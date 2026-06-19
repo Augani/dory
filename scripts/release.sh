@@ -1,7 +1,7 @@
 #!/bin/bash
-# Dory release pipeline: archive → export (Developer ID) → notarize → staple → zip.
+# Dory release pipeline: archive -> export (Developer ID) -> notarize -> staple -> zip.
 #
-# Requires (one-time, your Apple Developer account — the external gate):
+# Requires (one-time, your Apple Developer account -- the external gate):
 #   * A "Developer ID Application" certificate in your keychain.
 #   * A notarytool keychain profile:  xcrun notarytool store-credentials dory-notary \
 #         --apple-id you@example.com --team-id <TEAMID> --password <app-specific-password>
@@ -20,7 +20,7 @@ ARCHIVE="$BUILD_DIR/Dory.xcarchive"
 EXPORT_DIR="$BUILD_DIR/export"
 NOTARY_PROFILE="${DORY_NOTARY_PROFILE:-dory-notary}"
 
-echo "==> Archiving Dory $VERSION…"
+echo "==> Archiving Dory $VERSION..."
 xcodebuild -project Dory.xcodeproj -scheme Dory -configuration Release \
   -destination 'generic/platform=macOS' -archivePath "$ARCHIVE" \
   MARKETING_VERSION="$VERSION" archive
@@ -34,14 +34,14 @@ cat > "$BUILD_DIR/ExportOptions.plist" <<'PLIST'
 </dict></plist>
 PLIST
 
-echo "==> Exporting signed app…"
+echo "==> Exporting signed app..."
 xcodebuild -exportArchive -archivePath "$ARCHIVE" \
   -exportOptionsPlist "$BUILD_DIR/ExportOptions.plist" -exportPath "$EXPORT_DIR"
 
 APP="$EXPORT_DIR/Dory.app"
 
 if [ "${DORY_BUNDLE_ENGINE:-1}" = "1" ]; then
-  echo "==> Bundling the engine for a self-contained app (no extra downloads for users)…"
+  echo "==> Bundling the engine for a self-contained app (no extra downloads for users)..."
   scripts/bundle-engine.sh "$APP"
   codesign --force --deep --options runtime --sign "Developer ID Application" "$APP"
 fi
@@ -49,7 +49,7 @@ fi
 ZIP="$BUILD_DIR/Dory-$VERSION.zip"
 ditto -c -k --keepParent "$APP" "$ZIP"
 
-echo "==> Notarizing…"
+echo "==> Notarizing..."
 # CI passes credentials directly (NOTARY_APPLE_ID/_TEAM_ID/_PASSWORD); locally we use a stored
 # notarytool keychain profile created once with `xcrun notarytool store-credentials`.
 if [ -n "${NOTARY_APPLE_ID:-}" ]; then
