@@ -1,0 +1,46 @@
+#!/bin/bash
+# `dory` — Dory's command-line companion (the analog of OrbStack's `orb`). Drives Dory's own engine,
+# machines, and Kubernetes from the terminal. Install:  ln -sf "$PWD/scripts/dory" /usr/local/bin/dory
+set -euo pipefail
+
+DORY_SOCK="${DORY_SOCK:-$HOME/.dory/dory.sock}"
+KUBECONFIG_DORY="$HOME/.kube/dory-config"
+CONTAINER_BIN="$(command -v container || echo /opt/homebrew/bin/container)"
+
+# The framework-engine helper (Rosetta-fast x86 + host mounts via Apple's containerization), bundled
+# in the app and signed with the virtualization entitlement. Falls back to a local dev build.
+vm_helper() {
+  for p in "${DORY_VM_HELPER:-}" \
+           "$(dirname "$0")/../Helpers/dory-vm" \
+           "$(dirname "$0")/../Packages/ContainerizationEngine/.build/out/Products/Debug/dory-vmboot"; do
+    [ -n "$p" ] && [ -x "$p" ] && { echo "$p"; return; }
+  done
+}
+
+usage() {
+  cat <<EOF
+dory — Dory CLI
+
+  dory <docker args...>        Run any docker command against Dory's engine
+  dory shell <container>       Open an interactive shell in a container
+  dory machine <args...>       Manage Linux machines (ls, create, start, stop, delete, run)
+  dory k8s <kubectl args...>   Run kubectl against Dory's Kubernetes cluster
+  dory ssh <machine>           Open a shell in a Linux machine
+  dory vm [--image R] [--arch amd64|arm64] [--rosetta] [--mount h:g] -- <cmd>
+                               Run a container on Dory's in-process framework engine
+                               (Rosetta-fast x86 + host file mounts)
+  dory vm --devices            Boot a VM with USB + audio passthrough and dynamic
+                               memory ballooning (reclaims RAM to macOS)
+  dory help                    Show this help
+EOF
+}
+
+case "${1:-help}" in
+  help|-h|--help) usage ;;
+  shell)          exec docker -H "unix://$DORY_SOCK" exec -it "$2" sh -c 'command -v bash >/dev/null && exec bash || exec sh' ;;
+  machine)        shift; exec "$CONTAINER_BIN" machine "$@" ;;
+  ssh)            exec "$CONTAINER_BIN" machine run -n "$2" ;;
+  vm)             shift; H="$(vm_helper)"; [ -z "$H" ] && { echo "dory-vm helper not found; build+sign it (see scripts/bundle-engine.sh)"; exit 1; }; exec "$H" "$@" ;;
+  k8s)            shift; exec kubectl --kubeconfig "$KUBECONFIG_DORY" "$@" ;;
+  *)              exec docker -H "unix://$DORY_SOCK" "$@" ;;
+esac

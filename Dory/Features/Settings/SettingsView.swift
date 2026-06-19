@@ -1,0 +1,347 @@
+import SwiftUI
+
+struct SettingsView: View {
+    @Environment(AppStore.self) private var store
+    @Environment(\.palette) private var p
+
+    var body: some View {
+        HStack(spacing: 0) {
+            subNav
+            ScrollView {
+                content
+                    .padding(.horizontal, 24).padding(.vertical, 20)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+    }
+
+    private var subNav: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            ForEach(SettingsTab.allCases) { tab in
+                let selected = store.settingsTab == tab
+                Button { store.settingsTab = tab } label: {
+                    Text(tab.label)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(selected ? p.text : p.text2)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 10).padding(.vertical, 8)
+                        .background(selected ? p.accentWeak : Color.clear, in: RoundedRectangle(cornerRadius: 7))
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("settings-\(tab.rawValue)")
+            }
+            Spacer()
+        }
+        .frame(width: 178)
+        .padding(.horizontal, 10).padding(.vertical, 14)
+        .overlay(alignment: .trailing) { Rectangle().fill(p.border).frame(width: 1) }
+    }
+
+    @ViewBuilder private var content: some View {
+        switch store.settingsTab {
+        case .general: general
+        case .resources: resources
+        case .engine: engine
+        case .network: infoPanel(networkText)
+        case .migrate: migrate
+        case .about: infoPanel(aboutText)
+        }
+    }
+
+    private var migrate: some View {
+        VStack(alignment: .leading, spacing: 22) {
+            groupLabel("SWITCH TO DORY")
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Import your images and containers from Docker Desktop or OrbStack onto Dory's engine. Your source engine is only read — nothing there is modified, so you can switch back anytime.")
+                    .font(.system(size: 12.5)).foregroundStyle(p.text2).lineSpacing(4)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                if let inv = store.migrationInventory {
+                    preflightPanel(inv)
+                } else {
+                    Text("No Docker Desktop or OrbStack engine detected.")
+                        .font(.system(size: 11.5)).foregroundStyle(p.text3)
+                }
+                Button {
+                    Task { await store.importFromDocker() }
+                } label: {
+                    HStack(spacing: 8) {
+                        if store.migrationBusy { ProgressView().controlSize(.small) }
+                        Text(store.migrationBusy ? "Importing…" : "Import from Docker / OrbStack")
+                            .font(.system(size: 12.5, weight: .semibold)).foregroundStyle(.white)
+                    }
+                    .padding(.horizontal, 16).padding(.vertical, 9)
+                    .background(p.accent.opacity(store.migrationBusy ? 0.6 : 1), in: RoundedRectangle(cornerRadius: 8))
+                }
+                .buttonStyle(.plain)
+                .disabled(store.migrationBusy || store.migrationInventory == nil || store.runtimeKind != .sharedVM)
+                .accessibilityIdentifier("migrate-import")
+                if store.migrationInventory != nil && store.runtimeKind != .sharedVM {
+                    Text("Switch to Dory's shared VM (Docker Engine tab) to import.")
+                        .font(.system(size: 11.5)).foregroundStyle(p.text3)
+                }
+                if !store.migrationStatus.isEmpty {
+                    Text(store.migrationStatus).font(.system(size: 11.5)).foregroundStyle(p.text3)
+                }
+            }
+            .padding(18)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(p.bgElevated, in: RoundedRectangle(cornerRadius: 11))
+            .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(p.border))
+
+            groupLabel("HOW DORY COMPARES")
+            comparisonTable
+            Text("Free and open source — including at work. OrbStack requires a paid license for commercial use; Docker Desktop requires a paid subscription for larger companies.")
+                .font(.system(size: 11.5)).foregroundStyle(p.text3).lineSpacing(3)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .task { await store.loadMigrationPreflight() }
+    }
+
+    private func preflightPanel(_ inv: MigrationInventory) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 14) {
+                preflightStat("\(inv.images)", "images")
+                preflightStat("\(inv.containers)", "containers")
+                preflightStat("\(inv.volumes)", "volumes")
+            }
+            Text("Found on \(inv.sourceName). Images are copied and containers recreated on Dory — \(inv.sourceName) is left untouched.")
+                .font(.system(size: 11.5)).foregroundStyle(p.text2).lineSpacing(3)
+            if inv.volumes > 0 {
+                HStack(alignment: .top, spacing: 6) {
+                    Glyph(glyph: .shield, size: 12, color: p.amber)
+                    Text("Volume **data** isn't copied automatically — your \(inv.volumes) named volume\(inv.volumes == 1 ? "" : "s") stay in \(inv.sourceName). Re-mount or re-create them in Dory.")
+                        .font(.system(size: 11)).foregroundStyle(p.text3).lineSpacing(3)
+                }
+                .padding(.top, 2)
+            }
+        }
+        .padding(13)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(p.bgInput, in: RoundedRectangle(cornerRadius: 9))
+    }
+
+    private func preflightStat(_ value: String, _ label: String) -> some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text(value).font(.system(size: 18, weight: .bold)).foregroundStyle(p.accentText)
+            Text(label).font(.system(size: 10.5)).foregroundStyle(p.text3)
+        }
+    }
+
+    private var comparisonTable: some View {
+        VStack(spacing: 0) {
+            comparisonHeader
+            comparisonRow("Free for commercial use", .yes, .no("$8/user/mo"), .no("Paid for business"), divider: true)
+            comparisonRow("Open source", .yes, .no(nil), .no(nil), divider: true)
+            comparisonRow("Low memory (one shared VM)", .yes, .yes, .no(nil), divider: true)
+            comparisonRow("Apple-native virtualization", .yes, .yes, .no(nil), divider: true)
+            comparisonRow("*.local domains + HTTPS", .yes, .yes, .no(nil), divider: true)
+            comparisonRow("Drop-in docker & kubectl", .yes, .yes, .yes, divider: true)
+            comparisonRow("Kubernetes built-in", .yes, .yes, .yes, divider: true)
+            comparisonRow("Rosetta-fast x86", .yes, .yes, .partial, divider: false)
+        }
+        .background(p.bgElevated, in: RoundedRectangle(cornerRadius: 11))
+        .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(p.border))
+    }
+
+    private var comparisonHeader: some View {
+        HStack(spacing: 0) {
+            Text("").frame(maxWidth: .infinity, alignment: .leading)
+            ForEach(["Dory", "OrbStack", "Docker"], id: \.self) { name in
+                Text(name).font(.system(size: 11.5, weight: .bold))
+                    .foregroundStyle(name == "Dory" ? p.accentText : p.text3)
+                    .frame(width: 92)
+            }
+        }
+        .padding(.horizontal, 15).padding(.vertical, 11)
+        .overlay(alignment: .bottom) { Rectangle().fill(p.border).frame(height: 1) }
+    }
+
+    private enum Cell { case yes, no(String?), partial }
+
+    private func comparisonRow(_ label: String, _ dory: Cell, _ orb: Cell, _ docker: Cell, divider: Bool) -> some View {
+        HStack(spacing: 0) {
+            Text(label).font(.system(size: 12.5)).foregroundStyle(p.text2)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            cellView(dory, highlight: true)
+            cellView(orb, highlight: false)
+            cellView(docker, highlight: false)
+        }
+        .padding(.horizontal, 15).padding(.vertical, 11)
+        .overlay(alignment: .bottom) { if divider { Rectangle().fill(p.border).frame(height: 1) } }
+    }
+
+    @ViewBuilder private func cellView(_ cell: Cell, highlight: Bool) -> some View {
+        Group {
+            switch cell {
+            case .yes:
+                Glyph(glyph: .shield, size: 13, color: p.green)
+            case .partial:
+                Text("~").font(.system(size: 15, weight: .bold)).foregroundStyle(p.amber)
+            case .no(let note):
+                VStack(spacing: 1) {
+                    Text("✕").font(.system(size: 12, weight: .bold)).foregroundStyle(p.text3)
+                    if let note { Text(note).font(.system(size: 9)).foregroundStyle(p.text3).multilineTextAlignment(.center) }
+                }
+            }
+        }
+        .frame(width: 92)
+    }
+
+    private var general: some View {
+        @Bindable var store = store
+        return VStack(alignment: .leading, spacing: 0) {
+            groupLabel("STARTUP")
+            VStack(spacing: 0) {
+                toggleRow("Launch Dory at login", "Start the engine automatically when you log in.", isOn: Binding(get: { store.launchAtLogin }, set: { store.setLaunchAtLogin($0) }), divider: true)
+                toggleRow("Show menu bar icon", "Quick access to containers from the menu bar.", isOn: Binding(get: { store.showMenuBarIcon }, set: { store.setShowMenuBarIcon($0) }), divider: true)
+                toggleRow("Check for updates automatically", "Notify me when a new version of Dory is available.", isOn: Binding(get: { store.autoUpdate }, set: { store.setAutoUpdate($0) }), divider: false)
+            }
+            .background(p.bgElevated, in: RoundedRectangle(cornerRadius: 11))
+            .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(p.border))
+            .padding(.bottom, 22)
+
+            groupLabel("APPEARANCE")
+            HStack(spacing: 10) {
+                appearanceCard(.light, "Light", LinearGradient(colors: [Color(hex: 0xDCE9F7), .white], startPoint: .topLeading, endPoint: .bottomTrailing))
+                appearanceCard(.dark, "Dark", LinearGradient(colors: [Color(hex: 0x1B1D21), Color(hex: 0x2A2C33)], startPoint: .topLeading, endPoint: .bottomTrailing))
+            }
+        }
+    }
+
+    private func toggleRow(_ title: String, _ subtitle: String, isOn: Binding<Bool>, divider: Bool) -> some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title).font(.system(size: 13, weight: .semibold)).foregroundStyle(p.text)
+                Text(subtitle).font(.system(size: 11.5)).foregroundStyle(p.text3)
+            }
+            Spacer(minLength: 0)
+            DoryToggle(isOn: isOn)
+        }
+        .padding(.horizontal, 15).padding(.vertical, 13)
+        .overlay(alignment: .bottom) { if divider { Rectangle().fill(p.border).frame(height: 1) } }
+    }
+
+    private func appearanceCard(_ appearance: DoryAppearance, _ label: String, _ preview: LinearGradient) -> some View {
+        let selected = store.appearance == appearance
+        return Button { store.setAppearance(appearance) } label: {
+            VStack(alignment: .leading, spacing: 9) {
+                RoundedRectangle(cornerRadius: 7).fill(preview).frame(height: 46)
+                    .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(p.border))
+                Text(label).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(p.text)
+            }
+            .padding(13)
+            .frame(maxWidth: .infinity)
+            .background(p.bgElevated, in: RoundedRectangle(cornerRadius: 11))
+            .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(selected ? p.accent : p.border, lineWidth: 2))
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("appearance-\(appearance.rawValue)")
+    }
+
+    private var resources: some View {
+        let cores = ProcessInfo.processInfo.processorCount
+        let ramGB = Double(ProcessInfo.processInfo.physicalMemory) / 1_073_741_824
+        return VStack(alignment: .leading, spacing: 20) {
+            groupLabel("THIS MAC")
+            settingsSlider("CPU cores", "Engine uses up to 4 of \(cores) cores", min(1, 4.0 / Double(max(cores, 1))))
+            settingsSlider("Memory", String(format: "%.0f GB installed · grows on demand", ramGB), min(1, 4.0 / max(ramGB, 1)))
+            infoPanel("Dory's engine uses up to 4 CPU cores and allocates memory on demand — it reclaims RAM back to macOS when idle instead of holding a fixed reservation, so there are no manual limits to tune.")
+        }
+    }
+
+    private func settingsSlider(_ label: String, _ value: String, _ fraction: Double) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text(label).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(p.text)
+                Spacer()
+                Text(value).font(.system(size: 12.5, weight: .bold)).monospacedDigit().foregroundStyle(p.accentText)
+            }
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(p.bgInput).frame(height: 6)
+                    Capsule().fill(p.accent).frame(width: geo.size.width * fraction, height: 6)
+                    Circle().fill(.white).frame(width: 16, height: 16)
+                        .overlay(Circle().strokeBorder(p.border))
+                        .shadow(color: .black.opacity(0.3), radius: 2, y: 1)
+                        .offset(x: geo.size.width * fraction - 8)
+                }
+            }
+            .frame(height: 16)
+        }
+    }
+
+    private var engine: some View {
+        let kind = store.runtimeKind
+        let onShared = kind == .sharedVM
+        return VStack(alignment: .leading, spacing: 20) {
+            groupLabel("ACTIVE ENGINE")
+            HStack(spacing: 12) {
+                Circle().fill(store.engineRunning ? p.green : p.text3).frame(width: 9, height: 9)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(kind.displayName).font(.system(size: 13, weight: .semibold)).foregroundStyle(p.text)
+                    Text(engineDescription(for: kind)).font(.system(size: 11.5)).foregroundStyle(p.text3)
+                }
+                Spacer(minLength: 0)
+                Text("v\(store.engineVersion)").font(.system(size: 12, weight: .bold)).monospacedDigit().foregroundStyle(p.accentText)
+            }
+            .padding(.horizontal, 15).padding(.vertical, 13)
+            .background(p.bgElevated, in: RoundedRectangle(cornerRadius: 11))
+            .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(p.border))
+
+            groupLabel("DORY SHARED VM")
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Run every container in one shared Linux VM — like OrbStack — instead of a VM per container. Lower memory for multi-container stacks, and Dory becomes a standalone engine that no longer needs Docker or OrbStack.")
+                    .font(.system(size: 12.5)).foregroundStyle(p.text2).lineSpacing(4)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Button {
+                    Task { await store.useSharedVM() }
+                } label: {
+                    Text(onShared ? "Running on Dory's shared VM" : "Use Dory's shared VM")
+                        .font(.system(size: 12.5, weight: .semibold))
+                        .foregroundStyle(onShared ? p.text2 : .white)
+                        .padding(.horizontal, 16).padding(.vertical, 9)
+                        .background(onShared ? p.bgInput : p.accent, in: RoundedRectangle(cornerRadius: 8))
+                }
+                .buttonStyle(.plain)
+                .disabled(onShared)
+                .accessibilityIdentifier("use-shared-vm")
+                if !store.sharedVMStatus.isEmpty {
+                    Text(store.sharedVMStatus).font(.system(size: 11.5)).foregroundStyle(p.text3)
+                }
+            }
+            .padding(18)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(p.bgElevated, in: RoundedRectangle(cornerRadius: 11))
+            .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(p.border))
+        }
+    }
+
+    private func engineDescription(for kind: RuntimeKind) -> String {
+        switch kind {
+        case .docker: "Proxying the host Docker/OrbStack engine"
+        case .sharedVM: "One shared Linux VM on Apple's container engine"
+        case .appleContainer: "Apple container — one micro-VM per container"
+        case .mock: "Demo data"
+        }
+    }
+
+    private func infoPanel(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 12.5)).foregroundStyle(p.text2).lineSpacing(4)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(18)
+            .background(p.bgElevated, in: RoundedRectangle(cornerRadius: 11))
+            .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(p.border))
+    }
+
+    private func groupLabel(_ text: String) -> some View {
+        Text(text).font(.system(size: 11, weight: .bold)).tracking(0.5).foregroundStyle(p.text3)
+            .padding(.bottom, 10)
+    }
+
+    private let networkText = "All containers receive an automatic *.dory.local domain backed by the built-in DNS resolver. HTTPS certificates are issued locally and trusted system-wide. Default bridge subnet 192.168.215.0/24."
+    private var aboutText: String {
+        "Dory \(AppInfo.version) (build \(AppInfo.build)). A lighter, memory-efficient alternative to Docker Desktop and OrbStack, built for macOS — free and open source. © 2026 Dory contributors."
+    }
+}

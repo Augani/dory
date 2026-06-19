@@ -1,0 +1,41 @@
+name: Benchmark
+
+# Memory benchmark: Dory's shared VM vs one VM per container.
+#
+# IMPORTANT: this needs hardware virtualization and macOS 26 (Tahoe). GitHub-HOSTED macOS runners
+# are themselves VMs without nested virtualization, so they CANNOT run the container engine — this
+# job only produces real numbers on a SELF-HOSTED macOS 26 runner with Dory installed. Label such a
+# runner `[self-hosted, macOS, dory]` and it will pick this up.
+
+on:
+  workflow_dispatch:
+    inputs:
+      count:
+        description: 'Number of containers'
+        default: '2'
+      image:
+        description: 'Image to run'
+        default: 'alpine:latest'
+  schedule:
+    - cron: '0 9 * * 1'  # weekly, Monday 09:00 UTC
+
+jobs:
+  benchmark:
+    runs-on: [self-hosted, macOS, dory]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run memory benchmark
+        run: scripts/benchmark.sh "${{ github.event.inputs.count || '2' }}" "${{ github.event.inputs.image || 'alpine:latest' }}"
+      - name: Summarize
+        run: |
+          {
+            echo "### Dory memory benchmark"
+            echo ""
+            echo '```json'
+            cat benchmark-results.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results
+          path: benchmark-results.json

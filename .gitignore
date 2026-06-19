@@ -1,0 +1,56 @@
+# macOS
+.DS_Store
+
+# Xcode
+build/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+*.xccheckout
+*.moved-aside
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# Xcode project user-specific
+*.xcodeproj/*
+!*.xcodeproj/project.pbxproj
+!*.xcodeproj/xcshareddata/
+!*.xcodeproj/project.xcworkspace/
+*.xcworkspace/xcuserdata/
+
+# Swift Package Manager
+.build/
+.swiftpm/
+Package.resolved
+
+# Code coverage
+*.profraw
+*.profdata
+
+# Signing material / secrets — NEVER commit
+*.p12
+*.p12.b64
+*.pem
+*.key
+*.cer
+*.certSigningRequest
+*.mobileprovision
+*.provisionprofile
+*.env
+secrets*
+ExportOptions.plist
+
+# Release pipeline output
+release-build/
+
+# Dory runtime data
+.dory/
+
+# Local tooling
+.claude/settings.local.json
+.claude/*.local.json
+.claude/launch.json
+.playwright-mcp/
+benchmark-results.json

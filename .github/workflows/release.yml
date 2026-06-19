@@ -1,0 +1,121 @@
+name: Release
+
+# Builds, signs, notarizes, and publishes a Dory release when a version tag (e.g. v0.1.0) is
+# pushed, or on manual dispatch.
+#
+# Required repository secrets:
+#   DEVELOPER_ID_CERT_P12_BASE64  base64 of your "Developer ID Application" .p12
+#   DEVELOPER_ID_CERT_PASSWORD    the .p12 export password
+#   KEYCHAIN_PASSWORD             any string — used for the throwaway CI keychain
+#   NOTARY_APPLE_ID              Apple ID email for notarytool
+#   NOTARY_TEAM_ID               Apple Developer Team ID
+#   NOTARY_APPLE_PASSWORD        app-specific password for that Apple ID
+#
+# NOTE: Dory targets macOS 26 (Tahoe) and needs Xcode 27. GitHub-hosted runners do not offer that
+# toolchain yet, so point `runs-on` at a self-hosted macOS 26 runner (label it `[self-hosted, macOS]`
+# and update below). `macos-15` keeps the workflow valid out of the box but will fail to compile
+# until hosted runners catch up.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (e.g. 0.1.0)'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-15
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+      sha256: ${{ steps.build.outputs.sha256 }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: ver
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            V="${{ github.event.inputs.version }}"
+          else
+            V="${GITHUB_REF_NAME#v}"
+          fi
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+
+      - name: Select newest installed Xcode
+        run: sudo xcode-select -s "$(ls -d /Applications/Xcode*.app | sort -V | tail -1)/Contents/Developer"
+
+      - name: Import Developer ID certificate
+        env:
+          CERT_BASE64: ${{ secrets.DEVELOPER_ID_CERT_P12_BASE64 }}
+          CERT_PASSWORD: ${{ secrets.DEVELOPER_ID_CERT_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          KEYCHAIN="$RUNNER_TEMP/dory-signing.keychain-db"
+          echo "$CERT_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$RUNNER_TEMP/cert.p12" -P "$CERT_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN"
+          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security list-keychains -d user -s "$KEYCHAIN" login.keychain
+          rm -f "$RUNNER_TEMP/cert.p12"
+
+      - name: Build, sign, and notarize
+        id: build
+        env:
+          NOTARY_APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
+          # Team ID is not secret (it appears in every signed app); fall back to the project's team.
+          NOTARY_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID || '864H636QW4' }}
+          NOTARY_PASSWORD: ${{ secrets.NOTARY_APPLE_PASSWORD }}
+        run: scripts/release.sh "${{ steps.ver.outputs.version }}"
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.ver.outputs.version }}
+          name: Dory ${{ steps.ver.outputs.version }}
+          files: ${{ steps.build.outputs.zip }}
+          generate_release_notes: true
+          body: |
+            Native, lightweight Docker & Linux containers on Apple silicon — a free, open-source
+            alternative to OrbStack and Docker Desktop. Requires macOS 26 (Tahoe) or later.
+
+            **Install**
+
+            ```sh
+            brew install --cask Augani/dory/dory
+            ```
+
+            …or download `Dory-${{ steps.ver.outputs.version }}.zip` below.
+
+            ```
+            sha256: ${{ steps.build.outputs.sha256 }}
+            ```
+
+  # Keeps the Homebrew cask in this repo (the tap) current after every release.
+  bump-cask:
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - name: Update cask version + checksum
+        run: |
+          V="${{ needs.release.outputs.version }}"
+          S="${{ needs.release.outputs.sha256 }}"
+          sed -i -E "s/  version \"[^\"]+\"/  version \"$V\"/" Casks/dory.rb
+          sed -i -E "s/  sha256 \"[0-9a-f]+\"/  sha256 \"$S\"/" Casks/dory.rb
+          if git diff --quiet Casks/dory.rb; then echo "cask already current"; exit 0; fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "chore: update Homebrew cask to v$V"
+          git push

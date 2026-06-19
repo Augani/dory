@@ -1,0 +1,551 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 110;
+	objects = {
+
+/* Begin PBXContainerItemProxy section */
+		3E705CFD2FE37C7B0094B33C /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 3E705CE72FE37C790094B33C /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 3E705CEE2FE37C790094B33C;
+			remoteInfo = Dory;
+		};
+		3E705D072FE37C7B0094B33C /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 3E705CE72FE37C790094B33C /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 3E705CEE2FE37C790094B33C;
+			remoteInfo = Dory;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		3E705CEF2FE37C790094B33C /* Dory.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Dory.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		3E705CFC2FE37C7B0094B33C /* DoryTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = DoryTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		3E705D062FE37C7B0094B33C /* DoryUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = DoryUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedRootGroup section */
+		3E705CF12FE37C790094B33C /* Dory */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = Dory;
+			sourceTree = "<group>";
+		};
+		3E705CFF2FE37C7B0094B33C /* DoryTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = DoryTests;
+			sourceTree = "<group>";
+		};
+		3E705D092FE37C7B0094B33C /* DoryUITests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = DoryUITests;
+			sourceTree = "<group>";
+		};
+/* End PBXFileSystemSynchronizedRootGroup section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		3E705CEC2FE37C790094B33C /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			files = (
+			);
+		};
+		3E705CF92FE37C7B0094B33C /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			files = (
+			);
+		};
+		3E705D032FE37C7B0094B33C /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			files = (
+			);
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		3E705CE62FE37C790094B33C = {
+			isa = PBXGroup;
+			children = (
+				3E705CF12FE37C790094B33C /* Dory */,
+				3E705CFF2FE37C7B0094B33C /* DoryTests */,
+				3E705D092FE37C7B0094B33C /* DoryUITests */,
+				3E705CF02FE37C790094B33C /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		3E705CF02FE37C790094B33C /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				3E705CEF2FE37C790094B33C /* Dory.app */,
+				3E705CFC2FE37C7B0094B33C /* DoryTests.xctest */,
+				3E705D062FE37C7B0094B33C /* DoryUITests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		3E705CEE2FE37C790094B33C /* Dory */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 3E705D0E2FE37C7B0094B33C /* Build configuration list for PBXNativeTarget "Dory" */;
+			buildPhases = (
+				3E705CEB2FE37C790094B33C /* Sources */,
+				3E705CEC2FE37C790094B33C /* Frameworks */,
+				3E705CED2FE37C790094B33C /* Resources */,
+			);
+			buildRules = (
+			);
+			fileSystemSynchronizedGroups = (
+				3E705CF12FE37C790094B33C /* Dory */,
+			);
+			name = Dory;
+			productName = Dory;
+			productReference = 3E705CEF2FE37C790094B33C /* Dory.app */;
+			productType = "com.apple.product-type.application";
+		};
+		3E705CFB2FE37C7B0094B33C /* DoryTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 3E705D112FE37C7B0094B33C /* Build configuration list for PBXNativeTarget "DoryTests" */;
+			buildPhases = (
+				3E705CF82FE37C7B0094B33C /* Sources */,
+				3E705CF92FE37C7B0094B33C /* Frameworks */,
+				3E705CFA2FE37C7B0094B33C /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				3E705CFE2FE37C7B0094B33C /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				3E705CFF2FE37C7B0094B33C /* DoryTests */,
+			);
+			name = DoryTests;
+			productName = DoryTests;
+			productReference = 3E705CFC2FE37C7B0094B33C /* DoryTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		3E705D052FE37C7B0094B33C /* DoryUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 3E705D142FE37C7B0094B33C /* Build configuration list for PBXNativeTarget "DoryUITests" */;
+			buildPhases = (
+				3E705D022FE37C7B0094B33C /* Sources */,
+				3E705D032FE37C7B0094B33C /* Frameworks */,
+				3E705D042FE37C7B0094B33C /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				3E705D082FE37C7B0094B33C /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				3E705D092FE37C7B0094B33C /* DoryUITests */,
+			);
+			name = DoryUITests;
+			productName = DoryUITests;
+			productReference = 3E705D062FE37C7B0094B33C /* DoryUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		3E705CE72FE37C790094B33C /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 2700;
+				LastUpgradeCheck = 2700;
+				TargetAttributes = {
+					3E705CEE2FE37C790094B33C = {
+						CreatedOnToolsVersion = 27.0;
+					};
+					3E705CFB2FE37C7B0094B33C = {
+						CreatedOnToolsVersion = 27.0;
+						TestTargetID = 3E705CEE2FE37C790094B33C;
+					};
+					3E705D052FE37C7B0094B33C = {
+						CreatedOnToolsVersion = 27.0;
+						TestTargetID = 3E705CEE2FE37C790094B33C;
+					};
+				};
+			};
+			buildConfigurationList = 3E705CEA2FE37C790094B33C /* Build configuration list for PBXProject "Dory" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = 3E705CE62FE37C790094B33C;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 3E705CF02FE37C790094B33C /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				3E705CEE2FE37C790094B33C /* Dory */,
+				3E705CFB2FE37C7B0094B33C /* DoryTests */,
+				3E705D052FE37C7B0094B33C /* DoryUITests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		3E705CED2FE37C790094B33C /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			files = (
+			);
+		};
+		3E705CFA2FE37C7B0094B33C /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			files = (
+			);
+		};
+		3E705D042FE37C7B0094B33C /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			files = (
+			);
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		3E705CEB2FE37C790094B33C /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			files = (
+			);
+		};
+		3E705CF82FE37C7B0094B33C /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			files = (
+			);
+		};
+		3E705D022FE37C7B0094B33C /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			files = (
+			);
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		3E705CFE2FE37C7B0094B33C /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 3E705CEE2FE37C790094B33C /* Dory */;
+			targetProxy = 3E705CFD2FE37C7B0094B33C /* PBXContainerItemProxy */;
+		};
+		3E705D082FE37C7B0094B33C /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 3E705CEE2FE37C790094B33C /* Dory */;
+			targetProxy = 3E705D072FE37C7B0094B33C /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		3E705D0C2FE37C7B0094B33C /* Debug configuration for PBXProject "Dory" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = 864H636QW4;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		3E705D0D2FE37C7B0094B33C /* Release configuration for PBXProject "Dory" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = 864H636QW4;
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				SDKROOT = macosx;
+				SWIFT_COMPILATION_MODE = wholemodule;
+			};
+			name = Release;
+		};
+		3E705D0F2FE37C7B0094B33C /* Debug configuration for PBXNativeTarget "Dory" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 864H636QW4;
+				ENABLE_APP_SANDBOX = NO;
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_PREVIEWS = YES;
+				ENABLE_USER_SELECTED_FILES = readonly;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Dory connects to its local Linux VM so your container ports are reachable at localhost.";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.pythonxi.Dory;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				REGISTER_APP_GROUPS = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		3E705D102FE37C7B0094B33C /* Release configuration for PBXNativeTarget "Dory" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 864H636QW4;
+				ENABLE_APP_SANDBOX = NO;
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_PREVIEWS = YES;
+				ENABLE_USER_SELECTED_FILES = readonly;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Dory connects to its local Linux VM so your container ports are reachable at localhost.";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.pythonxi.Dory;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				REGISTER_APP_GROUPS = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		3E705D122FE37C7B0094B33C /* Debug configuration for PBXNativeTarget "DoryTests" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 864H636QW4;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.pythonxi.DoryTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Dory.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Dory";
+			};
+			name = Debug;
+		};
+		3E705D132FE37C7B0094B33C /* Release configuration for PBXNativeTarget "DoryTests" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 864H636QW4;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.pythonxi.DoryTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Dory.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Dory";
+			};
+			name = Release;
+		};
+		3E705D152FE37C7B0094B33C /* Debug configuration for PBXNativeTarget "DoryUITests" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 864H636QW4;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.pythonxi.DoryUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TEST_TARGET_NAME = Dory;
+			};
+			name = Debug;
+		};
+		3E705D162FE37C7B0094B33C /* Release configuration for PBXNativeTarget "DoryUITests" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 864H636QW4;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.pythonxi.DoryUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TEST_TARGET_NAME = Dory;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		3E705CEA2FE37C790094B33C /* Build configuration list for PBXProject "Dory" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				3E705D0C2FE37C7B0094B33C /* Debug configuration for PBXProject "Dory" */,
+				3E705D0D2FE37C7B0094B33C /* Release configuration for PBXProject "Dory" */,
+			);
+			defaultConfigurationName = Release;
+		};
+		3E705D0E2FE37C7B0094B33C /* Build configuration list for PBXNativeTarget "Dory" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				3E705D0F2FE37C7B0094B33C /* Debug configuration for PBXNativeTarget "Dory" */,
+				3E705D102FE37C7B0094B33C /* Release configuration for PBXNativeTarget "Dory" */,
+			);
+			defaultConfigurationName = Release;
+		};
+		3E705D112FE37C7B0094B33C /* Build configuration list for PBXNativeTarget "DoryTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				3E705D122FE37C7B0094B33C /* Debug configuration for PBXNativeTarget "DoryTests" */,
+				3E705D132FE37C7B0094B33C /* Release configuration for PBXNativeTarget "DoryTests" */,
+			);
+			defaultConfigurationName = Release;
+		};
+		3E705D142FE37C7B0094B33C /* Build configuration list for PBXNativeTarget "DoryUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				3E705D152FE37C7B0094B33C /* Debug configuration for PBXNativeTarget "DoryUITests" */,
+				3E705D162FE37C7B0094B33C /* Release configuration for PBXNativeTarget "DoryUITests" */,
+			);
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 3E705CE72FE37C790094B33C /* Project object */;
+	validationLevel = 1;
+}
