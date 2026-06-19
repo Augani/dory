@@ -121,3 +121,21 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git commit -am "chore: update Homebrew cask to v$V"
           git push
+
+      # Sync the same cask to the Augani/homebrew-dory tap so `brew install --cask Augani/dory/dory`
+      # picks it up. Needs a HOMEBREW_TAP_TOKEN secret (a PAT with contents:write on homebrew-dory);
+      # skipped if absent.
+      - name: Sync cask to the homebrew-dory tap
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then echo "HOMEBREW_TAP_TOKEN not set — skipping tap sync"; exit 0; fi
+          V="${{ needs.release.outputs.version }}"
+          git clone --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/Augani/homebrew-dory.git" tap
+          cp Casks/dory.rb tap/Casks/dory.rb
+          cd tap
+          if git diff --quiet; then echo "tap already current"; exit 0; fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "chore: update Dory cask to v$V"
+          git push

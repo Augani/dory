@@ -84,8 +84,7 @@ scripts/enable-kubernetes.sh    # bootstrap k3s in the shared VM
 ## Install (release builds)
 
 ```sh
-brew tap Augani/dory https://github.com/Augani/dory
-brew install --cask dory
+brew install --cask Augani/dory/dory
 ```
 
 …or download the latest notarized `.app` from [Releases](https://github.com/Augani/dory/releases).
