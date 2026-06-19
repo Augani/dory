@@ -10,6 +10,17 @@ struct VolumesView: View {
                 .init("NAME"), .init("SIZE", 110), .init("DRIVER", 120),
                 .init("USED BY", 150), .init("CREATED", 120),
             ])
+            if store.filteredVolumes.isEmpty {
+                TableEmptyState(
+                    glyph: .volumes,
+                    title: store.volumes.isEmpty ? "No volumes yet" : "No matches",
+                    message: store.volumes.isEmpty
+                        ? "Volumes keep data alive across container restarts. Create one to get started."
+                        : "No volumes match \u{201C}\(store.filter)\u{201D}.",
+                    actionLabel: store.volumes.isEmpty ? "New Volume" : nil,
+                    action: store.volumes.isEmpty ? { store.activeSheet = .newVolume } : nil
+                )
+            } else {
             ScrollView {
                 LazyVStack(spacing: 0) {
                     ForEach(store.filteredVolumes) { volume in
@@ -38,6 +49,7 @@ struct VolumesView: View {
                         }
                     }
                 }
+            }
             }
         }
     }

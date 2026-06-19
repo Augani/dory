@@ -10,6 +10,13 @@ struct NetworksView: View {
                 .init("NAME"), .init("DRIVER", 110), .init("SCOPE", 100),
                 .init("SUBNET", 170), .init("CONTAINERS", 110),
             ])
+            if store.filteredNetworks.isEmpty {
+                TableEmptyState(
+                    glyph: .networks,
+                    title: "No matches",
+                    message: "No networks match \u{201C}\(store.filter)\u{201D}."
+                )
+            } else {
             ScrollView {
                 LazyVStack(spacing: 0) {
                     ForEach(store.filteredNetworks) { network in
@@ -35,6 +42,7 @@ struct NetworksView: View {
                         }
                     }
                 }
+            }
             }
         }
     }

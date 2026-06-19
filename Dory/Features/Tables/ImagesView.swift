@@ -55,6 +55,37 @@ struct IconTile: View {
     }
 }
 
+struct TableEmptyState: View {
+    @Environment(\.palette) private var p
+    let glyph: DoryGlyph
+    let title: String
+    let message: String
+    var actionLabel: String? = nil
+    var action: (() -> Void)? = nil
+
+    var body: some View {
+        VStack(spacing: 12) {
+            Glyph(glyph: glyph, size: 34, color: p.text3)
+                .frame(width: 60, height: 60)
+                .background(p.bgElevated, in: RoundedRectangle(cornerRadius: 15))
+                .overlay(RoundedRectangle(cornerRadius: 15).strokeBorder(p.border))
+            Text(title).font(.system(size: 14.5, weight: .semibold)).foregroundStyle(p.text)
+            Text(message).font(.system(size: 12.5)).foregroundStyle(p.text3)
+                .multilineTextAlignment(.center).lineSpacing(3).frame(maxWidth: 340)
+            if let actionLabel, let action {
+                Button(action: action) {
+                    Text(actionLabel).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(.white)
+                        .padding(.horizontal, 14).padding(.vertical, 8)
+                        .background(p.accent, in: RoundedRectangle(cornerRadius: 8))
+                }
+                .buttonStyle(.plain).padding(.top, 2)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(40)
+    }
+}
+
 struct ImagesView: View {
     @Environment(AppStore.self) private var store
     @Environment(\.palette) private var p
@@ -65,6 +96,17 @@ struct ImagesView: View {
                 .init("REPOSITORY"), .init("IMAGE ID", 120), .init("SIZE", 90),
                 .init("CREATED", 120), .init("IN USE", 80),
             ])
+            if store.filteredImages.isEmpty {
+                TableEmptyState(
+                    glyph: .images,
+                    title: store.images.isEmpty ? "No images yet" : "No matches",
+                    message: store.images.isEmpty
+                        ? "Pull an image from a registry, or build one from a Dockerfile."
+                        : "No images match \u{201C}\(store.filter)\u{201D}.",
+                    actionLabel: store.images.isEmpty ? "Pull Image" : nil,
+                    action: store.images.isEmpty ? { store.activeSheet = .pullImage } : nil
+                )
+            } else {
             ScrollView {
                 LazyVStack(spacing: 0) {
                     ForEach(store.filteredImages) { image in
@@ -110,6 +152,7 @@ struct ImagesView: View {
                         }
                     }
                 }
+            }
             }
         }
     }

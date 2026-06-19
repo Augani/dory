@@ -56,6 +56,7 @@ final class AppStore {
             if let v = UserDefaults.standard.object(forKey: Self.autoUpdateKey) as? Bool { autoUpdate = v }
         }
         if let raw = env["DORY_SECTION"], let parsed = AppSection(rawValue: raw) { section = parsed }
+        if let raw = env["DORY_FILTER"] { filter = raw }
         if let raw = env["DORY_SETTINGS_TAB"], let parsed = SettingsTab(rawValue: raw) { settingsTab = parsed }
         if let raw = env["DORY_DETAIL_TAB"], let parsed = DetailTab(rawValue: raw) { detailTab = parsed }
         if env["DORY_APPEARANCE"] == "light" { appearance = .light }
