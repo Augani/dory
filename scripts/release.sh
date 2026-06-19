@@ -1,5 +1,5 @@
 #!/bin/bash
-# Dory release pipeline: archive -> export (Developer ID) -> notarize -> staple -> zip.
+# Dory release pipeline: archive + Developer ID sign -> notarize -> staple -> zip.
 #
 # Requires (one-time, your Apple Developer account -- the external gate):
 #   * A "Developer ID Application" certificate in your keychain.
@@ -20,31 +20,32 @@ ARCHIVE="$BUILD_DIR/Dory.xcarchive"
 EXPORT_DIR="$BUILD_DIR/export"
 NOTARY_PROFILE="${DORY_NOTARY_PROFILE:-dory-notary}"
 
-echo "==> Archiving Dory $VERSION..."
+TEAM="${NOTARY_TEAM_ID:-864H636QW4}"
+echo "==> Archiving + signing Dory $VERSION (Developer ID, team $TEAM)..."
+# Manual Developer ID signing — automatic signing needs developer-portal access that CI lacks, and
+# there is no entitlements file requiring a provisioning profile.
 xcodebuild -project Dory.xcodeproj -scheme Dory -configuration Release \
   -destination 'generic/platform=macOS' -archivePath "$ARCHIVE" \
-  MARKETING_VERSION="$VERSION" archive
+  MARKETING_VERSION="$VERSION" \
+  CODE_SIGN_STYLE=Manual \
+  CODE_SIGN_IDENTITY="Developer ID Application" \
+  DEVELOPMENT_TEAM="$TEAM" \
+  archive
 
-cat > "$BUILD_DIR/ExportOptions.plist" <<'PLIST'
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict>
-  <key>method</key><string>developer-id</string>
-  <key>signingStyle</key><string>automatic</string>
-</dict></plist>
-PLIST
-
-echo "==> Exporting signed app..."
-xcodebuild -exportArchive -archivePath "$ARCHIVE" \
-  -exportOptionsPlist "$BUILD_DIR/ExportOptions.plist" -exportPath "$EXPORT_DIR"
-
+mkdir -p "$EXPORT_DIR"
+rm -rf "$EXPORT_DIR/Dory.app"
+cp -R "$ARCHIVE/Products/Applications/Dory.app" "$EXPORT_DIR/"
 APP="$EXPORT_DIR/Dory.app"
 
-if [ "${DORY_BUNDLE_ENGINE:-1}" = "1" ]; then
-  echo "==> Bundling the engine for a self-contained app (no extra downloads for users)..."
+# Engine bundling is off by default — the app pulls the engine on first run. Set DORY_BUNDLE_ENGINE=1
+# for a self-contained app (needs the engine assets present locally).
+if [ "${DORY_BUNDLE_ENGINE:-0}" = "1" ]; then
+  echo "==> Bundling the engine for a self-contained app..."
   scripts/bundle-engine.sh "$APP"
-  codesign --force --deep --options runtime --sign "Developer ID Application" "$APP"
 fi
+
+echo "==> Signing (Developer ID + hardened runtime)..."
+codesign --force --deep --options runtime --timestamp --sign "Developer ID Application" "$APP"
 
 ZIP="$BUILD_DIR/Dory-$VERSION.zip"
 ditto -c -k --keepParent "$APP" "$ZIP"
