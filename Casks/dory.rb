@@ -2,7 +2,7 @@
 # Tap and install:  brew tap Augani/dory https://github.com/Augani/dory && brew install --cask dory
 cask "dory" do
   version "0.1.0"
-  sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+  sha256 "b365743fbca460f6d334315d601286eb1f7b9f7b1e78b5baf335aed8faf82a21"
 
   url "https://github.com/Augani/dory/releases/download/v#{version}/Dory-#{version}.zip"
   name "Dory"
