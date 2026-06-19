@@ -9,7 +9,7 @@ cask "dory" do
   desc "Lightweight native macOS app for Docker and Linux containers on Apple silicon"
   homepage "https://github.com/Augani/dory"
 
-  depends_on macos: ">= :tahoe"
+  depends_on macos: :tahoe
   depends_on arch: :arm64
 
   app "Dory.app"
