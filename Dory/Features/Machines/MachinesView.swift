@@ -13,13 +13,23 @@ struct MachinesView: View {
     var body: some View {
         VStack(spacing: 0) {
             header
-            ScrollView {
-                LazyVGrid(columns: columns, spacing: 14) {
-                    ForEach(store.filteredMachines) { machine in
-                        MachineCard(machine: machine)
+            if store.filteredMachines.isEmpty {
+                TableEmptyState(
+                    glyph: .machines,
+                    title: store.machines.isEmpty ? "No Linux machines yet" : "No matches",
+                    message: store.machines.isEmpty
+                        ? "Spin up a full Ubuntu, Debian, Fedora, or Alpine VM with systemd and SSH — use \u{201C}New Machine\u{201D} above."
+                        : "No machines match \u{201C}\(store.filter)\u{201D}."
+                )
+            } else {
+                ScrollView {
+                    LazyVGrid(columns: columns, spacing: 14) {
+                        ForEach(store.filteredMachines) { machine in
+                            MachineCard(machine: machine)
+                        }
                     }
+                    .padding(18)
                 }
-                .padding(18)
             }
         }
     }
