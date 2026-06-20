@@ -20,6 +20,14 @@ struct RootView: View {
                     .environment(\.palette, store.palette)
             }
         }
+        .overlay(alignment: .top) {
+            if let conflict = store.dockerHostConflict, !store.dockerHostConflictDismissed,
+               !store.dockerHostCleaned, !store.onboarding, store.activeSheet == nil {
+                dockerHostBanner(conflict)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                    .padding(.top, 14)
+            }
+        }
         .overlay(alignment: .bottom) {
             if let error = store.actionError, store.activeSheet == nil {
                 errorToast(error)
@@ -31,9 +39,14 @@ struct RootView: View {
             }
         }
         .animation(.spring(duration: 0.3), value: store.actionError)
+        .animation(.spring(duration: 0.3), value: store.dockerHostConflict)
+        .animation(.spring(duration: 0.3), value: store.dockerHostCleaned)
         .task { await store.connectBackend() }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
             DockerContext.deactivateSync()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            Task { await store.refreshIfIdle() }
         }
         .sheet(item: Binding(get: { store.activeSheet }, set: { store.activeSheet = $0 })) { sheet in
             Group {
@@ -54,6 +67,54 @@ struct RootView: View {
             .environment(\.palette, store.palette)
             .preferredColorScheme(store.appearance.colorScheme)
         }
+    }
+
+    private func dockerHostBanner(_ conflict: DockerHostConflict.Conflict) -> some View {
+        let p = store.palette
+        return HStack(spacing: 11) {
+            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(p.amber)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("A pinned DOCKER_HOST is overriding Dory")
+                    .font(.system(size: 12.5, weight: .semibold)).foregroundStyle(p.text)
+                Text("New terminals reach \(shortHost(conflict.effectiveHost)) instead of Dory.")
+                    .font(.system(size: 11)).foregroundStyle(p.text3).lineLimit(1)
+            }
+            Spacer(minLength: 8)
+            if conflict.isFixable {
+                Button { Task { await store.resolveDockerHostConflict() } } label: {
+                    Text("Make Dory default").font(.system(size: 12, weight: .semibold)).foregroundStyle(.white)
+                        .padding(.horizontal, 12).padding(.vertical, 7)
+                        .background(p.accent, in: RoundedRectangle(cornerRadius: 7))
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("docker-host-banner-fix")
+            } else {
+                Button {
+                    store.section = .settings
+                    store.settingsTab = .general
+                    store.dismissDockerHostConflict()
+                } label: {
+                    Text("How to fix").font(.system(size: 12, weight: .semibold)).foregroundStyle(p.accentText)
+                        .padding(.horizontal, 12).padding(.vertical, 7)
+                        .background(p.bgInput, in: RoundedRectangle(cornerRadius: 7))
+                }
+                .buttonStyle(.plain)
+            }
+            Button { store.dismissDockerHostConflict() } label: {
+                Image(systemName: "xmark").font(.system(size: 11, weight: .bold)).foregroundStyle(p.text3)
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("docker-host-banner-dismiss")
+        }
+        .padding(.horizontal, 16).padding(.vertical, 11)
+        .frame(maxWidth: 580)
+        .background(p.bgElevated, in: RoundedRectangle(cornerRadius: 11))
+        .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(p.amber.opacity(0.5)))
+        .shadow(color: .black.opacity(0.3), radius: 12, y: 6)
+    }
+
+    private func shortHost(_ host: String) -> String {
+        host.hasPrefix("unix://") ? String(host.dropFirst("unix://".count)) : host
     }
 
     private func errorToast(_ message: String) -> some View {

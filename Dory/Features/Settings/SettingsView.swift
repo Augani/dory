@@ -202,12 +202,73 @@ struct SettingsView: View {
             .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(p.border))
             .padding(.bottom, 22)
 
+            dockerHostCallout
+
             groupLabel("APPEARANCE")
             HStack(spacing: 10) {
                 appearanceCard(.light, "Light", LinearGradient(colors: [Color(hex: 0xDCE9F7), .white], startPoint: .topLeading, endPoint: .bottomTrailing))
                 appearanceCard(.dark, "Dark", LinearGradient(colors: [Color(hex: 0x1B1D21), Color(hex: 0x2A2C33)], startPoint: .topLeading, endPoint: .bottomTrailing))
             }
         }
+    }
+
+    @ViewBuilder private var dockerHostCallout: some View {
+        if store.dockerHostCleaned {
+            calloutCard(p.green) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Dory is the default `docker`").font(.system(size: 13, weight: .semibold)).foregroundStyle(p.text)
+                    Text("Removed the conflicting `DOCKER_HOST` from your shell startup files (a `.dory.bak` backup was saved next to each). New terminals now reach Dory through its docker context while it's running, and fall back when it's not.")
+                        .font(.system(size: 11.5)).foregroundStyle(p.text2).lineSpacing(3)
+                    Button { store.undoDockerHostCleanup() } label: {
+                        Text("Undo").font(.system(size: 12, weight: .semibold)).foregroundStyle(p.accentText)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("docker-host-undo")
+                }
+            }
+            .padding(.bottom, 22)
+        } else if let conflict = store.dockerHostConflict {
+            calloutCard(p.amber) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("A pinned `DOCKER_HOST` is overriding Dory").font(.system(size: 13, weight: .semibold)).foregroundStyle(p.text)
+                    Text("Your shell sets `DOCKER_HOST` to `\(shortHost(conflict.effectiveHost))`, which takes priority over Dory's docker context. New terminals keep using it until it's removed.")
+                        .font(.system(size: 11.5)).foregroundStyle(p.text2).lineSpacing(3)
+                    if conflict.isFixable {
+                        Text("Found in \(conflict.sites.map(\.displayPath).joined(separator: ", ")).")
+                            .font(.system(size: 11)).foregroundStyle(p.text3)
+                        Button { Task { await store.resolveDockerHostConflict() } } label: {
+                            Text("Make Dory the default docker")
+                                .font(.system(size: 12.5, weight: .semibold)).foregroundStyle(.white)
+                                .padding(.horizontal, 16).padding(.vertical, 9)
+                                .background(p.accent, in: RoundedRectangle(cornerRadius: 8))
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("docker-host-fix")
+                        Text("Comments the line out and keeps a backup — reversible anytime.")
+                            .font(.system(size: 11)).foregroundStyle(p.text3)
+                    } else {
+                        Text("Remove the `export DOCKER_HOST=…` line from your shell profile, then open a new terminal.")
+                            .font(.system(size: 11.5)).foregroundStyle(p.text3).lineSpacing(3)
+                    }
+                }
+            }
+            .padding(.bottom, 22)
+        }
+    }
+
+    private func calloutCard<Content: View>(_ accent: Color, @ViewBuilder content: () -> Content) -> some View {
+        HStack(alignment: .top, spacing: 11) {
+            Glyph(glyph: .shield, size: 14, color: accent)
+            content().frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(15)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(accent.opacity(0.08), in: RoundedRectangle(cornerRadius: 11))
+        .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(accent.opacity(0.4)))
+    }
+
+    private func shortHost(_ host: String) -> String {
+        host.hasPrefix("unix://") ? String(host.dropFirst("unix://".count)) : host
     }
 
     private func toggleRow(_ title: String, _ subtitle: String, isOn: Binding<Bool>, divider: Bool) -> some View {

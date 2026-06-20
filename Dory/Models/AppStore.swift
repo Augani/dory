@@ -30,6 +30,9 @@ final class AppStore {
     var showMenuBarIcon = true
     var autoUpdate = false
     var routeDockerCLI = true
+    var dockerHostConflict: DockerHostConflict.Conflict?
+    var dockerHostCleaned = false
+    var dockerHostConflictDismissed = false
 
     var containers: [Container] = MockData.containers
     var images: [DockerImage] = MockData.images
@@ -61,6 +64,8 @@ final class AppStore {
             if let v = UserDefaults.standard.object(forKey: Self.menuBarIconKey) as? Bool { showMenuBarIcon = v }
             if let v = UserDefaults.standard.object(forKey: Self.autoUpdateKey) as? Bool { autoUpdate = v }
             if let v = UserDefaults.standard.object(forKey: Self.routeDockerKey) as? Bool { routeDockerCLI = v }
+            dockerHostCleaned = DockerHostConflict.hasCleaned
+            dockerHostConflictDismissed = UserDefaults.standard.bool(forKey: Self.dockerHostDismissedKey)
         }
         if let raw = env["DORY_SECTION"], let parsed = AppSection(rawValue: raw) { section = parsed }
         if let raw = env["DORY_FILTER"] { filter = raw }
@@ -98,6 +103,7 @@ final class AppStore {
     static let menuBarIconKey = "dory.showMenuBarIcon"
     static let autoUpdateKey = "dory.autoUpdate"
     static let routeDockerKey = "dory.routeDockerCLI"
+    static let dockerHostDismissedKey = "dory.dockerHostDismissed"
 
     func setAutoUpdate(_ on: Bool) {
         autoUpdate = on
@@ -109,9 +115,50 @@ final class AppStore {
         routeDockerCLI = on
         UserDefaults.standard.set(on, forKey: Self.routeDockerKey)
         Task {
-            if on, runtimeKind != .mock { await DockerContext.activate(socketPath: shimSocketPath) }
-            else if !on { DockerContext.deactivateSync() }
+            if on, runtimeKind != .mock {
+                await DockerContext.activate(socketPath: shimSocketPath)
+                await detectDockerHostConflict()
+            } else if !on {
+                DockerContext.deactivateSync()
+                dockerHostConflict = nil
+            }
         }
+    }
+
+    private var isAutomationContext: Bool {
+        let env = ProcessInfo.processInfo.environment
+        return env["XCTestConfigurationFilePath"] != nil || env["XCTestSessionIdentifier"] != nil
+            || env["DORY_SECTION"] != nil || env["DORY_SHEET"] != nil || env["DORY_DETAIL_TAB"] != nil
+            || env["DORY_APPEARANCE"] != nil || env["DORY_ONBOARDING"] != nil
+    }
+
+    func detectDockerHostConflict() async {
+        guard routeDockerCLI, runtimeKind != .mock, !isAutomationContext else {
+            dockerHostConflict = nil
+            return
+        }
+        dockerHostConflict = await DockerHostConflict.detect(dorySocketPath: shimSocketPath)
+    }
+
+    func resolveDockerHostConflict() async {
+        guard let conflict = dockerHostConflict, conflict.isFixable else { return }
+        if DockerHostConflict.resolve(conflict) {
+            dockerHostCleaned = true
+            await detectDockerHostConflict()
+        } else {
+            actionError = "Couldn't update your shell profile — remove the DOCKER_HOST line manually."
+        }
+    }
+
+    func undoDockerHostCleanup() {
+        DockerHostConflict.undo()
+        dockerHostCleaned = false
+        Task { await detectDockerHostConflict() }
+    }
+
+    func dismissDockerHostConflict() {
+        dockerHostConflictDismissed = true
+        UserDefaults.standard.set(true, forKey: Self.dockerHostDismissedKey)
     }
 
     func setAppearance(_ value: DoryAppearance) {
@@ -180,7 +227,9 @@ final class AppStore {
         startPortForwarding()
         if routeDockerCLI && runtimeKind != .mock {
             await DockerContext.activate(socketPath: shimSocketPath)
+            await detectDockerHostConflict()
         }
+        startAutoRefresh()
     }
 
     var sharedVMStatus = ""
@@ -198,6 +247,7 @@ final class AppStore {
         await reload()
         restartShim()
         startPortForwarding()
+        startAutoRefresh()
         sharedVMStatus = "Running on Dory's shared VM"
     }
 
@@ -379,16 +429,46 @@ final class AppStore {
 
     func reload() async {
         guard let snap = try? await runtime.snapshot() else { return }
-        containers = snap.containers
-        images = snap.images
-        volumes = snap.volumes
-        networks = snap.networks
-        pods = snap.pods
-        engineRunning = snap.engineRunning
-        engineVersion = snap.engineVersion
+        if containers != snap.containers { containers = snap.containers }
+        if images != snap.images { images = snap.images }
+        if volumes != snap.volumes { volumes = snap.volumes }
+        if networks != snap.networks { networks = snap.networks }
+        if pods != snap.pods { pods = snap.pods }
+        if engineRunning != snap.engineRunning { engineRunning = snap.engineRunning }
+        if engineVersion != snap.engineVersion { engineVersion = snap.engineVersion }
         if selectedContainerID == nil || !containers.contains(where: { $0.id == selectedContainerID }) {
-            selectedContainerID = containers.first?.id
+            let first = containers.first?.id
+            if selectedContainerID != first { selectedContainerID = first }
         }
+    }
+
+    private var refreshTask: Task<Void, Never>?
+    private static let refreshInterval: Duration = .seconds(2)
+
+    /// Polls the live engine so containers/images/etc. created outside the GUI (e.g. `docker run`
+    /// from a terminal) appear on their own — the way Docker Desktop and OrbStack do. Idempotent:
+    /// cancels any prior loop first, so it's safe to call on every (re)connect.
+    func startAutoRefresh() {
+        refreshTask?.cancel()
+        guard runtimeKind != .mock, !isAutomationContext else { refreshTask = nil; return }
+        refreshTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: Self.refreshInterval)
+                await self?.refreshIfIdle()
+            }
+        }
+    }
+
+    func stopAutoRefresh() {
+        refreshTask?.cancel()
+        refreshTask = nil
+    }
+
+    /// A background refresh that yields to anything the user is actively doing — never polls over an
+    /// open sheet, an in-flight connect, onboarding, or the mock runtime.
+    func refreshIfIdle() async {
+        guard runtimeKind != .mock, !isConnecting, activeSheet == nil, !onboarding else { return }
+        await reload()
     }
 
     var selectedContainer: Container? {
