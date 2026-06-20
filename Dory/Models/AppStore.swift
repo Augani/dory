@@ -15,6 +15,7 @@ final class AppStore {
     var settingsTab: SettingsTab = .general
     var menuOpen = false
     var onboarding = false
+    var isConnecting = false
     var filter = ""
     var filterFocusToken = 0
     var imagesSort: TableSort?
@@ -133,6 +134,9 @@ final class AppStore {
     private(set) var shimRunning = false
 
     func connectBackend() async {
+        let isMock = ProcessInfo.processInfo.environment["DORY_RUNTIME"] == "mock"
+        if !isMock { isConnecting = true }
+        defer { isConnecting = false }
         switch ProcessInfo.processInfo.environment["DORY_RUNTIME"] {
         case "mock":
             break

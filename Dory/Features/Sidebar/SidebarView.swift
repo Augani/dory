@@ -26,8 +26,15 @@ struct SidebarView: View {
                 DoryLogo(size: 30)
                 VStack(alignment: .leading, spacing: 1) {
                     Text("Dory").font(.system(size: 15, weight: .bold)).foregroundStyle(p.text)
-                    Text("v\(AppInfo.version) · Engine \(store.engineRunning ? "running" : "stopped")")
-                        .font(.system(size: 10.5, weight: .medium)).foregroundStyle(p.text3)
+                    if store.isConnecting {
+                        HStack(spacing: 5) {
+                            ProgressView().controlSize(.mini)
+                            Text("Starting engine…").font(.system(size: 10.5, weight: .medium)).foregroundStyle(p.text3)
+                        }
+                    } else {
+                        Text("v\(AppInfo.version) · Engine \(store.engineRunning ? "running" : "stopped")")
+                            .font(.system(size: 10.5, weight: .medium)).foregroundStyle(p.text3)
+                    }
                 }
                 Spacer(minLength: 0)
             }
