@@ -66,9 +66,30 @@ fi
 xcrun stapler staple "$APP"
 ditto -c -k --keepParent "$APP" "$ZIP"
 
+notarize() {
+  if [ -n "${NOTARY_APPLE_ID:-}" ]; then
+    xcrun notarytool submit "$1" --apple-id "$NOTARY_APPLE_ID" --team-id "$NOTARY_TEAM_ID" --password "$NOTARY_PASSWORD" --wait
+  else
+    xcrun notarytool submit "$1" --keychain-profile "$NOTARY_PROFILE" --wait
+  fi
+}
+
+# A styled .dmg for direct download (the .zip remains the cask's artifact). Notarize + staple it
+# too so Gatekeeper is happy on a fresh download.
+DMG=""
+if [ "${DORY_MAKE_DMG:-1}" = "1" ]; then
+  echo "==> Building DMG..."
+  DMG="$BUILD_DIR/Dory-$VERSION.dmg"
+  scripts/make-dmg.sh "$APP" "$VERSION" "$DMG"
+  echo "==> Notarizing DMG..."
+  notarize "$DMG"
+  xcrun stapler staple "$DMG"
+fi
+
 SHA256="$(shasum -a 256 "$ZIP" | awk '{print $1}')"
 echo "==> Done: $ZIP  (sha256: $SHA256)"
+[ -n "$DMG" ] && echo "==> Done: $DMG  (sha256: $(shasum -a 256 "$DMG" | awk '{print $1}'))"
 # Expose outputs to a GitHub Actions step when running in CI.
 if [ -n "${GITHUB_OUTPUT:-}" ]; then
-  { echo "zip=$ZIP"; echo "sha256=$SHA256"; echo "version=$VERSION"; echo "build=$BUILD"; } >> "$GITHUB_OUTPUT"
+  { echo "zip=$ZIP"; echo "sha256=$SHA256"; echo "version=$VERSION"; echo "build=$BUILD"; echo "dmg=$DMG"; } >> "$GITHUB_OUTPUT"
 fi

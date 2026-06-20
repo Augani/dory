@@ -37,6 +37,7 @@ jobs:
       version: ${{ steps.ver.outputs.version }}
       sha256: ${{ steps.build.outputs.sha256 }}
       build: ${{ steps.build.outputs.build }}
+      dmg: ${{ steps.build.outputs.dmg }}
       edsig: ${{ steps.sparkle.outputs.edsig }}
       length: ${{ steps.sparkle.outputs.length }}
     steps:
@@ -102,7 +103,9 @@ jobs:
         with:
           tag_name: v${{ steps.ver.outputs.version }}
           name: Dory ${{ steps.ver.outputs.version }}
-          files: ${{ steps.build.outputs.zip }}
+          files: |
+            ${{ steps.build.outputs.zip }}
+            ${{ steps.build.outputs.dmg }}
           generate_release_notes: true
           body: |
             Native, lightweight Docker & Linux containers on Apple silicon — a free, open-source
@@ -114,10 +117,10 @@ jobs:
             brew install --cask Augani/dory/dory
             ```
 
-            …or download `Dory-${{ steps.ver.outputs.version }}.zip` below.
+            …or download `Dory-${{ steps.ver.outputs.version }}.dmg` below and drag Dory to Applications.
 
             ```
-            sha256: ${{ steps.build.outputs.sha256 }}
+            zip sha256: ${{ steps.build.outputs.sha256 }}
             ```
 
   # Keeps the Homebrew cask in this repo (the tap) current after every release.
