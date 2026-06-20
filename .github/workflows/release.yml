@@ -82,6 +82,10 @@ jobs:
           # Team ID is not secret (it appears in every signed app); fall back to the project's team.
           NOTARY_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID || '864H636QW4' }}
           NOTARY_PASSWORD: ${{ secrets.NOTARY_APPLE_PASSWORD }}
+          # Self-contained build (bundles the in-process engine: dory-vm + kernel + initfs). Only works
+          # on a runner that has run Apple's `container` (the kernel/initfs assets) — i.e. a self-hosted
+          # macOS 26 runner, NOT hosted CI (no virtualization). Set repo variable BUNDLE_ENGINE=1 there.
+          DORY_BUNDLE_ENGINE: ${{ vars.BUNDLE_ENGINE || '0' }}
         run: scripts/release.sh "${{ steps.ver.outputs.version }}" "${{ github.run_number }}"
 
       # Sign the zip with the Sparkle EdDSA key so the appcast entry verifies. Needs a

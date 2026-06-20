@@ -121,12 +121,13 @@ The goal is a single download. Status:
 
 | Component | Bundled? | How |
 |---|---|---|
-| Engine image (`docker:dind`) | ✅ implemented | `scripts/bundle-engine.sh` saves it into `Contents/Resources/dory-engine-image.tar`; `SharedVMProvisioner.ensureImage` loads it offline on first launch (no Docker Hub). Falls back to a registry pull if absent. |
-| Engine toolchain (`container` + kernel + plugins) | 🛠️ wired | `containerBinary()` prefers `Contents/Helpers/container`; the release script copies the ~315 MB toolchain in. Relocating the toolchain's launchd services needs hardening — the **production answer is to link the `apple/containerization` Swift package and spawn the VM in-process** (network-verified reachable; roadmapped). |
-| `docker` CLI | not needed | Dory's GUI manages everything; the Docker-compatible socket is there for users who want a CLI. |
-| **macOS 26+** | requirement, not a download | Apple's virtualization/containerization stack requires it — the unavoidable floor (same as Apple's `container`). |
+| In-process engine (`dory-vm` helper) | ✅ verified | `scripts/bundle-engine.sh` builds + signs the `dory-vmboot` helper (links Apple's `containerization` framework, ~100 MB) into `Contents/Helpers/dory-vm` with the `com.apple.security.virtualization` entitlement. |
+| VM kernel + initfs | ✅ verified | Compressed into `Contents/Resources/dory-vm-kernel.zst` (~6 MB) + `dory-vm-initfs.ext4.zst` (~30 MB); decompressed once on first launch via the bundled `zstd`. |
+| Engine image (`docker:dind`) | pulled on first run | NOT bundled (OrbStack model) — the helper pulls it on first boot. `DORY_BUNDLE_LEGACY=1` bundles it + the `container` toolchain for a fully-offline build. |
+| `docker` CLI | not needed | Dory hosts a Docker-compatible socket and points the `docker` context at it, so `docker` just works; the CLI itself isn't bundled. |
+| **macOS 26+** | requirement, not a download | Apple's virtualization/containerization stack requires it — the unavoidable floor. |
 
-So: **a self-contained Dory.app is achievable** (image bundling done; engine bundling wired, framework path roadmapped), requiring only macOS 26+ — no Homebrew, no Docker Hub, no Docker Desktop.
+So: **a self-contained Dory.app works** — verified end-to-end (`DORY_BUNDLE_ENGINE=1`): a re-signed bundle that passes `codesign --verify --deep --strict`, **~155 MB on disk / ~80 MB zipped** (the engine helper dominates; the "image pulled on first run" keeps it from being larger), requiring only macOS 26+ — no Homebrew, no Docker Hub, no Docker Desktop. Building it needs the kernel/initfs from a machine that has run Apple's `container`, so the release runner must be self-hosted (hosted CI has no virtualization).
 
 ## Architectural / environment notes
 

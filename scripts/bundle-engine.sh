@@ -1,11 +1,14 @@
 #!/bin/bash
 # Make a built Dory.app self-contained so users download ONLY the app — no `brew install container`.
 #
-# Default ("OrbStack model") injects a LEAN ~35-40MB payload and pulls the container engine on first
-# launch, the way OrbStack ships a small installer and fetches/builds its VM on first run:
-#   * Contents/Helpers/dory-vm                    — the signed in-process VM engine helper.
-#   * Contents/Resources/dory-vm-kernel.zst       — compressed Linux kernel  (16MB -> ~6MB).
-#   * Contents/Resources/dory-vm-initfs.ext4.zst  — compressed VM initfs     (512MB -> ~31MB).
+# Default ("OrbStack model") injects the in-process engine and pulls the docker engine IMAGE on first
+# launch (the image is NOT bundled), the way OrbStack ships an app and fetches engine bits on first
+# run. Measured payload ≈ 134MB on disk / ~80MB in the download zip:
+#   * Contents/Helpers/dory-vm                    — the signed in-process VM engine helper (~100MB,
+#                                                   statically links the containerization framework).
+#   * Contents/Helpers/zstd                       — decompresses the assets on first launch.
+#   * Contents/Resources/dory-vm-kernel.zst       — compressed Linux kernel  (~15MB -> ~6MB).
+#   * Contents/Resources/dory-vm-initfs.ext4.zst  — compressed VM initfs     (~165MB -> ~30MB).
 #   The docker engine image (docker:dind) is NOT bundled — the helper pulls it on first boot.
 #
 # Set DORY_BUNDLE_LEGACY=1 to additionally inject the heavy offline payload (the docker:dind image
@@ -83,5 +86,5 @@ fi
 
 TOTAL="$(du -sh "$RESOURCES"/dory-vm-* "$HELPERS"/dory-vm 2>/dev/null | awk '{s+=$1} END{print s}')"
 echo "==> Payload injected into $APP"
-echo "    Lean engine payload ≈ $(du -ch "$RESOURCES"/dory-vm-*.zst "$HELPERS"/dory-vm 2>/dev/null | tail -1 | awk '{print $1}') (engine image pulled on first launch)"
+echo "    Engine payload ≈ $(du -ch "$RESOURCES"/dory-vm-*.zst "$HELPERS"/dory-vm 2>/dev/null | tail -1 | awk '{print $1}') on disk (engine image pulled on first launch)"
 echo "    Re-sign the bundle (codesign --deep) before notarization so the payload is sealed."
