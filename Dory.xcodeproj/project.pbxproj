@@ -51,6 +51,8 @@
 		3E705CEC2FE37C790094B33C /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			files = (
+				AA00000000000000000000A3 /* Sparkle in Frameworks */,
+				AA00000000000000000000B3 /* SwiftTerm in Frameworks */,
 			);
 		};
 		3E705CF92FE37C7B0094B33C /* Frameworks */ = {
@@ -103,6 +105,10 @@
 				3E705CF12FE37C790094B33C /* Dory */,
 			);
 			name = Dory;
+			packageProductDependencies = (
+				AA00000000000000000000A2 /* Sparkle */,
+				AA00000000000000000000B2 /* SwiftTerm */,
+			);
 			productName = Dory;
 			productReference = 3E705CEF2FE37C790094B33C /* Dory.app */;
 			productType = "com.apple.product-type.application";
@@ -182,6 +188,10 @@
 			mainGroup = 3E705CE62FE37C790094B33C;
 			minimizedProjectReferenceProxies = 1;
 			preferredProjectObjectVersion = 77;
+			packageReferences = (
+				AA00000000000000000000A1 /* XCRemoteSwiftPackageReference "Sparkle" */,
+				AA00000000000000000000B1 /* XCRemoteSwiftPackageReference "SwiftTerm" */,
+			);
 			productRefGroup = 3E705CF02FE37C790094B33C /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
@@ -545,6 +555,43 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin PBXBuildFile section */
+		AA00000000000000000000A3 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = AA00000000000000000000A2 /* Sparkle */; };
+		AA00000000000000000000B3 /* SwiftTerm in Frameworks */ = {isa = PBXBuildFile; productRef = AA00000000000000000000B2 /* SwiftTerm */; };
+/* End PBXBuildFile section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		AA00000000000000000000A1 /* XCRemoteSwiftPackageReference "Sparkle" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/sparkle-project/Sparkle";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.0.0;
+			};
+		};
+		AA00000000000000000000B1 /* XCRemoteSwiftPackageReference "SwiftTerm" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/migueldeicaza/SwiftTerm";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 1.0.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		AA00000000000000000000A2 /* Sparkle */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AA00000000000000000000A1 /* XCRemoteSwiftPackageReference "Sparkle" */;
+			productName = Sparkle;
+		};
+		AA00000000000000000000B2 /* SwiftTerm */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AA00000000000000000000B1 /* XCRemoteSwiftPackageReference "SwiftTerm" */;
+			productName = SwiftTerm;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 3E705CE72FE37C790094B33C /* Project object */;
 	validationLevel = 1;

@@ -23,7 +23,7 @@ xcuserdata/
 # Swift Package Manager
 .build/
 .swiftpm/
-Package.resolved
+# Package.resolved is committed (app) so CI + contributors pin the same dependency versions.
 
 # Code coverage
 *.profraw

@@ -232,28 +232,25 @@ struct ContainerDetailView: View {
                 Text("Interactive shell").font(.system(size: 12.5)).foregroundStyle(p.text3)
                 Spacer()
                 Button { store.openContainerTerminal(container) } label: {
-                    Text("Open Terminal ↗").font(.system(size: 12, weight: .semibold)).foregroundStyle(.white)
-                        .padding(.horizontal, 13).padding(.vertical, 7)
-                        .background(p.accent, in: RoundedRectangle(cornerRadius: 7))
+                    Text("Open in Terminal.app ↗").font(.system(size: 12, weight: .semibold)).foregroundStyle(p.accentText)
                 }
                 .buttonStyle(.plain)
                 .disabled(!container.isRunning)
                 .accessibilityIdentifier("open-terminal")
             }
-            VStack(alignment: .leading, spacing: 8) {
-                Text(container.isRunning
-                     ? "Opens a live shell into this container in Terminal.app."
-                     : "Start the container to open a shell.")
+            if container.isRunning {
+                ContainerTerminalView(socketPath: store.shimSocketPath, containerID: container.id)
+                    .frame(height: 320)
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                    .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(p.border))
+                    .id(container.id)
+            } else {
+                Text("Start the container to open a shell.")
                     .font(.system(size: 12)).foregroundStyle(p.text3)
-                HStack(spacing: 0) {
-                    Text("$ ").foregroundStyle(Color(hex: 0x5B6070))
-                    Text("docker exec -it \(container.name) sh").foregroundStyle(p.monoText)
-                }
-                .font(.mono(11.5))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(13)
+                    .background(p.monoBg, in: RoundedRectangle(cornerRadius: 10))
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(13)
-            .background(p.monoBg, in: RoundedRectangle(cornerRadius: 10))
         }
     }
 

@@ -4,6 +4,9 @@ struct DoryCommands: Commands {
     let store: AppStore
 
     var body: some Commands {
+        CommandGroup(after: .appInfo) {
+            Button("Check for Updates…") { DoryUpdater.shared.checkForUpdates() }
+        }
         CommandGroup(replacing: .newItem) {
             Button("New Container") {
                 store.section = .containers

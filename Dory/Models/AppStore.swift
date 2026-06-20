@@ -82,6 +82,7 @@ final class AppStore {
     func setAutoUpdate(_ on: Bool) {
         autoUpdate = on
         UserDefaults.standard.set(on, forKey: Self.autoUpdateKey)
+        DoryUpdater.shared.automaticallyChecks = on
     }
 
     func setAppearance(_ value: DoryAppearance) {
