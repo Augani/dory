@@ -1,0 +1,17 @@
+<?xml version="1.0" standalone="yes"?>
+<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" xmlns:dc="http://purl.org/dc/elements/1.1/">
+  <channel>
+    <title>Dory</title>
+    <link>https://augani.github.io/dory/appcast.xml</link>
+    <description>Updates for Dory — native Docker &amp; Linux containers for macOS.</description>
+    <language>en</language>
+    <item>
+      <title>0.1.0</title>
+      <pubDate>Sat, 20 Jun 2026 12:00:00 +0000</pubDate>
+      <sparkle:version>1</sparkle:version>
+      <sparkle:shortVersionString>0.1.0</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <enclosure url="https://github.com/Augani/dory/releases/download/v0.1.0/Dory-0.1.0.zip" sparkle:edSignature="UvZf841aLg2XbKohwrG2sP/O6W2+Yws33CggO+xwGJ4sqnXrGe4j+Jp94FsYffbRZ00wACdKfWm9RgQaxJwJAg==" length="2032717" type="application/octet-stream" />
+    </item>
+  </channel>
+</rss>

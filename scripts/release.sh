@@ -15,6 +15,9 @@ if [ -z "${DEVELOPER_DIR:-}" ] && [ -d "$LOCAL_XCODE" ]; then export DEVELOPER_D
 cd "$(dirname "$0")/.."
 
 VERSION="${1:-0.1.0}"
+# Monotonic build number (CFBundleVersion) — Sparkle compares this to detect updates. CI passes
+# the run number; locally it defaults to 1.
+BUILD="${2:-${DORY_BUILD:-1}}"
 BUILD_DIR="release-build"
 ARCHIVE="$BUILD_DIR/Dory.xcarchive"
 EXPORT_DIR="$BUILD_DIR/export"
@@ -27,6 +30,7 @@ echo "==> Archiving + signing Dory $VERSION (Developer ID, team $TEAM)..."
 xcodebuild -project Dory.xcodeproj -scheme Dory -configuration Release \
   -destination 'generic/platform=macOS' -archivePath "$ARCHIVE" \
   MARKETING_VERSION="$VERSION" \
+  CURRENT_PROJECT_VERSION="$BUILD" \
   CODE_SIGN_STYLE=Manual \
   CODE_SIGN_IDENTITY="Developer ID Application" \
   DEVELOPMENT_TEAM="$TEAM" \
@@ -66,5 +70,5 @@ SHA256="$(shasum -a 256 "$ZIP" | awk '{print $1}')"
 echo "==> Done: $ZIP  (sha256: $SHA256)"
 # Expose outputs to a GitHub Actions step when running in CI.
 if [ -n "${GITHUB_OUTPUT:-}" ]; then
-  { echo "zip=$ZIP"; echo "sha256=$SHA256"; echo "version=$VERSION"; } >> "$GITHUB_OUTPUT"
+  { echo "zip=$ZIP"; echo "sha256=$SHA256"; echo "version=$VERSION"; echo "build=$BUILD"; } >> "$GITHUB_OUTPUT"
 fi

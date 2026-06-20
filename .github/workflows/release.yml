@@ -36,6 +36,9 @@ jobs:
     outputs:
       version: ${{ steps.ver.outputs.version }}
       sha256: ${{ steps.build.outputs.sha256 }}
+      build: ${{ steps.build.outputs.build }}
+      edsig: ${{ steps.sparkle.outputs.edsig }}
+      length: ${{ steps.sparkle.outputs.length }}
     steps:
       - uses: actions/checkout@v4
 
@@ -51,6 +54,9 @@ jobs:
 
       - name: Select newest installed Xcode
         run: sudo xcode-select -s "$(ls -d /Applications/Xcode*.app | sort -V | tail -1)/Contents/Developer"
+
+      - name: Ensure Metal toolchain (SwiftTerm ships Metal shaders)
+        run: xcodebuild -downloadComponent MetalToolchain || true
 
       - name: Import Developer ID certificate
         env:
@@ -75,7 +81,21 @@ jobs:
           # Team ID is not secret (it appears in every signed app); fall back to the project's team.
           NOTARY_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID || '864H636QW4' }}
           NOTARY_PASSWORD: ${{ secrets.NOTARY_APPLE_PASSWORD }}
-        run: scripts/release.sh "${{ steps.ver.outputs.version }}"
+        run: scripts/release.sh "${{ steps.ver.outputs.version }}" "${{ github.run_number }}"
+
+      # Sign the zip with the Sparkle EdDSA key so the appcast entry verifies. Needs a
+      # SPARKLE_PRIVATE_KEY secret (export it once with Sparkle's generate_keys -x); skipped if absent.
+      - name: Sign update for Sparkle
+        id: sparkle
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: |
+          if [ -z "$SPARKLE_PRIVATE_KEY" ]; then echo "SPARKLE_PRIVATE_KEY not set — skipping update signing"; exit 0; fi
+          curl -fsSL https://github.com/sparkle-project/Sparkle/releases/download/2.9.3/Sparkle-2.9.3.tar.xz -o /tmp/sparkle.tar.xz
+          mkdir -p /tmp/sparkle && tar -xf /tmp/sparkle.tar.xz -C /tmp/sparkle
+          OUT=$(/tmp/sparkle/bin/sign_update -s "$SPARKLE_PRIVATE_KEY" "${{ steps.build.outputs.zip }}")
+          echo "edsig=$(echo "$OUT" | sed -E 's/.*sparkle:edSignature="([^"]+)".*/\1/')" >> "$GITHUB_OUTPUT"
+          echo "length=$(echo "$OUT" | sed -E 's/.*length="([^"]+)".*/\1/')" >> "$GITHUB_OUTPUT"
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
@@ -110,16 +130,26 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: main
-      - name: Update cask version + checksum
+      - name: Update cask + Sparkle appcast
         run: |
           V="${{ needs.release.outputs.version }}"
           S="${{ needs.release.outputs.sha256 }}"
+          B="${{ needs.release.outputs.build }}"
+          SIG="${{ needs.release.outputs.edsig }}"
+          LEN="${{ needs.release.outputs.length }}"
           sed -i -E "s/  version \"[^\"]+\"/  version \"$V\"/" Casks/dory.rb
           sed -i -E "s/  sha256 \"[0-9a-f]+\"/  sha256 \"$S\"/" Casks/dory.rb
-          if git diff --quiet Casks/dory.rb; then echo "cask already current"; exit 0; fi
+          if [ -n "$SIG" ]; then
+            scripts/update-appcast.sh "$V" "${B:-1}" \
+              "https://github.com/Augani/dory/releases/download/v$V/Dory-$V.zip" "$SIG" "$LEN"
+          else
+            echo "no Sparkle signature (SPARKLE_PRIVATE_KEY unset) — appcast left unchanged"
+          fi
+          git add Casks/dory.rb docs/appcast.xml
+          if git diff --cached --quiet; then echo "nothing to update"; exit 0; fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -am "chore: update Homebrew cask to v$V"
+          git commit -m "chore: release metadata for v$V (cask + appcast)"
           git push
 
       # Sync the same cask to the Augani/homebrew-dory tap so `brew install --cask Augani/dory/dory`
