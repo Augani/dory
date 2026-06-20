@@ -29,6 +29,7 @@ final class AppStore {
     var launchAtLogin = false
     var showMenuBarIcon = true
     var autoUpdate = false
+    var routeDockerCLI = true
 
     var containers: [Container] = MockData.containers
     var images: [DockerImage] = MockData.images
@@ -59,6 +60,7 @@ final class AppStore {
             launchAtLogin = SMAppService.mainApp.status == .enabled
             if let v = UserDefaults.standard.object(forKey: Self.menuBarIconKey) as? Bool { showMenuBarIcon = v }
             if let v = UserDefaults.standard.object(forKey: Self.autoUpdateKey) as? Bool { autoUpdate = v }
+            if let v = UserDefaults.standard.object(forKey: Self.routeDockerKey) as? Bool { routeDockerCLI = v }
         }
         if let raw = env["DORY_SECTION"], let parsed = AppSection(rawValue: raw) { section = parsed }
         if let raw = env["DORY_FILTER"] { filter = raw }
@@ -95,11 +97,21 @@ final class AppStore {
     static let appearanceKey = "dory.appearance"
     static let menuBarIconKey = "dory.showMenuBarIcon"
     static let autoUpdateKey = "dory.autoUpdate"
+    static let routeDockerKey = "dory.routeDockerCLI"
 
     func setAutoUpdate(_ on: Bool) {
         autoUpdate = on
         UserDefaults.standard.set(on, forKey: Self.autoUpdateKey)
         DoryUpdater.shared.automaticallyChecks = on
+    }
+
+    func setRouteDockerCLI(_ on: Bool) {
+        routeDockerCLI = on
+        UserDefaults.standard.set(on, forKey: Self.routeDockerKey)
+        Task {
+            if on, runtimeKind != .mock { await DockerContext.activate(socketPath: shimSocketPath) }
+            else if !on { DockerContext.deactivateSync() }
+        }
     }
 
     func setAppearance(_ value: DoryAppearance) {
@@ -166,6 +178,9 @@ final class AppStore {
         await loadMachines()
         startShim()
         startPortForwarding()
+        if routeDockerCLI && runtimeKind != .mock {
+            await DockerContext.activate(socketPath: shimSocketPath)
+        }
     }
 
     var sharedVMStatus = ""

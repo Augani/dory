@@ -195,6 +195,7 @@ struct SettingsView: View {
             VStack(spacing: 0) {
                 toggleRow("Launch Dory at login", "Start the engine automatically when you log in.", isOn: Binding(get: { store.launchAtLogin }, set: { store.setLaunchAtLogin($0) }), divider: true)
                 toggleRow("Show menu bar icon", "Quick access to containers from the menu bar.", isOn: Binding(get: { store.showMenuBarIcon }, set: { store.setShowMenuBarIcon($0) }), divider: true)
+                toggleRow("Route the docker command to Dory", "While Dory is running, make a plain `docker` / `docker compose` use Dory's engine (sets the active docker context).", isOn: Binding(get: { store.routeDockerCLI }, set: { store.setRouteDockerCLI($0) }), divider: true)
                 toggleRow("Check for updates automatically", "Notify me when a new version of Dory is available.", isOn: Binding(get: { store.autoUpdate }, set: { store.setAutoUpdate($0) }), divider: false)
             }
             .background(p.bgElevated, in: RoundedRectangle(cornerRadius: 11))

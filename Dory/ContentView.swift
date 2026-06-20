@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 struct RootView: View {
     @Environment(AppStore.self) private var store
@@ -31,6 +32,9 @@ struct RootView: View {
         }
         .animation(.spring(duration: 0.3), value: store.actionError)
         .task { await store.connectBackend() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
+            DockerContext.deactivateSync()
+        }
         .sheet(item: Binding(get: { store.activeSheet }, set: { store.activeSheet = $0 })) { sheet in
             Group {
                 switch sheet {
