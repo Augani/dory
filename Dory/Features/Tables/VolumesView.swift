@@ -7,9 +7,9 @@ struct VolumesView: View {
     var body: some View {
         VStack(spacing: 0) {
             TableHeader(columns: [
-                .init("NAME"), .init("SIZE", 110), .init("DRIVER", 120),
+                .init("NAME", sort: "name"), .init("SIZE", 110), .init("DRIVER", 120, sort: "driver"),
                 .init("USED BY", 150), .init("CREATED", 120),
-            ])
+            ], sort: store.volumesSort, onSort: { store.toggleSort(.volumes, $0) })
             if store.filteredVolumes.isEmpty {
                 TableEmptyState(
                     glyph: .volumes,

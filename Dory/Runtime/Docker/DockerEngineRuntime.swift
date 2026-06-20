@@ -200,7 +200,8 @@ struct DockerEngineRuntime: ContainerRuntime {
         let id = summary.id.replacingOccurrences(of: "sha256:", with: "").prefix(12)
         return DockerImage(repository: repository, tag: tagValue, imageID: String(id),
                            size: DockerFormat.bytes(summary.size), created: DockerFormat.relative(unix: summary.created),
-                           usedByCount: summary.containers.flatMap { $0 > 0 ? $0 : 0 } ?? 0)
+                           usedByCount: summary.containers.flatMap { $0 > 0 ? $0 : 0 } ?? 0,
+                           sizeBytes: summary.size ?? 0, createdEpoch: summary.created ?? 0)
     }
 
     private func mapVolume(_ volume: DockerVolume) -> Volume {

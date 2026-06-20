@@ -104,7 +104,8 @@ struct AppleContainerRuntime: ContainerRuntime {
         return DockerImage(repository: repository, tag: tag, imageID: String(shortID),
                            size: DockerFormat.bytes(image.configuration?.descriptor?.size),
                            created: DockerFormat.relative(iso: image.configuration?.creationDate),
-                           usedByCount: usedBy)
+                           usedByCount: usedBy,
+                           sizeBytes: image.configuration?.descriptor?.size ?? 0)
     }
 
     private func mapVolume(_ volume: ACVolume) -> Volume {

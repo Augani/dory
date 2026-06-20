@@ -92,10 +92,17 @@ struct DockerImage: Identifiable, Hashable, Sendable {
     var size: String
     var created: String
     var usedByCount: Int
+    var sizeBytes: Int64 = 0
+    var createdEpoch: Int = 0
     var id: String { imageID.isEmpty ? "\(repository):\(tag)" : imageID }
 
     var usedLabel: String { usedByCount > 0 ? "\(usedByCount) container\(usedByCount > 1 ? "s" : "")" : "Unused" }
     var isUsed: Bool { usedByCount > 0 }
+}
+
+struct TableSort: Equatable, Sendable {
+    var key: String
+    var ascending: Bool
 }
 
 struct Volume: Identifiable, Hashable, Sendable {

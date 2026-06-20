@@ -16,6 +16,9 @@ final class AppStore {
     var menuOpen = false
     var onboarding = false
     var filter = ""
+    var imagesSort: TableSort?
+    var volumesSort: TableSort?
+    var networksSort: TableSort?
     var activeSheet: AppSheet?
     var actionError: String?
     var inspectedImage: DockerImage?
@@ -57,6 +60,18 @@ final class AppStore {
         }
         if let raw = env["DORY_SECTION"], let parsed = AppSection(rawValue: raw) { section = parsed }
         if let raw = env["DORY_FILTER"] { filter = raw }
+        if let raw = env["DORY_SORT"] {
+            let parts = raw.split(separator: ":")
+            if parts.count >= 2 {
+                let sort = TableSort(key: String(parts[1]), ascending: parts.count < 3 || parts[2] != "desc")
+                switch parts[0] {
+                case "images": imagesSort = sort
+                case "volumes": volumesSort = sort
+                case "networks": networksSort = sort
+                default: break
+                }
+            }
+        }
         if let raw = env["DORY_SETTINGS_TAB"], let parsed = SettingsTab(rawValue: raw) { settingsTab = parsed }
         if let raw = env["DORY_DETAIL_TAB"], let parsed = DetailTab(rawValue: raw) { detailTab = parsed }
         if env["DORY_APPEARANCE"] == "light" { appearance = .light }
@@ -395,18 +410,69 @@ final class AppStore {
     }
 
     var filteredImages: [DockerImage] {
-        guard !filter.isEmpty else { return images }
-        return images.filter { $0.repository.localizedCaseInsensitiveContains(filter) || $0.tag.localizedCaseInsensitiveContains(filter) }
+        var result = images
+        if !filter.isEmpty {
+            result = result.filter { $0.repository.localizedCaseInsensitiveContains(filter) || $0.tag.localizedCaseInsensitiveContains(filter) }
+        }
+        guard let s = imagesSort else { return result }
+        let asc = result.sorted { a, b in
+            switch s.key {
+            case "size": return a.sizeBytes < b.sizeBytes
+            case "created": return a.createdEpoch < b.createdEpoch
+            case "used": return a.usedByCount < b.usedByCount
+            default: return "\(a.repository):\(a.tag)".localizedCaseInsensitiveCompare("\(b.repository):\(b.tag)") == .orderedAscending
+            }
+        }
+        return s.ascending ? asc : asc.reversed()
     }
 
     var filteredVolumes: [Volume] {
-        guard !filter.isEmpty else { return volumes }
-        return volumes.filter { $0.name.localizedCaseInsensitiveContains(filter) }
+        var result = volumes
+        if !filter.isEmpty { result = result.filter { $0.name.localizedCaseInsensitiveContains(filter) } }
+        guard let s = volumesSort else { return result }
+        let asc = result.sorted { a, b in
+            switch s.key {
+            case "driver": return a.driver.localizedCaseInsensitiveCompare(b.driver) == .orderedAscending
+            default: return a.name.localizedCaseInsensitiveCompare(b.name) == .orderedAscending
+            }
+        }
+        return s.ascending ? asc : asc.reversed()
     }
 
     var filteredNetworks: [DoryNetwork] {
-        guard !filter.isEmpty else { return networks }
-        return networks.filter { $0.name.localizedCaseInsensitiveContains(filter) }
+        var result = networks
+        if !filter.isEmpty { result = result.filter { $0.name.localizedCaseInsensitiveContains(filter) } }
+        guard let s = networksSort else { return result }
+        let asc = result.sorted { a, b in
+            switch s.key {
+            case "driver": return a.driver.localizedCaseInsensitiveCompare(b.driver) == .orderedAscending
+            case "scope": return a.scope.localizedCaseInsensitiveCompare(b.scope) == .orderedAscending
+            case "containers": return a.containerCount < b.containerCount
+            default: return a.name.localizedCaseInsensitiveCompare(b.name) == .orderedAscending
+            }
+        }
+        return s.ascending ? asc : asc.reversed()
+    }
+
+    func toggleSort(_ section: AppSection, _ key: String) {
+        let next: (TableSort?) -> TableSort = { cur in
+            cur?.key == key ? TableSort(key: key, ascending: !(cur?.ascending ?? true)) : TableSort(key: key, ascending: true)
+        }
+        switch section {
+        case .images: imagesSort = next(imagesSort)
+        case .volumes: volumesSort = next(volumesSort)
+        case .networks: networksSort = next(networksSort)
+        default: break
+        }
+    }
+
+    func sortState(_ section: AppSection) -> TableSort? {
+        switch section {
+        case .images: return imagesSort
+        case .volumes: return volumesSort
+        case .networks: return networksSort
+        default: return nil
+        }
     }
 
     var filteredMachines: [Machine] {

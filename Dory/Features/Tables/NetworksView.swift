@@ -7,9 +7,9 @@ struct NetworksView: View {
     var body: some View {
         VStack(spacing: 0) {
             TableHeader(columns: [
-                .init("NAME"), .init("DRIVER", 110), .init("SCOPE", 100),
-                .init("SUBNET", 170), .init("CONTAINERS", 110),
-            ])
+                .init("NAME", sort: "name"), .init("DRIVER", 110, sort: "driver"), .init("SCOPE", 100, sort: "scope"),
+                .init("SUBNET", 170), .init("CONTAINERS", 110, sort: "containers"),
+            ], sort: store.networksSort, onSort: { store.toggleSort(.networks, $0) })
             if store.filteredNetworks.isEmpty {
                 TableEmptyState(
                     glyph: .networks,

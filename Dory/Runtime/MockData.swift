@@ -11,13 +11,13 @@ enum MockData {
     ]
 
     static let images: [DockerImage] = [
-        DockerImage(repository: "postgres", tag: "16", imageID: "3f1a2b9c", size: "438 MB", created: "2 weeks ago", usedByCount: 2),
-        DockerImage(repository: "redis", tag: "7-alpine", imageID: "9c4e1f02", size: "41 MB", created: "2 weeks ago", usedByCount: 1),
-        DockerImage(repository: "nginx", tag: "alpine", imageID: "a1b2c3d4", size: "48 MB", created: "1 month ago", usedByCount: 1),
-        DockerImage(repository: "node", tag: "20", imageID: "77ef33aa", size: "1.1 GB", created: "3 weeks ago", usedByCount: 1),
-        DockerImage(repository: "dory/web-api", tag: "latest", imageID: "b8d9e0f1", size: "256 MB", created: "42 min ago", usedByCount: 1),
-        DockerImage(repository: "mailhog/mailhog", tag: "latest", imageID: "2cc8aa90", size: "18 MB", created: "1 month ago", usedByCount: 1),
-        DockerImage(repository: "ubuntu", tag: "24.04", imageID: "5a6b7c8d", size: "78 MB", created: "2 months ago", usedByCount: 0),
+        DockerImage(repository: "postgres", tag: "16", imageID: "3f1a2b9c", size: "438 MB", created: "2 weeks ago", usedByCount: 2, sizeBytes: 459_276_288, createdEpoch: 1_717_700_000),
+        DockerImage(repository: "redis", tag: "7-alpine", imageID: "9c4e1f02", size: "41 MB", created: "2 weeks ago", usedByCount: 1, sizeBytes: 42_991_616, createdEpoch: 1_717_700_001),
+        DockerImage(repository: "nginx", tag: "alpine", imageID: "a1b2c3d4", size: "48 MB", created: "1 month ago", usedByCount: 1, sizeBytes: 50_331_648, createdEpoch: 1_716_300_000),
+        DockerImage(repository: "node", tag: "20", imageID: "77ef33aa", size: "1.1 GB", created: "3 weeks ago", usedByCount: 1, sizeBytes: 1_181_116_006, createdEpoch: 1_717_100_000),
+        DockerImage(repository: "dory/web-api", tag: "latest", imageID: "b8d9e0f1", size: "256 MB", created: "42 min ago", usedByCount: 1, sizeBytes: 268_435_456, createdEpoch: 1_718_899_000),
+        DockerImage(repository: "mailhog/mailhog", tag: "latest", imageID: "2cc8aa90", size: "18 MB", created: "1 month ago", usedByCount: 1, sizeBytes: 18_874_368, createdEpoch: 1_716_300_001),
+        DockerImage(repository: "ubuntu", tag: "24.04", imageID: "5a6b7c8d", size: "78 MB", created: "2 months ago", usedByCount: 0, sizeBytes: 81_788_928, createdEpoch: 1_713_700_000),
     ]
 
     static let volumes: [Volume] = [

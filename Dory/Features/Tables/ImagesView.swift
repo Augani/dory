@@ -3,27 +3,51 @@ import SwiftUI
 struct TableHeaderColumn: Identifiable {
     let title: String
     let width: CGFloat?
+    let sortKey: String?
     var id: String { title }
-    init(_ title: String, _ width: CGFloat? = nil) { self.title = title; self.width = width }
+    init(_ title: String, _ width: CGFloat? = nil, sort: String? = nil) {
+        self.title = title; self.width = width; self.sortKey = sort
+    }
 }
 
 struct TableHeader: View {
     @Environment(\.palette) private var p
     let columns: [TableHeaderColumn]
+    var sort: TableSort? = nil
+    var onSort: ((String) -> Void)? = nil
+
     var body: some View {
         HStack(spacing: 0) {
-            ForEach(columns) { col in
-                if let w = col.width {
-                    Text(col.title).frame(width: w, alignment: .leading)
-                } else {
-                    Text(col.title).frame(maxWidth: .infinity, alignment: .leading)
-                }
-            }
+            ForEach(columns) { col in cell(col) }
         }
         .font(.system(size: 10.5, weight: .bold)).tracking(0.5)
-        .foregroundStyle(p.text3)
         .padding(.horizontal, 18).padding(.vertical, 8)
         .overlay(alignment: .bottom) { Rectangle().fill(p.border).frame(height: 1) }
+    }
+
+    @ViewBuilder private func cell(_ col: TableHeaderColumn) -> some View {
+        let active = col.sortKey != nil && sort?.key == col.sortKey
+        let label = HStack(spacing: 3) {
+            Text(col.title)
+            if active {
+                Image(systemName: sort?.ascending == true ? "chevron.up" : "chevron.down")
+                    .font(.system(size: 7.5, weight: .bold))
+            }
+        }
+        .foregroundStyle(active ? p.text : p.text3)
+        if let key = col.sortKey, let onSort {
+            Button { onSort(key) } label: {
+                framed(label, width: col.width).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        } else {
+            framed(label, width: col.width)
+        }
+    }
+
+    @ViewBuilder private func framed(_ content: some View, width: CGFloat?) -> some View {
+        if let width { content.frame(width: width, alignment: .leading) }
+        else { content.frame(maxWidth: .infinity, alignment: .leading) }
     }
 }
 
@@ -93,9 +117,9 @@ struct ImagesView: View {
     var body: some View {
         VStack(spacing: 0) {
             TableHeader(columns: [
-                .init("REPOSITORY"), .init("IMAGE ID", 120), .init("SIZE", 90),
-                .init("CREATED", 120), .init("IN USE", 80),
-            ])
+                .init("REPOSITORY", sort: "repository"), .init("IMAGE ID", 120), .init("SIZE", 90, sort: "size"),
+                .init("CREATED", 120, sort: "created"), .init("IN USE", 80, sort: "used"),
+            ], sort: store.imagesSort, onSort: { store.toggleSort(.images, $0) })
             if store.filteredImages.isEmpty {
                 TableEmptyState(
                     glyph: .images,
