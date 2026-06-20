@@ -13,7 +13,7 @@ Docker Engine API compatibility.
 
 > ⭐ **If Dory saves you memory (or money), please [star the repo](https://github.com/Augani/dory) — it genuinely helps others find it.**
 
-![Dory](docs/screenshot.png)
+![Dory — containers, images, volumes, networks, and Linux machines](docs/demo.gif)
 
 ## Why Dory
 
