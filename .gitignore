@@ -54,3 +54,4 @@ release-build/
 .claude/launch.json
 .playwright-mcp/
 benchmark-results.json
+appcast.xml.tmp
