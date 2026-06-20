@@ -3,6 +3,7 @@ import SwiftUI
 struct MainColumnView: View {
     @Environment(AppStore.self) private var store
     @Environment(\.palette) private var p
+    @FocusState private var filterFocused: Bool
 
     var body: some View {
         VStack(spacing: 0) {
@@ -12,6 +13,7 @@ struct MainColumnView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .background(p.bgContent)
+        .onChange(of: store.filterFocusToken) { _, _ in filterFocused = true }
     }
 
     private var toolbar: some View {
@@ -44,6 +46,7 @@ struct MainColumnView: View {
                 .textFieldStyle(.plain)
                 .font(.system(size: 12))
                 .foregroundStyle(p.text)
+                .focused($filterFocused)
         }
         .padding(.horizontal, 9).padding(.vertical, 5)
         .frame(width: 170)

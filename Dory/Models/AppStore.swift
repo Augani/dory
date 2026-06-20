@@ -16,6 +16,7 @@ final class AppStore {
     var menuOpen = false
     var onboarding = false
     var filter = ""
+    var filterFocusToken = 0
     var imagesSort: TableSort?
     var volumesSort: TableSort?
     var networksSort: TableSort?

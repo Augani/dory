@@ -14,6 +14,19 @@ struct DoryCommands: Commands {
             }
             .keyboardShortcut("n", modifiers: .command)
         }
+        CommandGroup(after: .toolbar) {
+            Button("Containers") { store.section = .containers }.keyboardShortcut("1", modifiers: .command)
+            Button("Images") { store.section = .images }.keyboardShortcut("2", modifiers: .command)
+            Button("Volumes") { store.section = .volumes }.keyboardShortcut("3", modifiers: .command)
+            Button("Networks") { store.section = .networks }.keyboardShortcut("4", modifiers: .command)
+            Button("Compose") { store.section = .compose }.keyboardShortcut("5", modifiers: .command)
+            Button("Kubernetes") { store.section = .kubernetes }.keyboardShortcut("6", modifiers: .command)
+            Button("Machines") { store.section = .machines }.keyboardShortcut("7", modifiers: .command)
+            Button("Settings") { store.section = .settings }.keyboardShortcut(",", modifiers: .command)
+            Button("Filter") { if store.section != .settings { store.filterFocusToken += 1 } }
+                .keyboardShortcut("f", modifiers: .command)
+            Divider()
+        }
         CommandMenu("Containers") {
             Button("Start All") { startAll() }
             Button("Stop All") { stopAll() }
