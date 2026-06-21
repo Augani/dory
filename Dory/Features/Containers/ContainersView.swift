@@ -5,10 +5,11 @@ struct ContainersView: View {
     @Environment(AppStore.self) private var store
     @Environment(\.palette) private var p
     @State private var dragStartWidth: Double?
+    private let resizeHandleWidth: Double = 9
 
     var body: some View {
         GeometryReader { geo in
-            let maxDetail = max(360, geo.size.width - 360)
+            let maxDetail = max(320, geo.size.width - 360 - resizeHandleWidth)
             let detailWidth = min(max(store.containerDetailWidth, 320), maxDetail)
             HStack(alignment: .top, spacing: 0) {
                 list
@@ -36,7 +37,7 @@ struct ContainersView: View {
                 if inside { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() }
             }
             .gesture(
-                DragGesture(minimumDistance: 1)
+                DragGesture(minimumDistance: 1, coordinateSpace: .global)
                     .onChanged { value in
                         if dragStartWidth == nil { dragStartWidth = currentWidth }
                         let start = dragStartWidth ?? currentWidth

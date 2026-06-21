@@ -444,7 +444,7 @@ final class AppStore {
         if images != snap.images { images = snap.images }
         if volumes != snap.volumes { volumes = snap.volumes }
         if networks != snap.networks { networks = snap.networks }
-        if pods != snap.pods { pods = snap.pods }
+        if runtimeKind == .mock, pods != snap.pods { pods = snap.pods }
         if engineRunning != snap.engineRunning { engineRunning = snap.engineRunning }
         if engineVersion != snap.engineVersion { engineVersion = snap.engineVersion }
         if selectedContainerID == nil || !containers.contains(where: { $0.id == selectedContainerID }) {
@@ -480,6 +480,7 @@ final class AppStore {
     func refreshIfIdle() async {
         guard runtimeKind != .mock, !isConnecting, activeSheet == nil, !onboarding else { return }
         await reload()
+        if runtimeKind == .sharedVM { await loadKubernetes() }
     }
 
     var selectedContainer: Container? {
