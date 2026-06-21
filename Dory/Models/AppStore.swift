@@ -979,6 +979,9 @@ final class AppStore {
 
     @ObservationIgnored private let machineProvider = MachineProvider()
     var machineBusy = false
+    var machineCreationTitle = ""
+    var machineCreationLog = ""
+    var machineCreationError: String?
 
     func loadMachines() async {
         guard runtimeKind != .mock, machineProvider.isAvailable else { return }
@@ -1059,13 +1062,55 @@ final class AppStore {
             return "Image and name are required"
         }
         machineBusy = true
+        machineCreationTitle = "Creating \(trimmedName)"
+        machineCreationLog = "Preparing to create \(trimmedName)…\n"
+        machineCreationError = nil
+        activeSheet = .creatingMachine
         defer { machineBusy = false }
-        do { try await machineProvider.create(image: trimmedImage, name: trimmedName); await loadMachines(); return nil }
-        catch {
-            let message = "\(error)"
-            actionError = "Could not create machine: \(message)"
-            return message
+        do {
+            try await machineProvider.create(image: trimmedImage, name: trimmedName) { line in
+                self.appendMachineCreationLog(line)
+            }
+            appendMachineCreationLog("Machine created and started.")
+            activeSheet = nil
+            await loadMachines()
+            return nil
+        } catch {
+            let message = cleanMachineError("\(error)")
+            let help = machineErrorHelp(message)
+            appendMachineCreationLog("Error: \(message)")
+            if !help.isEmpty {
+                appendMachineCreationLog(help)
+            }
+            machineCreationError = help.isEmpty ? message : "\(message)\n\n\(help)"
+            actionError = "Could not create machine"
+            return machineCreationError
         }
+    }
+
+    private func appendMachineCreationLog(_ line: String) {
+        machineCreationLog.append(line + "\n")
+    }
+
+    private func cleanMachineError(_ message: String) -> String {
+        var cleaned = message.trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "\\n", with: "\n")
+            .replacingOccurrences(of: "\\\"", with: "\"")
+        if cleaned.hasPrefix("command(\"") {
+            cleaned.removeFirst("command(\"".count)
+            if cleaned.hasSuffix("\")") {
+                cleaned.removeLast(2)
+            }
+        }
+        return cleaned
+    }
+
+    private func machineErrorHelp(_ message: String) -> String {
+        let lower = message.lowercased()
+        if lower.contains("cannot exec: container is not running") || lower.contains("failed to create process in container") {
+            return "This is a known Apple Container bug with non-Alpine machine images (github.com/apple/container/issues/1669). Try creating an Alpine machine instead."
+        }
+        return ""
     }
 
     func deleteMachine(_ machine: Machine) {

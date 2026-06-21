@@ -4,9 +4,7 @@ import Foundation
 /// analog of OrbStack's Linux machines: persistent VMs with real init systems and SSH. Independent
 /// of the container-engine backend, since machines are always provided by Apple's `container`.
 struct MachineProvider: Sendable {
-    private var binary: String? {
-        Shell.find("container", candidates: ["/opt/homebrew/bin/container", "/usr/local/bin/container"])
-    }
+    private var binary: String? { SharedVMProvisioner.containerBinary() }
 
     var isAvailable: Bool { binary != nil }
 
@@ -20,10 +18,25 @@ struct MachineProvider: Sendable {
         return machines.map(Self.map)
     }
 
-    func create(image: String, name: String) async throws {
+    func create(image: String, name: String, progress: @escaping @MainActor (String) -> Void) async throws {
         guard let binary else { throw MachineError.cliUnavailable }
+        await progress("Using container binary at \(binary)")
+        let status = await Shell.runAsyncResult(binary, ["system", "status"])
+        await progress("System status: \(status.exit == 0 ? "running" : "not running")\n\(status.output)")
+        if status.exit != 0 {
+            await progress("Starting Apple Container system…")
+            let start = await Shell.runAsyncResult(binary, ["system", "start"])
+            await progress("system start exited \(start.exit)\n\(start.output)")
+            guard start.exit == 0 else { throw MachineError.command("Failed to start Apple Container system:\n\(start.output)") }
+        }
+        await progress("Pulling \(image) and provisioning disk…")
         let result = await Shell.runAsyncResult(binary, ["machine", "create", image, "--name", name])
+        await progress("machine create exited \(result.exit)")
         guard result.exit == 0 else { throw MachineError.command(result.output) }
+        await progress("Starting \(name)…")
+        let start = await Shell.runAsyncResult(binary, ["machine", "start", name])
+        await progress("machine start exited \(start.exit)")
+        guard start.exit == 0 else { throw MachineError.command(start.output) }
     }
 
     func start(name: String) async throws { try await runThrowing(["machine", "start", name]) }
