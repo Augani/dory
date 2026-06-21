@@ -57,6 +57,7 @@ final class VMImageCache {
         let cache = rootTar.deletingLastPathComponent()
         let script = """
         set -e
+        apt-get update -qq && apt-get install -y xz-utils
         rm -f /cache/base-disk.img
         truncate -s 8589934592 /cache/base-disk.img
         LOOP=$(losetup -f --show /cache/base-disk.img)
