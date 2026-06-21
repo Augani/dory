@@ -68,7 +68,7 @@ final class VMImageCache {
         losetup -d "$LOOP"
         """
         let result = await Shell.runAsyncResult(binary, [
-            "run", "--rm", "--privileged",
+            "run", "--rm", "--cap-add", "ALL",
             "-v", "\(cache.path):/cache",
             "ubuntu:24.04", "sh", "-c", script
         ])
