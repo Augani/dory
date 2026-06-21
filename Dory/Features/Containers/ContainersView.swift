@@ -1,20 +1,53 @@
 import SwiftUI
+import AppKit
 
 struct ContainersView: View {
     @Environment(AppStore.self) private var store
     @Environment(\.palette) private var p
+    @State private var dragStartWidth: Double?
 
     var body: some View {
-        HStack(alignment: .top, spacing: 0) {
-            list
-            if let selected = store.selectedContainer {
-                ContainerDetailView(container: selected)
-                    .frame(width: 372)
-                    .frame(maxHeight: .infinity, alignment: .top)
-                    .background(p.bgContent)
+        GeometryReader { geo in
+            let maxDetail = max(360, geo.size.width - 360)
+            let detailWidth = min(max(store.containerDetailWidth, 320), maxDetail)
+            HStack(alignment: .top, spacing: 0) {
+                list
+                if let selected = store.selectedContainer {
+                    resizeHandle(currentWidth: detailWidth, maxDetail: maxDetail)
+                    ContainerDetailView(container: selected)
+                        .frame(width: detailWidth)
+                        .frame(maxHeight: .infinity, alignment: .top)
+                        .background(p.bgContent)
+                }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+
+    private func resizeHandle(currentWidth: Double, maxDetail: Double) -> some View {
+        Rectangle()
+            .fill(p.border)
+            .frame(width: 1)
+            .frame(maxHeight: .infinity)
+            .padding(.horizontal, 4)
+            .background(p.bgContent)
+            .contentShape(Rectangle())
+            .onHover { inside in
+                if inside { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() }
+            }
+            .gesture(
+                DragGesture(minimumDistance: 1)
+                    .onChanged { value in
+                        if dragStartWidth == nil { dragStartWidth = currentWidth }
+                        let start = dragStartWidth ?? currentWidth
+                        store.containerDetailWidth = min(max(start - value.translation.width, 320), maxDetail)
+                    }
+                    .onEnded { _ in
+                        dragStartWidth = nil
+                        store.setContainerDetailWidth(store.containerDetailWidth)
+                    }
+            )
+            .accessibilityIdentifier("container-detail-resize")
     }
 
     private var list: some View {
@@ -31,7 +64,9 @@ struct ContainersView: View {
         }
         .defaultScrollAnchor(.top)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .overlay(alignment: .trailing) { Rectangle().fill(p.border).frame(width: 1) }
+        .overlay(alignment: .trailing) {
+            if store.selectedContainer == nil { Rectangle().fill(p.border).frame(width: 1) }
+        }
     }
 
     private var listHeader: some View {

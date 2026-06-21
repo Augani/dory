@@ -3,8 +3,13 @@
 	archiveVersion = 1;
 	classes = {
 	};
-	objectVersion = 77;
+	objectVersion = 110;
 	objects = {
+
+/* Begin PBXBuildFile section */
+		AA00000000000000000000A3 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = AA00000000000000000000A2 /* Sparkle */; };
+		AA00000000000000000000B3 /* SwiftTerm in Frameworks */ = {isa = PBXBuildFile; productRef = AA00000000000000000000B2 /* SwiftTerm */; };
+/* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
 		3E705CFD2FE37C7B0094B33C /* PBXContainerItemProxy */ = {
@@ -187,11 +192,11 @@
 			);
 			mainGroup = 3E705CE62FE37C790094B33C;
 			minimizedProjectReferenceProxies = 1;
-			preferredProjectObjectVersion = 77;
 			packageReferences = (
 				AA00000000000000000000A1 /* XCRemoteSwiftPackageReference "Sparkle" */,
 				AA00000000000000000000B1 /* XCRemoteSwiftPackageReference "SwiftTerm" */,
 			);
+			preferredProjectObjectVersion = 77;
 			productRefGroup = 3E705CF02FE37C790094B33C /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
@@ -387,8 +392,8 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				INFOPLIST_FILE = Dory/Info.plist;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Dory connects to its local Linux VM so your container ports are reachable at localhost.";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -421,8 +426,8 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				INFOPLIST_FILE = Dory/Info.plist;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Dory connects to its local Linux VM so your container ports are reachable at localhost.";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -557,11 +562,6 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
-
-/* Begin PBXBuildFile section */
-		AA00000000000000000000A3 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = AA00000000000000000000A2 /* Sparkle */; };
-		AA00000000000000000000B3 /* SwiftTerm in Frameworks */ = {isa = PBXBuildFile; productRef = AA00000000000000000000B2 /* SwiftTerm */; };
-/* End PBXBuildFile section */
 
 /* Begin XCRemoteSwiftPackageReference section */
 		AA00000000000000000000A1 /* XCRemoteSwiftPackageReference "Sparkle" */ = {

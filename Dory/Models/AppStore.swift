@@ -33,6 +33,7 @@ final class AppStore {
     var dockerHostConflict: DockerHostConflict.Conflict?
     var dockerHostCleaned = false
     var dockerHostConflictDismissed = false
+    var containerDetailWidth: Double = 372
 
     var containers: [Container] = MockData.containers
     var images: [DockerImage] = MockData.images
@@ -66,6 +67,9 @@ final class AppStore {
             if let v = UserDefaults.standard.object(forKey: Self.routeDockerKey) as? Bool { routeDockerCLI = v }
             dockerHostCleaned = DockerHostConflict.hasCleaned
             dockerHostConflictDismissed = UserDefaults.standard.bool(forKey: Self.dockerHostDismissedKey)
+            if let width = UserDefaults.standard.object(forKey: Self.containerDetailWidthKey) as? Double, width >= 320 {
+                containerDetailWidth = width
+            }
         }
         if let raw = env["DORY_SECTION"], let parsed = AppSection(rawValue: raw) { section = parsed }
         if let raw = env["DORY_FILTER"] { filter = raw }
@@ -104,6 +108,13 @@ final class AppStore {
     static let autoUpdateKey = "dory.autoUpdate"
     static let routeDockerKey = "dory.routeDockerCLI"
     static let dockerHostDismissedKey = "dory.dockerHostDismissed"
+    static let containerDetailWidthKey = "dory.containerDetailWidth"
+
+    func setContainerDetailWidth(_ width: Double) {
+        let clamped = min(max(width, 320), 1400)
+        containerDetailWidth = clamped
+        UserDefaults.standard.set(clamped, forKey: Self.containerDetailWidthKey)
+    }
 
     func setAutoUpdate(_ on: Bool) {
         autoUpdate = on
