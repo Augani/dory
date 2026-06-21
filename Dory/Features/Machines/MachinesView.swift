@@ -103,6 +103,7 @@ private struct MachineCard: View {
                 cardButton("Terminal") { store.openMachineTerminal(machine) }
                 cardButton("Delete") { confirmingDelete = true }
             }
+            .disabled(store.machineBusy)
             .padding(.top, 12)
             .overlay(alignment: .top) { Rectangle().fill(p.border).frame(height: 1) }
         }

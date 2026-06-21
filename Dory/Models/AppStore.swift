@@ -1037,11 +1037,16 @@ final class AppStore {
     func toggleMachine(_ machine: Machine) {
         guard let idx = machines.firstIndex(where: { $0.id == machine.id }) else { return }
         let wasRunning = machines[idx].status == .running
-        machines[idx].status = wasRunning ? .stopped : .running
+        machineBusy = true
         let name = machine.name
         let provider = machineProvider
         Task {
-            if wasRunning { _ = await provider.stop(name: name) } else { _ = await provider.start(name: name) }
+            defer { machineBusy = false }
+            do {
+                if wasRunning { try await provider.stop(name: name) } else { try await provider.start(name: name) }
+            } catch {
+                actionError = "Could not \(wasRunning ? "stop" : "start") \(name): \(error)"
+            }
             await loadMachines()
         }
     }
@@ -1049,11 +1054,18 @@ final class AppStore {
     func createMachine(image: String, name: String) async -> String? {
         let trimmedImage = image.trimmingCharacters(in: .whitespaces)
         let trimmedName = name.trimmingCharacters(in: .whitespaces)
-        guard !trimmedImage.isEmpty, !trimmedName.isEmpty else { return "Image and name are required" }
+        guard !trimmedImage.isEmpty, !trimmedName.isEmpty else {
+            actionError = "Image and name are required"
+            return "Image and name are required"
+        }
         machineBusy = true
         defer { machineBusy = false }
         do { try await machineProvider.create(image: trimmedImage, name: trimmedName); await loadMachines(); return nil }
-        catch { return "\(error)" }
+        catch {
+            let message = "\(error)"
+            actionError = "Could not create machine: \(message)"
+            return message
+        }
     }
 
     func deleteMachine(_ machine: Machine) {

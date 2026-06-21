@@ -26,12 +26,18 @@ struct MachineProvider: Sendable {
         guard result.exit == 0 else { throw MachineError.command(result.output) }
     }
 
-    @discardableResult func start(name: String) async -> Bool { await run(["machine", "start", name]) }
-    @discardableResult func stop(name: String) async -> Bool { await run(["machine", "stop", name]) }
+    func start(name: String) async throws { try await runThrowing(["machine", "start", name]) }
+    func stop(name: String) async throws { try await runThrowing(["machine", "stop", name]) }
 
     func delete(name: String) async {
         _ = await run(["machine", "stop", name])
         _ = await run(["machine", "delete", name])
+    }
+
+    private func runThrowing(_ arguments: [String]) async throws {
+        guard let binary else { throw MachineError.cliUnavailable }
+        let result = await Shell.runAsyncResult(binary, arguments)
+        guard result.exit == 0 else { throw MachineError.command(result.output) }
     }
 
     @discardableResult
