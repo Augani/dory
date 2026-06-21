@@ -34,7 +34,16 @@ struct AppleContainerRuntime: ContainerRuntime {
         let containers = containerList.map { map($0, stats: stats[$0.id]) }
         let images = imageList.map { mapImage($0, usedBy: imageRefCounts[$0.configuration?.name ?? ""] ?? 0) }
         let volumes = ((await volumesRaw) ?? []).map(mapVolume)
-        let machines = ((await machinesRaw) ?? []).map(MachineProvider.map)
+        let machines = ((await machinesRaw) ?? []).map { acm in
+            let running = acm.status?.lowercased() == "running"
+            let (distro, letter, hex) = Self.distroInfo(acm.id)
+            return Machine(
+                name: acm.id, distro: distro, version: acm.`default` == true ? "default" : "",
+                status: running ? .running : .stopped, cpuPercent: 0,
+                memoryDisplay: DockerFormat.bytes(acm.memory), ip: acm.ipAddress ?? "—",
+                letter: letter, badgeHex: hex
+            )
+        }
         let networks = synthesizeNetworks(from: containerList)
         let version = ((await versionRaw) ?? "").components(separatedBy: " ").last(where: { $0.first?.isNumber == true }) ?? "1.0.0"
 

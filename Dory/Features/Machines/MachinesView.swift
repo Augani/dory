@@ -6,13 +6,13 @@ struct MachinesView: View {
 
     private let columns = [GridItem(.flexible(), spacing: 14), GridItem(.flexible(), spacing: 14)]
     private let templates: [MachineTemplate] = [
-        MachineTemplate(image: "ubuntu:24.04", logo: "logo-ubuntu", name: "Ubuntu", version: "24.04 LTS", isKnownSupported: false,
+        MachineTemplate(image: "ubuntu:24.04", logo: "logo-ubuntu", name: "Ubuntu", version: "24.04 LTS", isKnownSupported: true,
                         description: "Long-term support release. Great for development, servers, and everyday Linux workloads."),
         MachineTemplate(image: "debian:12", logo: "logo-debian", name: "Debian", version: "12", isKnownSupported: false,
                         description: "Stable and lightweight. Ideal for testing and production-like environments."),
         MachineTemplate(image: "fedora:40", logo: "logo-fedora", name: "Fedora", version: "40", isKnownSupported: false,
                         description: "Bleeding-edge packages and the latest kernel. Perfect for trying new Linux features."),
-        MachineTemplate(image: "alpine:3.20", logo: "logo-alpine", name: "Alpine", version: "3.20", isKnownSupported: true,
+        MachineTemplate(image: "alpine:3.20", logo: "logo-alpine", name: "Alpine", version: "3.20", isKnownSupported: false,
                         description: "Minimal and security-focused. Excellent for containers and resource-constrained work."),
     ]
 
@@ -162,7 +162,7 @@ private struct TemplateCard: View {
                     Text(template.version).font(.system(size: 12)).foregroundStyle(p.text3)
                     Spacer()
                     if !template.isKnownSupported {
-                        Text("Container 1.0 issue")
+                        Text("Unsupported")
                             .font(.system(size: 10, weight: .semibold)).foregroundStyle(p.amber)
                             .padding(.horizontal, 8).padding(.vertical, 4)
                             .background(p.amberWeak, in: RoundedRectangle(cornerRadius: 6))

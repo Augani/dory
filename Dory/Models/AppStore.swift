@@ -233,7 +233,7 @@ final class AppStore {
             }
         }
         await loadKubernetes()
-        await loadMachines()
+        loadMachines()
         startShim()
         startPortForwarding()
         if routeDockerCLI && runtimeKind != .mock {
@@ -977,15 +977,15 @@ final class AppStore {
         appearance = appearance == .dark ? .light : .dark
     }
 
-    @ObservationIgnored private let machineProvider = MachineProvider()
+    @ObservationIgnored private let machineProvider = VirtualizationMachineProvider()
     var machineBusy = false
     var machineCreationTitle = ""
     var machineCreationLog = ""
     var machineCreationError: String?
 
-    func loadMachines() async {
+    func loadMachines() {
         guard runtimeKind != .mock, machineProvider.isAvailable else { return }
-        machines = await machineProvider.list()
+        machines = machineProvider.list()
     }
 
     var browsingVolume: String?
@@ -1046,11 +1046,15 @@ final class AppStore {
         Task {
             defer { machineBusy = false }
             do {
-                if wasRunning { try await provider.stop(name: name) } else { try await provider.start(name: name) }
+                if wasRunning {
+                    try await provider.stop(name: name)
+                } else {
+                    try await provider.start(name: name)
+                }
             } catch {
                 actionError = "Could not \(wasRunning ? "stop" : "start") \(name): \(error)"
             }
-            await loadMachines()
+            loadMachines()
         }
     }
 
@@ -1061,6 +1065,10 @@ final class AppStore {
             actionError = "Image and name are required"
             return "Image and name are required"
         }
+        guard let distro = distro(for: trimmedImage) else {
+            actionError = "Unsupported machine image: \(trimmedImage)"
+            return "Unsupported machine image"
+        }
         machineBusy = true
         machineCreationTitle = "Creating \(trimmedName)"
         machineCreationLog = "Preparing to create \(trimmedName)…\n"
@@ -1068,61 +1076,47 @@ final class AppStore {
         activeSheet = .creatingMachine
         defer { machineBusy = false }
         do {
-            try await machineProvider.create(image: trimmedImage, name: trimmedName) { line in
+            try await machineProvider.create(name: trimmedName, distro: distro) { line in
                 self.appendMachineCreationLog(line)
+            }
+            appendMachineCreationLog("Waiting for IP address…")
+            if let ip = await machineProvider.waitForIP(name: trimmedName, timeout: .seconds(120)) {
+                appendMachineCreationLog("IP address: \(ip)")
             }
             appendMachineCreationLog("Machine created and started.")
             activeSheet = nil
-            await loadMachines()
+            loadMachines()
             return nil
         } catch {
-            let message = cleanMachineError("\(error)")
-            let help = machineErrorHelp(message)
+            let message = "\(error)"
             appendMachineCreationLog("Error: \(message)")
-            if !help.isEmpty {
-                appendMachineCreationLog(help)
-            }
-            machineCreationError = help.isEmpty ? message : "\(message)\n\n\(help)"
+            machineCreationError = message
             actionError = "Could not create machine"
-            return machineCreationError
+            return message
         }
+    }
+
+    private func distro(for image: String) -> VMDistro? {
+        let lower = image.lowercased()
+        if lower.contains("ubuntu") { return .ubuntu2404 }
+        return nil
     }
 
     private func appendMachineCreationLog(_ line: String) {
         machineCreationLog.append(line + "\n")
     }
 
-    private func cleanMachineError(_ message: String) -> String {
-        var cleaned = message.trimmingCharacters(in: .whitespacesAndNewlines)
-            .replacingOccurrences(of: "\\n", with: "\n")
-            .replacingOccurrences(of: "\\\"", with: "\"")
-        if cleaned.hasPrefix("command(\"") {
-            cleaned.removeFirst("command(\"".count)
-            if cleaned.hasSuffix("\")") {
-                cleaned.removeLast(2)
-            }
-        }
-        return cleaned
-    }
-
-    private func machineErrorHelp(_ message: String) -> String {
-        let lower = message.lowercased()
-        if lower.contains("cannot exec: container is not running") || lower.contains("failed to create process in container") {
-            return "This is a known Apple Container bug with non-Alpine machine images (github.com/apple/container/issues/1669). Try creating an Alpine machine instead."
-        }
-        return ""
-    }
-
     func deleteMachine(_ machine: Machine) {
         let name = machine.name
         let provider = machineProvider
         machines.removeAll { $0.name == name }
-        Task { await provider.delete(name: name); await loadMachines() }
+        Task { await provider.delete(name: name); loadMachines() }
     }
 
     func openMachineTerminal(_ machine: Machine) {
-        guard let binary = SharedVMProvisioner.containerBinary() else { return }
-        TerminalLauncher.openMachineShell(binary: binary, machine: machine.name)
+        let ip = machineProvider.ipAddress(for: machine.name) ?? machine.ip
+        guard ip != "—", !ip.isEmpty else { return }
+        TerminalLauncher.openMachineShell(ip: ip, keyPath: machineProvider.sshKeyPath(for: machine.name).path)
     }
 
     func openContainerTerminal(_ container: Container) {
