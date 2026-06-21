@@ -21,7 +21,7 @@ final class VirtualizationMachineProvider {
 
     func create(name: String, distro: VMDistro, progress: @escaping (String) -> Void) async throws {
         guard VZVirtualMachine.isSupported else { throw VMError.virtualizationUnavailable }
-        try ensureBaseImage(for: distro, progress: progress)
+        try await ensureBaseImage(for: distro, progress: progress)
 
         let vmDir = cache.vmDirectory(name: name)
         try fileManager.createDirectory(at: vmDir, withIntermediateDirectories: true)
@@ -48,7 +48,7 @@ final class VirtualizationMachineProvider {
     func start(name: String) async throws {
         guard VZVirtualMachine.isSupported else { throw VMError.virtualizationUnavailable }
         let vmDir = cache.vmDirectory(name: name)
-        let config = try loadConfig(at: vmDir.appendingPathComponent("config.json"))
+        _ = try loadConfig(at: vmDir.appendingPathComponent("config.json"))
         let distro = VMDistro.ubuntu2404
         let vzConfig = try makeConfiguration(vmDir: vmDir, distro: distro)
         let vm = VZVirtualMachine(configuration: vzConfig)
@@ -80,7 +80,7 @@ final class VirtualizationMachineProvider {
     }
 
     func delete(name: String) async throws {
-        if let vm = vms[name] {
+        if vms[name] != nil {
             _ = try? await stop(name: name)
             vms.removeValue(forKey: name)
         }
@@ -140,7 +140,8 @@ final class VirtualizationMachineProvider {
         configuration.networkDevices = [network]
 
         let sharedDir = VZSharedDirectory(url: share, readOnly: false)
-        let fsDevice = VZVirtioFileSystemDeviceConfiguration(tag: "share", directoryShare: VZSingleDirectoryShare(directory: sharedDir))
+        let fsDevice = VZVirtioFileSystemDeviceConfiguration(tag: "share")
+        fsDevice.share = VZSingleDirectoryShare(directory: sharedDir)
         configuration.directorySharingDevices = [fsDevice]
 
         configuration.memoryBalloonDevices = [VZVirtioTraditionalMemoryBalloonDeviceConfiguration()]

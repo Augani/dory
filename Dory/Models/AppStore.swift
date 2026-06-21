@@ -1110,7 +1110,7 @@ final class AppStore {
         let name = machine.name
         let provider = machineProvider
         machines.removeAll { $0.name == name }
-        Task { await provider.delete(name: name); loadMachines() }
+        Task { try? await provider.delete(name: name); loadMachines() }
     }
 
     func openMachineTerminal(_ machine: Machine) {
