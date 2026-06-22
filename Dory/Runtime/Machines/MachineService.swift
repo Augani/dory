@@ -8,8 +8,27 @@ struct MachineService: Sendable {
     static let versionLabel = "dory.machine.version"
     static let archLabel = "dory.machine.arch"
     static let keepalive = ["tail", "-f", "/dev/null"]
+    static let snapshotRepoPrefix = "dory-snapshot/"
 
     static func containerName(for name: String) -> String { namePrefix + name }
+
+    func snapshot(machine: Machine, note: String, createdISO: String, tag: String) async throws -> MachineSnapshot {
+        let labels = SnapshotLabels.make(machine: machine, note: note, createdISO: createdISO)
+        let repo = Self.snapshotRepoPrefix + machine.name
+        let id = try await runtime.commit(containerID: Self.containerName(for: machine.name), repo: repo, tag: tag, labels: labels)
+        return MachineSnapshot(id: id, imageRef: "\(repo):\(tag)", machineName: machine.name, note: note,
+                               createdISO: createdISO, sizeBytes: 0, distro: machine.distro, version: machine.version,
+                               arch: machine.arch.isEmpty ? MachineArch.host.rawValue : machine.arch)
+    }
+
+    func listSnapshots() async -> [MachineSnapshot] {
+        let filters = "{\"label\":[\"\(SnapshotLabels.ofKey)\"]}"
+        let encoded = filters.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? filters
+        guard let response = await runtime.proxyRequest(method: "GET", path: "/images/json?filters=\(encoded)", headers: [], body: Data()),
+              response.isSuccess else { return [] }
+        return SnapshotLabels.snapshots(fromImagesJSON: response.body)
+            .sorted { $0.createdISO > $1.createdISO }
+    }
 
     static func displayName(fromContainerName raw: String) -> String? {
         let trimmed = raw.hasPrefix("/") ? String(raw.dropFirst()) : raw
