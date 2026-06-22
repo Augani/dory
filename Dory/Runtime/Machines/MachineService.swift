@@ -235,11 +235,15 @@ struct MachineService: Sendable {
         guard let tar = try? Data(contentsOf: fileURL) else {
             throw MachineError.createFailed("could not read \(fileURL.lastPathComponent)")
         }
+        let before = Set(await listSnapshots().map(\.id))
         try await runtime.loadImage(tar: tar)
-        let loaded = await listSnapshots().first
-        guard let loaded, Self.isDoryMachineImage(loadedLabels: [Self.label: loaded.distro]) else {
+        guard let loaded = Self.firstNew(before: before, after: await listSnapshots()) else {
             throw MachineError.createFailed("Not a Dory machine file")
         }
         return loaded.imageRef
+    }
+
+    static func firstNew(before: Set<String>, after: [MachineSnapshot]) -> MachineSnapshot? {
+        after.first { !before.contains($0.id) }
     }
 }

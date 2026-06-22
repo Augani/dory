@@ -46,4 +46,11 @@ struct DoryMachineFileTests {
         #expect(!MachineService.isDoryMachineImage(loadedLabels: [:]))
         #expect(!MachineService.isDoryMachineImage(loadedLabels: ["maintainer": "x"]))
     }
+
+    @Test func firstNewPicksTheNewlyLoadedSnapshot() {
+        let old = MachineSnapshot(id: "old", imageRef: "r1", machineName: "m", note: "", createdISO: "2026-01-02", sizeBytes: 0, distro: "Ubuntu", version: "", arch: "")
+        let new = MachineSnapshot(id: "new", imageRef: "r2", machineName: "m", note: "", createdISO: "2026-01-01", sizeBytes: 0, distro: "Ubuntu", version: "", arch: "")
+        #expect(MachineService.firstNew(before: ["old"], after: [old, new])?.id == "new")
+        #expect(MachineService.firstNew(before: ["old", "new"], after: [old, new]) == nil)
+    }
 }
