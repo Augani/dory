@@ -149,6 +149,42 @@ struct MachineService: Sendable {
         }
     }
 
+    private func runFromImage(name: String, imageRef: String, snapshot: MachineSnapshot) async throws {
+        let distro = MachineDistro.forFamily(MachineDistro.all.first { $0.display == snapshot.distro }?.family ?? "")
+        let boot: MachineDistro.Boot = distro?.boot ?? .systemd
+        let cmd = boot == .systemd ? ["/sbin/init"] : Self.keepalive
+        let body: [String: Any] = [
+            "Hostname": name, "Image": imageRef, "Cmd": cmd, "Env": ["container=docker"],
+            "StopSignal": "SIGRTMIN+3",
+            "Labels": [Self.label: distro?.family ?? snapshot.distro.lowercased(),
+                       Self.versionLabel: snapshot.version,
+                       Self.archLabel: snapshot.arch],
+            "HostConfig": ["Privileged": true, "CgroupnsMode": "host",
+                           "Tmpfs": ["/run": "", "/run/lock": "", "/tmp": ""],
+                           "RestartPolicy": ["Name": "unless-stopped"]] as [String: Any],
+        ]
+        let data = try JSONSerialization.data(withJSONObject: body)
+        let platform = (snapshot.arch.isEmpty ? MachineArch.host.rawValue : snapshot.arch)
+        let encodedPlatform = "linux/\(platform)".addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "linux/\(platform)"
+        guard let response = await runtime.proxyRequest(method: "POST",
+            path: "/containers/create?name=\(Self.containerName(for: name))&platform=\(encodedPlatform)",
+            headers: [(name: "Content-Type", value: "application/json")], body: data),
+            response.isSuccess else {
+            throw MachineError.createFailed("could not create machine from snapshot")
+        }
+        try await runtime.start(containerID: Self.containerName(for: name))
+    }
+
+    func cloneFromSnapshot(_ snapshot: MachineSnapshot, newName: String) async throws {
+        try await runFromImage(name: newName, imageRef: snapshot.imageRef, snapshot: snapshot)
+    }
+
+    func restore(_ snapshot: MachineSnapshot) async throws {
+        try? await runtime.stop(containerID: Self.containerName(for: snapshot.machineName))
+        try? await runtime.remove(containerID: Self.containerName(for: snapshot.machineName))
+        try await runFromImage(name: snapshot.machineName, imageRef: snapshot.imageRef, snapshot: snapshot)
+    }
+
     private func ensureEmulation(for arch: MachineArch, progress: @escaping @Sendable (String) -> Void) async {
         progress("Enabling \(arch.shortLabel) emulation…")
         try? await runtime.pull(image: "tonistiigi/binfmt")
