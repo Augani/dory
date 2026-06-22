@@ -30,6 +30,9 @@ struct MainColumnView: View {
                     secondaryButton("Sign In") { store.activeSheet = .registryLogin }
                     secondaryButton("Build") { store.activeSheet = .buildImage }
                 }
+                if store.section == .machines {
+                    secondaryButton("Import") { store.importMachineFile() }
+                }
                 if let label = store.section.primaryActionLabel {
                     primaryButton(label)
                 }

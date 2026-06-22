@@ -1146,6 +1146,176 @@ final class AppStore {
         machineCreationLog.append(line + "\n")
     }
 
+    var snapshotMachine: Machine?
+    var machineSnapshots: [MachineSnapshot] = []
+    var editMachineTarget: Machine?
+
+    func openMachineEdit(_ machine: Machine) {
+        editMachineTarget = machine
+    }
+
+    func openSnapshots(_ machine: Machine) {
+        snapshotMachine = machine
+        machineSnapshots = []
+        activeSheet = .machineSnapshots
+        Task { await reloadSnapshots() }
+    }
+
+    private func reloadSnapshots() async {
+        guard let machine = snapshotMachine else { return }
+        let all = await machineService.listSnapshots()
+        machineSnapshots = all.filter { $0.machineName == machine.name }
+    }
+
+    func takeSnapshot(_ machine: Machine, note: String) {
+        guard runtimeKind.isDockerCompatible else {
+            actionError = "Snapshots need Dory's shared VM — switch engines in Settings → Docker Engine."
+            return
+        }
+        let trimmedNote = note.trimmingCharacters(in: .whitespacesAndNewlines)
+        let createdISO = ISO8601DateFormatter().string(from: Date())
+        let tag = "s" + UUID().uuidString.prefix(8).lowercased()
+        machineBusy = true
+        let service = machineService
+        Task {
+            defer { machineBusy = false }
+            do {
+                _ = try await service.snapshot(machine: machine, note: trimmedNote, createdISO: createdISO, tag: tag)
+            } catch {
+                actionError = "Could not snapshot \(machine.name): \(error)"
+            }
+            if snapshotMachine?.name == machine.name { await reloadSnapshots() }
+        }
+    }
+
+    func cloneSnapshot(_ snapshot: MachineSnapshot) {
+        guard runtimeKind.isDockerCompatible else {
+            actionError = "Cloning needs Dory's shared VM — switch engines in Settings → Docker Engine."
+            return
+        }
+        let newName = snapshot.machineName + "-copy-" + String(UUID().uuidString.prefix(4).lowercased())
+        machineBusy = true
+        machineCreationTitle = "Cloning \(snapshot.machineName)"
+        machineCreationLog = "Creating \(newName) from snapshot…\n"
+        machineCreationError = nil
+        activeSheet = .creatingMachine
+        let service = machineService
+        Task {
+            defer { machineBusy = false }
+            do {
+                try await service.cloneFromSnapshot(snapshot, newName: newName)
+                appendMachineCreationLog("Clone \(newName) created and started.")
+                activeSheet = nil
+                loadMachines()
+            } catch {
+                let message = "\(error)"
+                appendMachineCreationLog("Error: \(message)")
+                machineCreationError = message
+                actionError = "Could not clone machine"
+            }
+        }
+    }
+
+    func restoreSnapshot(_ snapshot: MachineSnapshot) {
+        guard runtimeKind.isDockerCompatible else {
+            actionError = "Restoring needs Dory's shared VM — switch engines in Settings → Docker Engine."
+            return
+        }
+        machineBusy = true
+        machineCreationTitle = "Restoring \(snapshot.machineName)"
+        machineCreationLog = "Restoring \(snapshot.machineName) from snapshot…\n"
+        machineCreationError = nil
+        activeSheet = .creatingMachine
+        let service = machineService
+        Task {
+            defer { machineBusy = false }
+            do {
+                try await service.restore(snapshot)
+                appendMachineCreationLog("\(snapshot.machineName) restored from snapshot.")
+                activeSheet = nil
+                loadMachines()
+            } catch {
+                let message = "\(error)"
+                appendMachineCreationLog("Error: \(message)")
+                machineCreationError = message
+                actionError = "Could not restore machine"
+            }
+        }
+    }
+
+    func exportSnapshot(_ snapshot: MachineSnapshot) {
+        guard runtimeKind.isDockerCompatible else {
+            actionError = "Exporting needs Dory's shared VM — switch engines in Settings → Docker Engine."
+            return
+        }
+        let panel = NSSavePanel()
+        panel.title = "Export machine snapshot"
+        panel.nameFieldStringValue = "\(snapshot.machineName).dorymachine"
+        panel.allowedFileTypes = ["dorymachine"]
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        machineBusy = true
+        let service = machineService
+        Task {
+            defer { machineBusy = false }
+            do {
+                try await service.export(snapshot, to: url)
+            } catch {
+                actionError = "Could not export \(snapshot.machineName): \(error)"
+            }
+        }
+    }
+
+    func importMachineFile() {
+        guard runtimeKind.isDockerCompatible else {
+            actionError = "Importing needs Dory's shared VM — switch engines in Settings → Docker Engine."
+            return
+        }
+        let panel = NSOpenPanel()
+        panel.title = "Import a Dory machine file"
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.allowedFileTypes = ["dorymachine", "tar"]
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        machineBusy = true
+        machineCreationTitle = "Importing machine"
+        machineCreationLog = "Importing \(url.lastPathComponent)…\n"
+        machineCreationError = nil
+        activeSheet = .creatingMachine
+        let service = machineService
+        Task {
+            defer { machineBusy = false }
+            do {
+                let imageRef = try await service.importMachine(from: url)
+                appendMachineCreationLog("Imported snapshot \(imageRef). Use Clone or Restore from the Snapshots sheet.")
+                activeSheet = nil
+                loadMachines()
+                if snapshotMachine != nil { await reloadSnapshots() }
+            } catch {
+                let message = "\(error)"
+                appendMachineCreationLog("Error: \(message)")
+                machineCreationError = message
+                actionError = "Could not import machine file"
+            }
+        }
+    }
+
+    func deleteSnapshot(_ snapshot: MachineSnapshot) {
+        machineBusy = true
+        let id = snapshot.id
+        let activeRuntime = runtime
+        machineSnapshots.removeAll { $0.id == snapshot.id }
+        Task {
+            defer { machineBusy = false }
+            do {
+                try await activeRuntime.removeImage(id: id)
+            } catch {
+                actionError = "Could not delete snapshot: \(error)"
+            }
+            if snapshotMachine != nil { await reloadSnapshots() }
+        }
+    }
+
     func deleteMachine(_ machine: Machine) {
         let name = machine.name
         let service = machineService

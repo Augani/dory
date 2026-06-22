@@ -63,6 +63,7 @@ struct RootView: View {
                 case .inspectNetwork: NetworkDetailSheet()
                 case .newMachine: NewMachineSheet()
                 case .creatingMachine: MachineCreationSheet()
+                case .machineSnapshots: SnapshotsSheet()
                 }
             }
             .environment(store)
