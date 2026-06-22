@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import Observation
 import ServiceManagement
 import UniformTypeIdentifiers
@@ -522,6 +523,38 @@ final class AppStore {
 
     var runningCount: Int { containers.filter(\.isRunning).count }
 
+    var pendingContainerIDs: Set<String> = []
+    var cpuHistory: [String: [Double]] = [:]
+
+    func recordCPU(_ id: String, _ value: Double) {
+        var samples = cpuHistory[id] ?? []
+        samples.append(value)
+        if samples.count > 20 { samples.removeFirst(samples.count - 20) }
+        cpuHistory[id] = samples
+    }
+
+    func portURL(for container: Container, port: PublishedPort) -> URL {
+        if !container.domain.isEmpty, let url = URL(string: "https://\(container.domain)") {
+            return url
+        }
+        return URL(string: "http://localhost:\(port.hostPort)") ?? URL(string: "http://localhost")!
+    }
+
+    func openPort(_ url: URL) {
+        NSWorkspace.shared.open(url)
+    }
+
+    var reclaimableImageBytes: Int64 {
+        images.filter { !$0.isUsed }.reduce(0) { $0 + max(0, $1.sizeBytes) }
+    }
+
+    var reclaimLabel: String? {
+        let bytes = reclaimableImageBytes
+        guard bytes > 0 else { return nil }
+        let formatted = ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+        return "Reclaim \(formatted)"
+    }
+
     var totalCPU: Double { containers.reduce(0) { $0 + $1.cpuPercent } }
     var totalCPUDisplay: String { String(format: "%.1f%%", totalCPU) }
     var cpuMeterFraction: Double { min(100, totalCPU * 9) / 100 }
@@ -710,8 +743,15 @@ final class AppStore {
     }
 
     func toggle(_ container: Container) {
+        Task { await performToggle(container) }
+    }
+
+    func performToggle(_ container: Container) async {
         guard let idx = containers.firstIndex(where: { $0.id == container.id }) else { return }
         let wasRunning = container.status == .running
+        pendingContainerIDs.insert(container.id)
+        defer { pendingContainerIDs.remove(container.id) }
+
         var c = containers[idx]
         if wasRunning {
             c.status = .stopped
@@ -729,16 +769,14 @@ final class AppStore {
             c.uptime = "just now"
         }
         containers[idx] = c
-        let id = container.id
-        Task {
-            do {
-                if wasRunning { try await runtime.stop(containerID: id) }
-                else { try await runtime.start(containerID: id) }
-            } catch {
-                actionError = "Couldn't \(wasRunning ? "stop" : "start") \(container.name): \(error.localizedDescription)"
-            }
-            if runtimeKind != .mock { await reload() }
+
+        do {
+            if wasRunning { try await runtime.stop(containerID: container.id) }
+            else { try await runtime.start(containerID: container.id) }
+        } catch {
+            actionError = "Couldn't \(wasRunning ? "stop" : "start") \(container.name): \(error.localizedDescription)"
         }
+        if runtimeKind != .mock { await reload() }
     }
 
     func restart(_ container: Container) {
