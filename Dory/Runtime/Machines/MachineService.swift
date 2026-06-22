@@ -85,12 +85,16 @@ struct MachineService: Sendable {
 
         progress("Creating \(name)…")
         try await createContainer(name: name, distro: distro, imageTag: tag, keepaliveOnly: false)
-        try await runtime.start(containerID: Self.containerName(for: name))
         progress("Starting \(name)…")
+        try await runtime.start(containerID: Self.containerName(for: name))
 
         if distro.boot == .systemd {
-            try? await Task.sleep(for: .seconds(4))
-            if await !isRunning(name: name) {
+            var exited = false
+            for _ in 0..<8 {
+                try? await Task.sleep(for: .seconds(1))
+                if await !isRunning(name: name) { exited = true; break }
+            }
+            if exited {
                 progress("systemd did not come up on this image — falling back to a shell machine…")
                 try? await runtime.remove(containerID: Self.containerName(for: name))
                 try await createContainer(name: name, distro: distro, imageTag: tag, keepaliveOnly: true)

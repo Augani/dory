@@ -49,6 +49,10 @@ struct NewMachineSheet: View {
                         .background(p.bgInput, in: RoundedRectangle(cornerRadius: 8))
                         .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(p.border))
                         .onChange(of: name) { _, _ in nameEdited = true }
+                    if !name.trimmingCharacters(in: .whitespaces).isEmpty && !nameValid {
+                        Text("Use letters, numbers, dots, dashes or underscores.")
+                            .font(.system(size: 11.5)).foregroundStyle(p.red)
+                    }
                 }
             }
 
@@ -79,7 +83,13 @@ struct NewMachineSheet: View {
     }
 
     private var createDisabled: Bool {
-        name.trimmingCharacters(in: .whitespaces).isEmpty || store.machineBusy
+        name.trimmingCharacters(in: .whitespaces).isEmpty || !nameValid || store.machineBusy
+    }
+
+    private var nameValid: Bool {
+        let trimmed = name.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return false }
+        return trimmed.range(of: "^[a-zA-Z0-9][a-zA-Z0-9_.-]*$", options: .regularExpression) != nil
     }
 
     private func familyCard(_ family: MachineFamily) -> some View {
@@ -102,7 +112,7 @@ struct NewMachineSheet: View {
 
     @ViewBuilder
     private func badge(for family: MachineFamily) -> some View {
-        if let logo = NewMachineSheet.knownLogo(for: family) {
+        if let logo = MachineDistro.logoAsset(family: family.id) {
             Image(logo)
                 .resizable()
                 .aspectRatio(contentMode: .fit)
@@ -132,15 +142,5 @@ struct NewMachineSheet: View {
 
     static func defaultName(_ family: MachineFamily) -> String {
         "\(family.id)-\(String(UUID().uuidString.prefix(4).lowercased()))"
-    }
-
-    private static func knownLogo(for family: MachineFamily) -> String? {
-        switch family.id {
-        case "ubuntu": return "logo-ubuntu"
-        case "debian": return "logo-debian"
-        case "fedora": return "logo-fedora"
-        case "alpine": return "logo-alpine"
-        default: return nil
-        }
     }
 }

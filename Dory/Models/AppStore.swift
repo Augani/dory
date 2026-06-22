@@ -481,6 +481,7 @@ final class AppStore {
     func refreshIfIdle() async {
         guard runtimeKind != .mock, !isConnecting, activeSheet == nil, !onboarding else { return }
         await reload()
+        loadMachines()
         if runtimeKind == .sharedVM { await loadKubernetes() }
     }
 
@@ -987,7 +988,16 @@ final class AppStore {
 
     func loadMachines() {
         guard runtimeKind != .mock, runtimeKind.isDockerCompatible else { machines = []; return }
-        Task { machines = await machineService.list() }
+        Task {
+            var list = await machineService.list()
+            for index in list.indices {
+                if let match = containers.first(where: { $0.id == list[index].containerID }) {
+                    list[index].cpuPercent = match.cpuPercent
+                    list[index].memoryDisplay = match.memoryDisplay
+                }
+            }
+            machines = list
+        }
     }
 
     private static let legacyMachineCleanupKey = "dory.legacyMachineCleanupOffered"

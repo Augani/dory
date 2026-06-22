@@ -59,7 +59,7 @@ struct MachinesView: View {
                     .frame(width: 80, height: 80)
                     .background(p.accentSoft, in: RoundedRectangle(cornerRadius: 20))
                 Text("Linux machines").font(.system(size: 26, weight: .bold)).foregroundStyle(p.text)
-                Text("Spin up full Ubuntu, Debian, Fedora, or Alpine VMs with systemd and SSH. Use them for testing services, running CI locally, or any workload that needs a real Linux environment.")
+                Text("Spin up full Ubuntu, Debian, Fedora, Rocky, openSUSE, and more — each with systemd and an instant root shell. Use them for testing services, running CI locally, or any workload that needs a real Linux environment.")
                     .font(.system(size: 13.5)).foregroundStyle(p.text2).multilineTextAlignment(.center).lineSpacing(4)
                     .frame(maxWidth: 520)
                 featurePills
@@ -118,7 +118,7 @@ struct MachinesView: View {
     private var featurePills: some View {
         HStack(spacing: 8) {
             featurePill("systemd")
-            featurePill("SSH")
+            featurePill("Root shell")
             featurePill("Persistent disk")
             featurePill("Apple Silicon")
         }
