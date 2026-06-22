@@ -12,6 +12,24 @@ struct NewMachineSheet: View {
     @State private var nameEdited = false
     @State private var selectedRecipe: DevRecipe?
 
+    @State private var advancedExpanded = false
+    @State private var cpus = 2
+    @State private var memoryGB = 2
+    @State private var mountRows: [MountRow] = []
+    @State private var portRows: [PortRow] = []
+
+    private struct MountRow: Identifiable, Hashable {
+        let id = UUID()
+        var host = ""
+        var guest = ""
+    }
+
+    private struct PortRow: Identifiable, Hashable {
+        let id = UUID()
+        var host = ""
+        var guest = ""
+    }
+
     private let columns = [GridItem(.adaptive(minimum: 160, maximum: 260), spacing: 8)]
 
     init() {
@@ -38,6 +56,7 @@ struct NewMachineSheet: View {
                     distroSection
                     devEnvironmentSection
                     optionsRow
+                    advancedSection
                 }
                 .padding(20)
             }
@@ -143,6 +162,142 @@ struct NewMachineSheet: View {
         }
     }
 
+    private var advancedSection: some View {
+        DisclosureGroup(isExpanded: $advancedExpanded) {
+            VStack(alignment: .leading, spacing: 16) {
+                resourceRow
+                mountsBlock
+                portsBlock
+            }
+            .padding(.top, 12)
+        } label: {
+            Text("ADVANCED")
+                .font(.system(size: 10.5, weight: .semibold)).foregroundStyle(p.text3).tracking(0.5)
+        }
+        .tint(p.accent)
+    }
+
+    private var resourceRow: some View {
+        HStack(alignment: .top, spacing: 24) {
+            VStack(alignment: .leading, spacing: 9) {
+                sectionLabel("CPUS")
+                Stepper(value: $cpus, in: 1...8) {
+                    Text("\(cpus) \(cpus == 1 ? "core" : "cores")")
+                        .font(.system(size: 12.5)).foregroundStyle(p.text)
+                }
+                .frame(width: 180)
+            }
+            VStack(alignment: .leading, spacing: 9) {
+                sectionLabel("MEMORY")
+                Stepper(value: $memoryGB, in: 1...16) {
+                    Text("\(memoryGB) GB")
+                        .font(.system(size: 12.5)).foregroundStyle(p.text)
+                }
+                .frame(width: 180)
+            }
+            Spacer(minLength: 0)
+        }
+    }
+
+    private var mountsBlock: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                sectionLabel("MOUNTED FOLDERS")
+                Spacer(minLength: 0)
+                addButton { mountRows.append(MountRow()) }
+            }
+            ForEach($mountRows) { $row in
+                HStack(spacing: 8) {
+                    Button { chooseMountHost(for: row.id) } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "folder").font(.system(size: 11)).foregroundStyle(p.text3)
+                            Text(row.host.isEmpty ? "Host folder…" : row.host)
+                                .font(.mono(11.5)).foregroundStyle(row.host.isEmpty ? p.text3 : p.text)
+                                .lineLimit(1).truncationMode(.head)
+                        }
+                        .padding(.horizontal, 10).padding(.vertical, 7)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(p.bgInput, in: RoundedRectangle(cornerRadius: 8))
+                        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(p.border))
+                    }
+                    .buttonStyle(.plain)
+                    Image(systemName: "arrow.right").font(.system(size: 10)).foregroundStyle(p.text3)
+                    fieldInput("/guest/path", text: $row.guest, width: 150)
+                    removeButton { mountRows.removeAll { $0.id == row.id } }
+                }
+            }
+            if mountRows.isEmpty {
+                Text("Share host folders into the machine.")
+                    .font(.system(size: 11)).foregroundStyle(p.text3)
+            }
+        }
+    }
+
+    private var portsBlock: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                sectionLabel("EXPOSED PORTS")
+                Spacer(minLength: 0)
+                addButton { portRows.append(PortRow()) }
+            }
+            ForEach($portRows) { $row in
+                HStack(spacing: 8) {
+                    fieldInput("8080", text: $row.host, width: 90)
+                    Text("host").font(.system(size: 10.5)).foregroundStyle(p.text3)
+                    Image(systemName: "arrow.right").font(.system(size: 10)).foregroundStyle(p.text3)
+                    fieldInput("80", text: $row.guest, width: 90)
+                    Text("guest").font(.system(size: 10.5)).foregroundStyle(p.text3)
+                    Spacer(minLength: 0)
+                    removeButton { portRows.removeAll { $0.id == row.id } }
+                }
+            }
+            if portRows.isEmpty {
+                Text("Publish machine ports to localhost.")
+                    .font(.system(size: 11)).foregroundStyle(p.text3)
+            }
+        }
+    }
+
+    private func fieldInput(_ placeholder: String, text: Binding<String>, width: CGFloat) -> some View {
+        TextField(placeholder, text: text)
+            .textFieldStyle(.plain)
+            .font(.mono(11.5)).foregroundStyle(p.text)
+            .padding(.horizontal, 9).padding(.vertical, 7)
+            .frame(width: width)
+            .background(p.bgInput, in: RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(p.border))
+    }
+
+    private func addButton(_ action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: "plus").font(.system(size: 11, weight: .bold)).foregroundStyle(p.accent)
+                .frame(width: 22, height: 22)
+                .background(p.accentSoft, in: RoundedRectangle(cornerRadius: 7))
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func removeButton(_ action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: "minus.circle.fill").font(.system(size: 14)).foregroundStyle(p.text3)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func chooseMountHost(for id: UUID) {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.message = "Choose a host folder to mount into the machine"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        guard let index = mountRows.firstIndex(where: { $0.id == id }) else { return }
+        mountRows[index].host = url.path
+        if mountRows[index].guest.isEmpty {
+            mountRows[index].guest = "/mnt/\(url.lastPathComponent)"
+        }
+    }
+
     private var footer: some View {
         HStack(spacing: 12) {
             HStack(spacing: 6) {
@@ -240,8 +395,30 @@ struct NewMachineSheet: View {
         let machineName = name
         let arch = selectedArch
         let recipe = selectedRecipe
+        let settings = collectedSettings()
         store.activeSheet = nil
-        Task { _ = await store.createMachine(image: image, name: machineName, arch: arch, recipe: recipe) }
+        Task { _ = await store.createMachine(image: image, name: machineName, arch: arch, recipe: recipe, settings: settings) }
+    }
+
+    private func collectedSettings() -> MachineSettings {
+        let mounts = mountRows.compactMap { row -> MountPair? in
+            let host = row.host.trimmingCharacters(in: .whitespaces)
+            let guest = row.guest.trimmingCharacters(in: .whitespaces)
+            guard !host.isEmpty, !guest.isEmpty else { return nil }
+            return MountPair(host: host, guest: guest)
+        }
+        let ports = portRows.compactMap { row -> PortPair? in
+            guard let host = Int(row.host.trimmingCharacters(in: .whitespaces)),
+                  let guest = Int(row.guest.trimmingCharacters(in: .whitespaces)),
+                  host > 0, guest > 0 else { return nil }
+            return PortPair(host: host, guest: guest)
+        }
+        return MachineSettings(
+            cpus: advancedExpanded ? cpus : nil,
+            memoryMB: advancedExpanded ? memoryGB * 1024 : nil,
+            mounts: mounts,
+            ports: ports
+        )
     }
 
     static func defaultName(_ family: MachineFamily) -> String {

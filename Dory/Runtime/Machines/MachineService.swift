@@ -1,5 +1,15 @@
 import Foundation
 
+struct MountPair: Sendable, Hashable { var host: String; var guest: String }
+struct PortPair: Sendable, Hashable { var host: Int; var guest: Int }
+struct MachineSettings: Sendable, Hashable {
+    var cpus: Int?
+    var memoryMB: Int?
+    var mounts: [MountPair] = []
+    var ports: [PortPair] = []
+    static let `default` = MachineSettings(cpus: nil, memoryMB: nil)
+}
+
 struct MachineService: Sendable {
     let runtime: any ContainerRuntime
 
@@ -38,25 +48,30 @@ struct MachineService: Sendable {
         return name.isEmpty ? nil : name
     }
 
-    static func createBody(name: String, distro: MachineDistro, arch: MachineArch, imageTag: String, keepaliveOnly: Bool, recipe: DevRecipe? = nil) -> [String: Any] {
+    static func createBody(name: String, distro: MachineDistro, arch: MachineArch, imageTag: String, keepaliveOnly: Bool, recipe: DevRecipe? = nil, settings: MachineSettings = .default) -> [String: Any] {
         let useInit = distro.boot == .systemd && !keepaliveOnly
         let cmd = useInit ? ["/sbin/init"] : keepalive
         var labels = [label: distro.family, versionLabel: distro.version, archLabel: arch.rawValue]
         if let recipe { labels[recipeLabel] = recipe.id }
-        return [
+        let baseHostConfig: [String: Any] = [
+            "Privileged": true,
+            "CgroupnsMode": "host",
+            "Tmpfs": ["/run": "", "/run/lock": "", "/tmp": ""],
+            "RestartPolicy": ["Name": "unless-stopped"],
+        ]
+        var hostConfig = self.hostConfig(base: baseHostConfig, settings: settings)
+        hostConfig.removeValue(forKey: "ExposedPorts")
+        var body: [String: Any] = [
             "Hostname": name,
             "Image": imageTag,
             "Cmd": cmd,
             "Env": ["container=docker"],
             "StopSignal": "SIGRTMIN+3",
             "Labels": labels,
-            "HostConfig": [
-                "Privileged": true,
-                "CgroupnsMode": "host",
-                "Tmpfs": ["/run": "", "/run/lock": "", "/tmp": ""],
-                "RestartPolicy": ["Name": "unless-stopped"],
-            ] as [String: Any],
+            "HostConfig": hostConfig,
         ]
+        if !settings.ports.isEmpty { body["ExposedPorts"] = exposedPorts(for: settings) }
+        return body
     }
 
     static func machines(fromContainersJSON data: Data) -> [Machine] {
@@ -104,7 +119,7 @@ struct MachineService: Sendable {
         await list().first { $0.name == name }?.containerID
     }
 
-    func create(name: String, distro: MachineDistro, arch: MachineArch, recipe: DevRecipe? = nil, progress: @escaping @Sendable (String) -> Void) async throws {
+    func create(name: String, distro: MachineDistro, arch: MachineArch, recipe: DevRecipe? = nil, settings: MachineSettings = .default, progress: @escaping @Sendable (String) -> Void) async throws {
         if !arch.isNative { await ensureEmulation(for: arch, progress: progress) }
         let tag: String
         if let recipe {
@@ -114,7 +129,7 @@ struct MachineService: Sendable {
         }
 
         progress("Creating \(name)…")
-        try await createContainer(name: name, distro: distro, arch: arch, imageTag: tag, keepaliveOnly: false, recipe: recipe)
+        try await createContainer(name: name, distro: distro, arch: arch, imageTag: tag, keepaliveOnly: false, recipe: recipe, settings: settings)
         progress("Starting \(name)…")
         try await runtime.start(containerID: Self.containerName(for: name))
 
@@ -127,7 +142,7 @@ struct MachineService: Sendable {
             if exited {
                 progress("systemd did not come up on this image — falling back to a shell machine…")
                 try? await runtime.remove(containerID: Self.containerName(for: name))
-                try await createContainer(name: name, distro: distro, arch: arch, imageTag: tag, keepaliveOnly: true, recipe: recipe)
+                try await createContainer(name: name, distro: distro, arch: arch, imageTag: tag, keepaliveOnly: true, recipe: recipe, settings: settings)
                 try await runtime.start(containerID: Self.containerName(for: name))
             }
         }
@@ -142,8 +157,8 @@ struct MachineService: Sendable {
         try await runtime.remove(containerID: Self.containerName(for: name))
     }
 
-    private func createContainer(name: String, distro: MachineDistro, arch: MachineArch, imageTag: String, keepaliveOnly: Bool, recipe: DevRecipe? = nil) async throws {
-        let body = Self.createBody(name: name, distro: distro, arch: arch, imageTag: imageTag, keepaliveOnly: keepaliveOnly, recipe: recipe)
+    private func createContainer(name: String, distro: MachineDistro, arch: MachineArch, imageTag: String, keepaliveOnly: Bool, recipe: DevRecipe? = nil, settings: MachineSettings = .default) async throws {
+        let body = Self.createBody(name: name, distro: distro, arch: arch, imageTag: imageTag, keepaliveOnly: keepaliveOnly, recipe: recipe, settings: settings)
         let data = try JSONSerialization.data(withJSONObject: body)
         let encodedPlatform = arch.platform.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? arch.platform
         let path = "/containers/create?name=\(Self.containerName(for: name))&platform=\(encodedPlatform)"
@@ -157,20 +172,24 @@ struct MachineService: Sendable {
         }
     }
 
-    private func runFromImage(name: String, imageRef: String, snapshot: MachineSnapshot) async throws {
+    private func runFromImage(name: String, imageRef: String, snapshot: MachineSnapshot, settings: MachineSettings = .default) async throws {
         let distro = MachineDistro.forFamily(MachineDistro.all.first { $0.display == snapshot.distro }?.family ?? "")
         let boot: MachineDistro.Boot = distro?.boot ?? .systemd
         let cmd = boot == .systemd ? ["/sbin/init"] : Self.keepalive
-        let body: [String: Any] = [
+        let baseHostConfig: [String: Any] = ["Privileged": true, "CgroupnsMode": "host",
+                                             "Tmpfs": ["/run": "", "/run/lock": "", "/tmp": ""],
+                                             "RestartPolicy": ["Name": "unless-stopped"]]
+        var hostConfig = Self.hostConfig(base: baseHostConfig, settings: settings)
+        hostConfig.removeValue(forKey: "ExposedPorts")
+        var body: [String: Any] = [
             "Hostname": name, "Image": imageRef, "Cmd": cmd, "Env": ["container=docker"],
             "StopSignal": "SIGRTMIN+3",
             "Labels": [Self.label: distro?.family ?? snapshot.distro.lowercased(),
                        Self.versionLabel: snapshot.version,
                        Self.archLabel: snapshot.arch],
-            "HostConfig": ["Privileged": true, "CgroupnsMode": "host",
-                           "Tmpfs": ["/run": "", "/run/lock": "", "/tmp": ""],
-                           "RestartPolicy": ["Name": "unless-stopped"]] as [String: Any],
+            "HostConfig": hostConfig,
         ]
+        if !settings.ports.isEmpty { body["ExposedPorts"] = Self.exposedPorts(for: settings) }
         let data = try JSONSerialization.data(withJSONObject: body)
         let platform = (snapshot.arch.isEmpty ? MachineArch.host.rawValue : snapshot.arch)
         let encodedPlatform = "linux/\(platform)".addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "linux/\(platform)"
@@ -191,6 +210,27 @@ struct MachineService: Sendable {
         try? await runtime.stop(containerID: Self.containerName(for: snapshot.machineName))
         try? await runtime.remove(containerID: Self.containerName(for: snapshot.machineName))
         try await runFromImage(name: snapshot.machineName, imageRef: snapshot.imageRef, snapshot: snapshot)
+    }
+
+    func recreate(name: String, settings: MachineSettings) async throws {
+        guard let machine = await list().first(where: { $0.name == name }) else {
+            throw MachineError.notFound(name)
+        }
+        let createdISO = ISO8601DateFormatter().string(from: Date())
+        let tag = "edit\(Int(Date().timeIntervalSince1970))"
+        let snapshot = try await self.snapshot(machine: machine, note: "pre-edit", createdISO: createdISO, tag: tag)
+
+        try? await runtime.stop(containerID: Self.containerName(for: name))
+        try? await runtime.remove(containerID: Self.containerName(for: name))
+
+        do {
+            try await runFromImage(name: name, imageRef: snapshot.imageRef, snapshot: snapshot, settings: settings)
+        } catch {
+            try? await runtime.stop(containerID: Self.containerName(for: name))
+            try? await runtime.remove(containerID: Self.containerName(for: name))
+            try await runFromImage(name: name, imageRef: snapshot.imageRef, snapshot: snapshot, settings: .default)
+            throw error
+        }
     }
 
     private func ensureEmulation(for arch: MachineArch, progress: @escaping @Sendable (String) -> Void) async {
@@ -253,5 +293,31 @@ struct MachineService: Sendable {
 
     static func firstNew(before: Set<String>, after: [MachineSnapshot]) -> MachineSnapshot? {
         after.first { !before.contains($0.id) }
+    }
+}
+
+extension MachineService {
+    static func hostConfig(base: [String: Any], settings: MachineSettings) -> [String: Any] {
+        var host = base
+        if let cpus = settings.cpus { host["NanoCpus"] = Int64(cpus) * 1_000_000_000 }
+        if let memoryMB = settings.memoryMB { host["Memory"] = Int64(memoryMB) * 1024 * 1024 }
+        if !settings.mounts.isEmpty { host["Binds"] = settings.mounts.map { "\($0.host):\($0.guest)" } }
+        if !settings.ports.isEmpty {
+            var exposed: [String: [String: String]] = [:]
+            var bindings: [String: [[String: String]]] = [:]
+            for port in settings.ports {
+                exposed["\(port.guest)/tcp"] = [:]
+                bindings["\(port.guest)/tcp"] = [["HostPort": "\(port.host)"]]
+            }
+            host["ExposedPorts"] = exposed
+            host["PortBindings"] = bindings
+        }
+        return host
+    }
+
+    static func exposedPorts(for settings: MachineSettings) -> [String: [String: String]] {
+        var exposed: [String: [String: String]] = [:]
+        for port in settings.ports { exposed["\(port.guest)/tcp"] = [:] }
+        return exposed
     }
 }

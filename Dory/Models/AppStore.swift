@@ -1080,7 +1080,7 @@ final class AppStore {
         }
     }
 
-    func createMachine(image: String, name: String, arch: MachineArch = .host, recipe: DevRecipe? = nil) async -> String? {
+    func createMachine(image: String, name: String, arch: MachineArch = .host, recipe: DevRecipe? = nil, settings: MachineSettings = .default) async -> String? {
         let trimmedName = name.trimmingCharacters(in: .whitespaces)
         guard runtimeKind.isDockerCompatible else {
             actionError = "Linux machines need Dory's shared VM — switch engines in Settings → Docker Engine."
@@ -1098,7 +1098,7 @@ final class AppStore {
         activeSheet = .creatingMachine
         defer { machineBusy = false }
         do {
-            try await machineService.create(name: trimmedName, distro: distro, arch: arch, recipe: recipe) { line in
+            try await machineService.create(name: trimmedName, distro: distro, arch: arch, recipe: recipe, settings: settings) { line in
                 Task { @MainActor in self.appendMachineCreationLog(line) }
             }
             appendMachineCreationLog("Machine created and started.")
@@ -1110,6 +1110,34 @@ final class AppStore {
             appendMachineCreationLog("Error: \(message)")
             machineCreationError = message
             actionError = "Could not create machine"
+            return message
+        }
+    }
+
+    func editMachine(_ machine: Machine, settings: MachineSettings) async -> String? {
+        guard runtimeKind.isDockerCompatible else {
+            actionError = "Linux machines need Dory's shared VM — switch engines in Settings → Docker Engine."
+            return "Engine not available"
+        }
+        machineBusy = true
+        machineCreationTitle = "Updating \(machine.name)"
+        machineCreationLog = "Snapshotting \(machine.name) before applying new settings…\n"
+        machineCreationError = nil
+        activeSheet = .creatingMachine
+        defer { machineBusy = false }
+        do {
+            try await machineService.recreate(name: machine.name, settings: settings)
+            appendMachineCreationLog("Settings applied. Machine recreated from snapshot.")
+            activeSheet = nil
+            loadMachines()
+            return nil
+        } catch {
+            let message = "\(error)"
+            appendMachineCreationLog("Error: \(message)")
+            appendMachineCreationLog("Restored \(machine.name) from the pre-edit snapshot.")
+            machineCreationError = message
+            actionError = "Could not update machine settings"
+            loadMachines()
             return message
         }
     }

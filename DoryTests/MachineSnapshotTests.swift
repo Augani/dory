@@ -67,3 +67,17 @@ struct DevRecipeTests {
         #expect(!df.contains("/sbin/init"))
     }
 }
+
+struct MachineSettingsTests {
+    @Test func encodesResourcesAndMounts() {
+        let s = MachineSettings(cpus: 2, memoryMB: 2048,
+                                mounts: [MountPair(host: "/Users/x/proj", guest: "/proj")],
+                                ports: [PortPair(host: 8080, guest: 80)])
+        let host = MachineService.hostConfig(base: [:], settings: s)
+        #expect(host["NanoCpus"] as? Int64 == 2_000_000_000)
+        #expect(host["Memory"] as? Int64 == Int64(2048) * 1024 * 1024)
+        #expect((host["Binds"] as? [String])?.first == "/Users/x/proj:/proj")
+        let pb = host["PortBindings"] as? [String: [[String: String]]]
+        #expect(pb?["80/tcp"]?.first?["HostPort"] == "8080")
+    }
+}
