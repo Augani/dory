@@ -981,6 +981,11 @@ final class AppStore {
     }
 
     private var machineService: MachineService { MachineService(runtime: runtime) }
+
+    func machineSettings(_ name: String) async -> MachineSettings {
+        await machineService.currentSettings(name: name)
+    }
+
     var machineBusy = false
     var machineCreationTitle = ""
     var machineCreationLog = ""

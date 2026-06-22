@@ -254,6 +254,33 @@ struct MachineService: Sendable {
         return (try? JSONDecoder().decode(Out.self, from: data))?.Id
     }
 
+    func currentSettings(name: String) async -> MachineSettings {
+        guard let response = await runtime.proxyRequest(
+            method: "GET", path: "/containers/\(Self.containerName(for: name))/json", headers: [], body: Data()),
+            response.isSuccess else { return .default }
+        struct PortBinding: Decodable { let HostPort: String? }
+        struct HostConfig: Decodable {
+            let NanoCpus: Int64?
+            let Memory: Int64?
+            let Binds: [String]?
+            let PortBindings: [String: [PortBinding]?]?
+        }
+        struct Inspect: Decodable { let HostConfig: HostConfig? }
+        guard let host = (try? JSONDecoder().decode(Inspect.self, from: response.body))?.HostConfig else { return .default }
+        let cpus = (host.NanoCpus ?? 0) > 0 ? Int((host.NanoCpus ?? 0) / 1_000_000_000) : nil
+        let memoryMB = (host.Memory ?? 0) > 0 ? Int((host.Memory ?? 0) / (1024 * 1024)) : nil
+        let mounts: [MountPair] = (host.Binds ?? []).compactMap { bind in
+            let parts = bind.split(separator: ":", maxSplits: 1).map(String.init)
+            return parts.count == 2 ? MountPair(host: parts[0], guest: parts[1]) : nil
+        }
+        let ports: [PortPair] = (host.PortBindings ?? [:]).compactMap { key, bindings in
+            let guestStr = key.split(separator: "/").first.map(String.init) ?? key
+            guard let guest = Int(guestStr), let hostStr = bindings?.first?.HostPort ?? nil, let hostPort = Int(hostStr) else { return nil }
+            return PortPair(host: hostPort, guest: guest)
+        }
+        return MachineSettings(cpus: cpus, memoryMB: memoryMB, mounts: mounts, ports: ports)
+    }
+
     private func isRunning(name: String) async -> Bool {
         guard let response = await runtime.proxyRequest(
             method: "GET", path: "/containers/\(Self.containerName(for: name))/json", headers: [], body: Data()),

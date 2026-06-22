@@ -306,8 +306,8 @@ private struct MachineEditSheet: View {
     @Environment(\.palette) private var p
     let machine: Machine
 
-    @State private var cpus = 2
-    @State private var memoryGB = 2
+    @State private var cpus = 4
+    @State private var memoryGB = 4
 
     private struct MountRow: Identifiable, Hashable {
         let id = UUID()
@@ -342,6 +342,15 @@ private struct MachineEditSheet: View {
         }
         .frame(width: 540, height: 520)
         .background(p.bgWindow)
+        .task { await load() }
+    }
+
+    private func load() async {
+        let settings = await store.machineSettings(machine.name)
+        cpus = max(1, min(8, settings.cpus ?? 4))
+        memoryGB = max(1, min(16, settings.memoryMB.map { $0 / 1024 } ?? 4))
+        mountRows = settings.mounts.map { MountRow(host: $0.host, guest: $0.guest) }
+        portRows = settings.ports.map { PortRow(host: String($0.host), guest: String($0.guest)) }
     }
 
     private var header: some View {
@@ -361,7 +370,7 @@ private struct MachineEditSheet: View {
     private var warning: some View {
         HStack(spacing: 9) {
             Image(systemName: "info.circle.fill").font(.system(size: 13)).foregroundStyle(p.accent)
-            Text("Editing snapshots the machine, then recreates it with these settings.")
+            Text("Applying snapshots the machine, then recreates it with these settings. Your data is preserved.")
                 .font(.system(size: 12)).foregroundStyle(p.text2)
             Spacer(minLength: 0)
         }
