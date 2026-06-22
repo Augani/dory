@@ -104,7 +104,15 @@ private struct MachineCard: View {
                 distroBadge
                 VStack(alignment: .leading, spacing: 2) {
                     Text(machine.name).font(.system(size: 14.5, weight: .bold)).foregroundStyle(p.text).lineLimit(1)
-                    Text("\(machine.distro) \(machine.version)").font(.system(size: 11.5)).foregroundStyle(p.text3).lineLimit(1)
+                    HStack(spacing: 6) {
+                        Text("\(machine.distro) \(machine.version)").font(.system(size: 11.5)).foregroundStyle(p.text3).lineLimit(1)
+                        if machine.isEmulated {
+                            Text(machine.arch.uppercased())
+                                .font(.system(size: 9, weight: .bold)).foregroundStyle(p.amber).tracking(0.3)
+                                .padding(.horizontal, 5).padding(.vertical, 1.5)
+                                .background(p.amberWeak, in: RoundedRectangle(cornerRadius: 4))
+                        }
+                    }
                 }
                 Spacer(minLength: 8)
                 statusPill

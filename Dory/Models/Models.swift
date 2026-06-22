@@ -169,10 +169,12 @@ struct Machine: Identifiable, Hashable, Sendable {
     var letter: String
     var badgeHex: UInt32
     var containerID: String = ""
+    var arch: String = ""
     var id: String { name }
 
     var badgeColor: Color { Color(hex: badgeHex) }
     var actionLabel: String { status == .running ? "Stop" : "Start" }
+    var isEmulated: Bool { !arch.isEmpty && arch != MachineArch.host.rawValue }
 }
 
 enum LogLevel: String, Sendable {

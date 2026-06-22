@@ -6,6 +6,7 @@ struct MachineService: Sendable {
     static let namePrefix = "dory-machine-"
     static let label = "dory.machine"
     static let versionLabel = "dory.machine.version"
+    static let archLabel = "dory.machine.arch"
     static let keepalive = ["tail", "-f", "/dev/null"]
 
     static func containerName(for name: String) -> String { namePrefix + name }
@@ -17,7 +18,7 @@ struct MachineService: Sendable {
         return name.isEmpty ? nil : name
     }
 
-    static func createBody(name: String, distro: MachineDistro, imageTag: String, keepaliveOnly: Bool) -> [String: Any] {
+    static func createBody(name: String, distro: MachineDistro, arch: MachineArch, imageTag: String, keepaliveOnly: Bool) -> [String: Any] {
         let useInit = distro.boot == .systemd && !keepaliveOnly
         let cmd = useInit ? ["/sbin/init"] : keepalive
         return [
@@ -26,7 +27,7 @@ struct MachineService: Sendable {
             "Cmd": cmd,
             "Env": ["container=docker"],
             "StopSignal": "SIGRTMIN+3",
-            "Labels": [label: distro.family, versionLabel: distro.version],
+            "Labels": [label: distro.family, versionLabel: distro.version, archLabel: arch.rawValue],
             "HostConfig": [
                 "Privileged": true,
                 "CgroupnsMode": "host",
@@ -62,7 +63,8 @@ struct MachineService: Sendable {
                 ip: ip,
                 letter: distro.letter,
                 badgeHex: distro.badgeHex,
-                containerID: entry.Id
+                containerID: entry.Id,
+                arch: entry.Labels?[archLabel] ?? ""
             )
         }
     }
@@ -80,11 +82,12 @@ struct MachineService: Sendable {
         await list().first { $0.name == name }?.containerID
     }
 
-    func create(name: String, distro: MachineDistro, progress: @escaping @Sendable (String) -> Void) async throws {
-        let tag = try await MachineImageBuilder.ensureImage(distro, runtime: runtime, progress: progress)
+    func create(name: String, distro: MachineDistro, arch: MachineArch, progress: @escaping @Sendable (String) -> Void) async throws {
+        if !arch.isNative { await ensureEmulation(for: arch, progress: progress) }
+        let tag = try await MachineImageBuilder.ensureImage(distro, arch: arch, runtime: runtime, progress: progress)
 
         progress("Creating \(name)…")
-        try await createContainer(name: name, distro: distro, imageTag: tag, keepaliveOnly: false)
+        try await createContainer(name: name, distro: distro, arch: arch, imageTag: tag, keepaliveOnly: false)
         progress("Starting \(name)…")
         try await runtime.start(containerID: Self.containerName(for: name))
 
@@ -97,7 +100,7 @@ struct MachineService: Sendable {
             if exited {
                 progress("systemd did not come up on this image — falling back to a shell machine…")
                 try? await runtime.remove(containerID: Self.containerName(for: name))
-                try await createContainer(name: name, distro: distro, imageTag: tag, keepaliveOnly: true)
+                try await createContainer(name: name, distro: distro, arch: arch, imageTag: tag, keepaliveOnly: true)
                 try await runtime.start(containerID: Self.containerName(for: name))
             }
         }
@@ -112,10 +115,11 @@ struct MachineService: Sendable {
         try await runtime.remove(containerID: Self.containerName(for: name))
     }
 
-    private func createContainer(name: String, distro: MachineDistro, imageTag: String, keepaliveOnly: Bool) async throws {
-        let body = Self.createBody(name: name, distro: distro, imageTag: imageTag, keepaliveOnly: keepaliveOnly)
+    private func createContainer(name: String, distro: MachineDistro, arch: MachineArch, imageTag: String, keepaliveOnly: Bool) async throws {
+        let body = Self.createBody(name: name, distro: distro, arch: arch, imageTag: imageTag, keepaliveOnly: keepaliveOnly)
         let data = try JSONSerialization.data(withJSONObject: body)
-        let path = "/containers/create?name=\(Self.containerName(for: name))"
+        let encodedPlatform = arch.platform.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? arch.platform
+        let path = "/containers/create?name=\(Self.containerName(for: name))&platform=\(encodedPlatform)"
         guard let response = await runtime.proxyRequest(
             method: "POST", path: path,
             headers: [(name: "Content-Type", value: "application/json")], body: data) else {
@@ -124,6 +128,27 @@ struct MachineService: Sendable {
         guard response.isSuccess else {
             throw MachineError.createFailed(String(decoding: response.body, as: UTF8.self))
         }
+    }
+
+    private func ensureEmulation(for arch: MachineArch, progress: @escaping @Sendable (String) -> Void) async {
+        progress("Enabling \(arch.shortLabel) emulation…")
+        try? await runtime.pull(image: "tonistiigi/binfmt")
+        guard let body = try? JSONSerialization.data(withJSONObject: [
+            "Image": "tonistiigi/binfmt",
+            "Cmd": ["--install", arch.rawValue],
+            "HostConfig": ["Privileged": true, "AutoRemove": true] as [String: Any],
+        ]) else { return }
+        guard let create = await runtime.proxyRequest(
+            method: "POST", path: "/containers/create",
+            headers: [(name: "Content-Type", value: "application/json")], body: body),
+            create.isSuccess, let id = decodeId(create.body) else { return }
+        _ = await runtime.proxyRequest(method: "POST", path: "/containers/\(id)/start", headers: [], body: Data())
+        try? await Task.sleep(for: .seconds(2))
+    }
+
+    private func decodeId(_ data: Data) -> String? {
+        struct Out: Decodable { let Id: String }
+        return (try? JSONDecoder().decode(Out.self, from: data))?.Id
     }
 
     private func isRunning(name: String) async -> Bool {

@@ -2,7 +2,7 @@ import Foundation
 
 struct MachineDistro: Sendable, Identifiable, Hashable {
     enum Boot: String, Sendable { case systemd, shell }
-    enum PackageManager: String, Sendable { case apt, dnf, zypper, apk }
+    enum PackageManager: String, Sendable { case apt, dnf, zypper, apk, pacman }
 
     let family: String
     let display: String
@@ -13,9 +13,13 @@ struct MachineDistro: Sendable, Identifiable, Hashable {
     let letter: String
     let badgeHex: UInt32
     let logo: String
+    let arches: [MachineArch]
 
     var id: String { baseImage }
-    var machineImageTag: String { "dory-machine/\(baseImage)" }
+
+    func machineImageTag(for arch: MachineArch) -> String { "dory-machine/\(baseImage)-\(arch.rawValue)" }
+
+    func defaultArch() -> MachineArch { arches.contains(.host) ? .host : arches[0] }
 
     static var all: [MachineDistro] { MachineCatalog.all }
     static var families: [MachineFamily] { MachineCatalog.families }
@@ -38,6 +42,7 @@ struct MachineFamily: Identifiable, Hashable, Sendable {
     let logo: String
     let letter: String
     let badgeHex: UInt32
+    let arches: [MachineArch]
     let versions: [MachineDistro]
     var defaultVersion: MachineDistro { versions[0] }
 }
@@ -60,6 +65,8 @@ enum MachineCatalog {
              [("9", "oraclelinux:9"), ("8", "oraclelinux:8")]),
         make("amazon", "Amazon Linux", "logo-amazon", "Z", 0xFF9900, .dnf, .systemd,
              [("2023", "amazonlinux:2023")]),
+        make("arch", "Arch Linux", "logo-arch", "A", 0x1793D1, .pacman, .systemd,
+             [("Rolling", "archlinux:latest")], arches: [.amd64]),
         make("kali", "Kali Linux", "logo-kali", "K", 0x367BF0, .apt, .systemd,
              [("Rolling", "kalilinux/kali-rolling")]),
         make("centos", "CentOS Stream", "logo-centos", "C", 0x9B59B6, .dnf, .systemd,
@@ -72,11 +79,12 @@ enum MachineCatalog {
 
     private static func make(_ id: String, _ display: String, _ logo: String, _ letter: String,
                              _ hex: UInt32, _ pkg: MachineDistro.PackageManager, _ boot: MachineDistro.Boot,
-                             _ versions: [(String, String)]) -> MachineFamily {
+                             _ versions: [(String, String)],
+                             arches: [MachineArch] = [.arm64, .amd64]) -> MachineFamily {
         let distros = versions.map {
             MachineDistro(family: id, display: display, version: $0.0, baseImage: $0.1,
-                          boot: boot, pkg: pkg, letter: letter, badgeHex: hex, logo: logo)
+                          boot: boot, pkg: pkg, letter: letter, badgeHex: hex, logo: logo, arches: arches)
         }
-        return MachineFamily(id: id, display: display, logo: logo, letter: letter, badgeHex: hex, versions: distros)
+        return MachineFamily(id: id, display: display, logo: logo, letter: letter, badgeHex: hex, arches: arches, versions: distros)
     }
 }

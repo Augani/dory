@@ -1080,7 +1080,7 @@ final class AppStore {
         }
     }
 
-    func createMachine(image: String, name: String) async -> String? {
+    func createMachine(image: String, name: String, arch: MachineArch = .host) async -> String? {
         let trimmedName = name.trimmingCharacters(in: .whitespaces)
         guard runtimeKind.isDockerCompatible else {
             actionError = "Linux machines need Dory's shared VM — switch engines in Settings → Docker Engine."
@@ -1093,12 +1093,12 @@ final class AppStore {
         }
         machineBusy = true
         machineCreationTitle = "Creating \(trimmedName)"
-        machineCreationLog = "Preparing to create \(trimmedName)…\n"
+        machineCreationLog = "Preparing to create \(trimmedName) (\(arch.shortLabel))…\n"
         machineCreationError = nil
         activeSheet = .creatingMachine
         defer { machineBusy = false }
         do {
-            try await machineService.create(name: trimmedName, distro: distro) { line in
+            try await machineService.create(name: trimmedName, distro: distro, arch: arch) { line in
                 Task { @MainActor in self.appendMachineCreationLog(line) }
             }
             appendMachineCreationLog("Machine created and started.")

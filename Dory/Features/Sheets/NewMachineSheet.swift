@@ -6,6 +6,7 @@ struct NewMachineSheet: View {
 
     @State private var selectedFamily: MachineFamily
     @State private var selectedVersion: MachineDistro
+    @State private var selectedArch: MachineArch
     @State private var name: String
     @State private var lastAutoName: String
     @State private var nameEdited = false
@@ -17,6 +18,7 @@ struct NewMachineSheet: View {
         let auto = NewMachineSheet.defaultName(family)
         _selectedFamily = State(initialValue: family)
         _selectedVersion = State(initialValue: family.defaultVersion)
+        _selectedArch = State(initialValue: family.defaultVersion.defaultArch())
         _name = State(initialValue: auto)
         _lastAutoName = State(initialValue: auto)
     }
@@ -79,16 +81,29 @@ struct NewMachineSheet: View {
     }
 
     private var optionsRow: some View {
-        HStack(alignment: .top, spacing: 16) {
-            VStack(alignment: .leading, spacing: 9) {
-                sectionLabel("VERSION")
-                Picker("", selection: $selectedVersion) {
-                    ForEach(selectedFamily.versions) { version in
-                        Text(version.version).tag(version)
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(alignment: .top, spacing: 16) {
+                VStack(alignment: .leading, spacing: 9) {
+                    sectionLabel("VERSION")
+                    Picker("", selection: $selectedVersion) {
+                        ForEach(selectedFamily.versions) { version in
+                            Text(version.version).tag(version)
+                        }
                     }
+                    .labelsHidden().pickerStyle(.menu)
+                    .frame(width: 180, alignment: .leading)
                 }
-                .labelsHidden().pickerStyle(.menu)
-                .frame(width: 200, alignment: .leading)
+                VStack(alignment: .leading, spacing: 9) {
+                    sectionLabel("ARCHITECTURE")
+                    Picker("", selection: $selectedArch) {
+                        ForEach(selectedFamily.arches) { arch in
+                            Text(arch.label()).tag(arch)
+                        }
+                    }
+                    .labelsHidden().pickerStyle(.menu)
+                    .frame(width: 240, alignment: .leading)
+                    .disabled(selectedFamily.arches.count < 2)
+                }
             }
             VStack(alignment: .leading, spacing: 9) {
                 sectionLabel("NAME")
@@ -113,7 +128,7 @@ struct NewMachineSheet: View {
             HStack(spacing: 6) {
                 Image(systemName: selectedVersion.boot == .systemd ? "gearshape.2" : "terminal")
                     .font(.system(size: 11)).foregroundStyle(p.text3)
-                Text("\(selectedVersion.baseImage) · \(selectedVersion.boot == .systemd ? "systemd" : "shell")")
+                Text("\(selectedVersion.baseImage) · \(selectedArch.shortLabel) · \(selectedVersion.boot == .systemd ? "systemd" : "shell")")
                     .font(.mono(11.5)).foregroundStyle(p.text3).lineLimit(1)
             }
             Spacer(minLength: 8)
@@ -192,6 +207,7 @@ struct NewMachineSheet: View {
     private func select(_ family: MachineFamily) {
         selectedFamily = family
         selectedVersion = family.defaultVersion
+        if !family.arches.contains(selectedArch) { selectedArch = family.defaultVersion.defaultArch() }
         guard !nameEdited else { return }
         let auto = NewMachineSheet.defaultName(family)
         lastAutoName = auto
@@ -201,8 +217,9 @@ struct NewMachineSheet: View {
     private func create() {
         let image = selectedVersion.baseImage
         let machineName = name
+        let arch = selectedArch
         store.activeSheet = nil
-        Task { _ = await store.createMachine(image: image, name: machineName) }
+        Task { _ = await store.createMachine(image: image, name: machineName, arch: arch) }
     }
 
     static func defaultName(_ family: MachineFamily) -> String {

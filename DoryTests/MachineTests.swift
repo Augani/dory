@@ -34,7 +34,16 @@ struct MachineDistroTests {
     }
 
     @Test func derivesMachineImageTag() {
-        #expect(MachineDistro.forImage("ubuntu:24.04")?.machineImageTag == "dory-machine/ubuntu:24.04")
+        #expect(MachineDistro.forImage("ubuntu:24.04")?.machineImageTag(for: .arm64) == "dory-machine/ubuntu:24.04-arm64")
+        #expect(MachineDistro.forImage("ubuntu:24.04")?.machineImageTag(for: .amd64) == "dory-machine/ubuntu:24.04-amd64")
+    }
+
+    @Test func archCatalogRules() {
+        #expect(MachineDistro.forFamily("arch")?.arches == [.amd64])
+        #expect(MachineDistro.forFamily("arch")?.pkg == .pacman)
+        #expect(MachineDistro.forImage("archlinux:latest")?.defaultArch() == .amd64)
+        #expect(MachineDistro.forFamily("ubuntu")?.arches.contains(.arm64) == true)
+        #expect(MachineDistro.forFamily("ubuntu")?.arches.contains(.amd64) == true)
     }
 }
 
@@ -68,19 +77,28 @@ struct MachineImageBuilderTests {
         #expect(df.contains("CMD [\"tail\", \"-f\", \"/dev/null\"]"))
         #expect(!df.contains("/sbin/init"))
     }
+
+    @Test func pacmanDockerfileDisablesSandbox() {
+        let df = MachineImageBuilder.dockerfile(for: MachineDistro.forImage("archlinux:latest")!)
+        #expect(df.contains("FROM archlinux:latest"))
+        #expect(df.contains("pacman -Sy"))
+        #expect(df.contains("--disable-sandbox"))
+        #expect(df.contains("CMD [\"/sbin/init\"]"))
+    }
 }
 
 struct MachineServiceHelperTests {
     @Test func createBodyForSystemdSetsInitAndPrivileged() {
         let body = MachineService.createBody(name: "dev", distro: MachineDistro.forImage("ubuntu:24.04")!,
-                                             imageTag: "dory-machine/ubuntu:24.04", keepaliveOnly: false)
-        #expect(body["Image"] as? String == "dory-machine/ubuntu:24.04")
+                                             arch: .amd64, imageTag: "dory-machine/ubuntu:24.04-amd64", keepaliveOnly: false)
+        #expect(body["Image"] as? String == "dory-machine/ubuntu:24.04-amd64")
         #expect(body["Hostname"] as? String == "dev")
         #expect(body["Cmd"] as? [String] == ["/sbin/init"])
         #expect(body["StopSignal"] as? String == "SIGRTMIN+3")
         let labels = body["Labels"] as? [String: String]
         #expect(labels?["dory.machine"] == "ubuntu")
         #expect(labels?["dory.machine.version"] == "24.04 LTS")
+        #expect(labels?["dory.machine.arch"] == "amd64")
         let host = body["HostConfig"] as? [String: Any]
         #expect(host?["Privileged"] as? Bool == true)
         #expect(host?["CgroupnsMode"] as? String == "host")
@@ -89,13 +107,13 @@ struct MachineServiceHelperTests {
 
     @Test func createBodyKeepaliveOverridesInit() {
         let body = MachineService.createBody(name: "a", distro: MachineDistro.forImage("alpine:3.20")!,
-                                             imageTag: "dory-machine/alpine:3.20", keepaliveOnly: true)
+                                             arch: .arm64, imageTag: "dory-machine/alpine:3.20-arm64", keepaliveOnly: true)
         #expect(body["Cmd"] as? [String] == ["tail", "-f", "/dev/null"])
     }
 
     @Test func shellDistroUsesKeepaliveEvenWhenNotForced() {
         let body = MachineService.createBody(name: "a", distro: MachineDistro.forImage("alpine:3.20")!,
-                                             imageTag: "dory-machine/alpine:3.20", keepaliveOnly: false)
+                                             arch: .arm64, imageTag: "dory-machine/alpine:3.20-arm64", keepaliveOnly: false)
         #expect(body["Cmd"] as? [String] == ["tail", "-f", "/dev/null"])
     }
 

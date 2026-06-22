@@ -46,18 +46,23 @@ enum MachineImageBuilder {
             RUN apk add --no-cache bash sudo shadow iproute2 ca-certificates
             CMD ["tail", "-f", "/dev/null"]
             """
+        case .pacman:
+            return """
+            FROM \(distro.baseImage)
+            RUN pacman -Sy --noconfirm --disable-sandbox --needed sudo iproute2 \\
+             && (pacman -Scc --noconfirm --disable-sandbox || true)
+            STOPSIGNAL SIGRTMIN+3
+            CMD ["/sbin/init"]
+            """
         }
     }
 
-    static func ensureImage(_ distro: MachineDistro, runtime: any ContainerRuntime,
+    static func ensureImage(_ distro: MachineDistro, arch: MachineArch, runtime: any ContainerRuntime,
                             progress: @escaping @Sendable (String) -> Void) async throws -> String {
-        let tag = distro.machineImageTag
+        let tag = distro.machineImageTag(for: arch)
         if await runtime.inspectImage(id: tag) != nil { return tag }
 
-        progress("Pulling \(distro.baseImage)…")
-        try? await runtime.pull(image: distro.baseImage)
-
-        progress("Building \(distro.display) machine image (one-time)…")
+        progress("Building \(distro.display) machine image (\(arch.shortLabel), one-time)…")
         let dir = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("dory-machine-build-\(distro.family)-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -66,8 +71,9 @@ enum MachineImageBuilder {
 
         guard let tar = AppStore.tarDirectory(dir) else { throw MachineError.imageBuildFailed("Could not package build context") }
         let encodedTag = tag.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? tag
+        let encodedPlatform = arch.platform.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? arch.platform
         var lastError: String?
-        for await chunk in runtime.build(contextTar: tar, query: "t=\(encodedTag)") {
+        for await chunk in runtime.build(contextTar: tar, query: "t=\(encodedTag)&platform=\(encodedPlatform)") {
             for line in String(decoding: chunk, as: UTF8.self).split(separator: "\n") {
                 guard let text = AppStore.parseBuildLine(Data(line.utf8)) else { continue }
                 progress(text)
