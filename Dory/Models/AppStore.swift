@@ -3,6 +3,25 @@ import Observation
 import ServiceManagement
 import UniformTypeIdentifiers
 
+enum LoadState: Sendable { case connecting, ready, engineOff }
+
+enum ContainerFilter: String, CaseIterable, Sendable {
+    case running, all, stopped
+    var label: String {
+        switch self {
+        case .running: "Running"
+        case .all: "All"
+        case .stopped: "Stopped"
+        }
+    }
+}
+
+struct ContainerGroup: Identifiable, Sendable {
+    let id: String
+    let project: String?
+    let containers: [Container]
+}
+
 @Observable
 @MainActor
 final class AppStore {
@@ -10,7 +29,7 @@ final class AppStore {
     var section: AppSection = .containers {
         didSet { if oldValue != section { filter = "" } }
     }
-    var selectedContainerID: String? = "c1"
+    var selectedContainerID: String? = nil
     var detailTab: DetailTab = .overview
     var settingsTab: SettingsTab = .general
     var menuOpen = false
@@ -35,14 +54,21 @@ final class AppStore {
     var dockerHostConflictDismissed = false
     var containerDetailWidth: Double = 372
 
-    var containers: [Container] = MockData.containers
-    var images: [DockerImage] = MockData.images
+    var containers: [Container] = []
+    var images: [DockerImage] = []
     var volumes: [Volume] = MockData.volumes
     var networks: [DoryNetwork] = MockData.networks
     var pods: [Pod] = []
     var machines: [Machine] = MockData.machines
-    var engineRunning = true
+    var engineRunning = false
     var engineVersion = "1.4.0"
+
+    var loadState: LoadState = .connecting
+    var containerFilter: ContainerFilter =
+        ContainerFilter(rawValue: UserDefaults.standard.string(forKey: "containerFilter") ?? "") ?? .running
+    {
+        didSet { UserDefaults.standard.set(containerFilter.rawValue, forKey: "containerFilter") }
+    }
 
     var kubernetesReachable = false
     var kubernetesInfo = "Cluster not running"
@@ -440,7 +466,10 @@ final class AppStore {
     }
 
     func reload() async {
-        guard let snap = try? await runtime.snapshot() else { return }
+        guard let snap = try? await runtime.snapshot() else {
+            if loadState != .engineOff { loadState = .engineOff }
+            return
+        }
         if containers != snap.containers { containers = snap.containers }
         if images != snap.images { images = snap.images }
         if volumes != snap.volumes { volumes = snap.volumes }
@@ -452,6 +481,8 @@ final class AppStore {
             let first = containers.first?.id
             if selectedContainerID != first { selectedContainerID = first }
         }
+        let newState: LoadState = snap.engineRunning ? .ready : .engineOff
+        if loadState != newState { loadState = newState }
     }
 
     private var refreshTask: Task<Void, Never>?
@@ -518,9 +549,39 @@ final class AppStore {
         }
     }
 
+    private func matchesSearch(_ c: Container) -> Bool {
+        filter.isEmpty
+            || c.name.localizedCaseInsensitiveContains(filter)
+            || c.image.localizedCaseInsensitiveContains(filter)
+    }
+
     var filteredContainers: [Container] {
-        guard !filter.isEmpty else { return containers }
-        return containers.filter { $0.name.localizedCaseInsensitiveContains(filter) || $0.image.localizedCaseInsensitiveContains(filter) }
+        containers.filter { c in
+            let stateOK: Bool
+            switch containerFilter {
+            case .running: stateOK = c.isRunning
+            case .stopped: stateOK = !c.isRunning
+            case .all: stateOK = true
+            }
+            return stateOK && matchesSearch(c)
+        }
+    }
+
+    var groupedContainers: [ContainerGroup] {
+        var order: [String] = []
+        var byProject: [String: [Container]] = [:]
+        var ungrouped: [Container] = []
+        for c in filteredContainers {
+            if let project = c.composeProject {
+                if byProject[project] == nil { order.append(project) }
+                byProject[project, default: []].append(c)
+            } else {
+                ungrouped.append(c)
+            }
+        }
+        var groups = order.map { ContainerGroup(id: "proj:\($0)", project: $0, containers: byProject[$0] ?? []) }
+        if !ungrouped.isEmpty { groups.append(ContainerGroup(id: "ungrouped", project: nil, containers: ungrouped)) }
+        return groups
     }
 
     var filteredImages: [DockerImage] {
