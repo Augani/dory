@@ -27,18 +27,44 @@ struct ContainersView: View {
 
     @ViewBuilder private var listColumn: some View {
         VStack(spacing: 0) {
-            toolbar
-            content
+            filterBar
+            if store.loadState == .connecting && store.containers.isEmpty {
+                SkeletonRows()
+                Spacer(minLength: 0)
+            } else if store.loadState == .engineOff {
+                TableEmptyState(glyph: .containers, title: "Engine not running",
+                                message: "Dory's container engine isn't running yet. It starts automatically when Dory connects.")
+            } else if store.containers.isEmpty {
+                TableEmptyState(glyph: .containers, title: "No containers yet",
+                                message: "Run a container from an image, or start one with `docker run`.",
+                                actionLabel: "New Container", action: { store.activeSheet = .newContainer })
+            } else if store.filteredContainers.isEmpty {
+                TableEmptyState(glyph: .search, title: "No matches",
+                                message: "No containers match the current filter.")
+            } else {
+                listHeader
+                ScrollView {
+                    LazyVStack(spacing: 0, pinnedViews: []) {
+                        ForEach(store.groupedContainers) { group in
+                            if let project = group.project {
+                                groupHeader(project, count: group.containers.count)
+                            }
+                            ForEach(group.containers) { ContainerRow(container: $0) }
+                        }
+                    }
+                }
+            }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .overlay(alignment: .trailing) {
             if store.selectedContainer == nil { Rectangle().fill(p.border).frame(width: 1) }
         }
     }
 
-    private var toolbar: some View {
+    private var filterBar: some View {
         HStack(spacing: 10) {
-            Text("Containers").font(DoryType.title.font(.semibold)).foregroundStyle(p.text)
+            filterControl
+            Spacer()
             if store.runningCount > 0 {
                 HStack(spacing: 5) {
                     Circle().fill(p.green).frame(width: 6, height: 6)
@@ -48,18 +74,8 @@ struct ContainersView: View {
                 .padding(.horizontal, 9).padding(.vertical, 2)
                 .background(p.greenWeak, in: Capsule())
             }
-            Spacer()
-            filterControl
-            Button { store.activeSheet = .newContainer } label: {
-                HStack(spacing: 4) {
-                    Image(systemName: "plus").font(.system(size: 11, weight: .bold))
-                    Text("New")
-                }
-            }
-            .buttonStyle(DoryButtonStyle(kind: .primary))
-            .accessibilityIdentifier("new-container")
         }
-        .padding(.horizontal, 16).padding(.vertical, 10)
+        .padding(.horizontal, 16).padding(.vertical, 8)
         .overlay(alignment: .bottom) { Rectangle().fill(p.border).frame(height: 1) }
     }
 
@@ -82,36 +98,6 @@ struct ContainersView: View {
         .background(p.bgInput, in: RoundedRectangle(cornerRadius: DoryRadius.md.rawValue))
     }
 
-    @ViewBuilder private var content: some View {
-        if store.loadState == .connecting && store.containers.isEmpty {
-            SkeletonRows()
-            Spacer(minLength: 0)
-        } else if store.loadState == .engineOff {
-            TableEmptyState(glyph: .containers, title: "Engine not running",
-                            message: "Dory's container engine isn't running yet. It starts automatically when Dory connects.")
-        } else if store.containers.isEmpty {
-            TableEmptyState(glyph: .containers, title: "No containers yet",
-                            message: "Run a container from an image, or start one with `docker run`.",
-                            actionLabel: "New Container", action: { store.activeSheet = .newContainer })
-        } else if store.filteredContainers.isEmpty {
-            TableEmptyState(glyph: .search, title: "No matches",
-                            message: "No containers match the current filter.")
-        } else {
-            listHeader
-            ScrollView {
-                LazyVStack(spacing: 0, pinnedViews: []) {
-                    ForEach(store.groupedContainers) { group in
-                        if let project = group.project {
-                            groupHeader(project, count: group.containers.count)
-                        }
-                        ForEach(group.containers) { ContainerRow(container: $0) }
-                    }
-                }
-            }
-            .defaultScrollAnchor(.top)
-        }
-    }
-
     private func groupHeader(_ project: String, count: Int) -> some View {
         HStack(spacing: 6) {
             Image(systemName: "square.stack.3d.up").font(.system(size: 11)).foregroundStyle(p.text3)
@@ -129,7 +115,7 @@ struct ContainersView: View {
             Text("NAME").frame(maxWidth: .infinity, alignment: .leading)
             Text("CPU").frame(width: 92, alignment: .leading)
             Text("MEMORY").frame(width: 70, alignment: .leading)
-            Color.clear.frame(width: 96)
+            Spacer().frame(width: 96)
         }
         .font(.system(size: 10.5, weight: .bold)).tracking(0.5)
         .foregroundStyle(p.text3)
