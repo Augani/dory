@@ -882,3 +882,285 @@ git commit -m "test(machines): end-to-end verification fixes"
 - **Spec coverage:** MachineService/MachineImageBuilder/MachineDistro (architecture) → Tasks 1–4; systemd recipe + fallback → Tasks 2–4, 7; terminal via `ContainerTerminalView` → Task 5; guard rail → Task 5; networking/DNS (free, no code) → covered by being a container; migration/cleanup + 8 GB reclaim → Task 6; retire raw-VZ stack → Task 6; UI unchanged → Tasks 5 keeps `MachinesView` structure. Persistence → Task 7 Step 4.
 - **Type consistency:** `machineImageTag`, `createBody(name:distro:imageTag:keepaliveOnly:)`, `machines(fromContainersJSON:)`, `displayName(fromContainerName:)`, `containerName(for:)`, `MachineError`, `Machine.containerID`, `MachineService(runtime:)` are used identically across tasks.
 - **Open verification risk:** the exact systemd-in-container cgroup recipe (`Privileged` + `CgroupnsMode: host` + tmpfs) is the standard one but is engine-dependent; Task 7 Steps 3/6 confirm it works or exercise the fallback. The fallback guarantees a usable machine regardless, satisfying the "users won't have issues" requirement.
+
+---
+
+## Addendum (2026-06-22): OrbStack-breadth distro catalog + picker
+
+**Why:** Tasks 1–7 ship a working 4-distro feature. To match OrbStack ("a lot of options"),
+expand to a multi-distro, multi-version catalog and an OrbStack-style creation picker. The
+systemd-in-container recipe is shared by all systemd distros and was empirically verified
+against Dory's live engine this session: **apt** (Ubuntu/Debian), **dnf** (Rocky → Fedora/Alma/
+Oracle/Amazon/CentOS family), and **zypper** (openSUSE Leap, with `--gpg-auto-import-keys refresh`)
+all boot `systemctl is-system-running` → `running`. **pacman/Arch is excluded**: `archlinux:latest`
+has no arm64 manifest (x86-only), so it would need amd64 emulation — deferred. Alpine stays shell.
+
+### Global Constraints (addendum)
+
+- Package-manager recipes are keyed off `MachineDistro.pkg` (`apt`/`dnf`/`zypper`/`apk`), NOT the
+  distro id. Each `apt`/`dnf`/`zypper` recipe ends `STOPSIGNAL SIGRTMIN+3` + `CMD ["/sbin/init"]`;
+  `apk` ends `CMD ["tail", "-f", "/dev/null"]` (no `/sbin/init`).
+- The `dory.machine` label value is the **family** id (e.g. `ubuntu`); `dory.machine.version` is
+  the version string. `machines(fromContainersJSON:)` recovers family metadata via
+  `MachineDistro.forFamily(_:)`.
+- Catalog (family / display / pkg / boot / letter / badgeHex / logo → versions [label → image]):
+  - ubuntu / Ubuntu / apt / systemd / U / 0xE95420 / logo-ubuntu → 24.04 LTS→`ubuntu:24.04`, 22.04 LTS→`ubuntu:22.04`, 20.04 LTS→`ubuntu:20.04`
+  - debian / Debian / apt / systemd / D / 0xA80030 / logo-debian → 12→`debian:12`, 11→`debian:11`
+  - fedora / Fedora / dnf / systemd / F / 0x51A2DA / logo-fedora → 41→`fedora:41`, 40→`fedora:40`
+  - rocky / Rocky Linux / dnf / systemd / R / 0x10B981 / logo-rocky → 9→`rockylinux:9`, 8→`rockylinux:8`
+  - alma / AlmaLinux / dnf / systemd / L / 0x0078D4 / logo-alma → 9→`almalinux:9`, 8→`almalinux:8`
+  - opensuse / openSUSE / zypper / systemd / S / 0x73BA25 / logo-opensuse → Leap 15.6→`opensuse/leap:15.6`, Tumbleweed→`opensuse/tumbleweed`
+  - oracle / Oracle Linux / dnf / systemd / O / 0xC74634 / logo-oracle → 9→`oraclelinux:9`, 8→`oraclelinux:8`
+  - amazon / Amazon Linux / dnf / systemd / Z / 0xFF9900 / logo-amazon → 2023→`amazonlinux:2023`
+  - kali / Kali Linux / apt / systemd / K / 0x367BF0 / logo-kali → Rolling→`kalilinux/kali-rolling`
+  - centos / CentOS Stream / dnf / systemd / C / 0x9B59B6 / logo-centos → 9→`quay.io/centos/centos:stream9`
+  - alpine / Alpine / apk / shell / A / 0x0D597F / logo-alpine → 3.21→`alpine:3.21`, 3.20→`alpine:3.20`, 3.19→`alpine:3.19`
+- Only `logo-ubuntu`, `logo-debian`, `logo-fedora`, `logo-alpine` asset files exist. The picker/
+  cards MUST fall back to the colored letter badge when no asset matches (never render a raw
+  `Image("logo-rocky")` that would show blank). Reuse the existing `logoName(for:)` fallback
+  pattern in `MachinesView.swift`.
+
+---
+
+### Task 8: Expand the catalog model + builder + service labels
+
+**Files:**
+- Modify: `Dory/Runtime/Machines/MachineDistro.swift` (catalog v2 + `MachineFamily` + `MachineCatalog`)
+- Modify: `Dory/Runtime/Machines/MachineImageBuilder.swift` (`dockerfile(for:)` switches on `pkg`)
+- Modify: `Dory/Runtime/Machines/MachineService.swift` (`createBody` label = `distro.family`; `machines(...)` uses `forFamily`)
+- Modify: `DoryTests/MachineTests.swift` (update the three suites)
+
+**Interfaces:**
+- Produces: `MachineDistro` gains `family: String`, `pkg: PackageManager` (`enum PackageManager: String, Sendable { case apt, dnf, zypper, apk }`); `var id` becomes `baseImage`; `static func forFamily(_:) -> MachineDistro?` replaces `forID`; `static var families: [MachineFamily]`. New `struct MachineFamily: Identifiable, Hashable, Sendable { id, display, logo, letter, badgeHex, versions: [MachineDistro]; var defaultVersion }`. New `enum MachineCatalog { static let families; static let all }`.
+
+- [ ] **Step 1: Update the model tests (RED)**
+
+In `DoryTests/MachineTests.swift`, replace the body of `MachineDistroTests` with:
+
+```swift
+struct MachineDistroTests {
+    @Test func catalogHasManyFamilies() {
+        let ids = MachineDistro.families.map(\.id)
+        #expect(ids.contains("ubuntu"))
+        #expect(ids.contains("rocky"))
+        #expect(ids.contains("opensuse"))
+        #expect(ids.contains("alpine"))
+        #expect(MachineDistro.families.count >= 10)
+    }
+
+    @Test func eachFamilyHasVersions() {
+        for family in MachineDistro.families {
+            #expect(!family.versions.isEmpty)
+            #expect(family.defaultVersion.baseImage == family.versions[0].baseImage)
+        }
+    }
+
+    @Test func mapsImageToDistro() {
+        #expect(MachineDistro.forImage("ubuntu:22.04")?.family == "ubuntu")
+        #expect(MachineDistro.forImage("ubuntu:22.04")?.version == "22.04 LTS")
+        #expect(MachineDistro.forImage("alpine:3.20")?.boot == .shell)
+        #expect(MachineDistro.forImage("rockylinux:9")?.pkg == .dnf)
+        #expect(MachineDistro.forImage("opensuse/leap:15.6")?.pkg == .zypper)
+        #expect(MachineDistro.forImage("nope:1") == nil)
+    }
+
+    @Test func mapsFamilyToMetadata() {
+        #expect(MachineDistro.forFamily("ubuntu")?.letter == "U")
+        #expect(MachineDistro.forFamily("rocky")?.display == "Rocky Linux")
+    }
+
+    @Test func derivesMachineImageTag() {
+        #expect(MachineDistro.forImage("ubuntu:24.04")?.machineImageTag == "dory-machine/ubuntu:24.04")
+    }
+}
+```
+
+Update `MachineImageBuilderTests` to key off pkg families:
+
+```swift
+struct MachineImageBuilderTests {
+    @Test func aptDockerfileInstallsSystemd() {
+        let df = MachineImageBuilder.dockerfile(for: MachineDistro.forImage("ubuntu:24.04")!)
+        #expect(df.contains("FROM ubuntu:24.04"))
+        #expect(df.contains("systemd-sysv"))
+        #expect(df.contains("STOPSIGNAL SIGRTMIN+3"))
+        #expect(df.contains("CMD [\"/sbin/init\"]"))
+    }
+
+    @Test func dnfDockerfileUsesDnf() {
+        let df = MachineImageBuilder.dockerfile(for: MachineDistro.forImage("rockylinux:9")!)
+        #expect(df.contains("FROM rockylinux:9"))
+        #expect(df.contains("dnf -y install"))
+        #expect(df.contains("CMD [\"/sbin/init\"]"))
+    }
+
+    @Test func zypperDockerfileRefreshesFirst() {
+        let df = MachineImageBuilder.dockerfile(for: MachineDistro.forImage("opensuse/leap:15.6")!)
+        #expect(df.contains("zypper"))
+        #expect(df.contains("--gpg-auto-import-keys refresh"))
+        #expect(df.contains("CMD [\"/sbin/init\"]"))
+    }
+
+    @Test func apkDockerfileIsShellKeepalive() {
+        let df = MachineImageBuilder.dockerfile(for: MachineDistro.forImage("alpine:3.20")!)
+        #expect(df.contains("FROM alpine:3.20"))
+        #expect(df.contains("apk add"))
+        #expect(df.contains("CMD [\"tail\", \"-f\", \"/dev/null\"]"))
+        #expect(!df.contains("/sbin/init"))
+    }
+}
+```
+
+In `MachineServiceHelperTests`, change every `MachineDistro.forID("ubuntu")` → `MachineDistro.forImage("ubuntu:24.04")` and `MachineDistro.forID("alpine")` → `MachineDistro.forImage("alpine:3.20")` (the `forID` method is being removed). The `mapsContainersJSONToMachines` fixture keeps `"dory.machine":"ubuntu"` and still expects `distro == "Ubuntu"`, `letter == "U"` (now resolved via `forFamily`).
+
+Run: `scripts/test.sh -only-testing:DoryTests/MachineDistroTests` → expect RED (compile errors: `pkg`, `forFamily`, `families` missing).
+
+- [ ] **Step 2: Rewrite `MachineDistro.swift`**
+
+```swift
+import Foundation
+
+struct MachineDistro: Sendable, Identifiable, Hashable {
+    enum Boot: String, Sendable { case systemd, shell }
+    enum PackageManager: String, Sendable { case apt, dnf, zypper, apk }
+
+    let family: String
+    let display: String
+    let version: String
+    let baseImage: String
+    let boot: Boot
+    let pkg: PackageManager
+    let letter: String
+    let badgeHex: UInt32
+    let logo: String
+
+    var id: String { baseImage }
+    var machineImageTag: String { "dory-machine/\(baseImage)" }
+
+    static var all: [MachineDistro] { MachineCatalog.all }
+    static var families: [MachineFamily] { MachineCatalog.families }
+    static func forImage(_ image: String) -> MachineDistro? { all.first { $0.baseImage == image } }
+    static func forFamily(_ family: String) -> MachineDistro? { all.first { $0.family == family } }
+}
+
+struct MachineFamily: Identifiable, Hashable, Sendable {
+    let id: String
+    let display: String
+    let logo: String
+    let letter: String
+    let badgeHex: UInt32
+    let versions: [MachineDistro]
+    var defaultVersion: MachineDistro { versions[0] }
+}
+
+enum MachineCatalog {
+    static let families: [MachineFamily] = [
+        make("ubuntu", "Ubuntu", "logo-ubuntu", "U", 0xE95420, .apt, .systemd,
+             [("24.04 LTS", "ubuntu:24.04"), ("22.04 LTS", "ubuntu:22.04"), ("20.04 LTS", "ubuntu:20.04")]),
+        make("debian", "Debian", "logo-debian", "D", 0xA80030, .apt, .systemd,
+             [("12", "debian:12"), ("11", "debian:11")]),
+        make("fedora", "Fedora", "logo-fedora", "F", 0x51A2DA, .dnf, .systemd,
+             [("41", "fedora:41"), ("40", "fedora:40")]),
+        make("rocky", "Rocky Linux", "logo-rocky", "R", 0x10B981, .dnf, .systemd,
+             [("9", "rockylinux:9"), ("8", "rockylinux:8")]),
+        make("alma", "AlmaLinux", "logo-alma", "L", 0x0078D4, .dnf, .systemd,
+             [("9", "almalinux:9"), ("8", "almalinux:8")]),
+        make("opensuse", "openSUSE", "logo-opensuse", "S", 0x73BA25, .zypper, .systemd,
+             [("Leap 15.6", "opensuse/leap:15.6"), ("Tumbleweed", "opensuse/tumbleweed")]),
+        make("oracle", "Oracle Linux", "logo-oracle", "O", 0xC74634, .dnf, .systemd,
+             [("9", "oraclelinux:9"), ("8", "oraclelinux:8")]),
+        make("amazon", "Amazon Linux", "logo-amazon", "Z", 0xFF9900, .dnf, .systemd,
+             [("2023", "amazonlinux:2023")]),
+        make("kali", "Kali Linux", "logo-kali", "K", 0x367BF0, .apt, .systemd,
+             [("Rolling", "kalilinux/kali-rolling")]),
+        make("centos", "CentOS Stream", "logo-centos", "C", 0x9B59B6, .dnf, .systemd,
+             [("9", "quay.io/centos/centos:stream9")]),
+        make("alpine", "Alpine", "logo-alpine", "A", 0x0D597F, .apk, .shell,
+             [("3.21", "alpine:3.21"), ("3.20", "alpine:3.20"), ("3.19", "alpine:3.19")]),
+    ]
+
+    static let all: [MachineDistro] = families.flatMap(\.versions)
+
+    private static func make(_ id: String, _ display: String, _ logo: String, _ letter: String,
+                             _ hex: UInt32, _ pkg: MachineDistro.PackageManager, _ boot: MachineDistro.Boot,
+                             _ versions: [(String, String)]) -> MachineFamily {
+        let distros = versions.map {
+            MachineDistro(family: id, display: display, version: $0.0, baseImage: $0.1,
+                          boot: boot, pkg: pkg, letter: letter, badgeHex: hex, logo: logo)
+        }
+        return MachineFamily(id: id, display: display, logo: logo, letter: letter, badgeHex: hex, versions: distros)
+    }
+}
+```
+
+- [ ] **Step 3: Switch `MachineImageBuilder.dockerfile(for:)` on `distro.pkg`**
+
+Replace the `switch distro.id` block with `switch distro.pkg` producing the four recipes from the addendum Global Constraints (apt = current ubuntu/debian recipe; dnf = `dnf -y install systemd sudo passwd iproute procps-ng && dnf clean all` + mask resolved; zypper = `zypper --non-interactive --gpg-auto-import-keys refresh && zypper -n install systemd sudo iproute2 && zypper clean -a` + mask resolved; apk = current alpine keepalive). All systemd recipes end `STOPSIGNAL SIGRTMIN+3` + `CMD ["/sbin/init"]`; apk ends `CMD ["tail", "-f", "/dev/null"]`.
+
+- [ ] **Step 4: Update `MachineService` label semantics**
+
+In `createBody`, change `"Labels": [label: distro.id, ...]` → `[label: distro.family, versionLabel: distro.version]`. In `machines(fromContainersJSON:)`, change `MachineDistro.forID(distroID)` → `MachineDistro.forFamily(distroID)`. (No other lines change.)
+
+- [ ] **Step 5: GREEN + full build**
+
+Run the three suites: `scripts/test.sh -only-testing:DoryTests/MachineDistroTests -only-testing:DoryTests/MachineImageBuilderTests -only-testing:DoryTests/MachineServiceHelperTests` → all pass.
+Run `scripts/build.sh` → `xcodebuild_exit=0`.
+
+- [ ] **Step 6: Commit** (stage only the 3 source files + the test file; NOT pbxproj/.claude-tasks.md)
+
+```bash
+git add Dory/Runtime/Machines/MachineDistro.swift Dory/Runtime/Machines/MachineImageBuilder.swift Dory/Runtime/Machines/MachineService.swift DoryTests/MachineTests.swift
+git commit -m "feat(machines): OrbStack-breadth distro catalog (apt/dnf/zypper families)"
+```
+
+---
+
+### Task 9: OrbStack-style New Machine picker
+
+**Files:**
+- Create: `Dory/Features/Sheets/NewMachineSheet.swift`
+- Modify: `Dory/Models/Models.swift` (add `.newMachine` to the `AppSheet` enum, line ~258)
+- Modify: `Dory/ContentView.swift` (add `case .newMachine: NewMachineSheet()` to the sheet switch, ~line 64)
+- Modify: `Dory/Features/Machines/MachinesView.swift` (route creation to the picker; drop the hardcoded `MachineTemplate`/`templates`/`TemplateCard`)
+
+**Interfaces:**
+- Consumes: `MachineDistro.families`, `MachineFamily`, `store.createMachine(image:name:)`, `store.machineBusy`, `store.activeSheet`, the palette, the existing `logoName(for:)` fallback pattern.
+- Produces: `struct NewMachineSheet: View`; `AppSheet.newMachine`.
+
+- [ ] **Step 1: Add the sheet case**
+
+In `Dory/Models/Models.swift` add `newMachine` to the `AppSheet` enum (the `case newContainer, ... , creatingMachine` line). In `Dory/ContentView.swift` add `case .newMachine: NewMachineSheet()` inside the sheet `switch`.
+
+- [ ] **Step 2: Create `NewMachineSheet.swift`**
+
+A creation dialog mirroring OrbStack and following the existing sheet style (see `MachineCreationSheet.swift`, `NewVolumeSheet`, palette tokens `p.text/text2/text3/border/accent/accentSoft/bgWindow/bgElevated/bgInput`). Requirements:
+- `@Environment(AppStore.self) var store`, `@Environment(\.palette) var p`.
+- `@State selectedFamily: MachineFamily = MachineDistro.families[0]`
+- `@State selectedVersion: MachineDistro = MachineDistro.families[0].defaultVersion`
+- `@State name: String = NewMachineSheet.defaultName(MachineDistro.families[0])`
+- Title "New Linux machine".
+- A scrollable grid/list of `MachineDistro.families`: each row a selectable card showing a badge (logo if `logoName(for: family.id)` resolves a known asset — ubuntu/debian/fedora/alpine — else a colored letter badge using `family.letter`/`family.badgeHex`, exactly like `MachineCard`) + `family.display`. Selecting a family sets `selectedFamily`, resets `selectedVersion = family.defaultVersion`, and refreshes `name = defaultName(family)` only if the user has not hand-edited the name (track with a `@State nameEdited = false`).
+- A version `Picker` (`.menu` style) bound to `selectedVersion` over `selectedFamily.versions`, labeled by `version`.
+- A name `TextField` bound to `name` (set `nameEdited = true` on change).
+- "Create" button: disabled when `name.trimmingCharacters(in: .whitespaces).isEmpty || store.machineBusy`. Action: `let image = selectedVersion.baseImage; let n = name; store.activeSheet = nil; Task { _ = await store.createMachine(image: image, name: n) }`. "Cancel" sets `store.activeSheet = nil`.
+- `static func defaultName(_ family: MachineFamily) -> String { "\(family.id)-\(...)" }` — derive a short unique-ish suffix WITHOUT `Date()`/`Math.random` (use e.g. a counter from existing machine names or a short UUID prefix: `String(UUID().uuidString.prefix(4).lowercased())`).
+- Frame ~`minWidth: 520, minHeight: 420`, `.background(p.bgWindow)`.
+
+- [ ] **Step 3: Route MachinesView creation to the picker**
+
+In `Dory/Features/Machines/MachinesView.swift`:
+- Replace the header "New Machine" `Menu` with a `Button("New Machine") { store.activeSheet = .newMachine }` (keep the busy spinner + `.accessibilityIdentifier("new-machine")`).
+- In the empty gallery, replace the hardcoded `templateList` (4 `TemplateCard`s) with a primary `Button` "Create your first machine" → `store.activeSheet = .newMachine`, plus optional small quick-pick chips for a few popular families that ALSO open `.newMachine` (no per-template create path).
+- In `addAnotherSection`, replace `templateList` with a `Button` "New machine" → `.newMachine`.
+- Delete the now-unused `MachineTemplate` struct, the `templates` array, and `TemplateCard` view. Keep `MachineCard`, `MachineTerminalSheet`, and `logoName(for:)`.
+
+- [ ] **Step 4: Build + verify**
+
+Run `scripts/build.sh` → `xcodebuild_exit=0`, no `error:`. Re-run the three machine unit suites (no regression). Manually (or via the running app) confirm: New Machine opens the picker; selecting a family updates versions; Create kicks off creation through the existing `creatingMachine` progress sheet.
+
+- [ ] **Step 5: Commit** (stage only the 4 files)
+
+```bash
+git add Dory/Features/Sheets/NewMachineSheet.swift Dory/Models/Models.swift Dory/ContentView.swift Dory/Features/Machines/MachinesView.swift
+git commit -m "feat(machines): OrbStack-style New Machine distro/version picker"
+```
