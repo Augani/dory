@@ -26,6 +26,8 @@ struct NewMachineSheet: View {
 
     private var engineReady: Bool { store.runtimeKind.isDockerCompatible }
 
+    private var recipesAvailable: Bool { selectedVersion.pkg == .apt }
+
     var body: some View {
         VStack(spacing: 0) {
             header
@@ -90,6 +92,11 @@ struct NewMachineSheet: View {
                 ForEach(DevRecipe.all) { recipe in Text(recipe.display).tag(DevRecipe?.some(recipe)) }
             }
             .labelsHidden().pickerStyle(.menu).frame(width: 220, alignment: .leading)
+            .disabled(!recipesAvailable)
+            if !recipesAvailable {
+                Text("Dev recipes currently require an apt-based distro (Ubuntu, Debian, Kali).")
+                    .font(.system(size: 11)).foregroundStyle(p.text3)
+            }
         }
     }
 
@@ -220,6 +227,7 @@ struct NewMachineSheet: View {
     private func select(_ family: MachineFamily) {
         selectedFamily = family
         selectedVersion = family.defaultVersion
+        if family.defaultVersion.pkg != .apt { selectedRecipe = nil }
         if !family.arches.contains(selectedArch) { selectedArch = family.defaultVersion.defaultArch() }
         guard !nameEdited else { return }
         let auto = NewMachineSheet.defaultName(family)
