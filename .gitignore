@@ -55,3 +55,6 @@ release-build/
 .playwright-mcp/
 benchmark-results.json
 appcast.xml.tmp
+
+# Private cloud backend — separate repo, never in the public Dory repo
+cloud/
