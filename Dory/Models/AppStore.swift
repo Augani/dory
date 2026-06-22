@@ -942,6 +942,7 @@ final class AppStore {
         case .volumes: activeSheet = .newVolume
         case .networks: activeSheet = .newNetwork
         case .compose: openComposeFile()
+        case .machines: activeSheet = .newMachine
         default: break
         }
     }

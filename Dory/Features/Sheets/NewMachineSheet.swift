@@ -10,6 +10,8 @@ struct NewMachineSheet: View {
     @State private var lastAutoName: String
     @State private var nameEdited = false
 
+    private let columns = [GridItem(.adaptive(minimum: 160, maximum: 260), spacing: 8)]
+
     init() {
         let family = MachineDistro.families[0]
         let auto = NewMachineSheet.defaultName(family)
@@ -19,103 +21,144 @@ struct NewMachineSheet: View {
         _lastAutoName = State(initialValue: auto)
     }
 
-    private let columns = [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)]
+    private var engineReady: Bool { store.runtimeKind.isDockerCompatible }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("New Linux machine").font(.system(size: 16, weight: .bold)).foregroundStyle(p.text)
-
-            VStack(alignment: .leading, spacing: 6) {
-                Text("DISTRIBUTION").font(.system(size: 11, weight: .semibold)).foregroundStyle(p.text2)
-                ScrollView {
-                    LazyVGrid(columns: columns, spacing: 10) {
-                        ForEach(MachineDistro.families) { family in
-                            familyCard(family)
-                        }
-                    }
-                    .padding(.vertical, 2)
+        VStack(spacing: 0) {
+            header
+            Divider().overlay(p.border)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    if !engineReady { engineNotice }
+                    distroSection
+                    optionsRow
                 }
-                .frame(height: 230)
+                .padding(20)
             }
-
-            HStack(spacing: 12) {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("VERSION").font(.system(size: 11, weight: .semibold)).foregroundStyle(p.text2)
-                    Picker("", selection: $selectedVersion) {
-                        ForEach(selectedFamily.versions) { version in
-                            Text(version.version).tag(version)
-                        }
-                    }
-                    .labelsHidden()
-                    .pickerStyle(.menu)
-                    .frame(width: 180, alignment: .leading)
-                }
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("NAME").font(.system(size: 11, weight: .semibold)).foregroundStyle(p.text2)
-                    TextField("machine-name", text: $name)
-                        .textFieldStyle(.plain)
-                        .font(.mono(12.5)).foregroundStyle(p.text)
-                        .padding(.horizontal, 10).padding(.vertical, 8)
-                        .background(p.bgInput, in: RoundedRectangle(cornerRadius: 8))
-                        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(p.border))
-                        .onChange(of: name) { _, newValue in nameEdited = (newValue != lastAutoName) }
-                    if !name.trimmingCharacters(in: .whitespaces).isEmpty && !nameValid {
-                        Text("Use letters, numbers, dots, dashes or underscores.")
-                            .font(.system(size: 11.5)).foregroundStyle(p.red)
-                    }
-                }
-            }
-
-            HStack(spacing: 8) {
-                Spacer()
-                Button("Cancel") { store.activeSheet = nil }
-                    .buttonStyle(.plain)
-                    .font(.system(size: 13, weight: .medium)).foregroundStyle(p.text2)
-                    .padding(.horizontal, 14).padding(.vertical, 7)
-                    .background(p.bgElevated, in: RoundedRectangle(cornerRadius: 8))
-                    .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(p.border))
-                Button(action: create) {
-                    HStack(spacing: 6) {
-                        if store.machineBusy { ProgressView().controlSize(.small) }
-                        Text("Create").font(.system(size: 13, weight: .semibold)).foregroundStyle(.white)
-                    }
-                    .padding(.horizontal, 16).padding(.vertical, 7)
-                    .background(p.accent.opacity(createDisabled ? 0.5 : 1), in: RoundedRectangle(cornerRadius: 8))
-                }
-                .buttonStyle(.plain)
-                .disabled(createDisabled)
-                .accessibilityIdentifier("new-machine-submit")
-            }
+            Divider().overlay(p.border)
+            footer
         }
-        .padding(22)
-        .frame(minWidth: 520, minHeight: 420)
+        .frame(width: 580, height: 560)
         .background(p.bgWindow)
     }
 
-    private var createDisabled: Bool {
-        name.trimmingCharacters(in: .whitespaces).isEmpty || !nameValid || store.machineBusy
+    private var header: some View {
+        HStack(spacing: 12) {
+            Glyph(glyph: .machines, size: 18, color: p.accent)
+                .frame(width: 36, height: 36)
+                .background(p.accentSoft, in: RoundedRectangle(cornerRadius: 10))
+            VStack(alignment: .leading, spacing: 1) {
+                Text("New Linux machine").font(.system(size: 15, weight: .bold)).foregroundStyle(p.text)
+                Text("Pick a distribution and version").font(.system(size: 11.5)).foregroundStyle(p.text3)
+            }
+            Spacer()
+        }
+        .padding(.horizontal, 18).padding(.vertical, 14)
     }
 
-    private var nameValid: Bool {
-        let trimmed = name.trimmingCharacters(in: .whitespaces)
-        guard !trimmed.isEmpty else { return false }
-        return trimmed.range(of: "^[a-zA-Z0-9][a-zA-Z0-9_.-]*$", options: .regularExpression) != nil
+    private var engineNotice: some View {
+        HStack(spacing: 9) {
+            Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 13)).foregroundStyle(p.amber)
+            Text("Linux machines need Dory's shared VM. Switch engines in Settings → Docker Engine.")
+                .font(.system(size: 12)).foregroundStyle(p.text2)
+            Spacer(minLength: 0)
+        }
+        .padding(12)
+        .background(p.amberWeak, in: RoundedRectangle(cornerRadius: 9))
+    }
+
+    private var distroSection: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            sectionLabel("DISTRIBUTION")
+            LazyVGrid(columns: columns, alignment: .leading, spacing: 8) {
+                ForEach(MachineDistro.families) { family in
+                    familyCard(family)
+                }
+            }
+        }
+    }
+
+    private var optionsRow: some View {
+        HStack(alignment: .top, spacing: 16) {
+            VStack(alignment: .leading, spacing: 9) {
+                sectionLabel("VERSION")
+                Picker("", selection: $selectedVersion) {
+                    ForEach(selectedFamily.versions) { version in
+                        Text(version.version).tag(version)
+                    }
+                }
+                .labelsHidden().pickerStyle(.menu)
+                .frame(width: 200, alignment: .leading)
+            }
+            VStack(alignment: .leading, spacing: 9) {
+                sectionLabel("NAME")
+                TextField("machine-name", text: $name)
+                    .textFieldStyle(.plain)
+                    .font(.mono(12.5)).foregroundStyle(p.text)
+                    .padding(.horizontal, 10).padding(.vertical, 8)
+                    .background(p.bgInput, in: RoundedRectangle(cornerRadius: 8))
+                    .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(nameInvalid ? p.red : p.border))
+                    .onChange(of: name) { _, newValue in nameEdited = (newValue != lastAutoName) }
+                    .frame(maxWidth: .infinity)
+                if nameInvalid {
+                    Text("Use letters, numbers, dots, dashes or underscores.")
+                        .font(.system(size: 11)).foregroundStyle(p.red)
+                }
+            }
+        }
+    }
+
+    private var footer: some View {
+        HStack(spacing: 12) {
+            HStack(spacing: 6) {
+                Image(systemName: selectedVersion.boot == .systemd ? "gearshape.2" : "terminal")
+                    .font(.system(size: 11)).foregroundStyle(p.text3)
+                Text("\(selectedVersion.baseImage) · \(selectedVersion.boot == .systemd ? "systemd" : "shell")")
+                    .font(.mono(11.5)).foregroundStyle(p.text3).lineLimit(1)
+            }
+            Spacer(minLength: 8)
+            Button("Cancel") { store.activeSheet = nil }
+                .buttonStyle(.plain)
+                .font(.system(size: 13, weight: .medium)).foregroundStyle(p.text2)
+                .padding(.horizontal, 14).padding(.vertical, 7)
+                .background(p.bgInput, in: RoundedRectangle(cornerRadius: 8))
+                .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(p.border))
+            Button(action: create) {
+                HStack(spacing: 6) {
+                    if store.machineBusy { ProgressView().controlSize(.small) }
+                    Image(systemName: "plus").font(.system(size: 11, weight: .bold))
+                    Text("Create machine").font(.system(size: 13, weight: .semibold))
+                }
+                .foregroundStyle(.white)
+                .padding(.horizontal, 16).padding(.vertical, 7)
+                .background(p.accent.opacity(createDisabled ? 0.5 : 1), in: RoundedRectangle(cornerRadius: 8))
+            }
+            .buttonStyle(.plain)
+            .disabled(createDisabled)
+            .accessibilityIdentifier("new-machine-submit")
+        }
+        .padding(.horizontal, 18).padding(.vertical, 13)
+    }
+
+    private func sectionLabel(_ text: String) -> some View {
+        Text(text).font(.system(size: 10.5, weight: .semibold)).foregroundStyle(p.text3).tracking(0.5)
     }
 
     private func familyCard(_ family: MachineFamily) -> some View {
-        let isSelected = family.id == selectedFamily.id
-        return Button {
-            select(family)
-        } label: {
-            HStack(spacing: 11) {
+        let selected = family.id == selectedFamily.id
+        return Button { select(family) } label: {
+            HStack(spacing: 10) {
                 badge(for: family)
-                Text(family.display).font(.system(size: 13, weight: .semibold)).foregroundStyle(p.text).lineLimit(1)
+                Text(family.display).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(p.text).lineLimit(1)
                 Spacer(minLength: 0)
+                if selected {
+                    Image(systemName: "checkmark.circle.fill").font(.system(size: 13)).foregroundStyle(p.accent)
+                }
             }
-            .padding(.horizontal, 12).padding(.vertical, 10)
+            .padding(.horizontal, 11).padding(.vertical, 9)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(isSelected ? p.accentSoft : p.bgElevated, in: RoundedRectangle(cornerRadius: 10))
-            .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(isSelected ? p.accent : p.border, lineWidth: isSelected ? 1.5 : 1))
+            .background(selected ? p.accentSoft : p.bgElevated, in: RoundedRectangle(cornerRadius: 10))
+            .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(selected ? p.accent : p.border, lineWidth: selected ? 1.5 : 1))
         }
         .buttonStyle(.plain)
     }
@@ -123,16 +166,27 @@ struct NewMachineSheet: View {
     @ViewBuilder
     private func badge(for family: MachineFamily) -> some View {
         if let logo = MachineDistro.logoAsset(family: family.id) {
-            Image(logo)
-                .resizable()
-                .aspectRatio(contentMode: .fit)
-                .frame(width: 30, height: 30)
+            Image(logo).resizable().aspectRatio(contentMode: .fit).frame(width: 24, height: 24)
         } else {
             Text(family.letter)
-                .font(.system(size: 15, weight: .heavy)).foregroundStyle(.white)
-                .frame(width: 30, height: 30)
-                .background(Color(hex: family.badgeHex), in: RoundedRectangle(cornerRadius: 9))
+                .font(.system(size: 13, weight: .heavy)).foregroundStyle(.white)
+                .frame(width: 24, height: 24)
+                .background(Color(hex: family.badgeHex), in: RoundedRectangle(cornerRadius: 7))
         }
+    }
+
+    private var nameInvalid: Bool {
+        !name.trimmingCharacters(in: .whitespaces).isEmpty && !nameValid
+    }
+
+    private var createDisabled: Bool {
+        name.trimmingCharacters(in: .whitespaces).isEmpty || !nameValid || store.machineBusy || !engineReady
+    }
+
+    private var nameValid: Bool {
+        let trimmed = name.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return false }
+        return trimmed.range(of: "^[a-zA-Z0-9][a-zA-Z0-9_.-]*$", options: .regularExpression) != nil
     }
 
     private func select(_ family: MachineFamily) {
@@ -146,9 +200,9 @@ struct NewMachineSheet: View {
 
     private func create() {
         let image = selectedVersion.baseImage
-        let n = name
+        let machineName = name
         store.activeSheet = nil
-        Task { _ = await store.createMachine(image: image, name: n) }
+        Task { _ = await store.createMachine(image: image, name: machineName) }
     }
 
     static func defaultName(_ family: MachineFamily) -> String {

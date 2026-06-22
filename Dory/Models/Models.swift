@@ -25,7 +25,7 @@ enum AppSection: String, CaseIterable, Identifiable, Sendable {
         case .networks: "New Network"
         case .compose: "Open Compose File"
         case .kubernetes: nil
-        case .machines: nil
+        case .machines: "New Machine"
         case .settings: nil
         }
     }
