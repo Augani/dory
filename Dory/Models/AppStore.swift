@@ -874,7 +874,7 @@ final class AppStore {
     nonisolated static func tarDirectory(_ dir: URL) -> Data? {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/bin/tar")
-        proc.arguments = ["-cf", "-", "-C", dir.path, "."]
+        proc.arguments = ["--no-xattrs", "--no-mac-metadata", "-cf", "-", "-C", dir.path, "."]
         let pipe = Pipe()
         proc.standardOutput = pipe
         proc.standardError = FileHandle.nullDevice

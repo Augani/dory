@@ -4,10 +4,20 @@ struct NewMachineSheet: View {
     @Environment(AppStore.self) private var store
     @Environment(\.palette) private var p
 
-    @State private var selectedFamily: MachineFamily = MachineDistro.families[0]
-    @State private var selectedVersion: MachineDistro = MachineDistro.families[0].defaultVersion
-    @State private var name: String = NewMachineSheet.defaultName(MachineDistro.families[0])
+    @State private var selectedFamily: MachineFamily
+    @State private var selectedVersion: MachineDistro
+    @State private var name: String
+    @State private var lastAutoName: String
     @State private var nameEdited = false
+
+    init() {
+        let family = MachineDistro.families[0]
+        let auto = NewMachineSheet.defaultName(family)
+        _selectedFamily = State(initialValue: family)
+        _selectedVersion = State(initialValue: family.defaultVersion)
+        _name = State(initialValue: auto)
+        _lastAutoName = State(initialValue: auto)
+    }
 
     private let columns = [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)]
 
@@ -48,7 +58,7 @@ struct NewMachineSheet: View {
                         .padding(.horizontal, 10).padding(.vertical, 8)
                         .background(p.bgInput, in: RoundedRectangle(cornerRadius: 8))
                         .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(p.border))
-                        .onChange(of: name) { _, _ in nameEdited = true }
+                        .onChange(of: name) { _, newValue in nameEdited = (newValue != lastAutoName) }
                     if !name.trimmingCharacters(in: .whitespaces).isEmpty && !nameValid {
                         Text("Use letters, numbers, dots, dashes or underscores.")
                             .font(.system(size: 11.5)).foregroundStyle(p.red)
@@ -128,9 +138,10 @@ struct NewMachineSheet: View {
     private func select(_ family: MachineFamily) {
         selectedFamily = family
         selectedVersion = family.defaultVersion
-        if !nameEdited {
-            name = NewMachineSheet.defaultName(family)
-        }
+        guard !nameEdited else { return }
+        let auto = NewMachineSheet.defaultName(family)
+        lastAutoName = auto
+        name = auto
     }
 
     private func create() {

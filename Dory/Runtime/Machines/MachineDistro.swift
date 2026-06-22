@@ -22,14 +22,13 @@ struct MachineDistro: Sendable, Identifiable, Hashable {
     static func forImage(_ image: String) -> MachineDistro? { all.first { $0.baseImage == image } }
     static func forFamily(_ family: String) -> MachineDistro? { all.first { $0.family == family } }
 
+    static let logoFamilies: Set<String> = [
+        "ubuntu", "debian", "fedora", "alpine", "rocky", "alma",
+        "opensuse", "oracle", "amazon", "kali", "centos", "arch",
+    ]
+
     static func logoAsset(family: String) -> String? {
-        switch family {
-        case "ubuntu": "logo-ubuntu"
-        case "debian": "logo-debian"
-        case "fedora": "logo-fedora"
-        case "alpine": "logo-alpine"
-        default: nil
-        }
+        logoFamilies.contains(family) ? "logo-\(family)" : nil
     }
 }
 

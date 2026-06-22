@@ -243,10 +243,9 @@ private struct MachineCard: View {
 
 private func logoName(for distro: String) -> String? {
     let lower = distro.lowercased()
-    if lower.contains("ubuntu") { return "logo-ubuntu" }
-    if lower.contains("debian") { return "logo-debian" }
-    if lower.contains("fedora") { return "logo-fedora" }
-    if lower.contains("alpine") { return "logo-alpine" }
+    for family in ["ubuntu", "debian", "fedora", "alpine", "rocky", "alma", "opensuse", "oracle", "amazon", "kali", "centos", "arch"] {
+        if lower.contains(family) { return "logo-\(family)" }
+    }
     return nil
 }
 
