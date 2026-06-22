@@ -66,4 +66,69 @@ struct MachineService: Sendable {
             )
         }
     }
+
+    func list() async -> [Machine] {
+        let filters = "{\"label\":[\"\(Self.label)\"]}"
+        let encoded = filters.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? filters
+        guard let response = await runtime.proxyRequest(
+            method: "GET", path: "/containers/json?all=1&filters=\(encoded)", headers: [], body: Data()),
+            response.isSuccess else { return [] }
+        return Self.machines(fromContainersJSON: response.body)
+    }
+
+    func containerID(for name: String) async -> String? {
+        await list().first { $0.name == name }?.containerID
+    }
+
+    func create(name: String, distro: MachineDistro, progress: @escaping @Sendable (String) -> Void) async throws {
+        let tag = try await MachineImageBuilder.ensureImage(distro, runtime: runtime, progress: progress)
+
+        progress("Creating \(name)…")
+        try await createContainer(name: name, distro: distro, imageTag: tag, keepaliveOnly: false)
+        try await runtime.start(containerID: Self.containerName(for: name))
+        progress("Starting \(name)…")
+
+        if distro.boot == .systemd {
+            try? await Task.sleep(for: .seconds(4))
+            if await !isRunning(name: name) {
+                progress("systemd did not come up on this image — falling back to a shell machine…")
+                try? await runtime.remove(containerID: Self.containerName(for: name))
+                try await createContainer(name: name, distro: distro, imageTag: tag, keepaliveOnly: true)
+                try await runtime.start(containerID: Self.containerName(for: name))
+            }
+        }
+        progress("Machine \(name) is ready.")
+    }
+
+    func start(name: String) async throws { try await runtime.start(containerID: Self.containerName(for: name)) }
+    func stop(name: String) async throws { try await runtime.stop(containerID: Self.containerName(for: name)) }
+
+    func delete(name: String) async throws {
+        try? await runtime.stop(containerID: Self.containerName(for: name))
+        try await runtime.remove(containerID: Self.containerName(for: name))
+    }
+
+    private func createContainer(name: String, distro: MachineDistro, imageTag: String, keepaliveOnly: Bool) async throws {
+        let body = Self.createBody(name: name, distro: distro, imageTag: imageTag, keepaliveOnly: keepaliveOnly)
+        let data = try JSONSerialization.data(withJSONObject: body)
+        let path = "/containers/create?name=\(Self.containerName(for: name))"
+        guard let response = await runtime.proxyRequest(
+            method: "POST", path: path,
+            headers: [(name: "Content-Type", value: "application/json")], body: data) else {
+            throw MachineError.createFailed("no response from engine")
+        }
+        guard response.isSuccess else {
+            throw MachineError.createFailed(String(decoding: response.body, as: UTF8.self))
+        }
+    }
+
+    private func isRunning(name: String) async -> Bool {
+        guard let response = await runtime.proxyRequest(
+            method: "GET", path: "/containers/\(Self.containerName(for: name))/json", headers: [], body: Data()),
+            response.isSuccess else { return false }
+        struct State: Decodable { let Running: Bool? }
+        struct Inspect: Decodable { let State: State? }
+        let inspect = try? JSONDecoder().decode(Inspect.self, from: response.body)
+        return inspect?.State?.Running ?? false
+    }
 }
