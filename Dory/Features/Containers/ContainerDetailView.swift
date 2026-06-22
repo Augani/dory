@@ -67,14 +67,16 @@ struct ContainerDetailView: View {
                 Text(container.image).font(.mono(12)).foregroundStyle(p.text3)
             }
             Spacer(minLength: 0)
-            StatusBadge(label: container.status.label, color: container.status.dotColor(p), background: container.status.badgeBackground(p))
+            StatusPill(container.status)
         }
     }
 
     private var actions: some View {
         HStack(spacing: 7) {
-            actionButton(container.isRunning ? "Stop" : "Start") { store.toggle(container) }
-            actionButton("Restart") { store.restart(container) }
+            Button(container.isRunning ? "Stop" : "Start") { store.toggle(container) }
+                .buttonStyle(DoryButtonStyle(kind: .secondary))
+            Button("Restart") { store.restart(container) }
+                .buttonStyle(DoryButtonStyle(kind: .secondary))
             Spacer(minLength: 0)
             Menu {
                 Button("Open Terminal") { store.openContainerTerminal(container) }
@@ -86,10 +88,11 @@ struct ContainerDetailView: View {
                 Divider()
                 Button("Delete Container", role: .destructive) { confirmingDelete = true }
             } label: {
-                Text("⋯").font(.system(size: 15, weight: .bold)).foregroundStyle(p.text2)
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 13, weight: .bold)).foregroundStyle(p.text2)
                     .frame(width: 32, height: 30)
-                    .background(p.bgElevated, in: RoundedRectangle(cornerRadius: 7))
-                    .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(p.border))
+                    .background(p.bgElevated, in: RoundedRectangle(cornerRadius: DoryRadius.sm.rawValue))
+                    .overlay(RoundedRectangle(cornerRadius: DoryRadius.sm.rawValue).strokeBorder(p.border))
             }
             .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
             .accessibilityIdentifier("container-menu")
@@ -100,16 +103,6 @@ struct ContainerDetailView: View {
         } message: {
             Text("This permanently removes the container. This cannot be undone.")
         }
-    }
-
-    private func actionButton(_ label: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Text(label).font(.system(size: 12, weight: .semibold)).foregroundStyle(p.text)
-                .padding(.horizontal, 12).padding(.vertical, 6)
-                .background(p.bgElevated, in: RoundedRectangle(cornerRadius: 7))
-                .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(p.border))
-        }
-        .buttonStyle(.plain)
     }
 
     private var tabs: some View {
