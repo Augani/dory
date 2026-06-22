@@ -312,6 +312,36 @@ struct DockerEngineRuntime: ContainerRuntime {
         }
     }
 
+    func commit(containerID: String, repo: String, tag: String, labels: [String: String]) async throws -> String {
+        let body = try JSONSerialization.data(withJSONObject: ["Labels": labels])
+        let path = DockerImageOps.commitPath(container: containerID, repo: repo, tag: tag)
+        let response = try await http.send(HTTPRequest(method: "POST", path: path,
+            headers: [(name: "Content-Type", value: "application/json")], body: body))
+        guard response.isSuccess else {
+            throw HTTPError.status(code: response.statusCode, message: String(decoding: response.body, as: UTF8.self))
+        }
+        struct Out: Decodable { let Id: String }
+        return (try? JSONDecoder().decode(Out.self, from: response.body))?.Id ?? "\(repo):\(tag)"
+    }
+
+    func saveImage(reference: String) -> AsyncStream<Data> {
+        let encoded = reference.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? reference
+        let request = HTTPRequest(method: "GET", path: "/images/\(encoded)/get")
+        let client = http
+        return AsyncStream { continuation in
+            let handle = client.stream(request, onChunk: { continuation.yield($0) }, onComplete: { continuation.finish() })
+            continuation.onTermination = { _ in handle.close() }
+        }
+    }
+
+    func loadImage(tar: Data) async throws {
+        let response = try await http.send(HTTPRequest(method: "POST", path: "/images/load",
+            headers: [(name: "Content-Type", value: "application/x-tar")], body: tar))
+        guard response.isSuccess else {
+            throw HTTPError.status(code: response.statusCode, message: String(decoding: response.body, as: UTF8.self))
+        }
+    }
+
     func start(containerID: String) async throws { try await post("/containers/\(containerID)/start") }
     func stop(containerID: String) async throws { try await post("/containers/\(containerID)/stop") }
     func restart(containerID: String) async throws { try await post("/containers/\(containerID)/restart") }

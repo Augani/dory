@@ -84,6 +84,9 @@ protocol ContainerRuntime: Sendable {
     func copyOut(containerID: String, path: String) async -> Data?
     func copyIn(containerID: String, path: String, archive: Data) async -> Bool
     func build(contextTar: Data, query: String) -> AsyncStream<Data>
+    func commit(containerID: String, repo: String, tag: String, labels: [String: String]) async throws -> String
+    func saveImage(reference: String) -> AsyncStream<Data>
+    func loadImage(tar: Data) async throws
 
     // Raw passthrough for hijack/bidirectional endpoints (interactive exec, attach) — supported by
     // backends that front a Docker-compatible socket. Default: unsupported.
@@ -113,7 +116,16 @@ extension ContainerRuntime {
     func copyOut(containerID: String, path: String) async -> Data? { nil }
     func copyIn(containerID: String, path: String, archive: Data) async -> Bool { false }
     func build(contextTar: Data, query: String) -> AsyncStream<Data> { AsyncStream { $0.finish() } }
+    func commit(containerID: String, repo: String, tag: String, labels: [String: String]) async throws -> String { "" }
+    func saveImage(reference: String) -> AsyncStream<Data> { AsyncStream { $0.finish() } }
+    func loadImage(tar: Data) async throws {}
     var supportsRawProxy: Bool { false }
     func proxyRequest(method: String, path: String, headers: [(name: String, value: String)], body: Data) async -> HTTPResponse? { nil }
     nonisolated func proxyHijack(requestData: Data, clientFD: Int32) {}
+}
+
+enum DockerImageOps {
+    static func commitPath(container: String, repo: String, tag: String) -> String {
+        "/commit?container=\(container)&repo=\(repo)&tag=\(tag)"
+    }
 }
