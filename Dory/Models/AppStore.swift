@@ -234,6 +234,7 @@ final class AppStore {
         }
         await loadKubernetes()
         loadMachines()
+        offerLegacyMachineCleanup()
         startShim()
         startPortForwarding()
         if routeDockerCLI && runtimeKind != .mock {
@@ -987,6 +988,19 @@ final class AppStore {
     func loadMachines() {
         guard runtimeKind != .mock, runtimeKind.isDockerCompatible else { machines = []; return }
         Task { machines = await machineService.list() }
+    }
+
+    private static let legacyMachineCleanupKey = "dory.legacyMachineCleanupOffered"
+
+    func offerLegacyMachineCleanup() {
+        guard !UserDefaults.standard.bool(forKey: Self.legacyMachineCleanupKey) else { return }
+        let dir = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".dory/machines")
+        guard FileManager.default.fileExists(atPath: dir.path) else {
+            UserDefaults.standard.set(true, forKey: Self.legacyMachineCleanupKey); return
+        }
+        UserDefaults.standard.set(true, forKey: Self.legacyMachineCleanupKey)
+        try? FileManager.default.removeItem(at: dir)
+        actionError = "Reclaimed disk space from the old machine cache (~/.dory/machines). New machines run inside Dory's engine now."
     }
 
     var browsingVolume: String?
