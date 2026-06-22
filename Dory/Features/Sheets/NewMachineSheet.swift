@@ -10,6 +10,7 @@ struct NewMachineSheet: View {
     @State private var name: String
     @State private var lastAutoName: String
     @State private var nameEdited = false
+    @State private var selectedRecipe: DevRecipe?
 
     private let columns = [GridItem(.adaptive(minimum: 160, maximum: 260), spacing: 8)]
 
@@ -33,6 +34,7 @@ struct NewMachineSheet: View {
                 VStack(alignment: .leading, spacing: 18) {
                     if !engineReady { engineNotice }
                     distroSection
+                    devEnvironmentSection
                     optionsRow
                 }
                 .padding(20)
@@ -77,6 +79,17 @@ struct NewMachineSheet: View {
                     familyCard(family)
                 }
             }
+        }
+    }
+
+    private var devEnvironmentSection: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            sectionLabel("DEV ENVIRONMENT")
+            Picker("", selection: $selectedRecipe) {
+                Text("Plain OS").tag(DevRecipe?.none)
+                ForEach(DevRecipe.all) { recipe in Text(recipe.display).tag(DevRecipe?.some(recipe)) }
+            }
+            .labelsHidden().pickerStyle(.menu).frame(width: 220, alignment: .leading)
         }
     }
 
@@ -218,8 +231,9 @@ struct NewMachineSheet: View {
         let image = selectedVersion.baseImage
         let machineName = name
         let arch = selectedArch
+        let recipe = selectedRecipe
         store.activeSheet = nil
-        Task { _ = await store.createMachine(image: image, name: machineName, arch: arch) }
+        Task { _ = await store.createMachine(image: image, name: machineName, arch: arch, recipe: recipe) }
     }
 
     static func defaultName(_ family: MachineFamily) -> String {

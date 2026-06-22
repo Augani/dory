@@ -54,3 +54,16 @@ struct DoryMachineFileTests {
         #expect(MachineService.firstNew(before: ["old", "new"], after: [old, new]) == nil)
     }
 }
+
+struct DevRecipeTests {
+    @Test func catalogHasFiveRecipes() {
+        #expect(DevRecipe.all.map(\.id) == ["node", "python", "go", "java", "ruby"])
+    }
+    @Test func recipeDockerfileLayersOnBase() {
+        let df = MachineImageBuilder.recipeDockerfile(baseImageTag: "dory-machine/ubuntu:24.04-arm64",
+                                                      recipe: DevRecipe.forID("node")!)
+        #expect(df.contains("FROM dory-machine/ubuntu:24.04-arm64"))
+        #expect(df.contains("nodejs"))
+        #expect(!df.contains("/sbin/init"))
+    }
+}

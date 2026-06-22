@@ -7,6 +7,7 @@ struct MachineService: Sendable {
     static let label = "dory.machine"
     static let versionLabel = "dory.machine.version"
     static let archLabel = "dory.machine.arch"
+    static let recipeLabel = "dory.recipe"
     static let keepalive = ["tail", "-f", "/dev/null"]
     static let snapshotRepoPrefix = "dory-snapshot/"
 
@@ -37,16 +38,18 @@ struct MachineService: Sendable {
         return name.isEmpty ? nil : name
     }
 
-    static func createBody(name: String, distro: MachineDistro, arch: MachineArch, imageTag: String, keepaliveOnly: Bool) -> [String: Any] {
+    static func createBody(name: String, distro: MachineDistro, arch: MachineArch, imageTag: String, keepaliveOnly: Bool, recipe: DevRecipe? = nil) -> [String: Any] {
         let useInit = distro.boot == .systemd && !keepaliveOnly
         let cmd = useInit ? ["/sbin/init"] : keepalive
+        var labels = [label: distro.family, versionLabel: distro.version, archLabel: arch.rawValue]
+        if let recipe { labels[recipeLabel] = recipe.id }
         return [
             "Hostname": name,
             "Image": imageTag,
             "Cmd": cmd,
             "Env": ["container=docker"],
             "StopSignal": "SIGRTMIN+3",
-            "Labels": [label: distro.family, versionLabel: distro.version, archLabel: arch.rawValue],
+            "Labels": labels,
             "HostConfig": [
                 "Privileged": true,
                 "CgroupnsMode": "host",
@@ -101,12 +104,17 @@ struct MachineService: Sendable {
         await list().first { $0.name == name }?.containerID
     }
 
-    func create(name: String, distro: MachineDistro, arch: MachineArch, progress: @escaping @Sendable (String) -> Void) async throws {
+    func create(name: String, distro: MachineDistro, arch: MachineArch, recipe: DevRecipe? = nil, progress: @escaping @Sendable (String) -> Void) async throws {
         if !arch.isNative { await ensureEmulation(for: arch, progress: progress) }
-        let tag = try await MachineImageBuilder.ensureImage(distro, arch: arch, runtime: runtime, progress: progress)
+        let tag: String
+        if let recipe {
+            tag = try await MachineImageBuilder.ensureRecipeImage(distro: distro, arch: arch, recipe: recipe, runtime: runtime, progress: progress)
+        } else {
+            tag = try await MachineImageBuilder.ensureImage(distro, arch: arch, runtime: runtime, progress: progress)
+        }
 
         progress("Creating \(name)…")
-        try await createContainer(name: name, distro: distro, arch: arch, imageTag: tag, keepaliveOnly: false)
+        try await createContainer(name: name, distro: distro, arch: arch, imageTag: tag, keepaliveOnly: false, recipe: recipe)
         progress("Starting \(name)…")
         try await runtime.start(containerID: Self.containerName(for: name))
 
@@ -119,7 +127,7 @@ struct MachineService: Sendable {
             if exited {
                 progress("systemd did not come up on this image — falling back to a shell machine…")
                 try? await runtime.remove(containerID: Self.containerName(for: name))
-                try await createContainer(name: name, distro: distro, arch: arch, imageTag: tag, keepaliveOnly: true)
+                try await createContainer(name: name, distro: distro, arch: arch, imageTag: tag, keepaliveOnly: true, recipe: recipe)
                 try await runtime.start(containerID: Self.containerName(for: name))
             }
         }
@@ -134,8 +142,8 @@ struct MachineService: Sendable {
         try await runtime.remove(containerID: Self.containerName(for: name))
     }
 
-    private func createContainer(name: String, distro: MachineDistro, arch: MachineArch, imageTag: String, keepaliveOnly: Bool) async throws {
-        let body = Self.createBody(name: name, distro: distro, arch: arch, imageTag: imageTag, keepaliveOnly: keepaliveOnly)
+    private func createContainer(name: String, distro: MachineDistro, arch: MachineArch, imageTag: String, keepaliveOnly: Bool, recipe: DevRecipe? = nil) async throws {
+        let body = Self.createBody(name: name, distro: distro, arch: arch, imageTag: imageTag, keepaliveOnly: keepaliveOnly, recipe: recipe)
         let data = try JSONSerialization.data(withJSONObject: body)
         let encodedPlatform = arch.platform.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? arch.platform
         let path = "/containers/create?name=\(Self.containerName(for: name))&platform=\(encodedPlatform)"
