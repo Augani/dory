@@ -37,3 +37,13 @@ struct SnapshotCodecTests {
         #expect(snaps[0].sizeBytes == 123456789)
     }
 }
+
+struct DoryMachineFileTests {
+    @Test func acceptsDoryLabeledImage() {
+        #expect(MachineService.isDoryMachineImage(loadedLabels: ["dory.machine": "ubuntu"]))
+    }
+    @Test func rejectsPlainImage() {
+        #expect(!MachineService.isDoryMachineImage(loadedLabels: [:]))
+        #expect(!MachineService.isDoryMachineImage(loadedLabels: ["maintainer": "x"]))
+    }
+}

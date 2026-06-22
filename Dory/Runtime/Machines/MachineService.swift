@@ -215,4 +215,31 @@ struct MachineService: Sendable {
         let inspect = try? JSONDecoder().decode(Inspect.self, from: response.body)
         return inspect?.State?.Running ?? false
     }
+
+    static func isDoryMachineImage(loadedLabels: [String: String]) -> Bool {
+        loadedLabels.keys.contains(label)
+    }
+
+    func export(_ snapshot: MachineSnapshot, to fileURL: URL) async throws {
+        FileManager.default.createFile(atPath: fileURL.path, contents: nil)
+        guard let handle = try? FileHandle(forWritingTo: fileURL) else {
+            throw MachineError.createFailed("could not open \(fileURL.lastPathComponent) for writing")
+        }
+        defer { try? handle.close() }
+        for await chunk in runtime.saveImage(reference: snapshot.imageRef) {
+            try handle.write(contentsOf: chunk)
+        }
+    }
+
+    func importMachine(from fileURL: URL) async throws -> String {
+        guard let tar = try? Data(contentsOf: fileURL) else {
+            throw MachineError.createFailed("could not read \(fileURL.lastPathComponent)")
+        }
+        try await runtime.loadImage(tar: tar)
+        let loaded = await listSnapshots().first
+        guard let loaded, Self.isDoryMachineImage(loadedLabels: [Self.label: loaded.distro]) else {
+            throw MachineError.createFailed("Not a Dory machine file")
+        }
+        return loaded.imageRef
+    }
 }
