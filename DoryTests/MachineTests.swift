@@ -3,21 +3,34 @@ import Foundation
 @testable import Dory
 
 struct MachineDistroTests {
-    @Test func catalogHasFourDistros() {
-        #expect(MachineDistro.all.count == 4)
-        #expect(MachineDistro.all.map(\.id) == ["ubuntu", "debian", "fedora", "alpine"])
+    @Test func catalogHasManyFamilies() {
+        let ids = MachineDistro.families.map(\.id)
+        #expect(ids.contains("ubuntu"))
+        #expect(ids.contains("rocky"))
+        #expect(ids.contains("opensuse"))
+        #expect(ids.contains("alpine"))
+        #expect(MachineDistro.families.count >= 10)
+    }
+
+    @Test func eachFamilyHasVersions() {
+        for family in MachineDistro.families {
+            #expect(!family.versions.isEmpty)
+            #expect(family.defaultVersion.baseImage == family.versions[0].baseImage)
+        }
     }
 
     @Test func mapsImageToDistro() {
-        #expect(MachineDistro.forImage("ubuntu:24.04")?.display == "Ubuntu")
+        #expect(MachineDistro.forImage("ubuntu:22.04")?.family == "ubuntu")
+        #expect(MachineDistro.forImage("ubuntu:22.04")?.version == "22.04 LTS")
         #expect(MachineDistro.forImage("alpine:3.20")?.boot == .shell)
-        #expect(MachineDistro.forImage("debian:12")?.boot == .systemd)
-        #expect(MachineDistro.forImage("nope:1")  == nil)
+        #expect(MachineDistro.forImage("rockylinux:9")?.pkg == .dnf)
+        #expect(MachineDistro.forImage("opensuse/leap:15.6")?.pkg == .zypper)
+        #expect(MachineDistro.forImage("nope:1") == nil)
     }
 
-    @Test func mapsIDToDistro() {
-        #expect(MachineDistro.forID("fedora")?.baseImage == "fedora:40")
-        #expect(MachineDistro.forID("ubuntu")?.letter == "U")
+    @Test func mapsFamilyToMetadata() {
+        #expect(MachineDistro.forFamily("ubuntu")?.letter == "U")
+        #expect(MachineDistro.forFamily("rocky")?.display == "Rocky Linux")
     }
 
     @Test func derivesMachineImageTag() {
@@ -26,23 +39,30 @@ struct MachineDistroTests {
 }
 
 struct MachineImageBuilderTests {
-    @Test func systemdDockerfileInstallsSystemd() {
-        let df = MachineImageBuilder.dockerfile(for: MachineDistro.forID("ubuntu")!)
+    @Test func aptDockerfileInstallsSystemd() {
+        let df = MachineImageBuilder.dockerfile(for: MachineDistro.forImage("ubuntu:24.04")!)
         #expect(df.contains("FROM ubuntu:24.04"))
         #expect(df.contains("systemd-sysv"))
         #expect(df.contains("STOPSIGNAL SIGRTMIN+3"))
         #expect(df.contains("CMD [\"/sbin/init\"]"))
     }
 
-    @Test func fedoraDockerfileUsesDnf() {
-        let df = MachineImageBuilder.dockerfile(for: MachineDistro.forID("fedora")!)
-        #expect(df.contains("FROM fedora:40"))
+    @Test func dnfDockerfileUsesDnf() {
+        let df = MachineImageBuilder.dockerfile(for: MachineDistro.forImage("rockylinux:9")!)
+        #expect(df.contains("FROM rockylinux:9"))
         #expect(df.contains("dnf -y install"))
         #expect(df.contains("CMD [\"/sbin/init\"]"))
     }
 
-    @Test func alpineDockerfileIsShellKeepalive() {
-        let df = MachineImageBuilder.dockerfile(for: MachineDistro.forID("alpine")!)
+    @Test func zypperDockerfileRefreshesFirst() {
+        let df = MachineImageBuilder.dockerfile(for: MachineDistro.forImage("opensuse/leap:15.6")!)
+        #expect(df.contains("zypper"))
+        #expect(df.contains("--gpg-auto-import-keys refresh"))
+        #expect(df.contains("CMD [\"/sbin/init\"]"))
+    }
+
+    @Test func apkDockerfileIsShellKeepalive() {
+        let df = MachineImageBuilder.dockerfile(for: MachineDistro.forImage("alpine:3.20")!)
         #expect(df.contains("FROM alpine:3.20"))
         #expect(df.contains("apk add"))
         #expect(df.contains("CMD [\"tail\", \"-f\", \"/dev/null\"]"))
@@ -52,7 +72,7 @@ struct MachineImageBuilderTests {
 
 struct MachineServiceHelperTests {
     @Test func createBodyForSystemdSetsInitAndPrivileged() {
-        let body = MachineService.createBody(name: "dev", distro: MachineDistro.forID("ubuntu")!,
+        let body = MachineService.createBody(name: "dev", distro: MachineDistro.forImage("ubuntu:24.04")!,
                                              imageTag: "dory-machine/ubuntu:24.04", keepaliveOnly: false)
         #expect(body["Image"] as? String == "dory-machine/ubuntu:24.04")
         #expect(body["Hostname"] as? String == "dev")
@@ -68,13 +88,13 @@ struct MachineServiceHelperTests {
     }
 
     @Test func createBodyKeepaliveOverridesInit() {
-        let body = MachineService.createBody(name: "a", distro: MachineDistro.forID("alpine")!,
+        let body = MachineService.createBody(name: "a", distro: MachineDistro.forImage("alpine:3.20")!,
                                              imageTag: "dory-machine/alpine:3.20", keepaliveOnly: true)
         #expect(body["Cmd"] as? [String] == ["tail", "-f", "/dev/null"])
     }
 
     @Test func shellDistroUsesKeepaliveEvenWhenNotForced() {
-        let body = MachineService.createBody(name: "a", distro: MachineDistro.forID("alpine")!,
+        let body = MachineService.createBody(name: "a", distro: MachineDistro.forImage("alpine:3.20")!,
                                              imageTag: "dory-machine/alpine:3.20", keepaliveOnly: false)
         #expect(body["Cmd"] as? [String] == ["tail", "-f", "/dev/null"])
     }

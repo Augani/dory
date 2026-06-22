@@ -26,7 +26,7 @@ struct MachineService: Sendable {
             "Cmd": cmd,
             "Env": ["container=docker"],
             "StopSignal": "SIGRTMIN+3",
-            "Labels": [label: distro.id, versionLabel: distro.version],
+            "Labels": [label: distro.family, versionLabel: distro.version],
             "HostConfig": [
                 "Privileged": true,
                 "CgroupnsMode": "host",
@@ -49,7 +49,7 @@ struct MachineService: Sendable {
         guard let entries = try? JSONDecoder().decode([Entry].self, from: data) else { return [] }
         return entries.compactMap { entry -> Machine? in
             guard let rawName = entry.Names?.first, let name = displayName(fromContainerName: rawName) else { return nil }
-            guard let distroID = entry.Labels?[label], let distro = MachineDistro.forID(distroID) else { return nil }
+            guard let distroID = entry.Labels?[label], let distro = MachineDistro.forFamily(distroID) else { return nil }
             let running = (entry.State ?? "").lowercased() == "running"
             let ip = entry.NetworkSettings?.Networks?.values.compactMap(\.IPAddress).first(where: { !$0.isEmpty }) ?? "—"
             return Machine(

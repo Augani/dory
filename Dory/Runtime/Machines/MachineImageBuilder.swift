@@ -9,8 +9,8 @@ enum MachineError: Error, Sendable {
 
 enum MachineImageBuilder {
     static func dockerfile(for distro: MachineDistro) -> String {
-        switch distro.id {
-        case "ubuntu", "debian":
+        switch distro.pkg {
+        case .apt:
             return """
             FROM \(distro.baseImage)
             ENV DEBIAN_FRONTEND=noninteractive
@@ -21,7 +21,7 @@ enum MachineImageBuilder {
             STOPSIGNAL SIGRTMIN+3
             CMD ["/sbin/init"]
             """
-        case "fedora":
+        case .dnf:
             return """
             FROM \(distro.baseImage)
             RUN dnf -y install systemd sudo passwd iproute procps-ng \\
@@ -30,7 +30,17 @@ enum MachineImageBuilder {
             STOPSIGNAL SIGRTMIN+3
             CMD ["/sbin/init"]
             """
-        default:
+        case .zypper:
+            return """
+            FROM \(distro.baseImage)
+            RUN zypper --non-interactive --gpg-auto-import-keys refresh \\
+             && zypper -n install systemd sudo iproute2 \\
+             && zypper clean -a \\
+             && (systemctl mask systemd-resolved.service || true)
+            STOPSIGNAL SIGRTMIN+3
+            CMD ["/sbin/init"]
+            """
+        case .apk:
             return """
             FROM \(distro.baseImage)
             RUN apk add --no-cache bash sudo shadow iproute2 ca-certificates
@@ -49,7 +59,7 @@ enum MachineImageBuilder {
 
         progress("Building \(distro.display) machine image (one-time)…")
         let dir = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("dory-machine-build-\(distro.id)-\(UUID().uuidString)")
+            .appendingPathComponent("dory-machine-build-\(distro.family)-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: dir) }
         try dockerfile(for: distro).write(to: dir.appendingPathComponent("Dockerfile"), atomically: true, encoding: .utf8)
