@@ -15,8 +15,4 @@ enum TerminalLauncher {
     static func openContainerShell(socketPath: String, containerID: String) {
         open(command: "docker -H unix://\(socketPath) exec -it \(containerID) sh -c 'command -v bash >/dev/null && exec bash || exec sh'")
     }
-
-    static func openMachineShell(ip: String, keyPath: String) {
-        open(command: "ssh -i \(keyPath) -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null dory@\(ip)")
-    }
 }

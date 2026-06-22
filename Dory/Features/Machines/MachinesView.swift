@@ -17,6 +17,13 @@ struct MachinesView: View {
     ]
 
     var body: some View {
+        content
+            .sheet(item: Binding(get: { store.machineTerminal }, set: { store.machineTerminal = $0 })) { machine in
+                MachineTerminalSheet(machine: machine)
+            }
+    }
+
+    private var content: some View {
         VStack(spacing: 0) {
             if !store.machines.isEmpty || !store.filter.isEmpty {
                 header
@@ -273,4 +280,30 @@ private func logoName(for distro: String) -> String? {
     if lower.contains("fedora") { return "logo-fedora" }
     if lower.contains("alpine") { return "logo-alpine" }
     return nil
+}
+
+private struct MachineTerminalSheet: View {
+    @Environment(AppStore.self) private var store
+    @Environment(\.palette) private var p
+    let machine: Machine
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("\(machine.name) — \(machine.distro) \(machine.version)")
+                    .font(.system(size: 13, weight: .semibold)).foregroundStyle(p.text)
+                Spacer()
+                Button("Open in Terminal.app ↗") { store.openMachineTerminalApp(machine) }
+                    .buttonStyle(.plain).foregroundStyle(p.accentText).font(.system(size: 12, weight: .semibold))
+                Button("Close") { store.machineTerminal = nil }
+                    .buttonStyle(.plain).foregroundStyle(p.text2).font(.system(size: 12, weight: .semibold))
+            }
+            .padding(.horizontal, 14).padding(.vertical, 10)
+            .overlay(alignment: .bottom) { Rectangle().fill(p.border).frame(height: 1) }
+            ContainerTerminalView(socketPath: store.shimSocketPath, containerID: machine.containerID)
+                .frame(minWidth: 720, minHeight: 420)
+        }
+        .frame(width: 760, height: 480)
+        .background(p.bgWindow)
+    }
 }

@@ -977,15 +977,16 @@ final class AppStore {
         appearance = appearance == .dark ? .light : .dark
     }
 
-    @ObservationIgnored private let machineProvider = VirtualizationMachineProvider()
+    private var machineService: MachineService { MachineService(runtime: runtime) }
     var machineBusy = false
     var machineCreationTitle = ""
     var machineCreationLog = ""
     var machineCreationError: String?
+    var machineTerminal: Machine?
 
     func loadMachines() {
-        guard runtimeKind != .mock, machineProvider.isAvailable else { return }
-        machines = machineProvider.list()
+        guard runtimeKind != .mock, runtimeKind.isDockerCompatible else { machines = []; return }
+        Task { machines = await machineService.list() }
     }
 
     var browsingVolume: String?
@@ -1042,15 +1043,11 @@ final class AppStore {
         let wasRunning = machines[idx].status == .running
         machineBusy = true
         let name = machine.name
-        let provider = machineProvider
+        let service = machineService
         Task {
             defer { machineBusy = false }
             do {
-                if wasRunning {
-                    try await provider.stop(name: name)
-                } else {
-                    try await provider.start(name: name)
-                }
+                if wasRunning { try await service.stop(name: name) } else { try await service.start(name: name) }
             } catch {
                 actionError = "Could not \(wasRunning ? "stop" : "start") \(name): \(error)"
             }
@@ -1059,14 +1056,14 @@ final class AppStore {
     }
 
     func createMachine(image: String, name: String) async -> String? {
-        let trimmedImage = image.trimmingCharacters(in: .whitespaces)
         let trimmedName = name.trimmingCharacters(in: .whitespaces)
-        guard !trimmedImage.isEmpty, !trimmedName.isEmpty else {
-            actionError = "Image and name are required"
-            return "Image and name are required"
+        guard runtimeKind.isDockerCompatible else {
+            actionError = "Linux machines need Dory's shared VM — switch engines in Settings → Docker Engine."
+            return "Engine not available"
         }
-        guard let distro = distro(for: trimmedImage) else {
-            actionError = "Unsupported machine image: \(trimmedImage)"
+        guard !trimmedName.isEmpty else { actionError = "Name is required"; return "Name is required" }
+        guard let distro = MachineDistro.forImage(image.trimmingCharacters(in: .whitespaces)) else {
+            actionError = "Unsupported machine image: \(image)"
             return "Unsupported machine image"
         }
         machineBusy = true
@@ -1076,12 +1073,8 @@ final class AppStore {
         activeSheet = .creatingMachine
         defer { machineBusy = false }
         do {
-            try await machineProvider.create(name: trimmedName, distro: distro) { line in
-                self.appendMachineCreationLog(line)
-            }
-            appendMachineCreationLog("Waiting for IP address…")
-            if let ip = await machineProvider.waitForIP(name: trimmedName, timeout: .seconds(120)) {
-                appendMachineCreationLog("IP address: \(ip)")
+            try await machineService.create(name: trimmedName, distro: distro) { line in
+                Task { @MainActor in self.appendMachineCreationLog(line) }
             }
             appendMachineCreationLog("Machine created and started.")
             activeSheet = nil
@@ -1096,27 +1089,24 @@ final class AppStore {
         }
     }
 
-    private func distro(for image: String) -> VMDistro? {
-        let lower = image.lowercased()
-        if lower.contains("ubuntu") { return .ubuntu2404 }
-        return nil
-    }
-
     private func appendMachineCreationLog(_ line: String) {
         machineCreationLog.append(line + "\n")
     }
 
     func deleteMachine(_ machine: Machine) {
         let name = machine.name
-        let provider = machineProvider
+        let service = machineService
         machines.removeAll { $0.name == name }
-        Task { try? await provider.delete(name: name); loadMachines() }
+        Task { try? await service.delete(name: name); loadMachines() }
     }
 
     func openMachineTerminal(_ machine: Machine) {
-        let ip = machineProvider.ipAddress(for: machine.name) ?? machine.ip
-        guard ip != "—", !ip.isEmpty else { return }
-        TerminalLauncher.openMachineShell(ip: ip, keyPath: machineProvider.sshKeyPath(for: machine.name).path)
+        machineTerminal = machine
+    }
+
+    func openMachineTerminalApp(_ machine: Machine) {
+        guard !machine.containerID.isEmpty else { return }
+        TerminalLauncher.openContainerShell(socketPath: shimSocketPath, containerID: machine.containerID)
     }
 
     func openContainerTerminal(_ container: Container) {
