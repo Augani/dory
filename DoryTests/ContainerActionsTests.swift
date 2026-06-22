@@ -55,4 +55,13 @@ struct ContainerActionsTests {
         await store.performToggle(store.containers[0])
         #expect(!store.pendingContainerIDs.contains("a"))
     }
+
+    @Test func reloadPopulatesCpuHistoryForRunningContainers() async {
+        let store = AppStore()
+        await store.reload()
+        #expect(!store.cpuHistory.isEmpty)
+        let runningIDs = store.containers.filter(\.isRunning).map(\.id)
+        let hasSamples = runningIDs.contains { !(store.cpuHistory[$0]?.isEmpty ?? true) }
+        #expect(hasSamples)
+    }
 }

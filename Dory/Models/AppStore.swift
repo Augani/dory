@@ -239,12 +239,16 @@ final class AppStore {
             break
         case "apple":
             if let apple = await AppleContainerRuntime.detect() { runtime = apple; await reload() }
+            else { loadState = .engineOff }
         case "docker":
             if let docker = await DockerEngineRuntime.detect() { runtime = docker; await reload() }
+            else { loadState = .engineOff }
         case "shared":
             if let shared = await SharedVMProvisioner.runtime() { runtime = shared; await reload() }
+            else { loadState = .engineOff }
         case "docker-proxy":
             if let docker = await DockerEngineRuntime.detect() { runtime = docker; await reload() }
+            else { loadState = .engineOff }
         default:
             // Dory's own shared VM is the default engine — a standalone, OrbStack-style daemon.
             // Fall back to fronting an existing Docker/OrbStack socket, then Apple per-container.
@@ -257,6 +261,7 @@ final class AppStore {
                 runtime = apple; sharedVMStatus = ""; await reload()
             } else {
                 sharedVMStatus = ""
+                loadState = .engineOff
             }
         }
         await loadKubernetes()
@@ -482,6 +487,11 @@ final class AppStore {
             let first = containers.first?.id
             if selectedContainerID != first { selectedContainerID = first }
         }
+        let liveIDs = Set(containers.map(\.id))
+        for container in containers where container.isRunning {
+            recordCPU(container.id, container.cpuPercent)
+        }
+        cpuHistory = cpuHistory.filter { liveIDs.contains($0.key) }
         let newState: LoadState = snap.engineRunning ? .ready : .engineOff
         if loadState != newState { loadState = newState }
     }

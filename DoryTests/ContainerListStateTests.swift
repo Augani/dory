@@ -61,6 +61,8 @@ struct ContainerListStateTests {
     }
 
     @Test func filterPersists() {
+        let priorValue = UserDefaults.standard.string(forKey: "containerFilter")
+        defer { UserDefaults.standard.set(priorValue, forKey: "containerFilter") }
         let store = AppStore()
         store.containerFilter = .stopped
         #expect(UserDefaults.standard.string(forKey: "containerFilter") == "stopped")

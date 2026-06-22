@@ -7,24 +7,18 @@ extension RunState {
 struct StatusPill: View {
     @Environment(\.palette) private var p
     let text: String
-    let color: Color
-    let background: Color
     var showsDot: Bool = true
 
     init(_ status: RunState) {
         self.text = status.label
         self.colorKey = .status(status)
         self.showsDot = true
-        self.color = .clear
-        self.background = .clear
     }
 
     init(inUse: Bool) {
         self.text = inUse ? "In use" : "Unused"
         self.colorKey = .inUse(inUse)
         self.showsDot = false
-        self.color = .clear
-        self.background = .clear
     }
 
     private enum ColorKey { case status(RunState), inUse(Bool) }
