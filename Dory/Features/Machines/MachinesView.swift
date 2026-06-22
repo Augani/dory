@@ -5,16 +5,6 @@ struct MachinesView: View {
     @Environment(\.palette) private var p
 
     private let columns = [GridItem(.flexible(), spacing: 14), GridItem(.flexible(), spacing: 14)]
-    private let templates: [MachineTemplate] = [
-        MachineTemplate(image: "ubuntu:24.04", logo: "logo-ubuntu", name: "Ubuntu", version: "24.04 LTS", isKnownSupported: true,
-                        description: "Long-term support release. Great for development, servers, and everyday Linux workloads."),
-        MachineTemplate(image: "debian:12", logo: "logo-debian", name: "Debian", version: "12", isKnownSupported: false,
-                        description: "Stable and lightweight. Ideal for testing and production-like environments."),
-        MachineTemplate(image: "fedora:40", logo: "logo-fedora", name: "Fedora", version: "40", isKnownSupported: false,
-                        description: "Bleeding-edge packages and the latest kernel. Perfect for trying new Linux features."),
-        MachineTemplate(image: "alpine:3.20", logo: "logo-alpine", name: "Alpine", version: "3.20", isKnownSupported: false,
-                        description: "Minimal and security-focused. Excellent for containers and resource-constrained work."),
-    ]
 
     var body: some View {
         content
@@ -46,13 +36,7 @@ struct MachinesView: View {
         HStack {
             Text("Linux machines").font(.system(size: 12.5)).foregroundStyle(p.text3)
             Spacer()
-            Menu {
-                ForEach(templates) { template in
-                    Button("\(template.name) \(template.version)") {
-                        Task { _ = await store.createMachine(image: template.image, name: Self.autoName(template.name)) }
-                    }
-                }
-            } label: {
+            Button { store.activeSheet = .newMachine } label: {
                 HStack(spacing: 6) {
                     if store.machineBusy { ProgressView().controlSize(.small) }
                     Text(store.machineBusy ? "Creating\u{2026}" : "New Machine").font(.system(size: 12.5, weight: .semibold)).foregroundStyle(.white)
@@ -60,8 +44,7 @@ struct MachinesView: View {
                 .padding(.horizontal, 14).padding(.vertical, 7)
                 .background(p.accent, in: RoundedRectangle(cornerRadius: 8))
             }
-            .menuStyle(.borderlessButton)
-            .fixedSize()
+            .buttonStyle(.plain)
             .disabled(store.machineBusy)
             .accessibilityIdentifier("new-machine")
         }
@@ -80,11 +63,55 @@ struct MachinesView: View {
                     .font(.system(size: 13.5)).foregroundStyle(p.text2).multilineTextAlignment(.center).lineSpacing(4)
                     .frame(maxWidth: 520)
                 featurePills
-                templateList
-                    .padding(.top, 10)
+                createFirstButton
+                    .padding(.top, 6)
+                quickPickChips
             }
             .padding(.top, 36).padding(.bottom, 24)
             .padding(.horizontal, 18)
+        }
+    }
+
+    private var createFirstButton: some View {
+        Button { store.activeSheet = .newMachine } label: {
+            Text("Create your first machine")
+                .font(.system(size: 13.5, weight: .semibold)).foregroundStyle(.white)
+                .padding(.horizontal, 20).padding(.vertical, 10)
+                .background(p.accent, in: RoundedRectangle(cornerRadius: 9))
+        }
+        .buttonStyle(.plain)
+        .disabled(store.machineBusy)
+        .accessibilityIdentifier("create-first-machine")
+    }
+
+    private var quickPickChips: some View {
+        HStack(spacing: 8) {
+            ForEach(MachineDistro.families.prefix(5)) { family in
+                Button { store.activeSheet = .newMachine } label: {
+                    HStack(spacing: 7) {
+                        familyBadge(family)
+                        Text(family.display).font(.system(size: 12, weight: .semibold)).foregroundStyle(p.text)
+                    }
+                    .padding(.horizontal, 11).padding(.vertical, 7)
+                    .background(p.bgElevated, in: RoundedRectangle(cornerRadius: 8))
+                    .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(p.border))
+                }
+                .buttonStyle(.plain)
+                .disabled(store.machineBusy)
+            }
+        }
+    }
+
+    private func familyBadge(_ family: MachineFamily) -> some View {
+        Group {
+            if let logo = logoName(for: family.id) {
+                Image(logo).resizable().aspectRatio(contentMode: .fit).frame(width: 18, height: 18)
+            } else {
+                Text(family.letter)
+                    .font(.system(size: 10, weight: .heavy)).foregroundStyle(.white)
+                    .frame(width: 18, height: 18)
+                    .background(Color(hex: family.badgeHex), in: RoundedRectangle(cornerRadius: 5))
+            }
         }
     }
 
@@ -101,15 +128,6 @@ struct MachinesView: View {
         Text(title).font(.system(size: 11, weight: .semibold)).foregroundStyle(p.text2)
             .padding(.horizontal, 10).padding(.vertical, 5)
             .background(p.pill, in: RoundedRectangle(cornerRadius: 6))
-    }
-
-    private var templateList: some View {
-        VStack(spacing: 10) {
-            ForEach(templates) { template in
-                TemplateCard(template: template)
-            }
-        }
-        .frame(maxWidth: 640)
     }
 
     private var machineGrid: some View {
@@ -131,68 +149,18 @@ struct MachinesView: View {
     private var addAnotherSection: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Add another machine").font(.system(size: 16, weight: .semibold)).foregroundStyle(p.text)
-            templateList
-        }
-        .frame(maxWidth: 640, alignment: .leading)
-    }
-
-    fileprivate static func autoName(_ label: String) -> String {
-        let base = label.split(separator: " ").first.map { $0.lowercased() } ?? "linux"
-        return "\(base)-\(abs(label.hashValue) % 1000)"
-    }
-}
-
-private struct MachineTemplate: Identifiable {
-    let image: String
-    let logo: String
-    let name: String
-    let version: String
-    let isKnownSupported: Bool
-    let description: String
-    var id: String { image }
-}
-
-private struct TemplateCard: View {
-    @Environment(AppStore.self) private var store
-    @Environment(\.palette) private var p
-    let template: MachineTemplate
-
-    var body: some View {
-        HStack(alignment: .center, spacing: 16) {
-            Image(template.logo)
-                .resizable()
-                .aspectRatio(contentMode: .fit)
-                .frame(width: 40, height: 40)
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 6) {
-                    Text(template.name).font(.system(size: 16, weight: .semibold)).foregroundStyle(p.text)
-                    Text(template.version).font(.system(size: 12)).foregroundStyle(p.text3)
-                    Spacer()
-                    if !template.isKnownSupported {
-                        Text("Unsupported")
-                            .font(.system(size: 10, weight: .semibold)).foregroundStyle(p.amber)
-                            .padding(.horizontal, 8).padding(.vertical, 4)
-                            .background(p.amberWeak, in: RoundedRectangle(cornerRadius: 6))
-                    }
-                }
-                Text(template.description)
-                    .font(.system(size: 12.5)).foregroundStyle(p.text2).lineSpacing(3).lineLimit(2)
-            }
-            Spacer(minLength: 12)
-            Button {
-                Task { _ = await store.createMachine(image: template.image, name: MachinesView.autoName(template.name)) }
-            } label: {
-                Text("Create")
-                    .font(.system(size: 12, weight: .semibold)).foregroundStyle(p.accentText)
-                    .padding(.horizontal, 12).padding(.vertical, 6)
-                    .background(p.accentSoft, in: RoundedRectangle(cornerRadius: 6))
+            Button { store.activeSheet = .newMachine } label: {
+                Text("New machine")
+                    .font(.system(size: 12.5, weight: .semibold)).foregroundStyle(p.accentText)
+                    .padding(.horizontal, 14).padding(.vertical, 8)
+                    .background(p.accentSoft, in: RoundedRectangle(cornerRadius: 8))
+                    .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(p.border))
             }
             .buttonStyle(.plain)
             .disabled(store.machineBusy)
+            .accessibilityIdentifier("add-another-machine")
         }
-        .padding(16)
-        .background(p.bgElevated, in: RoundedRectangle(cornerRadius: 12))
-        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(p.border))
+        .frame(maxWidth: 640, alignment: .leading)
     }
 }
 

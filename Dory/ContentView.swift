@@ -61,6 +61,7 @@ struct RootView: View {
                 case .applyYAML: ApplyYAMLSheet()
                 case .inspectImage: ImageDetailSheet()
                 case .inspectNetwork: NetworkDetailSheet()
+                case .newMachine: NewMachineSheet()
                 case .creatingMachine: MachineCreationSheet()
                 }
             }

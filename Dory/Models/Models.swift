@@ -255,7 +255,7 @@ struct NetworkDetail: Sendable, Equatable {
 }
 
 enum AppSheet: String, Identifiable, Sendable {
-    case newContainer, pullImage, volumeBrowser, newVolume, newNetwork, buildImage, registryLogin, applyYAML, inspectImage, inspectNetwork, creatingMachine
+    case newContainer, pullImage, volumeBrowser, newVolume, newNetwork, buildImage, registryLogin, applyYAML, inspectImage, inspectNetwork, newMachine, creatingMachine
     var id: String { rawValue }
 }
 
