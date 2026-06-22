@@ -1138,8 +1138,7 @@ final class AppStore {
             return nil
         } catch {
             let message = "\(error)"
-            appendMachineCreationLog("Error: \(message)")
-            appendMachineCreationLog("Restored \(machine.name) from the pre-edit snapshot.")
+            appendMachineCreationLog("Edit failed: \(message). The pre-edit snapshot was retained — restore it from Snapshots if needed.")
             machineCreationError = message
             actionError = "Could not update machine settings"
             loadMachines()

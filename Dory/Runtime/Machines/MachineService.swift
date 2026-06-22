@@ -27,9 +27,12 @@ struct MachineService: Sendable {
         let labels = SnapshotLabels.make(machine: machine, note: note, createdISO: createdISO)
         let repo = Self.snapshotRepoPrefix + machine.name
         let id = try await runtime.commit(containerID: Self.containerName(for: machine.name), repo: repo, tag: tag, labels: labels)
+        let family = MachineDistro.all.first { $0.display == machine.distro }?.family ?? machine.distro.lowercased()
+        let boot = MachineDistro.forFamily(family)?.boot.rawValue ?? "systemd"
         return MachineSnapshot(id: id, imageRef: "\(repo):\(tag)", machineName: machine.name, note: note,
                                createdISO: createdISO, sizeBytes: 0, distro: machine.distro, version: machine.version,
-                               arch: machine.arch.isEmpty ? MachineArch.host.rawValue : machine.arch)
+                               arch: machine.arch.isEmpty ? MachineArch.host.rawValue : machine.arch,
+                               boot: boot, recipe: machine.recipe)
     }
 
     func listSnapshots() async -> [MachineSnapshot] {
@@ -101,7 +104,8 @@ struct MachineService: Sendable {
                 letter: distro.letter,
                 badgeHex: distro.badgeHex,
                 containerID: entry.Id,
-                arch: entry.Labels?[archLabel] ?? ""
+                arch: entry.Labels?[archLabel] ?? "",
+                recipe: entry.Labels?[recipeLabel] ?? ""
             )
         }
     }
@@ -174,19 +178,23 @@ struct MachineService: Sendable {
 
     private func runFromImage(name: String, imageRef: String, snapshot: MachineSnapshot, settings: MachineSettings = .default) async throws {
         let distro = MachineDistro.forFamily(MachineDistro.all.first { $0.display == snapshot.distro }?.family ?? "")
-        let boot: MachineDistro.Boot = distro?.boot ?? .systemd
-        let cmd = boot == .systemd ? ["/sbin/init"] : Self.keepalive
+        let cmd = snapshot.boot == "systemd" ? ["/sbin/init"] : Self.keepalive
         let baseHostConfig: [String: Any] = ["Privileged": true, "CgroupnsMode": "host",
                                              "Tmpfs": ["/run": "", "/run/lock": "", "/tmp": ""],
                                              "RestartPolicy": ["Name": "unless-stopped"]]
         var hostConfig = Self.hostConfig(base: baseHostConfig, settings: settings)
         hostConfig.removeValue(forKey: "ExposedPorts")
+        var labels: [String: String] = [
+            Self.label: distro?.family ?? snapshot.distro.lowercased(),
+            Self.versionLabel: snapshot.version,
+            Self.archLabel: snapshot.arch,
+            "dory.machine.boot": snapshot.boot,
+        ]
+        if !snapshot.recipe.isEmpty { labels[Self.recipeLabel] = snapshot.recipe }
         var body: [String: Any] = [
             "Hostname": name, "Image": imageRef, "Cmd": cmd, "Env": ["container=docker"],
             "StopSignal": "SIGRTMIN+3",
-            "Labels": [Self.label: distro?.family ?? snapshot.distro.lowercased(),
-                       Self.versionLabel: snapshot.version,
-                       Self.archLabel: snapshot.arch],
+            "Labels": labels,
             "HostConfig": hostConfig,
         ]
         if !settings.ports.isEmpty { body["ExposedPorts"] = Self.exposedPorts(for: settings) }
@@ -225,6 +233,7 @@ struct MachineService: Sendable {
 
         do {
             try await runFromImage(name: name, imageRef: snapshot.imageRef, snapshot: snapshot, settings: settings)
+            try? await runtime.removeImage(id: snapshot.imageRef)
         } catch {
             try? await runtime.stop(containerID: Self.containerName(for: name))
             try? await runtime.remove(containerID: Self.containerName(for: name))
@@ -300,9 +309,15 @@ struct MachineService: Sendable {
         guard let handle = try? FileHandle(forWritingTo: fileURL) else {
             throw MachineError.createFailed("could not open \(fileURL.lastPathComponent) for writing")
         }
-        defer { try? handle.close() }
-        for await chunk in runtime.saveImage(reference: snapshot.imageRef) {
-            try handle.write(contentsOf: chunk)
+        do {
+            for await chunk in runtime.saveImage(reference: snapshot.imageRef) {
+                try handle.write(contentsOf: chunk)
+            }
+            try? handle.close()
+        } catch {
+            try? handle.close()
+            try? FileManager.default.removeItem(at: fileURL)
+            throw error
         }
     }
 
@@ -334,7 +349,7 @@ extension MachineService {
             var bindings: [String: [[String: String]]] = [:]
             for port in settings.ports {
                 exposed["\(port.guest)/tcp"] = [:]
-                bindings["\(port.guest)/tcp"] = [["HostPort": "\(port.host)"]]
+                bindings["\(port.guest)/tcp"] = [["HostIp": "127.0.0.1", "HostPort": "\(port.host)"]]
             }
             host["ExposedPorts"] = exposed
             host["PortBindings"] = bindings

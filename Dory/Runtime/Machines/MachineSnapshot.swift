@@ -10,6 +10,8 @@ struct MachineSnapshot: Identifiable, Hashable, Sendable {
     let distro: String
     let version: String
     let arch: String
+    let boot: String
+    let recipe: String
 }
 
 enum SnapshotLabels {
@@ -19,14 +21,18 @@ enum SnapshotLabels {
 
     static func make(machine: Machine, note: String, createdISO: String) -> [String: String] {
         let family = MachineDistro.all.first { $0.display == machine.distro }?.family ?? machine.distro.lowercased()
-        return [
+        let boot = MachineDistro.forFamily(family)?.boot.rawValue ?? "systemd"
+        var labels: [String: String] = [
             "dory.machine": family,
             "dory.machine.version": machine.version,
             "dory.machine.arch": machine.arch.isEmpty ? MachineArch.host.rawValue : machine.arch,
+            "dory.machine.boot": boot,
             ofKey: machine.name,
             noteKey: note,
             createdKey: createdISO,
         ]
+        if !machine.recipe.isEmpty { labels["dory.recipe"] = machine.recipe }
+        return labels
     }
 
     static func snapshots(fromImagesJSON data: Data) -> [MachineSnapshot] {
@@ -42,7 +48,9 @@ enum SnapshotLabels {
                 note: labels[noteKey] ?? "", createdISO: labels[createdKey] ?? "",
                 sizeBytes: entry.Size ?? 0, distro: display,
                 version: labels["dory.machine.version"] ?? "",
-                arch: labels["dory.machine.arch"] ?? ""
+                arch: labels["dory.machine.arch"] ?? "",
+                boot: labels["dory.machine.boot"] ?? "systemd",
+                recipe: labels["dory.recipe"] ?? ""
             )
         }
     }
