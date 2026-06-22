@@ -49,3 +49,56 @@ struct MachineImageBuilderTests {
         #expect(!df.contains("/sbin/init"))
     }
 }
+
+struct MachineServiceHelperTests {
+    @Test func createBodyForSystemdSetsInitAndPrivileged() {
+        let body = MachineService.createBody(name: "dev", distro: MachineDistro.forID("ubuntu")!,
+                                             imageTag: "dory-machine/ubuntu:24.04", keepaliveOnly: false)
+        #expect(body["Image"] as? String == "dory-machine/ubuntu:24.04")
+        #expect(body["Hostname"] as? String == "dev")
+        #expect(body["Cmd"] as? [String] == ["/sbin/init"])
+        #expect(body["StopSignal"] as? String == "SIGRTMIN+3")
+        let labels = body["Labels"] as? [String: String]
+        #expect(labels?["dory.machine"] == "ubuntu")
+        #expect(labels?["dory.machine.version"] == "24.04 LTS")
+        let host = body["HostConfig"] as? [String: Any]
+        #expect(host?["Privileged"] as? Bool == true)
+        #expect(host?["CgroupnsMode"] as? String == "host")
+        #expect((host?["Tmpfs"] as? [String: String])?["/run"] == "")
+    }
+
+    @Test func createBodyKeepaliveOverridesInit() {
+        let body = MachineService.createBody(name: "a", distro: MachineDistro.forID("alpine")!,
+                                             imageTag: "dory-machine/alpine:3.20", keepaliveOnly: true)
+        #expect(body["Cmd"] as? [String] == ["tail", "-f", "/dev/null"])
+    }
+
+    @Test func shellDistroUsesKeepaliveEvenWhenNotForced() {
+        let body = MachineService.createBody(name: "a", distro: MachineDistro.forID("alpine")!,
+                                             imageTag: "dory-machine/alpine:3.20", keepaliveOnly: false)
+        #expect(body["Cmd"] as? [String] == ["tail", "-f", "/dev/null"])
+    }
+
+    @Test func stripsContainerNamePrefix() {
+        #expect(MachineService.displayName(fromContainerName: "/dory-machine-dev") == "dev")
+        #expect(MachineService.displayName(fromContainerName: "dory-machine-dev") == "dev")
+        #expect(MachineService.displayName(fromContainerName: "/some-other") == nil)
+    }
+
+    @Test func mapsContainersJSONToMachines() {
+        let json = """
+        [{"Id":"abc123","Names":["/dory-machine-dev"],"Image":"dory-machine/ubuntu:24.04",
+          "State":"running","Labels":{"dory.machine":"ubuntu","dory.machine.version":"24.04 LTS"},
+          "NetworkSettings":{"Networks":{"bridge":{"IPAddress":"172.17.0.5"}}}},
+         {"Id":"def","Names":["/not-a-machine"],"Image":"redis","State":"running","Labels":{}}]
+        """.data(using: .utf8)!
+        let machines = MachineService.machines(fromContainersJSON: json)
+        #expect(machines.count == 1)
+        #expect(machines[0].name == "dev")
+        #expect(machines[0].containerID == "abc123")
+        #expect(machines[0].distro == "Ubuntu")
+        #expect(machines[0].status == .running)
+        #expect(machines[0].ip == "172.17.0.5")
+        #expect(machines[0].letter == "U")
+    }
+}

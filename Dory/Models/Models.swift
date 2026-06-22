@@ -168,6 +168,7 @@ struct Machine: Identifiable, Hashable, Sendable {
     var ip: String
     var letter: String
     var badgeHex: UInt32
+    var containerID: String = ""
     var id: String { name }
 
     var badgeColor: Color { Color(hex: badgeHex) }
