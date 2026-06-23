@@ -1195,6 +1195,34 @@ final class AppStore {
         volumeBrowseBusy = false
     }
 
+    func copyVolumePath(_ entry: VolumeEntry) {
+        let path = volumeBrowsePath.isEmpty ? "/\(entry.name)" : "/\(volumeBrowsePath)/\(entry.name)"
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(path, forType: .string)
+    }
+
+    func exportVolumeFile(_ entry: VolumeEntry) {
+        guard let volume = browsingVolume, !entry.isDirectory else { return }
+        let relativePath = volumeBrowsePath.isEmpty ? entry.name : "\(volumeBrowsePath)/\(entry.name)"
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = entry.name
+        panel.canCreateDirectories = true
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        volumeBrowseBusy = true
+        Task {
+            let data = await VolumeBrowser(runtime: runtime).exportFile(volume: volume, path: relativePath)
+            volumeBrowseBusy = false
+            guard let data else { actionError = "Could not export \(entry.name)"; return }
+            do { try data.write(to: url) } catch { actionError = "Could not save file: \(error.localizedDescription)" }
+        }
+    }
+
+    func jumpToVolumePath(_ path: String) async {
+        volumeBrowsePath = path
+        volumeFilePreview = nil
+        await refreshVolumeBrowser()
+    }
+
     func toggleMachine(_ machine: Machine) {
         guard let idx = machines.firstIndex(where: { $0.id == machine.id }) else { return }
         let wasRunning = machines[idx].status == .running
