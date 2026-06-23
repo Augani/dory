@@ -55,13 +55,14 @@ struct MachineCreationSheet: View {
 
             if succeeded, let machine = store.machineCreated {
                 if let port = machine.sshPort {
+                    let sshCommand = "ssh \(machine.username)@localhost -p \(port)"
                     HStack(spacing: 6) {
                         Image(systemName: "terminal").font(.system(size: 11)).foregroundStyle(p.text3)
-                        Text("ssh \(machine.username)@localhost -p \(port)").font(.mono(11)).foregroundStyle(p.text2).lineLimit(1)
+                        Text(sshCommand).font(.mono(11)).foregroundStyle(p.text2).lineLimit(1)
                         Spacer(minLength: 0)
                         Button {
                             NSPasteboard.general.clearContents()
-                            NSPasteboard.general.setString("ssh \(machine.username)@localhost -p \(port)", forType: .string)
+                            NSPasteboard.general.setString(sshCommand, forType: .string)
                         } label: {
                             Image(systemName: "doc.on.doc").font(.system(size: 10)).foregroundStyle(p.text3)
                         }.buttonStyle(.plain)
