@@ -171,6 +171,8 @@ struct Machine: Identifiable, Hashable, Sendable {
     var containerID: String = ""
     var arch: String = ""
     var recipe: String = ""
+    var username: String = "root"
+    var loginShell: String = "/bin/sh"
     var id: String { name }
 
     var badgeColor: Color { Color(hex: badgeHex) }

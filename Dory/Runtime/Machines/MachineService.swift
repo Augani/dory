@@ -7,6 +7,8 @@ struct MachineSettings: Sendable, Hashable {
     var memoryMB: Int?
     var mounts: [MountPair] = []
     var ports: [PortPair] = []
+    var identity: MacIdentity? = nil
+    var env: [String: String] = [:]
     static let `default` = MachineSettings(cpus: nil, memoryMB: nil)
 }
 
@@ -17,6 +19,8 @@ struct MachineService: Sendable {
     static let label = "dory.machine"
     static let versionLabel = "dory.machine.version"
     static let archLabel = "dory.machine.arch"
+    static let userLabel = "dory.machine.user"
+    static let shellLabel = "dory.machine.shell"
     static let recipeLabel = "dory.recipe"
     static let keepalive = ["tail", "-f", "/dev/null"]
     static let snapshotRepoPrefix = "dory-snapshot/"
@@ -56,6 +60,10 @@ struct MachineService: Sendable {
         let cmd = useInit ? ["/sbin/init"] : keepalive
         var labels = [label: distro.family, versionLabel: distro.version, archLabel: arch.rawValue]
         if let recipe { labels[recipeLabel] = recipe.id }
+        if let identity = settings.identity {
+            labels[userLabel] = identity.username
+            labels[shellLabel] = identity.shell
+        }
         let baseHostConfig: [String: Any] = [
             "Privileged": true,
             "CgroupnsMode": "host",
@@ -68,7 +76,7 @@ struct MachineService: Sendable {
             "Hostname": name,
             "Image": imageTag,
             "Cmd": cmd,
-            "Env": ["container=docker"],
+            "Env": (["container=docker"] + settings.env.map { "\($0.key)=\($0.value)" }).sorted(),
             "StopSignal": "SIGRTMIN+3",
             "Labels": labels,
             "HostConfig": hostConfig,
@@ -105,7 +113,9 @@ struct MachineService: Sendable {
                 badgeHex: distro.badgeHex,
                 containerID: entry.Id,
                 arch: entry.Labels?[archLabel] ?? "",
-                recipe: entry.Labels?[recipeLabel] ?? ""
+                recipe: entry.Labels?[recipeLabel] ?? "",
+                username: entry.Labels?[userLabel] ?? "root",
+                loginShell: entry.Labels?[shellLabel] ?? "/bin/sh"
             )
         }
     }
@@ -191,6 +201,10 @@ struct MachineService: Sendable {
             "dory.machine.boot": snapshot.boot,
         ]
         if !snapshot.recipe.isEmpty { labels[Self.recipeLabel] = snapshot.recipe }
+        if let identity = settings.identity {
+            labels[Self.userLabel] = identity.username
+            labels[Self.shellLabel] = identity.shell
+        }
         var body: [String: Any] = [
             "Hostname": name, "Image": imageRef, "Cmd": cmd, "Env": ["container=docker"],
             "StopSignal": "SIGRTMIN+3",
