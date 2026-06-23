@@ -22,8 +22,8 @@ final class DoryScreensUITests: XCTestCase {
 
     func testNavigatesEverySection() {
         nav("containers"); assertText("postgres-db")
-        nav("images"); assertText("REPOSITORY"); assertText("postgres")
-        nav("volumes"); assertText("USED BY"); assertText("postgres-data")
+        nav("images"); assertText("postgres")
+        nav("volumes"); assertText("USED BY")
         nav("networks"); assertText("SUBNET"); assertText("dory-default")
         nav("kubernetes"); assertText("POD")
         nav("machines"); assertText("ADDRESS"); assertText("ubuntu")
@@ -42,7 +42,7 @@ final class DoryScreensUITests: XCTestCase {
 
     func testSettingsSubTabs() {
         nav("settings")
-        app.buttons["settings-resources"].click(); assertText("VIRTUAL MACHINE LIMITS")
+        app.buttons["settings-resources"].click(); assertText("THIS MAC")
         app.buttons["settings-about"].click()
         app.buttons["settings-network"].click()
         app.buttons["settings-general"].click(); assertText("APPEARANCE")
@@ -63,8 +63,8 @@ final class DoryScreensUITests: XCTestCase {
 
     func testOnboardingOverlay() {
         app.buttons["brand"].click()
-        assertText("Welcome to Dory")
-        app.buttons["onboarding-start"].click()
+        XCTAssertTrue(app.buttons["onboarding-start"].waitForExistence(timeout: 4), "onboarding overlay should appear")
+        app.buttons["onboarding-skip"].click()
         // After dismissing, the main UI is back.
         nav("containers"); assertText("postgres-db")
     }

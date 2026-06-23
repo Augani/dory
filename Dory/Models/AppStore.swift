@@ -236,7 +236,7 @@ final class AppStore {
         defer { isConnecting = false }
         switch ProcessInfo.processInfo.environment["DORY_RUNTIME"] {
         case "mock":
-            break
+            await reload()
         case "apple":
             if let apple = await AppleContainerRuntime.detect() { runtime = apple; await reload() }
             else { loadState = .engineOff }
@@ -1115,13 +1115,15 @@ final class AppStore {
     var machineCreated: Machine?
 
     func loadMachines() {
-        guard runtimeKind != .mock, runtimeKind.isDockerCompatible else { machines = []; return }
+        guard runtimeKind != .mock else { machines = MockData.machines; return }
+        guard runtimeKind.isDockerCompatible else { machines = []; return }
         Task { await refreshMachines() }
     }
 
     @discardableResult
     private func refreshMachines() async -> [Machine] {
-        guard runtimeKind != .mock, runtimeKind.isDockerCompatible else { machines = []; return [] }
+        guard runtimeKind != .mock else { machines = MockData.machines; return MockData.machines }
+        guard runtimeKind.isDockerCompatible else { machines = []; return [] }
         var list = await machineService.list()
         for index in list.indices {
             if let match = containers.first(where: { $0.id == list[index].containerID }) {
