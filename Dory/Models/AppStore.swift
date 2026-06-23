@@ -501,30 +501,40 @@ final class AppStore {
     }
 
     func streamPodLogs(_ pod: Pod) -> AsyncStream<LogLine> {
-        AsyncStream { cont in
-            guard let kubectl = kubeClient.kubectlPath else { cont.finish(); return }
-            var args: [String] = []
-            if let kubeconfig = KubeClient.kubeconfig() { args += ["--kubeconfig", kubeconfig] }
-            args += ["logs", pod.name, "-n", pod.namespace, "-f", "--since=1s", "--timestamps"]
+        guard let kubectl = kubeClient.kubectlPath else {
+            return AsyncStream { $0.finish() }
+        }
+        var args: [String] = []
+        if let kubeconfig = KubeClient.kubeconfig() { args += ["--kubeconfig", kubeconfig] }
+        args += ["logs", pod.name, "-n", pod.namespace, "-f", "--since=1s", "--timestamps"]
+        return AsyncStream { continuation in
+            final class LineBuffer: @unchecked Sendable { var data = Data() }
+            let buffer = LineBuffer()
             let process = Process()
             process.executableURL = URL(fileURLWithPath: kubectl)
             process.arguments = args
             let pipe = Pipe()
             process.standardOutput = pipe
-            process.standardError = Pipe()
-            let task = Task {
-                do {
-                    for try await line in pipe.fileHandleForReading.bytes.lines {
-                        for parsed in KubeLogParser.parse(line) { cont.yield(parsed) }
+            process.standardError = pipe
+            let reader = pipe.fileHandleForReading
+            reader.readabilityHandler = { handle in
+                let chunk = handle.availableData
+                guard !chunk.isEmpty else { return }
+                buffer.data.append(chunk)
+                while let newline = buffer.data.firstIndex(of: 0x0A) {
+                    let lineData = buffer.data.subdata(in: buffer.data.startIndex..<newline)
+                    buffer.data.removeSubrange(buffer.data.startIndex...newline)
+                    if let text = String(data: lineData, encoding: .utf8), !text.isEmpty {
+                        for parsed in KubeLogParser.parse(text) { continuation.yield(parsed) }
                     }
-                } catch {}
-                cont.finish()
+                }
             }
-            cont.onTermination = { _ in
-                task.cancel()
+            process.terminationHandler = { _ in continuation.finish() }
+            do { try process.run() } catch { continuation.finish() }
+            continuation.onTermination = { _ in
+                reader.readabilityHandler = nil
                 if process.isRunning { process.terminate() }
             }
-            do { try process.run() } catch { cont.finish() }
         }
     }
 
