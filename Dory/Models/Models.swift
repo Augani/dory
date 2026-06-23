@@ -148,6 +148,19 @@ enum PodPhase: String, Sendable {
     }
 }
 
+enum KubeResourceKind: String, CaseIterable, Identifiable, Sendable {
+    case pods, deployments, services
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .pods: "Pods"
+        case .deployments: "Deployments"
+        case .services: "Services"
+        }
+    }
+    var apiKind: String { rawValue }
+}
+
 struct Pod: Identifiable, Hashable, Sendable {
     var name: String
     var namespace: String
