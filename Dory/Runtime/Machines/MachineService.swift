@@ -389,7 +389,7 @@ extension MachineService {
             var bindings: [String: [[String: String]]] = [:]
             for port in settings.ports {
                 exposed["\(port.guest)/tcp"] = [:]
-                bindings["\(port.guest)/tcp"] = [["HostIp": "127.0.0.1", "HostPort": "\(port.host)"]]
+                bindings["\(port.guest)/tcp"] = [["HostPort": "\(port.host)"]]
             }
             host["ExposedPorts"] = exposed
             host["PortBindings"] = bindings

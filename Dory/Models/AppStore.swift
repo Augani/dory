@@ -332,7 +332,7 @@ final class AppStore {
                 if let ip = await SharedVMProvisioner.engineIP(), ip != "127.0.0.1" {
                     forwarder.updateTarget(ip)
                     let endpoints = await Self.containerEndpoints(runtime, suffix: suffix)
-                    forwarder.sync(ports: Set(endpoints.values))
+                    forwarder.sync(ports: await Self.allPublishedPorts(runtime))
                     table.replaceContainers(endpoints)
                     if FileManager.default.fileExists(atPath: KubernetesProvisioner.kubeconfigPath) {
                         await self?.ensureKubeProxy()
@@ -414,6 +414,19 @@ final class AppStore {
             }
         }
         return result
+    }
+
+    nonisolated static func publicPorts(fromContainersJSON data: Data) -> Set<Int> {
+        struct Entry: Decodable { let Ports: [PortItem]? }
+        struct PortItem: Decodable { let PublicPort: Int? }
+        guard let entries = try? JSONDecoder().decode([Entry].self, from: data) else { return [] }
+        return Set(entries.flatMap { ($0.Ports ?? []).compactMap(\.PublicPort) })
+    }
+
+    nonisolated static func allPublishedPorts(_ runtime: any ContainerRuntime) async -> Set<Int> {
+        guard let response = await runtime.proxyRequest(method: "GET", path: "/containers/json", headers: [], body: Data()),
+              response.isSuccess else { return [] }
+        return publicPorts(fromContainersJSON: response.body)
     }
 
     func loadKubernetes() async {
