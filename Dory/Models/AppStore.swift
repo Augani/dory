@@ -57,10 +57,10 @@ final class AppStore {
 
     var containers: [Container] = []
     var images: [DockerImage] = []
-    var volumes: [Volume] = MockData.volumes
-    var networks: [DoryNetwork] = MockData.networks
+    var volumes: [Volume] = []
+    var networks: [DoryNetwork] = []
     var pods: [Pod] = []
-    var machines: [Machine] = MockData.machines
+    var machines: [Machine] = []
     var engineRunning = false
     var engineVersion = "1.4.0"
 
