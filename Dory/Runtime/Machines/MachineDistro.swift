@@ -17,7 +17,7 @@ struct MachineDistro: Sendable, Identifiable, Hashable {
 
     var id: String { baseImage }
 
-    func machineImageTag(for arch: MachineArch) -> String { "dory-machine/\(baseImage)-\(arch.rawValue)" }
+    func machineImageTag(for arch: MachineArch) -> String { "dory-machine/\(baseImage)-\(arch.rawValue)-v2" }
 
     func defaultArch() -> MachineArch { arches.contains(.host) ? .host : arches[0] }
 

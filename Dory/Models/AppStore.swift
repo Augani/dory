@@ -1256,7 +1256,10 @@ final class AppStore {
         defer { machineBusy = false }
         var effectiveSettings = identity.map { Self.withIdentity(settings, $0) } ?? settings
         if effectiveSettings.identity != nil, !effectiveSettings.ports.contains(where: { $0.guest == 22 }) {
-            effectiveSettings.ports.append(PortPair(host: Self.allocateFreePort(), guest: 22))
+            let sshHostPort = Self.allocateFreePort()
+            if sshHostPort > 0 {
+                effectiveSettings.ports.append(PortPair(host: sshHostPort, guest: 22))
+            }
         }
         do {
             try await machineService.create(name: trimmedName, distro: distro, arch: arch, recipe: recipe, settings: effectiveSettings) { line in

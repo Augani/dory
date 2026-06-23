@@ -34,8 +34,8 @@ struct MachineDistroTests {
     }
 
     @Test func derivesMachineImageTag() {
-        #expect(MachineDistro.forImage("ubuntu:24.04")?.machineImageTag(for: .arm64) == "dory-machine/ubuntu:24.04-arm64")
-        #expect(MachineDistro.forImage("ubuntu:24.04")?.machineImageTag(for: .amd64) == "dory-machine/ubuntu:24.04-amd64")
+        #expect(MachineDistro.forImage("ubuntu:24.04")?.machineImageTag(for: .arm64) == "dory-machine/ubuntu:24.04-arm64-v2")
+        #expect(MachineDistro.forImage("ubuntu:24.04")?.machineImageTag(for: .amd64) == "dory-machine/ubuntu:24.04-amd64-v2")
     }
 
     @Test func archCatalogRules() {
