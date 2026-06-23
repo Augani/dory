@@ -73,13 +73,4 @@ struct KubernetesProvider: Sendable {
         guard result.exit == 0, let data = result.output.data(using: .utf8) else { return nil }
         return try? JSONDecoder().decode(T.self, from: data)
     }
-
-    static func phase(_ phase: String?, statuses: [KubeContainerStatus]) -> PodPhase {
-        switch phase {
-        case "Running": return .running
-        case "Pending": return .pending
-        case "Succeeded": return .completed
-        default: return .crashLoopBackOff
-        }
-    }
 }

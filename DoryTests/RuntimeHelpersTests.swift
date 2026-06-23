@@ -30,10 +30,10 @@ struct RuntimeHelpersTests {
     }
 
     @Test func mapsKubernetesPhase() {
-        #expect(KubernetesProvider.phase("Running", statuses: []) == .running)
-        #expect(KubernetesProvider.phase("Pending", statuses: []) == .pending)
-        #expect(KubernetesProvider.phase("Succeeded", statuses: []) == .completed)
-        #expect(KubernetesProvider.phase("Failed", statuses: []) == .crashLoopBackOff)
+        #expect(KubeRowMapper.podPhase("Running", statuses: []) == .running)
+        #expect(KubeRowMapper.podPhase("Pending", statuses: []) == .pending)
+        #expect(KubeRowMapper.podPhase("Succeeded", statuses: []) == .completed)
+        #expect(KubeRowMapper.podPhase("Failed", statuses: []) == .crashLoopBackOff)
     }
 
     @Test func formatsBytes() {
