@@ -45,9 +45,9 @@ enum MockData {
     ]
 
     static let deployments: [KubeDeploymentRow] = [
-        KubeDeploymentRow(name: "web", namespace: "default", ready: "2/2", upToDate: 2, available: 2, age: "42m"),
-        KubeDeploymentRow(name: "redis", namespace: "cache", ready: "1/1", upToDate: 1, available: 1, age: "2h"),
-        KubeDeploymentRow(name: "worker", namespace: "jobs", ready: "0/1", upToDate: 1, available: 0, age: "5m"),
+        KubeDeploymentRow(name: "web", namespace: "default", ready: "2/2", upToDate: 2, available: 2, age: "42m", replicas: 2),
+        KubeDeploymentRow(name: "redis", namespace: "cache", ready: "1/1", upToDate: 1, available: 1, age: "2h", replicas: 1),
+        KubeDeploymentRow(name: "worker", namespace: "jobs", ready: "0/1", upToDate: 1, available: 0, age: "5m", replicas: 1),
     ]
 
     static let kubeServices: [KubeServiceRow] = [

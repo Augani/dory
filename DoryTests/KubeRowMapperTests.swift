@@ -14,6 +14,7 @@ struct KubeRowMapperTests {
         #expect(rows[0].name == "web")
         #expect(rows[0].ready == "2/3")
         #expect(rows[0].available == 2)
+        #expect(rows[0].replicas == 3)
     }
 
     @Test func servicesSkipHeadless() {

@@ -45,4 +45,30 @@ struct KubeClient: Sendable {
         let result = await Shell.runAsyncResult(kubectl, Self.deleteArgs(kind: kind, name: name, namespace: namespace, kubeconfig: Self.kubeconfig()))
         return result.exit == 0 ? .success(()) : .failure(.nonZero(result.exit, result.output))
     }
+
+    static func scaleArgs(deployment: String, namespace: String, replicas: Int, kubeconfig: String?) -> [String] {
+        var args: [String] = []
+        if let kubeconfig, !kubeconfig.isEmpty { args += ["--kubeconfig", kubeconfig] }
+        args += ["scale", "deployment", deployment, "-n", namespace, "--replicas=\(replicas)"]
+        return args
+    }
+
+    static func rolloutRestartArgs(deployment: String, namespace: String, kubeconfig: String?) -> [String] {
+        var args: [String] = []
+        if let kubeconfig, !kubeconfig.isEmpty { args += ["--kubeconfig", kubeconfig] }
+        args += ["rollout", "restart", "deployment", deployment, "-n", namespace]
+        return args
+    }
+
+    func scale(deployment: String, namespace: String, replicas: Int) async -> Result<Void, KubeError> {
+        guard let kubectl = kubectlPath else { return .failure(.kubectlMissing) }
+        let result = await Shell.runAsyncResult(kubectl, Self.scaleArgs(deployment: deployment, namespace: namespace, replicas: replicas, kubeconfig: Self.kubeconfig()))
+        return result.exit == 0 ? .success(()) : .failure(.nonZero(result.exit, result.output))
+    }
+
+    func rolloutRestart(deployment: String, namespace: String) async -> Result<Void, KubeError> {
+        guard let kubectl = kubectlPath else { return .failure(.kubectlMissing) }
+        let result = await Shell.runAsyncResult(kubectl, Self.rolloutRestartArgs(deployment: deployment, namespace: namespace, kubeconfig: Self.kubeconfig()))
+        return result.exit == 0 ? .success(()) : .failure(.nonZero(result.exit, result.output))
+    }
 }

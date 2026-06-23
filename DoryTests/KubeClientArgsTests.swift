@@ -21,4 +21,14 @@ struct KubeClientArgsTests {
         #expect(KubeClient.deleteArgs(kind: "pod", name: "web-1", namespace: "default", kubeconfig: "/k")
             == ["--kubeconfig", "/k", "delete", "pod", "web-1", "-n", "default"])
     }
+
+    @Test func scaleArgsBuildReplicaFlag() {
+        #expect(KubeClient.scaleArgs(deployment: "web", namespace: "default", replicas: 3, kubeconfig: "/k")
+            == ["--kubeconfig", "/k", "scale", "deployment", "web", "-n", "default", "--replicas=3"])
+    }
+
+    @Test func rolloutRestartArgsBuild() {
+        #expect(KubeClient.rolloutRestartArgs(deployment: "web", namespace: "default", kubeconfig: "/k")
+            == ["--kubeconfig", "/k", "rollout", "restart", "deployment", "web", "-n", "default"])
+    }
 }

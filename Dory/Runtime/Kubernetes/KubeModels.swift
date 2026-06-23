@@ -39,6 +39,7 @@ struct KubeDeploymentRow: Identifiable, Hashable, Sendable {
     var upToDate: Int
     var available: Int
     var age: String
+    var replicas: Int
     var id: String { "\(namespace)/\(name)" }
 }
 
@@ -86,7 +87,8 @@ enum KubeRowMapper {
                 name: name, namespace: dep.metadata?.namespace ?? "default",
                 ready: "\(ready)/\(desired)", upToDate: dep.status?.updatedReplicas ?? 0,
                 available: dep.status?.availableReplicas ?? 0,
-                age: DockerFormat.relative(iso: dep.metadata?.creationTimestamp)
+                age: DockerFormat.relative(iso: dep.metadata?.creationTimestamp),
+                replicas: desired
             )
         }
     }
