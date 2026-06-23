@@ -20,6 +20,7 @@ struct NewMachineSheet: View {
     @State private var envRows: [EnvRow] = []
     @State private var shareHome = true
     @State private var shell = "/bin/bash"
+    @State private var username = NSUserName()
 
     private struct EnvRow: Identifiable, Hashable { let id = UUID(); var key = ""; var value = "" }
 
@@ -131,12 +132,15 @@ struct NewMachineSheet: View {
             HStack(alignment: .top, spacing: 16) {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("USER").font(.system(size: 9.5, weight: .semibold)).foregroundStyle(p.text3).tracking(0.5)
-                    Text(NSUserName())
+                    TextField("username", text: $username)
+                        .textFieldStyle(.plain)
                         .font(.mono(12.5)).foregroundStyle(p.text)
                         .padding(.horizontal, 10).padding(.vertical, 7)
                         .frame(width: 180, alignment: .leading)
                         .background(p.bgInput, in: RoundedRectangle(cornerRadius: 8))
-                        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(p.border))
+                        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(usernameInvalid ? p.red : p.border))
+                        .disabled(!shareHome)
+                        .opacity(shareHome ? 1 : 0.5)
                 }
                 VStack(alignment: .leading, spacing: 6) {
                     Text("LOGIN SHELL").font(.system(size: 9.5, weight: .semibold)).foregroundStyle(p.text3).tracking(0.5)
@@ -148,6 +152,10 @@ struct NewMachineSheet: View {
                     .labelsHidden().pickerStyle(.menu).frame(width: 160, alignment: .leading)
                 }
                 Spacer(minLength: 0)
+            }
+            if shareHome && usernameInvalid {
+                Text("Lowercase letters, digits, _ or -, starting with a letter or _ (max 32).")
+                    .font(.system(size: 11)).foregroundStyle(p.red)
             }
             Toggle("Share my Mac home (read-write)", isOn: $shareHome)
                 .toggleStyle(.switch).tint(p.accent)
@@ -204,6 +212,11 @@ struct NewMachineSheet: View {
                     .labelsHidden().pickerStyle(.menu)
                     .frame(width: 240, alignment: .leading)
                     .disabled(selectedFamily.arches.count < 2)
+                    if !selectedArch.isNative {
+                        Text("Emulated via binfmt — slower than \(MachineArch.host.display). Fine for builds and testing.")
+                            .font(.system(size: 11)).foregroundStyle(p.text3)
+                            .frame(width: 240, alignment: .leading)
+                    }
                 }
             }
             VStack(alignment: .leading, spacing: 9) {
@@ -439,7 +452,7 @@ struct NewMachineSheet: View {
     }
 
     private var createDisabled: Bool {
-        name.trimmingCharacters(in: .whitespaces).isEmpty || !nameValid || store.machineBusy || !engineReady || mountsOutsideHome
+        name.trimmingCharacters(in: .whitespaces).isEmpty || !nameValid || store.machineBusy || !engineReady || mountsOutsideHome || (shareHome && !usernameValid)
     }
 
     private var mountsOutsideHome: Bool {
@@ -457,6 +470,16 @@ struct NewMachineSheet: View {
         return trimmed.range(of: "^[a-zA-Z0-9][a-zA-Z0-9_.-]*$", options: .regularExpression) != nil
     }
 
+    private var usernameValid: Bool {
+        let trimmed = username.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty, trimmed.count <= 32 else { return false }
+        return trimmed.range(of: "^[a-z_][a-z0-9_-]*$", options: .regularExpression) != nil
+    }
+
+    private var usernameInvalid: Bool {
+        !username.trimmingCharacters(in: .whitespaces).isEmpty && !usernameValid
+    }
+
     private func select(_ family: MachineFamily) {
         selectedFamily = family
         selectedVersion = family.defaultVersion
@@ -469,7 +492,11 @@ struct NewMachineSheet: View {
     }
 
     private func create() {
-        let identity = shareHome ? MacIdentity.current(shell: shell) : nil
+        let trimmedUser = username.trimmingCharacters(in: .whitespaces)
+        let identity = shareHome
+            ? MacIdentity.make(username: trimmedUser, uid: Int(getuid()), homePath: NSHomeDirectory(),
+                               shell: shell, sshDir: NSHomeDirectory() + "/.ssh")
+            : nil
         let settings = collectedSettings()
         let machineName = name
         let image = selectedVersion.baseImage
