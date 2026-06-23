@@ -20,6 +20,15 @@ struct DoryApp: App {
         .windowResizability(.contentMinSize)
         .commands { DoryCommands(store: store) }
 
+        WindowGroup("Terminal", for: TerminalSession.self) { $session in
+            if let session {
+                TerminalWindowView(session: session)
+                    .environment(store)
+                    .environment(\.palette, store.palette)
+            }
+        }
+        .defaultSize(width: 760, height: 480)
+
         MenuBarExtra(isInserted: Binding(get: { store.showMenuBarIcon }, set: { store.setShowMenuBarIcon($0) })) {
             MenuBarContentView()
                 .environment(store)
