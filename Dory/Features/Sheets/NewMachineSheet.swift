@@ -17,6 +17,11 @@ struct NewMachineSheet: View {
     @State private var memoryGB = 2
     @State private var mountRows: [MountRow] = []
     @State private var portRows: [PortRow] = []
+    @State private var envRows: [EnvRow] = []
+    @State private var shareHome = true
+    @State private var shell = "/bin/bash"
+
+    private struct EnvRow: Identifiable, Hashable { let id = UUID(); var key = ""; var value = "" }
 
     private struct MountRow: Identifiable, Hashable {
         let id = UUID()
@@ -55,6 +60,7 @@ struct NewMachineSheet: View {
                     if !engineReady { engineNotice }
                     distroSection
                     devEnvironmentSection
+                    identitySection
                     optionsRow
                     advancedSection
                 }
@@ -114,6 +120,62 @@ struct NewMachineSheet: View {
             .disabled(!recipesAvailable)
             if !recipesAvailable {
                 Text("Dev recipes currently require an apt-based distro (Ubuntu, Debian, Kali).")
+                    .font(.system(size: 11)).foregroundStyle(p.text3)
+            }
+        }
+    }
+
+    private var identitySection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            sectionLabel("IDENTITY & SHARING")
+            HStack(alignment: .top, spacing: 16) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("USER").font(.system(size: 9.5, weight: .semibold)).foregroundStyle(p.text3).tracking(0.5)
+                    Text(NSUserName())
+                        .font(.mono(12.5)).foregroundStyle(p.text)
+                        .padding(.horizontal, 10).padding(.vertical, 7)
+                        .frame(width: 180, alignment: .leading)
+                        .background(p.bgInput, in: RoundedRectangle(cornerRadius: 8))
+                        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(p.border))
+                }
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("LOGIN SHELL").font(.system(size: 9.5, weight: .semibold)).foregroundStyle(p.text3).tracking(0.5)
+                    Picker("", selection: $shell) {
+                        Text("bash").tag("/bin/bash")
+                        Text("zsh").tag("/bin/zsh")
+                        Text("fish").tag("/usr/bin/fish")
+                    }
+                    .labelsHidden().pickerStyle(.menu).frame(width: 160, alignment: .leading)
+                }
+                Spacer(minLength: 0)
+            }
+            Toggle("Share my Mac home (read-write)", isOn: $shareHome)
+                .toggleStyle(.switch).tint(p.accent)
+                .font(.system(size: 12.5)).foregroundStyle(p.text)
+            Text("Your home, git config, and SSH keys are shared into this machine.")
+                .font(.system(size: 11)).foregroundStyle(p.text3)
+            envBlock
+        }
+    }
+
+    private var envBlock: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                sectionLabel("ENVIRONMENT")
+                Spacer(minLength: 0)
+                addButton { envRows.append(EnvRow()) }
+            }
+            ForEach($envRows) { $row in
+                HStack(spacing: 8) {
+                    fieldInput("KEY", text: $row.key, width: 150)
+                    Text("=").font(.system(size: 12)).foregroundStyle(p.text3)
+                    fieldInput("VALUE", text: $row.value, width: 180)
+                    Spacer(minLength: 0)
+                    removeButton { envRows.removeAll { $0.id == row.id } }
+                }
+            }
+            if envRows.isEmpty {
+                Text("Set environment variables for the machine.")
                     .font(.system(size: 11)).foregroundStyle(p.text3)
             }
         }
@@ -229,6 +291,13 @@ struct NewMachineSheet: View {
             if mountRows.isEmpty {
                 Text("Share host folders into the machine.")
                     .font(.system(size: 11)).foregroundStyle(p.text3)
+            }
+            if mountsOutsideHome {
+                HStack(spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 11)).foregroundStyle(p.red)
+                    Text("Mounted folders must be under your home (\(NSHomeDirectory())).")
+                        .font(.system(size: 11)).foregroundStyle(p.red)
+                }
             }
         }
     }
@@ -370,7 +439,16 @@ struct NewMachineSheet: View {
     }
 
     private var createDisabled: Bool {
-        name.trimmingCharacters(in: .whitespaces).isEmpty || !nameValid || store.machineBusy || !engineReady
+        name.trimmingCharacters(in: .whitespaces).isEmpty || !nameValid || store.machineBusy || !engineReady || mountsOutsideHome
+    }
+
+    private var mountsOutsideHome: Bool {
+        let home = NSHomeDirectory()
+        return mountRows.contains { row in
+            let host = row.host.trimmingCharacters(in: .whitespaces)
+            guard !host.isEmpty else { return false }
+            return host != home && !host.hasPrefix(home + "/")
+        }
     }
 
     private var nameValid: Bool {
@@ -391,13 +469,18 @@ struct NewMachineSheet: View {
     }
 
     private func create() {
-        let image = selectedVersion.baseImage
+        let identity = shareHome ? MacIdentity.current(shell: shell) : nil
+        let settings = collectedSettings()
         let machineName = name
+        let image = selectedVersion.baseImage
         let arch = selectedArch
         let recipe = selectedRecipe
-        let settings = collectedSettings()
         store.activeSheet = nil
-        Task { _ = await store.createMachine(image: image, name: machineName, arch: arch, recipe: recipe, settings: settings) }
+        Task { _ = await store.createMachine(image: image, name: machineName, arch: arch, recipe: recipe, settings: settings, identity: identity) }
+    }
+
+    static func buildSettings(cpus: Int, memoryGB: Int, mounts: [MountPair], ports: [PortPair], env: [String: String]) -> MachineSettings {
+        MachineSettings(cpus: cpus, memoryMB: memoryGB * 1024, mounts: mounts, ports: ports, env: env)
     }
 
     private func collectedSettings() -> MachineSettings {
@@ -413,12 +496,12 @@ struct NewMachineSheet: View {
                   host > 0, guest > 0 else { return nil }
             return PortPair(host: host, guest: guest)
         }
-        return MachineSettings(
-            cpus: advancedExpanded ? cpus : nil,
-            memoryMB: advancedExpanded ? memoryGB * 1024 : nil,
-            mounts: mounts,
-            ports: ports
-        )
+        let env = Dictionary(envRows.compactMap { row -> (String, String)? in
+            let key = row.key.trimmingCharacters(in: .whitespaces)
+            guard !key.isEmpty else { return nil }
+            return (key, row.value)
+        }, uniquingKeysWith: { _, latest in latest })
+        return Self.buildSettings(cpus: cpus, memoryGB: memoryGB, mounts: mounts, ports: ports, env: env)
     }
 
     static func defaultName(_ family: MachineFamily) -> String {
