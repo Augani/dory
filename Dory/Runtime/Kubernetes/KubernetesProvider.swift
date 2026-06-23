@@ -64,24 +64,8 @@ struct KubernetesProvider: Sendable {
             return KubernetesStatus(reachable: false, version: "", nodeCount: 0, pods: [])
         }
         let nodes = await decode(kubectl, kubeconfigArgs + ["get", "nodes", "-o", "json"], as: KubeNode.self)?.items?.count ?? 0
-        let pods = await pods(kubectl: kubectl)
+        let pods = await decode(kubectl, kubeconfigArgs + ["get", "pods", "-A", "-o", "json"], as: KubePodList.self).map(KubeRowMapper.pods) ?? []
         return KubernetesStatus(reachable: true, version: gitVersion, nodeCount: nodes, pods: pods)
-    }
-
-    private func pods(kubectl: String) async -> [Pod] {
-        guard let list = await decode(kubectl, kubeconfigArgs + ["get", "pods", "-A", "-o", "json"], as: KubePodList.self)?.items else { return [] }
-        return list.compactMap { pod in
-            guard let name = pod.metadata?.name else { return nil }
-            let statuses = pod.status?.containerStatuses ?? []
-            let ready = statuses.filter { $0.ready == true }.count
-            let restarts = statuses.reduce(0) { $0 + ($1.restartCount ?? 0) }
-            return Pod(
-                name: name, namespace: pod.metadata?.namespace ?? "default",
-                phase: Self.phase(pod.status?.phase, statuses: statuses),
-                ready: "\(ready)/\(max(statuses.count, 1))", restarts: restarts,
-                age: DockerFormat.relative(iso: pod.metadata?.creationTimestamp)
-            )
-        }
     }
 
     private func decode<T: Decodable>(_ kubectl: String, _ args: [String], as type: T.Type) async -> T? {
