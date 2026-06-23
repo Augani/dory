@@ -1500,4 +1500,20 @@ final class AppStore {
     func openContainerTerminal(_ container: Container) {
         TerminalLauncher.openContainerShell(socketPath: shimSocketPath, containerID: container.id)
     }
+
+    func terminalSession(for container: Container) -> TerminalSession {
+        TerminalSession(id: "container:\(container.id)", title: container.name, subtitle: container.image,
+                        logo: nil, socketPath: shimSocketPath, containerID: container.id,
+                        user: "root", shell: "/bin/sh", home: "/root")
+    }
+
+    func terminalSession(for machine: Machine) -> TerminalSession {
+        let home = machine.username == "root" ? "/root" : "/Users/\(machine.username)"
+        let family = MachineDistro.all.first { $0.display == machine.distro }?.family
+        return TerminalSession(id: "machine:\(machine.containerID)", title: machine.name,
+                               subtitle: "\(machine.distro) \(machine.version)",
+                               logo: family.flatMap { MachineDistro.logoAsset(family: $0) },
+                               socketPath: shimSocketPath, containerID: machine.containerID,
+                               user: machine.username, shell: machine.loginShell, home: home)
+    }
 }
