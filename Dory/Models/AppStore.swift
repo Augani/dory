@@ -82,10 +82,12 @@ final class AppStore {
     var deployments: [KubeDeploymentRow] = []
     var kubeServices: [KubeServiceRow] = []
     var selectedPodID: String? = nil
+    var selectedDeploymentID: String? = nil
 
     private var namespaceFilter: String? { kubeNamespace == "All Namespaces" ? nil : kubeNamespace }
     var kubeconfigHint: String { KubeContextHint.snippet(kubeconfigPath: KubernetesProvisioner.kubeconfigPath) }
     func selectedPod() -> Pod? { pods.first { $0.id == selectedPodID } }
+    func selectedDeployment() -> KubeDeploymentRow? { deployments.first { $0.id == selectedDeploymentID } }
 
     private var runtime: any ContainerRuntime
     var runtimeKind: RuntimeKind { runtime.kind }
@@ -485,6 +487,20 @@ final class AppStore {
 
     func deletePod(_ pod: Pod) async {
         switch await kubeClient.delete(kind: "pod", name: pod.name, namespace: pod.namespace) {
+        case .success: await loadKubeResource()
+        case .failure(let error): actionError = Self.kubeErrorText(error)
+        }
+    }
+
+    func scaleDeployment(_ deployment: KubeDeploymentRow, replicas: Int) async {
+        switch await kubeClient.scale(deployment: deployment.name, namespace: deployment.namespace, replicas: replicas) {
+        case .success: await loadKubeResource()
+        case .failure(let error): actionError = Self.kubeErrorText(error)
+        }
+    }
+
+    func restartDeployment(_ deployment: KubeDeploymentRow) async {
+        switch await kubeClient.rolloutRestart(deployment: deployment.name, namespace: deployment.namespace) {
         case .success: await loadKubeResource()
         case .failure(let error): actionError = Self.kubeErrorText(error)
         }
@@ -1654,5 +1670,11 @@ final class AppStore {
                                logo: family.flatMap { MachineDistro.logoAsset(family: $0) },
                                socketPath: shimSocketPath, containerID: machine.containerID,
                                user: machine.username, shell: machine.loginShell, home: home)
+    }
+
+    func terminalSession(for pod: Pod) -> TerminalSession {
+        TerminalSession(id: "pod:\(pod.namespace)/\(pod.name)", title: pod.name, subtitle: pod.namespace,
+                        logo: nil, socketPath: "", containerID: "", user: "root", shell: "/bin/sh", home: "/root",
+                        kubeExec: KubeExecTarget(pod: pod.name, namespace: pod.namespace, container: nil, kubeconfig: KubeClient.kubeconfig() ?? ""))
     }
 }
