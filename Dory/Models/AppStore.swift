@@ -1485,13 +1485,6 @@ final class AppStore {
         Task { try? await service.delete(name: name); loadMachines() }
     }
 
-    func openMachineTerminalApp(_ machine: Machine) {
-        guard !machine.containerID.isEmpty else { return }
-        let home = machine.username == "root" ? "/root" : "/Users/\(machine.username)"
-        TerminalLauncher.openMachineShell(socketPath: shimSocketPath, containerID: machine.containerID,
-                                          user: machine.username, shell: machine.loginShell, home: home)
-    }
-
     func openContainerTerminal(_ container: Container) {
         TerminalLauncher.openContainerShell(socketPath: shimSocketPath, containerID: container.id)
     }
