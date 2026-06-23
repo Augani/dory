@@ -133,6 +133,12 @@ private struct MachineCard: View {
             }
             .padding(.top, 16).padding(.bottom, 14)
 
+            if machine.username != "root" {
+                Text("\(machine.username) · \(machine.loginShell) · ~ shared")
+                    .font(.system(size: 11)).foregroundStyle(p.text3).lineLimit(1)
+                    .padding(.bottom, 12)
+            }
+
             Divider().overlay(p.border)
 
             HStack(spacing: 8) {

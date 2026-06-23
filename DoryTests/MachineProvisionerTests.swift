@@ -35,4 +35,10 @@ struct MachineProvisionerTests {
         #expect(!s.contains("ssh-keygen -A"))
         #expect(!s.contains("AuthorizedKeysFile"))
     }
+
+    @Test func sanitizesSudoersFilenameSlug() {
+        let identity = MacIdentity(username: "a b", uid: 501, homePath: "/Users/ab", shell: "/bin/bash", publicKeys: [])
+        let script = MachineProvisioner.script(identity: identity, pkg: .apt, isSystemd: true, includeSSH: false)
+        #expect(script.contains("/etc/sudoers.d/dory-ab"))
+    }
 }

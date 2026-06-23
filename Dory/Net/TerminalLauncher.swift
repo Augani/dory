@@ -20,7 +20,7 @@ enum TerminalLauncher {
         if user == "root" {
             return "exec -it \(container) sh -c 'command -v bash >/dev/null && exec bash || exec sh'"
         }
-        return "exec -it -u \(user) -w \(home) \(container) \(shell) -l"
+        return "exec -it -u '\(user)' -w '\(home)' \(container) '\(shell)' -l"
     }
 
     static func openMachineShell(socketPath: String, containerID: String, user: String, shell: String, home: String) {

@@ -9,6 +9,6 @@ struct ExecArgsTests {
 
     @Test func nonRootExecsAsUserWithLoginShell() {
         let a = TerminalLauncher.execArgs(user: "augustusotu", shell: "/bin/bash", home: "/Users/augustusotu", container: "c1")
-        #expect(a == "exec -it -u augustusotu -w /Users/augustusotu c1 /bin/bash -l")
+        #expect(a == "exec -it -u 'augustusotu' -w '/Users/augustusotu' c1 '/bin/bash' -l")
     }
 }

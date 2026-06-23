@@ -247,6 +247,7 @@ struct MachineService: Sendable {
         guard let machine = await list().first(where: { $0.name == name }) else {
             throw MachineError.notFound(name)
         }
+        let settings = Self.carryIdentity(settings, username: machine.username, loginShell: machine.loginShell)
         let createdISO = ISO8601DateFormatter().string(from: Date())
         let tag = "edit\(Int(Date().timeIntervalSince1970))"
         let snapshot = try await self.snapshot(machine: machine, note: "pre-edit", createdISO: createdISO, tag: tag)
@@ -359,6 +360,13 @@ struct MachineService: Sendable {
 }
 
 extension MachineService {
+    static func carryIdentity(_ settings: MachineSettings, username: String, loginShell: String) -> MachineSettings {
+        guard username != "root", settings.identity == nil else { return settings }
+        var copy = settings
+        copy.identity = MacIdentity(username: username, uid: 501, homePath: "/Users/\(username)", shell: loginShell, publicKeys: [])
+        return copy
+    }
+
     static func bindString(_ m: MountPair) -> String { m.readOnly ? "\(m.host):\(m.guest):ro" : "\(m.host):\(m.guest)" }
 
     static func parseBind(_ s: String) -> MountPair? {

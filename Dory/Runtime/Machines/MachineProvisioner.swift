@@ -11,7 +11,8 @@ enum MachineProvisioner {
         lines.append("SH=\(shellQuote(shellPath)); command -v \"$SH\" >/dev/null 2>&1 || SH=/bin/bash; command -v \"$SH\" >/dev/null 2>&1 || SH=/bin/sh")
         lines.append("id -u \(user) >/dev/null 2>&1 || useradd -u \(identity.uid) -M -d \(home) -s \"$SH\" \(user)")
         lines.append("usermod -d \(home) -s \"$SH\" \(user) 2>/dev/null || true")
-        lines.append("printf '%s ALL=(ALL) NOPASSWD:ALL\\n' \(user) > /etc/sudoers.d/dory-\(identity.username); chmod 440 /etc/sudoers.d/dory-\(identity.username)")
+        let slug = identity.username.filter { $0.isLetter || $0.isNumber || $0 == "." || $0 == "_" || $0 == "-" }
+        lines.append("printf '%s ALL=(ALL) NOPASSWD:ALL\\n' \(user) > /etc/sudoers.d/dory-\(slug); chmod 440 /etc/sudoers.d/dory-\(slug)")
         lines.append("install -d -m755 /etc/dory")
         lines.append("printf '%s\\n' \(shellQuote(keys)) > /etc/dory/authorized_keys; chmod 644 /etc/dory/authorized_keys")
         if includeSSH {
