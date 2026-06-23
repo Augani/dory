@@ -3,6 +3,7 @@ import SwiftUI
 struct PodDetailView: View {
     @Environment(AppStore.self) private var store
     @Environment(\.palette) private var p
+    @Environment(\.openWindow) private var openWindow
     let pod: Pod
     @State private var logLines: [LogLine] = []
 
@@ -28,6 +29,10 @@ struct PodDetailView: View {
             Text(pod.name).font(.mono(14, weight: .semibold)).foregroundStyle(p.text)
             Text(pod.namespace).font(.system(size: 12)).foregroundStyle(p.text3)
             Spacer()
+            Button("Exec") { openWindow(value: store.terminalSession(for: pod)) }
+                .buttonStyle(.plain).foregroundStyle(p.accentText)
+                .disabled(pod.phase != .running)
+                .accessibilityIdentifier("pod-exec")
             Button("Done") { store.selectedPodID = nil }.buttonStyle(.plain).foregroundStyle(p.accentText)
         }
         .padding(.horizontal, 18).padding(.vertical, 14)
