@@ -8,9 +8,6 @@ struct MachinesView: View {
 
     var body: some View {
         content
-            .sheet(item: Binding(get: { store.machineTerminal }, set: { store.machineTerminal = $0 })) { machine in
-                MachineTerminalSheet(machine: machine)
-            }
             .sheet(item: Binding(get: { store.editMachineTarget }, set: { store.editMachineTarget = $0 })) { machine in
                 MachineEditSheet(machine: machine)
             }
@@ -96,6 +93,7 @@ struct MachinesView: View {
 private struct MachineCard: View {
     @Environment(AppStore.self) private var store
     @Environment(\.palette) private var p
+    @Environment(\.openWindow) private var openWindow
     let machine: Machine
     @State private var confirmingDelete = false
 
@@ -161,7 +159,7 @@ private struct MachineCard: View {
                     store.toggleMachine(machine)
                 }
                 actionButton("terminal", "Terminal", prominent: false, enabled: isRunning) {
-                    store.openMachineTerminal(machine)
+                    openWindow(value: store.terminalSession(for: machine))
                 }
                 iconButton("trash") { confirmingDelete = true }
             }
@@ -278,49 +276,6 @@ private func logoName(for distro: String) -> String? {
         if lower.contains(family) { return "logo-\(family)" }
     }
     return nil
-}
-
-private struct MachineTerminalSheet: View {
-    @Environment(AppStore.self) private var store
-    @Environment(\.palette) private var p
-    let machine: Machine
-
-    var body: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 10) {
-                if let logo = logoName(for: machine.distro) {
-                    Image(logo).resizable().aspectRatio(contentMode: .fit).frame(width: 18, height: 18)
-                }
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(machine.name).font(.system(size: 13, weight: .semibold)).foregroundStyle(p.text)
-                    Text("\(machine.distro) \(machine.version) · \(machine.ip)").font(.system(size: 11)).foregroundStyle(p.text3)
-                }
-                Spacer()
-                Button { store.openMachineTerminalApp(machine) } label: {
-                    HStack(spacing: 5) {
-                        Image(systemName: "arrow.up.forward.app").font(.system(size: 11, weight: .semibold))
-                        Text("Terminal.app").font(.system(size: 12, weight: .semibold))
-                    }
-                    .foregroundStyle(p.accentText)
-                }
-                .buttonStyle(.plain)
-                Button { store.machineTerminal = nil } label: {
-                    Image(systemName: "xmark").font(.system(size: 11, weight: .bold)).foregroundStyle(p.text2)
-                        .frame(width: 26, height: 26)
-                        .background(p.bgInput, in: RoundedRectangle(cornerRadius: 7))
-                }
-                .buttonStyle(.plain)
-            }
-            .padding(.horizontal, 14).padding(.vertical, 10)
-            .background(p.bgElevated)
-            .overlay(alignment: .bottom) { Rectangle().fill(p.border).frame(height: 1) }
-            ContainerTerminalView(socketPath: store.shimSocketPath, containerID: machine.containerID,
-                                  user: machine.username, shell: machine.loginShell, home: machine.username == "root" ? "/root" : "/Users/\(machine.username)")
-                .frame(minWidth: 720, minHeight: 420)
-        }
-        .frame(width: 760, height: 480)
-        .background(p.bgWindow)
-    }
 }
 
 private struct MachineEditSheet: View {

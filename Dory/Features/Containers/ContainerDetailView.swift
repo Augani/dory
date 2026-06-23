@@ -3,6 +3,7 @@ import SwiftUI
 struct ContainerDetailView: View {
     @Environment(AppStore.self) private var store
     @Environment(\.palette) private var p
+    @Environment(\.openWindow) private var openWindow
     let container: Container
     @State private var logLines: [LogLine] = []
     @State private var envVars: [EnvVar] = []
@@ -79,7 +80,7 @@ struct ContainerDetailView: View {
                 .buttonStyle(DoryButtonStyle(kind: .secondary))
             Spacer(minLength: 0)
             Menu {
-                Button("Open Terminal") { store.openContainerTerminal(container) }
+                Button("Open Terminal") { openWindow(value: store.terminalSession(for: container)) }
                     .disabled(!container.isRunning)
                 Button("Copy Container ID") {
                     NSPasteboard.general.clearContents()
@@ -224,6 +225,10 @@ struct ContainerDetailView: View {
             HStack {
                 Text("Interactive shell").font(.system(size: 12.5)).foregroundStyle(p.text3)
                 Spacer()
+                Button { openWindow(value: store.terminalSession(for: container)) } label: {
+                    Text("Pop out ↗").font(.system(size: 12, weight: .semibold)).foregroundStyle(p.accentText)
+                }
+                .buttonStyle(.plain)
                 Button { store.openContainerTerminal(container) } label: {
                     Text("Open in Terminal.app ↗").font(.system(size: 12, weight: .semibold)).foregroundStyle(p.accentText)
                 }

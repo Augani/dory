@@ -1112,7 +1112,6 @@ final class AppStore {
     var machineCreationTitle = ""
     var machineCreationLog = ""
     var machineCreationError: String?
-    var machineTerminal: Machine?
 
     func loadMachines() {
         guard runtimeKind != .mock, runtimeKind.isDockerCompatible else { machines = []; return }
@@ -1484,10 +1483,6 @@ final class AppStore {
         let service = machineService
         machines.removeAll { $0.name == name }
         Task { try? await service.delete(name: name); loadMachines() }
-    }
-
-    func openMachineTerminal(_ machine: Machine) {
-        machineTerminal = machine
     }
 
     func openMachineTerminalApp(_ machine: Machine) {
