@@ -29,6 +29,13 @@ struct DoryApp: App {
         }
         .defaultSize(width: 760, height: 480)
 
+        Settings {
+            SettingsView()
+                .environment(store)
+                .environment(\.palette, store.palette)
+                .frame(width: 720, height: 560)
+        }
+
         MenuBarExtra(isInserted: Binding(get: { store.showMenuBarIcon }, set: { store.setShowMenuBarIcon($0) })) {
             MenuBarContentView()
                 .environment(store)
