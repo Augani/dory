@@ -1,6 +1,6 @@
 import Foundation
 
-struct MountPair: Sendable, Hashable { var host: String; var guest: String }
+struct MountPair: Sendable, Hashable { var host: String; var guest: String; var readOnly: Bool = false }
 struct PortPair: Sendable, Hashable { var host: Int; var guest: Int }
 struct MachineSettings: Sendable, Hashable {
     var cpus: Int?
@@ -278,10 +278,7 @@ struct MachineService: Sendable {
         guard let host = (try? JSONDecoder().decode(Inspect.self, from: response.body))?.HostConfig else { return .default }
         let cpus = (host.NanoCpus ?? 0) > 0 ? Int((host.NanoCpus ?? 0) / 1_000_000_000) : nil
         let memoryMB = (host.Memory ?? 0) > 0 ? Int((host.Memory ?? 0) / (1024 * 1024)) : nil
-        let mounts: [MountPair] = (host.Binds ?? []).compactMap { bind in
-            let parts = bind.split(separator: ":", maxSplits: 1).map(String.init)
-            return parts.count == 2 ? MountPair(host: parts[0], guest: parts[1]) : nil
-        }
+        let mounts: [MountPair] = (host.Binds ?? []).compactMap { Self.parseBind($0) }
         let ports: [PortPair] = (host.PortBindings ?? [:]).compactMap { key, bindings in
             let guestStr = key.split(separator: "/").first.map(String.init) ?? key
             guard let guest = Int(guestStr), let hostStr = bindings?.first?.HostPort ?? nil, let hostPort = Int(hostStr) else { return nil }
@@ -339,11 +336,19 @@ struct MachineService: Sendable {
 }
 
 extension MachineService {
+    static func bindString(_ m: MountPair) -> String { m.readOnly ? "\(m.host):\(m.guest):ro" : "\(m.host):\(m.guest)" }
+
+    static func parseBind(_ s: String) -> MountPair? {
+        let parts = s.split(separator: ":", maxSplits: 2).map(String.init)
+        guard parts.count >= 2 else { return nil }
+        return MountPair(host: parts[0], guest: parts[1], readOnly: parts.count == 3 && parts[2] == "ro")
+    }
+
     static func hostConfig(base: [String: Any], settings: MachineSettings) -> [String: Any] {
         var host = base
         if let cpus = settings.cpus { host["NanoCpus"] = Int64(cpus) * 1_000_000_000 }
         if let memoryMB = settings.memoryMB { host["Memory"] = Int64(memoryMB) * 1024 * 1024 }
-        if !settings.mounts.isEmpty { host["Binds"] = settings.mounts.map { "\($0.host):\($0.guest)" } }
+        if !settings.mounts.isEmpty { host["Binds"] = settings.mounts.map(Self.bindString) }
         if !settings.ports.isEmpty {
             var exposed: [String: [String: String]] = [:]
             var bindings: [String: [[String: String]]] = [:]
