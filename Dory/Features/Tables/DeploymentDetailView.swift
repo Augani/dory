@@ -21,6 +21,7 @@ struct DeploymentDetailView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(p.bgContent)
+        .onChange(of: deployment.replicas) { _, newValue in replicas = newValue }
         .confirmationDialog(
             "Scale \(deployment.name) to \(replicas) replica\(replicas == 1 ? "" : "s")?",
             isPresented: $confirmingScale, titleVisibility: .visible

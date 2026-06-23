@@ -1,9 +1,9 @@
 import SwiftUI
 import SwiftTerm
 
-/// An embedded interactive shell into a running container, backed by SwiftTerm. Runs
-/// `docker exec -it <id>` against Dory's socket through a login shell so the `docker` binary
-/// resolves from the user's PATH.
+/// An embedded interactive shell into a running container or pod, backed by SwiftTerm. Runs
+/// `docker exec -it <id>` against Dory's socket — or `kubectl exec -it` when a `kubeExec` target
+/// is present — through a login shell so the CLI binary resolves from the user's PATH.
 struct ContainerTerminalView: NSViewRepresentable {
     let socketPath: String
     let containerID: String
