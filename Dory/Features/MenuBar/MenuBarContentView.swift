@@ -30,10 +30,26 @@ struct MenuBarContentView: View {
         .padding(.horizontal, 15).padding(.vertical, 13)
     }
 
+    private var orderedContainers: [Container] {
+        store.containers.sorted { lhs, rhs in
+            if lhs.isRunning != rhs.isRunning { return lhs.isRunning }
+            return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+        }
+    }
+
     private var list: some View {
-        ScrollView {
+        let ordered = orderedContainers
+        let cap = 8
+        let visible = Array(ordered.prefix(cap))
+        let overflow = ordered.count - visible.count
+        return ScrollView {
             VStack(spacing: 0) {
-                ForEach(store.containers) { container in
+                if visible.isEmpty {
+                    Text("No containers")
+                        .font(.system(size: 12, weight: .medium)).foregroundStyle(store.palette.text3)
+                        .frame(maxWidth: .infinity).padding(.vertical, 14)
+                }
+                ForEach(visible) { container in
                     HStack(spacing: 9) {
                         StatusDot(color: container.status.dotColor(store.palette), size: 7)
                         Text(container.name).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(store.palette.text).lineLimit(1)
@@ -45,6 +61,15 @@ struct MenuBarContentView: View {
                             .onTapGesture { store.toggle(container) }
                     }
                     .padding(.horizontal, 9).padding(.vertical, 7)
+                }
+                if overflow > 0 {
+                    Button { NSApp.activate(ignoringOtherApps: true) } label: {
+                        Text("+\(overflow) more in Dory")
+                            .font(.system(size: 11.5, weight: .semibold)).foregroundStyle(store.palette.accentText)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 9).padding(.vertical, 8)
+                    }
+                    .buttonStyle(.plain)
                 }
             }
             .padding(6)
