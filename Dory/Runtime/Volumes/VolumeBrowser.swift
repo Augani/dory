@@ -26,6 +26,25 @@ struct VolumeBrowser: Sendable {
         return output.isEmpty ? nil : output
     }
 
+    func exportFile(volume: String, path: String) async -> Data? {
+        let target = Self.safePath(path)
+        try? await runtime.pull(image: Self.helperImage)
+        let body = Data("{\"Image\":\"\(Self.helperImage)\",\"Cmd\":[\"true\"],\"HostConfig\":{\"Binds\":[\"\(volume):/data:ro\"]}}".utf8)
+        guard let create = await runtime.proxyRequest(method: "POST", path: "/containers/create",
+            headers: [(name: "Content-Type", value: "application/json")], body: body),
+            let id = decodeId(create.body) else { return nil }
+        defer {
+            let runtime = self.runtime
+            Task { _ = await runtime.proxyRequest(method: "DELETE", path: "/containers/\(id)?force=true", headers: [], body: Data()) }
+        }
+        _ = await runtime.proxyRequest(method: "POST", path: "/containers/\(id)/start", headers: [], body: Data())
+        _ = await runtime.proxyRequest(method: "POST", path: "/containers/\(id)/wait", headers: [], body: Data())
+        let encoded = target.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? target
+        guard let archive = await runtime.proxyRequest(method: "GET", path: "/containers/\(id)/archive?path=\(encoded)",
+            headers: [], body: Data()), archive.isSuccess else { return nil }
+        return Self.extractSingleFileFromTar(archive.body)
+    }
+
     private func runHelper(volume: String, cmd: [String]) async -> String {
         try? await runtime.pull(image: Self.helperImage)
         let cmdJSON = cmd.map { "\"\($0.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\""))\"" }.joined(separator: ",")
@@ -47,6 +66,34 @@ struct VolumeBrowser: Sendable {
     private func decodeId(_ data: Data) -> String? {
         struct Out: Decodable { let Id: String }
         return (try? JSONDecoder().decode(Out.self, from: data))?.Id
+    }
+
+    static func extractSingleFileFromTar(_ data: Data) -> Data? {
+        let bytes = [UInt8](data)
+        let block = 512
+        var offset = 0
+        while offset + block <= bytes.count {
+            let header = bytes[offset..<offset + block]
+            if header.allSatisfy({ $0 == 0 }) { return nil }
+            let typeflag = bytes[offset + 156]
+            guard let size = parseOctalSize(bytes[(offset + 124)..<(offset + 136)]) else { return nil }
+            let contentStart = offset + block
+            let contentEnd = contentStart + size
+            guard contentEnd <= bytes.count else { return nil }
+            if typeflag == UInt8(ascii: "0") || typeflag == 0 {
+                return Data(bytes[contentStart..<contentEnd])
+            }
+            let padded = ((size + block - 1) / block) * block
+            offset = contentStart + padded
+        }
+        return nil
+    }
+
+    private static func parseOctalSize(_ field: ArraySlice<UInt8>) -> Int? {
+        let str = String(decoding: Array(field), as: UTF8.self)
+            .trimmingCharacters(in: CharacterSet(charactersIn: " \u{0}"))
+        if str.isEmpty { return 0 }
+        return Int(str, radix: 8)
     }
 
     static func safePath(_ path: String) -> String {
