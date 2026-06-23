@@ -63,6 +63,11 @@ struct KubernetesView: View {
                 PodDetailView(pod: pod).background(p.bgContent).transition(.move(edge: .trailing))
             }
         }
+        .overlay {
+            if store.kubeResource == .deployments, let dep = store.selectedDeployment() {
+                DeploymentDetailView(deployment: dep).background(p.bgContent).transition(.move(edge: .trailing))
+            }
+        }
     }
 
     @ViewBuilder private var resourceTable: some View {
@@ -108,6 +113,8 @@ struct KubernetesView: View {
                             Text(row.age).font(.system(size: 12.5)).foregroundStyle(p.text3).frame(width: 70, alignment: .leading)
                         }
                         .tableRow()
+                        .contentShape(Rectangle())
+                        .onTapGesture(count: 2) { store.selectedDeploymentID = row.id }
                     }
                 }
             }
