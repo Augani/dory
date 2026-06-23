@@ -75,6 +75,18 @@ final class AppStore {
     var kubernetesInfo = "Cluster not running"
     private let kubernetes = KubernetesProvider()
 
+    private let kubeClient = KubeClient()
+    var kubeNamespace = "All Namespaces"
+    var kubeResource: KubeResourceKind = .pods
+    var kubeNamespaces: [String] = []
+    var deployments: [KubeDeploymentRow] = []
+    var kubeServices: [KubeServiceRow] = []
+    var selectedPodID: String? = nil
+
+    private var namespaceFilter: String? { kubeNamespace == "All Namespaces" ? nil : kubeNamespace }
+    var kubeconfigHint: String { KubeContextHint.snippet(kubeconfigPath: KubernetesProvisioner.kubeconfigPath) }
+    func selectedPod() -> Pod? { pods.first { $0.id == selectedPodID } }
+
     private var runtime: any ContainerRuntime
     var runtimeKind: RuntimeKind { runtime.kind }
 
@@ -434,7 +446,86 @@ final class AppStore {
         let status = await kubernetes.status()
         kubernetesReachable = status.reachable
         kubernetesInfo = status.info
-        pods = status.pods
+        guard status.reachable else { pods = []; deployments = []; kubeServices = []; kubeNamespaces = []; return }
+        if case let .success(data) = await kubeClient.getJSON(kind: "namespaces", namespace: nil),
+           let list = try? JSONDecoder().decode(KubeNamespaceList.self, from: data) {
+            kubeNamespaces = KubeRowMapper.namespaces(list)
+        }
+        await loadKubeResource()
+    }
+
+    func loadKubeResource() async {
+        guard kubernetesReachable else { return }
+        switch kubeResource {
+        case .pods:
+            if case let .success(data) = await kubeClient.getJSON(kind: "pods", namespace: namespaceFilter),
+               let list = try? JSONDecoder().decode(KubePodList.self, from: data) {
+                pods = KubeRowMapper.pods(list)
+            }
+        case .deployments:
+            if case let .success(data) = await kubeClient.getJSON(kind: "deployments", namespace: namespaceFilter),
+               let list = try? JSONDecoder().decode(KubeDeploymentList.self, from: data) {
+                deployments = KubeRowMapper.deployments(list)
+            }
+        case .services:
+            if case let .success(data) = await kubeClient.getJSON(kind: "services", namespace: namespaceFilter),
+               let list = try? JSONDecoder().decode(KubeServiceList.self, from: data) {
+                kubeServices = KubeRowMapper.services(list)
+            }
+        }
+    }
+
+    func deletePod(_ pod: Pod) async {
+        switch await kubeClient.delete(kind: "pod", name: pod.name, namespace: pod.namespace) {
+        case .success: await loadKubeResource()
+        case .failure(let error): actionError = Self.kubeErrorText(error)
+        }
+    }
+
+    func podLogs(_ pod: Pod) async -> [LogLine] {
+        guard let kubectl = kubeClient.kubectlPath else { return [] }
+        var args: [String] = []
+        if let kubeconfig = KubeClient.kubeconfig() { args += ["--kubeconfig", kubeconfig] }
+        args += ["logs", pod.name, "-n", pod.namespace, "--tail=200", "--timestamps"]
+        let result = await Shell.runAsyncResult(kubectl, args)
+        guard result.exit == 0 else { return [] }
+        return KubeLogParser.parse(result.output)
+    }
+
+    func streamPodLogs(_ pod: Pod) -> AsyncStream<LogLine> {
+        AsyncStream { cont in
+            guard let kubectl = kubeClient.kubectlPath else { cont.finish(); return }
+            var args: [String] = []
+            if let kubeconfig = KubeClient.kubeconfig() { args += ["--kubeconfig", kubeconfig] }
+            args += ["logs", pod.name, "-n", pod.namespace, "-f", "--since=1s", "--timestamps"]
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: kubectl)
+            process.arguments = args
+            let pipe = Pipe()
+            process.standardOutput = pipe
+            process.standardError = Pipe()
+            let task = Task {
+                do {
+                    for try await line in pipe.fileHandleForReading.bytes.lines {
+                        for parsed in KubeLogParser.parse(line) { cont.yield(parsed) }
+                    }
+                } catch {}
+                cont.finish()
+            }
+            cont.onTermination = { _ in
+                task.cancel()
+                if process.isRunning { process.terminate() }
+            }
+            do { try process.run() } catch { cont.finish() }
+        }
+    }
+
+    static func kubeErrorText(_ error: KubeError) -> String {
+        switch error {
+        case .kubectlMissing: "kubectl not found — install it (brew install kubectl)."
+        case .nonZero(_, let stderr): stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+        case .decode: "Could not read the cluster response."
+        }
     }
 
     var kubernetesBusy = false
