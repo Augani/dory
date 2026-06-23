@@ -15,8 +15,10 @@ struct NetworksView: View {
             if store.filteredNetworks.isEmpty {
                 TableEmptyState(
                     glyph: .networks,
-                    title: "No matches",
-                    message: "No networks match \u{201C}\(store.filter)\u{201D}."
+                    title: store.networks.isEmpty ? "No networks yet" : "No matches",
+                    message: store.networks.isEmpty
+                        ? "Networks created by your containers and Compose projects appear here."
+                        : "No networks match \u{201C}\(store.filter)\u{201D}."
                 )
             } else {
             ScrollView {
