@@ -44,6 +44,17 @@ enum MockData {
         Pod(name: "worker-d4f9z", namespace: "jobs", phase: .pending, ready: "0/1", restarts: 0, age: "5m"),
     ]
 
+    static let deployments: [KubeDeploymentRow] = [
+        KubeDeploymentRow(name: "web", namespace: "default", ready: "2/2", upToDate: 2, available: 2, age: "42m"),
+        KubeDeploymentRow(name: "redis", namespace: "cache", ready: "1/1", upToDate: 1, available: 1, age: "2h"),
+        KubeDeploymentRow(name: "worker", namespace: "jobs", ready: "0/1", upToDate: 1, available: 0, age: "5m"),
+    ]
+
+    static let kubeServices: [KubeServiceRow] = [
+        KubeServiceRow(name: "web", namespace: "default", type: "ClusterIP", clusterIP: "10.43.0.12", ports: "80/TCP", age: "42m"),
+        KubeServiceRow(name: "redis", namespace: "cache", type: "ClusterIP", clusterIP: "10.43.0.40", ports: "6379/TCP", age: "2h"),
+    ]
+
     static let machines: [Machine] = [
         Machine(name: "ubuntu", distro: "Ubuntu", version: "24.04 LTS", status: .running, cpuPercent: 1.2, memoryDisplay: "420 MB", ip: "ubuntu.dory.local", letter: "U", badgeHex: 0xE95420),
         Machine(name: "debian", distro: "Debian", version: "12 Bookworm", status: .running, cpuPercent: 0.4, memoryDisplay: "180 MB", ip: "debian.dory.local", letter: "D", badgeHex: 0xA80030),

@@ -442,7 +442,15 @@ final class AppStore {
     }
 
     func loadKubernetes() async {
-        guard runtimeKind != .mock else { kubernetesReachable = false; return }
+        guard runtimeKind != .mock else {
+            kubernetesReachable = true
+            kubernetesInfo = "v1.31.0 · 1 node · \(MockData.pods.count) pods · 4 namespaces"
+            kubeNamespaces = ["default", "cache", "data", "jobs"]
+            pods = MockData.pods
+            deployments = MockData.deployments
+            kubeServices = MockData.kubeServices
+            return
+        }
         let status = await kubernetes.status()
         kubernetesReachable = status.reachable
         kubernetesInfo = status.info
