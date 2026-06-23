@@ -1112,19 +1112,25 @@ final class AppStore {
     var machineCreationTitle = ""
     var machineCreationLog = ""
     var machineCreationError: String?
+    var machineCreated: Machine?
 
     func loadMachines() {
         guard runtimeKind != .mock, runtimeKind.isDockerCompatible else { machines = []; return }
-        Task {
-            var list = await machineService.list()
-            for index in list.indices {
-                if let match = containers.first(where: { $0.id == list[index].containerID }) {
-                    list[index].cpuPercent = match.cpuPercent
-                    list[index].memoryDisplay = match.memoryDisplay
-                }
+        Task { await refreshMachines() }
+    }
+
+    @discardableResult
+    private func refreshMachines() async -> [Machine] {
+        guard runtimeKind != .mock, runtimeKind.isDockerCompatible else { machines = []; return [] }
+        var list = await machineService.list()
+        for index in list.indices {
+            if let match = containers.first(where: { $0.id == list[index].containerID }) {
+                list[index].cpuPercent = match.cpuPercent
+                list[index].memoryDisplay = match.memoryDisplay
             }
-            machines = list
         }
+        machines = list
+        return list
     }
 
     private static let legacyMachineCleanupKey = "dory.legacyMachineCleanupOffered"
@@ -1251,6 +1257,7 @@ final class AppStore {
         machineCreationTitle = "Creating \(trimmedName)"
         machineCreationLog = "Preparing to create \(trimmedName) (\(arch.shortLabel))…\n"
         machineCreationError = nil
+        machineCreated = nil
         activeSheet = .creatingMachine
         defer { machineBusy = false }
         var effectiveSettings = identity.map { Self.withIdentity(settings, $0) } ?? settings
@@ -1265,8 +1272,9 @@ final class AppStore {
                 Task { @MainActor in self.appendMachineCreationLog(line) }
             }
             appendMachineCreationLog("Machine created and started.")
-            activeSheet = nil
-            loadMachines()
+            let refreshed = await refreshMachines()
+            machineCreated = refreshed.first { $0.name == trimmedName }
+            if machineCreated == nil { activeSheet = nil }
             return nil
         } catch {
             let message = "\(error)"
@@ -1286,6 +1294,7 @@ final class AppStore {
         machineCreationTitle = "Updating \(machine.name)"
         machineCreationLog = "Snapshotting \(machine.name) before applying new settings…\n"
         machineCreationError = nil
+        machineCreated = nil
         activeSheet = .creatingMachine
         defer { machineBusy = false }
         do {
@@ -1360,6 +1369,7 @@ final class AppStore {
         machineCreationTitle = "Cloning \(snapshot.machineName)"
         machineCreationLog = "Creating \(newName) from snapshot…\n"
         machineCreationError = nil
+        machineCreated = nil
         activeSheet = .creatingMachine
         let service = machineService
         Task {
@@ -1387,6 +1397,7 @@ final class AppStore {
         machineCreationTitle = "Restoring \(snapshot.machineName)"
         machineCreationLog = "Restoring \(snapshot.machineName) from snapshot…\n"
         machineCreationError = nil
+        machineCreated = nil
         activeSheet = .creatingMachine
         let service = machineService
         Task {
@@ -1443,6 +1454,7 @@ final class AppStore {
         machineCreationTitle = "Importing machine"
         machineCreationLog = "Importing \(url.lastPathComponent)…\n"
         machineCreationError = nil
+        machineCreated = nil
         activeSheet = .creatingMachine
         let service = machineService
         Task {
