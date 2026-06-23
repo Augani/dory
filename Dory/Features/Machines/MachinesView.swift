@@ -139,6 +139,21 @@ private struct MachineCard: View {
                     .padding(.bottom, 12)
             }
 
+            if let port = machine.sshPort {
+                HStack(spacing: 6) {
+                    Image(systemName: "terminal").font(.system(size: 11)).foregroundStyle(p.text3)
+                    Text("ssh \(machine.username)@localhost -p \(port)").font(.mono(11)).foregroundStyle(p.text2).lineLimit(1)
+                    Spacer(minLength: 0)
+                    Button {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString("ssh \(machine.username)@localhost -p \(port)", forType: .string)
+                    } label: {
+                        Image(systemName: "doc.on.doc").font(.system(size: 10)).foregroundStyle(p.text3)
+                    }.buttonStyle(.plain)
+                }
+                .padding(.bottom, 12)
+            }
+
             Divider().overlay(p.border)
 
             HStack(spacing: 8) {

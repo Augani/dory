@@ -25,7 +25,7 @@ dory — Dory CLI
   dory shell <container>       Open an interactive shell in a container
   dory machine <args...>       Manage Linux machines (ls, create, start, stop, delete, run)
   dory k8s <kubectl args...>   Run kubectl against Dory's Kubernetes cluster
-  dory ssh <machine>           Open a shell in a Linux machine
+  dory ssh <machine>           SSH into a Linux machine as you (real ssh when available)
   dory vm [--image R] [--arch amd64|arm64] [--rosetta] [--mount h:g] -- <cmd>
                                Run a container on Dory's in-process framework engine
                                (Rosetta-fast x86 + host file mounts)
@@ -39,7 +39,18 @@ case "${1:-help}" in
   help|-h|--help) usage ;;
   shell)          exec docker -H "unix://$DORY_SOCK" exec -it "$2" sh -c 'command -v bash >/dev/null && exec bash || exec sh' ;;
   machine)        shift; exec "$CONTAINER_BIN" machine "$@" ;;
-  ssh)            exec "$CONTAINER_BIN" machine run -n "$2" ;;
+  ssh)            shift
+                  name="${1:?usage: dory ssh <machine>}"
+                  cid="dory-machine-$name"
+                  user="$(docker -H "unix://$DORY_SOCK" inspect -f '{{index .Config.Labels "dory.machine.user"}}' "$cid" 2>/dev/null || true)"; user="${user:-root}"
+                  shell="$(docker -H "unix://$DORY_SOCK" inspect -f '{{index .Config.Labels "dory.machine.shell"}}' "$cid" 2>/dev/null || true)"; shell="${shell:-/bin/sh}"
+                  port="$(docker -H "unix://$DORY_SOCK" inspect -f '{{index .Config.Labels "dory.machine.sshPort"}}' "$cid" 2>/dev/null || true)"
+                  if [ -n "$port" ]; then
+                    exec ssh -p "$port" -o StrictHostKeyChecking=accept-new "$user@localhost"
+                  else
+                    home="/Users/$user"; [ "$user" = "root" ] && home="/root"
+                    exec docker -H "unix://$DORY_SOCK" exec -it -u "$user" -w "$home" "$cid" "$shell" -l
+                  fi ;;
   vm)             shift; H="$(vm_helper)"; [ -z "$H" ] && { echo "dory-vm helper not found; build+sign it (see scripts/bundle-engine.sh)"; exit 1; }; exec "$H" "$@" ;;
   k8s)            shift; exec kubectl --kubeconfig "$KUBECONFIG_DORY" "$@" ;;
   *)              exec docker -H "unix://$DORY_SOCK" "$@" ;;
