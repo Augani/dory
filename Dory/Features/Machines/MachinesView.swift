@@ -293,7 +293,8 @@ private struct MachineTerminalSheet: View {
             .padding(.horizontal, 14).padding(.vertical, 10)
             .background(p.bgElevated)
             .overlay(alignment: .bottom) { Rectangle().fill(p.border).frame(height: 1) }
-            ContainerTerminalView(socketPath: store.shimSocketPath, containerID: machine.containerID)
+            ContainerTerminalView(socketPath: store.shimSocketPath, containerID: machine.containerID,
+                                  user: machine.username, shell: machine.loginShell, home: machine.username == "root" ? "/root" : "/Users/\(machine.username)")
                 .frame(minWidth: 720, minHeight: 420)
         }
         .frame(width: 760, height: 480)
