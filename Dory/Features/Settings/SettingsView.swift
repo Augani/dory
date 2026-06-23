@@ -306,30 +306,20 @@ struct SettingsView: View {
         let ramGB = Double(ProcessInfo.processInfo.physicalMemory) / 1_073_741_824
         return VStack(alignment: .leading, spacing: 20) {
             groupLabel("THIS MAC")
-            settingsSlider("CPU cores", "Engine uses up to 4 of \(cores) cores", min(1, 4.0 / Double(max(cores, 1))))
-            settingsSlider("Memory", String(format: "%.0f GB installed · grows on demand", ramGB), min(1, 4.0 / max(ramGB, 1)))
+            resourceMeter("CPU cores", "Engine uses up to 4 of \(cores) cores", min(1, 4.0 / Double(max(cores, 1))))
+            resourceMeter("Memory", String(format: "%.0f GB installed · grows on demand", ramGB), min(1, 4.0 / max(ramGB, 1)))
             infoPanel("Dory's engine uses up to 4 CPU cores and allocates memory on demand — it reclaims RAM back to macOS when idle instead of holding a fixed reservation, so there are no manual limits to tune.")
         }
     }
 
-    private func settingsSlider(_ label: String, _ value: String, _ fraction: Double) -> some View {
+    private func resourceMeter(_ label: String, _ value: String, _ fraction: Double) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Text(label).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(p.text)
                 Spacer()
                 Text(value).font(.system(size: 12.5, weight: .bold)).monospacedDigit().foregroundStyle(p.accentText)
             }
-            GeometryReader { geo in
-                ZStack(alignment: .leading) {
-                    Capsule().fill(p.bgInput).frame(height: 6)
-                    Capsule().fill(p.accent).frame(width: geo.size.width * fraction, height: 6)
-                    Circle().fill(.white).frame(width: 16, height: 16)
-                        .overlay(Circle().strokeBorder(p.border))
-                        .shadow(color: .black.opacity(0.3), radius: 2, y: 1)
-                        .offset(x: geo.size.width * fraction - 8)
-                }
-            }
-            .frame(height: 16)
+            ThinBar(fraction: fraction, tint: p.accent, height: 6)
         }
     }
 
