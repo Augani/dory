@@ -1112,6 +1112,7 @@ final class AppStore {
     var machineCreationTitle = ""
     var machineCreationLog = ""
     var machineCreationError: String?
+    var machineCreated: Machine?
 
     func loadMachines() {
         guard runtimeKind != .mock, runtimeKind.isDockerCompatible else { machines = []; return }
@@ -1251,6 +1252,7 @@ final class AppStore {
         machineCreationTitle = "Creating \(trimmedName)"
         machineCreationLog = "Preparing to create \(trimmedName) (\(arch.shortLabel))…\n"
         machineCreationError = nil
+        machineCreated = nil
         activeSheet = .creatingMachine
         defer { machineBusy = false }
         var effectiveSettings = identity.map { Self.withIdentity(settings, $0) } ?? settings
@@ -1265,8 +1267,9 @@ final class AppStore {
                 Task { @MainActor in self.appendMachineCreationLog(line) }
             }
             appendMachineCreationLog("Machine created and started.")
-            activeSheet = nil
             loadMachines()
+            machineCreated = machines.first { $0.name == trimmedName }
+            if machineCreated == nil { activeSheet = nil }
             return nil
         } catch {
             let message = "\(error)"
