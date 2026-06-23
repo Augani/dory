@@ -58,6 +58,11 @@ struct KubernetesView: View {
         } message: {
             Text("This permanently removes the pod. This cannot be undone.")
         }
+        .overlay {
+            if let pod = store.selectedPod() {
+                PodDetailView(pod: pod).background(p.bgContent).transition(.move(edge: .trailing))
+            }
+        }
     }
 
     @ViewBuilder private var resourceTable: some View {
