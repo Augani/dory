@@ -163,7 +163,7 @@ struct MachineService: Sendable {
 
         if let identity = settings.identity {
             progress("Setting up \(identity.username)…")
-            let script = MachineProvisioner.script(identity: identity, pkg: distro.pkg, isSystemd: distro.boot == .systemd, includeSSH: false)
+            let script = MachineProvisioner.script(identity: identity, pkg: distro.pkg, isSystemd: distro.boot == .systemd, includeSSH: true)
             let result = try? await runtime.exec(containerID: Self.containerName(for: name), command: ["/bin/sh", "-c", script])
             if let result, !result.succeeded {
                 progress("Identity setup reported: \(result.output)")
@@ -172,7 +172,11 @@ struct MachineService: Sendable {
         progress("Machine \(name) is ready.")
     }
 
-    func start(name: String) async throws { try await runtime.start(containerID: Self.containerName(for: name)) }
+    func start(name: String) async throws {
+        try await runtime.start(containerID: Self.containerName(for: name))
+        _ = try? await runtime.exec(containerID: Self.containerName(for: name),
+                                    command: ["/bin/sh", "-c", "command -v sshd >/dev/null 2>&1 && (pgrep -x sshd >/dev/null 2>&1 || /usr/sbin/sshd 2>/dev/null) || true"])
+    }
     func stop(name: String) async throws { try await runtime.stop(containerID: Self.containerName(for: name)) }
 
     func delete(name: String) async throws {
