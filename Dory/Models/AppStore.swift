@@ -1194,7 +1194,16 @@ final class AppStore {
         }
     }
 
-    func createMachine(image: String, name: String, arch: MachineArch = .host, recipe: DevRecipe? = nil, settings: MachineSettings = .default) async -> String? {
+    nonisolated static func withIdentity(_ settings: MachineSettings, _ identity: MacIdentity) -> MachineSettings {
+        var s = settings
+        s.identity = identity
+        if !s.mounts.contains(where: { $0.guest == identity.homePath }) {
+            s.mounts.append(MountPair(host: identity.homePath, guest: identity.homePath, readOnly: false))
+        }
+        return s
+    }
+
+    func createMachine(image: String, name: String, arch: MachineArch = .host, recipe: DevRecipe? = nil, settings: MachineSettings = .default, identity: MacIdentity? = nil) async -> String? {
         let trimmedName = name.trimmingCharacters(in: .whitespaces)
         guard runtimeKind.isDockerCompatible else {
             actionError = "Linux machines need Dory's shared VM — switch engines in Settings → Docker Engine."
@@ -1211,8 +1220,9 @@ final class AppStore {
         machineCreationError = nil
         activeSheet = .creatingMachine
         defer { machineBusy = false }
+        let effectiveSettings = identity.map { Self.withIdentity(settings, $0) } ?? settings
         do {
-            try await machineService.create(name: trimmedName, distro: distro, arch: arch, recipe: recipe, settings: settings) { line in
+            try await machineService.create(name: trimmedName, distro: distro, arch: arch, recipe: recipe, settings: effectiveSettings) { line in
                 Task { @MainActor in self.appendMachineCreationLog(line) }
             }
             appendMachineCreationLog("Machine created and started.")

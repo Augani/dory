@@ -160,6 +160,15 @@ struct MachineService: Sendable {
                 try await runtime.start(containerID: Self.containerName(for: name))
             }
         }
+
+        if let identity = settings.identity {
+            progress("Setting up \(identity.username)…")
+            let script = MachineProvisioner.script(identity: identity, pkg: distro.pkg, isSystemd: distro.boot == .systemd, includeSSH: false)
+            let result = try? await runtime.exec(containerID: Self.containerName(for: name), command: ["/bin/sh", "-c", script])
+            if let result, !result.succeeded {
+                progress("Identity setup reported: \(result.output)")
+            }
+        }
         progress("Machine \(name) is ready.")
     }
 
