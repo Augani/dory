@@ -173,6 +173,7 @@ struct Machine: Identifiable, Hashable, Sendable {
     var recipe: String = ""
     var username: String = "root"
     var loginShell: String = "/bin/sh"
+    var sshPort: Int? = nil
     var id: String { name }
 
     var badgeColor: Color { Color(hex: badgeHex) }

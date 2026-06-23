@@ -1207,6 +1207,27 @@ final class AppStore {
         }
     }
 
+    nonisolated static func allocateFreePort() -> Int {
+        let fd = socket(AF_INET, SOCK_STREAM, 0)
+        guard fd >= 0 else { return 0 }
+        defer { close(fd) }
+        var addr = sockaddr_in()
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_addr.s_addr = inet_addr("127.0.0.1")
+        addr.sin_port = 0
+        let bound = withUnsafePointer(to: &addr) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) }
+        }
+        guard bound == 0 else { return 0 }
+        var result = sockaddr_in()
+        var len = socklen_t(MemoryLayout<sockaddr_in>.size)
+        let got = withUnsafeMutablePointer(to: &result) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { getsockname(fd, $0, &len) }
+        }
+        guard got == 0 else { return 0 }
+        return Int(UInt16(bigEndian: result.sin_port))
+    }
+
     nonisolated static func withIdentity(_ settings: MachineSettings, _ identity: MacIdentity) -> MachineSettings {
         var s = settings
         s.identity = identity
@@ -1233,7 +1254,10 @@ final class AppStore {
         machineCreationError = nil
         activeSheet = .creatingMachine
         defer { machineBusy = false }
-        let effectiveSettings = identity.map { Self.withIdentity(settings, $0) } ?? settings
+        var effectiveSettings = identity.map { Self.withIdentity(settings, $0) } ?? settings
+        if effectiveSettings.identity != nil, !effectiveSettings.ports.contains(where: { $0.guest == 22 }) {
+            effectiveSettings.ports.append(PortPair(host: Self.allocateFreePort(), guest: 22))
+        }
         do {
             try await machineService.create(name: trimmedName, distro: distro, arch: arch, recipe: recipe, settings: effectiveSettings) { line in
                 Task { @MainActor in self.appendMachineCreationLog(line) }

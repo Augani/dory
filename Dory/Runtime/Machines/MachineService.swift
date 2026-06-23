@@ -21,6 +21,7 @@ struct MachineService: Sendable {
     static let archLabel = "dory.machine.arch"
     static let userLabel = "dory.machine.user"
     static let shellLabel = "dory.machine.shell"
+    static let sshPortLabel = "dory.machine.sshPort"
     static let recipeLabel = "dory.recipe"
     static let keepalive = ["tail", "-f", "/dev/null"]
     static let snapshotRepoPrefix = "dory-snapshot/"
@@ -63,6 +64,9 @@ struct MachineService: Sendable {
         if let identity = settings.identity {
             labels[userLabel] = identity.username
             labels[shellLabel] = identity.shell
+        }
+        if let sshPort = settings.ports.first(where: { $0.guest == 22 })?.host {
+            labels[sshPortLabel] = "\(sshPort)"
         }
         let baseHostConfig: [String: Any] = [
             "Privileged": true,
@@ -115,7 +119,8 @@ struct MachineService: Sendable {
                 arch: entry.Labels?[archLabel] ?? "",
                 recipe: entry.Labels?[recipeLabel] ?? "",
                 username: entry.Labels?[userLabel] ?? "root",
-                loginShell: entry.Labels?[shellLabel] ?? "/bin/sh"
+                loginShell: entry.Labels?[shellLabel] ?? "/bin/sh",
+                sshPort: entry.Labels?[sshPortLabel].flatMap { Int($0) }
             )
         }
     }
@@ -217,6 +222,9 @@ struct MachineService: Sendable {
         if let identity = settings.identity {
             labels[Self.userLabel] = identity.username
             labels[Self.shellLabel] = identity.shell
+        }
+        if let sshPort = settings.ports.first(where: { $0.guest == 22 })?.host {
+            labels[Self.sshPortLabel] = "\(sshPort)"
         }
         var body: [String: Any] = [
             "Hostname": name, "Image": imageRef, "Cmd": cmd, "Env": ["container=docker"],
