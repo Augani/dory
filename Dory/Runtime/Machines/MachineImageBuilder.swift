@@ -15,7 +15,7 @@ enum MachineImageBuilder {
             FROM \(distro.baseImage)
             ENV DEBIAN_FRONTEND=noninteractive
             RUN apt-get update \\
-             && apt-get install -y --no-install-recommends systemd systemd-sysv dbus dbus-user-session sudo bash ca-certificates iproute2 iputils-ping curl \\
+             && apt-get install -y --no-install-recommends systemd systemd-sysv dbus dbus-user-session sudo bash openssh-server ca-certificates iproute2 iputils-ping curl \\
              && rm -rf /var/lib/apt/lists/* \\
              && (systemctl mask systemd-resolved.service systemd-networkd.service || true)
             STOPSIGNAL SIGRTMIN+3
@@ -24,7 +24,7 @@ enum MachineImageBuilder {
         case .dnf:
             return """
             FROM \(distro.baseImage)
-            RUN dnf -y install systemd sudo passwd iproute procps-ng \\
+            RUN dnf -y install systemd sudo passwd iproute procps-ng openssh-server \\
              && dnf clean all \\
              && (systemctl mask systemd-resolved.service || true)
             STOPSIGNAL SIGRTMIN+3
@@ -34,7 +34,7 @@ enum MachineImageBuilder {
             return """
             FROM \(distro.baseImage)
             RUN zypper --non-interactive --gpg-auto-import-keys refresh \\
-             && zypper -n install systemd sudo iproute2 \\
+             && zypper -n install systemd sudo iproute2 openssh \\
              && zypper clean -a \\
              && (systemctl mask systemd-resolved.service || true)
             STOPSIGNAL SIGRTMIN+3
@@ -43,13 +43,13 @@ enum MachineImageBuilder {
         case .apk:
             return """
             FROM \(distro.baseImage)
-            RUN apk add --no-cache bash sudo shadow iproute2 ca-certificates
+            RUN apk add --no-cache bash sudo shadow iproute2 ca-certificates openssh
             CMD ["tail", "-f", "/dev/null"]
             """
         case .pacman:
             return """
             FROM \(distro.baseImage)
-            RUN pacman -Sy --noconfirm --disable-sandbox --needed sudo iproute2 \\
+            RUN pacman -Sy --noconfirm --disable-sandbox --needed sudo iproute2 openssh \\
              && (pacman -Scc --noconfirm --disable-sandbox || true)
             STOPSIGNAL SIGRTMIN+3
             CMD ["/sbin/init"]
