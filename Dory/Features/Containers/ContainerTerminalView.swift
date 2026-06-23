@@ -10,10 +10,16 @@ struct ContainerTerminalView: NSViewRepresentable {
     var user: String = "root"
     var shell: String = "/bin/sh"
     var home: String = "/root"
+    var kubeExec: KubeExecTarget? = nil
 
     func makeNSView(context: Context) -> LocalProcessTerminalView {
         let term = LocalProcessTerminalView(frame: NSRect(x: 0, y: 0, width: 640, height: 360))
-        let exec = "docker -H unix://\(socketPath) \(TerminalLauncher.execArgs(user: user, shell: shell, home: home, container: containerID))"
+        let exec: String
+        if let kubeExec {
+            exec = KubeExecCommand.shell(target: kubeExec)
+        } else {
+            exec = "docker -H unix://\(socketPath) \(TerminalLauncher.execArgs(user: user, shell: shell, home: home, container: containerID))"
+        }
         let env = Terminal.getEnvironmentVariables(termName: "xterm-256color")
         term.startProcess(executable: "/bin/zsh", args: ["-lc", exec], environment: env)
         return term

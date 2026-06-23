@@ -8,7 +8,8 @@ struct TerminalWindowView: View {
         VStack(spacing: 0) {
             header
             ContainerTerminalView(socketPath: session.socketPath, containerID: session.containerID,
-                                  user: session.user, shell: session.shell, home: session.home)
+                                  user: session.user, shell: session.shell, home: session.home,
+                                  kubeExec: session.kubeExec)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(minWidth: 480, minHeight: 300)
@@ -27,8 +28,9 @@ struct TerminalWindowView: View {
             }
             Spacer()
             Button {
-                TerminalLauncher.open(command: "docker -H unix://\(session.socketPath) " +
-                    TerminalLauncher.execArgs(user: session.user, shell: session.shell, home: session.home, container: session.containerID))
+                let command = session.kubeExec.map(KubeExecCommand.shell)
+                    ?? "docker -H unix://\(session.socketPath) " + TerminalLauncher.execArgs(user: session.user, shell: session.shell, home: session.home, container: session.containerID)
+                TerminalLauncher.open(command: command)
             } label: {
                 HStack(spacing: 5) {
                     Image(systemName: "arrow.up.forward.app").font(.system(size: 11, weight: .semibold))

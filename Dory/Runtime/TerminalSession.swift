@@ -10,4 +10,5 @@ struct TerminalSession: Identifiable, Hashable, Codable {
     let user: String
     let shell: String
     let home: String
+    var kubeExec: KubeExecTarget? = nil
 }

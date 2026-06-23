@@ -43,4 +43,20 @@ struct TerminalSessionTests {
         let data = try JSONEncoder().encode(s)
         #expect(try JSONDecoder().decode(TerminalSession.self, from: data) == s)
     }
+
+    @Test func podSessionRoundTripsKubeExec() throws {
+        let target = KubeExecTarget(pod: "web-1", namespace: "default", container: nil, kubeconfig: "/k")
+        let session = TerminalSession(id: "pod:default/web-1", title: "web-1", subtitle: "default",
+                                      logo: nil, socketPath: "", containerID: "", user: "root",
+                                      shell: "/bin/sh", home: "/root", kubeExec: target)
+        let data = try JSONEncoder().encode(session)
+        let decoded = try JSONDecoder().decode(TerminalSession.self, from: data)
+        #expect(decoded.kubeExec == target)
+    }
+
+    @Test func legacySessionDecodesKubeExecAsNil() throws {
+        let json = #"{"id":"container:abc","title":"c","subtitle":"img","logo":null,"socketPath":"/s","containerID":"abc","user":"root","shell":"/bin/sh","home":"/root"}"#
+        let decoded = try JSONDecoder().decode(TerminalSession.self, from: Data(json.utf8))
+        #expect(decoded.kubeExec == nil)
+    }
 }
