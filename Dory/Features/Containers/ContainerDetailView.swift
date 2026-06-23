@@ -11,10 +11,7 @@ struct ContainerDetailView: View {
     @State private var cpuHistory: [Double] = []
     @State private var confirmingDelete = false
 
-    private var sparkData: [Double] {
-        guard !cpuHistory.isEmpty else { return [0.04] }
-        return cpuHistory.map { min(1, max(0.03, $0 * 0.14)) }
-    }
+    private var sparkData: [Double] { ContainerStatsFormat.cpuSparkBars(cpuHistory) }
 
     private var displayCPU: Double { liveCPU ?? container.cpuPercent }
 
@@ -183,12 +180,18 @@ struct ContainerDetailView: View {
                 }
             }
             VStack(spacing: 8) {
-                SparkBars(heights: sparkData, tint: p.accent)
-                    .frame(height: 108 - 24)
-                    .padding(12)
-                    .frame(maxWidth: .infinity)
-                    .background(p.bgElevated, in: RoundedRectangle(cornerRadius: 10))
-                    .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(p.border))
+                Group {
+                    if cpuHistory.isEmpty {
+                        Text("Collecting CPU…").font(.system(size: 11)).foregroundStyle(p.text3)
+                            .frame(maxWidth: .infinity, minHeight: 84)
+                    } else {
+                        SparkBars(heights: sparkData, tint: p.accent).frame(height: 84)
+                    }
+                }
+                .padding(12)
+                .frame(maxWidth: .infinity)
+                .background(p.bgElevated, in: RoundedRectangle(cornerRadius: 10))
+                .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(p.border))
                 Text("CPU usage · last 60s").font(.system(size: 11)).foregroundStyle(p.text3)
                     .frame(maxWidth: .infinity)
             }
@@ -196,28 +199,49 @@ struct ContainerDetailView: View {
     }
 
     private var logs: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            ForEach(logLines) { line in
-                HStack(spacing: 6) {
-                    Text(line.timestamp).foregroundStyle(Color(hex: 0x5B6070))
-                    Text(line.level.rawValue).font(.mono(11.5, weight: .bold)).foregroundStyle(line.level.color(p))
-                    Text(line.message).foregroundStyle(p.monoText)
-                    Spacer(minLength: 0)
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("OUTPUT").font(.system(size: 10.5, weight: .bold)).tracking(0.5).foregroundStyle(p.text3)
+                Spacer()
+                Button {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(ContainerStatsFormat.logsPlainText(logLines), forType: .string)
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "doc.on.doc").font(.system(size: 10))
+                        Text("Copy").font(.system(size: 11, weight: .semibold))
+                    }
+                    .foregroundStyle(p.text3)
                 }
-                .font(.mono(11.5))
-                .lineLimit(1)
-                .padding(.vertical, 1.5)
+                .buttonStyle(.plain)
+                .disabled(logLines.isEmpty)
             }
-            HStack(spacing: 6) {
-                Text("$").foregroundStyle(p.green)
-                BlinkingCursor()
+            ScrollViewReader { proxy in
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(logLines) { line in
+                        HStack(spacing: 6) {
+                            Text(line.timestamp).foregroundStyle(Color(hex: 0x5B6070))
+                            Text(line.level.rawValue).font(.mono(11.5, weight: .bold)).foregroundStyle(line.level.color(p))
+                            Text(line.message).foregroundStyle(p.monoText)
+                            Spacer(minLength: 0)
+                        }
+                        .font(.mono(11.5)).lineLimit(1).padding(.vertical, 1.5)
+                        .id(line.id)
+                    }
+                    HStack(spacing: 6) {
+                        Text("$").foregroundStyle(p.green)
+                        BlinkingCursor()
+                    }
+                    .font(.mono(11.5)).padding(.top, 2).id("logs-cursor")
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(13)
+                .background(p.monoBg, in: RoundedRectangle(cornerRadius: 10))
+                .onChange(of: logLines.count) { _, _ in
+                    withAnimation(.easeOut(duration: 0.15)) { proxy.scrollTo("logs-cursor", anchor: .bottom) }
+                }
             }
-            .font(.mono(11.5))
-            .padding(.top, 2)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(13)
-        .background(p.monoBg, in: RoundedRectangle(cornerRadius: 10))
     }
 
     private var terminal: some View {
