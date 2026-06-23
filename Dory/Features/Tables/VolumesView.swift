@@ -3,6 +3,8 @@ import SwiftUI
 struct VolumesView: View {
     @Environment(AppStore.self) private var store
     @Environment(\.palette) private var p
+    @State private var pendingDeleteVolume: Volume?
+    @State private var confirmingPruneVolumes = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -44,13 +46,29 @@ struct VolumesView: View {
                         .contextMenu {
                             Button("Browse Files") { store.openVolumeBrowser(volume.name) }
                             Divider()
-                            Button("Delete Volume", role: .destructive) { store.deleteVolume(volume) }
-                            Button("Prune unused volumes") { store.pruneVolumes() }
+                            Button("Delete Volume", role: .destructive) { pendingDeleteVolume = volume }
+                            Button("Prune unused volumes") { confirmingPruneVolumes = true }
                         }
                     }
                 }
             }
             }
+        }
+        .confirmationDialog(
+            pendingDeleteVolume.map { "Delete volume \($0.name)?" } ?? "Delete volume?",
+            isPresented: Binding(get: { pendingDeleteVolume != nil }, set: { if !$0 { pendingDeleteVolume = nil } }),
+            titleVisibility: .visible
+        ) {
+            Button("Delete", role: .destructive) { if let volume = pendingDeleteVolume { store.deleteVolume(volume) } }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This permanently removes the volume and its data. This cannot be undone.")
+        }
+        .confirmationDialog("Prune unused volumes?", isPresented: $confirmingPruneVolumes, titleVisibility: .visible) {
+            Button("Prune", role: .destructive) { store.pruneVolumes() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Removes volumes not used by any container. This cannot be undone.")
         }
     }
 }

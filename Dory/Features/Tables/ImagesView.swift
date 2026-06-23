@@ -58,6 +58,7 @@ private struct ImageRow: View {
     @Environment(\.palette) private var p
     let image: DockerImage
     @State private var hover = false
+    @State private var pendingDeleteImage: DockerImage?
 
     var body: some View {
         HStack(spacing: 0) {
@@ -81,6 +82,16 @@ private struct ImageRow: View {
         .onTapGesture(count: 2) { store.inspect(image) }
         .onHover { hover = $0 }
         .contextMenu { menu }
+        .confirmationDialog(
+            "Delete \(image.repository):\(image.tag)?",
+            isPresented: Binding(get: { pendingDeleteImage != nil }, set: { if !$0 { pendingDeleteImage = nil } }),
+            titleVisibility: .visible
+        ) {
+            Button("Delete", role: .destructive) { if let img = pendingDeleteImage { store.removeImage(img) } }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This permanently removes the image. This cannot be undone.")
+        }
     }
 
     @ViewBuilder private var rowActions: some View {
@@ -88,7 +99,7 @@ private struct ImageRow: View {
             if hover {
                 IconButton(systemImage: "play.fill", label: "Run \(image.repository)") { runImage() }
                 IconButton(systemImage: "info.circle", label: "Inspect \(image.repository)") { store.inspect(image) }
-                IconButton(systemImage: "trash", label: "Delete \(image.repository)") { store.removeImage(image) }
+                IconButton(systemImage: "trash", label: "Delete \(image.repository)") { pendingDeleteImage = image }
             }
         }
     }
@@ -101,7 +112,7 @@ private struct ImageRow: View {
             NSPasteboard.general.setString(image.imageID, forType: .string)
         }
         Divider()
-        Button("Delete Image", role: .destructive) { store.removeImage(image) }
+        Button("Delete Image", role: .destructive) { pendingDeleteImage = image }
     }
 
     private func runImage() {
