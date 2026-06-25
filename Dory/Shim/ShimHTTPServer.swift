@@ -5,9 +5,32 @@ import Darwin
 
 final class ShimStreamWriter: @unchecked Sendable {
     private let fd: Int32
-    init(fd: Int32) { self.fd = fd }
+    private let chunked: Bool
+    private var finished = false
+
+    init(fd: Int32, chunked: Bool = false) {
+        self.fd = fd
+        self.chunked = chunked
+    }
+
     @discardableResult func write(_ data: Data) -> Bool {
-        (try? UnixSocketHTTP.writeAll(fd, data)) != nil
+        guard !finished else { return false }
+        guard !data.isEmpty else { return true }
+        guard chunked else {
+            return (try? UnixSocketHTTP.writeAll(fd, data)) != nil
+        }
+        var frame = Data(String(data.count, radix: 16).utf8)
+        frame.append(HTTPCodec.crlf)
+        frame.append(data)
+        frame.append(HTTPCodec.crlf)
+        return (try? UnixSocketHTTP.writeAll(fd, frame)) != nil
+    }
+
+    @discardableResult func finish() -> Bool {
+        guard !finished else { return true }
+        finished = true
+        guard chunked else { return true }
+        return (try? UnixSocketHTTP.writeAll(fd, Data("0\r\n\r\n".utf8))) != nil
     }
 }
 
@@ -184,16 +207,20 @@ final class ShimHTTPServer: @unchecked Sendable {
         }
         if let producer = response.stream {
             var head = "HTTP/1.1 \(response.status) \(HTTPCodec.reasonPhrase(response.status))\r\n"
-            for header in response.headers where header.name.lowercased() != "content-length" {
+            for header in response.headers {
+                let name = header.name.lowercased()
+                guard name != "content-length", name != "transfer-encoding" else { continue }
                 head += "\(header.name): \(header.value)\r\n"
             }
+            head += "Transfer-Encoding: chunked\r\n"
             if !response.headers.contains(where: { $0.name.lowercased() == "connection" }) {
                 head += "Connection: close\r\n"
             }
             head += "\r\n"
             guard (try? UnixSocketHTTP.writeAll(fd, Data(head.utf8))) != nil else { return }
-            let writer = ShimStreamWriter(fd: fd)
+            let writer = ShimStreamWriter(fd: fd, chunked: true)
             _ = runBlocking { await producer(writer); return ShimResponse.empty(status: 200) }
+            _ = writer.finish()
         } else {
             let data = HTTPCodec.serializeResponse(status: response.status, headers: response.headers, body: response.body)
             try? UnixSocketHTTP.writeAll(fd, data)

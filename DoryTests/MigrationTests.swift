@@ -46,6 +46,65 @@ final class MigrationTargetRuntime: ContainerRuntime {
 }
 
 @MainActor
+final class ArchiveMigrationSourceRuntime: ContainerRuntime {
+    let kind: RuntimeKind = .docker
+    nonisolated var supportsImageArchiveTransfer: Bool { true }
+
+    func snapshot() async throws -> RuntimeSnapshot {
+        RuntimeSnapshot(images: [
+            DockerImage(repository: "local/web", tag: "dev", imageID: "sha256:local", size: "12 MB", created: "now", usedByCount: 0),
+        ])
+    }
+
+    nonisolated func saveImage(reference: String) -> AsyncStream<Data> {
+        AsyncStream { continuation in
+            continuation.yield(Data("tar:\(reference):".utf8))
+            continuation.yield(Data("payload".utf8))
+            continuation.finish()
+        }
+    }
+
+    func start(containerID: String) async throws {}
+    func stop(containerID: String) async throws {}
+    func restart(containerID: String) async throws {}
+    func remove(containerID: String) async throws {}
+    func logs(containerID: String) async throws -> [LogLine] { [] }
+    func env(containerID: String) async throws -> [EnvVar] { [] }
+    func create(_ spec: ContainerSpec) async throws -> String { "unused" }
+    func exec(containerID: String, command: [String]) async throws -> ExecResult { ExecResult(exitCode: 0, output: "") }
+}
+
+@MainActor
+final class ArchiveMigrationTargetRuntime: ContainerRuntime {
+    enum TestError: Error { case pullShouldNotBeUsed }
+
+    let kind: RuntimeKind = .sharedVM
+    var loadedArchives: [Data] = []
+    var loadedArchiveChunks: [[String]] = []
+    var pulled: [String] = []
+    nonisolated var supportsImageArchiveTransfer: Bool { true }
+
+    func snapshot() async throws -> RuntimeSnapshot { RuntimeSnapshot() }
+    func start(containerID: String) async throws {}
+    func stop(containerID: String) async throws {}
+    func restart(containerID: String) async throws {}
+    func remove(containerID: String) async throws {}
+    func logs(containerID: String) async throws -> [LogLine] { [] }
+    func env(containerID: String) async throws -> [EnvVar] { [] }
+    func pull(image: String) async throws { pulled.append(image); throw TestError.pullShouldNotBeUsed }
+    func create(_ spec: ContainerSpec) async throws -> String { "unused" }
+    func exec(containerID: String, command: [String]) async throws -> ExecResult { ExecResult(exitCode: 0, output: "") }
+    func loadImage(tar: Data) async throws { loadedArchives.append(tar) }
+    func loadImage(stream: AsyncStream<Data>) async throws {
+        var chunks: [String] = []
+        for await chunk in stream {
+            chunks.append(String(decoding: chunk, as: UTF8.self))
+        }
+        loadedArchiveChunks.append(chunks)
+    }
+}
+
+@MainActor
 struct MigrationTests {
     @Test func migratesImagesAndRecreatesContainers() async {
         let source = MigrationSourceRuntime()
@@ -62,5 +121,26 @@ struct MigrationTests {
         #expect(spec?.environment["PORT"] == "80")
         #expect(spec?.labels["dory.migrated.from"] == "docker")
         #expect(summary.containersMigrated == ["web"])
+    }
+
+    @Test func migrationParsesDockerStyleAndLegacyPortDisplays() {
+        #expect(MigrationAssistant.parsePorts("8080→80, 127.0.0.1:5353->53/udp, 443/tcp") == [
+            "8080:80",
+            "127.0.0.1:5353:53/udp",
+            "443",
+        ])
+    }
+
+    @Test func copiesImageArchivesBeforeFallingBackToPull() async {
+        let source = ArchiveMigrationSourceRuntime()
+        let target = ArchiveMigrationTargetRuntime()
+
+        let summary = await MigrationAssistant.migrate(from: source, to: target, recreateContainers: false)
+
+        #expect(target.pulled.isEmpty)
+        #expect(target.loadedArchives.isEmpty)
+        #expect(target.loadedArchiveChunks == [["tar:local/web:dev:", "payload"]])
+        #expect(summary.imagesImported == ["local/web:dev"])
+        #expect(summary.failures.isEmpty)
     }
 }

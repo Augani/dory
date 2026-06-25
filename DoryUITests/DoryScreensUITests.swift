@@ -5,8 +5,12 @@ final class DoryScreensUITests: XCTestCase {
 
     override func setUpWithError() throws {
         continueAfterFailure = false
-        app = XCUIApplication()
+        app = XCUIApplication(bundleIdentifier: "com.pythonxi.Dory")
         app.launchEnvironment["DORY_RUNTIME"] = "mock"
+        if app.state != .notRunning {
+            app.terminate()
+        }
+        Thread.sleep(forTimeInterval: 0.5)
         app.launch()
     }
 
@@ -18,6 +22,12 @@ final class DoryScreensUITests: XCTestCase {
 
     private func assertText(_ text: String, timeout: TimeInterval = 4) {
         XCTAssertTrue(app.staticTexts[text].waitForExistence(timeout: timeout), "expected text '\(text)'")
+    }
+
+    private func selectKubeResource(_ id: String) {
+        let button = app.buttons["kube-resource-\(id)"]
+        XCTAssertTrue(button.waitForExistence(timeout: 4), "kube resource \(id) should exist")
+        button.click()
     }
 
     func testNavigatesEverySection() {
@@ -38,6 +48,23 @@ final class DoryScreensUITests: XCTestCase {
         app.buttons["tab-env"].click(); assertText("NODE_ENV")
         app.buttons["tab-terminal"].click()
         app.buttons["tab-overview"].click(); assertText("Restart policy")
+    }
+
+    func testKubernetesResourceSwitcherShowsWorkloadInventory() {
+        nav("kubernetes")
+        assertText("web-7d9f8b6c4-xk2lp")
+
+        selectKubeResource("configMaps")
+        assertText("web-config")
+        assertText("KEYS")
+
+        selectKubeResource("secrets")
+        assertText("web-secrets")
+        assertText("Opaque")
+
+        selectKubeResource("ingresses")
+        assertText("web.dory.local")
+        assertText("PATHS")
     }
 
     func testSettingsSubTabs() {
@@ -73,7 +100,7 @@ final class DoryScreensUITests: XCTestCase {
         nav("containers")
         app.buttons["primary-action"].click()
         assertText("New Container")
-        app.buttons["sheet-submit"].waitForExistence(timeout: 2)
+        XCTAssertTrue(app.buttons["sheet-submit"].waitForExistence(timeout: 2), "submit button should be visible")
         // Cancel without creating.
         app.buttons["Cancel"].firstMatch.click()
         nav("images")

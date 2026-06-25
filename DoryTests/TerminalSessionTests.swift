@@ -54,6 +54,21 @@ struct TerminalSessionTests {
         #expect(decoded.kubeExec == target)
     }
 
+    @Test func podSessionTargetsPrimaryContainer() {
+        let store = AppStore()
+        let pod = Pod(
+            name: "web-1",
+            namespace: "default",
+            phase: .running,
+            ready: "2/2",
+            restarts: 0,
+            age: "1m",
+            containers: ["app", "sidecar"]
+        )
+        let session = store.terminalSession(for: pod)
+        #expect(session.kubeExec?.container == "app")
+    }
+
     @Test func legacySessionDecodesKubeExecAsNil() throws {
         let json = #"{"id":"container:abc","title":"c","subtitle":"img","logo":null,"socketPath":"/s","containerID":"abc","user":"root","shell":"/bin/sh","home":"/root"}"#
         let decoded = try JSONDecoder().decode(TerminalSession.self, from: Data(json.utf8))

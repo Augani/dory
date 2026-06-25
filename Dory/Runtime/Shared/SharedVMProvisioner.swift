@@ -23,13 +23,14 @@ enum SharedVMProvisioner {
         /// generous cap costs nothing until workloads actually use it.
         var memory: String
 
-        init(cpus: Int = 4, memory: String = "4096M") {
+        nonisolated init(cpus: Int = 4, memory: String = "4096M") {
             self.cpus = cpus
             self.memory = memory
         }
     }
 
     enum ProvisionError: Error, Sendable {
+        case unsupportedHost(String)
         case containerCLINotFound
         case systemUnavailable
         case engineStartFailed(String)
@@ -46,6 +47,10 @@ enum SharedVMProvisioner {
             return helpers
         }
         return Shell.find("container", candidates: binaryCandidates)
+    }
+
+    static func hostSupport(platform: MacHostPlatform = .current(), containerBinaryPath: String? = containerBinary()) -> RuntimeSupport {
+        AppleContainerSupport.evaluate(platform: platform, hasContainerCLI: containerBinaryPath != nil)
     }
 
     /// Path to the engine image (`docker:dind`) tar bundled in the app's Resources, if present.
@@ -71,7 +76,12 @@ enum SharedVMProvisioner {
     }
 
     static func provision(config: Config = Config()) async throws -> String {
-        guard let binary = containerBinary() else {
+        let binaryPath = containerBinary()
+        let support = hostSupport(containerBinaryPath: binaryPath)
+        guard support.isSupported else {
+            throw ProvisionError.unsupportedHost(support.reason)
+        }
+        guard let binary = binaryPath else {
             throw ProvisionError.containerCLINotFound
         }
 
@@ -142,10 +152,12 @@ enum SharedVMProvisioner {
            check.output.contains("ok") { return }
         try? await runtime.pull(image: "tonistiigi/binfmt")
         let body = Data(#"{"Image":"tonistiigi/binfmt","Cmd":["--install","amd64"],"HostConfig":{"Privileged":true,"AutoRemove":true}}"#.utf8)
-        guard let create = await runtime.proxyRequest(method: "POST", path: "/containers/create?name=dory-binfmt",
+        let encodedName = DockerImageOps.queryValue("dory-binfmt")
+        guard let create = await runtime.proxyRequest(method: "POST", path: "/containers/create?name=\(encodedName)",
             headers: [(name: "Content-Type", value: "application/json")], body: body),
             let id = decodeId(create.body) else { return }
-        _ = await runtime.proxyRequest(method: "POST", path: "/containers/\(id)/start", headers: [], body: Data())
+        let encodedID = DockerImageOps.pathComponent(id)
+        _ = await runtime.proxyRequest(method: "POST", path: "/containers/\(encodedID)/start", headers: [], body: Data())
     }
 
     private static func decodeId(_ data: Data) -> String? {

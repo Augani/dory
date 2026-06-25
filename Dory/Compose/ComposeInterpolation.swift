@@ -76,12 +76,12 @@ enum ComposeInterpolation {
     /// Parse a `.env` file body into a variable dictionary.
     static func parseDotEnv(_ text: String) -> [String: String] {
         var result: [String: String] = [:]
-        for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
+        for line in text.split(whereSeparator: \.isNewline) {
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
             if trimmed.isEmpty || trimmed.hasPrefix("#") { continue }
             guard let eq = trimmed.firstIndex(of: "=") else { continue }
-            let key = String(trimmed[trimmed.startIndex..<eq]).trimmingCharacters(in: .whitespaces)
-            var value = String(trimmed[trimmed.index(after: eq)...]).trimmingCharacters(in: .whitespaces)
+            let key = String(trimmed[trimmed.startIndex..<eq]).trimmingCharacters(in: .whitespacesAndNewlines)
+            var value = String(trimmed[trimmed.index(after: eq)...]).trimmingCharacters(in: .whitespacesAndNewlines)
             if value.count >= 2, (value.hasPrefix("\"") && value.hasSuffix("\"")) || (value.hasPrefix("'") && value.hasSuffix("'")) {
                 value = String(value.dropFirst().dropLast())
             }

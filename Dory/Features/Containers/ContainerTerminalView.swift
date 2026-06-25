@@ -18,7 +18,10 @@ struct ContainerTerminalView: NSViewRepresentable {
         if let kubeExec {
             exec = KubeExecCommand.shell(target: kubeExec)
         } else {
-            exec = "docker -H unix://\(socketPath) \(TerminalLauncher.execArgs(user: user, shell: shell, home: home, container: containerID))"
+            exec = TerminalLauncher.dockerCommand(
+                socketPath: socketPath,
+                execArgs: TerminalLauncher.execArgs(user: user, shell: shell, home: home, container: containerID)
+            )
         }
         let env = Terminal.getEnvironmentVariables(termName: "xterm-256color")
         term.startProcess(executable: "/bin/zsh", args: ["-lc", exec], environment: env)

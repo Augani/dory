@@ -91,7 +91,7 @@ struct NewMachineSheet: View {
     private var engineNotice: some View {
         HStack(spacing: 9) {
             Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 13)).foregroundStyle(p.amber)
-            Text("Linux machines need Dory's shared VM. Switch engines in Settings → Docker Engine.")
+            Text(AppStore.dockerCompatibleEngineRequired("Linux machines"))
                 .font(.system(size: 12)).foregroundStyle(p.text2)
             Spacer(minLength: 0)
         }

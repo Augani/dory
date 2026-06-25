@@ -3,13 +3,31 @@ import Foundation
 struct KubeVersion: Decodable, Sendable { var gitVersion: String? }
 
 struct KubeContainerStatus: Decodable, Sendable {
+    var name: String?
     var ready: Bool?
     var restartCount: Int?
+    var state: KubeContainerState?
+}
+
+struct KubeContainerState: Decodable, Sendable {
+    var waiting: KubeContainerWaiting?
+}
+
+struct KubeContainerWaiting: Decodable, Sendable {
+    var reason: String?
 }
 
 struct KubePodStatus: Decodable, Sendable {
     var phase: String?
     var containerStatuses: [KubeContainerStatus]?
+}
+
+struct KubeContainerSpec: Decodable, Sendable {
+    var name: String?
+}
+
+struct KubePodSpec: Decodable, Sendable {
+    var containers: [KubeContainerSpec]?
 }
 
 struct KubeMetadata: Decodable, Sendable {
@@ -20,6 +38,7 @@ struct KubeMetadata: Decodable, Sendable {
 
 struct KubePod: Decodable, Sendable {
     var metadata: KubeMetadata?
+    var spec: KubePodSpec?
     var status: KubePodStatus?
 }
 

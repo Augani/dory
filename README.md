@@ -1,15 +1,15 @@
 # Dory
 
-A native, lightweight macOS app for running Docker and Linux containers on Apple silicon — a
-free, open-source alternative to OrbStack and Docker Desktop. Built in pure Swift/SwiftUI on top
-of Apple's [`container`](https://github.com/apple/container) / `containerization` stack, with full
-Docker Engine API compatibility.
+A native, lightweight macOS app for running Docker and Linux containers — a free, open-source
+alternative to OrbStack and Docker Desktop. Built in pure Swift/SwiftUI with a Docker-compatible
+runtime layer, plus an Apple `container` / `containerization` standalone engine when the host
+supports it.
 
 [![GitHub stars](https://img.shields.io/github/stars/Augani/dory?style=flat&logo=github&color=2E9BF5)](https://github.com/Augani/dory/stargazers)
 [![Latest release](https://img.shields.io/github/v/release/Augani/dory?color=2E9BF5)](https://github.com/Augani/dory/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/Augani/dory/total?color=34D058)](https://github.com/Augani/dory/releases)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
-![Platform](https://img.shields.io/badge/platform-macOS%2026%2B%20·%20Apple%20silicon-lightgrey)
+![Platform](https://img.shields.io/badge/platform-macOS%2015%2B-lightgrey)
 
 > ⭐ **If Dory saves you memory (or money), please [star the repo](https://github.com/Augani/dory) — it genuinely helps others find it.**
 
@@ -51,14 +51,15 @@ Dory selects a backend with the `DORY_RUNTIME` environment variable; all share o
 
 | `DORY_RUNTIME` | Backend | Model |
 |---|---|---|
-| `shared` *(default)* | **Shared VM** | One persistent `dockerd`-in-VM for all containers (OrbStack-style). Standalone — no Docker required. |
-| `apple` | **Apple `container`** | One lightweight micro-VM per container. |
-| `docker` | **Docker Engine API** | Transparent proxy to an existing `/var/run/docker.sock` (Docker Desktop, OrbStack). A companion GUI, not a replacement. |
+| `shared` *(default on supported hosts)* | **Shared VM** | One persistent `dockerd`-in-VM for all containers (OrbStack-style). Standalone — no Docker required. Requires macOS 26+ on Apple silicon. |
+| `apple` | **Apple `container`** | One lightweight micro-VM per container. Requires macOS 26+ on Apple silicon. |
+| `docker` | **Docker Engine API** | Transparent proxy to an existing Docker-compatible socket (Docker Desktop, OrbStack, Colima, Rancher Desktop, Podman). Works on older macOS and Intel when the host engine does. |
 | `mock` | **Mock** | In-memory sample data for UI development. |
 
 ## Requirements
 
-- macOS 26 (Tahoe) or later, on Apple silicon
+- macOS 15 or later for the app and Docker-compatible host-engine mode
+- macOS 26 (Tahoe) or later on Apple silicon for Dory's standalone Shared VM / Apple `container` backends
 - Xcode 27 or later (to build)
 
 ## Build & run

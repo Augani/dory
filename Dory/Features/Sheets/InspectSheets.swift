@@ -253,3 +253,72 @@ struct NetworkDetailSheet: View {
         .frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 20)
     }
 }
+
+struct KubeResourceDetailSheet: View {
+    @Environment(AppStore.self) private var store
+    @Environment(\.palette) private var p
+    @State private var revealSecrets = false
+
+    var body: some View {
+        Group {
+            if let configMap = store.selectedConfigMap {
+                InspectChrome(
+                    title: configMap.name,
+                    subtitle: "ConfigMap / \(configMap.namespace)",
+                    badge: "\(configMap.keyCount) key\(configMap.keyCount == 1 ? "" : "s")",
+                    copyValue: nil
+                ) {
+                    InspectSection(title: "DATA") {
+                        KeyValueList(pairs: configMap.data.keys.sorted().map { LabelPair(key: $0, value: configMap.data[$0] ?? "") })
+                    }
+                }
+            } else if let secret = store.selectedSecret {
+                InspectChrome(
+                    title: secret.name,
+                    subtitle: "Secret / \(secret.namespace)",
+                    badge: secret.type,
+                    copyValue: nil
+                ) {
+                    InspectSection(title: "DATA") {
+                        HStack {
+                            Text(revealSecrets ? "Values are visible" : "Values are hidden")
+                                .font(.system(size: 12.5)).foregroundStyle(p.text3)
+                            Spacer()
+                            Button(revealSecrets ? "Hide Values" : "Reveal Values") {
+                                revealSecrets.toggle()
+                            }
+                            .buttonStyle(.plain)
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(p.accentText)
+                        }
+                        .padding(.bottom, 6)
+                        KeyValueList(pairs: secretPairs(secret))
+                    }
+                }
+            } else if let ingress = store.selectedIngress {
+                InspectChrome(
+                    title: ingress.name,
+                    subtitle: "Ingress / \(ingress.namespace)",
+                    badge: ingress.hosts,
+                    copyValue: nil
+                ) {
+                    InspectSection(title: "ROUTING") {
+                        InspectRow(key: "Hosts", value: ingress.hosts)
+                        InspectRow(key: "Address", value: ingress.address)
+                        InspectRow(key: "Paths", value: ingress.paths)
+                    }
+                }
+            }
+        }
+        .onDisappear {
+            store.selectedConfigMap = nil
+            store.selectedSecret = nil
+            store.selectedIngress = nil
+        }
+    }
+
+    private func secretPairs(_ secret: KubeSecretRow) -> [LabelPair] {
+        if revealSecrets { return KubeSecretDecode.decode(secret.data) }
+        return secret.keys.map { LabelPair(key: $0, value: "••••••••") }
+    }
+}

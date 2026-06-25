@@ -54,7 +54,8 @@ struct EngineServicesTests {
         let before = [container("a", .stopped)]
         let after = [container("a", .running)]
         let events = EventSynthesizer.diff(previous: before, current: after)
-        #expect(events == [DoryEvent(containerID: "a", name: "a", image: "img:latest", action: .start)])
+        #expect(events == [DoryEvent(containerID: "a", name: "a", image: "img:latest", action: .start,
+                                     attributes: ["name": "a", "image": "img:latest"])])
     }
 
     @Test func emitsDieAndStopWhenContainerStops() {

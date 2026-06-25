@@ -78,9 +78,75 @@ struct Container: Identifiable, Hashable, Sendable {
     var createdEpoch: Int? = nil
     var labels: [String: String] = [:]
     var memoryBytes: Int64 = 0
+    var volumes: [String] = []
+    var nanoCPUs: Int64? = nil
+    var memoryLimitBytes: Int64? = nil
+    var mounts: [ContainerMount] = []
+    var volumeTargets: [String] = []
+    var networks: [String] = []
+    var networkEndpointSettings: [String: DockerEndpointSettings] = [:]
+    var exitCode: Int? = nil
+    var commandArgs: [String] = []
+    var entrypoint: [String] = []
+    var hostname: String? = nil
+    var domainname: String? = nil
+    var user: String? = nil
+    var workingDir: String? = nil
+    var shell: [String] = []
+    var tty: Bool = false
+    var openStdin: Bool = false
+    var stdinOnce: Bool = false
+    var stopSignal: String? = nil
+    var stopTimeout: Int? = nil
+    var networkMode: String? = nil
+    var autoRemove: Bool? = nil
+    var privileged: Bool? = nil
+    var initProcessEnabled: Bool? = nil
+    var capAdd: [String] = []
+    var capDrop: [String] = []
+    var dns: [String] = []
+    var dnsOptions: [String] = []
+    var dnsSearch: [String] = []
+    var extraHosts: [String] = []
+    var groupAdd: [String] = []
+    var ipcMode: String? = nil
+    var pidMode: String? = nil
+    var usernsMode: String? = nil
+    var readonlyRootfs: Bool? = nil
+    var shmSize: Int64? = nil
+    var tmpfs: [String: String] = [:]
+    var attachStdin: Bool? = nil
+    var attachStdout: Bool? = nil
+    var attachStderr: Bool? = nil
+    var healthcheck: DockerHealthConfig? = nil
+    var networkDisabled: Bool? = nil
+    var containerIDFile: String? = nil
+    var logConfig: DockerLogConfig? = nil
+    var volumeDriver: String? = nil
+    var volumesFrom: [String] = []
+    var consoleSize: [Int] = []
+    var annotations: [String: String] = [:]
+    var cgroupnsMode: String? = nil
+    var cgroup: String? = nil
+    var links: [String] = []
+    var oomScoreAdj: Int? = nil
+    var publishAllPorts: Bool? = nil
+    var securityOpt: [String] = []
+    var storageOpt: [String: String] = [:]
+    var utsMode: String? = nil
+    var sysctls: [String: String] = [:]
+    var runtimeName: String? = nil
+    var isolation: String? = nil
+    var maskedPaths: [String] = []
+    var readonlyPaths: [String] = []
+    var resources: ContainerResourceUpdate = ContainerResourceUpdate()
 
     var composeProject: String? { labels["com.docker.compose.project"] }
     var composeService: String? { labels["com.docker.compose.service"] }
+    var health: Health? {
+        guard let raw = labels["dory.health"] ?? labels["com.docker.compose.health"] else { return nil }
+        return Health(rawValue: raw)
+    }
     var isRunning: Bool { status == .running }
     var cpuFraction: Double { min(1, cpuPercent * 0.14) }
 }
@@ -94,6 +160,7 @@ struct DockerImage: Identifiable, Hashable, Sendable {
     var usedByCount: Int
     var sizeBytes: Int64 = 0
     var createdEpoch: Int = 0
+    var labels: [String: String] = [:]
     var id: String { imageID.isEmpty ? "\(repository):\(tag)" : imageID }
 
     var usedLabel: String { usedByCount > 0 ? "\(usedByCount) container\(usedByCount > 1 ? "s" : "")" : "Unused" }
@@ -111,6 +178,8 @@ struct Volume: Identifiable, Hashable, Sendable {
     var driver: String
     var usedBy: String
     var created: String
+    var labels: [String: String] = [:]
+    var options: [String: String] = [:]
     var id: String { name }
 }
 
@@ -120,6 +189,7 @@ struct DoryNetwork: Identifiable, Hashable, Sendable {
     var scope: String
     var subnet: String
     var containerCount: Int
+    var labels: [String: String] = [:]
     var id: String { name }
 }
 
@@ -149,16 +219,35 @@ enum PodPhase: String, Sendable {
 }
 
 enum KubeResourceKind: String, CaseIterable, Identifiable, Sendable {
-    case pods, deployments, services
+    case pods, deployments, services, configMaps, secrets, ingresses
     var id: String { rawValue }
     var label: String {
         switch self {
         case .pods: "Pods"
         case .deployments: "Deployments"
         case .services: "Services"
+        case .configMaps: "ConfigMaps"
+        case .secrets: "Secrets"
+        case .ingresses: "Ingress"
         }
     }
-    var apiKind: String { rawValue }
+    var apiKind: String {
+        switch self {
+        case .configMaps: "configmaps"
+        case .ingresses: "ingress"
+        default: rawValue
+        }
+    }
+    var deleteKind: String {
+        switch self {
+        case .pods: "pod"
+        case .deployments: "deployment"
+        case .services: "service"
+        case .configMaps: "configmap"
+        case .secrets: "secret"
+        case .ingresses: "ingress"
+        }
+    }
 }
 
 struct Pod: Identifiable, Hashable, Sendable {
@@ -168,7 +257,10 @@ struct Pod: Identifiable, Hashable, Sendable {
     var ready: String
     var restarts: Int
     var age: String
-    var id: String { name }
+    var containers: [String] = []
+    var id: String { "\(namespace)/\(name)" }
+    var primaryContainer: String? { containers.first }
+    var streamsAllContainerLogs: Bool { containers.count > 1 }
 }
 
 struct Machine: Identifiable, Hashable, Sendable {
@@ -186,6 +278,8 @@ struct Machine: Identifiable, Hashable, Sendable {
     var recipe: String = ""
     var username: String = "root"
     var loginShell: String = "/bin/sh"
+    var uid: Int? = nil
+    var homePath: String? = nil
     var sshPort: Int? = nil
     var id: String { name }
 
@@ -274,7 +368,7 @@ struct NetworkDetail: Sendable, Equatable {
 }
 
 enum AppSheet: String, Identifiable, Sendable {
-    case newContainer, pullImage, volumeBrowser, newVolume, newNetwork, buildImage, registryLogin, applyYAML, inspectImage, inspectNetwork, newMachine, creatingMachine, machineSnapshots
+    case newContainer, pullImage, volumeBrowser, newVolume, newNetwork, buildImage, registryLogin, applyYAML, inspectImage, inspectNetwork, kubeResourceDetail, newMachine, creatingMachine, machineSnapshots
     var id: String { rawValue }
 }
 

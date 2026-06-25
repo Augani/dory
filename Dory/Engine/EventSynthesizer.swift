@@ -2,6 +2,8 @@ import Foundation
 
 enum DoryEventAction: String, Sendable, Equatable {
     case create, start, stop, die, destroy
+    case healthStatusHealthy = "health_status: healthy"
+    case healthStatusUnhealthy = "health_status: unhealthy"
 }
 
 struct DoryEvent: Sendable, Equatable {
@@ -9,6 +11,7 @@ struct DoryEvent: Sendable, Equatable {
     var name: String
     var image: String
     var action: DoryEventAction
+    var attributes: [String: String]
 }
 
 /// Synthesizes Docker-style lifecycle events by diffing successive container snapshots.
@@ -29,6 +32,13 @@ enum EventSynthesizer {
                         events.append(event(container, .stop))
                     }
                 }
+                if before.health != container.health {
+                    if container.health == .healthy {
+                        events.append(event(container, .healthStatusHealthy))
+                    } else if container.health == .unhealthy {
+                        events.append(event(container, .healthStatusUnhealthy))
+                    }
+                }
             } else {
                 events.append(event(container, .create))
                 if container.status == .running { events.append(event(container, .start)) }
@@ -44,7 +54,11 @@ enum EventSynthesizer {
     }
 
     private static func event(_ container: Container, _ action: DoryEventAction) -> DoryEvent {
-        DoryEvent(containerID: container.id, name: container.name, image: container.image, action: action)
+        var attributes = ["name": container.name, "image": container.image]
+        for (key, value) in container.labels {
+            attributes[key] = value
+        }
+        return DoryEvent(containerID: container.id, name: container.name, image: container.image, action: action, attributes: attributes)
     }
 }
 
@@ -58,7 +72,8 @@ final class EventBus {
         return AsyncStream { continuation in
             continuations[id] = continuation
             continuation.onTermination = { [weak self] _ in
-                Task { @MainActor in self?.continuations[id] = nil }
+                guard let self else { return }
+                Task { @MainActor [self] in self.continuations[id] = nil }
             }
         }
     }

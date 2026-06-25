@@ -5,7 +5,8 @@ struct AppleContainerRuntime: ContainerRuntime {
     let binary: String
 
     static func detect() async -> AppleContainerRuntime? {
-        guard let binary = Shell.find("container", candidates: ["/opt/homebrew/bin/container", "/usr/local/bin/container"]) else { return nil }
+        guard let binary = Shell.find("container", candidates: ["/opt/homebrew/bin/container", "/usr/local/bin/container"]),
+              AppleContainerSupport.evaluate(platform: .current(), hasContainerCLI: true).isSupported else { return nil }
         let status = await Shell.runAsyncResult(binary, ["system", "status"])
         guard status.exit == 0 else { return nil }
         return AppleContainerRuntime(binary: binary)
@@ -75,6 +76,17 @@ struct AppleContainerRuntime: ContainerRuntime {
         let config = container.configuration
         let running = container.status?.state == "running"
         let ip = container.status?.networks?.first?.ipv4Address.map { String($0.split(separator: "/").first ?? "") } ?? "—"
+        let networks = container.status?.networks?.compactMap { network -> String? in
+            guard let name = network.network, !name.isEmpty else { return nil }
+            return name
+        } ?? []
+        let networkEndpointSettings = Dictionary(uniqueKeysWithValues: networks.map { network in
+            var endpoint = DockerEndpointSettings()
+            if !ip.isEmpty, ip != "—" {
+                endpoint.IPAddress = ip
+            }
+            return (network, endpoint)
+        })
         let command = [config?.initProcess?.executable].compactMap { $0 }.joined()
             + (config?.initProcess?.arguments.map { $0.isEmpty ? "" : " " + $0.joined(separator: " ") } ?? "")
         let memLimit = stats?.memoryLimitBytes ?? config?.resources?.memoryInBytes
@@ -82,7 +94,11 @@ struct AppleContainerRuntime: ContainerRuntime {
         let fraction = (memUsage.flatMap { u in memLimit.map { l in l > 0 ? Double(u) / Double(l) : 0 } }) ?? 0
         let ports = (config?.publishedPorts ?? []).compactMap { port -> String? in
             guard let container = port.containerPort else { return nil }
-            return port.hostPort.map { "\($0)→\(container)" } ?? "\(container)"
+            return ContainerPortDisplay.dockerDisplay(
+                hostPort: port.hostPort,
+                containerPort: container,
+                proto: port.proto
+            )
         }.joined(separator: ", ")
 
         return Container(
@@ -102,7 +118,10 @@ struct AppleContainerRuntime: ContainerRuntime {
             restartPolicy: "—",
             createdEpoch: nil,
             labels: config?.labels ?? [:],
-            memoryBytes: running ? (memUsage ?? 0) : 0
+            memoryBytes: running ? (memUsage ?? 0) : 0,
+            networks: networks,
+            networkEndpointSettings: networkEndpointSettings,
+            exitCode: container.status?.exitCode
         )
     }
 
@@ -114,7 +133,8 @@ struct AppleContainerRuntime: ContainerRuntime {
                            size: DockerFormat.bytes(image.configuration?.descriptor?.size),
                            created: DockerFormat.relative(iso: image.configuration?.creationDate),
                            usedByCount: usedBy,
-                           sizeBytes: image.configuration?.descriptor?.size ?? 0)
+                           sizeBytes: image.configuration?.descriptor?.size ?? 0,
+                           labels: image.configuration?.labels ?? [:])
     }
 
     private func mapVolume(_ volume: ACVolume) -> Volume {
@@ -148,13 +168,51 @@ struct AppleContainerRuntime: ContainerRuntime {
     }
     func remove(containerID: String) async throws { _ = await Shell.runAsyncResult(binary, ["delete", "-f", containerID]) }
     func removeVolume(name: String) async throws { _ = await Shell.runAsyncResult(binary, ["volume", "delete", name]) }
+    func createNetwork(name: String, labels: [String: String]) async throws {
+        var arguments = ["network", "create"]
+        for (key, value) in labels.sorted(by: { $0.key < $1.key }) {
+            arguments += ["--label", "\(key)=\(value)"]
+        }
+        arguments.append(name)
+        _ = try await Shell.runAsync(binary, arguments)
+    }
+    func removeNetwork(name: String) async throws {
+        _ = try await Shell.runAsync(binary, ["network", "delete", name])
+    }
+    func pruneNetworks() async throws {
+        _ = try await Shell.runAsync(binary, ["network", "prune"])
+    }
     func pull(image: String) async throws { _ = try await Shell.runAsync(binary, ["image", "pull", image]) }
+    func tagImage(source: String, repo: String, tag: String) async throws {
+        let target = tag.isEmpty ? repo : "\(repo):\(tag)"
+        _ = try await Shell.runAsync(binary, ["image", "tag", source, target])
+    }
+    func pushImage(reference: String) async throws -> AsyncStream<Data> {
+        let binary = self.binary
+        return AsyncStream { continuation in
+            Task {
+                do {
+                    let output = try await Shell.runAsync(binary, ["image", "push", "--progress", "plain", reference])
+                    for line in Self.pushProgressLines(output: output, reference: reference) {
+                        continuation.yield(line)
+                    }
+                } catch {
+                    continuation.yield(Self.pushLine(error: "\(error)"))
+                }
+                continuation.finish()
+            }
+        }
+    }
 
     func logs(containerID: String) async throws -> [LogLine] {
-        let output = (try? await Shell.runAsync(binary, ["logs", containerID])) ?? ""
-        return output.split(separator: "\n", omittingEmptySubsequences: true).map {
-            LogLine(timestamp: "", level: .info, message: String($0))
+        let stamped = await Shell.runAsyncResult(binary, ["logs", "--timestamps", containerID])
+        let output: String
+        if stamped.exit == 0 {
+            output = stamped.output
+        } else {
+            output = (try? await Shell.runAsync(binary, ["logs", containerID])) ?? ""
         }
+        return AppleLogParse.parse(output)
     }
 
     func streamLogs(containerID: String) -> AsyncStream<LogLine> {
@@ -177,7 +235,7 @@ struct AppleContainerRuntime: ContainerRuntime {
                     let lineData = buffer.data.subdata(in: buffer.data.startIndex..<newline)
                     buffer.data.removeSubrange(buffer.data.startIndex...newline)
                     if let text = String(data: lineData, encoding: .utf8), !text.isEmpty {
-                        continuation.yield(LogLine(timestamp: "", level: .info, message: text))
+                        continuation.yield(AppleLogParse.line(text))
                     }
                 }
             }
@@ -206,24 +264,120 @@ struct AppleContainerRuntime: ContainerRuntime {
         return ExecResult(exitCode: Int(result.exit), output: result.output)
     }
 
+    func containerExitCode(_ id: String) async -> Int? {
+        guard let list = try? await runJSON(["inspect", id, "--format", "json"], as: [ACContainer].self) else { return nil }
+        return list.first?.status?.exitCode
+    }
+
+    private func configuredCPUCount(containerID: String) async -> Int? {
+        guard let list = try? await runJSON(["inspect", containerID, "--format", "json"], as: [ACContainer].self),
+              let cpus = list.first?.configuration?.resources?.cpus,
+              cpus > 0 else { return nil }
+        return cpus
+    }
+
     func create(_ spec: ContainerSpec) async throws -> String {
-        var arguments = ["create", "--name", spec.name]
-        for (key, value) in spec.environment.sorted(by: { $0.key < $1.key }) { arguments += ["-e", "\(key)=\(value)"] }
-        for port in spec.ports { arguments += ["-p", port] }
-        for (key, value) in spec.labels.sorted(by: { $0.key < $1.key }) { arguments += ["--label", "\(key)=\(value)"] }
-        arguments.append("--")
-        arguments.append(spec.image)
-        arguments += spec.command
-        let output = try await Shell.runAsync(binary, arguments)
+        let output = try await Shell.runAsync(binary, Self.createArguments(for: spec))
         return output.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    nonisolated static func createArguments(for spec: ContainerSpec) -> [String] {
+        var arguments = ["create", "--name", spec.name]
+        if let platform = spec.platform?.trimmingCharacters(in: .whitespacesAndNewlines), !platform.isEmpty {
+            arguments += ["--platform", platform]
+        }
+        if let containerIDFile = spec.containerIDFile, !containerIDFile.isEmpty { arguments += ["--cidfile", containerIDFile] }
+        if let runtimeName = spec.runtimeName, !runtimeName.isEmpty { arguments += ["--runtime", runtimeName] }
+        for (key, value) in spec.environment.sorted(by: { $0.key < $1.key }) { arguments += ["-e", "\(key)=\(value)"] }
+        for port in spec.ports { arguments += ["-p", port] }
+        for (key, value) in spec.labels.sorted(by: { $0.key < $1.key }) { arguments += ["--label", "\(key)=\(value)"] }
+        if let user = spec.user, !user.isEmpty { arguments += ["--user", user] }
+        if let workingDir = spec.workingDir, !workingDir.isEmpty { arguments += ["--workdir", workingDir] }
+        if !spec.entrypoint.isEmpty { arguments += ["--entrypoint", spec.entrypoint.joined(separator: " ")] }
+        if spec.openStdin { arguments.append("--interactive") }
+        if spec.tty { arguments.append("--tty") }
+        if spec.autoRemove == true { arguments.append("--rm") }
+        if spec.initProcessEnabled == true || spec.resources.initProcessEnabled == true { arguments.append("--init") }
+        if spec.readonlyRootfs == true { arguments.append("--read-only") }
+        if let cpus = Self.cpuCount(from: spec.resources.nanoCPUs ?? spec.nanoCPUs) { arguments += ["--cpus", cpus] }
+        if let memory = spec.resources.memoryLimitBytes ?? spec.memoryLimitBytes { arguments += ["--memory", "\(memory)"] }
+        for cap in spec.capAdd { arguments += ["--cap-add", cap] }
+        for cap in spec.capDrop { arguments += ["--cap-drop", cap] }
+        for server in spec.dns { arguments += ["--dns", server] }
+        if let domainname = spec.domainname, !domainname.isEmpty { arguments += ["--dns-domain", domainname] }
+        for option in spec.dnsOptions { arguments += ["--dns-option", option] }
+        for domain in spec.dnsSearch { arguments += ["--dns-search", domain] }
+        if spec.networkDisabled == true { arguments.append("--no-dns") }
+        for network in Self.appleNetworks(spec) { arguments += ["--network", network] }
+        for volume in spec.volumes { arguments += ["--volume", volume] }
+        for mount in spec.mounts.compactMap(Self.appleMount) { arguments += ["--mount", mount] }
+        if let shmSize = spec.shmSize { arguments += ["--shm-size", "\(shmSize)"] }
+        for path in spec.tmpfs.keys.sorted() { arguments += ["--tmpfs", path] }
+        for ulimit in spec.resources.ulimits ?? [] {
+            if let encoded = Self.appleUlimit(ulimit) { arguments += ["--ulimit", encoded] }
+        }
+        arguments.append("--")
+        arguments.append(spec.image)
+        arguments += spec.command
+        return arguments
+    }
+
+    private nonisolated static func cpuCount(from nanoCPUs: Int64?) -> String? {
+        guard let nanoCPUs, nanoCPUs > 0 else { return nil }
+        let cpus = Double(nanoCPUs) / 1_000_000_000
+        return cpus == floor(cpus) ? String(Int(cpus)) : String(cpus)
+    }
+
+    private nonisolated static func appleNetworks(_ spec: ContainerSpec) -> [String] {
+        if spec.networkDisabled == true { return ["none"] }
+        let explicit = [spec.networkMode].compactMap { $0 }.filter { !$0.isEmpty && $0 != "default" }
+        return explicit.isEmpty ? spec.networks : explicit
+    }
+
+    private nonisolated static func appleMount(_ mount: ContainerMount) -> String? {
+        guard !mount.type.isEmpty, !mount.target.isEmpty else { return nil }
+        var parts = ["type=\(mount.type)", "target=\(mount.target)"]
+        if let source = mount.source, !source.isEmpty { parts.append("source=\(source)") }
+        if mount.readOnly { parts.append("readonly") }
+        return parts.joined(separator: ",")
+    }
+
+    private nonisolated static func appleUlimit(_ limit: DockerUlimit) -> String? {
+        guard let name = limit.Name, !name.isEmpty else { return nil }
+        guard let soft = limit.Soft else { return nil }
+        if let hard = limit.Hard { return "\(name)=\(soft):\(hard)" }
+        return "\(name)=\(soft)"
+    }
+
+    private static func pushProgressLines(output: String, reference: String) -> [Data] {
+        let lines = output.split(separator: "\n", omittingEmptySubsequences: true).map(String.init)
+        let statuses = lines.isEmpty ? ["Pushed \(reference)"] : lines
+        return statuses.map { pushLine(status: $0) }
+    }
+
+    private static func pushLine(status: String) -> Data {
+        let data = (try? JSONSerialization.data(withJSONObject: ["status": status])) ?? Data(#"{"status":"push progress unavailable"}"#.utf8)
+        return data + Data("\n".utf8)
+    }
+
+    private static func pushLine(error: String) -> Data {
+        let data = (try? JSONSerialization.data(withJSONObject: ["error": error])) ?? Data(#"{"error":"push failed"}"#.utf8)
+        return data + Data("\n".utf8)
+    }
+
     func sampleCPU(containerID: String) async -> Double? {
-        guard let a = try? await runJSON(["stats", "--no-stream", "--format", "json", containerID], as: [ACStats].self).first?.cpuUsageUsec else { return nil }
+        guard let first = try? await runJSON(["stats", "--no-stream", "--format", "json", containerID], as: [ACStats].self).first,
+              let a = first.cpuUsageUsec else { return nil }
         try? await Task.sleep(for: .milliseconds(800))
-        guard let b = try? await runJSON(["stats", "--no-stream", "--format", "json", containerID], as: [ACStats].self).first?.cpuUsageUsec else { return nil }
-        let deltaUsec = Double(b - a)
-        let elapsedUsec = 800_000.0
-        return max(0, min(100, deltaUsec / elapsedUsec * 100))
+        guard let second = try? await runJSON(["stats", "--no-stream", "--format", "json", containerID], as: [ACStats].self).first,
+              let b = second.cpuUsageUsec else { return nil }
+        let inspectedCPUs: Int?
+        if second.cpus == nil, first.cpus == nil {
+            inspectedCPUs = await configuredCPUCount(containerID: containerID)
+        } else {
+            inspectedCPUs = nil
+        }
+        let cpus = second.cpus ?? first.cpus ?? inspectedCPUs ?? 1
+        return AppleStatsMath.cpuPercent(deltaUsec: b - a, elapsedUsec: 800_000, cpus: cpus)
     }
 }

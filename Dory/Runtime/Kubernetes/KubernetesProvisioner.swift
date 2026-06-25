@@ -24,10 +24,12 @@ enum KubernetesProvisioner {
 
         progress("Starting the cluster in the shared VM…")
         await deleteExisting(runtime)
-        guard let create = await runtime.proxyRequest(method: "POST", path: "/containers/create?name=\(containerName)",
+        let encodedName = DockerImageOps.queryValue(containerName)
+        guard let create = await runtime.proxyRequest(method: "POST", path: "/containers/create?name=\(encodedName)",
             headers: [(name: "Content-Type", value: "application/json")], body: createBody()),
             create.statusCode == 201, let id = decodeId(create.body) else { throw K8sError.createFailed }
-        guard let start = await runtime.proxyRequest(method: "POST", path: "/containers/\(id)/start", headers: [], body: Data()),
+        let encodedID = DockerImageOps.pathComponent(id)
+        guard let start = await runtime.proxyRequest(method: "POST", path: "/containers/\(encodedID)/start", headers: [], body: Data()),
             start.statusCode == 204 || start.isSuccess else { throw K8sError.createFailed }
 
         progress("Waiting for the node to become Ready…")
@@ -68,13 +70,15 @@ enum KubernetesProvisioner {
     }
 
     private static func isRunning(_ runtime: any ContainerRuntime) async -> Bool {
-        guard let response = await runtime.proxyRequest(method: "GET", path: "/containers/\(containerName)/json", headers: [], body: Data()),
+        let encodedName = DockerImageOps.pathComponent(containerName)
+        guard let response = await runtime.proxyRequest(method: "GET", path: "/containers/\(encodedName)/json", headers: [], body: Data()),
               response.isSuccess else { return false }
         return String(data: response.body, encoding: .utf8)?.contains("\"Running\":true") ?? false
     }
 
     private static func deleteExisting(_ runtime: any ContainerRuntime) async {
-        _ = await runtime.proxyRequest(method: "DELETE", path: "/containers/\(containerName)?force=true", headers: [], body: Data())
+        let encodedName = DockerImageOps.pathComponent(containerName)
+        _ = await runtime.proxyRequest(method: "DELETE", path: "/containers/\(encodedName)?force=true", headers: [], body: Data())
     }
 
     private static func decodeId(_ data: Data) -> String? {

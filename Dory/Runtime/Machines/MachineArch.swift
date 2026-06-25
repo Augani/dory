@@ -15,7 +15,7 @@ enum MachineArch: String, Sendable, Hashable, CaseIterable, Identifiable {
         }
     }
 
-    static let host: MachineArch = {
+    nonisolated static let host: MachineArch = {
         var info = utsname()
         uname(&info)
         let machine = withUnsafeBytes(of: &info.machine) { raw -> String in

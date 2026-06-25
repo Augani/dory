@@ -1,11 +1,12 @@
 import Foundation
 
 struct MigrationSummary: Sendable, Equatable {
-    var imagesPulled: [String] = []
+    var imagesImported: [String] = []
+    var imagesPulled: [String] { imagesImported }
     var containersMigrated: [String] = []
     var failures: [String] = []
 
-    var total: Int { imagesPulled.count + containersMigrated.count }
+    var total: Int { imagesImported.count + containersMigrated.count }
 }
 
 /// A read-only inventory of what a migration WOULD move. Computed without modifying the source — the
@@ -18,9 +19,9 @@ struct MigrationInventory: Sendable, Equatable {
     var volumeNames: [String]
 }
 
-/// Imports images and recreates container definitions from one engine onto another (e.g. from a
-/// Docker/OrbStack engine onto Apple `container`). Images must be registry-pullable; local-only
-/// images are reported as failures rather than silently skipped.
+/// Imports images and recreates container definitions from one engine onto another. When both
+/// engines can export/import Docker image archives, image bytes are copied directly so local-only
+/// images migrate too. Registry pull is only the fallback for runtimes without archive transfer.
 enum MigrationAssistant {
     /// Reads the source engine without modifying anything — for the pre-flight inventory screen.
     static func preflight(from source: any ContainerRuntime) async -> MigrationInventory? {
@@ -50,9 +51,27 @@ enum MigrationAssistant {
         for image in snapshot.images {
             guard image.repository != "<none>", !image.repository.isEmpty else { continue }
             let reference = "\(image.repository):\(image.tag)"
+            var archiveError: Error?
+            if source.supportsImageArchiveTransfer && target.supportsImageArchiveTransfer {
+                progress?("Copying \(reference)")
+                do {
+                    if try await copyImageArchive(reference: reference, from: source, to: target) {
+                        summary.imagesImported.append(reference)
+                        continue
+                    }
+                } catch {
+                    archiveError = error
+                }
+            }
             progress?("Pulling \(reference)")
-            do { try await target.pull(image: reference); summary.imagesPulled.append(reference) }
-            catch { summary.failures.append("pull \(reference)") }
+            do { try await target.pull(image: reference); summary.imagesImported.append(reference) }
+            catch {
+                if let archiveError {
+                    summary.failures.append("import \(reference) (archive: \(archiveError); pull: \(error))")
+                } else {
+                    summary.failures.append("pull \(reference)")
+                }
+            }
         }
 
         guard recreateContainers else { return summary }
@@ -73,9 +92,12 @@ enum MigrationAssistant {
     }
 
     static func parsePorts(_ display: String) -> [String] {
-        guard display != "—", !display.isEmpty else { return [] }
-        return display.split(separator: ",").map {
-            $0.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: "→", with: ":")
-        }
+        ContainerPortDisplay.mappings(display).map(\.containerSpec)
+    }
+
+    private static func copyImageArchive(reference: String, from source: any ContainerRuntime, to target: any ContainerRuntime) async throws -> Bool {
+        let stream = source.saveImage(reference: reference)
+        try await target.loadImage(stream: stream)
+        return true
     }
 }

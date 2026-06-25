@@ -4,6 +4,7 @@ struct KubernetesView: View {
     @Environment(AppStore.self) private var store
     @Environment(\.palette) private var p
     @State private var pendingDeletePod: Pod?
+    @State private var pendingDeleteResource: KubeDeleteTarget?
 
     var body: some View {
         if !store.kubernetesReachable && store.pods.isEmpty {
@@ -58,6 +59,20 @@ struct KubernetesView: View {
         } message: {
             Text("This permanently removes the pod. This cannot be undone.")
         }
+        .confirmationDialog(
+            "Delete \(pendingDeleteResource?.title ?? "resource")?",
+            isPresented: Binding(get: { pendingDeleteResource != nil }, set: { if !$0 { pendingDeleteResource = nil } }),
+            titleVisibility: .visible
+        ) {
+            Button("Delete", role: .destructive) {
+                if let target = pendingDeleteResource {
+                    Task { await store.deleteResource(kind: target.kind, name: target.name, namespace: target.namespace) }
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This permanently removes the Kubernetes resource. This cannot be undone.")
+        }
         .overlay {
             if store.kubeResource == .pods, let pod = store.selectedPod() {
                 PodDetailView(pod: pod).background(p.bgContent).transition(.move(edge: .trailing))
@@ -75,6 +90,9 @@ struct KubernetesView: View {
         case .pods: podTable
         case .deployments: deploymentTable
         case .services: serviceTable
+        case .configMaps: configMapTable
+        case .secrets: secretTable
+        case .ingresses: ingressTable
         }
     }
 
@@ -125,21 +143,78 @@ struct KubernetesView: View {
         VStack(spacing: 0) {
             TableHeader(columns: [
                 .init("SERVICE"), .init("NAMESPACE", 110), .init("TYPE", 110),
-                .init("CLUSTER-IP", 120), .init("PORTS", 120), .init("AGE", 70),
+                .init("CLUSTER-IP", 120), .init("PORTS", 120), .init("AGE", 70), .init("", 66),
             ])
             ScrollView {
                 LazyVStack(spacing: 0) {
                     ForEach(store.kubeServices) { row in
-                        HStack(spacing: 0) {
-                            Text(row.name).font(.mono(13, weight: .semibold)).foregroundStyle(p.text).lineLimit(1)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                            Text(row.namespace).font(.system(size: 12)).foregroundStyle(p.text2).frame(width: 110, alignment: .leading)
-                            Text(row.type).font(.system(size: 12.5)).foregroundStyle(p.text2).frame(width: 110, alignment: .leading)
-                            Text(row.clusterIP).font(.mono(12)).foregroundStyle(p.text3).frame(width: 120, alignment: .leading)
-                            Text(row.ports).font(.mono(12)).foregroundStyle(p.text2).lineLimit(1).frame(width: 120, alignment: .leading)
-                            Text(row.age).font(.system(size: 12.5)).foregroundStyle(p.text3).frame(width: 70, alignment: .leading)
+                        ServiceRow(row: row) {
+                            store.openService(row)
+                        } onDelete: {
+                            pendingDeleteResource = KubeDeleteTarget(kind: .services, name: row.name, namespace: row.namespace)
                         }
-                        .tableRow()
+                    }
+                }
+            }
+        }
+    }
+
+    private var configMapTable: some View {
+        VStack(spacing: 0) {
+            TableHeader(columns: [
+                .init("CONFIGMAP"), .init("NAMESPACE", 110), .init("KEYS", 90), .init("AGE", 70), .init("", 40),
+            ])
+            ScrollView {
+                LazyVStack(spacing: 0) {
+                    ForEach(store.configMaps) { row in
+                        ConfigMapRow(row: row) {
+                            store.selectedConfigMap = row
+                            store.activeSheet = .kubeResourceDetail
+                        } onDelete: {
+                            pendingDeleteResource = KubeDeleteTarget(kind: .configMaps, name: row.name, namespace: row.namespace)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private var secretTable: some View {
+        VStack(spacing: 0) {
+            TableHeader(columns: [
+                .init("SECRET"), .init("NAMESPACE", 110), .init("TYPE", 180),
+                .init("KEYS", 80), .init("AGE", 70), .init("", 40),
+            ])
+            ScrollView {
+                LazyVStack(spacing: 0) {
+                    ForEach(store.secrets) { row in
+                        SecretRow(row: row) {
+                            store.selectedSecret = row
+                            store.activeSheet = .kubeResourceDetail
+                        } onDelete: {
+                            pendingDeleteResource = KubeDeleteTarget(kind: .secrets, name: row.name, namespace: row.namespace)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private var ingressTable: some View {
+        VStack(spacing: 0) {
+            TableHeader(columns: [
+                .init("INGRESS"), .init("NAMESPACE", 110), .init("HOSTS", 170),
+                .init("ADDRESS", 120), .init("PATHS"), .init("AGE", 70), .init("", 40),
+            ])
+            ScrollView {
+                LazyVStack(spacing: 0) {
+                    ForEach(store.ingresses) { row in
+                        IngressRow(row: row) {
+                            store.selectedIngress = row
+                            store.activeSheet = .kubeResourceDetail
+                        } onDelete: {
+                            pendingDeleteResource = KubeDeleteTarget(kind: .ingresses, name: row.name, namespace: row.namespace)
+                        }
                     }
                 }
             }
@@ -150,6 +225,31 @@ struct KubernetesView: View {
         if store.kubernetesReachable { return store.kubernetesInfo }
         let namespaces = Set(store.pods.map(\.namespace)).count
         return "\(store.pods.count) pods · \(namespaces) namespace\(namespaces == 1 ? "" : "s")"
+    }
+
+    private var resourcePicker: some View {
+        HStack(spacing: 2) {
+            ForEach(KubeResourceKind.allCases) { kind in
+                let selected = store.kubeResource == kind
+                Button {
+                    store.kubeResource = kind
+                    Task { await store.loadKubeResource() }
+                } label: {
+                    Text(kind.label)
+                        .font(.system(size: 11.5, weight: selected ? .semibold : .medium))
+                        .foregroundStyle(selected ? p.text : p.text2)
+                        .lineLimit(1)
+                        .padding(.horizontal, 8)
+                        .frame(height: 24)
+                        .background(selected ? p.bgElevated : .clear, in: RoundedRectangle(cornerRadius: 6))
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("kube-resource-\(kind.rawValue)")
+            }
+        }
+        .padding(2)
+        .background(p.bgInput, in: RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(p.border))
     }
 
     private var banner: some View {
@@ -163,11 +263,7 @@ struct KubernetesView: View {
             .padding(.horizontal, 12).padding(.vertical, 6)
             .background(healthy ? p.greenWeak : p.amberWeak, in: RoundedRectangle(cornerRadius: 8))
             Text(bannerInfo).font(.system(size: 12.5)).foregroundStyle(p.text2)
-            Picker("", selection: Binding(get: { store.kubeResource }, set: { store.kubeResource = $0; Task { await store.loadKubeResource() } })) {
-                ForEach(KubeResourceKind.allCases) { kind in Text(kind.label).tag(kind) }
-            }
-            .pickerStyle(.segmented).fixedSize().labelsHidden()
-            .accessibilityIdentifier("kube-resource-picker")
+            resourcePicker
             Picker("", selection: Binding(get: { store.kubeNamespace }, set: { store.kubeNamespace = $0; Task { await store.loadKubeResource() } })) {
                 Text("All Namespaces").tag("All Namespaces")
                 ForEach(store.kubeNamespaces, id: \.self) { ns in Text(ns).tag(ns) }
@@ -200,6 +296,14 @@ struct KubernetesView: View {
     }
 }
 
+private struct KubeDeleteTarget: Identifiable {
+    var kind: KubeResourceKind
+    var name: String
+    var namespace: String
+    var id: String { "\(kind.rawValue):\(namespace)/\(name)" }
+    var title: String { "\(kind.label.dropLast(kind == .ingresses ? 0 : 1)) \(name)" }
+}
+
 private struct PodRow: View {
     @Environment(AppStore.self) private var store
     @Environment(\.palette) private var p
@@ -227,6 +331,114 @@ private struct PodRow: View {
         .tableRow()
         .contentShape(Rectangle())
         .onTapGesture(count: 2) { store.selectedPodID = pod.id }
+        .onHover { hover = $0 }
+    }
+}
+
+private struct ServiceRow: View {
+    @Environment(\.palette) private var p
+    let row: KubeServiceRow
+    let onOpen: () -> Void
+    let onDelete: () -> Void
+    @State private var hover = false
+
+    var body: some View {
+        HStack(spacing: 0) {
+            Text(row.name).font(.mono(13, weight: .semibold)).foregroundStyle(p.text).lineLimit(1)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Text(row.namespace).font(.system(size: 12)).foregroundStyle(p.text2).frame(width: 110, alignment: .leading)
+            Text(row.type).font(.system(size: 12.5)).foregroundStyle(p.text2).frame(width: 110, alignment: .leading)
+            Text(row.clusterIP).font(.mono(12)).foregroundStyle(p.text3).frame(width: 120, alignment: .leading)
+            Text(row.ports).font(.mono(12)).foregroundStyle(p.text2).lineLimit(1).frame(width: 120, alignment: .leading)
+            Text(row.age).font(.system(size: 12.5)).foregroundStyle(p.text3).frame(width: 70, alignment: .leading)
+            HStack(spacing: 2) {
+                if hover {
+                    if !row.isHeadless {
+                        IconButton(systemImage: "safari", label: "Open \(row.name)", action: onOpen)
+                    }
+                    IconButton(systemImage: "trash", label: "Delete \(row.name)", action: onDelete)
+                }
+            }.frame(width: 66, alignment: .trailing)
+        }
+        .tableRow()
+        .onHover { hover = $0 }
+    }
+}
+
+private struct ConfigMapRow: View {
+    @Environment(\.palette) private var p
+    let row: KubeConfigMapRow
+    let onInspect: () -> Void
+    let onDelete: () -> Void
+    @State private var hover = false
+
+    var body: some View {
+        HStack(spacing: 0) {
+            Text(row.name).font(.mono(13, weight: .semibold)).foregroundStyle(p.text).lineLimit(1)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Text(row.namespace).font(.system(size: 12)).foregroundStyle(p.text2).frame(width: 110, alignment: .leading)
+            Text("\(row.keyCount)").font(.system(size: 12.5)).monospacedDigit().foregroundStyle(p.text2).frame(width: 90, alignment: .leading)
+            Text(row.age).font(.system(size: 12.5)).foregroundStyle(p.text3).frame(width: 70, alignment: .leading)
+            HStack(spacing: 2) {
+                if hover { IconButton(systemImage: "trash", label: "Delete \(row.name)", action: onDelete) }
+            }.frame(width: 40, alignment: .trailing)
+        }
+        .tableRow()
+        .contentShape(Rectangle())
+        .onTapGesture(count: 2, perform: onInspect)
+        .onHover { hover = $0 }
+    }
+}
+
+private struct SecretRow: View {
+    @Environment(\.palette) private var p
+    let row: KubeSecretRow
+    let onInspect: () -> Void
+    let onDelete: () -> Void
+    @State private var hover = false
+
+    var body: some View {
+        HStack(spacing: 0) {
+            Text(row.name).font(.mono(13, weight: .semibold)).foregroundStyle(p.text).lineLimit(1)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Text(row.namespace).font(.system(size: 12)).foregroundStyle(p.text2).frame(width: 110, alignment: .leading)
+            Text(row.type).font(.system(size: 12.5)).foregroundStyle(p.text2).lineLimit(1).frame(width: 180, alignment: .leading)
+            Text("\(row.keyCount)").font(.system(size: 12.5)).monospacedDigit().foregroundStyle(p.text2).frame(width: 80, alignment: .leading)
+            Text(row.age).font(.system(size: 12.5)).foregroundStyle(p.text3).frame(width: 70, alignment: .leading)
+            HStack(spacing: 2) {
+                if hover { IconButton(systemImage: "trash", label: "Delete \(row.name)", action: onDelete) }
+            }.frame(width: 40, alignment: .trailing)
+        }
+        .tableRow()
+        .contentShape(Rectangle())
+        .onTapGesture(count: 2, perform: onInspect)
+        .onHover { hover = $0 }
+    }
+}
+
+private struct IngressRow: View {
+    @Environment(\.palette) private var p
+    let row: KubeIngressRow
+    let onInspect: () -> Void
+    let onDelete: () -> Void
+    @State private var hover = false
+
+    var body: some View {
+        HStack(spacing: 0) {
+            Text(row.name).font(.mono(13, weight: .semibold)).foregroundStyle(p.text).lineLimit(1)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Text(row.namespace).font(.system(size: 12)).foregroundStyle(p.text2).frame(width: 110, alignment: .leading)
+            Text(row.hosts).font(.mono(12)).foregroundStyle(p.text2).lineLimit(1).frame(width: 170, alignment: .leading)
+            Text(row.address).font(.mono(12)).foregroundStyle(p.text3).lineLimit(1).frame(width: 120, alignment: .leading)
+            Text(row.paths).font(.mono(12)).foregroundStyle(p.text2).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
+            Text(row.age).font(.system(size: 12.5)).foregroundStyle(p.text3).frame(width: 70, alignment: .leading)
+            HStack(spacing: 2) {
+                if hover { IconButton(systemImage: "trash", label: "Delete \(row.name)", action: onDelete) }
+            }.frame(width: 40, alignment: .trailing)
+        }
+        .tableRow()
+        .contentShape(Rectangle())
+        .onTapGesture(count: 2, perform: onInspect)
         .onHover { hover = $0 }
     }
 }

@@ -12,6 +12,31 @@ struct MachineSnapshot: Identifiable, Hashable, Sendable {
     let arch: String
     let boot: String
     let recipe: String
+    let username: String
+    let uid: Int?
+    let homePath: String?
+    let loginShell: String
+
+    init(id: String, imageRef: String, machineName: String, note: String, createdISO: String,
+         sizeBytes: Int64, distro: String, version: String, arch: String, boot: String,
+         recipe: String, username: String = "root", uid: Int? = nil, homePath: String? = nil,
+         loginShell: String = "/bin/sh") {
+        self.id = id
+        self.imageRef = imageRef
+        self.machineName = machineName
+        self.note = note
+        self.createdISO = createdISO
+        self.sizeBytes = sizeBytes
+        self.distro = distro
+        self.version = version
+        self.arch = arch
+        self.boot = boot
+        self.recipe = recipe
+        self.username = username
+        self.uid = uid
+        self.homePath = homePath
+        self.loginShell = loginShell
+    }
 }
 
 enum SnapshotLabels {
@@ -32,6 +57,12 @@ enum SnapshotLabels {
             createdKey: createdISO,
         ]
         if !machine.recipe.isEmpty { labels["dory.recipe"] = machine.recipe }
+        if machine.username != "root" {
+            labels[MachineService.userLabel] = machine.username
+            labels[MachineService.shellLabel] = machine.loginShell
+            if let uid = machine.uid { labels[MachineService.uidLabel] = "\(uid)" }
+            if let home = machine.homePath { labels[MachineService.homeLabel] = home }
+        }
         return labels
     }
 
@@ -50,7 +81,11 @@ enum SnapshotLabels {
                 version: labels["dory.machine.version"] ?? "",
                 arch: labels["dory.machine.arch"] ?? "",
                 boot: labels["dory.machine.boot"] ?? "systemd",
-                recipe: labels["dory.recipe"] ?? ""
+                recipe: labels["dory.recipe"] ?? "",
+                username: labels[MachineService.userLabel] ?? "root",
+                uid: labels[MachineService.uidLabel].flatMap { Int($0) },
+                homePath: labels[MachineService.homeLabel],
+                loginShell: labels[MachineService.shellLabel] ?? "/bin/sh"
             )
         }
     }

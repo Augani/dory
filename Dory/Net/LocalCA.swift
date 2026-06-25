@@ -1,14 +1,23 @@
 import Foundation
 
-enum ShellError: Error, Sendable {
+nonisolated enum ShellError: Error, Sendable {
     case launchFailed(String)
     case nonZeroExit(Int32, String)
     case toolNotFound(String)
 }
 
-enum Shell {
-    static func find(_ tool: String, candidates: [String]) -> String? {
-        for path in candidates where FileManager.default.isExecutableFile(atPath: path) { return path }
+nonisolated enum Shell {
+    static func find(
+        _ tool: String,
+        candidates: [String],
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        fileManager: FileManager = .default
+    ) -> String? {
+        for path in candidates where fileManager.isExecutableFile(atPath: path) { return path }
+        for directory in (environment["PATH"] ?? "").split(separator: ":", omittingEmptySubsequences: true) {
+            let path = URL(fileURLWithPath: String(directory)).appendingPathComponent(tool).path
+            if fileManager.isExecutableFile(atPath: path) { return path }
+        }
         return nil
     }
 
@@ -61,7 +70,7 @@ enum Shell {
     }
 }
 
-struct CertificatePair: Sendable {
+nonisolated struct CertificatePair: Sendable {
     var certificate: URL
     var privateKey: URL
 }
@@ -70,7 +79,7 @@ struct CertificatePair: Sendable {
 /// `*.dory.local` development domains. Installing the CA into the system trust store is a
 /// privileged, security-sensitive action and is performed ONLY via `installInSystemTrust`,
 /// which must be invoked from an explicit, consented user action — never automatically.
-struct LocalCA: Sendable {
+nonisolated struct LocalCA: Sendable {
     let directory: URL
 
     init(directory: URL? = nil) {

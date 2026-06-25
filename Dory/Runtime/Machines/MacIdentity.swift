@@ -1,6 +1,6 @@
 import Foundation
 
-struct MacIdentity: Sendable, Hashable {
+nonisolated struct MacIdentity: Sendable, Hashable {
     let username: String
     let uid: Int
     let homePath: String

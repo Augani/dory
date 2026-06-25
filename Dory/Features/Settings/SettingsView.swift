@@ -53,13 +53,13 @@ struct SettingsView: View {
         VStack(alignment: .leading, spacing: 22) {
             groupLabel("SWITCH TO DORY")
             VStack(alignment: .leading, spacing: 12) {
-                Text("Import your images and containers from Docker Desktop or OrbStack onto Dory's engine. Your source engine is only read — nothing there is modified, so you can switch back anytime.")
+                Text("Import your images and containers from Docker Desktop, OrbStack, Colima, Rancher Desktop, Podman, or another Docker-compatible engine onto Dory's engine. Your source engine is only read — nothing there is modified, so you can switch back anytime.")
                     .font(.system(size: 12.5)).foregroundStyle(p.text2).lineSpacing(4)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 if let inv = store.migrationInventory {
                     preflightPanel(inv)
                 } else {
-                    Text("No Docker Desktop or OrbStack engine detected.")
+                    Text("No Docker-compatible local engine detected.")
                         .font(.system(size: 11.5)).foregroundStyle(p.text3)
                 }
                 Button {
@@ -67,7 +67,7 @@ struct SettingsView: View {
                 } label: {
                     HStack(spacing: 8) {
                         if store.migrationBusy { ProgressView().controlSize(.small) }
-                        Text(store.migrationBusy ? "Importing…" : "Import from Docker / OrbStack")
+                        Text(store.migrationBusy ? "Importing…" : "Import from Engine")
                             .font(.system(size: 12.5, weight: .semibold)).foregroundStyle(.white)
                     }
                     .padding(.horizontal, 16).padding(.vertical, 9)
@@ -326,6 +326,7 @@ struct SettingsView: View {
     private var engine: some View {
         let kind = store.runtimeKind
         let onShared = kind == .sharedVM
+        let sharedSupport = store.sharedVMSupport
         return VStack(alignment: .leading, spacing: 20) {
             groupLabel("ACTIVE ENGINE")
             HStack(spacing: 12) {
@@ -343,7 +344,7 @@ struct SettingsView: View {
 
             groupLabel("DORY SHARED VM")
             VStack(alignment: .leading, spacing: 12) {
-                Text("Run every container in one shared Linux VM — like OrbStack — instead of a VM per container. Lower memory for multi-container stacks, and Dory becomes a standalone engine that no longer needs Docker or OrbStack.")
+                Text("Run every container in one shared Linux VM — like OrbStack — instead of a VM per container. Lower memory for multi-container stacks, and Dory becomes a standalone engine that no longer needs Docker or OrbStack. Requires macOS 26 or later on Apple silicon; older Macs can use a Docker-compatible local engine.")
                     .font(.system(size: 12.5)).foregroundStyle(p.text2).lineSpacing(4)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 Button {
@@ -356,9 +357,12 @@ struct SettingsView: View {
                         .background(onShared ? p.bgInput : p.accent, in: RoundedRectangle(cornerRadius: 8))
                 }
                 .buttonStyle(.plain)
-                .disabled(onShared)
+                .disabled(onShared || !sharedSupport.isSupported)
                 .accessibilityIdentifier("use-shared-vm")
-                if !store.sharedVMStatus.isEmpty {
+                if !sharedSupport.isSupported {
+                    Text("Unavailable: \(sharedSupport.reason).")
+                        .font(.system(size: 11.5)).foregroundStyle(p.text3)
+                } else if !store.sharedVMStatus.isEmpty {
                     Text(store.sharedVMStatus).font(.system(size: 11.5)).foregroundStyle(p.text3)
                 }
             }
@@ -371,7 +375,7 @@ struct SettingsView: View {
 
     private func engineDescription(for kind: RuntimeKind) -> String {
         switch kind {
-        case .docker: "Proxying the host Docker/OrbStack engine"
+        case .docker: "Proxying a host Docker-compatible engine"
         case .sharedVM: "One shared Linux VM on Apple's container engine"
         case .appleContainer: "Apple container — one micro-VM per container"
         case .mock: "Demo data"

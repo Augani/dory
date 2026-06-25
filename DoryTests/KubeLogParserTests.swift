@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import Dory
 
@@ -18,5 +19,28 @@ struct KubeLogParserTests {
     }
     @Test func emptyInput() {
         #expect(KubeLogParser.parse("").isEmpty)
+    }
+
+    @Test func streamBufferHoldsPartialLinesUntilComplete() {
+        let buffer = KubeLogStreamBuffer()
+
+        #expect(buffer.append(Data("2026-06-23T10:00:00Z partial".utf8)).isEmpty)
+        let completed = buffer.append(Data(" line\nnext".utf8))
+
+        #expect(completed.count == 1)
+        #expect(completed[0].timestamp == "2026-06-23T10:00:00Z")
+        #expect(completed[0].message == "partial line")
+    }
+
+    @Test func streamBufferFlushesFinalLineWithoutNewline() {
+        let buffer = KubeLogStreamBuffer()
+
+        _ = buffer.append(Data("2026-06-23T10:00:00Z final line".utf8))
+        let flushed = buffer.flush()
+
+        #expect(flushed.count == 1)
+        #expect(flushed[0].timestamp == "2026-06-23T10:00:00Z")
+        #expect(flushed[0].message == "final line")
+        #expect(buffer.flush().isEmpty)
     }
 }

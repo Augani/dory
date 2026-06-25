@@ -27,4 +27,12 @@ struct PublishedPortParsingTests {
         let ports = parsePublishedPorts("0.0.0.0:53->53/udp")
         #expect(ports.first?.proto == "udp")
     }
+
+    @Test func parsesLegacyArrowDisplay() {
+        let ports = parsePublishedPorts("8080→80, 5353→53/udp")
+        #expect(ports == [
+            PublishedPort(hostPort: 5353, containerPort: 53, proto: "udp"),
+            PublishedPort(hostPort: 8080, containerPort: 80, proto: "tcp"),
+        ])
+    }
 }

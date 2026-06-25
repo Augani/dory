@@ -1,13 +1,13 @@
 import Foundation
 
-struct HTTPRequest: Sendable {
+nonisolated struct HTTPRequest: Sendable {
     var method: String
     var path: String
     var headers: [(name: String, value: String)] = []
     var body: Data?
 }
 
-struct HTTPResponse: Sendable {
+nonisolated struct HTTPResponse: Sendable {
     var statusCode: Int
     var reason: String
     var headers: [String: String]
@@ -17,7 +17,7 @@ struct HTTPResponse: Sendable {
     var isSuccess: Bool { (200..<300).contains(statusCode) }
 }
 
-enum HTTPError: Error, Sendable, Equatable {
+nonisolated enum HTTPError: Error, Sendable, Equatable {
     case malformedStatusLine
     case incomplete
     case malformedChunk
@@ -27,7 +27,7 @@ enum HTTPError: Error, Sendable, Equatable {
 }
 
 /// Incrementally strips HTTP chunked-transfer framing from a byte stream, emitting payload bytes.
-final class ChunkedStreamDecoder: @unchecked Sendable {
+nonisolated final class ChunkedStreamDecoder: @unchecked Sendable {
     private var buffer = [UInt8]()
 
     func feed(_ data: Data) -> Data {
@@ -58,7 +58,7 @@ final class ChunkedStreamDecoder: @unchecked Sendable {
     }
 }
 
-struct ParsedRequest: Sendable {
+nonisolated struct ParsedRequest: Sendable {
     var method: String
     var target: String
     var headers: [String: String]
@@ -66,21 +66,34 @@ struct ParsedRequest: Sendable {
 
     var path: String { String(target.split(separator: "?", maxSplits: 1).first ?? "") }
 
-    var query: [String: String] {
-        guard let q = target.split(separator: "?", maxSplits: 1).dropFirst().first else { return [:] }
-        var result: [String: String] = [:]
-        for pair in q.split(separator: "&") {
+    var queryItems: [(key: String, value: String)] {
+        guard let q = target.split(separator: "?", maxSplits: 1).dropFirst().first else { return [] }
+        return q.split(separator: "&").compactMap { pair in
             let kv = pair.split(separator: "=", maxSplits: 1)
-            guard let rawKey = kv.first else { continue }
-            let key = String(rawKey).removingPercentEncoding ?? String(rawKey)
-            let value = kv.count > 1 ? (String(kv[1]).removingPercentEncoding ?? String(kv[1])) : ""
-            result[key] = value
+            guard let rawKey = kv.first else { return nil }
+            let key = Self.decodeQueryComponent(rawKey)
+            let value = kv.count > 1 ? Self.decodeQueryComponent(kv[1]) : ""
+            return (key, value)
         }
+    }
+
+    var query: [String: String] {
+        var result: [String: String] = [:]
+        for item in queryItems { result[item.key] = item.value }
         return result
+    }
+
+    func queryValues(for key: String) -> [String] {
+        queryItems.compactMap { $0.key == key ? $0.value : nil }
+    }
+
+    private static func decodeQueryComponent(_ raw: Substring) -> String {
+        let formDecoded = String(raw).replacingOccurrences(of: "+", with: " ")
+        return formDecoded.removingPercentEncoding ?? formDecoded
     }
 }
 
-enum HTTPCodec {
+nonisolated enum HTTPCodec {
     static let crlf = Data([13, 10])
     static let headerTerminator = Data([13, 10, 13, 10])
     static let maxChunkBytes = 512 * 1024 * 1024
@@ -165,6 +178,24 @@ enum HTTPCodec {
         var data = Data(lines.utf8)
         if let body = request.body { data.append(body) }
         return data
+    }
+
+    nonisolated static func serializeChunkedRequest(_ request: HTTPRequest, host: String = "dory") -> Data {
+        var lines = "\(request.method) \(request.path) HTTP/1.1\r\n"
+        var headers = request.headers.filter {
+            let name = $0.name.lowercased()
+            return name != "content-length" && name != "transfer-encoding"
+        }
+        if !headers.contains(where: { $0.name.lowercased() == "host" }) {
+            headers.insert((name: "Host", value: host), at: 0)
+        }
+        headers.append((name: "Transfer-Encoding", value: "chunked"))
+        if !headers.contains(where: { $0.name.lowercased() == "connection" }) {
+            headers.append((name: "Connection", value: "close"))
+        }
+        for header in headers { lines += "\(header.name): \(header.value)\r\n" }
+        lines += "\r\n"
+        return Data(lines.utf8)
     }
 
     /// Parse a complete HTTP response from `data`. Returns nil if more bytes are required.

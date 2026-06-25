@@ -70,8 +70,8 @@ enum MachineImageBuilder {
         try dockerfile(for: distro).write(to: dir.appendingPathComponent("Dockerfile"), atomically: true, encoding: .utf8)
 
         guard let tar = AppStore.tarDirectory(dir) else { throw MachineError.imageBuildFailed("Could not package build context") }
-        let encodedTag = tag.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? tag
-        let encodedPlatform = arch.platform.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? arch.platform
+        let encodedTag = DockerImageOps.queryValue(tag)
+        let encodedPlatform = DockerImageOps.queryValue(arch.platform)
         var lastError: String?
         for await chunk in runtime.build(contextTar: tar, query: "t=\(encodedTag)&platform=\(encodedPlatform)") {
             for line in String(decoding: chunk, as: UTF8.self).split(separator: "\n") {
@@ -106,8 +106,8 @@ enum MachineImageBuilder {
         defer { try? FileManager.default.removeItem(at: dir) }
         try recipeDockerfile(baseImageTag: baseTag, recipe: recipe).write(to: dir.appendingPathComponent("Dockerfile"), atomically: true, encoding: .utf8)
         guard let tar = AppStore.tarDirectory(dir) else { throw MachineError.imageBuildFailed("Could not package recipe context") }
-        let encodedTag = tag.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? tag
-        let encodedPlatform = arch.platform.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? arch.platform
+        let encodedTag = DockerImageOps.queryValue(tag)
+        let encodedPlatform = DockerImageOps.queryValue(arch.platform)
         var lastError: String?
         for await chunk in runtime.build(contextTar: tar, query: "t=\(encodedTag)&platform=\(encodedPlatform)") {
             for line in String(decoding: chunk, as: UTF8.self).split(separator: "\n") {

@@ -24,12 +24,15 @@ final class ComposeEngine {
         self.maxHealthAttempts = maxHealthAttempts
     }
 
-    func networkName(_ project: ComposeProject) -> String { "\(project.name)_default" }
+    func networkName(_ project: ComposeProject) -> String { networkName(project, "default") }
+    func networkName(_ project: ComposeProject, _ network: String) -> String { "\(project.name)_\(network)" }
     func containerName(_ project: ComposeProject, _ service: String) -> String { "\(project.name)-\(service)-1" }
 
     @discardableResult
     func up(_ project: ComposeProject, pullImages: Bool = false, progress: (@MainActor (ComposeProgress) -> Void)? = nil) async throws -> [String: String] {
-        try await runtime.createNetwork(name: networkName(project), labels: projectLabels(project))
+        for network in projectNetworkKeys(project) {
+            try await ensureProjectNetwork(name: networkName(project, network), labels: networkLabels(project, network: network))
+        }
 
         var idByService: [String: String] = [:]
         let order = try project.startOrder()
@@ -55,43 +58,125 @@ final class ComposeEngine {
         return idByService
     }
 
+    private func ensureProjectNetwork(name: String, labels: [String: String]) async throws {
+        do {
+            try await runtime.createNetwork(name: name, labels: labels)
+        } catch {
+            guard Self.isNetworkAlreadyExists(error) else { throw error }
+        }
+    }
+
+    private static func isNetworkAlreadyExists(_ error: Error) -> Bool {
+        if case ShellError.nonZeroExit(_, let output) = error {
+            return output.localizedCaseInsensitiveContains("already exists")
+        }
+        if case HTTPError.status(let code, let message) = error {
+            if message.localizedCaseInsensitiveContains("already exists") { return true }
+            return code == 409 && message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        return String(describing: error).localizedCaseInsensitiveContains("already exists")
+    }
+
     func down(_ project: ComposeProject) async throws {
         let snapshot = try await runtime.snapshot()
         let prefix = "\(project.name)-"
         let projectContainers = snapshot.containers.filter { $0.name.hasPrefix(prefix) }
-        // Tear down in reverse start order so a service is removed only after everything that
-        // depends on it — the inverse of `up`. Unranked containers fall to the end.
         let order = (try? project.startOrder()) ?? []
-        let rank = Dictionary(order.enumerated().map { ($1, $0) }, uniquingKeysWith: { first, _ in first })
-        let ordered = projectContainers.sorted {
-            ($0.composeService.flatMap { rank[$0] } ?? -1) > ($1.composeService.flatMap { rank[$0] } ?? -1)
-        }
+        let ordered = Self.teardownOrder(containers: projectContainers, startOrder: order)
         for container in ordered {
             try? await runtime.stop(containerID: container.id)
             try? await runtime.remove(containerID: container.id)
         }
-        try? await runtime.removeNetwork(name: networkName(project))
+        for network in projectNetworkKeys(project).reversed() {
+            try? await runtime.removeNetwork(name: networkName(project, network))
+        }
     }
 
     func spec(for service: ComposeService, in project: ComposeProject) -> ContainerSpec {
-        ContainerSpec(
-            name: containerName(project, service.name),
-            image: service.image ?? "",
-            command: service.command,
-            environment: service.environment,
-            ports: service.ports,
-            labels: projectLabels(project).merging([
-                "com.docker.compose.service": service.name,
-                "com.docker.compose.container-number": "1",
-            ], uniquingKeysWith: { _, new in new }),
-            networks: [networkName(project)] + service.networks,
-            volumes: service.volumes,
-            restart: service.restart
+        let networkDisabled = service.networkMode == "none" ? true : nil
+        let stopTimeout = service.stopGracePeriod.map { Int($0.rounded(.up)) }
+        let resources = ContainerResourceUpdate(
+            memoryReservationBytes: service.memoryReservationBytes,
+            memorySwapBytes: service.memorySwapBytes,
+            memorySwappiness: service.memorySwappiness,
+            oomKillDisable: service.oomKillDisable,
+            pidsLimit: service.pidsLimit,
+            ulimits: service.ulimits.isEmpty ? nil : service.ulimits
         )
+        var spec = ContainerSpec(name: containerName(project, service.name), image: service.image ?? "")
+        spec.command = service.command
+        spec.entrypoint = service.entrypoint
+        spec.environment = service.environment
+        spec.ports = service.ports
+        spec.labels = projectLabels(project).merging([
+            "com.docker.compose.service": service.name,
+            "com.docker.compose.container-number": "1",
+        ], uniquingKeysWith: { _, new in new })
+        spec.networks = serviceNetworkKeys(service).map { networkName(project, $0) }
+        spec.volumes = service.volumes
+        spec.restart = service.restart
+        spec.memoryLimitBytes = service.memoryLimitBytes
+        spec.hostname = service.hostname
+        spec.domainname = service.domainname
+        spec.user = service.user
+        spec.workingDir = service.workingDir
+        spec.tty = service.tty
+        spec.openStdin = service.stdinOpen
+        spec.stopSignal = service.stopSignal
+        spec.stopTimeout = stopTimeout
+        spec.networkMode = service.networkMode
+        spec.privileged = service.privileged
+        spec.initProcessEnabled = service.initProcessEnabled
+        spec.capAdd = service.capAdd
+        spec.capDrop = service.capDrop
+        spec.dns = service.dns
+        spec.dnsOptions = service.dnsOptions
+        spec.dnsSearch = service.dnsSearch
+        spec.extraHosts = service.extraHosts
+        spec.groupAdd = service.groupAdd
+        spec.ipcMode = service.ipcMode
+        spec.pidMode = service.pidMode
+        spec.usernsMode = service.usernsMode
+        spec.readonlyRootfs = service.readOnly
+        spec.shmSize = service.shmSize
+        spec.tmpfs = service.tmpfs
+        spec.attachStdin = service.stdinOpen ? true : nil
+        spec.healthcheck = service.healthcheck?.dockerConfig
+        spec.networkDisabled = networkDisabled
+        spec.logConfig = service.logging?.dockerConfig
+        spec.volumesFrom = service.volumesFrom
+        spec.links = service.links
+        spec.oomScoreAdj = service.oomScoreAdj
+        spec.securityOpt = service.securityOpt
+        spec.storageOpt = service.storageOpt
+        spec.utsMode = service.utsMode
+        spec.sysctls = service.sysctls
+        spec.runtimeName = service.runtimeName
+        spec.isolation = service.isolation
+        spec.resources = resources
+        return spec
     }
 
     private func projectLabels(_ project: ComposeProject) -> [String: String] {
         ["com.docker.compose.project": project.name]
+    }
+
+    private func networkLabels(_ project: ComposeProject, network: String) -> [String: String] {
+        projectLabels(project).merging(["com.docker.compose.network": network], uniquingKeysWith: { _, new in new })
+    }
+
+    private func projectNetworkKeys(_ project: ComposeProject) -> [String] {
+        let keys = Set(project.services.flatMap(serviceNetworkKeys))
+        return keys.sorted {
+            if $0 == "default" { return true }
+            if $1 == "default" { return false }
+            return $0 < $1
+        }
+    }
+
+    private func serviceNetworkKeys(_ service: ComposeService) -> [String] {
+        if service.networkMode != nil { return [] }
+        return service.networks.isEmpty ? ["default"] : service.networks
     }
 
     private func waitForCondition(_ dependency: ComposeDependency, project: ComposeProject, ids: [String: String]) async throws {
@@ -141,6 +226,14 @@ final class ComposeEngine {
             try await Task.sleep(for: .seconds(pollInterval))
         }
         throw ComposeError.dependencyTimeout(service: service)
+    }
+
+    /// Tear down in reverse start order so dependents are removed before dependencies.
+    static func teardownOrder(containers: [Container], startOrder: [String]) -> [Container] {
+        let rank = Dictionary(startOrder.enumerated().map { ($1, $0) }, uniquingKeysWith: { first, _ in first })
+        return containers.sorted {
+            ($0.composeService.flatMap { rank[$0] } ?? -1) > ($1.composeService.flatMap { rank[$0] } ?? -1)
+        }
     }
 
     static func probeCommand(_ test: [String]) -> [String]? {

@@ -36,11 +36,41 @@ enum KubeServiceProxy {
     static func backends(suffix: String) async -> [String: ProxyBackend] {
         var result: [String: ProxyBackend] = [:]
         for service in await services() {
-            let host = "\(service.name).\(service.namespace).k8s.\(suffix)".lowercased()
-            let prefix = "/api/v1/namespaces/\(service.namespace)/services/\(service.name):\(service.port)/proxy"
-            result[host] = ProxyBackend(host: "127.0.0.1", port: proxyPort, pathPrefix: prefix)
+            let host = serviceHost(name: service.name, namespace: service.namespace, suffix: suffix)
+            result[host] = ProxyBackend(
+                host: "127.0.0.1",
+                port: proxyPort,
+                pathPrefix: serviceProxyPath(name: service.name, namespace: service.namespace, port: service.port)
+            )
         }
         return result
+    }
+
+    static func serviceHost(name: String, namespace: String, suffix: String) -> String {
+        "\(name).\(namespace).k8s.\(suffix)".lowercased()
+    }
+
+    static func serviceProxyPath(name: String, namespace: String, port: Int) -> String {
+        "/api/v1/namespaces/\(namespace)/services/\(name):\(port)/proxy"
+    }
+
+    static func firstPort(from summary: String) -> Int? {
+        summary.components(separatedBy: CharacterSet.decimalDigits.inverted)
+            .first { !$0.isEmpty }
+            .flatMap(Int.init)
+    }
+
+    static func browserURL(
+        name: String,
+        namespace: String,
+        ports: String,
+        suffix: String,
+        domainAvailable: Bool
+    ) -> URL? {
+        let host = serviceHost(name: name, namespace: namespace, suffix: suffix)
+        if domainAvailable { return URL(string: "http://\(host)") }
+        guard let port = firstPort(from: ports) else { return URL(string: "http://\(host)") }
+        return URL(string: "http://127.0.0.1:\(proxyPort)\(serviceProxyPath(name: name, namespace: namespace, port: port))/")
     }
 
     static func services() async -> [KubeService] {

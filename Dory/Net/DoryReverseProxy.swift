@@ -10,7 +10,7 @@ import Darwin
 ///
 /// HTTP is validated end to end here. Production binds :80 (and :443 with a `LocalCA` identity for
 /// automatic HTTPS); those privileged binds are the consent-gated system change.
-struct ProxyBackend: Sendable {
+nonisolated struct ProxyBackend: Sendable {
     var host: String
     var port: Int
     /// When non-empty, the request path is rewritten to `prefix + originalPath` before forwarding —
@@ -18,7 +18,7 @@ struct ProxyBackend: Sendable {
     var pathPrefix: String = ""
 }
 
-final class DoryReverseProxy: @unchecked Sendable {
+nonisolated final class DoryReverseProxy: @unchecked Sendable {
     typealias BackendResolver = @Sendable (String) -> ProxyBackend?
 
     private let resolve: BackendResolver
@@ -112,13 +112,13 @@ final class DoryReverseProxy: @unchecked Sendable {
         return nil
     }
 
-    enum ProxyError: Error, Sendable { case bind(String) }
+    nonisolated enum ProxyError: Error, Sendable { case bind(String) }
 }
 
 /// Live, thread-safe map of Dory domains → their backends. `<name>.dory.local` resolves to the
 /// loopback port that reaches the container; `<svc>.<ns>.k8s.dory.local` resolves through the
 /// Kubernetes API service proxy. Updated by the reconcilers; read by the proxies per connection.
-final class DomainTable: @unchecked Sendable {
+nonisolated final class DomainTable: @unchecked Sendable {
     private let lock = NSLock()
     private var containerMap: [String: ProxyBackend] = [:]
     private var kubeMap: [String: ProxyBackend] = [:]

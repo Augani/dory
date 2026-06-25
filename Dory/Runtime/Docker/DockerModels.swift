@@ -4,21 +4,44 @@ struct DockerPort: Decodable, Sendable {
     var privatePort: Int?
     var publicPort: Int?
     var type: String?
+    var ip: String?
     enum CodingKeys: String, CodingKey {
         case privatePort = "PrivatePort"
         case publicPort = "PublicPort"
         case type = "Type"
+        case ip = "IP"
     }
 }
 
-struct DockerEndpoint: Decodable, Sendable {
-    var ipAddress: String?
-    enum CodingKeys: String, CodingKey { case ipAddress = "IPAddress" }
+struct DockerNetworkSettingsSummary: Decodable, Sendable {
+    var networks: [String: DockerEndpointSettings]?
+    enum CodingKeys: String, CodingKey { case networks = "Networks" }
 }
 
-struct DockerNetworkSettingsSummary: Decodable, Sendable {
-    var networks: [String: DockerEndpoint]?
-    enum CodingKeys: String, CodingKey { case networks = "Networks" }
+struct DockerContainerMountSummary: Decodable, Sendable {
+    var type: String?
+    var name: String?
+    var source: String?
+    var destination: String?
+    var mode: String?
+    var rw: Bool?
+
+    enum CodingKeys: String, CodingKey {
+        case type = "Type", name = "Name", source = "Source", destination = "Destination"
+        case mode = "Mode", rw = "RW"
+    }
+
+    var containerMount: ContainerMount? {
+        guard let destination, !destination.isEmpty else { return nil }
+        let rawType = type?.lowercased() ?? "volume"
+        let sourceValue = rawType == "volume" ? (name ?? source) : source
+        return ContainerMount(
+            type: rawType,
+            source: sourceValue,
+            target: destination,
+            readOnly: rw == false || mode?.split(separator: ",").contains("ro") == true
+        )
+    }
 }
 
 struct DockerContainerSummary: Decodable, Sendable {
@@ -32,10 +55,11 @@ struct DockerContainerSummary: Decodable, Sendable {
     var ports: [DockerPort]?
     var networkSettings: DockerNetworkSettingsSummary?
     var labels: [String: String]?
+    var mounts: [DockerContainerMountSummary]?
     enum CodingKeys: String, CodingKey {
         case id = "Id", names = "Names", image = "Image", command = "Command"
         case created = "Created", state = "State", status = "Status"
-        case ports = "Ports", networkSettings = "NetworkSettings", labels = "Labels"
+        case ports = "Ports", networkSettings = "NetworkSettings", labels = "Labels", mounts = "Mounts"
     }
 }
 
@@ -45,12 +69,14 @@ struct DockerImageSummary: Decodable, Sendable {
     var size: Int64?
     var created: Int?
     var containers: Int?
+    var labels: [String: String]?
     enum CodingKeys: String, CodingKey {
         case id = "Id", repoTags = "RepoTags", size = "Size", created = "Created", containers = "Containers"
+        case labels = "Labels"
     }
 }
 
-struct DockerVolumeList: Decodable, Sendable {
+nonisolated struct DockerVolumeList: Decodable, Sendable {
     var volumes: [DockerVolume]?
     enum CodingKeys: String, CodingKey { case volumes = "Volumes" }
 }
@@ -59,8 +85,10 @@ struct DockerVolume: Decodable, Sendable {
     var name: String
     var driver: String?
     var createdAt: String?
+    var labels: [String: String]?
+    var options: [String: String]?
     enum CodingKeys: String, CodingKey {
-        case name = "Name", driver = "Driver", createdAt = "CreatedAt"
+        case name = "Name", driver = "Driver", createdAt = "CreatedAt", labels = "Labels", options = "Options"
     }
 }
 
@@ -86,10 +114,11 @@ struct DockerNetwork: Decodable, Sendable {
     var attachable: Bool?
     var options: [String: String]?
     var isInternal: Bool?
+    var labels: [String: String]?
     enum CodingKeys: String, CodingKey {
         case name = "Name", id = "Id", driver = "Driver", scope = "Scope", ipam = "IPAM"
         case containers = "Containers", created = "Created", attachable = "Attachable"
-        case options = "Options", isInternal = "Internal"
+        case options = "Options", isInternal = "Internal", labels = "Labels"
     }
 }
 
@@ -99,18 +128,18 @@ struct DockerNetworkContainer: Decodable, Sendable {
     enum CodingKeys: String, CodingKey { case name = "Name", ipv4Address = "IPv4Address" }
 }
 
-struct DockerVersion: Decodable, Sendable {
+nonisolated struct DockerVersion: Decodable, Sendable {
     var version: String?
     var apiVersion: String?
     enum CodingKeys: String, CodingKey { case version = "Version", apiVersion = "ApiVersion" }
 }
 
-struct DockerCPUUsage: Decodable, Sendable {
+nonisolated struct DockerCPUUsage: Decodable, Sendable {
     var totalUsage: Int64?
     enum CodingKeys: String, CodingKey { case totalUsage = "total_usage" }
 }
 
-struct DockerCPUStats: Decodable, Sendable {
+nonisolated struct DockerCPUStats: Decodable, Sendable {
     var cpuUsage: DockerCPUUsage?
     var systemCPUUsage: Int64?
     var onlineCPUs: Int?
@@ -119,13 +148,13 @@ struct DockerCPUStats: Decodable, Sendable {
     }
 }
 
-struct DockerMemoryStats: Decodable, Sendable {
+nonisolated struct DockerMemoryStats: Decodable, Sendable {
     var usage: Int64?
     var limit: Int64?
     enum CodingKeys: String, CodingKey { case usage = "usage", limit = "limit" }
 }
 
-struct DockerStats: Decodable, Sendable {
+nonisolated struct DockerStats: Decodable, Sendable {
     var cpuStats: DockerCPUStats?
     var precpuStats: DockerCPUStats?
     var memoryStats: DockerMemoryStats?

@@ -55,6 +55,25 @@ enum MockData {
         KubeServiceRow(name: "redis", namespace: "cache", type: "ClusterIP", clusterIP: "10.43.0.40", ports: "6379/TCP", age: "2h"),
     ]
 
+    static let configMaps: [KubeConfigMapRow] = [
+        KubeConfigMapRow(name: "web-config", namespace: "default", keys: ["LOG_LEVEL", "PUBLIC_URL"],
+                         data: ["LOG_LEVEL": "info", "PUBLIC_URL": "https://web.default.k8s.dory.local"], age: "42m"),
+        KubeConfigMapRow(name: "worker-flags", namespace: "jobs", keys: ["QUEUE", "BATCH_SIZE"],
+                         data: ["QUEUE": "emails", "BATCH_SIZE": "25"], age: "5m"),
+    ]
+
+    static let secrets: [KubeSecretRow] = [
+        KubeSecretRow(name: "web-secrets", namespace: "default", type: "Opaque", keys: ["DATABASE_URL", "SESSION_KEY"],
+                      data: ["DATABASE_URL": "cG9zdGdyZXM6Ly9wb3N0Z3Jlcy0wLmRhdGE6NTQzMi9hcHA=", "SESSION_KEY": "c2VjcmV0"], age: "42m"),
+        KubeSecretRow(name: "registry-pull", namespace: "default", type: "kubernetes.io/dockerconfigjson", keys: [".dockerconfigjson"],
+                      data: [".dockerconfigjson": "e30="], age: "2h"),
+    ]
+
+    static let ingresses: [KubeIngressRow] = [
+        KubeIngressRow(name: "web", namespace: "default", hosts: "web.dory.local", address: "127.0.0.1", paths: "/ → web", age: "42m"),
+        KubeIngressRow(name: "api", namespace: "default", hosts: "api.dory.local", address: "127.0.0.1", paths: "/v1 → web", age: "41m"),
+    ]
+
     static let machines: [Machine] = [
         Machine(name: "ubuntu", distro: "Ubuntu", version: "24.04 LTS", status: .running, cpuPercent: 1.2, memoryDisplay: "420 MB", ip: "ubuntu.dory.local", letter: "U", badgeHex: 0xE95420),
         Machine(name: "debian", distro: "Debian", version: "12 Bookworm", status: .running, cpuPercent: 0.4, memoryDisplay: "180 MB", ip: "debian.dory.local", letter: "D", badgeHex: 0xA80030),
@@ -93,6 +112,8 @@ enum MockData {
 
 struct MockRuntime: ContainerRuntime {
     let kind: RuntimeKind = .mock
+
+    nonisolated init() {}
 
     func snapshot() async throws -> RuntimeSnapshot {
         RuntimeSnapshot(containers: MockData.containers, images: MockData.images, volumes: MockData.volumes, networks: MockData.networks, pods: MockData.pods, machines: MockData.machines, engineRunning: true, engineVersion: "1.4.0")

@@ -1,6 +1,7 @@
 #!/bin/bash
-# Build Dory using the Xcode 27 toolchain that supports project format 110.
-export DEVELOPER_DIR="/Users/augustusotu/Downloads/Xcode-beta.app/Contents/Developer"
+# Build Dory with the toolchain from `xcode-select` (stable Xcode 26.5).
+# The project is saved in Xcode 16 format (objectVersion 77), so stable Xcode can open it.
+# Override the toolchain with DEVELOPER_DIR=/path/to/Xcode.app/Contents/Developer.
 cd "$(dirname "$0")/.."
 LOG=/tmp/dory_build.log
 xcodebuild -project Dory.xcodeproj -scheme Dory -destination 'platform=macOS' \

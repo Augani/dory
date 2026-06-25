@@ -33,14 +33,15 @@ struct VolumeBrowser: Sendable {
         guard let create = await runtime.proxyRequest(method: "POST", path: "/containers/create",
             headers: [(name: "Content-Type", value: "application/json")], body: body),
             let id = decodeId(create.body) else { return nil }
+        let encodedID = DockerImageOps.pathComponent(id)
         defer {
             let runtime = self.runtime
-            Task { _ = await runtime.proxyRequest(method: "DELETE", path: "/containers/\(id)?force=true", headers: [], body: Data()) }
+            Task { _ = await runtime.proxyRequest(method: "DELETE", path: "/containers/\(encodedID)?force=true", headers: [], body: Data()) }
         }
-        _ = await runtime.proxyRequest(method: "POST", path: "/containers/\(id)/start", headers: [], body: Data())
-        _ = await runtime.proxyRequest(method: "POST", path: "/containers/\(id)/wait", headers: [], body: Data())
-        let encoded = target.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? target
-        guard let archive = await runtime.proxyRequest(method: "GET", path: "/containers/\(id)/archive?path=\(encoded)",
+        _ = await runtime.proxyRequest(method: "POST", path: "/containers/\(encodedID)/start", headers: [], body: Data())
+        _ = await runtime.proxyRequest(method: "POST", path: "/containers/\(encodedID)/wait", headers: [], body: Data())
+        let encoded = DockerImageOps.queryValue(target)
+        guard let archive = await runtime.proxyRequest(method: "GET", path: "/containers/\(encodedID)/archive?path=\(encoded)",
             headers: [], body: Data()), archive.isSuccess else { return nil }
         return Self.extractSingleFileFromTar(archive.body)
     }
@@ -52,14 +53,15 @@ struct VolumeBrowser: Sendable {
         guard let create = await runtime.proxyRequest(method: "POST", path: "/containers/create",
             headers: [(name: "Content-Type", value: "application/json")], body: body),
             let id = decodeId(create.body) else { return "" }
+        let encodedID = DockerImageOps.pathComponent(id)
         defer {
             let runtime = self.runtime
-            Task { _ = await runtime.proxyRequest(method: "DELETE", path: "/containers/\(id)?force=true", headers: [], body: Data()) }
+            Task { _ = await runtime.proxyRequest(method: "DELETE", path: "/containers/\(encodedID)?force=true", headers: [], body: Data()) }
         }
-        guard let start = await runtime.proxyRequest(method: "POST", path: "/containers/\(id)/start", headers: [], body: Data()),
+        guard let start = await runtime.proxyRequest(method: "POST", path: "/containers/\(encodedID)/start", headers: [], body: Data()),
             start.statusCode == 204 || start.isSuccess else { return "" }
-        _ = await runtime.proxyRequest(method: "POST", path: "/containers/\(id)/wait", headers: [], body: Data())
-        guard let logs = await runtime.proxyRequest(method: "GET", path: "/containers/\(id)/logs?stdout=1&stderr=1", headers: [], body: Data()) else { return "" }
+        _ = await runtime.proxyRequest(method: "POST", path: "/containers/\(encodedID)/wait", headers: [], body: Data())
+        guard let logs = await runtime.proxyRequest(method: "GET", path: "/containers/\(encodedID)/logs?stdout=1&stderr=1", headers: [], body: Data()) else { return "" }
         return DockerLogFrames.plainText(logs.body)
     }
 

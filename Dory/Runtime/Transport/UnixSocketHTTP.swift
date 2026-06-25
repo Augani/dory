@@ -6,23 +6,51 @@ import Darwin
 struct UnixSocketHTTP: Sendable {
     let path: String
     var readChunk: Int = 64 * 1024
+    var ioTimeout: TimeInterval? = nil
 
     private static let ioQueue = DispatchQueue(label: "com.pythonxi.Dory.socket", attributes: .concurrent)
+
+    nonisolated init(path: String, readChunk: Int = 64 * 1024, ioTimeout: TimeInterval? = nil) {
+        self.path = path
+        self.readChunk = readChunk
+        self.ioTimeout = ioTimeout
+    }
 
     func send(_ request: HTTPRequest) async throws -> HTTPResponse {
         let path = self.path
         let chunk = self.readChunk
+        let timeout = self.ioTimeout
         return try await withCheckedThrowingContinuation { continuation in
             Self.ioQueue.async {
-                do { continuation.resume(returning: try Self.blockingSend(path: path, request: request, readChunk: chunk)) }
+                do { continuation.resume(returning: try Self.blockingSend(path: path, request: request, readChunk: chunk, ioTimeout: timeout)) }
                 catch { continuation.resume(throwing: error) }
             }
         }
     }
 
+    /// Sends a request body incrementally using HTTP/1.1 chunked transfer encoding. This keeps
+    /// large image/build archives out of the app heap while still speaking Docker's Unix-socket API.
+    func sendChunked(_ request: HTTPRequest, body: AsyncStream<Data>) async throws -> HTTPResponse {
+        let path = self.path
+        let readChunk = self.readChunk
+        return try await Task.detached(priority: .userInitiated) {
+            let fd = try Self.connectSocket(path)
+            defer { Darwin.close(fd) }
+            try Self.writeAll(fd, HTTPCodec.serializeChunkedRequest(request))
+            for await chunk in body where !chunk.isEmpty {
+                try Self.writeAll(fd, Data(String(chunk.count, radix: 16).utf8))
+                try Self.writeAll(fd, HTTPCodec.crlf)
+                try Self.writeAll(fd, chunk)
+                try Self.writeAll(fd, HTTPCodec.crlf)
+            }
+            try Self.writeAll(fd, Data("0\r\n\r\n".utf8))
+            return try Self.readResponse(fd: fd, readChunk: readChunk)
+        }.value
+    }
+
     /// Owns the single file descriptor for a stream and is the only thing that closes it, so
     /// `close()` is idempotent and cannot double-close (which could otherwise close a reused fd).
-    final class StreamHandle: @unchecked Sendable {
+    nonisolated final class StreamHandle: @unchecked Sendable {
         private let lock = NSLock()
         private var fd: Int32 = -1
         private var closed = false
@@ -86,11 +114,30 @@ struct UnixSocketHTTP: Sendable {
         return handle
     }
 
-    nonisolated static func blockingSend(path: String, request: HTTPRequest, readChunk: Int) throws -> HTTPResponse {
+    nonisolated static func blockingSend(path: String, request: HTTPRequest, readChunk: Int, ioTimeout: TimeInterval? = nil) throws -> HTTPResponse {
         let fd = try connectSocket(path)
         defer { close(fd) }
+        if let ioTimeout { try configureTimeout(fd, seconds: ioTimeout) }
         try writeAll(fd, HTTPCodec.serialize(request))
+        return try readResponse(fd: fd, readChunk: readChunk)
+    }
 
+    nonisolated static func configureTimeout(_ fd: Int32, seconds: TimeInterval) throws {
+        let clamped = max(seconds, 0.001)
+        var timeout = timeval(
+            tv_sec: Int(clamped),
+            tv_usec: Int32((clamped - floor(clamped)) * 1_000_000)
+        )
+        let size = socklen_t(MemoryLayout<timeval>.size)
+        guard setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, size) == 0 else {
+            throw HTTPError.socket(errnoMessage("setsockopt(SO_RCVTIMEO)"))
+        }
+        guard setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, size) == 0 else {
+            throw HTTPError.socket(errnoMessage("setsockopt(SO_SNDTIMEO)"))
+        }
+    }
+
+    nonisolated private static func readResponse(fd: Int32, readChunk: Int) throws -> HTTPResponse {
         var buffer = Data()
         var bytes = [UInt8](repeating: 0, count: readChunk)
         while true {
@@ -156,7 +203,7 @@ struct UnixSocketHTTP: Sendable {
     ///   • upstream→client pump ends (stream done) → the session is over: fully shut down the client
     ///     so the still-blocked client→upstream read returns instead of leaking forever.
     /// Each fd is closed exactly once, only after both pumps have drained.
-    private final class ProxyConnection: @unchecked Sendable {
+    nonisolated private final class ProxyConnection: @unchecked Sendable {
         private let lock = NSLock()
         private let client: Int32
         private let upstream: Int32

@@ -8,7 +8,7 @@ indirect enum YAMLValue: Sendable, Equatable {
     case mapping([String: YAMLValue])
     case sequence([YAMLValue])
 
-    var stringValue: String? {
+    nonisolated var stringValue: String? {
         switch self {
         case let .string(value): value
         case let .number(value): value == value.rounded() ? String(Int(value)) : String(value)
@@ -17,12 +17,12 @@ indirect enum YAMLValue: Sendable, Equatable {
         }
     }
 
-    var mappingValue: [String: YAMLValue]? {
+    nonisolated var mappingValue: [String: YAMLValue]? {
         if case let .mapping(value) = self { return value }
         return nil
     }
 
-    var sequenceValue: [YAMLValue]? {
+    nonisolated var sequenceValue: [YAMLValue]? {
         switch self {
         case let .sequence(value): return value
         case .null: return []
@@ -30,7 +30,7 @@ indirect enum YAMLValue: Sendable, Equatable {
         }
     }
 
-    var boolValue: Bool? {
+    nonisolated var boolValue: Bool? {
         switch self {
         case let .bool(value): value
         case let .string(value): ["true", "yes", "on", "1"].contains(value.lowercased())
@@ -38,10 +38,10 @@ indirect enum YAMLValue: Sendable, Equatable {
         }
     }
 
-    subscript(key: String) -> YAMLValue? { mappingValue?[key] }
+    nonisolated subscript(key: String) -> YAMLValue? { mappingValue?[key] }
 
     /// Coerce any scalar/sequence to an array of strings (for ports/volumes/command lists).
-    var stringList: [String] {
+    nonisolated var stringList: [String] {
         switch self {
         case let .sequence(items): return items.compactMap(\.stringValue)
         case let .string(value): return [value]

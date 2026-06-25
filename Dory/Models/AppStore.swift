@@ -81,8 +81,14 @@ final class AppStore {
     var kubeNamespaces: [String] = []
     var deployments: [KubeDeploymentRow] = []
     var kubeServices: [KubeServiceRow] = []
+    var configMaps: [KubeConfigMapRow] = []
+    var secrets: [KubeSecretRow] = []
+    var ingresses: [KubeIngressRow] = []
     var selectedPodID: String? = nil
     var selectedDeploymentID: String? = nil
+    var selectedConfigMap: KubeConfigMapRow?
+    var selectedSecret: KubeSecretRow?
+    var selectedIngress: KubeIngressRow?
 
     private var namespaceFilter: String? { kubeNamespace == "All Namespaces" ? nil : kubeNamespace }
     var kubeconfigHint: String { KubeContextHint.snippet(kubeconfigPath: KubernetesProvisioner.kubeconfigPath) }
@@ -150,6 +156,17 @@ final class AppStore {
     static let routeDockerKey = "dory.routeDockerCLI"
     static let dockerHostDismissedKey = "dory.dockerHostDismissed"
     static let containerDetailWidthKey = "dory.containerDetailWidth"
+    nonisolated static let dockerCompatibleEngineHint = "Start Dory's shared VM in Settings > Docker Engine, or run a local Docker-compatible engine such as Docker Desktop, Colima, Rancher Desktop, Podman, or OrbStack."
+    nonisolated static let dockerCompatibleFallbackHint = "Dory can still run on this Mac by proxying a local Docker-compatible engine such as Docker Desktop, Colima, Rancher Desktop, Podman, or OrbStack."
+
+    nonisolated static func dockerCompatibleEngineRequired(_ feature: String) -> String {
+        "\(feature) needs Dory's shared VM or a Docker-compatible engine. \(dockerCompatibleEngineHint)"
+    }
+
+    nonisolated static func sharedVMUnavailableStatus(_ support: RuntimeSupport) -> String {
+        let reason = support.reason.isEmpty ? "host requirements are not met" : support.reason
+        return "Dory's shared VM is unavailable (\(reason)). \(dockerCompatibleFallbackHint)"
+    }
 
     func setContainerDetailWidth(_ width: Double) {
         let clamped = min(max(width, 320), 1400)
@@ -258,26 +275,43 @@ final class AppStore {
             if let docker = await DockerEngineRuntime.detect() { runtime = docker; await reload() }
             else { loadState = .engineOff }
         case "shared":
+            let support = refreshSharedVMSupport()
+            guard support.isSupported else {
+                sharedVMStatus = Self.sharedVMUnavailableStatus(support)
+                loadState = .engineOff
+                break
+            }
             if let shared = await SharedVMProvisioner.runtime() { runtime = shared; await reload() }
-            else { loadState = .engineOff }
+            else {
+                sharedVMStatus = "Shared VM unavailable (could not start Apple's container engine)"
+                loadState = .engineOff
+            }
         case "docker-proxy":
             if let docker = await DockerEngineRuntime.detect() { runtime = docker; await reload() }
             else { loadState = .engineOff }
         default:
             // Dory's own shared VM is the default engine — a standalone, OrbStack-style daemon.
-            // Fall back to fronting an existing Docker/OrbStack socket, then Apple per-container.
-            sharedVMStatus = "Starting Dory's engine…"
-            if let shared = await SharedVMProvisioner.runtime() {
-                runtime = shared; sharedVMStatus = "Running on Dory's shared VM"; await reload()
-            } else if let docker = await DockerEngineRuntime.detect() {
-                runtime = docker; sharedVMStatus = ""; await reload()
-            } else if let apple = await AppleContainerRuntime.detect() {
-                runtime = apple; sharedVMStatus = ""; await reload()
+            // Fall back to fronting an existing Docker-compatible socket, then Apple per-container.
+            let support = refreshSharedVMSupport()
+            if support.isSupported {
+                sharedVMStatus = "Starting Dory's engine…"
+                if let shared = await SharedVMProvisioner.runtime() {
+                    runtime = shared; sharedVMStatus = "Running on Dory's shared VM"; await reload()
+                    break
+                }
+                sharedVMStatus = "Shared VM unavailable (could not start Apple's container engine)"
             } else {
-                sharedVMStatus = ""
+                sharedVMStatus = Self.sharedVMUnavailableStatus(support)
+            }
+            if let docker = await DockerEngineRuntime.detect() {
+                runtime = docker; await reload()
+            } else if let apple = await AppleContainerRuntime.detect() {
+                runtime = apple; await reload()
+            } else {
                 loadState = .engineOff
             }
         }
+        guard isMock || !(loadState == .engineOff && runtimeKind == .mock) else { return }
         await loadKubernetes()
         loadMachines()
         offerLegacyMachineCleanup()
@@ -291,14 +325,26 @@ final class AppStore {
     }
 
     var sharedVMStatus = ""
+    var sharedVMSupport = SharedVMProvisioner.hostSupport()
+
+    private func refreshSharedVMSupport() -> RuntimeSupport {
+        let support = SharedVMProvisioner.hostSupport()
+        sharedVMSupport = support
+        return support
+    }
 
     /// Provisions (or reuses) Dory's own single shared Linux VM and switches the live engine to it,
     /// making Dory a standalone, OrbStack-style daemon that no longer depends on Docker/OrbStack.
     func useSharedVM() async {
         guard runtimeKind != .sharedVM else { return }
+        let support = refreshSharedVMSupport()
+        guard support.isSupported else {
+            sharedVMStatus = Self.sharedVMUnavailableStatus(support)
+            return
+        }
         sharedVMStatus = "Starting Dory's shared VM…"
         guard let shared = await SharedVMProvisioner.runtime() else {
-            sharedVMStatus = "Shared VM unavailable (needs Apple `container`)"
+            sharedVMStatus = "Shared VM unavailable (could not start Apple's container engine)"
             return
         }
         runtime = shared
@@ -341,7 +387,7 @@ final class AppStore {
         let forwarder = self.portForwarder
         let table = self.domainTable
         let suffix = self.domainSuffix
-        portForwardingTask = Task.detached { [weak self] in
+        portForwardingTask = Task { [weak self] in
             while !Task.isCancelled {
                 if let ip = await SharedVMProvisioner.engineIP(), ip != "127.0.0.1" {
                     forwarder.updateTarget(ip)
@@ -349,7 +395,7 @@ final class AppStore {
                     forwarder.sync(ports: await Self.allPublishedPorts(runtime))
                     table.replaceContainers(endpoints)
                     if FileManager.default.fileExists(atPath: KubernetesProvisioner.kubeconfigPath) {
-                        await self?.ensureKubeProxy()
+                        self?.ensureKubeProxy()
                         table.replaceKube(await KubeServiceProxy.backends(suffix: suffix))
                     }
                 }
@@ -445,18 +491,16 @@ final class AppStore {
 
     func loadKubernetes() async {
         guard runtimeKind != .mock else {
-            kubernetesReachable = true
-            kubernetesInfo = "v1.31.0 · 1 node · \(MockData.pods.count) pods · 4 namespaces"
-            kubeNamespaces = ["default", "cache", "data", "jobs"]
-            pods = MockData.pods
-            deployments = MockData.deployments
-            kubeServices = MockData.kubeServices
+            loadMockKubernetes()
             return
         }
         let status = await kubernetes.status()
         kubernetesReachable = status.reachable
         kubernetesInfo = status.info
-        guard status.reachable else { pods = []; deployments = []; kubeServices = []; kubeNamespaces = []; return }
+        guard status.reachable else {
+            pods = []; deployments = []; kubeServices = []; configMaps = []; secrets = []; ingresses = []; kubeNamespaces = []
+            return
+        }
         if case let .success(data) = await kubeClient.getJSON(kind: "namespaces", namespace: nil),
            let list = try? JSONDecoder().decode(KubeNamespaceList.self, from: data) {
             kubeNamespaces = KubeRowMapper.namespaces(list)
@@ -465,23 +509,118 @@ final class AppStore {
     }
 
     func loadKubeResource() async {
+        guard runtimeKind != .mock else {
+            loadMockKubeResource(kubeResource)
+            return
+        }
         guard kubernetesReachable else { return }
-        switch kubeResource {
+        let result = await kubeClient.getJSON(kind: kubeResource.apiKind, namespace: namespaceFilter)
+        applyKubeResourceLoad(kind: kubeResource, result: result)
+    }
+
+    private func loadMockKubernetes() {
+        kubernetesReachable = true
+        kubernetesInfo = "v1.31.0 · 1 node · \(MockData.pods.count) pods · 4 namespaces"
+        kubeNamespaces = ["default", "cache", "data", "jobs"]
+        loadMockKubeResource(kubeResource)
+    }
+
+    private func mockNamespaceMatches(_ namespace: String) -> Bool {
+        namespaceFilter.map { $0 == namespace } ?? true
+    }
+
+    private func loadMockKubeResource(_ kind: KubeResourceKind) {
+        switch kind {
         case .pods:
-            if case let .success(data) = await kubeClient.getJSON(kind: "pods", namespace: namespaceFilter),
-               let list = try? JSONDecoder().decode(KubePodList.self, from: data) {
-                pods = KubeRowMapper.pods(list)
-            }
+            pods = MockData.pods.filter { mockNamespaceMatches($0.namespace) }
+            if let selectedPodID, !pods.contains(where: { $0.id == selectedPodID }) { self.selectedPodID = nil }
         case .deployments:
-            if case let .success(data) = await kubeClient.getJSON(kind: "deployments", namespace: namespaceFilter),
-               let list = try? JSONDecoder().decode(KubeDeploymentList.self, from: data) {
-                deployments = KubeRowMapper.deployments(list)
-            }
+            deployments = MockData.deployments.filter { mockNamespaceMatches($0.namespace) }
+            if let selectedDeploymentID, !deployments.contains(where: { $0.id == selectedDeploymentID }) { self.selectedDeploymentID = nil }
         case .services:
-            if case let .success(data) = await kubeClient.getJSON(kind: "services", namespace: namespaceFilter),
-               let list = try? JSONDecoder().decode(KubeServiceList.self, from: data) {
-                kubeServices = KubeRowMapper.services(list)
-            }
+            kubeServices = MockData.kubeServices.filter { mockNamespaceMatches($0.namespace) }
+        case .configMaps:
+            configMaps = MockData.configMaps.filter { mockNamespaceMatches($0.namespace) }
+            if let selectedConfigMap, !configMaps.contains(where: { $0.id == selectedConfigMap.id }) { self.selectedConfigMap = nil }
+        case .secrets:
+            secrets = MockData.secrets.filter { mockNamespaceMatches($0.namespace) }
+            if let selectedSecret, !secrets.contains(where: { $0.id == selectedSecret.id }) { self.selectedSecret = nil }
+        case .ingresses:
+            ingresses = MockData.ingresses.filter { mockNamespaceMatches($0.namespace) }
+            if let selectedIngress, !ingresses.contains(where: { $0.id == selectedIngress.id }) { self.selectedIngress = nil }
+        }
+        actionError = nil
+    }
+
+    func applyKubeResourceLoad(kind: KubeResourceKind, result: Result<Data, KubeError>) {
+        switch result {
+        case .success(let data):
+            applyKubeResourceData(kind: kind, data: data)
+        case .failure(let error):
+            clearKubeResource(kind)
+            actionError = Self.kubeErrorText(error)
+        }
+    }
+
+    private func applyKubeResourceData(kind: KubeResourceKind, data: Data) {
+        let decoder = JSONDecoder()
+        switch kind {
+        case .pods:
+            guard let list = try? decoder.decode(KubePodList.self, from: data) else { return decodeFailed(kind) }
+            pods = KubeRowMapper.pods(list)
+            if let selectedPodID, !pods.contains(where: { $0.id == selectedPodID }) { self.selectedPodID = nil }
+            actionError = nil
+        case .deployments:
+            guard let list = try? decoder.decode(KubeDeploymentList.self, from: data) else { return decodeFailed(kind) }
+            deployments = KubeRowMapper.deployments(list)
+            if let selectedDeploymentID, !deployments.contains(where: { $0.id == selectedDeploymentID }) { self.selectedDeploymentID = nil }
+            actionError = nil
+        case .services:
+            guard let list = try? decoder.decode(KubeServiceList.self, from: data) else { return decodeFailed(kind) }
+            kubeServices = KubeRowMapper.services(list)
+            actionError = nil
+        case .configMaps:
+            guard let list = try? decoder.decode(KubeConfigMapList.self, from: data) else { return decodeFailed(kind) }
+            configMaps = KubeRowMapper.configMaps(list)
+            if let selectedConfigMap, !configMaps.contains(where: { $0.id == selectedConfigMap.id }) { self.selectedConfigMap = nil }
+            actionError = nil
+        case .secrets:
+            guard let list = try? decoder.decode(KubeSecretList.self, from: data) else { return decodeFailed(kind) }
+            secrets = KubeRowMapper.secrets(list)
+            if let selectedSecret, !secrets.contains(where: { $0.id == selectedSecret.id }) { self.selectedSecret = nil }
+            actionError = nil
+        case .ingresses:
+            guard let list = try? decoder.decode(KubeIngressList.self, from: data) else { return decodeFailed(kind) }
+            ingresses = KubeRowMapper.ingresses(list)
+            if let selectedIngress, !ingresses.contains(where: { $0.id == selectedIngress.id }) { self.selectedIngress = nil }
+            actionError = nil
+        }
+    }
+
+    private func decodeFailed(_ kind: KubeResourceKind) {
+        clearKubeResource(kind)
+        actionError = Self.kubeErrorText(.decode)
+    }
+
+    private func clearKubeResource(_ kind: KubeResourceKind) {
+        switch kind {
+        case .pods:
+            pods = []
+            selectedPodID = nil
+        case .deployments:
+            deployments = []
+            selectedDeploymentID = nil
+        case .services:
+            kubeServices = []
+        case .configMaps:
+            configMaps = []
+            selectedConfigMap = nil
+        case .secrets:
+            secrets = []
+            selectedSecret = nil
+        case .ingresses:
+            ingresses = []
+            selectedIngress = nil
         }
     }
 
@@ -506,26 +645,66 @@ final class AppStore {
         }
     }
 
+    func deleteResource(kind: KubeResourceKind, name: String, namespace: String) async {
+        switch await kubeClient.delete(kind: kind.deleteKind, name: name, namespace: namespace) {
+        case .success: await loadKubeResource()
+        case .failure(let error): actionError = Self.kubeErrorText(error)
+        }
+    }
+
+    func openService(_ service: KubeServiceRow) {
+        guard !service.isHeadless else {
+            actionError = "Headless services do not expose a cluster IP to open in the browser."
+            return
+        }
+        let host = KubeServiceProxy.serviceHost(name: service.name, namespace: service.namespace, suffix: domainSuffix)
+        let domainAvailable = domainTable.backend(for: host) != nil
+        if !domainAvailable { ensureKubeProxy() }
+        if let url = KubeServiceProxy.browserURL(
+            name: service.name,
+            namespace: service.namespace,
+            ports: service.ports,
+            suffix: domainSuffix,
+            domainAvailable: domainAvailable
+        ) {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
     func podLogs(_ pod: Pod) async -> [LogLine] {
-        guard let kubectl = kubeClient.kubectlPath else { return [] }
-        var args: [String] = []
-        if let kubeconfig = KubeClient.kubeconfig() { args += ["--kubeconfig", kubeconfig] }
-        args += ["logs", pod.name, "-n", pod.namespace, "--tail=200", "--timestamps"]
-        let result = await Shell.runAsyncResult(kubectl, args)
-        guard result.exit == 0 else { return [] }
-        return KubeLogParser.parse(result.output)
+        guard runtimeKind != .mock else { return [] }
+        switch await kubeClient.logs(
+            pod: pod.name,
+            namespace: pod.namespace,
+            container: pod.streamsAllContainerLogs ? nil : pod.primaryContainer,
+            allContainers: pod.streamsAllContainerLogs
+        ) {
+        case .success(let data):
+            return KubeLogParser.parse(String(data: data, encoding: .utf8) ?? "")
+        case .failure(let error):
+            actionError = Self.kubeErrorText(error)
+            return []
+        }
     }
 
     func streamPodLogs(_ pod: Pod) -> AsyncStream<LogLine> {
+        guard runtimeKind != .mock else {
+            return AsyncStream { $0.finish() }
+        }
         guard let kubectl = kubeClient.kubectlPath else {
             return AsyncStream { $0.finish() }
         }
-        var args: [String] = []
-        if let kubeconfig = KubeClient.kubeconfig() { args += ["--kubeconfig", kubeconfig] }
-        args += ["logs", pod.name, "-n", pod.namespace, "-f", "--since=1s", "--timestamps"]
+        let args = KubeClient.logsArgs(
+            pod: pod.name,
+            namespace: pod.namespace,
+            container: pod.streamsAllContainerLogs ? nil : pod.primaryContainer,
+            allContainers: pod.streamsAllContainerLogs,
+            follow: true,
+            since: "1s",
+            kubeconfig: KubeClient.kubeconfig()
+        )
         return AsyncStream { continuation in
-            final class LineBuffer: @unchecked Sendable { var data = Data() }
-            let buffer = LineBuffer()
+            let buffer = KubeLogStreamBuffer()
             let process = Process()
             process.executableURL = URL(fileURLWithPath: kubectl)
             process.arguments = args
@@ -536,16 +715,12 @@ final class AppStore {
             reader.readabilityHandler = { handle in
                 let chunk = handle.availableData
                 guard !chunk.isEmpty else { return }
-                buffer.data.append(chunk)
-                while let newline = buffer.data.firstIndex(of: 0x0A) {
-                    let lineData = buffer.data.subdata(in: buffer.data.startIndex..<newline)
-                    buffer.data.removeSubrange(buffer.data.startIndex...newline)
-                    if let text = String(data: lineData, encoding: .utf8), !text.isEmpty {
-                        for parsed in KubeLogParser.parse(text) { continuation.yield(parsed) }
-                    }
-                }
+                for line in buffer.append(chunk) { continuation.yield(line) }
             }
-            process.terminationHandler = { _ in continuation.finish() }
+            process.terminationHandler = { _ in
+                for line in buffer.flush() { continuation.yield(line) }
+                continuation.finish()
+            }
             do { try process.run() } catch { continuation.finish() }
             continuation.onTermination = { _ in
                 reader.readabilityHandler = nil
@@ -990,6 +1165,7 @@ final class AppStore {
 
     var composeBusy = false
     var composeStatus = ""
+    private(set) var composeProjects: [String: ComposeProject] = [:]
 
     func openComposeFile() {
         let panel = NSOpenPanel()
@@ -1006,12 +1182,27 @@ final class AppStore {
         composeBusy = true
         composeStatus = "Reading \(fileURL.lastPathComponent)…"
         defer { composeBusy = false }
-        guard let text = try? String(contentsOf: fileURL, encoding: .utf8) else {
-            actionError = "Could not read \(fileURL.lastPathComponent)"; composeStatus = ""; return
+        let variables = Self.composeVariables(for: fileURL)
+        let fileURLs = Self.composeFileURLs(for: fileURL, variables: variables)
+        composeStatus = fileURLs.count == 1
+            ? "Reading \(fileURLs[0].lastPathComponent)…"
+            : "Reading \(fileURLs.count) Compose files…"
+        var texts: [String] = []
+        for url in fileURLs {
+            guard let text = try? String(contentsOf: url, encoding: .utf8) else {
+                actionError = "Could not read \(url.lastPathComponent)"; composeStatus = ""; return
+            }
+            texts.append(text)
         }
         let project: ComposeProject
+        let activeProfiles = ComposeParser.activeProfiles(from: variables["COMPOSE_PROFILES"])
         do {
-            project = try ComposeParser.parse(text, projectName: Self.composeName(for: fileURL))
+            project = try ComposeParser.parse(
+                texts,
+                projectName: Self.composeName(for: fileURL),
+                variables: variables,
+                activeProfiles: activeProfiles
+            )
         } catch {
             actionError = "Invalid Compose file: \(error)"; composeStatus = ""; return
         }
@@ -1021,6 +1212,7 @@ final class AppStore {
             _ = try await engine.up(project, pullImages: true) { progress in
                 self.composeStatus = "\(progress.service): \(progress.message)"
             }
+            composeProjects[project.name] = project
             composeStatus = "\(project.name): \(project.services.count) services up"
             await reload()
             section = .compose
@@ -1034,9 +1226,33 @@ final class AppStore {
         composeStatus = "Stopping \(name)…"
         defer { composeBusy = false }
         let engine = ComposeEngine(runtime: runtime)
-        try? await engine.down(ComposeProject(name: name, services: [], networks: [], volumes: []))
+        try? await engine.down(composeProject(named: name))
         await reload()
         composeStatus = ""
+    }
+
+    private func composeProject(named name: String) async -> ComposeProject {
+        if let project = composeProjects[name] { return project }
+        let snapshot = (try? await runtime.snapshot()) ?? RuntimeSnapshot(containers: containers)
+        let prefix = "\(name)-"
+        let services = Dictionary(grouping: snapshot.containers.filter {
+            $0.composeProject == name || $0.name.hasPrefix(prefix)
+        }, by: { $0.composeService ?? serviceName(fromContainerName: $0.name, projectName: name) })
+            .keys
+            .filter { !$0.isEmpty }
+            .sorted()
+            .map { serviceName in
+                ComposeService(name: serviceName, image: nil, build: nil, command: [], environment: [:],
+                               ports: [], volumes: [], networks: [], dependsOn: [], restart: nil,
+                               healthcheck: nil, profiles: [])
+            }
+        return ComposeProject(name: name, services: services, networks: [], volumes: [])
+    }
+
+    private func serviceName(fromContainerName name: String, projectName: String) -> String {
+        let prefix = "\(projectName)-"
+        guard name.hasPrefix(prefix), name.hasSuffix("-1") else { return "" }
+        return String(name.dropFirst(prefix.count).dropLast(2))
     }
 
     private static func composeName(for url: URL) -> String {
@@ -1045,6 +1261,59 @@ final class AppStore {
         let filtered = String(raw.lowercased().replacingOccurrences(of: " ", with: "-")
             .filter { $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" })
         return filtered.isEmpty ? "compose" : filtered
+    }
+
+    private static func composeVariables(for fileURL: URL) -> [String: String] {
+        var variables = ProcessInfo.processInfo.environment
+        let dotEnvURL = fileURL.deletingLastPathComponent().appendingPathComponent(".env")
+        guard let dotEnv = try? String(contentsOf: dotEnvURL, encoding: .utf8) else { return variables }
+        for (key, value) in ComposeInterpolation.parseDotEnv(dotEnv) where variables[key] == nil {
+            variables[key] = value
+        }
+        return variables
+    }
+
+    nonisolated static func composeFileURLs(for fileURL: URL, variables: [String: String]) -> [URL] {
+        let baseDirectory = fileURL.deletingLastPathComponent()
+        if let raw = variables["COMPOSE_FILE"]?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty {
+            let separator = variables["COMPOSE_PATH_SEPARATOR"] ?? ":"
+            let paths = raw.components(separatedBy: separator).map {
+                $0.trimmingCharacters(in: .whitespacesAndNewlines)
+            }.filter { !$0.isEmpty }
+            let urls = paths.map { resolveComposeFilePath($0, relativeTo: baseDirectory) }
+            if !urls.isEmpty { return urls }
+        }
+
+        var urls = [fileURL]
+        for candidate in defaultComposeOverrideURLs(for: fileURL) where FileManager.default.fileExists(atPath: candidate.path) {
+            urls.append(candidate)
+            break
+        }
+        return urls
+    }
+
+    nonisolated private static func defaultComposeOverrideURLs(for fileURL: URL) -> [URL] {
+        let directory = fileURL.deletingLastPathComponent()
+        switch fileURL.lastPathComponent {
+        case "compose.yaml":
+            return ["compose.override.yaml", "compose.override.yml"].map { directory.appendingPathComponent($0) }
+        case "compose.yml":
+            return ["compose.override.yml", "compose.override.yaml"].map { directory.appendingPathComponent($0) }
+        case "docker-compose.yaml":
+            return ["docker-compose.override.yaml", "docker-compose.override.yml"].map { directory.appendingPathComponent($0) }
+        case "docker-compose.yml":
+            return ["docker-compose.override.yml", "docker-compose.override.yaml"].map { directory.appendingPathComponent($0) }
+        default:
+            return []
+        }
+    }
+
+    nonisolated private static func resolveComposeFilePath(_ path: String, relativeTo directory: URL) -> URL {
+        if path.hasPrefix("/") { return URL(fileURLWithPath: path) }
+        if path.hasPrefix("~") {
+            return URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
+        }
+        return directory.appendingPathComponent(path)
     }
 
     func buildImage(contextDir: URL, tag: String) -> AsyncStream<String> {
@@ -1057,7 +1326,7 @@ final class AppStore {
                 cont.yield("Packaging build context…")
                 let tar = await Task.detached { AppStore.tarDirectory(contextDir) }.value
                 guard let tar else { cont.yield("Could not read build context at \(contextDir.path)"); cont.finish(); return }
-                let q = tag.isEmpty ? "" : "t=" + (tag.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? tag)
+                let q = tag.isEmpty ? "" : "t=" + DockerImageOps.queryValue(tag)
                 var buffer = Data()
                 for await chunk in self.runtime.build(contextTar: tar, query: q) {
                     buffer.append(chunk)
@@ -1080,35 +1349,39 @@ final class AppStore {
         guard let kubectl = KubeServiceProxy.kubectl() else { return "kubectl not found — install it (brew install kubectl) to apply manifests" }
         let kubeconfig = NSHomeDirectory() + "/.kube/dory-config"
         let result: String? = await Task.detached {
-            let proc = Process()
-            proc.executableURL = URL(fileURLWithPath: kubectl)
-            proc.arguments = ["--kubeconfig", kubeconfig, "apply", "-f", "-"]
-            let stdin = Pipe(), stdout = Pipe(), stderr = Pipe()
-            proc.standardInput = stdin; proc.standardOutput = stdout; proc.standardError = stderr
-            do { try proc.run() } catch { return "Could not run kubectl: \(error.localizedDescription)" }
-
-            // Drain stdout/stderr concurrently with the stdin write: otherwise kubectl can block
-            // writing output while we block writing the manifest (pipe deadlock). The throwing
-            // write(contentsOf:) surfaces a broken pipe as a catchable error rather than the
-            // uncatchable NSException the legacy write(_:) raises (which SIGPIPE ignore can't stop).
-            let outHandle = stdout.fileHandleForReading
-            let errHandle = stderr.fileHandleForReading
-            nonisolated(unsafe) var errData = Data()
-            let group = DispatchGroup()
-            group.enter()
-            DispatchQueue.global().async { _ = outHandle.readDataToEndOfFile(); group.leave() }
-            group.enter()
-            DispatchQueue.global().async { errData = errHandle.readDataToEndOfFile(); group.leave() }
-            do { try stdin.fileHandleForWriting.write(contentsOf: Data(yaml.utf8)) } catch {}
-            try? stdin.fileHandleForWriting.close()
-            group.wait()
-            proc.waitUntilExit()
-            if proc.terminationStatus == 0 { return nil }
-            let msg = (String(data: errData, encoding: .utf8) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-            return msg.isEmpty ? "kubectl apply failed" : msg
+            Self.runKubectlApply(kubectl: kubectl, kubeconfig: kubeconfig, yaml: yaml)
         }.value
         if result == nil { await reload() }
         return result
+    }
+
+    nonisolated private static func runKubectlApply(kubectl: String, kubeconfig: String, yaml: String) -> String? {
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: kubectl)
+        proc.arguments = ["--kubeconfig", kubeconfig, "apply", "-f", "-"]
+        let stdin = Pipe(), stdout = Pipe(), stderr = Pipe()
+        proc.standardInput = stdin; proc.standardOutput = stdout; proc.standardError = stderr
+        do { try proc.run() } catch { return "Could not run kubectl: \(error.localizedDescription)" }
+
+        // Drain stdout/stderr concurrently with the stdin write: otherwise kubectl can block
+        // writing output while we block writing the manifest (pipe deadlock). The throwing
+        // write(contentsOf:) surfaces a broken pipe as a catchable error rather than the
+        // uncatchable NSException the legacy write(_:) raises (which SIGPIPE ignore can't stop).
+        let outHandle = stdout.fileHandleForReading
+        let errHandle = stderr.fileHandleForReading
+        nonisolated(unsafe) var errData = Data()
+        let group = DispatchGroup()
+        group.enter()
+        DispatchQueue.global().async { _ = outHandle.readDataToEndOfFile(); group.leave() }
+        group.enter()
+        DispatchQueue.global().async { errData = errHandle.readDataToEndOfFile(); group.leave() }
+        do { try stdin.fileHandleForWriting.write(contentsOf: Data(yaml.utf8)) } catch {}
+        try? stdin.fileHandleForWriting.close()
+        group.wait()
+        proc.waitUntilExit()
+        if proc.terminationStatus == 0 { return nil }
+        let msg = (String(data: errData, encoding: .utf8) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return msg.isEmpty ? "kubectl apply failed" : msg
     }
 
     func registryLogin(registry: String, username: String, password: String) async -> String? {
@@ -1152,7 +1425,7 @@ final class AppStore {
 
     var migrationInventory: MigrationInventory?
 
-    /// Reads the host Docker/OrbStack engine (if any) without modifying it, to power the pre-flight
+    /// Reads a host Docker-compatible engine (if any) without modifying it, to power the pre-flight
     /// "here's what will move, nothing will be deleted" screen.
     func loadMigrationPreflight() async {
         guard let source = await DockerEngineRuntime.detect() else {
@@ -1162,14 +1435,14 @@ final class AppStore {
         migrationInventory = await MigrationAssistant.preflight(from: source)
     }
 
-    /// Imports an existing Docker Desktop / OrbStack engine's images + containers into Dory's own
+    /// Imports an existing Docker-compatible engine's images + containers into Dory's own
     /// shared VM — the "switch to Dory" flow. The target is Dory's standalone engine, so afterwards
     /// the source can be uninstalled.
     func importFromDocker() async {
         guard runtimeKind == .sharedVM else { migrationStatus = "Switch to Dory's shared VM first, then import"; return }
         guard !migrationBusy else { return }
         guard let source = await DockerEngineRuntime.detect() else {
-            migrationStatus = "No Docker/OrbStack engine found to import from"; return
+            migrationStatus = "No Docker-compatible engine found to import from"; return
         }
         migrationBusy = true
         defer { migrationBusy = false }
@@ -1281,7 +1554,7 @@ final class AppStore {
 
     func openVolumeBrowser(_ volume: String) {
         guard runtimeKind != .appleContainer else {
-            actionError = "Volume file browsing needs Dory's shared VM — switch engines in Settings → Docker Engine."
+            actionError = Self.dockerCompatibleEngineRequired("Volume file browsing")
             return
         }
         browsingVolume = volume
@@ -1397,10 +1670,17 @@ final class AppStore {
         return s
     }
 
+    nonisolated static func preservingHiddenMachineSettings(_ settings: MachineSettings, existing: MachineSettings) -> MachineSettings {
+        var copy = settings
+        if copy.env.isEmpty { copy.env = existing.env }
+        if copy.identity == nil { copy.identity = existing.identity }
+        return copy
+    }
+
     func createMachine(image: String, name: String, arch: MachineArch = .host, recipe: DevRecipe? = nil, settings: MachineSettings = .default, identity: MacIdentity? = nil) async -> String? {
         let trimmedName = name.trimmingCharacters(in: .whitespaces)
         guard runtimeKind.isDockerCompatible else {
-            actionError = "Linux machines need Dory's shared VM — switch engines in Settings → Docker Engine."
+            actionError = Self.dockerCompatibleEngineRequired("Linux machines")
             return "Engine not available"
         }
         guard !trimmedName.isEmpty else { actionError = "Name is required"; return "Name is required" }
@@ -1442,7 +1722,7 @@ final class AppStore {
 
     func editMachine(_ machine: Machine, settings: MachineSettings) async -> String? {
         guard runtimeKind.isDockerCompatible else {
-            actionError = "Linux machines need Dory's shared VM — switch engines in Settings → Docker Engine."
+            actionError = Self.dockerCompatibleEngineRequired("Linux machines")
             return "Engine not available"
         }
         machineBusy = true
@@ -1453,7 +1733,9 @@ final class AppStore {
         activeSheet = .creatingMachine
         defer { machineBusy = false }
         do {
-            try await machineService.recreate(name: machine.name, settings: settings)
+            let existing = await machineService.currentSettings(name: machine.name)
+            let effectiveSettings = Self.preservingHiddenMachineSettings(settings, existing: existing)
+            try await machineService.recreate(name: machine.name, settings: effectiveSettings)
             appendMachineCreationLog("Settings applied. Machine recreated from snapshot.")
             activeSheet = nil
             loadMachines()
@@ -1495,7 +1777,7 @@ final class AppStore {
 
     func takeSnapshot(_ machine: Machine, note: String) {
         guard runtimeKind.isDockerCompatible else {
-            actionError = "Snapshots need Dory's shared VM — switch engines in Settings → Docker Engine."
+            actionError = Self.dockerCompatibleEngineRequired("Snapshots")
             return
         }
         let trimmedNote = note.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1516,7 +1798,7 @@ final class AppStore {
 
     func cloneSnapshot(_ snapshot: MachineSnapshot) {
         guard runtimeKind.isDockerCompatible else {
-            actionError = "Cloning needs Dory's shared VM — switch engines in Settings → Docker Engine."
+            actionError = Self.dockerCompatibleEngineRequired("Cloning")
             return
         }
         let newName = snapshot.machineName + "-copy-" + String(UUID().uuidString.prefix(4).lowercased())
@@ -1545,7 +1827,7 @@ final class AppStore {
 
     func restoreSnapshot(_ snapshot: MachineSnapshot) {
         guard runtimeKind.isDockerCompatible else {
-            actionError = "Restoring needs Dory's shared VM — switch engines in Settings → Docker Engine."
+            actionError = Self.dockerCompatibleEngineRequired("Restoring")
             return
         }
         machineBusy = true
@@ -1573,13 +1855,13 @@ final class AppStore {
 
     func exportSnapshot(_ snapshot: MachineSnapshot) {
         guard runtimeKind.isDockerCompatible else {
-            actionError = "Exporting needs Dory's shared VM — switch engines in Settings → Docker Engine."
+            actionError = Self.dockerCompatibleEngineRequired("Exporting")
             return
         }
         let panel = NSSavePanel()
         panel.title = "Export machine snapshot"
         panel.nameFieldStringValue = "\(snapshot.machineName).dorymachine"
-        panel.allowedFileTypes = ["dorymachine"]
+        panel.allowedContentTypes = [UTType(filenameExtension: "dorymachine") ?? .data]
         guard panel.runModal() == .OK, let url = panel.url else { return }
         machineBusy = true
         let service = machineService
@@ -1595,7 +1877,7 @@ final class AppStore {
 
     func importMachineFile() {
         guard runtimeKind.isDockerCompatible else {
-            actionError = "Importing needs Dory's shared VM — switch engines in Settings → Docker Engine."
+            actionError = Self.dockerCompatibleEngineRequired("Importing")
             return
         }
         let panel = NSOpenPanel()
@@ -1603,7 +1885,10 @@ final class AppStore {
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
-        panel.allowedFileTypes = ["dorymachine", "tar"]
+        panel.allowedContentTypes = [
+            UTType(filenameExtension: "dorymachine") ?? .data,
+            UTType(filenameExtension: "tar") ?? .data,
+        ]
         guard panel.runModal() == .OK, let url = panel.url else { return }
         machineBusy = true
         machineCreationTitle = "Importing machine"
@@ -1675,6 +1960,11 @@ final class AppStore {
     func terminalSession(for pod: Pod) -> TerminalSession {
         TerminalSession(id: "pod:\(pod.namespace)/\(pod.name)", title: pod.name, subtitle: pod.namespace,
                         logo: nil, socketPath: "", containerID: "", user: "root", shell: "/bin/sh", home: "/root",
-                        kubeExec: KubeExecTarget(pod: pod.name, namespace: pod.namespace, container: nil, kubeconfig: KubeClient.kubeconfig() ?? ""))
+                        kubeExec: KubeExecTarget(
+                            pod: pod.name,
+                            namespace: pod.namespace,
+                            container: pod.primaryContainer,
+                            kubeconfig: KubeClient.kubeconfig() ?? ""
+                        ))
     }
 }

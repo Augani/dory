@@ -29,7 +29,10 @@ struct TerminalWindowView: View {
             Spacer()
             Button {
                 let command = session.kubeExec.map(KubeExecCommand.shell)
-                    ?? "docker -H unix://\(session.socketPath) " + TerminalLauncher.execArgs(user: session.user, shell: session.shell, home: session.home, container: session.containerID)
+                    ?? TerminalLauncher.dockerCommand(
+                        socketPath: session.socketPath,
+                        execArgs: TerminalLauncher.execArgs(user: session.user, shell: session.shell, home: session.home, container: session.containerID)
+                    )
                 TerminalLauncher.open(command: command)
             } label: {
                 HStack(spacing: 5) {

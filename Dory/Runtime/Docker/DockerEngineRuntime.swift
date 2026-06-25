@@ -1,7 +1,7 @@
 import Foundation
 
 enum DockerFormat {
-    static func bytes(_ value: Int64?) -> String {
+    nonisolated static func bytes(_ value: Int64?) -> String {
         guard let value, value > 0 else { return "0 MB" }
         let units = ["B", "KB", "MB", "GB", "TB"]
         var size = Double(value)
@@ -11,17 +11,17 @@ enum DockerFormat {
         return String(format: "%.0f %@", size, units[unit])
     }
 
-    static func relative(unix seconds: Int?) -> String {
+    nonisolated static func relative(unix seconds: Int?) -> String {
         guard let seconds, seconds > 0 else { return "—" }
         return relative(interval: Date().timeIntervalSince1970 - Double(seconds))
     }
 
-    static func relative(iso: String?) -> String {
+    nonisolated static func relative(iso: String?) -> String {
         guard let iso, let date = iso8601(iso) else { return "—" }
         return relative(interval: Date().timeIntervalSince(date))
     }
 
-    static func relative(interval: TimeInterval) -> String {
+    nonisolated static func relative(interval: TimeInterval) -> String {
         let seconds = max(0, Int(interval))
         switch seconds {
         case 0..<60: return "just now"
@@ -31,7 +31,7 @@ enum DockerFormat {
         }
     }
 
-    static func uptime(iso: String?) -> String {
+    nonisolated static func uptime(iso: String?) -> String {
         guard let iso, let date = iso8601(iso) else { return "—" }
         let seconds = max(0, Int(Date().timeIntervalSince(date)))
         let hours = seconds / 3600, minutes = (seconds % 3600) / 60
@@ -41,19 +41,31 @@ enum DockerFormat {
         return "\(seconds)s"
     }
 
-    static func ports(_ ports: [DockerPort]?) -> String {
+    nonisolated static func ports(_ ports: [DockerPort]?) -> String {
         guard let ports, !ports.isEmpty else { return "—" }
         var seen = Set<String>()
         var result: [String] = []
         for port in ports {
             guard let priv = port.privatePort else { continue }
-            let text = port.publicPort.map { "\($0)→\(priv)" } ?? "\(priv)"
+            let text = ContainerPortDisplay.dockerDisplay(
+                hostIP: port.ip,
+                hostPort: port.publicPort,
+                containerPort: priv,
+                proto: port.type
+            )
             if seen.insert(text).inserted { result.append(text) }
         }
         return result.isEmpty ? "—" : result.joined(separator: ", ")
     }
 
-    private static func iso8601(_ string: String) -> Date? {
+    nonisolated static func exitCode(from status: String?) -> Int? {
+        guard let status,
+              let start = status.range(of: "Exited (")?.upperBound,
+              let end = status[start...].firstIndex(of: ")") else { return nil }
+        return Int(status[start..<end])
+    }
+
+    private nonisolated static func iso8601(_ string: String) -> Date? {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         if let date = formatter.date(from: string) { return date }
@@ -62,38 +74,179 @@ enum DockerFormat {
     }
 }
 
+enum DockerEngineSocketDiscovery {
+    private nonisolated struct DockerConfig: Decodable {
+        var currentContext: String?
+    }
+
+    private nonisolated struct ContextMeta: Decodable {
+        var name: String?
+        var endpoints: [String: ContextEndpoint]?
+
+        enum CodingKeys: String, CodingKey {
+            case name = "Name"
+            case endpoints = "Endpoints"
+        }
+    }
+
+    private nonisolated struct ContextEndpoint: Decodable {
+        var host: String?
+
+        enum CodingKeys: String, CodingKey {
+            case host = "Host"
+        }
+    }
+
+    nonisolated static func candidates(
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        home: String = NSHomeDirectory(),
+        fileManager: FileManager = .default,
+        excluding excludedPaths: [String] = []
+    ) -> [String] {
+        var paths: [String] = []
+        let exclusions = Set(excludedPaths + [doryShimSocket(home: home)])
+
+        if let path = unixPath(from: environment["DOCKER_HOST"]) {
+            paths.append(path)
+        }
+
+        let contexts = contextSockets(home: home, fileManager: fileManager)
+        if let namedContext = environment["DOCKER_CONTEXT"], !namedContext.isEmpty {
+            paths += contexts.filter { $0.name == namedContext }.map(\.path)
+        } else if let current = currentDockerContext(home: home, fileManager: fileManager), !current.isEmpty, current != "default" {
+            paths += contexts.filter { $0.name == current }.map(\.path)
+        }
+        paths += contexts.map(\.path)
+
+        paths += commonSockets(home: home)
+        return uniqued(paths).filter { !exclusions.contains($0) }
+    }
+
+    private nonisolated static func doryShimSocket(home: String) -> String {
+        "\(home)/.dory/dory.sock"
+    }
+
+    private nonisolated static func commonSockets(home: String) -> [String] {
+        [
+            "/var/run/docker.sock",
+            "\(home)/.orbstack/run/docker.sock",
+            "\(home)/.docker/run/docker.sock",
+            "\(home)/.colima/default/docker.sock",
+            "\(home)/.rd/docker.sock",
+            "\(home)/.local/share/containers/podman/machine/podman-machine-default/podman.sock",
+            "\(home)/.local/share/containers/podman/machine/default/podman.sock",
+        ]
+    }
+
+    private nonisolated static func currentDockerContext(home: String, fileManager: FileManager) -> String? {
+        let url = URL(fileURLWithPath: home).appendingPathComponent(".docker/config.json")
+        guard fileManager.fileExists(atPath: url.path),
+              let data = try? Data(contentsOf: url),
+              let config = try? JSONDecoder().decode(DockerConfig.self, from: data) else { return nil }
+        return config.currentContext
+    }
+
+    private nonisolated static func contextSockets(home: String, fileManager: FileManager) -> [(name: String, path: String)] {
+        let root = URL(fileURLWithPath: home).appendingPathComponent(".docker/contexts/meta")
+        guard let entries = try? fileManager.contentsOfDirectory(
+            at: root,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        ) else { return [] }
+
+        return entries
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+            .compactMap { entry -> (name: String, path: String)? in
+                let url = entry.appendingPathComponent("meta.json")
+                guard fileManager.fileExists(atPath: url.path),
+                      let data = try? Data(contentsOf: url),
+                      let meta = try? JSONDecoder().decode(ContextMeta.self, from: data),
+                      let name = meta.name,
+                      let path = unixPath(from: meta.endpoints?["docker"]?.host) else { return nil }
+                return (name, path)
+            }
+    }
+
+    private nonisolated static func unixPath(from host: String?) -> String? {
+        guard let host, host.hasPrefix("unix://") else { return nil }
+        let raw = String(host.dropFirst("unix://".count))
+        let path = raw.removingPercentEncoding ?? raw
+        return path.isEmpty ? nil : path
+    }
+
+    private nonisolated static func uniqued(_ paths: [String]) -> [String] {
+        var seen = Set<String>()
+        return paths.filter { seen.insert($0).inserted }
+    }
+}
+
 struct DockerEngineRuntime: ContainerRuntime {
     let kind: RuntimeKind
     let socketPath: String
 
-    init(socketPath: String, kind: RuntimeKind = .docker) {
+    nonisolated init(socketPath: String, kind: RuntimeKind = .docker) {
         self.socketPath = socketPath
         self.kind = kind
     }
 
     private var http: UnixSocketHTTP { UnixSocketHTTP(path: socketPath) }
     private var decoder: JSONDecoder { JSONDecoder() }
+    private static let detectionProbeTimeout: TimeInterval = 0.75
+    private nonisolated static let statsProbeTimeout: TimeInterval = 0.75
+    nonisolated static let maxConcurrentStatsRequests = 8
 
     static func detect() async -> DockerEngineRuntime? {
-        var candidates: [String] = []
-        if let host = ProcessInfo.processInfo.environment["DOCKER_HOST"], host.hasPrefix("unix://") {
-            candidates.append(String(host.dropFirst("unix://".count)))
+        await detect(candidates: DockerEngineSocketDiscovery.candidates())
+    }
+
+    static func detect(candidates: [String], fileManager: FileManager = .default) async -> DockerEngineRuntime? {
+        let existing = candidates.enumerated().filter { fileManager.fileExists(atPath: $0.element) }
+        guard !existing.isEmpty else { return nil }
+
+        return await withTaskGroup(of: (Int, DockerEngineRuntime?).self) { group in
+            for (index, path) in existing {
+                group.addTask {
+                    let runtime = DockerEngineRuntime(socketPath: path)
+                    let version = try? await runtime.get("/version", as: DockerVersion.self, ioTimeout: detectionProbeTimeout)
+                    return (index, version == nil ? nil : runtime)
+                }
+            }
+
+            let orderedIndices = existing.map(\.offset)
+            var completed = Set<Int>()
+            var successes: [Int: DockerEngineRuntime] = [:]
+
+            while let (index, runtime) = await group.next() {
+                completed.insert(index)
+                if let runtime { successes[index] = runtime }
+                if let winner = Self.highestPriorityReadySuccess(
+                    orderedIndices: orderedIndices,
+                    completed: completed,
+                    successes: successes
+                ) {
+                    group.cancelAll()
+                    return winner
+                }
+            }
+            return nil
         }
-        let home = NSHomeDirectory()
-        candidates += [
-            "/var/run/docker.sock",
-            "\(home)/.orbstack/run/docker.sock",
-            "\(home)/.docker/run/docker.sock",
-        ]
-        for path in candidates where FileManager.default.fileExists(atPath: path) {
-            let runtime = DockerEngineRuntime(socketPath: path)
-            if (try? await runtime.get("/version", as: DockerVersion.self)) != nil { return runtime }
+    }
+
+    private nonisolated static func highestPriorityReadySuccess(
+        orderedIndices: [Int],
+        completed: Set<Int>,
+        successes: [Int: DockerEngineRuntime]
+    ) -> DockerEngineRuntime? {
+        for index in orderedIndices {
+            if let success = successes[index] { return success }
+            if !completed.contains(index) { return nil }
         }
         return nil
     }
 
-    private func get<T: Decodable>(_ path: String, as type: T.Type) async throws -> T {
-        let response = try await http.send(HTTPRequest(method: "GET", path: path, headers: [(name: "Accept", value: "application/json")]))
+    private func get<T: Decodable>(_ path: String, as type: T.Type, ioTimeout: TimeInterval? = nil) async throws -> T {
+        let client = UnixSocketHTTP(path: socketPath, ioTimeout: ioTimeout)
+        let response = try await client.send(HTTPRequest(method: "GET", path: path, headers: [(name: "Accept", value: "application/json")]))
         guard response.isSuccess else {
             throw HTTPError.status(code: response.statusCode, message: String(data: response.body, encoding: .utf8) ?? "")
         }
@@ -131,7 +284,7 @@ struct DockerEngineRuntime: ContainerRuntime {
     }
 
     func sampleCPU(containerID: String) async -> Double? {
-        let path = "/containers/\(containerID)/stats?stream=false"
+        let path = "/containers/\(DockerImageOps.pathComponent(containerID))/stats?stream=false"
         guard let first = try? await get(path, as: DockerStats.self) else { return nil }
         try? await Task.sleep(for: .milliseconds(800))
         guard let second = try? await get(path, as: DockerStats.self) else { return first.cpuPercent }
@@ -143,15 +296,47 @@ struct DockerEngineRuntime: ContainerRuntime {
     }
 
     private func statsByID(for running: [DockerContainerSummary]) async -> [String: DockerStats] {
-        await withTaskGroup(of: (String, DockerStats?).self) { group in
-            for container in running {
-                group.addTask {
-                    let stats = try? await self.get("/containers/\(container.id)/stats?stream=false&one-shot=false", as: DockerStats.self)
-                    return (container.id, stats)
+        await Self.boundedStatsByID(for: running) { container in
+            let encoded = DockerImageOps.pathComponent(container.id)
+            return try? await self.get(
+                "/containers/\(encoded)/stats?stream=false&one-shot=false",
+                as: DockerStats.self,
+                ioTimeout: Self.statsProbeTimeout
+            )
+        }
+    }
+
+    static func boundedStatsByID(
+        for running: [DockerContainerSummary],
+        limit: Int = maxConcurrentStatsRequests,
+        fetch: @escaping @Sendable (DockerContainerSummary) async -> DockerStats?
+    ) async -> [String: DockerStats] {
+        guard !running.isEmpty else { return [:] }
+        let limit = max(1, limit)
+        return await withTaskGroup(of: (String, DockerStats?).self) { group in
+            let initialCount = min(limit, running.count)
+            for index in 0..<initialCount {
+                let container = running[index]
+                group.addTask { (container.id, await fetch(container)) }
+            }
+
+            var nextIndex = initialCount
+            var inFlight = initialCount
+            var result: [String: DockerStats] = [:]
+
+            while inFlight > 0 {
+                guard let (id, stats) = await group.next() else { break }
+                inFlight -= 1
+                if let stats { result[id] = stats }
+
+                if nextIndex < running.count {
+                    let container = running[nextIndex]
+                    nextIndex += 1
+                    inFlight += 1
+                    group.addTask { (container.id, await fetch(container)) }
                 }
             }
-            var result: [String: DockerStats] = [:]
-            for await (id, stats) in group { if let stats { result[id] = stats } }
+
             return result
         }
     }
@@ -159,7 +344,11 @@ struct DockerEngineRuntime: ContainerRuntime {
     private func map(_ summary: DockerContainerSummary, stats: DockerStats?) -> Container {
         let name = summary.names?.first.map { String($0.drop(while: { $0 == "/" })) } ?? summary.id.prefix(12).description
         let status: RunState = summary.state == "running" ? .running : (summary.state == "paused" ? .paused : .stopped)
-        let ip = summary.networkSettings?.networks?.values.compactMap(\.ipAddress).first(where: { !$0.isEmpty }) ?? "—"
+        let endpointSettings = summary.networkSettings?.networks ?? [:]
+        let ip = endpointSettings.values.compactMap(\.IPAddress).first(where: { !$0.isEmpty }) ?? "—"
+        let networks = summary.networkSettings?.networks?.keys.sorted() ?? []
+        let mounts = summary.mounts?.compactMap(\.containerMount) ?? []
+        let volumeTargets = mounts.map(\.target)
         let memUsage = stats?.memoryStats?.usage
         let memLimit = stats?.memoryStats?.limit
         let fraction = (memUsage.flatMap { u in memLimit.map { l in l > 0 ? Double(u) / Double(l) : 0 } }) ?? 0
@@ -182,7 +371,12 @@ struct DockerEngineRuntime: ContainerRuntime {
             restartPolicy: "—",
             createdEpoch: summary.created,
             labels: summary.labels ?? [:],
-            memoryBytes: status == .running ? (memUsage ?? 0) : 0
+            memoryBytes: status == .running ? (memUsage ?? 0) : 0,
+            mounts: mounts,
+            volumeTargets: volumeTargets,
+            networks: networks,
+            networkEndpointSettings: endpointSettings,
+            exitCode: DockerFormat.exitCode(from: summary.status)
         )
     }
 
@@ -201,18 +395,22 @@ struct DockerEngineRuntime: ContainerRuntime {
         return DockerImage(repository: repository, tag: tagValue, imageID: String(id),
                            size: DockerFormat.bytes(summary.size), created: DockerFormat.relative(unix: summary.created),
                            usedByCount: summary.containers.flatMap { $0 > 0 ? $0 : 0 } ?? 0,
-                           sizeBytes: summary.size ?? 0, createdEpoch: summary.created ?? 0)
+                           sizeBytes: summary.size ?? 0, createdEpoch: summary.created ?? 0,
+                           labels: summary.labels ?? [:])
     }
 
     private func mapVolume(_ volume: DockerVolume) -> Volume {
         Volume(name: volume.name, size: "—", driver: volume.driver ?? "local",
-               usedBy: "—", created: DockerFormat.relative(iso: volume.createdAt))
+               usedBy: "—", created: DockerFormat.relative(iso: volume.createdAt),
+               labels: volume.labels ?? [:],
+               options: volume.options ?? [:])
     }
 
     private func mapNetwork(_ network: DockerNetwork) -> DoryNetwork {
         DoryNetwork(name: network.name, driver: network.driver ?? "—", scope: network.scope ?? "—",
                     subnet: network.ipam?.config?.first?.subnet ?? "—",
-                    containerCount: network.containers?.count ?? 0)
+                    containerCount: network.containers?.count ?? 0,
+                    labels: network.labels ?? [:])
     }
 
     private func postJSON<Body: Encodable, Out: Decodable>(_ path: String, body: Body, as type: Out.Type, acceptable: Set<Int> = [200, 201]) async throws -> Out {
@@ -227,8 +425,8 @@ struct DockerEngineRuntime: ContainerRuntime {
 
     func pull(image: String) async throws {
         let (repo, tag) = DockerRegistry.splitImageRef(image)
-        let encoded = repo.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? repo
-        let encodedTag = tag.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? tag
+        let encoded = DockerImageOps.queryValue(repo)
+        let encodedTag = DockerImageOps.queryValue(tag)
         var headers: [(name: String, value: String)] = []
         if let auth = DockerRegistry.registryAuthHeader(for: repo) { headers.append((name: "X-Registry-Auth", value: auth)) }
         let response = try await http.send(HTTPRequest(method: "POST", path: "/images/create?fromImage=\(encoded)&tag=\(encodedTag)", headers: headers))
@@ -250,19 +448,23 @@ struct DockerEngineRuntime: ContainerRuntime {
 
     func create(_ spec: ContainerSpec) async throws -> String {
         let body = DockerCreateBody(spec: spec)
-        let name = spec.name.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? spec.name
-        let result = try await postJSON("/containers/create?name=\(name)", body: body, as: DockerCreateResult.self)
+        let name = DockerImageOps.queryValue(spec.name)
+        var path = "/containers/create?name=\(name)"
+        if let platform = spec.platform?.trimmingCharacters(in: .whitespacesAndNewlines), !platform.isEmpty {
+            path += "&platform=\(DockerImageOps.queryValue(platform))"
+        }
+        let result = try await postJSON(path, body: body, as: DockerCreateResult.self)
         return result.id
     }
 
     func exec(containerID: String, command: [String]) async throws -> ExecResult {
-        let create = try await postJSON("/containers/\(containerID)/exec",
+        let create = try await postJSON("/containers/\(DockerImageOps.pathComponent(containerID))/exec",
             body: DockerExecCreate(Cmd: command), as: DockerExecResult.self)
         let startBody = try JSONEncoder().encode(DockerExecStart())
-        let startResponse = try await http.send(HTTPRequest(method: "POST", path: "/exec/\(create.id)/start",
+        let startResponse = try await http.send(HTTPRequest(method: "POST", path: "/exec/\(DockerImageOps.pathComponent(create.id))/start",
             headers: [(name: "Content-Type", value: "application/json")], body: startBody))
         let output = DockerLogFrames.plainText(startResponse.body)
-        let inspect = try await get("/exec/\(create.id)/json", as: DockerExecInspect.self)
+        let inspect = try await get("/exec/\(DockerImageOps.pathComponent(create.id))/json", as: DockerExecInspect.self)
         return ExecResult(exitCode: inspect.exitCode ?? 0, output: output)
     }
 
@@ -271,22 +473,58 @@ struct DockerEngineRuntime: ContainerRuntime {
                                as: DockerNetworkCreateResult.self, acceptable: [200, 201])
     }
 
+    func connectNetwork(name: String, containerID: String) async throws {
+        let body = try JSONEncoder().encode(DockerNetworkConnectRequest(Container: containerID))
+        let response = try await http.send(HTTPRequest(
+            method: "POST",
+            path: "/networks/\(DockerImageOps.pathComponent(name))/connect",
+            headers: [(name: "Content-Type", value: "application/json")],
+            body: body
+        ))
+        guard response.isSuccess else {
+            throw HTTPError.status(code: response.statusCode, message: String(data: response.body, encoding: .utf8) ?? "")
+        }
+    }
+
+    func disconnectNetwork(name: String, containerID: String, force: Bool) async throws {
+        let body = try JSONEncoder().encode(DockerNetworkDisconnectRequest(Container: containerID, Force: force))
+        let response = try await http.send(HTTPRequest(
+            method: "POST",
+            path: "/networks/\(DockerImageOps.pathComponent(name))/disconnect",
+            headers: [(name: "Content-Type", value: "application/json")],
+            body: body
+        ))
+        guard response.isSuccess else {
+            throw HTTPError.status(code: response.statusCode, message: String(data: response.body, encoding: .utf8) ?? "")
+        }
+    }
+
     func removeNetwork(name: String) async throws {
-        let response = try await http.send(HTTPRequest(method: "DELETE", path: "/networks/\(name)"))
+        let response = try await http.send(HTTPRequest(method: "DELETE", path: "/networks/\(DockerImageOps.pathComponent(name))"))
         guard response.isSuccess || response.statusCode == 404 else {
             throw HTTPError.status(code: response.statusCode, message: String(data: response.body, encoding: .utf8) ?? "")
         }
     }
 
     func removeVolume(name: String) async throws {
-        let response = try await http.send(HTTPRequest(method: "DELETE", path: "/volumes/\(name)?force=true"))
+        let response = try await http.send(HTTPRequest(method: "DELETE", path: "/volumes/\(DockerImageOps.pathComponent(name))?force=true"))
         guard response.isSuccess || response.statusCode == 404 else {
             throw HTTPError.status(code: response.statusCode, message: String(data: response.body, encoding: .utf8) ?? "")
         }
     }
 
-    func createVolume(name: String) async throws {
-        let body = try JSONEncoder().encode(["Name": name])
+    func createVolume(
+        name: String,
+        driver: String?,
+        labels: [String: String],
+        driverOptions: [String: String]
+    ) async throws {
+        let body = try JSONEncoder().encode(DockerVolumeCreate(
+            name: name,
+            driver: driver,
+            labels: labels,
+            driverOptions: driverOptions
+        ))
         let response = try await http.send(HTTPRequest(method: "POST", path: "/volumes/create",
             headers: [(name: "Content-Type", value: "application/json")], body: body))
         guard response.isSuccess else {
@@ -297,11 +535,34 @@ struct DockerEngineRuntime: ContainerRuntime {
     func pruneVolumes() async throws { try await prune("/volumes/prune") }
     func pruneNetworks() async throws { try await prune("/networks/prune") }
     func pruneImages() async throws { try await prune("/images/prune?filters=%7B%22dangling%22%3A%5B%22false%22%5D%7D") }
+    func pruneContainers() async throws { try await prune("/containers/prune") }
 
     func removeImage(id: String) async throws {
-        let response = try await http.send(HTTPRequest(method: "DELETE", path: "/images/\(id)?force=true"))
+        let response = try await http.send(HTTPRequest(method: "DELETE", path: "/images/\(DockerImageOps.pathComponent(id))?force=true"))
         guard response.isSuccess || response.statusCode == 404 else {
             throw HTTPError.status(code: response.statusCode, message: String(data: response.body, encoding: .utf8) ?? "")
+        }
+    }
+
+    func tagImage(source: String, repo: String, tag: String) async throws {
+        let response = try await http.send(HTTPRequest(method: "POST", path: DockerImageOps.tagPath(source: source, repo: repo, tag: tag)))
+        guard response.isSuccess else {
+            throw HTTPError.status(code: response.statusCode, message: String(data: response.body, encoding: .utf8) ?? "")
+        }
+    }
+
+    func pushImage(reference: String) async throws -> AsyncStream<Data> {
+        let split = DockerRegistry.splitImageRef(reference)
+        let auth = DockerRegistry.registryAuthHeader(for: split.repo) ?? Data("{}".utf8).base64EncodedString()
+        let request = HTTPRequest(
+            method: "POST",
+            path: DockerImageOps.pushPath(name: split.repo, tag: split.tag),
+            headers: [(name: "X-Registry-Auth", value: auth)]
+        )
+        let client = http
+        return AsyncStream { continuation in
+            let handle = client.stream(request, onChunk: { continuation.yield($0) }, onComplete: { continuation.finish() })
+            continuation.onTermination = { _ in handle.close() }
         }
     }
 
@@ -324,9 +585,26 @@ struct DockerEngineRuntime: ContainerRuntime {
         return (try? JSONDecoder().decode(Out.self, from: response.body))?.Id ?? "\(repo):\(tag)"
     }
 
+    var supportsImageArchiveTransfer: Bool { true }
+
     func saveImage(reference: String) -> AsyncStream<Data> {
-        let encoded = reference.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? reference
+        let encoded = DockerImageOps.pathComponent(reference)
         let request = HTTPRequest(method: "GET", path: "/images/\(encoded)/get")
+        let client = http
+        return AsyncStream { continuation in
+            let handle = client.stream(request, onChunk: { continuation.yield($0) }, onComplete: { continuation.finish() })
+            continuation.onTermination = { _ in handle.close() }
+        }
+    }
+
+    func saveImages(references: [String]) async throws -> AsyncStream<Data> {
+        guard !references.isEmpty else {
+            throw RuntimeFeatureError.unsupported("at least one image name is required")
+        }
+        let query = references
+            .map { "names=\(DockerImageOps.queryValue($0))" }
+            .joined(separator: "&")
+        let request = HTTPRequest(method: "GET", path: "/images/get?\(query)")
         let client = http
         return AsyncStream { continuation in
             let handle = client.stream(request, onChunk: { continuation.yield($0) }, onComplete: { continuation.finish() })
@@ -342,11 +620,50 @@ struct DockerEngineRuntime: ContainerRuntime {
         }
     }
 
-    func start(containerID: String) async throws { try await post("/containers/\(containerID)/start") }
-    func stop(containerID: String) async throws { try await post("/containers/\(containerID)/stop") }
-    func restart(containerID: String) async throws { try await post("/containers/\(containerID)/restart") }
+    func loadImage(stream: AsyncStream<Data>) async throws {
+        let response = try await http.sendChunked(HTTPRequest(method: "POST", path: "/images/load",
+            headers: [(name: "Content-Type", value: "application/x-tar")]), body: stream)
+        guard response.isSuccess else {
+            throw HTTPError.status(code: response.statusCode, message: String(decoding: response.body, as: UTF8.self))
+        }
+    }
+
+    func start(containerID: String) async throws { try await post("/containers/\(DockerImageOps.pathComponent(containerID))/start") }
+    func stop(containerID: String) async throws { try await post("/containers/\(DockerImageOps.pathComponent(containerID))/stop") }
+    func restart(containerID: String) async throws { try await post("/containers/\(DockerImageOps.pathComponent(containerID))/restart") }
+    func kill(containerID: String, signal: String?) async throws {
+        let query = signal
+            .map(DockerImageOps.queryValue)
+            .map { "?signal=\($0)" } ?? ""
+        try await post("/containers/\(DockerImageOps.pathComponent(containerID))/kill\(query)")
+    }
+    func pause(containerID: String) async throws { try await post("/containers/\(DockerImageOps.pathComponent(containerID))/pause") }
+    func unpause(containerID: String) async throws { try await post("/containers/\(DockerImageOps.pathComponent(containerID))/unpause") }
+    func rename(containerID: String, name: String) async throws {
+        let encoded = DockerImageOps.queryValue(name)
+        try await post("/containers/\(DockerImageOps.pathComponent(containerID))/rename?name=\(encoded)")
+    }
+    func update(containerID: String, resources: ContainerResourceUpdate) async throws {
+        let body = try JSONEncoder().encode(DockerContainerUpdateBody(resources: resources))
+        let response = try await http.send(HTTPRequest(
+            method: "POST",
+            path: "/containers/\(DockerImageOps.pathComponent(containerID))/update",
+            headers: [(name: "Content-Type", value: "application/json")],
+            body: body
+        ))
+        guard response.isSuccess else {
+            throw HTTPError.status(code: response.statusCode, message: String(data: response.body, encoding: .utf8) ?? "")
+        }
+    }
+    func resize(containerID: String, height: Int?, width: Int?) async throws {
+        var items: [String] = []
+        if let height { items.append("h=\(height)") }
+        if let width { items.append("w=\(width)") }
+        let query = items.isEmpty ? "" : "?\(items.joined(separator: "&"))"
+        try await post("/containers/\(DockerImageOps.pathComponent(containerID))/resize\(query)")
+    }
     func remove(containerID: String) async throws {
-        let response = try await http.send(HTTPRequest(method: "DELETE", path: "/containers/\(containerID)?force=true"))
+        let response = try await http.send(HTTPRequest(method: "DELETE", path: "/containers/\(DockerImageOps.pathComponent(containerID))?force=true"))
         guard response.isSuccess || response.statusCode == 404 else {
             throw HTTPError.status(code: response.statusCode, message: String(data: response.body, encoding: .utf8) ?? "")
         }
@@ -385,26 +702,26 @@ struct DockerEngineRuntime: ContainerRuntime {
     }
 
     func copyOut(containerID: String, path: String) async -> Data? {
-        let encoded = path.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? path
-        let response = try? await http.send(HTTPRequest(method: "GET", path: "/containers/\(containerID)/archive?path=\(encoded)"))
+        let encoded = DockerImageOps.queryValue(path)
+        let response = try? await http.send(HTTPRequest(method: "GET", path: "/containers/\(DockerImageOps.pathComponent(containerID))/archive?path=\(encoded)"))
         guard let response, response.isSuccess else { return nil }
         return response.body
     }
 
     func copyIn(containerID: String, path: String, archive: Data) async -> Bool {
-        let encoded = path.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? path
-        let response = try? await http.send(HTTPRequest(method: "PUT", path: "/containers/\(containerID)/archive?path=\(encoded)",
+        let encoded = DockerImageOps.queryValue(path)
+        let response = try? await http.send(HTTPRequest(method: "PUT", path: "/containers/\(DockerImageOps.pathComponent(containerID))/archive?path=\(encoded)",
             headers: [(name: "Content-Type", value: "application/x-tar")], body: archive))
         return response?.isSuccess ?? false
     }
 
     func containerExitCode(_ id: String) async -> Int? {
-        let inspect = try? await get("/containers/\(id)/json", as: DockerInspect.self)
+        let inspect = try? await get("/containers/\(DockerImageOps.pathComponent(id))/json", as: DockerInspect.self)
         return inspect?.state?.exitCode
     }
 
     func inspectImage(id: String) async -> ImageDetail? {
-        guard let raw = try? await get("/images/\(id)/json", as: DockerImageInspect.self) else { return nil }
+        guard let raw = try? await get("/images/\(DockerImageOps.pathComponent(id))/json", as: DockerImageInspect.self) else { return nil }
         let config = raw.config
         let env = (config?.env ?? []).map { entry -> EnvVar in
             if let eq = entry.firstIndex(of: "=") {
@@ -435,7 +752,7 @@ struct DockerEngineRuntime: ContainerRuntime {
     }
 
     func inspectNetwork(name: String) async -> NetworkDetail? {
-        guard let raw = try? await get("/networks/\(name)", as: DockerNetwork.self) else { return nil }
+        guard let raw = try? await get("/networks/\(DockerImageOps.pathComponent(name))", as: DockerNetwork.self) else { return nil }
         let options = (raw.options ?? [:]).sorted { $0.key < $1.key }.map { LabelPair(key: $0.key, value: $0.value) }
         let members = (raw.containers ?? [:]).values.map { container in
             NetworkMember(name: container.name ?? "—",
@@ -457,7 +774,7 @@ struct DockerEngineRuntime: ContainerRuntime {
     }
 
     func env(containerID: String) async throws -> [EnvVar] {
-        let inspect = try await get("/containers/\(containerID)/json", as: DockerInspect.self)
+        let inspect = try await get("/containers/\(DockerImageOps.pathComponent(containerID))/json", as: DockerInspect.self)
         return (inspect.config?.env ?? []).map { entry in
             if let eq = entry.firstIndex(of: "=") {
                 return EnvVar(key: String(entry[entry.startIndex..<eq]), value: String(entry[entry.index(after: eq)...]))
@@ -469,7 +786,7 @@ struct DockerEngineRuntime: ContainerRuntime {
     func streamLogs(containerID: String) -> AsyncStream<LogLine> {
         let request = HTTPRequest(
             method: "GET",
-            path: "/containers/\(containerID)/logs?follow=1&stdout=1&stderr=1&tail=80&timestamps=1",
+            path: "/containers/\(DockerImageOps.pathComponent(containerID))/logs?follow=1&stdout=1&stderr=1&tail=80&timestamps=1",
             headers: [(name: "Accept", value: "application/vnd.docker.raw-stream")]
         )
         let client = http
@@ -487,7 +804,7 @@ struct DockerEngineRuntime: ContainerRuntime {
     func logs(containerID: String) async throws -> [LogLine] {
         let response = try await http.send(HTTPRequest(
             method: "GET",
-            path: "/containers/\(containerID)/logs?stdout=1&stderr=1&tail=100&timestamps=1",
+            path: "/containers/\(DockerImageOps.pathComponent(containerID))/logs?stdout=1&stderr=1&tail=100&timestamps=1",
             headers: [(name: "Accept", value: "application/vnd.docker.raw-stream")]
         ))
         guard response.isSuccess else { return [] }

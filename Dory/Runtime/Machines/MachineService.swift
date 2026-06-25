@@ -1,15 +1,15 @@
 import Foundation
 
-struct MountPair: Sendable, Hashable { var host: String; var guest: String; var readOnly: Bool = false }
-struct PortPair: Sendable, Hashable { var host: Int; var guest: Int }
-struct MachineSettings: Sendable, Hashable {
+nonisolated struct MountPair: Sendable, Hashable { var host: String; var guest: String; var readOnly: Bool = false }
+nonisolated struct PortPair: Sendable, Hashable { var host: Int; var guest: Int }
+nonisolated struct MachineSettings: Sendable, Hashable {
     var cpus: Int?
     var memoryMB: Int?
     var mounts: [MountPair] = []
     var ports: [PortPair] = []
     var identity: MacIdentity? = nil
     var env: [String: String] = [:]
-    static let `default` = MachineSettings(cpus: nil, memoryMB: nil)
+    nonisolated static let `default` = MachineSettings(cpus: nil, memoryMB: nil)
 }
 
 struct MachineService: Sendable {
@@ -20,6 +20,8 @@ struct MachineService: Sendable {
     static let versionLabel = "dory.machine.version"
     static let archLabel = "dory.machine.arch"
     static let userLabel = "dory.machine.user"
+    static let uidLabel = "dory.machine.uid"
+    static let homeLabel = "dory.machine.home"
     static let shellLabel = "dory.machine.shell"
     static let sshPortLabel = "dory.machine.sshPort"
     static let recipeLabel = "dory.recipe"
@@ -42,7 +44,7 @@ struct MachineService: Sendable {
 
     func listSnapshots() async -> [MachineSnapshot] {
         let filters = "{\"label\":[\"\(SnapshotLabels.ofKey)\"]}"
-        let encoded = filters.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? filters
+        let encoded = DockerImageOps.queryValue(filters)
         guard let response = await runtime.proxyRequest(method: "GET", path: "/images/json?filters=\(encoded)", headers: [], body: Data()),
               response.isSuccess else { return [] }
         return SnapshotLabels.snapshots(fromImagesJSON: response.body)
@@ -62,8 +64,7 @@ struct MachineService: Sendable {
         var labels = [label: distro.family, versionLabel: distro.version, archLabel: arch.rawValue]
         if let recipe { labels[recipeLabel] = recipe.id }
         if let identity = settings.identity {
-            labels[userLabel] = identity.username
-            labels[shellLabel] = identity.shell
+            labels.merge(identityLabels(identity)) { _, new in new }
         }
         if let sshPort = settings.ports.first(where: { $0.guest == 22 })?.host {
             labels[sshPortLabel] = "\(sshPort)"
@@ -120,6 +121,8 @@ struct MachineService: Sendable {
                 recipe: entry.Labels?[recipeLabel] ?? "",
                 username: entry.Labels?[userLabel] ?? "root",
                 loginShell: entry.Labels?[shellLabel] ?? "/bin/sh",
+                uid: entry.Labels?[uidLabel].flatMap { Int($0) },
+                homePath: entry.Labels?[homeLabel],
                 sshPort: entry.Labels?[sshPortLabel].flatMap { Int($0) }
             )
         }
@@ -127,7 +130,7 @@ struct MachineService: Sendable {
 
     func list() async -> [Machine] {
         let filters = "{\"label\":[\"\(Self.label)\"]}"
-        let encoded = filters.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? filters
+        let encoded = DockerImageOps.queryValue(filters)
         guard let response = await runtime.proxyRequest(
             method: "GET", path: "/containers/json?all=1&filters=\(encoded)", headers: [], body: Data()),
             response.isSuccess else { return [] }
@@ -192,8 +195,9 @@ struct MachineService: Sendable {
     private func createContainer(name: String, distro: MachineDistro, arch: MachineArch, imageTag: String, keepaliveOnly: Bool, recipe: DevRecipe? = nil, settings: MachineSettings = .default) async throws {
         let body = Self.createBody(name: name, distro: distro, arch: arch, imageTag: imageTag, keepaliveOnly: keepaliveOnly, recipe: recipe, settings: settings)
         let data = try JSONSerialization.data(withJSONObject: body)
-        let encodedPlatform = arch.platform.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? arch.platform
-        let path = "/containers/create?name=\(Self.containerName(for: name))&platform=\(encodedPlatform)"
+        let encodedName = DockerImageOps.queryValue(Self.containerName(for: name))
+        let encodedPlatform = DockerImageOps.queryValue(arch.platform)
+        let path = "/containers/create?name=\(encodedName)&platform=\(encodedPlatform)"
         guard let response = await runtime.proxyRequest(
             method: "POST", path: path,
             headers: [(name: "Content-Type", value: "application/json")], body: data) else {
@@ -207,10 +211,21 @@ struct MachineService: Sendable {
     private func runFromImage(name: String, imageRef: String, snapshot: MachineSnapshot, settings: MachineSettings = .default) async throws {
         let distro = MachineDistro.forFamily(MachineDistro.all.first { $0.display == snapshot.distro }?.family ?? "")
         let cmd = snapshot.boot == "systemd" ? ["/sbin/init"] : Self.keepalive
+        var effectiveSettings = Self.carryIdentity(settings,
+                                                   username: snapshot.username,
+                                                   uid: snapshot.uid,
+                                                   homePath: snapshot.homePath,
+                                                   loginShell: snapshot.loginShell)
+        if let identity = effectiveSettings.identity,
+           !effectiveSettings.mounts.contains(where: { $0.guest == identity.homePath }) {
+            var copy = effectiveSettings
+            copy.mounts.append(MountPair(host: identity.homePath, guest: identity.homePath, readOnly: false))
+            effectiveSettings = copy
+        }
         let baseHostConfig: [String: Any] = ["Privileged": true, "CgroupnsMode": "host",
                                              "Tmpfs": ["/run": "", "/run/lock": "", "/tmp": ""],
                                              "RestartPolicy": ["Name": "unless-stopped"]]
-        var hostConfig = Self.hostConfig(base: baseHostConfig, settings: settings)
+        var hostConfig = Self.hostConfig(base: baseHostConfig, settings: effectiveSettings)
         hostConfig.removeValue(forKey: "ExposedPorts")
         var labels: [String: String] = [
             Self.label: distro?.family ?? snapshot.distro.lowercased(),
@@ -219,25 +234,28 @@ struct MachineService: Sendable {
             "dory.machine.boot": snapshot.boot,
         ]
         if !snapshot.recipe.isEmpty { labels[Self.recipeLabel] = snapshot.recipe }
-        if let identity = settings.identity {
-            labels[Self.userLabel] = identity.username
-            labels[Self.shellLabel] = identity.shell
+        if let identity = effectiveSettings.identity {
+            labels.merge(Self.identityLabels(identity)) { _, new in new }
         }
-        if let sshPort = settings.ports.first(where: { $0.guest == 22 })?.host {
+        if let sshPort = effectiveSettings.ports.first(where: { $0.guest == 22 })?.host {
             labels[Self.sshPortLabel] = "\(sshPort)"
         }
         var body: [String: Any] = [
-            "Hostname": name, "Image": imageRef, "Cmd": cmd, "Env": ["container=docker"],
+            "Hostname": name,
+            "Image": imageRef,
+            "Cmd": cmd,
+            "Env": (["container=docker"] + effectiveSettings.env.map { "\($0.key)=\($0.value)" }).sorted(),
             "StopSignal": "SIGRTMIN+3",
             "Labels": labels,
             "HostConfig": hostConfig,
         ]
-        if !settings.ports.isEmpty { body["ExposedPorts"] = Self.exposedPorts(for: settings) }
+        if !effectiveSettings.ports.isEmpty { body["ExposedPorts"] = Self.exposedPorts(for: effectiveSettings) }
         let data = try JSONSerialization.data(withJSONObject: body)
         let platform = (snapshot.arch.isEmpty ? MachineArch.host.rawValue : snapshot.arch)
-        let encodedPlatform = "linux/\(platform)".addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "linux/\(platform)"
+        let encodedName = DockerImageOps.queryValue(Self.containerName(for: name))
+        let encodedPlatform = DockerImageOps.queryValue("linux/\(platform)")
         guard let response = await runtime.proxyRequest(method: "POST",
-            path: "/containers/create?name=\(Self.containerName(for: name))&platform=\(encodedPlatform)",
+            path: "/containers/create?name=\(encodedName)&platform=\(encodedPlatform)",
             headers: [(name: "Content-Type", value: "application/json")], body: data),
             response.isSuccess else {
             throw MachineError.createFailed("could not create machine from snapshot")
@@ -259,7 +277,7 @@ struct MachineService: Sendable {
         guard let machine = await list().first(where: { $0.name == name }) else {
             throw MachineError.notFound(name)
         }
-        let settings = Self.carryIdentity(settings, username: machine.username, loginShell: machine.loginShell)
+        let settings = Self.carryIdentity(settings, username: machine.username, uid: machine.uid, homePath: machine.homePath, loginShell: machine.loginShell)
         let createdISO = ISO8601DateFormatter().string(from: Date())
         let tag = "edit\(Int(Date().timeIntervalSince1970))"
         let snapshot = try await self.snapshot(machine: machine, note: "pre-edit", createdISO: createdISO, tag: tag)
@@ -290,7 +308,8 @@ struct MachineService: Sendable {
             method: "POST", path: "/containers/create",
             headers: [(name: "Content-Type", value: "application/json")], body: body),
             create.isSuccess, let id = decodeId(create.body) else { return }
-        _ = await runtime.proxyRequest(method: "POST", path: "/containers/\(id)/start", headers: [], body: Data())
+        let encodedID = DockerImageOps.pathComponent(id)
+        _ = await runtime.proxyRequest(method: "POST", path: "/containers/\(encodedID)/start", headers: [], body: Data())
         try? await Task.sleep(for: .seconds(2))
     }
 
@@ -300,32 +319,78 @@ struct MachineService: Sendable {
     }
 
     func currentSettings(name: String) async -> MachineSettings {
+        let encodedName = DockerImageOps.pathComponent(Self.containerName(for: name))
         guard let response = await runtime.proxyRequest(
-            method: "GET", path: "/containers/\(Self.containerName(for: name))/json", headers: [], body: Data()),
+            method: "GET", path: "/containers/\(encodedName)/json", headers: [], body: Data()),
             response.isSuccess else { return .default }
         struct PortBinding: Decodable { let HostPort: String? }
+        struct Mount: Decodable {
+            let type: String?
+            let source: String?
+            let destination: String?
+            let target: String?
+            let readOnly: Bool?
+            let rw: Bool?
+
+            enum CodingKeys: String, CodingKey {
+                case type = "Type", source = "Source", destination = "Destination", target = "Target"
+                case readOnly = "ReadOnly", rw = "RW"
+            }
+        }
         struct HostConfig: Decodable {
             let NanoCpus: Int64?
             let Memory: Int64?
             let Binds: [String]?
             let PortBindings: [String: [PortBinding]?]?
         }
-        struct Inspect: Decodable { let HostConfig: HostConfig? }
-        guard let host = (try? JSONDecoder().decode(Inspect.self, from: response.body))?.HostConfig else { return .default }
+        struct Config: Decodable {
+            let Env: [String]?
+            let Labels: [String: String]?
+        }
+        struct Inspect: Decodable { let HostConfig: HostConfig?; let Mounts: [Mount]?; let Config: Config? }
+        guard let inspect = try? JSONDecoder().decode(Inspect.self, from: response.body),
+              let host = inspect.HostConfig else { return .default }
         let cpus = (host.NanoCpus ?? 0) > 0 ? Int((host.NanoCpus ?? 0) / 1_000_000_000) : nil
         let memoryMB = (host.Memory ?? 0) > 0 ? Int((host.Memory ?? 0) / (1024 * 1024)) : nil
-        let mounts: [MountPair] = (host.Binds ?? []).compactMap { Self.parseBind($0) }
+        let bindMounts = (host.Binds ?? []).compactMap { Self.parseBind($0) }
+        let inspectMounts = (inspect.Mounts ?? []).compactMap { mount -> MountPair? in
+            guard (mount.type ?? "bind").lowercased() == "bind",
+                  let source = mount.source,
+                  let target = mount.destination ?? mount.target,
+                  !source.isEmpty,
+                  !target.isEmpty else { return nil }
+            return MountPair(host: source, guest: target, readOnly: mount.readOnly ?? mount.rw.map { !$0 } ?? false)
+        }
+        let mounts = Self.uniqueMounts(bindMounts + inspectMounts)
         let ports: [PortPair] = (host.PortBindings ?? [:]).compactMap { key, bindings in
             let guestStr = key.split(separator: "/").first.map(String.init) ?? key
             guard let guest = Int(guestStr), let hostStr = bindings?.first?.HostPort ?? nil, let hostPort = Int(hostStr) else { return nil }
             return PortPair(host: hostPort, guest: guest)
         }
-        return MachineSettings(cpus: cpus, memoryMB: memoryMB, mounts: mounts, ports: ports)
+        let env = (inspect.Config?.Env ?? []).reduce(into: [String: String]()) { result, entry in
+            guard let eq = entry.firstIndex(of: "=") else { return }
+            let key = String(entry[entry.startIndex..<eq])
+            guard key != "container" else { return }
+            result[key] = String(entry[entry.index(after: eq)...])
+        }
+        let identity: MacIdentity? = {
+            guard let labels = inspect.Config?.Labels,
+                  let username = labels[Self.userLabel],
+                  username != "root" else { return nil }
+            let shell = labels[Self.shellLabel] ?? "/bin/sh"
+            return MacIdentity(username: username,
+                               uid: labels[Self.uidLabel].flatMap { Int($0) } ?? Self.fallbackUID(for: username),
+                               homePath: labels[Self.homeLabel] ?? Self.fallbackHome(for: username),
+                               shell: shell,
+                               publicKeys: [])
+        }()
+        return MachineSettings(cpus: cpus, memoryMB: memoryMB, mounts: mounts, ports: ports, identity: identity, env: env)
     }
 
     private func isRunning(name: String) async -> Bool {
+        let encodedName = DockerImageOps.pathComponent(Self.containerName(for: name))
         guard let response = await runtime.proxyRequest(
-            method: "GET", path: "/containers/\(Self.containerName(for: name))/json", headers: [], body: Data()),
+            method: "GET", path: "/containers/\(encodedName)/json", headers: [], body: Data()),
             response.isSuccess else { return false }
         struct State: Decodable { let Running: Bool? }
         struct Inspect: Decodable { let State: State? }
@@ -372,19 +437,45 @@ struct MachineService: Sendable {
 }
 
 extension MachineService {
-    static func carryIdentity(_ settings: MachineSettings, username: String, loginShell: String) -> MachineSettings {
+    static func identityLabels(_ identity: MacIdentity) -> [String: String] {
+        [
+            userLabel: identity.username,
+            uidLabel: "\(identity.uid)",
+            homeLabel: identity.homePath,
+            shellLabel: identity.shell,
+        ]
+    }
+
+    static func fallbackUID(for username: String) -> Int {
+        username == NSUserName() ? Int(getuid()) : 501
+    }
+
+    static func fallbackHome(for username: String) -> String {
+        username == NSUserName() ? NSHomeDirectory() : "/Users/\(username)"
+    }
+
+    static func carryIdentity(_ settings: MachineSettings, username: String, uid: Int? = nil, homePath: String? = nil, loginShell: String) -> MachineSettings {
         guard username != "root", settings.identity == nil else { return settings }
         var copy = settings
-        copy.identity = MacIdentity(username: username, uid: 501, homePath: "/Users/\(username)", shell: loginShell, publicKeys: [])
+        copy.identity = MacIdentity(username: username,
+                                    uid: uid ?? fallbackUID(for: username),
+                                    homePath: homePath ?? fallbackHome(for: username),
+                                    shell: loginShell,
+                                    publicKeys: [])
         return copy
     }
 
-    static func bindString(_ m: MountPair) -> String { m.readOnly ? "\(m.host):\(m.guest):ro" : "\(m.host):\(m.guest)" }
+    nonisolated static func bindString(_ m: MountPair) -> String { m.readOnly ? "\(m.host):\(m.guest):ro" : "\(m.host):\(m.guest)" }
 
-    static func parseBind(_ s: String) -> MountPair? {
+    nonisolated static func parseBind(_ s: String) -> MountPair? {
         let parts = s.split(separator: ":", maxSplits: 2).map(String.init)
         guard parts.count >= 2 else { return nil }
         return MountPair(host: parts[0], guest: parts[1], readOnly: parts.count == 3 && parts[2] == "ro")
+    }
+
+    nonisolated static func uniqueMounts(_ mounts: [MountPair]) -> [MountPair] {
+        var seen = Set<MountPair>()
+        return mounts.filter { seen.insert($0).inserted }
     }
 
     static func hostConfig(base: [String: Any], settings: MachineSettings) -> [String: Any] {

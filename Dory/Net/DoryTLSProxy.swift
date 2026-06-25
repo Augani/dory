@@ -8,7 +8,7 @@ import Darwin
 /// Terminates TLS for Dory's automatic local HTTPS using a `LocalCA`-issued identity, then routes by
 /// `Host:` header to the container's loopback backend — so `https://myapp.dory.local` works with no
 /// manual certs, mirroring OrbStack. Production binds :443 (a consent-gated privileged bind).
-final class DoryTLSProxy: @unchecked Sendable {
+nonisolated final class DoryTLSProxy: @unchecked Sendable {
     private let identity: SecIdentity
     private let resolve: DoryReverseProxy.BackendResolver
     private let queue = DispatchQueue(label: "com.pythonxi.Dory.tls", attributes: .concurrent)
