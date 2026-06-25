@@ -24,6 +24,7 @@ struct DockerShim: Sendable {
     let runtime: any ContainerRuntime
     var apiVersion: String = "1.47"
     let execStore = ExecStore()
+    var registrySearch: any RegistryImageSearch = HubImageSearch()
 
     static var defaultSocketPath: String { "\(NSHomeDirectory())/.dory/dory.sock" }
 
@@ -1185,7 +1186,7 @@ struct DockerShim: Sendable {
         let limit = request.query["limit"].flatMap(Int.init)
         let snapshot = (try? await runtime.snapshot()) ?? RuntimeSnapshot()
         var seen = Set<String>()
-        let matches = snapshot.images
+        var matches = snapshot.images
             .filter { image in
                 let reference = Self.imageReference(image).lowercased()
                 return image.repository.lowercased().contains(term)
@@ -1202,9 +1203,15 @@ struct DockerShim: Sendable {
                     star_count: 0
                 )
             }
-            .filter { Self.matchesImageSearchFilters($0, filters: filters) }
             .sorted { $0.name < $1.name }
-        let limited = limit.map { Array(matches.prefix(max(0, $0))) } ?? matches
+        if runtime.kind != .mock {
+            let hits = (try? await registrySearch.search(term: rawTerm, limit: limit)) ?? []
+            for hit in hits where seen.insert(hit.name).inserted {
+                matches.append(hit)
+            }
+        }
+        let filtered = matches.filter { Self.matchesImageSearchFilters($0, filters: filters) }
+        let limited = limit.map { Array(filtered.prefix(max(0, $0))) } ?? filtered
         return encode(limited)
     }
 

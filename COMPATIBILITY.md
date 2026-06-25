@@ -25,7 +25,7 @@ they have no Docker socket to forward to.
 | Container inspect | ✅ | `GET /containers/{id}/json`; includes common create-time `Config`/`HostConfig` fields, port bindings, mounts, and `NetworkSettings.Networks`; `size=1` adds `SizeRw`/`SizeRootFs` for `docker inspect --size` |
 | Exec (create + start + inspect) | ✅ | Used by the Compose health prober |
 | Image pull | ✅ | `POST /images/create` |
-| Image search (`docker search`) | 🟡 | `GET /images/search`; Docker/shared-VM backends search through dockerd, translated backends return Docker-shaped matches from local runtime images |
+| Image search (`docker search`) | ✅ | `GET /images/search`; Docker/shared-VM backends search through dockerd. Translated backends query Docker Hub (`index.docker.io/v1/search`) and merge the results with the user's matching local images (local entries tagged, deduped first), falling back to local-only when the registry is unreachable. `is-official`/`is-automated`/`stars` filters and `limit` apply to the merged list |
 | Registry auth (`docker login`) | ✅ | `POST /auth`; Docker/shared-VM backends validate through dockerd, translated backends persist Docker auth config for subsequent pulls |
 | Image tag (`docker tag`) | ✅ | `POST /images/{name}/tag`; Docker/shared-VM backends proxy/forward to dockerd, Apple backend maps to `container image tag` |
 | Image push (`docker push`) | ✅ | `POST /images/{name}/push`; Docker/shared-VM backends stream native dockerd progress with registry auth, Apple backend maps to `container image push` |
