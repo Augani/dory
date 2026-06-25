@@ -258,7 +258,7 @@ enum ComposeParser {
             let interpolated = ComposeInterpolation.interpolate(parsed, variables: variables)
             return merge(partial, interpolated, path: [])
         }
-        guard let root = merged.mappingValue else {
+        guard let root = stripTags(merged).mappingValue else {
             throw YAMLError.malformed("compose root is not a mapping")
         }
 
@@ -295,6 +295,9 @@ enum ComposeParser {
     ]
 
     private static func merge(_ base: YAMLValue, _ override: YAMLValue, path: [String]) -> YAMLValue {
+        if case let .tagged(.override, value) = override {
+            return stripTags(value)
+        }
         if isServiceField(path, in: keyedServiceFields) {
             return mergeKeyedCollection(base, override)
         }
@@ -313,13 +316,26 @@ enum ComposeParser {
 
         var merged = baseMap
         for (key, value) in overrideMap {
+            if case .tagged(.reset, _) = value {
+                merged[key] = nil
+                continue
+            }
             if let existing = merged[key] {
                 merged[key] = merge(existing, value, path: path + [key])
             } else {
-                merged[key] = value
+                merged[key] = stripTags(value)
             }
         }
         return .mapping(merged)
+    }
+
+    private static func stripTags(_ value: YAMLValue) -> YAMLValue {
+        switch value {
+        case let .tagged(_, inner): return stripTags(inner)
+        case let .mapping(map): return .mapping(map.mapValues(stripTags))
+        case let .sequence(items): return .sequence(items.map(stripTags))
+        default: return value
+        }
     }
 
     private static func isServiceField(_ path: [String], in fields: Set<String>) -> Bool {

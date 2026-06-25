@@ -108,11 +108,24 @@ struct YAMLParser {
 
     static func scalarOrFlow(_ raw: String) throws -> YAMLValue {
         let trimmed = raw.trimmingCharacters(in: .whitespaces)
+        if let (tag, remainder) = mergeTag(trimmed) {
+            return .tagged(tag, try scalarOrFlow(remainder))
+        }
         if trimmed.hasPrefix("[") || trimmed.hasPrefix("{") {
             var scanner = FlowScanner(trimmed)
             return try scanner.parseValue()
         }
         return scalar(trimmed)
+    }
+
+    private static func mergeTag(_ trimmed: String) -> (MergeTag, String)? {
+        for (token, tag) in [("!override", MergeTag.override), ("!reset", MergeTag.reset)] {
+            if trimmed == token { return (tag, "") }
+            if trimmed.hasPrefix(token + " ") {
+                return (tag, String(trimmed.dropFirst(token.count)).trimmingCharacters(in: .whitespaces))
+            }
+        }
+        return nil
     }
 
     static func scalar(_ raw: String) -> YAMLValue {

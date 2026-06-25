@@ -55,7 +55,7 @@ they have no Docker socket to forward to.
 | GUI Compose view | ✅ | Projects grouped by service with per-project + per-service start/stop |
 | Named/anonymous volumes | 🟡 | Anonymous-volume tracker built; full volume wiring iterative |
 | Profiles | ✅ | Unprofiled services start by default; `COMPOSE_PROFILES` and `*` activate profiled services. Targeted service activation is not exposed in the GUI |
-| Multiple files / overrides | 🟡 | Default override files plus `COMPOSE_FILE` ordered merge for common fields; advanced merge tags not yet |
+| Multiple files / overrides | 🟡 | Default override files plus `COMPOSE_FILE` ordered merge for common fields, including inline `!reset` (drop a key) and `!override` (replace instead of merge) tags; block-form tags (tag on the `key:` line with the value indented below) not yet |
 | `network_mode: service:` / shared pid/ipc | ⛔ | Co-schedule into one machine — by design, against Apple `container` |
 
 ## Engine backends

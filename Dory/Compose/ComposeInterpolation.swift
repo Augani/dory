@@ -40,6 +40,7 @@ enum ComposeInterpolation {
         case let .string(string): return .string(interpolate(string, variables: variables))
         case let .mapping(map): return .mapping(map.mapValues { interpolate($0, variables: variables) })
         case let .sequence(items): return .sequence(items.map { interpolate($0, variables: variables) })
+        case let .tagged(tag, inner): return .tagged(tag, interpolate(inner, variables: variables))
         default: return value
         }
     }
