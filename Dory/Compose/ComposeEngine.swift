@@ -27,11 +27,15 @@ final class ComposeEngine {
     func networkName(_ project: ComposeProject) -> String { networkName(project, "default") }
     func networkName(_ project: ComposeProject, _ network: String) -> String { "\(project.name)_\(network)" }
     func containerName(_ project: ComposeProject, _ service: String) -> String { "\(project.name)-\(service)-1" }
+    func volumeName(_ project: ComposeProject, _ volume: String) -> String { "\(project.name)_\(volume)" }
 
     @discardableResult
     func up(_ project: ComposeProject, pullImages: Bool = false, progress: (@MainActor (ComposeProgress) -> Void)? = nil) async throws -> [String: String] {
         for network in projectNetworkKeys(project) {
             try await ensureProjectNetwork(name: networkName(project, network), labels: networkLabels(project, network: network))
+        }
+        for volume in project.volumes {
+            try await ensureProjectVolume(name: volumeName(project, volume), labels: volumeLabels(project, volume: volume))
         }
 
         var idByService: [String: String] = [:]
@@ -62,11 +66,19 @@ final class ComposeEngine {
         do {
             try await runtime.createNetwork(name: name, labels: labels)
         } catch {
-            guard Self.isNetworkAlreadyExists(error) else { throw error }
+            guard Self.isAlreadyExists(error) else { throw error }
         }
     }
 
-    private static func isNetworkAlreadyExists(_ error: Error) -> Bool {
+    private func ensureProjectVolume(name: String, labels: [String: String]) async throws {
+        do {
+            try await runtime.createVolume(name: name, driver: nil, labels: labels, driverOptions: [:])
+        } catch {
+            guard Self.isAlreadyExists(error) else { throw error }
+        }
+    }
+
+    private static func isAlreadyExists(_ error: Error) -> Bool {
         if case ShellError.nonZeroExit(_, let output) = error {
             return output.localizedCaseInsensitiveContains("already exists")
         }
@@ -77,7 +89,7 @@ final class ComposeEngine {
         return String(describing: error).localizedCaseInsensitiveContains("already exists")
     }
 
-    func down(_ project: ComposeProject) async throws {
+    func down(_ project: ComposeProject, removeVolumes: Bool = false) async throws {
         let snapshot = try await runtime.snapshot()
         let prefix = "\(project.name)-"
         let projectContainers = snapshot.containers.filter { $0.name.hasPrefix(prefix) }
@@ -89,6 +101,11 @@ final class ComposeEngine {
         }
         for network in projectNetworkKeys(project).reversed() {
             try? await runtime.removeNetwork(name: networkName(project, network))
+        }
+        if removeVolumes {
+            for volume in project.volumes {
+                try? await runtime.removeVolume(name: volumeName(project, volume))
+            }
         }
     }
 
@@ -113,7 +130,7 @@ final class ComposeEngine {
             "com.docker.compose.container-number": "1",
         ], uniquingKeysWith: { _, new in new })
         spec.networks = serviceNetworkKeys(service).map { networkName(project, $0) }
-        spec.volumes = service.volumes
+        spec.volumes = service.volumes.map { rewriteVolumeReference($0, in: project) }
         spec.restart = service.restart
         spec.memoryLimitBytes = service.memoryLimitBytes
         spec.hostname = service.hostname
@@ -163,6 +180,16 @@ final class ComposeEngine {
 
     private func networkLabels(_ project: ComposeProject, network: String) -> [String: String] {
         projectLabels(project).merging(["com.docker.compose.network": network], uniquingKeysWith: { _, new in new })
+    }
+    private func volumeLabels(_ project: ComposeProject, volume: String) -> [String: String] {
+        projectLabels(project).merging(["com.docker.compose.volume": volume], uniquingKeysWith: { _, new in new })
+    }
+
+    private func rewriteVolumeReference(_ reference: String, in project: ComposeProject) -> String {
+        guard let separator = reference.firstIndex(of: ":") else { return reference }
+        let source = String(reference[..<separator])
+        guard project.volumes.contains(source) else { return reference }
+        return volumeName(project, source) + reference[separator...]
     }
 
     private func projectNetworkKeys(_ project: ComposeProject) -> [String] {

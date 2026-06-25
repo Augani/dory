@@ -33,6 +33,7 @@ final class RecordingRuntime: ContainerRuntime {
     var volumesCreated: [String] = []
     var volumeCreateRequests: [(name: String, driver: String?, labels: [String: String], driverOptions: [String: String])] = []
     var volumesRemoved: [String] = []
+    var preexistingVolumes: Set<String> = []
     var imagesRemoved: [String] = []
     var volumes: [Volume] = []
     var images: [DockerImage] = [
@@ -266,6 +267,9 @@ final class RecordingRuntime: ContainerRuntime {
         labels: [String: String],
         driverOptions: [String: String]
     ) async throws {
+        if preexistingVolumes.contains(name) {
+            throw ShellError.nonZeroExit(1, "Error: volume \(name) already exists")
+        }
         volumesCreated.append(name)
         volumeCreateRequests.append((name, driver, labels, driverOptions))
         if !volumes.contains(where: { $0.name == name }) {

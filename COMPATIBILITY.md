@@ -53,7 +53,7 @@ they have no Docker socket to forward to.
 | Healthchecks | ✅ | Exec-based probing + Docker-faithful state machine |
 | `up` / `down` | ✅ | Native engine; AND the real `docker compose up/down` CLI drives Dory's socket (verified) |
 | GUI Compose view | ✅ | Projects grouped by service with per-project + per-service start/stop |
-| Named/anonymous volumes | 🟡 | Anonymous-volume tracker built; full volume wiring iterative |
+| Named/anonymous volumes | 🟡 | Declared top-level volumes are created as `<project>_<vol>` with compose labels on `up`, service references to them are project-prefixed, and `down(removeVolumes:)` removes them (`compose down -v`); anonymous volumes pass through to the runtime. `external: true` volumes and long-form `type: volume` mounts not special-cased yet |
 | Profiles | ✅ | Unprofiled services start by default; `COMPOSE_PROFILES` and `*` activate profiled services. Targeted service activation is not exposed in the GUI |
 | Multiple files / overrides | 🟡 | Default override files plus `COMPOSE_FILE` ordered merge for common fields, including inline `!reset` (drop a key) and `!override` (replace instead of merge) tags; block-form tags (tag on the `key:` line with the value indented below) not yet |
 | `network_mode: service:` / shared pid/ipc | ⛔ | Co-schedule into one machine — by design, against Apple `container` |
