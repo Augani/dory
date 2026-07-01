@@ -1,8 +1,38 @@
 #!/bin/bash
-# Test Dory with the toolchain from `xcode-select` (stable Xcode 26.5).
-# Override the toolchain with DEVELOPER_DIR=/path/to/Xcode.app/Contents/Developer.
+# Test Dory with a full Xcode toolchain. Building/testing from the CLI never re-bumps the
+# project's objectVersion 77 (only the Xcode GUI does). Override explicitly with
+# DEVELOPER_DIR=/path/to/Xcode.app/Contents/Developer.
 set -euo pipefail
 cd "$(dirname "$0")/.."
+
+find_xcode() {
+  local dev app found
+  for app in /Applications/Xcode.app /Applications/Xcode-*.app \
+             "$HOME"/Applications/Xcode*.app "$HOME"/Downloads/Xcode*.app; do
+    dev="$app/Contents/Developer"
+    [ -x "$dev/usr/bin/xcodebuild" ] && { printf '%s' "$dev"; return 0; }
+  done
+  found="$(mdfind "kMDItemCFBundleIdentifier == 'com.apple.dt.Xcode'" 2>/dev/null | head -1)"
+  [ -n "$found" ] && [ -x "$found/Contents/Developer/usr/bin/xcodebuild" ] \
+    && { printf '%s' "$found/Contents/Developer"; return 0; }
+  return 1
+}
+
+if [ -z "${DEVELOPER_DIR:-}" ]; then
+  active="$(xcode-select -p 2>/dev/null || true)"
+  need_fallback=0
+  case "$active" in ""|*CommandLineTools*) need_fallback=1 ;; esac
+  [ -x "$active/usr/bin/xcodebuild" ] || need_fallback=1
+  if [ "$need_fallback" -eq 1 ]; then
+    if DEVELOPER_DIR="$(find_xcode)"; then
+      export DEVELOPER_DIR
+      echo "note: active xcode-select ('${active:-unset}') has no xcodebuild; using DEVELOPER_DIR=$DEVELOPER_DIR" >&2
+    else
+      echo "error: no full Xcode found. Install Xcode.app or set DEVELOPER_DIR=/path/to/Xcode.app/Contents/Developer" >&2
+      exit 1
+    fi
+  fi
+fi
 
 xcode_args=(-project Dory.xcodeproj -scheme Dory -destination 'platform=macOS')
 
