@@ -194,7 +194,7 @@ struct SettingsView: View {
             groupLabel("STARTUP")
             VStack(spacing: 0) {
                 toggleRow("Launch Dory at login", "Start the engine automatically when you log in.", isOn: Binding(get: { store.launchAtLogin }, set: { store.setLaunchAtLogin($0) }), divider: true)
-                toggleRow("Show menu bar icon", "Quick access to containers from the menu bar.", isOn: Binding(get: { store.showMenuBarIcon }, set: { store.setShowMenuBarIcon($0) }), divider: true)
+                toggleRow("Show menu bar icon", store.isAgentMode ? "Always on — Dory runs in the menu bar in background mode." : "Quick access to containers from the menu bar.", isOn: Binding(get: { store.showMenuBarIcon }, set: { store.setShowMenuBarIcon($0) }), divider: true, disabled: store.isAgentMode)
                 toggleRow("Route the docker command to Dory", "While Dory is running, make a plain `docker` / `docker compose` use Dory's engine (sets the active docker context).", isOn: Binding(get: { store.routeDockerCLI }, set: { store.setRouteDockerCLI($0) }), divider: false)
             }
             .background(p.bgElevated, in: RoundedRectangle(cornerRadius: 11))
@@ -270,7 +270,7 @@ struct SettingsView: View {
         host.hasPrefix("unix://") ? String(host.dropFirst("unix://".count)) : host
     }
 
-    private func toggleRow(_ title: String, _ subtitle: String, isOn: Binding<Bool>, divider: Bool) -> some View {
+    private func toggleRow(_ title: String, _ subtitle: String, isOn: Binding<Bool>, divider: Bool, disabled: Bool = false) -> some View {
         HStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 1) {
                 Text(title).font(.system(size: 13, weight: .semibold)).foregroundStyle(p.text)
@@ -280,6 +280,8 @@ struct SettingsView: View {
             DoryToggle(isOn: isOn)
         }
         .padding(.horizontal, 15).padding(.vertical, 13)
+        .opacity(disabled ? 0.55 : 1)
+        .allowsHitTesting(!disabled)
         .overlay(alignment: .bottom) { if divider { Rectangle().fill(p.border).frame(height: 1) } }
     }
 
