@@ -35,6 +35,9 @@ if [ -z "${DEVELOPER_DIR:-}" ]; then
 fi
 
 xcode_args=(-project Dory.xcodeproj -scheme Dory -destination 'platform=macOS')
+if [ -n "${CI:-}" ]; then
+  xcode_args+=(CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO)
+fi
 
 xcodebuild "${xcode_args[@]}" build-for-testing
 
