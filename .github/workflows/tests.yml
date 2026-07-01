@@ -1,0 +1,14 @@
+name: Tests
+on:
+  push:
+    branches: ['feat/**', 'fix/**']
+  workflow_dispatch:
+
+jobs:
+  unit:
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Unit tests (DoryTests)
+        run: bash scripts/test.sh -only-testing:DoryTests
