@@ -38,6 +38,10 @@ xcode_args=(-project Dory.xcodeproj -scheme Dory -destination 'platform=macOS')
 
 xcodebuild "${xcode_args[@]}" build-for-testing
 
+# Xcode 27 intermittently re-serializes the project to objectVersion 110 (breaks stable Xcode + CI);
+# pin it back to 77 before the test phase. Only rewrites that one line.
+sed -i '' 's/objectVersion = 110;/objectVersion = 77;/' Dory.xcodeproj/project.pbxproj 2>/dev/null || true
+
 # macOS 27 stamps DerivedData products with provenance metadata that syspolicyd rejects
 # once XCTest injects its test-host libraries. Clearing it from the transient build products
 # keeps the hosted unit-test host (Dory.app) and the UI-test runner (DoryUITests-Runner.app)

@@ -45,6 +45,10 @@ xcodebuild -project Dory.xcodeproj -scheme Dory -destination 'platform=macOS' \
   -configuration Debug build CODE_SIGNING_ALLOWED=NO "$@" > "$LOG" 2>&1
 status=$?
 
+# Xcode 27 intermittently re-serializes the project to objectVersion 110 (breaks stable Xcode + CI);
+# pin it back to 77. Only rewrites that one line, so intended pbxproj edits are preserved.
+sed -i '' 's/objectVersion = 110;/objectVersion = 77;/' Dory.xcodeproj/project.pbxproj 2>/dev/null || true
+
 # macOS 27 can stamp DerivedData app products with provenance metadata that leaves the debug
 # bundle launchable-looking but stuck before main/dyld. Clear it from this target's debug product.
 for app in "$HOME"/Library/Developer/Xcode/DerivedData/Dory-*/Build/Products/Debug/Dory.app; do
