@@ -1,24 +1,19 @@
-import Foundation
-import Sparkle
+import AppKit
 
-/// Thin wrapper around Sparkle's standard updater so the rest of the app can trigger update checks
-/// and reflect the "check automatically" preference without touching Sparkle directly.
 @MainActor
 final class DoryUpdater {
     static let shared = DoryUpdater()
 
-    private let controller: SPUStandardUpdaterController
-
-    private init() {
-        controller = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil)
-    }
+    private init() {}
 
     func checkForUpdates() {
-        controller.checkForUpdates(nil)
+        if let url = URL(string: "https://github.com/Augani/dory/releases") {
+            NSWorkspace.shared.open(url)
+        }
     }
 
     var automaticallyChecks: Bool {
-        get { controller.updater.automaticallyChecksForUpdates }
-        set { controller.updater.automaticallyChecksForUpdates = newValue }
+        get { false }
+        set { _ = newValue }
     }
 }

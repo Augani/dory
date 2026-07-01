@@ -281,7 +281,11 @@ final class AppStore {
                 loadState = .engineOff
                 break
             }
-            if let shared = await SharedVMProvisioner.runtime() { runtime = shared; await reload() }
+            if let shared = await SharedVMProvisioner.runtime() {
+                runtime = shared
+                sharedVMStatus = "Running on Dory's shared VM"
+                await reload()
+            }
             else {
                 sharedVMStatus = "Shared VM unavailable (could not start Apple's container engine)"
                 loadState = .engineOff
@@ -312,9 +316,8 @@ final class AppStore {
             }
         }
         guard isMock || !(loadState == .engineOff && runtimeKind == .mock) else { return }
-        await loadKubernetes()
-        loadMachines()
-        offerLegacyMachineCleanup()
+        // Bring up the Docker-compatible socket before ancillary inventory work. Kubernetes and
+        // machine discovery can involve external CLIs; they should never delay `docker` readiness.
         startShim()
         startPortForwarding()
         if routeDockerCLI && runtimeKind != .mock {
@@ -322,6 +325,12 @@ final class AppStore {
             await detectDockerHostConflict()
         }
         startAutoRefresh()
+        Task { [weak self] in
+            guard let self else { return }
+            await self.loadKubernetes()
+            self.loadMachines()
+            self.offerLegacyMachineCleanup()
+        }
     }
 
     var sharedVMStatus = ""
@@ -781,6 +790,7 @@ final class AppStore {
             shimRunning = true
         } catch {
             shimRunning = false
+            actionError = "Could not start Dory's Docker socket: \(error.localizedDescription)"
         }
     }
 

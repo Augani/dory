@@ -1,6 +1,6 @@
 import Foundation
 
-protocol RegistryImageSearch: Sendable {
+nonisolated protocol RegistryImageSearch: Sendable {
     func search(term: String, limit: Int?) async throws -> [DockerImageSearchOut]
 }
 

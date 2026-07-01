@@ -5,7 +5,7 @@ struct DoryCommands: Commands {
 
     var body: some Commands {
         CommandGroup(after: .appInfo) {
-            Button("Check for Updates…") { DoryUpdater.shared.checkForUpdates() }
+            Button("Releases") { DoryUpdater.shared.checkForUpdates() }
         }
         CommandGroup(replacing: .newItem) {
             Button("New Container") {

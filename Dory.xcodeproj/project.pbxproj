@@ -7,7 +7,6 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		AA00000000000000000000A3 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = AA00000000000000000000A2 /* Sparkle */; };
 		AA00000000000000000000B3 /* SwiftTerm in Frameworks */ = {isa = PBXBuildFile; productRef = AA00000000000000000000B2 /* SwiftTerm */; };
 /* End PBXBuildFile section */
 
@@ -56,7 +55,6 @@
 		3E705CEC2FE37C790094B33C /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			files = (
-				AA00000000000000000000A3 /* Sparkle in Frameworks */,
 				AA00000000000000000000B3 /* SwiftTerm in Frameworks */,
 			);
 		};
@@ -111,7 +109,6 @@
 			);
 			name = Dory;
 			packageProductDependencies = (
-				AA00000000000000000000A2 /* Sparkle */,
 				AA00000000000000000000B2 /* SwiftTerm */,
 			);
 			productName = Dory;
@@ -193,7 +190,6 @@
 			mainGroup = 3E705CE62FE37C790094B33C;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
-				AA00000000000000000000A1 /* XCRemoteSwiftPackageReference "Sparkle" */,
 				AA00000000000000000000B1 /* XCRemoteSwiftPackageReference "SwiftTerm" */,
 			);
 			preferredProjectObjectVersion = 77;
@@ -389,6 +385,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = 864H636QW4;
 				ENABLE_APP_SANDBOX = NO;
+				ENABLE_DEBUG_DYLIB = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
@@ -566,14 +563,6 @@
 /* End XCConfigurationList section */
 
 /* Begin XCRemoteSwiftPackageReference section */
-		AA00000000000000000000A1 /* XCRemoteSwiftPackageReference "Sparkle" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/sparkle-project/Sparkle";
-			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 2.0.0;
-			};
-		};
 		AA00000000000000000000B1 /* XCRemoteSwiftPackageReference "SwiftTerm" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/migueldeicaza/SwiftTerm";
@@ -585,11 +574,6 @@
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
-		AA00000000000000000000A2 /* Sparkle */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = AA00000000000000000000A1 /* XCRemoteSwiftPackageReference "Sparkle" */;
-			productName = Sparkle;
-		};
 		AA00000000000000000000B2 /* SwiftTerm */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = AA00000000000000000000B1 /* XCRemoteSwiftPackageReference "SwiftTerm" */;
