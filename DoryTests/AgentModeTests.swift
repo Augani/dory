@@ -35,4 +35,8 @@ struct AgentModeTests {
     @Test func openDoryTargetsMainWindow() {
         #expect(DoryCommands.openDoryWindowID == DoryApp.mainWindowID)
     }
+
+    @Test func delegateSkipsActivationPolicyUnderTests() {
+        #expect(DoryAppDelegate.isTestHost == true)
+    }
 }
