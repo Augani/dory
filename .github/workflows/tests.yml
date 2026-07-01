@@ -10,5 +10,19 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
-      - name: Unit tests (DoryTests)
-        run: bash scripts/test.sh -only-testing:DoryTests
+      - name: Unit tests (DoryTests, timing-sensitive tests quarantined)
+        run: >
+          bash scripts/test.sh -only-testing:DoryTests
+          -skip-testing:DoryTests/ReviewFixTests/shimWaitBlocksUntilContainerStops
+          -skip-testing:DoryTests/LocalCATests/generatesCAAndIssuesVerifiableDomainCertificate
+          -skip-testing:DoryTests/DockerEngineSocketDiscoveryTests/detectSkipsHungSocketAndFindsNextCandidate
+          -skip-testing:DoryTests/DockerEngineSocketDiscoveryTests/detectProbesMultipleStaleSocketsConcurrently
+          -skip-testing:DoryTests/DockerEngineRuntimePerformanceTests/snapshotDoesNotWaitForHungStatsProbe
+      - name: Timing-sensitive tests (low-load lane)
+        run: >
+          bash scripts/test.sh
+          -only-testing:DoryTests/ReviewFixTests/shimWaitBlocksUntilContainerStops
+          -only-testing:DoryTests/LocalCATests/generatesCAAndIssuesVerifiableDomainCertificate
+          -only-testing:DoryTests/DockerEngineSocketDiscoveryTests/detectSkipsHungSocketAndFindsNextCandidate
+          -only-testing:DoryTests/DockerEngineSocketDiscoveryTests/detectProbesMultipleStaleSocketsConcurrently
+          -only-testing:DoryTests/DockerEngineRuntimePerformanceTests/snapshotDoesNotWaitForHungStatsProbe
