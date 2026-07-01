@@ -27,4 +27,8 @@ struct AgentModeTests {
         let delegate = DoryAppDelegate()
         #expect(delegate.applicationShouldTerminateAfterLastWindowClosed(NSApplication.shared) == false)
     }
+
+    @Test func mainWindowIDIsStable() {
+        #expect(DoryApp.mainWindowID == "dory-main")
+    }
 }

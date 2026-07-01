@@ -2,6 +2,9 @@ import SwiftUI
 
 @main
 struct DoryApp: App {
+    static let mainWindowID = "dory-main"
+
+    @NSApplicationDelegateAdaptor(DoryAppDelegate.self) private var appDelegate
     @State private var store = AppStore()
 
     init() {
@@ -11,9 +14,10 @@ struct DoryApp: App {
     }
 
     var body: some Scene {
-        WindowGroup {
+        WindowGroup(id: Self.mainWindowID) {
             RootView()
                 .environment(store)
+                .modifier(LaunchWindowGate(store: store))
         }
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 1180, height: 766)
@@ -43,5 +47,18 @@ struct DoryApp: App {
             Image(systemName: "fish")
         }
         .menuBarExtraStyle(.window)
+    }
+}
+
+private struct LaunchWindowGate: ViewModifier {
+    let store: AppStore
+    @Environment(\.dismissWindow) private var dismissWindow
+
+    func body(content: Content) -> some View {
+        content.task {
+            if !store.shouldOpenWindowOnLaunch {
+                dismissWindow(id: DoryApp.mainWindowID)
+            }
+        }
     }
 }
