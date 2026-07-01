@@ -15,6 +15,8 @@ jobs:
           newest="$(ls -d /Applications/Xcode*.app | sort -V | tail -1)"
           echo "selected: $newest"
           echo "DEVELOPER_DIR=$newest/Contents/Developer" >> "$GITHUB_ENV"
+      - name: Download Metal toolchain (Xcode 26 ships without it)
+        run: xcodebuild -downloadComponent MetalToolchain || true
       - name: Unit tests (DoryTests, timing-sensitive tests quarantined)
         run: >
           bash scripts/test.sh -skip-testing:DoryUITests
