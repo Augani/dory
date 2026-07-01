@@ -1,6 +1,9 @@
 import SwiftUI
 
 struct DoryCommands: Commands {
+    static let openDoryWindowID = DoryApp.mainWindowID
+
+    @Environment(\.openWindow) private var openWindow
     let store: AppStore
 
     var body: some Commands {
@@ -25,6 +28,9 @@ struct DoryCommands: Commands {
             Button("Settings") { store.section = .settings }.keyboardShortcut(",", modifiers: .command)
             Button("Filter") { if store.section != .settings { store.filterFocusToken += 1 } }
                 .keyboardShortcut("f", modifiers: .command)
+            Divider()
+            Button("Open Dory") { openWindow(id: Self.openDoryWindowID) }
+                .keyboardShortcut("0", modifiers: .command)
             Divider()
         }
         CommandMenu("Containers") {

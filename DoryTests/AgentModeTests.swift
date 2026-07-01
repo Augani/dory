@@ -31,4 +31,8 @@ struct AgentModeTests {
     @Test func mainWindowIDIsStable() {
         #expect(DoryApp.mainWindowID == "dory-main")
     }
+
+    @Test func openDoryTargetsMainWindow() {
+        #expect(DoryCommands.openDoryWindowID == DoryApp.mainWindowID)
+    }
 }
