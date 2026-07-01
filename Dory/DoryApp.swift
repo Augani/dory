@@ -56,9 +56,8 @@ private struct LaunchWindowGate: ViewModifier {
 
     func body(content: Content) -> some View {
         content.task {
-            if !store.shouldOpenWindowOnLaunch {
-                dismissWindow(id: DoryApp.mainWindowID)
-            }
+            guard !DoryAppDelegate.isTestHost, !store.shouldOpenWindowOnLaunch else { return }
+            dismissWindow(id: DoryApp.mainWindowID)
         }
     }
 }

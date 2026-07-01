@@ -39,4 +39,11 @@ struct AgentModeTests {
     @Test func delegateSkipsActivationPolicyUnderTests() {
         #expect(DoryAppDelegate.isTestHost == true)
     }
+
+    @Test func windowGateInertUnderTests() {
+        #expect(DoryAppDelegate.isTestHost == true)
+        let store = AppStore()
+        store.onboarding = false
+        #expect(store.shouldOpenWindowOnLaunch == false)
+    }
 }
