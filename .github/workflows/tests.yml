@@ -17,19 +17,5 @@ jobs:
           echo "DEVELOPER_DIR=$newest/Contents/Developer" >> "$GITHUB_ENV"
       - name: Download Metal toolchain (Xcode 26 ships without it)
         run: xcodebuild -downloadComponent MetalToolchain || true
-      - name: Unit tests (DoryTests, timing-sensitive tests quarantined)
-        run: >
-          bash scripts/test.sh -skip-testing:DoryUITests
-          -skip-testing:DoryTests/ReviewFixTests/shimWaitBlocksUntilContainerStops
-          -skip-testing:DoryTests/LocalCATests/generatesCAAndIssuesVerifiableDomainCertificate
-          -skip-testing:DoryTests/DockerEngineSocketDiscoveryTests/detectSkipsHungSocketAndFindsNextCandidate
-          -skip-testing:DoryTests/DockerEngineSocketDiscoveryTests/detectProbesMultipleStaleSocketsConcurrently
-          -skip-testing:DoryTests/DockerEngineRuntimePerformanceTests/snapshotDoesNotWaitForHungStatsProbe
-      - name: Timing-sensitive tests (low-load lane)
-        run: >
-          bash scripts/test.sh
-          -only-testing:DoryTests/ReviewFixTests/shimWaitBlocksUntilContainerStops
-          -only-testing:DoryTests/LocalCATests/generatesCAAndIssuesVerifiableDomainCertificate
-          -only-testing:DoryTests/DockerEngineSocketDiscoveryTests/detectSkipsHungSocketAndFindsNextCandidate
-          -only-testing:DoryTests/DockerEngineSocketDiscoveryTests/detectProbesMultipleStaleSocketsConcurrently
-          -only-testing:DoryTests/DockerEngineRuntimePerformanceTests/snapshotDoesNotWaitForHungStatsProbe
+      - name: Unit tests (full suite; known timing flakes allowlisted)
+        run: bash scripts/ci-test.sh
