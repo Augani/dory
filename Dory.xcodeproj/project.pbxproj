@@ -391,6 +391,7 @@
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Config/Dory-Info.plist;
+				INFOPLIST_KEY_LSUIElement = YES;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Dory connects to its local Linux VM so your container ports are reachable at localhost.";
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -426,6 +427,7 @@
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Config/Dory-Info.plist;
+				INFOPLIST_KEY_LSUIElement = YES;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Dory connects to its local Linux VM so your container ports are reachable at localhost.";
 				LD_RUNPATH_SEARCH_PATHS = (
