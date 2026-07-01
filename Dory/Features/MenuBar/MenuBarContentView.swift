@@ -3,6 +3,12 @@ import SwiftUI
 struct MenuBarContentView: View {
     @Environment(AppStore.self) private var store
     @Environment(\.palette) private var p
+    @Environment(\.openWindow) private var openWindow
+
+    private func showMainWindow() {
+        openWindow(id: DoryApp.mainWindowID)
+        NSApp.activate(ignoringOtherApps: true)
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -63,7 +69,7 @@ struct MenuBarContentView: View {
                     .padding(.horizontal, 9).padding(.vertical, 7)
                 }
                 if overflow > 0 {
-                    Button { NSApp.activate(ignoringOtherApps: true) } label: {
+                    Button { showMainWindow() } label: {
                         Text("+\(overflow) more in Dory")
                             .font(.system(size: 11.5, weight: .semibold)).foregroundStyle(store.palette.accentText)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -79,7 +85,7 @@ struct MenuBarContentView: View {
 
     private var footer: some View {
         HStack(spacing: 0) {
-            Button { NSApp.activate(ignoringOtherApps: true) } label: {
+            Button { showMainWindow() } label: {
                 Text("Open Dory").font(.system(size: 12.5, weight: .semibold)).foregroundStyle(store.palette.accentText)
                     .frame(maxWidth: .infinity).padding(.vertical, 11)
             }
