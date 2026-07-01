@@ -10,6 +10,11 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
+      - name: Select newest installed Xcode
+        run: |
+          newest="$(ls -d /Applications/Xcode*.app | sort -V | tail -1)"
+          echo "selected: $newest"
+          echo "DEVELOPER_DIR=$newest/Contents/Developer" >> "$GITHUB_ENV"
       - name: Unit tests (DoryTests, timing-sensitive tests quarantined)
         run: >
           bash scripts/test.sh -skip-testing:DoryUITests
