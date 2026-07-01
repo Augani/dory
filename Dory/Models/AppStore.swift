@@ -110,6 +110,7 @@ final class AppStore {
             }
             launchAtLogin = SMAppService.mainApp.status == .enabled
             if let v = UserDefaults.standard.object(forKey: Self.menuBarIconKey) as? Bool { showMenuBarIcon = v }
+            if isAgentMode { showMenuBarIcon = true }
             if let v = UserDefaults.standard.object(forKey: Self.autoUpdateKey) as? Bool { autoUpdate = v }
             if let v = UserDefaults.standard.object(forKey: Self.routeDockerKey) as? Bool { routeDockerCLI = v }
             dockerHostCleaned = DockerHostConflict.hasCleaned
@@ -246,8 +247,8 @@ final class AppStore {
     }
 
     func setShowMenuBarIcon(_ on: Bool) {
-        showMenuBarIcon = on
-        UserDefaults.standard.set(on, forKey: Self.menuBarIconKey)
+        showMenuBarIcon = isAgentMode ? true : on
+        UserDefaults.standard.set(showMenuBarIcon, forKey: Self.menuBarIconKey)
     }
 
     func completeOnboarding() {
@@ -256,6 +257,15 @@ final class AppStore {
     }
 
     var palette: DoryPalette { appearance.palette }
+
+    var isAgentMode: Bool {
+        if let value = Bundle.main.object(forInfoDictionaryKey: "LSUIElement") as? Bool { return value }
+        if let number = Bundle.main.object(forInfoDictionaryKey: "LSUIElement") as? NSNumber { return number.boolValue }
+        if let string = Bundle.main.object(forInfoDictionaryKey: "LSUIElement") as? String { return string == "1" || string.lowercased() == "true" || string.lowercased() == "yes" }
+        return false
+    }
+
+    var shouldOpenWindowOnLaunch: Bool { !isAgentMode || onboarding }
 
     private var shimServer: ShimHTTPServer?
     var shimSocketPath: String { DockerShim.defaultSocketPath }
