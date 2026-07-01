@@ -1,4 +1,5 @@
 import Testing
+import AppKit
 @testable import Dory
 
 @MainActor
@@ -20,5 +21,10 @@ struct AgentModeTests {
         let store = AppStore()
         store.onboarding = false
         #expect(store.shouldOpenWindowOnLaunch == !store.isAgentMode)
+    }
+
+    @Test func appDelegateKeepsAppAliveAfterLastWindowCloses() {
+        let delegate = DoryAppDelegate()
+        #expect(delegate.applicationShouldTerminateAfterLastWindowClosed(NSApplication.shared) == false)
     }
 }
