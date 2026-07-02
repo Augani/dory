@@ -4,8 +4,17 @@ struct MenuBarContentView: View {
     @Environment(AppStore.self) private var store
     @Environment(\.palette) private var p
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.dismiss) private var dismiss
+
+    private func closePopover() {
+        dismiss()
+        for window in NSApp.windows where window.className.contains("MenuBarExtra") {
+            window.orderOut(nil)
+        }
+    }
 
     private func showMainWindow() {
+        closePopover()
         store.windowOpenRequested = true
         openWindow(id: DoryApp.mainWindowID)
         NSApp.activate(ignoringOtherApps: true)
