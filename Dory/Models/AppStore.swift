@@ -271,6 +271,14 @@ final class AppStore {
     var shimSocketPath: String { DockerShim.defaultSocketPath }
     private(set) var shimRunning = false
 
+    @ObservationIgnored private(set) var backendStartRequested = false
+
+    func startBackendIfNeeded() {
+        guard !backendStartRequested else { return }
+        backendStartRequested = true
+        Task { await connectBackend() }
+    }
+
     func connectBackend() async {
         let isMock = ProcessInfo.processInfo.environment["DORY_RUNTIME"] == "mock"
         if !isMock { isConnecting = true }

@@ -5,12 +5,15 @@ struct DoryApp: App {
     static let mainWindowID = "dory-main"
 
     @NSApplicationDelegateAdaptor(DoryAppDelegate.self) private var appDelegate
-    @State private var store = AppStore()
+    @State private var store: AppStore
 
     init() {
         // Writing to a socket whose peer has closed otherwise raises SIGPIPE and kills the process;
         // ignore it so the POSIX write paths return EPIPE and are handled gracefully.
         signal(SIGPIPE, SIG_IGN)
+        let store = AppStore()
+        store.startBackendIfNeeded()
+        _store = State(initialValue: store)
     }
 
     var body: some Scene {

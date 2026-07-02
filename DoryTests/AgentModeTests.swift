@@ -46,4 +46,12 @@ struct AgentModeTests {
         store.onboarding = false
         #expect(store.shouldOpenWindowOnLaunch == false)
     }
+
+    @Test func backendStartIsOnceOnly() {
+        let store = AppStore()
+        #expect(store.backendStartRequested == false)
+        store.startBackendIfNeeded()
+        store.startBackendIfNeeded()
+        #expect(store.backendStartRequested == true)
+    }
 }
