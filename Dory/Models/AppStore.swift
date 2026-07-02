@@ -50,6 +50,7 @@ final class AppStore {
     var showMenuBarIcon = true
     var autoUpdate = false
     var routeDockerCLI = true
+    var openLoginsOnMac = true
     var dockerHostConflict: DockerHostConflict.Conflict?
     var dockerHostCleaned = false
     var dockerHostConflictDismissed = false
@@ -113,6 +114,7 @@ final class AppStore {
             if isAgentMode { showMenuBarIcon = true }
             if let v = UserDefaults.standard.object(forKey: Self.autoUpdateKey) as? Bool { autoUpdate = v }
             if let v = UserDefaults.standard.object(forKey: Self.routeDockerKey) as? Bool { routeDockerCLI = v }
+            if let v = UserDefaults.standard.object(forKey: Self.openLoginsOnMacKey) as? Bool { openLoginsOnMac = v }
             dockerHostCleaned = DockerHostConflict.hasCleaned
             dockerHostConflictDismissed = UserDefaults.standard.bool(forKey: Self.dockerHostDismissedKey)
             if let width = UserDefaults.standard.object(forKey: Self.containerDetailWidthKey) as? Double, width >= 320 {
@@ -155,6 +157,7 @@ final class AppStore {
     static let menuBarIconKey = "dory.showMenuBarIcon"
     static let autoUpdateKey = "dory.autoUpdate"
     static let routeDockerKey = "dory.routeDockerCLI"
+    static let openLoginsOnMacKey = "dory.openLoginsOnMac"
     static let dockerHostDismissedKey = "dory.dockerHostDismissed"
     static let containerDetailWidthKey = "dory.containerDetailWidth"
     nonisolated static let dockerCompatibleEngineHint = "Start Dory's shared VM in Settings > Docker Engine, or run a local Docker-compatible engine such as Docker Desktop, Colima, Rancher Desktop, Podman, or OrbStack."
@@ -193,6 +196,11 @@ final class AppStore {
                 dockerHostConflict = nil
             }
         }
+    }
+
+    func setOpenLoginsOnMac(_ on: Bool) {
+        openLoginsOnMac = on
+        UserDefaults.standard.set(on, forKey: Self.openLoginsOnMacKey)
     }
 
     private var isAutomationContext: Bool {
@@ -398,6 +406,7 @@ final class AppStore {
     @ObservationIgnored private lazy var hostBridge = HostBridgeWatcher(
         bridgeRoot: URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".dory/bridge"),
         forwarder: portForwarder,
+        isEnabled: { [weak self] in self?.openLoginsOnMac ?? true },
         open: { url in DispatchQueue.main.async { NSWorkspace.shared.open(url) } }
     )
     private let domainTable = DomainTable()

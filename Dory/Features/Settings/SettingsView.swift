@@ -201,6 +201,14 @@ struct SettingsView: View {
             .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(p.border))
             .padding(.bottom, 22)
 
+            groupLabel("BROWSER LOGINS")
+            VStack(spacing: 0) {
+                toggleRow("Open logins on my Mac", "Let CLIs inside a machine open the login page in your Mac browser and complete the localhost callback.", isOn: Binding(get: { store.openLoginsOnMac }, set: { store.setOpenLoginsOnMac($0) }), divider: false)
+            }
+            .background(p.bgElevated, in: RoundedRectangle(cornerRadius: 11))
+            .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(p.border))
+            .padding(.bottom, 22)
+
             dockerHostCallout
 
             groupLabel("APPEARANCE")
