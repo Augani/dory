@@ -68,4 +68,10 @@ struct AgentModeTests {
         store.windowOpenRequested = false
         #expect(store.shouldOpenWindowOnLaunch == !store.isAgentMode)
     }
+
+    @Test func stopEngineCommandTargetsSharedEngine() {
+        if let command = SharedVMProvisioner.stopEngineCommand() {
+            #expect(command.arguments == ["stop", "dory-engine"])
+        }
+    }
 }

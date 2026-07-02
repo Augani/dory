@@ -170,6 +170,21 @@ enum SharedVMProvisioner {
         _ = await Shell.runAsyncResult(binary, ["stop", engineName])
     }
 
+    static func stopEngineCommand() -> (binary: String, arguments: [String])? {
+        guard let binary = containerBinary() else { return nil }
+        return (binary, ["stop", engineName])
+    }
+
+    static func stopEngineDetached() {
+        guard let command = stopEngineCommand() else { return }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: command.binary)
+        process.arguments = command.arguments
+        process.standardOutput = Pipe()
+        process.standardError = Pipe()
+        try? process.run()
+    }
+
     /// The shared VM's host-reachable IPv4 address (e.g. 192.168.64.x), used to forward published
     /// container ports to `localhost`.
     static func engineIP() async -> String? {

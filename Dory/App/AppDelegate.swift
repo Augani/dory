@@ -17,5 +17,6 @@ final class DoryAppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         DockerContext.deactivateSync()
+        SharedVMProvisioner.stopEngineDetached()
     }
 }
