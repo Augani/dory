@@ -36,4 +36,9 @@ enum HostBridge {
     static func allowedForwardPort(_ port: Int) -> Bool {
         port >= 1024 && port <= 65535
     }
+
+    static func resolvedTTL(_ ttlSec: Int?) -> Int {
+        guard let ttlSec, ttlSec > 0 else { return 300 }
+        return min(ttlSec, 3600)
+    }
 }

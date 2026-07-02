@@ -56,6 +56,7 @@ struct HostBridgeTests {
 
     @Test func rejectsHostlessURL() {
         #expect(HostBridge.allowedURL("http://") == nil)
+        #expect(HostBridge.allowedURL("http://user@/path") == nil)
     }
 
     @Test func forwardPortRange() {
@@ -67,6 +68,14 @@ struct HostBridgeTests {
         #expect(!HostBridge.allowedForwardPort(0))
         #expect(!HostBridge.allowedForwardPort(65536))
         #expect(!HostBridge.allowedForwardPort(-5))
+    }
+
+    @Test func ttlDefaultsAndClamps() {
+        #expect(HostBridge.resolvedTTL(nil) == 300)
+        #expect(HostBridge.resolvedTTL(120) == 120)
+        #expect(HostBridge.resolvedTTL(0) == 300)
+        #expect(HostBridge.resolvedTTL(-10) == 300)
+        #expect(HostBridge.resolvedTTL(99999) == 3600)
     }
 
     @Test func rejectsOversizedOpenPayload() {
