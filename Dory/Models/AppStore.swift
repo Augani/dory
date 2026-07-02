@@ -1726,6 +1726,15 @@ final class AppStore {
         return Int(UInt16(bigEndian: result.sin_port))
     }
 
+    nonisolated static func mergingEnv(_ settings: MachineSettings, resolved: [String: String]) -> MachineSettings {
+        guard !resolved.isEmpty else { return settings }
+        var copy = settings
+        for (key, value) in resolved where copy.env[key] == nil && !value.isEmpty {
+            copy.env[key] = value
+        }
+        return copy
+    }
+
     nonisolated static func withIdentity(_ settings: MachineSettings, _ identity: MacIdentity) -> MachineSettings {
         var s = settings
         s.identity = identity
@@ -1761,6 +1770,11 @@ final class AppStore {
         activeSheet = .creatingMachine
         defer { machineBusy = false }
         var effectiveSettings = identity.map { Self.withIdentity(settings, $0) } ?? settings
+        let resolvedSecrets = await MachineEnvImport.resolve(names: machineEnvAllowList)
+        effectiveSettings = Self.mergingEnv(effectiveSettings, resolved: resolvedSecrets)
+        if !resolvedSecrets.isEmpty {
+            appendMachineCreationLog("Copying \(resolvedSecrets.keys.sorted().joined(separator: ", ")) into \(trimmedName)…")
+        }
         if effectiveSettings.identity != nil, !effectiveSettings.ports.contains(where: { $0.guest == 22 }) {
             let sshHostPort = Self.allocateFreePort()
             if sshHostPort > 0 {
