@@ -206,6 +206,7 @@ final class AppStore {
     func setOpenLoginsOnMac(_ on: Bool) {
         openLoginsOnMac = on
         UserDefaults.standard.set(on, forKey: Self.openLoginsOnMacKey)
+        hostBridge.setEnabled(on)
     }
 
     private var isAutomationContext: Bool {
@@ -417,7 +418,7 @@ final class AppStore {
     @ObservationIgnored private lazy var hostBridge = HostBridgeWatcher(
         bridgeRoot: URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".dory/bridge"),
         forwarder: portForwarder,
-        isEnabled: { [weak self] in self?.openLoginsOnMac ?? true },
+        enabled: openLoginsOnMac,
         open: { url in DispatchQueue.main.async { NSWorkspace.shared.open(url) } }
     )
     private let domainTable = DomainTable()
@@ -517,6 +518,7 @@ final class AppStore {
 
     func unregisterMachineBridge(_ name: String) {
         hostBridge.stopWatching(machine: name)
+        portForwarder.teardownLoopback(forMachine: name)
     }
 
     /// `<name>.dory.local` → the published host port that reaches the container. Containers without a
@@ -1594,6 +1596,9 @@ final class AppStore {
             }
         }
         machines = list
+        for machine in list where machine.status == .running {
+            registerMachineBridge(machine.name)
+        }
         return list
     }
 
@@ -1753,11 +1758,15 @@ final class AppStore {
 
     func createMachine(image: String, name: String, arch: MachineArch = .host, recipe: DevRecipe? = nil, settings: MachineSettings = .default, identity: MacIdentity? = nil) async -> String? {
         let trimmedName = name.trimmingCharacters(in: .whitespaces)
+        guard !trimmedName.isEmpty else { actionError = "Name is required"; return "Name is required" }
+        guard trimmedName.wholeMatch(of: /[a-zA-Z0-9][a-zA-Z0-9_.-]*/) != nil else {
+            actionError = "Invalid machine name: use letters, digits, and _ . - (must start alphanumeric)"
+            return "Invalid machine name"
+        }
         guard runtimeKind.isDockerCompatible else {
             actionError = Self.dockerCompatibleEngineRequired("Linux machines")
             return "Engine not available"
         }
-        guard !trimmedName.isEmpty else { actionError = "Name is required"; return "Name is required" }
         guard let distro = MachineDistro.forImage(image.trimmingCharacters(in: .whitespaces)) else {
             actionError = "Unsupported machine image: \(image)"
             return "Unsupported machine image"
@@ -2018,6 +2027,7 @@ final class AppStore {
         let service = machineService
         machines.removeAll { $0.name == name }
         unregisterMachineBridge(name)
+        try? FileManager.default.removeItem(atPath: MachineService.bridgeHostDir(for: name))
         Task { try? await service.delete(name: name); loadMachines() }
     }
 

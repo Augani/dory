@@ -60,16 +60,22 @@ final class HostBridgeWatcher: @unchecked Sendable {
     private let bridgeRoot: URL
     private let forwarder: HostPortForwarder
     private let open: @Sendable (URL) -> Void
-    private let isEnabled: @Sendable () -> Bool
+    private var enabled = true
     private let lock = NSLock()
     private let scanQueue = DispatchQueue(label: "dev.dory.hostbridge.scan")
     private var sources: [String: [DispatchSourceFileSystemObject]] = [:]
 
-    init(bridgeRoot: URL, forwarder: HostPortForwarder, isEnabled: @escaping @Sendable () -> Bool = { true }, open: @escaping @Sendable (URL) -> Void) {
+    init(bridgeRoot: URL, forwarder: HostPortForwarder, enabled: Bool = true, open: @escaping @Sendable (URL) -> Void) {
         self.bridgeRoot = bridgeRoot
         self.forwarder = forwarder
-        self.isEnabled = isEnabled
+        self.enabled = enabled
         self.open = open
+    }
+
+    func setEnabled(_ on: Bool) {
+        lock.lock()
+        enabled = on
+        lock.unlock()
     }
 
     func startWatching(machine: String) {
@@ -114,7 +120,10 @@ final class HostBridgeWatcher: @unchecked Sendable {
 
     private func performScan(machine: String) {
         let base = bridgeRoot.appendingPathComponent(machine)
-        guard isEnabled() else {
+        lock.lock()
+        let on = enabled
+        lock.unlock()
+        guard on else {
             for dir in ["forward", "open"] {
                 for file in files(in: base.appendingPathComponent(dir)) { _ = HostBridge.consume(at: file) }
             }

@@ -112,7 +112,7 @@ struct HostBridgeTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let recorded = OpenRecorder()
         let fwd = HostPortForwarder(targetHost: "127.0.0.1", containerBinary: nil, engineName: "")
-        let watcher = HostBridgeWatcher(bridgeRoot: root, forwarder: fwd, isEnabled: { true }) { url in recorded.append(url) }
+        let watcher = HostBridgeWatcher(bridgeRoot: root, forwarder: fwd, enabled: true) { url in recorded.append(url) }
         watcher.startWatching(machine: "dev")
         defer { watcher.stopWatching(machine: "dev"); fwd.stopAll() }
         let openDir = root.appendingPathComponent("dev/open")
@@ -128,7 +128,7 @@ struct HostBridgeTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let recorded = OpenRecorder()
         let fwd = HostPortForwarder(targetHost: "127.0.0.1", containerBinary: nil, engineName: "")
-        let watcher = HostBridgeWatcher(bridgeRoot: root, forwarder: fwd, isEnabled: { true }) { url in recorded.append(url) }
+        let watcher = HostBridgeWatcher(bridgeRoot: root, forwarder: fwd, enabled: true) { url in recorded.append(url) }
         watcher.startWatching(machine: "dev")
         defer { watcher.stopWatching(machine: "dev"); fwd.stopAll() }
         let file = root.appendingPathComponent("dev/open/\(UUID().uuidString).json")
@@ -142,7 +142,7 @@ struct HostBridgeTests {
         let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
         let fwd = HostPortForwarder(targetHost: "127.0.0.1", containerBinary: nil, engineName: "")
-        let watcher = HostBridgeWatcher(bridgeRoot: root, forwarder: fwd, isEnabled: { true }) { _ in }
+        let watcher = HostBridgeWatcher(bridgeRoot: root, forwarder: fwd, enabled: true) { _ in }
         watcher.startWatching(machine: "dev")
         defer { watcher.stopWatching(machine: "dev"); fwd.stopAll() }
         let file = root.appendingPathComponent("dev/forward/54020.json")
@@ -156,7 +156,7 @@ struct HostBridgeTests {
         let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
         let fwd = HostPortForwarder(targetHost: "127.0.0.1", containerBinary: nil, engineName: "")
-        let watcher = HostBridgeWatcher(bridgeRoot: root, forwarder: fwd, isEnabled: { true }) { _ in }
+        let watcher = HostBridgeWatcher(bridgeRoot: root, forwarder: fwd, enabled: true) { _ in }
         watcher.startWatching(machine: "dev")
         #expect(watcher.watchedMachines() == ["dev"])
         watcher.stopWatching(machine: "dev")
@@ -169,7 +169,7 @@ struct HostBridgeTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let recorded = OpenRecorder()
         let fwd = HostPortForwarder(targetHost: "127.0.0.1", containerBinary: nil, engineName: "")
-        let watcher = HostBridgeWatcher(bridgeRoot: root, forwarder: fwd, isEnabled: { false }) { url in recorded.append(url) }
+        let watcher = HostBridgeWatcher(bridgeRoot: root, forwarder: fwd, enabled: false) { url in recorded.append(url) }
         watcher.startWatching(machine: "dev")
         defer { watcher.stopWatching(machine: "dev"); fwd.stopAll() }
         let openFile = root.appendingPathComponent("dev/open/\(UUID().uuidString).json")

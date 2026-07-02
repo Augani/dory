@@ -91,6 +91,17 @@ final class HostPortForwarder: @unchecked Sendable {
         listener?.stop()
     }
 
+    func teardownLoopback(forMachine machine: String) {
+        let prefix = "\(machine):"
+        lock.lock()
+        let keys = loopbackListeners.keys.filter { $0.hasPrefix(prefix) }
+        lock.unlock()
+        for key in keys {
+            let parts = key.split(separator: ":", maxSplits: 1).map(String.init)
+            if parts.count == 2, let port = Int(parts[1]) { teardownLoopback(machine: parts[0], port: port) }
+        }
+    }
+
     func activeLoopbackKeys() -> Set<String> {
         lock.lock(); defer { lock.unlock() }
         return Set(loopbackListeners.keys)

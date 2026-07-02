@@ -28,4 +28,16 @@ struct AppStoreEnvAllowListTests {
         let merged = AppStore.mergingEnv(.default, resolved: [:])
         #expect(merged.env.isEmpty)
     }
+
+    @Test func createMachineRejectsPathTraversalName() async {
+        let store = AppStore(runtime: MockRuntime())
+        let result = await store.createMachine(image: "ubuntu", name: "../evil")
+        #expect(result == "Invalid machine name")
+    }
+
+    @Test func createMachineRejectsSlashInName() async {
+        let store = AppStore(runtime: MockRuntime())
+        let result = await store.createMachine(image: "ubuntu", name: "a/b")
+        #expect(result == "Invalid machine name")
+    }
 }
