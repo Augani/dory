@@ -16,6 +16,8 @@ import Darwin
 final class HostPortForwarder: @unchecked Sendable {
     private let lock = NSLock()
     private var listeners: [Int: Listener] = [:]
+    private var loopbackListeners: [String: Listener] = [:]
+    private var loopbackTimers: [String: DispatchSourceTimer] = [:]
     private var targetHost: String
     private let containerBinary: String?
     private let engineName: String
@@ -48,8 +50,50 @@ final class HostPortForwarder: @unchecked Sendable {
     }
 
     func stopAll() {
-        lock.lock(); let ports = Array(listeners.keys); lock.unlock()
+        lock.lock(); let ports = Array(listeners.keys); let loopKeys = Array(loopbackListeners.keys); lock.unlock()
         for port in ports { stop(port: port) }
+        for key in loopKeys {
+            let parts = key.split(separator: ":", maxSplits: 1).map(String.init)
+            if parts.count == 2, let port = Int(parts[1]) { teardownLoopback(machine: parts[0], port: port) }
+        }
+    }
+
+    func forwardLoopback(machine: String, port: Int, ttl: Int) -> Bool {
+        let key = "\(machine):\(port)"
+        lock.lock()
+        if loopbackListeners[key] != nil { lock.unlock(); return true }
+        lock.unlock()
+        guard let fd = Self.listenLoopback(port: port) else { return false }
+        let engine = engineName
+        let binary = containerBinary
+        let listener = Listener(listenFD: fd) { client in
+            Self.execBridgeInto(client: client, port: port, containerName: engine, binary: binary)
+        }
+        lock.lock()
+        loopbackListeners[key] = listener
+        let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global())
+        timer.schedule(deadline: .now() + .seconds(ttl))
+        timer.setEventHandler { [weak self] in self?.teardownLoopback(machine: machine, port: port) }
+        loopbackTimers[key] = timer
+        timer.resume()
+        lock.unlock()
+        listener.run()
+        return true
+    }
+
+    func teardownLoopback(machine: String, port: Int) {
+        let key = "\(machine):\(port)"
+        lock.lock()
+        let listener = loopbackListeners.removeValue(forKey: key)
+        let timer = loopbackTimers.removeValue(forKey: key)
+        lock.unlock()
+        timer?.cancel()
+        listener?.stop()
+    }
+
+    func activeLoopbackKeys() -> Set<String> {
+        lock.lock(); defer { lock.unlock() }
+        return Set(loopbackListeners.keys)
     }
 
     private func start(port: Int, host: String) {
@@ -103,6 +147,31 @@ final class HostPortForwarder: @unchecked Sendable {
             group.leave()
         }
         Self.pump(from: outFD, to: client)
+        group.wait()
+        if process.isRunning { process.terminate() }
+        shutdown(client, SHUT_RDWR); Darwin.close(client)
+    }
+
+    nonisolated static func execBridgeInto(client: Int32, port: Int, containerName: String, binary: String?) {
+        guard let binary, !containerName.isEmpty else { shutdown(client, SHUT_RDWR); Darwin.close(client); return }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: binary)
+        process.arguments = ["exec", "-i", containerName, "nc", "127.0.0.1", String(port)]
+        let stdin = Pipe(), stdout = Pipe()
+        process.standardInput = stdin
+        process.standardOutput = stdout
+        process.standardError = Pipe()
+        guard (try? process.run()) != nil else { shutdown(client, SHUT_RDWR); Darwin.close(client); return }
+        let inFD = stdin.fileHandleForWriting.fileDescriptor
+        let outFD = stdout.fileHandleForReading.fileDescriptor
+        let group = DispatchGroup()
+        group.enter()
+        Thread.detachNewThread {
+            pump(from: client, to: inFD)
+            try? stdin.fileHandleForWriting.close()
+            group.leave()
+        }
+        pump(from: outFD, to: client)
         group.wait()
         if process.isRunning { process.terminate() }
         shutdown(client, SHUT_RDWR); Darwin.close(client)
