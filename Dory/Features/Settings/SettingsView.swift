@@ -3,6 +3,7 @@ import SwiftUI
 struct SettingsView: View {
     @Environment(AppStore.self) private var store
     @Environment(\.palette) private var p
+    @State private var envAllowListDraft = ""
 
     var body: some View {
         HStack(spacing: 0) {
@@ -208,6 +209,27 @@ struct SettingsView: View {
             .background(p.bgElevated, in: RoundedRectangle(cornerRadius: 11))
             .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(p.border))
             .padding(.bottom, 22)
+
+            groupLabel("MACHINE SECRETS")
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Comma-separated env var names to copy from your shell into new machines. \(MachineEnvImport.defaultNames.joined(separator: ", ")) is always included; common extras: \(MachineEnvImport.optionalExtras.joined(separator: ", ")).")
+                    .font(.system(size: 11.5)).foregroundStyle(p.text3).lineSpacing(3)
+                TextField("ANTHROPIC_API_KEY, GH_TOKEN", text: $envAllowListDraft, onCommit: {
+                    store.setMachineEnvAllowList(MachineEnvImport.parse(envAllowListDraft))
+                    envAllowListDraft = MachineEnvImport.serialize(store.machineEnvAllowList)
+                })
+                .textFieldStyle(.roundedBorder)
+                .font(.system(size: 12, design: .monospaced))
+                .accessibilityIdentifier("machine-env-allowlist")
+                Text("These secrets are copied into every machine's environment. They are visible to processes inside the machine.")
+                    .font(.system(size: 11)).foregroundStyle(p.amber).lineSpacing(3)
+            }
+            .padding(15)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(p.bgElevated, in: RoundedRectangle(cornerRadius: 11))
+            .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(p.border))
+            .padding(.bottom, 22)
+            .onAppear { if envAllowListDraft.isEmpty { envAllowListDraft = MachineEnvImport.serialize(store.machineEnvAllowList) } }
 
             dockerHostCallout
 
