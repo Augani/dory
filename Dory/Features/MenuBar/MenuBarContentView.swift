@@ -6,6 +6,7 @@ struct MenuBarContentView: View {
     @Environment(\.openWindow) private var openWindow
 
     private func showMainWindow() {
+        store.windowOpenRequested = true
         openWindow(id: DoryApp.mainWindowID)
         NSApp.activate(ignoringOtherApps: true)
     }

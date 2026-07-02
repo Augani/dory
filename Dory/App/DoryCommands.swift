@@ -29,7 +29,10 @@ struct DoryCommands: Commands {
             Button("Filter") { if store.section != .settings { store.filterFocusToken += 1 } }
                 .keyboardShortcut("f", modifiers: .command)
             Divider()
-            Button("Open Dory") { openWindow(id: Self.openDoryWindowID) }
+            Button("Open Dory") {
+                store.windowOpenRequested = true
+                openWindow(id: Self.openDoryWindowID)
+            }
                 .keyboardShortcut("0", modifiers: .command)
             Divider()
         }

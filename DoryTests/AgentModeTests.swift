@@ -59,4 +59,13 @@ struct AgentModeTests {
         let delegate = DoryAppDelegate()
         #expect(delegate.responds(to: #selector(NSApplicationDelegate.applicationWillTerminate(_:))))
     }
+
+    @Test func userRequestedWindowSkipsLaunchGate() {
+        let store = AppStore()
+        store.onboarding = false
+        store.windowOpenRequested = true
+        #expect(store.windowOpenRequested == true)
+        store.windowOpenRequested = false
+        #expect(store.shouldOpenWindowOnLaunch == !store.isAgentMode)
+    }
 }

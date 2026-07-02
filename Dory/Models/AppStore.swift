@@ -292,6 +292,7 @@ final class AppStore {
     private(set) var shimRunning = false
 
     @ObservationIgnored private(set) var backendStartRequested = false
+    @ObservationIgnored var windowOpenRequested = false
 
     func startBackendIfNeeded() {
         guard !backendStartRequested else { return }
