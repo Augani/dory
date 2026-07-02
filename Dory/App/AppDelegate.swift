@@ -14,4 +14,8 @@ final class DoryAppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         false
     }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        DockerContext.deactivateSync()
+    }
 }

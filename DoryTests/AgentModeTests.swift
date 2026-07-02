@@ -54,4 +54,9 @@ struct AgentModeTests {
         store.startBackendIfNeeded()
         #expect(store.backendStartRequested == true)
     }
+
+    @Test func delegateRespondsToWillTerminate() {
+        let delegate = DoryAppDelegate()
+        #expect(delegate.responds(to: #selector(NSApplicationDelegate.applicationWillTerminate(_:))))
+    }
 }
