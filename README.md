@@ -24,13 +24,16 @@
 
 ## Why Dory
 
-- **One VM, all your containers.** Dory's standalone engine boots a single persistent Linux
-  micro-VM and runs *everything* inside it — the OrbStack model, not the one-VM-per-container
-  model. Measured **~4.7× less idle memory** than per-container VMs (2 containers: ~122 MB vs
+- **One VM, all your containers.** Dory builds on [Apple's open-source container stack](https://github.com/apple/containerization)
+  and boots a single persistent Linux micro-VM that runs *everything* — instead of one VM per
+  container. Measured **~4.7× less idle memory** than per-container VMs (2 containers: ~122 MB vs
   ~574 MB), and the gap widens with every container you add
   ([methodology](docs/research/benchmark-methodology.md)).
+- **Small and silent, permanently.** A ~6 MB native app with ~0% idle CPU — no indexers, no
+  phone-home, no fans. That's a design constraint, not a version note.
 - **Free for everyone, forever.** No per-seat license, no "commercial use" tier, no account,
-  no sign-in. GPL-3.0, full source right here. [How that compares →](docs/comparison.md)
+  no sign-in. GPL-3.0, full source right here. (A [sourced comparison](docs/comparison.md) exists
+  if you want one — judge for yourself.)
 - **Your `docker` CLI just works.** Dory serves the Docker API on `~/.dory/dory.sock` and
   registers a `dory` Docker context — `docker run`, `docker compose`, your existing scripts and
   tools drive it unchanged.

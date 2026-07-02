@@ -153,6 +153,40 @@
   .frow li code,.frow p code{font-family:var(--mono);font-size:12px;color:#9fd0ff;background:rgba(46,155,245,.08);
     padding:1px 5px;border-radius:5px}
 
+  /* dev-env flow */
+  .flow{display:grid;grid-template-columns:1fr auto 1fr auto 1fr;gap:14px;align-items:stretch;margin-top:52px}
+  .step{background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:24px;min-width:0;
+    backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px)}
+  .step .n{display:inline-grid;place-items:center;width:26px;height:26px;border-radius:8px;font-size:13px;font-weight:800;
+    background:linear-gradient(135deg,var(--accent),var(--green));color:#fff;margin-bottom:12px}
+  .step h3{font-size:15.5px;font-weight:700;margin-bottom:8px}
+  .step p{font-size:12.8px;color:var(--text-2)}
+  .arrow{align-self:center;color:var(--text-3);font-size:22px}
+  .chips{display:flex;flex-wrap:wrap;gap:7px;margin-top:14px}
+  .chip{font-size:11.5px;font-weight:600;color:#9fd0ff;background:rgba(46,155,245,.10);
+    border:1px solid rgba(46,155,245,.25);border-radius:999px;padding:4px 11px}
+  .mini-term{margin-top:14px;background:#060b15;border:1px solid var(--border);border-radius:10px;
+    font-family:var(--mono);font-size:11.3px;line-height:1.8;padding:12px 14px;color:#c6d8f2;overflow-x:auto;white-space:pre;
+    scrollbar-width:thin;scrollbar-color:rgba(140,180,255,.2) transparent}
+  .mini-term .g{color:var(--green)}
+  .mini-term .b{color:#7fbdff}
+  .mini-term .p{color:#5b7396}
+  .snap{display:flex;align-items:center;gap:10px;margin-top:14px;background:rgba(52,208,88,.07);
+    border:1px solid rgba(52,208,88,.22);border-radius:10px;padding:10px 13px;font-size:12px;color:var(--text-2)}
+  .snap b{color:var(--green)}
+  .devshot{max-width:960px;margin:46px auto 0}
+  .devshot .shot{border-radius:14px;overflow:hidden;border:1px solid var(--border-strong);
+    box-shadow:0 30px 70px -28px rgba(0,0,0,.7)}
+  .devshot img{display:block;width:100%;height:auto}
+
+  /* footprint promise */
+  .promise{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-top:52px}
+  .pcard{background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:26px 22px;text-align:center;min-width:0}
+  .pcard .big{font-size:clamp(24px,3vw,34px);font-weight:800;letter-spacing:-.02em;
+    background:linear-gradient(120deg,#6CB8FF,#2E9BF5 60%,#34D058);-webkit-background-clip:text;background-clip:text;color:transparent}
+  .pcard .t{font-size:13px;font-weight:700;margin-top:8px}
+  .pcard p{font-size:12.3px;color:var(--text-3);margin-top:6px}
+
   /* memory bars */
   .mem-card{max-width:760px;margin:48px auto 0;background:var(--surface);border:1px solid var(--border-strong);
     border-radius:18px;padding:34px 36px;backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px)}
@@ -168,16 +202,6 @@
   .mem-big span{color:var(--text-2);font-size:14px}
   .mem-note{margin-top:14px;font-size:12px;color:var(--text-3)}
 
-  /* compare */
-  .compare{max-width:900px;margin:52px auto 0;border:1px solid var(--border-strong);border-radius:18px;overflow:hidden}
-  .compare table{width:100%;border-collapse:collapse;font-size:13.5px}
-  .compare th,.compare td{padding:15px 18px;text-align:left;border-bottom:1px solid var(--border)}
-  .compare th{background:var(--surface-2);font-size:12.5px;letter-spacing:.05em;text-transform:uppercase;color:var(--text-3)}
-  .compare td:first-child{color:var(--text-2)}
-  .compare tr:last-child td{border-bottom:none}
-  .yes{color:var(--green);font-weight:700}
-  .no{color:var(--text-3)}
-  .warn{color:var(--amber)}
   .compare-note{max-width:900px;margin:14px auto 0;font-size:12px;color:var(--text-3);text-align:center}
 
   /* install */
@@ -201,6 +225,9 @@
     .frow{grid-template-columns:1fr;gap:22px}
     .frow.flip .shot{order:0}
     #model-canvas{height:400px}
+    .flow{grid-template-columns:1fr}
+    .arrow{transform:rotate(90deg);justify-self:center}
+    .promise{grid-template-columns:1fr 1fr}
   }
   @media (max-width:640px){
     .nav-links a.navlink{display:none}
@@ -252,7 +279,8 @@
     <nav class="nav-links">
       <a class="navlink" href="#model">How it works</a>
       <a class="navlink" href="#features">Features</a>
-      <a class="navlink" href="#compare">Compare</a>
+      <a class="navlink" href="#devenv">Dev&nbsp;envs</a>
+      <a class="navlink" href="#footprint">Footprint</a>
       <a class="navlink" href="#install">Install</a>
       <a class="btn btn-ghost" href="https://github.com/Augani/dory" target="_blank" rel="noopener" aria-label="Star Dory on GitHub">
         <svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
@@ -301,10 +329,10 @@
     <div class="wrap">
       <span class="kicker reveal">How Dory wins the memory game</span>
       <h2 class="reveal">Every VM you don't boot is RAM you keep.</h2>
-      <p class="lead reveal">Apple's <code style="font-family:var(--mono);font-size:14px;color:#9fd0ff">container</code> tooling boots a
-        micro-VM — kernel, init, memory ballast — <em>per container</em>. Dory boots <b>one</b> persistent VM,
-        runs <code style="font-family:var(--mono);font-size:14px;color:#9fd0ff">dockerd</code> inside it, and every container shares
-        that single kernel and memory pool. Watch what happens as containers stack up:</p>
+      <p class="lead reveal">Dory builds on <a href="https://github.com/apple/containerization" target="_blank" rel="noopener" style="color:#9fd0ff;text-decoration:underline">Apple's open-source container stack</a>,
+        whose default model boots a micro-VM — kernel, init, memory ballast — <em>per container</em>.
+        Dory boots <b>one</b> persistent VM instead, runs <code style="font-family:var(--mono);font-size:14px;color:#9fd0ff">dockerd</code> inside it,
+        and every container shares that single kernel and memory pool. Watch what happens as containers stack up:</p>
       <div class="model-wrap reveal" id="model-wrap">
         <canvas id="model-canvas" aria-label="3D visualization: one VM per container versus Dory's single shared VM"></canvas>
         <div class="hud">
@@ -360,7 +388,9 @@
       <span class="kicker reveal">Under the hood</span>
       <h2 class="reveal">Built like a systems tool, not a wrapper.</h2>
       <p class="lead reveal">Dory's transport, HTTP server, YAML parser, and Docker API layer are hand-rolled Swift —
-        no Electron, no Node sidecars, no frameworks between your CLI and the engine.</p>
+        no Electron, no Node sidecars, no frameworks between your CLI and the engine. The virtualization underneath
+        is <a href="https://github.com/apple/containerization" target="_blank" rel="noopener" style="color:#9fd0ff;text-decoration:underline">Apple's open-source Containerization framework</a> —
+        we build on it openly and say so.</p>
       <div class="hood">
         <div class="hood-card reveal">
           <h3>A real Docker socket</h3>
@@ -434,15 +464,15 @@
       </div>
 
       <div class="frow reveal">
-        <div class="shot"><img src="shots/newmachine.png" width="1400" height="911" alt="Dory new machine sheet: use-case cards for Web/Node.js, Python and ML, Go, Rust, Java, DevOps, or a clean Linux, plus a custom composer" loading="lazy"></div>
+        <div class="shot"><img src="shots/machines.png" width="1400" height="911" alt="Dory Linux machines view: Ubuntu, Debian, Fedora, and Arch machines with live CPU and memory, terminal buttons, and dory.local addresses" loading="lazy"></div>
         <div>
           <span class="tag">Linux machines</span>
-          <h3>Machines that arrive ready to work.</h3>
+          <h3>Real Linux, one click away.</h3>
           <ul>
             <li>Full Ubuntu, Debian, Fedora, Alpine, or Arch — systemd, SSH, terminal, snapshots.</li>
-            <li>Pick a use-case — Node, Python &amp; ML, Go, Rust, Java, DevOps — and the machine provisions itself.</li>
-            <li>Or compose your own: check off runtimes, tools, and packages before it boots.</li>
+            <li>Live CPU and memory per machine, right in the grid.</li>
             <li>Each machine gets a <code>name.dory.local</code> address on your Mac.</li>
+            <li>Import and migrate from your existing setups in minutes.</li>
           </ul>
         </div>
       </div>
@@ -461,6 +491,49 @@
               <a href="https://github.com/Augani/dory/blob/main/COMPATIBILITY.md" style="color:#9fd0ff;text-decoration:underline">COMPATIBILITY.md</a>.</li>
           </ul>
         </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= DEV ENVIRONMENTS ================= -->
+  <section id="devenv" style="padding-top:30px">
+    <div class="wrap">
+      <span class="kicker reveal">Dev environments</span>
+      <h2 class="reveal">A ready-to-code machine in three moves.</h2>
+      <p class="lead reveal">Not just containers — Dory builds whole development environments.
+        Pick what you're building, and the machine arrives with the toolchain already on it.</p>
+      <div class="flow reveal">
+        <div class="step">
+          <span class="n">1</span>
+          <h3>Pick your stack</h3>
+          <p>Choose a use-case and Dory picks the recipe — or compose your own from runtimes, tools, and packages.</p>
+          <div class="chips">
+            <span class="chip">Web / Node.js</span><span class="chip">Python &amp; ML</span>
+            <span class="chip">Go</span><span class="chip">Rust</span><span class="chip">Java / JVM</span>
+            <span class="chip">DevOps &amp; CI</span><span class="chip">Build your own</span>
+          </div>
+        </div>
+        <div class="arrow" aria-hidden="true">→</div>
+        <div class="step">
+          <span class="n">2</span>
+          <h3>It provisions itself</h3>
+          <p>The machine boots and installs its own toolchain — you watch it happen, then get a terminal.</p>
+          <div class="mini-term"><span class="p">$</span> creating ubuntu machine <span class="b">web</span>…
+<span class="g">✓</span> node 24 · npm · pnpm
+<span class="g">✓</span> git · build tools · ssh
+<span class="b">→ web.dory.local</span>  <span class="g">ready</span></div>
+        </div>
+        <div class="arrow" aria-hidden="true">→</div>
+        <div class="step">
+          <span class="n">3</span>
+          <h3>Break it. Snapshot it. Reset it.</h3>
+          <p>Snapshot before a risky upgrade and roll back in seconds. Your shell's env vars and registry
+            logins can flow into the machine — consent-gated, from an allow-list you control.</p>
+          <div class="snap"><b>◉ snapshot</b> web · before-node-25 — restore anytime</div>
+        </div>
+      </div>
+      <div class="devshot reveal">
+        <div class="shot"><img src="shots/newmachine.png" width="1400" height="911" alt="Dory's new machine sheet: use-case cards for Web/Node.js, Python and ML, Go, Rust, Java, DevOps, a clean Linux, or a custom composition" loading="lazy"></div>
       </div>
     </div>
   </section>
@@ -486,25 +559,39 @@
     </div>
   </section>
 
-  <!-- ================= COMPARE ================= -->
-  <section id="compare">
+  <!-- ================= FOOTPRINT ================= -->
+  <section id="footprint">
     <div class="wrap">
-      <span class="kicker reveal">The part nobody puts on their pricing page</span>
-      <h2 class="reveal">Free means free.</h2>
-      <div class="compare reveal">
-        <table>
-          <thead><tr><th></th><th>Dory</th><th>Docker Desktop</th><th>OrbStack</th></tr></thead>
-          <tbody>
-            <tr><td>Price</td><td class="yes">Free, forever</td><td class="warn">Paid ≥250 employees / $10M rev</td><td class="warn">$8/user/mo commercial</td></tr>
-            <tr><td>Open source</td><td class="yes">GPL-3.0</td><td class="no">Proprietary app</td><td class="no">Proprietary</td></tr>
-            <tr><td>Account required</td><td class="yes">Never</td><td class="warn">For paid terms</td><td class="no">Not for personal</td></tr>
-            <tr><td>Shared-VM engine</td><td class="yes">Yes</td><td class="no">Fixed VM block</td><td class="yes">Yes</td></tr>
-            <tr><td>Kubernetes versions</td><td class="yes">Selectable (k3s)</td><td class="no">Pinned to release</td><td class="no">One, auto-bumped</td></tr>
-          </tbody>
-        </table>
+      <span class="kicker reveal">What you can hold us to</span>
+      <h2 class="reveal">Small. Silent. Yours.</h2>
+      <p class="lead reveal">Other tools will change their features and their pricing — that's their business.
+        Here's what Dory is built to be, permanently:</p>
+      <div class="promise reveal">
+        <div class="pcard">
+          <div class="big">~6 MB</div>
+          <div class="t">The whole app</div>
+          <p>Native Swift. No Electron, no bundled browser, no Node sidecar. Smaller than most <span style="font-family:var(--mono);font-size:11px">node_modules</span>.</p>
+        </div>
+        <div class="pcard">
+          <div class="big">~0%</div>
+          <div class="t">Idle CPU</div>
+          <p>An idle engine does nothing: no indexers, no phone-home, no fan spin-ups while you think.</p>
+        </div>
+        <div class="pcard">
+          <div class="big">1 VM</div>
+          <div class="t">For everything</div>
+          <p>One kernel, one memory pool — ~122 MB with two idle containers on our bench, and it grows slowly.</p>
+        </div>
+        <div class="pcard">
+          <div class="big">GPL-3.0</div>
+          <div class="t">Forever</div>
+          <p>No accounts, no telemetry, no paid tier, no rug to pull. The source is the guarantee.</p>
+        </div>
       </div>
-      <p class="compare-note reveal">Sourced and kept honest — read the full
-        <a href="https://github.com/Augani/dory/blob/main/docs/comparison.md" style="color:var(--text-2);text-decoration:underline">comparison with citations</a>.</p>
+      <p class="compare-note reveal">Don't take our word for anything — the
+        <a href="https://github.com/Augani/dory/blob/main/docs/research/benchmark-methodology.md" style="color:var(--text-2);text-decoration:underline">benchmark methodology</a>,
+        a <a href="https://github.com/Augani/dory/blob/main/docs/comparison.md" style="color:var(--text-2);text-decoration:underline">sourced comparison</a>,
+        and the per-feature <a href="https://github.com/Augani/dory/blob/main/COMPATIBILITY.md" style="color:var(--text-2);text-decoration:underline">status matrix</a> are all public. Judge for yourself.</p>
     </div>
   </section>
 
