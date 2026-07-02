@@ -41,4 +41,16 @@ struct MachineProvisionerTests {
         let script = MachineProvisioner.script(identity: identity, pkg: .apt, isSystemd: true, includeSSH: false)
         #expect(script.contains("/etc/sudoers.d/dory-ab"))
     }
+
+    @Test func installsDoryOpenShim() {
+        let s = MachineProvisioner.script(identity: id(), pkg: .apt, isSystemd: true, includeSSH: false)
+        #expect(s.contains("/usr/local/bin/dory-open"))
+        #expect(s.contains("ln -sf /usr/local/bin/dory-open /usr/local/bin/xdg-open"))
+        #expect(s.contains("/usr/local/bin/gio"))
+    }
+
+    @Test func ensuresSocatInstalled() {
+        let s = MachineProvisioner.script(identity: id(), pkg: .apt, isSystemd: true, includeSSH: false)
+        #expect(s.contains("socat"))
+    }
 }

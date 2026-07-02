@@ -25,6 +25,8 @@ enum MachineProvisioner {
                 lines.append("/usr/sbin/sshd")
             }
         }
+        let shim = (["set +e"] + DoryOpenShim.installCommands()).joined(separator: "\n")
+        lines.append("(\n\(shim)\n) || true")
         return lines.joined(separator: "\n")
     }
 
