@@ -184,6 +184,15 @@ struct MachineService: Sendable {
                 progress("Identity setup reported: \(result.output)")
             }
         }
+        progress("Installing gh, claude, and socat (best-effort)…")
+        let nodeProbe = try? await runtime.exec(containerID: Self.containerName(for: name),
+                                                command: ["/bin/sh", "-c", "command -v node >/dev/null 2>&1 && echo yes || echo no"])
+        let hasNode = (nodeProbe?.output ?? "").contains("yes")
+        let toolScript = MachineProvisioner.toolInstallScript(pkg: distro.pkg, hasNode: hasNode)
+        let toolResult = try? await runtime.exec(containerID: Self.containerName(for: name), command: ["/bin/sh", "-c", toolScript])
+        if let toolResult, !toolResult.succeeded {
+            progress("Tool install reported: \(toolResult.output)")
+        }
         progress("Machine \(name) is ready.")
     }
 
