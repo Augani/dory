@@ -9,7 +9,8 @@ nonisolated enum MachineEnvImport {
         var ordered: [String] = []
         for name in defaultNames + names {
             let cleaned = name.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
-            guard !cleaned.isEmpty, seen.insert(cleaned).inserted else { continue }
+            guard !cleaned.isEmpty, cleaned.wholeMatch(of: /[A-Z_][A-Z0-9_]*/) != nil else { continue }
+            guard seen.insert(cleaned).inserted else { continue }
             ordered.append(cleaned)
         }
         return ordered
