@@ -41,4 +41,14 @@ enum HostBridge {
         guard let ttlSec, ttlSec > 0 else { return 300 }
         return min(ttlSec, 3600)
     }
+
+    static func consume(at url: URL) -> Data? {
+        guard !url.lastPathComponent.hasSuffix(".tmp") else { return nil }
+        guard let data = try? Data(contentsOf: url), data.count <= maxRequestBytes else {
+            try? FileManager.default.removeItem(at: url)
+            return nil
+        }
+        try? FileManager.default.removeItem(at: url)
+        return data
+    }
 }

@@ -78,6 +78,27 @@ struct HostBridgeTests {
         #expect(HostBridge.resolvedTTL(99999) == 3600)
     }
 
+    @Test func consumeReadsThenDeletes() throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let file = dir.appendingPathComponent("req.json")
+        try Data("payload".utf8).write(to: file)
+        let data = HostBridge.consume(at: file)
+        #expect(data == Data("payload".utf8))
+        #expect(!FileManager.default.fileExists(atPath: file.path))
+    }
+
+    @Test func consumeSkipsTmpFiles() throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let file = dir.appendingPathComponent("req.json.tmp")
+        try Data("partial".utf8).write(to: file)
+        #expect(HostBridge.consume(at: file) == nil)
+        #expect(FileManager.default.fileExists(atPath: file.path))
+    }
+
     @Test func rejectsOversizedOpenPayload() {
         let padding = String(repeating: "a", count: HostBridge.maxRequestBytes)
         let json = #"{"url":"https://example.com/cb","cwd":"\#(padding)","ts":1719800000}"#
