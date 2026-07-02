@@ -24,4 +24,10 @@ enum HostBridge {
     }
 
     static let maxRequestBytes = 64 * 1024
+
+    static func allowedURL(_ raw: String) -> URL? {
+        guard !raw.isEmpty, raw.utf8.count <= 8192, let url = URL(string: raw) else { return nil }
+        guard let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" else { return nil }
+        return url
+    }
 }
