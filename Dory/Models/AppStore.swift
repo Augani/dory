@@ -50,6 +50,7 @@ final class AppStore {
     var showMenuBarIcon = true
     var autoUpdate = false
     var routeDockerCLI = true
+    var machineEnvAllowList: [String] = MachineEnvImport.defaultNames
     var openLoginsOnMac = true
     var dockerHostConflict: DockerHostConflict.Conflict?
     var dockerHostCleaned = false
@@ -114,6 +115,9 @@ final class AppStore {
             if isAgentMode { showMenuBarIcon = true }
             if let v = UserDefaults.standard.object(forKey: Self.autoUpdateKey) as? Bool { autoUpdate = v }
             if let v = UserDefaults.standard.object(forKey: Self.routeDockerKey) as? Bool { routeDockerCLI = v }
+            if let raw = UserDefaults.standard.string(forKey: Self.machineEnvAllowListKey) {
+                machineEnvAllowList = MachineEnvImport.parse(raw)
+            }
             if let v = UserDefaults.standard.object(forKey: Self.openLoginsOnMacKey) as? Bool { openLoginsOnMac = v }
             dockerHostCleaned = DockerHostConflict.hasCleaned
             dockerHostConflictDismissed = UserDefaults.standard.bool(forKey: Self.dockerHostDismissedKey)
@@ -157,6 +161,7 @@ final class AppStore {
     static let menuBarIconKey = "dory.showMenuBarIcon"
     static let autoUpdateKey = "dory.autoUpdate"
     static let routeDockerKey = "dory.routeDockerCLI"
+    static let machineEnvAllowListKey = "dory.machineEnvAllowList"
     static let openLoginsOnMacKey = "dory.openLoginsOnMac"
     static let dockerHostDismissedKey = "dory.dockerHostDismissed"
     static let containerDetailWidthKey = "dory.containerDetailWidth"
@@ -257,6 +262,12 @@ final class AppStore {
     func setShowMenuBarIcon(_ on: Bool) {
         showMenuBarIcon = isAgentMode ? true : on
         UserDefaults.standard.set(showMenuBarIcon, forKey: Self.menuBarIconKey)
+    }
+
+    func setMachineEnvAllowList(_ names: [String]) {
+        let normalized = MachineEnvImport.normalize(names)
+        machineEnvAllowList = normalized
+        UserDefaults.standard.set(MachineEnvImport.serialize(normalized), forKey: Self.machineEnvAllowListKey)
     }
 
     func completeOnboarding() {
