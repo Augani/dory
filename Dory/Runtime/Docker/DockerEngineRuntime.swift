@@ -199,7 +199,7 @@ struct DockerEngineRuntime: ContainerRuntime {
         await detect(candidates: DockerEngineSocketDiscovery.candidates())
     }
 
-    static func detect(candidates: [String], fileManager: FileManager = .default) async -> DockerEngineRuntime? {
+    static func detect(candidates: [String], fileManager: FileManager = .default, probeTimeout: TimeInterval = detectionProbeTimeout) async -> DockerEngineRuntime? {
         let existing = candidates.enumerated().filter { fileManager.fileExists(atPath: $0.element) }
         guard !existing.isEmpty else { return nil }
 
@@ -207,7 +207,7 @@ struct DockerEngineRuntime: ContainerRuntime {
             for (index, path) in existing {
                 group.addTask {
                     let runtime = DockerEngineRuntime(socketPath: path)
-                    let version = try? await runtime.get("/version", as: DockerVersion.self, ioTimeout: detectionProbeTimeout)
+                    let version = try? await runtime.get("/version", as: DockerVersion.self, ioTimeout: probeTimeout)
                     return (index, version == nil ? nil : runtime)
                 }
             }

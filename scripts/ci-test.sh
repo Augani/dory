@@ -1,12 +1,11 @@
 #!/bin/bash
-# CI gate: the full DoryTests suite must run to completion; only the known timing-flaky
-# tests (tracked for a proper fix) may fail. Robust to xcodebuild -skip-testing quirks
-# with Swift Testing identifiers.
+# CI gate: the full DoryTests suite must run to completion with zero failures. The retry
+# handles shared-runner host deaths (too few tests ran), never real test failures.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 LOG="${DORY_CI_TEST_LOG:-/tmp/dory_ci_tests.log}"
 
-ALLOW='shimWaitBlocksUntilContainerStops|generatesCAAndIssuesVerifiableDomainCertificate|detectSkipsHungSocketAndFindsNextCandidate|detectProbesMultipleStaleSocketsConcurrently|snapshotDoesNotWaitForHungStatsProbe'
+ALLOW='^$'
 
 for attempt in 1 2; do
   bash scripts/test.sh -skip-testing:DoryUITests 2>&1 | tee "$LOG"

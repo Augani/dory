@@ -126,15 +126,15 @@ struct DockerEngineSocketDiscoveryTests {
         defer { server.stop() }
 
         let started = Date()
-        let runtime = await DockerEngineRuntime.detect(candidates: [hungPath, goodPath])
+        let runtime = await DockerEngineRuntime.detect(candidates: [hungPath, goodPath], probeTimeout: 2.5)
 
         #expect(runtime?.socketPath == goodPath)
-        #expect(Date().timeIntervalSince(started) < 1.5)
+        #expect(Date().timeIntervalSince(started) < 6.0)
     }
 
     @MainActor
     @Test func detectProbesMultipleStaleSocketsConcurrently() async throws {
-        let hungPaths = (0..<3).map { Self.shortSocketPath("dory-detect-stale-\($0)") }
+        let hungPaths = (0..<4).map { Self.shortSocketPath("dory-detect-stale-\($0)") }
         let goodPath = Self.shortSocketPath("dory-detect-concurrent-good")
         let hung = try hungPaths.map { try HungUnixSocketCandidate(path: $0) }
         defer { hung.forEach { $0.stop() } }
@@ -149,10 +149,10 @@ struct DockerEngineSocketDiscoveryTests {
         defer { server.stop() }
 
         let started = Date()
-        let runtime = await DockerEngineRuntime.detect(candidates: hungPaths + [goodPath])
+        let runtime = await DockerEngineRuntime.detect(candidates: hungPaths + [goodPath], probeTimeout: 2.5)
 
         #expect(runtime?.socketPath == goodPath)
-        #expect(Date().timeIntervalSince(started) < 1.5)
+        #expect(Date().timeIntervalSince(started) < 6.0)
     }
 
     private static func shortSocketPath(_ prefix: String) -> String {

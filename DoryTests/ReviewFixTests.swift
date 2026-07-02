@@ -1040,7 +1040,10 @@ struct ReviewFixTests {
         let waitTask = Task {
             try await client.send(HTTPRequest(method: "POST", path: "/v1.47/containers/c1/wait"))
         }
-        try await Task.sleep(for: .milliseconds(50))
+        for _ in 0..<600 where await runtime.snapshotCount < 1 {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(await runtime.snapshotCount >= 1)
         await runtime.setStatus(id: "c1abcdef", status: .stopped)
 
         let response = try await waitTask.value

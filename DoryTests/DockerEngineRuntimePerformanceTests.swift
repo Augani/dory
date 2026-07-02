@@ -53,7 +53,7 @@ struct DockerEngineRuntimePerformanceTests {
                 """#.utf8))
             case "/containers/c1/stats":
                 return .streaming(contentType: "application/json") { _ in
-                    try? await Task.sleep(for: .seconds(3))
+                    try? await Task.sleep(for: .seconds(10))
                 }
             case "/images/json", "/networks":
                 return .json(Data("[]".utf8))
@@ -72,7 +72,7 @@ struct DockerEngineRuntimePerformanceTests {
         let started = Date()
         let snapshot = try await runtime.snapshot()
 
-        #expect(Date().timeIntervalSince(started) < 2)
+        #expect(Date().timeIntervalSince(started) < 5)
         let container = try #require(snapshot.containers.first)
         #expect(container.name == "web")
         #expect(container.cpuPercent == 0)
