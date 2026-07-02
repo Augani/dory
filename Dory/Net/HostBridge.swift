@@ -26,8 +26,14 @@ enum HostBridge {
     static let maxRequestBytes = 64 * 1024
 
     static func allowedURL(_ raw: String) -> URL? {
-        guard !raw.isEmpty, raw.utf8.count <= 8192, let url = URL(string: raw) else { return nil }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed.utf8.count <= 8192, let url = URL(string: trimmed) else { return nil }
         guard let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" else { return nil }
+        guard url.host?.isEmpty == false else { return nil }
         return url
+    }
+
+    static func allowedForwardPort(_ port: Int) -> Bool {
+        port >= 1024 && port <= 65535
     }
 }

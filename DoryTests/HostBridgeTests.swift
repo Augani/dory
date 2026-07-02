@@ -50,6 +50,25 @@ struct HostBridgeTests {
         #expect(HostBridge.allowedURL("HTTPS://EXAMPLE.com") != nil)
     }
 
+    @Test func trimsWhitespaceBeforeParsing() {
+        #expect(HostBridge.allowedURL("  https://x.com  ") != nil)
+    }
+
+    @Test func rejectsHostlessURL() {
+        #expect(HostBridge.allowedURL("http://") == nil)
+    }
+
+    @Test func forwardPortRange() {
+        #expect(HostBridge.allowedForwardPort(1024))
+        #expect(HostBridge.allowedForwardPort(53219))
+        #expect(HostBridge.allowedForwardPort(65535))
+        #expect(!HostBridge.allowedForwardPort(1023))
+        #expect(!HostBridge.allowedForwardPort(80))
+        #expect(!HostBridge.allowedForwardPort(0))
+        #expect(!HostBridge.allowedForwardPort(65536))
+        #expect(!HostBridge.allowedForwardPort(-5))
+    }
+
     @Test func rejectsOversizedOpenPayload() {
         let padding = String(repeating: "a", count: HostBridge.maxRequestBytes)
         let json = #"{"url":"https://example.com/cb","cwd":"\#(padding)","ts":1719800000}"#
