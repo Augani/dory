@@ -1783,6 +1783,7 @@ final class AppStore {
             let effectiveSettings = Self.preservingHiddenMachineSettings(settings, existing: existing)
             try await machineService.recreate(name: machine.name, settings: effectiveSettings)
             appendMachineCreationLog("Settings applied. Machine recreated from snapshot.")
+            registerMachineBridge(machine.name)
             activeSheet = nil
             loadMachines()
             return nil
@@ -1860,6 +1861,7 @@ final class AppStore {
             do {
                 try await service.cloneFromSnapshot(snapshot, newName: newName)
                 appendMachineCreationLog("Clone \(newName) created and started.")
+                registerMachineBridge(newName)
                 activeSheet = nil
                 loadMachines()
             } catch {
@@ -1888,6 +1890,7 @@ final class AppStore {
             do {
                 try await service.restore(snapshot)
                 appendMachineCreationLog("\(snapshot.machineName) restored from snapshot.")
+                registerMachineBridge(snapshot.machineName)
                 activeSheet = nil
                 loadMachines()
             } catch {
