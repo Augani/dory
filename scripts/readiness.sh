@@ -28,6 +28,7 @@ RUN_ONLINE="${RUN_ONLINE:-0}"
 RUN_DOMAINS="${RUN_DOMAINS:-0}"
 RUN_K8S="${RUN_K8S:-0}"
 RUN_MACHINES="${RUN_MACHINES:-0}"
+RUN_BRIDGE="${RUN_BRIDGE:-0}"
 STOP_ORBSTACK="${STOP_ORBSTACK:-0}"
 
 RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$"
@@ -61,6 +62,7 @@ Options:
   --domains            Run *.dory.local / *.orb.local checks when integration is active
   --k8s                Run Kubernetes context checks
   --machines           Run Linux machine CLI checks
+  --bridge             Run guest→host bridge (dory-open) check
   --stop-orbstack      Quit OrbStack before Dory-only runs
   -h, --help           Show this help
 EOF
@@ -77,6 +79,7 @@ while [ "$#" -gt 0 ]; do
     --domains) RUN_DOMAINS=1; shift ;;
     --k8s) RUN_K8S=1; shift ;;
     --machines) RUN_MACHINES=1; shift ;;
+    --bridge) RUN_BRIDGE=1; shift ;;
     --stop-orbstack) STOP_ORBSTACK=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown option: $1" >&2; usage; exit 2 ;;
@@ -450,6 +453,37 @@ EOF
   docker_e rmi -f "$tag" >/dev/null
 }
 
+test_bridge() {
+  local mname="dory-brdg-$RUN_SLUG"
+  local cname="dory-machine-$mname"
+  local hbridge="$HOME/.dory/bridge/$mname"
+  rm -rf "$hbridge"; mkdir -p "$hbridge/open" "$hbridge/forward"
+  docker_e rm -f "$cname" >/dev/null 2>&1 || true
+  docker_e run -d --name "$cname" --label "$LABEL_KEY=$RUN_ID" \
+    -v "$hbridge:/opt/dory/bridge" -e BROWSER=dory-open \
+    "$ALPINE_IMAGE" tail -f /dev/null >/dev/null
+  awk '/static let script = ##"""/{f=1;next} f && $0 ~ /^[[:space:]]*"""##[[:space:]]*$/{f=0;next} f' \
+    "$ROOT/Dory/Runtime/Machines/DoryOpenShim.swift" \
+    | docker_e exec -i "$cname" sh -c 'cat > /usr/local/bin/dory-open && chmod +x /usr/local/bin/dory-open'
+  docker_e exec "$cname" sh -c 'command -v nc >/dev/null 2>&1 || (apk add --no-cache netcat-openbsd >/dev/null 2>&1 || true)'
+  docker_e exec -d "$cname" sh -c '(printf "HTTP/1.0 200 OK\r\n\r\nok" | nc -l -p 53219) >/dev/null 2>&1'
+  docker_e exec "$cname" sh -c '/usr/local/bin/dory-open "http://127.0.0.1:53219/cb?code=xyz"' >/dev/null
+  local seen_open=0 seen_forward=0
+  for _ in $(seq 1 20); do
+    ls "$hbridge/open/"*.json >/dev/null 2>&1 && seen_open=1
+    [ -f "$hbridge/forward/53219.json" ] && seen_forward=1
+    [ "$seen_open" = 1 ] && [ "$seen_forward" = 1 ] && break
+    sleep 0.25
+  done
+  grep -q 'http://127.0.0.1:53219/cb?code=xyz' "$hbridge/open/"*.json 2>/dev/null || { echo "open request missing"; return 1; }
+  [ "$seen_forward" = 1 ] || { echo "forward request missing"; return 1; }
+  ( echo -e "GET /cb HTTP/1.0\r\n\r" | docker_e exec -i "$cname" nc 127.0.0.1 53219 ) | grep -q 'ok' \
+    || { echo "guest loopback server unreachable via exec-nc"; return 1; }
+  docker_e rm -f "$cname" >/dev/null 2>&1 || true
+  rm -rf "$hbridge"
+  return 0
+}
+
 measure_memory() {
   local engine="$1"
   local image="$ALPINE_IMAGE"
@@ -531,6 +565,12 @@ run_engine() {
     run_case "$CURRENT_ENGINE" "Linux machine build + systemd boot + exec" test_machines
   else
     skip_case "$CURRENT_ENGINE" "Linux machine build + systemd boot + exec" "enable with --machines"
+  fi
+
+  if [ "$RUN_BRIDGE" = "1" ]; then
+    run_case "$CURRENT_ENGINE" "guest→host bridge (dory-open open + forward)" test_bridge
+  else
+    skip_case "$CURRENT_ENGINE" "guest→host bridge (dory-open open + forward)" "enable with --bridge"
   fi
 
   if [ "$RUN_MEMORY" = "1" ]; then
