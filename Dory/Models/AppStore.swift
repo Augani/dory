@@ -395,6 +395,11 @@ final class AppStore {
         containerBinary: SharedVMProvisioner.containerBinary(),
         engineName: SharedVMProvisioner.engineName
     )
+    @ObservationIgnored private lazy var hostBridge = HostBridgeWatcher(
+        bridgeRoot: URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".dory/bridge"),
+        forwarder: portForwarder,
+        open: { url in DispatchQueue.main.async { NSWorkspace.shared.open(url) } }
+    )
     private let domainTable = DomainTable()
     private let dns = DoryDNS()
     @ObservationIgnored private let reverseProxy: DoryReverseProxy
@@ -443,6 +448,7 @@ final class AppStore {
         try? dns.start(port: Self.dnsPort)
         try? reverseProxy.start(httpPort: Self.httpProxyPort)
         networkingStarted = true
+        for machine in machines where machine.status == .running { registerMachineBridge(machine.name) }
         startTLS()
         Task.detached { await SharedVMProvisioner.ensureEmulation() }
     }
@@ -480,7 +486,17 @@ final class AppStore {
         dns.stop(); reverseProxy.stop(); tlsProxy?.stop(); tlsProxy = nil
         if let proxy = kubeProxy, proxy.isRunning { proxy.terminate() }
         kubeProxy = nil
+        for machine in hostBridge.watchedMachines() { hostBridge.stopWatching(machine: machine) }
         networkingStarted = false
+    }
+
+    func registerMachineBridge(_ name: String) {
+        try? FileManager.default.createDirectory(atPath: MachineService.bridgeHostDir(for: name), withIntermediateDirectories: true)
+        hostBridge.startWatching(machine: name)
+    }
+
+    func unregisterMachineBridge(_ name: String) {
+        hostBridge.stopWatching(machine: name)
     }
 
     /// `<name>.dory.local` → the published host port that reaches the container. Containers without a
@@ -1664,6 +1680,7 @@ final class AppStore {
             } catch {
                 actionError = "Could not \(wasRunning ? "stop" : "start") \(name): \(error)"
             }
+            if wasRunning { unregisterMachineBridge(name) } else { registerMachineBridge(name) }
             loadMachines()
         }
     }
@@ -1735,6 +1752,7 @@ final class AppStore {
                 Task { @MainActor in self.appendMachineCreationLog(line) }
             }
             appendMachineCreationLog("Machine created and started.")
+            registerMachineBridge(trimmedName)
             let refreshed = await refreshMachines()
             machineCreated = refreshed.first { $0.name == trimmedName }
             if machineCreated == nil { activeSheet = nil }
@@ -1962,6 +1980,7 @@ final class AppStore {
         let name = machine.name
         let service = machineService
         machines.removeAll { $0.name == name }
+        unregisterMachineBridge(name)
         Task { try? await service.delete(name: name); loadMachines() }
     }
 
