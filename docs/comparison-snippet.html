@@ -1,0 +1,111 @@
+<!--
+  Proposed comparison section for docs/index.html.
+  Uses the existing design tokens (.wrap, .eyebrow, h2, .lead, .reveal, --surface, --border, etc.)
+  so it drops in without new CSS. Suggested placement: a new <section id="compare"> between the
+  #features section and the #memory section. Optionally add a nav link:
+      <a class="navlink" href="#compare">Compare</a>
+  Every factual claim links to a primary source; Dory's own memory figure is labeled as such.
+  Scoped styles below are prefixed .cmp- so they don't collide with existing classes.
+-->
+<style>
+  .cmp-wrap { margin-top: 44px; overflow-x: auto; border: 1px solid var(--border); border-radius: 16px; background: var(--surface); }
+  table.cmp { width: 100%; border-collapse: collapse; min-width: 720px; font-size: 14.5px; }
+  table.cmp th, table.cmp td { text-align: left; padding: 16px 18px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  table.cmp thead th { font-size: 13px; letter-spacing: 0.02em; color: var(--text); background: var(--surface-2); position: sticky; top: 0; }
+  table.cmp thead th.dory { color: var(--accent-text); }
+  table.cmp tbody th { font-weight: 600; color: var(--text); width: 190px; }
+  table.cmp td { color: var(--text-2); }
+  table.cmp td.dory { color: var(--text); background: rgba(46,155,245,0.05); }
+  table.cmp tr:last-child th, table.cmp tr:last-child td { border-bottom: none; }
+  table.cmp a { color: var(--accent-text); }
+  table.cmp a:hover { text-decoration: underline; }
+  .cmp-yes { color: var(--green); font-weight: 600; }
+  .cmp-no { color: var(--text-3); }
+  .cmp-note { color: var(--text-3); font-size: 13.5px; }
+  .cmp-leads { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin-top: 40px; }
+  .cmp-lead-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 24px; }
+  .cmp-lead-card h3 { font-size: 17px; letter-spacing: -0.01em; }
+  .cmp-lead-card p { color: var(--text-2); font-size: 14.5px; margin-top: 9px; }
+  .cmp-sources { margin-top: 30px; font-size: 12.5px; color: var(--text-3); line-height: 1.9; }
+  .cmp-sources a { color: var(--text-2); }
+  .cmp-sources a:hover { color: var(--text); text-decoration: underline; }
+  @media (max-width: 720px) { .cmp-leads { grid-template-columns: 1fr; } }
+</style>
+
+<section id="compare">
+  <div class="wrap center">
+    <p class="eyebrow">How it compares</p>
+    <h2>Free and open, on purpose.</h2>
+    <p class="lead">Two things cost nothing to adopt and are hard to reverse: no license line item to buy or track, and an open-source codebase whose terms can't be quietly changed later. Everything below is sourced.</p>
+  </div>
+
+  <div class="wrap">
+    <div class="cmp-leads reveal">
+      <div class="cmp-lead-card">
+        <h3>Permanently free &amp; open source</h3>
+        <p>GPL-3.0, no paid tier, no seat count, no account. That removes a per-seat license line item and the ongoing job of tracking who's entitled to a commercial seat when your headcount or revenue grows.</p>
+      </div>
+      <div class="cmp-lead-card">
+        <h3>Terms you can't lose</h3>
+        <p>Pricing and free-tier terms for closed-source tools have changed before, and some developers have said publicly they no longer trust closed-source freemium runtimes for that reason. An open GPL-3.0 codebase is a commitment that can't be revoked.</p>
+      </div>
+    </div>
+
+    <div class="cmp-wrap reveal">
+      <table class="cmp">
+        <thead>
+          <tr>
+            <th scope="col"></th>
+            <th scope="col" class="dory">Dory</th>
+            <th scope="col">Docker Desktop</th>
+            <th scope="col">OrbStack</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <th scope="row">License / cost</th>
+            <td class="dory">Free. No paid tier, no seat count.</td>
+            <td>Free for individuals, education &amp; small business; paid subscription required at <b>250+ employees or US$10M+ revenue</b>.<sup><a href="#cmp-1">1</a></sup></td>
+            <td>Free for personal use; <b>US$8/user/mo</b> required for all commercial use.<sup><a href="#cmp-2">2</a></sup></td>
+          </tr>
+          <tr>
+            <th scope="row">Open source</th>
+            <td class="dory"><span class="cmp-yes">Yes</span> — GPL-3.0, source on GitHub.<sup><a href="#cmp-3">3</a></sup></td>
+            <td><span class="cmp-no">No</span> (Desktop app is proprietary)</td>
+            <td><span class="cmp-no">No</span>; open-source request open since 2023.<sup><a href="#cmp-4">4</a></sup></td>
+          </tr>
+          <tr>
+            <th scope="row">Account required</th>
+            <td class="dory"><span class="cmp-yes">No</span></td>
+            <td>Docker account to accept paid terms.<sup><a href="#cmp-1">1</a></sup></td>
+            <td>Not for personal use.</td>
+          </tr>
+          <tr>
+            <th scope="row">Idle memory posture</th>
+            <td class="dory">One shared VM; idle memory stays flat as containers grow. Dory measures <b>~4.7×</b> less than one-VM-per-container. <span class="cmp-note">Measured by Dory; public benchmark forthcoming.</span></td>
+            <td>Reported persistent idle footprint of <b>~3–4 GB</b> (fixed VM block macOS doesn't reclaim).<sup><a href="#cmp-6">6</a></sup><sup><a href="#cmp-7">7</a></sup></td>
+            <td>Also a single shared VM; a head-to-head figure is pending Dory's benchmark.</td>
+          </tr>
+          <tr>
+            <th scope="row">K8s version selection</th>
+            <td class="dory">Runs k3s, which publishes multiple channels — more than one minor selectable.</td>
+            <td>Bundled version tracks the Docker Desktop release.</td>
+            <td>One auto-bumped version; docs point to kind/k3d. Selection request open since Nov 2023.<sup><a href="#cmp-9">9</a></sup></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p class="cmp-note" style="margin-top:16px">This table compares licensing model, openness, and design posture — not a claim that any tool behaves badly. Docker Desktop and OrbStack are capable tools.</p>
+
+    <div class="cmp-sources">
+      <p id="cmp-1">1. Docker pricing / subscription (250-employee &amp; US$10M thresholds): <a href="https://www.docker.com/pricing/" target="_blank" rel="noopener">docker.com/pricing</a> · <a href="https://docs.docker.com/subscription/desktop-license/" target="_blank" rel="noopener">docs.docker.com/subscription/desktop-license</a></p>
+      <p id="cmp-2">2. OrbStack pricing (US$8/user/mo, commercial use): <a href="https://orbstack.dev/pricing" target="_blank" rel="noopener">orbstack.dev/pricing</a></p>
+      <p id="cmp-3">3. Dory source &amp; GPL-3.0 license: <a href="https://github.com/Augani/dory" target="_blank" rel="noopener">github.com/Augani/dory</a></p>
+      <p id="cmp-4">4. OrbStack open-source request: <a href="https://github.com/orbstack/orbstack/issues/359" target="_blank" rel="noopener">orbstack/orbstack#359</a></p>
+      <p id="cmp-6">6. Docker Desktop macOS memory not released to host: <a href="https://github.com/docker/for-mac/issues/6186" target="_blank" rel="noopener">docker/for-mac#6186</a></p>
+      <p id="cmp-7">7. Docker Desktop macOS resource-usage reports: <a href="https://github.com/docker/for-mac/issues/6655" target="_blank" rel="noopener">docker/for-mac#6655</a></p>
+      <p id="cmp-9">9. OrbStack K8s version-selection request (open since Nov 2023): <a href="https://github.com/orbstack/orbstack/issues/777" target="_blank" rel="noopener">orbstack/orbstack#777</a></p>
+    </div>
+  </div>
+</section>
