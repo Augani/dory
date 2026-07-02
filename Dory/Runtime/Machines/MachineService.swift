@@ -30,6 +30,10 @@ struct MachineService: Sendable {
 
     static func containerName(for name: String) -> String { namePrefix + name }
 
+    static func bridgeHostDir(for name: String) -> String {
+        URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".dory/bridge").appendingPathComponent(name).path
+    }
+
     func snapshot(machine: Machine, note: String, createdISO: String, tag: String) async throws -> MachineSnapshot {
         let labels = SnapshotLabels.make(machine: machine, note: note, createdISO: createdISO)
         let repo = Self.snapshotRepoPrefix + machine.name
@@ -76,12 +80,15 @@ struct MachineService: Sendable {
             "RestartPolicy": ["Name": "unless-stopped"],
         ]
         var hostConfig = self.hostConfig(base: baseHostConfig, settings: settings)
+        var binds = (hostConfig["Binds"] as? [String]) ?? []
+        binds.append("\(bridgeHostDir(for: name)):/opt/dory/bridge")
+        hostConfig["Binds"] = binds
         hostConfig.removeValue(forKey: "ExposedPorts")
         var body: [String: Any] = [
             "Hostname": name,
             "Image": imageTag,
             "Cmd": cmd,
-            "Env": (["container=docker"] + settings.env.map { "\($0.key)=\($0.value)" }).sorted(),
+            "Env": (["container=docker", "BROWSER=dory-open"] + settings.env.map { "\($0.key)=\($0.value)" }).sorted(),
             "StopSignal": "SIGRTMIN+3",
             "Labels": labels,
             "HostConfig": hostConfig,

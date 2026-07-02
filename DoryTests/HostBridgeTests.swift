@@ -164,6 +164,23 @@ struct HostBridgeTests {
         fwd.stopAll()
     }
 
+    @Test func createBodyBindsBridgeDir() {
+        let body = MachineService.createBody(name: "dev", distro: MachineDistro.forFamily("ubuntu")!, arch: .arm64, imageTag: "img", keepaliveOnly: true)
+        let host = body["HostConfig"] as! [String: Any]
+        let binds = host["Binds"] as! [String]
+        #expect(binds.contains("\(MachineService.bridgeHostDir(for: "dev")):/opt/dory/bridge"))
+    }
+
+    @Test func createBodySetsBrowserEnv() {
+        let body = MachineService.createBody(name: "dev", distro: MachineDistro.forFamily("ubuntu")!, arch: .arm64, imageTag: "img", keepaliveOnly: true)
+        let env = body["Env"] as! [String]
+        #expect(env.contains("BROWSER=dory-open"))
+    }
+
+    @Test func bridgeHostDirIsUnderDoryBridge() {
+        #expect(MachineService.bridgeHostDir(for: "dev").hasSuffix("/.dory/bridge/dev"))
+    }
+
     final class OpenRecorder: @unchecked Sendable {
         private let lock = NSLock()
         private var storage: [URL] = []
