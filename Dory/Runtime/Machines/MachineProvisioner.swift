@@ -42,5 +42,29 @@ enum MachineProvisioner {
         }
     }
 
+    static func ghInstall(pkg: MachineDistro.PackageManager) -> String {
+        switch pkg {
+        case .apt:
+            return [
+                "apt-get update -qq",
+                "apt-get install -y curl ca-certificates",
+                "install -d -m 0755 /etc/apt/keyrings",
+                "curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg -o /etc/apt/keyrings/githubcli-archive-keyring.gpg",
+                "chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg",
+                "printf 'deb [arch=%s signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main\\n' \"$(dpkg --print-architecture)\" > /etc/apt/sources.list.d/github-cli.list",
+                "apt-get update -qq",
+                "apt-get install -y gh",
+            ].joined(separator: " && ")
+        case .dnf:
+            return "dnf install -y 'dnf-command(config-manager)' && dnf config-manager --add-repo https://cli.github.com/packages/rpm/gh-cli.repo && dnf install -y gh"
+        case .zypper:
+            return "zypper -n install gh || (zypper -n addrepo https://cli.github.com/packages/rpm/gh-cli.repo && zypper -n --gpg-auto-import-keys install gh)"
+        case .apk:
+            return "apk add github-cli"
+        case .pacman:
+            return "pacman -Sy --noconfirm github-cli"
+        }
+    }
+
     private static func shellQuote(_ s: String) -> String { "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'" }
 }
