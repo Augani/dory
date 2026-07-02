@@ -180,3 +180,30 @@ Date (UTC):       <captured_utc>
 - Apple Container's networking and volume semantics differ by design (see caveats above); treat those
   rows as characterizing a different architecture, not as head-to-head with the shared-VM engines.
 - `iperf3` single-stream measures steady-state bandwidth, not latency or connection-setup cost.
+
+---
+
+## First live run — 2026-07-02 (Dory only; M-series Mac; single machine)
+
+Engine: dory (OrbStack/Docker Desktop apps not running → skipped; iperf3 image pull failed → C2C skipped).
+
+| Metric | Result | Read |
+|---|---|---|
+| Idle memory | +13.6 MB engine RSS for 3 idle alpine (~4.5 MB/container); system delta negative = noise | Low host footprint corroborated |
+| Bind-mount FS, 2k files | bind 0.195s vs in-container 0.264s (0.74×) | Bind ≥ as fast as overlay |
+| Bind-mount FS, 20k files | bind 0.188s vs in-container 2.452s (0.08×) | **SUSPECT — see caveat** |
+
+### CAVEAT — do NOT publish the 0.08× / "13× faster" figure
+Bind-mount wall time was ~flat (0.195s→0.188s) as file count went 2k→20k, while in-container scaled
+~10×. Flat-under-load is the signature of **write-back-cached virtiofs**: the in-guest timer returns
+before writes are durably flushed to the host, so bind time is undercounted. Before any FS-speed
+claim, a rigorous benchmark must: (1) force durability (fsync/`sync` that actually crosses the
+virtiofs boundary, or measure host-side completion), (2) add a TRUE native baseline (same op run
+directly on macOS, no container/VM), (3) use realistic workloads (`npm install`, `git status` on a
+large tree, tar-extract), (4) median-of-N with warm cache disclosed. HONEST current claim: Dory's
+bind mount is **not slower** than its own overlay fs (unlike Docker Desktop's documented penalty) —
+magnitude TBD. This is WS-E's charter.
+
+### C2C networking — not yet measured
+The harness's default `networkstatic/iperf3:latest` failed to pull. Re-run with a valid iperf3 image
+(e.g. build a tiny alpine+iper3 image locally) to get opportunity #6's number.
