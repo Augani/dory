@@ -181,6 +181,12 @@ struct HostBridgeTests {
         #expect(MachineService.bridgeHostDir(for: "dev").hasSuffix("/.dory/bridge/dev"))
     }
 
+    @Test func bridgeHostDirIsStableForRestoredMachine() {
+        let path = MachineService.bridgeHostDir(for: "restored")
+        #expect(path.hasSuffix("/.dory/bridge/restored"))
+        #expect(path == MachineService.bridgeHostDir(for: "restored"))
+    }
+
     final class OpenRecorder: @unchecked Sendable {
         private let lock = NSLock()
         private var storage: [URL] = []

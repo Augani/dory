@@ -233,6 +233,9 @@ struct MachineService: Sendable {
                                              "Tmpfs": ["/run": "", "/run/lock": "", "/tmp": ""],
                                              "RestartPolicy": ["Name": "unless-stopped"]]
         var hostConfig = Self.hostConfig(base: baseHostConfig, settings: effectiveSettings)
+        var binds = (hostConfig["Binds"] as? [String]) ?? []
+        binds.append("\(Self.bridgeHostDir(for: name)):/opt/dory/bridge")
+        hostConfig["Binds"] = binds
         hostConfig.removeValue(forKey: "ExposedPorts")
         var labels: [String: String] = [
             Self.label: distro?.family ?? snapshot.distro.lowercased(),
@@ -251,7 +254,7 @@ struct MachineService: Sendable {
             "Hostname": name,
             "Image": imageRef,
             "Cmd": cmd,
-            "Env": (["container=docker"] + effectiveSettings.env.map { "\($0.key)=\($0.value)" }).sorted(),
+            "Env": (["container=docker", "BROWSER=dory-open"] + effectiveSettings.env.map { "\($0.key)=\($0.value)" }).sorted(),
             "StopSignal": "SIGRTMIN+3",
             "Labels": labels,
             "HostConfig": hostConfig,
