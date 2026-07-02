@@ -60,11 +60,38 @@ enum MachineProvisioner {
         case .zypper:
             return "zypper -n install gh || (zypper -n addrepo https://cli.github.com/packages/rpm/gh-cli.repo && zypper -n --gpg-auto-import-keys install gh)"
         case .apk:
-            return "apk add github-cli"
+            return "\(apkEnableCommunityAndUpdate) && apk add github-cli"
         case .pacman:
             return "pacman -Sy --noconfirm github-cli"
         }
     }
+
+    static func toolInstallScript(pkg: MachineDistro.PackageManager, hasNode: Bool) -> String {
+        var lines: [String] = []
+        lines.append("(command -v gh >/dev/null 2>&1 || (\(ghInstall(pkg: pkg)))) || true")
+        lines.append("(command -v claude >/dev/null 2>&1 || (\(claudeInstall(hasNode: hasNode)))) || true")
+        lines.append("(command -v socat >/dev/null 2>&1 || (\(socatInstall(pkg: pkg)))) || true")
+        return lines.joined(separator: "\n")
+    }
+
+    private static func claudeInstall(hasNode: Bool) -> String {
+        let official = "curl -fsSL https://claude.ai/install.sh | sh"
+        guard hasNode else { return official }
+        return "\(official) || npm i -g @anthropic-ai/claude-code"
+    }
+
+    private static func socatInstall(pkg: MachineDistro.PackageManager) -> String {
+        switch pkg {
+        case .apt: return "apt-get update -qq && apt-get install -y socat"
+        case .dnf: return "dnf install -y socat"
+        case .zypper: return "zypper -n install socat"
+        case .apk: return "\(apkEnableCommunityAndUpdate) && apk add socat"
+        case .pacman: return "pacman -Sy --noconfirm socat"
+        }
+    }
+
+    private static let apkEnableCommunityAndUpdate =
+        "sed -i 's|^#\\(.*community\\)|\\1|' /etc/apk/repositories 2>/dev/null || true; apk update"
 
     private static func shellQuote(_ s: String) -> String { "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'" }
 }
