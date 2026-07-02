@@ -19,7 +19,7 @@ emit_forward() {
   [ "$p" -ge 1024 ] 2>/dev/null || return 0
   [ "$p" -le 65535 ] 2>/dev/null || return 0
   f="$BRIDGE/forward/$p.json"
-  t="$f.tmp.$$"
+  t="$f.$$.tmp"
   printf '{"port":%s,"ts":%s,"ttlSec":300}\n' "$p" "$TS" > "$t" && mv "$t" "$f"
 }
 
@@ -43,9 +43,10 @@ done
 
 UUID=$(cat /proc/sys/kernel/random/uuid 2>/dev/null || echo "$TS-$$")
 of="$BRIDGE/open/$UUID.json"
-ot="$of.tmp.$$"
+ot="$of.$$.tmp"
 ESC=$(printf '%s' "$URL" | sed 's/\\/\\\\/g; s/"/\\"/g')
-printf '{"url":"%s","cwd":"%s","ts":%s}\n' "$ESC" "$PWD" "$TS" > "$ot" && mv "$ot" "$of"
+CWDESC=$(printf '%s' "$PWD" | sed 's/\\/\\\\/g; s/"/\\"/g')
+printf '{"url":"%s","cwd":"%s","ts":%s}\n' "$ESC" "$CWDESC" "$TS" > "$ot" && mv "$ot" "$of"
 printf 'Opening %s on your Mac…\n' "$URL"
 exit 0
 """##
