@@ -3,12 +3,12 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Dory — Docker &amp; Linux containers, native to your Mac</title>
+<title>Dory: Docker &amp; Linux containers, native to your Mac</title>
 <meta name="description" content="Dory is a free, open-source alternative to Docker Desktop and OrbStack. One native app, one shared VM for every container, a real Docker socket, *.dory.local HTTPS domains, one-click Kubernetes, and full Linux machines.">
 <link rel="icon" type="image/svg+xml" href="favicon.svg">
 <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png">
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
-<meta property="og:title" content="Dory — Docker &amp; Linux containers, native to your Mac">
+<meta property="og:title" content="Dory: Docker &amp; Linux containers, native to your Mac">
 <meta property="og:description" content="Free, open source, one shared VM for all your containers. ~4.7× less idle memory than per-container VMs.">
 <meta property="og:image" content="https://augani.github.io/dory/screenshot.png">
 <meta property="og:url" content="https://augani.github.io/dory/">
@@ -65,15 +65,21 @@
 
   /* ---------- hero ---------- */
   .hero{position:relative;padding:56px 0 40px;text-align:center}
-  .fish-stage{height:190px;display:grid;place-items:center;margin-bottom:8px}
-  #fish{width:210px;height:190px;filter:drop-shadow(0 14px 30px rgba(46,155,245,.35));
-    transition:transform .8s cubic-bezier(.22,1,.36,1);cursor:pointer;will-change:transform}
-  #fish .tail{transform-origin:405px 205px;animation:wag 1.5s ease-in-out infinite}
+  .fish-stage{position:relative;height:230px;margin-bottom:8px;overflow:hidden;border-radius:16px}
+  #fish{position:absolute;left:0;top:0;width:150px;height:136px;
+    filter:drop-shadow(0 14px 30px rgba(46,155,245,.35));cursor:pointer;will-change:transform}
+  #fish .tail{transform-origin:405px 205px;animation:wag var(--wagdur,1.5s) ease-in-out infinite}
   #fish .topfin{transform-origin:340px 145px;animation:finflick 3.4s ease-in-out infinite}
   #fish .fishbody{animation:bob 3.2s ease-in-out infinite}
   @keyframes wag{0%,100%{transform:rotate(-7deg)}50%{transform:rotate(9deg)}}
   @keyframes finflick{0%,86%,100%{transform:rotate(0)}92%{transform:rotate(-6deg)}}
-  @keyframes bob{0%,100%{transform:translateY(-5px) rotate(-1.6deg)}50%{transform:translateY(6px) rotate(1.6deg)}}
+  @keyframes bob{0%,100%{transform:translateY(-4px) rotate(-1.2deg)}50%{transform:translateY(4px) rotate(1.2deg)}}
+  .bgfish{position:absolute;pointer-events:none;opacity:.26;filter:blur(1.6px) brightness(.5) saturate(.6);
+    animation:bgswim linear infinite}
+  .bgfish svg{width:100%;height:100%}
+  @keyframes bgswim{from{left:104%}to{left:-16%}}
+  .fbubble{position:absolute;border-radius:50%;pointer-events:none;
+    background:radial-gradient(circle at 32% 30%,rgba(190,220,255,.65),rgba(120,170,240,.12) 62%,transparent 70%)}
   .pill{display:inline-flex;align-items:center;gap:8px;font-size:12.5px;font-weight:600;color:#8fc4ff;
     background:rgba(46,155,245,.10);border:1px solid rgba(46,155,245,.28);
     padding:6px 14px;border-radius:999px;margin-bottom:24px}
@@ -231,8 +237,8 @@
   }
   @media (max-width:640px){
     .nav-links a.navlink{display:none}
-    .fish-stage{height:150px}
-    #fish{width:160px;height:150px}
+    .fish-stage{height:180px}
+    #fish{width:118px;height:107px}
     section{padding:64px 0}
     #model-canvas{height:340px}
     .hud-side .mb{font-size:19px}
@@ -240,7 +246,9 @@
   @media (prefers-reduced-motion:reduce){
     *{animation:none!important;transition:none!important}
     .reveal{opacity:1;transform:none}
-    #fish{cursor:default}
+    .fish-stage{display:grid;place-items:center}
+    #fish{position:static;cursor:default}
+    .bgfish,.fbubble{display:none}
   }
 </style>
 </head>
@@ -294,15 +302,18 @@
   <!-- ================= HERO ================= -->
   <section class="hero" style="padding-top:44px">
     <div class="wrap">
-      <div class="fish-stage">
-        <svg id="fish" viewBox="224 54 270 270" role="img" aria-label="Dory the fish — click me">
+      <div class="fish-stage" id="fish-stage">
+        <span class="bgfish" style="width:52px;height:47px;top:14%;animation-duration:34s;animation-delay:-6s" aria-hidden="true"><svg viewBox="224 54 270 270"><use href="#dory-fish"/></svg></span>
+        <span class="bgfish" style="width:34px;height:31px;top:64%;animation-duration:46s;animation-delay:-24s" aria-hidden="true"><svg viewBox="224 54 270 270"><use href="#dory-fish"/></svg></span>
+        <span class="bgfish" style="width:24px;height:22px;top:40%;animation-duration:58s;animation-delay:-40s" aria-hidden="true"><svg viewBox="224 54 270 270"><use href="#dory-fish"/></svg></span>
+        <svg id="fish" viewBox="224 54 270 270" role="img" aria-label="Dory the fish, click me">
           <use href="#dory-fish"/>
         </svg>
       </div>
       <div class="pill"><span class="dot"></span> Free &amp; open source · Native on every Mac</div>
       <h1>Docker &amp; Linux containers, <span class="grad">native to your Mac.</span></h1>
       <p class="sub">One shared Linux VM for every container. A real Docker socket your CLI already speaks.
-        HTTPS domains, one-click Kubernetes, and full Linux machines — in a ~6&nbsp;MB native app
+        HTTPS domains, one-click Kubernetes, and full Linux machines, all in a ~6&nbsp;MB native app
         that's free and open source.</p>
       <div class="cta-row">
         <a class="btn btn-primary btn-big" href="https://github.com/Augani/dory/releases/latest" target="_blank" rel="noopener">
@@ -330,7 +341,7 @@
       <span class="kicker reveal">How Dory wins the memory game</span>
       <h2 class="reveal">Every VM you don't boot is RAM you keep.</h2>
       <p class="lead reveal">Dory builds on <a href="https://github.com/apple/containerization" target="_blank" rel="noopener" style="color:#9fd0ff;text-decoration:underline">Apple's open-source container stack</a>,
-        whose default model boots a micro-VM — kernel, init, memory ballast — <em>per container</em>.
+        whose default model boots a micro-VM (kernel, init, memory ballast) <em>per container</em>.
         Dory boots <b>one</b> persistent VM instead, runs <code style="font-family:var(--mono);font-size:14px;color:#9fd0ff">dockerd</code> inside it,
         and every container shares that single kernel and memory pool. Watch what happens as containers stack up:</p>
       <div class="model-wrap reveal" id="model-wrap">
@@ -343,7 +354,7 @@
               <div class="per" id="ct-other">0 containers · 0 kernels</div>
             </div>
             <div class="hud-side dory">
-              <div class="t">Dory — one shared VM</div>
+              <div class="t">Dory: one shared VM</div>
               <div class="mb" id="mb-dory">0 MB</div>
               <div class="per" id="ct-dory">0 containers · 1 kernel</div>
             </div>
@@ -357,7 +368,7 @@
           <svg viewBox="0 0 860 300" role="img" aria-label="Diagram: five per-container VMs each with their own kernel, versus one Dory VM containing five containers">
             <g font-family="var(--font)" font-size="13">
               <text x="215" y="28" fill="#8fa2c0" text-anchor="middle" font-weight="700">ONE VM PER CONTAINER</text>
-              <text x="645" y="28" fill="#34D058" text-anchor="middle" font-weight="700">DORY — ONE SHARED VM</text>
+              <text x="645" y="28" fill="#34D058" text-anchor="middle" font-weight="700">DORY: ONE SHARED VM</text>
             </g>
             <g>
               <rect x="30" y="50" width="70" height="200" rx="10" fill="none" stroke="#5a6a85"/><rect x="40" y="212" width="50" height="28" rx="5" fill="#5a6a85" opacity=".5"/><rect x="47" y="120" width="36" height="36" rx="6" fill="#3D7BF4"/>
@@ -387,16 +398,16 @@
     <div class="wrap">
       <span class="kicker reveal">Under the hood</span>
       <h2 class="reveal">Built like a systems tool, not a wrapper.</h2>
-      <p class="lead reveal">Dory's transport, HTTP server, YAML parser, and Docker API layer are hand-rolled Swift —
-        no Electron, no Node sidecars, no frameworks between your CLI and the engine. The virtualization underneath
-        is <a href="https://github.com/apple/containerization" target="_blank" rel="noopener" style="color:#9fd0ff;text-decoration:underline">Apple's open-source Containerization framework</a> —
-        we build on it openly and say so.</p>
+      <p class="lead reveal">Dory's transport, HTTP server, YAML parser, and Docker API layer are hand-rolled Swift.
+        No Electron, no Node sidecars, no frameworks between your CLI and the engine. The virtualization underneath
+        is <a href="https://github.com/apple/containerization" target="_blank" rel="noopener" style="color:#9fd0ff;text-decoration:underline">Apple's open-source Containerization framework</a>,
+        and we build on it openly.</p>
       <div class="hood">
         <div class="hood-card reveal">
           <h3>A real Docker socket</h3>
-          <p>Dory serves the Docker Engine API on a unix socket with its own HTTP/1.1 implementation —
+          <p>Dory serves the Docker Engine API on a unix socket with its own HTTP/1.1 implementation,
             including connection hijack for <code style="font-family:var(--mono);font-size:12px;color:#9fd0ff">exec</code> and
-            <code style="font-family:var(--mono);font-size:12px;color:#9fd0ff">attach</code> streams — and registers a
+            <code style="font-family:var(--mono);font-size:12px;color:#9fd0ff">attach</code> streams, and registers a
             <code style="font-family:var(--mono);font-size:12px;color:#9fd0ff">dory</code> context so the CLI you already have just points at it.</p>
           <div class="term"><span class="p">$</span> docker context show
 <span class="g">dory</span>
@@ -408,7 +419,7 @@
           <h3>Domains &amp; TLS, locally issued</h3>
           <p>Every container gets <code style="font-family:var(--mono);font-size:12px;color:#9fd0ff">name.dory.local</code> via a scoped
             resolver entry. Dory runs its own certificate authority, mints per-host certs on the fly, terminates TLS
-            in-app, and proxies to the container. Consent-gated — nothing touches your system silently.</p>
+            in-app, and proxies to the container. Consent-gated: nothing touches your system silently.</p>
           <div class="term"><span class="p">$</span> curl -I https://web-api.dory.local
 <span class="g">HTTP/2 200</span>
 <span class="b">issuer: Dory Local CA</span>
@@ -421,7 +432,7 @@
             <code style="font-family:var(--mono);font-size:12px;color:#9fd0ff">dockerd</code> runs inside; virtiofs shares your home
             directory at the same path, so bind mounts resolve with zero setup. x86 images run via qemu binfmt.</p>
           <div class="term"><span class="p">$</span> docker run -v ~/proj:/app alpine ls /app
-<span class="b">(your files — no sharing dialogs)</span>
+<span class="b">(your files, no sharing dialogs)</span>
 <span class="p">$</span> docker run --platform linux/amd64 postgres
 <span class="g">✓ emulated on Apple silicon</span></div>
         </div>
@@ -443,7 +454,7 @@
           <ul>
             <li>Live CPU &amp; memory with per-container history, sampled from the real stats API.</li>
             <li>Logs stream in color; an embedded terminal drops you into <code>exec</code> without leaving the app.</li>
-            <li>Compose projects group automatically — stop a whole stack in one click.</li>
+            <li>Compose projects group automatically, so you stop a whole stack in one click.</li>
             <li>Every container shows its <code>*.dory.local</code> domain, IP, ports, and restart policy.</li>
           </ul>
         </div>
@@ -455,10 +466,10 @@
           <span class="tag">Kubernetes</span>
           <h3>A cluster you turn on, not one you assemble.</h3>
           <ul>
-            <li>One-click k3s inside the same shared VM — no second VM tax, no kind/minikube yak-shave.</li>
+            <li>One-click k3s inside the same shared VM: no second VM tax, no kind/minikube yak-shave.</li>
             <li>Pick your Kubernetes version; browse pods, deployments, services, config, secrets, ingress.</li>
             <li>Exec into pods, scale and restart deployments, <code>kubectl apply</code> from the app.</li>
-            <li>Your existing <code>kubectl</code> works — Dory just wires the kubeconfig.</li>
+            <li>Your existing <code>kubectl</code> works; Dory just wires the kubeconfig.</li>
           </ul>
         </div>
       </div>
@@ -469,7 +480,7 @@
           <span class="tag">Linux machines</span>
           <h3>Real Linux, one click away.</h3>
           <ul>
-            <li>Full Ubuntu, Debian, Fedora, Alpine, or Arch — systemd, SSH, terminal, snapshots.</li>
+            <li>Full Ubuntu, Debian, Fedora, Alpine, or Arch, with systemd, SSH, terminal, and snapshots.</li>
             <li>Live CPU and memory per machine, right in the grid.</li>
             <li>Each machine gets a <code>name.dory.local</code> address on your Mac.</li>
             <li>Import and migrate from your existing setups in minutes.</li>
@@ -486,7 +497,7 @@
             <li>Dory parses <code>compose.yaml</code> natively: <code>.env</code> + variable interpolation,
               <code>depends_on</code> ordering, and <code>service_healthy</code> waits via real health probes.</li>
             <li>Migration imports images and containers from Docker Desktop or OrbStack in minutes.</li>
-            <li>First launch is guided end-to-end — including a one-click engine toolchain install.</li>
+            <li>First launch is guided end-to-end, including a one-click engine toolchain install.</li>
             <li>Honest scorecard: every feature's status is tracked publicly in
               <a href="https://github.com/Augani/dory/blob/main/COMPATIBILITY.md" style="color:#9fd0ff;text-decoration:underline">COMPATIBILITY.md</a>.</li>
           </ul>
@@ -500,13 +511,13 @@
     <div class="wrap">
       <span class="kicker reveal">Dev environments</span>
       <h2 class="reveal">A ready-to-code machine in three moves.</h2>
-      <p class="lead reveal">Not just containers — Dory builds whole development environments.
+      <p class="lead reveal">Not just containers: Dory builds whole development environments.
         Pick what you're building, and the machine arrives with the toolchain already on it.</p>
       <div class="flow reveal">
         <div class="step">
           <span class="n">1</span>
           <h3>Pick your stack</h3>
-          <p>Choose a use-case and Dory picks the recipe — or compose your own from runtimes, tools, and packages.</p>
+          <p>Choose a use-case and Dory picks the recipe, or compose your own from runtimes, tools, and packages.</p>
           <div class="chips">
             <span class="chip">Web / Node.js</span><span class="chip">Python &amp; ML</span>
             <span class="chip">Go</span><span class="chip">Rust</span><span class="chip">Java / JVM</span>
@@ -517,7 +528,7 @@
         <div class="step">
           <span class="n">2</span>
           <h3>It provisions itself</h3>
-          <p>The machine boots and installs its own toolchain — you watch it happen, then get a terminal.</p>
+          <p>The machine boots and installs its own toolchain. You watch it happen, then get a terminal.</p>
           <div class="mini-term"><span class="p">$</span> creating ubuntu machine <span class="b">web</span>…
 <span class="g">✓</span> node 24 · npm · pnpm
 <span class="g">✓</span> git · build tools · ssh
@@ -528,8 +539,8 @@
           <span class="n">3</span>
           <h3>Break it. Snapshot it. Reset it.</h3>
           <p>Snapshot before a risky upgrade and roll back in seconds. Your shell's env vars and registry
-            logins can flow into the machine — consent-gated, from an allow-list you control.</p>
-          <div class="snap"><b>◉ snapshot</b> web · before-node-25 — restore anytime</div>
+            logins can flow into the machine, consent-gated, from an allow-list you control.</p>
+          <div class="snap"><b>◉ snapshot</b> web · before-node-25 · restore anytime</div>
         </div>
       </div>
       <div class="devshot reveal">
@@ -545,14 +556,14 @@
       <h2 class="reveal">Your RAM belongs to you.</h2>
       <div class="mem-card reveal" id="memcard">
         <div class="mem-row">
-          <div class="label"><b>Dory — one shared VM</b><span>~122 MB · 2 idle containers</span></div>
+          <div class="label"><b>Dory: one shared VM</b><span>~122 MB · 2 idle containers</span></div>
           <div class="track"><div class="fill dory" data-w="21%"></div></div>
         </div>
         <div class="mem-row">
           <div class="label"><b>One VM per container</b><span>~574 MB · 2 idle containers</span></div>
           <div class="track"><div class="fill other" data-w="100%"></div></div>
         </div>
-        <div class="mem-big"><span class="x">~4.7×</span><span>less idle memory — and the gap widens with every container you add</span></div>
+        <div class="mem-big"><span class="x">~4.7×</span><span>less idle memory, and the gap widens with every container you add</span></div>
         <div class="mem-note">*Measured by Dory on Apple silicon (<a href="https://github.com/Augani/dory/blob/main/docs/research/benchmark-methodology.md" style="color:var(--text-2);text-decoration:underline">methodology</a>).
           Treat it as our figure until the public reproducible benchmark lands.</div>
       </div>
@@ -564,7 +575,7 @@
     <div class="wrap">
       <span class="kicker reveal">What you can hold us to</span>
       <h2 class="reveal">Small. Silent. Yours.</h2>
-      <p class="lead reveal">Other tools will change their features and their pricing — that's their business.
+      <p class="lead reveal">Other tools will change their features and their pricing; that's their business.
         Here's what Dory is built to be, permanently:</p>
       <div class="promise reveal">
         <div class="pcard">
@@ -580,7 +591,7 @@
         <div class="pcard">
           <div class="big">1 VM</div>
           <div class="t">For everything</div>
-          <p>One kernel, one memory pool — ~122 MB with two idle containers on our bench, and it grows slowly.</p>
+          <p>One kernel, one memory pool: ~122 MB with two idle containers on our bench, and it grows slowly.</p>
         </div>
         <div class="pcard">
           <div class="big">GPL-3.0</div>
@@ -588,7 +599,7 @@
           <p>No accounts, no telemetry, no paid tier, no rug to pull. The source is the guarantee.</p>
         </div>
       </div>
-      <p class="compare-note reveal">Don't take our word for anything — the
+      <p class="compare-note reveal">Don't take our word for anything. The
         <a href="https://github.com/Augani/dory/blob/main/docs/research/benchmark-methodology.md" style="color:var(--text-2);text-decoration:underline">benchmark methodology</a>,
         a <a href="https://github.com/Augani/dory/blob/main/docs/comparison.md" style="color:var(--text-2);text-decoration:underline">sourced comparison</a>,
         and the per-feature <a href="https://github.com/Augani/dory/blob/main/COMPATIBILITY.md" style="color:var(--text-2);text-decoration:underline">status matrix</a> are all public. Judge for yourself.</p>
@@ -602,7 +613,7 @@
       <h2 class="reveal">Up and running in a minute.</h2>
       <div class="install-card reveal">
         <p style="color:var(--text-2);font-size:15px">Install with Homebrew, or grab the notarized app from GitHub Releases.
-          First launch walks you through the rest — engine included.</p>
+          First launch walks you through the rest, engine included.</p>
         <div class="brew" role="group" aria-label="Homebrew install command">
           <code>brew install --cask Augani/dory/dory</code>
           <button data-copy="brew install --cask Augani/dory/dory">Copy</button>
@@ -612,7 +623,7 @@
         </div>
         <p class="req">Universal app for Intel and Apple silicon, macOS 15+.
           Dory's standalone engine needs Apple silicon on macOS 26 (Tahoe);
-          Intel Macs pair Dory with any Docker-compatible engine — Colima, Docker Desktop, Rancher Desktop, Podman.</p>
+          Intel Macs pair Dory with any Docker-compatible engine: Colima, Docker Desktop, Rancher Desktop, Podman.</p>
       </div>
       <div class="oss reveal">
         <a class="btn btn-ghost" href="https://github.com/Augani/dory" target="_blank" rel="noopener">⭐ Star Dory on GitHub</a>
@@ -636,7 +647,7 @@
         <a href="https://github.com/Augani/dory/blob/main/LICENSE" target="_blank" rel="noopener">License</a>
       </div>
     </div>
-    <p class="fine">Made for macOS — Intel and Apple silicon · GPL-3.0 · © 2026 Dory contributors.
+    <p class="fine">Made for macOS, Intel and Apple silicon · GPL-3.0 · © 2026 Dory contributors.
       Not affiliated with Docker, Inc. or OrbStack.</p>
   </div>
 </footer>
@@ -709,39 +720,111 @@
     }
   }
 
-  /* ---------- Dory the fish ---------- */
+  /* ---------- Dory swims ---------- */
   var fish = document.getElementById("fish");
-  if (fish && !reduced){
+  var stage = document.getElementById("fish-stage");
+  if (fish && stage && !reduced){
     var pupil = fish.querySelector(".pupil");
     var glint = fish.querySelector(".glint");
+    var W = 0, H = 0, FW = 0, FH = 0;
+    function measure(){
+      W = stage.clientWidth; H = stage.clientHeight;
+      var cs = getComputedStyle(fish);
+      FW = parseFloat(cs.width) || 150;
+      FH = parseFloat(cs.height) || 136;
+    }
+    new ResizeObserver(measure).observe(stage);
+    measure();
+
+    var pos = {x: W / 2, y: H / 2}, vel = {x: -40, y: 0};
+    var facing = -1, rot = 0;
+    var target = null, nextWander = 0, nextBubble = 0, pointer = null;
+
+    function clampN(v, lo, hi){ return v < lo ? lo : v > hi ? hi : v; }
+
     addEventListener("pointermove", function(ev){
       var r = fish.getBoundingClientRect();
-      var cx = r.left + r.width * 0.28, cy = r.top + r.height * 0.55;
-      var dx = ev.clientX - cx, dy = ev.clientY - cy;
+      var eyeX = r.left + r.width * (facing === 1 ? 0.72 : 0.28);
+      var eyeY = r.top + r.height * 0.55;
+      var dx = ev.clientX - eyeX, dy = ev.clientY - eyeY;
       var d = Math.hypot(dx, dy) || 1;
       var m = Math.min(5, d / 40);
-      var ox = (dx / d) * m, oy = (dy / d) * m;
-      pupil.setAttribute("transform", "translate(" + ox.toFixed(1) + " " + oy.toFixed(1) + ")");
-      glint.setAttribute("transform", "translate(" + (ox * .5).toFixed(1) + " " + (oy * .5).toFixed(1) + ")");
-      var tilt = Math.max(-6, Math.min(6, dx / 60));
-      fish.style.transform = "rotate(" + tilt.toFixed(1) + "deg)";
+      pupil.setAttribute("transform", "translate(" + (dx / d * m).toFixed(1) + " " + (dy / d * m).toFixed(1) + ")");
+      glint.setAttribute("transform", "translate(" + (dx / d * m * .5).toFixed(1) + " " + (dy / d * m * .5).toFixed(1) + ")");
     }, {passive:true});
-    var darting = false;
+
+    stage.addEventListener("pointermove", function(ev){
+      var r = stage.getBoundingClientRect();
+      pointer = {x: ev.clientX - r.left, y: ev.clientY - r.top};
+    }, {passive:true});
+    stage.addEventListener("pointerleave", function(){ pointer = null; }, {passive:true});
+
+    function spawnBubble(){
+      if (!W) return;
+      var b = document.createElement("i");
+      b.className = "fbubble";
+      var s = 3 + Math.random() * 5;
+      b.style.width = b.style.height = s.toFixed(1) + "px";
+      b.style.left = (pos.x + (facing === 1 ? FW * .38 : -FW * .38)).toFixed(1) + "px";
+      b.style.top = (pos.y + FH * .06).toFixed(1) + "px";
+      stage.appendChild(b);
+      b.animate(
+        [{transform: "translateY(0)", opacity: .75},
+         {transform: "translateY(-" + (34 + Math.random() * 30).toFixed(0) + "px)", opacity: 0}],
+        {duration: 1100 + Math.random() * 700, easing: "ease-out"}
+      ).onfinish = function(){ b.remove(); };
+    }
+    function burst(n){ for (var i = 0; i < n; i++) setTimeout(spawnBubble, i * 45); }
+
     fish.addEventListener("click", function(){
-      if (darting) return;
-      darting = true;
-      fish.style.transition = "transform .55s cubic-bezier(.3,.7,.2,1)";
-      fish.style.transform = "translateX(46vw) rotate(8deg)";
-      setTimeout(function(){
-        fish.style.transition = "none";
-        fish.style.transform = "translateX(-46vw)";
-        requestAnimationFrame(function(){ requestAnimationFrame(function(){
-          fish.style.transition = "transform .7s cubic-bezier(.22,1,.36,1)";
-          fish.style.transform = "none";
-          setTimeout(function(){ darting = false; }, 700);
-        });});
-      }, 580);
+      vel.x += facing === 1 ? 420 : -420;
+      vel.y -= 90;
+      burst(10);
     });
+
+    function pickWander(now){
+      target = {
+        x: FW / 2 + 16 + Math.random() * Math.max(40, W - FW - 32),
+        y: FH / 2 + 8 + Math.random() * Math.max(20, H - FH - 16)
+      };
+      nextWander = now + 2600 + Math.random() * 3200;
+    }
+
+    var last = performance.now();
+    function swim(now){
+      var dt = Math.min(0.05, (now - last) / 1000);
+      last = now;
+      if (!document.hidden && W > 0){
+        var goal = pointer || target;
+        if (!pointer && (!target || now > nextWander)){ pickWander(now); goal = target; }
+        if (goal){
+          var dx = goal.x - pos.x, dy = goal.y - pos.y;
+          var dist = Math.hypot(dx, dy) || 1;
+          var max = pointer ? 170 : 95;
+          if (dist < 60 && !pointer) max *= dist / 60;
+          vel.x += (dx / dist * max - vel.x) * Math.min(1, dt * 1.8);
+          vel.y += (dy / dist * max - vel.y) * Math.min(1, dt * 1.8);
+        }
+        pos.x += vel.x * dt;
+        pos.y += vel.y * dt;
+        var minX = FW / 2, maxX = W - FW / 2, minY = FH / 2, maxY = H - FH / 2;
+        if (pos.x < minX){ pos.x = minX; vel.x = Math.abs(vel.x) * .5; }
+        if (pos.x > maxX){ pos.x = maxX; vel.x = -Math.abs(vel.x) * .5; }
+        if (pos.y < minY){ pos.y = minY; vel.y = Math.abs(vel.y) * .5; }
+        if (pos.y > maxY){ pos.y = maxY; vel.y = -Math.abs(vel.y) * .5; }
+        var speed = Math.hypot(vel.x, vel.y);
+        if (vel.x > 16) facing = 1;
+        else if (vel.x < -16) facing = -1;
+        rot += (clampN(-vel.y * 0.09, -13, 13) - rot) * Math.min(1, dt * 4);
+        fish.style.transform =
+          "translate(" + (pos.x - FW / 2).toFixed(1) + "px," + (pos.y - FH / 2).toFixed(1) + "px)" +
+          " scaleX(" + (facing === 1 ? -1 : 1) + ") rotate(" + rot.toFixed(1) + "deg)";
+        fish.style.setProperty("--wagdur", clampN(1.9 - speed / 120, 0.35, 1.9).toFixed(2) + "s");
+        if (speed > 70 && now > nextBubble){ nextBubble = now + 260; spawnBubble(); }
+      }
+      requestAnimationFrame(swim);
+    }
+    requestAnimationFrame(swim);
   }
 
   /* ---------- WebGL ocean ---------- */

@@ -13,9 +13,9 @@ before any live run.
 
 1. **Idle memory** per engine, plus the **marginal memory per idle container** at 0, 1, 5, and 10
    idle containers.
-2. **Container-to-container (C2C) network throughput** — steady-state TCP bandwidth between two
+2. **Container-to-container (C2C) network throughput**: steady-state TCP bandwidth between two
    containers on one Mac.
-3. **Filesystem performance** in three storage modes — bind-mounted host directory, named volume,
+3. **Filesystem performance** in three storage modes: bind-mounted host directory, named volume,
    and the container's in-VM native filesystem.
 
 ## Engines under test
@@ -39,7 +39,7 @@ the sections below, not hidden.
   per-run values are always written to a TSV so mean/min/max can be recomputed.
 - **Cold vs warm are labeled.** Images are pulled *before* any timed run so image download never
   pollutes a measurement (a "warm" start). Where cold-start matters it is a separate, explicitly
-  labeled measurement — timed runs never silently mix the two.
+  labeled measurement; timed runs never silently mix the two.
 - **Machine specs recorded.** Each run captures `hw.model`, `hw.memsize`, `hw.ncpu`,
   `machdep.cpu.brand_string`, and `sw_vers` into `machine-spec.txt` in the results directory. A
   result without its machine spec is not publishable.
@@ -52,19 +52,19 @@ the sections below, not hidden.
 - **Settle windows.** A configurable settle wait (default 12s) brackets each memory measurement so
   VM background activity quiesces before and after the workload is applied.
 
-## 1. Memory — `scripts/bench/memory.sh`
+## 1. Memory: `scripts/bench/memory.sh`
 
 For each engine and each container count in {0, 1, 5, 10}:
 
 1. Clean up any prior bench resources and settle.
-2. Record a baseline: host used memory via `vm_stat` — `(pages active + wired + compressed) ×
-   page size` — and the aggregate RSS of the engine's host-side processes via `ps -axo rss,args`.
+2. Record a baseline: host used memory via `vm_stat` (`(pages active + wired + compressed) ×
+   page size`) and the aggregate RSS of the engine's host-side processes via `ps -axo rss,args`.
 3. Start N idle containers (`alpine sleep infinity`; no ports, no workload). For Docker engines these
    land in the shared VM; for Apple Container each `container run` spins its own VM.
 4. Settle, then record the peak of the same two metrics.
 5. Report `system_delta = peak − baseline` and `process_rss_delta` likewise.
 
-**Two metrics, deliberately.** `system_delta` (vm_stat) is what a user actually feels — it includes
+**Two metrics, deliberately.** `system_delta` (vm_stat) is what a user actually feels: it includes
 the VM's growth, page cache, and helper processes. `process_rss_delta` attributes memory to named
 engine processes and is a cross-check. The 0-container run establishes each engine's **idle
 footprint**; counts 1/5/10 divide their delta by N to derive **marginal cost per idle container**.
@@ -79,7 +79,7 @@ Per-engine process match patterns (overridable via env vars):
 This vm_stat math and the RSS-pattern approach are shared with `scripts/readiness.sh` and the
 existing `scripts/benchmark.sh` so the two suites are directly comparable.
 
-## 2. Network — `scripts/bench/network.sh`
+## 2. Network: `scripts/bench/network.sh`
 
 Two containers on one user-defined bridge network; one runs `iperf3 -s`, the other runs `iperf3 -c`
 for a single TCP stream. We take **12 back-to-back 10-second samples** and report the median
@@ -89,25 +89,25 @@ pullable; otherwise it is installed into alpine via `apk`.
 **Apple Container caveat (documented, not hidden):** Apple Container has no `docker network create`.
 Two `container run` instances communicate over Apple's **vmnet**-backed networking, so the traffic is
 host-routed between two separate VMs rather than crossing an in-VM veth bridge. This is a genuine
-architectural difference; Apple's row is labeled `vmnet(host-routed)` versus `bridge(in-vm-veth)` for
+architectural difference. Apple's row is labeled `vmnet(host-routed)` versus `bridge(in-vm-veth)` for
 the shared-VM engines, and the two should not be read as a like-for-like veth comparison.
 
-## 3. Filesystem — `scripts/bench/filesystem.sh`
+## 3. Filesystem: `scripts/bench/filesystem.sh`
 
 Three storage modes, identical workload in each so results are comparable:
 
-- **bind** — a host directory bind-mounted into the container. On macOS engines this crosses the
+- **bind**: a host directory bind-mounted into the container. On macOS engines this crosses the
   host↔VM boundary and is the path users complain about.
-- **volume** — a named Docker volume backed by the VM's block store.
-- **native** — the container's own writable layer inside the VM (in-VM native FS).
+- **volume**: a named Docker volume backed by the VM's block store.
+- **native**: the container's own writable layer inside the VM (in-VM native FS).
 
 Workload (run inside the container via a single portable `sh -c` script):
 
-1. **write** — create N small files (default 2000 × 4 KiB) and `sync`.
-2. **read** — read all N files back (`cat > /dev/null`).
-3. **extract** — build a git-clone-sized tree (~40 dirs × 50 files), tar it, and time the
-   `tar -x` extract (many small files + directory creation — the metadata-heavy path).
-4. **fio** (optional) — if `fio` is present in the image, a 4k randrw job is recorded for a
+1. **write**: create N small files (default 2000 × 4 KiB) and `sync`.
+2. **read**: read all N files back (`cat > /dev/null`).
+3. **extract**: build a git-clone-sized tree (~40 dirs × 50 files), tar it, and time the
+   `tar -x` extract (many small files + directory creation, the metadata-heavy path).
+4. **fio** (optional): if `fio` is present in the image, a 4k randrw job is recorded for a
    defensible bandwidth number. The tar/small-file workload always runs so results exist without fio.
 
 Each mode is timed over N runs (default 3); the median wall-time per phase is reported.
@@ -119,7 +119,7 @@ misleading zero.
 ## Reproducing
 
 Requires macOS on Apple silicon with the target engines installed and running (their Docker sockets
-present; Apple Container's `container` CLI on `PATH`). This cannot run on GitHub-hosted runners —
+present; Apple Container's `container` CLI on `PATH`). This cannot run on GitHub-hosted runners:
 they are VMs without nested virtualization.
 
 ```sh
@@ -137,10 +137,10 @@ scripts/bench/filesystem.sh --engine apple --files 2000 --runs 3
 
 Outputs land in `bench-results/<timestamp>/`:
 
-- `machine-spec.txt` — hardware + OS disclosure for this run.
-- `memory.tsv`, `network.tsv`, `filesystem.tsv` — every raw sample plus `MEDIAN` rows.
-- `logs/<bench>-<engine>.log` — full stdout/stderr of each sub-benchmark.
-- `summary.md` — the human-readable comparison tables, each linking to its raw TSV.
+- `machine-spec.txt`: hardware + OS disclosure for this run.
+- `memory.tsv`, `network.tsv`, `filesystem.tsv`: every raw sample plus `MEDIAN` rows.
+- `logs/<bench>-<engine>.log`: full stdout/stderr of each sub-benchmark.
+- `summary.md`: the human-readable comparison tables, each linking to its raw TSV.
 
 ### Tunables (environment variables)
 
@@ -183,7 +183,7 @@ Date (UTC):       <captured_utc>
 
 ---
 
-## First live run — 2026-07-02 (Dory only; M-series Mac; single machine)
+## First live run: 2026-07-02 (Dory only; M-series Mac; single machine)
 
 Engine: dory (OrbStack/Docker Desktop apps not running → skipped; iperf3 image pull failed → C2C skipped).
 
@@ -191,9 +191,9 @@ Engine: dory (OrbStack/Docker Desktop apps not running → skipped; iperf3 image
 |---|---|---|
 | Idle memory | +13.6 MB engine RSS for 3 idle alpine (~4.5 MB/container); system delta negative = noise | Low host footprint corroborated |
 | Bind-mount FS, 2k files | bind 0.195s vs in-container 0.264s (0.74×) | Bind ≥ as fast as overlay |
-| Bind-mount FS, 20k files | bind 0.188s vs in-container 2.452s (0.08×) | **SUSPECT — see caveat** |
+| Bind-mount FS, 20k files | bind 0.188s vs in-container 2.452s (0.08×) | **SUSPECT (see caveat)** |
 
-### CAVEAT — do NOT publish the 0.08× / "13× faster" figure
+### CAVEAT: do NOT publish the 0.08× / "13× faster" figure
 Bind-mount wall time was ~flat (0.195s→0.188s) as file count went 2k→20k, while in-container scaled
 ~10×. Flat-under-load is the signature of **write-back-cached virtiofs**: the in-guest timer returns
 before writes are durably flushed to the host, so bind time is undercounted. Before any FS-speed
@@ -201,23 +201,23 @@ claim, a rigorous benchmark must: (1) force durability (fsync/`sync` that actual
 virtiofs boundary, or measure host-side completion), (2) add a TRUE native baseline (same op run
 directly on macOS, no container/VM), (3) use realistic workloads (`npm install`, `git status` on a
 large tree, tar-extract), (4) median-of-N with warm cache disclosed. HONEST current claim: Dory's
-bind mount is **not slower** than its own overlay fs (unlike Docker Desktop's documented penalty) —
+bind mount is **not slower** than its own overlay fs (unlike Docker Desktop's documented penalty);
 magnitude TBD. This is WS-E's charter.
 
-### C2C networking — MEASURED 2026-07-02 (Dory)
+### C2C networking: MEASURED 2026-07-02 (Dory)
 **Dory container-to-container throughput: median 114.16 Gbps** (5 back-to-back iperf3 single-stream
-runs; samples 111.54 / 113.67 / 114.16 / 114.40 / 115.01 Gbps — ±1.5% spread). Two containers on one
+runs; samples 111.54 / 113.67 / 114.16 / 114.40 / 115.01 Gbps, ±1.5% spread). Two containers on one
 user-defined bridge network inside Dory's shared VM; `iperf3 -s` ↔ `iperf3 -c -t 5 -J`, receiver-side
 Gbps. Reproduce: `BENCH_IPERF_IMAGE=taoyou/iperf3-alpine:latest scripts/benchmark-compare.sh --engines
 dory --metrics network`.
 
 Root cause of the earlier "pull failed": the harness default `networkstatic/iperf3:latest` is
-**x86-only (no arm64 manifest)** — it can never pull on Apple Silicon, the only platform Dory runs on,
+**x86-only (no arm64 manifest)**. It can never pull on Apple Silicon, the only platform Dory runs on,
 so this probe silently SKIP'd for every user. Fixed: `benchmark-compare.sh` now defaults to the
 multi-arch `taoyou/iperf3-alpine:latest` (Entrypoint `iperf3`, iperf 3.11, arm64).
 
 **Honest framing for #6:** 114 Gbps is co-located-containers-in-one-VM throughput (memory-bandwidth
-bound, loopback-class) — the structural advantage of Dory's shared engine. The research claim that
+bound, loopback-class): the structural advantage of Dory's shared engine. The research claim that
 Apple's Container is "~5× slower C2C" is from a **single external source**; we have NOT re-measured
 Apple Container here (its per-container-VM design has no `docker network` and routes over host vmnet,
 so it isn't a like-for-like bridge comparison). Publish Dory's 114 Gbps as a measured Dory number; do

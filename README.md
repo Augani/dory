@@ -6,7 +6,7 @@
 
 <p align="center">
   <b>Docker &amp; Linux containers, native to your Mac.</b><br>
-  A free, open-source alternative to Docker Desktop and OrbStack — one lightweight SwiftUI app
+  A free, open-source alternative to Docker Desktop and OrbStack. One lightweight SwiftUI app
   that runs every container in a single shared VM, for a fraction of the memory.
 </p>
 
@@ -18,24 +18,24 @@
   <img src="https://img.shields.io/badge/platform-macOS%2015%2B-lightgrey" alt="Platform">
 </p>
 
-> ⭐ **If Dory saves you memory (or money), please [star the repo](https://github.com/Augani/dory) — it genuinely helps others find it.**
+> ⭐ **If Dory saves you memory (or money), please [star the repo](https://github.com/Augani/dory). It genuinely helps others find it.**
 
-![Dory — containers, images, volumes, networks, and Linux machines](docs/demo.gif)
+![Dory: containers, images, volumes, networks, and Linux machines](docs/demo.gif)
 
 ## Why Dory
 
 - **One VM, all your containers.** Dory builds on [Apple's open-source container stack](https://github.com/apple/containerization)
-  and boots a single persistent Linux micro-VM that runs *everything* — instead of one VM per
+  and boots a single persistent Linux micro-VM that runs *everything*, instead of one VM per
   container. Measured **~4.7× less idle memory** than per-container VMs (2 containers: ~122 MB vs
   ~574 MB), and the gap widens with every container you add
   ([methodology](docs/research/benchmark-methodology.md)).
-- **Small and silent, permanently.** A ~6 MB native app with ~0% idle CPU — no indexers, no
+- **Small and silent, permanently.** A ~6 MB native app with ~0% idle CPU. No indexers, no
   phone-home, no fans. That's a design constraint, not a version note.
 - **Free for everyone, forever.** No per-seat license, no "commercial use" tier, no account,
   no sign-in. GPL-3.0, full source right here. (A [sourced comparison](docs/comparison.md) exists
-  if you want one — judge for yourself.)
+  if you want one, so judge for yourself.)
 - **Your `docker` CLI just works.** Dory serves the Docker API on `~/.dory/dory.sock` and
-  registers a `dory` Docker context — `docker run`, `docker compose`, your existing scripts and
+  registers a `dory` Docker context. `docker run`, `docker compose`, your existing scripts and
   tools drive it unchanged.
 - **Native, not Electron.** One Swift/SwiftUI app: menu-bar agent + full dashboard, launch
   animation to launch-at-login, light and dark. No Chromium, no Node, no telemetry.
@@ -52,22 +52,22 @@
 
 **Kubernetes, one click**
 - k3s inside the shared VM with selectable Kubernetes versions.
-- Cluster browser: pods, deployments, services, config maps, secrets, ingresses — with live
+- Cluster browser: pods, deployments, services, config maps, secrets, ingresses, all with live
   health, pod exec, scale / restart / rollout controls, and `kubectl apply` from the app.
 
 **Linux machines**
 - Full Ubuntu / Debian / Fedora / Alpine / Arch VMs with snapshots, terminal access, and
-  use-case recipes (Node, Python, Go, Rust, …) that provision the machine ready-to-code —
+  use-case recipes (Node, Python, Go, Rust, …) that provision the machine ready-to-code,
   plus a composer to hand-pick runtimes, tools, and packages.
 - Your home directory is shared into the engine, so `docker run -v ~/project:/app` just works.
 
 **Networking that disappears**
 - Published ports on `localhost`, automatic **`*.dory.local` domains** for every container, and
-  local **HTTPS** issued by a local CA — all consent-gated, nothing installed silently.
+  local **HTTPS** issued by a local CA. All consent-gated, nothing installed silently.
 - x86/amd64 images run on Apple silicon via emulation.
 
 **Zero-friction start**
-- First launch walks you through everything — including a one-click install of Apple's
+- First launch walks you through everything, including a one-click install of Apple's
   open-source `container` toolchain if it's missing.
 - **Migration** imports your images and containers from Docker Desktop or OrbStack.
 
@@ -87,16 +87,17 @@ drag Dory to Applications, and open it. First launch guides you through the rest
 Dory selects a backend automatically; `DORY_RUNTIME` overrides it. All share one
 `ContainerRuntime` protocol.
 
+
 | `DORY_RUNTIME` | Backend | Model |
 |---|---|---|
-| `shared` *(default on supported hosts)* | **Shared VM** | One persistent `dockerd`-in-VM for all containers (OrbStack-style). Standalone — no Docker required. Requires macOS 26+ on Apple silicon. |
+| `shared` *(default on supported hosts)* | **Shared VM** | One persistent `dockerd`-in-VM for all containers (OrbStack-style). Standalone: no Docker required. Requires macOS 26+ on Apple silicon. |
 | `apple` | **Apple `container`** | One lightweight micro-VM per container. Requires macOS 26+ on Apple silicon. |
 | `docker` | **Docker Engine API** | Transparent proxy to an existing Docker-compatible socket (Docker Desktop, OrbStack, Colima, Rancher Desktop, Podman). Works on older macOS and Intel when the host engine does. |
 | `mock` | **Mock** | In-memory sample data for UI development. |
 
 ## Requirements
 
-- macOS 15 or later, **Intel or Apple silicon** — the app ships as a universal binary. On Intel
+- macOS 15 or later, **Intel or Apple silicon**: the app ships as a universal binary. On Intel
   (or older macOS), Dory pairs with any Docker-compatible engine: Colima, Docker Desktop,
   Rancher Desktop, Podman, or OrbStack.
 - macOS 26 (Tahoe) or later on Apple silicon for Dory's standalone Shared VM / Apple `container` backends
@@ -136,7 +137,7 @@ ContainerRuntime protocol ──► { Shared VM · Apple container · Docker API
       └─ Net                 LocalCA (TLS) · DomainRouter (*.dory.local) · port forwarding
 ```
 
-Everything is dependency-light — the HTTP / unix-socket transport, YAML parser, and Docker-API
+Everything is dependency-light: the HTTP / unix-socket transport, YAML parser, and Docker-API
 client and server are hand-rolled, so the build stays small and deterministic. The
 `Packages/ContainerizationEngine` package links Apple's `containerization` framework to boot the
 Linux VM in-process.
@@ -144,12 +145,12 @@ Linux VM in-process.
 ## What's next
 
 Portable dev machines you can back up and restore, remote access to your engine, and sandboxed
-environments for AI agents. Follow the [releases](https://github.com/Augani/dory/releases) — and
+environments for AI agents. Follow the [releases](https://github.com/Augani/dory/releases), and
 open an issue if you want to shape what comes first.
 
 ## Contributing
 
-Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
+Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 

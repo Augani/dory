@@ -39,7 +39,7 @@ You can also open `Dory.xcodeproj` in Xcode and build/run from there.
   chaining / nil-coalescing over force-unwraps.
 - **Strict types.** Avoid `Any`; prefer enums over stringly-typed values.
 - **SwiftUI patterns.** State lives in `AppStore` (an `@Observable @MainActor` class) injected via
-  `@Environment`. Views are pure expressions of state — no view models.
+  `@Environment`. Views are pure expressions of state, with no view models.
 - **No new dependencies.** The transport, YAML parser, and Docker-API client/server are
   intentionally hand-rolled. Keep it that way unless there's a strong reason.
 

@@ -10,7 +10,7 @@ Legend: ✅ works · 🟡 works with Dory-specific behavior · 🛠️ implement
 ## Docker Engine API (via Dory's socket `~/.dory/dory.sock`)
 
 On the Docker backend, Dory's socket is a **full transparent proxy**: every request is forwarded
-verbatim and the response streamed back unchanged — uniformly correct for normal, streaming, and
+verbatim and the response streamed back unchanged. It is uniformly correct for normal, streaming, and
 hijacked (upgrade) endpoints, with all request headers preserved (registry auth, etc.). The
 per-endpoint translation below is what the **Apple `container`** and mock backends present, since
 they have no Docker socket to forward to.
@@ -39,7 +39,7 @@ they have no Docker socket to forward to.
 | `docker exec` (`-i`, `-it` TTY) + `attach` | ✅ | Bidirectional hijack proxy with correct half-close (stdin EOF) + exit codes; TTY (`/dev/pts/0`) verified |
 | `docker cp` / `docker export` (archive get/put/export) | ✅ | `GET`/`PUT /containers/{id}/archive` and `GET /containers/{id}/export`; archive PUT includes chunked request bodies |
 | `docker build` (classic + **BuildKit**) | ✅ | Both verified end-to-end via Dory's socket (BuildKit gRPC session proxied) |
-| Any other Docker endpoint (Docker backend) | ✅ | Transparent proxy — distribution, swarm, plugins, etc. all pass through |
+| Any other Docker endpoint (Docker backend) | ✅ | Transparent proxy (distribution, swarm, plugins, etc. all pass through) |
 | Full create-body flag coverage | 🟡 | Apple/mock translation maps common flags; the long tail is iterative (Docker backend forwards everything) |
 
 ## Compose
@@ -56,7 +56,7 @@ they have no Docker socket to forward to.
 | Named/anonymous volumes | 🟡 | Declared top-level volumes are created as `<project>_<vol>` with compose labels on `up`, service references to them are project-prefixed, and `down(removeVolumes:)` removes them (`compose down -v`); anonymous volumes pass through to the runtime. `external: true` volumes and long-form `type: volume` mounts not special-cased yet |
 | Profiles | ✅ | Unprofiled services start by default; `COMPOSE_PROFILES` and `*` activate profiled services. Targeted service activation is not exposed in the GUI |
 | Multiple files / overrides | 🟡 | Default override files plus `COMPOSE_FILE` ordered merge for common fields, including inline `!reset` (drop a key) and `!override` (replace instead of merge) tags; block-form tags (tag on the `key:` line with the value indented below) not yet |
-| `network_mode: service:` / shared pid/ipc | ⛔ | Co-schedule into one machine — by design, against Apple `container` |
+| `network_mode: service:` / shared pid/ipc | ⛔ | Co-schedule into one machine (by design, against Apple `container`) |
 
 ## Engine backends
 
@@ -69,12 +69,12 @@ they have no Docker socket to forward to.
 ## OrbStack parity surface
 
 All verified end-to-end on the shared-VM backend (default). System-wide binds (:53/:80/:443) and the
-CA trust install remain consent-gated — the same one-time admin grant OrbStack needs.
+CA trust install remain consent-gated, the same one-time admin grant OrbStack needs.
 
 | Capability | Status | Notes |
 |---|---|---|
 | Native GUI (menu bar + main window) | ✅ | All screens, both themes; one-click toggles for k8s/machines/shared-VM |
-| Standalone engine + shared-VM memory | ✅ | Default backend; Dory runs its own `dockerd` in one VM — no OrbStack/Docker. ~4.7× leaner than per-container |
+| Standalone engine + shared-VM memory | ✅ | Default backend; Dory runs its own `dockerd` in one VM, no OrbStack/Docker. ~4.7× leaner than per-container |
 | `localhost` access to published ports | ✅ | `HostPortForwarder`; verified `localhost:port → 200`, dynamic add/teardown |
 | Automatic `*.dory.local` domains | ✅ | `DoryDNS` resolver + `DoryReverseProxy`; verified `http://name.dory.local → 200`. System-wide via consent script |
 | Automatic local HTTPS | ✅ | `DoryTLSProxy` terminates TLS with a `LocalCA` identity; verified `https://name.dory.local → 200` |
@@ -88,28 +88,28 @@ CA trust install remain consent-gated — the same one-time admin grant OrbStack
 | `*.k8s.dory.local` service domains | ✅ HTTP + HTTPS | `KubeServiceProxy` runs `kubectl proxy`; the reverse/TLS proxy rewrites `<svc>.<ns>.k8s.dory.local` → the API service proxy. Verified `http`+`https → 200`. TLS cert carries per-namespace wildcard SANs (`*.default.k8s.dory.local`, `*.kube-system.k8s.dory.local`); other namespaces would need their wildcard added |
 | `dory` CLI (OrbStack's `orb`) | ✅ | `scripts/dory` wraps the engine, machines, and kubectl |
 
-### Apple containerization helper — low-level VM controls delivered
+### Apple containerization helper: low-level VM controls delivered
 
 Every feature achievable through Apple's `container` CLI + the dind architecture is done. The four
-items below were each investigated and shown to need low-level VM control the CLI does not expose —
+items below were each investigated and shown to need low-level VM control the CLI does not expose:
 device passthrough, memory ballooning, Rosetta device, custom mounts. Dory now delivers those
 controls through the bundled `dory-vm` helper, which links the `apple/containerization` Swift
 package and drives the VM in-process.
 
 **Foundation built + PROVEN END-TO-END.** `Packages/ContainerizationEngine/` is an additive Swift
 package (separate from the shipping app) that links `apple/containerization` and drives the Linux VM
-directly via Virtualization.framework. It does not just compile — a signed boot harness
+directly via Virtualization.framework. It does not just compile. A signed boot harness
 (`dory-vmboot`, adhoc-signed with `com.apple.security.virtualization`) **boots a real Linux VM
 in-process and runs a container**, verified by exit code:
 
-- `exit 42` — VM booted + container ran (kernel + initfs + image store all working in-process).
-- `exit 77` — an **amd64 image ran via Rosetta** (`uname -m == x86_64`) → **Rosetta-fast x86 PROVEN**.
-- `exit 99` — same run also read a **host file through a `Mount.share`** (`/shared/marker.txt`) →
+- `exit 42`: VM booted + container ran (kernel + initfs + image store all working in-process).
+- `exit 77`: an **amd64 image ran via Rosetta** (`uname -m == x86_64`) → **Rosetta-fast x86 PROVEN**.
+- `exit 99`: same run also read a **host file through a `Mount.share`** (`/shared/marker.txt`) →
   **bidirectional file sharing PROVEN**.
 
 **Shipped to users via `dory vm`.** The engine is packaged as a bundled, entitlement-signed helper
 (`Helpers/dory-vm`, built + signed by `scripts/bundle-engine.sh`) that the `dory` CLI and the app
-invoke — exactly how Dory already invokes `container`/`docker`/`kubectl`, so the app gains the
+invoke, exactly how Dory already invokes `container`/`docker`/`kubectl`, so the app gains the
 features without linking the framework's large dependency tree.
 
 | Capability | Status | Delivery |
@@ -117,13 +117,13 @@ features without linking the framework's large dependency tree.
 | Rosetta-speed x86 | ✅ **delivered** | `dory vm --arch amd64 --rosetta -- <cmd>` → `uname -m == x86_64`. Verified through the CLI |
 | Reverse / bidirectional file mount | ✅ **delivered** | `dory vm --mount host:guest -- <cmd>` reads/writes host files in the container. Verified |
 | USB / audio passthrough | ✅ **delivered** | `dory vm --devices`: a `VZInstanceExtension` injects an XHCI USB controller + `VZVirtioSoundDevice`. Verified `USB controllers attached: 1` |
-| Dynamic memory balloon → macOS | ✅ **delivered** | `dory vm --devices` attaches a balloon and reclaims RAM at runtime via the public `vzVirtualMachine` — verified `1024MiB → 512MiB reclaimed to macOS` |
+| Dynamic memory balloon → macOS | ✅ **delivered** | `dory vm --devices` attaches a balloon and reclaims RAM at runtime via the public `vzVirtualMachine`, verified `1024MiB → 512MiB reclaimed to macOS` |
 
 **All four are delivered** through the bundled, entitlement-signed `dory-vm` helper, surfaced by the
 `dory` CLI (`dory vm`). The default shared-VM engine is untouched. (A GUI entry point for the
 in-process engine is not yet wired up.)
 
-## Packaging — does the user need anything besides Dory.app?
+## Packaging: does the user need anything besides Dory.app?
 
 The goal is a single download. Status:
 
@@ -131,18 +131,18 @@ The goal is a single download. Status:
 |---|---|---|
 | In-process engine (`dory-vm` helper) | ✅ verified | `scripts/bundle-engine.sh` builds + signs the `dory-vmboot` helper (links Apple's `containerization` framework, ~100 MB) into `Contents/Helpers/dory-vm` with the `com.apple.security.virtualization` entitlement. |
 | VM kernel + initfs | ✅ verified | Compressed into `Contents/Resources/dory-vm-kernel.zst` (~6 MB) + `dory-vm-initfs.ext4.zst` (~30 MB); decompressed once on first launch via the bundled `zstd`. |
-| Engine image (`docker:dind`) | pulled on first run | NOT bundled (OrbStack model) — the helper pulls it on first boot. `DORY_BUNDLE_LEGACY=1` bundles it + the `container` toolchain for a fully-offline build. |
+| Engine image (`docker:dind`) | pulled on first run | NOT bundled (OrbStack model): the helper pulls it on first boot. `DORY_BUNDLE_LEGACY=1` bundles it + the `container` toolchain for a fully-offline build. |
 | `docker` CLI | not needed | Dory hosts a Docker-compatible socket and points the `docker` context at it, so `docker` just works; the CLI itself isn't bundled. |
 | macOS 15+ | app requirement | The SwiftUI app and Docker-compatible host-engine mode build and run with a macOS 15 deployment target. |
 | macOS 26+ on Apple silicon | standalone-engine requirement | Apple's `container` / `containerization` stack requires it; Dory gates the Shared VM and Apple `container` backends at runtime. |
 
-So: **a self-contained standalone Dory.app works on macOS 26+ Apple silicon** — verified end-to-end (`DORY_BUNDLE_ENGINE=1`): a re-signed bundle that passes `codesign --verify --deep --strict`, **~155 MB on disk / ~80 MB zipped** (the engine helper dominates; the "image pulled on first run" keeps it from being larger), requiring no Homebrew, no Docker Hub, no Docker Desktop. On macOS 15-25 or Intel, Dory still runs as a native app against a Docker-compatible host engine. Building the standalone bundle needs the kernel/initfs from a machine that has run Apple's `container`, so the release runner must be self-hosted (hosted CI has no virtualization).
+So: **a self-contained standalone Dory.app works on macOS 26+ Apple silicon**, verified end-to-end (`DORY_BUNDLE_ENGINE=1`): a re-signed bundle that passes `codesign --verify --deep --strict`, **~155 MB on disk / ~80 MB zipped** (the engine helper dominates; the "image pulled on first run" keeps it from being larger), requiring no Homebrew, no Docker Hub, no Docker Desktop. On macOS 15-25 or Intel, Dory still runs as a native app against a Docker-compatible host engine. Building the standalone bundle needs the kernel/initfs from a machine that has run Apple's `container`, so the release runner must be self-hosted (hosted CI has no virtualization).
 
 ## Architectural / environment notes
 
 - **Shared VM vs one-VM-per-container.** Dory offers BOTH: the Apple `container` backend is
   one-VM-per-container, while the **Shared VM backend** runs all containers in one VM like
-  OrbStack — measured ~4.7× less memory for 2 containers (122 MB vs 574 MB), with the gap widening
+  OrbStack. Measured ~4.7× less memory for 2 containers (122 MB vs 574 MB), with the gap widening
   per container. This closes the headline memory gap and makes Dory a standalone engine.
 - **File-sharing performance** under the Apple `container` runtime + a real bind-mount dev loop is
   not yet benchmarked here.
