@@ -36,10 +36,7 @@ jobs:
     outputs:
       version: ${{ steps.ver.outputs.version }}
       sha256: ${{ steps.build.outputs.sha256 }}
-      build: ${{ steps.build.outputs.build }}
       dmg: ${{ steps.build.outputs.dmg }}
-      edsig: ${{ steps.sparkle.outputs.edsig }}
-      length: ${{ steps.sparkle.outputs.length }}
     steps:
       - uses: actions/checkout@v4
 
@@ -88,20 +85,6 @@ jobs:
           DORY_BUNDLE_ENGINE: ${{ vars.BUNDLE_ENGINE || '0' }}
         run: scripts/release.sh "${{ steps.ver.outputs.version }}" "${{ github.run_number }}"
 
-      # Sign the zip with the Sparkle EdDSA key so the appcast entry verifies. Needs a
-      # SPARKLE_PRIVATE_KEY secret (export it once with Sparkle's generate_keys -x); skipped if absent.
-      - name: Sign update for Sparkle
-        id: sparkle
-        env:
-          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
-        run: |
-          if [ -z "$SPARKLE_PRIVATE_KEY" ]; then echo "SPARKLE_PRIVATE_KEY not set, skipping update signing"; exit 0; fi
-          curl -fsSL https://github.com/sparkle-project/Sparkle/releases/download/2.9.3/Sparkle-2.9.3.tar.xz -o /tmp/sparkle.tar.xz
-          mkdir -p /tmp/sparkle && tar -xf /tmp/sparkle.tar.xz -C /tmp/sparkle
-          OUT=$(/tmp/sparkle/bin/sign_update -s "$SPARKLE_PRIVATE_KEY" "${{ steps.build.outputs.zip }}")
-          echo "edsig=$(echo "$OUT" | sed -E 's/.*sparkle:edSignature="([^"]+)".*/\1/')" >> "$GITHUB_OUTPUT"
-          echo "length=$(echo "$OUT" | sed -E 's/.*length="([^"]+)".*/\1/')" >> "$GITHUB_OUTPUT"
-
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -112,8 +95,10 @@ jobs:
             ${{ steps.build.outputs.dmg }}
           generate_release_notes: true
           body: |
-            Native, lightweight Docker & Linux containers on Apple silicon, a free, open-source
-            alternative to OrbStack and Docker Desktop. Requires macOS 26 (Tahoe) or later.
+            Native, lightweight Docker & Linux containers, a free, open-source alternative to
+            OrbStack and Docker Desktop. Universal for Intel and Apple silicon, macOS 15+. The
+            standalone shared-VM engine needs Apple silicon on macOS 26 (Tahoe); Intel Macs pair
+            Dory with any Docker-compatible engine.
 
             **Install**
 
@@ -137,26 +122,17 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: main
-      - name: Update cask + Sparkle appcast
+      - name: Bump cask to the released version
         run: |
           V="${{ needs.release.outputs.version }}"
           S="${{ needs.release.outputs.sha256 }}"
-          B="${{ needs.release.outputs.build }}"
-          SIG="${{ needs.release.outputs.edsig }}"
-          LEN="${{ needs.release.outputs.length }}"
           sed -i -E "s/  version \"[^\"]+\"/  version \"$V\"/" Casks/dory.rb
           sed -i -E "s/  sha256 \"[0-9a-f]+\"/  sha256 \"$S\"/" Casks/dory.rb
-          if [ -n "$SIG" ]; then
-            scripts/update-appcast.sh "$V" "${B:-1}" \
-              "https://github.com/Augani/dory/releases/download/v$V/Dory-$V.zip" "$SIG" "$LEN"
-          else
-            echo "no Sparkle signature (SPARKLE_PRIVATE_KEY unset), appcast left unchanged"
-          fi
-          git add Casks/dory.rb docs/appcast.xml
-          if git diff --cached --quiet; then echo "nothing to update"; exit 0; fi
+          git add Casks/dory.rb
+          if git diff --cached --quiet; then echo "cask already current"; exit 0; fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -m "chore: release metadata for v$V (cask + appcast)"
+          git commit -m "chore: bump Homebrew cask to v$V"
           git push
 
       # Sync the same cask to the Augani/homebrew-dory tap so `brew install --cask Augani/dory/dory`
