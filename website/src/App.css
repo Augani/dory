@@ -68,15 +68,16 @@ header {
   position: relative;
   height: 230px;
   margin-bottom: 8px;
+  overflow: hidden;
 }
 
 .fish-glow {
   position: absolute;
-  inset: -10% -6%;
-  border-radius: 32px;
-  overflow: hidden;
+  inset: 0;
   opacity: 0.55;
   pointer-events: none;
+  -webkit-mask-image: radial-gradient(ellipse 38% 42% at 50% 38%, #000 0%, #000 25%, transparent 58%);
+  mask-image: radial-gradient(ellipse 38% 42% at 50% 38%, #000 0%, #000 25%, transparent 58%);
 }
 
 .fish-glow > div,
