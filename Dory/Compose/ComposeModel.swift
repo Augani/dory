@@ -329,7 +329,7 @@ enum ComposeParser {
         return .mapping(merged)
     }
 
-    private static func stripTags(_ value: YAMLValue) -> YAMLValue {
+    private nonisolated static func stripTags(_ value: YAMLValue) -> YAMLValue {
         switch value {
         case let .tagged(_, inner): return stripTags(inner)
         case let .mapping(map): return .mapping(map.mapValues(stripTags))

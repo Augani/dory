@@ -12,12 +12,12 @@ struct YAMLParser {
     private let lines: [Line]
     private var index = 0
 
-    static func parse(_ text: String) throws -> YAMLValue {
+    nonisolated static func parse(_ text: String) throws -> YAMLValue {
         var parser = YAMLParser(text: text)
         return try parser.parseDocument()
     }
 
-    private init(text: String) {
+    private nonisolated init(text: String) {
         var collected: [Line] = []
         for raw in text.split(separator: "\n", omittingEmptySubsequences: false) {
             let stripped = YAMLParser.stripComment(String(raw))
@@ -28,19 +28,19 @@ struct YAMLParser {
         lines = collected
     }
 
-    private mutating func parseDocument() throws -> YAMLValue {
+    private nonisolated mutating func parseDocument() throws -> YAMLValue {
         guard index < lines.count else { return .null }
         return try parseNode(indent: lines[index].indent)
     }
 
-    private mutating func parseNode(indent: Int) throws -> YAMLValue {
+    private nonisolated mutating func parseNode(indent: Int) throws -> YAMLValue {
         if lines[index].content.hasPrefix("- ") || lines[index].content == "-" {
             return try parseSequence(indent: indent)
         }
         return try parseMapping(indent: indent)
     }
 
-    private mutating func parseMapping(indent: Int) throws -> YAMLValue {
+    private nonisolated mutating func parseMapping(indent: Int) throws -> YAMLValue {
         var map: [String: YAMLValue] = [:]
         while index < lines.count, lines[index].indent == indent,
               !lines[index].content.hasPrefix("- ") {
@@ -58,7 +58,7 @@ struct YAMLParser {
         return .mapping(map)
     }
 
-    private mutating func parseSequence(indent: Int) throws -> YAMLValue {
+    private nonisolated mutating func parseSequence(indent: Int) throws -> YAMLValue {
         var seq: [YAMLValue] = []
         while index < lines.count, lines[index].indent == indent,
               lines[index].content.hasPrefix("- ") || lines[index].content == "-" {
@@ -92,7 +92,7 @@ struct YAMLParser {
         return .sequence(seq)
     }
 
-    private mutating func parseChildBlock(parentIndent: Int) throws -> YAMLValue {
+    private nonisolated mutating func parseChildBlock(parentIndent: Int) throws -> YAMLValue {
         guard index < lines.count else { return .null }
         let next = lines[index]
         if next.indent > parentIndent {
@@ -106,7 +106,7 @@ struct YAMLParser {
 
     // MARK: Scalars and flow collections
 
-    static func scalarOrFlow(_ raw: String) throws -> YAMLValue {
+    nonisolated static func scalarOrFlow(_ raw: String) throws -> YAMLValue {
         let trimmed = raw.trimmingCharacters(in: .whitespaces)
         if let (tag, remainder) = mergeTag(trimmed) {
             return .tagged(tag, try scalarOrFlow(remainder))
@@ -118,7 +118,7 @@ struct YAMLParser {
         return scalar(trimmed)
     }
 
-    private static func mergeTag(_ trimmed: String) -> (MergeTag, String)? {
+    private nonisolated static func mergeTag(_ trimmed: String) -> (MergeTag, String)? {
         for (token, tag) in [("!override", MergeTag.override), ("!reset", MergeTag.reset)] {
             if trimmed == token { return (tag, "") }
             if trimmed.hasPrefix(token + " ") {
@@ -128,7 +128,7 @@ struct YAMLParser {
         return nil
     }
 
-    static func scalar(_ raw: String) -> YAMLValue {
+    nonisolated static func scalar(_ raw: String) -> YAMLValue {
         let trimmed = raw.trimmingCharacters(in: .whitespaces)
         if trimmed.hasPrefix("\"") && trimmed.hasSuffix("\"") && trimmed.count >= 2 {
             return .string(unescape(String(trimmed.dropFirst().dropLast())))
@@ -150,13 +150,13 @@ struct YAMLParser {
         return .string(trimmed)
     }
 
-    private static func unescape(_ s: String) -> String {
+    private nonisolated static func unescape(_ s: String) -> String {
         s.replacingOccurrences(of: "\\n", with: "\n")
             .replacingOccurrences(of: "\\t", with: "\t")
             .replacingOccurrences(of: "\\\"", with: "\"")
     }
 
-    static func splitKeyValue(_ content: String) -> (key: String, value: String)? {
+    nonisolated static func splitKeyValue(_ content: String) -> (key: String, value: String)? {
         var inSingle = false, inDouble = false
         let chars = Array(content)
         var i = 0
@@ -177,13 +177,13 @@ struct YAMLParser {
         return nil
     }
 
-    private static func unquoteKey(_ key: String) -> String {
+    private nonisolated static func unquoteKey(_ key: String) -> String {
         if key.hasPrefix("\"") && key.hasSuffix("\"") && key.count >= 2 { return String(key.dropFirst().dropLast()) }
         if key.hasPrefix("'") && key.hasSuffix("'") && key.count >= 2 { return String(key.dropFirst().dropLast()) }
         return key
     }
 
-    private static func stripComment(_ line: String) -> String {
+    private nonisolated static func stripComment(_ line: String) -> String {
         var inSingle = false, inDouble = false
         let chars = Array(line)
         var i = 0
@@ -205,9 +205,9 @@ struct YAMLParser {
 private struct FlowScanner {
     private let chars: [Character]
     private var i = 0
-    init(_ string: String) { chars = Array(string) }
+    nonisolated init(_ string: String) { chars = Array(string) }
 
-    mutating func parseValue() throws -> YAMLValue {
+    nonisolated mutating func parseValue() throws -> YAMLValue {
         skipSpaces()
         guard i < chars.count else { return .null }
         switch chars[i] {
@@ -218,7 +218,7 @@ private struct FlowScanner {
         }
     }
 
-    private mutating func parseSequence() throws -> YAMLValue {
+    private nonisolated mutating func parseSequence() throws -> YAMLValue {
         i += 1
         var items: [YAMLValue] = []
         skipSpaces()
@@ -233,7 +233,7 @@ private struct FlowScanner {
         return .sequence(items)
     }
 
-    private mutating func parseMapping() throws -> YAMLValue {
+    private nonisolated mutating func parseMapping() throws -> YAMLValue {
         i += 1
         var map: [String: YAMLValue] = [:]
         skipSpaces()
@@ -253,7 +253,7 @@ private struct FlowScanner {
         return .mapping(map)
     }
 
-    private mutating func parseQuoted() -> String {
+    private nonisolated mutating func parseQuoted() -> String {
         let quote = chars[i]; i += 1
         var result = ""
         while i < chars.count, chars[i] != quote { result.append(chars[i]); i += 1 }
@@ -261,18 +261,37 @@ private struct FlowScanner {
         return result
     }
 
-    private mutating func parseScalar() -> String {
+    private nonisolated mutating func parseScalar() -> String {
         var result = ""
-        while i < chars.count, !",]}".contains(chars[i]) { result.append(chars[i]); i += 1 }
+        var braceDepth = 0
+        while i < chars.count {
+            let c = chars[i]
+            if c == "{" {
+                braceDepth += 1
+                result.append(c)
+                i += 1
+                continue
+            }
+            if c == "}" {
+                if braceDepth == 0 { break }
+                braceDepth -= 1
+                result.append(c)
+                i += 1
+                continue
+            }
+            if c == "," || c == "]" { break }
+            result.append(c)
+            i += 1
+        }
         return result.trimmingCharacters(in: .whitespaces)
     }
 
-    private mutating func parseKey() -> String {
+    private nonisolated mutating func parseKey() -> String {
         var result = ""
         while i < chars.count, !":,]}".contains(chars[i]) { result.append(chars[i]); i += 1 }
         return result.trimmingCharacters(in: .whitespaces)
     }
 
-    private func peek() -> Character? { i < chars.count ? chars[i] : nil }
-    private mutating func skipSpaces() { while i < chars.count, chars[i] == " " { i += 1 } }
+    private nonisolated func peek() -> Character? { i < chars.count ? chars[i] : nil }
+    private nonisolated mutating func skipSpaces() { while i < chars.count, chars[i] == " " { i += 1 } }
 }

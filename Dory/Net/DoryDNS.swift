@@ -4,9 +4,9 @@ import Darwin
 #endif
 
 /// A minimal UDP DNS resolver that answers `*.<suffix>` (default `*.dory.local`) with the loopback
-/// address, so container domains resolve to the host where Dory's reverse proxy is listening — the
-/// mechanism behind OrbStack's automatic `name.orb.local` domains. Non-matching queries are
-/// refused so the system resolver falls through to real DNS.
+/// address, so container domains resolve to the host where Dory's reverse proxy is listening. Exact
+/// host overrides let machine names resolve to their guest IPs while other names keep using loopback.
+/// Non-matching queries are refused so the system resolver falls through to real DNS.
 ///
 /// Binds an unprivileged port by default (validated end to end); production binds :53 and adds an
 /// `/etc/resolver/<suffix>` entry, which is the consent-gated system change.
@@ -16,6 +16,7 @@ final class DoryDNS: @unchecked Sendable {
     private let lock = NSLock()
     private var fd: Int32 = -1
     private var running = false
+    private var hostIPs: [String: String] = [:]
 
     init(suffix: String = "dory.local", address: String = "127.0.0.1") {
         self.suffix = suffix.lowercased()
@@ -44,6 +45,15 @@ final class DoryDNS: @unchecked Sendable {
         if socketFD >= 0 { Darwin.close(socketFD) }
     }
 
+    func replaceHostIPs(_ entries: [String: String]) {
+        let normalized = entries.reduce(into: [String: String]()) { result, pair in
+            let host = Self.normalizeHost(pair.key)
+            guard !host.isEmpty, Self.ipv4Bytes(pair.value) != nil else { return }
+            result[host] = pair.value
+        }
+        lock.lock(); hostIPs = normalized; lock.unlock()
+    }
+
     private func isRunning() -> Bool { lock.lock(); defer { lock.unlock() }; return running }
 
     private func serve(_ socketFD: Int32) {
@@ -57,7 +67,8 @@ final class DoryDNS: @unchecked Sendable {
                 }
             }
             if n <= 0 { if isRunning() { continue } else { break } }
-            guard let response = Self.makeResponse(Array(buffer[0..<n]), suffix: suffix, ip: address) else { continue }
+            let overrides = currentHostIPs()
+            guard let response = Self.makeResponse(Array(buffer[0..<n]), suffix: suffix, ip: address, hostIPs: overrides) else { continue }
             _ = response.withUnsafeBytes { raw in
                 withUnsafeMutablePointer(to: &client) { sptr in
                     sptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { caddr in
@@ -70,6 +81,12 @@ final class DoryDNS: @unchecked Sendable {
 
     /// Build a DNS answer for an A query whose name ends with the suffix; nil otherwise.
     nonisolated static func makeResponse(_ query: [UInt8], suffix: String, ip: String) -> [UInt8]? {
+        makeResponse(query, suffix: suffix, ip: ip, hostIPs: [:])
+    }
+
+    /// Build a DNS answer for an A query whose name ends with the suffix; nil otherwise.
+    /// `hostIPs` is an exact-name override table for guests that should resolve directly.
+    nonisolated static func makeResponse(_ query: [UInt8], suffix: String, ip: String, hostIPs: [String: String]) -> [UInt8]? {
         guard query.count >= 12 else { return nil }
         let qdcount = (Int(query[4]) << 8) | Int(query[5])
         guard qdcount >= 1 else { return nil }
@@ -88,6 +105,8 @@ final class DoryDNS: @unchecked Sendable {
         let name = labels.joined(separator: ".").lowercased()
         // Only answer A/AAAA queries inside our suffix; refuse everything else so DNS falls through.
         guard name.hasSuffix(suffix), qtype == 1 || qtype == 28 else { return nil }
+        let answerIP = hostIPs[normalizeHost(name)] ?? ip
+        guard ipv4Bytes(answerIP) != nil else { return nil }
         let questionEnd = index + 4
 
         var response = [UInt8]()
@@ -107,9 +126,26 @@ final class DoryDNS: @unchecked Sendable {
             response.append(0x00); response.append(0x01)         // CLASS IN
             response.append(contentsOf: [0x00, 0x00, 0x00, 0x1E]) // TTL 30s
             response.append(0x00); response.append(0x04)         // RDLENGTH 4
-            for part in ip.split(separator: ".") { response.append(UInt8(part) ?? 0) }
+            response.append(contentsOf: ipv4Bytes(answerIP) ?? [0, 0, 0, 0])
         }
         return response
+    }
+
+    private func currentHostIPs() -> [String: String] {
+        lock.lock(); defer { lock.unlock() }
+        return hostIPs
+    }
+
+    nonisolated static func normalizeHost(_ host: String) -> String {
+        let lowered = host.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return lowered.hasSuffix(".") ? String(lowered.dropLast()) : lowered
+    }
+
+    nonisolated static func ipv4Bytes(_ ip: String) -> [UInt8]? {
+        let parts = ip.split(separator: ".", omittingEmptySubsequences: false)
+        guard parts.count == 4 else { return nil }
+        let bytes = parts.compactMap { UInt8($0) }
+        return bytes.count == 4 ? bytes : nil
     }
 
     enum DNSError: Error, Sendable { case socket(String) }

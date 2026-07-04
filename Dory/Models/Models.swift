@@ -379,7 +379,7 @@ enum DetailTab: String, CaseIterable, Identifiable, Sendable {
 }
 
 enum SettingsTab: String, CaseIterable, Identifiable, Sendable {
-    case general, engine, resources, network, migrate, about
+    case general, engine, resources, network, usb, migrate, about
     var id: String { rawValue }
     var label: String {
         switch self {
@@ -387,6 +387,7 @@ enum SettingsTab: String, CaseIterable, Identifiable, Sendable {
         case .engine: "Docker Engine"
         case .resources: "Resources"
         case .network: "Network"
+        case .usb: "USB Devices"
         case .migrate: "Migrate & Compare"
         case .about: "About"
         }

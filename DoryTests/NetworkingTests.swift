@@ -28,6 +28,26 @@ struct NetworkingTests {
         #expect(Array(response.suffix(4)) == [127, 0, 0, 1])          // A record RDATA
     }
 
+    @Test func dnsUsesExactHostOverrideForMachines() throws {
+        let query = dnsQuery(name: "dev.dory.local", qtype: 1)
+        let response = try #require(DoryDNS.makeResponse(
+            query,
+            suffix: "dory.local",
+            ip: "127.0.0.1",
+            hostIPs: ["dev.dory.local": "172.17.0.5"]
+        ))
+        #expect(response[7] == 0x01)
+        #expect(Array(response.suffix(4)) == [172, 17, 0, 5])
+
+        let fallback = try #require(DoryDNS.makeResponse(
+            dnsQuery(name: "web.dory.local", qtype: 1),
+            suffix: "dory.local",
+            ip: "127.0.0.1",
+            hostIPs: ["dev.dory.local": "172.17.0.5"]
+        ))
+        #expect(Array(fallback.suffix(4)) == [127, 0, 0, 1])
+    }
+
     @Test func dnsRefusesForeignDomains() {
         #expect(DoryDNS.makeResponse(dnsQuery(name: "google.com", qtype: 1), suffix: "dory.local", ip: "127.0.0.1") == nil)
     }
@@ -63,6 +83,15 @@ struct NetworkingTests {
         let backend = table.backend(for: "web.default.k8s.dory.local")
         #expect(backend?.port == 18001)
         #expect(backend?.pathPrefix.contains("services/web:80/proxy") == true)
+    }
+
+    @Test func machineDNSHostsIncludeOnlyRunningMachinesWithIPv4() {
+        let machines = [
+            Machine(name: "dev", distro: "Ubuntu", version: "24.04", status: .running, cpuPercent: 0, memoryDisplay: "0", ip: "172.17.0.5", letter: "U", badgeHex: 0),
+            Machine(name: "off", distro: "Ubuntu", version: "24.04", status: .stopped, cpuPercent: 0, memoryDisplay: "0", ip: "172.17.0.6", letter: "U", badgeHex: 0),
+            Machine(name: "pending", distro: "Ubuntu", version: "24.04", status: .running, cpuPercent: 0, memoryDisplay: "0", ip: "—", letter: "U", badgeHex: 0),
+        ]
+        #expect(AppStore.machineDNSHosts(machines, suffix: "dory.local") == ["dev.dory.local": "172.17.0.5"])
     }
 
     @Test func kubeServiceProxyBuildsStableServiceRoutes() {

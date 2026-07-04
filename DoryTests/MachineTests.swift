@@ -52,6 +52,7 @@ struct MachineImageBuilderTests {
         let df = MachineImageBuilder.dockerfile(for: MachineDistro.forImage("ubuntu:24.04")!)
         #expect(df.contains("FROM ubuntu:24.04"))
         #expect(df.contains("systemd-sysv"))
+        #expect(df.contains("netcat-openbsd"))
         #expect(df.contains("STOPSIGNAL SIGRTMIN+3"))
         #expect(df.contains("CMD [\"/sbin/init\"]"))
     }
@@ -103,6 +104,10 @@ struct MachineServiceHelperTests {
         #expect(host?["Privileged"] as? Bool == true)
         #expect(host?["CgroupnsMode"] as? String == "host")
         #expect((host?["Tmpfs"] as? [String: String])?["/run"] == "")
+        #expect(host?["ExtraHosts"] as? [String] == [
+            "host.docker.internal:host-gateway",
+            "host.dory.internal:host-gateway",
+        ])
     }
 
     @Test func createBodyKeepaliveOverridesInit() {
@@ -138,5 +143,49 @@ struct MachineServiceHelperTests {
         #expect(machines[0].status == .running)
         #expect(machines[0].ip == "172.17.0.5")
         #expect(machines[0].letter == "U")
+    }
+
+    @Test func recipeSettingsMapResourcesPortsMountsEnvAndUser() throws {
+        let recipe = DevRecipe(
+            id: "node",
+            display: "Node",
+            icon: "terminal",
+            install: "",
+            distro: "ubuntu:24.04",
+            arch: "arm64",
+            resources: .init(cpus: 4, memory: "8GiB", disk: "60GiB"),
+            mounts: ["/Users/{{host_user}}/src:/workspace:ro"],
+            ports: [3000, 9229],
+            env: ["NODE_ENV": "development"],
+            user: .init(name: "{{host_user}}", sudo: true, shell: "/bin/zsh")
+        )
+
+        let settings = try MachineService.settings(
+            from: recipe,
+            hostUser: "augustus",
+            uid: 777,
+            homePath: "/Users/augustus",
+            publicKeys: ["ssh-ed25519 AAAA"]
+        )
+
+        #expect(settings.cpus == 4)
+        #expect(settings.memoryMB == 8192)
+        #expect(settings.mounts == [MountPair(host: "/Users/augustus/src", guest: "/workspace", readOnly: true)])
+        #expect(settings.ports == [PortPair(host: 3000, guest: 3000), PortPair(host: 9229, guest: 9229)])
+        #expect(settings.env == ["NODE_ENV": "development"])
+        #expect(settings.identity == MacIdentity(username: "augustus", uid: 777, homePath: "/Users/augustus", shell: "/bin/zsh", publicKeys: ["ssh-ed25519 AAAA"]))
+    }
+
+    @Test func recipeDistroAndArchResolveFromSchema() throws {
+        let recipe = DevRecipe(id: "py", display: "Python", icon: "terminal", install: "", distro: "fedora:41", arch: "amd64")
+        #expect(try MachineService.distro(for: recipe).pkg == .dnf)
+        #expect(try MachineService.arch(for: recipe) == .amd64)
+    }
+
+    @Test func recipeSettingsRejectBadMounts() {
+        let recipe = DevRecipe(id: "bad", display: "Bad", icon: "terminal", install: "", mounts: ["not-a-bind"])
+        #expect(throws: MachineError.self) {
+            _ = try MachineService.settings(from: recipe, hostUser: "me")
+        }
     }
 }

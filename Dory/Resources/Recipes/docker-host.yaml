@@ -1,0 +1,16 @@
+name: docker-host
+summary: Machine wired for Dory Docker socket access and CLI workflows
+distro: ubuntu:24.04
+arch: arm64
+resources: {cpus: 4, memory: 8GiB, disk: 80GiB}
+packages: [git, curl, ca-certificates, jq, socat]
+runcmd:
+  - ARCH=$(dpkg --print-architecture); DARCH=$([ "$ARCH" = arm64 ] && echo aarch64 || echo x86_64); curl -fsSL https://download.docker.com/linux/static/stable/$DARCH/docker-27.5.1.tgz | tar -xz -C /tmp
+  - install -m0755 /tmp/docker/docker /usr/local/bin/docker
+mounts:
+  - ~/Projects:~/Projects
+ports: [2375, 8080]
+env: {DOCKER_HOST: unix:///var/run/dory/docker.sock}
+ssh: {agent_forward: true}
+docker: true
+user: {name: "{{host_user}}", sudo: true, shell: /bin/bash}

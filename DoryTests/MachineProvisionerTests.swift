@@ -53,4 +53,12 @@ struct MachineProvisionerTests {
         let s = MachineProvisioner.script(identity: id(), pkg: .apt, isSystemd: true, includeSSH: false)
         #expect(s.contains("socat"))
     }
+
+    @Test func installsCredentialForwardingShim() {
+        let s = MachineProvisioner.script(identity: id(), pkg: .apt, isSystemd: true, includeSSH: false)
+        #expect(s.contains("/etc/profile.d/dory-credentials.sh"))
+        #expect(s.contains("SSH_AUTH_SOCK=/opt/dory/bridge/credentials/ssh-agent.sock"))
+        #expect(s.contains("/usr/local/bin/dory-git-askpass"))
+        #expect(s.contains("DORY_GIT_ASKPASS_SOCK=/opt/dory/bridge/credentials/git-askpass.sock"))
+    }
 }

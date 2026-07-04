@@ -1,0 +1,15 @@
+name: python-ml
+summary: Python data and ML workspace with venv, pipx, and native build tools
+distro: ubuntu:24.04
+arch: arm64
+resources: {cpus: 6, memory: 12GiB, disk: 80GiB}
+packages: [build-essential, python3, python3-pip, python3-venv, pipx, git, curl, libopenblas-dev]
+runcmd:
+  - python3 -m pip install --upgrade pip
+mounts:
+  - ~/Projects:~/Projects
+ports: [8888, 5000]
+env: {PIPX_HOME: /home/{{user}}/.local/pipx}
+ssh: {agent_forward: true}
+docker: false
+user: {name: "{{host_user}}", sudo: true, shell: /bin/bash}

@@ -1,6 +1,8 @@
 import AppKit
 
 final class DoryAppDelegate: NSObject, NSApplicationDelegate {
+    private var wakeObserver: NSObjectProtocol?
+
     static var isTestHost: Bool {
         ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
             || ProcessInfo.processInfo.environment["XCTestSessionIdentifier"] != nil
@@ -9,6 +11,13 @@ final class DoryAppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         guard !Self.isTestHost else { return }
         NSApp.setActivationPolicy(.accessory)
+        wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification,
+            object: nil,
+            queue: .main
+        ) { _ in
+            SharedVMProvisioner.resyncClockAfterWake()
+        }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -16,6 +25,9 @@ final class DoryAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        if let wakeObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver)
+        }
         DockerContext.deactivateSync()
         SharedVMProvisioner.stopEngineDetached()
     }

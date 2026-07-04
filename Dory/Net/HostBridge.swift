@@ -92,7 +92,8 @@ final class HostBridgeWatcher: @unchecked Sendable {
         guard !already else { return }
         let openDir = bridgeRoot.appendingPathComponent(machine).appendingPathComponent("open")
         let forwardDir = bridgeRoot.appendingPathComponent(machine).appendingPathComponent("forward")
-        for dir in [openDir, forwardDir] {
+        let credentialDir = bridgeRoot.appendingPathComponent(machine).appendingPathComponent("credentials")
+        for dir in [openDir, forwardDir, credentialDir] {
             try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         }
         var made: [DispatchSourceFileSystemObject] = []

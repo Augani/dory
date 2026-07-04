@@ -430,6 +430,11 @@ final class AppStore {
         enabled: openLoginsOnMac,
         open: { url in DispatchQueue.main.async { NSWorkspace.shared.open(url) } }
     )
+    @ObservationIgnored private lazy var credentialProxy = CredentialProxyManager(
+        bridgeRoot: URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".dory/bridge")
+    )
+    @ObservationIgnored private let usbAttachments = UsbAttachmentStore()
+    @ObservationIgnored private var usbReplayedMachines: Set<String> = []
     private let domainTable = DomainTable()
     private let dns = DoryDNS()
     @ObservationIgnored private let reverseProxy: DoryReverseProxy
@@ -457,6 +462,9 @@ final class AppStore {
             while !Task.isCancelled {
                 let endpoints = await Self.containerEndpoints(runtime, suffix: suffix)
                 table.replaceContainers(endpoints)
+                if let self {
+                    self.dns.replaceHostIPs(Self.machineDNSHosts(self.machines, suffix: suffix))
+                }
                 if FileManager.default.fileExists(atPath: KubernetesProvisioner.kubeconfigPath) {
                     self?.ensureKubeProxy()
                     table.replaceKube(await KubeServiceProxy.backends(suffix: suffix))
@@ -522,21 +530,39 @@ final class AppStore {
 
     private func stopLocalNetworking() {
         guard networkingStarted else { return }
+        dns.replaceHostIPs([:])
         dns.stop(); reverseProxy.stop(); tlsProxy?.stop(); tlsProxy = nil
         if let proxy = kubeProxy, proxy.isRunning { proxy.terminate() }
         kubeProxy = nil
         for machine in hostBridge.watchedMachines() { hostBridge.stopWatching(machine: machine) }
+        credentialProxy.stopAll()
         networkingStarted = false
     }
 
     func registerMachineBridge(_ name: String) {
         try? FileManager.default.createDirectory(atPath: MachineService.bridgeHostDir(for: name), withIntermediateDirectories: true)
         hostBridge.startWatching(machine: name)
+        credentialProxy.start(machine: name)
+        replayRememberedUSB(machine: name)
     }
 
     func unregisterMachineBridge(_ name: String) {
         hostBridge.stopWatching(machine: name)
+        credentialProxy.stop(machine: name)
         portForwarder.teardownLoopback(forMachine: name)
+        usbReplayedMachines.remove(name)
+    }
+
+    private func replayRememberedUSB(machine: String) {
+        guard !usbReplayedMachines.contains(machine) else { return }
+        let commands = usbAttachments.reattachCommands(for: machine)
+        usbReplayedMachines.insert(machine)
+        guard !commands.isEmpty else { return }
+        Task.detached(priority: .utility) {
+            for arguments in commands {
+                _ = await UsbDevicesView.runDory(arguments)
+            }
+        }
     }
 
     /// `<name>.dory.local` → the published host port that reaches the container. Containers without a
@@ -555,6 +581,16 @@ final class AppStore {
                 guard !name.isEmpty else { continue }
                 result["\(name).\(suffix)".lowercased()] = port
             }
+        }
+        return result
+    }
+
+    nonisolated static func machineDNSHosts(_ machines: [Machine], suffix: String) -> [String: String] {
+        var result: [String: String] = [:]
+        for machine in machines where machine.status == .running {
+            guard DoryDNS.ipv4Bytes(machine.ip) != nil else { continue }
+            let host = DoryDNS.normalizeHost("\(machine.name).\(suffix)")
+            result[host] = machine.ip
         }
         return result
     }
@@ -1624,6 +1660,7 @@ final class AppStore {
         guard runtimeKind != .mock else { machines = MockData.machines; return MockData.machines }
         guard runtimeKind.isDockerCompatible else { machines = []; return [] }
         machines = await machineService.list()
+        dns.replaceHostIPs(Self.machineDNSHosts(machines, suffix: domainSuffix))
         syncMachineStats()
         for machine in machines where machine.status == .running {
             registerMachineBridge(machine.name)

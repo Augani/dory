@@ -191,7 +191,7 @@ struct DockerEngineRuntime: ContainerRuntime {
 
     private var http: UnixSocketHTTP { UnixSocketHTTP(path: socketPath) }
     private var decoder: JSONDecoder { JSONDecoder() }
-    private static let detectionProbeTimeout: TimeInterval = 0.75
+    private nonisolated static let detectionProbeTimeout: TimeInterval = 0.75
     private nonisolated static let statsProbeTimeout: TimeInterval = 2.5
     nonisolated static let maxConcurrentStatsRequests = 8
 

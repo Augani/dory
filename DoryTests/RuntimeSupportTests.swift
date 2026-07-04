@@ -66,6 +66,52 @@ struct RuntimeSupportTests {
         #expect(SharedVMProvisioner.memoryStringToMB("1073741824") == 1024)
     }
 
+    @Test func sharedVMEngineArgumentsStartDirectIPBridge() {
+        let arguments = SharedVMProvisioner.engineArguments(
+            config: SharedVMProvisioner.Config(cpus: 6, memory: "3G"),
+            kernel: "/tmp/kernel",
+            gvproxy: "/tmp/gvproxy",
+            rootfs: "/tmp/rootfs.ext4"
+        )
+
+        #expect(arguments.contains("--direct-ip"))
+        #expect(argumentValue(after: "--kernel", in: arguments) == "/tmp/kernel")
+        #expect(argumentValue(after: "--gvproxy", in: arguments) == "/tmp/gvproxy")
+        #expect(argumentValue(after: "--rootfs", in: arguments) == "/tmp/rootfs.ext4")
+        #expect(argumentValue(after: "--mem-mb", in: arguments) == "3072")
+        #expect(argumentValue(after: "--cpus", in: arguments) == "6")
+    }
+
+    @Test func wakeClockResyncSignalsLiveHelperOnly() {
+        var sent: [(pid_t, Int32)] = []
+        let signaler: (pid_t, Int32) -> Int32 = { pid, signal in
+            sent.append((pid, signal))
+            return 0
+        }
+
+        #expect(SharedVMProvisioner.resyncClockAfterWake(
+            pid: 1234,
+            isAlive: { $0 == 1234 },
+            signalSender: signaler
+        ))
+        #expect(sent.count == 1)
+        #expect(sent[0].0 == 1234)
+        #expect(sent[0].1 == SIGUSR1)
+
+        sent.removeAll()
+        #expect(!SharedVMProvisioner.resyncClockAfterWake(
+            pid: 1234,
+            isAlive: { _ in false },
+            signalSender: signaler
+        ))
+        #expect(sent.isEmpty)
+        #expect(!SharedVMProvisioner.resyncClockAfterWake(
+            pid: nil,
+            isAlive: { _ in true },
+            signalSender: signaler
+        ))
+    }
+
     @Test func dockerCompatibleRequirementNamesOlderMacFallbacks() {
         let message = AppStore.dockerCompatibleEngineRequired("Linux machines")
         #expect(message.contains("Dory's shared VM or a Docker-compatible engine"))
@@ -83,5 +129,13 @@ struct RuntimeSupportTests {
         #expect(message.contains("Docker Desktop"))
         #expect(message.contains("Colima"))
         #expect(message.contains("Podman"))
+    }
+
+    private func argumentValue(after flag: String, in arguments: [String]) -> String? {
+        guard let index = arguments.firstIndex(of: flag),
+              arguments.indices.contains(arguments.index(after: index)) else {
+            return nil
+        }
+        return arguments[arguments.index(after: index)]
     }
 }

@@ -45,6 +45,7 @@ struct SettingsView: View {
         case .resources: resources
         case .engine: engine
         case .network: infoPanel(networkText)
+        case .usb: UsbDevicesView()
         case .migrate: migrate
         case .about: infoPanel(aboutText)
         }

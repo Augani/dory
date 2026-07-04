@@ -1,0 +1,16 @@
+name: go
+summary: Go toolchain with Git and common C build dependencies
+distro: ubuntu:24.04
+arch: arm64
+resources: {cpus: 4, memory: 8GiB, disk: 60GiB}
+packages: [build-essential, git, curl, ca-certificates]
+runcmd:
+  - ARCH=$(dpkg --print-architecture); curl -fsSL https://go.dev/dl/go1.23.4.linux-${ARCH}.tar.gz | tar -C /usr/local -xz
+  - printf '%s\n' 'export PATH=$PATH:/usr/local/go/bin' > /etc/profile.d/go.sh
+mounts:
+  - ~/Projects:~/Projects
+ports: [8080]
+env: {GOPATH: /home/{{user}}/go}
+ssh: {agent_forward: true}
+docker: false
+user: {name: "{{host_user}}", sudo: true, shell: /bin/bash}

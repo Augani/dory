@@ -1,0 +1,15 @@
+name: rust
+summary: Rust toolchain with OpenSSL and native build dependencies
+distro: ubuntu:24.04
+arch: arm64
+resources: {cpus: 4, memory: 8GiB, disk: 60GiB}
+packages: [build-essential, pkg-config, libssl-dev, git, curl, ca-certificates]
+runcmd:
+  - curl https://sh.rustup.rs -sSf | sh -s -- -y
+mounts:
+  - ~/Projects:~/Projects
+ports: [3000, 8080]
+env: {CARGO_HOME: /home/{{user}}/.cargo}
+ssh: {agent_forward: true}
+docker: false
+user: {name: "{{host_user}}", sudo: true, shell: /bin/bash}

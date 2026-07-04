@@ -6,7 +6,7 @@ import Foundation
 /// the shared engine are immediately usable in Pods, with no local registry push.
 enum KubernetesProvisioner {
     static let containerName = "dory-k8s"
-    static let defaultImage = KubeVersionCatalog.latest.image
+    nonisolated static let defaultImage = KubeVersionCatalog.latest.image
     static let apiPort = 6443
     static var kubeconfigPath: String { "\(NSHomeDirectory())/.kube/dory-config" }
 

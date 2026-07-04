@@ -11,8 +11,8 @@ enum SharedVMProvisioner {
     static var engineIPPath: String { "\(NSHomeDirectory())/.dory/engine.ip" }
 
     private static let zstdCandidates = ["/opt/homebrew/bin/zstd", "/usr/local/bin/zstd", "/usr/bin/zstd"]
-    private static let helperPIDPath = "\(NSHomeDirectory())/.dory/engine.pid"
-    private static let helperLogPath = "\(NSHomeDirectory())/.dory/engine.log"
+    nonisolated private static let helperPIDPath = "\(NSHomeDirectory())/.dory/engine.pid"
+    nonisolated private static let helperLogPath = "\(NSHomeDirectory())/.dory/engine.log"
     nonisolated static let defaultEngineMemoryMB = 2048
     nonisolated static let defaultEngineHeadroomMB = 512
 
@@ -102,18 +102,11 @@ enum SharedVMProvisioner {
         try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
         try? FileManager.default.removeItem(atPath: socketPath)
 
-        var arguments = [
-            "engine",
-            "--engine-sock", socketPath,
-            "--kernel", kernel,
-            "--gvproxy", gvproxy,
-            "--mem-mb", String(config.memoryMB),
-            "--cpus", String(config.cpus),
-        ]
+        var arguments = engineArguments(config: config, kernel: kernel, gvproxy: gvproxy, rootfs: nil)
         // Offline builds ship the engine image; hand it to the helper so first launch needs no
         // network. Online builds omit it and the engine fetches the image once.
         if let rootfs = await hvRootfsPath() {
-            arguments.append(contentsOf: ["--rootfs", rootfs])
+            arguments = engineArguments(config: config, kernel: kernel, gvproxy: gvproxy, rootfs: rootfs)
         }
 
         let process = Process()
@@ -122,7 +115,7 @@ enum SharedVMProvisioner {
 
         FileManager.default.createFile(atPath: helperLogPath, contents: nil)
         let log = try? FileHandle(forWritingTo: URL(fileURLWithPath: helperLogPath))
-        try? log?.seekToEnd()
+        _ = try? log?.seekToEnd()
         log?.write(Data("\n--- starting dory-hv engine \(Date()) mem=\(config.memoryMB)MiB ---\n".utf8))
         process.standardOutput = log ?? FileHandle.nullDevice
         process.standardError = log ?? FileHandle.nullDevice
@@ -141,6 +134,22 @@ enum SharedVMProvisioner {
             throw ProvisionError.engineUnreachable
         }
         return socketPath
+    }
+
+    static func engineArguments(config: Config, kernel: String, gvproxy: String, rootfs: String?) -> [String] {
+        var arguments = [
+            "engine",
+            "--engine-sock", socketPath,
+            "--kernel", kernel,
+            "--gvproxy", gvproxy,
+            "--mem-mb", String(config.memoryMB),
+            "--cpus", String(config.cpus),
+            "--direct-ip",
+        ]
+        if let rootfs {
+            arguments.append(contentsOf: ["--rootfs", rootfs])
+        }
+        return arguments
     }
 
     private static func hvKernelPath() async -> String? {
@@ -220,6 +229,17 @@ enum SharedVMProvisioner {
 
     static func stopEngineDetached() {
         stopHelper()
+    }
+
+    @discardableResult
+    nonisolated static func resyncClockAfterWake(
+        pid: pid_t? = helperPID(),
+        isAlive: (pid_t) -> Bool = helperProcessIsAlive(pid:),
+        signalSender: (pid_t, Int32) -> Int32 = Darwin.kill
+    ) -> Bool {
+        guard let pid, pid > 0 else { return false }
+        guard isAlive(pid) else { return false }
+        return signalSender(pid, SIGUSR1) == 0
     }
 
     /// The shared VM's host-reachable IPv4 address, written by the engine to `engine.ip`, used to
@@ -310,10 +330,14 @@ enum SharedVMProvisioner {
 
     private static func helperProcessIsAlive() -> Bool {
         guard let pid = helperPID(), pid > 0 else { return false }
+        return helperProcessIsAlive(pid: pid)
+    }
+
+    nonisolated private static func helperProcessIsAlive(pid: pid_t) -> Bool {
         return kill(pid, 0) == 0 || errno == EPERM
     }
 
-    private static func helperPID() -> pid_t? {
+    nonisolated private static func helperPID() -> pid_t? {
         guard let raw = try? String(contentsOfFile: helperPIDPath, encoding: .utf8),
               let value = Int32(raw.trimmingCharacters(in: .whitespacesAndNewlines)) else { return nil }
         return pid_t(value)

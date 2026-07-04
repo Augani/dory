@@ -958,10 +958,7 @@ struct DockerShim: Sendable {
                 let result = (try? await runtime.exec(containerID: entry.container, command: entry.cmd)) ?? ExecResult(exitCode: 1, output: "")
                 store.setResult(execID, exitCode: result.exitCode)
                 let payload = Data(result.output.utf8)
-                var frame = Data([1, 0, 0, 0])
-                let length = UInt32(payload.count)
-                frame.append(contentsOf: [UInt8(length >> 24 & 0xff), UInt8(length >> 16 & 0xff), UInt8(length >> 8 & 0xff), UInt8(length & 0xff)])
-                frame.append(payload)
+                let frame = Self.stdcopyFrame(stream: 1, payload: payload)
                 _ = try? UnixSocketHTTP.writeAll(fd, frame)
             }
         }
@@ -1600,12 +1597,10 @@ struct DockerShim: Sendable {
         return Data(stat.utf8).base64EncodedString()
     }
 
-    nonisolated private static func logFrame(_ line: LogLine, timestamps: Bool) -> Data {
-        let prefix = timestamps && !line.timestamp.isEmpty ? "\(line.timestamp) " : ""
-        let payload = Data("\(prefix)\(line.message)\n".utf8)
+    nonisolated static func stdcopyFrame(stream: UInt8, payload: Data) -> Data {
         let length = UInt32(payload.count)
-        var frame = Data([logStreamType(line), 0, 0, 0])
-        frame.append(contentsOf: [
+        var frame = Data([
+            stream, 0, 0, 0,
             UInt8(length >> 24 & 0xff),
             UInt8(length >> 16 & 0xff),
             UInt8(length >> 8 & 0xff),
@@ -1613,6 +1608,12 @@ struct DockerShim: Sendable {
         ])
         frame.append(payload)
         return frame
+    }
+
+    nonisolated private static func logFrame(_ line: LogLine, timestamps: Bool) -> Data {
+        let prefix = timestamps && !line.timestamp.isEmpty ? "\(line.timestamp) " : ""
+        let payload = Data("\(prefix)\(line.message)\n".utf8)
+        return stdcopyFrame(stream: logStreamType(line), payload: payload)
     }
 
     nonisolated private static func logStreamType(_ line: LogLine) -> UInt8 {

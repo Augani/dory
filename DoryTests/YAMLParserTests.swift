@@ -69,4 +69,9 @@ struct YAMLParserTests {
         #expect(root["env"]?["A"]?.stringValue == "1")
         #expect(root["env"]?["B"]?.stringValue == "two")
     }
+
+    @Test func parsesTemplateBracesInsideFlowScalar() throws {
+        let root = try YAMLParser.parse("env: {CARGO_HOME: /home/{{user}}/.cargo}")
+        #expect(root["env"]?["CARGO_HOME"]?.stringValue == "/home/{{user}}/.cargo")
+    }
 }

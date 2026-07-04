@@ -369,7 +369,7 @@ struct NewMachineSheet: View {
                     .frame(width: 240, alignment: .leading)
                     .disabled(selectedFamily.arches.count < 2)
                     if !selectedArch.isNative {
-                        Text("Emulated via binfmt — slower than \(MachineArch.host.display). Fine for builds and testing.")
+                        Text("Emulated via binfmt, slower than \(MachineArch.host.display). Fine for builds and testing. For near-native x86, run one-off commands with `dory vm --arch amd64 --rosetta`.")
                             .font(.system(size: 11)).foregroundStyle(p.text3)
                             .frame(width: 240, alignment: .leading)
                     }
