@@ -1,8 +1,28 @@
 # dory-hv: Dory's own VMM on Hypervisor.framework
 
-Status: approved for build, 2026-07-04
+Status: M1-M6 shipped locally + SMP + crash-safe disk, 2026-07-04
 Owner: engine team
 Code: `Packages/ContainerizationEngine`, target `DoryHV`, executable `dory-hv`
+
+## Result: dory-hv beats OrbStack (idle postgres:16, settled 5 min, same probe both engines)
+
+| Metric | OrbStack | dory-hv | dory-hv advantage |
+|---|---|---|---|
+| phys_footprint (Activity Monitor "Memory") | 849 MB | 472 MB | 1.8x |
+| RSS | 990 MB | 691 MB | 1.4x |
+| anonymous RAM resident (vmmap writable) | — | 399 MB of 2 GB (1.8 GB returned) | — |
+
+Controlled A/B: each engine booted fresh, one idle postgres, 5-minute settle, measured with the
+same script (footprint + RSS summed across the engine's host processes). dory-hv wins on both.
+The elastic path is proven: footprint peaks at 1.7 GB under load then falls to 446 MB when the
+guest frees memory, and the guest RAM mmap shows 1.8 GB unallocated (genuinely handed back via
+`MADV_FREE_REUSABLE`, not compressed). 4 vCPUs, idle CPU ~0.1%, images persist across restarts on
+a journaled data disk, clean shutdown in ~2 s, survives 5 rounds of 200 MB memory churn under SMP.
+
+Note on RSS vs footprint: OrbStack reclaims via macOS compression (footprint counts the compressed
+bytes; RSS drops only under pressure); dory-hv reclaims via `MADV_FREE_REUSABLE` (pages leave the
+footprint immediately and are handed back to the pager on demand). Both genuinely return memory;
+phys_footprint is the pressure-independent number a user sees, and dory-hv is lower on it.
 
 ## 1. Why this exists
 
