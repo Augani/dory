@@ -155,12 +155,14 @@ case "engine":
     var gvproxy: String?
     var memoryMB: UInt64 = 2048
     var cpus = 4
+    var rootfs: String?
     var iterator = arguments.dropFirst().makeIterator()
     while let argument = iterator.next() {
         switch argument {
         case "--engine-sock": engineSocket = iterator.next() ?? engineSocket
         case "--kernel": kernel = iterator.next()
         case "--gvproxy": gvproxy = iterator.next()
+        case "--rootfs": rootfs = iterator.next()
         case "--mem-mb": memoryMB = iterator.next().flatMap(UInt64.init) ?? memoryMB
         case "--cpus": cpus = iterator.next().flatMap(Int.init) ?? cpus
         default: fail("unknown option \(argument)")
@@ -174,7 +176,8 @@ case "engine":
         gvproxyPath: gvproxy,
         memoryMB: memoryMB,
         cpus: cpus,
-        stateDirectory: "\(NSHomeDirectory())/.dory/hv"
+        stateDirectory: "\(NSHomeDirectory())/.dory/hv",
+        bundledRootfs: rootfs
     )
     // Top-level code is implicitly MainActor; a plain Task would inherit it and deadlock behind
     // the semaphore below. Detach so the engine runs on the concurrent pool.

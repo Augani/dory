@@ -20,6 +20,9 @@ enum EngineMode {
         var memoryMB: UInt64
         var cpus: Int
         var stateDirectory: String
+        /// Offline builds pass a decompressed engine rootfs here so first launch needs no network;
+        /// online builds leave it nil and the engine fetches the image once.
+        var bundledRootfs: String?
     }
 
     /// gvproxy pid for the teardown path: stopping the helper must not orphan the sidecar.
@@ -90,10 +93,16 @@ enum EngineMode {
         // interrupted first run leaves no half-written file that the fileExists guard would then
         // treat as complete forever.
         if !FileManager.default.fileExists(atPath: pristineRootfs) {
-            note("first run: preparing engine rootfs (one-time)…")
             let temporary = pristineRootfs + ".partial"
             try? FileManager.default.removeItem(atPath: temporary)
-            try await prepareEngineDisk(at: temporary, stateDirectory: state)
+            if let bundled = configuration.bundledRootfs, FileManager.default.fileExists(atPath: bundled) {
+                // Offline build: the engine image ships in the app, no network on first launch.
+                note("first run: installing bundled engine rootfs (one-time, offline)…")
+                try FileManager.default.copyItem(atPath: bundled, toPath: temporary)
+            } else {
+                note("first run: fetching engine image (one-time)…")
+                try await prepareEngineDisk(at: temporary, stateDirectory: state)
+            }
             try fsyncFile(temporary)
             try FileManager.default.moveItem(atPath: temporary, toPath: pristineRootfs)
         }

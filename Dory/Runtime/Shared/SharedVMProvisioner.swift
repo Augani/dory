@@ -102,9 +102,7 @@ enum SharedVMProvisioner {
         try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
         try? FileManager.default.removeItem(atPath: socketPath)
 
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: helper)
-        process.arguments = [
+        var arguments = [
             "engine",
             "--engine-sock", socketPath,
             "--kernel", kernel,
@@ -112,6 +110,15 @@ enum SharedVMProvisioner {
             "--mem-mb", String(config.memoryMB),
             "--cpus", String(config.cpus),
         ]
+        // Offline builds ship the engine image; hand it to the helper so first launch needs no
+        // network. Online builds omit it and the engine fetches the image once.
+        if let rootfs = await hvRootfsPath() {
+            arguments.append(contentsOf: ["--rootfs", rootfs])
+        }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: helper)
+        process.arguments = arguments
 
         FileManager.default.createFile(atPath: helperLogPath, contents: nil)
         let log = try? FileHandle(forWritingTo: URL(fileURLWithPath: helperLogPath))
@@ -141,6 +148,12 @@ enum SharedVMProvisioner {
             return bundled
         }
         return installedKernelPath()
+    }
+
+    /// The bundled, decompressed engine rootfs for OFFLINE builds. Online builds omit the resource
+    /// and this returns nil, so the engine fetches the image once on first launch instead.
+    private static func hvRootfsPath() async -> String? {
+        await prepareCompressedResource(resource: "dory-engine-rootfs.ext4", outputName: "dory-engine-rootfs.ext4")
     }
 
     private static func hvHelperBinary() -> String? {
