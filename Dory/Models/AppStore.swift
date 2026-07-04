@@ -1660,6 +1660,7 @@ final class AppStore {
         guard runtimeKind != .mock else { machines = MockData.machines; return MockData.machines }
         guard runtimeKind.isDockerCompatible else { machines = []; return [] }
         machines = await machineService.list()
+        try? SSHConfigWriter().write(machines: machines)
         dns.replaceHostIPs(Self.machineDNSHosts(machines, suffix: domainSuffix))
         syncMachineStats()
         for machine in machines where machine.status == .running {
