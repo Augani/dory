@@ -144,7 +144,7 @@ case "boot":
             machine.attachVirtioSlot(transport)
         }
         try machine.loadBootPayload()
-        let stop = try machine.runBootCPU()
+        let stop = try machine.run()
         print("\ndory-hv: guest stopped: \(stop)")
     } catch {
         fail("\(error)")
@@ -168,7 +168,6 @@ case "engine":
     }
     guard let kernel else { fail("engine requires --kernel") }
     guard let gvproxy else { fail("engine requires --gvproxy") }
-    EngineMode.installSignalTeardown()
     let configuration = EngineMode.Configuration(
         engineSocket: engineSocket,
         kernelPath: kernel,
