@@ -1,15 +1,18 @@
 #!/bin/bash
 # Make a built Dory.app self-contained so users download ONLY the app — no `brew install container`.
 #
-# Default ("OrbStack model") injects the in-process engine and pulls the docker engine IMAGE on first
-# launch (the image is NOT bundled), the way OrbStack ships an app and fetches engine bits on first
-# run. Measured payload ≈ 134MB on disk / ~80MB in the download zip:
-#   * Contents/Helpers/dory-vm                    — the signed in-process VM engine helper (~100MB,
-#                                                   statically links the containerization framework).
-#   * Contents/Helpers/zstd                       — decompresses the assets on first launch.
+# Default ("OrbStack model") injects the in-process engines and pulls the docker engine IMAGE on
+# first launch (the image is NOT bundled), the way OrbStack ships an app and fetches engine bits on
+# first run. Bundled payload:
+#   * Contents/Helpers/dory-hv    — Dory's own Hypervisor.framework VMM (elastic memory via free-page
+#                                   reporting, SMP, journaled data disk), signed with
+#                                   com.apple.security.hypervisor. Preferred when DORY_HV_ENGINE=1.
+#   * Contents/Helpers/gvproxy    — userspace networking (Apache-2.0) for the dory-hv engine.
+#   * Contents/Helpers/dory-vm    — the older Virtualization.framework helper (~100MB), fallback.
+#   * Contents/Helpers/zstd       — decompresses the assets on first launch.
 #   * Contents/Resources/dory-vm-kernel.zst       — compressed Linux kernel  (~15MB -> ~6MB).
 #   * Contents/Resources/dory-vm-initfs.ext4.zst  — compressed VM initfs     (~165MB -> ~30MB).
-#   The docker engine image (docker:dind) is NOT bundled — the helper pulls it on first boot.
+#   The docker engine image (docker:dind) is NOT bundled — the engine pulls it on first boot.
 #
 # Set DORY_BUNDLE_LEGACY=1 to additionally inject the heavy offline payload (the docker:dind image
 # tarball + Apple's `container` toolchain) for the legacy SharedVMProvisioner path — adds ~600MB.
@@ -45,6 +48,50 @@ PLIST
     -s "${DORY_SIGN_ID:-Developer ID Application}" "$HELPERS/dory-vm" 2>/dev/null \
     || codesign --force --entitlements /tmp/dory-vm.entitlements -s - "$HELPERS/dory-vm"
   echo "    bundled Helpers/dory-vm (signed with com.apple.security.virtualization)"
+fi
+
+echo "==> Building + signing the Hypervisor.framework VM engine (dory-hv)…"
+# dory-hv is Dory's own VMM: elastic memory via free-page reporting, SMP, journaled data disk.
+# It needs only the unrestricted com.apple.security.hypervisor entitlement (no vm.networking).
+# The provisioner prefers it when DORY_HV_ENGINE=1 and it is present in Helpers.
+if [ -d "$PKG" ]; then
+  ( cd "$PKG" && swift build -c release --product dory-hv )
+  HV_BIN="$(find "$PKG/.build" -name dory-hv -type f -path '*Release*' 2>/dev/null | head -1)"
+  [ -n "$HV_BIN" ] || HV_BIN="$(find "$PKG/.build" -name dory-hv -type f 2>/dev/null | head -1)"
+  if [ -n "$HV_BIN" ]; then
+    cat > /tmp/dory-hv.entitlements <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict><key>com.apple.security.hypervisor</key><true/></dict></plist>
+PLIST
+    cp "$HV_BIN" "$HELPERS/dory-hv"
+    codesign --force --options runtime --timestamp --entitlements /tmp/dory-hv.entitlements \
+      -s "${DORY_SIGN_ID:-Developer ID Application}" "$HELPERS/dory-hv" 2>/dev/null \
+      || codesign --force --entitlements /tmp/dory-hv.entitlements -s - "$HELPERS/dory-hv"
+    echo "    bundled Helpers/dory-hv (signed with com.apple.security.hypervisor)"
+  else
+    echo "    WARNING: dory-hv build produced no binary; skipping the HV engine"
+  fi
+fi
+
+echo "==> Bundling gvproxy (userspace networking for the dory-hv engine)…"
+# gvproxy (gvisor-tap-vsock, Apache-2.0) gives the HV engine NAT/DNS with no restricted
+# entitlement. Prefer a path from DORY_GVPROXY, else podman's bundled copy, else PATH.
+GVPROXY_SRC="${DORY_GVPROXY:-}"
+if [ -z "$GVPROXY_SRC" ]; then
+  for cand in /opt/homebrew/opt/podman/libexec/podman/gvproxy \
+              /usr/local/opt/podman/libexec/podman/gvproxy \
+              "$(command -v gvproxy 2>/dev/null)"; do
+    [ -n "$cand" ] && [ -x "$cand" ] && { GVPROXY_SRC="$cand"; break; }
+  done
+fi
+if [ -n "$GVPROXY_SRC" ] && [ -x "$GVPROXY_SRC" ]; then
+  cp "$GVPROXY_SRC" "$HELPERS/gvproxy"
+  codesign --force --options runtime --timestamp -s "${DORY_SIGN_ID:-Developer ID Application}" "$HELPERS/gvproxy" 2>/dev/null \
+    || codesign --force -s - "$HELPERS/gvproxy"
+  echo "    bundled Helpers/gvproxy (from $GVPROXY_SRC)"
+else
+  echo "    WARNING: no gvproxy found — the dory-hv engine needs it. Set DORY_GVPROXY or 'brew install podman'."
 fi
 
 echo "==> Bundling zstd (decompresses the engine assets on first launch)…"

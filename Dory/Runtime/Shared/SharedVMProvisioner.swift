@@ -131,8 +131,10 @@ enum SharedVMProvisioner {
         let environment = ProcessInfo.processInfo.environment
         guard environment["DORY_HV_ENGINE"] == "1",
               let helper = hvHelperBinary(),
-              let kernel = defaultKernelPath(),
               let gvproxy = gvproxyBinary() else { return nil }
+        // Prefer a kernel from an installed toolchain; fall back to the compressed kernel bundled
+        // in the app so a self-contained install with no `container` toolchain still boots.
+        guard let kernel = await hvKernelPath() else { return nil }
 
         if await isReachable(), helperProcessIsAlive() {
             return socketPath
@@ -175,6 +177,11 @@ enum SharedVMProvisioner {
             return nil  // fall through to the VZ helper or container CLI
         }
         return socketPath
+    }
+
+    private static func hvKernelPath() async -> String? {
+        if let installed = defaultKernelPath() { return installed }
+        return await prepareCompressedResource(resource: "dory-vm-kernel", outputName: "dory-vm-kernel")
     }
 
     private static func hvHelperBinary() -> String? {
