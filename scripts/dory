@@ -17,6 +17,7 @@ DORY_SCRIPT_DIR="$(cd -P "$(dirname "$DORY_SCRIPT_SOURCE")" >/dev/null 2>&1 && p
 
 DORY_CLI_VERSION="0.0.0-dev"
 DORY_SOCK="${DORY_SOCK:-$HOME/.dory/dory.sock}"
+ENGINE_SOCK="${DORY_ENGINE_SOCK:-$HOME/.dory/engine.sock}"
 KUBECONFIG_DORY="$HOME/.kube/dory-config"
 RECIPE_DIR="${DORY_RECIPE_DIR:-$HOME/.dory/recipes}"
 BUILTIN_RECIPE_DIR="${DORY_BUILTIN_RECIPE_DIR:-$(cd "$DORY_SCRIPT_DIR/.." && pwd)/Dory/Resources/Recipes}"
@@ -44,6 +45,11 @@ DOCKER_BUILDX_BIN="${DORY_DOCKER_BUILDX_BIN:-$(resolve_cli docker-buildx || prin
 DOCKER_COMPOSE_BIN="${DORY_DOCKER_COMPOSE_BIN:-$(resolve_cli docker-compose || printf '%s\n' docker-compose)}"
 KUBECTL_BIN="${DORY_KUBECTL_BIN:-$(resolve_cli kubectl || printf '%s\n' kubectl)}"
 
+K8S_NAME="dory-k8s"
+K8S_IMAGE="${DORY_K8S_IMAGE:-rancher/k3s:v1.36.2-k3s1}"   # keep in sync with KubeVersionCatalog.latest
+K8S_DIR="$HOME/.dory/k8s"
+K8S_CONTEXT="dory"
+
 host_guest_arch() {
   [ "$(uname -m)" = "x86_64" ] && printf '%s\n' "amd64" || printf '%s\n' "arm64"
 }
@@ -66,6 +72,120 @@ hv_helper() {
            "$DORY_SCRIPT_DIR/../Packages/ContainerizationEngine/.build/out/Products/Debug/dory-hv"; do
     [ -n "$p" ] && [ -x "$p" ] && { echo "$p"; return; }
   done
+}
+
+# docker against Dory's engine (prefer the raw engine socket, like the app does).
+dk() {
+  if [ -S "$ENGINE_SOCK" ]; then docker -H "unix://$ENGINE_SOCK" "$@"; else docker -H "unix://$DORY_SOCK" "$@"; fi
+}
+
+# Extra port publishings for the k8s node: `--publish H:C[/proto]` flags plus one entry per line in
+# ~/.dory/k8s/ports (comments allowed). Kept in sync with KubernetesProvisioner's file format.
+k8s_desired_ports() {
+  local p
+  for p in ${K8S_PUBLISHES:-}; do echo "$p"; done
+  if [ -f "$K8S_DIR/ports" ]; then
+    sed -e 's/#.*//' -e 's/[[:space:]]//g' "$K8S_DIR/ports" | grep -v '^$' || true
+  fi
+}
+
+# True when the existing container's create-time bindings cover every desired port.
+k8s_ports_current() {
+  local bindings p cport hport
+  bindings="$(dk inspect -f '{{json .HostConfig.PortBindings}}' "$K8S_NAME" 2>/dev/null)" || return 1
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    hport="${p%%:*}"; cport="${p#*:}"
+    case "$cport" in */*) ;; *) cport="$cport/tcp" ;; esac
+    echo "$bindings" | grep -q "\"$cport\"" || return 1
+    echo "$bindings" | grep -q "\"HostPort\":\"$hport\"" || return 1
+  done <<EOF
+$(k8s_desired_ports)
+EOF
+  return 0
+}
+
+k8s_write_kubeconfig() {
+  mkdir -p "$HOME/.kube"
+  # k3s.yaml targets 127.0.0.1:6443 (host-reachable via Dory's port forwarder); rename the generic
+  # `default` cluster/user/context to `dory` so tools can address the cluster by context name.
+  dk exec "$K8S_NAME" cat /etc/rancher/k3s/k3s.yaml \
+    | sed -e "s/name: default/name: $K8S_CONTEXT/" \
+          -e "s/cluster: default/cluster: $K8S_CONTEXT/" \
+          -e "s/user: default/user: $K8S_CONTEXT/" \
+          -e "s/current-context: default/current-context: $K8S_CONTEXT/" \
+    > "$KUBECONFIG_DORY"
+  chmod 600 "$KUBECONFIG_DORY"
+}
+
+k8s_wait_ready() {
+  local i
+  for i in $(seq 1 90); do
+    if dk exec "$K8S_NAME" kubectl get nodes --no-headers 2>/dev/null | grep -q ' Ready'; then
+      k8s_write_kubeconfig
+      echo "Kubernetes is running (context: $K8S_CONTEXT, kubeconfig: $KUBECONFIG_DORY)"
+      return 0
+    fi
+    sleep 2
+  done
+  echo "error: k3s node did not become Ready; try 'dory k8s disable && dory k8s enable'" >&2
+  return 1
+}
+
+k8s_enable() {
+  K8S_PUBLISHES=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --publish|-p) K8S_PUBLISHES="$K8S_PUBLISHES $2"; shift 2 ;;
+      --image)      K8S_IMAGE="$2"; shift 2 ;;
+      *) echo "usage: dory k8s enable [--publish H:C[/proto]]... [--image IMG]" >&2; exit 2 ;;
+    esac
+  done
+  mkdir -p "$K8S_DIR"
+
+  local state
+  state="$(dk inspect -f '{{.State.Running}}' "$K8S_NAME" 2>/dev/null || echo absent)"
+  if [ "$state" != "absent" ] && k8s_ports_current; then
+    # Reuse the container: bindings are fixed at create and they already match.
+    [ "$state" = "true" ] || dk start "$K8S_NAME" >/dev/null
+    k8s_wait_ready
+    return
+  fi
+
+  echo "Creating Kubernetes (k3s) container '$K8S_NAME'..."
+  dk rm -f "$K8S_NAME" >/dev/null 2>&1 || true
+  set -- run -d --name "$K8S_NAME" --privileged -p "6443:6443"
+  local p
+  while IFS= read -r p; do
+    [ -n "$p" ] && set -- "$@" -p "$p"
+  done <<EOF
+$(k8s_desired_ports)
+EOF
+  # k3s' native registry mirror/trust config; host-side so it survives recreation (read at boot).
+  [ -f "$K8S_DIR/registries.yaml" ] && set -- "$@" -v "$K8S_DIR/registries.yaml:/etc/rancher/k3s/registries.yaml:ro"
+  set -- "$@" "$K8S_IMAGE" server --disable=traefik --tls-san=127.0.0.1 --tls-san=host.docker.internal
+  dk "$@" >/dev/null
+  k8s_wait_ready
+}
+
+k8s_disable() {
+  dk rm -f "$K8S_NAME" >/dev/null 2>&1 || true
+  rm -f "$KUBECONFIG_DORY"
+  echo "Kubernetes disabled"
+}
+
+k8s_status() {
+  local state
+  state="$(dk inspect -f '{{.State.Running}}' "$K8S_NAME" 2>/dev/null || true)"
+  case "$state" in
+    true)
+      if dk exec "$K8S_NAME" kubectl get nodes --no-headers 2>/dev/null | grep -q ' Ready'; then
+        echo "running (node Ready, context: $K8S_CONTEXT)"; exit 0
+      fi
+      echo "starting (node not Ready yet)"; exit 1 ;;
+    false) echo "stopped"; exit 1 ;;
+    *)     echo "not created"; exit 1 ;;
+  esac
 }
 
 usage() {
@@ -149,6 +269,12 @@ dory — Dory CLI
   dory usb ls|attach|detach     Inspect USB candidates and request USB/IP attach/detach
   dory expose <port|machine> [--port P] [--hostname H] [--print-command]
                                Share a local port or machine endpoint through a public HTTPS tunnel
+  dory k8s enable [--publish H:C[/proto]]... [--image IMG]
+                               Start the built-in k3s cluster (headless). Also reads
+                               ~/.dory/k8s/ports (one H:C[/proto] per line) and bind-mounts
+                               ~/.dory/k8s/registries.yaml when present
+  dory k8s disable             Delete the cluster container and its kubeconfig
+  dory k8s status              Cluster state (exit 0 when the node is Ready)
   dory k8s <kubectl args...>   Run kubectl against Dory's Kubernetes cluster
   dory ssh <machine>           SSH into a Linux machine as you (real ssh when available)
   dory vm [--image R] [--arch amd64|arm64] [--rosetta] [--mount h:g] -- <cmd>
@@ -3744,6 +3870,12 @@ case "${1:-help}" in
                     exec "$DOCKER_BIN" -H "unix://$DORY_SOCK" exec -it -u "$user" -w "$home" "$cid" "$shell" -l
                   fi ;;
   vm)             shift; H="$(vmm_helper || true)"; [ -z "$H" ] && { echo "dory-vmm helper not found; build+sign it (see scripts/bundle-engine.sh)" >&2; exit 1; }; exec "$H" "$@" ;;
-  k8s)            shift; exec "$KUBECTL_BIN" --kubeconfig "$KUBECONFIG_DORY" "$@" ;;
+  k8s)            shift
+                  case "${1:-}" in
+                    enable)  shift; k8s_enable "$@" ;;
+                    disable) k8s_disable ;;
+                    status)  k8s_status ;;
+                    *)       exec "$KUBECTL_BIN" --kubeconfig "$KUBECONFIG_DORY" "$@" ;;
+                  esac ;;
   *)              exec "$DOCKER_BIN" -H "unix://$DORY_SOCK" "$@" ;;
 esac

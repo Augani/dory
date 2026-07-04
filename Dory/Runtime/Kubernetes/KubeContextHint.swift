@@ -4,7 +4,7 @@ enum KubeContextHint {
     static func snippet(kubeconfigPath: String) -> String {
         """
         export KUBECONFIG=\(kubeconfigPath)
-        kubectl get pods -A
+        kubectl --context \(KubernetesProvisioner.contextName) get pods -A
         """
     }
 }
