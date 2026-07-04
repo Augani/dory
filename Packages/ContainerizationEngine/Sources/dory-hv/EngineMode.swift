@@ -210,9 +210,9 @@ enum EngineMode {
 
     /// Guest boot: mounts (docker state on the journaled /dev/vdb), DHCP through gvproxy,
     /// dockerd on unix + tcp 2375 (virtual network only), a shutdown listener on tcp 2377 (any
-    /// connection triggers sync + poweroff, giving the host a clean-unmount path), and the
-    /// elasticity trim loop (reporting granularity 16 KiB, cgroup2 proactive reclaim of cold
-    /// page cache, periodic compaction so freed fragments become reportable).
+    /// connection triggers sync + poweroff, giving the host a clean-unmount path), and a light
+    /// page-cache cap so free page reporting (which handles free pages automatically at 16 KiB
+    /// granularity) has cold pages to hand back when the cache bloats.
     private static func guestCommandLine() -> String {
         let script = [
             "export PATH=/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin",
@@ -232,10 +232,17 @@ enum EngineMode {
             "ip link set eth0 up",
             "udhcpc -i eth0 -q >/dev/null 2>&1",
             "echo 2 > /sys/module/page_reporting/parameters/page_reporting_order 2>/dev/null",
+            // Bias the guest toward returning cold cache instead of hoarding it; free page
+            // reporting then hands the freed pages back to the host automatically.
             "echo 200 > /proc/sys/vm/vfs_cache_pressure 2>/dev/null",
+            "echo 262144 > /proc/sys/vm/min_free_kbytes 2>/dev/null",
             "dockerd -H unix:///var/run/docker.sock -H tcp://0.0.0.0:2375 --tls=false >/var/log/dockerd.log 2>&1 & true",
             "( while true; do nc -l -p 2377 >/dev/null 2>&1; echo shutdown requested; sync; umount /var/lib/docker 2>/dev/null; sync; poweroff -f; done ) & true",
-            "( while true; do sleep 15; c=$(grep Cached: /proc/meminfo | head -1 | tr -s \\  | cut -d\\  -f2); [ ${c:-0} -gt 131072 ] && echo $((c/2))K > /sys/fs/cgroup/memory.reclaim 2>/dev/null; echo 1 > /proc/sys/vm/compact_memory 2>/dev/null; done ) & true",
+            // Cache cap only. NO compaction (it migrates pages and re-faults the ones free page
+            // reporting already handed back to the host — pure churn) and NO root memory.reclaim
+            // (write-rejected on the root cgroup). A gentle pagecache drop fires only when the
+            // cache genuinely bloats past ~384 MiB, so active workloads keep their working set.
+            "( while true; do sleep 30; c=$(grep Cached: /proc/meminfo | head -1 | tr -s \\  | cut -d\\  -f2); [ ${c:-0} -gt 393216 ] && echo 1 > /proc/sys/vm/drop_caches 2>/dev/null; done ) & true",
             // Hand PID 1 to tini (docker-init, shipped in docker:dind) as a reaping init. exec
             // replaces the boot shell in place, so tini keeps PID 1 while dockerd and the loops
             // above continue as its children. Container shims double-fork and orphan their exited
