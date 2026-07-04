@@ -35,21 +35,11 @@ struct ContainersView: View {
                 SkeletonRows()
                 Spacer(minLength: 0)
             } else if store.loadState == .engineOff {
-                if store.needsContainerToolchain || store.toolchainInstallPhase != .idle {
-                    VStack {
-                        Spacer(minLength: 0)
-                        EngineSetupCard()
-                        Spacer(minLength: 0)
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .padding(40)
-                } else {
-                    TableEmptyState(glyph: .containers, title: "Engine not running",
-                                    message: store.sharedVMStatus.isEmpty
-                                        ? "Dory's container engine isn't running yet. It starts automatically when Dory connects."
-                                        : store.sharedVMStatus,
-                                    actionLabel: "Try again", action: { Task { await store.retryEngine() } })
-                }
+                TableEmptyState(glyph: .containers, title: "Engine not running",
+                                message: store.sharedVMStatus.isEmpty
+                                    ? "Dory's engine isn't running yet. It starts automatically when Dory connects."
+                                    : store.sharedVMStatus,
+                                actionLabel: "Try again", action: { Task { await store.retryEngine() } })
             } else if store.containers.isEmpty {
                 TableEmptyState(glyph: .containers, title: "No containers yet",
                                 message: "Run a container from an image, or start one with `docker run`.",

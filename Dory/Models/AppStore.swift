@@ -6,15 +6,6 @@ import UniformTypeIdentifiers
 
 enum LoadState: Sendable { case connecting, ready, engineOff }
 
-enum ToolchainInstallPhase: Equatable, Sendable {
-    case idle
-    case installing
-    case startingEngine
-    case failed(String)
-
-    var isBusy: Bool { self == .installing || self == .startingEngine }
-}
-
 enum ContainerFilter: String, CaseIterable, Sendable {
     case running, all, stopped
     var label: String {
@@ -330,10 +321,7 @@ final class AppStore {
         switch ProcessInfo.processInfo.environment["DORY_RUNTIME"] {
         case "mock":
             await reload()
-        case "apple":
-            if let apple = await AppleContainerRuntime.detect() { runtime = apple; await reload() }
-            else { loadState = .engineOff }
-        case "docker":
+        case "docker", "docker-proxy":
             if let docker = await DockerEngineRuntime.detect() { runtime = docker; await reload() }
             else { loadState = .engineOff }
         case "shared":
@@ -345,34 +333,30 @@ final class AppStore {
             }
             if let shared = await SharedVMProvisioner.runtime() {
                 runtime = shared
-                sharedVMStatus = "Running on Dory's shared VM"
+                sharedVMStatus = "Running on Dory's engine"
                 await reload()
             }
             else {
-                sharedVMStatus = "Shared VM unavailable (could not start Apple's container engine)"
+                sharedVMStatus = "Dory's engine could not start — see ~/.dory/engine.log"
                 loadState = .engineOff
             }
-        case "docker-proxy":
-            if let docker = await DockerEngineRuntime.detect() { runtime = docker; await reload() }
-            else { loadState = .engineOff }
         default:
-            // Dory's own shared VM is the default engine — a standalone, OrbStack-style daemon.
-            // Fall back to fronting an existing Docker-compatible socket, then Apple per-container.
+            // Dory's own engine (dory-hv) is the default: a standalone, OrbStack-style daemon that
+            // ships everything it needs. On hardware it can't run (Intel / older macOS) fall back to
+            // fronting an existing Docker-compatible socket.
             let support = refreshSharedVMSupport()
             if support.isSupported {
                 sharedVMStatus = "Starting Dory's engine…"
                 if let shared = await SharedVMProvisioner.runtime() {
-                    runtime = shared; sharedVMStatus = "Running on Dory's shared VM"; await reload()
+                    runtime = shared; sharedVMStatus = "Running on Dory's engine"; await reload()
                     break
                 }
-                sharedVMStatus = "Shared VM unavailable (could not start Apple's container engine)"
+                sharedVMStatus = "Dory's engine could not start — see ~/.dory/engine.log"
             } else {
                 sharedVMStatus = Self.sharedVMUnavailableStatus(support)
             }
             if let docker = await DockerEngineRuntime.detect() {
                 runtime = docker; await reload()
-            } else if let apple = await AppleContainerRuntime.detect() {
-                runtime = apple; await reload()
             } else {
                 loadState = .engineOff
             }
@@ -397,7 +381,6 @@ final class AppStore {
 
     var sharedVMStatus = ""
     var sharedVMSupport = SharedVMProvisioner.hostSupport()
-    var toolchainInstallPhase: ToolchainInstallPhase = .idle
 
     private func refreshSharedVMSupport() -> RuntimeSupport {
         let support = SharedVMProvisioner.hostSupport()
@@ -405,70 +388,9 @@ final class AppStore {
         return support
     }
 
-    nonisolated static let toolchainInstallCommand = "brew install container"
-    nonisolated static let toolchainReleasesURL = "https://github.com/apple/container/releases/latest"
-
-    /// True when the engine is down solely because Apple's container toolchain isn't installed —
-    /// the one engine-off cause a user can fix in place, so the UI offers a guided install.
-    var needsContainerToolchain: Bool {
-        loadState == .engineOff && sharedVMSupport.issue == .missingToolchain
-    }
-
-    var canAutoInstallToolchain: Bool { Self.brewBinary() != nil }
-
-    nonisolated static func brewBinary() -> String? {
-        Shell.find("brew", candidates: ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"])
-    }
-
-    func installContainerToolchain() async {
-        guard !toolchainInstallPhase.isBusy, !isConnecting else { return }
-        guard let brew = Self.brewBinary() else {
-            toolchainInstallPhase = .failed("Homebrew isn't installed — use the installer download instead, then check again.")
-            return
-        }
-        toolchainInstallPhase = .installing
-        let install = await Shell.runAsyncResult(brew, ["install", "container"])
-        guard install.exit == 0 else {
-            toolchainInstallPhase = .failed(Self.toolchainFailureSummary(
-                install.output, fallback: "Homebrew could not install the container toolchain."))
-            return
-        }
-        await completeToolchainSetup()
-    }
-
-    /// Re-check after a manual install (Homebrew in a terminal, or Apple's pkg installer).
-    func recheckToolchain() async {
-        guard !toolchainInstallPhase.isBusy, !isConnecting else { return }
-        guard SharedVMProvisioner.containerBinary() != nil else {
-            toolchainInstallPhase = .failed("Apple's container toolchain still isn't installed.")
-            return
-        }
-        await completeToolchainSetup()
-    }
-
     func retryEngine() async {
         guard !isConnecting else { return }
         await connectBackend()
-    }
-
-    private func completeToolchainSetup() async {
-        toolchainInstallPhase = .startingEngine
-        await retryEngine()
-        if loadState == .engineOff {
-            let support = sharedVMSupport
-            toolchainInstallPhase = .failed(support.isSupported
-                ? "The engine didn't start. Run `container system status` in a terminal, then try again."
-                : Self.sharedVMUnavailableStatus(support))
-        } else {
-            toolchainInstallPhase = .idle
-        }
-    }
-
-    nonisolated private static func toolchainFailureSummary(_ output: String, fallback: String) -> String {
-        let lines = output.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
-        let summary = lines.last(where: { $0.localizedCaseInsensitiveContains("error") }) ?? lines.last
-        guard let summary, !summary.isEmpty else { return fallback }
-        return String(summary.prefix(220))
     }
 
     /// Provisions (or reuses) Dory's own single shared Linux VM and switches the live engine to it,
@@ -480,9 +402,9 @@ final class AppStore {
             sharedVMStatus = Self.sharedVMUnavailableStatus(support)
             return
         }
-        sharedVMStatus = "Starting Dory's shared VM…"
+        sharedVMStatus = "Starting Dory's engine…"
         guard let shared = await SharedVMProvisioner.runtime() else {
-            sharedVMStatus = "Shared VM unavailable (could not start Apple's container engine)"
+            sharedVMStatus = "Dory's engine could not start — see ~/.dory/engine.log"
             return
         }
         runtime = shared
@@ -501,11 +423,7 @@ final class AppStore {
     }
 
     let domainSuffix = "dory.local"
-    private let portForwarder = HostPortForwarder(
-        targetHost: "127.0.0.1",
-        containerBinary: SharedVMProvisioner.containerBinary(),
-        engineName: SharedVMProvisioner.engineName
-    )
+    private let portForwarder = HostPortForwarder(targetHost: "127.0.0.1")
     @ObservationIgnored private lazy var hostBridge = HostBridgeWatcher(
         bridgeRoot: URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".dory/bridge"),
         forwarder: portForwarder,

@@ -378,13 +378,13 @@ struct SettingsView: View {
 
             groupLabel("DORY SHARED VM")
             VStack(alignment: .leading, spacing: 12) {
-                Text("Run every container in one shared Linux VM — like OrbStack — instead of a VM per container. Lower memory for multi-container stacks, and Dory becomes a standalone engine that no longer needs Docker or OrbStack. Requires macOS 26 or later on Apple silicon; older Macs can use a Docker-compatible local engine.")
+                Text("Run every container in one shared Linux VM — like OrbStack — on Dory's own engine. A standalone daemon that ships its own kernel and networking, so it needs no Docker, OrbStack, or Apple container toolchain, and reclaims memory back to macOS as workloads idle. Requires macOS 15 or later on Apple silicon; older Macs can use a Docker-compatible local engine.")
                     .font(.system(size: 12.5)).foregroundStyle(p.text2).lineSpacing(4)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 Button {
                     Task { await store.useSharedVM() }
                 } label: {
-                    Text(onShared ? "Running on Dory's shared VM" : "Use Dory's shared VM")
+                    Text(onShared ? "Running on Dory's engine" : "Use Dory's engine")
                         .font(.system(size: 12.5, weight: .semibold))
                         .foregroundStyle(onShared ? p.text2 : .white)
                         .padding(.horizontal, 16).padding(.vertical, 9)
@@ -410,7 +410,7 @@ struct SettingsView: View {
     private func engineDescription(for kind: RuntimeKind) -> String {
         switch kind {
         case .docker: "Proxying a host Docker-compatible engine"
-        case .sharedVM: "One shared Linux VM on Apple's container engine"
+        case .sharedVM: "One shared Linux VM on Dory's own engine"
         case .appleContainer: "Apple container — one micro-VM per container"
         case .mock: "Demo data"
         }
