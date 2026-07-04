@@ -47,12 +47,18 @@ public final class GICRedistributorMMIO: MMIODevice {
     public let baseAddress: UInt64
     public let size: UInt64
     public let stride: UInt64
-    public var vcpuHandles: [hv_vcpu_t] = []
+    private var vcpuHandles: [hv_vcpu_t?] = []
 
     public init(baseAddress: UInt64, size: UInt64, stride: UInt64) {
         self.baseAddress = baseAddress
         self.size = size
         self.stride = stride
+    }
+
+    /// Registration completes before the boot CPU starts, so MMIO reads never race these writes.
+    public func setHandle(_ handle: hv_vcpu_t, at frameIndex: Int) {
+        while vcpuHandles.count <= frameIndex { vcpuHandles.append(nil) }
+        vcpuHandles[frameIndex] = handle
     }
 
     public func read(offset: UInt64, width: Int) -> UInt64 {
@@ -86,7 +92,7 @@ public final class GICRedistributorMMIO: MMIODevice {
 
     private func resolve(_ offset: UInt64) -> (hv_vcpu_t, UInt64)? {
         let index = Int(offset / stride)
-        guard index < vcpuHandles.count else { return nil }
-        return (vcpuHandles[index], offset % stride)
+        guard index < vcpuHandles.count, let handle = vcpuHandles[index] else { return nil }
+        return (handle, offset % stride)
     }
 }

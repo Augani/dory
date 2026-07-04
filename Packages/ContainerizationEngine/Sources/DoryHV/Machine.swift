@@ -39,9 +39,10 @@ public enum GuestStopReason: Sendable {
     case crash(String)
 }
 
-/// The virtual machine: RAM, GIC, devices, and the vCPU run loop. Single vCPU for bring-up; SMP
-/// arrives with PSCI CPU_ON once the boot path is proven.
-public final class Machine {
+/// The virtual machine: RAM, GIC, devices, and the vCPU threads. SMP: secondaries are created
+/// eagerly, parked, and released by PSCI CPU_ON. Thread-shared state is guarded by
+/// `teamCondition`; devices serialize their own guest-facing surfaces.
+public final class Machine: @unchecked Sendable {
     public let configuration: MachineConfiguration
     public let memory: GuestMemory
     public let bus = MMIOBus()
@@ -237,37 +238,177 @@ public final class Machine {
         bus.attach(uart)
     }
 
-    /// Runs the boot CPU until the guest powers off, resets, or faults. Must be called on the
-    /// thread that will own the vCPU for its whole lifetime.
-    public func runBootCPU() throws -> GuestStopReason {
-        let vcpu = try VCPU()
-        redistributorMMIO.vcpuHandles.append(vcpu.handle)
-        // The in-kernel GIC routes by affinity; every vCPU must publish its MPIDR before running.
-        try vcpu.writeSystem(HV_SYS_REG_MPIDR_EL1, 0x8000_0000)
-        try vcpu.write(HV_REG_CPSR, 0x3C5)
-        try vcpu.write(HV_REG_PC, entryPoint)
-        try vcpu.write(HV_REG_X0, dtbAddress)
-        try vcpu.write(HV_REG_X1, 0)
-        try vcpu.write(HV_REG_X2, 0)
-        try vcpu.write(HV_REG_X3, 0)
+    // MARK: SMP team
 
+    private let teamCondition = NSCondition()
+    private var teamHandles: [hv_vcpu_t?] = []
+    private var secondaryStarts: [(entry: UInt64, context: UInt64)?] = []
+    private var cpuStarted: [Bool] = []
+    private var stopReason: GuestStopReason?
+    private var registeredCPUs = 0
+    private var finishedSecondaries = 0
+    private var vcpusExited = false
+
+    /// Boots the guest with `configuration.cpuCount` vCPUs. Every vCPU gets a dedicated thread
+    /// (Hypervisor.framework requires create/run/destroy on one thread); secondaries are created
+    /// up front so the kernel's redistributor walk sees all GIC frames, then parked until PSCI
+    /// CPU_ON. The calling thread becomes the boot CPU. Returns when the guest stops.
+    public func run() throws -> GuestStopReason {
+        let count = max(1, configuration.cpuCount)
+        teamHandles = Array(repeating: nil, count: count)
+        secondaryStarts = Array(repeating: nil, count: count)
+        cpuStarted = Array(repeating: false, count: count)
+        cpuStarted[0] = true
+
+        for index in 1..<count {
+            let thread = Thread { [self] in cpuMain(index: index) }
+            thread.name = "dory-hv.vcpu\(index)"
+            thread.stackSize = 1 << 21
+            thread.start()
+        }
+
+        teamCondition.lock()
+        while registeredCPUs < count - 1, stopReason == nil {
+            teamCondition.wait()
+        }
+        let abortedDuringBringup = stopReason != nil
+        teamCondition.unlock()
+
+        if !abortedDuringBringup {
+            cpuMain(index: 0)
+        }
+
+        // The guest has stopped (or bring-up failed). Wake every secondary, cancel any still
+        // running under Hypervisor.framework, and JOIN them all before returning so the caller
+        // (and Machine.deinit -> hv_vm_destroy) never races a live vCPU thread.
+        stopAll(stopReason ?? .powerOff)
+        teamCondition.lock()
+        while finishedSecondaries < count - 1 {
+            teamCondition.wait()
+        }
+        defer { teamCondition.unlock() }
+        return stopReason ?? .crash("boot CPU exited without a stop reason")
+    }
+
+    private func cpuMain(index: Int) {
+        defer {
+            if index != 0 {
+                teamCondition.lock()
+                finishedSecondaries += 1
+                teamCondition.broadcast()
+                teamCondition.unlock()
+            }
+        }
+        do {
+            let vcpu = try VCPU()
+            try vcpu.writeSystem(HV_SYS_REG_MPIDR_EL1, 0x8000_0000 | UInt64(index))
+            register(vcpu: vcpu, index: index)
+
+            if index == 0 {
+                try vcpu.write(HV_REG_CPSR, 0x3C5)
+                try vcpu.write(HV_REG_PC, entryPoint)
+                try vcpu.write(HV_REG_X0, dtbAddress)
+                try vcpu.write(HV_REG_X1, 0)
+                try vcpu.write(HV_REG_X2, 0)
+                try vcpu.write(HV_REG_X3, 0)
+            } else {
+                guard let start = parkUntilStarted(index: index) else { return }
+                try vcpu.write(HV_REG_CPSR, 0x3C5)
+                try vcpu.write(HV_REG_PC, start.entry)
+                try vcpu.write(HV_REG_X0, start.context)
+            }
+
+            runLoop(vcpu: vcpu)
+        } catch {
+            stopAll(.crash("cpu\(index) failed: \(error)"))
+        }
+    }
+
+    private func register(vcpu: VCPU, index: Int) {
+        // Map this vCPU to its redistributor frame by the base the GIC actually assigned it,
+        // rather than assuming creation order.
+        var redistributorBase: hv_ipa_t = 0
+        var frameIndex = index
+        if hv_gic_get_redistributor_base(vcpu.handle, &redistributorBase) == HV_SUCCESS,
+           redistributorMMIO.stride > 0 {
+            frameIndex = Int((redistributorBase - GuestLayout.gicRedistributorBase) / redistributorMMIO.stride)
+        }
+        teamCondition.lock()
+        teamHandles[index] = vcpu.handle
+        redistributorMMIO.setHandle(vcpu.handle, at: frameIndex)
+        if index != 0 { registeredCPUs += 1 }
+        teamCondition.broadcast()
+        teamCondition.unlock()
+    }
+
+    private func parkUntilStarted(index: Int) -> (entry: UInt64, context: UInt64)? {
+        teamCondition.lock()
+        defer { teamCondition.unlock() }
+        while secondaryStarts[index] == nil, stopReason == nil {
+            teamCondition.wait()
+        }
+        return secondaryStarts[index]
+    }
+
+    private func stopAll(_ reason: GuestStopReason) {
+        teamCondition.lock()
+        if stopReason == nil { stopReason = reason }
+        // Cancel running vCPUs exactly once: a second pass could touch a handle a finished thread
+        // has already destroyed.
+        var handles: [hv_vcpu_t] = []
+        if !vcpusExited {
+            vcpusExited = true
+            handles = teamHandles.compactMap { $0 }
+        }
+        teamCondition.broadcast()
+        teamCondition.unlock()
+        if !handles.isEmpty {
+            hv_vcpus_exit(&handles, UInt32(handles.count))
+        }
+    }
+
+    private func startSecondary(mpidr: UInt64, entry: UInt64, context: UInt64) -> Int64 {
+        let index = Int(mpidr & 0xFF)
+        teamCondition.lock()
+        defer { teamCondition.unlock() }
+        guard index > 0, index < cpuStarted.count else { return -2 }  // INVALID_PARAMETERS
+        guard !cpuStarted[index] else { return -4 }  // ALREADY_ON
+        cpuStarted[index] = true
+        secondaryStarts[index] = (entry: entry, context: context)
+        teamCondition.broadcast()
+        return 0
+    }
+
+    private func runLoop(vcpu: VCPU) {
         while true {
-            let event = try vcpu.run()
-            switch event {
-            case .canceled:
-                return .powerOff
-            case .vtimerActivated:
-                // With the in-kernel GIC the timer PPI is delivered by the GIC itself; unmask and
-                // continue so the vtimer can fire again.
-                try vcpu.setVTimerMask(false)
-            case .exception(let syndrome, _, let physicalAddress):
-                if let stop = try handleException(
-                    vcpu: vcpu, syndrome: syndrome, physicalAddress: physicalAddress
-                ) {
-                    return stop
+            teamCondition.lock()
+            let stopped = stopReason != nil
+            teamCondition.unlock()
+            if stopped { return }
+
+            do {
+                let event = try vcpu.run()
+                switch event {
+                case .canceled:
+                    return
+                case .vtimerActivated:
+                    // With the in-kernel GIC the timer PPI is delivered by the GIC itself; unmask
+                    // and continue so the vtimer can fire again.
+                    try vcpu.setVTimerMask(false)
+                case .exception(let syndrome, _, let physicalAddress):
+                    if let stop = try handleException(
+                        vcpu: vcpu, syndrome: syndrome, physicalAddress: physicalAddress
+                    ) {
+                        stopAll(stop)
+                        return
+                    }
+                case .unknown(let raw):
+                    stopAll(.crash("unknown exit reason \(raw)"))
+                    return
                 }
-            case .unknown(let raw):
-                return .crash("unknown exit reason \(raw)")
+            } catch {
+                stopAll(.crash("\(error)"))
+                return
             }
         }
     }
@@ -282,7 +423,7 @@ public final class Machine {
             try handleMMIO(vcpu: vcpu, syndrome: syndrome, physicalAddress: physicalAddress)
             return nil
         case .instructionAbortLowerEL:
-            guard try restoreIfReleasedRAM(physicalAddress) else {
+            guard restoreIfReleasedRAM(physicalAddress) else {
                 return .crash("instruction abort outside RAM at pa 0x\(String(physicalAddress, radix: 16))")
             }
             return nil
@@ -303,7 +444,7 @@ public final class Machine {
     }
 
     private func handleMMIO(vcpu: VCPU, syndrome: UInt64, physicalAddress: UInt64) throws {
-        if try restoreIfReleasedRAM(physicalAddress) { return }
+        if restoreIfReleasedRAM(physicalAddress) { return }
         let abort = DataAbortInfo(syndrome: syndrome)
         guard abort.isValid else {
             let pc = try vcpu.read(HV_REG_PC)
@@ -347,8 +488,11 @@ public final class Machine {
         case PSCI.systemReset:
             return .reset
         case PSCI.cpuOn:
-            // Single-CPU bring-up: report the request as denied so the kernel proceeds UP.
-            try vcpu.write(HV_REG_X0, UInt64(bitPattern: -1))
+            let target = try vcpu.read(HV_REG_X1)
+            let entry = try vcpu.read(HV_REG_X2)
+            let context = try vcpu.read(HV_REG_X3)
+            let result = startSecondary(mpidr: target, entry: entry, context: context)
+            try vcpu.write(HV_REG_X0, UInt64(bitPattern: Int64(result)))
         default:
             try vcpu.write(HV_REG_X0, UInt64(bitPattern: -1))
         }
@@ -372,13 +516,12 @@ public final class Machine {
         }
     }
 
-    /// The guest touched a 16KiB host page that free page reporting returned to macOS: charge it
-    /// back and remap. The faulting instruction retries with no state change.
-    private func restoreIfReleasedRAM(_ physicalAddress: UInt64) throws -> Bool {
-        guard memory.contains(physicalAddress, count: 1) else { return false }
-        let pageStart = physicalAddress & ~UInt64(16383)
-        try memory.restoreRange(guestAddress: pageStart, length: 16384)
-        return true
+    /// A fault inside the RAM window MIGHT be the guest touching a page that free page reporting
+    /// returned to macOS. restorePage remaps it and returns true; if the page was never released
+    /// this returns false, so a genuine guest fault falls through to the crash path with a
+    /// diagnostic instead of an unkillable refault loop.
+    private func restoreIfReleasedRAM(_ physicalAddress: UInt64) -> Bool {
+        memory.restorePage(guestAddress: physicalAddress)
     }
 
     private func advancePC(_ vcpu: VCPU) throws {
