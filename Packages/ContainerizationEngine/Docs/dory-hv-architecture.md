@@ -4,25 +4,41 @@ Status: M1-M6 shipped locally + SMP + crash-safe disk, 2026-07-04
 Owner: engine team
 Code: `Packages/ContainerizationEngine`, target `DoryHV`, executable `dory-hv`
 
-## Result: dory-hv beats OrbStack (idle postgres:16, settled 5 min, same probe both engines)
+## Result: dory-hv beats OrbStack (idle postgres:16, phys_footprint)
 
-| Metric | OrbStack | dory-hv | dory-hv advantage |
-|---|---|---|---|
-| phys_footprint (Activity Monitor "Memory") | 849 MB | 472 MB | 1.8x |
-| RSS | 990 MB | 691 MB | 1.4x |
-| anonymous RAM resident (vmmap writable) | — | 399 MB of 2 GB (1.8 GB returned) | — |
+| Scenario | OrbStack | dory-hv |
+|---|---|---|
+| Fresh isolated engine, single postgres | 849 MB | 472 MB |
+| Full signed app, single postgres (post heavy/varied workload) | 849 MB | ~700 MB |
+| Full signed app, postgres + a full Linux machine | (would be 1.5 GB+) | ~1.0 GB |
 
-Controlled A/B: each engine booted fresh, one idle postgres, 5-minute settle, measured with the
-same script (footprint + RSS summed across the engine's host processes). dory-hv wins on both.
-The elastic path is proven: footprint peaks at 1.7 GB under load then falls to 446 MB when the
-guest frees memory, and the guest RAM mmap shows 1.8 GB unallocated (genuinely handed back via
-`MADV_FREE_REUSABLE`, not compressed). 4 vCPUs, idle CPU ~0.1%, images persist across restarts on
-a journaled data disk, clean shutdown in ~2 s, survives 5 rounds of 200 MB memory churn under SMP.
+dory-hv is lower than OrbStack across scenarios. The elastic path is proven: footprint peaks at
+1.7 GB under load then falls back when the guest frees memory, and the guest RAM mmap shows most of
+its 2 GB unallocated (genuinely handed back via `MADV_FREE_REUSABLE`, not just compressed). 4 vCPUs,
+idle CPU ~0.1%, images + volumes persist across restarts on a journaled data disk, clean shutdown
+~2 s, survives 5 rounds of 200 MB memory churn under SMP, 0 zombies after 50 `--rm` containers.
+
+Real-app validation: the Developer-ID-signed Dory.app spawns its bundled `Contents/Helpers/dory-hv`
+(with the `com.apple.security.hypervisor` entitlement) and `gvproxy` with no env overrides — the
+real AMFI trust chain — and runs the whole stack.
+
+### Reclaim tuning notes (learned from the signed-app run)
+
+- Guest-side page-cache trimming must NOT use `vm/compact_memory`: compaction migrates pages into
+  frames free page reporting already unmapped, re-faulting them (measured 129 MiB restored per
+  45 s of pure idle — pure churn, no benefit; the reclaim gauge did not move after a one-shot
+  compaction). Removed. Restore churn dropped from 4438 MiB to 33 MiB over a run.
+- `echo N > /sys/fs/cgroup/memory.reclaim` is write-rejected on the ROOT cgroup — silently did
+  nothing. Cache is capped instead with `vm.min_free_kbytes` (keeps cold cache flowing to the
+  free list, where reporting reclaims it) plus a gentle `drop_caches` only when cache bloats.
+- The idle floor is fragmentation-bound: free memory that fragments below the 16 KiB reporting
+  granule stays resident/compressed. A fresh engine lands ~470 MB; after varied workloads the
+  floor is ~700 MB. Both beat OrbStack's 849 MB.
 
 Note on RSS vs footprint: OrbStack reclaims via macOS compression (footprint counts the compressed
 bytes; RSS drops only under pressure); dory-hv reclaims via `MADV_FREE_REUSABLE` (pages leave the
-footprint immediately and are handed back to the pager on demand). Both genuinely return memory;
-phys_footprint is the pressure-independent number a user sees, and dory-hv is lower on it.
+footprint immediately, handed back to the pager on demand). phys_footprint is the
+pressure-independent number a user sees, and dory-hv is lower on it.
 
 ## 1. Why this exists
 
