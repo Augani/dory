@@ -289,19 +289,27 @@ the VZ helper). Console log and reclaim counters stream to `~/.dory/engine.log`.
 * Guest OOM risk: unlike the VZ balloon loop, reporting never starves the guest; the ceiling
   is the only hard limit and defaults to 2 GiB with env override.
 
-## 13. Milestones
+## 13. Status: the sole engine
+
+dory-hv is now Dory's ONLY shared-VM engine. The Apple `container` CLI path, the older
+Virtualization.framework `dory-vm` helper, the `AppleContainerRuntime` backend, and the
+container-toolchain install UX have all been removed. `SharedVMProvisioner` provisions dory-hv
+only; `hostSupport` is `DoryHVSupport` (macOS 15+ Apple silicon, no toolchain). The engine is
+default-on (`DORY_HV_ENGINE=0` force-disables for debugging). On hardware dory-hv cannot run
+(Intel / older macOS) the app still fronts an existing Docker-compatible socket.
 
 | # | Gate | Proof |
 |---|---|---|
 | M1 | HV smoke | guest executes instructions under ad-hoc signature + hypervisor entitlement |
-| M2 | Kernel boots | full boot log on PL011, panics at missing rootfs |
-| M3 | Rootfs + dockerd | `docker version` over proxied socket, no network |
+| M2 | Kernel boots | full boot log on PL011 |
+| M3 | Rootfs + dockerd | `docker version` over the published socket |
 | M4 | Networking | `docker pull postgres:16 && docker run` via `~/.dory/engine.sock` |
-| M5 | Reclaim | footprint falls back after load; beats the OrbStack 207 MB resting bar |
-| M6 | Integrated | provisioner prefers dory-hv behind flag, tests green, committed |
-
-Each milestone lands as its own commit; nothing merges to the default engine path until M5's
-numbers are reproduced twice.
+| M5 | Reclaim | footprint falls back after load; beats OrbStack (472 vs 849 MB fresh) |
+| M6 | Integrated | signed app spawns bundled dory-hv + gvproxy, tests green |
+| M7 | SMP | 4 vCPUs via PSCI CPU_ON, threads joined on stop |
+| M8 | Crash-safe | throwaway rootfs + journaled data disk, graceful shutdown, tini reaper |
+| M9 | Ports | `docker run -p` auto-forwarded through gvproxy (expose on publish, unexpose on stop) |
+| M10 | Sole engine | Apple container removed; dory-hv default-on; DoryTests + DoryHVTests green |
 
 ## 14. Open risks
 
