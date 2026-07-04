@@ -10,12 +10,15 @@ func fail(_ message: String) -> Never {
 
 struct Options {
     var kernel: String?
+    var initfs: String?
     var memoryMB: UInt64 = 2048
     var cpus: Int = 1
     var commandLine = "console=ttyAMA0 earlycon=pl011,mmio32,0x0c000000 panic=0"
     var disks: [String] = []
     var gvproxy: String?
     var exposePort: UInt16 = 0
+    var timeoutSeconds: UInt64 = 30
+    var shares: [VirtioFSShareConfiguration] = []
 }
 
 func parseOptions(_ arguments: ArraySlice<String>) -> Options {
@@ -24,12 +27,21 @@ func parseOptions(_ arguments: ArraySlice<String>) -> Options {
     while let argument = iterator.next() {
         switch argument {
         case "--kernel": options.kernel = iterator.next()
+        case "--initfs": options.initfs = iterator.next()
         case "--mem-mb": options.memoryMB = iterator.next().flatMap(UInt64.init) ?? options.memoryMB
         case "--cpus": options.cpus = iterator.next().flatMap(Int.init) ?? options.cpus
         case "--cmdline": options.commandLine = iterator.next() ?? options.commandLine
         case "--disk": if let disk = iterator.next() { options.disks.append(disk) }
         case "--gvproxy": options.gvproxy = iterator.next()
         case "--expose-docker": options.exposePort = iterator.next().flatMap(UInt16.init) ?? 0
+        case "--timeout-sec": options.timeoutSeconds = iterator.next().flatMap(UInt64.init) ?? options.timeoutSeconds
+        case "--share":
+            guard let value = iterator.next() else { fail("--share requires tag=/host/path[:ro|:rw][:dax]") }
+            do {
+                options.shares.append(try VirtioFSShareConfiguration(argument: value))
+            } catch {
+                fail("\(error)")
+            }
         default: fail("unknown option \(argument)")
         }
     }
@@ -53,9 +65,138 @@ func exposeDockerPort(apiSocket: String, hostPort: UInt16) {
     FileHandle.standardError.write(Data("dory-hv: docker api exposed on 127.0.0.1:\(hostPort)\n".utf8))
 }
 
+private struct EmptyParams: Encodable {}
+
+private struct AgentInfo: Codable {
+    var kernel: String
+    var uptimeSeconds: Int64
+    var memoryTotal: UInt64
+    var memoryFree: UInt64
+    var protocolVersion: Int
+
+    enum CodingKeys: String, CodingKey {
+        case kernel
+        case uptimeSeconds = "uptime_seconds"
+        case memoryTotal = "memory_total"
+        case memoryFree = "memory_free"
+        case protocolVersion = "protocol_version"
+    }
+}
+
+private final class AgentPingResultBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: Result<AgentInfo, Error>?
+
+    func set(_ result: Result<AgentInfo, Error>) {
+        lock.lock()
+        stored = result
+        lock.unlock()
+    }
+
+    func get() -> Result<AgentInfo, Error>? {
+        lock.lock()
+        defer { lock.unlock() }
+        return stored
+    }
+}
+
+func attachBackend(_ backend: VirtioDeviceBackend, to machine: Machine, slot: Int) {
+    let spi = GuestLayout.virtioFirstIRQ + UInt32(slot)
+    let transport = VirtioMMIOTransport(
+        baseAddress: GuestLayout.virtioBase + UInt64(slot) * GuestLayout.virtioSlotSize,
+        backend: backend,
+        memory: machine.memory
+    ) { [weak machine] in
+        machine?.raiseSPI(spi)
+    }
+    machine.attachVirtioSlot(transport)
+}
+
+func runAgentPing(_ options: Options) {
+    guard let kernel = options.kernel else { fail("agent-ping requires --kernel") }
+    guard let initfs = options.initfs else { fail("agent-ping requires --initfs") }
+    guard FileManager.default.fileExists(atPath: kernel) else { fail("kernel not found: \(kernel)") }
+    guard FileManager.default.fileExists(atPath: initfs) else { fail("initfs not found: \(initfs)") }
+
+    do {
+        let commandLine = options.commandLine == Options().commandLine
+            ? "console=ttyAMA0 earlycon=pl011,mmio32,0x0c000000 root=/dev/vda rw panic=0"
+            : options.commandLine
+        let machine = try Machine(configuration: MachineConfiguration(
+            kernelPath: kernel,
+            commandLine: commandLine,
+            memoryBytes: options.memoryMB << 20,
+            cpuCount: options.cpus
+        ))
+        machine.attachConsole(PL011(baseAddress: GuestLayout.uartBase) { byte in
+            FileHandle.standardError.write(Data([byte]))
+        })
+        machine.bus.attach(PL031(baseAddress: GuestLayout.rtcBase))
+        let vsock = VirtioVsock(guestCID: 3)
+        let backends: [VirtioDeviceBackend] = [
+            try VirtioBlk(path: initfs, identity: "dory-initfs"),
+            VirtioRng(),
+            VirtioBalloon(memory: machine.memory) { message in
+                FileHandle.standardError.write(Data("dory-hv: \(message)\n".utf8))
+            },
+            vsock,
+        ]
+        for (slot, backend) in backends.enumerated() {
+            attachBackend(backend, to: machine, slot: slot)
+        }
+        try machine.loadBootPayload()
+
+        let runThread = Thread {
+            do {
+                let stop = try machine.run()
+                FileHandle.standardError.write(Data("dory-hv: guest stopped before agent answered: \(stop)\n".utf8))
+            } catch {
+                FileHandle.standardError.write(Data("dory-hv: guest failed before agent answered: \(error)\n".utf8))
+            }
+        }
+        runThread.name = "dory-hv.agent-ping.vm"
+        runThread.start()
+
+        let deadline = DispatchTime.now().uptimeNanoseconds + options.timeoutSeconds * 1_000_000_000
+        let semaphore = DispatchSemaphore(value: 0)
+        let result = AgentPingResultBox()
+        Task.detached {
+            while DispatchTime.now().uptimeNanoseconds < deadline {
+                let connection = vsock.connect(port: VsockPorts.agent)
+                let transport = AgentVsockTransport(connection: connection, readTimeoutNanoseconds: 2_000_000_000)
+                let channel = AgentChannel(transport: transport)
+                do {
+                    let info: AgentInfo = try await channel.call("info", EmptyParams())
+                    result.set(.success(info))
+                    semaphore.signal()
+                    return
+                } catch {
+                    connection.close()
+                    try? await Task.sleep(nanoseconds: 500_000_000)
+                }
+            }
+            result.set(.failure(VMError.bootFailure("guest agent did not answer on vsock port 1024 within \(options.timeoutSeconds)s")))
+            semaphore.signal()
+        }
+        semaphore.wait()
+        switch result.get() {
+        case .success(let info):
+            let data = try JSONEncoder().encode(info)
+            print(String(decoding: data, as: UTF8.self))
+            exit(0)
+        case .failure(let error):
+            fail("\(error)")
+        case nil:
+            fail("agent-ping ended without a result")
+        }
+    } catch {
+        fail("\(error)")
+    }
+}
+
 let arguments = Array(CommandLine.arguments.dropFirst())
 guard let command = arguments.first else {
-    fail("usage: dory-hv <smoke|boot|engine> [--kernel path] [--mem-mb N] [--cpus N] [--cmdline s]")
+    fail("usage: dory-hv <smoke|madvtest|daxprobe|boot|agent-ping|engine|usb> [--kernel path] [--mem-mb N] [--cpus N] [--cmdline s]")
 }
 
 switch command {
@@ -69,6 +210,15 @@ case "smoke":
 case "madvtest":
     do {
         try MadviseProbe.run()
+    } catch {
+        fail("\(error)")
+    }
+case "daxprobe":
+    do {
+        let arg = arguments.dropFirst(1).first
+        let base = arg.flatMap { UInt64($0.hasPrefix("0x") ? String($0.dropFirst(2)) : $0, radix: 16) }
+        let result = try DaxCoherenceProbe.run(daxGuestBase: base ?? GuestLayout.daxWindowBase)
+        print("dory-hv: \(result)")
     } catch {
         fail("\(error)")
     }
@@ -92,10 +242,18 @@ case "boot":
         for (slot, diskPath) in options.disks.enumerated() {
             backends.append(try VirtioBlk(path: diskPath, identity: "dory-blk\(slot)"))
         }
+        var daxSlot: UInt64 = 0
+        for share in options.shares {
+            let daxBase = share.dax ? GuestLayout.daxWindowBase + daxSlot * DaxWindow.defaultSize : nil
+            if share.dax { daxSlot += 1 }
+            backends.append(try share.makeBackend(daxGuestBase: daxBase))
+            FileHandle.standardError.write(Data("dory-hv: sharing \(share.path) as virtiofs tag \(share.tag)\(share.readOnly ? " (ro)" : "")\(share.dax ? " (dax)" : "")\n".utf8))
+        }
         backends.append(VirtioRng())
         backends.append(VirtioBalloon(memory: machine.memory) { message in
             FileHandle.standardError.write(Data("dory-hv: \(message)\n".utf8))
         })
+        backends.append(VirtioVsock(guestCID: 3))
         var gvproxyProcess: Process?
         if let gvproxyPath = options.gvproxy {
             let networkDirectory = NSHomeDirectory() + "/.dory/hv"
@@ -149,6 +307,23 @@ case "boot":
     } catch {
         fail("\(error)")
     }
+case "agent-ping":
+    runAgentPing(parseOptions(arguments.dropFirst()))
+case "usb":
+    let subcommand = arguments.dropFirst().first ?? "list"
+    switch subcommand {
+    case "list", "ls":
+        do {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            let data = try encoder.encode(HostUsbDiscovery.list())
+            print(String(decoding: data, as: UTF8.self))
+        } catch {
+            fail("usb list failed: \(error)")
+        }
+    default:
+        fail("usage: dory-hv usb list")
+    }
 case "engine":
     var engineSocket = "\(NSHomeDirectory())/.dory/engine.sock"
     var kernel: String?
@@ -156,6 +331,9 @@ case "engine":
     var memoryMB: UInt64 = 2048
     var cpus = 4
     var rootfs: String?
+    var shares: [VirtioFSShareConfiguration] = []
+    var directIPSubnet: String?
+    var directIPGateway = "192.168.127.2"
     var iterator = arguments.dropFirst().makeIterator()
     while let argument = iterator.next() {
         switch argument {
@@ -165,6 +343,16 @@ case "engine":
         case "--rootfs": rootfs = iterator.next()
         case "--mem-mb": memoryMB = iterator.next().flatMap(UInt64.init) ?? memoryMB
         case "--cpus": cpus = iterator.next().flatMap(Int.init) ?? cpus
+        case "--direct-ip": directIPSubnet = directIPSubnet ?? "192.168.215.0/24"
+        case "--container-subnet": directIPSubnet = iterator.next()
+        case "--guest-gateway": directIPGateway = iterator.next() ?? directIPGateway
+        case "--share":
+            guard let value = iterator.next() else { fail("--share requires tag=/host/path[:ro|:rw][:dax]") }
+            do {
+                shares.append(try VirtioFSShareConfiguration(argument: value))
+            } catch {
+                fail("\(error)")
+            }
         default: fail("unknown option \(argument)")
         }
     }
@@ -177,7 +365,17 @@ case "engine":
         memoryMB: memoryMB,
         cpus: cpus,
         stateDirectory: "\(NSHomeDirectory())/.dory/hv",
-        bundledRootfs: rootfs
+        bundledRootfs: rootfs,
+        shares: shares,
+        directIP: directIPSubnet.map {
+            DirectIPBridgeConfiguration(
+                subnetCIDR: $0,
+                gateway: directIPGateway,
+                gvproxySocketPath: "",
+                localSocketPath: "\(NSHomeDirectory())/.dory/hv/direct-ip.sock",
+                interfaceNamePath: "\(NSHomeDirectory())/.dory/hv/direct-ip.interface"
+            )
+        }
     )
     // Top-level code is implicitly MainActor; a plain Task would inherit it and deadlock behind
     // the semaphore below. Detach so the engine runs on the concurrent pool.

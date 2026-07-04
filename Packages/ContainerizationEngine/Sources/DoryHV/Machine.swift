@@ -17,6 +17,7 @@ public enum GuestLayout {
     public static let virtioFirstIRQ: UInt32 = 16  // SPI numbers 16... (intid 48...)
     public static let ramBase: UInt64 = 0x8000_0000
     public static let dtbOffset: UInt64 = 256 << 20
+    public static let daxWindowBase: UInt64 = 0xC_0000_0000
 }
 
 public struct MachineConfiguration {

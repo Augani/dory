@@ -189,7 +189,9 @@ struct DoryVM {
         }
         guard network != nil else { throw EngineError.noNetwork }
 
-        let vmm = BalloonVMM(inner: VZVirtualMachineManager(kernel: kernel, initialFilesystem: initfs))
+        let rosetta = (ProcessInfo.processInfo.environment["DORY_ENGINE_ROSETTA"] ?? "0") == "1"
+        if rosetta { note("Rosetta x86 translation enabled on shared engine") }
+        let vmm = BalloonVMM(inner: VZVirtualMachineManager(kernel: kernel, initialFilesystem: initfs, rosetta: rosetta))
         var manager = try ContainerManager(vmm: vmm, network: network)
         // The vmm-injecting constructor uses the default image store; clean its prior container dir.
         let store = NSHomeDirectory() + "/Library/Application Support/com.apple.containerization"

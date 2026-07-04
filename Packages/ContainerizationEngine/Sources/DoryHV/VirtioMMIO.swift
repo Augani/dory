@@ -18,6 +18,22 @@ extension VirtioDeviceBackend {
     public func writeConfig(offset: UInt64, value: UInt64, width: Int) {}
 }
 
+public struct VirtioSharedMemoryRegion: Equatable, Sendable {
+    public var id: UInt32
+    public var guestBase: UInt64
+    public var length: UInt64
+
+    public init(id: UInt32, guestBase: UInt64, length: UInt64) {
+        self.id = id
+        self.guestBase = guestBase
+        self.length = length
+    }
+}
+
+public protocol VirtioSharedMemoryRegionProvider: AnyObject {
+    var sharedMemoryRegions: [VirtioSharedMemoryRegion] { get }
+}
+
 /// virtio-mmio v2 transport (virtio spec 1.2, section 4.2). One instance per bus slot.
 public final class VirtioMMIOTransport: MMIODevice {
     public let baseAddress: UInt64
@@ -32,6 +48,7 @@ public final class VirtioMMIOTransport: MMIODevice {
     private var driverFeatureSelect: UInt32 = 0
     private var driverFeatures: UInt64 = 0
     private var queueSelect: Int = 0
+    private var sharedMemorySelect: UInt32 = 0
     private var status: UInt32 = 0
     private var interruptStatus: UInt32 = 0
     private let interruptLock = NSLock()  // device backends may complete buffers off the vCPU thread
@@ -93,6 +110,10 @@ public final class VirtioMMIOTransport: MMIODevice {
             defer { interruptLock.unlock() }
             return UInt64(interruptStatus)
         case 0x070: return UInt64(status)
+        case 0x0B0: return selectedSharedMemoryRegion?.length.lowUInt32 ?? UInt64(UInt32.max)
+        case 0x0B4: return selectedSharedMemoryRegion?.length.highUInt32 ?? UInt64(UInt32.max)
+        case 0x0B8: return selectedSharedMemoryRegion?.guestBase.lowUInt32 ?? 0
+        case 0x0BC: return selectedSharedMemoryRegion?.guestBase.highUInt32 ?? 0
         case 0x0FC: return 0  // ConfigGeneration
         case 0x100...:
             return readConfig(offset: offset - 0x100, width: width)
@@ -150,6 +171,7 @@ public final class VirtioMMIOTransport: MMIODevice {
                 negotiatedFeatures = driverFeatures
                 backend.deviceReady(transport: self)
             }
+        case 0x0AC: sharedMemorySelect = UInt32(truncatingIfNeeded: value)
         case 0x080: withSelectedQueue { pendingQueueLayout[$0].descriptor = merge(pendingQueueLayout[$0].descriptor, low: value) }
         case 0x084: withSelectedQueue { pendingQueueLayout[$0].descriptor = merge(pendingQueueLayout[$0].descriptor, high: value) }
         case 0x090: withSelectedQueue { pendingQueueLayout[$0].avail = merge(pendingQueueLayout[$0].avail, low: value) }
@@ -194,4 +216,13 @@ public final class VirtioMMIOTransport: MMIODevice {
         }
         return value
     }
+
+    private var selectedSharedMemoryRegion: VirtioSharedMemoryRegion? {
+        (backend as? VirtioSharedMemoryRegionProvider)?.sharedMemoryRegions.first { $0.id == sharedMemorySelect }
+    }
+}
+
+private extension UInt64 {
+    var lowUInt32: UInt64 { self & 0xFFFF_FFFF }
+    var highUInt32: UInt64 { self >> 32 }
 }

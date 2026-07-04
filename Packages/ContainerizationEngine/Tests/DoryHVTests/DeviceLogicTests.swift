@@ -145,6 +145,43 @@ import Testing
     }
 }
 
+@Suite struct VirtioMMIOTransportTests {
+    private final class Backend: VirtioDeviceBackend, VirtioSharedMemoryRegionProvider {
+        let deviceID: UInt32 = 26
+        let deviceFeatures: UInt64 = 0
+        let queueCount = 1
+        let configSpace: [UInt8] = []
+        let sharedMemoryRegions: [VirtioSharedMemoryRegion]
+
+        init(sharedMemoryRegions: [VirtioSharedMemoryRegion]) {
+            self.sharedMemoryRegions = sharedMemoryRegions
+        }
+
+        func handleKick(queue: Int, transport: VirtioMMIOTransport) {}
+    }
+
+    @Test func sharedMemoryRegistersExposeSelectedRegionAndMissingSentinel() throws {
+        let memory = try GuestMemory(guestBase: GuestLayout.ramBase, size: 0x20_000)
+        let backend = Backend(sharedMemoryRegions: [
+            VirtioSharedMemoryRegion(id: 0, guestBase: 0x1_0000_0000, length: 0x2_0000),
+            VirtioSharedMemoryRegion(id: 3, guestBase: 0x2_0010_0000, length: 0x1_0000_0000),
+        ])
+        let transport = VirtioMMIOTransport(baseAddress: GuestLayout.virtioBase, backend: backend, memory: memory) {}
+
+        transport.write(offset: 0x0AC, value: 3, width: 4)
+
+        #expect(transport.read(offset: 0x0B0, width: 4) == 0)
+        #expect(transport.read(offset: 0x0B4, width: 4) == 1)
+        #expect(transport.read(offset: 0x0B8, width: 4) == 0x0010_0000)
+        #expect(transport.read(offset: 0x0BC, width: 4) == 2)
+
+        transport.write(offset: 0x0AC, value: 99, width: 4)
+
+        #expect(transport.read(offset: 0x0B0, width: 4) == UInt64(UInt32.max))
+        #expect(transport.read(offset: 0x0B4, width: 4) == UInt64(UInt32.max))
+    }
+}
+
 @Suite struct PL011Tests {
     @Test func transmitsToSinkAndReportsReadyFlags() {
         var out = [UInt8]()

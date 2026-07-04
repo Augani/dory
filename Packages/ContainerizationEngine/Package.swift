@@ -33,9 +33,20 @@ let package = Package(
             ]
         ),
         .target(
-            name: "DoryHV",
+            name: "DoryHVUSBShim",
             linkerSettings: [
-                .linkedFramework("Hypervisor")
+                .linkedFramework("IOKit"),
+                .linkedFramework("IOUSBHost"),
+            ]
+        ),
+        .target(
+            name: "DoryHV",
+            dependencies: ["DoryHVUSBShim"],
+            linkerSettings: [
+                .linkedFramework("Hypervisor"),
+                .linkedFramework("CoreServices"),
+                .linkedFramework("IOKit"),
+                .linkedFramework("IOUSBHost"),
             ]
         ),
         .executableTarget(

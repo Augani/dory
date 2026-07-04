@@ -1,0 +1,3 @@
+KERNEL_VERSION=6.12.30
+KERNEL_URL=https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.12.30.tar.xz
+KERNEL_SHA256=df046a48971e40ce0b2e003e7e55b6b1e7da2912120eb216d5d6c8450c9cf82e

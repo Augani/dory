@@ -1,10 +1,11 @@
 import Foundation
+import DoryHV
 
 /// Publishes container ports to the host through gvproxy. dockerd inside the guest binds published
 /// ports (`docker run -p 8080:80`) to the guest's address; gvproxy's userspace network is not
 /// directly routable from the host, so each published port must be exposed explicitly. This polls
 /// the docker socket and keeps gvproxy's forwards in sync with the live set of published ports.
-final class PortForwarder: @unchecked Sendable {
+final class PortForwarder: MachinePortForwarding, @unchecked Sendable {
     private let engineSocket: String
     private let apiSocket: String
     private let guestIP: String
@@ -64,6 +65,14 @@ final class PortForwarder: @unchecked Sendable {
     private func unexpose(_ port: Int) -> Bool {
         curlPost(unixSocket: apiSocket, url: "http://gvproxy/services/forwarder/unexpose",
                  body: "{\"local\":\"127.0.0.1:\(port)\",\"protocol\":\"tcp\"}")
+    }
+
+    func exposeMachinePort(_ port: UInt16) async -> Bool {
+        expose(Int(port))
+    }
+
+    func unexposeMachinePort(_ port: UInt16) async -> Bool {
+        unexpose(Int(port))
     }
 
     private func curlData(unixSocket: String, url: String) -> Data? {
