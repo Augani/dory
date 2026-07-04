@@ -53,6 +53,30 @@ struct FuseServerTests {
         #expect(try FuseProtocol.decodeOutHeader(readAfterRelease).error == -EBADF)
     }
 
+    @Test func zeroCopyReadMatchesArrayPath() throws {
+        let root = try TestFuseServerRoot()
+        try root.write("hello dory world", to: "z.txt")
+        let server = try FuseServer(hostFS: HostFS(rootPath: root.url.path))
+        let nodeID = payload(from: server.handle(request: request(unique: 1, opcode: .lookup, nodeID: HostFS.rootNodeID, payload: Array("z.txt\0".utf8)))).leUInt64(at: 0)
+        let handle = payload(from: server.handle(request: request(unique: 2, opcode: .open, nodeID: nodeID, payload: bytes(UInt32(O_RDONLY)) + bytes(UInt32(0))))).leUInt64(at: 0)
+
+        let readIn = bytes(handle) + bytes(UInt64(6)) + bytes(UInt32(4)) + bytes(UInt32(0)) + bytes(UInt64(0)) + bytes(UInt32(0)) + bytes(UInt32(0))
+        let req = request(unique: 3, opcode: .read, nodeID: nodeID, payload: readIn)
+
+        let arrayPath = server.handle(request: req)
+
+        let header = try FuseProtocol.decodeInHeader(req)
+        let readPayload = Array(req[FuseInHeader.byteCount..<Int(header.length)])
+        var dest = [UInt8](repeating: 0, count: FuseOutHeader.byteCount + 4096)
+        let written = dest.withUnsafeMutableBytes { buffer -> Int in
+            let segment = VirtqueueSegment(pointer: buffer.baseAddress!, length: buffer.count, isDeviceWritable: true)
+            return server.writeReadResponse(header: header, payload: readPayload, writable: [segment])
+        }
+
+        #expect(Array(dest[0..<written]) == arrayPath)
+        #expect(String(decoding: dest[FuseOutHeader.byteCount..<written], as: UTF8.self) == "dory")
+    }
+
     @Test func readdirplusReturnsPackedDirectoryEntries() throws {
         let root = try TestFuseServerRoot()
         try root.write("a", to: "a.txt")

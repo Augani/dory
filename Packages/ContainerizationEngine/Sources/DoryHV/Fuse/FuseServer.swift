@@ -129,6 +129,55 @@ public final class FuseServer: @unchecked Sendable {
         return try successResponse(unique: header.unique, payload: hostFS.read(handle: fd, offset: offset, count: size))
     }
 
+    /// Zero-copy READ: `preadv` the payload straight into the guest's device-writable descriptor
+    /// segments (scatter-gather, so any header+data split works) and write the fuse_out_header in
+    /// place, returning total bytes produced. Avoids the intermediate read buffer, the response
+    /// array, and the copy back into guest memory that the array path incurs. Returns 0 to signal
+    /// the caller to fall back (e.g. the first segment is too small to hold the out header).
+    public func writeReadResponse(header: FuseInHeader, payload: [UInt8], writable: [VirtqueueSegment]) -> Int {
+        guard let first = writable.first, first.length >= FuseOutHeader.byteCount else { return 0 }
+        let totalCapacity = writable.reduce(0) { $0 + $1.length }
+        func finish(errno: Int32, payloadBytes: Int) -> Int {
+            let total = FuseOutHeader.byteCount + payloadBytes
+            first.pointer.storeBytes(of: UInt32(total).littleEndian, toByteOffset: 0, as: UInt32.self)
+            first.pointer.storeBytes(of: Int32(-errno).littleEndian, toByteOffset: 4, as: Int32.self)
+            first.pointer.storeBytes(of: header.unique.littleEndian, toByteOffset: 8, as: UInt64.self)
+            return total
+        }
+        guard payload.count >= 40 else { return finish(errno: EINVAL, payloadBytes: 0) }
+        let size = min(Int(payload.leUInt32(at: 16)), HostFS.maxReadCount)
+        guard let signedOffset = off_t(exactly: payload.leUInt64(at: 8)) else {
+            return finish(errno: EINVAL, payloadBytes: 0)
+        }
+        guard let fd = load(handle: payload.leUInt64(at: 0)) else {
+            return finish(errno: EBADF, payloadBytes: 0)
+        }
+        let dataCapacity = min(size, totalCapacity - FuseOutHeader.byteCount)
+        guard dataCapacity > 0 else { return finish(errno: 0, payloadBytes: 0) }
+
+        // Build iovecs over the writable bytes AFTER the 16-byte out header.
+        var iovecs = [iovec]()
+        var remaining = dataCapacity
+        var skip = FuseOutHeader.byteCount
+        for segment in writable where remaining > 0 {
+            var base = segment.pointer
+            var length = segment.length
+            if skip > 0 {
+                let drop = min(skip, length)
+                base = base.advanced(by: drop)
+                length -= drop
+                skip -= drop
+            }
+            guard length > 0 else { continue }
+            let take = min(length, remaining)
+            iovecs.append(iovec(iov_base: base, iov_len: take))
+            remaining -= take
+        }
+        let readCount = preadv(fd, iovecs, Int32(iovecs.count), signedOffset)
+        guard readCount >= 0 else { return finish(errno: errno, payloadBytes: 0) }
+        return finish(errno: 0, payloadBytes: Int(readCount))
+    }
+
     private func handleWrite(header: FuseInHeader, payload: [UInt8]) throws -> [UInt8] {
         guard payload.count >= 40 else { return errorResponse(unique: header.unique, errno: EINVAL) }
         let handle = payload.leUInt64(at: 0)

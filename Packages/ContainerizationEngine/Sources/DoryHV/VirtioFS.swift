@@ -112,8 +112,20 @@ public final class VirtioFS: VirtioDeviceBackend, VirtioSharedMemoryRegionProvid
 
     @discardableResult
     private func process(chain: VirtqueueChain, virtqueue: Virtqueue, transport: VirtioMMIOTransport) -> Bool {
-        let response = server.handle(request: chain.readBytes())
-        let written = chain.writeBytes(response)
+        let request = chain.readBytes()
+        var written = 0
+        let writable = chain.writableSegments
+        if !writable.isEmpty,
+           let header = try? FuseProtocol.decodeInHeader(request),
+           header.length >= UInt32(FuseInHeader.byteCount), Int(header.length) <= request.count,
+           FuseOpcode(rawValue: header.opcode) == .read {
+            // Zero-copy fast path: preadv the payload straight into the guest's read buffers.
+            let payload = Array(request[FuseInHeader.byteCount..<Int(header.length)])
+            written = server.writeReadResponse(header: header, payload: payload, writable: writable)
+        }
+        if written == 0 {
+            written = chain.writeBytes(server.handle(request: request))
+        }
         return transport.withQueueLock { (try? virtqueue.push(chain, written: written)) ?? false }
     }
 }
