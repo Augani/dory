@@ -196,13 +196,15 @@ enum KubernetesProvisioner {
         return String(data: response.body, encoding: .utf8)?.contains("\"Running\":true") ?? false
     }
 
-    /// Whether the existing container already publishes every requested extra port, so an enable
-    /// with unchanged config can reuse it instead of recreating (bindings are fixed at create).
+    /// Whether the existing container already publishes every requested extra port and carries the
+    /// registries.yaml bind when one is configured, so an enable with unchanged config can reuse it
+    /// instead of recreating (both are fixed at create).
     private static func publishedPortsCurrent(_ runtime: any ContainerRuntime, extraPorts: [PortPublish]) async -> Bool {
-        guard !extraPorts.isEmpty else { return true }
+        guard !extraPorts.isEmpty || registriesBindSource() != nil else { return true }
         let encodedName = DockerImageOps.pathComponent(containerName)
         guard let response = await runtime.proxyRequest(method: "GET", path: "/containers/\(encodedName)/json", headers: [], body: Data()),
               response.isSuccess, let json = String(data: response.body, encoding: .utf8) else { return false }
+        if registriesBindSource() != nil && !json.contains("registries.yaml") { return false }
         return extraPorts.allSatisfy {
             json.contains("\"\($0.container)/\($0.proto)\"") && json.contains("\"HostPort\":\"\($0.host)\"")
         }

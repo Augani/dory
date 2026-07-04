@@ -89,9 +89,13 @@ k8s_desired_ports() {
   fi
 }
 
-# True when the existing container's create-time bindings cover every desired port.
+# True when the existing container's create-time config covers every desired port and, when the
+# host registries.yaml exists, its bind mount (both are fixed at create).
 k8s_ports_current() {
   local bindings p cport hport
+  if [ -f "$K8S_DIR/registries.yaml" ]; then
+    dk inspect -f '{{json .HostConfig.Binds}}' "$K8S_NAME" 2>/dev/null | grep -q "registries.yaml" || return 1
+  fi
   bindings="$(dk inspect -f '{{json .HostConfig.PortBindings}}' "$K8S_NAME" 2>/dev/null)" || return 1
   while IFS= read -r p; do
     [ -n "$p" ] || continue
