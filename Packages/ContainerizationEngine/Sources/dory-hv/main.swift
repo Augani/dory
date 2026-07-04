@@ -45,6 +45,12 @@ case "smoke":
     } catch {
         fail("\(error)")
     }
+case "madvtest":
+    do {
+        try MadviseProbe.run()
+    } catch {
+        fail("\(error)")
+    }
 case "boot":
     let options = parseOptions(arguments.dropFirst())
     guard let kernel = options.kernel else { fail("boot requires --kernel") }
@@ -60,11 +66,15 @@ case "boot":
         machine.attachConsole(PL011(baseAddress: GuestLayout.uartBase) { byte in
             console.write(Data([byte]))
         })
+        machine.bus.attach(PL031(baseAddress: GuestLayout.rtcBase))
         var backends: [VirtioDeviceBackend] = []
         for (slot, diskPath) in options.disks.enumerated() {
             backends.append(try VirtioBlk(path: diskPath, identity: "dory-blk\(slot)"))
         }
         backends.append(VirtioRng())
+        backends.append(VirtioBalloon(memory: machine.memory) { message in
+            FileHandle.standardError.write(Data("dory-hv: \(message)\n".utf8))
+        })
         for (slot, backend) in backends.enumerated() {
             let spi = GuestLayout.virtioFirstIRQ + UInt32(slot)
             let transport = VirtioMMIOTransport(

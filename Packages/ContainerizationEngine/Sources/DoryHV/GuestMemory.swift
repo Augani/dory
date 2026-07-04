@@ -34,6 +34,29 @@ public final class GuestMemory: @unchecked Sendable {
         )
     }
 
+    /// Returns a reported-free range to macOS. Stage-2 pins guest pages while mapped, so the
+    /// range is unmapped from the guest first, then marked reusable; the physical pages leave the
+    /// process footprint immediately. The guest gets the range back lazily via handleRAMFault.
+    @discardableResult
+    public func releaseRange(guestAddress: UInt64, length: UInt64) -> Bool {
+        guard contains(guestAddress, count: length), length > 0 else { return false }
+        guard hv_vm_unmap(guestAddress, Int(length)) == HV_SUCCESS else { return false }
+        let host = hostBase.advanced(by: Int(guestAddress - guestBase))
+        _ = madvise(host, Int(length), MADV_FREE_REUSABLE)
+        return true
+    }
+
+    /// Remaps a released block after the guest touched it. REUSE first so the refaulted pages are
+    /// charged back to the footprint honestly.
+    public func restoreRange(guestAddress: UInt64, length: UInt64) throws {
+        let host = hostBase.advanced(by: Int(guestAddress - guestBase))
+        _ = madvise(host, Int(length), MADV_FREE_REUSE)
+        try hvCheck(
+            hv_vm_map(host, guestAddress, Int(length), hv_memory_flags_t(HV_MEMORY_READ | HV_MEMORY_WRITE | HV_MEMORY_EXEC)),
+            "hv_vm_map (restore)"
+        )
+    }
+
     public func contains(_ address: UInt64, count: UInt64) -> Bool {
         guard address >= guestBase else { return false }
         let offset = address - guestBase

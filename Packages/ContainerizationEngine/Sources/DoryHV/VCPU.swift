@@ -77,6 +77,7 @@ public enum ExceptionClass: UInt64 {
     case hvc64 = 0x16
     case smc64 = 0x17
     case systemRegisterTrap = 0x18
+    case instructionAbortLowerEL = 0x20
     case dataAbortLowerEL = 0x24
 
     public init?(syndrome: UInt64) {

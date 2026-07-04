@@ -11,6 +11,7 @@ public enum GuestLayout {
     public static let gicRedistributorBase: UInt64 = 0x080A_0000
     public static let uartBase: UInt64 = 0x0C00_0000
     public static let uartIRQ: UInt32 = 1  // SPI number (intid 32 + 1)
+    public static let rtcBase: UInt64 = 0x0C09_0000
     public static let virtioBase: UInt64 = 0x0C10_0000
     public static let virtioSlotSize: UInt64 = 0x200
     public static let virtioFirstIRQ: UInt32 = 16  // SPI numbers 16... (intid 48...)
@@ -204,6 +205,13 @@ public final class Machine {
         fdt.property("clock-names", strings: ["uartclk", "apb_pclk"])
         fdt.endNode()
 
+        fdt.beginNode("pl031@\(String(GuestLayout.rtcBase, radix: 16))")
+        fdt.property("compatible", strings: ["arm,pl031", "arm,primecell"])
+        fdt.property("reg", cells64: [GuestLayout.rtcBase, 0x1000])
+        fdt.property("clocks", cells: [clockPhandle])
+        fdt.property("clock-names", strings: ["apb_pclk"])
+        fdt.endNode()
+
         for (slot, device) in virtioSlots.enumerated() {
             let base = GuestLayout.virtioBase + UInt64(slot) * GuestLayout.virtioSlotSize
             fdt.beginNode("virtio_mmio@\(String(base, radix: 16))")
@@ -273,6 +281,11 @@ public final class Machine {
         case .dataAbortLowerEL:
             try handleMMIO(vcpu: vcpu, syndrome: syndrome, physicalAddress: physicalAddress)
             return nil
+        case .instructionAbortLowerEL:
+            guard try restoreIfReleasedRAM(physicalAddress) else {
+                return .crash("instruction abort outside RAM at pa 0x\(String(physicalAddress, radix: 16))")
+            }
+            return nil
         case .hvc64:
             // HVC returns with PC already past the instruction; unknown hypercalls get
             // SMCCC NOT_SUPPORTED.
@@ -290,6 +303,7 @@ public final class Machine {
     }
 
     private func handleMMIO(vcpu: VCPU, syndrome: UInt64, physicalAddress: UInt64) throws {
+        if try restoreIfReleasedRAM(physicalAddress) { return }
         let abort = DataAbortInfo(syndrome: syndrome)
         guard abort.isValid else {
             let pc = try vcpu.read(HV_REG_PC)
@@ -356,6 +370,15 @@ public final class Machine {
         if isRead && registerIndex != 31 {
             try vcpu.write(registerFor(registerIndex), 0)
         }
+    }
+
+    /// The guest touched a 16KiB host page that free page reporting returned to macOS: charge it
+    /// back and remap. The faulting instruction retries with no state change.
+    private func restoreIfReleasedRAM(_ physicalAddress: UInt64) throws -> Bool {
+        guard memory.contains(physicalAddress, count: 1) else { return false }
+        let pageStart = physicalAddress & ~UInt64(16383)
+        try memory.restoreRange(guestAddress: pageStart, length: 16384)
+        return true
     }
 
     private func advancePC(_ vcpu: VCPU) throws {
