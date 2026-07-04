@@ -148,32 +148,41 @@ Devices on the bus:
 
 Guest side already ships: Apple's kernel has `CONFIG_PAGE_REPORTING=y` and
 `CONFIG_VIRTIO_BALLOON=y`. When the host offers `VIRTIO_BALLOON_F_REPORTING`, the guest
-kernel batches ranges of genuinely free pages (2 MiB granularity by default) and posts them on
-the reporting virtqueue. The contract allows the host to discard those pages; refaults are
-zero-filled, which Linux tolerates because reported pages are free by definition.
+kernel batches ranges of genuinely free pages and posts them on the reporting virtqueue. The
+contract allows the host to discard those pages; refaults are zero-filled, which Linux
+tolerates because reported pages are free by definition.
 
-Host side, per reported descriptor range:
+Host side, per reported range (validated empirically on macOS 27, see Findings below):
 
-```
-madvise(ramBase + gpa, len, MADV_FREE_REUSABLE)
-```
+1. `hv_vm_unmap(gpa, len)`: stage-2 mappings pin the backing pages, so madvise on a mapped
+   range is accepted but releases nothing. Unmap first.
+2. `madvise(host, len, MADV_FREE_REUSABLE)`: the physical pages leave the process footprint
+   immediately.
+3. On the guest's first touch of a released page, `hv_vcpu_run` exits with a data or
+   instruction abort inside the RAM window; the run loop calls `MADV_FREE_REUSE` (recharges
+   the footprint honestly) plus `hv_vm_map` on the 16 KiB block and retries the instruction.
 
-`MADV_FREE_REUSABLE` is the Darwin-specific advice (used by the Go and Swift runtimes) that
-removes pages from `phys_footprint` immediately, not just under pressure. The pages stay
-mapped; a guest re-touch refaults them as zero-filled and they count against footprint again.
-That gives OrbStack-class behavior: footprint rises under load and falls back when the guest
-frees memory, visibly, in Activity Monitor.
+Reporting alone cannot release guest page cache (cache is not free memory), so the guest init
+runs a small trim loop: cgroup2 `echo 128M > /sys/fs/cgroup/memory.reclaim` while cache is
+above a threshold, plus `compact_memory` so freed fragments coalesce into reportable blocks,
+plus `page_reporting_order=2` so reporting granularity (16 KiB) matches the host page size.
 
-Validation gates for this mechanism (Milestone 5):
+### Milestone 5 findings (measured)
 
-1. Grow the VM with a memory-heavy workload, stop it, watch footprint fall back near baseline.
-2. Data integrity: reuse after reclaim (build + run + checksum loops) stays correct.
-3. If `MADV_FREE_REUSABLE` misbehaves on the `hv_vm_map`ed region, fall back in order:
-   `MADV_FREE` (correct reclaim under pressure, footprint optics worse), then traditional
-   balloon + `madvise` on inflated ranges (we own the pages, so unlike VZ this actually works).
+* Fill/free cycle: a 2 GiB VM filled with 800 MB of urandom peaks at ~900 MB host footprint
+  and falls to ~107 MB within seconds of the guest freeing it. Data integrity checksums match
+  across reclaim cycles. Idle CPU: 0.2%.
+* `MADV_ZERO` returns success but releases nothing on this configuration; `MADV_FREE_REUSABLE`
+  without the prior `hv_vm_unmap` is likewise a silent no-op (pages pinned by stage 2).
+* Guest-touched pages are charged to the process RSS but NOT to `phys_footprint` unless they
+  were faulted through the restore path; benchmarks must therefore compare `vmmap` footprint
+  and RSS, not the `footprint` tool alone.
+* dockerd + idle postgres inside the VM: the guest itself uses ~63 MB; host footprint settles
+  around the low 300s MB with the trim loop (page cache churn from image loads is the
+  remaining gap to OrbStack's ~142 MB vmgr, addressed by tuning trim aggressiveness).
 
-The traditional balloon remains as a hard ceiling lever, and the stats virtqueue replaces the
-cgroup-based `statistics()` polling for observability.
+The traditional balloon queues complete as no-ops; the RAM ceiling plus reporting covers
+elasticity without guest OOM risk.
 
 ## 9. Networking
 

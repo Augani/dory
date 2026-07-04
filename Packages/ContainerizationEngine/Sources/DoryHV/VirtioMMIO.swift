@@ -34,6 +34,7 @@ public final class VirtioMMIOTransport: MMIODevice {
     private var queueSelect: Int = 0
     private var status: UInt32 = 0
     private var interruptStatus: UInt32 = 0
+    private let interruptLock = NSLock()  // device backends may complete buffers off the vCPU thread
     private var pendingQueueLayout: [(descriptor: UInt64, avail: UInt64, used: UInt64, count: UInt16)]
 
     private static let magic: UInt64 = 0x7472_6976  // "virt"
@@ -56,7 +57,9 @@ public final class VirtioMMIOTransport: MMIODevice {
 
     /// Signals a used-buffer interrupt to the guest.
     public func notifyUsed() {
+        interruptLock.lock()
         interruptStatus |= 1
+        interruptLock.unlock()
         interrupt()
     }
 
@@ -73,7 +76,10 @@ public final class VirtioMMIOTransport: MMIODevice {
         case 0x044:
             guard queueSelect < queues.count else { return 0 }
             return queues[queueSelect].ready ? 1 : 0
-        case 0x060: return UInt64(interruptStatus)
+        case 0x060:
+            interruptLock.lock()
+            defer { interruptLock.unlock() }
+            return UInt64(interruptStatus)
         case 0x070: return UInt64(status)
         case 0x0FC: return 0  // ConfigGeneration
         case 0x100...:
@@ -119,7 +125,9 @@ public final class VirtioMMIOTransport: MMIODevice {
                 backend.handleKick(queue: queue, transport: self)
             }
         case 0x064:
+            interruptLock.lock()
             interruptStatus &= ~UInt32(truncatingIfNeeded: value)
+            interruptLock.unlock()
         case 0x070:
             status = UInt32(truncatingIfNeeded: value)
             if status == 0 {
