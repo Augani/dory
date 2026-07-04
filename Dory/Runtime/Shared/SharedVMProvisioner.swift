@@ -45,8 +45,19 @@ enum SharedVMProvisioner {
         case engineUnreachable
     }
 
-    static func hostSupport(platform: MacHostPlatform = .current()) -> RuntimeSupport {
-        DoryHVSupport.evaluate(platform: platform)
+    static func hostSupport(
+        platform: MacHostPlatform = .current(),
+        engineAvailable: Bool = hvEngineAvailable()
+    ) -> RuntimeSupport {
+        let base = DoryHVSupport.evaluate(platform: platform)
+        guard base.isSupported else { return base }
+        // The hardware is capable, but the engine's own binaries/kernel must be present and the
+        // user must not have opted out (DORY_HV_ENGINE=0). Otherwise report it honestly so the app
+        // falls back to a Docker-compatible engine instead of showing a misleading boot failure.
+        guard engineAvailable else {
+            return .unsupported("Dory's engine is unavailable on this install", issue: .missingToolchain)
+        }
+        return .supported
     }
 
     /// Whether the dory-hv engine can run here: the signed helper, gvproxy, and a resolvable kernel

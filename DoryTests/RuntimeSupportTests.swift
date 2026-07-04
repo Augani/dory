@@ -7,28 +7,39 @@ struct RuntimeSupportTests {
     // no Apple `container` toolchain. That is the sole shared-VM engine and its host requirement.
     @Test func engineSupportsMacOS15AppleSilicon() {
         let sequoia = MacHostPlatform(major: 15, minor: 0, patch: 0, architecture: "arm64")
-        let support = SharedVMProvisioner.hostSupport(platform: sequoia)
+        let support = SharedVMProvisioner.hostSupport(platform: sequoia, engineAvailable: true)
         #expect(support.isSupported)
         #expect(support.issue == RuntimeSupport.Issue.none)
     }
 
     @Test func engineSupportsCurrentMacOSAppleSilicon() {
         let tahoe = MacHostPlatform(major: 26, minor: 1, patch: 0, architecture: "arm64")
-        #expect(SharedVMProvisioner.hostSupport(platform: tahoe).isSupported)
+        #expect(SharedVMProvisioner.hostSupport(platform: tahoe, engineAvailable: true).isSupported)
     }
 
     @Test func engineRequiresAppleSilicon() {
+        // Architecture is unfixable, so it is reported before the engine-availability check.
         let intel = MacHostPlatform(major: 26, minor: 0, patch: 0, architecture: "x86_64")
-        let support = SharedVMProvisioner.hostSupport(platform: intel)
+        let support = SharedVMProvisioner.hostSupport(platform: intel, engineAvailable: true)
         #expect(!support.isSupported)
         #expect(support.issue == .architecture)
     }
 
     @Test func engineRejectsMacOSOlderThan15() {
         let ventura = MacHostPlatform(major: 14, minor: 5, patch: 0, architecture: "arm64")
-        let support = SharedVMProvisioner.hostSupport(platform: ventura)
+        let support = SharedVMProvisioner.hostSupport(platform: ventura, engineAvailable: true)
         #expect(!support.isSupported)
         #expect(support.issue == .osVersion)
+    }
+
+    @Test func capableHardwareIsUnsupportedWhenEngineUnavailable() {
+        // Right Mac, but the engine's binaries/kernel are missing or the user opted out
+        // (DORY_HV_ENGINE=0): report unavailable so the app falls back to a Docker-compatible
+        // engine rather than showing a misleading boot failure.
+        let sequoia = MacHostPlatform(major: 15, minor: 4, patch: 0, architecture: "arm64")
+        let support = SharedVMProvisioner.hostSupport(platform: sequoia, engineAvailable: false)
+        #expect(!support.isSupported)
+        #expect(support.issue == .missingToolchain)
     }
 
     @Test func doryHVSupportEvaluatesArchitectureBeforeOSVersion() {

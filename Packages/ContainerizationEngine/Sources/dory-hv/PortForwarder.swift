@@ -30,8 +30,9 @@ final class PortForwarder: @unchecked Sendable {
             exposed.insert(port)
             log("port forward: 127.0.0.1:\(port) -> container")
         }
-        for port in exposed.subtracting(wanted) {
-            unexpose(port)
+        // Only forget the port once gvproxy confirms the forward is gone; a failed unexpose stays
+        // tracked and is retried on the next tick, so a stale host forward can't leak.
+        for port in exposed.subtracting(wanted) where unexpose(port) {
             exposed.remove(port)
             log("port forward: released 127.0.0.1:\(port)")
         }
@@ -60,9 +61,9 @@ final class PortForwarder: @unchecked Sendable {
                  body: "{\"local\":\"127.0.0.1:\(port)\",\"remote\":\"\(guestIP):\(port)\",\"protocol\":\"tcp\"}")
     }
 
-    private func unexpose(_ port: Int) {
-        _ = curlPost(unixSocket: apiSocket, url: "http://gvproxy/services/forwarder/unexpose",
-                     body: "{\"local\":\"127.0.0.1:\(port)\",\"protocol\":\"tcp\"}")
+    private func unexpose(_ port: Int) -> Bool {
+        curlPost(unixSocket: apiSocket, url: "http://gvproxy/services/forwarder/unexpose",
+                 body: "{\"local\":\"127.0.0.1:\(port)\",\"protocol\":\"tcp\"}")
     }
 
     private func curlData(unixSocket: String, url: String) -> Data? {
