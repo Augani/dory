@@ -71,14 +71,30 @@ enum SharedVMProvisioner {
     static func hostSupport(
         platform: MacHostPlatform = .current(),
         containerBinaryPath: String? = containerBinary(),
-        inProcessEngineAvailable: Bool = inProcessEngineAvailable()
+        inProcessEngineAvailable: Bool = inProcessEngineAvailable(),
+        hvEngineAvailable: Bool = hvEngineAvailable()
     ) -> RuntimeSupport {
+        // When Dory's own Hypervisor.framework engine is available it broadens support to macOS 15+
+        // Apple silicon with no Apple `container` toolchain — a superset of the legacy path below.
+        if hvEngineAvailable {
+            return DoryHVSupport.evaluate(platform: platform)
+        }
         let base = AppleContainerSupport.evaluate(platform: platform, hasContainerCLI: true)
         guard base.isSupported else { return base }
         guard containerBinaryPath != nil || inProcessEngineAvailable else {
             return .unsupported("needs Dory's bundled engine or Apple's container toolchain", issue: .missingToolchain)
         }
         return .supported
+    }
+
+    /// Whether the dory-hv engine can run here: opted in via DORY_HV_ENGINE, with the signed helper,
+    /// gvproxy, and a resolvable kernel (installed toolchain or the bundled compressed resource) all
+    /// present. Synchronous, so host-support can call it during launch.
+    static func hvEngineAvailable(environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
+        guard environment["DORY_HV_ENGINE"] == "1" else { return false }
+        guard hvHelperBinary() != nil, gvproxyBinary() != nil else { return false }
+        if defaultKernelPath() != nil { return true }
+        return Bundle.main.url(forResource: "dory-vm-kernel", withExtension: "zst") != nil
     }
 
     /// Path to the engine image (`docker:dind`) tar bundled in the app's Resources, if present.

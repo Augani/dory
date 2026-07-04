@@ -68,3 +68,21 @@ enum AppleContainerSupport {
         return .supported
     }
 }
+
+/// Dory's own VMM (`dory-hv`) runs on Hypervisor.framework's in-kernel GICv3, which is available
+/// from macOS 15, and needs no Apple `container` toolchain (it ships its own kernel + userspace
+/// networking). So when the dory-hv engine is present it supports a strictly broader set of hosts
+/// than the Virtualization.framework / Apple-container path.
+enum DoryHVSupport {
+    nonisolated static let minimumMajorVersion = 15
+
+    nonisolated static func evaluate(platform: MacHostPlatform) -> RuntimeSupport {
+        guard platform.isAppleSilicon else {
+            return .unsupported("Dory's engine requires Apple silicon", issue: .architecture)
+        }
+        guard platform.major >= minimumMajorVersion else {
+            return .unsupported("Dory's engine requires macOS 15 or later", issue: .osVersion)
+        }
+        return .supported
+    }
+}

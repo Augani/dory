@@ -34,7 +34,8 @@ struct RuntimeSupportTests {
         let support = SharedVMProvisioner.hostSupport(
             platform: platform,
             containerBinaryPath: nil,
-            inProcessEngineAvailable: true
+            inProcessEngineAvailable: true,
+            hvEngineAvailable: false
         )
         #expect(support.isSupported)
         #expect(support.issue == RuntimeSupport.Issue.none)
@@ -45,11 +46,63 @@ struct RuntimeSupportTests {
         let support = SharedVMProvisioner.hostSupport(
             platform: platform,
             containerBinaryPath: nil,
-            inProcessEngineAvailable: false
+            inProcessEngineAvailable: false,
+            hvEngineAvailable: false
         )
         #expect(!support.isSupported)
         #expect(support.issue == .missingToolchain)
         #expect(support.reason.contains("bundled engine"))
+    }
+
+    // The dory-hv engine runs on Hypervisor.framework's GICv3 (macOS 15+) with no Apple `container`
+    // toolchain, so when it is available the host is supported on a strictly broader set of Macs.
+    @Test func doryHVEngineSupportsMacOS15WithoutContainerToolchain() {
+        let sequoia = MacHostPlatform(major: 15, minor: 0, patch: 0, architecture: "arm64")
+        let support = SharedVMProvisioner.hostSupport(
+            platform: sequoia,
+            containerBinaryPath: nil,       // no Apple container toolchain
+            inProcessEngineAvailable: false,
+            hvEngineAvailable: true
+        )
+        #expect(support.isSupported)
+        #expect(support.issue == RuntimeSupport.Issue.none)
+    }
+
+    @Test func doryHVEngineStillRequiresAppleSilicon() {
+        let intel = MacHostPlatform(major: 26, minor: 0, patch: 0, architecture: "x86_64")
+        let support = SharedVMProvisioner.hostSupport(
+            platform: intel,
+            containerBinaryPath: nil,
+            inProcessEngineAvailable: false,
+            hvEngineAvailable: true
+        )
+        #expect(!support.isSupported)
+        #expect(support.issue == .architecture)
+    }
+
+    @Test func doryHVEngineRejectsMacOSOlderThan15() {
+        let ventura = MacHostPlatform(major: 14, minor: 5, patch: 0, architecture: "arm64")
+        let support = SharedVMProvisioner.hostSupport(
+            platform: ventura,
+            containerBinaryPath: nil,
+            inProcessEngineAvailable: false,
+            hvEngineAvailable: true
+        )
+        #expect(!support.isSupported)
+        #expect(support.issue == .osVersion)
+    }
+
+    @Test func doryHVSupportEvaluatesIndependentlyOfTheContainerPath() {
+        let sequoia = MacHostPlatform(major: 15, minor: 4, patch: 0, architecture: "arm64")
+        #expect(DoryHVSupport.evaluate(platform: sequoia).isSupported)
+        // The legacy Apple-container path rejects the same host (needs macOS 26).
+        #expect(!AppleContainerSupport.evaluate(platform: sequoia, hasContainerCLI: true).isSupported)
+    }
+
+    @Test func hvEngineAvailabilityIsGatedByTheOptInFlag() {
+        // Without DORY_HV_ENGINE=1 the engine is never treated as available, regardless of binaries.
+        #expect(!SharedVMProvisioner.hvEngineAvailable(environment: [:]))
+        #expect(!SharedVMProvisioner.hvEngineAvailable(environment: ["DORY_HV_ENGINE": "0"]))
     }
 
     @Test func sharedVMDefaultMemoryPolicyIsBelowLegacyFourGiB() {
