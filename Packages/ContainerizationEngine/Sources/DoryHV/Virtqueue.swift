@@ -167,3 +167,7 @@ public final class Virtqueue {
         return availFlags & 1 == 0  // VRING_AVAIL_F_NO_INTERRUPT
     }
 }
+
+extension VirtqueueSegment: @unchecked Sendable {}
+extension VirtqueueChain: @unchecked Sendable {}
+extension Virtqueue: @unchecked Sendable {}

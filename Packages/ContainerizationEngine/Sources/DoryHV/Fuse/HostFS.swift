@@ -21,6 +21,9 @@ public struct HostFSAttributes: Equatable, Sendable {
     public var atimeSeconds: Int64
     public var mtimeSeconds: Int64
     public var ctimeSeconds: Int64
+    public var atimeNsec: UInt32 = 0
+    public var mtimeNsec: UInt32 = 0
+    public var ctimeNsec: UInt32 = 0
 
     public var isDirectory: Bool { (mode & UInt32(S_IFMT)) == UInt32(S_IFDIR) }
     public var isRegularFile: Bool { (mode & UInt32(S_IFMT)) == UInt32(S_IFREG) }
@@ -405,7 +408,10 @@ public final class HostFS: @unchecked Sendable {
             gid: gid,
             atimeSeconds: Int64(st.st_atimespec.tv_sec),
             mtimeSeconds: Int64(st.st_mtimespec.tv_sec),
-            ctimeSeconds: Int64(st.st_ctimespec.tv_sec)
+            ctimeSeconds: Int64(st.st_ctimespec.tv_sec),
+            atimeNsec: UInt32(truncatingIfNeeded: st.st_atimespec.tv_nsec),
+            mtimeNsec: UInt32(truncatingIfNeeded: st.st_mtimespec.tv_nsec),
+            ctimeNsec: UInt32(truncatingIfNeeded: st.st_ctimespec.tv_nsec)
         )
     }
 }

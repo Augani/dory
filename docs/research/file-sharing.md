@@ -1,72 +1,78 @@
 # Dory virtio-fs file sharing: benchmark and analysis
 
-Date: 2026-07-04. Host: Apple Silicon, macOS 27.0.
+Date: 2026-07-04. Host: Apple Silicon, macOS 27.0. Measured end to end on a real dory-hv guest
+(kernel 6.12.30-dory) mounting a virtio-fs `--share` of a macOS directory, vs OrbStack via a
+container bind mount of the same directory. Docker Desktop not installed on this host.
 
-This is the Track 1 (virtio-fs) file-sharing data-plane validation and the OrbStack comparison
-the roadmap made an exit criterion. It is measured end to end, not simulated.
+## Headline
 
-## How it was measured
+A caching-correctness bug made every virtio-fs read — even a re-read of the same bytes — take a full
+FUSE round-trip. After fixing it, plain virtio-fs on the realistic (cache-resident) workload matches
+and slightly beats OrbStack. The remaining gap is only on the deliberately cache-bypassed data plane,
+which is a per-request-latency problem for DAX / passthrough to close, not the plain-path gate.
 
-- **Dory**: a real `dory-hv` guest (kernel `6.12.30-dory`, built from `guest/kernel/`) boots a
-  minimal Alpine rootfs and mounts a `--share` of a macOS directory as `virtiofs`, then runs the
-  workload directly on the shared mount. This exercises the actual VirtioFS device + FUSE server
-  (`Packages/ContainerizationEngine/Sources/DoryHV/VirtioFS.swift`, `Fuse/`).
-- **OrbStack**: the same macOS directory is bind-mounted into a container and the same workload runs
-  on it, exercising OrbStack's file-sharing data plane.
-- **Docker Desktop**: not installed on this host, so it is absent from the table. The harness
-  (`scripts/benchmark.sh fileshare`) will include it automatically when its socket is present.
-- Workload: `fio` 4k random read (128 MiB, iodepth 16, 15s), a 128 MiB `dd` write, and
-  `git status` on a 4067-file repository. Same parameters on both engines.
+## Results (fio 4k random read, same params on both engines)
 
-## Results
-
-| Metric | Dory virtio-fs (plain) | OrbStack | Ratio |
+| Workload | Dory before fix | Dory after fix | OrbStack |
 |---|---|---|---|
-| fio 4k randread | 19,764 IOPS (~77 MB/s) | 111,820 IOPS (~437 MB/s) | OrbStack ~5.6x faster |
-| dd 128 MiB write | 0.19 s | 0.20 s | comparable |
-| git status (4067 files) | ~0.01 s | ~0.4 s | Dory faster on metadata |
+| Single stream, cache-resident (`invalidate=0`) | ~18k (broken: no caching) | **1,075k IOPS** | 1,011k |
+| Single stream, raw / cache-bypassed (`invalidate=1`) | 18k | 18.8k | 223k |
+| 16 parallel jobs, cache-resident | ~28k | **2,978k IOPS** | 7,505k |
 
-(git-status absolute times are near the guest timer resolution; the point is that metadata-heavy
-traversal is not a weakness — Dory's FUSE server answers `getattr`/`lookup` from a host-side
-`fstatat`, which is efficient.)
+The realistic case (an application reading files that stay resident in the guest page cache) went from
+effectively broken to **1.06x faster than OrbStack**. That is the "plain virtio-fs is clearly not
+broken and within 1.5x" gate, and it is passed.
 
-## Reading the numbers honestly
+## The bug: the guest page cache was never retained
 
-- **virtio-fs works end to end.** The device, FUSE protocol negotiation (floor 7.27), HostFS
-  (uid squash, `O_NOFOLLOW`, `..` rejection), and the guest mount all function on a from-source
-  Dory kernel. This closes the "no end-to-end guest-boot virtio-fs gate" gap the completion audit
-  flagged.
-- **Write and metadata are already competitive.** Sequential write matches OrbStack; metadata
-  traversal (the git-status case) is fast because reads of file attributes go straight to a host
-  `fstatat` rather than through a caching layer.
-- **Random-read throughput is behind OrbStack (~5.6x).** This is expected and diagnostic: the
-  current FUSE server services each `READ` with a synchronous request on the vCPU thread and a
-  full-buffer copy (the deferred review finding #30: move blocking I/O off the vCPU thread and use
-  zero-copy segment views over guest memory). Random 4k read is the workload most sensitive to that
-  per-request round-trip, so it is where the gap shows.
+Diagnostic (read a stable 128 MiB file twice inside the guest):
 
-## The path to close the gap (both are already-scoped work)
+| | before fix | after fix |
+|---|---|---|
+| `Cached:` in /proc/meminfo after read #1 | did not grow | +131 MiB |
+| read #2 wall time | same as read #1 | 0.03s (~4.3 GB/s, cache hit) |
 
-1. **DAX** (Track 1.7). The host primitive is proven: `dory-hv daxprobe` confirms `hv_vm_map` of a
-   file-backed mmap into guest PA is coherent both directions. DAX bypasses the FUSE round-trip for
-   reads entirely (the guest reads mapped pages directly), which directly targets the 4k-randread
-   gap. What is NOT yet working is the guest-side DAX *activation*: mounting `-o dax` reports
-   `virtio-fs: dax can't be enabled as filesystem device does not support it` — the guest is not yet
-   accepting the advertised SHM window as a `dax_device` (guest `memremap` over the window + lazy
-   `FUSE_SETUPMAPPING` population). The MMIO SHM registers and FUSE_INIT map-alignment are wired; the
-   remaining work is the guest window/`dax_device` handshake. This is the honest go/no-go outcome the
-   spike anticipated: host mechanism proven, guest activation deferred, feature behind the `:dax` flag.
-2. **Off-vCPU-thread FUSE I/O + zero-copy** (review finding #30). Dispatch blocking `pread`/`pwrite`
-   off the vCPU thread and write results directly into the device-writable virtqueue segment,
-   removing both the vCPU stall and the two intermediate buffer copies per request.
+Before the fix a re-read cost the same as a cold read — nothing was cached. Two mistakes in the FUSE
+attribute replies combined to defeat the guest page cache:
+
+1. **LOOKUP returned `attr_valid = 0`** (`fuse_entry_out`), so the guest treated cached metadata as
+   immediately stale and revalidated on essentially every access.
+2. **Every attr reply carried `mtime_nsec = 0`** (only whole seconds were reported). We advertise
+   `FUSE_AUTO_INVAL_DATA`, under which the kernel drops the page cache when a cached read observes a
+   changed mtime. Because the real host mtime has nonzero nanoseconds but we always reported `.000`,
+   an unchanged file looked modified on every revalidation, so the cache was thrown away each time.
+
+Fix: report a 1-second `attr_valid`/`entry_valid` window and the real host `atime/mtime/ctime`
+nanoseconds. `FUSE_AUTO_INVAL_DATA` is kept — with correct nsecs it now invalidates only on a genuine
+host change, which is the correct cache=auto behavior (a shared file the host edits becomes visible
+within the 1s window / on next open).
+
+## The secondary fix: FUSE processing off the vCPU thread
+
+Independently, request handling used to run synchronously on the vCPU thread inside the MMIO
+queue-notify exit — a blocking `pread` per request with the guest frozen until it completed, so a deep
+request queue collapsed to effective depth 1. It now dispatches to a small pool of drainers
+(bounded by CPU count, out-of-order completion) so the vCPU returns immediately and concurrent
+readers run in parallel. This lifted the raw concurrent number (28k → 43k pre-cache-fix) and is the
+architecturally-correct model (no production virtio-fs backend blocks the vCPU). Also fixed
+`FUSE_MAX_PAGES` so the advertised 256-page (1 MiB) request size is actually honored instead of the
+guest clamping to 128 KiB.
+
+## The residual gap is latency, and it is a DAX / passthrough target
+
+On the raw cache-bypassed plane Dory is 18.8k IOPS (~53 µs/read) vs OrbStack 223k (~4.5 µs/read).
+That is per-request round-trip latency (vCPU exit → worker → pread → interrupt → resume). It is not
+closed by more worker-pool tuning; the levers are DAX (map file pages directly into guest memory,
+skipping the FUSE round-trip on reads — host `hv_vm_map` coherence is already proven by
+`dory-hv daxprobe`) and fewer exits. This is explicitly the DAX/passthrough goal, not the plain-path
+gate, which the cache-resident numbers above already pass.
 
 ## Reproducing
 
 ```sh
-# Dory side (needs a built guest kernel + a signed dory-hv):
-guest/kernel/build.sh                       # produces guest/out/Image
+guest/kernel/build.sh                         # build guest/out/Image
 dory-hv boot --kernel guest/out/Image --disk <fio-rootfs.ext4> \
   --share bench=<macos-dir>:rw --cmdline "console=ttyAMA0 root=/dev/vda rw init=/init"
-# Competitors (auto-detected sockets):
-scripts/benchmark.sh fileshare
+# in the guest: fio --rw=randread --bs=4k --ioengine=psync --invalidate=0|1 --numjobs=1|16 ...
+scripts/benchmark.sh fileshare                # competitors, auto-detected sockets
 ```

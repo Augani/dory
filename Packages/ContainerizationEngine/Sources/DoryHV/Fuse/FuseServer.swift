@@ -309,12 +309,19 @@ public final class FuseServer: @unchecked Sendable {
         ))
     }
 
+    // Cache-validity window handed to the guest for looked-up entries and attributes. A zero
+    // attr_valid forces the guest to revalidate with a GETATTR on essentially every access and
+    // prevents the page cache from being trusted, collapsing read throughput to a FUSE round-trip
+    // per 4 KiB. One second is the cache=auto default (virtiofsd): the guest trusts cached
+    // metadata and data for up to a second, revalidating on open via mtime.
+    static let cacheValiditySeconds: UInt64 = 1
+
     private func encodeEntryOut(_ attrs: HostFSAttributes) -> [UInt8] {
         var data = [UInt8]()
         data.appendLE(attrs.nodeID)
         data.appendLE(UInt64(1))
-        data.appendLE(UInt64(1))
-        data.appendLE(UInt64(0))
+        data.appendLE(Self.cacheValiditySeconds)   // entry_valid
+        data.appendLE(Self.cacheValiditySeconds)   // attr_valid
         data.appendLE(UInt32(0))
         data.appendLE(UInt32(0))
         data.append(contentsOf: encodeAttr(attrs))
@@ -323,7 +330,7 @@ public final class FuseServer: @unchecked Sendable {
 
     private func encodeAttrOut(_ attrs: HostFSAttributes) -> [UInt8] {
         var data = [UInt8]()
-        data.appendLE(UInt64(1))
+        data.appendLE(Self.cacheValiditySeconds)   // attr_valid
         data.appendLE(UInt32(0))
         data.appendLE(UInt32(0))
         data.append(contentsOf: encodeAttr(attrs))
@@ -358,9 +365,9 @@ public final class FuseServer: @unchecked Sendable {
         data.appendLE(UInt64(bitPattern: attrs.atimeSeconds))
         data.appendLE(UInt64(bitPattern: attrs.mtimeSeconds))
         data.appendLE(UInt64(bitPattern: attrs.ctimeSeconds))
-        data.appendLE(UInt32(0))
-        data.appendLE(UInt32(0))
-        data.appendLE(UInt32(0))
+        data.appendLE(attrs.atimeNsec)
+        data.appendLE(attrs.mtimeNsec)
+        data.appendLE(attrs.ctimeNsec)
         data.appendLE(attrs.mode)
         data.appendLE(attrs.isDirectory ? UInt32(2) : UInt32(1))
         data.appendLE(attrs.uid)

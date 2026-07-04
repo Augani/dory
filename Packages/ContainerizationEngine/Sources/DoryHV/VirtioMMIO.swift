@@ -226,3 +226,5 @@ private extension UInt64 {
     var lowUInt32: UInt64 { self & 0xFFFF_FFFF }
     var highUInt32: UInt64 { self >> 32 }
 }
+
+extension VirtioMMIOTransport: @unchecked Sendable {}
