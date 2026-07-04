@@ -29,6 +29,42 @@ struct RuntimeSupportTests {
         #expect(support.issue == RuntimeSupport.Issue.none)
     }
 
+    @Test func sharedVMCanUseBundledEngineWithoutContainerCLI() {
+        let platform = MacHostPlatform(major: 26, minor: 0, patch: 0, architecture: "arm64")
+        let support = SharedVMProvisioner.hostSupport(
+            platform: platform,
+            containerBinaryPath: nil,
+            inProcessEngineAvailable: true
+        )
+        #expect(support.isSupported)
+        #expect(support.issue == RuntimeSupport.Issue.none)
+    }
+
+    @Test func sharedVMReportsMissingEngineWhenNoCLIOrBundledHelper() {
+        let platform = MacHostPlatform(major: 26, minor: 0, patch: 0, architecture: "arm64")
+        let support = SharedVMProvisioner.hostSupport(
+            platform: platform,
+            containerBinaryPath: nil,
+            inProcessEngineAvailable: false
+        )
+        #expect(!support.isSupported)
+        #expect(support.issue == .missingToolchain)
+        #expect(support.reason.contains("bundled engine"))
+    }
+
+    @Test func sharedVMDefaultMemoryPolicyIsBelowLegacyFourGiB() {
+        let config = SharedVMProvisioner.Config()
+        #expect(config.memory == "2048M")
+        #expect(config.memoryMB == 2048)
+        #expect(config.headroomMB == 512)
+    }
+
+    @Test func sharedVMMemoryParserHandlesDockerStyleUnits() {
+        #expect(SharedVMProvisioner.memoryStringToMB("2G") == 2048)
+        #expect(SharedVMProvisioner.memoryStringToMB("1536M") == 1536)
+        #expect(SharedVMProvisioner.memoryStringToMB("1073741824") == 1024)
+    }
+
     @Test func toolchainInstallCommandTargetsHomebrewFormula() {
         #expect(AppStore.toolchainInstallCommand == "brew install container")
     }
