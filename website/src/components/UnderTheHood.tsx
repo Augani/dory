@@ -10,17 +10,17 @@ export function UnderTheHood() {
         <Reveal as="h2">Built like a systems tool, not a wrapper.</Reveal>
         <Reveal as="p" className="lead">
           Dory's transport, HTTP server, YAML parser, and Docker API layer are hand-rolled Swift. No
-          Electron, no Node sidecars, no frameworks between your CLI and the engine. The
-          virtualization underneath is{' '}
+          Electron, no Node sidecars, no frameworks between your CLI and the engine. The primary
+          virtualization layer is Dory's own raw Hypervisor.framework VMM, with the{' '}
           <a
             href="https://github.com/apple/containerization"
             target="_blank"
             rel="noopener"
             className="link"
           >
-            Apple's open-source Containerization framework
+            Apple Containerization framework
           </a>
-          , and we build on it openly.
+          {' '}helper kept as a fallback tier.
         </Reveal>
         <div className="hood">
           <Reveal className="hood-card">
@@ -60,19 +60,18 @@ export function UnderTheHood() {
             </div>
           </Reveal>
           <Reveal className="hood-card">
-            <h3>One VM, booted in-process</h3>
+            <h3>One VM, one engine</h3>
             <p>
-              Apple's <code className="inline-code">containerization</code> framework boots the Linux
-              VM; <code className="inline-code">dockerd</code> runs inside; virtiofs shares your home
-              directory at the same path, so bind mounts resolve with zero setup. x86 images run via
-              qemu binfmt.
+              Dory boots one persistent Linux VM and runs <code className="inline-code">dockerd</code>
+              inside it. virtiofs shares your home directory at the same path, so bind mounts resolve
+              with zero setup. Non-native images use qemu binfmt; amd64 is native on Intel.
             </p>
             <div className="term">
               <span className="p">$</span> docker run -v ~/proj:/app alpine ls /app{'\n'}
               <span className="b">(your files, no sharing dialogs)</span>
               {'\n'}
               <span className="p">$</span> docker run --platform linux/amd64 postgres{'\n'}
-              <span className="g">✓ emulated on Apple silicon</span>
+              <span className="g">✓ native on Intel, emulated on Apple silicon</span>
             </div>
           </Reveal>
         </div>

@@ -4,8 +4,8 @@ Thanks for your interest in improving Dory. This is a native macOS app written i
 
 ## Getting set up
 
-- macOS 26 (Tahoe) or later, on Apple silicon
-- Xcode 27 or later
+- macOS 15 (Sequoia) or later, on Apple silicon or Intel
+- Xcode 26 or later
 
 ```sh
 git clone https://github.com/Augani/dory.git
@@ -28,7 +28,7 @@ You can also open `Dory.xcodeproj` in Xcode and build/run from there.
 | `Dory/Engine` | Healthcheck state machine, event synthesis, anonymous-volume tracking |
 | `Dory/Features` | SwiftUI views, organized by screen |
 | `Dory/DesignSystem` | Theme, glyphs, and shared components |
-| `Packages/ContainerizationEngine` | In-process VM boot harness on Apple's `containerization` framework |
+| `Packages/ContainerizationEngine` | DoryHV, the raw Hypervisor.framework engine, plus the Virtualization.framework helper fallback |
 | `DoryTests` / `DoryUITests` | Unit, integration, and UI tests |
 
 ## Coding conventions

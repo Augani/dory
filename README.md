@@ -90,24 +90,31 @@ Dory selects a backend automatically; `DORY_RUNTIME` overrides it. All share one
 
 | `DORY_RUNTIME` | Backend | Model |
 |---|---|---|
-| `shared` *(default on supported hosts)* | **Shared VM** | One persistent `dockerd`-in-VM for all containers (OrbStack-style). Standalone: no Docker required. Requires macOS 26+ on Apple silicon. |
+| `shared` *(default on supported hosts)* | **Shared VM** | One persistent `dockerd`-in-VM for all containers (OrbStack-style). Standalone: no Docker required. Apple silicon uses `dory-hv`; Intel prefers the raw `dory-hv` tier when signed PVH assets are bundled, then falls back to the Virtualization.framework shared-engine tier when its amd64 assets are available. |
 | `apple` | **Apple `container`** | One lightweight micro-VM per container. Requires macOS 26+ on Apple silicon. |
-| `docker` | **Docker Engine API** | Transparent proxy to an existing Docker-compatible socket (Docker Desktop, OrbStack, Colima, Rancher Desktop, Podman). Works on older macOS and Intel when the host engine does. |
+| `docker` | **Docker Engine API** | Transparent proxy to an existing Docker-compatible socket (Docker Desktop, OrbStack, Colima, Rancher Desktop, Podman). Fallback for unsupported hosts or installs without bundled engine assets. |
 | `mock` | **Mock** | In-memory sample data for UI development. |
 
 ## Requirements
 
-> **This release: Dory's own engine requires Apple silicon.** The low-memory `dory-hv` engine is a
-> from-scratch Apple-silicon (ARM) hypervisor, so the self-contained, memory-efficient experience is
-> **Apple silicon only for now**. Native Intel support is planned for a later update — see below.
+> **Intel engine status:** Dory now builds and routes a universal app with Intel shared-engine
+> tiers. The raw `dory-hv` x86 path is implemented and selected first when PVH assets are bundled;
+> the Virtualization.framework helper remains the fallback tier. Full Intel readiness still needs
+> the physical Intel Mac gates in the roadmap before it is considered finished.
 
-- **Apple silicon, macOS 15 (Sequoia) or later** — full experience: Dory's own bundled engine, one
-  shared VM, low memory, Kubernetes, Linux machines, `*.dory.local` domains. Nothing else to install.
-- **Intel Macs** — Dory runs as a native front-end (app, CLI, and `docker` context) for a
-  Docker-compatible engine you install separately (Colima, Docker Desktop, Rancher Desktop, Podman,
-  or OrbStack). There is **no bundled engine on Intel yet**; a native Intel engine (via
-  Virtualization.framework) is on the roadmap for a later update.
-- Xcode 27 or later (to build from source).
+- **Runs on macOS 14 (Sonoma) or later**, universal for Intel and Apple silicon. That matches
+  OrbStack's floor, so Dory installs anywhere OrbStack does.
+- **The built-in engine on Apple silicon needs macOS 15 (Sequoia) or later** - the full experience:
+  Dory's own bundled engine, one shared VM, low memory, Kubernetes, Linux machines, `*.dory.local`
+  domains. Nothing else to install. The engine uses Apple's in-kernel interrupt API, which is
+  macOS 15+ on Apple silicon, so it cannot run on macOS 14.
+- **Intel Macs** run the same universal app. Builds with Intel `dory-hv` PVH assets use the
+  low-memory raw engine as an Intel beta; builds with only the amd64 VZ assets use the
+  Virtualization.framework shared-engine fallback. Full Intel readiness is still hardware-gated.
+- **On macOS 14, or any install without bundled engine assets**, Dory runs as a native app against
+  any Docker-compatible engine you install (Colima, Docker Desktop, Rancher Desktop, Podman, or
+  OrbStack).
+- Xcode 26 or later (to build from source).
 
 ## Build & run from source
 

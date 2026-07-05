@@ -289,14 +289,16 @@ the VZ helper). Console log and reclaim counters stream to `~/.dory/engine.log`.
 * Guest OOM risk: unlike the VZ balloon loop, reporting never starves the guest; the ceiling
   is the only hard limit and defaults to 2 GiB with env override.
 
-## 13. Status: the sole engine
+## 13. Status: the primary engine
 
-dory-hv is now Dory's ONLY shared-VM engine. The Apple `container` CLI path, the older
-Virtualization.framework `dory-vm` helper, the `AppleContainerRuntime` backend, and the
-container-toolchain install UX have all been removed. `SharedVMProvisioner` provisions dory-hv
-only; `hostSupport` is `DoryHVSupport` (macOS 15+ Apple silicon, no toolchain). The engine is
-default-on (`DORY_HV_ENGINE=0` force-disables for debugging). On hardware dory-hv cannot run
-(Intel / older macOS) the app still fronts an existing Docker-compatible socket.
+dory-hv is Dory's primary shared-VM engine. The Apple `container` CLI path, the
+`AppleContainerRuntime` backend, and the container-toolchain install UX have all been removed.
+`SharedVMProvisioner` provisions the raw `dory-hv` tier when its signed kernel/initfs assets are
+present; on Intel it falls back to the Virtualization.framework `dory-vm` helper when only the
+amd64 VZ assets are available. `hostSupport` is `DoryHVSupport` (macOS 15+ on Apple silicon or
+Intel, no toolchain). The engine is default-on (`DORY_HV_ENGINE=0` force-disables for debugging).
+On hardware where no built-in shared engine can run, the app still fronts an existing
+Docker-compatible socket.
 
 | # | Gate | Proof |
 |---|---|---|

@@ -58,7 +58,8 @@ export function MemoryBars() {
             >
               methodology
             </a>
-            ). Treat it as our figure until the public reproducible benchmark lands.
+            ). Intel memory and file-sharing tables will be published only after the physical Intel
+            readiness and benchmark gates pass.
           </div>
         </div>
       </div>

@@ -1,6 +1,6 @@
 # Dory vs. Docker Desktop vs. OrbStack
 
-A factual comparison for teams choosing a container runtime on macOS (Apple silicon).
+A factual comparison for teams choosing a container runtime on macOS.
 Every claim below links to a primary source (vendor licensing pages, official docs, or
 public tracker issues), so you can verify it yourself. Where a number is Dory's own internal
 measurement, it is labeled as such and is not presented as independently verified.
@@ -28,13 +28,13 @@ Neither of these depends on any performance benchmark. They are true on day one.
 | **Open source** | Yes. GPL-3.0, full source on GitHub. [[3]](#3) | No (proprietary; the underlying Docker Engine is open, the Desktop app is not). | No (proprietary). An open-source request has been open since 2023. [[4]](#4) |
 | **Account required** | No account, no sign-in. | Docker account required to accept subscription terms for paid use. [[1]](#1) | Not required for personal use. |
 | **2024 price history (context)** | n/a (free). | Subscription prices were raised in 2024 (Pro US$5→US$9/mo, Team US$9→US$15/mo per seat), and paid terms were later extended to cover university faculty and staff. [[5]](#5) | n/a |
-| **Idle memory posture (macOS)** | Runs all containers in **one shared VM** so idle memory stays flat as you add containers. Dory measures roughly **4.7× less idle memory than the one-VM-per-container model** for two containers (~122 MB vs ~574 MB). *Measured by Dory; a reproducible public benchmark is forthcoming. Treat this as Dory's own figure, not an independent result.* | Users have reported a persistent idle footprint in the **~3–4 GB** range, tied to a fixed VM memory block that macOS does not reclaim, plus elevated idle CPU/battery reports. [[6]](#6) [[7]](#7) [[8]](#8) | Also uses a single shared VM (one of the reasons its footprint is low). A head-to-head Dory-vs-OrbStack memory comparison is pending publication of Dory's benchmark. |
+| **Idle memory posture (macOS)** | Runs all containers in **one shared VM** so idle memory stays flat as you add containers. Dory measures roughly **4.7× less idle memory than the one-VM-per-container model** for two containers (~122 MB vs ~574 MB). *Measured by Dory; a reproducible public benchmark is forthcoming. Treat this as Dory's own figure, not an independent result.* | Users have reported a persistent idle footprint in the **~3-4 GB** range, tied to a fixed VM memory block that macOS does not reclaim, plus elevated idle CPU/battery reports. [[6]](#6) [[7]](#7) [[8]](#8) | Also uses a single shared VM (one of the reasons its footprint is low). A head-to-head Dory-vs-OrbStack memory comparison is pending publication of Dory's benchmark. |
 | **Kubernetes version selection** | Runs **k3s**, which publishes multiple release channels, so more than one Kubernetes minor version can be selected. | Bundled Kubernetes tracks the Docker Desktop release. | Ships **one** auto-bumped Kubernetes version; the docs point users who need a specific version to kind/k3d. A request for selectable versions has been open since Nov 2023. [[9]](#9) |
-| **Platform** | macOS 26+ on Apple silicon for the standalone shared-VM engine; a Docker-API proxy mode works on older macOS/Intel against an existing engine. [[3]](#3) | macOS (Intel + Apple silicon), Windows, Linux. | macOS (Apple silicon; Intel support is limited). |
+| **Platform** | Universal macOS app, macOS 14+ (Sonoma, matching OrbStack's floor); the built-in engine needs macOS 15+ on Apple silicon. Apple silicon has the verified native shared engine. Intel shared-engine support is in beta with raw `dory-hv` selected when PVH assets are bundled and the Virtualization.framework tier as fallback; full Intel readiness remains hardware-gated. Docker-API proxy fallback works against an existing engine. [[3]](#3) | macOS (Intel + Apple silicon), Windows, Linux. | macOS (Apple silicon; Intel support is limited). |
 
 ## Notes on what this table does and doesn't claim
 
-- The idle-memory row deliberately uses the **corroborated ~3–4 GB** Docker Desktop baseline and
+- The idle-memory row deliberately uses the **corroborated ~3-4 GB** Docker Desktop baseline and
   labels Dory's ~4.7× figure as an internal measurement. It does **not** claim any specific
   multiple against OrbStack; that comparison isn't published yet.
 - This is not a claim that Docker Desktop or OrbStack behave badly. They are capable tools; the

@@ -16,8 +16,9 @@ The memory is genuinely returned, not just compressed.
 
 **Self-contained.** The engine ships its own Linux kernel and userspace networking, so a fresh
 install needs nothing else — no Homebrew, no Apple container toolchain, no separate downloads.
-It runs on macOS 15 (Sequoia) or later on Apple silicon. Intel and older Macs can still pair Dory
-with any Docker-compatible engine.
+It runs on macOS 15 (Sequoia) or later on Apple silicon. Intel builds now include a hardware-gated
+raw `dory-hv` beta when PVH assets are bundled, with the Virtualization.framework helper and any
+Docker-compatible engine as fallbacks.
 
 **Everything you'd expect works.** `docker` CLI and API, published ports (`docker run -p`),
 volumes and images that persist across restarts, one-click Kubernetes, Linux machines, and

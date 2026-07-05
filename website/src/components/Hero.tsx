@@ -25,7 +25,7 @@ export function Hero() {
       <div className="wrap">
         <DoryFish />
         <div className="pill">
-          <span className="dot" /> Free &amp; open source · Native on every Mac
+          <span className="dot" /> Free &amp; open source · Intel + Apple silicon
         </div>
         <h1>
           Docker &amp; Linux containers, <span className="grad">native to your Mac.</span>

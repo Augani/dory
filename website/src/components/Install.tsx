@@ -48,10 +48,12 @@ export function Install() {
             </a>
           </div>
           <p className="req">
-            <b>Apple silicon, macOS 15+</b> for Dory's own low-memory engine — nothing else to install.
-            On Intel, Dory runs as a native front-end for a Docker-compatible engine you install
-            (Colima, Docker Desktop, Rancher Desktop, Podman, OrbStack); a native Intel engine is
-            planned for a later update.
+            <b>macOS 14+ (Sonoma) on Apple silicon or Intel</b>, the same floor as OrbStack. The
+            built-in low-memory engine needs macOS 15+ on Apple silicon; on macOS 14 Dory drives a
+            Docker-compatible engine. Intel builds prefer the raw{" "}
+            <code className="inline-code">dory-hv</code> beta when PVH assets are bundled, fall back
+            to the Virtualization.framework helper when VZ assets are bundled, and can always proxy
+            a Docker-compatible local engine.
           </p>
         </Reveal>
         <Reveal className="oss">

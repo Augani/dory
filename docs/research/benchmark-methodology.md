@@ -1,13 +1,14 @@
 # Dory Cross-Engine Benchmark Methodology
 
 This document describes how Dory's published performance comparisons are produced. The goal is a
-**reproducible, defensible** measurement of Dory against OrbStack, Docker Desktop, and Apple
-Container on a single Apple-silicon Mac, so that every marketing number links back to a raw log a
-skeptical reader can regenerate.
+**reproducible, defensible** measurement of Dory against the relevant macOS container runtimes on a
+single disclosed Mac, so that every marketing number links back to a raw log a skeptical reader can
+regenerate.
 
-The scripts live in [`scripts/bench/`](../../scripts/bench). Nothing here fabricates numbers: a
-`--dry-run` mode prints the exact commands the suite would execute so the methodology can be audited
-before any live run.
+The primary comparison harness is [`scripts/benchmark-compare.sh`](../../scripts/benchmark-compare.sh);
+[`scripts/benchmark.sh`](../../scripts/benchmark.sh) is the legacy focused memory/file-sharing probe.
+Nothing here fabricates numbers: `benchmark-compare.sh --dry-run` prints the exact commands the
+suite would execute so the methodology can be audited before any live run.
 
 ## What we measure
 
@@ -26,6 +27,10 @@ before any live run.
 | OrbStack | Docker API over `~/.orbstack/run/docker.sock` | One shared VM. |
 | Docker Desktop | Docker API over `~/.docker/run/docker.sock` | One shared VM (LinuxKit). |
 | Apple Container | `container` CLI (`/opt/homebrew/bin/container`) | **One lightweight VM per container.** No Docker socket; measured through its own CLI. |
+
+On Intel Macs, Apple Container rows are N/A unless the machine is running macOS 26+ and has Apple's
+`container` CLI installed. Intel publication tables compare Dory hv-x86, Dory VZ, Docker Desktop,
+Colima VZ, and OrbStack when that Mac is inside OrbStack's documented Intel support fence.
 
 Apple Container's per-container-VM model is the reason it is measured through a different code path
 and why some comparisons (notably named volumes and C2C networking) are architecturally different
@@ -52,7 +57,7 @@ the sections below, not hidden.
 - **Settle windows.** A configurable settle wait (default 12s) brackets each memory measurement so
   VM background activity quiesces before and after the workload is applied.
 
-## 1. Memory: `scripts/bench/memory.sh`
+## 1. Memory: `scripts/benchmark-compare.sh --metrics memory`
 
 For each engine and each container count in {0, 1, 5, 10}:
 
@@ -79,12 +84,12 @@ Per-engine process match patterns (overridable via env vars):
 This vm_stat math and the RSS-pattern approach are shared with `scripts/readiness.sh` and the
 existing `scripts/benchmark.sh` so the two suites are directly comparable.
 
-## 2. Network: `scripts/bench/network.sh`
+## 2. Network: `scripts/benchmark-compare.sh --metrics network`
 
 Two containers on one user-defined bridge network; one runs `iperf3 -s`, the other runs `iperf3 -c`
 for a single TCP stream. We take **12 back-to-back 10-second samples** and report the median
-receiver-side Gbps (parsed from `iperf3 -J`). iperf3 comes from `networkstatic/iperf3` when
-pullable; otherwise it is installed into alpine via `apk`.
+receiver-side Gbps (parsed from `iperf3 -J`). The default image is
+`taoyou/iperf3-alpine:latest`, which has arm64 and amd64 manifests.
 
 **Apple Container caveat (documented, not hidden):** Apple Container has no `docker network create`.
 Two `container run` instances communicate over Apple's **vmnet**-backed networking, so the traffic is
@@ -92,7 +97,7 @@ host-routed between two separate VMs rather than crossing an in-VM veth bridge. 
 architectural difference. Apple's row is labeled `vmnet(host-routed)` versus `bridge(in-vm-veth)` for
 the shared-VM engines, and the two should not be read as a like-for-like veth comparison.
 
-## 3. Filesystem: `scripts/bench/filesystem.sh`
+## 3. Filesystem: `scripts/benchmark-compare.sh --metrics fs`
 
 Three storage modes, identical workload in each so results are comparable:
 
@@ -118,24 +123,24 @@ misleading zero.
 
 ## Reproducing
 
-Requires macOS on Apple silicon with the target engines installed and running (their Docker sockets
-present; Apple Container's `container` CLI on `PATH`). This cannot run on GitHub-hosted runners:
-they are VMs without nested virtualization.
+Requires a real Mac with hardware virtualization and the target engines installed and running (their
+Docker sockets present; Apple Container's `container` CLI on `PATH` only for Apple Container rows).
+This cannot run on GitHub-hosted runners: they are VMs without nested virtualization.
 
 ```sh
 # Review what will run, execute nothing:
-scripts/bench/run-all.sh --engines dory,orbstack,docker-desktop,apple --dry-run
+scripts/benchmark-compare.sh --engines dory,orbstack,docker-desktop,apple-container --dry-run
 
-# Live run (writes bench-results/<timestamp>/):
-scripts/bench/run-all.sh --engines dory,orbstack,docker-desktop,apple
+# Live run (writes ~/.dory-benchmark/<timestamp>/ by default):
+scripts/benchmark-compare.sh --engines dory,orbstack,docker-desktop,apple-container
 
 # A single benchmark / single engine:
-scripts/bench/memory.sh    --engine dory --counts 0,1,5,10 --runs 3
-scripts/bench/network.sh   --engine orbstack --samples 12 --duration 10
-scripts/bench/filesystem.sh --engine apple --files 2000 --runs 3
+scripts/benchmark-compare.sh --engines dory --metrics memory --memory-count 5 --runs 3
+scripts/benchmark-compare.sh --engines orbstack --metrics network --runs 12
+scripts/benchmark-compare.sh --engines docker-desktop --metrics fs --fs-files 2000 --runs 3
 ```
 
-Outputs land in `bench-results/<timestamp>/`:
+Outputs land in `~/.dory-benchmark/<timestamp>/` unless `BENCH_WORKDIR` overrides it:
 
 - `machine-spec.txt`: hardware + OS disclosure for this run.
 - `memory.tsv`, `network.tsv`, `filesystem.tsv`: every raw sample plus `MEDIAN` rows.
@@ -151,7 +156,7 @@ Outputs land in `bench-results/<timestamp>/`:
 | `BENCH_RUNS` | `3` | Runs per measurement (median). |
 | `BENCH_SETTLE` | `12` | Settle seconds around memory measurements. |
 | `BENCH_ALPINE_IMAGE` | `alpine:latest` | Idle / filesystem workload image. |
-| `BENCH_IPERF_IMAGE` | `networkstatic/iperf3:latest` | Network workload image. |
+| `BENCH_IPERF_IMAGE` | `taoyou/iperf3-alpine:latest` | Network workload image; keep replacements multi-arch. |
 | `BENCH_NET_SAMPLES` / `BENCH_NET_DURATION` | `12` / `10` | Network samples and per-sample seconds. |
 | `BENCH_FS_FILES` / `BENCH_FS_FILE_KIB` | `2000` / `4` | Small-file count and size. |
 | `DRY_RUN` | `0` | `1` prints planned commands and executes nothing. |
@@ -171,6 +176,37 @@ Apple Container:  <container --version>
 Engine versions:  Dory <x>, OrbStack <y>, Docker Desktop <z>
 Date (UTC):       <captured_utc>
 ```
+
+## Intel Edition
+
+Intel results are publishable only from a physical Intel Mac running macOS 15 or later. Rosetta is
+not part of Intel results because amd64 is native there; Apple Container is included only if the same
+machine also runs macOS 26+ with the `container` CLI installed.
+
+Minimum Intel table:
+
+- Dory hv-x86, once the raw Hypervisor.framework engine passes readiness.
+- Dory VZ, the Virtualization.framework shared-engine baseline.
+- Docker Desktop.
+- Colima VZ.
+- OrbStack, only if the test Mac is inside OrbStack's Intel support fence.
+
+Required Intel metrics:
+
+- Idle footprint and marginal memory at 0, 1, 5, and 10 idle containers.
+- Host-RAM reclaim after container memory is freed.
+- Engine boot time to Docker API readiness.
+- Bind-mount, named-volume, and native-filesystem workloads.
+- Container-to-container network throughput.
+
+Images must be multi-arch or have an amd64 manifest. Do not use an image that only exists for the
+opposite architecture and then report an engine skip as a performance result. For the network probe,
+the default `taoyou/iperf3-alpine:latest` is multi-arch; keep any replacement image multi-arch too.
+
+Intel publication requires the raw data directory, the filled hardware disclosure, and explicit
+labels for `dory-hv-x86` versus `dory-vz`. Until DAX, USB, Kubernetes, and the 24-hour soak have
+passed on Intel hardware, Intel tables must say those rows are hardware-gated rather than inferred
+from Apple-silicon results.
 
 ## Known limitations
 
@@ -212,9 +248,9 @@ Gbps. Reproduce: `BENCH_IPERF_IMAGE=taoyou/iperf3-alpine:latest scripts/benchmar
 dory --metrics network`.
 
 Root cause of the earlier "pull failed": the harness default `networkstatic/iperf3:latest` is
-**x86-only (no arm64 manifest)**. It can never pull on Apple Silicon, the only platform Dory runs on,
-so this probe silently SKIP'd for every user. Fixed: `benchmark-compare.sh` now defaults to the
-multi-arch `taoyou/iperf3-alpine:latest` (Entrypoint `iperf3`, iperf 3.11, arm64).
+**x86-only (no arm64 manifest)**. It could not pull on Apple silicon, so this probe silently SKIP'd
+for Apple-silicon runs. Fixed: `benchmark-compare.sh` now defaults to the multi-arch
+`taoyou/iperf3-alpine:latest` (Entrypoint `iperf3`, iperf 3.11).
 
 **Honest framing for #6:** 114 Gbps is co-located-containers-in-one-VM throughput (memory-bandwidth
 bound, loopback-class): the structural advantage of Dory's shared engine. The research claim that
