@@ -357,8 +357,30 @@ case "usb":
         } catch {
             fail("usb probe failed: \(error)")
         }
+    case "attach":
+        let attachArgs = Array(arguments.dropFirst(2))
+        guard let busID = attachArgs.first else { fail("usage: dory-hv usb attach <busid> [userAuthorized|seize|capture]") }
+        let controlSocket = "\(NSHomeDirectory())/.dory/hv/usb-control.sock"
+        do {
+            let response = try UsbControlClient.send(UsbControlRequest(cmd: "attach", busid: busID, mode: attachArgs.dropFirst().first), socketPath: controlSocket)
+            guard response.ok else { fail("usb attach failed: \(response.error ?? "unknown")") }
+            print("attached \(busID) on vhci port \(response.port ?? -1)")
+        } catch {
+            fail("usb attach failed: \(error)")
+        }
+    case "detach":
+        let detachArgs = Array(arguments.dropFirst(2))
+        guard let busID = detachArgs.first else { fail("usage: dory-hv usb detach <busid>") }
+        let controlSocket = "\(NSHomeDirectory())/.dory/hv/usb-control.sock"
+        do {
+            let response = try UsbControlClient.send(UsbControlRequest(cmd: "detach", busid: busID), socketPath: controlSocket)
+            guard response.ok else { fail("usb detach failed: \(response.error ?? "unknown")") }
+            print("detached \(busID)")
+        } catch {
+            fail("usb detach failed: \(error)")
+        }
     default:
-        fail("usage: dory-hv usb <list|probe>")
+        fail("usage: dory-hv usb <list|probe|attach|detach>")
     }
 case "engine":
     var engineSocket = "\(NSHomeDirectory())/.dory/engine.sock"

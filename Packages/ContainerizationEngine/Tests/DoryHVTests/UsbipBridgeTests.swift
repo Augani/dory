@@ -89,6 +89,105 @@ struct UsbipManagerTests {
     }
 }
 
+struct UsbControlHandlerTests {
+    private func makeHandler(
+        manager: UsbipManager = UsbipManager(),
+        openFails: Bool = false,
+        attachFails: Bool = false
+    ) -> (UsbControlHandler, Box) {
+        let box = Box()
+        let handler = UsbControlHandler(
+            manager: manager,
+            openDevice: { busID, mode in
+                box.opened.append((busID, mode))
+                if openFails { throw UsbControlError.notAttached(busID) }
+                return StubExportedDevice(descriptor: fixtureDescriptor(busID: busID))
+            },
+            notifyAttach: { req in
+                box.attachCalls.append(req)
+                if attachFails { throw UsbControlError.notAttached(req.busid) }
+            },
+            notifyDetach: { req in box.detachCalls.append(req) }
+        )
+        return (handler, box)
+    }
+
+    @Test func attachClaimsRegistersAndNotifiesGuest() async throws {
+        let manager = UsbipManager()
+        let (handler, box) = makeHandler(manager: manager)
+
+        let outcome = try await handler.attach(busID: "3-2")
+
+        #expect(box.opened.map(\.0) == ["3-2"])
+        #expect(manager.claimedBusIDs == ["3-2"])
+        #expect(box.attachCalls.count == 1)
+        #expect(box.attachCalls.first?.busid == "3-2")
+        #expect(box.attachCalls.first?.vsock_port == VsockPorts.usbip)
+        #expect(box.attachCalls.first?.device_id == (UInt32(3) << 16) | 2) // busNumber 3, deviceNumber 2
+        #expect(outcome.port == 0)
+    }
+
+    @Test func attachAllocatesDistinctPortsAndRejectsDuplicate() async throws {
+        let (handler, _) = makeHandler()
+        let a = try await handler.attach(busID: "3-2")
+        let b = try await handler.attach(busID: "1-4")
+        #expect(Set([a.port, b.port]) == [0, 1])
+        await #expect(throws: UsbControlError.self) { _ = try await handler.attach(busID: "3-2") }
+    }
+
+    @Test func attachRollsBackWhenGuestNotifyFails() async throws {
+        let manager = UsbipManager()
+        let (handler, _) = makeHandler(manager: manager, attachFails: true)
+
+        await #expect(throws: (any Error).self) { _ = try await handler.attach(busID: "3-2") }
+        // The claim must be undone so the device returns to macOS.
+        #expect(manager.claimedBusIDs.isEmpty)
+        #expect(handler.attachedBusIDs.isEmpty)
+    }
+
+    @Test func detachNotifiesGuestUnregistersAndFreesPort() async throws {
+        let manager = UsbipManager()
+        let (handler, box) = makeHandler(manager: manager)
+        _ = try await handler.attach(busID: "3-2")
+
+        try await handler.detach(busID: "3-2")
+
+        #expect(box.detachCalls.map(\.busid) == ["3-2"])
+        #expect(manager.claimedBusIDs.isEmpty)
+        #expect(handler.attachedBusIDs.isEmpty)
+        // Port is freed for reuse.
+        let again = try await handler.attach(busID: "3-2")
+        #expect(again.port == 0)
+    }
+
+    @Test func detachOfUnknownBusIDThrows() async throws {
+        let (handler, _) = makeHandler()
+        await #expect(throws: UsbControlError.self) { try await handler.detach(busID: "9-9") }
+    }
+
+    @Test func controlCodecRoundTripsRequestAndResponse() throws {
+        let request = UsbControlRequest(cmd: "attach", busid: "3-2", mode: "capture")
+        let line = try UsbControlCodec.encodeRequest(request)
+        #expect(line.last == 0x0a)
+        #expect(try UsbControlCodec.decodeRequest(line.dropLast()) == request)
+
+        let response = UsbControlResponse.success(UsbAttachOutcome(busID: "3-2", port: 1, vsockPort: 1025, deviceID: 0x30002, speed: 3))
+        let rline = try UsbControlCodec.encodeResponse(response)
+        #expect(try UsbControlCodec.decodeResponse(rline.dropLast()) == response)
+
+        #expect(UsbControlCodec.mode(from: "capture") == .capture)
+        #expect(UsbControlCodec.mode(from: "seize") == .seize)
+        #expect(UsbControlCodec.mode(from: nil) == .userAuthorized)
+        #expect(UsbControlCodec.mode(from: "garbage") == .userAuthorized)
+    }
+
+    final class Box: @unchecked Sendable {
+        var opened: [(String, HostUsbOpenMode)] = []
+        var attachCalls: [UsbAgentAttachRequest] = []
+        var detachCalls: [UsbAgentDetachRequest] = []
+    }
+}
+
 private final class StubExportedDevice: UsbipExportedDevice, @unchecked Sendable {
     let descriptor: UsbipDeviceDescriptor
     let submitPayload: [UInt8]

@@ -250,11 +250,29 @@ enum EngineMode {
         portForwarder.start()
         note("engine starting: \(configuration.memoryMB)MiB ceiling, \(configuration.cpus) cpus, socket \(configuration.engineSocket)")
 
-        // USB passthrough listener: serves guest usbip dials on VsockPorts.usbip. It is a no-op until
-        // `dory usb attach` claims a device and registers it with the manager (the control plane), so
-        // it is always safe to register.
+        // USB passthrough: the listener serves guest usbip dials on VsockPorts.usbip, and the control
+        // server drives `dory usb attach/detach` — it claims the host device, registers it with the
+        // manager, and tells the guest agent to dial. The listener is a no-op until a device is claimed.
         let usbipManager = UsbipManager()
         usbipManager.attachListener(to: vsock)
+        let usbControlHandler = UsbControlHandler(
+            manager: usbipManager,
+            openDevice: { busID, mode in try HostUsbDeviceFactory.open(busID: busID, mode: mode) },
+            notifyAttach: { request in
+                let connection = vsock.connect(port: VsockPorts.agent)
+                defer { connection.close() }
+                let channel = AgentChannel(transport: AgentVsockTransport(connection: connection, readTimeoutNanoseconds: 10_000_000_000))
+                let _: UsbAgentReply = try await channel.call("usb.attach", request)
+            },
+            notifyDetach: { request in
+                let connection = vsock.connect(port: VsockPorts.agent)
+                defer { connection.close() }
+                let channel = AgentChannel(transport: AgentVsockTransport(connection: connection, readTimeoutNanoseconds: 10_000_000_000))
+                let _: UsbAgentReply = try await channel.call("usb.detach", request)
+            }
+        )
+        let usbControlServer = UsbControlServer(path: configuration.stateDirectory + "/usb-control.sock", handler: usbControlHandler)
+        do { try usbControlServer.start() } catch { note("usb control server unavailable: \(error)") }
 
         let agentFeatures = AgentFeatureHandles()
         let shares = configuration.shares

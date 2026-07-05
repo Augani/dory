@@ -794,34 +794,35 @@ usb_cmd() {
       ;;
     attach)
       shift
-      local busid="" port="${DORY_USBIP_PORT:-0}" machine=""
+      local busid="" mode=""
       while [ "$#" -gt 0 ]; do
         case "$1" in
-          --machine) machine="${2:?usage: dory usb attach <busid> [port] [--machine m]}"; shift 2 ;;
-          --port) port="${2:?usage: dory usb attach <busid> [port] [--machine m]}"; shift 2 ;;
+          --mode) mode="${2:?usage: dory usb attach <busid> [--mode userAuthorized|seize|capture]}"; shift 2 ;;
           --*) echo "unknown usb attach option: $1" >&2; exit 2 ;;
-          *) if [ -z "$busid" ]; then busid="$1"; elif [ "$port" = "${DORY_USBIP_PORT:-0}" ]; then port="$1"; else echo "usage: dory usb attach <busid> [port] [--machine m]" >&2; exit 2; fi; shift ;;
+          *) if [ -z "$busid" ]; then busid="$1"; fi; shift ;;
         esac
       done
-      [ -n "$busid" ] || { echo "usage: dory usb attach <busid> [port] [--machine m]" >&2; exit 2; }
-      local socket_fd="${DORY_USBIP_SOCKET_FD:--1}"
-      local device_id="${DORY_USBIP_DEVICE_ID:-0}"
-      local speed="${DORY_USBIP_SPEED:-0}"
-      usb_rpc "usb.attach" "{\"busid\":\"$busid\",\"port\":$port,\"socket_fd\":$socket_fd,\"device_id\":$device_id,\"speed\":$speed,\"machine\":\"$machine\"}"
+      [ -n "$busid" ] || { echo "usage: dory usb attach <busid> [--mode userAuthorized|seize|capture]" >&2; exit 2; }
+      local hv; hv="$(hv_helper || true)"
+      [ -n "$hv" ] || { echo "dory usb attach needs the dory-hv engine running" >&2; exit 2; }
+      # The engine (which owns the device claim + guest agent) does the claim, registers the usbip
+      # export, and tells the guest to dial. Mode defaults to userAuthorized (driverless devices);
+      # capture (driver-owned devices, e.g. mass storage) needs the notarized com.apple.vm.device-access.
+      if [ -n "$mode" ]; then "$hv" usb attach "$busid" "$mode"; else "$hv" usb attach "$busid"; fi
       ;;
     detach)
       shift
-      local busid="" port="${DORY_USBIP_PORT:-0}" machine=""
+      local busid=""
       while [ "$#" -gt 0 ]; do
         case "$1" in
-          --machine) machine="${2:?usage: dory usb detach <busid> [port] [--machine m]}"; shift 2 ;;
-          --port) port="${2:?usage: dory usb detach <busid> [port] [--machine m]}"; shift 2 ;;
           --*) echo "unknown usb detach option: $1" >&2; exit 2 ;;
-          *) if [ -z "$busid" ]; then busid="$1"; elif [ "$port" = "${DORY_USBIP_PORT:-0}" ]; then port="$1"; else echo "usage: dory usb detach <busid> [port] [--machine m]" >&2; exit 2; fi; shift ;;
+          *) if [ -z "$busid" ]; then busid="$1"; fi; shift ;;
         esac
       done
-      [ -n "$busid" ] || { echo "usage: dory usb detach <busid> [port] [--machine m]" >&2; exit 2; }
-      usb_rpc "usb.detach" "{\"busid\":\"$busid\",\"port\":$port,\"machine\":\"$machine\"}"
+      [ -n "$busid" ] || { echo "usage: dory usb detach <busid>" >&2; exit 2; }
+      local hv; hv="$(hv_helper || true)"
+      [ -n "$hv" ] || { echo "dory usb detach needs the dory-hv engine running" >&2; exit 2; }
+      "$hv" usb detach "$busid"
       ;;
     *) echo "usage: dory usb ls|attach|detach" >&2; exit 2 ;;
   esac
