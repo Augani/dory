@@ -1,0 +1,11 @@
+# Pinned inputs for guest/initfs/build.sh.
+#
+# Format:
+#   <key> <url> <sha256>
+#
+# Alpine minirootfs provides /bin/sh, BusyBox applets, udhcpc, nc, and base device/mount tooling.
+# Docker static provides dockerd, containerd, runc, docker-init, docker-proxy, ctr, and docker.
+alpine_arm64 https://dl-cdn.alpinelinux.org/alpine/v3.21/releases/aarch64/alpine-minirootfs-3.21.7-aarch64.tar.gz d1d1a3fae5f4d6146e9742790a47fcb116199622cfb8439f218a4d5fbe5000da
+alpine_amd64 https://dl-cdn.alpinelinux.org/alpine/v3.21/releases/x86_64/alpine-minirootfs-3.21.7-x86_64.tar.gz 8cba1ea3e8b500ea986a313d8eecf3d5952a2a0d23a69117bb81c023d9ceac05
+docker_arm64 https://download.docker.com/linux/static/stable/aarch64/docker-27.5.1.tgz e6b53725a73763ab3f988c73f8772eaed429754c1a579db5ff11f21990fd1817
+docker_amd64 https://download.docker.com/linux/static/stable/x86_64/docker-27.5.1.tgz 4f798b3ee1e0140eab5bf30b0edc4e84f4cdb53255a429dc3bbae9524845d640

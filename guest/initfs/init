@@ -1,0 +1,54 @@
+#!/bin/sh
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+mountpoint() {
+  grep -q " $1 " /proc/mounts 2>/dev/null
+}
+
+mkdir -p /proc /sys /dev /dev/pts /run /tmp /var/log /var/run /var/lib/docker
+mountpoint /proc || mount -t proc proc /proc 2>/dev/null || true
+mountpoint /sys || mount -t sysfs sys /sys 2>/dev/null || true
+mountpoint /dev || mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
+mountpoint /dev/pts || mount -t devpts devpts /dev/pts 2>/dev/null || true
+mountpoint /run || mount -t tmpfs tmpfs /run 2>/dev/null || true
+mountpoint /tmp || mount -t tmpfs tmpfs /tmp 2>/dev/null || true
+mkdir -p /sys/fs/cgroup
+mountpoint /sys/fs/cgroup || mount -t cgroup2 none /sys/fs/cgroup 2>/dev/null || true
+
+ip link set lo up 2>/dev/null || true
+if ip link show eth0 >/dev/null 2>&1; then
+  ip link set eth0 up 2>/dev/null || true
+  udhcpc -i eth0 -q >/dev/null 2>&1 || true
+fi
+
+if [ -b /dev/vdb ]; then
+  mount -t ext4 /dev/vdb /var/lib/docker 2>/dev/null || {
+    echo "DORY: failed to mount /dev/vdb at /var/lib/docker"
+  }
+fi
+
+if [ -x /usr/bin/dory-agent ] && ! pgrep -x dory-agent >/dev/null 2>&1; then
+  /usr/bin/dory-agent >/var/log/dory-agent.log 2>&1 &
+fi
+
+if [ -x /usr/local/bin/dockerd ]; then
+  /usr/local/bin/dockerd \
+    -H unix:///var/run/docker.sock \
+    -H tcp://0.0.0.0:2375 \
+    --tls=false >/var/log/dockerd.log 2>&1 &
+fi
+
+( while true; do
+    nc -l -p 2377 >/dev/null 2>&1
+    echo "DORY: shutdown requested"
+    sync
+    umount /var/lib/docker 2>/dev/null || true
+    sync
+    poweroff -f
+  done ) &
+
+if [ -x /usr/local/bin/docker-init ]; then
+  exec /usr/local/bin/docker-init -s -- sleep 2147483647
+fi
+
+while true; do sleep 2147483647; done
