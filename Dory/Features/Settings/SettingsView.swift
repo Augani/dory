@@ -58,10 +58,27 @@ struct SettingsView: View {
                 Text("Import your images and containers from Docker Desktop, OrbStack, Colima, Rancher Desktop, Podman, or another Docker-compatible engine onto Dory's engine. Your source engine is only read — nothing there is modified, so you can switch back anytime.")
                     .font(.system(size: 12.5)).foregroundStyle(p.text2).lineSpacing(4)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                if store.migrationSources.count > 1 {
+                    HStack(spacing: 8) {
+                        Text("Source").font(.system(size: 11.5)).foregroundStyle(p.text3)
+                        Picker("Source", selection: Binding(
+                            get: { store.selectedMigrationSourcePath ?? store.migrationSources.first?.socketPath ?? "" },
+                            set: { path in Task { await store.selectMigrationSource(path) } }
+                        )) {
+                            ForEach(store.migrationSources) { engine in
+                                Text(engine.label).tag(engine.socketPath)
+                            }
+                        }
+                        .labelsHidden().fixedSize()
+                        .accessibilityIdentifier("migrate-source-picker")
+                    }
+                }
                 if let inv = store.migrationInventory {
                     preflightPanel(inv)
                 } else {
-                    Text("No Docker-compatible local engine detected.")
+                    Text(store.migrationSources.isEmpty
+                        ? "No Docker-compatible local engine detected."
+                        : "Couldn't read \(store.migrationSources.first(where: { $0.socketPath == store.selectedMigrationSourcePath })?.label ?? "the selected engine") — is it running?")
                         .font(.system(size: 11.5)).foregroundStyle(p.text3)
                 }
                 Button {
@@ -84,6 +101,17 @@ struct SettingsView: View {
                 }
                 if !store.migrationStatus.isEmpty {
                     Text(store.migrationStatus).font(.system(size: 11.5)).foregroundStyle(p.text3)
+                }
+                if let failures = store.migrationSummary?.failures, !failures.isEmpty {
+                    VStack(alignment: .leading, spacing: 3) {
+                        ForEach(failures.prefix(8), id: \.self) { failure in
+                            Text("• \(failure)").font(.system(size: 11)).foregroundStyle(p.red)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        if failures.count > 8 {
+                            Text("+ \(failures.count - 8) more").font(.system(size: 11)).foregroundStyle(p.text3)
+                        }
+                    }
                 }
             }
             .padding(18)

@@ -1558,25 +1558,45 @@ final class AppStore {
     var migrationBusy = false
 
     var migrationInventory: MigrationInventory?
+    /// Every source engine found on this host (OrbStack, Docker Desktop, Colima, …), so the user
+    /// picks which to import from instead of the app silently auto-selecting the top-priority socket.
+    var migrationSources: [DockerSourceEngine] = []
+    var selectedMigrationSourcePath: String?
+    /// The last import result, so the UI can surface per-item failures instead of a bare count.
+    var migrationSummary: MigrationSummary?
 
-    /// Reads a host Docker-compatible engine (if any) without modifying it, to power the pre-flight
+    private func selectedMigrationRuntime() async -> DockerEngineRuntime? {
+        guard let path = selectedMigrationSourcePath else { return nil }
+        return await DockerEngineRuntime.detect(candidates: [path])
+    }
+
+    func selectMigrationSource(_ path: String) async {
+        selectedMigrationSourcePath = path
+        await loadMigrationPreflight()
+    }
+
+    /// Reads the selected host engine (if any) without modifying it, to power the pre-flight
     /// "here's what will move, nothing will be deleted" screen.
     func loadMigrationPreflight() async {
-        guard let source = await DockerEngineRuntime.detect() else {
+        migrationSources = DockerEngineSocketDiscovery.availableSources()
+        if selectedMigrationSourcePath == nil
+            || !migrationSources.contains(where: { $0.socketPath == selectedMigrationSourcePath }) {
+            selectedMigrationSourcePath = migrationSources.first?.socketPath
+        }
+        guard let source = await selectedMigrationRuntime() else {
             migrationInventory = nil
             return
         }
         migrationInventory = await MigrationAssistant.preflight(from: source)
     }
 
-    /// Imports an existing Docker-compatible engine's images + containers into Dory's own
-    /// shared VM — the "switch to Dory" flow. The target is Dory's standalone engine, so afterwards
-    /// the source can be uninstalled.
+    /// Imports the selected engine's images + containers into Dory's own shared VM — the "switch to
+    /// Dory" flow. The target is Dory's standalone engine, so afterwards the source can be uninstalled.
     func importFromDocker() async {
         guard runtimeKind == .sharedVM else { migrationStatus = "Switch to Dory's shared VM first, then import"; return }
         guard !migrationBusy else { return }
-        guard let source = await DockerEngineRuntime.detect() else {
-            migrationStatus = "No Docker-compatible engine found to import from"; return
+        guard let source = await selectedMigrationRuntime() else {
+            migrationStatus = "Couldn't reach the selected source engine — is it running?"; return
         }
         migrationBusy = true
         defer { migrationBusy = false }
@@ -1585,7 +1605,9 @@ final class AppStore {
         let summary = await MigrationAssistant.migrate(from: source, to: target) { message in
             Task { @MainActor in self.migrationStatus = message }
         }
-        migrationStatus = "Imported \(summary.imagesPulled.count) images, \(summary.containersMigrated.count) containers"
+        migrationSummary = summary
+        let base = "Imported \(summary.imagesImported.count) images, \(summary.containersMigrated.count) containers"
+        migrationStatus = summary.failures.isEmpty ? base : "\(base) — \(summary.failures.count) failed"
         await reload()
     }
 
