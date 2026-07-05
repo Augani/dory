@@ -15,6 +15,7 @@ enum SharedVMProvisioner {
     nonisolated private static let helperLogPath = "\(NSHomeDirectory())/.dory/engine.log"
     nonisolated static let defaultEngineMemoryMB = 2048
     nonisolated static let defaultEngineHeadroomMB = 512
+    nonisolated static var engineArch: String { MachineArch.host.rawValue }
 
     struct Config: Sendable {
         var cpus: Int
@@ -27,7 +28,7 @@ enum SharedVMProvisioner {
         /// Trades away dory-hv's memory advantage while on, so it is a manual Settings toggle.
         var rosettaX86: Bool
 
-        static let rosettaX86Key = "dory.rosettaX86Enabled"
+        nonisolated static let rosettaX86Key = "dory.rosettaX86Enabled"
         static let rosettaEngineMemoryMB = 3072
 
         nonisolated init(
@@ -56,17 +57,30 @@ enum SharedVMProvisioner {
 
     static func hostSupport(
         platform: MacHostPlatform = .current(),
-        engineAvailable: Bool = hvEngineAvailable()
+        engineAvailable: Bool = hvEngineAvailable(),
+        vzEngineAvailable: Bool = vmEngineAvailable(),
+        hypervisorSupported: Bool = hostHypervisorSupported()
     ) -> RuntimeSupport {
-        let base = DoryHVSupport.evaluate(platform: platform)
-        guard base.isSupported else { return base }
-        // The hardware is capable, but the engine's own binaries/kernel must be present and the
-        // user must not have opted out (DORY_HV_ENGINE=0). Otherwise report it honestly so the app
-        // falls back to a Docker-compatible engine instead of showing a misleading boot failure.
-        guard engineAvailable else {
-            return .unsupported("Dory's engine is unavailable on this install", issue: .missingToolchain)
-        }
-        return .supported
+        engineSupport(
+            platform: platform,
+            hvNativeAvailable: engineAvailable,
+            vzSharedAvailable: vzEngineAvailable,
+            hypervisorSupported: hypervisorSupported
+        ).support
+    }
+
+    static func engineSupport(
+        platform: MacHostPlatform = .current(),
+        hvNativeAvailable: Bool = hvEngineAvailable(),
+        vzSharedAvailable: Bool = vmEngineAvailable(),
+        hypervisorSupported: Bool = hostHypervisorSupported()
+    ) -> EngineSupportEvaluation {
+        EngineSupport.evaluate(
+            platform: platform,
+            hvNativeAvailable: hvNativeAvailable,
+            vzSharedAvailable: vzSharedAvailable,
+            hypervisorSupported: hypervisorSupported
+        )
     }
 
     /// Whether the dory-hv engine can run here: the signed helper, gvproxy, and a resolvable kernel
@@ -75,17 +89,40 @@ enum SharedVMProvisioner {
     static func hvEngineAvailable(environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
         guard environment["DORY_HV_ENGINE"] != "0" else { return false }
         guard hvHelperBinary() != nil, gvproxyBinary() != nil else { return false }
-        if Bundle.main.url(forResource: "dory-vm-kernel", withExtension: "zst") != nil { return true }
+        if Bundle.main.url(forResource: hvKernelResourceName(), withExtension: "zst") != nil { return true }
+        if engineArch == "arm64", Bundle.main.url(forResource: "dory-hv-kernel", withExtension: "zst") != nil { return true }
+        if engineArch == "arm64", Bundle.main.url(forResource: vmKernelResourceName(), withExtension: "zst") != nil { return true }
+        if engineArch == "arm64", Bundle.main.url(forResource: "dory-vm-kernel", withExtension: "zst") != nil { return true }
+        guard engineArch == "arm64" else { return false }
         return installedKernelPath() != nil
     }
 
+    static func vmEngineAvailable(environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
+        guard environment["DORY_VM_ENGINE"] != "0" else { return false }
+        guard vmHelperBinary() != nil else { return false }
+        let hasKernel = Bundle.main.url(forResource: vmKernelResourceName(), withExtension: "zst") != nil
+            || (engineArch == "arm64" && Bundle.main.url(forResource: "dory-vm-kernel", withExtension: "zst") != nil)
+            || (engineArch == "arm64" && installedKernelPath() != nil)
+        let hasInitfs = Bundle.main.url(forResource: vmInitfsResourceName(), withExtension: "zst") != nil
+            || (engineArch == "arm64" && Bundle.main.url(forResource: "dory-vm-initfs.ext4", withExtension: "zst") != nil)
+        return hasKernel && hasInitfs
+    }
+
+    static func hostHypervisorSupported() -> Bool {
+        var value: Int32 = 0
+        var size = MemoryLayout<Int32>.size
+        let result = sysctlbyname("kern.hv_support", &value, &size, nil, 0)
+        return result == 0 && value == 1
+    }
+
     static func provision(config: Config = Config()) async throws -> String {
-        let support = hostSupport()
-        guard support.isSupported else {
-            throw ProvisionError.unsupportedHost(support.reason)
+        let evaluation = engineSupport()
+        guard evaluation.support.isSupported else {
+            throw ProvisionError.unsupportedHost(evaluation.support.reason)
         }
-        if config.rosettaX86 {
-            guard let socket = try await provisionWithRosettaEngine(config: config) else {
+        let useRosetta = config.rosettaX86 && MacHostPlatform.current().isAppleSilicon
+        if useRosetta || evaluation.tier == .vzShared {
+            guard let socket = try await provisionWithVZEngine(config: config, rosetta: useRosetta) else {
                 throw ProvisionError.engineUnavailable
             }
             return socket
@@ -96,13 +133,12 @@ enum SharedVMProvisioner {
         return socket
     }
 
-    /// The Virtualization.framework engine with Rosetta x86 translation (opt-in). Runs the same
-    /// `dockerd`-in-VM as dory-hv but on VZ, so `docker run --platform linux/amd64` uses Rosetta —
-    /// heavy amd64 images like SQL Server run reliably where qemu-user segfaults (proven). Publishes
-    /// to the same `engine.sock`, so the shim and docker context are unchanged.
-    private static func provisionWithRosettaEngine(config: Config) async throws -> String? {
+    /// The Virtualization.framework engine. On Apple silicon it can opt into Rosetta x86
+    /// translation; on Intel it runs the amd64 guest natively as the first shared-engine tier.
+    /// Publishes to the same `engine.sock`, so the shim and docker context are unchanged.
+    private static func provisionWithVZEngine(config: Config, rosetta: Bool) async throws -> String? {
         guard let helper = vmHelperBinary(),
-              let kernel = await hvKernelPath(),
+              let kernel = await vmKernelPath(),
               let initfs = await vmInitfsPath() else { return nil }
 
         if await isReachable(), helperProcessIsAlive() {
@@ -118,9 +154,11 @@ enum SharedVMProvisioner {
         process.executableURL = URL(fileURLWithPath: helper)
         process.arguments = ["--shared-engine", socketPath, "--kernel", kernel, "--initfs", initfs]
         var environment = ProcessInfo.processInfo.environment
-        environment["DORY_ENGINE_ROSETTA"] = "1"
-        // SQL Server refuses to start below 2 GB; default to 3 GB headroom (reclaimed when idle).
-        if environment["DORY_ENGINE_MEM_MB"] == nil {
+        if rosetta {
+            environment["DORY_ENGINE_ROSETTA"] = "1"
+        }
+        // SQL Server refuses to start below 2 GB; default Rosetta launches to 3 GB headroom.
+        if rosetta && environment["DORY_ENGINE_MEM_MB"] == nil {
             environment["DORY_ENGINE_MEM_MB"] = String(max(Config.rosettaEngineMemoryMB, config.memoryMB))
         }
         process.environment = environment
@@ -128,7 +166,8 @@ enum SharedVMProvisioner {
         FileManager.default.createFile(atPath: helperLogPath, contents: nil)
         let log = try? FileHandle(forWritingTo: URL(fileURLWithPath: helperLogPath))
         _ = try? log?.seekToEnd()
-        log?.write(Data("\n--- starting VZ+Rosetta engine \(Date()) mem=\(environment["DORY_ENGINE_MEM_MB"] ?? "?")MiB ---\n".utf8))
+        let label = rosetta ? "VZ+Rosetta" : "VZ"
+        log?.write(Data("\n--- starting \(label) engine \(Date()) mem=\(environment["DORY_ENGINE_MEM_MB"] ?? config.memory) ---\n".utf8))
         process.standardOutput = log ?? FileHandle.nullDevice
         process.standardError = log ?? FileHandle.nullDevice
 
@@ -227,6 +266,30 @@ enum SharedVMProvisioner {
     }
 
     private static func hvKernelPath() async -> String? {
+        if let bundled = await prepareCompressedResource(resource: hvKernelResourceName(), outputName: hvKernelOutputName()) {
+            return bundled
+        }
+        if engineArch == "arm64",
+           let bundled = await prepareCompressedResource(resource: "dory-hv-kernel", outputName: "dory-hv-kernel") {
+            return bundled
+        }
+        if engineArch == "arm64",
+           let bundled = await prepareCompressedResource(resource: vmKernelResourceName(), outputName: vmKernelOutputName()) {
+            return bundled
+        }
+        if engineArch == "arm64",
+           let bundled = await prepareCompressedResource(resource: "dory-vm-kernel", outputName: "dory-vm-kernel") {
+            return bundled
+        }
+        guard engineArch == "arm64" else { return nil }
+        return installedKernelPath()
+    }
+
+    private static func vmKernelPath() async -> String? {
+        if let bundled = await prepareCompressedResource(resource: vmKernelResourceName(), outputName: vmKernelOutputName()) {
+            return bundled
+        }
+        guard engineArch == "arm64" else { return nil }
         if let bundled = await prepareCompressedResource(resource: "dory-vm-kernel", outputName: "dory-vm-kernel") {
             return bundled
         }
@@ -251,11 +314,7 @@ enum SharedVMProvisioner {
             return helper
         }
         let cwd = FileManager.default.currentDirectoryPath
-        let devCandidates = [
-            "\(cwd)/Packages/ContainerizationEngine/.build/out/Products/Release/dory-hv",
-            "\(cwd)/Packages/ContainerizationEngine/.build/out/Products/Debug/dory-hv",
-        ]
-        return devCandidates.first { FileManager.default.isExecutableFile(atPath: $0) }
+        return helperDevCandidates(named: "dory-hv", cwd: cwd).first { FileManager.default.isExecutableFile(atPath: $0) }
     }
 
     private static func vmHelperBinary() -> String? {
@@ -270,15 +329,56 @@ enum SharedVMProvisioner {
             return helper
         }
         let cwd = FileManager.default.currentDirectoryPath
-        let devCandidates = [
-            "\(cwd)/Packages/ContainerizationEngine/.build/arm64-apple-macosx/release/dory-vmboot",
-            "\(cwd)/Packages/ContainerizationEngine/.build/arm64-apple-macosx/debug/dory-vmboot",
+        return helperDevCandidates(named: "dory-vmboot", cwd: cwd).first { FileManager.default.isExecutableFile(atPath: $0) }
+    }
+
+    nonisolated static func helperDevCandidates(
+        named helperName: String,
+        cwd: String,
+        hostArch: String = engineArch
+    ) -> [String] {
+        let swiftPMArch = hostArch == "amd64" ? "x86_64" : hostArch
+        let packageRoot = "\(cwd)/Packages/ContainerizationEngine"
+        return [
+            "\(packageRoot)/.build/out/Products/Release/\(helperName)",
+            "\(packageRoot)/.build/out/Products/Debug/\(helperName)",
+            "\(packageRoot)/.build/apple/Products/Release/\(helperName)",
+            "\(packageRoot)/.build/apple/Products/Debug/\(helperName)",
+            "\(packageRoot)/.build/\(swiftPMArch)-apple-macosx/release/\(helperName)",
+            "\(packageRoot)/.build/\(swiftPMArch)-apple-macosx/debug/\(helperName)",
         ]
-        return devCandidates.first { FileManager.default.isExecutableFile(atPath: $0) }
     }
 
     private static func vmInitfsPath() async -> String? {
-        await prepareCompressedResource(resource: "dory-vm-initfs.ext4", outputName: "dory-vm-initfs.ext4")
+        if let bundled = await prepareCompressedResource(resource: vmInitfsResourceName(), outputName: vmInitfsOutputName()) {
+            return bundled
+        }
+        guard engineArch == "arm64" else { return nil }
+        return await prepareCompressedResource(resource: "dory-vm-initfs.ext4", outputName: "dory-vm-initfs.ext4")
+    }
+
+    nonisolated static func vmKernelResourceName(arch: String = engineArch) -> String {
+        "dory-vm-kernel-\(arch)"
+    }
+
+    nonisolated static func vmKernelOutputName(arch: String = engineArch) -> String {
+        "dory-vm-kernel-\(arch)"
+    }
+
+    nonisolated static func hvKernelResourceName(arch: String = engineArch) -> String {
+        "dory-hv-kernel-\(arch)"
+    }
+
+    nonisolated static func hvKernelOutputName(arch: String = engineArch) -> String {
+        "dory-hv-kernel-\(arch)"
+    }
+
+    nonisolated static func vmInitfsResourceName(arch: String = engineArch) -> String {
+        "dory-vm-initfs-\(arch).ext4"
+    }
+
+    nonisolated static func vmInitfsOutputName(arch: String = engineArch) -> String {
+        "dory-vm-initfs-\(arch).ext4"
     }
 
     private static func gvproxyBinary() -> String? {
@@ -301,18 +401,23 @@ enum SharedVMProvisioner {
         return candidates.first { FileManager.default.isExecutableFile(atPath: $0) }
     }
 
-    /// Register x86/amd64 emulation in the shared VM so Intel images run on Apple silicon, the way
-    /// OrbStack does. Idempotent: the binfmt installer is a no-op if amd64 is already registered.
-    static func ensureEmulation() async {
+    /// Register the non-native CPU architecture in the shared VM. On Apple silicon this installs
+    /// amd64; on Intel it installs arm64. Idempotent when the handler is already registered.
+    static func ensureEmulation(for arch: MachineArch = .nonNativeHost) async {
+        guard !arch.isNative else { return }
         let runtime = DockerEngineRuntime(socketPath: socketPath, kind: .sharedVM)
         try? await runtime.pull(image: "tonistiigi/binfmt")
-        let body = Data(#"{"Image":"tonistiigi/binfmt","Cmd":["--install","amd64"],"HostConfig":{"Privileged":true,"AutoRemove":true}}"#.utf8)
+        let body = binfmtInstallBody(for: arch)
         let encodedName = DockerImageOps.queryValue("dory-binfmt")
         guard let create = await runtime.proxyRequest(method: "POST", path: "/containers/create?name=\(encodedName)",
             headers: [(name: "Content-Type", value: "application/json")], body: body),
             let id = decodeId(create.body) else { return }
         let encodedID = DockerImageOps.pathComponent(id)
         _ = await runtime.proxyRequest(method: "POST", path: "/containers/\(encodedID)/start", headers: [], body: Data())
+    }
+
+    nonisolated static func binfmtInstallBody(for arch: MachineArch) -> Data {
+        Data(#"{"Image":"tonistiigi/binfmt","Cmd":["--install","\#(arch.rawValue)"],"HostConfig":{"Privileged":true,"AutoRemove":true}}"#.utf8)
     }
 
     private static func decodeId(_ data: Data) -> String? {

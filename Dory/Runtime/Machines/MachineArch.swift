@@ -25,6 +25,10 @@ enum MachineArch: String, Sendable, Hashable, CaseIterable, Identifiable {
         return machine.hasPrefix("arm") || machine.hasPrefix("aarch") ? .arm64 : .amd64
     }()
 
+    nonisolated static var nonNativeHost: MachineArch {
+        host == .arm64 ? .amd64 : .arm64
+    }
+
     var isNative: Bool { self == MachineArch.host }
 
     func label(includeEmulated: Bool = true) -> String {

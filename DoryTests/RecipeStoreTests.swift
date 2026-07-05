@@ -57,6 +57,16 @@ struct RecipeStoreTests {
         }
     }
 
+    @Test func missingArchDefaultsToHostArch() throws {
+        let url = try writeRecipe("""
+        name: host-default
+        distro: ubuntu:24.04
+        """)
+
+        let recipe = try DevRecipe.load(from: url)
+        #expect(recipe.arch == MachineArch.host.rawValue)
+    }
+
     @Test func storeLoadsYamlFilesSortedByID() throws {
         let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("dory-recipes-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)

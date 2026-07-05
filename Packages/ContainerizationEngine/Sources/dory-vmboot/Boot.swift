@@ -63,7 +63,7 @@ struct DeviceExtension: VZInstanceExtension {
 
 struct Args {
     var image = "docker.io/library/alpine:latest"
-    var arch = "arm64"
+    var arch = hostLinuxArch()
     var rosetta = false
     var devices = false
     var sharedEngine: String? = nil
@@ -125,7 +125,7 @@ struct DoryVM {
             try? FileManager.default.createDirectory(atPath: scratch, withIntermediateDirectories: true)
             defer { try? FileManager.default.removeItem(atPath: scratch) }
 
-            let kernel = tunedKernel(kernelPath)
+            let kernel = tunedKernel(kernelPath, arch: args.arch)
             let initfs = Mount.block(format: "ext4", source: initfsPath, destination: "/", options: ["ro"])
             let store = try ImageStore(path: URL(fileURLWithPath: contentRoot))
             let image = try await store.get(reference: args.image, pull: true)
@@ -167,14 +167,15 @@ struct DoryVM {
 
     // Kernel command line tuned for fast VM boot: keep console=hvc0 + tsc=reliable (panics stay
     // readable), then silence the serial console and skip slow hardware probes the VM doesn't have.
-    static func tunedKernel(_ path: String) -> Kernel {
+    static func tunedKernel(_ path: String, arch: String = hostLinuxArch()) -> Kernel {
         var cl = Kernel.CommandLine()
         cl.kernelArgs += [
             "quiet", "loglevel=1", "no_timer_check", "random.trust_cpu=on",
             "8250.nr_uarts=0", "i8042.noaux", "i8042.nomux", "i8042.dumbkbd",
         ]
         cl.addPanic(level: 0)
-        return Kernel(path: URL(fileURLWithPath: path), platform: .linuxArm, commandline: cl)
+        let platform: SystemPlatform = arch == "amd64" ? .linuxAmd : .linuxArm
+        return Kernel(path: URL(fileURLWithPath: path), platform: platform, commandline: cl)
     }
 
     // Self-contained shared engine: boot ONE VM running dockerd (dind) in-process and publish its
@@ -243,7 +244,7 @@ struct DoryVM {
         if !FileManager.default.fileExists(atPath: pristine) {
             note("first run: preparing engine (one-time)…")
             _ = try await EXT4Unpacker(blockSizeInBytes: 8 * 1024 * 1024 * 1024)
-                .unpack(image, for: Platform(arch: "arm64", os: "linux"), at: URL(fileURLWithPath: pristine))
+                .unpack(image, for: Platform(arch: hostLinuxArch(), os: "linux"), at: URL(fileURLWithPath: pristine))
         }
         try? FileManager.default.removeItem(atPath: bootRootfs)
         try FileManager.default.copyItem(atPath: pristine, toPath: bootRootfs)
@@ -344,4 +345,12 @@ struct DoryVM {
         print("dory-vm: USB + audio + dynamic balloon all active")
         exit(0)
     }
+}
+
+func hostLinuxArch() -> String {
+    #if arch(arm64)
+    "arm64"
+    #else
+    "amd64"
+    #endif
 }

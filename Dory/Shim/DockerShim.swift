@@ -1114,7 +1114,7 @@ struct DockerShim: Sendable {
         let out = DockerVersionOut(
             Version: snapshot?.engineVersion ?? "dory",
             ApiVersion: apiVersion, MinAPIVersion: "1.24",
-            Os: "linux", Arch: "arm64", KernelVersion: "dory",
+            Os: "linux", Arch: Self.hostDockerArch(), KernelVersion: "dory",
             GoVersion: "swift", GitCommit: "dory", BuildTime: ""
         )
         return encode(out)
@@ -1131,7 +1131,7 @@ struct DockerShim: Sendable {
             Images: snapshot.images.count, NCPU: ProcessInfo.processInfo.processorCount,
             MemTotal: Int64(ProcessInfo.processInfo.physicalMemory),
             ServerVersion: snapshot.engineVersion, OperatingSystem: "Dory",
-            OSType: "linux", Architecture: "aarch64", Driver: "dory"
+            OSType: "linux", Architecture: Self.hostKernelArch(), Driver: "dory"
         )
         return encode(out)
     }
@@ -1727,10 +1727,22 @@ struct DockerShim: Sendable {
     }
 
     private static func defaultDockerArchitecture() -> String {
+        hostDockerArch()
+    }
+
+    static func hostDockerArch() -> String {
         #if arch(arm64)
         "arm64"
         #else
         "amd64"
+        #endif
+    }
+
+    static func hostKernelArch() -> String {
+        #if arch(arm64)
+        "aarch64"
+        #else
+        "x86_64"
         #endif
     }
 

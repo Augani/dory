@@ -3,31 +3,76 @@ import Testing
 @testable import Dory
 
 struct RuntimeSupportTests {
-    // Dory's own engine (dory-hv) runs on Hypervisor.framework's GICv3 — macOS 15+ Apple silicon,
-    // no Apple `container` toolchain. That is the sole shared-VM engine and its host requirement.
+    // Dory's native dory-hv tier runs on Apple silicon and is preferred on Intel when raw PVH assets
+    // are present. Intel falls back to the VZ shared tier when only amd64 VZ assets are available.
     @Test func engineSupportsMacOS15AppleSilicon() {
         let sequoia = MacHostPlatform(major: 15, minor: 0, patch: 0, architecture: "arm64")
-        let support = SharedVMProvisioner.hostSupport(platform: sequoia, engineAvailable: true)
-        #expect(support.isSupported)
-        #expect(support.issue == RuntimeSupport.Issue.none)
+        let evaluation = SharedVMProvisioner.engineSupport(
+            platform: sequoia,
+            hvNativeAvailable: true,
+            vzSharedAvailable: false,
+            hypervisorSupported: true
+        )
+        #expect(evaluation.tier == .hvNative)
+        #expect(evaluation.support.isSupported)
+        #expect(evaluation.support.issue == RuntimeSupport.Issue.none)
     }
 
     @Test func engineSupportsCurrentMacOSAppleSilicon() {
         let tahoe = MacHostPlatform(major: 26, minor: 1, patch: 0, architecture: "arm64")
-        #expect(SharedVMProvisioner.hostSupport(platform: tahoe, engineAvailable: true).isSupported)
+        #expect(SharedVMProvisioner.hostSupport(
+            platform: tahoe,
+            engineAvailable: true,
+            vzEngineAvailable: false,
+            hypervisorSupported: true
+        ).isSupported)
     }
 
-    @Test func engineRequiresAppleSilicon() {
-        // Architecture is unfixable, so it is reported before the engine-availability check.
-        let intel = MacHostPlatform(major: 26, minor: 0, patch: 0, architecture: "x86_64")
-        let support = SharedVMProvisioner.hostSupport(platform: intel, engineAvailable: true)
-        #expect(!support.isSupported)
-        #expect(support.issue == .architecture)
+    @Test func intelUsesVZSharedTierWhenAssetsExist() {
+        let intel = MacHostPlatform(major: 15, minor: 7, patch: 0, architecture: "x86_64")
+        let evaluation = SharedVMProvisioner.engineSupport(
+            platform: intel,
+            hvNativeAvailable: false,
+            vzSharedAvailable: true,
+            hypervisorSupported: true
+        )
+        #expect(evaluation.tier == .vzShared)
+        #expect(evaluation.support.isSupported)
+    }
+
+    @Test func intelPrefersNativeHVTierWhenRawEngineAssetsExist() {
+        let intel = MacHostPlatform(major: 15, minor: 7, patch: 0, architecture: "x86_64")
+        let evaluation = SharedVMProvisioner.engineSupport(
+            platform: intel,
+            hvNativeAvailable: true,
+            vzSharedAvailable: true,
+            hypervisorSupported: true
+        )
+        #expect(evaluation.tier == .hvNative)
+        #expect(evaluation.support.isSupported)
+    }
+
+    @Test func intelFallsBackToProxyOnlyWhenAssetsAreMissing() {
+        let intel = MacHostPlatform(major: 15, minor: 7, patch: 0, architecture: "x86_64")
+        let evaluation = SharedVMProvisioner.engineSupport(
+            platform: intel,
+            hvNativeAvailable: false,
+            vzSharedAvailable: false,
+            hypervisorSupported: true
+        )
+        #expect(evaluation.tier == .proxyOnly)
+        #expect(!evaluation.support.isSupported)
+        #expect(evaluation.support.issue == .missingToolchain)
     }
 
     @Test func engineRejectsMacOSOlderThan15() {
         let ventura = MacHostPlatform(major: 14, minor: 5, patch: 0, architecture: "arm64")
-        let support = SharedVMProvisioner.hostSupport(platform: ventura, engineAvailable: true)
+        let support = SharedVMProvisioner.hostSupport(
+            platform: ventura,
+            engineAvailable: true,
+            vzEngineAvailable: true,
+            hypervisorSupported: true
+        )
         #expect(!support.isSupported)
         #expect(support.issue == .osVersion)
     }
@@ -37,15 +82,43 @@ struct RuntimeSupportTests {
         // (DORY_HV_ENGINE=0): report unavailable so the app falls back to a Docker-compatible
         // engine rather than showing a misleading boot failure.
         let sequoia = MacHostPlatform(major: 15, minor: 4, patch: 0, architecture: "arm64")
-        let support = SharedVMProvisioner.hostSupport(platform: sequoia, engineAvailable: false)
+        let support = SharedVMProvisioner.hostSupport(
+            platform: sequoia,
+            engineAvailable: false,
+            vzEngineAvailable: true,
+            hypervisorSupported: true
+        )
         #expect(!support.isSupported)
         #expect(support.issue == .missingToolchain)
     }
 
-    @Test func doryHVSupportEvaluatesArchitectureBeforeOSVersion() {
-        // An Intel Mac on an old macOS reports the architecture (the unfixable requirement) first.
+    @Test func engineSupportEvaluatesOSVersionBeforeTierAssets() {
         let oldIntel = MacHostPlatform(major: 13, minor: 0, patch: 0, architecture: "x86_64")
-        #expect(DoryHVSupport.evaluate(platform: oldIntel).issue == .architecture)
+        let evaluation = SharedVMProvisioner.engineSupport(
+            platform: oldIntel,
+            hvNativeAvailable: false,
+            vzSharedAvailable: true,
+            hypervisorSupported: true
+        )
+        #expect(evaluation.tier == .proxyOnly)
+        #expect(evaluation.support.issue == .osVersion)
+    }
+
+    @Test func engineSupportRequiresHypervisorFramework() {
+        let intel = MacHostPlatform(major: 15, minor: 7, patch: 0, architecture: "x86_64")
+        let evaluation = SharedVMProvisioner.engineSupport(
+            platform: intel,
+            hvNativeAvailable: false,
+            vzSharedAvailable: true,
+            hypervisorSupported: false
+        )
+        #expect(evaluation.tier == .proxyOnly)
+        #expect(evaluation.support.issue == .hypervisor)
+    }
+
+    @Test func nativeHVPlatformSupportIncludesIntelMacsAtTheMacOS15Floor() {
+        let intel = MacHostPlatform(major: 15, minor: 7, patch: 0, architecture: "x86_64")
+        #expect(DoryHVSupport.evaluate(platform: intel).isSupported)
     }
 
     @Test func hvEngineDisabledByOptOutFlag() {
@@ -92,6 +165,41 @@ struct RuntimeSupportTests {
 
         let home = NSHomeDirectory()
         #expect(argumentValue(after: "--share", in: arguments) == "home=\(home):rw:at=\(home):safe")
+    }
+
+    @Test func sharedVMResourceNamesAreArchSuffixed() {
+        #expect(SharedVMProvisioner.hvKernelResourceName(arch: "arm64") == "dory-hv-kernel-arm64")
+        #expect(SharedVMProvisioner.hvKernelResourceName(arch: "amd64") == "dory-hv-kernel-amd64")
+        #expect(SharedVMProvisioner.vmKernelResourceName(arch: "arm64") == "dory-vm-kernel-arm64")
+        #expect(SharedVMProvisioner.vmKernelResourceName(arch: "amd64") == "dory-vm-kernel-amd64")
+        #expect(SharedVMProvisioner.vmInitfsResourceName(arch: "arm64") == "dory-vm-initfs-arm64.ext4")
+        #expect(SharedVMProvisioner.vmInitfsResourceName(arch: "amd64") == "dory-vm-initfs-amd64.ext4")
+    }
+
+    @Test func sharedVMHelperDevCandidatesCoverUniversalOutAndHostArchBuilds() {
+        let arm64 = SharedVMProvisioner.helperDevCandidates(named: "dory-vmboot", cwd: "/repo", hostArch: "arm64")
+        let amd64 = SharedVMProvisioner.helperDevCandidates(named: "dory-vmboot", cwd: "/repo", hostArch: "amd64")
+
+        #expect(arm64.contains("/repo/Packages/ContainerizationEngine/.build/out/Products/Debug/dory-vmboot"))
+        #expect(arm64.contains("/repo/Packages/ContainerizationEngine/.build/apple/Products/Debug/dory-vmboot"))
+        #expect(arm64.contains("/repo/Packages/ContainerizationEngine/.build/arm64-apple-macosx/debug/dory-vmboot"))
+
+        #expect(amd64.contains("/repo/Packages/ContainerizationEngine/.build/out/Products/Debug/dory-vmboot"))
+        #expect(amd64.contains("/repo/Packages/ContainerizationEngine/.build/apple/Products/Debug/dory-vmboot"))
+        #expect(amd64.contains("/repo/Packages/ContainerizationEngine/.build/x86_64-apple-macosx/debug/dory-vmboot"))
+        #expect(!amd64.contains("/repo/Packages/ContainerizationEngine/.build/arm64-apple-macosx/debug/dory-vmboot"))
+    }
+
+    @Test func sharedVMEmulationInstallerTargetsRequestedArch() throws {
+        let arm64 = try JSONSerialization.jsonObject(with: SharedVMProvisioner.binfmtInstallBody(for: .arm64)) as? [String: Any]
+        let amd64 = try JSONSerialization.jsonObject(with: SharedVMProvisioner.binfmtInstallBody(for: .amd64)) as? [String: Any]
+
+        #expect(arm64?["Image"] as? String == "tonistiigi/binfmt")
+        #expect(arm64?["Cmd"] as? [String] == ["--install", "arm64"])
+        #expect(amd64?["Cmd"] as? [String] == ["--install", "amd64"])
+        let hostConfig = arm64?["HostConfig"] as? [String: Any]
+        #expect(hostConfig?["Privileged"] as? Bool == true)
+        #expect(hostConfig?["AutoRemove"] as? Bool == true)
     }
 
     @Test func wakeClockResyncSignalsLiveHelperOnly() {

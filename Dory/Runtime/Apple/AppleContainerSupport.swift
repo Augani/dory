@@ -11,6 +11,10 @@ nonisolated struct MacHostPlatform: Equatable, Sendable {
         architecture == "arm64" || architecture == "arm64e"
     }
 
+    var isIntel: Bool {
+        architecture == "x86_64"
+    }
+
     static func current() -> MacHostPlatform {
         let version = ProcessInfo.processInfo.operatingSystemVersion
         return MacHostPlatform(
@@ -39,6 +43,7 @@ nonisolated struct RuntimeSupport: Equatable, Sendable {
         case osVersion
         case architecture
         case missingToolchain
+        case hypervisor
     }
 
     var isSupported: Bool
@@ -52,19 +57,83 @@ nonisolated struct RuntimeSupport: Equatable, Sendable {
     }
 }
 
-/// Dory's own VMM (`dory-hv`) runs on Hypervisor.framework's in-kernel GICv3, which is available
-/// from macOS 15, and needs no Apple `container` toolchain (it ships its own kernel + userspace
-/// networking). So when the dory-hv engine is present it supports a strictly broader set of hosts
-/// than the Virtualization.framework / Apple-container path.
-enum DoryHVSupport {
+nonisolated enum EngineTier: Equatable, Sendable {
+    case hvNative
+    case vzShared
+    case proxyOnly
+}
+
+nonisolated struct EngineSupportEvaluation: Equatable, Sendable {
+    var tier: EngineTier
+    var support: RuntimeSupport
+
+    var hasBuiltInEngine: Bool {
+        switch tier {
+        case .hvNative, .vzShared: return support.isSupported
+        case .proxyOnly: return false
+        }
+    }
+}
+
+enum EngineSupport {
     nonisolated static let minimumMajorVersion = 15
 
-    nonisolated static func evaluate(platform: MacHostPlatform) -> RuntimeSupport {
-        guard platform.isAppleSilicon else {
-            return .unsupported("Dory's engine requires Apple silicon", issue: .architecture)
+    nonisolated static func evaluate(
+        platform: MacHostPlatform,
+        hvNativeAvailable: Bool,
+        vzSharedAvailable: Bool,
+        hypervisorSupported: Bool
+    ) -> EngineSupportEvaluation {
+        guard platform.major >= minimumMajorVersion else {
+            return EngineSupportEvaluation(
+                tier: .proxyOnly,
+                support: .unsupported("Dory's engine requires macOS 15 or later", issue: .osVersion)
+            )
         }
+        guard hypervisorSupported else {
+            return EngineSupportEvaluation(
+                tier: .proxyOnly,
+                support: .unsupported("Hypervisor.framework is unavailable on this Mac", issue: .hypervisor)
+            )
+        }
+        if platform.isAppleSilicon {
+            guard hvNativeAvailable else {
+                return EngineSupportEvaluation(
+                    tier: .proxyOnly,
+                    support: .unsupported("Dory's engine is unavailable on this install", issue: .missingToolchain)
+                )
+            }
+            return EngineSupportEvaluation(tier: .hvNative, support: .supported)
+        }
+        if platform.isIntel {
+            if hvNativeAvailable {
+                return EngineSupportEvaluation(tier: .hvNative, support: .supported)
+            }
+            guard vzSharedAvailable else {
+                return EngineSupportEvaluation(
+                    tier: .proxyOnly,
+                    support: .unsupported("Dory's Intel engine assets are unavailable on this install", issue: .missingToolchain)
+                )
+            }
+            return EngineSupportEvaluation(tier: .vzShared, support: .supported)
+        }
+        return EngineSupportEvaluation(
+            tier: .proxyOnly,
+            support: .unsupported("Dory's engine does not support this Mac architecture", issue: .architecture)
+        )
+    }
+}
+
+/// Compatibility shim for call sites that still ask specifically about the native dory-hv tier.
+enum DoryHVSupport {
+    nonisolated static let minimumMajorVersion = EngineSupport.minimumMajorVersion
+
+    nonisolated static func evaluate(platform: MacHostPlatform) -> RuntimeSupport {
         guard platform.major >= minimumMajorVersion else {
             return .unsupported("Dory's engine requires macOS 15 or later", issue: .osVersion)
+        }
+        guard platform.isAppleSilicon || platform.isIntel else {
+            return .unsupported("Dory's engine does not support this Mac architecture", issue: .architecture)
         }
         return .supported
     }

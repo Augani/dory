@@ -10,8 +10,9 @@
 #   * Contents/Helpers/gvproxy    — userspace networking (Apache-2.0) for the dory-hv engine.
 #   * Contents/Helpers/dory-vm    — the older Virtualization.framework helper (~100MB), fallback.
 #   * Contents/Helpers/zstd       — decompresses the assets on first launch.
-#   * Contents/Resources/dory-vm-kernel.zst       — compressed Linux kernel  (~15MB -> ~6MB).
-#   * Contents/Resources/dory-vm-initfs.ext4.zst  — compressed VM initfs     (~165MB -> ~30MB).
+#   * Contents/Resources/dory-hv-kernel-<arch>.zst       — compressed PVH/Image kernel for dory-hv.
+#   * Contents/Resources/dory-vm-kernel-<arch>.zst       — compressed Linux kernel.
+#   * Contents/Resources/dory-vm-initfs-<arch>.ext4.zst  — compressed VM initfs.
 #   The docker engine image (docker:dind) is NOT bundled — the engine pulls it on first boot.
 #
 # Set DORY_BUNDLE_LEGACY=1 to additionally inject the heavy offline payload (the docker:dind image
@@ -92,59 +93,74 @@ SH
   echo "    injected /usr/bin/dory-agent into initfs"
 }
 
-find_qemu_x86_64_static() {
-  if [ -n "${DORY_QEMU_X86_64_STATIC:-}" ] && [ -x "$DORY_QEMU_X86_64_STATIC" ]; then
-    printf '%s\n' "$DORY_QEMU_X86_64_STATIC"; return 0
+find_qemu_static() {
+  local guest_arch="$1" qemu_name env_name
+  if [ "$guest_arch" = "amd64" ]; then
+    qemu_name="qemu-x86_64-static"
+    env_name="DORY_QEMU_X86_64_STATIC"
+  else
+    qemu_name="qemu-aarch64-static"
+    env_name="DORY_QEMU_AARCH64_STATIC"
   fi
-  for cand in "$(command -v qemu-x86_64-static 2>/dev/null)" \
-              /opt/homebrew/bin/qemu-x86_64-static \
-              /usr/local/bin/qemu-x86_64-static \
-              /opt/homebrew/opt/qemu/bin/qemu-x86_64-static \
-              /usr/local/opt/qemu/bin/qemu-x86_64-static; do
+  if [ -n "${!env_name:-}" ] && [ -x "${!env_name}" ]; then
+    printf '%s\n' "${!env_name}"; return 0
+  fi
+  for cand in "$(command -v "$qemu_name" 2>/dev/null)" \
+              "/opt/homebrew/bin/$qemu_name" \
+              "/usr/local/bin/$qemu_name" \
+              "/opt/homebrew/opt/qemu/bin/$qemu_name" \
+              "/usr/local/opt/qemu/bin/$qemu_name"; do
     [ -n "$cand" ] && [ -x "$cand" ] && { printf '%s\n' "$cand"; return 0; }
   done
   return 1
 }
 
 inject_qemu_into_initfs() {
-  local image="$1" qemu="$2" debugfs_bin
+  local image="$1" qemu="$2" guest_arch="$3" debugfs_bin qemu_name
+  [ "$guest_arch" = "amd64" ] && qemu_name="qemu-x86_64-static" || qemu_name="qemu-aarch64-static"
   [ "${DORY_SKIP_QEMU_INJECT:-0}" = "1" ] && return 0
   [ -n "$image" ] && [ -f "$image" ] || return 0
   [ -n "$qemu" ] && [ -x "$qemu" ] || return 0
   if ! debugfs_bin="$(find_debugfs)"; then
-    echo "    WARNING: debugfs not found — cannot inject qemu-x86_64-static"
+    echo "    WARNING: debugfs not found; cannot inject $qemu_name"
     return 0
   fi
   "$debugfs_bin" -w -R "mkdir /usr" "$image" >/dev/null 2>&1 || true
   "$debugfs_bin" -w -R "mkdir /usr/bin" "$image" >/dev/null 2>&1 || true
-  "$debugfs_bin" -w -R "rm /usr/bin/qemu-x86_64-static" "$image" >/dev/null 2>&1 || true
-  "$debugfs_bin" -w -R "write $qemu /usr/bin/qemu-x86_64-static" "$image" >/dev/null
-  "$debugfs_bin" -w -R "sif /usr/bin/qemu-x86_64-static mode 0100755" "$image" >/dev/null
-  echo "    injected /usr/bin/qemu-x86_64-static into initfs"
+  "$debugfs_bin" -w -R "rm /usr/bin/$qemu_name" "$image" >/dev/null 2>&1 || true
+  "$debugfs_bin" -w -R "write $qemu /usr/bin/$qemu_name" "$image" >/dev/null
+  "$debugfs_bin" -w -R "sif /usr/bin/$qemu_name mode 0100755" "$image" >/dev/null
+  echo "    injected /usr/bin/$qemu_name into initfs"
 }
 
-is_linux_aarch64_elf() {
-  local bin="$1" magic
+is_linux_elf_for_arch() {
+  local arch="$1" bin="$2" magic
   [ -n "$bin" ] && [ -r "$bin" ] || return 1
   magic="$(dd if="$bin" bs=1 count=4 2>/dev/null | od -An -tx1 | tr -d ' \n')"
   [ "$magic" = "7f454c46" ] || return 1
-  file "$bin" 2>/dev/null | grep -Eqi 'ELF.*(aarch64|ARM aarch64)'
+  if [ "$arch" = "amd64" ]; then
+    file "$bin" 2>/dev/null | grep -Eqi 'ELF.*(x86-64|x86_64)'
+  else
+    file "$bin" 2>/dev/null | grep -Eqi 'ELF.*(aarch64|ARM aarch64)'
+  fi
 }
 
 find_toolbox_binary() {
-  local name="$1" env_name="DORY_TOOLBOX_$(printf '%s' "$name" | tr '[:lower:]-' '[:upper:]_')" cand
+  local name="$1" arch="$2" upper_arch env_name cand
+  upper_arch="$(printf '%s' "$arch" | tr '[:lower:]-' '[:upper:]_')"
+  env_name="DORY_TOOLBOX_${upper_arch}_$(printf '%s' "$name" | tr '[:lower:]-' '[:upper:]_')"
   if [ -n "${!env_name:-}" ] && [ -x "${!env_name}" ]; then
-    if is_linux_aarch64_elf "${!env_name}"; then
+    if is_linux_elf_for_arch "$arch" "${!env_name}"; then
       printf '%s\n' "${!env_name}"; return 0
     fi
-    echo "    WARNING: $env_name=${!env_name} is not a Linux aarch64 ELF; skipping $name" >&2
+    echo "    WARNING: $env_name=${!env_name} is not a Linux $arch ELF; skipping $name" >&2
     return 1
   fi
   for cand in "$(command -v "$name" 2>/dev/null)" \
               "/opt/homebrew/bin/$name" \
               "/usr/local/bin/$name"; do
     [ -n "$cand" ] && [ -x "$cand" ] || continue
-    if is_linux_aarch64_elf "$cand"; then
+    if is_linux_elf_for_arch "$arch" "$cand"; then
       printf '%s\n' "$cand"; return 0
     fi
   done
@@ -152,7 +168,7 @@ find_toolbox_binary() {
 }
 
 inject_debug_toolbox_into_initfs() {
-  local image="$1" debugfs_bin busybox curl_bin strace_bin
+  local image="$1" arch="$2" debugfs_bin busybox curl_bin strace_bin upper_arch
   [ "${DORY_SKIP_TOOLBOX_INJECT:-0}" = "1" ] && return 0
   [ -n "$image" ] && [ -f "$image" ] || return 0
   if ! debugfs_bin="$(find_debugfs)"; then
@@ -160,12 +176,13 @@ inject_debug_toolbox_into_initfs() {
     return 0
   fi
 
-  busybox="$(find_toolbox_binary busybox || true)"
-  curl_bin="$(find_toolbox_binary curl || true)"
-  strace_bin="$(find_toolbox_binary strace || true)"
-  [ -n "$busybox" ] || echo "    WARNING: no Linux aarch64 busybox found; debug toolbox will lack it (set DORY_TOOLBOX_BUSYBOX to a Linux static binary)"
-  [ -n "$curl_bin" ] || echo "    WARNING: no Linux aarch64 curl found; debug toolbox will lack it (set DORY_TOOLBOX_CURL to a Linux static binary)"
-  [ -n "$strace_bin" ] || echo "    WARNING: no Linux aarch64 strace found; debug toolbox will lack it (set DORY_TOOLBOX_STRACE to a Linux static binary)"
+  busybox="$(find_toolbox_binary busybox "$arch" || true)"
+  curl_bin="$(find_toolbox_binary curl "$arch" || true)"
+  strace_bin="$(find_toolbox_binary strace "$arch" || true)"
+  upper_arch="$(printf '%s' "$arch" | tr '[:lower:]-' '[:upper:]_')"
+  [ -n "$busybox" ] || echo "    WARNING: no Linux $arch busybox found; debug toolbox will lack it (set DORY_TOOLBOX_${upper_arch}_BUSYBOX to a Linux static binary)"
+  [ -n "$curl_bin" ] || echo "    WARNING: no Linux $arch curl found; debug toolbox will lack it (set DORY_TOOLBOX_${upper_arch}_CURL to a Linux static binary)"
+  [ -n "$strace_bin" ] || echo "    WARNING: no Linux $arch strace found; debug toolbox will lack it (set DORY_TOOLBOX_${upper_arch}_STRACE to a Linux static binary)"
   if [ -z "$busybox" ] && [ -z "$curl_bin" ] && [ -z "$strace_bin" ]; then
     echo "    WARNING: no valid Linux toolbox binaries available; skipping debug toolbox injection"
     return 0
@@ -292,6 +309,12 @@ if [ ! -x "$HELPERS/docker" ]; then
   fi
 fi
 bundle_cli docker "" ""
+# The docker compose v2 plugin, so `docker compose` works on the host with nothing else installed.
+if [ ! -x "$HELPERS/docker-compose" ]; then
+  COMPOSE_VER="v2.32.4"
+  curl -fsSL "https://github.com/docker/compose/releases/download/${COMPOSE_VER}/docker-compose-darwin-${DARCH}" -o "$HELPERS/docker-compose" 2>/dev/null && chmod +x "$HELPERS/docker-compose"
+fi
+bundle_cli docker-compose "" ""
 
 echo "==> Bundling zstd (decompresses the engine assets on first launch)…"
 ZSTD_BIN="$(command -v zstd)"
@@ -300,43 +323,116 @@ codesign --force --options runtime -s "${DORY_SIGN_ID:-Developer ID Application}
   || codesign --force -s - "$HELPERS/zstd"
 echo "    bundled Helpers/zstd"
 
-echo "==> Bundling the VM kernel + initfs, compressed (so the engine needs no \`container\` install)…"
-DORY_GUEST_KERNEL_ZST="$(dirname "$0")/../guest/out/Image.zst"
-if [ -n "${DORY_KERNEL:-}" ]; then
-  KERNEL_SRC="$DORY_KERNEL"
-elif [ -f "$DORY_GUEST_KERNEL_ZST" ]; then
-  KERNEL_SRC="$DORY_GUEST_KERNEL_ZST"
-else
-  KERNEL_SRC="$(ls -t "$SUPPORT"/kernels/vmlinux-* 2>/dev/null | head -1)"
-fi
-INITFS_SRC="${DORY_INITFS:-$(ls -t "$SUPPORT"/containers/*/initfs.ext4 2>/dev/null | head -1)}"
-INITFS_TO_BUNDLE="$INITFS_SRC"
-if [ -n "$KERNEL_SRC" ] && [ -f "$KERNEL_SRC" ]; then
-  if [ "${KERNEL_SRC##*.}" = "zst" ]; then
-    cp "$KERNEL_SRC" "$RESOURCES/dory-vm-kernel.zst"
+host_guest_arch() {
+  [ "$(uname -m)" = "x86_64" ] && printf '%s\n' "amd64" || printf '%s\n' "arm64"
+}
+
+env_for_arch() {
+  local prefix="$1" arch="$2" upper_arch
+  upper_arch="$(printf '%s' "$arch" | tr '[:lower:]-' '[:upper:]_')"
+  printf '%s_%s' "$prefix" "$upper_arch"
+}
+
+kernel_source_for_arch() {
+  local arch="$1" env_name
+  env_name="$(env_for_arch DORY_KERNEL "$arch")"
+  if [ -n "${!env_name:-}" ]; then printf '%s\n' "${!env_name}"; return 0; fi
+  if [ "$arch" = "$(host_guest_arch)" ] && [ -n "${DORY_KERNEL:-}" ]; then printf '%s\n' "$DORY_KERNEL"; return 0; fi
+  if [ "$arch" = "arm64" ] && [ -f "$(dirname "$0")/../guest/out/Image.zst" ]; then printf '%s\n' "$(dirname "$0")/../guest/out/Image.zst"; return 0; fi
+  if [ "$arch" = "amd64" ] && [ -f "$(dirname "$0")/../guest/out/bzImage-x86" ]; then printf '%s\n' "$(dirname "$0")/../guest/out/bzImage-x86"; return 0; fi
+  if [ "$arch" = "arm64" ] && [ "$arch" = "$(host_guest_arch)" ]; then ls -t "$SUPPORT"/kernels/vmlinux-* 2>/dev/null | head -1; fi
+}
+
+hv_kernel_source_for_arch() {
+  local arch="$1" env_name
+  env_name="$(env_for_arch DORY_HV_KERNEL "$arch")"
+  if [ -n "${!env_name:-}" ]; then printf '%s\n' "${!env_name}"; return 0; fi
+  if [ "$arch" = "$(host_guest_arch)" ] && [ -n "${DORY_HV_KERNEL:-}" ]; then printf '%s\n' "$DORY_HV_KERNEL"; return 0; fi
+  if [ "$arch" = "arm64" ] && [ -f "$(dirname "$0")/../guest/out/Image.zst" ]; then printf '%s\n' "$(dirname "$0")/../guest/out/Image.zst"; return 0; fi
+  if [ "$arch" = "amd64" ] && [ -f "$(dirname "$0")/../guest/out/vmlinux-x86.zst" ]; then printf '%s\n' "$(dirname "$0")/../guest/out/vmlinux-x86.zst"; return 0; fi
+  if [ "$arch" = "amd64" ] && [ -f "$(dirname "$0")/../guest/out/vmlinux-x86" ]; then printf '%s\n' "$(dirname "$0")/../guest/out/vmlinux-x86"; return 0; fi
+  if [ "$arch" = "arm64" ] && [ "$arch" = "$(host_guest_arch)" ]; then ls -t "$SUPPORT"/kernels/vmlinux-* 2>/dev/null | head -1; fi
+}
+
+initfs_source_for_arch() {
+  local arch="$1" env_name
+  env_name="$(env_for_arch DORY_INITFS "$arch")"
+  if [ -n "${!env_name:-}" ]; then printf '%s\n' "${!env_name}"; return 0; fi
+  if [ "$arch" = "$(host_guest_arch)" ] && [ -n "${DORY_INITFS:-}" ]; then printf '%s\n' "$DORY_INITFS"; return 0; fi
+  if [ -f "$(dirname "$0")/../guest/out/initfs-$arch.ext4" ]; then printf '%s\n' "$(dirname "$0")/../guest/out/initfs-$arch.ext4"; return 0; fi
+}
+
+bundle_hv_kernel_for_arch() {
+  local arch="$1" kernel_src kernel_out
+  kernel_src="$(hv_kernel_source_for_arch "$arch" || true)"
+  kernel_out="$RESOURCES/dory-hv-kernel-$arch.zst"
+  if [ -n "$kernel_src" ] && [ -f "$kernel_src" ]; then
+    if [ "${kernel_src##*.}" = "zst" ]; then
+      cp "$kernel_src" "$kernel_out"
+    else
+      zstd -19 -q -f "$kernel_src" -o "$kernel_out"
+    fi
+    echo "    bundled Resources/$(basename "$kernel_out") ($(du -h "$kernel_out" | awk '{print $1}'), from $(du -h "$kernel_src" | awk '{print $1}'))"
   else
-    zstd -19 -q -f "$KERNEL_SRC" -o "$RESOURCES/dory-vm-kernel.zst"
+    echo "    WARNING: no $arch dory-hv kernel found; run guest/kernel/build.sh $arch or set $(env_for_arch DORY_HV_KERNEL "$arch")"
   fi
-  echo "    bundled Resources/dory-vm-kernel.zst ($(du -h "$RESOURCES/dory-vm-kernel.zst" | awk '{print $1}'), from $(du -h "$KERNEL_SRC" | awk '{print $1}'))"
-else
-  echo "    WARNING: no kernel found at guest/out/Image.zst or under $SUPPORT/kernels; run guest/kernel/build.sh or set DORY_KERNEL"
-fi
-if [ -n "$INITFS_SRC" ] && [ -f "$INITFS_SRC" ]; then
-  DORY_GUEST_AGENT="$(dirname "$0")/../guest/out/dory-agent"
-  inject_dory_agent_into_initfs "$INITFS_SRC" "$DORY_GUEST_AGENT" "/tmp/dory-initfs-agent-$$.ext4"
-  QEMU_X86_64="$(find_qemu_x86_64_static || true)"
-  if [ -n "$QEMU_X86_64" ]; then
-    inject_qemu_into_initfs "$INITFS_TO_BUNDLE" "$QEMU_X86_64"
+}
+
+bundle_guest_assets_for_arch() {
+  local arch="$1" kernel_src initfs_src kernel_out initfs_out agent qemu_guest_arch qemu_static
+  kernel_src="$(kernel_source_for_arch "$arch" || true)"
+  initfs_src="$(initfs_source_for_arch "$arch" || true)"
+  kernel_out="$RESOURCES/dory-vm-kernel-$arch.zst"
+  initfs_out="$RESOURCES/dory-vm-initfs-$arch.ext4.zst"
+
+  if [ -n "$kernel_src" ] && [ -f "$kernel_src" ]; then
+    if [ "${kernel_src##*.}" = "zst" ]; then
+      cp "$kernel_src" "$kernel_out"
+    else
+      zstd -19 -q -f "$kernel_src" -o "$kernel_out"
+    fi
+    echo "    bundled Resources/$(basename "$kernel_out") ($(du -h "$kernel_out" | awk '{print $1}'), from $(du -h "$kernel_src" | awk '{print $1}'))"
   else
-    echo "    WARNING: qemu-x86_64-static not found; amd64 binfmt will rely on the runtime installer fallback"
+    echo "    WARNING: no $arch kernel found; run guest/kernel/build.sh $arch or set $(env_for_arch DORY_KERNEL "$arch")"
   fi
-  inject_debug_toolbox_into_initfs "$INITFS_TO_BUNDLE"
-  # --long catches the large zero-fill region in the sparse ext4 (512MB -> ~31MB).
-  zstd -19 --long=27 -q -f "$INITFS_TO_BUNDLE" -o "$RESOURCES/dory-vm-initfs.ext4.zst"
-  echo "    bundled Resources/dory-vm-initfs.ext4.zst ($(du -h "$RESOURCES/dory-vm-initfs.ext4.zst" | awk '{print $1}'), from $(du -h "$INITFS_TO_BUNDLE" | awk '{print $1}'))"
-  [ "$INITFS_TO_BUNDLE" = "$INITFS_SRC" ] || rm -f "$INITFS_TO_BUNDLE"
-else
-  echo "    WARNING: no initfs found — set DORY_INITFS to a built initfs.ext4"
+
+  INITFS_TO_BUNDLE="$initfs_src"
+  if [ -n "$initfs_src" ] && [ -f "$initfs_src" ]; then
+    agent="$(dirname "$0")/../guest/out/dory-agent-$arch"
+    [ -f "$agent" ] || agent="$(dirname "$0")/../guest/out/dory-agent"
+    inject_dory_agent_into_initfs "$initfs_src" "$agent" "/tmp/dory-initfs-$arch-agent-$$.ext4"
+    [ "$arch" = "arm64" ] && qemu_guest_arch="amd64" || qemu_guest_arch="arm64"
+    qemu_static="$(find_qemu_static "$qemu_guest_arch" || true)"
+    if [ -n "$qemu_static" ]; then
+      inject_qemu_into_initfs "$INITFS_TO_BUNDLE" "$qemu_static" "$qemu_guest_arch"
+    else
+      echo "    WARNING: qemu static interpreter for $qemu_guest_arch not found; non-native binfmt will rely on runtime fallback"
+    fi
+    inject_debug_toolbox_into_initfs "$INITFS_TO_BUNDLE" "$arch"
+    # --long catches the large zero-fill region in the sparse ext4.
+    zstd -19 --long=27 -q -f "$INITFS_TO_BUNDLE" -o "$initfs_out"
+    echo "    bundled Resources/$(basename "$initfs_out") ($(du -h "$initfs_out" | awk '{print $1}'), from $(du -h "$INITFS_TO_BUNDLE" | awk '{print $1}'))"
+    [ "$INITFS_TO_BUNDLE" = "$initfs_src" ] || rm -f "$INITFS_TO_BUNDLE"
+  else
+    echo "    WARNING: no $arch initfs found; run guest/initfs/build.sh or set $(env_for_arch DORY_INITFS "$arch")"
+  fi
+}
+
+echo "==> Bundling VM kernel + initfs assets, compressed (so the engine needs no container install)…"
+for asset_arch in ${DORY_BUNDLE_ARCHES:-arm64 amd64}; do
+  bundle_hv_kernel_for_arch "$asset_arch"
+  bundle_guest_assets_for_arch "$asset_arch"
+done
+
+HOST_GUEST_ARCH="$(host_guest_arch)"
+if [ -f "$RESOURCES/dory-hv-kernel-$HOST_GUEST_ARCH.zst" ]; then
+  ln -sf "dory-hv-kernel-$HOST_GUEST_ARCH.zst" "$RESOURCES/dory-hv-kernel.zst"
+fi
+if [ -f "$RESOURCES/dory-vm-kernel-$HOST_GUEST_ARCH.zst" ]; then
+  ln -sf "dory-vm-kernel-$HOST_GUEST_ARCH.zst" "$RESOURCES/dory-vm-kernel.zst"
+fi
+if [ -f "$RESOURCES/dory-vm-initfs-$HOST_GUEST_ARCH.ext4.zst" ]; then
+  ln -sf "dory-vm-initfs-$HOST_GUEST_ARCH.ext4.zst" "$RESOURCES/dory-vm-initfs.ext4.zst"
 fi
 
 if [ "${DORY_BUNDLE_LEGACY:-0}" = "1" ]; then
@@ -352,7 +448,6 @@ if [ "${DORY_BUNDLE_LEGACY:-0}" = "1" ]; then
   echo "    bundled Helpers/container + libexec"
 fi
 
-TOTAL="$(du -sh "$RESOURCES"/dory-vm-* "$HELPERS"/dory-vm 2>/dev/null | awk '{s+=$1} END{print s}')"
 echo "==> Payload injected into $APP"
-echo "    Engine payload ≈ $(du -ch "$RESOURCES"/dory-vm-*.zst "$HELPERS"/dory-vm 2>/dev/null | tail -1 | awk '{print $1}') on disk (engine image pulled on first launch)"
+echo "    Engine payload ≈ $(du -ch "$RESOURCES"/dory-hv-*.zst "$RESOURCES"/dory-vm-*.zst "$HELPERS"/dory-hv "$HELPERS"/dory-vm 2>/dev/null | tail -1 | awk '{print $1}') on disk (engine image pulled on first launch)"
 echo "    Re-sign the bundle (codesign --deep) before notarization so the payload is sealed."

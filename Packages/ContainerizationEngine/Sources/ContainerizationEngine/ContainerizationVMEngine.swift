@@ -51,7 +51,7 @@ public struct ContainerizationVMEngine: Sendable {
     /// caller can wait on it, exec into it, and tear it down.
     @discardableResult
     public func run(_ spec: RunSpec) async throws -> LinuxContainer {
-        let kernel = Kernel(path: kernelPath, platform: .linuxArm)
+        let kernel = Kernel(path: kernelPath, platform: Self.hostLinuxPlatform())
 
         var network: Network?
         if #available(macOS 26, *) {
@@ -108,5 +108,13 @@ public struct ContainerizationVMEngine: Sendable {
 
     public func wait(_ container: LinuxContainer) async throws -> ExitStatus {
         try await container.wait()
+    }
+
+    private static func hostLinuxPlatform() -> SystemPlatform {
+        #if arch(arm64)
+        .linuxArm
+        #else
+        .linuxAmd
+        #endif
     }
 }

@@ -7,19 +7,19 @@
 # Examples:
 #   scripts/readiness.sh --engines dory
 #   scripts/readiness.sh --engines orbstack,dory --memory-count 5
-#   RUN_DOMAINS=1 RUN_AMD64=1 scripts/readiness.sh --engines dory,orbstack
+#   RUN_DOMAINS=1 RUN_NONNATIVE_ARCH=1 scripts/readiness.sh --engines dory,orbstack
 #
 # Environment knobs:
 #   DORY_SOCK, ORBSTACK_SOCK, DOCKER_DESKTOP_SOCK
 #   READINESS_WORKDIR, READINESS_SETTLE, READINESS_ALPINE_IMAGE, READINESS_NGINX_IMAGE
-#   RUN_MEMORY=0|1, RUN_AMD64=0|1, RUN_ONLINE=0|1, RUN_DOMAINS=0|1, RUN_DIRECT_IP=0|1, RUN_FILE_WATCH=0|1, RUN_K8S=0|1, RUN_MACHINES=0|1, RUN_MACHINE_RECIPE=0|1, RUN_USB=0|1, RUN_VPN=0|1
+#   RUN_MEMORY=0|1, RUN_NONNATIVE_ARCH=0|1, RUN_AMD64=0|1 (legacy alias), RUN_ONLINE=0|1, RUN_DOMAINS=0|1, RUN_DIRECT_IP=0|1, RUN_FILE_WATCH=0|1, RUN_K8S=0|1, RUN_MACHINES=0|1, RUN_MACHINE_RECIPE=0|1, RUN_USB=0|1, RUN_VPN=0|1
 #   DORY_DIRECT_IP_INTERFACE_FILE points at the helper-written utun interface file
 #   READINESS_FILE_WATCH_IMAGE for --file-watch (default: alpine image)
 #   READINESS_MACHINE_RECIPE, READINESS_MACHINE_RECIPE_COMMAND for --machine-recipe
 #   RUN_DEBUG_SHELL=0|1, DORY_DEBUG_AGENT_SOCK, DORY_DEBUG_CONTAINER_ID
 #   RUN_CLOCK_SYNC=0|1, DORY_CLOCK_SYNC_AGENT_SOCK, DORY_CLOCK_SYNC_PID, DORY_CLOCK_SYNC_TOLERANCE_MS
 #   RUN_GUEST_AGENT=0|1, DORY_HV_BIN, DORY_GUEST_KERNEL, DORY_GUEST_INITFS
-#   DORY_USB_TEST_BUSID, DORY_USB_AGENT_SOCK, DORY_USBIP_SOCKET_FD for --usb hardware smoke
+#   DORY_USB_TEST_BUSID, optional DORY_USB_MODE=userAuthorized|seize|capture for --usb hardware smoke
 #   DORY_REQUIRE_VPN=1 makes --vpn fail when no active VPN-like interface or route is detected
 #   STOP_ORBSTACK=1 to quit OrbStack before running Dory-only checks
 set -u
@@ -31,7 +31,7 @@ NGINX_IMAGE="${READINESS_NGINX_IMAGE:-nginx:alpine}"
 MEMORY_COUNT="${READINESS_MEMORY_COUNT:-3}"
 SETTLE="${READINESS_SETTLE:-8}"
 RUN_MEMORY="${RUN_MEMORY:-1}"
-RUN_AMD64="${RUN_AMD64:-1}"
+RUN_NONNATIVE_ARCH="${RUN_NONNATIVE_ARCH:-${RUN_AMD64:-1}}"
 RUN_ONLINE="${RUN_ONLINE:-0}"
 RUN_DOMAINS="${RUN_DOMAINS:-0}"
 RUN_DIRECT_IP="${RUN_DIRECT_IP:-0}"
@@ -76,7 +76,9 @@ Options:
   --memory-count N     Containers to run for memory measurements (default: $MEMORY_COUNT)
   --settle SECONDS     Wait time before/after memory workload (default: $SETTLE)
   --skip-memory        Skip memory measurements
-  --skip-amd64         Skip linux/amd64 emulation check
+  --skip-nonnative-arch
+                       Skip the non-native architecture emulation check
+  --skip-amd64         Legacy alias for --skip-nonnative-arch
   --online             Run online registry search check
   --domains            Run *.dory.local / *.orb.local checks when integration is active
   --direct-ip          Run Dory direct container-IP ping + browser check (requires system integration route)
@@ -88,7 +90,7 @@ Options:
   --guest-agent        Run dory-hv guest-agent vsock smoke (requires DORY_GUEST_KERNEL and DORY_GUEST_INITFS)
   --dax                Run dory-hv virtio-fs DAX coherence probe (requires a signed dory-hv, DORY_HV_BIN)
   --rosetta            Run Rosetta x86-64 machine execution smoke (requires a signed dory-vm + Rosetta; DORY_VM_HELPER)
-  --usb                Run USB/IP hardware smoke when DORY_USB_TEST_BUSID and agent socket settings are set
+  --usb                Run USB/IP hardware smoke when DORY_USB_TEST_BUSID is set
   --vpn                Record route/DNS state and run userspace networking checks during VPN coexistence testing
   --debug-shell        Run debug shell smoke when DORY_DEBUG_AGENT_SOCK and DORY_DEBUG_CONTAINER_ID are set
   --clock-sync         Run host-wake clock sync smoke when agent socket and helper PID are available
@@ -107,7 +109,7 @@ while [ "$#" -gt 0 ]; do
     --memory-count) MEMORY_COUNT="$2"; shift 2 ;;
     --settle) SETTLE="$2"; shift 2 ;;
     --skip-memory) RUN_MEMORY=0; shift ;;
-    --skip-amd64) RUN_AMD64=0; shift ;;
+    --skip-nonnative-arch|--skip-amd64) RUN_NONNATIVE_ARCH=0; shift ;;
     --online) RUN_ONLINE=1; shift ;;
     --domains) RUN_DOMAINS=1; shift ;;
     --direct-ip) RUN_DIRECT_IP=1; shift ;;
@@ -170,6 +172,30 @@ skip_case() {
 
 mb() {
   awk -v b="${1:-0}" 'BEGIN { printf "%.0f", b / 1048576 }'
+}
+
+host_guest_arch() {
+  [ "$(uname -m)" = "x86_64" ] && printf '%s\n' "amd64" || printf '%s\n' "arm64"
+}
+
+nonnative_guest_arch() {
+  [ "$(host_guest_arch)" = "amd64" ] && printf '%s\n' "arm64" || printf '%s\n' "amd64"
+}
+
+binfmt_handler_for_arch() {
+  case "$1" in
+    amd64) printf '%s\n' "qemu-x86_64" ;;
+    arm64) printf '%s\n' "qemu-aarch64" ;;
+    *) echo "unsupported arch: $1" >&2; return 2 ;;
+  esac
+}
+
+uname_pattern_for_arch() {
+  case "$1" in
+    amd64) printf '%s\n' 'x86_64|amd64' ;;
+    arm64) printf '%s\n' 'aarch64|arm64' ;;
+    *) echo "unsupported arch: $1" >&2; return 2 ;;
+  esac
 }
 
 used_mem() {
@@ -445,13 +471,18 @@ test_resource_limits_update() {
   docker_e rm -f "$name" >/dev/null
 }
 
-test_amd64() {
-  local name="$PREFIX-binfmt"
+test_nonnative_arch() {
+  local arch handler pattern name
+  arch="$(nonnative_guest_arch)"
+  handler="$(binfmt_handler_for_arch "$arch")"
+  pattern="$(uname_pattern_for_arch "$arch")"
+  name="$PREFIX-binfmt"
   docker_e run --rm --privileged --name "$name" --label "$LABEL_KEY=$RUN_ID" "$ALPINE_IMAGE" \
-    sh -c 'test -e /proc/sys/fs/binfmt_misc/register || { echo "binfmt_misc not mounted" >&2; exit 1; }
-           test -e /proc/sys/fs/binfmt_misc/qemu-x86_64 || { echo "qemu-x86_64 handler not registered" >&2; exit 1; }
-           grep -qx enabled /proc/sys/fs/binfmt_misc/qemu-x86_64 || { echo "qemu-x86_64 handler not enabled" >&2; exit 1; }'
-  docker_e run --rm --platform linux/amd64 --label "$LABEL_KEY=$RUN_ID" "$ALPINE_IMAGE" uname -m | grep -Eq 'x86_64|amd64'
+    sh -c 'handler="$1"
+           test -e /proc/sys/fs/binfmt_misc/register || { echo "binfmt_misc not mounted" >&2; exit 1; }
+           test -e "/proc/sys/fs/binfmt_misc/$handler" || { echo "$handler handler not registered" >&2; exit 1; }
+           grep -qx enabled "/proc/sys/fs/binfmt_misc/$handler" || { echo "$handler handler not enabled" >&2; exit 1; }' sh "$handler"
+  docker_e run --rm --platform "linux/$arch" --label "$LABEL_KEY=$RUN_ID" "$ALPINE_IMAGE" uname -m | grep -Eq "$pattern"
 }
 
 test_online_search() {
@@ -806,8 +837,9 @@ test_usb() {
     echo "device $DORY_USB_TEST_BUSID not present in 'dory usb ls'" >&2
     return 1
   fi
-  "$ROOT/scripts/dory" usb attach "$DORY_USB_TEST_BUSID" "${DORY_USBIP_PORT:-0}" || return 1
-  "$ROOT/scripts/dory" usb detach "$DORY_USB_TEST_BUSID" "${DORY_USBIP_PORT:-0}" || return 1
+  local mode="${DORY_USB_MODE:-userAuthorized}"
+  "$ROOT/scripts/dory" usb attach "$DORY_USB_TEST_BUSID" --mode "$mode" || return 1
+  "$ROOT/scripts/dory" usb detach "$DORY_USB_TEST_BUSID" || return 1
 }
 
 test_debug_shell() {
@@ -874,10 +906,10 @@ run_engine() {
   run_case "$CURRENT_ENGINE" "commit + save/load image archive" test_image_archive_commit
   run_case "$CURRENT_ENGINE" "memory/cpu resource limits + update" test_resource_limits_update
 
-  if [ "$RUN_AMD64" = "1" ]; then
-    run_case "$CURRENT_ENGINE" "linux/amd64 emulation" test_amd64
+  if [ "$RUN_NONNATIVE_ARCH" = "1" ]; then
+    run_case "$CURRENT_ENGINE" "linux/$(nonnative_guest_arch) emulation" test_nonnative_arch
   else
-    skip_case "$CURRENT_ENGINE" "linux/amd64 emulation" "disabled"
+    skip_case "$CURRENT_ENGINE" "linux/$(nonnative_guest_arch) emulation" "disabled"
   fi
 
   if [ "$RUN_ONLINE" = "1" ]; then
@@ -940,7 +972,9 @@ run_engine() {
     skip_case "$CURRENT_ENGINE" "dory-hv virtio-fs DAX coherence" "enable with --dax (needs a signed dory-hv)"
   fi
 
-  if [ "$RUN_ROSETTA" = "1" ]; then
+  if [ "$RUN_ROSETTA" = "1" ] && [ "$(host_guest_arch)" = "amd64" ]; then
+    skip_case "$CURRENT_ENGINE" "Rosetta x86-64 machine execution" "N/A on Intel hosts; amd64 is native"
+  elif [ "$RUN_ROSETTA" = "1" ]; then
     run_case "$CURRENT_ENGINE" "Rosetta x86-64 machine execution" test_rosetta
   else
     skip_case "$CURRENT_ENGINE" "Rosetta x86-64 machine execution" "enable with --rosetta (needs a signed dory-vm + Rosetta installed)"
@@ -960,10 +994,6 @@ run_engine() {
 
   if [ "$RUN_USB" = "1" ] && [ -z "${DORY_USB_TEST_BUSID:-}" ]; then
     skip_case "$CURRENT_ENGINE" "USB/IP hardware smoke" "set DORY_USB_TEST_BUSID"
-  elif [ "$RUN_USB" = "1" ] && { [ -z "${DORY_USB_AGENT_SOCK:-}" ] || [ -z "${DORY_USBIP_SOCKET_FD:-}" ]; }; then
-    skip_case "$CURRENT_ENGINE" "USB/IP hardware smoke" "set DORY_USB_AGENT_SOCK and DORY_USBIP_SOCKET_FD"
-  elif [ "$RUN_USB" = "1" ] && ! grep -q 'usb)' "$ROOT/scripts/dory"; then
-    skip_case "$CURRENT_ENGINE" "USB/IP hardware smoke" "USB CLI attach surface pending"
   elif [ "$RUN_USB" = "1" ]; then
     run_case "$CURRENT_ENGINE" "USB/IP hardware smoke" test_usb
   else

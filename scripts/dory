@@ -10,6 +10,10 @@ RECIPE_DIR="${DORY_RECIPE_DIR:-$HOME/.dory/recipes}"
 BUILTIN_RECIPE_DIR="${DORY_BUILTIN_RECIPE_DIR:-$(cd "$(dirname "$0")/.." && pwd)/Dory/Resources/Recipes}"
 DOCKER_BIN="${DORY_DOCKER_BIN:-$(command -v docker || echo docker)}"
 
+host_guest_arch() {
+  [ "$(uname -m)" = "x86_64" ] && printf '%s\n' "amd64" || printf '%s\n' "arm64"
+}
+
 # The framework-engine helper (Rosetta-fast x86 + host mounts via Apple's containerization), bundled
 # in the app and signed with the virtualization entitlement. Falls back to a local dev build.
 vm_helper() {
@@ -98,7 +102,7 @@ recipe_ls() {
     id="$(recipe_field name "$file")"
     summary="$(recipe_field summary "$file")"
     distro="$(recipe_field distro "$file")"
-    arch="$(recipe_field arch "$file")"; [ -n "$arch" ] || arch="arm64"
+    arch="$(recipe_field arch "$file")"; [ -n "$arch" ] || arch="$(host_guest_arch)"
     case "$file" in "$RECIPE_DIR"/*) source="user" ;; *) source="built-in" ;; esac
     [ -n "$id" ] && printf '%-18s %-14s %-7s %s [%s]\n' "$id" "$distro" "$arch" "$summary" "$source"
   done < <(recipe_files | sort)
@@ -153,7 +157,7 @@ EOF
 machine_recipe_plan() {
   local recipe="$1" name="$2" out="$3"
   python3 - "$recipe" "$name" "$out" <<'PY'
-import json, os, shlex, sys, urllib.parse
+import json, os, platform, shlex, sys, urllib.parse
 
 recipe_path, machine_name, out_dir = sys.argv[1:4]
 host_user = os.environ.get("USER") or os.environ.get("LOGNAME") or "dory"
@@ -257,7 +261,7 @@ guest_user_template = str(user_cfg.get("name", "{{host_user}}"))
 guest_user = sub(guest_user_template, guest_user_template.replace("{{host_user}}", host_user))
 recipe = sub(recipe, guest_user)
 distro = str(recipe.get("distro") or "ubuntu:24.04")
-arch = str(recipe.get("arch") or "arm64")
+arch = str(recipe.get("arch") or ("amd64" if platform.machine() == "x86_64" else "arm64"))
 resources = recipe.get("resources") or {}
 packages = recipe.get("packages") or []
 runcmd = recipe.get("runcmd") or []
@@ -565,7 +569,7 @@ inspect_path, image_ref, name, bridge = sys.argv[1:5]
 image = json.load(open(inspect_path))[0]
 labels = image.get("Config", {}).get("Labels") or {}
 boot = labels.get("dory.machine.boot", "systemd")
-arch = labels.get("dory.machine.arch", "arm64")
+arch = labels.get("dory.machine.arch", "amd64" if __import__("platform").machine() == "x86_64" else "arm64")
 container_labels = {
     "dory.machine": labels.get("dory.machine", labels.get("dory.snapshot.of", name)),
     "dory.machine.version": labels.get("dory.machine.version", ""),
