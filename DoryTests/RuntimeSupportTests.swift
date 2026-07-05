@@ -82,6 +82,18 @@ struct RuntimeSupportTests {
         #expect(argumentValue(after: "--cpus", in: arguments) == "6")
     }
 
+    @Test func sharedVMEngineArgumentsShareHomeAtItsRealPath() {
+        let arguments = SharedVMProvisioner.engineArguments(
+            config: SharedVMProvisioner.Config(cpus: 4, memory: "2G"),
+            kernel: "/tmp/kernel",
+            gvproxy: "/tmp/gvproxy",
+            rootfs: nil
+        )
+
+        let home = NSHomeDirectory()
+        #expect(argumentValue(after: "--share", in: arguments) == "home=\(home):rw:at=\(home)")
+    }
+
     @Test func wakeClockResyncSignalsLiveHelperOnly() {
         var sent: [(pid_t, Int32)] = []
         let signaler: (pid_t, Int32) -> Int32 = { pid, signal in

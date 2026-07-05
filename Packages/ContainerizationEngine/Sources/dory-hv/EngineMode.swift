@@ -359,8 +359,9 @@ enum EngineMode {
         script += BinfmtRegistration.bootCommands()
         for share in shares {
             let tag = shellQuote(share.tag)
-            let mountPoint = shellQuote("/mnt/dory/\(share.tag)")
-            let options = share.readOnly ? "ro" : "rw"
+            let mountPoint = shellQuote(share.guestMountPoint ?? "/mnt/dory/\(share.tag)")
+            var options = share.readOnly ? "ro" : "rw"
+            if share.dax { options += ",dax=always" }
             script.append("mkdir -p \(mountPoint)")
             script.append("mount -t virtiofs -o \(options) \(tag) \(mountPoint) || echo VIRTIOFS-MOUNT-FAILED-\(share.tag)")
         }

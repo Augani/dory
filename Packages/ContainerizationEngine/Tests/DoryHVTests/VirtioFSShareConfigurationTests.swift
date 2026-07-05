@@ -55,6 +55,24 @@ struct VirtioFSShareConfigurationTests {
         }
     }
 
+    @Test func parsesGuestMountPointFromAtOption() throws {
+        let share = try VirtioFSShareConfiguration(argument: "home=/Users/example:rw:at=/Users/example")
+        #expect(share.path == "/Users/example")
+        #expect(share.guestMountPoint == "/Users/example")
+        #expect(!share.readOnly)
+    }
+
+    @Test func defaultsGuestMountPointToNil() throws {
+        let share = try VirtioFSShareConfiguration(argument: "src=/Users/example/project")
+        #expect(share.guestMountPoint == nil)
+    }
+
+    @Test func rejectsRelativeGuestMountPoint() {
+        #expect(throws: (any Error).self) {
+            _ = try VirtioFSShareConfiguration(argument: "home=/Users/example:at=relative/path")
+        }
+    }
+
     @Test func makeBackendWithoutDaxHasNoDaxConfiguration() throws {
         let dir = FileManager.default.temporaryDirectory.path
         let share = try VirtioFSShareConfiguration(argument: "t=\(dir)")

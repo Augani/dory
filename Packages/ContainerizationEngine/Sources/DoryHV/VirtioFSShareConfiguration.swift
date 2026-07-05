@@ -5,8 +5,12 @@ public struct VirtioFSShareConfiguration: Equatable, Sendable {
     public var path: String
     public var readOnly: Bool
     public var dax: Bool
+    /// Where the guest mounts this share. `nil` mounts under `/mnt/dory/<tag>`; a value mounts at
+    /// that absolute guest path so a host directory can appear at its identical macOS path (e.g.
+    /// `$HOME` at `$HOME`), which is what makes `-v /Users/…:/…` bind mounts resolve transparently.
+    public var guestMountPoint: String?
 
-    public init(tag: String, path: String, readOnly: Bool = false, dax: Bool = false) throws {
+    public init(tag: String, path: String, readOnly: Bool = false, dax: Bool = false, guestMountPoint: String? = nil) throws {
         guard !tag.isEmpty, Array(tag.utf8).count < VirtioFS.tagByteCount else {
             throw VMError.invalidConfiguration("invalid virtio-fs share tag: \(tag)")
         }
@@ -16,10 +20,14 @@ public struct VirtioFSShareConfiguration: Equatable, Sendable {
         guard !path.isEmpty else {
             throw VMError.invalidConfiguration("virtio-fs share \(tag) has an empty host path")
         }
+        if let guestMountPoint, !guestMountPoint.hasPrefix("/") {
+            throw VMError.invalidConfiguration("virtio-fs share \(tag) guest mount point must be absolute: \(guestMountPoint)")
+        }
         self.tag = tag
         self.path = path
         self.readOnly = readOnly
         self.dax = dax
+        self.guestMountPoint = guestMountPoint
     }
 
     public init(argument: String) throws {
@@ -32,17 +40,20 @@ public struct VirtioFSShareConfiguration: Equatable, Sendable {
         var path = components.removeFirst()
         var readOnly = false
         var dax = false
+        var guestMountPoint: String?
         for option in components {
             switch option {
             case "ro": readOnly = true
             case "rw": readOnly = false
             case "dax": dax = true
             case "": path += ":"
+            case let option where option.hasPrefix("at="):
+                guestMountPoint = String(option.dropFirst(3))
             default:
-                throw VMError.invalidConfiguration("unknown virtio-fs share option ':\(option)' (expected ro, rw, or dax)")
+                throw VMError.invalidConfiguration("unknown virtio-fs share option ':\(option)' (expected ro, rw, dax, or at=/guest/path)")
             }
         }
-        try self.init(tag: tag, path: path, readOnly: readOnly, dax: dax)
+        try self.init(tag: tag, path: path, readOnly: readOnly, dax: dax, guestMountPoint: guestMountPoint)
     }
 
     public func makeBackend(daxGuestBase: UInt64? = nil) throws -> VirtioFS {
