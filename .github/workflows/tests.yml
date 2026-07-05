@@ -19,3 +19,43 @@ jobs:
         run: xcodebuild -downloadComponent MetalToolchain || true
       - name: Unit tests (full suite; known timing flakes allowlisted)
         run: bash scripts/ci-test.sh
+
+  build-x86_64:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select newest installed Xcode
+        run: |
+          newest="$(ls -d /Applications/Xcode*.app | sort -V | tail -1)"
+          echo "selected: $newest"
+          echo "DEVELOPER_DIR=$newest/Contents/Developer" >> "$GITHUB_ENV"
+      - name: Download Metal toolchain (Xcode 26 ships without it)
+        run: xcodebuild -downloadComponent MetalToolchain || true
+      - name: Cross-compile Intel slice
+        run: |
+          xcodebuild build \
+            -project Dory.xcodeproj \
+            -scheme Dory \
+            -destination 'generic/platform=macOS' \
+            ARCHS=x86_64 \
+            ONLY_ACTIVE_ARCH=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO
+
+  containerization-engine:
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select newest installed Xcode
+        run: |
+          newest="$(ls -d /Applications/Xcode*.app | sort -V | tail -1)"
+          echo "selected: $newest"
+          echo "DEVELOPER_DIR=$newest/Contents/Developer" >> "$GITHUB_ENV"
+      - name: DoryHV unit tests
+        working-directory: Packages/ContainerizationEngine
+        run: swift test
+      - name: Universal helper build
+        working-directory: Packages/ContainerizationEngine
+        run: swift build --arch arm64 --arch x86_64

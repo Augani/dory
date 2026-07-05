@@ -5,9 +5,10 @@
 # after starting N identical containers, in each mode. The delta is the memory those containers and
 # their VM(s) cost. Backend-agnostic — no internal APIs, just the public CLIs and vm_stat.
 #
-# Requires a real macOS 26 (Tahoe) machine with hardware virtualization: Dory's engine running
-# (shared VM, socket at ~/.dory/dory.sock) and Apple's `container` CLI for the per-container mode.
-# This CANNOT run on GitHub-hosted runners — they are VMs without nested virtualization.
+# Requires a real Mac with hardware virtualization: Dory's engine running (shared VM, socket at
+# ~/.dory/dory.sock by default). The Apple `container` per-container comparison is included only
+# when the `container` CLI is present; it requires macOS 26+ and is N/A on Intel macOS 15.
+# This CANNOT run on GitHub-hosted runners because they are VMs without nested virtualization.
 #
 # Usage:
 #   scripts/benchmark.sh [count] [image]             # memory benchmark
@@ -17,7 +18,7 @@ set -euo pipefail
 COUNT="${1:-2}"
 IMAGE="${2:-alpine:latest}"
 DORY_SOCK="${DORY_SOCK:-$HOME/.dory/dory.sock}"
-CONTAINER_BIN="$(command -v container || echo /opt/homebrew/bin/container)"
+CONTAINER_BIN="${BENCH_CONTAINER_BIN:-$(command -v container || echo /opt/homebrew/bin/container)}"
 SETTLE="${BENCH_SETTLE:-12}"
 LABEL="dory-bench"
 
@@ -135,8 +136,13 @@ cleanup_shared() {
     | xargs -I{} docker -H "unix://$DORY_SOCK" rm -f {} >/dev/null 2>&1 || true
 }
 cleanup_percontainer() {
+  has_container_cli || return 0
   "$CONTAINER_BIN" ls -aq 2>/dev/null | grep "^$LABEL-" 2>/dev/null \
     | xargs -I{} "$CONTAINER_BIN" rm -f {} >/dev/null 2>&1 || true
+}
+
+has_container_cli() {
+  [ -x "$CONTAINER_BIN" ] || command -v "$CONTAINER_BIN" >/dev/null 2>&1
 }
 
 measure() { # mode -> prints delta bytes
@@ -163,21 +169,39 @@ echo "==> Benchmarking $COUNT × $IMAGE  (settle ${SETTLE}s)…"
 trap 'cleanup_shared; cleanup_percontainer' EXIT
 
 SHARED="$(measure shared)"
-PERCON="$(measure percontainer)"
-RATIO="$(awk -v p="$PERCON" -v s="$SHARED" 'BEGIN { printf "%.1f", (s>0)? p/s : 0 }')"
+PERCON=""
+RATIO="null"
+if has_container_cli; then
+  PERCON="$(measure percontainer)"
+  RATIO="$(awk -v p="$PERCON" -v s="$SHARED" 'BEGIN { printf "%.1f", (s>0)? p/s : 0 }')"
+else
+  echo "==> Skipping Apple container per-container comparison: container CLI not found"
+fi
 
 printf '\n%-28s %8s MB\n' "Dory — one shared VM" "$(mb "$SHARED")"
-printf '%-28s %8s MB\n'   "One VM per container"  "$(mb "$PERCON")"
-printf '%-28s %8sx\n\n'   "Less memory"            "$RATIO"
+if [ -n "$PERCON" ]; then
+  printf '%-28s %8s MB\n'   "One VM per container"  "$(mb "$PERCON")"
+  printf '%-28s %8sx\n\n'   "Less memory"            "$RATIO"
+else
+  printf '%-28s %8s\n\n'    "One VM per container"  "N/A"
+fi
+
+percontainer_json="null"
+percontainer_mb_json="null"
+if [ -n "$PERCON" ]; then
+  percontainer_json="$PERCON"
+  percontainer_mb_json="$(mb "$PERCON")"
+fi
 
 cat > benchmark-results.json <<JSON
 {
   "containers": $COUNT,
   "image": "$IMAGE",
+  "hostArch": "$(uname -m)",
   "sharedVmBytes": $SHARED,
-  "perContainerBytes": $PERCON,
+  "perContainerBytes": $percontainer_json,
   "sharedVmMb": $(mb "$SHARED"),
-  "perContainerMb": $(mb "$PERCON"),
+  "perContainerMb": $percontainer_mb_json,
   "ratio": $RATIO
 }
 JSON

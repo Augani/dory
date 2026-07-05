@@ -11,10 +11,9 @@ name: Release
 #   NOTARY_TEAM_ID               Apple Developer Team ID
 #   NOTARY_APPLE_PASSWORD        app-specific password for that Apple ID
 #
-# NOTE: Dory targets macOS 26 (Tahoe) and needs Xcode 27. GitHub-hosted runners do not offer that
-# toolchain yet, so point `runs-on` at a self-hosted macOS 26 runner (label it `[self-hosted, macOS]`
-# and update below). `macos-15` keeps the workflow valid out of the box, but it will fail to compile
-# until hosted runners catch up.
+# NOTE: Dory targets macOS 15+ and releases as a universal Intel + Apple silicon app. Engine-bundled
+# releases still need the guest assets present on the runner; set BUNDLE_ENGINE=1 only on a runner
+# that has built or fetched those assets.
 
 on:
   push:
@@ -30,8 +29,8 @@ permissions:
 
 jobs:
   release:
-    # Builds on a recent macOS image (macOS 26 Tahoe or newer). Override the runner by setting the
-    # repo variable RELEASE_RUNNER (e.g. macos-26 or a self-hosted label) in Settings, Variables.
+    # Override the runner by setting the repo variable RELEASE_RUNNER to a hosted image or a
+    # self-hosted label in Settings, Variables.
     runs-on: ${{ vars.RELEASE_RUNNER || 'macos-latest' }}
     outputs:
       version: ${{ steps.ver.outputs.version }}
@@ -79,9 +78,8 @@ jobs:
           # Team ID is not secret (it appears in every signed app); fall back to the project's team.
           NOTARY_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID || '864H636QW4' }}
           NOTARY_PASSWORD: ${{ secrets.NOTARY_APPLE_PASSWORD }}
-          # Self-contained build (bundles the in-process engine: dory-vm + kernel + initfs). Only works
-          # on a runner that has run Apple's `container` (the kernel/initfs assets), i.e. a self-hosted
-          # macOS 26 runner, NOT hosted CI (no virtualization). Set repo variable BUNDLE_ENGINE=1 there.
+          # Self-contained build (bundles helper binaries plus kernel/initfs assets). Hosted CI can
+          # build the universal app; set BUNDLE_ENGINE=1 only on a runner with guest assets available.
           DORY_BUNDLE_ENGINE: ${{ vars.BUNDLE_ENGINE || '0' }}
         run: scripts/release.sh "${{ steps.ver.outputs.version }}" "${{ github.run_number }}"
 
@@ -96,9 +94,9 @@ jobs:
           generate_release_notes: true
           body: |
             Native, lightweight Docker & Linux containers, a free, open-source alternative to
-            OrbStack and Docker Desktop. Universal for Intel and Apple silicon, macOS 15+. The
-            standalone shared-VM engine needs Apple silicon on macOS 26 (Tahoe); Intel Macs pair
-            Dory with any Docker-compatible engine.
+            OrbStack and Docker Desktop. Universal for Intel and Apple silicon, macOS 15+.
+            See the release notes and COMPATIBILITY.md for the current built-in engine tier on
+            each Mac architecture.
 
             **Install**
 

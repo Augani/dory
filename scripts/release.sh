@@ -18,7 +18,7 @@ fi
 cd "$(dirname "$0")/.."
 
 VERSION="${1:-0.1.0}"
-# Monotonic build number (CFBundleVersion) — Sparkle compares this to detect updates. CI passes
+# Monotonic build number (CFBundleVersion). Sparkle compares this to detect updates. CI passes
 # the run number; locally it defaults to 1.
 BUILD="${2:-${DORY_BUILD:-1}}"
 BUILD_DIR="release-build"
@@ -26,12 +26,25 @@ ARCHIVE="$BUILD_DIR/Dory.xcarchive"
 EXPORT_DIR="$BUILD_DIR/export"
 NOTARY_PROFILE="${DORY_NOTARY_PROFILE:-dory-notary}"
 
+assert_universal_app_binary() {
+  local binary="$1"
+  local archs
+  archs="$(lipo -archs "$binary" | tr ' ' '\n' | sort | tr '\n' ' ')"
+  case " $archs " in
+    *" arm64 "*" x86_64 "*) ;;
+    *) echo "release error: $binary is not universal (archs: ${archs:-none})" >&2; exit 1 ;;
+  esac
+  echo "==> Verified universal app binary: $archs"
+}
+
 TEAM="${NOTARY_TEAM_ID:-864H636QW4}"
 echo "==> Archiving + signing Dory $VERSION (Developer ID, team $TEAM)..."
-# Manual Developer ID signing — automatic signing needs developer-portal access that CI lacks, and
+# Manual Developer ID signing. Automatic signing needs developer-portal access that CI lacks, and
 # there is no entitlements file requiring a provisioning profile.
 xcodebuild -project Dory.xcodeproj -scheme Dory -configuration Release \
   -destination 'generic/platform=macOS' -archivePath "$ARCHIVE" \
+  ARCHS="arm64 x86_64" \
+  ONLY_ACTIVE_ARCH=NO \
   MARKETING_VERSION="$VERSION" \
   CURRENT_PROJECT_VERSION="$BUILD" \
   CODE_SIGN_STYLE=Manual \
@@ -43,8 +56,9 @@ mkdir -p "$EXPORT_DIR"
 rm -rf "$EXPORT_DIR/Dory.app"
 cp -R "$ARCHIVE/Products/Applications/Dory.app" "$EXPORT_DIR/"
 APP="$EXPORT_DIR/Dory.app"
+assert_universal_app_binary "$APP/Contents/MacOS/Dory"
 
-# Engine bundling is off by default — the app pulls the engine on first run. Set DORY_BUNDLE_ENGINE=1
+# Engine bundling is off by default. The app pulls the engine on first run. Set DORY_BUNDLE_ENGINE=1
 # for a self-contained app (needs the engine assets present locally).
 if [ "${DORY_BUNDLE_ENGINE:-0}" = "1" ]; then
   echo "==> Bundling the engine for a self-contained app..."

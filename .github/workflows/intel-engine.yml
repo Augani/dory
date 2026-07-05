@@ -1,0 +1,80 @@
+name: Intel Engine
+
+# Hardware gate for the Intel engine plan. This workflow must run on a physical Intel Mac because
+# Hypervisor.framework cannot be validated on GitHub-hosted macOS runners or under Rosetta.
+# Configure a self-hosted runner with labels: self-hosted, macOS, intel, dory.
+
+on:
+  workflow_dispatch:
+    inputs:
+      readiness_engines:
+        description: 'Comma-separated readiness engines'
+        default: 'dory'
+      readiness_extra_args:
+        description: 'Extra scripts/readiness.sh args'
+        default: ''
+  schedule:
+    - cron: '30 9 * * 1'
+  push:
+    branches: ['feat/**', 'fix/**']
+    paths:
+      - '.github/workflows/intel-engine.yml'
+      - 'Packages/ContainerizationEngine/**'
+      - 'Dory/Runtime/Shared/**'
+      - 'Dory/Runtime/Apple/**'
+      - 'scripts/readiness.sh'
+      - 'scripts/bundle-engine.sh'
+      - 'guest/**'
+
+jobs:
+  intel-engine:
+    runs-on: [self-hosted, macOS, intel, dory]
+    timeout-minutes: 120
+    env:
+      READINESS_WORKDIR: ${{ runner.temp }}/dory-readiness
+      READINESS_SETTLE: '8'
+      ENGINES: ${{ github.event.inputs.readiness_engines || 'dory' }}
+      READINESS_EXTRA_ARGS: ${{ github.event.inputs.readiness_extra_args || '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select newest installed Xcode
+        run: |
+          newest="$(find /Applications -maxdepth 1 -name 'Xcode*.app' -type d | sort | tail -1)"
+          [ -n "$newest" ] || { echo "No Xcode installation found"; exit 1; }
+          echo "selected: $newest"
+          echo "DEVELOPER_DIR=$newest/Contents/Developer" >> "$GITHUB_ENV"
+
+      - name: Record Intel host facts
+        run: |
+          sw_vers
+          uname -a
+          sysctl -n hw.model
+          sysctl -n machdep.cpu.brand_string
+          sysctl kern.hv_support
+          test "$(uname -m)" = "x86_64"
+
+      - name: DoryHV logic tests
+        working-directory: Packages/ContainerizationEngine
+        run: swift test
+
+      - name: Build Intel helper slice
+        working-directory: Packages/ContainerizationEngine
+        run: swift build --arch x86_64
+
+      - name: Intel readiness core
+        run: |
+          args=(--engines "$ENGINES")
+          if [ -n "$READINESS_EXTRA_ARGS" ]; then
+            extra=( $READINESS_EXTRA_ARGS )
+            args+=("${extra[@]}")
+          fi
+          scripts/readiness.sh "${args[@]}"
+
+      - name: Upload readiness artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: intel-readiness
+          path: ${{ env.READINESS_WORKDIR }}
+          if-no-files-found: ignore

@@ -44,9 +44,9 @@
 #   DORY_SOCK, ORBSTACK_SOCK, DOCKER_DESKTOP_SOCK   engine socket overrides
 #   BENCH_CONTAINER_BIN                             path to Apple's `container` CLI
 #   BENCH_ALPINE_IMAGE, BENCH_IPERF_IMAGE           images used for the probes
-#                                                   (iperf image MUST be arm64/multi-arch — Dory runs
-#                                                    only on Apple Silicon; x86-only images such as
-#                                                    networkstatic/iperf3 fail "no matching manifest")
+#                                                   (must have manifests for the host guest arch:
+#                                                    arm64 on Apple silicon, amd64 on Intel; prefer
+#                                                    multi-arch images such as taoyou/iperf3-alpine)
 #   BENCH_WORKDIR                                   results root (default ~/.dory-benchmark)
 #   BENCH_SETTLE, BENCH_MEMORY_COUNT, BENCH_RUNS, BENCH_FS_FILES
 #   *_PROCESS_PATTERN                               override per-engine host-process match
