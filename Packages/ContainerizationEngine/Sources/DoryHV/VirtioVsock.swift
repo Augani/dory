@@ -118,10 +118,16 @@ public protocol VsockConnection: AnyObject {
     func read(into buffer: UnsafeMutableRawBufferPointer) throws -> Int
     func write(_ bytes: [UInt8]) throws
     func close()
+    /// True once the peer has shut the connection down (or it was reset). `read` returns 0 both when
+    /// no bytes are buffered yet and after the peer is gone, so a long-lived reader (e.g. the USB
+    /// bridge) needs this to tell "idle" from EOF — without it a claimed device can never be released
+    /// on guest reboot.
+    var isPeerClosed: Bool { get }
 }
 
 public enum VsockPorts {
     public static let agent: UInt32 = 1024
+    public static let usbip: UInt32 = 1025
 }
 
 public final class VirtioVsock: VirtioDeviceBackend {
@@ -310,9 +316,16 @@ public final class VirtioVsock: VirtioDeviceBackend {
         let key: ConnectionKey
         private let send: (VirtioVsockHeader.Operation, [UInt8], UInt32) -> Void
         private let onClose: (ConnectionKey) -> Void
+        // `receive` runs on the vsock queue while `read`/`close` may run on a bridge's own thread, so
+        // inbound + isClosed are guarded. Drained bytes still count toward forwardCount (credit), so
+        // it is tracked separately from what remains buffered.
+        private let lock = NSLock()
         private var inbound = [UInt8]()
-        private(set) var forwardCount: UInt32 = 0
+        private var forwardCountValue: UInt32 = 0
         private var isClosed = false
+
+        var forwardCount: UInt32 { lock.lock(); defer { lock.unlock() }; return forwardCountValue }
+        var isPeerClosed: Bool { lock.lock(); defer { lock.unlock() }; return isClosed }
 
         init(
             key: ConnectionKey,
@@ -325,12 +338,15 @@ public final class VirtioVsock: VirtioDeviceBackend {
         }
 
         func receive(_ bytes: [UInt8]) {
+            lock.lock()
             inbound.append(contentsOf: bytes)
-            forwardCount &+= UInt32(bytes.count)
+            forwardCountValue &+= UInt32(bytes.count)
+            lock.unlock()
         }
 
         func read(into buffer: UnsafeMutableRawBufferPointer) throws -> Int {
-            guard !isClosed else { return 0 }
+            lock.lock()
+            defer { lock.unlock() }
             let count = min(buffer.count, inbound.count)
             guard count > 0 else { return 0 }
             inbound.prefix(count).withUnsafeBytes { source in
@@ -341,15 +357,22 @@ public final class VirtioVsock: VirtioDeviceBackend {
         }
 
         func write(_ bytes: [UInt8]) throws {
-            guard !isClosed else { return }
-            send(.readWrite, bytes, forwardCount)
+            lock.lock()
+            let closed = isClosed
+            let credit = forwardCountValue
+            lock.unlock()
+            guard !closed else { return }
+            send(.readWrite, bytes, credit)
         }
 
         func close() {
-            guard !isClosed else { return }
+            lock.lock()
+            if isClosed { lock.unlock(); return }
             isClosed = true
-            send(.shutdown, [], forwardCount)
+            let credit = forwardCountValue
             inbound.removeAll()
+            lock.unlock()
+            send(.shutdown, [], credit)
             onClose(key)
         }
     }

@@ -135,6 +135,9 @@ import Testing
             written.append(contentsOf: bytes)
         }
 
-        func close() {}
+        func close() { closed = true }
+
+        private(set) var closed = false
+        var isPeerClosed: Bool { closed }
     }
 }
