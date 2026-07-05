@@ -91,7 +91,7 @@ struct RuntimeSupportTests {
         )
 
         let home = NSHomeDirectory()
-        #expect(argumentValue(after: "--share", in: arguments) == "home=\(home):rw:at=\(home)")
+        #expect(argumentValue(after: "--share", in: arguments) == "home=\(home):rw:at=\(home):safe")
     }
 
     @Test func wakeClockResyncSignalsLiveHelperOnly() {

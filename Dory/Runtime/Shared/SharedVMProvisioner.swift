@@ -151,10 +151,11 @@ enum SharedVMProvisioner {
         }
         // Share the user's home at its identical guest path so `-v ~/project:/app` bind mounts
         // resolve with no configuration — the OrbStack "just works" default. Plain virtio-fs (no
-        // DAX): it matches OrbStack on realistic cache-resident workloads and, unlike DAX, has no
-        // window-thrashing or read-only-file caveats, so it is the safe default for the whole home.
+        // DAX): matches OrbStack on realistic workloads with none of DAX's caveats. `:safe` hides
+        // credential stores and shell rc files (`~/.ssh`, `~/.aws`, `Library`, …) from every
+        // container as defense-in-depth; per-bind-mount on-demand sharing is the stronger follow-up.
         let home = NSHomeDirectory()
-        arguments.append(contentsOf: ["--share", "home=\(home):rw:at=\(home)"])
+        arguments.append(contentsOf: ["--share", "home=\(home):rw:at=\(home):safe"])
         return arguments
     }
 

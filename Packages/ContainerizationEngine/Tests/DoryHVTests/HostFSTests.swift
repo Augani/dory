@@ -48,6 +48,30 @@ struct HostFSTests {
         #expect(entries[2].attributes.isDirectory)
     }
 
+    @Test func hiddenNamesAreInvisibleToLookupReaddirAndNested() throws {
+        let root = try TestHostFSRoot()
+        try FileManager.default.createDirectory(at: root.url.appendingPathComponent(".ssh"), withIntermediateDirectories: false)
+        try root.write("PRIVATE KEY", to: ".ssh/id_rsa")
+        try FileManager.default.createDirectory(at: root.url.appendingPathComponent("project"), withIntermediateDirectories: false)
+        try root.write("code", to: "project/main.swift")
+        try FileManager.default.createDirectory(at: root.url.appendingPathComponent("project/.ssh"), withIntermediateDirectories: false)
+        try root.write("nested secret", to: "project/.ssh/id_rsa")
+        let fs = try HostFS(rootPath: root.url.path, hiddenNames: [".ssh"])
+
+        // A hidden name is not listed and cannot be looked up (so no node id → no read/open path).
+        #expect(try fs.readdirplus(nodeID: HostFS.rootNodeID).map(\.name) == ["project"])
+        #expect(throws: HostFSError.self) { _ = try fs.lookup(parent: HostFS.rootNodeID, name: ".ssh") }
+
+        // Hiding is by name at any depth: the same name nested under an allowed dir is also hidden.
+        let project = try fs.lookup(parent: HostFS.rootNodeID, name: "project")
+        #expect(try fs.readdirplus(nodeID: project.nodeID).map(\.name) == ["main.swift"])
+        #expect(throws: HostFSError.self) { _ = try fs.lookup(parent: project.nodeID, name: ".ssh") }
+
+        // Non-hidden siblings still resolve normally.
+        let file = try fs.lookup(parent: project.nodeID, name: "main.swift")
+        #expect(file.attributes.isRegularFile)
+    }
+
     @Test func statfsReturnsHostFilesystemShape() throws {
         let root = try TestHostFSRoot()
         let fs = try HostFS(rootPath: root.url.path)

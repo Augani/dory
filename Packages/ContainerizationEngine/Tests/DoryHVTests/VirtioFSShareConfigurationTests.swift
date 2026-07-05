@@ -67,6 +67,23 @@ struct VirtioFSShareConfigurationTests {
         #expect(share.guestMountPoint == nil)
     }
 
+    @Test func safeOptionAppliesSensitiveNameDenylist() throws {
+        let share = try VirtioFSShareConfiguration(argument: "home=/Users/example:rw:at=/Users/example:safe")
+        #expect(share.hiddenNames == VirtioFSShareConfiguration.sensitiveNames)
+        #expect(share.hiddenNames.contains(".ssh"))
+        #expect(share.hiddenNames.contains(".aws"))
+    }
+
+    @Test func hideOptionAddsExplicitNames() throws {
+        let share = try VirtioFSShareConfiguration(argument: "src=/tmp/x:hide=secrets,.env")
+        #expect(share.hiddenNames == ["secrets", ".env"])
+    }
+
+    @Test func defaultsToNoHiddenNames() throws {
+        let share = try VirtioFSShareConfiguration(argument: "src=/tmp/x")
+        #expect(share.hiddenNames.isEmpty)
+    }
+
     @Test func rejectsRelativeGuestMountPoint() {
         #expect(throws: (any Error).self) {
             _ = try VirtioFSShareConfiguration(argument: "home=/Users/example:at=relative/path")

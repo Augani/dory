@@ -81,14 +81,26 @@ read-only. With DAX, the raw 4k-randread number is 1,074k IOPS — the round-tri
 
 The benchmarks above ran through a manual `dory-hv boot --share` harness. In the app, sharing is
 now wired automatically: the engine shares the user's home directory at its identical guest path
-(`home=$HOME:rw:at=$HOME`), so a bind mount like `docker run -v ~/project:/app` resolves with no
+(`home=$HOME:rw:at=$HOME:safe`), so a bind mount like `docker run -v ~/project:/app` resolves with no
 configuration — the guest sees `~/project` at the same path, which is the virtio-fs mount. This uses
-**plain** virtio-fs, not DAX: plain matches OrbStack on realistic cache-resident workloads and has
-none of DAX's window-thrashing or read-only-file caveats, so it is safe across the whole home tree.
-DAX stays opt-in (`:dax`) for workloads that want the raw-plane win.
+**plain** virtio-fs, not DAX (DAX stays opt-in via `:dax` for the raw-plane win): plain matches
+OrbStack on realistic cache-resident workloads with none of DAX's window-thrashing or read-only-file
+caveats.
 
-Verified end to end on a real dory-hv guest: a host dir mounted at `/Users/dorytest` read a host
-file and a guest write-back persisted to the host.
+**Security — the `:safe` denylist.** Sharing the whole home tree read-write would expose credential
+stores (`~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.kube`, …), shell rc files, and `~/Library` to every
+container — a real exfiltration/rc-poisoning risk. `:safe` applies `VirtioFSShareConfiguration.sensitiveNames`,
+which `HostFS` hides by name at any depth: a lookup of a hidden name fails as not-found and hidden
+entries are omitted from directory listings, so no container can read or overwrite them. This is
+defense-in-depth for the convenience share; the stronger guarantee — sharing only the exact paths a
+container `-v`-mounts, nothing else — is per-bind-mount **on-demand sharing**, tracked as a follow-up
+(it needs the transparent-proxy shim to intercept `/containers/create` plus an engine-side authorization
+channel, so it is a multi-component change, not a flag).
+
+Verified end to end on a real dory-hv guest: with `:safe`, `~/.ssh`/`~/.aws`/`~/.zshrc` are invisible
+(lookup fails, absent from `ls`) while `~/project` reads, writes, and lists normally. Separately, the
+guest now advertises `FUSE_DO_READDIRPLUS` so shared directories actually enumerate — without it the
+server saw plain `FUSE_READDIR` (unhandled) and every `ls` returned empty.
 
 ## Write correctness
 

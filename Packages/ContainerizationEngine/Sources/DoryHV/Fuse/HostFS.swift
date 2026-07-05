@@ -62,13 +62,19 @@ public final class HostFS: @unchecked Sendable {
     private let guestUID: UInt32
     private let guestGID: UInt32
     private let readOnly: Bool
+    /// Entry names hidden from the guest at any depth. A lookup of a hidden name fails as if the
+    /// path does not exist, and hidden entries are omitted from directory listings — so a container
+    /// bind-mounting a shared home tree cannot read or overwrite `~/.ssh`, `~/.aws`, shell rc files,
+    /// etc. Since a node id is only ever minted through `lookup`, gating lookup + readdir also blocks
+    /// getattr/open/read/write on a hidden path (the guest can never obtain its node id).
+    private let hiddenNames: Set<String>
     private var nextNodeID: UInt64 = 2
     private var nodes: [UInt64: Node] = [:]
     private var idsByFileKey: [FileKey: UInt64] = [:]
     private var idsByRelativePath: [String: Set<UInt64>] = [:]
     private let lock = NSLock()
 
-    public init(rootPath: String, guestUID: UInt32 = 1000, guestGID: UInt32 = 1000, readOnly: Bool = false) throws {
+    public init(rootPath: String, guestUID: UInt32 = 1000, guestGID: UInt32 = 1000, readOnly: Bool = false, hiddenNames: Set<String> = []) throws {
         var resolved = [CChar](repeating: 0, count: Int(PATH_MAX))
         guard realpath(rootPath, &resolved) != nil else {
             throw HostFSError.invalidRoot(rootPath)
@@ -85,6 +91,7 @@ public final class HostFS: @unchecked Sendable {
         self.guestUID = guestUID
         self.guestGID = guestGID
         self.readOnly = readOnly
+        self.hiddenNames = hiddenNames
 
         var st = stat()
         guard fstat(fd, &st) == 0 else {
@@ -121,6 +128,9 @@ public final class HostFS: @unchecked Sendable {
 
     public func lookup(parent: UInt64, name: String) throws -> HostFSEntry {
         try validateComponent(name)
+        guard !hiddenNames.contains(name) else {
+            throw HostFSError.notFound(name)
+        }
         let parentNode = try node(for: parent)
         guard parentNode.attributes.isDirectory else {
             throw HostFSError.notDirectory(parent)
@@ -326,7 +336,9 @@ public final class HostFS: @unchecked Sendable {
         guard let names = try? FileManager.default.contentsOfDirectory(atPath: absolute) else {
             throw HostFSError.notFound(node.relativePath)
         }
-        return try names.sorted().map { try lookup(parent: nodeID, name: $0) }
+        return try names.sorted()
+            .filter { !hiddenNames.contains($0) }
+            .map { try lookup(parent: nodeID, name: $0) }
     }
 
     public func statfs() throws -> HostFSStat {
