@@ -2,8 +2,11 @@ import Foundation
 
 /// One-click Kubernetes: runs a k3s server as a container inside Dory's shared VM (the k3d pattern),
 /// publishes the API on :6443 (auto-forwarded to `localhost` by the port forwarder), and writes a
-/// kubeconfig the host `kubectl` picks up — mirroring OrbStack's built-in cluster. Built images in
-/// the shared engine are immediately usable in Pods, with no local registry push.
+/// kubeconfig the host `kubectl` picks up — mirroring OrbStack's built-in cluster. NOTE: k3s brings
+/// its own embedded containerd image store, SEPARATE from the shared engine's dockerd store. A
+/// locally-built Docker image is therefore NOT automatically visible to Pods — push it to a registry
+/// the cluster can reach, or import it into k3s's containerd (`k8s.io` namespace). Auto image-sync is
+/// a tracked follow-up.
 enum KubernetesProvisioner {
     static let containerName = "dory-k8s"
     nonisolated static let defaultImage = KubeVersionCatalog.latest.image

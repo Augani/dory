@@ -81,7 +81,7 @@ CA trust install remain consent-gated, the same one-time admin grant OrbStack ne
 | **Bind-mount file sharing** | ✅ | Home dir shared into the VM (virtiofs); verified `docker run -v ~/proj:/app` reads/writes host files live |
 | One-click Kubernetes | ✅ | `KubernetesProvisioner` runs k3s in the shared VM; verified host `kubectl` + pod deploy; GUI "Enable" button |
 | Linux machines (Ubuntu/Debian/Fedora/Alpine) | ✅ | `MachineProvider` via `container machine`; verified real machine create/list/start/stop/delete; GUI picker |
-| x86/amd64 emulation | ✅ (qemu) | Auto-installs qemu binfmt; verified `--platform linux/amd64 → x86_64`. Rosetta fast-path is a documented gap |
+| x86/amd64 emulation | ✅ (qemu, with limits) | Auto-installs qemu binfmt; verified `--platform linux/amd64 → x86_64`. **Heavy amd64 workloads can segfault** under qemu-user on the default `dory-hv` engine — SQL Server (`mcr.microsoft.com/mssql/server`), Oracle, and some AVX/threading-heavy images hit `qemu: uncaught target signal 11`. This is a qemu-user emulation limit, not a Dory bug, and Rosetta cannot run on `dory-hv` (raw Hypervisor.framework). The fast x86 path is the Virtualization.framework helper: `dory vm --arch amd64 --rosetta` / `DORY_ENGINE_ROSETTA=1`. (GitHub #3) |
 | Volume file browser | ✅ | `VolumeBrowser`; verified list + read files inside volumes; GUI sheet |
 | Terminal / SSH into containers + machines | ✅ | `TerminalLauncher` opens Terminal.app against Dory's socket/engine |
 | Docker Desktop / OrbStack migration | ✅ | `MigrationAssistant` imports images + containers into Dory's shared VM; Docker-compatible sources stream image archives directly when possible, so local/private images do not require a registry pull or a full tarball buffered in app memory |
