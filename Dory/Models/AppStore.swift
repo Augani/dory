@@ -125,6 +125,10 @@ final class AppStore {
             if let saved = UserDefaults.standard.string(forKey: Self.kubernetesVersionKey) {
                 kubernetesVersionTag = KubeVersionCatalog.version(forTag: saved).tag
             }
+            if let v = UserDefaults.standard.object(forKey: Self.dnsPortKey) as? Int, let p = UInt16(exactly: v), p > 0 { dnsPort = p }
+            if let v = UserDefaults.standard.object(forKey: Self.httpProxyPortKey) as? Int, let p = UInt16(exactly: v), p > 0 { httpProxyPort = p }
+            if let v = UserDefaults.standard.object(forKey: Self.httpsProxyPortKey) as? Int, let p = UInt16(exactly: v), p > 0 { httpsProxyPort = p }
+            if let v = UserDefaults.standard.object(forKey: Self.domainsEnabledKey) as? Bool { domainsEnabled = v }
             dockerHostCleaned = DockerHostConflict.hasCleaned
             dockerHostConflictDismissed = UserDefaults.standard.bool(forKey: Self.dockerHostDismissedKey)
             if let width = UserDefaults.standard.object(forKey: Self.containerDetailWidthKey) as? Double, width >= 320 {
@@ -474,18 +478,29 @@ final class AppStore {
         }
     }
 
-    static let dnsPort: UInt16 = 15353
-    static let httpProxyPort: UInt16 = 8080
-    static let httpsProxyPort: UInt16 = 8443
+    static let defaultDNSPort: UInt16 = 15353
+    static let defaultHTTPProxyPort: UInt16 = 8080
+    static let defaultHTTPSProxyPort: UInt16 = 8443
+    static let dnsPortKey = "dory.dnsPort"
+    static let httpProxyPortKey = "dory.httpProxyPort"
+    static let httpsProxyPortKey = "dory.httpsProxyPort"
+    static let domainsEnabledKey = "dory.domainsEnabled"
+    // User-configurable: 8080 collides with common dev servers, and MDM-managed DNS can't be pointed
+    // at Dory, so the whole *.dory.local feature is turn-off-able (GitHub #2).
+    var dnsPort: UInt16 = AppStore.defaultDNSPort
+    var httpProxyPort: UInt16 = AppStore.defaultHTTPProxyPort
+    var httpsProxyPort: UInt16 = AppStore.defaultHTTPSProxyPort
+    var domainsEnabled = true
     @ObservationIgnored private var tlsProxy: DoryTLSProxy?
 
     private func startLocalNetworking() {
+        guard domainsEnabled else { return }
         guard !networkingStarted else { return }
-        // DNS on a high port (mDNSResponder owns :53/:5353); a consent-gated /etc/resolver entry
-        // with a `port` directive points the system resolver here, so DNS needs no root.
+        // DNS on a high port (mDNSResponder owns :53/:5353); the system resolver is pointed here via
+        // an /etc/resolver entry with a `port` directive, so DNS needs no root.
         do {
-            try dns.start(port: Self.dnsPort)
-            try reverseProxy.start(httpPort: Self.httpProxyPort)
+            try dns.start(port: dnsPort)
+            try reverseProxy.start(httpPort: httpProxyPort)
         } catch {
             actionError = "Local *.dory.local networking couldn't start (a port may be in use): \(error.localizedDescription)"
             return
@@ -496,10 +511,22 @@ final class AppStore {
         Task.detached { await SharedVMProvisioner.ensureEmulation() }
     }
 
+    /// Applies changed networking settings (ports or the domains toggle): full teardown then restart
+    /// so listeners rebind on the new ports and machine bridges are re-registered cleanly. Restarting
+    /// through startPortForwarding cancels and re-drives the reconcile task, avoiding a double-register.
+    func applyNetworkingSettings(dnsPort: UInt16? = nil, httpProxyPort: UInt16? = nil, httpsProxyPort: UInt16? = nil, domainsEnabled: Bool? = nil) {
+        if let dnsPort { self.dnsPort = dnsPort; UserDefaults.standard.set(Int(dnsPort), forKey: Self.dnsPortKey) }
+        if let httpProxyPort { self.httpProxyPort = httpProxyPort; UserDefaults.standard.set(Int(httpProxyPort), forKey: Self.httpProxyPortKey) }
+        if let httpsProxyPort { self.httpsProxyPort = httpsProxyPort; UserDefaults.standard.set(Int(httpsProxyPort), forKey: Self.httpsProxyPortKey) }
+        if let domainsEnabled { self.domainsEnabled = domainsEnabled; UserDefaults.standard.set(domainsEnabled, forKey: Self.domainsEnabledKey) }
+        stopLocalNetworking()
+        startPortForwarding()
+    }
+
     private func startTLS() {
         let table = domainTable
         let suffix = domainSuffix
-        let port = Self.httpsProxyPort
+        let port = httpsProxyPort
         // TLS wildcards match one label, so `*.dory.local` doesn't cover multi-level k8s Service
         // domains like `web.default.k8s.dory.local`. Per-namespace wildcards (issued once at
         // startup) cover the common namespaces without fragile live cert reloads.

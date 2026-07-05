@@ -4,6 +4,9 @@ struct SettingsView: View {
     @Environment(AppStore.self) private var store
     @Environment(\.palette) private var p
     @State private var envAllowListDraft = ""
+    @State private var dnsPortDraft = ""
+    @State private var httpPortDraft = ""
+    @State private var httpsPortDraft = ""
 
     var body: some View {
         HStack(spacing: 0) {
@@ -44,7 +47,7 @@ struct SettingsView: View {
         case .general: general
         case .resources: resources
         case .engine: engine
-        case .network: infoPanel(networkText)
+        case .network: network
         case .usb: UsbDevicesView()
         case .migrate: migrate
         case .about: infoPanel(aboutText)
@@ -459,7 +462,64 @@ struct SettingsView: View {
             .padding(.bottom, 10)
     }
 
-    private let networkText = "All containers receive an automatic *.dory.local domain backed by the built-in DNS resolver. HTTPS certificates are issued locally and trusted system-wide. Default bridge subnet 192.168.215.0/24."
+    private var network: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            groupLabel("LOCAL DOMAINS")
+            VStack(spacing: 0) {
+                toggleRow(
+                    "Enable *.dory.local domains",
+                    "Give each container an automatic *.dory.local name with local HTTPS. Turn this off if the proxy ports conflict, or if your DNS is managed (MDM / corporate) and can't be pointed at Dory.",
+                    isOn: Binding(get: { store.domainsEnabled }, set: { store.applyNetworkingSettings(domainsEnabled: $0) }),
+                    divider: false
+                )
+            }
+            .background(p.bgElevated, in: RoundedRectangle(cornerRadius: 11))
+            .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(p.border))
+            .padding(.bottom, 22)
+
+            groupLabel("PORTS")
+            VStack(alignment: .leading, spacing: 12) {
+                portField("DNS resolver", store: $dnsPortDraft, fallback: AppStore.defaultDNSPort) { store.applyNetworkingSettings(dnsPort: $0) }
+                portField("HTTP proxy", store: $httpPortDraft, fallback: AppStore.defaultHTTPProxyPort) { store.applyNetworkingSettings(httpProxyPort: $0) }
+                portField("HTTPS proxy", store: $httpsPortDraft, fallback: AppStore.defaultHTTPSProxyPort) { store.applyNetworkingSettings(httpsProxyPort: $0) }
+                Text("Change these if the defaults (15353 / 8080 / 8443) collide with other software — 8080 is a common one. Saved on Return; local networking restarts to rebind.")
+                    .font(.system(size: 11.5)).foregroundStyle(p.text3).lineSpacing(3)
+            }
+            .padding(15)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(p.bgElevated, in: RoundedRectangle(cornerRadius: 11))
+            .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(p.border))
+            .opacity(store.domainsEnabled ? 1 : 0.55)
+            .allowsHitTesting(store.domainsEnabled)
+
+            Text("Published container ports stay reachable at localhost regardless of this setting. Default bridge subnet 192.168.215.0/24.")
+                .font(.system(size: 11.5)).foregroundStyle(p.text3).lineSpacing(3)
+                .padding(.top, 14)
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .onAppear {
+            dnsPortDraft = String(store.dnsPort)
+            httpPortDraft = String(store.httpProxyPort)
+            httpsPortDraft = String(store.httpsProxyPort)
+        }
+    }
+
+    private func portField(_ label: String, store draft: Binding<String>, fallback: UInt16, apply: @escaping (UInt16) -> Void) -> some View {
+        HStack(spacing: 12) {
+            Text(label).font(.system(size: 12.5)).foregroundStyle(p.text2).frame(width: 110, alignment: .leading)
+            TextField(String(fallback), text: draft, onCommit: {
+                let port = UInt16(draft.wrappedValue.trimmingCharacters(in: .whitespaces)) ?? fallback
+                draft.wrappedValue = String(port)
+                apply(port)
+            })
+            .textFieldStyle(.roundedBorder)
+            .font(.system(size: 12, design: .monospaced))
+            .frame(width: 100)
+            .accessibilityIdentifier("port-\(label)")
+            Spacer(minLength: 0)
+        }
+    }
     private var aboutText: String {
         "Dory \(AppInfo.version) (build \(AppInfo.build)). A lighter, memory-efficient alternative to Docker Desktop and OrbStack, built for macOS — free and open source. © 2026 Dory contributors."
     }
