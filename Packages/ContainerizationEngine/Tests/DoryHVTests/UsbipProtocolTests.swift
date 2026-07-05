@@ -65,13 +65,14 @@ struct UsbipProtocolTests {
         #expect(command.encoded() == bytes)
     }
 
-    @Test func submitReplyEncodesInPayloadOnlyForInDirection() throws {
-        let header = UsbipHeaderBasic(command: .retSubmit, sequenceNumber: 0x0d05, deviceID: 0, direction: .in, endpoint: 0)
+    @Test func submitReplyEncodesPayloadWithServerDirectionHeader() throws {
+        let header = UsbipHeaderBasic(command: .retSubmit, sequenceNumber: 0x0d05, deviceID: 0, direction: .out, endpoint: 0)
         let reply = UsbipSubmitReply(header: header, status: 0, actualLength: 4, transferBuffer: [1, 2, 3, 4, 5])
         let encoded = reply.encoded()
 
         #expect(encoded.count == UsbipSubmitReply.headerByteCount + 4)
         #expect(encoded.prefix(4).elementsEqual([0, 0, 0, 3]))
+        #expect(encoded[12..<16].elementsEqual([0, 0, 0, 0]))
         #expect(Array(encoded.suffix(4)) == [1, 2, 3, 4])
     }
 

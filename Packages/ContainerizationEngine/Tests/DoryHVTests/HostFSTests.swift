@@ -72,6 +72,50 @@ struct HostFSTests {
         #expect(file.attributes.isRegularFile)
     }
 
+    @Test func hiddenNamesRejectMutationsBeforeHostChanges() throws {
+        let root = try TestHostFSRoot()
+        try root.write("keep", to: ".env")
+        try root.write("secret", to: ".secret")
+        try root.write("visible", to: "visible.txt")
+        try FileManager.default.createDirectory(at: root.url.appendingPathComponent(".cache"), withIntermediateDirectories: false)
+        let fs = try HostFS(rootPath: root.url.path, hiddenNames: [".cache", ".env", ".secret", ".ssh", ".target"])
+
+        #expect(throws: HostFSError.notFound(".env")) {
+            _ = try fs.createFile(parent: HostFS.rootNodeID, name: ".env")
+        }
+        #expect(try String(contentsOf: root.url.appendingPathComponent(".env"), encoding: .utf8) == "keep")
+
+        #expect(throws: HostFSError.notFound(".ssh")) {
+            _ = try fs.mkdir(parent: HostFS.rootNodeID, name: ".ssh")
+        }
+        #expect(!FileManager.default.fileExists(atPath: root.url.appendingPathComponent(".ssh").path))
+
+        #expect(throws: HostFSError.notFound(".env")) {
+            try fs.unlink(parent: HostFS.rootNodeID, name: ".env")
+        }
+        #expect(try String(contentsOf: root.url.appendingPathComponent(".env"), encoding: .utf8) == "keep")
+
+        #expect(throws: HostFSError.notFound(".cache")) {
+            try fs.rmdir(parent: HostFS.rootNodeID, name: ".cache")
+        }
+        var isDirectory = ObjCBool(false)
+        let cacheExists = FileManager.default.fileExists(atPath: root.url.appendingPathComponent(".cache").path, isDirectory: &isDirectory)
+        #expect(cacheExists)
+        #expect(isDirectory.boolValue)
+
+        #expect(throws: HostFSError.notFound(".target")) {
+            _ = try fs.rename(parent: HostFS.rootNodeID, name: "visible.txt", newParent: HostFS.rootNodeID, newName: ".target")
+        }
+        #expect(FileManager.default.fileExists(atPath: root.url.appendingPathComponent("visible.txt").path))
+        #expect(!FileManager.default.fileExists(atPath: root.url.appendingPathComponent(".target").path))
+
+        #expect(throws: HostFSError.notFound(".secret")) {
+            _ = try fs.rename(parent: HostFS.rootNodeID, name: ".secret", newParent: HostFS.rootNodeID, newName: "revealed.txt")
+        }
+        #expect(try String(contentsOf: root.url.appendingPathComponent(".secret"), encoding: .utf8) == "secret")
+        #expect(!FileManager.default.fileExists(atPath: root.url.appendingPathComponent("revealed.txt").path))
+    }
+
     @Test func statfsReturnsHostFilesystemShape() throws {
         let root = try TestHostFSRoot()
         let fs = try HostFS(rootPath: root.url.path)

@@ -96,4 +96,3 @@ struct UsbAttachmentStore: Sendable {
         return trimmed
     }
 }
-

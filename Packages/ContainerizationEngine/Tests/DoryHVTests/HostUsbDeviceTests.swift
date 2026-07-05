@@ -89,6 +89,8 @@ struct HostUsbDeviceTests {
         let reply = try device.submit(command)
 
         #expect(backend.controlSetups == [HostUsbControlSetup(requestType: 0x80, request: 0x06, value: 0x0100, index: 0, length: 3)])
+        #expect(reply.header.direction == .out)
+        #expect(reply.header.endpoint == 0)
         #expect(reply.status == 0)
         #expect(reply.actualLength == 3)
         #expect(reply.transferBuffer == [1, 2, 3])
@@ -124,6 +126,8 @@ struct HostUsbDeviceTests {
 
         #expect(backend.transfers.map(\.endpointAddress) == [0x02])
         #expect(backend.transfers.map(\.payload) == [[9, 8, 7, 6]])
+        #expect(reply.header.direction == .out)
+        #expect(reply.header.endpoint == 0)
         #expect(reply.status == 0)
         #expect(reply.actualLength == 4)
     }
@@ -146,6 +150,8 @@ struct HostUsbDeviceTests {
 
         #expect(backend.transfers.map(\.endpointAddress) == [0x83])
         #expect(backend.transfers.map(\.expectedLength) == [8])
+        #expect(reply.header.direction == .out)
+        #expect(reply.header.endpoint == 0)
         #expect(reply.transferBuffer == [0xaa, 0xbb])
     }
 
@@ -167,6 +173,8 @@ struct HostUsbDeviceTests {
 
         #expect(reply.status == -ENOENT)
         #expect(reply.actualLength == 0)
+        #expect(reply.header.direction == .out)
+        #expect(reply.header.endpoint == 0)
     }
 
     @Test func unlinkAbortsBackend() throws {

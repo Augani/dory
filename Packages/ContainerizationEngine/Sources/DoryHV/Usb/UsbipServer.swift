@@ -36,7 +36,7 @@ public final class UsbipServer: @unchecked Sendable {
         case .cmdSubmit:
             let command = try UsbipSubmitCommand(decoding: bytes)
             guard command.numberOfPackets == 0 || command.numberOfPackets == 0xffff_ffff else {
-                let replyHeader = UsbipHeaderBasic(command: .retSubmit, sequenceNumber: command.header.sequenceNumber, deviceID: 0, direction: command.header.direction, endpoint: 0)
+                let replyHeader = UsbipHeaderBasic(command: .retSubmit, sequenceNumber: command.header.sequenceNumber, deviceID: 0, direction: .out, endpoint: 0)
                 return UsbipSubmitReply(header: replyHeader, status: -EPIPE, actualLength: 0, numberOfPackets: command.numberOfPackets).encoded()
             }
             return try device.submit(command).encoded()

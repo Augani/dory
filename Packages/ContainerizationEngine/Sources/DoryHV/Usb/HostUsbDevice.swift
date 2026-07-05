@@ -361,7 +361,7 @@ public final class HostUsbDevice: UsbipExportedDevice, @unchecked Sendable {
     }
 
     private func reply(for command: UsbipSubmitCommand, status: Int32, actualLength: UInt32, data: [UInt8]) -> UsbipSubmitReply {
-        let header = UsbipHeaderBasic(command: .retSubmit, sequenceNumber: command.header.sequenceNumber, deviceID: 0, direction: command.header.direction, endpoint: 0)
+        let header = UsbipHeaderBasic(command: .retSubmit, sequenceNumber: command.header.sequenceNumber, deviceID: 0, direction: .out, endpoint: 0)
         return UsbipSubmitReply(header: header, status: status, actualLength: actualLength, transferBuffer: data)
     }
 

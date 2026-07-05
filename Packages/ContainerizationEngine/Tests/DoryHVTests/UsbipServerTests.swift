@@ -42,8 +42,11 @@ struct UsbipServerTests {
         )
 
         let response = try server.handleURB(command.encoded(), busID: "3-2")
+        let replyHeader = try UsbipHeaderBasic(decoding: Array(response.prefix(UsbipHeaderBasic.byteCount)))
 
         #expect(device.submitted.map(\.header.sequenceNumber) == [44])
+        #expect(replyHeader.direction == .out)
+        #expect(replyHeader.endpoint == 0)
         #expect(response.prefix(4).elementsEqual([0, 0, 0, 3]))
         #expect(Array(response.suffix(3)) == [7, 8, 9])
     }
@@ -67,7 +70,7 @@ struct UsbipServerTests {
         let device = StubUsbDevice(descriptor: fixtureUsbDevice())
         let server = UsbipServer(devices: [device])
         let command = UsbipSubmitCommand(
-            header: UsbipHeaderBasic(command: .cmdSubmit, sequenceNumber: 46, deviceID: 0x0003_0002, direction: .out, endpoint: 2),
+            header: UsbipHeaderBasic(command: .cmdSubmit, sequenceNumber: 46, deviceID: 0x0003_0002, direction: .in, endpoint: 2),
             transferFlags: 0,
             transferBufferLength: 0,
             startFrame: 0,
@@ -78,8 +81,11 @@ struct UsbipServerTests {
         )
 
         let response = try server.handleURB(command.encoded(), busID: "3-2")
+        let replyHeader = try UsbipHeaderBasic(decoding: Array(response.prefix(UsbipHeaderBasic.byteCount)))
 
         #expect(device.submitted.isEmpty)
+        #expect(replyHeader.direction == .out)
+        #expect(replyHeader.endpoint == 0)
         #expect(response.prefix(4).elementsEqual([0, 0, 0, 3]))
         #expect(response[20..<24].elementsEqual([0xff, 0xff, 0xff, UInt8(bitPattern: Int8(Int32(EPIPE) * -1))]))
     }
@@ -98,7 +104,7 @@ private final class StubUsbDevice: UsbipExportedDevice, @unchecked Sendable {
 
     func submit(_ command: UsbipSubmitCommand) throws -> UsbipSubmitReply {
         submitted.append(command)
-        let header = UsbipHeaderBasic(command: .retSubmit, sequenceNumber: command.header.sequenceNumber, deviceID: 0, direction: command.header.direction, endpoint: 0)
+        let header = UsbipHeaderBasic(command: .retSubmit, sequenceNumber: command.header.sequenceNumber, deviceID: 0, direction: .out, endpoint: 0)
         return UsbipSubmitReply(header: header, status: 0, actualLength: UInt32(submitPayload.count), transferBuffer: submitPayload)
     }
 

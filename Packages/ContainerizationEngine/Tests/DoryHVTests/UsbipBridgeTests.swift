@@ -200,7 +200,7 @@ private final class StubExportedDevice: UsbipExportedDevice, @unchecked Sendable
 
     func submit(_ command: UsbipSubmitCommand) throws -> UsbipSubmitReply {
         submitted.append(command)
-        let header = UsbipHeaderBasic(command: .retSubmit, sequenceNumber: command.header.sequenceNumber, deviceID: 0, direction: command.header.direction, endpoint: 0)
+        let header = UsbipHeaderBasic(command: .retSubmit, sequenceNumber: command.header.sequenceNumber, deviceID: 0, direction: .out, endpoint: 0)
         return UsbipSubmitReply(header: header, status: 0, actualLength: UInt32(submitPayload.count), transferBuffer: submitPayload)
     }
 

@@ -311,7 +311,8 @@ public struct UsbipSubmitReply: Equatable, Sendable {
         bytes.appendBE(numberOfPackets)
         bytes.appendBE(errorCount)
         bytes.append(contentsOf: [UInt8](repeating: 0, count: 8))
-        if header.direction == .in {
+        // Server response headers keep direction zero; payload presence is driven by the transfer result.
+        if !transferBuffer.isEmpty {
             bytes.append(contentsOf: transferBuffer.prefix(Int(actualLength)))
         }
         return bytes
