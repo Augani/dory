@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: readiness-web
+  namespace: dory-readiness
+  labels:
+    dev.dory.readiness: "true"
+spec:
+  selector:
+    app.kubernetes.io/name: readiness-web
+  ports:
+    - name: http
+      port: 80
+      targetPort: 80
+

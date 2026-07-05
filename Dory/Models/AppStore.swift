@@ -927,7 +927,9 @@ final class AppStore {
                 Task { @MainActor in self.kubernetesInfo = message }
             }
         } catch {
-            kubernetesInfo = "Kubernetes failed to start"
+            let message = "Kubernetes failed: \(error)"
+            kubernetesInfo = message
+            actionError = message
         }
         await loadKubernetes()
     }

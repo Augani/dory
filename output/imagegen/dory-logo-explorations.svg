@@ -1,0 +1,96 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="1200" viewBox="0 0 1800 1200">
+  <rect width="1800" height="1200" fill="#F6F8FB"/>
+  <style>
+    .label{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:34px;font-weight:700;fill:#172033}
+    .note{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:20px;font-weight:500;fill:#5C667A}
+    .tile{fill:#FFFFFF;stroke:#D9E1EF;stroke-width:2}
+  </style>
+
+  <g transform="translate(80 70)">
+    <rect class="tile" width="500" height="500" rx="34"/>
+    <g transform="translate(250 224)">
+      <circle r="142" fill="#12213F"/>
+      <path d="M-78 42 C-48 87 42 92 84 42 L111 0 C58 22 -59 22 -111 0 Z" fill="#19C7A6"/>
+      <path d="M-108 -4 C-72 24 72 24 108 -4 C77 -36 -77 -36 -108 -4 Z" fill="#6CE0C6"/>
+      <path d="M-34 -62 L34 -62 L57 -9 C23 2 -23 2 -57 -9 Z" fill="#FFFFFF"/>
+      <path d="M-18 -48 H18 M-25 -30 H25 M-32 -12 H32" stroke="#12213F" stroke-width="10" stroke-linecap="round"/>
+      <path d="M-6 -96 H40 C83 -96 108 -69 108 -28 C108 18 77 42 37 42 H-6 Z M25 -58 V4 H39 C57 4 70 -6 70 -27 C70 -47 57 -58 39 -58 Z" fill="#FFFFFF"/>
+    </g>
+    <text class="label" x="42" y="420">Harbor D</text>
+    <text class="note" x="42" y="455">Dory boat + container stack, no fish cues</text>
+  </g>
+
+  <g transform="translate(650 70)">
+    <rect class="tile" width="500" height="500" rx="34"/>
+    <g transform="translate(250 224)">
+      <rect x="-138" y="-138" width="276" height="276" rx="62" fill="#1A1D2E"/>
+      <path d="M-70 -36 L0 -76 L70 -36 V44 L0 84 L-70 44 Z" fill="#FF6B5F"/>
+      <path d="M0 -76 L70 -36 L0 4 L-70 -36 Z" fill="#FFB75F"/>
+      <path d="M0 4 L70 -36 V44 L0 84 Z" fill="#D9427A"/>
+      <path d="M0 4 L-70 -36 V44 L0 84 Z" fill="#7338E8"/>
+      <path d="M-39 -20 H39 M-39 0 H39 M-39 20 H39" stroke="#FFFFFF" stroke-width="9" stroke-linecap="round" opacity=".92"/>
+      <circle cx="92" cy="-84" r="34" fill="#31D0AA"/>
+      <path d="M78 -84 H106" stroke="#1A1D2E" stroke-width="8" stroke-linecap="round"/>
+    </g>
+    <text class="label" x="42" y="420">MicroVM Cube</text>
+    <text class="note" x="42" y="455">container runtime + shared engine</text>
+  </g>
+
+  <g transform="translate(1220 70)">
+    <rect class="tile" width="500" height="500" rx="34"/>
+    <g transform="translate(250 224)">
+      <circle r="142" fill="#0F172A"/>
+      <path d="M-87 48 C-68 -36 -10 -91 74 -96 C107 -52 114 19 80 74 C19 84 -41 73 -87 48 Z" fill="#FFFFFF"/>
+      <path d="M-48 35 C-28 -17 9 -52 60 -61 C74 -30 76 13 54 45 C17 52 -20 48 -48 35 Z" fill="#0F172A"/>
+      <path d="M-11 -92 C22 -123 74 -128 111 -99 C76 -91 49 -72 32 -42 Z" fill="#31D0AA"/>
+      <circle cx="-86" cy="-83" r="24" fill="#F25F4C"/>
+      <path d="M-98 -83 H-74 M-86 -95 V-71" stroke="#FFFFFF" stroke-width="7" stroke-linecap="round"/>
+      <path d="M-77 80 C-17 116 61 104 106 54" stroke="#31D0AA" stroke-width="13" stroke-linecap="round" fill="none"/>
+    </g>
+    <text class="label" x="42" y="420">Orbit Shell</text>
+    <text class="note" x="42" y="455">fast native app, socket/orbit motif</text>
+  </g>
+
+  <g transform="translate(80 630)">
+    <rect class="tile" width="500" height="500" rx="34"/>
+    <g transform="translate(250 224)">
+      <rect x="-142" y="-142" width="284" height="284" rx="72" fill="#112623"/>
+      <path d="M-82 -58 H25 C77 -58 111 -24 111 28 C111 80 77 114 25 114 H-82 Z" fill="#26D07C"/>
+      <path d="M-29 -10 H23 C43 -10 55 4 55 28 C55 51 43 65 23 65 H-29 Z" fill="#112623"/>
+      <path d="M-82 -58 L-29 -10 V65 L-82 114 Z" fill="#C9F24A"/>
+      <path d="M-108 -91 H-54 M-108 -65 H-76 M-108 -39 H-94" stroke="#FFFFFF" stroke-width="12" stroke-linecap="round"/>
+      <circle cx="86" cy="-82" r="19" fill="#FFFFFF"/>
+    </g>
+    <text class="label" x="42" y="420">Terminal Dock</text>
+    <text class="note" x="42" y="455">CLI prompt + D-shaped runtime</text>
+  </g>
+
+  <g transform="translate(650 630)">
+    <rect class="tile" width="500" height="500" rx="34"/>
+    <g transform="translate(250 224)">
+      <circle r="142" fill="#231942"/>
+      <path d="M-72 -98 H48 C92 -98 124 -65 124 -21 C124 24 92 57 48 57 H-72 Z" fill="#FFFFFF"/>
+      <path d="M-28 -56 H41 C63 -56 78 -41 78 -21 C78 -1 63 15 41 15 H-28 Z" fill="#231942"/>
+      <path d="M-95 91 L-41 37 H18 L-36 91 Z" fill="#F4C95D"/>
+      <path d="M-13 91 L41 37 H99 L45 91 Z" fill="#F97068"/>
+      <path d="M-113 -36 L-78 -70 L-48 -40 L-83 -6 Z" fill="#37D5D6"/>
+    </g>
+    <text class="label" x="42" y="420">Bridge Path</text>
+    <text class="note" x="42" y="455">ports, routing, and local domains</text>
+  </g>
+
+  <g transform="translate(1220 630)">
+    <rect class="tile" width="500" height="500" rx="34"/>
+    <g transform="translate(250 224)">
+      <rect x="-142" y="-142" width="284" height="284" rx="72" fill="#0E2538"/>
+      <path d="M0 -104 L89 -52 V52 L0 104 L-89 52 V-52 Z" fill="#4CC9F0"/>
+      <path d="M0 -104 L89 -52 L0 0 L-89 -52 Z" fill="#B8F3FF"/>
+      <path d="M0 0 L89 -52 V52 L0 104 Z" fill="#2096D3"/>
+      <path d="M0 0 L-89 -52 V52 L0 104 Z" fill="#2B66C3"/>
+      <path d="M-39 -32 H39 M-39 -8 H39 M-39 16 H39" stroke="#0E2538" stroke-width="10" stroke-linecap="round"/>
+      <path d="M-104 94 C-64 129 60 130 104 94" stroke="#A7F25C" stroke-width="14" stroke-linecap="round" fill="none"/>
+    </g>
+    <text class="label" x="42" y="420">Stack Beacon</text>
+    <text class="note" x="42" y="455">containers, Kubernetes, Linux machines</text>
+  </g>
+</svg>

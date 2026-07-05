@@ -29,11 +29,9 @@ NOTARY_PROFILE="${DORY_NOTARY_PROFILE:-dory-notary}"
 assert_universal_app_binary() {
   local binary="$1"
   local archs
-  archs="$(lipo -archs "$binary" | tr ' ' '\n' | sort | tr '\n' ' ')"
-  case " $archs " in
-    *" arm64 "*" x86_64 "*) ;;
-    *) echo "release error: $binary is not universal (archs: ${archs:-none})" >&2; exit 1 ;;
-  esac
+  archs="$(lipo -archs "$binary")"
+  case " $archs " in *" arm64 "*) ;; *) echo "release error: $binary missing arm64 (archs: ${archs:-none})" >&2; exit 1 ;; esac
+  case " $archs " in *" x86_64 "*) ;; *) echo "release error: $binary missing x86_64 (archs: ${archs:-none})" >&2; exit 1 ;; esac
   echo "==> Verified universal app binary: $archs"
 }
 
@@ -66,10 +64,24 @@ if [ "${DORY_BUNDLE_ENGINE:-0}" = "1" ]; then
 fi
 
 echo "==> Signing (Developer ID + hardened runtime)..."
-codesign --force --deep --options runtime --timestamp --sign "Developer ID Application" "$APP"
+# NOT --deep: bundle-engine.sh already signed the nested helpers with their own entitlements
+# (dory-hv needs com.apple.security.hypervisor, dory-vm needs com.apple.security.virtualization),
+# and --deep would re-sign them WITHOUT entitlements, breaking the engine with HV_DENIED. A
+# non-deep sign re-seals the bundle and re-signs the main app with its entitlements, leaving the
+# already-signed helpers intact.
+codesign --force --options runtime --timestamp --entitlements Dory/Dory.entitlements --sign "Developer ID Application" "$APP"
 
 ZIP="$BUILD_DIR/Dory-$VERSION.zip"
 ditto -c -k --keepParent "$APP" "$ZIP"
+
+# DORY_SKIP_NOTARIZE=1 produces a signed, engine-bundled app without the Apple notary round-trip,
+# for fast local verification. Notarize once the build is confirmed working.
+if [ "${DORY_SKIP_NOTARIZE:-0}" = "1" ]; then
+  echo "==> Skipping notarization (DORY_SKIP_NOTARIZE=1); signed app at $APP"
+  SHA256="$(shasum -a 256 "$ZIP" | awk '{print $1}')"
+  echo "==> Done (signed, not notarized): $ZIP  (sha256: $SHA256)"
+  exit 0
+fi
 
 echo "==> Notarizing..."
 # CI passes credentials directly (NOTARY_APPLE_ID/_TEAM_ID/_PASSWORD); locally we use a stored

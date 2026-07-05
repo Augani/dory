@@ -1,0 +1,44 @@
+{
+    "configurations": [
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:Dory}/Packages/ContainerizationEngine",
+            "name": "Debug dory-vmboot (Packages/ContainerizationEngine)",
+            "target": "dory-vmboot",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug dory-vmboot (Packages/ContainerizationEngine)"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:Dory}/Packages/ContainerizationEngine",
+            "name": "Release dory-vmboot (Packages/ContainerizationEngine)",
+            "target": "dory-vmboot",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release dory-vmboot (Packages/ContainerizationEngine)"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:Dory}/Packages/ContainerizationEngine",
+            "name": "Debug dory-hv (Packages/ContainerizationEngine)",
+            "target": "dory-hv",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug dory-hv (Packages/ContainerizationEngine)"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:Dory}/Packages/ContainerizationEngine",
+            "name": "Release dory-hv (Packages/ContainerizationEngine)",
+            "target": "dory-hv",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release dory-hv (Packages/ContainerizationEngine)"
+        }
+    ]
+}

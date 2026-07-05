@@ -9,10 +9,11 @@
 #                                   com.apple.security.hypervisor. Preferred when DORY_HV_ENGINE=1.
 #   * Contents/Helpers/gvproxy    — userspace networking (Apache-2.0) for the dory-hv engine.
 #   * Contents/Helpers/dory-vm    — the older Virtualization.framework helper (~100MB), fallback.
-#   * Contents/Helpers/zstd       — decompresses the assets on first launch.
-#   * Contents/Resources/dory-hv-kernel-<arch>.zst       — compressed PVH/Image kernel for dory-hv.
-#   * Contents/Resources/dory-vm-kernel-<arch>.zst       — compressed Linux kernel.
-#   * Contents/Resources/dory-vm-initfs-<arch>.ext4.zst  — compressed VM initfs.
+#   * Contents/Resources/dory-hv-kernel-<arch>.lzfse       — LZFSE PVH/Image kernel for dory-hv.
+#   * Contents/Resources/dory-vm-kernel-<arch>.lzfse       — LZFSE Linux kernel.
+#   * Contents/Resources/dory-vm-initfs-<arch>.ext4.lzfse  — LZFSE VM initfs.
+#   Assets are compressed by dory-hv (LZFSE) and decompressed in-process at first launch via Apple's
+#   Compression framework — no external zstd binary or dylib is bundled.
 #   The docker engine image (docker:dind) is NOT bundled — the engine pulls it on first boot.
 #
 # Set DORY_BUNDLE_LEGACY=1 to additionally inject the heavy offline payload (the docker:dind image
@@ -29,7 +30,6 @@ HELPERS="$APP/Contents/Helpers"
 SUPPORT="$HOME/Library/Application Support/com.apple.container"
 
 [ -d "$APP" ] || { echo "no such app bundle: $APP"; exit 1; }
-command -v zstd >/dev/null || { echo "zstd not found (brew install zstd)"; exit 1; }
 mkdir -p "$RESOURCES" "$HELPERS"
 
 find_debugfs() {
@@ -218,9 +218,8 @@ echo "==> Building + signing the in-process VM engine helper (dory-vm)…"
 PKG="$(dirname "$0")/../Packages/ContainerizationEngine"
 if [ -d "$PKG" ]; then
   ( cd "$PKG" && swift build -c release --product dory-vmboot )
-  # This package emits to .build/out/Products/<config>/ — NOT swift's --show-bin-path location.
-  HELPER_BIN="$(find "$PKG/.build" -name dory-vmboot -type f -path '*Release*' 2>/dev/null | head -1)"
-  [ -n "$HELPER_BIN" ] || HELPER_BIN="$(find "$PKG/.build" -name dory-vmboot -type f 2>/dev/null | head -1)"
+  HELPER_BIN="$(cd "$PKG" && swift build -c release --product dory-vmboot --show-bin-path 2>/dev/null)/dory-vmboot"
+  [ -x "$HELPER_BIN" ] || HELPER_BIN="$(find "$PKG/.build" -name dory-vmboot -type f -ipath '*/release/*' -not -path '*dSYM*' 2>/dev/null | head -1)"
   cat > /tmp/dory-vm.entitlements <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -239,8 +238,8 @@ echo "==> Building + signing the Hypervisor.framework VM engine (dory-hv)…"
 # The provisioner prefers it when DORY_HV_ENGINE=1 and it is present in Helpers.
 if [ -d "$PKG" ]; then
   ( cd "$PKG" && swift build -c release --product dory-hv )
-  HV_BIN="$(find "$PKG/.build" -name dory-hv -type f -path '*Release*' 2>/dev/null | head -1)"
-  [ -n "$HV_BIN" ] || HV_BIN="$(find "$PKG/.build" -name dory-hv -type f 2>/dev/null | head -1)"
+  HV_BIN="$(cd "$PKG" && swift build -c release --product dory-hv --show-bin-path 2>/dev/null)/dory-hv"
+  [ -x "$HV_BIN" ] || HV_BIN="$(find "$PKG/.build" -name dory-hv -type f -ipath '*/release/*' -not -path '*dSYM*' 2>/dev/null | head -1)"
   if [ -n "$HV_BIN" ]; then
     cat > /tmp/dory-hv.entitlements <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -259,7 +258,8 @@ fi
 
 echo "==> Bundling gvproxy (userspace networking for the dory-hv engine)…"
 # gvproxy (gvisor-tap-vsock, Apache-2.0) gives the HV engine NAT/DNS with no restricted
-# entitlement. Prefer a path from DORY_GVPROXY, else podman's bundled copy, else PATH.
+# entitlement. Prefer DORY_GVPROXY, else podman's copy, else PATH, else the pinned release.
+GVPROXY_VERSION="${DORY_GVPROXY_VERSION:-v0.8.6}"
 GVPROXY_SRC="${DORY_GVPROXY:-}"
 if [ -z "$GVPROXY_SRC" ]; then
   for cand in /opt/homebrew/opt/podman/libexec/podman/gvproxy \
@@ -268,13 +268,22 @@ if [ -z "$GVPROXY_SRC" ]; then
     [ -n "$cand" ] && [ -x "$cand" ] && { GVPROXY_SRC="$cand"; break; }
   done
 fi
+if [ -z "$GVPROXY_SRC" ] || [ ! -x "$GVPROXY_SRC" ]; then
+  echo "    fetching gvproxy $GVPROXY_VERSION (gvisor-tap-vsock release)…"
+  GVPROXY_TMP="/tmp/dory-gvproxy-darwin"
+  if curl -fsSL "https://github.com/containers/gvisor-tap-vsock/releases/download/${GVPROXY_VERSION}/gvproxy-darwin" -o "$GVPROXY_TMP" 2>/dev/null; then
+    chmod +x "$GVPROXY_TMP"
+    GVPROXY_SRC="$GVPROXY_TMP"
+  fi
+fi
 if [ -n "$GVPROXY_SRC" ] && [ -x "$GVPROXY_SRC" ]; then
   cp "$GVPROXY_SRC" "$HELPERS/gvproxy"
   codesign --force --options runtime --timestamp -s "${DORY_SIGN_ID:-Developer ID Application}" "$HELPERS/gvproxy" 2>/dev/null \
     || codesign --force -s - "$HELPERS/gvproxy"
   echo "    bundled Helpers/gvproxy (from $GVPROXY_SRC)"
 else
-  echo "    WARNING: no gvproxy found — the dory-hv engine needs it. Set DORY_GVPROXY or 'brew install podman'."
+  echo "    ERROR: could not obtain gvproxy — the dory-hv engine cannot run without it; refusing to ship a broken engine." >&2
+  exit 1
 fi
 
 echo "==> Bundling the host kubectl + docker CLIs (so k8s and the docker CLI need no separate install)…"
@@ -316,12 +325,9 @@ if [ ! -x "$HELPERS/docker-compose" ]; then
 fi
 bundle_cli docker-compose "" ""
 
-echo "==> Bundling zstd (decompresses the engine assets on first launch)…"
-ZSTD_BIN="$(command -v zstd)"
-cp "$ZSTD_BIN" "$HELPERS/zstd"
-codesign --force --options runtime -s "${DORY_SIGN_ID:-Developer ID Application}" "$HELPERS/zstd" 2>/dev/null \
-  || codesign --force -s - "$HELPERS/zstd"
-echo "    bundled Helpers/zstd"
+# No external zstd: the engine kernel/initfs are compressed with LZFSE by dory-hv itself (below) and
+# decompressed in-process at first launch via Apple's Compression framework, so nothing external is
+# linked or bundled for decompression.
 
 host_guest_arch() {
   [ "$(uname -m)" = "x86_64" ] && printf '%s\n' "amd64" || printf '%s\n' "arm64"
@@ -338,7 +344,7 @@ kernel_source_for_arch() {
   env_name="$(env_for_arch DORY_KERNEL "$arch")"
   if [ -n "${!env_name:-}" ]; then printf '%s\n' "${!env_name}"; return 0; fi
   if [ "$arch" = "$(host_guest_arch)" ] && [ -n "${DORY_KERNEL:-}" ]; then printf '%s\n' "$DORY_KERNEL"; return 0; fi
-  if [ "$arch" = "arm64" ] && [ -f "$(dirname "$0")/../guest/out/Image.zst" ]; then printf '%s\n' "$(dirname "$0")/../guest/out/Image.zst"; return 0; fi
+  if [ "$arch" = "arm64" ] && [ -f "$(dirname "$0")/../guest/out/Image" ]; then printf '%s\n' "$(dirname "$0")/../guest/out/Image"; return 0; fi
   if [ "$arch" = "amd64" ] && [ -f "$(dirname "$0")/../guest/out/bzImage-x86" ]; then printf '%s\n' "$(dirname "$0")/../guest/out/bzImage-x86"; return 0; fi
   if [ "$arch" = "arm64" ] && [ "$arch" = "$(host_guest_arch)" ]; then ls -t "$SUPPORT"/kernels/vmlinux-* 2>/dev/null | head -1; fi
 }
@@ -348,8 +354,7 @@ hv_kernel_source_for_arch() {
   env_name="$(env_for_arch DORY_HV_KERNEL "$arch")"
   if [ -n "${!env_name:-}" ]; then printf '%s\n' "${!env_name}"; return 0; fi
   if [ "$arch" = "$(host_guest_arch)" ] && [ -n "${DORY_HV_KERNEL:-}" ]; then printf '%s\n' "$DORY_HV_KERNEL"; return 0; fi
-  if [ "$arch" = "arm64" ] && [ -f "$(dirname "$0")/../guest/out/Image.zst" ]; then printf '%s\n' "$(dirname "$0")/../guest/out/Image.zst"; return 0; fi
-  if [ "$arch" = "amd64" ] && [ -f "$(dirname "$0")/../guest/out/vmlinux-x86.zst" ]; then printf '%s\n' "$(dirname "$0")/../guest/out/vmlinux-x86.zst"; return 0; fi
+  if [ "$arch" = "arm64" ] && [ -f "$(dirname "$0")/../guest/out/Image" ]; then printf '%s\n' "$(dirname "$0")/../guest/out/Image"; return 0; fi
   if [ "$arch" = "amd64" ] && [ -f "$(dirname "$0")/../guest/out/vmlinux-x86" ]; then printf '%s\n' "$(dirname "$0")/../guest/out/vmlinux-x86"; return 0; fi
   if [ "$arch" = "arm64" ] && [ "$arch" = "$(host_guest_arch)" ]; then ls -t "$SUPPORT"/kernels/vmlinux-* 2>/dev/null | head -1; fi
 }
@@ -362,16 +367,17 @@ initfs_source_for_arch() {
   if [ -f "$(dirname "$0")/../guest/out/initfs-$arch.ext4" ]; then printf '%s\n' "$(dirname "$0")/../guest/out/initfs-$arch.ext4"; return 0; fi
 }
 
+compress_asset() {  # raw_src  out.lzfse
+  [ -x "$HELPERS/dory-hv" ] || { echo "    ERROR: $HELPERS/dory-hv missing; cannot compress engine assets" >&2; exit 1; }
+  "$HELPERS/dory-hv" lzfse compress "$1" "$2"
+}
+
 bundle_hv_kernel_for_arch() {
   local arch="$1" kernel_src kernel_out
   kernel_src="$(hv_kernel_source_for_arch "$arch" || true)"
-  kernel_out="$RESOURCES/dory-hv-kernel-$arch.zst"
+  kernel_out="$RESOURCES/dory-hv-kernel-$arch.lzfse"
   if [ -n "$kernel_src" ] && [ -f "$kernel_src" ]; then
-    if [ "${kernel_src##*.}" = "zst" ]; then
-      cp "$kernel_src" "$kernel_out"
-    else
-      zstd -19 -q -f "$kernel_src" -o "$kernel_out"
-    fi
+    compress_asset "$kernel_src" "$kernel_out"
     echo "    bundled Resources/$(basename "$kernel_out") ($(du -h "$kernel_out" | awk '{print $1}'), from $(du -h "$kernel_src" | awk '{print $1}'))"
   else
     echo "    WARNING: no $arch dory-hv kernel found; run guest/kernel/build.sh $arch or set $(env_for_arch DORY_HV_KERNEL "$arch")"
@@ -382,15 +388,11 @@ bundle_guest_assets_for_arch() {
   local arch="$1" kernel_src initfs_src kernel_out initfs_out agent qemu_guest_arch qemu_static
   kernel_src="$(kernel_source_for_arch "$arch" || true)"
   initfs_src="$(initfs_source_for_arch "$arch" || true)"
-  kernel_out="$RESOURCES/dory-vm-kernel-$arch.zst"
-  initfs_out="$RESOURCES/dory-vm-initfs-$arch.ext4.zst"
+  kernel_out="$RESOURCES/dory-vm-kernel-$arch.lzfse"
+  initfs_out="$RESOURCES/dory-vm-initfs-$arch.ext4.lzfse"
 
   if [ -n "$kernel_src" ] && [ -f "$kernel_src" ]; then
-    if [ "${kernel_src##*.}" = "zst" ]; then
-      cp "$kernel_src" "$kernel_out"
-    else
-      zstd -19 -q -f "$kernel_src" -o "$kernel_out"
-    fi
+    compress_asset "$kernel_src" "$kernel_out"
     echo "    bundled Resources/$(basename "$kernel_out") ($(du -h "$kernel_out" | awk '{print $1}'), from $(du -h "$kernel_src" | awk '{print $1}'))"
   else
     echo "    WARNING: no $arch kernel found; run guest/kernel/build.sh $arch or set $(env_for_arch DORY_KERNEL "$arch")"
@@ -409,8 +411,7 @@ bundle_guest_assets_for_arch() {
       echo "    WARNING: qemu static interpreter for $qemu_guest_arch not found; non-native binfmt will rely on runtime fallback"
     fi
     inject_debug_toolbox_into_initfs "$INITFS_TO_BUNDLE" "$arch"
-    # --long catches the large zero-fill region in the sparse ext4.
-    zstd -19 --long=27 -q -f "$INITFS_TO_BUNDLE" -o "$initfs_out"
+    compress_asset "$INITFS_TO_BUNDLE" "$initfs_out"
     echo "    bundled Resources/$(basename "$initfs_out") ($(du -h "$initfs_out" | awk '{print $1}'), from $(du -h "$INITFS_TO_BUNDLE" | awk '{print $1}'))"
     [ "$INITFS_TO_BUNDLE" = "$initfs_src" ] || rm -f "$INITFS_TO_BUNDLE"
   else
@@ -425,14 +426,14 @@ for asset_arch in ${DORY_BUNDLE_ARCHES:-arm64 amd64}; do
 done
 
 HOST_GUEST_ARCH="$(host_guest_arch)"
-if [ -f "$RESOURCES/dory-hv-kernel-$HOST_GUEST_ARCH.zst" ]; then
-  ln -sf "dory-hv-kernel-$HOST_GUEST_ARCH.zst" "$RESOURCES/dory-hv-kernel.zst"
+if [ -f "$RESOURCES/dory-hv-kernel-$HOST_GUEST_ARCH.lzfse" ]; then
+  ln -sf "dory-hv-kernel-$HOST_GUEST_ARCH.lzfse" "$RESOURCES/dory-hv-kernel.lzfse"
 fi
-if [ -f "$RESOURCES/dory-vm-kernel-$HOST_GUEST_ARCH.zst" ]; then
-  ln -sf "dory-vm-kernel-$HOST_GUEST_ARCH.zst" "$RESOURCES/dory-vm-kernel.zst"
+if [ -f "$RESOURCES/dory-vm-kernel-$HOST_GUEST_ARCH.lzfse" ]; then
+  ln -sf "dory-vm-kernel-$HOST_GUEST_ARCH.lzfse" "$RESOURCES/dory-vm-kernel.lzfse"
 fi
-if [ -f "$RESOURCES/dory-vm-initfs-$HOST_GUEST_ARCH.ext4.zst" ]; then
-  ln -sf "dory-vm-initfs-$HOST_GUEST_ARCH.ext4.zst" "$RESOURCES/dory-vm-initfs.ext4.zst"
+if [ -f "$RESOURCES/dory-vm-initfs-$HOST_GUEST_ARCH.ext4.lzfse" ]; then
+  ln -sf "dory-vm-initfs-$HOST_GUEST_ARCH.ext4.lzfse" "$RESOURCES/dory-vm-initfs.ext4.lzfse"
 fi
 
 if [ "${DORY_BUNDLE_LEGACY:-0}" = "1" ]; then
@@ -449,5 +450,5 @@ if [ "${DORY_BUNDLE_LEGACY:-0}" = "1" ]; then
 fi
 
 echo "==> Payload injected into $APP"
-echo "    Engine payload ≈ $(du -ch "$RESOURCES"/dory-hv-*.zst "$RESOURCES"/dory-vm-*.zst "$HELPERS"/dory-hv "$HELPERS"/dory-vm 2>/dev/null | tail -1 | awk '{print $1}') on disk (engine image pulled on first launch)"
+echo "    Engine payload ≈ $(du -ch "$RESOURCES"/dory-hv-*.lzfse "$RESOURCES"/dory-vm-*.lzfse "$HELPERS"/dory-hv "$HELPERS"/dory-vm 2>/dev/null | tail -1 | awk '{print $1}') on disk (engine image pulled on first launch)"
 echo "    Re-sign the bundle (codesign --deep) before notarization so the payload is sealed."

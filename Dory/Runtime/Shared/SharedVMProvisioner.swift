@@ -9,8 +9,6 @@ import Foundation
 enum SharedVMProvisioner {
     static var socketPath: String { "\(NSHomeDirectory())/.dory/engine.sock" }
     static var engineIPPath: String { "\(NSHomeDirectory())/.dory/engine.ip" }
-
-    private static let zstdCandidates = ["/opt/homebrew/bin/zstd", "/usr/local/bin/zstd", "/usr/bin/zstd"]
     nonisolated private static let helperPIDPath = "\(NSHomeDirectory())/.dory/engine.pid"
     nonisolated private static let helperLogPath = "\(NSHomeDirectory())/.dory/engine.log"
     nonisolated static let defaultEngineMemoryMB = 2048
@@ -89,10 +87,10 @@ enum SharedVMProvisioner {
     static func hvEngineAvailable(environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
         guard environment["DORY_HV_ENGINE"] != "0" else { return false }
         guard hvHelperBinary() != nil, gvproxyBinary() != nil else { return false }
-        if Bundle.main.url(forResource: hvKernelResourceName(), withExtension: "zst") != nil { return true }
-        if engineArch == "arm64", Bundle.main.url(forResource: "dory-hv-kernel", withExtension: "zst") != nil { return true }
-        if engineArch == "arm64", Bundle.main.url(forResource: vmKernelResourceName(), withExtension: "zst") != nil { return true }
-        if engineArch == "arm64", Bundle.main.url(forResource: "dory-vm-kernel", withExtension: "zst") != nil { return true }
+        if Bundle.main.url(forResource: hvKernelResourceName(), withExtension: "lzfse") != nil { return true }
+        if engineArch == "arm64", Bundle.main.url(forResource: "dory-hv-kernel", withExtension: "lzfse") != nil { return true }
+        if engineArch == "arm64", Bundle.main.url(forResource: vmKernelResourceName(), withExtension: "lzfse") != nil { return true }
+        if engineArch == "arm64", Bundle.main.url(forResource: "dory-vm-kernel", withExtension: "lzfse") != nil { return true }
         guard engineArch == "arm64" else { return false }
         return installedKernelPath() != nil
     }
@@ -100,11 +98,11 @@ enum SharedVMProvisioner {
     static func vmEngineAvailable(environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
         guard environment["DORY_VM_ENGINE"] != "0" else { return false }
         guard vmHelperBinary() != nil else { return false }
-        let hasKernel = Bundle.main.url(forResource: vmKernelResourceName(), withExtension: "zst") != nil
-            || (engineArch == "arm64" && Bundle.main.url(forResource: "dory-vm-kernel", withExtension: "zst") != nil)
+        let hasKernel = Bundle.main.url(forResource: vmKernelResourceName(), withExtension: "lzfse") != nil
+            || (engineArch == "arm64" && Bundle.main.url(forResource: "dory-vm-kernel", withExtension: "lzfse") != nil)
             || (engineArch == "arm64" && installedKernelPath() != nil)
-        let hasInitfs = Bundle.main.url(forResource: vmInitfsResourceName(), withExtension: "zst") != nil
-            || (engineArch == "arm64" && Bundle.main.url(forResource: "dory-vm-initfs.ext4", withExtension: "zst") != nil)
+        let hasInitfs = Bundle.main.url(forResource: vmInitfsResourceName(), withExtension: "lzfse") != nil
+            || (engineArch == "arm64" && Bundle.main.url(forResource: "dory-vm-initfs.ext4", withExtension: "lzfse") != nil)
         return hasKernel && hasInitfs
     }
 
@@ -472,14 +470,20 @@ enum SharedVMProvisioner {
     }
 
     private static func prepareCompressedResource(resource: String, outputName: String) async -> String? {
-        guard let source = Bundle.main.url(forResource: resource, withExtension: "zst"),
-              let zstd = zstdBinary() else { return nil }
+        guard let source = Bundle.main.url(forResource: resource, withExtension: "lzfse") else { return nil }
         let directory = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".dory/vm")
         let output = directory.appendingPathComponent(outputName)
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         if shouldRefreshAsset(source: source, output: output) {
-            let result = await Shell.runAsyncResult(zstd, ["-d", "-q", "-f", source.path, "-o", output.path])
-            guard result.exit == 0 else { return nil }
+            let temporary = output.appendingPathExtension("partial")
+            do {
+                try LZFSE.decompress(source: source.path, destination: temporary.path)
+                _ = try? FileManager.default.removeItem(at: output)
+                try FileManager.default.moveItem(at: temporary, to: output)
+            } catch {
+                try? FileManager.default.removeItem(at: temporary)
+                return nil
+            }
         }
         return FileManager.default.fileExists(atPath: output.path) ? output.path : nil
     }
@@ -504,13 +508,6 @@ enum SharedVMProvisioner {
             .path
     }
 
-    private static func zstdBinary() -> String? {
-        if let helper = bundledHelperPath(named: "zstd"),
-           FileManager.default.isExecutableFile(atPath: helper) {
-            return helper
-        }
-        return Shell.find("zstd", candidates: zstdCandidates)
-    }
 
     private static func bundledHelperPath(named name: String) -> String? {
         if let auxiliary = Bundle.main.url(forAuxiliaryExecutable: name)?.path {

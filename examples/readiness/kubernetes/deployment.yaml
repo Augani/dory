@@ -1,0 +1,39 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: readiness-web
+  namespace: dory-readiness
+  labels:
+    app.kubernetes.io/name: readiness-web
+    dev.dory.readiness: "true"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: readiness-web
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: readiness-web
+        dev.dory.readiness: "true"
+    spec:
+      containers:
+        - name: web
+          image: nginx:alpine
+          ports:
+            - containerPort: 80
+          volumeMounts:
+            - name: html
+              mountPath: /usr/share/nginx/html/index.html
+              subPath: index.html
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 2
+            periodSeconds: 2
+      volumes:
+        - name: html
+          configMap:
+            name: readiness-html
+

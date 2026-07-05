@@ -223,6 +223,19 @@ guard let command = arguments.first else {
 }
 
 switch command {
+case "lzfse":
+    let sub = arguments.dropFirst().first
+    let paths = Array(arguments.dropFirst(2))
+    guard let sub, paths.count == 2 else { fail("usage: dory-hv lzfse <compress|decompress> <in> <out>") }
+    do {
+        switch sub {
+        case "compress": try LZFSE.compress(source: paths[0], destination: paths[1])
+        case "decompress": try LZFSE.decompress(source: paths[0], destination: paths[1])
+        default: fail("usage: dory-hv lzfse <compress|decompress> <in> <out>")
+        }
+    } catch {
+        fail("lzfse \(sub) failed: \(error)")
+    }
 case "smoke":
     do {
         let result = try HVSmoke.run()

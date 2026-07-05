@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: readiness-html
+  namespace: dory-readiness
+  labels:
+    dev.dory.readiness: "true"
+data:
+  index.html: |
+    k8s-ok
+

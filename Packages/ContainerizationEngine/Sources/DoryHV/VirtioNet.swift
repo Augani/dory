@@ -13,6 +13,7 @@ public final class VirtioNet: VirtioDeviceBackend {
     public static let guestMAC: [UInt8] = [0x5A, 0x94, 0xEF, 0xE4, 0x0C, 0xEE]
 
     private static let headerLength = 12
+    private static let vfkitMagic: [UInt8] = Array("VFKT".utf8)
     private let socketFD: Int32
     private var receiveSource: (any DispatchSourceRead)?
     private weak var transport: VirtioMMIOTransport?
@@ -51,6 +52,10 @@ public final class VirtioNet: VirtioDeviceBackend {
         var bufferSize = 1 << 20
         setsockopt(descriptor, SOL_SOCKET, SO_SNDBUF, &bufferSize, socklen_t(MemoryLayout<Int>.size))
         setsockopt(descriptor, SOL_SOCKET, SO_RCVBUF, &bufferSize, socklen_t(MemoryLayout<Int>.size))
+        // gvproxy's vfkit unixgram protocol (AcceptVfkit) requires the client's first datagram to be
+        // the 4-byte "VFKT" magic: it validates the peer and registers our bound address for return
+        // traffic. Without it gvproxy reads the first ethernet frame as the magic and exits.
+        _ = Self.vfkitMagic.withUnsafeBytes { send(descriptor, $0.baseAddress, $0.count, 0) }
         self.socketFD = descriptor
     }
 

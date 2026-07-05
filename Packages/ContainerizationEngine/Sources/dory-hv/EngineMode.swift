@@ -155,9 +155,12 @@ enum EngineMode {
             try FileManager.default.moveItem(atPath: temporary, toPath: dataDisk)
         }
 
+        let bootScriptDisk = state + "/boot-script.ext4"
+        try makeBootScriptDisk(at: bootScriptDisk, script: guestBootScript(shares: configuration.shares))
+
         let machine = try Machine(configuration: MachineConfiguration(
             kernelPath: configuration.kernelPath,
-            commandLine: guestCommandLine(shares: configuration.shares),
+            commandLine: guestCommandLine(),
             memoryBytes: configuration.memoryMB << 20,
             cpuCount: configuration.cpus
         ))
@@ -166,6 +169,7 @@ enum EngineMode {
         var backends: [VirtioDeviceBackend] = []
         backends.append(try VirtioBlk(path: bootRootfs, identity: "dory-rootfs"))
         backends.append(try VirtioBlk(path: dataDisk, identity: "dory-data"))
+        backends.append(try VirtioBlk(path: bootScriptDisk, identity: "dory-bootscript"))
         backends.append(VirtioRng())
         backends.append(VirtioBalloon(memory: machine.memory) { note($0) })
         let vsock = VirtioVsock(guestCID: 3)
@@ -353,7 +357,7 @@ enum EngineMode {
     /// connection triggers sync + poweroff, giving the host a clean-unmount path), and a light
     /// page-cache cap so free page reporting (which handles free pages automatically at 16 KiB
     /// granularity) has cold pages to hand back when the cache bloats.
-    private static func guestCommandLine(shares: [VirtioFSShareConfiguration] = []) -> String {
+    private static func guestBootScript(shares: [VirtioFSShareConfiguration] = []) -> String {
         var script = [
             "export PATH=/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin",
             "mount -t proc proc /proc",
@@ -396,7 +400,7 @@ enum EngineMode {
             // (write-rejected on the root cgroup). A gentle pagecache-only drop fires when the
             // cache passes ~320 MiB, capping the idle footprint while leaving a healthy working
             // set for active containers.
-            "( while true; do sleep 30; c=$(grep Cached: /proc/meminfo | head -1 | tr -s \\  | cut -d\\  -f2); [ ${c:-0} -gt 327680 ] && echo 1 > /proc/sys/vm/drop_caches 2>/dev/null; done ) & true",
+            "( while true; do sleep 30; c=$(awk '/^Cached:/{print $2; exit}' /proc/meminfo); [ ${c:-0} -gt 327680 ] && echo 1 > /proc/sys/vm/drop_caches 2>/dev/null; done ) & true",
             // Hand PID 1 to tini (docker-init, shipped in docker:dind) as a reaping init. exec
             // replaces the boot shell in place, so tini keeps PID 1 while dockerd and the loops
             // above continue as its children. Container shims double-fork and orphan their exited
@@ -406,12 +410,32 @@ enum EngineMode {
             "[ -x /usr/local/bin/docker-init ] && exec /usr/local/bin/docker-init -s -- sleep 2147483647",
             "while true; do sleep 2147483647; done",
         ]
+        return script.joined(separator: "\n") + "\n"
+    }
+
+    /// The full boot script lives on a dedicated ext4 disk (vdc), so the kernel command line stays
+    /// tiny and quote-free: it can never overflow COMMAND_LINE_SIZE or be mis-parsed by the guest
+    /// shell, the failure a multi-KB embedded script invites.
+    private static func guestCommandLine() -> String {
         #if arch(arm64)
         let console = "console=ttyAMA0"
         #else
         let console = "console=ttyS0 earlyprintk=serial,ttyS0,115200"
         #endif
-        return "\(console) root=/dev/vda rw panic=0 init=/bin/sh -- -c \"\(script.joined(separator: "; "))\""
+        return "\(console) root=/dev/vda rw panic=0 init=/bin/sh -- -c \"mkdir -p /mnt && mount -t ext4 /dev/vdc /mnt && exec /bin/sh /mnt/boot.sh\""
+    }
+
+    private static func makeBootScriptDisk(at path: String, script: String) throws {
+        try? FileManager.default.removeItem(atPath: path)
+        let temporary = path + ".partial"
+        try? FileManager.default.removeItem(atPath: temporary)
+        let formatter = try EXT4.Formatter(FilePath(temporary), minDiskSize: 1 * 1024 * 1024)
+        let stream = InputStream(data: Data(script.utf8))
+        stream.open()
+        defer { stream.close() }
+        try formatter.create(path: FilePath("/boot.sh"), mode: EXT4.Inode.Mode(.S_IFREG, 0o755), buf: stream)
+        try formatter.close()
+        try FileManager.default.moveItem(atPath: temporary, toPath: path)
     }
 
     private static func attachPlatformDevices(to machine: Machine) {

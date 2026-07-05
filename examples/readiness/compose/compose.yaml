@@ -1,0 +1,35 @@
+services:
+  api:
+    build:
+      context: ../docker/app
+    image: dory/readiness-app:local
+    environment:
+      DORY_MESSAGE: compose-ok
+    labels:
+      dev.dory.readiness: "${DORY_READINESS_RUN_ID:-manual}"
+    ports:
+      - "${DORY_READINESS_BIND:-127.0.0.1}:${DORY_READINESS_API_PORT:-18080}:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/health"]
+      interval: 2s
+      timeout: 2s
+      retries: 20
+
+  worker:
+    image: dory/readiness-app:local
+    command: ["worker"]
+    environment:
+      API_URL: "http://api:8080"
+    labels:
+      dev.dory.readiness: "${DORY_READINESS_RUN_ID:-manual}"
+    depends_on:
+      api:
+        condition: service_healthy
+    volumes:
+      - readiness-data:/data
+
+volumes:
+  readiness-data:
+    labels:
+      dev.dory.readiness: "${DORY_READINESS_RUN_ID:-manual}"
+
