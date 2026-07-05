@@ -136,9 +136,11 @@ struct DoryVM {
             let userCommand = args.command.joined(separator: " ")
             let scratchPath = scratch
             let mounts = args.mounts
+            // Memory ceiling is env-tunable so heavy amd64 images (SQL Server wants >= 2 GB) can run.
+            let memoryMB = UInt64(ProcessInfo.processInfo.environment["DORY_VM_MEM_MB"] ?? "") ?? 1024
             let configure: @Sendable (inout LinuxContainer.Configuration) -> Void = { config in
                 config.cpus = 2
-                config.memoryInBytes = 1024 * 1024 * 1024
+                config.memoryInBytes = memoryMB * 1024 * 1024
                 config.mounts.append(Mount.share(source: scratchPath, destination: "/dory-out"))
                 for (host, guest) in mounts { config.mounts.append(Mount.share(source: host, destination: guest)) }
                 config.process.arguments = ["/bin/sh", "-c", "{ \(userCommand) ; } > /dory-out/stdout 2>&1; echo $? > /dory-out/exit"]
