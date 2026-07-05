@@ -14,7 +14,7 @@ import Testing
     private let dataIn: UInt64 = 0x8000_5000
 
     private func makeMemory() throws -> GuestMemory {
-        try GuestMemory(guestBase: base, size: 64 * 16384)
+        try GuestMemory(guestBase: base, size: 64 * HostPage.size)
     }
 
     private func writeDescriptor(_ memory: GuestMemory, index: UInt64, addr: UInt64, len: UInt32, flags: UInt16, next: UInt16) throws {
@@ -91,23 +91,23 @@ import Testing
 
 @Suite struct GuestMemoryReclaimGuardTests {
     @Test func releaseRangeRejectsUnalignedAndOutOfBounds() throws {
-        let memory = try GuestMemory(guestBase: 0x8000_0000, size: 64 * 16384)
+        let memory = try GuestMemory(guestBase: 0x8000_0000, size: 64 * HostPage.size)
         // Unaligned start.
-        #expect(!memory.releaseRange(guestAddress: 0x8000_0001, length: 16384))
+        #expect(!memory.releaseRange(guestAddress: 0x8000_0001, length: HostPage.size))
         // Unaligned length.
-        #expect(!memory.releaseRange(guestAddress: 0x8000_0000, length: 4096))
+        #expect(!memory.releaseRange(guestAddress: 0x8000_0000, length: HostPage.size / 2))
         // Out of bounds.
-        #expect(!memory.releaseRange(guestAddress: 0x9000_0000, length: 16384))
+        #expect(!memory.releaseRange(guestAddress: 0x9000_0000, length: HostPage.size))
     }
 
     @Test func restorePageNeverDoubleCountsOrTouchesOutOfRange() throws {
-        let memory = try GuestMemory(guestBase: 0x8000_0000, size: 64 * 16384)
+        let memory = try GuestMemory(guestBase: 0x8000_0000, size: 64 * HostPage.size)
         // Outside RAM is a genuine fault the caller must surface: false, no counters moved.
         #expect(!memory.restorePage(guestAddress: 0x7000_0000))
         // An in-RAM page whose released-bit is clear was never unmapped (the releaseRange lock
         // makes "unmapped implies bit set" an invariant), so this is a benign no-op: it reports
         // success (the guest retry resolves) but must NOT charge a restore.
-        #expect(memory.restorePage(guestAddress: 0x8000_4000))
+        #expect(memory.restorePage(guestAddress: 0x8000_0000 + HostPage.size))
         #expect(memory.releasedBytes.load(ordering: .relaxed) == 0)
         #expect(memory.restoredBytes.load(ordering: .relaxed) == 0)
     }

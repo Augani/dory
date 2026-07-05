@@ -1,6 +1,7 @@
 import Foundation
 import Hypervisor
 
+#if arch(arm64)
 /// Bridges guest MMIO in the GIC distributor and redistributor windows to the in-kernel GIC's
 /// register API. The interrupt machinery itself (prioritization, CPU interface, timer PPIs) runs
 /// inside Hypervisor.framework; only the memory-mapped configuration surface passes through here.
@@ -96,3 +97,4 @@ public final class GICRedistributorMMIO: MMIODevice {
         return (handle, offset % stride)
     }
 }
+#endif

@@ -16,7 +16,7 @@ public final class VirtioBalloon: VirtioDeviceBackend {
     public private(set) var reportEvents: UInt64 = 0
     private var advice: Int32?
 
-    private static let hostPageSize: UInt64 = 16384
+    private static let hostPageSize: UInt64 = HostPage.size
     private static let madvZero: Int32 = 11  // MADV_ZERO: release physical pages, zero-fill refault
 
     public init(memory: GuestMemory, log: @escaping (String) -> Void = { _ in }) {

@@ -13,12 +13,12 @@ public final class GuestMemory: @unchecked Sendable {
     public let releasedBytes = Atomic<UInt64>(0)
     public let restoredBytes = Atomic<UInt64>(0)
 
-    static let pageSize: UInt64 = 16384
+    static let pageSize: UInt64 = HostPage.size
     private let releasedPages: Mutex<[Bool]>
 
     public init(guestBase: UInt64, size: UInt64) throws {
-        guard size > 0, size % 16384 == 0 else {
-            throw VMError.invalidConfiguration("RAM size must be a positive multiple of 16KiB")
+        guard size > 0, size % Self.pageSize == 0 else {
+            throw VMError.invalidConfiguration("RAM size must be a positive multiple of the host page size")
         }
         guard let region = mmap(nil, Int(size), PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0),
               region != MAP_FAILED else {
@@ -63,7 +63,7 @@ public final class GuestMemory: @unchecked Sendable {
         }
     }
 
-    /// Remaps a single 16KiB RAM page the guest faulted on. A stage-2 fault inside the RAM window
+    /// Remaps a single host RAM page the guest faulted on. A stage-2 fault inside the RAM window
     /// can only mean this page was unmapped by free page reporting (nothing else touches stage-2
     /// RAM mappings), so mapping it is always correct and resolves the fault — it can never loop.
     /// The released-page set is consulted only for accounting: a tracked page is charged back to

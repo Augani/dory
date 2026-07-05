@@ -2,6 +2,7 @@ import Darwin
 import Foundation
 import Hypervisor
 
+#if arch(arm64)
 /// Guest physical layout, modeled on QEMU's virt machine so every address is one Linux has been
 /// booting on for a decade.
 public enum GuestLayout {
@@ -53,7 +54,7 @@ public final class Machine: @unchecked Sendable {
     private let redistributorMMIO: GICRedistributorMMIO
 
     public init(configuration: MachineConfiguration) throws {
-        try hvCheck(hv_vm_create(nil), "hv_vm_create")
+        try hvCreateVM()
         self.configuration = configuration
         self.memory = try GuestMemory(guestBase: GuestLayout.ramBase, size: configuration.memoryBytes)
         try memory.mapIntoGuest()
@@ -102,10 +103,19 @@ public final class Machine: @unchecked Sendable {
         return intid
     }
 
-    /// Pulses a shared peripheral interrupt (declared edge-triggered in the DTB).
-    public func raiseSPI(_ spi: UInt32) {
-        let intid = 32 + spi
+    /// Pulses a guest system interrupt. On arm64 these are GIC SPIs declared edge-triggered in the DTB.
+    public func raiseGSI(_ gsi: UInt32) {
+        let intid = 32 + gsi
         _ = hv_gic_set_spi(intid, true)
+    }
+
+    /// Compatibility spelling for arm64 callers; new shared engine code should use `raiseGSI`.
+    public func raiseSPI(_ spi: UInt32) {
+        raiseGSI(spi)
+    }
+
+    public func requestStop(_ reason: GuestStopReason) {
+        stopAll(reason)
     }
 
     public func loadBootPayload() throws {
@@ -562,3 +572,272 @@ enum PSCI {
     static let systemReset: UInt32 = 0x8400_0009
     static let features: UInt32 = 0x8400_000A
 }
+#else
+/// Device-wiring view of the x86 guest layout. Every value is sourced from `X86GuestLayout`, the
+/// single source of truth also used to build the PVH boot plan, MPTABLE, and kernel command line,
+/// so the device model and the boot contract can never drift apart.
+public enum GuestLayout {
+    public static let uartBase = X86GuestLayout.uartBase
+    public static let uartIRQ = UInt32(X86GuestLayout.uartIRQ)
+    public static let rtcBase = X86GuestLayout.rtcBase
+    public static let virtioBase = X86GuestLayout.virtioBase
+    public static let virtioSlotSize = X86GuestLayout.virtioSlotSize
+    public static let virtioFirstIRQ = UInt32(X86GuestLayout.virtioFirstIRQ)
+    public static let ramBase = X86GuestLayout.ramBase
+    public static let daxWindowBase = X86GuestLayout.daxWindowBase
+}
+
+public struct MachineConfiguration {
+    public var kernelPath: String
+    public var commandLine: String
+    public var memoryBytes: UInt64
+    public var cpuCount: Int
+
+    public init(kernelPath: String, commandLine: String, memoryBytes: UInt64, cpuCount: Int) {
+        self.kernelPath = kernelPath
+        self.commandLine = commandLine
+        self.memoryBytes = memoryBytes
+        self.cpuCount = cpuCount
+    }
+}
+
+public enum GuestStopReason: Sendable {
+    case powerOff
+    case reset
+    case crash(String)
+}
+
+public final class Machine: @unchecked Sendable {
+    public let configuration: MachineConfiguration
+    public let memory: GuestMemory
+    public let bus = MMIOBus()
+    public let pioBus = PIOBus()
+    public private(set) var entryPoint: UInt64 = 0
+    public private(set) var startInfoAddress: UInt64 = 0
+    private let stopLock = NSLock()
+    private var stopReason: GuestStopReason?
+
+    public init(configuration: MachineConfiguration) throws {
+        try hvCreateVM()
+        var configuration = configuration
+        if configuration.memoryBytes > X86GuestLayout.mmioHoleBase {
+            fputs(
+                "dory-hv: capping guest memory to \(X86GuestLayout.mmioHoleBase >> 20) MiB (x86 MMIO hole at 0x\(String(X86GuestLayout.mmioHoleBase, radix: 16)))\n",
+                stderr
+            )
+            configuration.memoryBytes = X86GuestLayout.mmioHoleBase
+        }
+        self.configuration = configuration
+        self.memory = try GuestMemory(guestBase: 0, size: configuration.memoryBytes)
+        try memory.mapIntoGuest()
+    }
+
+    deinit {
+        hv_vm_destroy()
+    }
+
+    public func loadBootPayload() throws {
+        let kernel = try PVHKernelImage(contentsOf: configuration.kernelPath)
+        entryPoint = try kernel.load(into: memory)
+        startInfoAddress = X86GuestLayout.pvhStartInfo
+
+        let plan = X86BootPlanBuilder.build(
+            baseCommandLine: configuration.commandLine,
+            memoryBytes: configuration.memoryBytes,
+            virtioDeviceCount: busDeviceCount
+        )
+        let pvh = PVHBootBuilder.build(
+            commandLine: plan.commandLine,
+            commandLinePhysicalAddress: X86GuestLayout.pvhCommandLine,
+            modulesPhysicalAddress: X86GuestLayout.pvhModules,
+            memoryMapPhysicalAddress: X86GuestLayout.pvhMemoryMap,
+            modules: [],
+            memoryMap: plan.memoryMap
+        )
+        try memory.write(Array(pvh.startInfo), at: X86GuestLayout.pvhStartInfo)
+        try memory.write(Array(pvh.commandLine), at: X86GuestLayout.pvhCommandLine)
+        try memory.write(Array(pvh.memoryMap), at: X86GuestLayout.pvhMemoryMap)
+
+        let mpTable = MPTableBuilder.build(
+            tablePhysicalAddress: UInt32(X86GuestLayout.mpConfigurationTable),
+            cpuCount: configuration.cpuCount,
+            virtioInterruptPins: plan.virtioDevices.map(\.irq)
+        )
+        try memory.write(Array(mpTable.floatingPointer), at: X86GuestLayout.mpFloatingPointer)
+        try memory.write(Array(mpTable.configurationTable), at: X86GuestLayout.mpConfigurationTable)
+    }
+
+    public func attachVirtioSlot(_ device: MMIODevice) {
+        busDeviceCount += 1
+        bus.attach(device)
+    }
+
+    public func attachConsole(_ uart: UART16550) {
+        pioBus.attach(uart)
+    }
+
+    public func attachRTC(_ rtc: CMOSRTC) {
+        pioBus.attach(rtc)
+    }
+
+    public func attachResetController(_ controller: I8042) {
+        pioBus.attach(controller)
+    }
+
+    public func raiseGSI(_ gsi: UInt32) {
+        _ = hv_vm_ioapic_pulse_irq(Int32(gsi))
+    }
+
+    public func raiseSPI(_ spi: UInt32) {
+        raiseGSI(spi)
+    }
+
+    public func requestStop(_ reason: GuestStopReason) {
+        stopLock.lock()
+        if stopReason == nil {
+            stopReason = reason
+        }
+        stopLock.unlock()
+    }
+
+    public func run() throws -> GuestStopReason {
+        if entryPoint == 0 || startInfoAddress == 0 {
+            try loadBootPayload()
+        }
+        let vcpu = try VCPU()
+        try vcpu.configurePVHEntry(entryPoint: entryPoint, startInfoAddress: startInfoAddress)
+        var executor = X86VMExitExecutor()
+
+        while true {
+            if let reason = currentStopReason() {
+                return reason
+            }
+            let state: X86VMExitState
+            switch try vcpu.run() {
+            case .vmExit(let exitState):
+                state = exitState
+            }
+            var registers = try vcpu.snapshotGeneralRegisters()
+            let action = try executor.execute(state: state, registers: &registers, pioBus: pioBus)
+            try vcpu.applyGeneralRegisters(registers)
+            switch action {
+            case .advanceRIP(let length):
+                try vcpu.advanceRIP(by: length)
+            case .writeMSR(let write, let length):
+                try vcpu.applyGuestMSRWrite(write)
+                try vcpu.advanceRIP(by: length)
+            case .controlRegister(let controlRegister):
+                try handleControlRegister(controlRegister, vcpu: vcpu, registers: &registers)
+                try vcpu.applyGeneralRegisters(registers)
+                try vcpu.advanceRIP(by: controlRegister.instructionLength)
+            case .invalidateTLB(let length):
+                try vcpu.invalidateTLB()
+                try vcpu.advanceRIP(by: length)
+            case .halted:
+                try vcpu.advanceRIP(by: state.instructionLength)
+                usleep(1_000)
+            case .eptViolation(let violation):
+                if memory.restorePage(guestAddress: violation.guestPhysicalAddress) {
+                    continue
+                }
+                let ripAdvance = try handleEPTViolation(violation, vcpu: vcpu, registers: &registers)
+                try vcpu.applyGeneralRegisters(registers)
+                try vcpu.advanceRIP(by: UInt32(ripAdvance))
+            case .eptMisconfiguration(let guestPhysicalAddress):
+                throw VMError.unexpectedExit(
+                    "x86 EPT misconfiguration at gpa 0x\(String(guestPhysicalAddress, radix: 16))"
+                )
+            }
+        }
+    }
+
+    private func currentStopReason() -> GuestStopReason? {
+        stopLock.lock()
+        defer { stopLock.unlock() }
+        return stopReason
+    }
+
+    private func handleControlRegister(
+        _ exit: X86ControlRegisterExit,
+        vcpu: VCPU,
+        registers: inout X86RegisterState
+    ) throws {
+        switch exit.access {
+        case .moveToCR:
+            try vcpu.write(controlRegister(exit.controlRegister), registers.read(exit.register))
+        case .moveFromCR:
+            registers.write(exit.register, value: try vcpu.read(controlRegister(exit.controlRegister)), width: 8)
+        case .clts:
+            let cr0 = try vcpu.read(HV_X86_CR0)
+            try vcpu.write(HV_X86_CR0, cr0 & ~(1 << 3))
+        case .lmsw:
+            let cr0 = try vcpu.read(HV_X86_CR0)
+            var lowBits = UInt64(exit.lmswSourceData & 0xF)
+            if cr0 & 1 != 0 {
+                lowBits |= 1
+            }
+            try vcpu.write(HV_X86_CR0, (cr0 & ~0xF) | lowBits)
+        }
+    }
+
+    private func controlRegister(_ number: UInt8) throws -> hv_x86_reg_t {
+        switch number {
+        case 0:
+            return HV_X86_CR0
+        case 3:
+            return HV_X86_CR3
+        case 4:
+            return HV_X86_CR4
+        case 8:
+            return HV_X86_TPR
+        default:
+            throw VMError.unexpectedExit("unsupported x86 control register CR\(number)")
+        }
+    }
+
+    private func handleEPTViolation(
+        _ violation: X86EPTViolation,
+        vcpu: VCPU,
+        registers: inout X86RegisterState
+    ) throws -> Int {
+        guard violation.read || violation.write else {
+            throw VMError.unexpectedExit(
+                "x86 EPT violation without read/write at gpa 0x\(String(violation.guestPhysicalAddress, radix: 16))"
+            )
+        }
+        let rip = try vcpu.read(HV_X86_RIP)
+        let cr0 = try vcpu.read(HV_X86_CR0)
+        let cr3 = try vcpu.read(HV_X86_CR3)
+        let instructionBytes: [UInt8]
+        do {
+            instructionBytes = try X86InstructionFetch.readBytes(
+                rip: rip,
+                cr0: cr0,
+                cr3: cr3,
+                count: 15,
+                memory: memory
+            )
+        } catch {
+            throw VMError.unexpectedExit(
+                "x86 MMIO instruction fetch failed at rip 0x\(String(rip, radix: 16)), gpa 0x\(String(violation.guestPhysicalAddress, radix: 16)): \(error)"
+            )
+        }
+        do {
+            let instruction = try X86MMIODecoder.decode(instructionBytes)
+            return try X86MMIOExecutor.execute(
+                instruction: instruction,
+                physicalAddress: violation.guestPhysicalAddress,
+                bus: bus,
+                registers: &registers
+            )
+        } catch {
+            let hexBytes = instructionBytes.map { String(format: "%02x", $0) }.joined(separator: " ")
+            throw VMError.unexpectedExit(
+                "x86 MMIO decode failed at rip 0x\(String(rip, radix: 16)), gpa 0x\(String(violation.guestPhysicalAddress, radix: 16)), bytes [\(hexBytes)]: \(error)"
+            )
+        }
+    }
+
+    private var busDeviceCount = 0
+}
+#endif

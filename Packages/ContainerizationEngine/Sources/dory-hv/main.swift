@@ -3,6 +3,14 @@ import Foundation
 
 signal(SIGPIPE, SIG_IGN)
 
+#if arch(arm64)
+let defaultBootCommandLine = "console=ttyAMA0 earlycon=pl011,mmio32,0x0c000000 panic=0"
+let defaultAgentPingCommandLine = "console=ttyAMA0 earlycon=pl011,mmio32,0x0c000000 root=/dev/vda rw panic=0"
+#else
+let defaultBootCommandLine = "console=ttyS0 earlyprintk=serial,ttyS0,115200 panic=0"
+let defaultAgentPingCommandLine = "root=/dev/vda rw panic=0"
+#endif
+
 func fail(_ message: String) -> Never {
     FileHandle.standardError.write(Data("dory-hv: \(message)\n".utf8))
     exit(1)
@@ -13,7 +21,7 @@ struct Options {
     var initfs: String?
     var memoryMB: UInt64 = 2048
     var cpus: Int = 1
-    var commandLine = "console=ttyAMA0 earlycon=pl011,mmio32,0x0c000000 panic=0"
+    var commandLine = defaultBootCommandLine
     var disks: [String] = []
     var gvproxy: String?
     var exposePort: UInt16 = 0
@@ -107,9 +115,27 @@ func attachBackend(_ backend: VirtioDeviceBackend, to machine: Machine, slot: In
         backend: backend,
         memory: machine.memory
     ) { [weak machine] in
-        machine?.raiseSPI(spi)
+        machine?.raiseGSI(spi)
     }
     machine.attachVirtioSlot(transport)
+}
+
+func attachPlatformDevices(to machine: Machine, console: FileHandle) {
+    #if arch(arm64)
+    machine.attachConsole(PL011(baseAddress: GuestLayout.uartBase) { byte in
+        console.write(Data([byte]))
+    })
+    machine.bus.attach(PL031(baseAddress: GuestLayout.rtcBase))
+    #else
+    machine.attachConsole(UART16550(basePort: UInt16(truncatingIfNeeded: GuestLayout.uartBase)) { byte in
+        console.write(Data([byte]))
+    })
+    machine.attachRTC(CMOSRTC(basePort: UInt16(truncatingIfNeeded: GuestLayout.rtcBase)))
+    machine.attachResetController(I8042 { [weak machine] in
+        FileHandle.standardError.write(Data("dory-hv: guest requested i8042 reset\n".utf8))
+        machine?.requestStop(.reset)
+    })
+    #endif
 }
 
 func runAgentPing(_ options: Options) {
@@ -120,7 +146,7 @@ func runAgentPing(_ options: Options) {
 
     do {
         let commandLine = options.commandLine == Options().commandLine
-            ? "console=ttyAMA0 earlycon=pl011,mmio32,0x0c000000 root=/dev/vda rw panic=0"
+            ? defaultAgentPingCommandLine
             : options.commandLine
         let machine = try Machine(configuration: MachineConfiguration(
             kernelPath: kernel,
@@ -128,10 +154,7 @@ func runAgentPing(_ options: Options) {
             memoryBytes: options.memoryMB << 20,
             cpuCount: options.cpus
         ))
-        machine.attachConsole(PL011(baseAddress: GuestLayout.uartBase) { byte in
-            FileHandle.standardError.write(Data([byte]))
-        })
-        machine.bus.attach(PL031(baseAddress: GuestLayout.rtcBase))
+        attachPlatformDevices(to: machine, console: FileHandle.standardError)
         let vsock = VirtioVsock(guestCID: 3)
         let backends: [VirtioDeviceBackend] = [
             try VirtioBlk(path: initfs, identity: "dory-initfs"),
@@ -234,10 +257,7 @@ case "boot":
         )
         let machine = try Machine(configuration: configuration)
         let console = FileHandle.standardOutput
-        machine.attachConsole(PL011(baseAddress: GuestLayout.uartBase) { byte in
-            console.write(Data([byte]))
-        })
-        machine.bus.attach(PL031(baseAddress: GuestLayout.rtcBase))
+        attachPlatformDevices(to: machine, console: console)
         var backends: [VirtioDeviceBackend] = []
         for (slot, diskPath) in options.disks.enumerated() {
             backends.append(try VirtioBlk(path: diskPath, identity: "dory-blk\(slot)"))
@@ -297,7 +317,7 @@ case "boot":
                 backend: backend,
                 memory: machine.memory
             ) { [weak machine] in
-                machine?.raiseSPI(spi)
+                machine?.raiseGSI(spi)
             }
             machine.attachVirtioSlot(transport)
         }

@@ -161,10 +161,7 @@ enum EngineMode {
             memoryBytes: configuration.memoryMB << 20,
             cpuCount: configuration.cpus
         ))
-        machine.bus.attach(PL031(baseAddress: GuestLayout.rtcBase))
-        machine.attachConsole(PL011(baseAddress: GuestLayout.uartBase) { byte in
-            FileHandle.standardOutput.write(Data([byte]))
-        })
+        attachPlatformDevices(to: machine)
 
         var backends: [VirtioDeviceBackend] = []
         backends.append(try VirtioBlk(path: bootRootfs, identity: "dory-rootfs"))
@@ -227,7 +224,7 @@ enum EngineMode {
                 backend: backend,
                 memory: machine.memory
             ) { [weak machine] in
-                machine?.raiseSPI(spi)
+                machine?.raiseGSI(spi)
             }
             machine.attachVirtioSlot(transport)
         }
@@ -348,7 +345,7 @@ enum EngineMode {
         let store = try ImageStore(path: URL(fileURLWithPath: stateDirectory + "/content"))
         let image = try await store.get(reference: "docker.io/library/docker:dind", pull: true)
         _ = try await EXT4Unpacker(blockSizeInBytes: 8 * 1024 * 1024 * 1024)
-            .unpack(image, for: Platform(arch: "arm64", os: "linux"), at: URL(fileURLWithPath: path))
+            .unpack(image, for: Platform(arch: hostLinuxArch(), os: "linux"), at: URL(fileURLWithPath: path))
     }
 
     /// Guest boot: mounts (docker state on the journaled /dev/vdb), DHCP through gvproxy,
@@ -409,7 +406,30 @@ enum EngineMode {
             "[ -x /usr/local/bin/docker-init ] && exec /usr/local/bin/docker-init -s -- sleep 2147483647",
             "while true; do sleep 2147483647; done",
         ]
-        return "console=ttyAMA0 root=/dev/vda rw panic=0 init=/bin/sh -- -c \"\(script.joined(separator: "; "))\""
+        #if arch(arm64)
+        let console = "console=ttyAMA0"
+        #else
+        let console = "console=ttyS0 earlyprintk=serial,ttyS0,115200"
+        #endif
+        return "\(console) root=/dev/vda rw panic=0 init=/bin/sh -- -c \"\(script.joined(separator: "; "))\""
+    }
+
+    private static func attachPlatformDevices(to machine: Machine) {
+        #if arch(arm64)
+        machine.bus.attach(PL031(baseAddress: GuestLayout.rtcBase))
+        machine.attachConsole(PL011(baseAddress: GuestLayout.uartBase) { byte in
+            FileHandle.standardOutput.write(Data([byte]))
+        })
+        #else
+        machine.attachConsole(UART16550(basePort: UInt16(truncatingIfNeeded: GuestLayout.uartBase)) { byte in
+            FileHandle.standardOutput.write(Data([byte]))
+        })
+        machine.attachRTC(CMOSRTC(basePort: UInt16(truncatingIfNeeded: GuestLayout.rtcBase)))
+        machine.attachResetController(I8042 { [weak machine] in
+            note("guest requested i8042 reset")
+            machine?.requestStop(.reset)
+        })
+        #endif
     }
 
     private static func shellQuote(_ value: String) -> String {
@@ -557,4 +577,12 @@ enum EngineMode {
     private static func note(_ message: String) {
         FileHandle.standardError.write(Data("dory-hv: \(message)\n".utf8))
     }
+}
+
+private func hostLinuxArch() -> String {
+    #if arch(arm64)
+    "arm64"
+    #else
+    "amd64"
+    #endif
 }

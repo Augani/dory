@@ -145,6 +145,67 @@ import Testing
     }
 }
 
+@Suite struct PIOBusTests {
+    private final class StubDevice: PIODevice {
+        let basePort: UInt16
+        let portCount: UInt16
+        var writes: [(offset: UInt16, value: UInt32, width: Int)] = []
+
+        init(basePort: UInt16, portCount: UInt16) {
+            self.basePort = basePort
+            self.portCount = portCount
+        }
+
+        func read(portOffset: UInt16, width: Int) -> UInt32 {
+            UInt32(portOffset) | (UInt32(width) << 16)
+        }
+
+        func write(portOffset: UInt16, value: UInt32, width: Int) {
+            writes.append((portOffset, value, width))
+        }
+    }
+
+    @Test func routesByPortAndComputesOffset() {
+        let bus = PIOBus()
+        let uart = StubDevice(basePort: 0x3F8, portCount: 8)
+        let cmos = StubDevice(basePort: 0x70, portCount: 2)
+        bus.attach(uart)
+        bus.attach(cmos)
+
+        let hit = bus.device(for: 0x3FD)
+        #expect(hit?.0 === uart)
+        #expect(hit?.1 == 5)
+        #expect(bus.device(for: 0x71)?.0 === cmos)
+        #expect(bus.device(for: 0x71)?.1 == 1)
+        #expect(bus.device(for: 0x3F7) == nil)
+        #expect(bus.device(for: 0x400) == nil)
+    }
+
+    @Test func readAndWriteDispatchToMappedDevice() {
+        let bus = PIOBus()
+        let uart = StubDevice(basePort: 0x3F8, portCount: 8)
+        bus.attach(uart)
+
+        #expect(bus.read(port: 0x3FA, width: 1) == 0x1_0002)
+        bus.write(port: 0x3F8, value: 0x41, width: 1)
+
+        #expect(uart.writes.count == 1)
+        #expect(uart.writes.first?.offset == 0)
+        #expect(uart.writes.first?.value == 0x41)
+        #expect(uart.writes.first?.width == 1)
+    }
+
+    @Test func unmappedPortsReadAsAllOnesAndIgnoreWrites() {
+        let bus = PIOBus()
+
+        #expect(bus.read(port: 0x80, width: 1) == 0xFF)
+        #expect(bus.read(port: 0x80, width: 2) == 0xFFFF)
+        #expect(bus.read(port: 0x80, width: 4) == 0xFFFF_FFFF)
+        #expect(bus.read(port: 0x80, width: 8) == 0)
+        bus.write(port: 0x80, value: 0xDEAD_BEEF, width: 4)
+    }
+}
+
 @Suite struct VirtioMMIOTransportTests {
     private final class Backend: VirtioDeviceBackend, VirtioSharedMemoryRegionProvider {
         let deviceID: UInt32 = 26

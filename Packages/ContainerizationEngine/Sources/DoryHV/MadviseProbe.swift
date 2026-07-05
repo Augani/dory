@@ -22,7 +22,7 @@ public enum MadviseProbe {
         defer { munmap(region, size) }
 
         if mapIntoVM {
-            try hvCheck(hv_vm_create(nil), "hv_vm_create")
+            try hvCreateVM()
             try hvCheck(
                 hv_vm_map(region, 0x8000_0000, size, hv_memory_flags_t(HV_MEMORY_READ | HV_MEMORY_WRITE | HV_MEMORY_EXEC)),
                 "hv_vm_map"

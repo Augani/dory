@@ -33,7 +33,7 @@ public protocol DaxMappingBackend: AnyObject, Sendable {
 
 public final class DaxWindow: @unchecked Sendable {
     public static let defaultSize: UInt64 = 4 * 1024 * 1024 * 1024
-    public static let pageSize: UInt64 = 16384
+    public static let pageSize: UInt64 = HostPage.size
 
     public let guestBase: UInt64
     public let length: UInt64
