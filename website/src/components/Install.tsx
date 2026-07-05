@@ -48,9 +48,10 @@ export function Install() {
             </a>
           </div>
           <p className="req">
-            Universal app for Intel and Apple silicon, macOS 15+. Dory's standalone engine needs Apple
-            silicon on macOS 26 (Tahoe); Intel Macs pair Dory with any Docker-compatible engine: Colima,
-            Docker Desktop, Rancher Desktop, Podman.
+            <b>Apple silicon, macOS 15+</b> for Dory's own low-memory engine — nothing else to install.
+            On Intel, Dory runs as a native front-end for a Docker-compatible engine you install
+            (Colima, Docker Desktop, Rancher Desktop, Podman, OrbStack); a native Intel engine is
+            planned for a later update.
           </p>
         </Reveal>
         <Reveal className="oss">
