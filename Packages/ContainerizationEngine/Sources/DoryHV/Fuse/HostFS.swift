@@ -216,6 +216,36 @@ public final class HostFS: @unchecked Sendable {
         }
     }
 
+    public func truncate(handle fd: Int32, size: UInt64) throws {
+        guard !readOnly else { throw HostFSError.readOnly }
+        guard let signedSize = off_t(exactly: size) else {
+            throw HostFSError.invalidName("truncate size")
+        }
+        guard ftruncate(fd, signedSize) == 0 else {
+            throw HostFSError.io("ftruncate: errno \(errno)")
+        }
+    }
+
+    public func truncate(nodeID: UInt64, size: UInt64) throws {
+        guard !readOnly else { throw HostFSError.readOnly }
+        let node = try node(for: nodeID)
+        guard node.attributes.isRegularFile else {
+            throw HostFSError.notRegularFile(nodeID)
+        }
+        guard let signedSize = off_t(exactly: size) else {
+            throw HostFSError.invalidName("truncate size")
+        }
+        let fd = openat(rootFD, cPath(node.relativePath), O_WRONLY | O_NOFOLLOW | O_CLOEXEC)
+        guard fd >= 0 else {
+            if errno == ELOOP { throw HostFSError.permissionDenied(node.relativePath) }
+            throw HostFSError.io("openat truncate \(node.relativePath): errno \(errno)")
+        }
+        defer { Darwin.close(fd) }
+        guard ftruncate(fd, signedSize) == 0 else {
+            throw HostFSError.io("ftruncate: errno \(errno)")
+        }
+    }
+
     public func close(handle fd: Int32) {
         Darwin.close(fd)
     }

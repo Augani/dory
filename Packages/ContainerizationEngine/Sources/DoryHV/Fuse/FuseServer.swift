@@ -91,14 +91,23 @@ public final class FuseServer: @unchecked Sendable {
 
     private func handleSetattr(header: FuseInHeader, payload: [UInt8]) throws -> [UInt8] {
         guard payload.count >= 88 else { return errorResponse(unique: header.unique, errno: EINVAL) }
-        let valid = payload.leUInt32(at: 0)
+        let valid = FuseSetattrValid(rawValue: payload.leUInt32(at: 0))
         let attrs = try hostFS.getattr(nodeID: header.nodeID)
-        if valid & 1 != 0 {
+        if valid.contains(.mode) {
             let requestedMode = payload.leUInt32(at: 68) & 0o7777
             let currentMode = attrs.mode & 0o7777
             guard requestedMode == currentMode else {
                 return errorResponse(unique: header.unique, errno: EOPNOTSUPP)
             }
+        }
+        if valid.contains(.size) {
+            let size = payload.leUInt64(at: 16)
+            if valid.contains(.fileHandle), let fd = load(handle: payload.leUInt64(at: 8)) {
+                try hostFS.truncate(handle: fd, size: size)
+            } else {
+                try hostFS.truncate(nodeID: header.nodeID, size: size)
+            }
+            return try successResponse(unique: header.unique, payload: encodeAttrOut(hostFS.getattr(nodeID: header.nodeID)))
         }
         return successResponse(unique: header.unique, payload: encodeAttrOut(attrs))
     }

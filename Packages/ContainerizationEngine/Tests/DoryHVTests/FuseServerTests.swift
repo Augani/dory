@@ -155,6 +155,43 @@ struct FuseServerTests {
         #expect(try FuseProtocol.decodeOutHeader(differentMode).error == -EOPNOTSUPP)
     }
 
+    @Test func setattrSizeTruncatesAndGrowsHostFile() throws {
+        let root = try TestFuseServerRoot()
+        try root.write("0123456789ABCDEF", to: "resize.txt")
+        let server = try FuseServer(hostFS: HostFS(rootPath: root.url.path))
+        let file = root.url.appendingPathComponent("resize.txt")
+        let lookup = server.handle(request: request(unique: 60, opcode: .lookup, nodeID: HostFS.rootNodeID, payload: Array("resize.txt\0".utf8)))
+        let nodeID = payload(from: lookup).leUInt64(at: 0)
+
+        let shrink = server.handle(request: request(unique: 61, opcode: .setattr, nodeID: nodeID, payload: setattrSize(5)))
+        #expect(try FuseProtocol.decodeOutHeader(shrink).error == 0)
+        #expect(payload(from: shrink).leUInt64(at: 24) == 5)
+        #expect(try Data(contentsOf: file) == Data("01234".utf8))
+
+        let open = server.handle(request: request(unique: 62, opcode: .open, nodeID: nodeID, payload: bytes(UInt32(bitPattern: O_RDWR)) + bytes(UInt32(0))))
+        let handle = payload(from: open).leUInt64(at: 0)
+        let grow = server.handle(request: request(unique: 63, opcode: .setattr, nodeID: nodeID, payload: setattrSize(10, fileHandle: handle)))
+        #expect(try FuseProtocol.decodeOutHeader(grow).error == 0)
+        #expect(payload(from: grow).leUInt64(at: 24) == 10)
+        let grown = try Data(contentsOf: file)
+        #expect(grown.count == 10)
+        #expect(grown.prefix(5) == Data("01234".utf8))
+        #expect(Array(grown.suffix(5)) == [0, 0, 0, 0, 0])
+    }
+
+    @Test func setattrSizeOnReadOnlyShareFails() throws {
+        let root = try TestFuseServerRoot()
+        try root.write("keepme", to: "ro.txt")
+        let server = try FuseServer(hostFS: HostFS(rootPath: root.url.path, readOnly: true))
+        let lookup = server.handle(request: request(unique: 70, opcode: .lookup, nodeID: HostFS.rootNodeID, payload: Array("ro.txt\0".utf8)))
+        let nodeID = payload(from: lookup).leUInt64(at: 0)
+
+        let truncate = server.handle(request: request(unique: 71, opcode: .setattr, nodeID: nodeID, payload: setattrSize(0)))
+
+        #expect(try FuseProtocol.decodeOutHeader(truncate).error != 0)
+        #expect(try Data(contentsOf: root.url.appendingPathComponent("ro.txt")) == Data("keepme".utf8))
+    }
+
     @Test func mkdirAndRmdirMutateHostFilesystem() throws {
         let root = try TestFuseServerRoot()
         let server = try FuseServer(hostFS: HostFS(rootPath: root.url.path))
@@ -298,6 +335,18 @@ private func setattrIn(mode: UInt32) -> [UInt8] {
     var data = [UInt8](repeating: 0, count: 88)
     replaceLE(UInt32(1), at: 0, in: &data)
     replaceLE(mode, at: 68, in: &data)
+    return data
+}
+
+private func setattrSize(_ size: UInt64, fileHandle: UInt64? = nil) -> [UInt8] {
+    var data = [UInt8](repeating: 0, count: 88)
+    var valid = FuseSetattrValid.size.rawValue
+    if let fileHandle {
+        valid |= FuseSetattrValid.fileHandle.rawValue
+        data.replaceSubrange(8..<16, with: bytes(fileHandle))
+    }
+    replaceLE(valid, at: 0, in: &data)
+    data.replaceSubrange(16..<24, with: bytes(size))
     return data
 }
 

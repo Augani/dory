@@ -167,6 +167,22 @@ public struct FuseInitFlag: OptionSet, Sendable {
     public static let mapAlignment = FuseInitFlag(rawValue: 1 << 26)
 }
 
+public struct FuseSetattrValid: OptionSet, Sendable {
+    public let rawValue: UInt32
+
+    public init(rawValue: UInt32) {
+        self.rawValue = rawValue
+    }
+
+    public static let mode = FuseSetattrValid(rawValue: 1 << 0)
+    public static let uid = FuseSetattrValid(rawValue: 1 << 1)
+    public static let gid = FuseSetattrValid(rawValue: 1 << 2)
+    public static let size = FuseSetattrValid(rawValue: 1 << 3)
+    public static let atime = FuseSetattrValid(rawValue: 1 << 4)
+    public static let mtime = FuseSetattrValid(rawValue: 1 << 5)
+    public static let fileHandle = FuseSetattrValid(rawValue: 1 << 6)
+}
+
 public struct FuseSetupMappingIn: Equatable, Sendable {
     public static let byteCount = 40  // fuse_setupmapping_in: fh, foffset, len, flags, moffset (5x u64)
 
