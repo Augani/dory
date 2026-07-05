@@ -250,6 +250,12 @@ enum EngineMode {
         portForwarder.start()
         note("engine starting: \(configuration.memoryMB)MiB ceiling, \(configuration.cpus) cpus, socket \(configuration.engineSocket)")
 
+        // USB passthrough listener: serves guest usbip dials on VsockPorts.usbip. It is a no-op until
+        // `dory usb attach` claims a device and registers it with the manager (the control plane), so
+        // it is always safe to register.
+        let usbipManager = UsbipManager()
+        usbipManager.attachListener(to: vsock)
+
         let agentFeatures = AgentFeatureHandles()
         let shares = configuration.shares
         Task.detached {

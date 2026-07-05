@@ -67,6 +67,28 @@ struct UsbipBridgeTests {
     }
 }
 
+struct UsbipManagerTests {
+    @Test func registerUnregisterTracksClaimedDevicesByBusID() {
+        let manager = UsbipManager()
+        #expect(manager.claimedBusIDs.isEmpty)
+
+        manager.register(StubExportedDevice(descriptor: fixtureDescriptor(busID: "3-2")))
+        manager.register(StubExportedDevice(descriptor: fixtureDescriptor(busID: "1-4")))
+        #expect(manager.claimedBusIDs == ["1-4", "3-2"])
+        #expect(manager.exportedDevice(busID: "3-2")?.descriptor.busID == "3-2")
+        #expect(manager.exportedDevices().count == 2)
+
+        let removed = manager.unregister(busID: "3-2")
+        #expect(removed?.descriptor.busID == "3-2")
+        #expect(manager.claimedBusIDs == ["1-4"])
+        #expect(manager.exportedDevice(busID: "3-2") == nil)
+    }
+
+    @Test func portDefaultsToUsbipVsockPort() {
+        #expect(UsbipManager().port == VsockPorts.usbip)
+    }
+}
+
 private final class StubExportedDevice: UsbipExportedDevice, @unchecked Sendable {
     let descriptor: UsbipDeviceDescriptor
     let submitPayload: [UInt8]

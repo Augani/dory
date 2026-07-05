@@ -27,16 +27,21 @@ enum UsbipCommandFraming {
 public final class UsbipBridge: @unchecked Sendable {
     private let connection: VsockConnection
     private let server: UsbipServer
-    private let busID: String
     private let onClose: () -> Void
     private let queue: DispatchQueue
 
-    public init(connection: VsockConnection, device: any UsbipExportedDevice, onClose: @escaping () -> Void = {}) {
+    /// Backed by a server that may export several claimed devices; the busID is read from the guest's
+    /// OP_REQ_IMPORT frame, so one listener can serve whichever device the guest asked for.
+    public init(connection: VsockConnection, server: UsbipServer, label: String = "shared", onClose: @escaping () -> Void = {}) {
         self.connection = connection
-        self.server = UsbipServer(devices: [device])
-        self.busID = device.descriptor.busID
+        self.server = server
         self.onClose = onClose
-        self.queue = DispatchQueue(label: "dory.usbip.bridge.\(device.descriptor.busID)")
+        self.queue = DispatchQueue(label: "dory.usbip.bridge.\(label)")
+    }
+
+    /// Single-device convenience.
+    public convenience init(connection: VsockConnection, device: any UsbipExportedDevice, onClose: @escaping () -> Void = {}) {
+        self.init(connection: connection, server: UsbipServer(devices: [device]), label: device.descriptor.busID, onClose: onClose)
     }
 
     public func start() {
@@ -51,6 +56,7 @@ public final class UsbipBridge: @unchecked Sendable {
             onClose()
         }
         guard let importFrame = readExact(UsbipImportRequest.byteCount),
+              let busID = (try? UsbipImportRequest(decoding: importFrame))?.busID,
               let importReply = try? server.handleImport(importFrame) else { return }
         write(importReply)
 
