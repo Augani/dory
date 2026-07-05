@@ -128,45 +128,52 @@ k8s_desired_ports() {
   fi
 }
 
-k8s_port_current() {
-  local state="$1" p="$2" hport rest cport proto key binding
-  hport="${p%%:*}"
-  rest="${p#*:}"
-  cport="${rest%%/*}"
-  proto="${rest#*/}"
-  key="$cport/$proto"
-  if [ "$state" = "true" ]; then
-    dk port "$K8S_NAME" "$key" 2>/dev/null | grep -q ":$hport$"
-    return $?
-  fi
-  binding="$(dk inspect -f "{{json (index .HostConfig.PortBindings \"$key\")}}" "$K8S_NAME" 2>/dev/null)" || return 1
-  printf '%s\n' "$binding" | grep -Fq "\"HostPort\":\"$hport\""
+k8s_canonical_ports() {
+  local p
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    [ "$p" = "6443:6443/tcp" ] && continue
+    printf '%s\n' "$p"
+  done | LC_ALL=C sort -u
 }
 
-k8s_registries_current() {
-  local binds expected
-  [ -f "$K8S_DIR/registries.yaml" ] || return 0
-  expected="$K8S_DIR/registries.yaml:/etc/rancher/k3s/registries.yaml:ro"
-  binds="$(dk inspect -f '{{json .HostConfig.Binds}}' "$K8S_NAME" 2>/dev/null)" || return 1
-  printf '%s\n' "$binds" | grep -Fq "\"$expected\""
+k8s_actual_ports() {
+  dk inspect -f '{{range $key, $bindings := .HostConfig.PortBindings}}{{range $bindings}}{{if .HostPort}}{{.HostPort}}:{{$key}}{{"\n"}}{{end}}{{end}}{{end}}' "$K8S_NAME" 2>/dev/null
+}
+
+k8s_desired_registries_bind() {
+  [ -f "$K8S_DIR/registries.yaml" ] && printf '%s\n' "$K8S_DIR/registries.yaml:/etc/rancher/k3s/registries.yaml:ro"
+  return 0
+}
+
+k8s_actual_registries_bind() {
+  dk inspect -f '{{range .HostConfig.Binds}}{{println .}}{{end}}' "$K8S_NAME" 2>/dev/null \
+    | grep -E ':/etc/rancher/k3s/registries\.yaml(:|$)' \
+    | LC_ALL=C sort -u || true
 }
 
 # Emits create-time config drift details and returns non-zero when drift exists.
 k8s_config_drift() {
-  local state="$1" desired_ports="$2" p drift=0
-  if ! k8s_registries_current; then
-    echo "  - registries.yaml bind missing or changed: $K8S_DIR/registries.yaml"
+  local state="$1" desired_ports="$2" drift=0 actual_ports desired_registry actual_registry
+  desired_ports="$(printf '%s\n' "$desired_ports" | k8s_canonical_ports)"
+  actual_ports="$(k8s_actual_ports | k8s_canonical_ports)" || {
+    echo "  - published ports could not be inspected"
+    drift=1
+  }
+  if [ "${actual_ports:-}" != "$desired_ports" ]; then
+    echo "  - published ports differ"
+    echo "    desired: ${desired_ports:-none}"
+    echo "    actual: ${actual_ports:-none}"
     drift=1
   fi
-  while IFS= read -r p; do
-    [ -n "$p" ] || continue
-    if ! k8s_port_current "$state" "$p"; then
-      echo "  - port $p is not published as requested"
-      drift=1
-    fi
-  done <<EOF
-$desired_ports
-EOF
+  desired_registry="$(k8s_desired_registries_bind)"
+  actual_registry="$(k8s_actual_registries_bind)"
+  if [ "$actual_registry" != "$desired_registry" ]; then
+    echo "  - registries.yaml bind differs"
+    echo "    desired: ${desired_registry:-none}"
+    echo "    actual: ${actual_registry:-none}"
+    drift=1
+  fi
   return "$drift"
 }
 
@@ -175,10 +182,10 @@ k8s_write_kubeconfig() {
   # k3s.yaml targets 127.0.0.1:6443 (host-reachable via Dory's port forwarder); rename the generic
   # `default` cluster/user/context to `dory` so tools can address the cluster by context name.
   dk exec "$K8S_NAME" cat /etc/rancher/k3s/k3s.yaml \
-    | sed -e "s/name: default/name: $K8S_CONTEXT/" \
-          -e "s/cluster: default/cluster: $K8S_CONTEXT/" \
-          -e "s/user: default/user: $K8S_CONTEXT/" \
-          -e "s/current-context: default/current-context: $K8S_CONTEXT/" \
+    | sed -e "s/^\([[:space:]]*\)name: default$/\1name: $K8S_CONTEXT/" \
+          -e "s/^\([[:space:]]*\)cluster: default$/\1cluster: $K8S_CONTEXT/" \
+          -e "s/^\([[:space:]]*\)user: default$/\1user: $K8S_CONTEXT/" \
+          -e "s/^\([[:space:]]*\)current-context: default$/\1current-context: $K8S_CONTEXT/" \
     > "$KUBECONFIG_DORY"
   chmod 600 "$KUBECONFIG_DORY"
 }
@@ -213,7 +220,7 @@ k8s_enable() {
   mkdir -p "$K8S_DIR"
 
   local desired_ports state drift
-  desired_ports="$(k8s_desired_ports)" || exit $?
+  desired_ports="$(k8s_desired_ports | k8s_canonical_ports)" || exit $?
   state="$(dk inspect -f '{{.State.Running}}' "$K8S_NAME" 2>/dev/null || echo absent)"
   if [ "$state" != "absent" ]; then
     if drift="$(k8s_config_drift "$state" "$desired_ports")"; then
@@ -222,8 +229,8 @@ k8s_enable() {
       k8s_wait_ready
       return
     fi
-    if [ "$state" = "true" ] && [ "$recreate" -ne 1 ]; then
-      echo "error: Kubernetes create-time config drift detected on running cluster:" >&2
+    if [ "$recreate" -ne 1 ]; then
+      echo "error: Kubernetes create-time config drift detected:" >&2
       printf '%s\n' "$drift" >&2
       echo "re-run with --recreate to apply (destroys cluster state)" >&2
       exit 3

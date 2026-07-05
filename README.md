@@ -195,6 +195,7 @@ The native browser covers:
 
 The bundled `kubectl` and `dory k8s <kubectl args...>` target the same cluster. k3s has its own image
 store, so push a built image to a registry or import it into the cluster before using it in a Pod.
+Use `dory k8s enable|disable|status` to manage the cluster from scripts or CI.
 
 ## Dory Linux machines
 

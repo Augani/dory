@@ -59,8 +59,8 @@ struct KubernetesStatus: Sendable {
     }
 }
 
-/// Surfaces an existing Kubernetes cluster via `kubectl`. One-click bootstrap of k3s is provided
-/// separately (scripts/enable-kubernetes.sh) because it boots infrastructure.
+/// Surfaces an existing Kubernetes cluster via `kubectl`. Dory can bootstrap its built-in k3s
+/// cluster through KubernetesProvisioner or `dory k8s enable`.
 struct KubernetesProvider: Sendable {
     var kubectlPath: String? {
         HostTools.kubectl()
