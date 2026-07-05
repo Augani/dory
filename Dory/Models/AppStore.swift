@@ -129,6 +129,7 @@ final class AppStore {
             if let v = UserDefaults.standard.object(forKey: Self.httpProxyPortKey) as? Int, let p = UInt16(exactly: v), p > 0 { httpProxyPort = p }
             if let v = UserDefaults.standard.object(forKey: Self.httpsProxyPortKey) as? Int, let p = UInt16(exactly: v), p > 0 { httpsProxyPort = p }
             if let v = UserDefaults.standard.object(forKey: Self.domainsEnabledKey) as? Bool { domainsEnabled = v }
+            if let v = UserDefaults.standard.object(forKey: SharedVMProvisioner.Config.rosettaX86Key) as? Bool { rosettaX86Enabled = v }
             dockerHostCleaned = DockerHostConflict.hasCleaned
             dockerHostConflictDismissed = UserDefaults.standard.bool(forKey: Self.dockerHostDismissedKey)
             if let width = UserDefaults.standard.object(forKey: Self.containerDetailWidthKey) as? Double, width >= 320 {
@@ -308,6 +309,9 @@ final class AppStore {
     private var shimServer: ShimHTTPServer?
     var shimSocketPath: String { DockerShim.defaultSocketPath }
     private(set) var shimRunning = false
+    /// Opt-in: run the Virtualization.framework engine with Rosetta so heavy amd64 images (SQL Server)
+    /// run reliably. Trades away dory-hv's memory advantage while on, so it is a manual toggle (#3).
+    var rosettaX86Enabled = false
 
     @ObservationIgnored private(set) var backendStartRequested = false
     @ObservationIgnored var windowOpenRequested = false
@@ -394,6 +398,19 @@ final class AppStore {
 
     func retryEngine() async {
         guard !isConnecting else { return }
+        await connectBackend()
+    }
+
+    /// Toggles the opt-in Rosetta x86 engine and restarts the shared engine so the new mode takes
+    /// effect. On → Virtualization.framework + Rosetta (heavy amd64 like SQL Server works, more
+    /// memory). Off → dory-hv (the memory advantage). No-op unless the shared engine is active.
+    func setRosettaX86(_ on: Bool) async {
+        guard on != rosettaX86Enabled else { return }
+        rosettaX86Enabled = on
+        UserDefaults.standard.set(on, forKey: SharedVMProvisioner.Config.rosettaX86Key)
+        guard runtimeKind == .sharedVM, !isConnecting else { return }
+        sharedVMStatus = on ? "Switching to the Rosetta x86 engine…" : "Switching to Dory's engine…"
+        SharedVMProvisioner.stopEngineDetached()
         await connectBackend()
     }
 

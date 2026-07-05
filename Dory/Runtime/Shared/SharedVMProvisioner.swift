@@ -22,15 +22,24 @@ enum SharedVMProvisioner {
         /// generous cap costs nothing until workloads actually use it; env vars can raise it.
         var memory: String
         var headroomMB: Int
+        /// Opt-in x86/amd64 via Rosetta: runs the Virtualization.framework engine (which supports
+        /// Rosetta) instead of dory-hv, so heavy amd64 images like SQL Server run reliably (proven).
+        /// Trades away dory-hv's memory advantage while on, so it is a manual Settings toggle.
+        var rosettaX86: Bool
+
+        static let rosettaX86Key = "dory.rosettaX86Enabled"
+        static let rosettaEngineMemoryMB = 3072
 
         nonisolated init(
             cpus: Int = 4,
             memory: String = "\(SharedVMProvisioner.defaultEngineMemoryMB)M",
-            headroomMB: Int = SharedVMProvisioner.defaultEngineHeadroomMB
+            headroomMB: Int = SharedVMProvisioner.defaultEngineHeadroomMB,
+            rosettaX86: Bool = UserDefaults.standard.bool(forKey: Config.rosettaX86Key)
         ) {
             self.cpus = cpus
             self.memory = memory
             self.headroomMB = headroomMB
+            self.rosettaX86 = rosettaX86
         }
 
         var memoryMB: Int {
@@ -75,10 +84,68 @@ enum SharedVMProvisioner {
         guard support.isSupported else {
             throw ProvisionError.unsupportedHost(support.reason)
         }
+        if config.rosettaX86 {
+            guard let socket = try await provisionWithRosettaEngine(config: config) else {
+                throw ProvisionError.engineUnavailable
+            }
+            return socket
+        }
         guard let socket = try await provisionWithHVEngine(config: config) else {
             throw ProvisionError.engineUnavailable
         }
         return socket
+    }
+
+    /// The Virtualization.framework engine with Rosetta x86 translation (opt-in). Runs the same
+    /// `dockerd`-in-VM as dory-hv but on VZ, so `docker run --platform linux/amd64` uses Rosetta —
+    /// heavy amd64 images like SQL Server run reliably where qemu-user segfaults (proven). Publishes
+    /// to the same `engine.sock`, so the shim and docker context are unchanged.
+    private static func provisionWithRosettaEngine(config: Config) async throws -> String? {
+        guard let helper = vmHelperBinary(),
+              let kernel = await hvKernelPath(),
+              let initfs = await vmInitfsPath() else { return nil }
+
+        if await isReachable(), helperProcessIsAlive() {
+            return socketPath
+        }
+        stopHelper()
+
+        let directory = (socketPath as NSString).deletingLastPathComponent
+        try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
+        try? FileManager.default.removeItem(atPath: socketPath)
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: helper)
+        process.arguments = ["--shared-engine", socketPath, "--kernel", kernel, "--initfs", initfs]
+        var environment = ProcessInfo.processInfo.environment
+        environment["DORY_ENGINE_ROSETTA"] = "1"
+        // SQL Server refuses to start below 2 GB; default to 3 GB headroom (reclaimed when idle).
+        if environment["DORY_ENGINE_MEM_MB"] == nil {
+            environment["DORY_ENGINE_MEM_MB"] = String(max(Config.rosettaEngineMemoryMB, config.memoryMB))
+        }
+        process.environment = environment
+
+        FileManager.default.createFile(atPath: helperLogPath, contents: nil)
+        let log = try? FileHandle(forWritingTo: URL(fileURLWithPath: helperLogPath))
+        _ = try? log?.seekToEnd()
+        log?.write(Data("\n--- starting VZ+Rosetta engine \(Date()) mem=\(environment["DORY_ENGINE_MEM_MB"] ?? "?")MiB ---\n".utf8))
+        process.standardOutput = log ?? FileHandle.nullDevice
+        process.standardError = log ?? FileHandle.nullDevice
+
+        do {
+            try process.run()
+            try? "\(process.processIdentifier)\n".write(toFile: helperPIDPath, atomically: true, encoding: .utf8)
+            try? log?.close()
+        } catch {
+            try? log?.close()
+            throw ProvisionError.engineStartFailed("\(error)")
+        }
+
+        guard await waitForReachable(attempts: 240) else {
+            if process.isRunning { process.terminate() }
+            throw ProvisionError.engineUnreachable
+        }
+        return socketPath
     }
 
     static func runtime(config: Config = Config()) async -> DockerEngineRuntime? {
@@ -189,6 +256,29 @@ enum SharedVMProvisioner {
             "\(cwd)/Packages/ContainerizationEngine/.build/out/Products/Debug/dory-hv",
         ]
         return devCandidates.first { FileManager.default.isExecutableFile(atPath: $0) }
+    }
+
+    private static func vmHelperBinary() -> String? {
+        let environment = ProcessInfo.processInfo.environment
+        if let override = environment["DORY_VM_HELPER"],
+           !override.isEmpty,
+           FileManager.default.isExecutableFile(atPath: override) {
+            return override
+        }
+        if let helper = bundledHelperPath(named: "dory-vm"),
+           FileManager.default.isExecutableFile(atPath: helper) {
+            return helper
+        }
+        let cwd = FileManager.default.currentDirectoryPath
+        let devCandidates = [
+            "\(cwd)/Packages/ContainerizationEngine/.build/arm64-apple-macosx/release/dory-vmboot",
+            "\(cwd)/Packages/ContainerizationEngine/.build/arm64-apple-macosx/debug/dory-vmboot",
+        ]
+        return devCandidates.first { FileManager.default.isExecutableFile(atPath: $0) }
+    }
+
+    private static func vmInitfsPath() async -> String? {
+        await prepareCompressedResource(resource: "dory-vm-initfs.ext4", outputName: "dory-vm-initfs.ext4")
     }
 
     private static func gvproxyBinary() -> String? {

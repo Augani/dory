@@ -436,6 +436,24 @@ struct SettingsView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(p.bgElevated, in: RoundedRectangle(cornerRadius: 11))
             .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(p.border))
+            .padding(.bottom, 22)
+
+            groupLabel("X86 / AMD64")
+            VStack(spacing: 0) {
+                toggleRow(
+                    "Run x86 images with Rosetta",
+                    "Use Apple's Rosetta to run amd64 images (SQL Server, Oracle, older x86 builds) reliably and fast. Switches Dory's engine to Virtualization.framework, which uses more memory than the default engine — turn off when you don't need x86.",
+                    isOn: Binding(get: { store.rosettaX86Enabled }, set: { on in Task { await store.setRosettaX86(on) } }),
+                    divider: false,
+                    disabled: !onShared
+                )
+            }
+            .background(p.bgElevated, in: RoundedRectangle(cornerRadius: 11))
+            .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(p.border))
+            if !onShared {
+                Text("Switch to Dory's shared engine above to use Rosetta x86.")
+                    .font(.system(size: 11.5)).foregroundStyle(p.text3).padding(.top, 8)
+            }
         }
     }
 
