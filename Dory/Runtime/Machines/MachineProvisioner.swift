@@ -27,6 +27,8 @@ enum MachineProvisioner {
         }
         let shim = (["set +e"] + DoryOpenShim.installCommands()).joined(separator: "\n")
         lines.append("(\n\(shim)\n) || true")
+        let credentials = (["set +e"] + DoryCredentialShim.installCommands()).joined(separator: "\n")
+        lines.append("(\n\(credentials)\n) || true")
         return lines.joined(separator: "\n")
     }
 

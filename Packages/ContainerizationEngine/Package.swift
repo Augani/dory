@@ -11,6 +11,7 @@ let package = Package(
     products: [
         .library(name: "ContainerizationEngine", targets: ["ContainerizationEngine"]),
         .executable(name: "dory-vmboot", targets: ["dory-vmboot"]),
+        .executable(name: "dory-hv", targets: ["dory-hv"]),
     ],
     dependencies: [
         .package(url: "https://github.com/apple/containerization.git", branch: "main"),
@@ -30,6 +31,37 @@ let package = Package(
                 .product(name: "ContainerizationOCI", package: "containerization"),
                 .product(name: "ContainerizationExtras", package: "containerization"),
             ]
+        ),
+        .target(
+            name: "DoryHVUSBShim",
+            linkerSettings: [
+                .linkedFramework("IOKit"),
+                .linkedFramework("IOUSBHost"),
+            ]
+        ),
+        .target(
+            name: "DoryHV",
+            dependencies: ["DoryHVUSBShim"],
+            linkerSettings: [
+                .linkedFramework("Hypervisor"),
+                .linkedFramework("CoreServices"),
+                .linkedFramework("IOKit"),
+                .linkedFramework("IOUSBHost"),
+            ]
+        ),
+        .executableTarget(
+            name: "dory-hv",
+            dependencies: [
+                "DoryHV",
+                .product(name: "Containerization", package: "containerization"),
+                .product(name: "ContainerizationEXT4", package: "containerization"),
+                .product(name: "ContainerizationOCI", package: "containerization"),
+                .product(name: "ContainerizationExtras", package: "containerization"),
+            ]
+        ),
+        .testTarget(
+            name: "DoryHVTests",
+            dependencies: ["DoryHV"]
         ),
     ]
 )

@@ -81,45 +81,6 @@ struct RuntimeHelpersTests {
         #expect(parsePublishedPorts(display) == [PublishedPort(hostPort: 5353, containerPort: 53, proto: "udp")])
     }
 
-    @Test func mapsDistroInfo() {
-        #expect(AppleContainerRuntime.distroInfo("ubuntu-dev").distro == "Ubuntu")
-        #expect(AppleContainerRuntime.distroInfo("ubuntu-dev").letter == "U")
-        #expect(AppleContainerRuntime.distroInfo("my-alpine").distro == "Alpine")
-        #expect(AppleContainerRuntime.distroInfo("dory-mach").distro == "Linux")
-        #expect(AppleContainerRuntime.distroInfo("dory-mach").letter == "D")
-    }
-
-    @Test func appleCreateArgumentsPreserveDockerCreateFields() {
-        var spec = ContainerSpec(name: "amd", image: "alpine:3.22", platform: " linux/amd64 ")
-        spec.command = ["sh", "-lc", "true"]
-        spec.domainname = "svc.dory.local"
-        spec.environment = ["B": "2", "A": "1"]
-        spec.dns = ["1.1.1.1"]
-        spec.ports = ["8080:80"]
-        spec.labels = ["role": "web"]
-        spec.networkMode = "backend"
-        spec.networkDisabled = true
-        spec.containerIDFile = "/tmp/dory.cid"
-        spec.runtimeName = "container-runtime-linux"
-
-        #expect(AppleContainerRuntime.createArguments(for: spec) == [
-            "create", "--name", "amd",
-            "--platform", "linux/amd64",
-            "--cidfile", "/tmp/dory.cid",
-            "--runtime", "container-runtime-linux",
-            "-e", "A=1",
-            "-e", "B=2",
-            "-p", "8080:80",
-            "--label", "role=web",
-            "--dns", "1.1.1.1",
-            "--dns-domain", "svc.dory.local",
-            "--no-dns",
-            "--network", "none",
-            "--", "alpine:3.22",
-            "sh", "-lc", "true",
-        ])
-    }
-
     @Test func mapsKubernetesPhase() {
         #expect(KubeRowMapper.podPhase("Running", statuses: []) == .running)
         #expect(KubeRowMapper.podPhase("Pending", statuses: []) == .pending)

@@ -6,6 +6,9 @@ set -euo pipefail
 DORY_SOCK="${DORY_SOCK:-$HOME/.dory/dory.sock}"
 KUBECONFIG_DORY="$HOME/.kube/dory-config"
 CONTAINER_BIN="$(command -v container || echo /opt/homebrew/bin/container)"
+RECIPE_DIR="${DORY_RECIPE_DIR:-$HOME/.dory/recipes}"
+BUILTIN_RECIPE_DIR="${DORY_BUILTIN_RECIPE_DIR:-$(cd "$(dirname "$0")/.." && pwd)/Dory/Resources/Recipes}"
+DOCKER_BIN="${DORY_DOCKER_BIN:-$(command -v docker || echo docker)}"
 
 # The framework-engine helper (Rosetta-fast x86 + host mounts via Apple's containerization), bundled
 # in the app and signed with the virtualization entitlement. Falls back to a local dev build.
@@ -17,13 +20,34 @@ vm_helper() {
   done
 }
 
+hv_helper() {
+  for p in "${DORY_HV_BIN:-}" \
+           "$(dirname "$0")/../Helpers/dory-hv" \
+           "$(dirname "$0")/../Packages/ContainerizationEngine/.build/debug/dory-hv" \
+           "$(dirname "$0")/../Packages/ContainerizationEngine/.build/out/Products/Release/dory-hv" \
+           "$(dirname "$0")/../Packages/ContainerizationEngine/.build/out/Products/Debug/dory-hv"; do
+    [ -n "$p" ] && [ -x "$p" ] && { echo "$p"; return; }
+  done
+}
+
 usage() {
   cat <<EOF
 dory — Dory CLI
 
   dory <docker args...>        Run any docker command against Dory's engine
   dory shell <container>       Open an interactive shell in a container
+  dory debug <container> [-- cmd...]
+                               Enter a container's namespaces through the Dory guest agent
   dory machine <args...>       Manage Linux machines (ls, create, start, stop, delete, run)
+  dory machine snapshot <name> Take a Dory machine snapshot
+  dory machine restore <name> <tag|image>
+                               Restore, clone, import, export, or delete snapshots
+  dory machine backup [machine] <tag|image> <s3://bucket/prefix-or-file>
+                               Export a snapshot image and upload it with aws s3 cp
+  dory recipe ls|show|add|new  Manage machine recipes
+  dory usb ls|attach|detach     Inspect USB candidates and request USB/IP attach/detach
+  dory expose <port|machine> [--port P] [--hostname H] [--print-command]
+                               Share a local port or machine endpoint through a public HTTPS tunnel
   dory k8s <kubectl args...>   Run kubectl against Dory's Kubernetes cluster
   dory ssh <machine>           SSH into a Linux machine as you (real ssh when available)
   dory vm [--image R] [--arch amd64|arm64] [--rosetta] [--mount h:g] -- <cmd>
@@ -35,10 +59,841 @@ dory — Dory CLI
 EOF
 }
 
+recipe_files() {
+  [ -d "$BUILTIN_RECIPE_DIR" ] && find "$BUILTIN_RECIPE_DIR" -maxdepth 1 \( -name '*.yaml' -o -name '*.yml' \) -print
+  [ -d "$RECIPE_DIR" ] && find "$RECIPE_DIR" -maxdepth 1 \( -name '*.yaml' -o -name '*.yml' \) -print
+}
+
+recipe_field() {
+  awk -v key="$1" '
+    {
+      key_end = index($0, ":")
+      if (key_end == 0) next
+      name = substr($0, 1, key_end - 1)
+      sub(/^[[:space:]]+/, "", name)
+      sub(/[[:space:]]+$/, "", name)
+      if (name != key) next
+      value = substr($0, key_end + 1)
+      sub(/^[[:space:]]+/, "", value)
+      sub(/[[:space:]]+$/, "", value)
+      print value
+      exit
+    }' "$2"
+}
+
+recipe_path() {
+  local name="$1" file id
+  if [ -f "$name" ]; then echo "$name"; return 0; fi
+  while IFS= read -r file; do
+    id="$(recipe_field name "$file")"
+    [ "$id" = "$name" ] && { echo "$file"; return 0; }
+  done < <(recipe_files | sort)
+  return 1
+}
+
+recipe_ls() {
+  local file id summary distro arch source
+  printf '%-18s %-14s %-7s %s\n' NAME DISTRO ARCH SUMMARY
+  while IFS= read -r file; do
+    id="$(recipe_field name "$file")"
+    summary="$(recipe_field summary "$file")"
+    distro="$(recipe_field distro "$file")"
+    arch="$(recipe_field arch "$file")"; [ -n "$arch" ] || arch="arm64"
+    case "$file" in "$RECIPE_DIR"/*) source="user" ;; *) source="built-in" ;; esac
+    [ -n "$id" ] && printf '%-18s %-14s %-7s %s [%s]\n' "$id" "$distro" "$arch" "$summary" "$source"
+  done < <(recipe_files | sort)
+}
+
+recipe_show() {
+  local path
+  path="$(recipe_path "${1:?usage: dory recipe show <name|path>}")" || { echo "recipe not found: $1" >&2; exit 1; }
+  cat "$path"
+}
+
+recipe_add() {
+  local src="${1:?usage: dory recipe add <url|path>}" tmp name dest
+  mkdir -p "$RECIPE_DIR"
+  if [[ "$src" =~ ^https?:// ]]; then
+    tmp="$(mktemp -t dory-recipe.XXXXXX.yaml)"
+    curl -fsSL "$src" -o "$tmp"
+  else
+    tmp="$src"
+  fi
+  [ -f "$tmp" ] || { echo "recipe file not found: $src" >&2; exit 1; }
+  name="$(recipe_field name "$tmp")"
+  [ -n "$name" ] || { echo "recipe is missing top-level name:" >&2; exit 1; }
+  dest="$RECIPE_DIR/$name.yaml"
+  cp "$tmp" "$dest"
+  echo "added recipe $name -> $dest"
+}
+
+recipe_new() {
+  local name="${1:?usage: dory recipe new <name>}" path
+  mkdir -p "$RECIPE_DIR"
+  path="$RECIPE_DIR/$name.yaml"
+  [ ! -e "$path" ] || { echo "recipe already exists: $path" >&2; exit 1; }
+  cat > "$path" <<EOF
+name: $name
+summary: Custom development environment
+distro: ubuntu:24.04
+arch: arm64
+resources: {cpus: 2, memory: 4GiB, disk: 40GiB}
+packages: []
+runcmd: []
+mounts: []
+ports: []
+env: {}
+ssh: {agent_forward: true}
+docker: false
+user: {name: "{{host_user}}", sudo: true, shell: /bin/bash}
+EOF
+  echo "$path"
+}
+
+machine_recipe_plan() {
+  local recipe="$1" name="$2" out="$3"
+  python3 - "$recipe" "$name" "$out" <<'PY'
+import json, os, shlex, sys, urllib.parse
+
+recipe_path, machine_name, out_dir = sys.argv[1:4]
+host_user = os.environ.get("USER") or os.environ.get("LOGNAME") or "dory"
+host_home = os.path.expanduser("~")
+host_uid = os.getuid()
+
+def scalar(value):
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+        return value[1:-1]
+    if value.lower() == "true":
+        return True
+    if value.lower() == "false":
+        return False
+    try:
+        return int(value)
+    except ValueError:
+        return value
+
+def parse_inline(value):
+    value = value.strip()
+    if value.startswith("[") and value.endswith("]"):
+        inner = value[1:-1].strip()
+        if not inner:
+            return []
+        return [scalar(part) for part in inner.split(",")]
+    if value.startswith("{") and value.endswith("}"):
+        inner = value[1:-1].strip()
+        if not inner:
+            return {}
+        result = {}
+        for part in inner.split(","):
+            key, raw = part.split(":", 1)
+            result[key.strip()] = scalar(raw)
+        return result
+    return scalar(value)
+
+def load_simple_yaml(path):
+    root = {}
+    lines = path and open(path, encoding="utf-8").read().splitlines() or []
+    i = 0
+    while i < len(lines):
+        raw = lines[i]
+        stripped = raw.strip()
+        if not stripped or stripped.startswith("#") or raw.startswith(" "):
+            i += 1
+            continue
+        if ":" not in raw:
+            i += 1
+            continue
+        key, value = raw.split(":", 1)
+        key = key.strip()
+        value = value.strip()
+        if value:
+            root[key] = parse_inline(value)
+            i += 1
+            continue
+        items = []
+        mapping = {}
+        i += 1
+        while i < len(lines) and (lines[i].startswith(" ") or not lines[i].strip()):
+            child = lines[i].strip()
+            if child.startswith("- "):
+                items.append(scalar(child[2:]))
+            elif child and ":" in child:
+                ckey, cvalue = child.split(":", 1)
+                mapping[ckey.strip()] = parse_inline(cvalue)
+            i += 1
+        root[key] = items if items else mapping
+    return root
+
+def sub(value, user):
+    if isinstance(value, str):
+        return value.replace("{{host_user}}", host_user).replace("{{user}}", user)
+    if isinstance(value, list):
+        return [sub(v, user) for v in value]
+    if isinstance(value, dict):
+        return {sub(k, user): sub(v, user) for k, v in value.items()}
+    return value
+
+catalog = {
+    "ubuntu:24.04": ("ubuntu", "Ubuntu", "24.04 LTS", "apt", "systemd"),
+    "ubuntu:22.04": ("ubuntu", "Ubuntu", "22.04 LTS", "apt", "systemd"),
+    "ubuntu:20.04": ("ubuntu", "Ubuntu", "20.04 LTS", "apt", "systemd"),
+    "debian:12": ("debian", "Debian", "12", "apt", "systemd"),
+    "debian:11": ("debian", "Debian", "11", "apt", "systemd"),
+    "fedora:41": ("fedora", "Fedora", "41", "dnf", "systemd"),
+    "fedora:40": ("fedora", "Fedora", "40", "dnf", "systemd"),
+    "alpine:3.21": ("alpine", "Alpine", "3.21", "apk", "shell"),
+    "alpine:3.20": ("alpine", "Alpine", "3.20", "apk", "shell"),
+    "alpine:3.19": ("alpine", "Alpine", "3.19", "apk", "shell"),
+    "archlinux:latest": ("arch", "Arch Linux", "Rolling", "pacman", "systemd"),
+}
+
+recipe = load_simple_yaml(recipe_path)
+recipe_id = str(recipe.get("name") or "").strip()
+if not recipe_id:
+    raise SystemExit("recipe is missing top-level name:")
+user_cfg = recipe.get("user") or {}
+guest_user_template = str(user_cfg.get("name", "{{host_user}}"))
+guest_user = sub(guest_user_template, guest_user_template.replace("{{host_user}}", host_user))
+recipe = sub(recipe, guest_user)
+distro = str(recipe.get("distro") or "ubuntu:24.04")
+arch = str(recipe.get("arch") or "arm64")
+resources = recipe.get("resources") or {}
+packages = recipe.get("packages") or []
+runcmd = recipe.get("runcmd") or []
+mounts = recipe.get("mounts") or []
+ports = [int(p) for p in (recipe.get("ports") or [])]
+env = recipe.get("env") or {}
+docker_enabled = bool(recipe.get("docker", False))
+user_cfg = recipe.get("user") or {}
+guest_user = str(user_cfg.get("name") or host_user)
+guest_shell = str(user_cfg.get("shell") or "/bin/bash")
+if distro not in catalog:
+    raise SystemExit(f"unsupported recipe distro {distro}")
+if arch not in ("arm64", "amd64"):
+    raise SystemExit(f"unsupported recipe arch {arch}")
+family, display, version, pkg, boot = catalog[distro]
+base_tag = f"dory-machine/{distro}-{arch}-v2"
+recipe_tag = f"dory-recipe/{recipe_id}-{arch}"
+container = f"dory-machine-{machine_name}"
+platform = f"linux/{arch}"
+
+def size_mb(value):
+    text = str(value)
+    for suffix, mult in (("TiB", 1024 * 1024), ("GiB", 1024), ("MiB", 1)):
+        if text.endswith(suffix):
+            return int(text[:-len(suffix)]) * mult
+    return None
+
+def quote(value):
+    return shlex.quote(str(value))
+
+def package_install(names):
+    if not names:
+        return ""
+    joined = " ".join(quote(n) for n in names)
+    if pkg == "apt":
+        return f"apt-get update -qq && apt-get install -y --no-install-recommends {joined} && rm -rf /var/lib/apt/lists/*"
+    if pkg == "dnf":
+        return f"dnf install -y {joined} && dnf clean all"
+    if pkg == "apk":
+        return f"apk add --no-cache {joined}"
+    if pkg == "pacman":
+        return f"pacman -Sy --noconfirm --needed {joined}"
+    return ""
+
+def base_dockerfile():
+    if pkg == "apt":
+        return f"""FROM {distro}
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update \\
+ && apt-get install -y --no-install-recommends systemd systemd-sysv dbus dbus-user-session sudo bash openssh-server netcat-openbsd ca-certificates iproute2 iputils-ping curl \\
+ && rm -rf /var/lib/apt/lists/* \\
+ && (systemctl mask systemd-resolved.service systemd-networkd.service || true)
+STOPSIGNAL SIGRTMIN+3
+CMD ["/sbin/init"]
+"""
+    if pkg == "dnf":
+        return f"""FROM {distro}
+RUN dnf -y install systemd sudo passwd iproute procps-ng openssh-server nmap-ncat \\
+ && dnf clean all \\
+ && (systemctl mask systemd-resolved.service || true)
+STOPSIGNAL SIGRTMIN+3
+CMD ["/sbin/init"]
+"""
+    if pkg == "apk":
+        return f"""FROM {distro}
+RUN apk add --no-cache bash sudo shadow iproute2 ca-certificates openssh netcat-openbsd
+CMD ["tail", "-f", "/dev/null"]
+"""
+    if pkg == "pacman":
+        return f"""FROM {distro}
+RUN pacman -Sy --noconfirm --disable-sandbox --needed sudo iproute2 openssh gnu-netcat \\
+ && (pacman -Scc --noconfirm --disable-sandbox || true)
+STOPSIGNAL SIGRTMIN+3
+CMD ["/sbin/init"]
+"""
+    raise SystemExit(f"unsupported package manager {pkg}")
+
+provision = [package_install(packages), *[str(c) for c in runcmd]]
+if docker_enabled:
+    provision.append("install -d -m 755 /var/run/dory")
+provision_script = "\n".join(line for line in provision if line.strip())
+recipe_dockerfile = f"""FROM {base_tag}
+RUN <<'DORY_RECIPE'
+set -e
+{provision_script}
+DORY_RECIPE
+"""
+
+host_config = {
+    "Privileged": True,
+    "CgroupnsMode": "host",
+    "Tmpfs": {"/run": "", "/run/lock": "", "/tmp": ""},
+    "RestartPolicy": {"Name": "unless-stopped"},
+}
+cpus = int(resources.get("cpus") or 0)
+memory = size_mb(resources.get("memory") or "")
+if cpus > 0:
+    host_config["NanoCpus"] = cpus * 1000000000
+if memory:
+    host_config["Memory"] = memory * 1024 * 1024
+binds = []
+for mount in mounts:
+    parts = str(mount).split(":")
+    if len(parts) >= 2:
+        host = os.path.expanduser(parts[0])
+        guest = parts[1].replace("~", f"/home/{guest_user}", 1) if parts[1].startswith("~") else parts[1]
+        suffix = ":ro" if len(parts) >= 3 and parts[2] == "ro" else ""
+        binds.append(f"{host}:{guest}{suffix}")
+bridge = os.path.join(host_home, ".dory", "bridge", machine_name)
+binds.append(f"{bridge}:/opt/dory/bridge")
+host_config["Binds"] = binds
+if ports:
+    host_config["PortBindings"] = {f"{p}/tcp": [{"HostPort": str(p)}] for p in ports}
+
+labels = {
+    "dory.machine": family,
+    "dory.machine.version": version,
+    "dory.machine.arch": arch,
+    "dory.recipe": recipe_id,
+}
+if guest_user != "root":
+    guest_home = host_home if guest_user == host_user else f"/home/{guest_user}"
+    labels.update({
+        "dory.machine.user": guest_user,
+        "dory.machine.uid": str(host_uid if guest_user == host_user else 1000),
+        "dory.machine.home": guest_home,
+        "dory.machine.shell": guest_shell,
+    })
+if 22 in ports:
+    labels["dory.machine.sshPort"] = "22"
+body = {
+    "Hostname": machine_name,
+    "Image": recipe_tag,
+    "Cmd": ["/sbin/init"] if boot == "systemd" else ["tail", "-f", "/dev/null"],
+    "Env": sorted([
+        "BROWSER=dory-open",
+        "container=docker",
+        "SSH_AUTH_SOCK=/opt/dory/bridge/credentials/ssh-agent.sock",
+        "GIT_ASKPASS=/usr/local/bin/dory-git-askpass",
+        "DORY_GIT_ASKPASS_SOCK=/opt/dory/bridge/credentials/git-askpass.sock",
+        *[f"{k}={v}" for k, v in env.items()],
+    ]),
+    "StopSignal": "SIGRTMIN+3",
+    "Labels": labels,
+    "HostConfig": host_config,
+}
+if ports:
+    body["ExposedPorts"] = {f"{p}/tcp": {} for p in ports}
+
+os.makedirs(out_dir, exist_ok=True)
+open(os.path.join(out_dir, "base.Dockerfile"), "w", encoding="utf-8").write(base_dockerfile())
+open(os.path.join(out_dir, "recipe.Dockerfile"), "w", encoding="utf-8").write(recipe_dockerfile)
+open(os.path.join(out_dir, "create.json"), "w", encoding="utf-8").write(json.dumps(body, indent=2, sort_keys=True) + "\n")
+create_path = "/containers/create?name=" + urllib.parse.quote(container, safe="") + "&platform=" + urllib.parse.quote(platform, safe="")
+start_path = "/containers/" + urllib.parse.quote(container, safe="") + "/start"
+env_path = os.path.join(out_dir, "plan.env")
+with open(env_path, "w", encoding="utf-8") as f:
+    for key, value in {
+        "RECIPE_ID": recipe_id,
+        "DISTRO": distro,
+        "ARCH": arch,
+        "PLATFORM": platform,
+        "BASE_TAG": base_tag,
+        "RECIPE_TAG": recipe_tag,
+        "CONTAINER_NAME": container,
+        "BRIDGE_DIR": bridge,
+        "CREATE_PATH": create_path,
+        "START_PATH": start_path,
+    }.items():
+        f.write(f"{key}={quote(value)}\n")
+PY
+}
+
+machine_create_recipe() {
+  local name="" recipe="" dry_run=0 tmp
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --recipe) recipe="${2:?usage: dory machine create <name> --recipe <name|path> [--dry-run]}"; shift 2 ;;
+      --dry-run) dry_run=1; shift ;;
+      --*) echo "unknown machine create option: $1" >&2; exit 2 ;;
+      *) if [ -z "$name" ]; then name="$1"; shift; else echo "unexpected argument: $1" >&2; exit 2; fi ;;
+    esac
+  done
+  [ -n "$name" ] && [ -n "$recipe" ] || { echo "usage: dory machine create <name> --recipe <name|path> [--dry-run]" >&2; exit 2; }
+  [[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || { echo "invalid machine name: $name" >&2; exit 2; }
+  recipe="$(recipe_path "$recipe")" || { echo "recipe not found: $recipe" >&2; exit 1; }
+  tmp="$(mktemp -d -t dory-machine-recipe.XXXXXX)"
+  machine_recipe_plan "$recipe" "$name" "$tmp"
+  # shellcheck disable=SC1091
+  source "$tmp/plan.env"
+  if [ "$dry_run" -eq 1 ]; then
+    echo "recipe: $RECIPE_ID"
+    echo "base image: $BASE_TAG"
+    echo "recipe image: $RECIPE_TAG"
+    echo "container: $CONTAINER_NAME"
+    echo "create path: $CREATE_PATH"
+    echo "start path: $START_PATH"
+    echo "--- create.json ---"
+    sed -n '1,220p' "$tmp/create.json"
+    echo "--- recipe.Dockerfile ---"
+    sed -n '1,220p' "$tmp/recipe.Dockerfile"
+    return 0
+  fi
+  mkdir -p "$BRIDGE_DIR"
+  if ! "$DOCKER_BIN" -H "unix://$DORY_SOCK" image inspect "$BASE_TAG" >/dev/null 2>&1; then
+    "$DOCKER_BIN" -H "unix://$DORY_SOCK" build --platform "$PLATFORM" -t "$BASE_TAG" -f "$tmp/base.Dockerfile" "$tmp"
+  fi
+  if ! "$DOCKER_BIN" -H "unix://$DORY_SOCK" image inspect "$RECIPE_TAG" >/dev/null 2>&1; then
+    "$DOCKER_BIN" -H "unix://$DORY_SOCK" build --platform "$PLATFORM" -t "$RECIPE_TAG" -f "$tmp/recipe.Dockerfile" "$tmp"
+  fi
+  curl --unix-socket "$DORY_SOCK" -fsS -X POST -H 'Content-Type: application/json' \
+    --data-binary @"$tmp/create.json" "http://dory$CREATE_PATH" >/dev/null
+  curl --unix-socket "$DORY_SOCK" -fsS -X POST "http://dory$START_PATH" >/dev/null
+  echo "created machine $name from recipe $RECIPE_ID"
+}
+
+dory_urlencode() {
+  python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$1"
+}
+
+machine_container_name() {
+  printf 'dory-machine-%s' "$1"
+}
+
+machine_snapshot_ref() {
+  local machine="$1" selector="$2"
+  if [[ "$selector" == sha256:* || "$selector" == *"/"* || "$selector" == *":"* ]]; then
+    printf '%s' "$selector"
+  else
+    printf 'dory-snapshot/%s:%s' "$machine" "$selector"
+  fi
+}
+
+machine_snapshot_create() {
+  local name="${1:?usage: dory machine snapshot <name> [--note text] [--tag tag]}" note="" tag="" cid labels body repo path id
+  shift
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --note) note="${2:?--note requires text}"; shift 2 ;;
+      --tag) tag="${2:?--tag requires tag}"; shift 2 ;;
+      --*) echo "unknown snapshot option: $1" >&2; exit 2 ;;
+      *) note="$1"; shift ;;
+    esac
+  done
+  cid="$(machine_container_name "$name")"
+  "$DOCKER_BIN" -H "unix://$DORY_SOCK" inspect "$cid" >/dev/null
+  [ -n "$tag" ] || tag="s$(date -u +%s)"
+  repo="dory-snapshot/$name"
+  labels="$("$DOCKER_BIN" -H "unix://$DORY_SOCK" inspect -f '{{json .Config.Labels}}' "$cid")"
+  body="$(mktemp -t dory-snapshot.XXXXXX.json)"
+  python3 - "$labels" "$name" "$note" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$body" <<'PY'
+import json, sys
+
+labels = json.loads(sys.argv[1] or "{}")
+machine, note, created = sys.argv[2:5]
+out = {}
+for key in ("dory.machine", "dory.machine.version", "dory.machine.arch", "dory.machine.boot",
+            "dory.recipe", "dory.machine.user", "dory.machine.uid", "dory.machine.home",
+            "dory.machine.shell", "dory.machine.sshPort"):
+    if labels.get(key):
+        out[key] = labels[key]
+out.setdefault("dory.machine.boot", "systemd")
+out["dory.snapshot.of"] = machine
+out["dory.snapshot.note"] = note
+out["dory.snapshot.created"] = created
+print(json.dumps({"Labels": out}, separators=(",", ":")))
+PY
+  path="/commit?container=$(dory_urlencode "$cid")&repo=$(dory_urlencode "$repo")&tag=$(dory_urlencode "$tag")"
+  id="$(curl --unix-socket "$DORY_SOCK" -fsS -X POST -H 'Content-Type: application/json' --data-binary @"$body" "http://dory$path" \
+    | python3 -c 'import json,sys; print(json.load(sys.stdin).get("Id",""))')"
+  rm -f "$body"
+  echo "snapshot $repo:$tag ${id:+($id)}"
+}
+
+machine_snapshot_list() {
+  local machine="${1:-}" filter ids inspect
+  filter="label=dory.snapshot.of"
+  [ -z "$machine" ] || filter="label=dory.snapshot.of=$machine"
+  ids="$("$DOCKER_BIN" -H "unix://$DORY_SOCK" image ls -q --filter "$filter" | sort -u)"
+  printf '%-32s %-20s %-19s %s\n' IMAGE MACHINE CREATED NOTE
+  [ -n "$ids" ] || return 0
+  inspect="$(mktemp -t dory-snapshots.XXXXXX.json)"
+  # shellcheck disable=SC2086
+  "$DOCKER_BIN" -H "unix://$DORY_SOCK" image inspect $ids > "$inspect"
+  python3 - "$inspect" <<'PY'
+import json, sys
+
+for image in json.load(open(sys.argv[1])):
+    labels = image.get("Config", {}).get("Labels") or {}
+    tags = [t for t in image.get("RepoTags") or [] if t != "<none>:<none>"]
+    ref = tags[0] if tags else image.get("Id", "")
+    print(f"{ref[:31]:<32} {labels.get('dory.snapshot.of','')[:19]:<20} {labels.get('dory.snapshot.created','')[:19]:<19} {labels.get('dory.snapshot.note','')}")
+PY
+  rm -f "$inspect"
+}
+
+machine_snapshot_create_body() {
+  local image="$1" name="$2" out="$3" bridge="$4" inspect
+  inspect="$(mktemp -t dory-snapshot-image.XXXXXX.json)"
+  "$DOCKER_BIN" -H "unix://$DORY_SOCK" image inspect "$image" > "$inspect"
+  python3 - "$inspect" "$image" "$name" "$bridge" > "$out" <<'PY'
+import json, sys
+
+inspect_path, image_ref, name, bridge = sys.argv[1:5]
+image = json.load(open(inspect_path))[0]
+labels = image.get("Config", {}).get("Labels") or {}
+boot = labels.get("dory.machine.boot", "systemd")
+arch = labels.get("dory.machine.arch", "arm64")
+container_labels = {
+    "dory.machine": labels.get("dory.machine", labels.get("dory.snapshot.of", name)),
+    "dory.machine.version": labels.get("dory.machine.version", ""),
+    "dory.machine.arch": arch,
+    "dory.machine.boot": boot,
+}
+for key in ("dory.recipe", "dory.machine.user", "dory.machine.uid", "dory.machine.home", "dory.machine.shell", "dory.machine.sshPort"):
+    if labels.get(key):
+        container_labels[key] = labels[key]
+cmd = ["/sbin/init"] if boot == "systemd" else ["tail", "-f", "/dev/null"]
+body = {
+    "Hostname": name,
+    "Image": image_ref,
+    "Cmd": cmd,
+    "Env": [
+        "BROWSER=dory-open",
+        "container=docker",
+        "SSH_AUTH_SOCK=/opt/dory/bridge/credentials/ssh-agent.sock",
+        "GIT_ASKPASS=/usr/local/bin/dory-git-askpass",
+        "DORY_GIT_ASKPASS_SOCK=/opt/dory/bridge/credentials/git-askpass.sock",
+    ],
+    "StopSignal": "SIGRTMIN+3",
+    "Labels": container_labels,
+    "HostConfig": {
+        "Privileged": True,
+        "CgroupnsMode": "host",
+        "Tmpfs": {"/run": "", "/run/lock": "", "/tmp": ""},
+        "RestartPolicy": {"Name": "unless-stopped"},
+        "Binds": [f"{bridge}:/opt/dory/bridge"],
+    },
+}
+print(json.dumps({"platform": f"linux/{arch}", "body": body}, separators=(",", ":")))
+PY
+  rm -f "$inspect"
+}
+
+machine_run_snapshot_image() {
+  local name="$1" image="$2" cid bridge tmp platform create_path
+  cid="$(machine_container_name "$name")"
+  bridge="$HOME/.dory/bridge/$name"
+  mkdir -p "$bridge"
+  tmp="$(mktemp -t dory-machine-restore.XXXXXX.json)"
+  machine_snapshot_create_body "$image" "$name" "$tmp" "$bridge"
+  platform="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["platform"])' "$tmp")"
+  python3 -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1]))["body"]))' "$tmp" > "$tmp.body"
+  "$DOCKER_BIN" -H "unix://$DORY_SOCK" rm -f "$cid" >/dev/null 2>&1 || true
+  create_path="/containers/create?name=$(dory_urlencode "$cid")&platform=$(dory_urlencode "$platform")"
+  curl --unix-socket "$DORY_SOCK" -fsS -X POST -H 'Content-Type: application/json' --data-binary @"$tmp.body" "http://dory$create_path" >/dev/null
+  curl --unix-socket "$DORY_SOCK" -fsS -X POST "http://dory/containers/$(dory_urlencode "$cid")/start" >/dev/null
+  rm -f "$tmp" "$tmp.body"
+  echo "started $name from $image"
+}
+
+machine_snapshot_restore() {
+  local name="${1:?usage: dory machine restore <name> <tag|image>}" selector="${2:?usage: dory machine restore <name> <tag|image>}" image
+  image="$(machine_snapshot_ref "$name" "$selector")"
+  machine_run_snapshot_image "$name" "$image"
+}
+
+machine_snapshot_clone() {
+  local source="${1:?usage: dory machine clone <source-machine> <tag|image> <new-name>}" selector="${2:?usage: dory machine clone <source-machine> <tag|image> <new-name>}" name="${3:?usage: dory machine clone <source-machine> <tag|image> <new-name>}" image
+  image="$(machine_snapshot_ref "$source" "$selector")"
+  machine_run_snapshot_image "$name" "$image"
+}
+
+machine_snapshot_export() {
+  local image dest
+  if [ "$#" -eq 3 ]; then
+    image="$(machine_snapshot_ref "$1" "$2")"
+    dest="$3"
+  else
+    image="${1:?usage: dory machine export [machine] <tag|image> <file>}"
+    dest="${2:?usage: dory machine export [machine] <tag|image> <file>}"
+  fi
+  "$DOCKER_BIN" -H "unix://$DORY_SOCK" save -o "$dest" "$image"
+  echo "$dest"
+}
+
+machine_snapshot_backup() {
+  local image dest tmp filename
+  if [ "$#" -eq 3 ]; then
+    image="$(machine_snapshot_ref "$1" "$2")"
+    dest="$3"
+  else
+    image="${1:?usage: dory machine backup [machine] <tag|image> <s3://bucket/prefix-or-file>}"
+    dest="${2:?usage: dory machine backup [machine] <tag|image> <s3://bucket/prefix-or-file>}"
+  fi
+  command -v aws >/dev/null 2>&1 || { echo "aws CLI not found; install and configure aws first" >&2; exit 1; }
+  case "$dest" in s3://*) ;; *) echo "backup destination must be s3://bucket/key-or-prefix" >&2; exit 2 ;; esac
+  filename="$(printf '%s' "$image" | sed 's#[/:]#-#g' | tr -cd '[:alnum:]_.-').tar"
+  case "$dest" in
+    */) dest="$dest$filename" ;;
+  esac
+  tmp="$(mktemp -t dory-machine-backup.XXXXXX.tar)"
+  trap 'rm -f "$tmp"' RETURN
+  "$DOCKER_BIN" -H "unix://$DORY_SOCK" save -o "$tmp" "$image"
+  aws s3 cp "$tmp" "$dest"
+  echo "$dest"
+}
+
+machine_snapshot_import() {
+  local src="${1:?usage: dory machine import <file>}"
+  "$DOCKER_BIN" -H "unix://$DORY_SOCK" load -i "$src"
+}
+
+machine_snapshot_delete() {
+  local image
+  if [ "$#" -eq 2 ]; then
+    image="$(machine_snapshot_ref "$1" "$2")"
+  else
+    image="${1:?usage: dory machine delete-snapshot [machine] <tag|image>}"
+  fi
+  "$DOCKER_BIN" -H "unix://$DORY_SOCK" rmi "$image"
+}
+
+machine_cmd() {
+  case "${1:-ls}" in
+    create)
+      shift
+      if printf '%s\n' "$*" | grep -q -- '--recipe'; then
+        machine_create_recipe "$@"
+      else
+        exec "$CONTAINER_BIN" machine create "$@"
+      fi ;;
+    snapshot) shift; machine_snapshot_create "$@" ;;
+    snapshots|list-snapshots) shift; machine_snapshot_list "$@" ;;
+    restore) shift; machine_snapshot_restore "$@" ;;
+    clone) shift; machine_snapshot_clone "$@" ;;
+    export) shift; machine_snapshot_export "$@" ;;
+    backup) shift; machine_snapshot_backup "$@" ;;
+    import) shift; machine_snapshot_import "$@" ;;
+    delete-snapshot|rm-snapshot) shift; machine_snapshot_delete "$@" ;;
+    *) exec "$CONTAINER_BIN" machine "$@" ;;
+  esac
+}
+
+agent_rpc() {
+  local sock="$1" method="$2" payload="$3"
+  [ -n "$sock" ] && [ -S "$sock" ] || { echo "set DORY_AGENT_SOCK to a dory agent bridge socket" >&2; return 2; }
+  python3 - "$sock" "$method" "$payload" <<'PY'
+import json, socket, struct, sys
+
+def recv_exactly(s, count):
+    buf = b""
+    while len(buf) < count:
+        chunk = s.recv(count - len(buf))
+        if not chunk:
+            return buf
+        buf += chunk
+    return buf
+
+sock_path, method, payload = sys.argv[1], sys.argv[2], json.loads(sys.argv[3])
+request = json.dumps({"id": 1, "method": method, "params": payload}, separators=(",", ":")).encode()
+with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+    s.connect(sock_path)
+    s.sendall(struct.pack(">I", len(request)) + request)
+    header = recv_exactly(s, 4)
+    if len(header) != 4:
+        raise SystemExit("agent closed before response")
+    length = struct.unpack(">I", header)[0]
+    data = recv_exactly(s, length)
+    if len(data) != length:
+        raise SystemExit("agent closed mid-response")
+response = json.loads(data)
+if response.get("error"):
+    print(response["error"].get("message", "agent request failed"), file=sys.stderr)
+    raise SystemExit(1)
+print(json.dumps(response.get("result", {}), sort_keys=True))
+PY
+}
+
+usb_rpc() {
+  local method="$1" payload="$2"
+  local sock="${DORY_USB_AGENT_SOCK:-${DORY_AGENT_SOCK:-}}"
+  agent_rpc "$sock" "$method" "$payload"
+}
+
+debug_payload() {
+  local container="$1"
+  shift
+  python3 - "$container" "$@" <<'PY'
+import json, sys
+
+container = sys.argv[1]
+argv = sys.argv[2:]
+payload = {"containerID": container}
+if argv:
+    payload["argv"] = argv
+print(json.dumps(payload, separators=(",", ":")))
+PY
+}
+
+debug_cmd() {
+  local container="${1:?usage: dory debug <container> [-- cmd...]}"
+  shift
+  [ "${1:-}" != "--" ] || shift
+  local sock="${DORY_DEBUG_AGENT_SOCK:-${DORY_AGENT_SOCK:-}}"
+  local result
+  result="$(agent_rpc "$sock" "debug.shell" "$(debug_payload "$container" "$@")")"
+  if [ "$#" -eq 0 ]; then
+    printf '%s\n' "$result"
+  else
+    python3 - "$result" <<'PY'
+import base64, json, sys
+
+result = json.loads(sys.argv[1])
+if result.get("stdout_b64"):
+    sys.stdout.buffer.write(base64.b64decode(result["stdout_b64"]))
+if result.get("stderr_b64"):
+    sys.stderr.buffer.write(base64.b64decode(result["stderr_b64"]))
+raise SystemExit(int(result.get("exit_code", 0)))
+PY
+  fi
+}
+
+usb_cmd() {
+  case "${1:-ls}" in
+    ls)
+      local hv
+      hv="$(hv_helper || true)"
+      if [ -n "$hv" ]; then
+        "$hv" usb list
+      else
+        system_profiler SPUSBDataType 2>/dev/null || ioreg -p IOUSB -l
+      fi
+      ;;
+    attach)
+      shift
+      local busid="" mode=""
+      while [ "$#" -gt 0 ]; do
+        case "$1" in
+          --mode) mode="${2:?usage: dory usb attach <busid> [--mode userAuthorized|seize|capture]}"; shift 2 ;;
+          --*) echo "unknown usb attach option: $1" >&2; exit 2 ;;
+          *) if [ -z "$busid" ]; then busid="$1"; fi; shift ;;
+        esac
+      done
+      [ -n "$busid" ] || { echo "usage: dory usb attach <busid> [--mode userAuthorized|seize|capture]" >&2; exit 2; }
+      local hv; hv="$(hv_helper || true)"
+      [ -n "$hv" ] || { echo "dory usb attach needs the dory-hv engine running" >&2; exit 2; }
+      # The engine (which owns the device claim + guest agent) does the claim, registers the usbip
+      # export, and tells the guest to dial. Mode defaults to userAuthorized (driverless devices);
+      # capture (driver-owned devices, e.g. mass storage) needs the notarized com.apple.vm.device-access.
+      if [ -n "$mode" ]; then "$hv" usb attach "$busid" "$mode"; else "$hv" usb attach "$busid"; fi
+      ;;
+    detach)
+      shift
+      local busid=""
+      while [ "$#" -gt 0 ]; do
+        case "$1" in
+          --*) echo "unknown usb detach option: $1" >&2; exit 2 ;;
+          *) if [ -z "$busid" ]; then busid="$1"; fi; shift ;;
+        esac
+      done
+      [ -n "$busid" ] || { echo "usage: dory usb detach <busid>" >&2; exit 2; }
+      local hv; hv="$(hv_helper || true)"
+      [ -n "$hv" ] || { echo "dory usb detach needs the dory-hv engine running" >&2; exit 2; }
+      "$hv" usb detach "$busid"
+      ;;
+    *) echo "usage: dory usb ls|attach|detach" >&2; exit 2 ;;
+  esac
+}
+
+expose_cmd() {
+  local target="" port="" hostname="" scheme="http" print_command=0 cloudflared url
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --port) port="${2:?usage: dory expose <port|machine> [--port P] [--hostname H] [--print-command]}"; shift 2 ;;
+      --hostname) hostname="${2:?usage: dory expose <port|machine> [--port P] [--hostname H] [--print-command]}"; shift 2 ;;
+      --scheme) scheme="${2:?usage: dory expose <port|machine> [--scheme http|https]}"; shift 2 ;;
+      --print-command) print_command=1; shift ;;
+      --*) echo "unknown expose option: $1" >&2; exit 2 ;;
+      *) if [ -z "$target" ]; then target="$1"; shift; else echo "unexpected argument: $1" >&2; exit 2; fi ;;
+    esac
+  done
+  [ -n "$target" ] || { echo "usage: dory expose <port|machine> [--port P] [--hostname H] [--print-command]" >&2; exit 2; }
+  [[ "$scheme" == "http" || "$scheme" == "https" ]] || { echo "invalid expose scheme: $scheme" >&2; exit 2; }
+  if [[ "$target" =~ ^[0-9]+$ ]]; then
+    port="$target"
+    [ "$port" -ge 1 ] && [ "$port" -le 65535 ] || { echo "invalid expose port: $port" >&2; exit 2; }
+    url="$scheme://127.0.0.1:$port"
+  else
+    [[ "$target" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$ ]] || { echo "invalid machine name: $target" >&2; exit 2; }
+    port="${port:-80}"
+    [[ "$port" =~ ^[0-9]+$ ]] && [ "$port" -ge 1 ] && [ "$port" -le 65535 ] || { echo "invalid expose port: $port" >&2; exit 2; }
+    url="$scheme://$target.dory.local:$port"
+  fi
+  if [ -n "$hostname" ]; then
+    [[ "$hostname" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$ ]] || {
+      echo "invalid expose hostname: $hostname" >&2; exit 2
+    }
+  fi
+  cloudflared="${DORY_CLOUDFLARED_BIN:-$(command -v cloudflared || true)}"
+  [ -n "$cloudflared" ] || { echo "cloudflared not found; install it or set DORY_CLOUDFLARED_BIN" >&2; exit 1; }
+  if [ -n "$hostname" ]; then
+    local tunnel="${DORY_CLOUDFLARED_TUNNEL:-}"
+    [ -n "$tunnel" ] || {
+      echo "exposing on a named hostname requires a pre-created cloudflared tunnel with ingress mapping $hostname -> $url" >&2
+      echo "create it with: cloudflared tunnel create <name> && cloudflared tunnel route dns <name> $hostname" >&2
+      echo "then set DORY_CLOUDFLARED_TUNNEL=<name> and re-run" >&2
+      exit 2
+    }
+    local cmd=("$cloudflared" tunnel run "$tunnel")
+  else
+    local cmd=("$cloudflared" tunnel --url "$url")
+  fi
+  if [ "$print_command" -eq 1 ]; then
+    printf '%q ' "${cmd[@]}"
+    printf '\n'
+  else
+    exec "${cmd[@]}"
+  fi
+}
+
 case "${1:-help}" in
   help|-h|--help) usage ;;
   shell)          exec docker -H "unix://$DORY_SOCK" exec -it "$2" sh -c 'command -v bash >/dev/null && exec bash || exec sh' ;;
-  machine)        shift; exec "$CONTAINER_BIN" machine "$@" ;;
+  debug)          shift; debug_cmd "$@" ;;
+  machine)        shift; machine_cmd "$@" ;;
+  recipe)         shift
+                  case "${1:-ls}" in
+                    ls) recipe_ls ;;
+                    show) shift; recipe_show "$@" ;;
+                    add) shift; recipe_add "$@" ;;
+                    new) shift; recipe_new "$@" ;;
+                    *) echo "usage: dory recipe ls|show|add|new" >&2; exit 2 ;;
+                  esac ;;
+  usb)            shift; usb_cmd "$@" ;;
+  expose)         shift; expose_cmd "$@" ;;
   ssh)            shift
                   name="${1:?usage: dory ssh <machine>}"
                   cid="dory-machine-$name"

@@ -74,6 +74,12 @@ enum DockerFormat {
     }
 }
 
+struct DockerSourceEngine: Identifiable, Sendable, Equatable {
+    var id: String { socketPath }
+    var label: String
+    var socketPath: String
+}
+
 enum DockerEngineSocketDiscovery {
     private nonisolated struct DockerConfig: Decodable {
         var currentContext: String?
@@ -104,7 +110,9 @@ enum DockerEngineSocketDiscovery {
         excluding excludedPaths: [String] = []
     ) -> [String] {
         var paths: [String] = []
-        let exclusions = Set(excludedPaths + [doryShimSocket(home: home)])
+        // Exclude both Dory sockets so a migration never picks Dory as its own source: the user-facing
+        // shim socket (what the `dory` docker context points at) and the raw shared-VM engine socket.
+        let exclusions = Set(excludedPaths + [doryShimSocket(home: home), doryEngineSocket(home: home)])
 
         if let path = unixPath(from: environment["DOCKER_HOST"]) {
             paths.append(path)
@@ -124,6 +132,34 @@ enum DockerEngineSocketDiscovery {
 
     private nonisolated static func doryShimSocket(home: String) -> String {
         "\(home)/.dory/dory.sock"
+    }
+
+    private nonisolated static func doryEngineSocket(home: String) -> String {
+        "\(home)/.dory/engine.sock"
+    }
+
+    /// Every migration source engine present on this host, each labeled by vendor, so the user can
+    /// pick which one to import from instead of the app silently auto-selecting the highest-priority
+    /// socket (which is why "can't import from OrbStack" happened when Docker Desktop was also
+    /// installed — `/var/run/docker.sock` outranked OrbStack and there was no way to override it).
+    /// Only sockets whose file exists are returned; readiness is confirmed by a later probe.
+    nonisolated static func availableSources(
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        home: String = NSHomeDirectory(),
+        fileManager: FileManager = .default
+    ) -> [DockerSourceEngine] {
+        candidates(environment: environment, home: home, fileManager: fileManager)
+            .filter { fileManager.fileExists(atPath: $0) }
+            .map { DockerSourceEngine(label: engineLabel(for: $0, home: home), socketPath: $0) }
+    }
+
+    nonisolated static func engineLabel(for path: String, home: String) -> String {
+        if path.hasPrefix("\(home)/.orbstack/") { return "OrbStack" }
+        if path.hasPrefix("\(home)/.colima/") { return "Colima" }
+        if path.hasPrefix("\(home)/.rd/") { return "Rancher Desktop" }
+        if path.contains("/podman") { return "Podman" }
+        if path == "/var/run/docker.sock" || path.hasPrefix("\(home)/.docker/") { return "Docker" }
+        return path
     }
 
     private nonisolated static func commonSockets(home: String) -> [String] {
@@ -191,7 +227,7 @@ struct DockerEngineRuntime: ContainerRuntime {
 
     private var http: UnixSocketHTTP { UnixSocketHTTP(path: socketPath) }
     private var decoder: JSONDecoder { JSONDecoder() }
-    private static let detectionProbeTimeout: TimeInterval = 0.75
+    private nonisolated static let detectionProbeTimeout: TimeInterval = 0.75
     private nonisolated static let statsProbeTimeout: TimeInterval = 2.5
     nonisolated static let maxConcurrentStatsRequests = 8
 

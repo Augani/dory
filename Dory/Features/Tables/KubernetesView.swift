@@ -23,7 +23,7 @@ struct KubernetesView: View {
                 .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(p.border))
             Text("Kubernetes is not running").font(.system(size: 15, weight: .semibold)).foregroundStyle(p.text)
             Text(store.kubernetesBusy ? store.kubernetesInfo : (store.runtimeKind == .sharedVM
-                ? "Run a one-click local k3s cluster inside Dory's shared VM.\nBuilt images are usable in Pods immediately — no registry push."
+                ? "Run a one-click local k3s cluster inside Dory's shared VM.\nk3s has its own image store — push a built image to a registry or import it into the cluster to use it in Pods."
                 : "Kubernetes runs inside Dory's shared VM. Switch to it in Settings → Docker Engine to enable Kubernetes."))
                 .font(.system(size: 12.5)).foregroundStyle(p.text3).multilineTextAlignment(.center).lineSpacing(3)
             Picker("", selection: Binding(

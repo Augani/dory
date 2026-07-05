@@ -4,6 +4,9 @@ struct SettingsView: View {
     @Environment(AppStore.self) private var store
     @Environment(\.palette) private var p
     @State private var envAllowListDraft = ""
+    @State private var dnsPortDraft = ""
+    @State private var httpPortDraft = ""
+    @State private var httpsPortDraft = ""
 
     var body: some View {
         HStack(spacing: 0) {
@@ -44,7 +47,8 @@ struct SettingsView: View {
         case .general: general
         case .resources: resources
         case .engine: engine
-        case .network: infoPanel(networkText)
+        case .network: network
+        case .usb: UsbDevicesView()
         case .migrate: migrate
         case .about: infoPanel(aboutText)
         }
@@ -57,10 +61,27 @@ struct SettingsView: View {
                 Text("Import your images and containers from Docker Desktop, OrbStack, Colima, Rancher Desktop, Podman, or another Docker-compatible engine onto Dory's engine. Your source engine is only read — nothing there is modified, so you can switch back anytime.")
                     .font(.system(size: 12.5)).foregroundStyle(p.text2).lineSpacing(4)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                if store.migrationSources.count > 1 {
+                    HStack(spacing: 8) {
+                        Text("Source").font(.system(size: 11.5)).foregroundStyle(p.text3)
+                        Picker("Source", selection: Binding(
+                            get: { store.selectedMigrationSourcePath ?? store.migrationSources.first?.socketPath ?? "" },
+                            set: { path in Task { await store.selectMigrationSource(path) } }
+                        )) {
+                            ForEach(store.migrationSources) { engine in
+                                Text(engine.label).tag(engine.socketPath)
+                            }
+                        }
+                        .labelsHidden().fixedSize()
+                        .accessibilityIdentifier("migrate-source-picker")
+                    }
+                }
                 if let inv = store.migrationInventory {
                     preflightPanel(inv)
                 } else {
-                    Text("No Docker-compatible local engine detected.")
+                    Text(store.migrationSources.isEmpty
+                        ? "No Docker-compatible local engine detected."
+                        : "Couldn't read \(store.migrationSources.first(where: { $0.socketPath == store.selectedMigrationSourcePath })?.label ?? "the selected engine") — is it running?")
                         .font(.system(size: 11.5)).foregroundStyle(p.text3)
                 }
                 Button {
@@ -83,6 +104,17 @@ struct SettingsView: View {
                 }
                 if !store.migrationStatus.isEmpty {
                     Text(store.migrationStatus).font(.system(size: 11.5)).foregroundStyle(p.text3)
+                }
+                if let failures = store.migrationSummary?.failures, !failures.isEmpty {
+                    VStack(alignment: .leading, spacing: 3) {
+                        ForEach(failures.prefix(8), id: \.self) { failure in
+                            Text("• \(failure)").font(.system(size: 11)).foregroundStyle(p.red)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        if failures.count > 8 {
+                            Text("+ \(failures.count - 8) more").font(.system(size: 11)).foregroundStyle(p.text3)
+                        }
+                    }
                 }
             }
             .padding(18)
@@ -378,13 +410,13 @@ struct SettingsView: View {
 
             groupLabel("DORY SHARED VM")
             VStack(alignment: .leading, spacing: 12) {
-                Text("Run every container in one shared Linux VM — like OrbStack — instead of a VM per container. Lower memory for multi-container stacks, and Dory becomes a standalone engine that no longer needs Docker or OrbStack. Requires macOS 26 or later on Apple silicon; older Macs can use a Docker-compatible local engine.")
+                Text("Run every container in one shared Linux VM — like OrbStack — on Dory's own engine. A standalone daemon that ships its own kernel and networking, so it needs no Docker, OrbStack, or Apple container toolchain, and reclaims memory back to macOS as workloads idle. Requires macOS 15 or later on Apple silicon; older Macs can use a Docker-compatible local engine.")
                     .font(.system(size: 12.5)).foregroundStyle(p.text2).lineSpacing(4)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 Button {
                     Task { await store.useSharedVM() }
                 } label: {
-                    Text(onShared ? "Running on Dory's shared VM" : "Use Dory's shared VM")
+                    Text(onShared ? "Running on Dory's engine" : "Use Dory's engine")
                         .font(.system(size: 12.5, weight: .semibold))
                         .foregroundStyle(onShared ? p.text2 : .white)
                         .padding(.horizontal, 16).padding(.vertical, 9)
@@ -404,13 +436,31 @@ struct SettingsView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(p.bgElevated, in: RoundedRectangle(cornerRadius: 11))
             .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(p.border))
+            .padding(.bottom, 22)
+
+            groupLabel("X86 / AMD64")
+            VStack(spacing: 0) {
+                toggleRow(
+                    "Run x86 images with Rosetta",
+                    "Use Apple's Rosetta to run amd64 images (SQL Server, Oracle, older x86 builds) reliably and fast. Switches Dory's engine to Virtualization.framework, which uses more memory than the default engine — turn off when you don't need x86.",
+                    isOn: Binding(get: { store.rosettaX86Enabled }, set: { on in Task { await store.setRosettaX86(on) } }),
+                    divider: false,
+                    disabled: !onShared
+                )
+            }
+            .background(p.bgElevated, in: RoundedRectangle(cornerRadius: 11))
+            .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(p.border))
+            if !onShared {
+                Text("Switch to Dory's shared engine above to use Rosetta x86.")
+                    .font(.system(size: 11.5)).foregroundStyle(p.text3).padding(.top, 8)
+            }
         }
     }
 
     private func engineDescription(for kind: RuntimeKind) -> String {
         switch kind {
         case .docker: "Proxying a host Docker-compatible engine"
-        case .sharedVM: "One shared Linux VM on Apple's container engine"
+        case .sharedVM: "One shared Linux VM on Dory's own engine"
         case .appleContainer: "Apple container — one micro-VM per container"
         case .mock: "Demo data"
         }
@@ -430,7 +480,64 @@ struct SettingsView: View {
             .padding(.bottom, 10)
     }
 
-    private let networkText = "All containers receive an automatic *.dory.local domain backed by the built-in DNS resolver. HTTPS certificates are issued locally and trusted system-wide. Default bridge subnet 192.168.215.0/24."
+    private var network: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            groupLabel("LOCAL DOMAINS")
+            VStack(spacing: 0) {
+                toggleRow(
+                    "Enable *.dory.local domains",
+                    "Give each container an automatic *.dory.local name with local HTTPS. Turn this off if the proxy ports conflict, or if your DNS is managed (MDM / corporate) and can't be pointed at Dory.",
+                    isOn: Binding(get: { store.domainsEnabled }, set: { store.applyNetworkingSettings(domainsEnabled: $0) }),
+                    divider: false
+                )
+            }
+            .background(p.bgElevated, in: RoundedRectangle(cornerRadius: 11))
+            .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(p.border))
+            .padding(.bottom, 22)
+
+            groupLabel("PORTS")
+            VStack(alignment: .leading, spacing: 12) {
+                portField("DNS resolver", store: $dnsPortDraft, fallback: AppStore.defaultDNSPort) { store.applyNetworkingSettings(dnsPort: $0) }
+                portField("HTTP proxy", store: $httpPortDraft, fallback: AppStore.defaultHTTPProxyPort) { store.applyNetworkingSettings(httpProxyPort: $0) }
+                portField("HTTPS proxy", store: $httpsPortDraft, fallback: AppStore.defaultHTTPSProxyPort) { store.applyNetworkingSettings(httpsProxyPort: $0) }
+                Text("Change these if the defaults (15353 / 8080 / 8443) collide with other software — 8080 is a common one. Saved on Return; local networking restarts to rebind.")
+                    .font(.system(size: 11.5)).foregroundStyle(p.text3).lineSpacing(3)
+            }
+            .padding(15)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(p.bgElevated, in: RoundedRectangle(cornerRadius: 11))
+            .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(p.border))
+            .opacity(store.domainsEnabled ? 1 : 0.55)
+            .allowsHitTesting(store.domainsEnabled)
+
+            Text("Published container ports stay reachable at localhost regardless of this setting. Default bridge subnet 192.168.215.0/24.")
+                .font(.system(size: 11.5)).foregroundStyle(p.text3).lineSpacing(3)
+                .padding(.top, 14)
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .onAppear {
+            dnsPortDraft = String(store.dnsPort)
+            httpPortDraft = String(store.httpProxyPort)
+            httpsPortDraft = String(store.httpsProxyPort)
+        }
+    }
+
+    private func portField(_ label: String, store draft: Binding<String>, fallback: UInt16, apply: @escaping (UInt16) -> Void) -> some View {
+        HStack(spacing: 12) {
+            Text(label).font(.system(size: 12.5)).foregroundStyle(p.text2).frame(width: 110, alignment: .leading)
+            TextField(String(fallback), text: draft, onCommit: {
+                let port = UInt16(draft.wrappedValue.trimmingCharacters(in: .whitespaces)) ?? fallback
+                draft.wrappedValue = String(port)
+                apply(port)
+            })
+            .textFieldStyle(.roundedBorder)
+            .font(.system(size: 12, design: .monospaced))
+            .frame(width: 100)
+            .accessibilityIdentifier("port-\(label)")
+            Spacer(minLength: 0)
+        }
+    }
     private var aboutText: String {
         "Dory \(AppInfo.version) (build \(AppInfo.build)). A lighter, memory-efficient alternative to Docker Desktop and OrbStack, built for macOS — free and open source. © 2026 Dory contributors."
     }

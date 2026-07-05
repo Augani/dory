@@ -6,15 +6,6 @@ import UniformTypeIdentifiers
 
 enum LoadState: Sendable { case connecting, ready, engineOff }
 
-enum ToolchainInstallPhase: Equatable, Sendable {
-    case idle
-    case installing
-    case startingEngine
-    case failed(String)
-
-    var isBusy: Bool { self == .installing || self == .startingEngine }
-}
-
 enum ContainerFilter: String, CaseIterable, Sendable {
     case running, all, stopped
     var label: String {
@@ -134,6 +125,11 @@ final class AppStore {
             if let saved = UserDefaults.standard.string(forKey: Self.kubernetesVersionKey) {
                 kubernetesVersionTag = KubeVersionCatalog.version(forTag: saved).tag
             }
+            if let v = UserDefaults.standard.object(forKey: Self.dnsPortKey) as? Int, let p = UInt16(exactly: v), p > 0 { dnsPort = p }
+            if let v = UserDefaults.standard.object(forKey: Self.httpProxyPortKey) as? Int, let p = UInt16(exactly: v), p > 0 { httpProxyPort = p }
+            if let v = UserDefaults.standard.object(forKey: Self.httpsProxyPortKey) as? Int, let p = UInt16(exactly: v), p > 0 { httpsProxyPort = p }
+            if let v = UserDefaults.standard.object(forKey: Self.domainsEnabledKey) as? Bool { domainsEnabled = v }
+            if let v = UserDefaults.standard.object(forKey: SharedVMProvisioner.Config.rosettaX86Key) as? Bool { rosettaX86Enabled = v }
             dockerHostCleaned = DockerHostConflict.hasCleaned
             dockerHostConflictDismissed = UserDefaults.standard.bool(forKey: Self.dockerHostDismissedKey)
             if let width = UserDefaults.standard.object(forKey: Self.containerDetailWidthKey) as? Double, width >= 320 {
@@ -313,6 +309,9 @@ final class AppStore {
     private var shimServer: ShimHTTPServer?
     var shimSocketPath: String { DockerShim.defaultSocketPath }
     private(set) var shimRunning = false
+    /// Opt-in: run the Virtualization.framework engine with Rosetta so heavy amd64 images (SQL Server)
+    /// run reliably. Trades away dory-hv's memory advantage while on, so it is a manual toggle (#3).
+    var rosettaX86Enabled = false
 
     @ObservationIgnored private(set) var backendStartRequested = false
     @ObservationIgnored var windowOpenRequested = false
@@ -330,10 +329,7 @@ final class AppStore {
         switch ProcessInfo.processInfo.environment["DORY_RUNTIME"] {
         case "mock":
             await reload()
-        case "apple":
-            if let apple = await AppleContainerRuntime.detect() { runtime = apple; await reload() }
-            else { loadState = .engineOff }
-        case "docker":
+        case "docker", "docker-proxy":
             if let docker = await DockerEngineRuntime.detect() { runtime = docker; await reload() }
             else { loadState = .engineOff }
         case "shared":
@@ -345,34 +341,30 @@ final class AppStore {
             }
             if let shared = await SharedVMProvisioner.runtime() {
                 runtime = shared
-                sharedVMStatus = "Running on Dory's shared VM"
+                sharedVMStatus = "Running on Dory's engine"
                 await reload()
             }
             else {
-                sharedVMStatus = "Shared VM unavailable (could not start Apple's container engine)"
+                sharedVMStatus = "Dory's engine could not start — see ~/.dory/engine.log"
                 loadState = .engineOff
             }
-        case "docker-proxy":
-            if let docker = await DockerEngineRuntime.detect() { runtime = docker; await reload() }
-            else { loadState = .engineOff }
         default:
-            // Dory's own shared VM is the default engine — a standalone, OrbStack-style daemon.
-            // Fall back to fronting an existing Docker-compatible socket, then Apple per-container.
+            // Dory's own engine (dory-hv) is the default: a standalone, OrbStack-style daemon that
+            // ships everything it needs. On hardware it can't run (Intel / older macOS) fall back to
+            // fronting an existing Docker-compatible socket.
             let support = refreshSharedVMSupport()
             if support.isSupported {
                 sharedVMStatus = "Starting Dory's engine…"
                 if let shared = await SharedVMProvisioner.runtime() {
-                    runtime = shared; sharedVMStatus = "Running on Dory's shared VM"; await reload()
+                    runtime = shared; sharedVMStatus = "Running on Dory's engine"; await reload()
                     break
                 }
-                sharedVMStatus = "Shared VM unavailable (could not start Apple's container engine)"
+                sharedVMStatus = "Dory's engine could not start — see ~/.dory/engine.log"
             } else {
                 sharedVMStatus = Self.sharedVMUnavailableStatus(support)
             }
             if let docker = await DockerEngineRuntime.detect() {
                 runtime = docker; await reload()
-            } else if let apple = await AppleContainerRuntime.detect() {
-                runtime = apple; await reload()
             } else {
                 loadState = .engineOff
             }
@@ -397,7 +389,6 @@ final class AppStore {
 
     var sharedVMStatus = ""
     var sharedVMSupport = SharedVMProvisioner.hostSupport()
-    var toolchainInstallPhase: ToolchainInstallPhase = .idle
 
     private func refreshSharedVMSupport() -> RuntimeSupport {
         let support = SharedVMProvisioner.hostSupport()
@@ -405,70 +396,22 @@ final class AppStore {
         return support
     }
 
-    nonisolated static let toolchainInstallCommand = "brew install container"
-    nonisolated static let toolchainReleasesURL = "https://github.com/apple/container/releases/latest"
-
-    /// True when the engine is down solely because Apple's container toolchain isn't installed —
-    /// the one engine-off cause a user can fix in place, so the UI offers a guided install.
-    var needsContainerToolchain: Bool {
-        loadState == .engineOff && sharedVMSupport.issue == .missingToolchain
-    }
-
-    var canAutoInstallToolchain: Bool { Self.brewBinary() != nil }
-
-    nonisolated static func brewBinary() -> String? {
-        Shell.find("brew", candidates: ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"])
-    }
-
-    func installContainerToolchain() async {
-        guard !toolchainInstallPhase.isBusy, !isConnecting else { return }
-        guard let brew = Self.brewBinary() else {
-            toolchainInstallPhase = .failed("Homebrew isn't installed — use the installer download instead, then check again.")
-            return
-        }
-        toolchainInstallPhase = .installing
-        let install = await Shell.runAsyncResult(brew, ["install", "container"])
-        guard install.exit == 0 else {
-            toolchainInstallPhase = .failed(Self.toolchainFailureSummary(
-                install.output, fallback: "Homebrew could not install the container toolchain."))
-            return
-        }
-        await completeToolchainSetup()
-    }
-
-    /// Re-check after a manual install (Homebrew in a terminal, or Apple's pkg installer).
-    func recheckToolchain() async {
-        guard !toolchainInstallPhase.isBusy, !isConnecting else { return }
-        guard SharedVMProvisioner.containerBinary() != nil else {
-            toolchainInstallPhase = .failed("Apple's container toolchain still isn't installed.")
-            return
-        }
-        await completeToolchainSetup()
-    }
-
     func retryEngine() async {
         guard !isConnecting else { return }
         await connectBackend()
     }
 
-    private func completeToolchainSetup() async {
-        toolchainInstallPhase = .startingEngine
-        await retryEngine()
-        if loadState == .engineOff {
-            let support = sharedVMSupport
-            toolchainInstallPhase = .failed(support.isSupported
-                ? "The engine didn't start. Run `container system status` in a terminal, then try again."
-                : Self.sharedVMUnavailableStatus(support))
-        } else {
-            toolchainInstallPhase = .idle
-        }
-    }
-
-    nonisolated private static func toolchainFailureSummary(_ output: String, fallback: String) -> String {
-        let lines = output.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
-        let summary = lines.last(where: { $0.localizedCaseInsensitiveContains("error") }) ?? lines.last
-        guard let summary, !summary.isEmpty else { return fallback }
-        return String(summary.prefix(220))
+    /// Toggles the opt-in Rosetta x86 engine and restarts the shared engine so the new mode takes
+    /// effect. On → Virtualization.framework + Rosetta (heavy amd64 like SQL Server works, more
+    /// memory). Off → dory-hv (the memory advantage). No-op unless the shared engine is active.
+    func setRosettaX86(_ on: Bool) async {
+        guard on != rosettaX86Enabled else { return }
+        rosettaX86Enabled = on
+        UserDefaults.standard.set(on, forKey: SharedVMProvisioner.Config.rosettaX86Key)
+        guard runtimeKind == .sharedVM, !isConnecting else { return }
+        sharedVMStatus = on ? "Switching to the Rosetta x86 engine…" : "Switching to Dory's engine…"
+        SharedVMProvisioner.stopEngineDetached()
+        await connectBackend()
     }
 
     /// Provisions (or reuses) Dory's own single shared Linux VM and switches the live engine to it,
@@ -480,9 +423,9 @@ final class AppStore {
             sharedVMStatus = Self.sharedVMUnavailableStatus(support)
             return
         }
-        sharedVMStatus = "Starting Dory's shared VM…"
+        sharedVMStatus = "Starting Dory's engine…"
         guard let shared = await SharedVMProvisioner.runtime() else {
-            sharedVMStatus = "Shared VM unavailable (could not start Apple's container engine)"
+            sharedVMStatus = "Dory's engine could not start — see ~/.dory/engine.log"
             return
         }
         runtime = shared
@@ -501,17 +444,18 @@ final class AppStore {
     }
 
     let domainSuffix = "dory.local"
-    private let portForwarder = HostPortForwarder(
-        targetHost: "127.0.0.1",
-        containerBinary: SharedVMProvisioner.containerBinary(),
-        engineName: SharedVMProvisioner.engineName
-    )
+    private let portForwarder = HostPortForwarder(targetHost: "127.0.0.1")
     @ObservationIgnored private lazy var hostBridge = HostBridgeWatcher(
         bridgeRoot: URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".dory/bridge"),
         forwarder: portForwarder,
         enabled: openLoginsOnMac,
         open: { url in DispatchQueue.main.async { NSWorkspace.shared.open(url) } }
     )
+    @ObservationIgnored private lazy var credentialProxy = CredentialProxyManager(
+        bridgeRoot: URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".dory/bridge")
+    )
+    @ObservationIgnored private let usbAttachments = UsbAttachmentStore()
+    @ObservationIgnored private var usbReplayedMachines: Set<String> = []
     private let domainTable = DomainTable()
     private let dns = DoryDNS()
     @ObservationIgnored private let reverseProxy: DoryReverseProxy
@@ -531,35 +475,49 @@ final class AppStore {
         let forwarder = self.portForwarder
         let table = self.domainTable
         let suffix = self.domainSuffix
+        // Dory's engine publishes container ports to the host through gvproxy, so published ports
+        // are already reachable at 127.0.0.1. The app never binds them itself (that would race
+        // gvproxy); it only points *.dory.local domains at those localhost ports.
+        forwarder.updateTarget("127.0.0.1")
         portForwardingTask = Task { [weak self] in
             while !Task.isCancelled {
-                if let ip = await SharedVMProvisioner.engineIP(), ip != "127.0.0.1" {
-                    forwarder.updateTarget(ip)
-                    let endpoints = await Self.containerEndpoints(runtime, suffix: suffix)
-                    forwarder.sync(ports: await Self.allPublishedPorts(runtime))
-                    table.replaceContainers(endpoints)
-                    if FileManager.default.fileExists(atPath: KubernetesProvisioner.kubeconfigPath) {
-                        self?.ensureKubeProxy()
-                        table.replaceKube(await KubeServiceProxy.backends(suffix: suffix))
-                    }
+                let endpoints = await Self.containerEndpoints(runtime, suffix: suffix)
+                table.replaceContainers(endpoints)
+                if let self {
+                    self.dns.replaceHostIPs(Self.machineDNSHosts(self.machines, suffix: suffix))
+                }
+                if FileManager.default.fileExists(atPath: KubernetesProvisioner.kubeconfigPath) {
+                    self?.ensureKubeProxy()
+                    table.replaceKube(await KubeServiceProxy.backends(suffix: suffix))
                 }
                 try? await Task.sleep(for: .seconds(3))
             }
         }
     }
 
-    static let dnsPort: UInt16 = 15353
-    static let httpProxyPort: UInt16 = 8080
-    static let httpsProxyPort: UInt16 = 8443
+    static let defaultDNSPort: UInt16 = 15353
+    static let defaultHTTPProxyPort: UInt16 = 8080
+    static let defaultHTTPSProxyPort: UInt16 = 8443
+    static let dnsPortKey = "dory.dnsPort"
+    static let httpProxyPortKey = "dory.httpProxyPort"
+    static let httpsProxyPortKey = "dory.httpsProxyPort"
+    static let domainsEnabledKey = "dory.domainsEnabled"
+    // User-configurable: 8080 collides with common dev servers, and MDM-managed DNS can't be pointed
+    // at Dory, so the whole *.dory.local feature is turn-off-able (GitHub #2).
+    var dnsPort: UInt16 = AppStore.defaultDNSPort
+    var httpProxyPort: UInt16 = AppStore.defaultHTTPProxyPort
+    var httpsProxyPort: UInt16 = AppStore.defaultHTTPSProxyPort
+    var domainsEnabled = true
     @ObservationIgnored private var tlsProxy: DoryTLSProxy?
 
     private func startLocalNetworking() {
+        guard domainsEnabled else { return }
         guard !networkingStarted else { return }
-        // DNS on a high port (mDNSResponder owns :53/:5353); a consent-gated /etc/resolver entry
-        // with a `port` directive points the system resolver here, so DNS needs no root.
+        // DNS on a high port (mDNSResponder owns :53/:5353); the system resolver is pointed here via
+        // an /etc/resolver entry with a `port` directive, so DNS needs no root.
         do {
-            try dns.start(port: Self.dnsPort)
-            try reverseProxy.start(httpPort: Self.httpProxyPort)
+            try dns.start(port: dnsPort)
+            try reverseProxy.start(httpPort: httpProxyPort)
         } catch {
             actionError = "Local *.dory.local networking couldn't start (a port may be in use): \(error.localizedDescription)"
             return
@@ -570,10 +528,22 @@ final class AppStore {
         Task.detached { await SharedVMProvisioner.ensureEmulation() }
     }
 
+    /// Applies changed networking settings (ports or the domains toggle): full teardown then restart
+    /// so listeners rebind on the new ports and machine bridges are re-registered cleanly. Restarting
+    /// through startPortForwarding cancels and re-drives the reconcile task, avoiding a double-register.
+    func applyNetworkingSettings(dnsPort: UInt16? = nil, httpProxyPort: UInt16? = nil, httpsProxyPort: UInt16? = nil, domainsEnabled: Bool? = nil) {
+        if let dnsPort { self.dnsPort = dnsPort; UserDefaults.standard.set(Int(dnsPort), forKey: Self.dnsPortKey) }
+        if let httpProxyPort { self.httpProxyPort = httpProxyPort; UserDefaults.standard.set(Int(httpProxyPort), forKey: Self.httpProxyPortKey) }
+        if let httpsProxyPort { self.httpsProxyPort = httpsProxyPort; UserDefaults.standard.set(Int(httpsProxyPort), forKey: Self.httpsProxyPortKey) }
+        if let domainsEnabled { self.domainsEnabled = domainsEnabled; UserDefaults.standard.set(domainsEnabled, forKey: Self.domainsEnabledKey) }
+        stopLocalNetworking()
+        startPortForwarding()
+    }
+
     private func startTLS() {
         let table = domainTable
         let suffix = domainSuffix
-        let port = Self.httpsProxyPort
+        let port = httpsProxyPort
         // TLS wildcards match one label, so `*.dory.local` doesn't cover multi-level k8s Service
         // domains like `web.default.k8s.dory.local`. Per-namespace wildcards (issued once at
         // startup) cover the common namespaces without fragile live cert reloads.
@@ -604,21 +574,39 @@ final class AppStore {
 
     private func stopLocalNetworking() {
         guard networkingStarted else { return }
+        dns.replaceHostIPs([:])
         dns.stop(); reverseProxy.stop(); tlsProxy?.stop(); tlsProxy = nil
         if let proxy = kubeProxy, proxy.isRunning { proxy.terminate() }
         kubeProxy = nil
         for machine in hostBridge.watchedMachines() { hostBridge.stopWatching(machine: machine) }
+        credentialProxy.stopAll()
         networkingStarted = false
     }
 
     func registerMachineBridge(_ name: String) {
         try? FileManager.default.createDirectory(atPath: MachineService.bridgeHostDir(for: name), withIntermediateDirectories: true)
         hostBridge.startWatching(machine: name)
+        credentialProxy.start(machine: name)
+        replayRememberedUSB(machine: name)
     }
 
     func unregisterMachineBridge(_ name: String) {
         hostBridge.stopWatching(machine: name)
+        credentialProxy.stop(machine: name)
         portForwarder.teardownLoopback(forMachine: name)
+        usbReplayedMachines.remove(name)
+    }
+
+    private func replayRememberedUSB(machine: String) {
+        guard !usbReplayedMachines.contains(machine) else { return }
+        let commands = usbAttachments.reattachCommands(for: machine)
+        usbReplayedMachines.insert(machine)
+        guard !commands.isEmpty else { return }
+        Task.detached(priority: .utility) {
+            for arguments in commands {
+                _ = await UsbDevicesView.runDory(arguments)
+            }
+        }
     }
 
     /// `<name>.dory.local` → the published host port that reaches the container. Containers without a
@@ -637,6 +625,16 @@ final class AppStore {
                 guard !name.isEmpty else { continue }
                 result["\(name).\(suffix)".lowercased()] = port
             }
+        }
+        return result
+    }
+
+    nonisolated static func machineDNSHosts(_ machines: [Machine], suffix: String) -> [String: String] {
+        var result: [String: String] = [:]
+        for machine in machines where machine.status == .running {
+            guard DoryDNS.ipv4Bytes(machine.ip) != nil else { continue }
+            let host = DoryDNS.normalizeHost("\(machine.name).\(suffix)")
+            result[host] = machine.ip
         }
         return result
     }
@@ -1604,25 +1602,45 @@ final class AppStore {
     var migrationBusy = false
 
     var migrationInventory: MigrationInventory?
+    /// Every source engine found on this host (OrbStack, Docker Desktop, Colima, …), so the user
+    /// picks which to import from instead of the app silently auto-selecting the top-priority socket.
+    var migrationSources: [DockerSourceEngine] = []
+    var selectedMigrationSourcePath: String?
+    /// The last import result, so the UI can surface per-item failures instead of a bare count.
+    var migrationSummary: MigrationSummary?
 
-    /// Reads a host Docker-compatible engine (if any) without modifying it, to power the pre-flight
+    private func selectedMigrationRuntime() async -> DockerEngineRuntime? {
+        guard let path = selectedMigrationSourcePath else { return nil }
+        return await DockerEngineRuntime.detect(candidates: [path])
+    }
+
+    func selectMigrationSource(_ path: String) async {
+        selectedMigrationSourcePath = path
+        await loadMigrationPreflight()
+    }
+
+    /// Reads the selected host engine (if any) without modifying it, to power the pre-flight
     /// "here's what will move, nothing will be deleted" screen.
     func loadMigrationPreflight() async {
-        guard let source = await DockerEngineRuntime.detect() else {
+        migrationSources = DockerEngineSocketDiscovery.availableSources()
+        if selectedMigrationSourcePath == nil
+            || !migrationSources.contains(where: { $0.socketPath == selectedMigrationSourcePath }) {
+            selectedMigrationSourcePath = migrationSources.first?.socketPath
+        }
+        guard let source = await selectedMigrationRuntime() else {
             migrationInventory = nil
             return
         }
         migrationInventory = await MigrationAssistant.preflight(from: source)
     }
 
-    /// Imports an existing Docker-compatible engine's images + containers into Dory's own
-    /// shared VM — the "switch to Dory" flow. The target is Dory's standalone engine, so afterwards
-    /// the source can be uninstalled.
+    /// Imports the selected engine's images + containers into Dory's own shared VM — the "switch to
+    /// Dory" flow. The target is Dory's standalone engine, so afterwards the source can be uninstalled.
     func importFromDocker() async {
         guard runtimeKind == .sharedVM else { migrationStatus = "Switch to Dory's shared VM first, then import"; return }
         guard !migrationBusy else { return }
-        guard let source = await DockerEngineRuntime.detect() else {
-            migrationStatus = "No Docker-compatible engine found to import from"; return
+        guard let source = await selectedMigrationRuntime() else {
+            migrationStatus = "Couldn't reach the selected source engine — is it running?"; return
         }
         migrationBusy = true
         defer { migrationBusy = false }
@@ -1631,7 +1649,9 @@ final class AppStore {
         let summary = await MigrationAssistant.migrate(from: source, to: target) { message in
             Task { @MainActor in self.migrationStatus = message }
         }
-        migrationStatus = "Imported \(summary.imagesPulled.count) images, \(summary.containersMigrated.count) containers"
+        migrationSummary = summary
+        let base = "Imported \(summary.imagesImported.count) images, \(summary.containersMigrated.count) containers"
+        migrationStatus = summary.failures.isEmpty ? base : "\(base) — \(summary.failures.count) failed"
         await reload()
     }
 
@@ -1706,6 +1726,8 @@ final class AppStore {
         guard runtimeKind != .mock else { machines = MockData.machines; return MockData.machines }
         guard runtimeKind.isDockerCompatible else { machines = []; return [] }
         machines = await machineService.list()
+        try? SSHConfigWriter().write(machines: machines)
+        dns.replaceHostIPs(Self.machineDNSHosts(machines, suffix: domainSuffix))
         syncMachineStats()
         for machine in machines where machine.status == .running {
             registerMachineBridge(machine.name)

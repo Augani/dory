@@ -12,6 +12,15 @@ struct StreamingAndEncodingTests {
         return data
     }
 
+    @Test func stdcopyFrameMatchesReferenceFramingAndRoundTrips() {
+        let payload = Data("hello world\n".utf8)
+        let built = DockerShim.stdcopyFrame(stream: 1, payload: payload)
+        #expect(built == frame("hello world\n", stream: 1))
+        #expect(DockerShim.stdcopyFrame(stream: 2, payload: payload).first == 2)
+        let lines = LogStreamDecoder().feed(built)
+        #expect(lines.first?.message == "hello world")
+    }
+
     @Test func logStreamDecoderParsesCompleteFrames() {
         let decoder = LogStreamDecoder()
         let lines = decoder.feed(frame("2026-06-18T12:00:00.123456789Z hello world\n"))

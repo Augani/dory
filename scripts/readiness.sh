@@ -12,7 +12,15 @@
 # Environment knobs:
 #   DORY_SOCK, ORBSTACK_SOCK, DOCKER_DESKTOP_SOCK
 #   READINESS_WORKDIR, READINESS_SETTLE, READINESS_ALPINE_IMAGE, READINESS_NGINX_IMAGE
-#   RUN_MEMORY=0|1, RUN_AMD64=0|1, RUN_ONLINE=0|1, RUN_DOMAINS=0|1, RUN_K8S=0|1, RUN_MACHINES=0|1
+#   RUN_MEMORY=0|1, RUN_AMD64=0|1, RUN_ONLINE=0|1, RUN_DOMAINS=0|1, RUN_DIRECT_IP=0|1, RUN_FILE_WATCH=0|1, RUN_K8S=0|1, RUN_MACHINES=0|1, RUN_MACHINE_RECIPE=0|1, RUN_USB=0|1, RUN_VPN=0|1
+#   DORY_DIRECT_IP_INTERFACE_FILE points at the helper-written utun interface file
+#   READINESS_FILE_WATCH_IMAGE for --file-watch (default: alpine image)
+#   READINESS_MACHINE_RECIPE, READINESS_MACHINE_RECIPE_COMMAND for --machine-recipe
+#   RUN_DEBUG_SHELL=0|1, DORY_DEBUG_AGENT_SOCK, DORY_DEBUG_CONTAINER_ID
+#   RUN_CLOCK_SYNC=0|1, DORY_CLOCK_SYNC_AGENT_SOCK, DORY_CLOCK_SYNC_PID, DORY_CLOCK_SYNC_TOLERANCE_MS
+#   RUN_GUEST_AGENT=0|1, DORY_HV_BIN, DORY_GUEST_KERNEL, DORY_GUEST_INITFS
+#   DORY_USB_TEST_BUSID, DORY_USB_AGENT_SOCK, DORY_USBIP_SOCKET_FD for --usb hardware smoke
+#   DORY_REQUIRE_VPN=1 makes --vpn fail when no active VPN-like interface or route is detected
 #   STOP_ORBSTACK=1 to quit OrbStack before running Dory-only checks
 set -u
 
@@ -26,9 +34,20 @@ RUN_MEMORY="${RUN_MEMORY:-1}"
 RUN_AMD64="${RUN_AMD64:-1}"
 RUN_ONLINE="${RUN_ONLINE:-0}"
 RUN_DOMAINS="${RUN_DOMAINS:-0}"
+RUN_DIRECT_IP="${RUN_DIRECT_IP:-0}"
+RUN_FILE_WATCH="${RUN_FILE_WATCH:-0}"
 RUN_K8S="${RUN_K8S:-0}"
 RUN_MACHINES="${RUN_MACHINES:-0}"
+RUN_MACHINE_RECIPE="${RUN_MACHINE_RECIPE:-0}"
 RUN_BRIDGE="${RUN_BRIDGE:-0}"
+RUN_GUEST_AGENT="${RUN_GUEST_AGENT:-0}"
+RUN_DAX="${RUN_DAX:-0}"
+RUN_ROSETTA="${RUN_ROSETTA:-0}"
+RUN_USB="${RUN_USB:-0}"
+RUN_VPN="${RUN_VPN:-0}"
+RUN_DEBUG_SHELL="${RUN_DEBUG_SHELL:-0}"
+RUN_CLOCK_SYNC="${RUN_CLOCK_SYNC:-0}"
+CLOCK_SYNC_TOLERANCE_MS="${DORY_CLOCK_SYNC_TOLERANCE_MS:-100}"
 STOP_ORBSTACK="${STOP_ORBSTACK:-0}"
 
 RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$"
@@ -60,11 +79,25 @@ Options:
   --skip-amd64         Skip linux/amd64 emulation check
   --online             Run online registry search check
   --domains            Run *.dory.local / *.orb.local checks when integration is active
+  --direct-ip          Run Dory direct container-IP ping + browser check (requires system integration route)
+  --file-watch         Run host edit to inotify propagation check for bind/shared mounts
   --k8s                Run Kubernetes context checks
   --machines           Run Linux machine CLI checks
+  --machine-recipe     Create a Linux machine from a recipe and assert its provisioned command
   --bridge             Run guest→host bridge (dory-open) check
+  --guest-agent        Run dory-hv guest-agent vsock smoke (requires DORY_GUEST_KERNEL and DORY_GUEST_INITFS)
+  --dax                Run dory-hv virtio-fs DAX coherence probe (requires a signed dory-hv, DORY_HV_BIN)
+  --rosetta            Run Rosetta x86-64 machine execution smoke (requires a signed dory-vm + Rosetta; DORY_VM_HELPER)
+  --usb                Run USB/IP hardware smoke when DORY_USB_TEST_BUSID and agent socket settings are set
+  --vpn                Record route/DNS state and run userspace networking checks during VPN coexistence testing
+  --debug-shell        Run debug shell smoke when DORY_DEBUG_AGENT_SOCK and DORY_DEBUG_CONTAINER_ID are set
+  --clock-sync         Run host-wake clock sync smoke when agent socket and helper PID are available
   --stop-orbstack      Quit OrbStack before Dory-only runs
   -h, --help           Show this help
+
+Clock sync env:
+  DORY_CLOCK_SYNC_AGENT_SOCK or DORY_AGENT_SOCK
+  DORY_CLOCK_SYNC_PID, DORY_CLOCK_SYNC_TOLERANCE_MS
 EOF
 }
 
@@ -77,9 +110,19 @@ while [ "$#" -gt 0 ]; do
     --skip-amd64) RUN_AMD64=0; shift ;;
     --online) RUN_ONLINE=1; shift ;;
     --domains) RUN_DOMAINS=1; shift ;;
+    --direct-ip) RUN_DIRECT_IP=1; shift ;;
+    --file-watch) RUN_FILE_WATCH=1; shift ;;
     --k8s) RUN_K8S=1; shift ;;
     --machines) RUN_MACHINES=1; shift ;;
+    --machine-recipe) RUN_MACHINE_RECIPE=1; shift ;;
     --bridge) RUN_BRIDGE=1; shift ;;
+    --guest-agent) RUN_GUEST_AGENT=1; shift ;;
+    --dax) RUN_DAX=1; shift ;;
+    --rosetta) RUN_ROSETTA=1; shift ;;
+    --usb) RUN_USB=1; shift ;;
+    --vpn) RUN_VPN=1; shift ;;
+    --debug-shell) RUN_DEBUG_SHELL=1; shift ;;
+    --clock-sync) RUN_CLOCK_SYNC=1; shift ;;
     --stop-orbstack) STOP_ORBSTACK=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown option: $1" >&2; usage; exit 2 ;;
@@ -141,7 +184,7 @@ used_mem() {
 process_rss_bytes() {
   local engine="$1" pattern
   case "$engine" in
-    dory) pattern="${DORY_PROCESS_PATTERN:-Dory|dory-vm|containermanagerd}" ;;
+    dory) pattern="${DORY_PROCESS_PATTERN:-Dory|dory-vm|dory-vmboot|containermanagerd}" ;;
     orbstack) pattern="${ORBSTACK_PROCESS_PATTERN:-OrbStack}" ;;
     docker-desktop|desktop) pattern="${DOCKER_DESKTOP_PROCESS_PATTERN:-Docker|com.docker}" ;;
     *) pattern="${GENERIC_ENGINE_PROCESS_PATTERN:-$engine}" ;;
@@ -251,6 +294,37 @@ test_bind_mount() {
   printf 'from-host\n' > "$dir/input.txt"
   docker_e run --rm --label "$LABEL_KEY=$RUN_ID" -v "$dir:/mnt" "$ALPINE_IMAGE" sh -c 'grep -q from-host /mnt/input.txt && echo from-container > /mnt/output.txt'
   grep -q 'from-container' "$dir/output.txt"
+}
+
+test_file_watch() {
+  local dir="$WORKDIR/${ENGINE_ID}-file-watch"
+  local name="$PREFIX-file-watch"
+  local image="${READINESS_FILE_WATCH_IMAGE:-$ALPINE_IMAGE}"
+  mkdir -p "$dir"
+  printf 'before\n' > "$dir/input.txt"
+  docker_e rm -f "$name" >/dev/null 2>&1 || true
+  docker_e run -d --name "$name" --label "$LABEL_KEY=$RUN_ID" -v "$dir:/work" "$image" sh -lc '
+    apk add --no-cache inotify-tools >/dev/null
+    touch /work/ready
+    timeout 20 inotifywait -q -e modify,attrib,create,delete /work/input.txt > /work/event.txt
+  ' >/dev/null
+  trap 'docker_e rm -f "$name" >/dev/null 2>&1 || true' RETURN
+  for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+    [ -f "$dir/ready" ] && break
+    docker_e inspect "$name" --format '{{.State.Running}}' 2>/dev/null | grep -q true || { docker_e logs "$name" 2>&1; return 1; }
+    sleep 1
+  done
+  [ -f "$dir/ready" ] || { docker_e logs "$name" 2>&1; echo "inotify watcher did not become ready"; return 1; }
+  sleep 1
+  printf 'after\n' >> "$dir/input.txt"
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    [ -s "$dir/event.txt" ] && break
+    sleep 1
+  done
+  [ -s "$dir/event.txt" ] || { docker_e logs "$name" 2>&1; echo "host edit did not produce an inotify event"; return 1; }
+  grep -Eq 'MODIFY|ATTRIB|CREATE|DELETE' "$dir/event.txt"
+  docker_e rm -f "$name" >/dev/null 2>&1 || true
+  trap - RETURN
 }
 
 test_volume_roundtrip() {
@@ -372,6 +446,11 @@ test_resource_limits_update() {
 }
 
 test_amd64() {
+  local name="$PREFIX-binfmt"
+  docker_e run --rm --privileged --name "$name" --label "$LABEL_KEY=$RUN_ID" "$ALPINE_IMAGE" \
+    sh -c 'test -e /proc/sys/fs/binfmt_misc/register || { echo "binfmt_misc not mounted" >&2; exit 1; }
+           test -e /proc/sys/fs/binfmt_misc/qemu-x86_64 || { echo "qemu-x86_64 handler not registered" >&2; exit 1; }
+           grep -qx enabled /proc/sys/fs/binfmt_misc/qemu-x86_64 || { echo "qemu-x86_64 handler not enabled" >&2; exit 1; }'
   docker_e run --rm --platform linux/amd64 --label "$LABEL_KEY=$RUN_ID" "$ALPINE_IMAGE" uname -m | grep -Eq 'x86_64|amd64'
 }
 
@@ -394,6 +473,84 @@ test_domains() {
   done
   docker_e rm -f "$name" >/dev/null
   return 1
+}
+
+test_direct_ip() {
+  [ "$CURRENT_ENGINE" = "dory" ] || { echo "direct container IP routing is a Dory shared-VM claim"; return 1; }
+  local name="$PREFIX-direct-ip" ip iface_file iface route_info
+  iface_file="${DORY_DIRECT_IP_INTERFACE_FILE:-$HOME/.dory/hv/direct-ip.interface}"
+  [ -f "$iface_file" ] || {
+    echo "direct-IP interface file missing: $iface_file; start Dory and run scripts/enable-networking.sh --direct-ip"
+    return 1
+  }
+  iface="$(tr -d '[:space:]' < "$iface_file")"
+  [ -n "$iface" ] || { echo "direct-IP interface file is empty: $iface_file"; return 1; }
+  if ! ifconfig "$iface" >/dev/null 2>&1; then
+    echo "direct-IP interface is not active: $iface"
+    return 1
+  fi
+  docker_e run -d --name "$name" --label "$LABEL_KEY=$RUN_ID" "$NGINX_IMAGE" >/dev/null
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    ip="$(docker_e inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$name" 2>/dev/null)"
+    [ -n "$ip" ] && break
+    sleep 1
+  done
+  [ -n "$ip" ] || { docker_e rm -f "$name" >/dev/null; echo "container has no IPv4 address"; return 1; }
+  route_info="$(route -n get "$ip" 2>/dev/null || true)"
+  if ! printf '%s\n' "$route_info" | grep -Eq "interface: +$iface"; then
+    docker_e rm -f "$name" >/dev/null
+    echo "host route for $ip does not use $iface; run scripts/enable-networking.sh --direct-ip"
+    return 1
+  fi
+  ping -c 1 -W 1000 "$ip" >/dev/null
+  curl -fsS --connect-timeout 3 "http://$ip" | grep -qi 'welcome'
+  docker_e rm -f "$name" >/dev/null
+}
+
+vpn_snapshot() {
+  local dir="$1"
+  mkdir -p "$dir"
+  if command -v ifconfig >/dev/null 2>&1; then
+    ifconfig > "$dir/interfaces.txt" 2>&1 || true
+  elif command -v ip >/dev/null 2>&1; then
+    ip addr show > "$dir/interfaces.txt" 2>&1 || true
+  fi
+  if command -v netstat >/dev/null 2>&1; then
+    netstat -rn > "$dir/routes.txt" 2>&1 || true
+  elif command -v ip >/dev/null 2>&1; then
+    ip route show table all > "$dir/routes.txt" 2>&1 || true
+  fi
+  if command -v route >/dev/null 2>&1; then
+    route -n get default > "$dir/default-route.txt" 2>&1 || true
+  fi
+  if command -v scutil >/dev/null 2>&1; then
+    scutil --dns > "$dir/dns.txt" 2>&1 || true
+  elif [ -f /etc/resolv.conf ]; then
+    cp /etc/resolv.conf "$dir/dns.txt" 2>/dev/null || true
+  fi
+}
+
+vpn_detected() {
+  local dir="$1"
+  grep -Eiq '(^utun[0-9]*:|^ppp[0-9]*:|^tun[0-9]*:|^tap[0-9]*:|wireguard|wg[0-9]|tailscale|zerotier|vpn)' \
+    "$dir/interfaces.txt" "$dir/routes.txt" "$dir/dns.txt" 2>/dev/null
+}
+
+test_vpn_coexistence() {
+  [ "$CURRENT_ENGINE" = "dory" ] || { echo "VPN coexistence is a Dory gvproxy claim"; return 1; }
+  local dir="$WORKDIR/${ENGINE_ID}-vpn"
+  vpn_snapshot "$dir"
+  if vpn_detected "$dir"; then
+    echo "VPN-like interface or route detected; artifacts: $dir"
+  elif [ "${DORY_REQUIRE_VPN:-0}" = "1" ]; then
+    echo "no VPN-like interface or route detected; artifacts: $dir"
+    return 1
+  else
+    echo "no VPN-like interface or route detected; recorded baseline artifacts: $dir"
+  fi
+  test_engine_info
+  test_network_dns
+  test_published_port
 }
 
 test_k8s() {
@@ -449,8 +606,47 @@ EOF
   [ "$ok" = "1" ]
   docker_e exec "$name" cat /proc/1/comm | grep -q systemd
   docker_e exec "$name" sh -c 'echo machine-exec-ok' | grep -q machine-exec-ok
+  docker_e exec "$name" sh -c 'getent hosts host.docker.internal >/dev/null || ping -c1 -W1 host.docker.internal >/dev/null'
+  docker_e exec "$name" sh -c 'getent hosts host.dory.internal >/dev/null || ping -c1 -W1 host.dory.internal >/dev/null'
   docker_e rm -f "$name" >/dev/null
   docker_e rmi -f "$tag" >/dev/null
+}
+
+machine_recipe_command() {
+  local recipe="$1"
+  if [ -n "${READINESS_MACHINE_RECIPE_COMMAND:-}" ]; then
+    printf '%s' "$READINESS_MACHINE_RECIPE_COMMAND"
+    return
+  fi
+  case "$recipe" in
+    rust|rust-dev) printf '%s' 'test -x "$HOME/.cargo/bin/cargo" && "$HOME/.cargo/bin/cargo" --version' ;;
+    node) printf '%s' 'node --version && corepack --version' ;;
+    go) printf '%s' '. /etc/profile.d/go.sh 2>/dev/null || true; go version' ;;
+    python-ml) printf '%s' 'python3 --version && python3 -m pip --version' ;;
+    docker-host) printf '%s' 'docker --version' ;;
+    k8s-lab) printf '%s' 'kubectl version --client=true' ;;
+    *) printf '%s' 'cat /proc/1/comm | grep -Eq "systemd|tail"' ;;
+  esac
+}
+
+test_machine_recipe() {
+  [ "$CURRENT_ENGINE" = "dory" ] || return 2
+  local recipe="${READINESS_MACHINE_RECIPE:-rust}"
+  local name="recipe-${RUN_SLUG}"
+  local cid="dory-machine-$name"
+  local command
+  command="$(machine_recipe_command "$recipe")"
+  docker_e rm -f "$cid" >/dev/null 2>&1 || true
+  trap 'docker_e rm -f "$cid" >/dev/null 2>&1 || true' RETURN
+  "$ROOT/scripts/dory" machine create "$name" --recipe "$recipe" >/dev/null
+  for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+    docker_e inspect "$cid" --format '{{.State.Running}}' 2>/dev/null | grep -q true && break
+    sleep 2
+  done
+  docker_e inspect "$cid" --format '{{index .Config.Labels "dory.recipe"}}' | grep -qx "$recipe"
+  docker_e exec "$cid" sh -lc "$command"
+  docker_e rm -f "$cid" >/dev/null
+  trap - RETURN
 }
 
 test_bridge() {
@@ -482,6 +678,142 @@ test_bridge() {
   docker_e rm -f "$cname" >/dev/null 2>&1 || true
   rm -rf "$hbridge"
   return 0
+}
+
+test_dax() {
+  [ "$CURRENT_ENGINE" = "dory" ] || return 2
+  local hv="${DORY_HV_BIN:-$ROOT/Packages/ContainerizationEngine/.build/debug/dory-hv}"
+  [ -x "$hv" ] || { echo "dory-hv not found or executable: $hv"; return 1; }
+  "$hv" daxprobe | grep -q "dax coherence passed"
+}
+
+test_rosetta() {
+  local vm="${DORY_VM_HELPER:-$ROOT/Packages/ContainerizationEngine/.build/out/Products/Debug/dory-vmboot}"
+  [ -x "$vm" ] || { echo "dory-vm helper not found or executable: $vm"; return 1; }
+  [ -e /Library/Apple/usr/libexec/oah/RosettaLinux ] || { echo "Rosetta for Linux not installed (softwareupdate --install-rosetta)"; return 1; }
+  "$vm" --image "${DORY_ROSETTA_IMAGE:-docker.io/library/alpine:latest}" --arch amd64 --rosetta -- 'uname -m' 2>/dev/null | grep -qx x86_64
+}
+
+test_guest_agent() {
+  [ "$CURRENT_ENGINE" = "dory" ] || return 2
+  local hv="${DORY_HV_BIN:-$ROOT/Packages/ContainerizationEngine/.build/debug/dory-hv}"
+  local kernel="${DORY_GUEST_KERNEL:-$ROOT/guest/out/Image}"
+  local initfs="${DORY_GUEST_INITFS:-}"
+  [ -x "$hv" ] || { echo "dory-hv not found or executable: $hv"; return 1; }
+  [ -f "$kernel" ] || { echo "guest kernel not found: $kernel"; return 1; }
+  [ -n "$initfs" ] && [ -f "$initfs" ] || { echo "set DORY_GUEST_INITFS to a built initfs.ext4"; return 1; }
+  "$hv" agent-ping --kernel "$kernel" --initfs "$initfs" --mem-mb "${DORY_GUEST_AGENT_MEM_MB:-512}" --cpus 2 --timeout-sec "${DORY_GUEST_AGENT_TIMEOUT:-30}" \
+    | tee "$WORKDIR/${ENGINE_ID}-guest-agent.json" \
+    | grep -q '"kernel":"6.12.30-dory"'
+}
+
+agent_rpc_readiness() {
+  local sock="$1" method="$2" payload="$3"
+  [ -n "$sock" ] && [ -S "$sock" ] || { echo "agent socket not found: $sock"; return 2; }
+  python3 - "$sock" "$method" "$payload" <<'PY'
+import json, socket, struct, sys
+
+def recv_exactly(s, count):
+    buf = b""
+    while len(buf) < count:
+        chunk = s.recv(count - len(buf))
+        if not chunk:
+            return buf
+        buf += chunk
+    return buf
+
+sock_path, method, payload = sys.argv[1], sys.argv[2], json.loads(sys.argv[3])
+request = json.dumps({"id": 1, "method": method, "params": payload}, separators=(",", ":")).encode()
+with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+    s.connect(sock_path)
+    s.sendall(struct.pack(">I", len(request)) + request)
+    header = recv_exactly(s, 4)
+    if len(header) != 4:
+        raise SystemExit("agent closed before response")
+    length = struct.unpack(">I", header)[0]
+    data = recv_exactly(s, length)
+    if len(data) != length:
+        raise SystemExit("agent closed mid-response")
+response = json.loads(data)
+if response.get("error"):
+    print(response["error"].get("message", "agent request failed"), file=sys.stderr)
+    raise SystemExit(1)
+print(json.dumps(response.get("result", {}), sort_keys=True))
+PY
+}
+
+agent_exec_stdout() {
+  local sock="$1" payload="$2"
+  agent_rpc_readiness "$sock" "exec" "$payload" | python3 -c '
+import base64, json, sys
+result = json.load(sys.stdin)
+if int(result.get("exit_code", 0)) != 0:
+    if result.get("stderr_b64"):
+        sys.stderr.buffer.write(base64.b64decode(result["stderr_b64"]))
+    raise SystemExit(int(result.get("exit_code", 1)))
+if result.get("stdout_b64"):
+    sys.stdout.buffer.write(base64.b64decode(result["stdout_b64"]))
+'
+}
+
+clock_sync_helper_pid() {
+  if [ -n "${DORY_CLOCK_SYNC_PID:-}" ]; then
+    echo "$DORY_CLOCK_SYNC_PID"
+    return
+  fi
+  [ -f "$HOME/.dory/engine.pid" ] && cat "$HOME/.dory/engine.pid"
+}
+
+test_clock_sync() {
+  [ "$CURRENT_ENGINE" = "dory" ] || return 2
+  local sock="${DORY_CLOCK_SYNC_AGENT_SOCK:-${DORY_AGENT_SOCK:-}}"
+  local pid guest_raw guest_ns host_ns delta_ms
+  [ -n "$sock" ] && [ -S "$sock" ] || { echo "set DORY_CLOCK_SYNC_AGENT_SOCK or DORY_AGENT_SOCK to a live guest agent bridge socket"; return 1; }
+  pid="$(clock_sync_helper_pid)"
+  [ -n "$pid" ] || { echo "set DORY_CLOCK_SYNC_PID or start Dory so $HOME/.dory/engine.pid exists"; return 1; }
+  kill -0 "$pid" 2>/dev/null || { echo "helper pid is not live: $pid"; return 1; }
+
+  agent_exec_stdout "$sock" '{"argv":["date","-s","@946684800"],"timeout_ms":5000}' >/dev/null
+  kill -USR1 "$pid"
+  sleep "${DORY_CLOCK_SYNC_SETTLE:-0.5}"
+  guest_raw="$(agent_exec_stdout "$sock" '{"argv":["date","+%s%N"],"timeout_ms":5000}' | tr -d '[:space:]')"
+  case "$guest_raw" in
+    *[!0-9]*|"") echo "guest date does not support numeric nanosecond output: $guest_raw"; return 1 ;;
+  esac
+  guest_ns="$guest_raw"
+  host_ns="$(python3 - <<'PY'
+import time
+print(time.time_ns())
+PY
+)"
+  delta_ms="$(python3 - "$host_ns" "$guest_ns" <<'PY'
+import sys
+host = int(sys.argv[1])
+guest = int(sys.argv[2])
+print(abs(host - guest) // 1_000_000)
+PY
+)"
+  [ "$delta_ms" -le "$CLOCK_SYNC_TOLERANCE_MS" ] || {
+    echo "clock delta ${delta_ms}ms exceeds tolerance ${CLOCK_SYNC_TOLERANCE_MS}ms"
+    return 1
+  }
+  echo "clock delta ${delta_ms}ms"
+}
+
+test_usb() {
+  [ "$CURRENT_ENGINE" = "dory" ] || return 2
+  if ! "$ROOT/scripts/dory" usb ls 2>/dev/null | grep -q "$DORY_USB_TEST_BUSID"; then
+    echo "device $DORY_USB_TEST_BUSID not present in 'dory usb ls'" >&2
+    return 1
+  fi
+  "$ROOT/scripts/dory" usb attach "$DORY_USB_TEST_BUSID" "${DORY_USBIP_PORT:-0}" || return 1
+  "$ROOT/scripts/dory" usb detach "$DORY_USB_TEST_BUSID" "${DORY_USBIP_PORT:-0}" || return 1
+}
+
+test_debug_shell() {
+  [ "$CURRENT_ENGINE" = "dory" ] || return 2
+  DORY_DEBUG_AGENT_SOCK="$DORY_DEBUG_AGENT_SOCK" "$ROOT/scripts/dory" debug "$DORY_DEBUG_CONTAINER_ID" -- /bin/sh -c 'echo dory-debug-ok' \
+    | grep -q 'dory-debug-ok'
 }
 
 measure_memory() {
@@ -529,6 +861,11 @@ run_engine() {
   run_case "$CURRENT_ENGINE" "container lifecycle + logs + exec + stats" test_lifecycle_logs_exec_stats
   run_case "$CURRENT_ENGINE" "docker cp + export" test_cp_archive
   run_case "$CURRENT_ENGINE" "bind mount host read/write" test_bind_mount
+  if [ "$RUN_FILE_WATCH" = "1" ]; then
+    run_case "$CURRENT_ENGINE" "host file edit propagates to inotify" test_file_watch
+  else
+    skip_case "$CURRENT_ENGINE" "host file edit propagates to inotify" "enable with --file-watch"
+  fi
   run_case "$CURRENT_ENGINE" "volume create/use/inspect/remove" test_volume_roundtrip
   run_case "$CURRENT_ENGINE" "network create + service DNS" test_network_dns
   run_case "$CURRENT_ENGINE" "localhost published port" test_published_port
@@ -555,6 +892,18 @@ run_engine() {
     skip_case "$CURRENT_ENGINE" "automatic local domains" "enable with --domains after system integration is installed"
   fi
 
+  if [ "$RUN_DIRECT_IP" = "1" ]; then
+    run_case "$CURRENT_ENGINE" "direct container IP ping + HTTP" test_direct_ip
+  else
+    skip_case "$CURRENT_ENGINE" "direct container IP ping + HTTP" "enable with --direct-ip after scripts/enable-networking.sh --direct-ip"
+  fi
+
+  if [ "$RUN_VPN" = "1" ]; then
+    run_case "$CURRENT_ENGINE" "VPN coexistence userspace networking" test_vpn_coexistence
+  else
+    skip_case "$CURRENT_ENGINE" "VPN coexistence userspace networking" "enable with --vpn; set DORY_REQUIRE_VPN=1 to require an active VPN"
+  fi
+
   if [ "$RUN_K8S" = "1" ]; then
     run_case "$CURRENT_ENGINE" "Kubernetes context reachable" test_k8s
   else
@@ -567,10 +916,66 @@ run_engine() {
     skip_case "$CURRENT_ENGINE" "Linux machine build + systemd boot + exec" "enable with --machines"
   fi
 
+  if [ "$RUN_MACHINE_RECIPE" = "1" ]; then
+    run_case "$CURRENT_ENGINE" "Linux machine recipe create + provisioned command" test_machine_recipe
+  else
+    skip_case "$CURRENT_ENGINE" "Linux machine recipe create + provisioned command" "enable with --machine-recipe"
+  fi
+
   if [ "$RUN_BRIDGE" = "1" ]; then
     run_case "$CURRENT_ENGINE" "guest→host bridge (dory-open open + forward)" test_bridge
   else
     skip_case "$CURRENT_ENGINE" "guest→host bridge (dory-open open + forward)" "enable with --bridge"
+  fi
+
+  if [ "$RUN_GUEST_AGENT" = "1" ]; then
+    run_case "$CURRENT_ENGINE" "dory-hv guest-agent vsock ping" test_guest_agent
+  else
+    skip_case "$CURRENT_ENGINE" "dory-hv guest-agent vsock ping" "enable with --guest-agent and DORY_GUEST_INITFS"
+  fi
+
+  if [ "$RUN_DAX" = "1" ]; then
+    run_case "$CURRENT_ENGINE" "dory-hv virtio-fs DAX coherence" test_dax
+  else
+    skip_case "$CURRENT_ENGINE" "dory-hv virtio-fs DAX coherence" "enable with --dax (needs a signed dory-hv)"
+  fi
+
+  if [ "$RUN_ROSETTA" = "1" ]; then
+    run_case "$CURRENT_ENGINE" "Rosetta x86-64 machine execution" test_rosetta
+  else
+    skip_case "$CURRENT_ENGINE" "Rosetta x86-64 machine execution" "enable with --rosetta (needs a signed dory-vm + Rosetta installed)"
+  fi
+
+  if [ "$RUN_CLOCK_SYNC" = "1" ] && [ "$CURRENT_ENGINE" != "dory" ]; then
+    skip_case "$CURRENT_ENGINE" "host wake clock sync" "Dory-only"
+  elif [ "$RUN_CLOCK_SYNC" = "1" ] && [ -z "${DORY_CLOCK_SYNC_AGENT_SOCK:-${DORY_AGENT_SOCK:-}}" ]; then
+    skip_case "$CURRENT_ENGINE" "host wake clock sync" "set DORY_CLOCK_SYNC_AGENT_SOCK or DORY_AGENT_SOCK"
+  elif [ "$RUN_CLOCK_SYNC" = "1" ] && { [ -z "${DORY_CLOCK_SYNC_PID:-}" ] && [ ! -f "$HOME/.dory/engine.pid" ]; }; then
+    skip_case "$CURRENT_ENGINE" "host wake clock sync" "set DORY_CLOCK_SYNC_PID or start Dory"
+  elif [ "$RUN_CLOCK_SYNC" = "1" ]; then
+    run_case "$CURRENT_ENGINE" "host wake clock sync" test_clock_sync
+  else
+    skip_case "$CURRENT_ENGINE" "host wake clock sync" "enable with --clock-sync and a live agent socket"
+  fi
+
+  if [ "$RUN_USB" = "1" ] && [ -z "${DORY_USB_TEST_BUSID:-}" ]; then
+    skip_case "$CURRENT_ENGINE" "USB/IP hardware smoke" "set DORY_USB_TEST_BUSID"
+  elif [ "$RUN_USB" = "1" ] && { [ -z "${DORY_USB_AGENT_SOCK:-}" ] || [ -z "${DORY_USBIP_SOCKET_FD:-}" ]; }; then
+    skip_case "$CURRENT_ENGINE" "USB/IP hardware smoke" "set DORY_USB_AGENT_SOCK and DORY_USBIP_SOCKET_FD"
+  elif [ "$RUN_USB" = "1" ] && ! grep -q 'usb)' "$ROOT/scripts/dory"; then
+    skip_case "$CURRENT_ENGINE" "USB/IP hardware smoke" "USB CLI attach surface pending"
+  elif [ "$RUN_USB" = "1" ]; then
+    run_case "$CURRENT_ENGINE" "USB/IP hardware smoke" test_usb
+  else
+    skip_case "$CURRENT_ENGINE" "USB/IP hardware smoke" "enable with --usb and DORY_USB_TEST_BUSID"
+  fi
+
+  if [ "$RUN_DEBUG_SHELL" = "1" ] && { [ -z "${DORY_DEBUG_AGENT_SOCK:-}" ] || [ -z "${DORY_DEBUG_CONTAINER_ID:-}" ]; }; then
+    skip_case "$CURRENT_ENGINE" "debug shell via guest agent" "set DORY_DEBUG_AGENT_SOCK and DORY_DEBUG_CONTAINER_ID"
+  elif [ "$RUN_DEBUG_SHELL" = "1" ]; then
+    run_case "$CURRENT_ENGINE" "debug shell via guest agent" test_debug_shell
+  else
+    skip_case "$CURRENT_ENGINE" "debug shell via guest agent" "enable with --debug-shell"
   fi
 
   if [ "$RUN_MEMORY" = "1" ]; then

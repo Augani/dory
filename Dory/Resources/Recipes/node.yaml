@@ -1,0 +1,17 @@
+name: node
+summary: Node.js LTS with Corepack and common native build dependencies
+distro: ubuntu:24.04
+arch: arm64
+resources: {cpus: 4, memory: 8GiB, disk: 60GiB}
+packages: [build-essential, git, curl, ca-certificates, python3, pkg-config]
+runcmd:
+  - curl -fsSL https://deb.nodesource.com/setup_lts.x | bash -
+  - apt-get install -y nodejs
+  - corepack enable
+mounts:
+  - ~/Projects:~/Projects
+ports: [3000, 5173, 8080]
+env: {NODE_ENV: development}
+ssh: {agent_forward: true}
+docker: false
+user: {name: "{{host_user}}", sudo: true, shell: /bin/bash}

@@ -63,7 +63,7 @@ struct KubernetesStatus: Sendable {
 /// separately (scripts/enable-kubernetes.sh) because it boots infrastructure.
 struct KubernetesProvider: Sendable {
     var kubectlPath: String? {
-        Shell.find("kubectl", candidates: ["/usr/local/bin/kubectl", "/opt/homebrew/bin/kubectl"])
+        HostTools.kubectl()
     }
 
     /// Prefer Dory's own cluster kubeconfig when present, so the GUI reflects the cluster Dory

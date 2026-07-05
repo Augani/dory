@@ -136,9 +136,11 @@ struct DoryVM {
             let userCommand = args.command.joined(separator: " ")
             let scratchPath = scratch
             let mounts = args.mounts
+            // Memory ceiling is env-tunable so heavy amd64 images (SQL Server wants >= 2 GB) can run.
+            let memoryMB = UInt64(ProcessInfo.processInfo.environment["DORY_VM_MEM_MB"] ?? "") ?? 1024
             let configure: @Sendable (inout LinuxContainer.Configuration) -> Void = { config in
                 config.cpus = 2
-                config.memoryInBytes = 1024 * 1024 * 1024
+                config.memoryInBytes = memoryMB * 1024 * 1024
                 config.mounts.append(Mount.share(source: scratchPath, destination: "/dory-out"))
                 for (host, guest) in mounts { config.mounts.append(Mount.share(source: host, destination: guest)) }
                 config.process.arguments = ["/bin/sh", "-c", "{ \(userCommand) ; } > /dory-out/stdout 2>&1; echo $? > /dory-out/exit"]
@@ -189,7 +191,9 @@ struct DoryVM {
         }
         guard network != nil else { throw EngineError.noNetwork }
 
-        let vmm = BalloonVMM(inner: VZVirtualMachineManager(kernel: kernel, initialFilesystem: initfs))
+        let rosetta = (ProcessInfo.processInfo.environment["DORY_ENGINE_ROSETTA"] ?? "0") == "1"
+        if rosetta { note("Rosetta x86 translation enabled on shared engine") }
+        let vmm = BalloonVMM(inner: VZVirtualMachineManager(kernel: kernel, initialFilesystem: initfs, rosetta: rosetta))
         var manager = try ContainerManager(vmm: vmm, network: network)
         // The vmm-injecting constructor uses the default image store; clean its prior container dir.
         let store = NSHomeDirectory() + "/Library/Application Support/com.apple.containerization"
@@ -198,9 +202,15 @@ struct DoryVM {
         try? FileManager.default.removeItem(atPath: store + "/containers/dory-shared-engine")
         let hostURL = URL(fileURLWithPath: hostSock)
 
+        // Tunable memory policy (env overrides let us measure/right-size without a rebuild).
+        let bootMemBytes = (UInt64(ProcessInfo.processInfo.environment["DORY_ENGINE_MEM_MB"] ?? "") ?? 2048) * 1024 * 1024
+        let headroomBytes = (UInt64(ProcessInfo.processInfo.environment["DORY_ENGINE_HEADROOM_MB"] ?? "") ?? 512) * 1024 * 1024
+        let reclaimSec = UInt64(ProcessInfo.processInfo.environment["DORY_ENGINE_RECLAIM_SEC"] ?? "") ?? 5
+        note("mem ceiling \(bootMemBytes / 1048576)MiB, headroom \(headroomBytes / 1048576)MiB, reclaim/\(reclaimSec)s")
+
         let configure: @Sendable (inout LinuxContainer.Configuration) -> Void = { config in
             config.cpus = 4
-            config.memoryInBytes = 4 * 1024 * 1024 * 1024
+            config.memoryInBytes = bootMemBytes
             config.cpuOverhead = 0
             config.memoryOverhead = 64 * 1024 * 1024
             config.useInit = true
@@ -246,29 +256,53 @@ struct DoryVM {
             networking: true,
             configuration: configure
         )
+        if let ip = container.interfaces.first?.ipv4Address.description.split(separator: "/").first {
+            let ipPath = (hostSock as NSString).deletingLastPathComponent + "/engine.ip"
+            try? String(ip).write(toFile: ipPath, atomically: true, encoding: .utf8)
+            note("vm ip \(ip)")
+        }
         try await container.create()
         try await container.start()
         note("running — docker socket published at \(hostSock)")
 
         // Elastic memory: every 10s, shrink the VM's backing RAM toward actual usage + headroom and
         // hand the rest back to macOS via the balloon; it grows again automatically under load.
-        let maxMem: UInt64 = 4 * 1024 * 1024 * 1024
+        let maxMem: UInt64 = bootMemBytes
+        // For measurement: DORY_ENGINE_FORCE_TARGET_MB sets a fixed balloon target every cycle,
+        // bypassing the (currently flaky) framework statistics() call, to isolate whether inflating
+        // Apple's traditional balloon actually returns pages to the host process.
+        let forceTargetBytes = (UInt64(ProcessInfo.processInfo.environment["DORY_ENGINE_FORCE_TARGET_MB"] ?? "")).map { $0 * 1024 * 1024 }
         let reclaim = Task {
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 10_000_000_000)
-                guard let used = (try? await container.statistics())?.memory?.usageBytes else { continue }
-                // Keep generous headroom above real usage so a fast-allocating workload never hits the
-                // balloon ceiling between cycles; the balloon still reclaims large high-water drops.
-                let target = min(maxMem, max(1024 * 1024 * 1024, used + 1536 * 1024 * 1024))
+                try? await Task.sleep(nanoseconds: reclaimSec * 1_000_000_000)
+                let target: UInt64
+                if let forced = forceTargetBytes {
+                    target = forced
+                } else if let used = (try? await container.statistics())?.memory?.usageBytes {
+                    target = min(maxMem, max(256 * 1024 * 1024, used + headroomBytes))
+                    note("reclaim: used \(used / 1048576)MiB")
+                } else {
+                    note("reclaim: statistics unavailable, skipping")
+                    continue
+                }
+                note("reclaim: setting balloon target \(target / 1048576)MiB")
                 try? await container.withVirtualMachineInstance { instance in
-                    guard let vzi = instance as? VZVirtualMachineInstance else { return }
+                    guard let vzi = instance as? VZVirtualMachineInstance else {
+                        FileHandle.standardError.write(Data("dory-engine: reclaim: no VZ instance\n".utf8)); return
+                    }
                     let vm = vzi.vzVirtualMachine
                     let queue = vzi.vmQueue
                     await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
                         queue.async {
+                            let count = vm.memoryBalloonDevices.count
+                            let msg: String
                             if let balloon = vm.memoryBalloonDevices.first as? VZVirtioTraditionalMemoryBalloonDevice {
                                 balloon.targetVirtualMachineMemorySize = target
+                                msg = "dory-engine: reclaim: balloon set to \(target / 1048576)MiB (devices=\(count))\n"
+                            } else {
+                                msg = "dory-engine: reclaim: NO balloon device on VM (devices=\(count))\n"
                             }
+                            FileHandle.standardError.write(Data(msg.utf8))
                             cont.resume()
                         }
                     }

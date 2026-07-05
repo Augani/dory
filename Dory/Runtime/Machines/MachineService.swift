@@ -15,7 +15,7 @@ nonisolated struct MachineSettings: Sendable, Hashable {
 struct MachineService: Sendable {
     let runtime: any ContainerRuntime
 
-    static let namePrefix = "dory-machine-"
+    nonisolated static let namePrefix = "dory-machine-"
     static let label = "dory.machine"
     static let versionLabel = "dory.machine.version"
     static let archLabel = "dory.machine.arch"
@@ -28,10 +28,55 @@ struct MachineService: Sendable {
     static let keepalive = ["tail", "-f", "/dev/null"]
     static let snapshotRepoPrefix = "dory-snapshot/"
 
-    static func containerName(for name: String) -> String { namePrefix + name }
+    nonisolated static func containerName(for name: String) -> String { namePrefix + name }
 
     static func bridgeHostDir(for name: String) -> String {
         URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".dory/bridge").appendingPathComponent(name).path
+    }
+
+    static func distro(for recipe: DevRecipe) throws -> MachineDistro {
+        guard let distro = MachineDistro.forImage(recipe.distro) else {
+            throw MachineError.createFailed("unsupported recipe distro \(recipe.distro)")
+        }
+        return distro
+    }
+
+    static func arch(for recipe: DevRecipe) throws -> MachineArch {
+        guard let arch = MachineArch(rawValue: recipe.arch) else {
+            throw MachineError.createFailed("unsupported recipe arch \(recipe.arch)")
+        }
+        return arch
+    }
+
+    static func settings(
+        from recipe: DevRecipe,
+        hostUser: String = NSUserName(),
+        uid: Int = Int(getuid()),
+        homePath: String = NSHomeDirectory(),
+        publicKeys: [String] = []
+    ) throws -> MachineSettings {
+        let recipe = recipe.substituted(hostUser: hostUser)
+        let guestHome = recipe.user.name == "root"
+            ? "/root"
+            : (recipe.user.name == hostUser ? homePath : "/home/\(recipe.user.name)")
+        var settings = MachineSettings(
+            cpus: recipe.resources.cpus,
+            memoryMB: memoryMB(from: recipe.resources.memory),
+            mounts: try recipe.mounts.map { try parseMount($0, hostHome: homePath, guestHome: guestHome) },
+            ports: recipe.ports.map { PortPair(host: $0, guest: $0) },
+            identity: nil,
+            env: recipe.env
+        )
+        if recipe.user.name != "root" {
+            settings.identity = MacIdentity(
+                username: recipe.user.name,
+                uid: recipe.user.name == hostUser ? uid : 1000,
+                homePath: guestHome,
+                shell: recipe.user.shell,
+                publicKeys: publicKeys
+            )
+        }
+        return settings
     }
 
     func snapshot(machine: Machine, note: String, createdISO: String, tag: String) async throws -> MachineSnapshot {
@@ -77,6 +122,7 @@ struct MachineService: Sendable {
             "Privileged": true,
             "CgroupnsMode": "host",
             "Tmpfs": ["/run": "", "/run/lock": "", "/tmp": ""],
+            "ExtraHosts": ["host.docker.internal:host-gateway", "host.dory.internal:host-gateway"],
             "RestartPolicy": ["Name": "unless-stopped"],
         ]
         var hostConfig = self.hostConfig(base: baseHostConfig, settings: settings)
@@ -88,7 +134,7 @@ struct MachineService: Sendable {
             "Hostname": name,
             "Image": imageTag,
             "Cmd": cmd,
-            "Env": (["container=docker", "BROWSER=dory-open"] + settings.env.map { "\($0.key)=\($0.value)" }).sorted(),
+            "Env": Self.machineEnv(settings: settings),
             "StopSignal": "SIGRTMIN+3",
             "Labels": labels,
             "HostConfig": hostConfig,
@@ -196,6 +242,18 @@ struct MachineService: Sendable {
         progress("Machine \(name) is ready.")
     }
 
+    func create(name: String, recipe: DevRecipe, progress: @escaping @Sendable (String) -> Void) async throws {
+        let recipe = recipe.substituted(hostUser: NSUserName())
+        try recipe.validate()
+        let distro = try Self.distro(for: recipe)
+        let arch = try Self.arch(for: recipe)
+        let settings = try Self.settings(
+            from: recipe,
+            publicKeys: MacIdentity.current(shell: recipe.user.shell).publicKeys
+        )
+        try await create(name: name, distro: distro, arch: arch, recipe: recipe, settings: settings, progress: progress)
+    }
+
     func start(name: String) async throws {
         try await runtime.start(containerID: Self.containerName(for: name))
         _ = try? await runtime.exec(containerID: Self.containerName(for: name),
@@ -263,7 +321,7 @@ struct MachineService: Sendable {
             "Hostname": name,
             "Image": imageRef,
             "Cmd": cmd,
-            "Env": (["container=docker", "BROWSER=dory-open"] + effectiveSettings.env.map { "\($0.key)=\($0.value)" }).sorted(),
+            "Env": Self.machineEnv(settings: effectiveSettings),
             "StopSignal": "SIGRTMIN+3",
             "Labels": labels,
             "HostConfig": hostConfig,
@@ -492,6 +550,44 @@ extension MachineService {
         return MountPair(host: parts[0], guest: parts[1], readOnly: parts.count == 3 && parts[2] == "ro")
     }
 
+    nonisolated static func parseMount(_ value: String, hostHome: String = NSHomeDirectory(), guestHome: String) throws -> MountPair {
+        guard let mount = parseBind(value) else {
+            throw MachineError.createFailed("invalid recipe mount \(value)")
+        }
+        let host = try expandTilde(mount.host, home: hostHome, mount: value)
+        let guest = try expandTilde(mount.guest, home: guestHome, mount: value)
+        return MountPair(host: host, guest: guest, readOnly: mount.readOnly)
+    }
+
+    nonisolated static func expandTilde(_ path: String, home: String, mount: String) throws -> String {
+        guard !path.isEmpty else {
+            throw MachineError.createFailed("invalid recipe mount \(mount)")
+        }
+        guard path.hasPrefix("~") else { return path }
+        let trimmedHome = home.hasSuffix("/") ? String(home.dropLast()) : home
+        guard !trimmedHome.isEmpty else {
+            throw MachineError.createFailed("cannot resolve home directory for recipe mount \(mount)")
+        }
+        if path == "~" { return trimmedHome }
+        guard path.hasPrefix("~/") else {
+            throw MachineError.createFailed("unsupported ~user expansion in recipe mount \(mount)")
+        }
+        return trimmedHome + String(path.dropFirst(1))
+    }
+
+    nonisolated static func memoryMB(from size: String) -> Int? {
+        let units: [(suffix: String, multiplier: Int)] = [
+            ("TiB", 1024 * 1024),
+            ("GiB", 1024),
+            ("MiB", 1),
+        ]
+        for unit in units where size.hasSuffix(unit.suffix) {
+            let raw = String(size.dropLast(unit.suffix.count))
+            return Int(raw).map { $0 * unit.multiplier }
+        }
+        return nil
+    }
+
     nonisolated static func uniqueMounts(_ mounts: [MountPair]) -> [MountPair] {
         var seen = Set<MountPair>()
         return mounts.filter { seen.insert($0).inserted }
@@ -519,5 +615,15 @@ extension MachineService {
         var exposed: [String: [String: String]] = [:]
         for port in settings.ports { exposed["\(port.guest)/tcp"] = [:] }
         return exposed
+    }
+
+    static func machineEnv(settings: MachineSettings) -> [String] {
+        let credentialsDir = "\(DoryCredentialShim.bridgeGuestDir)/credentials"
+        let credentialEnv = [
+            "SSH_AUTH_SOCK=\(credentialsDir)/ssh-agent.sock",
+            "GIT_ASKPASS=\(DoryCredentialShim.gitAskpassPath)",
+            "DORY_GIT_ASKPASS_SOCK=\(credentialsDir)/git-askpass.sock",
+        ]
+        return (["container=docker", "BROWSER=dory-open"] + credentialEnv + settings.env.map { "\($0.key)=\($0.value)" }).sorted()
     }
 }

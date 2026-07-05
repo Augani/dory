@@ -1,0 +1,16 @@
+name: k8s-lab
+summary: Kubernetes lab with kubectl, Docker CLI, and common debugging tools
+distro: ubuntu:24.04
+arch: arm64
+resources: {cpus: 6, memory: 12GiB, disk: 80GiB}
+packages: [git, curl, ca-certificates, jq, socat, iproute2, dnsutils]
+runcmd:
+  - ARCH=$(dpkg --print-architecture); curl -fsSL -o /usr/local/bin/kubectl https://dl.k8s.io/release/$(curl -fsSL https://dl.k8s.io/release/stable.txt)/bin/linux/$ARCH/kubectl
+  - chmod +x /usr/local/bin/kubectl
+mounts:
+  - ~/Projects:~/Projects
+ports: [8001, 8080, 30000]
+env: {KUBECONFIG: /home/{{user}}/.kube/config}
+ssh: {agent_forward: true}
+docker: true
+user: {name: "{{host_user}}", sudo: true, shell: /bin/bash}

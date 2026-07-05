@@ -109,6 +109,53 @@ struct DockerEngineSocketDiscoveryTests {
         #expect(!candidates.contains(dorySocket))
     }
 
+    @Test func doryEngineSocketIsAlsoExcluded() throws {
+        let home = try TempHome.make()
+        defer { try? FileManager.default.removeItem(at: home) }
+
+        let engineSocket = "\(home.path)/.dory/engine.sock"
+        let candidates = DockerEngineSocketDiscovery.candidates(
+            environment: ["DOCKER_HOST": "unix://\(engineSocket)"],
+            home: home.path
+        )
+
+        #expect(!candidates.contains(engineSocket))
+    }
+
+    @Test func availableSourcesLabelsEachEngineByVendor() throws {
+        let home = try TempHome.make()
+        defer { try? FileManager.default.removeItem(at: home) }
+
+        for relative in [".orbstack/run/docker.sock", ".colima/default/docker.sock", ".rd/docker.sock"] {
+            let url = home.appendingPathComponent(relative)
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            FileManager.default.createFile(atPath: url.path, contents: Data())
+        }
+
+        let sources = DockerEngineSocketDiscovery.availableSources(environment: [:], home: home.path)
+        let byLabel = Dictionary(uniqueKeysWithValues: sources.map { ($0.label, $0.socketPath) })
+
+        #expect(byLabel["OrbStack"] == "\(home.path)/.orbstack/run/docker.sock")
+        #expect(byLabel["Colima"] == "\(home.path)/.colima/default/docker.sock")
+        #expect(byLabel["Rancher Desktop"] == "\(home.path)/.rd/docker.sock")
+    }
+
+    @Test func availableSourcesOmitsSocketsThatDoNotExist() throws {
+        let home = try TempHome.make()
+        defer { try? FileManager.default.removeItem(at: home) }
+
+        // No socket files created under this temp home → none of its per-home sockets are offered.
+        // (A real `/var/run/docker.sock` may exist on the host; that is global, not under this home.)
+        let sources = DockerEngineSocketDiscovery.availableSources(environment: [:], home: home.path)
+        #expect(!sources.contains { $0.socketPath.hasPrefix(home.path) })
+    }
+
+    @Test func engineLabelIdentifiesDockerAndFallsBackToPath() throws {
+        #expect(DockerEngineSocketDiscovery.engineLabel(for: "/var/run/docker.sock", home: "/Users/x") == "Docker")
+        #expect(DockerEngineSocketDiscovery.engineLabel(for: "/Users/x/.docker/run/docker.sock", home: "/Users/x") == "Docker")
+        #expect(DockerEngineSocketDiscovery.engineLabel(for: "/weird/custom.sock", home: "/Users/x") == "/weird/custom.sock")
+    }
+
     @MainActor
     @Test func detectSkipsHungSocketAndFindsNextCandidate() async throws {
         let hungPath = Self.shortSocketPath("dory-detect-hung")

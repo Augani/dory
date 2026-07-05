@@ -16,7 +16,7 @@ enum KubeServiceProxy {
     static var kubeconfig: String { KubernetesProvisioner.kubeconfigPath }
 
     static func kubectl() -> String? {
-        Shell.find("kubectl", candidates: ["/usr/local/bin/kubectl", "/opt/homebrew/bin/kubectl"])
+        HostTools.kubectl()
     }
 
     static func startProxy() -> Process? {

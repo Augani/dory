@@ -69,24 +69,20 @@ struct OnboardingView: View {
 
     private var startingStep: some View {
         VStack(spacing: 0) {
-            if store.needsContainerToolchain || store.toolchainInstallPhase != .idle {
-                EngineSetupCard()
-            } else {
-                Text("Starting the Dory engine").font(.system(size: 19, weight: .heavy)).foregroundStyle(p.text)
-                    .padding(.bottom, 6)
-                Text(store.sharedVMStatus.isEmpty ? "Provisioning your shared VM…" : store.sharedVMStatus)
-                    .font(.system(size: 13)).foregroundStyle(p.text2).multilineTextAlignment(.center)
-                    .padding(.bottom, 22)
+            Text("Starting the Dory engine").font(.system(size: 19, weight: .heavy)).foregroundStyle(p.text)
+                .padding(.bottom, 6)
+            Text(store.sharedVMStatus.isEmpty ? "Provisioning your engine…" : store.sharedVMStatus)
+                .font(.system(size: 13)).foregroundStyle(p.text2).multilineTextAlignment(.center)
+                .padding(.bottom, 22)
 
-                ProgressView().controlSize(.large).padding(.bottom, 22)
+            ProgressView().controlSize(.large).padding(.bottom, 22)
 
-                Text("First launch fetches the engine once — this is the only wait.")
-                    .font(.system(size: 11.5)).foregroundStyle(p.text3).multilineTextAlignment(.center)
-                    .padding(.bottom, 18)
+            Text("First launch fetches the engine once — this is the only wait.")
+                .font(.system(size: 11.5)).foregroundStyle(p.text3).multilineTextAlignment(.center)
+                .padding(.bottom, 18)
 
-                if waited {
-                    primaryButton("Continue", id: "onboarding-continue") { step = .demo }
-                }
+            if waited {
+                primaryButton("Continue", id: "onboarding-continue") { step = .demo }
             }
             skipButton.padding(.top, 9)
         }

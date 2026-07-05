@@ -81,7 +81,7 @@ CA trust install remain consent-gated, the same one-time admin grant OrbStack ne
 | **Bind-mount file sharing** | ✅ | Home dir shared into the VM (virtiofs); verified `docker run -v ~/proj:/app` reads/writes host files live |
 | One-click Kubernetes | ✅ | `KubernetesProvisioner` runs k3s in the shared VM; verified host `kubectl` + pod deploy; GUI "Enable" button |
 | Linux machines (Ubuntu/Debian/Fedora/Alpine) | ✅ | `MachineProvider` via `container machine`; verified real machine create/list/start/stop/delete; GUI picker |
-| x86/amd64 emulation | ✅ (qemu) | Auto-installs qemu binfmt; verified `--platform linux/amd64 → x86_64`. Rosetta fast-path is a documented gap |
+| x86/amd64 emulation | ✅ (qemu, with limits) | Auto-installs qemu binfmt; verified `--platform linux/amd64 → x86_64`. **Heavy amd64 workloads can segfault** under qemu-user on the default `dory-hv` engine — SQL Server (`mcr.microsoft.com/mssql/server`), Oracle, and some AVX/threading-heavy images hit `qemu: uncaught target signal 11`. This is a qemu-user emulation limit, not a Dory bug, and Rosetta cannot run on `dory-hv` (raw Hypervisor.framework). The fast x86 path is the Virtualization.framework helper: `dory vm --arch amd64 --rosetta` / `DORY_ENGINE_ROSETTA=1`. (GitHub #3) |
 | Volume file browser | ✅ | `VolumeBrowser`; verified list + read files inside volumes; GUI sheet |
 | Terminal / SSH into containers + machines | ✅ | `TerminalLauncher` opens Terminal.app against Dory's socket/engine |
 | Docker Desktop / OrbStack migration | ✅ | `MigrationAssistant` imports images + containers into Dory's shared VM; Docker-compatible sources stream image archives directly when possible, so local/private images do not require a registry pull or a full tarball buffered in app memory |
@@ -90,11 +90,11 @@ CA trust install remain consent-gated, the same one-time admin grant OrbStack ne
 
 ### Apple containerization helper: low-level VM controls delivered
 
-Every feature achievable through Apple's `container` CLI + the dind architecture is done. The four
-items below were each investigated and shown to need low-level VM control the CLI does not expose:
-device passthrough, memory ballooning, Rosetta device, custom mounts. Dory now delivers those
-controls through the bundled `dory-vm` helper, which links the `apple/containerization` Swift
-package and drives the VM in-process.
+Several features need low-level VM control the `container` CLI does not expose: audio, memory
+ballooning, the Rosetta device, custom mounts — all delivered through the bundled `dory-vm` helper,
+which links the `apple/containerization` Swift package and drives the VM in-process. USB *device*
+passthrough is the exception: the helper attaches a USB controller but does not yet pass a host
+device through — real per-device passthrough is the usbip-over-vsock path (roadmap Track 3.6).
 
 **Foundation built + PROVEN END-TO-END.** `Packages/ContainerizationEngine/` is an additive Swift
 package (separate from the shipping app) that links `apple/containerization` and drives the Linux VM
@@ -116,10 +116,12 @@ features without linking the framework's large dependency tree.
 |---|---|---|
 | Rosetta-speed x86 | ✅ **delivered** | `dory vm --arch amd64 --rosetta -- <cmd>` → `uname -m == x86_64`. Verified through the CLI |
 | Reverse / bidirectional file mount | ✅ **delivered** | `dory vm --mount host:guest -- <cmd>` reads/writes host files in the container. Verified |
-| USB / audio passthrough | ✅ **delivered** | `dory vm --devices`: a `VZInstanceExtension` injects an XHCI USB controller + `VZVirtioSoundDevice`. Verified `USB controllers attached: 1` |
+| Audio passthrough | ✅ **delivered** | `dory vm --devices`: a `VZInstanceExtension` injects `VZVirtioSoundDevice`. Verified audio device configured |
+| USB device passthrough | 🚧 **in progress** | `dory vm --devices` attaches a `VZXHCIController`, but **no host USB device is passed through** — it is an empty controller (`USB controllers attached: 1` confirms the controller, not a device). Real per-device passthrough is the usbip-over-vsock path (roadmap Track 3.6), pending the `--usb` hardware gate |
 | Dynamic memory balloon → macOS | ✅ **delivered** | `dory vm --devices` attaches a balloon and reclaims RAM at runtime via the public `vzVirtualMachine`, verified `1024MiB → 512MiB reclaimed to macOS` |
 
-**All four are delivered** through the bundled, entitlement-signed `dory-vm` helper, surfaced by the
+**Rosetta, file mount, audio, and the memory balloon are delivered** through the bundled,
+entitlement-signed `dory-vm` helper, surfaced by the
 `dory` CLI (`dory vm`). The default shared-VM engine is untouched. (A GUI entry point for the
 in-process engine is not yet wired up.)
 

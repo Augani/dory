@@ -1,0 +1,14 @@
+name: ubuntu-dev
+summary: Ubuntu development base with common build and network tools
+distro: ubuntu:24.04
+arch: arm64
+resources: {cpus: 4, memory: 8GiB, disk: 60GiB}
+packages: [build-essential, git, curl, ca-certificates, pkg-config, libssl-dev, jq, vim]
+runcmd: []
+mounts:
+  - ~/Projects:~/Projects
+ports: [3000, 8080]
+env: {}
+ssh: {agent_forward: true}
+docker: false
+user: {name: "{{host_user}}", sudo: true, shell: /bin/bash}

@@ -8,7 +8,7 @@ enum KubeError: Error, Sendable, Equatable {
 
 struct KubeClient: Sendable {
     var kubectlPath: String? {
-        Shell.find("kubectl", candidates: ["/usr/local/bin/kubectl", "/opt/homebrew/bin/kubectl"])
+        HostTools.kubectl()
     }
 
     static func kubeconfig() -> String? {

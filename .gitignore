@@ -45,6 +45,9 @@ ExportOptions.plist
 # Release pipeline output
 release-build/
 
+# Guest build artifacts (kernel Image, compiled agent) — rebuilt via guest/kernel/build.sh + guest/agent/build.sh
+guest/out/
+
 # Dory runtime data
 .dory/
 
@@ -65,3 +68,6 @@ cloud/
 
 # Website build output (source lives in website/; built into docs/ via `npm run build`)
 docs-build/
+
+# Go build artifact (build.sh writes the real output to guest/out/)
+guest/agent/agent

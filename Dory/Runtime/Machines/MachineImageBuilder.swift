@@ -15,7 +15,7 @@ enum MachineImageBuilder {
             FROM \(distro.baseImage)
             ENV DEBIAN_FRONTEND=noninteractive
             RUN apt-get update \\
-             && apt-get install -y --no-install-recommends systemd systemd-sysv dbus dbus-user-session sudo bash openssh-server ca-certificates iproute2 iputils-ping curl \\
+             && apt-get install -y --no-install-recommends systemd systemd-sysv dbus dbus-user-session sudo bash openssh-server netcat-openbsd ca-certificates iproute2 iputils-ping curl \\
              && rm -rf /var/lib/apt/lists/* \\
              && (systemctl mask systemd-resolved.service systemd-networkd.service || true)
             STOPSIGNAL SIGRTMIN+3
@@ -24,7 +24,7 @@ enum MachineImageBuilder {
         case .dnf:
             return """
             FROM \(distro.baseImage)
-            RUN dnf -y install systemd sudo passwd iproute procps-ng openssh-server \\
+            RUN dnf -y install systemd sudo passwd iproute procps-ng openssh-server nmap-ncat \\
              && dnf clean all \\
              && (systemctl mask systemd-resolved.service || true)
             STOPSIGNAL SIGRTMIN+3
@@ -34,7 +34,7 @@ enum MachineImageBuilder {
             return """
             FROM \(distro.baseImage)
             RUN zypper --non-interactive --gpg-auto-import-keys refresh \\
-             && zypper -n install systemd sudo iproute2 openssh \\
+             && zypper -n install systemd sudo iproute2 openssh netcat-openbsd \\
              && zypper clean -a \\
              && (systemctl mask systemd-resolved.service || true)
             STOPSIGNAL SIGRTMIN+3
@@ -43,13 +43,13 @@ enum MachineImageBuilder {
         case .apk:
             return """
             FROM \(distro.baseImage)
-            RUN apk add --no-cache bash sudo shadow iproute2 ca-certificates openssh
+            RUN apk add --no-cache bash sudo shadow iproute2 ca-certificates openssh netcat-openbsd
             CMD ["tail", "-f", "/dev/null"]
             """
         case .pacman:
             return """
             FROM \(distro.baseImage)
-            RUN pacman -Sy --noconfirm --disable-sandbox --needed sudo iproute2 openssh \\
+            RUN pacman -Sy --noconfirm --disable-sandbox --needed sudo iproute2 openssh gnu-netcat \\
              && (pacman -Scc --noconfirm --disable-sandbox || true)
             STOPSIGNAL SIGRTMIN+3
             CMD ["/sbin/init"]
@@ -89,9 +89,16 @@ enum MachineImageBuilder {
     static func recipeTag(_ recipe: DevRecipe, arch: MachineArch) -> String { "dory-recipe/\(recipe.id)-\(arch.rawValue)" }
 
     static func recipeDockerfile(baseImageTag: String, recipe: DevRecipe) -> String {
+        recipeDockerfile(baseImageTag: baseImageTag, recipe: recipe, packageManager: .apt)
+    }
+
+    static func recipeDockerfile(baseImageTag: String, recipe: DevRecipe, packageManager: MachineDistro.PackageManager) -> String {
         """
         FROM \(baseImageTag)
-        RUN \(recipe.install)
+        RUN <<'DORY_RECIPE'
+        set -e
+        \(recipe.provisionScript(packageManager: packageManager))
+        DORY_RECIPE
         """
     }
 
@@ -104,7 +111,8 @@ enum MachineImageBuilder {
         let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("dory-recipe-\(recipe.id)-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: dir) }
-        try recipeDockerfile(baseImageTag: baseTag, recipe: recipe).write(to: dir.appendingPathComponent("Dockerfile"), atomically: true, encoding: .utf8)
+        try recipeDockerfile(baseImageTag: baseTag, recipe: recipe, packageManager: distro.pkg)
+            .write(to: dir.appendingPathComponent("Dockerfile"), atomically: true, encoding: .utf8)
         guard let tar = AppStore.tarDirectory(dir) else { throw MachineError.imageBuildFailed("Could not package recipe context") }
         let encodedTag = DockerImageOps.queryValue(tag)
         let encodedPlatform = DockerImageOps.queryValue(arch.platform)

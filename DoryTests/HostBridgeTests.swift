@@ -159,6 +159,7 @@ struct HostBridgeTests {
         let watcher = HostBridgeWatcher(bridgeRoot: root, forwarder: fwd, enabled: true) { _ in }
         watcher.startWatching(machine: "dev")
         #expect(watcher.watchedMachines() == ["dev"])
+        #expect(FileManager.default.fileExists(atPath: root.appendingPathComponent("dev/credentials").path))
         watcher.stopWatching(machine: "dev")
         #expect(watcher.watchedMachines().isEmpty)
         fwd.stopAll()
@@ -194,6 +195,8 @@ struct HostBridgeTests {
         let body = MachineService.createBody(name: "dev", distro: MachineDistro.forFamily("ubuntu")!, arch: .arm64, imageTag: "img", keepaliveOnly: true)
         let env = body["Env"] as! [String]
         #expect(env.contains("BROWSER=dory-open"))
+        #expect(env.contains("SSH_AUTH_SOCK=/opt/dory/bridge/credentials/ssh-agent.sock"))
+        #expect(env.contains("GIT_ASKPASS=/usr/local/bin/dory-git-askpass"))
     }
 
     @Test func bridgeHostDirIsUnderDoryBridge() {

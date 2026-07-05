@@ -9,9 +9,7 @@ enum DockerContext {
     private static let previousKey = "dory.previousDockerContext"
 
     private static func dockerBinary() -> String? {
-        Shell.find("docker", candidates: [
-            "/opt/homebrew/bin/docker", "/usr/local/bin/docker", "/usr/bin/docker",
-        ])
+        HostTools.docker()
     }
 
     static func activate(socketPath: String) async {
