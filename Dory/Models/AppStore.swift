@@ -108,7 +108,8 @@ final class AppStore {
         let table = domainTable
         reverseProxy = DoryReverseProxy { host in table.backend(for: host) }
         let env = ProcessInfo.processInfo.environment
-        let realLaunch = env["DORY_SECTION"] == nil && env["DORY_APPEARANCE"] == nil && env["XCTestConfigurationFilePath"] == nil
+        let realLaunch = env["DORY_SECTION"] == nil && env["DORY_APPEARANCE"] == nil
+            && env["XCTestConfigurationFilePath"] == nil && env["DORY_UI_TEST"] != "1"
         if realLaunch {
             if let raw = UserDefaults.standard.string(forKey: Self.appearanceKey), let saved = DoryAppearance(rawValue: raw) {
                 appearance = saved
@@ -159,9 +160,9 @@ final class AppStore {
             if parsed == .inspectNetwork { inspectedNetwork = networks.first(where: { $0.containerCount > 0 }) ?? networks.first }
         }
         let snapshotMode = env["DORY_SECTION"] != nil || env["DORY_SHEET"] != nil || env["DORY_DETAIL_TAB"] != nil
-        let testMode = env["XCTestConfigurationFilePath"] != nil || env["XCTestSessionIdentifier"] != nil
+        let testMode = env["XCTestConfigurationFilePath"] != nil || env["XCTestSessionIdentifier"] != nil || env["DORY_UI_TEST"] == "1"
         isSnapshotMode = snapshotMode
-        if snapshotMode { launchSplashComplete = true }
+        if snapshotMode || testMode { launchSplashComplete = true }
         if env["DORY_ONBOARDING"] == "1" {
             onboarding = true
         } else if !UserDefaults.standard.bool(forKey: Self.onboardingDoneKey) && !snapshotMode && !testMode {
@@ -180,7 +181,13 @@ final class AppStore {
     static let containerDetailWidthKey = "dory.containerDetailWidth"
     static let kubernetesVersionKey = "dory.kubernetesVersion"
     nonisolated static let dockerCompatibleEngineHint = "Start Dory's shared VM in Settings > Docker Engine, or run a local Docker-compatible engine such as Docker Desktop, Colima, Rancher Desktop, Podman, or OrbStack."
-    nonisolated static let dockerCompatibleFallbackHint = "Dory can still run on this Mac by proxying a local Docker-compatible engine such as Docker Desktop, Colima, Rancher Desktop, Podman, or OrbStack."
+    nonisolated static var dockerCompatibleFallbackHint: String {
+        if MacHostPlatform.current().isAppleSilicon {
+            "Dory can still run on this Mac by proxying a local Docker-compatible engine such as Docker Desktop, Colima, Rancher Desktop, Podman, or OrbStack."
+        } else {
+            "Dory's built-in Intel engine needs bundled engine assets and Hypervisor.framework support. This install can still proxy a local Docker-compatible engine such as Colima, Docker Desktop, Rancher Desktop, Podman, or OrbStack."
+        }
+    }
 
     nonisolated static func dockerCompatibleEngineRequired(_ feature: String) -> String {
         "\(feature) needs Dory's shared VM or a Docker-compatible engine. \(dockerCompatibleEngineHint)"
@@ -214,9 +221,11 @@ final class AppStore {
         Task {
             if on, runtimeKind != .mock {
                 await DockerContext.activate(socketPath: shimSocketPath)
+                HostDockerCLI.install()
                 await detectDockerHostConflict()
             } else if !on {
                 DockerContext.deactivateSync()
+                HostDockerCLI.remove()
                 dockerHostConflict = nil
             }
         }
@@ -231,6 +240,7 @@ final class AppStore {
     private var isAutomationContext: Bool {
         let env = ProcessInfo.processInfo.environment
         return env["XCTestConfigurationFilePath"] != nil || env["XCTestSessionIdentifier"] != nil
+            || env["DORY_UI_TEST"] == "1"
             || env["DORY_SECTION"] != nil || env["DORY_SHEET"] != nil || env["DORY_DETAIL_TAB"] != nil
             || env["DORY_APPEARANCE"] != nil || env["DORY_ONBOARDING"] != nil
     }
@@ -349,9 +359,9 @@ final class AppStore {
                 loadState = .engineOff
             }
         default:
-            // Dory's own engine (dory-hv) is the default: a standalone, OrbStack-style daemon that
-            // ships everything it needs. On hardware it can't run (Intel / older macOS) fall back to
-            // fronting an existing Docker-compatible socket.
+            // Dory's own engine is the default: a standalone, OrbStack-style daemon that ships
+            // everything it needs. If the built-in engine cannot run on this host or install,
+            // fall back to fronting an existing Docker-compatible socket.
             let support = refreshSharedVMSupport()
             if support.isSupported {
                 sharedVMStatus = "Starting Dory's engine…"
@@ -376,6 +386,7 @@ final class AppStore {
         startPortForwarding()
         if routeDockerCLI && runtimeKind != .mock {
             await DockerContext.activate(socketPath: shimSocketPath)
+            HostDockerCLI.install()
             await detectDockerHostConflict()
         }
         startAutoRefresh()

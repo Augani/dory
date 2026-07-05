@@ -33,8 +33,9 @@ final class DoryUITests: XCTestCase {
     }
 
     private func makeApp() -> XCUIApplication {
-        let app = XCUIApplication(bundleIdentifier: "com.pythonxi.Dory")
+        let app = XCUIApplication()
         app.launchEnvironment["DORY_RUNTIME"] = "mock"
+        app.launchEnvironment["DORY_UI_TEST"] = "1"
         return app
     }
 }

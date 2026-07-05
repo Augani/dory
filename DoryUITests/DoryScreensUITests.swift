@@ -5,8 +5,9 @@ final class DoryScreensUITests: XCTestCase {
 
     override func setUpWithError() throws {
         continueAfterFailure = false
-        app = XCUIApplication(bundleIdentifier: "com.pythonxi.Dory")
+        app = XCUIApplication()
         app.launchEnvironment["DORY_RUNTIME"] = "mock"
+        app.launchEnvironment["DORY_UI_TEST"] = "1"
         if app.state != .notRunning {
             app.terminate()
         }

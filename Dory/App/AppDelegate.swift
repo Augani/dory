@@ -6,6 +6,7 @@ final class DoryAppDelegate: NSObject, NSApplicationDelegate {
     static var isTestHost: Bool {
         ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
             || ProcessInfo.processInfo.environment["XCTestSessionIdentifier"] != nil
+            || ProcessInfo.processInfo.environment["DORY_UI_TEST"] == "1"
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {

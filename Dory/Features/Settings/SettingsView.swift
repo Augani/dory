@@ -228,7 +228,7 @@ struct SettingsView: View {
             VStack(spacing: 0) {
                 toggleRow("Launch Dory at login", "Start the engine automatically when you log in.", isOn: Binding(get: { store.launchAtLogin }, set: { store.setLaunchAtLogin($0) }), divider: true)
                 toggleRow("Show menu bar icon", store.isAgentMode ? "Always on — Dory runs in the menu bar in background mode." : "Quick access to containers from the menu bar.", isOn: Binding(get: { store.showMenuBarIcon }, set: { store.setShowMenuBarIcon($0) }), divider: true, disabled: store.isAgentMode)
-                toggleRow("Route the docker command to Dory", "While Dory is running, make a plain `docker` / `docker compose` use Dory's engine (sets the active docker context).", isOn: Binding(get: { store.routeDockerCLI }, set: { store.setRouteDockerCLI($0) }), divider: false)
+                toggleRow("Set up the docker command", "Installs `docker` and `docker compose` for your terminal (into `~/.dory/bin`, added to your PATH) and points them at Dory's engine, so `docker` just works with nothing else installed. No admin needed; turn off to remove.", isOn: Binding(get: { store.routeDockerCLI }, set: { store.setRouteDockerCLI($0) }), divider: false)
             }
             .background(p.bgElevated, in: RoundedRectangle(cornerRadius: 11))
             .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(p.border))
@@ -410,7 +410,7 @@ struct SettingsView: View {
 
             groupLabel("DORY SHARED VM")
             VStack(alignment: .leading, spacing: 12) {
-                Text("Run every container in one shared Linux VM — like OrbStack — on Dory's own engine. A standalone daemon that ships its own kernel and networking, so it needs no Docker, OrbStack, or Apple container toolchain, and reclaims memory back to macOS as workloads idle. Requires macOS 15 or later on Apple silicon; older Macs can use a Docker-compatible local engine.")
+                Text("Run every container in one shared Linux VM — like OrbStack — on Dory's own engine. A standalone daemon that ships its own kernel and networking, so it needs no Docker, OrbStack, or Apple container toolchain, and reclaims memory back to macOS as workloads idle. Requires macOS 15 or later on Apple silicon or Intel; installs without bundled engine assets can use a Docker-compatible local engine.")
                     .font(.system(size: 12.5)).foregroundStyle(p.text2).lineSpacing(4)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 Button {
@@ -438,21 +438,23 @@ struct SettingsView: View {
             .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(p.border))
             .padding(.bottom, 22)
 
-            groupLabel("X86 / AMD64")
-            VStack(spacing: 0) {
-                toggleRow(
-                    "Run x86 images with Rosetta",
-                    "Use Apple's Rosetta to run amd64 images (SQL Server, Oracle, older x86 builds) reliably and fast. Switches Dory's engine to Virtualization.framework, which uses more memory than the default engine — turn off when you don't need x86.",
-                    isOn: Binding(get: { store.rosettaX86Enabled }, set: { on in Task { await store.setRosettaX86(on) } }),
-                    divider: false,
-                    disabled: !onShared
-                )
-            }
-            .background(p.bgElevated, in: RoundedRectangle(cornerRadius: 11))
-            .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(p.border))
-            if !onShared {
-                Text("Switch to Dory's shared engine above to use Rosetta x86.")
-                    .font(.system(size: 11.5)).foregroundStyle(p.text3).padding(.top, 8)
+            if MacHostPlatform.current().isAppleSilicon {
+                groupLabel("X86 / AMD64")
+                VStack(spacing: 0) {
+                    toggleRow(
+                        "Run x86 images with Rosetta",
+                        "Use Apple's Rosetta to run amd64 images (SQL Server, Oracle, older x86 builds) reliably and fast. Switches Dory's engine to Virtualization.framework, which uses more memory than the default engine. Turn off when you don't need x86.",
+                        isOn: Binding(get: { store.rosettaX86Enabled }, set: { on in Task { await store.setRosettaX86(on) } }),
+                        divider: false,
+                        disabled: !onShared
+                    )
+                }
+                .background(p.bgElevated, in: RoundedRectangle(cornerRadius: 11))
+                .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(p.border))
+                if !onShared {
+                    Text("Switch to Dory's shared engine above to use Rosetta x86.")
+                        .font(.system(size: 11.5)).foregroundStyle(p.text3).padding(.top, 8)
+                }
             }
         }
     }
@@ -510,7 +512,7 @@ struct SettingsView: View {
             .opacity(store.domainsEnabled ? 1 : 0.55)
             .allowsHitTesting(store.domainsEnabled)
 
-            Text("Published container ports stay reachable at localhost regardless of this setting. Default bridge subnet 192.168.215.0/24.")
+            Text("Published container ports stay reachable at localhost regardless of this setting. Containers use Docker's default bridge network (172.17.0.0/16).")
                 .font(.system(size: 11.5)).foregroundStyle(p.text3).lineSpacing(3)
                 .padding(.top, 14)
         }
