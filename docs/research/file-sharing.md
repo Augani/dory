@@ -77,6 +77,28 @@ real 40 bytes (every SETUPMAPPING was rejected as a short frame); and mapping th
 (Apple's `hv_vm_map` rejects a read-only host mapping) while keeping the guest's stage-2 protection
 read-only. With DAX, the raw 4k-randread number is 1,074k IOPS — the round-trip is gone.
 
+## Zero-config sharing (the OrbStack "just works" default)
+
+The benchmarks above ran through a manual `dory-hv boot --share` harness. In the app, sharing is
+now wired automatically: the engine shares the user's home directory at its identical guest path
+(`home=$HOME:rw:at=$HOME`), so a bind mount like `docker run -v ~/project:/app` resolves with no
+configuration — the guest sees `~/project` at the same path, which is the virtio-fs mount. This uses
+**plain** virtio-fs, not DAX: plain matches OrbStack on realistic cache-resident workloads and has
+none of DAX's window-thrashing or read-only-file caveats, so it is safe across the whole home tree.
+DAX stays opt-in (`:dax`) for workloads that want the raw-plane win.
+
+Verified end to end on a real dory-hv guest: a host dir mounted at `/Users/dorytest` read a host
+file and a guest write-back persisted to the host.
+
+## Write correctness
+
+Writes go through the same FUSE server for both plain and DAX shares. `SETATTR` now honors
+`FATTR_SIZE`, so `truncate()` and `O_TRUNC` opens actually resize the host file — previously the size
+field was dropped and an overwrite left a stale tail (we do not negotiate `atomic_o_trunc`, so the
+guest relies on a separate `SETATTR size=0` for every `O_TRUNC`). Verified in a guest with
+`-o dax=always`: O_TRUNC (41→3 bytes), ftruncate shrink/grow, extending write (0→4 MiB), create,
+in-place overwrite, and write/read coherency all persist correctly to the host.
+
 ## Reproducing
 
 ```sh
