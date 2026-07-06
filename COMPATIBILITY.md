@@ -1,8 +1,10 @@
 # Dory Compatibility Matrix
 
-This is the honest, maintained statement of what Dory does. It reflects the **current
-implementation**, which talks to a Docker Engine API backend through a pluggable runtime layer
-designed to also target Apple's `container` engine when present.
+This is the honest, maintained statement of what Dory does. The shipping standalone path is
+Dory's bundled shared VM: one Linux VM, Dory's own socket, bundled Docker/Compose/kubectl tools,
+and no host Docker install. The runtime layer still keeps Apple `container` as a detected
+comparison target and future backend, but it is not yet a feature-equivalent selectable path for
+Compose, Kubernetes, and Linux machines.
 
 Legend: ✅ works · 🟡 works with Dory-specific behavior · 🛠️ implemented, activation gated ·
 ⛔ unsupported / not yet · 🔒 blocked by an external gate.
@@ -12,8 +14,8 @@ Legend: ✅ works · 🟡 works with Dory-specific behavior · 🛠️ implement
 On the Docker backend, Dory's socket is a **full transparent proxy**: every request is forwarded
 verbatim and the response streamed back unchanged. It is uniformly correct for normal, streaming, and
 hijacked (upgrade) endpoints, with all request headers preserved (registry auth, etc.). The
-per-endpoint translation below is what the **Apple `container`** and mock backends present, since
-they have no Docker socket to forward to.
+per-endpoint translation notes are retained for the mock runtime and the future Apple `container`
+backend model; the shipping shared-VM path fronts a real `dockerd` socket.
 
 | Capability | Status | Notes |
 |---|---|---|
@@ -62,9 +64,9 @@ they have no Docker socket to forward to.
 
 | Backend | Standalone? | Memory model | Notes |
 |---|---|---|---|
-| **Shared VM** (`DORY_RUNTIME=shared`) | ✅ yes | **One shared VM for all containers** (OrbStack-style) | Dory provisions one persistent Linux micro-VM running `dockerd` (DinD), publishes its socket to the host, and drives it with the verified Docker runtime. Apple silicon uses the native `dory-hv` tier today. Intel prefers the raw `dory-hv` tier when signed PVH kernel/initfs assets are bundled, then resolves to the Virtualization.framework shared-engine tier when amd64 VZ assets and the helper are bundled, with Docker-compatible proxy fallback when assets or hypervisor support are missing. Verified on Apple silicon: standalone (engine 29.5.3, no OrbStack), workloads share one VM. Measured on Apple silicon: 2 containers = **1 VM @ ~122 MB** vs **~574 MB** as 3 per-container VMs. Persistent `/var/lib/docker` (overlayfs preserved across restarts); configurable CPUs/memory; idempotent reuse. |
+| **Shared VM** (`DORY_RUNTIME=shared`) | ✅ yes | **One shared VM for all containers** (OrbStack-style) | Dory provisions one persistent Linux micro-VM running `dockerd` (DinD), publishes its socket to the host, and drives it with the verified Docker runtime. Apple silicon uses the native `dory-hv` tier today. Intel prefers the raw `dory-hv` tier when signed PVH kernel/initfs assets are bundled, then resolves to the Virtualization.framework shared-engine tier when amd64 VZ assets and the helper are bundled, with Docker-compatible proxy fallback when assets or hypervisor support are missing. Verified on Apple silicon: standalone (engine 29.6.1, no Docker Desktop/OrbStack/Colima), workloads share one VM. Measured on Apple silicon: 2 containers = **1 VM @ ~122 MB** vs **~574 MB** as 3 per-container VMs. Persistent `/var/lib/docker` (overlayfs preserved across restarts); configurable CPUs/memory; idempotent reuse; memory is returned to macOS as workloads idle. |
 | **Docker-compatible host engine** | ❌ proxies host engine | Docker Desktop / OrbStack / Colima / Rancher Desktop / Podman | Transparent proxy to the detected local engine socket (`DOCKER_HOST`, Docker contexts, and common engine sockets). This is the fallback path for unsupported hosts, missing bundled assets, and installs where the built-in engine is disabled. Compatibility follows the installed host engine. Companion GUI, not standalone. |
-| **Apple `container`** | ✅ yes | **One VM per container** | Native per-container micro-VMs; heavier for multi-container stacks. Requires macOS 26+ on Apple silicon and is runtime-gated. |
+| **Apple `container`** | 🛠️ detected / planned | **One VM per container** | Native per-container micro-VMs; useful as a comparison target, but not yet wired as a feature-equivalent selectable backend for Dory's Compose, Kubernetes, Linux machines, and Docker socket UX. Requires macOS 26+ on Apple silicon when that backend ships. |
 
 ## OrbStack parity surface
 
@@ -74,11 +76,12 @@ CA trust install remain consent-gated, the same one-time admin grant OrbStack ne
 | Capability | Status | Notes |
 |---|---|---|
 | Native GUI (menu bar + main window) | ✅ | All screens, both themes; one-click toggles for k8s/machines/shared-VM |
-| Standalone engine + shared-VM memory | ✅ | Default backend; Dory runs its own `dockerd` in one VM, no OrbStack/Docker. ~4.7× leaner than per-container |
+| Standalone engine + shared-VM memory | ✅ | Default backend; Dory runs its own `dockerd` in one VM, no OrbStack/Docker/Colima/Apple container install. ~4.7× leaner than per-container |
 | `localhost` access to published ports | ✅ | `HostPortForwarder`; verified `localhost:port → 200`, dynamic add/teardown |
 | Automatic `*.dory.local` domains | ✅ | `DoryDNS` resolver + `DoryReverseProxy`; verified `http://name.dory.local → 200`. System-wide via consent script |
 | Automatic local HTTPS | ✅ | `DoryTLSProxy` terminates TLS with a `LocalCA` identity; verified `https://name.dory.local → 200` |
 | **Bind-mount file sharing** | ✅ | Home dir shared into the VM (virtiofs); verified `docker run -v ~/proj:/app` reads/writes host files live |
+| Apple GPU AI workloads | ✅ host-service bridge | Containers can reach Metal-backed macOS services at `host.dory.internal` on ports `11434` (Ollama), `1234` (LM Studio/OpenAI-compatible local servers), and `18190` (readiness/custom). Verified from the default Docker bridge and a user-defined bridge network. In-guest GPU compute is an experimental virtio-gpu Venus/Vulkan track, not raw Apple GPU passthrough |
 | One-click Kubernetes | ✅ | `KubernetesProvisioner` runs k3s in the shared VM; verified host `kubectl` + pod deploy; GUI "Enable" button |
 | Linux machines (Ubuntu/Debian/Fedora/Alpine) | ✅ | `MachineProvider` via `container machine`; verified real machine create/list/start/stop/delete; GUI picker |
 | Non-native CPU emulation | ✅ (qemu, with limits) | Auto-installs qemu binfmt for the opposite host architecture: amd64 on Apple silicon, arm64 on Intel. Apple silicon verification: `--platform linux/amd64` reports `x86_64`. Intel arm64 emulation is wired symmetrically and awaits the Intel readiness gate. **Heavy amd64 workloads can segfault** under qemu-user on the default `dory-hv` engine - SQL Server (`mcr.microsoft.com/mssql/server`), Oracle, and some AVX/threading-heavy images hit `qemu: uncaught target signal 11`. This is a qemu-user emulation limit, not a Dory bug, and Rosetta cannot run on `dory-hv` (raw Hypervisor.framework). The fast x86 path on Apple silicon is the Virtualization.framework helper: `dory vm --arch amd64 --rosetta` / `DORY_ENGINE_ROSETTA=1`. (GitHub #3) |
@@ -131,17 +134,25 @@ The goal is a single download. Status:
 
 | Component | Bundled? | How |
 |---|---|---|
-| In-process engine (`dory-vm` helper) | ✅ verified | `scripts/bundle-engine.sh` builds + signs the `dory-vmboot` helper (links Apple's `containerization` framework, ~100 MB) into `Contents/Helpers/dory-vm` with the `com.apple.security.virtualization` entitlement. |
-| VM kernel + initfs | ✅ verified | Compressed into `Contents/Resources/dory-vm-kernel.zst` (~6 MB) + `dory-vm-initfs.ext4.zst` (~30 MB); decompressed once on first launch via the bundled `zstd`. |
-| Engine image (`docker:dind`) | pulled on first run | NOT bundled (OrbStack model): the helper pulls it on first boot. `DORY_BUNDLE_LEGACY=1` bundles it + the `container` toolchain for a fully-offline build. |
-| `docker` CLI | not needed | Dory hosts a Docker-compatible socket and points the `docker` context at it, so `docker` just works; the CLI itself isn't bundled. |
+| In-process engine (`dory-hv` + `dory-vm` helpers) | ✅ verified | `scripts/bundle-engine.sh` builds + signs the Hypervisor.framework `dory-hv` helper, `gvproxy`, and the Virtualization.framework fallback helper into `Contents/Helpers` with the required entitlements. |
+| VM kernel + initfs | ✅ verified | Compressed into `Contents/Resources/*.lzfse`; decompressed once on first launch with Apple's Compression framework. No external `zstd` binary or dylib is required. |
+| Engine rootfs / `dockerd` payload | ✅ bundled for offline releases; internal one-time fetch in dev bundles | Offline releases include `dory-engine-rootfs.ext4.lzfse` when the release runner provides `DORY_ENGINE_ROOTFS` or a prepared rootfs. Development bundles can still fetch `docker:dind` once internally on first boot. Neither path requires Docker Desktop, Colima, OrbStack, Homebrew, or Apple `container` on the user's Mac. |
+| `docker` CLI + Compose + `kubectl` | ✅ bundled | `Contents/Helpers/docker`, `docker-compose`, and `kubectl` ship with the app. Optional shell integration links them into `~/.dory/bin` and installs the Compose plugin into `~/.docker/cli-plugins`, all per-user and reversible. |
 | macOS 14+ (Sonoma) | app requirement | The SwiftUI app and Docker-compatible host-engine mode build and run with a macOS 14 deployment target, matching OrbStack's floor. The app links no Virtualization/Hypervisor code and uses no macOS-15-only API. |
 | macOS 15+ (Sequoia) | built-in engine requirement | The bundled `dory-hv`/`dory-vm` engine needs macOS 15: the Apple-silicon path uses the in-kernel GIC interrupt API (`hv_gic_*`) introduced in macOS 15, and the engine package plus its Virtualization USB config are 15.0. On macOS 14 Dory runs in Docker-compatible proxy mode. |
 | Apple silicon built-in engine | verified standalone engine | The native `dory-hv` shared engine is verified on Apple silicon. |
 | Intel built-in engine | beta, hardware-gated | The universal app, raw `dory-hv` x86 selection, PVH asset selection, amd64 VZ fallback assets, and Virtualization.framework tier routing are implemented. Full Intel readiness still requires a physical Intel Mac with Hypervisor.framework support. |
-| macOS 26+ on Apple silicon | Apple `container` backend requirement | Apple's per-container `container` backend requires it; Dory gates that backend at runtime. |
+| macOS 26+ on Apple silicon | Apple `container` backend requirement | Apple's per-container `container` backend requires it; Dory will gate that backend at runtime when the feature-equivalent path ships. |
 
-So: **a self-contained standalone Dory.app works on Apple silicon**, verified end-to-end (`DORY_BUNDLE_ENGINE=1`): a re-signed bundle that passes `codesign --verify --deep --strict`, **~155 MB on disk / ~80 MB zipped** (the engine helper dominates; the "image pulled on first run" keeps it from being larger), requiring no Homebrew, no Docker Hub, no Docker Desktop. On Intel, the raw `dory-hv` tier is wired as a beta when PVH assets are bundled, with the Virtualization.framework helper as the amd64 fallback; until the Intel hardware readiness gate is green, Dory still has the Docker-compatible fallback path. Building a self-contained bundle needs the guest kernel/initfs assets available on the release runner.
+So: **a self-contained standalone Dory.app works on Apple silicon**, verified end-to-end
+(`DORY_BUNDLE_ENGINE=1`): a re-signed bundle that passes `codesign --verify --deep --strict`,
+ships the helpers, CLIs, kernel/initfs, networking, and optional offline engine rootfs, and
+requires no Homebrew, no Docker Desktop, no Colima, no OrbStack, and no Apple `container` install.
+On Intel, the raw `dory-hv` tier is wired as a beta when PVH assets are bundled, with the
+Virtualization.framework helper as the amd64 fallback; until the Intel hardware readiness gate is
+green, Dory still has the Docker-compatible fallback path. Building a self-contained bundle needs
+the guest kernel/initfs assets available on the release runner, and a fully offline first boot also
+needs a prepared engine rootfs.
 
 ## Architectural / environment notes
 

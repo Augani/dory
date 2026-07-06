@@ -56,11 +56,14 @@ cp -R "$ARCHIVE/Products/Applications/Dory.app" "$EXPORT_DIR/"
 APP="$EXPORT_DIR/Dory.app"
 assert_universal_app_binary "$APP/Contents/MacOS/Dory"
 
-# Engine bundling is off by default. The app pulls the engine on first run. Set DORY_BUNDLE_ENGINE=1
-# for a self-contained app (needs the engine assets present locally).
-if [ "${DORY_BUNDLE_ENGINE:-0}" = "1" ]; then
+# Engine bundling is the release default: users should be able to install Dory.app on a clean Mac
+# without Docker Desktop, Colima, OrbStack, Homebrew, or Apple `container`. Set DORY_BUNDLE_ENGINE=0
+# only for tiny development artifacts.
+if [ "${DORY_BUNDLE_ENGINE:-1}" = "1" ]; then
   echo "==> Bundling the engine for a self-contained app..."
   scripts/bundle-engine.sh "$APP"
+else
+  echo "==> WARNING: producing a development app without bundled engine assets."
 fi
 
 echo "==> Signing (Developer ID + hardened runtime)..."

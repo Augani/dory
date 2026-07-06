@@ -1,0 +1,136 @@
+:root {
+  color-scheme: dark;
+  --bg: #08111f;
+  --panel: #101b2b;
+  --panel-2: #142239;
+  --text: #f6fbff;
+  --muted: #a8b9cb;
+  --line: rgba(255, 255, 255, 0.13);
+  --accent: #37c6ff;
+  --green: #5ee08f;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  min-height: 100%;
+  margin: 0;
+}
+
+body {
+  display: grid;
+  place-items: center;
+  background:
+    radial-gradient(circle at 30% 20%, rgba(55, 198, 255, 0.16), transparent 26rem),
+    linear-gradient(135deg, #08111f 0%, #111a2a 54%, #062016 100%);
+  color: var(--text);
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+.shell {
+  width: min(920px, calc(100vw - 40px));
+  padding: 44px;
+  border: 1px solid var(--line);
+  border-radius: 24px;
+  background: rgba(8, 17, 31, 0.82);
+  box-shadow: 0 30px 90px rgba(0, 0, 0, 0.35);
+}
+
+.hero {
+  display: grid;
+  grid-template-columns: 90px 1fr;
+  gap: 26px;
+  align-items: center;
+}
+
+.mark {
+  width: 86px;
+  height: 86px;
+  display: block;
+}
+
+.system {
+  margin: 0 0 10px;
+  color: var(--green);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+h1 {
+  margin: 0;
+  font-size: clamp(38px, 6vw, 68px);
+  line-height: 0.96;
+  letter-spacing: 0;
+}
+
+.lede {
+  max-width: 640px;
+  margin: 18px 0 0;
+  color: var(--muted);
+  font-size: 18px;
+  line-height: 1.55;
+}
+
+.panel {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 38px;
+}
+
+article {
+  min-height: 118px;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--panel);
+}
+
+strong,
+span {
+  display: block;
+}
+
+strong {
+  margin-bottom: 8px;
+  font-size: 14px;
+}
+
+article span,
+footer {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+footer {
+  display: flex;
+  gap: 9px;
+  align-items: center;
+  margin-top: 24px;
+}
+
+.pulse {
+  width: 9px;
+  height: 9px;
+  border-radius: 999px;
+  background: var(--green);
+  box-shadow: 0 0 0 6px rgba(94, 224, 143, 0.12);
+}
+
+@media (max-width: 760px) {
+  .shell {
+    width: min(100vw - 24px, 520px);
+    padding: 24px;
+  }
+
+  .hero,
+  .panel {
+    grid-template-columns: 1fr;
+  }
+}

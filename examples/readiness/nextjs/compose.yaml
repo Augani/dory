@@ -1,0 +1,12 @@
+services:
+  web:
+    build: .
+    image: dory/readiness-nextjs:local
+    container_name: dory-readiness-nextjs
+    labels:
+      dev.dory.readiness: "${DORY_READINESS_RUN_ID:-manual}"
+    environment:
+      HOSTNAME: "0.0.0.0"
+      PORT: "3000"
+    ports:
+      - "${DORY_NEXTJS_BIND:-127.0.0.1}:${DORY_NEXTJS_PORT:-18081}:3000"

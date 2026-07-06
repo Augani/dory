@@ -1,20 +1,28 @@
 #!/bin/bash
-# Make a built Dory.app self-contained so users download ONLY the app — no `brew install container`.
+# Make a built Dory.app self-contained so users download ONLY the app — no Docker Desktop, Colima,
+# OrbStack, Homebrew, or `brew install container` on the user's Mac.
 #
-# Default ("OrbStack model") injects the in-process engines and pulls the docker engine IMAGE on
-# first launch (the image is NOT bundled), the way OrbStack ships an app and fetches engine bits on
-# first run. Bundled payload:
+# Bundled payload:
 #   * Contents/Helpers/dory-hv    — Dory's own Hypervisor.framework VMM (elastic memory via free-page
 #                                   reporting, SMP, journaled data disk), signed with
 #                                   com.apple.security.hypervisor. Preferred when DORY_HV_ENGINE=1.
 #   * Contents/Helpers/gvproxy    — userspace networking (Apache-2.0) for the dory-hv engine.
 #   * Contents/Helpers/dory-vm    — the older Virtualization.framework helper (~100MB), fallback.
+#   * Contents/Helpers/docker, docker-compose, kubectl — host CLIs for clean-Mac Docker/Compose/k8s.
+#   * Contents/Frameworks/libvirglrenderer.dylib, libMoltenVK.dylib — optional experimental
+#                                   Venus/Vulkan renderer payload for in-guest GPU acceleration.
 #   * Contents/Resources/dory-hv-kernel-<arch>.lzfse       — LZFSE PVH/Image kernel for dory-hv.
 #   * Contents/Resources/dory-vm-kernel-<arch>.lzfse       — LZFSE Linux kernel.
 #   * Contents/Resources/dory-vm-initfs-<arch>.ext4.lzfse  — LZFSE VM initfs.
+#   * Contents/Resources/dory-agent-linux-<arch>           — guest relay/agent for host AI bridge
+#                                                           and future vsock control features.
+#   * Contents/Resources/dory-engine-rootfs.ext4.lzfse     — optional offline dockerd rootfs when
+#                                                           DORY_ENGINE_ROOTFS is provided, or when
+#                                                           a prepared ~/.dory/hv/rootfs-pristine.ext4 exists.
 #   Assets are compressed by dory-hv (LZFSE) and decompressed in-process at first launch via Apple's
 #   Compression framework — no external zstd binary or dylib is bundled.
-#   The docker engine image (docker:dind) is NOT bundled — the engine pulls it on first boot.
+#   If no engine rootfs is bundled, development builds fetch docker:dind once internally on first
+#   boot; that still requires no host Docker/container install.
 #
 # Set DORY_BUNDLE_LEGACY=1 to additionally inject the heavy offline payload (the docker:dind image
 # tarball + Apple's `container` toolchain) for the legacy SharedVMProvisioner path — adds ~600MB.
@@ -27,10 +35,221 @@ export PATH="/opt/homebrew/bin:$PATH"
 APP="${1:?usage: bundle-engine.sh <path/to/Dory.app>}"
 RESOURCES="$APP/Contents/Resources"
 HELPERS="$APP/Contents/Helpers"
+FRAMEWORKS="$APP/Contents/Frameworks"
 SUPPORT="$HOME/Library/Application Support/com.apple.container"
 
 [ -d "$APP" ] || { echo "no such app bundle: $APP"; exit 1; }
-mkdir -p "$RESOURCES" "$HELPERS"
+mkdir -p "$RESOURCES" "$HELPERS" "$FRAMEWORKS"
+
+sign_runtime_payload() {
+  local path="$1"
+  codesign --force --options runtime --timestamp -s "${DORY_SIGN_ID:-Developer ID Application}" "$path" 2>/dev/null \
+    || codesign --force -s - "$path"
+}
+
+fetch_url() {
+  local url="$1" out="$2"
+  curl -fsSL \
+    --retry "${DORY_CURL_RETRIES:-2}" \
+    --retry-delay "${DORY_CURL_RETRY_DELAY:-2}" \
+    --connect-timeout "${DORY_CURL_CONNECT_TIMEOUT:-15}" \
+    --max-time "${DORY_CURL_MAX_TIME:-240}" \
+    "$url" -o "$out"
+}
+
+fetch_url_stdout() {
+  local url="$1"
+  curl -fsSL \
+    --retry "${DORY_CURL_RETRIES:-2}" \
+    --retry-delay "${DORY_CURL_RETRY_DELAY:-2}" \
+    --connect-timeout "${DORY_CURL_CONNECT_TIMEOUT:-15}" \
+    --max-time "${DORY_CURL_MAX_TIME:-240}" \
+    "$url"
+}
+
+dylib_has_symbol() {
+  local dylib="$1" symbol="$2"
+  [ -f "$dylib" ] || return 1
+  nm -gU "$dylib" 2>/dev/null | grep -q "_$symbol"
+}
+
+find_compatible_virglrenderer() {
+  local cand
+  for cand in "${DORY_VIRGLRENDERER_PATH:-}" \
+              "${DORY_VIRGLRENDERER:-}" \
+              "$FRAMEWORKS/libvirglrenderer.dylib" \
+              /opt/homebrew/lib/libvirglrenderer.dylib \
+              /opt/homebrew/opt/virglrenderer/lib/libvirglrenderer.dylib \
+              /opt/homebrew/opt/virglrenderer/lib/libvirglrenderer.1.dylib \
+              /usr/local/lib/libvirglrenderer.dylib \
+              /usr/local/opt/virglrenderer/lib/libvirglrenderer.dylib \
+              /usr/local/opt/virglrenderer/lib/libvirglrenderer.1.dylib; do
+    [ -n "$cand" ] && [ -f "$cand" ] || continue
+    # The Venus path maps host-visible blobs via virgl_renderer_resource_get_map_ptr (the
+    # libkrun/krunkit model); the slp/krunkit build exports it. resource_map is the fallback.
+    if dylib_has_symbol "$cand" virgl_renderer_resource_get_map_ptr \
+       || dylib_has_symbol "$cand" virgl_renderer_resource_map; then
+      printf '%s\n' "$cand"
+      return 0
+    fi
+    echo "    WARNING: $cand exports no virgl_renderer_resource_get_map_ptr/resource_map; skipping for Venus GPU bundling" >&2
+  done
+  return 1
+}
+
+find_moltenvk_icd() {
+  local cand old_ifs
+  if [ -n "${DORY_MOLTENVK_ICD:-}" ] && [ -f "$DORY_MOLTENVK_ICD" ]; then
+    printf '%s\n' "$DORY_MOLTENVK_ICD"
+    return 0
+  fi
+  if [ -n "${VK_ICD_FILENAMES:-}" ]; then
+    old_ifs="$IFS"
+    IFS=':'
+    for cand in $VK_ICD_FILENAMES; do
+      IFS="$old_ifs"
+      [ -n "$cand" ] && [ -f "$cand" ] && { printf '%s\n' "$cand"; return 0; }
+      IFS=':'
+    done
+    IFS="$old_ifs"
+  fi
+  for cand in "$RESOURCES/vulkan/icd.d/MoltenVK_icd.json" \
+              /opt/homebrew/etc/vulkan/icd.d/MoltenVK_icd.json \
+              /opt/homebrew/share/vulkan/icd.d/MoltenVK_icd.json \
+              /usr/local/etc/vulkan/icd.d/MoltenVK_icd.json \
+              /usr/local/share/vulkan/icd.d/MoltenVK_icd.json; do
+    [ -n "$cand" ] && [ -f "$cand" ] && { printf '%s\n' "$cand"; return 0; }
+  done
+  return 1
+}
+
+find_moltenvk_dylib() {
+  local icd="${1:-}" library_path cand base_dir relative_dir
+  if [ -n "${DORY_MOLTENVK_DYLIB:-}" ] && [ -f "$DORY_MOLTENVK_DYLIB" ]; then
+    printf '%s\n' "$DORY_MOLTENVK_DYLIB"
+    return 0
+  fi
+  if [ -n "$icd" ] && [ -f "$icd" ]; then
+    library_path="$(sed -nE 's/.*"library_path"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' "$icd" | head -1)"
+    if [ -n "$library_path" ]; then
+      if [ "${library_path#/}" != "$library_path" ] && [ -f "$library_path" ]; then
+        printf '%s\n' "$library_path"
+        return 0
+      fi
+      base_dir="$(cd "$(dirname "$icd")" && pwd)"
+      relative_dir="$(dirname "$library_path")"
+      cand="$(cd "$base_dir/$relative_dir" 2>/dev/null && pwd)/$(basename "$library_path")"
+      [ -f "$cand" ] && { printf '%s\n' "$cand"; return 0; }
+    fi
+  fi
+  for cand in "$FRAMEWORKS/libMoltenVK.dylib" \
+              /opt/homebrew/lib/libMoltenVK.dylib \
+              /opt/homebrew/opt/molten-vk/lib/libMoltenVK.dylib \
+              /usr/local/lib/libMoltenVK.dylib \
+              /usr/local/opt/molten-vk/lib/libMoltenVK.dylib; do
+    [ -n "$cand" ] && [ -f "$cand" ] && { printf '%s\n' "$cand"; return 0; }
+  done
+  return 1
+}
+
+is_bundle_dependency() {
+  case "$1" in
+    /System/*|/usr/lib/*|@rpath/*|@loader_path/*|@executable_path/*) return 1 ;;
+    /opt/homebrew/*|/usr/local/*|/opt/local/*|/Library/Frameworks/*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+BUNDLED_DYLIBS=""
+copy_dylib_dependency_closure() {
+  local src="$1" dest_name="${2:-}" dest dep dep_base deps
+  [ -f "$src" ] || return 0
+  [ -n "$dest_name" ] || dest_name="$(basename "$src")"
+  case "|$BUNDLED_DYLIBS|" in
+    *"|$dest_name|"*) return 0 ;;
+  esac
+  BUNDLED_DYLIBS="${BUNDLED_DYLIBS}|$dest_name"
+  dest="$FRAMEWORKS/$dest_name"
+  cp "$src" "$dest"
+  chmod 0755 "$dest"
+  install_name_tool -id "@rpath/$dest_name" "$dest" 2>/dev/null || true
+  # @loader_path lets each bundled dylib resolve its @rpath siblings (all in Contents/Frameworks)
+  # without depending on the loading executable carrying an rpath to Frameworks — fully self-contained.
+  install_name_tool -add_rpath @loader_path "$dest" 2>/dev/null || true
+
+  deps="$(otool -L "$dest" 2>/dev/null | awk 'NR > 1 {print $1}')"
+  for dep in $deps; do
+    is_bundle_dependency "$dep" || continue
+    [ -f "$dep" ] || { echo "    WARNING: dependency $dep is referenced by $dest_name but was not found"; continue; }
+    dep_base="$(basename "$dep")"
+    copy_dylib_dependency_closure "$dep" "$dep_base"
+    install_name_tool -change "$dep" "@rpath/$dep_base" "$dest" 2>/dev/null || true
+  done
+}
+
+warn_or_fail_optional_venus() {
+  local message="$1"
+  if [ "${DORY_BUNDLE_VENUS_REQUIRED:-0}" = "1" ]; then
+    echo "    ERROR: $message" >&2
+    exit 1
+  fi
+  echo "    WARNING: $message"
+}
+
+bundle_venus_renderer() {
+  local virgl icd molten bundled_icd dylib
+  echo "==> Bundling experimental Venus GPU renderer (virglrenderer + MoltenVK)…"
+  if ! virgl="$(find_compatible_virglrenderer)"; then
+    warn_or_fail_optional_venus "no compatible libvirglrenderer.dylib found; install the slp/krunkit tap (brew install slp/krunkit/virglrenderer molten-vk libepoxy) or set DORY_VIRGLRENDERER_PATH to a Venus build that exports virgl_renderer_resource_get_map_ptr"
+    return 0
+  fi
+  if ! icd="$(find_moltenvk_icd)"; then
+    warn_or_fail_optional_venus "MoltenVK_icd.json not found; install/provide MoltenVK or set DORY_MOLTENVK_ICD"
+    return 0
+  fi
+  if ! molten="$(find_moltenvk_dylib "$icd")"; then
+    warn_or_fail_optional_venus "libMoltenVK.dylib not found; install/provide MoltenVK or set DORY_MOLTENVK_DYLIB"
+    return 0
+  fi
+
+  mkdir -p "$FRAMEWORKS" "$RESOURCES/vulkan/icd.d"
+  BUNDLED_DYLIBS=""
+  copy_dylib_dependency_closure "$virgl" libvirglrenderer.dylib
+  copy_dylib_dependency_closure "$molten" libMoltenVK.dylib
+
+  if ! dylib_has_symbol "$FRAMEWORKS/libvirglrenderer.dylib" virgl_renderer_resource_get_map_ptr \
+     && ! dylib_has_symbol "$FRAMEWORKS/libvirglrenderer.dylib" virgl_renderer_resource_map; then
+    warn_or_fail_optional_venus "bundled libvirglrenderer.dylib exports no virgl_renderer_resource_get_map_ptr/resource_map"
+    return 0
+  fi
+
+  bundled_icd="$RESOURCES/vulkan/icd.d/MoltenVK_icd.json"
+  if grep -q '"library_path"' "$icd"; then
+    sed -E 's#"library_path"[[:space:]]*:[[:space:]]*"[^"]+"#"library_path": "@executable_path/../Frameworks/libMoltenVK.dylib"#' "$icd" > "$bundled_icd"
+  else
+    cp "$icd" "$bundled_icd"
+    echo "    WARNING: bundled MoltenVK ICD has no library_path entry to rewrite"
+  fi
+
+  while IFS= read -r dylib; do
+    [ -n "$dylib" ] || continue
+    # Belt-and-suspenders self-containment: rewrite any remaining absolute homebrew/local dep to
+    # @rpath and guarantee a @loader_path rpath, so the bundled runtime never needs those libs on the
+    # user's Mac. Then (re-)sign, since the edits invalidate the signature.
+    for dep in $(otool -L "$dylib" | awk 'NR>1{print $1}'); do
+      case "$dep" in
+        /opt/homebrew/*|/usr/local/*)
+          install_name_tool -change "$dep" "@rpath/$(basename "$dep")" "$dylib" 2>/dev/null || true ;;
+      esac
+    done
+    otool -l "$dylib" | grep -q "path @loader_path " || install_name_tool -add_rpath @loader_path "$dylib" 2>/dev/null || true
+    sign_runtime_payload "$dylib"
+  done < <(find "$FRAMEWORKS" -maxdepth 1 -type f -name '*.dylib' -print)
+
+  echo "    bundled Frameworks/libvirglrenderer.dylib (from $virgl)"
+  echo "    bundled Frameworks/libMoltenVK.dylib (from $molten)"
+  echo "    bundled Resources/vulkan/icd.d/MoltenVK_icd.json"
+}
 
 find_debugfs() {
   for cand in "$(command -v debugfs 2>/dev/null)" \
@@ -271,7 +490,7 @@ fi
 if [ -z "$GVPROXY_SRC" ] || [ ! -x "$GVPROXY_SRC" ]; then
   echo "    fetching gvproxy $GVPROXY_VERSION (gvisor-tap-vsock release)…"
   GVPROXY_TMP="/tmp/dory-gvproxy-darwin"
-  if curl -fsSL "https://github.com/containers/gvisor-tap-vsock/releases/download/${GVPROXY_VERSION}/gvproxy-darwin" -o "$GVPROXY_TMP" 2>/dev/null; then
+  if fetch_url "https://github.com/containers/gvisor-tap-vsock/releases/download/${GVPROXY_VERSION}/gvproxy-darwin" "$GVPROXY_TMP" 2>/dev/null; then
     chmod +x "$GVPROXY_TMP"
     GVPROXY_SRC="$GVPROXY_TMP"
   fi
@@ -286,6 +505,12 @@ else
   exit 1
 fi
 
+if [ "${DORY_BUNDLE_VENUS:-1}" = "1" ]; then
+  bundle_venus_renderer
+else
+  echo "==> DORY_BUNDLE_VENUS=0: skipping experimental Venus GPU renderer bundling"
+fi
+
 echo "==> Bundling the host kubectl + docker CLIs (so k8s and the docker CLI need no separate install)…"
 # Host-side CLIs Dory shells out to: kubectl (Kubernetes browser/apply/scale/exec) and docker (the
 # optional `docker` context). Bundling them means a fresh download needs nothing installed. Prefer a
@@ -298,7 +523,7 @@ bundle_cli() {  # name  local-fallback-path  download-url
   local name="$1" local_src="$2" url="$3" tmp="/tmp/dory-cli-$1"
   if [ -x "$local_src" ]; then cp "$local_src" "$HELPERS/$name"
   elif command -v "$name" >/dev/null 2>&1; then cp "$(command -v "$name")" "$HELPERS/$name"
-  elif [ -n "$url" ]; then curl -fsSL "$url" -o "$tmp" 2>/dev/null && install -m0755 "$tmp" "$HELPERS/$name" && rm -f "$tmp"; fi
+  elif [ -n "$url" ]; then fetch_url "$url" "$tmp" 2>/dev/null && install -m0755 "$tmp" "$HELPERS/$name" && rm -f "$tmp"; fi
   if [ -x "$HELPERS/$name" ]; then
     codesign --force --options runtime --timestamp -s "${DORY_SIGN_ID:-Developer ID Application}" "$HELPERS/$name" 2>/dev/null \
       || codesign --force -s - "$HELPERS/$name"
@@ -308,12 +533,12 @@ bundle_cli() {  # name  local-fallback-path  download-url
   fi
 }
 
-KVER="$(curl -fsSL https://dl.k8s.io/release/stable.txt 2>/dev/null || echo v1.31.0)"
+KVER="$(fetch_url_stdout https://dl.k8s.io/release/stable.txt 2>/dev/null || echo v1.31.0)"
 bundle_cli kubectl "" "https://dl.k8s.io/release/${KVER}/bin/darwin/${KARCH}/kubectl"
 # The static docker CLI tarball contains a single `docker` binary.
 if [ ! -x "$HELPERS/docker" ]; then
   DOCKER_TGZ="/tmp/dory-docker.tgz"
-  if curl -fsSL "https://download.docker.com/mac/static/stable/${DARCH}/docker-27.5.1.tgz" -o "$DOCKER_TGZ" 2>/dev/null; then
+  if fetch_url "https://download.docker.com/mac/static/stable/${DARCH}/docker-27.5.1.tgz" "$DOCKER_TGZ" 2>/dev/null; then
     tar -xzf "$DOCKER_TGZ" -C /tmp docker/docker 2>/dev/null && install -m0755 /tmp/docker/docker "$HELPERS/docker" && rm -rf "$DOCKER_TGZ" /tmp/docker
   fi
 fi
@@ -321,7 +546,7 @@ bundle_cli docker "" ""
 # The docker compose v2 plugin, so `docker compose` works on the host with nothing else installed.
 if [ ! -x "$HELPERS/docker-compose" ]; then
   COMPOSE_VER="v2.32.4"
-  curl -fsSL "https://github.com/docker/compose/releases/download/${COMPOSE_VER}/docker-compose-darwin-${DARCH}" -o "$HELPERS/docker-compose" 2>/dev/null && chmod +x "$HELPERS/docker-compose"
+  fetch_url "https://github.com/docker/compose/releases/download/${COMPOSE_VER}/docker-compose-darwin-${DARCH}" "$HELPERS/docker-compose" 2>/dev/null && chmod +x "$HELPERS/docker-compose"
 fi
 bundle_cli docker-compose "" ""
 
@@ -359,12 +584,51 @@ hv_kernel_source_for_arch() {
   if [ "$arch" = "arm64" ] && [ "$arch" = "$(host_guest_arch)" ]; then ls -t "$SUPPORT"/kernels/vmlinux-* 2>/dev/null | head -1; fi
 }
 
+# Separate GPU-enabled kernel (built with DORY_EXPERIMENTAL_GPU=1 guest/kernel/build.sh, which now
+# writes /out/Image-gpu). Kept distinct so the default kernel stays headless per the project doc.
+hv_gpu_kernel_source_for_arch() {
+  local arch="$1" env_name
+  env_name="$(env_for_arch DORY_HV_GPU_KERNEL "$arch")"
+  if [ -n "${!env_name:-}" ]; then printf '%s\n' "${!env_name}"; return 0; fi
+  if [ "$arch" = "$(host_guest_arch)" ] && [ -n "${DORY_HV_GPU_KERNEL:-}" ]; then printf '%s\n' "$DORY_HV_GPU_KERNEL"; return 0; fi
+  if [ "$arch" = "arm64" ] && [ -f "$(dirname "$0")/../guest/out/Image-gpu" ]; then printf '%s\n' "$(dirname "$0")/../guest/out/Image-gpu"; return 0; fi
+  if [ "$arch" = "amd64" ] && [ -f "$(dirname "$0")/../guest/out/vmlinux-x86-gpu" ]; then printf '%s\n' "$(dirname "$0")/../guest/out/vmlinux-x86-gpu"; return 0; fi
+}
+
 initfs_source_for_arch() {
   local arch="$1" env_name
   env_name="$(env_for_arch DORY_INITFS "$arch")"
   if [ -n "${!env_name:-}" ]; then printf '%s\n' "${!env_name}"; return 0; fi
   if [ "$arch" = "$(host_guest_arch)" ] && [ -n "${DORY_INITFS:-}" ]; then printf '%s\n' "$DORY_INITFS"; return 0; fi
   if [ -f "$(dirname "$0")/../guest/out/initfs-$arch.ext4" ]; then printf '%s\n' "$(dirname "$0")/../guest/out/initfs-$arch.ext4"; return 0; fi
+}
+
+guest_agent_source_for_arch() {
+  local arch="$1" env_name agent
+  env_name="$(env_for_arch DORY_GUEST_AGENT "$arch")"
+  if [ -n "${!env_name:-}" ] && [ -f "${!env_name}" ]; then printf '%s\n' "${!env_name}"; return 0; fi
+  if [ "$arch" = "$(host_guest_arch)" ] && [ -n "${DORY_GUEST_AGENT:-}" ] && [ -f "$DORY_GUEST_AGENT" ]; then printf '%s\n' "$DORY_GUEST_AGENT"; return 0; fi
+  agent="$(dirname "$0")/../guest/out/dory-agent-$arch"
+  if [ -f "$agent" ]; then printf '%s\n' "$agent"; return 0; fi
+  agent="$(dirname "$0")/../guest/out/dory-agent"
+  if [ "$arch" = "arm64" ] && [ -f "$agent" ]; then printf '%s\n' "$agent"; return 0; fi
+  return 1
+}
+
+engine_rootfs_source() {
+  if [ -n "${DORY_ENGINE_ROOTFS:-}" ] && [ -f "$DORY_ENGINE_ROOTFS" ]; then
+    printf '%s\n' "$DORY_ENGINE_ROOTFS"
+    return 0
+  fi
+  if [ -f "$HOME/.dory/hv/rootfs-pristine.ext4" ]; then
+    printf '%s\n' "$HOME/.dory/hv/rootfs-pristine.ext4"
+    return 0
+  fi
+  if [ -f "$(dirname "$0")/../guest/out/dory-engine-rootfs.ext4" ]; then
+    printf '%s\n' "$(dirname "$0")/../guest/out/dory-engine-rootfs.ext4"
+    return 0
+  fi
+  return 1
 }
 
 compress_asset() {  # raw_src  out.lzfse
@@ -381,6 +645,22 @@ bundle_hv_kernel_for_arch() {
     echo "    bundled Resources/$(basename "$kernel_out") ($(du -h "$kernel_out" | awk '{print $1}'), from $(du -h "$kernel_src" | awk '{print $1}'))"
   else
     echo "    WARNING: no $arch dory-hv kernel found; run guest/kernel/build.sh $arch or set $(env_for_arch DORY_HV_KERNEL "$arch")"
+  fi
+}
+
+# Ships the GPU-enabled kernel as a distinct resource (dory-hv-kernel-gpu-<arch>.lzfse) selected at
+# runtime only when GPU acceleration is on. Gated on DORY_BUNDLE_VENUS so headless-only builds skip
+# it; the default headless kernel above is never overwritten.
+bundle_hv_gpu_kernel_for_arch() {
+  local arch="$1" kernel_src kernel_out
+  [ "${DORY_BUNDLE_VENUS:-1}" = "1" ] || return 0
+  kernel_src="$(hv_gpu_kernel_source_for_arch "$arch" || true)"
+  kernel_out="$RESOURCES/dory-hv-kernel-gpu-$arch.lzfse"
+  if [ -n "$kernel_src" ] && [ -f "$kernel_src" ]; then
+    compress_asset "$kernel_src" "$kernel_out"
+    echo "    bundled Resources/$(basename "$kernel_out") ($(du -h "$kernel_out" | awk '{print $1}'), from $(du -h "$kernel_src" | awk '{print $1}'))"
+  else
+    echo "    note: no $arch GPU kernel found; build with DORY_EXPERIMENTAL_GPU=1 guest/kernel/build.sh $arch or set $(env_for_arch DORY_HV_GPU_KERNEL "$arch") (GPU acceleration will be unavailable)"
   fi
 }
 
@@ -419,11 +699,34 @@ bundle_guest_assets_for_arch() {
   fi
 }
 
+bundle_guest_agent_for_arch() {
+  local arch="$1" agent_src agent_out
+  agent_src="$(guest_agent_source_for_arch "$arch" || true)"
+  agent_out="$RESOURCES/dory-agent-linux-$arch"
+  if [ -n "$agent_src" ] && [ -f "$agent_src" ]; then
+    install -m0755 "$agent_src" "$agent_out"
+    echo "    bundled Resources/$(basename "$agent_out") ($(du -h "$agent_out" | awk '{print $1}'))"
+  else
+    echo "    WARNING: no $arch dory-agent found; run guest/agent/build.sh or set $(env_for_arch DORY_GUEST_AGENT "$arch")"
+  fi
+}
+
 echo "==> Bundling VM kernel + initfs assets, compressed (so the engine needs no container install)…"
 for asset_arch in ${DORY_BUNDLE_ARCHES:-arm64 amd64}; do
+  bundle_guest_agent_for_arch "$asset_arch"
   bundle_hv_kernel_for_arch "$asset_arch"
+  bundle_hv_gpu_kernel_for_arch "$asset_arch"
   bundle_guest_assets_for_arch "$asset_arch"
 done
+
+ENGINE_ROOTFS_SRC="$(engine_rootfs_source || true)"
+if [ -n "$ENGINE_ROOTFS_SRC" ]; then
+  ENGINE_ROOTFS_OUT="$RESOURCES/dory-engine-rootfs.ext4.lzfse"
+  compress_asset "$ENGINE_ROOTFS_SRC" "$ENGINE_ROOTFS_OUT"
+  echo "    bundled Resources/$(basename "$ENGINE_ROOTFS_OUT") ($(du -h "$ENGINE_ROOTFS_OUT" | awk '{print $1}'), from $(du -h "$ENGINE_ROOTFS_SRC" | awk '{print $1}'))"
+else
+  echo "    WARNING: no prepared engine rootfs found; this development bundle will fetch docker:dind internally on first boot"
+fi
 
 HOST_GUEST_ARCH="$(host_guest_arch)"
 if [ -f "$RESOURCES/dory-hv-kernel-$HOST_GUEST_ARCH.lzfse" ]; then
@@ -450,5 +753,5 @@ if [ "${DORY_BUNDLE_LEGACY:-0}" = "1" ]; then
 fi
 
 echo "==> Payload injected into $APP"
-echo "    Engine payload ≈ $(du -ch "$RESOURCES"/dory-hv-*.lzfse "$RESOURCES"/dory-vm-*.lzfse "$HELPERS"/dory-hv "$HELPERS"/dory-vm 2>/dev/null | tail -1 | awk '{print $1}') on disk (engine image pulled on first launch)"
-echo "    Re-sign the bundle (codesign --deep) before notarization so the payload is sealed."
+echo "    Engine payload ≈ $(du -ch "$RESOURCES"/dory-hv-*.lzfse "$RESOURCES"/dory-vm-*.lzfse "$RESOURCES"/dory-engine-rootfs.ext4.lzfse "$HELPERS"/dory-hv "$HELPERS"/dory-vm "$HELPERS"/docker "$HELPERS"/docker-compose "$HELPERS"/kubectl "$FRAMEWORKS"/*.dylib 2>/dev/null | tail -1 | awk '{print $1}') on disk"
+echo "    Re-sign the app bundle before notarization so the payload is sealed."

@@ -58,6 +58,7 @@ guest/out/
 .playwright-mcp/
 benchmark-results.json
 appcast.xml.tmp
+examples/readiness/tmp/
 
 # Private cloud backend — separate repo, never in the public Dory repo
 cloud/

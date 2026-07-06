@@ -407,7 +407,7 @@ Design (locked): USB/IP, not XHCI emulation. The guest kernel already gets `CONF
 - [ ] 6.2 Machine snapshots and restore surfaced in UI + CLI (`dory machine snapshot/restore`, `MachineSnapshot.swift` exists; add scheduled snapshots and S3 backup per the cloud roadmap Phase 2b).
 - [ ] 6.3 ssh-agent and git credential forwarding into machines and containers (mount an agent-proxied SSH_AUTH_SOCK via a vsock-backed unix socket bridge; host-bridge branch already built the credential bootstrap).
 - [ ] 6.4 `dory expose <port|machine>`: public HTTPS tunnel for sharing a dev server (rides the remote-access roadmap phase; cloudflared-style, opt-in).
-- [ ] 6.5 [RESEARCH ONLY] GPU compute in guest: virtio-gpu + Venus (Vulkan) over MoltenVK, libkrun/krunkit precedent. Write a findings doc in `docs/research/gpu-venus.md` before committing to anything; neither OrbStack nor Colima has it, so even a working llama.cpp demo is a headline, but the effort is large and MoltenVK feature gaps are real.
+- [ ] 6.5 [EXPERIMENTAL] GPU compute in guest: virtio-gpu + Venus (Vulkan) over MoltenVK, following the libkrun/krunkit path now documented by Lima and used by Colima's Apple Silicon AI workload flow. Dory has a hidden `--gpu=venus` bootstrap backend and opt-in kernel fragment, but not a product renderer yet; a working llama.cpp Vulkan demo remains the go/no-go gate.
 
 ---
 
