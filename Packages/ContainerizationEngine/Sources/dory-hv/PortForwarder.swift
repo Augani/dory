@@ -9,14 +9,18 @@ final class PortForwarder: MachinePortForwarding, @unchecked Sendable {
     private let engineSocket: String
     private let apiSocket: String
     private let guestIP: String
+    /// Host address published ports bind to: 127.0.0.1 (default, localhost-only) or 0.0.0.0 when the
+    /// user opts into LAN visibility.
+    private let localHost: String
     private let log: (String) -> Void
     private let timer: any DispatchSourceTimer
     private var exposed = Set<Int>()
 
-    init(engineSocket: String, apiSocket: String, guestIP: String, log: @escaping (String) -> Void) {
+    init(engineSocket: String, apiSocket: String, guestIP: String, localHost: String = "127.0.0.1", log: @escaping (String) -> Void) {
         self.engineSocket = engineSocket
         self.apiSocket = apiSocket
         self.guestIP = guestIP
+        self.localHost = localHost
         self.log = log
         self.timer = DispatchSource.makeTimerSource(queue: .global())
         timer.schedule(deadline: .now() + 3, repeating: 2)
@@ -29,13 +33,13 @@ final class PortForwarder: MachinePortForwarding, @unchecked Sendable {
         guard let wanted = publishedPorts() else { return }  // docker not ready or unreachable
         for port in wanted.subtracting(exposed) where expose(port) {
             exposed.insert(port)
-            log("port forward: 127.0.0.1:\(port) -> container")
+            log("port forward: \(localHost):\(port) -> container")
         }
         // Only forget the port once gvproxy confirms the forward is gone; a failed unexpose stays
         // tracked and is retried on the next tick, so a stale host forward can't leak.
         for port in exposed.subtracting(wanted) where unexpose(port) {
             exposed.remove(port)
-            log("port forward: released 127.0.0.1:\(port)")
+            log("port forward: released \(localHost):\(port)")
         }
     }
 
@@ -59,12 +63,12 @@ final class PortForwarder: MachinePortForwarding, @unchecked Sendable {
         // gvproxy's TCP forward wants a bare host:port remote (no scheme), unlike the unix-socket
         // forward used for the docker socket.
         curlPost(unixSocket: apiSocket, url: "http://gvproxy/services/forwarder/expose",
-                 body: "{\"local\":\"127.0.0.1:\(port)\",\"remote\":\"\(guestIP):\(port)\",\"protocol\":\"tcp\"}")
+                 body: "{\"local\":\"\(localHost):\(port)\",\"remote\":\"\(guestIP):\(port)\",\"protocol\":\"tcp\"}")
     }
 
     private func unexpose(_ port: Int) -> Bool {
         curlPost(unixSocket: apiSocket, url: "http://gvproxy/services/forwarder/unexpose",
-                 body: "{\"local\":\"127.0.0.1:\(port)\",\"protocol\":\"tcp\"}")
+                 body: "{\"local\":\"\(localHost):\(port)\",\"protocol\":\"tcp\"}")
     }
 
     func exposeMachinePort(_ port: UInt16) async -> Bool {

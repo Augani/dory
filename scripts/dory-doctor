@@ -435,7 +435,7 @@ class Doctor:
         daemon = report["daemon"]
         containers = report["containers"]
         host_has_proxy = bool(
-            host_env.get("HTTPS_PROXY") or host_env.get("HTTP_PROXY")
+            host_env.get("HTTPS_PROXY") or host_env.get("HTTP_PROXY") or host_env.get("ALL_PROXY")
             or system.get("https_proxy") or system.get("http_proxy") or system.get("pac")
         )
         containers_have_proxy = bool(containers.get("https_proxy") or containers.get("http_proxy"))
@@ -450,17 +450,17 @@ class Doctor:
         if containers:
             layers.append("containers")
         detail = ("proxy set at: " + ", ".join(layers)) if layers else "no proxy configured at any layer"
-        if host_has_proxy and not containers_have_proxy and not daemon_has_proxy:
+        if host_has_proxy and not containers_have_proxy:
             self.add(
                 "network.proxy",
                 "warn",
                 "network.proxy_not_propagated",
-                "Host is behind a proxy that Docker is not using",
+                "Host is behind a proxy that containers do not use",
                 detail + " — image pulls and container internet can fail with EOF/timeout behind a corporate proxy",
                 "Add a `proxies.default` block (httpProxy/httpsProxy/noProxy) to ~/.docker/config.json so Docker injects the proxy into builds and containers.",
                 **report,
             )
-        elif host_has_proxy and containers_have_proxy and not daemon_has_proxy:
+        elif host_has_proxy and not daemon_has_proxy:
             self.add(
                 "network.proxy",
                 "warn",
@@ -474,7 +474,9 @@ class Doctor:
             self.add("network.proxy", "pass", "network.proxy_ok", "Proxy configuration consistent", detail, **report)
 
     def check_lan_exposure(self) -> None:
-        lan_visible = bool((load_config().get("network") or {}).get("lanVisible", False))
+        # Strict `is True` so a stray 1/"true"/null in the config does not read as exposed here while
+        # the engine (which requires a genuine boolean) keeps ports on loopback.
+        lan_visible = (load_config().get("network") or {}).get("lanVisible") is True
         table = route_table(self.sock)
         published = [] if table.get("error") else [row for row in table.get("ports", []) if row.get("state") == "running"]
         count = len(published)
@@ -1705,9 +1707,9 @@ def parse_scutil_proxy(text: str) -> dict[str, Any]:
             fields[key.strip()] = value.strip()
     out: dict[str, str] = {}
     if fields.get("HTTPEnable") == "1" and fields.get("HTTPProxy"):
-        out["http_proxy"] = f"{fields['HTTPProxy']}:{fields.get('HTTPPort', '')}".rstrip(":")
+        out["http_proxy"] = redact_str(f"{fields['HTTPProxy']}:{fields.get('HTTPPort', '')}".rstrip(":"))
     if fields.get("HTTPSEnable") == "1" and fields.get("HTTPSProxy"):
-        out["https_proxy"] = f"{fields['HTTPSProxy']}:{fields.get('HTTPSPort', '')}".rstrip(":")
+        out["https_proxy"] = redact_str(f"{fields['HTTPSProxy']}:{fields.get('HTTPSPort', '')}".rstrip(":"))
     if fields.get("ProxyAutoConfigEnable") == "1" and fields.get("ProxyAutoConfigURLString"):
         out["pac"] = redact_str(fields["ProxyAutoConfigURLString"])
     return out
@@ -1977,6 +1979,9 @@ def redact_str(value: str) -> str:
     value = BASIC_RE.sub("Basic [redacted]", value)
     # user:pass@host credentials embedded in URLs (e.g. HTTPS_PROXY=http://user:secret@proxy:8080).
     value = URL_CREDENTIAL_RE.sub(r"\1[redacted]@", value)
+    # Schemeless user:pass@host (e.g. ALL_PROXY=user:secret@proxy:8080). The lookbehind skips values
+    # already handled by the URL rule above (their creds follow `//`).
+    value = re.sub(r"(?<![/\w@])([^\s:/@]+:)[^\s:/@]+@", r"\1[redacted]@", value)
     # token/secret/password/access_token/... in both `key=value` and `key: value` forms, covering
     # log lines and query strings alike.
     value = re.sub(

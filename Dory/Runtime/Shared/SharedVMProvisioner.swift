@@ -436,7 +436,28 @@ nonisolated enum SharedVMProvisioner {
         // container as defense-in-depth; per-bind-mount on-demand sharing is the stronger follow-up.
         let home = NSHomeDirectory()
         arguments.append(contentsOf: ["--share", "home=\(home):rw:at=\(home):safe"])
+        // Opt-in LAN visibility: the engine binds published ports to 0.0.0.0 instead of loopback.
+        // Off by default and read strictly (see lanVisibleFromConfig) so ports are never silently
+        // exposed to the local network.
+        if lanVisibleFromConfig() {
+            arguments.append(contentsOf: ["--publish-host", "0.0.0.0"])
+        }
         return arguments
+    }
+
+    /// Reads the opt-in `network.lanVisible` flag from the CLI-owned config (honoring DORY_CONFIG,
+    /// the same path the CLI writes). Strict: only a genuine JSON boolean `true` enables LAN
+    /// visibility, so a stray `1`/`"true"`/null can never silently expose ports.
+    nonisolated static func lanVisibleFromConfig() -> Bool {
+        let path = ProcessInfo.processInfo.environment["DORY_CONFIG"] ?? "\(NSHomeDirectory())/.dory/config.json"
+        guard let data = FileManager.default.contents(atPath: path),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let network = json["network"] as? [String: Any],
+              let flag = network["lanVisible"] as? NSNumber,
+              CFGetTypeID(flag) == CFBooleanGetTypeID() else {
+            return false
+        }
+        return flag.boolValue
     }
 
     private static func hvKernelPath(gpu: Bool = false) async -> String? {

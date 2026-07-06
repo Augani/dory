@@ -1285,21 +1285,16 @@ final class AppStore {
     }
 
     func loadLanVisible() {
-        let path = "\(NSHomeDirectory())/.dory/config.json"
-        guard let data = FileManager.default.contents(atPath: path),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let network = json["network"] as? [String: Any],
-              let lan = network["lanVisible"] as? Bool else {
-            lanVisible = false
-            return
-        }
-        lanVisible = lan
+        lanVisible = SharedVMProvisioner.lanVisibleFromConfig()
     }
 
     func setLanVisible(_ on: Bool) async {
         guard on != lanVisible else { return }
         lanVisible = on
-        _ = await HealthDiagnostics.runControl(["network", "--lan-visible", on ? "on" : "off"])
+        let result = await HealthDiagnostics.runControl(["network", "--lan-visible", on ? "on" : "off"])
+        if !result.ok {
+            loadLanVisible()
+        }
     }
 
     private func matchesSearch(_ c: Container) -> Bool {

@@ -428,6 +428,7 @@ case "engine":
     var directIPGateway = "192.168.127.2"
     var gpuMode = EngineMode.GPUAccelerationMode.off
     var amd64Emulation = false
+    var publishHost = "127.0.0.1"
     var iterator = arguments.dropFirst().makeIterator()
     while let argument = iterator.next() {
         switch argument {
@@ -447,6 +448,10 @@ case "engine":
             gpuMode = parseGPUMode(String(value.dropFirst("--gpu=".count)))
         case "--amd64":
             amd64Emulation = true
+        case "--publish-host":
+            // Fail safe: only the two well-known bind addresses are honored; anything else stays
+            // loopback-only so a malformed value can never silently expose ports to the LAN.
+            publishHost = iterator.next() == "0.0.0.0" ? "0.0.0.0" : "127.0.0.1"
         case "--share":
             guard let value = iterator.next() else { fail("--share requires tag=/host/path[:ro|:rw][:dax]") }
             do {
@@ -478,7 +483,8 @@ case "engine":
             )
         },
         gpuMode: gpuMode,
-        amd64Emulation: amd64Emulation
+        amd64Emulation: amd64Emulation,
+        publishHost: publishHost
     )
     // Top-level code is implicitly MainActor; a plain Task would inherit it and deadlock behind
     // the semaphore below. Detach so the engine runs on the concurrent pool.

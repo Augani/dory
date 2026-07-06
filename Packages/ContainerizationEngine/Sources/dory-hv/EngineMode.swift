@@ -29,6 +29,9 @@ enum EngineMode {
         /// Register a qemu binfmt handler in the guest so `--platform linux/amd64` images run on the
         /// arm64 engine. Opt-in (Settings → Rosetta x86) to keep the default guest lean.
         var amd64Emulation: Bool = false
+        /// Host address published container ports bind to. Defaults to loopback; set to 0.0.0.0 only
+        /// when the user opts into LAN visibility (Settings → Network / `dory network --lan-visible`).
+        var publishHost: String = "127.0.0.1"
     }
 
     enum GPUAccelerationMode: String {
@@ -283,6 +286,7 @@ enum EngineMode {
             engineSocket: configuration.engineSocket,
             apiSocket: apiSocket,
             guestIP: "192.168.127.2",
+            localHost: configuration.publishHost,
             log: { note($0) }
         )
         portForwarder.start()
