@@ -80,6 +80,13 @@ final class AppStore {
         didSet { UserDefaults.standard.set(containerFilter.rawValue, forKey: "containerFilter") }
     }
 
+    var healthSnapshot: HealthSnapshot?
+    var healthLoading = false
+    var healthActiveLoading = false
+    var healthActionInFlight = false
+    var healthActionError: String?
+    @ObservationIgnored private var healthLoadToken = 0
+
     var kubernetesReachable = false
     var kubernetesInfo = "Cluster not running"
     var kubernetesVersionTag: String = KubeVersionCatalog.latest.tag
@@ -1162,8 +1169,63 @@ final class AppStore {
             pods.isEmpty ? "Cluster not enabled" : "\(pods.count) pods across \(Set(pods.map(\.namespace)).count) namespaces"
         case .machines:
             "\(machines.count) machine\(machines.count == 1 ? "" : "s") · \(machines.filter { $0.status == .running }.count) running"
+        case .health: healthSubtitle
         case .settings: "Dory v\(AppInfo.version)"
         }
+    }
+
+    private var healthSubtitle: String {
+        guard let snapshot = healthSnapshot else { return "Run diagnostics" }
+        if snapshot.cliMissing { return "Diagnostics CLI unavailable" }
+        if snapshot.failing > 0 {
+            return "\(snapshot.failing) failing · \(snapshot.warning) warning"
+        }
+        if snapshot.warning > 0 {
+            return "\(snapshot.warning) warning\(snapshot.warning == 1 ? "" : "s")"
+        }
+        return "All checks passing"
+    }
+
+    func loadHealth(active: Bool = false) async {
+        if active {
+            guard !healthActiveLoading else { return }
+            healthActiveLoading = true
+        } else {
+            guard !healthLoading else { return }
+            healthLoading = true
+        }
+        healthLoadToken &+= 1
+        let token = healthLoadToken
+        let snapshot = await HealthDiagnostics.load(active: active)
+        // Only the most recently started load may publish; a slower passive run must not clobber a
+        // fresher active snapshot (or vice versa).
+        if token == healthLoadToken {
+            healthSnapshot = snapshot
+        }
+        if active { healthActiveLoading = false } else { healthLoading = false }
+    }
+
+    func runHealthRepair() async {
+        guard !healthActionInFlight else { return }
+        healthActionInFlight = true
+        healthActionError = nil
+        let result = await HealthDiagnostics.runControl(["repair", "all", "--apply"])
+        if !result.ok { healthActionError = result.output.isEmpty ? "Repair failed" : result.output }
+        healthActionInFlight = false
+        await loadHealth()
+    }
+
+    var canRestartEngineForHealth: Bool {
+        (runtimeKind == .sharedVM || runtimeKind == .disconnected) && !isConnecting
+    }
+
+    func restartEngineForHealth() async {
+        guard canRestartEngineForHealth else { return }
+        healthActionInFlight = true
+        healthActionError = nil
+        await restartEngine()
+        healthActionInFlight = false
+        await loadHealth()
     }
 
     private func matchesSearch(_ c: Container) -> Bool {

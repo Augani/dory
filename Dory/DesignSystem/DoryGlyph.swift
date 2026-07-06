@@ -27,7 +27,7 @@ struct GlyphPrim: Sendable {
 enum DoryGlyph: Sendable {
     case containers, images, volumes, networks, kubernetes, machines, settings
     case search, plus, play, pause, listView, gridView, moon
-    case eye, shield
+    case eye, shield, health
 
     var viewBox: CGFloat { 16 }
 
@@ -74,6 +74,8 @@ enum DoryGlyph: Sendable {
             return [.init(kind: .path("M2 8s2-4 6-4 6 4 6 4-2 4-6 4-6-4-6-4z")), .init(kind: .circle(8, 8, 1.6))]
         case .shield:
             return [.init(kind: .path("M8 1.5 3 4v4c0 3 2.2 5.5 5 6.5 2.8-1 5-3.5 5-6.5V4z"))]
+        case .health:
+            return [.init(kind: .path("M1.5 8.4H5l1.4-4 2.6 8 1.6-4H14.5"))]
         case .moon:
             return []
         }

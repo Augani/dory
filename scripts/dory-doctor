@@ -2238,7 +2238,7 @@ def cmd_repair(args: argparse.Namespace) -> int:
         # A single explicit `dory repair <target> --apply` still forces the action.
         if fan_out and args.apply:
             probe = handler(False)
-            if probe.get("status") == "pass":
+            if probe.get("status") in {"pass", "skip"}:
                 actions.append(probe)
                 continue
         actions.append(handler(args.apply))
@@ -2326,11 +2326,21 @@ def repair_dns(apply: bool) -> dict[str, Any]:
     resolver = Path(f"/etc/resolver/{DOMAIN_SUFFIX}")
     detail = f"resolver={resolver} exists={resolver.exists()}"
     if not apply:
+        # A merely-absent resolver means networking was never enabled — a system-wide DNS flush would
+        # fix nothing, so `repair all` must skip it (a direct `dory repair dns --apply` still forces
+        # the flush for the stale-cache case where the resolver exists but *.dory.local went stale).
+        if not resolver.exists():
+            return {
+                "target": "dns",
+                "status": "skip",
+                "detail": detail,
+                "next": "run scripts/enable-networking.sh to install the *.dory.local resolver; nothing to flush",
+            }
         return {
             "target": "dns",
-            "status": "warn" if not resolver.exists() else "pass",
+            "status": "pass",
             "detail": detail,
-            "next": "would flush macOS DNS cache; run scripts/enable-networking.sh if the resolver file is missing",
+            "next": "run `dory repair dns --apply` to flush the macOS DNS cache if *.dory.local is stale",
         }
     flush = subprocess.run(["dscacheutil", "-flushcache"], text=True, capture_output=True, timeout=15)
     hup = subprocess.run(["killall", "-HUP", "mDNSResponder"], text=True, capture_output=True, timeout=15)

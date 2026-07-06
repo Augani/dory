@@ -1,7 +1,7 @@
 import SwiftUI
 
 enum AppSection: String, CaseIterable, Identifiable, Sendable {
-    case containers, images, volumes, networks, compose, kubernetes, machines, settings
+    case containers, images, volumes, networks, compose, kubernetes, machines, health, settings
     var id: String { rawValue }
 
     var title: String {
@@ -13,6 +13,7 @@ enum AppSection: String, CaseIterable, Identifiable, Sendable {
         case .compose: "Compose"
         case .kubernetes: "Kubernetes"
         case .machines: "Linux Machines"
+        case .health: "Health"
         case .settings: "Settings"
         }
     }
@@ -26,6 +27,7 @@ enum AppSection: String, CaseIterable, Identifiable, Sendable {
         case .compose: "Open Compose File"
         case .kubernetes: nil
         case .machines: "New Machine"
+        case .health: nil
         case .settings: nil
         }
     }

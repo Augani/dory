@@ -550,6 +550,22 @@ if [ ! -x "$HELPERS/docker-compose" ]; then
 fi
 bundle_cli docker-compose "" ""
 
+# The `dory` CLI + its Python helpers, so the in-app Health panel and `dory doctor`/`dory compat`/
+# `dory idle` work on a clean Mac with nothing installed. They must sit together in Helpers so the
+# bash wrapper resolves dory-doctor/dory-idle-proxy beside itself (stdlib-only Python; needs the
+# system python3). These are scripts, not Mach-O, so they are sealed by the app signature, not
+# signed individually.
+echo "==> Bundling the dory CLI helpers (Health panel + doctor/compat/idle)…"
+DORY_SCRIPTS="$(cd "$(dirname "$0")" && pwd)"
+for script in dory dory-doctor dory-idle-proxy; do
+  if [ -f "$DORY_SCRIPTS/$script" ]; then
+    install -m0755 "$DORY_SCRIPTS/$script" "$HELPERS/$script"
+    echo "    bundled Helpers/$script"
+  else
+    echo "    WARNING: $DORY_SCRIPTS/$script missing — the Health panel will need a system dory install."
+  fi
+done
+
 # No external zstd: the engine kernel/initfs are compressed with LZFSE by dory-hv itself (below) and
 # decompressed in-process at first launch via Apple's Compression framework, so nothing external is
 # linked or bundled for decompression.

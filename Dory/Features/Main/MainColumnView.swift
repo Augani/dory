@@ -93,6 +93,7 @@ struct MainColumnView: View {
         case .compose: ComposeProjectsView()
         case .kubernetes: KubernetesView()
         case .machines: MachinesView()
+        case .health: HealthView()
         case .settings: SettingsView()
         }
     }

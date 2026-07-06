@@ -59,6 +59,8 @@ struct SidebarView: View {
                 row(.kubernetes, .kubernetes, "Kubernetes")
                 sectionLabel("LINUX").padding(.top, 6)
                 row(.machines, .machines, "Machines", trailing: "\(store.machines.count)")
+                sectionLabel("SYSTEM").padding(.top, 6)
+                row(.health, .health, "Health")
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
