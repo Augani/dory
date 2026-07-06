@@ -1106,9 +1106,18 @@ final class AppStore {
     /// open sheet, an in-flight connect, onboarding, or the mock runtime.
     func refreshIfIdle() async {
         guard runtimeKind != .mock, !isConnecting, activeSheet == nil, !onboarding else { return }
+        capEngineLogIfDue()
         await reload()
         loadMachines()
         if runtimeKind == .sharedVM { await loadKubernetes() }
+    }
+
+    @ObservationIgnored private var lastLogCap = Date.distantPast
+    private func capEngineLogIfDue() {
+        guard runtimeKind == .sharedVM else { return }
+        guard Date().timeIntervalSince(lastLogCap) > 60 else { return }
+        lastLogCap = Date()
+        SharedVMProvisioner.capEngineLog()
     }
 
     var selectedContainer: Container? {

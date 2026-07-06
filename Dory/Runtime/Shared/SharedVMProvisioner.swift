@@ -19,6 +19,41 @@ nonisolated enum SharedVMProvisioner {
     nonisolated static let defaultEngineMemoryMB = 2048
     nonisolated static let defaultEngineHeadroomMB = 512
     nonisolated static var engineArch: String { MachineArch.host.rawValue }
+    nonisolated static let logMaxBytes = Int(ProcessInfo.processInfo.environment["DORY_LOG_MAX_BYTES"] ?? "") ?? (8 * 1024 * 1024)
+    nonisolated static let logHardMaxBytes = Int(ProcessInfo.processInfo.environment["DORY_LOG_HARD_MAX_BYTES"] ?? "") ?? (64 * 1024 * 1024)
+
+    /// Keeps only the most recent `maxBytes` of a CLOSED log so it never grows without bound while
+    /// preserving the recent diagnostic window. Safe here because the previous engine is stopped
+    /// before a new one opens the log for append.
+    nonisolated static func rotateLog(_ path: String, maxBytes: Int = logMaxBytes) {
+        let url = URL(fileURLWithPath: path)
+        guard let size = (try? FileManager.default.attributesOfItem(atPath: path)[.size]) as? Int, size > maxBytes else { return }
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return }
+        defer { try? handle.close() }
+        try? handle.seek(toOffset: UInt64(size - maxBytes))
+        guard var tail = try? handle.readToEnd() else { return }
+        if let newline = tail.firstIndex(of: 0x0A), newline + 1 < tail.count {
+            tail = tail.subdata(in: (newline + 1)..<tail.count)
+        }
+        var out = Data("[log rotated to cap size; older lines dropped]\n".utf8)
+        out.append(tail)
+        try? out.write(to: url, options: .atomic)
+    }
+
+    /// Backstop for a LIVE, O_APPEND log: an in-place truncate is safe because the writer seeks to
+    /// EOF each write and resumes at 0. Fires only at a generous hard cap so a very long-running
+    /// engine session cannot grow the log without bound between restarts.
+    nonisolated static func capLogInPlace(_ path: String, hardBytes: Int = logHardMaxBytes) {
+        guard let size = (try? FileManager.default.attributesOfItem(atPath: path)[.size]) as? Int, size > hardBytes else { return }
+        if let handle = try? FileHandle(forWritingTo: URL(fileURLWithPath: path)) {
+            try? handle.truncate(atOffset: 0)
+            try? handle.close()
+        }
+    }
+
+    nonisolated static func capEngineLog() {
+        capLogInPlace(helperLogPath)
+    }
 
     struct Config: Sendable {
         var cpus: Int
@@ -234,7 +269,10 @@ nonisolated enum SharedVMProvisioner {
         }
         process.environment = environment
 
-        FileManager.default.createFile(atPath: helperLogPath, contents: nil)
+        rotateLog(helperLogPath)
+        if !FileManager.default.fileExists(atPath: helperLogPath) {
+            FileManager.default.createFile(atPath: helperLogPath, contents: nil)
+        }
         let log = try? FileHandle(forWritingTo: URL(fileURLWithPath: helperLogPath))
         _ = try? log?.seekToEnd()
         let label = rosetta ? "VZ+Rosetta" : "VZ"
@@ -291,7 +329,10 @@ nonisolated enum SharedVMProvisioner {
         process.executableURL = URL(fileURLWithPath: helper)
         process.arguments = arguments
 
-        FileManager.default.createFile(atPath: helperLogPath, contents: nil)
+        rotateLog(helperLogPath)
+        if !FileManager.default.fileExists(atPath: helperLogPath) {
+            FileManager.default.createFile(atPath: helperLogPath, contents: nil)
+        }
         let log = try? FileHandle(forWritingTo: URL(fileURLWithPath: helperLogPath))
         _ = try? log?.seekToEnd()
         log?.write(Data("\n--- starting dory-hv engine \(Date()) mem=\(config.memoryMB)MiB ---\n".utf8))

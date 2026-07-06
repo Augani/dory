@@ -37,12 +37,86 @@ LAUNCH_AGENT_LABEL = "dev.dory.idle-proxy"
 LAUNCH_AGENT_PATH = HOME / "Library" / "LaunchAgents" / f"{LAUNCH_AGENT_LABEL}.plist"
 
 
+LOG_MAX_BYTES = int(os.environ.get("DORY_LOG_MAX_BYTES", str(8 * 1024 * 1024)))
+LOG_HARD_MAX_BYTES = int(os.environ.get("DORY_LOG_HARD_MAX_BYTES", str(64 * 1024 * 1024)))
+
+
 def repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
 def default_engine_script() -> Path:
     return repo_root() / "scripts" / "runtime" / "dory-engine"
+
+
+def rotate_log_tail(path: Path, max_bytes: int = LOG_MAX_BYTES) -> bool:
+    # Race-free rotation for a CLOSED log: keep only the most recent max_bytes so the file cannot grow
+    # without bound, and preserve the recent diagnostic window. Call before a writer opens the file
+    # (engine startup) — never on a file a process is currently appending to (see cap_log_inplace).
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return False
+    if size <= max_bytes:
+        return False
+    tmp = path.parent / f"{path.name}.rot.{os.getpid()}"
+    try:
+        with path.open("rb") as handle:
+            handle.seek(size - max_bytes)
+            tail = handle.read()
+        newline = tail.find(b"\n")
+        if 0 <= newline < len(tail) - 1:
+            tail = tail[newline + 1:]
+        fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(b"[log rotated to cap size; older lines dropped]\n")
+            handle.write(tail)
+        os.replace(tmp, path)
+        return True
+    except OSError:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        return False
+
+
+def cap_log_inplace(path: Path, hard_bytes: int = LOG_HARD_MAX_BYTES) -> bool:
+    # Backstop for a LIVE, O_APPEND log (engine.log while the engine runs, launchd proxy logs): an
+    # in-place truncate is safe because O_APPEND writers seek to EOF each write and resume at 0. Only
+    # fires at a generous hard cap, so the window loss is rare; startup rotate_log_tail preserves the
+    # window in the common restart cycle.
+    try:
+        if path.stat().st_size <= hard_bytes:
+            return False
+        os.truncate(path, 0)
+        return True
+    except OSError:
+        return False
+
+
+def rotate_dory_logs_startup(state_dir: Path = STATE, max_bytes: int = LOG_MAX_BYTES) -> int:
+    rotated = 0
+    try:
+        candidates = sorted(set(state_dir.glob("*.log")) | set(state_dir.glob("*.err.log")))
+    except OSError:
+        return 0
+    for log_path in candidates:
+        if rotate_log_tail(log_path, max_bytes):
+            rotated += 1
+    return rotated
+
+
+def cap_dory_logs(state_dir: Path = STATE, hard_bytes: int = LOG_HARD_MAX_BYTES) -> int:
+    capped = 0
+    try:
+        candidates = sorted(set(state_dir.glob("*.log")) | set(state_dir.glob("*.err.log")))
+    except OSError:
+        return 0
+    for log_path in candidates:
+        if cap_log_inplace(log_path, hard_bytes):
+            capped += 1
+    return capped
 
 
 def note(message: str) -> None:
@@ -229,6 +303,7 @@ class IdleProxy:
         self.connection_slots = threading.BoundedSemaphore(self.max_connections)
         # Set once we own the listener socket, so a watchdog can notice the Dory app taking it over.
         self.owned_inode: int | None = None
+        self.last_log_rotation = 0.0
 
     def foreign_owner_live(self) -> bool:
         # True when something OTHER than us is serving a live Docker API at the listener path —
@@ -238,6 +313,7 @@ class IdleProxy:
 
     def serve(self) -> int:
         self.listener_sock.parent.mkdir(parents=True, exist_ok=True)
+        rotate_dory_logs_startup()
         monitor = threading.Thread(target=self.monitor_idle, daemon=True)
         monitor.start()
         try:
@@ -469,6 +545,12 @@ class IdleProxy:
 
     def monitor_idle(self) -> None:
         while not self.stop_event.wait(5):
+            # Bound every Dory log continuously while the proxy runs (the always-on component in the
+            # recommended Auto-Idle mode), independent of the idle policy below.
+            now = time.time()
+            if now - self.last_log_rotation > 60:
+                self.last_log_rotation = now
+                cap_dory_logs()
             config = load_config()
             mode = config.get("runtimeMode", "manual")
             if mode not in {"auto-idle", "battery-saver"}:

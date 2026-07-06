@@ -234,6 +234,47 @@ compat_rc=$?
 set -e
 [ "$compat_rc" = "2" ] || { echo "unknown compat recipe should exit 2, got $compat_rc"; exit 1; }
 
+# Log rotation/caps (Track 5 P0): rotate keeps the recent tail under the cap; cap truncates a live
+# over-cap log in place; and the doctor disk check flags an uncapped log.
+python3 - <<'PY'
+import importlib.machinery, importlib.util, tempfile
+from pathlib import Path
+loader = importlib.machinery.SourceFileLoader("dip", "scripts/dory-idle-proxy")
+dip = importlib.util.module_from_spec(importlib.util.spec_from_loader("dip", loader))
+loader.exec_module(dip)
+d = Path(tempfile.mkdtemp())
+big = d / "engine.log"
+big.write_bytes(b"".join(b"line-%06d\n" % i for i in range(100000)))
+assert dip.rotate_log_tail(big, 4096) is True, "rotate should fire over cap"
+assert big.stat().st_size <= 4096 + 64, "rotated file exceeds cap"
+tail = big.read_bytes()
+assert b"line-099999" in tail, "rotate dropped the recent tail"
+assert b"line-000000" not in tail, "rotate kept stale lines"
+assert dip.rotate_log_tail(big, 10_000_000) is False, "rotate must no-op under cap"
+live = d / "idle-proxy.log"
+live.write_bytes(b"x" * 5000)
+assert dip.cap_log_inplace(live, 1000) is True, "cap should truncate over hard cap"
+assert live.stat().st_size == 0, "cap did not truncate in place"
+assert dip.cap_log_inplace(live, 1000) is False, "cap must no-op under hard cap"
+PY
+
+mkdir -p "$TMP_HOME/.dory"
+head -c 200000 /dev/zero | tr '\0' 'x' > "$TMP_HOME/.dory/engine.log"
+DORY_LOG_HARD_MAX_BYTES=1000 scripts/dory disk --json | python3 -c '
+import json, sys
+report = json.load(sys.stdin)
+assert report["state"]["largest_log"]["bytes"] >= 200000, report["state"]
+'
+DORY_LOG_HARD_MAX_BYTES=1000 scripts/dory-doctor doctor --json --only disk | python3 -c '
+import json, sys
+results = json.load(sys.stdin)["results"]
+log_check = [r for r in results if r["id"] == "disk.dory_logs"]
+assert log_check, "disk.dory_logs check missing"
+assert log_check[0]["status"] == "warn", log_check[0]
+assert log_check[0]["code"] == "disk.dory_log_uncapped", log_check[0]
+'
+rm -f "$TMP_HOME/.dory/engine.log"
+
 scripts/dory-idle-proxy launch-agent print | python3 -c '
 import plistlib, sys
 data = plistlib.loads(sys.stdin.buffer.read())

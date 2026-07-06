@@ -21,8 +21,23 @@ PIDFILE="$STATE/engine-cli.pid"
 LOGFILE="$STATE/engine.log"
 KERNEL="$STATE/vm/dory-hv-kernel-arm64"
 
+LOG_MAX_BYTES="${DORY_LOG_MAX_BYTES:-8388608}"
+
 note() { printf 'dory-engine: %s\n' "$*"; }
 die() { printf 'dory-engine: %s\n' "$*" >&2; exit 1; }
+
+rotate_log() {
+  local file="$1" max="${2:-$LOG_MAX_BYTES}" size
+  [ -f "$file" ] || return 0
+  size="$(stat -f%z "$file" 2>/dev/null || echo 0)"
+  if [ "$size" -gt "$max" ]; then
+    if tail -c "$max" "$file" > "$file.rot" 2>/dev/null; then
+      mv "$file.rot" "$file"
+    else
+      rm -f "$file.rot"
+    fi
+  fi
+}
 
 require_layout() {
   [ -x "$BIN/dory-hv" ] || die "missing $BIN/dory-hv (run from the extracted release directory)"
@@ -74,6 +89,7 @@ cmd_start() {
   fi
 
   note "starting engine (${mem_mb} MiB ceiling, $cpus cpus)…"
+  rotate_log "$LOGFILE"
   rm -f "$SOCK"
   nohup "$BIN/dory-hv" engine \
     --engine-sock "$SOCK" \

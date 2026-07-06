@@ -44,6 +44,7 @@ DOMAIN_PROXY_PORT = int(os.environ.get("DORY_DOMAIN_PROXY_PORT", "8080"))
 HTTPS_PROXY_PORT = int(os.environ.get("DORY_HTTPS_PROXY_PORT", "8443"))
 DOCKER_IMAGE = os.environ.get("DORY_DOCTOR_IMAGE", "alpine:latest")
 RUN_LABEL_KEY = "dev.dory.doctor"
+LOG_HARD_MAX_BYTES = int(os.environ.get("DORY_LOG_HARD_MAX_BYTES", str(64 * 1024 * 1024)))
 SECRET_KEY_RE = re.compile(r"(token|secret|password|passwd|authorization|auth|credential|key)", re.I)
 BEARER_RE = re.compile(r"Bearer\s+[A-Za-z0-9._~+/-]+=*", re.I)
 BASIC_RE = re.compile(r"Basic\s+[A-Za-z0-9._~+/-]+=*", re.I)
@@ -839,6 +840,27 @@ class Doctor:
             state_action,
             **state,
         )
+        largest_log = state.get("largest_log") or {}
+        largest_bytes = int(largest_log.get("bytes", 0) or 0)
+        if largest_bytes > LOG_HARD_MAX_BYTES:
+            self.add(
+                "disk.dory_logs",
+                "warn",
+                "disk.dory_log_uncapped",
+                "A Dory log exceeds the size cap",
+                f"{largest_log.get('path', 'a log')} is {format_bytes(largest_bytes)} (cap {format_bytes(LOG_HARD_MAX_BYTES)})",
+                "Run `dory cleanup --logs --apply`; automatic caps apply on the next engine start or while Auto-Idle runs.",
+                largest_log=largest_log,
+            )
+        else:
+            self.add(
+                "disk.dory_logs",
+                "pass",
+                "disk.dory_logs_capped",
+                "Dory logs are within the size cap",
+                f"largest {format_bytes(largest_bytes)} of {format_bytes(LOG_HARD_MAX_BYTES)} cap",
+                largest_log=largest_log,
+            )
 
     def check_memory(self) -> None:
         report = memory_report()
@@ -1187,7 +1209,8 @@ def disk_report(sock: Path | None = None) -> dict[str, Any]:
     state = {
         "path": str(state_root),
         "total_bytes": directory_size(state_root),
-        "log_bytes": matched_size(state_root, ["*.log", "*.log.*"]),
+        "log_bytes": matched_size(state_root, ["*.log", "*.log.*", "*.err.log"]),
+        "largest_log": largest_matching_file(state_root, ["*.log", "*.log.*", "*.err.log"]),
         "vm_disk_bytes": matched_size(state_root, ["*.raw", "*.qcow2", "*.img", "*.ext4", "*.vhd", "*.vhdx"]),
     }
     return {"generated_at": now_iso(), "socket": str(sock), "host": host, "docker": docker, "state": state}
@@ -1391,6 +1414,22 @@ def matched_size(root: Path, patterns: list[str]) -> int:
                 except OSError:
                     pass
     return total
+
+
+def largest_matching_file(root: Path, patterns: list[str]) -> dict[str, Any]:
+    biggest = {"path": "", "bytes": 0}
+    if not root.exists():
+        return biggest
+    for dirpath, _, filenames in os.walk(root, onerror=lambda _: None):
+        for name in filenames:
+            if any(fnmatch.fnmatch(name, pattern) for pattern in patterns):
+                try:
+                    size = (Path(dirpath) / name).stat().st_size
+                except OSError:
+                    continue
+                if size > biggest["bytes"]:
+                    biggest = {"path": str(Path(dirpath) / name), "bytes": size}
+    return biggest
 
 
 def memory_report() -> dict[str, Any]:
