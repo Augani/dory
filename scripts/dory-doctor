@@ -236,6 +236,7 @@ class Doctor:
             ("ports", self.check_port_publish),
             ("domains", self.check_domain_route),
             ("mounts", self.check_mount),
+            ("filelock", self.check_file_lock),
             ("watch", self.check_watch_visibility),
             ("clock", self.check_vm_clock),
             ("disk", self.check_disk),
@@ -839,6 +840,50 @@ class Doctor:
                     "Update the Dory engine so virtio-fs handles FUSE symlink/readlink operations.",
                     host_link_seen=link,
                 )
+
+    def check_file_lock(self) -> None:
+        if not self.active:
+            self.add("mount.lock", "skip", "mount.active_probe_skipped", "File-lock probe skipped",
+                     "Run `dory doctor --active` to verify exclusive lock behavior across processes.")
+            return
+        if not self.engine_available():
+            self.add("mount.lock", "skip", "socket.unreachable", "File-lock probe skipped", "Docker API is not reachable.")
+            return
+        probe_root = HOME / ".dory" / "doctor"
+        probe_root.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="lock-", dir=str(probe_root)) as tmp:
+            root = Path(tmp)
+            # One process holds an exclusive flock on a bind-mounted file (BusyBox flock's FILE PROG
+            # form) while a second, non-blocking exclusive lock on the same file must fail. If it
+            # succeeds, virtio-fs is not honoring locks — the Docker VirtioFS correctness regression
+            # class that corrupts SQLite et al. The whole thing runs under an in-container `timeout`
+            # so a misbehaving flock can never hang the probe (and never wedge dockerd).
+            script = (
+                "command -v flock >/dev/null 2>&1 || { echo LOCK_NO_FLOCK; exit 0; }; "
+                "flock -x /work/lock sleep 2 & "
+                "sleep 0.5; "
+                "if flock -nx /work/lock true; then echo LOCK_NOT_HONORED; else echo LOCK_HONORED; fi; "
+                "wait"
+            )
+            result = self.docker(
+                ["run", "--rm", "--pull=missing", "--label", self.label, "-v", f"{root}:/work", DOCKER_IMAGE,
+                 "timeout", "12", "sh", "-c", script],
+                timeout=45,
+            )
+            out = result.stdout or ""
+            if "LOCK_NO_FLOCK" in out:
+                self.add("mount.lock", "skip", "mount.lock_no_tool", "File-lock probe skipped",
+                         "the probe image has no flock; install util-linux to test lock behavior")
+            elif "LOCK_HONORED" in out:
+                self.add("mount.lock", "pass", "mount.lock_ok", "Exclusive file locks are honored",
+                         "flock across processes on the bind mount is exclusive")
+            elif "LOCK_NOT_HONORED" in out:
+                self.add("mount.lock", "warn", "mount.lock_not_honored", "Exclusive file locks are NOT honored",
+                         "a second process took an exclusive lock while one was held — apps relying on flock (SQLite, Prisma, etc.) can corrupt data",
+                         "Run lock-dependent writers on a named volume instead of a bind mount, or update the engine's virtio-fs.")
+            else:
+                self.add("mount.lock", "warn", "mount.lock_inconclusive", "File-lock probe inconclusive",
+                         compact(result.stderr or out) or "no flock result")
 
     def check_watch_visibility(self) -> None:
         if not self.active:
@@ -1759,6 +1804,33 @@ def proxy_report(sock: Path | None = None) -> dict[str, Any]:
     return {"generated_at": now_iso(), "host_env": host_env, "system": system, "daemon": daemon, "containers": containers}
 
 
+SENSITIVE_SHARE_NAMES = [
+    ".ssh", ".aws", ".gcloud", ".azure", ".kube", ".docker", ".gnupg", ".config",
+    ".zsh_history", ".bash_history", ".netrc", ".npmrc", ".pypirc", "Library",
+]
+
+
+def mount_report() -> dict[str, Any]:
+    # Dory shares the user's home at its identical guest path (the OrbStack "just works" default),
+    # read-write, with the `:safe` policy that hides credential stores and shell rc files. This is a
+    # fixed engine default, so the file-sharing dashboard can report it without querying the guest.
+    home = str(HOME)
+    return {
+        "generated_at": now_iso(),
+        "shares": [
+            {
+                "host_path": home,
+                "guest_path": home,
+                "mode": "rw",
+                "policy": "safe",
+                "hidden": SENSITIVE_SHARE_NAMES,
+                "backend": "virtio-fs",
+            }
+        ],
+        "policy_note": "Credential stores and shell rc files (~/.ssh, ~/.aws, ~/.kube, Library, …) are hidden from every container as defense-in-depth.",
+    }
+
+
 def route_table(sock: Path | None = None) -> dict[str, Any]:
     sock = sock or socket_path()
     out: dict[str, Any] = {"generated_at": now_iso(), "socket": str(sock), "ports": [], "domains": [], "error": ""}
@@ -2006,6 +2078,7 @@ def bundle(path: Path | None, active: bool = False) -> Path:
         "doctor": [result.as_dict() for result in results],
         "routes": route_table(),
         "proxy": proxy_report(),
+        "mounts": mount_report(),
         "disk": disk_report(),
         "idle": idle_status(),
         "incidents": read_incidents(200),
@@ -2562,9 +2635,23 @@ def cmd_network(args: argparse.Namespace) -> int:
 
 
 def cmd_mount(args: argparse.Namespace) -> int:
+    report = mount_report()
     doctor = Doctor(timeout=args.timeout, active=True)
-    results = doctor.run_all(only={"socket", "api", "mounts", "watch"})
-    print_results(results, args.json)
+    results = doctor.run_all(only={"socket", "api", "mounts", "filelock", "watch"})
+    if args.json:
+        print(json.dumps({
+            "generated_at": now_iso(),
+            "shares": report["shares"],
+            "policy_note": report["policy_note"],
+            "results": [r.as_dict() for r in results],
+        }, indent=2, sort_keys=True))
+    else:
+        print("File sharing")
+        for share in report["shares"]:
+            print(f"  {share['host_path']} -> {share['guest_path']}  ({share['mode']}, {share['policy']}, {share['backend']})")
+        print(f"  {report['policy_note']}")
+        print("")
+        print_results(results, False)
     return exit_code(results)
 
 

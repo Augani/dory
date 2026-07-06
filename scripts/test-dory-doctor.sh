@@ -262,7 +262,9 @@ import json, sys
 report = json.load(sys.stdin)
 assert report["state"]["largest_log"]["bytes"] >= 200000, report["state"]
 '
-DORY_LOG_HARD_MAX_BYTES=1000 scripts/dory-doctor doctor --json --only disk | python3 -c '
+# `doctor --only disk` exits non-zero when the host disk is critically low, so capture before piping.
+disk_json="$(DORY_LOG_HARD_MAX_BYTES=1000 scripts/dory-doctor doctor --json --only disk 2>/dev/null || true)"
+printf '%s' "$disk_json" | python3 -c '
 import json, sys
 results = json.load(sys.stdin)["results"]
 log_check = [r for r in results if r["id"] == "disk.dory_logs"]
@@ -328,6 +330,21 @@ lan_rc=$?
 set -e
 [ "$lan_rc" = "2" ] || { echo "bad --lan-visible value should exit 2, got $lan_rc"; exit 1; }
 
+# File-sharing dashboard + file-lock probe (Track 3 P1): `dory mount --json` shows the active share +
+# safe policy; the file-lock probe registers (skips without a live engine).
+# `dory mount` exits non-zero when the socket is absent, so capture before piping under pipefail.
+mount_json="$(DORY_SOCK=/tmp/dory-no-such-mount.sock scripts/dory mount --json 2>/dev/null || true)"
+printf '%s' "$mount_json" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+assert d["shares"], "mount dashboard missing shares"
+share = d["shares"][0]
+assert share["mode"] == "rw" and share["policy"] == "safe", share
+assert d.get("policy_note"), "missing policy note"
+ids = {r["id"]: r for r in d["results"]}
+assert "mount.lock" in ids and ids["mount.lock"]["status"] == "skip", ids.get("mount.lock")
+'
+
 # Incident timeline (Track 6): `dory repair --apply` records an incident; `dory incidents --json`
 # reads it newest-first at 0600; a healthy `repair all --apply` records only what it actually applied.
 INC_LOG="$TMP_HOME/incidents-test.jsonl"
@@ -369,7 +386,9 @@ PY
 
 # Memory inspector + guest disk (Track 5 P1): footprint breaks host RSS into engine/app roles;
 # the guest disk probe is active-only and must skip cleanly in the default passive run.
-scripts/dory-doctor doctor --json --only memory,disk | python3 -c '
+# `--only memory,disk` exits non-zero when the host disk is critically low; capture before piping.
+memdisk_json="$(scripts/dory-doctor doctor --json --only memory,disk 2>/dev/null || true)"
+printf '%s' "$memdisk_json" | python3 -c '
 import json, sys
 results = json.load(sys.stdin)["results"]
 mem = [r for r in results if r["id"] == "memory.footprint"]
