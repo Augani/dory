@@ -6,7 +6,12 @@ import Foundation
 /// engine: it ships its own kernel, userspace networking (gvproxy), and a journaled data disk, so
 /// it needs no Apple `container` toolchain and gives every user the same performance. Dory's Docker
 /// runtime then drives the published socket.
-enum SharedVMProvisioner {
+/// Explicitly nonisolated: the app builds with MainActor-by-default isolation, which put every
+/// provisioning step — the stopHelper kill-and-wait loop (up to 2 s), LZFSE kernel decompression,
+/// rootfs copies, engine spawn — ON the main thread, freezing the UI for the whole engine restart
+/// whenever a Settings toggle re-provisioned. Off the main actor, `connectBackend`'s awaits
+/// suspend instead of block and the UI stays live.
+nonisolated enum SharedVMProvisioner {
     static var socketPath: String { "\(NSHomeDirectory())/.dory/engine.sock" }
     static var engineIPPath: String { "\(NSHomeDirectory())/.dory/engine.ip" }
     nonisolated private static let helperPIDPath = "\(NSHomeDirectory())/.dory/engine.pid"
@@ -568,7 +573,13 @@ enum SharedVMProvisioner {
         stopHelper()
     }
 
+    /// Synchronous stop, for app termination only — it must complete before the process exits.
+    /// Everywhere else use `stopEngine()`, which runs the kill-and-wait loop off the main actor.
     static func stopEngineDetached() {
+        stopHelper()
+    }
+
+    static func stopEngine() async {
         stopHelper()
     }
 

@@ -440,7 +440,7 @@ final class AppStore {
         UserDefaults.standard.set(preference.rawValue, forKey: Self.enginePreferenceKey)
         guard changed || preference == .custom, !isConnecting else { return }
         if preference != .dory {
-            SharedVMProvisioner.stopEngineDetached()
+            await SharedVMProvisioner.stopEngine()
             runtime = DisconnectedRuntime()
         }
         sharedVMStatus = "Switching engine…"
@@ -520,7 +520,7 @@ final class AppStore {
     func restartEngine() async {
         guard runtimeKind == .sharedVM || runtimeKind == .disconnected, !isConnecting else { return }
         sharedVMStatus = "Restarting the engine…"
-        SharedVMProvisioner.stopEngineDetached()
+        await SharedVMProvisioner.stopEngine()
         await connectBackend()
     }
 
@@ -533,7 +533,7 @@ final class AppStore {
         UserDefaults.standard.set(on, forKey: SharedVMProvisioner.Config.rosettaX86Key)
         guard runtimeKind == .sharedVM || runtimeKind == .disconnected, !isConnecting else { return }
         sharedVMStatus = on ? "Switching to the Rosetta x86 engine…" : "Switching to Dory's engine…"
-        SharedVMProvisioner.stopEngineDetached()
+        await SharedVMProvisioner.stopEngine()
         await connectBackend()
     }
 
@@ -546,7 +546,7 @@ final class AppStore {
         UserDefaults.standard.set(on, forKey: SharedVMProvisioner.Config.gpuVenusKey)
         guard runtimeKind == .sharedVM || runtimeKind == .disconnected, !isConnecting else { return }
         sharedVMStatus = on ? "Enabling GPU acceleration…" : "Disabling GPU acceleration…"
-        SharedVMProvisioner.stopEngineDetached()
+        await SharedVMProvisioner.stopEngine()
         await connectBackend()
     }
 
