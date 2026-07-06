@@ -57,7 +57,7 @@ struct ContainerActionsTests {
     }
 
     @Test func reloadPopulatesCpuHistoryForRunningContainers() async {
-        let store = AppStore()
+        let store = AppStore(runtime: MockRuntime())
         await store.reload()
         #expect(!store.cpuHistory.isEmpty)
         let runningIDs = store.containers.filter(\.isRunning).map(\.id)

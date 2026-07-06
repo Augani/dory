@@ -70,7 +70,7 @@ struct ContainerListStateTests {
     }
 
     @Test func reloadBecomesReadyWithMockRuntime() async {
-        let store = AppStore()
+        let store = AppStore(runtime: MockRuntime())
         await store.reload()
         #expect(store.loadState == .ready)
         #expect(!store.containers.isEmpty)

@@ -1,12 +1,14 @@
 import XCTest
 
+/// Drives the real app in its honest disconnected state: automation launches never boot the
+/// engine and the app ships no demo data, so these tests assert navigation chrome, empty states,
+/// sheets, and the onboarding overlay rather than fixture containers.
 final class DoryScreensUITests: XCTestCase {
     var app: XCUIApplication!
 
     override func setUpWithError() throws {
         continueAfterFailure = false
         app = XCUIApplication()
-        app.launchEnvironment["DORY_RUNTIME"] = "mock"
         app.launchEnvironment["DORY_UI_TEST"] = "1"
         if app.state != .notRunning {
             app.terminate()
@@ -25,55 +27,14 @@ final class DoryScreensUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts[text].waitForExistence(timeout: timeout), "expected text '\(text)'")
     }
 
-    /// Matches any element by accessibility identifier. Container rows are single flattened
-    /// accessibility elements (tap-to-select), so their child texts are not individual staticTexts;
-    /// the row's `container-<id>` identifier is the stable hook.
-    private func assertElement(_ id: String, timeout: TimeInterval = 4) {
-        let element = app.descendants(matching: .any).matching(identifier: id).firstMatch
-        XCTAssertTrue(element.waitForExistence(timeout: timeout), "expected element '\(id)'")
-    }
-
-    private func selectKubeResource(_ id: String) {
-        let button = app.buttons["kube-resource-\(id)"]
-        XCTAssertTrue(button.waitForExistence(timeout: 4), "kube resource \(id) should exist")
-        button.click()
-    }
-
     func testNavigatesEverySection() {
-        nav("containers"); assertElement("container-c1")
-        nav("images"); assertText("postgres")
-        nav("volumes"); assertText("USED BY")
-        nav("networks"); assertText("SUBNET"); assertText("dory-default")
-        nav("kubernetes"); assertText("POD")
-        nav("machines"); assertText("ADDRESS"); assertText("ubuntu")
+        nav("containers"); assertText("Containers"); assertText("Engine not running")
+        nav("images"); assertText("Images")
+        nav("volumes"); assertText("Volumes")
+        nav("networks"); assertText("Networks")
+        nav("kubernetes"); assertText("Kubernetes")
+        nav("machines"); assertText("Linux Machines")
         nav("settings"); assertText("STARTUP")
-    }
-
-    func testContainerDetailTabs() {
-        nav("containers")
-        assertText("DETAILS") // Overview is default for the selected container
-        app.buttons["tab-stats"].click(); assertText("CPU usage · last 60s")
-        app.buttons["tab-logs"].click()
-        app.buttons["tab-env"].click(); assertText("NODE_ENV")
-        app.buttons["tab-terminal"].click()
-        app.buttons["tab-overview"].click(); assertText("Restart policy")
-    }
-
-    func testKubernetesResourceSwitcherShowsWorkloadInventory() {
-        nav("kubernetes")
-        assertText("web-7d9f8b6c4-xk2lp")
-
-        selectKubeResource("configMaps")
-        assertText("web-config")
-        assertText("KEYS")
-
-        selectKubeResource("secrets")
-        assertText("web-secrets")
-        assertText("Opaque")
-
-        selectKubeResource("ingresses")
-        assertText("web.dory.local")
-        assertText("PATHS")
     }
 
     func testSettingsSubTabs() {
@@ -101,8 +62,8 @@ final class DoryScreensUITests: XCTestCase {
         app.buttons["brand"].click()
         XCTAssertTrue(app.buttons["onboarding-start"].waitForExistence(timeout: 4), "onboarding overlay should appear")
         app.buttons["onboarding-skip"].click()
-        // After dismissing, the main UI is back.
-        nav("containers"); assertElement("container-c1")
+        // After dismissing, the main UI is back in its disconnected state.
+        nav("containers"); assertText("Engine not running")
     }
 
     func testNewContainerSheetOpensAndCancels() {

@@ -83,27 +83,4 @@ struct KubeResourceLoadStateTests {
         #expect(store.actionError == "Headless services do not expose a cluster IP to open in the browser.")
     }
 
-    @Test func mockResourceReloadUsesMockDataAndNamespaceFilter() async {
-        let store = AppStore()
-        store.kubeResource = .services
-        store.kubeNamespace = "cache"
-        store.actionError = "previous failure"
-
-        await store.loadKubeResource()
-
-        #expect(store.kubeServices.map(\.id) == ["cache/redis"])
-        #expect(store.actionError == nil)
-    }
-
-    @Test func mockInitialLoadUsesSelectedResourceAndNamespace() async {
-        let store = AppStore()
-        store.kubeResource = .deployments
-        store.kubeNamespace = "jobs"
-
-        await store.loadKubernetes()
-
-        #expect(store.kubernetesReachable)
-        #expect(store.kubeNamespaces == ["default", "cache", "data", "jobs"])
-        #expect(store.deployments.map(\.id) == ["jobs/worker"])
-    }
 }

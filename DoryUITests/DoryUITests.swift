@@ -26,15 +26,17 @@ final class DoryUITests: XCTestCase {
 
     @MainActor
     func testLaunchPerformance() throws {
-        // This measures how long it takes to launch your application.
+        // This measures how long it takes to launch your application. Terminate between
+        // iterations so every launch is cold — a still-running instance records no metric.
         measure(metrics: [XCTApplicationLaunchMetric()]) {
-            makeApp().launch()
+            let app = makeApp()
+            app.launch()
+            app.terminate()
         }
     }
 
     private func makeApp() -> XCUIApplication {
         let app = XCUIApplication()
-        app.launchEnvironment["DORY_RUNTIME"] = "mock"
         app.launchEnvironment["DORY_UI_TEST"] = "1"
         return app
     }

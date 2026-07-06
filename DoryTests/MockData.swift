@@ -1,5 +1,9 @@
 import Foundation
 
+@testable import Dory
+
+/// Test fixtures only. These demo objects used to ship inside the app as its default runtime;
+/// they now exist purely so unit tests can drive the store and shim with deterministic data.
 enum MockData {
     static let containers: [Container] = [
         Container(id: "c1", name: "postgres-db", image: "postgres:16", status: .running, cpuPercent: 2.4, memoryDisplay: "128 MB", memoryLimitDisplay: "2 GB", memoryFraction: 0.06, ports: "5432→5432", uptime: "3h 12m", created: "3 hours ago", ipAddress: "192.168.215.4", domain: "postgres-db.dory.local", command: "postgres", restartPolicy: "unless-stopped", labels: ["com.docker.compose.project": "dory-stack", "com.docker.compose.service": "db"], memoryBytes: 134_217_728),

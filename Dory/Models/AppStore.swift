@@ -112,12 +112,9 @@ final class AppStore {
         let env = ProcessInfo.processInfo.environment
         let realLaunch = env["DORY_SECTION"] == nil && env["DORY_APPEARANCE"] == nil
             && env["XCTestConfigurationFilePath"] == nil && env["DORY_UI_TEST"] != "1"
-        // A real launch starts disconnected (empty, engine-off) so no demo data ever leaks into the
-        // UI before the engine connects or when it fails to start. Previews, tests, and an explicit
-        // DORY_RUNTIME=mock keep the mock runtime so their designed data still renders.
-        let usesMockData = env["DORY_RUNTIME"] == "mock" || !realLaunch
-            || env["XCODE_RUNNING_FOR_PREVIEWS"] == "1"
-        self.runtime = runtime ?? (usesMockData ? MockRuntime() : DisconnectedRuntime())
+        // Every launch starts disconnected (empty, engine-off) until a real engine connects: the app
+        // ships no demo data. Tests inject their own fixture runtime through the parameter.
+        self.runtime = runtime ?? DisconnectedRuntime()
         let table = domainTable
         reverseProxy = DoryReverseProxy { host in table.backend(for: host) }
         if realLaunch {
@@ -367,12 +364,16 @@ final class AppStore {
     }
 
     func connectBackend() async {
-        let isMock = ProcessInfo.processInfo.environment["DORY_RUNTIME"] == "mock"
-        if !isMock { isConnecting = true }
+        // Automation launches (UI tests, screenshot harnesses) never boot the real engine: they
+        // exercise the app against the honest disconnected state unless they opt into a backend
+        // with an explicit DORY_RUNTIME.
+        if isAutomationContext, ProcessInfo.processInfo.environment["DORY_RUNTIME"] == nil {
+            loadState = .engineOff
+            return
+        }
+        isConnecting = true
         defer { isConnecting = false }
         switch ProcessInfo.processInfo.environment["DORY_RUNTIME"] {
-        case "mock":
-            await reload()
         case "docker", "docker-proxy":
             if let docker = await DockerEngineRuntime.detect() { runtime = docker; await reload() }
             else { loadState = .engineOff }
@@ -412,8 +413,9 @@ final class AppStore {
             }
         }
         // With no live engine there is nothing to proxy: don't stand up the shim or, worse, redirect
-        // the user's `docker` CLI at a dead socket. Explicit mock mode still wires the shim for tests.
-        guard isMock || loadState != .engineOff else { return }
+        // the user's `docker` CLI at a dead socket. Injected fixture runtimes still wire the shim so
+        // shim tests can drive it.
+        guard runtimeKind == .mock || loadState != .engineOff else { return }
         // Bring up the Docker-compatible socket before ancillary inventory work. Kubernetes and
         // machine discovery can involve external CLIs; they should never delay `docker` readiness.
         startShim()
@@ -721,10 +723,6 @@ final class AppStore {
     }
 
     func loadKubernetes() async {
-        guard runtimeKind != .mock else {
-            loadMockKubernetes()
-            return
-        }
         let status = await kubernetes.status()
         kubernetesReachable = status.reachable
         kubernetesInfo = status.info
@@ -740,47 +738,9 @@ final class AppStore {
     }
 
     func loadKubeResource() async {
-        guard runtimeKind != .mock else {
-            loadMockKubeResource(kubeResource)
-            return
-        }
         guard kubernetesReachable else { return }
         let result = await kubeClient.getJSON(kind: kubeResource.apiKind, namespace: namespaceFilter)
         applyKubeResourceLoad(kind: kubeResource, result: result)
-    }
-
-    private func loadMockKubernetes() {
-        kubernetesReachable = true
-        kubernetesInfo = "v1.31.0 · 1 node · \(MockData.pods.count) pods · 4 namespaces"
-        kubeNamespaces = ["default", "cache", "data", "jobs"]
-        loadMockKubeResource(kubeResource)
-    }
-
-    private func mockNamespaceMatches(_ namespace: String) -> Bool {
-        namespaceFilter.map { $0 == namespace } ?? true
-    }
-
-    private func loadMockKubeResource(_ kind: KubeResourceKind) {
-        switch kind {
-        case .pods:
-            pods = MockData.pods.filter { mockNamespaceMatches($0.namespace) }
-            if let selectedPodID, !pods.contains(where: { $0.id == selectedPodID }) { self.selectedPodID = nil }
-        case .deployments:
-            deployments = MockData.deployments.filter { mockNamespaceMatches($0.namespace) }
-            if let selectedDeploymentID, !deployments.contains(where: { $0.id == selectedDeploymentID }) { self.selectedDeploymentID = nil }
-        case .services:
-            kubeServices = MockData.kubeServices.filter { mockNamespaceMatches($0.namespace) }
-        case .configMaps:
-            configMaps = MockData.configMaps.filter { mockNamespaceMatches($0.namespace) }
-            if let selectedConfigMap, !configMaps.contains(where: { $0.id == selectedConfigMap.id }) { self.selectedConfigMap = nil }
-        case .secrets:
-            secrets = MockData.secrets.filter { mockNamespaceMatches($0.namespace) }
-            if let selectedSecret, !secrets.contains(where: { $0.id == selectedSecret.id }) { self.selectedSecret = nil }
-        case .ingresses:
-            ingresses = MockData.ingresses.filter { mockNamespaceMatches($0.namespace) }
-            if let selectedIngress, !ingresses.contains(where: { $0.id == selectedIngress.id }) { self.selectedIngress = nil }
-        }
-        actionError = nil
     }
 
     func applyKubeResourceLoad(kind: KubeResourceKind, result: Result<Data, KubeError>) {
@@ -1822,14 +1782,12 @@ final class AppStore {
     var machineCreated: Machine?
 
     func loadMachines() {
-        guard runtimeKind != .mock else { machines = MockData.machines; return }
         guard runtimeKind.isDockerCompatible else { machines = []; return }
         Task { await refreshMachines() }
     }
 
     @discardableResult
     private func refreshMachines() async -> [Machine] {
-        guard runtimeKind != .mock else { machines = MockData.machines; return MockData.machines }
         guard runtimeKind.isDockerCompatible else { machines = []; return [] }
         machines = await machineService.list()
         try? SSHConfigWriter().write(machines: machines)
