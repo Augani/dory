@@ -10,6 +10,25 @@ public final class VirglRenderer: VirtioGPURenderer, @unchecked Sendable {
     private let callbacks: UnsafeMutablePointer<VirglRendererCallbacks>
     private let functions: Functions
 
+    // Fence completions arrive on virglrenderer's internal threads (ASYNC_FENCE_CB); the C
+    // callbacks have no per-instance cookie routing here, so a single active renderer is registered
+    // globally (one renderer per engine process) and forwards into the device's sink.
+    private static let fenceLock = NSLock()
+    nonisolated(unsafe) private static weak var activeRenderer: VirglRenderer?
+    nonisolated(unsafe) private var fenceSink: ((UInt32, UInt32, UInt64) -> Void)?
+
+    public var onFenceSignaled: ((UInt32, UInt32, UInt64) -> Void)? {
+        get { Self.fenceLock.lock(); defer { Self.fenceLock.unlock() }; return fenceSink }
+        set { Self.fenceLock.lock(); fenceSink = newValue; Self.fenceLock.unlock() }
+    }
+
+    fileprivate static func signalFence(contextID: UInt32, ringIndex: UInt32, fenceID: UInt64) {
+        fenceLock.lock()
+        let sink = activeRenderer?.fenceSink
+        fenceLock.unlock()
+        sink?(contextID, ringIndex, fenceID)
+    }
+
     public static func discover(
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) throws -> VirglRenderer {
@@ -72,8 +91,9 @@ public final class VirglRenderer: VirtioGPURenderer, @unchecked Sendable {
 
             // Host-allocated HOST3D blobs (the zero-copy map model libkrun uses): do NOT set
             // USE_GUEST_VRAM, which would make virglrenderer choose guest-backed storage that returns
-            // no mappable host pointer.
-            let flags = RendererFlags.venus | RendererFlags.noVirgl
+            // no mappable host pointer. ASYNC_FENCE_CB delivers fence completions from the renderer's
+            // own threads, so no poll loop is needed for real fence signalling.
+            let flags = RendererFlags.venus | RendererFlags.noVirgl | RendererFlags.asyncFenceCB
             let initStatus = functions.initialize(nil, flags, UnsafeMutableRawPointer(callbacks))
             guard initStatus == 0 else {
                 callbacks.deinitialize(count: 1)
@@ -104,6 +124,9 @@ public final class VirglRenderer: VirtioGPURenderer, @unchecked Sendable {
             self.handle = handle
             self.callbacks = callbacks
             self.functions = functions
+            Self.fenceLock.lock()
+            Self.activeRenderer = self
+            Self.fenceLock.unlock()
         } catch {
             dlclose(handle)
             throw error
@@ -111,10 +134,30 @@ public final class VirglRenderer: VirtioGPURenderer, @unchecked Sendable {
     }
 
     deinit {
+        Self.fenceLock.lock()
+        if Self.activeRenderer === self { Self.activeRenderer = nil }
+        Self.fenceLock.unlock()
         functions.cleanup(nil)
         callbacks.deinitialize(count: 1)
         callbacks.deallocate()
         dlclose(handle)
+    }
+
+    /// Registers a host fence so virglrenderer signals it (via the async callbacks) once all GPU
+    /// work submitted before it has completed. Context fences carry Venus's per-ring ordering;
+    /// plain fences ride the global ctx0 timeline.
+    public func createFence(contextID: UInt32, ringIndex: UInt32, fenceID: UInt64, contextFence: Bool) throws {
+        if contextFence, let contextCreateFence = functions.contextCreateFence {
+            try check(
+                contextCreateFence(contextID, 0, ringIndex, fenceID),
+                "virgl_renderer_context_create_fence"
+            )
+            return
+        }
+        try check(
+            functions.createFence(Int32(truncatingIfNeeded: fenceID), contextID),
+            "virgl_renderer_create_fence"
+        )
     }
 
     public func createContext(id: UInt32, flags: UInt32, name: String) throws {
@@ -352,6 +395,7 @@ public final class VirglRenderer: VirtioGPURenderer, @unchecked Sendable {
 private enum RendererFlags {
     static let venus: Int32 = 1 << 6
     static let noVirgl: Int32 = 1 << 7
+    static let asyncFenceCB: Int32 = 1 << 8
     static let useGuestVRAM: Int32 = 1 << 14
 }
 
@@ -377,8 +421,14 @@ private let doryVirglLog: @convention(c) (Int32, UnsafePointer<CChar>?, UnsafeMu
     FileHandle.standardError.write(Data("virgl[\(level)]: \(text)\n".utf8))
 }
 
-private let doryVirglWriteFence: WriteFenceCallback = { _, _ in }
-private let doryVirglWriteContextFence: WriteContextFenceCallback = { _, _, _, _ in }
+// ctx0 fences ride the global timeline: write_fence has no context/ring, so they complete under
+// (context 0, ring 0). Context fences carry their real coordinates.
+private let doryVirglWriteFence: WriteFenceCallback = { _, fence in
+    VirglRenderer.signalFence(contextID: 0, ringIndex: 0, fenceID: UInt64(fence))
+}
+private let doryVirglWriteContextFence: WriteContextFenceCallback = { _, contextID, ringIndex, fenceID in
+    VirglRenderer.signalFence(contextID: contextID, ringIndex: ringIndex, fenceID: fenceID)
+}
 
 private struct VirglRendererCallbacks {
     var version: Int32
@@ -477,6 +527,8 @@ private struct Functions {
         UnsafePointer<iovec>?,
         Int32
     ) -> Int32
+    typealias CreateFence = @convention(c) (Int32, UInt32) -> Int32
+    typealias ContextCreateFence = @convention(c) (UInt32, UInt32, UInt32, UInt64) -> Int32
 
     let initialize: Initialize
     let cleanup: Cleanup
@@ -499,6 +551,8 @@ private struct Functions {
     let resourceGetMapInfo: ResourceGetMapInfo
     let transferWriteIOV: TransferWriteIOV
     let transferReadIOV: TransferReadIOV
+    let createFence: CreateFence
+    let contextCreateFence: ContextCreateFence?
 
     init(handle: UnsafeMutableRawPointer) throws {
         initialize = try Self.required(handle, "virgl_renderer_init")
@@ -522,6 +576,8 @@ private struct Functions {
         resourceGetMapInfo = try Self.required(handle, "virgl_renderer_resource_get_map_info")
         transferWriteIOV = try Self.required(handle, "virgl_renderer_transfer_write_iov")
         transferReadIOV = try Self.required(handle, "virgl_renderer_transfer_read_iov")
+        createFence = try Self.required(handle, "virgl_renderer_create_fence")
+        contextCreateFence = Self.optional(handle, "virgl_renderer_context_create_fence")
     }
 
     private static func required<T>(_ handle: UnsafeMutableRawPointer, _ name: String) throws -> T {

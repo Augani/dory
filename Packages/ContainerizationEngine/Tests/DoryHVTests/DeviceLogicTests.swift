@@ -314,6 +314,116 @@ import Testing
         #expect(try memory.read(UInt32.self, at: usedRing + 8) == 408)
     }
 
+    @Test func fencedCommandDefersCompletionUntilRendererSignals() throws {
+        let renderer = FakeVirtioGPURenderer(capsets: [VirtioGPUCapset(id: 4, maxVersion: 0, data: [1])])
+        let gpu = VirtioGPU(hostMemoryBase: 0x1_0000_0000, renderer: renderer)
+        let memory = try GuestMemory(guestBase: base, size: 64 * HostPage.size)
+        let transport = VirtioMMIOTransport(baseAddress: GuestLayout.virtioBase, backend: gpu, memory: memory) {}
+        transport.queues[0].configure(size: 8, descriptorTable: descTable, availRing: availRing, usedRing: usedRing)
+        transport.queues[0].setReady(true)
+
+        // SUBMIT_3D with VIRTIO_GPU_FLAG_FENCE on the global (ctx0) timeline: no INFO_RING_IDX.
+        var request = [UInt8]()
+        request.appendLE(UInt32(0x0207))
+        request.appendLE(UInt32(1))       // FLAG_FENCE
+        request.appendLE(UInt64(7))       // fence_id
+        request.appendLE(UInt32(5))       // ctx_id
+        request.append(contentsOf: [0, 0, 0, 0])
+        request.appendLE(UInt32(0))       // size
+        request.appendLE(UInt32(0))       // padding
+        try writeDescriptor(memory, index: 0, addr: requestBuffer, len: UInt32(request.count), flags: 0x1, next: 1)
+        try writeDescriptor(memory, index: 1, addr: responseBuffer, len: 512, flags: 0x2, next: 0)
+        try memory.write(request, at: requestBuffer)
+        try memory.write(UInt16(0), at: availRing)
+        try memory.write(UInt16(0), at: availRing + 4)
+        try memory.write(UInt16(1), at: availRing + 2)
+
+        gpu.handleKick(queue: 0, transport: transport)
+
+        // The command executed and registered a fence, but the descriptor must stay unused.
+        #expect(renderer.createdFences.count == 1)
+        #expect(renderer.createdFences.first?.fenceID == 7)
+        #expect(renderer.createdFences.first?.contextFence == false)
+        #expect(try memory.read(UInt16.self, at: usedRing + 2) == 0)
+
+        // A ctx0 signal completes it: response carries OK + FLAG_FENCE + the fence id.
+        renderer.signalFence(contextID: 0, ringIndex: 0, fenceID: 7)
+        #expect(try memory.read(UInt16.self, at: usedRing + 2) == 1)
+        #expect(try memory.read(UInt32.self, at: responseBuffer) == 0x1100)
+        #expect(try memory.read(UInt32.self, at: responseBuffer + 4) == 1)
+        #expect(try memory.read(UInt64.self, at: responseBuffer + 8) == 7)
+    }
+
+    @Test func contextFenceCompletesOnlyItsRing() throws {
+        let renderer = FakeVirtioGPURenderer(capsets: [VirtioGPUCapset(id: 4, maxVersion: 0, data: [1])])
+        let gpu = VirtioGPU(hostMemoryBase: 0x1_0000_0000, renderer: renderer)
+        let memory = try GuestMemory(guestBase: base, size: 64 * HostPage.size)
+        let transport = VirtioMMIOTransport(baseAddress: GuestLayout.virtioBase, backend: gpu, memory: memory) {}
+        transport.queues[0].configure(size: 8, descriptorTable: descTable, availRing: availRing, usedRing: usedRing)
+        transport.queues[0].setReady(true)
+
+        var request = [UInt8]()
+        request.appendLE(UInt32(0x0207))
+        request.appendLE(UInt32(3))       // FLAG_FENCE | FLAG_INFO_RING_IDX
+        request.appendLE(UInt64(11))      // fence_id
+        request.appendLE(UInt32(9))       // ctx_id
+        request.append(contentsOf: [2, 0, 0, 0])  // ring_idx 2
+        request.appendLE(UInt32(0))
+        request.appendLE(UInt32(0))
+        try writeDescriptor(memory, index: 0, addr: requestBuffer, len: UInt32(request.count), flags: 0x1, next: 1)
+        try writeDescriptor(memory, index: 1, addr: responseBuffer, len: 512, flags: 0x2, next: 0)
+        try memory.write(request, at: requestBuffer)
+        try memory.write(UInt16(0), at: availRing)
+        try memory.write(UInt16(0), at: availRing + 4)
+        try memory.write(UInt16(1), at: availRing + 2)
+
+        gpu.handleKick(queue: 0, transport: transport)
+        #expect(renderer.createdFences.first?.contextFence == true)
+        #expect(try memory.read(UInt16.self, at: usedRing + 2) == 0)
+
+        // Signals for another ring or context leave it pending; its own ring completes it.
+        renderer.signalFence(contextID: 9, ringIndex: 1, fenceID: 11)
+        #expect(try memory.read(UInt16.self, at: usedRing + 2) == 0)
+        renderer.signalFence(contextID: 8, ringIndex: 2, fenceID: 11)
+        #expect(try memory.read(UInt16.self, at: usedRing + 2) == 0)
+        renderer.signalFence(contextID: 9, ringIndex: 2, fenceID: 11)
+        #expect(try memory.read(UInt16.self, at: usedRing + 2) == 1)
+        #expect(try memory.read(UInt32.self, at: responseBuffer + 4) == 3)
+        #expect(try memory.read(UInt64.self, at: responseBuffer + 8) == 11)
+    }
+
+    @Test func fenceRegistrationFailureRespondsImmediately() throws {
+        let renderer = FakeVirtioGPURenderer(capsets: [VirtioGPUCapset(id: 4, maxVersion: 0, data: [1])])
+        renderer.failFenceCreation = true
+        let gpu = VirtioGPU(hostMemoryBase: 0x1_0000_0000, renderer: renderer)
+        let memory = try GuestMemory(guestBase: base, size: 64 * HostPage.size)
+        let transport = VirtioMMIOTransport(baseAddress: GuestLayout.virtioBase, backend: gpu, memory: memory) {}
+        transport.queues[0].configure(size: 8, descriptorTable: descTable, availRing: availRing, usedRing: usedRing)
+        transport.queues[0].setReady(true)
+
+        var request = [UInt8]()
+        request.appendLE(UInt32(0x0207))
+        request.appendLE(UInt32(1))
+        request.appendLE(UInt64(13))
+        request.appendLE(UInt32(5))
+        request.append(contentsOf: [0, 0, 0, 0])
+        request.appendLE(UInt32(0))
+        request.appendLE(UInt32(0))
+        try writeDescriptor(memory, index: 0, addr: requestBuffer, len: UInt32(request.count), flags: 0x1, next: 1)
+        try writeDescriptor(memory, index: 1, addr: responseBuffer, len: 512, flags: 0x2, next: 0)
+        try memory.write(request, at: requestBuffer)
+        try memory.write(UInt16(0), at: availRing)
+        try memory.write(UInt16(0), at: availRing + 4)
+        try memory.write(UInt16(1), at: availRing + 2)
+
+        gpu.handleKick(queue: 0, transport: transport)
+
+        // Degraded but never hung: the eager response still carries the fence id as the signal.
+        #expect(try memory.read(UInt16.self, at: usedRing + 2) == 1)
+        #expect(try memory.read(UInt32.self, at: responseBuffer) == 0x1100)
+        #expect(try memory.read(UInt64.self, at: responseBuffer + 8) == 13)
+    }
+
     private func writeDescriptor(_ memory: GuestMemory, index: UInt64, addr: UInt64, len: UInt32, flags: UInt16, next: UInt16) throws {
         let descriptor = descTable + index * 16
         try memory.write(addr, at: descriptor)
@@ -388,6 +498,27 @@ private final class FakeVirtioGPURenderer: VirtioGPURenderer {
     func unmapBlob(resourceID: UInt32) throws {}
     func transferToHost3D(_ transfer: VirtioGPUTransfer3D, entries: [VirtioGPUMemoryEntry]) throws {}
     func transferFromHost3D(_ transfer: VirtioGPUTransfer3D, entries: [VirtioGPUMemoryEntry]) throws {}
+
+    var onFenceSignaled: ((UInt32, UInt32, UInt64) -> Void)?
+    /// Registered fences accumulate; tests fire them via `signalFence` to model asynchronous
+    /// completion, or set `autoSignalFences` for the old eager behavior.
+    private(set) var createdFences: [(contextID: UInt32, ringIndex: UInt32, fenceID: UInt64, contextFence: Bool)] = []
+    var autoSignalFences = false
+    var failFenceCreation = false
+
+    func createFence(contextID: UInt32, ringIndex: UInt32, fenceID: UInt64, contextFence: Bool) throws {
+        if failFenceCreation {
+            throw VMError.invalidConfiguration("fence creation disabled")
+        }
+        createdFences.append((contextID, ringIndex, fenceID, contextFence))
+        if autoSignalFences {
+            signalFence(contextID: contextFence ? contextID : 0, ringIndex: contextFence ? ringIndex : 0, fenceID: fenceID)
+        }
+    }
+
+    func signalFence(contextID: UInt32, ringIndex: UInt32, fenceID: UInt64) {
+        onFenceSignaled?(contextID, ringIndex, fenceID)
+    }
 }
 
 @Suite struct PL011Tests {

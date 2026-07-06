@@ -86,6 +86,11 @@ public protocol VirtioGPURenderer: AnyObject {
     func unmapBlob(resourceID: UInt32) throws
     func transferToHost3D(_ transfer: VirtioGPUTransfer3D, entries: [VirtioGPUMemoryEntry]) throws
     func transferFromHost3D(_ transfer: VirtioGPUTransfer3D, entries: [VirtioGPUMemoryEntry]) throws
+    /// Registers a fence that must call `onFenceSignaled` (possibly from another thread) once all
+    /// GPU work submitted before it has completed. Context fences order per (context, ring); plain
+    /// fences ride the global ctx0 timeline and signal as (0, 0, id).
+    func createFence(contextID: UInt32, ringIndex: UInt32, fenceID: UInt64, contextFence: Bool) throws
+    var onFenceSignaled: ((_ contextID: UInt32, _ ringIndex: UInt32, _ fenceID: UInt64) -> Void)? { get set }
 }
 
 extension VirtioGPUMemoryEntry: @unchecked Sendable {}
@@ -176,6 +181,29 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
     private var resourceEntries: [UInt32: [VirtioGPUMemoryEntry]] = [:]
     private var blobResources: [UInt32: BlobResource] = [:]
 
+    // Real fence signalling: a fenced command's descriptor is held here and completed only when the
+    // renderer signals the fence (from its own thread), per the virtio-gpu contract — responding
+    // immediately would tell the guest its GPU work finished before it did.
+    private struct FenceKey: Hashable {
+        var contextID: UInt32
+        var ringIndex: UInt32
+    }
+
+    private struct PendingFence {
+        var fenceID: UInt64
+        var response: [UInt8]
+        var chain: VirtqueueChain
+    }
+
+    private let fenceLock = NSLock()
+    private var pendingFences: [FenceKey: [PendingFence]] = [:]
+    private weak var lastTransport: VirtioMMIOTransport?
+
+    private enum HeaderFlag {
+        static let fence: UInt32 = 1 << 0
+        static let infoRingIndex: UInt32 = 1 << 1
+    }
+
     private enum Command {
         static let getDisplayInfo: UInt32 = 0x0100
         static let resourceCreate2D: UInt32 = 0x0101
@@ -248,6 +276,9 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
         ]
         self.scanoutCount = scanoutCount
         self.hostVisibleMemory = hostVisibleMemory
+        renderer?.onFenceSignaled = { [weak self] contextID, ringIndex, fenceID in
+            self?.fenceSignaled(contextID: contextID, ringIndex: ringIndex, fenceID: fenceID)
+        }
     }
 
     public var configSpace: [UInt8] {
@@ -261,10 +292,17 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
 
     public func handleKick(queue: Int, transport: VirtioMMIOTransport) {
         guard queue == 0 || queue == 1 else { return }
+        fenceLock.lock()
+        lastTransport = transport
+        fenceLock.unlock()
         let virtqueue = transport.queues[queue]
         var interrupt = false
         while let chain = (try? virtqueue.pop()) ?? nil {
-            let response = process(chain: chain, cursorQueue: queue == 1, transport: transport)
+            let request = chain.readBytes()
+            let response = process(request: request, cursorQueue: queue == 1, transport: transport)
+            if queue == 0, deferForFence(request: request, response: response, chain: chain) {
+                continue
+            }
             let written = chain.writeBytes(response)
             let wants = (try? virtqueue.push(chain, written: written)) ?? false
             interrupt = interrupt || wants
@@ -274,8 +312,66 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
         }
     }
 
-    private func process(chain: VirtqueueChain, cursorQueue: Bool, transport: VirtioMMIOTransport) -> [UInt8] {
-        let request = chain.readBytes()
+    /// Holds a successfully processed, fenced command's descriptor until the renderer signals the
+    /// fence. Returns false (respond immediately) for unfenced commands, errors — whose response
+    /// still carries the fence id, which the guest treats as the signal — and fence-registration
+    /// failures, so a broken fence path degrades to the old eager completion instead of hanging.
+    private func deferForFence(request: [UInt8], response: [UInt8], chain: VirtqueueChain) -> Bool {
+        guard let renderer, request.count >= 24, response.count >= 4 else { return false }
+        let flags = request.leUInt32(at: 4)
+        guard flags & HeaderFlag.fence != 0 else { return false }
+        guard response.leUInt32(at: 0) & 0xFF00 == 0x1100 else { return false }
+        let fenceID = request.leUInt64(at: 8)
+        let contextID = request.leUInt32(at: 16)
+        let ringIndex = UInt32(request[20])
+        let contextFence = flags & HeaderFlag.infoRingIndex != 0
+        do {
+            try renderer.createFence(contextID: contextID, ringIndex: ringIndex, fenceID: fenceID, contextFence: contextFence)
+        } catch {
+            return false
+        }
+        // ctx0 fences signal without context/ring coordinates, so they queue under (0, 0).
+        let key = contextFence
+            ? FenceKey(contextID: contextID, ringIndex: ringIndex)
+            : FenceKey(contextID: 0, ringIndex: 0)
+        fenceLock.lock()
+        pendingFences[key, default: []].append(PendingFence(fenceID: fenceID, response: response, chain: chain))
+        fenceLock.unlock()
+        return true
+    }
+
+    /// Renderer-thread entry: completes every pending descriptor on the signaled timeline whose
+    /// fence id is covered (fences signal in creation order within a ring).
+    private func fenceSignaled(contextID: UInt32, ringIndex: UInt32, fenceID: UInt64) {
+        let key = FenceKey(contextID: contextID, ringIndex: ringIndex)
+        fenceLock.lock()
+        var completed = [PendingFence]()
+        if var waiting = pendingFences[key] {
+            // The legacy ctx0 API carries 32-bit ids on the callback; compare within that width.
+            let signaled: (PendingFence) -> Bool = key == FenceKey(contextID: 0, ringIndex: 0)
+                ? { UInt32(truncatingIfNeeded: $0.fenceID) <= UInt32(truncatingIfNeeded: fenceID) }
+                : { $0.fenceID <= fenceID }
+            completed = waiting.filter(signaled)
+            waiting.removeAll(where: signaled)
+            pendingFences[key] = waiting.isEmpty ? nil : waiting
+        }
+        let transport = lastTransport
+        fenceLock.unlock()
+        guard !completed.isEmpty, let transport else { return }
+        transport.withQueueLock {
+            var interrupt = false
+            for pending in completed {
+                let written = pending.chain.writeBytes(pending.response)
+                let wants = (try? transport.queues[0].push(pending.chain, written: written)) ?? false
+                interrupt = interrupt || wants
+            }
+            if interrupt {
+                transport.notifyUsed()
+            }
+        }
+    }
+
+    private func process(request: [UInt8], cursorQueue: Bool, transport: VirtioMMIOTransport) -> [UInt8] {
         guard request.count >= 4 else {
             return responseHeader(type: Response.errorUnspecified, request: request)
         }
@@ -535,7 +631,10 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
     private func responseHeader(type: UInt32, request: [UInt8]) -> [UInt8] {
         var response = [UInt8]()
         response.appendLE(type)
-        response.appendLE(UInt32(0)) // flags
+        // Echo the fence flags: a response completing a fenced command must carry FLAG_FENCE (and
+        // the ring flag) alongside the fence id below, or the guest never treats the fence as done.
+        let requestFlags = request.count >= 8 ? request.leUInt32(at: 4) : 0
+        response.appendLE(requestFlags & (HeaderFlag.fence | HeaderFlag.infoRingIndex))
         response.appendLE(request.count >= 16 ? request.leUInt64(at: 8) : UInt64(0))
         response.appendLE(request.count >= 20 ? request.leUInt32(at: 16) : UInt32(0))
         response.append(request.count >= 21 ? request[20] : UInt8(0))
