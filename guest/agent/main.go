@@ -7,9 +7,11 @@ import (
 const agentPort = 1024
 
 func main() {
+	startHostAIBridge()
 	listener, err := listenVsock(agentPort)
 	if err != nil {
-		log.Fatalf("listen vsock: %v", err)
+		log.Printf("rpc vsock listener disabled: %v", err)
+		select {}
 	}
 	for {
 		conn, err := listener.Accept()

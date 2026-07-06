@@ -267,7 +267,17 @@ public final class VirtioVsock: VirtioDeviceBackend {
             }
             connection.receive(payload)
             return [header.reply(operation: .creditUpdate, forwardCount: connection.forwardCount).encoded()]
-        case .shutdown, .reset:
+        case .shutdown:
+            // A guest half-close (SHUT_WR carries only VIRTIO_VSOCK_SHUTDOWN_SEND) means the guest is
+            // done sending but can still receive, so keep the connection alive for the host to finish
+            // streaming its reply and only mark inbound EOF. Any other shutdown tears the connection down.
+            if header.flags == VsockShutdown.send {
+                withLock { connections[key] }?.markPeerSendClosed()
+            } else {
+                withLock { connections.removeValue(forKey: key) }?.close()
+            }
+            return [header.reply(operation: .shutdown).encoded()]
+        case .reset:
             withLock { connections.removeValue(forKey: key) }?.close()
             return [header.reply(operation: .shutdown).encoded()]
         case .creditRequest:
@@ -312,6 +322,11 @@ public final class VirtioVsock: VirtioDeviceBackend {
         }
     }
 
+    private enum VsockShutdown {
+        static let receive: UInt32 = 1  // VIRTIO_VSOCK_SHUTDOWN_RCV
+        static let send: UInt32 = 2     // VIRTIO_VSOCK_SHUTDOWN_SEND
+    }
+
     private final class InProcessConnection: VsockConnection {
         let key: ConnectionKey
         private let send: (VirtioVsockHeader.Operation, [UInt8], UInt32) -> Void
@@ -323,9 +338,12 @@ public final class VirtioVsock: VirtioDeviceBackend {
         private var inbound = [UInt8]()
         private var forwardCountValue: UInt32 = 0
         private var isClosed = false
+        private var peerSendClosed = false
 
         var forwardCount: UInt32 { lock.lock(); defer { lock.unlock() }; return forwardCountValue }
-        var isPeerClosed: Bool { lock.lock(); defer { lock.unlock() }; return isClosed }
+        // True once the guest can no longer send (either a full close or a SHUT_WR half-close). Readers
+        // draining inbound use it as EOF; the host may still write a reply until a full close.
+        var isPeerClosed: Bool { lock.lock(); defer { lock.unlock() }; return isClosed || peerSendClosed }
 
         init(
             key: ConnectionKey,
@@ -365,12 +383,15 @@ public final class VirtioVsock: VirtioDeviceBackend {
             send(.readWrite, bytes, credit)
         }
 
+        func markPeerSendClosed() {
+            lock.lock(); peerSendClosed = true; lock.unlock()
+        }
+
         func close() {
             lock.lock()
             if isClosed { lock.unlock(); return }
             isClosed = true
             let credit = forwardCountValue
-            inbound.removeAll()
             lock.unlock()
             send(.shutdown, [], credit)
             onClose(key)

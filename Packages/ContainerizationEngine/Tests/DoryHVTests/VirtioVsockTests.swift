@@ -159,4 +159,61 @@ import Testing
         #expect(count == payload.count)
         #expect(Array(buffer.prefix(count)) == payload)
     }
+
+    @Test func guestSendShutdownHalfClosesButKeepsConnectionWritable() throws {
+        let device = VirtioVsock(guestCID: 3)
+        var accepted: VsockConnection?
+        device.listen(port: 1024) { accepted = $0 }
+        _ = try device.receive(packet: VirtioVsockHeader(
+            sourceCID: 3, destinationCID: 2, sourcePort: 40_000, destinationPort: 1024,
+            length: 0, operation: .request
+        ).encoded())
+
+        let payload = [UInt8]("hi".utf8)
+        _ = try device.receive(packet: VirtioVsockHeader(
+            sourceCID: 3, destinationCID: 2, sourcePort: 40_000, destinationPort: 1024,
+            length: UInt32(payload.count), operation: .readWrite
+        ).encoded() + payload)
+
+        // SHUT_WR half-close: VIRTIO_VSOCK_SHUTDOWN_SEND (2). The guest is done sending, but the host
+        // must still be able to stream a reply, so the connection stays alive.
+        _ = try device.receive(packet: VirtioVsockHeader(
+            sourceCID: 3, destinationCID: 2, sourcePort: 40_000, destinationPort: 1024,
+            length: 0, operation: .shutdown, flags: 2
+        ).encoded())
+
+        let connection = try #require(accepted)
+        #expect(connection.isPeerClosed)
+
+        var buffer = [UInt8](repeating: 0, count: 8)
+        let count = try buffer.withUnsafeMutableBytes { try connection.read(into: $0) }
+        #expect(Array(buffer.prefix(count)) == payload)
+
+        try connection.write([9, 9])
+        let reply = try #require(device.drainPendingGuestPackets()
+            .compactMap { try? VirtioVsockHeader(decoding: $0) }
+            .first { $0.operation == .readWrite })
+        #expect(reply.length == 2)
+    }
+
+    @Test func guestFullShutdownTearsDownConnection() throws {
+        let device = VirtioVsock(guestCID: 3)
+        device.listen(port: 1024) { _ in }
+        _ = try device.receive(packet: VirtioVsockHeader(
+            sourceCID: 3, destinationCID: 2, sourcePort: 40_001, destinationPort: 1024,
+            length: 0, operation: .request
+        ).encoded())
+
+        // Full shutdown (SEND|RCV = 3) tears the connection down.
+        _ = try device.receive(packet: VirtioVsockHeader(
+            sourceCID: 3, destinationCID: 2, sourcePort: 40_001, destinationPort: 1024,
+            length: 0, operation: .shutdown, flags: 3
+        ).encoded())
+
+        let responses = try device.receive(packet: VirtioVsockHeader(
+            sourceCID: 3, destinationCID: 2, sourcePort: 40_001, destinationPort: 1024,
+            length: 1, operation: .readWrite
+        ).encoded() + [7])
+        #expect(try VirtioVsockHeader(decoding: responses[0]).operation == .reset)
+    }
 }

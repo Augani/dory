@@ -489,27 +489,6 @@ public final class FuseServer: @unchecked Sendable {
     }
 }
 
-private extension Array where Element == UInt8 {
-    mutating func appendLE(_ value: UInt32) {
-        Swift.withUnsafeBytes(of: value.littleEndian) { append(contentsOf: $0) }
-    }
-
-    mutating func appendLE(_ value: UInt64) {
-        Swift.withUnsafeBytes(of: value.littleEndian) { append(contentsOf: $0) }
-    }
-
-    func leUInt32(at offset: Int) -> UInt32 {
-        UInt32(self[offset])
-            | UInt32(self[offset + 1]) << 8
-            | UInt32(self[offset + 2]) << 16
-            | UInt32(self[offset + 3]) << 24
-    }
-
-    func leUInt64(at offset: Int) -> UInt64 {
-        UInt64(leUInt32(at: offset)) | UInt64(leUInt32(at: offset + 4)) << 32
-    }
-}
-
 private extension NSLock {
     func withLock<R>(_ body: () throws -> R) rethrows -> R {
         lock()
