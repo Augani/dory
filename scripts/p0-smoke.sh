@@ -69,6 +69,19 @@ scripts/dory doctor --json --only socket,api,docker,context,disk,memory,helpers 
 scripts/dory network --active --json > "$WORKDIR/network.json"
 scripts/dory mount --json > "$WORKDIR/mount.json"
 
+ENGINE_SOCK="${DORY_ENGINE_SOCK:-$HOME/.dory/engine.sock}"
+if [ -S "$ENGINE_SOCK" ]; then
+  scripts/dory engine status > "$WORKDIR/engine-status.json"
+  scripts/dory engine wake > /dev/null
+  grep -q '"awake": true' "$WORKDIR/engine-status.json" || {
+    echo "p0-smoke: dory engine status did not report an awake engine" >&2
+    exit 1
+  }
+fi
+scripts/dory idle history --json > "$WORKDIR/idle-history.json"
+python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$WORKDIR/idle-history.json"
+scripts/dory idle proxy-status > "$WORKDIR/idle-proxy-status.json" 2>/dev/null || true
+
 docker_e run --rm alpine:latest true
 
 PORT="$(free_port)"

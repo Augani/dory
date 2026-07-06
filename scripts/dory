@@ -78,6 +78,10 @@ dory — Dory CLI
   dory idle status [--json]     Explain whether Auto-Idle could sleep and what blocks it
   dory idle proxy [--foreground]
                                Run the opt-in Auto-Idle socket proxy
+  dory idle history [--json] [--limit N]
+                               Show recent Auto-Idle sleep/wake transitions
+  dory engine sleep|wake|status
+                               Stop, start, or check the headless engine
   dory idle proxy-status [--json]
                                Show the last Auto-Idle proxy state transition
   dory idle launch-agent install|uninstall|status|print
@@ -941,9 +945,15 @@ case "${1:-help}" in
   idle)
                   shift
                   case "${1:-status}" in
-                    proxy|launch-agent) idle_proxy_cmd "$@" ;;
+                    proxy|launch-agent|history) idle_proxy_cmd "$@" ;;
                     proxy-status|proxy-state) shift; idle_proxy_cmd status "$@" ;;
                     *) doctor_cmd idle "$@" ;;
+                  esac ;;
+  engine)
+                  shift
+                  case "${1:-status}" in
+                    sleep|wake|start|stop|status) idle_proxy_cmd engine "$@" ;;
+                    *) echo "usage: dory engine sleep|wake|status" >&2; exit 64 ;;
                   esac ;;
   bundle)         shift; doctor_cmd bundle "$@" ;;
   shell)          exec docker -H "unix://$DORY_SOCK" exec -it "$2" sh -c 'command -v bash >/dev/null && exec bash || exec sh' ;;

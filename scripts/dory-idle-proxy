@@ -14,6 +14,7 @@ import errno
 import json
 import os
 import plistlib
+import shutil
 import signal
 import socket
 import stat
@@ -213,6 +214,7 @@ class IdleProxy:
         self.idle_seconds_override = idle_seconds
         self.wake_timeout = wake_timeout
         self.state_file = state_file
+        self.history_file = state_file.with_name("idle-history.jsonl")
         self.stop_event = threading.Event()
         self.wake_lock = threading.Lock()
         self.active_lock = threading.Lock()
@@ -220,10 +222,46 @@ class IdleProxy:
         self.last_activity = time.time()
         self.state_lock = threading.Lock()
         self.current_state = "sleeping"
+        self.last_recorded_state: str | None = None
+        # Cap concurrent forwarded connections so a client storm cannot exhaust the process's
+        # threads/fds; excess connections wait briefly for a slot instead of being dropped.
+        self.max_connections = int(os.environ.get("DORY_IDLE_MAX_CONNECTIONS", "128"))
+        self.connection_slots = threading.BoundedSemaphore(self.max_connections)
+        # Set once we own the listener socket, so a watchdog can notice the Dory app taking it over.
+        self.owned_inode: int | None = None
+
+    def foreign_owner_live(self) -> bool:
+        # True when something OTHER than us is serving a live Docker API at the listener path —
+        # i.e. the Dory app's own shim. We only call this while we are NOT bound, so any live
+        # `_ping` response is the app's.
+        return self.listener_sock.exists() and engine_ping(self.listener_sock)
 
     def serve(self) -> int:
         self.listener_sock.parent.mkdir(parents=True, exist_ok=True)
-        self.prepare_listener_path()
+        monitor = threading.Thread(target=self.monitor_idle, daemon=True)
+        monitor.start()
+        try:
+            while not self.stop_event.is_set():
+                # Coexistence: the Dory app's shim is the authoritative owner of dory.sock while the
+                # app runs (it does the create-body rewrites the raw forward cannot). Stand aside when
+                # it is present and reclaim the socket once it exits.
+                if self.foreign_owner_live():
+                    self.publish_state("deferred", "the Dory app owns the Docker socket; standing by")
+                    self.stop_event.wait(3)
+                    continue
+                self._serve_once()
+        finally:
+            self.publish_state("stopped", "proxy stopped")
+        return 0
+
+    def _serve_once(self) -> None:
+        try:
+            self.prepare_listener_path()
+        except SystemExit as exc:
+            # Another live server grabbed the socket between our check and prepare; defer.
+            note(str(exc))
+            self.stop_event.wait(3)
+            return
         server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         # Restrict the umask across bind so the Docker control socket is never briefly world/group
         # accessible between bind() and chmod(); restore it once the mode is pinned.
@@ -234,31 +272,67 @@ class IdleProxy:
         finally:
             os.umask(previous_umask)
         server.listen(64)
+        try:
+            self.owned_inode = os.stat(self.listener_sock).st_ino
+        except OSError:
+            self.owned_inode = None
+        superseded = threading.Event()
+        watchdog = threading.Thread(target=self._watch_ownership, args=(superseded,), daemon=True)
+        watchdog.start()
         note(f"listening at unix://{self.listener_sock}")
         self.publish_state("awake" if engine_ping(self.engine_sock) else "sleeping", "proxy listening")
-        monitor = threading.Thread(target=self.monitor_idle, daemon=True)
-        monitor.start()
         try:
-            while not self.stop_event.is_set():
+            while not self.stop_event.is_set() and not superseded.is_set():
                 try:
                     server.settimeout(1.0)
                     client, _ = server.accept()
                 except socket.timeout:
                     continue
                 except OSError as exc:
-                    if exc.errno == errno.EINTR:
+                    if exc.errno in (errno.EINTR, errno.ECONNABORTED):
                         continue
+                    if superseded.is_set() or self.stop_event.is_set():
+                        break
                     raise
-                threading.Thread(target=self.handle_client, args=(client,), daemon=True).start()
+                if not self.connection_slots.acquire(timeout=self.wake_timeout):
+                    send_unavailable(client, f"Dory is busy: more than {self.max_connections} concurrent Docker connections")
+                    client.close()
+                    continue
+                threading.Thread(target=self._handle_and_release, args=(client,), daemon=True).start()
         finally:
+            superseded.set()
             server.close()
+            # Only unlink the path if it is still OUR socket; if the app already replaced it, leave
+            # the app's socket alone.
             try:
-                if self.listener_sock.exists():
+                if os.stat(self.listener_sock).st_ino == self.owned_inode:
                     self.listener_sock.unlink()
             except OSError:
                 pass
-            self.publish_state("stopped", "proxy stopped")
-        return 0
+        if superseded.is_set() and not self.stop_event.is_set():
+            self.publish_state("deferred", "the Dory app took over the Docker socket; standing by")
+
+    def _watch_ownership(self, superseded: threading.Event) -> None:
+        # The app takes the socket over with unlink()+bind(), which replaces the inode at our path.
+        # When our recorded inode no longer matches, we have been superseded and must release.
+        while not self.stop_event.is_set() and not superseded.is_set():
+            if self.stop_event.wait(2):
+                return
+            try:
+                current = os.stat(self.listener_sock).st_ino
+            except OSError:
+                # Path vanished — someone unlinked our socket; treat as superseded so we recheck.
+                superseded.set()
+                return
+            if self.owned_inode is not None and current != self.owned_inode:
+                superseded.set()
+                return
+
+    def _handle_and_release(self, client: socket.socket) -> None:
+        try:
+            self.handle_client(client)
+        finally:
+            self.connection_slots.release()
 
     def prepare_listener_path(self) -> None:
         if not self.listener_sock.exists():
@@ -474,16 +548,66 @@ class IdleProxy:
                     os.unlink(tmp)
                 except OSError:
                     pass
+            # Incident history: append one line per genuine STATE TRANSITION (not every refresh),
+            # so `dory idle history` can explain why the engine slept/woke without spamming the log.
+            if state != self.last_recorded_state:
+                self.last_recorded_state = state
+                self.append_history({"at": payload["updated_at"], "state": state, "detail": detail, **extra})
+
+    def append_history(self, record: dict[str, Any]) -> None:
+        try:
+            self.history_file.parent.mkdir(parents=True, exist_ok=True)
+            line = json.dumps(record, sort_keys=True) + "\n"
+            fd = os.open(str(self.history_file), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+            with os.fdopen(fd, "a", encoding="utf-8") as handle:
+                handle.write(line)
+            # Trim to the most recent MAX lines so the file cannot grow without bound.
+            self.trim_history(max_lines=500)
+        except OSError:
+            pass
+
+    def trim_history(self, max_lines: int) -> None:
+        try:
+            with self.history_file.open("r", encoding="utf-8") as handle:
+                lines = handle.readlines()
+        except OSError:
+            return
+        if len(lines) <= max_lines:
+            return
+        keep = lines[-max_lines:]
+        tmp = self.history_file.with_suffix(f".{os.getpid()}.trim")
+        try:
+            fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.writelines(keep)
+            os.replace(tmp, self.history_file)
+        except OSError:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+
+
+STABLE_PROXY_PATH = STATE / "bin" / "dory-idle-proxy"
+
+
+def stable_proxy_path() -> Path:
+    # The LaunchAgent must point at a path that survives app upgrades. The app bundle's script path
+    # changes across versions (and a Homebrew symlink can move), so install copies the current proxy
+    # into ~/.dory/bin and the plist references that stable copy; upgrades just refresh the copy.
+    return STABLE_PROXY_PATH
 
 
 def launch_agent_plist() -> dict[str, Any]:
-    script = Path(__file__).resolve()
     log_dir = STATE
     return {
         "Label": LAUNCH_AGENT_LABEL,
-        "ProgramArguments": [sys.executable, str(script), "proxy", "--foreground"],
+        "ProgramArguments": [sys.executable, str(stable_proxy_path()), "proxy", "--foreground"],
         "RunAtLoad": True,
         "KeepAlive": True,
+        # Never crash-loop: if the proxy exits (e.g. it deferred to the app and then found the socket
+        # perpetually owned), launchd waits this long before relaunching.
+        "ThrottleInterval": 10,
         "StandardOutPath": str(log_dir / "idle-proxy.log"),
         "StandardErrorPath": str(log_dir / "idle-proxy.err.log"),
         "EnvironmentVariables": {
@@ -499,9 +623,17 @@ def print_launch_agent() -> None:
 def install_launch_agent(load: bool) -> int:
     LAUNCH_AGENT_PATH.parent.mkdir(parents=True, exist_ok=True)
     STATE.mkdir(parents=True, exist_ok=True)
+    # Copy this proxy to the stable, upgrade-proof path the plist references. Re-running install
+    # after an app upgrade refreshes it in place.
+    stable = stable_proxy_path()
+    stable.parent.mkdir(parents=True, exist_ok=True)
+    source = Path(__file__).resolve()
+    if source != stable:
+        shutil.copyfile(source, stable)
+        os.chmod(stable, 0o755)
     with LAUNCH_AGENT_PATH.open("wb") as handle:
         plistlib.dump(launch_agent_plist(), handle, sort_keys=False)
-    note(f"installed {LAUNCH_AGENT_PATH}")
+    note(f"installed {LAUNCH_AGENT_PATH} -> {stable}")
     if load:
         subprocess.run(["launchctl", "bootout", f"gui/{os.getuid()}", str(LAUNCH_AGENT_PATH)], capture_output=True)
         result = subprocess.run(["launchctl", "bootstrap", f"gui/{os.getuid()}", str(LAUNCH_AGENT_PATH)])
@@ -536,6 +668,98 @@ def cmd_status(args: argparse.Namespace) -> int:
     state = read_state(Path(args.state_file).expanduser() if args.state_file else None)
     print(json.dumps(state, indent=2, sort_keys=True))
     return 0 if state.get("available") else 1
+
+
+def cmd_history(args: argparse.Namespace) -> int:
+    state_file = Path(args.state_file).expanduser()
+    history_file = state_file.with_name("idle-history.jsonl")
+    records: list[dict[str, Any]] = []
+    if history_file.exists():
+        try:
+            for line in history_file.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if line:
+                    records.append(json.loads(line))
+        except Exception:
+            pass
+    records = records[-args.limit:]
+    if args.json:
+        print(json.dumps(records, indent=2, sort_keys=True))
+        return 0
+    if not records:
+        print("No Auto-Idle transitions recorded yet.")
+        return 0
+    for record in records:
+        extra = ""
+        blockers = record.get("blockers")
+        if blockers:
+            names = ", ".join(sorted({b.get("container") or b.get("type") or "?" for b in blockers}))
+            extra = f"  [blocked by: {names}]"
+        print(f"{record.get('at', '?'):20} {record.get('state', '?'):18} {record.get('detail', '')}{extra}")
+    return 0
+
+
+def cmd_engine(args: argparse.Namespace) -> int:
+    engine_sock = Path(args.engine_sock).expanduser()
+    engine_command = Path(args.engine_command).expanduser()
+    action = args.action
+    if action in {"wake", "start"}:
+        if engine_ping(engine_sock):
+            note("engine already awake")
+            return 0
+        if not engine_command.exists():
+            note(f"engine command not found: {engine_command}")
+            return 1
+        note("waking engine")
+        try:
+            result = subprocess.run(
+                [str(engine_command), "start"],
+                text=True,
+                capture_output=True,
+                timeout=max(args.wake_timeout, 30),
+            )
+        except subprocess.TimeoutExpired:
+            note(f"engine did not start within {args.wake_timeout}s")
+            return 1
+        except OSError as exc:
+            note(str(exc))
+            return 1
+        if result.returncode != 0:
+            note((result.stderr or result.stdout or "engine start failed").strip()[:500])
+            return 1
+        deadline = time.time() + args.wake_timeout
+        while time.time() < deadline:
+            if engine_ping(engine_sock):
+                note("engine awake")
+                return 0
+            time.sleep(0.5)
+        note(f"engine socket did not answer within {args.wake_timeout}s")
+        return 1
+    if action in {"sleep", "stop"}:
+        if not engine_command.exists():
+            note(f"engine command not found: {engine_command}")
+            return 1
+        note("putting engine to sleep")
+        try:
+            result = subprocess.run(
+                [str(engine_command), "stop"],
+                text=True,
+                capture_output=True,
+                timeout=60,
+            )
+        except (subprocess.TimeoutExpired, OSError) as exc:
+            note(str(exc))
+            return 1
+        if result.returncode != 0:
+            note((result.stderr or result.stdout or "engine stop failed").strip()[:500])
+            return 1
+        note("engine asleep")
+        return 0
+    if action == "status":
+        awake = engine_ping(engine_sock)
+        print(json.dumps({"awake": awake, "engine_sock": str(engine_sock)}, indent=2, sort_keys=True))
+        return 0 if awake else 1
+    raise SystemExit("usage: dory engine sleep|wake|status")
 
 
 def cmd_proxy(args: argparse.Namespace) -> int:
@@ -587,6 +811,19 @@ def build_parser() -> argparse.ArgumentParser:
     status.add_argument("--state-file", default=os.environ.get("DORY_IDLE_STATE", str(DEFAULT_STATE_FILE)))
     status.add_argument("--json", action="store_true", help="Accepted for consistency; output is always JSON")
     status.set_defaults(func=cmd_status)
+
+    history = sub.add_parser("history", help="Show recent Auto-Idle sleep/wake transitions")
+    history.add_argument("--state-file", default=os.environ.get("DORY_IDLE_STATE", str(DEFAULT_STATE_FILE)))
+    history.add_argument("--limit", type=int, default=20)
+    history.add_argument("--json", action="store_true")
+    history.set_defaults(func=cmd_history)
+
+    engine = sub.add_parser("engine", help="Manually put the engine to sleep or wake it")
+    engine.add_argument("action", choices=["sleep", "wake", "start", "stop", "status"])
+    engine.add_argument("--engine-sock", default=os.environ.get("DORY_ENGINE_SOCK", str(DEFAULT_ENGINE_SOCK)))
+    engine.add_argument("--engine-command", default=os.environ.get("DORY_ENGINE_CMD", str(default_engine_script())))
+    engine.add_argument("--wake-timeout", type=int, default=int(os.environ.get("DORY_WAKE_TIMEOUT", "120")))
+    engine.set_defaults(func=cmd_engine)
 
     launch_agent = sub.add_parser("launch-agent", help="Install or inspect the Auto-Idle LaunchAgent")
     launch_agent.add_argument("action", choices=["install", "uninstall", "status", "print"])

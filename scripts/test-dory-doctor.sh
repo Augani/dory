@@ -8,12 +8,14 @@ TMP_HOME="$(mktemp -d)"
 PIDS_TO_CLEAN=()
 
 cleanup() {
-  for pid in "${PIDS_TO_CLEAN[@]}"; do
-    if kill -0 "$pid" 2>/dev/null; then
-      kill "$pid" 2>/dev/null || true
-      wait "$pid" 2>/dev/null || true
-    fi
-  done
+  if [ "${#PIDS_TO_CLEAN[@]}" -gt 0 ]; then
+    for pid in "${PIDS_TO_CLEAN[@]}"; do
+      if kill -0 "$pid" 2>/dev/null; then
+        kill "$pid" 2>/dev/null || true
+        wait "$pid" 2>/dev/null || true
+      fi
+    done
+  fi
   rm -rf "$TMP_HOME"
 }
 trap cleanup EXIT
@@ -382,3 +384,155 @@ while time.time() < deadline:
     time.sleep(0.05)
 raise SystemExit(f"proxy did not publish an awake/busy state: {last!r}")
 PY
+
+# --- Auto-Idle: incident history records genuine transitions (not every refresh) ---
+python3 - "$TMP_HOME/idle-history.jsonl" <<'PY'
+import json
+import sys
+import time
+
+hist = sys.argv[1]
+deadline = time.time() + 5
+states: list[str] = []
+while time.time() < deadline:
+    try:
+        lines = [line for line in open(hist, encoding="utf-8").read().splitlines() if line.strip()]
+    except FileNotFoundError:
+        lines = []
+    states = [json.loads(line).get("state") for line in lines]
+    if "waking" in states and "awake" in states:
+        break
+    time.sleep(0.05)
+if "waking" not in states or "awake" not in states:
+    raise SystemExit(f"history missing wake transitions: {states!r}")
+for previous, current in zip(states, states[1:]):
+    if previous == current:
+        raise SystemExit(f"history recorded a non-transition: {states!r}")
+PY
+
+history_perm="$(stat -f '%Lp' "$TMP_HOME/idle-history.jsonl")"
+[ "$history_perm" = "600" ] || { echo "idle-history.jsonl perms=$history_perm (want 600)"; exit 1; }
+
+scripts/dory-idle-proxy history --state-file "$TMP_HOME/proxy-state.json" --json | grep -q '"state": "awake"'
+
+# --- Auto-Idle: concurrent clients are all served (slot semaphore does not drop them) ---
+python3 - "$TMP_HOME/proxy.sock" <<'PY'
+import socket
+import sys
+import threading
+
+sock_path = sys.argv[1]
+results: list[bool] = []
+lock = threading.Lock()
+
+
+def one(_index: int) -> None:
+    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    client.settimeout(10)
+    try:
+        client.connect(sock_path)
+        client.sendall(b"GET /_ping HTTP/1.1\r\nHost: dory\r\nConnection: close\r\n\r\n")
+        client.shutdown(socket.SHUT_WR)
+        buf = b""
+        while True:
+            try:
+                chunk = client.recv(4096)
+            except socket.timeout:
+                break
+            if not chunk:
+                break
+            buf += chunk
+        with lock:
+            results.append(b"200 OK" in buf)
+    finally:
+        client.close()
+
+
+threads = [threading.Thread(target=one, args=(index,)) for index in range(8)]
+for thread in threads:
+    thread.start()
+for thread in threads:
+    thread.join()
+if len(results) != 8 or not all(results):
+    raise SystemExit(f"concurrent clients failed: {results!r}")
+PY
+
+# --- Auto-Idle: coexistence — proxy defers to the app that owns the socket, never steals it ---
+APP_SOCK="$TMP_HOME/app-owned.sock"
+APP_READY="$TMP_HOME/app.ready"
+python3 "$TMP_HOME/fake_engine_server.py" "$APP_SOCK" "$APP_READY" > "$TMP_HOME/app.log" 2>&1 &
+app_pid=$!
+PIDS_TO_CLEAN+=("$app_pid")
+
+python3 - "$APP_READY" <<'PY'
+import os
+import sys
+import time
+
+deadline = time.time() + 5
+while time.time() < deadline:
+    if os.path.exists(sys.argv[1]):
+        raise SystemExit(0)
+    time.sleep(0.05)
+raise SystemExit("stand-in app socket never became ready")
+PY
+
+app_inode="$(stat -f '%i' "$APP_SOCK")"
+
+scripts/dory-idle-proxy proxy \
+  --foreground \
+  --listener "$APP_SOCK" \
+  --engine-sock "$FAKE_ENGINE_SOCK" \
+  --engine-command "$TMP_HOME/fake-engine" \
+  --idle-seconds 3600 \
+  --wake-timeout 5 \
+  --state-file "$TMP_HOME/coexist-state.json" \
+  > "$TMP_HOME/coexist.log" 2>&1 &
+coexist_pid=$!
+PIDS_TO_CLEAN+=("$coexist_pid")
+
+python3 - "$TMP_HOME/coexist-state.json" <<'PY'
+import json
+import sys
+import time
+
+state_path = sys.argv[1]
+deadline = time.time() + 5
+last: dict = {}
+while time.time() < deadline:
+    try:
+        last = json.load(open(state_path, encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError):
+        last = {}
+    if last.get("state") == "deferred":
+        raise SystemExit(0)
+    time.sleep(0.05)
+raise SystemExit(f"proxy did not defer to the app: {last!r}")
+PY
+
+now_inode="$(stat -f '%i' "$APP_SOCK")"
+[ "$app_inode" = "$now_inode" ] || { echo "proxy stole the app socket (inode $app_inode -> $now_inode)"; exit 1; }
+
+python3 - "$APP_SOCK" <<'PY'
+import socket
+import sys
+
+client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+client.settimeout(5)
+client.connect(sys.argv[1])
+client.sendall(b"GET /_ping HTTP/1.1\r\nHost: dory\r\nConnection: close\r\n\r\n")
+client.shutdown(socket.SHUT_WR)
+buf = b""
+while True:
+    try:
+        chunk = client.recv(4096)
+    except TimeoutError:
+        break
+    if not chunk:
+        break
+    buf += chunk
+if b"200 OK" not in buf:
+    raise SystemExit("stand-in app socket stopped answering after the proxy deferred")
+PY
+
+kill "$coexist_pid" 2>/dev/null || true
