@@ -34,16 +34,10 @@ struct DockerShim: Sendable {
     }
 
     func handle(_ request: ParsedRequest) async -> ShimResponse {
-        // Backends fronting a real Docker socket are a full transparent proxy: every request is
-        // forwarded verbatim and the response streamed back unchanged. This is uniformly correct
-        // for normal, streaming (stats/logs --follow/events), and hijacked (exec/attach/BuildKit)
-        // endpoints, and preserves all request headers (registry auth, etc.). The per-endpoint
-        // translation below serves only the non-proxy backends (Apple `container`, mock).
-        if runtime.supportsRawProxy {
-            let runtime = self.runtime
-            return ShimResponse.hijacked { fd, initial in runtime.proxyHijack(requestData: initial, clientFD: fd) }
-        }
-
+        // Docker-compatible backends proxy unsupported normal endpoints at the fallback below.
+        // True connection-hijack endpoints still return `ShimResponse.hijacked` from their
+        // per-endpoint handlers, which keeps exec/attach/BuildKit bidirectional streams intact
+        // without tunneling unrelated future requests on the same client connection.
         let path = Self.normalize(request.path)
         let method = request.method.uppercased()
 
@@ -61,6 +55,7 @@ struct DockerShim: Sendable {
             return await infoResponse()
         case ("GET", "/containers/json"):
             return await containersResponse(
+                request: request,
                 all: request.query["all"] == "1" || request.query["all"] == "true",
                 filters: DockerListFilters.parse(request.query["filters"]),
                 includeSize: Self.queryBool("size", in: request.query, default: false),
@@ -138,7 +133,8 @@ struct DockerShim: Sendable {
         if parts.count == 3, parts[0] == "containers", method == "GET", parts[2] == "json" {
             return await inspectResponse(
                 id: parts[1],
-                includeSize: Self.queryBool("size", in: request.query, default: false)
+                includeSize: Self.queryBool("size", in: request.query, default: false),
+                request: request
             )
         }
         if parts.count == 3, parts[0] == "containers", method == "GET", parts[2] == "top" {
@@ -181,7 +177,7 @@ struct DockerShim: Sendable {
             return await exportContainer(id: parts[1])
         }
         if parts.count == 3, parts[0] == "containers", method == "POST", parts[2] == "wait" {
-            return await waitContainer(id: parts[1])
+            return await waitContainer(id: parts[1], request: request)
         }
         if parts.count == 3, parts[0] == "containers", method == "POST", parts[2] == "rename" {
             return await rename(id: parts[1], request: request)
@@ -224,6 +220,23 @@ struct DockerShim: Sendable {
     }
 
     private func createContainer(_ request: ParsedRequest) async -> ShimResponse {
+        if runtime.supportsRawProxy {
+            let normalized = runtime.kind == .sharedVM
+                ? Self.sharedVMNormalizedCreateBody(request.body)
+                : SharedVMCreateBody(body: request.body, compatibilityError: nil)
+            if let message = normalized.compatibilityError {
+                return errorResponse(501, message)
+            }
+            guard let response = await runtime.proxyRequest(
+                method: request.method.uppercased(),
+                path: request.target,
+                headers: Self.proxyRequestHeaders(request),
+                body: normalized.body
+            ) else {
+                return errorResponse(502, "docker engine unavailable")
+            }
+            return ShimResponse(status: response.statusCode, headers: Self.proxyHeaders(response), body: response.body)
+        }
         guard let body = try? JSONDecoder().decode(DockerCreateRequest.self, from: request.body) else {
             return errorResponse(400, "invalid create request body")
         }
@@ -242,11 +255,12 @@ struct DockerShim: Sendable {
         guard !from.isEmpty else { return errorResponse(400, "fromImage is required") }
         let reference = PullReference.resolve(fromImage: from, tagQuery: request.query["tag"])
         let runtime = self.runtime
+        let clientAuth = request.headers["x-registry-auth"]
         return ShimResponse.streaming(contentType: "application/json") { writer in
             let initial = PullProgress.lines(repository: reference.repository, tag: reference.tag, reference: reference.reference).first ?? Data()
             guard writer.write(initial) else { return }
             do {
-                try await runtime.pull(image: reference.reference)
+                try await runtime.pull(image: reference.reference, registryAuth: clientAuth)
                 for line in PullProgress.lines(repository: reference.repository, tag: reference.tag, reference: reference.reference).dropFirst() {
                     guard writer.write(line) else { return }
                 }
@@ -254,6 +268,180 @@ struct DockerShim: Sendable {
                 _ = writer.write(PullProgress.error(message: Self.runtimeErrorMessage(error)))
             }
         }
+    }
+
+    private struct SharedVMCreateBody {
+        var body: Data
+        var compatibilityError: String?
+    }
+
+    private static let sharedVMHostServiceGateway = "host-gateway"
+    private static let sharedVMGPUUnsupportedMessage =
+        "Dory's shared VM accepts Docker --gpus only when GPU acceleration is enabled in Settings > Docker Engine > GPU Acceleration (this restarts the engine). Enable it, then rerun with --gpus all on an image that ships Mesa's Venus Vulkan driver. Alternatively, run a Metal-backed host service such as Ollama, LM Studio, MLX, or llama.cpp and call it from containers at http://host.dory.internal:11434 or http://host.dory.internal:1234."
+
+    private static func sharedVMNormalizedCreateBody(_ body: Data) -> SharedVMCreateBody {
+        guard var root = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any] else {
+            return SharedVMCreateBody(body: body, compatibilityError: nil)
+        }
+
+        var hostConfig = root["HostConfig"] as? [String: Any] ?? [:]
+        var changed = false
+        var portBindings = hostConfig["PortBindings"] as? [String: Any] ?? [:]
+        for key in portBindings.keys {
+            guard var bindings = portBindings[key] as? [[String: Any]] else { continue }
+            for index in bindings.indices {
+                guard let hostIP = bindings[index]["HostIp"] as? String,
+                      isLoopbackHostIP(hostIP) else { continue }
+                bindings[index]["HostIp"] = ""
+                changed = true
+            }
+            portBindings[key] = bindings
+        }
+        if normalizeSharedVMHostAliases(in: &hostConfig) {
+            changed = true
+        }
+
+        var compatibilityError: String?
+        if hasGPUDeviceRequest(hostConfig) {
+            if sharedVMGPUDeviceTranslationEnabled() {
+                if normalizeSharedVMGPUDevices(in: &hostConfig) {
+                    changed = true
+                }
+            } else {
+                compatibilityError = sharedVMGPUUnsupportedMessage
+            }
+        }
+        guard changed else {
+            return SharedVMCreateBody(body: body, compatibilityError: compatibilityError)
+        }
+
+        if hostConfig["PortBindings"] != nil {
+            hostConfig["PortBindings"] = portBindings
+        }
+        root["HostConfig"] = hostConfig
+        return SharedVMCreateBody(
+            body: (try? JSONSerialization.data(withJSONObject: root)) ?? body,
+            compatibilityError: compatibilityError
+        )
+    }
+
+    private static func isLoopbackHostIP(_ value: String) -> Bool {
+        var host = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if host.hasPrefix("["), host.hasSuffix("]") {
+            host.removeFirst()
+            host.removeLast()
+        }
+        return host == "localhost"
+            || host == "::1"
+            || host == "0:0:0:0:0:0:0:1"
+            || host.hasPrefix("127.")
+    }
+
+    private static func normalizeSharedVMHostAliases(in hostConfig: inout [String: Any]) -> Bool {
+        var extraHosts = hostConfig["ExtraHosts"] as? [Any] ?? []
+        var changed = false
+        for alias in ["host.docker.internal", "host.dory.internal"] {
+            let desired = "\(alias):\(sharedVMHostServiceGateway)"
+            if let index = extraHosts.firstIndex(where: { entry in
+                guard let string = entry as? String else { return false }
+                return extraHostName(string) == alias
+            }) {
+                guard let current = extraHosts[index] as? String,
+                      current != desired,
+                      shouldRewriteSharedVMHostAlias(current) else { continue }
+                extraHosts[index] = desired
+                changed = true
+            } else {
+                extraHosts.append(desired)
+                changed = true
+            }
+        }
+        if changed {
+            hostConfig["ExtraHosts"] = extraHosts
+        }
+        return changed
+    }
+
+    private static func extraHostName(_ value: String) -> String {
+        value.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
+            .first
+            .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines).lowercased() } ?? ""
+    }
+
+    private static func shouldRewriteSharedVMHostAlias(_ value: String) -> Bool {
+        let parts = value.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
+        guard parts.count > 1 else { return true }
+        var address = String(parts[1]).trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if address.hasPrefix("["), address.hasSuffix("]") {
+            address.removeFirst()
+            address.removeLast()
+        }
+        return address.isEmpty || address == "host-gateway" || address == "172.17.0.1" || address == "10.0.2.2"
+    }
+
+    private static func hasGPUDeviceRequest(_ hostConfig: [String: Any]) -> Bool {
+        guard let requests = hostConfig["DeviceRequests"] as? [[String: Any]] else { return false }
+        return requests.contains { request in
+            if let driver = (request["Driver"] as? String)?.lowercased(),
+               driver.contains("gpu") || driver.contains("nvidia") || driver.contains("cuda") {
+                return true
+            }
+            return containsGPUCapability(request["Capabilities"] as Any)
+        }
+    }
+
+    private static func sharedVMGPUDeviceTranslationEnabled() -> Bool {
+        let environment = ProcessInfo.processInfo.environment
+        return environment["DORY_EXPERIMENTAL_GPU"] == "venus"
+            || environment["DORY_SHARED_VM_GPU_DEVICES"] == "1"
+    }
+
+    private static func normalizeSharedVMGPUDevices(in hostConfig: inout [String: Any]) -> Bool {
+        var changed = false
+        if hostConfig["DeviceRequests"] != nil {
+            hostConfig.removeValue(forKey: "DeviceRequests")
+            changed = true
+        }
+
+        var devices = hostConfig["Devices"] as? [[String: Any]]
+            ?? (hostConfig["Devices"] as? [Any])?.compactMap { $0 as? [String: Any] }
+            ?? []
+        for path in ["/dev/dri/renderD128", "/dev/dri/card0"] {
+            let alreadyPresent = devices.contains { device in
+                device["PathInContainer"] as? String == path || device["PathOnHost"] as? String == path
+            }
+            if !alreadyPresent {
+                devices.append([
+                    "PathOnHost": path,
+                    "PathInContainer": path,
+                    "CgroupPermissions": "rwm",
+                ])
+                changed = true
+            }
+        }
+        if changed || hostConfig["Devices"] != nil {
+            hostConfig["Devices"] = devices
+        }
+
+        var rules = hostConfig["DeviceCgroupRules"] as? [String]
+            ?? (hostConfig["DeviceCgroupRules"] as? [Any])?.compactMap { $0 as? String }
+            ?? []
+        if !rules.contains("c 226:* rwm") {
+            rules.append("c 226:* rwm")
+            hostConfig["DeviceCgroupRules"] = rules
+            changed = true
+        }
+        return changed
+    }
+
+    private static func containsGPUCapability(_ value: Any) -> Bool {
+        if let string = value as? String {
+            return string.lowercased().contains("gpu")
+        }
+        if let values = value as? [Any] {
+            return values.contains { containsGPUCapability($0) }
+        }
+        return false
     }
 
     private func createNetwork(_ request: ParsedRequest) async -> ShimResponse {
@@ -378,7 +566,7 @@ struct DockerShim: Sendable {
     private func pushImage(source: String, request: ParsedRequest) async -> ShimResponse {
         let reference = Self.imagePushReference(name: source, tag: request.query["tag"])
         do {
-            let stream = try await runtime.pushImage(reference: reference)
+            let stream = try await runtime.pushImage(reference: reference, registryAuth: request.headers["x-registry-auth"])
             return ShimResponse.streaming(contentType: "application/json") { writer in
                 for await chunk in stream {
                     guard writer.write(chunk) else { return }
@@ -550,7 +738,18 @@ struct DockerShim: Sendable {
         return encode([DockerContainerChangeOut]())
     }
 
-    private func waitContainer(id: String) async -> ShimResponse {
+    private func waitContainer(id: String, request: ParsedRequest) async -> ShimResponse {
+        if runtime.supportsRawProxy {
+            if let response = await runtime.proxyRequest(
+                method: request.method.uppercased(),
+                path: request.target,
+                headers: Self.proxyRequestHeaders(request),
+                body: request.body
+            ) {
+                return ShimResponse(status: response.statusCode, headers: Self.proxyHeaders(response), body: response.body)
+            }
+            return errorResponse(502, "docker engine unavailable")
+        }
         while !Task.isCancelled {
             let snapshot: RuntimeSnapshot
             do {
@@ -565,6 +764,9 @@ struct DockerShim: Sendable {
                 var fallbackCode = await runtime.containerExitCode(container.id)
                 if fallbackCode == nil {
                     fallbackCode = await runtime.containerExitCode(id)
+                }
+                if fallbackCode == nil {
+                    fallbackCode = container.exitCode
                 }
                 return ShimResponse.json(Data("{\"StatusCode\":\(ContainerWait.statusCode(fallbackCode))}".utf8))
             }
@@ -665,7 +867,18 @@ struct DockerShim: Sendable {
         ))
     }
 
-    private func inspectResponse(id: String, includeSize: Bool = false) async -> ShimResponse {
+    private func inspectResponse(id: String, includeSize: Bool = false, request: ParsedRequest) async -> ShimResponse {
+        if runtime.supportsRawProxy {
+            guard let response = await runtime.proxyRequest(
+                method: request.method.uppercased(),
+                path: request.target,
+                headers: Self.proxyRequestHeaders(request),
+                body: request.body
+            ) else {
+                return errorResponse(502, "docker engine unavailable")
+            }
+            return ShimResponse(status: response.statusCode, headers: Self.proxyHeaders(response), body: response.body)
+        }
         let snapshot = (try? await runtime.snapshot()) ?? RuntimeSnapshot()
         guard let container = snapshot.containers.first(where: { Self.containerMatches($0, id: id) }) else {
             return errorResponse(404, "no such container: \(id)")
@@ -938,6 +1151,17 @@ struct DockerShim: Sendable {
             .map { (name: $0.key, value: $0.value) }
     }
 
+    /// Headers for a proxied request whose body may have been rewritten. Hop-by-hop and body length
+    /// headers are regenerated by the transport.
+    private static func proxyRequestHeaders(_ request: ParsedRequest) -> [(name: String, value: String)] {
+        request.headers.compactMap { key, value in
+            if key == "connection" || key == "content-length" || key == "host" || key == "transfer-encoding" {
+                return nil
+            }
+            return (name: key, value: value)
+        }
+    }
+
     private func execStart(execID: String) -> ShimResponse {
         let runtime = self.runtime
         let store = self.execStore
@@ -1024,8 +1248,12 @@ struct DockerShim: Sendable {
         let runtime = self.runtime
         let query = String(request.target.split(separator: "?", maxSplits: 1).dropFirst().first ?? "")
         let context = request.body
+        let registryHeaders: [(name: String, value: String)] = [
+            (lower: "x-registry-config", canonical: "X-Registry-Config"),
+            (lower: "x-registry-auth", canonical: "X-Registry-Auth"),
+        ].compactMap { pair in request.headers[pair.lower].map { (name: pair.canonical, value: $0) } }
         return ShimResponse.streaming(contentType: "application/json") { writer in
-            for await chunk in runtime.build(contextTar: context, query: query) {
+            for await chunk in runtime.build(contextTar: context, query: query, registryHeaders: registryHeaders) {
                 if !writer.write(chunk) { return }
             }
         }
@@ -1137,11 +1365,23 @@ struct DockerShim: Sendable {
     }
 
     private func containersResponse(
+        request: ParsedRequest,
         all: Bool,
         filters: [String: [String]],
         includeSize: Bool = false,
         limit: Int? = nil
     ) async -> ShimResponse {
+        if runtime.supportsRawProxy {
+            if let response = await runtime.proxyRequest(
+                method: "GET",
+                path: request.target,
+                headers: Self.proxyRequestHeaders(request),
+                body: Data()
+            ) {
+                return ShimResponse(status: response.statusCode, headers: Self.proxyHeaders(response), body: response.body)
+            }
+            return errorResponse(502, "docker engine unavailable")
+        }
         let snapshot = (try? await runtime.snapshot()) ?? RuntimeSnapshot()
         let imageSizes = Self.imageSizeIndex(snapshot.images)
         let filtered = snapshot.containers

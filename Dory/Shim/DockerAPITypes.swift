@@ -18,8 +18,16 @@ struct DockerPortOut: Codable, Sendable {
     let PrivatePort: Int
     let PublicPort: Int?
     let portType: String
+    let IP: String?
     enum CodingKeys: String, CodingKey {
-        case PrivatePort, PublicPort, portType = "Type"
+        case PrivatePort, PublicPort, portType = "Type", IP
+    }
+
+    init(PrivatePort: Int, PublicPort: Int?, portType: String, IP: String? = nil) {
+        self.PrivatePort = PrivatePort
+        self.PublicPort = PublicPort
+        self.portType = portType
+        self.IP = IP
     }
 }
 

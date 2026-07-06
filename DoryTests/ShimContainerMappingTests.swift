@@ -32,12 +32,15 @@ struct ShimContainerMappingTests {
         #expect(ports[0].PrivatePort == 53)
         #expect(ports[0].PublicPort == 5353)
         #expect(ports[0].portType == "udp")
+        #expect(ports[0].IP == "127.0.0.1")
         #expect(ports[1].PrivatePort == 443)
         #expect(ports[1].PublicPort == 8443)
         #expect(ports[1].portType == "tcp")
+        #expect(ports[1].IP == "0.0.0.0")
         #expect(ports[2].PrivatePort == 9090)
         #expect(ports[2].PublicPort == nil)
         #expect(ports[2].portType == "tcp")
+        #expect(ports[2].IP == nil)
     }
 
     @Test func waitCodeFallsBackOnlyWhenUnknown() {

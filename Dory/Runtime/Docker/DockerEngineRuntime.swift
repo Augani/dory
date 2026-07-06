@@ -459,12 +459,12 @@ struct DockerEngineRuntime: ContainerRuntime {
         return try decoder.decode(Out.self, from: response.body)
     }
 
-    func pull(image: String) async throws {
+    func pull(image: String, registryAuth: String?) async throws {
         let (repo, tag) = DockerRegistry.splitImageRef(image)
         let encoded = DockerImageOps.queryValue(repo)
         let encodedTag = DockerImageOps.queryValue(tag)
         var headers: [(name: String, value: String)] = []
-        if let auth = DockerRegistry.registryAuthHeader(for: repo) { headers.append((name: "X-Registry-Auth", value: auth)) }
+        if let auth = registryAuth ?? DockerRegistry.registryAuthHeader(for: repo) { headers.append((name: "X-Registry-Auth", value: auth)) }
         let response = try await http.send(HTTPRequest(method: "POST", path: "/images/create?fromImage=\(encoded)&tag=\(encodedTag)", headers: headers))
         guard response.isSuccess else {
             throw HTTPError.status(code: response.statusCode, message: String(data: response.body, encoding: .utf8) ?? "")
@@ -587,9 +587,9 @@ struct DockerEngineRuntime: ContainerRuntime {
         }
     }
 
-    func pushImage(reference: String) async throws -> AsyncStream<Data> {
+    func pushImage(reference: String, registryAuth: String?) async throws -> AsyncStream<Data> {
         let split = DockerRegistry.splitImageRef(reference)
-        let auth = DockerRegistry.registryAuthHeader(for: split.repo) ?? Data("{}".utf8).base64EncodedString()
+        let auth = registryAuth ?? DockerRegistry.registryAuthHeader(for: split.repo) ?? Data("{}".utf8).base64EncodedString()
         let request = HTTPRequest(
             method: "POST",
             path: DockerImageOps.pushPath(name: split.repo, tag: split.tag),
@@ -727,9 +727,11 @@ struct DockerEngineRuntime: ContainerRuntime {
         UnixSocketHTTP.bidirectionalCopy(client: clientFD, upstream: dockerFD)
     }
 
-    func build(contextTar: Data, query: String) -> AsyncStream<Data> {
+    func build(contextTar: Data, query: String, registryHeaders: [(name: String, value: String)]) -> AsyncStream<Data> {
+        var headers: [(name: String, value: String)] = [(name: "Content-Type", value: "application/x-tar")]
+        headers.append(contentsOf: registryHeaders)
         let request = HTTPRequest(method: "POST", path: query.isEmpty ? "/build" : "/build?\(query)",
-            headers: [(name: "Content-Type", value: "application/x-tar")], body: contextTar)
+            headers: headers, body: contextTar)
         let client = http
         return AsyncStream { continuation in
             let handle = client.stream(request, onChunk: { continuation.yield($0) }, onComplete: { continuation.finish() })

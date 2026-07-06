@@ -13,6 +13,12 @@ struct PublishedPortParsingTests {
         #expect(ports.first?.hostPort == 8080)
     }
 
+    @Test func dedupesBracketedIPv6() {
+        let ports = parsePublishedPorts("0.0.0.0:8080->80/tcp, [::]:8080->80/tcp")
+        #expect(ports.count == 1)
+        #expect(ports.first?.hostPort == 8080)
+    }
+
     @Test func keepsDistinctHostPortsSorted() {
         let ports = parsePublishedPorts("0.0.0.0:5432->5432/tcp, 0.0.0.0:8080->80/tcp")
         #expect(ports.map(\.hostPort) == [5432, 8080])

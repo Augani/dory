@@ -23,6 +23,7 @@ enum RuntimeKind: String, Sendable {
     case docker
     case appleContainer
     case sharedVM
+    case disconnected
 
     var displayName: String {
         switch self {
@@ -30,6 +31,7 @@ enum RuntimeKind: String, Sendable {
         case .docker: "Docker Engine"
         case .appleContainer: "Apple container"
         case .sharedVM: "Shared VM"
+        case .disconnected: "Disconnected"
         }
     }
 
@@ -223,7 +225,7 @@ protocol ContainerRuntime: Sendable {
     func logs(containerID: String) async throws -> [LogLine]
     func env(containerID: String) async throws -> [EnvVar]
 
-    func pull(image: String) async throws
+    func pull(image: String, registryAuth: String?) async throws
     func create(_ spec: ContainerSpec) async throws -> String
     func exec(containerID: String, command: [String]) async throws -> ExecResult
     func createNetwork(name: String, labels: [String: String]) async throws
@@ -237,7 +239,7 @@ protocol ContainerRuntime: Sendable {
     func removeImage(id: String) async throws
     func pruneImages() async throws
     func tagImage(source: String, repo: String, tag: String) async throws
-    func pushImage(reference: String) async throws -> AsyncStream<Data>
+    func pushImage(reference: String, registryAuth: String?) async throws -> AsyncStream<Data>
     func login(registry: String, username: String, password: String) async throws
     func inspectImage(id: String) async -> ImageDetail?
     func inspectNetwork(name: String) async -> NetworkDetail?
@@ -251,7 +253,7 @@ protocol ContainerRuntime: Sendable {
     func containerExitCode(_ id: String) async -> Int?
     func copyOut(containerID: String, path: String) async -> Data?
     func copyIn(containerID: String, path: String, archive: Data) async -> Bool
-    func build(contextTar: Data, query: String) -> AsyncStream<Data>
+    func build(contextTar: Data, query: String, registryHeaders: [(name: String, value: String)]) -> AsyncStream<Data>
     func commit(containerID: String, repo: String, tag: String, labels: [String: String]) async throws -> String
     var supportsImageArchiveTransfer: Bool { get }
     func saveImage(reference: String) -> AsyncStream<Data>
@@ -267,7 +269,8 @@ protocol ContainerRuntime: Sendable {
 }
 
 extension ContainerRuntime {
-    func pull(image: String) async throws {}
+    func pull(image: String, registryAuth: String?) async throws {}
+    func pull(image: String) async throws { try await pull(image: image, registryAuth: nil) }
     func kill(containerID: String, signal: String?) async throws {
         try await stop(containerID: containerID)
     }
@@ -305,8 +308,11 @@ extension ContainerRuntime {
     func tagImage(source: String, repo: String, tag: String) async throws {
         throw RuntimeFeatureError.unsupported("image tag is not supported by \(kind.displayName)")
     }
-    func pushImage(reference: String) async throws -> AsyncStream<Data> {
+    func pushImage(reference: String, registryAuth: String?) async throws -> AsyncStream<Data> {
         throw RuntimeFeatureError.unsupported("image push is not supported by \(kind.displayName)")
+    }
+    func pushImage(reference: String) async throws -> AsyncStream<Data> {
+        try await pushImage(reference: reference, registryAuth: nil)
     }
     func login(registry: String, username: String, password: String) async throws {
         try DockerRegistry.persistDockerAuth(server: registry, username: username, password: password)
@@ -320,7 +326,8 @@ extension ContainerRuntime {
     func containerExitCode(_ id: String) async -> Int? { nil }
     func copyOut(containerID: String, path: String) async -> Data? { nil }
     func copyIn(containerID: String, path: String, archive: Data) async -> Bool { false }
-    func build(contextTar: Data, query: String) -> AsyncStream<Data> { AsyncStream { $0.finish() } }
+    func build(contextTar: Data, query: String, registryHeaders: [(name: String, value: String)]) -> AsyncStream<Data> { AsyncStream { $0.finish() } }
+    func build(contextTar: Data, query: String) -> AsyncStream<Data> { build(contextTar: contextTar, query: query, registryHeaders: []) }
     func commit(containerID: String, repo: String, tag: String, labels: [String: String]) async throws -> String { "" }
     var supportsImageArchiveTransfer: Bool { false }
     func saveImage(reference: String) -> AsyncStream<Data> { AsyncStream { $0.finish() } }
@@ -344,6 +351,29 @@ extension ContainerRuntime {
     var supportsRawProxy: Bool { false }
     func proxyRequest(method: String, path: String, headers: [(name: String, value: String)], body: Data) async -> HTTPResponse? { nil }
     nonisolated func proxyHijack(requestData: Data, clientFD: Int32) {}
+}
+
+/// The runtime the app holds before any real engine connects, and after the engine is found to be
+/// off. It reports an empty, engine-off snapshot so the UI shows the genuine "no engine" state
+/// instead of `MockRuntime`'s demo containers — which would otherwise leak into a real launch while
+/// the engine is starting or when it fails to start.
+struct DisconnectedRuntime: ContainerRuntime {
+    var kind: RuntimeKind { .disconnected }
+
+    func snapshot() async throws -> RuntimeSnapshot {
+        RuntimeSnapshot(engineRunning: false, engineVersion: "")
+    }
+
+    private func off() -> RuntimeFeatureError { .unsupported("the engine is not running") }
+
+    func start(containerID: String) async throws { throw off() }
+    func stop(containerID: String) async throws { throw off() }
+    func restart(containerID: String) async throws { throw off() }
+    func remove(containerID: String) async throws { throw off() }
+    func logs(containerID: String) async throws -> [LogLine] { [] }
+    func env(containerID: String) async throws -> [EnvVar] { [] }
+    func create(_ spec: ContainerSpec) async throws -> String { throw off() }
+    func exec(containerID: String, command: [String]) async throws -> ExecResult { throw off() }
 }
 
 enum DockerImageOps {

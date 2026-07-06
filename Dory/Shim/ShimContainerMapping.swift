@@ -102,7 +102,12 @@ enum ShimContainerMapping {
 
     static func ports(_ display: String) -> [DockerPortOut] {
         ContainerPortDisplay.mappings(display).map {
-            DockerPortOut(PrivatePort: $0.containerPort, PublicPort: $0.hostPort, portType: $0.proto)
+            DockerPortOut(
+                PrivatePort: $0.containerPort,
+                PublicPort: $0.hostPort,
+                portType: $0.proto,
+                IP: $0.hostIP
+            )
         }
     }
 
