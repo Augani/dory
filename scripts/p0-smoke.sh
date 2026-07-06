@@ -82,6 +82,8 @@ scripts/dory idle history --json > "$WORKDIR/idle-history.json"
 python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$WORKDIR/idle-history.json"
 scripts/dory idle proxy-status > "$WORKDIR/idle-proxy-status.json" 2>/dev/null || true
 
+DORY_SOCK="$DORY_SOCK" scripts/compat-smoke.sh
+
 docker_e run --rm alpine:latest true
 
 PORT="$(free_port)"

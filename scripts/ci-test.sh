@@ -14,6 +14,12 @@ if ! bash scripts/test-dory-doctor.sh; then
   exit 1
 fi
 
+# Compatibility surface: structural tier runs without an engine, so gate CI on it too.
+if ! bash scripts/compat-smoke.sh; then
+  echo "ci-test: compatibility smoke failed" >&2
+  exit 1
+fi
+
 # Retry the whole suite on ANY non-clean attempt, not only when too few tests ran. A shared-runner
 # host death is intermittent and can be *partial*: one xctest worker crashes, its tests all report
 # "failed" at 0.000s while 300+ others still pass. The old gate treated that first-attempt cascade as

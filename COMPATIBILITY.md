@@ -178,6 +178,29 @@ green, Dory still has the Docker-compatible fallback path. Building a self-conta
 the guest kernel/initfs assets available on the release runner, and a fully offline first boot also
 needs a prepared engine rootfs.
 
+## Tool compatibility (`dory compat`)
+
+"Docker-compatible" breaks at the edges: tools assume Docker Desktop or `/var/run/docker.sock`, read
+`DOCKER_HOST`, or need Ryuk and socket bind mounts. `dory compat` measures those real workflows,
+names the exact env/config mismatch, and ships a copy-paste recipe per tool with a verification
+command (`dory compat --recipe <tool>`). The compatibility CI harness (`scripts/compat-smoke.sh`)
+gates the recipe surface in CI and runs the engine-backed smoke tests during release readiness.
+
+| Tool/workflow | What `dory compat` checks | Fix it points to |
+|---|---|---|
+| Docker CLI | CLI on PATH, socket reachable, `DOCKER_HOST`/context targets Dory | `docker context use dory` |
+| Docker Compose v2 | Bundled `docker compose` plugin resolves | Shell integration puts the plugin on PATH |
+| VS Code Dev Containers | App installed, `docker` on PATH, engine route | `"dev.containers.dockerPath"` + `dory` context |
+| Cursor Dev Containers | Same as VS Code (fork) | Same recipe |
+| Testcontainers | `DOCKER_HOST` or `/var/run/docker.sock` resolves to Dory; Ryuk note | `export DOCKER_HOST=unix://~/.dory/dory.sock` |
+| GitHub Actions `act` | Default `/var/run/docker.sock` vs Dory | `act --container-daemon-socket unix://…` |
+| Supabase local | CLI present + engine reachable | `docker context use dory` then `supabase start` |
+| LocalStack | CLI present + engine reachable | `localstack start -d`, verify `:4566/_localstack/health` |
+| Skaffold/Tilt (Kubernetes) | `kubectl` + a kubeconfig/context | `kubectl config use-context dory` |
+
+Each row's recipe has a verification command; run `dory compat` for the live status on your machine
+and `dory compat --recipe` for the full set.
+
 ## Architectural / environment notes
 
 - **Shared VM vs one-VM-per-container.** Dory offers BOTH: the Apple `container` backend is

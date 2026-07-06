@@ -71,6 +71,9 @@ dory — Dory CLI
   dory cleanup [--json] [--apply] [--include-volumes]
                                Show or apply safe cleanup for stopped containers, cache, and logs
   dory routes [--json]          Show published ports and inferred *.dory.local routes
+  dory compat [--json] [--only TOOLS]
+                               Check tool compatibility (VS Code, Testcontainers, act, ...)
+  dory compat --recipe [TOOL]  Show copy-paste setup recipes with verification commands
   dory repair [all|socket|context|dns|routes|domains|ports|dockerd|engine|guest-agent] [--apply]
                                Repair a subsystem; 'all' only acts on unhealthy ones with --apply
   dory mode [manual|auto-idle|always-on|battery-saver|show]
@@ -940,6 +943,7 @@ case "${1:-help}" in
   disk)           shift; doctor_cmd disk "$@" ;;
   cleanup)        shift; doctor_cmd cleanup "$@" ;;
   routes)         shift; doctor_cmd routes "$@" ;;
+  compat)         shift; doctor_cmd compat "$@" ;;
   repair)         shift; doctor_cmd repair "$@" ;;
   mode)           shift; doctor_cmd mode "$@" ;;
   idle)

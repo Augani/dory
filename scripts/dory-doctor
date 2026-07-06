@@ -1777,6 +1777,359 @@ def exit_code(results: list[CheckResult]) -> int:
     return 1 if any(result.status == "fail" for result in results) else 0
 
 
+# ----- Compatibility center (Track 4) -------------------------------------------------------------
+# "Docker-compatible" breaks at the edges: tools assume Docker Desktop or /var/run/docker.sock, read
+# DOCKER_HOST, or need Ryuk/socket bind mounts. These checks measure real workflows, name the exact
+# env/config mismatch, and each ships a copy-paste recipe with a verification command.
+
+VAR_RUN_DOCKER_SOCK = Path("/var/run/docker.sock")
+
+
+def socket_reachable(path: Path, timeout: float = 2.0) -> bool:
+    try:
+        status_code, _, body = unix_http(path, "GET", "/_ping", timeout=timeout)
+        return status_code == 200 and body.strip() == b"OK"
+    except Exception:
+        return False
+
+
+def compat_socket_state() -> dict[str, Any]:
+    dory = socket_path()
+    dory_resolved = dory.resolve() if dory.exists() else dory
+    env_host = os.environ.get("DOCKER_HOST", "").strip()
+    env_target: Path | None = None
+    if env_host.startswith("unix://"):
+        env_target = Path(env_host[len("unix://"):]).expanduser()
+    var_run_target: Path | None = None
+    if VAR_RUN_DOCKER_SOCK.exists():
+        try:
+            var_run_target = VAR_RUN_DOCKER_SOCK.resolve()
+        except OSError:
+            var_run_target = None
+    return {
+        "dory_socket": str(dory),
+        "dory_reachable": socket_reachable(dory),
+        "docker_host": env_host,
+        "docker_host_points_at_dory": bool(env_target) and env_target.resolve() == dory_resolved,
+        "docker_context": os.environ.get("DOCKER_CONTEXT", "").strip(),
+        "var_run_exists": VAR_RUN_DOCKER_SOCK.exists(),
+        "var_run_is_dory": var_run_target == dory_resolved,
+    }
+
+
+def tool_on_path(*names: str) -> str | None:
+    for name in names:
+        found = shutil.which(name)
+        if found:
+            return found
+    return None
+
+
+def app_installed(*bundle_names: str) -> bool:
+    roots = [Path("/Applications"), HOME / "Applications"]
+    return any((root / name).exists() for root in roots for name in bundle_names)
+
+
+def check_compat_docker(state: dict[str, Any]) -> list[CheckResult]:
+    out: list[CheckResult] = []
+    binary = docker_bin()
+    if not binary:
+        out.append(CheckResult(
+            "compat.docker.cli", "fail", "compat.docker.cli_missing",
+            "Docker CLI missing",
+            "No docker executable on PATH or DORY_DOCKER_BIN.",
+            "Install Dory shell integration (`dory install`) so the bundled docker CLI is on PATH.",
+        ))
+        return out
+    out.append(CheckResult("compat.docker.cli", "pass", "compat.docker.cli_ok", "Docker CLI found", binary))
+    if not state["dory_reachable"]:
+        out.append(CheckResult(
+            "compat.docker.reach", "fail", "compat.docker.unreachable",
+            "Docker socket is not answering",
+            f"{state['dory_socket']} did not answer /_ping.",
+            "Start Dory (or `dory engine wake`) and re-run `dory compat`.",
+        ))
+        return out
+    if state["docker_host_points_at_dory"] or state["docker_context"] == "dory":
+        out.append(CheckResult(
+            "compat.docker.route", "pass", "compat.docker.route_ok",
+            "docker targets Dory",
+            f"DOCKER_HOST={state['docker_host'] or 'unset'} context={state['docker_context'] or 'default'}",
+        ))
+    else:
+        out.append(CheckResult(
+            "compat.docker.route", "warn", "compat.docker.route_default",
+            "docker relies on the default context",
+            "Neither DOCKER_HOST nor DOCKER_CONTEXT names Dory; the CLI works only if the `dory` context is the active default.",
+            f"Run `docker context use dory` or export DOCKER_HOST=unix://{state['dory_socket']}.",
+        ))
+    return out
+
+
+def check_compat_compose(state: dict[str, Any]) -> list[CheckResult]:
+    binary = docker_bin()
+    if not binary:
+        return [CheckResult(
+            "compat.compose", "skip", "compat.compose.no_docker",
+            "Docker Compose not checked", "docker CLI missing.",
+        )]
+    try:
+        result = subprocess.run([binary, "compose", "version"], text=True, capture_output=True, timeout=15)
+    except Exception as exc:
+        return [CheckResult("compat.compose", "fail", "compat.compose.exception", "Docker Compose check failed", str(exc))]
+    if result.returncode == 0:
+        return [CheckResult("compat.compose", "pass", "compat.compose.ok", "Docker Compose v2 plugin works", result.stdout.strip())]
+    return [CheckResult(
+        "compat.compose", "warn", "compat.compose.missing",
+        "Docker Compose plugin not available",
+        compact(result.stderr or result.stdout),
+        "Install Dory shell integration so the bundled compose plugin is on PATH.",
+    )]
+
+
+def check_compat_ide(state: dict[str, Any], tool: str, title: str, bundles: list[str]) -> list[CheckResult]:
+    installed = app_installed(*bundles) or bool(tool_on_path(tool))
+    if not installed:
+        return [CheckResult(
+            f"compat.{tool}", "skip", f"compat.{tool}.absent",
+            f"{title} not installed", f"{title} was not found; recipe available via `dory compat recipe {tool}`.",
+        )]
+    if not docker_bin():
+        return [CheckResult(
+            f"compat.{tool}", "fail", f"compat.{tool}.no_docker",
+            f"{title}: docker CLI missing",
+            "Dev Containers shells out to `docker`, which is not on PATH.",
+            "Install Dory shell integration so `docker` resolves for the IDE's login shell.",
+        )]
+    if not (state["docker_host_points_at_dory"] or state["docker_context"] == "dory" or state["dory_reachable"]):
+        return [CheckResult(
+            f"compat.{tool}", "warn", f"compat.{tool}.route",
+            f"{title}: engine route unverified",
+            "The Dev Containers extension uses the active docker context; Dory's socket is not the default target.",
+            f"Set `\"dev.containers.dockerPath\": \"docker\"` and run `docker context use dory` (see `dory compat recipe {tool}`).",
+        )]
+    return [CheckResult(
+        f"compat.{tool}", "pass", f"compat.{tool}.ok",
+        f"{title} can reach Dory",
+        f"docker CLI present, Dory socket reachable at {state['dory_socket']}.",
+    )]
+
+
+def check_compat_testcontainers(state: dict[str, Any]) -> list[CheckResult]:
+    # Testcontainers resolves the host from DOCKER_HOST, then the docker context, then
+    # /var/run/docker.sock. Ryuk (its reaper) also bind-mounts the docker socket, so a reachable,
+    # named socket matters more here than anywhere else.
+    if state["docker_host_points_at_dory"]:
+        detail = f"DOCKER_HOST={state['docker_host']} resolves to Dory."
+        return [CheckResult("compat.testcontainers", "pass", "compat.testcontainers.env_ok", "Testcontainers is pointed at Dory", detail)]
+    if state["var_run_is_dory"]:
+        return [CheckResult(
+            "compat.testcontainers", "pass", "compat.testcontainers.varrun_ok",
+            "Testcontainers finds Dory via /var/run/docker.sock",
+            "/var/run/docker.sock resolves to Dory's socket; Ryuk and the default host detection work.",
+        )]
+    action = (
+        f"export DOCKER_HOST=unix://{state['dory_socket']} (and TESTCONTAINERS_RYUK_DISABLED=true "
+        "only if Ryuk cannot bind-mount the socket)."
+    )
+    return [CheckResult(
+        "compat.testcontainers", "fail", "compat.testcontainers.unresolved",
+        "Testcontainers cannot find the Docker host",
+        "DOCKER_HOST does not point at Dory and /var/run/docker.sock is not linked to it, so host auto-detection falls back to a socket that does not exist.",
+        action,
+    )]
+
+
+def check_compat_act(state: dict[str, Any]) -> list[CheckResult]:
+    installed = tool_on_path("act")
+    if state["var_run_is_dory"]:
+        return [CheckResult("compat.act", "pass", "compat.act.varrun_ok", "act finds Dory via /var/run/docker.sock", "/var/run/docker.sock resolves to Dory.")]
+    if state["docker_host"]:
+        return [CheckResult("compat.act", "pass", "compat.act.env_ok", "act will use DOCKER_HOST", f"DOCKER_HOST={state['docker_host']}")]
+    status = "warn" if installed else "skip"
+    return [CheckResult(
+        "compat.act", status, "compat.act.default_sock",
+        "act defaults to /var/run/docker.sock",
+        "act hard-codes /var/run/docker.sock unless told otherwise, and Dory does not create that path by default.",
+        f"Run `act --container-daemon-socket unix://{state['dory_socket']}` or export DOCKER_HOST.",
+    )]
+
+
+def check_compat_cli_tool(state: dict[str, Any], tool: str, title: str, cli_names: list[str], note: str) -> list[CheckResult]:
+    binary = tool_on_path(*cli_names)
+    if not binary:
+        return [CheckResult(
+            f"compat.{tool}", "skip", f"compat.{tool}.absent",
+            f"{title} not installed", f"{title} CLI not found; recipe available via `dory compat recipe {tool}`.",
+        )]
+    if not state["dory_reachable"]:
+        return [CheckResult(
+            f"compat.{tool}", "fail", f"compat.{tool}.unreachable",
+            f"{title}: Docker socket not answering",
+            f"{title} needs a reachable Docker engine; {state['dory_socket']} did not answer.",
+            "Start Dory (or `dory engine wake`).",
+        )]
+    return [CheckResult(f"compat.{tool}", "pass", f"compat.{tool}.ok", f"{title} can reach Dory", f"{binary}; {note}")]
+
+
+def check_compat_kubernetes(state: dict[str, Any]) -> list[CheckResult]:
+    binary = kubectl_bin()
+    if not binary:
+        return [CheckResult("compat.kubernetes", "skip", "compat.kubernetes.absent", "kubectl not installed", "Skaffold/Tilt recipe available via `dory compat recipe kubernetes`.")]
+    if not DEFAULT_KUBECONFIG.exists() and not (HOME / ".kube" / "config").exists():
+        return [CheckResult(
+            "compat.kubernetes", "warn", "compat.kubernetes.no_context",
+            "No kubeconfig found",
+            "Neither ~/.kube/config nor Dory's kubeconfig exists; Skaffold/Tilt need a cluster context.",
+            "Enable Kubernetes in Dory, then `kubectl config use-context dory`.",
+        )]
+    return [CheckResult("compat.kubernetes", "pass", "compat.kubernetes.ok", "kubectl and a kubeconfig are present", binary)]
+
+
+COMPAT_TOOLS: list[dict[str, Any]] = [
+    {"tool": "docker", "title": "Docker CLI", "check": check_compat_docker},
+    {"tool": "compose", "title": "Docker Compose v2", "check": check_compat_compose},
+    {"tool": "vscode", "title": "VS Code Dev Containers", "check": lambda s: check_compat_ide(s, "vscode", "VS Code Dev Containers", ["Visual Studio Code.app"])},
+    {"tool": "cursor", "title": "Cursor Dev Containers", "check": lambda s: check_compat_ide(s, "cursor", "Cursor Dev Containers", ["Cursor.app"])},
+    {"tool": "testcontainers", "title": "Testcontainers", "check": check_compat_testcontainers},
+    {"tool": "act", "title": "GitHub Actions act", "check": check_compat_act},
+    {"tool": "supabase", "title": "Supabase local", "check": lambda s: check_compat_cli_tool(s, "supabase", "Supabase local", ["supabase"], "run `supabase start` to bring up the stack.")},
+    {"tool": "localstack", "title": "LocalStack", "check": lambda s: check_compat_cli_tool(s, "localstack", "LocalStack", ["localstack"], "publishes 4566; verify with `curl localhost:4566/_localstack/health`.")},
+    {"tool": "kubernetes", "title": "Skaffold/Tilt (Kubernetes)", "check": check_compat_kubernetes},
+]
+
+
+def compat_recipes() -> dict[str, dict[str, Any]]:
+    sock = str(socket_path())
+    host = f"unix://{sock}"
+    return {
+        "docker": {
+            "title": "Docker CLI",
+            "summary": "Point the docker CLI at Dory's socket via the bundled context.",
+            "steps": ["docker context use dory", f"# or, explicitly: export DOCKER_HOST={host}"],
+            "verify": "docker -c dory version",
+        },
+        "compose": {
+            "title": "Docker Compose v2",
+            "summary": "Use the bundled compose plugin against Dory.",
+            "steps": ["docker context use dory", "docker compose version"],
+            "verify": "docker compose version",
+        },
+        "vscode": {
+            "title": "VS Code Dev Containers",
+            "summary": "Make the Dev Containers extension use Dory's engine.",
+            "steps": [
+                "docker context use dory",
+                '# settings.json: "dev.containers.dockerPath": "docker"',
+                f'# or set the extension env: "docker.environment": {{ "DOCKER_HOST": "{host}" }}',
+            ],
+            "verify": "docker -c dory run --rm alpine:latest true",
+        },
+        "cursor": {
+            "title": "Cursor Dev Containers",
+            "summary": "Cursor is a VS Code fork; the Dev Containers extension works the same way.",
+            "steps": [
+                "docker context use dory",
+                '# settings.json: "dev.containers.dockerPath": "docker"',
+            ],
+            "verify": "docker -c dory run --rm alpine:latest true",
+        },
+        "testcontainers": {
+            "title": "Testcontainers (Java/Go/Node/Python)",
+            "summary": "Set the Docker host so host auto-detection and Ryuk resolve Dory.",
+            "steps": [
+                f"export DOCKER_HOST={host}",
+                "# If Ryuk cannot bind-mount the socket in your setup:",
+                "export TESTCONTAINERS_RYUK_DISABLED=true",
+                "# If containers must reach the host, expose it explicitly:",
+                "export TESTCONTAINERS_HOST_OVERRIDE=host.docker.internal",
+            ],
+            "verify": f"DOCKER_HOST={host} docker run --rm testcontainers/ryuk:0.7.0 --help || echo 'ryuk image reachable'",
+        },
+        "act": {
+            "title": "GitHub Actions act",
+            "summary": "act defaults to /var/run/docker.sock; tell it to use Dory instead.",
+            "steps": [f"act --container-daemon-socket {host}", f"# or: export DOCKER_HOST={host}"],
+            "verify": f"act --container-daemon-socket {host} -l",
+        },
+        "supabase": {
+            "title": "Supabase local",
+            "summary": "Supabase's CLI drives Docker; point it at Dory.",
+            "steps": ["docker context use dory", f"# or: export DOCKER_HOST={host}", "supabase start"],
+            "verify": "supabase status",
+        },
+        "localstack": {
+            "title": "LocalStack",
+            "summary": "Run LocalStack against Dory and reach its published port.",
+            "steps": ["docker context use dory", "localstack start -d"],
+            "verify": "curl -fsS localhost:4566/_localstack/health",
+        },
+        "kubernetes": {
+            "title": "Skaffold/Tilt (Kubernetes)",
+            "summary": "Use Dory's Kubernetes context for image load and deploy.",
+            "steps": ["kubectl config use-context dory", "skaffold dev  # or: tilt up"],
+            "verify": "kubectl --context dory get nodes",
+        },
+    }
+
+
+def run_compat(tools: set[str] | None = None) -> list[CheckResult]:
+    state = compat_socket_state()
+    results: list[CheckResult] = []
+    for entry in COMPAT_TOOLS:
+        if tools and entry["tool"] not in tools:
+            continue
+        try:
+            results.extend(entry["check"](state))
+        except Exception as exc:
+            results.append(CheckResult(f"compat.{entry['tool']}", "fail", f"compat.{entry['tool']}.probe_exception", entry["title"], str(exc)))
+    return results
+
+
+def print_compat(results: list[CheckResult], as_json: bool) -> None:
+    if as_json:
+        print(json.dumps({"generated_at": now_iso(), "results": [r.as_dict() for r in results]}, indent=2, sort_keys=True))
+        return
+    counts: dict[str, int] = {}
+    for result in results:
+        counts[result.status] = counts.get(result.status, 0) + 1
+        label = result.status.upper().ljust(4)
+        print(f"{label} {result.id}: {result.title}")
+        print(f"     {result.detail}")
+        if result.action:
+            print(f"     action: {result.action}")
+    print("")
+    print("Summary: " + ", ".join(f"{status}={count}" for status, count in sorted(counts.items())))
+    print("Recipes: `dory compat recipe <tool>` (tools: " + ", ".join(entry["tool"] for entry in COMPAT_TOOLS) + ")")
+
+
+def print_compat_recipe(tool: str | None, as_json: bool) -> int:
+    recipes = compat_recipes()
+    if tool is None:
+        if as_json:
+            print(json.dumps({"tools": recipes}, indent=2, sort_keys=True))
+        else:
+            for name, recipe in recipes.items():
+                print(f"{name}: {recipe['title']} — {recipe['summary']}")
+            print("\nShow one with `dory compat recipe <tool>`.")
+        return 0
+    recipe = recipes.get(tool)
+    if not recipe:
+        print(f"No recipe for '{tool}'. Known: {', '.join(recipes)}", file=sys.stderr)
+        return 2
+    if as_json:
+        print(json.dumps({tool: recipe}, indent=2, sort_keys=True))
+        return 0
+    print(f"# {recipe['title']}")
+    print(recipe["summary"])
+    print("")
+    for step in recipe["steps"]:
+        print(step)
+    print("")
+    print(f"Verify: {recipe['verify']}")
+    return 0
+
+
 def cmd_doctor(args: argparse.Namespace) -> int:
     only = set(args.only.split(",")) if args.only else None
     doctor = Doctor(timeout=args.timeout, active=args.active)
@@ -2103,6 +2456,16 @@ def cmd_idle(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_compat(args: argparse.Namespace) -> int:
+    if args.recipe is not None:
+        tool = args.recipe or None
+        return print_compat_recipe(tool, args.json)
+    tools = set(args.only.split(",")) if args.only else None
+    results = run_compat(tools)
+    print_compat(results, args.json)
+    return exit_code(results)
+
+
 def cmd_bundle(args: argparse.Namespace) -> int:
     path = Path(args.path).expanduser() if args.path else None
     print(bundle(path, active=args.active))
@@ -2171,6 +2534,12 @@ def build_parser() -> argparse.ArgumentParser:
     idle.add_argument("action", choices=["status"], nargs="?", default="status")
     idle.add_argument("--json", action="store_true")
     idle.set_defaults(func=cmd_idle)
+
+    compat = sub.add_parser("compat", help="Check tool compatibility and show recipes")
+    compat.add_argument("--json", action="store_true")
+    compat.add_argument("--only", help="Comma-separated tools: " + ",".join(entry["tool"] for entry in COMPAT_TOOLS))
+    compat.add_argument("--recipe", nargs="?", const="", help="Show a copy-paste recipe (optionally for one tool)")
+    compat.set_defaults(func=cmd_compat)
 
     bundle_parser = sub.add_parser("bundle", help="Write a redacted diagnostic bundle")
     bundle_parser.add_argument("path", nargs="?")

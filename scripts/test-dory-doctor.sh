@@ -199,6 +199,40 @@ scripts/dory help | grep -q "dory doctor"
 scripts/dory help | grep -q "dory idle proxy"
 scripts/dory help | grep -q "dory idle proxy-status"
 scripts/dory help | grep -q "dory cleanup"
+scripts/dory help | grep -q "dory compat"
+
+# Compatibility center: every registered tool is checked and every non-pass carries an action;
+# runs without an engine (skips/warns/fails, never crashes). `compat` exits 1 when a tool fails,
+# which is expected here, so capture first rather than piping under pipefail.
+compat_json="$(scripts/dory compat --json || true)"
+printf '%s' "$compat_json" | python3 -c '
+import json, sys
+results = json.load(sys.stdin)["results"]
+checked = {r["id"].split(".")[1] for r in results}
+required = {"docker", "compose", "testcontainers", "act", "kubernetes", "vscode", "cursor", "supabase", "localstack"}
+missing = required - checked
+assert not missing, f"compat did not check: {sorted(missing)}"
+for r in results:
+    assert r["status"] in {"pass", "warn", "fail", "skip"}, r
+    if r["status"] in {"fail", "warn"}:
+        assert r.get("action") or r.get("detail"), r
+'
+
+# Every recipe ships a verification command (Track 4 exit criterion).
+scripts/dory compat --recipe --json | python3 -c '
+import json, sys
+tools = json.load(sys.stdin)["tools"]
+assert tools, "no recipes"
+for name, recipe in tools.items():
+    assert recipe.get("verify"), f"{name} has no verification command"
+'
+
+scripts/dory compat --recipe testcontainers | grep -q "Verify:"
+set +e
+scripts/dory compat --recipe no-such-tool >/dev/null 2>&1
+compat_rc=$?
+set -e
+[ "$compat_rc" = "2" ] || { echo "unknown compat recipe should exit 2, got $compat_rc"; exit 1; }
 
 scripts/dory-idle-proxy launch-agent print | python3 -c '
 import plistlib, sys
