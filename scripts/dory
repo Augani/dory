@@ -944,6 +944,7 @@ case "${1:-help}" in
   cleanup)        shift; doctor_cmd cleanup "$@" ;;
   routes)         shift; doctor_cmd routes "$@" ;;
   compat)         shift; doctor_cmd compat "$@" ;;
+  incidents)      shift; doctor_cmd incidents "$@" ;;
   repair)         shift; doctor_cmd repair "$@" ;;
   mode)           shift; doctor_cmd mode "$@" ;;
   idle)

@@ -297,6 +297,24 @@ idle_set_rc=$?
 set -e
 [ "$idle_set_rc" = "2" ] || { echo "unknown idle key should exit 2, got $idle_set_rc"; exit 1; }
 
+# Incident timeline (Track 6): `dory repair --apply` records an incident; `dory incidents --json`
+# reads it newest-first at 0600; a healthy `repair all --apply` records only what it actually applied.
+INC_LOG="$TMP_HOME/incidents-test.jsonl"
+DORY_INCIDENTS="$INC_LOG" scripts/dory incidents --json | python3 -c '
+import json, sys
+assert json.load(sys.stdin)["incidents"] == [], "expected empty incident timeline"
+'
+DORY_INCIDENTS="$INC_LOG" DORY_SOCK=/tmp/dory-no-such-sock.sock scripts/dory repair socket --apply >/dev/null 2>&1 || true
+DORY_INCIDENTS="$INC_LOG" scripts/dory incidents --json | python3 -c '
+import json, sys
+inc = json.load(sys.stdin)["incidents"]
+assert inc, "repair --apply should record an incident"
+assert inc[0]["type"] == "repair", inc[0]
+assert "socket" in (inc[0].get("detail") or ""), inc[0]
+'
+inc_perm="$(stat -f "%Lp" "$INC_LOG")"
+[ "$inc_perm" = "600" ] || { echo "incidents perms=$inc_perm (want 600)"; exit 1; }
+
 # Memory inspector + guest disk (Track 5 P1): footprint breaks host RSS into engine/app roles;
 # the guest disk probe is active-only and must skip cleanly in the default passive run.
 scripts/dory-doctor doctor --json --only memory,disk | python3 -c '

@@ -188,6 +188,16 @@ struct IdleHistoryEntry: Decodable, Sendable, Hashable {
     let detail: String?
 }
 
+struct Incident: Decodable, Sendable, Hashable {
+    let at: String
+    let type: String
+    let detail: String?
+}
+
+struct IncidentReport: Decodable, Sendable {
+    let incidents: [Incident]
+}
+
 struct FailableDecodable<Wrapped: Decodable>: Decodable {
     let value: Wrapped?
     init(from decoder: Decoder) throws {
@@ -199,6 +209,7 @@ struct HealthSnapshot: Sendable {
     var checks: [DoctorCheck] = []
     var idle: IdleStatus?
     var history: [IdleHistoryEntry] = []
+    var incidents: [Incident] = []
     var cliMissing = false
     var doctorError: String?
     var activeProbed = false
@@ -256,7 +267,8 @@ enum HealthDiagnostics {
         async let compatRun = run(cli, ["compat", "--json"])
         async let idleRun = run(cli, ["idle", "status", "--json"])
         async let historyRun = run(cli, ["idle", "history", "--json", "--limit", "40"])
-        let (doctor, compat, idle, history) = await (doctorRun, compatRun, idleRun, historyRun)
+        async let incidentsRun = run(cli, ["incidents", "--json", "--limit", "40"])
+        let (doctor, compat, idle, history, incidents) = await (doctorRun, compatRun, idleRun, historyRun, incidentsRun)
 
         var snapshot = HealthSnapshot(activeProbed: active)
         var checks: [DoctorCheck] = []
@@ -274,6 +286,9 @@ enum HealthDiagnostics {
         snapshot.idle = decode(idle.stdout)
         if let rows: [FailableDecodable<IdleHistoryEntry>] = decode(history.stdout) {
             snapshot.history = rows.compactMap(\.value).reversed()
+        }
+        if let report: IncidentReport = decode(incidents.stdout) {
+            snapshot.incidents = report.incidents
         }
         return snapshot
     }

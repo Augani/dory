@@ -22,6 +22,9 @@ struct HealthView: View {
                                 categorySection(category, checks)
                             }
                         }
+                        if !snapshot.incidents.isEmpty {
+                            incidentsSection(snapshot.incidents)
+                        }
                         if !snapshot.history.isEmpty {
                             historySection(snapshot.history)
                         }
@@ -222,6 +225,44 @@ struct HealthView: View {
             statusBadge(check.health)
         }
         .padding(.horizontal, 12).padding(.vertical, 10)
+    }
+
+    // MARK: Incident timeline
+
+    private func incidentsSection(_ incidents: [Incident]) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            groupLabel("INCIDENT TIMELINE")
+            VStack(spacing: 0) {
+                ForEach(Array(incidents.enumerated()), id: \.offset) { index, incident in
+                    if index > 0 {
+                        Divider().overlay(p.border)
+                    }
+                    HStack(alignment: .top, spacing: 10) {
+                        Text(incident.type.replacingOccurrences(of: "-", with: " "))
+                            .font(.system(size: 11, weight: .bold)).foregroundStyle(incidentColor(incident.type))
+                            .frame(width: 120, alignment: .leading)
+                        VStack(alignment: .leading, spacing: 1) {
+                            if let detail = incident.detail, !detail.isEmpty {
+                                Text(detail).font(.system(size: 12)).foregroundStyle(p.text).lineLimit(2)
+                            }
+                            Text(incident.at).font(.system(size: 10.5)).foregroundStyle(p.text3)
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.horizontal, 12).padding(.vertical, 9)
+                }
+            }
+            .cardStyle(p, padding: 4)
+        }
+    }
+
+    private func incidentColor(_ type: String) -> Color {
+        switch type {
+        case "engine-start", "wake-recovery": p.green
+        case "engine-stop": p.text2
+        case "repair": p.accentText
+        default: p.amber
+        }
     }
 
     // MARK: History

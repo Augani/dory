@@ -22,7 +22,7 @@ final class DoryAppDelegate: NSObject, NSApplicationDelegate {
             object: nil,
             queue: .main
         ) { _ in
-            SharedVMProvisioner.resyncClockAfterWake()
+            SharedVMProvisioner.recoverAfterWake()
         }
     }
 

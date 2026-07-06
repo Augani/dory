@@ -55,6 +55,44 @@ nonisolated enum SharedVMProvisioner {
         capLogInPlace(helperLogPath)
     }
 
+    nonisolated static var incidentsPath: String { "\(NSHomeDirectory())/.dory/incidents.jsonl" }
+
+    /// Appends one JSON line to the shared incident timeline (~/.dory/incidents.jsonl), the same file
+    /// `dory incidents` reads. Best-effort and never throws into the caller.
+    nonisolated static func recordIncident(_ type: String, _ detail: String) {
+        let record: [String: Any] = ["at": iso8601Now(), "type": type, "detail": detail]
+        guard var data = try? JSONSerialization.data(withJSONObject: record, options: [.sortedKeys]) else { return }
+        data.append(0x0A)
+        let directory = (incidentsPath as NSString).deletingLastPathComponent
+        try? FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
+        if !FileManager.default.fileExists(atPath: incidentsPath) {
+            FileManager.default.createFile(atPath: incidentsPath, contents: nil, attributes: [.posixPermissions: 0o600])
+        }
+        guard let handle = try? FileHandle(forWritingTo: URL(fileURLWithPath: incidentsPath)) else { return }
+        defer { try? handle.close() }
+        _ = try? handle.seekToEnd()
+        try? handle.write(contentsOf: data)
+    }
+
+    private nonisolated static func iso8601Now() -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter.string(from: Date())
+    }
+
+    /// Wake handler: resync the guest clock (drift breaks TLS/DBs/tests), then verify the engine
+    /// socket and record a wake-recovery incident so the timeline explains post-sleep behavior.
+    nonisolated static func recoverAfterWake() {
+        let clockResynced = resyncClockAfterWake()
+        Task.detached {
+            let reachable = await isReachable()
+            recordIncident(
+                "wake-recovery",
+                "woke from sleep; clock \(clockResynced ? "resynced" : "unchanged"), engine socket \(reachable ? "reachable" : "unreachable")"
+            )
+        }
+    }
+
     struct Config: Sendable {
         var cpus: Int
         /// Guest RAM ceiling. The engine reclaims below the ceiling via free page reporting, so a
@@ -283,6 +321,7 @@ nonisolated enum SharedVMProvisioner {
         do {
             try process.run()
             try? "\(process.processIdentifier)\n".write(toFile: helperPIDPath, atomically: true, encoding: .utf8)
+            recordIncident("engine-start", "\(label) engine started")
             try? log?.close()
         } catch {
             try? log?.close()
@@ -342,6 +381,7 @@ nonisolated enum SharedVMProvisioner {
         do {
             try process.run()
             try? "\(process.processIdentifier)\n".write(toFile: helperPIDPath, atomically: true, encoding: .utf8)
+            recordIncident("engine-start", "dory-hv engine started")
             try? log?.close()
         } catch {
             try? log?.close()
@@ -764,6 +804,7 @@ nonisolated enum SharedVMProvisioner {
         try? FileManager.default.removeItem(atPath: helperPIDPath)
         try? FileManager.default.removeItem(atPath: engineIPPath)
         try? FileManager.default.removeItem(atPath: socketPath)
+        recordIncident("engine-stop", "engine stopped")
     }
 
     nonisolated static func memoryStringToMB(_ raw: String) -> Int? {

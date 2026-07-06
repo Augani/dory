@@ -39,6 +39,7 @@ DEFAULT_ENGINE_SOCK = HOME / ".dory" / "engine.sock"
 DEFAULT_CONFIG = HOME / ".dory" / "config.json"
 DEFAULT_KUBECONFIG = HOME / ".kube" / "dory-config"
 DEFAULT_IDLE_STATE = HOME / ".dory" / "idle-state.json"
+DEFAULT_INCIDENTS = HOME / ".dory" / "incidents.jsonl"
 DOMAIN_SUFFIX = os.environ.get("DORY_DOMAIN_SUFFIX", "dory.local")
 DOMAIN_PROXY_PORT = int(os.environ.get("DORY_DOMAIN_PROXY_PORT", "8080"))
 HTTPS_PROXY_PORT = int(os.environ.get("DORY_HTTPS_PROXY_PORT", "8443"))
@@ -66,6 +67,61 @@ def config_path() -> Path:
 
 def idle_state_path() -> Path:
     return Path(os.environ.get("DORY_IDLE_STATE", str(DEFAULT_IDLE_STATE))).expanduser()
+
+
+def incidents_path() -> Path:
+    return Path(os.environ.get("DORY_INCIDENTS", str(DEFAULT_INCIDENTS))).expanduser()
+
+
+def record_incident(kind: str, detail: str, **extra: Any) -> None:
+    path = incidents_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        line = json.dumps({"at": now_iso(), "type": kind, "detail": detail, **extra}, sort_keys=True) + "\n"
+        fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        with os.fdopen(fd, "a", encoding="utf-8") as handle:
+            handle.write(line)
+        _trim_incidents(path, 500)
+    except OSError:
+        pass
+
+
+def _trim_incidents(path: Path, max_lines: int) -> None:
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+    except OSError:
+        return
+    if len(lines) <= max_lines:
+        return
+    tmp = path.with_suffix(f".{os.getpid()}.trim")
+    try:
+        fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.writelines(lines[-max_lines:])
+        os.replace(tmp, path)
+    except OSError:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+
+
+def read_incidents(limit: int = 50) -> list[dict[str, Any]]:
+    path = incidents_path()
+    if not path.exists():
+        return []
+    records: list[dict[str, Any]] = []
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line:
+                try:
+                    records.append(json.loads(line))
+                except ValueError:
+                    continue
+    except OSError:
+        return []
+    return records[-limit:]
 
 
 def docker_bin() -> str | None:
@@ -1788,6 +1844,7 @@ def bundle(path: Path | None, active: bool = False) -> Path:
         "routes": route_table(),
         "disk": disk_report(),
         "idle": idle_status(),
+        "incidents": read_incidents(200),
         "config": load_config(),
         "environment": safe_environment(),
     }
@@ -1796,6 +1853,7 @@ def bundle(path: Path | None, active: bool = False) -> Path:
         for source, name in [
             (HOME / ".dory" / "engine.log", "logs/engine.log"),
             (HOME / ".dory" / "dory.log", "logs/dory.log"),
+            (HOME / ".dory" / "idle-proxy.log", "logs/idle-proxy.log"),
         ]:
             if source.exists() and source.is_file():
                 zf.writestr(name, redact(tail_text(source, 300_000)))
@@ -2361,6 +2419,7 @@ def cmd_repair(args: argparse.Namespace) -> int:
         "guest-agent": repair_guest_agent,
     }
     actions: list[dict[str, Any]] = []
+    applied_targets: list[str] = []
     all_targets = ["socket", "context", "dns", "routes", "ports", "domains", "dockerd", "guest-agent"]
     fan_out = args.target == "all"
     targets = all_targets if fan_out else [args.target]
@@ -2377,6 +2436,15 @@ def cmd_repair(args: argparse.Namespace) -> int:
                 actions.append(probe)
                 continue
         actions.append(handler(args.apply))
+        if args.apply:
+            applied_targets.append(target)
+    if applied_targets:
+        record_incident(
+            "repair",
+            f"applied repair: {', '.join(applied_targets)}",
+            targets=applied_targets,
+            requested=args.target,
+        )
     if args.json:
         print(json.dumps({"generated_at": now_iso(), "apply": args.apply, "actions": actions}, indent=2, sort_keys=True))
     else:
@@ -2646,6 +2714,19 @@ def cmd_idle(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_incidents(args: argparse.Namespace) -> int:
+    records = list(reversed(read_incidents(args.limit)))
+    if args.json:
+        print(json.dumps({"generated_at": now_iso(), "incidents": records}, indent=2, sort_keys=True))
+        return 0
+    if not records:
+        print("No incidents recorded yet.")
+        return 0
+    for record in records:
+        print(f"{record.get('at', '?'):20} {record.get('type', '?'):16} {record.get('detail', '')}")
+    return 0
+
+
 def cmd_compat(args: argparse.Namespace) -> int:
     if args.recipe is not None:
         tool = args.recipe or None
@@ -2726,6 +2807,11 @@ def build_parser() -> argparse.ArgumentParser:
     idle.add_argument("value", nargs="?", help="idle policy value for `set`")
     idle.add_argument("--json", action="store_true")
     idle.set_defaults(func=cmd_idle)
+
+    incidents = sub.add_parser("incidents", help="Show the local incident timeline (starts, sleeps, wakes, repairs)")
+    incidents.add_argument("--json", action="store_true")
+    incidents.add_argument("--limit", type=int, default=50)
+    incidents.set_defaults(func=cmd_incidents)
 
     compat = sub.add_parser("compat", help="Check tool compatibility and show recipes")
     compat.add_argument("--json", action="store_true")
