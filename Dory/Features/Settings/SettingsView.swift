@@ -410,21 +410,38 @@ struct SettingsView: View {
 
             groupLabel("DORY SHARED VM")
             VStack(alignment: .leading, spacing: 12) {
-                Text("Run every container in one shared Linux VM — like OrbStack — on Dory's own engine. A standalone daemon that ships its own kernel and networking, so it needs no Docker, OrbStack, or Apple container toolchain, and reclaims memory back to macOS as workloads idle. Requires macOS 15 or later on Apple silicon or Intel; installs without bundled engine assets can use a Docker-compatible local engine.")
+                Text("Run every container in one shared Linux VM — like OrbStack — on Dory's own engine. The app bundles the engine, kernel, networking, Docker CLI, Compose, and kubectl, so it needs no Docker, OrbStack, Colima, Homebrew, or Apple container toolchain on the user's Mac. Memory is returned to macOS as workloads idle. Metal-backed AI services on the Mac are reachable from containers at host.dory.internal on ports 11434, 1234, and 18190. Requires macOS 15 or later on Apple silicon or Intel; installs without bundled engine assets can use a Docker-compatible local engine.")
                     .font(.system(size: 12.5)).foregroundStyle(p.text2).lineSpacing(4)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                Button {
-                    Task { await store.useSharedVM() }
-                } label: {
-                    Text(onShared ? "Running on Dory's engine" : "Use Dory's engine")
-                        .font(.system(size: 12.5, weight: .semibold))
-                        .foregroundStyle(onShared ? p.text2 : .white)
-                        .padding(.horizontal, 16).padding(.vertical, 9)
-                        .background(onShared ? p.bgInput : p.accent, in: RoundedRectangle(cornerRadius: 8))
+                HStack(spacing: 8) {
+                    Button {
+                        Task { await store.useSharedVM() }
+                    } label: {
+                        Text(onShared ? "Running on Dory's engine" : "Use Dory's engine")
+                            .font(.system(size: 12.5, weight: .semibold))
+                            .foregroundStyle(onShared ? p.text2 : .white)
+                            .padding(.horizontal, 16).padding(.vertical, 9)
+                            .background(onShared ? p.bgInput : p.accent, in: RoundedRectangle(cornerRadius: 8))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(onShared || !sharedSupport.isSupported)
+                    .accessibilityIdentifier("use-shared-vm")
+                    if onShared {
+                        Button {
+                            Task { await store.restartEngine() }
+                        } label: {
+                            Label(store.isConnecting ? "Restarting…" : "Restart Engine", systemImage: "arrow.clockwise")
+                                .font(.system(size: 12.5, weight: .semibold))
+                                .foregroundStyle(p.text2)
+                                .padding(.horizontal, 14).padding(.vertical, 9)
+                                .background(p.bgInput, in: RoundedRectangle(cornerRadius: 8))
+                                .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(p.border))
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(store.isConnecting)
+                        .accessibilityIdentifier("restart-engine")
+                    }
                 }
-                .buttonStyle(.plain)
-                .disabled(onShared || !sharedSupport.isSupported)
-                .accessibilityIdentifier("use-shared-vm")
                 if !sharedSupport.isSupported {
                     Text("Unavailable: \(sharedSupport.reason).")
                         .font(.system(size: 11.5)).foregroundStyle(p.text3)
@@ -438,12 +455,16 @@ struct SettingsView: View {
             .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(p.border))
             .padding(.bottom, 22)
 
+            groupLabel("APPLE CONTAINER")
+            appleContainerCard
+                .padding(.bottom, 22)
+
             if MacHostPlatform.current().isAppleSilicon {
                 groupLabel("X86 / AMD64")
                 VStack(spacing: 0) {
                     toggleRow(
-                        "Run x86 images with Rosetta",
-                        "Use Apple's Rosetta to run amd64 images (SQL Server, Oracle, older x86 builds) reliably and fast. Switches Dory's engine to Virtualization.framework, which uses more memory than the default engine. Turn off when you don't need x86.",
+                        "Run Intel (x86/amd64) images",
+                        "Run amd64 images (SQL Server, Oracle, older x86 builds) on Dory's own engine through QEMU emulation — no separate VM, so the memory advantage stays. Emulated x86 is slower than native arm64; leave off when you don't need it to keep the guest lean. Restarts the engine.",
                         isOn: Binding(get: { store.rosettaX86Enabled }, set: { on in Task { await store.setRosettaX86(on) } }),
                         divider: false,
                         disabled: !onShared
@@ -452,11 +473,96 @@ struct SettingsView: View {
                 .background(p.bgElevated, in: RoundedRectangle(cornerRadius: 11))
                 .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(p.border))
                 if !onShared {
-                    Text("Switch to Dory's shared engine above to use Rosetta x86.")
+                    Text("Switch to Dory's shared engine above to run x86/amd64 images.")
                         .font(.system(size: 11.5)).foregroundStyle(p.text3).padding(.top, 8)
                 }
             }
+
+            groupLabel("GPU ACCELERATION (EXPERIMENTAL)")
+            gpuAccelerationCard
+                .padding(.bottom, 12)
+            VStack(spacing: 0) {
+                toggleRow(
+                    "Enable GPU acceleration for AI & compute",
+                    "Attaches a virtio-gpu device (Mesa Venus in the guest, virglrenderer and MoltenVK on your Mac) so Vulkan and GPU compute inside containers reach Apple Metal. Toggling this restarts the engine to apply, then run a container with `--gpus all` on an image that ships Mesa's Venus Vulkan driver.",
+                    isOn: Binding(get: { store.gpuVenusEnabled }, set: { on in Task { await store.setGPUVenus(on) } }),
+                    divider: false,
+                    disabled: !onShared || !store.gpuRuntimeAvailable
+                )
+            }
+            .background(p.bgElevated, in: RoundedRectangle(cornerRadius: 11))
+            .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(p.border))
+            if onShared, store.gpuRuntimeAvailable {
+                Text("Changes apply when the engine restarts (done automatically). Existing containers keep their old settings until recreated.")
+                    .font(.system(size: 11.5)).foregroundStyle(p.text3).lineSpacing(3).padding(.top, 8)
+            }
+            if !onShared {
+                Text("Switch to Dory's shared engine above to use GPU acceleration.")
+                    .font(.system(size: 11.5)).foregroundStyle(p.text3).padding(.top, 8)
+            } else if !store.gpuRuntimeAvailable {
+                Text("Install or bundle the Venus runtime (virglrenderer plus MoltenVK) to enable this. Until then, run a Metal-backed host service such as Ollama, LM Studio, or MLX and reach it from containers at host.dory.internal on ports 11434, 1234, and 18190.")
+                    .font(.system(size: 11.5)).foregroundStyle(p.text3).lineSpacing(3).padding(.top, 8)
+            }
         }
+    }
+
+    private var appleContainerCard: some View {
+        let path = HostTools.appleContainer()
+        let detected = path != nil
+        return VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 10) {
+                Circle().fill(detected ? p.green : p.text3).frame(width: 8, height: 8)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(detected ? "Apple container detected" : "Apple container not found")
+                        .font(.system(size: 13, weight: .semibold)).foregroundStyle(p.text)
+                    Text(detected ? (path ?? "") : "Install Apple's container CLI only if you want to benchmark Apple's per-container VM runtime.")
+                        .font(.system(size: 11.5)).foregroundStyle(p.text3).lineLimit(1)
+                }
+                Spacer(minLength: 0)
+                Text("External")
+                    .font(.system(size: 10.5, weight: .bold))
+                    .foregroundStyle(p.text3)
+                    .padding(.horizontal, 8).padding(.vertical, 3)
+                    .background(p.bgInput, in: Capsule())
+            }
+            Text("Dory's bundled shared VM remains the full-feature engine for Docker CLI compatibility, Compose, Kubernetes, Linux machines, port forwarding, and memory reclamation. Apple's container runtime is a useful comparison target, but it is not yet wired as a feature-equivalent selectable backend.")
+                .font(.system(size: 12.5)).foregroundStyle(p.text2).lineSpacing(4)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(p.bgElevated, in: RoundedRectangle(cornerRadius: 11))
+        .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(p.border))
+    }
+
+    private var gpuAccelerationCard: some View {
+        let available = store.gpuRuntimeAvailable
+        return VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 10) {
+                Circle().fill(available ? p.green : p.text3).frame(width: 8, height: 8)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(available ? "Venus GPU runtime detected" : "Venus GPU runtime not found")
+                        .font(.system(size: 13, weight: .semibold)).foregroundStyle(p.text)
+                    Text(available
+                        ? "A Venus-capable virglrenderer and a MoltenVK ICD are available to the engine."
+                        : "Needs a Venus-capable libvirglrenderer and a MoltenVK ICD, either bundled in the app or installed via the krunkit tap (brew install slp/krunkit/virglrenderer molten-vk libepoxy).")
+                        .font(.system(size: 11.5)).foregroundStyle(p.text3).lineLimit(3)
+                }
+                Spacer(minLength: 0)
+                Text("Experimental")
+                    .font(.system(size: 10.5, weight: .bold))
+                    .foregroundStyle(p.text3)
+                    .padding(.horizontal, 8).padding(.vertical, 3)
+                    .background(p.bgInput, in: Capsule())
+            }
+            Text("Best for running Vulkan or GPU compute (llama.cpp, ComfyUI, ML inference) inside Linux containers against your Mac's GPU. For host-side AI tools like Ollama or LM Studio, containers can already reach them at host.dory.internal on ports 11434, 1234, and 18190 without enabling this.")
+                .font(.system(size: 12.5)).foregroundStyle(p.text2).lineSpacing(4)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(p.bgElevated, in: RoundedRectangle(cornerRadius: 11))
+        .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(p.border))
     }
 
     private func engineDescription(for kind: RuntimeKind) -> String {
@@ -465,6 +571,7 @@ struct SettingsView: View {
         case .sharedVM: "One shared Linux VM on Dory's own engine"
         case .appleContainer: "Apple container — one micro-VM per container"
         case .mock: "Demo data"
+        case .disconnected: "No engine running"
         }
     }
 
@@ -541,6 +648,6 @@ struct SettingsView: View {
         }
     }
     private var aboutText: String {
-        "Dory \(AppInfo.version) (build \(AppInfo.build)). A lighter, memory-efficient alternative to Docker Desktop and OrbStack, built for macOS — free and open source. © 2026 Dory contributors."
+        "Dory \(AppInfo.version) (build \(AppInfo.build)). A self-contained, memory-efficient alternative to Docker Desktop and OrbStack, built for macOS — free and open source. © 2026 Dory contributors."
     }
 }

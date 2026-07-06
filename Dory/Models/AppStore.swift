@@ -56,6 +56,11 @@ final class AppStore {
     var dockerHostCleaned = false
     var dockerHostConflictDismissed = false
     var containerDetailWidth: Double = 372
+    var containerScope: ContainerScope =
+        ContainerScope(rawValue: UserDefaults.standard.string(forKey: "dory.containerScope") ?? "") ?? .all
+    {
+        didSet { UserDefaults.standard.set(containerScope.rawValue, forKey: Self.containerScopeKey) }
+    }
 
     var containers: [Container] = []
     var images: [DockerImage] = []
@@ -103,13 +108,18 @@ final class AppStore {
     private var runtime: any ContainerRuntime
     var runtimeKind: RuntimeKind { runtime.kind }
 
-    init(runtime: any ContainerRuntime = MockRuntime()) {
-        self.runtime = runtime
-        let table = domainTable
-        reverseProxy = DoryReverseProxy { host in table.backend(for: host) }
+    init(runtime: (any ContainerRuntime)? = nil) {
         let env = ProcessInfo.processInfo.environment
         let realLaunch = env["DORY_SECTION"] == nil && env["DORY_APPEARANCE"] == nil
             && env["XCTestConfigurationFilePath"] == nil && env["DORY_UI_TEST"] != "1"
+        // A real launch starts disconnected (empty, engine-off) so no demo data ever leaks into the
+        // UI before the engine connects or when it fails to start. Previews, tests, and an explicit
+        // DORY_RUNTIME=mock keep the mock runtime so their designed data still renders.
+        let usesMockData = env["DORY_RUNTIME"] == "mock" || !realLaunch
+            || env["XCODE_RUNNING_FOR_PREVIEWS"] == "1"
+        self.runtime = runtime ?? (usesMockData ? MockRuntime() : DisconnectedRuntime())
+        let table = domainTable
+        reverseProxy = DoryReverseProxy { host in table.backend(for: host) }
         if realLaunch {
             if let raw = UserDefaults.standard.string(forKey: Self.appearanceKey), let saved = DoryAppearance(rawValue: raw) {
                 appearance = saved
@@ -131,6 +141,7 @@ final class AppStore {
             if let v = UserDefaults.standard.object(forKey: Self.httpsProxyPortKey) as? Int, let p = UInt16(exactly: v), p > 0 { httpsProxyPort = p }
             if let v = UserDefaults.standard.object(forKey: Self.domainsEnabledKey) as? Bool { domainsEnabled = v }
             if let v = UserDefaults.standard.object(forKey: SharedVMProvisioner.Config.rosettaX86Key) as? Bool { rosettaX86Enabled = v }
+            if let v = UserDefaults.standard.object(forKey: SharedVMProvisioner.Config.gpuVenusKey) as? Bool { gpuVenusEnabled = v }
             dockerHostCleaned = DockerHostConflict.hasCleaned
             dockerHostConflictDismissed = UserDefaults.standard.bool(forKey: Self.dockerHostDismissedKey)
             if let width = UserDefaults.standard.object(forKey: Self.containerDetailWidthKey) as? Double, width >= 320 {
@@ -179,6 +190,7 @@ final class AppStore {
     static let openLoginsOnMacKey = "dory.openLoginsOnMac"
     static let dockerHostDismissedKey = "dory.dockerHostDismissed"
     static let containerDetailWidthKey = "dory.containerDetailWidth"
+    static let containerScopeKey = "dory.containerScope"
     static let kubernetesVersionKey = "dory.kubernetesVersion"
     nonisolated static let dockerCompatibleEngineHint = "Start Dory's shared VM in Settings > Docker Engine, or run a local Docker-compatible engine such as Docker Desktop, Colima, Rancher Desktop, Podman, or OrbStack."
     nonisolated static var dockerCompatibleFallbackHint: String {
@@ -198,10 +210,21 @@ final class AppStore {
         return "Dory's shared VM is unavailable (\(reason)). \(dockerCompatibleFallbackHint)"
     }
 
+    nonisolated static func engineFailureStatus() -> String {
+        if let reason = SharedVMProvisioner.engineLogTail() {
+            return "Dory's engine could not start: \(reason)"
+        }
+        return "Dory's engine could not start — see ~/.dory/engine.log"
+    }
+
     func setContainerDetailWidth(_ width: Double) {
         let clamped = min(max(width, 320), 1400)
         containerDetailWidth = clamped
         UserDefaults.standard.set(clamped, forKey: Self.containerDetailWidthKey)
+    }
+
+    func setContainerScope(_ scope: ContainerScope) {
+        containerScope = scope
     }
 
     func setAutoUpdate(_ on: Bool) {
@@ -322,6 +345,11 @@ final class AppStore {
     /// Opt-in: run the Virtualization.framework engine with Rosetta so heavy amd64 images (SQL Server)
     /// run reliably. Trades away dory-hv's memory advantage while on, so it is a manual toggle (#3).
     var rosettaX86Enabled = false
+    /// Opt-in experimental GPU acceleration (virtio-gpu/Venus → virglrenderer → MoltenVK → Metal) for
+    /// Vulkan and AI compute inside containers. Applied on the next engine start; falls back to
+    /// headless when the host Venus runtime is absent, so the Settings toggle gates on availability.
+    var gpuVenusEnabled = false
+    let gpuRuntimeAvailable = SharedVMProvisioner.venusRuntimeAvailable()
 
     @ObservationIgnored private(set) var backendStartRequested = false
     @ObservationIgnored var windowOpenRequested = false
@@ -330,6 +358,12 @@ final class AppStore {
         guard !backendStartRequested else { return }
         backendStartRequested = true
         Task { await connectBackend() }
+    }
+
+    private func adoptSharedRuntime(_ shared: any ContainerRuntime) async {
+        runtime = shared
+        sharedVMStatus = "Running on Dory's engine"
+        await reload()
     }
 
     func connectBackend() async {
@@ -350,12 +384,10 @@ final class AppStore {
                 break
             }
             if let shared = await SharedVMProvisioner.runtime() {
-                runtime = shared
-                sharedVMStatus = "Running on Dory's engine"
-                await reload()
+                await adoptSharedRuntime(shared)
             }
             else {
-                sharedVMStatus = "Dory's engine could not start — see ~/.dory/engine.log"
+                sharedVMStatus = Self.engineFailureStatus()
                 loadState = .engineOff
             }
         default:
@@ -366,10 +398,10 @@ final class AppStore {
             if support.isSupported {
                 sharedVMStatus = "Starting Dory's engine…"
                 if let shared = await SharedVMProvisioner.runtime() {
-                    runtime = shared; sharedVMStatus = "Running on Dory's engine"; await reload()
+                    await adoptSharedRuntime(shared)
                     break
                 }
-                sharedVMStatus = "Dory's engine could not start — see ~/.dory/engine.log"
+                sharedVMStatus = Self.engineFailureStatus()
             } else {
                 sharedVMStatus = Self.sharedVMUnavailableStatus(support)
             }
@@ -379,7 +411,9 @@ final class AppStore {
                 loadState = .engineOff
             }
         }
-        guard isMock || !(loadState == .engineOff && runtimeKind == .mock) else { return }
+        // With no live engine there is nothing to proxy: don't stand up the shim or, worse, redirect
+        // the user's `docker` CLI at a dead socket. Explicit mock mode still wires the shim for tests.
+        guard isMock || loadState != .engineOff else { return }
         // Bring up the Docker-compatible socket before ancillary inventory work. Kubernetes and
         // machine discovery can involve external CLIs; they should never delay `docker` readiness.
         startShim()
@@ -412,6 +446,16 @@ final class AppStore {
         await connectBackend()
     }
 
+    /// Stops and re-provisions the shared engine so engine-level settings (GPU, Rosetta, memory) or a
+    /// newly installed Venus runtime take effect. Running containers are recreated by the daemon on
+    /// the fresh boot; the app itself never needs restarting.
+    func restartEngine() async {
+        guard runtimeKind == .sharedVM || runtimeKind == .disconnected, !isConnecting else { return }
+        sharedVMStatus = "Restarting the engine…"
+        SharedVMProvisioner.stopEngineDetached()
+        await connectBackend()
+    }
+
     /// Toggles the opt-in Rosetta x86 engine and restarts the shared engine so the new mode takes
     /// effect. On → Virtualization.framework + Rosetta (heavy amd64 like SQL Server works, more
     /// memory). Off → dory-hv (the memory advantage). No-op unless the shared engine is active.
@@ -419,8 +463,21 @@ final class AppStore {
         guard on != rosettaX86Enabled else { return }
         rosettaX86Enabled = on
         UserDefaults.standard.set(on, forKey: SharedVMProvisioner.Config.rosettaX86Key)
-        guard runtimeKind == .sharedVM, !isConnecting else { return }
+        guard runtimeKind == .sharedVM || runtimeKind == .disconnected, !isConnecting else { return }
         sharedVMStatus = on ? "Switching to the Rosetta x86 engine…" : "Switching to Dory's engine…"
+        SharedVMProvisioner.stopEngineDetached()
+        await connectBackend()
+    }
+
+    /// Toggles experimental GPU acceleration (virtio-gpu/Venus) and restarts the shared engine so the
+    /// virtio-gpu device is attached or removed at the next boot. No-op unless the shared engine is
+    /// active; the engine falls back to headless if the host Venus runtime turns out to be missing.
+    func setGPUVenus(_ on: Bool) async {
+        guard on != gpuVenusEnabled else { return }
+        gpuVenusEnabled = on
+        UserDefaults.standard.set(on, forKey: SharedVMProvisioner.Config.gpuVenusKey)
+        guard runtimeKind == .sharedVM || runtimeKind == .disconnected, !isConnecting else { return }
+        sharedVMStatus = on ? "Enabling GPU acceleration…" : "Disabling GPU acceleration…"
         SharedVMProvisioner.stopEngineDetached()
         await connectBackend()
     }
@@ -952,14 +1009,7 @@ final class AppStore {
     func startShim() {
         guard shimServer == nil else { return }
         let shim = DockerShim(runtime: runtime)
-        let runtime = self.runtime
-        let rawProxy: ShimHTTPServer.RawProxy?
-        if runtime.supportsRawProxy {
-            rawProxy = { (fd: Int32, initial: Data) in runtime.proxyHijack(requestData: initial, clientFD: fd) }
-        } else {
-            rawProxy = nil
-        }
-        let server = ShimHTTPServer(socketPath: DockerShim.defaultSocketPath, rawProxy: rawProxy) { request in await shim.handle(request) }
+        let server = ShimHTTPServer(socketPath: DockerShim.defaultSocketPath) { request in await shim.handle(request) }
         do {
             try server.start()
             shimServer = server
@@ -1043,10 +1093,7 @@ final class AppStore {
     }
 
     func portURL(for container: Container, port: PublishedPort) -> URL {
-        if !container.domain.isEmpty, let url = URL(string: "https://\(container.domain)") {
-            return url
-        }
-        return URL(string: "http://localhost:\(port.hostPort)") ?? URL(string: "http://localhost")!
+        URL(string: "http://127.0.0.1:\(port.hostPort)") ?? URL(string: "http://127.0.0.1")!
     }
 
     func openPort(_ url: URL) {
@@ -1095,6 +1142,8 @@ final class AppStore {
         filter.isEmpty
             || c.name.localizedCaseInsensitiveContains(filter)
             || c.image.localizedCaseInsensitiveContains(filter)
+            || (c.composeProject?.localizedCaseInsensitiveContains(filter) ?? false)
+            || (c.composeService?.localizedCaseInsensitiveContains(filter) ?? false)
     }
 
     var filteredContainers: [Container] {
@@ -1105,7 +1154,43 @@ final class AppStore {
             case .stopped: stateOK = !c.isRunning
             case .all: stateOK = true
             }
-            return stateOK && matchesSearch(c)
+            let scopeOK: Bool
+            switch containerScope {
+            case .all: scopeOK = true
+            case .standalone: scopeOK = c.composeProject == nil
+            case .compose: scopeOK = c.composeProject != nil
+            }
+            return stateOK && scopeOK && matchesSearch(c)
+        }
+    }
+
+    func containers(inComposeProject name: String) -> [Container] {
+        containers
+            .filter { $0.composeProject == name }
+            .sorted { lhs, rhs in
+                (lhs.composeService ?? lhs.name).localizedCaseInsensitiveCompare(rhs.composeService ?? rhs.name) == .orderedAscending
+            }
+    }
+
+    func composeRunningCount(_ name: String) -> Int {
+        containers(inComposeProject: name).filter(\.isRunning).count
+    }
+
+    func startComposeProject(_ name: String) {
+        for container in containers(inComposeProject: name) where !container.isRunning {
+            toggle(container)
+        }
+    }
+
+    func stopComposeProject(_ name: String) {
+        for container in containers(inComposeProject: name) where container.isRunning {
+            toggle(container)
+        }
+    }
+
+    func restartComposeProject(_ name: String) {
+        for container in containers(inComposeProject: name) where container.isRunning {
+            restart(container)
         }
     }
 
@@ -1198,7 +1283,12 @@ final class AppStore {
     }
 
     func overviewRows(for c: Container) -> [(key: String, value: String)] {
-        [
+        var rows: [(key: String, value: String)] = []
+        if let project = c.composeProject {
+            rows.append(("Compose project", project))
+            rows.append(("Compose service", c.composeService ?? "—"))
+        }
+        rows.append(contentsOf: [
             ("Domain", c.domain),
             ("IP address", c.ipAddress),
             ("Ports", c.ports),
@@ -1206,7 +1296,8 @@ final class AppStore {
             ("Restart policy", c.restartPolicy),
             ("Created", c.created),
             ("Uptime", c.uptime),
-        ]
+        ])
+        return rows
     }
 
     func statMetrics(for c: Container) -> [StatMetric] {
@@ -1401,7 +1492,9 @@ final class AppStore {
             composeProjects[project.name] = project
             composeStatus = "\(project.name): \(project.services.count) services up"
             await reload()
-            section = .compose
+            containerScope = .compose
+            section = .containers
+            selectedContainerID = containers(inComposeProject: project.name).first?.id ?? selectedContainerID
         } catch {
             actionError = "Compose up failed: \(error)"; composeStatus = ""
         }

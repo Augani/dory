@@ -25,20 +25,28 @@ enum SharedVMProvisioner {
         /// Rosetta) instead of dory-hv, so heavy amd64 images like SQL Server run reliably (proven).
         /// Trades away dory-hv's memory advantage while on, so it is a manual Settings toggle.
         var rosettaX86: Bool
+        /// Opt-in experimental GPU acceleration: attaches a virtio-gpu/Venus device backed by
+        /// virglrenderer + MoltenVK so Vulkan and compute workloads inside containers reach Apple
+        /// Metal. Fails closed to headless when the host Venus runtime is missing, so it is a manual
+        /// Settings toggle and takes effect on the next engine start.
+        var gpuVenus: Bool
 
         nonisolated static let rosettaX86Key = "dory.rosettaX86Enabled"
+        nonisolated static let gpuVenusKey = "dory.experimentalGPU"
         static let rosettaEngineMemoryMB = 3072
 
         nonisolated init(
             cpus: Int = 4,
             memory: String = "\(SharedVMProvisioner.defaultEngineMemoryMB)M",
             headroomMB: Int = SharedVMProvisioner.defaultEngineHeadroomMB,
-            rosettaX86: Bool = UserDefaults.standard.bool(forKey: Config.rosettaX86Key)
+            rosettaX86: Bool = UserDefaults.standard.bool(forKey: Config.rosettaX86Key),
+            gpuVenus: Bool = UserDefaults.standard.bool(forKey: Config.gpuVenusKey)
         ) {
             self.cpus = cpus
             self.memory = memory
             self.headroomMB = headroomMB
             self.rosettaX86 = rosettaX86
+            self.gpuVenus = gpuVenus
         }
 
         var memoryMB: Int {
@@ -50,7 +58,64 @@ enum SharedVMProvisioner {
         case unsupportedHost(String)
         case engineUnavailable
         case engineStartFailed(String)
-        case engineUnreachable
+        case engineUnreachable(String?)
+    }
+
+    /// The last meaningful line the engine logged before it failed, used to turn the generic
+    /// "could not start" status into an actionable reason (an unknown flag, a stall after boot).
+    nonisolated static func engineLogTail() -> String? {
+        guard let raw = try? String(contentsOfFile: helperLogPath, encoding: .utf8) else { return nil }
+        let lines = raw
+            .split(separator: "\n", omittingEmptySubsequences: true)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty && !$0.hasPrefix("---") }
+        guard var last = lines.last else { return nil }
+        for prefix in ["dory-engine: ", "dory-hv: "] where last.hasPrefix(prefix) {
+            last = String(last.dropFirst(prefix.count))
+        }
+        // A booted-but-unreachable engine's last line is the VM IP; name that as a stall so the
+        // status reads as a diagnosis rather than a stray address.
+        if last.hasPrefix("vm ip ") {
+            return "engine started but never became reachable (stalled after boot)"
+        }
+        return last
+    }
+
+    /// Whether the host Venus GPU runtime (a virglrenderer dylib plus a MoltenVK ICD) is present,
+    /// bundled in the app or installed via Homebrew. Enabling GPU acceleration without it makes the
+    /// engine fall back to headless, so the Settings toggle gates on this to stay honest.
+    static func venusRuntimeAvailable(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Bool {
+        let fileManager = FileManager.default
+        let rendererCandidates = [
+            environment["DORY_VIRGLRENDERER_PATH"],
+            environment["DORY_VIRGLRENDERER"],
+            Bundle.main.privateFrameworksPath.map { "\($0)/libvirglrenderer.dylib" },
+            Bundle.main.resourcePath.map { "\($0)/libvirglrenderer.dylib" },
+            "/opt/homebrew/lib/libvirglrenderer.dylib",
+            "/usr/local/lib/libvirglrenderer.dylib",
+        ].compactMap { $0 }
+        let icdCandidates = [
+            environment["DORY_MOLTENVK_ICD"],
+            Bundle.main.resourcePath.map { "\($0)/vulkan/icd.d/MoltenVK_icd.json" },
+            "/opt/homebrew/etc/vulkan/icd.d/MoltenVK_icd.json",
+            "/opt/homebrew/share/vulkan/icd.d/MoltenVK_icd.json",
+            "/usr/local/etc/vulkan/icd.d/MoltenVK_icd.json",
+            "/usr/local/share/vulkan/icd.d/MoltenVK_icd.json",
+        ].compactMap { $0 }
+        guard icdCandidates.contains(where: { fileManager.fileExists(atPath: $0) }) else { return false }
+        // The Venus path exposes host-visible blobs by hv_vm_mapping the pointer virglrenderer returns
+        // from virgl_renderer_resource_map (the libkrun/krunkit model), so probe the renderer actually
+        // exports a blob-map entrypoint before enabling the toggle.
+        for path in rendererCandidates where fileManager.fileExists(atPath: path) {
+            guard let handle = dlopen(path, RTLD_LAZY | RTLD_LOCAL) else { continue }
+            let hasBlobMap = dlsym(handle, "virgl_renderer_resource_map") != nil
+                || dlsym(handle, "virgl_renderer_resource_get_map_ptr") != nil
+            dlclose(handle)
+            if hasBlobMap { return true }
+        }
+        return false
     }
 
     static func hostSupport(
@@ -118,9 +183,12 @@ enum SharedVMProvisioner {
         guard evaluation.support.isSupported else {
             throw ProvisionError.unsupportedHost(evaluation.support.reason)
         }
-        let useRosetta = config.rosettaX86 && MacHostPlatform.current().isAppleSilicon
-        if useRosetta || evaluation.tier == .vzShared {
-            guard let socket = try await provisionWithVZEngine(config: config, rosetta: useRosetta) else {
+        // The Apple-Virtualization (VZ) engine is retired as an x86 path: it drives Apple's
+        // ContainerManager, whose guest handshake never completes against Dory's own guest, so it only
+        // stalls. x86/amd64 images now run on our own dory-hv engine via qemu binfmt (config.rosettaX86).
+        // The VZ tier survives solely for Intel hosts that ship without the dory-hv assets.
+        if evaluation.tier == .vzShared {
+            guard let socket = try await provisionWithVZEngine(config: config, rosetta: false) else {
                 throw ProvisionError.engineUnavailable
             }
             return socket
@@ -134,7 +202,7 @@ enum SharedVMProvisioner {
     /// The Virtualization.framework engine. On Apple silicon it can opt into Rosetta x86
     /// translation; on Intel it runs the amd64 guest natively as the first shared-engine tier.
     /// Publishes to the same `engine.sock`, so the shim and docker context are unchanged.
-    private static func provisionWithVZEngine(config: Config, rosetta: Bool) async throws -> String? {
+    private static func provisionWithVZEngine(config: Config, rosetta: Bool, attempts: Int = 240) async throws -> String? {
         guard let helper = vmHelperBinary(),
               let kernel = await vmKernelPath(),
               let initfs = await vmInitfsPath() else { return nil }
@@ -178,9 +246,9 @@ enum SharedVMProvisioner {
             throw ProvisionError.engineStartFailed("\(error)")
         }
 
-        guard await waitForReachable(attempts: 240) else {
+        guard await waitForReachable(attempts: attempts, process: process) else {
             if process.isRunning { process.terminate() }
-            throw ProvisionError.engineUnreachable
+            throw ProvisionError.engineUnreachable(engineLogTail())
         }
         return socketPath
     }
@@ -195,7 +263,8 @@ enum SharedVMProvisioner {
     /// and waits for the docker socket.
     private static func provisionWithHVEngine(config: Config) async throws -> String? {
         guard let helper = hvHelperBinary(), let gvproxy = gvproxyBinary() else { return nil }
-        guard let kernel = await hvKernelPath() else { return nil }
+        guard let kernel = await hvKernelPath(gpu: config.gpuVenus || ProcessInfo.processInfo.environment["DORY_EXPERIMENTAL_GPU"] == "venus") else { return nil }
+        installGuestAgentForHVEngine()
 
         if await isReachable(), helperProcessIsAlive() {
             return socketPath
@@ -233,9 +302,9 @@ enum SharedVMProvisioner {
             throw ProvisionError.engineStartFailed("\(error)")
         }
 
-        guard await waitForReachable(attempts: 240) else {
+        guard await waitForReachable(attempts: 240, process: process) else {
             if process.isRunning { process.terminate() }
-            throw ProvisionError.engineUnreachable
+            throw ProvisionError.engineUnreachable(engineLogTail())
         }
         return socketPath
     }
@@ -253,6 +322,14 @@ enum SharedVMProvisioner {
         if let rootfs {
             arguments.append(contentsOf: ["--rootfs", rootfs])
         }
+        if config.gpuVenus || ProcessInfo.processInfo.environment["DORY_EXPERIMENTAL_GPU"] == "venus" {
+            arguments.append(contentsOf: ["--gpu", "venus"])
+        }
+        // Opt-in x86/amd64 emulation: the guest registers a qemu binfmt handler so `--platform
+        // linux/amd64` images run on the arm64 dory-hv engine. Off by default to keep the guest lean.
+        if config.rosettaX86 {
+            arguments.append("--amd64")
+        }
         // Share the user's home at its identical guest path so `-v ~/project:/app` bind mounts
         // resolve with no configuration — the OrbStack "just works" default. Plain virtio-fs (no
         // DAX): matches OrbStack on realistic workloads with none of DAX's caveats. `:safe` hides
@@ -263,7 +340,15 @@ enum SharedVMProvisioner {
         return arguments
     }
 
-    private static func hvKernelPath() async -> String? {
+    private static func hvKernelPath(gpu: Bool = false) async -> String? {
+        if let override = ProcessInfo.processInfo.environment["DORY_HV_KERNEL"],
+           !override.isEmpty, FileManager.default.fileExists(atPath: override) {
+            return override
+        }
+        if gpu,
+           let bundled = await prepareCompressedResource(resource: hvGPUKernelResourceName(), outputName: hvGPUKernelOutputName()) {
+            return bundled
+        }
         if let bundled = await prepareCompressedResource(resource: hvKernelResourceName(), outputName: hvKernelOutputName()) {
             return bundled
         }
@@ -371,6 +456,14 @@ enum SharedVMProvisioner {
         "dory-hv-kernel-\(arch)"
     }
 
+    nonisolated static func hvGPUKernelResourceName(arch: String = engineArch) -> String {
+        "dory-hv-kernel-gpu-\(arch)"
+    }
+
+    nonisolated static func hvGPUKernelOutputName(arch: String = engineArch) -> String {
+        "dory-hv-kernel-gpu-\(arch)"
+    }
+
     nonisolated static func vmInitfsResourceName(arch: String = engineArch) -> String {
         "dory-vm-initfs-\(arch).ext4"
     }
@@ -397,6 +490,54 @@ enum SharedVMProvisioner {
             "/usr/local/bin/gvproxy",
         ]
         return candidates.first { FileManager.default.isExecutableFile(atPath: $0) }
+    }
+
+    private static func installGuestAgentForHVEngine() {
+        guard let source = guestAgentSourceBinary() else { return }
+        let directory = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".dory/bin")
+        let destination = directory.appendingPathComponent(guestAgentInstallName())
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            if shouldRefreshAsset(source: URL(fileURLWithPath: source), output: destination) {
+                let temporary = destination.appendingPathExtension("partial")
+                try? FileManager.default.removeItem(at: temporary)
+                try FileManager.default.copyItem(atPath: source, toPath: temporary.path)
+                try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: temporary.path)
+                try? FileManager.default.removeItem(at: destination)
+                try FileManager.default.moveItem(at: temporary, to: destination)
+            }
+            try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: destination.path)
+        } catch {
+            try? FileManager.default.removeItem(at: destination.appendingPathExtension("partial"))
+        }
+    }
+
+    nonisolated static func guestAgentInstallName(arch: String = engineArch) -> String {
+        "dory-agent-linux-\(arch)"
+    }
+
+    private static func guestAgentSourceBinary() -> String? {
+        let environment = ProcessInfo.processInfo.environment
+        if let override = environment["DORY_GUEST_AGENT"],
+           !override.isEmpty,
+           FileManager.default.fileExists(atPath: override) {
+            return override
+        }
+        let installName = guestAgentInstallName()
+        if let resource = Bundle.main.url(forResource: installName, withExtension: nil),
+           FileManager.default.fileExists(atPath: resource.path) {
+            return resource.path
+        }
+        if let helper = bundledHelperPath(named: installName),
+           FileManager.default.fileExists(atPath: helper) {
+            return helper
+        }
+        let cwd = FileManager.default.currentDirectoryPath
+        let candidates = [
+            "\(cwd)/guest/out/dory-agent-\(engineArch)",
+            "\(cwd)/guest/out/dory-agent",
+        ]
+        return candidates.first { FileManager.default.fileExists(atPath: $0) }
     }
 
     /// Register the non-native CPU architecture in the shared VM. On Apple silicon this installs
@@ -454,9 +595,16 @@ enum SharedVMProvisioner {
         return parts.allSatisfy { Int($0).map { (0...255).contains($0) } ?? false }
     }
 
-    private static func waitForReachable(attempts: Int = 60) async -> Bool {
+    /// Polls the engine's docker socket until it answers, giving up after `attempts` half-second
+    /// ticks. When a `process` is supplied, a dead engine short-circuits the wait: if the helper
+    /// exits (a rejected flag, a crash, an AMFI SIGKILL) there is no socket to wait for, so we fail
+    /// in a tick instead of polling a dead socket for the full timeout window.
+    private static func waitForReachable(attempts: Int = 60, process: Process? = nil) async -> Bool {
         for _ in 0..<attempts {
             if await isReachable() { return true }
+            if let process, !process.isRunning {
+                return await isReachable()
+            }
             try? await Task.sleep(for: .milliseconds(500))
         }
         return false
@@ -490,10 +638,17 @@ enum SharedVMProvisioner {
 
     private static func shouldRefreshAsset(source: URL, output: URL) -> Bool {
         guard FileManager.default.fileExists(atPath: output.path) else { return true }
-        let sourceDate = try? source.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
-        let outputDate = try? output.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
-        guard let sourceDate, let outputDate else { return false }
-        return outputDate < sourceDate
+        let sourceValues = try? source.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
+        let outputValues = try? output.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
+        if let sourceSize = sourceValues?.fileSize, let outputSize = outputValues?.fileSize,
+           sourceSize != outputSize {
+            return true
+        }
+        if let sourceDate = sourceValues?.contentModificationDate,
+           let outputDate = outputValues?.contentModificationDate {
+            return outputDate < sourceDate
+        }
+        return false
     }
 
     /// A vmlinux left by a prior Apple `container` install, used only as a dev convenience so the
