@@ -253,5 +253,6 @@ private final class LoopbackVsockConnection: VsockConnection, @unchecked Sendabl
 
     func write(_ bytes: [UInt8]) throws { lock.lock(); written.append(contentsOf: bytes); lock.unlock() }
     func close() { lock.lock(); closed = true; lock.unlock() }
+    func shutdownSend() {}
     var isPeerClosed: Bool { lock.lock(); defer { lock.unlock() }; return closed || (finished && inbound.isEmpty) }
 }

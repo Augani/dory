@@ -136,6 +136,7 @@ import Testing
         }
 
         func close() { closed = true }
+        func shutdownSend() {}
 
         private(set) var closed = false
         var isPeerClosed: Bool { closed }

@@ -8,6 +8,7 @@ const agentPort = 1024
 
 func main() {
 	startHostAIBridge()
+	startDockerProxy()
 	listener, err := listenVsock(agentPort)
 	if err != nil {
 		log.Printf("rpc vsock listener disabled: %v", err)

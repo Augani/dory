@@ -118,6 +118,10 @@ public protocol VsockConnection: AnyObject {
     func read(into buffer: UnsafeMutableRawBufferPointer) throws -> Int
     func write(_ bytes: [UInt8]) throws
     func close()
+    /// Half-close: signals the peer that this side is done sending (SHUT_WR) while the connection
+    /// stays open for the peer's remaining data. Bridges relaying a client's request-EOF must use
+    /// this, not `close()` — a full close truncates the response mid-stream.
+    func shutdownSend()
     /// True once the peer has shut the connection down (or it was reset). `read` returns 0 both when
     /// no bytes are buffered yet and after the peer is gone, so a long-lived reader (e.g. the USB
     /// bridge) needs this to tell "idle" from EOF — without it a claimed device can never be released
@@ -128,6 +132,10 @@ public protocol VsockConnection: AnyObject {
 public enum VsockPorts {
     public static let agent: UInt32 = 1024
     public static let usbip: UInt32 = 1025
+    /// The guest agent's docker-socket proxy: each host connection is piped to /var/run/docker.sock
+    /// inside the engine VM with full half-close fidelity (the gvproxy unix forward this replaces
+    /// tears the stream down on a client SHUT_WR, which is how `docker run` attaches output).
+    public static let docker: UInt32 = 1026
 }
 
 public final class VirtioVsock: VirtioDeviceBackend {
@@ -172,8 +180,8 @@ public final class VirtioVsock: VirtioDeviceBackend {
         let (key, connection) = withLock { () -> (ConnectionKey, InProcessConnection) in
             let hostPort = allocateHostPortLocked()
             let key = ConnectionKey(guestPort: guestPort, hostPort: hostPort)
-            let connection = InProcessConnection(key: key) { [weak self] operation, payload, forwardCount in
-                self?.enqueueHostPacket(key: key, operation: operation, payload: payload, forwardCount: forwardCount)
+            let connection = InProcessConnection(key: key) { [weak self] operation, payload, forwardCount, flags in
+                self?.enqueueHostPacket(key: key, operation: operation, payload: payload, forwardCount: forwardCount, flags: flags)
             } onClose: { [weak self] key in
                 self?.removeConnection(key: key)
             }
@@ -250,14 +258,15 @@ public final class VirtioVsock: VirtioDeviceBackend {
                 return [header.reply(operation: .reset).encoded()]
             }
             let connection = withLock { () -> InProcessConnection in
-                let connection = InProcessConnection(key: key) { [weak self] operation, payload, forwardCount in
-                    self?.enqueueHostPacket(key: key, operation: operation, payload: payload, forwardCount: forwardCount)
+                let connection = InProcessConnection(key: key) { [weak self] operation, payload, forwardCount, flags in
+                    self?.enqueueHostPacket(key: key, operation: operation, payload: payload, forwardCount: forwardCount, flags: flags)
                 } onClose: { [weak self] key in
                     self?.removeConnection(key: key)
                 }
                 connections[key] = connection
                 return connection
             }
+            connection.updatePeerCredit(bufferAllocation: header.bufferAllocation, forwardCount: header.forwardCount)
             listener(connection)
             return [header.reply(operation: .response).encoded()]
         case .readWrite:
@@ -265,6 +274,7 @@ public final class VirtioVsock: VirtioDeviceBackend {
             guard let connection, UInt32(payload.count) <= header.bufferAllocation else {
                 return [header.reply(operation: .reset).encoded()]
             }
+            connection.updatePeerCredit(bufferAllocation: header.bufferAllocation, forwardCount: header.forwardCount)
             connection.receive(payload)
             return [header.reply(operation: .creditUpdate, forwardCount: connection.forwardCount).encoded()]
         case .shutdown:
@@ -272,7 +282,9 @@ public final class VirtioVsock: VirtioDeviceBackend {
             // done sending but can still receive, so keep the connection alive for the host to finish
             // streaming its reply and only mark inbound EOF. Any other shutdown tears the connection down.
             if header.flags == VsockShutdown.send {
-                withLock { connections[key] }?.markPeerSendClosed()
+                let connection = withLock { connections[key] }
+                connection?.updatePeerCredit(bufferAllocation: header.bufferAllocation, forwardCount: header.forwardCount)
+                connection?.markPeerSendClosed()
             } else {
                 withLock { connections.removeValue(forKey: key) }?.close()
             }
@@ -283,8 +295,12 @@ public final class VirtioVsock: VirtioDeviceBackend {
         case .creditRequest:
             return [header.reply(operation: .creditUpdate).encoded()]
         case .response:
+            withLock { connections[key] }?
+                .updatePeerCredit(bufferAllocation: header.bufferAllocation, forwardCount: header.forwardCount)
             return []
         case .creditUpdate:
+            withLock { connections[key] }?
+                .updatePeerCredit(bufferAllocation: header.bufferAllocation, forwardCount: header.forwardCount)
             return []
         case .invalid:
             return []
@@ -300,7 +316,8 @@ public final class VirtioVsock: VirtioDeviceBackend {
         key: ConnectionKey,
         operation: VirtioVsockHeader.Operation,
         payload: [UInt8] = [],
-        forwardCount: UInt32 = 0
+        forwardCount: UInt32 = 0,
+        flags: UInt32 = 0
     ) {
         let header = VirtioVsockHeader(
             sourceCID: 2,
@@ -309,6 +326,7 @@ public final class VirtioVsock: VirtioDeviceBackend {
             destinationPort: key.guestPort,
             length: UInt32(payload.count),
             operation: operation,
+            flags: flags,
             forwardCount: forwardCount
         )
         let transport = withLock { () -> VirtioMMIOTransport? in
@@ -329,7 +347,7 @@ public final class VirtioVsock: VirtioDeviceBackend {
 
     private final class InProcessConnection: VsockConnection {
         let key: ConnectionKey
-        private let send: (VirtioVsockHeader.Operation, [UInt8], UInt32) -> Void
+        private let send: (VirtioVsockHeader.Operation, [UInt8], UInt32, UInt32) -> Void
         private let onClose: (ConnectionKey) -> Void
         // `receive` runs on the vsock queue while `read`/`close` may run on a bridge's own thread, so
         // inbound + isClosed are guarded. Drained bytes still count toward forwardCount (credit), so
@@ -339,6 +357,17 @@ public final class VirtioVsock: VirtioDeviceBackend {
         private var forwardCountValue: UInt32 = 0
         private var isClosed = false
         private var peerSendClosed = false
+        private var hostSendClosed = false
+        // Peer credit: how much the guest socket can still absorb. Writes block while the in-flight
+        // window is exhausted — without this a fast host writer (a docker build context upload)
+        // overruns the guest's vsock buffer and the kernel drops the payload mid-stream. The values
+        // refresh from every guest packet header; 256 KiB matches the kernel's default buf_alloc as
+        // the pre-handshake estimate.
+        private var peerBufferAllocation: UInt32 = 256 * 1024
+        private var peerForwardCount: UInt32 = 0
+        private var transmittedCount: UInt32 = 0
+
+        private static let writeChunk = 32 * 1024
 
         var forwardCount: UInt32 { lock.lock(); defer { lock.unlock() }; return forwardCountValue }
         // True once the guest can no longer send (either a full close or a SHUT_WR half-close). Readers
@@ -347,7 +376,7 @@ public final class VirtioVsock: VirtioDeviceBackend {
 
         init(
             key: ConnectionKey,
-            send: @escaping (VirtioVsockHeader.Operation, [UInt8], UInt32) -> Void,
+            send: @escaping (VirtioVsockHeader.Operation, [UInt8], UInt32, UInt32) -> Void,
             onClose: @escaping (ConnectionKey) -> Void
         ) {
             self.key = key
@@ -374,17 +403,59 @@ public final class VirtioVsock: VirtioDeviceBackend {
             return count
         }
 
-        func write(_ bytes: [UInt8]) throws {
+        func updatePeerCredit(bufferAllocation: UInt32, forwardCount: UInt32) {
             lock.lock()
-            let closed = isClosed
-            let credit = forwardCountValue
+            if bufferAllocation > 0 { peerBufferAllocation = bufferAllocation }
+            peerForwardCount = forwardCount
             lock.unlock()
-            guard !closed else { return }
-            send(.readWrite, bytes, credit)
+        }
+
+        func write(_ bytes: [UInt8]) throws {
+            var offset = 0
+            while offset < bytes.count {
+                let chunk = min(Self.writeChunk, bytes.count - offset)
+                guard waitForCredit(chunk: UInt32(chunk)) else { return }
+                lock.lock()
+                let credit = forwardCountValue
+                transmittedCount &+= UInt32(chunk)
+                lock.unlock()
+                send(.readWrite, Array(bytes[offset..<(offset + chunk)]), credit, 0)
+                offset += chunk
+            }
+        }
+
+        /// Blocks until the peer's receive window admits `chunk` more bytes, polling with backoff the
+        /// same way bridge readers do. Returns false when the connection is no longer writable.
+        private func waitForCredit(chunk: UInt32) -> Bool {
+            var pollInterval: useconds_t = 500
+            let maxPollInterval: useconds_t = 16_000
+            while true {
+                lock.lock()
+                let writable = !isClosed && !hostSendClosed
+                let inFlight = transmittedCount &- peerForwardCount
+                let allowance = peerBufferAllocation
+                lock.unlock()
+                guard writable else { return false }
+                if inFlight &+ chunk <= allowance { return true }
+                usleep(pollInterval)
+                pollInterval = min(pollInterval * 2, maxPollInterval)
+            }
         }
 
         func markPeerSendClosed() {
             lock.lock(); peerSendClosed = true; lock.unlock()
+        }
+
+        /// Host-side half-close: tells the guest this end is done sending (VIRTIO_VSOCK_SHUTDOWN_SEND)
+        /// while its remaining data keeps flowing back. The relay for `docker run`'s attach depends on
+        /// this — the CLI half-closes as soon as the request is sent and then reads the whole stream.
+        func shutdownSend() {
+            lock.lock()
+            if isClosed || hostSendClosed { lock.unlock(); return }
+            hostSendClosed = true
+            let credit = forwardCountValue
+            lock.unlock()
+            send(.shutdown, [], credit, VsockShutdown.send)
         }
 
         func close() {
@@ -393,7 +464,7 @@ public final class VirtioVsock: VirtioDeviceBackend {
             isClosed = true
             let credit = forwardCountValue
             lock.unlock()
-            send(.shutdown, [], credit)
+            send(.shutdown, [], credit, VsockShutdown.receive | VsockShutdown.send)
             onClose(key)
         }
     }

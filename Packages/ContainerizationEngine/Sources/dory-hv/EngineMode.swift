@@ -264,7 +264,10 @@ enum EngineMode {
         }
 
         try machine.loadBootPayload()
-        publishForward(local: configuration.engineSocket, guestPort: 2375, apiSocket: apiSocket, label: "docker socket")
+        // engine.sock is served by dory-hv itself and relayed to guest dockerd over vsock: the
+        // gvproxy unix forward it replaces tears the stream down on a client half-close, which the
+        // docker CLI does right after every attach/exec request — so `docker run` output was lost.
+        DockerSocketBridge(socketPath: configuration.engineSocket, log: { note($0) }).attach(to: vsock)
         let shutdownSocket = state + "/shutdown.sock"
         publishForward(local: shutdownSocket, guestPort: 2377, apiSocket: apiSocket, label: "shutdown channel")
         installGracefulShutdown(shutdownSocket: shutdownSocket)
@@ -457,12 +460,16 @@ enum EngineMode {
     }
 
     private static func guestAgentStartCommand(shares: [VirtioFSShareConfiguration]) -> String {
-        var paths = ["/usr/bin/dory-agent"]
+        // The share copy comes first: the app refreshes ~/.dory/bin/dory-agent-* from its bundle on
+        // every launch, so preferring it over the rootfs-baked /usr/bin/dory-agent means agent fixes
+        // ship with app updates instead of waiting for a re-bundled engine rootfs.
+        var paths = [String]()
         for share in shares {
             let root = share.guestMountPoint ?? "/mnt/dory/\(share.tag)"
             paths.append("\(root)/.dory/bin/dory-agent-linux-\(hostLinuxArch())")
             paths.append("\(root)/.dory/bin/dory-agent")
         }
+        paths.append("/usr/bin/dory-agent")
         let quotedPaths = paths.map(shellQuote).joined(separator: " ")
         let ports = HostAIBridge.defaultPorts.map(String.init).joined(separator: ",")
         return "for p in \(quotedPaths); do if [ -r \"$p\" ] && ! pgrep -x dory-agent >/dev/null 2>&1; then cp \"$p\" /run/dory-agent && chmod 0755 /run/dory-agent && DORY_HOST_AI_BRIDGE_PORTS=\(shellQuote(ports)) /run/dory-agent >/var/log/dory-agent.log 2>&1 & break; fi; done; true"

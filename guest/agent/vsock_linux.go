@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -82,6 +83,10 @@ func readFullFD(fd int, buffer []byte) error {
 	return nil
 }
 
+// listenVsock returns a hand-rolled AF_VSOCK listener. Go's net.FileListener rejects vsock fds
+// with "protocol not supported" (it cannot parse the sockaddr family), so the accept loop runs on
+// the raw descriptor; accepted fds are set non-blocking before os.NewFile wraps them, which
+// registers them with the runtime poller for normal blocking-read/write goroutine semantics.
 func listenVsock(port uint32) (net.Listener, error) {
 	fd, err := unix.Socket(unix.AF_VSOCK, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0)
 	if err != nil {
@@ -96,7 +101,64 @@ func listenVsock(port uint32) (net.Listener, error) {
 		unix.Close(fd)
 		return nil, err
 	}
-	file := os.NewFile(uintptr(fd), "dory-agent-vsock")
-	defer file.Close()
-	return net.FileListener(file)
+	return &vsockListener{fd: fd}, nil
 }
+
+type vsockListener struct {
+	fd int
+}
+
+func (l *vsockListener) Accept() (net.Conn, error) {
+	for {
+		nfd, _, err := unix.Accept4(l.fd, unix.SOCK_CLOEXEC)
+		if err != nil {
+			if err == unix.EINTR {
+				continue
+			}
+			return nil, err
+		}
+		if err := unix.SetNonblock(nfd, true); err != nil {
+			unix.Close(nfd)
+			return nil, err
+		}
+		return &vsockConn{file: os.NewFile(uintptr(nfd), "dory-agent-vsock-conn")}, nil
+	}
+}
+
+func (l *vsockListener) Close() error   { return unix.Close(l.fd) }
+func (l *vsockListener) Addr() net.Addr { return vsockAddr{} }
+
+type vsockAddr struct{}
+
+func (vsockAddr) Network() string { return "vsock" }
+func (vsockAddr) String() string  { return "vsock" }
+
+type vsockConn struct {
+	file *os.File
+}
+
+func (c *vsockConn) Read(b []byte) (int, error)  { return c.file.Read(b) }
+func (c *vsockConn) Write(b []byte) (int, error) { return c.file.Write(b) }
+func (c *vsockConn) Close() error                { return c.file.Close() }
+
+// CloseWrite half-closes the send side (SHUT_WR) so the peer sees EOF while its own data keeps
+// flowing back — the docker proxy relies on this to relay request-EOF without truncating replies.
+func (c *vsockConn) CloseWrite() error {
+	raw, err := c.file.SyscallConn()
+	if err != nil {
+		return err
+	}
+	var shutdownErr error
+	if controlErr := raw.Control(func(fd uintptr) {
+		shutdownErr = unix.Shutdown(int(fd), unix.SHUT_WR)
+	}); controlErr != nil {
+		return controlErr
+	}
+	return shutdownErr
+}
+
+func (c *vsockConn) LocalAddr() net.Addr                { return vsockAddr{} }
+func (c *vsockConn) RemoteAddr() net.Addr               { return vsockAddr{} }
+func (c *vsockConn) SetDeadline(t time.Time) error      { return c.file.SetDeadline(t) }
+func (c *vsockConn) SetReadDeadline(t time.Time) error  { return c.file.SetReadDeadline(t) }
+func (c *vsockConn) SetWriteDeadline(t time.Time) error { return c.file.SetWriteDeadline(t) }
