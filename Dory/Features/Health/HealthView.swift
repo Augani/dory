@@ -12,6 +12,7 @@ struct HealthView: View {
                         cliMissingCard
                     } else {
                         summaryCard(snapshot)
+                        recoverySection
                         if let idle = snapshot.idle {
                             autoIdleCard(idle)
                         }
@@ -86,6 +87,46 @@ struct HealthView: View {
             }
         }
         .cardStyle(p)
+    }
+
+    // MARK: Recovery
+
+    private var recoveryActions: [(target: String, title: String)] {
+        [
+            ("socket", "Rebuild socket"),
+            ("context", "Fix docker context"),
+            ("dns", "Flush DNS"),
+            ("routes", "Refresh routes"),
+            ("domains", "Refresh domains"),
+            ("ports", "Reforward ports"),
+            ("dockerd", "Restart dockerd"),
+            ("guest-agent", "Wake guest agent"),
+        ]
+    }
+
+    private var recoverySection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            groupLabel("RECOVERY ACTIONS")
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 158), spacing: 8)], alignment: .leading, spacing: 8) {
+                ForEach(recoveryActions, id: \.target) { action in
+                    Button {
+                        Task { await store.runRepairTarget(action.target) }
+                    } label: {
+                        Text(action.title)
+                            .font(.system(size: 12.5, weight: .semibold)).foregroundStyle(p.text)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 8)
+                            .background(p.bgInput, in: RoundedRectangle(cornerRadius: 8))
+                            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(p.border))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(store.healthActionInFlight)
+                    .accessibilityIdentifier("recover-\(action.target)")
+                }
+            }
+            Text("Each action repairs one subsystem in place — no VM restart, no lost containers or volumes.")
+                .font(.system(size: 11)).foregroundStyle(p.text3)
+        }
     }
 
     private func statusChip(_ count: Int, _ status: HealthStatus) -> some View {

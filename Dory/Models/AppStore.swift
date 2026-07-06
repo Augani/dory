@@ -1220,11 +1220,17 @@ final class AppStore {
     }
 
     func runHealthRepair() async {
+        await runRepairTarget("all")
+    }
+
+    func runRepairTarget(_ target: String) async {
         guard !healthActionInFlight else { return }
         healthActionInFlight = true
         healthActionError = nil
-        let result = await HealthDiagnostics.runControl(["repair", "all", "--apply"])
-        if !result.ok { healthActionError = result.output.isEmpty ? "Repair failed" : result.output }
+        let result = await HealthDiagnostics.runControl(["repair", target, "--apply"])
+        if !result.ok {
+            healthActionError = result.output.isEmpty ? "Repair \(target) failed" : result.output
+        }
         healthActionInFlight = false
         await loadHealth()
     }
