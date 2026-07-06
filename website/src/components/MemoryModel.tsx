@@ -318,7 +318,7 @@ export function MemoryModel() {
           <b>122 MB</b> total in Dory's shared VM versus about <b>574 MB</b> as per-container VMs on
           the same machine (
           <a
-            href="https://github.com/Augani/dory/blob/main/website/public/research/benchmark-methodology.md"
+            href="https://github.com/Augani/dory/blob/main/scripts/benchmark.sh"
             className="link"
           >
             methodology

@@ -40,7 +40,7 @@ export function Footprint() {
         <Reveal as="p" className="compare-note">
           Don't take our word for anything. The{' '}
           <a
-            href="https://github.com/Augani/dory/blob/main/website/public/research/benchmark-methodology.md"
+            href="https://github.com/Augani/dory/blob/main/scripts/benchmark.sh"
             className="link"
           >
             benchmark methodology

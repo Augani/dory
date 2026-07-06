@@ -30,7 +30,7 @@
   container, and memory is genuinely handed back to macOS as workloads idle (free-page reporting,
   not a balloon that never deflates). Measured **~4.7× less idle memory** than per-container VMs
   (2 containers: ~122 MB vs ~574 MB), and the gap widens with every container you add
-  ([methodology](website/public/research/benchmark-methodology.md)).
+  (measure it yourself: [`scripts/benchmark.sh`](scripts/benchmark.sh)).
 - **Small and silent, permanently.** A native app with ~0% idle CPU. No indexers, no
   phone-home, no fans. That's a design constraint, not a version note.
 - **Free for everyone, forever.** No per-seat license, no "commercial use" tier, no account,

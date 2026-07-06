@@ -76,3 +76,6 @@ guest/agent/agent
 # Built GitHub Pages site (CI builds website/ and deploys the output directly) plus
 # local-only planning notes. Nothing under docs/ is tracked.
 docs/
+
+# Internal engine notes (not published)
+Packages/ContainerizationEngine/Docs/
