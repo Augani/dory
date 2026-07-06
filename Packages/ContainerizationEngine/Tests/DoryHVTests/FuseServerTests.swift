@@ -136,6 +136,25 @@ struct FuseServerTests {
         #expect(!FileManager.default.fileExists(atPath: root.url.appendingPathComponent("final.txt").path))
     }
 
+    @Test func symlinkAndReadlinkMutateHostFilesystem() throws {
+        let root = try TestFuseServerRoot()
+        try root.write("target", to: "target.txt")
+        let server = try FuseServer(hostFS: HostFS(rootPath: root.url.path))
+
+        let symlink = server.handle(request: request(unique: 46, opcode: .symlink, nodeID: HostFS.rootNodeID, payload: Array("link.txt\0target.txt\0".utf8)))
+        let symlinkPayload = payload(from: symlink)
+        let nodeID = symlinkPayload.leUInt64(at: 0)
+
+        #expect(try FuseProtocol.decodeOutHeader(symlink).error == 0)
+        #expect(symlinkPayload.leUInt32(at: 100) & UInt32(S_IFMT) == UInt32(S_IFLNK))
+        #expect(try FileManager.default.destinationOfSymbolicLink(atPath: root.url.appendingPathComponent("link.txt").path) == "target.txt")
+
+        let readlink = server.handle(request: request(unique: 47, opcode: .readlink, nodeID: nodeID))
+
+        #expect(try FuseProtocol.decodeOutHeader(readlink).error == 0)
+        #expect(String(decoding: payload(from: readlink), as: UTF8.self) == "target.txt")
+    }
+
     @Test func setattrSameModeSucceedsForFSEventsRelayWithoutChangingMode() throws {
         let root = try TestFuseServerRoot()
         try root.write("payload", to: "watched.txt")

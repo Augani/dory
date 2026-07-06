@@ -123,7 +123,11 @@ public final class HostFSEventRelay: @unchecked Sendable {
             paths,
             FSEventStreamEventId(kFSEventStreamEventIdSinceNow),
             0.05,
-            FSEventStreamCreateFlags(kFSEventStreamCreateFlagFileEvents | kFSEventStreamCreateFlagNoDefer)
+            FSEventStreamCreateFlags(
+                kFSEventStreamCreateFlagFileEvents |
+                kFSEventStreamCreateFlagNoDefer |
+                kFSEventStreamCreateFlagUseCFTypes
+            )
         ) else {
             callbackBox = nil
             return

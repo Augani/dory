@@ -192,6 +192,19 @@ public struct AgentPortSnapshot: Decodable, Equatable, Sendable {
         self.added = added
         self.removed = removed
     }
+
+    enum CodingKeys: String, CodingKey {
+        case ports
+        case added
+        case removed
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        ports = try container.decodeIfPresent([AgentListenPort].self, forKey: .ports) ?? []
+        added = try container.decodeIfPresent([AgentPortEvent].self, forKey: .added) ?? []
+        removed = try container.decodeIfPresent([AgentPortEvent].self, forKey: .removed) ?? []
+    }
 }
 
 private struct EmptyAgentParams: Encodable {}

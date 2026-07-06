@@ -264,9 +264,13 @@ enum EngineMode {
         }
 
         try machine.loadBootPayload()
-        // engine.sock is served by dory-hv itself and relayed to guest dockerd over vsock: the
-        // gvproxy unix forward it replaces tears the stream down on a client half-close, which the
-        // docker CLI does right after every attach/exec request — so `docker run` output was lost.
+        // engine.sock is served by dory-hv over vsock from boot: the gvproxy unix forward tears the
+        // stream down on the docker CLI's post-request half-close, which silences every foreground
+        // `docker run`/`attach`. Connections before the guest agent listens fail fast and the app's
+        // readiness probe retries, so nothing waits on the sidecar; if the agent never becomes
+        // reachable at all, the agent-unavailable path below falls back to a gvproxy forward so
+        // basic Docker still works (degraded attach) rather than not at all. Promoting mid-flight
+        // instead would leave the shim's pooled keep-alive connections on the degraded path forever.
         DockerSocketBridge(socketPath: configuration.engineSocket, log: { note($0) }).attach(to: vsock)
         let shutdownSocket = state + "/shutdown.sock"
         publishForward(local: shutdownSocket, guestPort: 2377, apiSocket: apiSocket, label: "shutdown channel")
@@ -312,7 +316,8 @@ enum EngineMode {
         let shares = configuration.shares
         Task.detached {
             guard await probeAgent(vsock: vsock) else {
-                note("guest agent unavailable; machine port-forward/clock/fs-relay disabled")
+                note("guest agent unavailable; falling back to a gvproxy docker forward (degraded attach); machine port-forward/clock/fs-relay disabled")
+                publishForward(local: configuration.engineSocket, guestPort: 2375, apiSocket: apiSocket, label: "docker socket (agent fallback)")
                 return
             }
             note("guest agent reachable; enabling machine port-forward and file-event relay")
@@ -472,7 +477,7 @@ enum EngineMode {
         paths.append("/usr/bin/dory-agent")
         let quotedPaths = paths.map(shellQuote).joined(separator: " ")
         let ports = HostAIBridge.defaultPorts.map(String.init).joined(separator: ",")
-        return "for p in \(quotedPaths); do if [ -r \"$p\" ] && ! pgrep -x dory-agent >/dev/null 2>&1; then cp \"$p\" /run/dory-agent && chmod 0755 /run/dory-agent && DORY_HOST_AI_BRIDGE_PORTS=\(shellQuote(ports)) /run/dory-agent >/var/log/dory-agent.log 2>&1 & break; fi; done; true"
+        return "( for i in $(seq 1 100); do if pgrep -x dory-agent >/dev/null 2>&1; then exit 0; fi; for p in \(quotedPaths); do if [ -r \"$p\" ]; then cp \"$p\" /run/dory-agent && chmod 0755 /run/dory-agent && DORY_HOST_AI_BRIDGE_PORTS=\(shellQuote(ports)) /run/dory-agent >/var/log/dory-agent.log 2>&1 & exit 0; fi; done; sleep 0.2; done; echo 'dory-agent not found after waiting: \(quotedPaths)' >/var/log/dory-agent.log ) & true"
     }
 
     /// The full boot script lives on a dedicated ext4 disk (vdc), so the kernel command line stays
@@ -573,7 +578,7 @@ enum EngineMode {
         forwarded: ForwardedPortSet,
         forwarder: PortForwarder
     ) async {
-        let desired = Set(snapshot.ports.filter { $0.protocol == "tcp" || $0.protocol == "tcp6" }.map(\.port))
+        let desired = Set(snapshot.ports.filter(MachinePortPolicy.isForwardable).map(\.port))
         let alreadyForwarded = forwarded.snapshot()
         for port in desired.subtracting(alreadyForwarded) {
             if await forwarder.exposeMachinePort(port) {
@@ -618,7 +623,8 @@ enum EngineMode {
             let transport = AgentVsockTransport(connection: connection, readTimeoutNanoseconds: 1_000_000_000)
             let channel = AgentChannel(transport: transport)
             do {
-                _ = try await channel.watchPorts()
+                let info: GuestAgentInfo = try await channel.call("info", EmptyAgentProbeParams())
+                guard info.protocolVersion >= 1 else { throw AgentProtocolError.malformedFrame }
                 connection.close()
                 return true
             } catch {
@@ -629,6 +635,16 @@ enum EngineMode {
             }
         }
         return false
+    }
+
+    private struct EmptyAgentProbeParams: Encodable {}
+
+    private struct GuestAgentInfo: Decodable {
+        var protocolVersion: Int
+
+        enum CodingKeys: String, CodingKey {
+            case protocolVersion = "protocol_version"
+        }
     }
 
     /// Asks gvproxy to serve a guest TCP port as a host unix socket, retrying until the listener

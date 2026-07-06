@@ -153,6 +153,18 @@ struct HostFSTests {
         }
     }
 
+    @Test func createAndReadSymlinkAreVisibleOnHost() throws {
+        let root = try TestHostFSRoot()
+        try root.write("inside", to: "target.txt")
+        let fs = try HostFS(rootPath: root.url.path)
+
+        let link = try fs.symlink(parent: HostFS.rootNodeID, name: "link.txt", target: "target.txt")
+
+        #expect(link.attributes.isSymlink)
+        #expect(try fs.readlink(nodeID: link.nodeID) == "target.txt")
+        #expect(try FileManager.default.destinationOfSymbolicLink(atPath: root.url.appendingPathComponent("link.txt").path) == "target.txt")
+    }
+
     @Test func directoryOpenAsFileIsRejected() throws {
         let root = try TestHostFSRoot()
         try FileManager.default.createDirectory(at: root.url.appendingPathComponent("dir"), withIntermediateDirectories: false)

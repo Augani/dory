@@ -183,6 +183,25 @@ public final class HostFS: @unchecked Sendable {
         return fd
     }
 
+    public func readlink(nodeID: UInt64) throws -> String {
+        let node = try node(for: nodeID)
+        guard node.attributes.isSymlink else {
+            throw HostFSError.notRegularFile(nodeID)
+        }
+        var capacity = Int(PATH_MAX)
+        while true {
+            var buffer = [CChar](repeating: 0, count: capacity)
+            let count = readlinkat(rootFD, cPath(node.relativePath), &buffer, capacity)
+            guard count >= 0 else {
+                throw HostFSError.io("readlink \(node.relativePath): errno \(errno)")
+            }
+            if count < capacity {
+                return String(decoding: buffer.prefix(count).map { UInt8(bitPattern: $0) }, as: UTF8.self)
+            }
+            capacity *= 2
+        }
+    }
+
     public func read(handle fd: Int32, offset: UInt64, count: Int) throws -> [UInt8] {
         guard count >= 0 else { throw HostFSError.invalidName("read count") }
         guard let signedOffset = off_t(exactly: offset) else {
@@ -280,6 +299,22 @@ public final class HostFS: @unchecked Sendable {
         let relative = join(parentNode.relativePath, name)
         guard mkdirat(rootFD, cPath(relative), mode_t(mode)) == 0 else {
             throw HostFSError.io("mkdir \(relative): errno \(errno)")
+        }
+        return try lookup(parent: parent, name: name)
+    }
+
+    public func symlink(parent: UInt64, name: String, target: String) throws -> HostFSEntry {
+        guard !readOnly else { throw HostFSError.readOnly }
+        try validateComponent(name)
+        try requireVisible(name)
+        guard !target.isEmpty, !target.utf8.contains(0) else {
+            throw HostFSError.invalidName(target)
+        }
+        let parentNode = try node(for: parent)
+        guard parentNode.attributes.isDirectory else { throw HostFSError.notDirectory(parent) }
+        let relative = join(parentNode.relativePath, name)
+        guard symlinkat(target, rootFD, cPath(relative)) == 0 else {
+            throw HostFSError.io("symlink \(relative): errno \(errno)")
         }
         return try lookup(parent: parent, name: name)
     }

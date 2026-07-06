@@ -219,7 +219,7 @@ func runAgentPing(_ options: Options) {
 
 let arguments = Array(CommandLine.arguments.dropFirst())
 guard let command = arguments.first else {
-    fail("usage: dory-hv <smoke|madvtest|daxprobe|boot|agent-ping|engine|usb> [--kernel path] [--mem-mb N] [--cpus N] [--cmdline s]")
+    fail("usage: dory-hv <smoke|madvtest|daxprobe|boot|agent-ping|engine|usb> [--kernel path] [--mem-mb N] [--cpus N] [--cmdline s] [--state-dir path]")
 }
 
 switch command {
@@ -422,6 +422,7 @@ case "engine":
     var memoryMB: UInt64 = 2048
     var cpus = 4
     var rootfs: String?
+    var stateDirectory = "\(NSHomeDirectory())/.dory/hv"
     var shares: [VirtioFSShareConfiguration] = []
     var directIPSubnet: String?
     var directIPGateway = "192.168.127.2"
@@ -434,6 +435,7 @@ case "engine":
         case "--kernel": kernel = iterator.next()
         case "--gvproxy": gvproxy = iterator.next()
         case "--rootfs": rootfs = iterator.next()
+        case "--state-dir": stateDirectory = iterator.next() ?? stateDirectory
         case "--mem-mb": memoryMB = iterator.next().flatMap(UInt64.init) ?? memoryMB
         case "--cpus": cpus = iterator.next().flatMap(Int.init) ?? cpus
         case "--direct-ip": directIPSubnet = directIPSubnet ?? "192.168.215.0/24"
@@ -463,7 +465,7 @@ case "engine":
         gvproxyPath: gvproxy,
         memoryMB: memoryMB,
         cpus: cpus,
-        stateDirectory: "\(NSHomeDirectory())/.dory/hv",
+        stateDirectory: stateDirectory,
         bundledRootfs: rootfs,
         shares: shares,
         directIP: directIPSubnet.map {
@@ -471,8 +473,8 @@ case "engine":
                 subnetCIDR: $0,
                 gateway: directIPGateway,
                 gvproxySocketPath: "",
-                localSocketPath: "\(NSHomeDirectory())/.dory/hv/direct-ip.sock",
-                interfaceNamePath: "\(NSHomeDirectory())/.dory/hv/direct-ip.interface"
+                localSocketPath: "\(stateDirectory)/direct-ip.sock",
+                interfaceNamePath: "\(stateDirectory)/direct-ip.interface"
             )
         },
         gpuMode: gpuMode,

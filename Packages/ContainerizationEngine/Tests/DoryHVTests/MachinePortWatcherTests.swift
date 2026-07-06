@@ -14,12 +14,30 @@ import Testing
         #expect(request.method == "ports.watch")
     }
 
+    @Test func watchPortsTreatsNullDiffsAsEmptyArrays() async throws {
+        let transport = StubAgentTransport(responsePayload: #"{"id":1,"result":{"ports":null,"added":null,"removed":null}}"#)
+        let channel = AgentChannel(transport: transport)
+
+        let snapshot = try await channel.watchPorts()
+
+        #expect(snapshot == AgentPortSnapshot(ports: [], added: [], removed: []))
+    }
+
     @Test func watcherExposesAndReleasesTCPDiffsOnly() async throws {
         let transport = StubAgentTransport(responsePayload: """
         {"id":1,"result":{
           "ports":[{"protocol":"tcp","port":3000}],
-          "added":[{"action":"add","protocol":"tcp","port":3000},{"action":"add","protocol":"udp","port":5353}],
-          "removed":[{"action":"remove","protocol":"tcp6","port":8080},{"action":"remove","protocol":"udp","port":5353}]
+          "added":[
+            {"action":"add","protocol":"tcp","port":3000},
+            {"action":"add","protocol":"udp","port":5353},
+            {"action":"add","protocol":"tcp","port":2375},
+            {"action":"add","protocol":"tcp","port":11434}
+          ],
+          "removed":[
+            {"action":"remove","protocol":"tcp6","port":8080},
+            {"action":"remove","protocol":"udp","port":5353},
+            {"action":"remove","protocol":"tcp","port":2377}
+          ]
         }}
         """)
         let forwarder = FakeMachinePortForwarder()

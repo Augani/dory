@@ -36,6 +36,10 @@ public final class FuseServer: @unchecked Sendable {
                 )
             case .lookup:
                 return try handleLookup(header: header, payload: payload)
+            case .readlink:
+                return try handleReadlink(header: header)
+            case .symlink:
+                return try handleSymlink(header: header, payload: payload)
             case .getattr:
                 return try handleGetattr(header: header)
             case .setattr:
@@ -81,6 +85,16 @@ public final class FuseServer: @unchecked Sendable {
     private func handleLookup(header: FuseInHeader, payload: [UInt8]) throws -> [UInt8] {
         let name = try readCString(payload)
         let entry = try hostFS.lookup(parent: header.nodeID, name: name)
+        return successResponse(unique: header.unique, payload: encodeEntryOut(entry.attributes))
+    }
+
+    private func handleReadlink(header: FuseInHeader) throws -> [UInt8] {
+        return try successResponse(unique: header.unique, payload: Array(hostFS.readlink(nodeID: header.nodeID).utf8))
+    }
+
+    private func handleSymlink(header: FuseInHeader, payload: [UInt8]) throws -> [UInt8] {
+        let values = try readCStrings(payload, count: 2)
+        let entry = try hostFS.symlink(parent: header.nodeID, name: values[0], target: values[1])
         return successResponse(unique: header.unique, payload: encodeEntryOut(entry.attributes))
     }
 

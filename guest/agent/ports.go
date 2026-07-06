@@ -32,6 +32,12 @@ func currentListeningPorts(params json.RawMessage) (any, error) {
 	added, removed := diffPorts(portWatchState.ports, ports)
 	portWatchState.ports = ports
 	portWatchState.Unlock()
+	if added == nil {
+		added = []portEvent{}
+	}
+	if removed == nil {
+		removed = []portEvent{}
+	}
 	return map[string]any{"ports": ports, "added": added, "removed": removed}, nil
 }
 
@@ -88,8 +94,8 @@ func diffPorts(previous, current []listenPort) ([]portEvent, []portEvent) {
 		newSet[portKey(port)] = port
 	}
 
-	var added []portEvent
-	var removed []portEvent
+	added := []portEvent{}
+	removed := []portEvent{}
 	for key, port := range newSet {
 		if _, ok := oldSet[key]; !ok {
 			added = append(added, portEvent{Action: "add", Protocol: port.Protocol, Port: port.Port})

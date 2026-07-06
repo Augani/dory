@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -223,6 +224,27 @@ func TestPortsWatchReturnsSnapshot(t *testing.T) {
 	}
 	if _, ok := result["removed"]; !ok {
 		t.Fatalf("response missing removed diff: %#v", result)
+	}
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "null") {
+		t.Fatalf("ports.watch encoded null slices: %s", encoded)
+	}
+	var decoded map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"ports", "added", "removed"} {
+		raw, ok := decoded[key]
+		if !ok {
+			t.Fatalf("ports.watch missing %q", key)
+		}
+		var arr []any
+		if err := json.Unmarshal(raw, &arr); err != nil {
+			t.Fatalf("ports.watch %q is not a JSON array: %s", key, raw)
+		}
 	}
 }
 
