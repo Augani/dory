@@ -2680,6 +2680,8 @@ final class AppStore {
             ) { message in
                 Task { @MainActor in self.kubernetesInfo = message }
             }
+        } catch KubernetesProvisioner.K8sError.configDrift {
+            kubernetesInfo = "Kubernetes create-time config changed; disable and re-enable Kubernetes to apply"
         } catch {
             let message = "Kubernetes failed: \(error)"
             kubernetesInfo = message
