@@ -25,6 +25,14 @@ final class DoryScreensUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts[text].waitForExistence(timeout: timeout), "expected text '\(text)'")
     }
 
+    /// Matches any element by accessibility identifier. Container rows are single flattened
+    /// accessibility elements (tap-to-select), so their child texts are not individual staticTexts;
+    /// the row's `container-<id>` identifier is the stable hook.
+    private func assertElement(_ id: String, timeout: TimeInterval = 4) {
+        let element = app.descendants(matching: .any).matching(identifier: id).firstMatch
+        XCTAssertTrue(element.waitForExistence(timeout: timeout), "expected element '\(id)'")
+    }
+
     private func selectKubeResource(_ id: String) {
         let button = app.buttons["kube-resource-\(id)"]
         XCTAssertTrue(button.waitForExistence(timeout: 4), "kube resource \(id) should exist")
@@ -32,7 +40,7 @@ final class DoryScreensUITests: XCTestCase {
     }
 
     func testNavigatesEverySection() {
-        nav("containers"); assertText("postgres-db")
+        nav("containers"); assertElement("container-c1")
         nav("images"); assertText("postgres")
         nav("volumes"); assertText("USED BY")
         nav("networks"); assertText("SUBNET"); assertText("dory-default")
@@ -94,7 +102,7 @@ final class DoryScreensUITests: XCTestCase {
         XCTAssertTrue(app.buttons["onboarding-start"].waitForExistence(timeout: 4), "onboarding overlay should appear")
         app.buttons["onboarding-skip"].click()
         // After dismissing, the main UI is back.
-        nav("containers"); assertText("postgres-db")
+        nav("containers"); assertElement("container-c1")
     }
 
     func testNewContainerSheetOpensAndCancels() {
