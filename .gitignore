@@ -79,3 +79,6 @@ docs/
 
 # Internal engine notes (not published)
 Packages/ContainerizationEngine/Docs/
+
+# Python bytecode from the doctor helpers
+scripts/__pycache__/

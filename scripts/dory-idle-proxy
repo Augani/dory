@@ -1,0 +1,605 @@
+#!/usr/bin/env python3
+"""Opt-in Auto-Idle socket proxy for Dory.
+
+The proxy keeps a tiny Docker-compatible unix socket alive, starts the
+headless Dory engine on first API use, forwards bytes to the real engine
+socket, and can stop the engine again once the configured idle policy is safe.
+It is intentionally stdlib-only so it can ship beside the CLI.
+"""
+
+from __future__ import annotations
+
+import argparse
+import errno
+import json
+import os
+import plistlib
+import signal
+import socket
+import stat
+import subprocess
+import sys
+import threading
+import time
+from pathlib import Path
+from typing import Any
+
+
+HOME = Path.home()
+STATE = HOME / ".dory"
+DEFAULT_LISTENER_SOCK = STATE / "dory.sock"
+DEFAULT_ENGINE_SOCK = STATE / "engine.sock"
+DEFAULT_CONFIG = STATE / "config.json"
+DEFAULT_KUBECONFIG = HOME / ".kube" / "dory-config"
+DEFAULT_STATE_FILE = STATE / "idle-state.json"
+LAUNCH_AGENT_LABEL = "dev.dory.idle-proxy"
+LAUNCH_AGENT_PATH = HOME / "Library" / "LaunchAgents" / f"{LAUNCH_AGENT_LABEL}.plist"
+
+
+def repo_root() -> Path:
+    return Path(__file__).resolve().parents[1]
+
+
+def default_engine_script() -> Path:
+    return repo_root() / "scripts" / "runtime" / "dory-engine"
+
+
+def note(message: str) -> None:
+    print(f"dory-idle-proxy: {message}", flush=True)
+
+
+def now_iso() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def config_path() -> Path:
+    return Path(os.environ.get("DORY_CONFIG", str(DEFAULT_CONFIG))).expanduser()
+
+
+def load_config() -> dict[str, Any]:
+    base = {
+        "runtimeMode": "manual",
+        "idle": {
+            "sleepAfterMinutes": 15,
+            "keepPublishedPortsAwake": True,
+            "keepKubernetesAwake": True,
+            "keepPinnedProjectsAwake": True,
+            "showWakeNotifications": True,
+        },
+    }
+    path = config_path()
+    if not path.exists():
+        return base
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return base
+    for key, value in raw.items():
+        if isinstance(value, dict) and isinstance(base.get(key), dict):
+            merged = dict(base[key])
+            merged.update(value)
+            base[key] = merged
+        else:
+            base[key] = value
+    return base
+
+
+def unix_http(sock: Path, method: str, path: str, timeout: float = 2.0) -> tuple[int, bytes]:
+    request = (
+        f"{method} {path} HTTP/1.1\r\n"
+        "Host: dory\r\n"
+        "User-Agent: dory-idle-proxy\r\n"
+        "Connection: close\r\n"
+        "Content-Length: 0\r\n"
+        "\r\n"
+    ).encode("utf-8")
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+        client.settimeout(timeout)
+        client.connect(str(sock))
+        client.sendall(request)
+        chunks: list[bytes] = []
+        while True:
+            try:
+                chunk = client.recv(65536)
+            except socket.timeout:
+                break
+            if not chunk:
+                break
+            chunks.append(chunk)
+    raw = b"".join(chunks)
+    head, _, body = raw.partition(b"\r\n\r\n")
+    status_line = head.split(b"\r\n", 1)[0].decode("iso-8859-1", "replace")
+    parts = status_line.split(" ", 2)
+    if len(parts) < 2 or not parts[1].isdigit():
+        raise RuntimeError("invalid HTTP response from engine")
+    return int(parts[1]), body
+
+
+def engine_ping(sock: Path) -> bool:
+    try:
+        status_code, body = unix_http(sock, "GET", "/_ping", timeout=2)
+        return status_code == 200 and body.strip() == b"OK"
+    except Exception:
+        return False
+
+
+def docker_containers(sock: Path) -> list[dict[str, Any]]:
+    status_code, body = unix_http(sock, "GET", "/containers/json?all=1", timeout=4)
+    if not (200 <= status_code < 300):
+        return []
+    try:
+        data = json.loads(body.decode("utf-8") or "[]")
+    except Exception:
+        return []
+    return data if isinstance(data, list) else []
+
+
+def sleep_blockers(engine_sock: Path) -> list[dict[str, Any]]:
+    blockers: list[dict[str, Any]] = []
+    config = load_config()
+    idle_config = config.get("idle") or {}
+    keep_ports = bool(idle_config.get("keepPublishedPortsAwake", True))
+    keep_pins = bool(idle_config.get("keepPinnedProjectsAwake", True))
+    keep_kube = bool(idle_config.get("keepKubernetesAwake", True))
+    if not engine_ping(engine_sock):
+        return blockers
+    for container in docker_containers(engine_sock):
+        name = ((container.get("Names") or [""])[0]).lstrip("/") or (container.get("Id") or "")[:12]
+        state = container.get("State") or ""
+        labels = container.get("Labels") or {}
+        ports = container.get("Ports") or []
+        if state == "running":
+            blockers.append({"type": "running-container", "container": name})
+        if keep_ports and state == "running" and any(port.get("PublicPort") for port in ports):
+            blockers.append({"type": "published-port", "container": name})
+        if keep_pins and (labels.get("io.dory.keep-awake") == "true" or labels.get("dev.dory.keep-awake") == "true"):
+            blockers.append({"type": "pinned", "container": name})
+    if keep_kube and DEFAULT_KUBECONFIG.exists():
+        blockers.append({"type": "kubernetes-config", "path": str(DEFAULT_KUBECONFIG)})
+    return blockers
+
+
+def send_unavailable(client: socket.socket, detail: str) -> None:
+    body = json.dumps({"message": "Dory engine could not be started", "detail": detail}).encode("utf-8")
+    response = (
+        "HTTP/1.1 503 Service Unavailable\r\n"
+        "Content-Type: application/json\r\n"
+        f"Content-Length: {len(body)}\r\n"
+        "Connection: close\r\n"
+        "\r\n"
+    ).encode("utf-8") + body
+    try:
+        client.sendall(response)
+    except OSError:
+        pass
+
+
+def read_state(path: Path | None = None) -> dict[str, Any]:
+    path = path or Path(os.environ.get("DORY_IDLE_STATE", str(DEFAULT_STATE_FILE))).expanduser()
+    if not path.exists():
+        return {
+            "available": False,
+            "path": str(path),
+            "state": "unknown",
+            "detail": "Auto-Idle proxy has not written state yet",
+        }
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return {
+            "available": False,
+            "path": str(path),
+            "state": "unknown",
+            "detail": f"could not read state: {exc}",
+        }
+    data["available"] = True
+    data.setdefault("path", str(path))
+    return data
+
+
+class IdleProxy:
+    def __init__(
+        self,
+        listener_sock: Path,
+        engine_sock: Path,
+        engine_command: Path,
+        idle_seconds: int | None,
+        wake_timeout: int,
+        state_file: Path,
+    ):
+        self.listener_sock = listener_sock
+        self.engine_sock = engine_sock
+        self.engine_command = engine_command
+        self.idle_seconds_override = idle_seconds
+        self.wake_timeout = wake_timeout
+        self.state_file = state_file
+        self.stop_event = threading.Event()
+        self.wake_lock = threading.Lock()
+        self.active_lock = threading.Lock()
+        self.active_connections = 0
+        self.last_activity = time.time()
+        self.state_lock = threading.Lock()
+        self.current_state = "sleeping"
+
+    def serve(self) -> int:
+        self.listener_sock.parent.mkdir(parents=True, exist_ok=True)
+        self.prepare_listener_path()
+        server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        # Restrict the umask across bind so the Docker control socket is never briefly world/group
+        # accessible between bind() and chmod(); restore it once the mode is pinned.
+        previous_umask = os.umask(0o077)
+        try:
+            server.bind(str(self.listener_sock))
+            os.chmod(self.listener_sock, 0o600)
+        finally:
+            os.umask(previous_umask)
+        server.listen(64)
+        note(f"listening at unix://{self.listener_sock}")
+        self.publish_state("awake" if engine_ping(self.engine_sock) else "sleeping", "proxy listening")
+        monitor = threading.Thread(target=self.monitor_idle, daemon=True)
+        monitor.start()
+        try:
+            while not self.stop_event.is_set():
+                try:
+                    server.settimeout(1.0)
+                    client, _ = server.accept()
+                except socket.timeout:
+                    continue
+                except OSError as exc:
+                    if exc.errno == errno.EINTR:
+                        continue
+                    raise
+                threading.Thread(target=self.handle_client, args=(client,), daemon=True).start()
+        finally:
+            server.close()
+            try:
+                if self.listener_sock.exists():
+                    self.listener_sock.unlink()
+            except OSError:
+                pass
+            self.publish_state("stopped", "proxy stopped")
+        return 0
+
+    def prepare_listener_path(self) -> None:
+        if not self.listener_sock.exists():
+            return
+        try:
+            mode = self.listener_sock.stat().st_mode
+        except OSError:
+            self.listener_sock.unlink(missing_ok=True)
+            return
+        if stat.S_ISSOCK(mode):
+            if engine_ping(self.listener_sock):
+                raise SystemExit(f"{self.listener_sock} already has a live Docker API server")
+            self.listener_sock.unlink()
+            return
+        raise SystemExit(f"{self.listener_sock} exists and is not a socket")
+
+    def handle_client(self, client: socket.socket) -> None:
+        # Reserve the connection slot immediately (a bare counter bump, no I/O) so the idle monitor
+        # never sleeps the engine out from under a request that is mid-wake. The publish/ping cost
+        # is deferred until after the engine is confirmed ready.
+        with self.active_lock:
+            self.active_connections += 1
+            self.last_activity = time.time()
+        upstream: socket.socket | None = None
+        try:
+            ok, detail = self.ensure_engine()
+            if not ok:
+                send_unavailable(client, detail)
+                return
+            self.mark_activity(delta=0)
+            upstream = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            upstream.connect(str(self.engine_sock))
+            self.pipe(client, upstream)
+        except Exception as exc:
+            send_unavailable(client, str(exc))
+        finally:
+            for sock in [client, upstream]:
+                if sock:
+                    try:
+                        sock.close()
+                    except OSError:
+                        pass
+            self.mark_activity(delta=-1)
+
+    def mark_activity(self, delta: int) -> None:
+        with self.active_lock:
+            self.active_connections = max(0, self.active_connections + delta)
+            self.last_activity = time.time()
+            active = self.active_connections
+        if active > 0:
+            self.publish_state("busy", "active Docker API request", active_connections=active)
+
+    def ensure_engine(self) -> tuple[bool, str]:
+        if engine_ping(self.engine_sock):
+            self.publish_state("awake", "engine already awake")
+            return True, ""
+        with self.wake_lock:
+            if engine_ping(self.engine_sock):
+                self.publish_state("awake", "engine became awake during wait")
+                return True, ""
+            if not self.engine_command.exists():
+                self.publish_state("failed-to-wake", "engine command not found")
+                return False, f"engine command not found: {self.engine_command}"
+            note("engine is sleeping or unavailable; waking it")
+            self.publish_state("waking", "starting engine")
+            try:
+                start = subprocess.run(
+                    [str(self.engine_command), "start"],
+                    text=True,
+                    capture_output=True,
+                    timeout=max(self.wake_timeout, 30),
+                )
+            except subprocess.TimeoutExpired:
+                self.publish_state("failed-to-wake", f"engine did not start within {self.wake_timeout}s")
+                return False, f"engine did not start within {self.wake_timeout}s"
+            except OSError as exc:
+                self.publish_state("failed-to-wake", str(exc))
+                return False, str(exc)
+            if start.returncode != 0:
+                detail = (start.stderr or start.stdout or "engine start failed").strip()
+                self.publish_state("failed-to-wake", detail[:500])
+                return False, detail
+            deadline = time.time() + self.wake_timeout
+            while time.time() < deadline:
+                if engine_ping(self.engine_sock):
+                    note("engine awake")
+                    self.publish_state("awake", "engine awake after wake request")
+                    return True, ""
+                time.sleep(0.5)
+            self.publish_state("failed-to-wake", f"engine socket did not answer within {self.wake_timeout}s")
+            return False, f"engine socket did not answer within {self.wake_timeout}s"
+
+    def pipe(self, left: socket.socket, right: socket.socket) -> None:
+        # Blocking two-thread pump, one per direction. sendall on a *blocking* socket handles
+        # backpressure correctly (it never raises EWOULDBLOCK mid-stream), and a client half-close
+        # is relayed as SHUT_WR so the peer sees request-EOF while its reply keeps streaming — the
+        # same half-close fidelity the docker CLI needs for attach/exec. The old non-blocking
+        # selector loop dropped a 64 KiB chunk on any send-buffer backpressure and closed the
+        # connection, corrupting `docker pull`/`build` streams; it also leaked one selector fd per
+        # connection and could not interrupt a long-lived hijacked stream on shutdown.
+        # A short recv timeout lets both pumps notice stop_event even mid-stream, so proxy shutdown
+        # (SIGTERM / LaunchAgent stop) is never blocked by an idle `logs -f`/`attach` connection.
+        left.settimeout(1.0)
+        right.settimeout(1.0)
+
+        def pump_loop(src: socket.socket, dst: socket.socket) -> None:
+            try:
+                while not self.stop_event.is_set():
+                    try:
+                        data = src.recv(65536)
+                    except socket.timeout:
+                        continue
+                    except OSError:
+                        break
+                    if not data:
+                        break
+                    try:
+                        dst.settimeout(None)
+                        dst.sendall(data)
+                    except OSError:
+                        break
+            finally:
+                try:
+                    dst.shutdown(socket.SHUT_WR)
+                except OSError:
+                    pass
+
+        forward = threading.Thread(target=pump_loop, args=(left, right), daemon=True)
+        backward = threading.Thread(target=pump_loop, args=(right, left), daemon=True)
+        forward.start()
+        backward.start()
+        forward.join()
+        backward.join()
+
+    def monitor_idle(self) -> None:
+        while not self.stop_event.wait(5):
+            config = load_config()
+            mode = config.get("runtimeMode", "manual")
+            if mode not in {"auto-idle", "battery-saver"}:
+                continue
+            idle_config = config.get("idle") or {}
+            configured_seconds = int(idle_config.get("sleepAfterMinutes", 15)) * 60
+            idle_seconds = self.idle_seconds_override or configured_seconds
+            with self.active_lock:
+                active = self.active_connections
+                idle_for = time.time() - self.last_activity
+            if active > 0 or idle_for < idle_seconds:
+                if active == 0 and engine_ping(self.engine_sock):
+                    remaining = max(0, int(idle_seconds - idle_for))
+                    self.publish_state(
+                        "idle-cooling-down",
+                        f"waiting {remaining}s before sleep",
+                        idle_for_seconds=int(idle_for),
+                        sleep_in_seconds=remaining,
+                    )
+                continue
+            if not engine_ping(self.engine_sock):
+                self.publish_state("sleeping", "engine socket is not reachable")
+                continue
+            blockers = sleep_blockers(self.engine_sock)
+            if blockers:
+                self.publish_state("awake", "sleep blocked", blockers=blockers, idle_for_seconds=int(idle_for))
+                continue
+            # Stop the engine under wake_lock and only if no request slipped in during the blocker
+            # scan (which can take seconds). ensure_engine() also takes wake_lock, so a request that
+            # arrives now either already bumped active_connections (we abort) or blocks on the lock
+            # and re-wakes the engine right after — never mid-flight.
+            with self.wake_lock:
+                with self.active_lock:
+                    active = self.active_connections
+                    idle_for = time.time() - self.last_activity
+                if active > 0 or idle_for < idle_seconds:
+                    continue
+                note(f"idle for {int(idle_for)}s; stopping engine")
+                self.publish_state("sleeping", "idle policy passed; stopping engine", idle_for_seconds=int(idle_for))
+                subprocess.run([str(self.engine_command), "stop"], text=True, capture_output=True, timeout=60)
+                self.last_activity = time.time()
+            self.publish_state("sleeping", "engine stopped by idle policy")
+
+    def publish_state(self, state: str, detail: str, **extra: Any) -> None:
+        # engine_ready is derived from the state we already know, not a fresh blocking engine_ping:
+        # pinging here (up to 2 s connect timeout) under state_lock would stall every thread's state
+        # publishing whenever the engine socket is slow or hung.
+        engine_ready = state in {"awake", "busy", "idle-cooling-down"}
+        with self.state_lock:
+            self.current_state = state
+            with self.active_lock:
+                active = self.active_connections
+                idle_for = max(0, int(time.time() - self.last_activity))
+            payload: dict[str, Any] = {
+                "state": state,
+                "detail": detail,
+                "updated_at": now_iso(),
+                "listener_socket": str(self.listener_sock),
+                "engine_socket": str(self.engine_sock),
+                "engine_command": str(self.engine_command),
+                "engine_ready": engine_ready,
+                "active_connections": active,
+                "idle_for_seconds": idle_for,
+            }
+            payload.update(extra)
+            self.state_file.parent.mkdir(parents=True, exist_ok=True)
+            # Unique temp path per writer + 0600: the state file records container names and socket
+            # paths, and a shared ".tmp" name would let concurrent writers clobber each other.
+            tmp = self.state_file.with_suffix(f"{self.state_file.suffix}.{os.getpid()}.{threading.get_ident()}.tmp")
+            try:
+                fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                    handle.write(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+                os.replace(tmp, self.state_file)
+            finally:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+
+
+def launch_agent_plist() -> dict[str, Any]:
+    script = Path(__file__).resolve()
+    log_dir = STATE
+    return {
+        "Label": LAUNCH_AGENT_LABEL,
+        "ProgramArguments": [sys.executable, str(script), "proxy", "--foreground"],
+        "RunAtLoad": True,
+        "KeepAlive": True,
+        "StandardOutPath": str(log_dir / "idle-proxy.log"),
+        "StandardErrorPath": str(log_dir / "idle-proxy.err.log"),
+        "EnvironmentVariables": {
+            "PATH": os.environ.get("PATH", "/usr/bin:/bin:/usr/sbin:/sbin"),
+        },
+    }
+
+
+def print_launch_agent() -> None:
+    plistlib.dump(launch_agent_plist(), sys.stdout.buffer, sort_keys=False)
+
+
+def install_launch_agent(load: bool) -> int:
+    LAUNCH_AGENT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    STATE.mkdir(parents=True, exist_ok=True)
+    with LAUNCH_AGENT_PATH.open("wb") as handle:
+        plistlib.dump(launch_agent_plist(), handle, sort_keys=False)
+    note(f"installed {LAUNCH_AGENT_PATH}")
+    if load:
+        subprocess.run(["launchctl", "bootout", f"gui/{os.getuid()}", str(LAUNCH_AGENT_PATH)], capture_output=True)
+        result = subprocess.run(["launchctl", "bootstrap", f"gui/{os.getuid()}", str(LAUNCH_AGENT_PATH)])
+        return result.returncode
+    return 0
+
+
+def uninstall_launch_agent() -> int:
+    if LAUNCH_AGENT_PATH.exists():
+        subprocess.run(["launchctl", "bootout", f"gui/{os.getuid()}", str(LAUNCH_AGENT_PATH)], capture_output=True)
+        LAUNCH_AGENT_PATH.unlink()
+        note(f"removed {LAUNCH_AGENT_PATH}")
+    else:
+        note("launch agent is not installed")
+    return 0
+
+
+def launch_agent_status() -> int:
+    installed = LAUNCH_AGENT_PATH.exists()
+    result = subprocess.run(["launchctl", "print", f"gui/{os.getuid()}/{LAUNCH_AGENT_LABEL}"], text=True, capture_output=True)
+    payload = {
+        "installed": installed,
+        "path": str(LAUNCH_AGENT_PATH),
+        "loaded": result.returncode == 0,
+        "detail": result.stdout.strip()[:1000] if result.returncode == 0 else result.stderr.strip()[:1000],
+    }
+    print(json.dumps(payload, indent=2, sort_keys=True))
+    return 0 if installed else 1
+
+
+def cmd_status(args: argparse.Namespace) -> int:
+    state = read_state(Path(args.state_file).expanduser() if args.state_file else None)
+    print(json.dumps(state, indent=2, sort_keys=True))
+    return 0 if state.get("available") else 1
+
+
+def cmd_proxy(args: argparse.Namespace) -> int:
+    proxy = IdleProxy(
+        listener_sock=Path(args.listener).expanduser(),
+        engine_sock=Path(args.engine_sock).expanduser(),
+        engine_command=Path(args.engine_command).expanduser(),
+        idle_seconds=args.idle_seconds,
+        wake_timeout=args.wake_timeout,
+        state_file=Path(args.state_file).expanduser(),
+    )
+
+    def stop(_signum: int, _frame: Any) -> None:
+        proxy.stop_event.set()
+
+    signal.signal(signal.SIGINT, stop)
+    signal.signal(signal.SIGTERM, stop)
+    return proxy.serve()
+
+
+def cmd_launch_agent(args: argparse.Namespace) -> int:
+    if args.action == "print":
+        print_launch_agent()
+        return 0
+    if args.action == "install":
+        return install_launch_agent(load=not args.no_load)
+    if args.action == "uninstall":
+        return uninstall_launch_agent()
+    if args.action == "status":
+        return launch_agent_status()
+    raise SystemExit("usage: dory idle launch-agent install|uninstall|status|print")
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="dory-idle-proxy")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    proxy = sub.add_parser("proxy", help="Run the Auto-Idle socket proxy in the foreground")
+    proxy.add_argument("--foreground", action="store_true", help="Accepted for launchd readability")
+    proxy.add_argument("--listener", default=os.environ.get("DORY_SOCK", str(DEFAULT_LISTENER_SOCK)))
+    proxy.add_argument("--engine-sock", default=os.environ.get("DORY_ENGINE_SOCK", str(DEFAULT_ENGINE_SOCK)))
+    proxy.add_argument("--engine-command", default=os.environ.get("DORY_ENGINE_CMD", str(default_engine_script())))
+    proxy.add_argument("--idle-seconds", type=int, help="Override configured sleepAfterMinutes for testing")
+    proxy.add_argument("--wake-timeout", type=int, default=int(os.environ.get("DORY_WAKE_TIMEOUT", "120")))
+    proxy.add_argument("--state-file", default=os.environ.get("DORY_IDLE_STATE", str(DEFAULT_STATE_FILE)))
+    proxy.set_defaults(func=cmd_proxy)
+
+    status = sub.add_parser("status", help="Print the last Auto-Idle proxy state")
+    status.add_argument("--state-file", default=os.environ.get("DORY_IDLE_STATE", str(DEFAULT_STATE_FILE)))
+    status.add_argument("--json", action="store_true", help="Accepted for consistency; output is always JSON")
+    status.set_defaults(func=cmd_status)
+
+    launch_agent = sub.add_parser("launch-agent", help="Install or inspect the Auto-Idle LaunchAgent")
+    launch_agent.add_argument("action", choices=["install", "uninstall", "status", "print"])
+    launch_agent.add_argument("--no-load", action="store_true", help="Write plist without launchctl bootstrap")
+    launch_agent.set_defaults(func=cmd_launch_agent)
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

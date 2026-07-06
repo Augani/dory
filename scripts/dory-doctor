@@ -1,0 +1,2192 @@
+#!/usr/bin/env python3
+"""Dory P0 diagnostics and recovery helper.
+
+This script backs `dory doctor`, `dory disk`, `dory routes`, `dory cleanup`,
+`dory repair`, `dory mode`, and `dory idle`. It intentionally depends only on Python's
+standard library plus the Docker CLI when CLI-specific checks are requested.
+"""
+
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import fnmatch
+import http.client
+import json
+import os
+import re
+import shutil
+import signal
+import socket
+import ssl
+import stat
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+import zipfile
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+
+HOME = Path.home()
+DEFAULT_SOCK = HOME / ".dory" / "dory.sock"
+DEFAULT_ENGINE_SOCK = HOME / ".dory" / "engine.sock"
+DEFAULT_CONFIG = HOME / ".dory" / "config.json"
+DEFAULT_KUBECONFIG = HOME / ".kube" / "dory-config"
+DEFAULT_IDLE_STATE = HOME / ".dory" / "idle-state.json"
+DOMAIN_SUFFIX = os.environ.get("DORY_DOMAIN_SUFFIX", "dory.local")
+DOMAIN_PROXY_PORT = int(os.environ.get("DORY_DOMAIN_PROXY_PORT", "8080"))
+HTTPS_PROXY_PORT = int(os.environ.get("DORY_HTTPS_PROXY_PORT", "8443"))
+DOCKER_IMAGE = os.environ.get("DORY_DOCTOR_IMAGE", "alpine:latest")
+RUN_LABEL_KEY = "dev.dory.doctor"
+SECRET_KEY_RE = re.compile(r"(token|secret|password|passwd|authorization|auth|credential|key)", re.I)
+BEARER_RE = re.compile(r"Bearer\s+[A-Za-z0-9._~+/-]+=*", re.I)
+BASIC_RE = re.compile(r"Basic\s+[A-Za-z0-9._~+/-]+=*", re.I)
+# scheme://user:pass@ — keeps the scheme+user, drops the ':password@'.
+URL_CREDENTIAL_RE = re.compile(r"([a-z][a-z0-9+.-]*://[^\s:/@]+:)[^\s:/@]+@", re.I)
+
+
+def now_iso() -> str:
+    return dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def socket_path() -> Path:
+    return Path(os.environ.get("DORY_SOCK", str(DEFAULT_SOCK))).expanduser()
+
+
+def config_path() -> Path:
+    return Path(os.environ.get("DORY_CONFIG", str(DEFAULT_CONFIG))).expanduser()
+
+
+def idle_state_path() -> Path:
+    return Path(os.environ.get("DORY_IDLE_STATE", str(DEFAULT_IDLE_STATE))).expanduser()
+
+
+def docker_bin() -> str | None:
+    configured = os.environ.get("DORY_DOCKER_BIN")
+    if configured:
+        return configured
+    return shutil.which("docker")
+
+
+def kubectl_bin() -> str | None:
+    configured = os.environ.get("DORY_KUBECTL_BIN")
+    if configured:
+        return configured
+    return shutil.which("kubectl")
+
+
+def docker_cli(args: list[str], timeout: float = 60) -> subprocess.CompletedProcess[str]:
+    binary = docker_bin()
+    if not binary:
+        raise FileNotFoundError("docker CLI not found")
+    env = os.environ.copy()
+    env["DOCKER_HOST"] = f"unix://{socket_path()}"
+    return subprocess.run([binary, *args], env=env, text=True, capture_output=True, timeout=timeout)
+
+
+def repo_root() -> Path:
+    return Path(__file__).resolve().parents[1]
+
+
+def dory_engine_script() -> Path:
+    return repo_root() / "scripts" / "runtime" / "dory-engine"
+
+
+@dataclass
+class CheckResult:
+    id: str
+    status: str
+    code: str
+    title: str
+    detail: str
+    action: str = ""
+    data: dict[str, Any] = field(default_factory=dict)
+
+    def as_dict(self) -> dict[str, Any]:
+        out = {
+            "id": self.id,
+            "status": self.status,
+            "code": self.code,
+            "title": self.title,
+            "detail": self.detail,
+        }
+        if self.action:
+            out["action"] = self.action
+        if self.data:
+            out["data"] = self.data
+        return out
+
+
+class Doctor:
+    def __init__(
+        self,
+        sock: Path | None = None,
+        timeout: float = 5.0,
+        active: bool = False,
+        network_probes: list[str] | None = None,
+    ):
+        self.sock = sock or socket_path()
+        self.timeout = timeout
+        self.active = active
+        self.extra_network_probes = network_probes or []
+        self.run_id = f"{int(time.time())}-{os.getpid()}"
+        self.label = f"{RUN_LABEL_KEY}={self.run_id}"
+        self.results: list[CheckResult] = []
+        self.created_containers: list[str] = []
+
+    def add(
+        self,
+        check_id: str,
+        status: str,
+        code: str,
+        title: str,
+        detail: str,
+        action: str = "",
+        **data: Any,
+    ) -> None:
+        self.results.append(CheckResult(check_id, status, code, title, detail, action, data))
+
+    def run_all(self, only: set[str] | None = None) -> list[CheckResult]:
+        checks = [
+            ("socket", self.check_socket),
+            ("api", self.check_api_ping),
+            ("docker", self.check_docker_cli),
+            ("context", self.check_docker_context),
+            ("registry", self.check_registry),
+            ("network", self.check_dns_compare),
+            ("ports", self.check_port_publish),
+            ("domains", self.check_domain_route),
+            ("mounts", self.check_mount),
+            ("watch", self.check_watch_visibility),
+            ("clock", self.check_vm_clock),
+            ("disk", self.check_disk),
+            ("memory", self.check_memory),
+            ("helpers", self.check_helpers),
+        ]
+        try:
+            for group, fn in checks:
+                if only and group not in only:
+                    continue
+                try:
+                    fn()
+                except Exception as exc:  # keep doctor useful even when one probe breaks
+                    self.add(group, "fail", f"{group}.probe_exception", group, str(exc))
+            return self.results
+        finally:
+            self.cleanup()
+
+    def docker(self, args: list[str], timeout: float | None = None) -> subprocess.CompletedProcess[str]:
+        binary = docker_bin()
+        if not binary:
+            raise FileNotFoundError("docker CLI not found")
+        env = os.environ.copy()
+        env["DOCKER_HOST"] = f"unix://{self.sock}"
+        return subprocess.run(
+            [binary, *args],
+            env=env,
+            text=True,
+            capture_output=True,
+            timeout=timeout or max(self.timeout, 20),
+        )
+
+    def api(self, method: str, path: str, body: bytes | None = None) -> tuple[int, dict[str, str], bytes]:
+        return unix_http(self.sock, method, path, body=body, timeout=self.timeout)
+
+    def api_json(self, path: str) -> Any:
+        status_code, _, body = self.api("GET", path)
+        if status_code < 200 or status_code >= 300:
+            raise RuntimeError(f"Docker API {path} returned HTTP {status_code}")
+        return json.loads(body.decode("utf-8") or "null")
+
+    def check_socket(self) -> None:
+        path = self.sock
+        if not path.exists():
+            fallback = DEFAULT_ENGINE_SOCK if DEFAULT_ENGINE_SOCK.exists() else None
+            detail = f"{path} does not exist"
+            action = "Start Dory, or set DORY_SOCK to a running Docker-compatible unix socket."
+            if fallback:
+                detail += f"; headless engine socket exists at {fallback}"
+                action = f"Set DORY_SOCK={fallback} or start the Dory app socket."
+            self.add("socket.exists", "fail", "socket.missing", "Docker socket missing", detail, action)
+            return
+        mode = path.stat().st_mode
+        if not stat.S_ISSOCK(mode):
+            self.add(
+                "socket.exists",
+                "fail",
+                "socket.not_socket",
+                "Docker socket path is not a socket",
+                f"{path} exists but is not a unix socket",
+                "Run `dory repair socket` to move the stale path aside.",
+            )
+            return
+        self.add("socket.exists", "pass", "socket.ok", "Docker socket exists", str(path))
+
+    def check_api_ping(self) -> None:
+        try:
+            status_code, _, body = self.api("GET", "/_ping")
+            text = body.decode("utf-8", "replace").strip()
+        except Exception as exc:
+            self.add(
+                "socket.ping",
+                "fail",
+                "socket.unreachable",
+                "Docker API is not reachable",
+                str(exc),
+                "Start Dory or run `dory repair socket` if the socket path is stale.",
+            )
+            return
+        if status_code == 200 and text == "OK":
+            self.add("socket.ping", "pass", "socket.ping_ok", "Docker API ping passed", "Docker API returned OK")
+        else:
+            self.add(
+                "socket.ping",
+                "fail",
+                "socket.bad_ping",
+                "Docker API ping failed",
+                f"HTTP {status_code}: {text[:120]}",
+            )
+
+    def check_docker_cli(self) -> None:
+        binary = docker_bin()
+        if not binary:
+            self.add(
+                "docker.cli",
+                "fail",
+                "docker.cli_missing",
+                "Docker CLI missing",
+                "No docker executable found in PATH or DORY_DOCKER_BIN.",
+                "Install Dory shell integration or set DORY_DOCKER_BIN.",
+            )
+            return
+        self.add("docker.cli", "pass", "docker.cli_found", "Docker CLI found", binary)
+        try:
+            version = self.docker(["version", "--format", "{{json .Server}}"], timeout=12)
+        except Exception as exc:
+            self.add("docker.version", "fail", "docker.version_exception", "Docker CLI version failed", str(exc))
+            return
+        if version.returncode == 0:
+            self.add("docker.version", "pass", "docker.version_ok", "Docker CLI can reach Dory", version.stdout.strip()[:300])
+        else:
+            self.add(
+                "docker.version",
+                "fail",
+                "docker.version_failed",
+                "Docker CLI cannot reach Dory",
+                compact(version.stderr or version.stdout),
+                "Check DOCKER_HOST and the Dory Docker context.",
+            )
+        compose = subprocess.run([binary, "compose", "version"], text=True, capture_output=True, timeout=12)
+        if compose.returncode == 0:
+            self.add("docker.compose", "pass", "docker.compose_ok", "Docker Compose plugin works", compose.stdout.strip())
+        else:
+            self.add(
+                "docker.compose",
+                "warn",
+                "docker.compose_missing",
+                "Docker Compose plugin not available",
+                compact(compose.stderr or compose.stdout),
+                "Install Dory shell integration so the bundled Compose plugin is on PATH.",
+            )
+
+    def check_docker_context(self) -> None:
+        binary = docker_bin()
+        if not binary:
+            self.add("docker.context", "skip", "docker.cli_missing", "Docker context skipped", "Docker CLI is missing.")
+            return
+        env_host = os.environ.get("DOCKER_HOST", "")
+        expected = f"unix://{self.sock}"
+        if env_host and env_host != expected:
+            self.add(
+                "docker.host_env",
+                "warn",
+                "socket.docker_host_conflict",
+                "DOCKER_HOST points away from Dory",
+                f"DOCKER_HOST={env_host}",
+                f"Unset DOCKER_HOST or set it to {expected}.",
+            )
+        elif env_host == expected:
+            self.add("docker.host_env", "pass", "socket.docker_host_ok", "DOCKER_HOST points at Dory", env_host)
+        else:
+            self.add("docker.host_env", "pass", "socket.docker_host_unset", "DOCKER_HOST is not overriding context", "unset")
+
+        current = subprocess.run([binary, "context", "show"], text=True, capture_output=True, timeout=8)
+        if current.returncode == 0:
+            name = current.stdout.strip()
+            status = "pass" if name == "dory" else "warn"
+            code = "context.active" if name == "dory" else "context.not_active"
+            action = "" if name == "dory" else "Run `dory repair context` to create and activate the Dory context."
+            self.add("docker.context.current", status, code, "Active Docker context", name or "unknown", action)
+        else:
+            self.add("docker.context.current", "warn", "context.show_failed", "Could not read Docker context", compact(current.stderr))
+
+        inspect = subprocess.run(
+            [binary, "context", "inspect", "dory", "--format", "{{json .Endpoints.docker.Host}}"],
+            text=True,
+            capture_output=True,
+            timeout=8,
+        )
+        if inspect.returncode != 0:
+            self.add(
+                "docker.context.dory",
+                "warn",
+                "context.missing",
+                "Dory Docker context missing",
+                compact(inspect.stderr or inspect.stdout),
+                "Run `dory repair context`.",
+            )
+            return
+        host = inspect.stdout.strip().strip('"')
+        if host == expected:
+            self.add("docker.context.dory", "pass", "context.dory_ok", "Dory context targets this socket", host)
+        else:
+            self.add(
+                "docker.context.dory",
+                "warn",
+                "context.wrong_socket",
+                "Dory context targets another socket",
+                host,
+                "Run `dory repair context` to update it.",
+            )
+
+    def check_registry(self) -> None:
+        for index, probe in enumerate(network_probes(self.extra_network_probes)):
+            self.check_registry_probe(probe, default=(index == 0))
+
+    def check_registry_probe(self, probe: dict[str, Any], default: bool) -> None:
+        host = str(probe["host"])
+        port = int(probe.get("port") or 443)
+        slug = slugify(str(probe.get("name") or host))
+        dns_id = "network.registry_dns" if default else f"network.registry_dns.{slug}"
+        tls_id = "network.registry_https" if default else f"network.registry_https.{slug}"
+        tcp_id = "network.registry_tcp" if default else f"network.registry_tcp.{slug}"
+        try:
+            infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+            ips = sorted({info[4][0] for info in infos})
+        except socket.gaierror as exc:
+            self.add(
+                dns_id,
+                "fail",
+                "network.registry_dns_failed",
+                "Host cannot resolve network probe",
+                f"{host}:{port}: {exc}",
+                "Check DNS, VPN, or proxy settings.",
+                probe=probe,
+            )
+            return
+        self.add(dns_id, "pass", "network.registry_dns_ok", "Host resolves network probe", f"{host}:{port}", ips=ips[:8], probe=probe)
+        try:
+            context = ssl.create_default_context()
+            conn = http.client.HTTPSConnection(host, port, timeout=self.timeout, context=context)
+            conn.request("GET", "/v2/", headers={"User-Agent": "dory-doctor"})
+            response = conn.getresponse()
+            body = response.read(512)
+            conn.close()
+        except ssl.SSLError as exc:
+            self.add(tls_id, "fail", "network.registry_tls_failed", "Network probe TLS failed", str(exc), probe=probe)
+            return
+        except TimeoutError as exc:
+            self.add(tcp_id, "fail", "network.registry_timeout", "Network probe connection timed out", str(exc), probe=probe)
+            return
+        except OSError as exc:
+            self.add(tcp_id, "fail", "network.registry_tcp_failed", "Network probe TCP connection failed", str(exc), probe=probe)
+            return
+        if response.status in (200, 401):
+            self.add(
+                tls_id,
+                "pass",
+                "network.registry_https_ok",
+                "Network probe HTTPS path works",
+                f"HTTP {response.status}; auth challenge is expected for Docker Hub",
+                probe=probe,
+            )
+        else:
+            self.add(
+                tls_id,
+                "warn",
+                "network.registry_unexpected_status",
+                "Network probe returned unexpected status",
+                f"HTTP {response.status}: {body.decode('utf-8', 'replace')[:120]}",
+                probe=probe,
+            )
+
+    def check_dns_compare(self) -> None:
+        if not self.active:
+            self.add(
+                "network.container_dns",
+                "skip",
+                "network.active_probe_skipped",
+                "Container DNS comparison skipped",
+                "Run `dory doctor --active` to compare host DNS with container DNS.",
+            )
+            return
+        if not self.engine_available():
+            self.add("network.container_dns", "skip", "socket.unreachable", "Container DNS skipped", "Docker API is not reachable.")
+            return
+        for index, probe in enumerate(network_probes(self.extra_network_probes)):
+            self.check_dns_probe(probe, default=(index == 0))
+
+    def check_dns_probe(self, probe: dict[str, Any], default: bool) -> None:
+        host = str(probe["host"])
+        port = int(probe.get("port") or 443)
+        slug = slugify(str(probe.get("name") or host))
+        check_id = "network.container_dns" if default else f"network.container_dns.{slug}"
+        try:
+            host_ips = sorted({info[4][0] for info in socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)})
+        except socket.gaierror:
+            host_ips = []
+        probe_root = HOME / ".dory" / "doctor"
+        probe_root.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="dory-dns-", dir=str(probe_root)) as tmp:
+            output_path = Path(tmp) / "dns.txt"
+            command = (
+                "nslookup \"$1\" 2>/dev/null | "
+                "awk '/^Address[[:space:]]*[0-9]*:/ {print $NF}' | tail -n 8 > /work/dns.txt"
+            )
+            result = self.docker(
+                [
+                    "run",
+                    "--rm",
+                    "--pull=missing",
+                    "--label",
+                    self.label,
+                    "-v",
+                    f"{tmp}:/work",
+                    DOCKER_IMAGE,
+                    "sh",
+                    "-c",
+                    command,
+                    "dory-dns",
+                    host,
+                ],
+                timeout=60,
+            )
+            dns_output = output_path.read_text(encoding="utf-8", errors="replace") if output_path.exists() else ""
+        if result.returncode != 0:
+            self.add(
+                check_id,
+                "fail",
+                "network.container_dns_failed",
+                "Container cannot resolve network probe",
+                compact(result.stderr or result.stdout or dns_output),
+                "Check Dory VM DNS, VPN split DNS, and proxy settings.",
+                probe=probe,
+            )
+            return
+        container_ips = sorted({line.strip() for line in dns_output.splitlines() if line.strip()})
+        if not container_ips:
+            self.add(check_id, "fail", "network.container_dns_empty", "Container DNS returned no addresses", dns_output, probe=probe)
+            return
+        status = "pass" if not host_ips or set(host_ips).intersection(container_ips) else "warn"
+        code = "network.container_dns_ok" if status == "pass" else "network.vpn_dns_mismatch"
+        detail = f"host={','.join(host_ips[:8]) or 'unknown'} container={','.join(container_ips[:8])}"
+        action = "" if status == "pass" else "Container DNS differs from host DNS; check VPN split-DNS forwarding."
+        self.add(check_id, status, code, "Host/container DNS comparison", detail, action, probe=probe)
+
+    def check_port_publish(self) -> None:
+        if not self.active:
+            table = route_table(self.sock)
+            if table.get("error"):
+                self.add(
+                    "network.published_ports",
+                    "fail",
+                    "network.port_table_unreadable",
+                    "Published port table could not be read",
+                    table["error"],
+                    "The Docker API did not return the container list; run `dory doctor` again once the engine is healthy.",
+                )
+                return
+            count = len(table.get("ports", []))
+            self.add(
+                "network.published_ports",
+                "pass",
+                "network.port_table_ok",
+                "Published port table readable",
+                f"{count} published port route(s) found",
+                ports=count,
+            )
+            return
+        name, port = self.start_http_container()
+        if not name or not port:
+            return
+        body, error = wait_http(f"http://127.0.0.1:{port}", timeout=self.timeout, attempts=30)
+        if error:
+            self.add(
+                "network.port_publish",
+                "fail",
+                "network.port_unreachable",
+                "Published localhost port is not reachable",
+                error,
+                "Check Dory port forwarding and local firewall/VPN software.",
+                port=port,
+            )
+            return
+        if "dory-doctor-ok" in body:
+            self.add("network.port_publish", "pass", "network.port_ok", "Published localhost port works", f"127.0.0.1:{port}")
+        else:
+            self.add("network.port_publish", "fail", "network.port_bad_response", "Published port returned wrong body", body[:120])
+
+    def check_domain_route(self) -> None:
+        table = route_table(self.sock)
+        domain_count = len(table.get("domains", []))
+        if not self.active:
+            if table.get("error"):
+                self.add(
+                    "network.domain_table",
+                    "fail",
+                    "network.domain_table_unreadable",
+                    "Domain route table could not be read",
+                    table["error"],
+                    "The Docker API did not return the container list; run `dory doctor` again once the engine is healthy.",
+                )
+                return
+            self.add(
+                "network.domain_table",
+                "pass",
+                "network.domain_table_ok",
+                "Domain route table readable",
+                f"{domain_count} domain route(s) inferred from containers",
+                domains=domain_count,
+            )
+            return
+        name, _ = self.start_http_container(reuse=True)
+        if not name:
+            return
+        host = f"{name}.{DOMAIN_SUFFIX}"
+        response_status = 0
+        body = ""
+        last_error = ""
+        for _ in range(30):
+            try:
+                conn = http.client.HTTPConnection("127.0.0.1", DOMAIN_PROXY_PORT, timeout=self.timeout)
+                conn.request("GET", "/", headers={"Host": host, "User-Agent": "dory-doctor"})
+                response = conn.getresponse()
+                response_status = response.status
+                body = response.read(2048).decode("utf-8", "replace")
+                conn.close()
+                if response_status == 200 and "dory-doctor-ok" in body:
+                    break
+            except OSError as exc:
+                last_error = str(exc)
+            time.sleep(0.3)
+        if response_status == 0:
+            self.add(
+                "network.domain_route",
+                "warn",
+                "network.domain_proxy_unreachable",
+                "Local domain proxy not reachable",
+                f"127.0.0.1:{DOMAIN_PROXY_PORT}: {last_error}",
+                "Enable Dory local domains or check the configured HTTP proxy port.",
+                host=host,
+            )
+            return
+        if response_status == 200 and "dory-doctor-ok" in body:
+            self.add("network.domain_route", "pass", "network.domain_ok", "Local domain route works", host)
+        else:
+            self.add(
+                "network.domain_route",
+                "warn",
+                "network.domain_bad_response",
+                "Local domain route did not return the expected service",
+                f"HTTP {response_status}: {body[:120]}",
+                "Check whether the Dory app route table has reconciled this container.",
+                host=host,
+            )
+
+    def check_mount(self) -> None:
+        if not self.active:
+            self.add(
+                "mount.basic",
+                "skip",
+                "mount.active_probe_skipped",
+                "Bind mount probe skipped",
+                "Run `dory doctor --active` to validate bind mount read/write/path-with-spaces behavior.",
+            )
+            return
+        if not self.engine_available():
+            self.add("mount.basic", "skip", "socket.unreachable", "Bind mount skipped", "Docker API is not reachable.")
+            return
+        probe_root = HOME / ".dory" / "doctor"
+        probe_root.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="path with spaces ", dir=str(probe_root)) as tmp:
+            root = Path(tmp)
+            (root / "host.txt").write_text("host-ok\n", encoding="utf-8")
+            (root / "truncate.txt").write_text("truncate-me\n", encoding="utf-8")
+            script = (
+                "set -eu; "
+                "grep -q host-ok /work/host.txt; "
+                "printf container-ok > /work/container.txt; "
+                ": > /work/truncate.txt"
+            )
+            result = self.docker(
+                [
+                    "run",
+                    "--rm",
+                    "--pull=missing",
+                    "--label",
+                    self.label,
+                    "-v",
+                    f"{root}:/work",
+                    DOCKER_IMAGE,
+                    "sh",
+                    "-c",
+                    script,
+                ],
+                timeout=60,
+            )
+            if result.returncode != 0:
+                self.add(
+                    "mount.basic",
+                    "fail",
+                    "mount.read_write_failed",
+                    "Bind mount read/write failed",
+                    compact(result.stderr or result.stdout),
+                    "Check file sharing permissions and path handling.",
+                    path=str(root),
+                )
+                return
+            ok = (root / "container.txt").read_text(encoding="utf-8") == "container-ok"
+            truncated = (root / "truncate.txt").stat().st_size == 0
+            if ok and truncated:
+                self.add("mount.basic", "pass", "mount.read_write_ok", "Bind mount read/write works", "path with spaces passed")
+            else:
+                self.add(
+                    "mount.basic",
+                    "fail",
+                    "mount.host_visibility_failed",
+                    "Bind mount changes were not visible on host",
+                    f"container_file={ok} truncated={truncated}",
+                )
+            link_result = self.docker(
+                [
+                    "run",
+                    "--rm",
+                    "--pull=missing",
+                    "--label",
+                    self.label,
+                    "-v",
+                    f"{root}:/work",
+                    DOCKER_IMAGE,
+                    "sh",
+                    "-c",
+                    "ln -sf host.txt /work/link.txt && test -L /work/link.txt",
+                ],
+                timeout=60,
+            )
+            link = (root / "link.txt").is_symlink()
+            if link_result.returncode == 0 and link:
+                self.add("mount.symlink", "pass", "mount.symlink_ok", "Bind mount symlink creation works", "ln -s propagated to host")
+            else:
+                self.add(
+                    "mount.symlink",
+                    "fail",
+                    "mount.symlink_failed",
+                    "Bind mount symlink creation failed",
+                    compact(link_result.stderr or link_result.stdout),
+                    "Update the Dory engine so virtio-fs handles FUSE symlink/readlink operations.",
+                    host_link_seen=link,
+                )
+
+    def check_watch_visibility(self) -> None:
+        if not self.active:
+            self.add(
+                "mount.watch",
+                "skip",
+                "mount.active_probe_skipped",
+                "Watch visibility probe skipped",
+                "Run `dory doctor --active` to validate host edits becoming visible inside a mounted container.",
+            )
+            return
+        binary = docker_bin()
+        if not binary:
+            self.add(
+                "mount.watch",
+                "fail",
+                "docker.cli_missing",
+                "Watch visibility probe needs Docker CLI",
+                "No docker executable found in PATH or DORY_DOCKER_BIN.",
+            )
+            return
+        probe_root = HOME / ".dory" / "doctor"
+        probe_root.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="watch ", dir=str(probe_root)) as tmp:
+            root = Path(tmp)
+            watch_file = root / "watch.txt"
+            watch_file.write_text("initial\n", encoding="utf-8")
+            name = f"dory-doctor-watch-{self.run_id}"
+            self.created_containers.append(name)
+            command = (
+                "for i in $(seq 1 80); do "
+                "test \"$(cat /work/watch.txt 2>/dev/null || true)\" = changed && exit 0; "
+                "sleep 0.1; "
+                "done; exit 1"
+            )
+            proc = subprocess.Popen(
+                [
+                    binary,
+                    "-H",
+                    f"unix://{self.sock}",
+                    "run",
+                    "--name",
+                    name,
+                    "--rm",
+                    "--label",
+                    self.label,
+                    "-v",
+                    f"{root}:/work",
+                    DOCKER_IMAGE,
+                    "sh",
+                    "-c",
+                    command,
+                ],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            time.sleep(0.8)
+            watch_file.write_text("changed", encoding="utf-8")
+            try:
+                stdout, stderr = proc.communicate(timeout=15)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                stdout, stderr = proc.communicate()
+            if proc.returncode == 0:
+                self.add("mount.watch", "pass", "mount.watch_visible", "Host edits are visible in mounted container", "polling visibility probe passed")
+            else:
+                self.add(
+                    "mount.watch",
+                    "fail",
+                    "mount.watch_stale",
+                    "Host edits did not become visible in mounted container",
+                    compact(stderr or stdout),
+                    "Check virtiofs/file-sharing health and watcher-heavy project behavior.",
+                )
+
+    def check_vm_clock(self) -> None:
+        if not self.active:
+            self.add("vm.clock", "skip", "vm.active_probe_skipped", "VM clock probe skipped", "Run `dory doctor --active` to compare guest and host clocks.")
+            return
+        result = self.docker(
+            ["run", "--rm", "--pull=missing", "--label", self.label, DOCKER_IMAGE, "date", "+%s"],
+            timeout=60,
+        )
+        if result.returncode != 0:
+            self.add("vm.clock", "fail", "vm.clock_failed", "Could not read guest clock", compact(result.stderr or result.stdout))
+            return
+        try:
+            guest = int(result.stdout.strip().splitlines()[-1])
+        except Exception:
+            self.add("vm.clock", "fail", "vm.clock_parse_failed", "Could not parse guest clock", result.stdout)
+            return
+        host = int(time.time())
+        drift = abs(host - guest)
+        status = "pass" if drift <= 5 else "warn"
+        code = "vm.clock_ok" if status == "pass" else "vm.clock_drift"
+        action = "" if status == "pass" else "Restart the Dory engine if this persists after laptop sleep/wake."
+        self.add("vm.clock", status, code, "Host/guest clock drift", f"{drift}s", action, host=host, guest=guest)
+
+    def check_disk(self) -> None:
+        report = disk_report(self.sock)
+        host = report["host"]
+        free = host.get("free_bytes", 0)
+        total = host.get("total_bytes", 0)
+        pct_free = (free / total * 100) if total else 0
+        if total and pct_free < 5:
+            status, code = "fail", "disk.host_critical"
+            action = "Free host disk space before pulling or building images."
+        elif total and pct_free < 15:
+            status, code = "warn", "disk.host_low"
+            action = "Consider pruning images/build cache or freeing host disk space."
+        else:
+            status, code = "pass", "disk.host_ok"
+            action = ""
+        self.add("disk.host", status, code, "Host disk space", f"{format_bytes(free)} free of {format_bytes(total)}", action, **host)
+        docker = report.get("docker", {})
+        if docker.get("available"):
+            self.add(
+                "disk.docker",
+                "pass",
+                "disk.docker_df_ok",
+                "Docker disk usage readable",
+                docker_summary(docker),
+                **docker,
+            )
+        else:
+            self.add(
+                "disk.docker",
+                "warn",
+                "disk.docker_df_unavailable",
+                "Docker disk usage unavailable",
+                docker.get("error", "Docker API did not return /system/df"),
+            )
+        state = report.get("state", {})
+        log_bytes = int(state.get("log_bytes", 0) or 0)
+        state_status = "warn" if log_bytes > 100_000_000 else "pass"
+        state_code = "disk.dory_logs_large" if state_status == "warn" else "disk.dory_state_ok"
+        state_action = "Run `dory cleanup --logs --apply` to trim old log data while preserving recent tails." if state_status == "warn" else ""
+        self.add(
+            "disk.dory_state",
+            state_status,
+            state_code,
+            "Dory state disk usage estimated",
+            f"state={format_bytes(state.get('total_bytes', 0))} logs={format_bytes(state.get('log_bytes', 0))} vm={format_bytes(state.get('vm_disk_bytes', 0))}",
+            state_action,
+            **state,
+        )
+
+    def check_memory(self) -> None:
+        report = memory_report()
+        self.add(
+            "memory.processes",
+            "pass",
+            "memory.processes_ok",
+            "Dory process memory sampled",
+            f"rss={format_bytes(report.get('rss_bytes', 0))} processes={len(report.get('processes', []))}",
+            **report,
+        )
+
+    def check_helpers(self) -> None:
+        resolver = Path(f"/etc/resolver/{DOMAIN_SUFFIX}")
+        ca = HOME / "Library" / "Application Support" / "Dory" / "LocalCA"
+        data = {"resolver": str(resolver), "resolver_exists": resolver.exists(), "local_ca_dir": str(ca), "local_ca_exists": ca.exists()}
+        if resolver.exists():
+            self.add("helpers.resolver", "pass", "helpers.resolver_ok", "Local domain resolver file exists", str(resolver), **data)
+        else:
+            self.add(
+                "helpers.resolver",
+                "warn",
+                "helpers.resolver_missing",
+                "Local domain resolver file missing",
+                str(resolver),
+                "Run `scripts/enable-networking.sh` if you want system-wide *.dory.local resolution.",
+                **data,
+            )
+
+    def engine_available(self) -> bool:
+        try:
+            status_code, _, body = self.api("GET", "/_ping")
+            return status_code == 200 and body.strip() == b"OK"
+        except Exception:
+            return False
+
+    def start_http_container(self, reuse: bool = False) -> tuple[str | None, int | None]:
+        existing = getattr(self, "_http_container", None)
+        if reuse and existing:
+            return existing
+        if not self.engine_available():
+            self.add("network.http_probe", "skip", "socket.unreachable", "HTTP probe skipped", "Docker API is not reachable.")
+            return None, None
+        name = f"dory-doctor-http-{self.run_id}"
+        self.created_containers.append(name)
+        _ = self.docker(["rm", "-f", name], timeout=15)
+        host_port = free_tcp_port()
+        command = (
+            "while true; do "
+            "printf 'HTTP/1.1 200 OK\\r\\nContent-Length: 14\\r\\n\\r\\ndory-doctor-ok' "
+            "| nc -l -p 8080; "
+            "done"
+        )
+        run = self.docker(
+            [
+                "run",
+                "-d",
+                "--pull=missing",
+                "--name",
+                name,
+                "--label",
+                self.label,
+                "-p",
+                f"127.0.0.1:{host_port}:8080",
+                DOCKER_IMAGE,
+                "sh",
+                "-c",
+                command,
+            ],
+            timeout=90,
+        )
+        if run.returncode != 0:
+            self.add(
+                "network.http_probe",
+                "fail",
+                "network.http_probe_start_failed",
+                "Could not start HTTP probe container",
+                compact(run.stderr or run.stdout),
+            )
+            return None, None
+        port = None
+        for _ in range(30):
+            port_cmd = self.docker(["port", name, "8080/tcp"], timeout=8)
+            if port_cmd.returncode == 0:
+                port = parse_port(port_cmd.stdout)
+                if port:
+                    break
+            time.sleep(0.2)
+        if not port:
+            self.add("network.http_probe", "fail", "network.port_missing", "HTTP probe has no published port", compact(port_cmd.stderr or port_cmd.stdout))
+            return name, None
+        self._http_container = (name, port)
+        return name, port
+
+    def cleanup(self) -> None:
+        if not self.created_containers or not docker_bin():
+            return
+        names = sorted(set(self.created_containers))
+        try:
+            self.docker(["rm", "-f", *names], timeout=20)
+        except Exception:
+            pass
+
+
+def unix_http(sock: Path, method: str, path: str, body: bytes | None = None, timeout: float = 5.0) -> tuple[int, dict[str, str], bytes]:
+    body = body or b""
+    request = (
+        f"{method} {path} HTTP/1.1\r\n"
+        "Host: dory\r\n"
+        "User-Agent: dory-doctor\r\n"
+        "Connection: close\r\n"
+        f"Content-Length: {len(body)}\r\n"
+        "\r\n"
+    ).encode("utf-8") + body
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+        client.settimeout(timeout)
+        client.connect(str(sock))
+        client.sendall(request)
+        chunks: list[bytes] = []
+        while True:
+            try:
+                chunk = client.recv(65536)
+            except socket.timeout as exc:
+                # A read timeout is a real failure, not end-of-response: returning the partial bytes
+                # would let a slow-but-healthy Docker API look like a malformed/short reply. The
+                # `Connection: close` request means a healthy server closes the socket (recv -> b"")
+                # when done, so the only way we reach here is a genuine stall.
+                raise TimeoutError(f"Docker socket read timed out after {timeout}s") from exc
+            if not chunk:
+                break
+            chunks.append(chunk)
+    raw = b"".join(chunks)
+    head, _, payload = raw.partition(b"\r\n\r\n")
+    lines = head.decode("iso-8859-1", "replace").split("\r\n")
+    if not lines or not lines[0].startswith("HTTP/"):
+        raise RuntimeError("invalid HTTP response from Docker socket")
+    parts = lines[0].split(" ", 2)
+    status_code = int(parts[1])
+    headers: dict[str, str] = {}
+    for line in lines[1:]:
+        if ":" in line:
+            key, value = line.split(":", 1)
+            headers[key.strip().lower()] = value.strip()
+    if headers.get("transfer-encoding", "").lower() == "chunked":
+        payload = decode_chunked(payload)
+    return status_code, headers, payload
+
+
+def decode_chunked(data: bytes) -> bytes:
+    out = bytearray()
+    index = 0
+    while True:
+        end = data.find(b"\r\n", index)
+        if end < 0:
+            break
+        size_text = data[index:end].split(b";", 1)[0]
+        try:
+            size = int(size_text, 16)
+        except ValueError:
+            break
+        index = end + 2
+        if size == 0:
+            break
+        out += data[index : index + size]
+        index += size + 2
+    return bytes(out)
+
+
+def compact(text: str, limit: int = 700) -> str:
+    return re.sub(r"\s+", " ", text or "").strip()[:limit]
+
+
+def http_get(url: str, timeout: float = 5.0) -> str:
+    with urllib.request.urlopen(url, timeout=timeout) as response:
+        return response.read(4096).decode("utf-8", "replace")
+
+
+def wait_http(url: str, timeout: float = 5.0, attempts: int = 20) -> tuple[str, str]:
+    last_error = ""
+    for _ in range(attempts):
+        try:
+            return http_get(url, timeout=timeout), ""
+        except Exception as exc:
+            last_error = str(exc)
+            time.sleep(0.25)
+    return "", last_error
+
+
+def parse_port(output: str) -> int | None:
+    for token in re.split(r"\s+", output.strip()):
+        if ":" in token:
+            candidate = token.rsplit(":", 1)[-1]
+            if candidate.isdigit():
+                return int(candidate)
+    return None
+
+
+def slugify(value: str) -> str:
+    slug = re.sub(r"[^A-Za-z0-9_.-]+", "-", value.strip().lower()).strip("-")
+    return slug[:80] or "probe"
+
+
+def parse_network_probe(value: str) -> dict[str, Any]:
+    raw = value.strip()
+    if not raw:
+        raise ValueError("probe cannot be empty")
+    name = ""
+    if "=" in raw and "://" not in raw.split("=", 1)[0]:
+        name, raw = raw.split("=", 1)
+        name = name.strip()
+        raw = raw.strip()
+    if "://" in raw:
+        parsed = urllib.parse.urlparse(raw)
+        if parsed.username or parsed.password:
+            raise ValueError("network probes must not contain credentials")
+        host = parsed.hostname or ""
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    else:
+        if "/" in raw or "@" in raw:
+            raise ValueError("network probes must be host[:port] without paths or credentials")
+        host = raw
+        port = 443
+        if raw.count(":") == 1:
+            left, right = raw.rsplit(":", 1)
+            if right.isdigit():
+                host = left
+                port = int(right)
+    host = host.strip().strip("[]").lower()
+    if not host or not re.match(r"^[A-Za-z0-9_.:-]+$", host):
+        raise ValueError(f"invalid probe host: {host or value}")
+    if port < 1 or port > 65535:
+        raise ValueError(f"invalid probe port: {port}")
+    return {
+        "name": slugify(name or host),
+        "host": host,
+        "port": port,
+    }
+
+
+def network_probes(extra: list[str] | None = None) -> list[dict[str, Any]]:
+    probes = [parse_network_probe(f"docker-hub={os.environ.get('DORY_REGISTRY_PROBE', 'registry-1.docker.io')}:443")]
+    for item in (load_config().get("network") or {}).get("probes", []):
+        try:
+            if isinstance(item, str):
+                probes.append(parse_network_probe(item))
+            elif isinstance(item, dict):
+                probes.append(parse_network_probe(f"{item.get('name') or item.get('host')}={item.get('host')}:{item.get('port', 443)}"))
+        except Exception:
+            continue
+    for item in extra or []:
+        probes.append(parse_network_probe(item))
+    seen: set[tuple[str, int]] = set()
+    deduped: list[dict[str, Any]] = []
+    for probe in probes:
+        key = (str(probe["host"]), int(probe["port"]))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(probe)
+    return deduped
+
+
+def save_network_probe(value: str) -> dict[str, Any]:
+    probe = parse_network_probe(value)
+    config = load_config()
+    network = dict(config.get("network") or {})
+    probes = [p for p in network.get("probes", []) if not (isinstance(p, dict) and p.get("host") == probe["host"] and int(p.get("port", 443)) == probe["port"])]
+    probes.append(probe)
+    network["probes"] = sorted(probes, key=lambda item: (str(item.get("host")), int(item.get("port", 443))))
+    config["network"] = network
+    save_config(config)
+    return probe
+
+
+def remove_network_probe(value: str) -> bool:
+    target = parse_network_probe(value)
+    config = load_config()
+    network = dict(config.get("network") or {})
+    original = list(network.get("probes", []))
+    kept = [
+        item for item in original
+        if not (isinstance(item, dict) and item.get("host") == target["host"] and int(item.get("port", 443)) == target["port"])
+    ]
+    network["probes"] = kept
+    config["network"] = network
+    save_config(config)
+    return len(kept) != len(original)
+
+
+def free_tcp_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        s.bind(("127.0.0.1", 0))
+        return int(s.getsockname()[1])
+
+
+def docker_summary(report: dict[str, Any]) -> str:
+    return (
+        f"images={format_bytes(report.get('images_bytes', 0))} "
+        f"containers={format_bytes(report.get('containers_bytes', 0))} "
+        f"volumes={format_bytes(report.get('volumes_bytes', 0))} "
+        f"build_cache={format_bytes(report.get('build_cache_bytes', 0))}"
+    )
+
+
+def disk_report(sock: Path | None = None) -> dict[str, Any]:
+    sock = sock or socket_path()
+    target = HOME
+    try:
+        usage = shutil.disk_usage(target)
+        host = {
+            "path": str(target),
+            "total_bytes": usage.total,
+            "used_bytes": usage.used,
+            "free_bytes": usage.free,
+        }
+    except Exception as exc:
+        host = {"path": str(target), "error": str(exc)}
+
+    docker: dict[str, Any] = {"available": False}
+    try:
+        status_code, _, body = unix_http(sock, "GET", "/system/df", timeout=5)
+        if 200 <= status_code < 300:
+            raw = json.loads(body.decode("utf-8") or "{}")
+            images = raw.get("Images") or []
+            containers = raw.get("Containers") or []
+            volumes = raw.get("Volumes") or []
+            build_cache = raw.get("BuildCache") or []
+            docker = {
+                "available": True,
+                "images_count": len(images),
+                "containers_count": len(containers),
+                "volumes_count": len(volumes),
+                "build_cache_count": len(build_cache),
+                "images_bytes": sum_int(item.get("Size") for item in images),
+                "containers_bytes": sum_int((item.get("SizeRw") or item.get("SizeRootFs")) for item in containers),
+                "volumes_bytes": sum_int(((item.get("UsageData") or {}).get("Size")) for item in volumes),
+                "build_cache_bytes": sum_int(item.get("Size") for item in build_cache),
+            }
+        else:
+            docker["error"] = f"HTTP {status_code}"
+    except Exception as exc:
+        docker["error"] = str(exc)
+
+    state_root = HOME / ".dory"
+    state = {
+        "path": str(state_root),
+        "total_bytes": directory_size(state_root),
+        "log_bytes": matched_size(state_root, ["*.log", "*.log.*"]),
+        "vm_disk_bytes": matched_size(state_root, ["*.raw", "*.qcow2", "*.img", "*.ext4", "*.vhd", "*.vhdx"]),
+    }
+    return {"generated_at": now_iso(), "socket": str(sock), "host": host, "docker": docker, "state": state}
+
+
+def cleanup_report(apply: bool = False, include_volumes: bool = False, log_max_bytes: int = 5_000_000) -> dict[str, Any]:
+    actions: list[dict[str, Any]] = []
+    report = disk_report()
+    docker = report.get("docker", {})
+    if docker.get("available"):
+        containers = docker_containers_for_cleanup()
+        stopped = [c for c in containers if (c.get("State") or "") != "running"]
+        actions.append(cleanup_action(
+            target="stopped-containers",
+            apply=apply,
+            count=len(stopped),
+            bytes_reclaimable=sum_int((c.get("SizeRw") or c.get("SizeRootFs")) for c in stopped),
+            command=["container", "prune", "-f"],
+            detail=f"{len(stopped)} stopped container(s)",
+        ))
+        dangling_images = docker_image_ids(["images", "-f", "dangling=true", "-q"])
+        actions.append(cleanup_action(
+            target="dangling-images",
+            apply=apply,
+            count=len(dangling_images),
+            bytes_reclaimable=0,
+            command=["image", "prune", "-f"],
+            detail=f"{len(dangling_images)} dangling image(s)",
+        ))
+        build_cache_bytes = int(docker.get("build_cache_bytes") or 0)
+        actions.append(cleanup_action(
+            target="build-cache",
+            apply=apply,
+            count=int(docker.get("build_cache_count") or 0),
+            bytes_reclaimable=build_cache_bytes,
+            command=["builder", "prune", "-f"],
+            detail=f"{format_bytes(build_cache_bytes)} build cache",
+        ))
+        if include_volumes:
+            volume_bytes = int(docker.get("volumes_bytes") or 0)
+            actions.append(cleanup_action(
+                target="unused-volumes",
+                apply=apply,
+                count=int(docker.get("volumes_count") or 0),
+                bytes_reclaimable=volume_bytes,
+                command=["volume", "prune", "-f"],
+                detail=f"{format_bytes(volume_bytes)} volume data; destructive",
+            ))
+        else:
+            actions.append({
+                "target": "unused-volumes",
+                "status": "skip",
+                "detail": "Volume cleanup skipped; pass --include-volumes to inspect this destructive cleanup action.",
+                "risk": "high",
+            })
+    else:
+        actions.append({
+            "target": "docker",
+            "status": "skip",
+            "detail": docker.get("error", "Docker API unavailable"),
+        })
+    actions.append(cleanup_logs(apply=apply, max_bytes=log_max_bytes))
+    return {
+        "generated_at": now_iso(),
+        "apply": apply,
+        "include_volumes": include_volumes,
+        "actions": actions,
+    }
+
+
+def docker_containers_for_cleanup() -> list[dict[str, Any]]:
+    try:
+        status_code, _, body = unix_http(socket_path(), "GET", "/containers/json?all=1&size=1", timeout=5)
+        if 200 <= status_code < 300:
+            data = json.loads(body.decode("utf-8") or "[]")
+            return data if isinstance(data, list) else []
+    except Exception:
+        pass
+    return []
+
+
+def docker_image_ids(args: list[str]) -> list[str]:
+    try:
+        result = docker_cli(args, timeout=30)
+    except Exception:
+        return []
+    if result.returncode != 0:
+        return []
+    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+
+def cleanup_action(
+    target: str,
+    apply: bool,
+    count: int,
+    bytes_reclaimable: int,
+    command: list[str],
+    detail: str,
+) -> dict[str, Any]:
+    action: dict[str, Any] = {
+        "target": target,
+        "status": "pass" if count == 0 and bytes_reclaimable == 0 else "warn",
+        "detail": detail,
+        "count": count,
+        "bytes_reclaimable": bytes_reclaimable,
+        "risk": "medium" if target == "build-cache" else "low",
+        "command": ["docker", *command],
+    }
+    if not apply or (count == 0 and bytes_reclaimable == 0):
+        action["applied"] = False
+        return action
+    try:
+        result = docker_cli(command, timeout=120)
+    except Exception as exc:
+        action.update({"status": "fail", "applied": False, "detail": str(exc)})
+        return action
+    action["applied"] = result.returncode == 0
+    if result.returncode != 0:
+        action["status"] = "fail"
+        action["detail"] = compact(result.stderr or result.stdout)
+    else:
+        action["status"] = "pass"
+        action["detail"] = compact(result.stdout or detail)
+    return action
+
+
+def cleanup_logs(apply: bool, max_bytes: int) -> dict[str, Any]:
+    state_root = HOME / ".dory"
+    logs = []
+    total_reclaimable = 0
+    if state_root.exists():
+        for path in sorted(state_root.glob("*.log*")):
+            if not path.is_file():
+                continue
+            try:
+                size = path.stat().st_size
+            except OSError:
+                continue
+            reclaimable = max(0, size - max_bytes)
+            if reclaimable:
+                logs.append({"path": str(path), "size_bytes": size, "bytes_reclaimable": reclaimable})
+                total_reclaimable += reclaimable
+                if apply:
+                    trim_file_tail(path, max_bytes)
+    return {
+        "target": "logs",
+        "status": "pass" if total_reclaimable == 0 else "warn",
+        "detail": f"{format_bytes(total_reclaimable)} log bytes above {format_bytes(max_bytes)} per file",
+        "bytes_reclaimable": total_reclaimable,
+        "applied": bool(apply and total_reclaimable),
+        "risk": "low",
+        "files": logs,
+    }
+
+
+def trim_file_tail(path: Path, max_bytes: int) -> None:
+    with path.open("rb") as handle:
+        handle.seek(0, os.SEEK_END)
+        size = handle.tell()
+        handle.seek(max(0, size - max_bytes))
+        data = handle.read(max_bytes)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_bytes(data)
+    os.replace(tmp, path)
+
+
+def sum_int(values: Any) -> int:
+    total = 0
+    for value in values:
+        if isinstance(value, int):
+            total += max(0, value)
+    return total
+
+
+def directory_size(root: Path) -> int:
+    if not root.exists():
+        return 0
+    total = 0
+    for dirpath, dirnames, filenames in os.walk(root, onerror=lambda _: None):
+        dirnames[:] = [d for d in dirnames if d not in {"Cache", "tmp"}]
+        for name in filenames:
+            path = Path(dirpath) / name
+            try:
+                st = path.stat()
+            except OSError:
+                continue
+            if stat.S_ISREG(st.st_mode):
+                total += st.st_size
+    return total
+
+
+def matched_size(root: Path, patterns: list[str]) -> int:
+    if not root.exists():
+        return 0
+    total = 0
+    for dirpath, _, filenames in os.walk(root, onerror=lambda _: None):
+        for name in filenames:
+            if any(fnmatch.fnmatch(name, pattern) for pattern in patterns):
+                try:
+                    total += (Path(dirpath) / name).stat().st_size
+                except OSError:
+                    pass
+    return total
+
+
+def memory_report() -> dict[str, Any]:
+    patterns = [re.compile(p, re.I) for p in os.environ.get("DORY_PROCESS_PATTERN", "Dory|dory-hv|dory-vm|dory-vmboot|gvproxy").split("|")]
+    processes: list[dict[str, Any]] = []
+    rss = 0
+    try:
+        result = subprocess.run(["ps", "-axo", "pid=,rss=,comm=,args="], text=True, capture_output=True, timeout=8)
+        lines = result.stdout.splitlines() if result.returncode == 0 else []
+    except Exception:
+        lines = []
+    for line in lines:
+        parts = line.strip().split(None, 2)
+        if len(parts) < 3:
+            continue
+        pid_text, rss_text, rest = parts
+        if "dory-doctor" in rest:
+            continue
+        if not any(pattern.search(rest) for pattern in patterns):
+            continue
+        try:
+            rss_bytes = int(rss_text) * 1024
+        except ValueError:
+            continue
+        rss += rss_bytes
+        processes.append({"pid": int(pid_text), "rss_bytes": rss_bytes, "command": rest[:240]})
+    return {"generated_at": now_iso(), "rss_bytes": rss, "processes": processes}
+
+
+def route_table(sock: Path | None = None) -> dict[str, Any]:
+    sock = sock or socket_path()
+    out: dict[str, Any] = {"generated_at": now_iso(), "socket": str(sock), "ports": [], "domains": [], "error": ""}
+    try:
+        status_code, _, body = unix_http(sock, "GET", "/containers/json?all=1", timeout=5)
+        if not (200 <= status_code < 300):
+            out["error"] = f"Docker API returned HTTP {status_code}"
+            return out
+        containers = json.loads(body.decode("utf-8") or "[]")
+    except Exception as exc:
+        out["error"] = str(exc)
+        return out
+
+    host_port_counts: dict[tuple[str, int], int] = {}
+    for container in containers:
+        for port in container.get("Ports") or []:
+            public = port.get("PublicPort")
+            if public:
+                host_ip = port.get("IP") or "0.0.0.0"
+                host_port_counts[(host_ip, int(public))] = host_port_counts.get((host_ip, int(public)), 0) + 1
+
+    for container in containers:
+        names = [n[1:] if n.startswith("/") else n for n in (container.get("Names") or [])]
+        name = names[0] if names else (container.get("Id") or "")[:12]
+        state = container.get("State") or ""
+        status = container.get("Status") or ""
+        labels = container.get("Labels") or {}
+        project = labels.get("com.docker.compose.project") or labels.get("dev.dory.project") or ""
+        public_ports: list[int] = []
+        for port in container.get("Ports") or []:
+            private = port.get("PrivatePort")
+            public = port.get("PublicPort")
+            if public:
+                host_ip = port.get("IP") or "0.0.0.0"
+                conflict = host_port_counts.get((host_ip, int(public)), 0) > 1
+                row = {
+                    "container": name,
+                    "container_id": (container.get("Id") or "")[:12],
+                    "state": state,
+                    "status": status,
+                    "project": project,
+                    "host_ip": host_ip,
+                    "host_port": int(public),
+                    "container_port": int(private) if private else None,
+                    "protocol": port.get("Type") or "tcp",
+                    "conflict": conflict,
+                }
+                out["ports"].append(row)
+                public_ports.append(int(public))
+        if public_ports and state == "running":
+            domain = f"{name}.{DOMAIN_SUFFIX}".lower()
+            out["domains"].append(
+                {
+                    "domain": domain,
+                    "container": name,
+                    "project": project,
+                    "host_port": min(public_ports),
+                    "http_proxy": f"http://127.0.0.1:{DOMAIN_PROXY_PORT}",
+                    "https_proxy": f"https://127.0.0.1:{HTTPS_PROXY_PORT}",
+                    "target": f"http://127.0.0.1:{min(public_ports)}",
+                }
+            )
+    out["ports"].sort(key=lambda row: (row["host_port"], row["container"]))
+    out["domains"].sort(key=lambda row: row["domain"])
+    return out
+
+
+def idle_status(sock: Path | None = None) -> dict[str, Any]:
+    config = load_config()
+    table = route_table(sock)
+    blockers: list[dict[str, Any]] = []
+    if table.get("error"):
+        blockers.append({"type": "engine", "reason": table["error"]})
+    running_names = set()
+    for row in table.get("ports", []):
+        if row.get("state") == "running":
+            running_names.add(row["container"])
+            blockers.append({"type": "published-port", "container": row["container"], "port": row["host_port"]})
+    try:
+        status_code, _, body = unix_http(sock or socket_path(), "GET", "/containers/json?all=1", timeout=5)
+        containers = json.loads(body.decode("utf-8") or "[]") if 200 <= status_code < 300 else []
+        for container in containers:
+            name = ((container.get("Names") or [""])[0]).lstrip("/") or (container.get("Id") or "")[:12]
+            if container.get("State") == "running" and name not in running_names:
+                blockers.append({"type": "running-container", "container": name})
+            labels = container.get("Labels") or {}
+            if labels.get("io.dory.keep-awake") == "true" or labels.get("dev.dory.keep-awake") == "true":
+                blockers.append({"type": "pinned", "container": name})
+    except Exception:
+        pass
+    if DEFAULT_KUBECONFIG.exists():
+        blockers.append({"type": "kubernetes-config", "path": str(DEFAULT_KUBECONFIG)})
+    mode = config.get("runtimeMode", "manual")
+    return {
+        "generated_at": now_iso(),
+        "mode": mode,
+        "auto_idle_enabled": mode in {"auto-idle", "battery-saver"},
+        "sleep_after_minutes": ((config.get("idle") or {}).get("sleepAfterMinutes")),
+        "can_sleep": len(blockers) == 0,
+        "blockers": blockers,
+        "proxy_state": read_idle_proxy_state(),
+    }
+
+
+def read_idle_proxy_state() -> dict[str, Any]:
+    path = idle_state_path()
+    if not path.exists():
+        return {
+            "available": False,
+            "path": str(path),
+            "state": "unknown",
+            "detail": "Auto-Idle proxy has not written state yet",
+        }
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return {
+            "available": False,
+            "path": str(path),
+            "state": "unknown",
+            "detail": f"could not read state: {exc}",
+        }
+    data["available"] = True
+    data.setdefault("path", str(path))
+    return data
+
+
+def load_config() -> dict[str, Any]:
+    path = config_path()
+    if not path.exists():
+        return default_config()
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return default_config()
+    return merge_config(default_config(), raw)
+
+
+def default_config() -> dict[str, Any]:
+    return {
+        "runtimeMode": "manual",
+        "idle": {
+            "sleepAfterMinutes": 15,
+            "keepPublishedPortsAwake": True,
+            "keepKubernetesAwake": True,
+            "keepPinnedProjectsAwake": True,
+            "showWakeNotifications": True,
+        },
+        "network": {
+            "probes": [],
+        },
+    }
+
+
+def merge_config(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    out = dict(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(out.get(key), dict):
+            nested = dict(out[key])
+            nested.update(value)
+            out[key] = nested
+        else:
+            out[key] = value
+    return out
+
+
+def save_config(config: dict[str, Any]) -> None:
+    path = config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(config, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def format_bytes(value: int | float | None) -> str:
+    if not value:
+        return "0 B"
+    value = float(value)
+    for unit in ["B", "KB", "MB", "GB", "TB"]:
+        if value < 1024 or unit == "TB":
+            if unit == "B":
+                return f"{int(value)} {unit}"
+            return f"{value:.1f} {unit}"
+        value /= 1024
+    return f"{value:.1f} TB"
+
+
+def redact(value: Any) -> Any:
+    if isinstance(value, dict):
+        out = {}
+        for key, item in value.items():
+            if SECRET_KEY_RE.search(str(key)):
+                out[key] = "[redacted]"
+            else:
+                out[key] = redact(item)
+        return out
+    if isinstance(value, list):
+        return [redact(item) for item in value]
+    if isinstance(value, str):
+        return redact_str(value)
+    return value
+
+
+def redact_str(value: str) -> str:
+    value = BEARER_RE.sub("Bearer [redacted]", value)
+    value = BASIC_RE.sub("Basic [redacted]", value)
+    # user:pass@host credentials embedded in URLs (e.g. HTTPS_PROXY=http://user:secret@proxy:8080).
+    value = URL_CREDENTIAL_RE.sub(r"\1[redacted]@", value)
+    # token/secret/password/access_token/... in both `key=value` and `key: value` forms, covering
+    # log lines and query strings alike.
+    value = re.sub(
+        r"(?i)((?:access[_-]?|refresh[_-]?)?(?:password|passwd|token|secret|apikey|api[_-]?key))(\s*[=:]\s*)([^&\s\"']+)",
+        lambda m: f"{m.group(1)}{m.group(2)}[redacted]",
+        value,
+    )
+    # base64-ish X-Registry-Auth / long opaque credential blobs.
+    value = re.sub(r"(?i)(x-registry-auth\s*[=:]\s*)[A-Za-z0-9+/=_-]{16,}", r"\1[redacted]", value)
+    return value
+
+
+def bundle(path: Path | None, active: bool = False) -> Path:
+    if path is None:
+        stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+        path = HOME / ".dory" / "diagnostics" / f"dory-diagnostics-{stamp}.zip"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    doctor = Doctor(active=active)
+    results = doctor.run_all()
+    payload = {
+        "generated_at": now_iso(),
+        "doctor": [result.as_dict() for result in results],
+        "routes": route_table(),
+        "disk": disk_report(),
+        "idle": idle_status(),
+        "config": load_config(),
+        "environment": safe_environment(),
+    }
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("doctor.json", json.dumps(redact(payload), indent=2, sort_keys=True) + "\n")
+        for source, name in [
+            (HOME / ".dory" / "engine.log", "logs/engine.log"),
+            (HOME / ".dory" / "dory.log", "logs/dory.log"),
+        ]:
+            if source.exists() and source.is_file():
+                zf.writestr(name, redact(tail_text(source, 300_000)))
+    return path
+
+
+def safe_environment() -> dict[str, str]:
+    keep = {}
+    for key, value in os.environ.items():
+        if key.startswith("DORY_") or key in {"DOCKER_HOST", "DOCKER_CONTEXT", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY"}:
+            keep[key] = value
+    return keep
+
+
+def tail_text(path: Path, max_bytes: int) -> str:
+    with path.open("rb") as handle:
+        try:
+            handle.seek(0, os.SEEK_END)
+            size = handle.tell()
+            handle.seek(max(0, size - max_bytes))
+        except OSError:
+            pass
+        return handle.read(max_bytes).decode("utf-8", "replace")
+
+
+def print_results(results: list[CheckResult], as_json: bool) -> None:
+    if as_json:
+        print(json.dumps({"generated_at": now_iso(), "results": [r.as_dict() for r in results]}, indent=2, sort_keys=True))
+        return
+    widths = {"pass": 0, "warn": 0, "fail": 0, "skip": 0}
+    for result in results:
+        widths[result.status] = widths.get(result.status, 0) + 1
+        label = result.status.upper().ljust(4)
+        print(f"{label} {result.id}: {result.title}")
+        print(f"     {result.detail}")
+        if result.action:
+            print(f"     action: {result.action}")
+    print("")
+    print("Summary: " + ", ".join(f"{status}={count}" for status, count in widths.items() if count))
+
+
+def print_routes(table: dict[str, Any], as_json: bool) -> None:
+    if as_json:
+        print(json.dumps(table, indent=2, sort_keys=True))
+        return
+    if table.get("error"):
+        print(f"Could not read routes: {table['error']}")
+        return
+    print("Published ports")
+    if not table["ports"]:
+        print("  none")
+    for row in table["ports"]:
+        conflict = " conflict" if row.get("conflict") else ""
+        print(f"  {row['host_ip']}:{row['host_port']} -> {row['container']}:{row['container_port']}/{row['protocol']} ({row['state']}){conflict}")
+    print("")
+    print(f"Domains (*.{DOMAIN_SUFFIX})")
+    if not table["domains"]:
+        print("  none")
+    for row in table["domains"]:
+        print(f"  {row['domain']} -> {row['target']} via {row['http_proxy']}")
+
+
+def print_disk(report: dict[str, Any], as_json: bool) -> None:
+    if as_json:
+        print(json.dumps(report, indent=2, sort_keys=True))
+        return
+    host = report["host"]
+    print(f"Host: {format_bytes(host.get('free_bytes', 0))} free of {format_bytes(host.get('total_bytes', 0))} at {host.get('path')}")
+    docker = report["docker"]
+    if docker.get("available"):
+        print("Docker: " + docker_summary(docker))
+        print(f"        images={docker.get('images_count', 0)} containers={docker.get('containers_count', 0)} volumes={docker.get('volumes_count', 0)} build_cache={docker.get('build_cache_count', 0)}")
+    else:
+        print(f"Docker: unavailable ({docker.get('error', 'unknown')})")
+    state = report["state"]
+    print(f"Dory state: {format_bytes(state.get('total_bytes', 0))} total, {format_bytes(state.get('log_bytes', 0))} logs, {format_bytes(state.get('vm_disk_bytes', 0))} VM disks")
+
+
+def print_cleanup(report: dict[str, Any], as_json: bool) -> None:
+    if as_json:
+        print(json.dumps(report, indent=2, sort_keys=True))
+        return
+    print("Cleanup plan" + (" (applied)" if report.get("apply") else " (dry run)"))
+    for action in report.get("actions", []):
+        status = str(action.get("status", "info")).upper()
+        detail = action.get("detail", "")
+        target = action.get("target", "unknown")
+        print(f"{status} {target}: {detail}")
+        if action.get("bytes_reclaimable"):
+            print(f"     reclaimable: {format_bytes(action['bytes_reclaimable'])}")
+        if action.get("command") and not report.get("apply"):
+            print("     command: " + " ".join(action["command"]))
+    if not report.get("apply"):
+        print("Dry run. Re-run with --apply for actions that change local state.")
+
+
+def print_idle(status: dict[str, Any], as_json: bool) -> None:
+    if as_json:
+        print(json.dumps(status, indent=2, sort_keys=True))
+        return
+    print(f"Mode: {status['mode']}")
+    print(f"Auto-Idle enabled: {'yes' if status['auto_idle_enabled'] else 'no'}")
+    print(f"Can sleep now: {'yes' if status['can_sleep'] else 'no'}")
+    proxy = status.get("proxy_state") or {}
+    print(f"Proxy state: {proxy.get('state', 'unknown')} ({proxy.get('detail', 'no state')})")
+    if status["blockers"]:
+        print("Sleep blockers:")
+        for blocker in status["blockers"]:
+            detail = ", ".join(f"{k}={v}" for k, v in blocker.items())
+            print(f"  {detail}")
+
+
+def exit_code(results: list[CheckResult]) -> int:
+    return 1 if any(result.status == "fail" for result in results) else 0
+
+
+def cmd_doctor(args: argparse.Namespace) -> int:
+    only = set(args.only.split(",")) if args.only else None
+    doctor = Doctor(timeout=args.timeout, active=args.active)
+    results = doctor.run_all(only=only)
+    bundle_path = None
+    if args.bundle is not None:
+        target = None if args.bundle == "" else Path(args.bundle).expanduser()
+        bundle_path = bundle(target, active=args.active)
+    if args.json:
+        payload: dict[str, Any] = {"generated_at": now_iso(), "results": [r.as_dict() for r in results]}
+        if bundle_path:
+            payload["bundle"] = str(bundle_path)
+        print(json.dumps(payload, indent=2, sort_keys=True))
+    else:
+        print_results(results, False)
+        if bundle_path:
+            print(f"Diagnostic bundle: {bundle_path}")
+    return exit_code(results)
+
+
+def cmd_network(args: argparse.Namespace) -> int:
+    if args.list_probes:
+        probes = network_probes(args.probe)
+        if args.json:
+            print(json.dumps({"generated_at": now_iso(), "probes": probes}, indent=2, sort_keys=True))
+        else:
+            for probe in probes:
+                print(f"{probe['name']}: {probe['host']}:{probe['port']}")
+        return 0
+    if args.save_probe:
+        try:
+            probe = save_network_probe(args.save_probe)
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+        if args.json:
+            print(json.dumps({"saved": probe, "config_path": str(config_path())}, indent=2, sort_keys=True))
+        else:
+            print(f"Saved probe {probe['name']}: {probe['host']}:{probe['port']}")
+        return 0
+    if args.remove_probe:
+        try:
+            removed = remove_network_probe(args.remove_probe)
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+        if args.json:
+            print(json.dumps({"removed": removed, "config_path": str(config_path())}, indent=2, sort_keys=True))
+        else:
+            print("Removed probe" if removed else "No matching probe")
+        return 0
+    only = {"socket", "api", "registry", "network", "ports", "domains"}
+    doctor = Doctor(timeout=args.timeout, active=args.active, network_probes=args.probe)
+    results = doctor.run_all(only=only)
+    print_results(results, args.json)
+    return exit_code(results)
+
+
+def cmd_mount(args: argparse.Namespace) -> int:
+    doctor = Doctor(timeout=args.timeout, active=True)
+    results = doctor.run_all(only={"socket", "api", "mounts", "watch"})
+    print_results(results, args.json)
+    return exit_code(results)
+
+
+def cmd_disk(args: argparse.Namespace) -> int:
+    report = disk_report()
+    print_disk(report, args.json)
+    return 0
+
+
+def cmd_cleanup(args: argparse.Namespace) -> int:
+    report = cleanup_report(apply=args.apply, include_volumes=args.include_volumes, log_max_bytes=args.log_max_bytes)
+    print_cleanup(report, args.json)
+    return 1 if any(action.get("status") == "fail" for action in report.get("actions", [])) else 0
+
+
+def cmd_routes(args: argparse.Namespace) -> int:
+    table = route_table()
+    print_routes(table, args.json)
+    return 1 if table.get("error") else 0
+
+
+def cmd_repair(args: argparse.Namespace) -> int:
+    handlers = {
+        "socket": repair_socket,
+        "context": repair_context,
+        "engine": repair_engine,
+        "routes": repair_routes,
+        "dns": repair_dns,
+        "domains": repair_domains,
+        "ports": repair_ports,
+        "dockerd": repair_dockerd,
+        "guest-agent": repair_guest_agent,
+    }
+    actions: list[dict[str, Any]] = []
+    all_targets = ["socket", "context", "dns", "routes", "ports", "domains", "dockerd", "guest-agent"]
+    fan_out = args.target == "all"
+    targets = all_targets if fan_out else [args.target]
+    for target in targets:
+        handler = handlers.get(target)
+        if handler is None:
+            continue
+        # `repair all --apply` must not run side effects (DNS flush, SIGUSR1 to the engine) on a
+        # healthy subsystem: probe each one dry first and only apply where it reports a problem.
+        # A single explicit `dory repair <target> --apply` still forces the action.
+        if fan_out and args.apply:
+            probe = handler(False)
+            if probe.get("status") == "pass":
+                actions.append(probe)
+                continue
+        actions.append(handler(args.apply))
+    if args.json:
+        print(json.dumps({"generated_at": now_iso(), "apply": args.apply, "actions": actions}, indent=2, sort_keys=True))
+    else:
+        for action in actions:
+            status = action.get("status", "info").upper()
+            print(f"{status} {action.get('target')}: {action.get('detail')}")
+            if action.get("next"):
+                print(f"     next: {action['next']}")
+        if not args.apply:
+            print("Dry run. Re-run with --apply for actions that change local state.")
+    return 1 if any(action.get("status") == "fail" for action in actions) else 0
+
+
+def repair_socket(apply: bool) -> dict[str, Any]:
+    sock = socket_path()
+    if not sock.exists():
+        return {"target": "socket", "status": "pass", "detail": f"{sock} does not exist; no stale file to move"}
+    try:
+        mode = sock.stat().st_mode
+    except OSError as exc:
+        return {"target": "socket", "status": "fail", "detail": str(exc)}
+    if stat.S_ISSOCK(mode):
+        return {"target": "socket", "status": "pass", "detail": f"{sock} is a socket"}
+    backup = sock.with_name(sock.name + f".stale-{int(time.time())}")
+    if apply:
+        os.replace(sock, backup)
+        return {"target": "socket", "status": "pass", "detail": f"moved stale socket path to {backup}"}
+    return {"target": "socket", "status": "warn", "detail": f"{sock} is not a socket", "next": f"would move it to {backup}"}
+
+
+def repair_context(apply: bool) -> dict[str, Any]:
+    binary = docker_bin()
+    if not binary:
+        return {"target": "context", "status": "fail", "detail": "docker CLI not found"}
+    host = f"unix://{socket_path()}"
+    if not apply:
+        return {"target": "context", "status": "warn", "detail": "Dory Docker context may need repair", "next": f"would create/update context dory -> {host} and activate it"}
+    inspect = subprocess.run([binary, "context", "inspect", "dory"], text=True, capture_output=True)
+    if inspect.returncode == 0:
+        update = subprocess.run([binary, "context", "update", "dory", "--docker", f"host={host}"], text=True, capture_output=True)
+        if update.returncode != 0:
+            return {"target": "context", "status": "fail", "detail": compact(update.stderr or update.stdout)}
+    else:
+        create = subprocess.run([binary, "context", "create", "dory", "--description", "Dory", "--docker", f"host={host}"], text=True, capture_output=True)
+        if create.returncode != 0:
+            return {"target": "context", "status": "fail", "detail": compact(create.stderr or create.stdout)}
+    use = subprocess.run([binary, "context", "use", "dory"], text=True, capture_output=True)
+    if use.returncode != 0:
+        return {"target": "context", "status": "fail", "detail": compact(use.stderr or use.stdout)}
+    return {"target": "context", "status": "pass", "detail": f"docker context dory now targets {host}"}
+
+
+def repair_engine(apply: bool) -> dict[str, Any]:
+    script = dory_engine_script()
+    if not script.exists():
+        return {"target": "engine", "status": "skip", "detail": f"{script} not found"}
+    if not apply:
+        return {"target": "engine", "status": "warn", "detail": "Headless engine restart available", "next": f"would run {script} stop && {script} start"}
+    stop = subprocess.run([str(script), "stop"], text=True, capture_output=True, timeout=60)
+    start = subprocess.run([str(script), "start"], text=True, capture_output=True, timeout=180)
+    if start.returncode != 0:
+        return {"target": "engine", "status": "fail", "detail": compact(start.stderr or start.stdout)}
+    return {"target": "engine", "status": "pass", "detail": compact(stop.stdout + " " + start.stdout)}
+
+
+def repair_routes(apply: bool) -> dict[str, Any]:
+    table = route_table()
+    if table.get("error"):
+        return {"target": "routes", "status": "fail", "detail": table["error"]}
+    conflicts = [row for row in table["ports"] if row.get("conflict")]
+    if conflicts:
+        return {
+            "target": "routes",
+            "status": "warn",
+            "detail": f"{len(conflicts)} conflicting published port rows found",
+            "next": "stop one of the containers using the same host port, then rerun `dory routes`",
+        }
+    return {"target": "routes", "status": "pass", "detail": f"{len(table['ports'])} port route(s), {len(table['domains'])} domain route(s) readable"}
+
+
+def repair_dns(apply: bool) -> dict[str, Any]:
+    resolver = Path(f"/etc/resolver/{DOMAIN_SUFFIX}")
+    detail = f"resolver={resolver} exists={resolver.exists()}"
+    if not apply:
+        return {
+            "target": "dns",
+            "status": "warn" if not resolver.exists() else "pass",
+            "detail": detail,
+            "next": "would flush macOS DNS cache; run scripts/enable-networking.sh if the resolver file is missing",
+        }
+    flush = subprocess.run(["dscacheutil", "-flushcache"], text=True, capture_output=True, timeout=15)
+    hup = subprocess.run(["killall", "-HUP", "mDNSResponder"], text=True, capture_output=True, timeout=15)
+    if flush.returncode != 0:
+        return {"target": "dns", "status": "fail", "detail": compact(flush.stderr or flush.stdout)}
+    if hup.returncode != 0:
+        return {"target": "dns", "status": "warn", "detail": f"DNS cache flushed; mDNSResponder HUP failed: {compact(hup.stderr or hup.stdout)}"}
+    return {"target": "dns", "status": "pass", "detail": "macOS DNS cache flushed"}
+
+
+def repair_domains(apply: bool) -> dict[str, Any]:
+    table = route_table()
+    if table.get("error"):
+        return {"target": "domains", "status": "fail", "detail": table["error"]}
+    domains = len(table.get("domains", []))
+    resolver = Path(f"/etc/resolver/{DOMAIN_SUFFIX}")
+    if apply:
+        dns = repair_dns(True)
+        return {
+            "target": "domains",
+            "status": dns.get("status", "warn"),
+            "detail": f"{domains} inferred domain route(s); {dns.get('detail')}",
+            "next": "restart Dory if the reverse proxy listener itself is wedged",
+        }
+    return {
+        "target": "domains",
+        "status": "pass" if resolver.exists() else "warn",
+        "detail": f"{domains} inferred domain route(s); resolver_exists={resolver.exists()}",
+        "next": "would flush DNS cache; restart Dory only if the local reverse proxy listener is wedged",
+    }
+
+
+def repair_ports(apply: bool) -> dict[str, Any]:
+    table = route_table()
+    if table.get("error"):
+        return {"target": "ports", "status": "fail", "detail": table["error"]}
+    conflicts = [row for row in table.get("ports", []) if row.get("conflict")]
+    if conflicts:
+        return {
+            "target": "ports",
+            "status": "warn",
+            "detail": f"{len(conflicts)} conflicting published port route(s)",
+            "next": "stop one of the conflicting containers; Dory will reconcile route ownership automatically",
+        }
+    return {"target": "ports", "status": "pass", "detail": f"{len(table.get('ports', []))} published port route(s) readable; no conflicts"}
+
+
+def repair_dockerd(apply: bool) -> dict[str, Any]:
+    try:
+        status_code, _, body = unix_http(socket_path(), "GET", "/_ping", timeout=3)
+        if status_code == 200 and body.strip() == b"OK":
+            return {"target": "dockerd", "status": "pass", "detail": "Docker API is reachable"}
+    except Exception as exc:
+        if not apply:
+            return {
+                "target": "dockerd",
+                "status": "warn",
+                "detail": f"Docker API unreachable: {exc}",
+                "next": "would restart the headless engine when available; app-managed engines should be restarted from Dory",
+            }
+    return repair_engine(apply)
+
+
+def repair_guest_agent(apply: bool) -> dict[str, Any]:
+    pid = shared_engine_pid()
+    if not pid:
+        return {
+            "target": "guest-agent",
+            "status": "skip",
+            "detail": "shared engine helper PID not found",
+            "next": "start Dory's engine before repairing guest-agent-backed features",
+        }
+    if not apply:
+        return {
+            "target": "guest-agent",
+            "status": "warn",
+            "detail": f"shared engine helper pid={pid}",
+            "next": "would send SIGUSR1 wake/clock resync signal; restart engine if agent RPC remains unavailable",
+        }
+    try:
+        os.kill(pid, signal.SIGUSR1)
+    except Exception as exc:
+        return {"target": "guest-agent", "status": "fail", "detail": str(exc)}
+    return {"target": "guest-agent", "status": "pass", "detail": f"sent wake/clock resync signal to helper pid={pid}"}
+
+
+def shared_engine_pid() -> int | None:
+    for path in [HOME / ".dory" / "engine.pid", HOME / ".dory" / "engine-cli.pid"]:
+        try:
+            pid = int(path.read_text(encoding="utf-8").strip())
+        except Exception:
+            continue
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            continue
+        return pid
+    return None
+
+
+def cmd_mode(args: argparse.Namespace) -> int:
+    config = load_config()
+    if args.mode != "show":
+        config["runtimeMode"] = args.mode
+        save_config(config)
+    if args.json:
+        print(json.dumps({"config_path": str(config_path()), **config}, indent=2, sort_keys=True))
+    else:
+        print(f"Runtime mode: {config.get('runtimeMode')}")
+        print(f"Config: {config_path()}")
+        idle = config.get("idle") or {}
+        print(f"Sleep after idle: {idle.get('sleepAfterMinutes')} minutes")
+        print(f"Keep published ports awake: {idle.get('keepPublishedPortsAwake')}")
+        print(f"Keep Kubernetes awake: {idle.get('keepKubernetesAwake')}")
+    return 0
+
+
+def cmd_idle(args: argparse.Namespace) -> int:
+    if args.action != "status":
+        raise SystemExit("usage: dory idle status [--json]")
+    status = idle_status()
+    print_idle(status, args.json)
+    return 0
+
+
+def cmd_bundle(args: argparse.Namespace) -> int:
+    path = Path(args.path).expanduser() if args.path else None
+    print(bundle(path, active=args.active))
+    return 0
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="dory-doctor")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    doctor = sub.add_parser("doctor", help="Run P0 diagnostics")
+    doctor.add_argument("--json", action="store_true")
+    doctor.add_argument("--active", action="store_true", help="Run active container probes")
+    doctor.add_argument("--timeout", type=float, default=5.0)
+    doctor.add_argument("--only", help="Comma-separated groups: socket,api,docker,context,registry,network,ports,domains,mounts,watch,clock,disk,memory,helpers")
+    doctor.add_argument("--bundle", nargs="?", const="", help="Also write a redacted diagnostic bundle")
+    doctor.set_defaults(func=cmd_doctor)
+
+    network = sub.add_parser("network", help="Run network diagnostics")
+    network.add_argument("--json", action="store_true")
+    network.add_argument("--active", action="store_true")
+    network.add_argument("--timeout", type=float, default=5.0)
+    network.add_argument("--probe", action="append", default=[], metavar="HOST[:PORT]", help="Run an extra one-time safe network probe")
+    network.add_argument("--save-probe", metavar="HOST[:PORT]", help="Persist a safe host/port probe for future network checks")
+    network.add_argument("--remove-probe", metavar="HOST[:PORT]", help="Remove a persisted network probe")
+    network.add_argument("--list-probes", action="store_true", help="List default and configured safe network probes")
+    network.set_defaults(func=cmd_network)
+
+    mount = sub.add_parser("mount", help="Run active bind-mount diagnostics")
+    mount.add_argument("--json", action="store_true")
+    mount.add_argument("--timeout", type=float, default=5.0)
+    mount.set_defaults(func=cmd_mount)
+
+    disk = sub.add_parser("disk", help="Show disk guardrails")
+    disk.add_argument("--json", action="store_true")
+    disk.set_defaults(func=cmd_disk)
+
+    cleanup = sub.add_parser("cleanup", help="Show or apply safe cleanup actions")
+    cleanup.add_argument("--json", action="store_true")
+    cleanup.add_argument("--apply", action="store_true")
+    cleanup.add_argument("--include-volumes", action="store_true", help="Include destructive unused-volume pruning")
+    cleanup.add_argument("--log-max-bytes", type=int, default=5_000_000, help="Trim each Dory log file to this many trailing bytes")
+    cleanup.set_defaults(func=cmd_cleanup)
+
+    routes = sub.add_parser("routes", help="Show published ports and dory.local routes")
+    routes.add_argument("--json", action="store_true")
+    routes.set_defaults(func=cmd_routes)
+
+    repair = sub.add_parser("repair", help="Run non-destructive repair actions")
+    repair.add_argument(
+        "target",
+        choices=["all", "socket", "context", "engine", "routes", "dns", "domains", "ports", "dockerd", "guest-agent"],
+        nargs="?",
+        default="all",
+    )
+    repair.add_argument("--apply", action="store_true")
+    repair.add_argument("--json", action="store_true")
+    repair.set_defaults(func=cmd_repair)
+
+    mode = sub.add_parser("mode", help="Show or set runtime mode")
+    mode.add_argument("mode", choices=["show", "manual", "auto-idle", "always-on", "battery-saver"], nargs="?", default="show")
+    mode.add_argument("--json", action="store_true")
+    mode.set_defaults(func=cmd_mode)
+
+    idle = sub.add_parser("idle", help="Inspect Auto-Idle readiness")
+    idle.add_argument("action", choices=["status"], nargs="?", default="status")
+    idle.add_argument("--json", action="store_true")
+    idle.set_defaults(func=cmd_idle)
+
+    bundle_parser = sub.add_parser("bundle", help="Write a redacted diagnostic bundle")
+    bundle_parser.add_argument("path", nargs="?")
+    bundle_parser.add_argument("--active", action="store_true")
+    bundle_parser.set_defaults(func=cmd_bundle)
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    try:
+        return args.func(args)
+    except KeyboardInterrupt:
+        return 130
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

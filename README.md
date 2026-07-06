@@ -39,7 +39,8 @@
 - **Your `docker` CLI just works, even on a clean Mac.** Dory bundles the Docker CLI, Compose
   plugin, and `kubectl`, serves the Docker API on `~/.dory/dory.sock`, and registers a `dory`
   Docker context. `docker run`, `docker compose`, your existing scripts and tools drive it
-  unchanged.
+  unchanged, with the engine socket promoted over vsock so stdout, stderr, attach/exec, and stdin
+  EOF behave like a normal Docker daemon.
 - **Native, not Electron.** One Swift/SwiftUI app: menu-bar agent + full dashboard, launch
   animation to launch-at-login, light and dark. No Chromium, no Node, no telemetry.
 
@@ -55,6 +56,25 @@
 - Bundled host tools: Docker CLI, Docker Compose v2, and `kubectl` are shipped inside Dory.app
   and linked into `~/.dory/bin` only when you ask for shell integration.
 
+**Self-diagnosing runtime**
+- `dory doctor`, `dory network`, and `dory mount` check the socket, Docker context, registry,
+  DNS, published ports, `*.dory.local` routes, bind mounts, file-change visibility, disk, memory,
+  and helper setup, with JSON output for support and automation.
+- `dory disk` and `dory routes` show where Docker/Dory storage is going and what owns each
+  published port or local domain.
+- `dory network --save-probe registry.company.test:443` stores credential-free private network
+  probes for VPN, split-DNS, and internal-registry checks.
+- `dory cleanup` shows safe cleanup actions for stopped containers, dangling images, build cache,
+  and oversized logs; it only changes state with `--apply`, and volume cleanup is opt-in.
+- `dory repair` offers non-destructive socket, context, DNS, route, domain, port, dockerd, engine,
+  and guest-agent recovery actions before users reach for a full reset. `dory repair all --apply`
+  only touches subsystems that are actually unhealthy.
+- `dory bundle` writes a redacted diagnostic zip so support starts from one artifact instead of
+  a thread full of shell commands.
+- `dory mode` and `dory idle status` expose the Auto-Idle foundation; `dory idle proxy` can run
+  the opt-in always-listening socket proxy for headless dogfooding. The proxy wakes a sleeping
+  headless engine on Docker API use, forwards the request, and records its idle/wake state.
+
 **Kubernetes, one click**
 - k3s inside the shared VM with selectable Kubernetes versions.
 - Cluster browser: pods, deployments, services, config maps, secrets, ingresses, all with live
@@ -69,6 +89,8 @@
 **Networking that disappears**
 - Published ports on `localhost`, automatic **`*.dory.local` domains** for every container, and
   local **HTTPS** issued by a local CA. All consent-gated, nothing installed silently.
+- Internal guest control ports stay private; only Docker-published ports and explicit Dory routes
+  are exposed on macOS loopback.
 - **Apple GPU AI bridge**: run Metal-backed services on macOS, such as Ollama, LM Studio, MLX, or
   llama.cpp, and call them from Linux containers at `host.dory.internal` on ports `11434`, `1234`,
   or `18190`.
@@ -148,6 +170,8 @@ reinstall, no environment variables:
 scripts/build.sh        # compile-check
 scripts/test.sh         # full test suite
 scripts/shot.sh         # build, launch, and screenshot the window
+scripts/test-dory-doctor.sh # fast diagnostics, bundle, repair, and Auto-Idle proxy smoke
+scripts/p0-smoke.sh     # strict release smoke against a running Dory socket
 ```
 
 Or open `Dory.xcodeproj` in Xcode and Run.
@@ -161,6 +185,26 @@ silently:
 scripts/enable-networking.sh    # *.dory.local domains + trust the local CA
 scripts/enable-kubernetes.sh    # bootstrap k3s in the shared VM
 ```
+
+### Diagnostics
+
+When something feels off, start here:
+
+```sh
+dory doctor --active
+dory network --active
+dory mount
+dory disk
+dory cleanup
+dory routes
+dory repair
+dory network --list-probes
+dory bundle
+dory idle status
+dory idle proxy --foreground
+```
+
+For scripted checks, add `--json` to the commands that support it.
 
 ## Architecture
 

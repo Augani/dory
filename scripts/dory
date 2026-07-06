@@ -3,11 +3,23 @@
 # machines, and Kubernetes from the terminal. Install:  ln -sf "$PWD/scripts/dory" /usr/local/bin/dory
 set -euo pipefail
 
+# Resolve the real script directory THROUGH symlinks — `dory` is installed as a symlink at
+# /usr/local/bin (or the Homebrew bin), and a plain `dirname "$0"` would then look for the
+# dory-doctor / dory-idle-proxy helpers and recipe dir next to the symlink instead of beside the
+# real script. macOS ships no `readlink -f`, so follow the chain by hand.
+DORY_SCRIPT_SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$DORY_SCRIPT_SOURCE" ]; do
+  DORY_SCRIPT_DIR="$(cd -P "$(dirname "$DORY_SCRIPT_SOURCE")" >/dev/null 2>&1 && pwd)"
+  DORY_SCRIPT_SOURCE="$(readlink "$DORY_SCRIPT_SOURCE")"
+  case "$DORY_SCRIPT_SOURCE" in /*) ;; *) DORY_SCRIPT_SOURCE="$DORY_SCRIPT_DIR/$DORY_SCRIPT_SOURCE" ;; esac
+done
+DORY_SCRIPT_DIR="$(cd -P "$(dirname "$DORY_SCRIPT_SOURCE")" >/dev/null 2>&1 && pwd)"
+
 DORY_SOCK="${DORY_SOCK:-$HOME/.dory/dory.sock}"
 KUBECONFIG_DORY="$HOME/.kube/dory-config"
 CONTAINER_BIN="$(command -v container || echo /opt/homebrew/bin/container)"
 RECIPE_DIR="${DORY_RECIPE_DIR:-$HOME/.dory/recipes}"
-BUILTIN_RECIPE_DIR="${DORY_BUILTIN_RECIPE_DIR:-$(cd "$(dirname "$0")/.." && pwd)/Dory/Resources/Recipes}"
+BUILTIN_RECIPE_DIR="${DORY_BUILTIN_RECIPE_DIR:-$(cd "$DORY_SCRIPT_DIR/.." && pwd)/Dory/Resources/Recipes}"
 DOCKER_BIN="${DORY_DOCKER_BIN:-$(command -v docker || echo docker)}"
 
 host_guest_arch() {
@@ -49,6 +61,27 @@ dory — Dory CLI
   dory machine backup [machine] <tag|image> <s3://bucket/prefix-or-file>
                                Export a snapshot image and upload it with aws s3 cp
   dory recipe ls|show|add|new  Manage machine recipes
+  dory doctor [--json] [--active] [--bundle [PATH]]
+                               Diagnose socket, CLI, network, mounts, disk, memory, and helpers
+  dory network [--json] [--active] [--probe HOST[:PORT]]
+  dory network --save-probe HOST[:PORT] | --list-probes | --remove-probe HOST[:PORT]
+                               Diagnose DNS, registry, ports, and *.dory.local routing
+  dory mount [--json]           Validate bind mount read/write and host-edit visibility
+  dory disk [--json]            Show host, Docker, Dory state, log, and VM disk usage
+  dory cleanup [--json] [--apply] [--include-volumes]
+                               Show or apply safe cleanup for stopped containers, cache, and logs
+  dory routes [--json]          Show published ports and inferred *.dory.local routes
+  dory repair [all|socket|context|dns|routes|domains|ports|dockerd|engine|guest-agent] [--apply]
+                               Repair a subsystem; 'all' only acts on unhealthy ones with --apply
+  dory mode [manual|auto-idle|always-on|battery-saver|show]
+                               Show or set the runtime availability mode
+  dory idle status [--json]     Explain whether Auto-Idle could sleep and what blocks it
+  dory idle proxy [--foreground]
+                               Run the opt-in Auto-Idle socket proxy
+  dory idle proxy-status [--json]
+                               Show the last Auto-Idle proxy state transition
+  dory idle launch-agent install|uninstall|status|print
+                               Manage the opt-in always-listening LaunchAgent
   dory usb ls|attach|detach     Inspect USB candidates and request USB/IP attach/detach
   dory expose <port|machine> [--port P] [--hostname H] [--print-command]
                                Share a local port or machine endpoint through a public HTTPS tunnel
@@ -883,8 +916,36 @@ expose_cmd() {
   fi
 }
 
+doctor_cmd() {
+  local helper="${DORY_DOCTOR_BIN:-$DORY_SCRIPT_DIR/dory-doctor}"
+  [ -x "$helper" ] || { echo "dory-doctor helper not found: $helper" >&2; exit 1; }
+  exec "$helper" "$@"
+}
+
+idle_proxy_cmd() {
+  local helper="${DORY_IDLE_PROXY_BIN:-$DORY_SCRIPT_DIR/dory-idle-proxy}"
+  [ -x "$helper" ] || { echo "dory-idle-proxy helper not found: $helper" >&2; exit 1; }
+  exec "$helper" "$@"
+}
+
 case "${1:-help}" in
   help|-h|--help) usage ;;
+  doctor)         shift; doctor_cmd doctor "$@" ;;
+  network)        shift; doctor_cmd network "$@" ;;
+  mount)          shift; doctor_cmd mount "$@" ;;
+  disk)           shift; doctor_cmd disk "$@" ;;
+  cleanup)        shift; doctor_cmd cleanup "$@" ;;
+  routes)         shift; doctor_cmd routes "$@" ;;
+  repair)         shift; doctor_cmd repair "$@" ;;
+  mode)           shift; doctor_cmd mode "$@" ;;
+  idle)
+                  shift
+                  case "${1:-status}" in
+                    proxy|launch-agent) idle_proxy_cmd "$@" ;;
+                    proxy-status|proxy-state) shift; idle_proxy_cmd status "$@" ;;
+                    *) doctor_cmd idle "$@" ;;
+                  esac ;;
+  bundle)         shift; doctor_cmd bundle "$@" ;;
   shell)          exec docker -H "unix://$DORY_SOCK" exec -it "$2" sh -c 'command -v bash >/dev/null && exec bash || exec sh' ;;
   debug)          shift; debug_cmd "$@" ;;
   machine)        shift; machine_cmd "$@" ;;

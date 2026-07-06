@@ -7,6 +7,13 @@ LOG="${DORY_CI_TEST_LOG:-/tmp/dory_ci_tests.log}"
 
 ALLOW='^$'
 
+# Gate on the doctor helper's own tests: without `set -e` a failing exit here would be swallowed
+# by the pipefail-only shell, letting CI pass on a broken diagnostic surface.
+if ! bash scripts/test-dory-doctor.sh; then
+  echo "ci-test: dory-doctor test suite failed" >&2
+  exit 1
+fi
+
 # Retry the whole suite on ANY non-clean attempt, not only when too few tests ran. A shared-runner
 # host death is intermittent and can be *partial*: one xctest worker crashes, its tests all report
 # "failed" at 0.000s while 300+ others still pass. The old gate treated that first-attempt cascade as

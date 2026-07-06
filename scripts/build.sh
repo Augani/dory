@@ -58,6 +58,59 @@ for app in "$HOME"/Library/Developer/Xcode/DerivedData/Dory-*/Build/Products/Deb
   xattr -dr com.apple.quarantine "$app" 2>/dev/null || true
 done
 
+bundle_debug_hv_helper() {
+  local pkg configuration hv_bin entitlements app helper
+  [ "${DORY_BUILD_DEBUG_HELPERS:-1}" = "1" ] || return 0
+  configuration="${DORY_DEBUG_HELPER_CONFIGURATION:-release}"
+  pkg="Packages/ContainerizationEngine"
+  [ -d "$pkg" ] || return 0
+
+  echo "note: building and bundling dory-hv helper ($configuration)" >&2
+  ( cd "$pkg" && swift build -c "$configuration" --product dory-hv ) || return 1
+  hv_bin="$(cd "$pkg" && swift build -c "$configuration" --product dory-hv --show-bin-path 2>/dev/null)/dory-hv"
+  if [ ! -x "$hv_bin" ]; then
+    hv_bin="$(find "$pkg/.build" -name dory-hv -type f -ipath "*/$configuration/*" -not -path '*dSYM*' -print | head -1)"
+  fi
+  [ -x "$hv_bin" ] || { echo "error: dory-hv helper was not produced" >&2; return 1; }
+
+  entitlements="$(mktemp "${TMPDIR:-/tmp}/dory-hv-entitlements.XXXXXX")"
+  cat > "$entitlements" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict><key>com.apple.security.hypervisor</key><true/></dict></plist>
+PLIST
+
+  for app in "$HOME"/Library/Developer/Xcode/DerivedData/Dory-*/Build/Products/Debug/Dory.app; do
+    [ -d "$app" ] || continue
+    mkdir -p "$app/Contents/Helpers"
+    mkdir -p "$app/Contents/Resources"
+    helper="$app/Contents/Helpers/dory-hv"
+    cp "$hv_bin" "$helper"
+    codesign --force --options runtime --entitlements "$entitlements" -s - "$helper" >/dev/null 2>&1 \
+      || codesign --force --entitlements "$entitlements" -s - "$helper" >/dev/null
+    xattr -cr "$helper" 2>/dev/null || true
+    for arch in arm64 amd64; do
+      if [ -f "guest/out/dory-agent-$arch" ]; then
+        cp "guest/out/dory-agent-$arch" "$app/Contents/Resources/dory-agent-linux-$arch"
+        chmod 0755 "$app/Contents/Resources/dory-agent-linux-$arch"
+      fi
+    done
+    if [ -f "guest/out/Image" ]; then
+      "$hv_bin" lzfse compress "guest/out/Image" "$app/Contents/Resources/dory-hv-kernel-arm64.lzfse"
+      cp "$app/Contents/Resources/dory-hv-kernel-arm64.lzfse" "$app/Contents/Resources/dory-hv-kernel.lzfse"
+    fi
+    if [ -f "guest/out/Image-gpu" ]; then
+      "$hv_bin" lzfse compress "guest/out/Image-gpu" "$app/Contents/Resources/dory-hv-kernel-gpu-arm64.lzfse"
+    fi
+  done
+
+  rm -f "$entitlements"
+}
+
+if [ "$status" -eq 0 ]; then
+  bundle_debug_hv_helper || status=$?
+fi
+
 grep -E '(error:|warning:.*\.swift|BUILD SUCCEEDED|BUILD FAILED)' "$LOG" | tail -60 || true
 echo "xcodebuild_exit=$status"
 exit "$status"

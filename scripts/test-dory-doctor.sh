@@ -1,0 +1,384 @@
+#!/bin/bash
+# Fast checks for the P0 diagnostics CLI. These intentionally do not require a
+# running Dory engine; engine-backed probes are covered by readiness scripts.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+TMP_HOME="$(mktemp -d)"
+PIDS_TO_CLEAN=()
+
+cleanup() {
+  for pid in "${PIDS_TO_CLEAN[@]}"; do
+    if kill -0 "$pid" 2>/dev/null; then
+      kill "$pid" 2>/dev/null || true
+      wait "$pid" 2>/dev/null || true
+    fi
+  done
+  rm -rf "$TMP_HOME"
+}
+trap cleanup EXIT
+
+export HOME="$TMP_HOME"
+export DORY_CONFIG="$TMP_HOME/config.json"
+export DORY_SOCK="$TMP_HOME/missing-dory.sock"
+
+python3 -m py_compile scripts/dory-doctor
+python3 -m py_compile scripts/dory-idle-proxy
+bash -n scripts/dory
+bash -n scripts/p0-smoke.sh
+
+scripts/dory-doctor mode show --json | python3 -c '
+import json, sys
+data = json.load(sys.stdin)
+assert data["runtimeMode"] == "manual"
+assert data["idle"]["sleepAfterMinutes"] == 15
+'
+
+scripts/dory-doctor mode auto-idle --json | python3 -c '
+import json, sys
+data = json.load(sys.stdin)
+assert data["runtimeMode"] == "auto-idle"
+'
+
+scripts/dory-doctor idle status --json | python3 -c '
+import json, sys
+data = json.load(sys.stdin)
+assert data["mode"] == "auto-idle"
+assert data["auto_idle_enabled"] is True
+assert data["can_sleep"] is False
+assert data["blockers"]
+assert data["proxy_state"]["available"] is False
+assert data["proxy_state"]["state"] == "unknown"
+'
+
+cat > "$TMP_HOME/idle-state.json" <<'JSON'
+{
+  "state": "idle-cooling-down",
+  "detail": "waiting 42s before sleep",
+  "updated_at": "2026-07-06T00:00:00Z",
+  "active_connections": 0,
+  "engine_ready": true
+}
+JSON
+
+DORY_IDLE_STATE="$TMP_HOME/idle-state.json" scripts/dory-doctor idle status --json | python3 -c '
+import json, sys
+data = json.load(sys.stdin)
+assert data["proxy_state"]["available"] is True
+assert data["proxy_state"]["state"] == "idle-cooling-down"
+assert data["proxy_state"]["detail"] == "waiting 42s before sleep"
+'
+
+scripts/dory-doctor disk --json | python3 -c '
+import json, sys
+data = json.load(sys.stdin)
+assert "host" in data
+assert "docker" in data
+assert data["docker"]["available"] is False
+'
+
+mkdir -p "$TMP_HOME/.dory"
+python3 - "$TMP_HOME/.dory/engine.log" <<'PY'
+from pathlib import Path
+import sys
+Path(sys.argv[1]).write_bytes(b"0123456789" * 10)
+PY
+
+scripts/dory-doctor cleanup --json --log-max-bytes 10 | python3 -c '
+import json, sys
+data = json.load(sys.stdin)
+logs = [item for item in data["actions"] if item["target"] == "logs"][0]
+assert logs["bytes_reclaimable"] == 90
+assert logs["applied"] is False
+assert any(item["target"] == "docker" and item["status"] == "skip" for item in data["actions"])
+'
+
+scripts/dory-doctor cleanup --json --apply --log-max-bytes 10 | python3 -c '
+import json, os, sys
+data = json.load(sys.stdin)
+logs = [item for item in data["actions"] if item["target"] == "logs"][0]
+assert logs["applied"] is True
+assert os.path.getsize(os.path.expanduser("~/.dory/engine.log")) == 10
+'
+
+scripts/dory-doctor network --save-probe internal=registry.internal.example:5000 --json | python3 -c '
+import json, sys
+data = json.load(sys.stdin)
+assert data["saved"]["name"] == "internal"
+assert data["saved"]["host"] == "registry.internal.example"
+assert data["saved"]["port"] == 5000
+'
+
+scripts/dory-doctor network --list-probes --json | python3 -c '
+import json, sys
+data = json.load(sys.stdin)
+probes = {(item["host"], item["port"]) for item in data["probes"]}
+assert ("registry-1.docker.io", 443) in probes
+assert ("registry.internal.example", 5000) in probes
+'
+
+set +e
+bad_probe="$(scripts/dory-doctor network --save-probe 'https://user:secret@registry.internal.example' 2>&1)"
+bad_rc=$?
+set -e
+test "$bad_rc" -eq 2
+printf '%s' "$bad_probe" | grep -q "must not contain credentials"
+
+scripts/dory-doctor network --remove-probe registry.internal.example:5000 --json | python3 -c '
+import json, sys
+data = json.load(sys.stdin)
+assert data["removed"] is True
+'
+
+set +e
+routes_json="$(scripts/dory-doctor routes --json)"
+routes_rc=$?
+set -e
+test "$routes_rc" -eq 1
+printf '%s' "$routes_json" | python3 -c '
+import json, sys
+data = json.load(sys.stdin)
+assert data["error"]
+assert data["ports"] == []
+'
+
+set +e
+doctor_json="$(scripts/dory-doctor doctor --json --only socket,api)"
+doctor_rc=$?
+set -e
+test "$doctor_rc" -eq 1
+printf '%s' "$doctor_json" | python3 -c '
+import json, sys
+data = json.load(sys.stdin)
+codes = {item["code"] for item in data["results"]}
+assert "socket.missing" in codes
+assert "socket.unreachable" in codes
+'
+
+set +e
+repair_json="$(scripts/dory-doctor repair all --json)"
+repair_rc=$?
+set -e
+test "$repair_rc" -eq 1
+printf '%s' "$repair_json" | python3 -c '
+import json, sys
+data = json.load(sys.stdin)
+targets = {item["target"] for item in data["actions"]}
+assert {"socket", "context", "dns", "routes", "ports", "domains", "dockerd", "guest-agent"} <= targets
+assert any(item["target"] == "guest-agent" and item["status"] == "skip" for item in data["actions"])
+'
+
+set +e
+cat > "$TMP_HOME/.dory/engine.log" <<'LOG'
+Authorization: Bearer secret-token
+Proxy-Authorization: Basic abc123
+password=supersecret
+LOG
+bundle_json="$(DORY_TOKEN=supersecret scripts/dory-doctor doctor --json --only socket --bundle "$TMP_HOME/dory-diagnostics.zip")"
+bundle_rc=$?
+set -e
+test "$bundle_rc" -eq 1
+printf '%s' "$bundle_json" | python3 -c '
+import json, os, sys, zipfile
+data = json.load(sys.stdin)
+assert os.path.exists(data["bundle"])
+assert data["bundle"].endswith("dory-diagnostics.zip")
+with zipfile.ZipFile(data["bundle"]) as zf:
+    text = zf.read("doctor.json").decode()
+    log = zf.read("logs/engine.log").decode()
+assert "supersecret" not in text
+assert "supersecret" not in log
+assert "secret-token" not in log
+assert "[redacted]" in text
+assert "[redacted]" in log
+'
+
+scripts/dory help | grep -q "dory doctor"
+scripts/dory help | grep -q "dory idle proxy"
+scripts/dory help | grep -q "dory idle proxy-status"
+scripts/dory help | grep -q "dory cleanup"
+
+scripts/dory-idle-proxy launch-agent print | python3 -c '
+import plistlib, sys
+data = plistlib.loads(sys.stdin.buffer.read())
+assert data["Label"] == "dev.dory.idle-proxy"
+assert data["RunAtLoad"] is True
+assert data["KeepAlive"] is True
+assert data["ProgramArguments"][-2:] == ["proxy", "--foreground"]
+'
+
+scripts/dory idle launch-agent print | python3 -c '
+import plistlib, sys
+data = plistlib.loads(sys.stdin.buffer.read())
+assert data["Label"] == "dev.dory.idle-proxy"
+'
+
+DORY_IDLE_STATE="$TMP_HOME/idle-state.json" scripts/dory idle proxy-status --json | python3 -c '
+import json, sys
+data = json.load(sys.stdin)
+assert data["available"] is True
+assert data["state"] == "idle-cooling-down"
+'
+
+cat > "$TMP_HOME/fake_engine_server.py" <<'PY'
+import os
+import socket
+import sys
+
+sock_path, ready_path = sys.argv[1], sys.argv[2]
+try:
+    os.unlink(sock_path)
+except FileNotFoundError:
+    pass
+
+server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+server.bind(sock_path)
+server.listen(16)
+with open(ready_path, "w", encoding="utf-8") as handle:
+    handle.write("ready")
+
+while True:
+    conn, _ = server.accept()
+    data = b""
+    while b"\r\n\r\n" not in data:
+        chunk = conn.recv(4096)
+        if not chunk:
+            break
+        data += chunk
+    if b"GET /_ping " in data:
+        body = b"OK"
+        conn.sendall(
+            b"HTTP/1.1 200 OK\r\n"
+            b"Content-Length: 2\r\n"
+            b"Connection: close\r\n"
+            b"\r\n" + body
+        )
+    elif b"GET /containers/json" in data:
+        body = b"[]"
+        conn.sendall(
+            b"HTTP/1.1 200 OK\r\n"
+            b"Content-Type: application/json\r\n"
+            b"Content-Length: 2\r\n"
+            b"Connection: close\r\n"
+            b"\r\n" + body
+        )
+    else:
+        body = b'{"ok":true}'
+        conn.sendall(
+            b"HTTP/1.1 200 OK\r\n"
+            b"Content-Type: application/json\r\n"
+            b"Content-Length: %d\r\n"
+            b"Connection: close\r\n"
+            b"\r\n" % len(body) + body
+        )
+    conn.close()
+PY
+
+cat > "$TMP_HOME/fake-engine" <<'SH'
+#!/bin/sh
+set -eu
+case "${1:-}" in
+  start)
+    echo start >> "$FAKE_ENGINE_STARTS"
+    python3 "$FAKE_ENGINE_SERVER" "$FAKE_ENGINE_SOCK" "$FAKE_ENGINE_READY" > "$FAKE_ENGINE_LOG" 2>&1 &
+    echo "$!" > "$FAKE_ENGINE_PID"
+    ;;
+  stop)
+    if [ -s "$FAKE_ENGINE_PID" ]; then
+      kill "$(cat "$FAKE_ENGINE_PID")" 2>/dev/null || true
+    fi
+    ;;
+  *)
+    exit 64
+    ;;
+esac
+SH
+chmod +x "$TMP_HOME/fake-engine"
+
+export FAKE_ENGINE_SERVER="$TMP_HOME/fake_engine_server.py"
+export FAKE_ENGINE_SOCK="$TMP_HOME/engine.sock"
+export FAKE_ENGINE_READY="$TMP_HOME/fake-engine.ready"
+export FAKE_ENGINE_STARTS="$TMP_HOME/fake-engine.starts"
+export FAKE_ENGINE_PID="$TMP_HOME/fake-engine.pid"
+export FAKE_ENGINE_LOG="$TMP_HOME/fake-engine.log"
+
+DORY_CONFIG="$TMP_HOME/config.json" scripts/dory-idle-proxy proxy \
+  --foreground \
+  --listener "$TMP_HOME/proxy.sock" \
+  --engine-sock "$FAKE_ENGINE_SOCK" \
+  --engine-command "$TMP_HOME/fake-engine" \
+  --idle-seconds 3600 \
+  --wake-timeout 5 \
+  --state-file "$TMP_HOME/proxy-state.json" \
+  > "$TMP_HOME/proxy.log" 2>&1 &
+proxy_pid=$!
+PIDS_TO_CLEAN+=("$proxy_pid")
+
+python3 - "$TMP_HOME/proxy.sock" "$TMP_HOME/proxy.log" <<'PY'
+import os
+import sys
+import time
+
+sock_path, log_path = sys.argv[1], sys.argv[2]
+deadline = time.time() + 5
+while time.time() < deadline:
+    if os.path.exists(sock_path):
+        raise SystemExit(0)
+    time.sleep(0.05)
+
+try:
+    log = open(log_path, encoding="utf-8").read()
+except FileNotFoundError:
+    log = ""
+raise SystemExit(f"proxy socket was not created; log:\n{log}")
+PY
+
+proxy_response="$(python3 - "$TMP_HOME/proxy.sock" <<'PY'
+import socket
+import sys
+
+client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+client.settimeout(5)
+client.connect(sys.argv[1])
+client.sendall(b"GET /_ping HTTP/1.1\r\nHost: dory\r\nConnection: close\r\n\r\n")
+client.shutdown(socket.SHUT_WR)
+chunks = []
+while True:
+    try:
+        chunk = client.recv(4096)
+    except TimeoutError:
+        break
+    if not chunk:
+        break
+    chunks.append(chunk)
+    if b"\r\n\r\nOK" in b"".join(chunks):
+        break
+raw = b"".join(chunks)
+if not raw:
+    raise SystemExit("proxy returned no response")
+print(raw.decode("iso-8859-1"))
+PY
+)"
+printf '%s' "$proxy_response" | grep -q "HTTP/1.1 200 OK"
+printf '%s' "$proxy_response" | grep -q "OK"
+grep -q "start" "$FAKE_ENGINE_STARTS"
+test -S "$FAKE_ENGINE_SOCK"
+
+python3 - "$TMP_HOME/proxy-state.json" <<'PY'
+import json
+import sys
+import time
+
+state_path = sys.argv[1]
+deadline = time.time() + 5
+last = {}
+while time.time() < deadline:
+    try:
+        last = json.load(open(state_path, encoding="utf-8"))
+    except FileNotFoundError:
+        last = {}
+    if last.get("state") in {"awake", "busy"} and last.get("engine_ready") is True:
+        raise SystemExit(0)
+    time.sleep(0.05)
+raise SystemExit(f"proxy did not publish an awake/busy state: {last!r}")
+PY
