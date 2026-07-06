@@ -123,7 +123,7 @@ struct MockRuntime: ContainerRuntime {
     func stop(containerID: String) async throws {}
     func restart(containerID: String) async throws {}
     func remove(containerID: String) async throws {}
-    func pull(image: String) async throws {}
+    func pull(image: String, registryAuth: String?) async throws {}
     func create(_ spec: ContainerSpec) async throws -> String { "mock-\(spec.name)" }
     func exec(containerID: String, command: [String]) async throws -> ExecResult { ExecResult(exitCode: 0, output: "") }
     func createNetwork(name: String, labels: [String: String]) async throws {}

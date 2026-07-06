@@ -43,6 +43,130 @@ struct DoryCommands: Commands {
             Button("Refresh") { Task { await store.reload() } }
                 .keyboardShortcut("r", modifiers: .command)
         }
+        CommandMenu("Runtime") {
+            Menu("Running Services") {
+                if runningServices.isEmpty {
+                    Button("No running services") {}
+                        .disabled(true)
+                } else {
+                    ForEach(runningServices.prefix(12), id: \.id) { container in
+                        Menu(serviceTitle(container)) {
+                            Button("Open Details") {
+                                openContainer(container, scope: container.composeProject == nil ? .all : .compose)
+                            }
+                            Button("Open Terminal") {
+                                openWindow(value: store.terminalSession(for: container))
+                            }
+                            Divider()
+                            Button("Restart") { store.restart(container) }
+                            Button("Stop") { if container.isRunning { store.toggle(container) } }
+                        }
+                    }
+                }
+            }
+
+            Menu("Compose Stacks") {
+                if composeProjects.isEmpty {
+                    Button("No Compose stacks") {}
+                        .disabled(true)
+                } else {
+                    ForEach(composeProjects, id: \.name) { project in
+                        Menu("\(project.name) (\(composeRunningCount(project.services))/\(project.services.count) running)") {
+                            Button("Open Stack") {
+                                if let first = project.services.first {
+                                    openContainer(first, scope: .compose)
+                                } else {
+                                    openMain(.compose)
+                                }
+                            }
+                            Divider()
+                            Button("Start") { store.startComposeProject(project.name) }
+                            Button("Stop") { store.stopComposeProject(project.name) }
+                            Button("Restart") { store.restartComposeProject(project.name) }
+                            Button("Down - stop and remove", role: .destructive) {
+                                Task { await store.composeDown(project.name) }
+                            }
+                        }
+                    }
+                }
+            }
+
+            Menu("Linux Machines") {
+                if store.machines.isEmpty {
+                    Button("No machines") {}
+                        .disabled(true)
+                } else {
+                    ForEach(store.machines, id: \.id) { machine in
+                        Menu("\(machine.name) (\(machine.status.rawValue))") {
+                            Button("Open Machines") { openMain(.machines) }
+                            Button("Open Terminal") {
+                                openWindow(value: store.terminalSession(for: machine))
+                            }
+                            Divider()
+                            Button(machine.status == .running ? "Stop" : "Start") {
+                                store.toggleMachine(machine)
+                            }
+                        }
+                    }
+                }
+            }
+
+            Menu("Kubernetes") {
+                Button("Open Kubernetes") { openMain(.kubernetes) }
+                Button("Refresh") { Task { await store.loadKubernetes() } }
+                Divider()
+                if store.kubernetesReachable {
+                    Button("Disable Kubernetes", role: .destructive) {
+                        Task { await store.disableKubernetes() }
+                    }
+                } else {
+                    Button("Enable Kubernetes") {
+                        Task { await store.enableKubernetes() }
+                    }
+                    .disabled(store.runtimeKind != .sharedVM || store.kubernetesBusy)
+                }
+            }
+        }
+    }
+
+    private var runningServices: [Container] {
+        store.containers
+            .filter(\.isRunning)
+            .sorted { serviceTitle($0).localizedCaseInsensitiveCompare(serviceTitle($1)) == .orderedAscending }
+    }
+
+    private var composeProjects: [(name: String, services: [Container])] {
+        let grouped = Dictionary(grouping: store.containers.filter { $0.composeProject != nil }, by: { $0.composeProject ?? "" })
+        return grouped.keys.sorted().map { name in
+            (
+                name: name,
+                services: (grouped[name] ?? []).sorted {
+                    serviceTitle($0).localizedCaseInsensitiveCompare(serviceTitle($1)) == .orderedAscending
+                }
+            )
+        }
+    }
+
+    private func composeRunningCount(_ services: [Container]) -> Int {
+        services.filter(\.isRunning).count
+    }
+
+    private func serviceTitle(_ container: Container) -> String {
+        container.composeService ?? container.name
+    }
+
+    private func openMain(_ section: AppSection) {
+        store.section = section
+        store.windowOpenRequested = true
+        openWindow(id: Self.openDoryWindowID)
+    }
+
+    private func openContainer(_ container: Container, scope: ContainerScope) {
+        store.setContainerScope(scope)
+        store.section = .containers
+        store.selectedContainerID = container.id
+        store.windowOpenRequested = true
+        openWindow(id: Self.openDoryWindowID)
     }
 
     private func startAll() {

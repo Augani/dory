@@ -49,13 +49,13 @@ struct OnboardingView: View {
                 .font(.system(size: 21, weight: .heavy)).foregroundStyle(p.text)
                 .multilineTextAlignment(.center).lineSpacing(2).fixedSize(horizontal: false, vertical: true)
                 .padding(.bottom, 8)
-            Text("A self-contained, Apple-native engine for Docker & Kubernetes. One shared VM, a fraction of the RAM — and your tools just work.")
+            Text("A self-contained, Apple-native engine for Docker, Compose, and Kubernetes. One shared VM, a fraction of the RAM — and your tools just work.")
                 .font(.system(size: 13)).foregroundStyle(p.text2).multilineTextAlignment(.center).lineSpacing(3)
                 .padding(.bottom, 22)
 
             VStack(spacing: 12) {
                 feature(.shield, p.green, p.greenWeak, "Up to 4.7× less memory", "One shared VM instead of one per container.")
-                feature(.eye, p.accentText, p.accentWeak, "Drop-in docker & kubectl", "Your existing CLI, Compose files and images just work.")
+                feature(.eye, p.accentText, p.accentWeak, "Bundled docker, Compose & kubectl", "Dory ships the tools and points them at its engine.")
                 feature(.networks, p.amber, p.amberWeak, "Automatic *.dory.local domains", "Every container on a real HTTPS URL.")
             }
             .padding(.bottom, 24)
@@ -77,7 +77,7 @@ struct OnboardingView: View {
 
             ProgressView().controlSize(.large).padding(.bottom, 22)
 
-            Text("First launch fetches the engine once — this is the only wait.")
+            Text("Dory.app already includes the engine, kernel, networking, Docker, Compose, and kubectl. First launch extracts and starts them.")
                 .font(.system(size: 11.5)).foregroundStyle(p.text3).multilineTextAlignment(.center)
                 .padding(.bottom, 18)
 
@@ -136,12 +136,12 @@ struct OnboardingView: View {
         VStack(spacing: 0) {
             Text("You're all set").font(.system(size: 20, weight: .heavy)).foregroundStyle(p.text)
                 .padding(.bottom, 6)
-            Text("Your existing tools point at Dory — nothing to reconfigure.")
+            Text("Dory's bundled tools and Docker context point at the engine — nothing else to install.")
                 .font(.system(size: 13)).foregroundStyle(p.text2).multilineTextAlignment(.center)
                 .padding(.bottom, 20)
 
             VStack(spacing: 10) {
-                proofRow("docker CLI configured")
+                proofRow("docker CLI + Compose configured")
                 proofRow("kubectl ready when you enable Kubernetes")
                 proofRow("*.dory.local domains active")
             }

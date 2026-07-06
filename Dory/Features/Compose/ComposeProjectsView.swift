@@ -81,8 +81,13 @@ private struct ProjectCard: View {
                         .font(.system(size: 11.5)).foregroundStyle(p.text3)
                 }
                 Spacer(minLength: 0)
-                actionButton(running > 0 ? "Stop" : "Start") { toggleAll(start: running == 0) }
+                actionButton(running > 0 ? "Stop" : "Start") {
+                    if running > 0 { store.stopComposeProject(name) }
+                    else { store.startComposeProject(name) }
+                }
                 Menu {
+                    Button("Restart Running Services") { store.restartComposeProject(name) }
+                        .disabled(running == 0)
                     Button("Down — stop & remove", role: .destructive) { Task { await store.composeDown(name) } }
                 } label: {
                     Text("⋯").font(.system(size: 15, weight: .bold)).foregroundStyle(p.text2)
@@ -112,16 +117,18 @@ private struct ProjectCard: View {
                     }
                     .padding(.vertical, 8)
                     .overlay(alignment: .top) { Rectangle().fill(p.border).frame(height: 1) }
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        store.selectedContainerID = service.id
+                        store.setContainerScope(.compose)
+                        store.section = .containers
+                    }
                 }
             }
         }
         .padding(16)
         .background(p.bgElevated, in: RoundedRectangle(cornerRadius: 13))
         .overlay(RoundedRectangle(cornerRadius: 13).strokeBorder(p.border))
-    }
-
-    private func toggleAll(start: Bool) {
-        for service in services where service.isRunning != start { store.toggle(service) }
     }
 
     private func actionButton(_ label: String, action: @escaping () -> Void) -> some View {

@@ -70,6 +70,7 @@ struct ContainersView: View {
     private var filterBar: some View {
         HStack(spacing: 10) {
             filterControl
+            scopeControl
             Spacer()
             if store.runningCount > 0 {
                 HStack(spacing: 5) {
@@ -104,12 +105,59 @@ struct ContainersView: View {
         .background(p.bgInput, in: RoundedRectangle(cornerRadius: DoryRadius.md.rawValue))
     }
 
+    private var scopeControl: some View {
+        HStack(spacing: 2) {
+            ForEach(ContainerScope.allCases) { scope in
+                let selected = store.containerScope == scope
+                Button { store.setContainerScope(scope) } label: {
+                    Text(scope.label)
+                        .font(.system(size: 11.5, weight: .semibold))
+                        .foregroundStyle(selected ? p.text : p.text3)
+                        .padding(.horizontal, 10).padding(.vertical, 4)
+                        .background(selected ? p.bgElevated : Color.clear, in: RoundedRectangle(cornerRadius: DoryRadius.sm.rawValue))
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("container-scope-\(scope.rawValue)")
+            }
+        }
+        .padding(2)
+        .background(p.bgInput, in: RoundedRectangle(cornerRadius: DoryRadius.md.rawValue))
+    }
+
     private func groupHeader(_ project: String, count: Int) -> some View {
-        HStack(spacing: 6) {
-            Image(systemName: "square.stack.3d.up").font(.system(size: 11)).foregroundStyle(p.text3)
-            Text(project).font(.system(size: 11, weight: .semibold)).foregroundStyle(p.text)
-            Text("compose · \(count) service\(count == 1 ? "" : "s")").font(.system(size: 10.5)).foregroundStyle(p.text3)
+        let total = store.containers(inComposeProject: project).count
+        let running = store.composeRunningCount(project)
+        return HStack(spacing: 8) {
+            Image(systemName: "square.stack.3d.up.fill").font(.system(size: 11)).foregroundStyle(p.accentText)
+            Text(project).font(.system(size: 11.5, weight: .bold)).foregroundStyle(p.text)
+            Text("\(running)/\(total) running · \(count) shown").font(.system(size: 10.5)).foregroundStyle(p.text3)
             Spacer()
+            if running < total {
+                IconButton(systemImage: "play.fill", label: "Start \(project)") { store.startComposeProject(project) }
+                    .frame(width: 24, height: 22)
+            }
+            if running > 0 {
+                IconButton(systemImage: "stop.fill", label: "Stop \(project)") { store.stopComposeProject(project) }
+                    .frame(width: 24, height: 22)
+                IconButton(systemImage: "arrow.clockwise", label: "Restart \(project)") { store.restartComposeProject(project) }
+                    .frame(width: 24, height: 22)
+            }
+            Menu {
+                Button("Start Stack") { store.startComposeProject(project) }
+                Button("Stop Stack") { store.stopComposeProject(project) }
+                Button("Restart Running Services") { store.restartComposeProject(project) }
+                Divider()
+                Button("Down - stop and remove", role: .destructive) { Task { await store.composeDown(project) } }
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 11, weight: .bold)).foregroundStyle(p.text3)
+                    .frame(width: 24, height: 22)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
         }
         .padding(.horizontal, 16).padding(.vertical, 6)
         .background(p.bgContent)
@@ -171,18 +219,32 @@ private struct ContainerRow: View {
     private var pending: Bool { store.pendingContainerIDs.contains(container.id) }
     private var ports: [PublishedPort] { parsePublishedPorts(container.ports) }
     private var spark: [Double] { (store.cpuHistory[container.id] ?? []).map { min(100, max(0, $0 * 7)) } }
+    private var title: String { container.composeService ?? container.name }
+    private var subtitle: String {
+        if let project = container.composeProject {
+            return "\(project) / \(container.name) · \(container.image)"
+        }
+        return container.image
+    }
 
     var body: some View {
         HStack(spacing: 0) {
             StatusPill(container.status).padding(.trailing, 10)
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
-                    Text(container.name).font(DoryType.body.font(.semibold)).foregroundStyle(p.text).lineLimit(1)
+                    Text(title).font(DoryType.body.font(.semibold)).foregroundStyle(p.text).lineLimit(1)
+                    if container.composeProject != nil {
+                        Text("service")
+                            .font(.system(size: 9.5, weight: .bold))
+                            .foregroundStyle(p.accentText)
+                            .padding(.horizontal, 6).padding(.vertical, 1)
+                            .background(p.accentWeak, in: Capsule())
+                    }
                     ForEach(ports.prefix(compact ? 1 : 3)) { port in
                         PortChip(label: port.label) { store.openPort(store.portURL(for: container, port: port)) }
                     }
                 }
-                Text(container.image).font(.mono(11)).foregroundStyle(p.text3).lineLimit(1)
+                Text(subtitle).font(.mono(11)).foregroundStyle(p.text3).lineLimit(1)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 

@@ -74,7 +74,12 @@ private struct LaunchWindowGate: ViewModifier {
                 dismissWindow(id: DoryApp.mainWindowID)
             }
             .onDisappear {
-                DoryActivation.setForeground(false)
+                Task { @MainActor in
+                    try? await Task.sleep(for: .milliseconds(100))
+                    if !DoryAppDelegate.hasVisibleMainWindow() {
+                        DoryActivation.setForeground(false)
+                    }
+                }
             }
     }
 }

@@ -11,6 +11,7 @@ struct RootView: View {
         }
         .frame(minWidth: 1000, minHeight: 660)
         .background(store.palette.bgWindow)
+        .background(MainWindowMarker())
         .environment(\.palette, store.palette)
         .tint(store.palette.accent)
         .preferredColorScheme(store.appearance.colorScheme)
@@ -145,6 +146,26 @@ struct RootView: View {
         .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(store.palette.red.opacity(0.5)))
         .shadow(color: .black.opacity(0.3), radius: 12, y: 6)
         .padding(.bottom, 20)
+    }
+}
+
+private struct MainWindowMarker: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView(frame: .zero)
+        markWindow(for: view)
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        markWindow(for: nsView)
+    }
+
+    private func markWindow(for view: NSView) {
+        DispatchQueue.main.async {
+            if let window = view.window {
+                DoryAppDelegate.markMainWindow(window)
+            }
+        }
     }
 }
 

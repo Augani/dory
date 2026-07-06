@@ -13,6 +13,10 @@ enum HostTools {
         "/opt/homebrew/bin/docker", "/usr/local/bin/docker", "/usr/bin/docker",
     ]) }
 
+    static func appleContainer() -> String? { resolve("container", systemCandidates: [
+        "/opt/homebrew/bin/container", "/usr/local/bin/container", "/usr/bin/container",
+    ]) }
+
     private static func resolve(_ name: String, systemCandidates: [String]) -> String? {
         if let bundled = bundledPath(named: name) { return bundled }
         return Shell.find(name, candidates: systemCandidates)

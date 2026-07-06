@@ -378,6 +378,18 @@ enum DetailTab: String, CaseIterable, Identifiable, Sendable {
     var label: String { rawValue.capitalized }
 }
 
+enum ContainerScope: String, CaseIterable, Identifiable, Sendable {
+    case all, standalone, compose
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .all: "All"
+        case .standalone: "Standalone"
+        case .compose: "Compose"
+        }
+    }
+}
+
 enum SettingsTab: String, CaseIterable, Identifiable, Sendable {
     case general, engine, resources, network, usb, migrate, about
     var id: String { rawValue }

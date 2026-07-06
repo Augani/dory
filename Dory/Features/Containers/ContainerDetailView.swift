@@ -19,6 +19,9 @@ struct ContainerDetailView: View {
         VStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 0) {
                 header
+                if let project = container.composeProject {
+                    composeContext(project: project).padding(.top, 12)
+                }
                 actions.padding(.top, 14)
                 tabs.padding(.top, 14)
             }
@@ -61,12 +64,61 @@ struct ContainerDetailView: View {
         HStack(alignment: .top, spacing: 10) {
             StatusDot(color: container.status.dotColor(p), size: 9).padding(.top, 6)
             VStack(alignment: .leading, spacing: 1) {
-                Text(container.name).font(.system(size: 17, weight: .bold)).foregroundStyle(p.text)
-                Text(container.image).font(.mono(12)).foregroundStyle(p.text3)
+                Text(container.composeService ?? container.name).font(.system(size: 17, weight: .bold)).foregroundStyle(p.text)
+                Text(container.composeProject == nil ? container.image : "\(container.name) · \(container.image)")
+                    .font(.mono(12)).foregroundStyle(p.text3)
             }
             Spacer(minLength: 0)
             StatusPill(container.status)
         }
+    }
+
+    private func composeContext(project: String) -> some View {
+        let services = store.containers(inComposeProject: project)
+        let running = services.filter(\.isRunning).count
+        return HStack(spacing: 10) {
+            Image(systemName: "square.stack.3d.up.fill")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(p.accentText)
+                .frame(width: 26, height: 26)
+                .background(p.accentWeak, in: RoundedRectangle(cornerRadius: 7))
+            VStack(alignment: .leading, spacing: 1) {
+                Text(project).font(.system(size: 12.5, weight: .bold)).foregroundStyle(p.text)
+                Text("\(running) of \(services.count) services running")
+                    .font(.system(size: 11)).foregroundStyle(p.text3)
+            }
+            Spacer(minLength: 0)
+            if running < services.count {
+                IconButton(systemImage: "play.fill", label: "Start \(project)") { store.startComposeProject(project) }
+                    .frame(width: 30, height: 28)
+            }
+            if running > 0 {
+                IconButton(systemImage: "stop.fill", label: "Stop \(project)") { store.stopComposeProject(project) }
+                    .frame(width: 30, height: 28)
+                IconButton(systemImage: "arrow.clockwise", label: "Restart \(project)") { store.restartComposeProject(project) }
+                    .frame(width: 30, height: 28)
+            }
+            Menu {
+                Button("Restart Running Services") { store.restartComposeProject(project) }
+                    .disabled(running == 0)
+                Button("Show Compose Services") {
+                    store.setContainerScope(.compose)
+                    store.section = .containers
+                }
+                Divider()
+                Button("Down - stop and remove", role: .destructive) { Task { await store.composeDown(project) } }
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 13, weight: .bold)).foregroundStyle(p.text2)
+                    .frame(width: 30, height: 28)
+                    .background(p.bgInput, in: RoundedRectangle(cornerRadius: 7))
+                    .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(p.border))
+            }
+            .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+        }
+        .padding(10)
+        .background(p.bgElevated, in: RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(p.border))
     }
 
     private var actions: some View {
