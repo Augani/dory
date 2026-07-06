@@ -1,0 +1,153 @@
+#!/bin/bash
+# dory-engine — Dory's container engine as a standalone, Colima-style runtime.
+#
+#   dory-engine start [--mem-mb N] [--cpus N] [--amd64] [--gpu venus]
+#   dory-engine stop
+#   dory-engine status
+#   dory-engine env
+#
+# Runs the same dory-hv engine the Dory app bundles, headless: one shared Linux VM with dockerd,
+# memory returned to macOS as workloads idle. The docker socket is published at
+# ~/.dory/engine.sock; `dory-engine start` also creates and can switch to a `dory-engine`
+# docker context so plain `docker` works.
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BIN="$HERE/bin"
+SHARE="$HERE/share/dory"
+STATE="$HOME/.dory"
+SOCK="$STATE/engine.sock"
+PIDFILE="$STATE/engine-cli.pid"
+LOGFILE="$STATE/engine.log"
+KERNEL="$STATE/vm/dory-hv-kernel-arm64"
+
+note() { printf 'dory-engine: %s\n' "$*"; }
+die() { printf 'dory-engine: %s\n' "$*" >&2; exit 1; }
+
+require_layout() {
+  [ -x "$BIN/dory-hv" ] || die "missing $BIN/dory-hv (run from the extracted release directory)"
+  [ -x "$BIN/gvproxy" ] || die "missing $BIN/gvproxy"
+  [ -f "$SHARE/dory-hv-kernel-arm64.lzfse" ] || die "missing kernel asset"
+}
+
+engine_pid() {
+  [ -f "$PIDFILE" ] || return 1
+  local pid
+  pid="$(cat "$PIDFILE" 2>/dev/null)" || return 1
+  [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null || return 1
+  printf '%s' "$pid"
+}
+
+socket_ready() {
+  [ -S "$SOCK" ] || return 1
+  curl -sf --max-time 2 --unix-socket "$SOCK" http://d/_ping >/dev/null 2>&1
+}
+
+cmd_start() {
+  require_layout
+  local mem_mb=2048 cpus=4 extra=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --mem-mb) mem_mb="$2"; shift 2 ;;
+      --cpus) cpus="$2"; shift 2 ;;
+      --amd64) extra+=(--amd64); shift ;;
+      --gpu) extra+=(--gpu "$2"); shift 2 ;;
+      *) die "unknown option $1" ;;
+    esac
+  done
+
+  if pid="$(engine_pid)" && socket_ready; then
+    note "already running (pid $pid)"
+    cmd_env
+    return 0
+  fi
+
+  mkdir -p "$STATE/vm" "$STATE/bin"
+  if [ ! -f "$KERNEL" ] || [ "$SHARE/dory-hv-kernel-arm64.lzfse" -nt "$KERNEL" ]; then
+    note "preparing kernel (one-time)…"
+    "$BIN/dory-hv" lzfse decompress "$SHARE/dory-hv-kernel-arm64.lzfse" "$KERNEL"
+  fi
+  # The guest agent rides the home share; the boot script prefers this copy so upgrades apply.
+  if [ -f "$SHARE/dory-agent-linux-arm64" ]; then
+    cp "$SHARE/dory-agent-linux-arm64" "$STATE/bin/dory-agent-linux-arm64"
+    chmod 0755 "$STATE/bin/dory-agent-linux-arm64"
+  fi
+
+  note "starting engine (${mem_mb} MiB ceiling, $cpus cpus)…"
+  rm -f "$SOCK"
+  nohup "$BIN/dory-hv" engine \
+    --engine-sock "$SOCK" \
+    --kernel "$KERNEL" \
+    --gvproxy "$BIN/gvproxy" \
+    --mem-mb "$mem_mb" --cpus "$cpus" --direct-ip \
+    ${extra[@]+"${extra[@]}"} \
+    --share "home=$HOME:rw:at=$HOME:safe" \
+    >> "$LOGFILE" 2>&1 &
+  echo $! > "$PIDFILE"
+
+  local waited=0
+  until socket_ready; do
+    kill -0 "$(cat "$PIDFILE")" 2>/dev/null || die "engine exited during start — see $LOGFILE"
+    waited=$((waited + 1))
+    [ "$waited" -ge 120 ] && die "engine did not become ready in 120s — see $LOGFILE"
+    sleep 1
+  done
+  note "ready in ${waited}s"
+
+  if command -v docker >/dev/null 2>&1; then
+    docker context inspect dory-engine >/dev/null 2>&1 \
+      || docker context create dory-engine --docker "host=unix://$SOCK" >/dev/null 2>&1 || true
+    note "docker context 'dory-engine' targets this engine (docker context use dory-engine)"
+  fi
+  cmd_env
+}
+
+cmd_stop() {
+  local pid
+  if ! pid="$(engine_pid)"; then
+    note "not running"
+    rm -f "$PIDFILE"
+    return 0
+  fi
+  note "stopping (graceful)…"
+  kill "$pid" 2>/dev/null || true
+  local waited=0
+  while kill -0 "$pid" 2>/dev/null; do
+    waited=$((waited + 1))
+    if [ "$waited" -ge 20 ]; then
+      note "forcing shutdown"
+      kill -9 "$pid" 2>/dev/null || true
+      break
+    fi
+    sleep 1
+  done
+  rm -f "$PIDFILE"
+  note "stopped"
+}
+
+cmd_status() {
+  if pid="$(engine_pid)"; then
+    if socket_ready; then
+      local api_version
+      api_version="$(curl -sf --max-time 2 --unix-socket "$SOCK" http://d/version 2>/dev/null | sed -n 's/.*"ApiVersion":"\([^"]*\)".*/\1/p' | head -1)"
+      note "running (pid $pid, docker api ${api_version:-unknown}) at unix://$SOCK"
+    else
+      note "starting (pid $pid) — socket not ready yet"
+    fi
+  else
+    note "not running"
+    return 1
+  fi
+}
+
+cmd_env() {
+  printf 'export DOCKER_HOST="unix://%s"\n' "$SOCK"
+}
+
+case "${1:-}" in
+  start) shift; cmd_start "$@" ;;
+  stop) cmd_stop ;;
+  status) cmd_status ;;
+  env) cmd_env ;;
+  *) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 64 ;;
+esac

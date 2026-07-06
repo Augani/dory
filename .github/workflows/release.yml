@@ -91,12 +91,22 @@ jobs:
           files: |
             ${{ steps.build.outputs.zip }}
             ${{ steps.build.outputs.dmg }}
+            ${{ steps.build.outputs.lite }}
+            ${{ steps.build.outputs.runtime }}
           generate_release_notes: true
           body: |
             Native, lightweight Docker & Linux containers, a free, open-source alternative to
             OrbStack and Docker Desktop. Universal for Intel and Apple silicon, macOS 15+.
             See the release notes and COMPATIBILITY.md for the current built-in engine tier on
             each Mac architecture.
+
+            **Pick your flavor**
+
+            | Asset | What it is |
+            |---|---|
+            | `Dory-${{ steps.ver.outputs.version }}.dmg` / `.zip` | Full app with Dory's bundled engine — zero prerequisites |
+            | `Dory-${{ steps.ver.outputs.version }}-lite.zip` | App only (~6 MB) — front an engine you already run (Colima, Docker Desktop, OrbStack, Rancher, Podman) via Settings → Engine Backend |
+            | `dory-engine-${{ steps.ver.outputs.version }}-arm64.tar.gz` | Headless engine runtime, no GUI — `./dory-engine start`, then `docker context use dory-engine` |
 
             **Install**
 
