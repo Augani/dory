@@ -422,13 +422,14 @@ enum EnginePreference: String, CaseIterable, Identifiable, Sendable {
 }
 
 enum SettingsTab: String, CaseIterable, Identifiable, Sendable {
-    case general, engine, resources, network, usb, migrate, about
+    case general, engine, resources, autoIdle, network, usb, migrate, about
     var id: String { rawValue }
     var label: String {
         switch self {
         case .general: "General"
         case .engine: "Docker Engine"
         case .resources: "Resources"
+        case .autoIdle: "Auto-Idle"
         case .network: "Network"
         case .usb: "USB Devices"
         case .migrate: "Migrate & Compare"

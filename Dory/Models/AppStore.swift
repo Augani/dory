@@ -87,6 +87,11 @@ final class AppStore {
     var healthActionError: String?
     @ObservationIgnored private var healthLoadToken = 0
 
+    var runtimeMode = "manual"
+    var idlePolicy = IdlePolicy.fallback
+    var idlePolicyLoaded = false
+    var idlePolicyBusy = false
+
     var kubernetesReachable = false
     var kubernetesInfo = "Cluster not running"
     var kubernetesVersionTag: String = KubeVersionCatalog.latest.tag
@@ -1235,6 +1240,41 @@ final class AppStore {
         await restartEngine()
         healthActionInFlight = false
         await loadHealth()
+    }
+
+    func loadIdlePolicy() async {
+        let result = await HealthDiagnostics.runControl(["idle", "status", "--json"])
+        guard let data = result.output.data(using: .utf8),
+              let status = try? JSONDecoder().decode(IdleStatus.self, from: data) else { return }
+        runtimeMode = status.mode
+        idlePolicy = status.policy ?? .fallback
+        idlePolicyLoaded = true
+    }
+
+    func setRuntimeMode(_ mode: String) async {
+        guard mode != runtimeMode, !idlePolicyBusy else { return }
+        idlePolicyBusy = true
+        runtimeMode = mode
+        _ = await HealthDiagnostics.runControl(["mode", mode])
+        idlePolicyBusy = false
+        await loadIdlePolicy()
+    }
+
+    func setIdleSleepAfter(_ minutes: Int) async {
+        guard minutes != idlePolicy.sleepAfterMinutes, !idlePolicyBusy else { return }
+        idlePolicyBusy = true
+        idlePolicy.sleepAfterMinutes = minutes
+        _ = await HealthDiagnostics.runControl(["idle", "set", "sleepAfterMinutes", String(minutes)])
+        idlePolicyBusy = false
+        await loadIdlePolicy()
+    }
+
+    func setIdleFlag(_ key: String, _ on: Bool) async {
+        guard !idlePolicyBusy else { return }
+        idlePolicyBusy = true
+        _ = await HealthDiagnostics.runControl(["idle", "set", key, on ? "on" : "off"])
+        idlePolicyBusy = false
+        await loadIdlePolicy()
     }
 
     private func matchesSearch(_ c: Container) -> Bool {

@@ -461,6 +461,12 @@ class IdleProxy:
         if active > 0:
             self.publish_state("busy", "active Docker API request", active_connections=active)
 
+    def wake_note(self, message: str) -> None:
+        # Honor the Settings toggle: the wake progress line is CLI-visible by default, silenced when
+        # the user turns wake notifications off.
+        if (load_config().get("idle") or {}).get("showWakeNotifications", True):
+            note(message)
+
     def ensure_engine(self) -> tuple[bool, str]:
         if engine_ping(self.engine_sock):
             self.publish_state("awake", "engine already awake")
@@ -472,7 +478,7 @@ class IdleProxy:
             if not self.engine_command.exists():
                 self.publish_state("failed-to-wake", "engine command not found")
                 return False, f"engine command not found: {self.engine_command}"
-            note("engine is sleeping or unavailable; waking it")
+            self.wake_note("engine is sleeping or unavailable; waking it")
             self.publish_state("waking", "starting engine")
             try:
                 start = subprocess.run(
@@ -494,7 +500,7 @@ class IdleProxy:
             deadline = time.time() + self.wake_timeout
             while time.time() < deadline:
                 if engine_ping(self.engine_sock):
-                    note("engine awake")
+                    self.wake_note("engine awake")
                     self.publish_state("awake", "engine awake after wake request")
                     return True, ""
                 time.sleep(0.5)

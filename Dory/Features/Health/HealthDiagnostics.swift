@@ -107,6 +107,50 @@ struct IdleBlocker: Decodable, Sendable, Hashable {
     }
 }
 
+func decodeFlexibleInt<Key: CodingKey>(_ container: KeyedDecodingContainer<Key>, _ key: Key) -> Int? {
+    if let value = try? container.decode(Int.self, forKey: key) { return value }
+    if let value = try? container.decode(Double.self, forKey: key) { return Int(value) }
+    if let value = try? container.decode(String.self, forKey: key) { return Int(value) }
+    return nil
+}
+
+struct IdlePolicy: Decodable, Sendable, Hashable {
+    var sleepAfterMinutes: Int
+    var keepPublishedPortsAwake: Bool
+    var keepKubernetesAwake: Bool
+    var keepPinnedProjectsAwake: Bool
+    var showWakeNotifications: Bool
+
+    static let fallback = IdlePolicy()
+
+    enum CodingKeys: String, CodingKey {
+        case sleepAfterMinutes, keepPublishedPortsAwake, keepKubernetesAwake, keepPinnedProjectsAwake, showWakeNotifications
+    }
+
+    init(
+        sleepAfterMinutes: Int = 15,
+        keepPublishedPortsAwake: Bool = true,
+        keepKubernetesAwake: Bool = true,
+        keepPinnedProjectsAwake: Bool = true,
+        showWakeNotifications: Bool = true
+    ) {
+        self.sleepAfterMinutes = sleepAfterMinutes
+        self.keepPublishedPortsAwake = keepPublishedPortsAwake
+        self.keepKubernetesAwake = keepKubernetesAwake
+        self.keepPinnedProjectsAwake = keepPinnedProjectsAwake
+        self.showWakeNotifications = showWakeNotifications
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        sleepAfterMinutes = decodeFlexibleInt(container, .sleepAfterMinutes) ?? 15
+        keepPublishedPortsAwake = (try? container.decode(Bool.self, forKey: .keepPublishedPortsAwake)) ?? true
+        keepKubernetesAwake = (try? container.decode(Bool.self, forKey: .keepKubernetesAwake)) ?? true
+        keepPinnedProjectsAwake = (try? container.decode(Bool.self, forKey: .keepPinnedProjectsAwake)) ?? true
+        showWakeNotifications = (try? container.decode(Bool.self, forKey: .showWakeNotifications)) ?? true
+    }
+}
+
 struct IdleStatus: Decodable, Sendable {
     let mode: String
     let autoIdleEnabled: Bool
@@ -114,9 +158,10 @@ struct IdleStatus: Decodable, Sendable {
     let sleepAfterMinutes: Int?
     let blockers: [IdleBlocker]
     let proxyState: IdleProxyState?
+    let policy: IdlePolicy?
 
     enum CodingKeys: String, CodingKey {
-        case mode, blockers
+        case mode, blockers, policy
         case autoIdleEnabled = "auto_idle_enabled"
         case canSleep = "can_sleep"
         case sleepAfterMinutes = "sleep_after_minutes"
@@ -130,16 +175,10 @@ struct IdleStatus: Decodable, Sendable {
         mode = (try? container.decode(String.self, forKey: .mode)) ?? "manual"
         autoIdleEnabled = (try? container.decode(Bool.self, forKey: .autoIdleEnabled)) ?? false
         canSleep = (try? container.decode(Bool.self, forKey: .canSleep)) ?? true
-        sleepAfterMinutes = Self.flexibleInt(container, .sleepAfterMinutes)
+        sleepAfterMinutes = decodeFlexibleInt(container, .sleepAfterMinutes)
         blockers = (try? container.decode([IdleBlocker].self, forKey: .blockers)) ?? []
         proxyState = try? container.decode(IdleProxyState.self, forKey: .proxyState)
-    }
-
-    private static func flexibleInt(_ container: KeyedDecodingContainer<CodingKeys>, _ key: CodingKeys) -> Int? {
-        if let value = try? container.decode(Int.self, forKey: key) { return value }
-        if let value = try? container.decode(Double.self, forKey: key) { return Int(value) }
-        if let value = try? container.decode(String.self, forKey: key) { return Int(value) }
-        return nil
+        policy = try? container.decode(IdlePolicy.self, forKey: .policy)
     }
 }
 

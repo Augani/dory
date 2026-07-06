@@ -48,6 +48,7 @@ struct SettingsView: View {
         case .general: general
         case .resources: resources
         case .engine: engine
+        case .autoIdle: AutoIdleView()
         case .network: network
         case .usb: UsbDevicesView()
         case .migrate: migrate

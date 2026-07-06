@@ -275,6 +275,28 @@ assert log_check[0]["code"] == "disk.dory_log_uncapped", log_check[0]
 '
 rm -f "$TMP_HOME/.dory/engine.log"
 
+# Auto-Idle policy CLI (Track 7): `dory idle set` writes idle.* keys, preserves runtimeMode, and
+# `idle status --json` echoes the full policy for the Settings UI. Isolated config so it does not
+# perturb the idle-proxy tests below.
+IDLE_CFG="$TMP_HOME/idle-policy-config.json"
+DORY_CONFIG="$IDLE_CFG" scripts/dory mode auto-idle >/dev/null
+DORY_CONFIG="$IDLE_CFG" scripts/dory idle set sleepAfterMinutes 30 >/dev/null
+DORY_CONFIG="$IDLE_CFG" scripts/dory idle set keepPublishedPortsAwake off >/dev/null
+DORY_CONFIG="$IDLE_CFG" scripts/dory idle status --json | python3 -c '
+import json, sys
+data = json.load(sys.stdin)
+assert data["mode"] == "auto-idle", data["mode"]
+policy = data.get("policy") or {}
+assert policy.get("sleepAfterMinutes") == 30, policy
+assert policy.get("keepPublishedPortsAwake") is False, policy
+assert policy.get("keepKubernetesAwake") is True, policy
+'
+set +e
+DORY_CONFIG="$IDLE_CFG" scripts/dory idle set bogusKey 5 >/dev/null 2>&1
+idle_set_rc=$?
+set -e
+[ "$idle_set_rc" = "2" ] || { echo "unknown idle key should exit 2, got $idle_set_rc"; exit 1; }
+
 scripts/dory-idle-proxy launch-agent print | python3 -c '
 import plistlib, sys
 data = plistlib.loads(sys.stdin.buffer.read())

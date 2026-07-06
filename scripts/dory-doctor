@@ -1552,14 +1552,16 @@ def idle_status(sock: Path | None = None) -> dict[str, Any]:
     if DEFAULT_KUBECONFIG.exists():
         blockers.append({"type": "kubernetes-config", "path": str(DEFAULT_KUBECONFIG)})
     mode = config.get("runtimeMode", "manual")
+    policy = config.get("idle") or {}
     return {
         "generated_at": now_iso(),
         "mode": mode,
         "auto_idle_enabled": mode in {"auto-idle", "battery-saver"},
-        "sleep_after_minutes": ((config.get("idle") or {}).get("sleepAfterMinutes")),
+        "sleep_after_minutes": policy.get("sleepAfterMinutes"),
         "can_sleep": len(blockers) == 0,
         "blockers": blockers,
         "proxy_state": read_idle_proxy_state(),
+        "policy": policy,
     }
 
 
@@ -2497,9 +2499,54 @@ def cmd_mode(args: argparse.Namespace) -> int:
     return 0
 
 
+IDLE_INT_KEYS = {"sleepAfterMinutes"}
+IDLE_BOOL_KEYS = {"keepPublishedPortsAwake", "keepKubernetesAwake", "keepPinnedProjectsAwake", "showWakeNotifications"}
+
+
+def parse_bool_arg(value: str) -> bool | None:
+    lowered = str(value).strip().lower()
+    if lowered in {"on", "true", "1", "yes", "y"}:
+        return True
+    if lowered in {"off", "false", "0", "no", "n"}:
+        return False
+    return None
+
+
+def idle_set(key: str | None, value: str | None, as_json: bool) -> int:
+    if not key or value is None:
+        print(f"usage: dory idle set KEY VALUE  (keys: {', '.join(sorted(IDLE_INT_KEYS | IDLE_BOOL_KEYS))})", file=sys.stderr)
+        return 2
+    if key in IDLE_INT_KEYS:
+        try:
+            parsed: Any = max(0, int(value))
+        except ValueError:
+            print(f"{key} expects a non-negative integer", file=sys.stderr)
+            return 2
+    elif key in IDLE_BOOL_KEYS:
+        parsed = parse_bool_arg(value)
+        if parsed is None:
+            print(f"{key} expects on/off (true/false)", file=sys.stderr)
+            return 2
+    else:
+        print(f"unknown idle key '{key}'; known: {', '.join(sorted(IDLE_INT_KEYS | IDLE_BOOL_KEYS))}", file=sys.stderr)
+        return 2
+    config = load_config()
+    idle = dict(config.get("idle") or {})
+    idle[key] = parsed
+    config["idle"] = idle
+    save_config(config)
+    if as_json:
+        print(json.dumps({"config_path": str(config_path()), "idle": idle}, indent=2, sort_keys=True))
+    else:
+        print(f"Set idle.{key} = {parsed}")
+    return 0
+
+
 def cmd_idle(args: argparse.Namespace) -> int:
+    if args.action == "set":
+        return idle_set(args.key, args.value, args.json)
     if args.action != "status":
-        raise SystemExit("usage: dory idle status [--json]")
+        raise SystemExit("usage: dory idle status|set KEY VALUE [--json]")
     status = idle_status()
     print_idle(status, args.json)
     return 0
@@ -2579,8 +2626,10 @@ def build_parser() -> argparse.ArgumentParser:
     mode.add_argument("--json", action="store_true")
     mode.set_defaults(func=cmd_mode)
 
-    idle = sub.add_parser("idle", help="Inspect Auto-Idle readiness")
-    idle.add_argument("action", choices=["status"], nargs="?", default="status")
+    idle = sub.add_parser("idle", help="Inspect Auto-Idle readiness or set idle policy")
+    idle.add_argument("action", choices=["status", "set"], nargs="?", default="status")
+    idle.add_argument("key", nargs="?", help="idle policy key for `set`")
+    idle.add_argument("value", nargs="?", help="idle policy value for `set`")
     idle.add_argument("--json", action="store_true")
     idle.set_defaults(func=cmd_idle)
 
