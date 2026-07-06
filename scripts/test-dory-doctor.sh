@@ -345,6 +345,25 @@ ids = {r["id"]: r for r in d["results"]}
 assert "mount.lock" in ids and ids["mount.lock"]["status"] == "skip", ids.get("mount.lock")
 '
 
+# Last-known-good doctor diff: a healthy run saves the baseline; a later regression is reported and
+# a failing run never overwrites the good baseline.
+python3 - <<'PY'
+import importlib.machinery, importlib.util, os, sys, tempfile
+loader = importlib.machinery.SourceFileLoader("dd", "scripts/dory-doctor")
+dd = importlib.util.module_from_spec(importlib.util.spec_from_loader("dd", loader))
+sys.modules["dd"] = dd
+loader.exec_module(dd)
+os.environ["DORY_LAST_GOOD"] = os.path.join(tempfile.mkdtemp(), "lg.json")
+CR = dd.CheckResult
+dd.save_last_good([CR("socket.exists", "pass", "socket.ok", "Socket", "ok"),
+                   CR("network.proxy", "pass", "network.proxy_ok", "Proxy", "ok")])
+diff = dd.diff_last_good([CR("socket.exists", "pass", "socket.ok", "Socket", "ok"),
+                          CR("network.proxy", "fail", "network.proxy_x", "Proxy", "broke")])
+assert any(r["id"] == "network.proxy" and r["to"] == "fail" for r in diff["regressions"]), diff
+dd.save_last_good([CR("network.proxy", "fail", "x", "Proxy", "broke")])
+assert dd.load_last_good()["checks"]["network.proxy"]["status"] == "pass", "fail run overwrote baseline"
+PY
+
 # Incident timeline (Track 6): `dory repair --apply` records an incident; `dory incidents --json`
 # reads it newest-first at 0600; a healthy `repair all --apply` records only what it actually applied.
 INC_LOG="$TMP_HOME/incidents-test.jsonl"

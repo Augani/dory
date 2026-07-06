@@ -138,6 +138,66 @@ def read_incidents(limit: int = 50) -> list[dict[str, Any]]:
     return records[-limit:]
 
 
+def last_good_path() -> Path:
+    return Path(os.environ.get("DORY_LAST_GOOD", str(HOME / ".dory" / "doctor-last-good.json"))).expanduser()
+
+
+STATUS_RANK = {"pass": 0, "skip": 1, "warn": 2, "fail": 3}
+
+
+def save_last_good(results: list["CheckResult"]) -> None:
+    # Only snapshot a genuinely healthy full run (no failures), so `--diff` always compares against a
+    # known-good baseline rather than a previously-broken state.
+    if any(r.status == "fail" for r in results):
+        return
+    snapshot = {
+        "saved_at": now_iso(),
+        "checks": {r.id: {"status": r.status, "code": r.code, "title": r.title} for r in results},
+    }
+    path = last_good_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(f".{os.getpid()}.tmp")
+        tmp.write_text(json.dumps(snapshot, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError:
+        pass
+
+
+def load_last_good() -> dict[str, Any] | None:
+    path = last_good_path()
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else None
+    except (OSError, ValueError):
+        return None
+
+
+def diff_last_good(results: list["CheckResult"]) -> dict[str, Any]:
+    baseline = load_last_good()
+    current = {r.id: {"status": r.status, "code": r.code, "title": r.title} for r in results}
+    if not baseline:
+        return {"baseline_saved_at": None, "regressions": [], "resolved": [], "new": []}
+    base_checks = baseline.get("checks") or {}
+    regressions: list[dict[str, Any]] = []
+    resolved: list[dict[str, Any]] = []
+    new: list[dict[str, Any]] = []
+    for check_id, cur in current.items():
+        prev = base_checks.get(check_id)
+        if prev is None:
+            new.append({"id": check_id, "status": cur["status"], "title": cur["title"]})
+            continue
+        cur_rank = STATUS_RANK.get(cur["status"], 0)
+        prev_rank = STATUS_RANK.get(prev.get("status", "pass"), 0)
+        if cur_rank > prev_rank:
+            regressions.append({"id": check_id, "from": prev.get("status"), "to": cur["status"], "title": cur["title"]})
+        elif cur_rank < prev_rank:
+            resolved.append({"id": check_id, "from": prev.get("status"), "to": cur["status"], "title": cur["title"]})
+    return {"baseline_saved_at": baseline.get("saved_at"), "regressions": regressions, "resolved": resolved, "new": new}
+
+
 def docker_bin() -> str | None:
     configured = os.environ.get("DORY_DOCKER_BIN")
     if configured:
@@ -2564,20 +2624,50 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     only = set(args.only.split(",")) if args.only else None
     doctor = Doctor(timeout=args.timeout, active=args.active)
     results = doctor.run_all(only=only)
+    diff = diff_last_good(results) if getattr(args, "diff", False) else None
+    # Refresh the healthy baseline only after a FULL run, and compute the diff against the PREVIOUS
+    # baseline first so `--diff` shows what changed since it last worked.
+    if only is None:
+        save_last_good(results)
     bundle_path = None
     if args.bundle is not None:
         target = None if args.bundle == "" else Path(args.bundle).expanduser()
         bundle_path = bundle(target, active=args.active)
     if args.json:
         payload: dict[str, Any] = {"generated_at": now_iso(), "results": [r.as_dict() for r in results]}
+        if diff is not None:
+            payload["diff"] = diff
         if bundle_path:
             payload["bundle"] = str(bundle_path)
         print(json.dumps(payload, indent=2, sort_keys=True))
     else:
         print_results(results, False)
+        if diff is not None:
+            print_diff(diff)
         if bundle_path:
             print(f"Diagnostic bundle: {bundle_path}")
     return exit_code(results)
+
+
+def print_diff(diff: dict[str, Any]) -> None:
+    baseline_at = diff.get("baseline_saved_at")
+    print("")
+    if not baseline_at:
+        print("Diff: no healthy baseline saved yet (run `dory doctor` once while healthy).")
+        return
+    print(f"Diff vs last healthy run ({baseline_at}):")
+    regressions = diff.get("regressions") or []
+    resolved = diff.get("resolved") or []
+    new = diff.get("new") or []
+    if not regressions and not resolved and not new:
+        print("  no changes since the last healthy run")
+        return
+    for item in regressions:
+        print(f"  REGRESSED {item['id']}: {item['from']} -> {item['to']} ({item['title']})")
+    for item in new:
+        print(f"  NEW       {item['id']}: {item['status']} ({item['title']})")
+    for item in resolved:
+        print(f"  RESOLVED  {item['id']}: {item['from']} -> {item['to']} ({item['title']})")
 
 
 def cmd_network(args: argparse.Namespace) -> int:
@@ -3021,6 +3111,7 @@ def build_parser() -> argparse.ArgumentParser:
     doctor.add_argument("--timeout", type=float, default=5.0)
     doctor.add_argument("--only", help="Comma-separated groups: socket,api,docker,context,registry,network,ports,domains,mounts,watch,clock,disk,memory,helpers")
     doctor.add_argument("--bundle", nargs="?", const="", help="Also write a redacted diagnostic bundle")
+    doctor.add_argument("--diff", action="store_true", help="Show what changed since the last healthy run")
     doctor.set_defaults(func=cmd_doctor)
 
     network = sub.add_parser("network", help="Run network diagnostics")

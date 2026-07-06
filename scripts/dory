@@ -61,8 +61,9 @@ dory — Dory CLI
   dory machine backup [machine] <tag|image> <s3://bucket/prefix-or-file>
                                Export a snapshot image and upload it with aws s3 cp
   dory recipe ls|show|add|new  Manage machine recipes
-  dory doctor [--json] [--active] [--bundle [PATH]]
+  dory doctor [--json] [--active] [--bundle [PATH]] [--diff]
                                Diagnose socket, CLI, network, mounts, disk, memory, and helpers
+                               (--diff shows what changed since the last healthy run)
   dory network [--json] [--active] [--probe HOST[:PORT]]
   dory network --save-probe HOST[:PORT] | --list-probes | --remove-probe HOST[:PORT]
                                Diagnose DNS, registry, proxy, ports, and *.dory.local routing
