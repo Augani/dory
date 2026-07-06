@@ -27,7 +27,7 @@ LABEL="dory-bench"
 if [ "${1:-}" = "fileshare" ]; then
   shift
   SHARE_ROOT="${1:-$PWD/.dory-file-bench}"
-  RESULT_DIR="${BENCH_RESULT_DIR:-$PWD/docs/research}"
+  RESULT_DIR="${BENCH_RESULT_DIR:-$PWD/website/public/research}"
   FILE_IMAGE="${DORY_FILE_BENCH_IMAGE:-dory/file-bench:local}"
   KERNEL_TREE="${BENCH_KERNEL_TREE:-}"
   NPM_PACKAGE="${BENCH_NPM_PACKAGE:-vite@latest}"

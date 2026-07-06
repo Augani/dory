@@ -6,7 +6,6 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "postbuild": "node scripts/sync-to-docs.mjs",
     "lint": "oxlint",
     "preview": "vite preview"
   },

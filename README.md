@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/logo.svg" width="120" alt="Dory logo">
+  <img src="website/public/logo.svg" width="120" alt="Dory logo">
 </p>
 
 <h1 align="center">Dory</h1>
@@ -21,20 +21,21 @@
 
 > ⭐ **If Dory saves you memory (or money), please [star the repo](https://github.com/Augani/dory). It genuinely helps others find it.**
 
-![Dory: containers, images, volumes, networks, and Linux machines](docs/demo.gif)
+![Dory: containers, images, volumes, networks, and Linux machines](website/public/demo.gif)
 
 ## Why Dory
 
-- **One VM, all your containers.** Dory builds on [Apple's open-source container stack](https://github.com/apple/containerization)
-  and boots a single persistent Linux micro-VM that runs *everything*, instead of one VM per
-  container. Measured **~4.7× less idle memory** than per-container VMs (2 containers: ~122 MB vs
-  ~574 MB), and the gap widens with every container you add
-  ([methodology](docs/research/benchmark-methodology.md)).
-- **Small and silent, permanently.** A ~6 MB native app with ~0% idle CPU. No indexers, no
+- **Its own engine, built for the Mac.** Dory ships `dory-hv`, its own hypervisor engine on
+  Apple's Hypervisor.framework: one persistent Linux VM runs *everything*, instead of one VM per
+  container, and memory is genuinely handed back to macOS as workloads idle (free-page reporting,
+  not a balloon that never deflates). Measured **~4.7× less idle memory** than per-container VMs
+  (2 containers: ~122 MB vs ~574 MB), and the gap widens with every container you add
+  ([methodology](website/public/research/benchmark-methodology.md)).
+- **Small and silent, permanently.** A native app with ~0% idle CPU. No indexers, no
   phone-home, no fans. That's a design constraint, not a version note.
 - **Free for everyone, forever.** No per-seat license, no "commercial use" tier, no account,
-  no sign-in. GPL-3.0, full source right here. (A [sourced comparison](docs/comparison.md) exists
-  if you want one, so judge for yourself.)
+  no sign-in. GPL-3.0, full source right here. (A [sourced comparison](website/public/comparison.md)
+  exists if you want one, so judge for yourself.)
 - **Your `docker` CLI just works, even on a clean Mac.** Dory bundles the Docker CLI, Compose
   plugin, and `kubectl`, serves the Docker API on `~/.dory/dory.sock`, and registers a `dory`
   Docker context. `docker run`, `docker compose`, your existing scripts and tools drive it
@@ -70,10 +71,13 @@
   local **HTTPS** issued by a local CA. All consent-gated, nothing installed silently.
 - **Apple GPU AI bridge**: run Metal-backed services on macOS, such as Ollama, LM Studio, MLX, or
   llama.cpp, and call them from Linux containers at `host.dory.internal` on ports `11434`, `1234`,
-  or `18190`. In-guest GPU compute is an experimental virtio-gpu Venus/Vulkan path with a
-  fail-closed virglrenderer/MoltenVK gate that release builds can bundle when compatible pinned
-  artifacts are available; it is not raw Apple GPU passthrough.
-- x86/amd64 images run on Apple silicon via emulation.
+  or `18190`.
+- **In-guest GPU compute (experimental)**: an opt-in virtio-gpu **Venus/Vulkan** path — containers
+  running Mesa's Venus driver see the Apple GPU through virglrenderer → MoltenVK → Metal
+  (`vulkaninfo` enumerates it, compute queues included). Toggle it in Settings; the renderer ships
+  inside the app. Not raw GPU passthrough; fences and heavy async workloads are still maturing.
+- **Intel (x86/amd64) images** run on Apple silicon via an opt-in QEMU emulation toggle — on
+  Dory's own engine, no separate VM.
 
 **Zero-friction start**
 - First launch starts Dory's bundled engine, kernel, networking helper, Docker tools, Compose,
@@ -93,19 +97,28 @@ brew install --cask Augani/dory/dory
 drag Dory to Applications, and open it. First launch guides you through the rest; supported Macs do
 not need a separate Docker install.
 
+### Pick your flavor
+
+Every release ships three artifacts, so you install only what you need:
+
+| Asset | What it is |
+|---|---|
+| `Dory-x.y.z.dmg` / `.zip` | **Full app** with Dory's bundled engine — zero prerequisites, works on a clean Mac |
+| `Dory-x.y.z-lite.zip` | **App only** (~6 MB) — front an engine you already run (Colima, Docker Desktop, OrbStack, Rancher Desktop, Podman) |
+| `dory-engine-x.y.z-arm64.tar.gz` | **Headless engine runtime**, no GUI — `./dory-engine start`, then `docker context use dory-engine`. Colima-style |
+
 ## Engine backends
 
-Dory selects a backend automatically; `DORY_RUNTIME` can override the shipping shared-VM, Docker,
-or mock paths for development. Apple `container` is detected for comparison and future backend work,
-but Dory's full Docker/Compose/Kubernetes feature set currently runs through the shared VM.
+Dory defaults to its own engine, and **Settings → Engine Backend** switches it Colima-style — no
+reinstall, no environment variables:
 
+| Backend | Model |
+|---|---|
+| **Dory engine** *(default)* | One persistent `dockerd`-in-VM for all containers on `dory-hv`, Dory's own Hypervisor.framework engine. Standalone: no Docker install required. Memory reclaim, GPU, x86 emulation, Kubernetes, Linux machines. |
+| **Existing engine** | Transparent proxy to an engine already on your Mac — auto-detects Colima, Docker Desktop, OrbStack, Rancher Desktop, and Podman sockets. Dory becomes the GUI, domains, and port UX on top. |
+| **Custom socket** | Point Dory at any Docker-compatible unix socket. |
 
-| `DORY_RUNTIME` | Backend | Model |
-|---|---|---|
-| `shared` *(default on supported hosts)* | **Shared VM** | One persistent `dockerd`-in-VM for all containers (OrbStack-style). Standalone: no Docker required. Apple silicon uses `dory-hv`; Intel prefers the raw `dory-hv` tier when signed PVH assets are bundled, then falls back to the Virtualization.framework shared-engine tier when its amd64 assets are available. |
-| `apple` *(planned)* | **Apple `container`** | One lightweight micro-VM per container. Detected for benchmarking and future backend work, but not yet a feature-equivalent selectable backend for Compose, Kubernetes, and Linux machines. |
-| `docker` | **Docker Engine API** | Transparent proxy to an existing Docker-compatible socket (Docker Desktop, OrbStack, Colima, Rancher Desktop, Podman). Fallback for unsupported hosts or installs without bundled engine assets. |
-| `mock` | **Mock** | In-memory sample data for UI development. |
+(`DORY_RUNTIME=shared|docker` remains as a development override.)
 
 ## Requirements
 
@@ -155,18 +168,23 @@ scripts/enable-kubernetes.sh    # bootstrap k3s in the shared VM
 Dory.app (SwiftUI)
       │
       ▼
-ContainerRuntime protocol ──► { Shared VM · Docker API · Mock · Apple container (planned) }
+ContainerRuntime protocol ──► { Dory engine (dory-hv) · any Docker-compatible socket }
       │
       ├─ doryd shim          Docker REST API over ~/.dory/dory.sock
       ├─ Compose engine      YAML → dependency DAG → reconcile
       ├─ engine services     health state machine · event synthesis · anon-volumes
       └─ Net                 LocalCA (TLS) · DomainRouter (*.dory.local) · port forwarding
+
+dory-hv (Helpers/dory-hv) — Dory's own VMM on Hypervisor.framework
+      ├─ virtio devices      blk · net · vsock · fs (virtiofs) · balloon · rng · gpu (Venus)
+      ├─ memory reclaim      free-page reporting → pages handed back to macOS in seconds
+      ├─ docker socket       engine.sock served over vsock with full half-close fidelity
+      └─ gvproxy sidecar     outbound NAT/DNS + published-port forwards
 ```
 
-Everything is dependency-light: the HTTP / unix-socket transport, YAML parser, and Docker-API
-client and server are hand-rolled, so the build stays small and deterministic. The
-`Packages/ContainerizationEngine` package links Apple's `containerization` framework to boot the
-Linux VM in-process.
+Everything is dependency-light: the HTTP / unix-socket transport, YAML parser, Docker-API
+client/server, and the entire VMM (virtio devices, FDT builder, GIC wiring, vsock transport) are
+hand-rolled in Swift, so the build stays small and deterministic.
 
 ## What's next
 

@@ -1,12 +1,13 @@
 name: Deploy Pages
 
-# Builds website/ (React + Vite) into docs/ and publishes it to GitHub Pages on every
-# push to main. One-time setup: repo Settings → Pages → Source → "GitHub Actions".
+# Builds website/ (React + Vite) and publishes the build output directly to GitHub Pages on
+# every push to main; nothing under docs/ is tracked in git. One-time setup: repo
+# Settings → Pages → Source → "GitHub Actions".
 
 on:
   push:
     branches: [main]
-    paths: ['docs/**', 'website/**', '.github/workflows/pages.yml']
+    paths: ['website/**', '.github/workflows/pages.yml']
   workflow_dispatch:
 
 permissions:
@@ -38,6 +39,6 @@ jobs:
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: docs
+          path: docs-build
       - id: deployment
         uses: actions/deploy-pages@v4

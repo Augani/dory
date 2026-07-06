@@ -40,13 +40,13 @@ export function Footprint() {
         <Reveal as="p" className="compare-note">
           Don't take our word for anything. The{' '}
           <a
-            href="https://github.com/Augani/dory/blob/main/docs/research/benchmark-methodology.md"
+            href="https://github.com/Augani/dory/blob/main/website/public/research/benchmark-methodology.md"
             className="link"
           >
             benchmark methodology
           </a>
           , a{' '}
-          <a href="https://github.com/Augani/dory/blob/main/docs/comparison.md" className="link">
+          <a href="https://github.com/Augani/dory/blob/main/website/public/comparison.md" className="link">
             sourced comparison
           </a>
           , and the per-feature{' '}

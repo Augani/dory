@@ -1,10 +1,10 @@
 # Dory Compatibility Matrix
 
-This is the honest, maintained statement of what Dory does. The shipping standalone path is
-Dory's bundled shared VM: one Linux VM, Dory's own socket, bundled Docker/Compose/kubectl tools,
-and no host Docker install. The runtime layer still keeps Apple `container` as a detected
-comparison target and future backend, but it is not yet a feature-equivalent selectable path for
-Compose, Kubernetes, and Linux machines.
+This is the honest, maintained statement of what Dory does, current as of **0.3.0**. The shipping
+standalone path is Dory's own engine (`dory-hv`, our VMM on Hypervisor.framework): one Linux VM,
+Dory's own socket, bundled Docker/Compose/kubectl tools, and no host Docker install. Settings →
+Engine Backend can instead point Dory at any existing Docker-compatible engine (Colima, Docker
+Desktop, OrbStack, Rancher Desktop, Podman) or a custom socket, Colima-style.
 
 Legend: ✅ works · 🟡 works with Dory-specific behavior · 🛠️ implemented, activation gated ·
 ⛔ unsupported / not yet · 🔒 blocked by an external gate.
@@ -64,9 +64,8 @@ backend model; the shipping shared-VM path fronts a real `dockerd` socket.
 
 | Backend | Standalone? | Memory model | Notes |
 |---|---|---|---|
-| **Shared VM** (`DORY_RUNTIME=shared`) | ✅ yes | **One shared VM for all containers** (OrbStack-style) | Dory provisions one persistent Linux micro-VM running `dockerd` (DinD), publishes its socket to the host, and drives it with the verified Docker runtime. Apple silicon uses the native `dory-hv` tier today. Intel prefers the raw `dory-hv` tier when signed PVH kernel/initfs assets are bundled, then resolves to the Virtualization.framework shared-engine tier when amd64 VZ assets and the helper are bundled, with Docker-compatible proxy fallback when assets or hypervisor support are missing. Verified on Apple silicon: standalone (engine 29.6.1, no Docker Desktop/OrbStack/Colima), workloads share one VM. Measured on Apple silicon: 2 containers = **1 VM @ ~122 MB** vs **~574 MB** as 3 per-container VMs. Persistent `/var/lib/docker` (overlayfs preserved across restarts); configurable CPUs/memory; idempotent reuse; memory is returned to macOS as workloads idle. |
-| **Docker-compatible host engine** | ❌ proxies host engine | Docker Desktop / OrbStack / Colima / Rancher Desktop / Podman | Transparent proxy to the detected local engine socket (`DOCKER_HOST`, Docker contexts, and common engine sockets). This is the fallback path for unsupported hosts, missing bundled assets, and installs where the built-in engine is disabled. Compatibility follows the installed host engine. Companion GUI, not standalone. |
-| **Apple `container`** | 🛠️ detected / planned | **One VM per container** | Native per-container micro-VMs; useful as a comparison target, but not yet wired as a feature-equivalent selectable backend for Dory's Compose, Kubernetes, Linux machines, and Docker socket UX. Requires macOS 26+ on Apple silicon when that backend ships. |
+| **Dory engine** (default; `DORY_RUNTIME=shared`) | ✅ yes | **One shared VM for all containers** (OrbStack-style) | Dory provisions one persistent Linux micro-VM running `dockerd` (DinD) on `dory-hv`, publishes its socket to the host over vsock with full half-close fidelity, and drives it with the verified Docker runtime. Intel prefers the raw `dory-hv` tier when signed PVH kernel/initfs assets are bundled, with Docker-compatible proxy fallback when assets or hypervisor support are missing. Verified on Apple silicon: standalone (engine 29.6.x, no Docker Desktop/OrbStack/Colima), workloads share one VM. Measured on Apple silicon: 2 containers = **1 VM @ ~122 MB** vs **~574 MB** as 3 per-container VMs. Persistent `/var/lib/docker` (preserved across restarts); memory is returned to macOS as workloads idle. Also available headless as the `dory-engine` runtime tarball. |
+| **Existing engine** (Settings → Engine Backend; `DORY_RUNTIME=docker`) | ❌ proxies host engine | Docker Desktop / OrbStack / Colima / Rancher Desktop / Podman | First-class selectable backend (not just a fallback): transparent proxy to the detected local engine socket (`DOCKER_HOST`, Docker contexts, and common engine sockets), or a custom socket path. Compatibility follows the installed host engine. Companion GUI, not standalone. |
 
 ## OrbStack parity surface
 
@@ -81,10 +80,11 @@ CA trust install remain consent-gated, the same one-time admin grant OrbStack ne
 | Automatic `*.dory.local` domains | ✅ | `DoryDNS` resolver + `DoryReverseProxy`; verified `http://name.dory.local → 200`. System-wide via consent script |
 | Automatic local HTTPS | ✅ | `DoryTLSProxy` terminates TLS with a `LocalCA` identity; verified `https://name.dory.local → 200` |
 | **Bind-mount file sharing** | ✅ | Home dir shared into the VM (virtiofs); verified `docker run -v ~/proj:/app` reads/writes host files live |
-| Apple GPU AI workloads | ✅ host-service bridge | Containers can reach Metal-backed macOS services at `host.dory.internal` on ports `11434` (Ollama), `1234` (LM Studio/OpenAI-compatible local servers), and `18190` (readiness/custom). Verified from the default Docker bridge and a user-defined bridge network. In-guest GPU compute is an experimental virtio-gpu Venus/Vulkan track, not raw Apple GPU passthrough |
+| Apple GPU AI workloads | ✅ host-service bridge | Containers can reach Metal-backed macOS services at `host.dory.internal` on ports `11434` (Ollama), `1234` (LM Studio/OpenAI-compatible local servers), and `18190` (readiness/custom). Verified from the default Docker bridge and a user-defined bridge network |
+| In-guest GPU compute (Venus/Vulkan) | 🟡 experimental, working | Opt-in via **Settings → GPU Acceleration**: virtio-gpu with Mesa's Venus driver in the container → virglrenderer → MoltenVK → Metal. Verified end-to-end: `vulkaninfo` in a Debian container enumerates `Virtio-GPU Venus (Apple M2 Pro)` with compute queues. The renderer ships inside Dory.app (no Homebrew needed); the container needs Mesa Venus (`mesa-vulkan-drivers` + `--device /dev/dri/renderD128`). Fence signalling is still a stub, so heavy async workloads are not there yet. Not raw GPU passthrough |
 | One-click Kubernetes | ✅ | `KubernetesProvisioner` runs k3s in the shared VM; verified host `kubectl` + pod deploy; GUI "Enable" button |
 | Linux machines (Ubuntu/Debian/Fedora/Alpine) | ✅ | `MachineProvider` via `container machine`; verified real machine create/list/start/stop/delete; GUI picker |
-| Non-native CPU emulation | ✅ (qemu, with limits) | Auto-installs qemu binfmt for the opposite host architecture: amd64 on Apple silicon, arm64 on Intel. Apple silicon verification: `--platform linux/amd64` reports `x86_64`. Intel arm64 emulation is wired symmetrically and awaits the Intel readiness gate. **Heavy amd64 workloads can segfault** under qemu-user on the default `dory-hv` engine - SQL Server (`mcr.microsoft.com/mssql/server`), Oracle, and some AVX/threading-heavy images hit `qemu: uncaught target signal 11`. This is a qemu-user emulation limit, not a Dory bug, and Rosetta cannot run on `dory-hv` (raw Hypervisor.framework). The fast x86 path on Apple silicon is the Virtualization.framework helper: `dory vm --arch amd64 --rosetta` / `DORY_ENGINE_ROSETTA=1`. (GitHub #3) |
+| Non-native CPU emulation | ✅ (qemu, with limits) | Opt-in via **Settings → Run Intel (x86/amd64) images**: registers qemu binfmt in the guest so `--platform linux/amd64` runs on Dory's own engine (verified: alpine and debian report `x86_64`/`amd64`, pulls fetch the right platform variant). First x86 use installs the qemu handlers via `tonistiigi/binfmt` (cached afterwards). **Heavy amd64 workloads can segfault** under qemu-user — SQL Server (`mcr.microsoft.com/mssql/server`), Oracle, and some AVX/threading-heavy images hit `qemu: uncaught target signal 11`. This is a qemu-user emulation limit, not a Dory bug; Rosetta cannot run on a raw Hypervisor.framework VMM, and the former Virtualization.framework Rosetta engine switch was retired (its guest handshake was unreliable). (GitHub #3) |
 | Volume file browser | ✅ | `VolumeBrowser`; verified list + read files inside volumes; GUI sheet |
 | Terminal / SSH into containers + machines | ✅ | `TerminalLauncher` opens Terminal.app against Dory's socket/engine |
 | Docker Desktop / OrbStack migration | ✅ | `MigrationAssistant` imports images + containers into Dory's shared VM; Docker-compatible sources stream image archives directly when possible, so local/private images do not require a registry pull or a full tarball buffered in app memory |
@@ -117,7 +117,7 @@ features without linking the framework's large dependency tree.
 
 | Capability | Status | Delivery |
 |---|---|---|
-| Rosetta-speed x86 | ✅ **delivered** | `dory vm --arch amd64 --rosetta -- <cmd>` → `uname -m == x86_64`. Verified through the CLI |
+| Rosetta-speed x86 | 🟡 one-off VMs only | `dory vm --arch amd64 --rosetta -- <cmd>` → `uname -m == x86_64` for single-shot VMs. The Rosetta *shared-engine* switch was retired in 0.3 (its guest handshake stalled); day-to-day x86 images run on Dory's own engine via the qemu binfmt toggle instead |
 | Reverse / bidirectional file mount | ✅ **delivered** | `dory vm --mount host:guest -- <cmd>` reads/writes host files in the container. Verified |
 | Audio passthrough | ✅ **delivered** | `dory vm --devices`: a `VZInstanceExtension` injects `VZVirtioSoundDevice`. Verified audio device configured |
 | USB device passthrough | 🚧 **in progress** | `dory vm --devices` attaches a `VZXHCIController`, but **no host USB device is passed through** - it is an empty controller (`USB controllers attached: 1` confirms the controller, not a device). Real per-device passthrough is the usbip-over-vsock path (roadmap Track 3.6), pending the `--usb` hardware gate |
@@ -130,7 +130,16 @@ in-process engine is not yet wired up.)
 
 ## Packaging: does the user need anything besides Dory.app?
 
-The goal is a single download. Status:
+The goal is a single download, and since 0.3 every release ships three flavors so you take only
+what you need:
+
+| Flavor | Contents |
+|---|---|
+| `Dory-x.y.z.dmg` / `.zip` | Full app: bundled engine, kernel (headless + GPU), offline engine rootfs, Venus GPU renderer, Docker/Compose/kubectl CLIs |
+| `Dory-x.y.z-lite.zip` | The app alone (~6 MB): fronts an engine you already run via Settings → Engine Backend |
+| `dory-engine-x.y.z-arm64.tar.gz` | Headless engine runtime (Colima-style): `dory-hv`, `gvproxy`, kernel, guest agent, and a `dory-engine start/stop/status` launcher that publishes `~/.dory/engine.sock` and a `dory-engine` docker context |
+
+Status of the full flavor:
 
 | Component | Bundled? | How |
 |---|---|---|

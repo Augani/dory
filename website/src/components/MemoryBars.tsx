@@ -53,7 +53,7 @@ export function MemoryBars() {
           <div className="mem-note">
             *Measured by Dory on Apple silicon (
             <a
-              href="https://github.com/Augani/dory/blob/main/docs/research/benchmark-methodology.md"
+              href="https://github.com/Augani/dory/blob/main/website/public/research/benchmark-methodology.md"
               className="link"
             >
               methodology
