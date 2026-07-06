@@ -108,12 +108,27 @@ final class HostPortForwarder: @unchecked Sendable {
     }
 
     private func start(port: Int, host: String) {
-        guard let fd = Self.listenLoopback(port: port) else { return }
+        // Published container ports honor the opt-in LAN-visibility setting; everything else (machine
+        // SSH tunnels) stays loopback-only.
+        guard let fd = Self.listenLoopback(port: port, bindHost: Self.publishBindHost()) else { return }
         let listener = Listener(listenFD: fd) { [weak self] client in
             self?.handle(client: client, port: port, host: host)
         }
         lock.lock(); listeners[port] = listener; lock.unlock()
         listener.run()
+    }
+
+    /// Reads the opt-in `network.lanVisible` flag from ~/.dory/config.json (the CLI-owned config, the
+    /// single source of truth). Defaults to loopback-only so ports are never silently LAN-exposed.
+    nonisolated static func publishBindHost() -> String {
+        let path = "\(NSHomeDirectory())/.dory/config.json"
+        guard let data = FileManager.default.contents(atPath: path),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let network = json["network"] as? [String: Any],
+              let lanVisible = network["lanVisible"] as? Bool, lanVisible else {
+            return "127.0.0.1"
+        }
+        return "0.0.0.0"
     }
 
     private func stop(port: Int) {
@@ -232,7 +247,7 @@ final class HostPortForwarder: @unchecked Sendable {
         }
     }
 
-    nonisolated static func listenLoopback(port: Int) -> Int32? {
+    nonisolated static func listenLoopback(port: Int, bindHost: String = "127.0.0.1") -> Int32? {
         let fd = socket(AF_INET, SOCK_STREAM, 0)
         guard fd >= 0 else { return nil }
         var yes: Int32 = 1
@@ -240,7 +255,7 @@ final class HostPortForwarder: @unchecked Sendable {
         var addr = sockaddr_in()
         addr.sin_family = sa_family_t(AF_INET)
         addr.sin_port = in_port_t(UInt16(truncatingIfNeeded: port).bigEndian)
-        addr.sin_addr.s_addr = inet_addr("127.0.0.1")
+        addr.sin_addr.s_addr = inet_addr(bindHost)
         let bound = withUnsafePointer(to: &addr) { ptr in
             ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) }
         }

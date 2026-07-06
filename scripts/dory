@@ -65,7 +65,9 @@ dory — Dory CLI
                                Diagnose socket, CLI, network, mounts, disk, memory, and helpers
   dory network [--json] [--active] [--probe HOST[:PORT]]
   dory network --save-probe HOST[:PORT] | --list-probes | --remove-probe HOST[:PORT]
-                               Diagnose DNS, registry, ports, and *.dory.local routing
+                               Diagnose DNS, registry, proxy, ports, and *.dory.local routing
+  dory network --lan-visible on|off
+                               Publish ports to the local network, or restrict to localhost
   dory mount [--json]           Validate bind mount read/write and host-edit visibility
   dory disk [--json]            Show host, Docker, Dory state, log, and VM disk usage
   dory cleanup [--json] [--apply] [--include-volumes]

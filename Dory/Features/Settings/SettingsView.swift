@@ -689,7 +689,19 @@ struct SettingsView: View {
             .opacity(store.domainsEnabled ? 1 : 0.55)
             .allowsHitTesting(store.domainsEnabled)
 
-            Text("Published container ports stay reachable at localhost regardless of this setting. Containers use Docker's default bridge network (172.17.0.0/16).")
+            groupLabel("LAN ACCESS").padding(.top, 22)
+            VStack(spacing: 0) {
+                toggleRow(
+                    "Make published ports LAN-visible",
+                    "Off (default): published ports are reachable only from this Mac (localhost). On: bind them so other devices on your local network can reach your containers. Takes effect for newly published ports or after an engine restart.",
+                    isOn: Binding(get: { store.lanVisible }, set: { on in Task { await store.setLanVisible(on) } }),
+                    divider: false
+                )
+            }
+            .background(p.bgElevated, in: RoundedRectangle(cornerRadius: 11))
+            .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(p.border))
+
+            Text("With LAN access off, published container ports stay reachable only at localhost on this Mac. Containers use Docker's default bridge network (172.17.0.0/16).")
                 .font(.system(size: 11.5)).foregroundStyle(p.text3).lineSpacing(3)
                 .padding(.top, 14)
         }
@@ -699,6 +711,7 @@ struct SettingsView: View {
             dnsPortDraft = String(store.dnsPort)
             httpPortDraft = String(store.httpProxyPort)
             httpsPortDraft = String(store.httpsProxyPort)
+            store.loadLanVisible()
         }
     }
 

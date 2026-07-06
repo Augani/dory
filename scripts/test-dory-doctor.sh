@@ -294,6 +294,40 @@ idle_set_rc=$?
 set -e
 [ "$idle_set_rc" = "2" ] || { echo "unknown idle key should exit 2, got $idle_set_rc"; exit 1; }
 
+# Proxy inspector (Track 2 P1): a host proxy that Docker is not configured to use warns with an
+# actionable fix, and proxy-URL credentials are redacted from the output.
+HTTPS_PROXY="http://user:secretpw@proxy.corp.test:8080" \
+  DORY_SOCK=/tmp/dory-no-such-proxy.sock scripts/dory-doctor doctor --json --only proxy | python3 -c '
+import json, sys
+results = json.load(sys.stdin)["results"]
+proxy = [r for r in results if r["id"] == "network.proxy"]
+assert proxy, "network.proxy check missing"
+assert proxy[0]["status"] == "warn", proxy[0]
+assert proxy[0]["code"] == "network.proxy_not_propagated", proxy[0]
+assert "secretpw" not in json.dumps(proxy[0]), "proxy credentials leaked in output"
+'
+
+# LAN access controls (Track 2 P1): default is localhost-only (pass); `dory network --lan-visible on`
+# flips the check to a clear warn (no silent exposure); a bad value exits 2.
+LAN_CFG="$TMP_HOME/lan-config.json"
+DORY_CONFIG="$LAN_CFG" DORY_SOCK=/tmp/dory-no-such-lan.sock scripts/dory-doctor doctor --json --only exposure | python3 -c '
+import json, sys
+r = [x for x in json.load(sys.stdin)["results"] if x["id"] == "network.lan_exposure"][0]
+assert r["status"] == "pass" and r["code"] == "network.lan_localhost_only", r
+'
+DORY_CONFIG="$LAN_CFG" scripts/dory network --lan-visible on >/dev/null
+DORY_CONFIG="$LAN_CFG" DORY_SOCK=/tmp/dory-no-such-lan.sock scripts/dory-doctor doctor --json --only exposure | python3 -c '
+import json, sys
+r = [x for x in json.load(sys.stdin)["results"] if x["id"] == "network.lan_exposure"][0]
+assert r["status"] == "warn" and r["code"] == "network.lan_exposed", r
+'
+python3 -c 'import json; assert json.load(open("'"$LAN_CFG"'"))["network"]["lanVisible"] is True'
+set +e
+DORY_CONFIG="$LAN_CFG" scripts/dory network --lan-visible maybe >/dev/null 2>&1
+lan_rc=$?
+set -e
+[ "$lan_rc" = "2" ] || { echo "bad --lan-visible value should exit 2, got $lan_rc"; exit 1; }
+
 # Incident timeline (Track 6): `dory repair --apply` records an incident; `dory incidents --json`
 # reads it newest-first at 0600; a healthy `repair all --apply` records only what it actually applied.
 INC_LOG="$TMP_HOME/incidents-test.jsonl"

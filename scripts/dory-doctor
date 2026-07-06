@@ -230,6 +230,8 @@ class Doctor:
             ("docker", self.check_docker_cli),
             ("context", self.check_docker_context),
             ("registry", self.check_registry),
+            ("proxy", self.check_proxy),
+            ("exposure", self.check_lan_exposure),
             ("network", self.check_dns_compare),
             ("ports", self.check_port_publish),
             ("domains", self.check_domain_route),
@@ -424,6 +426,78 @@ class Doctor:
                 "Dory context targets another socket",
                 host,
                 "Run `dory repair context` to update it.",
+            )
+
+    def check_proxy(self) -> None:
+        report = proxy_report(self.sock)
+        host_env = report["host_env"]
+        system = report["system"]
+        daemon = report["daemon"]
+        containers = report["containers"]
+        host_has_proxy = bool(
+            host_env.get("HTTPS_PROXY") or host_env.get("HTTP_PROXY")
+            or system.get("https_proxy") or system.get("http_proxy") or system.get("pac")
+        )
+        containers_have_proxy = bool(containers.get("https_proxy") or containers.get("http_proxy"))
+        daemon_has_proxy = bool(daemon.get("https_proxy") or daemon.get("http_proxy"))
+        layers = []
+        if host_env:
+            layers.append("host env")
+        if system:
+            layers.append("macOS system")
+        if daemon:
+            layers.append("daemon")
+        if containers:
+            layers.append("containers")
+        detail = ("proxy set at: " + ", ".join(layers)) if layers else "no proxy configured at any layer"
+        if host_has_proxy and not containers_have_proxy and not daemon_has_proxy:
+            self.add(
+                "network.proxy",
+                "warn",
+                "network.proxy_not_propagated",
+                "Host is behind a proxy that Docker is not using",
+                detail + " — image pulls and container internet can fail with EOF/timeout behind a corporate proxy",
+                "Add a `proxies.default` block (httpProxy/httpsProxy/noProxy) to ~/.docker/config.json so Docker injects the proxy into builds and containers.",
+                **report,
+            )
+        elif host_has_proxy and containers_have_proxy and not daemon_has_proxy:
+            self.add(
+                "network.proxy",
+                "warn",
+                "network.proxy_daemon_missing",
+                "Containers use a proxy but the daemon does not",
+                detail + " — `docker pull` from the engine may fail even though container runtime env is set",
+                "Configure the engine/daemon proxy (HTTP_PROXY/HTTPS_PROXY in the engine environment) to match the container proxy.",
+                **report,
+            )
+        else:
+            self.add("network.proxy", "pass", "network.proxy_ok", "Proxy configuration consistent", detail, **report)
+
+    def check_lan_exposure(self) -> None:
+        lan_visible = bool((load_config().get("network") or {}).get("lanVisible", False))
+        table = route_table(self.sock)
+        published = [] if table.get("error") else [row for row in table.get("ports", []) if row.get("state") == "running"]
+        count = len(published)
+        if lan_visible:
+            self.add(
+                "network.lan_exposure",
+                "warn",
+                "network.lan_exposed",
+                "Published ports are LAN-visible",
+                f"LAN visibility is ON — {count} published port(s) reachable from your local network, not just this Mac",
+                "Run `dory network --lan-visible off` (or Settings -> Network) to restrict published ports to localhost.",
+                lan_visible=True,
+                published_ports=count,
+            )
+        else:
+            self.add(
+                "network.lan_exposure",
+                "pass",
+                "network.lan_localhost_only",
+                "Published ports are localhost-only",
+                f"localhost-only — {count} published port(s) reachable only from this Mac",
+                lan_visible=False,
+                published_ports=count,
             )
 
     def check_registry(self) -> None:
@@ -1623,6 +1697,66 @@ def memory_report() -> dict[str, Any]:
     }
 
 
+def parse_scutil_proxy(text: str) -> dict[str, Any]:
+    fields: dict[str, str] = {}
+    for line in text.splitlines():
+        if " : " in line:
+            key, value = line.split(" : ", 1)
+            fields[key.strip()] = value.strip()
+    out: dict[str, str] = {}
+    if fields.get("HTTPEnable") == "1" and fields.get("HTTPProxy"):
+        out["http_proxy"] = f"{fields['HTTPProxy']}:{fields.get('HTTPPort', '')}".rstrip(":")
+    if fields.get("HTTPSEnable") == "1" and fields.get("HTTPSProxy"):
+        out["https_proxy"] = f"{fields['HTTPSProxy']}:{fields.get('HTTPSPort', '')}".rstrip(":")
+    if fields.get("ProxyAutoConfigEnable") == "1" and fields.get("ProxyAutoConfigURLString"):
+        out["pac"] = redact_str(fields["ProxyAutoConfigURLString"])
+    return out
+
+
+def proxy_report(sock: Path | None = None) -> dict[str, Any]:
+    sock = sock or socket_path()
+    host_env: dict[str, str] = {}
+    for key in ["HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY"]:
+        value = os.environ.get(key) or os.environ.get(key.lower())
+        if value:
+            host_env[key] = redact_str(value)
+
+    system: dict[str, Any] = {}
+    try:
+        result = subprocess.run(["scutil", "--proxy"], text=True, capture_output=True, timeout=5)
+        if result.returncode == 0:
+            system = parse_scutil_proxy(result.stdout)
+    except Exception:
+        pass
+
+    daemon: dict[str, str] = {}
+    try:
+        status_code, _, body = unix_http(sock, "GET", "/info", timeout=5)
+        if 200 <= status_code < 300:
+            info = json.loads(body.decode("utf-8") or "{}")
+            for out_key, info_key in [("http_proxy", "HTTPProxy"), ("https_proxy", "HTTPSProxy"), ("no_proxy", "NoProxy")]:
+                value = info.get(info_key)
+                if value:
+                    daemon[out_key] = redact_str(str(value))
+    except Exception:
+        pass
+
+    containers: dict[str, str] = {}
+    docker_cfg = HOME / ".docker" / "config.json"
+    if docker_cfg.exists():
+        try:
+            cfg = json.loads(docker_cfg.read_text(encoding="utf-8") or "{}")
+            default = ((cfg.get("proxies") or {}).get("default")) or {}
+            for out_key, cfg_key in [("http_proxy", "httpProxy"), ("https_proxy", "httpsProxy"), ("no_proxy", "noProxy")]:
+                value = default.get(cfg_key)
+                if value:
+                    containers[out_key] = redact_str(str(value))
+        except Exception:
+            pass
+
+    return {"generated_at": now_iso(), "host_env": host_env, "system": system, "daemon": daemon, "containers": containers}
+
+
 def route_table(sock: Path | None = None) -> dict[str, Any]:
     sock = sock or socket_path()
     out: dict[str, Any] = {"generated_at": now_iso(), "socket": str(sock), "ports": [], "domains": [], "error": ""}
@@ -1775,6 +1909,7 @@ def default_config() -> dict[str, Any]:
         },
         "network": {
             "probes": [],
+            "lanVisible": False,
         },
     }
 
@@ -1865,6 +2000,7 @@ def bundle(path: Path | None, active: bool = False) -> Path:
         "generated_at": now_iso(),
         "doctor": [result.as_dict() for result in results],
         "routes": route_table(),
+        "proxy": proxy_report(),
         "disk": disk_report(),
         "idle": idle_status(),
         "incidents": read_incidents(200),
@@ -2397,7 +2533,23 @@ def cmd_network(args: argparse.Namespace) -> int:
         else:
             print("Removed probe" if removed else "No matching probe")
         return 0
-    only = {"socket", "api", "registry", "network", "ports", "domains"}
+    if args.lan_visible is not None:
+        want = parse_bool_arg(args.lan_visible)
+        if want is None:
+            print("usage: dory network --lan-visible on|off", file=sys.stderr)
+            return 2
+        config = load_config()
+        network = dict(config.get("network") or {})
+        network["lanVisible"] = want
+        config["network"] = network
+        save_config(config)
+        if args.json:
+            print(json.dumps({"lanVisible": want, "config_path": str(config_path())}, indent=2, sort_keys=True))
+        else:
+            print(f"LAN visibility {'ON — published ports reachable from the local network' if want else 'OFF — published ports are localhost-only'}")
+            print("Restart the engine (or republish ports) for the change to take effect.")
+        return 0
+    only = {"socket", "api", "registry", "proxy", "exposure", "network", "ports", "domains"}
     doctor = Doctor(timeout=args.timeout, active=args.active, network_probes=args.probe)
     results = doctor.run_all(only=only)
     print_results(results, args.json)
@@ -2787,6 +2939,7 @@ def build_parser() -> argparse.ArgumentParser:
     network.add_argument("--save-probe", metavar="HOST[:PORT]", help="Persist a safe host/port probe for future network checks")
     network.add_argument("--remove-probe", metavar="HOST[:PORT]", help="Remove a persisted network probe")
     network.add_argument("--list-probes", action="store_true", help="List default and configured safe network probes")
+    network.add_argument("--lan-visible", metavar="on|off", help="Publish ports to the local network (on) or restrict to localhost (off)")
     network.set_defaults(func=cmd_network)
 
     mount = sub.add_parser("mount", help="Run active bind-mount diagnostics")

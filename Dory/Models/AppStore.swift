@@ -91,6 +91,7 @@ final class AppStore {
     var idlePolicy = IdlePolicy.fallback
     var idlePolicyLoaded = false
     var idlePolicyBusy = false
+    var lanVisible = false
 
     var kubernetesReachable = false
     var kubernetesInfo = "Cluster not running"
@@ -1281,6 +1282,24 @@ final class AppStore {
         _ = await HealthDiagnostics.runControl(["idle", "set", key, on ? "on" : "off"])
         idlePolicyBusy = false
         await loadIdlePolicy()
+    }
+
+    func loadLanVisible() {
+        let path = "\(NSHomeDirectory())/.dory/config.json"
+        guard let data = FileManager.default.contents(atPath: path),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let network = json["network"] as? [String: Any],
+              let lan = network["lanVisible"] as? Bool else {
+            lanVisible = false
+            return
+        }
+        lanVisible = lan
+    }
+
+    func setLanVisible(_ on: Bool) async {
+        guard on != lanVisible else { return }
+        lanVisible = on
+        _ = await HealthDiagnostics.runControl(["network", "--lan-visible", on ? "on" : "off"])
     }
 
     private func matchesSearch(_ c: Container) -> Bool {
