@@ -99,19 +99,38 @@ nonisolated enum SharedVMProvisioner {
     }
 
     /// Wake handler: only meaningful when an engine was started this session. Resync the guest clock
-    /// (drift breaks TLS/DBs/tests), verify the engine socket, and record a wake-recovery incident so
-    /// the timeline explains post-sleep behavior. No-op in manual mode with no engine, so a laptop
-    /// lid-open does not flood the timeline.
+    /// (drift breaks TLS/DBs/tests), then verify the engine socket and host DNS (VPN/DNS often drift
+    /// across sleep) and record a wake-recovery incident so the timeline explains post-sleep behavior.
+    /// The checks are host-side and non-blocking (no containers), so a laptop lid-open is cheap. No-op
+    /// in manual mode with no engine, so a lid-open does not flood the timeline.
     nonisolated static func recoverAfterWake() {
         guard let pid = helperPID(), pid > 0 else { return }
         let clockResynced = resyncClockAfterWake(pid: pid)
         Task.detached {
+            // Let the network stack settle: didWake fires before Wi-Fi/VPN reconnects, so an
+            // immediate DNS/socket probe would false-alarm.
+            try? await Task.sleep(for: .seconds(3))
             let reachable = await isReachable()
+            let dnsResolves = hostResolves("registry-1.docker.io")
             recordIncident(
                 "wake-recovery",
-                "woke from sleep; clock \(clockResynced ? "resynced" : "unchanged"), engine socket \(reachable ? "reachable" : "unreachable")"
+                "woke from sleep; clock \(clockResynced ? "resynced" : "unchanged"), "
+                + "engine socket \(reachable ? "reachable" : "unreachable"), "
+                + "registry DNS \(dnsResolves ? "resolves" : "not resolving (check VPN/DNS)")"
             )
         }
+    }
+
+    /// Host-side DNS resolution via the system resolver (honors VPN/split-DNS). Used post-wake to
+    /// catch the common "DNS stopped working after sleep" failure without touching the engine.
+    private nonisolated static func hostResolves(_ host: String) -> Bool {
+        var hints = addrinfo()
+        hints.ai_family = AF_UNSPEC
+        hints.ai_socktype = SOCK_STREAM
+        var result: UnsafeMutablePointer<addrinfo>?
+        let status = getaddrinfo(host, nil, &hints, &result)
+        if let result { freeaddrinfo(result) }
+        return status == 0
     }
 
     struct Config: Sendable {
