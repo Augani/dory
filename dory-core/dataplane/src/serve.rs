@@ -7,6 +7,7 @@
 //! stream), while tests supply an in-memory `dockerd`.
 
 use std::future::Future;
+use std::os::unix::io::{FromRawFd, RawFd};
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -42,6 +43,35 @@ pub async fn serve<B: Backend>(
         tokio::spawn(async move {
             let _ = handle_conn(client, backend, opts).await;
         });
+    }
+}
+
+/// Serve on an already-bound listener fd handed over from the embedding process (Swift/doryd binds
+/// `dory.sock` and passes the fd across the FFI). Takes ownership of `listen_fd`. The listener is put
+/// into non-blocking mode for tokio.
+pub async fn serve_fd<B: Backend>(
+    listen_fd: RawFd,
+    backend: Arc<B>,
+    opts: Arc<ServeOpts>,
+) -> std::io::Result<()> {
+    // SAFETY: the caller transfers ownership of a valid, bound AF_UNIX listener fd.
+    let std_listener = unsafe { std::os::unix::net::UnixListener::from_raw_fd(listen_fd) };
+    std_listener.set_nonblocking(true)?;
+    let listener = UnixListener::from_std(std_listener)?;
+    serve(listener, backend, opts).await
+}
+
+/// A backend that dials a unix socket per connection: the guest `dockerd` reachable through the
+/// vsock forward socket in production, or a plain dockerd socket.
+pub struct UnixBackend {
+    pub path: std::path::PathBuf,
+}
+
+impl Backend for UnixBackend {
+    type Stream = UnixStream;
+    fn connect(&self) -> Pin<Box<dyn Future<Output = std::io::Result<UnixStream>> + Send + '_>> {
+        let path = self.path.clone();
+        Box::pin(async move { UnixStream::connect(path).await })
     }
 }
 

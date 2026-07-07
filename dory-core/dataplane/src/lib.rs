@@ -16,7 +16,7 @@ pub mod serve;
 pub use classify::Disposition;
 pub use create_rewrite::{rewrite_create_body, RewriteError, RewriteOpts};
 pub use http_head::{parse_head, RequestHead};
-pub use serve::{serve, Backend, ServeOpts};
+pub use serve::{serve, serve_fd, Backend, ServeOpts, UnixBackend};
 
 /// What the serving loop should do with a connection whose head is `buf`. `None` means the head is
 /// not yet complete — read more bytes. `/_ping` is reported as passthrough here; the idle-activity

@@ -16,6 +16,7 @@ required-features = ["bindgen"]
 dory-proto = { path = "../proto" }
 dory-dataplane = { path = "../dataplane" }
 uniffi = { workspace = true }
+tokio = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }

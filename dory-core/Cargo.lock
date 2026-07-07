@@ -263,6 +263,7 @@ dependencies = [
  "dory-dataplane",
  "dory-proto",
  "serde_json",
+ "tokio",
  "uniffi",
 ]
 

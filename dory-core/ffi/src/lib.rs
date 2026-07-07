@@ -46,6 +46,63 @@ pub fn rewrite_create_body(body: Vec<u8>, gpu_supported: bool) -> RewriteResult 
     }
 }
 
+/// A running docker dataplane, owned by the embedding VMM/doryd process. This is the real seam-2
+/// pattern: Swift binds `dory.sock`, hands the listener **fd** and the backend config across the FFI,
+/// and from then on every byte flows socket-to-socket inside Rust — none crosses back into Swift.
+#[derive(uniffi::Object)]
+pub struct DoryDataplane {
+    // Keeping the runtime here keeps the serving tasks alive; it is shut down in the background on
+    // drop so releasing the object is safe from any thread (Swift, or a tokio worker in tests) —
+    // a plain Runtime drop blocks and panics inside an async context.
+    runtime: std::sync::Mutex<Option<tokio::runtime::Runtime>>,
+    task: std::sync::Mutex<Option<tokio::task::AbortHandle>>,
+}
+
+#[uniffi::export]
+impl DoryDataplane {
+    /// Stop serving. Idempotent; also happens on drop.
+    pub fn shutdown(&self) {
+        if let Some(handle) = self.task.lock().unwrap().take() {
+            handle.abort();
+        }
+    }
+}
+
+impl Drop for DoryDataplane {
+    fn drop(&mut self) {
+        if let Some(runtime) = self.runtime.lock().unwrap().take() {
+            runtime.shutdown_background();
+        }
+    }
+}
+
+/// Start serving docker on `listen_fd` (an already-bound AF_UNIX listener the caller owns and hands
+/// over), proxying to the guest `dockerd` reachable at `dockerd_socket_path`. Two worker threads —
+/// dev-tool traffic doesn't need more, and idle RSS stays small.
+#[uniffi::export]
+pub fn start_dataplane(
+    listen_fd: i32,
+    dockerd_socket_path: String,
+    gpu_supported: bool,
+) -> std::sync::Arc<DoryDataplane> {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .expect("build dataplane runtime");
+    let backend = std::sync::Arc::new(dory_dataplane::UnixBackend {
+        path: dockerd_socket_path.into(),
+    });
+    let opts = std::sync::Arc::new(dory_dataplane::ServeOpts { gpu_supported });
+    let task = runtime.spawn(async move {
+        let _ = dory_dataplane::serve_fd(listen_fd, backend, opts).await;
+    });
+    std::sync::Arc::new(DoryDataplane {
+        runtime: std::sync::Mutex::new(Some(runtime)),
+        task: std::sync::Mutex::new(Some(task.abort_handle())),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -69,5 +126,68 @@ mod tests {
         assert!(r.ok);
         let v: serde_json::Value = serde_json::from_slice(&r.body).unwrap();
         assert!(v["HostConfig"]["ExtraHosts"].as_array().unwrap().len() >= 2);
+    }
+
+    /// The real seam-2 path: bind a listener (as Swift would), hand its raw fd to `start_dataplane`,
+    /// and confirm a docker create through that socket reaches the backend with the body rewritten —
+    /// all bytes staying inside Rust.
+    #[tokio::test]
+    async fn start_dataplane_serves_a_handed_over_fd() {
+        use std::os::unix::io::IntoRawFd;
+        use std::sync::Mutex;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::{UnixListener, UnixStream};
+
+        let base = std::env::temp_dir();
+        let pid = std::process::id();
+        let sock = base.join(format!("dory-ffi-serve-{pid}.sock"));
+        let dockerd = base.join(format!("dory-ffi-dockerd-{pid}.sock"));
+        let _ = std::fs::remove_file(&sock);
+        let _ = std::fs::remove_file(&dockerd);
+
+        // Fake dockerd: record the request it receives, reply 201.
+        let dockerd_listener = UnixListener::bind(&dockerd).unwrap();
+        let captured = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let cap = captured.clone();
+        tokio::spawn(async move {
+            if let Ok((mut s, _)) = dockerd_listener.accept().await {
+                let mut got = Vec::new();
+                let mut tmp = [0u8; 4096];
+                loop {
+                    match tokio::time::timeout(std::time::Duration::from_millis(300), s.read(&mut tmp)).await {
+                        Ok(Ok(n)) if n > 0 => got.extend_from_slice(&tmp[..n]),
+                        _ => break,
+                    }
+                }
+                *cap.lock().unwrap() = got;
+                let _ = s.write_all(b"HTTP/1.1 201 Created\r\nContent-Length: 0\r\n\r\n").await;
+                let _ = s.shutdown().await;
+            }
+        });
+
+        // The "Swift-created" dory.sock listener, handed over as a raw fd.
+        let listener = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+        let fd = listener.into_raw_fd();
+        let dp = start_dataplane(fd, dockerd.to_string_lossy().into_owned(), false);
+
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await; // let it start accepting
+        let body = r#"{"HostConfig":{"PortBindings":{"80/tcp":[{"HostIp":"127.0.0.1","HostPort":"8080"}]}}}"#;
+        let req = format!(
+            "POST /v1.47/containers/create HTTP/1.1\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        let mut client = UnixStream::connect(&sock).await.unwrap();
+        client.write_all(req.as_bytes()).await.unwrap();
+        let mut resp = Vec::new();
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(3), client.read_to_end(&mut resp)).await;
+
+        let got = String::from_utf8_lossy(&captured.lock().unwrap()).into_owned();
+        assert!(got.contains("/containers/create"), "backend got the request: {got}");
+        assert!(got.contains("\"HostIp\":\"\""), "loopback HostIp rewritten before forwarding: {got}");
+
+        dp.shutdown();
+        let _ = std::fs::remove_file(&sock);
+        let _ = std::fs::remove_file(&dockerd);
     }
 }
