@@ -13,6 +13,7 @@ staticlib the Swift `doryd`/`dory-vmm` link. The two seams of the design are bot
 | `agent` (`dory-agent`) | **guest** (static-musl) | PID-1 agent: vsock mux server (RPC dispatch: clock/info/ports) + docker byte-stream bridge | ✅ built; dispatch tested on host, vsock server cross-compiles arm64+x86_64 musl |
 | `dataplane` (`dory-dataplane`) | host | docker proxy logic: `http_head`, `classify` (passthrough/hijack/create-rewrite), `create_rewrite` (loopback HostIp, host-gateway ExtraHosts, `--gpus`) | ✅ built, 15 tests |
 | `ffi` (`dory-ffi`) | host | **seam 2**: UniFFI staticlib (control-only: config/fds/stats, never data-plane bytes). Exposes `startDataplane(listenFd, dockerdSocketPath, gpuSupported)` and the docker-tier `startDataplaneForward(listenFd, forwardSocketPath, cid, port, gpuSupported)` — the real fd-handover serves. | ✅ built, 5 tests; Swift bindings generated + a Swift consumer compiled & run against the staticlib; both fd-passing serves are tested end-to-end |
+| `remote` (`dory-remote`) | **host** (doryd) | agent RPC over SSH: `AgentClient` (transport-agnostic handshake+mux+pb typed RPC) + `ssh` (russh 0.54 connect/key-auth/tunnel via direct-streamlocal or direct-tcpip; mandatory `HostKeyPolicy`). The same protobuf protocol that rides vsock rides an SSH channel. | ✅ built, 6 tests incl. a full in-process real-russh loopback (info RPC over SSH) + host-key-rejection; host-only, not in the guest musl build |
 
 The `full_rpc_spine_over_mux` test in `agent` composes handshake → mux → dispatch → protobuf over an
 in-memory connection — the whole RPC path, minus the vsock transport.
@@ -67,7 +68,13 @@ cutover; the Rust path stayed healthy throughout.
 
 ## Not yet built (integration, next sessions)
 
-- `remote` crate (russh SSH transport + chunked sync + reconciler).
+- **`remote` sync half** — the russh transport + `AgentClient` are built (above); the
+  **chunked/resumable file sync + reconciler** are deferred pending decision **D5** (conflict policy
+  + resumability semantics) in `../docs/architecture/rust-sidecar.md §15`. The transport is the
+  unblocked foundation they build on.
+- **`dory-agent` daemon mode** — the agent's mux/dispatch server currently binds vsock only; the VPS
+  daemon needs the same server over a TCP/unix listener (the socket `remote`'s `direct-streamlocal`
+  tunnels to). Small: reuse `serve_control`'s handshake+`Mux::start(dispatch)` on a `TcpListener`.
 - The Swift side: `doryd` (control plane, launchd) and `dory-vmm` (VZ per-VM, embeds the dataplane
   via FFI, owns the captive vsock fds). The `startDataplane(listenFd, …)` /
   `startDataplaneForward(listenFd, …)` FFI entries are **done** (see `ffi`), and `dory-hv` now
