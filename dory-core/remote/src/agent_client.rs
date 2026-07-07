@@ -10,7 +10,9 @@ use std::sync::Arc;
 
 use dory_pb::agent::{
     self, agent_request::Method, agent_response::Result as Res, AgentRequest, AgentResponse,
-    ClockSyncRequest, InfoRequest, PortsWatchRequest,
+    ClockSyncRequest, InfoRequest, PortsWatchRequest, SyncDeleteRequest, SyncDeleteResponse,
+    SyncFileStatusRequest, SyncFileStatusResponse, SyncManifestRequest, SyncManifestResponse,
+    SyncPutChunkRequest, SyncPutChunkResponse,
 };
 use dory_proto::handshake::{handshake, Hello};
 use dory_proto::mux::Mux;
@@ -72,6 +74,34 @@ impl AgentClient {
             _ => Err(RemoteError::UnexpectedVariant),
         }
     }
+
+    pub async fn sync_manifest(&self, req: SyncManifestRequest) -> Result<SyncManifestResponse, RemoteError> {
+        match self.call(Method::SyncManifest(req)).await? {
+            Res::SyncManifest(r) => Ok(r),
+            _ => Err(RemoteError::UnexpectedVariant),
+        }
+    }
+
+    pub async fn sync_file_status(&self, req: SyncFileStatusRequest) -> Result<SyncFileStatusResponse, RemoteError> {
+        match self.call(Method::SyncFileStatus(req)).await? {
+            Res::SyncFileStatus(r) => Ok(r),
+            _ => Err(RemoteError::UnexpectedVariant),
+        }
+    }
+
+    pub async fn sync_put_chunk(&self, req: SyncPutChunkRequest) -> Result<SyncPutChunkResponse, RemoteError> {
+        match self.call(Method::SyncPutChunk(req)).await? {
+            Res::SyncPutChunk(r) => Ok(r),
+            _ => Err(RemoteError::UnexpectedVariant),
+        }
+    }
+
+    pub async fn sync_delete(&self, req: SyncDeleteRequest) -> Result<SyncDeleteResponse, RemoteError> {
+        match self.call(Method::SyncDelete(req)).await? {
+            Res::SyncDelete(r) => Ok(r),
+            _ => Err(RemoteError::UnexpectedVariant),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -109,9 +139,9 @@ mod tests {
             }),
             Some(Method::ClockSync(_)) => Res::ClockSync(agent::ClockSyncResponse { synced: true }),
             Some(Method::PortsWatch(_)) => Res::PortsWatch(agent::PortsWatchResponse::default()),
-            None => Res::Error(agent::RpcError {
+            _ => Res::Error(agent::RpcError {
                 code: 400,
-                message: "empty".into(),
+                message: "unsupported in this fake".into(),
             }),
         };
         AgentResponse {

@@ -590,8 +590,10 @@ version = "0.0.0"
 dependencies = [
  "dory-pb",
  "dory-proto",
+ "dory-sync",
  "libc",
  "prost",
+ "thiserror 2.0.18",
  "tokio",
  "tokio-vsock",
 ]
@@ -640,10 +642,18 @@ dependencies = [
  "dory-agent",
  "dory-pb",
  "dory-proto",
+ "dory-sync",
  "prost",
  "russh",
  "thiserror 2.0.18",
  "tokio",
+]
+
+[[package]]
+name = "dory-sync"
+version = "0.0.0"
+dependencies = [
+ "sha2",
 ]
 
 [[package]]

@@ -7,7 +7,8 @@ license.workspace = true
 [dependencies]
 dory-proto = { path = "../proto" }
 dory-pb = { path = "../pb" }
-tokio = { workspace = true }
+dory-sync = { path = "../sync" }
+tokio = { workspace = true, features = ["fs"] }
 thiserror = { workspace = true }
 prost = { workspace = true }
 russh = "0.54"
@@ -15,3 +16,4 @@ russh = "0.54"
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
 dory-agent = { path = "../agent" }
+dory-sync = { path = "../sync" }

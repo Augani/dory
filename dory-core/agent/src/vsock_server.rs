@@ -12,7 +12,8 @@ use dory_proto::mux::{Handler, HandlerFuture, Mux};
 use tokio::net::UnixStream;
 use tokio_vsock::{VsockAddr, VsockListener, VMADDR_CID_ANY};
 
-use crate::dispatch::{agent_build, dispatch};
+use crate::dispatch::agent_build;
+use crate::handler::handle;
 
 const GUEST_DOCKER_SOCK: &str = "/var/run/docker.sock";
 
@@ -31,7 +32,7 @@ async fn serve_control() -> std::io::Result<()> {
                 return;
             }
             let handler: Handler =
-                Arc::new(|req: Vec<u8>| Box::pin(async move { dispatch(&req) }) as HandlerFuture);
+                Arc::new(|req: Vec<u8>| Box::pin(async move { handle(&req).await }) as HandlerFuture);
             // The mux owns the connection via its own spawned reader/writer tasks; it serves until
             // the peer closes, at which point those tasks unwind.
             let _mux = Mux::start(stream, handler);

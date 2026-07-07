@@ -1,0 +1,8 @@
+[package]
+name = "dory-sync"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+sha2 = "0.10"

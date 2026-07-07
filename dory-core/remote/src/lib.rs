@@ -13,7 +13,9 @@
 pub mod agent_client;
 pub mod error;
 pub mod ssh;
+pub mod sync_push;
 
 pub use agent_client::AgentClient;
 pub use error::RemoteError;
 pub use ssh::{AgentEndpoint, HostKeyPolicy, SshAgent, SshConfig};
+pub use sync_push::{push, PushStats, SyncTarget};

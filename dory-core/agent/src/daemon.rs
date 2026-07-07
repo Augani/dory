@@ -10,7 +10,8 @@ use dory_proto::mux::{Handler, HandlerFuture, Mux};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpListener;
 
-use crate::dispatch::{agent_build, dispatch};
+use crate::dispatch::agent_build;
+use crate::handler::handle;
 
 /// Accept loop over a bound TCP listener; one control mux per connection.
 pub async fn serve(listener: TcpListener) -> std::io::Result<()> {
@@ -34,6 +35,6 @@ where
         return;
     }
     let handler: Handler =
-        Arc::new(|req: Vec<u8>| Box::pin(async move { dispatch(&req) }) as HandlerFuture);
+        Arc::new(|req: Vec<u8>| Box::pin(async move { handle(&req).await }) as HandlerFuture);
     let _mux = Mux::start(stream, handler);
 }

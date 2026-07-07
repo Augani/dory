@@ -9,7 +9,7 @@ use prost::Message;
 /// yields a well-formed error response (never a panic), so one bad frame can't take down the mux.
 pub fn dispatch(req_bytes: &[u8]) -> Vec<u8> {
     let response = match agent::AgentRequest::decode(req_bytes) {
-        Ok(req) => handle(req),
+        Ok(req) => handle_method(req.method),
         Err(_) => err(400, "malformed AgentRequest"),
     };
     response.encode_to_vec()
@@ -19,7 +19,7 @@ pub fn agent_build() -> String {
     concat!("dory-agent/", env!("CARGO_PKG_VERSION")).to_string()
 }
 
-fn err(code: i32, message: &str) -> agent::AgentResponse {
+pub fn err(code: i32, message: &str) -> agent::AgentResponse {
     agent::AgentResponse {
         result: Some(Res::Error(agent::RpcError {
             code,
@@ -28,13 +28,17 @@ fn err(code: i32, message: &str) -> agent::AgentResponse {
     }
 }
 
-fn handle(req: agent::AgentRequest) -> agent::AgentResponse {
-    let result = match req.method {
+/// Run the non-I/O methods (clock/info/ports). The async, filesystem-touching sync methods are
+/// routed by [`crate::handler`] before they reach here; if one arrives here it is a routing bug, so
+/// it is answered with an error rather than silently ignored.
+pub fn handle_method(method: Option<Method>) -> agent::AgentResponse {
+    let result = match method {
         Some(Method::ClockSync(r)) => Res::ClockSync(agent::ClockSyncResponse {
             synced: set_clock(r.host_epoch_ns),
         }),
         Some(Method::Info(_)) => Res::Info(info()),
         Some(Method::PortsWatch(_)) => Res::PortsWatch(ports_watch()),
+        Some(_) => return err(500, "sync method must be dispatched via the async handler"),
         None => return err(400, "empty method"),
     };
     agent::AgentResponse {

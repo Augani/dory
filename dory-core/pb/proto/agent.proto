@@ -41,11 +41,67 @@ message RpcError {
   string message = 2;
 }
 
+// --- Host-authoritative file sync (remote machines) ---
+// The host is the source of truth; these push a host tree into a remote `root` directory, making it
+// an exact replica. `root` is an absolute path on the remote; `path` is relative to it (forward
+// slash). `hash` is the sha256 of the file's full content — used both to skip unchanged files and to
+// scope resumable staging.
+
+message SyncFileEntry {
+  string path = 1;
+  uint64 size = 2;
+  int64 mtime_ns = 3;
+  uint32 mode = 4;
+  bytes hash = 5;
+}
+
+// Ask the remote to walk `root` and return its current manifest, so the host can diff.
+message SyncManifestRequest { string root = 1; }
+message SyncManifestResponse { repeated SyncFileEntry entries = 1; }
+
+// How many bytes are already staged for (path, hash) from a prior interrupted push — the resume
+// offset. Zero means start fresh.
+message SyncFileStatusRequest {
+  string root = 1;
+  string path = 2;
+  bytes hash = 3;
+}
+message SyncFileStatusResponse { uint64 have_bytes = 1; }
+
+// Append one chunk to the staged file for (path, hash) at `offset`. When `last` is set the staged
+// file is fsynced, its mode/mtime applied, and atomically renamed into place.
+message SyncPutChunkRequest {
+  string root = 1;
+  string path = 2;
+  bytes hash = 3;
+  uint64 offset = 4;
+  bytes data = 5;
+  bool last = 6;
+  uint32 mode = 7;
+  int64 mtime_ns = 8;
+}
+message SyncPutChunkResponse {
+  uint64 next_offset = 1; // bytes now durably staged (or committed size when last)
+  bool committed = 2;
+}
+
+// Remove these relpaths from `root` (files the host no longer has). Empty dirs left behind are
+// pruned by the remote.
+message SyncDeleteRequest {
+  string root = 1;
+  repeated string paths = 2;
+}
+message SyncDeleteResponse { uint32 deleted = 1; }
+
 message AgentRequest {
   oneof method {
     ClockSyncRequest clock_sync = 1;
     InfoRequest info = 2;
     PortsWatchRequest ports_watch = 3;
+    SyncManifestRequest sync_manifest = 4;
+    SyncFileStatusRequest sync_file_status = 5;
+    SyncPutChunkRequest sync_put_chunk = 6;
+    SyncDeleteRequest sync_delete = 7;
   }
 }
 
@@ -55,5 +111,9 @@ message AgentResponse {
     ClockSyncResponse clock_sync = 2;
     InfoResponse info = 3;
     PortsWatchResponse ports_watch = 4;
+    SyncManifestResponse sync_manifest = 5;
+    SyncFileStatusResponse sync_file_status = 6;
+    SyncPutChunkResponse sync_put_chunk = 7;
+    SyncDeleteResponse sync_delete = 8;
   }
 }
