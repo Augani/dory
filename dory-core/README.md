@@ -12,7 +12,7 @@ staticlib the Swift `doryd`/`dory-vmm` link. The two seams of the design are bot
 | `pb` (`dory-pb`) | host + guest | **seam 1**: the one `.proto` (agent RPC + control API), `prost`-generated; Swift consumes the same via `swift-protobuf` | ✅ built, 4 tests |
 | `agent` (`dory-agent`) | **guest** (static-musl) | PID-1 agent: vsock mux server (RPC dispatch: clock/info/ports) + docker byte-stream bridge | ✅ built; dispatch tested on host, vsock server cross-compiles arm64+x86_64 musl |
 | `dataplane` (`dory-dataplane`) | host | docker proxy logic: `http_head`, `classify` (passthrough/hijack/create-rewrite), `create_rewrite` (loopback HostIp, host-gateway ExtraHosts, `--gpus`) | ✅ built, 15 tests |
-| `ffi` (`dory-ffi`) | host | **seam 2**: UniFFI staticlib (control-only: config/fds/stats, never data-plane bytes). Exposes `startDataplane(listenFd, dockerdSocketPath, gpuSupported) -> DoryDataplane` — the real fd-handover serve. | ✅ built, 4 tests; Swift bindings generated + a Swift consumer compiled & run against the staticlib; the fd-passing serve is tested end-to-end |
+| `ffi` (`dory-ffi`) | host | **seam 2**: UniFFI staticlib (control-only: config/fds/stats, never data-plane bytes). Exposes `startDataplane(listenFd, dockerdSocketPath, gpuSupported)` and the docker-tier `startDataplaneForward(listenFd, forwardSocketPath, cid, port, gpuSupported)` — the real fd-handover serves. | ✅ built, 5 tests; Swift bindings generated + a Swift consumer compiled & run against the staticlib; both fd-passing serves are tested end-to-end |
 
 The `full_rpc_spine_over_mux` test in `agent` composes handshake → mux → dispatch → protobuf over an
 in-memory connection — the whole RPC path, minus the vsock transport.
@@ -47,7 +47,10 @@ cargo run -p dory-ffi --features bindgen --bin uniffi-bindgen -- \
 
 - `remote` crate (russh SSH transport + chunked sync + reconciler).
 - The Swift side: `doryd` (control plane, launchd) and `dory-vmm` (VZ per-VM, embeds the dataplane
-  via FFI, owns the captive vsock fds). The `startDataplane(listenFd, …)` FFI entry that hands Rust
-  the docker socket fd is **done** (see `ffi`); what remains is the Swift caller + the real vsock
-  backend (dial the guest dockerd over the VZ vsock instead of a unix path).
+  via FFI, owns the captive vsock fds). The `startDataplane(listenFd, …)` /
+  `startDataplaneForward(listenFd, …)` FFI entries are **done** (see `ffi`), and `dory-hv` now
+  serves the matching `--agent-vsock-forward` listener (preamble → fresh guest vsock stream, tested
+  in `DoryHVTests/AgentVsockForwardTests`); what remains is the production Swift caller in
+  doryd/dory-vmm and the on-hardware integration run (docker run/exec/pull/build through
+  dory.sock → dataplane → forward → guest dockerd).
 - VZ VM boot + a guest rootfs running `dory-agent` as PID 1; the big-bang cutover checklist.

@@ -85,14 +85,46 @@ pub fn start_dataplane(
     dockerd_socket_path: String,
     gpu_supported: bool,
 ) -> std::sync::Arc<DoryDataplane> {
+    spawn_dataplane(
+        listen_fd,
+        std::sync::Arc::new(dory_dataplane::UnixBackend {
+            path: dockerd_socket_path.into(),
+        }),
+        gpu_supported,
+    )
+}
+
+/// The docker-tier variant: serve `listen_fd` and reach the guest `dockerd` by dialing `dory-hv`'s
+/// `--agent-vsock-forward` socket with a `HostToGuest {cid, port}` preamble per connection.
+#[uniffi::export]
+pub fn start_dataplane_forward(
+    listen_fd: i32,
+    forward_socket_path: String,
+    cid: u32,
+    port: u32,
+    gpu_supported: bool,
+) -> std::sync::Arc<DoryDataplane> {
+    spawn_dataplane(
+        listen_fd,
+        std::sync::Arc::new(dory_dataplane::ForwardBackend {
+            forward_socket: forward_socket_path.into(),
+            cid,
+            port,
+        }),
+        gpu_supported,
+    )
+}
+
+fn spawn_dataplane<B: dory_dataplane::Backend>(
+    listen_fd: i32,
+    backend: std::sync::Arc<B>,
+    gpu_supported: bool,
+) -> std::sync::Arc<DoryDataplane> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
         .build()
         .expect("build dataplane runtime");
-    let backend = std::sync::Arc::new(dory_dataplane::UnixBackend {
-        path: dockerd_socket_path.into(),
-    });
     let opts = std::sync::Arc::new(dory_dataplane::ServeOpts { gpu_supported });
     let task = runtime.spawn(async move {
         let _ = dory_dataplane::serve_fd(listen_fd, backend, opts).await;
@@ -189,5 +221,67 @@ mod tests {
         dp.shutdown();
         let _ = std::fs::remove_file(&sock);
         let _ = std::fs::remove_file(&dockerd);
+    }
+
+    /// The docker-tier seam: `start_dataplane_forward` must reach the backend through dory-hv's
+    /// forward socket, preamble first — the fd handover plus the ForwardBackend dial in one path.
+    #[tokio::test]
+    async fn start_dataplane_forward_writes_the_preamble_then_the_request() {
+        use dory_proto::preamble::{read_preamble, Direction};
+        use std::os::unix::io::IntoRawFd;
+        use std::sync::Mutex;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::{UnixListener, UnixStream};
+
+        let base = std::env::temp_dir();
+        let pid = std::process::id();
+        let sock = base.join(format!("dory-ffi-fwd-serve-{pid}.sock"));
+        let fwd = base.join(format!("dory-ffi-fwd-{pid}.sock"));
+        let _ = std::fs::remove_file(&sock);
+        let _ = std::fs::remove_file(&fwd);
+
+        let fwd_listener = UnixListener::bind(&fwd).unwrap();
+        let got_preamble = std::sync::Arc::new(Mutex::new(None));
+        let got_request = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let (gp, gr) = (got_preamble.clone(), got_request.clone());
+        tokio::spawn(async move {
+            if let Ok((mut s, _)) = fwd_listener.accept().await {
+                let preamble = read_preamble(&mut s).await.unwrap();
+                *gp.lock().unwrap() = Some(preamble);
+                let mut req = Vec::new();
+                let mut tmp = [0u8; 4096];
+                loop {
+                    match tokio::time::timeout(std::time::Duration::from_millis(300), s.read(&mut tmp)).await {
+                        Ok(Ok(n)) if n > 0 => req.extend_from_slice(&tmp[..n]),
+                        _ => break,
+                    }
+                }
+                *gr.lock().unwrap() = req;
+                let _ = s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n").await;
+                let _ = s.shutdown().await;
+            }
+        });
+
+        let listener = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+        let fd = listener.into_raw_fd();
+        let dp = start_dataplane_forward(fd, fwd.to_string_lossy().into_owned(), 3, 1026, false);
+
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        let mut client = UnixStream::connect(&sock).await.unwrap();
+        client.write_all(b"GET /v1.47/version HTTP/1.1\r\nHost: d\r\n\r\n").await.unwrap();
+        let mut resp = Vec::new();
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(3), client.read_to_end(&mut resp)).await;
+
+        let preamble = got_preamble.lock().unwrap().clone().expect("preamble received");
+        assert_eq!(preamble.direction, Direction::HostToGuest);
+        assert_eq!(preamble.cid, 3);
+        assert_eq!(preamble.port, 1026);
+        let request = String::from_utf8_lossy(&got_request.lock().unwrap()).into_owned();
+        assert!(request.contains("GET /v1.47/version"), "forwarded request: {request}");
+        assert!(String::from_utf8_lossy(&resp).starts_with("HTTP/1.1 200"), "reply relayed");
+
+        dp.shutdown();
+        let _ = std::fs::remove_file(&sock);
+        let _ = std::fs::remove_file(&fwd);
     }
 }
