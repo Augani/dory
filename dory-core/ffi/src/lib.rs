@@ -12,6 +12,8 @@
 
 uniffi::setup_scaffolding!();
 
+mod remote;
+
 /// The wire protocol version doryd and the agent must agree on.
 #[uniffi::export]
 pub fn proto_version() -> u32 {

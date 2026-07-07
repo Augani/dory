@@ -12,10 +12,12 @@
 
 pub mod agent_client;
 pub mod error;
+pub mod keys;
 pub mod ssh;
 pub mod sync_push;
 
 pub use agent_client::AgentClient;
 pub use error::RemoteError;
+pub use keys::{private_key_from_openssh, public_key_from_openssh};
 pub use ssh::{AgentEndpoint, HostKeyPolicy, SshAgent, SshConfig};
 pub use sync_push::{push, PushStats, SyncTarget};

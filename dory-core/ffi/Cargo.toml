@@ -15,11 +15,15 @@ required-features = ["bindgen"]
 [dependencies]
 dory-proto = { path = "../proto" }
 dory-dataplane = { path = "../dataplane" }
+dory-remote = { path = "../remote" }
 uniffi = { workspace = true }
 tokio = { workspace = true }
+thiserror = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }
+dory-agent = { path = "../agent" }
+russh = "0.54"
 
 [features]
 # Enables the uniffi-bindgen helper binary that generates the Swift bindings.

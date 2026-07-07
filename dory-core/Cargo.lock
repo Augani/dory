@@ -612,9 +612,13 @@ dependencies = [
 name = "dory-ffi"
 version = "0.0.0"
 dependencies = [
+ "dory-agent",
  "dory-dataplane",
  "dory-proto",
+ "dory-remote",
+ "russh",
  "serde_json",
+ "thiserror 2.0.18",
  "tokio",
  "uniffi",
 ]
