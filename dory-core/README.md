@@ -47,17 +47,26 @@ cargo run -p dory-ffi --features bindgen --bin uniffi-bindgen -- \
 
 The docker-tier spine ran end-to-end on a real VM: docker CLI → `dory.sock` → dataplane
 (`examples/forward_serve`) → `ForwardBackend` preamble → `dory-hv --agent-vsock-forward` → guest
-vsock 1026 → `dockerd`. `version`/`ps`/`run --rm` (attach half-close), `-i` stdin-EOF streaming,
-and a full `pull` all relayed byte-exact. During the same run the *legacy* Go-agent RPC (port 1024)
-wedged with `malformedFrame` — field evidence for the cutover; the Rust path stayed healthy.
+vsock 1026 → `dockerd`. Verified byte-exact: `version`/`ps`, `run --rm` (attach half-close), `-i`
+stdin-EOF streaming, a full `pull`, `exec` on a running container (hijack mid-connection), and —
+after the keep-alive fix below — `--gpus` answered by the dataplane's 501 and a real `docker
+create -p 127.0.0.1:…` stored in the daemon with `HostIp` emptied **and** both host-gateway
+`ExtraHosts`, all through the CLI's pooled connection.
+
+Two integration-found bugs, both fixed with regression tests:
+- **Keep-alive classification gap**: the serve loop classified only the first request per
+  connection, then spliced raw — a create reused after `GET /_ping` bypassed create-rewrite/GPU
+  gating. Now every request head is classified (lazy backend dial, blind response pump, raw splice
+  only on hijack/chunked-tail).
+- **`"ExtraHosts": null`**: the Go CLI marshals an empty list as explicit `null`, which
+  `entry().or_insert_with()` kept, silently skipping the host-gateway injection.
+
+The *legacy* Go-agent RPC (port 1024) wedged with `malformedFrame` in 2 of 3 runs (port-watch
+polling, minutes into uptime; even the guest shutdown listener died) — field evidence for the
+cutover; the Rust path stayed healthy throughout.
 
 ## Not yet built (integration, next sessions)
 
-- **Per-request classification in `dataplane::serve`** — `handle_conn` classifies only the first
-  request per connection, then splices raw. The docker CLI pools keep-alive connections, so a
-  create on a reused connection (after `GET /_ping`) bypasses create-rewrite/GPU gating (proven:
-  `docker run --gpus all` reached dockerd; the same body on a fresh connection got the 501). Loop
-  over request heads client→backend, rewrite each create, splice only on hijack.
 - `remote` crate (russh SSH transport + chunked sync + reconciler).
 - The Swift side: `doryd` (control plane, launchd) and `dory-vmm` (VZ per-VM, embeds the dataplane
   via FFI, owns the captive vsock fds). The `startDataplane(listenFd, …)` /
