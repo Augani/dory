@@ -32,6 +32,9 @@ enum EngineMode {
         /// Host address published container ports bind to. Defaults to loopback; set to 0.0.0.0 only
         /// when the user opts into LAN visibility (Settings → Network / `dory network --lan-visible`).
         var publishHost: String = "127.0.0.1"
+        /// Unix socket the Rust dataplane's ForwardBackend dials (re-platform docker tier): each
+        /// connection opens a preamble-named guest vsock stream. nil keeps the forward off.
+        var agentVsockForward: String?
     }
 
     enum GPUAccelerationMode: String {
@@ -275,6 +278,9 @@ enum EngineMode {
         // basic Docker still works (degraded attach) rather than not at all. Promoting mid-flight
         // instead would leave the shim's pooled keep-alive connections on the degraded path forever.
         DockerSocketBridge(socketPath: configuration.engineSocket, log: { note($0) }).attach(to: vsock)
+        if let forwardSocket = configuration.agentVsockForward {
+            AgentVsockForward(socketPath: forwardSocket, guestCID: 3, log: { note($0) }).attach(to: vsock)
+        }
         let shutdownSocket = state + "/shutdown.sock"
         publishForward(local: shutdownSocket, guestPort: 2377, apiSocket: apiSocket, label: "shutdown channel")
         installGracefulShutdown(shutdownSocket: shutdownSocket)

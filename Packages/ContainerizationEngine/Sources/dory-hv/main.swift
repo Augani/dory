@@ -429,10 +429,12 @@ case "engine":
     var gpuMode = EngineMode.GPUAccelerationMode.off
     var amd64Emulation = false
     var publishHost = "127.0.0.1"
+    var agentVsockForward: String?
     var iterator = arguments.dropFirst().makeIterator()
     while let argument = iterator.next() {
         switch argument {
         case "--engine-sock": engineSocket = iterator.next() ?? engineSocket
+        case "--agent-vsock-forward": agentVsockForward = iterator.next()
         case "--kernel": kernel = iterator.next()
         case "--gvproxy": gvproxy = iterator.next()
         case "--rootfs": rootfs = iterator.next()
@@ -484,7 +486,8 @@ case "engine":
         },
         gpuMode: gpuMode,
         amd64Emulation: amd64Emulation,
-        publishHost: publishHost
+        publishHost: publishHost,
+        agentVsockForward: agentVsockForward
     )
     // Top-level code is implicitly MainActor; a plain Task would inherit it and deadlock behind
     // the semaphore below. Detach so the engine runs on the concurrent pool.
