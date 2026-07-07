@@ -65,7 +65,13 @@ final class DoryAppDelegate: NSObject, NSApplicationDelegate {
 enum DoryActivation {
     @MainActor static func setForeground(_ foreground: Bool) {
         guard !DoryAppDelegate.isTestHost else { return }
-        NSApp.setActivationPolicy(foreground ? .regular : .accessory)
+        let target: NSApplication.ActivationPolicy = foreground ? .regular : .accessory
+        // Every setActivationPolicy call re-inserts the MenuBarExtra status item, so a redundant call
+        // (already .regular, asked for .regular) makes the menu-bar icon flicker/duplicate. Only flip
+        // when the policy actually changes.
+        if NSApp.activationPolicy() != target {
+            NSApp.setActivationPolicy(target)
+        }
         if foreground { NSApp.activate(ignoringOtherApps: true) }
     }
 }
