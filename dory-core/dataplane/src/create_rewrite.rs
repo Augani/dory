@@ -77,6 +77,11 @@ fn ensure_extra_hosts(hc: &mut serde_json::Map<String, Value>) {
     let list = hc
         .entry("ExtraHosts")
         .or_insert_with(|| Value::Array(Vec::new()));
+    // The docker CLI (Go) marshals an empty list as an explicit `"ExtraHosts": null`, which
+    // `or_insert_with` keeps as-is — treat any non-array as empty or the injection silently skips.
+    if !list.is_array() {
+        *list = Value::Array(Vec::new());
+    }
     let Some(arr) = list.as_array_mut() else {
         return;
     };
@@ -146,6 +151,17 @@ mod tests {
             out["HostConfig"]["PortBindings"]["80/tcp"][0]["HostIp"],
             "0.0.0.0"
         );
+    }
+
+    /// The docker CLI (Go) always sends `"ExtraHosts": null` for an empty list — the injection
+    /// must treat that as empty, not silently skip (found on hardware 2026-07-07: HostIp was
+    /// rewritten but ExtraHosts stayed null through a real `docker create`).
+    #[test]
+    fn explicit_null_extra_hosts_still_gets_injected() {
+        let out = rewrite(json!({"HostConfig": {"ExtraHosts": null}}), false).unwrap();
+        let hosts = out["HostConfig"]["ExtraHosts"].as_array().unwrap();
+        assert!(hosts.contains(&json!("host.docker.internal:host-gateway")));
+        assert!(hosts.contains(&json!("host.dory.internal:host-gateway")));
     }
 
     #[test]
