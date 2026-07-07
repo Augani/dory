@@ -3,6 +3,7 @@
 //! bridge. On a non-Linux host there is no AF_VSOCK, so `main` only smoke-checks the dispatcher.
 
 mod dispatch;
+mod proc_net;
 
 #[cfg(target_os = "linux")]
 mod vsock_server;

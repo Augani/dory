@@ -96,8 +96,31 @@ fn set_clock(_host_epoch_ns: i64) -> bool {
 }
 
 fn ports_watch() -> agent::PortsWatchResponse {
-    // Skeleton: real impl parses /proc/net/{tcp,tcp6,udp} and diffs against the prior snapshot.
-    agent::PortsWatchResponse::default()
+    // Read the guest listener tables and return the current set; the host (doryd) diffs successive
+    // snapshots, so the agent stays stateless. On a non-Linux host these reads simply return nothing.
+    let mut ports = Vec::new();
+    for (path, protocol) in [
+        ("/proc/net/tcp", "tcp"),
+        ("/proc/net/tcp6", "tcp"),
+        ("/proc/net/udp", "udp"),
+        ("/proc/net/udp6", "udp"),
+    ] {
+        if let Ok(table) = std::fs::read_to_string(path) {
+            for (proto, port) in crate::proc_net::parse_listeners(&table, protocol) {
+                ports.push(agent::ListenPort {
+                    protocol: proto,
+                    port: port as u32,
+                });
+            }
+        }
+    }
+    ports.sort_by(|a, b| (a.port, &a.protocol).cmp(&(b.port, &b.protocol)));
+    ports.dedup();
+    agent::PortsWatchResponse {
+        ports,
+        added: Vec::new(),
+        removed: Vec::new(),
+    }
 }
 
 #[cfg(test)]
