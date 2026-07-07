@@ -82,3 +82,10 @@ Packages/ContainerizationEngine/Docs/
 
 # Python bytecode from the doctor helpers
 scripts/__pycache__/
+
+# Rust build output — the dory-core workspace + the de-risking spikes.
+# (Nested .gitignore files in those dirs cover the same; these are belt-and-suspenders.)
+/dory-core/target/
+/dory-core/ffi/generated/
+/spikes/*/target/
+/spikes/*/Cargo.lock
