@@ -209,6 +209,8 @@ Both files survive cluster recreation. Ports and binds are fixed when the contai
 changing them is reported as drift and is never applied destructively. Run `dory k8s enable` with
 `--recreate` or disable and re-enable Kubernetes in the app to apply the change. The command also
 accepts repeatable `--publish HOST:CONTAINER[/proto]` options and `--image` to pin the k3s image.
+Add `--no-kubeconfig-merge` to leave `~/.kube/config` untouched and use only the
+`~/.kube/dory-config` side file for CI or deliberately isolated `KUBECONFIG` setups.
 
 ```sh
 kubectl --context dory get pods -A

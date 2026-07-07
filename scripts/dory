@@ -189,7 +189,11 @@ k8s_write_kubeconfig() {
           -e "s/^current-context: default$/current-context: $K8S_CONTEXT/" \
     > "$KUBECONFIG_DORY"
   chmod 600 "$KUBECONFIG_DORY"
-  k8s_merge_kubeconfig
+  if [ "${K8S_MERGE:-1}" -eq 1 ]; then
+    k8s_merge_kubeconfig
+  else
+    echo "note: kubeconfig merge skipped; to use the cluster: export KUBECONFIG=$KUBECONFIG_DORY"
+  fi
 }
 
 # Fold the dory context into ~/.kube/config via kubectl itself — never hand-edit the file
@@ -238,12 +242,13 @@ k8s_enable() {
   local recreate=0
   while [ $# -gt 0 ]; do
     case "$1" in
-      --publish|-p) [ $# -ge 2 ] || { echo "usage: dory k8s enable [--recreate] [--publish H:C[/proto]]... [--image IMG]" >&2; exit 2; }
+      --publish|-p) [ $# -ge 2 ] || { echo "usage: dory k8s enable [--recreate] [--no-kubeconfig-merge] [--publish H:C[/proto]]... [--image IMG]" >&2; exit 2; }
                     K8S_PUBLISHES="$K8S_PUBLISHES $2"; shift 2 ;;
-      --image)      [ $# -ge 2 ] || { echo "usage: dory k8s enable [--recreate] [--publish H:C[/proto]]... [--image IMG]" >&2; exit 2; }
+      --image)      [ $# -ge 2 ] || { echo "usage: dory k8s enable [--recreate] [--no-kubeconfig-merge] [--publish H:C[/proto]]... [--image IMG]" >&2; exit 2; }
                     K8S_IMAGE="$2"; shift 2 ;;
       --recreate)   recreate=1; shift ;;
-      *) echo "usage: dory k8s enable [--recreate] [--publish H:C[/proto]]... [--image IMG]" >&2; exit 2 ;;
+      --no-kubeconfig-merge) K8S_MERGE=0; shift ;;
+      *) echo "usage: dory k8s enable [--recreate] [--no-kubeconfig-merge] [--publish H:C[/proto]]... [--image IMG]" >&2; exit 2 ;;
     esac
   done
   mkdir -p "$K8S_DIR"
@@ -400,11 +405,13 @@ dory — Dory CLI
   dory usb ls|attach|detach     Inspect USB candidates and request USB/IP attach/detach
   dory expose <port|machine> [--port P] [--hostname H] [--print-command]
                                Share a local port or machine endpoint through a public HTTPS tunnel
-  dory k8s enable [--recreate] [--publish H:C[/proto]]... [--image IMG]
+  dory k8s enable [--recreate] [--no-kubeconfig-merge] [--publish H:C[/proto]]... [--image IMG]
                                Start the built-in k3s cluster (headless). Also reads
                                ~/.dory/k8s/ports (one H:C[/proto] per line) and bind-mounts
                                ~/.dory/k8s/registries.yaml when present. --recreate applies
                                create-time config drift and destroys cluster state.
+                               --no-kubeconfig-merge leaves ~/.kube/config untouched
+                               (side file + export KUBECONFIG only).
   dory k8s disable             Delete the cluster container and its kubeconfig (reserved only
                                with no trailing args; otherwise passed to kubectl)
   dory k8s status              Cluster state (reserved only with no trailing args; otherwise

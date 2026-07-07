@@ -112,7 +112,7 @@ enum KubernetesProvisioner {
 
     static func enable(runtime: any ContainerRuntime, image: String = defaultImage, progress: @Sendable (String) -> Void = { _ in }) async throws {
         let extraPorts = try loadExtraPorts()
-        switch await containerState(runtime) {
+        switch await existingContainerState(runtime) {
         case .running:
             if await publishedPortsCurrent(runtime, extraPorts: extraPorts) {
                 try await writeKubeconfig(runtime)
@@ -362,12 +362,12 @@ enum KubernetesProvisioner {
         return (String(data: data, encoding: .utf8) ?? "", process.terminationStatus == 0)
     }
 
-    private static func containerState(_ runtime: any ContainerRuntime) async -> ExistingContainerState {
+    private static func existingContainerState(_ runtime: any ContainerRuntime) async -> ExistingContainerState {
         let encodedName = DockerImageOps.pathComponent(containerName)
         guard let response = await runtime.proxyRequest(method: "GET", path: "/containers/\(encodedName)/json", headers: [], body: Data()),
               response.isSuccess else { return .absent }
         guard let inspect = try? JSONDecoder().decode(ContainerInspect.self, from: response.body) else { return .absent }
-        return inspect.State?.Running == true ? .running : .stopped
+        return inspect.State?.running == true ? .running : .stopped
     }
 
     /// Whether the existing container already publishes every requested extra port and carries the
@@ -462,7 +462,19 @@ enum KubernetesProvisioner {
         }
     }
 
-    private struct ContainerInspect: Decodable, Sendable { let State: ContainerState? }
+    private struct ContainerInspect: Decodable, Sendable {
+        let State: ContainerState?
+        let HostConfig: HostConfig?
+
+        struct HostConfig: Decodable, Sendable {
+            let Binds: [String]?
+            let PortBindings: [String: [PortBinding]]?
+        }
+
+        struct PortBinding: Decodable, Sendable {
+            let HostPort: String?
+        }
+    }
 
     private static func containerState(_ runtime: any ContainerRuntime) async -> ContainerState? {
         let encodedName = DockerImageOps.pathComponent(containerName)
@@ -486,21 +498,4 @@ enum KubernetesProvisioner {
         return (try? JSONDecoder().decode(Out.self, from: data))?.Id
     }
 
-    private struct ContainerInspect: Decodable {
-        let HostConfig: HostConfig?
-        let State: State?
-
-        struct HostConfig: Decodable {
-            let Binds: [String]?
-            let PortBindings: [String: [PortBinding]]?
-        }
-
-        struct State: Decodable {
-            let Running: Bool?
-        }
-
-        struct PortBinding: Decodable {
-            let HostPort: String?
-        }
-    }
 }
