@@ -1,0 +1,12 @@
+[package]
+name = "vsock-spike"
+version = "0.0.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1", features = ["net", "io-util", "rt-multi-thread", "macros"] }
+tokio-vsock = "0.7"
+
+[[bin]]
+name = "vsock-spike"
+path = "src/main.rs"
