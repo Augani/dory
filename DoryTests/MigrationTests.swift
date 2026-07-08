@@ -30,7 +30,7 @@ final class MigrationSourceRuntime: ContainerRuntime {
 
 @MainActor
 final class MigrationTargetRuntime: ContainerRuntime {
-    let kind: RuntimeKind = .appleContainer
+    let kind: RuntimeKind = .sharedVM
     var pulled: [String] = []
     var created: [ContainerSpec] = []
     func snapshot() async throws -> RuntimeSnapshot { RuntimeSnapshot() }

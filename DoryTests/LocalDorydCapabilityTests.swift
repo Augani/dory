@@ -33,6 +33,13 @@ struct LocalDorydCapabilityTests {
     @Test func settingsAndRuntimeLabelsDoNotAdvertiseUnsupportedAppleRuntime() {
         #expect(SettingsTab.allCases.contains(.localTools))
         #expect(SettingsTab.localTools.label == "Local Tools")
-        #expect(RuntimeKind.appleContainer.displayName == "Unsupported runtime")
+        let activeRuntimeLabels = [
+            RuntimeKind.docker.displayName,
+            RuntimeKind.sharedVM.displayName,
+            RuntimeKind.disconnected.displayName,
+            RuntimeKind.mock.displayName,
+        ]
+        #expect(!activeRuntimeLabels.contains { $0.localizedCaseInsensitiveContains("Unsupported") })
+        #expect(!activeRuntimeLabels.contains { $0.localizedCaseInsensitiveContains("Apple") })
     }
 }

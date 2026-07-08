@@ -900,7 +900,6 @@ struct SettingsView: View {
         switch kind {
         case .docker: "Proxying a host Docker-compatible engine"
         case .sharedVM: store.dorydRuntimeActive ? "Daemon-managed Linux engine VM" : "One shared Linux VM on Dory's own engine"
-        case .appleContainer: "Unsupported local runtime"
         case .mock: "Demo data"
         case .disconnected: "No engine running"
         }

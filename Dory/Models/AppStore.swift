@@ -2861,7 +2861,7 @@ final class AppStore {
     var volumeBrowseBusy = false
 
     func openVolumeBrowser(_ volume: String) {
-        guard runtimeKind != .appleContainer else {
+        guard runtimeKind.isDockerCompatible || runtimeKind == .mock else {
             actionError = Self.dockerCompatibleEngineRequired("Volume file browsing")
             return
         }

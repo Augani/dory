@@ -21,7 +21,6 @@ nonisolated struct ContainerMount: Sendable, Hashable {
 enum RuntimeKind: String, Sendable {
     case mock
     case docker
-    case appleContainer
     case sharedVM
     case disconnected
 
@@ -29,7 +28,6 @@ enum RuntimeKind: String, Sendable {
         switch self {
         case .mock: "Mock"
         case .docker: "Docker Engine"
-        case .appleContainer: "Unsupported runtime"
         case .sharedVM: "Shared VM"
         case .disconnected: "Disconnected"
         }

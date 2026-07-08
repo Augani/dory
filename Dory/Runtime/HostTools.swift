@@ -13,10 +13,6 @@ enum HostTools {
         "/opt/homebrew/bin/docker", "/usr/local/bin/docker", "/usr/bin/docker",
     ]) }
 
-    static func appleContainer() -> String? { resolve("container", systemCandidates: [
-        "/opt/homebrew/bin/container", "/usr/local/bin/container", "/usr/bin/container",
-    ]) }
-
     static func dorydctl() -> String? { resolve("dorydctl", systemCandidates: [
         "\(NSHomeDirectory())/.dory/bin/dorydctl", "/opt/homebrew/bin/dorydctl", "/usr/local/bin/dorydctl",
     ]) }

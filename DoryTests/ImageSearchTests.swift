@@ -67,7 +67,7 @@ struct ImageSearchTests {
     }
 
     @Test func mergesHubResultsWithLocalImagesAndDedupesLocalFirst() async throws {
-        let runtime = SearchRuntime(kind: .appleContainer, images: [localImage("nginx")])
+        let runtime = SearchRuntime(kind: .sharedVM, images: [localImage("nginx")])
         let hub = StubRegistrySearch(results: [
             hubResult("nginx", stars: 18000, official: true, description: "Official build of Nginx"),
             hubResult("nginxinc/nginx-unprivileged", stars: 200),
@@ -96,7 +96,7 @@ struct ImageSearchTests {
     }
 
     @Test func fallsBackToLocalWhenRegistryFails() async throws {
-        let runtime = SearchRuntime(kind: .appleContainer, images: [localImage("nginx")])
+        let runtime = SearchRuntime(kind: .sharedVM, images: [localImage("nginx")])
         let hub = StubRegistrySearch(failure: SearchFailure())
         let shim = DockerShim(runtime: runtime, registrySearch: hub)
 
@@ -107,7 +107,7 @@ struct ImageSearchTests {
     }
 
     @Test func appliesStarFilterToMergedResults() async throws {
-        let runtime = SearchRuntime(kind: .appleContainer, images: [localImage("xenial")])
+        let runtime = SearchRuntime(kind: .sharedVM, images: [localImage("xenial")])
         let hub = StubRegistrySearch(results: [
             hubResult("nginx", stars: 5000),
             hubResult("lowstar", stars: 1),
@@ -122,7 +122,7 @@ struct ImageSearchTests {
     }
 
     @Test func limitsMergedResultsAndPassesTermAndLimitToRegistry() async throws {
-        let runtime = SearchRuntime(kind: .appleContainer, images: [localImage("nginx")])
+        let runtime = SearchRuntime(kind: .sharedVM, images: [localImage("nginx")])
         let hub = StubRegistrySearch(results: [hubResult("a"), hubResult("b"), hubResult("c")])
         let shim = DockerShim(runtime: runtime, registrySearch: hub)
 
