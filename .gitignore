@@ -1,19 +1,27 @@
 # macOS
 .DS_Store
+._*
 
 # Xcode
 build/
 DerivedData/
+DerivedData-*/
 *.xcuserstate
+*.xcuserdatad/
 xcuserdata/
 *.xccheckout
+*.xcscmblueprint
+*.xcactivitylog
 *.moved-aside
 *.hmap
 *.ipa
+*.pkg
 *.dSYM.zip
 *.dSYM
 *.xcarchive/
 *.xcresult/
+*.xctestrun
+TestResults/
 *.app/
 
 # Xcode project user-specific
@@ -31,6 +39,7 @@ xcuserdata/
 # Code coverage
 *.profraw
 *.profdata
+*.coverage
 
 # Signing material / secrets — NEVER commit
 *.p12
@@ -42,6 +51,8 @@ xcuserdata/
 *.mobileprovision
 *.provisionprofile
 *.env
+.env.*
+!.env.example
 secrets*
 ExportOptions.plist
 
@@ -54,6 +65,10 @@ release-build*/
 notarytool-*.json
 *.spctl.log
 *.stapler.log
+*.log
+*.tmp
+tmp/
+.cache/
 
 # Guest build artifacts (kernel Image, compiled agent) — rebuilt via guest/kernel/build.sh + guest/agent/build.sh
 guest/out/
@@ -63,6 +78,13 @@ guest/.cache/
 .dory/
 
 # Local tooling
+.vscode/
+.idea/
+.zed/
+.cursor/
+*.swp
+*.swo
+*~
 .claude/settings.local.json
 .claude/*.local.json
 .claude/launch.json
@@ -81,6 +103,8 @@ __pycache__/
 .coverage
 .coverage.*
 htmlcov/
+.venv/
+venv/
 
 # Node / website build output
 node_modules/
