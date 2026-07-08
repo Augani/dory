@@ -17,7 +17,8 @@ func fail(_ message: String) -> Never {
 
 let env = ProcessInfo.processInfo.environment
 let dorydEnvironment = DorydEnvironment(values: env)
-let hostCLIInstaller = HostCLIInstaller(environment: dorydEnvironment)
+let socket = DorySocket(home: dorydEnvironment.home)
+let hostCLIInstaller = HostCLIInstaller(environment: dorydEnvironment, dockerSocketPath: socket.path)
 let hostCLIReconciler: HostCLIReconciler?
 if dorydEnvironment.hostCLIEnabled {
     let reconciler = HostCLIReconciler(
@@ -30,6 +31,9 @@ if dorydEnvironment.hostCLIEnabled {
     } else if !cliInstall.missing.isEmpty {
         FileHandle.standardError.write(Data("doryd: host CLI incomplete, missing \(cliInstall.missing.joined(separator: ","))\n".utf8))
     }
+    if let contextError = cliInstall.dockerContextError {
+        FileHandle.standardError.write(Data("doryd: docker context not reconciled: \(contextError)\n".utf8))
+    }
     reconciler.start()
     hostCLIReconciler = reconciler
 } else {
@@ -41,7 +45,6 @@ if dorydEnvironment.hostCLIEnabled {
     }
     hostCLIReconciler = nil
 }
-let socket = DorySocket(home: dorydEnvironment.home)
 let idleController = IdleController()
 let dockerTier = dorydEnvironment.dockerTierConfiguration().map {
     DockerTier(configuration: $0, idleController: idleController)

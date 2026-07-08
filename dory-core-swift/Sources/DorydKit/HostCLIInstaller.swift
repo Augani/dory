@@ -5,6 +5,8 @@ public struct HostCLIInstallResult: Sendable, Equatable {
     public var missing: [String]
     public var pathProfileChanged: Bool
     public var composePluginInstalled: Bool
+    public var dockerContextReconciled: Bool
+    public var dockerContextError: String?
 
     public var dockerLinked: Bool {
         linked.contains("docker")
@@ -19,6 +21,8 @@ public struct HostCLIRemoveResult: Sendable, Equatable {
 
 /// Per-user terminal integration owned by doryd. When the daemon is running from the app bundle,
 /// fresh terminals should already have Dory's docker, Compose, kubectl, dory, and support tools.
+public typealias HostCLICommandRunner = @Sendable (_ executable: String, _ arguments: [String], _ environment: [String: String]) -> Int32
+
 public struct HostCLIInstaller: Sendable {
     private static let beginSentinel = "# >>> dory cli >>>"
     private static let endSentinel = "# <<< dory cli <<<"
@@ -27,15 +31,30 @@ public struct HostCLIInstaller: Sendable {
 
     public var home: String
     public var helpersDirectory: String?
+    public var dockerSocketPath: String
+    public var commandRunner: HostCLICommandRunner
 
-    public init(home: String, helpersDirectory: String?) {
+    public init(
+        home: String,
+        helpersDirectory: String?,
+        dockerSocketPath: String? = nil,
+        commandRunner: HostCLICommandRunner? = nil
+    ) {
         self.home = home
         self.helpersDirectory = helpersDirectory
+        self.dockerSocketPath = dockerSocketPath ?? "\(home)/.dory/dory.sock"
+        self.commandRunner = commandRunner ?? Self.runCommand
     }
 
-    public init(environment: DorydEnvironment) {
+    public init(
+        environment: DorydEnvironment,
+        dockerSocketPath: String? = nil,
+        commandRunner: HostCLICommandRunner? = nil
+    ) {
         self.home = environment.home
         self.helpersDirectory = Self.helpersDirectory(environment: environment)
+        self.dockerSocketPath = dockerSocketPath ?? "\(environment.home)/.dory/dory.sock"
+        self.commandRunner = commandRunner ?? Self.runCommand
     }
 
     @discardableResult
@@ -62,12 +81,15 @@ public struct HostCLIInstaller: Sendable {
                 composePluginInstalled = fileManager.fileExists(atPath: "\(composePluginDir)/docker-compose")
             }
         }
+        let dockerContext = reconcileDockerContext()
 
         return HostCLIInstallResult(
             linked: linked,
             missing: missing,
             pathProfileChanged: addToPath(),
-            composePluginInstalled: composePluginInstalled
+            composePluginInstalled: composePluginInstalled,
+            dockerContextReconciled: dockerContext.ok,
+            dockerContextError: dockerContext.error
         )
     }
 
@@ -162,6 +184,59 @@ public struct HostCLIInstaller: Sendable {
         guard let helpersDirectory else { return nil }
         let path = "\(helpersDirectory)/\(tool)"
         return FileManager.default.isExecutableFile(atPath: path) ? path : nil
+    }
+
+    private func reconcileDockerContext() -> (ok: Bool, error: String?) {
+        guard let docker = sourcePath(for: "docker") else {
+            return (false, "docker helper is missing")
+        }
+        let host = "unix://\(dockerSocketPath)"
+        let environment = dockerCommandEnvironment()
+        let inspect = commandRunner(docker, ["context", "inspect", "dory"], environment)
+        let configure: Int32
+        if inspect == 0 {
+            configure = commandRunner(docker, ["context", "update", "dory", "--docker", "host=\(host)"], environment)
+        } else {
+            configure = commandRunner(
+                docker,
+                ["context", "create", "dory", "--description", "Dory", "--docker", "host=\(host)"],
+                environment
+            )
+        }
+        guard configure == 0 else {
+            return (false, "docker context \(inspect == 0 ? "update" : "create") failed with status \(configure)")
+        }
+        let use = commandRunner(docker, ["context", "use", "dory"], environment)
+        guard use == 0 else {
+            return (false, "docker context use failed with status \(use)")
+        }
+        return (true, nil)
+    }
+
+    private func dockerCommandEnvironment() -> [String: String] {
+        var environment = ProcessInfo.processInfo.environment
+        environment["HOME"] = home
+        return environment
+    }
+
+    private static func runCommand(
+        executable: String,
+        arguments: [String],
+        environment: [String: String]
+    ) -> Int32 {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = arguments
+        process.environment = environment
+        process.standardOutput = Pipe()
+        process.standardError = Pipe()
+        do {
+            try process.run()
+        } catch {
+            return 127
+        }
+        process.waitUntilExit()
+        return process.terminationStatus
     }
 
     private func symlink(_ source: String, to destination: String) {

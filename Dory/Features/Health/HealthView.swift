@@ -415,7 +415,7 @@ struct HealthView: View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Diagnostics CLI unavailable")
                 .font(.system(size: 14, weight: .semibold)).foregroundStyle(p.text)
-            Text("The `dory` helper was not found in the app bundle or on PATH. Install Dory's shell integration, or set DORY_CLI to the dory script, to see engine, networking, file-sharing, disk, and compatibility health here.")
+            Text("The `dory` helper was not found in the app bundle or on PATH. Restart Dory so doryd can repair terminal integration, or set DORY_CLI to the dory script, to see engine, networking, file-sharing, disk, and compatibility health here.")
                 .font(.system(size: 12.5)).foregroundStyle(p.text2).lineSpacing(4)
                 .frame(maxWidth: .infinity, alignment: .leading)
             actionButton("Retry", loading: store.healthLoading) {

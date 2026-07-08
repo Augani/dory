@@ -54,8 +54,9 @@
 - Volumes (with a file browser) and networks (subnet / gateway / attached-container inspect).
 - **Compose**: `up` / `down` with `.env` + variable interpolation, `depends_on` ordering, and
   `service_healthy` waiting.
-- Bundled host tools: Docker CLI, Docker Compose v2, and `kubectl` are shipped inside Dory.app
-  and linked into `~/.dory/bin` only when you ask for shell integration.
+- Bundled host tools: Docker CLI, Docker Compose v2, and `kubectl` are shipped inside Dory.app;
+  while doryd is running it keeps `~/.dory/bin` and the `dory` Docker context reconciled so clean
+  Macs do not need Docker Desktop, Homebrew, or a manual install step.
 
 **Self-diagnosing runtime**
 - `dory doctor`, `dory network`, and `dory mount` check the socket, Docker context, registry,
