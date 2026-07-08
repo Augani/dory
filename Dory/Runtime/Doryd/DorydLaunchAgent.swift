@@ -4,6 +4,12 @@ import Foundation
 enum DorydLaunchAgent {
     static let label = "dev.dory.doryd"
 
+    struct Install: Sendable, Equatable {
+        var plistPath: String
+        var programPath: String
+        var plistContents: String
+    }
+
     struct Status: Sendable, Equatable {
         var loaded: Bool
         var plistPath: String?
@@ -29,9 +35,15 @@ enum DorydLaunchAgent {
 
     static func ensureCurrent(
         bundle: Bundle = .main,
+        launchAgentsDirectory: URL? = nil,
         runner: @escaping Runner = runLaunchctl
     ) async -> Bool {
-        guard let current = currentInstall(bundle: bundle) else { return false }
+        guard let current = currentInstall(bundle: bundle, launchAgentsDirectory: launchAgentsDirectory) else { return false }
+        do {
+            try writeCurrentInstall(current)
+        } catch {
+            return false
+        }
         let uid = getuid()
         let service = serviceTarget(uid: uid)
         let print = await runner(["print", service])
@@ -81,16 +93,21 @@ enum DorydLaunchAgent {
         )
     }
 
-    static func currentInstall(bundle: Bundle) -> (plistPath: String, programPath: String)? {
+    static func currentInstall(bundle: Bundle, launchAgentsDirectory: URL? = nil) -> Install? {
         let bundleURL = bundle.bundleURL
-        let plist = bundleURL.appendingPathComponent("Contents/Resources/\(label).plist").path
         let program = bundleURL.appendingPathComponent("Contents/Helpers/doryd").path
+        let helpersDirectory = bundleURL.appendingPathComponent("Contents/Helpers", isDirectory: true)
         let fileManager = FileManager.default
-        guard fileManager.isReadableFile(atPath: plist),
-              fileManager.isExecutableFile(atPath: program) else {
+        guard fileManager.isExecutableFile(atPath: program),
+              let launchAgentsDirectory = launchAgentsDirectory ?? defaultLaunchAgentsDirectory() else {
             return nil
         }
-        return (plist, program)
+        let plist = launchAgentsDirectory.appendingPathComponent("\(label).plist").path
+        return Install(
+            plistPath: plist,
+            programPath: program,
+            plistContents: launchAgentPlist(program: program, helpersDirectory: helpersDirectory)
+        )
     }
 
     static func serviceTarget(uid: uid_t = getuid()) -> String {
@@ -114,6 +131,85 @@ enum DorydLaunchAgent {
     private static func normalize(_ path: String?) -> String? {
         guard let path else { return nil }
         return URL(fileURLWithPath: path).standardizedFileURL.path
+    }
+
+    private static func defaultLaunchAgentsDirectory() -> URL? {
+        FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first?
+            .appendingPathComponent("LaunchAgents", isDirectory: true)
+    }
+
+    private static func writeCurrentInstall(_ install: Install) throws {
+        let url = URL(fileURLWithPath: install.plistPath)
+        let directory = url.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        if let existing = try? String(contentsOf: url, encoding: .utf8),
+           existing == install.plistContents {
+            return
+        }
+        try install.plistContents.write(to: url, atomically: true, encoding: .utf8)
+    }
+
+    static func launchAgentPlist(program: String, helpersDirectory: URL) -> String {
+        let vmm = helpersDirectory.appendingPathComponent("dory-vmm").path
+        let hv = helpersDirectory.appendingPathComponent("dory-hv").path
+        let gvproxy = helpersDirectory.appendingPathComponent("gvproxy").path
+        return """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        <plist version="1.0">
+        <dict>
+            <key>Label</key>
+            <string>\(label)</string>
+            <key>ProgramArguments</key>
+            <array>
+                <string>\(xmlEscaped(program))</string>
+            </array>
+            <key>MachServices</key>
+            <dict>
+                <key>\(label)</key>
+                <true/>
+            </dict>
+            <key>EnvironmentVariables</key>
+            <dict>
+                <key>DORYD_VMM_HELPER</key>
+                <string>\(xmlEscaped(vmm))</string>
+                <key>DORYD_HV_HELPER</key>
+                <string>\(xmlEscaped(hv))</string>
+                <key>DORYD_GVPROXY</key>
+                <string>\(xmlEscaped(gvproxy))</string>
+                <key>DORYD_NETWORKING</key>
+                <string>1</string>
+                <key>DORYD_IDLE_SLEEP_AFTER_SECONDS</key>
+                <string>300</string>
+                <key>DORYD_DNS_PORT</key>
+                <string>15353</string>
+                <key>DORYD_HTTP_PROXY_PORT</key>
+                <string>8080</string>
+                <key>DORYD_HTTPS_PROXY_PORT</key>
+                <string>8443</string>
+            </dict>
+            <key>RunAtLoad</key>
+            <true/>
+            <key>KeepAlive</key>
+            <true/>
+            <key>ProcessType</key>
+            <string>Interactive</string>
+            <key>StandardOutPath</key>
+            <string>/tmp/doryd.log</string>
+            <key>StandardErrorPath</key>
+            <string>/tmp/doryd.log</string>
+        </dict>
+        </plist>
+        """
+    }
+
+    private static func xmlEscaped(_ value: String) -> String {
+        value
+            .replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "\"", with: "&quot;")
+            .replacingOccurrences(of: "'", with: "&apos;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
     }
 
     private static func runLaunchctl(_ arguments: [String]) async -> CommandResult {
