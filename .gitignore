@@ -12,6 +12,9 @@ xcuserdata/
 *.ipa
 *.dSYM.zip
 *.dSYM
+*.xcarchive/
+*.xcresult/
+*.app/
 
 # Xcode project user-specific
 *.xcodeproj/*
@@ -44,6 +47,13 @@ ExportOptions.plist
 
 # Release pipeline output
 release-build*/
+/Dory-*.zip
+/Dory-*.dmg
+/dory-engine-*.tar.gz
+*.notarization-log.json
+notarytool-*.json
+*.spctl.log
+*.stapler.log
 
 # Guest build artifacts (kernel Image, compiled agent) — rebuilt via guest/kernel/build.sh + guest/agent/build.sh
 guest/out/
@@ -60,6 +70,27 @@ guest/.cache/
 benchmark-results.json
 appcast.xml.tmp
 examples/readiness/tmp/
+
+# Python caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Node / website build output
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+website/dist/
+website/.vite/
+website/.cache/
 
 # Private cloud backend — separate repo, never in the public Dory repo
 cloud/
