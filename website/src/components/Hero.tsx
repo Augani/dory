@@ -32,8 +32,9 @@ export function Hero() {
         </h1>
         <p className="sub">
           One shared Linux VM for every container. A real Docker socket your CLI already speaks.
-          HTTPS domains, one-click Kubernetes, and full Linux machines, all in a ~6&nbsp;MB native app
-          that's free and open source.
+          HTTPS domains, one-click Kubernetes, and full Linux machines in a native app that's free
+          and open source. Use the full clean-Mac bundle, or the ~6&nbsp;MB lite app with an engine
+          you already run.
         </p>
         <div className="cta-row">
           <a
@@ -60,7 +61,7 @@ export function Hero() {
             <b>~4.7x</b> less idle memory*
           </span>
           <span>
-            <b>~6 MB</b> app download
+            <b>Full</b> clean-Mac bundle
           </span>
           <span>
             <b>0</b> Electron · <b>0</b> telemetry

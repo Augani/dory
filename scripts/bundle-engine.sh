@@ -836,9 +836,9 @@ bundle_universal_host_cli() {
   echo "    bundled Helpers/$name${arch_info:+ ($arch_info)}"
 }
 
-KVER="${DORY_KUBECTL_VERSION:-$(fetch_url_stdout https://dl.k8s.io/release/stable.txt 2>/dev/null || echo v1.31.0)}"
-DOCKER_CLI_VERSION="${DORY_DOCKER_CLI_VERSION:-27.5.1}"
-COMPOSE_VER="${DORY_COMPOSE_VERSION:-v2.32.4}"
+KVER="${DORY_KUBECTL_VERSION:-v1.36.1}"
+DOCKER_CLI_VERSION="${DORY_DOCKER_CLI_VERSION:-29.0.1}"
+COMPOSE_VER="${DORY_DOCKER_COMPOSE_VERSION:-${DORY_COMPOSE_VERSION:-v2.39.2}}"
 bundle_universal_host_cli kubectl
 bundle_universal_host_cli docker
 bundle_universal_host_cli docker-compose

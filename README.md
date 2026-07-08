@@ -16,7 +16,7 @@
   <a href="https://github.com/Augani/dory/releases/latest"><img src="https://img.shields.io/github/v/release/Augani/dory?color=2E9BF5" alt="Latest release"></a>
   <a href="https://github.com/Augani/dory/releases"><img src="https://img.shields.io/github/downloads/Augani/dory/total?color=34D058" alt="Downloads"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-GPLv3-blue.svg" alt="License: GPL v3"></a>
-  <img src="https://img.shields.io/badge/platform-macOS%2015%2B-lightgrey" alt="Platform">
+  <img src="https://img.shields.io/badge/platform-macOS%2014%2B-lightgrey" alt="Platform">
 </p>
 
 > ⭐ **If Dory saves you memory (or money), please [star the repo](https://github.com/Augani/dory). It genuinely helps others find it.**
@@ -29,8 +29,9 @@
   Apple's Hypervisor.framework: one persistent Linux VM runs *everything*, instead of one VM per
   container, and memory is genuinely handed back to macOS as workloads idle (free-page reporting,
   not a balloon that never deflates). Measured **~4.7× less idle memory** than per-container VMs
-  (2 containers: ~122 MB vs ~574 MB), and the gap widens with every container you add
-  (measure it yourself: [`scripts/benchmark.sh`](scripts/benchmark.sh)).
+  (2 containers: ~122 MB vs ~574 MB), and the gap widens with every container you add.
+  Measure it yourself with [`scripts/benchmark-compare.sh`](scripts/benchmark-compare.sh) and the
+  public [benchmark playbook](BENCHMARKS.md).
 - **Small and silent, permanently.** A native app with ~0% idle CPU. No indexers, no
   phone-home, no fans. That's a design constraint, not a version note.
 - **Free for everyone, forever.** No per-seat license, no "commercial use" tier, no account,
@@ -74,6 +75,8 @@
 - `dory mode` and `dory idle status` expose the Auto-Idle foundation; `dory idle proxy` can run
   the opt-in always-listening socket proxy for headless dogfooding. The proxy wakes a sleeping
   headless engine on Docker API use, forwards the request, and records its idle/wake state.
+- In the app-managed path, Dory can attach to a sleeping `doryd` without waking `dory-hv`, and the
+  idle policy stops an empty engine while keeping Docker and machine state on disk.
 
 **Kubernetes, one click**
 - k3s inside the shared VM with selectable Kubernetes versions.
@@ -83,7 +86,11 @@
 **Linux machines**
 - Full Ubuntu / Debian / Fedora / Alpine / Arch VMs with snapshots, terminal access, and
   use-case recipes (Node, Python, Go, Rust, …) that provision the machine ready-to-code,
-  plus a composer to hand-pick runtimes, tools, and packages.
+  plus a composer to hand-pick runtimes, tools, and packages. Machines are real isolated Linux VMs,
+  not Docker containers.
+- Every machine has a `name.dory.local` address. The UI shows the copyable terminal command
+  (`dory ssh <name>` or `dory machine shell <name>`), and custom addresses can be assigned during
+  creation.
 - Your home directory is shared into the engine, so `docker run -v ~/project:/app` just works.
 
 **Networking that disappears**
@@ -102,10 +109,14 @@
   Dory's own engine, no separate VM.
 
 **Zero-friction start**
-- First launch starts Dory's bundled engine, kernel, networking helper, Docker tools, Compose,
-  and Kubernetes tooling. No Docker Desktop, Colima, OrbStack, Homebrew, or Apple `container`
-  install is required for the built-in shared-VM path.
-- **Migration** imports your images and containers from Docker Desktop or OrbStack.
+- On supported Macs, Dory ships its bundled engine, kernel, networking helper, Docker tools,
+  Compose, and Kubernetes tooling. No Docker Desktop, Colima, OrbStack, Homebrew, or Apple
+  `container` install is required for the built-in shared-VM path.
+- **Migration** imports your images and containers from Docker Desktop or OrbStack, with a preflight
+  confidence report that lists what transfers, what needs attention, and the estimated image disk.
+- **Managed settings** exposes local, MDM-friendly defaults for engine route, domains, DNS/proxy
+  ports, Auto-Idle, file sharing, scoped mounts, credential-store hiding, env allow-list, and
+  telemetry mode `none`.
 
 See [COMPATIBILITY.md](COMPATIBILITY.md) for the honest, per-feature status matrix.
 
@@ -175,6 +186,7 @@ scripts/test.sh         # full test suite
 scripts/shot.sh         # build, launch, and screenshot the window
 scripts/test-dory-doctor.sh # fast diagnostics, bundle, repair, and Auto-Idle proxy smoke
 scripts/p0-smoke.sh     # strict release smoke against a running Dory socket
+scripts/benchmark-compare.sh --dry-run # auditable cross-engine benchmark plan
 ```
 
 Or open `Dory.xcodeproj` in Xcode and Run.
@@ -235,9 +247,11 @@ hand-rolled in Swift, so the build stays small and deterministic.
 
 ## What's next
 
-Portable dev machines you can back up and restore, remote access to your engine, and sandboxed
-environments for AI agents. Follow the [releases](https://github.com/Augani/dory/releases), and
-open an issue if you want to shape what comes first.
+For the 0.3 local release, the focus is clean-Mac packaging, benchmark evidence, compatibility
+smoke, Linux machines, migration confidence, managed settings, and agent-safe local foundations.
+Remote engines, cloud backup/relay, and phone workflows are deliberately after the local release is
+solid. Follow the [releases](https://github.com/Augani/dory/releases), and open an issue if you want
+to shape what comes first.
 
 ## Contributing
 

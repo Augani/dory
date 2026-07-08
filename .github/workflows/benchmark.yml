@@ -1,22 +1,32 @@
 name: Benchmark
 
-# Memory benchmark: Dory's shared VM vs one VM per container.
+# Cross-engine benchmark: Dory's shared VM against incumbent macOS container runtimes.
 #
 # IMPORTANT: this needs real Mac hardware with hardware virtualization. GitHub-HOSTED macOS runners
 # are themselves VMs without nested virtualization, so they CANNOT run the container engine. This
-# job produces Dory/Docker/OrbStack numbers on a SELF-HOSTED macOS 15+ runner with Dory installed.
-# Apple Container comparison rows require macOS 26+ and are N/A on Intel macOS 15. Label such a
-# runner `[self-hosted, macOS, dory]`; add `intel` to the runner labels for the Intel track.
+# job produces Dory/Docker/OrbStack/Apple Container numbers only on a SELF-HOSTED Mac with the target
+# engines installed. Apple Container comparison rows require macOS 26+ and are N/A on Intel macOS 15.
+# Label such a runner `[self-hosted, macOS, dory]`; add `intel` to the runner labels for the Intel
+# track.
 
 on:
   workflow_dispatch:
     inputs:
-      count:
-        description: 'Number of containers'
-        default: '2'
-      image:
-        description: 'Image to run'
-        default: 'alpine:latest'
+      engines:
+        description: 'Comma-separated engines: dory,orbstack,docker-desktop,apple-container'
+        default: 'dory,orbstack,docker-desktop,apple-container'
+      metrics:
+        description: 'Comma-separated metrics: memory,network,fs'
+        default: 'memory,network,fs'
+      memory_count:
+        description: 'Number of idle containers for memory metric'
+        default: '3'
+      runs:
+        description: 'Repetitions per timed metric'
+        default: '3'
+      fs_files:
+        description: 'Small files for the filesystem metric'
+        default: '2000'
   schedule:
     - cron: '0 9 * * 1'  # weekly, Monday 09:00 UTC
 
@@ -25,18 +35,42 @@ jobs:
     runs-on: [self-hosted, macOS, dory]
     steps:
       - uses: actions/checkout@v4
-      - name: Run memory benchmark
-        run: scripts/benchmark.sh "${{ github.event.inputs.count || '2' }}" "${{ github.event.inputs.image || 'alpine:latest' }}"
+      - name: Run cross-engine benchmark
+        env:
+          BENCH_WORKDIR: ${{ runner.temp }}/dory-benchmark
+        run: |
+          scripts/benchmark-compare.sh \
+            --engines "${{ github.event.inputs.engines || 'dory,orbstack,docker-desktop,apple-container' }}" \
+            --metrics "${{ github.event.inputs.metrics || 'memory,network,fs' }}" \
+            --memory-count "${{ github.event.inputs.memory_count || '3' }}" \
+            --runs "${{ github.event.inputs.runs || '3' }}" \
+            --fs-files "${{ github.event.inputs.fs_files || '2000' }}"
+          result_dir="$(find "$BENCH_WORKDIR" -mindepth 1 -maxdepth 1 -type d | sort | tail -1)"
+          test -n "$result_dir"
+          echo "BENCH_RESULT_DIR=$result_dir" >> "$GITHUB_ENV"
       - name: Summarize
         run: |
           {
-            echo "### Dory memory benchmark"
+            echo "### Dory cross-engine benchmark"
             echo ""
+            echo "Raw result directory: \`$BENCH_RESULT_DIR\`"
+            echo ""
+            echo "#### Machine"
+            echo '```tsv'
+            cat "$BENCH_RESULT_DIR/machine-spec.tsv"
+            echo '```'
+            echo ""
+            echo "#### Status"
+            echo '```tsv'
+            cat "$BENCH_RESULT_DIR/status.tsv"
+            echo '```'
+            echo ""
+            echo "#### Summary JSON"
             echo '```json'
-            cat benchmark-results.json
+            cat "$BENCH_RESULT_DIR/summary.json"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         with:
           name: benchmark-results
-          path: benchmark-results.json
+          path: ${{ runner.temp }}/dory-benchmark

@@ -75,12 +75,13 @@ export function Features() {
           tag="Linux machines"
           title="Real Linux, one click away."
         >
-          <li>Full Ubuntu, Debian, Fedora, Alpine, or Arch, with systemd, SSH, terminal, and snapshots.</li>
+          <li>Full Ubuntu, Debian, Fedora, Alpine, or Arch VMs, with systemd, SSH, terminal, and snapshots.</li>
           <li>Live CPU and memory per machine, right in the grid.</li>
           <li>
-            Each machine gets a <code>name.dory.local</code> address on your Mac.
+            Each machine gets a <code>name.dory.local</code> address, and the UI shows the copyable{' '}
+            <code>dory ssh name</code> command for any terminal.
           </li>
-          <li>Import and migrate from your existing setups in minutes.</li>
+          <li>Assign custom addresses, mounts, ports, CPU, memory, and recipes before creation.</li>
         </FeatureRow>
 
         <FeatureRow
@@ -95,7 +96,8 @@ export function Features() {
             interpolation, <code>depends_on</code> ordering, and <code>service_healthy</code> waits via
             real health probes.
           </li>
-          <li>Migration imports images and containers from Docker Desktop or OrbStack in minutes.</li>
+          <li>Migration imports images and containers from Docker Desktop or OrbStack after a confidence report.</li>
+          <li>Managed settings export local policy for engine route, domains, file sharing, Auto-Idle, and telemetry none.</li>
           <li>First launch is guided end-to-end, including a one-click engine toolchain install.</li>
           <li>
             Honest scorecard: every feature's status is tracked publicly in{' '}

@@ -15,10 +15,10 @@ export function Footprint() {
         <div className="promise">
           <Reveal className="pcard">
             <div className="big">~6 MB</div>
-            <div className="t">The whole app</div>
+            <div className="t">Lite app</div>
             <p>
-              Native Swift. No Electron, no bundled browser, no Node sidecar. Smaller than most{' '}
-              <span style={{ fontFamily: 'var(--mono)', fontSize: 11 }}>node_modules</span>.
+              Native Swift, no Electron, no bundled browser, no Node sidecar. The full release adds
+              the engine, Docker, Compose, and kubectl for clean Macs.
             </p>
           </Reveal>
           <Reveal className="pcard">
@@ -40,7 +40,7 @@ export function Footprint() {
         <Reveal as="p" className="compare-note">
           Don't take our word for anything. The{' '}
           <a
-            href="https://github.com/Augani/dory/blob/main/scripts/benchmark.sh"
+            href="https://github.com/Augani/dory/blob/main/BENCHMARKS.md"
             className="link"
           >
             benchmark methodology

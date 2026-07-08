@@ -502,7 +502,7 @@ dockerd, with memory returned to macOS as workloads idle.
     docker context use dory-engine
     docker run --rm alpine echo hello
 
-\`dory-engine stop|status|env\` manage it. Requires macOS 14+ on Apple silicon.
+\`dory-engine stop|status|env\` manage it. Requires macOS 15+ on Apple silicon.
 EOF
   tar -czf "$BUILD_DIR/$RUNTIME_NAME.tar.gz" -C "$BUILD_DIR/runtime" "$RUNTIME_NAME"
   RUNTIME_TAR="$BUILD_DIR/$RUNTIME_NAME.tar.gz"

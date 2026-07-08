@@ -128,6 +128,20 @@ jobs:
             See the release notes and COMPATIBILITY.md for the current built-in engine tier on
             each Mac architecture.
 
+            **0.3 local release focus**
+
+            - Clean-Mac full app bundles with Dory's engine, Docker CLI, Compose, and kubectl.
+            - Low-memory shared VM, app/menu process memory reporting, and Auto-Idle that keeps
+              state on disk when the engine sleeps.
+            - Full Linux machines as isolated VMs with addresses, terminal commands, snapshots,
+              recipes, mounts, ports, and resource settings.
+            - Migration confidence reports for Docker Desktop and OrbStack imports.
+            - Managed local settings for fleet-friendly defaults, with telemetry set to none.
+            - Reproducible benchmark harness and publication rules in `BENCHMARKS.md`.
+
+            Remote engines, cloud backup/relay, and phone workflows are intentionally deferred
+            until the local release is solid.
+
             **Pick your Mac build**
 
             | Asset | What it is |
@@ -154,6 +168,8 @@ jobs:
             ```
             universal zip sha256: ${{ steps.build.outputs.sha256 }}
             ```
+
+            Read next: `CHANGELOG.md`, `COMPATIBILITY.md`, and `BENCHMARKS.md`.
 
   # Keeps the Homebrew cask in this repo (the tap) current after every release.
   bump-cask:

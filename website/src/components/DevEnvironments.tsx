@@ -41,6 +41,8 @@ export function DevEnvironments() {
               <span className="g">✓</span> node 24 · npm · pnpm{'\n'}
               <span className="g">✓</span> git · build tools · ssh{'\n'}
               <span className="b">→ web.dory.local</span> <span className="g">ready</span>
+              {'\n'}
+              <span className="p">$</span> dory ssh web
             </div>
           </div>
           <div className="arrow" aria-hidden="true">

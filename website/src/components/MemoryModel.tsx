@@ -321,7 +321,14 @@ export function MemoryModel() {
             href="https://github.com/Augani/dory/blob/main/scripts/benchmark.sh"
             className="link"
           >
-            methodology
+            focused probe
+          </a>
+          ; full benchmark rules in{' '}
+          <a
+            href="https://github.com/Augani/dory/blob/main/BENCHMARKS.md"
+            className="link"
+          >
+            BENCHMARKS.md
           </a>
           ).
         </Reveal>

@@ -30,8 +30,9 @@ export function Install() {
         <Reveal as="h2">Up and running in a minute.</Reveal>
         <Reveal className="install-card">
           <p style={{ color: 'var(--text-2)', fontSize: 15 }}>
-            Install with Homebrew, or grab the notarized app from GitHub Releases. First launch walks
-            you through the rest, engine included.
+            Install with Homebrew, or grab the notarized Apple-silicon, Intel, or universal app from
+            GitHub Releases. Full downloads include the engine and host CLIs; the lite app fronts an
+            engine you already run.
           </p>
           <div className="brew" role="group" aria-label="Homebrew install command">
             <code>{BREW_CMD}</code>

@@ -53,10 +53,10 @@ export function MemoryBars() {
           <div className="mem-note">
             *Measured by Dory on Apple silicon (
             <a
-              href="https://github.com/Augani/dory/blob/main/scripts/benchmark.sh"
+              href="https://github.com/Augani/dory/blob/main/BENCHMARKS.md"
               className="link"
             >
-              methodology
+              benchmark rules
             </a>
             ). Intel memory and file-sharing tables will be published only after the physical Intel
             readiness and benchmark gates pass.
