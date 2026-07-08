@@ -20,9 +20,11 @@ Every run writes:
 
 - `machine-spec.tsv`: Mac model, memory, CPU, macOS build, Docker client, Apple Container CLI,
   and the released Dory.app identity when `--dory-app` is used.
+- `engine-versions.tsv`: per-engine interface, endpoint, server/CLI version, OS/kernel, and arch.
 - `memory.tsv`, `cpu.tsv`, `network.tsv`, `filesystem.tsv`: raw per-metric data.
 - `status.tsv`: pass, fail, and skip reasons per engine.
-- `summary.json`: machine-readable aggregate for GitHub Actions artifacts.
+- `summary.md`: a publishable local table generated from the raw TSV files.
+- `summary.json`: machine-readable aggregate for GitHub Actions artifacts and scripts.
 
 ## Current Local Evidence
 
@@ -54,7 +56,7 @@ scripts/benchmark-compare.sh \
   --dory-app /Applications/Dory.app \
   --engines dory,orbstack,docker-desktop,apple-container \
   --metrics memory,cpu,network,fs \
-  --memory-count 3 \
+  --memory-counts 0,1,3,5,10 \
   --runs 3 \
   --cpu-mb 256 \
   --fs-files 2000
@@ -67,7 +69,8 @@ BENCH_WORKDIR="$PWD/.benchmark-results" \
 scripts/benchmark-compare.sh \
   --dory-app /Applications/Dory.app \
   --engines dory \
-  --metrics memory,cpu,network,fs
+  --metrics memory,cpu,network,fs \
+  --memory-counts 0,1,3
 ```
 
 ## GitHub Workflow

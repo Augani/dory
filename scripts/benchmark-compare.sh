@@ -69,10 +69,11 @@ METRICS="${METRICS:-memory,cpu,network,fs}"
 ALPINE_IMAGE="${BENCH_ALPINE_IMAGE:-alpine:latest}"
 IPERF_IMAGE="${BENCH_IPERF_IMAGE:-taoyou/iperf3-alpine:latest}"
 MEMORY_COUNT="${BENCH_MEMORY_COUNT:-3}"
+MEMORY_COUNTS="${BENCH_MEMORY_COUNTS:-$MEMORY_COUNT}"
 RUNS="${BENCH_RUNS:-3}"
 CPU_MB="${BENCH_CPU_MB:-256}"
 FS_FILES="${BENCH_FS_FILES:-2000}"
-SETTLE="${BENCH_SETTLE:-8}"
+SETTLE="${BENCH_SETTLE:-12}"
 CONTAINER_BIN="${BENCH_CONTAINER_BIN:-$(command -v container 2>/dev/null || echo /opt/homebrew/bin/container)}"
 DORY_BENCH_APP="${DORY_BENCH_APP:-}"
 DORY_BENCH_APP_WAIT="${DORY_BENCH_APP_WAIT:-90}"
@@ -88,7 +89,9 @@ FS_TSV="$WORKDIR/filesystem.tsv"
 CPU_TSV="$WORKDIR/cpu.tsv"
 STATUS_TSV="$WORKDIR/status.tsv"
 SUMMARY_JSON="$WORKDIR/summary.json"
+SUMMARY_MD="$WORKDIR/summary.md"
 MACHINE_SPEC="$WORKDIR/machine-spec.tsv"
+ENGINE_VERSIONS_TSV="$WORKDIR/engine-versions.tsv"
 LABEL_KEY="dev.dory.bench"
 
 CURRENT_ENGINE=""
@@ -107,6 +110,7 @@ Options:
   --engines LIST       Comma-separated: dory,orbstack,docker-desktop,apple-container (default: all)
   --metrics LIST       Comma-separated subset of: memory,cpu,network,fs (default: all)
   --memory-count N     Idle containers for the memory metric (default: $MEMORY_COUNT)
+  --memory-counts LIST Comma-separated idle-container counts for memory sweeps
   --runs N             Repetitions per timed metric; median reported (default: $RUNS)
   --cpu-mb N           MiB streamed through sha256sum for the CPU metric (default: $CPU_MB)
   --fs-files N         Files created by the filesystem workload (default: $FS_FILES)
@@ -122,7 +126,8 @@ while [ "$#" -gt 0 ]; do
   case "$1" in
     --engines) ENGINES="${2:-}"; shift 2 ;;
     --metrics) METRICS="${2:-}"; shift 2 ;;
-    --memory-count) MEMORY_COUNT="${2:-}"; shift 2 ;;
+    --memory-count) MEMORY_COUNT="${2:-}"; MEMORY_COUNTS="$MEMORY_COUNT"; shift 2 ;;
+    --memory-counts) MEMORY_COUNTS="${2:-}"; shift 2 ;;
     --runs) RUNS="${2:-}"; shift 2 ;;
     --cpu-mb) CPU_MB="${2:-}"; shift 2 ;;
     --fs-files) FS_FILES="${2:-}"; shift 2 ;;
@@ -378,6 +383,42 @@ capture_machine_spec() {
   } > "$MACHINE_SPEC"
 }
 
+record_engine_version() {
+  local engine="$CURRENT_ENGINE" label endpoint version name os kernel arch interface
+  label="$(engine_label "$engine")"
+  if is_apple_container "$engine"; then
+    interface="container-cli"
+    endpoint="$CONTAINER_BIN"
+    if [ "$DRY_RUN" = "1" ]; then
+      version="dry-run-not-queried"
+    else
+      version="$("$CONTAINER_BIN" --version 2>/dev/null | head -1 || true)"
+    fi
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+      "$engine" "$label" "$interface" "$endpoint" "$(sanitize "${version:-unknown}")" "" "" "$(uname -m)" >> "$ENGINE_VERSIONS_TSV"
+    return
+  fi
+
+  interface="docker-api"
+  endpoint="$ENGINE_SOCK"
+  if [ "$DRY_RUN" = "1" ]; then
+    version="dry-run-not-queried"
+    name=""
+    os=""
+    kernel=""
+    arch="$(uname -m)"
+  else
+    version="$(docker_e version --format '{{.Server.Version}}' 2>/dev/null || true)"
+    name="$(docker_e info --format '{{.Name}}' 2>/dev/null || true)"
+    os="$(docker_e info --format '{{.OperatingSystem}}' 2>/dev/null || true)"
+    kernel="$(docker_e info --format '{{.KernelVersion}}' 2>/dev/null || true)"
+    arch="$(docker_e info --format '{{.Architecture}}' 2>/dev/null || true)"
+  fi
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$engine" "$label" "$interface" "$endpoint" "$(sanitize "${version:-unknown}")" \
+    "$(sanitize "$name")" "$(sanitize "$os $kernel")" "$(sanitize "$arch")" >> "$ENGINE_VERSIONS_TSV"
+}
+
 # --------------------------------------------------------------------------------------------------
 # Metric selection
 # --------------------------------------------------------------------------------------------------
@@ -426,35 +467,55 @@ metric_memory_docker() {
     record_status SKIP "$engine" "memory" "cannot pull $ALPINE_IMAGE"
     return
   fi
+  local old_ifs="$IFS" count
+  IFS=','
+  for count in $MEMORY_COUNTS; do
+    IFS="$old_ifs"
+    count="$(printf '%s' "$count" | sed 's/^ *//;s/ *$//')"
+    [ -n "$count" ] && metric_memory_docker_count "$count"
+    IFS=','
+  done
+  IFS="$old_ifs"
+}
+
+metric_memory_docker_count() {
+  local count="$1" engine="$CURRENT_ENGINE"
+  case "$count" in
+    ''|*[!0-9]*) record_status FAIL "$engine" "memory" "invalid memory count: $count"; return ;;
+  esac
   cleanup_docker_engine
   if [ "$DRY_RUN" = "1" ]; then
-    printf '    [dry-run] sample used_mem + rss, run %s idle containers, resample\n' "$MEMORY_COUNT"
-    for i in $(seq 1 "$MEMORY_COUNT"); do
-      docker_er run -d --name "$PREFIX-mem-$i" --label "$LABEL_KEY=$RUN_ID" "$ALPINE_IMAGE" sleep 600
-    done
-    record_status PASS "$engine" "memory" "dry-run"
+    printf '    [dry-run] sample used_mem + rss, run %s idle containers, resample\n' "$count"
+    if [ "$count" -gt 0 ]; then
+      for i in $(seq 1 "$count"); do
+        docker_er run -d --name "$PREFIX-mem-$count-$i" --label "$LABEL_KEY=$RUN_ID" "$ALPINE_IMAGE" sleep 600
+      done
+    fi
+    record_status PASS "$engine" "memory" "dry-run (${count} idle)"
     return
   fi
   local base rss_base peak rss_peak sys_delta rss_delta i
   sleep "$SETTLE"
   base="$(used_mem)"
   rss_base="$(process_rss_bytes "$engine")"
-  for i in $(seq 1 "$MEMORY_COUNT"); do
-    if ! docker_e run -d --name "$PREFIX-mem-$i" --label "$LABEL_KEY=$RUN_ID" "$ALPINE_IMAGE" sleep 600 >/dev/null 2>&1; then
-      record_status FAIL "$engine" "memory" "run container $i failed"
-      cleanup_docker_engine
-      return
-    fi
-  done
+  if [ "$count" -gt 0 ]; then
+    for i in $(seq 1 "$count"); do
+      if ! docker_e run -d --name "$PREFIX-mem-$count-$i" --label "$LABEL_KEY=$RUN_ID" "$ALPINE_IMAGE" sleep 600 >/dev/null 2>&1; then
+        record_status FAIL "$engine" "memory" "run container $i failed"
+        cleanup_docker_engine
+        return
+      fi
+    done
+  fi
   sleep "$SETTLE"
   peak="$(used_mem)"
   rss_peak="$(process_rss_bytes "$engine")"
   sys_delta=$((peak - base))
   rss_delta=$((rss_peak - rss_base))
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-    "$engine" "$MEMORY_COUNT" "$ALPINE_IMAGE" "$sys_delta" "$(mb "$sys_delta")" "$rss_delta" "$(mb "$rss_delta")" >> "$MEMORY_TSV"
+    "$engine" "$count" "$ALPINE_IMAGE" "$sys_delta" "$(mb "$sys_delta")" "$rss_delta" "$(mb "$rss_delta")" >> "$MEMORY_TSV"
   cleanup_docker_engine
-  record_status PASS "$engine" "memory" "system_delta=$(mb "$sys_delta")MB rss_delta=$(mb "$rss_delta")MB (${MEMORY_COUNT} idle)"
+  record_status PASS "$engine" "memory" "system_delta=$(mb "$sys_delta")MB rss_delta=$(mb "$rss_delta")MB (${count} idle)"
 }
 
 metric_memory_apple() {
@@ -463,35 +524,55 @@ metric_memory_apple() {
     record_status SKIP "$engine" "memory" "cannot pull $ALPINE_IMAGE"
     return
   fi
+  local old_ifs="$IFS" count
+  IFS=','
+  for count in $MEMORY_COUNTS; do
+    IFS="$old_ifs"
+    count="$(printf '%s' "$count" | sed 's/^ *//;s/ *$//')"
+    [ -n "$count" ] && metric_memory_apple_count "$count"
+    IFS=','
+  done
+  IFS="$old_ifs"
+}
+
+metric_memory_apple_count() {
+  local count="$1" engine="$CURRENT_ENGINE"
+  case "$count" in
+    ''|*[!0-9]*) record_status FAIL "$engine" "memory" "invalid memory count: $count"; return ;;
+  esac
   cleanup_apple_container
   if [ "$DRY_RUN" = "1" ]; then
-    printf '    [dry-run] sample used_mem + rss, run %s idle apple containers, resample\n' "$MEMORY_COUNT"
-    for i in $(seq 1 "$MEMORY_COUNT"); do
-      container_c run -d --name "$PREFIX-mem-$i" "$ALPINE_IMAGE" sleep 600
-    done
-    record_status PASS "$engine" "memory" "dry-run"
+    printf '    [dry-run] sample used_mem + rss, run %s idle apple containers, resample\n' "$count"
+    if [ "$count" -gt 0 ]; then
+      for i in $(seq 1 "$count"); do
+        container_c run -d --name "$PREFIX-mem-$count-$i" "$ALPINE_IMAGE" sleep 600
+      done
+    fi
+    record_status PASS "$engine" "memory" "dry-run (${count} idle)"
     return
   fi
   local base rss_base peak rss_peak sys_delta rss_delta i
   sleep "$SETTLE"
   base="$(used_mem)"
   rss_base="$(process_rss_bytes "$engine")"
-  for i in $(seq 1 "$MEMORY_COUNT"); do
-    if ! "$CONTAINER_BIN" run -d --name "$PREFIX-mem-$i" "$ALPINE_IMAGE" sleep 600 >/dev/null 2>&1; then
-      record_status FAIL "$engine" "memory" "run container $i failed"
-      cleanup_apple_container
-      return
-    fi
-  done
+  if [ "$count" -gt 0 ]; then
+    for i in $(seq 1 "$count"); do
+      if ! "$CONTAINER_BIN" run -d --name "$PREFIX-mem-$count-$i" "$ALPINE_IMAGE" sleep 600 >/dev/null 2>&1; then
+        record_status FAIL "$engine" "memory" "run container $i failed"
+        cleanup_apple_container
+        return
+      fi
+    done
+  fi
   sleep "$SETTLE"
   peak="$(used_mem)"
   rss_peak="$(process_rss_bytes "$engine")"
   sys_delta=$((peak - base))
   rss_delta=$((rss_peak - rss_base))
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-    "$engine" "$MEMORY_COUNT" "$ALPINE_IMAGE" "$sys_delta" "$(mb "$sys_delta")" "$rss_delta" "$(mb "$rss_delta")" >> "$MEMORY_TSV"
+    "$engine" "$count" "$ALPINE_IMAGE" "$sys_delta" "$(mb "$sys_delta")" "$rss_delta" "$(mb "$rss_delta")" >> "$MEMORY_TSV"
   cleanup_apple_container
-  record_status PASS "$engine" "memory" "system_delta=$(mb "$sys_delta")MB rss_delta=$(mb "$rss_delta")MB (${MEMORY_COUNT} idle)"
+  record_status PASS "$engine" "memory" "system_delta=$(mb "$sys_delta")MB rss_delta=$(mb "$rss_delta")MB (${count} idle)"
 }
 
 # --------------------------------------------------------------------------------------------------
@@ -798,6 +879,7 @@ run_engine() {
     return
   fi
 
+  record_engine_version
   cleanup_engine
 
   if metric_enabled memory; then metric_memory; else record_status SKIP "$CURRENT_ENGINE" "memory" "disabled via --metrics"; fi
@@ -842,9 +924,9 @@ print_table() {
   note "results table"
   echo ""
   if metric_enabled memory && [ -s "$MEMORY_TSV" ]; then
-    echo "IDLE MEMORY ($MEMORY_COUNT idle $ALPINE_IMAGE containers)"
-    printf '  %-16s %14s %14s\n' "engine" "system_MB" "engine_rss_MB"
-    awk -F'\t' 'NR>1 { printf "  %-16s %14s %14s\n", $1, $5, $7 }' "$MEMORY_TSV"
+    echo "IDLE MEMORY ($ALPINE_IMAGE containers; counts: $MEMORY_COUNTS)"
+    printf '  %-16s %10s %14s %14s\n' "engine" "count" "system_MB" "engine_rss_MB"
+    awk -F'\t' 'NR>1 { printf "  %-16s %10s %14s %14s\n", $1, $2, $5, $7 }' "$MEMORY_TSV"
     echo ""
   fi
   if metric_enabled cpu && [ -s "$CPU_TSV" ]; then
@@ -867,13 +949,92 @@ print_table() {
   fi
 }
 
+write_summary_md() {
+  {
+    echo "# Dory Benchmark Run"
+    echo ""
+    echo "- Run ID: \`$RUN_ID\`"
+    echo "- Engines: \`$ENGINES\`"
+    echo "- Metrics: \`$METRICS\`"
+    echo "- Memory counts: \`$MEMORY_COUNTS\`"
+    echo "- Runs per timed metric: \`$RUNS\`"
+    echo "- Result directory: \`$WORKDIR\`"
+    echo ""
+    echo "## Raw Files"
+    echo ""
+    echo "- Machine spec: \`machine-spec.tsv\`"
+    echo "- Engine versions: \`engine-versions.tsv\`"
+    echo "- Status: \`status.tsv\`"
+    echo "- Memory: \`memory.tsv\`"
+    echo "- CPU: \`cpu.tsv\`"
+    echo "- Network: \`network.tsv\`"
+    echo "- Filesystem: \`filesystem.tsv\`"
+    echo "- JSON summary: \`summary.json\`"
+    echo ""
+    echo "## Machine"
+    echo ""
+    echo '```tsv'
+    cat "$MACHINE_SPEC"
+    echo '```'
+    echo ""
+    echo "## Engine Versions"
+    echo ""
+    echo '```tsv'
+    cat "$ENGINE_VERSIONS_TSV"
+    echo '```'
+    echo ""
+    echo "## Status"
+    echo ""
+    echo '```tsv'
+    cat "$STATUS_TSV"
+    echo '```'
+    if metric_enabled memory && [ -s "$MEMORY_TSV" ]; then
+      echo ""
+      echo "## Idle Memory"
+      echo ""
+      echo '| Engine | Idle containers | System delta MB | Engine process RSS delta MB |'
+      echo '|---|---:|---:|---:|'
+      awk -F'\t' 'NR>1 { printf "| %s | %s | %s | %s |\n", $1, $2, $5, $7 }' "$MEMORY_TSV"
+    fi
+    if metric_enabled cpu && [ -s "$CPU_TSV" ]; then
+      echo ""
+      echo "## CPU"
+      echo ""
+      echo '| Engine | Median seconds | Samples |'
+      echo '|---|---:|---|'
+      awk -F'\t' 'NR>1 { printf "| %s | %s | `%s` |\n", $1, $5, $6 }' "$CPU_TSV"
+    fi
+    if metric_enabled network && [ -s "$NETWORK_TSV" ]; then
+      echo ""
+      echo "## Network"
+      echo ""
+      echo '| Engine | Median Gbps | Samples |'
+      echo '|---|---:|---|'
+      awk -F'\t' 'NR>1 { printf "| %s | %s | `%s` |\n", $1, $4, $5 }' "$NETWORK_TSV"
+    fi
+    if metric_enabled fs && [ -s "$FS_TSV" ]; then
+      echo ""
+      echo "## Filesystem"
+      echo ""
+      echo '| Engine | Bind mount seconds | In-container seconds | Ratio |'
+      echo '|---|---:|---:|---:|'
+      awk -F'\t' 'NR>1 { printf "| %s | %s | %s | %sx |\n", $1, $4, $5, $6 }' "$FS_TSV"
+    fi
+    echo ""
+    echo "## Publication Guardrail"
+    echo ""
+    echo "Publish this run only with the raw directory intact. Do not combine these medians with numbers from a different Mac, date, or engine version."
+  } > "$SUMMARY_MD"
+}
+
 write_summary() {
-  local mem_json cpu_json net_json fs_json status_json
+  local mem_json cpu_json net_json fs_json status_json versions_json
   mem_json="$(tsv_to_json_array "$MEMORY_TSV")"
   cpu_json="$(tsv_to_json_array "$CPU_TSV")"
   net_json="$(tsv_to_json_array "$NETWORK_TSV")"
   fs_json="$(tsv_to_json_array "$FS_TSV")"
   status_json="$(tsv_to_json_array "$STATUS_TSV")"
+  versions_json="$(tsv_to_json_array "$ENGINE_VERSIONS_TSV")"
   cat > "$SUMMARY_JSON" <<EOF
 {
   "runId": "$RUN_ID",
@@ -881,6 +1042,7 @@ write_summary() {
   "metrics": "$(json_escape "$METRICS")",
   "dryRun": $( [ "$DRY_RUN" = "1" ] && echo true || echo false ),
   "memoryCount": $MEMORY_COUNT,
+  "memoryCounts": "$(json_escape "$MEMORY_COUNTS")",
   "runs": $RUNS,
   "cpuMB": $CPU_MB,
   "fsFiles": $FS_FILES,
@@ -892,17 +1054,21 @@ write_summary() {
   "cpu": $cpu_json,
   "network": $net_json,
   "filesystem": $fs_json,
+  "engineVersions": $versions_json,
   "status": $status_json,
   "files": {
     "memory": "$MEMORY_TSV",
     "cpu": "$CPU_TSV",
     "network": "$NETWORK_TSV",
     "filesystem": "$FS_TSV",
+    "engineVersions": "$ENGINE_VERSIONS_TSV",
     "status": "$STATUS_TSV",
-    "machineSpec": "$MACHINE_SPEC"
+    "machineSpec": "$MACHINE_SPEC",
+    "summaryMarkdown": "$SUMMARY_MD"
   }
 }
 EOF
+  write_summary_md
 }
 
 # --------------------------------------------------------------------------------------------------
@@ -915,6 +1081,7 @@ printf 'engine\tcontainers\timage\tsystem_delta_bytes\tsystem_delta_mb\tprocess_
 printf 'engine\timage\truns\tworkload_mib\tmedian_seconds\tsamples_seconds\n' > "$CPU_TSV"
 printf 'engine\timage\truns\tmedian_gbps\tsamples_gbps\n' > "$NETWORK_TSV"
 printf 'engine\tfiles\truns\tbind_seconds\tincontainer_seconds\tratio\n' > "$FS_TSV"
+printf 'engine\tlabel\tinterface\tendpoint\tversion\tname\tos_kernel\tarchitecture\n' > "$ENGINE_VERSIONS_TSV"
 
 trap '{ [ -n "${CURRENT_ENGINE:-}" ] && cleanup_engine; write_summary; } >/dev/null 2>&1 || true' EXIT
 trap 'exit 130' INT TERM
@@ -942,5 +1109,6 @@ write_summary
 
 note "summary: pass=$PASS_COUNT fail=$FAIL_COUNT skip=$SKIP_COUNT"
 note "summary json: $SUMMARY_JSON"
+note "summary markdown: $SUMMARY_MD"
 
 [ "$FAIL_COUNT" -eq 0 ]

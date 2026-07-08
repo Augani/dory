@@ -230,7 +230,8 @@ BENCH_WORKDIR="$PWD/.benchmark-results" \
 scripts/benchmark-compare.sh \
   --dory-app /Applications/Dory.app \
   --engines dory,orbstack,docker-desktop \
-  --metrics memory,cpu,network,fs
+  --metrics memory,cpu,network,fs \
+  --memory-counts 0,1,3,5,10
 ```
 
 ## Architecture

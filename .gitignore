@@ -91,6 +91,9 @@ guest/.cache/
 .playwright-mcp/
 benchmark-results.json
 .benchmark-results/
+.benchmark-smoke/
+benchmark-results/
+dory-benchmark/
 appcast.xml.tmp
 examples/readiness/tmp/
 
