@@ -53,6 +53,9 @@ assert "dory.sandbox_run" in commands["mcp"]["tools"]
 assert commands["sandbox"]["status"] == "preview"
 assert commands["sandbox"]["hostFileSharingDefault"] == "none"
 assert commands["sandbox"]["scopedMounts"] is True
+assert commands["sandbox"]["networkPolicies"] == ["none", "outbound", "full"]
+assert commands["sandbox"]["rollback"] is True
+assert commands["sandbox"]["ttlCleanup"] is True
 assert data["recommendedRecoveryLoop"]
 '
 
@@ -105,6 +108,22 @@ elif [ "$1" = "machine" ] && [ "$2" = "stop" ]; then
   printf '{"id":"%s","state":"stopped"}\n' "$3"
 elif [ "$1" = "machine" ] && [ "$2" = "delete" ]; then
   printf '{"ok":true,"message":"deleted"}\n'
+elif [ "$1" = "machine" ] && [ "$2" = "snapshot" ]; then
+  machine="$3"
+  shift 3
+  snapshot_id="snap"
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --id) snapshot_id="$2"; shift 2 ;;
+      --note) shift 2 ;;
+      *) echo "unexpected snapshot args: $*" >&2; exit 64 ;;
+    esac
+  done
+  printf '{"id":"%s","machineID":"%s","createdISO":"2026-07-08T00:00:00Z","note":"pre-sandbox-run"}\n' "$snapshot_id" "$machine"
+elif [ "$1" = "machine" ] && [ "$2" = "restore-snapshot" ]; then
+  printf '{"id":"%s","state":"running"}\n' "$3"
+elif [ "$1" = "machine" ] && [ "$2" = "delete-snapshot" ]; then
+  printf '{"ok":true,"message":"snapshot deleted"}\n'
 elif [ "$1" = "machine" ] && [ "$2" = "exec" ]; then
   machine="$3"
   shift 3
@@ -163,8 +182,11 @@ data = json.load(sys.stdin)
 assert data["schema"] == "dev.dory.sandbox.run"
 assert data["sandbox"] == "agenttest"
 assert data["isolation"] == "dedicated-vm"
+assert data["networkPolicy"] == "outbound"
 assert data["hostFileSharing"] == "none"
 assert data["mounts"] == []
+assert data["rollback"]["requested"] is False
+assert data["ttl"]["seconds"] == 0
 assert data["cleanup"]["stopped"] is True
 assert data["cleanup"]["deleted"] is True
 assert data["exec"]["stdout"] == "isolated\n"
@@ -177,9 +199,30 @@ import json, sys
 data = json.load(sys.stdin)
 assert data["schema"] == "dev.dory.sandbox.run"
 assert data["sandbox"] == "agentmount"
+assert data["networkPolicy"] == "outbound"
 assert data["hostFileSharing"] == "scoped"
 assert data["mounts"] == [{"guestPath": "/work/project", "hostPath": "'"$TMP_HOME"'/project", "mode": "ro", "readOnly": True, "tag": "dorysb0"}]
 assert data["exec"]["stdout"] == "/work/project\n"
+'
+
+sandbox_policy_json="$(DORY_SANDBOX_DISABLE_TTL_SCHEDULER=1 DORYDCTL_BIN="$TMP_HOME/fake-dorydctl" DORY_SANDBOX_KERNEL="$TMP_HOME/kernel" DORY_SANDBOX_ROOTFS="$TMP_HOME/rootfs.ext4" \
+  scripts/dory sandbox run --json --keep --name agentpolicy --network none --rollback --ttl-seconds 30 -- /bin/echo isolated)"
+printf '%s' "$sandbox_policy_json" | python3 -c '
+import json, sys
+data = json.load(sys.stdin)
+assert data["schema"] == "dev.dory.sandbox.run"
+assert data["sandbox"] == "agentpolicy"
+assert data["kept"] is True
+assert data["networkPolicy"] == "none"
+assert data["cleanup"]["stopped"] is False
+assert data["cleanup"]["deleted"] is False
+assert data["rollback"]["requested"] is True
+assert data["rollback"]["created"] is True
+assert data["rollback"]["restored"] is True
+assert data["rollback"]["snapshotDeleted"] is True
+assert data["rollback"]["snapshotID"].startswith("dory-sandbox-pre-")
+assert data["ttl"] == {"seconds": 30, "scheduled": True}
+assert data["exec"]["stdout"] == "isolated\n"
 '
 
 mkdir -p "$TMP_HOME/.dory"

@@ -117,7 +117,7 @@ dory — Dory CLI
                                Emit a versioned CLI capability map for coding agents
   dory mcp serve [--read-only]
                                Serve Dory tools over stdio MCP for Claude/Cursor-style clients
-  dory sandbox run [--json] [--keep] [--name NAME] -- <command...>
+  dory sandbox run [--json] [--keep] [--network none|outbound|full] [--rollback] -- <command...>
                                Run a command in a dedicated Linux VM with no host sharing by default
   dory wait engine|container|machine [NAME] --until STATE --timeout N [--json]
                                Wait for a runtime state without hand-written polling loops
@@ -852,7 +852,7 @@ machine_cmd() {
 }
 
 sandbox_usage() {
-  echo "usage: dory sandbox run [--json] [--keep] [--name NAME] [--mount HOST[:GUEST[:ro|rw]]] [--memory-mb N] [--cpus N] [--kernel PATH] [--rootfs PATH] -- <command...>" >&2
+  echo "usage: dory sandbox run [--json] [--keep] [--name NAME] [--mount HOST[:GUEST[:ro|rw]]] [--network none|outbound|full] [--rollback] [--ttl-seconds N] [--memory-mb N] [--cpus N] [--kernel PATH] [--rootfs PATH] -- <command...>" >&2
 }
 
 first_file() {
@@ -939,13 +939,13 @@ PY
 }
 
 sandbox_emit_run_result() {
-  local name="$1" kept="$2" exit_code="$3" json="$4" tmp="$5"
-  python3 - "$name" "$kept" "$exit_code" "$json" "$tmp" <<'PY'
+  local name="$1" kept="$2" exit_code="$3" json="$4" tmp="$5" network="$6" rollback="$7" ttl_seconds="$8" snapshot_id="$9"
+  python3 - "$name" "$kept" "$exit_code" "$json" "$tmp" "$network" "$rollback" "$ttl_seconds" "$snapshot_id" <<'PY'
 import json
 import pathlib
 import sys
 
-name, kept, exit_code, as_json, tmp = sys.argv[1:6]
+name, kept, exit_code, as_json, tmp, network, rollback, ttl_seconds, snapshot_id = sys.argv[1:10]
 root = pathlib.Path(tmp)
 
 def read_json(name: str, default):
@@ -961,14 +961,28 @@ cleanup = {
     "stopped": (root / "stop.json").exists(),
     "deleted": (root / "delete.json").exists(),
 }
+rollback_result = {
+    "requested": rollback == "1",
+    "snapshotID": snapshot_id or None,
+    "created": (root / "snapshot.json").exists(),
+    "restored": (root / "rollback.json").exists(),
+    "snapshotDeleted": (root / "delete-snapshot.json").exists(),
+}
+ttl = {
+    "seconds": int(ttl_seconds),
+    "scheduled": (root / "ttl.json").exists(),
+}
 result = {
     "schema": "dev.dory.sandbox.run",
     "version": 1,
     "sandbox": name,
     "machine": name,
     "isolation": "dedicated-vm",
+    "networkPolicy": network,
     "hostFileSharing": "scoped" if mounts else "none",
     "mounts": mounts,
+    "rollback": rollback_result,
+    "ttl": ttl,
     "kept": kept == "1",
     "exitCode": int(exit_code),
     "exec": exec_result,
@@ -988,6 +1002,7 @@ PY
 
 sandbox_run_cmd() {
   local ctl name="" keep=0 json=0 memory=2048 cpus=2 kernel="" rootfs="" tmp exec_rc=0 created=0 cwd=""
+  local network="outbound" rollback=0 ttl_seconds=0 snapshot_id="" rollback_failed=0
   local mounts=() mount_tags=() mount_guests=() mount_modes=() mount_rows=() create_args=()
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -999,6 +1014,9 @@ sandbox_run_cmd() {
       --kernel) kernel="${2:?--kernel requires a value}"; shift 2 ;;
       --rootfs) rootfs="${2:?--rootfs requires a value}"; shift 2 ;;
       --mount) mounts+=("${2:?--mount requires a path}"); shift 2 ;;
+      --network) network="${2:?--network requires none, outbound, or full}"; shift 2 ;;
+      --rollback) rollback=1; shift ;;
+      --ttl-seconds) ttl_seconds="${2:?--ttl-seconds requires a value}"; shift 2 ;;
       --) shift; break ;;
       -h|--help) sandbox_usage; return 0 ;;
       --*) echo "unknown sandbox option: $1" >&2; sandbox_usage; exit 2 ;;
@@ -1008,6 +1026,11 @@ sandbox_run_cmd() {
   [ "$#" -gt 0 ] || { sandbox_usage; exit 2; }
   [[ "$memory" =~ ^[0-9]+$ ]] && [ "$memory" -gt 0 ] || { echo "invalid --memory-mb: $memory" >&2; exit 2; }
   [[ "$cpus" =~ ^[0-9]+$ ]] && [ "$cpus" -gt 0 ] || { echo "invalid --cpus: $cpus" >&2; exit 2; }
+  case "$network" in
+    none|outbound|full) ;;
+    *) echo "invalid --network: $network (expected none, outbound, or full)" >&2; exit 2 ;;
+  esac
+  [[ "$ttl_seconds" =~ ^[0-9]+$ ]] || { echo "invalid --ttl-seconds: $ttl_seconds" >&2; exit 2; }
 
   local parsed tag host guest mode mount_index=0
   if [ "${#mounts[@]}" -gt 0 ]; then
@@ -1075,6 +1098,14 @@ PY
     exit 1
   fi
 
+  if [ "$network" = "none" ]; then
+    if ! "$ctl" --timeout 120 machine exec "$name" --json -- /bin/sh -lc 'for iface in $(ls /sys/class/net 2>/dev/null || true); do [ "$iface" = lo ] && continue; ip link set "$iface" down 2>/dev/null || true; done; true' > "$tmp/network.json"; then
+      [ "$keep" -eq 1 ] || "$ctl" --timeout 60 machine delete "$name" > "$tmp/delete.json" 2>/dev/null || true
+      rm -rf "$tmp"
+      exit 1
+    fi
+  fi
+
   local idx=0
   while [ "$idx" -lt "${#mount_tags[@]}" ]; do
     if ! "$ctl" --timeout 120 machine exec "$name" --json -- /bin/sh -lc 'mkdir -p "$1" && if [ "$3" = ro ]; then mount -t virtiofs -o ro "$2" "$1"; else mount -t virtiofs "$2" "$1"; fi' sh "${mount_guests[$idx]}" "${mount_tags[$idx]}" "${mount_modes[$idx]}" > "$tmp/mount-$idx.json"; then
@@ -1085,6 +1116,15 @@ PY
     idx=$((idx + 1))
   done
 
+  if [ "$rollback" -eq 1 ]; then
+    snapshot_id="dory-sandbox-pre-$(date +%s)-$RANDOM"
+    if ! "$ctl" --timeout 120 machine snapshot "$name" --id "$snapshot_id" --note "pre-sandbox-run" > "$tmp/snapshot.json"; then
+      [ "$keep" -eq 1 ] || "$ctl" --timeout 60 machine delete "$name" > "$tmp/delete.json" 2>/dev/null || true
+      rm -rf "$tmp"
+      exit 1
+    fi
+  fi
+
   set +e
   if [ -n "$cwd" ]; then
     "$ctl" --timeout 900 machine exec "$name" --json --cwd "$cwd" -- "$@" > "$tmp/exec.json"
@@ -1094,11 +1134,32 @@ PY
   exec_rc=$?
   set -e
 
+  if [ "$rollback" -eq 1 ]; then
+    if ! "$ctl" --timeout 180 machine restore-snapshot "$name" "$snapshot_id" > "$tmp/rollback.json"; then
+      rollback_failed=1
+    fi
+    "$ctl" --timeout 60 machine delete-snapshot "$name" "$snapshot_id" > "$tmp/delete-snapshot.json" 2>/dev/null || true
+    if [ "$rollback_failed" -eq 1 ] && [ "$exec_rc" -eq 0 ]; then
+      exec_rc=1
+    fi
+  fi
+
+  if [ "$keep" -eq 1 ] && [ "$ttl_seconds" -gt 0 ]; then
+    printf '{"seconds":%s,"sandbox":"%s"}\n' "$ttl_seconds" "$name" > "$tmp/ttl.json"
+    if [ "${DORY_SANDBOX_DISABLE_TTL_SCHEDULER:-0}" != "1" ]; then
+      (
+        sleep "$ttl_seconds"
+        "$ctl" --timeout 60 machine stop "$name" >/dev/null 2>&1 || true
+        "$ctl" --timeout 60 machine delete "$name" >/dev/null 2>&1 || true
+      ) >/dev/null 2>&1 &
+    fi
+  fi
+
   if [ "$keep" -eq 0 ] && [ "$created" -eq 1 ]; then
     "$ctl" --timeout 60 machine stop "$name" > "$tmp/stop.json" 2>/dev/null || true
     "$ctl" --timeout 60 machine delete "$name" > "$tmp/delete.json" 2>/dev/null || true
   fi
-  sandbox_emit_run_result "$name" "$keep" "$exec_rc" "$json" "$tmp"
+  sandbox_emit_run_result "$name" "$keep" "$exec_rc" "$json" "$tmp" "$network" "$rollback" "$ttl_seconds" "$snapshot_id"
   rm -rf "$tmp"
   exit "$exec_rc"
 }
@@ -1838,6 +1899,13 @@ TOOLS: list[dict[str, Any]] = [
                 "description": "Command argv to execute.",
             },
             "keep": {"type": "boolean", "description": "Keep the sandbox machine after the command exits."},
+            "networkPolicy": {
+                "type": "string",
+                "enum": ["none", "outbound", "full"],
+                "description": "Sandbox network policy. none disables guest network interfaces; outbound/full are explicit policy labels.",
+            },
+            "rollback": {"type": "boolean", "description": "Snapshot before running and restore the sandbox afterward."},
+            "ttlSeconds": {"type": "integer", "minimum": 0, "description": "When keep=true, schedule automatic cleanup after this many seconds. 0 disables TTL cleanup."},
             "mounts": {
                 "type": "array",
                 "items": {"type": "string"},
@@ -2012,6 +2080,18 @@ def call_tool(name: str, arguments: Any) -> dict[str, Any]:
             raise ToolExecutionError("keep must be a boolean")
         if keep:
             command.append("--keep")
+        network_policy = string_arg(args, "networkPolicy")
+        if network_policy:
+            if network_policy not in ("none", "outbound", "full"):
+                raise ToolExecutionError("networkPolicy must be none, outbound, or full")
+            command.extend(["--network", network_policy])
+        rollback = args.get("rollback", False)
+        if not isinstance(rollback, bool):
+            raise ToolExecutionError("rollback must be a boolean")
+        if rollback:
+            command.append("--rollback")
+        if "ttlSeconds" in args:
+            command.extend(["--ttl-seconds", str(int_arg(args, "ttlSeconds", 0, 0, 30 * 24 * 60 * 60))])
         mounts = args.get("mounts", [])
         if mounts:
             if not isinstance(mounts, list) or not all(isinstance(item, str) and item for item in mounts):
@@ -2276,12 +2356,15 @@ data = {
         {
             "id": "sandbox",
             "status": "preview",
-            "invoke": "dory sandbox run [--json] [--keep] [--mount HOST[:GUEST[:ro|rw]]] -- <command>",
+            "invoke": "dory sandbox run [--json] [--keep] [--network none|outbound|full] [--rollback] [--ttl-seconds N] [--mount HOST[:GUEST[:ro|rw]]] -- <command>",
             "json": True,
             "safeForAutomation": True,
             "isolation": "dedicated doryd Linux VM per run",
             "hostFileSharingDefault": "none",
             "scopedMounts": True,
+            "networkPolicies": ["none", "outbound", "full"],
+            "rollback": True,
+            "ttlCleanup": True,
             "notes": "Preview: runs commands in a dedicated VM and deletes it by default. No host files are visible unless an explicit --mount is provided.",
         },
         {
