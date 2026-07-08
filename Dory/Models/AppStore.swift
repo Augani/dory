@@ -183,6 +183,13 @@ final class AppStore {
             if let v = UserDefaults.standard.object(forKey: Self.httpProxyPortKey) as? Int, let p = UInt16(exactly: v), p > 0 { httpProxyPort = p }
             if let v = UserDefaults.standard.object(forKey: Self.httpsProxyPortKey) as? Int, let p = UInt16(exactly: v), p > 0 { httpsProxyPort = p }
             if let v = UserDefaults.standard.object(forKey: Self.domainsEnabledKey) as? Bool { domainsEnabled = v }
+            if let saved = Self.normalizedDomainSuffix(UserDefaults.standard.string(forKey: Self.domainSuffixKey)) {
+                domainSuffix = saved
+            }
+            if let override = Self.normalizedDomainSuffix(env["DORY_DOMAIN_SUFFIX"] ?? env["DORYD_DOMAIN_SUFFIX"]) {
+                domainSuffix = override
+            }
+            dns = DoryDNS(suffix: domainSuffix)
             if let v = UserDefaults.standard.object(forKey: SharedVMProvisioner.Config.rosettaX86Key) as? Bool { rosettaX86Enabled = v }
             if let raw = UserDefaults.standard.string(forKey: Self.enginePreferenceKey),
                let saved = EnginePreference(rawValue: raw) { enginePreference = saved }
@@ -523,7 +530,7 @@ final class AppStore {
         daemonSocketPath = nil
         sharedVMStatus = "Starting Dory's daemon…"
         if dorydClient.usesMachService {
-            _ = await DorydLaunchAgent.ensureCurrent()
+            _ = await DorydLaunchAgent.ensureCurrent(configuration: dorydLaunchAgentConfiguration())
         }
         do {
             let started = try await dorydClient.engineStart()
@@ -748,7 +755,7 @@ final class AppStore {
         shimRunning = false
     }
 
-    let domainSuffix = "dory.local"
+    var domainSuffix = AppStore.defaultDomainSuffix
     private let portForwarder = HostPortForwarder(targetHost: "127.0.0.1")
     @ObservationIgnored private lazy var hostBridge = HostBridgeWatcher(
         bridgeRoot: URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".dory/bridge"),
@@ -762,7 +769,7 @@ final class AppStore {
     @ObservationIgnored private let usbAttachments = UsbAttachmentStore()
     @ObservationIgnored private var usbReplayedMachines: Set<String> = []
     private let domainTable = DomainTable()
-    private let dns = DoryDNS()
+    @ObservationIgnored private var dns = DoryDNS()
     @ObservationIgnored private let reverseProxy: DoryReverseProxy
     private var networkingStarted = false
     var localNetworkingActiveForTests: Bool { networkingStarted }
@@ -823,6 +830,8 @@ final class AppStore {
     static let httpProxyPortKey = "dory.httpProxyPort"
     static let httpsProxyPortKey = "dory.httpsProxyPort"
     static let domainsEnabledKey = "dory.domainsEnabled"
+    static let defaultDomainSuffix = "dory.local"
+    static let domainSuffixKey = "dory.domainSuffix"
     // User-configurable: 8080 collides with common dev servers, and MDM-managed DNS can't be pointed
     // at Dory, so the whole *.dory.local feature is turn-off-able (GitHub #2).
     var dnsPort: UInt16 = AppStore.defaultDNSPort
@@ -854,13 +863,84 @@ final class AppStore {
     /// Applies changed networking settings (ports or the domains toggle): full teardown then restart
     /// so listeners rebind on the new ports and machine bridges are re-registered cleanly. Restarting
     /// through startPortForwarding cancels and re-drives the reconcile task, avoiding a double-register.
-    func applyNetworkingSettings(dnsPort: UInt16? = nil, httpProxyPort: UInt16? = nil, httpsProxyPort: UInt16? = nil, domainsEnabled: Bool? = nil) {
+    func applyNetworkingSettings(
+        dnsPort: UInt16? = nil,
+        httpProxyPort: UInt16? = nil,
+        httpsProxyPort: UInt16? = nil,
+        domainsEnabled: Bool? = nil,
+        domainSuffix: String? = nil
+    ) {
+        var launchAgentNeedsRefresh = false
+        var suffixChanged = false
+        if let domainSuffix {
+            guard let normalized = Self.normalizedDomainSuffix(domainSuffix) else {
+                networkingAuthorizationMessage = "Use a DNS-style suffix such as dev.dory.local."
+                return
+            }
+            if normalized != self.domainSuffix {
+                self.domainSuffix = normalized
+                UserDefaults.standard.set(normalized, forKey: Self.domainSuffixKey)
+                suffixChanged = true
+                launchAgentNeedsRefresh = true
+            }
+        }
         if let dnsPort { self.dnsPort = dnsPort; UserDefaults.standard.set(Int(dnsPort), forKey: Self.dnsPortKey) }
         if let httpProxyPort { self.httpProxyPort = httpProxyPort; UserDefaults.standard.set(Int(httpProxyPort), forKey: Self.httpProxyPortKey) }
         if let httpsProxyPort { self.httpsProxyPort = httpsProxyPort; UserDefaults.standard.set(Int(httpsProxyPort), forKey: Self.httpsProxyPortKey) }
         if let domainsEnabled { self.domainsEnabled = domainsEnabled; UserDefaults.standard.set(domainsEnabled, forKey: Self.domainsEnabledKey) }
         stopLocalNetworking()
+        if suffixChanged {
+            domainTable.replaceContainers([:])
+            domainTable.replaceKube([:])
+            dorydContainerEndpoints = [:]
+            dns = DoryDNS(suffix: self.domainSuffix)
+        }
         startPortForwarding()
+        if dnsPort != nil || httpProxyPort != nil || httpsProxyPort != nil || launchAgentNeedsRefresh {
+            refreshDorydLaunchAgentForNetworkingSettings()
+        }
+    }
+
+    private func refreshDorydLaunchAgentForNetworkingSettings() {
+        guard dorydClient.usesMachService else { return }
+        let configuration = dorydLaunchAgentConfiguration()
+        Task { [weak self] in
+            let ok = await DorydLaunchAgent.ensureCurrent(configuration: configuration)
+            guard ok, let self else { return }
+            if self.runtimeOwnedByDoryd {
+                await self.publishDorydNetworkRoutes()
+            }
+        }
+    }
+
+    private func dorydLaunchAgentConfiguration() -> DorydLaunchAgent.Configuration {
+        DorydLaunchAgent.Configuration(
+            domainSuffix: domainSuffix,
+            dnsPort: dnsPort,
+            httpProxyPort: httpProxyPort,
+            httpsProxyPort: httpsProxyPort
+        )
+    }
+
+    nonisolated static func normalizedDomainSuffix(_ raw: String?) -> String? {
+        guard let raw else { return nil }
+        var suffix = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        while suffix.hasSuffix(".") {
+            suffix.removeLast()
+        }
+        guard suffix.count <= 253 else { return nil }
+        let labels = suffix.split(separator: ".", omittingEmptySubsequences: false)
+        guard labels.count >= 2 else { return nil }
+        for label in labels {
+            guard !label.isEmpty, label.count <= 63 else { return nil }
+            guard label.first != "-", label.last != "-" else { return nil }
+            for scalar in label.unicodeScalars {
+                let value = scalar.value
+                let valid = (48...57).contains(value) || (97...122).contains(value) || value == 45
+                guard valid else { return nil }
+            }
+        }
+        return suffix
     }
 
     private func startTLS() {

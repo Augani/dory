@@ -10,6 +10,28 @@ enum DorydLaunchAgent {
         var plistContents: String
     }
 
+    struct Configuration: Sendable, Equatable {
+        var domainSuffix: String
+        var idleSleepAfterSeconds: UInt32
+        var dnsPort: UInt16
+        var httpProxyPort: UInt16
+        var httpsProxyPort: UInt16
+
+        nonisolated init(
+            domainSuffix: String = "dory.local",
+            idleSleepAfterSeconds: UInt32 = 300,
+            dnsPort: UInt16 = 15353,
+            httpProxyPort: UInt16 = 8080,
+            httpsProxyPort: UInt16 = 8443
+        ) {
+            self.domainSuffix = domainSuffix
+            self.idleSleepAfterSeconds = idleSleepAfterSeconds
+            self.dnsPort = dnsPort
+            self.httpProxyPort = httpProxyPort
+            self.httpsProxyPort = httpsProxyPort
+        }
+    }
+
     struct Status: Sendable, Equatable {
         var loaded: Bool
         var plistPath: String?
@@ -36,11 +58,17 @@ enum DorydLaunchAgent {
     static func ensureCurrent(
         bundle: Bundle = .main,
         launchAgentsDirectory: URL? = nil,
+        configuration: Configuration = Configuration(),
         runner: @escaping Runner = runLaunchctl
     ) async -> Bool {
-        guard let current = currentInstall(bundle: bundle, launchAgentsDirectory: launchAgentsDirectory) else { return false }
+        guard let current = currentInstall(
+            bundle: bundle,
+            launchAgentsDirectory: launchAgentsDirectory,
+            configuration: configuration
+        ) else { return false }
+        let plistChanged: Bool
         do {
-            try writeCurrentInstall(current)
+            plistChanged = try writeCurrentInstall(current)
         } catch {
             return false
         }
@@ -49,7 +77,12 @@ enum DorydLaunchAgent {
         let print = await runner(["print", service])
         let status = print.ok ? parseStatus(print.stdout) : nil
 
-        switch decision(status: status, currentPlist: current.plistPath, currentProgram: current.programPath) {
+        switch decision(
+            status: status,
+            currentPlist: current.plistPath,
+            currentProgram: current.programPath,
+            currentPlistChanged: plistChanged
+        ) {
         case .upToDate:
             return true
         case .bootstrap:
@@ -70,7 +103,12 @@ enum DorydLaunchAgent {
         }
     }
 
-    static func decision(status: Status?, currentPlist: String?, currentProgram: String?) -> Decision {
+    static func decision(
+        status: Status?,
+        currentPlist: String?,
+        currentProgram: String?,
+        currentPlistChanged: Bool = false
+    ) -> Decision {
         guard let currentPlist, !currentPlist.isEmpty,
               let currentProgram, !currentProgram.isEmpty else {
             return .unavailable("current doryd LaunchAgent is not bundled")
@@ -80,6 +118,9 @@ enum DorydLaunchAgent {
         }
         guard normalize(status.programPath) == normalize(currentProgram),
               normalize(status.plistPath) == normalize(currentPlist) else {
+            return .replace
+        }
+        guard !currentPlistChanged else {
             return .replace
         }
         return .upToDate
@@ -93,7 +134,11 @@ enum DorydLaunchAgent {
         )
     }
 
-    static func currentInstall(bundle: Bundle, launchAgentsDirectory: URL? = nil) -> Install? {
+    static func currentInstall(
+        bundle: Bundle,
+        launchAgentsDirectory: URL? = nil,
+        configuration: Configuration = Configuration()
+    ) -> Install? {
         let bundleURL = bundle.bundleURL
         let program = bundleURL.appendingPathComponent("Contents/Helpers/doryd").path
         let helpersDirectory = bundleURL.appendingPathComponent("Contents/Helpers", isDirectory: true)
@@ -106,7 +151,11 @@ enum DorydLaunchAgent {
         return Install(
             plistPath: plist,
             programPath: program,
-            plistContents: launchAgentPlist(program: program, helpersDirectory: helpersDirectory)
+            plistContents: launchAgentPlist(
+                program: program,
+                helpersDirectory: helpersDirectory,
+                configuration: configuration
+            )
         )
     }
 
@@ -138,18 +187,23 @@ enum DorydLaunchAgent {
             .appendingPathComponent("LaunchAgents", isDirectory: true)
     }
 
-    private static func writeCurrentInstall(_ install: Install) throws {
+    private static func writeCurrentInstall(_ install: Install) throws -> Bool {
         let url = URL(fileURLWithPath: install.plistPath)
         let directory = url.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         if let existing = try? String(contentsOf: url, encoding: .utf8),
            existing == install.plistContents {
-            return
+            return false
         }
         try install.plistContents.write(to: url, atomically: true, encoding: .utf8)
+        return true
     }
 
-    static func launchAgentPlist(program: String, helpersDirectory: URL) -> String {
+    static func launchAgentPlist(
+        program: String,
+        helpersDirectory: URL,
+        configuration: Configuration = Configuration()
+    ) -> String {
         let vmm = helpersDirectory.appendingPathComponent("dory-vmm").path
         let hv = helpersDirectory.appendingPathComponent("dory-hv").path
         let gvproxy = helpersDirectory.appendingPathComponent("gvproxy").path
@@ -179,14 +233,16 @@ enum DorydLaunchAgent {
                 <string>\(xmlEscaped(gvproxy))</string>
                 <key>DORYD_NETWORKING</key>
                 <string>1</string>
+                <key>DORYD_DOMAIN_SUFFIX</key>
+                <string>\(xmlEscaped(configuration.domainSuffix))</string>
                 <key>DORYD_IDLE_SLEEP_AFTER_SECONDS</key>
-                <string>300</string>
+                <string>\(configuration.idleSleepAfterSeconds)</string>
                 <key>DORYD_DNS_PORT</key>
-                <string>15353</string>
+                <string>\(configuration.dnsPort)</string>
                 <key>DORYD_HTTP_PROXY_PORT</key>
-                <string>8080</string>
+                <string>\(configuration.httpProxyPort)</string>
                 <key>DORYD_HTTPS_PROXY_PORT</key>
-                <string>8443</string>
+                <string>\(configuration.httpsProxyPort)</string>
             </dict>
             <key>RunAtLoad</key>
             <true/>

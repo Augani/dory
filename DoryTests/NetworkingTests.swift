@@ -113,6 +113,19 @@ struct NetworkingTests {
         ])
     }
 
+    @Test func domainSuffixNormalizationAcceptsDNSStyleSuffixes() {
+        #expect(AppStore.normalizedDomainSuffix(" Team.Dory.Local. ") == "team.dory.local")
+        #expect(AppStore.normalizedDomainSuffix("dory.local") == "dory.local")
+    }
+
+    @Test func domainSuffixNormalizationRejectsUnsafeSuffixes() {
+        #expect(AppStore.normalizedDomainSuffix("dory") == nil)
+        #expect(AppStore.normalizedDomainSuffix("-team.dory.local") == nil)
+        #expect(AppStore.normalizedDomainSuffix("team..dory.local") == nil)
+        #expect(AppStore.normalizedDomainSuffix("team_dory.local") == nil)
+        #expect(AppStore.normalizedDomainSuffix("team dory.local") == nil)
+    }
+
     @Test func kubeServiceProxyBuildsStableServiceRoutes() {
         #expect(KubeServiceProxy.serviceHost(name: "Web", namespace: "Default", suffix: "dory.local") == "web.default.k8s.dory.local")
         #expect(KubeServiceProxy.serviceProxyPath(name: "web", namespace: "default", port: 8080) == "/api/v1/namespaces/default/services/web:8080/proxy")
