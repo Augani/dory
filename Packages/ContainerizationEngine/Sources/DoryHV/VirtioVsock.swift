@@ -367,7 +367,10 @@ public final class VirtioVsock: VirtioDeviceBackend {
         private var peerForwardCount: UInt32 = 0
         private var transmittedCount: UInt32 = 0
 
-        private static let writeChunk = 32 * 1024
+        // Linux's virtio-vsock RX buffers are smaller than the socket-level credit window. Keep each
+        // host->guest packet comfortably below the observed RX descriptor size so the header length
+        // can never describe more payload than fits in one virtqueue buffer.
+        private static let writeChunk = 4 * 1024
 
         var forwardCount: UInt32 { lock.lock(); defer { lock.unlock() }; return forwardCountValue }
         // True once the guest can no longer send (either a full close or a SHUT_WR half-close). Readers

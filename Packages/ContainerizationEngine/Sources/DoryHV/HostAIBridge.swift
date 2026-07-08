@@ -8,8 +8,8 @@ import Foundation
 /// `127.0.0.1:<port>`, where tools such as Ollama and LM Studio normally bind.
 public final class HostAIBridge: @unchecked Sendable {
     /// Single source of truth for the AI-bridge port list. EngineMode serializes this into
-    /// DORY_HOST_AI_BRIDGE_PORTS for the guest agent, which mirrors it only as a fallback
-    /// (defaultHostAIBridgePorts in guest/agent/host_ai_bridge.go). User-facing copy in
+    /// DORY_HOST_AI_BRIDGE_PORTS for the Rust guest agent, which mirrors it only as a fallback.
+    /// User-facing copy in
     /// SettingsView, DockerShim, and the READMEs also references these numbers; change them in
     /// lockstep if this set ever changes.
     public static let defaultPorts: [UInt16] = [11_434, 1_234, 18_190]

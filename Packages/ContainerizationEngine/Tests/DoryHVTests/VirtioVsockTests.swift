@@ -139,6 +139,36 @@ import Testing
         #expect(Array(packets[0].dropFirst(VirtioVsockHeader.byteCount)) == [1, 2, 3, 4])
     }
 
+    @Test func hostConnectionSplitsLargeWritesIntoRxSafePackets() throws {
+        let device = VirtioVsock(guestCID: 3)
+        let connection = device.connect(port: 1024)
+        let request = try VirtioVsockHeader(decoding: device.drainPendingGuestPackets()[0])
+        let response = VirtioVsockHeader(
+            sourceCID: 3,
+            destinationCID: 2,
+            sourcePort: 1024,
+            destinationPort: request.sourcePort,
+            length: 0,
+            operation: .response
+        )
+        _ = try device.receive(packet: response.encoded())
+
+        let payload = Array(repeating: UInt8(7), count: 12_515)
+        try connection.write(payload)
+
+        let packets = device.drainPendingGuestPackets()
+        #expect(packets.count == 4)
+        let reconstructed = try packets.flatMap { packet -> [UInt8] in
+            let header = try VirtioVsockHeader(decoding: packet)
+            #expect(header.operation == .readWrite)
+            #expect(packet.count <= VirtioVsockHeader.byteCount + 4 * 1024)
+            let chunk = Array(packet.dropFirst(VirtioVsockHeader.byteCount))
+            #expect(header.length == UInt32(chunk.count))
+            return chunk
+        }
+        #expect(reconstructed == payload)
+    }
+
     @Test func hostConnectionReadsGuestPayload() throws {
         let device = VirtioVsock(guestCID: 3)
         let connection = device.connect(port: 1024)

@@ -45,7 +45,7 @@ public final class UsbipBridge: @unchecked Sendable {
     }
 
     public func start() {
-        queue.async { [weak self] in self?.serve() }
+        queue.async { self.serve() }
     }
 
     /// Runs the serve loop synchronously; returns when the connection ends. Exposed for the loopback
