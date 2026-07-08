@@ -211,6 +211,70 @@ final class DorydServiceTests: XCTestCase {
         XCTAssertEqual(tier.status().state, .stopped)
     }
 
+    func testEngineSleepOverXPCStopsEmptyHelperAndIsIdempotent() throws {
+        let home = "/tmp/doryd-service-sleep-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        defer { try? FileManager.default.removeItem(atPath: home) }
+        let idle = IdleController(now: Date(timeIntervalSince1970: 0))
+        let tier = DockerTier(
+            configuration: DockerTierConfiguration(
+                home: home,
+                forwardSocketPath: home + "/forward.sock",
+                activitySocketPath: home + "/activity.sock",
+                hvProcess: HvProcessConfiguration(
+                    executablePath: "/bin/sleep",
+                    arguments: ["30"]
+                )
+            ),
+            idleController: idle,
+            containerActivityProbe: { _ in .empty },
+            dockerReadyWaiter: { _, _ in true }
+        )
+        try tier.start()
+        defer { tier.stop() }
+        XCTAssertEqual(tier.status().state, .running)
+        XCTAssertNotNil(tier.status().hvPID)
+
+        let service = DorydService(socketPath: tier.socketPath, dockerTier: tier)
+        let listener = makeAnonymousListener(service: service)
+        listener.resume()
+        defer { listener.invalidate() }
+
+        let connection = NSXPCConnection(listenerEndpoint: listener.endpoint)
+        connection.remoteObjectInterface = NSXPCInterface(with: DorydControl.self)
+        connection.resume()
+        defer { connection.invalidate() }
+
+        let proxy = try XCTUnwrap(connection.remoteObjectProxy as? DorydControl)
+
+        let sleep = expectation(description: "engineSleep reply")
+        var sleepOK = false
+        var sleepMessage = ""
+        proxy.engineSleep { ok, message in
+            sleepOK = ok
+            sleepMessage = message
+            sleep.fulfill()
+        }
+        wait(for: [sleep], timeout: 5)
+        XCTAssertTrue(sleepOK, sleepMessage)
+        XCTAssertEqual(sleepMessage, "")
+        XCTAssertEqual(tier.status().state, .sleeping)
+        XCTAssertNil(tier.status().hvPID)
+        XCTAssertTrue(idle.snapshot.sleeping)
+
+        let secondSleep = expectation(description: "second engineSleep reply")
+        var secondOK = false
+        var secondMessage = ""
+        proxy.engineSleep { ok, message in
+            secondOK = ok
+            secondMessage = message
+            secondSleep.fulfill()
+        }
+        wait(for: [secondSleep], timeout: 5)
+        XCTAssertTrue(secondOK, secondMessage)
+        XCTAssertEqual(secondMessage, "docker tier is already sleeping")
+        XCTAssertEqual(tier.status().state, .sleeping)
+    }
+
     func testDockerAgentInfoPortsAndTelemetryOverXPC() throws {
         let home = "/tmp/doryd-service-agent-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         defer { try? FileManager.default.removeItem(atPath: home) }

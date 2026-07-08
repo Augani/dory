@@ -91,6 +91,17 @@ public final class DorydService: NSObject, DorydControl {
             reply(false, "docker tier is not configured")
             return
         }
+        let status = dockerTier.status()
+        switch status.state {
+        case .sleeping:
+            reply(true, "docker tier is already sleeping")
+            return
+        case .stopped:
+            reply(true, "docker tier is already stopped")
+            return
+        case .starting, .running, .failed:
+            break
+        }
         let slept = dockerTier.sleepForIdle(idleAfter: 0)
         if slept {
             incidentWriter?.record(type: "engine.sleep", detail: "manual XPC sleep")
