@@ -14,7 +14,7 @@ final class PortForwarder: MachinePortForwarding, @unchecked Sendable {
     private let localHost: String
     private let log: (String) -> Void
     private let timer: any DispatchSourceTimer
-    private var exposed = Set<Int>()
+    private var exposed = Set<PublishedPortForward>()
 
     init(engineSocket: String, apiSocket: String, guestIP: String, localHost: String = "127.0.0.1", log: @escaping (String) -> Void) {
         self.engineSocket = engineSocket
@@ -30,62 +30,72 @@ final class PortForwarder: MachinePortForwarding, @unchecked Sendable {
     func start() { timer.resume() }
 
     private func sync() {
-        guard let wanted = publishedPorts() else { return }  // docker not ready or unreachable
-        for port in wanted.subtracting(exposed) where expose(port) {
-            exposed.insert(port)
-            log("port forward: \(localHost):\(Self.localPort(forPublishedPort: port)) -> container:\(port)")
+        guard let wanted = wantedForwards() else { return }  // docker not ready or unreachable
+        for forward in wanted.subtracting(exposed) where expose(forward) {
+            exposed.insert(forward)
+            log("port forward: \(forward.localEndpoint)/\(forward.protocol.rawValue) -> container:\(forward.guestPort)/\(forward.protocol.rawValue)")
         }
         // Only forget the port once gvproxy confirms the forward is gone; a failed unexpose stays
         // tracked and is retried on the next tick, so a stale host forward can't leak.
-        for port in exposed.subtracting(wanted) where unexpose(port) {
-            exposed.remove(port)
-            log("port forward: released \(localHost):\(Self.localPort(forPublishedPort: port))")
+        for forward in exposed.subtracting(wanted) where unexpose(forward) {
+            exposed.remove(forward)
+            log("port forward: released \(forward.localEndpoint)/\(forward.protocol.rawValue)")
         }
     }
 
+    private func wantedForwards() -> Set<PublishedPortForward>? {
+        guard let ports = publishedPorts() else { return nil }
+        return PublishedPortForwardPlan.forwards(for: ports, publishHost: localHost, guestIP: guestIP)
+    }
+
     /// The set of host ports currently published by any running container.
-    private func publishedPorts() -> Set<Int>? {
+    private func publishedPorts() -> Set<PublishedPortBinding>? {
         guard let data = curlData(unixSocket: engineSocket, url: "http://d/v1.41/containers/json"),
               let containers = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
             return nil
         }
-        var ports = Set<Int>()
+        var ports = Set<PublishedPortBinding>()
         for container in containers {
             guard let list = container["Ports"] as? [[String: Any]] else { continue }
             for entry in list {
-                let proto = (entry["Type"] as? String ?? "tcp").lowercased()
-                guard proto == "tcp" || proto == "tcp6" else { continue }
-                if let publicPort = entry["PublicPort"] as? Int { ports.insert(publicPort) }
+                let proto = entry["Type"] as? String ?? "tcp"
+                guard let publicPort = entry["PublicPort"] as? Int,
+                      let binding = PublishedPortBinding(dockerType: proto, publicPort: publicPort) else {
+                    continue
+                }
+                ports.insert(binding)
             }
         }
         return ports
     }
 
-    private func expose(_ port: Int) -> Bool {
-        let localPort = Self.localPort(forPublishedPort: port)
+    private func expose(_ forward: PublishedPortForward) -> Bool {
         // gvproxy's TCP forward wants a bare host:port remote (no scheme), unlike the unix-socket
         // forward used for the docker socket.
         return curlPost(unixSocket: apiSocket, url: "http://gvproxy/services/forwarder/expose",
-                        body: "{\"local\":\"\(localHost):\(localPort)\",\"remote\":\"\(guestIP):\(port)\",\"protocol\":\"tcp\"}")
+                        body: gvproxyBody(
+                            local: forward.localEndpoint,
+                            remote: forward.remoteEndpoint,
+                            transportProtocol: forward.protocol.rawValue
+                        ))
     }
 
-    private func unexpose(_ port: Int) -> Bool {
-        let localPort = Self.localPort(forPublishedPort: port)
+    private func unexpose(_ forward: PublishedPortForward) -> Bool {
         return curlPost(unixSocket: apiSocket, url: "http://gvproxy/services/forwarder/unexpose",
-                        body: "{\"local\":\"\(localHost):\(localPort)\",\"protocol\":\"tcp\"}")
+                        body: gvproxyBody(
+                            local: forward.localEndpoint,
+                            transportProtocol: forward.protocol.rawValue
+                        ))
     }
 
     func exposeMachinePort(_ port: UInt16) async -> Bool {
-        expose(Int(port))
+        let binding = PublishedPortBinding(protocol: .tcp, port: Int(port))
+        return expose(PublishedPortForwardPlan.forward(for: binding, localHost: localHost, guestIP: guestIP))
     }
 
     func unexposeMachinePort(_ port: UInt16) async -> Bool {
-        unexpose(Int(port))
-    }
-
-    private static func localPort(forPublishedPort port: Int) -> Int {
-        guard port > 0, port < 1024 else { return port }
-        return 60_000 + port
+        let binding = PublishedPortBinding(protocol: .tcp, port: Int(port))
+        return unexpose(PublishedPortForwardPlan.forward(for: binding, localHost: localHost, guestIP: guestIP))
     }
 
     private func curlData(unixSocket: String, url: String) -> Data? {
@@ -99,6 +109,21 @@ final class PortForwarder: MachinePortForwarding, @unchecked Sendable {
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         task.waitUntilExit()
         return task.terminationStatus == 0 ? data : nil
+    }
+
+    private func gvproxyBody(local: String, remote: String? = nil, transportProtocol: String) -> String {
+        var body: [String: String] = [
+            "local": local,
+            "protocol": transportProtocol,
+        ]
+        if let remote {
+            body["remote"] = remote
+        }
+        guard let data = try? JSONSerialization.data(withJSONObject: body),
+              let string = String(data: data, encoding: .utf8) else {
+            return "{}"
+        }
+        return string
     }
 
     @discardableResult
