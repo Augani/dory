@@ -9,7 +9,7 @@ struct DoryCommands: Commands {
 
     var body: some Commands {
         CommandGroup(after: .appInfo) {
-            Button("Releases") { DoryUpdater.shared.checkForUpdates() }
+            Button("Check for Updates...") { DoryUpdater.shared.checkForUpdates() }
         }
         CommandGroup(replacing: .newItem) {
             Button("New Container") {

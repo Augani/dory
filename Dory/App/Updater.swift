@@ -1,19 +1,28 @@
 import AppKit
+import Sparkle
 
 @MainActor
 final class DoryUpdater {
     static let shared = DoryUpdater()
 
-    private init() {}
+    private let updaterController: SPUStandardUpdaterController
+
+    var updater: SPUUpdater { updaterController.updater }
+
+    private init(startingUpdater: Bool = true) {
+        updaterController = SPUStandardUpdaterController(
+            startingUpdater: startingUpdater,
+            updaterDelegate: nil,
+            userDriverDelegate: nil
+        )
+    }
 
     func checkForUpdates() {
-        if let url = URL(string: "https://github.com/Augani/dory/releases") {
-            NSWorkspace.shared.open(url)
-        }
+        updaterController.checkForUpdates(nil)
     }
 
     var automaticallyChecks: Bool {
-        get { false }
-        set { _ = newValue }
+        get { updater.automaticallyChecksForUpdates }
+        set { updater.automaticallyChecksForUpdates = newValue }
     }
 }

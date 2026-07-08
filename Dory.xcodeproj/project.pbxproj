@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		AA00000000000000000000B3 /* SwiftTerm in Frameworks */ = {isa = PBXBuildFile; productRef = AA00000000000000000000B2 /* SwiftTerm */; };
+		AA00000000000000000000C3 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = AA00000000000000000000C2 /* Sparkle */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -56,6 +57,7 @@
 			isa = PBXFrameworksBuildPhase;
 			files = (
 				AA00000000000000000000B3 /* SwiftTerm in Frameworks */,
+				AA00000000000000000000C3 /* Sparkle in Frameworks */,
 			);
 		};
 		3E705CF92FE37C7B0094B33C /* Frameworks */ = {
@@ -110,6 +112,7 @@
 			name = Dory;
 			packageProductDependencies = (
 				AA00000000000000000000B2 /* SwiftTerm */,
+				AA00000000000000000000C2 /* Sparkle */,
 			);
 			productName = Dory;
 			productReference = 3E705CEF2FE37C790094B33C /* Dory.app */;
@@ -191,6 +194,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				AA00000000000000000000B1 /* XCRemoteSwiftPackageReference "SwiftTerm" */,
+				AA00000000000000000000C1 /* XCRemoteSwiftPackageReference "Sparkle" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 3E705CF02FE37C790094B33C /* Products */;
@@ -575,6 +579,14 @@
 				minimumVersion = 1.0.0;
 			};
 		};
+		AA00000000000000000000C1 /* XCRemoteSwiftPackageReference "Sparkle" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/sparkle-project/Sparkle";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.9.4;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -582,6 +594,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = AA00000000000000000000B1 /* XCRemoteSwiftPackageReference "SwiftTerm" */;
 			productName = SwiftTerm;
+		};
+		AA00000000000000000000C2 /* Sparkle */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AA00000000000000000000C1 /* XCRemoteSwiftPackageReference "Sparkle" */;
+			productName = Sparkle;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

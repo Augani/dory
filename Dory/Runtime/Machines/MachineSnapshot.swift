@@ -17,10 +17,10 @@ struct MachineSnapshot: Identifiable, Hashable, Sendable {
     let homePath: String?
     let loginShell: String
 
-    init(id: String, imageRef: String, machineName: String, note: String, createdISO: String,
-         sizeBytes: Int64, distro: String, version: String, arch: String, boot: String,
-         recipe: String, username: String = "root", uid: Int? = nil, homePath: String? = nil,
-         loginShell: String = "/bin/sh") {
+    nonisolated init(id: String, imageRef: String, machineName: String, note: String, createdISO: String,
+                     sizeBytes: Int64, distro: String, version: String, arch: String, boot: String,
+                     recipe: String, username: String = "root", uid: Int? = nil, homePath: String? = nil,
+                     loginShell: String = "/bin/sh") {
         self.id = id
         self.imageRef = imageRef
         self.machineName = machineName

@@ -171,6 +171,7 @@ final class AppStore {
             if let v = UserDefaults.standard.object(forKey: Self.menuBarIconKey) as? Bool { showMenuBarIcon = v }
             if isAgentMode { showMenuBarIcon = true }
             if let v = UserDefaults.standard.object(forKey: Self.autoUpdateKey) as? Bool { autoUpdate = v }
+            DoryUpdater.shared.automaticallyChecks = autoUpdate
             if let v = UserDefaults.standard.object(forKey: Self.routeDockerKey) as? Bool { routeDockerCLI = v }
             if let raw = UserDefaults.standard.string(forKey: Self.machineEnvAllowListKey) {
                 machineEnvAllowList = MachineEnvImport.parse(raw)
