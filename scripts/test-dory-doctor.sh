@@ -76,6 +76,7 @@ assert commands["events"]["status"] == "available"
 assert commands["events"]["schema"] == "dev.dory.events"
 assert commands["events"]["eventSchema"] == "dev.dory.event"
 assert "incident" in commands["events"]["sources"]
+assert "authorization-plan" in commands["network"]["invoke"]
 assert commands["engine"]["json"] is True
 assert commands["machine"]["json"] is True
 assert "machine exec NAME --json" in commands["machine"]["notes"]
@@ -212,6 +213,41 @@ elif [ "$1" = "engine" ] && [ "$2" = "wake" ]; then
   printf '{"ok":true,"message":"wake requested"}\n'
 elif [ "$1" = "machine" ] && [ "$2" = "list" ]; then
   printf '[{"id":"dev","state":"running","address":"dev.dory.local"}]\n'
+elif [ "$1" = "network" ] && [ "$2" = "authorization-plan" ]; then
+  cat <<'JSON'
+{
+  "degradedMode": "high-port-dns-only",
+  "authorizedMode": "system-resolver-proxy-tls",
+  "suffix": "dory.local",
+  "dnsBindAddress": "127.0.0.1",
+  "dnsPort": 15353,
+  "httpProxyPort": 8080,
+  "httpsProxyPort": 8443,
+  "privilegedTCPForwards": [
+    {"listenPort": 25, "targetPort": 60025}
+  ],
+  "requests": [
+    {
+      "id": "resolver.dory.local",
+      "kind": "resolverFile",
+      "title": "Install dory.local resolver",
+      "reason": "Route *.dory.local DNS queries to doryd.",
+      "requiresAdmin": true,
+      "filePath": "/etc/resolver/dory.local",
+      "fileContents": "# Managed by Dory. Do not edit.\nnameserver 127.0.0.1\nport 15353\n",
+      "command": ["/usr/bin/install", "-m", "0644", "<generated>", "/etc/resolver/dory.local"]
+    },
+    {
+      "id": "pf.dev.dory.enable",
+      "kind": "pfEnable",
+      "title": "Enable Dory pf rules",
+      "reason": "Load Dory pf rules.",
+      "requiresAdmin": true,
+      "command": ["/sbin/pfctl", "-a", "com.apple/dev.dory", "-f", "/etc/pf.anchors/dev.dory"]
+    }
+  ]
+}
+JSON
 elif [ "$1" = "machine" ] && [ "$2" = "create" ]; then
   printf '{"id":"%s","state":"created"}\n' "$3"
 elif [ "$1" = "machine" ] && [ "$2" = "start" ]; then
@@ -271,6 +307,26 @@ fi
 SH
 chmod +x "$TMP_HOME/fake-dorydctl"
 
+cat > "$TMP_HOME/fake-dory-network-helper" <<'SH'
+#!/bin/sh
+dry=0
+plan=""
+root="/"
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --plan-json) plan="$2"; shift 2 ;;
+    --dry-run) dry=1; shift ;;
+    --file-system-root) root="$2"; shift 2 ;;
+    *) echo "unexpected helper args: $*" >&2; exit 64 ;;
+  esac
+done
+test "$dry" = "1" || { echo "expected --dry-run" >&2; exit 64; }
+test "$root" != "/" || { echo "expected test file-system root" >&2; exit 64; }
+test -s "$plan" || { echo "missing plan" >&2; exit 64; }
+printf '[{"id":"resolver.dory.local","kind":"resolverFile","action":"write-file","target":"/etc/resolver/dory.local","dryRun":true},{"id":"pf.dev.dory.enable","kind":"pfEnable","action":"run-command","target":"/sbin/pfctl -a com.apple/dev.dory -f /etc/pf.anchors/dev.dory","dryRun":true}]\n'
+SH
+chmod +x "$TMP_HOME/fake-dory-network-helper"
+
 DORYDCTL_BIN="$TMP_HOME/fake-dorydctl" scripts/dory engine status --json | python3 -c '
 import json, sys
 data = json.load(sys.stdin)
@@ -280,6 +336,23 @@ assert data["detail"] == "idle policy"
 
 DORYDCTL_BIN="$TMP_HOME/fake-dorydctl" scripts/dory engine status | grep -q "Dory engine: sleeping"
 DORYDCTL_BIN="$TMP_HOME/fake-dorydctl" scripts/dory engine sleep --json | grep -q '"sleep requested"'
+DORYDCTL_BIN="$TMP_HOME/fake-dorydctl" scripts/dory network authorization-plan --json | python3 -c '
+import json, sys
+data = json.load(sys.stdin)
+assert data["suffix"] == "dory.local"
+assert data["privilegedTCPForwards"][0]["listenPort"] == 25
+'
+DORYDCTL_BIN="$TMP_HOME/fake-dorydctl" DORY_NETWORK_HELPER_BIN="$TMP_HOME/fake-dory-network-helper" \
+  scripts/dory network authorize --json --dry-run --file-system-root "$TMP_HOME/network-root" | python3 -c '
+import json, sys
+data = json.load(sys.stdin)
+assert data["schema"] == "dev.dory.network.authorization"
+assert data["dryRun"] is True
+assert data["applied"] is False
+assert data["suffix"] == "dory.local"
+assert data["privilegedTCPForwards"][0]["targetPort"] == 60025
+assert {item["id"] for item in data["results"]} == {"resolver.dory.local", "pf.dev.dory.enable"}
+'
 DORYDCTL_BIN="$TMP_HOME/fake-dorydctl" scripts/dory machine exec dev --json -- /bin/echo ok | python3 -c '
 import json, sys
 data = json.load(sys.stdin)
@@ -620,6 +693,7 @@ scripts/dory help | grep -q "dory install"
 scripts/dory help | grep -q "dory uninstall"
 scripts/dory help | grep -q "dory support bundle"
 scripts/dory help | grep -q "dory logs collect"
+scripts/dory help | grep -q "dory network authorize"
 scripts/dory help | grep -q "dory idle history"
 ! scripts/dory help | grep -q "dory idle proxy"
 scripts/dory help | grep -q "dory cleanup"

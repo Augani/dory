@@ -97,6 +97,10 @@ dory — Dory CLI
   dory network [--json] [--active] [--probe HOST[:PORT]]
   dory network --save-probe HOST[:PORT] | --list-probes | --remove-probe HOST[:PORT]
                                Diagnose DNS, registry, proxy, ports, and *.dory.local routing
+  dory network authorization-plan [--json]
+                               Print doryd's resolver, pf, TLS, and low-port authorization plan
+  dory network authorize [--json] [--dry-run|--apply]
+                               Dry-run or apply doryd's local-domain and privileged-port plan
   dory network --lan-visible on|off
                                Publish ports to the local network, or restrict to localhost
   dory mount [--json]           Validate bind mount read/write and host-edit visibility
@@ -946,6 +950,172 @@ dorydctl_bin() {
     "$DORY_SCRIPT_DIR/../Helpers/dorydctl" \
     "$HOME/.dory/bin/dorydctl" \
     "$(command -v dorydctl 2>/dev/null || true)"
+}
+
+network_helper_bin() {
+  first_executable \
+    "${DORY_NETWORK_HELPER_BIN:-}" \
+    "$DORY_SCRIPT_DIR/dory-network-helper" \
+    "$DORY_SCRIPT_DIR/../Helpers/dory-network-helper" \
+    "$HOME/.dory/bin/dory-network-helper" \
+    "$(command -v dory-network-helper 2>/dev/null || true)"
+}
+
+network_authorization_usage() {
+  cat >&2 <<'EOF'
+usage:
+  dory network authorization-plan [--json]
+  dory network authorize [--json] [--dry-run|--apply] [--plan-json PATH] [--file-system-root PATH]
+
+`authorize` defaults to --dry-run. Use --apply only when you intend to write /etc/resolver,
+install Dory's pf anchor, enable pf, and trust the local CA. Applying requires admin privileges;
+use the Settings button for the guided macOS prompt, or run from an already-root shell.
+EOF
+}
+
+network_plan_text() {
+  python3 -c '
+import json, sys
+plan = json.load(sys.stdin)
+print(f"Domain suffix: {plan.get(\"suffix\", \"unknown\")}")
+print(f"Mode: {plan.get(\"degradedMode\", \"unknown\")} -> {plan.get(\"authorizedMode\", \"unknown\")}")
+print(f"Resolver: {plan.get(\"dnsBindAddress\", \"127.0.0.1\")}:{plan.get(\"dnsPort\", \"?\")}")
+print(f"HTTP/HTTPS: 80->{plan.get(\"httpProxyPort\", \"?\")} 443->{plan.get(\"httpsProxyPort\", \"?\")}")
+for forward in plan.get("privilegedTCPForwards") or []:
+    print(f"Low TCP: {forward.get(\"listenPort\")}->{forward.get(\"targetPort\")}")
+print("Requests:")
+for request in plan.get("requests") or []:
+    command = " ".join(request.get("command") or [])
+    print(f"  - {request.get(\"kind\", \"unknown\")}: {request.get(\"title\", request.get(\"id\", \"?\"))} [{command}]")
+'
+}
+
+network_authorize_json() {
+  local plan_path="$1" dry_run="$2" results_path="$3"
+  python3 - "$plan_path" "$dry_run" "$results_path" <<'PY'
+import json
+import sys
+
+plan_path = sys.argv[1]
+dry_run = sys.argv[2] == "1"
+results_path = sys.argv[3]
+plan = json.load(open(plan_path, encoding="utf-8"))
+results = json.load(open(results_path, encoding="utf-8"))
+print(json.dumps({
+    "schema": "dev.dory.network.authorization",
+    "version": 1,
+    "dryRun": dry_run,
+    "applied": not dry_run,
+    "suffix": plan.get("suffix"),
+    "degradedMode": plan.get("degradedMode"),
+    "authorizedMode": plan.get("authorizedMode"),
+    "privilegedTCPForwards": plan.get("privilegedTCPForwards") or [],
+    "results": results,
+}, separators=(",", ":"), sort_keys=True))
+PY
+}
+
+network_authorize_text() {
+  local plan_path="$1" dry_run="$2" results_path="$3"
+  python3 - "$plan_path" "$dry_run" "$results_path" <<'PY'
+import json
+import sys
+
+plan_path = sys.argv[1]
+dry_run = sys.argv[2] == "1"
+results_path = sys.argv[3]
+plan = json.load(open(plan_path, encoding="utf-8"))
+results = json.load(open(results_path, encoding="utf-8"))
+mode = "dry-run" if dry_run else "applied"
+print(f"Dory networking authorization {mode} for {plan.get('suffix', 'unknown')}:")
+for item in results:
+    print(f"  - {item.get('action', '?')} {item.get('target', '?')}")
+forwards = plan.get("privilegedTCPForwards") or []
+if forwards:
+    shown = ", ".join(f"{item.get('listenPort')}->{item.get('targetPort')}" for item in forwards[:6])
+    extra = len(forwards) - 6
+    print("Low TCP forwards: " + shown + (f", +{extra} more" if extra > 0 else ""))
+else:
+    print("Low TCP forwards: standard 80/443 only")
+PY
+}
+
+network_authorization_plan_cmd() {
+  local json=0 ctl out
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --json) json=1; shift ;;
+      -h|--help) network_authorization_usage; return 0 ;;
+      *) echo "unknown network authorization-plan option: $1" >&2; network_authorization_usage; exit 2 ;;
+    esac
+  done
+  ctl="$(dorydctl_bin 2>/dev/null)" || { echo "dorydctl not found; start Dory/doryd before inspecting networking authorization." >&2; exit 1; }
+  out="$("$ctl" --timeout 10 network authorization-plan)"
+  if [ "$json" -eq 1 ]; then
+    printf '%s\n' "$out"
+  else
+    printf '%s\n' "$out" | network_plan_text
+  fi
+}
+
+network_authorize_cmd() {
+  local json=0 dry_run=1 apply=0 plan_path="" fs_root="" helper ctl tmp="" results_tmp="" out rc args=()
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --json) json=1; shift ;;
+      --dry-run) dry_run=1; apply=0; shift ;;
+      --apply) dry_run=0; apply=1; shift ;;
+      --plan-json|--plan) plan_path="${2:?$1 requires a path}"; shift 2 ;;
+      --file-system-root) fs_root="${2:?--file-system-root requires a path}"; shift 2 ;;
+      -h|--help) network_authorization_usage; return 0 ;;
+      *) echo "unknown network authorize option: $1" >&2; network_authorization_usage; exit 2 ;;
+    esac
+  done
+
+  helper="$(network_helper_bin 2>/dev/null)" || { echo "dory-network-helper not found; reinstall Dory or run dory support bundle for diagnostics." >&2; exit 1; }
+  if [ -z "$plan_path" ]; then
+    ctl="$(dorydctl_bin 2>/dev/null)" || { echo "dorydctl not found; start Dory/doryd before authorizing networking." >&2; exit 1; }
+    tmp="$(mktemp -t dory-network-plan.XXXXXX.json)"
+    "$ctl" --timeout 10 network authorization-plan > "$tmp"
+    plan_path="$tmp"
+  fi
+
+  if [ "$apply" -eq 1 ] && [ "$(id -u)" -ne 0 ]; then
+    [ -z "$tmp" ] || rm -f "$tmp"
+    echo "dory network authorize --apply needs admin privileges. Use Dory Settings > Network > Authorize, or rerun from an already-root shell." >&2
+    exit 1
+  fi
+
+  args=(--plan-json "$plan_path")
+  [ "$dry_run" -eq 1 ] && args+=(--dry-run)
+  [ -n "$fs_root" ] && args+=(--file-system-root "$fs_root")
+  set +e
+  out="$("$helper" "${args[@]}" 2>&1)"
+  rc=$?
+  set -e
+  if [ "$rc" -ne 0 ]; then
+    [ -z "$tmp" ] || rm -f "$tmp"
+    printf '%s\n' "$out" >&2
+    exit "$rc"
+  fi
+  results_tmp="$(mktemp -t dory-network-results.XXXXXX.json)"
+  printf '%s\n' "$out" > "$results_tmp"
+  if [ "$json" -eq 1 ]; then
+    network_authorize_json "$plan_path" "$dry_run" "$results_tmp"
+  else
+    network_authorize_text "$plan_path" "$dry_run" "$results_tmp"
+  fi
+  rm -f "$results_tmp"
+  [ -z "$tmp" ] || rm -f "$tmp"
+}
+
+network_cmd() {
+  case "${1:-}" in
+    authorization-plan|auth-plan) shift || true; network_authorization_plan_cmd "$@" ;;
+    authorize) shift || true; network_authorize_cmd "$@" ;;
+    -h|--help) doctor_cmd network --help ;;
+    *) doctor_cmd network "$@" ;;
+  esac
 }
 
 doryd_machine_cmd() {
@@ -2719,11 +2889,11 @@ data = {
         {
             "id": "network",
             "status": "available",
-            "invoke": "dory network --json [--active] [--probe HOST[:PORT]]",
+            "invoke": "dory network --json [--active] [--probe HOST[:PORT]] | dory network authorization-plan --json | dory network authorize --json --dry-run",
             "json": True,
             "dryRun": True,
             "safeForAutomation": True,
-            "notes": "Classifies DNS, registry, proxy, port, and local-domain failures.",
+            "notes": "Classifies DNS, registry, proxy, port, and local-domain failures. authorization-plan and authorize use doryd's live resolver/pf/TLS/low-port plan; authorize defaults to --dry-run and requires explicit --apply plus admin privileges for writes.",
         },
         {
             "id": "mount",
@@ -2919,7 +3089,7 @@ case "${1:-help}" in
   doctor)         shift; doctor_cmd doctor "$@" ;;
   support)        shift; support_cmd "$@" ;;
   logs)           shift; logs_cmd "$@" ;;
-  network)        shift; doctor_cmd network "$@" ;;
+  network)        shift; network_cmd "$@" ;;
   mount)          shift; doctor_cmd mount "$@" ;;
   disk)           shift; doctor_cmd disk "$@" ;;
   cleanup)        shift; doctor_cmd cleanup "$@" ;;
