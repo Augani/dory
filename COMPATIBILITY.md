@@ -14,15 +14,15 @@ Legend: ✅ works · 🟡 works with Dory-specific behavior · 🛠️ implement
 On the Docker backend, Dory's socket is a **full transparent proxy**: every request is forwarded
 verbatim and the response streamed back unchanged. It is uniformly correct for normal, streaming, and
 hijacked (upgrade) endpoints, with all request headers preserved (registry auth, etc.). The
-per-endpoint translation notes are retained for the mock runtime and the future Apple `container`
-backend model; the shipping shared-VM path fronts a real `dockerd` socket.
+per-endpoint translation notes are retained for the mock runtime and retired translated-runtime
+experiments; the shipping shared-VM path fronts a real `dockerd` socket.
 
 | Capability | Status | Notes |
 |---|---|---|
-| `docker version` / `info` / `_ping` | ✅ | Docker backend: real engine response (transparent passthrough). Apple/mock: Dory-branded. Verified with the real `docker` CLI |
+| `docker version` / `info` / `_ping` | ✅ | Docker backend: real engine response (transparent passthrough). Mock/translated test runtimes: Dory-branded. Verified with the real `docker` CLI |
 | `docker ps` / list containers | ✅ | Real containers, correct names/status/ports/timestamps; supports `id`, `name`, `status`, `label`, `ancestor`, `before`, `since`, `exited`, `health`, `volume`, `network`, `publish`, and `expose` filters; `size=1` adds `SizeRw`/`SizeRootFs` for `docker ps -s` |
 | Container start / stop / restart / remove | ✅ | `POST /containers/{id}/...`, `DELETE /containers/{id}` |
-| `docker images` / list | ✅ | Translated from the runtime snapshot (Apple/mock), including `reference`, `label`, `dangling`, `before`, and `since` filters on `/images/json` |
+| `docker images` / list | ✅ | Translated from the runtime snapshot (mock/translated test runtimes), including `reference`, `label`, `dangling`, `before`, and `since` filters on `/images/json` |
 | Container create (with body) | ✅ | image, cmd, env, ports, labels, network/network-disabled DNS, DNS domain, restart policy, platform query, cidfile, runtime handler; image refs starting with `-` rejected at the boundary |
 | Container inspect | ✅ | `GET /containers/{id}/json`; includes common create-time `Config`/`HostConfig` fields, port bindings, mounts, and `NetworkSettings.Networks`; `size=1` adds `SizeRw`/`SizeRootFs` for `docker inspect --size` |
 | Exec (create + start + inspect) | ✅ | Used by the Compose health prober |
@@ -35,14 +35,14 @@ backend model; the shipping shared-VM path fronts a real `dockerd` socket.
 | Network list / create / remove / connect / disconnect | 🟡 | `GET /networks` includes `id`, `name`, `driver`, `scope`, `type`, and `label` filters on translated backends; create/remove/connect/disconnect endpoints exist, but Apple's `container` CLI has no post-create connect/disconnect command yet |
 | Volume list / create / remove / prune | ✅ | `GET /volumes` includes `name`, `driver`, `dangling`, and `label` filters on translated backends; `POST /volumes/create`, `DELETE /volumes/{id}`, `POST /volumes/prune` |
 | System disk usage (`docker system df`) | ✅ | `GET /system/df`; translated from runtime snapshot images, containers, volumes, and empty BuildKit cache when unavailable |
-| Logs (`docker logs`, `-f`) | ✅ | Docker backend: live follow proxied verbatim. Apple/mock: Docker raw-stream frames with `tail`, `timestamps`, stdout/stderr suppression, and finite follow via runtime streaming |
-| Stats (mem live, CPU%) | ✅ | Docker backend: `docker stats` streamed through the proxy. Apple/mock: two-sample CPU sampler |
-| Events (`docker events`) | ✅ | Docker backend: proxied (live engine events). Apple/mock: synthesized via `EventSynthesizer` |
+| Logs (`docker logs`, `-f`) | ✅ | Docker backend: live follow proxied verbatim. Mock/translated test runtimes: Docker raw-stream frames with `tail`, `timestamps`, stdout/stderr suppression, and finite follow via runtime streaming |
+| Stats (mem live, CPU%) | ✅ | Docker backend: `docker stats` streamed through the proxy. Mock/translated test runtimes: two-sample CPU sampler |
+| Events (`docker events`) | ✅ | Docker backend: proxied (live engine events). Mock/translated test runtimes: synthesized via `EventSynthesizer` |
 | `docker exec` (`-i`, `-it` TTY) + `attach` | ✅ | Bidirectional hijack proxy with correct half-close (stdin EOF) + exit codes; TTY (`/dev/pts/0`) verified |
 | `docker cp` / `docker export` (archive get/put/export) | ✅ | `GET`/`PUT /containers/{id}/archive` and `GET /containers/{id}/export`; archive PUT includes chunked request bodies |
 | `docker build` (classic + **BuildKit**) | ✅ | Both verified end-to-end via Dory's socket (BuildKit gRPC session proxied) |
 | Any other Docker endpoint (Docker backend) | ✅ | Transparent proxy (distribution, swarm, plugins, etc. all pass through) |
-| Full create-body flag coverage | 🟡 | Apple/mock translation maps common flags; the long tail is iterative (Docker backend forwards everything) |
+| Full create-body flag coverage | 🟡 | Mock/translated test runtimes map common flags; the long tail is iterative (Docker backend forwards everything) |
 
 ## Compose
 
@@ -58,7 +58,7 @@ backend model; the shipping shared-VM path fronts a real `dockerd` socket.
 | Named/anonymous volumes | 🟡 | Declared top-level volumes are created as `<project>_<vol>` with compose labels on `up`, service references to them are project-prefixed, and `down(removeVolumes:)` removes them (`compose down -v`); anonymous volumes pass through to the runtime. `external: true` volumes and long-form `type: volume` mounts not special-cased yet |
 | Profiles | ✅ | Unprofiled services start by default; `COMPOSE_PROFILES` and `*` activate profiled services. Targeted service activation is not exposed in the GUI |
 | Multiple files / overrides | 🟡 | Default override files plus `COMPOSE_FILE` ordered merge for common fields, including inline `!reset` (drop a key) and `!override` (replace instead of merge) tags; block-form tags (tag on the `key:` line with the value indented below) not yet |
-| `network_mode: service:` / shared pid/ipc | ⛔ | Co-schedule into one machine (by design, against Apple `container`) |
+| `network_mode: service:` / shared pid/ipc | ⛔ | Co-schedule related processes into one Dory machine or one container image instead |
 
 ## Engine backends
 
@@ -108,11 +108,11 @@ CA trust install remain consent-gated, the same one-time admin grant OrbStack ne
 | `*.k8s.dory.local` service domains | ✅ HTTP + HTTPS | `KubeServiceProxy` runs `kubectl proxy`; the reverse/TLS proxy rewrites `<svc>.<ns>.k8s.dory.local` → the API service proxy. Verified `http`+`https → 200`. TLS cert carries per-namespace wildcard SANs (`*.default.k8s.dory.local`, `*.kube-system.k8s.dory.local`); other namespaces would need their wildcard added |
 | `dory` CLI (OrbStack's `orb`) | ✅ | `scripts/dory` wraps the engine, machines, kubectl, diagnostics, disk/routes, repair, and runtime mode/idle status |
 
-### Apple containerization helper: low-level VM controls delivered
+### Bundled VM helper: low-level VM controls delivered
 
-Several features need low-level VM control the `container` CLI does not expose: audio, memory
-ballooning, the Rosetta device, custom mounts - all delivered through the bundled `dory-vm` helper,
-which links the `apple/containerization` Swift package and drives the VM in-process. USB *device*
+Several features need low-level VM control below Docker's API: audio, memory ballooning, the
+Rosetta device, and custom mounts. These are delivered through Dory's bundled `dory-vm` helper, not
+through Apple's separate `container` CLI and not as an Apple Container backend. USB *device*
 passthrough is the exception: the helper attaches a USB controller but does not yet pass a host
 device through - real per-device passthrough is the usbip-over-vsock path (roadmap Track 3.6).
 
@@ -165,10 +165,10 @@ Status of the full flavor:
 | Engine rootfs / `dockerd` payload | ✅ bundled for offline releases; internal one-time fetch in dev bundles | Offline releases include `dory-engine-rootfs.ext4.lzfse` when the release runner provides `DORY_ENGINE_ROOTFS` or a prepared rootfs. Development bundles can still fetch `docker:dind` once internally on first boot. Neither path requires Docker Desktop, Colima, OrbStack, Homebrew, or Apple `container` on the user's Mac. |
 | `docker` CLI + Compose + `kubectl` | ✅ bundled | `Contents/Helpers/docker`, `docker-compose`, and `kubectl` ship with the app. Optional shell integration links them into `~/.dory/bin` and installs the Compose plugin into `~/.docker/cli-plugins`, all per-user and reversible. |
 | macOS 14+ (Sonoma) | app requirement | The SwiftUI app and Docker-compatible host-engine mode build and run with a macOS 14 deployment target, matching OrbStack's floor. The app links no Virtualization/Hypervisor code and uses no macOS-15-only API. |
-| macOS 15+ (Sequoia) | built-in engine requirement | The bundled `dory-hv`/`dory-vm` engine needs macOS 15: the Apple-silicon path uses the in-kernel GIC interrupt API (`hv_gic_*`) introduced in macOS 15, and the engine package plus its Virtualization USB config are 15.0. On macOS 14 Dory runs in Docker-compatible proxy mode. |
+| macOS 14+ (Sonoma) built-in engine | supported target | The bundled Dory engine is the default local path on supported hardware. macOS 14 remains a release target for the app and local engine surfaces; hardware/asset gates degrade to Docker-compatible proxy mode instead of requiring Docker Desktop. |
 | Apple silicon built-in engine | verified standalone engine | The native `dory-hv` shared engine is verified on Apple silicon. |
 | Intel built-in engine | beta, hardware-gated | The universal app, raw `dory-hv` x86 selection, PVH asset selection, amd64 VZ fallback assets, and Virtualization.framework tier routing are implemented. Full Intel readiness still requires a physical Intel Mac with Hypervisor.framework support. |
-| macOS 26+ on Apple silicon | Apple `container` backend requirement | Apple's per-container `container` backend requires it; Dory will gate that backend at runtime when the feature-equivalent path ships. |
+| Apple Container backend | ⛔ unsupported / not required | Dory 0.3 does not expose or require Apple's separate `container` CLI. It may appear only as a benchmark competitor when installed separately on the same Mac. |
 
 So: **a self-contained standalone Dory.app works on Apple silicon**, verified end-to-end
 (`DORY_BUNDLE_ENGINE=1`): a re-signed bundle that passes `codesign --verify --deep --strict`,
@@ -205,12 +205,13 @@ and `dory compat --recipe` for the full set.
 
 ## Architectural / environment notes
 
-- **Shared VM vs one-VM-per-container.** Dory offers BOTH: the Apple `container` backend is
-  one-VM-per-container, while the **Shared VM backend** runs all containers in one VM like
-  OrbStack. Measured ~4.7× less memory for 2 containers (122 MB vs 574 MB), with the gap widening
-  per container. This closes the headline memory gap and makes Dory a standalone engine.
-- **File-sharing performance** under the Apple `container` runtime + a real bind-mount dev loop is
-  not yet benchmarked here.
+- **Shared VM vs one-VM-per-container.** Dory's shipping engine runs containers in one shared Linux
+  VM. Apple's separate Container CLI is not a Dory backend; it is only a useful competitor row when
+  installed on the same Mac for benchmark context. Measured ~4.7× less memory for 2 containers
+  (122 MB vs 574 MB), with the gap widening per container. This closes the headline memory gap and
+  makes Dory a standalone engine.
+- **File-sharing performance** for release claims must come from `scripts/benchmark-compare.sh`
+  artifacts on the same Mac and engine versions being compared.
 - **Distribution.** Release automation builds Apple-silicon, Intel, and universal app artifacts,
   signs them with Developer ID, submits them for notarization when Apple credentials are present,
   staples the tickets, generates the Sparkle appcast, and bumps/syncs the Homebrew Cask. The
