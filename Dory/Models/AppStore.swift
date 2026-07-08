@@ -259,6 +259,43 @@ final class AppStore {
         "\(feature) needs Dory's shared VM or a Docker-compatible engine. \(dockerCompatibleEngineHint)"
     }
 
+    func managedSettingsProfile() -> ManagedSettingsProfile {
+        ManagedSettingsProfile(
+            engine: ManagedEngineSettings(
+                preference: enginePreference.rawValue,
+                routeDockerCLI: routeDockerCLI,
+                rosettaX86: rosettaX86Enabled,
+                gpuVenus: gpuVenusEnabled
+            ),
+            network: ManagedNetworkSettings(
+                domainsEnabled: domainsEnabled,
+                domainSuffix: domainSuffix,
+                dnsPort: dnsPort,
+                httpProxyPort: httpProxyPort,
+                httpsProxyPort: httpsProxyPort
+            ),
+            autoIdle: ManagedAutoIdleSettings(
+                mode: runtimeMode,
+                sleepAfterMinutes: idlePolicy.sleepAfterMinutes,
+                keepPublishedPortsAwake: idlePolicy.keepPublishedPortsAwake,
+                keepKubernetesAwake: idlePolicy.keepKubernetesAwake,
+                keepPinnedProjectsAwake: idlePolicy.keepPinnedProjectsAwake,
+                showWakeNotifications: idlePolicy.showWakeNotifications
+            ),
+            fileSharing: ManagedFileSharingSettings(
+                defaultPolicy: "safe-scoped",
+                scopedMountsRequiredForSandboxes: true,
+                credentialStoresHidden: true,
+                machineEnvAllowList: machineEnvAllowList
+            ),
+            telemetry: ManagedTelemetrySettings()
+        )
+    }
+
+    func managedSettingsJSON() -> String {
+        ManagedSettingsEncoder.json(managedSettingsProfile())
+    }
+
     nonisolated static func dorydEngineEnabled(environment: [String: String]) -> Bool {
         dorydEngineFlags(environment: environment).enabled
     }

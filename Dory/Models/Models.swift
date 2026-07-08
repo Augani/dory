@@ -424,7 +424,7 @@ enum EnginePreference: String, CaseIterable, Identifiable, Sendable {
 }
 
 enum SettingsTab: String, CaseIterable, Identifiable, Sendable {
-    case general, engine, resources, autoIdle, network, usb, migrate, about
+    case general, engine, resources, autoIdle, network, usb, migrate, managed, about
     var id: String { rawValue }
     var label: String {
         switch self {
@@ -435,6 +435,7 @@ enum SettingsTab: String, CaseIterable, Identifiable, Sendable {
         case .network: "Network"
         case .usb: "USB Devices"
         case .migrate: "Migrate & Compare"
+        case .managed: "Managed"
         case .about: "About"
         }
     }

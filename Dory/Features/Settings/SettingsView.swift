@@ -53,6 +53,7 @@ struct SettingsView: View {
         case .network: network
         case .usb: UsbDevicesView()
         case .migrate: migrate
+        case .managed: managed
         case .about: infoPanel(aboutText)
         }
     }
@@ -140,8 +141,16 @@ struct SettingsView: View {
                 preflightStat("\(inv.images)", "images")
                 preflightStat("\(inv.containers)", "containers")
                 preflightStat("\(inv.volumes)", "volumes")
+                preflightStat(inv.estimatedImageDiskDisplay, "image disk")
             }
-            Text("Found on \(inv.sourceName). Images are copied and containers recreated on Dory — \(inv.sourceName) is left untouched.")
+            HStack(spacing: 7) {
+                Glyph(glyph: .shield, size: 12, color: inv.confidenceLabel == "High confidence" ? p.green : p.amber)
+                Text("\(inv.confidenceLabel) from \(inv.sourceName). \(inv.sourceName) is read only until you start the import, and aborting before import writes nothing.")
+                    .font(.system(size: 11.5, weight: .semibold)).foregroundStyle(p.text2).lineSpacing(3)
+            }
+            preflightList("Transfers", inv.transferItems, color: p.text2)
+            preflightList("Needs attention", inv.attentionItems, color: inv.confidenceLabel == "High confidence" ? p.text3 : p.amber)
+            Text("Images are copied and containers recreated on Dory. Compose labels, ports, and detected networks are preserved where the source engine exposes them.")
                 .font(.system(size: 11.5)).foregroundStyle(p.text2).lineSpacing(3)
             if inv.volumes > 0 {
                 HStack(alignment: .top, spacing: 6) {
@@ -155,6 +164,21 @@ struct SettingsView: View {
         .padding(13)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(p.bgInput, in: RoundedRectangle(cornerRadius: 9))
+    }
+
+    private func preflightList(_ title: String, _ items: [String], color: Color) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title.uppercased())
+                .font(.system(size: 9.5, weight: .bold)).foregroundStyle(p.text3).tracking(0.4)
+            ForEach(items.prefix(5), id: \.self) { item in
+                Text("• \(item)").font(.system(size: 11)).foregroundStyle(color).lineSpacing(2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            if items.count > 5 {
+                Text("+ \(items.count - 5) more").font(.system(size: 11)).foregroundStyle(p.text3)
+            }
+        }
+        .padding(.top, 2)
     }
 
     private func preflightStat(_ value: String, _ label: String) -> some View {
@@ -178,6 +202,58 @@ struct SettingsView: View {
         }
         .background(p.bgElevated, in: RoundedRectangle(cornerRadius: 11))
         .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(p.border))
+    }
+
+    private var managed: some View {
+        let json = store.managedSettingsJSON()
+        return VStack(alignment: .leading, spacing: 22) {
+            groupLabel("FLEET DEFAULTS")
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(alignment: .top, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Managed settings profile")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(p.text)
+                        Text("Config-file and MDM-friendly defaults for engine, DNS, Auto-Idle, sandbox file-sharing, and telemetry. Local features stay free; telemetry is none.")
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(p.text3)
+                            .lineLimit(3)
+                    }
+                    Spacer(minLength: 0)
+                    Button {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(json, forType: .string)
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "doc.on.doc")
+                            Text("Copy JSON")
+                        }
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 7)
+                        .background(p.accent, in: RoundedRectangle(cornerRadius: 7))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("managed-copy-json")
+                }
+                ScrollView(.horizontal) {
+                    Text(json)
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(p.text2)
+                        .textSelection(.enabled)
+                        .padding(12)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(maxWidth: .infinity, minHeight: 260, alignment: .leading)
+                .background(p.bgInput, in: RoundedRectangle(cornerRadius: 8))
+                .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(p.border))
+            }
+            .padding(18)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(p.bgElevated, in: RoundedRectangle(cornerRadius: 11))
+            .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(p.border))
+        }
     }
 
     private var comparisonHeader: some View {

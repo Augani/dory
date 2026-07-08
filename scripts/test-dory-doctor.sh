@@ -124,6 +124,8 @@ elif [ "$1" = "machine" ] && [ "$2" = "restore-snapshot" ]; then
   printf '{"id":"%s","state":"running"}\n' "$3"
 elif [ "$1" = "machine" ] && [ "$2" = "delete-snapshot" ]; then
   printf '{"ok":true,"message":"snapshot deleted"}\n'
+elif [ "$1" = "machine" ] && [ "$2" = "shell" ]; then
+  printf 'shell:%s\n' "$3"
 elif [ "$1" = "machine" ] && [ "$2" = "exec" ]; then
   machine="$3"
   shift 3
@@ -174,6 +176,8 @@ assert data["machine"] == "dev"
 assert data["argv"] == ["/bin/echo", "ok"]
 assert data["stdout"] == "ok\n"
 '
+DORYDCTL_BIN="$TMP_HOME/fake-dorydctl" scripts/dory ssh dev | grep -q '^shell:dev$'
+DORYDCTL_BIN="$TMP_HOME/fake-dorydctl" scripts/dory machine shell dev | grep -q '^shell:dev$'
 touch "$TMP_HOME/kernel" "$TMP_HOME/rootfs.ext4"
 DORYDCTL_BIN="$TMP_HOME/fake-dorydctl" DORY_SANDBOX_KERNEL="$TMP_HOME/kernel" DORY_SANDBOX_ROOTFS="$TMP_HOME/rootfs.ext4" \
   scripts/dory sandbox run --json --name agenttest -- /bin/echo isolated | python3 -c '

@@ -46,6 +46,52 @@ final class MigrationTargetRuntime: ContainerRuntime {
 }
 
 @MainActor
+final class MigrationPreflightRuntime: ContainerRuntime {
+    let kind: RuntimeKind = .docker
+
+    func snapshot() async throws -> RuntimeSnapshot {
+        RuntimeSnapshot(
+            containers: [
+                Container(id: "c1", name: "web", image: "local/web:dev", status: .running, cpuPercent: 0,
+                          memoryDisplay: "0", memoryLimitDisplay: "—", memoryFraction: 0, ports: "8080→80",
+                          uptime: "—", created: "now", ipAddress: "—", domain: "", command: "", restartPolicy: "no",
+                          labels: ["com.docker.compose.project": "shop"],
+                          mounts: [
+                            ContainerMount(type: "bind", source: "/Users/me/shop", target: "/app"),
+                            ContainerMount(type: "volume", source: "db-data", target: "/var/lib/postgresql/data"),
+                          ],
+                          volumeTargets: ["/cache"]),
+                Container(id: "c2", name: "db", image: "postgres:16", status: .running, cpuPercent: 0,
+                          memoryDisplay: "0", memoryLimitDisplay: "—", memoryFraction: 0, ports: "",
+                          uptime: "—", created: "now", ipAddress: "—", domain: "", command: "", restartPolicy: "no",
+                          networkMode: "host", privileged: true),
+            ],
+            images: [
+                DockerImage(repository: "local/web", tag: "dev", imageID: "sha256:web", size: "120 MB", created: "now", usedByCount: 1, sizeBytes: 123_000_000),
+                DockerImage(repository: "postgres", tag: "16", imageID: "sha256:db", size: "40 MB", created: "now", usedByCount: 1),
+                DockerImage(repository: "<none>", tag: "<none>", imageID: "sha256:dangling", size: "1 MB", created: "now", usedByCount: 0),
+            ],
+            volumes: [
+                Volume(name: "db-data", size: "—", driver: "local", usedBy: "db", created: "now"),
+            ],
+            networks: [
+                DoryNetwork(name: "bridge", driver: "bridge", scope: "local", subnet: "", containerCount: 0),
+                DoryNetwork(name: "shop_default", driver: "bridge", scope: "local", subnet: "172.20.0.0/16", containerCount: 2),
+            ]
+        )
+    }
+
+    func start(containerID: String) async throws {}
+    func stop(containerID: String) async throws {}
+    func restart(containerID: String) async throws {}
+    func remove(containerID: String) async throws {}
+    func logs(containerID: String) async throws -> [LogLine] { [] }
+    func env(containerID: String) async throws -> [EnvVar] { [] }
+    func create(_ spec: ContainerSpec) async throws -> String { "unused" }
+    func exec(containerID: String, command: [String]) async throws -> ExecResult { ExecResult(exitCode: 0, output: "") }
+}
+
+@MainActor
 final class ArchiveMigrationSourceRuntime: ContainerRuntime {
     let kind: RuntimeKind = .docker
     nonisolated var supportsImageArchiveTransfer: Bool { true }
@@ -106,6 +152,32 @@ final class ArchiveMigrationTargetRuntime: ContainerRuntime {
 
 @MainActor
 struct MigrationTests {
+    @Test func preflightBuildsConfidenceReportBeforeImport() async throws {
+        let inventory = try #require(await MigrationAssistant.preflight(from: MigrationPreflightRuntime()))
+
+        #expect(inventory.images == 2)
+        #expect(inventory.containers == 2)
+        #expect(inventory.volumes == 1)
+        #expect(inventory.volumeNames == ["db-data"])
+        #expect(inventory.networks == 1)
+        #expect(inventory.composeProjects == ["shop"])
+        #expect(inventory.estimatedImageBytes == 163_000_000)
+        #expect(inventory.bindMounts == 1)
+        #expect(inventory.namedVolumeMounts == 1)
+        #expect(inventory.anonymousVolumeTargets == 1)
+        #expect(inventory.privilegedContainers == ["db"])
+        #expect(inventory.hostNetworkContainers == ["db"])
+        #expect(inventory.containersWithPublishedPorts == 1)
+        #expect(inventory.confidenceLabel == "Needs review")
+        #expect(inventory.transferItems.contains { $0.contains("compose project") })
+        #expect(inventory.transferItems.contains { $0.contains("custom network") })
+        #expect(inventory.attentionItems.contains { $0.contains("Volume data") })
+        #expect(inventory.attentionItems.contains { $0.contains("bind mount") })
+        #expect(inventory.attentionItems.contains { $0.contains("Privileged") })
+        #expect(inventory.attentionItems.contains { $0.contains("Host-network") })
+        #expect(MigrationAssistant.estimatedBytes(for: "1.5 GB") == 1_500_000_000)
+    }
+
     @Test func migratesImagesAndRecreatesContainers() async {
         let source = MigrationSourceRuntime()
         let target = MigrationTargetRuntime()
