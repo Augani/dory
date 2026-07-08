@@ -227,7 +227,7 @@ verify_full_bundle() {
   launch_agent="$resources/dev.dory.doryd.plist"
 
   echo "==> Verifying full clean-Mac bundle payload..."
-  for helper in doryd dorydctl dory-vmm dory-network-helper dory-hv dory-vm gvproxy docker docker-compose kubectl dory dory-doctor dory-idle-proxy; do
+  for helper in doryd dorydctl dory-vmm dory-network-helper dory-hv dory-vm gvproxy docker docker-compose kubectl dory dory-doctor; do
     assert_executable_exists "$helpers/$helper" "bundled helper"
   done
   for helper in doryd dorydctl dory-vmm dory-network-helper dory-hv dory-vm; do
@@ -236,7 +236,7 @@ verify_full_bundle() {
   for helper in gvproxy docker docker-compose kubectl; do
     assert_macho_arches "$helpers/$helper" "$HOST_CLI_ARCHES"
   done
-  for helper in doryd dorydctl dory-vmm dory-network-helper dory-hv dory-vm gvproxy docker docker-compose kubectl dory dory-doctor dory-idle-proxy; do
+  for helper in doryd dorydctl dory-vmm dory-network-helper dory-hv dory-vm gvproxy docker docker-compose kubectl dory dory-doctor; do
     verify_developer_id_signature "$helpers/$helper"
   done
 

@@ -5,7 +5,8 @@ import Foundation
 struct HostDockerCLITests {
     @Test func linkedToolsIncludeSupportCommands() {
         #expect(HostDockerCLI.linkedTools.contains("dory-doctor"))
-        #expect(HostDockerCLI.linkedTools.contains("dory-idle-proxy"))
+        #expect(HostDockerCLI.linkedTools.contains("dorydctl"))
+        #expect(!HostDockerCLI.linkedTools.contains("dory-idle-proxy"))
     }
 
     @Test func appendsPathBlockToEmptyProfile() throws {

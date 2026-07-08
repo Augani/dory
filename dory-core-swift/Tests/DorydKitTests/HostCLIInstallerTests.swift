@@ -10,7 +10,7 @@ final class HostCLIInstallerTests: XCTestCase {
         try FileManager.default.createDirectory(atPath: home, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(atPath: directory) }
 
-        for tool in ["docker", "docker-compose", "kubectl", "dory", "dory-doctor", "dory-idle-proxy", "dorydctl"] {
+        for tool in ["docker", "docker-compose", "kubectl", "dory", "dory-doctor", "dorydctl"] {
             _ = try executableFixture(at: helpers + "/\(tool)")
         }
 
@@ -34,7 +34,7 @@ final class HostCLIInstallerTests: XCTestCase {
         try FileManager.default.createDirectory(atPath: home, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(atPath: directory) }
 
-        for tool in ["docker", "docker-compose", "kubectl", "dory", "dory-doctor", "dory-idle-proxy", "dorydctl"] {
+        for tool in ["docker", "docker-compose", "kubectl", "dory", "dory-doctor", "dorydctl"] {
             _ = try executableFixture(at: helpers + "/\(tool)")
         }
 
@@ -53,7 +53,7 @@ final class HostCLIInstallerTests: XCTestCase {
         defer { try? FileManager.default.removeItem(atPath: directory) }
 
         let doryd = try executableFixture(at: helpers + "/doryd")
-        for tool in ["docker", "docker-compose", "kubectl", "dory", "dory-doctor", "dory-idle-proxy", "dorydctl"] {
+        for tool in ["docker", "docker-compose", "kubectl", "dory", "dory-doctor", "dorydctl"] {
             _ = try executableFixture(at: helpers + "/\(tool)")
         }
 

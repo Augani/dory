@@ -87,7 +87,7 @@ assert data["action"] == "install"
 assert data["dryRun"] is False
 assert data["composePluginInstalled"] is True
 linked = set(data["linked"])
-assert {"docker", "docker-compose", "kubectl", "dory", "dory-doctor", "dory-idle-proxy", "dorydctl"} <= linked
+assert {"docker", "docker-compose", "kubectl", "dory", "dory-doctor", "dorydctl"} <= linked
 assert os.path.islink(os.path.expanduser("~/.dory/bin/docker"))
 assert os.path.islink(os.path.expanduser("~/.docker/cli-plugins/docker-compose"))
 assert "dory cli" in open(os.path.expanduser("~/.zprofile"), encoding="utf-8").read()
@@ -503,8 +503,8 @@ scripts/dory help | grep -q "dory install"
 scripts/dory help | grep -q "dory uninstall"
 scripts/dory help | grep -q "dory support bundle"
 scripts/dory help | grep -q "dory logs collect"
-scripts/dory help | grep -q "dory idle proxy"
-scripts/dory help | grep -q "dory idle proxy-status"
+scripts/dory help | grep -q "dory idle history"
+! scripts/dory help | grep -q "dory idle proxy"
 scripts/dory help | grep -q "dory cleanup"
 scripts/dory help | grep -q "dory compat"
 scripts/dory help | grep -q "dory agent guide"
@@ -782,11 +782,12 @@ assert data["KeepAlive"] is True
 assert data["ProgramArguments"][-2:] == ["proxy", "--foreground"]
 '
 
-scripts/dory idle launch-agent print | python3 -c '
-import plistlib, sys
-data = plistlib.loads(sys.stdin.buffer.read())
-assert data["Label"] == "dev.dory.idle-proxy"
-'
+set +e
+retired_idle="$(scripts/dory idle launch-agent print 2>&1 >/dev/null)"
+retired_rc=$?
+set -e
+test "$retired_rc" -eq 64
+printf '%s' "$retired_idle" | grep -q "doryd owns Auto-Idle"
 
 DORY_IDLE_STATE="$TMP_HOME/idle-state.json" scripts/dory idle proxy-status --json | python3 -c '
 import json, sys

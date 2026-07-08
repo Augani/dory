@@ -2004,7 +2004,7 @@ def read_idle_proxy_state() -> dict[str, Any]:
             "available": False,
             "path": str(path),
             "state": "unknown",
-            "detail": "Auto-Idle proxy has not written state yet",
+            "detail": "doryd has not written idle state yet",
         }
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -2255,7 +2255,7 @@ def print_idle(status: dict[str, Any], as_json: bool) -> None:
     print(f"Auto-Idle enabled: {'yes' if status['auto_idle_enabled'] else 'no'}")
     print(f"Can sleep now: {'yes' if status['can_sleep'] else 'no'}")
     proxy = status.get("proxy_state") or {}
-    print(f"Proxy state: {proxy.get('state', 'unknown')} ({proxy.get('detail', 'no state')})")
+    print(f"Doryd idle state: {proxy.get('state', 'unknown')} ({proxy.get('detail', 'no state')})")
     if status["blockers"]:
         print("Sleep blockers:")
         for blocker in status["blockers"]:

@@ -340,11 +340,6 @@ bundle_host_cli_helpers() {
       scripts/dory-doctor \
       /Applications/Dory.app/Contents/Helpers/dory-doctor \
       "$HOME/.dory/bin/dory-doctor"
-    copy_host_cli_helper "$app" dory-idle-proxy \
-      "${DORY_IDLE_PROXY_BIN:-}" \
-      scripts/dory-idle-proxy \
-      /Applications/Dory.app/Contents/Helpers/dory-idle-proxy \
-      "$HOME/.dory/bin/dory-idle-proxy"
   done
 }
 
@@ -353,7 +348,7 @@ sign_debug_apps() {
   for app in "$HOME"/Library/Developer/Xcode/DerivedData/Dory-*/Build/Products/Debug/Dory.app; do
     [ -d "$app" ] || continue
     xattr -cr "$app" 2>/dev/null || true
-    for helper in docker docker-compose kubectl dory dory-doctor dory-idle-proxy; do
+    for helper in docker docker-compose kubectl dory dory-doctor; do
       [ -f "$app/Contents/Helpers/$helper" ] || continue
       codesign --force -s - "$app/Contents/Helpers/$helper" >/dev/null 2>&1 || true
     done

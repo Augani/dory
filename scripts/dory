@@ -5,7 +5,7 @@ set -euo pipefail
 
 # Resolve the real script directory THROUGH symlinks — `dory` is installed as a symlink at
 # /usr/local/bin (or the Homebrew bin), and a plain `dirname "$0"` would then look for the
-# dory-doctor / dory-idle-proxy helpers and recipe dir next to the symlink instead of beside the
+# dory-doctor helper and recipe dir next to the symlink instead of beside the
 # real script. macOS ships no `readlink -f`, so follow the chain by hand.
 DORY_SCRIPT_SOURCE="${BASH_SOURCE[0]}"
 while [ -L "$DORY_SCRIPT_SOURCE" ]; do
@@ -112,16 +112,10 @@ dory — Dory CLI
   dory mode [manual|auto-idle|always-on|battery-saver|show]
                                Show or set the runtime availability mode
   dory idle status [--json]     Explain whether Auto-Idle could sleep and what blocks it
-  dory idle proxy [--foreground]
-                               Run the opt-in Auto-Idle socket proxy
   dory idle history [--json] [--limit N]
-                               Show recent Auto-Idle sleep/wake transitions
+                               Show doryd Auto-Idle sleep/wake transitions
   dory engine sleep|wake|status
                                Stop, start, or check the headless engine
-  dory idle proxy-status [--json]
-                               Show the last Auto-Idle proxy state transition
-  dory idle launch-agent install|uninstall|status|print
-                               Manage the opt-in always-listening LaunchAgent
   dory agent guide [--json|--text]
                                Emit a versioned CLI capability map for coding agents
   dory mcp serve [--read-only]
@@ -171,9 +165,6 @@ cli_tool_source() {
       ;;
     dory-doctor)
       first_executable "${DORY_DOCTOR_BIN:-}" "$DORY_SCRIPT_DIR/dory-doctor" "$DORY_SCRIPT_DIR/../Helpers/dory-doctor" "$HOME/.dory/bin/dory-doctor" "$(command -v dory-doctor 2>/dev/null || true)"
-      ;;
-    dory-idle-proxy)
-      first_executable "${DORY_IDLE_PROXY_BIN:-}" "$DORY_SCRIPT_DIR/dory-idle-proxy" "$DORY_SCRIPT_DIR/../Helpers/dory-idle-proxy" "$HOME/.dory/bin/dory-idle-proxy" "$(command -v dory-idle-proxy 2>/dev/null || true)"
       ;;
     dorydctl)
       first_executable "${DORYDCTL_BIN:-}" "$DORY_SCRIPT_DIR/dorydctl" "$DORY_SCRIPT_DIR/../Helpers/dorydctl" "$HOME/.dory/bin/dorydctl" "$(command -v dorydctl 2>/dev/null || true)"
@@ -275,7 +266,7 @@ install_cmd() {
     esac
   done
 
-  local tools=(docker docker-compose kubectl dory dory-doctor dory-idle-proxy dorydctl)
+  local tools=(docker docker-compose kubectl dory dory-doctor dorydctl)
   local linked_csv="" linked_words="" missing_csv="" tool source dest path_changed=0 compose_installed=0
 
   if [ "$action" = "uninstall" ]; then
@@ -1612,6 +1603,202 @@ idle_proxy_cmd() {
   exec "$helper" "$@"
 }
 
+idle_history_cmd() {
+  local json=0 limit=40 ctl out rc args
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --json) json=1; shift ;;
+      --limit) limit="${2:?--limit requires a count}"; shift 2 ;;
+      -h|--help) echo "usage: dory idle history [--json] [--limit N]"; return 0 ;;
+      *) echo "unknown idle history option: $1" >&2; exit 2 ;;
+    esac
+  done
+  [[ "$limit" =~ ^[0-9]+$ ]] && [ "$limit" -ge 1 ] || { echo "invalid --limit: $limit" >&2; exit 2; }
+  if ctl="$(dorydctl_bin 2>/dev/null)"; then
+    set +e
+    out="$("$ctl" --timeout 5 idle history --limit "$limit" 2>/dev/null)"
+    rc=$?
+    set -e
+    if [ "$rc" -eq 0 ] && [ -n "$out" ]; then
+      if [ "$json" -eq 1 ]; then
+        printf '%s\n' "$out"
+      else
+        printf '%s\n' "$out" | python3 -c '
+import json, sys
+rows = json.load(sys.stdin)
+if not rows:
+    print("No Auto-Idle transitions recorded yet.")
+for row in rows:
+    print("{:20} {:18} {}".format(row.get("at", "?"), row.get("state") or row.get("type", "?"), row.get("detail", "")))
+'
+      fi
+      return 0
+    fi
+  fi
+  args=(history --limit "$limit")
+  [ "$json" -eq 1 ] && args+=(--json)
+  idle_proxy_cmd "${args[@]}"
+}
+
+idle_proxy_status_cmd() {
+  local json=0 ctl out rc args
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --json) json=1; shift ;;
+      -h|--help) echo "usage: dory idle proxy-status [--json]"; return 0 ;;
+      *) echo "unknown idle proxy-status option: $1" >&2; exit 2 ;;
+    esac
+  done
+  if ctl="$(dorydctl_bin 2>/dev/null)"; then
+    set +e
+    out="$("$ctl" --timeout 5 idle status 2>/dev/null)"
+    rc=$?
+    set -e
+    if [ "$rc" -eq 0 ] && [ -n "$out" ]; then
+      if [ "$json" -eq 1 ]; then
+        printf '%s\n' "$out" | python3 -c 'import json,sys; print(json.dumps((json.load(sys.stdin).get("proxy_state") or {}), indent=2, sort_keys=True))'
+      else
+        printf '%s\n' "$out" | python3 -c 'import json,sys; data=json.load(sys.stdin).get("proxy_state") or {}; print(f"Doryd idle state: {data.get(\"state\", \"unknown\")} ({data.get(\"detail\", \"no state\")})")'
+      fi
+      return 0
+    fi
+  fi
+  args=(status)
+  [ "$json" -eq 1 ] && args+=(--json)
+  idle_proxy_cmd "${args[@]}"
+}
+
+idle_retired_cmd() {
+  local action="$1"
+  cat >&2 <<EOF
+dory idle $action is retired. doryd owns Auto-Idle automatically while dev.dory.doryd is running.
+Use: dory idle status, dory idle history, dory mode auto-idle, or dory engine sleep|wake.
+EOF
+  return 64
+}
+
+print_idle_status_json() {
+  local json="$1"
+  if [ "$json" -eq 1 ]; then
+    cat
+  else
+    python3 -c '
+import json, sys
+data = json.load(sys.stdin)
+print("Mode: {}".format(data.get("mode", "unknown")))
+print("Auto-Idle enabled: {}".format("yes" if data.get("auto_idle_enabled") else "no"))
+print("Can sleep now: {}".format("yes" if data.get("can_sleep") else "no"))
+state = data.get("proxy_state") or {}
+print("Doryd idle state: {} ({})".format(state.get("state", "unknown"), state.get("detail", "no state")))
+blockers = data.get("blockers") or []
+if blockers:
+    print("Sleep blockers:")
+    for blocker in blockers:
+        print("  " + ", ".join(f"{key}={value}" for key, value in blocker.items()))
+'
+  fi
+}
+
+mode_cmd() {
+  local mode="show" json=0 ctl out rc args=()
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --json) json=1; shift ;;
+      -h|--help) echo "usage: dory mode [manual|auto-idle|always-on|battery-saver|show] [--json]"; return 0 ;;
+      manual|auto-idle|always-on|battery-saver|show) mode="$1"; shift ;;
+      *) echo "unknown mode option: $1" >&2; exit 2 ;;
+    esac
+  done
+  if ctl="$(dorydctl_bin 2>/dev/null)"; then
+    set +e
+    if [ "$mode" = "show" ]; then
+      out="$("$ctl" --timeout 5 idle status 2>/dev/null)"
+    else
+      out="$("$ctl" --timeout 5 idle mode "$mode" 2>/dev/null)"
+    fi
+    rc=$?
+    set -e
+    if [ "$rc" -eq 0 ] && [ -n "$out" ]; then
+      printf '%s\n' "$out" | print_idle_status_json "$json"
+      return 0
+    fi
+  fi
+  args=("$mode")
+  [ "$json" -eq 1 ] && args+=(--json)
+  doctor_cmd mode "${args[@]}"
+}
+
+idle_status_cmd() {
+  local json=0 ctl out rc args=()
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --json) json=1; shift ;;
+      -h|--help) echo "usage: dory idle status [--json]"; return 0 ;;
+      *) echo "unknown idle status option: $1" >&2; exit 2 ;;
+    esac
+  done
+  if ctl="$(dorydctl_bin 2>/dev/null)"; then
+    set +e
+    out="$("$ctl" --timeout 5 idle status 2>/dev/null)"
+    rc=$?
+    set -e
+    if [ "$rc" -eq 0 ] && [ -n "$out" ]; then
+      printf '%s\n' "$out" | print_idle_status_json "$json"
+      return 0
+    fi
+  fi
+  args=(status)
+  [ "$json" -eq 1 ] && args+=(--json)
+  doctor_cmd idle "${args[@]}"
+}
+
+idle_set_cmd() {
+  local key="" value="" json=0 ctl out rc args=()
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --json) json=1; shift ;;
+      -h|--help) echo "usage: dory idle set KEY VALUE [--json]"; return 0 ;;
+      *)
+        if [ -z "$key" ]; then
+          key="$1"
+        elif [ -z "$value" ]; then
+          value="$1"
+        else
+          echo "too many idle set arguments" >&2
+          exit 2
+        fi
+        shift
+        ;;
+    esac
+  done
+  [ -n "$key" ] && [ -n "$value" ] || { echo "usage: dory idle set KEY VALUE [--json]" >&2; exit 2; }
+  if ctl="$(dorydctl_bin 2>/dev/null)"; then
+    set +e
+    out="$("$ctl" --timeout 5 idle set "$key" "$value" 2>/dev/null)"
+    rc=$?
+    set -e
+    if [ "$rc" -eq 0 ] && [ -n "$out" ]; then
+      if [ "$json" -eq 1 ]; then
+        printf '%s\n' "$out"
+      else
+        printf '%s\n' "$out" | python3 -c '
+import json, sys
+data = json.load(sys.stdin)
+policy = data.get("policy") or {}
+print("Set idle policy. Mode: {}".format(data.get("mode", "unknown")))
+print("Sleep after idle: {} minutes".format(policy.get("sleepAfterMinutes")))
+print("Keep published ports awake: {}".format(policy.get("keepPublishedPortsAwake")))
+print("Keep Kubernetes awake: {}".format(policy.get("keepKubernetesAwake")))
+'
+      fi
+      return 0
+    fi
+  fi
+  args=(set "$key" "$value")
+  [ "$json" -eq 1 ] && args+=(--json)
+  doctor_cmd idle "${args[@]}"
+}
+
 _engine_socket_up() { curl -sf --max-time "${2:-3}" --unix-socket "$1" http://d/_ping >/dev/null 2>&1; }
 
 engine_cmd() {
@@ -2714,12 +2901,16 @@ case "${1:-help}" in
   compat)         shift; doctor_cmd compat "$@" ;;
   incidents)      shift; doctor_cmd incidents "$@" ;;
   repair)         shift; doctor_cmd repair "$@" ;;
-  mode)           shift; doctor_cmd mode "$@" ;;
+  mode)           shift; mode_cmd "$@" ;;
   idle)
                   shift
                   case "${1:-status}" in
-                    proxy|launch-agent|history) idle_proxy_cmd "$@" ;;
-                    proxy-status|proxy-state) shift; idle_proxy_cmd status "$@" ;;
+                    status) shift || true; idle_status_cmd "$@" ;;
+                    set) shift || true; idle_set_cmd "$@" ;;
+                    --json|-h|--help) idle_status_cmd "$@" ;;
+                    history) shift || true; idle_history_cmd "$@" ;;
+                    proxy-status|proxy-state) shift || true; idle_proxy_status_cmd "$@" ;;
+                    proxy|launch-agent) idle_retired_cmd "$1" ;;
                     *) doctor_cmd idle "$@" ;;
                   esac ;;
   engine)         shift; engine_cmd "$@" ;;

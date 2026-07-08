@@ -10,7 +10,7 @@ enum HostDockerCLI {
     private static let beginSentinel = "# >>> dory cli >>>"
     private static let endSentinel = "# <<< dory cli <<<"
     private static let profiles = [".zprofile", ".zshrc", ".bash_profile", ".profile"]
-    static let linkedTools = ["docker", "docker-compose", "kubectl", "dory", "dory-doctor", "dory-idle-proxy", "dorydctl"]
+    static let linkedTools = ["docker", "docker-compose", "kubectl", "dory", "dory-doctor", "dorydctl"]
 
     struct Status: Equatable {
         var dockerLinked: Bool

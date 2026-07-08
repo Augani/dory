@@ -336,7 +336,7 @@ public final class IdlePolicyStore: @unchecked Sendable {
                 "available": false,
                 "path": statePath,
                 "state": "unknown",
-                "detail": "Auto-Idle proxy has not written state yet",
+                "detail": "doryd has not written idle state yet",
             ] as NSDictionary
         }
         do {

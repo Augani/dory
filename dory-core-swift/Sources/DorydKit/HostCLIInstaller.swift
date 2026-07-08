@@ -16,7 +16,7 @@ public struct HostCLIInstallResult: Sendable, Equatable {
 public struct HostCLIInstaller: Sendable {
     private static let beginSentinel = "# >>> dory cli >>>"
     private static let endSentinel = "# <<< dory cli <<<"
-    private static let tools = ["docker", "docker-compose", "kubectl", "dory", "dory-doctor", "dory-idle-proxy", "dorydctl"]
+    private static let tools = ["docker", "docker-compose", "kubectl", "dory", "dory-doctor", "dorydctl"]
     private static let profiles = [".zprofile", ".zshrc", ".bash_profile", ".profile"]
 
     public var home: String

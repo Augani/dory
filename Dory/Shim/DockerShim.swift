@@ -61,7 +61,7 @@ struct DockerShim: Sendable {
     func handle(_ request: ParsedRequest) async -> ShimResponse {
         let path = Self.normalize(request.path)
         let method = request.method.uppercased()
-        // `/_ping` is a pure liveness probe (the docker CLI, health checkers, and the Auto-Idle proxy
+        // `/_ping` is a pure liveness probe (the docker CLI, health checkers, and doryd idle checks
         // all poll it) and is answered by the shim without touching the engine, so it must NOT count
         // as use or wake a sleeping engine. Every other request is real use: record it, and if the
         // idle monitor slept the engine, wake it first so the request runs against a live engine.
