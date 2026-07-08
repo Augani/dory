@@ -1,10 +1,12 @@
 import AppKit
 import Darwin
+import SwiftUI
 
 final class DoryAppDelegate: NSObject, NSApplicationDelegate {
-    private static let mainWindowIdentifier = NSUserInterfaceItemIdentifier("dory.main-window")
+    fileprivate static let mainWindowIdentifier = NSUserInterfaceItemIdentifier("dory.main-window")
     private static let instanceLock = NSLock()
     private static var instanceLockFD: Int32 = -1
+    private static let statusItemController = DoryStatusItemController()
 
     static var isTestHost: Bool {
         ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
@@ -19,6 +21,20 @@ final class DoryAppDelegate: NSObject, NSApplicationDelegate {
             exit(EXIT_SUCCESS)
         }
         terminateStaleInstances(bundleIdentifier: bundleIdentifier)
+    }
+
+    @MainActor static func configureMenuBar(store: AppStore) {
+        guard !isTestHost else { return }
+        statusItemController.configure(store: store)
+    }
+
+    @MainActor static func refreshMenuBarVisibility() {
+        guard !isTestHost else { return }
+        statusItemController.applyVisibility()
+    }
+
+    @MainActor static func openMainWindow() {
+        statusItemController.openMainWindow()
     }
 
     nonisolated static func hasOtherInstance(currentProcessIdentifier: pid_t, candidates: [pid_t]) -> Bool {
@@ -78,6 +94,7 @@ final class DoryAppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         guard !Self.isTestHost else { return }
         NSApp.setActivationPolicy(.accessory)
+        Self.refreshMenuBarVisibility()
         Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(500))
             Self.closeDuplicateMainWindows()
@@ -127,12 +144,174 @@ enum DoryActivation {
     @MainActor static func setForeground(_ foreground: Bool) {
         guard !DoryAppDelegate.isTestHost else { return }
         let target: NSApplication.ActivationPolicy = foreground ? .regular : .accessory
-        // Every setActivationPolicy call re-inserts the MenuBarExtra status item, so a redundant call
-        // (already .regular, asked for .regular) makes the menu-bar icon flicker/duplicate. Only flip
-        // when the policy actually changes.
+        // Keep activation changes idempotent; repeated flips still make windows and popovers flicker.
         if NSApp.activationPolicy() != target {
             NSApp.setActivationPolicy(target)
         }
         if foreground { NSApp.activate(ignoringOtherApps: true) }
+    }
+}
+
+@MainActor
+private final class DoryStatusItemController: NSObject, NSPopoverDelegate, NSWindowDelegate {
+    private var statusItem: NSStatusItem?
+    private let popover = NSPopover()
+    private weak var store: AppStore?
+    private var mainWindow: NSWindow?
+    private var terminalWindows: [String: NSWindow] = [:]
+
+    func configure(store: AppStore) {
+        self.store = store
+        popover.behavior = .transient
+        popover.delegate = self
+        applyVisibility()
+    }
+
+    func applyVisibility() {
+        guard let store else { return }
+        if store.showMenuBarIcon {
+            installStatusItemIfNeeded()
+        } else {
+            closePopover()
+            if let statusItem {
+                NSStatusBar.system.removeStatusItem(statusItem)
+                self.statusItem = nil
+            }
+        }
+    }
+
+    func openMainWindow() {
+        guard let store else { return }
+        if let existing = NSApp.windows.first(where: { $0.identifier == DoryAppDelegate.mainWindowIdentifier }) {
+            existing.makeKeyAndOrderFront(nil)
+            DoryActivation.setForeground(true)
+            return
+        }
+
+        let window: NSWindow
+        if let mainWindow {
+            window = mainWindow
+        } else {
+            let controller = NSHostingController(
+                rootView: RootView()
+                    .environment(store)
+                    .environment(\.palette, store.palette)
+            )
+            window = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 1180, height: 766),
+                styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+                backing: .buffered,
+                defer: false
+            )
+            window.contentViewController = controller
+            window.isReleasedWhenClosed = false
+            window.titleVisibility = .hidden
+            window.titlebarAppearsTransparent = true
+            window.minSize = NSSize(width: 1000, height: 660)
+            window.setFrameAutosaveName("DoryMainWindow")
+            window.center()
+            window.delegate = self
+            mainWindow = window
+        }
+
+        DoryAppDelegate.markMainWindow(window)
+        window.makeKeyAndOrderFront(nil)
+        DoryActivation.setForeground(true)
+    }
+
+    private func installStatusItemIfNeeded() {
+        guard statusItem == nil else { return }
+        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        item.button?.image = statusImage()
+        item.button?.imagePosition = .imageOnly
+        item.button?.toolTip = "Dory"
+        item.button?.setAccessibilityLabel("Dory")
+        item.button?.target = self
+        item.button?.action = #selector(togglePopover(_:))
+        item.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
+        statusItem = item
+    }
+
+    @objc private func togglePopover(_ sender: Any?) {
+        if popover.isShown {
+            closePopover()
+        } else {
+            showPopover()
+        }
+    }
+
+    private func showPopover() {
+        guard let button = statusItem?.button, let store else { return }
+        popover.contentViewController = NSHostingController(
+            rootView: MenuBarContentView(actions: MenuBarActions(
+                closePopover: { [weak self] in self?.closePopover() },
+                openMainWindow: { [weak self] in self?.openMainWindow() },
+                openTerminal: { [weak self] session in self?.openTerminal(session) }
+            ))
+            .environment(store)
+            .environment(\.palette, store.palette)
+            .preferredColorScheme(store.appearance.colorScheme)
+        )
+        popover.contentSize = NSSize(width: 340, height: 560)
+        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        popover.contentViewController?.view.window?.makeKey()
+    }
+
+    private func closePopover() {
+        popover.performClose(nil)
+    }
+
+    private func openTerminal(_ session: TerminalSession) {
+        guard let store else { return }
+        if let window = terminalWindows[session.id] {
+            window.makeKeyAndOrderFront(nil)
+            DoryActivation.setForeground(true)
+            return
+        }
+
+        let controller = NSHostingController(
+            rootView: TerminalWindowView(session: session)
+                .environment(store)
+                .environment(\.palette, store.palette)
+                .preferredColorScheme(store.appearance.colorScheme)
+        )
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 760, height: 480),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = session.title
+        window.contentViewController = controller
+        window.isReleasedWhenClosed = false
+        window.minSize = NSSize(width: 480, height: 300)
+        window.center()
+        window.delegate = self
+        terminalWindows[session.id] = window
+        window.makeKeyAndOrderFront(nil)
+        DoryActivation.setForeground(true)
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow else { return }
+        if window === mainWindow {
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(100))
+                if !DoryAppDelegate.hasVisibleMainWindow() {
+                    DoryActivation.setForeground(false)
+                }
+            }
+            return
+        }
+        if let match = terminalWindows.first(where: { $0.value === window })?.key {
+            terminalWindows.removeValue(forKey: match)
+        }
+    }
+
+    private func statusImage() -> NSImage? {
+        let image = NSImage(named: "MenuBarFish")
+        image?.isTemplate = true
+        image?.size = NSSize(width: 18, height: 18)
+        return image
     }
 }

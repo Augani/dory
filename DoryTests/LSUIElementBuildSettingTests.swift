@@ -35,6 +35,15 @@ struct LSUIElementBuildSettingTests {
         #expect(plist["LSMultipleInstancesProhibited"] as? Bool == true)
     }
 
+    @Test func menuBarUsesSingleAppKitStatusItem() throws {
+        let app = try repositoryFile("Dory/DoryApp.swift")
+        let delegate = try repositoryFile("Dory/App/AppDelegate.swift")
+        #expect(!app.contains("MenuBarExtra"))
+        #expect(delegate.contains("DoryStatusItemController"))
+        #expect(delegate.contains("NSStatusBar.system.statusItem"))
+        #expect(delegate.contains("NSStatusBar.system.removeStatusItem"))
+    }
+
     @Test func appBuildPrunesStaleBundledHelpersBeforeSigning() throws {
         let text = try pbxproj()
         #expect(text.contains("Prune Stale Bundled Helpers"))

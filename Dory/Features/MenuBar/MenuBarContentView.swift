@@ -1,10 +1,17 @@
 import SwiftUI
 
+struct MenuBarActions {
+    var closePopover: () -> Void
+    var openMainWindow: () -> Void
+    var openTerminal: (TerminalSession) -> Void
+
+    static let noop = MenuBarActions(closePopover: {}, openMainWindow: {}, openTerminal: { _ in })
+}
+
 struct MenuBarContentView: View {
     @Environment(AppStore.self) private var store
     @Environment(\.palette) private var p
-    @Environment(\.openWindow) private var openWindow
-    @Environment(\.dismiss) private var dismiss
+    let actions: MenuBarActions
     @State private var servicesExpanded = true
     @State private var composeExpanded = true
     @State private var machinesExpanded = true
@@ -25,17 +32,13 @@ struct MenuBarContentView: View {
     }
 
     private func closePopover() {
-        dismiss()
-        for window in NSApp.windows where window.className.contains("MenuBarExtra") {
-            window.orderOut(nil)
-        }
+        actions.closePopover()
     }
 
     private func showMainWindow() {
         closePopover()
         store.windowOpenRequested = true
-        openWindow(id: DoryApp.mainWindowID)
-        NSApp.activate(ignoringOtherApps: true)
+        actions.openMainWindow()
     }
 
     private func openSection(_ section: AppSection) {
@@ -55,16 +58,14 @@ struct MenuBarContentView: View {
     }
 
     private func openTerminal(_ container: Container) {
-        openWindow(value: store.terminalSession(for: container))
         closePopover()
-        NSApp.activate(ignoringOtherApps: true)
+        actions.openTerminal(store.terminalSession(for: container))
     }
 
     private func openMachineTerminal(_ machine: Machine) {
         guard store.canOpenMachineTerminal(machine) else { return }
-        openWindow(value: store.terminalSession(for: machine))
         closePopover()
-        NSApp.activate(ignoringOtherApps: true)
+        actions.openTerminal(store.terminalSession(for: machine))
     }
 
     var body: some View {

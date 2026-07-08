@@ -490,6 +490,7 @@ final class AppStore {
     func setShowMenuBarIcon(_ on: Bool) {
         showMenuBarIcon = isAgentMode ? true : on
         UserDefaults.standard.set(showMenuBarIcon, forKey: Self.menuBarIconKey)
+        DoryAppDelegate.refreshMenuBarVisibility()
     }
 
     func setMachineEnvAllowList(_ names: [String]) {

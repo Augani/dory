@@ -14,6 +14,7 @@ struct DoryApp: App {
         DoryAppDelegate.exitDuplicateInstanceIfNeeded()
         let store = AppStore()
         store.startBackendIfNeeded()
+        DoryAppDelegate.configureMenuBar(store: store)
         _store = State(initialValue: store)
     }
 
@@ -43,15 +44,6 @@ struct DoryApp: App {
                 .environment(\.palette, store.palette)
                 .frame(width: 720, height: 560)
         }
-
-        MenuBarExtra(isInserted: Binding(get: { store.showMenuBarIcon }, set: { store.setShowMenuBarIcon($0) })) {
-            MenuBarContentView()
-                .environment(store)
-        } label: {
-            Image("MenuBarFish")
-                .renderingMode(.template)
-        }
-        .menuBarExtraStyle(.window)
     }
 }
 
