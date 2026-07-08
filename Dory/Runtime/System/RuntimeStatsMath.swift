@@ -1,6 +1,6 @@
 import Foundation
 
-enum AppleStatsMath {
+enum RuntimeStatsMath {
     static func cpuPercent(deltaUsec: Int64, elapsedUsec: Double, cpus: Int) -> Double {
         guard elapsedUsec > 0, deltaUsec > 0 else { return 0 }
         let safeCPUs = max(1, cpus)

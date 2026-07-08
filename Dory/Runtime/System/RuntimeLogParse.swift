@@ -1,6 +1,6 @@
 import Foundation
 
-enum AppleLogParse {
+enum RuntimeLogParse {
     static func parse(_ raw: String) -> [LogLine] {
         raw.split(separator: "\n", omittingEmptySubsequences: true).map { line(String($0)) }
     }
