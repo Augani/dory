@@ -115,6 +115,8 @@ dory — Dory CLI
                                Emit a versioned CLI capability map for coding agents
   dory wait engine|container|machine [NAME] --until STATE --timeout N [--json]
                                Wait for a runtime state without hand-written polling loops
+  dory events [--json] [--follow] [--limit N]
+                               Show or stream idle transitions and runtime incidents
   dory usb ls|attach|detach     Inspect USB candidates and request USB/IP attach/detach
   dory expose <port|machine> [--port P] [--hostname H] [--print-command]
                                Share a local port or machine endpoint through a public HTTPS tunnel
@@ -1220,6 +1222,147 @@ wait_cmd() {
   done
 }
 
+events_cmd() {
+  local follow=0 json=0 limit=50 interval=1
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --follow) follow=1; shift ;;
+      --json) json=1; shift ;;
+      --limit) limit="${2:?--limit requires a count}"; shift 2 ;;
+      --interval) interval="${2:?--interval requires seconds}"; shift 2 ;;
+      -h|--help) echo "usage: dory events [--json] [--follow] [--limit N] [--interval N]"; return 0 ;;
+      *) echo "unknown events option: $1" >&2; exit 2 ;;
+    esac
+  done
+  [[ "$limit" =~ ^[0-9]+$ ]] && [ "$limit" -ge 1 ] || { echo "invalid --limit: $limit" >&2; exit 2; }
+  [[ "$interval" =~ ^[0-9]+$ ]] && [ "$interval" -ge 1 ] || { echo "invalid --interval: $interval" >&2; exit 2; }
+
+  python3 - "$follow" "$json" "$limit" "$interval" <<'PY'
+import json
+import os
+import sys
+import time
+from pathlib import Path
+
+follow = sys.argv[1] == "1"
+as_json = sys.argv[2] == "1"
+limit = int(sys.argv[3])
+interval = int(sys.argv[4])
+home = Path.home()
+idle_state = Path(os.environ.get("DORY_IDLE_STATE", str(home / ".dory" / "idle-state.json"))).expanduser()
+idle_history = idle_state.with_name("idle-history.jsonl")
+incidents = Path(os.environ.get("DORY_INCIDENTS", str(home / ".dory" / "incidents.jsonl"))).expanduser()
+
+
+def read_jsonl(path: Path) -> list[dict]:
+    out: list[dict] = []
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                value = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(value, dict):
+                out.append(value)
+    except FileNotFoundError:
+        pass
+    except OSError:
+        pass
+    return out
+
+
+def idle_event(record: dict) -> dict:
+    state = str(record.get("state") or "unknown")
+    return {
+        "schema": "dev.dory.event",
+        "version": 1,
+        "source": "idle",
+        "type": f"idle.{state}",
+        "at": record.get("at") or record.get("updated_at") or "",
+        "state": state,
+        "detail": record.get("detail") or "",
+        "raw": record,
+    }
+
+
+def incident_event(record: dict) -> dict:
+    event_type = str(record.get("type") or "incident")
+    return {
+        "schema": "dev.dory.event",
+        "version": 1,
+        "source": "incident",
+        "type": event_type,
+        "at": record.get("at") or "",
+        "detail": record.get("detail") or "",
+        "raw": record,
+    }
+
+
+def snapshot() -> list[dict]:
+    events = [idle_event(item) for item in read_jsonl(idle_history)]
+    events.extend(incident_event(item) for item in read_jsonl(incidents))
+    events.sort(key=lambda item: (str(item.get("at") or ""), item["source"], item["type"]))
+    return events[-limit:]
+
+
+def emit_event(event: dict) -> None:
+    if as_json:
+        print(json.dumps(event, separators=(",", ":"), sort_keys=True), flush=True)
+    else:
+        print(f"{event.get('at') or '?':20} {event['source']:<8} {event['type']:<24} {event.get('detail', '')}", flush=True)
+
+
+if not follow:
+    events = snapshot()
+    if as_json:
+        print(json.dumps({"schema": "dev.dory.events", "version": 1, "events": events}, separators=(",", ":"), sort_keys=True))
+    elif events:
+        for event in events:
+            emit_event(event)
+    else:
+        print("No Dory events recorded yet.")
+    raise SystemExit(0)
+
+for event in snapshot():
+    emit_event(event)
+
+offsets: dict[Path, int] = {}
+for path in (idle_history, incidents):
+    try:
+        offsets[path] = path.stat().st_size
+    except FileNotFoundError:
+        offsets[path] = 0
+
+while True:
+    for path, convert in ((idle_history, idle_event), (incidents, incident_event)):
+        try:
+            size = path.stat().st_size
+        except FileNotFoundError:
+            offsets[path] = 0
+            continue
+        if size < offsets.get(path, 0):
+            offsets[path] = 0
+        with path.open("r", encoding="utf-8") as handle:
+            handle.seek(offsets.get(path, 0))
+            lines = handle.readlines()
+            offsets[path] = handle.tell()
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(record, dict):
+                emit_event(convert(record))
+    time.sleep(interval)
+PY
+}
+
 agent_guide_json() {
   python3 - "$DORY_SOCK" <<'PY'
 import json
@@ -1381,10 +1524,11 @@ data = {
         },
         {
             "id": "events",
-            "status": "planned",
+            "status": "available",
             "invoke": "dory events --follow --json",
             "json": True,
             "safeForAutomation": True,
+            "sources": ["idle", "incident"],
         },
         {
             "id": "sandbox",
@@ -1421,7 +1565,8 @@ Use `dory agent guide --json` for the stable machine-readable contract.
 Prefer `--json` on doctor, network, mount, disk, cleanup, routes, compat, repair, and idle commands.
 Run read-only checks first; use `--apply` only for explicit repair/cleanup writes.
 Available agent-native primitive: `dory wait`.
-Planned agent-native primitives: `dory events`, `dory sandbox`, and `dory mcp serve`.
+Available agent-native primitive: `dory events --follow --json`.
+Planned agent-native primitives: `dory sandbox` and `dory mcp serve`.
 EOF
 }
 
@@ -1470,6 +1615,7 @@ case "${1:-help}" in
   engine)         shift; engine_cmd "$@" ;;
   agent)          shift; agent_cmd "$@" ;;
   wait)           shift; wait_cmd "$@" ;;
+  events)         shift; events_cmd "$@" ;;
   bundle)         shift; doctor_cmd bundle "$@" ;;
   shell)          exec "$DOCKER_BIN" -H "unix://$DORY_SOCK" exec -it "$2" sh -c 'command -v bash >/dev/null && exec bash || exec sh' ;;
   debug)          shift; debug_cmd "$@" ;;

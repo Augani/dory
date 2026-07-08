@@ -41,6 +41,8 @@ assert commands["doctor"]["json"] is True
 assert commands["repair"]["dryRun"] is True
 assert commands["wait"]["status"] == "available"
 assert "machine" in commands["wait"]["targets"]
+assert commands["events"]["status"] == "available"
+assert "incident" in commands["events"]["sources"]
 assert commands["sandbox"]["status"] == "planned"
 assert data["recommendedRecoveryLoop"]
 '
@@ -76,6 +78,27 @@ assert data["target"] == "ghost"
 assert data["state"] == "missing"
 assert data["matched"] is True
 '
+
+mkdir -p "$TMP_HOME/.dory"
+cat > "$TMP_HOME/.dory/idle-history.jsonl" <<'JSONL'
+{"at":"2026-07-08T00:00:01Z","state":"waking","detail":"docker request"}
+{"at":"2026-07-08T00:00:02Z","state":"awake","detail":"engine ready"}
+JSONL
+cat > "$TMP_HOME/.dory/incidents.jsonl" <<'JSONL'
+{"at":"2026-07-08T00:00:03Z","type":"engine.sleep","detail":"idle policy"}
+JSONL
+
+scripts/dory events --json --limit 10 | python3 -c '
+import json, sys
+data = json.load(sys.stdin)
+assert data["schema"] == "dev.dory.events"
+events = data["events"]
+assert [event["type"] for event in events] == ["idle.waking", "idle.awake", "engine.sleep"]
+assert events[0]["source"] == "idle"
+assert events[-1]["source"] == "incident"
+'
+
+scripts/dory events --limit 1 | grep -q "engine.sleep"
 
 scripts/dory-doctor mode show --json | python3 -c '
 import json, sys
@@ -250,6 +273,7 @@ scripts/dory help | grep -q "dory cleanup"
 scripts/dory help | grep -q "dory compat"
 scripts/dory help | grep -q "dory agent guide"
 scripts/dory help | grep -q "dory wait engine"
+scripts/dory help | grep -q "dory events"
 
 # Compatibility center: every registered tool is checked and every non-pass carries an action;
 # runs without an engine (skips/warns/fails, never crashes). `compat` exits 1 when a tool fails,
