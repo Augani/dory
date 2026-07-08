@@ -1,4 +1,5 @@
 import Darwin
+import DorydKit
 import DoryVMMKit
 import Virtualization
 import XCTest
@@ -15,6 +16,7 @@ final class DoryVMMKitTests: XCTestCase {
             "--handoff-sock", "/tmp/handoff.sock",
             "--agent-sock", "/tmp/agent.sock",
             "--shell-sock", "/tmp/shell.sock",
+            "--share", "src=/tmp/src:/workspace/src:ro",
         ])
 
         XCTAssertEqual(arguments.machineID, "dev")
@@ -26,6 +28,9 @@ final class DoryVMMKitTests: XCTestCase {
         XCTAssertEqual(arguments.handoffSocketPath, "/tmp/handoff.sock")
         XCTAssertEqual(arguments.agentSocketPath, "/tmp/agent.sock")
         XCTAssertEqual(arguments.shellSocketPath, "/tmp/shell.sock")
+        XCTAssertEqual(arguments.shares, [
+            DoryMachineShareConfiguration(tag: "src", hostPath: "/tmp/src", guestPath: "/workspace/src", readOnly: true),
+        ])
         XCTAssertEqual(arguments.bootMode, .virtualMachine)
     }
 
@@ -60,6 +65,8 @@ final class DoryVMMKitTests: XCTestCase {
         let kernel = "\(base)/vmlinux"
         let rootfs = "\(base)/rootfs.raw"
         let serial = "\(base)/serial.log"
+        let share = "\(base)/share"
+        try FileManager.default.createDirectory(atPath: share, withIntermediateDirectories: true)
         FileManager.default.createFile(atPath: kernel, contents: Data([0x7f, 0x45, 0x4c, 0x46]))
         FileManager.default.createFile(atPath: rootfs, contents: nil)
         XCTAssertEqual(truncate(rootfs, 1024 * 1024), 0)
@@ -74,7 +81,10 @@ final class DoryVMMKitTests: XCTestCase {
                 kernelPath: kernel,
                 rootfsPath: rootfs,
                 memoryMB: 2048,
-                cpuCount: 2
+                cpuCount: 2,
+                shares: [
+                    DoryMachineShareConfiguration(tag: "src", hostPath: share, guestPath: "/workspace/src", readOnly: true),
+                ]
             ),
             serialOutput: serialHandle
         )
@@ -96,5 +106,9 @@ final class DoryVMMKitTests: XCTestCase {
         XCTAssertTrue(configuration.entropyDevices.first is VZVirtioEntropyDeviceConfiguration)
         XCTAssertEqual(configuration.serialPorts.count, 1)
         XCTAssertTrue(configuration.serialPorts.first is VZVirtioConsoleDeviceSerialPortConfiguration)
+        XCTAssertEqual(configuration.directorySharingDevices.count, 1)
+        let shareDevice = try XCTUnwrap(configuration.directorySharingDevices.first as? VZVirtioFileSystemDeviceConfiguration)
+        XCTAssertEqual(shareDevice.tag, "src")
+        XCTAssertTrue(shareDevice.share is VZSingleDirectoryShare)
     }
 }

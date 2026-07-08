@@ -27,6 +27,7 @@ public struct DoryVMMArguments: Sendable, Equatable {
     public var exitAfterHandoff = false
     public var handoffOnly = false
     public var holdSeconds: UInt32?
+    public var shares: [DoryMachineShareConfiguration] = []
 
     public init() {}
 
@@ -104,6 +105,8 @@ public func parseDoryVMMArguments(_ raw: [String]) throws -> DoryVMMArguments {
             parsed.readyTimeoutSeconds = TimeInterval(try uint64Value(after: argument, from: raw, index: &index))
         case "--hold-seconds":
             parsed.holdSeconds = UInt32(try uint64Value(after: argument, from: raw, index: &index))
+        case "--share":
+            parsed.shares.append(try DoryMachineShareConfiguration(argument: value(after: argument, from: raw, index: &index)))
         case "--exit-after-handoff":
             parsed.exitAfterHandoff = true
         case "--handoff-only":
@@ -140,6 +143,7 @@ public struct DoryVZMachineSpec: Sendable, Equatable {
     public var memoryMB: UInt64
     public var cpuCount: Int
     public var kernelCommandLine: String?
+    public var shares: [DoryMachineShareConfiguration]
 
     public init(
         machineID: String,
@@ -148,7 +152,8 @@ public struct DoryVZMachineSpec: Sendable, Equatable {
         rootfsPath: String,
         memoryMB: UInt64,
         cpuCount: Int,
-        kernelCommandLine: String? = nil
+        kernelCommandLine: String? = nil,
+        shares: [DoryMachineShareConfiguration] = []
     ) {
         self.machineID = machineID
         self.stateDirectory = stateDirectory
@@ -157,6 +162,7 @@ public struct DoryVZMachineSpec: Sendable, Equatable {
         self.memoryMB = memoryMB
         self.cpuCount = max(1, cpuCount)
         self.kernelCommandLine = kernelCommandLine
+        self.shares = shares
     }
 }
 
@@ -215,6 +221,28 @@ public enum DoryVZConfigurationBuilder {
         let network = VZVirtioNetworkDeviceConfiguration()
         network.attachment = VZNATNetworkDeviceAttachment()
         configuration.networkDevices = [network]
+
+        configuration.directorySharingDevices = try spec.shares.map { share in
+            try share.validate()
+            var isDirectory: ObjCBool = false
+            guard fileManager.fileExists(atPath: share.hostPath, isDirectory: &isDirectory),
+                  isDirectory.boolValue else {
+                throw DoryVZMachineError.missingFile(share.hostPath)
+            }
+            do {
+                try VZVirtioFileSystemDeviceConfiguration.validateTag(share.tag)
+            } catch {
+                throw DoryVZMachineError.validation("\(error)")
+            }
+            let directory = VZSharedDirectory(
+                url: URL(fileURLWithPath: share.hostPath, isDirectory: true),
+                readOnly: share.readOnly
+            )
+            let shareConfig = VZSingleDirectoryShare(directory: directory)
+            let device = VZVirtioFileSystemDeviceConfiguration(tag: share.tag)
+            device.share = shareConfig
+            return device
+        }
 
         do {
             let attachment = try VZDiskImageStorageDeviceAttachment(
@@ -310,7 +338,8 @@ public enum DoryVMMMain {
                 handoffSocketPath: handoffSocketPath,
                 memoryMB: arguments.memoryMB,
                 cpuCount: arguments.cpuCount,
-                readyTimeoutSeconds: arguments.readyTimeoutSeconds
+                readyTimeoutSeconds: arguments.readyTimeoutSeconds,
+                shares: arguments.shares
             )
         }
 
@@ -362,7 +391,8 @@ public enum DoryVMMMain {
         handoffSocketPath: String,
         memoryMB: UInt64,
         cpuCount: Int,
-        readyTimeoutSeconds: TimeInterval
+        readyTimeoutSeconds: TimeInterval,
+        shares: [DoryMachineShareConfiguration]
     ) throws -> DoryVMMRuntime {
         try FileManager.default.createDirectory(atPath: stateDirectory, withIntermediateDirectories: true)
         let serialLog = try openAppendLog("\(stateDirectory)/serial.log")
@@ -372,7 +402,8 @@ public enum DoryVMMMain {
             kernelPath: kernelPath,
             rootfsPath: rootfsPath,
             memoryMB: memoryMB,
-            cpuCount: cpuCount
+            cpuCount: cpuCount,
+            shares: shares
         )
         let configuration = try DoryVZConfigurationBuilder.makeConfiguration(spec: spec, serialOutput: serialLog)
         try validate(configuration: configuration)

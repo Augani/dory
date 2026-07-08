@@ -52,7 +52,7 @@ assert "dory.machine_exec" in commands["mcp"]["tools"]
 assert "dory.sandbox_run" in commands["mcp"]["tools"]
 assert commands["sandbox"]["status"] == "preview"
 assert commands["sandbox"]["hostFileSharingDefault"] == "none"
-assert commands["sandbox"]["scopedMounts"] is False
+assert commands["sandbox"]["scopedMounts"] is True
 assert data["recommendedRecoveryLoop"]
 '
 
@@ -107,15 +107,29 @@ elif [ "$1" = "machine" ] && [ "$2" = "delete" ]; then
   printf '{"ok":true,"message":"deleted"}\n'
 elif [ "$1" = "machine" ] && [ "$2" = "exec" ]; then
   machine="$3"
-  test "$4" = "--json"
-  test "$5" = "--"
-  test "$6" = "/bin/echo"
-  if [ "$machine" = "dev" ]; then
-    test "$7" = "ok"
+  shift 3
+  cwd=""
+  test "$1" = "--json"
+  shift
+  if [ "${1:-}" = "--cwd" ]; then
+    cwd="$2"
+    shift 2
+  fi
+  test "$1" = "--"
+  shift
+  if [ "$1" = "/bin/sh" ]; then
+    printf '{"schema":"dev.dory.machine.exec","version":1,"machine":"%s","argv":["/bin/sh"],"exitCode":0,"stdout":"","stderr":"","stdoutBase64":"","stderrBase64":"","timedOut":false,"stdoutTruncated":false,"stderrTruncated":false}\n' "$machine"
+  elif [ "$1" = "/bin/pwd" ]; then
+    printf '{"schema":"dev.dory.machine.exec","version":1,"machine":"%s","argv":["/bin/pwd"],"exitCode":0,"stdout":"%s\\n","stderr":"","stdoutBase64":"","stderrBase64":"","timedOut":false,"stdoutTruncated":false,"stderrTruncated":false}\n' "$machine" "$cwd"
+  elif [ "$1" = "/bin/echo" ] && [ "$machine" = "dev" ]; then
+    test "$2" = "ok"
     printf '{"schema":"dev.dory.machine.exec","version":1,"machine":"dev","argv":["/bin/echo","ok"],"exitCode":0,"stdout":"ok\\n","stderr":"","stdoutBase64":"b2sK","stderrBase64":"","timedOut":false,"stdoutTruncated":false,"stderrTruncated":false}\n'
-  else
-    test "$7" = "isolated"
+  elif [ "$1" = "/bin/echo" ]; then
+    test "$2" = "isolated"
     printf '{"schema":"dev.dory.machine.exec","version":1,"machine":"%s","argv":["/bin/echo","isolated"],"exitCode":0,"stdout":"isolated\\n","stderr":"","stdoutBase64":"aXNvbGF0ZWQK","stderrBase64":"","timedOut":false,"stdoutTruncated":false,"stderrTruncated":false}\n' "$machine"
+  else
+    echo "unexpected exec args: machine=$machine cwd=$cwd argv=$*" >&2
+    exit 64
   fi
 else
   echo "unexpected args: $*" >&2
@@ -155,15 +169,17 @@ assert data["cleanup"]["stopped"] is True
 assert data["cleanup"]["deleted"] is True
 assert data["exec"]["stdout"] == "isolated\n"
 '
-set +e
-sandbox_mount_json="$(DORYDCTL_BIN="$TMP_HOME/fake-dorydctl" DORY_SANDBOX_KERNEL="$TMP_HOME/kernel" DORY_SANDBOX_ROOTFS="$TMP_HOME/rootfs.ext4" scripts/dory sandbox run --json --mount "$PWD" -- /bin/true 2>/dev/null)"
-sandbox_mount_rc=$?
-set -e
-test "$sandbox_mount_rc" -eq 2
+mkdir -p "$TMP_HOME/project"
+sandbox_mount_json="$(DORYDCTL_BIN="$TMP_HOME/fake-dorydctl" DORY_SANDBOX_KERNEL="$TMP_HOME/kernel" DORY_SANDBOX_ROOTFS="$TMP_HOME/rootfs.ext4" \
+  scripts/dory sandbox run --json --name agentmount --mount "$TMP_HOME/project:/work/project:ro" -- /bin/pwd)"
 printf '%s' "$sandbox_mount_json" | python3 -c '
 import json, sys
 data = json.load(sys.stdin)
-assert data["code"] == "sandbox.mounts_unavailable"
+assert data["schema"] == "dev.dory.sandbox.run"
+assert data["sandbox"] == "agentmount"
+assert data["hostFileSharing"] == "scoped"
+assert data["mounts"] == [{"guestPath": "/work/project", "hostPath": "'"$TMP_HOME"'/project", "mode": "ro", "readOnly": True, "tag": "dorysb0"}]
+assert data["exec"]["stdout"] == "/work/project\n"
 '
 
 mkdir -p "$TMP_HOME/.dory"

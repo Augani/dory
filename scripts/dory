@@ -852,7 +852,7 @@ machine_cmd() {
 }
 
 sandbox_usage() {
-  echo "usage: dory sandbox run [--json] [--keep] [--name NAME] [--memory-mb N] [--cpus N] [--kernel PATH] [--rootfs PATH] -- <command...>" >&2
+  echo "usage: dory sandbox run [--json] [--keep] [--name NAME] [--mount HOST[:GUEST[:ro|rw]]] [--memory-mb N] [--cpus N] [--kernel PATH] [--rootfs PATH] -- <command...>" >&2
 }
 
 first_file() {
@@ -903,6 +903,41 @@ print(json.dumps({
 PY
 }
 
+sandbox_parse_mount() {
+  python3 - "$1" "$2" <<'PY'
+import os
+import sys
+
+raw, index = sys.argv[1], int(sys.argv[2])
+mode = "rw"
+parts = raw.split(":")
+if parts and parts[-1] in ("ro", "rw"):
+    mode = parts.pop()
+if len(parts) == 1:
+    host = parts[0]
+    guest = ""
+elif len(parts) >= 2:
+    guest = parts.pop()
+    host = ":".join(parts)
+else:
+    print("empty mount", file=sys.stderr)
+    sys.exit(2)
+
+host = os.path.abspath(os.path.expanduser(host))
+if not os.path.isdir(host):
+    print(f"sandbox mount host path must be an existing directory: {host}", file=sys.stderr)
+    sys.exit(2)
+if not guest:
+    base = os.path.basename(os.path.realpath(host).rstrip(os.sep)) or "project"
+    guest = f"/workspace/{base}"
+if not guest.startswith("/") or guest == "/":
+    print(f"sandbox mount guest path must be absolute and not /: {guest}", file=sys.stderr)
+    sys.exit(2)
+tag = f"dorysb{index}"
+print("\t".join([tag, host, guest, mode]))
+PY
+}
+
 sandbox_emit_run_result() {
   local name="$1" kept="$2" exit_code="$3" json="$4" tmp="$5"
   python3 - "$name" "$kept" "$exit_code" "$json" "$tmp" <<'PY'
@@ -921,6 +956,7 @@ def read_json(name: str, default):
         return default
 
 exec_result = read_json("exec.json", {})
+mounts = read_json("mounts.json", [])
 cleanup = {
     "stopped": (root / "stop.json").exists(),
     "deleted": (root / "delete.json").exists(),
@@ -931,8 +967,8 @@ result = {
     "sandbox": name,
     "machine": name,
     "isolation": "dedicated-vm",
-    "hostFileSharing": "none",
-    "mounts": [],
+    "hostFileSharing": "scoped" if mounts else "none",
+    "mounts": mounts,
     "kept": kept == "1",
     "exitCode": int(exit_code),
     "exec": exec_result,
@@ -951,8 +987,8 @@ PY
 }
 
 sandbox_run_cmd() {
-  local ctl name="" keep=0 json=0 memory=2048 cpus=2 kernel="" rootfs="" tmp exec_rc=0 created=0
-  local mounts=()
+  local ctl name="" keep=0 json=0 memory=2048 cpus=2 kernel="" rootfs="" tmp exec_rc=0 created=0 cwd=""
+  local mounts=() mount_tags=() mount_guests=() mount_modes=() mount_rows=() create_args=()
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --json) json=1; shift ;;
@@ -970,14 +1006,26 @@ sandbox_run_cmd() {
     esac
   done
   [ "$#" -gt 0 ] || { sandbox_usage; exit 2; }
-  if [ "${#mounts[@]}" -gt 0 ]; then
-    local msg="scoped sandbox mounts are not wired yet; this preview runs with no host file sharing"
-    if [ "$json" -eq 1 ]; then sandbox_error_json "sandbox.mounts_unavailable" "$msg"; fi
-    echo "$msg" >&2
-    exit 2
-  fi
   [[ "$memory" =~ ^[0-9]+$ ]] && [ "$memory" -gt 0 ] || { echo "invalid --memory-mb: $memory" >&2; exit 2; }
   [[ "$cpus" =~ ^[0-9]+$ ]] && [ "$cpus" -gt 0 ] || { echo "invalid --cpus: $cpus" >&2; exit 2; }
+
+  local parsed tag host guest mode mount_index=0
+  if [ "${#mounts[@]}" -gt 0 ]; then
+    for raw_mount in "${mounts[@]}"; do
+      if ! parsed="$(sandbox_parse_mount "$raw_mount" "$mount_index")"; then
+        if [ "$json" -eq 1 ]; then sandbox_error_json "sandbox.invalid_mount" "invalid sandbox mount: $raw_mount"; fi
+        exit 2
+      fi
+      IFS=$'\t' read -r tag host guest mode <<<"$parsed"
+      mount_tags+=("$tag")
+      mount_guests+=("$guest")
+      mount_modes+=("$mode")
+      mount_rows+=("$tag" "$host" "$guest" "$mode")
+      create_args+=(--share "$tag=$host:$guest:$mode")
+      [ -n "$cwd" ] || cwd="$guest"
+      mount_index=$((mount_index + 1))
+    done
+  fi
 
   ctl="$(dorydctl_bin 2>/dev/null)" || { echo "dorydctl not found; build/install doryd before using sandboxes" >&2; exit 1; }
   [ -n "$name" ] || name="dory-sandbox-$(date +%Y%m%d%H%M%S)-$RANDOM"
@@ -988,9 +1036,37 @@ sandbox_run_cmd() {
   [ -n "$rootfs" ] && [ -f "$rootfs" ] || { echo "sandbox rootfs not found; set DORY_SANDBOX_ROOTFS or build guest assets" >&2; exit 1; }
 
   tmp="$(mktemp -d -t dory-sandbox.XXXXXX)"
-  if ! "$ctl" --timeout 120 machine create "$name" --kernel "$kernel" --rootfs "$rootfs" --memory-mb "$memory" --cpus "$cpus" > "$tmp/create.json"; then
-    rm -rf "$tmp"
-    exit 1
+  if [ "${#mount_rows[@]}" -gt 0 ]; then
+    python3 - "$tmp/mounts.json" "${mount_rows[@]}" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+rows = sys.argv[2:]
+mounts = []
+for index in range(0, len(rows), 4):
+    tag, host, guest, mode = rows[index:index + 4]
+    mounts.append({
+        "tag": tag,
+        "hostPath": host,
+        "guestPath": guest,
+        "mode": mode,
+        "readOnly": mode == "ro",
+    })
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(mounts, handle, separators=(",", ":"), sort_keys=True)
+PY
+  fi
+  if [ "${#create_args[@]}" -gt 0 ]; then
+    if ! "$ctl" --timeout 120 machine create "$name" --kernel "$kernel" --rootfs "$rootfs" --memory-mb "$memory" --cpus "$cpus" "${create_args[@]}" > "$tmp/create.json"; then
+      rm -rf "$tmp"
+      exit 1
+    fi
+  else
+    if ! "$ctl" --timeout 120 machine create "$name" --kernel "$kernel" --rootfs "$rootfs" --memory-mb "$memory" --cpus "$cpus" > "$tmp/create.json"; then
+      rm -rf "$tmp"
+      exit 1
+    fi
   fi
   created=1
   if ! "$ctl" --timeout 120 machine start "$name" > "$tmp/start.json"; then
@@ -999,8 +1075,22 @@ sandbox_run_cmd() {
     exit 1
   fi
 
+  local idx=0
+  while [ "$idx" -lt "${#mount_tags[@]}" ]; do
+    if ! "$ctl" --timeout 120 machine exec "$name" --json -- /bin/sh -lc 'mkdir -p "$1" && if [ "$3" = ro ]; then mount -t virtiofs -o ro "$2" "$1"; else mount -t virtiofs "$2" "$1"; fi' sh "${mount_guests[$idx]}" "${mount_tags[$idx]}" "${mount_modes[$idx]}" > "$tmp/mount-$idx.json"; then
+      [ "$keep" -eq 1 ] || "$ctl" --timeout 60 machine delete "$name" > "$tmp/delete.json" 2>/dev/null || true
+      rm -rf "$tmp"
+      exit 1
+    fi
+    idx=$((idx + 1))
+  done
+
   set +e
-  "$ctl" --timeout 900 machine exec "$name" --json -- "$@" > "$tmp/exec.json"
+  if [ -n "$cwd" ]; then
+    "$ctl" --timeout 900 machine exec "$name" --json --cwd "$cwd" -- "$@" > "$tmp/exec.json"
+  else
+    "$ctl" --timeout 900 machine exec "$name" --json -- "$@" > "$tmp/exec.json"
+  fi
   exec_rc=$?
   set -e
 
@@ -1748,6 +1838,11 @@ TOOLS: list[dict[str, Any]] = [
                 "description": "Command argv to execute.",
             },
             "keep": {"type": "boolean", "description": "Keep the sandbox machine after the command exits."},
+            "mounts": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Explicit scoped mounts as HOST[:GUEST[:ro|rw]]. Host file sharing is disabled when omitted.",
+            },
             "memoryMB": {"type": "integer", "minimum": 1},
             "cpus": {"type": "integer", "minimum": 1},
         }, ["command"]),
@@ -1917,6 +2012,12 @@ def call_tool(name: str, arguments: Any) -> dict[str, Any]:
             raise ToolExecutionError("keep must be a boolean")
         if keep:
             command.append("--keep")
+        mounts = args.get("mounts", [])
+        if mounts:
+            if not isinstance(mounts, list) or not all(isinstance(item, str) and item for item in mounts):
+                raise ToolExecutionError("mounts must be an array of non-empty strings")
+            for mount in mounts:
+                command.extend(["--mount", mount])
         if "memoryMB" in args:
             command.extend(["--memory-mb", str(int_arg(args, "memoryMB", 2048, 1, 1_048_576))])
         if "cpus" in args:
@@ -2175,13 +2276,13 @@ data = {
         {
             "id": "sandbox",
             "status": "preview",
-            "invoke": "dory sandbox run [--json] [--keep] -- <command>",
+            "invoke": "dory sandbox run [--json] [--keep] [--mount HOST[:GUEST[:ro|rw]]] -- <command>",
             "json": True,
             "safeForAutomation": True,
             "isolation": "dedicated doryd Linux VM per run",
             "hostFileSharingDefault": "none",
-            "scopedMounts": False,
-            "notes": "Preview: runs commands in a dedicated VM and deletes it by default. Scoped --mount is intentionally rejected until VZ shared-directory support lands.",
+            "scopedMounts": True,
+            "notes": "Preview: runs commands in a dedicated VM and deletes it by default. No host files are visible unless an explicit --mount is provided.",
         },
         {
             "id": "mcp",
@@ -2217,7 +2318,7 @@ Run read-only checks first; use `--apply` only for explicit repair/cleanup write
 Available agent-native primitive: `dory wait`.
 Available agent-native primitive: `dory events --follow --json`.
 Available agent-native primitive: `dory mcp serve [--read-only]`.
-Preview agent-native primitive: `dory sandbox run [--json] -- CMD` (dedicated VM, no host sharing; scoped mounts pending).
+Preview agent-native primitive: `dory sandbox run [--json] --mount . -- CMD` (dedicated VM, no host sharing by default).
 EOF
 }
 

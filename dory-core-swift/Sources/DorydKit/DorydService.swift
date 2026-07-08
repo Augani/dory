@@ -800,7 +800,8 @@ private extension DoryMachineConfiguration {
             rootfsPath: try dictionary.requiredString("rootfsPath"),
             memoryMB: try dictionary.optionalUInt64("memoryMB") ?? 2048,
             cpuCount: try dictionary.optionalInt("cpuCount") ?? 2,
-            address: dictionary.optionalString("address")
+            address: dictionary.optionalString("address"),
+            shares: try dictionary.optionalMachineShares("shares")
         )
     }
 }
@@ -915,8 +916,45 @@ private extension NSDictionary {
         }
     }
 
+    func optionalMachineShares(_ key: String) throws -> [DoryMachineShareConfiguration] {
+        guard let raw = self[key] else { return [] }
+        guard let rows = raw as? [NSDictionary] else {
+            throw XPCRemoteConfigError.invalid(key)
+        }
+        return try rows.map { row in
+            let share = DoryMachineShareConfiguration(
+                tag: try row.requiredString("tag"),
+                hostPath: try row.requiredString("hostPath"),
+                guestPath: try row.requiredString("guestPath"),
+                readOnly: row.optionalBool("readOnly") ?? false
+            )
+            try share.validate()
+            return share
+        }
+    }
+
     func optionalString(_ key: String) -> String? {
         self[key] as? String
+    }
+
+    func optionalBool(_ key: String) -> Bool? {
+        if let value = self[key] as? Bool {
+            return value
+        }
+        if let number = self[key] as? NSNumber {
+            return number.boolValue
+        }
+        if let string = self[key] as? String {
+            switch string.lowercased() {
+            case "true", "yes", "1":
+                return true
+            case "false", "no", "0":
+                return false
+            default:
+                return nil
+            }
+        }
+        return nil
     }
 
     func optionalUInt16(_ key: String) throws -> UInt16? {
@@ -1024,11 +1062,24 @@ private extension DoryMachineStatus {
         if let address {
             dictionary["address"] = address
         }
+        dictionary["shares"] = shares.map(\.xpcDictionary)
         dictionary["handoffFDCount"] = handoffFDCount
         dictionary["memoryMB"] = memoryMB
         dictionary["currentBalloonTargetMB"] = currentBalloonTargetMB
         dictionary["cpuCount"] = cpuCount
         return dictionary as NSDictionary
+    }
+}
+
+private extension DoryMachineShareConfiguration {
+    var xpcDictionary: NSDictionary {
+        [
+            "tag": tag,
+            "hostPath": hostPath,
+            "guestPath": guestPath,
+            "readOnly": readOnly,
+            "mode": readOnly ? "ro" : "rw",
+        ]
     }
 }
 

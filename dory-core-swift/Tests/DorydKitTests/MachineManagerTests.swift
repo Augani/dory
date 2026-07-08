@@ -64,7 +64,10 @@ final class MachineManagerTests: XCTestCase {
 
     func testMachineDefinitionsPersistAcrossManagerRestart() throws {
         let base = "/tmp/dory-machine-persist-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let share = "\(base)-share"
+        try FileManager.default.createDirectory(atPath: share, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(atPath: base) }
+        defer { try? FileManager.default.removeItem(atPath: share) }
         let config = MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
             stateDirectory: base,
@@ -79,7 +82,10 @@ final class MachineManagerTests: XCTestCase {
             kernelPath: "/tmp/kernel",
             rootfsPath: "/tmp/rootfs",
             memoryMB: 4096,
-            cpuCount: 4
+            cpuCount: 4,
+            shares: [
+                DoryMachineShareConfiguration(tag: "src", hostPath: share, guestPath: "/workspace/src", readOnly: true),
+            ]
         ))
 
         let configPath = "\(base)/dev/machine.json"
@@ -92,6 +98,9 @@ final class MachineManagerTests: XCTestCase {
         let loaded = reloaded.list()
         XCTAssertEqual(loaded.map(\.id), ["dev"])
         XCTAssertEqual(loaded.first?.state, .stopped)
+        XCTAssertEqual(loaded.first?.shares, [
+            DoryMachineShareConfiguration(tag: "src", hostPath: share, guestPath: "/workspace/src", readOnly: true),
+        ])
         let running = try reloaded.start(id: "dev")
         XCTAssertEqual(running.state, .running)
         XCTAssertNotNil(running.pid)
@@ -99,6 +108,34 @@ final class MachineManagerTests: XCTestCase {
         XCTAssertEqual(stopped.state, .stopped)
         try reloaded.delete(id: "dev")
         XCTAssertFalse(FileManager.default.fileExists(atPath: "\(base)/dev"))
+    }
+
+    func testLegacyMachineDefinitionsLoadWithoutShareField() throws {
+        let base = "/tmp/dory-machine-legacy-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        try FileManager.default.createDirectory(atPath: "\(base)/dev", withIntermediateDirectories: true)
+        let legacyJSON = Data("""
+        {
+          "id": "dev",
+          "kernelPath": "/tmp/kernel",
+          "rootfsPath": "/tmp/rootfs",
+          "memoryMB": 2048,
+          "cpuCount": 2
+        }
+        """.utf8)
+        try legacyJSON.write(to: URL(fileURLWithPath: "\(base)/dev/machine.json"))
+
+        let manager = MachineManager(configuration: MachineManagerConfiguration(
+            vmmExecutablePath: "/bin/sleep",
+            stateDirectory: base,
+            baseArguments: ["30"],
+            passMachineArguments: false,
+            requiresReadyHandoff: false
+        ))
+
+        let loaded = manager.list()
+        XCTAssertEqual(loaded.map(\.id), ["dev"])
+        XCTAssertEqual(loaded.first?.shares, [])
     }
 
     func testUpdatePersistsMachineResourcesAndRestartsRunningMachine() throws {

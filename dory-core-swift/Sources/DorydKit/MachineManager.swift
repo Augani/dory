@@ -26,6 +26,72 @@ public struct MachineManagerConfiguration: Sendable, Equatable {
     }
 }
 
+public struct DoryMachineShareConfiguration: Sendable, Equatable, Hashable, Codable {
+    public var tag: String
+    public var hostPath: String
+    public var guestPath: String
+    public var readOnly: Bool
+
+    public init(
+        tag: String,
+        hostPath: String,
+        guestPath: String,
+        readOnly: Bool = false
+    ) {
+        self.tag = tag
+        self.hostPath = hostPath
+        self.guestPath = guestPath
+        self.readOnly = readOnly
+    }
+
+    public init(argument: String) throws {
+        guard let equals = argument.firstIndex(of: "="), equals != argument.startIndex else {
+            throw MachineManagerError.invalidShare(argument)
+        }
+        let tag = String(argument[..<equals])
+        var components = argument[argument.index(after: equals)...].split(separator: ":", omittingEmptySubsequences: false).map(String.init)
+        guard components.count >= 2 else {
+            throw MachineManagerError.invalidShare(argument)
+        }
+        let readOnly: Bool
+        switch components.last {
+        case "ro":
+            readOnly = true
+            components.removeLast()
+        case "rw":
+            readOnly = false
+            components.removeLast()
+        default:
+            readOnly = false
+        }
+        guard components.count >= 2 else {
+            throw MachineManagerError.invalidShare(argument)
+        }
+        let guestPath = components.removeLast()
+        let hostPath = components.joined(separator: ":")
+        self.init(tag: tag, hostPath: hostPath, guestPath: guestPath, readOnly: readOnly)
+        try validate()
+    }
+
+    public var argumentValue: String {
+        "\(tag)=\(hostPath):\(guestPath):\(readOnly ? "ro" : "rw")"
+    }
+
+    public func validate() throws {
+        guard !tag.isEmpty,
+              tag.utf8.count < 36,
+              tag.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" || $0 == "." }) else {
+            throw MachineManagerError.invalidShare(tag)
+        }
+        guard hostPath.hasPrefix("/"), !hostPath.contains("\0") else {
+            throw MachineManagerError.invalidShare(hostPath)
+        }
+        guard guestPath.hasPrefix("/"), guestPath != "/", !guestPath.contains("\0") else {
+            throw MachineManagerError.invalidShare(guestPath)
+        }
+    }
+}
+
 public struct DoryMachineConfiguration: Sendable, Equatable, Hashable, Codable {
     public var id: String
     public var kernelPath: String
@@ -33,6 +99,7 @@ public struct DoryMachineConfiguration: Sendable, Equatable, Hashable, Codable {
     public var memoryMB: UInt64
     public var cpuCount: Int
     public var address: String?
+    public var shares: [DoryMachineShareConfiguration]
 
     public init(
         id: String,
@@ -40,7 +107,8 @@ public struct DoryMachineConfiguration: Sendable, Equatable, Hashable, Codable {
         rootfsPath: String,
         memoryMB: UInt64 = 2048,
         cpuCount: Int = 2,
-        address: String? = nil
+        address: String? = nil,
+        shares: [DoryMachineShareConfiguration] = []
     ) {
         self.id = id
         self.kernelPath = kernelPath
@@ -48,6 +116,30 @@ public struct DoryMachineConfiguration: Sendable, Equatable, Hashable, Codable {
         self.memoryMB = memoryMB
         self.cpuCount = max(1, cpuCount)
         self.address = address
+        self.shares = shares
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case kernelPath
+        case rootfsPath
+        case memoryMB
+        case cpuCount
+        case address
+        case shares
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            id: try container.decode(String.self, forKey: .id),
+            kernelPath: try container.decode(String.self, forKey: .kernelPath),
+            rootfsPath: try container.decode(String.self, forKey: .rootfsPath),
+            memoryMB: try container.decodeIfPresent(UInt64.self, forKey: .memoryMB) ?? 2048,
+            cpuCount: try container.decodeIfPresent(Int.self, forKey: .cpuCount) ?? 2,
+            address: try container.decodeIfPresent(String.self, forKey: .address),
+            shares: try container.decodeIfPresent([DoryMachineShareConfiguration].self, forKey: .shares) ?? []
+        )
     }
 }
 
@@ -75,6 +167,7 @@ public struct DoryMachineStatus: Sendable, Equatable {
     public var memoryMB: UInt64
     public var currentBalloonTargetMB: UInt64
     public var cpuCount: Int
+    public var shares: [DoryMachineShareConfiguration]
 
     public init(
         id: String,
@@ -91,7 +184,8 @@ public struct DoryMachineStatus: Sendable, Equatable {
         handoffFDCount: Int = 0,
         memoryMB: UInt64 = 0,
         currentBalloonTargetMB: UInt64? = nil,
-        cpuCount: Int = 0
+        cpuCount: Int = 0,
+        shares: [DoryMachineShareConfiguration] = []
     ) {
         self.id = id
         self.state = state
@@ -108,6 +202,7 @@ public struct DoryMachineStatus: Sendable, Equatable {
         self.memoryMB = memoryMB
         self.currentBalloonTargetMB = currentBalloonTargetMB ?? memoryMB
         self.cpuCount = cpuCount
+        self.shares = shares
     }
 }
 
@@ -156,6 +251,7 @@ public enum MachineManagerError: Error, Sendable, Equatable, CustomStringConvert
     case balloonUnavailable(String)
     case balloonApplyFailed(String, String)
     case invalidAddress(String)
+    case invalidShare(String)
     case persistence(String)
 
     public var description: String {
@@ -180,6 +276,8 @@ public enum MachineManagerError: Error, Sendable, Equatable, CustomStringConvert
             return "machine balloon control failed for \(id): \(message)"
         case let .invalidAddress(address):
             return "invalid machine address: \(address)"
+        case let .invalidShare(share):
+            return "invalid machine share: \(share)"
         case let .persistence(message):
             return "machine state persistence failed: \(message)"
         }
@@ -220,6 +318,7 @@ public final class MachineManager: @unchecked Sendable {
         }
         var machine = machine
         machine.address = try Self.normalizedAddress(machine.address)
+        try Self.validateShares(machine.shares)
         lock.lock()
         let exists = machines[machine.id] != nil
         lock.unlock()
@@ -596,7 +695,8 @@ public final class MachineManager: @unchecked Sendable {
                 lastError: entry.lastError ?? "dory-vmm process exited",
                 address: entry.configuration.address,
                 memoryMB: entry.configuration.memoryMB,
-                cpuCount: entry.configuration.cpuCount
+                cpuCount: entry.configuration.cpuCount,
+                shares: entry.configuration.shares
             )
         }
         return DoryMachineStatus(
@@ -614,7 +714,8 @@ public final class MachineManager: @unchecked Sendable {
             handoffFDCount: entry.handoff?.fileDescriptors.count ?? 0,
             memoryMB: entry.configuration.memoryMB,
             currentBalloonTargetMB: entry.currentBalloonTargetMB ?? entry.configuration.memoryMB,
-            cpuCount: entry.configuration.cpuCount
+            cpuCount: entry.configuration.cpuCount,
+            shares: entry.configuration.shares
         )
     }
 
@@ -643,6 +744,9 @@ public final class MachineManager: @unchecked Sendable {
         ]
         if let handoffPath {
             arguments.append(contentsOf: ["--handoff-sock", handoffPath])
+        }
+        for share in machine.shares {
+            arguments.append(contentsOf: ["--share", share.argumentValue])
         }
         return arguments
     }
@@ -929,6 +1033,21 @@ public final class MachineManager: @unchecked Sendable {
             throw MachineManagerError.invalidAddress(raw)
         }
         return trimmed
+    }
+
+    private static func validateShares(_ shares: [DoryMachineShareConfiguration]) throws {
+        var tags = Set<String>()
+        for share in shares {
+            try share.validate()
+            guard tags.insert(share.tag).inserted else {
+                throw MachineManagerError.invalidShare(share.tag)
+            }
+            var isDirectory: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: share.hostPath, isDirectory: &isDirectory),
+                  isDirectory.boolValue else {
+                throw MachineManagerError.invalidShare(share.hostPath)
+            }
+        }
     }
 
     private static func generatedSnapshotID(prefix: String = "s") -> String {

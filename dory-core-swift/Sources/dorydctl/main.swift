@@ -129,6 +129,14 @@ struct ArgumentCursor {
         values.removeSubrange(index...(index + 1))
         return value
     }
+
+    mutating func optionValues(_ name: String) throws -> [String] {
+        var result: [String] = []
+        while let value = try optionValue(name) {
+            result.append(value)
+        }
+        return result
+    }
 }
 
 func usage(exitCode: Int32 = 2) -> Never {
@@ -141,7 +149,7 @@ func usage(exitCode: Int32 = 2) -> Never {
           dorydctl [global] docker agent-info|ports|telemetry
           dorydctl [global] machine list
           dorydctl [global] machine status NAME
-          dorydctl [global] machine create NAME --kernel PATH --rootfs PATH [--memory-mb N] [--cpus N] [--address HOST]
+          dorydctl [global] machine create NAME --kernel PATH --rootfs PATH [--memory-mb N] [--cpus N] [--address HOST] [--share TAG=HOST:GUEST[:ro|rw]]
           dorydctl [global] machine update NAME [--memory-mb N] [--cpus N] [--address HOST]
           dorydctl [global] machine start|stop|delete NAME
           dorydctl [global] machine exec NAME [--json] [--cwd PATH] [--env KEY=VALUE] [--timeout-ms N] [--output-limit-bytes N] -- COMMAND [ARG...]
@@ -595,6 +603,7 @@ func runMachine(cursor: inout ArgumentCursor, client: DorydCtlClient) throws {
         }
         let memoryMB = try cursor.optionValue("--memory-mb").map { try positiveUInt64($0, option: "--memory-mb") } ?? 2048
         let cpuCount = try cursor.optionValue("--cpus").map { try positiveInt($0, option: "--cpus") } ?? 2
+        let shares = try cursor.optionValues("--share").map { try DoryMachineShareConfiguration(argument: $0) }
         var config: [String: Any] = [
             "id": name,
             "kernelPath": kernel,
@@ -604,6 +613,16 @@ func runMachine(cursor: inout ArgumentCursor, client: DorydCtlClient) throws {
         ]
         if let address = try cursor.optionValue("--address") {
             config["address"] = address
+        }
+        if !shares.isEmpty {
+            config["shares"] = shares.map { share in
+                [
+                    "tag": share.tag,
+                    "hostPath": share.hostPath,
+                    "guestPath": share.guestPath,
+                    "readOnly": share.readOnly,
+                ] as NSDictionary
+            }
         }
         let status = try client.statusCommand { proxy, reply in
             proxy.machineCreate(config as NSDictionary, reply: reply)
