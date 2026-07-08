@@ -10,7 +10,7 @@ enum HostDockerCLI {
     private static let beginSentinel = "# >>> dory cli >>>"
     private static let endSentinel = "# <<< dory cli <<<"
     private static let profiles = [".zprofile", ".zshrc", ".bash_profile", ".profile"]
-    private static let linkedTools = ["docker", "docker-compose", "kubectl", "dory", "dorydctl"]
+    static let linkedTools = ["docker", "docker-compose", "kubectl", "dory", "dory-doctor", "dory-idle-proxy", "dorydctl"]
 
     struct Status: Equatable {
         var dockerLinked: Bool
@@ -81,6 +81,7 @@ enum HostDockerCLI {
     }
 
     private static func symlink(_ source: String, to destination: String) {
+        guard source != destination else { return }
         let fileManager = FileManager.default
         if let existing = try? fileManager.destinationOfSymbolicLink(atPath: destination), existing == source {
             return

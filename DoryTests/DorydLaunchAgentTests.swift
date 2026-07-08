@@ -139,6 +139,10 @@ struct DorydLaunchAgentTests {
         #expect(ok)
         #expect(plist.contains("<string>\(dorydURL.path)</string>"))
         #expect(plist.contains("<string>\(helpersURL.appendingPathComponent("dory-vmm").path)</string>"))
+        #expect(plist.contains("<key>DORYD_HELPERS_DIR</key>"))
+        #expect(plist.contains("<string>\(helpersURL.path)</string>"))
+        #expect(plist.contains("<key>DORYD_HOST_CLI</key>"))
+        #expect(plist.contains("<string>1</string>"))
         #expect(plist.contains("<key>DORYD_DOMAIN_SUFFIX</key>"))
         #expect(plist.contains("<string>dory.local</string>"))
         #expect(recorder.commands.map { $0.first ?? "" } == ["print", "bootstrap", "kickstart"])
@@ -195,6 +199,17 @@ struct DorydLaunchAgentTests {
         #expect(ok)
         #expect(plist.contains("<string>team.dory.local</string>"))
         #expect(recorder.commands.map { $0.first ?? "" } == ["print", "bootout", "bootstrap", "kickstart"])
+    }
+
+    @Test func launchAgentCanDisableDaemonHostCLIRepair() {
+        let plist = DorydLaunchAgent.launchAgentPlist(
+            program: "/Applications/Dory.app/Contents/Helpers/doryd",
+            helpersDirectory: URL(fileURLWithPath: "/Applications/Dory.app/Contents/Helpers"),
+            configuration: DorydLaunchAgent.Configuration(hostCLIEnabled: false)
+        )
+
+        #expect(plist.contains("<key>DORYD_HOST_CLI</key>"))
+        #expect(plist.contains("<string>0</string>"))
     }
 }
 

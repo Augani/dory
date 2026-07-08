@@ -17,6 +17,16 @@ func fail(_ message: String) -> Never {
 
 let env = ProcessInfo.processInfo.environment
 let dorydEnvironment = DorydEnvironment(values: env)
+if dorydEnvironment.hostCLIEnabled {
+    let cliInstall = HostCLIInstaller(environment: dorydEnvironment).install()
+    if cliInstall.dockerLinked {
+        FileHandle.standardError.write(Data("doryd: host CLI ready in \(dorydEnvironment.home)/.dory/bin\n".utf8))
+    } else if !cliInstall.missing.isEmpty {
+        FileHandle.standardError.write(Data("doryd: host CLI incomplete, missing \(cliInstall.missing.joined(separator: ","))\n".utf8))
+    }
+} else {
+    FileHandle.standardError.write(Data("doryd: host CLI integration disabled by settings\n".utf8))
+}
 let socket = DorySocket(home: dorydEnvironment.home)
 let idleController = IdleController()
 let dockerTier = dorydEnvironment.dockerTierConfiguration().map {

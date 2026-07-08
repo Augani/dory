@@ -172,6 +172,11 @@ final class DorydConfigurationTests: XCTestCase {
         XCTAssertNil(config.agentControl)
     }
 
+    func testHostCLIRepairDefaultsOnAndCanBeDisabled() {
+        XCTAssertTrue(DorydEnvironment(values: [:], home: "/tmp/doryd-home").hostCLIEnabled)
+        XCTAssertFalse(DorydEnvironment(values: ["DORYD_HOST_CLI": "0"], home: "/tmp/doryd-home").hostCLIEnabled)
+    }
+
     func testNetworkingConfigurationIsOptInAndHighPortOnly() throws {
         XCTAssertNil(DorydEnvironment(values: [:], home: "/tmp/doryd-home", cwd: "/tmp").networkingConfiguration())
 

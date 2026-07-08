@@ -84,6 +84,10 @@ public struct DorydEnvironment: Sendable {
         )
     }
 
+    public var hostCLIEnabled: Bool {
+        bool("DORYD_HOST_CLI", default: true)
+    }
+
     public func machineManagerConfiguration() -> MachineManagerConfiguration? {
         guard let helper = executablePath(firstOf: ["DORYD_VMM_HELPER", "DORY_VMM_HELPER"], fallbackCandidates: helperCandidates(named: "dory-vmm")) else {
             return nil

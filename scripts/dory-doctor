@@ -396,7 +396,7 @@ class Doctor:
                 "docker.cli_missing",
                 "Docker CLI missing",
                 "No docker executable found in PATH or DORY_DOCKER_BIN.",
-                "Install Dory shell integration or set DORY_DOCKER_BIN.",
+                "doryd normally repairs Dory terminal integration automatically; run `dory install` as recovery or set DORY_DOCKER_BIN.",
             )
             return
         self.add("docker.cli", "pass", "docker.cli_found", "Docker CLI found", binary)
@@ -426,7 +426,7 @@ class Doctor:
                 "docker.compose_missing",
                 "Docker Compose plugin not available",
                 compact(compose.stderr or compose.stdout),
-                "Install Dory shell integration so the bundled Compose plugin is on PATH.",
+                "doryd normally installs the bundled Compose plugin automatically; run `dory install` as recovery.",
             )
 
     def check_docker_context(self) -> None:
@@ -2328,7 +2328,7 @@ def check_compat_docker(state: dict[str, Any]) -> list[CheckResult]:
             "compat.docker.cli", "fail", "compat.docker.cli_missing",
             "Docker CLI missing",
             "No docker executable on PATH or DORY_DOCKER_BIN.",
-            "Install Dory shell integration (`dory install`) so the bundled docker CLI is on PATH.",
+            "doryd normally keeps the bundled docker CLI on PATH automatically; run `dory install` as recovery.",
         ))
         return out
     out.append(CheckResult("compat.docker.cli", "pass", "compat.docker.cli_ok", "Docker CLI found", binary))
@@ -2373,7 +2373,7 @@ def check_compat_compose(state: dict[str, Any]) -> list[CheckResult]:
         "compat.compose", "warn", "compat.compose.missing",
         "Docker Compose plugin not available",
         compact(result.stderr or result.stdout),
-        "Install Dory shell integration so the bundled compose plugin is on PATH.",
+        "doryd normally keeps the bundled Compose plugin on PATH automatically; run `dory install` as recovery.",
     )]
 
 
@@ -2389,7 +2389,7 @@ def check_compat_ide(state: dict[str, Any], tool: str, title: str, bundles: list
             f"compat.{tool}", "fail", f"compat.{tool}.no_docker",
             f"{title}: docker CLI missing",
             "Dev Containers shells out to `docker`, which is not on PATH.",
-            "Install Dory shell integration so `docker` resolves for the IDE's login shell.",
+            "doryd normally keeps `docker` on the login-shell PATH; run `dory install` as recovery.",
         )]
     if not (state["docker_host_points_at_dory"] or state["docker_context"] == "dory" or state["dory_reachable"]):
         return [CheckResult(

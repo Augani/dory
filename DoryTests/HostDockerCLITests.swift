@@ -3,6 +3,11 @@ import Foundation
 @testable import Dory
 
 struct HostDockerCLITests {
+    @Test func linkedToolsIncludeSupportCommands() {
+        #expect(HostDockerCLI.linkedTools.contains("dory-doctor"))
+        #expect(HostDockerCLI.linkedTools.contains("dory-idle-proxy"))
+    }
+
     @Test func appendsPathBlockToEmptyProfile() throws {
         let updated = try #require(HostDockerCLI.appendingPathBlock(to: "", binDir: "/Users/x/.dory/bin"))
         #expect(updated.contains("export PATH=\"/Users/x/.dory/bin:$PATH\""))

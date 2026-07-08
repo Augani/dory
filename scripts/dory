@@ -39,6 +39,7 @@ resolve_cli() {
 
 CONTAINER_BIN="${DORY_CONTAINER_BIN:-$(resolve_cli container || printf '%s\n' /opt/homebrew/bin/container)}"
 DOCKER_BIN="${DORY_DOCKER_BIN:-$(resolve_cli docker || printf '%s\n' docker)}"
+DOCKER_COMPOSE_BIN="${DORY_DOCKER_COMPOSE_BIN:-$(resolve_cli docker-compose || printf '%s\n' docker-compose)}"
 KUBECTL_BIN="${DORY_KUBECTL_BIN:-$(resolve_cli kubectl || printf '%s\n' kubectl)}"
 
 host_guest_arch() {
@@ -70,6 +71,10 @@ usage() {
 dory — Dory CLI
 
   dory <docker args...>        Run any docker command against Dory's engine
+  dory install [--json] [--dry-run]
+                               Repair doryd's per-user terminal integration for docker, compose, kubectl, and dory
+  dory uninstall [--json] [--dry-run]
+                               Remove Dory shell integration from ~/.dory/bin and shell profiles
   dory shell <container>       Open an interactive shell in a container
   dory debug <container> [-- cmd...]
                                Enter a container's namespaces through the Dory guest agent
@@ -139,6 +144,186 @@ dory — Dory CLI
                                memory ballooning (reclaims RAM to macOS)
   dory help                    Show this help
 EOF
+}
+
+DORY_CLI_BEGIN="# >>> dory cli >>>"
+DORY_CLI_END="# <<< dory cli <<<"
+DORY_CLI_PROFILES=(".zprofile" ".zshrc" ".bash_profile" ".profile")
+
+install_usage() {
+  echo "usage: dory install|uninstall [--json] [--dry-run]" >&2
+}
+
+cli_tool_source() {
+  local tool="$1"
+  case "$tool" in
+    docker)
+      first_executable "${DORY_DOCKER_BIN:-}" "$DORY_SCRIPT_DIR/docker" "$DORY_SCRIPT_DIR/../Helpers/docker" "$HOME/.dory/bin/docker" "$(command -v docker 2>/dev/null || true)"
+      ;;
+    docker-compose)
+      first_executable "${DORY_DOCKER_COMPOSE_BIN:-}" "$DORY_SCRIPT_DIR/docker-compose" "$DORY_SCRIPT_DIR/../Helpers/docker-compose" "$HOME/.docker/cli-plugins/docker-compose" "$HOME/.dory/bin/docker-compose" "$(command -v docker-compose 2>/dev/null || true)"
+      ;;
+    kubectl)
+      first_executable "${DORY_KUBECTL_BIN:-}" "$DORY_SCRIPT_DIR/kubectl" "$DORY_SCRIPT_DIR/../Helpers/kubectl" "$HOME/.dory/bin/kubectl" "$(command -v kubectl 2>/dev/null || true)"
+      ;;
+    dory)
+      first_executable "$DORY_SCRIPT_DIR/dory" "$DORY_SCRIPT_SOURCE" "$HOME/.dory/bin/dory" "$(command -v dory 2>/dev/null || true)"
+      ;;
+    dory-doctor)
+      first_executable "${DORY_DOCTOR_BIN:-}" "$DORY_SCRIPT_DIR/dory-doctor" "$DORY_SCRIPT_DIR/../Helpers/dory-doctor" "$HOME/.dory/bin/dory-doctor" "$(command -v dory-doctor 2>/dev/null || true)"
+      ;;
+    dory-idle-proxy)
+      first_executable "${DORY_IDLE_PROXY_BIN:-}" "$DORY_SCRIPT_DIR/dory-idle-proxy" "$DORY_SCRIPT_DIR/../Helpers/dory-idle-proxy" "$HOME/.dory/bin/dory-idle-proxy" "$(command -v dory-idle-proxy 2>/dev/null || true)"
+      ;;
+    dorydctl)
+      first_executable "${DORYDCTL_BIN:-}" "$DORY_SCRIPT_DIR/dorydctl" "$DORY_SCRIPT_DIR/../Helpers/dorydctl" "$HOME/.dory/bin/dorydctl" "$(command -v dorydctl 2>/dev/null || true)"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+cli_path_block() {
+  printf '%s\nexport PATH="%s:$PATH"\n%s\n' "$DORY_CLI_BEGIN" "$HOME/.dory/bin" "$DORY_CLI_END"
+}
+
+profile_contains_dory_block() {
+  local profile="$1"
+  [ -f "$profile" ] && grep -Fq "$DORY_CLI_BEGIN" "$profile"
+}
+
+install_path_block() {
+  local dry_run="$1" profile content updated_any=0 saw_profile=0
+  for name in "${DORY_CLI_PROFILES[@]}"; do
+    profile="$HOME/$name"
+    [ -e "$profile" ] || continue
+    saw_profile=1
+    profile_contains_dory_block "$profile" && continue
+    updated_any=1
+    if [ "$dry_run" -eq 1 ]; then
+      continue
+    fi
+    content="$(cat "$profile" 2>/dev/null || true)"
+    {
+      printf '%s' "$content"
+      case "$content" in ""|*$'\n') printf '\n' ;; *) printf '\n\n' ;; esac
+      cli_path_block
+    } > "$profile"
+  done
+  if [ "$saw_profile" -eq 0 ]; then
+    updated_any=1
+    [ "$dry_run" -eq 1 ] || cli_path_block > "$HOME/.zprofile"
+  fi
+  [ "$updated_any" -eq 1 ]
+}
+
+remove_path_blocks() {
+  local dry_run="$1" profile tmp changed=0
+  for name in "${DORY_CLI_PROFILES[@]}"; do
+    profile="$HOME/$name"
+    profile_contains_dory_block "$profile" || continue
+    changed=1
+    [ "$dry_run" -eq 1 ] && continue
+    tmp="$(mktemp -t dory-profile.XXXXXX)"
+    awk -v begin="$DORY_CLI_BEGIN" -v end="$DORY_CLI_END" '
+      $0 == begin { skipping = 1; next }
+      $0 == end { skipping = 0; next }
+      !skipping { print }
+    ' "$profile" > "$tmp"
+    mv "$tmp" "$profile"
+  done
+  [ "$changed" -eq 1 ]
+}
+
+csv_append() {
+  local list="$1" item="$2"
+  [ -n "$list" ] && printf '%s,%s' "$list" "$item" || printf '%s' "$item"
+}
+
+install_emit_json() {
+  local action="$1" dry_run="$2" path_changed="$3" compose_installed="$4" linked_csv="$5" missing_csv="$6"
+  python3 - "$action" "$dry_run" "$HOME/.dory/bin" "$path_changed" "$compose_installed" "$linked_csv" "$missing_csv" <<'PY'
+import json
+import sys
+
+action, dry_run, bin_dir, path_changed, compose_installed, linked_csv, missing_csv = sys.argv[1:8]
+split = lambda value: [item for item in value.split(",") if item]
+print(json.dumps({
+    "schema": "dev.dory.cli.install",
+    "version": 1,
+    "action": action,
+    "dryRun": dry_run == "1",
+    "binDir": bin_dir,
+    "linked": split(linked_csv),
+    "missing": split(missing_csv),
+    "pathProfileChanged": path_changed == "1",
+    "composePluginInstalled": compose_installed == "1",
+}, separators=(",", ":"), sort_keys=True))
+PY
+}
+
+install_cmd() {
+  local action="${1:-install}" json=0 dry_run=0
+  case "$action" in install|uninstall) shift || true ;; *) install_usage; exit 2 ;; esac
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --json) json=1; shift ;;
+      --dry-run) dry_run=1; shift ;;
+      -h|--help|help) install_usage; return 0 ;;
+      *) echo "unknown install option: $1" >&2; install_usage; exit 2 ;;
+    esac
+  done
+
+  local tools=(docker docker-compose kubectl dory dory-doctor dory-idle-proxy dorydctl)
+  local linked_csv="" linked_words="" missing_csv="" tool source dest path_changed=0 compose_installed=0
+
+  if [ "$action" = "uninstall" ]; then
+    if remove_path_blocks "$dry_run"; then path_changed=1; fi
+    if [ "$dry_run" -eq 0 ]; then
+      for tool in "${tools[@]}"; do rm -f "$HOME/.dory/bin/$tool"; done
+      rm -f "$HOME/.docker/cli-plugins/docker-compose"
+    fi
+    [ "$json" -eq 1 ] && install_emit_json "$action" "$dry_run" "$path_changed" 0 "" "" || echo "Dory shell integration removed."
+    return 0
+  fi
+
+  [ "$dry_run" -eq 1 ] || mkdir -p "$HOME/.dory/bin" "$HOME/.docker/cli-plugins"
+  for tool in "${tools[@]}"; do
+    source="$(cli_tool_source "$tool" 2>/dev/null || true)"
+    if [ -n "$source" ]; then
+      linked_csv="$(csv_append "$linked_csv" "$tool")"
+      linked_words="$linked_words $tool"
+      dest="$HOME/.dory/bin/$tool"
+      if [ "$dry_run" -eq 0 ]; then
+        if [ "$source" != "$dest" ]; then
+          rm -f "$dest"
+          ln -s "$source" "$dest"
+        fi
+      fi
+      if [ "$tool" = "docker-compose" ]; then
+        compose_installed=1
+        if [ "$dry_run" -eq 0 ]; then
+          if [ "$source" != "$HOME/.docker/cli-plugins/docker-compose" ]; then
+            rm -f "$HOME/.docker/cli-plugins/docker-compose"
+            ln -s "$source" "$HOME/.docker/cli-plugins/docker-compose"
+          fi
+        fi
+      fi
+    else
+      missing_csv="$(csv_append "$missing_csv" "$tool")"
+    fi
+  done
+  if install_path_block "$dry_run"; then path_changed=1; fi
+
+  if [ "$json" -eq 1 ]; then
+    install_emit_json "$action" "$dry_run" "$path_changed" "$compose_installed" "$linked_csv" "$missing_csv"
+  else
+    echo "Dory shell integration installed in $HOME/.dory/bin"
+    echo "Open a new terminal, then run: docker version"
+    [ -z "$missing_csv" ] || echo "Missing bundled helpers: $missing_csv" >&2
+  fi
+  case "$linked_words " in *" docker "*) return 0 ;; *) return 1 ;; esac
 }
 
 recipe_files() {
@@ -2306,6 +2491,15 @@ data = {
             "notes": "Writes a redacted support zip and returns schema dev.dory.support.bundle v1 with the shareable path.",
         },
         {
+            "id": "install",
+            "status": "available",
+            "invoke": "dory install --json",
+            "json": True,
+            "dryRun": True,
+            "safeForAutomation": True,
+            "notes": "Repairs the per-user terminal integration doryd normally keeps current, so docker, docker compose, kubectl, and dory resolve from ~/.dory/bin without Docker Desktop or admin access.",
+        },
+        {
             "id": "repair",
             "status": "available",
             "invoke": "dory repair TARGET --json [--apply]",
@@ -2507,6 +2701,8 @@ agent_cmd() {
 
 case "${1:-help}" in
   help|-h|--help) usage ;;
+  install)        shift; install_cmd install "$@" ;;
+  uninstall)      shift; install_cmd uninstall "$@" ;;
   doctor)         shift; doctor_cmd doctor "$@" ;;
   support)        shift; support_cmd "$@" ;;
   logs)           shift; logs_cmd "$@" ;;

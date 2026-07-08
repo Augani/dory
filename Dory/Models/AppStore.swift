@@ -405,6 +405,9 @@ final class AppStore {
                 HostDockerCLI.remove()
                 dockerHostConflict = nil
             }
+            if dorydClient.usesMachService {
+                _ = await DorydLaunchAgent.ensureCurrent(configuration: dorydLaunchAgentConfiguration())
+            }
         }
     }
 
@@ -1025,7 +1028,8 @@ final class AppStore {
             domainSuffix: domainSuffix,
             dnsPort: dnsPort,
             httpProxyPort: httpProxyPort,
-            httpsProxyPort: httpsProxyPort
+            httpsProxyPort: httpsProxyPort,
+            hostCLIEnabled: routeDockerCLI
         )
     }
 

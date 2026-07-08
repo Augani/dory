@@ -16,19 +16,22 @@ enum DorydLaunchAgent {
         var dnsPort: UInt16
         var httpProxyPort: UInt16
         var httpsProxyPort: UInt16
+        var hostCLIEnabled: Bool
 
         nonisolated init(
             domainSuffix: String = "dory.local",
             idleSleepAfterSeconds: UInt32 = 300,
             dnsPort: UInt16 = 15353,
             httpProxyPort: UInt16 = 8080,
-            httpsProxyPort: UInt16 = 8443
+            httpsProxyPort: UInt16 = 8443,
+            hostCLIEnabled: Bool = true
         ) {
             self.domainSuffix = domainSuffix
             self.idleSleepAfterSeconds = idleSleepAfterSeconds
             self.dnsPort = dnsPort
             self.httpProxyPort = httpProxyPort
             self.httpsProxyPort = httpsProxyPort
+            self.hostCLIEnabled = hostCLIEnabled
         }
     }
 
@@ -231,6 +234,10 @@ enum DorydLaunchAgent {
                 <string>\(xmlEscaped(hv))</string>
                 <key>DORYD_GVPROXY</key>
                 <string>\(xmlEscaped(gvproxy))</string>
+                <key>DORYD_HELPERS_DIR</key>
+                <string>\(xmlEscaped(helpersDirectory.path))</string>
+                <key>DORYD_HOST_CLI</key>
+                <string>\(configuration.hostCLIEnabled ? "1" : "0")</string>
                 <key>DORYD_NETWORKING</key>
                 <string>1</string>
                 <key>DORYD_DOMAIN_SUFFIX</key>

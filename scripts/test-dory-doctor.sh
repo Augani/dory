@@ -40,6 +40,8 @@ assert commands["doctor"]["status"] == "available"
 assert commands["doctor"]["json"] is True
 assert commands["support"]["status"] == "available"
 assert commands["support"]["redacted"] is True
+assert commands["install"]["status"] == "available"
+assert commands["install"]["dryRun"] is True
 assert commands["repair"]["dryRun"] is True
 assert commands["wait"]["status"] == "available"
 assert "machine" in commands["wait"]["targets"]
@@ -62,6 +64,49 @@ assert data["recommendedRecoveryLoop"]
 '
 
 scripts/dory agent guide --text | grep -q "Dory agent guide v1"
+
+mkdir -p "$TMP_HOME/fake-bin"
+for tool in docker docker-compose kubectl dorydctl; do
+  cat > "$TMP_HOME/fake-bin/$tool" <<'SH'
+#!/bin/sh
+echo "$0 $*"
+SH
+  chmod +x "$TMP_HOME/fake-bin/$tool"
+done
+
+install_json="$(DORY_DOCKER_BIN="$TMP_HOME/fake-bin/docker" \
+  DORY_DOCKER_COMPOSE_BIN="$TMP_HOME/fake-bin/docker-compose" \
+  DORY_KUBECTL_BIN="$TMP_HOME/fake-bin/kubectl" \
+  DORYDCTL_BIN="$TMP_HOME/fake-bin/dorydctl" \
+  scripts/dory install --json)"
+printf '%s' "$install_json" | python3 -c '
+import json, os, sys
+data = json.load(sys.stdin)
+assert data["schema"] == "dev.dory.cli.install"
+assert data["action"] == "install"
+assert data["dryRun"] is False
+assert data["composePluginInstalled"] is True
+linked = set(data["linked"])
+assert {"docker", "docker-compose", "kubectl", "dory", "dory-doctor", "dory-idle-proxy", "dorydctl"} <= linked
+assert os.path.islink(os.path.expanduser("~/.dory/bin/docker"))
+assert os.path.islink(os.path.expanduser("~/.docker/cli-plugins/docker-compose"))
+assert "dory cli" in open(os.path.expanduser("~/.zprofile"), encoding="utf-8").read()
+'
+
+uninstall_json="$(DORY_DOCKER_BIN="$TMP_HOME/fake-bin/docker" \
+  DORY_DOCKER_COMPOSE_BIN="$TMP_HOME/fake-bin/docker-compose" \
+  DORY_KUBECTL_BIN="$TMP_HOME/fake-bin/kubectl" \
+  DORYDCTL_BIN="$TMP_HOME/fake-bin/dorydctl" \
+  scripts/dory uninstall --json)"
+printf '%s' "$uninstall_json" | python3 -c '
+import json, os, sys
+data = json.load(sys.stdin)
+assert data["schema"] == "dev.dory.cli.install"
+assert data["action"] == "uninstall"
+assert not os.path.exists(os.path.expanduser("~/.dory/bin/docker"))
+assert not os.path.exists(os.path.expanduser("~/.docker/cli-plugins/docker-compose"))
+assert "dory cli" not in open(os.path.expanduser("~/.zprofile"), encoding="utf-8").read()
+'
 
 DORYDCTL_BIN=/usr/bin/false DORY_DOCKER_BIN=/usr/bin/false scripts/dory wait engine --until not-running --timeout 0 --json | python3 -c '
 import json, sys
@@ -454,6 +499,8 @@ assert os.path.exists(data["path"])
 '
 
 scripts/dory help | grep -q "dory doctor"
+scripts/dory help | grep -q "dory install"
+scripts/dory help | grep -q "dory uninstall"
 scripts/dory help | grep -q "dory support bundle"
 scripts/dory help | grep -q "dory logs collect"
 scripts/dory help | grep -q "dory idle proxy"
