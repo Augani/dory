@@ -145,6 +145,8 @@ struct DorydLaunchAgentTests {
         #expect(plist.contains("<string>1</string>"))
         #expect(plist.contains("<key>DORYD_DOMAIN_SUFFIX</key>"))
         #expect(plist.contains("<string>dory.local</string>"))
+        #expect(plist.contains("<key>StandardOutPath</key>"))
+        #expect(plist.contains("<string>\(DorydLaunchAgent.logPath)</string>"))
         #expect(recorder.commands.map { $0.first ?? "" } == ["print", "bootstrap", "kickstart"])
         #expect(recorder.commands.first { $0.first == "bootstrap" }?.last == plistURL.path)
     }

@@ -41,6 +41,8 @@ DEFAULT_CONFIG = HOME / ".dory" / "config.json"
 DEFAULT_KUBECONFIG = HOME / ".kube" / "dory-config"
 DEFAULT_IDLE_STATE = HOME / ".dory" / "idle-state.json"
 DEFAULT_INCIDENTS = HOME / ".dory" / "incidents.jsonl"
+STATE_ROOT = HOME / ".dory"
+SCRIPT_DIR = Path(__file__).resolve().parent
 DOMAIN_SUFFIX = os.environ.get("DORY_DOMAIN_SUFFIX", "dory.local")
 DOMAIN_PROXY_PORT = int(os.environ.get("DORY_DOMAIN_PROXY_PORT", "8080"))
 HTTPS_PROXY_PORT = int(os.environ.get("DORY_HTTPS_PROXY_PORT", "8443"))
@@ -2126,6 +2128,107 @@ def redact_str(value: str) -> str:
     return value
 
 
+def first_executable(candidates: list[str | None]) -> Path | None:
+    for raw in candidates:
+        if not raw:
+            continue
+        candidate = Path(raw).expanduser()
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return candidate
+    return None
+
+
+def dorydctl_bin() -> Path | None:
+    return first_executable([
+        os.environ.get("DORYDCTL_BIN"),
+        str(SCRIPT_DIR / "dorydctl"),
+        str(SCRIPT_DIR / "../Helpers/dorydctl"),
+        str(HOME / ".dory" / "bin" / "dorydctl"),
+        shutil.which("dorydctl"),
+    ])
+
+
+def dorydctl_json(args: list[str], timeout: float = 4.0) -> dict[str, Any]:
+    tool = dorydctl_bin()
+    if tool is None:
+        return {"available": False, "ok": False, "error": "dorydctl not found"}
+    command = [str(tool), "--timeout", str(max(1, int(timeout))), *args]
+    try:
+        result = subprocess.run(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout + 1)
+    except subprocess.TimeoutExpired:
+        return {"available": True, "ok": False, "command": args, "error": "dorydctl timed out"}
+    except OSError as exc:
+        return {"available": True, "ok": False, "command": args, "error": str(exc)}
+    if result.returncode != 0:
+        return {
+            "available": True,
+            "ok": False,
+            "command": args,
+            "exit_code": result.returncode,
+            "error": compact(result.stderr or result.stdout),
+        }
+    try:
+        payload = json.loads(result.stdout or "null")
+    except json.JSONDecodeError as exc:
+        return {
+            "available": True,
+            "ok": False,
+            "command": args,
+            "error": f"invalid JSON from dorydctl: {exc}",
+            "stdout": compact(result.stdout),
+        }
+    return {"available": True, "ok": True, "command": args, "body": payload}
+
+
+def doryd_support_snapshot() -> dict[str, Any]:
+    return {
+        "doctor": dorydctl_json(["doctor-json"]),
+        "health": dorydctl_json(["health"]),
+        "engine": dorydctl_json(["engine", "status"]),
+        "ports": dorydctl_json(["docker", "ports"]),
+        "machines": dorydctl_json(["machine", "list"]),
+        "idle": dorydctl_json(["idle", "status"]),
+        "idle_history": dorydctl_json(["idle", "history", "--limit", "80"]),
+        "incidents": dorydctl_json(["incidents", "--limit", "200"]),
+    }
+
+
+def unique_log_sources() -> list[tuple[Path, str]]:
+    candidates: list[tuple[Path, str]] = []
+
+    for pattern in ("*.log", "*.err.log", "*.log.*"):
+        for path in sorted(STATE_ROOT.glob(pattern)):
+            candidates.append((path, f"logs/{path.name}"))
+
+    nested_roots = [
+        (STATE_ROOT / "hv", "logs/hv", 20),
+        (STATE_ROOT / "machines" / "logs", "logs/machines", 40),
+    ]
+    for root, archive_root, limit in nested_roots:
+        if not root.is_dir():
+            continue
+        paths = sorted(
+            [path for path in root.glob("*.log*") if path.is_file()],
+            key=lambda item: item.stat().st_mtime if item.exists() else 0,
+            reverse=True,
+        )[:limit]
+        for path in paths:
+            candidates.append((path, f"{archive_root}/{path.name}"))
+
+    seen: set[Path] = set()
+    result: list[tuple[Path, str]] = []
+    for path, archive_name in candidates:
+        try:
+            resolved = path.resolve()
+        except OSError:
+            continue
+        if resolved in seen or not path.is_file():
+            continue
+        seen.add(resolved)
+        result.append((path, archive_name))
+    return result
+
+
 def bundle(path: Path | None, active: bool = False) -> Path:
     if path is None:
         stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -2142,16 +2245,13 @@ def bundle(path: Path | None, active: bool = False) -> Path:
         "disk": disk_report(),
         "idle": idle_status(),
         "incidents": read_incidents(200),
+        "doryd": doryd_support_snapshot(),
         "config": load_config(),
         "environment": safe_environment(),
     }
     with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("doctor.json", json.dumps(redact(payload), indent=2, sort_keys=True) + "\n")
-        for source, name in [
-            (HOME / ".dory" / "engine.log", "logs/engine.log"),
-            (HOME / ".dory" / "dory.log", "logs/dory.log"),
-            (HOME / ".dory" / "idle-proxy.log", "logs/idle-proxy.log"),
-        ]:
+        for source, name in unique_log_sources():
             if source.exists() and source.is_file():
                 zf.writestr(name, redact(tail_text(source, 300_000)))
     return path

@@ -3,6 +3,8 @@ import Foundation
 
 enum DorydLaunchAgent {
     static let label = "dev.dory.doryd"
+    static let stateDirectory = "\(NSHomeDirectory())/.dory"
+    static let logPath = "\(NSHomeDirectory())/.dory/doryd.log"
 
     struct Install: Sendable, Equatable {
         var plistPath: String
@@ -194,6 +196,7 @@ enum DorydLaunchAgent {
         let url = URL(fileURLWithPath: install.plistPath)
         let directory = url.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(atPath: stateDirectory, withIntermediateDirectories: true)
         if let existing = try? String(contentsOf: url, encoding: .utf8),
            existing == install.plistContents {
             return false
@@ -258,9 +261,9 @@ enum DorydLaunchAgent {
             <key>ProcessType</key>
             <string>Interactive</string>
             <key>StandardOutPath</key>
-            <string>/tmp/doryd.log</string>
+            <string>\(xmlEscaped(logPath))</string>
             <key>StandardErrorPath</key>
-            <string>/tmp/doryd.log</string>
+            <string>\(xmlEscaped(logPath))</string>
         </dict>
         </plist>
         """

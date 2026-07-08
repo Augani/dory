@@ -153,12 +153,26 @@ printf '%s' "$ssh_err" | grep -q "requires dorydctl"
 cat > "$TMP_HOME/fake-dorydctl" <<'SH'
 #!/bin/sh
 if [ "$1" = "--timeout" ]; then shift 2; fi
-if [ "$1" = "engine" ] && [ "$2" = "status" ]; then
+if [ "$1" = "doctor-json" ]; then
+  printf '{"schema":"dev.dory.doryd.doctor","token":"supersecret","checks":[]}\n'
+elif [ "$1" = "health" ]; then
+  printf '{"state":"running","checks":[]}\n'
+elif [ "$1" = "incidents" ]; then
+  printf '[{"at":"2026-07-08T00:00:04Z","type":"engine.start","detail":"Authorization: Bearer secret-token"}]\n'
+elif [ "$1" = "idle" ] && [ "$2" = "status" ]; then
+  printf '{"mode":"auto-idle","state":"idle"}\n'
+elif [ "$1" = "idle" ] && [ "$2" = "history" ]; then
+  printf '[{"at":"2026-07-08T00:00:05Z","state":"sleeping","detail":"idle policy"}]\n'
+elif [ "$1" = "docker" ] && [ "$2" = "ports" ]; then
+  printf '[{"container":"web","hostPort":8080,"containerPort":80,"protocol":"tcp"}]\n'
+elif [ "$1" = "engine" ] && [ "$2" = "status" ]; then
   printf '{"state":"sleeping","detail":"idle policy"}\n'
 elif [ "$1" = "engine" ] && [ "$2" = "sleep" ]; then
   printf '{"ok":true,"message":"sleep requested"}\n'
 elif [ "$1" = "engine" ] && [ "$2" = "wake" ]; then
   printf '{"ok":true,"message":"wake requested"}\n'
+elif [ "$1" = "machine" ] && [ "$2" = "list" ]; then
+  printf '[{"id":"dev","state":"running","address":"dev.dory.local"}]\n'
 elif [ "$1" = "machine" ] && [ "$2" = "create" ]; then
   printf '{"id":"%s","state":"created"}\n' "$3"
 elif [ "$1" = "machine" ] && [ "$2" = "start" ]; then
@@ -489,7 +503,19 @@ with zipfile.ZipFile(data["bundle"]) as zf:
     assert "doctor.json" in zf.namelist()
 '
 
-support_json="$(scripts/dory support bundle --json "$TMP_HOME/dory-support.zip")"
+mkdir -p "$TMP_HOME/.dory/hv" "$TMP_HOME/.dory/machines/logs"
+cat > "$TMP_HOME/.dory/doryd.log" <<'LOG'
+Authorization: Bearer secret-token
+token=supersecret
+LOG
+cat > "$TMP_HOME/.dory/hv/dory-hv.log" <<'LOG'
+engine helper ready
+LOG
+cat > "$TMP_HOME/.dory/machines/logs/ready-dev.log" <<'LOG'
+machine ready
+LOG
+
+support_json="$(DORYDCTL_BIN="$TMP_HOME/fake-dorydctl" scripts/dory support bundle --json "$TMP_HOME/dory-support.zip")"
 printf '%s' "$support_json" | python3 -c '
 import json, os, sys, zipfile
 data = json.load(sys.stdin)
@@ -498,10 +524,28 @@ assert data["redacted"] is True
 assert data["path"].endswith("dory-support.zip")
 assert os.path.exists(data["path"])
 with zipfile.ZipFile(data["path"]) as zf:
-    assert "doctor.json" in zf.namelist()
+    names = set(zf.namelist())
+    assert "doctor.json" in names
+    assert "logs/doryd.log" in names
+    assert "logs/hv/dory-hv.log" in names
+    assert "logs/machines/ready-dev.log" in names
+    doctor = json.loads(zf.read("doctor.json"))
+    doryd = doctor["doryd"]
+    assert doryd["doctor"]["ok"] is True
+    assert doryd["health"]["body"]["state"] == "running"
+    assert doryd["incidents"]["body"][0]["type"] == "engine.start"
+    assert doryd["machines"]["body"][0]["address"] == "dev.dory.local"
+    log = zf.read("logs/doryd.log").decode()
+text = json.dumps(doctor)
+assert "supersecret" not in text
+assert "secret-token" not in text
+assert "supersecret" not in log
+assert "secret-token" not in log
+assert "[redacted]" in text
+assert "[redacted]" in log
 '
 
-logs_json="$(scripts/dory logs collect --json "$TMP_HOME/dory-logs.zip")"
+logs_json="$(DORYDCTL_BIN="$TMP_HOME/fake-dorydctl" scripts/dory logs collect --json "$TMP_HOME/dory-logs.zip")"
 printf '%s' "$logs_json" | python3 -c '
 import json, os, sys
 data = json.load(sys.stdin)
