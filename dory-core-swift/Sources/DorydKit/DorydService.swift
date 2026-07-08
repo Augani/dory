@@ -647,6 +647,9 @@ public final class DorydService: NSObject, DorydControl {
     }
 
     private func currentPublishedPorts() -> [DoryListenPort] {
+        if let dockerPorts = dockerTier?.currentDockerPublishedPorts() {
+            return dockerPorts
+        }
         do {
             _ = try dockerTier?.refreshPublishedPorts()
         } catch {

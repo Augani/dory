@@ -1,4 +1,5 @@
 import Darwin
+import DoryCore
 import Foundation
 
 public enum HealthCheckStatus: String, Sendable, Codable {
@@ -475,7 +476,7 @@ public final class HealthReporter: @unchecked Sendable {
 
     private func lanExposureCheck() -> HealthCheck {
         let lanVisible = configBool(path: ["network", "lanVisible"]) == true
-        let count = dockerTier?.currentPublishedPorts()?.count ?? 0
+        let count = publishedPorts()?.count ?? 0
         if lanVisible {
             return HealthCheck(
                 id: "network.lan_exposure",
@@ -512,7 +513,7 @@ public final class HealthReporter: @unchecked Sendable {
     }
 
     private func publishedPortsCheck(dockerReachable: Bool) -> HealthCheck {
-        if let ports = dockerTier?.currentPublishedPorts() {
+        if let ports = publishedPorts() {
             return HealthCheck(
                 id: "network.published_ports",
                 status: .pass,
@@ -543,8 +544,9 @@ public final class HealthReporter: @unchecked Sendable {
     }
 
     private func domainTableCheck(dockerReachable: Bool) -> HealthCheck {
-        let domainCount = dockerTier?.currentPublishedPorts()?.count ?? 0
-        guard dockerReachable || dockerTier?.currentPublishedPorts() != nil else {
+        let ports = publishedPorts()
+        let domainCount = ports?.count ?? 0
+        guard dockerReachable || ports != nil else {
             return HealthCheck(
                 id: "network.domain_table",
                 status: .fail,
@@ -562,6 +564,10 @@ public final class HealthReporter: @unchecked Sendable {
             detail: "\(domainCount) domain route(s) inferred from containers",
             data: ["domains": String(domainCount)]
         )
+    }
+
+    private func publishedPorts() -> [DoryListenPort]? {
+        dockerTier?.currentDockerPublishedPorts() ?? dockerTier?.currentPublishedPorts()
     }
 
     private func mountBasicSkipCheck() -> HealthCheck {

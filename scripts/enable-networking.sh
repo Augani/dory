@@ -36,8 +36,9 @@ usage() {
 Usage: $0 [--direct-ip] [--forward LOW:HIGH] [--container-subnet CIDR] [--host-gateway IPv4] [--guest-gateway IPv4] [--direct-ip-interface IFACE] [--dry-run] [--remove]
 
   --direct-ip             Add/remove the direct container-IP route with the same admin consent flow.
-  --forward LOW:HIGH      Add a privileged TCP redirect in fallback mode, e.g. 25:1025. With live
-                          doryd, set DORYD_PRIVILEGED_TCP_FORWARDS=25:1025 on the daemon instead.
+  --forward LOW:HIGH      Add a privileged TCP redirect only in fallback mode, e.g. 25:1025. With
+                          live doryd, currently published low TCP ports are discovered automatically;
+                          use DORYD_PRIVILEGED_TCP_FORWARDS only for static extra redirects.
   --container-subnet CIDR Container bridge subnet to route. Default: $CONTAINER_SUBNET
   --host-gateway IPv4     Host-side point-to-point utun address. Default: $HOST_GATEWAY
   --guest-gateway IPv4    Guest/gvproxy gateway for that subnet. Default: $GUEST_GATEWAY
@@ -161,7 +162,7 @@ apply_live_doryd_plan() {
   fi
   echo "==> Applying live doryd networking authorization plan with $helper"
   if [ "${#PRIVILEGED_FORWARDS[@]}" -gt 0 ]; then
-    echo "    note: live doryd plans ignore --forward; set DORYD_PRIVILEGED_TCP_FORWARDS on doryd for daemon-managed low-port redirects."
+    echo "    note: live doryd plans ignore --forward; doryd discovers Docker-published low TCP ports automatically."
   fi
   if [ "$DRY_RUN" = "1" ]; then
     "$helper" --dry-run --plan-json "$plan"

@@ -121,6 +121,40 @@ struct NetworkingTests {
         #expect(AppStore.effectivePublishedPort(1024) == 1024)
     }
 
+    @Test func networkingAuthorizationSummaryListsDorydLowPortRedirects() {
+        let plan = DorydNetworkingAuthorizationPlan(
+            degradedMode: "high-port-dns-only",
+            authorizedMode: "system-resolver-proxy-tls",
+            suffix: "dory.local",
+            dnsBindAddress: "127.0.0.1",
+            dnsPort: 15353,
+            httpProxyPort: 8080,
+            httpsProxyPort: 8443,
+            privilegedTCPForwards: [
+                DorydPrivilegedTCPForward(listenPort: 25, targetPort: 60_025),
+                DorydPrivilegedTCPForward(listenPort: 110, targetPort: 60_110),
+            ],
+            requests: []
+        )
+
+        #expect(AppStore.networkingAuthorizationSummary(plan) == "Standard 80/443 plus low TCP redirects: 25 -> 60025, 110 -> 60110.")
+    }
+
+    @Test func networkingAuthorizationSummaryHandlesNoExtraLowPorts() {
+        let plan = DorydNetworkingAuthorizationPlan(
+            degradedMode: "high-port-dns-only",
+            authorizedMode: "system-resolver-proxy-tls",
+            suffix: "dory.local",
+            dnsBindAddress: "127.0.0.1",
+            dnsPort: 15353,
+            httpProxyPort: 8080,
+            httpsProxyPort: 8443,
+            requests: []
+        )
+
+        #expect(AppStore.networkingAuthorizationSummary(plan).contains("no extra low TCP publishes"))
+    }
+
     @Test func domainSuffixNormalizationAcceptsDNSStyleSuffixes() {
         #expect(AppStore.normalizedDomainSuffix(" Team.Dory.Local. ") == "team.dory.local")
         #expect(AppStore.normalizedDomainSuffix("dory.local") == "dory.local")

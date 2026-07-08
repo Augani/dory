@@ -940,13 +940,13 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: 10) {
                 HStack(spacing: 12) {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Authorize local domains")
+                        Text("Authorize doryd networking")
                             .font(.system(size: 13, weight: .semibold))
                             .foregroundStyle(p.text)
-                        Text("Installs the resolver and macOS port redirects for \(store.domainSuffix), including localhost 80 and 443.")
+                        Text("Applies doryd's current resolver and macOS port-redirect plan for \(store.domainSuffix), including 80/443 and any published low TCP ports.")
                             .font(.system(size: 11.5))
                             .foregroundStyle(p.text3)
-                            .lineLimit(2)
+                            .lineLimit(3)
                     }
                     Spacer(minLength: 0)
                     Button {
@@ -966,7 +966,7 @@ struct SettingsView: View {
                     Text(message)
                         .font(.system(size: 11.5))
                         .foregroundStyle(p.text3)
-                        .lineLimit(2)
+                        .lineLimit(4)
                 }
             }
             .padding(15)

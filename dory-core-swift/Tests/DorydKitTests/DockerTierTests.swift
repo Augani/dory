@@ -1,4 +1,5 @@
 import Darwin
+import DoryCore
 @testable import DorydKit
 import Foundation
 import XCTest
@@ -68,6 +69,88 @@ final class DockerTierTests: XCTestCase {
         XCTAssertEqual(serverDone.wait(timeout: .now() + 2), .success)
         XCTAssertNil(capture.error)
         XCTAssertEqual(capture.preamble, [1, 3, 0, 0, 0, 2, 4, 0, 0])
+    }
+
+    func testCurrentDockerPublishedPortsUsesRunningContainerPortBindings() throws {
+        let base = "/tmp/dory-tier-ports-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+
+        let forwardPath = base + "/forward.sock"
+        let listener = try bindUnixListener(path: forwardPath)
+        defer { close(listener) }
+
+        let capture = Capture()
+        let serverDone = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            let accepted = accept(listener, nil, nil)
+            guard accepted >= 0 else {
+                capture.setError("accept failed: \(errno)")
+                serverDone.signal()
+                return
+            }
+            defer {
+                close(accepted)
+                serverDone.signal()
+            }
+
+            guard let lengthBytes = readExactly(4, from: accepted) else {
+                capture.setError("missing preamble length")
+                return
+            }
+            let length = le32(lengthBytes)
+            guard let preamble = readExactly(Int(length), from: accepted) else {
+                capture.setError("missing preamble body")
+                return
+            }
+            capture.setPreamble(preamble)
+
+            guard let request = readUntilHeaderEnd(from: accepted) else {
+                capture.setError("missing docker request")
+                return
+            }
+            capture.setRequest(request)
+
+            let body = """
+            [
+              {"Id":"run","Names":["/web"],"State":"running","Ports":[
+                {"PrivatePort":80,"PublicPort":25,"Type":"tcp"},
+                {"PrivatePort":443,"PublicPort":443,"Type":"tcp6"},
+                {"PrivatePort":53,"PublicPort":5353,"Type":"udp6"}
+              ],"Labels":{}},
+              {"Id":"off","Names":["/off"],"State":"exited","Ports":[
+                {"PrivatePort":110,"PublicPort":110,"Type":"tcp"}
+              ],"Labels":{}},
+              {"Id":"bad","Names":["/bad"],"State":"running","Ports":[
+                {"PrivatePort":80,"PublicPort":70000,"Type":"tcp"},
+                {"PrivatePort":80,"PublicPort":8080,"Type":"sctp"},
+                {"PrivatePort":80,"Type":"tcp"}
+              ],"Labels":{}}
+            ]
+            """
+            writeAll("HTTP/1.1 200 OK\r\nContent-Length: \(body.utf8.count)\r\nConnection: close\r\n\r\n\(body)", to: accepted)
+            shutdown(accepted, SHUT_WR)
+        }
+
+        let tier = DockerTier(configuration: DockerTierConfiguration(
+            home: base + "/home",
+            forwardSocketPath: forwardPath,
+            cid: 3,
+            dockerPort: 1026,
+            gpuSupported: false
+        ))
+        try tier.start()
+        defer { tier.stop() }
+
+        XCTAssertEqual(tier.currentDockerPublishedPorts(), [
+            DoryListenPort(protocol: "tcp", port: 25),
+            DoryListenPort(protocol: "tcp", port: 443),
+            DoryListenPort(protocol: "udp", port: 5353),
+        ])
+        XCTAssertEqual(serverDone.wait(timeout: .now() + 2), .success)
+        XCTAssertNil(capture.error)
+        XCTAssertEqual(capture.preamble, [1, 3, 0, 0, 0, 2, 4, 0, 0])
+        XCTAssertTrue(capture.request?.contains("GET /containers/json?all=1") == true)
     }
 
     func testArmSleepingPublishesSocketWithoutStartingHelperUntilWake() throws {
@@ -282,12 +365,19 @@ final class DockerTierTests: XCTestCase {
 private final class Capture: @unchecked Sendable {
     private let lock = NSLock()
     private var storedPreamble: [UInt8]?
+    private var storedRequest: String?
     private var storedError: String?
 
     var preamble: [UInt8]? {
         lock.lock()
         defer { lock.unlock() }
         return storedPreamble
+    }
+
+    var request: String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedRequest
     }
 
     var error: String? {
@@ -299,6 +389,12 @@ private final class Capture: @unchecked Sendable {
     func setPreamble(_ preamble: [UInt8]) {
         lock.lock()
         storedPreamble = preamble
+        lock.unlock()
+    }
+
+    func setRequest(_ request: String) {
+        lock.lock()
+        storedRequest = request
         lock.unlock()
     }
 

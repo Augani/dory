@@ -1234,7 +1234,7 @@ final class AppStore {
             let script = "do shell script \(Self.appleScriptString(command)) with administrator privileges"
             let result = await Shell.runAsyncResult("/usr/bin/osascript", ["-e", script])
             if result.exit == 0 {
-                networkingAuthorizationMessage = "Local domains are authorized for \(plan.suffix)."
+                networkingAuthorizationMessage = "Dory networking is authorized for \(plan.suffix). \(Self.networkingAuthorizationSummary(plan))"
                 await publishDorydNetworkRoutes()
             } else {
                 let output = result.output.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1244,6 +1244,22 @@ final class AppStore {
             networkingAuthorizationMessage = "Local domain authorization failed: \(error.localizedDescription)"
         }
         try? FileManager.default.removeItem(at: planURL)
+    }
+
+    nonisolated static func networkingAuthorizationSummary(_ plan: DorydNetworkingAuthorizationPlan) -> String {
+        let forwards = plan.privilegedTCPForwards.sorted {
+            if $0.listenPort == $1.listenPort { return $0.targetPort < $1.targetPort }
+            return $0.listenPort < $1.listenPort
+        }
+        guard !forwards.isEmpty else {
+            return "Standard 80/443 redirects point to doryd's local proxies; no extra low TCP publishes were detected."
+        }
+        let shown = forwards.prefix(4)
+            .map { "\($0.listenPort) -> \($0.targetPort)" }
+            .joined(separator: ", ")
+        let remaining = forwards.count - 4
+        let suffix = remaining > 0 ? ", +\(remaining) more" : ""
+        return "Standard 80/443 plus low TCP redirects: \(shown)\(suffix)."
     }
 
     nonisolated private static func bundledHelper(_ name: String) -> String? {

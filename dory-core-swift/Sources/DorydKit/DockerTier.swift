@@ -374,6 +374,34 @@ public final class DockerTier: @unchecked Sendable {
         return portPublisher.current
     }
 
+    public func currentDockerPublishedPorts() -> [DoryListenPort]? {
+        lock.lock()
+        let currentState = state
+        lock.unlock()
+        guard currentState == .running else { return [] }
+
+        switch DockerEngineProbe.containerSummaries(
+            forwardSocketPath: configuration.forwardSocketPath,
+            cid: configuration.cid,
+            dockerPort: configuration.dockerPort
+        ) {
+        case let .ok(containers):
+            var ports = Set<DoryListenPort>()
+            for container in containers where container.isRunning {
+                for port in container.ports {
+                    guard let listenPort = Self.dockerPublishedPort(port) else { continue }
+                    ports.insert(listenPort)
+                }
+            }
+            return ports.sorted {
+                if $0.port == $1.port { return $0.protocol < $1.protocol }
+                return $0.port < $1.port
+            }
+        case .unavailable:
+            return nil
+        }
+    }
+
     public func containerSummariesForIdle() -> DockerContainerList {
         lock.lock()
         let currentState = state
@@ -425,6 +453,22 @@ public final class DockerTier: @unchecked Sendable {
             maximumTargetMB: maximumTargetMB,
             canBalloon: configuration.hvProcess != nil
         )
+    }
+
+    private static func dockerPublishedPort(_ port: DockerContainerPort) -> DoryListenPort? {
+        guard let publicPort = port.publicPort,
+              (1...65_535).contains(publicPort),
+              let portNumber = UInt32(exactly: publicPort) else {
+            return nil
+        }
+        switch (port.type ?? "tcp").lowercased() {
+        case "tcp", "tcp6":
+            return DoryListenPort(protocol: "tcp", port: portNumber)
+        case "udp", "udp6":
+            return DoryListenPort(protocol: "udp", port: portNumber)
+        default:
+            return nil
+        }
     }
 
     public func syncAgentClock(now: Date = Date()) -> AgentClockSyncResult {
