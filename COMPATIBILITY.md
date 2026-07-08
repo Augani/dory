@@ -72,6 +72,7 @@ experiments; the shipping shared-VM path fronts a real `dockerd` socket.
 | Capability | Status | Notes |
 |---|---|---|
 | `dory doctor` | ✅ | Checks socket/API, Docker CLI and context, registry DNS/TLS, host/container DNS comparison, published ports, local domains, bind mounts, watcher visibility, VM clock, disk, memory, and helper setup. Supports `--json`, `--active`, focused `--only` groups, and bundle creation. |
+| Agent-native CLI contract | ✅ | `dory agent guide --json`, `dory wait --json`, `dory events --json`, and `dory mcp serve [--read-only]` expose versioned schemas for non-interactive automation. While `doryd` is running it automatically reconciles bundled Docker/Compose/kubectl/Dory wrappers and the Docker context, so `dory install` is manual recovery only. |
 | Redacted diagnostic bundle | ✅ | `dory bundle` and `dory doctor --bundle` write a zip containing doctor output, route/disk/idle summaries, selected environment, config, and log tails with token/password/basic/bearer redaction. |
 | Network readiness CLI | ✅ | `dory network --active` starts a labeled HTTP probe container and verifies registry reachability, container DNS, localhost port publishing, and `*.dory.local` routing. |
 | Corporate/private network probes | ✅ foundation | `dory network --save-probe HOST[:PORT]`, `--list-probes`, and one-time `--probe HOST[:PORT]` store credential-free host/port probes. `dory network` includes them in host DNS, TCP/TLS, and active host/container DNS comparison. |

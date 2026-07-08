@@ -72,7 +72,7 @@ dory — Dory CLI
 
   dory <docker args...>        Run any docker command against Dory's engine
   dory install [--json] [--dry-run]
-                               Repair doryd's per-user terminal integration for docker, compose, kubectl, and dory
+                               Manual recovery for doryd's per-user terminal integration for docker, compose, kubectl, and dory
   dory uninstall [--json] [--dry-run]
                                Remove Dory shell integration from ~/.dory/bin and shell profiles
   dory shell <container>       Open an interactive shell in a container
@@ -1937,12 +1937,18 @@ import json
 import sys
 
 kind, target, desired, state, matched, elapsed, timeout = sys.argv[1:8]
+ok = matched == "1"
 print(json.dumps({
+    "schema": "dev.dory.wait",
+    "version": 1,
+    "ok": ok,
+    "status": "matched" if ok else "timeout",
+    "code": "wait.matched" if ok else "wait.timeout",
     "kind": kind,
     "target": target,
     "desiredState": desired,
     "state": state,
-    "matched": matched == "1",
+    "matched": ok,
     "elapsedSeconds": int(elapsed),
     "timeoutSeconds": int(timeout),
 }, separators=(",", ":"), sort_keys=True))
@@ -2645,6 +2651,16 @@ data = {
         "nonInteractive": True,
         "promptPolicy": "commands should not prompt unless an operation explicitly needs --apply or user credentials",
         "destructivePolicy": "run dry-run or read-only commands first; require explicit --apply/--include-volumes/delete verbs for writes",
+        "hostToolPolicy": "doryd reconciles bundled docker, docker compose, kubectl, dory, and docker context integration automatically while it is running; do not require dory install for first use",
+    },
+    "schemas": {
+        "agentGuide": "dev.dory.agent.guide v1",
+        "wait": "dev.dory.wait v1",
+        "events": "dev.dory.events v1",
+        "event": "dev.dory.event v1",
+        "supportBundle": "dev.dory.support.bundle v1",
+        "machineExec": "dev.dory.machine.exec v1",
+        "sandboxRun": "dev.dory.sandbox.run v1",
     },
     "exitCodes": {
         "0": "success or healthy",
@@ -2684,11 +2700,12 @@ data = {
         {
             "id": "install",
             "status": "available",
-            "invoke": "dory install --json",
+            "invoke": "dory install --json --dry-run",
             "json": True,
             "dryRun": True,
+            "manualRecoveryOnly": True,
             "safeForAutomation": True,
-            "notes": "Repairs the per-user terminal integration doryd normally keeps current, so docker, docker compose, kubectl, and dory resolve from ~/.dory/bin without Docker Desktop or admin access.",
+            "notes": "Manual recovery only. doryd keeps per-user terminal integration current automatically while it is running, so docker, docker compose, kubectl, and dory resolve from ~/.dory/bin without Docker Desktop or admin access.",
         },
         {
             "id": "repair",
@@ -2803,14 +2820,18 @@ data = {
             "status": "available",
             "invoke": "dory wait <target> --until <state> --timeout N --json",
             "json": True,
+            "schema": "dev.dory.wait",
             "safeForAutomation": True,
             "targets": ["engine", "container", "machine"],
+            "resultCodes": ["wait.matched", "wait.timeout"],
         },
         {
             "id": "events",
             "status": "available",
             "invoke": "dory events --follow --json",
             "json": True,
+            "schema": "dev.dory.events",
+            "eventSchema": "dev.dory.event",
             "safeForAutomation": True,
             "sources": ["idle", "incident"],
         },
@@ -2858,6 +2879,7 @@ Dory agent guide v1
 
 Use `dory agent guide --json` for the stable machine-readable contract.
 Prefer `--json` on doctor, network, mount, disk, cleanup, routes, compat, repair, and idle commands.
+doryd reconciles host tools automatically while it is running; do not run `dory install` for first use.
 Use `dory machine exec NAME --json -- CMD` for structured machine command results.
 Run read-only checks first; use `--apply` only for explicit repair/cleanup writes.
 Available agent-native primitive: `dory wait`.

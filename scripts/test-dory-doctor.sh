@@ -35,6 +35,9 @@ data = json.load(sys.stdin)
 assert data["schema"] == "dev.dory.agent.guide"
 assert data["version"] == 1
 assert data["defaults"]["socket"] == os.environ["DORY_SOCK"]
+assert "do not require dory install" in data["defaults"]["hostToolPolicy"]
+assert data["schemas"]["wait"] == "dev.dory.wait v1"
+assert data["schemas"]["events"] == "dev.dory.events v1"
 commands = {item["id"]: item for item in data["commands"]}
 assert commands["doctor"]["status"] == "available"
 assert commands["doctor"]["json"] is True
@@ -42,10 +45,17 @@ assert commands["support"]["status"] == "available"
 assert commands["support"]["redacted"] is True
 assert commands["install"]["status"] == "available"
 assert commands["install"]["dryRun"] is True
+assert commands["install"]["manualRecoveryOnly"] is True
+assert commands["install"]["invoke"] == "dory install --json --dry-run"
+assert "Manual recovery only" in commands["install"]["notes"]
 assert commands["repair"]["dryRun"] is True
 assert commands["wait"]["status"] == "available"
+assert commands["wait"]["schema"] == "dev.dory.wait"
+assert "wait.timeout" in commands["wait"]["resultCodes"]
 assert "machine" in commands["wait"]["targets"]
 assert commands["events"]["status"] == "available"
+assert commands["events"]["schema"] == "dev.dory.events"
+assert commands["events"]["eventSchema"] == "dev.dory.event"
 assert "incident" in commands["events"]["sources"]
 assert commands["engine"]["json"] is True
 assert commands["machine"]["json"] is True
@@ -64,6 +74,7 @@ assert data["recommendedRecoveryLoop"]
 '
 
 scripts/dory agent guide --text | grep -q "Dory agent guide v1"
+scripts/dory agent guide --text | grep -q "doryd reconciles host tools automatically"
 
 mkdir -p "$TMP_HOME/fake-bin"
 for tool in docker docker-compose kubectl dorydctl; do
@@ -124,17 +135,26 @@ test "$wait_rc" -eq 1
 printf '%s' "$wait_json" | python3 -c '
 import json, sys
 data = json.load(sys.stdin)
+assert data["schema"] == "dev.dory.wait"
+assert data["version"] == 1
 assert data["kind"] == "engine"
 assert data["desiredState"] == "running"
+assert data["ok"] is False
+assert data["status"] == "timeout"
+assert data["code"] == "wait.timeout"
 assert data["matched"] is False
 '
 
 DORYDCTL_BIN=/usr/bin/false DORY_DOCKER_BIN=/usr/bin/false scripts/dory wait machine ghost --until missing --timeout 0 --json | python3 -c '
 import json, sys
 data = json.load(sys.stdin)
+assert data["schema"] == "dev.dory.wait"
 assert data["kind"] == "machine"
 assert data["target"] == "ghost"
 assert data["state"] == "missing"
+assert data["ok"] is True
+assert data["status"] == "matched"
+assert data["code"] == "wait.matched"
 assert data["matched"] is True
 '
 
