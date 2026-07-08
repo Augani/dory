@@ -28,6 +28,7 @@ python3 -m py_compile scripts/dory-doctor
 python3 -m py_compile scripts/dory-idle-proxy
 bash -n scripts/dory
 bash -n scripts/p0-smoke.sh
+bash -n scripts/nonnative-build-smoke.sh
 
 scripts/dory agent guide --json | python3 -c '
 import json, os, sys

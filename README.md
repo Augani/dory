@@ -191,6 +191,7 @@ scripts/test.sh         # full test suite
 scripts/shot.sh         # build, launch, and screenshot the window
 scripts/test-dory-doctor.sh # fast diagnostics, bundle, repair, and Auto-Idle proxy smoke
 scripts/p0-smoke.sh     # strict release smoke against a running Dory socket
+scripts/nonnative-build-smoke.sh # focused linux/amd64-on-arm64 BuildKit smoke
 scripts/benchmark-compare.sh --dry-run # auditable cross-engine benchmark plan
 ```
 
