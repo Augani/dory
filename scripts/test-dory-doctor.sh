@@ -29,6 +29,23 @@ python3 -m py_compile scripts/dory-idle-proxy
 bash -n scripts/dory
 bash -n scripts/p0-smoke.sh
 
+scripts/dory agent guide --json | python3 -c '
+import json, os, sys
+data = json.load(sys.stdin)
+assert data["schema"] == "dev.dory.agent.guide"
+assert data["version"] == 1
+assert data["defaults"]["socket"] == os.environ["DORY_SOCK"]
+commands = {item["id"]: item for item in data["commands"]}
+assert commands["doctor"]["status"] == "available"
+assert commands["doctor"]["json"] is True
+assert commands["repair"]["dryRun"] is True
+assert commands["sandbox"]["status"] == "planned"
+assert commands["wait"]["invoke"].startswith("dory wait")
+assert data["recommendedRecoveryLoop"]
+'
+
+scripts/dory agent guide --text | grep -q "Dory agent guide v1"
+
 scripts/dory-doctor mode show --json | python3 -c '
 import json, sys
 data = json.load(sys.stdin)
@@ -200,6 +217,7 @@ scripts/dory help | grep -q "dory idle proxy"
 scripts/dory help | grep -q "dory idle proxy-status"
 scripts/dory help | grep -q "dory cleanup"
 scripts/dory help | grep -q "dory compat"
+scripts/dory help | grep -q "dory agent guide"
 
 # Compatibility center: every registered tool is checked and every non-pass carries an action;
 # runs without an engine (skips/warns/fails, never crashes). `compat` exits 1 when a tool fails,

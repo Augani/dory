@@ -111,6 +111,8 @@ dory — Dory CLI
                                Show the last Auto-Idle proxy state transition
   dory idle launch-agent install|uninstall|status|print
                                Manage the opt-in always-listening LaunchAgent
+  dory agent guide [--json|--text]
+                               Emit a versioned CLI capability map for coding agents
   dory usb ls|attach|detach     Inspect USB candidates and request USB/IP attach/detach
   dory expose <port|machine> [--port P] [--hostname H] [--print-command]
                                Share a local port or machine endpoint through a public HTTPS tunnel
@@ -1075,6 +1077,232 @@ engine_cmd() {
   esac
 }
 
+agent_guide_json() {
+  python3 - "$DORY_SOCK" <<'PY'
+import json
+import sys
+
+socket_path = sys.argv[1]
+
+data = {
+    "schema": "dev.dory.agent.guide",
+    "version": 1,
+    "summary": "Machine-readable Dory CLI capability map for non-interactive coding agents.",
+    "defaults": {
+        "socket": socket_path,
+        "preferJSON": True,
+        "nonInteractive": True,
+        "promptPolicy": "commands should not prompt unless an operation explicitly needs --apply or user credentials",
+        "destructivePolicy": "run dry-run or read-only commands first; require explicit --apply/--include-volumes/delete verbs for writes",
+    },
+    "exitCodes": {
+        "0": "success or healthy",
+        "1": "runtime unhealthy, probe failed, or requested operation could not complete",
+        "2": "usage or validation error",
+        "64": "unsupported subcommand or operation",
+    },
+    "commands": [
+        {
+            "id": "docker",
+            "status": "available",
+            "invoke": "dory <docker args...>",
+            "json": "docker-dependent",
+            "safeForAutomation": True,
+            "notes": "Passes through to docker against Dory's socket.",
+            "examples": ["dory ps", "dory version --format '{{json .}}'"],
+        },
+        {
+            "id": "doctor",
+            "status": "available",
+            "invoke": "dory doctor --json [--active] [--only GROUPS] [--bundle [PATH]]",
+            "json": True,
+            "dryRun": True,
+            "safeForAutomation": True,
+            "groups": ["socket", "api", "docker", "context", "registry", "network", "ports", "domains", "mounts", "watch", "clock", "disk", "memory", "helpers"],
+        },
+        {
+            "id": "repair",
+            "status": "available",
+            "invoke": "dory repair TARGET --json [--apply]",
+            "json": True,
+            "dryRun": True,
+            "safeForAutomation": True,
+            "targets": ["all", "socket", "context", "dns", "routes", "domains", "ports", "dockerd", "engine", "guest-agent"],
+        },
+        {
+            "id": "network",
+            "status": "available",
+            "invoke": "dory network --json [--active] [--probe HOST[:PORT]]",
+            "json": True,
+            "dryRun": True,
+            "safeForAutomation": True,
+            "notes": "Classifies DNS, registry, proxy, port, and local-domain failures.",
+        },
+        {
+            "id": "mount",
+            "status": "available",
+            "invoke": "dory mount --json",
+            "json": True,
+            "dryRun": True,
+            "safeForAutomation": True,
+            "notes": "Validates bind-mount read/write/truncate/path-space/watch behavior.",
+        },
+        {
+            "id": "disk",
+            "status": "available",
+            "invoke": "dory disk --json",
+            "json": True,
+            "dryRun": True,
+            "safeForAutomation": True,
+        },
+        {
+            "id": "cleanup",
+            "status": "available",
+            "invoke": "dory cleanup --json [--apply] [--include-volumes]",
+            "json": True,
+            "dryRun": True,
+            "safeForAutomation": True,
+            "destructiveRequires": ["--apply", "--include-volumes for volume pruning"],
+        },
+        {
+            "id": "routes",
+            "status": "available",
+            "invoke": "dory routes --json",
+            "json": True,
+            "dryRun": True,
+            "safeForAutomation": True,
+        },
+        {
+            "id": "compat",
+            "status": "available",
+            "invoke": "dory compat --json [--only TOOLS]",
+            "json": True,
+            "dryRun": True,
+            "safeForAutomation": True,
+        },
+        {
+            "id": "idle",
+            "status": "available",
+            "invoke": "dory idle status --json | dory idle history --json",
+            "json": True,
+            "dryRun": True,
+            "safeForAutomation": True,
+        },
+        {
+            "id": "engine",
+            "status": "available",
+            "invoke": "dory engine status|wake|sleep",
+            "json": False,
+            "safeForAutomation": False,
+            "notes": "Use dorydctl when available for machine-readable engine state.",
+        },
+        {
+            "id": "machine",
+            "status": "available",
+            "invoke": "dory machine ls|create|start|stop|delete|snapshot|restore ...",
+            "json": "partial",
+            "safeForAutomation": True,
+            "notes": "Routes to dorydctl when present; legacy fallback remains during cutover.",
+        },
+        {
+            "id": "ssh",
+            "status": "available",
+            "invoke": "dory ssh <machine>",
+            "json": False,
+            "safeForAutomation": False,
+            "notes": "Interactive terminal attach; use machine lifecycle/status commands for automation.",
+        },
+        {
+            "id": "expose",
+            "status": "available",
+            "invoke": "dory expose <port|machine> [--print-command]",
+            "json": False,
+            "safeForAutomation": True,
+            "notes": "--print-command is non-interactive and does not start the tunnel.",
+        },
+        {
+            "id": "usb",
+            "status": "available",
+            "invoke": "dory usb ls|attach|detach",
+            "json": False,
+            "safeForAutomation": False,
+            "notes": "USB attach can require user authorization.",
+        },
+        {
+            "id": "wait",
+            "status": "planned",
+            "invoke": "dory wait <target> --until <state> --timeout N --json",
+            "json": True,
+            "safeForAutomation": True,
+        },
+        {
+            "id": "events",
+            "status": "planned",
+            "invoke": "dory events --follow --json",
+            "json": True,
+            "safeForAutomation": True,
+        },
+        {
+            "id": "sandbox",
+            "status": "planned",
+            "invoke": "dory sandbox run --mount ./project <agent>",
+            "json": True,
+            "safeForAutomation": True,
+            "notes": "Future per-agent isolated VM/container with scoped mounts and TTL cleanup.",
+        },
+        {
+            "id": "mcp",
+            "status": "planned",
+            "invoke": "dory mcp serve",
+            "json": True,
+            "safeForAutomation": True,
+        },
+    ],
+    "recommendedRecoveryLoop": [
+        "Run dory doctor --json before modifying runtime state.",
+        "If a result includes an action, prefer the matching dory repair TARGET --json dry-run.",
+        "Only add --apply when the user or task has authorized a write.",
+        "After repair, re-run the smallest relevant doctor group.",
+    ],
+}
+print(json.dumps(data, separators=(",", ":"), sort_keys=True))
+PY
+}
+
+agent_guide_text() {
+  cat <<'EOF'
+Dory agent guide v1
+
+Use `dory agent guide --json` for the stable machine-readable contract.
+Prefer `--json` on doctor, network, mount, disk, cleanup, routes, compat, repair, and idle commands.
+Run read-only checks first; use `--apply` only for explicit repair/cleanup writes.
+Planned agent-native primitives: `dory wait`, `dory events`, `dory sandbox`, and `dory mcp serve`.
+EOF
+}
+
+agent_cmd() {
+  case "${1:-guide}" in
+    guide)
+      shift || true
+      local format="json"
+      while [ "$#" -gt 0 ]; do
+        case "$1" in
+          --json) format="json"; shift ;;
+          --text) format="text"; shift ;;
+          -h|--help) echo "usage: dory agent guide [--json|--text]"; return 0 ;;
+          *) echo "unknown agent guide option: $1" >&2; exit 2 ;;
+        esac
+      done
+      if [ "$format" = "json" ]; then
+        agent_guide_json
+      else
+        agent_guide_text
+      fi
+      ;;
+    *) echo "usage: dory agent guide [--json|--text]" >&2; exit 2 ;;
+  esac
+}
+
 case "${1:-help}" in
   help|-h|--help) usage ;;
   doctor)         shift; doctor_cmd doctor "$@" ;;
@@ -1095,6 +1323,7 @@ case "${1:-help}" in
                     *) doctor_cmd idle "$@" ;;
                   esac ;;
   engine)         shift; engine_cmd "$@" ;;
+  agent)          shift; agent_cmd "$@" ;;
   bundle)         shift; doctor_cmd bundle "$@" ;;
   shell)          exec "$DOCKER_BIN" -H "unix://$DORY_SOCK" exec -it "$2" sh -c 'command -v bash >/dev/null && exec bash || exec sh' ;;
   debug)          shift; debug_cmd "$@" ;;
