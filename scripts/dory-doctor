@@ -2476,6 +2476,28 @@ def check_compat_kubernetes(state: dict[str, Any]) -> list[CheckResult]:
     return [CheckResult("compat.kubernetes", "pass", "compat.kubernetes.ok", "kubectl and a kubeconfig are present", binary)]
 
 
+def check_compat_amd64(state: dict[str, Any]) -> list[CheckResult]:
+    machine = os.uname().machine
+    if machine == "x86_64":
+        return [CheckResult(
+            "compat.amd64", "pass", "compat.amd64.native_host",
+            "amd64 images are native on this Mac",
+            "This host is x86_64, so linux/amd64 containers do not need emulation.",
+        )]
+    if machine != "arm64" or sys.platform != "darwin":
+        return [CheckResult(
+            "compat.amd64", "skip", "compat.amd64.not_apple_silicon",
+            "amd64 emulation check skipped",
+            f"Host platform is {sys.platform}/{machine}; Dory's amd64 warning is specific to Apple silicon.",
+        )]
+    return [CheckResult(
+        "compat.amd64", "warn", "compat.amd64.qemu_limited",
+        "amd64 images use QEMU emulation",
+        "On Apple silicon, Dory's shared engine runs linux/amd64 images through qemu-user binfmt. Alpine/Debian-class images work, but heavy SQL Server, Oracle, AVX, or threading-heavy amd64 images may segfault under qemu-user.",
+        "Prefer native arm64 images when available; for one-off Rosetta-fast x86 runs use `dory vm --arch amd64 --rosetta -- <cmd>`. See COMPATIBILITY.md before adopting SQL Server or Oracle on Dory.",
+    )]
+
+
 COMPAT_TOOLS: list[dict[str, Any]] = [
     {"tool": "docker", "title": "Docker CLI", "check": check_compat_docker},
     {"tool": "compose", "title": "Docker Compose v2", "check": check_compat_compose},
@@ -2486,6 +2508,7 @@ COMPAT_TOOLS: list[dict[str, Any]] = [
     {"tool": "supabase", "title": "Supabase local", "check": lambda s: check_compat_cli_tool(s, "supabase", "Supabase local", ["supabase"], "run `supabase start` to bring up the stack.")},
     {"tool": "localstack", "title": "LocalStack", "check": lambda s: check_compat_cli_tool(s, "localstack", "LocalStack", ["localstack"], "publishes 4566; verify with `curl localhost:4566/_localstack/health`.")},
     {"tool": "kubernetes", "title": "Skaffold/Tilt (Kubernetes)", "check": check_compat_kubernetes},
+    {"tool": "amd64", "title": "linux/amd64 images", "check": check_compat_amd64},
 ]
 
 
@@ -2559,6 +2582,16 @@ def compat_recipes() -> dict[str, dict[str, Any]]:
             "summary": "Use Dory's Kubernetes context for image load and deploy.",
             "steps": ["kubectl config use-context dory", "skaffold dev  # or: tilt up"],
             "verify": "kubectl --context dory get nodes",
+        },
+        "amd64": {
+            "title": "linux/amd64 images on Apple silicon",
+            "summary": "Understand Dory's qemu-user path before choosing heavy x86-only images.",
+            "steps": [
+                "docker run --rm --platform linux/amd64 alpine uname -m",
+                "# For heavy SQL Server/Oracle-class amd64 images, prefer native arm64 alternatives when available.",
+                "dory vm --arch amd64 --rosetta -- uname -m  # one-off Rosetta-fast x86 path",
+            ],
+            "verify": "dory compat --only amd64 --json",
         },
     }
 

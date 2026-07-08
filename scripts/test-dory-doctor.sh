@@ -310,7 +310,7 @@ printf '%s' "$compat_json" | python3 -c '
 import json, sys
 results = json.load(sys.stdin)["results"]
 checked = {r["id"].split(".")[1] for r in results}
-required = {"docker", "compose", "testcontainers", "act", "kubernetes", "vscode", "cursor", "supabase", "localstack"}
+required = {"docker", "compose", "testcontainers", "act", "kubernetes", "vscode", "cursor", "supabase", "localstack", "amd64"}
 missing = required - checked
 assert not missing, f"compat did not check: {sorted(missing)}"
 for r in results:
@@ -329,6 +329,7 @@ for name, recipe in tools.items():
 '
 
 scripts/dory compat --recipe testcontainers | grep -q "Verify:"
+scripts/dory compat --recipe amd64 | grep -q "qemu-user"
 set +e
 scripts/dory compat --recipe no-such-tool >/dev/null 2>&1
 compat_rc=$?

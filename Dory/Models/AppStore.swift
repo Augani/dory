@@ -425,8 +425,8 @@ final class AppStore {
     private var shimServer: ShimHTTPServer?
     var shimSocketPath: String { daemonSocketPath ?? DockerShim.defaultSocketPath }
     private(set) var shimRunning = false
-    /// Opt-in: run the Virtualization.framework engine with Rosetta so heavy amd64 images (SQL Server)
-    /// run reliably. Trades away dory-hv's memory advantage while on, so it is a manual toggle (#3).
+    /// Opt-in: register qemu-user binfmt handlers so linux/amd64 images can run on the dory-hv
+    /// engine. Rosetta remains available only through one-off `dory vm --rosetta` runs.
     var rosettaX86Enabled = false
     /// Opt-in experimental GPU acceleration (virtio-gpu/Venus → virglrenderer → MoltenVK → Metal) for
     /// Vulkan and AI compute inside containers. Applied on the next engine start; falls back to
@@ -689,19 +689,18 @@ final class AppStore {
         await connectBackend()
     }
 
-    /// Toggles the opt-in Rosetta x86 engine and restarts the shared engine so the new mode takes
-    /// effect. On → Virtualization.framework + Rosetta (heavy amd64 like SQL Server works, more
-    /// memory). Off → dory-hv (the memory advantage). No-op unless the shared engine is active.
+    /// Toggles the opt-in qemu-user x86/amd64 binfmt path and restarts the shared engine so the new
+    /// mode takes effect. Heavy amd64 images such as SQL Server/Oracle remain documented as limited.
     func setRosettaX86(_ on: Bool) async {
         guard on != rosettaX86Enabled else { return }
         rosettaX86Enabled = on
         UserDefaults.standard.set(on, forKey: SharedVMProvisioner.Config.rosettaX86Key)
         guard !runtimeOwnedByDoryd else {
-            sharedVMStatus = "Rosetta mode will apply when doryd is configured with matching helper settings."
+            sharedVMStatus = "amd64 emulation will apply when doryd restarts the engine."
             return
         }
         guard runtimeKind == .sharedVM || runtimeKind == .disconnected, !isConnecting else { return }
-        sharedVMStatus = on ? "Switching to the Rosetta x86 engine…" : "Switching to Dory's engine…"
+        sharedVMStatus = on ? "Enabling x86/amd64 emulation…" : "Disabling x86/amd64 emulation…"
         await SharedVMProvisioner.stopEngine()
         await connectBackend()
     }

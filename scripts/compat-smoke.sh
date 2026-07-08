@@ -35,7 +35,7 @@ import sys
 
 results = json.load(open(sys.argv[1], encoding="utf-8"))["results"]
 checked = {r["id"].split(".")[1] for r in results}
-required = {"docker", "compose", "testcontainers", "act", "kubernetes", "vscode", "cursor", "supabase", "localstack"}
+required = {"docker", "compose", "testcontainers", "act", "kubernetes", "vscode", "cursor", "supabase", "localstack", "amd64"}
 missing = required - checked
 assert not missing, f"compat did not check: {sorted(missing)}"
 for result in results:
