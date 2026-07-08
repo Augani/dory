@@ -27,10 +27,6 @@ if [ -b /dev/vdb ]; then
   }
 fi
 
-if [ -x /usr/bin/dory-agent ] && ! pgrep -x dory-agent >/dev/null 2>&1; then
-  /usr/bin/dory-agent >/var/log/dory-agent.log 2>&1 &
-fi
-
 if [ -x /usr/local/bin/dockerd ]; then
   /usr/local/bin/dockerd \
     -H unix:///var/run/docker.sock \
@@ -46,6 +42,10 @@ fi
     sync
     poweroff -f
   done ) &
+
+if [ -x /usr/bin/dory-agent ]; then
+  exec /usr/bin/dory-agent >/var/log/dory-agent.log 2>&1
+fi
 
 if [ -x /usr/local/bin/docker-init ]; then
   exec /usr/local/bin/docker-init -s -- sleep 2147483647

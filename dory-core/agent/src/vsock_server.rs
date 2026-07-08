@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use dory_proto::channels::{PORT_CONTROL, PORT_DOCKER};
+use dory_proto::channels::{PORT_CONTROL, PORT_DOCKER, PORT_SHELL};
 use dory_proto::half_close::splice;
 use dory_proto::handshake::{handshake, Hello};
 use dory_proto::mux::{Handler, HandlerFuture, Mux};
@@ -18,7 +18,7 @@ use crate::handler::handle;
 const GUEST_DOCKER_SOCK: &str = "/var/run/docker.sock";
 
 pub async fn run() -> std::io::Result<()> {
-    tokio::try_join!(serve_control(), serve_docker())?;
+    tokio::try_join!(serve_control(), serve_docker(), serve_shell())?;
     Ok(())
 }
 
@@ -28,11 +28,15 @@ async fn serve_control() -> std::io::Result<()> {
     loop {
         let (mut stream, _peer) = listener.accept().await?;
         tokio::spawn(async move {
-            if handshake(&mut stream, &Hello::current(agent_build())).await.is_err() {
+            if handshake(&mut stream, &Hello::current(agent_build()))
+                .await
+                .is_err()
+            {
                 return;
             }
-            let handler: Handler =
-                Arc::new(|req: Vec<u8>| Box::pin(async move { handle(&req).await }) as HandlerFuture);
+            let handler: Handler = Arc::new(|req: Vec<u8>| {
+                Box::pin(async move { handle(&req).await }) as HandlerFuture
+            });
             // The mux owns the connection via its own spawned reader/writer tasks; it serves until
             // the peer closes, at which point those tasks unwind.
             let _mux = Mux::start(stream, handler);
@@ -52,6 +56,17 @@ async fn serve_docker() -> std::io::Result<()> {
                 }
                 Err(_) => { /* dockerd not up yet; drop the client */ }
             }
+        });
+    }
+}
+
+/// Interactive shell byte stream: each connection gets an independent guest PTY.
+async fn serve_shell() -> std::io::Result<()> {
+    let listener = VsockListener::bind(VsockAddr::new(VMADDR_CID_ANY, PORT_SHELL))?;
+    loop {
+        let (client, _peer) = listener.accept().await?;
+        tokio::spawn(async move {
+            let _ = crate::terminal::serve_shell_stream(client).await;
         });
     }
 }

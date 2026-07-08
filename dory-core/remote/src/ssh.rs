@@ -107,7 +107,10 @@ struct ClientHandler {
 impl Handler for ClientHandler {
     type Error = russh::Error;
 
-    async fn check_server_key(&mut self, server_public_key: &PublicKey) -> Result<bool, Self::Error> {
+    async fn check_server_key(
+        &mut self,
+        server_public_key: &PublicKey,
+    ) -> Result<bool, Self::Error> {
         match &self.policy {
             // Compare key MATERIAL, not the whole PublicKey: `==` on ssh_key::PublicKey also compares
             // the comment, which is never sent over the wire, so a pinned key carrying a comment
@@ -115,8 +118,10 @@ impl Handler for ClientHandler {
             HostKeyPolicy::Pinned(pinned) => Ok(pinned.key_data() == server_public_key.key_data()),
             HostKeyPolicy::KnownHosts { path, host, port } => {
                 // A parse/IO error on known_hosts is treated as "not known" — reject, never accept.
-                Ok(russh::keys::check_known_hosts_path(host, *port, server_public_key, path)
-                    .unwrap_or(false))
+                Ok(
+                    russh::keys::check_known_hosts_path(host, *port, server_public_key, path)
+                        .unwrap_or(false),
+                )
             }
         }
     }
@@ -131,9 +136,9 @@ mod tests {
     use dory_proto::handshake::{handshake, Hello};
     use dory_proto::mux::{Handler as MuxHandler, HandlerFuture, Mux};
     use prost::Message;
+    use russh::keys::ssh_key::{rand_core::OsRng, Algorithm, PrivateKey};
     use russh::server::{self, Auth, Msg, Server as _, Session};
     use russh::{Channel, ChannelId};
-    use russh::keys::ssh_key::{rand_core::OsRng, Algorithm, PrivateKey};
     use tokio::net::TcpListener;
 
     /// A fresh throwaway ed25519 identity — generated per test so no key material lives in the repo.
@@ -147,7 +152,10 @@ mod tests {
     where
         S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
     {
-        if handshake(&mut stream, &Hello::current("fake-remote-agent")).await.is_err() {
+        if handshake(&mut stream, &Hello::current("fake-remote-agent"))
+            .await
+            .is_err()
+        {
             return;
         }
         let handler: MuxHandler = Arc::new(|req: Vec<u8>| {
@@ -303,6 +311,9 @@ mod tests {
             build: "doryd-test".into(),
         })
         .await;
-        assert!(res.is_err(), "a mismatched host key must fail the connection");
+        assert!(
+            res.is_err(),
+            "a mismatched host key must fail the connection"
+        );
     }
 }

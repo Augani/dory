@@ -12,6 +12,7 @@ async fn main() -> std::io::Result<()> {
         eprintln!("dory-agent: daemon serving control on {addr}");
         return dory_agent::daemon::serve(listener).await;
     }
+    dory_agent::reaper::start_pid1_reaper_if_needed();
     dory_agent::vsock_server::run().await
 }
 
@@ -40,5 +41,9 @@ async fn main() -> std::io::Result<()> {
 fn daemon_addr() -> Option<String> {
     let args: Vec<String> = std::env::args().collect();
     let idx = args.iter().position(|a| a == "--daemon")?;
-    Some(args.get(idx + 1).cloned().unwrap_or_else(|| "127.0.0.1:2377".to_string()))
+    Some(
+        args.get(idx + 1)
+            .cloned()
+            .unwrap_or_else(|| "127.0.0.1:2377".to_string()),
+    )
 }

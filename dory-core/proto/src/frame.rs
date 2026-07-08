@@ -70,7 +70,10 @@ async fn read_exact_or_boundary_eof<R: AsyncRead + Unpin>(
 
 /// Write one frame: the LE length prefix then the payload. Rejects oversized payloads before writing
 /// anything, so a bad caller can't emit a half-frame.
-pub async fn write_frame<W: AsyncWrite + Unpin>(w: &mut W, payload: &[u8]) -> Result<(), FrameError> {
+pub async fn write_frame<W: AsyncWrite + Unpin>(
+    w: &mut W,
+    payload: &[u8],
+) -> Result<(), FrameError> {
     if payload.len() > MAX_FRAME_BYTES {
         return Err(FrameError::TooLarge(payload.len()));
     }
@@ -216,7 +219,10 @@ mod tests {
     async fn timeout_is_not_a_frame_error() {
         let (_a, mut b) = duplex(64); // keep _a alive so there is no EOF; just no data ever arrives
         let res = tokio::time::timeout(Duration::from_secs(5), read_frame(&mut b)).await;
-        assert!(res.is_err(), "the deadline must elapse (Elapsed), not resolve to a FrameError");
+        assert!(
+            res.is_err(),
+            "the deadline must elapse (Elapsed), not resolve to a FrameError"
+        );
         // read_frame itself never yielded a FrameError; the error is a timeout owned by the caller.
     }
 }

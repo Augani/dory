@@ -11,10 +11,14 @@
 
 pub mod daemon;
 pub mod dispatch;
+pub mod exec;
 pub mod handler;
 pub mod proc_net;
+pub mod reaper;
 pub mod sync_apply;
 pub mod telemetry;
 
+#[cfg(target_os = "linux")]
+pub mod terminal;
 #[cfg(target_os = "linux")]
 pub mod vsock_server;

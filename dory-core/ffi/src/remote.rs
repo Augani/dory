@@ -12,8 +12,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use dory_remote::{
-    private_key_from_openssh, public_key_from_openssh, push, AgentEndpoint, HostKeyPolicy, SshAgent,
-    SshConfig,
+    private_key_from_openssh, public_key_from_openssh, push, AgentEndpoint, HostKeyPolicy,
+    SshAgent, SshConfig,
 };
 
 #[derive(Debug, uniffi::Error, thiserror::Error)]
@@ -24,7 +24,9 @@ pub enum RemoteFfiError {
 
 impl From<dory_remote::RemoteError> for RemoteFfiError {
     fn from(e: dory_remote::RemoteError) -> RemoteFfiError {
-        RemoteFfiError::Failed { message: e.to_string() }
+        RemoteFfiError::Failed {
+            message: e.to_string(),
+        }
     }
 }
 
@@ -34,7 +36,11 @@ pub enum RemoteHostKey {
     /// Trust exactly this OpenSSH public key line (`ssh-ed25519 AAAA... comment`).
     Pinned { openssh_public_key: String },
     /// Consult an OpenSSH `known_hosts` file for `host:port`.
-    KnownHosts { path: String, host: String, port: u16 },
+    KnownHosts {
+        path: String,
+        host: String,
+        port: u16,
+    },
 }
 
 /// Where the agent daemon listens on the remote.
@@ -77,6 +83,22 @@ pub struct TelemetryFfi {
     pub mem_available_kb: u64,
     pub psi_some_avg10: f64,
     pub psi_full_avg10: f64,
+}
+
+#[derive(uniffi::Record)]
+pub struct ExecEnvFfi {
+    pub key: String,
+    pub value: String,
+}
+
+#[derive(uniffi::Record)]
+pub struct ExecResultFfi {
+    pub exit_code: i32,
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
+    pub timed_out: bool,
+    pub stdout_truncated: bool,
+    pub stderr_truncated: bool,
 }
 
 /// A live remote connection owned by `doryd`. Holds its own runtime + the SSH session.
@@ -123,7 +145,9 @@ pub fn remote_connect(config: RemoteConfig) -> Result<Arc<RemoteAgent>, RemoteFf
         .worker_threads(2)
         .enable_all()
         .build()
-        .map_err(|e| RemoteFfiError::Failed { message: e.to_string() })?;
+        .map_err(|e| RemoteFfiError::Failed {
+            message: e.to_string(),
+        })?;
     let agent = runtime.block_on(SshAgent::connect(ssh_config))?;
     Ok(Arc::new(RemoteAgent {
         runtime: std::sync::Mutex::new(Some(runtime)),
@@ -159,8 +183,33 @@ impl RemoteAgent {
         })
     }
 
+    /// Run a bounded non-interactive command through the remote agent.
+    pub fn exec(
+        &self,
+        argv: Vec<String>,
+        cwd: String,
+        env: Vec<ExecEnvFfi>,
+        timeout_ms: u64,
+        output_limit_bytes: u64,
+    ) -> Result<ExecResultFfi, RemoteFfiError> {
+        let guard = self.runtime.lock().unwrap();
+        let runtime = guard.as_ref().ok_or_else(shutdown_error)?;
+        let out = runtime.block_on(self.agent.client.exec(
+            argv,
+            cwd,
+            env.into_iter().map(|item| (item.key, item.value)).collect(),
+            timeout_ms,
+            output_limit_bytes,
+        ))?;
+        Ok(exec_result(out))
+    }
+
     /// Push `local_root` to `remote_root`, making the remote an exact replica (host-authoritative).
-    pub fn push(&self, local_root: String, remote_root: String) -> Result<PushStatsFfi, RemoteFfiError> {
+    pub fn push(
+        &self,
+        local_root: String,
+        remote_root: String,
+    ) -> Result<PushStatsFfi, RemoteFfiError> {
         let guard = self.runtime.lock().unwrap();
         let runtime = guard.as_ref().ok_or_else(shutdown_error)?;
         let stats = runtime.block_on(push(
@@ -173,6 +222,17 @@ impl RemoteAgent {
             bytes_sent: stats.bytes_sent,
             files_deleted: stats.files_deleted,
         })
+    }
+}
+
+pub(crate) fn exec_result(out: dory_pb::agent::ExecResponse) -> ExecResultFfi {
+    ExecResultFfi {
+        exit_code: out.exit_code,
+        stdout: out.stdout,
+        stderr: out.stderr,
+        timed_out: out.timed_out,
+        stdout_truncated: out.stdout_truncated,
+        stderr_truncated: out.stderr_truncated,
     }
 }
 
@@ -214,7 +274,9 @@ mod tests {
                 let mut cfg = server::Config::default();
                 cfg.keys.push(host_key);
                 let cfg = Arc::new(cfg);
-                let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+                let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+                    .await
+                    .unwrap();
                 tx.send(listener.local_addr().unwrap()).unwrap();
                 loop {
                     if let Ok((stream, peer)) = listener.accept().await {
@@ -243,7 +305,11 @@ mod tests {
     }
     impl server::Handler for Srv {
         type Error = russh::Error;
-        async fn auth_publickey(&mut self, _u: &str, _k: &russh::keys::PublicKey) -> Result<Auth, Self::Error> {
+        async fn auth_publickey(
+            &mut self,
+            _u: &str,
+            _k: &russh::keys::PublicKey,
+        ) -> Result<Auth, Self::Error> {
             Ok(Auth::Accept)
         }
         async fn channel_open_direct_streamlocal(
@@ -256,7 +322,12 @@ mod tests {
             tokio::spawn(dory_agent::daemon::serve_conn(channel.into_stream()));
             Ok(true)
         }
-        async fn data(&mut self, _c: ChannelId, _d: &[u8], _s: &mut Session) -> Result<(), Self::Error> {
+        async fn data(
+            &mut self,
+            _c: ChannelId,
+            _d: &[u8],
+            _s: &mut Session,
+        ) -> Result<(), Self::Error> {
             Ok(())
         }
     }
@@ -278,8 +349,12 @@ mod tests {
             port: addr.port(),
             user: "dory".into(),
             openssh_private_key: client_key,
-            host_key: RemoteHostKey::Pinned { openssh_public_key: host_pub },
-            endpoint: RemoteEndpoint::UnixSocket { path: "/run/dory/agent.sock".into() },
+            host_key: RemoteHostKey::Pinned {
+                openssh_public_key: host_pub,
+            },
+            endpoint: RemoteEndpoint::UnixSocket {
+                path: "/run/dory/agent.sock".into(),
+            },
             build: "doryd-ffi-test".into(),
         })
         .expect("connect over ssh");
@@ -300,10 +375,16 @@ mod tests {
         std::fs::create_dir_all(&remote).unwrap();
 
         let stats = agent
-            .push(local.to_string_lossy().into_owned(), remote.to_string_lossy().into_owned())
+            .push(
+                local.to_string_lossy().into_owned(),
+                remote.to_string_lossy().into_owned(),
+            )
             .expect("push");
         assert_eq!(stats.files_sent, 2);
-        assert_eq!(std::fs::read(remote.join("src/main.rs")).unwrap(), b"fn main() {}");
+        assert_eq!(
+            std::fs::read(remote.join("src/main.rs")).unwrap(),
+            b"fn main() {}"
+        );
 
         let _ = std::fs::remove_dir_all(&local);
         let _ = std::fs::remove_dir_all(&remote);
@@ -327,10 +408,15 @@ mod tests {
             port: addr.port(),
             user: "dory".into(),
             openssh_private_key: client_key,
-            host_key: RemoteHostKey::Pinned { openssh_public_key: wrong_pub },
+            host_key: RemoteHostKey::Pinned {
+                openssh_public_key: wrong_pub,
+            },
             endpoint: RemoteEndpoint::UnixSocket { path: "/x".into() },
             build: "t".into(),
         });
-        assert!(res.is_err(), "a mismatched host key must fail the connection");
+        assert!(
+            res.is_err(),
+            "a mismatched host key must fail the connection"
+        );
     }
 }

@@ -13,7 +13,7 @@ The builder is intentionally reproducible from pinned public inputs in `guest/in
 
 Runtime contents added by Dory:
 
-- `/sbin/init`: mounts `proc`, `sysfs`, `devtmpfs`, `devpts`, `tmpfs` for `/run` and `/tmp`, and cgroup v2.
+- `/sbin/init`: mounts `proc`, `sysfs`, `devtmpfs`, `devpts`, `tmpfs` for `/run` and `/tmp`, and cgroup v2, then execs `dory-agent` as PID 1.
 - `/usr/bin/dory-agent`: guest RPC agent listening on vsock port 1024.
 - `/usr/local/bin/dockerd`, `containerd`, `runc`, `docker-init`, `docker-proxy`, `ctr`, `docker`, and `containerd-shim-runc-v2`.
 - `/etc/resolv.conf` and `/etc/hostname`.
@@ -23,10 +23,10 @@ Boot behavior:
 
 - Bring up `lo` and, when present, `eth0` via BusyBox `udhcpc`.
 - Mount `/dev/vdb` at `/var/lib/docker` when a persistent Docker state disk is attached.
-- Start `/usr/bin/dory-agent` when present.
 - Start `dockerd` on `unix:///var/run/docker.sock` and `tcp://0.0.0.0:2375`.
 - Listen on TCP 2377 for a shutdown request, sync, unmount Docker state, and power off.
-- Hand PID 1 to `docker-init` when present, falling back to a long sleep loop.
+- Exec `/usr/bin/dory-agent` as PID 1 when present.
+- Hand PID 1 to `docker-init` only when `dory-agent` is absent, falling back to a long sleep loop.
 
 To inventory a built image on a machine with `debugfs`:
 

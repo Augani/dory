@@ -83,7 +83,10 @@ pub async fn put_chunk(req: SyncPutChunkRequest) -> Result<SyncPutChunkResponse,
 
     // Strict append: the chunk offset must match what is already staged. offset 0 (re)starts the
     // file; a resumed chunk must land exactly at the current staged size.
-    let staged = tokio::fs::metadata(&staging).await.map(|m| m.len()).unwrap_or(0);
+    let staged = tokio::fs::metadata(&staging)
+        .await
+        .map(|m| m.len())
+        .unwrap_or(0);
     if req.offset == 0 {
         // fresh (or restart): truncate any stale staging
     } else if req.offset != staged {
@@ -252,7 +255,8 @@ mod tests {
     }
     impl TempRoot {
         fn new(tag: &str) -> TempRoot {
-            let path = std::env::temp_dir().join(format!("dory-apply-{}-{}", std::process::id(), tag));
+            let path =
+                std::env::temp_dir().join(format!("dory-apply-{}-{}", std::process::id(), tag));
             let _ = fs::remove_dir_all(&path);
             fs::create_dir_all(&path).unwrap();
             TempRoot { path }
@@ -312,7 +316,10 @@ mod tests {
         .unwrap();
         assert_eq!(r1.next_offset, 8);
         assert!(!r1.committed);
-        assert!(!t.path.join("big.bin").exists(), "not committed mid-transfer");
+        assert!(
+            !t.path.join("big.bin").exists(),
+            "not committed mid-transfer"
+        );
 
         // A reconnect: status reports the resume offset.
         let status = file_status(SyncFileStatusRequest {
@@ -357,7 +364,13 @@ mod tests {
         })
         .await
         .unwrap_err();
-        assert!(matches!(err, SyncError::OffsetMismatch { got: 99, expected: 0 }));
+        assert!(matches!(
+            err,
+            SyncError::OffsetMismatch {
+                got: 99,
+                expected: 0
+            }
+        ));
     }
 
     #[tokio::test]
@@ -378,8 +391,14 @@ mod tests {
         .await
         .unwrap_err();
         assert!(matches!(err, SyncError::HashMismatch));
-        assert!(!t.path.join("f").exists(), "a corrupt file must never be published");
-        assert!(!staging_path(&t.path, "f", &declared).exists(), "poisoned staging removed");
+        assert!(
+            !t.path.join("f").exists(),
+            "a corrupt file must never be published"
+        );
+        assert!(
+            !staging_path(&t.path, "f", &declared).exists(),
+            "poisoned staging removed"
+        );
     }
 
     #[tokio::test]
@@ -397,7 +416,10 @@ mod tests {
                 mtime_ns: 0,
             })
             .await;
-            assert!(matches!(err, Err(SyncError::PathEscape)), "{bad:?} must be rejected");
+            assert!(
+                matches!(err, Err(SyncError::PathEscape)),
+                "{bad:?} must be rejected"
+            );
         }
     }
 
@@ -424,8 +446,14 @@ mod tests {
             mtime_ns: 0,
         })
         .await;
-        assert!(matches!(err, Err(SyncError::PathEscape)), "write through a symlink must be rejected");
-        assert!(!outside.path.join("evil.txt").exists(), "nothing may be written outside the root");
+        assert!(
+            matches!(err, Err(SyncError::PathEscape)),
+            "write through a symlink must be rejected"
+        );
+        assert!(
+            !outside.path.join("evil.txt").exists(),
+            "nothing may be written outside the root"
+        );
     }
 
     #[cfg(unix)]
@@ -441,8 +469,14 @@ mod tests {
             paths: vec!["link/victim.txt".into()],
         })
         .await;
-        assert!(matches!(err, Err(SyncError::PathEscape)), "delete through a symlink must be rejected");
-        assert!(outside.path.join("victim.txt").exists(), "a file outside the root must survive");
+        assert!(
+            matches!(err, Err(SyncError::PathEscape)),
+            "delete through a symlink must be rejected"
+        );
+        assert!(
+            outside.path.join("victim.txt").exists(),
+            "a file outside the root must survive"
+        );
     }
 
     #[tokio::test]
@@ -474,33 +508,69 @@ mod tests {
         let c = b"0123456789abcdef".to_vec();
         let h = hash_bytes(&c).to_vec();
 
-        let half = |root: &str, path: &str, off: u64, data: Vec<u8>, last: bool| SyncPutChunkRequest {
-            root: root.to_string(),
-            path: path.into(),
-            hash: h.clone(),
-            offset: off,
-            data,
-            last,
-            mode: 0o644,
-            mtime_ns: 0,
-        };
+        let half =
+            |root: &str, path: &str, off: u64, data: Vec<u8>, last: bool| SyncPutChunkRequest {
+                root: root.to_string(),
+                path: path.into(),
+                hash: h.clone(),
+                offset: off,
+                data,
+                last,
+                mode: 0o644,
+                mtime_ns: 0,
+            };
 
         // Stage both a and b halfway with the same content/hash.
-        put_chunk(half(&t.root(), "a.txt", 0, c[..8].to_vec(), false)).await.unwrap();
-        put_chunk(half(&t.root(), "b.txt", 0, c[..8].to_vec(), false)).await.unwrap();
-        assert_eq!(file_status(SyncFileStatusRequest { root: t.root(), path: "a.txt".into(), hash: h.clone() }).await.unwrap().have_bytes, 8);
-        assert_eq!(file_status(SyncFileStatusRequest { root: t.root(), path: "b.txt".into(), hash: h.clone() }).await.unwrap().have_bytes, 8);
+        put_chunk(half(&t.root(), "a.txt", 0, c[..8].to_vec(), false))
+            .await
+            .unwrap();
+        put_chunk(half(&t.root(), "b.txt", 0, c[..8].to_vec(), false))
+            .await
+            .unwrap();
+        assert_eq!(
+            file_status(SyncFileStatusRequest {
+                root: t.root(),
+                path: "a.txt".into(),
+                hash: h.clone()
+            })
+            .await
+            .unwrap()
+            .have_bytes,
+            8
+        );
+        assert_eq!(
+            file_status(SyncFileStatusRequest {
+                root: t.root(),
+                path: "b.txt".into(),
+                hash: h.clone()
+            })
+            .await
+            .unwrap()
+            .have_bytes,
+            8
+        );
 
         // Finish a (commits + cleans a's staging). b's staging must be untouched.
-        put_chunk(half(&t.root(), "a.txt", 8, c[8..].to_vec(), true)).await.unwrap();
+        put_chunk(half(&t.root(), "a.txt", 8, c[8..].to_vec(), true))
+            .await
+            .unwrap();
         assert_eq!(
-            file_status(SyncFileStatusRequest { root: t.root(), path: "b.txt".into(), hash: h.clone() }).await.unwrap().have_bytes,
+            file_status(SyncFileStatusRequest {
+                root: t.root(),
+                path: "b.txt".into(),
+                hash: h.clone()
+            })
+            .await
+            .unwrap()
+            .have_bytes,
             8,
             "finishing a.txt must not wipe b.txt's independent staging"
         );
 
         // Finish b — must still resume from 8 and commit.
-        put_chunk(half(&t.root(), "b.txt", 8, c[8..].to_vec(), true)).await.unwrap();
+        put_chunk(half(&t.root(), "b.txt", 8, c[8..].to_vec(), true))
+            .await
+            .unwrap();
         assert_eq!(fs::read(t.path.join("a.txt")).unwrap(), c);
         assert_eq!(fs::read(t.path.join("b.txt")).unwrap(), c);
     }
@@ -522,7 +592,9 @@ mod tests {
         .await
         .unwrap();
 
-        let m = manifest(SyncManifestRequest { root: t.root() }).await.unwrap();
+        let m = manifest(SyncManifestRequest { root: t.root() })
+            .await
+            .unwrap();
         let paths: Vec<&str> = m.entries.iter().map(|e| e.path.as_str()).collect();
         // The staging dir must NOT leak into the manifest.
         assert_eq!(paths, vec!["sub/f.txt"]);

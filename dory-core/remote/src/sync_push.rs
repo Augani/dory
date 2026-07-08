@@ -70,7 +70,11 @@ pub async fn push<T: SyncTarget>(
 
         // Resume: pick up where the remote left off, unless its staged size is past our file (stale).
         let staged = target.staged_bytes(remote_root, rel, &entry.hash).await?;
-        let mut offset: usize = if staged <= bytes.len() as u64 { staged as usize } else { 0 };
+        let mut offset: usize = if staged <= bytes.len() as u64 {
+            staged as usize
+        } else {
+            0
+        };
 
         loop {
             let end = (offset as usize + CHUNK_BYTES).min(bytes.len());
@@ -110,11 +114,17 @@ pub async fn push<T: SyncTarget>(
 impl SyncTarget for AgentClient {
     async fn remote_manifest(&self, root: &str) -> Result<Manifest, RemoteError> {
         let resp = self
-            .sync_manifest(SyncManifestRequest { root: root.to_string() })
+            .sync_manifest(SyncManifestRequest {
+                root: root.to_string(),
+            })
             .await?;
         let mut entries = Vec::with_capacity(resp.entries.len());
         for e in resp.entries {
-            let hash: Hash = e.hash.as_slice().try_into().map_err(|_| RemoteError::Decode)?;
+            let hash: Hash = e
+                .hash
+                .as_slice()
+                .try_into()
+                .map_err(|_| RemoteError::Decode)?;
             entries.push(dory_sync::FileEntry {
                 path: e.path,
                 size: e.size,
@@ -166,7 +176,8 @@ mod tests {
     }
     impl TempTree {
         fn new(tag: &str) -> TempTree {
-            let root = std::env::temp_dir().join(format!("dory-push-{}-{}", std::process::id(), tag));
+            let root =
+                std::env::temp_dir().join(format!("dory-push-{}-{}", std::process::id(), tag));
             let _ = std::fs::remove_dir_all(&root);
             std::fs::create_dir_all(&root).unwrap();
             TempTree { root }
@@ -225,7 +236,12 @@ mod tests {
         async fn remote_manifest(&self, _root: &str) -> Result<Manifest, RemoteError> {
             Ok(self.remote.clone())
         }
-        async fn staged_bytes(&self, _root: &str, path: &str, _hash: &Hash) -> Result<u64, RemoteError> {
+        async fn staged_bytes(
+            &self,
+            _root: &str,
+            path: &str,
+            _hash: &Hash,
+        ) -> Result<u64, RemoteError> {
             Ok(self.preset_staged.get(path).copied().unwrap_or(0))
         }
         async fn put_chunk(&self, req: SyncPutChunkRequest) -> Result<u64, RemoteError> {
@@ -256,7 +272,13 @@ mod tests {
         assert_eq!(target.assembled("dir/b.bin"), big);
         // The final chunk of each file is flagged `last`.
         let rec = target.rec.lock().unwrap();
-        assert!(rec.chunks.iter().rfind(|c| c.path == "dir/b.bin").unwrap().last);
+        assert!(
+            rec.chunks
+                .iter()
+                .rfind(|c| c.path == "dir/b.bin")
+                .unwrap()
+                .last
+        );
     }
 
     #[tokio::test]
@@ -271,7 +293,10 @@ mod tests {
 
         let rec = target.rec.lock().unwrap();
         let first = rec.chunks.iter().find(|c| c.path == "f").unwrap();
-        assert_eq!(first.offset, 4, "resume must start at the staged offset, not 0");
+        assert_eq!(
+            first.offset, 4,
+            "resume must start at the staged offset, not 0"
+        );
         // Only the remaining 6 bytes are sent.
         assert_eq!(stats.bytes_sent, 6);
     }
@@ -314,7 +339,10 @@ mod tests {
         assert_eq!(stats.files_sent, 1, "only changed.txt is sent");
         assert_eq!(stats.files_deleted, 1);
         let rec = target.rec.lock().unwrap();
-        assert!(rec.chunks.iter().all(|c| c.path == "changed.txt"), "same.txt must not be re-sent");
+        assert!(
+            rec.chunks.iter().all(|c| c.path == "changed.txt"),
+            "same.txt must not be re-sent"
+        );
         assert_eq!(rec.deleted, vec!["gone.txt".to_string()]);
     }
 

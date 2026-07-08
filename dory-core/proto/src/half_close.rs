@@ -102,7 +102,10 @@ mod tests {
             .await
             .expect("half-close collapsed: client read hung");
 
-        assert_eq!(peer_got, STDIN, "peer must receive the stdin sent before half-close");
+        assert_eq!(
+            peer_got, STDIN,
+            "peer must receive the stdin sent before half-close"
+        );
         assert_eq!(
             client_got, REPLY_AFTER_HALFCLOSE,
             "client must receive the reply written AFTER its half-close (peer->client stayed open)"

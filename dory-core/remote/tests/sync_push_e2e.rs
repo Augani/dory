@@ -65,8 +65,14 @@ async fn push_makes_the_remote_a_byte_exact_replica_and_converges_on_edits() {
     let stats = push(&local.path, &remote_root, &client).await.unwrap();
     assert_eq!(stats.files_sent, 3);
     assert_eq!(stats.files_deleted, 0);
-    assert!(converged(&local.path, &remote.path), "remote must be an exact replica");
-    assert_eq!(fs::read(remote.path.join("assets/big.bin")).unwrap(), vec![42u8; 700 * 1024]);
+    assert!(
+        converged(&local.path, &remote.path),
+        "remote must be an exact replica"
+    );
+    assert_eq!(
+        fs::read(remote.path.join("assets/big.bin")).unwrap(),
+        vec![42u8; 700 * 1024]
+    );
 
     // Re-push with no changes: nothing sent or deleted.
     let noop = push(&local.path, &remote_root, &client).await.unwrap();
@@ -81,8 +87,14 @@ async fn push_makes_the_remote_a_byte_exact_replica_and_converges_on_edits() {
     let stats2 = push(&local.path, &remote_root, &client).await.unwrap();
     assert_eq!(stats2.files_sent, 2, "changed + added");
     assert_eq!(stats2.files_deleted, 1, "removed README.md");
-    assert!(converged(&local.path, &remote.path), "remote converges after edits");
-    assert!(!remote.path.join("README.md").exists(), "deleted file removed from replica");
+    assert!(
+        converged(&local.path, &remote.path),
+        "remote converges after edits"
+    );
+    assert!(
+        !remote.path.join("README.md").exists(),
+        "deleted file removed from replica"
+    );
     assert_eq!(
         fs::read(remote.path.join("src/main.rs")).unwrap(),
         b"fn main() { println!(\"changed\"); }"

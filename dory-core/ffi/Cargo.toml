@@ -14,6 +14,7 @@ required-features = ["bindgen"]
 
 [dependencies]
 dory-proto = { path = "../proto" }
+dory-pb = { path = "../pb" }
 dory-dataplane = { path = "../dataplane" }
 dory-remote = { path = "../remote" }
 uniffi = { workspace = true }

@@ -10,9 +10,10 @@ use std::sync::Arc;
 
 use dory_pb::agent::{
     self, agent_request::Method, agent_response::Result as Res, AgentRequest, AgentResponse,
-    ClockSyncRequest, InfoRequest, PortsWatchRequest, SyncDeleteRequest, SyncDeleteResponse,
-    SyncFileStatusRequest, SyncFileStatusResponse, SyncManifestRequest, SyncManifestResponse,
-    SyncPutChunkRequest, SyncPutChunkResponse, TelemetryRequest, TelemetryResponse,
+    ClockSyncRequest, ExecEnv, ExecRequest, ExecResponse, InfoRequest, PortsWatchRequest,
+    SyncDeleteRequest, SyncDeleteResponse, SyncFileStatusRequest, SyncFileStatusResponse,
+    SyncManifestRequest, SyncManifestResponse, SyncPutChunkRequest, SyncPutChunkResponse,
+    TelemetryRequest, TelemetryResponse,
 };
 use dory_proto::handshake::{handshake, Hello};
 use dory_proto::mux::Mux;
@@ -28,7 +29,10 @@ pub struct AgentClient {
 impl AgentClient {
     /// Take ownership of a connected stream, complete the protocol handshake, and start the mux.
     /// A version skew is a clean [`RemoteError::Handshake`], never a wedge.
-    pub async fn connect<S>(mut stream: S, build: impl Into<String>) -> Result<AgentClient, RemoteError>
+    pub async fn connect<S>(
+        mut stream: S,
+        build: impl Into<String>,
+    ) -> Result<AgentClient, RemoteError>
     where
         S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
@@ -61,8 +65,14 @@ impl AgentClient {
         }
     }
 
-    pub async fn clock_sync(&self, host_epoch_ns: i64) -> Result<agent::ClockSyncResponse, RemoteError> {
-        match self.call(Method::ClockSync(ClockSyncRequest { host_epoch_ns })).await? {
+    pub async fn clock_sync(
+        &self,
+        host_epoch_ns: i64,
+    ) -> Result<agent::ClockSyncResponse, RemoteError> {
+        match self
+            .call(Method::ClockSync(ClockSyncRequest { host_epoch_ns }))
+            .await?
+        {
             Res::ClockSync(r) => Ok(r),
             _ => Err(RemoteError::UnexpectedVariant),
         }
@@ -82,28 +92,67 @@ impl AgentClient {
         }
     }
 
-    pub async fn sync_manifest(&self, req: SyncManifestRequest) -> Result<SyncManifestResponse, RemoteError> {
+    pub async fn exec(
+        &self,
+        argv: Vec<String>,
+        cwd: String,
+        env: Vec<(String, String)>,
+        timeout_ms: u64,
+        output_limit_bytes: u64,
+    ) -> Result<ExecResponse, RemoteError> {
+        let env = env
+            .into_iter()
+            .map(|(key, value)| ExecEnv { key, value })
+            .collect();
+        match self
+            .call(Method::Exec(ExecRequest {
+                argv,
+                cwd,
+                env,
+                timeout_ms,
+                output_limit_bytes,
+            }))
+            .await?
+        {
+            Res::Exec(r) => Ok(r),
+            _ => Err(RemoteError::UnexpectedVariant),
+        }
+    }
+
+    pub async fn sync_manifest(
+        &self,
+        req: SyncManifestRequest,
+    ) -> Result<SyncManifestResponse, RemoteError> {
         match self.call(Method::SyncManifest(req)).await? {
             Res::SyncManifest(r) => Ok(r),
             _ => Err(RemoteError::UnexpectedVariant),
         }
     }
 
-    pub async fn sync_file_status(&self, req: SyncFileStatusRequest) -> Result<SyncFileStatusResponse, RemoteError> {
+    pub async fn sync_file_status(
+        &self,
+        req: SyncFileStatusRequest,
+    ) -> Result<SyncFileStatusResponse, RemoteError> {
         match self.call(Method::SyncFileStatus(req)).await? {
             Res::SyncFileStatus(r) => Ok(r),
             _ => Err(RemoteError::UnexpectedVariant),
         }
     }
 
-    pub async fn sync_put_chunk(&self, req: SyncPutChunkRequest) -> Result<SyncPutChunkResponse, RemoteError> {
+    pub async fn sync_put_chunk(
+        &self,
+        req: SyncPutChunkRequest,
+    ) -> Result<SyncPutChunkResponse, RemoteError> {
         match self.call(Method::SyncPutChunk(req)).await? {
             Res::SyncPutChunk(r) => Ok(r),
             _ => Err(RemoteError::UnexpectedVariant),
         }
     }
 
-    pub async fn sync_delete(&self, req: SyncDeleteRequest) -> Result<SyncDeleteResponse, RemoteError> {
+    pub async fn sync_delete(
+        &self,
+        req: SyncDeleteRequest,
+    ) -> Result<SyncDeleteResponse, RemoteError> {
         match self.call(Method::SyncDelete(req)).await? {
             Res::SyncDelete(r) => Ok(r),
             _ => Err(RemoteError::UnexpectedVariant),
@@ -123,11 +172,15 @@ mod tests {
     where
         S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
-        if handshake(&mut stream, &Hello::current("fake-agent")).await.is_err() {
+        if handshake(&mut stream, &Hello::current("fake-agent"))
+            .await
+            .is_err()
+        {
             return;
         }
-        let handler: Handler =
-            Arc::new(|req: Vec<u8>| Box::pin(async move { dory_agent_dispatch(&req) }) as HandlerFuture);
+        let handler: Handler = Arc::new(|req: Vec<u8>| {
+            Box::pin(async move { dory_agent_dispatch(&req) }) as HandlerFuture
+        });
         let _mux = Mux::start(stream, handler);
         // Hold the mux alive for the test's duration.
         std::future::pending::<()>().await;
@@ -146,6 +199,14 @@ mod tests {
             }),
             Some(Method::ClockSync(_)) => Res::ClockSync(agent::ClockSyncResponse { synced: true }),
             Some(Method::PortsWatch(_)) => Res::PortsWatch(agent::PortsWatchResponse::default()),
+            Some(Method::Exec(_)) => Res::Exec(agent::ExecResponse {
+                exit_code: 0,
+                stdout: b"exec-ok".to_vec(),
+                stderr: Vec::new(),
+                timed_out: false,
+                stdout_truncated: false,
+                stderr_truncated: false,
+            }),
             _ => Res::Error(agent::RpcError {
                 code: 400,
                 message: "unsupported in this fake".into(),
@@ -162,7 +223,9 @@ mod tests {
         let (client_stream, agent_stream) = tokio::io::duplex(64 * 1024);
         tokio::spawn(spawn_fake_agent(agent_stream));
 
-        let client = AgentClient::connect(client_stream, "doryd-test").await.unwrap();
+        let client = AgentClient::connect(client_stream, "doryd-test")
+            .await
+            .unwrap();
         let info = client.info().await.unwrap();
         assert_eq!(info.proto_version, dory_proto::handshake::PROTO_VERSION);
         assert_eq!(info.agent_build, "fake-agent");
@@ -170,6 +233,19 @@ mod tests {
 
         let clock = client.clock_sync(1_700_000_000_000_000_000).await.unwrap();
         assert!(clock.synced);
+
+        let exec = client
+            .exec(
+                vec!["/bin/echo".into(), "ok".into()],
+                String::new(),
+                Vec::new(),
+                1000,
+                1024,
+            )
+            .await
+            .unwrap();
+        assert_eq!(exec.exit_code, 0);
+        assert_eq!(exec.stdout, b"exec-ok");
     }
 
     #[tokio::test]

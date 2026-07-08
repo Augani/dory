@@ -31,7 +31,10 @@ pub async fn serve_conn<S>(mut stream: S)
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
-    if handshake(&mut stream, &Hello::current(agent_build())).await.is_err() {
+    if handshake(&mut stream, &Hello::current(agent_build()))
+        .await
+        .is_err()
+    {
         return;
     }
     let handler: Handler =

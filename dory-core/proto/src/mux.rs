@@ -149,7 +149,12 @@ impl Mux {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = oneshot::channel();
         self.pending.lock().unwrap().insert(id, tx);
-        if self.out.send(encode_msg(id, KIND_REQUEST, payload)).await.is_err() {
+        if self
+            .out
+            .send(encode_msg(id, KIND_REQUEST, payload))
+            .await
+            .is_err()
+        {
             self.pending.lock().unwrap().remove(&id);
             return Err(MuxError::Closed);
         }
@@ -197,7 +202,10 @@ mod tests {
             let (i, resp) = h.await.unwrap();
             let mut expected = b"echo:".to_vec();
             expected.extend_from_slice(&[i, 0xAA, i]);
-            assert_eq!(resp, expected, "call {i} got the wrong response — ids crossed");
+            assert_eq!(
+                resp, expected,
+                "call {i} got the wrong response — ids crossed"
+            );
         }
     }
 
@@ -206,10 +214,14 @@ mod tests {
         // Both ends serve AND call; ids are per-end so numeric overlap must not confuse routing.
         let (a, b) = duplex(64 * 1024);
         let end_a = Mux::start(a, {
-            Arc::new(|req: Vec<u8>| Box::pin(async move { [b"A:".to_vec(), req].concat() }) as HandlerFuture)
+            Arc::new(|req: Vec<u8>| {
+                Box::pin(async move { [b"A:".to_vec(), req].concat() }) as HandlerFuture
+            })
         });
         let end_b = Mux::start(b, {
-            Arc::new(|req: Vec<u8>| Box::pin(async move { [b"B:".to_vec(), req].concat() }) as HandlerFuture)
+            Arc::new(|req: Vec<u8>| {
+                Box::pin(async move { [b"B:".to_vec(), req].concat() }) as HandlerFuture
+            })
         });
 
         let (ra, rb) = tokio::join!(end_a.call(b"ping"), end_b.call(b"ping"));
@@ -222,7 +234,7 @@ mod tests {
         let (a, b) = duplex(1024);
         let client = Mux::client(a);
         drop(b); // peer gone
-        // The reader sees EOF and clears pending; the call must return Closed, never hang.
+                 // The reader sees EOF and clears pending; the call must return Closed, never hang.
         let res = tokio::time::timeout(Duration::from_secs(5), client.call(b"x")).await;
         assert!(matches!(res, Ok(Err(MuxError::Closed))), "got {res:?}");
     }

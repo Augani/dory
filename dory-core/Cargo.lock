@@ -614,6 +614,7 @@ version = "0.0.0"
 dependencies = [
  "dory-agent",
  "dory-dataplane",
+ "dory-pb",
  "dory-proto",
  "dory-remote",
  "russh",

@@ -10,6 +10,8 @@ pub const PORT_CONTROL: u32 = 1024;
 pub const PORT_USBIP: u32 = 1025;
 /// Docker byte-stream bridge (host `dory.sock` ↔ guest `dockerd`), one connection per docker client.
 pub const PORT_DOCKER: u32 = 1026;
+/// Interactive machine shell PTY byte stream, one connection per attached terminal.
+pub const PORT_SHELL: u32 = 1027;
 
 /// Guest-initiated dial-back targets on the host (the AI bridge): the guest connects to
 /// `VMADDR_CID_HOST` on these ports and doryd forwards to `127.0.0.1:<same>`.

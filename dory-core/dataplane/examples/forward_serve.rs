@@ -34,8 +34,12 @@ async fn main() -> std::io::Result<()> {
             forward_socket: forward.into(),
             cid,
             port,
+            retry_for: None,
         }),
-        Arc::new(ServeOpts { gpu_supported: false }),
+        Arc::new(ServeOpts {
+            gpu_supported: false,
+            activity: None,
+        }),
     )
     .await
 }

@@ -16,7 +16,9 @@ async fn agent_client_drives_real_dispatch_over_tcp() {
     });
 
     let stream = TcpStream::connect(addr).await.unwrap();
-    let client = AgentClient::connect(stream, "doryd-test").await.expect("handshake with real agent");
+    let client = AgentClient::connect(stream, "doryd-test")
+        .await
+        .expect("handshake with real agent");
 
     // Real dispatch, not a fake: proto version negotiated, agent build string from the binary.
     let info = client.info().await.expect("info rpc");
@@ -29,7 +31,10 @@ async fn agent_client_drives_real_dispatch_over_tcp() {
 
     // clock_sync round-trips; on a host the agent has no privilege to set the clock, so synced=false
     // — the point is the typed RPC completes against real dispatch, not the side effect.
-    let clock = client.clock_sync(1_700_000_000_000_000_000).await.expect("clock rpc");
+    let clock = client
+        .clock_sync(1_700_000_000_000_000_000)
+        .await
+        .expect("clock rpc");
     assert!(!clock.synced, "host dispatch declines to set the clock");
 
     // ports_watch: real /proc/net parse on Linux, empty on a non-Linux host — must not error.
@@ -40,5 +45,8 @@ async fn agent_client_drives_real_dispatch_over_tcp() {
 
     // Concurrent calls are id-routed by the mux — fire several and confirm each resolves.
     let (a, b, c) = tokio::join!(client.info(), client.info(), client.info());
-    assert!(a.is_ok() && b.is_ok() && c.is_ok(), "concurrent RPCs all resolve");
+    assert!(
+        a.is_ok() && b.is_ok() && c.is_ok(),
+        "concurrent RPCs all resolve"
+    );
 }

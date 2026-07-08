@@ -80,10 +80,11 @@ mod tests {
     #[tokio::test]
     async fn matching_versions_exchange_builds() {
         let (mut a, mut b) = duplex(4096);
-        let host = tokio::spawn(async move {
-            handshake(&mut a, &Hello::current("doryd-0.4")).await
-        });
-        let peer = handshake(&mut b, &Hello::current("agent-0.4")).await.unwrap();
+        let host =
+            tokio::spawn(async move { handshake(&mut a, &Hello::current("doryd-0.4")).await });
+        let peer = handshake(&mut b, &Hello::current("agent-0.4"))
+            .await
+            .unwrap();
         let host_saw = host.await.unwrap().unwrap();
         assert_eq!(peer.build, "doryd-0.4");
         assert_eq!(host_saw.build, "agent-0.4");
@@ -92,7 +93,10 @@ mod tests {
     #[tokio::test]
     async fn version_mismatch_is_a_clean_error() {
         let (mut a, mut b) = duplex(4096);
-        let older = Hello { proto_version: PROTO_VERSION + 1, build: "newer".into() };
+        let older = Hello {
+            proto_version: PROTO_VERSION + 1,
+            build: "newer".into(),
+        };
         let a_task = tokio::spawn(async move { handshake(&mut a, &older).await });
         let res = handshake(&mut b, &Hello::current("current")).await;
         assert!(
@@ -100,6 +104,9 @@ mod tests {
             "got {res:?}"
         );
         // Both ends detect it — no wedge, no hang.
-        assert!(matches!(a_task.await.unwrap(), Err(HandshakeError::VersionMismatch { .. })));
+        assert!(matches!(
+            a_task.await.unwrap(),
+            Err(HandshakeError::VersionMismatch { .. })
+        ));
     }
 }

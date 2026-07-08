@@ -28,9 +28,9 @@ pub fn err(code: i32, message: &str) -> agent::AgentResponse {
     }
 }
 
-/// Run the non-I/O methods (clock/info/ports). The async, filesystem-touching sync methods are
-/// routed by [`crate::handler`] before they reach here; if one arrives here it is a routing bug, so
-/// it is answered with an error rather than silently ignored.
+/// Run the non-I/O methods (clock/info/ports). Async methods such as sync and exec are routed by
+/// [`crate::handler`] before they reach here; if one arrives here it is a routing bug, so it is
+/// answered with an error rather than silently ignored.
 pub fn handle_method(method: Option<Method>) -> agent::AgentResponse {
     let result = match method {
         Some(Method::ClockSync(r)) => Res::ClockSync(agent::ClockSyncResponse {
@@ -39,7 +39,7 @@ pub fn handle_method(method: Option<Method>) -> agent::AgentResponse {
         Some(Method::Info(_)) => Res::Info(info()),
         Some(Method::PortsWatch(_)) => Res::PortsWatch(ports_watch()),
         Some(Method::Telemetry(_)) => Res::Telemetry(telemetry()),
-        Some(_) => return err(500, "sync method must be dispatched via the async handler"),
+        Some(_) => return err(500, "async method must be dispatched via the async handler"),
         None => return err(400, "empty method"),
     };
     agent::AgentResponse {
@@ -218,7 +218,9 @@ mod tests {
 
         // Agent side: handshake, then serve the dispatcher over the mux.
         let server = tokio::spawn(async move {
-            handshake(&mut server_io, &Hello::current("agent")).await.unwrap();
+            handshake(&mut server_io, &Hello::current("agent"))
+                .await
+                .unwrap();
             let handler: Handler =
                 Arc::new(|req: Vec<u8>| Box::pin(async move { dispatch(&req) }) as HandlerFuture);
             let mux = Mux::start(server_io, handler);
@@ -228,7 +230,9 @@ mod tests {
         });
 
         // doryd side: handshake, then make RPC calls.
-        let peer = handshake(&mut client_io, &Hello::current("doryd")).await.unwrap();
+        let peer = handshake(&mut client_io, &Hello::current("doryd"))
+            .await
+            .unwrap();
         assert_eq!(peer.build, "agent");
         let client = Mux::client(client_io);
 

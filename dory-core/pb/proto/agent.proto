@@ -51,6 +51,29 @@ message TelemetryResponse {
   double psi_full_avg10 = 4; // memory-pressure "full" 10s average, percent (0..100)
 }
 
+// Run a bounded non-interactive command in the guest. This is the primitive doryd uses for
+// VM-machine provisioning and smoke checks; streaming terminals/debug shells can layer on a
+// separate channel later.
+message ExecEnv {
+  string key = 1;
+  string value = 2;
+}
+message ExecRequest {
+  repeated string argv = 1;
+  string cwd = 2;
+  repeated ExecEnv env = 3;
+  uint64 timeout_ms = 4;
+  uint64 output_limit_bytes = 5;
+}
+message ExecResponse {
+  int32 exit_code = 1;
+  bytes stdout = 2;
+  bytes stderr = 3;
+  bool timed_out = 4;
+  bool stdout_truncated = 5;
+  bool stderr_truncated = 6;
+}
+
 // --- Host-authoritative file sync (remote machines) ---
 // The host is the source of truth; these push a host tree into a remote `root` directory, making it
 // an exact replica. `root` is an absolute path on the remote; `path` is relative to it (forward
@@ -113,6 +136,7 @@ message AgentRequest {
     SyncPutChunkRequest sync_put_chunk = 6;
     SyncDeleteRequest sync_delete = 7;
     TelemetryRequest telemetry = 8;
+    ExecRequest exec = 9;
   }
 }
 
@@ -127,5 +151,6 @@ message AgentResponse {
     SyncPutChunkResponse sync_put_chunk = 7;
     SyncDeleteResponse sync_delete = 8;
     TelemetryResponse telemetry = 9;
+    ExecResponse exec = 10;
   }
 }

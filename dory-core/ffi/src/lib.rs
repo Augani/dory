@@ -12,7 +12,8 @@
 
 uniffi::setup_scaffolding!();
 
-mod remote;
+mod agent_forward;
+pub(crate) mod remote;
 
 /// The wire protocol version doryd and the agent must agree on.
 #[uniffi::export]
@@ -93,6 +94,7 @@ pub fn start_dataplane(
             path: dockerd_socket_path.into(),
         }),
         gpu_supported,
+        None,
     )
 }
 
@@ -112,8 +114,37 @@ pub fn start_dataplane_forward(
             forward_socket: forward_socket_path.into(),
             cid,
             port,
+            retry_for: None,
         }),
         gpu_supported,
+        None,
+    )
+}
+
+/// Docker-tier dataplane with doryd-side activity reporting. The activity socket receives one
+/// tab-separated line per meaningful docker connection: `begin<TAB>METHOD<TAB>PATH\n`, then `end\n`.
+/// `/_ping` is intentionally exempt. Backend dials retry while doryd wakes the helper.
+#[uniffi::export]
+pub fn start_dataplane_forward_with_activity(
+    listen_fd: i32,
+    forward_socket_path: String,
+    cid: u32,
+    port: u32,
+    gpu_supported: bool,
+    activity_socket_path: String,
+) -> std::sync::Arc<DoryDataplane> {
+    spawn_dataplane(
+        listen_fd,
+        std::sync::Arc::new(dory_dataplane::ForwardBackend {
+            forward_socket: forward_socket_path.into(),
+            cid,
+            port,
+            retry_for: Some(std::time::Duration::from_secs(30)),
+        }),
+        gpu_supported,
+        Some(dory_dataplane::serve::ActivityReporter::new(
+            activity_socket_path.into(),
+        )),
     )
 }
 
@@ -121,13 +152,17 @@ fn spawn_dataplane<B: dory_dataplane::Backend>(
     listen_fd: i32,
     backend: std::sync::Arc<B>,
     gpu_supported: bool,
+    activity: Option<dory_dataplane::serve::ActivityReporter>,
 ) -> std::sync::Arc<DoryDataplane> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
         .build()
         .expect("build dataplane runtime");
-    let opts = std::sync::Arc::new(dory_dataplane::ServeOpts { gpu_supported });
+    let opts = std::sync::Arc::new(dory_dataplane::ServeOpts {
+        gpu_supported,
+        activity,
+    });
     let task = runtime.spawn(async move {
         let _ = dory_dataplane::serve_fd(listen_fd, backend, opts).await;
     });
@@ -188,13 +223,20 @@ mod tests {
                 let mut got = Vec::new();
                 let mut tmp = [0u8; 4096];
                 loop {
-                    match tokio::time::timeout(std::time::Duration::from_millis(300), s.read(&mut tmp)).await {
+                    match tokio::time::timeout(
+                        std::time::Duration::from_millis(300),
+                        s.read(&mut tmp),
+                    )
+                    .await
+                    {
                         Ok(Ok(n)) if n > 0 => got.extend_from_slice(&tmp[..n]),
                         _ => break,
                     }
                 }
                 *cap.lock().unwrap() = got;
-                let _ = s.write_all(b"HTTP/1.1 201 Created\r\nContent-Length: 0\r\n\r\n").await;
+                let _ = s
+                    .write_all(b"HTTP/1.1 201 Created\r\nContent-Length: 0\r\n\r\n")
+                    .await;
                 let _ = s.shutdown().await;
             }
         });
@@ -214,11 +256,21 @@ mod tests {
         let mut client = UnixStream::connect(&sock).await.unwrap();
         client.write_all(req.as_bytes()).await.unwrap();
         let mut resp = Vec::new();
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(3), client.read_to_end(&mut resp)).await;
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            client.read_to_end(&mut resp),
+        )
+        .await;
 
         let got = String::from_utf8_lossy(&captured.lock().unwrap()).into_owned();
-        assert!(got.contains("/containers/create"), "backend got the request: {got}");
-        assert!(got.contains("\"HostIp\":\"\""), "loopback HostIp rewritten before forwarding: {got}");
+        assert!(
+            got.contains("/containers/create"),
+            "backend got the request: {got}"
+        );
+        assert!(
+            got.contains("\"HostIp\":\"\""),
+            "loopback HostIp rewritten before forwarding: {got}"
+        );
 
         dp.shutdown();
         let _ = std::fs::remove_file(&sock);
@@ -253,13 +305,20 @@ mod tests {
                 let mut req = Vec::new();
                 let mut tmp = [0u8; 4096];
                 loop {
-                    match tokio::time::timeout(std::time::Duration::from_millis(300), s.read(&mut tmp)).await {
+                    match tokio::time::timeout(
+                        std::time::Duration::from_millis(300),
+                        s.read(&mut tmp),
+                    )
+                    .await
+                    {
                         Ok(Ok(n)) if n > 0 => req.extend_from_slice(&tmp[..n]),
                         _ => break,
                     }
                 }
                 *gr.lock().unwrap() = req;
-                let _ = s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n").await;
+                let _ = s
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+                    .await;
                 let _ = s.shutdown().await;
             }
         });
@@ -270,17 +329,34 @@ mod tests {
 
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         let mut client = UnixStream::connect(&sock).await.unwrap();
-        client.write_all(b"GET /v1.47/version HTTP/1.1\r\nHost: d\r\n\r\n").await.unwrap();
+        client
+            .write_all(b"GET /v1.47/version HTTP/1.1\r\nHost: d\r\n\r\n")
+            .await
+            .unwrap();
         let mut resp = Vec::new();
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(3), client.read_to_end(&mut resp)).await;
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            client.read_to_end(&mut resp),
+        )
+        .await;
 
-        let preamble = got_preamble.lock().unwrap().clone().expect("preamble received");
+        let preamble = got_preamble
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("preamble received");
         assert_eq!(preamble.direction, Direction::HostToGuest);
         assert_eq!(preamble.cid, 3);
         assert_eq!(preamble.port, 1026);
         let request = String::from_utf8_lossy(&got_request.lock().unwrap()).into_owned();
-        assert!(request.contains("GET /v1.47/version"), "forwarded request: {request}");
-        assert!(String::from_utf8_lossy(&resp).starts_with("HTTP/1.1 200"), "reply relayed");
+        assert!(
+            request.contains("GET /v1.47/version"),
+            "forwarded request: {request}"
+        );
+        assert!(
+            String::from_utf8_lossy(&resp).starts_with("HTTP/1.1 200"),
+            "reply relayed"
+        );
 
         dp.shutdown();
         let _ = std::fs::remove_file(&sock);

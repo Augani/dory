@@ -108,6 +108,9 @@ mod tests {
         let (mut a, mut b) = duplex(64);
         // A valid frame carrying a too-short body -> Malformed, not a panic.
         tokio::spawn(async move { write_frame(&mut a, &[0u8; 3]).await.unwrap() });
-        assert!(matches!(read_preamble(&mut b).await, Err(PreambleError::Malformed)));
+        assert!(matches!(
+            read_preamble(&mut b).await,
+            Err(PreambleError::Malformed)
+        ));
     }
 }

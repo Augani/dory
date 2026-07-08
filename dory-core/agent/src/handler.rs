@@ -9,6 +9,7 @@ use dory_pb::agent::{
 use prost::Message;
 
 use crate::dispatch::{err, handle_method};
+use crate::exec::{self, ExecError};
 use crate::sync_apply::{self, SyncError};
 
 pub async fn handle(req_bytes: &[u8]) -> Vec<u8> {
@@ -19,9 +20,12 @@ pub async fn handle(req_bytes: &[u8]) -> Vec<u8> {
 
     let response = match req.method {
         Some(Method::SyncManifest(r)) => wrap(sync_apply::manifest(r).await, Res::SyncManifest),
-        Some(Method::SyncFileStatus(r)) => wrap(sync_apply::file_status(r).await, Res::SyncFileStatus),
+        Some(Method::SyncFileStatus(r)) => {
+            wrap(sync_apply::file_status(r).await, Res::SyncFileStatus)
+        }
         Some(Method::SyncPutChunk(r)) => wrap(sync_apply::put_chunk(r).await, Res::SyncPutChunk),
         Some(Method::SyncDelete(r)) => wrap(sync_apply::delete(r).await, Res::SyncDelete),
+        Some(Method::Exec(r)) => wrap_exec(exec::run(r).await),
         other => handle_method(other),
     };
     response.encode_to_vec()
@@ -32,6 +36,15 @@ fn wrap<T>(result: Result<T, SyncError>, ok: impl FnOnce(T) -> Res) -> AgentResp
     match result {
         Ok(value) => agent::AgentResponse {
             result: Some(ok(value)),
+        },
+        Err(e) => err(e.code(), &e.to_string()),
+    }
+}
+
+fn wrap_exec(result: Result<agent::ExecResponse, ExecError>) -> AgentResponse {
+    match result {
+        Ok(value) => agent::AgentResponse {
+            result: Some(Res::Exec(value)),
         },
         Err(e) => err(e.code(), &e.to_string()),
     }
