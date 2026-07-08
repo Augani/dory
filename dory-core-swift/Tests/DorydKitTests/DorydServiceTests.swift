@@ -620,7 +620,11 @@ final class DorydServiceTests: XCTestCase {
     }
 
     func testNetworkRoutesAndStatusOverXPC() throws {
-        let networking = NetworkingController(configuration: NetworkingConfiguration(dnsPort: 0, httpProxyPort: 0))
+        let networking = NetworkingController(configuration: NetworkingConfiguration(
+            dnsPort: 0,
+            httpProxyPort: 0,
+            privilegedTCPForwards: [PrivilegedTCPForward(listenPort: 25, targetPort: 1025)]
+        ))
         try networking.start()
         defer { networking.stop() }
         let service = DorydService(
@@ -680,6 +684,9 @@ final class DorydServiceTests: XCTestCase {
         XCTAssertEqual(authorization["degradedMode"] as? String, "high-port-dns-only")
         XCTAssertEqual(authorization["authorizedMode"] as? String, "system-resolver-proxy-tls")
         XCTAssertEqual(authorization["suffix"] as? String, "dory.local")
+        let forwards = try XCTUnwrap(authorization["privilegedTCPForwards"] as? [NSDictionary])
+        XCTAssertEqual(forwards.first?["listenPort"] as? UInt16, 25)
+        XCTAssertEqual(forwards.first?["targetPort"] as? UInt16, 1025)
         let requests = try XCTUnwrap(authorization["requests"] as? [NSDictionary])
         XCTAssertTrue(requests.contains { $0["kind"] as? String == "resolverFile" })
         XCTAssertTrue(requests.contains { $0["kind"] as? String == "pfAnchor" })

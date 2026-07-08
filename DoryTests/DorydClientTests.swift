@@ -209,6 +209,9 @@ struct DorydClientTests {
         #expect(networkPlan.dnsPort == 15353)
         #expect(networkPlan.httpProxyPort == 18080)
         #expect(networkPlan.httpsProxyPort == 18443)
+        #expect(networkPlan.privilegedTCPForwards == [
+            DorydPrivilegedTCPForward(listenPort: 25, targetPort: 1025),
+        ])
         #expect(networkPlan.requests.map(\.kind) == ["resolverFile"])
         #expect(balloonPlan.host.pressure == "warning")
         #expect(balloonPlan.applicableTargets.map(\.id) == ["docker"])
@@ -1084,6 +1087,12 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
             "dnsPort": 15353,
             "httpProxyPort": 18080,
             "httpsProxyPort": 18443,
+            "privilegedTCPForwards": [
+                [
+                    "listenPort": 25,
+                    "targetPort": 1025,
+                ],
+            ],
             "requests": [
                 [
                     "id": "resolver.dory.local",

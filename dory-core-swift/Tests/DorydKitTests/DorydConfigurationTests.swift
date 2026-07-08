@@ -182,6 +182,7 @@ final class DorydConfigurationTests: XCTestCase {
             "DORYD_DNS_PORT": "15353",
             "DORYD_HTTP_PROXY_PORT": "18080",
             "DORYD_HTTPS_PROXY_PORT": "18443",
+            "DORYD_PRIVILEGED_TCP_FORWARDS": "25:1025, 110:1110",
             "DORYD_CA_CERT": "/tmp/doryd-ca.crt",
         ], home: "/tmp/doryd-home", cwd: "/tmp")
 
@@ -191,6 +192,10 @@ final class DorydConfigurationTests: XCTestCase {
             dnsPort: 15353,
             httpProxyPort: 18080,
             httpsProxyPort: 18443,
+            privilegedTCPForwards: [
+                PrivilegedTCPForward(listenPort: 25, targetPort: 1025),
+                PrivilegedTCPForward(listenPort: 110, targetPort: 1110),
+            ],
             localCACertificatePath: "/tmp/doryd-ca.crt"
         ))
     }

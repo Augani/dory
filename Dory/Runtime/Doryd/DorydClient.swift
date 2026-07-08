@@ -242,7 +242,24 @@ nonisolated struct DorydNetworkingAuthorizationRequest: Sendable, Equatable, Cod
     var command: [String]
 }
 
+nonisolated struct DorydPrivilegedTCPForward: Sendable, Equatable, Codable {
+    var listenPort: UInt16
+    var targetPort: UInt16
+}
+
 nonisolated struct DorydNetworkingAuthorizationPlan: Sendable, Equatable, Codable {
+    private enum CodingKeys: String, CodingKey {
+        case degradedMode
+        case authorizedMode
+        case suffix
+        case dnsBindAddress
+        case dnsPort
+        case httpProxyPort
+        case httpsProxyPort
+        case privilegedTCPForwards
+        case requests
+    }
+
     var degradedMode: String
     var authorizedMode: String
     var suffix: String
@@ -250,7 +267,46 @@ nonisolated struct DorydNetworkingAuthorizationPlan: Sendable, Equatable, Codabl
     var dnsPort: UInt16
     var httpProxyPort: UInt16
     var httpsProxyPort: UInt16
+    var privilegedTCPForwards: [DorydPrivilegedTCPForward] = []
     var requests: [DorydNetworkingAuthorizationRequest]
+
+    init(
+        degradedMode: String,
+        authorizedMode: String,
+        suffix: String,
+        dnsBindAddress: String,
+        dnsPort: UInt16,
+        httpProxyPort: UInt16,
+        httpsProxyPort: UInt16,
+        privilegedTCPForwards: [DorydPrivilegedTCPForward] = [],
+        requests: [DorydNetworkingAuthorizationRequest]
+    ) {
+        self.degradedMode = degradedMode
+        self.authorizedMode = authorizedMode
+        self.suffix = suffix
+        self.dnsBindAddress = dnsBindAddress
+        self.dnsPort = dnsPort
+        self.httpProxyPort = httpProxyPort
+        self.httpsProxyPort = httpsProxyPort
+        self.privilegedTCPForwards = privilegedTCPForwards
+        self.requests = requests
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.degradedMode = try container.decode(String.self, forKey: .degradedMode)
+        self.authorizedMode = try container.decode(String.self, forKey: .authorizedMode)
+        self.suffix = try container.decode(String.self, forKey: .suffix)
+        self.dnsBindAddress = try container.decode(String.self, forKey: .dnsBindAddress)
+        self.dnsPort = try container.decode(UInt16.self, forKey: .dnsPort)
+        self.httpProxyPort = try container.decode(UInt16.self, forKey: .httpProxyPort)
+        self.httpsProxyPort = try container.decode(UInt16.self, forKey: .httpsProxyPort)
+        self.privilegedTCPForwards = try container.decodeIfPresent(
+            [DorydPrivilegedTCPForward].self,
+            forKey: .privilegedTCPForwards
+        ) ?? []
+        self.requests = try container.decode([DorydNetworkingAuthorizationRequest].self, forKey: .requests)
+    }
 }
 
 nonisolated struct DorydHostMemorySnapshot: Sendable, Equatable {
@@ -1077,6 +1133,9 @@ nonisolated final class DorydClient: @unchecked Sendable {
         }
         let requests = rawRequests.compactMap(networkAuthorizationRequest(from:))
         guard requests.count == rawRequests.count else { return nil }
+        let rawForwards = dictionary["privilegedTCPForwards"] as? [NSDictionary] ?? []
+        let privilegedTCPForwards = rawForwards.compactMap(privilegedTCPForward(from:))
+        guard privilegedTCPForwards.count == rawForwards.count else { return nil }
         return DorydNetworkingAuthorizationPlan(
             degradedMode: degradedMode,
             authorizedMode: authorizedMode,
@@ -1085,8 +1144,17 @@ nonisolated final class DorydClient: @unchecked Sendable {
             dnsPort: dnsPort,
             httpProxyPort: httpProxyPort,
             httpsProxyPort: httpsProxyPort,
+            privilegedTCPForwards: privilegedTCPForwards,
             requests: requests
         )
+    }
+
+    nonisolated private static func privilegedTCPForward(from dictionary: NSDictionary) -> DorydPrivilegedTCPForward? {
+        guard let listenPort = uint16(dictionary["listenPort"]),
+              let targetPort = uint16(dictionary["targetPort"]) else {
+            return nil
+        }
+        return DorydPrivilegedTCPForward(listenPort: listenPort, targetPort: targetPort)
     }
 
     nonisolated private static func networkAuthorizationRequest(from dictionary: NSDictionary) -> DorydNetworkingAuthorizationRequest? {

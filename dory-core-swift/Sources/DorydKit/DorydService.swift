@@ -849,7 +849,17 @@ private extension NetworkingAuthorizationPlan {
             "dnsPort": dnsPort,
             "httpProxyPort": httpProxyPort,
             "httpsProxyPort": httpsProxyPort,
+            "privilegedTCPForwards": privilegedTCPForwards.map(\.xpcDictionary),
             "requests": requests.map(\.xpcDictionary),
+        ]
+    }
+}
+
+private extension PrivilegedTCPForward {
+    var xpcDictionary: NSDictionary {
+        [
+            "listenPort": listenPort,
+            "targetPort": targetPort,
         ]
     }
 }

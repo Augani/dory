@@ -64,6 +64,7 @@ public struct DorydEnvironment: Sendable {
             dnsPort: uint16("DORYD_DNS_PORT") ?? 1053,
             httpProxyPort: uint16("DORYD_HTTP_PROXY_PORT") ?? 8080,
             httpsProxyPort: uint16("DORYD_HTTPS_PROXY_PORT") ?? 8443,
+            privilegedTCPForwards: privilegedTCPForwards(),
             localCACertificatePath: string("DORYD_CA_CERT") ?? "\(home)/.dory/ca/ca.crt"
         )
     }
@@ -363,6 +364,23 @@ public struct DorydEnvironment: Sendable {
 
     private func splitArguments(_ raw: String) -> [String] {
         raw.split(separator: " ").map(String.init).filter { !$0.isEmpty }
+    }
+
+    private func privilegedTCPForwards() -> [PrivilegedTCPForward] {
+        let raw = string("DORYD_PRIVILEGED_TCP_FORWARDS")
+            ?? string("DORYD_PRIVILEGED_PORT_FORWARDS")
+            ?? ""
+        var forwards: [UInt16: PrivilegedTCPForward] = [:]
+        for entry in raw.split(separator: ",") {
+            let parts = entry.split(separator: ":", maxSplits: 1)
+            guard parts.count == 2,
+                  let listen = UInt16(String(parts[0]).trimmingCharacters(in: .whitespaces)),
+                  let target = UInt16(String(parts[1]).trimmingCharacters(in: .whitespaces)) else {
+                continue
+            }
+            forwards[listen] = PrivilegedTCPForward(listenPort: listen, targetPort: target)
+        }
+        return forwards.values.sorted { $0.listenPort < $1.listenPort }
     }
 }
 

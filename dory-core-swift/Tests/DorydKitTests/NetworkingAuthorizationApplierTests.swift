@@ -12,6 +12,9 @@ final class NetworkingAuthorizationApplierTests: XCTestCase {
             dnsPort: 15353,
             httpProxyPort: 18080,
             httpsProxyPort: 18443,
+            privilegedTCPForwards: [
+                PrivilegedTCPForward(listenPort: 25, targetPort: 1025),
+            ],
             localCACertificatePath: nil
         ))
 
@@ -28,7 +31,9 @@ final class NetworkingAuthorizationApplierTests: XCTestCase {
         port 15353
 
         """)
-        XCTAssertTrue(try String(contentsOfFile: anchor).contains("port 80 -> 127.0.0.1 port 18080"))
+        let anchorContents = try String(contentsOfFile: anchor)
+        XCTAssertTrue(anchorContents.contains("port 25 -> 127.0.0.1 port 1025"))
+        XCTAssertTrue(anchorContents.contains("port 80 -> 127.0.0.1 port 18080"))
         XCTAssertEqual(try permissions(atPath: resolver), 0o644)
         XCTAssertEqual(try permissions(atPath: anchor), 0o644)
         XCTAssertEqual(recorder.commands, [

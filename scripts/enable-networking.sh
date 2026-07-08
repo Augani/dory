@@ -24,6 +24,7 @@ CA_CERT="$HOME/.dory/ca/ca.crt"
 DIRECT_IP=0
 REMOVE=0
 DRY_RUN=0
+PRIVILEGED_FORWARDS=()
 CONTAINER_SUBNET="192.168.215.0/24"
 HOST_GATEWAY="192.168.127.1"
 GUEST_GATEWAY="192.168.127.2"
@@ -32,9 +33,11 @@ DIRECT_IP_INTERFACE_FILE="$HOME/.dory/hv/direct-ip.interface"
 
 usage() {
   cat <<EOF
-Usage: $0 [--direct-ip] [--container-subnet CIDR] [--host-gateway IPv4] [--guest-gateway IPv4] [--direct-ip-interface IFACE] [--dry-run] [--remove]
+Usage: $0 [--direct-ip] [--forward LOW:HIGH] [--container-subnet CIDR] [--host-gateway IPv4] [--guest-gateway IPv4] [--direct-ip-interface IFACE] [--dry-run] [--remove]
 
   --direct-ip             Add/remove the direct container-IP route with the same admin consent flow.
+  --forward LOW:HIGH      Add a privileged TCP redirect in fallback mode, e.g. 25:1025. With live
+                          doryd, set DORYD_PRIVILEGED_TCP_FORWARDS=25:1025 on the daemon instead.
   --container-subnet CIDR Container bridge subnet to route. Default: $CONTAINER_SUBNET
   --host-gateway IPv4     Host-side point-to-point utun address. Default: $HOST_GATEWAY
   --guest-gateway IPv4    Guest/gvproxy gateway for that subnet. Default: $GUEST_GATEWAY
@@ -72,9 +75,20 @@ valid_interface() {
   [[ "$iface" =~ ^[A-Za-z0-9_-]{1,15}$ ]]
 }
 
+valid_forward() {
+  local mapping="$1" low high
+  [[ "$mapping" == *:* ]] || return 1
+  low="${mapping%%:*}"
+  high="${mapping#*:}"
+  [[ "$low" =~ ^[0-9]+$ && "$high" =~ ^[0-9]+$ ]] || return 1
+  [ "$low" -ge 1 ] && [ "$low" -lt 1024 ] || return 1
+  [ "$high" -ge 1024 ] && [ "$high" -le 65535 ] || return 1
+}
+
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --direct-ip) DIRECT_IP=1; shift ;;
+    --forward) PRIVILEGED_FORWARDS+=("${2:?missing LOW:HIGH}"); shift 2 ;;
     --container-subnet) CONTAINER_SUBNET="${2:?missing CIDR}"; shift 2 ;;
     --host-gateway) HOST_GATEWAY="${2:?missing IPv4}"; shift 2 ;;
     --guest-gateway) GUEST_GATEWAY="${2:?missing IPv4}"; shift 2 ;;
@@ -89,6 +103,11 @@ done
 valid_cidr "$CONTAINER_SUBNET" || { echo "invalid --container-subnet: $CONTAINER_SUBNET" >&2; exit 2; }
 valid_ipv4 "$HOST_GATEWAY" || { echo "invalid --host-gateway: $HOST_GATEWAY" >&2; exit 2; }
 valid_ipv4 "$GUEST_GATEWAY" || { echo "invalid --guest-gateway: $GUEST_GATEWAY" >&2; exit 2; }
+if [ "${#PRIVILEGED_FORWARDS[@]}" -gt 0 ]; then
+  for forward in "${PRIVILEGED_FORWARDS[@]}"; do
+    valid_forward "$forward" || { echo "invalid --forward: $forward (expected LOW:HIGH with LOW < 1024 and HIGH >= 1024)" >&2; exit 2; }
+  done
+fi
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -141,6 +160,9 @@ apply_live_doryd_plan() {
     return 2
   fi
   echo "==> Applying live doryd networking authorization plan with $helper"
+  if [ "${#PRIVILEGED_FORWARDS[@]}" -gt 0 ]; then
+    echo "    note: live doryd plans ignore --forward; set DORYD_PRIVILEGED_TCP_FORWARDS on doryd for daemon-managed low-port redirects."
+  fi
   if [ "$DRY_RUN" = "1" ]; then
     "$helper" --dry-run --plan-json "$plan"
     rc=$?
@@ -162,6 +184,11 @@ http:  127.0.0.1:80  -> 127.0.0.1:$HTTP_PORT
 https: 127.0.0.1:443 -> 127.0.0.1:$HTTPS_PORT
 trust: $CA_CERT
 EOF
+    if [ "${#PRIVILEGED_FORWARDS[@]}" -gt 0 ]; then
+      for forward in "${PRIVILEGED_FORWARDS[@]}"; do
+        echo "tcp:   127.0.0.1:${forward%%:*}  -> 127.0.0.1:${forward#*:}"
+      done
+    fi
     return 0
   fi
 
@@ -178,6 +205,12 @@ EOF
 rdr pass on lo0 inet proto tcp from any to any port 80 -> 127.0.0.1 port $HTTP_PORT
 rdr pass on lo0 inet proto tcp from any to any port 443 -> 127.0.0.1 port $HTTPS_PORT
 EOF
+  if [ "${#PRIVILEGED_FORWARDS[@]}" -gt 0 ]; then
+    for forward in "${PRIVILEGED_FORWARDS[@]}"; do
+      echo "rdr pass on lo0 inet proto tcp from any to any port ${forward%%:*} -> 127.0.0.1 port ${forward#*:}" \
+        | sudo tee -a /etc/pf.anchors/dev.dory >/dev/null
+    done
+  fi
   sudo pfctl -a com.apple/dev.dory -f /etc/pf.anchors/dev.dory
   sudo pfctl -E >/dev/null 2>&1 || true
 

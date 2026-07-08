@@ -1,11 +1,22 @@
 import Foundation
 
+public struct PrivilegedTCPForward: Sendable, Equatable, Hashable, Codable {
+    public var listenPort: UInt16
+    public var targetPort: UInt16
+
+    public init(listenPort: UInt16, targetPort: UInt16) {
+        self.listenPort = listenPort
+        self.targetPort = targetPort
+    }
+}
+
 public struct NetworkingConfiguration: Sendable, Equatable {
     public var suffix: String
     public var dnsBindAddress: String
     public var dnsPort: UInt16
     public var httpProxyPort: UInt16
     public var httpsProxyPort: UInt16
+    public var privilegedTCPForwards: [PrivilegedTCPForward]
     public var localCACertificatePath: String?
 
     public init(
@@ -14,6 +25,7 @@ public struct NetworkingConfiguration: Sendable, Equatable {
         dnsPort: UInt16 = 1053,
         httpProxyPort: UInt16 = 8080,
         httpsProxyPort: UInt16 = 8443,
+        privilegedTCPForwards: [PrivilegedTCPForward] = [],
         localCACertificatePath: String? = nil
     ) {
         self.suffix = suffix
@@ -21,6 +33,7 @@ public struct NetworkingConfiguration: Sendable, Equatable {
         self.dnsPort = dnsPort
         self.httpProxyPort = httpProxyPort
         self.httpsProxyPort = httpsProxyPort
+        self.privilegedTCPForwards = privilegedTCPForwards
         self.localCACertificatePath = localCACertificatePath
     }
 }

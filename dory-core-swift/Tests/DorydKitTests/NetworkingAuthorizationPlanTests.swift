@@ -9,6 +9,10 @@ final class NetworkingAuthorizationPlanTests: XCTestCase {
             dnsPort: 15353,
             httpProxyPort: 18080,
             httpsProxyPort: 18443,
+            privilegedTCPForwards: [
+                PrivilegedTCPForward(listenPort: 25, targetPort: 1025),
+                PrivilegedTCPForward(listenPort: 110, targetPort: 1110),
+            ],
             localCACertificatePath: "/Users/test/.dory/ca/ca.crt"
         ))
 
@@ -16,6 +20,10 @@ final class NetworkingAuthorizationPlanTests: XCTestCase {
         XCTAssertEqual(plan.authorizedMode, "system-resolver-proxy-tls")
         XCTAssertEqual(plan.suffix, "dory.local")
         XCTAssertEqual(plan.dnsPort, 15353)
+        XCTAssertEqual(plan.privilegedTCPForwards, [
+            PrivilegedTCPForward(listenPort: 25, targetPort: 1025),
+            PrivilegedTCPForward(listenPort: 110, targetPort: 1110),
+        ])
         XCTAssertEqual(plan.requests.map(\.kind), [.resolverFile, .pfAnchor, .pfEnable, .localCATrust])
 
         let resolver = try XCTUnwrap(plan.requests.first { $0.kind == .resolverFile })
@@ -30,7 +38,9 @@ final class NetworkingAuthorizationPlanTests: XCTestCase {
 
         let pf = try XCTUnwrap(plan.requests.first { $0.kind == .pfAnchor })
         XCTAssertEqual(pf.filePath, "/etc/pf.anchors/dev.dory")
+        XCTAssertTrue(pf.fileContents?.contains("port 25 -> 127.0.0.1 port 1025") == true)
         XCTAssertTrue(pf.fileContents?.contains("port 80 -> 127.0.0.1 port 18080") == true)
+        XCTAssertTrue(pf.fileContents?.contains("port 110 -> 127.0.0.1 port 1110") == true)
         XCTAssertTrue(pf.fileContents?.contains("port 443 -> 127.0.0.1 port 18443") == true)
 
         let enable = try XCTUnwrap(plan.requests.first { $0.kind == .pfEnable })
@@ -60,6 +70,25 @@ final class NetworkingAuthorizationPlanTests: XCTestCase {
         }
     }
 
+    func testDecodesLegacyPlanWithoutPrivilegedForwards() throws {
+        let json = Data("""
+        {
+          "degradedMode": "high-port-dns-only",
+          "authorizedMode": "system-resolver-proxy-tls",
+          "suffix": "dory.local",
+          "dnsBindAddress": "127.0.0.1",
+          "dnsPort": 15353,
+          "httpProxyPort": 8080,
+          "httpsProxyPort": 8443,
+          "requests": []
+        }
+        """.utf8)
+
+        let plan = try JSONDecoder().decode(NetworkingAuthorizationPlan.self, from: json)
+
+        XCTAssertEqual(plan.privilegedTCPForwards, [])
+    }
+
     func testRejectsPrivilegedOrInvalidDaemonPorts() {
         XCTAssertThrowsError(try NetworkingAuthorizationPlan.make(configuration: NetworkingConfiguration(
             dnsPort: 53
@@ -72,6 +101,20 @@ final class NetworkingAuthorizationPlanTests: XCTestCase {
             dnsPort: 15353
         ))) { error in
             XCTAssertEqual(error as? NetworkingAuthorizationError, .invalidBindAddress("127.0.0.999"))
+        }
+
+        XCTAssertThrowsError(try NetworkingAuthorizationPlan.make(configuration: NetworkingConfiguration(
+            dnsPort: 15353,
+            privilegedTCPForwards: [PrivilegedTCPForward(listenPort: 25, targetPort: 25)]
+        ))) { error in
+            XCTAssertEqual(error as? NetworkingAuthorizationError, .invalidPrivilegedForward("25:25"))
+        }
+
+        XCTAssertThrowsError(try NetworkingAuthorizationPlan.make(configuration: NetworkingConfiguration(
+            dnsPort: 15353,
+            privilegedTCPForwards: [PrivilegedTCPForward(listenPort: 1024, targetPort: 2024)]
+        ))) { error in
+            XCTAssertEqual(error as? NetworkingAuthorizationError, .invalidPrivilegedForward("1024:2024"))
         }
     }
 }

@@ -4,6 +4,7 @@ public enum NetworkingAuthorizationError: Error, Sendable, Equatable, CustomStri
     case invalidSuffix(String)
     case invalidBindAddress(String)
     case invalidPort(String)
+    case invalidPrivilegedForward(String)
     case invalidPath(String)
 
     public var description: String {
@@ -14,6 +15,8 @@ public enum NetworkingAuthorizationError: Error, Sendable, Equatable, CustomStri
             return "invalid DNS bind address: \(value)"
         case let .invalidPort(name):
             return "invalid unprivileged networking port: \(name)"
+        case let .invalidPrivilegedForward(value):
+            return "invalid privileged TCP forward: \(value)"
         case let .invalidPath(name):
             return "invalid networking path: \(name)"
         }
@@ -59,6 +62,18 @@ public struct NetworkingAuthorizationRequest: Sendable, Equatable, Codable {
 }
 
 public struct NetworkingAuthorizationPlan: Sendable, Equatable, Codable {
+    private enum CodingKeys: String, CodingKey {
+        case degradedMode
+        case authorizedMode
+        case suffix
+        case dnsBindAddress
+        case dnsPort
+        case httpProxyPort
+        case httpsProxyPort
+        case privilegedTCPForwards
+        case requests
+    }
+
     public var degradedMode: String
     public var authorizedMode: String
     public var suffix: String
@@ -66,6 +81,7 @@ public struct NetworkingAuthorizationPlan: Sendable, Equatable, Codable {
     public var dnsPort: UInt16
     public var httpProxyPort: UInt16
     public var httpsProxyPort: UInt16
+    public var privilegedTCPForwards: [PrivilegedTCPForward]
     public var requests: [NetworkingAuthorizationRequest]
 
     public init(
@@ -76,6 +92,7 @@ public struct NetworkingAuthorizationPlan: Sendable, Equatable, Codable {
         dnsPort: UInt16,
         httpProxyPort: UInt16,
         httpsProxyPort: UInt16,
+        privilegedTCPForwards: [PrivilegedTCPForward] = [],
         requests: [NetworkingAuthorizationRequest]
     ) {
         self.degradedMode = degradedMode
@@ -85,7 +102,24 @@ public struct NetworkingAuthorizationPlan: Sendable, Equatable, Codable {
         self.dnsPort = dnsPort
         self.httpProxyPort = httpProxyPort
         self.httpsProxyPort = httpsProxyPort
+        self.privilegedTCPForwards = privilegedTCPForwards
         self.requests = requests
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.degradedMode = try container.decode(String.self, forKey: .degradedMode)
+        self.authorizedMode = try container.decode(String.self, forKey: .authorizedMode)
+        self.suffix = try container.decode(String.self, forKey: .suffix)
+        self.dnsBindAddress = try container.decode(String.self, forKey: .dnsBindAddress)
+        self.dnsPort = try container.decode(UInt16.self, forKey: .dnsPort)
+        self.httpProxyPort = try container.decode(UInt16.self, forKey: .httpProxyPort)
+        self.httpsProxyPort = try container.decode(UInt16.self, forKey: .httpsProxyPort)
+        self.privilegedTCPForwards = try container.decodeIfPresent(
+            [PrivilegedTCPForward].self,
+            forKey: .privilegedTCPForwards
+        ) ?? []
+        self.requests = try container.decode([NetworkingAuthorizationRequest].self, forKey: .requests)
     }
 
     public static func make(configuration: NetworkingConfiguration) throws -> NetworkingAuthorizationPlan {
@@ -94,6 +128,7 @@ public struct NetworkingAuthorizationPlan: Sendable, Equatable, Codable {
         try validateUnprivilegedPort(configuration.dnsPort, field: "dnsPort")
         try validateUnprivilegedPort(configuration.httpProxyPort, field: "httpProxyPort")
         try validateUnprivilegedPort(configuration.httpsProxyPort, field: "httpsProxyPort")
+        let privilegedTCPForwards = try validatedPrivilegedTCPForwards(configuration.privilegedTCPForwards)
 
         let resolverPath = "/etc/resolver/\(suffix)"
         let resolverContents = """
@@ -105,12 +140,11 @@ public struct NetworkingAuthorizationPlan: Sendable, Equatable, Codable {
 
         let pfAnchorName = "com.apple/dev.dory"
         let pfAnchorPath = "/etc/pf.anchors/dev.dory"
-        let pfAnchorContents = """
-        # Managed by Dory. Do not edit.
-        rdr pass on lo0 inet proto tcp from any to any port 80 -> 127.0.0.1 port \(configuration.httpProxyPort)
-        rdr pass on lo0 inet proto tcp from any to any port 443 -> 127.0.0.1 port \(configuration.httpsProxyPort)
-
-        """
+        let pfAnchorContents = pfAnchorFileContents(
+            httpProxyPort: configuration.httpProxyPort,
+            httpsProxyPort: configuration.httpsProxyPort,
+            privilegedTCPForwards: privilegedTCPForwards
+        )
 
         var requests = [
             NetworkingAuthorizationRequest(
@@ -159,8 +193,28 @@ public struct NetworkingAuthorizationPlan: Sendable, Equatable, Codable {
             dnsPort: configuration.dnsPort,
             httpProxyPort: configuration.httpProxyPort,
             httpsProxyPort: configuration.httpsProxyPort,
+            privilegedTCPForwards: privilegedTCPForwards,
             requests: requests
         )
+    }
+
+    private static func pfAnchorFileContents(
+        httpProxyPort: UInt16,
+        httpsProxyPort: UInt16,
+        privilegedTCPForwards: [PrivilegedTCPForward]
+    ) -> String {
+        var forwards: [UInt16: UInt16] = [
+            80: httpProxyPort,
+            443: httpsProxyPort,
+        ]
+        for forward in privilegedTCPForwards {
+            forwards[forward.listenPort] = forward.targetPort
+        }
+
+        let rules = forwards.keys.sorted().map { listenPort in
+            "rdr pass on lo0 inet proto tcp from any to any port \(listenPort) -> 127.0.0.1 port \(forwards[listenPort]!)"
+        }
+        return (["# Managed by Dory. Do not edit."] + rules).joined(separator: "\n") + "\n"
     }
 
     private static func validatedSuffix(_ value: String) throws -> String {
@@ -197,6 +251,17 @@ public struct NetworkingAuthorizationPlan: Sendable, Equatable, Codable {
         guard value >= 1024 else {
             throw NetworkingAuthorizationError.invalidPort(field)
         }
+    }
+
+    private static func validatedPrivilegedTCPForwards(_ forwards: [PrivilegedTCPForward]) throws -> [PrivilegedTCPForward] {
+        var byListenPort: [UInt16: PrivilegedTCPForward] = [:]
+        for forward in forwards {
+            guard forward.listenPort > 0, forward.listenPort < 1024, forward.targetPort >= 1024 else {
+                throw NetworkingAuthorizationError.invalidPrivilegedForward("\(forward.listenPort):\(forward.targetPort)")
+            }
+            byListenPort[forward.listenPort] = forward
+        }
+        return byListenPort.values.sorted { $0.listenPort < $1.listenPort }
     }
 
     private static func validateAbsolutePath(_ value: String, field: String) throws {

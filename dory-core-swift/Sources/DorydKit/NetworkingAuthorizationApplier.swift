@@ -71,6 +71,7 @@ public struct NetworkingAuthorizationApplier: Sendable {
             dnsPort: plan.dnsPort,
             httpProxyPort: plan.httpProxyPort,
             httpsProxyPort: plan.httpsProxyPort,
+            privilegedTCPForwards: plan.privilegedTCPForwards,
             localCACertificatePath: caPath
         ))
     }
