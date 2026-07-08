@@ -49,25 +49,10 @@ status=$?
 # pin it back to 77. Only rewrites that one line, so intended pbxproj edits are preserved.
 sed -i '' 's/objectVersion = 110;/objectVersion = 77;/' Dory.xcodeproj/project.pbxproj 2>/dev/null || true
 
-# macOS 27 can stamp DerivedData app products with provenance metadata that leaves the debug
-# bundle launchable-looking but stuck before main/dyld. Clear it from this target's debug product.
-for app in "$HOME"/Library/Developer/Xcode/DerivedData/Dory-*/Build/Products/Debug/Dory.app; do
-  [ -d "$app" ] || continue
-  rm -rf "$(dirname "$app")/DoryUITests-Runner.app"
-  rm -rf "$app/Contents/PlugIns/DoryTests.xctest"
-  rm -rf "$app/Contents/Frameworks/XCTest.framework" \
-         "$app/Contents/Frameworks/XCTestCore.framework" \
-         "$app/Contents/Frameworks/XCTestSupport.framework" \
-         "$app/Contents/Frameworks/XCTAutomationSupport.framework" \
-         "$app/Contents/Frameworks/XCUIAutomation.framework" \
-         "$app/Contents/Frameworks/XCUnit.framework" \
-         "$app/Contents/Frameworks/Testing.framework" \
-         "$app/Contents/Frameworks/libXCTestBundleInject.dylib" \
-         "$app/Contents/Frameworks/libXCTestSwiftSupport.dylib"
-  xattr -cr "$app" 2>/dev/null || true
-  xattr -dr com.apple.provenance "$app" 2>/dev/null || true
-  xattr -dr com.apple.quarantine "$app" 2>/dev/null || true
-done
+# macOS 27 can stamp DerivedData app products with provenance metadata that leaves debug
+# bundles launchable-looking but stuck before main/dyld. Clear it and strip transient XCTest
+# payloads from normal debug app builds.
+scripts/clean-xcode-products.sh --strip-test-products
 
 fetch_url() {
   local url="$1" out="$2"

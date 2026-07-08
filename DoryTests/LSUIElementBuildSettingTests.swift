@@ -17,6 +17,13 @@ struct LSUIElementBuildSettingTests {
         return try String(contentsOf: path, encoding: .utf8)
     }
 
+    private func repositoryFile(_ relativePath: String) throws -> String {
+        let here = URL(fileURLWithPath: #filePath)
+        let root = here.deletingLastPathComponent().deletingLastPathComponent()
+        let path = root.appendingPathComponent(relativePath)
+        return try String(contentsOf: path, encoding: .utf8)
+    }
+
     @Test func appTargetConfigsSetLSUIElement() throws {
         let text = try pbxproj()
         let occurrences = text.components(separatedBy: "INFOPLIST_KEY_LSUIElement = YES;").count - 1
@@ -35,6 +42,18 @@ struct LSUIElementBuildSettingTests {
         #expect(text.contains("rm -f \\\"$HELPERS/$helper\\\""))
         #expect(text.contains("$(TARGET_BUILD_DIR)/$(WRAPPER_NAME)/Contents/Helpers"))
         #expect(text.contains("$(TARGET_BUILD_DIR)/$(WRAPPER_NAME)/Contents/Helpers/dory-idle-proxy"))
+    }
+
+    @Test func buildAndTestScriptsScrubTransientXcodeProducts() throws {
+        let build = try repositoryFile("scripts/build.sh")
+        let test = try repositoryFile("scripts/test.sh")
+        let clean = try repositoryFile("scripts/clean-xcode-products.sh")
+        #expect(build.contains("scripts/clean-xcode-products.sh --strip-test-products"))
+        #expect(test.components(separatedBy: "scripts/clean-xcode-products.sh").count - 1 >= 2)
+        #expect(clean.contains("DoryUITests-Runner.app"))
+        #expect(clean.contains("DoryTests.xctest"))
+        #expect(clean.contains("com.apple.provenance"))
+        #expect(clean.contains("com.apple.quarantine"))
     }
 
     @Test func mainSchemeDoesNotRunUITestRunner() throws {
