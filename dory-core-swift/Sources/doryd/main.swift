@@ -17,15 +17,29 @@ func fail(_ message: String) -> Never {
 
 let env = ProcessInfo.processInfo.environment
 let dorydEnvironment = DorydEnvironment(values: env)
+let hostCLIInstaller = HostCLIInstaller(environment: dorydEnvironment)
+let hostCLIReconciler: HostCLIReconciler?
 if dorydEnvironment.hostCLIEnabled {
-    let cliInstall = HostCLIInstaller(environment: dorydEnvironment).install()
+    let reconciler = HostCLIReconciler(
+        installer: hostCLIInstaller,
+        interval: dorydEnvironment.hostCLIReconcileIntervalSeconds
+    )
+    let cliInstall = reconciler.reconcileNow()
     if cliInstall.dockerLinked {
         FileHandle.standardError.write(Data("doryd: host CLI ready in \(dorydEnvironment.home)/.dory/bin\n".utf8))
     } else if !cliInstall.missing.isEmpty {
         FileHandle.standardError.write(Data("doryd: host CLI incomplete, missing \(cliInstall.missing.joined(separator: ","))\n".utf8))
     }
+    reconciler.start()
+    hostCLIReconciler = reconciler
 } else {
-    FileHandle.standardError.write(Data("doryd: host CLI integration disabled by settings\n".utf8))
+    let removal = hostCLIInstaller.remove()
+    if !removal.removed.isEmpty || removal.pathProfileChanged || removal.composePluginRemoved {
+        FileHandle.standardError.write(Data("doryd: host CLI integration disabled and removed from \(dorydEnvironment.home)/.dory/bin\n".utf8))
+    } else {
+        FileHandle.standardError.write(Data("doryd: host CLI integration disabled by settings\n".utf8))
+    }
+    hostCLIReconciler = nil
 }
 let socket = DorySocket(home: dorydEnvironment.home)
 let idleController = IdleController()
@@ -112,6 +126,7 @@ FileHandle.standardError.write(Data("doryd: serving XPC \(machServiceName)\n".ut
 
 private let shutdownCoordinator = DorydShutdownCoordinator(
     listener: listener,
+    hostCLIReconciler: hostCLIReconciler,
     idleSleepScheduler: idleSleepScheduler,
     wakeCoordinator: wakeCoordinator,
     networkingController: networkingController,
@@ -154,6 +169,7 @@ dispatchMain()
 
 private final class DorydShutdownCoordinator {
     private let listener: NSXPCListener
+    private let hostCLIReconciler: HostCLIReconciler?
     private let idleSleepScheduler: IdleSleepScheduler?
     private let wakeCoordinator: HostWakeCoordinator
     private let networkingController: NetworkingController?
@@ -165,6 +181,7 @@ private final class DorydShutdownCoordinator {
 
     init(
         listener: NSXPCListener,
+        hostCLIReconciler: HostCLIReconciler?,
         idleSleepScheduler: IdleSleepScheduler?,
         wakeCoordinator: HostWakeCoordinator,
         networkingController: NetworkingController?,
@@ -173,6 +190,7 @@ private final class DorydShutdownCoordinator {
         remoteManager: RemoteMachineManager
     ) {
         self.listener = listener
+        self.hostCLIReconciler = hostCLIReconciler
         self.idleSleepScheduler = idleSleepScheduler
         self.wakeCoordinator = wakeCoordinator
         self.networkingController = networkingController
@@ -192,6 +210,7 @@ private final class DorydShutdownCoordinator {
 
         FileHandle.standardError.write(Data("doryd: shutting down (\(reason))\n".utf8))
         listener.invalidate()
+        hostCLIReconciler?.stop()
         idleSleepScheduler?.stop()
         wakeCoordinator.stop()
         networkingController?.stop()

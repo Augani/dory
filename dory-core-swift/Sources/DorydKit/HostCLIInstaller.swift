@@ -11,6 +11,12 @@ public struct HostCLIInstallResult: Sendable, Equatable {
     }
 }
 
+public struct HostCLIRemoveResult: Sendable, Equatable {
+    public var removed: [String]
+    public var pathProfileChanged: Bool
+    public var composePluginRemoved: Bool
+}
+
 /// Per-user terminal integration owned by doryd. When the daemon is running from the app bundle,
 /// fresh terminals should already have Dory's docker, Compose, kubectl, dory, and support tools.
 public struct HostCLIInstaller: Sendable {
@@ -65,6 +71,34 @@ public struct HostCLIInstaller: Sendable {
         )
     }
 
+    @discardableResult
+    public func remove() -> HostCLIRemoveResult {
+        let fileManager = FileManager.default
+        let binDir = "\(home)/.dory/bin"
+        let composePlugin = "\(home)/.docker/cli-plugins/docker-compose"
+        var removed: [String] = []
+
+        for tool in Self.tools {
+            let path = "\(binDir)/\(tool)"
+            if fileManager.fileExists(atPath: path) || (try? fileManager.destinationOfSymbolicLink(atPath: path)) != nil {
+                try? fileManager.removeItem(atPath: path)
+                removed.append(tool)
+            }
+        }
+
+        let hadComposePlugin = fileManager.fileExists(atPath: composePlugin)
+            || (try? fileManager.destinationOfSymbolicLink(atPath: composePlugin)) != nil
+        if hadComposePlugin {
+            try? fileManager.removeItem(atPath: composePlugin)
+        }
+
+        return HostCLIRemoveResult(
+            removed: removed,
+            pathProfileChanged: removeFromPath(),
+            composePluginRemoved: hadComposePlugin
+        )
+    }
+
     public static func pathBlock(binDir: String) -> String {
         "\(beginSentinel)\nexport PATH=\"\(binDir):$PATH\"\n\(endSentinel)\n"
     }
@@ -73,6 +107,26 @@ public struct HostCLIInstaller: Sendable {
         guard !content.contains(beginSentinel) else { return nil }
         let separator = content.isEmpty || content.hasSuffix("\n") ? "\n" : "\n\n"
         return content + separator + pathBlock(binDir: binDir)
+    }
+
+    public static func removingPathBlock(from content: String) -> String {
+        guard content.contains(beginSentinel) else { return content }
+        var output: [String] = []
+        var skipping = false
+        for line in content.components(separatedBy: "\n") {
+            if line == beginSentinel {
+                skipping = true
+                continue
+            }
+            if line == endSentinel {
+                skipping = false
+                continue
+            }
+            if !skipping {
+                output.append(line)
+            }
+        }
+        return output.joined(separator: "\n")
     }
 
     private static func helpersDirectory(environment: DorydEnvironment) -> String? {
@@ -138,6 +192,20 @@ public struct HostCLIInstaller: Sendable {
         if !sawProfile {
             let path = "\(home)/.zprofile"
             if (try? Self.pathBlock(binDir: binDir).write(toFile: path, atomically: true, encoding: .utf8)) != nil {
+                changed = true
+            }
+        }
+        return changed
+    }
+
+    private func removeFromPath() -> Bool {
+        var changed = false
+        for name in Self.profiles {
+            let path = "\(home)/\(name)"
+            guard let content = try? String(contentsOfFile: path, encoding: .utf8),
+                  content.contains(Self.beginSentinel) else { continue }
+            let stripped = Self.removingPathBlock(from: content)
+            if (try? stripped.write(toFile: path, atomically: true, encoding: .utf8)) != nil {
                 changed = true
             }
         }

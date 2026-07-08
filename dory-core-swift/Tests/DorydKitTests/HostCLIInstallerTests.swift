@@ -69,6 +69,56 @@ final class HostCLIInstallerTests: XCTestCase {
         XCTAssertNil(HostCLIInstaller.appendingPathBlock(to: once, binDir: "/home/u/.dory/bin"))
     }
 
+    func testRemoveUnlinksToolsComposePluginAndPathBlock() throws {
+        let directory = "/tmp/doryd-cli-remove-\(getpid())-\(UUID().uuidString)"
+        let home = directory + "/home"
+        let helpers = directory + "/Dory.app/Contents/Helpers"
+        try FileManager.default.createDirectory(atPath: helpers, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(atPath: home, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+
+        for tool in ["docker", "docker-compose", "kubectl", "dory", "dory-doctor", "dorydctl"] {
+            _ = try executableFixture(at: helpers + "/\(tool)")
+        }
+
+        let installer = HostCLIInstaller(home: home, helpersDirectory: helpers)
+        XCTAssertTrue(installer.install().dockerLinked)
+
+        let result = installer.remove()
+
+        XCTAssertTrue(result.removed.contains("docker"))
+        XCTAssertTrue(result.composePluginRemoved)
+        XCTAssertTrue(result.pathProfileChanged)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: home + "/.dory/bin/docker"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: home + "/.docker/cli-plugins/docker-compose"))
+        let profile = try String(contentsOfFile: home + "/.zprofile", encoding: .utf8)
+        XCTAssertFalse(profile.contains("dory cli"))
+    }
+
+    func testReconcilerRestoresMissingLinks() throws {
+        let directory = "/tmp/doryd-cli-reconcile-\(getpid())-\(UUID().uuidString)"
+        let home = directory + "/home"
+        let helpers = directory + "/Dory.app/Contents/Helpers"
+        try FileManager.default.createDirectory(atPath: helpers, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(atPath: home, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+
+        for tool in ["docker", "docker-compose", "kubectl", "dory", "dory-doctor", "dorydctl"] {
+            _ = try executableFixture(at: helpers + "/\(tool)")
+        }
+
+        let reconciler = HostCLIReconciler(
+            installer: HostCLIInstaller(home: home, helpersDirectory: helpers),
+            interval: 30
+        )
+        XCTAssertTrue(reconciler.reconcileNow().dockerLinked)
+        try FileManager.default.removeItem(atPath: home + "/.dory/bin/docker")
+
+        XCTAssertTrue(reconciler.reconcileNow().dockerLinked)
+
+        XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: home + "/.dory/bin/docker"), helpers + "/docker")
+    }
+
     private func executableFixture(at path: String) throws -> String {
         try "#!/bin/sh\nexit 0\n".write(toFile: path, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: path)

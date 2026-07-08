@@ -175,6 +175,15 @@ final class DorydConfigurationTests: XCTestCase {
     func testHostCLIRepairDefaultsOnAndCanBeDisabled() {
         XCTAssertTrue(DorydEnvironment(values: [:], home: "/tmp/doryd-home").hostCLIEnabled)
         XCTAssertFalse(DorydEnvironment(values: ["DORYD_HOST_CLI": "0"], home: "/tmp/doryd-home").hostCLIEnabled)
+        XCTAssertEqual(DorydEnvironment(values: [:], home: "/tmp/doryd-home").hostCLIReconcileIntervalSeconds, 300)
+        XCTAssertEqual(
+            DorydEnvironment(values: ["DORYD_HOST_CLI_RECONCILE_SECONDS": "5"], home: "/tmp/doryd-home").hostCLIReconcileIntervalSeconds,
+            30
+        )
+        XCTAssertEqual(
+            DorydEnvironment(values: ["DORYD_HOST_CLI_RECONCILE_SECONDS": "120"], home: "/tmp/doryd-home").hostCLIReconcileIntervalSeconds,
+            120
+        )
     }
 
     func testNetworkingConfigurationIsOptInAndHighPortOnly() throws {
