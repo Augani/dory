@@ -256,7 +256,7 @@ struct HealthView: View {
                     .font(.system(size: 12)).foregroundStyle(p.text2)
             }
             if let proxy = idle.proxyState, let state = proxy.state, state != "unknown" {
-                Text("Proxy: \(state)\(proxy.detail.map { " — \($0)" } ?? "")")
+                Text("Doryd idle: \(state)\(proxy.detail.map { " — \($0)" } ?? "")")
                     .font(.system(size: 11)).foregroundStyle(p.text3).lineLimit(2)
             }
             if store.canRestartEngineForHealth {
