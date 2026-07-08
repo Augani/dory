@@ -133,30 +133,22 @@ public final class IdlePolicyStore: @unchecked Sendable {
     }
 
     public func status() -> NSDictionary {
-        lock.lock()
-        let config = loadConfigLocked()
-        let mode = runtimeMode(from: config)
-        let policy = policy(from: config)
-        lock.unlock()
-
-        var blockers = blockers(policy: policy)
-        if policy.keepKubernetesAwake, FileManager.default.fileExists(atPath: kubeconfigPath) {
-            blockers.append([
-                "type": "kubernetes-config",
-                "path": kubeconfigPath,
-            ] as NSDictionary)
-        }
+        let snapshot = currentSnapshot()
 
         return [
             "generated_at": ISO8601DateFormatter().string(from: Date()),
-            "mode": mode,
-            "auto_idle_enabled": Self.autoIdleEnabled(mode),
-            "sleep_after_minutes": policy.sleepAfterMinutes,
-            "can_sleep": blockers.isEmpty,
-            "blockers": blockers,
+            "mode": snapshot.mode,
+            "auto_idle_enabled": Self.autoIdleEnabled(snapshot.mode),
+            "sleep_after_minutes": snapshot.policy.sleepAfterMinutes,
+            "can_sleep": snapshot.blockers.isEmpty,
+            "blockers": snapshot.blockers,
             "proxy_state": readProxyState(),
-            "policy": policy.xpcDictionary,
+            "policy": snapshot.policy.xpcDictionary,
         ] as NSDictionary
+    }
+
+    public func canSleepNow() -> Bool {
+        currentSnapshot().blockers.isEmpty
     }
 
     public func history(limit: Int) -> NSArray {
@@ -270,6 +262,29 @@ public final class IdlePolicyStore: @unchecked Sendable {
             }
         }
         return blockers
+    }
+
+    private struct PolicySnapshot {
+        var mode: String
+        var policy: DoryIdlePolicy
+        var blockers: [NSDictionary]
+    }
+
+    private func currentSnapshot() -> PolicySnapshot {
+        lock.lock()
+        let config = loadConfigLocked()
+        let mode = runtimeMode(from: config)
+        let policy = policy(from: config)
+        lock.unlock()
+
+        var blockers = blockers(policy: policy)
+        if policy.keepKubernetesAwake, FileManager.default.fileExists(atPath: kubeconfigPath) {
+            blockers.append([
+                "type": "kubernetes-config",
+                "path": kubeconfigPath,
+            ] as NSDictionary)
+        }
+        return PolicySnapshot(mode: mode, policy: policy, blockers: blockers)
     }
 
     private func loadConfigLocked() -> [String: Any] {

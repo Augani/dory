@@ -87,6 +87,9 @@ let idleSleepScheduler = dockerTier.flatMap { tier -> IdleSleepScheduler? in
     return IdleSleepScheduler(
         dockerTier: tier,
         configuration: idlePolicyStore.schedulerConfiguration(base: baseConfiguration),
+        canAttemptSleep: {
+            idlePolicyStore.canSleepNow()
+        },
         incidentWriter: incidentWriter
     )
 }
