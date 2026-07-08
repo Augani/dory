@@ -103,6 +103,7 @@
 				3E705CEB2FE37C790094B33C /* Sources */,
 				3E705CEC2FE37C790094B33C /* Frameworks */,
 				3E705CED2FE37C790094B33C /* Resources */,
+				AA00000000000000000000D0 /* Prune Stale Bundled Helpers */,
 			);
 			buildRules = (
 			);
@@ -225,6 +226,43 @@
 			);
 		};
 /* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		AA00000000000000000000D0 /* Prune Stale Bundled Helpers */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Prune Stale Bundled Helpers";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(TARGET_BUILD_DIR)/$(WRAPPER_NAME)/Contents/Helpers",
+				"$(TARGET_BUILD_DIR)/$(WRAPPER_NAME)/Contents/Helpers/container",
+				"$(TARGET_BUILD_DIR)/$(WRAPPER_NAME)/Contents/Helpers/docker",
+				"$(TARGET_BUILD_DIR)/$(WRAPPER_NAME)/Contents/Helpers/docker-compose",
+				"$(TARGET_BUILD_DIR)/$(WRAPPER_NAME)/Contents/Helpers/dory",
+				"$(TARGET_BUILD_DIR)/$(WRAPPER_NAME)/Contents/Helpers/dory-doctor",
+				"$(TARGET_BUILD_DIR)/$(WRAPPER_NAME)/Contents/Helpers/dory-hv",
+				"$(TARGET_BUILD_DIR)/$(WRAPPER_NAME)/Contents/Helpers/dory-idle-proxy",
+				"$(TARGET_BUILD_DIR)/$(WRAPPER_NAME)/Contents/Helpers/dory-network-helper",
+				"$(TARGET_BUILD_DIR)/$(WRAPPER_NAME)/Contents/Helpers/dory-vm",
+				"$(TARGET_BUILD_DIR)/$(WRAPPER_NAME)/Contents/Helpers/dory-vmm",
+				"$(TARGET_BUILD_DIR)/$(WRAPPER_NAME)/Contents/Helpers/doryd",
+				"$(TARGET_BUILD_DIR)/$(WRAPPER_NAME)/Contents/Helpers/dorydctl",
+				"$(TARGET_BUILD_DIR)/$(WRAPPER_NAME)/Contents/Helpers/gvproxy",
+				"$(TARGET_BUILD_DIR)/$(WRAPPER_NAME)/Contents/Helpers/kubectl",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "set -eu\nAPP=\"${TARGET_BUILD_DIR}/${WRAPPER_NAME}\"\nHELPERS=\"$APP/Contents/Helpers\"\nfor helper in container docker docker-compose dory dory-doctor dory-hv dory-idle-proxy dory-network-helper dory-vm dory-vmm doryd dorydctl gvproxy kubectl; do\n  rm -f \"$HELPERS/$helper\"\ndone\nrmdir \"$HELPERS\" 2>/dev/null || true\n";
+		};
+/* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		3E705CEB2FE37C790094B33C /* Sources */ = {
