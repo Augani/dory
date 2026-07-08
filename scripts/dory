@@ -17,10 +17,29 @@ DORY_SCRIPT_DIR="$(cd -P "$(dirname "$DORY_SCRIPT_SOURCE")" >/dev/null 2>&1 && p
 
 DORY_SOCK="${DORY_SOCK:-$HOME/.dory/dory.sock}"
 KUBECONFIG_DORY="$HOME/.kube/dory-config"
-CONTAINER_BIN="$(command -v container || echo /opt/homebrew/bin/container)"
 RECIPE_DIR="${DORY_RECIPE_DIR:-$HOME/.dory/recipes}"
 BUILTIN_RECIPE_DIR="${DORY_BUILTIN_RECIPE_DIR:-$(cd "$DORY_SCRIPT_DIR/.." && pwd)/Dory/Resources/Recipes}"
-DOCKER_BIN="${DORY_DOCKER_BIN:-$(command -v docker || echo docker)}"
+
+first_executable() {
+  local cand
+  for cand in "$@"; do
+    [ -n "$cand" ] && [ -x "$cand" ] && { printf '%s\n' "$cand"; return 0; }
+  done
+  return 1
+}
+
+resolve_cli() {
+  local name="$1"
+  first_executable \
+    "$DORY_SCRIPT_DIR/$name" \
+    "$DORY_SCRIPT_DIR/../Helpers/$name" \
+    "$HOME/.dory/bin/$name" \
+    "$(command -v "$name" 2>/dev/null || true)"
+}
+
+CONTAINER_BIN="${DORY_CONTAINER_BIN:-$(resolve_cli container || printf '%s\n' /opt/homebrew/bin/container)}"
+DOCKER_BIN="${DORY_DOCKER_BIN:-$(resolve_cli docker || printf '%s\n' docker)}"
+KUBECTL_BIN="${DORY_KUBECTL_BIN:-$(resolve_cli kubectl || printf '%s\n' kubectl)}"
 
 host_guest_arch() {
   [ "$(uname -m)" = "x86_64" ] && printf '%s\n' "amd64" || printf '%s\n' "arm64"
@@ -728,7 +747,66 @@ machine_snapshot_delete() {
   "$DOCKER_BIN" -H "unix://$DORY_SOCK" rmi "$image"
 }
 
-machine_cmd() {
+dorydctl_bin() {
+  first_executable \
+    "${DORYDCTL_BIN:-}" \
+    "$DORY_SCRIPT_DIR/dorydctl" \
+    "$DORY_SCRIPT_DIR/../Helpers/dorydctl" \
+    "$HOME/.dory/bin/dorydctl" \
+    "$(command -v dorydctl 2>/dev/null || true)"
+}
+
+doryd_machine_cmd() {
+  local ctl="$1" sub name
+  shift
+  sub="${1:-list}"
+  case "$sub" in
+    ls|list)
+      exec "$ctl" machine list
+      ;;
+    run|exec)
+      shift
+      name="${1:?usage: dory machine run <name> -- <command...>}"
+      shift
+      [ "${1:-}" != "--" ] || shift
+      [ "$#" -gt 0 ] || { echo "usage: dory machine run <name> -- <command...>" >&2; exit 2; }
+      exec "$ctl" machine exec "$name" -- "$@"
+      ;;
+    ssh|shell)
+      shift
+      name="${1:?usage: dory machine shell <name>}"
+      exec "$ctl" machine shell "$name"
+      ;;
+    clone)
+      shift
+      exec "$ctl" machine clone-snapshot "$@"
+      ;;
+    restore)
+      shift
+      exec "$ctl" machine restore-snapshot "$@"
+      ;;
+    export)
+      shift
+      exec "$ctl" machine export-snapshot "$@"
+      ;;
+    import)
+      shift
+      exec "$ctl" machine import-snapshot "$@"
+      ;;
+    delete-snapshot|rm-snapshot)
+      shift
+      exec "$ctl" machine delete-snapshot "$@"
+      ;;
+    create|update|start|stop|delete|rm|status|provision|snapshots|snapshot)
+      exec "$ctl" machine "$@"
+      ;;
+    *)
+      exec "$ctl" machine "$@"
+      ;;
+  esac
+}
+
+legacy_machine_cmd() {
   case "${1:-ls}" in
     create)
       shift
@@ -747,6 +825,14 @@ machine_cmd() {
     delete-snapshot|rm-snapshot) shift; machine_snapshot_delete "$@" ;;
     *) exec "$CONTAINER_BIN" machine "$@" ;;
   esac
+}
+
+machine_cmd() {
+  local ctl
+  if [ "${DORY_LEGACY_DOCKER_MACHINES:-0}" != "1" ] && ctl="$(dorydctl_bin 2>/dev/null)"; then
+    doryd_machine_cmd "$ctl" "$@"
+  fi
+  legacy_machine_cmd "$@"
 }
 
 agent_rpc() {
@@ -1010,7 +1096,7 @@ case "${1:-help}" in
                   esac ;;
   engine)         shift; engine_cmd "$@" ;;
   bundle)         shift; doctor_cmd bundle "$@" ;;
-  shell)          exec docker -H "unix://$DORY_SOCK" exec -it "$2" sh -c 'command -v bash >/dev/null && exec bash || exec sh' ;;
+  shell)          exec "$DOCKER_BIN" -H "unix://$DORY_SOCK" exec -it "$2" sh -c 'command -v bash >/dev/null && exec bash || exec sh' ;;
   debug)          shift; debug_cmd "$@" ;;
   machine)        shift; machine_cmd "$@" ;;
   recipe)         shift
@@ -1025,18 +1111,21 @@ case "${1:-help}" in
   expose)         shift; expose_cmd "$@" ;;
   ssh)            shift
                   name="${1:?usage: dory ssh <machine>}"
+                  if ctl="$(dorydctl_bin 2>/dev/null)"; then
+                    exec "$ctl" machine shell "$name"
+                  fi
                   cid="dory-machine-$name"
-                  user="$(docker -H "unix://$DORY_SOCK" inspect -f '{{index .Config.Labels "dory.machine.user"}}' "$cid" 2>/dev/null || true)"; user="${user:-root}"
-                  shell="$(docker -H "unix://$DORY_SOCK" inspect -f '{{index .Config.Labels "dory.machine.shell"}}' "$cid" 2>/dev/null || true)"; shell="${shell:-/bin/sh}"
-                  home="$(docker -H "unix://$DORY_SOCK" inspect -f '{{index .Config.Labels "dory.machine.home"}}' "$cid" 2>/dev/null || true)"
-                  port="$(docker -H "unix://$DORY_SOCK" inspect -f '{{index .Config.Labels "dory.machine.sshPort"}}' "$cid" 2>/dev/null || true)"
+                  user="$("$DOCKER_BIN" -H "unix://$DORY_SOCK" inspect -f '{{index .Config.Labels "dory.machine.user"}}' "$cid" 2>/dev/null || true)"; user="${user:-root}"
+                  shell="$("$DOCKER_BIN" -H "unix://$DORY_SOCK" inspect -f '{{index .Config.Labels "dory.machine.shell"}}' "$cid" 2>/dev/null || true)"; shell="${shell:-/bin/sh}"
+                  home="$("$DOCKER_BIN" -H "unix://$DORY_SOCK" inspect -f '{{index .Config.Labels "dory.machine.home"}}' "$cid" 2>/dev/null || true)"
+                  port="$("$DOCKER_BIN" -H "unix://$DORY_SOCK" inspect -f '{{index .Config.Labels "dory.machine.sshPort"}}' "$cid" 2>/dev/null || true)"
                   if [ -n "$port" ]; then
                     exec ssh -p "$port" -o StrictHostKeyChecking=accept-new "$user@localhost"
                   else
                     if [ -z "$home" ]; then if [ "$user" = "root" ]; then home="/root"; else home="/home/$user"; fi; fi
-                    exec docker -H "unix://$DORY_SOCK" exec -it -u "$user" -w "$home" "$cid" "$shell" -l
+                    exec "$DOCKER_BIN" -H "unix://$DORY_SOCK" exec -it -u "$user" -w "$home" "$cid" "$shell" -l
                   fi ;;
   vm)             shift; H="$(vm_helper)"; [ -z "$H" ] && { echo "dory-vm helper not found; build+sign it (see scripts/bundle-engine.sh)"; exit 1; }; exec "$H" "$@" ;;
-  k8s)            shift; exec kubectl --kubeconfig "$KUBECONFIG_DORY" "$@" ;;
-  *)              exec docker -H "unix://$DORY_SOCK" "$@" ;;
+  k8s)            shift; exec "$KUBECTL_BIN" --kubeconfig "$KUBECONFIG_DORY" "$@" ;;
+  *)              exec "$DOCKER_BIN" -H "unix://$DORY_SOCK" "$@" ;;
 esac
