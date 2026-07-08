@@ -43,10 +43,11 @@ secrets*
 ExportOptions.plist
 
 # Release pipeline output
-release-build/
+release-build*/
 
 # Guest build artifacts (kernel Image, compiled agent) — rebuilt via guest/kernel/build.sh + guest/agent/build.sh
 guest/out/
+guest/.cache/
 
 # Dory runtime data
 .dory/
@@ -87,5 +88,8 @@ scripts/__pycache__/
 # (Nested .gitignore files in those dirs cover the same; these are belt-and-suspenders.)
 /dory-core/target/
 /dory-core/ffi/generated/
+/dory-core-swift/.build/
+/dory-core-swift/artifacts/
+/dory-core-swift/Sources/DoryCore/generated/
 /spikes/*/target/
 /spikes/*/Cargo.lock
