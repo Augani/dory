@@ -21,7 +21,7 @@ struct MachineComposerView: View {
         _name = State(initialValue: "dev-" + String(UUID().uuidString.prefix(4).lowercased()))
     }
 
-    private var engineReady: Bool { store.runtimeKind.isDockerCompatible }
+    private var engineReady: Bool { store.dorydRuntimeActive }
     private var selectedItems: [ProvisionItem] { ProvisionCatalog.all.filter { selected.contains($0.id) } }
 
     private var filteredPackages: [ProvisionItem] {
@@ -81,7 +81,7 @@ struct MachineComposerView: View {
     private var engineNotice: some View {
         HStack(spacing: 9) {
             Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 13)).foregroundStyle(p.amber)
-            Text(AppStore.dockerCompatibleEngineRequired("Linux machines"))
+            Text(AppStore.dorydMachineManagerRequired())
                 .font(.system(size: 12)).foregroundStyle(p.text2)
             Spacer(minLength: 0)
         }
@@ -287,7 +287,7 @@ struct MachineComposerView: View {
         let identity = MacIdentity.make(username: Self.linuxUsername(), uid: Int(getuid()),
                                         homePath: NSHomeDirectory(), shell: "/bin/bash",
                                         sshDir: NSHomeDirectory() + "/.ssh")
-        let settings = NewMachineSheet.buildSettings(cpus: cpus, memoryGB: memoryGB, mounts: [], ports: [], env: [:], address: trimmedAddress)
+        let settings = NewMachineSheet.buildSettings(cpus: cpus, memoryGB: memoryGB, mounts: [], address: trimmedAddress)
         let machineName = name
         Task { _ = await store.createMachine(image: "ubuntu:24.04", name: machineName, arch: .host, recipe: recipe, settings: settings, identity: identity) }
     }

@@ -324,14 +324,7 @@ private struct MachineEditSheet: View {
         var readOnly = false
     }
 
-    private struct PortRow: Identifiable, Hashable {
-        let id = UUID()
-        var host = ""
-        var guest = ""
-    }
-
     @State private var mountRows: [MountRow] = []
-    @State private var portRows: [PortRow] = []
 
     var body: some View {
         VStack(spacing: 0) {
@@ -343,14 +336,13 @@ private struct MachineEditSheet: View {
                     resourceRow
                     addressBlock
                     mountsBlock
-                    portsBlock
                 }
                 .padding(20)
             }
             Divider().overlay(p.border)
             footer
         }
-        .frame(width: 540, height: 560)
+        .frame(width: 540, height: 500)
         .background(p.bgWindow)
         .task { await load() }
     }
@@ -361,7 +353,6 @@ private struct MachineEditSheet: View {
         memoryGB = max(1, min(16, settings.memoryMB.map { $0 / 1024 } ?? 4))
         address = settings.address ?? machine.ip
         mountRows = settings.mounts.map { MountRow(host: $0.host, guest: $0.guest, readOnly: $0.readOnly) }
-        portRows = settings.ports.map { PortRow(host: String($0.host), guest: String($0.guest)) }
     }
 
     private var header: some View {
@@ -371,7 +362,7 @@ private struct MachineEditSheet: View {
                 .background(p.accentSoft, in: RoundedRectangle(cornerRadius: 10))
             VStack(alignment: .leading, spacing: 1) {
                 Text("Edit \(machine.name)").font(.system(size: 15, weight: .bold)).foregroundStyle(p.text)
-                Text("Apply resources, address, mounts and ports").font(.system(size: 11.5)).foregroundStyle(p.text3)
+                Text("Apply resources, address and mounted folders").font(.system(size: 11.5)).foregroundStyle(p.text3)
             }
             Spacer()
         }
@@ -381,7 +372,7 @@ private struct MachineEditSheet: View {
     private var warning: some View {
         HStack(spacing: 9) {
             Image(systemName: "info.circle.fill").font(.system(size: 13)).foregroundStyle(p.accent)
-            Text("Applying snapshots the machine, then recreates it with these settings. Your data is preserved.")
+            Text("Changes update the doryd VM definition. Restart the machine for resource and mount changes to take effect.")
                 .font(.system(size: 12)).foregroundStyle(p.text2)
             Spacer(minLength: 0)
         }
@@ -449,31 +440,6 @@ private struct MachineEditSheet: View {
             }
             if mountRows.isEmpty {
                 Text("Share host folders into the machine.")
-                    .font(.system(size: 11)).foregroundStyle(p.text3)
-            }
-        }
-    }
-
-    private var portsBlock: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                sectionLabel("EXPOSED PORTS")
-                Spacer(minLength: 0)
-                addButton { portRows.append(PortRow()) }
-            }
-            ForEach($portRows) { $row in
-                HStack(spacing: 8) {
-                    fieldInput("8080", text: $row.host, width: 90)
-                    Text("host").font(.system(size: 10.5)).foregroundStyle(p.text3)
-                    Image(systemName: "arrow.right").font(.system(size: 10)).foregroundStyle(p.text3)
-                    fieldInput("80", text: $row.guest, width: 90)
-                    Text("guest").font(.system(size: 10.5)).foregroundStyle(p.text3)
-                    Spacer(minLength: 0)
-                    removeButton { portRows.removeAll { $0.id == row.id } }
-                }
-            }
-            if portRows.isEmpty {
-                Text("Publish machine ports to localhost.")
                     .font(.system(size: 11)).foregroundStyle(p.text3)
             }
         }
@@ -570,17 +536,10 @@ private struct MachineEditSheet: View {
             guard !host.isEmpty, !guest.isEmpty else { return nil }
             return MountPair(host: host, guest: guest, readOnly: row.readOnly)
         }
-        let ports = portRows.compactMap { row -> PortPair? in
-            guard let host = Int(row.host.trimmingCharacters(in: .whitespaces)),
-                  let guest = Int(row.guest.trimmingCharacters(in: .whitespaces)),
-                  host > 0, guest > 0 else { return nil }
-            return PortPair(host: host, guest: guest)
-        }
         let settings = MachineSettings(
             cpus: cpus,
             memoryMB: memoryGB * 1024,
             mounts: mounts,
-            ports: ports,
             address: address.trimmingCharacters(in: .whitespacesAndNewlines)
         )
         let target = machine

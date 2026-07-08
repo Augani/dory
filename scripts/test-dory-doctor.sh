@@ -138,6 +138,18 @@ assert data["state"] == "missing"
 assert data["matched"] is True
 '
 
+mkdir -p "$TMP_HOME/no-dorydctl-home"
+set +e
+machine_err="$(HOME="$TMP_HOME/no-dorydctl-home" PATH="/usr/bin:/bin" DORYDCTL_BIN="$TMP_HOME/missing-dorydctl" DORY_DOCKER_BIN=/usr/bin/false scripts/dory machine ls 2>&1 >/dev/null)"
+machine_rc=$?
+ssh_err="$(HOME="$TMP_HOME/no-dorydctl-home" PATH="/usr/bin:/bin" DORYDCTL_BIN="$TMP_HOME/missing-dorydctl" DORY_DOCKER_BIN=/usr/bin/false scripts/dory ssh dev 2>&1 >/dev/null)"
+ssh_rc=$?
+set -e
+test "$machine_rc" -eq 1
+test "$ssh_rc" -eq 1
+printf '%s' "$machine_err" | grep -q "requires dorydctl"
+printf '%s' "$ssh_err" | grep -q "requires dorydctl"
+
 cat > "$TMP_HOME/fake-dorydctl" <<'SH'
 #!/bin/sh
 if [ "$1" = "--timeout" ]; then shift 2; fi

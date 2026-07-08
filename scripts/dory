@@ -78,7 +78,7 @@ dory — Dory CLI
   dory shell <container>       Open an interactive shell in a container
   dory debug <container> [-- cmd...]
                                Enter a container's namespaces through the Dory guest agent
-  dory machine <args...>       Manage Linux machines (ls, create, start, stop, delete, run)
+  dory machine <args...>       Manage doryd Linux VM machines (ls, create, start, stop, delete, run)
   dory machine exec <name> [--json] -- <command...>
                                Run a command in a machine; --json emits schema v1 result metadata
   dory machine snapshot <name> Take a Dory machine snapshot
@@ -1025,10 +1025,14 @@ legacy_machine_cmd() {
 
 machine_cmd() {
   local ctl
-  if [ "${DORY_LEGACY_DOCKER_MACHINES:-0}" != "1" ] && ctl="$(dorydctl_bin 2>/dev/null)"; then
+  if ctl="$(dorydctl_bin 2>/dev/null)"; then
     doryd_machine_cmd "$ctl" "$@"
   fi
-  legacy_machine_cmd "$@"
+  if [ "${DORY_LEGACY_DOCKER_MACHINES:-0}" = "1" ]; then
+    legacy_machine_cmd "$@"
+  fi
+  echo "dory machine requires dorydctl and Dory's daemon-managed VM machine runtime. Start Dory's engine; set DORY_LEGACY_DOCKER_MACHINES=1 only to inspect old container-backed machines." >&2
+  exit 1
 }
 
 sandbox_usage() {
@@ -2768,7 +2772,7 @@ data = {
             "invoke": "dory machine ls|create|start|stop|delete|snapshot|restore|exec ...",
             "json": True,
             "safeForAutomation": True,
-            "notes": "Routes to dorydctl when present; use `dory machine exec NAME --json -- CMD` for schema dev.dory.machine.exec v1. Legacy fallback remains during cutover.",
+            "notes": "Requires dorydctl and Dory's daemon-managed VM machine runtime; use `dory machine exec NAME --json -- CMD` for schema dev.dory.machine.exec v1. Set DORY_LEGACY_DOCKER_MACHINES=1 only for old container-backed machine inspection.",
         },
         {
             "id": "ssh",
@@ -2937,6 +2941,10 @@ case "${1:-help}" in
                   name="${1:?usage: dory ssh <machine>}"
                   if ctl="$(dorydctl_bin 2>/dev/null)"; then
                     exec "$ctl" machine shell "$name"
+                  fi
+                  if [ "${DORY_LEGACY_DOCKER_MACHINES:-0}" != "1" ]; then
+                    echo "dory ssh requires dorydctl and Dory's daemon-managed VM machine runtime. Start Dory's engine; set DORY_LEGACY_DOCKER_MACHINES=1 only to inspect old container-backed machines." >&2
+                    exit 1
                   fi
                   cid="dory-machine-$name"
                   user="$("$DOCKER_BIN" -H "unix://$DORY_SOCK" inspect -f '{{index .Config.Labels "dory.machine.user"}}' "$cid" 2>/dev/null || true)"; user="${user:-root}"

@@ -40,4 +40,18 @@ struct AppStoreEnvAllowListTests {
         let result = await store.createMachine(image: "ubuntu", name: "a/b")
         #expect(result == "Invalid machine name")
     }
+
+    @Test func createMachineRequiresDorydMachineRuntime() async {
+        let store = AppStore(runtime: MockRuntime())
+        let result = await store.createMachine(image: "ubuntu", name: "dev")
+        #expect(result == AppStore.dorydMachineManagerRequired())
+        #expect(store.actionError == AppStore.dorydMachineManagerRequired())
+    }
+
+    @Test func loadMachinesClearsRowsWithoutDorydRuntime() {
+        let store = AppStore(runtime: MockRuntime())
+        store.machines = MockData.machines
+        store.loadMachines()
+        #expect(store.machines.isEmpty)
+    }
 }

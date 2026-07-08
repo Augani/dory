@@ -155,7 +155,7 @@ struct SnapshotsSheet: View {
     }
 
     private var takeDisabled: Bool {
-        machine == nil || store.isMachineBusy(machine?.name ?? "") || !store.runtimeKind.isDockerCompatible
+        machine == nil || store.isMachineBusy(machine?.name ?? "") || !store.dorydRuntimeActive
     }
 
     private func takeSnapshot() {

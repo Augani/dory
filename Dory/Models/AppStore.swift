@@ -304,6 +304,10 @@ final class AppStore {
         "\(feature) needs Dory's shared VM or a Docker-compatible engine. \(dockerCompatibleEngineHint)"
     }
 
+    nonisolated static func dorydMachineManagerRequired(_ feature: String = "Linux machines") -> String {
+        "\(feature) needs Dory's daemon-managed VM machine runtime. Switch Docker Engine to Dory and make sure doryd is running; external Docker engines are supported for containers, not Linux Machines."
+    }
+
     func managedSettingsProfile() -> ManagedSettingsProfile {
         ManagedSettingsProfile(
             engine: ManagedEngineSettings(
@@ -2672,26 +2676,31 @@ final class AppStore {
         appearance = appearance == .dark ? .light : .dark
     }
 
-    private var machineService: MachineService { MachineService(runtime: runtime) }
+    @discardableResult
+    private func requireDorydMachines(_ feature: String = "Linux machines") -> Bool {
+        guard runtimeOwnedByDoryd else {
+            actionError = Self.dorydMachineManagerRequired(feature)
+            return false
+        }
+        return true
+    }
 
     func machineSettings(_ name: String) async -> MachineSettings {
-        if runtimeOwnedByDoryd {
-            do {
-                guard let status = try await dorydClient.machineList().first(where: { $0.id == name }) else {
-                    return .default
-                }
-                return MachineSettings(
-                    cpus: status.cpuCount,
-                    memoryMB: status.memoryMB.flatMap { Int(exactly: $0) },
-                    mounts: status.shares.map(Self.mountPair(fromDoryd:)),
-                    address: status.address
-                )
-            } catch {
-                actionError = "Could not load doryd machine settings: \(error)"
+        guard requireDorydMachines() else { return .default }
+        do {
+            guard let status = try await dorydClient.machineList().first(where: { $0.id == name }) else {
                 return .default
             }
+            return MachineSettings(
+                cpus: status.cpuCount,
+                memoryMB: status.memoryMB.flatMap { Int(exactly: $0) },
+                mounts: status.shares.map(Self.mountPair(fromDoryd:)),
+                address: status.address
+            )
+        } catch {
+            actionError = "Could not load doryd machine settings: \(error)"
+            return .default
         }
-        return await machineService.currentSettings(name: name)
     }
 
     private(set) var busyMachines: Set<String> = []
@@ -2704,34 +2713,28 @@ final class AppStore {
     var machineCreated: Machine?
 
     func loadMachines() {
-        guard runtimeKind.isDockerCompatible else { machines = []; return }
+        guard runtimeOwnedByDoryd else { machines = []; return }
         Task { await refreshMachines() }
     }
 
     @discardableResult
     private func refreshMachines() async -> [Machine] {
-        guard runtimeKind.isDockerCompatible else { machines = []; return [] }
-        if runtimeOwnedByDoryd {
-            do {
-                machines = try await dorydClient.machineList().map {
-                    Self.machine(fromDoryd: $0, domainSuffix: domainSuffix)
-                }
-                await publishDorydNetworkRoutes()
-                return machines
-            } catch {
-                actionError = "doryd machine list failed: \(error)"
-                machines = []
-                return []
+        guard runtimeOwnedByDoryd else {
+            machines = []
+            dns.replaceHostIPs([:])
+            return []
+        }
+        do {
+            machines = try await dorydClient.machineList().map {
+                Self.machine(fromDoryd: $0, domainSuffix: domainSuffix)
             }
+            await publishDorydNetworkRoutes()
+            return machines
+        } catch {
+            actionError = "doryd machine list failed: \(error)"
+            machines = []
+            return []
         }
-        machines = await machineService.list()
-        try? SSHConfigWriter().write(machines: machines)
-        dns.replaceHostIPs(Self.machineDNSHosts(machines, suffix: domainSuffix))
-        syncMachineStats()
-        for machine in machines where machine.status == .running {
-            registerMachineBridge(machine.name)
-        }
-        return machines
     }
 
     nonisolated static func defaultMachineAddress(name: String, suffix: String) -> String {
@@ -2796,28 +2799,20 @@ final class AppStore {
     }
 
     func machineTerminalCommand(_ machine: Machine) -> String? {
-        if runtimeOwnedByDoryd {
-            let dorydctl = HostTools.dorydctl() ?? "dorydctl"
-            return TerminalLauncher.machineShellCommand(target: MachineShellTarget(
-                machineID: machine.name,
-                dorydctlPath: dorydctl
-            ))
-        }
-        if let port = machine.sshPort {
-            return "ssh \(machine.username)@localhost -p \(port)"
-        }
-        return nil
+        guard runtimeOwnedByDoryd else { return nil }
+        let dorydctl = HostTools.dorydctl() ?? "dorydctl"
+        return TerminalLauncher.machineShellCommand(target: MachineShellTarget(
+            machineID: machine.name,
+            dorydctlPath: dorydctl
+        ))
     }
 
     func canOpenMachineTerminal(_ machine: Machine) -> Bool {
-        if runtimeOwnedByDoryd {
-            return !machine.shellSocketPath.isEmpty && HostTools.dorydctl() != nil
-        }
-        return !machine.containerID.isEmpty
+        runtimeOwnedByDoryd && !machine.shellSocketPath.isEmpty && HostTools.dorydctl() != nil
     }
 
     func canUseMachineArtifacts(_ machine: Machine) -> Bool {
-        runtimeOwnedByDoryd || !machine.containerID.isEmpty
+        runtimeOwnedByDoryd
     }
 
     func syncMachineStats() {
@@ -2840,7 +2835,7 @@ final class AppStore {
         }
         UserDefaults.standard.set(true, forKey: Self.legacyMachineCleanupKey)
         try? FileManager.default.removeItem(at: dir)
-        actionError = "Reclaimed disk space from the old machine cache (~/.dory/machines). New machines run inside Dory's engine now."
+        actionError = "Reclaimed disk space from the old machine cache (~/.dory/machines). New machines are doryd-managed Linux VMs with their own lifecycle and address."
     }
 
     var browsingVolume: String?
@@ -2921,36 +2916,23 @@ final class AppStore {
     }
 
     func toggleMachine(_ machine: Machine) {
+        guard requireDorydMachines() else { return }
         guard let idx = machines.firstIndex(where: { $0.id == machine.id }) else { return }
         let wasRunning = machines[idx].status == .running
         let name = machine.name
         busyMachines.insert(name)
-        if runtimeOwnedByDoryd {
-            Task {
-                defer { busyMachines.remove(name) }
-                do {
-                    if wasRunning {
-                        _ = try await dorydClient.machineStop(name)
-                    } else {
-                        _ = try await dorydClient.machineStart(name)
-                    }
-                } catch {
-                    actionError = "Could not \(wasRunning ? "stop" : "start") \(name): \(error)"
-                }
-                await refreshMachines()
-            }
-            return
-        }
-        let service = machineService
         Task {
             defer { busyMachines.remove(name) }
             do {
-                if wasRunning { try await service.stop(name: name) } else { try await service.start(name: name) }
+                if wasRunning {
+                    _ = try await dorydClient.machineStop(name)
+                } else {
+                    _ = try await dorydClient.machineStart(name)
+                }
             } catch {
                 actionError = "Could not \(wasRunning ? "stop" : "start") \(name): \(error)"
             }
-            if wasRunning { unregisterMachineBridge(name) } else { registerMachineBridge(name) }
-            loadMachines()
+            await refreshMachines()
         }
     }
 
@@ -3064,59 +3046,9 @@ final class AppStore {
             actionError = "Invalid machine name: use letters, digits, and _ . - (must start alphanumeric)"
             return "Invalid machine name"
         }
-        guard runtimeKind.isDockerCompatible else {
-            actionError = Self.dockerCompatibleEngineRequired("Linux machines")
-            return "Engine not available"
-        }
-        if runtimeOwnedByDoryd {
-            return await createDorydMachine(name: trimmedName, settings: settings, recipe: recipe)
-        }
-        guard let distro = MachineDistro.forImage(image.trimmingCharacters(in: .whitespaces)) else {
-            actionError = "Unsupported machine image: \(image)"
-            return "Unsupported machine image"
-        }
-        guard !busyMachines.contains(trimmedName) else { return nil }
-        busyMachines.insert(trimmedName)
-        machineCreationTitle = "Creating \(trimmedName)"
-        machineCreationLog = "Preparing to create \(trimmedName) (\(arch.shortLabel))…\n"
-        machineCreationError = nil
-        machineCreated = nil
-        activeSheet = .creatingMachine
-        defer { busyMachines.remove(trimmedName) }
-        var effectiveSettings = identity.map { Self.withIdentity(settings, $0) } ?? settings
-        let resolvedSecrets = await MachineEnvImport.resolve(names: machineEnvAllowList)
-        effectiveSettings = Self.mergingEnv(effectiveSettings, resolved: resolvedSecrets)
-        if !resolvedSecrets.isEmpty {
-            appendMachineCreationLog("Copying \(resolvedSecrets.keys.sorted().joined(separator: ", ")) into \(trimmedName)…")
-        }
-        if effectiveSettings.identity != nil, !effectiveSettings.ports.contains(where: { $0.guest == 22 }) {
-            let sshHostPort = Self.allocateFreePort()
-            if sshHostPort > 0 {
-                effectiveSettings.ports.append(PortPair(host: sshHostPort, guest: 22))
-            }
-        }
-        do {
-            try await machineService.create(name: trimmedName, distro: distro, arch: arch, recipe: recipe, settings: effectiveSettings) { line in
-                Task { @MainActor in self.appendMachineCreationLog(line) }
-            }
-            appendMachineCreationLog("Machine created and started.")
-            registerMachineBridge(trimmedName)
-            let refreshed = await refreshMachines()
-            machineCreated = refreshed.first { $0.name == trimmedName }
-            if machineCreated == nil {
-                let message = "Machine '\(trimmedName)' was created but isn't showing in the list yet — check the Machines tab."
-                appendMachineCreationLog(message)
-                machineCreationError = message
-                return message
-            }
-            return nil
-        } catch {
-            let message = "\(error)"
-            appendMachineCreationLog("Error: \(message)")
-            machineCreationError = message
-            actionError = "Could not create machine"
-            return message
-        }
+        guard requireDorydMachines() else { return actionError }
+        let effectiveSettings = identity.map { Self.withIdentity(settings, $0) } ?? settings
+        return await createDorydMachine(name: trimmedName, settings: effectiveSettings, recipe: recipe)
     }
 
     nonisolated static func dorydRecipeID(for recipe: DevRecipe) -> String? {
@@ -3185,61 +3117,37 @@ final class AppStore {
     }
 
     func editMachine(_ machine: Machine, settings: MachineSettings) async -> String? {
-        guard runtimeKind.isDockerCompatible else {
-            actionError = Self.dockerCompatibleEngineRequired("Linux machines")
-            return "Engine not available"
-        }
+        guard requireDorydMachines() else { return actionError }
         busyMachines.insert(machine.name)
         machineCreationTitle = "Updating \(machine.name)"
-        machineCreationLog = runtimeOwnedByDoryd
-            ? "Updating doryd VM definition for \(machine.name)…\n"
-            : "Snapshotting \(machine.name) before applying new settings…\n"
+        machineCreationLog = "Updating doryd VM definition for \(machine.name)…\n"
         machineCreationError = nil
         machineCreated = nil
         activeSheet = .creatingMachine
         defer { busyMachines.remove(machine.name) }
-        if runtimeOwnedByDoryd {
-            do {
-                let current = try await dorydClient.machineList().first { $0.id == machine.name }
-                let memory = settings.memoryMB.flatMap { UInt64(exactly: $0) } ?? current?.memoryMB
-                let cpus = settings.cpus ?? current?.cpuCount
-                let address = Self.trimmedNonEmpty(settings.address)
-                    ?? current?.address
-                    ?? Self.defaultMachineAddress(name: machine.name, suffix: domainSuffix)
-                _ = try await dorydClient.machineUpdate(
-                    machine.name,
-                    memoryMB: memory,
-                    cpuCount: cpus,
-                    address: address,
-                    shares: Self.dorydShares(from: settings.mounts)
-                )
-                appendMachineCreationLog("Settings applied to doryd VM definition.")
-                activeSheet = nil
-                await refreshMachines()
-                return nil
-            } catch {
-                let message = "\(error)"
-                appendMachineCreationLog("Edit failed: \(message).")
-                machineCreationError = message
-                actionError = "Could not update doryd VM machine"
-                return message
-            }
-        }
         do {
-            let existing = await machineService.currentSettings(name: machine.name)
-            let effectiveSettings = Self.preservingHiddenMachineSettings(settings, existing: existing)
-            try await machineService.recreate(name: machine.name, settings: effectiveSettings)
-            appendMachineCreationLog("Settings applied. Machine recreated from snapshot.")
-            registerMachineBridge(machine.name)
+            let current = try await dorydClient.machineList().first { $0.id == machine.name }
+            let memory = settings.memoryMB.flatMap { UInt64(exactly: $0) } ?? current?.memoryMB
+            let cpus = settings.cpus ?? current?.cpuCount
+            let address = Self.trimmedNonEmpty(settings.address)
+                ?? current?.address
+                ?? Self.defaultMachineAddress(name: machine.name, suffix: domainSuffix)
+            _ = try await dorydClient.machineUpdate(
+                machine.name,
+                memoryMB: memory,
+                cpuCount: cpus,
+                address: address,
+                shares: Self.dorydShares(from: settings.mounts)
+            )
+            appendMachineCreationLog("Settings applied to doryd VM definition.")
             activeSheet = nil
-            loadMachines()
+            await refreshMachines()
             return nil
         } catch {
             let message = "\(error)"
-            appendMachineCreationLog("Edit failed: \(message). The pre-edit snapshot was retained — restore it from Snapshots if needed.")
+            appendMachineCreationLog("Edit failed: \(message).")
             machineCreationError = message
-            actionError = "Could not update machine settings"
-            loadMachines()
+            actionError = "Could not update doryd VM machine"
             return message
         }
     }
@@ -3265,18 +3173,17 @@ final class AppStore {
 
     private func reloadSnapshots() async {
         guard let machine = snapshotMachine else { return }
-        if runtimeOwnedByDoryd {
-            do {
-                machineSnapshots = try await dorydClient.machineSnapshots(machineID: machine.name)
-                    .map(Self.machineSnapshot(fromDoryd:))
-            } catch {
-                actionError = "Could not load doryd snapshots: \(error)"
-                machineSnapshots = []
-            }
+        guard requireDorydMachines("Snapshots") else {
+            machineSnapshots = []
             return
         }
-        let all = await machineService.listSnapshots()
-        machineSnapshots = all.filter { $0.machineName == machine.name }
+        do {
+            machineSnapshots = try await dorydClient.machineSnapshots(machineID: machine.name)
+                .map(Self.machineSnapshot(fromDoryd:))
+        } catch {
+            actionError = "Could not load doryd snapshots: \(error)"
+            machineSnapshots = []
+        }
     }
 
     nonisolated static func machineSnapshot(fromDoryd snapshot: DorydMachineSnapshot) -> MachineSnapshot {
@@ -3296,50 +3203,31 @@ final class AppStore {
     }
 
     func takeSnapshot(_ machine: Machine, note: String) {
-        guard runtimeKind.isDockerCompatible else {
-            actionError = Self.dockerCompatibleEngineRequired("Snapshots")
-            return
-        }
+        guard requireDorydMachines("Snapshots") else { return }
         let trimmedNote = note.trimmingCharacters(in: .whitespacesAndNewlines)
         let createdISO = ISO8601DateFormatter().string(from: Date())
         let tag = "s" + UUID().uuidString.prefix(8).lowercased()
         let name = machine.name
         busyMachines.insert(name)
-        if runtimeOwnedByDoryd {
-            Task {
-                defer { busyMachines.remove(name) }
-                do {
-                    _ = try await dorydClient.machineSnapshot(
-                        name,
-                        note: trimmedNote,
-                        createdISO: createdISO,
-                        snapshotID: String(tag)
-                    )
-                } catch {
-                    actionError = "Could not snapshot \(machine.name): \(error)"
-                }
-                if snapshotMachine?.name == machine.name { await reloadSnapshots() }
-                await refreshMachines()
-            }
-            return
-        }
-        let service = machineService
         Task {
             defer { busyMachines.remove(name) }
             do {
-                _ = try await service.snapshot(machine: machine, note: trimmedNote, createdISO: createdISO, tag: tag)
+                _ = try await dorydClient.machineSnapshot(
+                    name,
+                    note: trimmedNote,
+                    createdISO: createdISO,
+                    snapshotID: String(tag)
+                )
             } catch {
                 actionError = "Could not snapshot \(machine.name): \(error)"
             }
             if snapshotMachine?.name == machine.name { await reloadSnapshots() }
+            await refreshMachines()
         }
     }
 
     func cloneMachine(_ machine: Machine) {
-        guard runtimeKind.isDockerCompatible else {
-            actionError = Self.dockerCompatibleEngineRequired("Cloning")
-            return
-        }
+        guard requireDorydMachines("Cloning") else { return }
         let name = machine.name
         let newName = name + "-copy-" + String(UUID().uuidString.prefix(4).lowercased())
         busyMachines.insert(name)
@@ -3348,46 +3236,24 @@ final class AppStore {
         machineCreationError = nil
         machineCreated = nil
         activeSheet = .creatingMachine
-        if runtimeOwnedByDoryd {
-            Task {
-                defer { busyMachines.remove(name) }
-                do {
-                    let createdISO = ISO8601DateFormatter().string(from: Date())
-                    let snapshot = try await dorydClient.machineSnapshot(
-                        name,
-                        note: "clone base",
-                        createdISO: createdISO,
-                        snapshotID: "s" + UUID().uuidString.prefix(8).lowercased()
-                    )
-                    _ = try await dorydClient.machineCloneSnapshot(
-                        machineID: name,
-                        snapshotID: snapshot.id,
-                        newID: newName
-                    )
-                    appendMachineCreationLog("Clone \(newName) created and started.")
-                    activeSheet = nil
-                    await refreshMachines()
-                } catch {
-                    let message = "\(error)"
-                    appendMachineCreationLog("Error: \(message)")
-                    machineCreationError = message
-                    actionError = "Could not clone machine"
-                }
-            }
-            return
-        }
-        let service = machineService
         Task {
             defer { busyMachines.remove(name) }
             do {
                 let createdISO = ISO8601DateFormatter().string(from: Date())
-                let tag = "s" + UUID().uuidString.prefix(8).lowercased()
-                let snapshot = try await service.snapshot(machine: machine, note: "clone base", createdISO: createdISO, tag: tag)
-                try await service.cloneFromSnapshot(snapshot, newName: newName)
+                let snapshot = try await dorydClient.machineSnapshot(
+                    name,
+                    note: "clone base",
+                    createdISO: createdISO,
+                    snapshotID: "s" + UUID().uuidString.prefix(8).lowercased()
+                )
+                _ = try await dorydClient.machineCloneSnapshot(
+                    machineID: name,
+                    snapshotID: snapshot.id,
+                    newID: newName
+                )
                 appendMachineCreationLog("Clone \(newName) created and started.")
-                registerMachineBridge(newName)
                 activeSheet = nil
-                loadMachines()
+                await refreshMachines()
             } catch {
                 let message = "\(error)"
                 appendMachineCreationLog("Error: \(message)")
@@ -3398,10 +3264,7 @@ final class AppStore {
     }
 
     func exportMachine(_ machine: Machine) {
-        guard runtimeKind.isDockerCompatible else {
-            actionError = Self.dockerCompatibleEngineRequired("Exporting")
-            return
-        }
+        guard requireDorydMachines("Exporting") else { return }
         let panel = NSSavePanel()
         panel.title = "Export machine"
         panel.nameFieldStringValue = "\(machine.name).dorymachine"
@@ -3409,39 +3272,24 @@ final class AppStore {
         guard panel.runModal() == .OK, let url = panel.url else { return }
         let name = machine.name
         busyMachines.insert(name)
-        if runtimeOwnedByDoryd {
-            Task {
-                defer { busyMachines.remove(name) }
-                do {
-                    let createdISO = ISO8601DateFormatter().string(from: Date())
-                    let snapshot = try await dorydClient.machineSnapshot(
-                        name,
-                        note: "export",
-                        createdISO: createdISO,
-                        snapshotID: "s" + UUID().uuidString.prefix(8).lowercased()
-                    )
-                    let result = try await dorydClient.machineExportSnapshot(
-                        machineID: name,
-                        snapshotID: snapshot.id,
-                        to: url.path
-                    )
-                    if !result.ok {
-                        throw DorydClientError.daemon(result.message)
-                    }
-                } catch {
-                    actionError = "Could not export \(machine.name): \(error)"
-                }
-            }
-            return
-        }
-        let service = machineService
         Task {
             defer { busyMachines.remove(name) }
             do {
                 let createdISO = ISO8601DateFormatter().string(from: Date())
-                let tag = "s" + UUID().uuidString.prefix(8).lowercased()
-                let snapshot = try await service.snapshot(machine: machine, note: "export", createdISO: createdISO, tag: tag)
-                try await service.export(snapshot, to: url)
+                let snapshot = try await dorydClient.machineSnapshot(
+                    name,
+                    note: "export",
+                    createdISO: createdISO,
+                    snapshotID: "s" + UUID().uuidString.prefix(8).lowercased()
+                )
+                let result = try await dorydClient.machineExportSnapshot(
+                    machineID: name,
+                    snapshotID: snapshot.id,
+                    to: url.path
+                )
+                if !result.ok {
+                    throw DorydClientError.daemon(result.message)
+                }
             } catch {
                 actionError = "Could not export \(machine.name): \(error)"
             }
@@ -3449,10 +3297,7 @@ final class AppStore {
     }
 
     func cloneSnapshot(_ snapshot: MachineSnapshot) {
-        guard runtimeKind.isDockerCompatible else {
-            actionError = Self.dockerCompatibleEngineRequired("Cloning")
-            return
-        }
+        guard requireDorydMachines("Cloning") else { return }
         let newName = snapshot.machineName + "-copy-" + String(UUID().uuidString.prefix(4).lowercased())
         let busyKey = snapshot.machineName
         busyMachines.insert(busyKey)
@@ -3461,36 +3306,17 @@ final class AppStore {
         machineCreationError = nil
         machineCreated = nil
         activeSheet = .creatingMachine
-        if runtimeOwnedByDoryd {
-            Task {
-                defer { busyMachines.remove(busyKey) }
-                do {
-                    _ = try await dorydClient.machineCloneSnapshot(
-                        machineID: snapshot.machineName,
-                        snapshotID: snapshot.id,
-                        newID: newName
-                    )
-                    appendMachineCreationLog("Clone \(newName) created and started.")
-                    activeSheet = nil
-                    await refreshMachines()
-                } catch {
-                    let message = "\(error)"
-                    appendMachineCreationLog("Error: \(message)")
-                    machineCreationError = message
-                    actionError = "Could not clone machine"
-                }
-            }
-            return
-        }
-        let service = machineService
         Task {
             defer { busyMachines.remove(busyKey) }
             do {
-                try await service.cloneFromSnapshot(snapshot, newName: newName)
+                _ = try await dorydClient.machineCloneSnapshot(
+                    machineID: snapshot.machineName,
+                    snapshotID: snapshot.id,
+                    newID: newName
+                )
                 appendMachineCreationLog("Clone \(newName) created and started.")
-                registerMachineBridge(newName)
                 activeSheet = nil
-                loadMachines()
+                await refreshMachines()
             } catch {
                 let message = "\(error)"
                 appendMachineCreationLog("Error: \(message)")
@@ -3501,10 +3327,7 @@ final class AppStore {
     }
 
     func restoreSnapshot(_ snapshot: MachineSnapshot) {
-        guard runtimeKind.isDockerCompatible else {
-            actionError = Self.dockerCompatibleEngineRequired("Restoring")
-            return
-        }
+        guard requireDorydMachines("Restoring") else { return }
         let busyKey = snapshot.machineName
         busyMachines.insert(busyKey)
         machineCreationTitle = "Restoring \(snapshot.machineName)"
@@ -3512,35 +3335,16 @@ final class AppStore {
         machineCreationError = nil
         machineCreated = nil
         activeSheet = .creatingMachine
-        if runtimeOwnedByDoryd {
-            Task {
-                defer { busyMachines.remove(busyKey) }
-                do {
-                    _ = try await dorydClient.machineRestoreSnapshot(
-                        machineID: snapshot.machineName,
-                        snapshotID: snapshot.id
-                    )
-                    appendMachineCreationLog("\(snapshot.machineName) restored from snapshot.")
-                    activeSheet = nil
-                    await refreshMachines()
-                } catch {
-                    let message = "\(error)"
-                    appendMachineCreationLog("Error: \(message)")
-                    machineCreationError = message
-                    actionError = "Could not restore machine"
-                }
-            }
-            return
-        }
-        let service = machineService
         Task {
             defer { busyMachines.remove(busyKey) }
             do {
-                try await service.restore(snapshot)
+                _ = try await dorydClient.machineRestoreSnapshot(
+                    machineID: snapshot.machineName,
+                    snapshotID: snapshot.id
+                )
                 appendMachineCreationLog("\(snapshot.machineName) restored from snapshot.")
-                registerMachineBridge(snapshot.machineName)
                 activeSheet = nil
-                loadMachines()
+                await refreshMachines()
             } catch {
                 let message = "\(error)"
                 appendMachineCreationLog("Error: \(message)")
@@ -3551,10 +3355,7 @@ final class AppStore {
     }
 
     func exportSnapshot(_ snapshot: MachineSnapshot) {
-        guard runtimeKind.isDockerCompatible else {
-            actionError = Self.dockerCompatibleEngineRequired("Exporting")
-            return
-        }
+        guard requireDorydMachines("Exporting") else { return }
         let panel = NSSavePanel()
         panel.title = "Export machine snapshot"
         panel.nameFieldStringValue = "\(snapshot.machineName).dorymachine"
@@ -3562,29 +3363,17 @@ final class AppStore {
         guard panel.runModal() == .OK, let url = panel.url else { return }
         let busyKey = snapshot.machineName
         busyMachines.insert(busyKey)
-        if runtimeOwnedByDoryd {
-            Task {
-                defer { busyMachines.remove(busyKey) }
-                do {
-                    let result = try await dorydClient.machineExportSnapshot(
-                        machineID: snapshot.machineName,
-                        snapshotID: snapshot.id,
-                        to: url.path
-                    )
-                    if !result.ok {
-                        throw DorydClientError.daemon(result.message)
-                    }
-                } catch {
-                    actionError = "Could not export \(snapshot.machineName): \(error)"
-                }
-            }
-            return
-        }
-        let service = machineService
         Task {
             defer { busyMachines.remove(busyKey) }
             do {
-                try await service.export(snapshot, to: url)
+                let result = try await dorydClient.machineExportSnapshot(
+                    machineID: snapshot.machineName,
+                    snapshotID: snapshot.id,
+                    to: url.path
+                )
+                if !result.ok {
+                    throw DorydClientError.daemon(result.message)
+                }
             } catch {
                 actionError = "Could not export \(snapshot.machineName): \(error)"
             }
@@ -3592,10 +3381,7 @@ final class AppStore {
     }
 
     func importMachineFile() {
-        guard runtimeKind.isDockerCompatible else {
-            actionError = Self.dockerCompatibleEngineRequired("Importing")
-            return
-        }
+        guard requireDorydMachines("Importing") else { return }
         let panel = NSOpenPanel()
         panel.title = "Import a Dory machine file"
         panel.canChooseFiles = true
@@ -3612,32 +3398,13 @@ final class AppStore {
         machineCreationError = nil
         machineCreated = nil
         activeSheet = .creatingMachine
-        if runtimeOwnedByDoryd {
-            Task {
-                defer { busyMachines.remove(Self.importBusyKey) }
-                do {
-                    let snapshot = try await dorydClient.machineImportSnapshot(from: url.path)
-                    appendMachineCreationLog("Imported snapshot \(snapshot.id). Use Clone or Restore from the Snapshots sheet.")
-                    activeSheet = nil
-                    await refreshMachines()
-                    if snapshotMachine != nil { await reloadSnapshots() }
-                } catch {
-                    let message = "\(error)"
-                    appendMachineCreationLog("Error: \(message)")
-                    machineCreationError = message
-                    actionError = "Could not import machine file"
-                }
-            }
-            return
-        }
-        let service = machineService
         Task {
             defer { busyMachines.remove(Self.importBusyKey) }
             do {
-                let imageRef = try await service.importMachine(from: url)
-                appendMachineCreationLog("Imported snapshot \(imageRef). Use Clone or Restore from the Snapshots sheet.")
+                let snapshot = try await dorydClient.machineImportSnapshot(from: url.path)
+                appendMachineCreationLog("Imported snapshot \(snapshot.id). Use Clone or Restore from the Snapshots sheet.")
                 activeSheet = nil
-                loadMachines()
+                await refreshMachines()
                 if snapshotMachine != nil { await reloadSnapshots() }
             } catch {
                 let message = "\(error)"
@@ -3649,33 +3416,20 @@ final class AppStore {
     }
 
     func deleteSnapshot(_ snapshot: MachineSnapshot) {
+        guard requireDorydMachines("Snapshots") else { return }
         let busyKey = snapshot.machineName
         busyMachines.insert(busyKey)
-        let id = snapshot.id
         machineSnapshots.removeAll { $0.id == snapshot.id }
-        if runtimeOwnedByDoryd {
-            Task {
-                defer { busyMachines.remove(busyKey) }
-                do {
-                    let result = try await dorydClient.machineDeleteSnapshot(
-                        machineID: snapshot.machineName,
-                        snapshotID: snapshot.id
-                    )
-                    if !result.ok {
-                        throw DorydClientError.daemon(result.message)
-                    }
-                } catch {
-                    actionError = "Could not delete snapshot: \(error)"
-                }
-                if snapshotMachine != nil { await reloadSnapshots() }
-            }
-            return
-        }
-        let activeRuntime = runtime
         Task {
             defer { busyMachines.remove(busyKey) }
             do {
-                try await activeRuntime.removeImage(id: id)
+                let result = try await dorydClient.machineDeleteSnapshot(
+                    machineID: snapshot.machineName,
+                    snapshotID: snapshot.id
+                )
+                if !result.ok {
+                    throw DorydClientError.daemon(result.message)
+                }
             } catch {
                 actionError = "Could not delete snapshot: \(error)"
             }
@@ -3684,32 +3438,21 @@ final class AppStore {
     }
 
     func deleteMachine(_ machine: Machine) {
+        guard requireDorydMachines() else { return }
         let name = machine.name
         machines.removeAll { $0.name == name }
         unregisterMachineBridge(name)
         try? FileManager.default.removeItem(atPath: MachineService.bridgeHostDir(for: name))
-        if runtimeOwnedByDoryd {
-            Task {
-                do {
-                    let result = try await dorydClient.machineDelete(name)
-                    if !result.ok {
-                        actionError = result.message.isEmpty ? "Could not delete machine '\(name)'" : result.message
-                    }
-                } catch {
-                    actionError = "Could not delete machine '\(name)': \(error)"
-                }
-                await refreshMachines()
-            }
-            return
-        }
-        let service = machineService
         Task {
             do {
-                try await service.delete(name: name)
+                let result = try await dorydClient.machineDelete(name)
+                if !result.ok {
+                    actionError = result.message.isEmpty ? "Could not delete machine '\(name)'" : result.message
+                }
             } catch {
-                actionError = "Could not delete machine '\(name)': \(error.localizedDescription)"
+                actionError = "Could not delete machine '\(name)': \(error)"
             }
-            loadMachines()
+            await refreshMachines()
         }
     }
 

@@ -21,21 +21,11 @@ struct NewMachineSheet: View {
     @State private var cpus = 2
     @State private var memoryGB = 2
     @State private var mountRows: [MountRow] = []
-    @State private var portRows: [PortRow] = []
-    @State private var envRows: [EnvRow] = []
     @State private var shareHome = true
     @State private var shell = "/bin/bash"
     @State private var username = NSUserName()
 
-    private struct EnvRow: Identifiable, Hashable { let id = UUID(); var key = ""; var value = "" }
-
     private struct MountRow: Identifiable, Hashable {
-        let id = UUID()
-        var host = ""
-        var guest = ""
-    }
-
-    private struct PortRow: Identifiable, Hashable {
         let id = UUID()
         var host = ""
         var guest = ""
@@ -53,7 +43,7 @@ struct NewMachineSheet: View {
         _lastAutoName = State(initialValue: auto)
     }
 
-    private var engineReady: Bool { store.runtimeKind.isDockerCompatible }
+    private var engineReady: Bool { store.dorydRuntimeActive }
 
     private var recipesAvailable: Bool { selectedVersion.pkg == .apt }
 
@@ -245,7 +235,7 @@ struct NewMachineSheet: View {
     private var engineNotice: some View {
         HStack(spacing: 9) {
             Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 13)).foregroundStyle(p.amber)
-            Text(AppStore.dockerCompatibleEngineRequired("Linux machines"))
+            Text(AppStore.dorydMachineManagerRequired())
                 .font(.system(size: 12)).foregroundStyle(p.text2)
             Spacer(minLength: 0)
         }
@@ -319,30 +309,6 @@ struct NewMachineSheet: View {
                 .font(.system(size: 12.5)).foregroundStyle(p.text)
             Text("Your home, git config, and SSH keys are shared into this machine.")
                 .font(.system(size: 11)).foregroundStyle(p.text3)
-            envBlock
-        }
-    }
-
-    private var envBlock: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                sectionLabel("ENVIRONMENT")
-                Spacer(minLength: 0)
-                addButton { envRows.append(EnvRow()) }
-            }
-            ForEach($envRows) { $row in
-                HStack(spacing: 8) {
-                    fieldInput("KEY", text: $row.key, width: 150)
-                    Text("=").font(.system(size: 12)).foregroundStyle(p.text3)
-                    fieldInput("VALUE", text: $row.value, width: 180)
-                    Spacer(minLength: 0)
-                    removeButton { envRows.removeAll { $0.id == row.id } }
-                }
-            }
-            if envRows.isEmpty {
-                Text("Set environment variables for the machine.")
-                    .font(.system(size: 11)).foregroundStyle(p.text3)
-            }
         }
     }
 
@@ -405,7 +371,6 @@ struct NewMachineSheet: View {
             VStack(alignment: .leading, spacing: 16) {
                 resourceRow
                 mountsBlock
-                portsBlock
             }
             .padding(.top, 12)
         } label: {
@@ -474,31 +439,6 @@ struct NewMachineSheet: View {
                     Text("Mounted folders must be under your home (\(NSHomeDirectory())).")
                         .font(.system(size: 11)).foregroundStyle(p.red)
                 }
-            }
-        }
-    }
-
-    private var portsBlock: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                sectionLabel("EXPOSED PORTS")
-                Spacer(minLength: 0)
-                addButton { portRows.append(PortRow()) }
-            }
-            ForEach($portRows) { $row in
-                HStack(spacing: 8) {
-                    fieldInput("8080", text: $row.host, width: 90)
-                    Text("host").font(.system(size: 10.5)).foregroundStyle(p.text3)
-                    Image(systemName: "arrow.right").font(.system(size: 10)).foregroundStyle(p.text3)
-                    fieldInput("80", text: $row.guest, width: 90)
-                    Text("guest").font(.system(size: 10.5)).foregroundStyle(p.text3)
-                    Spacer(minLength: 0)
-                    removeButton { portRows.removeAll { $0.id == row.id } }
-                }
-            }
-            if portRows.isEmpty {
-                Text("Publish machine ports to localhost.")
-                    .font(.system(size: 11)).foregroundStyle(p.text3)
             }
         }
     }
@@ -668,8 +608,8 @@ struct NewMachineSheet: View {
         Task { _ = await store.createMachine(image: image, name: machineName, arch: arch, recipe: recipe, settings: settings, identity: identity) }
     }
 
-    static func buildSettings(cpus: Int, memoryGB: Int, mounts: [MountPair], ports: [PortPair], env: [String: String], address: String? = nil) -> MachineSettings {
-        MachineSettings(cpus: cpus, memoryMB: memoryGB * 1024, mounts: mounts, ports: ports, env: env, address: address)
+    static func buildSettings(cpus: Int, memoryGB: Int, mounts: [MountPair], address: String? = nil) -> MachineSettings {
+        MachineSettings(cpus: cpus, memoryMB: memoryGB * 1024, mounts: mounts, address: address)
     }
 
     private func collectedSettings() -> MachineSettings {
@@ -679,18 +619,7 @@ struct NewMachineSheet: View {
             guard !host.isEmpty, !guest.isEmpty else { return nil }
             return MountPair(host: host, guest: guest)
         }
-        let ports = portRows.compactMap { row -> PortPair? in
-            guard let host = Int(row.host.trimmingCharacters(in: .whitespaces)),
-                  let guest = Int(row.guest.trimmingCharacters(in: .whitespaces)),
-                  host > 0, guest > 0 else { return nil }
-            return PortPair(host: host, guest: guest)
-        }
-        let env = Dictionary(envRows.compactMap { row -> (String, String)? in
-            let key = row.key.trimmingCharacters(in: .whitespaces)
-            guard !key.isEmpty else { return nil }
-            return (key, row.value)
-        }, uniquingKeysWith: { _, latest in latest })
-        return Self.buildSettings(cpus: cpus, memoryGB: memoryGB, mounts: mounts, ports: ports, env: env, address: trimmedAddress)
+        return Self.buildSettings(cpus: cpus, memoryGB: memoryGB, mounts: mounts, address: trimmedAddress)
     }
 
     static func defaultName(_ family: MachineFamily) -> String {

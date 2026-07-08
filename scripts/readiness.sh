@@ -732,19 +732,16 @@ test_k8s() {
 
 test_machines() {
   case "$CURRENT_ENGINE" in
-    dory) test_machines_dory ;;
-    doryd) test_machines_doryd ;;
+    dory|doryd) test_machines_doryd ;;
     orbstack) orb list >/dev/null ;;
     docker-desktop|desktop) return 2 ;;
     *) return 2 ;;
   esac
 }
 
-# Exercises Dory's REAL machines feature (MachineService/MachineImageBuilder), not Apple's
-# `container machine`: builds a systemd machine image with the same apt Dockerfile the app uses,
-# runs it privileged as `/sbin/init` with the createBody HostConfig, and asserts systemd comes up
-# as PID 1 — the backend-specific risk. Image + container carry the run label so cleanup removes them.
-test_machines_dory() {
+# Legacy container-backed machine smoke retained for explicit migration troubleshooting only.
+# Release readiness uses doryd VM machines through test_machines_doryd.
+test_machines_legacy_container() {
   local dir="$WORKDIR/${ENGINE_ID}-machine"
   local tag="dory-readiness-machine-${ENGINE_ID}-${RUN_SLUG}:latest"
   local name="$PREFIX-machine"
@@ -856,7 +853,7 @@ machine_recipe_command() {
     printf '%s' "$READINESS_MACHINE_RECIPE_COMMAND"
     return
   fi
-  if [ "${CURRENT_ENGINE:-}" = "doryd" ]; then
+  if [ "${CURRENT_ENGINE:-}" = "dory" ] || [ "${CURRENT_ENGINE:-}" = "doryd" ]; then
     case "$recipe" in
       rust|rust-dev) printf '%s' 'cargo --version' ;;
       node) printf '%s' 'node --version && npm --version' ;;
@@ -881,7 +878,7 @@ machine_recipe_command() {
 
 test_machine_recipe() {
   is_dory_engine || return 2
-  if [ "$CURRENT_ENGINE" = "doryd" ]; then
+  if is_dory_engine; then
     local host_arch rootfs_default kernel rootfs memory cpus dir name state detail command recipe
     case "$(uname -m)" in
       arm64|aarch64) host_arch="arm64" ;;
@@ -943,22 +940,7 @@ test_machine_recipe() {
     trap - RETURN
     return 0
   fi
-  local recipe="${READINESS_MACHINE_RECIPE:-rust}"
-  local name="recipe-${RUN_SLUG}"
-  local cid="dory-machine-$name"
-  local command
-  command="$(machine_recipe_command "$recipe")"
-  docker_e rm -f "$cid" >/dev/null 2>&1 || true
-  trap 'docker_e rm -f "$cid" >/dev/null 2>&1 || true' RETURN
-  "$ROOT/scripts/dory" machine create "$name" --recipe "$recipe" >/dev/null
-  for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
-    docker_e inspect "$cid" --format '{{.State.Running}}' 2>/dev/null | grep -q true && break
-    sleep 2
-  done
-  docker_e inspect "$cid" --format '{{index .Config.Labels "dory.recipe"}}' | grep -qx "$recipe"
-  docker_e exec "$cid" sh -lc "$command"
-  docker_e rm -f "$cid" >/dev/null
-  trap - RETURN
+  return 2
 }
 
 test_bridge() {
@@ -1241,9 +1223,9 @@ run_engine() {
   fi
 
   if [ "$RUN_MACHINES" = "1" ]; then
-    run_case "$CURRENT_ENGINE" "Linux machine build + systemd boot + exec" test_machines
+    run_case "$CURRENT_ENGINE" "Linux VM machine boot + exec" test_machines
   else
-    skip_case "$CURRENT_ENGINE" "Linux machine build + systemd boot + exec" "enable with --machines"
+    skip_case "$CURRENT_ENGINE" "Linux VM machine boot + exec" "enable with --machines"
   fi
 
   if [ "$RUN_MACHINE_RECIPE" = "1" ]; then
