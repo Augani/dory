@@ -56,6 +56,20 @@ struct LSUIElementBuildSettingTests {
         #expect(clean.contains("com.apple.quarantine"))
     }
 
+    @Test func buildScriptCanBundleHostCLIsOnCleanMacs() throws {
+        let build = try repositoryFile("scripts/build.sh")
+        #expect(build.contains("download_docker_cli()"))
+        #expect(build.contains("DORY_DOCKER_CLI_VERSION:-29.0.1"))
+        #expect(build.contains("download.docker.com/mac/static/stable"))
+        #expect(build.contains("download_docker_compose()"))
+        #expect(build.contains("DORY_DOCKER_COMPOSE_VERSION:-v2.39.2"))
+        #expect(build.contains("github.com/docker/compose/releases/download"))
+        #expect(build.contains("download_kubectl()"))
+        #expect(build.contains("DORY_KUBECTL_VERSION:-v1.36.1"))
+        #expect(build.contains("dl.k8s.io/release"))
+        #expect(build.contains("DORY_BUNDLE_HOST_CLI_DOWNLOADS:-1"))
+    }
+
     @Test func mainSchemeDoesNotRunUITestRunner() throws {
         let here = URL(fileURLWithPath: #filePath)
         let root = here.deletingLastPathComponent().deletingLastPathComponent()

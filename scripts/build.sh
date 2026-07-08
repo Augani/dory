@@ -213,18 +213,101 @@ resolve_symlink() {
   printf '%s\n' "$source"
 }
 
-copy_host_cli_helper() {
-  local app="$1" tool="$2" source dest cand
-  shift 2
-  dest="$app/Contents/Helpers/$tool"
+first_existing_cli() {
+  local cand
   for cand in "$@"; do
     [ -n "$cand" ] || continue
     cand="$(resolve_symlink "$cand")"
     if [ -f "$cand" ] && [ -r "$cand" ]; then
-      source="$cand"
-      break
+      printf '%s\n' "$cand"
+      return 0
     fi
   done
+  return 1
+}
+
+host_cli_cache_dir() {
+  printf '%s\n' "${DORY_HOST_CLI_CACHE:-$PWD/.build/host-cli}"
+}
+
+host_arch() {
+  case "$(uname -m)" in
+    arm64|arm64e) printf 'arm64\n' ;;
+    x86_64|amd64) printf 'x86_64\n' ;;
+    *) uname -m ;;
+  esac
+}
+
+docker_static_arch() {
+  case "$(host_arch)" in
+    arm64) printf 'aarch64\n' ;;
+    x86_64) printf 'x86_64\n' ;;
+    *) return 1 ;;
+  esac
+}
+
+kubectl_darwin_arch() {
+  case "$(host_arch)" in
+    arm64) printf 'arm64\n' ;;
+    x86_64) printf 'amd64\n' ;;
+    *) return 1 ;;
+  esac
+}
+
+download_docker_cli() {
+  [ "${DORY_BUNDLE_HOST_CLI_DOWNLOADS:-1}" = "1" ] || return 1
+  local version arch cache tgz tmp out
+  version="${DORY_DOCKER_CLI_VERSION:-29.0.1}"
+  arch="$(docker_static_arch)" || return 1
+  cache="$(host_cli_cache_dir)"
+  out="$cache/docker-$version-$arch"
+  [ -x "$out" ] && { printf '%s\n' "$out"; return 0; }
+  mkdir -p "$cache"
+  tgz="$cache/docker-$version-$arch.tgz"
+  fetch_url "https://download.docker.com/mac/static/stable/$arch/docker-$version.tgz" "$tgz" || return 1
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/dory-docker-cli.XXXXXX")"
+  tar -xzf "$tgz" -C "$tmp"
+  install -m 0755 "$tmp/docker/docker" "$out"
+  rm -rf "$tmp"
+  xattr -cr "$out" 2>/dev/null || true
+  printf '%s\n' "$out"
+}
+
+download_docker_compose() {
+  [ "${DORY_BUNDLE_HOST_CLI_DOWNLOADS:-1}" = "1" ] || return 1
+  local version arch cache out
+  version="${DORY_DOCKER_COMPOSE_VERSION:-v2.39.2}"
+  arch="$(docker_static_arch)" || return 1
+  cache="$(host_cli_cache_dir)"
+  out="$cache/docker-compose-$version-$arch"
+  [ -x "$out" ] && { printf '%s\n' "$out"; return 0; }
+  mkdir -p "$cache"
+  fetch_url "https://github.com/docker/compose/releases/download/$version/docker-compose-darwin-$arch" "$out" || return 1
+  chmod 0755 "$out"
+  xattr -cr "$out" 2>/dev/null || true
+  printf '%s\n' "$out"
+}
+
+download_kubectl() {
+  [ "${DORY_BUNDLE_HOST_CLI_DOWNLOADS:-1}" = "1" ] || return 1
+  local version arch cache out
+  version="${DORY_KUBECTL_VERSION:-v1.36.1}"
+  arch="$(kubectl_darwin_arch)" || return 1
+  cache="$(host_cli_cache_dir)"
+  out="$cache/kubectl-$version-$arch"
+  [ -x "$out" ] && { printf '%s\n' "$out"; return 0; }
+  mkdir -p "$cache"
+  fetch_url "https://dl.k8s.io/release/$version/bin/darwin/$arch/kubectl" "$out" || return 1
+  chmod 0755 "$out"
+  xattr -cr "$out" 2>/dev/null || true
+  printf '%s\n' "$out"
+}
+
+copy_host_cli_helper() {
+  local app="$1" tool="$2" source dest cand
+  shift 2
+  dest="$app/Contents/Helpers/$tool"
+  source="$(first_existing_cli "$@" || true)"
   if [ -z "${source:-}" ]; then
     echo "warning: host CLI helper '$tool' unavailable; terminal docker/kubectl setup cannot bundle it" >&2
     return 0
@@ -239,33 +322,14 @@ copy_host_cli_helper() {
 bundle_host_cli_helpers() {
   local app docker docker_compose kubectl
   [ "${DORY_BUNDLE_HOST_CLI:-1}" = "1" ] || return 0
-  docker="$(command -v docker 2>/dev/null || true)"
-  docker_compose="$(command -v docker-compose 2>/dev/null || true)"
-  kubectl="$(command -v kubectl 2>/dev/null || true)"
+  docker="$(first_existing_cli "${DORY_DOCKER_CLI:-}" /Applications/Dory.app/Contents/Helpers/docker "$HOME/.dory/bin/docker" /opt/homebrew/bin/docker /usr/local/bin/docker "$(command -v docker 2>/dev/null || true)" || download_docker_cli || true)"
+  docker_compose="$(first_existing_cli "${DORY_DOCKER_COMPOSE:-}" /Applications/Dory.app/Contents/Helpers/docker-compose "$HOME/.docker/cli-plugins/docker-compose" "$HOME/.dory/bin/docker-compose" /opt/homebrew/bin/docker-compose /usr/local/bin/docker-compose "$(command -v docker-compose 2>/dev/null || true)" || download_docker_compose || true)"
+  kubectl="$(first_existing_cli "${DORY_KUBECTL:-}" /Applications/Dory.app/Contents/Helpers/kubectl "$HOME/.dory/bin/kubectl" /opt/homebrew/bin/kubectl /usr/local/bin/kubectl "$(command -v kubectl 2>/dev/null || true)" || download_kubectl || true)"
   for app in "$HOME"/Library/Developer/Xcode/DerivedData/Dory-*/Build/Products/Debug/Dory.app; do
     [ -d "$app" ] || continue
-    copy_host_cli_helper "$app" docker \
-      "${DORY_DOCKER_CLI:-}" \
-      /Applications/Dory.app/Contents/Helpers/docker \
-      "$HOME/.dory/bin/docker" \
-      /opt/homebrew/bin/docker \
-      /usr/local/bin/docker \
-      "$docker"
-    copy_host_cli_helper "$app" docker-compose \
-      "${DORY_DOCKER_COMPOSE:-}" \
-      /Applications/Dory.app/Contents/Helpers/docker-compose \
-      "$HOME/.docker/cli-plugins/docker-compose" \
-      "$HOME/.dory/bin/docker-compose" \
-      /opt/homebrew/bin/docker-compose \
-      /usr/local/bin/docker-compose \
-      "$docker_compose"
-    copy_host_cli_helper "$app" kubectl \
-      "${DORY_KUBECTL:-}" \
-      /Applications/Dory.app/Contents/Helpers/kubectl \
-      "$HOME/.dory/bin/kubectl" \
-      /opt/homebrew/bin/kubectl \
-      /usr/local/bin/kubectl \
-      "$kubectl"
+    copy_host_cli_helper "$app" docker "$docker"
+    copy_host_cli_helper "$app" docker-compose "$docker_compose"
+    copy_host_cli_helper "$app" kubectl "$kubectl"
     copy_host_cli_helper "$app" dory \
       "${DORY_CLI:-}" \
       scripts/dory \
