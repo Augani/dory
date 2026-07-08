@@ -31,11 +31,9 @@ BUILD="${2:-${DORY_BUILD:-1}}"
 BUILD_DIR="${DORY_RELEASE_BUILD_DIR:-release-build}"
 NOTARY_PROFILE="${DORY_NOTARY_PROFILE:-dory-notary}"
 TEAM="${NOTARY_TEAM_ID:-864H636QW4}"
+NOTARY_TEAM_ID="${NOTARY_TEAM_ID:-$TEAM}"
 RELEASE_VARIANTS="${DORY_RELEASE_VARIANTS:-arm64 x86_64 universal}"
 SIGN_IDENTITY="${DORY_SIGN_ID:-Developer ID Application}"
-
-rm -rf "$BUILD_DIR"
-mkdir -p "$BUILD_DIR"
 
 notarize() {
   if [ -n "${NOTARY_APPLE_ID:-}" ]; then
@@ -47,6 +45,10 @@ notarize() {
 
 sha256_file() {
   shasum -a 256 "$1" | awk '{print $1}'
+}
+
+file_size_bytes() {
+  wc -c < "$1" | tr -d '[:space:]'
 }
 
 path_if_exists() {
@@ -113,6 +115,133 @@ configure_variant() {
   esac
 }
 
+release_error() {
+  echo "release error: $*" >&2
+  exit 1
+}
+
+require_tool() {
+  command -v "$1" >/dev/null 2>&1 || release_error "required tool '$1' not found"
+}
+
+preflight_release() {
+  local requested
+  echo "==> Release preflight..."
+  for tool in xcodebuild codesign xcrun ditto lipo shasum plutil security; do
+    require_tool "$tool"
+  done
+  if [ "${DORY_MAKE_DMG:-1}" = "1" ]; then
+    require_tool hdiutil
+  fi
+  if [ -z "$RELEASE_VARIANTS" ]; then
+    release_error "DORY_RELEASE_VARIANTS is empty"
+  fi
+  for requested in $RELEASE_VARIANTS; do
+    configure_variant "$requested"
+  done
+
+  if [ "${DORY_SKIP_SIGNING_PREFLIGHT:-0}" != "1" ] && [ "$SIGN_IDENTITY" != "-" ]; then
+    security find-identity -v -p codesigning | grep -F "$SIGN_IDENTITY" >/dev/null \
+      || release_error "codesigning identity '$SIGN_IDENTITY' not found; import the Developer ID Application certificate or set DORY_SKIP_SIGNING_PREFLIGHT=1 for local dry-runs"
+  fi
+
+  if [ "${DORY_SKIP_NOTARIZE:-0}" = "1" ]; then
+    echo "==> WARNING: notarization disabled by DORY_SKIP_NOTARIZE=1; do not publish these artifacts."
+  else
+    require_tool spctl
+    if [ -n "${NOTARY_APPLE_ID:-}" ] || [ -n "${NOTARY_PASSWORD:-}" ]; then
+      [ -n "${NOTARY_APPLE_ID:-}" ] || release_error "NOTARY_APPLE_ID is required when using notarytool environment credentials"
+      [ -n "${NOTARY_TEAM_ID:-}" ] || release_error "NOTARY_TEAM_ID is required when using notarytool environment credentials"
+      [ -n "${NOTARY_PASSWORD:-}" ] || release_error "NOTARY_PASSWORD is required when using notarytool environment credentials"
+    else
+      echo "==> Using notarytool keychain profile '$NOTARY_PROFILE' (set NOTARY_APPLE_ID/NOTARY_TEAM_ID/NOTARY_PASSWORD in CI)."
+    fi
+  fi
+}
+
+assert_file_exists() {
+  [ -f "$1" ] || release_error "$2 missing: $1"
+}
+
+assert_executable_exists() {
+  [ -x "$1" ] || release_error "$2 missing or not executable: $1"
+}
+
+assert_macho_arches() {
+  local binary="$1" expected="$2" archs arch
+  assert_executable_exists "$binary" "Mach-O executable"
+  archs="$(lipo -archs "$binary" 2>/dev/null || true)"
+  [ -n "$archs" ] || release_error "$binary is not a Mach-O binary"
+  for arch in $expected; do
+    case " $archs " in
+      *" $arch "*) ;;
+      *) release_error "$binary missing $arch (archs: ${archs:-none})" ;;
+    esac
+  done
+}
+
+verify_codesign() {
+  local app="$1"
+  echo "==> Verifying code signature for $app..."
+  codesign --verify --strict --deep --verbose=2 "$app"
+  verify_developer_id_signature "$app"
+}
+
+verify_developer_id_signature() {
+  local path="$1"
+  [ "${DORY_REQUIRE_DEVELOPER_ID_SIGNATURES:-1}" = "1" ] || return 0
+  [ "$SIGN_IDENTITY" != "-" ] || return 0
+  codesign -dv "$path" 2>&1 | grep -q 'Authority=Developer ID Application' \
+    || release_error "$path is not signed by a Developer ID Application certificate"
+}
+
+validate_stapled_app() {
+  local app="$1"
+  echo "==> Validating stapled app ticket + Gatekeeper assessment..."
+  xcrun stapler validate "$app"
+  spctl --assess --type execute --verbose=4 "$app"
+}
+
+validate_stapled_dmg() {
+  local dmg="$1"
+  echo "==> Validating stapled DMG ticket + Gatekeeper assessment..."
+  xcrun stapler validate "$dmg"
+  spctl --assess --type open --context context:primary-signature --verbose=4 "$dmg"
+}
+
+verify_full_bundle() {
+  local app="$1" helpers resources launch_agent asset_arch helper
+  helpers="$app/Contents/Helpers"
+  resources="$app/Contents/Resources"
+  launch_agent="$resources/dev.dory.doryd.plist"
+
+  echo "==> Verifying full clean-Mac bundle payload..."
+  for helper in doryd dorydctl dory-vmm dory-network-helper dory-hv dory-vm gvproxy docker docker-compose kubectl dory dory-doctor dory-idle-proxy; do
+    assert_executable_exists "$helpers/$helper" "bundled helper"
+  done
+  for helper in doryd dorydctl dory-vmm dory-network-helper dory-hv dory-vm; do
+    assert_macho_arches "$helpers/$helper" "$HELPER_ARCHES"
+  done
+  for helper in gvproxy docker docker-compose kubectl; do
+    assert_macho_arches "$helpers/$helper" "$HOST_CLI_ARCHES"
+  done
+  for helper in doryd dorydctl dory-vmm dory-network-helper dory-hv dory-vm gvproxy docker docker-compose kubectl dory dory-doctor dory-idle-proxy; do
+    verify_developer_id_signature "$helpers/$helper"
+  done
+
+  for asset_arch in $BUNDLE_ARCHES; do
+    assert_file_exists "$resources/dory-agent-linux-$asset_arch" "guest agent"
+    assert_file_exists "$resources/dory-hv-kernel-$asset_arch" "raw dory-hv kernel"
+    assert_file_exists "$resources/dory-hv-kernel-$asset_arch.lzfse" "compressed dory-hv kernel"
+    assert_file_exists "$resources/dory-machine-rootfs-$asset_arch.ext4" "machine rootfs"
+    assert_file_exists "$resources/dory-vm-kernel-$asset_arch.lzfse" "compressed VZ kernel"
+    assert_file_exists "$resources/dory-vm-initfs-$asset_arch.ext4.lzfse" "compressed VZ initfs"
+  done
+  assert_file_exists "$resources/dory-engine-rootfs.ext4.lzfse" "engine rootfs"
+  assert_file_exists "$launch_agent" "bundled launchd plist"
+  plutil -lint "$launch_agent" >/dev/null
+}
+
 sign_app() {
   local app="$1"
   echo "==> Signing $(basename "$(dirname "$app")")/Dory.app (Developer ID + hardened runtime)..."
@@ -152,6 +281,7 @@ finish_app_artifact() {
     echo "==> Notarizing $zip..."
     notarize "$zip"
     xcrun stapler staple "$app"
+    validate_stapled_app "$app"
     zip_app "$app" "$zip"
   fi
 
@@ -164,9 +294,65 @@ finish_app_artifact() {
       echo "==> Notarizing $dmg..."
       notarize "$dmg"
       xcrun stapler staple "$dmg"
+      validate_stapled_dmg "$dmg"
     fi
   fi
 }
+
+json_escape() {
+  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+artifact_kind() {
+  case "$1" in
+    *.dmg) printf '%s' "dmg" ;;
+    *.zip) printf '%s' "zip" ;;
+    *.tar.gz) printf '%s' "tar.gz" ;;
+    *) printf '%s' "file" ;;
+  esac
+}
+
+write_release_manifest() {
+  local manifest="$BUILD_DIR/release-manifest.json" artifact first kind
+  first=1
+  {
+    echo "{"
+    echo "  \"schemaVersion\": 1,"
+    echo "  \"version\": \"$(json_escape "$VERSION")\","
+    echo "  \"build\": \"$(json_escape "$BUILD")\","
+    echo "  \"bundleEngine\": $([ "${DORY_BUNDLE_ENGINE:-1}" = "1" ] && echo true || echo false),"
+    echo "  \"notarized\": $([ "${DORY_SKIP_NOTARIZE:-0}" = "1" ] && echo false || echo true),"
+    echo "  \"variants\": \"$(json_escape "$RELEASE_VARIANTS")\","
+    echo "  \"artifacts\": ["
+    for artifact in "$@"; do
+      [ -n "$artifact" ] && [ -f "$artifact" ] || continue
+      kind="$(artifact_kind "$artifact")"
+      if [ "$first" -eq 0 ]; then
+        echo ","
+      fi
+      first=0
+      printf '    {"name":"%s","path":"%s","kind":"%s","bytes":%s,"sha256":"%s"}' \
+        "$(json_escape "$(basename "$artifact")")" \
+        "$(json_escape "$artifact")" \
+        "$kind" \
+        "$(file_size_bytes "$artifact")" \
+        "$(sha256_file "$artifact")"
+    done
+    echo
+    echo "  ]"
+    echo "}"
+  } > "$manifest"
+  printf '%s' "$manifest"
+}
+
+preflight_release
+if [ "${DORY_RELEASE_PREFLIGHT_ONLY:-0}" = "1" ]; then
+  echo "==> Preflight-only mode passed."
+  exit 0
+fi
+
+rm -rf "$BUILD_DIR"
+mkdir -p "$BUILD_DIR"
 
 ZIPS=()
 DMGS=()
@@ -208,6 +394,10 @@ for requested in $RELEASE_VARIANTS; do
   fi
 
   sign_app "$APP"
+  if [ "${DORY_BUNDLE_ENGINE:-1}" = "1" ]; then
+    verify_full_bundle "$APP"
+  fi
+  verify_codesign "$APP"
   finish_app_artifact "$APP" "$ZIP" "$DMG"
   ZIPS+=("$ZIP")
   [ -f "$DMG" ] && DMGS+=("$DMG")
@@ -248,6 +438,7 @@ if [ "${DORY_BUNDLE_ENGINE:-1}" = "1" ] && [ "${DORY_BUILD_LITE:-1}" = "1" ]; th
     mkdir -p "$LITE_DIR"
     cp -R "$LITE_ARCHIVE/Products/Applications/Dory.app" "$LITE_DIR/"
     sign_app "$LITE_APP"
+    verify_codesign "$LITE_APP"
     LITE_ZIP="$BUILD_DIR/Dory-$VERSION-lite.zip"
     zip_app "$LITE_APP" "$LITE_ZIP"
     if [ "${DORY_SKIP_NOTARIZE:-0}" = "1" ]; then
@@ -318,6 +509,9 @@ for artifact in "$LITE_ZIP" "$RUNTIME_TAR"; do
   echo "    $artifact  (sha256: $(sha256_file "$artifact"))"
 done
 
+MANIFEST="$(write_release_manifest "${ZIPS[@]}" "${DMGS[@]}" "$LITE_ZIP" "$RUNTIME_TAR")"
+echo "    $MANIFEST  (release manifest)"
+
 # Expose outputs to a GitHub Actions step when running in CI.
 if [ -n "${GITHUB_OUTPUT:-}" ]; then
   {
@@ -328,6 +522,7 @@ if [ -n "${GITHUB_OUTPUT:-}" ]; then
     echo "dmg=$DEFAULT_DMG"
     echo "lite=$LITE_ZIP"
     echo "runtime=$RUNTIME_TAR"
+    echo "manifest=$MANIFEST"
     echo "zip_arm64=$(path_if_exists "$BUILD_DIR/Dory-$VERSION-arm64.zip")"
     echo "zip_x86_64=$(path_if_exists "$BUILD_DIR/Dory-$VERSION-x86_64.zip")"
     echo "zip_universal=$(path_if_exists "$BUILD_DIR/Dory-$VERSION-universal.zip")"

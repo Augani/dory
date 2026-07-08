@@ -40,6 +40,7 @@ jobs:
       zip_arm64: ${{ steps.build.outputs.zip_arm64 }}
       zip_x86_64: ${{ steps.build.outputs.zip_x86_64 }}
       zip_universal: ${{ steps.build.outputs.zip_universal }}
+      manifest: ${{ steps.build.outputs.manifest }}
     steps:
       - uses: actions/checkout@v4
 
@@ -82,9 +83,10 @@ jobs:
           # Team ID is not secret (it appears in every signed app); fall back to the project's team.
           NOTARY_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID || '864H636QW4' }}
           NOTARY_PASSWORD: ${{ secrets.NOTARY_APPLE_PASSWORD }}
-          # Self-contained build (bundles helper binaries plus kernel/initfs assets). Hosted CI can
-          # build the universal app; set BUNDLE_ENGINE=1 only on a runner with guest assets available.
-          DORY_BUNDLE_ENGINE: ${{ vars.BUNDLE_ENGINE || '0' }}
+          # Self-contained build (bundles helper binaries plus kernel/initfs/rootfs assets) is the
+          # release default. Use a prepared runner with guest assets, or intentionally set the repo
+          # variable BUNDLE_ENGINE=0 only for app-only dry-runs.
+          DORY_BUNDLE_ENGINE: ${{ vars.BUNDLE_ENGINE || '1' }}
           DORY_RELEASE_VARIANTS: ${{ vars.RELEASE_VARIANTS || 'arm64 x86_64 universal' }}
         run: scripts/release.sh "${{ steps.ver.outputs.version }}" "${{ github.run_number }}"
 
@@ -104,6 +106,7 @@ jobs:
             ${{ steps.build.outputs.dmg }}
             ${{ steps.build.outputs.lite }}
             ${{ steps.build.outputs.runtime }}
+            ${{ steps.build.outputs.manifest }}
           generate_release_notes: true
           body: |
             Native, lightweight Docker & Linux containers, a free, open-source alternative to
