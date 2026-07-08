@@ -10,6 +10,7 @@ name: Release
 #   NOTARY_APPLE_ID              Apple ID email for notarytool
 #   NOTARY_TEAM_ID               Apple Developer Team ID
 #   NOTARY_APPLE_PASSWORD        app-specific password for that Apple ID
+#   SPARKLE_ED_PRIVATE_KEY       Sparkle EdDSA private key from generate_keys/sign_update
 #
 # NOTE: Dory.app targets macOS 14+ and releases as Apple-silicon, Intel, and universal downloads.
 # The bundled low-memory engine is gated at runtime where host APIs require macOS 15+; macOS 14
@@ -43,6 +44,7 @@ jobs:
       zip_x86_64: ${{ steps.build.outputs.zip_x86_64 }}
       zip_universal: ${{ steps.build.outputs.zip_universal }}
       manifest: ${{ steps.build.outputs.manifest }}
+      appcast: ${{ steps.build.outputs.appcast }}
     steps:
       - uses: actions/checkout@v4
 
@@ -90,7 +92,15 @@ jobs:
           # variable BUNDLE_ENGINE=0 only for app-only dry-runs.
           DORY_BUNDLE_ENGINE: ${{ vars.BUNDLE_ENGINE || '1' }}
           DORY_RELEASE_VARIANTS: ${{ vars.RELEASE_VARIANTS || 'arm64 x86_64 universal' }}
+          DORY_RELEASE_ASSET_BASE_URL: https://github.com/Augani/dory/releases/download/v${{ steps.ver.outputs.version }}
+          DORY_SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
         run: scripts/release.sh "${{ steps.ver.outputs.version }}" "${{ github.run_number }}"
+
+      - name: Upload generated appcast
+        uses: actions/upload-artifact@v4
+        with:
+          name: dory-appcast
+          path: ${{ steps.build.outputs.appcast }}
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
@@ -109,6 +119,7 @@ jobs:
             ${{ steps.build.outputs.lite }}
             ${{ steps.build.outputs.runtime }}
             ${{ steps.build.outputs.manifest }}
+            ${{ steps.build.outputs.appcast }}
           generate_release_notes: true
           body: |
             Native, lightweight Docker & Linux containers, a free, open-source alternative to
@@ -154,17 +165,25 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: main
+      - name: Download generated appcast
+        uses: actions/download-artifact@v4
+        with:
+          name: dory-appcast
+          path: appcast-artifact
       - name: Bump cask to the released version
         run: |
           V="${{ needs.release.outputs.version }}"
           S="${{ needs.release.outputs.sha256 }}"
           sed -i -E "s/  version \"[^\"]+\"/  version \"$V\"/" Casks/dory.rb
           sed -i -E "s/  sha256 \"[0-9a-f]+\"/  sha256 \"$S\"/" Casks/dory.rb
-          git add Casks/dory.rb
+          test -f appcast-artifact/appcast.xml
+          cp appcast-artifact/appcast.xml website/public/appcast.xml
+          cp appcast-artifact/appcast.xml docs-build/appcast.xml
+          git add Casks/dory.rb website/public/appcast.xml docs-build/appcast.xml
           if git diff --cached --quiet; then echo "cask already current"; exit 0; fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -m "chore: bump Homebrew cask to v$V"
+          git commit -m "chore: bump Homebrew cask and appcast to v$V"
           git push
 
       # Sync the same cask to the Augani/homebrew-dory tap so `brew install --cask Augani/dory/dory`

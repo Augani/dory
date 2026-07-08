@@ -356,6 +356,17 @@ write_release_manifest() {
   printf '%s' "$manifest"
 }
 
+build_appcast_enabled() {
+  local requested="${DORY_BUILD_APPCAST:-}"
+  if [ -z "$requested" ]; then
+    [ "${DORY_SKIP_NOTARIZE:-0}" = "1" ] && requested="0" || requested="1"
+  fi
+  case "$requested" in
+    0|1) printf '%s' "$requested" ;;
+    *) release_error "DORY_BUILD_APPCAST must be 0 or 1" ;;
+  esac
+}
+
 preflight_release
 if [ "${DORY_RELEASE_PREFLIGHT_ONLY:-0}" = "1" ]; then
   echo "==> Preflight-only mode passed."
@@ -502,6 +513,18 @@ DEFAULT_DMG="${COMPAT_DMG:-${UNIVERSAL_DMG:-}}"
 DEFAULT_SHA256=""
 [ -n "$DEFAULT_ZIP" ] && DEFAULT_SHA256="$(sha256_file "$DEFAULT_ZIP")"
 
+APPCAST=""
+if [ "$(build_appcast_enabled)" = "1" ]; then
+  [ -n "$DEFAULT_ZIP" ] || release_error "cannot generate Sparkle appcast without a default zip artifact"
+  echo "==> Generating Sparkle appcast..."
+  APPCAST="$BUILD_DIR/appcast.xml"
+  scripts/generate-appcast.sh "$VERSION" "$BUILD" "$DEFAULT_ZIP" "$APPCAST" "website/public/appcast.xml" >/dev/null
+  mkdir -p docs-build website/public
+  cp "$APPCAST" docs-build/appcast.xml
+  cp "$APPCAST" website/public/appcast.xml
+  preflight_macos_floor
+fi
+
 echo "==> Done."
 if [ "${#ZIPS[@]}" -gt 0 ]; then
   for artifact in "${ZIPS[@]}"; do
@@ -520,8 +543,9 @@ for artifact in "$LITE_ZIP" "$RUNTIME_TAR"; do
   echo "    $artifact  (sha256: $(sha256_file "$artifact"))"
 done
 
-MANIFEST="$(write_release_manifest "${ZIPS[@]}" "${DMGS[@]}" "$LITE_ZIP" "$RUNTIME_TAR")"
+MANIFEST="$(write_release_manifest "${ZIPS[@]}" "${DMGS[@]}" "$LITE_ZIP" "$RUNTIME_TAR" "$APPCAST")"
 echo "    $MANIFEST  (release manifest)"
+[ -n "$APPCAST" ] && echo "    $APPCAST  (Sparkle appcast)"
 
 # Expose outputs to a GitHub Actions step when running in CI.
 if [ -n "${GITHUB_OUTPUT:-}" ]; then
@@ -534,6 +558,7 @@ if [ -n "${GITHUB_OUTPUT:-}" ]; then
     echo "lite=$LITE_ZIP"
     echo "runtime=$RUNTIME_TAR"
     echo "manifest=$MANIFEST"
+    echo "appcast=$APPCAST"
     echo "zip_arm64=$(path_if_exists "$BUILD_DIR/Dory-$VERSION-arm64.zip")"
     echo "zip_x86_64=$(path_if_exists "$BUILD_DIR/Dory-$VERSION-x86_64.zip")"
     echo "zip_universal=$(path_if_exists "$BUILD_DIR/Dory-$VERSION-universal.zip")"
