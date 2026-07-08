@@ -5,10 +5,10 @@ import Testing
 struct RuntimeSupportTests {
     // Dory's native dory-hv tier runs on Apple silicon and is preferred on Intel when raw PVH assets
     // are present. Intel falls back to the VZ shared tier when only amd64 VZ assets are available.
-    @Test func engineSupportsMacOS15AppleSilicon() {
-        let sequoia = MacHostPlatform(major: 15, minor: 0, patch: 0, architecture: "arm64")
+    @Test func engineSupportsMacOS14AppleSilicon() {
+        let sonoma = MacHostPlatform(major: 14, minor: 0, patch: 0, architecture: "arm64")
         let evaluation = SharedVMProvisioner.engineSupport(
-            platform: sequoia,
+            platform: sonoma,
             hvNativeAvailable: true,
             vzSharedAvailable: false,
             hypervisorSupported: true
@@ -29,7 +29,7 @@ struct RuntimeSupportTests {
     }
 
     @Test func intelUsesVZSharedTierWhenAssetsExist() {
-        let intel = MacHostPlatform(major: 15, minor: 7, patch: 0, architecture: "x86_64")
+        let intel = MacHostPlatform(major: 14, minor: 7, patch: 0, architecture: "x86_64")
         let evaluation = SharedVMProvisioner.engineSupport(
             platform: intel,
             hvNativeAvailable: false,
@@ -41,7 +41,7 @@ struct RuntimeSupportTests {
     }
 
     @Test func intelPrefersNativeHVTierWhenRawEngineAssetsExist() {
-        let intel = MacHostPlatform(major: 15, minor: 7, patch: 0, architecture: "x86_64")
+        let intel = MacHostPlatform(major: 14, minor: 7, patch: 0, architecture: "x86_64")
         let evaluation = SharedVMProvisioner.engineSupport(
             platform: intel,
             hvNativeAvailable: true,
@@ -53,7 +53,7 @@ struct RuntimeSupportTests {
     }
 
     @Test func intelFallsBackToProxyOnlyWhenAssetsAreMissing() {
-        let intel = MacHostPlatform(major: 15, minor: 7, patch: 0, architecture: "x86_64")
+        let intel = MacHostPlatform(major: 14, minor: 7, patch: 0, architecture: "x86_64")
         let evaluation = SharedVMProvisioner.engineSupport(
             platform: intel,
             hvNativeAvailable: false,
@@ -65,8 +65,8 @@ struct RuntimeSupportTests {
         #expect(evaluation.support.issue == .missingToolchain)
     }
 
-    @Test func engineRejectsMacOSOlderThan15() {
-        let ventura = MacHostPlatform(major: 14, minor: 5, patch: 0, architecture: "arm64")
+    @Test func engineRejectsMacOSOlderThan14() {
+        let ventura = MacHostPlatform(major: 13, minor: 6, patch: 0, architecture: "arm64")
         let support = SharedVMProvisioner.hostSupport(
             platform: ventura,
             engineAvailable: true,
@@ -105,7 +105,7 @@ struct RuntimeSupportTests {
     }
 
     @Test func engineSupportRequiresHypervisorFramework() {
-        let intel = MacHostPlatform(major: 15, minor: 7, patch: 0, architecture: "x86_64")
+        let intel = MacHostPlatform(major: 14, minor: 7, patch: 0, architecture: "x86_64")
         let evaluation = SharedVMProvisioner.engineSupport(
             platform: intel,
             hvNativeAvailable: false,
@@ -116,8 +116,8 @@ struct RuntimeSupportTests {
         #expect(evaluation.support.issue == .hypervisor)
     }
 
-    @Test func nativeHVPlatformSupportIncludesIntelMacsAtTheMacOS15Floor() {
-        let intel = MacHostPlatform(major: 15, minor: 7, patch: 0, architecture: "x86_64")
+    @Test func nativeHVPlatformSupportIncludesIntelMacsAtTheMacOS14Floor() {
+        let intel = MacHostPlatform(major: 14, minor: 7, patch: 0, architecture: "x86_64")
         #expect(DoryHVSupport.evaluate(platform: intel).isSupported)
     }
 

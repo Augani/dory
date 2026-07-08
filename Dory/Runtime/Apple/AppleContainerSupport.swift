@@ -76,7 +76,7 @@ nonisolated struct EngineSupportEvaluation: Equatable, Sendable {
 }
 
 enum EngineSupport {
-    nonisolated static let minimumMajorVersion = 15
+    nonisolated static let minimumMajorVersion = 14
 
     nonisolated static func evaluate(
         platform: MacHostPlatform,
@@ -87,7 +87,7 @@ enum EngineSupport {
         guard platform.major >= minimumMajorVersion else {
             return EngineSupportEvaluation(
                 tier: .proxyOnly,
-                support: .unsupported("Dory's engine requires macOS 15 or later", issue: .osVersion)
+                support: .unsupported("Dory's engine requires macOS 14 or later", issue: .osVersion)
             )
         }
         guard hypervisorSupported else {
@@ -130,7 +130,7 @@ enum DoryHVSupport {
 
     nonisolated static func evaluate(platform: MacHostPlatform) -> RuntimeSupport {
         guard platform.major >= minimumMajorVersion else {
-            return .unsupported("Dory's engine requires macOS 15 or later", issue: .osVersion)
+            return .unsupported("Dory's engine requires macOS 14 or later", issue: .osVersion)
         }
         guard platform.isAppleSilicon || platform.isIntel else {
             return .unsupported("Dory's engine does not support this Mac architecture", issue: .architecture)
