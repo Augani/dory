@@ -345,7 +345,7 @@ struct FuseServerTests {
 
         let differentMode = server.handle(request: request(unique: 54, opcode: .setattr, nodeID: nodeID, payload: setattrIn(mode: 0o600)))
 
-        #expect(try FuseProtocol.decodeOutHeader(differentMode).error == -EOPNOTSUPP)
+        #expect(try FuseProtocol.decodeOutHeader(differentMode).error == -FuseProtocol.linuxErrno(EOPNOTSUPP))
     }
 
     @Test func setattrSizeTruncatesAndGrowsHostFile() throws {
@@ -414,7 +414,7 @@ struct FuseServerTests {
         // A miss is now a cacheable negative dentry (error 0, nodeid 0), not a bare ENOENT.
         #expect(try FuseProtocol.decodeOutHeader(missing).error == 0)
         #expect(payload(from: missing).leUInt64(at: 0) == 0)
-        #expect(try FuseProtocol.decodeOutHeader(unsupported).error == -ENOSYS)
+        #expect(try FuseProtocol.decodeOutHeader(unsupported).error == -FuseProtocol.linuxErrno(ENOSYS))
     }
 
     @Test func initEnablesWritebackAndKillprivV2ByDefault() throws {
@@ -432,6 +432,15 @@ struct FuseServerTests {
         #expect(defaultFlags & FuseInitFlag.handleKillprivV2.rawValue == FuseInitFlag.handleKillprivV2.rawValue)
         #expect(optOutFlags & FuseInitFlag.writebackCache.rawValue == 0)
         #expect(optOutFlags & FuseInitFlag.handleKillprivV2.rawValue == 0)
+    }
+
+    @Test func linuxErrnoTranslatesDivergentDarwinCodes() {
+        #expect(FuseProtocol.linuxErrno(ENOSYS) == 38)      // Darwin 78 -> Linux 38 (else guest sees EREMCHG)
+        #expect(FuseProtocol.linuxErrno(EOPNOTSUPP) == 95)  // Darwin 102 -> Linux 95
+        #expect(FuseProtocol.linuxErrno(ENODATA) == 61)     // Darwin 96 -> Linux 61
+        #expect(FuseProtocol.linuxErrno(ENOENT) == ENOENT)  // 2 == 2, coincident codes pass through
+        #expect(FuseProtocol.linuxErrno(EIO) == EIO)        // 5 == 5
+        #expect(FuseProtocol.linuxErrno(EINVAL) == EINVAL)  // 22 == 22
     }
 
     @Test func lookupMissReturnsCacheableNegativeDentry() throws {
@@ -592,8 +601,8 @@ struct FuseServerTests {
             ]))
         ))
 
-        #expect(try FuseProtocol.decodeOutHeader(setup).error == -ENOSYS)
-        #expect(try FuseProtocol.decodeOutHeader(remove).error == -ENOSYS)
+        #expect(try FuseProtocol.decodeOutHeader(setup).error == -FuseProtocol.linuxErrno(ENOSYS))
+        #expect(try FuseProtocol.decodeOutHeader(remove).error == -FuseProtocol.linuxErrno(ENOSYS))
     }
 }
 

@@ -244,6 +244,27 @@ public enum FuseProtocol {
     public static let minimumMinorVersion: UInt32 = 27
     public static let eproto: Int32 = 71
 
+    // FUSE replies carry LINUX errno values, but the server computes with Darwin's <errno.h>. Most
+    // common codes coincide (ENOENT=2, EIO=5, EINVAL=22, EACCES=13, EBADF=9, EEXIST=17, ENOTDIR=20,
+    // EISDIR=21, EROFS=30, EBUSY=16), but several differ and MUST be translated — otherwise the guest
+    // misreads them. Critically, a Darwin ENOSYS(78) is Linux EREMCHG(78), so the kernel never sees
+    // "not implemented" and its statx->getattr and copy_file_range->read+write fallbacks never fire,
+    // which breaks every modern tool (node/npm use statx) on a bind mount even though busybox works.
+    public static func linuxErrno(_ darwin: Int32) -> Int32 {
+        switch darwin {
+        case ENOSYS: return 38               // Darwin 78 -> Linux 38
+        case ENODATA: return 61              // Darwin 96 -> Linux 61 (== Linux ENOATTR)
+        case EOPNOTSUPP: return 95           // Darwin 102 -> Linux 95
+        case ENOTSUP: return 95              // Darwin 45 -> Linux 95 (ENOTSUP == EOPNOTSUPP on Linux)
+        case EPROTO: return eproto           // Darwin 100 -> Linux 71
+        case ELOOP: return 40                // Darwin 62 -> Linux 40
+        case ENAMETOOLONG: return 36         // Darwin 63 -> Linux 36
+        case ENOTEMPTY: return 39            // Darwin 66 -> Linux 39
+        case EOVERFLOW: return 75            // Darwin 84 -> Linux 75
+        default: return darwin
+        }
+    }
+
     public static func decodeInHeader(_ data: [UInt8]) throws -> FuseInHeader {
         guard data.count >= FuseInHeader.byteCount else { throw FuseProtocolError.shortFrame }
         return FuseInHeader(

@@ -233,7 +233,7 @@ public final class FuseServer: @unchecked Sendable {
         func finish(errno: Int32, payloadBytes: Int) -> Int {
             let total = FuseOutHeader.byteCount + payloadBytes
             first.pointer.storeBytes(of: UInt32(total).littleEndian, toByteOffset: 0, as: UInt32.self)
-            first.pointer.storeBytes(of: Int32(-errno).littleEndian, toByteOffset: 4, as: Int32.self)
+            first.pointer.storeBytes(of: Int32(-FuseProtocol.linuxErrno(errno)).littleEndian, toByteOffset: 4, as: Int32.self)
             first.pointer.storeBytes(of: header.unique.littleEndian, toByteOffset: 8, as: UInt64.self)
             return total
         }
@@ -460,7 +460,8 @@ public final class FuseServer: @unchecked Sendable {
         return writer.written
     }
 
-    private func writeErrorResponse(unique: UInt64, errno: Int32, writable: [VirtqueueSegment]) -> Int {
+    private func writeErrorResponse(unique: UInt64, errno rawErrno: Int32, writable: [VirtqueueSegment]) -> Int {
+        let errno = FuseProtocol.linuxErrno(rawErrno)
         guard writable.reduce(0, { $0 + $1.length }) >= FuseOutHeader.byteCount else { return 0 }
         var writer = FuseDirectResponseWriter(writable: writable)
         writer.appendOutHeader(unique: unique, error: -errno, payloadByteCount: 0)
@@ -723,7 +724,8 @@ public final class FuseServer: @unchecked Sendable {
         return response
     }
 
-    private func errorResponse(unique: UInt64, errno: Int32) -> [UInt8] {
+    private func errorResponse(unique: UInt64, errno rawErrno: Int32) -> [UInt8] {
+        let errno = FuseProtocol.linuxErrno(rawErrno)
         var response = [UInt8]()
         response.reserveCapacity(FuseOutHeader.byteCount)
         response.appendLE(UInt32(FuseOutHeader.byteCount))
