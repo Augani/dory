@@ -59,6 +59,7 @@ final class AppStore {
     var showMenuBarIcon = true
     var autoUpdate = false
     var routeDockerCLI = true
+    var keepDorydRunningAfterQuit = false
     var machineEnvAllowList: [String] = MachineEnvImport.defaultNames
     var openLoginsOnMac = true
     var dockerHostConflict: DockerHostConflict.Conflict?
@@ -186,6 +187,7 @@ final class AppStore {
             if let v = UserDefaults.standard.object(forKey: Self.autoUpdateKey) as? Bool { autoUpdate = v }
             DoryUpdater.shared.automaticallyChecks = autoUpdate
             if let v = UserDefaults.standard.object(forKey: Self.routeDockerKey) as? Bool { routeDockerCLI = v }
+            if let v = UserDefaults.standard.object(forKey: Self.keepDorydRunningAfterQuitKey) as? Bool { keepDorydRunningAfterQuit = v }
             if let raw = UserDefaults.standard.string(forKey: Self.machineEnvAllowListKey) {
                 machineEnvAllowList = MachineEnvImport.parse(raw)
             }
@@ -256,6 +258,7 @@ final class AppStore {
     static let menuBarIconKey = "dory.showMenuBarIcon"
     static let autoUpdateKey = "dory.autoUpdate"
     static let routeDockerKey = "dory.routeDockerCLI"
+    static let keepDorydRunningAfterQuitKey = "dory.keepDorydRunningAfterQuit"
     static let machineEnvAllowListKey = "dory.machineEnvAllowList"
     static let openLoginsOnMacKey = "dory.openLoginsOnMac"
     static let dockerHostDismissedKey = "dory.dockerHostDismissed"
@@ -328,6 +331,7 @@ final class AppStore {
             engine: ManagedEngineSettings(
                 preference: enginePreference.rawValue,
                 routeDockerCLI: routeDockerCLI,
+                keepDorydRunningAfterQuit: keepDorydRunningAfterQuit,
                 rosettaX86: rosettaX86Enabled,
                 gpuVenus: gpuVenusEnabled
             ),
@@ -451,6 +455,14 @@ final class AppStore {
             }
             showSettingsSuccess(on ? "Terminal docker command enabled." : "Terminal docker command removed.")
         }
+    }
+
+    func setKeepDorydRunningAfterQuit(_ on: Bool) {
+        keepDorydRunningAfterQuit = on
+        UserDefaults.standard.set(on, forKey: Self.keepDorydRunningAfterQuitKey)
+        showSettingsSuccess(on
+            ? "doryd will keep running after Dory quits."
+            : "doryd will stop when Dory quits.")
     }
 
     @discardableResult

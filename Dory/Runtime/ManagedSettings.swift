@@ -13,6 +13,7 @@ struct ManagedSettingsProfile: Codable, Equatable, Sendable {
 struct ManagedEngineSettings: Codable, Equatable, Sendable {
     var preference: String
     var routeDockerCLI: Bool
+    var keepDorydRunningAfterQuit: Bool
     var rosettaX86: Bool
     var gpuVenus: Bool
 }

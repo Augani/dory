@@ -255,6 +255,32 @@ struct DorydLaunchAgentTests {
         #expect(recorder.commands.map { $0.first ?? "" } == ["print", "bootout", "bootstrap", "print", "bootstrap", "kickstart"])
     }
 
+    @Test func bootoutCurrentStopsLaunchAgentService() async {
+        let recorder = LaunchctlRecorder(printOutput: "")
+
+        let ok = await DorydLaunchAgent.bootoutCurrent(uid: 501) { arguments in
+            recorder.run(arguments)
+        }
+
+        #expect(ok)
+        #expect(recorder.commands == [["bootout", "gui/501/dev.dory.doryd"]])
+    }
+
+    @Test func bootoutCurrentTreatsMissingServiceAsStopped() async {
+        let recorder = LaunchctlRecorder(
+            printOutput: "",
+            bootoutStatus: 36,
+            bootoutStderr: "Boot-out failed: 3: No such process"
+        )
+
+        let ok = await DorydLaunchAgent.bootoutCurrent(uid: 501) { arguments in
+            recorder.run(arguments)
+        }
+
+        #expect(ok)
+        #expect(recorder.commands == [["bootout", "gui/501/dev.dory.doryd"]])
+    }
+
     @Test func launchAgentCanDisableDaemonHostCLIRepair() {
         let plist = DorydLaunchAgent.launchAgentPlist(
             program: "/Applications/Dory.app/Contents/Helpers/doryd",
@@ -294,12 +320,22 @@ private final class LaunchctlRecorder: @unchecked Sendable {
     private let printStatus: Int32
     private let printOutput: String
     private var bootstrapStatuses: [Int32]
+    private let bootoutStatus: Int32
+    private let bootoutStderr: String
     private var recorded: [[String]] = []
 
-    init(printStatus: Int32 = 0, printOutput: String, bootstrapStatuses: [Int32] = []) {
+    init(
+        printStatus: Int32 = 0,
+        printOutput: String,
+        bootstrapStatuses: [Int32] = [],
+        bootoutStatus: Int32 = 0,
+        bootoutStderr: String = ""
+    ) {
         self.printStatus = printStatus
         self.printOutput = printOutput
         self.bootstrapStatuses = bootstrapStatuses
+        self.bootoutStatus = bootoutStatus
+        self.bootoutStderr = bootoutStderr
     }
 
     var commands: [[String]] {
@@ -320,6 +356,9 @@ private final class LaunchctlRecorder: @unchecked Sendable {
         }
         if let bootstrapStatus {
             return DorydLaunchAgent.CommandResult(status: bootstrapStatus, stdout: "", stderr: "")
+        }
+        if arguments.first == "bootout" {
+            return DorydLaunchAgent.CommandResult(status: bootoutStatus, stdout: "", stderr: bootoutStderr)
         }
         return DorydLaunchAgent.CommandResult(status: 0, stdout: "", stderr: "")
     }

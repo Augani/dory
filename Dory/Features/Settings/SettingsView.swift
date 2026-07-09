@@ -457,6 +457,7 @@ struct SettingsView: View {
             VStack(spacing: 0) {
                 toggleRow("Launch Dory at login", "Start the engine automatically when you log in.", isOn: Binding(get: { store.launchAtLogin }, set: { store.setLaunchAtLogin($0) }), divider: true)
                 toggleRow("Show menu bar icon", store.isAgentMode ? "Always on — Dory runs in the menu bar in background mode." : "Quick access to containers from the menu bar.", isOn: Binding(get: { store.showMenuBarIcon }, set: { store.setShowMenuBarIcon($0) }), divider: true, disabled: store.isAgentMode)
+                toggleRow("Keep doryd running after quit", "Leave the daemon, Docker socket, local domains, and machines available after the Dory app exits. Turn off to stop doryd when you quit Dory.", isOn: Binding(get: { store.keepDorydRunningAfterQuit }, set: { store.setKeepDorydRunningAfterQuit($0) }), divider: true)
                 toggleRow("Terminal docker command", "doryd keeps `docker`, `docker compose`, `kubectl`, and Dory support commands ready in `~/.dory/bin` and points them at Dory's engine. No Docker Desktop or admin setup required; turn off to remove.", isOn: Binding(get: { store.routeDockerCLI }, set: { store.setRouteDockerCLI($0) }), divider: false)
             }
             .background(p.bgElevated, in: RoundedRectangle(cornerRadius: 11))

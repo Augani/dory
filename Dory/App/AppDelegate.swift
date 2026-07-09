@@ -110,6 +110,10 @@ final class DoryAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        if !Self.isTestHost,
+           !UserDefaults.standard.bool(forKey: AppStore.keepDorydRunningAfterQuitKey) {
+            DorydLaunchAgent.bootoutCurrentSynchronously()
+        }
         Self.instanceLock.lock()
         let fd = Self.instanceLockFD
         Self.instanceLockFD = -1

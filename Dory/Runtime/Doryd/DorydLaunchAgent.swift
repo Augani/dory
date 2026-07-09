@@ -118,6 +118,34 @@ enum DorydLaunchAgent {
         }
     }
 
+    @discardableResult
+    static func bootoutCurrent(
+        uid: uid_t = getuid(),
+        runner: @escaping Runner = runLaunchctl
+    ) async -> Bool {
+        let result = await runner(["bootout", serviceTarget(uid: uid)])
+        return result.ok || result.stderr.localizedCaseInsensitiveContains("No such process")
+    }
+
+    @discardableResult
+    static func bootoutCurrentSynchronously(uid: uid_t = getuid()) -> Bool {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+        process.arguments = ["bootout", serviceTarget(uid: uid)]
+        let stderr = Pipe()
+        process.standardError = stderr
+        process.standardOutput = FileHandle.nullDevice
+        do {
+            try process.run()
+        } catch {
+            return false
+        }
+        let errData = stderr.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        let err = String(decoding: errData, as: UTF8.self)
+        return process.terminationStatus == 0 || err.localizedCaseInsensitiveContains("No such process")
+    }
+
     private static func bootstrapAndKickstart(
         uid: uid_t,
         plistPath: String,
