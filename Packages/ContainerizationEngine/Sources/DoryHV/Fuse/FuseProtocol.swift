@@ -165,6 +165,8 @@ public struct FuseInitFlag: OptionSet, Sendable {
     public static let autoInvalidateData = FuseInitFlag(rawValue: 1 << 12)
     public static let doReaddirplus = FuseInitFlag(rawValue: 1 << 13)
     public static let readdirplusAuto = FuseInitFlag(rawValue: 1 << 14)
+    public static let writebackCache = FuseInitFlag(rawValue: 1 << 16)
+    public static let parallelDirops = FuseInitFlag(rawValue: 1 << 18)
     public static let maxPages = FuseInitFlag(rawValue: 1 << 22)
     public static let mapAlignment = FuseInitFlag(rawValue: 1 << 26)
 }
@@ -318,7 +320,12 @@ public enum FuseProtocol {
         return data
     }
 
-    public static func negotiateInit(header: FuseInHeader, request: FuseInitIn, daxMapAlignmentLog2: UInt16? = nil) -> [UInt8] {
+    public static func negotiateInit(
+        header: FuseInHeader,
+        request: FuseInitIn,
+        daxMapAlignmentLog2: UInt16? = nil,
+        writebackCache: Bool = false
+    ) -> [UInt8] {
         guard request.minor >= minimumMinorVersion else {
             return encodeOutHeader(FuseOutHeader(length: UInt32(FuseOutHeader.byteCount), error: -eproto, unique: header.unique))
         }
@@ -333,7 +340,13 @@ public enum FuseProtocol {
         // `ls` calls list an empty directory. Force readdirplus until plain readdir is implemented.
         var flags = FuseInitFlag.asyncRead.rawValue | FuseInitFlag.bigWrites.rawValue
             | FuseInitFlag.autoInvalidateData.rawValue | FuseInitFlag.maxPages.rawValue
-            | FuseInitFlag.doReaddirplus.rawValue
+            | FuseInitFlag.doReaddirplus.rawValue | FuseInitFlag.parallelDirops.rawValue
+        if writebackCache {
+            // WRITEBACK_CACHE lets the guest coalesce buffered writes. Linux ignores FOPEN_NOFLUSH
+            // while it is enabled, so the runtime keeps it opt-in for close-heavy or stricter
+            // durability experiments.
+            flags |= FuseInitFlag.writebackCache.rawValue
+        }
         if daxMapAlignmentLog2 != nil {
             flags |= FuseInitFlag.mapAlignment.rawValue
         }

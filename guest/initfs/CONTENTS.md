@@ -8,7 +8,7 @@
 The builder is intentionally reproducible from pinned public inputs in `guest/initfs/PINS`:
 
 - Alpine minirootfs 3.21.7 for `arm64` and `amd64`
-- Docker static 27.5.1 for `arm64` and `amd64`
+- Docker static 29.6.1 for `arm64` and `amd64`
 - Dory's guest agent from `guest/out/dory-agent-<arch>`
 
 Runtime contents added by Dory:

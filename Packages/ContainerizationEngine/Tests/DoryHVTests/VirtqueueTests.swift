@@ -108,7 +108,7 @@ import Testing
         // makes "unmapped implies bit set" an invariant), so this is a benign no-op: it reports
         // success (the guest retry resolves) but must NOT charge a restore.
         #expect(memory.restorePage(guestAddress: 0x8000_0000 + HostPage.size))
-        #expect(memory.releasedBytes.load(ordering: .relaxed) == 0)
-        #expect(memory.restoredBytes.load(ordering: .relaxed) == 0)
+        #expect(memory.releasedBytes.load() == 0)
+        #expect(memory.restoredBytes.load() == 0)
     }
 }

@@ -430,6 +430,7 @@ case "engine":
     var amd64Emulation = false
     var publishHost = "127.0.0.1"
     var agentVsockForward: String?
+    var guestAgent: String?
     var iterator = arguments.dropFirst().makeIterator()
     while let argument = iterator.next() {
         switch argument {
@@ -454,6 +455,8 @@ case "engine":
             // Fail safe: only the two well-known bind addresses are honored; anything else stays
             // loopback-only so a malformed value can never silently expose ports to the LAN.
             publishHost = iterator.next() == "0.0.0.0" ? "0.0.0.0" : "127.0.0.1"
+        case "--guest-agent":
+            guestAgent = iterator.next()
         case "--share":
             guard let value = iterator.next() else { fail("--share requires tag=/host/path[:ro|:rw][:dax]") }
             do {
@@ -487,7 +490,8 @@ case "engine":
         gpuMode: gpuMode,
         amd64Emulation: amd64Emulation,
         publishHost: publishHost,
-        agentVsockForward: agentVsockForward
+        agentVsockForward: agentVsockForward,
+        guestAgentPath: guestAgent
     )
     // Top-level code is implicitly MainActor; a plain Task would inherit it and deadlock behind
     // the semaphore below. Detach so the engine runs on the concurrent pool.

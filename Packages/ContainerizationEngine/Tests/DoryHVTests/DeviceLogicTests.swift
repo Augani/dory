@@ -80,6 +80,48 @@ import Testing
     }
 }
 
+@Suite struct VirtioBlkTests {
+    private func makeDisk(byteCount: Int = 4096) throws -> String {
+        let path = NSTemporaryDirectory() + "/dory-virtioblk-test-\(UUID().uuidString).img"
+        try Data(repeating: 0, count: byteCount).write(to: URL(fileURLWithPath: path))
+        return path
+    }
+
+    @Test func defaultsToSingleQueueWithoutMQFeature() throws {
+        let path = try makeDisk()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        let block = try VirtioBlk(path: path, identity: "test", queueCount: 1)
+
+        #expect(block.queueCount == 1)
+        #expect(block.deviceFeatures & (1 << 9) != 0)
+        #expect(block.deviceFeatures & (1 << 12) == 0)
+        #expect(block.configSpace.leUInt16(at: 34) == 1)
+    }
+
+    @Test func multiqueueAdvertisesQueueCountInConfigSpace() throws {
+        let path = try makeDisk()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        let block = try VirtioBlk(path: path, identity: "test", queueCount: 4)
+
+        #expect(block.queueCount == 4)
+        #expect(block.deviceFeatures & (1 << 12) != 0)
+        #expect(block.configSpace.leUInt16(at: 34) == 4)
+    }
+
+    @Test func queueCountIsClampedToVirtioMMIOLimits() throws {
+        let path = try makeDisk()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        let tooLow = try VirtioBlk(path: path, identity: "test", queueCount: 0)
+        let tooHigh = try VirtioBlk(path: path, identity: "test", queueCount: 99)
+
+        #expect(tooLow.queueCount == 1)
+        #expect(tooHigh.queueCount == 16)
+    }
+}
+
 @Suite struct DataAbortInfoTests {
     @Test func decodesWriteOfA4ByteRegister() {
         // ISV=1, SAS=0b10 (4 bytes), SSE=0, SRT=5, SF=1, WnR=1

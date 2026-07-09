@@ -33,10 +33,12 @@ struct FuseServerTests {
 
         let open = server.handle(request: request(unique: 12, opcode: .open, nodeID: nodeID, payload: bytes(UInt32(O_RDONLY)) + bytes(UInt32(0))))
         let openHeader = try FuseProtocol.decodeOutHeader(open)
-        let handle = payload(from: open).leUInt64(at: 0)
+        let openPayload = payload(from: open)
+        let handle = openPayload.leUInt64(at: 0)
 
         #expect(openHeader.error == 0)
         #expect(handle > 0)
+        #expect(openPayload.leUInt32(at: 8) == (1 << 1) | (1 << 5))
 
         let readIn = bytes(handle) + bytes(UInt64(6)) + bytes(UInt32(4)) + bytes(UInt32(0)) + bytes(UInt64(0)) + bytes(UInt32(0)) + bytes(UInt32(0))
         let read = server.handle(request: request(unique: 13, opcode: .read, nodeID: nodeID, payload: readIn))
@@ -77,6 +79,169 @@ struct FuseServerTests {
         #expect(String(decoding: dest[FuseOutHeader.byteCount..<written], as: UTF8.self) == "dory")
     }
 
+    @Test func directWriteAndReleaseMatchArrayPath() throws {
+        let root = try TestFuseServerRoot()
+        let server = try FuseServer(hostFS: HostFS(rootPath: root.url.path))
+        let createIn = bytes(UInt32(O_CREAT | O_RDWR)) + bytes(UInt32(0o644)) + bytes(UInt32(0)) + bytes(UInt32(0)) + Array("direct.txt\0".utf8)
+        let create = server.handle(request: request(unique: 101, opcode: .create, nodeID: HostFS.rootNodeID, payload: createIn))
+        let createPayload = payload(from: create)
+        let nodeID = createPayload.leUInt64(at: 0)
+        let handle = createPayload.leUInt64(at: 128)
+        let writeData = Array("hello direct".utf8)
+        let writeIn = bytes(handle) + bytes(UInt64(0)) + bytes(UInt32(writeData.count)) + bytes(UInt32(0)) + bytes(UInt64(0)) + bytes(UInt32(0)) + bytes(UInt32(0)) + writeData
+        let writeRequest = request(unique: 102, opcode: .write, nodeID: nodeID, payload: writeIn)
+        let writeHeader = try FuseProtocol.decodeInHeader(writeRequest)
+        let writePayload = writeRequest[FuseInHeader.byteCount..<Int(writeHeader.length)]
+        var writeDest = [UInt8](repeating: 0, count: FuseOutHeader.byteCount + 8)
+        let writeCount = writeDest.withUnsafeMutableBytes { buffer -> Int in
+            let segment = VirtqueueSegment(pointer: buffer.baseAddress!, length: buffer.count, isDeviceWritable: true)
+            return server.writeWriteResponse(header: writeHeader, payload: writePayload, writable: [segment])
+        }
+
+        #expect(writeCount == FuseOutHeader.byteCount + 8)
+        #expect(try FuseProtocol.decodeOutHeader(Array(writeDest)).error == 0)
+        #expect(payload(from: Array(writeDest)).leUInt32(at: 0) == UInt32(writeData.count))
+
+        let releaseIn = bytes(handle) + bytes(UInt32(0)) + bytes(UInt32(0)) + bytes(UInt64(0))
+        let releaseRequest = request(unique: 103, opcode: .release, nodeID: nodeID, payload: releaseIn)
+        let releaseHeader = try FuseProtocol.decodeInHeader(releaseRequest)
+        let releasePayload = releaseRequest[FuseInHeader.byteCount..<Int(releaseHeader.length)]
+        var releaseDest = [UInt8](repeating: 0, count: FuseOutHeader.byteCount)
+        let releaseCount = releaseDest.withUnsafeMutableBytes { buffer -> Int in
+            let segment = VirtqueueSegment(pointer: buffer.baseAddress!, length: buffer.count, isDeviceWritable: true)
+            return server.writeReleaseResponse(header: releaseHeader, payload: releasePayload, writable: [segment])
+        }
+
+        #expect(releaseCount == FuseOutHeader.byteCount)
+        #expect(try FuseProtocol.decodeOutHeader(Array(releaseDest)).error == 0)
+        #expect(try String(contentsOf: root.url.appendingPathComponent("direct.txt"), encoding: .utf8) == "hello direct")
+    }
+
+    @Test func directMetadataMissResponsesMatchArrayPath() throws {
+        let root = try TestFuseServerRoot()
+        try root.write("exists", to: "exists.txt")
+        let server = try FuseServer(hostFS: HostFS(rootPath: root.url.path))
+
+        let missingRequest = request(unique: 201, opcode: .lookup, nodeID: HostFS.rootNodeID, payload: Array("missing.txt\0".utf8))
+        let missingHeader = try FuseProtocol.decodeInHeader(missingRequest)
+        let missingPayload = missingRequest[FuseInHeader.byteCount..<Int(missingHeader.length)]
+        let missingArrayPath = server.handle(request: missingRequest)
+        var missingDest = [UInt8](repeating: 0, count: FuseOutHeader.byteCount)
+        let missingCount = missingDest.withUnsafeMutableBytes { buffer -> Int in
+            let segment = VirtqueueSegment(pointer: buffer.baseAddress!, length: buffer.count, isDeviceWritable: true)
+            return server.writeLookupMissResponse(header: missingHeader, payload: missingPayload, writable: [segment])
+        }
+
+        #expect(missingCount == FuseOutHeader.byteCount)
+        #expect(Array(missingDest) == missingArrayPath)
+
+        let hitRequest = request(unique: 202, opcode: .lookup, nodeID: HostFS.rootNodeID, payload: Array("exists.txt\0".utf8))
+        let hitHeader = try FuseProtocol.decodeInHeader(hitRequest)
+        let hitPayload = hitRequest[FuseInHeader.byteCount..<Int(hitHeader.length)]
+        var hitDest = [UInt8](repeating: 0, count: FuseOutHeader.byteCount)
+        let hitCount = hitDest.withUnsafeMutableBytes { buffer -> Int in
+            let segment = VirtqueueSegment(pointer: buffer.baseAddress!, length: buffer.count, isDeviceWritable: true)
+            return server.writeLookupMissResponse(header: hitHeader, payload: hitPayload, writable: [segment])
+        }
+
+        #expect(hitCount == 0)
+
+        let getxattrRequest = request(unique: 203, opcode: .getxattr, nodeID: HostFS.rootNodeID)
+        let getxattrHeader = try FuseProtocol.decodeInHeader(getxattrRequest)
+        let getxattrArrayPath = server.handle(request: getxattrRequest)
+        var getxattrDest = [UInt8](repeating: 0, count: FuseOutHeader.byteCount)
+        let getxattrCount = getxattrDest.withUnsafeMutableBytes { buffer -> Int in
+            let segment = VirtqueueSegment(pointer: buffer.baseAddress!, length: buffer.count, isDeviceWritable: true)
+            return server.writeGetXattrNoDataResponse(header: getxattrHeader, writable: [segment])
+        }
+
+        #expect(getxattrCount == FuseOutHeader.byteCount)
+        #expect(Array(getxattrDest) == getxattrArrayPath)
+    }
+
+    @Test func directCreateAndGetattrResponsesAreValid() throws {
+        let root = try TestFuseServerRoot()
+        let server = try FuseServer(hostFS: HostFS(rootPath: root.url.path))
+        let createIn = bytes(UInt32(O_CREAT | O_RDWR)) + bytes(UInt32(0o644)) + bytes(UInt32(0)) + bytes(UInt32(0)) + Array("created-direct.txt\0".utf8)
+        let createRequest = request(unique: 210, opcode: .create, nodeID: HostFS.rootNodeID, payload: createIn)
+        let createHeader = try FuseProtocol.decodeInHeader(createRequest)
+        let createPayload = createRequest[FuseInHeader.byteCount..<Int(createHeader.length)]
+        var createDest = [UInt8](repeating: 0, count: FuseOutHeader.byteCount + 144)
+        let createCount = createDest.withUnsafeMutableBytes { buffer -> Int in
+            let segment = VirtqueueSegment(pointer: buffer.baseAddress!, length: buffer.count, isDeviceWritable: true)
+            return server.writeCreateResponse(header: createHeader, payload: createPayload, writable: [segment])
+        }
+
+        #expect(createCount == FuseOutHeader.byteCount + 144)
+        #expect(try FuseProtocol.decodeOutHeader(Array(createDest)).error == 0)
+        let createdPayload = payload(from: Array(createDest))
+        let nodeID = createdPayload.leUInt64(at: 0)
+        let handle = createdPayload.leUInt64(at: 128)
+        #expect(nodeID != HostFS.rootNodeID)
+        #expect(handle > 0)
+        #expect(FileManager.default.fileExists(atPath: root.url.appendingPathComponent("created-direct.txt").path))
+
+        let getattrRequest = request(unique: 211, opcode: .getattr, nodeID: nodeID)
+        let getattrHeader = try FuseProtocol.decodeInHeader(getattrRequest)
+        let getattrArrayPath = server.handle(request: getattrRequest)
+        var getattrDest = [UInt8](repeating: 0, count: FuseOutHeader.byteCount + 104)
+        let getattrCount = getattrDest.withUnsafeMutableBytes { buffer -> Int in
+            let segment = VirtqueueSegment(pointer: buffer.baseAddress!, length: buffer.count, isDeviceWritable: true)
+            return server.writeGetattrResponse(header: getattrHeader, writable: [segment])
+        }
+
+        #expect(getattrCount == FuseOutHeader.byteCount + 104)
+        #expect(Array(getattrDest) == getattrArrayPath)
+
+        let releaseIn = bytes(handle) + bytes(UInt32(0)) + bytes(UInt32(0)) + bytes(UInt64(0))
+        #expect(try FuseProtocol.decodeOutHeader(server.handle(request: request(unique: 212, opcode: .release, nodeID: nodeID, payload: releaseIn))).error == 0)
+    }
+
+    @Test func directMkdirUnlinkAndRmdirResponsesAreValid() throws {
+        let root = try TestFuseServerRoot()
+        try root.write("remove me", to: "gone.txt")
+        let server = try FuseServer(hostFS: HostFS(rootPath: root.url.path))
+        let mkdirIn = bytes(UInt32(0o755)) + bytes(UInt32(0)) + Array("nested-direct\0".utf8)
+        let mkdirRequest = request(unique: 220, opcode: .mkdir, nodeID: HostFS.rootNodeID, payload: mkdirIn)
+        let mkdirHeader = try FuseProtocol.decodeInHeader(mkdirRequest)
+        let mkdirPayload = mkdirRequest[FuseInHeader.byteCount..<Int(mkdirHeader.length)]
+        var mkdirDest = [UInt8](repeating: 0, count: FuseOutHeader.byteCount + 128)
+        let mkdirCount = mkdirDest.withUnsafeMutableBytes { buffer -> Int in
+            let segment = VirtqueueSegment(pointer: buffer.baseAddress!, length: buffer.count, isDeviceWritable: true)
+            return server.writeMkdirResponse(header: mkdirHeader, payload: mkdirPayload, writable: [segment])
+        }
+
+        #expect(mkdirCount == FuseOutHeader.byteCount + 128)
+        #expect(try FuseProtocol.decodeOutHeader(Array(mkdirDest)).error == 0)
+        #expect(FileManager.default.fileExists(atPath: root.url.appendingPathComponent("nested-direct").path))
+
+        let unlinkRequest = request(unique: 221, opcode: .unlink, nodeID: HostFS.rootNodeID, payload: Array("gone.txt\0".utf8))
+        let unlinkHeader = try FuseProtocol.decodeInHeader(unlinkRequest)
+        let unlinkPayload = unlinkRequest[FuseInHeader.byteCount..<Int(unlinkHeader.length)]
+        var unlinkDest = [UInt8](repeating: 0, count: FuseOutHeader.byteCount)
+        let unlinkCount = unlinkDest.withUnsafeMutableBytes { buffer -> Int in
+            let segment = VirtqueueSegment(pointer: buffer.baseAddress!, length: buffer.count, isDeviceWritable: true)
+            return server.writeRemoveResponse(header: unlinkHeader, opcode: .unlink, payload: unlinkPayload, writable: [segment])
+        }
+
+        #expect(unlinkCount == FuseOutHeader.byteCount)
+        #expect(try FuseProtocol.decodeOutHeader(Array(unlinkDest)).error == 0)
+        #expect(!FileManager.default.fileExists(atPath: root.url.appendingPathComponent("gone.txt").path))
+
+        let rmdirRequest = request(unique: 222, opcode: .rmdir, nodeID: HostFS.rootNodeID, payload: Array("nested-direct\0".utf8))
+        let rmdirHeader = try FuseProtocol.decodeInHeader(rmdirRequest)
+        let rmdirPayload = rmdirRequest[FuseInHeader.byteCount..<Int(rmdirHeader.length)]
+        var rmdirDest = [UInt8](repeating: 0, count: FuseOutHeader.byteCount)
+        let rmdirCount = rmdirDest.withUnsafeMutableBytes { buffer -> Int in
+            let segment = VirtqueueSegment(pointer: buffer.baseAddress!, length: buffer.count, isDeviceWritable: true)
+            return server.writeRemoveResponse(header: rmdirHeader, opcode: .rmdir, payload: rmdirPayload, writable: [segment])
+        }
+
+        #expect(rmdirCount == FuseOutHeader.byteCount)
+        #expect(try FuseProtocol.decodeOutHeader(Array(rmdirDest)).error == 0)
+        #expect(!FileManager.default.fileExists(atPath: root.url.appendingPathComponent("nested-direct").path))
+    }
+
     @Test func readdirplusReturnsPackedDirectoryEntries() throws {
         let root = try TestFuseServerRoot()
         try root.write("a", to: "a.txt")
@@ -110,6 +275,7 @@ struct FuseServerTests {
         #expect(try FuseProtocol.decodeOutHeader(create).error == 0)
         #expect(nodeID != 0)
         #expect(handle != 0)
+        #expect(createPayload.leUInt32(at: 136) == (1 << 1) | (1 << 5))
 
         let writeIn = bytes(handle) + bytes(UInt64(0)) + bytes(UInt32(11)) + bytes(UInt32(0)) + bytes(UInt64(0)) + bytes(UInt32(0)) + bytes(UInt32(0)) + Array("hello world".utf8)
         let write = server.handle(request: request(unique: 41, opcode: .write, nodeID: nodeID, payload: writeIn))
@@ -120,17 +286,20 @@ struct FuseServerTests {
         let fsync = server.handle(request: request(unique: 42, opcode: .fsync, nodeID: nodeID, payload: bytes(handle) + bytes(UInt32(0)) + bytes(UInt32(0))))
         #expect(try FuseProtocol.decodeOutHeader(fsync).error == 0)
 
-        let release = server.handle(request: request(unique: 43, opcode: .release, nodeID: nodeID, payload: bytes(handle) + bytes(UInt32(0)) + bytes(UInt32(0)) + bytes(UInt64(0))))
+        let flush = server.handle(request: request(unique: 43, opcode: .flush, nodeID: nodeID, payload: bytes(handle) + bytes(UInt32(0)) + bytes(UInt32(0)) + bytes(UInt64(0))))
+        #expect(try FuseProtocol.decodeOutHeader(flush).error == 0)
+
+        let release = server.handle(request: request(unique: 44, opcode: .release, nodeID: nodeID, payload: bytes(handle) + bytes(UInt32(0)) + bytes(UInt32(0)) + bytes(UInt64(0))))
         #expect(try FuseProtocol.decodeOutHeader(release).error == 0)
         #expect(try String(contentsOf: root.url.appendingPathComponent("draft.txt"), encoding: .utf8) == "hello world")
 
         let renameIn = bytes(UInt64(HostFS.rootNodeID)) + Array("draft.txt\0final.txt\0".utf8)
-        let rename = server.handle(request: request(unique: 44, opcode: .rename, nodeID: HostFS.rootNodeID, payload: renameIn))
+        let rename = server.handle(request: request(unique: 45, opcode: .rename, nodeID: HostFS.rootNodeID, payload: renameIn))
 
         #expect(try FuseProtocol.decodeOutHeader(rename).error == 0)
         #expect(FileManager.default.fileExists(atPath: root.url.appendingPathComponent("final.txt").path))
 
-        let unlink = server.handle(request: request(unique: 45, opcode: .unlink, nodeID: HostFS.rootNodeID, payload: Array("final.txt\0".utf8)))
+        let unlink = server.handle(request: request(unique: 46, opcode: .unlink, nodeID: HostFS.rootNodeID, payload: Array("final.txt\0".utf8)))
 
         #expect(try FuseProtocol.decodeOutHeader(unlink).error == 0)
         #expect(!FileManager.default.fileExists(atPath: root.url.appendingPathComponent("final.txt").path))
@@ -239,6 +408,21 @@ struct FuseServerTests {
         #expect(payload(from: statfs).leUInt64(at: 0) > 0)
         #expect(try FuseProtocol.decodeOutHeader(missing).error == -ENOENT)
         #expect(try FuseProtocol.decodeOutHeader(unsupported).error == -ENOSYS)
+    }
+
+    @Test func initKeepsWritebackCacheOptIn() throws {
+        let root = try TestFuseServerRoot()
+        let initIn = bytes(UInt32(7)) + bytes(UInt32(38)) + bytes(UInt32(131_072)) + bytes(UInt32(FuseInitFlag.asyncRead.rawValue))
+        let defaultServer = try FuseServer(hostFS: HostFS(rootPath: root.url.path))
+        let optInServer = try FuseServer(hostFS: HostFS(rootPath: root.url.path), writebackCache: true)
+
+        let defaultResponse = defaultServer.handle(request: request(unique: 33, opcode: .initOp, nodeID: HostFS.rootNodeID, payload: initIn))
+        let optInResponse = optInServer.handle(request: request(unique: 34, opcode: .initOp, nodeID: HostFS.rootNodeID, payload: initIn))
+        let defaultFlags = payload(from: defaultResponse).leUInt32(at: 12)
+        let optInFlags = payload(from: optInResponse).leUInt32(at: 12)
+
+        #expect(defaultFlags & FuseInitFlag.writebackCache.rawValue == 0)
+        #expect(optInFlags & FuseInitFlag.writebackCache.rawValue == FuseInitFlag.writebackCache.rawValue)
     }
 
     @Test func daxSetupAndRemoveMappingRequireConfiguredWindowAndOpenHandle() throws {

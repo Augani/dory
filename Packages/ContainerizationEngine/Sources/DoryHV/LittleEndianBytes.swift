@@ -28,3 +28,24 @@ extension Array where Element == UInt8 {
         UInt64(leUInt32(at: offset)) | UInt64(leUInt32(at: offset + 4)) << 32
     }
 }
+
+extension ArraySlice where Element == UInt8 {
+    func leUInt16(at offset: Int) -> UInt16 {
+        let index = startIndex + offset
+        guard offset >= 0, index + 1 < endIndex else { return 0 }
+        return UInt16(self[index]) | UInt16(self[index + 1]) << 8
+    }
+
+    func leUInt32(at offset: Int) -> UInt32 {
+        let index = startIndex + offset
+        guard offset >= 0, index + 3 < endIndex else { return 0 }
+        return UInt32(self[index])
+            | UInt32(self[index + 1]) << 8
+            | UInt32(self[index + 2]) << 16
+            | UInt32(self[index + 3]) << 24
+    }
+
+    func leUInt64(at offset: Int) -> UInt64 {
+        UInt64(leUInt32(at: offset)) | UInt64(leUInt32(at: offset + 4)) << 32
+    }
+}

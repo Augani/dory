@@ -118,6 +118,10 @@ public protocol VsockConnection: AnyObject {
     func read(into buffer: UnsafeMutableRawBufferPointer) throws -> Int
     func write(_ bytes: [UInt8]) throws
     func close()
+    /// Blocks until a subsequent `read(into:)` can return bytes, or until the peer closes. A nil
+    /// timeout waits indefinitely. Implementations keep `read(into:)` nonblocking for callers that
+    /// already manage their own waits.
+    func waitForReadable(timeoutNanoseconds: UInt64?) -> Bool
     /// Half-close: signals the peer that this side is done sending (SHUT_WR) while the connection
     /// stays open for the peer's remaining data. Bridges relaying a client's request-EOF must use
     /// this, not `close()` — a full close truncates the response mid-stream.
@@ -127,6 +131,18 @@ public protocol VsockConnection: AnyObject {
     /// bridge) needs this to tell "idle" from EOF — without it a claimed device can never be released
     /// on guest reboot.
     var isPeerClosed: Bool { get }
+}
+
+public extension VsockConnection {
+    func waitForReadable(timeoutNanoseconds: UInt64?) -> Bool {
+        if isPeerClosed { return true }
+        if let timeoutNanoseconds {
+            usleep(useconds_t(min(timeoutNanoseconds / 1_000, UInt64(useconds_t.max))))
+        } else {
+            usleep(1_000)
+        }
+        return !isPeerClosed
+    }
 }
 
 public enum VsockPorts {
@@ -352,7 +368,7 @@ public final class VirtioVsock: VirtioDeviceBackend {
         // `receive` runs on the vsock queue while `read`/`close` may run on a bridge's own thread, so
         // inbound + isClosed are guarded. Drained bytes still count toward forwardCount (credit), so
         // it is tracked separately from what remains buffered.
-        private let lock = NSLock()
+        private let condition = NSCondition()
         private var inbound = [UInt8]()
         private var forwardCountValue: UInt32 = 0
         private var isClosed = false
@@ -372,10 +388,10 @@ public final class VirtioVsock: VirtioDeviceBackend {
         // can never describe more payload than fits in one virtqueue buffer.
         private static let writeChunk = 4 * 1024
 
-        var forwardCount: UInt32 { lock.lock(); defer { lock.unlock() }; return forwardCountValue }
+        var forwardCount: UInt32 { condition.lock(); defer { condition.unlock() }; return forwardCountValue }
         // True once the guest can no longer send (either a full close or a SHUT_WR half-close). Readers
         // draining inbound use it as EOF; the host may still write a reply until a full close.
-        var isPeerClosed: Bool { lock.lock(); defer { lock.unlock() }; return isClosed || peerSendClosed }
+        var isPeerClosed: Bool { condition.lock(); defer { condition.unlock() }; return isClosed || peerSendClosed }
 
         init(
             key: ConnectionKey,
@@ -388,15 +404,16 @@ public final class VirtioVsock: VirtioDeviceBackend {
         }
 
         func receive(_ bytes: [UInt8]) {
-            lock.lock()
+            condition.lock()
             inbound.append(contentsOf: bytes)
             forwardCountValue &+= UInt32(bytes.count)
-            lock.unlock()
+            condition.broadcast()
+            condition.unlock()
         }
 
         func read(into buffer: UnsafeMutableRawBufferPointer) throws -> Int {
-            lock.lock()
-            defer { lock.unlock() }
+            condition.lock()
+            defer { condition.unlock() }
             let count = min(buffer.count, inbound.count)
             guard count > 0 else { return 0 }
             inbound.prefix(count).withUnsafeBytes { source in
@@ -407,10 +424,28 @@ public final class VirtioVsock: VirtioDeviceBackend {
         }
 
         func updatePeerCredit(bufferAllocation: UInt32, forwardCount: UInt32) {
-            lock.lock()
+            condition.lock()
             if bufferAllocation > 0 { peerBufferAllocation = bufferAllocation }
             peerForwardCount = forwardCount
-            lock.unlock()
+            condition.broadcast()
+            condition.unlock()
+        }
+
+        func waitForReadable(timeoutNanoseconds: UInt64?) -> Bool {
+            condition.lock()
+            defer { condition.unlock() }
+            if !inbound.isEmpty || isClosed || peerSendClosed { return true }
+            if let timeoutNanoseconds {
+                let deadline = Date().addingTimeInterval(Double(timeoutNanoseconds) / 1_000_000_000)
+                while inbound.isEmpty && !isClosed && !peerSendClosed {
+                    if !condition.wait(until: deadline) { break }
+                }
+            } else {
+                while inbound.isEmpty && !isClosed && !peerSendClosed {
+                    condition.wait()
+                }
+            }
+            return !inbound.isEmpty || isClosed || peerSendClosed
         }
 
         func write(_ bytes: [UInt8]) throws {
@@ -418,55 +453,63 @@ public final class VirtioVsock: VirtioDeviceBackend {
             while offset < bytes.count {
                 let chunk = min(Self.writeChunk, bytes.count - offset)
                 guard waitForCredit(chunk: UInt32(chunk)) else { return }
-                lock.lock()
+                condition.lock()
                 let credit = forwardCountValue
                 transmittedCount &+= UInt32(chunk)
-                lock.unlock()
+                condition.unlock()
                 send(.readWrite, Array(bytes[offset..<(offset + chunk)]), credit, 0)
                 offset += chunk
             }
         }
 
-        /// Blocks until the peer's receive window admits `chunk` more bytes, polling with backoff the
-        /// same way bridge readers do. Returns false when the connection is no longer writable.
+        /// Blocks until the peer's receive window admits `chunk` more bytes. Returns false when the
+        /// connection is no longer writable.
         private func waitForCredit(chunk: UInt32) -> Bool {
-            var pollInterval: useconds_t = 500
-            let maxPollInterval: useconds_t = 16_000
             while true {
-                lock.lock()
+                condition.lock()
                 let writable = !isClosed && !hostSendClosed
                 let inFlight = transmittedCount &- peerForwardCount
                 let allowance = peerBufferAllocation
-                lock.unlock()
-                guard writable else { return false }
-                if inFlight &+ chunk <= allowance { return true }
-                usleep(pollInterval)
-                pollInterval = min(pollInterval * 2, maxPollInterval)
+                if !writable {
+                    condition.unlock()
+                    return false
+                }
+                if inFlight &+ chunk <= allowance {
+                    condition.unlock()
+                    return true
+                }
+                condition.wait()
+                condition.unlock()
             }
         }
 
         func markPeerSendClosed() {
-            lock.lock(); peerSendClosed = true; lock.unlock()
+            condition.lock()
+            peerSendClosed = true
+            condition.broadcast()
+            condition.unlock()
         }
 
         /// Host-side half-close: tells the guest this end is done sending (VIRTIO_VSOCK_SHUTDOWN_SEND)
         /// while its remaining data keeps flowing back. The relay for `docker run`'s attach depends on
         /// this — the CLI half-closes as soon as the request is sent and then reads the whole stream.
         func shutdownSend() {
-            lock.lock()
-            if isClosed || hostSendClosed { lock.unlock(); return }
+            condition.lock()
+            if isClosed || hostSendClosed { condition.unlock(); return }
             hostSendClosed = true
             let credit = forwardCountValue
-            lock.unlock()
+            condition.broadcast()
+            condition.unlock()
             send(.shutdown, [], credit, VsockShutdown.send)
         }
 
         func close() {
-            lock.lock()
-            if isClosed { lock.unlock(); return }
+            condition.lock()
+            if isClosed { condition.unlock(); return }
             isClosed = true
             let credit = forwardCountValue
-            lock.unlock()
+            condition.broadcast()
+            condition.unlock()
             send(.shutdown, [], credit, VsockShutdown.receive | VsockShutdown.send)
             onClose(key)
         }

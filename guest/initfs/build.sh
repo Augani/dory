@@ -150,6 +150,17 @@ install_ext4_tools() {
   done
 }
 
+# dockerd builds the default bridge's NAT/filter chains through the `iptables` userspace; without it
+# it aborts at init ("iptables not found") and never serves. The apk ships /usr/sbin/iptables ->
+# xtables-nft-multi (nft backend) plus its libmnl/libnftnl deps. Deps first so the symlinks resolve.
+install_iptables() {
+  local arch="$1" dest="$2" pkg apk
+  for pkg in libmnl libnftnl libxtables iptables; do
+    apk="$(fetch_pin "${pkg}_${arch}")"
+    extract_apk "$apk" "$dest"
+  done
+}
+
 write_runtime_files() {
   local rootfs="$1" arch="$2" agent="$OUT_DIR/dory-agent-$arch"
   mkdir -p "$rootfs"/{dev,proc,sys,run,tmp,var/log,var/run,var/lib/docker,usr/bin,usr/local/bin,etc,sbin}
@@ -183,6 +194,7 @@ build_arch() {
 
   extract_tar "$alpine_tar" "$rootfs"
   install_ext4_tools "$arch" "$rootfs"
+  install_iptables "$arch" "$rootfs"
   install_docker_static "$docker_tar" "$rootfs"
   write_runtime_files "$rootfs" "$arch"
 

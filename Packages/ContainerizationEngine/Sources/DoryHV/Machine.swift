@@ -274,6 +274,7 @@ public final class Machine: @unchecked Sendable {
         for index in 1..<count {
             let thread = Thread { [self] in cpuMain(index: index) }
             thread.name = "dory-hv.vcpu\(index)"
+            thread.qualityOfService = .userInteractive
             thread.stackSize = 1 << 21
             thread.start()
         }
@@ -302,6 +303,7 @@ public final class Machine: @unchecked Sendable {
     }
 
     private func cpuMain(index: Int) {
+        Self.applyVCPUQoS()
         defer {
             if index != 0 {
                 teamCondition.lock()
@@ -422,6 +424,11 @@ public final class Machine: @unchecked Sendable {
                 return
             }
         }
+    }
+
+    private static func applyVCPUQoS() {
+        Thread.current.qualityOfService = .userInteractive
+        _ = pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0)
     }
 
     private func handleException(vcpu: VCPU, syndrome: UInt64, physicalAddress: UInt64) throws -> GuestStopReason? {

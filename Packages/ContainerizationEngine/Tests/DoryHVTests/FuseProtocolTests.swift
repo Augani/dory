@@ -46,6 +46,27 @@ struct FuseProtocolTests {
         #expect(payload[0..<4].elementsEqual([7, 0, 0, 0]))
         #expect(payload[4..<8].elementsEqual([38, 0, 0, 0]))
         #expect(payload[8..<12].elementsEqual([0, 0, 2, 0]))
+        #expect(payload.leUInt32(at: 12) & FuseInitFlag.writebackCache.rawValue == 0)
+        #expect(payload.leUInt32(at: 12) & FuseInitFlag.parallelDirops.rawValue == FuseInitFlag.parallelDirops.rawValue)
+    }
+
+    @Test func initNegotiationCanEnableWritebackCache() throws {
+        let header = FuseInHeader(
+            length: UInt32(FuseInHeader.byteCount + FuseInitIn.byteCount),
+            opcode: FuseOpcode.initOp.rawValue,
+            unique: 0x456,
+            nodeID: 1,
+            uid: 0,
+            gid: 0,
+            pid: 42
+        )
+        let request = FuseInitIn(major: 7, minor: 38, maxReadahead: 131_072, flags: FuseInitFlag.asyncRead.rawValue)
+
+        let response = FuseProtocol.negotiateInit(header: header, request: request, writebackCache: true)
+        let payload = Array(response.dropFirst(FuseOutHeader.byteCount))
+
+        #expect(payload.leUInt32(at: 12) & FuseInitFlag.writebackCache.rawValue == FuseInitFlag.writebackCache.rawValue)
+        #expect(payload.leUInt32(at: 12) & FuseInitFlag.parallelDirops.rawValue == FuseInitFlag.parallelDirops.rawValue)
     }
 
     @Test func initNegotiationCanAdvertiseDaxMapAlignment() throws {

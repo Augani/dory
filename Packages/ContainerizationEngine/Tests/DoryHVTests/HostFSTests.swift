@@ -201,6 +201,21 @@ struct HostFSTests {
         #expect(!FileManager.default.fileExists(atPath: root.url.appendingPathComponent("final.txt").path))
     }
 
+    @Test func createFileAndOpenReturnsWritableHandle() throws {
+        let root = try TestHostFSRoot()
+        let fs = try HostFS(rootPath: root.url.path)
+
+        let created = try fs.createFileAndOpen(parent: HostFS.rootNodeID, name: "draft.txt")
+        defer { fs.close(handle: created.fd) }
+
+        #expect(created.entry.attributes.isRegularFile)
+        try fs.write(handle: created.fd, offset: 0, data: Array("hello".utf8))
+        #expect(try String(contentsOf: root.url.appendingPathComponent("draft.txt"), encoding: .utf8) == "hello")
+
+        let lookedUp = try fs.lookup(parent: HostFS.rootNodeID, name: "draft.txt")
+        #expect(lookedUp.nodeID == created.entry.nodeID)
+    }
+
     @Test func mkdirAndRmdirAreVisibleOnHost() throws {
         let root = try TestHostFSRoot()
         let fs = try HostFS(rootPath: root.url.path)
@@ -213,6 +228,41 @@ struct HostFSTests {
         try fs.rmdir(parent: HostFS.rootNodeID, name: "nested")
 
         #expect(!FileManager.default.fileExists(atPath: root.url.appendingPathComponent("nested").path))
+    }
+
+    @Test func unlinkForgetsOnlyTheRemovedFileNode() throws {
+        let root = try TestHostFSRoot()
+        try root.write("one", to: "file.txt")
+        try root.write("two", to: "file-extra.txt")
+        let fs = try HostFS(rootPath: root.url.path)
+        let file = try fs.lookup(parent: HostFS.rootNodeID, name: "file.txt")
+        let sibling = try fs.lookup(parent: HostFS.rootNodeID, name: "file-extra.txt")
+
+        try fs.unlink(parent: HostFS.rootNodeID, name: "file.txt")
+
+        #expect(throws: HostFSError.notFound("node \(file.nodeID)")) {
+            _ = try fs.cachedAttributes(nodeID: file.nodeID)
+        }
+        #expect(try fs.cachedAttributes(nodeID: sibling.nodeID).size == 3)
+    }
+
+    @Test func rmdirForgetsDescendantNodes() throws {
+        let root = try TestHostFSRoot()
+        try FileManager.default.createDirectory(at: root.url.appendingPathComponent("nested"), withIntermediateDirectories: false)
+        try root.write("child", to: "nested/child.txt")
+        let fs = try HostFS(rootPath: root.url.path)
+        let dir = try fs.lookup(parent: HostFS.rootNodeID, name: "nested")
+        let child = try fs.lookup(parent: dir.nodeID, name: "child.txt")
+
+        try FileManager.default.removeItem(at: root.url.appendingPathComponent("nested/child.txt"))
+        try fs.rmdir(parent: HostFS.rootNodeID, name: "nested")
+
+        #expect(throws: HostFSError.notFound("node \(dir.nodeID)")) {
+            _ = try fs.cachedAttributes(nodeID: dir.nodeID)
+        }
+        #expect(throws: HostFSError.notFound("node \(child.nodeID)")) {
+            _ = try fs.cachedAttributes(nodeID: child.nodeID)
+        }
     }
 
     @Test func xattrRoundTripsThroughOpenHandle() throws {

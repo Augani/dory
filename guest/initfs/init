@@ -35,7 +35,7 @@ done
 ip link set lo up 2>/dev/null || true
 if ip link show eth0 >/dev/null 2>&1; then
   ip link set eth0 up 2>/dev/null || true
-  udhcpc -i eth0 -q >/dev/null 2>&1 || true
+  udhcpc -i eth0 -q -n -t 5 -T 1 >/dev/null 2>&1 || true
 fi
 
 if [ -b /dev/vdb ]; then

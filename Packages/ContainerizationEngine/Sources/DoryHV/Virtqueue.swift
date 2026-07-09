@@ -15,9 +15,17 @@ public struct VirtqueueChain {
 
     public var readableSegments: [VirtqueueSegment] { segments.filter { !$0.isDeviceWritable } }
     public var writableSegments: [VirtqueueSegment] { segments.filter { $0.isDeviceWritable } }
+    public var hasWritableSegments: Bool { segments.contains { $0.isDeviceWritable } }
 
     public func readBytes(maximum: Int = Int.max) -> [UInt8] {
         var bytes = [UInt8]()
+        var capacity = 0
+        for segment in segments where !segment.isDeviceWritable {
+            let remaining = maximum - capacity
+            guard remaining > 0 else { break }
+            capacity += min(segment.length, remaining)
+        }
+        bytes.reserveCapacity(capacity)
         for segment in segments where !segment.isDeviceWritable {
             let take = min(segment.length, maximum - bytes.count)
             guard take > 0 else { break }

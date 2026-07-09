@@ -7,8 +7,8 @@
 # Docker static provides dockerd, containerd, runc, docker-init, docker-proxy, ctr, and docker.
 alpine_arm64 https://dl-cdn.alpinelinux.org/alpine/v3.21/releases/aarch64/alpine-minirootfs-3.21.7-aarch64.tar.gz d1d1a3fae5f4d6146e9742790a47fcb116199622cfb8439f218a4d5fbe5000da
 alpine_amd64 https://dl-cdn.alpinelinux.org/alpine/v3.21/releases/x86_64/alpine-minirootfs-3.21.7-x86_64.tar.gz 8cba1ea3e8b500ea986a313d8eecf3d5952a2a0d23a69117bb81c023d9ceac05
-docker_arm64 https://download.docker.com/linux/static/stable/aarch64/docker-27.5.1.tgz e6b53725a73763ab3f988c73f8772eaed429754c1a579db5ff11f21990fd1817
-docker_amd64 https://download.docker.com/linux/static/stable/x86_64/docker-27.5.1.tgz 4f798b3ee1e0140eab5bf30b0edc4e84f4cdb53255a429dc3bbae9524845d640
+docker_arm64 https://download.docker.com/linux/static/stable/aarch64/docker-29.6.1.tgz 917a4bb83565bcacb38c430f08daae8b59db3256331ac23f22394f0542509881
+docker_amd64 https://download.docker.com/linux/static/stable/x86_64/docker-29.6.1.tgz b0df4a43a98d7ecb708acbdb5a34a3416e13b6e39bcbbdf296f51f0f3442b29f
 libeconf_arm64 https://dl-cdn.alpinelinux.org/alpine/v3.21/main/aarch64/libeconf-0.6.3-r0.apk db25f8abaf1ec61f5dcc0ff9b55271a3f6e43037e430b0c126ac000483e17dad
 libuuid_arm64 https://dl-cdn.alpinelinux.org/alpine/v3.21/main/aarch64/libuuid-2.40.4-r1.apk d392ac96027cbe5ca9bc270d2aa4e99747b0eae3cf65a0087f2c6f13a7382702
 libcom_err_arm64 https://dl-cdn.alpinelinux.org/alpine/v3.21/main/aarch64/libcom_err-1.47.1-r1.apk 0798fedbc002cada8e74a7cb4cdae885e5f0c1b5fd59b15af5b2903b95d30153
@@ -21,3 +21,14 @@ libcom_err_amd64 https://dl-cdn.alpinelinux.org/alpine/v3.21/main/x86_64/libcom_
 libblkid_amd64 https://dl-cdn.alpinelinux.org/alpine/v3.21/main/x86_64/libblkid-2.40.4-r1.apk 74dbd807a8e2a7e88bbdbd0a30329c467e7d6512c03644e373ef12d14d28e817
 e2fsprogs-libs_amd64 https://dl-cdn.alpinelinux.org/alpine/v3.21/main/x86_64/e2fsprogs-libs-1.47.1-r1.apk 728d6d3c4d2f3a8d4384f64b00811f47c2ad1760f52b9e1ac82f88216c8fcbb3
 e2fsprogs_amd64 https://dl-cdn.alpinelinux.org/alpine/v3.21/main/x86_64/e2fsprogs-1.47.1-r1.apk f778a891aa832f40cf3be200b8ac346540c87fb90063e843f0d74044cff0b9c5
+# iptables (+ libmnl/libnftnl deps) — dockerd needs the `iptables` userspace to build the default
+# bridge's NAT/filter chains; without it dockerd aborts at init with "iptables not found". The apk
+# ships /usr/sbin/iptables -> xtables-nft-multi (nft backend; the dory kernel has NF_TABLES built in).
+iptables_arm64 https://dl-cdn.alpinelinux.org/alpine/v3.21/main/aarch64/iptables-1.8.11-r1.apk 09f11de18f75653ccae83190f20b2dffb48533186d720ae23b73904be90ff89e
+libxtables_arm64 https://dl-cdn.alpinelinux.org/alpine/v3.21/main/aarch64/libxtables-1.8.11-r1.apk 7e414a9b68be53dbecacfa7d3adcf8340bb07b299dc595378adb5cadc9a818e8
+libmnl_arm64 https://dl-cdn.alpinelinux.org/alpine/v3.21/main/aarch64/libmnl-1.0.5-r2.apk a746622c068d36803f62a208b9cd4480565b55a5e1290d475599f94822ae0c24
+libnftnl_arm64 https://dl-cdn.alpinelinux.org/alpine/v3.21/main/aarch64/libnftnl-1.2.8-r0.apk 2e18aa79b5581f61522d03b8e2d551ad51a0e240c6f9f33f76655da04a3a6785
+iptables_amd64 https://dl-cdn.alpinelinux.org/alpine/v3.21/main/x86_64/iptables-1.8.11-r1.apk 659b088f780c9dca88b70587f87f6aa24582ca75008986b5913220b67e3cebef
+libxtables_amd64 https://dl-cdn.alpinelinux.org/alpine/v3.21/main/x86_64/libxtables-1.8.11-r1.apk 7bf83828c8c1c0b7b08aff38fdd2d11829fa77c7a750e6224b0b30fae0aecc0e
+libmnl_amd64 https://dl-cdn.alpinelinux.org/alpine/v3.21/main/x86_64/libmnl-1.0.5-r2.apk 0de58a7968c96825f7ad1205ae0d18dd4d96c37db9dca31fee4727f6b08bc308
+libnftnl_amd64 https://dl-cdn.alpinelinux.org/alpine/v3.21/main/x86_64/libnftnl-1.2.8-r0.apk de4048171138081548e581221d1b4642f07a6a638681b5db481b0edd54ba51b2

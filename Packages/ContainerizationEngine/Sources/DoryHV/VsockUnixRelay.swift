@@ -92,8 +92,6 @@ enum VsockUnixRelay {
     /// client's write side so it sees EOF while it can still be sending late request bytes.
     private static func pumpVsockToClient(from connection: VsockConnection, to fd: Int32) {
         var buffer = [UInt8](repeating: 0, count: 32 * 1024)
-        var pollInterval: useconds_t = 500
-        let maxPollInterval: useconds_t = 16_000
         while true {
             let capacity = buffer.count
             let count = (try? buffer.withUnsafeMutableBytes {
@@ -104,8 +102,7 @@ enum VsockUnixRelay {
                     shutdown(fd, SHUT_WR)
                     return
                 }
-                usleep(pollInterval)
-                pollInterval = min(pollInterval * 2, maxPollInterval)
+                _ = connection.waitForReadable(timeoutNanoseconds: nil)
                 continue
             }
             var offset = 0
@@ -119,7 +116,6 @@ enum VsockUnixRelay {
                 }
                 offset += written
             }
-            pollInterval = 500
         }
     }
 }

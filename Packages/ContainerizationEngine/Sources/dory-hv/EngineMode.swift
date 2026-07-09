@@ -31,6 +31,9 @@ enum EngineMode {
         /// Unix socket the Rust dataplane's ForwardBackend dials (re-platform docker tier): each
         /// connection opens a preamble-named guest vsock stream. nil keeps the forward off.
         var agentVsockForward: String?
+        /// Current guest agent binary supplied by the app/doryd bundle for this boot. It is copied
+        /// into the read-only boot-config share so stale files under the user's home cannot shadow it.
+        var guestAgentPath: String?
     }
 
     enum GPUAccelerationMode: String {
@@ -160,7 +163,8 @@ enum EngineMode {
             shares: configuration.shares,
             gpuMode: configuration.gpuMode,
             amd64Emulation: configuration.amd64Emulation
-        ))
+        ), guestAgentPath: configuration.guestAgentPath)
+        let guestLogShare = try guestLogShareConfiguration(stateDirectory: state)
 
         let machine = try Machine(configuration: MachineConfiguration(
             kernelPath: configuration.kernelPath,
@@ -196,6 +200,7 @@ enum EngineMode {
         backends.append(vsock)
         HostAIBridge(log: { note($0) }).attach(to: vsock)
         backends.append(try bootConfigShare.makeBackend())
+        backends.append(try guestLogShare.makeBackend())
         for share in configuration.shares {
             let daxBase = share.dax ? GuestLayout.daxWindowBase + daxSlot * DaxWindow.defaultSize : nil
             if share.dax { daxSlot += 1 }
@@ -346,7 +351,11 @@ enum EngineMode {
         }
     }
 
-    private static func writeBootConfiguration(stateDirectory: String, script: String) throws -> VirtioFSShareConfiguration {
+    private static func writeBootConfiguration(
+        stateDirectory: String,
+        script: String,
+        guestAgentPath: String?
+    ) throws -> VirtioFSShareConfiguration {
         let directory = stateDirectory + "/boot-config"
         try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
         let path = directory + "/boot.sh"
@@ -358,14 +367,43 @@ enum EngineMode {
         }
         try? FileManager.default.removeItem(atPath: path)
         try FileManager.default.moveItem(atPath: temporary, toPath: path)
+        try stageGuestAgent(sourcePath: guestAgentPath, directory: directory)
         return try VirtioFSShareConfiguration(tag: "dorycfg", path: directory, readOnly: true)
+    }
+
+    private static func stageGuestAgent(sourcePath: String?, directory: String) throws {
+        let destination = directory + "/dory-agent"
+        let temporary = destination + ".partial"
+        try? FileManager.default.removeItem(atPath: temporary)
+        guard let sourcePath, FileManager.default.fileExists(atPath: sourcePath) else {
+            try? FileManager.default.removeItem(atPath: destination)
+            return
+        }
+        do {
+            try FileManager.default.copyItem(atPath: sourcePath, toPath: temporary)
+            guard chmod(temporary, S_IRUSR | S_IXUSR | S_IRGRP | S_IXGRP | S_IROTH | S_IXOTH) == 0 else {
+                throw VMError.invalidConfiguration("cannot chmod \(temporary): errno \(errno)")
+            }
+            try? FileManager.default.removeItem(atPath: destination)
+            try FileManager.default.moveItem(atPath: temporary, toPath: destination)
+        } catch {
+            try? FileManager.default.removeItem(atPath: temporary)
+            try? FileManager.default.removeItem(atPath: destination)
+            throw error
+        }
+    }
+
+    private static func guestLogShareConfiguration(stateDirectory: String) throws -> VirtioFSShareConfiguration {
+        let directory = stateDirectory + "/guest-logs"
+        try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
+        return try VirtioFSShareConfiguration(tag: "dorylogs", path: directory, readOnly: false)
     }
 
     /// Guest boot: mounts (docker state on the journaled /dev/vdb), DHCP through gvproxy,
     /// dockerd on unix + tcp 2375 (virtual network only), a shutdown listener on tcp 2377 (any
     /// connection triggers sync + poweroff, giving the host a clean-unmount path), and a light
-    /// page-cache cap so free page reporting (which handles free pages automatically at 16 KiB
-    /// granularity) has cold pages to hand back when the cache bloats.
+    /// workload-aware page-cache cap so free page reporting (which handles free pages automatically
+    /// at 16 KiB granularity) has cold pages to hand back when the engine is idle.
     private static func guestBootScript(
         shares: [VirtioFSShareConfiguration] = [],
         gpuMode: GPUAccelerationMode = .off,
@@ -380,17 +418,29 @@ enum EngineMode {
             "mount -t tmpfs tmpfs /tmp",
             "mkdir -p /dev/pts",
             "mount -t devpts devpts /dev/pts",
+            "mkdir -p /mnt/dory-logs",
+            "if mount -t virtiofs dorylogs /mnt/dory-logs 2>/dev/null; then",
+            "  { echo BOOT; uname -a; cat /proc/cmdline; } >/mnt/dory-logs/boot.log 2>&1 || true",
+            "  ( while [ ! -e /var/log/dockerd.log ]; do sleep 0.2; done; tail -n +1 -f /var/log/dockerd.log >/mnt/dory-logs/dockerd.log 2>&1 ) & true",
+            "  ( while [ ! -e /var/log/dory-agent.log ]; do sleep 0.2; done; tail -n +1 -f /var/log/dory-agent.log >/mnt/dory-logs/dory-agent.log 2>&1 ) & true",
+            "fi",
             "mkdir -p /var/lib/docker",
             // First boot receives a sparse blank disk from the host. Format it inside the guest so
             // the macOS 14 helper does not need Apple's macOS 15-only EXT4 formatter.
-            "mount -t ext4 /dev/vdb /var/lib/docker || { echo DATA-DISK-FORMAT; mkfs.ext4 -F /dev/vdb >/var/log/dory-data-mkfs.log 2>&1 && mount -t ext4 /dev/vdb /var/lib/docker; } || { echo DATA-DISK-MOUNT-FAILED; sync; poweroff -f; }",
+            "DORY_DOCKER_MOUNT_OPTS=noatime,lazytime,commit=30",
+            "DORY_DOCKER_MOUNT_FALLBACK_OPTS=noatime,commit=30",
+            "dory_mount_docker_data() { mount -t ext4 -o \"$DORY_DOCKER_MOUNT_OPTS\" /dev/vdb /var/lib/docker || mount -t ext4 -o \"$DORY_DOCKER_MOUNT_FALLBACK_OPTS\" /dev/vdb /var/lib/docker || mount -t ext4 /dev/vdb /var/lib/docker; }",
+            "dory_format_docker_data() { mkfs.ext4 -F -O fast_commit /dev/vdb >/var/log/dory-data-mkfs.log 2>&1 || mkfs.ext4 -F /dev/vdb >>/var/log/dory-data-mkfs.log 2>&1; }",
+            "dory_mount_docker_data || { echo DATA-DISK-FORMAT; dory_format_docker_data && dory_mount_docker_data; } || { echo DATA-DISK-MOUNT-FAILED; sync; poweroff -f; }",
+            "awk '$2==\"/var/lib/docker\"{print $4}' /proc/mounts >/var/log/dory-data-mount-options.log 2>&1 || true",
             "ip link set lo up",
             "ip link set eth0 up",
-            "udhcpc -i eth0 -q >/dev/null 2>&1",
+            "udhcpc -i eth0 -q -n -t 5 -T 1 >/dev/null 2>&1 || true",
             "echo 2 > /sys/module/page_reporting/parameters/page_reporting_order 2>/dev/null",
-            // Bias the guest toward returning cold cache instead of hoarding it; free page
-            // reporting then hands the freed pages back to the host automatically.
-            "echo 200 > /proc/sys/vm/vfs_cache_pressure 2>/dev/null",
+            // Keep the normal kernel dentry/inode balance during active workloads. Free page
+            // reporting and the idle cache cap below handle reclaim without making metadata-heavy
+            // container runs fight their own warm caches.
+            "echo 100 > /proc/sys/vm/vfs_cache_pressure 2>/dev/null",
             "echo 262144 > /proc/sys/vm/min_free_kbytes 2>/dev/null",
         ]
         if gpuMode == .venus {
@@ -413,15 +463,16 @@ enum EngineMode {
         }
         script += [
             guestAgentStartCommand(shares: shares),
-            "dockerd -H unix:///var/run/docker.sock -H tcp://0.0.0.0:2375 --tls=false >/var/log/dockerd.log 2>&1 & true",
+            "dockerd -H unix:///var/run/docker.sock -H tcp://0.0.0.0:2375 --tls=false --log-level=warn --feature containerd-snapshotter=true >/var/log/dockerd.log 2>&1 & true",
             amd64Emulation ? BinfmtRegistration.dockerFallbackCommand() : "true",
             "( while true; do nc -l -p 2377 >/dev/null 2>&1; echo shutdown requested; sync; umount /var/lib/docker 2>/dev/null; sync; poweroff -f; done ) & true",
             // Cache cap only. NO compaction (it migrates pages and re-faults the ones free page
             // reporting already handed back to the host — pure churn) and NO root memory.reclaim
-            // (write-rejected on the root cgroup). A gentle pagecache-only drop fires when the
-            // cache passes ~320 MiB, capping the idle footprint while leaving a healthy working
-            // set for active containers.
-            "( while true; do sleep 30; c=$(awk '/^Cached:/{print $2; exit}' /proc/meminfo); [ ${c:-0} -gt 327680 ] && echo 1 > /proc/sys/vm/drop_caches 2>/dev/null; done ) & true",
+            // (write-rejected on the root cgroup). A gentle pagecache-only drop fires when the guest
+            // is quiet, so idle containers can reclaim memory without evicting an active workload's
+            // page cache. /proc/stat's iowait is counted as busy by using idle-only as the quiet
+            // numerator.
+            "( prev_total=0; prev_idle=0; quiet_running_ticks=0; while true; do sleep 5; set -- $(awk '/^cpu /{t=0; for(i=2;i<=NF;i++) t+=$i; print t,$5; exit}' /proc/stat); total=${1:-0}; idle=${2:-0}; quiet=0; if [ ${prev_total:-0} -gt 0 ]; then dt=$((total-prev_total)); di=$((idle-prev_idle)); [ $dt -gt 0 ] && [ $((100 - (di * 100 / dt))) -le 8 ] && quiet=1; fi; prev_total=$total; prev_idle=$idle; running=$(docker -H unix:///var/run/docker.sock ps -q 2>/dev/null | wc -l | tr -d ' '); if [ ${running:-0} -gt 0 ] && [ $quiet -eq 1 ]; then quiet_running_ticks=$((quiet_running_ticks+1)); else quiet_running_ticks=0; fi; [ $quiet_running_ticks -ge 2 ] || continue; c=$(awk '/^Cached:/{print $2; exit}' /proc/meminfo); [ ${c:-0} -gt 327680 ] && echo 1 > /proc/sys/vm/drop_caches 2>/dev/null; done ) & true",
             // Hand PID 1 to tini (docker-init, shipped in docker:dind) as a reaping init. exec
             // replaces the boot shell in place, so tini keeps PID 1 while dockerd and the loops
             // above continue as its children. Container shims double-fork and orphan their exited
@@ -439,6 +490,7 @@ enum EngineMode {
         // every launch, so preferring it over the rootfs-baked /usr/bin/dory-agent means agent fixes
         // ship with app updates instead of waiting for a re-bundled engine rootfs.
         var paths = [String]()
+        paths.append("/mnt/dory-config/dory-agent")
         for share in shares {
             let root = share.guestMountPoint ?? "/mnt/dory/\(share.tag)"
             paths.append("\(root)/.dory/bin/dory-agent-linux-\(hostLinuxArch())")

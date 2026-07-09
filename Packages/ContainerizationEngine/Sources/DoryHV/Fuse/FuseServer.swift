@@ -4,13 +4,37 @@ import Foundation
 public final class FuseServer: @unchecked Sendable {
     private let hostFS: HostFS
     private let daxWindow: DaxWindow?
+    private let writebackCache: Bool
+    private let deferReleaseClose: Bool
+    private let fastCreateAttributes: Bool
+    private let stats: FuseStats?
+    private let closeQueue = DispatchQueue(label: "dory-hv.fuse.close")
+    private let deferredCloseLock = NSLock()
+    private var deferredCloseFDs: [Int32] = []
+    private var deferredCloseScheduled = false
     private let lock = NSLock()
     private var nextHandle: UInt64 = 1
     private var fileHandles: [UInt64: Int32] = [:]
 
-    public init(hostFS: HostFS, daxWindow: DaxWindow? = nil) {
+    private enum OpenFlag {
+        static let keepCache: UInt32 = 1 << 1
+        static let cacheDir: UInt32 = 1 << 3
+        static let noFlush: UInt32 = 1 << 5
+    }
+
+    public init(
+        hostFS: HostFS,
+        daxWindow: DaxWindow? = nil,
+        writebackCache: Bool? = nil,
+        deferReleaseClose: Bool? = nil,
+        fastCreateAttributes: Bool? = nil
+    ) {
         self.hostFS = hostFS
         self.daxWindow = daxWindow
+        self.writebackCache = writebackCache ?? Self.writebackCacheEnabledFromEnvironment()
+        self.deferReleaseClose = deferReleaseClose ?? Self.deferReleaseCloseEnabledFromEnvironment()
+        self.fastCreateAttributes = fastCreateAttributes ?? Self.fastCreateAttributesEnabledFromEnvironment()
+        self.stats = FuseStats.fromEnvironment()
     }
 
     public func handle(request: [UInt8]) -> [UInt8] {
@@ -20,19 +44,30 @@ public final class FuseServer: @unchecked Sendable {
             return errorResponse(unique: 0, errno: EINVAL)
         }
 
-        let payload = Array(request[Int(FuseInHeader.byteCount)..<Int(header.length)])
         guard let opcode = FuseOpcode(rawValue: header.opcode) else {
             return errorResponse(unique: header.unique, errno: ENOSYS)
         }
+        return handle(header: header, opcode: opcode, request: request)
+    }
+
+    func handle(header: FuseInHeader, opcode: FuseOpcode, request: [UInt8]) -> [UInt8] {
+        guard Int(header.length) <= request.count,
+              header.length >= UInt32(FuseInHeader.byteCount) else {
+            return errorResponse(unique: header.unique, errno: EINVAL)
+        }
+
+        let payload = request[Int(FuseInHeader.byteCount)..<Int(header.length)]
+        stats?.record(opcode)
 
         do {
             switch opcode {
             case .initOp:
-                let initIn = try FuseProtocol.decodeInitIn(payload)
+                let initIn = try FuseProtocol.decodeInitIn(Array(payload))
                 return FuseProtocol.negotiateInit(
                     header: header,
                     request: initIn,
-                    daxMapAlignmentLog2: daxWindow == nil ? nil : UInt16(log2(Double(DaxWindow.pageSize)))
+                    daxMapAlignmentLog2: daxWindow == nil ? nil : UInt16(log2(Double(DaxWindow.pageSize))),
+                    writebackCache: writebackCache
                 )
             case .lookup:
                 return try handleLookup(header: header, payload: payload)
@@ -58,6 +93,14 @@ public final class FuseServer: @unchecked Sendable {
                 return try handleStatFS(header: header)
             case .fsync:
                 return try handleFsync(header: header, payload: payload)
+            case .flush:
+                return successResponse(unique: header.unique, payload: [])
+            case .getxattr:
+                return errorResponse(unique: header.unique, errno: ENODATA)
+            case .setxattr:
+                return errorResponse(unique: header.unique, errno: EOPNOTSUPP)
+            case .listxattr:
+                return try handleListXattr(header: header, payload: payload)
             case .create:
                 return try handleCreate(header: header, payload: payload)
             case .mkdir:
@@ -82,9 +125,11 @@ public final class FuseServer: @unchecked Sendable {
         }
     }
 
-    private func handleLookup(header: FuseInHeader, payload: [UInt8]) throws -> [UInt8] {
+    private func handleLookup(header: FuseInHeader, payload: ArraySlice<UInt8>) throws -> [UInt8] {
         let name = try readCString(payload)
-        let entry = try hostFS.lookup(parent: header.nodeID, name: name)
+        guard let entry = try hostFS.lookupIfExists(parent: header.nodeID, name: name) else {
+            return errorResponse(unique: header.unique, errno: ENOENT)
+        }
         return successResponse(unique: header.unique, payload: encodeEntryOut(entry.attributes))
     }
 
@@ -92,7 +137,7 @@ public final class FuseServer: @unchecked Sendable {
         return try successResponse(unique: header.unique, payload: Array(hostFS.readlink(nodeID: header.nodeID).utf8))
     }
 
-    private func handleSymlink(header: FuseInHeader, payload: [UInt8]) throws -> [UInt8] {
+    private func handleSymlink(header: FuseInHeader, payload: ArraySlice<UInt8>) throws -> [UInt8] {
         let values = try readCStrings(payload, count: 2)
         let entry = try hostFS.symlink(parent: header.nodeID, name: values[0], target: values[1])
         return successResponse(unique: header.unique, payload: encodeEntryOut(entry.attributes))
@@ -103,13 +148,13 @@ public final class FuseServer: @unchecked Sendable {
         return successResponse(unique: header.unique, payload: encodeAttrOut(attrs))
     }
 
-    private func handleSetattr(header: FuseInHeader, payload: [UInt8]) throws -> [UInt8] {
+    private func handleSetattr(header: FuseInHeader, payload: ArraySlice<UInt8>) throws -> [UInt8] {
         guard payload.count >= 88 else { return errorResponse(unique: header.unique, errno: EINVAL) }
         let valid = FuseSetattrValid(rawValue: payload.leUInt32(at: 0))
-        let attrs = try hostFS.getattr(nodeID: header.nodeID)
+        let cachedAttrs = try hostFS.cachedAttributes(nodeID: header.nodeID)
         if valid.contains(.mode) {
             let requestedMode = payload.leUInt32(at: 68) & 0o7777
-            let currentMode = attrs.mode & 0o7777
+            let currentMode = cachedAttrs.mode & 0o7777
             guard requestedMode == currentMode else {
                 return errorResponse(unique: header.unique, errno: EOPNOTSUPP)
             }
@@ -123,25 +168,25 @@ public final class FuseServer: @unchecked Sendable {
             }
             return try successResponse(unique: header.unique, payload: encodeAttrOut(hostFS.getattr(nodeID: header.nodeID)))
         }
-        return successResponse(unique: header.unique, payload: encodeAttrOut(attrs))
+        return successResponse(unique: header.unique, payload: encodeAttrOut(cachedAttrs))
     }
 
-    private func handleOpen(header: FuseInHeader, payload: [UInt8]) throws -> [UInt8] {
+    private func handleOpen(header: FuseInHeader, payload: ArraySlice<UInt8>) throws -> [UInt8] {
         guard payload.count >= 8 else { return errorResponse(unique: header.unique, errno: EINVAL) }
         let flags = Int32(bitPattern: payload.leUInt32(at: 0))
         let fd = flags & O_ACCMODE == O_RDONLY
             ? try hostFS.openRead(nodeID: header.nodeID)
             : try hostFS.openReadWrite(nodeID: header.nodeID)
         let handle = store(fd: fd)
-        return successResponse(unique: header.unique, payload: encodeOpenOut(handle: handle, openFlags: 1 << 1))
+        return successResponse(unique: header.unique, payload: encodeOpenOut(handle: handle, openFlags: OpenFlag.keepCache | OpenFlag.noFlush))
     }
 
     private func handleOpenDir(header: FuseInHeader) throws -> [UInt8] {
         _ = try hostFS.getattr(nodeID: header.nodeID)
-        return successResponse(unique: header.unique, payload: encodeOpenOut(handle: header.nodeID, openFlags: 1 << 3))
+        return successResponse(unique: header.unique, payload: encodeOpenOut(handle: header.nodeID, openFlags: OpenFlag.cacheDir))
     }
 
-    private func handleRead(header: FuseInHeader, payload: [UInt8]) throws -> [UInt8] {
+    private func handleRead(header: FuseInHeader, payload: ArraySlice<UInt8>) throws -> [UInt8] {
         guard payload.count >= 40 else { return errorResponse(unique: header.unique, errno: EINVAL) }
         let handle = payload.leUInt64(at: 0)
         let offset = payload.leUInt64(at: 8)
@@ -158,6 +203,10 @@ public final class FuseServer: @unchecked Sendable {
     /// array, and the copy back into guest memory that the array path incurs. Returns 0 to signal
     /// the caller to fall back (e.g. the first segment is too small to hold the out header).
     public func writeReadResponse(header: FuseInHeader, payload: [UInt8], writable: [VirtqueueSegment]) -> Int {
+        writeReadResponse(header: header, payload: payload[...], writable: writable)
+    }
+
+    public func writeReadResponse(header: FuseInHeader, payload: ArraySlice<UInt8>, writable: [VirtqueueSegment]) -> Int {
         guard let first = writable.first, first.length >= FuseOutHeader.byteCount else { return 0 }
         let totalCapacity = writable.reduce(0) { $0 + $1.length }
         func finish(errno: Int32, payloadBytes: Int) -> Int {
@@ -201,7 +250,194 @@ public final class FuseServer: @unchecked Sendable {
         return finish(errno: 0, payloadBytes: Int(readCount))
     }
 
-    private func handleWrite(header: FuseInHeader, payload: [UInt8]) throws -> [UInt8] {
+    /// Direct LOOKUP miss response. Fresh file-create loops issue a negative LOOKUP before CREATE for
+    /// each path; returning ENOENT in place avoids allocating a tiny error frame thousands of times.
+    /// Existing entries fall back to the normal array path so the full entry payload stays centralized.
+    public func writeLookupMissResponse(header: FuseInHeader, payload: ArraySlice<UInt8>, writable: [VirtqueueSegment]) -> Int {
+        stats?.record(.lookup)
+        do {
+            let name = try readCString(payload)
+            guard try hostFS.lookupIfExists(parent: header.nodeID, name: name) == nil else {
+                return 0
+            }
+            return writeErrorResponse(unique: header.unique, errno: ENOENT, writable: writable)
+        } catch {
+            return writeErrorResponse(unique: header.unique, errno: mapError(error), writable: writable)
+        }
+    }
+
+    /// Direct GETXATTR response for the default policy: Dory does not expose host extended attributes
+    /// through broad home shares, so the stable answer is ENODATA. This is on the hot path for Alpine's
+    /// shell-created files.
+    public func writeGetXattrNoDataResponse(header: FuseInHeader, writable: [VirtqueueSegment]) -> Int {
+        stats?.record(.getxattr)
+        return writeErrorResponse(unique: header.unique, errno: ENODATA, writable: writable)
+    }
+
+    /// Direct GETATTR response. Metadata-heavy create loops ask for attrs after create; emitting the
+    /// fixed attr payload in place avoids another response allocation on that path.
+    public func writeGetattrResponse(header: FuseInHeader, writable: [VirtqueueSegment]) -> Int {
+        stats?.record(.getattr)
+        let payloadBytes = 104
+        guard writable.reduce(0, { $0 + $1.length }) >= FuseOutHeader.byteCount + payloadBytes else { return 0 }
+        do {
+            let attrs = try hostFS.getattr(nodeID: header.nodeID)
+            var writer = FuseDirectResponseWriter(writable: writable)
+            writer.appendOutHeader(unique: header.unique, error: 0, payloadByteCount: payloadBytes)
+            appendAttrOut(attrs, to: &writer)
+            return writer.written
+        } catch {
+            return writeErrorResponse(unique: header.unique, errno: mapError(error), writable: writable)
+        }
+    }
+
+    /// Direct CREATE response. The common shell redirection path creates and opens a file, then writes
+    /// and releases it immediately. This keeps the create response on the same direct path as write and
+    /// release while preserving the normal fallback for undersized writable chains.
+    public func writeCreateResponse(header: FuseInHeader, payload: ArraySlice<UInt8>, writable: [VirtqueueSegment]) -> Int {
+        stats?.record(.create)
+        let payloadBytes = 144
+        guard writable.reduce(0, { $0 + $1.length }) >= FuseOutHeader.byteCount + payloadBytes else { return 0 }
+        do {
+            guard payload.count >= 16 else {
+                return writeErrorResponse(unique: header.unique, errno: EINVAL, writable: writable)
+            }
+            let flags = Int32(bitPattern: payload.leUInt32(at: 0))
+            let mode = UInt16(truncatingIfNeeded: payload.leUInt32(at: 4))
+            let name = try readCString(payload.dropFirst(16))
+            let created = try hostFS.createFileAndOpen(
+                parent: header.nodeID,
+                name: name,
+                mode: mode,
+                flags: flags,
+                syntheticAttributes: fastCreateAttributes
+            )
+            let handle = store(fd: created.fd)
+            var writer = FuseDirectResponseWriter(writable: writable)
+            writer.appendOutHeader(unique: header.unique, error: 0, payloadByteCount: payloadBytes)
+            appendEntryOut(created.entry.attributes, to: &writer)
+            appendOpenOut(handle: handle, openFlags: OpenFlag.keepCache | OpenFlag.noFlush, to: &writer)
+            return writer.written
+        } catch {
+            return writeErrorResponse(unique: header.unique, errno: mapError(error), writable: writable)
+        }
+    }
+
+    /// Direct MKDIR response. It is cold compared with CREATE, but keeping directory setup on the
+    /// direct path avoids a stray allocation in create/delete benchmark loops.
+    public func writeMkdirResponse(header: FuseInHeader, payload: ArraySlice<UInt8>, writable: [VirtqueueSegment]) -> Int {
+        stats?.record(.mkdir)
+        let payloadBytes = 128
+        guard writable.reduce(0, { $0 + $1.length }) >= FuseOutHeader.byteCount + payloadBytes else { return 0 }
+        do {
+            guard payload.count >= 8 else {
+                return writeErrorResponse(unique: header.unique, errno: EINVAL, writable: writable)
+            }
+            let mode = UInt16(truncatingIfNeeded: payload.leUInt32(at: 0))
+            let name = try readCString(payload.dropFirst(8))
+            let entry = try hostFS.mkdir(parent: header.nodeID, name: name, mode: mode)
+            var writer = FuseDirectResponseWriter(writable: writable)
+            writer.appendOutHeader(unique: header.unique, error: 0, payloadByteCount: payloadBytes)
+            appendEntryOut(entry.attributes, to: &writer)
+            return writer.written
+        } catch {
+            return writeErrorResponse(unique: header.unique, errno: mapError(error), writable: writable)
+        }
+    }
+
+    /// Direct UNLINK/RMDIR response for cleanup-heavy bind mount loops. The host mutation still goes
+    /// through HostFS; this only avoids allocating and copying the empty success frame.
+    public func writeRemoveResponse(header: FuseInHeader, opcode: FuseOpcode, payload: ArraySlice<UInt8>, writable: [VirtqueueSegment]) -> Int {
+        stats?.record(opcode)
+        guard writable.reduce(0, { $0 + $1.length }) >= FuseOutHeader.byteCount else { return 0 }
+        do {
+            let name = try readCString(payload)
+            switch opcode {
+            case .unlink:
+                try hostFS.unlink(parent: header.nodeID, name: name)
+            case .rmdir:
+                try hostFS.rmdir(parent: header.nodeID, name: name)
+            default:
+                return writeErrorResponse(unique: header.unique, errno: EINVAL, writable: writable)
+            }
+            return writeEmptySuccessResponse(unique: header.unique, writable: writable)
+        } catch {
+            return writeErrorResponse(unique: header.unique, errno: mapError(error), writable: writable)
+        }
+    }
+
+    /// Direct WRITE response path for the virtio-fs device. The response is a fixed
+    /// `fuse_out_header + fuse_write_out`, so writing it straight into the guest avoids a tiny
+    /// allocation and scatter-copy on every small write in metadata-heavy bind workloads.
+    public func writeWriteResponse(header: FuseInHeader, payload: ArraySlice<UInt8>, writable: [VirtqueueSegment]) -> Int {
+        stats?.record(.write)
+        let payloadBytes = 8
+        guard writable.reduce(0, { $0 + $1.length }) >= FuseOutHeader.byteCount + payloadBytes else { return 0 }
+        do {
+            guard payload.count >= 40 else { return writeErrorResponse(unique: header.unique, errno: EINVAL, writable: writable) }
+            let handle = payload.leUInt64(at: 0)
+            let offset = payload.leUInt64(at: 8)
+            let size = Int(payload.leUInt32(at: 16))
+            guard payload.count >= 40 + size else {
+                return writeErrorResponse(unique: header.unique, errno: EINVAL, writable: writable)
+            }
+            guard let fd = load(handle: handle) else {
+                return writeErrorResponse(unique: header.unique, errno: EBADF, writable: writable)
+            }
+            let written = try payload.withUnsafeBytes { raw -> Int in
+                let base = raw.baseAddress?.advanced(by: 40)
+                return try hostFS.write(
+                    handle: fd,
+                    offset: offset,
+                    bytes: UnsafeRawBufferPointer(start: base, count: size)
+                )
+            }
+            hostFS.recordWrite(nodeID: header.nodeID, offset: offset, count: written)
+            var writer = FuseDirectResponseWriter(writable: writable)
+            writer.appendOutHeader(unique: header.unique, error: 0, payloadByteCount: payloadBytes)
+            writer.appendLE(UInt32(written))
+            writer.appendLE(UInt32(0))
+            return writer.written
+        } catch {
+            return writeErrorResponse(unique: header.unique, errno: mapError(error), writable: writable)
+        }
+    }
+
+    /// Direct RELEASE/RELEASEDIR response path. RELEASE is close-heavy in shell-file-create loops;
+    /// keeping it allocation-free makes the common success path cheaper without changing close
+    /// ordering or deferred-close semantics.
+    public func writeReleaseResponse(header: FuseInHeader, payload: ArraySlice<UInt8>, writable: [VirtqueueSegment]) -> Int {
+        stats?.record(.release)
+        guard writable.reduce(0, { $0 + $1.length }) >= FuseOutHeader.byteCount else { return 0 }
+        guard payload.count >= 8 else {
+            return writeErrorResponse(unique: header.unique, errno: EINVAL, writable: writable)
+        }
+        let handle = payload.leUInt64(at: 0)
+        if let fd = remove(handle: handle) {
+            if deferReleaseClose {
+                enqueueDeferredClose(fd)
+            } else {
+                hostFS.close(handle: fd)
+            }
+        }
+        return writeEmptySuccessResponse(unique: header.unique, writable: writable)
+    }
+
+    public func writeEmptySuccessResponse(unique: UInt64, writable: [VirtqueueSegment]) -> Int {
+        guard writable.reduce(0, { $0 + $1.length }) >= FuseOutHeader.byteCount else { return 0 }
+        var writer = FuseDirectResponseWriter(writable: writable)
+        writer.appendOutHeader(unique: unique, error: 0, payloadByteCount: 0)
+        return writer.written
+    }
+
+    private func writeErrorResponse(unique: UInt64, errno: Int32, writable: [VirtqueueSegment]) -> Int {
+        guard writable.reduce(0, { $0 + $1.length }) >= FuseOutHeader.byteCount else { return 0 }
+        var writer = FuseDirectResponseWriter(writable: writable)
+        writer.appendOutHeader(unique: unique, error: -errno, payloadByteCount: 0)
+        return writer.written
+    }
+
+    private func handleWrite(header: FuseInHeader, payload: ArraySlice<UInt8>) throws -> [UInt8] {
         guard payload.count >= 40 else { return errorResponse(unique: header.unique, errno: EINVAL) }
         let handle = payload.leUInt64(at: 0)
         let offset = payload.leUInt64(at: 8)
@@ -210,15 +446,22 @@ public final class FuseServer: @unchecked Sendable {
         guard let fd = load(handle: handle) else {
             return errorResponse(unique: header.unique, errno: EBADF)
         }
-        let data = Array(payload[40..<(40 + size)])
-        let written = try hostFS.write(handle: fd, offset: offset, data: data)
-        var response = [UInt8]()
-        response.appendLE(UInt32(written))
-        response.appendLE(UInt32(0))
-        return successResponse(unique: header.unique, payload: response)
+        let written = try payload.withUnsafeBytes { raw -> Int in
+            let base = raw.baseAddress?.advanced(by: 40)
+            return try hostFS.write(
+                handle: fd,
+                offset: offset,
+                bytes: UnsafeRawBufferPointer(start: base, count: size)
+            )
+        }
+        hostFS.recordWrite(nodeID: header.nodeID, offset: offset, count: written)
+        return successResponse(unique: header.unique, payloadByteCount: 8) { response in
+            response.appendLE(UInt32(written))
+            response.appendLE(UInt32(0))
+        }
     }
 
-    private func handleReadDirPlus(header: FuseInHeader, payload: [UInt8]) throws -> [UInt8] {
+    private func handleReadDirPlus(header: FuseInHeader, payload: ArraySlice<UInt8>) throws -> [UInt8] {
         guard payload.count >= 40 else { return errorResponse(unique: header.unique, errno: EINVAL) }
         guard let offset = Int(exactly: payload.leUInt64(at: 8)) else {
             return errorResponse(unique: header.unique, errno: EINVAL)
@@ -250,7 +493,18 @@ public final class FuseServer: @unchecked Sendable {
         return successResponse(unique: header.unique, payload: data)
     }
 
-    private func handleFsync(header: FuseInHeader, payload: [UInt8]) throws -> [UInt8] {
+    private func handleListXattr(header: FuseInHeader, payload: ArraySlice<UInt8>) throws -> [UInt8] {
+        guard payload.count >= 8 else { return errorResponse(unique: header.unique, errno: EINVAL) }
+        let size = payload.leUInt32(at: 0)
+        guard size > 0 else {
+            var data = [UInt8]()
+            data.appendLE(UInt32(0))
+            return successResponse(unique: header.unique, payload: data)
+        }
+        return successResponse(unique: header.unique, payload: [])
+    }
+
+    private func handleFsync(header: FuseInHeader, payload: ArraySlice<UInt8>) throws -> [UInt8] {
         guard payload.count >= 16 else { return errorResponse(unique: header.unique, errno: EINVAL) }
         let handle = payload.leUInt64(at: 0)
         guard let fd = load(handle: handle) else {
@@ -260,56 +514,101 @@ public final class FuseServer: @unchecked Sendable {
         return successResponse(unique: header.unique, payload: [])
     }
 
-    private func handleCreate(header: FuseInHeader, payload: [UInt8]) throws -> [UInt8] {
+    private func handleCreate(header: FuseInHeader, payload: ArraySlice<UInt8>) throws -> [UInt8] {
         guard payload.count >= 16 else { return errorResponse(unique: header.unique, errno: EINVAL) }
+        let flags = Int32(bitPattern: payload.leUInt32(at: 0))
         let mode = UInt16(truncatingIfNeeded: payload.leUInt32(at: 4))
-        let name = try readCString(Array(payload.dropFirst(16)))
-        let entry = try hostFS.createFile(parent: header.nodeID, name: name, mode: mode)
-        let fd = try hostFS.openReadWrite(nodeID: entry.nodeID)
-        let handle = store(fd: fd)
-        return successResponse(unique: header.unique, payload: encodeEntryOut(entry.attributes) + encodeOpenOut(handle: handle, openFlags: 1 << 1))
+        let name = try readCString(payload.dropFirst(16))
+        let created = try hostFS.createFileAndOpen(
+            parent: header.nodeID,
+            name: name,
+            mode: mode,
+            flags: flags,
+            syntheticAttributes: fastCreateAttributes
+        )
+        let handle = store(fd: created.fd)
+        let entry = created.entry
+        return successResponse(unique: header.unique, payloadByteCount: 144) { response in
+            appendEntryOut(entry.attributes, to: &response)
+            appendOpenOut(handle: handle, openFlags: OpenFlag.keepCache | OpenFlag.noFlush, to: &response)
+        }
     }
 
-    private func handleMkdir(header: FuseInHeader, payload: [UInt8]) throws -> [UInt8] {
+    private func handleMkdir(header: FuseInHeader, payload: ArraySlice<UInt8>) throws -> [UInt8] {
         guard payload.count >= 8 else { return errorResponse(unique: header.unique, errno: EINVAL) }
         let mode = UInt16(truncatingIfNeeded: payload.leUInt32(at: 0))
-        let name = try readCString(Array(payload.dropFirst(8)))
+        let name = try readCString(payload.dropFirst(8))
         let entry = try hostFS.mkdir(parent: header.nodeID, name: name, mode: mode)
         return successResponse(unique: header.unique, payload: encodeEntryOut(entry.attributes))
     }
 
-    private func handleUnlink(header: FuseInHeader, payload: [UInt8]) throws -> [UInt8] {
+    private func handleUnlink(header: FuseInHeader, payload: ArraySlice<UInt8>) throws -> [UInt8] {
         try hostFS.unlink(parent: header.nodeID, name: readCString(payload))
         return successResponse(unique: header.unique, payload: [])
     }
 
-    private func handleRmdir(header: FuseInHeader, payload: [UInt8]) throws -> [UInt8] {
+    private func handleRmdir(header: FuseInHeader, payload: ArraySlice<UInt8>) throws -> [UInt8] {
         try hostFS.rmdir(parent: header.nodeID, name: readCString(payload))
         return successResponse(unique: header.unique, payload: [])
     }
 
-    private func handleRename(header: FuseInHeader, payload: [UInt8]) throws -> [UInt8] {
+    private func handleRename(header: FuseInHeader, payload: ArraySlice<UInt8>) throws -> [UInt8] {
         guard payload.count >= 8 else { return errorResponse(unique: header.unique, errno: EINVAL) }
         let newParent = payload.leUInt64(at: 0)
-        let names = try readCStrings(Array(payload.dropFirst(8)), count: 2)
+        let names = try readCStrings(payload.dropFirst(8), count: 2)
         _ = try hostFS.rename(parent: header.nodeID, name: names[0], newParent: newParent, newName: names[1])
         return successResponse(unique: header.unique, payload: [])
     }
 
-    private func handleRelease(header: FuseInHeader, payload: [UInt8]) -> [UInt8] {
+    private func handleRelease(header: FuseInHeader, payload: ArraySlice<UInt8>) -> [UInt8] {
         guard payload.count >= 8 else { return errorResponse(unique: header.unique, errno: EINVAL) }
         let handle = payload.leUInt64(at: 0)
         if let fd = remove(handle: handle) {
-            hostFS.close(handle: fd)
+            if deferReleaseClose {
+                enqueueDeferredClose(fd)
+            } else {
+                hostFS.close(handle: fd)
+            }
         }
         return successResponse(unique: header.unique, payload: [])
     }
 
-    private func handleSetupMapping(header: FuseInHeader, payload: [UInt8]) throws -> [UInt8] {
+    private func enqueueDeferredClose(_ fd: Int32) {
+        let shouldSchedule = deferredCloseLock.withLock {
+            deferredCloseFDs.append(fd)
+            guard !deferredCloseScheduled else { return false }
+            deferredCloseScheduled = true
+            return true
+        }
+        guard shouldSchedule else { return }
+        closeQueue.async { [self] in
+            drainDeferredCloses()
+        }
+    }
+
+    private func drainDeferredCloses() {
+        while true {
+            let batch: [Int32] = deferredCloseLock.withLock {
+                guard !deferredCloseFDs.isEmpty else {
+                    deferredCloseScheduled = false
+                    return []
+                }
+                let fds = deferredCloseFDs
+                deferredCloseFDs.removeAll(keepingCapacity: true)
+                return fds
+            }
+            guard !batch.isEmpty else { return }
+            for fd in batch {
+                hostFS.close(handle: fd)
+            }
+        }
+    }
+
+    private func handleSetupMapping(header: FuseInHeader, payload: ArraySlice<UInt8>) throws -> [UInt8] {
         guard let daxWindow else {
             return errorResponse(unique: header.unique, errno: ENOSYS)
         }
-        let request = try FuseProtocol.decodeSetupMappingIn(payload)
+        let request = try FuseProtocol.decodeSetupMappingIn(Array(payload))
         // virtio-fs sends fh = -1 for inode-based DAX mappings; resolve the file from the node id.
         // The backend mmaps read-write (Apple's hv_vm_map rejects a read-only host region), so the
         // fd must be writable; a read-only file therefore falls back to plain FUSE reads via the
@@ -329,11 +628,11 @@ public final class FuseServer: @unchecked Sendable {
         return successResponse(unique: header.unique, payload: [])
     }
 
-    private func handleRemoveMapping(header: FuseInHeader, payload: [UInt8]) throws -> [UInt8] {
+    private func handleRemoveMapping(header: FuseInHeader, payload: ArraySlice<UInt8>) throws -> [UInt8] {
         guard let daxWindow else {
             return errorResponse(unique: header.unique, errno: ENOSYS)
         }
-        let request = try FuseProtocol.decodeRemoveMappingIn(payload)
+        let request = try FuseProtocol.decodeRemoveMappingIn(Array(payload))
         try daxWindow.remove(request)
         return successResponse(unique: header.unique, payload: [])
     }
@@ -355,7 +654,7 @@ public final class FuseServer: @unchecked Sendable {
         lock.withLock { fileHandles.removeValue(forKey: handle) }
     }
 
-    private func readCString(_ payload: [UInt8]) throws -> String {
+    private func readCString(_ payload: ArraySlice<UInt8>) throws -> String {
         guard let terminator = payload.firstIndex(of: 0),
               let string = String(bytes: payload[..<terminator], encoding: .utf8) else {
             throw HostFSError.invalidName("")
@@ -363,7 +662,7 @@ public final class FuseServer: @unchecked Sendable {
         return string
     }
 
-    private func readCStrings(_ payload: [UInt8], count: Int) throws -> [String] {
+    private func readCStrings(_ payload: ArraySlice<UInt8>, count: Int) throws -> [String] {
         var strings = [String]()
         var start = payload.startIndex
         while strings.count < count {
@@ -378,19 +677,28 @@ public final class FuseServer: @unchecked Sendable {
     }
 
     private func successResponse(unique: UInt64, payload: [UInt8]) -> [UInt8] {
-        FuseProtocol.encodeOutHeader(FuseOutHeader(
-            length: UInt32(FuseOutHeader.byteCount + payload.count),
-            error: 0,
-            unique: unique
-        )) + payload
+        successResponse(unique: unique, payloadByteCount: payload.count) { response in
+            response.append(contentsOf: payload)
+        }
+    }
+
+    private func successResponse(unique: UInt64, payloadByteCount: Int, appendPayload: (inout [UInt8]) -> Void) -> [UInt8] {
+        var response = [UInt8]()
+        response.reserveCapacity(FuseOutHeader.byteCount + payloadByteCount)
+        response.appendLE(UInt32(FuseOutHeader.byteCount + payloadByteCount))
+        response.appendLE(UInt32(0))
+        response.appendLE(unique)
+        appendPayload(&response)
+        return response
     }
 
     private func errorResponse(unique: UInt64, errno: Int32) -> [UInt8] {
-        FuseProtocol.encodeOutHeader(FuseOutHeader(
-            length: UInt32(FuseOutHeader.byteCount),
-            error: -errno,
-            unique: unique
-        ))
+        var response = [UInt8]()
+        response.reserveCapacity(FuseOutHeader.byteCount)
+        response.appendLE(UInt32(FuseOutHeader.byteCount))
+        response.appendLE(UInt32(bitPattern: -errno))
+        response.appendLE(unique)
+        return response
     }
 
     // Cache-validity window handed to the guest for looked-up entries and attributes. A zero
@@ -402,31 +710,69 @@ public final class FuseServer: @unchecked Sendable {
 
     private func encodeEntryOut(_ attrs: HostFSAttributes) -> [UInt8] {
         var data = [UInt8]()
+        data.reserveCapacity(128)
+        appendEntryOut(attrs, to: &data)
+        return data
+    }
+
+    private func encodeAttrOut(_ attrs: HostFSAttributes) -> [UInt8] {
+        var data = [UInt8]()
+        data.reserveCapacity(96)
+        appendAttrOut(attrs, to: &data)
+        return data
+    }
+
+    private func encodeOpenOut(handle: UInt64, openFlags: UInt32) -> [UInt8] {
+        var data = [UInt8]()
+        data.reserveCapacity(16)
+        appendOpenOut(handle: handle, openFlags: openFlags, to: &data)
+        return data
+    }
+
+    private func appendEntryOut(_ attrs: HostFSAttributes, to data: inout [UInt8]) {
         data.appendLE(attrs.nodeID)
         data.appendLE(UInt64(1))
         data.appendLE(Self.cacheValiditySeconds)   // entry_valid
         data.appendLE(Self.cacheValiditySeconds)   // attr_valid
         data.appendLE(UInt32(0))
         data.appendLE(UInt32(0))
-        data.append(contentsOf: encodeAttr(attrs))
-        return data
+        appendAttr(attrs, to: &data)
     }
 
-    private func encodeAttrOut(_ attrs: HostFSAttributes) -> [UInt8] {
-        var data = [UInt8]()
+    private func appendEntryOut(_ attrs: HostFSAttributes, to writer: inout FuseDirectResponseWriter) {
+        writer.appendLE(attrs.nodeID)
+        writer.appendLE(UInt64(1))
+        writer.appendLE(Self.cacheValiditySeconds)   // entry_valid
+        writer.appendLE(Self.cacheValiditySeconds)   // attr_valid
+        writer.appendLE(UInt32(0))
+        writer.appendLE(UInt32(0))
+        appendAttr(attrs, to: &writer)
+    }
+
+    private func appendAttrOut(_ attrs: HostFSAttributes, to data: inout [UInt8]) {
         data.appendLE(Self.cacheValiditySeconds)   // attr_valid
         data.appendLE(UInt32(0))
         data.appendLE(UInt32(0))
-        data.append(contentsOf: encodeAttr(attrs))
-        return data
+        appendAttr(attrs, to: &data)
     }
 
-    private func encodeOpenOut(handle: UInt64, openFlags: UInt32) -> [UInt8] {
-        var data = [UInt8]()
+    private func appendAttrOut(_ attrs: HostFSAttributes, to writer: inout FuseDirectResponseWriter) {
+        writer.appendLE(Self.cacheValiditySeconds)   // attr_valid
+        writer.appendLE(UInt32(0))
+        writer.appendLE(UInt32(0))
+        appendAttr(attrs, to: &writer)
+    }
+
+    private func appendOpenOut(handle: UInt64, openFlags: UInt32, to data: inout [UInt8]) {
         data.appendLE(handle)
         data.appendLE(openFlags)
         data.appendLE(UInt32(0))
-        return data
+    }
+
+    private func appendOpenOut(handle: UInt64, openFlags: UInt32, to writer: inout FuseDirectResponseWriter) {
+        writer.appendLE(handle)
+        writer.appendLE(openFlags)
+        writer.appendLE(UInt32(0))
     }
 
     private func encodeDirentPlus(_ entry: HostFSEntry, offset: UInt64) -> [UInt8] {
@@ -443,6 +789,12 @@ public final class FuseServer: @unchecked Sendable {
 
     private func encodeAttr(_ attrs: HostFSAttributes) -> [UInt8] {
         var data = [UInt8]()
+        data.reserveCapacity(88)
+        appendAttr(attrs, to: &data)
+        return data
+    }
+
+    private func appendAttr(_ attrs: HostFSAttributes, to data: inout [UInt8]) {
         data.appendLE(attrs.nodeID)
         data.appendLE(attrs.size)
         data.appendLE((attrs.size + 511) / 512)
@@ -459,7 +811,25 @@ public final class FuseServer: @unchecked Sendable {
         data.appendLE(UInt32(0))
         data.appendLE(UInt32(4096))
         data.appendLE(UInt32(0))
-        return data
+    }
+
+    private func appendAttr(_ attrs: HostFSAttributes, to writer: inout FuseDirectResponseWriter) {
+        writer.appendLE(attrs.nodeID)
+        writer.appendLE(attrs.size)
+        writer.appendLE((attrs.size + 511) / 512)
+        writer.appendLE(UInt64(bitPattern: attrs.atimeSeconds))
+        writer.appendLE(UInt64(bitPattern: attrs.mtimeSeconds))
+        writer.appendLE(UInt64(bitPattern: attrs.ctimeSeconds))
+        writer.appendLE(attrs.atimeNsec)
+        writer.appendLE(attrs.mtimeNsec)
+        writer.appendLE(attrs.ctimeNsec)
+        writer.appendLE(attrs.mode)
+        writer.appendLE(attrs.isDirectory ? UInt32(2) : UInt32(1))
+        writer.appendLE(attrs.uid)
+        writer.appendLE(attrs.gid)
+        writer.appendLE(UInt32(0))
+        writer.appendLE(UInt32(4096))
+        writer.appendLE(UInt32(0))
     }
 
     private func direntType(for attrs: HostFSAttributes) -> UInt32 {
@@ -467,6 +837,27 @@ public final class FuseServer: @unchecked Sendable {
         if attrs.isSymlink { return 10 }
         if attrs.isRegularFile { return 8 }
         return 0
+    }
+
+    private static func writebackCacheEnabledFromEnvironment() -> Bool {
+        guard let value = ProcessInfo.processInfo.environment["DORY_FUSE_WRITEBACK_CACHE"]?.lowercased() else {
+            return false
+        }
+        return ["1", "true", "yes", "on"].contains(value)
+    }
+
+    private static func deferReleaseCloseEnabledFromEnvironment() -> Bool {
+        guard let value = ProcessInfo.processInfo.environment["DORY_FUSE_DEFER_CLOSE"]?.lowercased() else {
+            return true
+        }
+        return !["0", "false", "no", "off"].contains(value)
+    }
+
+    private static func fastCreateAttributesEnabledFromEnvironment() -> Bool {
+        guard let value = ProcessInfo.processInfo.environment["DORY_FUSE_FAST_CREATE"]?.lowercased() else {
+            return true
+        }
+        return !["0", "false", "no", "off"].contains(value)
     }
 
     private func mapError(_ error: Error) -> Int32 {
@@ -503,10 +894,85 @@ public final class FuseServer: @unchecked Sendable {
     }
 }
 
+private final class FuseStats: @unchecked Sendable {
+    private let lock = NSLock()
+    private var counts: [FuseOpcode: Int] = [:]
+    private var total = 0
+
+    static func fromEnvironment() -> FuseStats? {
+        let value = ProcessInfo.processInfo.environment["DORY_FUSE_STATS"] ?? ""
+        guard ["1", "true", "yes", "on"].contains(value.lowercased()) else { return nil }
+        FileHandle.standardError.write(Data("dory-hv: fuse stats enabled\n".utf8))
+        return FuseStats()
+    }
+
+    func record(_ opcode: FuseOpcode) {
+        let snapshot: (Int, [FuseOpcode: Int])? = lock.withLock {
+            total += 1
+            counts[opcode, default: 0] += 1
+            guard total <= 20 || total.isMultiple(of: 100) else { return nil }
+            return (total, counts)
+        }
+        guard let snapshot else { return }
+        let line = snapshot.1
+            .sorted { lhs, rhs in lhs.key.rawValue < rhs.key.rawValue }
+            .map { "\($0.key)=\($0.value)" }
+            .joined(separator: " ")
+        FileHandle.standardError.write(Data("dory-hv: fuse stats total=\(snapshot.0) \(line)\n".utf8))
+    }
+}
+
 private extension NSLock {
     func withLock<R>(_ body: () throws -> R) rethrows -> R {
         lock()
         defer { unlock() }
         return try body()
+    }
+}
+
+private struct FuseDirectResponseWriter {
+    private let writable: [VirtqueueSegment]
+    private var segmentIndex = 0
+    private var segmentOffset = 0
+    private(set) var written = 0
+
+    init(writable: [VirtqueueSegment]) {
+        self.writable = writable
+    }
+
+    mutating func appendOutHeader(unique: UInt64, error: Int32, payloadByteCount: Int) {
+        appendLE(UInt32(FuseOutHeader.byteCount + payloadByteCount))
+        appendLE(UInt32(bitPattern: error))
+        appendLE(unique)
+    }
+
+    mutating func appendLE(_ value: UInt32) {
+        var value = value.littleEndian
+        withUnsafeBytes(of: &value) { append($0) }
+    }
+
+    mutating func appendLE(_ value: UInt64) {
+        var value = value.littleEndian
+        withUnsafeBytes(of: &value) { append($0) }
+    }
+
+    private mutating func append(_ source: UnsafeRawBufferPointer) {
+        var copied = 0
+        while copied < source.count, segmentIndex < writable.count {
+            let segment = writable[segmentIndex]
+            let remainingInSegment = segment.length - segmentOffset
+            if remainingInSegment <= 0 {
+                segmentIndex += 1
+                segmentOffset = 0
+                continue
+            }
+            let take = min(remainingInSegment, source.count - copied)
+            segment.pointer
+                .advanced(by: segmentOffset)
+                .copyMemory(from: source.baseAddress!.advanced(by: copied), byteCount: take)
+            copied += take
+            segmentOffset += take
+            written += take
+        }
     }
 }
