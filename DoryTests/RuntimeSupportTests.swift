@@ -169,6 +169,27 @@ struct RuntimeSupportTests {
         #expect(argumentValue(after: "--share", in: arguments) == "home=\(home):rw:at=\(home):safe")
     }
 
+    @Test func sharedVMEngineArgumentsAppendValidDaxDataSharesOnly() throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("dory-dax-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let path = dir.standardizedFileURL.path
+
+        let arguments = SharedVMProvisioner.engineArguments(
+            config: SharedVMProvisioner.Config(cpus: 4, memory: "2G", daxDataShares: [path, "/no/such/dax/dir", path]),
+            kernel: "/tmp/kernel",
+            gvproxy: "/tmp/gvproxy",
+            rootfs: nil
+        )
+
+        let home = NSHomeDirectory()
+        #expect(arguments.contains("home=\(home):rw:at=\(home):safe"))       // home stays non-DAX
+        #expect(arguments.contains("daxdata0=\(path):rw:dax:at=\(path):safe")) // existing dir -> DAX share
+        #expect(!arguments.contains { $0.contains("/no/such/dax/dir") })      // missing path dropped
+        #expect(arguments.filter { $0.hasPrefix("daxdata") }.count == 1)      // de-duplicated
+    }
+
     @Test func sharedVMResourceNamesAreArchSuffixed() {
         #expect(SharedVMProvisioner.hvKernelResourceName(arch: "arm64") == "dory-hv-kernel-arm64")
         #expect(SharedVMProvisioner.hvKernelResourceName(arch: "amd64") == "dory-hv-kernel-amd64")

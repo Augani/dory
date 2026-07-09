@@ -148,9 +148,15 @@ nonisolated enum SharedVMProvisioner {
         /// Metal. Fails closed to headless when the host Venus runtime is missing, so it is a manual
         /// Settings toggle and takes effect on the next engine start.
         var gpuVenus: Bool
+        /// Opt-in DAX data shares (P2.4): host directories the user designates as mmap/DB-heavy get a
+        /// virtio-fs DAX window (`dax=always`) so page-cache-backed mmap reads land in host memory with
+        /// no per-page FUSE round trip. Deliberately NOT the home share — metadata-storm workloads churn
+        /// SETUPMAPPING and gain nothing from DAX. Each entry is mounted read-write at its host path.
+        var daxDataShares: [String]
 
         nonisolated static let rosettaX86Key = "dory.rosettaX86Enabled"
         nonisolated static let gpuVenusKey = "dory.experimentalGPU"
+        nonisolated static let daxDataSharesKey = "dory.daxDataShares"
         static let rosettaEngineMemoryMB = 3072
 
         nonisolated init(
@@ -158,13 +164,33 @@ nonisolated enum SharedVMProvisioner {
             memory: String = "\(SharedVMProvisioner.defaultEngineMemoryMB)M",
             headroomMB: Int = SharedVMProvisioner.defaultEngineHeadroomMB,
             rosettaX86: Bool = UserDefaults.standard.bool(forKey: Config.rosettaX86Key),
-            gpuVenus: Bool = UserDefaults.standard.bool(forKey: Config.gpuVenusKey)
+            gpuVenus: Bool = UserDefaults.standard.bool(forKey: Config.gpuVenusKey),
+            daxDataShares: [String] = (UserDefaults.standard.array(forKey: Config.daxDataSharesKey) as? [String]) ?? []
         ) {
             self.cpus = cpus
             self.memory = memory
             self.headroomMB = headroomMB
             self.rosettaX86 = rosettaX86
             self.gpuVenus = gpuVenus
+            self.daxDataShares = daxDataShares
+        }
+
+        /// The subset of `daxDataShares` that are safe to mount: existing directories, standardized,
+        /// de-duplicated, and never the home directory (which is already shared without DAX).
+        nonisolated func validatedDaxDataShares(home: String) -> [String] {
+            var seen = Set<String>()
+            var result = [String]()
+            for raw in daxDataShares {
+                let path = URL(fileURLWithPath: raw).standardizedFileURL.path
+                guard path != home, !seen.contains(path) else { continue }
+                var isDirectory: ObjCBool = false
+                guard FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory), isDirectory.boolValue else {
+                    continue
+                }
+                seen.insert(path)
+                result.append(path)
+            }
+            return result
         }
 
         var memoryMB: Int {
@@ -416,6 +442,11 @@ nonisolated enum SharedVMProvisioner {
         // container as defense-in-depth; per-bind-mount on-demand sharing is the stronger follow-up.
         let home = NSHomeDirectory()
         arguments.append(contentsOf: ["--share", "home=\(home):rw:at=\(home):safe"])
+        // Opt-in DAX data shares (P2.4): each designated directory is mounted read-write at its host
+        // path with a DAX window, on top of the plain home share, for mmap/DB workloads.
+        for (index, path) in config.validatedDaxDataShares(home: home).enumerated() {
+            arguments.append(contentsOf: ["--share", "daxdata\(index)=\(path):rw:dax:at=\(path):safe"])
+        }
         // Opt-in LAN visibility: the engine binds published ports to 0.0.0.0 instead of loopback.
         // Off by default and read strictly (see lanVisibleFromConfig) so ports are never silently
         // exposed to the local network.
