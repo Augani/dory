@@ -338,18 +338,43 @@ used_mem() {
     END { printf "%.0f", (a+w+c)*ps }'
 }
 
-process_rss_bytes() {
-  local engine="$1" pattern
-  case "$engine" in
-    dory) pattern="${DORY_PROCESS_PATTERN:-Dory|doryd|dory-hv|dory-vmm|gvproxy}" ;;
-    orbstack) pattern="${ORBSTACK_PROCESS_PATTERN:-OrbStack|orbstack-helper|xbin/vmgr}" ;;
-    colima) pattern="${COLIMA_PROCESS_PATTERN:-colima|limactl|lima-guestagent|socket_vmnet}" ;;
-    podman) pattern="${PODMAN_PROCESS_PATTERN:-podman|vfkit|gvproxy}" ;;
-    docker-desktop|desktop) pattern="${DOCKER_DESKTOP_PROCESS_PATTERN:-Docker|com.docker}" ;;
-    apple|apple-container|container) pattern="${APPLE_CONTAINER_PROCESS_PATTERN:-container-runtime-linux|container-network-vmnet|containerization|com.apple.container}" ;;
-    *) pattern="${GENERIC_ENGINE_PROCESS_PATTERN:-$engine}" ;;
+engine_process_pattern() {
+  case "$1" in
+    dory) printf '%s' "${DORY_PROCESS_PATTERN:-Dory|doryd|dory-hv|dory-vmm|gvproxy}" ;;
+    orbstack) printf '%s' "${ORBSTACK_PROCESS_PATTERN:-OrbStack|orbstack-helper|xbin/vmgr}" ;;
+    colima) printf '%s' "${COLIMA_PROCESS_PATTERN:-colima|limactl|lima-guestagent|socket_vmnet}" ;;
+    podman) printf '%s' "${PODMAN_PROCESS_PATTERN:-podman|vfkit|gvproxy}" ;;
+    docker-desktop|desktop) printf '%s' "${DOCKER_DESKTOP_PROCESS_PATTERN:-Docker|com.docker}" ;;
+    apple|apple-container|container) printf '%s' "${APPLE_CONTAINER_PROCESS_PATTERN:-container-runtime-linux|container-network-vmnet|containerization|com.apple.container}" ;;
+    *) printf '%s' "${GENERIC_ENGINE_PROCESS_PATTERN:-$1}" ;;
   esac
+}
+
+process_rss_bytes() {
+  local pattern; pattern="$(engine_process_pattern "$1")"
   ps -axo rss,args | awk -v pat="$pattern" '$0 ~ pat && $0 !~ /awk/ { sum += $1 } END { printf "%.0f", sum * 1024 }'
+}
+
+# Sum phys_footprint across the whole engine process tree. phys_footprint (resident + compressed +
+# other charged memory) is the figure reviewers screenshot; RSS materially undercounts it (dory-hv
+# measured 205MB RSS vs 645MB footprint). Falls back to RSS if footprint(1) is unavailable.
+process_footprint_bytes() {
+  local engine="$1" pattern pid val unit bytes total=0 got=0
+  pattern="$(engine_process_pattern "$engine")"
+  for pid in $(ps -axo pid,args | awk -v pat="$pattern" '$0 ~ pat && $0 !~ /awk/ { print $1 }'); do
+    set -- $(/usr/bin/footprint "$pid" 2>/dev/null | awk '/phys_footprint:/ { print $2, $3; exit }')
+    val="${1:-}"; unit="${2:-}"
+    [ -n "$val" ] || continue
+    got=1
+    case "$unit" in
+      KB|K) bytes="$(awk -v v="$val" 'BEGIN { printf "%.0f", v * 1024 }')" ;;
+      MB|M) bytes="$(awk -v v="$val" 'BEGIN { printf "%.0f", v * 1048576 }')" ;;
+      GB|G) bytes="$(awk -v v="$val" 'BEGIN { printf "%.0f", v * 1073741824 }')" ;;
+      *)    bytes="$(awk -v v="$val" 'BEGIN { printf "%.0f", v }')" ;;
+    esac
+    total=$((total + bytes))
+  done
+  [ "$got" = "1" ] && printf '%s' "$total" || process_rss_bytes "$engine"
 }
 
 # --------------------------------------------------------------------------------------------------
@@ -584,10 +609,11 @@ metric_memory_docker_count() {
     record_status PASS "$engine" "memory" "dry-run (${count} idle)"
     return
   fi
-  local base rss_base peak rss_peak sys_delta rss_delta i
+  local base rss_base fp_base peak rss_peak fp_peak sys_delta rss_delta i
   sleep "$SETTLE"
   base="$(used_mem)"
   rss_base="$(process_rss_bytes "$engine")"
+  fp_base="$(process_footprint_bytes "$engine")"
   if [ "$count" -gt 0 ]; then
     for i in $(seq 1 "$count"); do
       if ! docker_e run -d --name "$PREFIX-mem-$count-$i" --label "$LABEL_KEY=$RUN_ID" "$ALPINE_IMAGE" sleep 600 >/dev/null 2>&1; then
@@ -600,12 +626,26 @@ metric_memory_docker_count() {
   sleep "$SETTLE"
   peak="$(used_mem)"
   rss_peak="$(process_rss_bytes "$engine")"
+  fp_peak="$(process_footprint_bytes "$engine")"
   sys_delta=$((peak - base))
   rss_delta=$((rss_peak - rss_base))
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-    "$engine" "$count" "$ALPINE_IMAGE" "$sys_delta" "$(mb "$sys_delta")" "$rss_delta" "$(mb "$rss_delta")" >> "$MEMORY_TSV"
+  # Reclaim curve (opt-in via BENCH_RECLAIM_CURVE=1): stop the containers, then sample phys_footprint
+  # at intervals. Dory's free-page reporting drops footprint over time; VZ-backed engines (Docker VMM,
+  # Colima/Lima, Apple container) cannot return guest memory so their curve stays flat — the §5 moat.
+  local curve="" t prev=0
+  if [ "${BENCH_RECLAIM_CURVE:-0}" = "1" ] && [ "$count" -gt 0 ]; then
+    cleanup_docker_engine
+    for t in ${RECLAIM_CURVE_SECONDS:-0 30 120 300}; do
+      [ "$t" -gt "$prev" ] && sleep $((t - prev))
+      prev="$t"
+      curve="${curve:+$curve,}${t}s=$(mb "$(process_footprint_bytes "$engine")")MB"
+    done
+  fi
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$engine" "$count" "$ALPINE_IMAGE" "$sys_delta" "$(mb "$sys_delta")" "$rss_delta" "$(mb "$rss_delta")" \
+    "$(mb "$fp_base")" "$(mb "$fp_peak")" "$(sanitize "${curve:-n/a}")" >> "$MEMORY_TSV"
   cleanup_docker_engine
-  record_status PASS "$engine" "memory" "system_delta=$(mb "$sys_delta")MB rss_delta=$(mb "$rss_delta")MB (${count} idle)"
+  record_status PASS "$engine" "memory" "sys_delta=$(mb "$sys_delta")MB footprint=$(mb "$fp_base")->$(mb "$fp_peak")MB (${count} idle)${curve:+ reclaim[$curve]}"
 }
 
 metric_memory_apple() {
@@ -641,10 +681,11 @@ metric_memory_apple_count() {
     record_status PASS "$engine" "memory" "dry-run (${count} idle)"
     return
   fi
-  local base rss_base peak rss_peak sys_delta rss_delta i
+  local base rss_base fp_base peak rss_peak fp_peak sys_delta rss_delta i
   sleep "$SETTLE"
   base="$(used_mem)"
   rss_base="$(process_rss_bytes "$engine")"
+  fp_base="$(process_footprint_bytes "$engine")"
   if [ "$count" -gt 0 ]; then
     for i in $(seq 1 "$count"); do
       if ! "$CONTAINER_BIN" run -d --name "$PREFIX-mem-$count-$i" "$ALPINE_IMAGE" sleep 600 >/dev/null 2>&1; then
@@ -657,12 +698,25 @@ metric_memory_apple_count() {
   sleep "$SETTLE"
   peak="$(used_mem)"
   rss_peak="$(process_rss_bytes "$engine")"
+  fp_peak="$(process_footprint_bytes "$engine")"
   sys_delta=$((peak - base))
   rss_delta=$((rss_peak - rss_base))
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-    "$engine" "$count" "$ALPINE_IMAGE" "$sys_delta" "$(mb "$sys_delta")" "$rss_delta" "$(mb "$rss_delta")" >> "$MEMORY_TSV"
+  # Reclaim curve: Apple container is per-container-VM on Virtualization.framework, which cannot
+  # return guest memory to the host, so this curve is expected to stay flat (the contrast §5 sells).
+  local curve="" t prev=0
+  if [ "${BENCH_RECLAIM_CURVE:-0}" = "1" ] && [ "$count" -gt 0 ]; then
+    cleanup_apple_container
+    for t in ${RECLAIM_CURVE_SECONDS:-0 30 120 300}; do
+      [ "$t" -gt "$prev" ] && sleep $((t - prev))
+      prev="$t"
+      curve="${curve:+$curve,}${t}s=$(mb "$(process_footprint_bytes "$engine")")MB"
+    done
+  fi
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$engine" "$count" "$ALPINE_IMAGE" "$sys_delta" "$(mb "$sys_delta")" "$rss_delta" "$(mb "$rss_delta")" \
+    "$(mb "$fp_base")" "$(mb "$fp_peak")" "$(sanitize "${curve:-n/a}")" >> "$MEMORY_TSV"
   cleanup_apple_container
-  record_status PASS "$engine" "memory" "system_delta=$(mb "$sys_delta")MB rss_delta=$(mb "$rss_delta")MB (${count} idle)"
+  record_status PASS "$engine" "memory" "sys_delta=$(mb "$sys_delta")MB footprint=$(mb "$fp_base")->$(mb "$fp_peak")MB (${count} idle)${curve:+ reclaim[$curve]}"
 }
 
 # --------------------------------------------------------------------------------------------------
@@ -1367,7 +1421,7 @@ EOF
 
 mkdir -p "$WORKDIR"
 printf 'status\tengine\tmetric\tdetail\n' > "$STATUS_TSV"
-printf 'engine\tcontainers\timage\tsystem_delta_bytes\tsystem_delta_mb\tprocess_delta_bytes\tprocess_delta_mb\n' > "$MEMORY_TSV"
+printf 'engine\tcontainers\timage\tsystem_delta_bytes\tsystem_delta_mb\tprocess_delta_bytes\tprocess_delta_mb\tfootprint_base_mb\tfootprint_peak_mb\treclaim_curve\n' > "$MEMORY_TSV"
 printf 'engine\timage\truns\tworkload_mib\tmedian_seconds\tsamples_seconds\tcv_pct\n' > "$CPU_TSV"
 printf 'engine\tsource\tjobs\truns\tmedian_seconds\tpeak_system_mb\tpeak_engine_rss_mb\tsamples_seconds\tcv_pct\n' > "$BUILD_TSV"
 printf 'engine\timage\truns\tmedian_gbps\tsamples_gbps\tcv_pct\n' > "$NETWORK_TSV"
