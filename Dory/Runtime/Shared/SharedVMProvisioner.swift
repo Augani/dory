@@ -170,6 +170,23 @@ nonisolated enum SharedVMProvisioner {
         var memoryMB: Int {
             SharedVMProvisioner.memoryStringToMB(memory) ?? SharedVMProvisioner.defaultEngineMemoryMB
         }
+
+        /// Sizes the engine to the host instead of the fixed 4 vCPU / 2048 MiB literals: reserve two
+        /// logical cores for macOS + the app, and set a memory ceiling of half the host RAM (never
+        /// exceeding host-4GiB, never below the 2048/3072 MiB floor). The ceiling is elastic — dory-hv's
+        /// free-page reporting hands idle guest memory back to the host — so a generous cap costs nothing
+        /// at idle while letting Compose/parallel workloads use the cores and RAM a real machine has.
+        nonisolated static func hostScaled(
+            rosettaX86: Bool = UserDefaults.standard.bool(forKey: Config.rosettaX86Key),
+            gpuVenus: Bool = UserDefaults.standard.bool(forKey: Config.gpuVenusKey)
+        ) -> Config {
+            let info = ProcessInfo.processInfo
+            let cpus = max(4, info.activeProcessorCount - 2)
+            let hostMB = Int(info.physicalMemory / (1024 * 1024))
+            let floorMB = rosettaX86 ? rosettaEngineMemoryMB : SharedVMProvisioner.defaultEngineMemoryMB
+            let engineMB = max(floorMB, min(hostMB / 2, hostMB - 4096))
+            return Config(cpus: cpus, memory: "\(engineMB)M", rosettaX86: rosettaX86, gpuVenus: gpuVenus)
+        }
     }
 
     enum ProvisionError: Error, Sendable {
@@ -289,7 +306,7 @@ nonisolated enum SharedVMProvisioner {
         return result == 0 && value == 1
     }
 
-    static func provision(config: Config = Config()) async throws -> String {
+    static func provision(config: Config = .hostScaled()) async throws -> String {
         let evaluation = engineSupport()
         guard evaluation.support.isSupported else {
             throw ProvisionError.unsupportedHost(evaluation.support.reason)
@@ -305,7 +322,7 @@ nonisolated enum SharedVMProvisioner {
         return socket
     }
 
-    static func runtime(config: Config = Config()) async -> DockerEngineRuntime? {
+    static func runtime(config: Config = .hostScaled()) async -> DockerEngineRuntime? {
         guard let socket = try? await provision(config: config) else { return nil }
         return DockerEngineRuntime(socketPath: socket, kind: .sharedVM)
     }
