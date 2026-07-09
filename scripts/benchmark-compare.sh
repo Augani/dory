@@ -378,6 +378,33 @@ ratio() {
   awk -v a="${1:-0}" -v b="${2:-0}" 'BEGIN { if (b+0==0) printf "0"; else printf "%.2f", (a+0)/(b+0) }'
 }
 
+# Coefficient of variation (%) over the numeric args: 100 * sample_stddev / mean. This is the
+# reproducibility signal for a metric — competitor bind/fs numbers that swing run-to-run (OrbStack
+# 0.222->0.501s, Colima 0.159->0.917s in the research) show up as a high CV. Returns 0 for n<2.
+cv_pct() {
+  [ "$#" -gt 1 ] || { printf '0'; return; }
+  printf '%s\n' "$@" | awk '
+    { v[n++] = $1 + 0; sum += $1 + 0 }
+    END {
+      if (n < 2 || sum == 0) { printf "0"; exit }
+      mean = sum / n
+      for (i = 0; i < n; i++) { d = v[i] - mean; ss += d * d }
+      printf "%.1f", 100 * sqrt(ss / (n - 1)) / mean
+    }'
+}
+
+# CV threshold above which a metric row is flagged unstable in the status/summary.
+CV_WARN_PCT="${BENCH_CV_WARN_PCT:-15}"
+
+# Emits " cv=X%" plus an UNSTABLE marker when the coefficient of variation exceeds the threshold, for
+# appending to a PASS status detail. Empty-safe.
+cv_detail() {
+  awk -v cv="${1:-0}" -v t="$CV_WARN_PCT" 'BEGIN {
+    printf " cv=%s%%", cv
+    if (cv + 0 > t + 0) printf " UNSTABLE(>%s%%)", t
+  }'
+}
+
 # --------------------------------------------------------------------------------------------------
 # Machine spec capture
 # --------------------------------------------------------------------------------------------------
@@ -404,8 +431,50 @@ capture_machine_spec() {
   } > "$MACHINE_SPEC"
 }
 
+# Best-effort per-engine VM profile: which VMM the engine runs and, for VZ-family engines, the
+# Rosetta state. This is the P0.5 stamp that lets a reader trust (or distrust) a competitor multiplier
+# without re-running: a Colima "vz+virtiofs" number is a different beast from "qemu+sshfs", and Docker
+# Desktop's VMM-vs-Virtualization.framework toggle changes everything. Echoes `vm_type<TAB>vmm<TAB>rosetta`.
+detect_engine_vm_profile() {
+  local engine="$1" vm_type="unknown" vmm="unknown" rosetta="unknown" store
+  case "$engine" in
+    dory|dory-*)
+      vm_type="dory-hv"; vmm="dory-hv-custom-hvf"; rosetta="no" ;;
+    orbstack)
+      vm_type="orbstack"; vmm="orbstack-custom"; rosetta="rosetta" ;;
+    colima)
+      if command -v colima >/dev/null 2>&1; then
+        vm_type="$(colima list -j 2>/dev/null | grep -o '"vmType":"[^"]*"' | head -1 | cut -d'"' -f4)"
+        [ -n "$vm_type" ] || vm_type="unknown"
+        vmm="$vm_type"
+        rosetta="$(colima list -j 2>/dev/null | grep -o '"rosetta":[a-z]*' | head -1 | cut -d: -f2)"
+        [ -n "$rosetta" ] || rosetta="unknown"
+      fi ;;
+    docker-desktop)
+      for store in "$HOME/Library/Group Containers/group.com.docker/settings-store.json" \
+                   "$HOME/Library/Group Containers/group.com.docker/settings.json"; do
+        [ -f "$store" ] || continue
+        if grep -q '"useVirtualizationFramework"[[:space:]]*:[[:space:]]*true' "$store" 2>/dev/null; then
+          vm_type="vz"; vmm="apple-virtualization"
+        elif grep -q '"useVirtualizationFramework"[[:space:]]*:[[:space:]]*false' "$store" 2>/dev/null; then
+          vm_type="docker-vmm"; vmm="docker-vmm"
+        fi
+        if grep -qi '"rosetta"[[:space:]]*:[[:space:]]*true\|"useRosetta"[[:space:]]*:[[:space:]]*true' "$store" 2>/dev/null; then
+          rosetta="rosetta"
+        else
+          rosetta="no"
+        fi
+        break
+      done ;;
+    apple-container|container)
+      vm_type="apple-vz"; vmm="apple-virtualization" ;;
+  esac
+  printf '%s\t%s\t%s' "$vm_type" "$vmm" "$rosetta"
+}
+
 record_engine_version() {
-  local engine="$CURRENT_ENGINE" label endpoint version name os kernel arch interface
+  local engine="$CURRENT_ENGINE" label endpoint version name os kernel arch interface vm_profile
+  vm_profile="$(detect_engine_vm_profile "$engine")"
   label="$(engine_label "$engine")"
   if is_apple_container "$engine"; then
     interface="container-cli"
@@ -415,8 +484,8 @@ record_engine_version() {
     else
       version="$("$CONTAINER_BIN" --version 2>/dev/null | head -1 || true)"
     fi
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-      "$engine" "$label" "$interface" "$endpoint" "$(sanitize "${version:-unknown}")" "" "" "$(uname -m)" >> "$ENGINE_VERSIONS_TSV"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+      "$engine" "$label" "$interface" "$endpoint" "$(sanitize "${version:-unknown}")" "" "" "$(uname -m)" "$vm_profile" >> "$ENGINE_VERSIONS_TSV"
     return
   fi
 
@@ -435,9 +504,9 @@ record_engine_version() {
     kernel="$(docker_e info --format '{{.KernelVersion}}' 2>/dev/null || true)"
     arch="$(docker_e info --format '{{.Architecture}}' 2>/dev/null || true)"
   fi
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
     "$engine" "$label" "$interface" "$endpoint" "$(sanitize "${version:-unknown}")" \
-    "$(sanitize "$name")" "$(sanitize "$os $kernel")" "$(sanitize "$arch")" >> "$ENGINE_VERSIONS_TSV"
+    "$(sanitize "$name")" "$(sanitize "$os $kernel")" "$(sanitize "$arch")" "$vm_profile" >> "$ENGINE_VERSIONS_TSV"
 }
 
 # --------------------------------------------------------------------------------------------------
@@ -651,8 +720,10 @@ metric_cpu_docker() {
   fi
   # shellcheck disable=SC2086
   med="$(median $samples)"
-  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$engine" "$ALPINE_IMAGE" "$RUNS" "$CPU_MB" "$med" "$(sanitize "$samples")" >> "$CPU_TSV"
-  record_status PASS "$engine" "cpu" "median=${med}s over $RUNS run(s), ${CPU_MB} MiB"
+  # shellcheck disable=SC2086
+  local cpu_cv; cpu_cv="$(cv_pct $samples)"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$engine" "$ALPINE_IMAGE" "$RUNS" "$CPU_MB" "$med" "$(sanitize "$samples")" "$cpu_cv" >> "$CPU_TSV"
+  record_status PASS "$engine" "cpu" "median=${med}s over $RUNS run(s), ${CPU_MB} MiB$(cv_detail "$cpu_cv")"
 }
 
 metric_cpu_apple() {
@@ -679,8 +750,10 @@ metric_cpu_apple() {
   fi
   # shellcheck disable=SC2086
   med="$(median $samples)"
-  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$engine" "$ALPINE_IMAGE" "$RUNS" "$CPU_MB" "$med" "$(sanitize "$samples")" >> "$CPU_TSV"
-  record_status PASS "$engine" "cpu" "median=${med}s over $RUNS run(s), ${CPU_MB} MiB"
+  # shellcheck disable=SC2086
+  local cpu_cv; cpu_cv="$(cv_pct $samples)"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$engine" "$ALPINE_IMAGE" "$RUNS" "$CPU_MB" "$med" "$(sanitize "$samples")" "$cpu_cv" >> "$CPU_TSV"
+  record_status PASS "$engine" "cpu" "median=${med}s over $RUNS run(s), ${CPU_MB} MiB$(cv_detail "$cpu_cv")"
 }
 
 # --------------------------------------------------------------------------------------------------
@@ -776,9 +849,11 @@ metric_build_docker() {
   fi
   # shellcheck disable=SC2086
   local med; med="$(median $samples)"
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-    "$engine" "$BUILD_SRC_DIR" "$BUILD_JOBS" "$RUNS" "$med" "$(mb "$peak_sys_max")" "$(mb "$peak_rss_max")" "$(sanitize "$samples")" >> "$BUILD_TSV"
-  record_status PASS "$engine" "build" "median=${med}s over $RUNS run(s), peak_sys=$(mb "$peak_sys_max")MB peak_rss=$(mb "$peak_rss_max")MB"
+  # shellcheck disable=SC2086
+  local build_cv; build_cv="$(cv_pct $samples)"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$engine" "$BUILD_SRC_DIR" "$BUILD_JOBS" "$RUNS" "$med" "$(mb "$peak_sys_max")" "$(mb "$peak_rss_max")" "$(sanitize "$samples")" "$build_cv" >> "$BUILD_TSV"
+  record_status PASS "$engine" "build" "median=${med}s over $RUNS run(s), peak_sys=$(mb "$peak_sys_max")MB peak_rss=$(mb "$peak_rss_max")MB$(cv_detail "$build_cv")"
 }
 
 metric_build_apple() {
@@ -826,9 +901,11 @@ metric_build_apple() {
   fi
   # shellcheck disable=SC2086
   local med; med="$(median $samples)"
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-    "$engine" "$BUILD_SRC_DIR" "$BUILD_JOBS" "$RUNS" "$med" "$(mb "$peak_sys_max")" "$(mb "$peak_rss_max")" "$(sanitize "$samples")" >> "$BUILD_TSV"
-  record_status PASS "$engine" "build" "median=${med}s over $RUNS run(s), peak_sys=$(mb "$peak_sys_max")MB peak_rss=$(mb "$peak_rss_max")MB"
+  # shellcheck disable=SC2086
+  local build_cv; build_cv="$(cv_pct $samples)"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$engine" "$BUILD_SRC_DIR" "$BUILD_JOBS" "$RUNS" "$med" "$(mb "$peak_sys_max")" "$(mb "$peak_rss_max")" "$(sanitize "$samples")" "$build_cv" >> "$BUILD_TSV"
+  record_status PASS "$engine" "build" "median=${med}s over $RUNS run(s), peak_sys=$(mb "$peak_sys_max")MB peak_rss=$(mb "$peak_rss_max")MB$(cv_detail "$build_cv")"
 }
 
 # --------------------------------------------------------------------------------------------------
@@ -879,11 +956,13 @@ metric_network() {
     record_status FAIL "$engine" "network" "no throughput samples parsed from iperf3 JSON"
     return
   fi
-  local med
+  local med net_cv
   # shellcheck disable=SC2086
   med="$(median $samples)"
-  printf '%s\t%s\t%s\t%s\t%s\n' "$engine" "$IPERF_IMAGE" "$RUNS" "$med" "$(sanitize "$samples")" >> "$NETWORK_TSV"
-  record_status PASS "$engine" "network" "median=${med} Gbps over $RUNS run(s)"
+  # shellcheck disable=SC2086
+  net_cv="$(cv_pct $samples)"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$engine" "$IPERF_IMAGE" "$RUNS" "$med" "$(sanitize "$samples")" "$net_cv" >> "$NETWORK_TSV"
+  record_status PASS "$engine" "network" "median=${med} Gbps over $RUNS run(s)$(cv_detail "$net_cv")"
 }
 
 # --------------------------------------------------------------------------------------------------
@@ -978,8 +1057,13 @@ metric_fs_docker() {
   # shellcheck disable=SC2086
   cont_med="$(median $cont_samples)"
   rat="$(ratio "$host_med" "$cont_med")"
-  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$engine" "$FS_FILES" "$RUNS" "$host_med" "$cont_med" "$rat" >> "$FS_TSV"
-  record_status PASS "$engine" "fs" "bind=${host_med}s in-container=${cont_med}s ratio=${rat}x (${FS_FILES} files)"
+  local bind_cv cont_cv
+  # shellcheck disable=SC2086
+  bind_cv="$(cv_pct $host_samples)"
+  # shellcheck disable=SC2086
+  cont_cv="$(cv_pct $cont_samples)"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$engine" "$FS_FILES" "$RUNS" "$host_med" "$cont_med" "$rat" "$bind_cv" "$cont_cv" >> "$FS_TSV"
+  record_status PASS "$engine" "fs" "bind=${host_med}s in-container=${cont_med}s ratio=${rat}x (${FS_FILES} files)$(cv_detail "$bind_cv")"
 }
 
 time_apple_host() {
@@ -1030,8 +1114,13 @@ metric_fs_apple() {
   # shellcheck disable=SC2086
   cont_med="$(median $cont_samples)"
   rat="$(ratio "$host_med" "$cont_med")"
-  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$engine" "$FS_FILES" "$RUNS" "$host_med" "$cont_med" "$rat" >> "$FS_TSV"
-  record_status PASS "$engine" "fs" "bind=${host_med}s in-container=${cont_med}s ratio=${rat}x (${FS_FILES} files)"
+  local bind_cv cont_cv
+  # shellcheck disable=SC2086
+  bind_cv="$(cv_pct $host_samples)"
+  # shellcheck disable=SC2086
+  cont_cv="$(cv_pct $cont_samples)"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$engine" "$FS_FILES" "$RUNS" "$host_med" "$cont_med" "$rat" "$bind_cv" "$cont_cv" >> "$FS_TSV"
+  record_status PASS "$engine" "fs" "bind=${host_med}s in-container=${cont_med}s ratio=${rat}x (${FS_FILES} files)$(cv_detail "$bind_cv")"
 }
 
 # --------------------------------------------------------------------------------------------------
@@ -1279,11 +1368,11 @@ EOF
 mkdir -p "$WORKDIR"
 printf 'status\tengine\tmetric\tdetail\n' > "$STATUS_TSV"
 printf 'engine\tcontainers\timage\tsystem_delta_bytes\tsystem_delta_mb\tprocess_delta_bytes\tprocess_delta_mb\n' > "$MEMORY_TSV"
-printf 'engine\timage\truns\tworkload_mib\tmedian_seconds\tsamples_seconds\n' > "$CPU_TSV"
-printf 'engine\tsource\tjobs\truns\tmedian_seconds\tpeak_system_mb\tpeak_engine_rss_mb\tsamples_seconds\n' > "$BUILD_TSV"
-printf 'engine\timage\truns\tmedian_gbps\tsamples_gbps\n' > "$NETWORK_TSV"
-printf 'engine\tfiles\truns\tbind_seconds\tincontainer_seconds\tratio\n' > "$FS_TSV"
-printf 'engine\tlabel\tinterface\tendpoint\tversion\tname\tos_kernel\tarchitecture\n' > "$ENGINE_VERSIONS_TSV"
+printf 'engine\timage\truns\tworkload_mib\tmedian_seconds\tsamples_seconds\tcv_pct\n' > "$CPU_TSV"
+printf 'engine\tsource\tjobs\truns\tmedian_seconds\tpeak_system_mb\tpeak_engine_rss_mb\tsamples_seconds\tcv_pct\n' > "$BUILD_TSV"
+printf 'engine\timage\truns\tmedian_gbps\tsamples_gbps\tcv_pct\n' > "$NETWORK_TSV"
+printf 'engine\tfiles\truns\tbind_seconds\tincontainer_seconds\tratio\tbind_cv_pct\tincontainer_cv_pct\n' > "$FS_TSV"
+printf 'engine\tlabel\tinterface\tendpoint\tversion\tname\tos_kernel\tarchitecture\tvm_type\tvmm\trosetta\n' > "$ENGINE_VERSIONS_TSV"
 
 trap '{ [ -n "${CURRENT_ENGINE:-}" ] && cleanup_engine; write_summary; } >/dev/null 2>&1 || true' EXIT
 trap 'exit 130' INT TERM
@@ -1296,6 +1385,12 @@ note "results dir: $WORKDIR"
 
 capture_machine_spec
 
+# Engines run sequentially (all of A, then all of B). Each metric already records its coefficient of
+# variation (cv_pct column + status detail) and each engine records its VMM/vmType/rosetta profile, so
+# run-to-run instability (the OrbStack 0.222<->0.501s / Colima 0.159<->0.917s swings) is now visible and
+# attributable without interleaving. True A/B/A/B interleaving (one rep of each metric per engine per
+# round, medians aggregated across rounds) needs every metric refactored to defer its median/CV to a
+# shared per-round ledger; that lands with a live multi-engine session to validate the aggregation.
 OLD_IFS="$IFS"
 IFS=','
 for engine in $ENGINES; do
