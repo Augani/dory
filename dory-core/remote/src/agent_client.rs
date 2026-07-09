@@ -7,6 +7,7 @@
 //! (the whole point of seam 1). `doryd` embeds this for remote VPSes; nothing here is SSH-specific.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use dory_pb::agent::{
     self, agent_request::Method, agent_response::Result as Res, AgentRequest, AgentResponse,
@@ -21,6 +22,14 @@ use prost::Message;
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::error::RemoteError;
+
+// The mux only unblocks a caller when the connection closes; a connected-but-silent peer would
+// otherwise hang `call` (and any FFI `block_on` above it) forever. Every RPC therefore carries a
+// deadline sized to its slowest legitimate completion.
+const CONTROL_DEADLINE: Duration = Duration::from_secs(30);
+const SYNC_MANIFEST_DEADLINE: Duration = Duration::from_secs(10 * 60);
+const SYNC_IO_DEADLINE: Duration = Duration::from_secs(2 * 60);
+const EXEC_GRACE: Duration = Duration::from_secs(30);
 
 pub struct AgentClient {
     mux: Arc<Mux>,
@@ -43,10 +52,20 @@ impl AgentClient {
     }
 
     async fn call(&self, method: Method) -> Result<Res, RemoteError> {
+        self.call_with_deadline(method, CONTROL_DEADLINE).await
+    }
+
+    async fn call_with_deadline(
+        &self,
+        method: Method,
+        deadline: Duration,
+    ) -> Result<Res, RemoteError> {
         let req = AgentRequest {
             method: Some(method),
         };
-        let bytes = self.mux.call(&req.encode_to_vec()).await?;
+        let bytes = tokio::time::timeout(deadline, self.mux.call(&req.encode_to_vec()))
+            .await
+            .map_err(|_| RemoteError::Timeout(deadline))??;
         let resp = AgentResponse::decode(bytes.as_slice()).map_err(|_| RemoteError::Decode)?;
         match resp.result {
             Some(Res::Error(e)) => Err(RemoteError::Rpc {
@@ -104,14 +123,23 @@ impl AgentClient {
             .into_iter()
             .map(|(key, value)| ExecEnv { key, value })
             .collect();
+        // Mirror the agent's server-side clamp (0 => 30s default, cap 10min), then add grace so
+        // the client deadline only fires when the agent itself failed to enforce its timeout.
+        let server_timeout = Duration::from_millis(match timeout_ms {
+            0 => 30_000,
+            value => value.min(10 * 60_000),
+        });
         match self
-            .call(Method::Exec(ExecRequest {
-                argv,
-                cwd,
-                env,
-                timeout_ms,
-                output_limit_bytes,
-            }))
+            .call_with_deadline(
+                Method::Exec(ExecRequest {
+                    argv,
+                    cwd,
+                    env,
+                    timeout_ms,
+                    output_limit_bytes,
+                }),
+                server_timeout + EXEC_GRACE,
+            )
             .await?
         {
             Res::Exec(r) => Ok(r),
@@ -123,7 +151,11 @@ impl AgentClient {
         &self,
         req: SyncManifestRequest,
     ) -> Result<SyncManifestResponse, RemoteError> {
-        match self.call(Method::SyncManifest(req)).await? {
+        // Manifests hash whole trees; large repos on slow disks legitimately take minutes.
+        match self
+            .call_with_deadline(Method::SyncManifest(req), SYNC_MANIFEST_DEADLINE)
+            .await?
+        {
             Res::SyncManifest(r) => Ok(r),
             _ => Err(RemoteError::UnexpectedVariant),
         }
@@ -133,7 +165,10 @@ impl AgentClient {
         &self,
         req: SyncFileStatusRequest,
     ) -> Result<SyncFileStatusResponse, RemoteError> {
-        match self.call(Method::SyncFileStatus(req)).await? {
+        match self
+            .call_with_deadline(Method::SyncFileStatus(req), SYNC_IO_DEADLINE)
+            .await?
+        {
             Res::SyncFileStatus(r) => Ok(r),
             _ => Err(RemoteError::UnexpectedVariant),
         }
@@ -143,7 +178,10 @@ impl AgentClient {
         &self,
         req: SyncPutChunkRequest,
     ) -> Result<SyncPutChunkResponse, RemoteError> {
-        match self.call(Method::SyncPutChunk(req)).await? {
+        match self
+            .call_with_deadline(Method::SyncPutChunk(req), SYNC_IO_DEADLINE)
+            .await?
+        {
             Res::SyncPutChunk(r) => Ok(r),
             _ => Err(RemoteError::UnexpectedVariant),
         }
@@ -153,7 +191,10 @@ impl AgentClient {
         &self,
         req: SyncDeleteRequest,
     ) -> Result<SyncDeleteResponse, RemoteError> {
-        match self.call(Method::SyncDelete(req)).await? {
+        match self
+            .call_with_deadline(Method::SyncDelete(req), SYNC_IO_DEADLINE)
+            .await?
+        {
             Res::SyncDelete(r) => Ok(r),
             _ => Err(RemoteError::UnexpectedVariant),
         }
@@ -246,6 +287,31 @@ mod tests {
             .unwrap();
         assert_eq!(exec.exit_code, 0);
         assert_eq!(exec.stdout, b"exec-ok");
+    }
+
+    #[tokio::test]
+    async fn a_connected_but_silent_agent_times_out_instead_of_hanging() {
+        // Handshake completes, then the peer never answers any mux request. The per-call deadline
+        // must surface Timeout — without it the caller (and any FFI block_on above it) wedges.
+        let (client_stream, mut agent_stream) = tokio::io::duplex(64 * 1024);
+        tokio::spawn(async move {
+            let _ = handshake(&mut agent_stream, &Hello::current("silent-agent")).await;
+            std::future::pending::<()>().await;
+        });
+
+        let client = AgentClient::connect(client_stream, "doryd-test")
+            .await
+            .unwrap();
+        let res = client
+            .call_with_deadline(
+                Method::Info(InfoRequest {}),
+                std::time::Duration::from_millis(200),
+            )
+            .await;
+        match res {
+            Err(RemoteError::Timeout(_)) => {}
+            other => panic!("expected Timeout, got {other:?}"),
+        }
     }
 
     #[tokio::test]

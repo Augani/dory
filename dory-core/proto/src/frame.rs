@@ -113,17 +113,6 @@ pub async fn read_frame<R: AsyncRead + Unpin>(r: &mut R) -> Result<Vec<u8>, Fram
     }
 }
 
-/// Encode a frame into a freshly allocated buffer (prefix + payload), for callers that batch writes.
-pub fn encode(payload: &[u8]) -> Result<Vec<u8>, FrameError> {
-    if payload.len() > MAX_FRAME_BYTES {
-        return Err(FrameError::TooLarge(payload.len()));
-    }
-    let mut out = Vec::with_capacity(PREFIX_BYTES + payload.len());
-    out.extend_from_slice(&(payload.len() as u32).to_le_bytes());
-    out.extend_from_slice(payload);
-    Ok(out)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

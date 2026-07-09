@@ -77,7 +77,7 @@ pub async fn push<T: SyncTarget>(
         };
 
         loop {
-            let end = (offset as usize + CHUNK_BYTES).min(bytes.len());
+            let end = (offset + CHUNK_BYTES).min(bytes.len());
             let chunk = bytes[offset..end].to_vec();
             let last = end == bytes.len();
             let sent = chunk.len() as u64;

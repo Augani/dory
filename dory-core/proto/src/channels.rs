@@ -6,7 +6,8 @@
 
 /// Multiplexed agent RPC: clock, ports, fsevents, exec, info.
 pub const PORT_CONTROL: u32 = 1024;
-/// usbip byte stream.
+/// usbip byte stream. Served by the Swift usbip bridge in dory-hv; catalogued here so host and
+/// guest agree on the port map in one place.
 pub const PORT_USBIP: u32 = 1025;
 /// Docker byte-stream bridge (host `dory.sock` ↔ guest `dockerd`), one connection per docker client.
 pub const PORT_DOCKER: u32 = 1026;
@@ -14,10 +15,6 @@ pub const PORT_DOCKER: u32 = 1026;
 pub const PORT_SHELL: u32 = 1027;
 
 /// Guest-initiated dial-back targets on the host (the AI bridge): the guest connects to
-/// `VMADDR_CID_HOST` on these ports and doryd forwards to `127.0.0.1:<same>`.
+/// `VMADDR_CID_HOST` on these ports and doryd forwards to `127.0.0.1:<same>`. The forwarding side
+/// lives in Swift (doryd); this list is the shared catalog entry, not a Rust consumer.
 pub const HOST_PORTS_AI: &[u32] = &[11434, 1234, 18190];
-
-/// A raw byte-stream port (its own forwarded connection, spliced) vs the muxed control port.
-pub fn is_stream_port(port: u32) -> bool {
-    port != PORT_CONTROL
-}

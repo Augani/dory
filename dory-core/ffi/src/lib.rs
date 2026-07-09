@@ -3,8 +3,10 @@
 //! The iron rule: this boundary carries **configuration, file descriptors, and stats — never
 //! data-plane bytes**. Swift hands the Rust engine an fd and a compiled config; from then on bytes
 //! flow socket-to-socket entirely inside Rust ([`dory_proto::half_close`]), zero per-packet
-//! crossings. Every exported entry is panic-safe (UniFFI wraps calls so a Rust panic surfaces as a
-//! Swift error rather than unwinding across the boundary — UB).
+//! crossings. Panic contract: the release profile builds with `panic = "abort"`, so a panic here
+//! kills the embedding process — it does NOT surface as a Swift error. Exported entries therefore
+//! avoid panicking on any input; the one deliberate exception is tokio runtime construction, whose
+//! failure (thread/fd exhaustion) is treated as fatal.
 //!
 //! This slice exposes the small control surface that is ready: the protocol version and the
 //! create-body rewrite. The `serve(listen_fd, config) -> Handle` entry that hands Rust the captive
@@ -14,6 +16,8 @@ uniffi::setup_scaffolding!();
 
 mod agent_forward;
 pub(crate) mod remote;
+
+const COLD_WAKE_BACKEND_RETRY: std::time::Duration = std::time::Duration::from_secs(210);
 
 /// The wire protocol version doryd and the agent must agree on.
 #[uniffi::export]
@@ -113,7 +117,7 @@ pub fn start_dataplane_with_activity(
         listen_fd,
         std::sync::Arc::new(dory_dataplane::UnixBackend {
             path: dockerd_socket_path.into(),
-            retry_for: Some(std::time::Duration::from_secs(60)),
+            retry_for: Some(COLD_WAKE_BACKEND_RETRY),
         }),
         gpu_supported,
         Some(dory_dataplane::serve::ActivityReporter::new(
@@ -163,7 +167,7 @@ pub fn start_dataplane_forward_with_activity(
             forward_socket: forward_socket_path.into(),
             cid,
             port,
-            retry_for: Some(std::time::Duration::from_secs(30)),
+            retry_for: Some(COLD_WAKE_BACKEND_RETRY),
         }),
         gpu_supported,
         Some(dory_dataplane::serve::ActivityReporter::new(
@@ -188,7 +192,11 @@ fn spawn_dataplane<B: dory_dataplane::Backend>(
         activity,
     });
     let task = runtime.spawn(async move {
-        let _ = dory_dataplane::serve_fd(listen_fd, backend, opts).await;
+        // The exported signatures return a bare Arc (no error channel), so a dead listener fd or
+        // bind failure must at least be visible in the daemon log rather than vanish.
+        if let Err(error) = dory_dataplane::serve_fd(listen_fd, backend, opts).await {
+            eprintln!("dory-ffi: dataplane on fd {listen_fd} stopped serving: {error}");
+        }
     });
     std::sync::Arc::new(DoryDataplane {
         runtime: std::sync::Mutex::new(Some(runtime)),

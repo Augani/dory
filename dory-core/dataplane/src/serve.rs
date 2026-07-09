@@ -34,6 +34,8 @@ use crate::classify::{classify, Disposition};
 use crate::create_rewrite::{rewrite_create_body, RewriteOpts};
 use crate::http_head::{head_end, parse_head, MAX_HEAD_BYTES};
 
+pub const ACTIVITY_ACK_TIMEOUT: Duration = Duration::from_secs(210);
+
 pub struct ServeOpts {
     pub gpu_supported: bool,
     pub activity: Option<ActivityReporter>,
@@ -64,7 +66,7 @@ impl ActivityReporter {
             let _ = stream.write_all(line.as_bytes()).await;
             let _ = stream.shutdown().await;
             let mut ack = [0u8; 8];
-            let _ = timeout(Duration::from_secs(35), stream.read(&mut ack)).await;
+            let _ = timeout(ACTIVITY_ACK_TIMEOUT, stream.read(&mut ack)).await;
         }
     }
 }

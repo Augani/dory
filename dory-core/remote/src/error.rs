@@ -7,8 +7,8 @@ pub enum RemoteError {
     Ssh(String),
     #[error("ssh authentication failed for user {0}")]
     AuthFailed(String),
-    #[error("server host key rejected")]
-    HostKeyRejected,
+    #[error("agent rpc timed out after {0:?}")]
+    Timeout(std::time::Duration),
     #[error("handshake: {0}")]
     Handshake(#[from] HandshakeError),
     #[error("mux: {0}")]

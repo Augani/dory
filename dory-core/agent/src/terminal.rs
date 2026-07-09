@@ -61,8 +61,19 @@ fn spawn_shell() -> io::Result<ShellProcess> {
         .and_then(|name| name.to_str())
         .unwrap_or("sh");
     let arg0 = CString::new(format!("-{shell_name}")).expect("shell name has no nul");
-    let term_key = CString::new("TERM").unwrap();
-    let term_value = CString::new("xterm-256color").unwrap();
+    let argv: [*const libc::c_char; 2] = [arg0.as_ptr(), ptr::null()];
+
+    // Build the child environment BEFORE forking: between fork and exec in a multithreaded process
+    // only async-signal-safe calls are legal, and `setenv` (which may allocate) is not one of them.
+    let env_strings: Vec<CString> = std::env::vars()
+        .filter(|(key, _)| key != "TERM")
+        .filter_map(|(key, value)| CString::new(format!("{key}={value}")).ok())
+        .chain(std::iter::once(
+            CString::new("TERM=xterm-256color").expect("static env has no nul"),
+        ))
+        .collect();
+    let mut envp: Vec<*const libc::c_char> = env_strings.iter().map(|s| s.as_ptr()).collect();
+    envp.push(ptr::null());
 
     let mut master: libc::c_int = -1;
     let pid = unsafe {
@@ -78,8 +89,7 @@ fn spawn_shell() -> io::Result<ShellProcess> {
     }
     if pid == 0 {
         unsafe {
-            libc::setenv(term_key.as_ptr(), term_value.as_ptr(), 0);
-            libc::execl(shell.as_ptr(), arg0.as_ptr(), ptr::null::<libc::c_char>());
+            libc::execve(shell.as_ptr(), argv.as_ptr(), envp.as_ptr());
             libc::_exit(127);
         }
     }

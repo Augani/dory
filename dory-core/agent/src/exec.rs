@@ -7,6 +7,9 @@ const DEFAULT_TIMEOUT_MS: u64 = 30_000;
 const MAX_TIMEOUT_MS: u64 = 10 * 60_000;
 const DEFAULT_OUTPUT_LIMIT: usize = 1024 * 1024;
 const MAX_OUTPUT_LIMIT: usize = 16 * 1024 * 1024;
+// After the child is reaped, any bytes still in the pipes are bounded by the kernel buffer — unless
+// a descendant inherited the write end. Bound the drain so such a descendant can never hang the RPC.
+const DRAIN_TIMEOUT_MS: u64 = 5_000;
 
 #[derive(Debug, Error)]
 pub enum ExecError {
@@ -47,9 +50,14 @@ pub async fn run(req: ExecRequest) -> Result<ExecResponse, ExecError> {
     }
     command.stdout(std::process::Stdio::piped());
     command.stderr(std::process::Stdio::piped());
+    // Own process group so a timeout can kill the whole tree, not just the direct child — a
+    // backgrounded descendant would otherwise survive the kill and hold the output pipes open.
+    #[cfg(unix)]
+    command.process_group(0);
 
     let _wait_guard = crate::reaper::managed_child_wait_guard().await;
     let mut child = command.spawn()?;
+    let group_pid = child.id();
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
     let limit = output_limit(req.output_limit_bytes);
@@ -72,17 +80,14 @@ pub async fn run(req: ExecRequest) -> Result<ExecResponse, ExecError> {
         Ok(status) => status?,
         Err(_) => {
             timed_out = true;
+            kill_process_group(group_pid);
             let _ = child.start_kill();
             child.wait().await?
         }
     };
 
-    let (stdout, stdout_truncated) = stdout_task
-        .await
-        .map_err(|e| ExecError::Join(e.to_string()))??;
-    let (stderr, stderr_truncated) = stderr_task
-        .await
-        .map_err(|e| ExecError::Join(e.to_string()))??;
+    let (stdout, stdout_truncated) = drain_output(stdout_task, group_pid).await?;
+    let (stderr, stderr_truncated) = drain_output(stderr_task, group_pid).await?;
 
     Ok(ExecResponse {
         exit_code: status.code().unwrap_or(if timed_out { 124 } else { 128 }),
@@ -92,6 +97,40 @@ pub async fn run(req: ExecRequest) -> Result<ExecResponse, ExecError> {
         stdout_truncated,
         stderr_truncated,
     })
+}
+
+/// Await a reader task, but never forever: a descendant holding the pipe write-end keeps the reader
+/// from EOF, so on a stalled drain sweep the process group (closing the pipes) and retry once; a
+/// survivor that escaped the group forfeits its residual bytes rather than hanging the RPC.
+async fn drain_output(
+    mut task: tokio::task::JoinHandle<std::io::Result<(Vec<u8>, bool)>>,
+    group_pid: Option<u32>,
+) -> Result<(Vec<u8>, bool), ExecError> {
+    let drain = std::time::Duration::from_millis(DRAIN_TIMEOUT_MS);
+    if let Ok(joined) = tokio::time::timeout(drain, &mut task).await {
+        return Ok(joined.map_err(|e| ExecError::Join(e.to_string()))??);
+    }
+    kill_process_group(group_pid);
+    match tokio::time::timeout(drain, &mut task).await {
+        Ok(joined) => Ok(joined.map_err(|e| ExecError::Join(e.to_string()))??),
+        Err(_) => {
+            task.abort();
+            Ok((Vec::new(), true))
+        }
+    }
+}
+
+fn kill_process_group(group_pid: Option<u32>) {
+    #[cfg(unix)]
+    if let Some(pid) = group_pid {
+        if let Ok(pid) = i32::try_from(pid) {
+            unsafe {
+                libc::kill(-pid, libc::SIGKILL);
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = group_pid;
 }
 
 fn timeout_ms(raw: u64) -> u64 {
@@ -180,6 +219,36 @@ mod tests {
 
         assert_eq!(out.stdout.len(), 4);
         assert!(out.stdout_truncated);
+    }
+
+    #[tokio::test]
+    async fn exec_returns_despite_descendant_holding_stdout_open() {
+        // The backgrounded sleep inherits the stdout pipe, so the reader never sees EOF from the
+        // direct child alone. The bounded drain must sweep the process group and still deliver the
+        // bytes the command actually wrote.
+        let start = std::time::Instant::now();
+        let out = run(ExecRequest {
+            argv: vec![
+                "/bin/sh".into(),
+                "-c".into(),
+                "sleep 600 & printf held".into(),
+            ],
+            cwd: String::new(),
+            env: Vec::new(),
+            timeout_ms: 60_000,
+            output_limit_bytes: 1024,
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(out.exit_code, 0);
+        assert_eq!(out.stdout, b"held");
+        assert!(!out.timed_out);
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(30),
+            "drain must be bounded, took {:?}",
+            start.elapsed()
+        );
     }
 
     #[tokio::test]

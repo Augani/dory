@@ -6,9 +6,8 @@
 //!   mux + pb). Reusable for vsock, unix, or SSH.
 //! - [`ssh`] — the russh SSH transport: connect, key auth, tunnel a channel to the agent daemon, and
 //!   run `AgentClient` over it. Host-key verification is mandatory ([`ssh::HostKeyPolicy`]).
-//!
-//! Not yet built (blocked on decision D5 — conflict policy sign-off): chunked/resumable file sync
-//! and the reconciler. The transport and RPC below are the unblocked foundation they build on.
+//! - [`sync_push`] — host-authoritative chunked file sync (D5): manifest diff, chunked puts,
+//!   deletes; the guest-side reconciler lives in `dory-sync`.
 
 pub mod agent_client;
 pub mod error;
