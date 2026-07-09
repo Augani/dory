@@ -931,11 +931,17 @@ public final class FuseServer: @unchecked Sendable {
         return !["0", "false", "no", "off"].contains(value)
     }
 
+    // Default OFF: caching negative lookups breaks tools that create a path in parallel right after a
+    // miss (npm's arborist fails `mkdir node_modules/<pkg>` with ENOENT because the just-created parent
+    // is still cached as a negative dentry). It is a real correctness regression on a bind mount and is
+    // not safe without the host-side FSEvents invalidation channel (P0.3), so it stays opt-in via
+    // DORY_FUSE_NEGATIVE_DENTRY=1 until that lands. The `touch`-storm microbenchmark win it gave does
+    // not justify breaking `npm install`.
     private static func negativeDentryCachingEnabledFromEnvironment() -> Bool {
         guard let value = ProcessInfo.processInfo.environment["DORY_FUSE_NEGATIVE_DENTRY"]?.lowercased() else {
-            return true
+            return false
         }
-        return !["0", "false", "no", "off"].contains(value)
+        return ["1", "true", "yes", "on"].contains(value)
     }
 
     private static func timeoutFromEnvironment(_ key: String) -> UInt64 {

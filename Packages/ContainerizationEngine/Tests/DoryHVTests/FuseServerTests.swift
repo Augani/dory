@@ -120,7 +120,7 @@ struct FuseServerTests {
     @Test func directMetadataMissResponsesMatchArrayPath() throws {
         let root = try TestFuseServerRoot()
         try root.write("exists", to: "exists.txt")
-        let server = try FuseServer(hostFS: HostFS(rootPath: root.url.path))
+        let server = try FuseServer(hostFS: HostFS(rootPath: root.url.path), negativeDentryCaching: true)
 
         let missingRequest = request(unique: 201, opcode: .lookup, nodeID: HostFS.rootNodeID, payload: Array("missing.txt\0".utf8))
         let missingHeader = try FuseProtocol.decodeInHeader(missingRequest)
@@ -411,9 +411,8 @@ struct FuseServerTests {
 
         #expect(try FuseProtocol.decodeOutHeader(statfs).length == UInt32(FuseOutHeader.byteCount + 80))
         #expect(payload(from: statfs).leUInt64(at: 0) > 0)
-        // A miss is now a cacheable negative dentry (error 0, nodeid 0), not a bare ENOENT.
-        #expect(try FuseProtocol.decodeOutHeader(missing).error == 0)
-        #expect(payload(from: missing).leUInt64(at: 0) == 0)
+        // Negative-dentry caching is opt-in (off by default), so a miss is a plain ENOENT.
+        #expect(try FuseProtocol.decodeOutHeader(missing).error == -ENOENT)
         #expect(try FuseProtocol.decodeOutHeader(unsupported).error == -FuseProtocol.linuxErrno(ENOSYS))
     }
 
@@ -445,7 +444,7 @@ struct FuseServerTests {
 
     @Test func lookupMissReturnsCacheableNegativeDentry() throws {
         let root = try TestFuseServerRoot()
-        let server = try FuseServer(hostFS: HostFS(rootPath: root.url.path), entryValiditySeconds: 7)
+        let server = try FuseServer(hostFS: HostFS(rootPath: root.url.path), negativeDentryCaching: true, entryValiditySeconds: 7)
 
         let miss = server.handle(request: request(unique: 80, opcode: .lookup, nodeID: HostFS.rootNodeID, payload: Array("nope.txt\0".utf8)))
         let header = try FuseProtocol.decodeOutHeader(miss)
