@@ -21,7 +21,7 @@ struct NewMachineSheet: View {
     @State private var cpus = 2
     @State private var memoryGB = 2
     @State private var mountRows: [MountRow] = []
-    @State private var shareHome = true
+    @State private var shareHome = false
     @State private var shell = "/bin/bash"
     @State private var username = NSUserName()
 
@@ -307,7 +307,7 @@ struct NewMachineSheet: View {
             Toggle("Share my Mac home (read-write)", isOn: $shareHome)
                 .toggleStyle(.switch).tint(p.accent)
                 .font(.system(size: 12.5)).foregroundStyle(p.text)
-            Text("Your home, git config, and SSH keys are shared into this machine.")
+            Text(shareHome ? "Your home, git config, and SSH keys are shared into this machine." : "No Mac home folder is shared unless you turn this on or add scoped mounts.")
                 .font(.system(size: 11)).foregroundStyle(p.text3)
         }
     }

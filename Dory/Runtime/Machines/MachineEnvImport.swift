@@ -7,7 +7,7 @@ nonisolated enum MachineEnvImport {
     static func normalize(_ names: [String]) -> [String] {
         var seen = Set<String>()
         var ordered: [String] = []
-        for name in defaultNames + names {
+        for name in names {
             let cleaned = name.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
             guard !cleaned.isEmpty, cleaned.wholeMatch(of: /[A-Z_][A-Z0-9_]*/) != nil else { continue }
             guard seen.insert(cleaned).inserted else { continue }

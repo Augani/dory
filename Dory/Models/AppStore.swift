@@ -153,6 +153,7 @@ final class AppStore {
     @ObservationIgnored private let dorydEngineRequired: Bool
     @ObservationIgnored private let dorydEngineExplicitlyRequested: Bool
     @ObservationIgnored private let environment: [String: String]
+    @ObservationIgnored private let machineEnvResolver: @Sendable ([String]) async -> [String: String]
     @ObservationIgnored private var runtimeOwnedByDoryd = false
     @ObservationIgnored private var daemonSocketPath: String?
     var runtimeKind: RuntimeKind { runtime.kind }
@@ -161,11 +162,15 @@ final class AppStore {
         runtime: (any ContainerRuntime)? = nil,
         dorydClient: DorydClient = DorydClient(),
         useDorydEngine: Bool? = nil,
-        environment: [String: String] = ProcessInfo.processInfo.environment
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        machineEnvResolver: @escaping @Sendable ([String]) async -> [String: String] = { names in
+            await MachineEnvImport.resolve(names: names)
+        }
     ) {
         let env = environment
         let dorydFlags = Self.dorydEngineFlags(environment: env)
         self.environment = env
+        self.machineEnvResolver = machineEnvResolver
         self.dorydClient = dorydClient
         self.dorydEngineEnabled = useDorydEngine ?? dorydFlags.enabled
         self.dorydEngineRequired = useDorydEngine == true || dorydFlags.required
@@ -548,6 +553,9 @@ final class AppStore {
         let normalized = MachineEnvImport.normalize(names)
         machineEnvAllowList = normalized
         UserDefaults.standard.set(MachineEnvImport.serialize(normalized), forKey: Self.machineEnvAllowListKey)
+        showSettingsSuccess(normalized.isEmpty
+            ? "New machines will not copy host environment variables."
+            : "New machines will copy \(normalized.count) allowed environment variable\(normalized.count == 1 ? "" : "s") when present.")
     }
 
     func completeOnboarding() {
@@ -3279,7 +3287,9 @@ final class AppStore {
             return "Invalid machine name"
         }
         guard requireDorydMachines() else { return actionError }
-        let effectiveSettings = identity.map { Self.withIdentity(settings, $0) } ?? settings
+        let identitySettings = identity.map { Self.withIdentity(settings, $0) } ?? settings
+        let resolvedEnv = await machineEnvResolver(machineEnvAllowList)
+        let effectiveSettings = Self.mergingEnv(identitySettings, resolved: resolvedEnv)
         return await createDorydMachine(name: trimmedName, settings: effectiveSettings, recipe: recipe)
     }
 

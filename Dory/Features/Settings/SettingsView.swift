@@ -8,6 +8,7 @@ struct SettingsView: View {
     @State private var httpPortDraft = ""
     @State private var httpsPortDraft = ""
     @State private var customSocketDraft = ""
+    @State private var machineEnvAllowListDraft = ""
     @State private var detectedEngineSources: [DockerSourceEngine] = []
 
     var body: some View {
@@ -61,6 +62,7 @@ struct SettingsView: View {
         switch store.settingsTab {
         case .general: general
         case .resources: resources
+        case .machines: machines
         case .engine: engine
         case .autoIdle: AutoIdleView()
         case .network: network
@@ -686,6 +688,138 @@ struct SettingsView: View {
         case .networking: p.accent
         case .helper: p.text3
         }
+    }
+
+    private var machines: some View {
+        VStack(alignment: .leading, spacing: 22) {
+            groupLabel("NEW MACHINE DEFAULTS")
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(alignment: .top, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Host environment allow-list")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(p.text)
+                        Text("Only named variables are copied when a new machine is created. Empty values are skipped; values are read at creation time.")
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(p.text3)
+                            .lineLimit(3)
+                    }
+                    Spacer(minLength: 0)
+                    Button(action: commitMachineEnvAllowListDraft) {
+                        Image(systemName: "checkmark")
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundStyle(.white)
+                            .frame(width: 28, height: 26)
+                            .background(p.accent, in: RoundedRectangle(cornerRadius: 7))
+                    }
+                    .buttonStyle(.plain)
+                    .help("Save environment allow-list")
+                    .accessibilityIdentifier("machine-env-save")
+                }
+                TextField("ANTHROPIC_API_KEY, GH_TOKEN", text: $machineEnvAllowListDraft, onCommit: commitMachineEnvAllowListDraft)
+                    .textFieldStyle(.plain)
+                    .font(.mono(12))
+                    .foregroundStyle(p.text)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+                    .background(p.bgInput, in: RoundedRectangle(cornerRadius: 8))
+                    .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(p.border))
+                    .accessibilityIdentifier("machine-env-allow-list")
+                VStack(spacing: 0) {
+                    machineEnvToggleRow("ANTHROPIC_API_KEY", divider: true)
+                    ForEach(MachineEnvImport.optionalExtras, id: \.self) { name in
+                        machineEnvToggleRow(name, divider: name != (MachineEnvImport.optionalExtras.last ?? ""))
+                    }
+                }
+                .background(p.bgInput, in: RoundedRectangle(cornerRadius: 9))
+                .overlay(RoundedRectangle(cornerRadius: 9).strokeBorder(p.border))
+                Text(machineEnvAllowListSummary)
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(p.text3)
+                    .lineLimit(2)
+            }
+            .padding(18)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(p.bgElevated, in: RoundedRectangle(cornerRadius: 11))
+            .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(p.border))
+
+            groupLabel("AGENT SANDBOXES")
+            VStack(spacing: 0) {
+                machinePolicyRow("Persistent machines", "No host folders are shared unless the create request includes mounts. Settings above control which host env names may be copied.", divider: true)
+                machinePolicyRow("Sandbox runs", "`dory sandbox run` starts a dedicated VM with no host file sharing by default. Add mounts explicitly for scoped workspace access.", divider: true)
+                machinePolicyRow("Shell access", "`dory machine shell NAME` and `dory machine exec NAME -- ...` enter the VM boundary; the agent sees machine files, mounted folders, and copied env only.", divider: false)
+            }
+            .background(p.bgElevated, in: RoundedRectangle(cornerRadius: 11))
+            .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(p.border))
+        }
+        .onAppear(perform: syncMachineEnvAllowListDraft)
+        .onChange(of: store.machineEnvAllowList) { _, _ in syncMachineEnvAllowListDraft() }
+    }
+
+    private func machineEnvToggleRow(_ name: String, divider: Bool) -> some View {
+        toggleRow(
+            name,
+            machineEnvDraftNames.contains(name) ? "Copied when present" : "Not copied",
+            isOn: Binding(
+                get: { machineEnvDraftNames.contains(name) },
+                set: { enabled in setMachineEnvDraft(name, enabled: enabled) }
+            ),
+            divider: divider
+        )
+    }
+
+    private func machinePolicyRow(_ title: String, _ subtitle: String, divider: Bool) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "checkmark.circle.fill")
+                .font(.system(size: 12))
+                .foregroundStyle(p.green)
+                .padding(.top, 2)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.system(size: 12.5, weight: .semibold))
+                    .foregroundStyle(p.text)
+                Text(subtitle)
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(p.text3)
+                    .lineLimit(3)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 15)
+        .padding(.vertical, 12)
+        .overlay(alignment: .bottom) { if divider { Rectangle().fill(p.border).frame(height: 1) } }
+    }
+
+    private var machineEnvDraftNames: [String] {
+        MachineEnvImport.parse(machineEnvAllowListDraft)
+    }
+
+    private var machineEnvAllowListSummary: String {
+        let names = MachineEnvImport.normalize(store.machineEnvAllowList)
+        guard !names.isEmpty else { return "No host environment variables are copied to new machines." }
+        return "Saved: \(names.joined(separator: ", "))"
+    }
+
+    private func syncMachineEnvAllowListDraft() {
+        machineEnvAllowListDraft = MachineEnvImport.serialize(store.machineEnvAllowList)
+    }
+
+    private func commitMachineEnvAllowListDraft() {
+        let names = MachineEnvImport.parse(machineEnvAllowListDraft)
+        store.setMachineEnvAllowList(names)
+        machineEnvAllowListDraft = MachineEnvImport.serialize(store.machineEnvAllowList)
+    }
+
+    private func setMachineEnvDraft(_ name: String, enabled: Bool) {
+        var names = machineEnvDraftNames
+        if enabled {
+            names.append(name)
+        } else {
+            names.removeAll { $0 == name }
+        }
+        machineEnvAllowListDraft = MachineEnvImport.serialize(names)
+        store.setMachineEnvAllowList(names)
+        machineEnvAllowListDraft = MachineEnvImport.serialize(store.machineEnvAllowList)
     }
 
     private var engine: some View {

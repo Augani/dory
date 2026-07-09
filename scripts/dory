@@ -1125,6 +1125,46 @@ network_cmd() {
   esac
 }
 
+dory_machine_has_option() {
+  local option="$1" arg
+  shift
+  while [ "$#" -gt 0 ]; do
+    arg="${1:-}"
+    case "$arg" in
+      "$option"|"$option"=*) return 0 ;;
+    esac
+    shift
+  done
+  return 1
+}
+
+dory_machine_env_allow_list() {
+  local raw
+  if [ "${DORY_MACHINE_ENV_ALLOW_LIST+x}" = "x" ]; then
+    printf '%s\n' "$DORY_MACHINE_ENV_ALLOW_LIST"
+    return 0
+  fi
+  if raw="$(defaults read com.pythonxi.Dory dory.machineEnvAllowList 2>/dev/null)"; then
+    printf '%s\n' "$raw"
+  else
+    printf '%s\n' "ANTHROPIC_API_KEY"
+  fi
+}
+
+dory_machine_env_rows() {
+  local raw token key value seen=" "
+  raw="$(dory_machine_env_allow_list)"
+  for token in $(printf '%s\n' "$raw" | tr ',\n\t' '   '); do
+    key="$(printf '%s' "$token" | tr '[:lower:]' '[:upper:]')"
+    [[ "$key" =~ ^[A-Z_][A-Z0-9_]*$ ]] || continue
+    case "$seen" in *" $key "*) continue ;; esac
+    seen="$seen$key "
+    value="${!key-}"
+    [ -n "$value" ] || continue
+    printf '%s=%s\n' "$key" "$value"
+  done
+}
+
 doryd_machine_cmd() {
   local ctl="$1" sub name args=()
   shift
@@ -1169,6 +1209,28 @@ doryd_machine_cmd() {
     delete-snapshot|rm-snapshot)
       shift
       exec "$ctl" machine delete-snapshot "$@"
+      ;;
+    create)
+      shift
+      name="${1:?usage: dory machine create <name> [--kernel PATH] [--rootfs PATH] [--memory-mb N] [--cpus N] [--share TAG=HOST:GUEST[:ro|rw]] [--env KEY=VALUE]}"
+      shift
+      args=("$name")
+      if ! dory_machine_has_option --kernel "$@"; then
+        local kernel
+        kernel="$(sandbox_default_kernel || true)"
+        [ -n "$kernel" ] || { echo "machine kernel not found; set DORYD_MACHINE_KERNEL or install the full Dory app bundle" >&2; exit 1; }
+        args+=(--kernel "$kernel")
+      fi
+      if ! dory_machine_has_option --rootfs "$@"; then
+        local rootfs
+        rootfs="$(sandbox_default_rootfs || true)"
+        [ -n "$rootfs" ] || { echo "machine rootfs not found; set DORYD_MACHINE_ROOTFS or install the full Dory app bundle" >&2; exit 1; }
+        args+=(--rootfs "$rootfs")
+      fi
+      while IFS= read -r env_row; do
+        [ -n "$env_row" ] && args+=(--env "$env_row")
+      done < <(dory_machine_env_rows)
+      exec "$ctl" machine create "${args[@]}" "$@"
       ;;
     create|update|start|stop|delete|rm|status|provision|snapshots|snapshot)
       exec "$ctl" machine "$@"

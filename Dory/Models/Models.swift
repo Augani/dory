@@ -432,13 +432,14 @@ struct LocalDorydCapability: Identifiable, Equatable, Sendable {
 }
 
 enum SettingsTab: String, CaseIterable, Identifiable, Sendable {
-    case general, engine, resources, autoIdle, network, usb, localTools, migrate, managed, about
+    case general, engine, resources, machines, autoIdle, network, usb, localTools, migrate, managed, about
     var id: String { rawValue }
     var label: String {
         switch self {
         case .general: "General"
         case .engine: "Engine & Daemon"
         case .resources: "Resources"
+        case .machines: "Machines"
         case .autoIdle: "Auto-Idle"
         case .network: "Network"
         case .usb: "USB Devices"

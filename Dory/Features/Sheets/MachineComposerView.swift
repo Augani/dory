@@ -275,21 +275,11 @@ struct MachineComposerView: View {
         }
     }
 
-    private static func linuxUsername() -> String {
-        let allowed = Set("abcdefghijklmnopqrstuvwxyz0123456789_-")
-        let filtered = String(NSUserName().lowercased().filter { allowed.contains($0) }.prefix(32))
-        guard let first = filtered.first, first.isLetter || first == "_" else { return "dev" }
-        return filtered
-    }
-
     private func create() {
         let recipe = ProvisionComposer.composedRecipe(selectedItems)
-        let identity = MacIdentity.make(username: Self.linuxUsername(), uid: Int(getuid()),
-                                        homePath: NSHomeDirectory(), shell: "/bin/bash",
-                                        sshDir: NSHomeDirectory() + "/.ssh")
         let settings = NewMachineSheet.buildSettings(cpus: cpus, memoryGB: memoryGB, mounts: [], address: trimmedAddress)
         let machineName = name
-        Task { _ = await store.createMachine(image: "ubuntu:24.04", name: machineName, arch: .host, recipe: recipe, settings: settings, identity: identity) }
+        Task { _ = await store.createMachine(image: "ubuntu:24.04", name: machineName, arch: .host, recipe: recipe, settings: settings) }
     }
 
     private var dnsName: String {

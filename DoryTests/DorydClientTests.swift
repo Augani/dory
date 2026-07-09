@@ -561,6 +561,63 @@ struct DorydClientTests {
     }
 
     @MainActor
+    @Test func appStoreCopiesAllowedHostEnvWhenCreatingDorydMachine() async throws {
+        let base = "/tmp/damc-env-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let socketPath = base + "/doryd.sock"
+        defer { try? FileManager.default.removeItem(atPath: base) }
+
+        let shim = DockerShim(runtime: MockRuntime())
+        let dockerServer = ShimHTTPServer(socketPath: socketPath) { request in
+            await shim.handle(request)
+        }
+        try dockerServer.start()
+        defer { dockerServer.stop() }
+
+        let listener = NSXPCListener.anonymous()
+        let service = FakeDorydService(socketPath: socketPath)
+        let delegate = FakeDorydListenerDelegate(service: service)
+        listener.delegate = delegate
+        listener.resume()
+        defer { listener.invalidate() }
+
+        let store = AppStore(
+            dorydClient: DorydClient(endpoint: listener.endpoint),
+            useDorydEngine: true,
+            environment: [
+                "DORYD_MACHINE_KERNEL": "/vm/Image",
+                "DORYD_MACHINE_ROOTFS": "/vm/rootfs.raw",
+            ],
+            machineEnvResolver: { _ in
+                [
+                    "ANTHROPIC_API_KEY": "sk-ant-host",
+                    "GH_TOKEN": "gh-host",
+                    "EMPTY_TOKEN": "",
+                ]
+            }
+        )
+        store.routeDockerCLI = false
+        store.setMachineEnvAllowList(["ANTHROPIC_API_KEY", "GH_TOKEN", "EMPTY_TOKEN"])
+
+        await store.connectBackend()
+        let result = await store.createMachine(
+            image: "not-a-docker-image",
+            name: "envdev",
+            settings: MachineSettings(cpus: nil, memoryMB: nil, env: ["GH_TOKEN": "gh-explicit"])
+        )
+
+        #expect(result == nil)
+        let config = try #require(service.latestMachineCreateConfig)
+        let envRows = try #require(config["env"] as? [NSDictionary])
+        let env = Dictionary(uniqueKeysWithValues: envRows.compactMap { row -> (String, String)? in
+            guard let key = row["key"] as? String, let value = row["value"] as? String else { return nil }
+            return (key, value)
+        })
+        #expect(env["ANTHROPIC_API_KEY"] == "sk-ant-host")
+        #expect(env["GH_TOKEN"] == "gh-explicit")
+        #expect(env["EMPTY_TOKEN"] == nil)
+    }
+
+    @MainActor
     @Test func dorydMachineConfigurationRequiresKernelAndRootfsAndUsesSettingsDefaults() {
         #expect(AppStore.dorydMachineConfiguration(
             name: "vmdev",

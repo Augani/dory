@@ -9,11 +9,20 @@ struct AppStoreEnvAllowListTests {
         #expect(store.machineEnvAllowList == ["ANTHROPIC_API_KEY"])
     }
 
-    @Test func setAllowListNormalizesAndKeepsAnthropicFirst() {
+    @Test func setAllowListNormalizesDedupesAndPersistsUserChoice() {
         defer { UserDefaults.standard.removeObject(forKey: AppStore.machineEnvAllowListKey) }
         let store = AppStore(runtime: MockRuntime())
         store.setMachineEnvAllowList(["gh_token", "  ", "gh_token"])
-        #expect(store.machineEnvAllowList == ["ANTHROPIC_API_KEY", "GH_TOKEN"])
+        #expect(store.machineEnvAllowList == ["GH_TOKEN"])
+        #expect(UserDefaults.standard.string(forKey: AppStore.machineEnvAllowListKey) == "GH_TOKEN")
+    }
+
+    @Test func setAllowListCanDisableAutomaticEnvTransfer() {
+        defer { UserDefaults.standard.removeObject(forKey: AppStore.machineEnvAllowListKey) }
+        let store = AppStore(runtime: MockRuntime())
+        store.setMachineEnvAllowList([])
+        #expect(store.machineEnvAllowList.isEmpty)
+        #expect(UserDefaults.standard.string(forKey: AppStore.machineEnvAllowListKey) == "")
     }
 
     @Test func mergingEnvAddsResolvedButUserKeysWin() {
