@@ -2,9 +2,11 @@ import Darwin
 import Foundation
 
 /// virtio-balloon with free page reporting (VIRTIO_BALLOON_F_REPORTING): the guest batches ranges
-/// of free pages onto the reporting queue and this device hands them straight back to macOS with
-/// madvise. This is the mechanism Virtualization.framework lacks, and the reason dory-hv exists:
-/// the host footprint tracks what the guest is actually using instead of its high-water mark.
+/// of free pages onto the reporting queue and `GuestMemory.releaseRange` hands them straight back to
+/// macOS via `MADV_FREE_REUSABLE`, which drops them from the process's physical footprint immediately
+/// (refaults come back through `MADV_FREE_REUSE`). This is the mechanism Virtualization.framework
+/// lacks, and the reason dory-hv exists: the host footprint tracks what the guest is actually using
+/// instead of its high-water mark.
 public final class VirtioBalloon: VirtioDeviceBackend {
     public let deviceID: UInt32 = 5
     public let queueCount = 3  // inflate, deflate, reporting
@@ -14,10 +16,8 @@ public final class VirtioBalloon: VirtioDeviceBackend {
     private let log: (String) -> Void
     public private(set) var reclaimedBytes: UInt64 = 0
     public private(set) var reportEvents: UInt64 = 0
-    private var advice: Int32?
 
     private static let hostPageSize: UInt64 = HostPage.size
-    private static let madvZero: Int32 = 11  // MADV_ZERO: release physical pages, zero-fill refault
 
     public init(memory: GuestMemory, log: @escaping (String) -> Void = { _ in }) {
         self.memory = memory
