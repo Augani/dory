@@ -8,16 +8,30 @@ struct SettingsView: View {
     @State private var httpPortDraft = ""
     @State private var httpsPortDraft = ""
     @State private var customSocketDraft = ""
+    @State private var detectedEngineSources: [DockerSourceEngine] = []
 
     var body: some View {
         HStack(spacing: 0) {
             subNav
             ScrollView {
-                content
+                VStack(alignment: .leading, spacing: 16) {
+                    if let notice = store.settingsNotice {
+                        settingsNotice(notice)
+                            .transition(.move(edge: .top).combined(with: .opacity))
+                            .task(id: notice.id) {
+                                try? await Task.sleep(for: .seconds(4))
+                                if store.settingsNotice?.id == notice.id {
+                                    store.clearSettingsNotice()
+                                }
+                            }
+                    }
+                    content
+                }
                     .padding(.horizontal, 24).padding(.vertical, 20)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
+        .animation(.spring(duration: 0.25), value: store.settingsNotice)
     }
 
     private var subNav: some View {
@@ -58,11 +72,36 @@ struct SettingsView: View {
         }
     }
 
+    private func settingsNotice(_ notice: SettingsNotice) -> some View {
+        let color = notice.kind == .success ? p.green : p.red
+        return HStack(spacing: 10) {
+            Image(systemName: notice.kind == .success ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(color)
+            Text(notice.message)
+                .font(.system(size: 12.5, weight: .semibold))
+                .foregroundStyle(p.text)
+                .lineLimit(2)
+            Spacer(minLength: 0)
+            Button { store.clearSettingsNotice() } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 10.5, weight: .bold))
+                    .foregroundStyle(p.text3)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 13)
+        .padding(.vertical, 10)
+        .frame(maxWidth: 720, alignment: .leading)
+        .background(color.opacity(0.10), in: RoundedRectangle(cornerRadius: 9))
+        .overlay(RoundedRectangle(cornerRadius: 9).strokeBorder(color.opacity(0.35)))
+    }
+
     private var migrate: some View {
         VStack(alignment: .leading, spacing: 22) {
             groupLabel("SWITCH TO DORY")
             VStack(alignment: .leading, spacing: 12) {
-                Text("Import your images and containers from Docker Desktop, OrbStack, Colima, Rancher Desktop, Podman, or another Docker-compatible engine onto Dory's engine. Your source engine is only read — nothing there is modified, so you can switch back anytime.")
+                Text("Import images, volumes, networks, and containers from Docker Desktop, OrbStack, Colima, Rancher Desktop, Podman, or another Docker-compatible engine onto Dory's engine. Source volume data is mounted read-only while Dory uses temporary helper containers for the copy.")
                     .font(.system(size: 12.5)).foregroundStyle(p.text2).lineSpacing(4)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 if store.migrationSources.count > 1 {
@@ -73,7 +112,7 @@ struct SettingsView: View {
                             set: { path in Task { await store.selectMigrationSource(path) } }
                         )) {
                             ForEach(store.migrationSources) { engine in
-                                Text(engine.label).tag(engine.socketPath)
+                                Text(engine.pickerLabel).tag(engine.socketPath)
                             }
                         }
                         .labelsHidden().fixedSize()
@@ -100,7 +139,7 @@ struct SettingsView: View {
                     .background(p.accent.opacity(store.migrationBusy ? 0.6 : 1), in: RoundedRectangle(cornerRadius: 8))
                 }
                 .buttonStyle(.plain)
-                .disabled(store.migrationBusy || store.migrationInventory == nil || store.runtimeKind != .sharedVM)
+                .disabled(store.migrationBusy || store.migrationSources.isEmpty || store.runtimeKind != .sharedVM)
                 .accessibilityIdentifier("migrate-import")
                 if store.migrationInventory != nil && store.runtimeKind != .sharedVM {
                     Text("Switch to Dory's daemon engine (Engine & Daemon tab) to import.")
@@ -198,7 +237,7 @@ struct SettingsView: View {
             comparisonRow("*.local domains + HTTPS", .yes, .yes, .no(nil), divider: true)
             comparisonRow("Drop-in docker & kubectl", .yes, .yes, .yes, divider: true)
             comparisonRow("Kubernetes built-in", .yes, .yes, .yes, divider: true)
-            comparisonRow("Rosetta-fast x86", .yes, .yes, .partial, divider: false)
+            comparisonRow("x86 / amd64 images", .partial, .yes, .partial, divider: false)
         }
         .background(p.bgElevated, in: RoundedRectangle(cornerRadius: 11))
         .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(p.border))
@@ -775,10 +814,9 @@ struct SettingsView: View {
     /// Colima-style backend picker: Dory's bundled engine, an auto-detected existing engine, or a
     /// custom Docker-compatible socket. Detected engines are listed so the choice is informed.
     private var engineBackendCard: some View {
-        let detected = DockerEngineSocketDiscovery.availableSources()
-        return VStack(spacing: 0) {
+        VStack(spacing: 0) {
             ForEach(EnginePreference.allCases) { preference in
-                engineChoiceRow(preference, detected: detected)
+                engineChoiceRow(preference, detected: detectedEngineSources)
                 if preference != EnginePreference.allCases.last {
                     Rectangle().fill(p.border).frame(height: 1)
                 }
@@ -786,6 +824,7 @@ struct SettingsView: View {
         }
         .background(p.bgElevated, in: RoundedRectangle(cornerRadius: 11))
         .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(p.border))
+        .task { detectedEngineSources = await Task.detached { DockerEngineSocketDiscovery.availableSources() }.value }
     }
 
     @ViewBuilder private func engineChoiceRow(_ preference: EnginePreference, detected: [DockerSourceEngine]) -> some View {

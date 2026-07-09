@@ -151,6 +151,117 @@ final class ArchiveMigrationTargetRuntime: ContainerRuntime {
 }
 
 @MainActor
+final class VolumeMigrationSourceRuntime: ContainerRuntime {
+    let kind: RuntimeKind = .docker
+    var helperCreated = false
+    var helperRemoved = false
+
+    func snapshot() async throws -> RuntimeSnapshot {
+        RuntimeSnapshot(
+            containers: [
+                Container(id: "c1", name: "db", image: "postgres:16", status: .stopped, cpuPercent: 0,
+                          memoryDisplay: "0", memoryLimitDisplay: "—", memoryFraction: 0, ports: "",
+                          uptime: "—", created: "now", ipAddress: "—", domain: "", command: "", restartPolicy: "unless-stopped",
+                          labels: ["com.docker.compose.project": "shop"],
+                          mounts: [ContainerMount(type: "volume", source: "db-data", target: "/var/lib/postgresql/data")],
+                          networks: ["shop_default"]),
+            ],
+            images: [
+                DockerImage(repository: "postgres", tag: "16", imageID: "sha256:db", size: "40 MB", created: "now", usedByCount: 1),
+            ],
+            volumes: [
+                Volume(name: "db-data", size: "—", driver: "local", usedBy: "db", created: "now"),
+            ],
+            networks: [
+                DoryNetwork(name: "bridge", driver: "bridge", scope: "local", subnet: "", containerCount: 0),
+                DoryNetwork(name: "shop_default", driver: "bridge", scope: "local", subnet: "", containerCount: 1),
+            ]
+        )
+    }
+
+    func start(containerID: String) async throws {}
+    func stop(containerID: String) async throws {}
+    func restart(containerID: String) async throws {}
+    func remove(containerID: String) async throws {}
+    func logs(containerID: String) async throws -> [LogLine] { [] }
+    func env(containerID: String) async throws -> [EnvVar] { [EnvVar(key: "POSTGRES_PASSWORD", value: "secret")] }
+    func create(_ spec: ContainerSpec) async throws -> String { "unused" }
+    func exec(containerID: String, command: [String]) async throws -> ExecResult { ExecResult(exitCode: 0, output: "") }
+
+    func proxyRequest(method: String, path: String, headers: [(name: String, value: String)], body: Data) async -> HTTPResponse? {
+        if method == "POST", path == "/containers/create" {
+            helperCreated = true
+            return HTTPResponse(statusCode: 201, reason: "Created", headers: [:], body: Data(#"{"Id":"source-helper"}"#.utf8))
+        }
+        if method == "DELETE", path.contains("/containers/source-helper") {
+            helperRemoved = true
+            return HTTPResponse(statusCode: 204, reason: "No Content", headers: [:], body: Data())
+        }
+        return nil
+    }
+
+    func copyOutStream(containerID: String, path: String) -> AsyncThrowingStream<Data, Error> {
+        AsyncThrowingStream { continuation in
+            continuation.yield(Data("tar-header".utf8))
+            continuation.yield(Data("tar-body".utf8))
+            continuation.finish()
+        }
+    }
+}
+
+@MainActor
+final class VolumeMigrationTargetRuntime: ContainerRuntime {
+    let kind: RuntimeKind = .sharedVM
+    var pulled: [String] = []
+    var volumesCreated: [String] = []
+    var networksCreated: [String] = []
+    var archiveChunks: [String] = []
+    var helperCreated = false
+    var helperRemoved = false
+    var created: [ContainerSpec] = []
+
+    func snapshot() async throws -> RuntimeSnapshot { RuntimeSnapshot() }
+    func start(containerID: String) async throws {}
+    func stop(containerID: String) async throws {}
+    func restart(containerID: String) async throws {}
+    func remove(containerID: String) async throws {}
+    func logs(containerID: String) async throws -> [LogLine] { [] }
+    func env(containerID: String) async throws -> [EnvVar] { [] }
+    func pull(image: String, registryAuth: String?) async throws { pulled.append(image) }
+    func create(_ spec: ContainerSpec) async throws -> String { created.append(spec); return "new" }
+    func exec(containerID: String, command: [String]) async throws -> ExecResult { ExecResult(exitCode: 0, output: "") }
+    func createVolume(name: String, driver: String?, labels: [String: String], driverOptions: [String: String]) async throws {
+        volumesCreated.append(name)
+    }
+    func createNetwork(name: String, labels: [String: String]) async throws {
+        networksCreated.append(name)
+    }
+
+    func proxyRequest(method: String, path: String, headers: [(name: String, value: String)], body: Data) async -> HTTPResponse? {
+        if method == "POST", path == "/containers/create" {
+            helperCreated = true
+            return HTTPResponse(statusCode: 201, reason: "Created", headers: [:], body: Data(#"{"Id":"target-helper"}"#.utf8))
+        }
+        if method == "DELETE", path.contains("/containers/target-helper") {
+            helperRemoved = true
+            return HTTPResponse(statusCode: 204, reason: "No Content", headers: [:], body: Data())
+        }
+        return nil
+    }
+
+    func copyIn(containerID: String, path: String, archiveStream: AsyncThrowingStream<Data, Error>) async -> Bool {
+        do {
+            for try await chunk in archiveStream {
+                archiveChunks.append(String(decoding: chunk, as: UTF8.self))
+            }
+            return containerID == "target-helper" && path == "/data"
+        } catch {
+            return false
+        }
+    }
+}
+
+@MainActor
 struct MigrationTests {
     @Test func preflightBuildsConfidenceReportBeforeImport() async throws {
         let inventory = try #require(await MigrationAssistant.preflight(from: MigrationPreflightRuntime()))
@@ -171,7 +282,7 @@ struct MigrationTests {
         #expect(inventory.confidenceLabel == "Needs review")
         #expect(inventory.transferItems.contains { $0.contains("compose project") })
         #expect(inventory.transferItems.contains { $0.contains("custom network") })
-        #expect(inventory.attentionItems.contains { $0.contains("Volume data") })
+        #expect(inventory.attentionItems.contains { $0.contains("Named Docker volume data") })
         #expect(inventory.attentionItems.contains { $0.contains("bind mount") })
         #expect(inventory.attentionItems.contains { $0.contains("Privileged") })
         #expect(inventory.attentionItems.contains { $0.contains("Host-network") })
@@ -214,5 +325,27 @@ struct MigrationTests {
         #expect(target.loadedArchiveChunks == [["tar:local/web:dev:", "payload"]])
         #expect(summary.imagesImported == ["local/web:dev"])
         #expect(summary.failures.isEmpty)
+    }
+
+    @Test func copiesVolumesAndRecreatesContainersWithMountsAndNetworks() async {
+        let source = VolumeMigrationSourceRuntime()
+        let target = VolumeMigrationTargetRuntime()
+
+        let summary = await MigrationAssistant.migrate(from: source, to: target)
+
+        #expect(target.pulled == ["postgres:16"])
+        #expect(target.networksCreated == ["shop_default"])
+        #expect(target.volumesCreated == ["db-data"])
+        #expect(target.archiveChunks == ["tar-header", "tar-body"])
+        #expect(summary.networksCreated == ["shop_default"])
+        #expect(summary.volumesCopied == ["db-data"])
+        #expect(summary.containersMigrated == ["db"])
+        #expect(summary.failures.isEmpty)
+        #expect(target.created.first?.mounts == [ContainerMount(type: "volume", source: "db-data", target: "/var/lib/postgresql/data")])
+        #expect(target.created.first?.networks == ["shop_default"])
+        #expect(target.created.first?.restart == "unless-stopped")
+        #expect(target.created.first?.environment["POSTGRES_PASSWORD"] == "secret")
+        #expect(source.helperCreated)
+        #expect(target.helperCreated)
     }
 }

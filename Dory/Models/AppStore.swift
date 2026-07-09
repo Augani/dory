@@ -6,6 +6,14 @@ import UniformTypeIdentifiers
 
 enum LoadState: Sendable { case connecting, ready, engineOff }
 
+struct SettingsNotice: Identifiable, Equatable, Sendable {
+    enum Kind: Equatable, Sendable { case success, failure }
+
+    var id = UUID()
+    var kind: Kind
+    var message: String
+}
+
 enum ContainerFilter: String, CaseIterable, Sendable {
     case running, all, stopped
     var label: String {
@@ -43,6 +51,7 @@ final class AppStore {
     var networksSort: TableSort?
     var activeSheet: AppSheet?
     var actionError: String?
+    var settingsNotice: SettingsNotice?
     var inspectedImage: DockerImage?
     var inspectedNetwork: DoryNetwork?
 
@@ -106,7 +115,7 @@ final class AppStore {
         return "External Docker-compatible engine"
     }
 
-    var runtimeMode = "manual"
+    var runtimeMode = "always-on"
     var idlePolicy = IdlePolicy.fallback
     var idlePolicyLoaded = false
     var idlePolicyBusy = false
@@ -190,6 +199,9 @@ final class AppStore {
             if let v = UserDefaults.standard.object(forKey: Self.domainsEnabledKey) as? Bool { domainsEnabled = v }
             if let saved = Self.normalizedDomainSuffix(UserDefaults.standard.string(forKey: Self.domainSuffixKey)) {
                 domainSuffix = saved
+            }
+            if let savedMode = Self.persistedRuntimeMode(environment: env) {
+                runtimeMode = savedMode
             }
             if let override = Self.normalizedDomainSuffix(env["DORY_DOMAIN_SUFFIX"] ?? env["DORYD_DOMAIN_SUFFIX"]) {
                 domainSuffix = override
@@ -394,6 +406,7 @@ final class AppStore {
         autoUpdate = on
         UserDefaults.standard.set(on, forKey: Self.autoUpdateKey)
         DoryUpdater.shared.automaticallyChecks = on
+        showSettingsSuccess(on ? "Automatic update checks enabled." : "Automatic update checks disabled.")
     }
 
     func setKubernetesVersion(_ version: KubeVersion) {
@@ -402,19 +415,41 @@ final class AppStore {
     }
 
     func setRouteDockerCLI(_ on: Bool) {
+        let previous = routeDockerCLI
         routeDockerCLI = on
         UserDefaults.standard.set(on, forKey: Self.routeDockerKey)
         Task {
+            let localChangeApplied: Bool
             if on {
-                await configureTerminalDockerCLI()
+                localChangeApplied = await configureTerminalDockerCLI()
             } else if !on {
                 DockerContext.deactivateSync()
                 HostDockerCLI.remove()
                 dockerHostConflict = nil
+                localChangeApplied = true
+            } else {
+                localChangeApplied = true
             }
+
+            guard localChangeApplied else {
+                routeDockerCLI = previous
+                UserDefaults.standard.set(previous, forKey: Self.routeDockerKey)
+                showSettingsFailure("Terminal docker command could not be enabled because Dory's bundled CLI helpers are missing.")
+                return
+            }
+
+            var daemonRefreshApplied = true
             if dorydClient.usesMachService {
-                _ = await DorydLaunchAgent.ensureCurrent(configuration: dorydLaunchAgentConfiguration())
+                daemonRefreshApplied = await DorydLaunchAgent.ensureCurrent(configuration: dorydLaunchAgentConfiguration())
             }
+
+            guard daemonRefreshApplied else {
+                showSettingsFailure(on
+                    ? "Terminal docker command was installed, but doryd could not be refreshed. Restart Dory to finish applying it."
+                    : "Terminal docker command was removed locally, but doryd could not be refreshed. Restart Dory to finish applying it.")
+                return
+            }
+            showSettingsSuccess(on ? "Terminal docker command enabled." : "Terminal docker command removed.")
         }
     }
 
@@ -433,6 +468,7 @@ final class AppStore {
         openLoginsOnMac = on
         UserDefaults.standard.set(on, forKey: Self.openLoginsOnMacKey)
         hostBridge.setEnabled(on)
+        showSettingsSuccess(on ? "Browser login handoff enabled." : "Browser login handoff disabled.")
     }
 
     private var isAutomationContext: Bool {
@@ -475,15 +511,17 @@ final class AppStore {
     func setAppearance(_ value: DoryAppearance) {
         appearance = value
         UserDefaults.standard.set(value.rawValue, forKey: Self.appearanceKey)
+        showSettingsSuccess("\(value.rawValue.capitalized) appearance applied.")
     }
 
     func setLaunchAtLogin(_ on: Bool) {
         launchAtLogin = on
         do {
             if on { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
+            showSettingsSuccess(on ? "Dory will launch at login." : "Dory will not launch at login.")
         } catch {
             launchAtLogin = (SMAppService.mainApp.status == .enabled)
-            actionError = "Could not update the login item: \(error.localizedDescription)"
+            showSettingsFailure("Could not update the login item: \(error.localizedDescription)")
         }
     }
 
@@ -491,6 +529,7 @@ final class AppStore {
         showMenuBarIcon = isAgentMode ? true : on
         UserDefaults.standard.set(showMenuBarIcon, forKey: Self.menuBarIconKey)
         DoryAppDelegate.refreshMenuBarVisibility()
+        showSettingsSuccess(showMenuBarIcon ? "Menu bar icon enabled." : "Menu bar icon hidden.")
     }
 
     func setMachineEnvAllowList(_ names: [String]) {
@@ -505,6 +544,18 @@ final class AppStore {
     }
 
     var palette: DoryPalette { appearance.palette }
+
+    func clearSettingsNotice() {
+        settingsNotice = nil
+    }
+
+    private func showSettingsSuccess(_ message: String) {
+        settingsNotice = SettingsNotice(kind: .success, message: message)
+    }
+
+    private func showSettingsFailure(_ message: String) {
+        settingsNotice = SettingsNotice(kind: .failure, message: message)
+    }
 
     var isAgentMode: Bool {
         if let value = Bundle.main.object(forInfoDictionaryKey: "LSUIElement") as? Bool { return value }
@@ -555,6 +606,12 @@ final class AppStore {
             forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main
         ) { [weak self] _ in
             Task { @MainActor in await self?.ensureEngineAwake() }
+        }
+    }
+
+    deinit {
+        if let activationObserver {
+            NotificationCenter.default.removeObserver(activationObserver)
         }
     }
 
@@ -636,22 +693,16 @@ final class AppStore {
             _ = await DorydLaunchAgent.ensureCurrent(configuration: dorydLaunchAgentConfiguration())
         }
         do {
-            let status = try await dorydClient.engineStatus()
-            let socketPath = try await dorydClient.dorySocketPath()
+            let (status, socketPath) = try await waitForDorydBackend()
             daemonSocketPath = socketPath
             runtimeOwnedByDoryd = true
             runtime = DockerEngineRuntime(socketPath: socketPath, kind: .sharedVM)
 
-            if status.state == "sleeping" {
-                engineSleeping = true
-                engineActivity.setSleeping(true)
-                engineRunning = false
-                loadState = .ready
-                sharedVMStatus = status.detail.isEmpty ? "Sleeping — Docker use wakes it." : "Sleeping — \(status.detail)"
-                return true
-            }
-
             if status.state != "running" {
+                // Opening Dory is an explicit "I want the engine" signal. doryd may arm a sleeping
+                // socket at login or after Auto-Idle, but the app should promote it to a live engine
+                // on attach; idle policy decides only whether it may sleep again later.
+                await refreshDorydRuntimeMode()
                 let started = try await dorydClient.engineStart()
                 guard started.ok else {
                     sharedVMStatus = started.message.isEmpty ? "doryd could not start the engine." : started.message
@@ -683,6 +734,33 @@ final class AppStore {
             loadState = .engineOff
             return false
         }
+    }
+
+    private func waitForDorydBackend(timeout: TimeInterval = 8) async throws -> (DorydEngineStatus, String) {
+        let deadline = Date().addingTimeInterval(timeout)
+        var lastError: Error?
+        repeat {
+            do {
+                let status = try await dorydClient.engineStatus()
+                let socketPath = try await dorydClient.dorySocketPath()
+                return (status, socketPath)
+            } catch {
+                lastError = error
+                try? await Task.sleep(for: .milliseconds(250))
+            }
+        } while Date() < deadline
+        throw lastError ?? NSError(
+            domain: "DorydReadiness",
+            code: 1,
+            userInfo: [NSLocalizedDescriptionKey: "doryd did not answer before timeout"]
+        )
+    }
+
+    /// Fetches doryd's runtime mode before attach finishes so the UI immediately reflects the real
+    /// policy while the app promotes a sleeping/stopped daemon-owned engine to running.
+    private func refreshDorydRuntimeMode() async {
+        guard let status = try? await dorydClient.idleStatus() else { return }
+        applyIdleStatus(status)
     }
 
     nonisolated static func externalEngineLabel(_ socketPath: String) -> String {
@@ -809,12 +887,14 @@ final class AppStore {
         UserDefaults.standard.set(on, forKey: SharedVMProvisioner.Config.rosettaX86Key)
         guard !runtimeOwnedByDoryd else {
             sharedVMStatus = "amd64 emulation will apply when doryd restarts the engine."
+            showSettingsSuccess(sharedVMStatus)
             return
         }
         guard runtimeKind == .sharedVM || runtimeKind == .disconnected, !isConnecting else { return }
         sharedVMStatus = on ? "Enabling x86/amd64 emulation…" : "Disabling x86/amd64 emulation…"
         await SharedVMProvisioner.stopEngine()
         await connectBackend()
+        showSettingsSuccess(on ? "x86/amd64 emulation enabled." : "x86/amd64 emulation disabled.")
     }
 
     /// Toggles experimental GPU acceleration (virtio-gpu/Venus) and restarts the shared engine so the
@@ -826,12 +906,14 @@ final class AppStore {
         UserDefaults.standard.set(on, forKey: SharedVMProvisioner.Config.gpuVenusKey)
         guard !runtimeOwnedByDoryd else {
             sharedVMStatus = "GPU mode will apply when doryd is configured with matching helper settings."
+            showSettingsSuccess(sharedVMStatus)
             return
         }
         guard runtimeKind == .sharedVM || runtimeKind == .disconnected, !isConnecting else { return }
         sharedVMStatus = on ? "Enabling GPU acceleration…" : "Disabling GPU acceleration…"
         await SharedVMProvisioner.stopEngine()
         await connectBackend()
+        showSettingsSuccess(on ? "GPU acceleration enabled." : "GPU acceleration disabled.")
     }
 
     /// Provisions (or reuses) Dory's own single shared Linux VM and switches the live engine to it,
@@ -982,6 +1064,7 @@ final class AppStore {
         if let domainSuffix {
             guard let normalized = Self.normalizedDomainSuffix(domainSuffix) else {
                 networkingAuthorizationMessage = "Use a DNS-style suffix such as dev.dory.local."
+                showSettingsFailure("Use a DNS-style suffix such as dev.dory.local.")
                 return
             }
             if normalized != self.domainSuffix {
@@ -1005,6 +1088,7 @@ final class AppStore {
         if dnsPort != nil || httpProxyPort != nil || httpsProxyPort != nil || launchAgentNeedsRefresh {
             refreshDorydLaunchAgentForNetworkingSettings()
         }
+        showSettingsSuccess("Networking settings applied.")
     }
 
     private func refreshDorydLaunchAgentForNetworkingSettings() {
@@ -1044,6 +1128,22 @@ final class AppStore {
             }
         }
         return suffix
+    }
+
+    private static func persistedRuntimeMode(environment: [String: String]) -> String? {
+        let rawPath = environment["DORY_CONFIG"] ?? "\(NSHomeDirectory())/.dory/config.json"
+        let path = (rawPath as NSString).expandingTildeInPath
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let mode = object["runtimeMode"] as? String else {
+            return nil
+        }
+        switch mode {
+        case "always-on", "auto-idle", "battery-saver", "manual":
+            return mode
+        default:
+            return nil
+        }
     }
 
     private func startTLS() {
@@ -1597,6 +1697,18 @@ final class AppStore {
         await evaluateIdleSleep()
     }
 
+    /// Refresh for the menu-bar popover. Reads only non-waking data (process memory, the doryd machine
+    /// list, and doryd's engine state) before touching Docker, then skips the Docker/Kubernetes poll
+    /// while the engine sleeps — so opening the popover never wakes a slept engine.
+    func refreshMenuBar() async {
+        await refreshProcessMemory()
+        loadMachines()
+        if await syncDorydEngineStateBeforeDockerPoll() { return }
+        if engineSleeping { return }
+        await reload()
+        if runtimeKind == .sharedVM { await loadKubernetes() }
+    }
+
     private func syncDorydEngineStateBeforeDockerPoll() async -> Bool {
         guard runtimeOwnedByDoryd else { return engineSleeping }
         guard let status = try? await dorydClient.engineStatus() else { return engineSleeping }
@@ -1919,16 +2031,24 @@ final class AppStore {
         runtimeMode = mode
         if let status = try? await dorydClient.idleSetMode(mode) {
             applyIdleStatus(status)
+            await confirmRuntimeModeApplied(status.mode)
             return
         }
         guard !dorydEngineRequired else {
             runtimeMode = previousMode
-            actionError = "doryd is unavailable; idle mode was not changed."
+            showSettingsFailure("doryd is unavailable; idle mode was not changed.")
             await loadIdlePolicy()
             return
         }
-        _ = await HealthDiagnostics.runControl(["mode", mode])
+        let result = await HealthDiagnostics.runControl(["idle", "mode", mode])
+        if !result.ok {
+            runtimeMode = previousMode
+            showSettingsFailure(result.output.isEmpty ? "Idle mode was not changed." : result.output)
+            await loadIdlePolicy()
+            return
+        }
         await loadIdlePolicy()
+        await confirmRuntimeModeApplied(runtimeMode)
     }
 
     func setIdleSleepAfter(_ minutes: Int) async {
@@ -1939,16 +2059,24 @@ final class AppStore {
         idlePolicy.sleepAfterMinutes = minutes
         if let status = try? await dorydClient.idleSetPolicy(key: "sleepAfterMinutes", value: String(minutes)) {
             applyIdleStatus(status)
+            showSettingsSuccess("Idle sleep now waits \(minutes) minute\(minutes == 1 ? "" : "s").")
             return
         }
         guard !dorydEngineRequired else {
             idlePolicy = previousPolicy
-            actionError = "doryd is unavailable; idle policy was not changed."
+            showSettingsFailure("doryd is unavailable; idle policy was not changed.")
             await loadIdlePolicy()
             return
         }
-        _ = await HealthDiagnostics.runControl(["idle", "set", "sleepAfterMinutes", String(minutes)])
+        let result = await HealthDiagnostics.runControl(["idle", "set", "sleepAfterMinutes", String(minutes)])
+        if !result.ok {
+            idlePolicy = previousPolicy
+            showSettingsFailure(result.output.isEmpty ? "Idle policy was not changed." : result.output)
+            await loadIdlePolicy()
+            return
+        }
         await loadIdlePolicy()
+        showSettingsSuccess("Idle sleep now waits \(minutes) minute\(minutes == 1 ? "" : "s").")
     }
 
     func setIdleFlag(_ key: String, _ on: Bool) async {
@@ -1957,21 +2085,82 @@ final class AppStore {
         defer { idlePolicyBusy = false }
         if let status = try? await dorydClient.idleSetPolicy(key: key, value: on ? "on" : "off") {
             applyIdleStatus(status)
+            showSettingsSuccess("\(Self.idlePolicyLabel(key)) \(on ? "enabled" : "disabled").")
             return
         }
         guard !dorydEngineRequired else {
-            actionError = "doryd is unavailable; idle policy was not changed."
+            showSettingsFailure("doryd is unavailable; idle policy was not changed.")
             await loadIdlePolicy()
             return
         }
-        _ = await HealthDiagnostics.runControl(["idle", "set", key, on ? "on" : "off"])
+        let result = await HealthDiagnostics.runControl(["idle", "set", key, on ? "on" : "off"])
+        if !result.ok {
+            showSettingsFailure(result.output.isEmpty ? "Idle policy was not changed." : result.output)
+            await loadIdlePolicy()
+            return
+        }
         await loadIdlePolicy()
+        showSettingsSuccess("\(Self.idlePolicyLabel(key)) \(on ? "enabled" : "disabled").")
     }
 
     private func applyIdleStatus(_ status: IdleStatus) {
         runtimeMode = status.mode
         idlePolicy = status.policy ?? .fallback
         idlePolicyLoaded = true
+    }
+
+    private func confirmRuntimeModeApplied(_ mode: String) async {
+        let label = Self.runtimeModeLabel(mode)
+        if let wakeFailure = await promoteDorydEngineIfNeeded(for: mode) {
+            showSettingsFailure("\(label) was saved, but \(wakeFailure)")
+            return
+        }
+        showSettingsSuccess("\(label) applied.")
+    }
+
+    private func promoteDorydEngineIfNeeded(for mode: String) async -> String? {
+        guard runtimeOwnedByDoryd, Self.runtimeModeKeepsEngineAwake(mode) else { return nil }
+        do {
+            let status = try await dorydClient.engineStatus()
+            guard status.state != "running" else {
+                engineSleeping = false
+                engineRunning = true
+                engineActivity.setSleeping(false)
+                return nil
+            }
+            let result = try await dorydClient.engineStart()
+            guard result.ok else {
+                return result.message.isEmpty ? "the engine could not be started." : result.message
+            }
+            await connectBackend()
+            return loadState == .ready ? nil : (sharedVMStatus.isEmpty ? "Docker did not answer after the engine started." : sharedVMStatus)
+        } catch {
+            return "the engine could not be started: \(error)"
+        }
+    }
+
+    private static func runtimeModeKeepsEngineAwake(_ mode: String) -> Bool {
+        mode == "always-on" || mode == "manual"
+    }
+
+    private static func runtimeModeLabel(_ mode: String) -> String {
+        switch mode {
+        case "always-on": return "Always On"
+        case "auto-idle": return "Auto-Idle"
+        case "battery-saver": return "Battery Saver"
+        case "manual": return "Manual Stop"
+        default: return mode
+        }
+    }
+
+    private static func idlePolicyLabel(_ key: String) -> String {
+        switch key {
+        case "keepPublishedPortsAwake": return "Published-port keep-awake"
+        case "keepKubernetesAwake": return "Kubernetes keep-awake"
+        case "keepPinnedProjectsAwake": return "Pinned-project keep-awake"
+        case "showWakeNotifications": return "Wake notifications"
+        default: return key
+        }
     }
 
     func loadLanVisible() {
@@ -1984,7 +2173,10 @@ final class AppStore {
         let result = await HealthDiagnostics.runControl(["network", "--lan-visible", on ? "on" : "off"])
         if !result.ok {
             loadLanVisible()
+            showSettingsFailure(result.output.isEmpty ? "LAN access was not changed." : result.output)
+            return
         }
+        showSettingsSuccess(on ? "Published ports are LAN-visible." : "Published ports are localhost-only.")
     }
 
     private func matchesSearch(_ c: Container) -> Bool {
@@ -2212,11 +2404,12 @@ final class AppStore {
             c.memoryBytes = 0
             c.uptime = "—"
         } else {
+            let isMock = runtimeKind == .mock
             c.status = .running
-            c.cpuPercent = runtimeKind == .mock ? 1.2 : 0
-            c.memoryDisplay = c.memoryLimitDisplay == "2 GB" ? "128 MB" : "96 MB"
-            c.memoryFraction = 0.08
-            c.memoryBytes = c.memoryLimitDisplay == "2 GB" ? 134_217_728 : 100_663_296
+            c.cpuPercent = isMock ? 1.2 : 0
+            c.memoryDisplay = isMock ? (c.memoryLimitDisplay == "2 GB" ? "128 MB" : "96 MB") : "—"
+            c.memoryFraction = isMock ? 0.08 : 0
+            c.memoryBytes = isMock ? (c.memoryLimitDisplay == "2 GB" ? 134_217_728 : 100_663_296) : 0
             c.uptime = "just now"
         }
         containers[idx] = c
@@ -2566,9 +2759,21 @@ final class AppStore {
     /// The last import result, so the UI can surface per-item failures instead of a bare count.
     var migrationSummary: MigrationSummary?
 
-    private func selectedMigrationRuntime() async -> DockerEngineRuntime? {
+    private func selectedMigrationSource() -> DockerSourceEngine? {
         guard let path = selectedMigrationSourcePath else { return nil }
-        return await DockerEngineRuntime.detect(candidates: [path])
+        if let source = migrationSources.first(where: { $0.socketPath == path }) {
+            return source
+        }
+        return DockerSourceEngine(
+            label: DockerEngineSocketDiscovery.engineLabel(for: path, home: NSHomeDirectory()),
+            socketPath: path,
+            socketExists: FileManager.default.fileExists(atPath: path)
+        )
+    }
+
+    private func selectedMigrationRuntime() async -> DockerEngineRuntime? {
+        guard let source = selectedMigrationSource() else { return nil }
+        return await DockerEngineSourceActivator.readyRuntime(for: source)
     }
 
     func selectMigrationSource(_ path: String) async {
@@ -2579,16 +2784,36 @@ final class AppStore {
     /// Reads the selected host engine (if any) without modifying it, to power the pre-flight
     /// "here's what will move, nothing will be deleted" screen.
     func loadMigrationPreflight() async {
-        migrationSources = DockerEngineSocketDiscovery.availableSources()
+        migrationSources = await Task.detached { DockerEngineSocketDiscovery.availableSources() }.value
+        migrationSummary = nil
         if selectedMigrationSourcePath == nil
             || !migrationSources.contains(where: { $0.socketPath == selectedMigrationSourcePath }) {
             selectedMigrationSourcePath = migrationSources.first?.socketPath
         }
-        guard let source = await selectedMigrationRuntime() else {
+        guard let selectedSource = selectedMigrationSource() else {
             migrationInventory = nil
+            migrationStatus = "No Docker-compatible local engine detected."
             return
         }
-        migrationInventory = await MigrationAssistant.preflight(from: source)
+        let socketWasMissing = !FileManager.default.fileExists(atPath: selectedSource.socketPath)
+        migrationStatus = socketWasMissing
+            ? "Starting \(selectedSource.label)…"
+            : "Reading \(selectedSource.label)…"
+        guard let source = await selectedMigrationRuntime() else {
+            migrationInventory = nil
+            migrationStatus = "Couldn't reach \(selectedSource.label). Open \(selectedSource.label) and try again."
+            return
+        }
+        guard let inventory = await MigrationAssistant.preflight(from: source) else {
+            migrationInventory = nil
+            migrationStatus = "Couldn't read \(selectedSource.label)."
+            return
+        }
+        migrationInventory = inventory
+        migrationStatus = "Ready to import from \(inventory.sourceName)."
+        if socketWasMissing {
+            showSettingsSuccess("\(inventory.sourceName) is ready to import.")
+        }
     }
 
     /// Imports the selected engine's images + containers into Dory's own shared VM — the "switch to
@@ -2596,8 +2821,18 @@ final class AppStore {
     func importFromDocker() async {
         guard runtimeKind == .sharedVM else { migrationStatus = "Switch to Dory's shared VM first, then import"; return }
         guard !migrationBusy else { return }
+        guard let selectedSource = selectedMigrationSource() else {
+            migrationStatus = "No import source selected."
+            showSettingsFailure("No import source selected.")
+            return
+        }
+        if !FileManager.default.fileExists(atPath: selectedSource.socketPath) {
+            migrationStatus = "Starting \(selectedSource.label)…"
+        }
         guard let source = await selectedMigrationRuntime() else {
-            migrationStatus = "Couldn't reach the selected source engine — is it running?"; return
+            migrationStatus = "Couldn't reach \(selectedSource.label). Open \(selectedSource.label) and try again."
+            showSettingsFailure(migrationStatus)
+            return
         }
         migrationBusy = true
         defer { migrationBusy = false }
@@ -2607,8 +2842,13 @@ final class AppStore {
             Task { @MainActor in self.migrationStatus = message }
         }
         migrationSummary = summary
-        let base = "Imported \(summary.imagesImported.count) images, \(summary.containersMigrated.count) containers"
+        let base = "Imported \(summary.imagesImported.count) images, \(summary.volumesCopied.count) volumes, \(summary.containersMigrated.count) containers"
         migrationStatus = summary.failures.isEmpty ? base : "\(base) — \(summary.failures.count) failed"
+        if summary.failures.isEmpty {
+            showSettingsSuccess("\(base) from \(source.displayName).")
+        } else {
+            showSettingsFailure("\(base) from \(source.displayName), but \(summary.failures.count) item\(summary.failures.count == 1 ? "" : "s") failed.")
+        }
         await reload()
     }
 
@@ -2780,15 +3020,13 @@ final class AppStore {
 
     func machineTerminalCommand(_ machine: Machine) -> String? {
         guard runtimeOwnedByDoryd else { return nil }
-        let dorydctl = HostTools.dorydctl() ?? "dorydctl"
-        return TerminalLauncher.machineShellCommand(target: MachineShellTarget(
-            machineID: machine.name,
-            dorydctlPath: dorydctl
+        return TerminalLauncher.userFacingMachineShellCommand(target: UserFacingMachineShellTarget(
+            machineID: machine.name
         ))
     }
 
     func canOpenMachineTerminal(_ machine: Machine) -> Bool {
-        runtimeOwnedByDoryd && !machine.shellSocketPath.isEmpty && HostTools.dorydctl() != nil
+        runtimeOwnedByDoryd && !machine.shellSocketPath.isEmpty && HostTools.userFacingDoryCommand() != nil
     }
 
     func canUseMachineArtifacts(_ machine: Machine) -> Bool {
@@ -3449,7 +3687,7 @@ final class AppStore {
         let home = machine.username == "root" ? "/root" : "/Users/\(machine.username)"
         let family = MachineDistro.all.first { $0.display == machine.distro }?.family
         let machineShell = runtimeOwnedByDoryd
-            ? HostTools.dorydctl().map { MachineShellTarget(machineID: machine.name, dorydctlPath: $0) }
+            ? HostTools.userFacingDoryCommand().map { _ in MachineShellTarget(machineID: machine.name) }
             : nil
         let sessionID = runtimeOwnedByDoryd ? "machine:\(machine.name)" : "machine:\(machine.containerID)"
         return TerminalSession(id: sessionID, title: machine.name,

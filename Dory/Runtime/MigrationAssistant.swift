@@ -3,10 +3,12 @@ import Foundation
 struct MigrationSummary: Sendable, Equatable {
     var imagesImported: [String] = []
     var imagesPulled: [String] { imagesImported }
+    var volumesCopied: [String] = []
+    var networksCreated: [String] = []
     var containersMigrated: [String] = []
     var failures: [String] = []
 
-    var total: Int { imagesImported.count + containersMigrated.count }
+    var total: Int { imagesImported.count + volumesCopied.count + networksCreated.count + containersMigrated.count }
 }
 
 /// A read-only inventory of what a migration WOULD move. Computed without modifying the source — the
@@ -42,6 +44,9 @@ struct MigrationInventory: Sendable, Equatable {
             "\(images) image\(images == 1 ? "" : "s") copied by archive when possible",
             "\(containers) container definition\(containers == 1 ? "" : "s") recreated on Dory",
         ]
+        if volumes > 0 {
+            items.append("\(volumes) named volume\(volumes == 1 ? "" : "s") copied with data")
+        }
         if !composeProjects.isEmpty {
             items.append("\(composeProjects.count) compose project\(composeProjects.count == 1 ? "" : "s") detected: \(composeProjects.prefix(4).joined(separator: ", "))")
         }
@@ -57,7 +62,7 @@ struct MigrationInventory: Sendable, Equatable {
     var attentionItems: [String] {
         var items: [String] = []
         if namedVolumeMounts > 0 || anonymousVolumeTargets > 0 || volumes > 0 {
-            items.append("Volume data is not copied automatically; \(volumeReferenceCount) volume reference\(volumeReferenceCount == 1 ? "" : "s") need a manual data copy or remount.")
+            items.append("Named Docker volume data is copied through temporary helper containers; source volumes are mounted read-only.")
         }
         if bindMounts > 0 {
             items.append("\(bindMounts) bind mount\(bindMounts == 1 ? "" : "s") depend on host paths still existing on this Mac.")
@@ -69,7 +74,7 @@ struct MigrationInventory: Sendable, Equatable {
             items.append("Host-network containers need review: \(hostNetworkContainers.prefix(4).joined(separator: ", ")).")
         }
         if estimatedImageBytes > 0 {
-            items.append("Plan for at least \(estimatedImageDiskDisplay) of image space, plus any volume data you choose to copy.")
+            items.append("Plan for at least \(estimatedImageDiskDisplay) of image space, plus named volume data.")
         }
         if items.isEmpty {
             items.append("No obvious blockers found. The source engine stays read-only until you start the import.")
@@ -93,6 +98,8 @@ struct MigrationInventory: Sendable, Equatable {
 /// engines can export/import Docker image archives, image bytes are copied directly so local-only
 /// images migrate too. Registry pull is only the fallback for runtimes without archive transfer.
 enum MigrationAssistant {
+    private static let defaultNetworkNames: Set<String> = ["bridge", "host", "none"]
+
     /// Reads the source engine without modifying anything — for the pre-flight inventory screen.
     static func preflight(from source: any ContainerRuntime) async -> MigrationInventory? {
         guard let snapshot = try? await source.snapshot() else { return nil }
@@ -113,11 +120,9 @@ enum MigrationAssistant {
             .filter { ($0.networkMode ?? "").lowercased() == "host" }
             .map(\.name)
             .sorted()
-        let customNetworks = snapshot.networks.filter { network in
-            !["bridge", "host", "none"].contains(network.name)
-        }
+        let customNetworks = snapshot.networks.filter { !defaultNetworkNames.contains($0.name) }
         return MigrationInventory(
-            sourceName: source.kind.displayName,
+            sourceName: sourceDisplayName(source),
             images: realImages.count,
             containers: containers.count,
             volumes: snapshot.volumes.count,
@@ -132,6 +137,13 @@ enum MigrationAssistant {
             hostNetworkContainers: hostNetworkContainers,
             containersWithPublishedPorts: containers.filter { !$0.ports.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && $0.ports != "—" }.count
         )
+    }
+
+    private static func sourceDisplayName(_ source: any ContainerRuntime) -> String {
+        if let docker = source as? DockerEngineRuntime {
+            return docker.displayName
+        }
+        return source.kind.displayName
     }
 
     static func migrate(
@@ -172,17 +184,48 @@ enum MigrationAssistant {
             }
         }
 
+        let customNetworks = snapshot.networks.filter { !defaultNetworkNames.contains($0.name) }
+        for network in customNetworks {
+            progress?("Creating network \(network.name)")
+            do {
+                try await target.createNetwork(name: network.name, labels: migrationLabels(source: source, existing: network.labels))
+                summary.networksCreated.append(network.name)
+            } catch {
+                summary.failures.append("create network \(network.name)")
+            }
+        }
+
+        let helperImages = helperImagesByVolume(snapshot: snapshot)
+        for volume in snapshot.volumes {
+            progress?("Copying volume \(volume.name)")
+            do {
+                try await target.createVolume(
+                    name: volume.name,
+                    driver: volume.driver.isEmpty ? nil : volume.driver,
+                    labels: migrationLabels(source: source, existing: volume.labels),
+                    driverOptions: volume.options
+                )
+                guard let helperImage = helperImages[volume.name] else {
+                    summary.failures.append("copy volume \(volume.name) (no reusable helper image)")
+                    continue
+                }
+                try await copyVolumeData(
+                    name: volume.name,
+                    helperImage: helperImage,
+                    from: source,
+                    to: target
+                )
+                summary.volumesCopied.append(volume.name)
+            } catch {
+                summary.failures.append("copy volume \(volume.name)")
+            }
+        }
+
         guard recreateContainers else { return summary }
         for container in snapshot.containers {
             progress?("Recreating \(container.name)")
             let env = (try? await source.env(containerID: container.id)) ?? []
-            let spec = ContainerSpec(
-                name: container.name,
-                image: container.image,
-                environment: Dictionary(env.map { ($0.key, $0.value) }, uniquingKeysWith: { first, _ in first }),
-                ports: parsePorts(container.ports),
-                labels: ["dory.migrated.from": source.kind.rawValue]
-            )
+            let spec = migrationSpec(for: container, env: env, source: source)
             do { _ = try await target.create(spec); summary.containersMigrated.append(container.name) }
             catch { summary.failures.append("recreate \(container.name)") }
         }
@@ -224,6 +267,178 @@ enum MigrationAssistant {
         let stream = source.saveImage(reference: reference)
         try await target.loadImage(stream: stream)
         return true
+    }
+
+    private static func migrationLabels(source: any ContainerRuntime, existing: [String: String] = [:]) -> [String: String] {
+        var labels = existing
+        labels["dory.migrated.from"] = source.kind.rawValue
+        return labels
+    }
+
+    private static func helperImagesByVolume(snapshot: RuntimeSnapshot) -> [String: String] {
+        let realImageReference = snapshot.images
+            .first { $0.repository != "<none>" && !$0.repository.isEmpty }
+            .map { "\($0.repository):\($0.tag)" }
+        var result: [String: String] = [:]
+        for volume in snapshot.volumes {
+            if let container = snapshot.containers.first(where: { container in
+                container.mounts.contains { $0.type == "volume" && $0.source == volume.name }
+            }) {
+                result[volume.name] = container.image
+            } else if let realImageReference {
+                result[volume.name] = realImageReference
+            }
+        }
+        return result
+    }
+
+    private static func copyVolumeData(
+        name: String,
+        helperImage: String,
+        from source: any ContainerRuntime,
+        to target: any ContainerRuntime
+    ) async throws {
+        let sourceHelper = try await createVolumeHelper(on: source, volume: name, image: helperImage, readOnly: true)
+        let targetHelper = try await createVolumeHelper(on: target, volume: name, image: helperImage, readOnly: false)
+        defer {
+            Task {
+                await removeVolumeHelper(sourceHelper, from: source)
+                await removeVolumeHelper(targetHelper, from: target)
+            }
+        }
+        let archive = source.copyOutStream(containerID: sourceHelper, path: "/data/.")
+        let copied = await target.copyIn(containerID: targetHelper, path: "/data", archiveStream: archive)
+        if !copied { throw RuntimeFeatureError.unsupported("volume archive copy failed") }
+    }
+
+    private struct VolumeHelperCreate: Encodable {
+        let Image: String
+        let Cmd: [String]
+        let HostConfig: VolumeHelperHostConfig
+    }
+
+    private struct VolumeHelperHostConfig: Encodable {
+        let Mounts: [VolumeHelperMount]
+    }
+
+    private struct VolumeHelperMount: Encodable {
+        let type: String
+        let source: String
+        let target: String
+        let readOnly: Bool
+
+        enum CodingKeys: String, CodingKey {
+            case type = "Type", source = "Source", target = "Target", readOnly = "ReadOnly"
+        }
+    }
+
+    private struct VolumeHelperCreateResult: Decodable {
+        let Id: String
+    }
+
+    private static func createVolumeHelper(
+        on runtime: any ContainerRuntime,
+        volume: String,
+        image: String,
+        readOnly: Bool
+    ) async throws -> String {
+        let body = try JSONEncoder().encode(VolumeHelperCreate(
+            Image: image,
+            Cmd: ["true"],
+            HostConfig: VolumeHelperHostConfig(Mounts: [
+                VolumeHelperMount(type: "volume", source: volume, target: "/data", readOnly: readOnly),
+            ])
+        ))
+        guard let response = await runtime.proxyRequest(
+            method: "POST",
+            path: "/containers/create",
+            headers: [(name: "Content-Type", value: "application/json")],
+            body: body
+        ), response.isSuccess,
+              let created = try? JSONDecoder().decode(VolumeHelperCreateResult.self, from: response.body) else {
+            throw RuntimeFeatureError.unsupported("could not create volume helper")
+        }
+        return created.Id
+    }
+
+    private static func removeVolumeHelper(_ id: String, from runtime: any ContainerRuntime) async {
+        _ = await runtime.proxyRequest(
+            method: "DELETE",
+            path: "/containers/\(DockerImageOps.pathComponent(id))?force=true&v=true",
+            headers: [],
+            body: Data()
+        )
+    }
+
+    private static func migrationSpec(for container: Container, env: [EnvVar], source: any ContainerRuntime) -> ContainerSpec {
+        ContainerSpec(
+            name: container.name,
+            image: container.image,
+            command: container.commandArgs,
+            environment: Dictionary(env.map { ($0.key, $0.value) }, uniquingKeysWith: { first, _ in first }),
+            ports: parsePorts(container.ports),
+            labels: migrationLabels(source: source, existing: container.labels),
+            networks: container.networks.filter { !defaultNetworkNames.contains($0) },
+            volumes: container.volumes,
+            restart: container.restartPolicy == "—" ? nil : container.restartPolicy,
+            nanoCPUs: container.nanoCPUs,
+            memoryLimitBytes: container.memoryLimitBytes,
+            mounts: container.mounts,
+            volumeTargets: container.volumeTargets,
+            hostname: container.hostname,
+            domainname: container.domainname,
+            user: container.user,
+            workingDir: container.workingDir,
+            entrypoint: container.entrypoint,
+            shell: container.shell,
+            tty: container.tty,
+            openStdin: container.openStdin,
+            stdinOnce: container.stdinOnce,
+            stopSignal: container.stopSignal,
+            stopTimeout: container.stopTimeout,
+            networkMode: container.networkMode,
+            autoRemove: container.autoRemove,
+            privileged: container.privileged,
+            initProcessEnabled: container.initProcessEnabled,
+            capAdd: container.capAdd,
+            capDrop: container.capDrop,
+            dns: container.dns,
+            dnsOptions: container.dnsOptions,
+            dnsSearch: container.dnsSearch,
+            extraHosts: container.extraHosts,
+            groupAdd: container.groupAdd,
+            ipcMode: container.ipcMode,
+            pidMode: container.pidMode,
+            usernsMode: container.usernsMode,
+            readonlyRootfs: container.readonlyRootfs,
+            shmSize: container.shmSize,
+            tmpfs: container.tmpfs,
+            attachStdin: container.attachStdin,
+            attachStdout: container.attachStdout,
+            attachStderr: container.attachStderr,
+            healthcheck: container.healthcheck,
+            networkDisabled: container.networkDisabled,
+            containerIDFile: container.containerIDFile,
+            logConfig: container.logConfig,
+            volumeDriver: container.volumeDriver,
+            volumesFrom: container.volumesFrom,
+            consoleSize: container.consoleSize,
+            annotations: container.annotations,
+            cgroupnsMode: container.cgroupnsMode,
+            cgroup: container.cgroup,
+            links: container.links,
+            oomScoreAdj: container.oomScoreAdj,
+            publishAllPorts: container.publishAllPorts,
+            securityOpt: container.securityOpt,
+            storageOpt: container.storageOpt,
+            utsMode: container.utsMode,
+            sysctls: container.sysctls,
+            runtimeName: container.runtimeName,
+            isolation: container.isolation,
+            maskedPaths: container.maskedPaths,
+            readonlyPaths: container.readonlyPaths,
+            resources: container.resources
+        )
     }
 
     private static func estimatedBytes(_ image: DockerImage) -> Int64 {
