@@ -80,6 +80,7 @@ nonisolated struct DorydMachineConfiguration: Sendable, Equatable {
     var cpuCount: Int
     var address: String? = nil
     var shares: [DorydMachineShareConfiguration] = []
+    var environment: [String: String] = [:]
 
     var xpcDictionary: NSDictionary {
         var dictionary: [String: Any] = [
@@ -94,6 +95,14 @@ nonisolated struct DorydMachineConfiguration: Sendable, Equatable {
         }
         if !shares.isEmpty {
             dictionary["shares"] = shares.map(\.xpcDictionary)
+        }
+        if !environment.isEmpty {
+            dictionary["env"] = environment.sorted(by: { $0.key < $1.key }).map { key, value in
+                [
+                    "key": key,
+                    "value": value,
+                ] as NSDictionary
+            }
         }
         return dictionary as NSDictionary
     }
@@ -116,6 +125,7 @@ nonisolated struct DorydMachineStatus: Sendable, Equatable {
     var currentBalloonTargetMB: UInt64? = nil
     var cpuCount: Int?
     var shares: [DorydMachineShareConfiguration] = []
+    var environment: [String: String] = [:]
 }
 
 nonisolated struct DorydMachineExecResult: Sendable, Equatable {
@@ -548,7 +558,8 @@ nonisolated final class DorydClient: @unchecked Sendable {
         cpuCount: Int? = nil,
         address: String? = nil,
         updatesAddress: Bool = false,
-        shares: [DorydMachineShareConfiguration]? = nil
+        shares: [DorydMachineShareConfiguration]? = nil,
+        environment: [String: String]? = nil
     ) async throws -> DorydMachineStatus {
         var config: [String: Any] = [:]
         if let memoryMB {
@@ -564,6 +575,14 @@ nonisolated final class DorydClient: @unchecked Sendable {
         }
         if let shares {
             config["shares"] = shares.map(\.xpcDictionary)
+        }
+        if let environment {
+            config["env"] = environment.sorted(by: { $0.key < $1.key }).map { key, value in
+                [
+                    "key": key,
+                    "value": value,
+                ] as NSDictionary
+            }
         }
         return try await withTimeout(atLeast: 120).statusCommand { proxy, reply in
             proxy.machineUpdate(machineID, config: config as NSDictionary, reply: reply)
@@ -977,7 +996,8 @@ nonisolated final class DorydClient: @unchecked Sendable {
             memoryMB: uint64(dictionary["memoryMB"]),
             currentBalloonTargetMB: uint64(dictionary["currentBalloonTargetMB"]),
             cpuCount: int(dictionary["cpuCount"]),
-            shares: machineShares(from: dictionary["shares"])
+            shares: machineShares(from: dictionary["shares"]),
+            environment: machineEnvironment(from: dictionary["env"])
         )
     }
 
@@ -1006,6 +1026,26 @@ nonisolated final class DorydClient: @unchecked Sendable {
                 readOnly: readOnly
             )
         }
+    }
+
+    nonisolated private static func machineEnvironment(from value: Any?) -> [String: String] {
+        let rows: [NSDictionary]
+        if let swiftRows = value as? [NSDictionary] {
+            rows = swiftRows
+        } else if let nsRows = value as? NSArray {
+            rows = nsRows.compactMap { $0 as? NSDictionary }
+        } else {
+            return [:]
+        }
+        var result: [String: String] = [:]
+        for row in rows {
+            guard let key = row["key"] as? String,
+                  key.wholeMatch(of: /[A-Za-z_][A-Za-z0-9_]*/) != nil else {
+                continue
+            }
+            result[key] = (row["value"] as? String) ?? ""
+        }
+        return result
     }
 
     nonisolated private static func machineStatuses(from rows: NSArray) -> [DorydMachineStatus]? {

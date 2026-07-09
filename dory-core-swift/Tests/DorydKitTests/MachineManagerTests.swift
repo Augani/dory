@@ -187,7 +187,8 @@ final class MachineManagerTests: XCTestCase {
             cpuCount: 4,
             shares: [
                 DoryMachineShareConfiguration(tag: "src", hostPath: share, guestPath: "/workspace/src", readOnly: true),
-            ]
+            ],
+            environment: ["APP_ENV": "dev"]
         ))
 
         let configPath = "\(base)/dev/machine.json"
@@ -203,6 +204,7 @@ final class MachineManagerTests: XCTestCase {
         XCTAssertEqual(loaded.first?.shares, [
             DoryMachineShareConfiguration(tag: "src", hostPath: share, guestPath: "/workspace/src", readOnly: true),
         ])
+        XCTAssertEqual(loaded.first?.environment, ["APP_ENV": "dev"])
         let running = try reloaded.start(id: "dev")
         XCTAssertEqual(running.state, .running)
         XCTAssertNotNil(running.pid)
@@ -210,6 +212,38 @@ final class MachineManagerTests: XCTestCase {
         XCTAssertEqual(stopped.state, .stopped)
         try reloaded.delete(id: "dev")
         XCTAssertFalse(FileManager.default.fileExists(atPath: "\(base)/dev"))
+    }
+
+    func testStartPassesEnvironmentArgumentsToVMM() throws {
+        let base = "/tmp/dory-machine-env-argv-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        let argsPath = "\(base)/argv.txt"
+        let helperPath = "\(base)/record-vmm.sh"
+        try """
+        #!/bin/sh
+        printf '%s\n' "$@" > "\(argsPath)"
+        sleep 30
+        """.write(to: URL(fileURLWithPath: helperPath), atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: helperPath)
+
+        let manager = MachineManager(configuration: MachineManagerConfiguration(
+            vmmExecutablePath: helperPath,
+            stateDirectory: "\(base)/state",
+            requiresReadyHandoff: false
+        ))
+        defer { try? manager.delete(id: "dev") }
+
+        _ = try manager.create(DoryMachineConfiguration(
+            id: "dev",
+            kernelPath: "/tmp/kernel",
+            rootfsPath: "/tmp/rootfs",
+            environment: ["APP_ENV": "dev"]
+        ))
+        _ = try manager.start(id: "dev")
+
+        let args = try waitForFileContent(argsPath)
+        XCTAssertTrue(args.contains("--env\nAPP_ENV=dev"))
     }
 
     func testLegacyMachineDefinitionsLoadWithoutShareField() throws {
@@ -238,6 +272,7 @@ final class MachineManagerTests: XCTestCase {
         let loaded = manager.list()
         XCTAssertEqual(loaded.map(\.id), ["dev"])
         XCTAssertEqual(loaded.first?.shares, [])
+        XCTAssertEqual(loaded.first?.environment, [:])
     }
 
     func testUpdatePersistsMachineResourcesAndRestartsRunningMachine() throws {
@@ -274,7 +309,9 @@ final class MachineManagerTests: XCTestCase {
             shares: [
                 DoryMachineShareConfiguration(tag: "src", hostPath: share, guestPath: "/workspace/src"),
             ],
-            updatesShares: true
+            updatesShares: true,
+            environment: ["NODE_ENV": "production"],
+            updatesEnvironment: true
         )
 
         XCTAssertEqual(updated.state, .running)
@@ -284,6 +321,7 @@ final class MachineManagerTests: XCTestCase {
         XCTAssertEqual(updated.shares, [
             DoryMachineShareConfiguration(tag: "src", hostPath: share, guestPath: "/workspace/src"),
         ])
+        XCTAssertEqual(updated.environment, ["NODE_ENV": "production"])
         let stored = try JSONDecoder().decode(
             DoryMachineConfiguration.self,
             from: Data(contentsOf: URL(fileURLWithPath: "\(base)/dev/machine.json"))
@@ -294,6 +332,7 @@ final class MachineManagerTests: XCTestCase {
         XCTAssertEqual(stored.shares, [
             DoryMachineShareConfiguration(tag: "src", hostPath: share, guestPath: "/workspace/src"),
         ])
+        XCTAssertEqual(stored.environment, ["NODE_ENV": "production"])
     }
 
     func testRejectsNonIPv4MachineAddress() throws {
@@ -924,4 +963,15 @@ private func waitForMachineState(
         Thread.sleep(forTimeInterval: 0.02)
     }
     return try XCTUnwrap(manager.status(id: id))
+}
+
+private func waitForFileContent(_ path: String, timeout: TimeInterval = 2) throws -> String {
+    let deadline = Date().addingTimeInterval(timeout)
+    while Date() < deadline {
+        if let content = try? String(contentsOfFile: path), !content.isEmpty {
+            return content
+        }
+        Thread.sleep(forTimeInterval: 0.02)
+    }
+    return try String(contentsOfFile: path)
 }

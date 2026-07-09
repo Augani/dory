@@ -29,6 +29,7 @@ public struct DoryVMMArguments: Sendable, Equatable {
     public var handoffOnly = false
     public var holdSeconds: UInt32?
     public var shares: [DoryMachineShareConfiguration] = []
+    public var environment: [String: String] = [:]
 
     public init() {}
 
@@ -48,6 +49,7 @@ public enum DoryVMMArgumentError: Error, Sendable, Equatable, CustomStringConver
     case missingStateDirectory
     case missingKernel
     case missingRootfs
+    case invalidEnvironment(String)
 
     public var description: String {
         switch self {
@@ -65,6 +67,8 @@ public enum DoryVMMArgumentError: Error, Sendable, Equatable, CustomStringConver
             return "missing --kernel"
         case .missingRootfs:
             return "missing --rootfs"
+        case let .invalidEnvironment(value):
+            return "invalid --env value: \(value)"
         }
     }
 }
@@ -110,6 +114,16 @@ public func parseDoryVMMArguments(_ raw: [String]) throws -> DoryVMMArguments {
             parsed.holdSeconds = UInt32(try uint64Value(after: argument, from: raw, index: &index))
         case "--share":
             parsed.shares.append(try DoryMachineShareConfiguration(argument: value(after: argument, from: raw, index: &index)))
+        case "--env":
+            let rawValue = try value(after: argument, from: raw, index: &index)
+            guard let equals = rawValue.firstIndex(of: "="), equals != rawValue.startIndex else {
+                throw DoryVMMArgumentError.invalidEnvironment(rawValue)
+            }
+            let key = String(rawValue[..<equals])
+            guard key.wholeMatch(of: /[A-Za-z_][A-Za-z0-9_]*/) != nil else {
+                throw DoryVMMArgumentError.invalidEnvironment(key)
+            }
+            parsed.environment[key] = String(rawValue[rawValue.index(after: equals)...])
         case "--exit-after-handoff":
             parsed.exitAfterHandoff = true
         case "--handoff-only":
@@ -147,6 +161,7 @@ public struct DoryVZMachineSpec: Sendable, Equatable {
     public var cpuCount: Int
     public var kernelCommandLine: String?
     public var shares: [DoryMachineShareConfiguration]
+    public var environment: [String: String]
 
     public init(
         machineID: String,
@@ -156,7 +171,8 @@ public struct DoryVZMachineSpec: Sendable, Equatable {
         memoryMB: UInt64,
         cpuCount: Int,
         kernelCommandLine: String? = nil,
-        shares: [DoryMachineShareConfiguration] = []
+        shares: [DoryMachineShareConfiguration] = [],
+        environment: [String: String] = [:]
     ) {
         self.machineID = machineID
         self.stateDirectory = stateDirectory
@@ -166,6 +182,7 @@ public struct DoryVZMachineSpec: Sendable, Equatable {
         self.cpuCount = max(1, cpuCount)
         self.kernelCommandLine = kernelCommandLine
         self.shares = shares
+        self.environment = environment
     }
 }
 
@@ -199,6 +216,9 @@ public enum DoryVZMachineError: Error, Sendable, CustomStringConvertible {
 }
 
 public enum DoryVZConfigurationBuilder {
+    private static let bootConfigTag = "dorycfg"
+    private static let bootConfigGuestPath = "/mnt/dory-config"
+
     public static func makeConfiguration(
         spec: DoryVZMachineSpec,
         serialOutput: FileHandle?
@@ -225,7 +245,9 @@ public enum DoryVZConfigurationBuilder {
         network.attachment = VZNATNetworkDeviceAttachment()
         configuration.networkDevices = [network]
 
-        configuration.directorySharingDevices = try spec.shares.map { share in
+        let bootConfigShare = try prepareBootConfigShare(spec: spec)
+        let directoryShares = [bootConfigShare] + spec.shares
+        configuration.directorySharingDevices = try directoryShares.map { share in
             try share.validate()
             var isDirectory: ObjCBool = false
             guard fileManager.fileExists(atPath: share.hostPath, isDirectory: &isDirectory),
@@ -273,6 +295,112 @@ public enum DoryVZConfigurationBuilder {
 
     public static func defaultKernelCommandLine(machineID: String) -> String {
         "console=hvc0 root=/dev/vda rw rootwait panic=1 dory.machine_id=\(machineID)"
+    }
+
+    private static func prepareBootConfigShare(spec: DoryVZMachineSpec) throws -> DoryMachineShareConfiguration {
+        guard !spec.shares.contains(where: { $0.tag == bootConfigTag }) else {
+            throw DoryVZMachineError.validation("machine share tag '\(bootConfigTag)' is reserved")
+        }
+        let directory = "\(spec.stateDirectory)/\(bootConfigTag)"
+        try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
+        let script = guestBootScript(shares: spec.shares, environment: spec.environment)
+        try script.write(
+            to: URL(fileURLWithPath: "\(directory)/boot.sh"),
+            atomically: true,
+            encoding: .utf8
+        )
+        return DoryMachineShareConfiguration(
+            tag: bootConfigTag,
+            hostPath: directory,
+            guestPath: bootConfigGuestPath,
+            readOnly: true
+        )
+    }
+
+    private static func guestBootScript(shares: [DoryMachineShareConfiguration], environment: [String: String]) -> String {
+        var lines = [
+            "#!/bin/sh",
+            "export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+            "",
+            "mountpoint() {",
+            "  grep -q \" $1 \" /proc/mounts 2>/dev/null",
+            "}",
+            "",
+            "mkdir -p /proc /sys /dev /dev/pts /run /tmp /var/log /var/run /var/lib/docker",
+            "mountpoint /proc || mount -t proc proc /proc 2>/dev/null || true",
+            "mountpoint /sys || mount -t sysfs sys /sys 2>/dev/null || true",
+            "mountpoint /dev || mount -t devtmpfs devtmpfs /dev 2>/dev/null || true",
+            "mountpoint /dev/pts || mount -t devpts devpts /dev/pts 2>/dev/null || true",
+            "mountpoint /run || mount -t tmpfs tmpfs /run 2>/dev/null || true",
+            "mountpoint /tmp || mount -t tmpfs tmpfs /tmp 2>/dev/null || true",
+            "mkdir -p /sys/fs/cgroup",
+            "mountpoint /sys/fs/cgroup || mount -t cgroup2 none /sys/fs/cgroup 2>/dev/null || true",
+            "",
+            ": > /var/log/dory-mounts.log",
+        ]
+        for (key, value) in environment.sorted(by: { $0.key < $1.key }) {
+            guard key.wholeMatch(of: /[A-Za-z_][A-Za-z0-9_]*/) != nil else { continue }
+            lines.append("export \(key)=\(shellQuote(value))")
+        }
+        if !environment.isEmpty {
+            lines.append("")
+        }
+        for share in shares {
+            let options = share.readOnly ? "ro" : "rw"
+            lines.append("mkdir -p \(shellQuote(share.guestPath))")
+            lines.append(
+                "if mountpoint \(shellQuote(share.guestPath)); then " +
+                "echo \(shellQuote("DORY: \(share.tag) already mounted at \(share.guestPath)")) >>/var/log/dory-mounts.log; " +
+                "elif mount -t virtiofs -o \(shellQuote(options)) \(shellQuote(share.tag)) \(shellQuote(share.guestPath)) 2>>/var/log/dory-mounts.log; then " +
+                "echo \(shellQuote("DORY: mounted \(share.tag) at \(share.guestPath)")) >>/var/log/dory-mounts.log; " +
+                "else echo \(shellQuote("DORY: failed to mount \(share.tag) at \(share.guestPath)")) >>/var/log/dory-mounts.log; fi"
+            )
+        }
+        lines += [
+            "",
+            "ip link set lo up 2>/dev/null || true",
+            "if ip link show eth0 >/dev/null 2>&1; then",
+            "  ip link set eth0 up 2>/dev/null || true",
+            "  udhcpc -i eth0 -q -n -t 5 -T 1 >/dev/null 2>&1 || true",
+            "fi",
+            "",
+            "if [ -b /dev/vdb ]; then",
+            "  mount -t ext4 /dev/vdb /var/lib/docker 2>/dev/null || {",
+            "    echo \"DORY: failed to mount /dev/vdb at /var/lib/docker\"",
+            "  }",
+            "fi",
+            "",
+            "if [ -x /usr/local/bin/dockerd ]; then",
+            "  /usr/local/bin/dockerd \\",
+            "    -H unix:///var/run/docker.sock \\",
+            "    -H tcp://0.0.0.0:2375 \\",
+            "    --tls=false >/var/log/dockerd.log 2>&1 &",
+            "fi",
+            "",
+            "( while true; do",
+            "    nc -l -p 2377 >/dev/null 2>&1",
+            "    echo \"DORY: shutdown requested\"",
+            "    sync",
+            "    umount /var/lib/docker 2>/dev/null || true",
+            "    sync",
+            "    poweroff -f",
+            "  done ) &",
+            "",
+            "if [ -x /usr/bin/dory-agent ]; then",
+            "  exec /usr/bin/dory-agent >/var/log/dory-agent.log 2>&1",
+            "fi",
+            "",
+            "if [ -x /usr/local/bin/docker-init ]; then",
+            "  exec /usr/local/bin/docker-init -s -- sleep 2147483647",
+            "fi",
+            "",
+            "while true; do sleep 2147483647; done",
+        ]
+        return lines.joined(separator: "\n") + "\n"
+    }
+
+    private static func shellQuote(_ value: String) -> String {
+        "'\(value.replacingOccurrences(of: "'", with: "'\\''"))'"
     }
 
     private static func clampedMemorySize(megabytes: UInt64) -> UInt64 {
@@ -343,7 +471,8 @@ public enum DoryVMMMain {
                 cpuCount: arguments.cpuCount,
                 kernelCommandLine: arguments.kernelCommandLine,
                 readyTimeoutSeconds: arguments.readyTimeoutSeconds,
-                shares: arguments.shares
+                shares: arguments.shares,
+                environment: arguments.environment
             )
         }
 
@@ -397,7 +526,8 @@ public enum DoryVMMMain {
         cpuCount: Int,
         kernelCommandLine: String?,
         readyTimeoutSeconds: TimeInterval,
-        shares: [DoryMachineShareConfiguration]
+        shares: [DoryMachineShareConfiguration],
+        environment: [String: String]
     ) throws -> DoryVMMRuntime {
         try FileManager.default.createDirectory(atPath: stateDirectory, withIntermediateDirectories: true)
         let serialLog = try openAppendLog("\(stateDirectory)/serial.log")
@@ -409,7 +539,8 @@ public enum DoryVMMMain {
             memoryMB: memoryMB,
             cpuCount: cpuCount,
             kernelCommandLine: kernelCommandLine,
-            shares: shares
+            shares: shares,
+            environment: environment
         )
         let configuration = try DoryVZConfigurationBuilder.makeConfiguration(spec: spec, serialOutput: serialLog)
         try validate(configuration: configuration)

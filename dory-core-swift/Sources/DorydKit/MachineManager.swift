@@ -100,6 +100,7 @@ public struct DoryMachineConfiguration: Sendable, Equatable, Hashable, Codable {
     public var cpuCount: Int
     public var address: String?
     public var shares: [DoryMachineShareConfiguration]
+    public var environment: [String: String]
 
     public init(
         id: String,
@@ -108,7 +109,8 @@ public struct DoryMachineConfiguration: Sendable, Equatable, Hashable, Codable {
         memoryMB: UInt64 = 2048,
         cpuCount: Int = 2,
         address: String? = nil,
-        shares: [DoryMachineShareConfiguration] = []
+        shares: [DoryMachineShareConfiguration] = [],
+        environment: [String: String] = [:]
     ) {
         self.id = id
         self.kernelPath = kernelPath
@@ -117,6 +119,7 @@ public struct DoryMachineConfiguration: Sendable, Equatable, Hashable, Codable {
         self.cpuCount = max(1, cpuCount)
         self.address = address
         self.shares = shares
+        self.environment = environment
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -127,6 +130,7 @@ public struct DoryMachineConfiguration: Sendable, Equatable, Hashable, Codable {
         case cpuCount
         case address
         case shares
+        case environment
     }
 
     public init(from decoder: Decoder) throws {
@@ -138,7 +142,8 @@ public struct DoryMachineConfiguration: Sendable, Equatable, Hashable, Codable {
             memoryMB: try container.decodeIfPresent(UInt64.self, forKey: .memoryMB) ?? 2048,
             cpuCount: try container.decodeIfPresent(Int.self, forKey: .cpuCount) ?? 2,
             address: try container.decodeIfPresent(String.self, forKey: .address),
-            shares: try container.decodeIfPresent([DoryMachineShareConfiguration].self, forKey: .shares) ?? []
+            shares: try container.decodeIfPresent([DoryMachineShareConfiguration].self, forKey: .shares) ?? [],
+            environment: try container.decodeIfPresent([String: String].self, forKey: .environment) ?? [:]
         )
     }
 }
@@ -168,6 +173,7 @@ public struct DoryMachineStatus: Sendable, Equatable {
     public var currentBalloonTargetMB: UInt64
     public var cpuCount: Int
     public var shares: [DoryMachineShareConfiguration]
+    public var environment: [String: String]
 
     public init(
         id: String,
@@ -185,7 +191,8 @@ public struct DoryMachineStatus: Sendable, Equatable {
         memoryMB: UInt64 = 0,
         currentBalloonTargetMB: UInt64? = nil,
         cpuCount: Int = 0,
-        shares: [DoryMachineShareConfiguration] = []
+        shares: [DoryMachineShareConfiguration] = [],
+        environment: [String: String] = [:]
     ) {
         self.id = id
         self.state = state
@@ -203,6 +210,7 @@ public struct DoryMachineStatus: Sendable, Equatable {
         self.currentBalloonTargetMB = currentBalloonTargetMB ?? memoryMB
         self.cpuCount = cpuCount
         self.shares = shares
+        self.environment = environment
     }
 }
 
@@ -252,6 +260,7 @@ public enum MachineManagerError: Error, Sendable, Equatable, CustomStringConvert
     case balloonApplyFailed(String, String)
     case invalidAddress(String)
     case invalidShare(String)
+    case invalidEnvironment(String)
     case persistence(String)
 
     public var description: String {
@@ -278,6 +287,8 @@ public enum MachineManagerError: Error, Sendable, Equatable, CustomStringConvert
             return "invalid machine address: \(address)"
         case let .invalidShare(share):
             return "invalid machine share: \(share)"
+        case let .invalidEnvironment(key):
+            return "invalid machine environment variable: \(key)"
         case let .persistence(message):
             return "machine state persistence failed: \(message)"
         }
@@ -321,6 +332,7 @@ public final class MachineManager: @unchecked Sendable {
         var machine = machine
         machine.address = try Self.normalizedAddress(machine.address)
         try Self.validateShares(machine.shares)
+        try Self.validateEnvironment(machine.environment)
         lock.lock()
         let exists = machines[machine.id] != nil
         lock.unlock()
@@ -341,7 +353,8 @@ public final class MachineManager: @unchecked Sendable {
             address: preparedMachine.address,
             memoryMB: preparedMachine.memoryMB,
             cpuCount: preparedMachine.cpuCount,
-            shares: preparedMachine.shares
+            shares: preparedMachine.shares,
+            environment: preparedMachine.environment
         )
     }
 
@@ -488,7 +501,9 @@ public final class MachineManager: @unchecked Sendable {
         address: String? = nil,
         updatesAddress: Bool = false,
         shares: [DoryMachineShareConfiguration]? = nil,
-        updatesShares: Bool = false
+        updatesShares: Bool = false,
+        environment: [String: String]? = nil,
+        updatesEnvironment: Bool = false
     ) throws -> DoryMachineStatus {
         if let memoryMB, memoryMB == 0 {
             throw MachineManagerError.persistence("memoryMB must be positive")
@@ -499,8 +514,11 @@ public final class MachineManager: @unchecked Sendable {
         if let shares {
             try Self.validateShares(shares)
         }
+        if let environment {
+            try Self.validateEnvironment(environment)
+        }
         let normalizedAddress = try Self.normalizedAddress(address)
-        let needsRestart = memoryMB != nil || cpuCount != nil || updatesShares
+        let needsRestart = memoryMB != nil || cpuCount != nil || updatesShares || updatesEnvironment
         let (current, wasRunning) = try configurationAndRunningState(id: id)
         if wasRunning && needsRestart {
             _ = try stop(id: id)
@@ -517,6 +535,9 @@ public final class MachineManager: @unchecked Sendable {
         }
         if updatesShares {
             updated.shares = shares ?? []
+        }
+        if updatesEnvironment {
+            updated.environment = environment ?? [:]
         }
         do {
             try persist(updated)
@@ -740,7 +761,8 @@ public final class MachineManager: @unchecked Sendable {
                 address: entry.configuration.address,
                 memoryMB: entry.configuration.memoryMB,
                 cpuCount: entry.configuration.cpuCount,
-                shares: entry.configuration.shares
+                shares: entry.configuration.shares,
+                environment: entry.configuration.environment
             )
         }
         return DoryMachineStatus(
@@ -759,7 +781,8 @@ public final class MachineManager: @unchecked Sendable {
             memoryMB: entry.configuration.memoryMB,
             currentBalloonTargetMB: entry.currentBalloonTargetMB ?? entry.configuration.memoryMB,
             cpuCount: entry.configuration.cpuCount,
-            shares: entry.configuration.shares
+            shares: entry.configuration.shares,
+            environment: entry.configuration.environment
         )
     }
 
@@ -791,6 +814,9 @@ public final class MachineManager: @unchecked Sendable {
         }
         for share in machine.shares {
             arguments.append(contentsOf: ["--share", share.argumentValue])
+        }
+        for (key, value) in machine.environment.sorted(by: { $0.key < $1.key }) {
+            arguments.append(contentsOf: ["--env", "\(key)=\(value)"])
         }
         return arguments
     }
@@ -1075,6 +1101,21 @@ public final class MachineManager: @unchecked Sendable {
                 throw MachineManagerError.invalidShare(share.hostPath)
             }
         }
+    }
+
+    private static func validateEnvironment(_ environment: [String: String]) throws {
+        for (key, value) in environment {
+            guard isValidEnvironmentKey(key) else {
+                throw MachineManagerError.invalidEnvironment(key)
+            }
+            guard !value.contains("\0") else {
+                throw MachineManagerError.invalidEnvironment(key)
+            }
+        }
+    }
+
+    private static func isValidEnvironmentKey(_ key: String) -> Bool {
+        key.wholeMatch(of: /[A-Za-z_][A-Za-z0-9_]*/) != nil
     }
 
     private static func generatedSnapshotID(prefix: String = "s") -> String {

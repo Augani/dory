@@ -17,6 +17,7 @@ final class DoryVMMKitTests: XCTestCase {
             "--agent-sock", "/tmp/agent.sock",
             "--shell-sock", "/tmp/shell.sock",
             "--share", "src=/tmp/src:/workspace/src:ro",
+            "--env", "APP_ENV=dev",
         ])
 
         XCTAssertEqual(arguments.machineID, "dev")
@@ -31,7 +32,18 @@ final class DoryVMMKitTests: XCTestCase {
         XCTAssertEqual(arguments.shares, [
             DoryMachineShareConfiguration(tag: "src", hostPath: "/tmp/src", guestPath: "/workspace/src", readOnly: true),
         ])
+        XCTAssertEqual(arguments.environment, ["APP_ENV": "dev"])
         XCTAssertEqual(arguments.bootMode, .virtualMachine)
+    }
+
+    func testRejectsInvalidEnvironmentArgument() throws {
+        XCTAssertThrowsError(try parseDoryVMMArguments([
+            "--machine-id", "dev",
+            "--handoff-sock", "/tmp/handoff.sock",
+            "--env", "1BAD=value",
+        ])) { error in
+            XCTAssertEqual(error as? DoryVMMArgumentError, .invalidEnvironment("1BAD"))
+        }
     }
 
     func testExitAfterHandoffKeepsContractShimMode() throws {
@@ -84,7 +96,8 @@ final class DoryVMMKitTests: XCTestCase {
                 cpuCount: 2,
                 shares: [
                     DoryMachineShareConfiguration(tag: "src", hostPath: share, guestPath: "/workspace/src", readOnly: true),
-                ]
+                ],
+                environment: ["APP_ENV": "dev build"]
             ),
             serialOutput: serialHandle
         )
@@ -106,9 +119,47 @@ final class DoryVMMKitTests: XCTestCase {
         XCTAssertTrue(configuration.entropyDevices.first is VZVirtioEntropyDeviceConfiguration)
         XCTAssertEqual(configuration.serialPorts.count, 1)
         XCTAssertTrue(configuration.serialPorts.first is VZVirtioConsoleDeviceSerialPortConfiguration)
-        XCTAssertEqual(configuration.directorySharingDevices.count, 1)
-        let shareDevice = try XCTUnwrap(configuration.directorySharingDevices.first as? VZVirtioFileSystemDeviceConfiguration)
+        XCTAssertEqual(configuration.directorySharingDevices.count, 2)
+        let tags = configuration.directorySharingDevices.compactMap { ($0 as? VZVirtioFileSystemDeviceConfiguration)?.tag }
+        XCTAssertTrue(tags.contains("dorycfg"))
+        XCTAssertTrue(tags.contains("src"))
+        let shareDevice = try XCTUnwrap(configuration.directorySharingDevices.compactMap { $0 as? VZVirtioFileSystemDeviceConfiguration }.first { $0.tag == "src" })
         XCTAssertEqual(shareDevice.tag, "src")
         XCTAssertTrue(shareDevice.share is VZSingleDirectoryShare)
+        let bootScript = try String(contentsOfFile: "\(base)/dorycfg/boot.sh", encoding: .utf8)
+        XCTAssertTrue(bootScript.contains("export APP_ENV='dev build'"))
+        XCTAssertTrue(bootScript.contains("mount -t virtiofs -o 'ro' 'src' '/workspace/src'"))
+        XCTAssertTrue(bootScript.contains("exec /usr/bin/dory-agent"))
+    }
+
+    func testRejectsReservedBootConfigShareTag() throws {
+        let base = "/tmp/dory-vmm-reserved-share-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+
+        let kernel = "\(base)/vmlinux"
+        let rootfs = "\(base)/rootfs.raw"
+        let share = "\(base)/share"
+        try FileManager.default.createDirectory(atPath: share, withIntermediateDirectories: true)
+        FileManager.default.createFile(atPath: kernel, contents: Data([0x7f, 0x45, 0x4c, 0x46]))
+        FileManager.default.createFile(atPath: rootfs, contents: nil)
+        XCTAssertEqual(truncate(rootfs, 1024 * 1024), 0)
+
+        XCTAssertThrowsError(try DoryVZConfigurationBuilder.makeConfiguration(
+            spec: DoryVZMachineSpec(
+                machineID: "dev",
+                stateDirectory: base,
+                kernelPath: kernel,
+                rootfsPath: rootfs,
+                memoryMB: 2048,
+                cpuCount: 2,
+                shares: [
+                    DoryMachineShareConfiguration(tag: "dorycfg", hostPath: share, guestPath: "/workspace/src"),
+                ]
+            ),
+            serialOutput: nil
+        )) { error in
+            XCTAssertTrue("\(error)".contains("reserved"))
+        }
     }
 }

@@ -2928,6 +2928,7 @@ final class AppStore {
                 cpus: status.cpuCount,
                 memoryMB: status.memoryMB.flatMap { Int(exactly: $0) },
                 mounts: status.shares.map(Self.mountPair(fromDoryd:)),
+                env: status.environment,
                 address: status.address
             )
         } catch {
@@ -3265,7 +3266,8 @@ final class AppStore {
             memoryMB: max(1, memoryMB),
             cpuCount: max(1, cpuCount),
             address: address,
-            shares: dorydShares(from: settings.mounts)
+            shares: dorydShares(from: settings.mounts),
+            environment: settings.env
         )
     }
 
@@ -3356,9 +3358,17 @@ final class AppStore {
         defer { busyMachines.remove(machine.name) }
         do {
             let current = try await dorydClient.machineList().first { $0.id == machine.name }
-            let memory = settings.memoryMB.flatMap { UInt64(exactly: $0) } ?? current?.memoryMB
-            let cpus = settings.cpus ?? current?.cpuCount
-            let address = Self.trimmedNonEmpty(settings.address)
+            let currentSettings = MachineSettings(
+                cpus: current?.cpuCount,
+                memoryMB: current?.memoryMB.flatMap { Int(exactly: $0) },
+                mounts: current?.shares.map(Self.mountPair(fromDoryd:)) ?? [],
+                env: current?.environment ?? [:],
+                address: current?.address
+            )
+            let effectiveSettings = Self.preservingHiddenMachineSettings(settings, existing: currentSettings)
+            let memory = effectiveSettings.memoryMB.flatMap { UInt64(exactly: $0) } ?? current?.memoryMB
+            let cpus = effectiveSettings.cpus ?? current?.cpuCount
+            let address = Self.trimmedNonEmpty(effectiveSettings.address)
                 ?? current?.address
             _ = try await dorydClient.machineUpdate(
                 machine.name,
@@ -3366,7 +3376,8 @@ final class AppStore {
                 cpuCount: cpus,
                 address: address,
                 updatesAddress: true,
-                shares: Self.dorydShares(from: settings.mounts)
+                shares: Self.dorydShares(from: effectiveSettings.mounts),
+                environment: effectiveSettings.env
             )
             appendMachineCreationLog("Settings applied to doryd VM definition.")
             activeSheet = nil

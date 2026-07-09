@@ -814,10 +814,19 @@ final class DorydServiceTests: XCTestCase {
             "memoryMB": 1024,
             "cpuCount": 2,
             "address": "192.168.215.40",
+            "env": [
+                [
+                    "key": "APP_ENV",
+                    "value": "dev",
+                ] as NSDictionary,
+            ],
         ]) { ok, body, message in
             XCTAssertTrue(ok, message)
             XCTAssertEqual(body["state"] as? String, "created")
             XCTAssertEqual(body["address"] as? String, "192.168.215.40")
+            let env = body["env"] as? [NSDictionary]
+            XCTAssertEqual(env?.first?["key"] as? String, "APP_ENV")
+            XCTAssertEqual(env?.first?["value"] as? String, "dev")
             create.fulfill()
         }
         wait(for: [create], timeout: 5)
@@ -837,6 +846,8 @@ final class DorydServiceTests: XCTestCase {
             let statuses = body as? [NSDictionary]
             XCTAssertEqual(statuses?.first?["id"] as? String, "dev")
             XCTAssertEqual(statuses?.first?["address"] as? String, "192.168.215.40")
+            let env = statuses?.first?["env"] as? [NSDictionary]
+            XCTAssertEqual(env?.first?["value"] as? String, "dev")
             list.fulfill()
         }
         wait(for: [list], timeout: 5)
@@ -862,6 +873,12 @@ final class DorydServiceTests: XCTestCase {
                     "readOnly": true,
                 ] as NSDictionary,
             ],
+            "env": [
+                [
+                    "key": "NODE_ENV",
+                    "value": "production",
+                ] as NSDictionary,
+            ],
         ]) { ok, body, message in
             XCTAssertTrue(ok, message)
             XCTAssertEqual(body["state"] as? String, "stopped")
@@ -872,6 +889,9 @@ final class DorydServiceTests: XCTestCase {
             XCTAssertEqual(shares?.first?["hostPath"] as? String, share)
             XCTAssertEqual(shares?.first?["guestPath"] as? String, "/workspace/src")
             XCTAssertEqual(shares?.first?["readOnly"] as? Bool, true)
+            let env = body["env"] as? [NSDictionary]
+            XCTAssertEqual(env?.first?["key"] as? String, "NODE_ENV")
+            XCTAssertEqual(env?.first?["value"] as? String, "production")
             update.fulfill()
         }
         wait(for: [update], timeout: 5)

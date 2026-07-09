@@ -151,8 +151,8 @@ func usage(exitCode: Int32 = 2) -> Never {
           dorydctl [global] docker agent-info|ports|telemetry
           dorydctl [global] machine list
           dorydctl [global] machine status NAME
-          dorydctl [global] machine create NAME --kernel PATH --rootfs PATH [--memory-mb N] [--cpus N] [--address IPv4] [--share TAG=HOST:GUEST[:ro|rw]]
-          dorydctl [global] machine update NAME [--memory-mb N] [--cpus N] [--address IPv4 | --clear-address] [--share TAG=HOST:GUEST[:ro|rw] ... | --clear-shares]
+          dorydctl [global] machine create NAME --kernel PATH --rootfs PATH [--memory-mb N] [--cpus N] [--address IPv4] [--share TAG=HOST:GUEST[:ro|rw]] [--env KEY=VALUE]
+          dorydctl [global] machine update NAME [--memory-mb N] [--cpus N] [--address IPv4 | --clear-address] [--share TAG=HOST:GUEST[:ro|rw] ... | --clear-shares] [--env KEY=VALUE ... | --clear-env]
           dorydctl [global] machine start|stop|delete NAME
           dorydctl [global] machine exec NAME [--json] [--cwd PATH] [--env KEY=VALUE] [--timeout-ms N] [--output-limit-bytes N] -- COMMAND [ARG...]
           dorydctl [global] machine shell NAME
@@ -220,6 +220,20 @@ func nonNegativeUInt64(_ raw: String, option: String) throws -> UInt64 {
         throw DorydCtlError.usage("\(option) must be a non-negative integer")
     }
     return value
+}
+
+func parseEnvironmentRow(_ raw: String) throws -> NSDictionary {
+    guard let equals = raw.firstIndex(of: "="), equals != raw.startIndex else {
+        throw DorydCtlError.usage("--env must be KEY=VALUE")
+    }
+    let key = String(raw[..<equals])
+    guard key.wholeMatch(of: /[A-Za-z_][A-Za-z0-9_]*/) != nil else {
+        throw DorydCtlError.usage("--env key must match [A-Za-z_][A-Za-z0-9_]*")
+    }
+    return [
+        "key": key,
+        "value": String(raw[raw.index(after: equals)...]),
+    ] as NSDictionary
 }
 
 func machineExecControlTimeout(timeoutMs: UInt64) -> TimeInterval {
@@ -626,6 +640,7 @@ func runMachine(cursor: inout ArgumentCursor, client: DorydCtlClient) throws {
         let memoryMB = try cursor.optionValue("--memory-mb").map { try positiveUInt64($0, option: "--memory-mb") } ?? 2048
         let cpuCount = try cursor.optionValue("--cpus").map { try positiveInt($0, option: "--cpus") } ?? 2
         let shares = try cursor.optionValues("--share").map { try DoryMachineShareConfiguration(argument: $0) }
+        let env = try cursor.optionValues("--env").map(parseEnvironmentRow)
         var config: [String: Any] = [
             "id": name,
             "kernelPath": kernel,
@@ -645,6 +660,9 @@ func runMachine(cursor: inout ArgumentCursor, client: DorydCtlClient) throws {
                     "readOnly": share.readOnly,
                 ] as NSDictionary
             }
+        }
+        if !env.isEmpty {
+            config["env"] = env
         }
         let status = try client.statusCommand { proxy, reply in
             proxy.machineCreate(config as NSDictionary, reply: reply)
@@ -733,7 +751,7 @@ func runMachine(cursor: inout ArgumentCursor, client: DorydCtlClient) throws {
 }
 
 func runMachineUpdate(cursor: inout ArgumentCursor, client: DorydCtlClient) throws {
-    let usage = "usage: dorydctl machine update NAME [--memory-mb N] [--cpus N] [--address IPv4 | --clear-address] [--share TAG=HOST:GUEST[:ro|rw] ... | --clear-shares]"
+    let usage = "usage: dorydctl machine update NAME [--memory-mb N] [--cpus N] [--address IPv4 | --clear-address] [--share TAG=HOST:GUEST[:ro|rw] ... | --clear-shares] [--env KEY=VALUE ... | --clear-env]"
     let name = try cursor.take(usage)
     var config: [String: Any] = [:]
     if let memory = try cursor.optionValue("--memory-mb") {
@@ -773,6 +791,17 @@ func runMachineUpdate(cursor: inout ArgumentCursor, client: DorydCtlClient) thro
         }
         cursor.values.removeAll { $0 == "--clear-shares" }
         config["shares"] = [] as [NSDictionary]
+    }
+    let envValues = try cursor.optionValues("--env")
+    if !envValues.isEmpty {
+        config["env"] = try envValues.map(parseEnvironmentRow)
+    }
+    if cursor.values.contains("--clear-env") {
+        guard config["env"] == nil else {
+            throw DorydCtlError.usage("use either --env or --clear-env, not both")
+        }
+        cursor.values.removeAll { $0 == "--clear-env" }
+        config["env"] = [] as [NSDictionary]
     }
     guard !config.isEmpty else {
         throw DorydCtlError.usage(usage)

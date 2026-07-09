@@ -105,7 +105,8 @@ struct DorydClientTests {
             address: "192.168.215.40",
             shares: [
                 DorydMachineShareConfiguration(tag: "src", hostPath: "/Users/me/src", guestPath: "/workspace/src", readOnly: true),
-            ]
+            ],
+            environment: ["FOO": "bar"]
         ))
         let startedMachine = try await client.machineStart("dev")
         let execResult = try await client.machineExec("dev", argv: ["/bin/sh", "-lc", "cargo --version"])
@@ -123,7 +124,13 @@ struct DorydClientTests {
         let importedSnapshot = try await client.machineImportSnapshot(from: "/tmp/dev.dorymachine")
         let deletedSnapshot = try await client.machineDeleteSnapshot(machineID: "dev", snapshotID: "s1")
         let stoppedMachine = try await client.machineStop("dev")
-        let updatedMachine = try await client.machineUpdate("dev", memoryMB: 4096, cpuCount: 4, address: "192.168.215.41")
+        let updatedMachine = try await client.machineUpdate(
+            "dev",
+            memoryMB: 4096,
+            cpuCount: 4,
+            address: "192.168.215.41",
+            environment: ["BAR": "baz"]
+        )
         let machines = try await client.machineList()
         let deletedMachine = try await client.machineDelete("dev")
         let remoteInfo = try await client.remoteConnect(DorydRemoteMachineConfiguration(
@@ -187,6 +194,7 @@ struct DorydClientTests {
         #expect(startedMachine.shares == [
             DorydMachineShareConfiguration(tag: "src", hostPath: "/Users/me/src", guestPath: "/workspace/src", readOnly: true),
         ])
+        #expect(startedMachine.environment == ["FOO": "bar"])
         #expect(execResult.stdout == "cargo 1.0\n")
         #expect(execResult.exitCode == 0)
         #expect(provisionedMachine.recipeID == "rust")
@@ -203,6 +211,7 @@ struct DorydClientTests {
         #expect(updatedMachine.memoryMB == 4096)
         #expect(updatedMachine.cpuCount == 4)
         #expect(updatedMachine.address == "192.168.215.41")
+        #expect(updatedMachine.environment == ["BAR": "baz"])
         #expect(machines.map(\.id) == ["dev", "dev-copy"])
         #expect(deletedMachine == DorydCommandResult(ok: true, message: ""))
         #expect(remoteInfo.agentBuild == "remote-agent")
@@ -375,6 +384,7 @@ struct DorydClientTests {
         #expect(currentSettings.memoryMB == 2048)
         #expect(currentSettings.address == "192.168.215.40")
         #expect(currentSettings.mounts == [MountPair(host: "/Users/me/src", guest: "/workspace/src", readOnly: true)])
+        #expect(currentSettings.env == ["ANTHROPIC_API_KEY": "test-token"])
 
         store.toggleMachine(machine)
         try await waitUntil {
@@ -410,6 +420,9 @@ struct DorydClientTests {
         #expect(updateShares.first?["hostPath"] as? String == "/Users/me/app")
         #expect(updateShares.first?["guestPath"] as? String == "/workspace/app")
         #expect(updateShares.first?["readOnly"] as? Bool == false)
+        let updateEnv = try #require(service.latestMachineUpdateConfig?["env"] as? [NSDictionary])
+        #expect(updateEnv.first?["key"] as? String == "ANTHROPIC_API_KEY")
+        #expect(updateEnv.first?["value"] as? String == "test-token")
 
         machine = try #require(store.machines.first { $0.name == "dev" })
         store.deleteMachine(machine)
@@ -515,7 +528,8 @@ struct DorydClientTests {
             settings: MachineSettings(
                 cpus: 3,
                 memoryMB: 3072,
-                mounts: [MountPair(host: "/Users/me/project", guest: "/workspace/project")]
+                mounts: [MountPair(host: "/Users/me/project", guest: "/workspace/project")],
+                env: ["APP_ENV": "dev"]
             )
         )
 
@@ -534,6 +548,9 @@ struct DorydClientTests {
         let createShares = try #require(config["shares"] as? [NSDictionary])
         #expect(createShares.first?["hostPath"] as? String == "/Users/me/project")
         #expect(createShares.first?["guestPath"] as? String == "/workspace/project")
+        let createEnv = try #require(config["env"] as? [NSDictionary])
+        #expect(createEnv.first?["key"] as? String == "APP_ENV")
+        #expect(createEnv.first?["value"] as? String == "dev")
 
         try await waitUntil {
             store.machines.first { $0.name == "vmdev" }?.status == .running
@@ -553,7 +570,7 @@ struct DorydClientTests {
 
         let config = AppStore.dorydMachineConfiguration(
             name: "vmdev",
-            settings: MachineSettings(cpus: 3, memoryMB: 3072),
+            settings: MachineSettings(cpus: 3, memoryMB: 3072, env: ["APP_ENV": "dev"]),
             environment: [
                 "DORYD_GUEST_KERNEL": "/vm/Image",
                 "DORYD_GUEST_ROOTFS": "/vm/rootfs.raw",
@@ -565,7 +582,8 @@ struct DorydClientTests {
             kernelPath: "/vm/Image",
             rootfsPath: "/vm/rootfs.raw",
             memoryMB: 3072,
-            cpuCount: 3
+            cpuCount: 3,
+            environment: ["APP_ENV": "dev"]
         ))
     }
 
@@ -865,6 +883,12 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
                     "guestPath": "/workspace/src",
                     "readOnly": true,
                 ] as NSDictionary,
+            ],
+            environment: [
+                [
+                    "key": "ANTHROPIC_API_KEY",
+                    "value": "test-token",
+                ] as NSDictionary,
             ]
         )
     ]
@@ -1049,7 +1073,8 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
             memoryMB: Self.uint64(config["memoryMB"]) ?? 2048,
             cpuCount: Self.int(config["cpuCount"]) ?? 2,
             address: config["address"] as? String,
-            shares: Self.shareRows(config["shares"])
+            shares: Self.shareRows(config["shares"]),
+            environment: Self.environmentRows(config["env"])
         )
         lock.lock()
         _machineCreateCount += 1
@@ -1071,7 +1096,8 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
             memoryMB: Self.uint64(current?["memoryMB"]) ?? 2048,
             cpuCount: Self.int(current?["cpuCount"]) ?? 2,
             address: current?["address"] as? String,
-            shares: Self.shareRows(current?["shares"])
+            shares: Self.shareRows(current?["shares"]),
+            environment: Self.environmentRows(current?["env"])
         )
         _machineStartCount += 1
         machines[machineID] = row
@@ -1088,7 +1114,8 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
             memoryMB: Self.uint64(current?["memoryMB"]) ?? 2048,
             cpuCount: Self.int(current?["cpuCount"]) ?? 2,
             address: current?["address"] as? String,
-            shares: Self.shareRows(current?["shares"])
+            shares: Self.shareRows(current?["shares"]),
+            environment: Self.environmentRows(current?["env"])
         )
         _machineStopCount += 1
         machines[machineID] = row
@@ -1113,6 +1140,7 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
             ?? 2
         let address = config["address"] == nil ? current["address"] as? String : config["address"] as? String
         let shares = config["shares"] == nil ? Self.shareRows(current["shares"]) : Self.shareRows(config["shares"])
+        let environment = config["env"] == nil ? Self.environmentRows(current["env"]) : Self.environmentRows(config["env"])
         let state = current["state"] as? String ?? "stopped"
         let row = Self.machineRow(
             id: machineID,
@@ -1123,7 +1151,8 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
             memoryMB: memoryMB,
             cpuCount: cpuCount,
             address: address,
-            shares: shares
+            shares: shares,
+            environment: environment
         )
         machines[machineID] = row
         lock.unlock()
@@ -1499,7 +1528,8 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
         memoryMB: UInt64 = 2048,
         cpuCount: Int = 2,
         address: String? = nil,
-        shares: [NSDictionary] = []
+        shares: [NSDictionary] = [],
+        environment: [NSDictionary] = []
     ) -> NSDictionary {
         var row: [String: Any] = [
             "id": id,
@@ -1521,10 +1551,21 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
             row["address"] = address
         }
         row["shares"] = shares
+        row["env"] = environment
         return row as NSDictionary
     }
 
     private static func shareRows(_ value: Any?) -> [NSDictionary] {
+        if let rows = value as? [NSDictionary] {
+            return rows
+        }
+        if let rows = value as? NSArray {
+            return rows.compactMap { $0 as? NSDictionary }
+        }
+        return []
+    }
+
+    private static func environmentRows(_ value: Any?) -> [NSDictionary] {
         if let rows = value as? [NSDictionary] {
             return rows
         }

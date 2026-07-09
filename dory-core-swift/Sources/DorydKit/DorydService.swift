@@ -230,7 +230,9 @@ public final class DorydService: NSObject, DorydControl {
                 address: update.address,
                 updatesAddress: update.updatesAddress,
                 shares: update.shares,
-                updatesShares: update.updatesShares
+                updatesShares: update.updatesShares,
+                environment: update.environment,
+                updatesEnvironment: update.updatesEnvironment
             )
             incidentWriter?.record(type: "machine.update", detail: machineID)
             reply(true, status.xpcDictionary, "")
@@ -744,6 +746,8 @@ private struct MachineUpdateRequest {
     var updatesAddress: Bool
     var shares: [DoryMachineShareConfiguration]?
     var updatesShares: Bool
+    var environment: [String: String]?
+    var updatesEnvironment: Bool
 
     init(xpcDictionary dictionary: NSDictionary) throws {
         self.memoryMB = try dictionary.optionalUInt64("memoryMB")
@@ -757,7 +761,9 @@ private struct MachineUpdateRequest {
         }
         self.shares = dictionary["shares"] == nil ? nil : try dictionary.optionalMachineShares("shares")
         self.updatesShares = dictionary["shares"] != nil
-        if memoryMB == nil, cpuCount == nil, !updatesAddress, !updatesShares {
+        self.environment = dictionary["env"] == nil ? nil : try dictionary.optionalEnvironmentDictionary("env")
+        self.updatesEnvironment = dictionary["env"] != nil
+        if memoryMB == nil, cpuCount == nil, !updatesAddress, !updatesShares, !updatesEnvironment {
             throw XPCRemoteConfigError.invalid("config")
         }
     }
@@ -812,7 +818,8 @@ private extension DoryMachineConfiguration {
             memoryMB: try dictionary.optionalUInt64("memoryMB") ?? 2048,
             cpuCount: try dictionary.optionalInt("cpuCount") ?? 2,
             address: dictionary.optionalString("address"),
-            shares: try dictionary.optionalMachineShares("shares")
+            shares: try dictionary.optionalMachineShares("shares"),
+            environment: try dictionary.optionalEnvironmentDictionary("env")
         )
     }
 }
@@ -952,6 +959,26 @@ private extension NSDictionary {
         }
     }
 
+    func optionalEnvironmentDictionary(_ key: String) throws -> [String: String] {
+        guard let raw = self[key] else { return [:] }
+        guard let rows = raw as? [NSDictionary] else {
+            throw XPCRemoteConfigError.invalid(key)
+        }
+        var result: [String: String] = [:]
+        for row in rows {
+            let key = try row.requiredString("key")
+            guard key.wholeMatch(of: /[A-Za-z_][A-Za-z0-9_]*/) != nil else {
+                throw XPCRemoteConfigError.invalid("env")
+            }
+            let value = row.optionalString("value") ?? ""
+            guard !value.contains("\0") else {
+                throw XPCRemoteConfigError.invalid("env")
+            }
+            result[key] = value
+        }
+        return result
+    }
+
     func optionalString(_ key: String) -> String? {
         self[key] as? String
     }
@@ -1082,6 +1109,12 @@ private extension DoryMachineStatus {
             dictionary["address"] = address
         }
         dictionary["shares"] = shares.map(\.xpcDictionary)
+        dictionary["env"] = environment.sorted(by: { $0.key < $1.key }).map { key, value in
+            [
+                "key": key,
+                "value": value,
+            ] as NSDictionary
+        }
         dictionary["handoffFDCount"] = handoffFDCount
         dictionary["memoryMB"] = memoryMB
         dictionary["currentBalloonTargetMB"] = currentBalloonTargetMB
