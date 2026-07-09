@@ -5,8 +5,12 @@ public final class FuseServer: @unchecked Sendable {
     private let hostFS: HostFS
     private let daxWindow: DaxWindow?
     private let writebackCache: Bool
+    private let killPrivV2: Bool
     private let deferReleaseClose: Bool
     private let fastCreateAttributes: Bool
+    private let negativeDentryCaching: Bool
+    private let entryValiditySeconds: UInt64
+    private let attrValiditySeconds: UInt64
     private let stats: FuseStats?
     private let closeQueue = DispatchQueue(label: "dory-hv.fuse.close")
     private let deferredCloseLock = NSLock()
@@ -26,14 +30,22 @@ public final class FuseServer: @unchecked Sendable {
         hostFS: HostFS,
         daxWindow: DaxWindow? = nil,
         writebackCache: Bool? = nil,
+        killPrivV2: Bool? = nil,
         deferReleaseClose: Bool? = nil,
-        fastCreateAttributes: Bool? = nil
+        fastCreateAttributes: Bool? = nil,
+        negativeDentryCaching: Bool? = nil,
+        entryValiditySeconds: UInt64? = nil,
+        attrValiditySeconds: UInt64? = nil
     ) {
         self.hostFS = hostFS
         self.daxWindow = daxWindow
         self.writebackCache = writebackCache ?? Self.writebackCacheEnabledFromEnvironment()
+        self.killPrivV2 = killPrivV2 ?? Self.killPrivV2EnabledFromEnvironment()
         self.deferReleaseClose = deferReleaseClose ?? Self.deferReleaseCloseEnabledFromEnvironment()
         self.fastCreateAttributes = fastCreateAttributes ?? Self.fastCreateAttributesEnabledFromEnvironment()
+        self.negativeDentryCaching = negativeDentryCaching ?? Self.negativeDentryCachingEnabledFromEnvironment()
+        self.entryValiditySeconds = entryValiditySeconds ?? Self.timeoutFromEnvironment("DORY_FUSE_ENTRY_TIMEOUT")
+        self.attrValiditySeconds = attrValiditySeconds ?? Self.timeoutFromEnvironment("DORY_FUSE_ATTR_TIMEOUT")
         self.stats = FuseStats.fromEnvironment()
     }
 
@@ -67,7 +79,8 @@ public final class FuseServer: @unchecked Sendable {
                     header: header,
                     request: initIn,
                     daxMapAlignmentLog2: daxWindow == nil ? nil : UInt16(log2(Double(DaxWindow.pageSize))),
-                    writebackCache: writebackCache
+                    writebackCache: writebackCache,
+                    killPrivV2: killPrivV2
                 )
             case .lookup:
                 return try handleLookup(header: header, payload: payload)
@@ -128,7 +141,10 @@ public final class FuseServer: @unchecked Sendable {
     private func handleLookup(header: FuseInHeader, payload: ArraySlice<UInt8>) throws -> [UInt8] {
         let name = try readCString(payload)
         guard let entry = try hostFS.lookupIfExists(parent: header.nodeID, name: name) else {
-            return errorResponse(unique: header.unique, errno: ENOENT)
+            guard negativeDentryCaching else {
+                return errorResponse(unique: header.unique, errno: ENOENT)
+            }
+            return successResponse(unique: header.unique, payload: encodeNegativeEntryOut())
         }
         return successResponse(unique: header.unique, payload: encodeEntryOut(entry.attributes))
     }
@@ -163,8 +179,13 @@ public final class FuseServer: @unchecked Sendable {
             let size = payload.leUInt64(at: 16)
             if valid.contains(.fileHandle), let fd = load(handle: payload.leUInt64(at: 8)) {
                 try hostFS.truncate(handle: fd, size: size)
+                // KILLPRIV_V2 delegates the suid/sgid kill on truncate to the server, same as WRITE.
+                // Clear unconditionally under V2 (clearPrivilegedBits no-ops when no priv bit is set),
+                // matching POSIX truncate semantics and the flag the kernel sets (FATTR_KILL_SUIDGID).
+                if killPrivV2 { try? hostFS.clearPrivilegedBits(handle: fd) }
             } else {
                 try hostFS.truncate(nodeID: header.nodeID, size: size)
+                if killPrivV2 { try? hostFS.clearPrivilegedBits(nodeID: header.nodeID) }
             }
             return try successResponse(unique: header.unique, payload: encodeAttrOut(hostFS.getattr(nodeID: header.nodeID)))
         }
@@ -260,7 +281,15 @@ public final class FuseServer: @unchecked Sendable {
             guard try hostFS.lookupIfExists(parent: header.nodeID, name: name) == nil else {
                 return 0
             }
-            return writeErrorResponse(unique: header.unique, errno: ENOENT, writable: writable)
+            guard negativeDentryCaching else {
+                return writeErrorResponse(unique: header.unique, errno: ENOENT, writable: writable)
+            }
+            let payloadBytes = 128
+            guard writable.reduce(0, { $0 + $1.length }) >= FuseOutHeader.byteCount + payloadBytes else { return 0 }
+            var writer = FuseDirectResponseWriter(writable: writable)
+            writer.appendOutHeader(unique: header.unique, error: 0, payloadByteCount: payloadBytes)
+            appendNegativeEntryOut(to: &writer)
+            return writer.written
         } catch {
             return writeErrorResponse(unique: header.unique, errno: mapError(error), writable: writable)
         }
@@ -393,6 +422,7 @@ public final class FuseServer: @unchecked Sendable {
                 )
             }
             hostFS.recordWrite(nodeID: header.nodeID, offset: offset, count: written)
+            killPrivilegeBitsIfRequested(writeFlags: payload.leUInt32(at: 20), fd: fd)
             var writer = FuseDirectResponseWriter(writable: writable)
             writer.appendOutHeader(unique: header.unique, error: 0, payloadByteCount: payloadBytes)
             writer.appendLE(UInt32(written))
@@ -455,6 +485,7 @@ public final class FuseServer: @unchecked Sendable {
             )
         }
         hostFS.recordWrite(nodeID: header.nodeID, offset: offset, count: written)
+        killPrivilegeBitsIfRequested(writeFlags: payload.leUInt32(at: 20), fd: fd)
         return successResponse(unique: header.unique, payloadByteCount: 8) { response in
             response.appendLE(UInt32(written))
             response.appendLE(UInt32(0))
@@ -701,18 +732,51 @@ public final class FuseServer: @unchecked Sendable {
         return response
     }
 
-    // Cache-validity window handed to the guest for looked-up entries and attributes. A zero
+    // Default cache-validity window handed to the guest for looked-up entries and attributes. A zero
     // attr_valid forces the guest to revalidate with a GETATTR on essentially every access and
     // prevents the page cache from being trusted, collapsing read throughput to a FUSE round-trip
-    // per 4 KiB. One second is the cache=auto default (virtiofsd): the guest trusts cached
-    // metadata and data for up to a second, revalidating on open via mtime.
-    static let cacheValiditySeconds: UInt64 = 1
+    // per 4 KiB. One second is the cache=auto default (virtiofsd): the guest trusts cached metadata
+    // and data for up to a second, revalidating on open via mtime. `entryValiditySeconds` /
+    // `attrValiditySeconds` are the seam for P0.3: once the FSEvents notify path can invalidate the
+    // guest kernel cache on host-side changes, these can be raised to 5-30s. They stay at 1s until
+    // then, because a longer window without invalidation serves stale dentries/attrs.
+    static let defaultCacheValiditySeconds: UInt64 = 1
 
     private func encodeEntryOut(_ attrs: HostFSAttributes) -> [UInt8] {
         var data = [UInt8]()
         data.reserveCapacity(128)
         appendEntryOut(attrs, to: &data)
         return data
+    }
+
+    // Cacheable negative dentry: fuse_entry_out with nodeid=0 and a nonzero entry_valid. The guest
+    // kernel translates nodeid=0 to ENOENT for the syscall but caches the "does not exist" answer for
+    // entry_valid seconds, deleting the LOOKUP-miss that precedes every CREATE in a file-create storm.
+    private func encodeNegativeEntryOut() -> [UInt8] {
+        var data = [UInt8]()
+        data.reserveCapacity(128)
+        appendNegativeEntryOut(to: &data)
+        return data
+    }
+
+    private func appendNegativeEntryOut(to data: inout [UInt8]) {
+        data.appendLE(UInt64(0))                  // nodeid = 0 => negative dentry
+        data.appendLE(UInt64(0))                  // generation
+        data.appendLE(entryValiditySeconds)       // entry_valid
+        data.appendLE(UInt64(0))                  // attr_valid (unused for negatives)
+        data.appendLE(UInt32(0))                  // entry_valid_nsec
+        data.appendLE(UInt32(0))                  // attr_valid_nsec
+        for _ in 0..<11 { data.appendLE(UInt64(0)) }  // empty fuse_attr (88 bytes)
+    }
+
+    private func appendNegativeEntryOut(to writer: inout FuseDirectResponseWriter) {
+        writer.appendLE(UInt64(0))
+        writer.appendLE(UInt64(0))
+        writer.appendLE(entryValiditySeconds)
+        writer.appendLE(UInt64(0))
+        writer.appendLE(UInt32(0))
+        writer.appendLE(UInt32(0))
+        for _ in 0..<11 { writer.appendLE(UInt64(0)) }
     }
 
     private func encodeAttrOut(_ attrs: HostFSAttributes) -> [UInt8] {
@@ -732,8 +796,8 @@ public final class FuseServer: @unchecked Sendable {
     private func appendEntryOut(_ attrs: HostFSAttributes, to data: inout [UInt8]) {
         data.appendLE(attrs.nodeID)
         data.appendLE(UInt64(1))
-        data.appendLE(Self.cacheValiditySeconds)   // entry_valid
-        data.appendLE(Self.cacheValiditySeconds)   // attr_valid
+        data.appendLE(entryValiditySeconds)   // entry_valid
+        data.appendLE(attrValiditySeconds)    // attr_valid
         data.appendLE(UInt32(0))
         data.appendLE(UInt32(0))
         appendAttr(attrs, to: &data)
@@ -742,22 +806,22 @@ public final class FuseServer: @unchecked Sendable {
     private func appendEntryOut(_ attrs: HostFSAttributes, to writer: inout FuseDirectResponseWriter) {
         writer.appendLE(attrs.nodeID)
         writer.appendLE(UInt64(1))
-        writer.appendLE(Self.cacheValiditySeconds)   // entry_valid
-        writer.appendLE(Self.cacheValiditySeconds)   // attr_valid
+        writer.appendLE(entryValiditySeconds)   // entry_valid
+        writer.appendLE(attrValiditySeconds)    // attr_valid
         writer.appendLE(UInt32(0))
         writer.appendLE(UInt32(0))
         appendAttr(attrs, to: &writer)
     }
 
     private func appendAttrOut(_ attrs: HostFSAttributes, to data: inout [UInt8]) {
-        data.appendLE(Self.cacheValiditySeconds)   // attr_valid
+        data.appendLE(attrValiditySeconds)   // attr_valid
         data.appendLE(UInt32(0))
         data.appendLE(UInt32(0))
         appendAttr(attrs, to: &data)
     }
 
     private func appendAttrOut(_ attrs: HostFSAttributes, to writer: inout FuseDirectResponseWriter) {
-        writer.appendLE(Self.cacheValiditySeconds)   // attr_valid
+        writer.appendLE(attrValiditySeconds)   // attr_valid
         writer.appendLE(UInt32(0))
         writer.appendLE(UInt32(0))
         appendAttr(attrs, to: &writer)
@@ -839,11 +903,44 @@ public final class FuseServer: @unchecked Sendable {
         return 0
     }
 
+    // FUSE_WRITE_KILL_SUIDGID: the kernel sets this in fuse_write_in.write_flags (offset 20 of the
+    // write payload) under HANDLE_KILLPRIV_V2 to ask the server to drop suid/sgid + security.capability.
+    static let writeKillSuidgid: UInt32 = 1 << 2
+
+    private func killPrivilegeBitsIfRequested(writeFlags: UInt32, fd: Int32) {
+        guard killPrivV2, writeFlags & Self.writeKillSuidgid != 0 else { return }
+        try? hostFS.clearPrivilegedBits(handle: fd)
+    }
+
     private static func writebackCacheEnabledFromEnvironment() -> Bool {
+        // Default ON (P0.2): the guest is the effectively-exclusive writer of shared paths, so
+        // coalescing buffered writes is safe and removes the per-write round trip. Opt out with
+        // DORY_FUSE_WRITEBACK_CACHE=0 for the durability-strict benchmark arm.
         guard let value = ProcessInfo.processInfo.environment["DORY_FUSE_WRITEBACK_CACHE"]?.lowercased() else {
-            return false
+            return true
         }
-        return ["1", "true", "yes", "on"].contains(value)
+        return !["0", "false", "no", "off"].contains(value)
+    }
+
+    private static func killPrivV2EnabledFromEnvironment() -> Bool {
+        guard let value = ProcessInfo.processInfo.environment["DORY_FUSE_KILLPRIV"]?.lowercased() else {
+            return true
+        }
+        return !["0", "false", "no", "off"].contains(value)
+    }
+
+    private static func negativeDentryCachingEnabledFromEnvironment() -> Bool {
+        guard let value = ProcessInfo.processInfo.environment["DORY_FUSE_NEGATIVE_DENTRY"]?.lowercased() else {
+            return true
+        }
+        return !["0", "false", "no", "off"].contains(value)
+    }
+
+    private static func timeoutFromEnvironment(_ key: String) -> UInt64 {
+        guard let raw = ProcessInfo.processInfo.environment[key], let value = UInt64(raw) else {
+            return defaultCacheValiditySeconds
+        }
+        return value
     }
 
     private static func deferReleaseCloseEnabledFromEnvironment() -> Bool {

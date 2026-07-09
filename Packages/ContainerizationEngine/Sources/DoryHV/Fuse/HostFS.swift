@@ -274,6 +274,31 @@ public final class HostFS: @unchecked Sendable {
         }
     }
 
+    // Clears set-user-ID / set-group-ID after a privileged-file write, honoring FUSE
+    // HANDLE_KILLPRIV_V2. Best-effort and idempotent: only touches the mode when a priv bit is set,
+    // so the common (unprivileged) write path pays nothing beyond the flag check in the caller.
+    public func clearPrivilegedBits(handle fd: Int32) throws {
+        guard !readOnly else { return }
+        var info = stat()
+        guard fstat(fd, &info) == 0 else { return }
+        let privileged = info.st_mode & mode_t(S_ISUID | S_ISGID)
+        guard privileged != 0 else { return }
+        _ = fchmod(fd, info.st_mode & ~mode_t(S_ISUID | S_ISGID))
+    }
+
+    // nodeID variant of clearPrivilegedBits for the truncate path, which may not carry an open handle
+    // (an O_TRUNC open arrives as SETATTR size with no fh). Opens the node write-only without following
+    // symlinks, clears via the fd, and closes.
+    public func clearPrivilegedBits(nodeID: UInt64) throws {
+        guard !readOnly else { return }
+        let node = try node(for: nodeID)
+        guard node.attributes.isRegularFile else { return }
+        let fd = openat(rootFD, cPath(node.relativePath), O_WRONLY | O_NOFOLLOW | O_CLOEXEC)
+        guard fd >= 0 else { return }
+        defer { Darwin.close(fd) }
+        try clearPrivilegedBits(handle: fd)
+    }
+
     public func truncate(handle fd: Int32, size: UInt64) throws {
         guard !readOnly else { throw HostFSError.readOnly }
         guard let signedSize = off_t(exactly: size) else {

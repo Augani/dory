@@ -126,14 +126,19 @@ struct FuseServerTests {
         let missingHeader = try FuseProtocol.decodeInHeader(missingRequest)
         let missingPayload = missingRequest[FuseInHeader.byteCount..<Int(missingHeader.length)]
         let missingArrayPath = server.handle(request: missingRequest)
-        var missingDest = [UInt8](repeating: 0, count: FuseOutHeader.byteCount)
+        var missingDest = [UInt8](repeating: 0, count: FuseOutHeader.byteCount + 128)
         let missingCount = missingDest.withUnsafeMutableBytes { buffer -> Int in
             let segment = VirtqueueSegment(pointer: buffer.baseAddress!, length: buffer.count, isDeviceWritable: true)
             return server.writeLookupMissResponse(header: missingHeader, payload: missingPayload, writable: [segment])
         }
 
-        #expect(missingCount == FuseOutHeader.byteCount)
-        #expect(Array(missingDest) == missingArrayPath)
+        // Negative-dentry caching: a miss now replies with a full fuse_entry_out carrying nodeid=0 and a
+        // nonzero entry_valid (a cacheable negative), identical on both the direct and array dispatch paths.
+        #expect(missingCount == FuseOutHeader.byteCount + 128)
+        #expect(Array(missingDest[0..<missingCount]) == missingArrayPath)
+        #expect(try FuseProtocol.decodeOutHeader(Array(missingDest)).error == 0)
+        #expect(payload(from: Array(missingDest[0..<missingCount])).leUInt64(at: 0) == 0)
+        #expect(payload(from: Array(missingDest[0..<missingCount])).leUInt64(at: 16) > 0)
 
         let hitRequest = request(unique: 202, opcode: .lookup, nodeID: HostFS.rootNodeID, payload: Array("exists.txt\0".utf8))
         let hitHeader = try FuseProtocol.decodeInHeader(hitRequest)
@@ -406,23 +411,117 @@ struct FuseServerTests {
 
         #expect(try FuseProtocol.decodeOutHeader(statfs).length == UInt32(FuseOutHeader.byteCount + 80))
         #expect(payload(from: statfs).leUInt64(at: 0) > 0)
-        #expect(try FuseProtocol.decodeOutHeader(missing).error == -ENOENT)
+        // A miss is now a cacheable negative dentry (error 0, nodeid 0), not a bare ENOENT.
+        #expect(try FuseProtocol.decodeOutHeader(missing).error == 0)
+        #expect(payload(from: missing).leUInt64(at: 0) == 0)
         #expect(try FuseProtocol.decodeOutHeader(unsupported).error == -ENOSYS)
     }
 
-    @Test func initKeepsWritebackCacheOptIn() throws {
+    @Test func initEnablesWritebackAndKillprivV2ByDefault() throws {
         let root = try TestFuseServerRoot()
         let initIn = bytes(UInt32(7)) + bytes(UInt32(38)) + bytes(UInt32(131_072)) + bytes(UInt32(FuseInitFlag.asyncRead.rawValue))
         let defaultServer = try FuseServer(hostFS: HostFS(rootPath: root.url.path))
-        let optInServer = try FuseServer(hostFS: HostFS(rootPath: root.url.path), writebackCache: true)
+        let optOutServer = try FuseServer(hostFS: HostFS(rootPath: root.url.path), writebackCache: false, killPrivV2: false)
 
         let defaultResponse = defaultServer.handle(request: request(unique: 33, opcode: .initOp, nodeID: HostFS.rootNodeID, payload: initIn))
-        let optInResponse = optInServer.handle(request: request(unique: 34, opcode: .initOp, nodeID: HostFS.rootNodeID, payload: initIn))
+        let optOutResponse = optOutServer.handle(request: request(unique: 34, opcode: .initOp, nodeID: HostFS.rootNodeID, payload: initIn))
         let defaultFlags = payload(from: defaultResponse).leUInt32(at: 12)
-        let optInFlags = payload(from: optInResponse).leUInt32(at: 12)
+        let optOutFlags = payload(from: optOutResponse).leUInt32(at: 12)
 
-        #expect(defaultFlags & FuseInitFlag.writebackCache.rawValue == 0)
-        #expect(optInFlags & FuseInitFlag.writebackCache.rawValue == FuseInitFlag.writebackCache.rawValue)
+        #expect(defaultFlags & FuseInitFlag.writebackCache.rawValue == FuseInitFlag.writebackCache.rawValue)
+        #expect(defaultFlags & FuseInitFlag.handleKillprivV2.rawValue == FuseInitFlag.handleKillprivV2.rawValue)
+        #expect(optOutFlags & FuseInitFlag.writebackCache.rawValue == 0)
+        #expect(optOutFlags & FuseInitFlag.handleKillprivV2.rawValue == 0)
+    }
+
+    @Test func lookupMissReturnsCacheableNegativeDentry() throws {
+        let root = try TestFuseServerRoot()
+        let server = try FuseServer(hostFS: HostFS(rootPath: root.url.path), entryValiditySeconds: 7)
+
+        let miss = server.handle(request: request(unique: 80, opcode: .lookup, nodeID: HostFS.rootNodeID, payload: Array("nope.txt\0".utf8)))
+        let header = try FuseProtocol.decodeOutHeader(miss)
+        let body = payload(from: miss)
+
+        #expect(header.error == 0)
+        #expect(header.length == UInt32(FuseOutHeader.byteCount + 128))
+        #expect(body.leUInt64(at: 0) == 0)     // nodeid = 0 => negative dentry
+        #expect(body.leUInt64(at: 16) == 7)    // entry_valid = configured timeout
+        #expect(body.leUInt64(at: 24) == 0)    // attr_valid = 0 for negatives
+    }
+
+    @Test func negativeDentryDisabledReturnsPlainENOENT() throws {
+        let root = try TestFuseServerRoot()
+        let server = try FuseServer(hostFS: HostFS(rootPath: root.url.path), negativeDentryCaching: false)
+
+        let miss = server.handle(request: request(unique: 81, opcode: .lookup, nodeID: HostFS.rootNodeID, payload: Array("nope.txt\0".utf8)))
+
+        #expect(try FuseProtocol.decodeOutHeader(miss).error == -ENOENT)
+        #expect(miss.count == FuseOutHeader.byteCount)
+    }
+
+    @Test func entryAndAttrTimeoutsAreConfigurable() throws {
+        let root = try TestFuseServerRoot()
+        try root.write("cached", to: "cached.txt")
+        let server = try FuseServer(hostFS: HostFS(rootPath: root.url.path), entryValiditySeconds: 30, attrValiditySeconds: 30)
+
+        let lookup = server.handle(request: request(unique: 82, opcode: .lookup, nodeID: HostFS.rootNodeID, payload: Array("cached.txt\0".utf8)))
+        let entry = payload(from: lookup)
+        let nodeID = entry.leUInt64(at: 0)
+        let getattr = server.handle(request: request(unique: 83, opcode: .getattr, nodeID: nodeID))
+
+        #expect(entry.leUInt64(at: 16) == 30)  // entry_valid
+        #expect(entry.leUInt64(at: 24) == 30)  // attr_valid
+        #expect(payload(from: getattr).leUInt64(at: 0) == 30)  // attr_valid on GETATTR
+    }
+
+    @Test func writeWithKillSuidgidClearsPrivilegeBits() throws {
+        let root = try TestFuseServerRoot()
+        try root.write("payload", to: "suid.bin")
+        let path = root.url.appendingPathComponent("suid.bin").path
+        try FileManager.default.setAttributes([.posixPermissions: 0o4755], ofItemAtPath: path)
+        let server = try FuseServer(hostFS: HostFS(rootPath: root.url.path))
+        let nodeID = payload(from: server.handle(request: request(unique: 90, opcode: .lookup, nodeID: HostFS.rootNodeID, payload: Array("suid.bin\0".utf8)))).leUInt64(at: 0)
+        let handle = payload(from: server.handle(request: request(unique: 91, opcode: .open, nodeID: nodeID, payload: bytes(UInt32(bitPattern: O_RDWR)) + bytes(UInt32(0))))).leUInt64(at: 0)
+
+        let data = Array("x".utf8)
+        let killFlag = UInt32(1 << 2) // FUSE_WRITE_KILL_SUIDGID
+        let writeIn = bytes(handle) + bytes(UInt64(0)) + bytes(UInt32(data.count)) + bytes(killFlag) + bytes(UInt64(0)) + bytes(UInt32(0)) + bytes(UInt32(0)) + data
+        let write = server.handle(request: request(unique: 92, opcode: .write, nodeID: nodeID, payload: writeIn))
+
+        #expect(try FuseProtocol.decodeOutHeader(write).error == 0)
+        let mode = try FileManager.default.attributesOfItem(atPath: path)[.posixPermissions] as? Int ?? 0
+        #expect(mode & 0o4000 == 0)  // S_ISUID cleared
+    }
+
+    @Test func truncateClearsPrivilegeBitsUnderKillprivV2() throws {
+        let root = try TestFuseServerRoot()
+        try root.write("privileged", to: "suidtrunc.bin")
+        let path = root.url.appendingPathComponent("suidtrunc.bin").path
+        try FileManager.default.setAttributes([.posixPermissions: 0o6755], ofItemAtPath: path)  // suid+sgid
+        let server = try FuseServer(hostFS: HostFS(rootPath: root.url.path))
+        let nodeID = payload(from: server.handle(request: request(unique: 97, opcode: .lookup, nodeID: HostFS.rootNodeID, payload: Array("suidtrunc.bin\0".utf8)))).leUInt64(at: 0)
+
+        // An O_TRUNC open arrives as SETATTR size=0 (FUSE_ATOMIC_O_TRUNC is not advertised); under
+        // KILLPRIV_V2 the server must drop suid/sgid on the truncate just as it does on write.
+        let trunc = server.handle(request: request(unique: 98, opcode: .setattr, nodeID: nodeID, payload: setattrSize(0)))
+
+        #expect(try FuseProtocol.decodeOutHeader(trunc).error == 0)
+        let mode = try FileManager.default.attributesOfItem(atPath: path)[.posixPermissions] as? Int ?? 0
+        #expect(mode & 0o6000 == 0)  // S_ISUID and S_ISGID cleared
+    }
+
+    @Test func truncateKeepsPrivilegeBitsWhenKillprivV2Disabled() throws {
+        let root = try TestFuseServerRoot()
+        try root.write("privileged", to: "keepsuid.bin")
+        let path = root.url.appendingPathComponent("keepsuid.bin").path
+        try FileManager.default.setAttributes([.posixPermissions: 0o6755], ofItemAtPath: path)
+        let server = try FuseServer(hostFS: HostFS(rootPath: root.url.path), killPrivV2: false)
+        let nodeID = payload(from: server.handle(request: request(unique: 99, opcode: .lookup, nodeID: HostFS.rootNodeID, payload: Array("keepsuid.bin\0".utf8)))).leUInt64(at: 0)
+
+        _ = server.handle(request: request(unique: 100, opcode: .setattr, nodeID: nodeID, payload: setattrSize(0)))
+
+        let mode = try FileManager.default.attributesOfItem(atPath: path)[.posixPermissions] as? Int ?? 0
+        #expect(mode & 0o6000 == 0o6000)  // bits preserved: no V2 contract, kernel owns the kill
     }
 
     @Test func daxSetupAndRemoveMappingRequireConfiguredWindowAndOpenHandle() throws {

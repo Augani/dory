@@ -169,6 +169,7 @@ public struct FuseInitFlag: OptionSet, Sendable {
     public static let parallelDirops = FuseInitFlag(rawValue: 1 << 18)
     public static let maxPages = FuseInitFlag(rawValue: 1 << 22)
     public static let mapAlignment = FuseInitFlag(rawValue: 1 << 26)
+    public static let handleKillprivV2 = FuseInitFlag(rawValue: 1 << 28)
 }
 
 public struct FuseSetattrValid: OptionSet, Sendable {
@@ -324,7 +325,8 @@ public enum FuseProtocol {
         header: FuseInHeader,
         request: FuseInitIn,
         daxMapAlignmentLog2: UInt16? = nil,
-        writebackCache: Bool = false
+        writebackCache: Bool = false,
+        killPrivV2: Bool = false
     ) -> [UInt8] {
         guard request.minor >= minimumMinorVersion else {
             return encodeOutHeader(FuseOutHeader(length: UInt32(FuseOutHeader.byteCount), error: -eproto, unique: header.unique))
@@ -342,10 +344,16 @@ public enum FuseProtocol {
             | FuseInitFlag.autoInvalidateData.rawValue | FuseInitFlag.maxPages.rawValue
             | FuseInitFlag.doReaddirplus.rawValue | FuseInitFlag.parallelDirops.rawValue
         if writebackCache {
-            // WRITEBACK_CACHE lets the guest coalesce buffered writes. Linux ignores FOPEN_NOFLUSH
-            // while it is enabled, so the runtime keeps it opt-in for close-heavy or stricter
-            // durability experiments.
+            // WRITEBACK_CACHE lets the guest coalesce buffered writes, removing the per-write round
+            // trip on the create storm. Linux ignores FOPEN_NOFLUSH while it is enabled; the runtime
+            // keeps an env opt-out (DORY_FUSE_WRITEBACK_CACHE=0) for the durability-strict benchmark arm.
             flags |= FuseInitFlag.writebackCache.rawValue
+        }
+        if killPrivV2 {
+            // HANDLE_KILLPRIV_V2 delegates suid/sgid + security.capability clearing to the server, so
+            // the kernel skips the pre-write SETATTR/GETXATTR probe. The write path honors
+            // FUSE_WRITE_KILL_SUIDGID (and truncate clears the bits) to keep the contract correct.
+            flags |= FuseInitFlag.handleKillprivV2.rawValue
         }
         if daxMapAlignmentLog2 != nil {
             flags |= FuseInitFlag.mapAlignment.rawValue
