@@ -138,15 +138,17 @@ enum EngineMode {
         // Both one-time artifacts are built at a temp path and atomically renamed into place, so an
         // interrupted first run leaves no half-written file that the fileExists guard would then
         // treat as complete forever.
-        guard let bundledRootfs = configuration.bundledRootfs,
-              FileManager.default.fileExists(atPath: bundledRootfs) else {
-            throw VMError.invalidConfiguration("dory-hv engine requires a bundled engine rootfs for offline macOS 14 runtime support")
+        if let bundledRootfs = configuration.bundledRootfs,
+           FileManager.default.fileExists(atPath: bundledRootfs) {
+            // Offline build: the engine image ships in the app, no network on first launch. Reinstall
+            // whenever the bundled rootfs changes so a new app version's guest agent/init is not masked
+            // by a stale pristine.
+            try PristineRootfs.ensure(state: state, bundledRootfs: bundledRootfs) { note($0) }
+        } else if FileManager.default.fileExists(atPath: pristineRootfs) {
+            note("reusing installed engine rootfs from \(pristineRootfs)")
+        } else {
+            throw VMError.invalidConfiguration("dory-hv engine requires an installed or bundled engine rootfs")
         }
-
-        // Offline build: the engine image ships in the app, no network on first launch. Reinstall
-        // whenever the bundled rootfs changes so a new app version's guest agent/init is not masked
-        // by a stale pristine.
-        try PristineRootfs.ensure(state: state, bundledRootfs: bundledRootfs) { note($0) }
         try? FileManager.default.removeItem(atPath: bootRootfs)
         try FileManager.default.copyItem(atPath: pristineRootfs, toPath: bootRootfs)
 

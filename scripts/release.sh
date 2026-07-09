@@ -358,6 +358,31 @@ finish_app_artifact() {
   fi
 }
 
+finish_zip_update_artifact() {
+  local app="$1" zip="$2"
+  zip_app "$app" "$zip"
+  if [ "${DORY_SKIP_NOTARIZE:-0}" = "1" ]; then
+    echo "==> Skipping notarization for $zip (DORY_SKIP_NOTARIZE=1)"
+  else
+    echo "==> Notarizing $zip..."
+    notarize "$zip"
+    xcrun stapler staple "$app"
+    validate_stapled_app "$app"
+    zip_app "$app" "$zip"
+  fi
+}
+
+prune_app_update_payload() {
+  local app="$1" resources
+  resources="$app/Contents/Resources"
+  # Sparkle app updates carry app + helper code, but not the large guest/rootfs payloads that are
+  # distributed by the full bundle/runtime lane and persist under ~/.dory once installed.
+  rm -f \
+    "$resources"/dory-engine-rootfs*.ext4.lzfse \
+    "$resources"/dory-machine-rootfs*.ext4 \
+    "$resources"/dory-vm-initfs*.ext4.lzfse
+}
+
 json_escape() {
   printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
 }
@@ -430,6 +455,7 @@ FIRST_ARCHIVE=""
 UNIVERSAL_ARCHIVE=""
 UNIVERSAL_ZIP=""
 UNIVERSAL_DMG=""
+UNIVERSAL_APP=""
 ARM64_APP=""
 
 for requested in $RELEASE_VARIANTS; do
@@ -477,6 +503,7 @@ for requested in $RELEASE_VARIANTS; do
     universal)
       UNIVERSAL_ZIP="$ZIP"
       [ -f "$DMG" ] && UNIVERSAL_DMG="$DMG"
+      UNIVERSAL_APP="$APP"
       ;;
   esac
 done
@@ -519,6 +546,26 @@ if [ "${DORY_BUNDLE_ENGINE:-1}" = "1" ] && [ "${DORY_BUILD_LITE:-1}" = "1" ]; th
       xcrun stapler staple "$LITE_APP"
       zip_app "$LITE_APP" "$LITE_ZIP"
     fi
+  fi
+fi
+
+# app-update: app + helpers only, no heavy guest/rootfs payload. This is the normal Sparkle feed
+# artifact so users can take UI/helper fixes without downloading the engine on every release.
+APP_UPDATE_ZIP=""
+if [ "${DORY_BUNDLE_ENGINE:-1}" = "1" ] && [ "${DORY_BUILD_APP_UPDATE:-1}" = "1" ]; then
+  UPDATE_SOURCE_APP="${UNIVERSAL_APP:-$ARM64_APP}"
+  if [ -n "$UPDATE_SOURCE_APP" ] && [ -d "$UPDATE_SOURCE_APP" ]; then
+    echo "==> Building app update bundle (app + helpers, no rootfs payload)..."
+    UPDATE_DIR="$BUILD_DIR/export-app-update"
+    UPDATE_APP="$UPDATE_DIR/Dory.app"
+    rm -rf "$UPDATE_DIR"
+    mkdir -p "$UPDATE_DIR"
+    cp -R "$UPDATE_SOURCE_APP" "$UPDATE_DIR/"
+    prune_app_update_payload "$UPDATE_APP"
+    sign_app "$UPDATE_APP"
+    verify_codesign "$UPDATE_APP"
+    APP_UPDATE_ZIP="$BUILD_DIR/Dory-$VERSION-app-update.zip"
+    finish_zip_update_artifact "$UPDATE_APP" "$APP_UPDATE_ZIP"
   fi
 fi
 
@@ -565,12 +612,21 @@ DEFAULT_DMG="${COMPAT_DMG:-${UNIVERSAL_DMG:-}}"
 DEFAULT_SHA256=""
 [ -n "$DEFAULT_ZIP" ] && DEFAULT_SHA256="$(sha256_file "$DEFAULT_ZIP")"
 
+APPCAST_ZIP="$DEFAULT_ZIP"
+if [ "${DORY_APPCAST_PREFER_APP_UPDATE:-1}" = "1" ] && [ -n "$APP_UPDATE_ZIP" ] && [ -f "$APP_UPDATE_ZIP" ]; then
+  APPCAST_ZIP="$APP_UPDATE_ZIP"
+fi
+if [ -n "${DORY_APPCAST_ZIP:-}" ]; then
+  [ -f "$DORY_APPCAST_ZIP" ] || release_error "DORY_APPCAST_ZIP does not exist: $DORY_APPCAST_ZIP"
+  APPCAST_ZIP="$DORY_APPCAST_ZIP"
+fi
+
 APPCAST=""
 if [ "$(build_appcast_enabled)" = "1" ]; then
-  [ -n "$DEFAULT_ZIP" ] || release_error "cannot generate Sparkle appcast without a default zip artifact"
-  echo "==> Generating Sparkle appcast..."
+  [ -n "$APPCAST_ZIP" ] || release_error "cannot generate Sparkle appcast without an app update artifact"
+  echo "==> Generating Sparkle appcast for $(basename "$APPCAST_ZIP")..."
   APPCAST="$BUILD_DIR/appcast.xml"
-  scripts/generate-appcast.sh "$VERSION" "$BUILD" "$DEFAULT_ZIP" "$APPCAST" "website/public/appcast.xml" >/dev/null
+  scripts/generate-appcast.sh "$VERSION" "$BUILD" "$APPCAST_ZIP" "$APPCAST" "website/public/appcast.xml" >/dev/null
   mkdir -p docs-build website/public
   cp "$APPCAST" docs-build/appcast.xml
   cp "$APPCAST" website/public/appcast.xml
@@ -590,7 +646,7 @@ if [ "${#DMGS[@]}" -gt 0 ]; then
     echo "    $artifact  (sha256: $(sha256_file "$artifact"))"
   done
 fi
-for artifact in "$LITE_ZIP" "$RUNTIME_TAR"; do
+for artifact in "$LITE_ZIP" "$APP_UPDATE_ZIP" "$RUNTIME_TAR"; do
   [ -n "$artifact" ] && [ -f "$artifact" ] || continue
   echo "    $artifact  (sha256: $(sha256_file "$artifact"))"
 done
@@ -606,7 +662,7 @@ if [ "${#DMGS[@]}" -gt 0 ]; then
     MANIFEST_ARTIFACTS+=("$artifact")
   done
 fi
-MANIFEST_ARTIFACTS+=("$LITE_ZIP" "$RUNTIME_TAR" "$APPCAST")
+MANIFEST_ARTIFACTS+=("$LITE_ZIP" "$APP_UPDATE_ZIP" "$RUNTIME_TAR" "$APPCAST")
 MANIFEST="$(write_release_manifest "${MANIFEST_ARTIFACTS[@]}")"
 echo "    $MANIFEST  (release manifest)"
 [ -n "$APPCAST" ] && echo "    $APPCAST  (Sparkle appcast)"
@@ -620,9 +676,11 @@ if [ -n "${GITHUB_OUTPUT:-}" ]; then
     echo "build=$BUILD"
     echo "dmg=$DEFAULT_DMG"
     echo "lite=$LITE_ZIP"
+    echo "app_update=$APP_UPDATE_ZIP"
     echo "runtime=$RUNTIME_TAR"
     echo "manifest=$MANIFEST"
     echo "appcast=$APPCAST"
+    echo "appcast_zip=$APPCAST_ZIP"
     echo "zip_arm64=$(path_if_exists "$BUILD_DIR/Dory-$VERSION-arm64.zip")"
     echo "zip_x86_64=$(path_if_exists "$BUILD_DIR/Dory-$VERSION-x86_64.zip")"
     echo "zip_universal=$(path_if_exists "$BUILD_DIR/Dory-$VERSION-universal.zip")"
