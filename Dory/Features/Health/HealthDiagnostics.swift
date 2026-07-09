@@ -172,7 +172,7 @@ struct IdleStatus: Decodable, Sendable {
     // wipe the whole Auto-Idle card. Every field falls back to a sane default.
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        mode = (try? container.decode(String.self, forKey: .mode)) ?? "manual"
+        mode = (try? container.decode(String.self, forKey: .mode)) ?? "always-on"
         autoIdleEnabled = (try? container.decode(Bool.self, forKey: .autoIdleEnabled)) ?? false
         canSleep = (try? container.decode(Bool.self, forKey: .canSleep)) ?? true
         sleepAfterMinutes = decodeFlexibleInt(container, .sleepAfterMinutes)

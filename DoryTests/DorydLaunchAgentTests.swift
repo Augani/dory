@@ -141,8 +141,15 @@ struct DorydLaunchAgentTests {
         #expect(plist.contains("<string>\(helpersURL.appendingPathComponent("dory-vmm").path)</string>"))
         #expect(plist.contains("<key>DORYD_HELPERS_DIR</key>"))
         #expect(plist.contains("<string>\(helpersURL.path)</string>"))
+        #expect(plist.contains("<key>DORYD_RESOURCES_DIR</key>"))
+        #expect(plist.contains("<string>\(contentsURL.appendingPathComponent("Resources").path)</string>"))
         #expect(plist.contains("<key>DORYD_HOST_CLI</key>"))
         #expect(plist.contains("<string>1</string>"))
+        #expect(plist.contains("<key>DORYD_CPUS</key>"))
+        #expect(plist.contains("<string>2</string>"))
+        #expect(plist.contains("<key>DORYD_MEMORY_MB</key>"))
+        #expect(plist.contains("<string>2048</string>"))
+        #expect(!plist.contains("<key>DORYD_AUTOSTART_DOCKER_TIER</key>"))
         #expect(plist.contains("<key>DORYD_DOMAIN_SUFFIX</key>"))
         #expect(plist.contains("<string>dory.local</string>"))
         #expect(plist.contains("<key>StandardOutPath</key>"))
@@ -203,6 +210,51 @@ struct DorydLaunchAgentTests {
         #expect(recorder.commands.map { $0.first ?? "" } == ["print", "bootout", "bootstrap", "kickstart"])
     }
 
+    @Test func ensureCurrentRetriesBootstrapAfterReplacingLaunchAgent() async throws {
+        let temporaryDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("DorydLaunchAgentTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
+
+        let bundleURL = temporaryDirectory.appendingPathComponent("Dory.app", isDirectory: true)
+        let contentsURL = bundleURL.appendingPathComponent("Contents", isDirectory: true)
+        let helpersURL = contentsURL.appendingPathComponent("Helpers", isDirectory: true)
+        let launchAgentsDirectory = temporaryDirectory.appendingPathComponent("LaunchAgents", isDirectory: true)
+        try FileManager.default.createDirectory(at: helpersURL, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: launchAgentsDirectory, withIntermediateDirectories: true)
+        try """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        <plist version="1.0"><dict><key>CFBundleIdentifier</key><string>dev.dory.test</string></dict></plist>
+        """.write(to: contentsURL.appendingPathComponent("Info.plist"), atomically: true, encoding: .utf8)
+        let dorydURL = helpersURL.appendingPathComponent("doryd")
+        try "#!/bin/sh\n".write(to: dorydURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: dorydURL.path)
+        let bundle = try #require(Bundle(url: bundleURL))
+
+        let recorder = LaunchctlRecorder(
+            printOutput:
+            """
+            gui/501/dev.dory.doryd = {
+                path = /Users/me/Library/LaunchAgents/dev.dory.doryd.plist
+                state = running
+                program = /tmp/OldDory.app/Contents/Helpers/doryd
+            }
+            """,
+            bootstrapStatuses: [5, 0]
+        )
+
+        let ok = await DorydLaunchAgent.ensureCurrent(
+            bundle: bundle,
+            launchAgentsDirectory: launchAgentsDirectory,
+            bootstrapRetryDelay: .milliseconds(0)
+        ) { arguments in
+            recorder.run(arguments)
+        }
+
+        #expect(ok)
+        #expect(recorder.commands.map { $0.first ?? "" } == ["print", "bootout", "bootstrap", "print", "bootstrap", "kickstart"])
+    }
+
     @Test func launchAgentCanDisableDaemonHostCLIRepair() {
         let plist = DorydLaunchAgent.launchAgentPlist(
             program: "/Applications/Dory.app/Contents/Helpers/doryd",
@@ -213,17 +265,41 @@ struct DorydLaunchAgentTests {
         #expect(plist.contains("<key>DORYD_HOST_CLI</key>"))
         #expect(plist.contains("<string>0</string>"))
     }
+
+    @Test func launchAgentOwnsEngineResourcePolicy() {
+        let plist = DorydLaunchAgent.launchAgentPlist(
+            program: "/Applications/Dory.app/Contents/Helpers/doryd",
+            helpersDirectory: URL(fileURLWithPath: "/Applications/Dory.app/Contents/Helpers"),
+            configuration: DorydLaunchAgent.Configuration(cpuCount: 6, memoryMB: 4096)
+        )
+
+        #expect(plist.contains("<key>DORYD_CPUS</key>"))
+        #expect(plist.contains("<string>6</string>"))
+        #expect(plist.contains("<key>DORYD_MEMORY_MB</key>"))
+        #expect(plist.contains("<string>4096</string>"))
+    }
+
+    @Test func launchAgentDoesNotOwnRuntimeModePolicy() {
+        let plist = DorydLaunchAgent.launchAgentPlist(
+            program: "/Applications/Dory.app/Contents/Helpers/doryd",
+            helpersDirectory: URL(fileURLWithPath: "/Applications/Dory.app/Contents/Helpers")
+        )
+
+        #expect(!plist.contains("<key>DORYD_AUTOSTART_DOCKER_TIER</key>"))
+    }
 }
 
 private final class LaunchctlRecorder: @unchecked Sendable {
     private let lock = NSLock()
     private let printStatus: Int32
     private let printOutput: String
+    private var bootstrapStatuses: [Int32]
     private var recorded: [[String]] = []
 
-    init(printStatus: Int32 = 0, printOutput: String) {
+    init(printStatus: Int32 = 0, printOutput: String, bootstrapStatuses: [Int32] = []) {
         self.printStatus = printStatus
         self.printOutput = printOutput
+        self.bootstrapStatuses = bootstrapStatuses
     }
 
     var commands: [[String]] {
@@ -235,9 +311,15 @@ private final class LaunchctlRecorder: @unchecked Sendable {
     func run(_ arguments: [String]) -> DorydLaunchAgent.CommandResult {
         lock.lock()
         recorded.append(arguments)
+        let bootstrapStatus = arguments.first == "bootstrap" && !bootstrapStatuses.isEmpty
+            ? bootstrapStatuses.removeFirst()
+            : nil
         lock.unlock()
         if arguments.first == "print" {
             return DorydLaunchAgent.CommandResult(status: printStatus, stdout: printOutput, stderr: "")
+        }
+        if let bootstrapStatus {
+            return DorydLaunchAgent.CommandResult(status: bootstrapStatus, stdout: "", stderr: "")
         }
         return DorydLaunchAgent.CommandResult(status: 0, stdout: "", stderr: "")
     }

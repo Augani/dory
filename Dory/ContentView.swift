@@ -47,7 +47,23 @@ struct RootView: View {
                     }
             }
         }
+        .overlay(alignment: .bottom) {
+            if let notice = store.settingsNotice,
+               notice.kind == .success,
+               store.actionError == nil,
+               store.activeSheet == nil {
+                settingsToast(notice)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                    .task(id: notice.id) {
+                        try? await Task.sleep(for: .seconds(4))
+                        if store.settingsNotice?.id == notice.id {
+                            store.clearSettingsNotice()
+                        }
+                    }
+            }
+        }
         .animation(.spring(duration: 0.3), value: store.actionError)
+        .animation(.spring(duration: 0.3), value: store.settingsNotice)
         .animation(.spring(duration: 0.3), value: store.dockerHostConflict)
         .animation(.spring(duration: 0.3), value: store.dockerHostCleaned)
         .task { store.startBackendIfNeeded() }
@@ -141,6 +157,24 @@ struct RootView: View {
         .frame(maxWidth: 460)
         .background(store.palette.bgElevated, in: RoundedRectangle(cornerRadius: 11))
         .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(store.palette.red.opacity(0.5)))
+        .shadow(color: .black.opacity(0.3), radius: 12, y: 6)
+        .padding(.bottom, 20)
+    }
+
+    private func settingsToast(_ notice: SettingsNotice) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: "checkmark.circle.fill").foregroundStyle(store.palette.green)
+            Text(notice.message).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(store.palette.text).lineLimit(2)
+            Spacer(minLength: 8)
+            Button { store.clearSettingsNotice() } label: {
+                Image(systemName: "xmark").font(.system(size: 11, weight: .bold)).foregroundStyle(store.palette.text3)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 16).padding(.vertical, 12)
+        .frame(maxWidth: 460)
+        .background(store.palette.bgElevated, in: RoundedRectangle(cornerRadius: 11))
+        .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(store.palette.green.opacity(0.5)))
         .shadow(color: .black.opacity(0.3), radius: 12, y: 6)
         .padding(.bottom, 20)
     }

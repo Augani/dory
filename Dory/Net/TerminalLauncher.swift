@@ -16,29 +16,32 @@ enum TerminalLauncher {
         open(command: dockerCommand(socketPath: socketPath, execArgs: execArgs(user: "root", shell: "/bin/sh", home: "/root", container: containerID)))
     }
 
-    static func execArgs(user: String, shell: String, home: String, container: String) -> String {
+    nonisolated static func execArgs(user: String, shell: String, home: String, container: String) -> String {
         let container = shellQuote(container)
         if user == "root" {
+            let fallbackShellProbe = "command -v bash >/dev/null && exec bash || exec sh"
             return "exec -it \(container) sh -c \(shellQuote(fallbackShellProbe))"
         }
         return "exec -it -u \(shellQuote(user)) -w \(shellQuote(home)) \(container) \(shellQuote(shell)) -l"
     }
 
-    static func dockerCommand(socketPath: String, execArgs: String) -> String {
+    nonisolated static func dockerCommand(socketPath: String, execArgs: String) -> String {
         "docker -H \(shellQuote("unix://\(socketPath)")) \(execArgs)"
     }
 
-    static func machineShellCommand(target: MachineShellTarget) -> String {
-        "\(shellQuote(target.dorydctlPath)) machine shell \(shellQuote(target.machineID))"
+    nonisolated static func machineShellCommand(target: MachineShellTarget) -> String {
+        userFacingMachineShellCommand(target: UserFacingMachineShellTarget(machineID: target.machineID))
+    }
+
+    nonisolated static func userFacingMachineShellCommand(target: UserFacingMachineShellTarget) -> String {
+        "dory machine shell \(shellQuote(target.machineID))"
     }
 
     static func openMachineShell(socketPath: String, containerID: String, user: String, shell: String, home: String) {
         open(command: dockerCommand(socketPath: socketPath, execArgs: execArgs(user: user, shell: shell, home: home, container: containerID)))
     }
 
-    private static let fallbackShellProbe = "command -v bash >/dev/null && exec bash || exec sh"
-
-    private static func shellQuote(_ value: String) -> String {
+    nonisolated private static func shellQuote(_ value: String) -> String {
         let safe = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_./:@%+=,-")
         guard !value.isEmpty, value.unicodeScalars.allSatisfy({ safe.contains($0) }) else {
             return "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"

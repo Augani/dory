@@ -379,6 +379,8 @@ enum DorydClientError: Error, Sendable, CustomStringConvertible {
 }
 
 nonisolated final class DorydClient: @unchecked Sendable {
+    private static let engineColdStartTimeout: TimeInterval = 240
+
     private enum Target {
         case machService(String)
         case endpoint(NSXPCListenerEndpoint)
@@ -469,7 +471,7 @@ nonisolated final class DorydClient: @unchecked Sendable {
     }
 
     func engineStart() async throws -> DorydCommandResult {
-        try await withTimeout(atLeast: 120).command { proxy, reply in
+        try await withTimeout(atLeast: Self.engineColdStartTimeout).command { proxy, reply in
             proxy.engineStart(reply: reply)
         }
     }
@@ -487,7 +489,7 @@ nonisolated final class DorydClient: @unchecked Sendable {
     }
 
     func engineWake() async throws -> DorydCommandResult {
-        try await withTimeout(atLeast: 120).command { proxy, reply in
+        try await withTimeout(atLeast: Self.engineColdStartTimeout).command { proxy, reply in
             proxy.engineWake(reply: reply)
         }
     }

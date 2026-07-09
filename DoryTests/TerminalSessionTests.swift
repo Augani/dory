@@ -74,4 +74,12 @@ struct TerminalSessionTests {
         let decoded = try JSONDecoder().decode(TerminalSession.self, from: Data(json.utf8))
         #expect(decoded.kubeExec == nil)
     }
+
+    @Test func legacyMachineShellTargetIgnoresPrivateHelperPath() throws {
+        let json = #"{"id":"machine:ubuntu-19d3","title":"ubuntu-19d3","subtitle":"Ubuntu","logo":null,"socketPath":"","containerID":"","user":"root","shell":"/bin/sh","home":"/root","machineShell":{"machineID":"ubuntu-19d3","dorydctlPath":"/DerivedData/Dory.app/Contents/Helpers/dorydctl"}}"#
+        let decoded = try JSONDecoder().decode(TerminalSession.self, from: Data(json.utf8))
+        let target = try #require(decoded.machineShell)
+        #expect(target.machineID == "ubuntu-19d3")
+        #expect(TerminalLauncher.machineShellCommand(target: target) == "dory machine shell ubuntu-19d3")
+    }
 }

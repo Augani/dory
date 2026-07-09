@@ -144,13 +144,15 @@ struct RuntimeSupportTests {
             config: SharedVMProvisioner.Config(cpus: 6, memory: "3G"),
             kernel: "/tmp/kernel",
             gvproxy: "/tmp/gvproxy",
-            rootfs: "/tmp/rootfs.ext4"
+            rootfs: "/tmp/rootfs.ext4",
+            guestAgent: "/tmp/dory-agent"
         )
 
         #expect(arguments.contains("--direct-ip"))
         #expect(argumentValue(after: "--kernel", in: arguments) == "/tmp/kernel")
         #expect(argumentValue(after: "--gvproxy", in: arguments) == "/tmp/gvproxy")
         #expect(argumentValue(after: "--rootfs", in: arguments) == "/tmp/rootfs.ext4")
+        #expect(argumentValue(after: "--guest-agent", in: arguments) == "/tmp/dory-agent")
         #expect(argumentValue(after: "--mem-mb", in: arguments) == "3072")
         #expect(argumentValue(after: "--cpus", in: arguments) == "6")
     }

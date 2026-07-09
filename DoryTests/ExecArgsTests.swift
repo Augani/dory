@@ -29,4 +29,11 @@ struct ExecArgsTests {
         )
         #expect(command == #"docker -H 'unix:///Users/Augustus Otu/.dory/dory.sock' exec -it c1 sh -c 'command -v bash >/dev/null && exec bash || exec sh'"#)
     }
+
+    @Test func machineShellCommandUsesStableDoryCLI() {
+        let command = TerminalLauncher.machineShellCommand(target: MachineShellTarget(
+            machineID: "ubuntu-19d3"
+        ))
+        #expect(command == "dory machine shell ubuntu-19d3")
+    }
 }

@@ -305,60 +305,6 @@ nonisolated enum SharedVMProvisioner {
         return socket
     }
 
-    /// The Virtualization.framework engine. On Apple silicon it can opt into Rosetta x86
-    /// translation; on Intel it runs the amd64 guest natively as the first shared-engine tier.
-    /// Publishes to the same `engine.sock`, so the shim and docker context are unchanged.
-    private static func provisionWithVZEngine(config: Config, rosetta: Bool, attempts: Int = 240) async throws -> String? {
-        guard let helper = vmHelperBinary(),
-              let kernel = await vmKernelPath(),
-              let initfs = await vmInitfsPath() else { return nil }
-
-        if await isReachable(), helperProcessIsAlive() {
-            return socketPath
-        }
-        stopHelper()
-
-        let directory = (socketPath as NSString).deletingLastPathComponent
-        try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
-        try? FileManager.default.removeItem(atPath: socketPath)
-
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: helper)
-        process.arguments = ["--shared-engine", socketPath, "--kernel", kernel, "--initfs", initfs]
-        var environment = ProcessInfo.processInfo.environment
-        if rosetta {
-            environment["DORY_ENGINE_ROSETTA"] = "1"
-        }
-        // SQL Server refuses to start below 2 GB; default Rosetta launches to 3 GB headroom.
-        if rosetta && environment["DORY_ENGINE_MEM_MB"] == nil {
-            environment["DORY_ENGINE_MEM_MB"] = String(max(Config.rosettaEngineMemoryMB, config.memoryMB))
-        }
-        process.environment = environment
-
-        rotateLog(helperLogPath)
-        let log = openAppendLog(helperLogPath)
-        let label = rosetta ? "VZ+Rosetta" : "VZ"
-        log?.write(Data("\n--- starting \(label) engine \(Date()) mem=\(environment["DORY_ENGINE_MEM_MB"] ?? config.memory) ---\n".utf8))
-        process.standardOutput = log ?? FileHandle.nullDevice
-        process.standardError = log ?? FileHandle.nullDevice
-
-        do {
-            try process.run()
-            try? "\(process.processIdentifier)\n".write(toFile: helperPIDPath, atomically: true, encoding: .utf8)
-            recordIncident("engine-start", "\(label) engine started")
-            try? log?.close()
-        } catch {
-            try? log?.close()
-            throw ProvisionError.engineStartFailed("\(error)")
-        }
-
-        guard await waitForReachable(attempts: attempts, process: process) else {
-            if process.isRunning { process.terminate() }
-            throw ProvisionError.engineUnreachable(engineLogTail())
-        }
-        return socketPath
-    }
-
     static func runtime(config: Config = Config()) async -> DockerEngineRuntime? {
         guard let socket = try? await provision(config: config) else { return nil }
         return DockerEngineRuntime(socketPath: socket, kind: .sharedVM)
@@ -370,6 +316,7 @@ nonisolated enum SharedVMProvisioner {
     private static func provisionWithHVEngine(config: Config) async throws -> String? {
         guard let helper = hvHelperBinary(), let gvproxy = gvproxyBinary() else { return nil }
         guard let kernel = await hvKernelPath(gpu: config.gpuVenus || ProcessInfo.processInfo.environment["DORY_EXPERIMENTAL_GPU"] == "venus") else { return nil }
+        let guestAgent = guestAgentSourceBinary()
         installGuestAgentForHVEngine()
 
         if await isReachable(), helperProcessIsAlive() {
@@ -381,11 +328,11 @@ nonisolated enum SharedVMProvisioner {
         try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
         try? FileManager.default.removeItem(atPath: socketPath)
 
-        var arguments = engineArguments(config: config, kernel: kernel, gvproxy: gvproxy, rootfs: nil)
+        var arguments = engineArguments(config: config, kernel: kernel, gvproxy: gvproxy, rootfs: nil, guestAgent: guestAgent)
         // Offline builds ship the engine image; hand it to the helper so first launch needs no
         // network. Online builds omit it and the engine fetches the image once.
         if let rootfs = await hvRootfsPath() {
-            arguments = engineArguments(config: config, kernel: kernel, gvproxy: gvproxy, rootfs: rootfs)
+            arguments = engineArguments(config: config, kernel: kernel, gvproxy: gvproxy, rootfs: rootfs, guestAgent: guestAgent)
         }
 
         let process = Process()
@@ -415,7 +362,13 @@ nonisolated enum SharedVMProvisioner {
         return socketPath
     }
 
-    static func engineArguments(config: Config, kernel: String, gvproxy: String, rootfs: String?) -> [String] {
+    static func engineArguments(
+        config: Config,
+        kernel: String,
+        gvproxy: String,
+        rootfs: String?,
+        guestAgent: String? = nil
+    ) -> [String] {
         var arguments = [
             "engine",
             "--engine-sock", socketPath,
@@ -427,6 +380,9 @@ nonisolated enum SharedVMProvisioner {
         ]
         if let rootfs {
             arguments.append(contentsOf: ["--rootfs", rootfs])
+        }
+        if let guestAgent {
+            arguments.append(contentsOf: ["--guest-agent", guestAgent])
         }
         if config.gpuVenus || ProcessInfo.processInfo.environment["DORY_EXPERIMENTAL_GPU"] == "venus" {
             arguments.append(contentsOf: ["--gpu", "venus"])
@@ -495,17 +451,6 @@ nonisolated enum SharedVMProvisioner {
         return installedKernelPath()
     }
 
-    private static func vmKernelPath() async -> String? {
-        if let bundled = await prepareCompressedResource(resource: vmKernelResourceName(), outputName: vmKernelOutputName()) {
-            return bundled
-        }
-        guard engineArch == "arm64" else { return nil }
-        if let bundled = await prepareCompressedResource(resource: "dory-vm-kernel", outputName: "dory-vm-kernel") {
-            return bundled
-        }
-        return installedKernelPath()
-    }
-
     /// The bundled, decompressed engine rootfs for OFFLINE builds. Online builds omit the resource
     /// and this returns nil, so the engine fetches the image once on first launch instead.
     private static func hvRootfsPath() async -> String? {
@@ -527,10 +472,6 @@ nonisolated enum SharedVMProvisioner {
         return helperDevCandidates(named: "dory-hv", cwd: cwd).first { FileManager.default.isExecutableFile(atPath: $0) }
     }
 
-    private static func vmHelperBinary() -> String? {
-        nil
-    }
-
     nonisolated static func helperDevCandidates(
         named helperName: String,
         cwd: String,
@@ -546,14 +487,6 @@ nonisolated enum SharedVMProvisioner {
             "\(packageRoot)/.build/\(swiftPMArch)-apple-macosx/release/\(helperName)",
             "\(packageRoot)/.build/\(swiftPMArch)-apple-macosx/debug/\(helperName)",
         ]
-    }
-
-    private static func vmInitfsPath() async -> String? {
-        if let bundled = await prepareCompressedResource(resource: vmInitfsResourceName(), outputName: vmInitfsOutputName()) {
-            return bundled
-        }
-        guard engineArch == "arm64" else { return nil }
-        return await prepareCompressedResource(resource: "dory-vm-initfs.ext4", outputName: "dory-vm-initfs.ext4")
     }
 
     nonisolated static func vmKernelResourceName(arch: String = engineArch) -> String {
@@ -581,10 +514,6 @@ nonisolated enum SharedVMProvisioner {
     }
 
     nonisolated static func vmInitfsResourceName(arch: String = engineArch) -> String {
-        "dory-vm-initfs-\(arch).ext4"
-    }
-
-    nonisolated static func vmInitfsOutputName(arch: String = engineArch) -> String {
         "dory-vm-initfs-\(arch).ext4"
     }
 

@@ -144,7 +144,6 @@ nonisolated enum DoryProcessMemorySampler {
     private static func isBundledHelperPath(_ path: String) -> Bool {
         path.contains("/Dory.app/Contents/Helpers/")
             || path.contains("/.dory/bin/")
-            || path.contains("/Projects/Dory/scripts/")
     }
 
     private static func processRows(currentPID: pid_t) -> [DoryProcessMemoryRow] {

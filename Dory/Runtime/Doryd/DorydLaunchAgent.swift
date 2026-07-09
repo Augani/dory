@@ -5,6 +5,7 @@ enum DorydLaunchAgent {
     static let label = "dev.dory.doryd"
     static let stateDirectory = "\(NSHomeDirectory())/.dory"
     static let logPath = "\(NSHomeDirectory())/.dory/doryd.log"
+    private static let bootstrapRetryCount = 20
 
     struct Install: Sendable, Equatable {
         var plistPath: String
@@ -19,6 +20,8 @@ enum DorydLaunchAgent {
         var httpProxyPort: UInt16
         var httpsProxyPort: UInt16
         var hostCLIEnabled: Bool
+        var cpuCount: UInt16
+        var memoryMB: UInt32
 
         nonisolated init(
             domainSuffix: String = "dory.local",
@@ -26,7 +29,9 @@ enum DorydLaunchAgent {
             dnsPort: UInt16 = 15353,
             httpProxyPort: UInt16 = 8080,
             httpsProxyPort: UInt16 = 8443,
-            hostCLIEnabled: Bool = true
+            hostCLIEnabled: Bool = true,
+            cpuCount: UInt16 = 2,
+            memoryMB: UInt32 = 2048
         ) {
             self.domainSuffix = domainSuffix
             self.idleSleepAfterSeconds = idleSleepAfterSeconds
@@ -34,6 +39,8 @@ enum DorydLaunchAgent {
             self.httpProxyPort = httpProxyPort
             self.httpsProxyPort = httpsProxyPort
             self.hostCLIEnabled = hostCLIEnabled
+            self.cpuCount = max(1, cpuCount)
+            self.memoryMB = max(256, memoryMB)
         }
     }
 
@@ -64,6 +71,7 @@ enum DorydLaunchAgent {
         bundle: Bundle = .main,
         launchAgentsDirectory: URL? = nil,
         configuration: Configuration = Configuration(),
+        bootstrapRetryDelay: Duration = .milliseconds(250),
         runner: @escaping Runner = runLaunchctl
     ) async -> Bool {
         guard let current = currentInstall(
@@ -91,19 +99,69 @@ enum DorydLaunchAgent {
         case .upToDate:
             return true
         case .bootstrap:
-            let bootstrapped = await runner(["bootstrap", domainTarget(uid: uid), current.plistPath])
-            if bootstrapped.ok {
-                _ = await runner(["kickstart", "-k", service])
-            }
-            return bootstrapped.ok
+            return await bootstrapAndKickstart(
+                uid: uid,
+                plistPath: current.plistPath,
+                retryDelay: bootstrapRetryDelay,
+                runner: runner
+            )
         case .replace:
             _ = await runner(["bootout", service])
-            let bootstrapped = await runner(["bootstrap", domainTarget(uid: uid), current.plistPath])
+            return await bootstrapAndKickstart(
+                uid: uid,
+                plistPath: current.plistPath,
+                retryDelay: bootstrapRetryDelay,
+                runner: runner
+            )
+        case .unavailable:
+            return false
+        }
+    }
+
+    private static func bootstrapAndKickstart(
+        uid: uid_t,
+        plistPath: String,
+        retryDelay: Duration,
+        runner: @escaping Runner
+    ) async -> Bool {
+        let domain = domainTarget(uid: uid)
+        let service = serviceTarget(uid: uid)
+        for attempt in 0..<bootstrapRetryCount {
+            let bootstrapped = await runner(["bootstrap", domain, plistPath])
             if bootstrapped.ok {
                 _ = await runner(["kickstart", "-k", service])
+                return true
             }
-            return bootstrapped.ok
-        case .unavailable:
+
+            let print = await runner(["print", service])
+            let status = print.ok ? parseStatus(print.stdout) : nil
+            if let status, status.loaded, normalize(status.plistPath) == normalize(plistPath) {
+                _ = await runner(["kickstart", "-k", service])
+                return true
+            }
+
+            if attempt < bootstrapRetryCount - 1 {
+                try? await Task.sleep(for: retryDelay)
+            }
+        }
+        return false
+    }
+
+    @discardableResult
+    static func writeCurrentPlist(
+        bundle: Bundle = .main,
+        launchAgentsDirectory: URL? = nil,
+        configuration: Configuration = Configuration()
+    ) -> Bool {
+        guard let current = currentInstall(
+            bundle: bundle,
+            launchAgentsDirectory: launchAgentsDirectory,
+            configuration: configuration
+        ) else { return false }
+        do {
+            _ = try writeCurrentInstall(current)
+            return true
+        } catch {
             return false
         }
     }
@@ -213,6 +271,10 @@ enum DorydLaunchAgent {
         let vmm = helpersDirectory.appendingPathComponent("dory-vmm").path
         let hv = helpersDirectory.appendingPathComponent("dory-hv").path
         let gvproxy = helpersDirectory.appendingPathComponent("gvproxy").path
+        let resourcesDirectory = helpersDirectory
+            .deletingLastPathComponent()
+            .appendingPathComponent("Resources", isDirectory: true)
+            .path
         return """
         <?xml version="1.0" encoding="UTF-8"?>
         <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -239,8 +301,14 @@ enum DorydLaunchAgent {
                 <string>\(xmlEscaped(gvproxy))</string>
                 <key>DORYD_HELPERS_DIR</key>
                 <string>\(xmlEscaped(helpersDirectory.path))</string>
+                <key>DORYD_RESOURCES_DIR</key>
+                <string>\(xmlEscaped(resourcesDirectory))</string>
                 <key>DORYD_HOST_CLI</key>
                 <string>\(configuration.hostCLIEnabled ? "1" : "0")</string>
+                <key>DORYD_CPUS</key>
+                <string>\(configuration.cpuCount)</string>
+                <key>DORYD_MEMORY_MB</key>
+                <string>\(configuration.memoryMB)</string>
                 <key>DORYD_NETWORKING</key>
                 <string>1</string>
                 <key>DORYD_DOMAIN_SUFFIX</key>

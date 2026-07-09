@@ -17,6 +17,19 @@ enum HostTools {
         "\(NSHomeDirectory())/.dory/bin/dorydctl", "/opt/homebrew/bin/dorydctl", "/usr/local/bin/dorydctl",
     ]) }
 
+    /// Public terminal affordances must go through the stable user command, not bundle-private helpers.
+    static func userFacingDoryCommand(
+        home: String = NSHomeDirectory(),
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        fileManager: FileManager = .default
+    ) -> String? {
+        Shell.find("dory", candidates: [
+            "\(home)/.dory/bin/dory",
+            "/opt/homebrew/bin/dory",
+            "/usr/local/bin/dory",
+        ], environment: environment, fileManager: fileManager)
+    }
+
     private static func resolve(_ name: String, systemCandidates: [String]) -> String? {
         if let bundled = bundledPath(named: name) { return bundled }
         return Shell.find(name, candidates: systemCandidates)

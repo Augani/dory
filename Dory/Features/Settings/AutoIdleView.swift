@@ -5,10 +5,10 @@ struct AutoIdleView: View {
     @Environment(\.palette) private var p
 
     private let modes: [(id: String, title: String, detail: String)] = [
-        ("manual", "Manual", "You start and stop the engine yourself."),
-        ("auto-idle", "Auto-Idle", "doryd wakes on Docker use and sleeps when nothing needs it."),
-        ("always-on", "Always On", "Engine stays running until you stop it."),
-        ("battery-saver", "Battery Saver", "Auto-Idle, but sleeps sooner on battery."),
+        ("always-on", "Always On", "Dory starts the engine when the app opens and keeps it running."),
+        ("auto-idle", "Auto-Idle", "Dory starts on app open; doryd sleeps it after idle time."),
+        ("battery-saver", "Battery Saver", "Auto-Idle with the same blockers and sleep policy."),
+        ("manual", "Manual Stop", "Dory keeps the engine running until you stop it."),
     ]
 
     private let sleepChoices = [5, 15, 30, 60]

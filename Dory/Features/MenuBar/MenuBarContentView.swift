@@ -21,14 +21,7 @@ struct MenuBarContentView: View {
     @State private var memoryExpanded = true
 
     private func refreshPopover() {
-        Task {
-            await store.refreshProcessMemory()
-            await store.reload()
-            store.loadMachines()
-            if store.runtimeKind == .sharedVM {
-                await store.loadKubernetes()
-            }
-        }
+        Task { await store.refreshMenuBar() }
     }
 
     private func closePopover() {

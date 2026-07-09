@@ -235,7 +235,7 @@ struct DorydClientTests {
         #expect(balloonPlan.applicableTargets.map(\.id) == ["docker"])
         #expect(reconciledBalloonPlan.host.pressure == "warning")
         #expect(reconciledBalloonPlan.applicableTargets.map(\.id) == ["docker"])
-        #expect(idleStatus.mode == "auto-idle")
+        #expect(idleStatus.mode == "always-on")
         #expect(idleHistory.map(\.state) == ["sleeping"])
         #expect(updatedIdlePolicy.policy?.sleepAfterMinutes == 30)
         #expect(updatedIdleMode.mode == "manual")
@@ -367,7 +367,7 @@ struct DorydClientTests {
         #expect(machine.ip == "192.168.215.40")
         #expect(machine.mounts == [MountPair(host: "/Users/me/src", guest: "/workspace/src", readOnly: true)])
         #expect(machine.containerID.isEmpty)
-        #expect(store.machineTerminalCommand(machine)?.contains("dorydctl") == true)
+        #expect(store.machineTerminalCommand(machine) == "dory machine shell dev")
         #expect(store.canUseMachineArtifacts(machine))
 
         let currentSettings = await store.machineSettings(machine.name)
@@ -622,9 +622,98 @@ struct DorydClientTests {
     }
 
     @MainActor
-    @Test func appStoreAttachesSleepingDorydWithoutStartingEngine() async throws {
+    @Test func appStoreMenuBarRefreshDoesNotWakeDorydIdleSleep() async throws {
+        let base = "/tmp/dmbr-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let socketPath = base + "/doryd.sock"
+        defer { try? FileManager.default.removeItem(atPath: base) }
+
+        let shim = DockerShim(runtime: MockRuntime())
+        let dockerServer = ShimHTTPServer(socketPath: socketPath) { request in
+            await shim.handle(request)
+        }
+        try dockerServer.start()
+        defer { dockerServer.stop() }
+
         let listener = NSXPCListener.anonymous()
-        let service = FakeDorydService(socketPath: "/tmp/doryd-sleeping.sock")
+        let service = FakeDorydService(socketPath: socketPath)
+        let delegate = FakeDorydListenerDelegate(service: service)
+        listener.delegate = delegate
+        listener.resume()
+        defer { listener.invalidate() }
+
+        let store = AppStore(
+            dorydClient: DorydClient(endpoint: listener.endpoint),
+            useDorydEngine: true
+        )
+        store.routeDockerCLI = false
+
+        await store.connectBackend()
+        #expect(!store.containers.isEmpty)
+
+        store.containers = []
+        service.setEngineStatus("sleeping", detail: "idle")
+
+        await store.refreshMenuBar()
+
+        #expect(store.engineSleeping)
+        #expect(!store.engineRunning)
+        #expect(store.containers.isEmpty)
+        #expect(service.engineWakeCount == 0)
+    }
+
+    @MainActor
+    @Test func appStoreStartsStoppedDorydOnAttach() async throws {
+        let base = "/tmp/doryd-start-stopped-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let socketPath = base + "/doryd.sock"
+        defer { try? FileManager.default.removeItem(atPath: base) }
+
+        let shim = DockerShim(runtime: MockRuntime())
+        let dockerServer = ShimHTTPServer(socketPath: socketPath) { request in
+            await shim.handle(request)
+        }
+        try dockerServer.start()
+        defer { dockerServer.stop() }
+
+        let listener = NSXPCListener.anonymous()
+        let service = FakeDorydService(socketPath: socketPath)
+        service.setEngineStatus("stopped", detail: "stopped")
+        service.setIdleMode("manual")
+        let delegate = FakeDorydListenerDelegate(service: service)
+        listener.delegate = delegate
+        listener.resume()
+        defer { listener.invalidate() }
+
+        let store = AppStore(
+            dorydClient: DorydClient(endpoint: listener.endpoint),
+            useDorydEngine: true
+        )
+        store.routeDockerCLI = false
+
+        await store.connectBackend()
+
+        #expect(service.engineStartCount == 1)
+        #expect(service.engineWakeCount == 0)
+        #expect(store.runtimeMode == "manual")
+        #expect(store.loadState == .ready)
+        #expect(!store.engineSleeping)
+        #expect(store.engineRunning)
+    }
+
+    @MainActor
+    @Test func appStoreStartsSleepingDorydOnAttach() async throws {
+        let base = "/tmp/doryd-start-sleeping-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let socketPath = base + "/doryd.sock"
+        defer { try? FileManager.default.removeItem(atPath: base) }
+
+        let shim = DockerShim(runtime: MockRuntime())
+        let dockerServer = ShimHTTPServer(socketPath: socketPath) { request in
+            await shim.handle(request)
+        }
+        try dockerServer.start()
+        defer { dockerServer.stop() }
+
+        let listener = NSXPCListener.anonymous()
+        let service = FakeDorydService(socketPath: socketPath)
         service.setEngineStatus("sleeping", detail: "armed")
         let delegate = FakeDorydListenerDelegate(service: service)
         listener.delegate = delegate
@@ -639,13 +728,13 @@ struct DorydClientTests {
 
         await store.connectBackend()
 
-        #expect(service.engineStartCount == 0)
+        #expect(service.engineStartCount == 1)
         #expect(service.engineWakeCount == 0)
         #expect(store.runtimeKind == .sharedVM)
         #expect(store.loadState == .ready)
-        #expect(store.engineSleeping)
-        #expect(!store.engineRunning)
-        #expect(store.sharedVMStatus == "Sleeping — armed")
+        #expect(!store.engineSleeping)
+        #expect(store.engineRunning)
+        #expect(!store.containers.isEmpty)
     }
 
     @MainActor
@@ -670,7 +759,31 @@ struct DorydClientTests {
 
         #expect(store.runtimeMode == "manual")
         #expect(store.idlePolicy.sleepAfterMinutes == 15)
-        #expect(store.actionError == "doryd is unavailable; idle policy was not changed.")
+        #expect(store.actionError == nil)
+        #expect(store.settingsNotice?.kind == .failure)
+        #expect(store.settingsNotice?.message == "doryd is unavailable; idle policy was not changed.")
+    }
+
+    @MainActor
+    @Test func idleSettingsShowInAppNoticeOnSuccess() async throws {
+        let listener = NSXPCListener.anonymous()
+        let service = FakeDorydService()
+        let delegate = FakeDorydListenerDelegate(service: service)
+        listener.delegate = delegate
+        listener.resume()
+        defer { listener.invalidate() }
+
+        let store = AppStore(
+            dorydClient: DorydClient(endpoint: listener.endpoint),
+            useDorydEngine: true
+        )
+        store.runtimeMode = "manual"
+
+        await store.setRuntimeMode("auto-idle")
+
+        #expect(store.runtimeMode == "auto-idle")
+        #expect(store.settingsNotice?.kind == .success)
+        #expect(store.settingsNotice?.message == "Auto-Idle applied.")
     }
 
 #if DEBUG
@@ -728,7 +841,7 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
     private var _engineStartOK = true
     private var _engineStartMessage = ""
     private var _idleAvailable = true
-    private var idleMode = "auto-idle"
+    private var idleMode = "always-on"
     private var idlePolicy: [String: Any] = [
         "sleepAfterMinutes": 15,
         "keepPublishedPortsAwake": true,
@@ -862,6 +975,12 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
         lock.unlock()
     }
 
+    func setIdleMode(_ mode: String) {
+        lock.lock()
+        idleMode = mode
+        lock.unlock()
+    }
+
     func protocolVersion(reply: @escaping (UInt32) -> Void) {
         reply(1)
     }
@@ -883,6 +1002,10 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
         _engineStartCount += 1
         let ok = _engineStartOK
         let message = _engineStartMessage
+        if ok {
+            _engineState = "running"
+            _engineDetail = "ok"
+        }
         lock.unlock()
         reply(ok, message)
     }

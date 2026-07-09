@@ -2,7 +2,10 @@ import Foundation
 
 struct MachineShellTarget: Hashable, Codable, Sendable {
     let machineID: String
-    let dorydctlPath: String
+}
+
+struct UserFacingMachineShellTarget: Hashable, Codable, Sendable {
+    let machineID: String
 }
 
 struct TerminalSession: Identifiable, Hashable, Codable {
