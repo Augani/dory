@@ -7,13 +7,42 @@ cd "$(dirname "$0")/.."
 TMP_HOME="$(mktemp -d)"
 PIDS_TO_CLEAN=()
 
+stop_test_pid() {
+  local pid="${1:-}" state="" attempt
+  case "$pid" in
+    ''|*[!0-9]*) return 0 ;;
+  esac
+  if ! kill -0 "$pid" 2>/dev/null; then
+    wait "$pid" 2>/dev/null || true
+    return 0
+  fi
+  kill "$pid" 2>/dev/null || true
+  # Never let an offline self-test wedge its caller during EXIT cleanup. A child that has exited
+  # but has not yet been waited is a zombie, so reap it instead of waiting for kill -0 to change.
+  for ((attempt = 0; attempt < 50; attempt++)); do
+    state="$(ps -o stat= -p "$pid" 2>/dev/null | tr -d '[:space:]' || true)"
+    case "$state" in
+      ''|*Z*) break ;;
+    esac
+    sleep 0.1
+  done
+  if kill -0 "$pid" 2>/dev/null && [[ "$state" != *Z* ]]; then
+    kill -KILL "$pid" 2>/dev/null || true
+  fi
+  wait "$pid" 2>/dev/null || true
+}
+
 cleanup() {
+  local pid engine_pid=""
+  # fake-engine backgrounds its server and then exits, so that server is not represented by the
+  # proxy PID. Track its private pidfile explicitly or successful test runs leak an orphan server.
+  if [ -n "${FAKE_ENGINE_PID:-}" ] && [ -s "$FAKE_ENGINE_PID" ]; then
+    read -r engine_pid < "$FAKE_ENGINE_PID" || true
+    PIDS_TO_CLEAN+=("$engine_pid")
+  fi
   if [ "${#PIDS_TO_CLEAN[@]}" -gt 0 ]; then
     for pid in "${PIDS_TO_CLEAN[@]}"; do
-      if kill -0 "$pid" 2>/dev/null; then
-        kill "$pid" 2>/dev/null || true
-        wait "$pid" 2>/dev/null || true
-      fi
+      stop_test_pid "$pid"
     done
   fi
   rm -rf "$TMP_HOME"
@@ -23,6 +52,12 @@ trap cleanup EXIT
 export HOME="$TMP_HOME"
 export DORY_CONFIG="$TMP_HOME/config.json"
 export DORY_SOCK="$TMP_HOME/missing-dory.sock"
+# Fail closed against host-installed clients. Individual cases opt into their own fake binaries;
+# every other case must remain offline even when the caller's PATH contains ~/.dory/bin.
+export DORYDCTL_BIN=/usr/bin/false
+export DORY_DOCKER_BIN=/usr/bin/false
+export DORY_DOCKER_COMPOSE_BIN=/usr/bin/false
+export DORY_KUBECTL_BIN=/usr/bin/false
 export DORY_SUPPORT_UNIFIED_LOG=1
 export DORY_SUPPORT_UNIFIED_LOG_LAST=1m
 
@@ -44,6 +79,14 @@ export PATH="$TMP_HOME/fake-system-bin:$PATH"
 
 python3 -m py_compile scripts/dory-doctor
 python3 -m py_compile scripts/dory-idle-proxy
+grep -q 'DORY_DOCTOR_SHARED_PROBE_ROOT' scripts/dory-doctor
+if grep -q 'probe_root = HOME / "\.dory" / "doctor"' scripts/dory-doctor; then
+  echo "active doctor probes must not use the guest-hidden ~/.dory state directory" >&2
+  exit 1
+fi
+for hidden in .dory .zsh_history .bash_history .codex .orbstack .colima; do
+  grep -q "\"$hidden\"" scripts/dory-doctor
+done
 bash -n scripts/dory
 bash -n scripts/p0-smoke.sh
 bash -n scripts/nonnative-build-smoke.sh
@@ -951,6 +994,45 @@ PY
 # Memory inspector + guest disk (Track 5 P1): footprint breaks host RSS into engine/app roles;
 # the guest disk probe is active-only and must skip cleanly in the default passive run.
 # `--only memory,disk` exits non-zero when the host disk is critically low; capture before piping.
+python3 - <<'PY'
+import importlib.machinery, importlib.util, sys
+loader = importlib.machinery.SourceFileLoader("dd", "scripts/dory-doctor")
+dd = importlib.util.module_from_spec(importlib.util.spec_from_loader("dd", loader))
+sys.modules["dd"] = dd
+loader.exec_module(dd)
+
+class Completed:
+    returncode = 0
+    stdout = """101 10 /Applications/Dory.app/Contents/Helpers/doryd doryd
+202 20 /Applications/Dory.app/Contents/Helpers/dory-hv dory-hv engine
+303 30 /Applications/Dory.app/Contents/Helpers/gvproxy gvproxy
+"""
+
+dd.subprocess.run = lambda *args, **kwargs: Completed()
+samples = {
+    101: {"rss_bytes": 11_000, "phys_footprint_bytes": 21_000},
+    202: {"rss_bytes": 22_000, "phys_footprint_bytes": 52_000},
+    303: {"rss_bytes": 33_000, "phys_footprint_bytes": 63_000},
+}
+dd.darwin_process_memory = lambda pid: samples.get(pid)
+report = dd.memory_report()
+assert report["rss_bytes"] == 66_000, report
+assert report["phys_footprint_bytes"] == 136_000, report
+assert report["engine_phys_footprint_bytes"] == 52_000, report
+assert report["app_phys_footprint_bytes"] == 21_000, report
+assert report["helper_phys_footprint_bytes"] == 63_000, report
+assert report["phys_footprint_complete"] is True, report
+assert report["phys_footprint_aggregation"] == "sum_of_per_process_charges_may_double_count_shared_pages", report
+assert all("phys_footprint_bytes" in process for process in report["processes"]), report
+
+dd.darwin_process_memory = lambda pid: samples.get(pid) if pid != 303 else None
+partial = dd.memory_report()
+assert partial["physical_footprint_available"] is True, partial
+assert partial["phys_footprint_complete"] is False, partial
+assert partial["phys_footprint_sampled_processes"] == 2, partial
+assert partial["rss_bytes"] == 11_000 + 22_000 + (30 * 1024), partial
+PY
+
 memdisk_json="$(scripts/dory-doctor doctor --json --only memory,disk 2>/dev/null || true)"
 printf '%s' "$memdisk_json" | python3 -c '
 import json, sys
@@ -959,6 +1041,8 @@ mem = [r for r in results if r["id"] == "memory.footprint"]
 assert mem, "memory.footprint check missing"
 data = mem[0].get("data", {})
 assert "engine_rss_bytes" in data and "app_rss_bytes" in data, data
+assert "physical_footprint_available" in data, data
+assert data.get("phys_footprint_source") == "proc_pid_rusage.RUSAGE_INFO_V4", data
 guest = [r for r in results if r["id"] == "disk.guest"]
 assert guest and guest[0]["status"] == "skip", "guest disk should skip passively"
 assert guest[0]["code"] == "disk.active_probe_skipped", guest[0]
@@ -1300,4 +1384,4 @@ if b"200 OK" not in buf:
     raise SystemExit("stand-in app socket stopped answering after the proxy deferred")
 PY
 
-kill "$coexist_pid" 2>/dev/null || true
+stop_test_pid "$coexist_pid"

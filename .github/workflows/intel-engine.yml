@@ -20,10 +20,13 @@ on:
     paths:
       - '.github/workflows/intel-engine.yml'
       - 'Packages/ContainerizationEngine/**'
+      - 'dory-core/**'
+      - 'dory-core-swift/**'
       - 'Dory/Runtime/Shared/**'
       - 'Dory/Runtime/Apple/**'
       - 'scripts/readiness.sh'
       - 'scripts/bundle-engine.sh'
+      - 'scripts/build-dory-ffi-xcframework.sh'
       - 'guest/**'
 
 jobs:
@@ -53,6 +56,9 @@ jobs:
           sysctl -n machdep.cpu.brand_string
           sysctl kern.hv_support
           test "$(uname -m)" = "x86_64"
+
+      - name: Build shared Rust guest-control client
+        run: scripts/build-dory-ffi-xcframework.sh
 
       - name: DoryHV logic tests
         working-directory: Packages/ContainerizationEngine

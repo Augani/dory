@@ -14,6 +14,33 @@ if ! bash scripts/test-dory-doctor.sh; then
   exit 1
 fi
 
+# Benchmark publication is a product surface too. This gate is entirely offline: it validates the
+# external-network harness's argument checks, balanced schedule, metadata parsing, and failure rows.
+if ! bash scripts/test-benchmark-external-network.sh; then
+  echo "ci-test: external-network benchmark tests failed" >&2
+  exit 1
+fi
+if ! bash scripts/test-benchmark-user-workflows.sh; then
+  echo "ci-test: user-workflow benchmark tests failed" >&2
+  exit 1
+fi
+
+# The installed-engine host-share suite is deliberately disruptive, but its safety rails and
+# guest-side coordination logic are testable without contacting Docker. Keep that offline contract
+# in CI so the live gate cannot silently lose ownership checks, cleanup containment, or Bash 3.2
+# compatibility.
+if ! bash scripts/test-live-hostshare-integration.sh; then
+  echo "ci-test: live host-share harness offline tests failed" >&2
+  exit 1
+fi
+
+# Guest control has one authoritative handshake+mux+protobuf implementation. Shell tooling either
+# reaches it through typed surfaces or fails closed for RPCs that do not exist yet.
+if ! bash scripts/test-agent-protocol-consumers.sh; then
+  echo "ci-test: agent protocol consumer tests failed" >&2
+  exit 1
+fi
+
 # Compatibility surface: structural tier runs without an engine, so gate CI on it too.
 if ! bash scripts/compat-smoke.sh; then
   echo "ci-test: compatibility smoke failed" >&2

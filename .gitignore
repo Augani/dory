@@ -160,3 +160,6 @@ scripts/__pycache__/
 /dory-core-swift/Sources/DoryCore/generated/
 /spikes/*/target/
 /spikes/*/Cargo.lock
+
+#codex
+.codex-bench/

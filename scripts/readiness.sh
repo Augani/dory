@@ -19,11 +19,11 @@
 #   DORY_DIRECT_IP_INTERFACE_FILE points at the helper-written utun interface file
 #   READINESS_FILE_WATCH_IMAGE for --file-watch (default: alpine image)
 #   READINESS_MACHINE_RECIPE, READINESS_MACHINE_RECIPE_COMMAND for --machine-recipe
-#   RUN_DEBUG_SHELL=0|1, DORY_DEBUG_AGENT_SOCK, DORY_DEBUG_CONTAINER_ID
-#   RUN_CLOCK_SYNC=0|1, DORY_CLOCK_SYNC_AGENT_SOCK, DORY_CLOCK_SYNC_PID, DORY_CLOCK_SYNC_TOLERANCE_MS
+#   RUN_DEBUG_SHELL=0|1 (currently records an explicit unsupported skip)
+#   RUN_CLOCK_SYNC=0|1, DORY_CLOCK_SYNC_TOLERANCE_MS
 #   RUN_GUEST_AGENT=0|1, DORY_HV_BIN, DORY_GUEST_KERNEL, DORY_GUEST_INITFS
 #   DORYD_CTL, DORYD_MACHINE_KERNEL, DORYD_MACHINE_ROOTFS for doryd per-VM machine checks
-#   DORY_USB_TEST_BUSID, optional DORY_USB_MODE=userAuthorized|seize|capture for --usb hardware smoke
+#   RUN_USB=1 records an explicit unsupported skip until the agent has a vhci attach RPC
 #   DORY_REQUIRE_VPN=1 makes --vpn fail when no active VPN-like interface or route is detected
 #   STOP_ORBSTACK=1 to quit OrbStack before running Dory-only checks
 set -u
@@ -94,18 +94,17 @@ Options:
   --machine-recipe     Create a Linux machine from a recipe and assert its provisioned command
   --bridge             Run guest→host bridge (dory-open) check
   --guest-agent        Run dory-hv guest-agent vsock smoke (requires DORY_GUEST_KERNEL and DORY_GUEST_INITFS)
-  --dax                Run dory-hv virtio-fs DAX coherence probe (requires a signed dory-hv, DORY_HV_BIN)
+  --dax                Run the low-level DAX mapping probe only (production host-share DAX is rejected)
   --rosetta            Record Rosetta machine backend status (pending dory-vmm Rosetta support)
-  --usb                Run USB/IP hardware smoke when DORY_USB_TEST_BUSID is set
+  --usb                Record the unavailable guest USB attach/detach RPC explicitly
   --vpn                Record route/DNS state and run userspace networking checks during VPN coexistence testing
-  --debug-shell        Run debug shell smoke when DORY_DEBUG_AGENT_SOCK and DORY_DEBUG_CONTAINER_ID are set
-  --clock-sync         Run host-wake clock sync smoke when agent socket and helper PID are available
+  --debug-shell        Record the unavailable agent namespace-debug RPC explicitly
+  --clock-sync         Run the typed doryd host-wake clock synchronization path
   --stop-orbstack      Quit OrbStack before Dory-only runs
   -h, --help           Show this help
 
 Clock sync env:
-  DORY_CLOCK_SYNC_AGENT_SOCK or DORY_AGENT_SOCK
-  DORY_CLOCK_SYNC_PID, DORY_CLOCK_SYNC_TOLERANCE_MS
+  DORY_CLOCK_SYNC_TOLERANCE_MS
 
 doryd VM machine env:
   DORYD_CTL
@@ -999,90 +998,30 @@ test_guest_agent() {
     | grep -q '"kernel":"6.12.30-dory"'
 }
 
-agent_rpc_readiness() {
-  local sock="$1" method="$2" payload="$3"
-  [ -n "$sock" ] && [ -S "$sock" ] || { echo "agent socket not found: $sock"; return 2; }
-  python3 - "$sock" "$method" "$payload" <<'PY'
-import json, socket, struct, sys
-
-def recv_exactly(s, count):
-    buf = b""
-    while len(buf) < count:
-        chunk = s.recv(count - len(buf))
-        if not chunk:
-            return buf
-        buf += chunk
-    return buf
-
-sock_path, method, payload = sys.argv[1], sys.argv[2], json.loads(sys.argv[3])
-request = json.dumps({"id": 1, "method": method, "params": payload}, separators=(",", ":")).encode()
-with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
-    s.connect(sock_path)
-    s.sendall(struct.pack(">I", len(request)) + request)
-    header = recv_exactly(s, 4)
-    if len(header) != 4:
-        raise SystemExit("agent closed before response")
-    length = struct.unpack(">I", header)[0]
-    data = recv_exactly(s, length)
-    if len(data) != length:
-        raise SystemExit("agent closed mid-response")
-response = json.loads(data)
-if response.get("error"):
-    print(response["error"].get("message", "agent request failed"), file=sys.stderr)
-    raise SystemExit(1)
-print(json.dumps(response.get("result", {}), sort_keys=True))
-PY
-}
-
-agent_exec_stdout() {
-  local sock="$1" payload="$2"
-  agent_rpc_readiness "$sock" "exec" "$payload" | python3 -c '
-import base64, json, sys
-result = json.load(sys.stdin)
-if int(result.get("exit_code", 0)) != 0:
-    if result.get("stderr_b64"):
-        sys.stderr.buffer.write(base64.b64decode(result["stderr_b64"]))
-    raise SystemExit(int(result.get("exit_code", 1)))
-if result.get("stdout_b64"):
-    sys.stdout.buffer.write(base64.b64decode(result["stdout_b64"]))
-'
-}
-
-clock_sync_helper_pid() {
-  if [ -n "${DORY_CLOCK_SYNC_PID:-}" ]; then
-    echo "$DORY_CLOCK_SYNC_PID"
-    return
-  fi
-  [ -f "$HOME/.dory/engine.pid" ] && cat "$HOME/.dory/engine.pid"
-}
-
 test_clock_sync() {
-  is_dory_engine || return 2
-  local sock="${DORY_CLOCK_SYNC_AGENT_SOCK:-${DORY_AGENT_SOCK:-}}"
-  local pid guest_raw guest_ns host_ns delta_ms
-  [ -n "$sock" ] && [ -S "$sock" ] || { echo "set DORY_CLOCK_SYNC_AGENT_SOCK or DORY_AGENT_SOCK to a live guest agent bridge socket"; return 1; }
-  pid="$(clock_sync_helper_pid)"
-  [ -n "$pid" ] || { echo "set DORY_CLOCK_SYNC_PID or start Dory so $HOME/.dory/engine.pid exists"; return 1; }
-  kill -0 "$pid" 2>/dev/null || { echo "helper pid is not live: $pid"; return 1; }
-
-  agent_exec_stdout "$sock" '{"argv":["date","-s","@946684800"],"timeout_ms":5000}' >/dev/null
-  kill -USR1 "$pid"
-  sleep "${DORY_CLOCK_SYNC_SETTLE:-0.5}"
-  guest_raw="$(agent_exec_stdout "$sock" '{"argv":["date","+%s%N"],"timeout_ms":5000}' | tr -d '[:space:]')"
-  case "$guest_raw" in
-    *[!0-9]*|"") echo "guest date does not support numeric nanosecond output: $guest_raw"; return 1 ;;
-  esac
-  guest_ns="$guest_raw"
-  host_ns="$(python3 - <<'PY'
-import time
-print(time.time_ns())
+  [ "$CURRENT_ENGINE" = "doryd" ] || return 2
+  local result_file="$WORKDIR/${ENGINE_ID}-clock-sync.json"
+  local guest_raw delta_ms
+  # This calls DockerTier.syncAgentClock, the exact typed path HostWakeCoordinator invokes after
+  # host wake. The CLI fails unless the running agent attempted and accepted clock_settime.
+  dorydctl docker clock-sync > "$result_file"
+  python3 - "$result_file" <<'PY'
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as handle:
+    result = json.load(handle)
+if result.get("attempted") is not True or result.get("synced") is not True or result.get("error"):
+    raise SystemExit(f"clock synchronization was not accepted: {result}")
 PY
-)"
-  delta_ms="$(python3 - "$host_ns" "$guest_ns" <<'PY'
-import sys
-host = int(sys.argv[1])
-guest = int(sys.argv[2])
-print(abs(host - guest) // 1_000_000)
+  guest_raw="$(docker_e info --format '{{.SystemTime}}' | tr -d '\r\n')"
+  delta_ms="$(python3 - "$guest_raw" <<'PY'
+from datetime import datetime
+import sys, time
+
+raw = sys.argv[1].strip().strip('"')
+if raw.endswith('Z'):
+    raw = raw[:-1] + '+00:00'
+guest_ns = int(datetime.fromisoformat(raw).timestamp() * 1_000_000_000)
+print(abs(time.time_ns() - guest_ns) // 1_000_000)
 PY
 )"
   [ "$delta_ms" -le "$CLOCK_SYNC_TOLERANCE_MS" ] || {
@@ -1101,12 +1040,6 @@ test_usb() {
   local mode="${DORY_USB_MODE:-userAuthorized}"
   "$ROOT/scripts/dory" usb attach "$DORY_USB_TEST_BUSID" --mode "$mode" || return 1
   "$ROOT/scripts/dory" usb detach "$DORY_USB_TEST_BUSID" || return 1
-}
-
-test_debug_shell() {
-  is_dory_engine || return 2
-  DORY_DEBUG_AGENT_SOCK="$DORY_DEBUG_AGENT_SOCK" "$ROOT/scripts/dory" debug "$DORY_DEBUG_CONTAINER_ID" -- /bin/sh -c 'echo dory-debug-ok' \
-    | grep -q 'dory-debug-ok'
 }
 
 test_doryd_launchd() {
@@ -1245,9 +1178,9 @@ run_engine() {
   fi
 
   if [ "$RUN_DAX" = "1" ]; then
-    run_case "$CURRENT_ENGINE" "dory-hv virtio-fs DAX coherence" test_dax
+    run_case "$CURRENT_ENGINE" "dory-hv low-level DAX mapping probe" test_dax
   else
-    skip_case "$CURRENT_ENGINE" "dory-hv virtio-fs DAX coherence" "enable with --dax (needs a signed dory-hv)"
+    skip_case "$CURRENT_ENGINE" "dory-hv low-level DAX mapping probe" "enable with --dax (production host-share DAX remains disabled)"
   fi
 
   if [ "$RUN_ROSETTA" = "1" ] && [ "$(host_guest_arch)" = "amd64" ]; then
@@ -1258,30 +1191,22 @@ run_engine() {
     skip_case "$CURRENT_ENGINE" "Rosetta x86-64 machine execution" "pending dory-vmm Rosetta machine backend"
   fi
 
-  if [ "$RUN_CLOCK_SYNC" = "1" ] && ! is_dory_engine; then
-    skip_case "$CURRENT_ENGINE" "host wake clock sync" "Dory-only"
-  elif [ "$RUN_CLOCK_SYNC" = "1" ] && [ -z "${DORY_CLOCK_SYNC_AGENT_SOCK:-${DORY_AGENT_SOCK:-}}" ]; then
-    skip_case "$CURRENT_ENGINE" "host wake clock sync" "set DORY_CLOCK_SYNC_AGENT_SOCK or DORY_AGENT_SOCK"
-  elif [ "$RUN_CLOCK_SYNC" = "1" ] && { [ -z "${DORY_CLOCK_SYNC_PID:-}" ] && [ ! -f "$HOME/.dory/engine.pid" ]; }; then
-    skip_case "$CURRENT_ENGINE" "host wake clock sync" "set DORY_CLOCK_SYNC_PID or start Dory"
+  if [ "$RUN_CLOCK_SYNC" = "1" ] && [ "$CURRENT_ENGINE" != "doryd" ]; then
+    skip_case "$CURRENT_ENGINE" "host wake clock sync" "typed clock-sync readiness is supported by the doryd engine only"
   elif [ "$RUN_CLOCK_SYNC" = "1" ]; then
     run_case "$CURRENT_ENGINE" "host wake clock sync" test_clock_sync
   else
-    skip_case "$CURRENT_ENGINE" "host wake clock sync" "enable with --clock-sync and a live agent socket"
+    skip_case "$CURRENT_ENGINE" "host wake clock sync" "enable with --clock-sync on the doryd engine"
   fi
 
-  if [ "$RUN_USB" = "1" ] && [ -z "${DORY_USB_TEST_BUSID:-}" ]; then
-    skip_case "$CURRENT_ENGINE" "USB/IP hardware smoke" "set DORY_USB_TEST_BUSID"
-  elif [ "$RUN_USB" = "1" ]; then
-    run_case "$CURRENT_ENGINE" "USB/IP hardware smoke" test_usb
+  if [ "$RUN_USB" = "1" ]; then
+    skip_case "$CURRENT_ENGINE" "USB/IP hardware smoke" "dory-agent protocol v1 has no guest vhci attach/detach RPC"
   else
     skip_case "$CURRENT_ENGINE" "USB/IP hardware smoke" "enable with --usb and DORY_USB_TEST_BUSID"
   fi
 
-  if [ "$RUN_DEBUG_SHELL" = "1" ] && { [ -z "${DORY_DEBUG_AGENT_SOCK:-}" ] || [ -z "${DORY_DEBUG_CONTAINER_ID:-}" ]; }; then
-    skip_case "$CURRENT_ENGINE" "debug shell via guest agent" "set DORY_DEBUG_AGENT_SOCK and DORY_DEBUG_CONTAINER_ID"
-  elif [ "$RUN_DEBUG_SHELL" = "1" ]; then
-    run_case "$CURRENT_ENGINE" "debug shell via guest agent" test_debug_shell
+  if [ "$RUN_DEBUG_SHELL" = "1" ]; then
+    skip_case "$CURRENT_ENGINE" "debug shell via guest agent" "dory-agent protocol v1 has no namespace-debug RPC"
   else
     skip_case "$CURRENT_ENGINE" "debug shell via guest agent" "enable with --debug-shell"
   fi

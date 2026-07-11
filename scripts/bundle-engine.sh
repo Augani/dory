@@ -84,6 +84,10 @@ if [ -z "${DEVELOPER_DIR:-}" ]; then
   fi
 fi
 
+# DoryCore's generated bindings and universal static XCFramework are ignored artifacts. Release
+# bundling must create them from this checkout before building either doryd/dory-vmm or dory-hv.
+scripts/build-dory-ffi-xcframework.sh --if-needed
+
 have_developer_id() {
   security find-identity -v -p codesigning 2>/dev/null | grep -q "Developer ID Application"
 }
@@ -946,6 +950,17 @@ hv_gpu_kernel_source_for_arch() {
   if [ "$arch" = "amd64" ] && [ -f "$(dirname "$0")/../guest/out/vmlinux-x86-gpu" ]; then printf '%s\n' "$(dirname "$0")/../guest/out/vmlinux-x86-gpu"; return 0; fi
 }
 
+hv_gpu_kernel_override_for_arch() {
+  local arch="$1" env_name
+  env_name="$(env_for_arch DORY_HV_GPU_KERNEL "$arch")"
+  if [ -n "${!env_name:-}" ]; then printf '%s\n' "${!env_name}"; return 0; fi
+  if [ "$arch" = "$(host_guest_arch)" ] && [ -n "${DORY_HV_GPU_KERNEL:-}" ]; then
+    printf '%s\n' "$DORY_HV_GPU_KERNEL"
+    return 0
+  fi
+  return 1
+}
+
 initfs_source_for_arch() {
   local arch="$1" env_name
   env_name="$(env_for_arch DORY_INITFS "$arch")"
@@ -1045,14 +1060,28 @@ bundle_hv_kernel_for_arch() {
 # runtime only when GPU acceleration is on. Gated on DORY_BUNDLE_VENUS so headless-only builds skip
 # it; the default headless kernel above is never overwritten.
 bundle_hv_gpu_kernel_for_arch() {
-  local arch="$1" kernel_src kernel_out
-  [ "${DORY_BUNDLE_VENUS:-1}" = "1" ] || return 0
-  kernel_src="$(hv_gpu_kernel_source_for_arch "$arch" || true)"
+  local arch="$1" kernel_src kernel_out override
   kernel_out="$RESOURCES/dory-hv-kernel-gpu-$arch.lzfse"
+  if [ "${DORY_BUNDLE_VENUS:-1}" != "1" ]; then
+    rm -f "$kernel_out"
+    return 0
+  fi
+  override="$(hv_gpu_kernel_override_for_arch "$arch" || true)"
+  if [ -n "$override" ] && [ "${DORY_ALLOW_UNVERIFIED_GUEST_ASSETS:-0}" != "1" ]; then
+    echo "    ERROR: explicit $arch GPU kernel overrides require DORY_ALLOW_UNVERIFIED_GUEST_ASSETS=1 and are development-only" >&2
+    exit 1
+  fi
+  kernel_src="$(hv_gpu_kernel_source_for_arch "$arch" || true)"
   if [ -n "$kernel_src" ] && [ -f "$kernel_src" ]; then
+    if [ -z "$override" ] && ! DORY_EXPERIMENTAL_GPU=1 "$REPO_ROOT/guest/kernel/verify-build.sh" "$arch" >/dev/null 2>&1; then
+      rm -f "$kernel_out"
+      echo "    WARNING: omitting stale or unverified guest/out $arch GPU kernel; rebuild it with DORY_EXPERIMENTAL_GPU=1 guest/kernel/build.sh $arch" >&2
+      return 0
+    fi
     compress_asset "$kernel_src" "$kernel_out"
     echo "    bundled Resources/$(basename "$kernel_out") ($(du -h "$kernel_out" | awk '{print $1}'), from $(du -h "$kernel_src" | awk '{print $1}'))"
   else
+    rm -f "$kernel_out"
     echo "    note: no $arch GPU kernel found; build with DORY_EXPERIMENTAL_GPU=1 guest/kernel/build.sh $arch or set $(env_for_arch DORY_HV_GPU_KERNEL "$arch") (GPU acceleration will be unavailable)"
   fi
 }
@@ -1074,8 +1103,7 @@ bundle_guest_assets_for_arch() {
 
   INITFS_TO_BUNDLE="$initfs_src"
   if [ -n "$initfs_src" ] && [ -f "$initfs_src" ]; then
-    agent="$(dirname "$0")/../guest/out/dory-agent-$arch"
-    [ -f "$agent" ] || agent="$(dirname "$0")/../guest/out/dory-agent"
+    agent="$(guest_agent_source_for_arch "$arch" || true)"
     inject_dory_agent_into_initfs "$initfs_src" "$agent" "/tmp/dory-initfs-$arch-agent-$$.ext4"
     [ "$arch" = "arm64" ] && qemu_guest_arch="amd64" || qemu_guest_arch="arm64"
     qemu_static="$(find_qemu_static "$qemu_guest_arch" || true)"

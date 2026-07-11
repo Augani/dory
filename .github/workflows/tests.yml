@@ -7,6 +7,16 @@ on:
   workflow_dispatch:
 
 jobs:
+  guest-agent-linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Linux guest-agent tests
+        working-directory: dory-core
+        run: cargo test --locked -p dory-agent -p dory-remote
+
   unit:
     runs-on: macos-latest
     timeout-minutes: 60
@@ -55,6 +65,8 @@ jobs:
           newest="$(ls -d /Applications/Xcode*.app | sort -V | tail -1)"
           echo "selected: $newest"
           echo "DEVELOPER_DIR=$newest/Contents/Developer" >> "$GITHUB_ENV"
+      - name: Build shared Rust guest-control client
+        run: scripts/build-dory-ffi-xcframework.sh
       - name: DoryHV unit tests
         working-directory: Packages/ContainerizationEngine
         run: swift test

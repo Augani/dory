@@ -40,6 +40,13 @@ if [ -z "${DEVELOPER_DIR:-}" ]; then
   fi
 fi
 
+# Both doryd/dory-vmm and raw dory-hv link the same Rust handshake+mux+protobuf client through
+# DoryCore. Its generated Swift and XCFramework are intentionally ignored build products, so a
+# clean checkout must materialize them before either Swift package is resolved.
+if [ "${DORY_BUILD_DEBUG_HELPERS:-1}" = "1" ] || [ "${DORY_BUILD_DORYD_HELPERS:-1}" = "1" ]; then
+  scripts/build-dory-ffi-xcframework.sh --if-needed || exit 1
+fi
+
 LOG=/tmp/dory_build.log
 xcodebuild -project Dory.xcodeproj -scheme Dory -destination 'platform=macOS' \
   -configuration Debug build CODE_SIGNING_ALLOWED=NO "$@" > "$LOG" 2>&1

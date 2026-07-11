@@ -9,6 +9,7 @@ standard library plus the Docker CLI when CLI-specific checks are requested.
 from __future__ import annotations
 
 import argparse
+import ctypes
 import datetime as dt
 import fcntl
 import fnmatch
@@ -77,6 +78,15 @@ def idle_state_path() -> Path:
 
 def incidents_path() -> Path:
     return Path(os.environ.get("DORY_INCIDENTS", str(DEFAULT_INCIDENTS))).expanduser()
+
+
+def shared_probe_root() -> Path:
+    # The default whole-home share deliberately hides ~/.dory because it contains sockets, keys,
+    # and VM state. Active probes must live in a visible sibling or Docker cannot resolve their
+    # bind-mount source path inside the guest.
+    return Path(
+        os.environ.get("DORY_DOCTOR_SHARED_PROBE_ROOT", str(HOME / ".dory-doctor"))
+    ).expanduser()
 
 
 def record_incident(kind: str, detail: str, **extra: Any) -> None:
@@ -654,7 +664,7 @@ class Doctor:
             host_ips = sorted({info[4][0] for info in socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)})
         except socket.gaierror:
             host_ips = []
-        probe_root = HOME / ".dory" / "doctor"
+        probe_root = shared_probe_root()
         probe_root.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(prefix="dory-dns-", dir=str(probe_root)) as tmp:
             output_path = Path(tmp) / "dns.txt"
@@ -825,7 +835,7 @@ class Doctor:
         if not self.engine_available():
             self.add("mount.basic", "skip", "socket.unreachable", "Bind mount skipped", "Docker API is not reachable.")
             return
-        probe_root = HOME / ".dory" / "doctor"
+        probe_root = shared_probe_root()
         probe_root.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(prefix="path with spaces ", dir=str(probe_root)) as tmp:
             root = Path(tmp)
@@ -914,7 +924,7 @@ class Doctor:
         if not self.engine_available():
             self.add("mount.lock", "skip", "socket.unreachable", "File-lock probe skipped", "Docker API is not reachable.")
             return
-        probe_root = HOME / ".dory" / "doctor"
+        probe_root = shared_probe_root()
         probe_root.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(prefix="lock-", dir=str(probe_root)) as tmp:
             root = Path(tmp)
@@ -970,7 +980,7 @@ class Doctor:
                 "No docker executable found in PATH or DORY_DOCKER_BIN.",
             )
             return
-        probe_root = HOME / ".dory" / "doctor"
+        probe_root = shared_probe_root()
         probe_root.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(prefix="watch ", dir=str(probe_root)) as tmp:
             root = Path(tmp)
@@ -1172,24 +1182,51 @@ class Doctor:
         report.update(self.guest_memory())
         engine = int(report.get("engine_rss_bytes", 0) or 0)
         app = int(report.get("app_rss_bytes", 0) or 0)
+        helper = int(report.get("helper_rss_bytes", 0) or 0)
         guest_total = int(report.get("guest_total_bytes", 0) or 0)
-        detail = (
-            f"host RSS {format_bytes(report.get('rss_bytes', 0))} "
-            f"(engine {format_bytes(engine)}, app {format_bytes(app)})"
-        )
+        footprint_available = bool(report.get("physical_footprint_available"))
+        footprint_complete = bool(report.get("phys_footprint_complete"))
+        if footprint_available:
+            qualifier = "" if footprint_complete else "at least "
+            detail = (
+                f"{qualifier}summed physical footprint {format_bytes(report.get('phys_footprint_bytes', 0))} "
+                f"(engine {format_bytes(report.get('engine_phys_footprint_bytes', 0))}, "
+                f"app {format_bytes(report.get('app_phys_footprint_bytes', 0))}, "
+                f"network {format_bytes(report.get('helper_phys_footprint_bytes', 0))}; "
+                "shared pages may be counted more than once); "
+                f"current RSS {format_bytes(report.get('rss_bytes', 0))} "
+                f"(engine {format_bytes(engine)}, app {format_bytes(app)}, network {format_bytes(helper)})"
+            )
+            status = "pass" if footprint_complete else "warn"
+            code = "memory.footprint_ok" if footprint_complete else "memory.footprint_partial"
+            action = "" if footprint_complete else "Run the memory check again; a Dory process exited while it was sampled."
+        else:
+            detail = (
+                f"physical footprint unavailable; current RSS fallback {format_bytes(report.get('rss_bytes', 0))} "
+                f"(engine {format_bytes(engine)}, app {format_bytes(app)}, network {format_bytes(helper)})"
+            )
+            status = "warn"
+            code = "memory.footprint_unavailable"
+            action = "Kernel physical-footprint accounting was unavailable; RSS does not represent the VM's full macOS memory charge."
         if guest_total:
             detail += f"; guest RAM ceiling {format_bytes(guest_total)}"
-            if engine:
-                reclaimed = max(0, guest_total - engine)
+            engine_footprint = int(report.get("engine_phys_footprint_bytes", 0) or 0)
+            engine_charge = engine_footprint if engine_footprint else engine
+            if engine_charge:
+                reclaimed = max(0, guest_total - engine_charge)
                 report["reclaimed_bytes"] = reclaimed
                 report["reclaim_ratio"] = round(reclaimed / guest_total, 3)
+                report["reclaim_basis"] = (
+                    "engine_phys_footprint" if engine_footprint else "engine_current_rss_fallback"
+                )
                 detail += f", ~{format_bytes(reclaimed)} reclaimed to macOS"
         self.add(
             "memory.footprint",
-            "pass",
-            "memory.footprint_ok",
+            status,
+            code,
             "Dory memory footprint",
             detail,
+            action,
             **report,
         )
 
@@ -1765,6 +1802,70 @@ def largest_matching_file(root: Path, patterns: list[str]) -> dict[str, Any]:
     return biggest
 
 
+class _RusageInfoV4(ctypes.Structure):
+    # macOS <sys/resource.h>. Keep the complete structure: proc_pid_rusage writes every field for
+    # the requested version, even though the doctor only consumes the two live-memory values.
+    _fields_ = [
+        ("ri_uuid", ctypes.c_uint8 * 16),
+        ("ri_user_time", ctypes.c_uint64),
+        ("ri_system_time", ctypes.c_uint64),
+        ("ri_pkg_idle_wkups", ctypes.c_uint64),
+        ("ri_interrupt_wkups", ctypes.c_uint64),
+        ("ri_pageins", ctypes.c_uint64),
+        ("ri_wired_size", ctypes.c_uint64),
+        ("ri_resident_size", ctypes.c_uint64),
+        ("ri_phys_footprint", ctypes.c_uint64),
+        ("ri_proc_start_abstime", ctypes.c_uint64),
+        ("ri_proc_exit_abstime", ctypes.c_uint64),
+        ("ri_child_user_time", ctypes.c_uint64),
+        ("ri_child_system_time", ctypes.c_uint64),
+        ("ri_child_pkg_idle_wkups", ctypes.c_uint64),
+        ("ri_child_interrupt_wkups", ctypes.c_uint64),
+        ("ri_child_pageins", ctypes.c_uint64),
+        ("ri_child_elapsed_abstime", ctypes.c_uint64),
+        ("ri_diskio_bytesread", ctypes.c_uint64),
+        ("ri_diskio_byteswritten", ctypes.c_uint64),
+        ("ri_cpu_time_qos_default", ctypes.c_uint64),
+        ("ri_cpu_time_qos_maintenance", ctypes.c_uint64),
+        ("ri_cpu_time_qos_background", ctypes.c_uint64),
+        ("ri_cpu_time_qos_utility", ctypes.c_uint64),
+        ("ri_cpu_time_qos_legacy", ctypes.c_uint64),
+        ("ri_cpu_time_qos_user_initiated", ctypes.c_uint64),
+        ("ri_cpu_time_qos_user_interactive", ctypes.c_uint64),
+        ("ri_billed_system_time", ctypes.c_uint64),
+        ("ri_serviced_system_time", ctypes.c_uint64),
+        ("ri_logical_writes", ctypes.c_uint64),
+        ("ri_lifetime_max_phys_footprint", ctypes.c_uint64),
+        ("ri_instructions", ctypes.c_uint64),
+        ("ri_cycles", ctypes.c_uint64),
+        ("ri_billed_energy", ctypes.c_uint64),
+        ("ri_serviced_energy", ctypes.c_uint64),
+        ("ri_interval_max_phys_footprint", ctypes.c_uint64),
+        ("ri_runnable_time", ctypes.c_uint64),
+    ]
+
+
+def darwin_process_memory(pid: int) -> dict[str, int] | None:
+    """Return live kernel-accounted memory for one process, or None when unavailable."""
+    if sys.platform != "darwin":
+        return None
+    try:
+        libproc = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
+        proc_pid_rusage = libproc.proc_pid_rusage
+        proc_pid_rusage.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_void_p]
+        proc_pid_rusage.restype = ctypes.c_int
+        usage = _RusageInfoV4()
+        # Match the daemon sampler's fixed RUSAGE_INFO_V4 layout.
+        if proc_pid_rusage(pid, 4, ctypes.byref(usage)) != 0:
+            return None
+        return {
+            "rss_bytes": int(usage.ri_resident_size),
+            "phys_footprint_bytes": int(usage.ri_phys_footprint),
+        }
+    except (AttributeError, OSError, TypeError, ValueError):
+        return None
+
+
 def memory_report() -> dict[str, Any]:
     patterns = [re.compile(p, re.I) for p in os.environ.get("DORY_PROCESS_PATTERN", "Dory|doryd|dory-hv|dory-vmm|gvproxy").split("|")]
     processes: list[dict[str, Any]] = []
@@ -1787,7 +1888,6 @@ def memory_report() -> dict[str, Any]:
             rss_bytes = int(rss_text) * 1024
         except ValueError:
             continue
-        rss += rss_bytes
         lowered = rest.lower()
         if "dory-hv" in lowered or "dory-vmm" in lowered:
             role = "engine"
@@ -1795,18 +1895,51 @@ def memory_report() -> dict[str, Any]:
             role = "network"
         else:
             role = "app"
-        processes.append({"pid": int(pid_text), "rss_bytes": rss_bytes, "role": role, "command": rest[:240]})
+        pid = int(pid_text)
+        process = {"pid": pid, "rss_bytes": rss_bytes, "role": role, "command": rest[:240]}
+        live_memory = darwin_process_memory(pid)
+        if live_memory is not None:
+            # Prefer the kernel's live resident size to ps's rounded KiB value while retaining the
+            # long-standing rss_bytes field and process schema.
+            process["rss_bytes"] = live_memory["rss_bytes"]
+            process["phys_footprint_bytes"] = live_memory["phys_footprint_bytes"]
+        rss += int(process["rss_bytes"])
+        processes.append(process)
     engine_rss = sum(p["rss_bytes"] for p in processes if p["role"] == "engine")
     app_rss = sum(p["rss_bytes"] for p in processes if p["role"] == "app")
     helper_rss = sum(p["rss_bytes"] for p in processes if p["role"] == "network")
-    return {
+    footprint_processes = [p for p in processes if "phys_footprint_bytes" in p]
+    footprint = sum(p["phys_footprint_bytes"] for p in footprint_processes)
+    report = {
         "generated_at": now_iso(),
         "rss_bytes": rss,
+        "rss_kind": "current_resident_size",
+        "rss_scope": "matched_dory_processes",
         "engine_rss_bytes": engine_rss,
         "app_rss_bytes": app_rss,
         "helper_rss_bytes": helper_rss,
+        "physical_footprint_available": bool(footprint_processes),
+        "phys_footprint_complete": bool(processes) and len(footprint_processes) == len(processes),
+        "phys_footprint_source": "proc_pid_rusage.RUSAGE_INFO_V4",
+        "phys_footprint_aggregation": "sum_of_per_process_charges_may_double_count_shared_pages",
+        "phys_footprint_sampled_processes": len(footprint_processes),
+        "process_count": len(processes),
         "processes": processes,
     }
+    if footprint_processes:
+        report.update({
+            "phys_footprint_bytes": footprint,
+            "engine_phys_footprint_bytes": sum(
+                p["phys_footprint_bytes"] for p in footprint_processes if p["role"] == "engine"
+            ),
+            "app_phys_footprint_bytes": sum(
+                p["phys_footprint_bytes"] for p in footprint_processes if p["role"] == "app"
+            ),
+            "helper_phys_footprint_bytes": sum(
+                p["phys_footprint_bytes"] for p in footprint_processes if p["role"] == "network"
+            ),
+        })
+    return report
 
 
 def capture_command(command: list[str], timeout: float = 5.0, max_bytes: int = SUPPORT_SYSTEM_LOG_BYTES) -> dict[str, Any]:
@@ -1948,8 +2081,12 @@ def proxy_report(sock: Path | None = None) -> dict[str, Any]:
 
 
 SENSITIVE_SHARE_NAMES = [
-    ".ssh", ".aws", ".gcloud", ".azure", ".kube", ".docker", ".gnupg", ".config",
-    ".zsh_history", ".bash_history", ".netrc", ".npmrc", ".pypirc", "Library",
+    ".ssh", ".aws", ".gcloud", ".azure", ".kube", ".docker", ".dory", ".gnupg", ".config",
+    ".codex", ".claude", ".colima", ".lima", ".orbstack", ".podman", ".rd",
+    ".netrc", ".npmrc", ".pypirc", ".pgpass", ".gitconfig", ".git-credentials", ".terraform.d",
+    ".zsh_history", ".bash_history",
+    ".zshrc", ".zshenv", ".zprofile", ".zlogin", ".bashrc", ".bash_profile", ".profile",
+    "Library",
 ]
 
 

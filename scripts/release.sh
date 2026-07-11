@@ -134,25 +134,123 @@ preflight_macos_floor() {
   done
 }
 
+release_host_guest_arch() {
+  [ "$(uname -m)" = x86_64 ] && printf '%s\n' amd64 || printf '%s\n' arm64
+}
+
+release_guest_arches() {
+  local requested arches=""
+  for requested in $RELEASE_VARIANTS; do
+    case "$requested" in
+      arm64|apple-silicon|silicon) arches="$arches arm64" ;;
+      x86_64|amd64|intel) arches="$arches amd64" ;;
+      universal|fat) arches="$arches arm64 amd64" ;;
+      *) release_error "unknown DORY_RELEASE_VARIANTS entry '$requested' (use arm64, x86_64, universal)" ;;
+    esac
+  done
+  for requested in arm64 amd64; do
+    case " $arches " in *" $requested "*) printf '%s\n' "$requested" ;; esac
+  done
+}
+
+# Return the exact environment variable bundle-engine.sh will consult for a guest asset. The
+# architecture-specific spelling wins; the unsuffixed compatibility spelling applies only to the
+# host's native guest architecture.
+guest_override_name() {
+  local prefix="$1" arch="$2" upper name
+  upper="$(printf '%s' "$arch" | tr '[:lower:]-' '[:upper:]_')"
+  name="${prefix}_${upper}"
+  if [ -n "${!name:-}" ]; then
+    printf '%s\n' "$name"
+  elif [ "$arch" = "$(release_host_guest_arch)" ] && [ -n "${!prefix:-}" ]; then
+    printf '%s\n' "$prefix"
+  fi
+}
+
 # Fail in seconds, not after the full xcodebuild, when an engine-bundled release is requested on a
 # runner that never built/fetched the guest assets. bundle-engine.sh remains the authoritative
 # (hard-failing) check; this only covers the two classes every engine bundle needs.
 preflight_guest_assets() {
   [ "${DORY_BUNDLE_ENGINE:-1}" = "1" ] || return 0
-  local missing=""
-  if [ -z "${DORY_HV_KERNEL_ARM64:-}${DORY_HV_KERNEL:-}" ] && [ ! -f guest/out/Image ]; then
-    missing="$missing arm64-kernel(guest/out/Image)"
+  local arch name value hv_kernel vm_kernel initfs agent engine_rootfs gpu_kernel
+  local missing="" override_names="" kernel_verify_arches="" initfs_verify_arches=""
+
+  for arch in $(release_guest_arches); do
+    hv_kernel="$(guest_override_name DORY_HV_KERNEL "$arch")"
+    vm_kernel="$(guest_override_name DORY_KERNEL "$arch")"
+    initfs="$(guest_override_name DORY_INITFS "$arch")"
+    agent="$(guest_override_name DORY_GUEST_AGENT "$arch")"
+    engine_rootfs="$(guest_override_name DORY_ENGINE_ROOTFS "$arch")"
+    gpu_kernel=""
+    if [ "${DORY_BUNDLE_VENUS:-1}" = "1" ]; then
+      gpu_kernel="$(guest_override_name DORY_HV_GPU_KERNEL "$arch")"
+    fi
+
+    for name in "$hv_kernel" "$vm_kernel" "$initfs" "$agent" "$engine_rootfs" "$gpu_kernel"; do
+      [ -n "$name" ] || continue
+      value="${!name}"
+      [ -f "$value" ] || release_error "$name does not name a regular file: $value"
+      case " $override_names " in *" $name "*) ;; *) override_names="$override_names $name" ;; esac
+    done
+
+    # dory-hv and Virtualization.framework have independent kernel override surfaces. If either
+    # consumer still selects guest/out, the standard kernel must retain valid provenance.
+    if [ -z "$hv_kernel" ] || [ -z "$vm_kernel" ]; then
+      kernel_verify_arches="$kernel_verify_arches $arch"
+    fi
+
+    # The standalone agent, VZ initfs, and engine rootfs also select independently. A DORY_INITFS
+    # override does not replace the guest/out agent or the engine-rootfs fallback.
+    if [ -z "$initfs" ] || [ -z "$agent" ]; then
+      initfs_verify_arches="$initfs_verify_arches $arch"
+    fi
+    if [ -z "$engine_rootfs" ]; then
+      if [ -f "guest/out/dory-engine-rootfs-$arch.ext4" ]; then
+        override_names="$override_names guest/out/dory-engine-rootfs-$arch.ext4(implicit)"
+      else
+        initfs_verify_arches="$initfs_verify_arches $arch"
+      fi
+    fi
+  done
+
+  if [ -n "$override_names" ]; then
+    [ "${DORY_ALLOW_UNVERIFIED_GUEST_ASSETS:-0}" = "1" ] \
+      || release_error "guest-asset overrides bypass source provenance:$override_names. Use verified guest/out assets, or explicitly set DORY_ALLOW_UNVERIFIED_GUEST_ASSETS=1 for a development-only release"
+    echo "==> WARNING: accepting unverified development guest assets:$override_names"
   fi
-  if [ -z "${DORY_INITFS_ARM64:-}${DORY_INITFS:-}" ] && [ ! -f guest/out/initfs-arm64.ext4 ]; then
-    missing="$missing arm64-initfs(guest/out/initfs-arm64.ext4)"
-  fi
-  if [ -z "${DORY_HV_KERNEL_AMD64:-}" ] && [ ! -f guest/out/vmlinux-x86 ]; then
-    missing="$missing amd64-kernel(guest/out/vmlinux-x86)"
-  fi
-  if [ -z "${DORY_INITFS_AMD64:-}" ] && [ ! -f guest/out/initfs-amd64.ext4 ]; then
-    missing="$missing amd64-initfs(guest/out/initfs-amd64.ext4)"
-  fi
-  [ -z "$missing" ] || release_error "engine-bundled release needs guest assets on this runner; missing:$missing. Build them with guest/kernel/build.sh and guest/initfs/build.sh (or set DORY_HV_KERNEL_*/DORY_INITFS_* overrides), or set DORY_BUNDLE_ENGINE=0 for an app-only dry-run"
+
+  for arch in arm64 amd64; do
+    case " $kernel_verify_arches " in
+      *" $arch "*)
+        if [ "$arch" = arm64 ]; then
+          if [ -f guest/out/Image ]; then
+            DORY_EXPERIMENTAL_GPU=0 guest/kernel/verify-build.sh "$arch" >/dev/null \
+              || release_error "$arch kernel is stale or missing required features"
+          else
+            missing="$missing arm64-kernel(guest/out/Image)"
+          fi
+        else
+          if [ -f guest/out/vmlinux-x86 ]; then
+            DORY_EXPERIMENTAL_GPU=0 guest/kernel/verify-build.sh "$arch" >/dev/null \
+              || release_error "$arch kernel is stale or missing required features"
+          else
+            missing="$missing amd64-kernel(guest/out/vmlinux-x86)"
+          fi
+        fi
+        ;;
+    esac
+    case " $initfs_verify_arches " in
+      *" $arch "*)
+        if [ ! -f "guest/out/initfs-$arch.ext4" ]; then
+          missing="$missing $arch-initfs(guest/out/initfs-$arch.ext4)"
+        else
+          guest/initfs/verify-build.sh "$arch" >/dev/null \
+            || release_error "$arch initfs/guest agent is stale"
+        fi
+        ;;
+    esac
+  done
+  [ -z "$missing" ] || release_error "engine-bundled release needs guest assets on this runner; missing:$missing. Build them with guest/kernel/build.sh and guest/initfs/build.sh (or use the matching DORY_HV_KERNEL_*, DORY_KERNEL_*, DORY_INITFS_*, DORY_GUEST_AGENT_*, and DORY_ENGINE_ROOTFS_* overrides with the explicit development escape), or set DORY_BUNDLE_ENGINE=0 for an app-only dry-run"
 }
 
 preflight_release() {
@@ -258,6 +356,7 @@ verify_full_bundle() {
   for helper in gvproxy docker docker-compose kubectl; do
     assert_macho_arches "$helpers/$helper" "$HOST_CLI_ARCHES"
   done
+  scripts/verify-macos-deployment-targets.sh "$app" "$HELPER_ARCHES"
   for helper in doryd dorydctl dory-vmm dory-network-helper dory-hv gvproxy docker docker-compose kubectl dory dory-doctor; do
     verify_developer_id_signature "$helpers/$helper"
   done
@@ -372,17 +471,6 @@ finish_zip_update_artifact() {
   fi
 }
 
-prune_app_update_payload() {
-  local app="$1" resources
-  resources="$app/Contents/Resources"
-  # Sparkle app updates carry app + helper code, but not the large guest/rootfs payloads that are
-  # distributed by the full bundle/runtime lane and persist under ~/.dory once installed.
-  rm -f \
-    "$resources"/dory-engine-rootfs*.ext4.lzfse \
-    "$resources"/dory-machine-rootfs*.ext4 \
-    "$resources"/dory-vm-initfs*.ext4.lzfse
-}
-
 json_escape() {
   printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
 }
@@ -479,10 +567,16 @@ for requested in $RELEASE_VARIANTS; do
   # Mac without Docker Desktop, Colima, OrbStack, Homebrew, or Apple `container`.
   if [ "${DORY_BUNDLE_ENGINE:-1}" = "1" ]; then
     echo "==> Bundling the self-contained engine for $VARIANT..."
+    # A release consumes the exact stamped initfs. Opportunistically rewriting it with host-found
+    # agent/QEMU/toolbox binaries would make the signed guest vary by runner and escape provenance;
+    # add those tools to guest/initfs/PINS + build.sh before making them part of a release image.
     DORY_BUNDLE_ARCHES="$BUNDLE_ARCHES" \
     DORY_SWIFTPM_HELPER_ARCHES="$HELPER_ARCHES" \
     DORY_HOST_CLI_ARCHES="$HOST_CLI_ARCHES" \
     DORY_BUNDLE_NATIVE_ARCH="$NATIVE_GUEST_ARCH" \
+    DORY_SKIP_AGENT_INJECT=1 \
+    DORY_SKIP_QEMU_INJECT=1 \
+    DORY_SKIP_TOOLBOX_INJECT=1 \
     DORY_REQUIRE_BUNDLE_ASSETS="${DORY_REQUIRE_BUNDLE_ASSETS:-1}" \
       scripts/bundle-engine.sh "$APP"
   else
@@ -549,19 +643,21 @@ if [ "${DORY_BUNDLE_ENGINE:-1}" = "1" ] && [ "${DORY_BUILD_LITE:-1}" = "1" ]; th
   fi
 fi
 
-# app-update: app + helpers only, no heavy guest/rootfs payload. This is the normal Sparkle feed
-# artifact so users can take UI/helper fixes without downloading the engine on every release.
+# app-update: a self-contained application update. Sparkle replaces Dory.app, so boot-critical
+# guest assets stay in this artifact even though that makes updates larger.
 APP_UPDATE_ZIP=""
 if [ "${DORY_BUNDLE_ENGINE:-1}" = "1" ] && [ "${DORY_BUILD_APP_UPDATE:-1}" = "1" ]; then
   UPDATE_SOURCE_APP="${UNIVERSAL_APP:-$ARM64_APP}"
+  UPDATE_ARCHES="arm64"
+  [ -z "$UNIVERSAL_APP" ] || UPDATE_ARCHES="arm64 amd64"
   if [ -n "$UPDATE_SOURCE_APP" ] && [ -d "$UPDATE_SOURCE_APP" ]; then
-    echo "==> Building app update bundle (app + helpers, no rootfs payload)..."
+    echo "==> Building self-contained app update bundle..."
     UPDATE_DIR="$BUILD_DIR/export-app-update"
     UPDATE_APP="$UPDATE_DIR/Dory.app"
     rm -rf "$UPDATE_DIR"
     mkdir -p "$UPDATE_DIR"
     cp -R "$UPDATE_SOURCE_APP" "$UPDATE_DIR/"
-    prune_app_update_payload "$UPDATE_APP"
+    scripts/validate-app-update-payload.sh "$UPDATE_APP" "$UPDATE_ARCHES"
     sign_app "$UPDATE_APP"
     verify_codesign "$UPDATE_APP"
     APP_UPDATE_ZIP="$BUILD_DIR/Dory-$VERSION-app-update.zip"

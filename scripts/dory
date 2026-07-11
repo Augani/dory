@@ -78,7 +78,7 @@ dory — Dory CLI
                                Remove Dory shell integration from ~/.dory/bin and shell profiles
   dory shell <container>       Open an interactive shell in a container
   dory debug <container> [-- cmd...]
-                               Enter a container's namespaces through the Dory guest agent
+                               Reserved for a future agent namespace-debug RPC (currently unavailable)
   dory machine <args...>       Manage doryd Linux VM machines (ls, create, start, stop, delete, run)
   dory machine exec <name> [--json] -- <command...>
                                Run a command in a machine; --json emits schema v1 result metadata
@@ -1602,83 +1602,11 @@ sandbox_cmd() {
   esac
 }
 
-agent_rpc() {
-  local sock="$1" method="$2" payload="$3"
-  [ -n "$sock" ] && [ -S "$sock" ] || { echo "set DORY_AGENT_SOCK to a dory agent bridge socket" >&2; return 2; }
-  python3 - "$sock" "$method" "$payload" <<'PY'
-import json, socket, struct, sys
-
-def recv_exactly(s, count):
-    buf = b""
-    while len(buf) < count:
-        chunk = s.recv(count - len(buf))
-        if not chunk:
-            return buf
-        buf += chunk
-    return buf
-
-sock_path, method, payload = sys.argv[1], sys.argv[2], json.loads(sys.argv[3])
-request = json.dumps({"id": 1, "method": method, "params": payload}, separators=(",", ":")).encode()
-with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
-    s.connect(sock_path)
-    s.sendall(struct.pack(">I", len(request)) + request)
-    header = recv_exactly(s, 4)
-    if len(header) != 4:
-        raise SystemExit("agent closed before response")
-    length = struct.unpack(">I", header)[0]
-    data = recv_exactly(s, length)
-    if len(data) != length:
-        raise SystemExit("agent closed mid-response")
-response = json.loads(data)
-if response.get("error"):
-    print(response["error"].get("message", "agent request failed"), file=sys.stderr)
-    raise SystemExit(1)
-print(json.dumps(response.get("result", {}), sort_keys=True))
-PY
-}
-
-usb_rpc() {
-  local method="$1" payload="$2"
-  local sock="${DORY_USB_AGENT_SOCK:-${DORY_AGENT_SOCK:-}}"
-  agent_rpc "$sock" "$method" "$payload"
-}
-
-debug_payload() {
-  local container="$1"
-  shift
-  python3 - "$container" "$@" <<'PY'
-import json, sys
-
-container = sys.argv[1]
-argv = sys.argv[2:]
-payload = {"containerID": container}
-if argv:
-    payload["argv"] = argv
-print(json.dumps(payload, separators=(",", ":")))
-PY
-}
-
 debug_cmd() {
-  local container="${1:?usage: dory debug <container> [-- cmd...]}"
-  shift
-  [ "${1:-}" != "--" ] || shift
-  local sock="${DORY_DEBUG_AGENT_SOCK:-${DORY_AGENT_SOCK:-}}"
-  local result
-  result="$(agent_rpc "$sock" "debug.shell" "$(debug_payload "$container" "$@")")"
-  if [ "$#" -eq 0 ]; then
-    printf '%s\n' "$result"
-  else
-    python3 - "$result" <<'PY'
-import base64, json, sys
-
-result = json.loads(sys.argv[1])
-if result.get("stdout_b64"):
-    sys.stdout.buffer.write(base64.b64decode(result["stdout_b64"]))
-if result.get("stderr_b64"):
-    sys.stderr.buffer.write(base64.b64decode(result["stderr_b64"]))
-raise SystemExit(int(result.get("exit_code", 0)))
-PY
-  fi
+  [ "$#" -gt 0 ] || { echo "usage: dory debug <container> [-- cmd...]" >&2; return 2; }
+  echo "dory debug is unavailable: dory-agent protocol v1 has no namespace-debug RPC" >&2
+  echo "use 'dory shell $1' for containers that include a shell, or 'dory exec $1 ...' for normal Docker exec" >&2
+  return 2
 }
 
 usb_cmd() {
