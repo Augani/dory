@@ -63,9 +63,40 @@ Performance work follows the same ownership split as lifecycle work.
 - Failed experiments must be actively reverted from source, the installed app, and the live LaunchAgent before another product-state run.
 - Benchmark reports must separate product-state runs from one-off environment experiments.
 
+### Host-share coherence contract
+
+Fast host sharing is allowed to graduate only when it preserves both namespace coherence and native
+Linux watcher behavior.
+
+- A FUSE node ID belongs to one host object for its entire lookup lifetime. Host replacement creates
+  a new monotonic node ID; `FORGET` and `BATCH_FORGET` release lookup references.
+- Host-writable shares default to zero entry/attribute TTL, no negative dentries, no keep-cache, and
+  no writeback until reverse invalidation is negotiated and healthy end to end.
+- Cache readiness requires a live macOS event source, a negotiated virtio-fs notification queue,
+  posted guest buffers, successful FUSE initialization, and an ordered invalidation/fsnotify path.
+- Event overflow, queue loss, root replacement, sleep/wake discontinuity, or protocol mismatch moves
+  the share to degraded mode and disables cache-dependent behavior.
+- A reverse-invalidation deadline covers request quiescence as well as guest acknowledgment. Missing
+  the deadline permanently closes that backend's request-publication gate until VM replacement; work
+  admitted before the boundary cannot publish a used-ring response afterward. A host syscall already
+  begun by that work cannot be canceled or rolled back and retains normal host last-writer semantics;
+  the boundary fences only response publication and admission of new work.
+- Production host shares reject virtio-fs DAX, including read-only DAX. Direct guest mappings bypass
+  the FUSE request gate: writable mappings can still store after a failed reverse invalidation, and
+  read-only mappings can still serve stale bytes while recovery is pending. DAX may return only after
+  a host-owned vCPU-quiesce boundary is implemented and proven under host edits and atomic replacement.
+- Polling visibility is not HMR correctness. Release validation must include a host edit observed by
+  a guest inotify-backed watcher.
+- Performance experiments that violate these conditions may be used to measure upside, but must be
+  explicitly labeled unsafe and reverted immediately afterward.
+
 The current benchmark strategy is:
 
-- protect the shared-VM networking path, where Dory already leads;
+- protect the fast guest-local container bridge path, while keeping its measurement boundary honest:
+  the current container-to-container iperf result never crosses `VirtioNet` or gvproxy and therefore
+  proves neither host/Internet throughput nor a lead over other desktop network stacks;
+- rank the external path only from same-session, interleaved DNS, TCP/TLS, fixed-download, and
+  concurrent-registry measurements, with Dory device-drop and gvproxy retransmit counters retained;
 - keep vCPU scheduling and I/O workers inside `dory-hv`, because those are custom-VMM advantages;
 - avoid kernel churn until the engine execution path proves the guest kernel is the bottleneck;
 - prefer narrow, falsifiable experiments over broad bundles of unrelated tuning.

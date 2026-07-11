@@ -58,7 +58,7 @@ export function Hero() {
         </div>
         <div className="meta-row">
           <span>
-            <b>~4.7x</b> less idle memory*
+            <b>One</b> shared Linux VM
           </span>
           <span>
             <b>Full</b> clean-Mac bundle

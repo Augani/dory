@@ -3,9 +3,6 @@ import * as THREE from 'three'
 import { Reveal } from './Reveal'
 import { useReducedMotion } from '../hooks/useReducedMotion'
 
-const PER_VM = 287
-const DORY_BASE = 100
-const DORY_PER = 11
 const MAX = 6
 
 function box(w: number, h: number, d: number, mat: THREE.Material) {
@@ -62,8 +59,8 @@ export function MemoryModel() {
   const reduced = useReducedMotion()
   const wrapRef = useRef<HTMLDivElement>(null)
   const hostRef = useRef<HTMLDivElement>(null)
-  const [mbOther, setMbOther] = useState('0 MB')
-  const [mbDory, setMbDory] = useState('0 MB')
+  const [vmOther, setVmOther] = useState('0 VMs')
+  const [vmDory, setVmDory] = useState('1 VM')
   const [ctOther, setCtOther] = useState('0 containers, 0 kernels')
   const [ctDory, setCtDory] = useState('0 containers, 1 kernel')
   const addRef = useRef<() => void>(() => {})
@@ -144,8 +141,8 @@ export function MemoryModel() {
     }
 
     function updateHUD() {
-      setMbOther(`${count * PER_VM} MB`)
-      setMbDory(`${count ? DORY_BASE + count * DORY_PER : 0} MB`)
+      setVmOther(`${count} VM${count === 1 ? '' : 's'}`)
+      setVmDory('1 VM')
       setCtOther(`${count} container${count === 1 ? '' : 's'}, ${count} kernel${count === 1 ? '' : 's'}`)
       setCtDory(`${count} container${count === 1 ? '' : 's'}, 1 kernel`)
     }
@@ -262,7 +259,7 @@ export function MemoryModel() {
     <section id="model" style={{ paddingTop: 36 }}>
       <div className="wrap">
         <Reveal as="span" className="kicker">
-          How Dory wins the memory game
+          How Dory avoids per-container VMs
         </Reveal>
         <Reveal as="h2">Every VM you don't boot is RAM you keep.</Reveal>
         <Reveal as="p" className="lead">
@@ -282,12 +279,12 @@ export function MemoryModel() {
                   <div className="hud-top">
                     <div className="hud-side other">
                       <div className="t">One VM per container</div>
-                      <div className="mb">{mbOther}</div>
+                      <div className="mb">{vmOther}</div>
                       <div className="per">{ctOther}</div>
                     </div>
                     <div className="hud-side dory">
                       <div className="t">Dory: one shared VM</div>
-                      <div className="mb">{mbDory}</div>
+                      <div className="mb">{vmDory}</div>
                       <div className="per">{ctDory}</div>
                     </div>
                   </div>
@@ -305,23 +302,15 @@ export function MemoryModel() {
           </div>
         </Reveal>
         <Reveal as="p" className="model-note">
-          Illustrative animation. Anchored to our measurement: 2 idle containers is about{' '}
-          <b>122 MB</b> total in Dory's shared VM versus about <b>574 MB</b> as per-container VMs on
-          the same machine (
-          <a
-            href="https://github.com/Augani/dory/blob/main/scripts/benchmark.sh"
-            className="link"
-          >
-            focused probe
-          </a>
-          ; full benchmark rules in{' '}
+          Illustrative architecture, not a memory estimate. Fresh total-footprint comparisons ship
+          only with repeatable process attribution and raw samples; see{' '}
           <a
             href="https://github.com/Augani/dory/blob/main/BENCHMARKS.md"
             className="link"
           >
             BENCHMARKS.md
           </a>
-          ).
+          .
         </Reveal>
       </div>
     </section>

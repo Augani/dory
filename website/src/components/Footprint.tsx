@@ -29,7 +29,10 @@ export function Footprint() {
           <Reveal className="pcard">
             <div className="big">1 VM</div>
             <div className="t">For everything</div>
-            <p>One kernel, one memory pool: ~122 MB with two idle containers on our bench, and it grows slowly.</p>
+            <p>
+              One kernel and one memory pool, with free-page reporting. Host-pressure reclaim is
+              available in the opt-in experimental Senpai mode.
+            </p>
           </Reveal>
           <Reveal className="pcard">
             <div className="big">GPL-3.0</div>

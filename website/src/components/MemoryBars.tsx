@@ -25,41 +25,41 @@ export function MemoryBars() {
   return (
     <section id="memory" style={{ paddingTop: 40 }}>
       <div className="wrap">
-        <span className="kicker">Measured, not promised</span>
-        <h2>Your RAM belongs to you.</h2>
+        <span className="kicker">A memory architecture you can inspect</span>
+        <h2>One VM, with host-aware reclaim.</h2>
         <div className="mem-card" ref={cardRef}>
           <div className="mem-row">
             <div className="label">
               <b>Dory: one shared VM</b>
-              <span>~122 MB · 2 idle containers</span>
+              <span>All containers share one persistent Linux engine</span>
             </div>
             <div className="track">
-              <div className="fill dory" style={{ width: filled ? '21%' : 0 }} />
+              <div className="fill dory" style={{ width: filled ? '100%' : 0 }} />
             </div>
           </div>
           <div className="mem-row">
             <div className="label">
-              <b>One VM per container</b>
-              <span>~574 MB · 2 idle containers</span>
+              <b>Memory returns to macOS</b>
+              <span>Free-page reporting plus pressure-triggered reclaim</span>
             </div>
             <div className="track">
-              <div className="fill other" style={{ width: filled ? '100%' : 0 }} />
+              <div className="fill other" style={{ width: filled ? '72%' : 0 }} />
             </div>
           </div>
           <div className="mem-big">
-            <span className="x">~4.7x</span>
-            <span>less idle memory, and the gap widens with every container you add</span>
+            <span className="x">Open</span>
+            <span>benchmark rules, raw samples, and no unsupported multiplier</span>
           </div>
           <div className="mem-note">
-            *Measured by Dory on Apple silicon (
+            Fresh total-footprint comparisons will be published only with repeatable process-tree
+            attribution and raw samples (
             <a
               href="https://github.com/Augani/dory/blob/main/BENCHMARKS.md"
               className="link"
             >
               benchmark rules
             </a>
-            ). Intel memory and file-sharing tables will be published only after the physical Intel
-            readiness and benchmark gates pass.
+            ). Intel tables will likewise wait for physical-hardware readiness and benchmark gates.
           </div>
         </div>
       </div>

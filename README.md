@@ -28,10 +28,10 @@
 - **Its own engine, built for the Mac.** Dory ships `dory-hv`, its own hypervisor engine on
   Apple's Hypervisor.framework: one persistent Linux VM runs *everything*, instead of one VM per
   container, and memory is genuinely handed back to macOS as workloads idle (free-page reporting,
-  not a balloon that never deflates). Measured **~4.7× less idle memory** than per-container VMs
-  (2 containers: ~122 MB vs ~574 MB), and the gap widens with every container you add.
-  Measure it yourself with [`scripts/benchmark-compare.sh`](scripts/benchmark-compare.sh) and the
-  public [benchmark playbook](BENCHMARKS.md).
+  not a balloon that never deflates). Reproduce the current measurements with
+  [`scripts/benchmark-compare.sh`](scripts/benchmark-compare.sh) and the public
+  [benchmark playbook](BENCHMARKS.md); Dory does not publish a memory multiplier until total
+  process-tree measurements against current competitors are repeatable.
 - **Small and silent, permanently.** A native app with ~0% idle CPU. No indexers, no
   phone-home, no fans. That's a design constraint, not a version note.
 - **Free for everyone, forever.** No per-seat license, no "commercial use" tier, no account,
@@ -94,6 +94,8 @@
   (`dory ssh <name>` or `dory machine shell <name>`), and custom addresses can be assigned during
   creation.
 - Your home directory is shared into the engine, so `docker run -v ~/project:/app` just works.
+  Host shares intentionally use plain virtio-fs: DAX host-share options are rejected until Dory can
+  quiesce guest CPUs across a failed reverse invalidation without risking stale reads or late writes.
 
 **Networking that disappears**
 - Published ports on `localhost`, automatic **`*.dory.local` domains** for every container, and
@@ -155,7 +157,7 @@ reinstall, no environment variables:
 
 | Backend | Model |
 |---|---|
-| **Dory engine** *(default)* | One persistent `dockerd`-in-VM for all containers on `dory-hv`, Dory's own Hypervisor.framework engine. Standalone: no Docker install required. Memory reclaim, GPU, x86 emulation, Kubernetes, Linux machines. |
+| **Dory engine** *(default)* | One persistent `dockerd`-in-VM for all containers. macOS 15+ uses `dory-hv`, Dory's own Hypervisor.framework engine; macOS 14 uses the bundled Virtualization.framework `dory-vmm` fallback. Standalone: no Docker install required. Memory reclaim, x86 emulation, Kubernetes, and Linux machines. |
 | **Existing engine** | Transparent proxy to an engine already on your Mac — auto-detects Colima, Docker Desktop, OrbStack, Rancher Desktop, and Podman sockets. Dory becomes the GUI, domains, and port UX on top. |
 | **Custom socket** | Point Dory at any Docker-compatible unix socket. |
 
@@ -164,22 +166,22 @@ reinstall, no environment variables:
 ## Requirements
 
 > **Intel engine status:** Dory now builds and routes a universal app with Intel shared-engine
-> tiers. The raw `dory-hv` x86 path is implemented and selected first when PVH assets are bundled;
-> the Virtualization.framework helper remains the fallback tier. Full Intel readiness still needs
-> the physical Intel Mac gates in the roadmap before it is considered finished.
+> tiers. On macOS 15+, the raw `dory-hv` x86 path is implemented and selected when its PVH assets
+> are bundled. Sonoma uses the bundled Virtualization.framework `dory-vmm` tier because the shipped
+> `dory-hv` slices require macOS 15. Full Intel readiness still needs the physical Intel Mac gates
+> in the roadmap before it is considered finished.
 
 - **Runs on macOS 14 (Sonoma) or later**, universal for Intel and Apple silicon. That matches
   OrbStack's floor, so Dory installs anywhere OrbStack does.
-- **The built-in engine on Apple silicon needs macOS 15 (Sequoia) or later** - the full experience:
-  Dory's own bundled engine, bundled Docker/Compose/kubectl tools, one shared VM, low memory,
-  Kubernetes, Linux machines, `*.dory.local` domains. Nothing else to install. The engine uses
-  Apple's in-kernel interrupt API, which is macOS 15+ on Apple silicon, so it cannot run on
-  macOS 14.
-- **Intel Macs** run the same universal app. Builds with Intel `dory-hv` PVH assets use the
-  low-memory raw engine as an Intel beta; builds with only the amd64 VZ assets use the
-  Virtualization.framework shared-engine fallback. Full Intel readiness is still hardware-gated.
-- **On macOS 14, or any install without bundled engine assets**, Dory runs as a native app against
-  any Docker-compatible engine you install (Colima, Docker Desktop, Rancher Desktop, Podman, or
+- **The raw `dory-hv` engine needs macOS 15 (Sequoia) or later** on both Apple silicon and Intel;
+  both shipped slices declare that minimum. It provides Dory's custom low-memory VMM path.
+- **On macOS 14**, a full bundle routes the shared Docker VM through the bundled `dory-vmm`
+  Virtualization.framework fallback instead of trying to launch an incompatible `dory-hv`.
+- **Intel Macs** run the same universal app. On macOS 15+, builds with Intel `dory-hv` PVH assets
+  use the raw engine as an Intel beta; Sonoma uses the amd64 `dory-vmm` fallback. Full Intel
+  readiness is still hardware-gated.
+- **On an install without bundled engine assets**, Dory runs as a native app against any
+  Docker-compatible engine you install (Colima, Docker Desktop, Rancher Desktop, Podman, or
   OrbStack).
 - Xcode 26 or later (to build from source).
 

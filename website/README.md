@@ -3,10 +3,12 @@
 Source for [augani.github.io/dory](https://augani.github.io/dory) — React + TypeScript + Vite,
 published by GitHub Pages Actions from the generated `../docs-build` artifact.
 
+From the repository root (which is not itself an npm package):
+
 ```sh
-npm install
-npm run dev     # local dev server with HMR
-npm run build   # typecheck and build into ../docs-build
+npm --prefix website ci
+npm --prefix website run dev     # local dev server with HMR
+npm --prefix website run build   # typecheck and build into docs-build/
 ```
 
 `npm run build` writes to `../docs-build` (gitignored). GitHub Pages uploads that
