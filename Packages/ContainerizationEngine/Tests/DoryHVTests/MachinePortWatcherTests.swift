@@ -1,22 +1,12 @@
+import DoryCore
 import Foundation
 import Testing
 @testable import DoryHV
 
 @Suite struct MachinePortWatcherTests {
-    @Test func watchPortsUsesAgentMethod() async throws {
-        let transport = StubAgentTransport(responsePayload: #"{"id":1,"result":{"ports":[],"added":[],"removed":[]}}"#)
-        let channel = AgentChannel(transport: transport)
-
-        let snapshot = try await channel.watchPorts()
-        let request = try transport.decodedRequest()
-
-        #expect(snapshot == AgentPortSnapshot(ports: [], added: [], removed: []))
-        #expect(request.method == "ports.watch")
-    }
-
-    @Test func watchPortsTreatsNullDiffsAsEmptyArrays() async throws {
-        let transport = StubAgentTransport(responsePayload: #"{"id":1,"result":{"ports":null,"added":null,"removed":null}}"#)
-        let channel = AgentChannel(transport: transport)
+    @Test func watchPortsUsesAuthoritativeTypedClient() async throws {
+        let client = StubAgentControlRPC()
+        let channel = AgentChannel(client: client)
 
         let snapshot = try await channel.watchPorts()
 
@@ -24,59 +14,29 @@ import Testing
     }
 
     @Test func watcherExposesAndReleasesTCPDiffsOnly() async throws {
-        let transport = StubAgentTransport(responsePayload: """
-        {"id":1,"result":{
-          "ports":[{"protocol":"tcp","port":3000}],
-          "added":[
-            {"action":"add","protocol":"tcp","port":3000},
-            {"action":"add","protocol":"udp","port":5353},
-            {"action":"add","protocol":"tcp","port":2375},
-            {"action":"add","protocol":"tcp","port":11434}
-          ],
-          "removed":[
-            {"action":"remove","protocol":"tcp6","port":8080},
-            {"action":"remove","protocol":"udp","port":5353},
-            {"action":"remove","protocol":"tcp","port":2377}
-          ]
-        }}
-        """)
+        let client = StubAgentControlRPC()
+        client.portsResult = DoryPortsSnapshot(
+            ports: [DoryListenPort(protocol: "tcp", port: 3_000)],
+            added: [
+                DoryPortEvent(action: "added", protocol: "tcp", port: 3_000),
+                DoryPortEvent(action: "added", protocol: "udp", port: 5_353),
+                DoryPortEvent(action: "added", protocol: "tcp", port: 2_375),
+                DoryPortEvent(action: "added", protocol: "tcp", port: 11_434),
+            ],
+            removed: [
+                DoryPortEvent(action: "removed", protocol: "tcp6", port: 8_080),
+                DoryPortEvent(action: "removed", protocol: "udp", port: 5_353),
+                DoryPortEvent(action: "removed", protocol: "tcp", port: 2_377),
+            ]
+        )
         let forwarder = FakeMachinePortForwarder()
-        let watcher = MachinePortWatcher(channel: AgentChannel(transport: transport), forwarder: forwarder)
+        let watcher = MachinePortWatcher(channel: AgentChannel(client: client), forwarder: forwarder)
 
         let snapshot = try await watcher.pollOnce()
 
-        #expect(snapshot.ports == [AgentListenPort(protocol: "tcp", port: 3000)])
-        #expect(await forwarder.exposed == [3000])
-        #expect(await forwarder.unexposed == [8080])
-    }
-
-    private final class StubAgentTransport: AgentByteTransport {
-        private var response: [UInt8]
-        private(set) var written = [UInt8]()
-
-        init(responsePayload: String) {
-            self.response = (try? AgentFrameCodec.encode(Array(responsePayload.utf8))) ?? []
-        }
-
-        func readExact(_ count: Int) async throws -> [UInt8] {
-            let bytes = Array(response.prefix(count))
-            response.removeFirst(min(count, response.count))
-            return bytes
-        }
-
-        func writeAll(_ bytes: [UInt8]) async throws {
-            written.append(contentsOf: bytes)
-        }
-
-        func decodedRequest() throws -> CapturedRequest {
-            let length = try AgentFrameCodec.decodeLength(Array(written.prefix(4)))
-            let payload = Data(written.dropFirst(4).prefix(length))
-            return try JSONDecoder().decode(CapturedRequest.self, from: payload)
-        }
-    }
-
-    private struct CapturedRequest: Decodable {
-        var method: String
+        #expect(snapshot.ports == [AgentListenPort(protocol: "tcp", port: 3_000)])
+        #expect(await forwarder.exposed == [3_000])
+        #expect(await forwarder.unexposed == [8_080])
     }
 
     private actor FakeMachinePortForwarder: MachinePortForwarding {

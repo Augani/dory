@@ -1,105 +1,434 @@
 import CoreServices
+import Darwin
 import Foundation
 
-public struct FSEventBatchParams: Codable, Sendable, Equatable {
-    public var paths: [String]
+public struct HostFSEventChange: Sendable, Equatable {
+    public var hostPath: String
+    public var guestPath: String
+    public var flags: UInt32
+    public var eventID: UInt64
+    /// Only the pathname reported by FSEvents may invalidate data pages. Namespace fanout to a
+    /// surviving hard-link alias carries metadata/nlink semantics, never permission to discard
+    /// that alias's potentially dirty cache.
+    public var permitsContentInvalidation: Bool
+    /// The stream reported a changed directory rather than one exact file. The coherence
+    /// coordinator expands this only over HostFS bindings already known in that directory.
+    public var isDirectoryAggregate: Bool
 
-    public init(paths: [String]) {
-        self.paths = paths
+    public init(
+        hostPath: String,
+        guestPath: String,
+        flags: UInt32,
+        eventID: UInt64,
+        permitsContentInvalidation: Bool = true,
+        isDirectoryAggregate: Bool = false
+    ) {
+        self.hostPath = URL(fileURLWithPath: hostPath).standardizedFileURL.path
+        self.guestPath = guestPath
+        self.flags = flags
+        self.eventID = eventID
+        self.permitsContentInvalidation = permitsContentInvalidation
+        self.isDirectoryAggregate = isDirectoryAggregate
     }
-}
 
-public struct FSEventBatchResult: Decodable, Sendable, Equatable {
-    public var touched: Int
+    /// FSEvents asks clients to rescan after any of these markers. Continuing to serve cached
+    /// dentries after a dropped event would make the host and guest disagree, so the coherence
+    /// coordinator must degrade immediately instead of treating this as an ordinary path edit.
+    public var requiresRescan: Bool {
+        let mask = UInt32(
+            kFSEventStreamEventFlagMustScanSubDirs |
+            kFSEventStreamEventFlagUserDropped |
+            kFSEventStreamEventFlagKernelDropped |
+            kFSEventStreamEventFlagEventIdsWrapped |
+            kFSEventStreamEventFlagRootChanged |
+            // HostFS pins root/directory descriptors. A detach/remount can replace the filesystem
+            // identity underneath those fds even when RootChanged is not co-reported.
+            kFSEventStreamEventFlagMount |
+            kFSEventStreamEventFlagUnmount
+        )
+        return flags & mask != 0
+    }
+
+    /// A same-mode chmod generated solely to wake Linux watchers is expected to return as an inode
+    /// metadata event. Only this narrow shape is eligible for one-shot echo suppression; content,
+    /// namespace, xattr, ownership, overflow, and root events always make the round trip.
+    public var isMetadataOnly: Bool {
+        // macOS reports fchmod(2) as ItemChangeOwner even when uid/gid are unchanged. Treat both
+        // metadata classifications as echo-eligible; the path token still prevents an unrelated
+        // chmod from being discarded.
+        let metadata = UInt32(
+            kFSEventStreamEventFlagItemInodeMetaMod |
+            kFSEventStreamEventFlagItemChangeOwner
+        )
+        let substantive = UInt32(
+            kFSEventStreamEventFlagItemCreated |
+            kFSEventStreamEventFlagItemRemoved |
+            kFSEventStreamEventFlagItemRenamed |
+            kFSEventStreamEventFlagItemModified |
+            kFSEventStreamEventFlagItemFinderInfoMod |
+            kFSEventStreamEventFlagItemXattrMod |
+            kFSEventStreamEventFlagMount |
+            kFSEventStreamEventFlagUnmount
+        )
+        return !requiresRescan && flags & metadata != 0 && flags & substantive == 0
+    }
+
+    /// FSEvents may coalesce remove/create or both sides of an atomic replacement into one path.
+    /// DELETE is correct only while that name is actually absent; if a new object already occupies
+    /// it, INVAL_ENTRY preserves the replacement's watch/dentry semantics.
+    public var representsRemoval: Bool {
+        let namespaceMask = UInt32(
+            kFSEventStreamEventFlagItemRemoved |
+            kFSEventStreamEventFlagItemRenamed
+        )
+        guard flags & namespaceMask != 0 else {
+            return false
+        }
+        var info = stat()
+        if lstat(hostPath, &info) == 0 { return false }
+        return errno == ENOENT || errno == ENOTDIR
+    }
 }
 
 public struct HostFSEventShare: Sendable, Equatable {
     public var hostRoot: String
+    /// FSEvents may return either the spelling used to create its stream or the canonical realpath
+    /// spelling (for example `/var` versus `/private/var`). Mapping accepts both.
+    public var hostRootAliases: [String]
     public var guestRoot: String
 
     public init(hostRoot: String, guestRoot: String) {
-        self.hostRoot = URL(fileURLWithPath: hostRoot).standardizedFileURL.path
-        self.guestRoot = guestRoot
+        let supplied = URL(fileURLWithPath: hostRoot).standardizedFileURL.path
+        let canonical = URL(fileURLWithPath: supplied)
+            .resolvingSymlinksInPath()
+            .standardizedFileURL.path
+        self.hostRoot = supplied
+        self.hostRootAliases = Array(Set([supplied, canonical])).sorted { $0.count > $1.count }
+        if guestRoot.count > 1, guestRoot.hasSuffix("/") {
+            self.guestRoot = String(guestRoot.dropLast())
+        } else {
+            self.guestRoot = guestRoot
+        }
+    }
+
+    public func mapHostPathToGuest(_ path: String) -> String? {
+        guard let relative = relativePath(forHostPath: path) else { return nil }
+        guard !relative.isEmpty else { return guestRoot }
+        return guestRoot == "/" ? "/" + relative : guestRoot + "/" + relative
+    }
+
+    /// Predicts the exact path the guest agent will chmod. Missing/deleted entries fall back to the
+    /// nearest existing regular file or directory, but never above this share root. Symlinks are not
+    /// nudged because the guest opens its final component with O_NOFOLLOW.
+    public func nudgeTarget(forHostPath path: String) -> (host: String, guest: String)? {
+        guard let (initialCandidate, boundary) = normalizedPathAndRootInsideShare(path) else {
+            return nil
+        }
+        var candidate = initialCandidate
+        while true {
+            var info = stat()
+            if lstat(candidate, &info) == 0 {
+                let kind = info.st_mode & mode_t(S_IFMT)
+                if kind == mode_t(S_IFREG) || kind == mode_t(S_IFDIR) {
+                    guard let guest = mapHostPathToGuest(candidate) else { return nil }
+                    return (candidate, guest)
+                }
+            } else if errno != ENOENT && errno != ENOTDIR && errno != ELOOP {
+                return nil
+            }
+            guard candidate != boundary else { return nil }
+            let parent = URL(fileURLWithPath: candidate).deletingLastPathComponent().path
+            guard isPath(parent, inside: boundary), parent != candidate else { return nil }
+            candidate = parent
+        }
+    }
+
+    private func relativePath(forHostPath path: String) -> String? {
+        guard let (normalized, root) = normalizedPathAndRootInsideShare(path) else { return nil }
+        if normalized == root { return "" }
+        let prefix = root == "/" ? "/" : root + "/"
+        return String(normalized.dropFirst(prefix.count))
+    }
+
+    private func normalizedPathAndRootInsideShare(_ path: String) -> (String, String)? {
+        let normalized = URL(fileURLWithPath: path).standardizedFileURL.path
+        guard let root = hostRootAliases.first(where: { isPath(normalized, inside: $0) }) else {
+            return nil
+        }
+        return (normalized, root)
+    }
+
+    private func isPath(_ candidate: String, inside root: String) -> Bool {
+        if candidate == root { return true }
+        let prefix = root == "/" ? "/" : root + "/"
+        return candidate.hasPrefix(prefix)
+    }
+}
+
+public enum HostFSEventRelayError: Error, Equatable, Sendable {
+    case streamCreationFailed
+    case streamStartFailed
+    case suppressionLedgerFull(limit: Int)
+    case repeatedSyntheticEcho(path: String)
+}
+
+public enum HostShareCoherenceStartupError: Error, Equatable, Sendable {
+    case eventRelayUnavailable(productionShareCount: Int)
+}
+
+/// Production host shares are safe only while their host-change observation path is live. This
+/// applies to writable shares and read-only shares alike: read-only guest mappings can still retain
+/// stale host page cache. Engine startup therefore fails instead of running any production share
+/// without the relay; an empty production-share set has no such requirement.
+public enum HostShareCoherenceStartupPolicy {
+    public static func requireEventRelay(
+        started: Bool,
+        productionShareCount: Int
+    ) throws {
+        guard productionShareCount > 0 else { return }
+        guard started else {
+            throw HostShareCoherenceStartupError.eventRelayUnavailable(
+                productionShareCount: productionShareCount
+            )
+        }
     }
 }
 
 public final class FSEventBatcher: @unchecked Sendable {
-    private let shares: [HostFSEventShare]
-    private let send: @Sendable ([String]) async -> Void
-    private let lock = NSLock()
-    private var pending = Set<String>()
+    public typealias SendBatch = @Sendable ([HostFSEventChange]) async throws -> Void
 
-    public init(shares: [HostFSEventShare], send: @escaping @Sendable ([String]) async -> Void) {
-        self.shares = shares
+    /// An npm install can emit tens of thousands of distinct FileEvents before the asynchronous
+    /// coherence round trip finishes. Keep one bounded batch comfortably above that ordinary
+    /// developer workload: treating it as an observation loss needlessly restarts the VM even
+    /// though CoreServices delivered every path. A true FSEvents dropped-event marker still takes
+    /// the existing fail-closed recovery path, and this remains a hard cap against unbounded use.
+    public static let defaultPendingLimit = 65_536
+
+    private let shares: [HostFSEventShare]
+    private let send: SendBatch
+    private let pendingLimit: Int
+    private let eventsAreDirectoryAggregates: Bool
+    private let lock = NSLock()
+    private var pending: [String: HostFSEventChange] = [:]
+    private var pendingRequiresRescan = false
+
+    public init(
+        shares: [HostFSEventShare],
+        pendingLimit: Int = FSEventBatcher.defaultPendingLimit,
+        eventsAreDirectoryAggregates: Bool = false,
+        send: @escaping SendBatch
+    ) {
+        // Longest root first makes nested shares deterministic.
+        self.shares = shares.sorted { $0.hostRoot.count > $1.hostRoot.count }
+        self.pendingLimit = max(1, pendingLimit)
+        self.eventsAreDirectoryAggregates = eventsAreDirectoryAggregates
         self.send = send
     }
 
-    public func enqueue(hostPaths: [String]) {
-        let guestPaths = hostPaths.compactMap(mapHostPathToGuest)
-        guard !guestPaths.isEmpty else { return }
+    public func enqueue(hostPaths: [String], flags: [UInt32], eventIDs: [UInt64]) {
+        guard hostPaths.count == flags.count, flags.count == eventIDs.count else { return }
+        let changes = zip(hostPaths.indices, hostPaths).compactMap { index, path in
+            mapHostPath(path, flags: flags[index], eventID: eventIDs[index])
+        }
+        guard !changes.isEmpty else { return }
+        let batchLatestEventID = changes.map(\.eventID).max() ?? 0
         lock.withLock {
-            pending.formUnion(guestPaths)
+            for change in changes {
+                if change.requiresRescan {
+                    FileHandle.standardError.write(Data(
+                        "dory-hv: FSEvents rescan marker path=\(change.hostPath) flags=0x\(String(change.flags, radix: 16)) event=\(change.eventID)\n".utf8
+                    ))
+                }
+                if pendingRequiresRescan { break }
+                if pending[change.hostPath] == nil, pending.count >= pendingLimit {
+                    let latest = max(batchLatestEventID, pending.values.map(\.eventID).max() ?? 0)
+                    collapseToRescanLocked(latestEventID: latest, reason: "pending-overflow")
+                    break
+                }
+                if var existing = pending[change.hostPath] {
+                    existing.flags |= change.flags
+                    existing.eventID = max(existing.eventID, change.eventID)
+                    pending[change.hostPath] = existing
+                } else {
+                    pending[change.hostPath] = change
+                }
+            }
         }
     }
 
-    public func flushNow() async {
-        let paths = lock.withLock { () -> [String] in
-            let paths = pending.sorted()
-            pending.removeAll()
-            return paths
+    public func enqueue(hostPaths: [String]) {
+        enqueue(
+            hostPaths: hostPaths,
+            flags: Array(repeating: 0, count: hostPaths.count),
+            eventIDs: Array(repeating: 0, count: hostPaths.count)
+        )
+    }
+
+    public func flushNow() async throws {
+        let changes = lock.withLock { () -> [HostFSEventChange] in
+            let changes = pending.values.sorted {
+                $0.guestPath == $1.guestPath ? $0.hostPath < $1.hostPath : $0.guestPath < $1.guestPath
+            }
+            pending.removeAll(keepingCapacity: true)
+            pendingRequiresRescan = false
+            return changes
         }
-        guard !paths.isEmpty else { return }
-        await send(paths)
+        guard !changes.isEmpty else { return }
+        do {
+            try await send(changes)
+        } catch {
+            lock.withLock {
+                let latest = max(
+                    changes.map(\.eventID).max() ?? 0,
+                    pending.values.map(\.eventID).max() ?? 0
+                )
+                if pendingRequiresRescan
+                    || changes.contains(where: \.requiresRescan)
+                    || pending.count + changes.count > pendingLimit {
+                    collapseToRescanLocked(latestEventID: latest, reason: "retry-overflow-or-rescan")
+                } else {
+                    for change in changes {
+                        if var newer = pending[change.hostPath] {
+                            newer.flags |= change.flags
+                            newer.eventID = max(newer.eventID, change.eventID)
+                            pending[change.hostPath] = newer
+                        } else {
+                            pending[change.hostPath] = change
+                        }
+                    }
+                }
+            }
+            throw error
+        }
     }
 
     public var hasPending: Bool {
         lock.withLock { !pending.isEmpty }
     }
 
-    public func mapHostPathToGuest(_ path: String) -> String? {
-        let normalized = URL(fileURLWithPath: path).standardizedFileURL.path
-        for share in shares {
-            if normalized == share.hostRoot {
-                return share.guestRoot
-            }
-            let prefix = share.hostRoot.hasSuffix("/") ? share.hostRoot : share.hostRoot + "/"
-            guard normalized.hasPrefix(prefix) else { continue }
-            let relative = String(normalized.dropFirst(prefix.count))
-            guard !relative.isEmpty else { return share.guestRoot }
-            return share.guestRoot + "/" + relative
+    public func discardPending() {
+        lock.withLock {
+            pending.removeAll(keepingCapacity: false)
+            pendingRequiresRescan = false
         }
-        return nil
+    }
+
+    var pendingCount: Int {
+        lock.withLock { pending.count }
+    }
+
+    public func mapHostPathToGuest(_ path: String) -> String? {
+        shares.lazy.compactMap { $0.mapHostPathToGuest(path) }.first
+    }
+
+    public func mapHostPath(_ path: String, flags: UInt32, eventID: UInt64) -> HostFSEventChange? {
+        let normalized = URL(fileURLWithPath: path).standardizedFileURL.path
+        guard let guest = mapHostPathToGuest(normalized) else { return nil }
+        return HostFSEventChange(
+            hostPath: normalized,
+            guestPath: guest,
+            flags: flags,
+            eventID: eventID,
+            isDirectoryAggregate: eventsAreDirectoryAggregates
+        )
+    }
+
+    private func collapseToRescanLocked(latestEventID: UInt64, reason: String) {
+        FileHandle.standardError.write(Data(
+            "dory-hv: FSEvents batch collapsed reason=\(reason) pending=\(pending.count) event=\(latestEventID)\n".utf8
+        ))
+        pending.removeAll(keepingCapacity: true)
+        pendingRequiresRescan = true
+        let flags = UInt32(
+            kFSEventStreamEventFlagMustScanSubDirs |
+            kFSEventStreamEventFlagUserDropped
+        )
+        for share in shares {
+            pending[share.hostRoot] = HostFSEventChange(
+                hostPath: share.hostRoot,
+                guestPath: share.guestRoot,
+                flags: flags,
+                eventID: latestEventID
+            )
+        }
     }
 }
 
+/// Watches configured host roots and emits loss-aware, retryable batches. This type deliberately
+/// does not decide cache policy; the coordinator must invalidate the guest kernel and await its
+/// completion barrier before sending a watcher nudge.
 public final class HostFSEventRelay: @unchecked Sendable {
-    public typealias SendBatch = @Sendable ([String]) async -> Void
+    public typealias SendBatch = FSEventBatcher.SendBatch
+    public typealias FailureHandler = @Sendable (any Error) -> Void
+    @usableFromInline
+    static let defaultDebounceMilliseconds: UInt64 = 1
 
     private let shares: [HostFSEventShare]
     private let batcher: FSEventBatcher
     private let debounceNanoseconds: UInt64
+    private let onFailure: FailureHandler
     private let queue = DispatchQueue(label: "dev.dory.hostfs.fsevents")
+    /// CoreServices owns `queue` and can report UserDropped when its callback cannot drain quickly
+    /// enough. URL normalization, share mapping, and pending-dictionary merging are substantially
+    /// more expensive than copying one delivered batch, so perform them on a separate ordered queue
+    /// and return the FSEvents callback promptly.
+    private let processingQueue = DispatchQueue(label: "dev.dory.hostfs.fsevents.processing")
     private let lock = NSLock()
     private var stream: FSEventStreamRef?
     private var callbackBox: CallbackBox?
     private var flushScheduled = false
+    private var consecutiveFailures = 0
+    private var running = false
+    private var lifecycleGeneration: UInt64 = 0
+
+    static let streamCreateFlags = FSEventStreamCreateFlags(
+        // Directory-level events keep a whole-home share from producing one record per package
+        // file. HostShareCoherenceCoordinator expands each changed directory only over immediate
+        // HostFS bindings the guest already knows, retaining precise cache and watcher behavior.
+        // RootChanged is emitted only with WatchRoot. Without it a renamed/deleted share root
+        // could silently leave positive cache state attached to an obsolete host directory.
+        kFSEventStreamCreateFlagWatchRoot |
+        // HostFS mutations and watcher nudges run in this same dory-hv process. Excluding
+        // self-originated events prevents guest writes from being reflected back into the
+        // guest while preserving edits made by editors and tools on macOS.
+        kFSEventStreamCreateFlagIgnoreSelf |
+        // Ask FSEvents to mark any self event that still reaches the stream. IgnoreSelf normally
+        // suppresses it, but relying on that suppression alone lets a package-manager create storm
+        // be mistaken for an external host edit when the system reports it anyway.
+        kFSEventStreamCreateFlagMarkSelf |
+        kFSEventStreamCreateFlagUseCFTypes
+    )
+
+    /// `dory-hv` performs the host syscalls for guest FUSE mutations. Those paths are already
+    /// coherent in its HostFS state and must not be fed back through the host-edit invalidation
+    /// pipeline. The explicit OwnEvent check is the fail-safe complement to IgnoreSelf.
+    static func ignoresOwnEvent(_ flags: UInt32) -> Bool {
+        flags & UInt32(kFSEventStreamEventFlagOwnEvent) != 0
+    }
 
     public init(
         shares: [HostFSEventShare],
-        debounceMilliseconds: UInt64 = 50,
-        send: @escaping SendBatch
+        debounceMilliseconds: UInt64 = HostFSEventRelay.defaultDebounceMilliseconds,
+        send: @escaping SendBatch,
+        onFailure: @escaping FailureHandler = { _ in }
     ) {
         self.shares = shares
-        self.batcher = FSEventBatcher(shares: shares, send: send)
+        self.batcher = FSEventBatcher(
+            shares: shares,
+            eventsAreDirectoryAggregates: true,
+            send: send
+        )
         self.debounceNanoseconds = debounceMilliseconds * 1_000_000
+        self.onFailure = onFailure
     }
 
     deinit {
         stop()
     }
 
-    public func start() {
-        guard stream == nil, !shares.isEmpty else { return }
+    @discardableResult
+    public func start() -> Bool {
+        guard stream == nil, !shares.isEmpty else { return stream != nil }
         let paths = shares.map(\.hostRoot) as CFArray
         let box = CallbackBox(relay: self)
         callbackBox = box
@@ -112,64 +441,219 @@ public final class HostFSEventRelay: @unchecked Sendable {
         )
         guard let created = FSEventStreamCreate(
             nil,
-            { _, info, count, eventPaths, _, _ in
+            { _, info, count, eventPaths, eventFlags, eventIDs in
                 guard let info else { return }
                 let box = Unmanaged<CallbackBox>.fromOpaque(info).takeUnretainedValue()
-                let pathsPointer = unsafeBitCast(eventPaths, to: NSArray.self)
-                let paths = (0..<count).compactMap { pathsPointer.object(at: $0) as? String }
-                box.relay?.record(hostPaths: paths)
+                let pathsArray = unsafeBitCast(eventPaths, to: NSArray.self)
+                var paths = [String]()
+                var flags = [UInt32]()
+                var ids = [UInt64]()
+                paths.reserveCapacity(count)
+                flags.reserveCapacity(count)
+                ids.reserveCapacity(count)
+                for index in 0..<count {
+                    guard let path = pathsArray.object(at: index) as? String else { continue }
+                    let flagsValue = UInt32(eventFlags[index])
+                    guard !HostFSEventRelay.ignoresOwnEvent(flagsValue) else { continue }
+                    paths.append(path)
+                    flags.append(flagsValue)
+                    ids.append(UInt64(eventIDs[index]))
+                }
+                box.relay?.recordFromStream(hostPaths: paths, flags: flags, eventIDs: ids)
             },
             &context,
             paths,
             FSEventStreamEventId(kFSEventStreamEventIdSinceNow),
             0.05,
-            FSEventStreamCreateFlags(
-                kFSEventStreamCreateFlagFileEvents |
-                kFSEventStreamCreateFlagNoDefer |
-                kFSEventStreamCreateFlagUseCFTypes
-            )
+            Self.streamCreateFlags
         ) else {
             callbackBox = nil
-            return
+            onFailure(HostFSEventRelayError.streamCreationFailed)
+            return false
         }
         stream = created
+        lock.withLock {
+            lifecycleGeneration &+= 1
+            running = true
+            flushScheduled = false
+            consecutiveFailures = 0
+        }
         FSEventStreamSetDispatchQueue(created, queue)
-        FSEventStreamStart(created)
+        guard FSEventStreamStart(created) else {
+            FSEventStreamInvalidate(created)
+            FSEventStreamRelease(created)
+            stream = nil
+            callbackBox = nil
+            lock.withLock {
+                lifecycleGeneration &+= 1
+                running = false
+                flushScheduled = false
+            }
+            batcher.discardPending()
+            onFailure(HostFSEventRelayError.streamStartFailed)
+            return false
+        }
+        return true
     }
 
     public func stop() {
-        guard let stream else { return }
-        FSEventStreamStop(stream)
-        FSEventStreamInvalidate(stream)
-        FSEventStreamRelease(stream)
+        let existing = stream
         self.stream = nil
+        lock.withLock {
+            lifecycleGeneration &+= 1
+            running = false
+            flushScheduled = false
+            consecutiveFailures = 0
+        }
+        batcher.discardPending()
+        if let existing {
+            FSEventStreamStop(existing)
+            FSEventStreamInvalidate(existing)
+            FSEventStreamRelease(existing)
+        }
+        // The stream context stores an unretained pointer to this box. Keep it alive until stop,
+        // invalidation, and release have drained CoreServices' use of that context.
         callbackBox = nil
     }
 
+    public func record(hostPaths: [String], flags: [UInt32], eventIDs: [UInt64]) {
+        guard lock.withLock({ running }) else { return }
+        batcher.enqueue(hostPaths: hostPaths, flags: flags, eventIDs: eventIDs)
+        scheduleFlush()
+    }
+
+    func recordFromStream(hostPaths: [String], flags: [UInt32], eventIDs: [UInt64]) {
+        guard let generation = lock.withLock({ running ? lifecycleGeneration : nil }) else { return }
+        processingQueue.async { [weak self] in
+            guard let self,
+                  self.lock.withLock({ self.running && self.lifecycleGeneration == generation }) else {
+                return
+            }
+            self.batcher.enqueue(hostPaths: hostPaths, flags: flags, eventIDs: eventIDs)
+            self.scheduleFlush()
+        }
+    }
+
     public func record(hostPaths: [String]) {
+        guard lock.withLock({ running }) else { return }
         batcher.enqueue(hostPaths: hostPaths)
         scheduleFlush()
     }
 
     private func scheduleFlush() {
-        let shouldSchedule = lock.withLock { () -> Bool in
-            guard !flushScheduled else { return false }
+        let scheduled = lock.withLock { () -> (delay: UInt64, generation: UInt64)? in
+            guard running, !flushScheduled else { return nil }
             flushScheduled = true
-            return true
+            let backoff = min(UInt64(2_000_000_000), debounceNanoseconds << min(consecutiveFailures, 5))
+            return (backoff, lifecycleGeneration)
         }
-        guard shouldSchedule else { return }
+        guard let scheduled else {
+            if !lock.withLock({ running }) { batcher.discardPending() }
+            return
+        }
         Task.detached { [weak self] in
             guard let self else { return }
-            try? await Task.sleep(nanoseconds: debounceNanoseconds)
-            await self.batcher.flushNow()
+            try? await Task.sleep(nanoseconds: scheduled.delay)
+            guard self.lock.withLock({
+                self.running && self.lifecycleGeneration == scheduled.generation
+            }) else {
+                self.batcher.discardPending()
+                return
+            }
+            do {
+                try await self.batcher.flushNow()
+                self.lock.withLock {
+                    if self.running, self.lifecycleGeneration == scheduled.generation {
+                        self.consecutiveFailures = 0
+                    }
+                }
+            } catch {
+                let shouldReport = self.lock.withLock { () -> Bool in
+                    guard self.running,
+                          self.lifecycleGeneration == scheduled.generation else { return false }
+                    self.consecutiveFailures += 1
+                    return true
+                }
+                if shouldReport { self.onFailure(error) }
+            }
             let shouldReschedule = self.lock.withLock { () -> Bool in
+                guard self.running,
+                      self.lifecycleGeneration == scheduled.generation else { return false }
                 self.flushScheduled = false
                 return self.batcher.hasPending
             }
             if shouldReschedule {
                 self.scheduleFlush()
+            } else if !self.lock.withLock({
+                self.running && self.lifecycleGeneration == scheduled.generation
+            }) {
+                self.batcher.discardPending()
             }
         }
+    }
+}
+
+/// One-shot ledger for the metadata-only FSEvent produced by a guest watcher nudge. Cache
+/// invalidation still runs for a consumed echo; only the second guest nudge is suppressed.
+public final class FSEventEchoSuppressor: @unchecked Sendable {
+    private struct Token {
+        var sourceEventID: UInt64
+        var expiresAt: TimeInterval
+        var remainingEchoes: Int
+    }
+
+    private let lock = NSLock()
+    private let limit: Int
+    private let lifetimeSeconds: TimeInterval
+    private var tokens: [String: Token] = [:]
+
+    public init(limit: Int = 8_192, lifetimeSeconds: TimeInterval = 2) {
+        self.limit = max(1, limit)
+        self.lifetimeSeconds = max(0.05, lifetimeSeconds)
+    }
+
+    public func register(hostPath: String, sourceEventID: UInt64, now: TimeInterval = ProcessInfo.processInfo.systemUptime) throws {
+        let path = URL(fileURLWithPath: hostPath).standardizedFileURL.path
+        try lock.withLock {
+            expireLocked(now: now)
+            guard tokens[path] != nil || tokens.count < limit else {
+                throw HostFSEventRelayError.suppressionLedgerFull(limit: limit)
+            }
+            tokens[path] = Token(
+                sourceEventID: max(tokens[path]?.sourceEventID ?? 0, sourceEventID),
+                expiresAt: now + lifetimeSeconds,
+                // One token per nudge. A small burst on one path can legitimately have several
+                // in-flight chmod echoes, so count them rather than overwriting a one-shot token.
+                remainingEchoes: min(32, (tokens[path]?.remainingEchoes ?? 0) + 1)
+            )
+        }
+    }
+
+    public func consumeIfSyntheticEcho(
+        _ change: HostFSEventChange,
+        now: TimeInterval = ProcessInfo.processInfo.systemUptime
+    ) -> Bool {
+        guard change.isMetadataOnly else { return false }
+        return lock.withLock {
+            expireLocked(now: now)
+            guard var token = tokens[change.hostPath],
+                  change.eventID == 0 || change.eventID > token.sourceEventID else { return false }
+            token.remainingEchoes -= 1
+            if token.remainingEchoes == 0 {
+                tokens.removeValue(forKey: change.hostPath)
+            } else {
+                tokens[change.hostPath] = token
+            }
+            return true
+        }
+    }
+
+    public func clear() {
+        lock.withLock { tokens.removeAll(keepingCapacity: false) }
+    }
+
+    private func expireLocked(now: TimeInterval) {
+        tokens = tokens.filter { $0.value.expiresAt > now }
     }
 }
 
@@ -178,12 +662,6 @@ private final class CallbackBox {
 
     init(relay: HostFSEventRelay) {
         self.relay = relay
-    }
-}
-
-public extension AgentChannel {
-    func sendFSEventBatch(paths: [String]) async throws -> FSEventBatchResult {
-        try await call("fsevents.batch", FSEventBatchParams(paths: paths))
     }
 }
 

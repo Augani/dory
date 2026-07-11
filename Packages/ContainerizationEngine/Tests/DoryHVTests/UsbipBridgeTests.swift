@@ -145,6 +145,33 @@ struct UsbControlHandlerTests {
         #expect(handler.attachedBusIDs.isEmpty)
     }
 
+    @Test func unavailableGuestRPCFailsBeforeOpeningOrClaimingHostDevice() async throws {
+        let manager = UsbipManager()
+        let box = Box()
+        let handler = UsbControlHandler(
+            manager: manager,
+            ensureSupported: { throw UsbControlError.guestAgentRPCUnavailable },
+            openDevice: { busID, mode in
+                box.opened.append((busID, mode))
+                return StubExportedDevice(descriptor: fixtureDescriptor(busID: busID))
+            },
+            notifyAttach: { box.attachCalls.append($0) },
+            notifyDetach: { box.detachCalls.append($0) }
+        )
+
+        await #expect(throws: UsbControlError.guestAgentRPCUnavailable) {
+            _ = try await handler.attach(busID: "3-2")
+        }
+        await #expect(throws: UsbControlError.guestAgentRPCUnavailable) {
+            try await handler.detach(busID: "3-2")
+        }
+        #expect(box.opened.isEmpty)
+        #expect(box.attachCalls.isEmpty)
+        #expect(box.detachCalls.isEmpty)
+        #expect(manager.claimedBusIDs.isEmpty)
+        #expect(handler.attachedBusIDs.isEmpty)
+    }
+
     @Test func detachNotifiesGuestUnregistersAndFreesPort() async throws {
         let manager = UsbipManager()
         let (handler, box) = makeHandler(manager: manager)

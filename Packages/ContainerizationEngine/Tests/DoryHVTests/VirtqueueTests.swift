@@ -76,6 +76,28 @@ import Testing
         #expect(try queue.push(chain, written: 0) == false)
     }
 
+    @Test func peekClassifiesNextChainWithoutConsumingIt() throws {
+        let memory = try makeMemory()
+        let queue = Virtqueue(memory: memory)
+        queue.configure(size: 8, descriptorTable: descTable, availRing: availRing, usedRing: usedRing)
+        queue.setReady(true)
+        try writeDescriptor(memory, index: 0, addr: dataOut, len: 4, flags: 0, next: 0)
+        try memory.write([0x10, 0x20, 0x30, 0x40], at: dataOut)
+        try memory.write(UInt16(0), at: availRing)
+        try memory.write(UInt16(0), at: availRing + 4)
+        try memory.write(UInt16(1), at: availRing + 2)
+
+        let first = try #require(try queue.peek())
+        let second = try #require(try queue.peek())
+        #expect(first.head == second.head)
+        #expect(first.readBytes() == [0x10, 0x20, 0x30, 0x40])
+        #expect(queue.hasPending)
+
+        let popped = try #require(try queue.pop())
+        #expect(popped.head == first.head)
+        #expect(!queue.hasPending)
+    }
+
     @Test func rejectsOutOfBoundsDescriptorChain() throws {
         let memory = try makeMemory()
         let queue = Virtqueue(memory: memory)

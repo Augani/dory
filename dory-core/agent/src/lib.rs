@@ -12,6 +12,7 @@
 pub mod daemon;
 pub mod dispatch;
 pub mod exec;
+pub mod fsevents;
 pub mod handler;
 pub mod proc_net;
 pub mod reaper;

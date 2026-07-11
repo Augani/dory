@@ -16,6 +16,11 @@ use dory_sync::{plan, walk_manifest, Hash, Manifest, CHUNK_BYTES, HASH_LEN};
 use crate::agent_client::AgentClient;
 use crate::error::RemoteError;
 
+// A conflicting writer can atomically replace a destination after an identical peer consumed this
+// transfer's shared staging file. Re-query/restart a bounded number of times rather than failing a
+// benign race forever; the bound prevents an actively churning/hostile peer from causing a wedge.
+const MAX_CONFLICT_RECOVERIES_PER_FILE: usize = 16;
+
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct PushStats {
     pub files_sent: u64,
@@ -37,11 +42,13 @@ pub trait SyncTarget {
         path: &str,
         hash: &Hash,
     ) -> impl std::future::Future<Output = Result<u64, RemoteError>> + Send;
-    /// Apply one chunk; returns the remote's new staged offset.
+    /// Apply one chunk; returns the remote's new staged offset and whether the full file is already
+    /// committed. `committed` may be true before this caller sends its last chunk when an identical
+    /// concurrent push won the race; the caller can then stop without re-sending the same bytes.
     fn put_chunk(
         &self,
         req: SyncPutChunkRequest,
-    ) -> impl std::future::Future<Output = Result<u64, RemoteError>> + Send;
+    ) -> impl std::future::Future<Output = Result<(u64, bool), RemoteError>> + Send;
     fn delete(
         &self,
         root: &str,
@@ -75,6 +82,7 @@ pub async fn push<T: SyncTarget>(
         } else {
             0
         };
+        let mut conflict_recoveries = 0usize;
 
         loop {
             let end = (offset + CHUNK_BYTES).min(bytes.len());
@@ -84,7 +92,7 @@ pub async fn push<T: SyncTarget>(
             // The peer's returned next_offset is NOT trusted for indexing: a buggy/hostile agent
             // could return an out-of-bounds value and panic the slice below (panic=abort => doryd
             // dies). The host knows the true position; advance by what we sent.
-            let _ = target
+            let outcome = target
                 .put_chunk(SyncPutChunkRequest {
                     root: remote_root.to_string(),
                     path: rel.clone(),
@@ -95,10 +103,36 @@ pub async fn push<T: SyncTarget>(
                     mode: entry.mode,
                     mtime_ns: entry.mtime_ns,
                 })
-                .await?;
+                .await;
+            let (next_offset, committed) = match outcome {
+                Ok(outcome) => outcome,
+                Err(RemoteError::Rpc { code: 409, .. })
+                    if conflict_recoveries < MAX_CONFLICT_RECOVERIES_PER_FILE =>
+                {
+                    conflict_recoveries += 1;
+                    let staged = target.staged_bytes(remote_root, rel, &entry.hash).await?;
+                    offset = if staged <= bytes.len() as u64 {
+                        staged as usize
+                    } else {
+                        0
+                    };
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
             stats.bytes_sent += sent;
             offset = end;
-            if last {
+            // We never use the peer's offset as a local slice index. A committed response is the
+            // one exception where it affects control flow, so require proof that the peer claims
+            // the complete local length. The final request must likewise be acknowledged as a
+            // complete commit; inconsistent responses are protocol decode failures, not success.
+            if committed && next_offset != bytes.len() as u64 {
+                return Err(RemoteError::Decode);
+            }
+            if last && !committed {
+                return Err(RemoteError::Decode);
+            }
+            if last || committed {
                 break;
             }
         }
@@ -147,8 +181,9 @@ impl SyncTarget for AgentClient {
         Ok(resp.have_bytes)
     }
 
-    async fn put_chunk(&self, req: SyncPutChunkRequest) -> Result<u64, RemoteError> {
-        Ok(self.sync_put_chunk(req).await?.next_offset)
+    async fn put_chunk(&self, req: SyncPutChunkRequest) -> Result<(u64, bool), RemoteError> {
+        let resp = self.sync_put_chunk(req).await?;
+        Ok((resp.next_offset, resp.committed))
     }
 
     async fn delete(&self, root: &str, paths: &[String]) -> Result<u32, RemoteError> {
@@ -206,7 +241,12 @@ mod tests {
         remote: Manifest,
         preset_staged: HashMap<String, u64>,
         /// If set, put_chunk returns this bogus next_offset — models a buggy/hostile agent.
-        bogus_next_offset: Option<u64>,
+        bogus_nonfinal_next_offset: Option<u64>,
+        premature_commit_next_offset: Option<u64>,
+        bogus_final_next_offset: Option<u64>,
+        suppress_final_commit: bool,
+        conflict_once_at_offset: Option<u64>,
+        conflict_fired: Mutex<bool>,
         rec: Mutex<Recorded>,
     }
     impl FakeTarget {
@@ -214,7 +254,12 @@ mod tests {
             FakeTarget {
                 remote,
                 preset_staged: HashMap::new(),
-                bogus_next_offset: None,
+                bogus_nonfinal_next_offset: None,
+                premature_commit_next_offset: None,
+                bogus_final_next_offset: None,
+                suppress_final_commit: false,
+                conflict_once_at_offset: None,
+                conflict_fired: Mutex::new(false),
                 rec: Mutex::new(Recorded::default()),
             }
         }
@@ -244,10 +289,29 @@ mod tests {
         ) -> Result<u64, RemoteError> {
             Ok(self.preset_staged.get(path).copied().unwrap_or(0))
         }
-        async fn put_chunk(&self, req: SyncPutChunkRequest) -> Result<u64, RemoteError> {
+        async fn put_chunk(&self, req: SyncPutChunkRequest) -> Result<(u64, bool), RemoteError> {
+            if self.conflict_once_at_offset == Some(req.offset) {
+                let mut fired = self.conflict_fired.lock().unwrap();
+                if !*fired {
+                    *fired = true;
+                    return Err(RemoteError::Rpc {
+                        code: 409,
+                        message: "staging was consumed by a concurrent commit".into(),
+                    });
+                }
+            }
             let honest = req.offset + req.data.len() as u64;
+            let premature = !req.last && self.premature_commit_next_offset.is_some();
+            let committed = (req.last && !self.suppress_final_commit) || premature;
+            let next_offset = if req.last {
+                self.bogus_final_next_offset.unwrap_or(honest)
+            } else if premature {
+                self.premature_commit_next_offset.unwrap()
+            } else {
+                self.bogus_nonfinal_next_offset.unwrap_or(honest)
+            };
             self.rec.lock().unwrap().chunks.push(req);
-            Ok(self.bogus_next_offset.unwrap_or(honest))
+            Ok((next_offset, committed))
         }
         async fn delete(&self, _root: &str, paths: &[String]) -> Result<u32, RemoteError> {
             self.rec.lock().unwrap().deleted.extend_from_slice(paths);
@@ -352,12 +416,65 @@ mod tests {
         // Multi-chunk file so the loop iterates and would re-index with the bogus offset.
         t.write("f", &vec![3u8; CHUNK_BYTES + 50]);
         let mut target = FakeTarget::new(Manifest::default());
-        target.bogus_next_offset = Some(u64::MAX); // a hostile/buggy agent
+        target.bogus_nonfinal_next_offset = Some(u64::MAX); // a hostile/buggy agent
 
         // Must complete without panicking (panic=abort would kill doryd) and send the whole file.
         let stats = push(&t.root, "/remote", &target).await.unwrap();
         assert_eq!(stats.bytes_sent, (CHUNK_BYTES + 50) as u64);
         assert_eq!(target.assembled("f"), vec![3u8; CHUNK_BYTES + 50]);
+    }
+
+    #[tokio::test]
+    async fn push_rejects_a_premature_or_size_inconsistent_commit() {
+        let t = TempTree::new("premature-commit");
+        t.write("f", &vec![3u8; CHUNK_BYTES + 50]);
+        let mut target = FakeTarget::new(Manifest::default());
+        target.premature_commit_next_offset = Some(1);
+        let err = push(&t.root, "/remote", &target).await.unwrap_err();
+        assert!(matches!(err, RemoteError::Decode));
+        assert_eq!(target.rec.lock().unwrap().chunks.len(), 1);
+
+        let t = TempTree::new("bad-final-offset");
+        t.write("f", b"small");
+        let mut target = FakeTarget::new(Manifest::default());
+        target.bogus_final_next_offset = Some(4);
+        let err = push(&t.root, "/remote", &target).await.unwrap_err();
+        assert!(matches!(err, RemoteError::Decode));
+
+        let t = TempTree::new("uncommitted-final");
+        t.write("f", b"small");
+        let mut target = FakeTarget::new(Manifest::default());
+        target.suppress_final_commit = true;
+        let err = push(&t.root, "/remote", &target).await.unwrap_err();
+        assert!(matches!(err, RemoteError::Decode));
+    }
+
+    #[tokio::test]
+    async fn push_stops_on_a_size_consistent_concurrent_commit() {
+        let t = TempTree::new("concurrent-commit");
+        let size = CHUNK_BYTES + 50;
+        t.write("f", &vec![3u8; size]);
+        let mut target = FakeTarget::new(Manifest::default());
+        target.premature_commit_next_offset = Some(size as u64);
+
+        let stats = push(&t.root, "/remote", &target).await.unwrap();
+        assert_eq!(stats.files_sent, 1);
+        assert_eq!(stats.bytes_sent, CHUNK_BYTES as u64);
+        assert_eq!(target.rec.lock().unwrap().chunks.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn push_requeries_and_restarts_after_a_concurrent_staging_conflict() {
+        let t = TempTree::new("recover-conflict");
+        let data = vec![0x5A; CHUNK_BYTES + 50];
+        t.write("f", &data);
+        let mut target = FakeTarget::new(Manifest::default());
+        target.conflict_once_at_offset = Some(CHUNK_BYTES as u64);
+
+        let stats = push(&t.root, "/remote", &target).await.unwrap();
+        assert_eq!(stats.files_sent, 1);
+        assert!(*target.conflict_fired.lock().unwrap());
+        assert_eq!(target.assembled("f"), data);
     }
 
     #[tokio::test]

@@ -24,6 +24,24 @@ as first-class API (see `ContainerizationVMEngine.swift`):
 - Engine scaffold (`ContainerizationVMEngine`) implemented against the real framework API
   (`Kernel` + `ContainerManager` + `LinuxContainer`, mirroring the framework's own `cctl run`).
 - Package **resolves**. Build verifies the API usage compiles here.
+- Raw `dory-hv` uses the same Rust guest-control client as doryd/dory-vmm: versioned handshake,
+  multiplexing, deadlines, and protobuf are linked through `DoryCore`, not reimplemented in Swift.
+- USB discovery and the host usbip bridge exist, but attach/detach intentionally fail before a host
+  device is opened or claimed until `dory-agent` has a real vhci attach/detach protobuf RPC.
+
+## Build
+
+`DoryCore`'s universal Rust XCFramework and generated Swift bindings are ignored build products.
+Materialize them once per clean checkout before invoking this package directly:
+
+```sh
+../../scripts/build-dory-ffi-xcframework.sh
+swift test
+swift build -c release --product dory-hv
+```
+
+The repository's CI, `scripts/build.sh`, and `scripts/bundle-engine.sh` run that prerequisite
+automatically.
 
 ## Wiring into Dory (the remaining multi-week work)
 

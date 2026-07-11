@@ -18,6 +18,11 @@ public final class DockerSocketBridge: @unchecked Sendable {
         self.log = log
     }
 
+    /// Lets the engine reject an impossible Docker endpoint before it creates disks or sidecars.
+    public static func validateSocketPath(_ socketPath: String) throws {
+        try VsockUnixRelay.validateSocketPath(socketPath)
+    }
+
     private final class VsockBox: @unchecked Sendable {
         let vsock: VirtioVsock
         init(_ vsock: VirtioVsock) { self.vsock = vsock }
@@ -28,11 +33,8 @@ public final class DockerSocketBridge: @unchecked Sendable {
         init(_ connection: VsockConnection) { self.connection = connection }
     }
 
-    public func attach(to vsock: VirtioVsock) {
-        guard let listener = VsockUnixRelay.makeListener(socketPath: socketPath) else {
-            log("docker socket bridge could not listen on \(socketPath)")
-            return
-        }
+    public func attach(to vsock: VirtioVsock) throws {
+        let listener = try VsockUnixRelay.makeListener(socketPath: socketPath)
         let box = VsockBox(vsock)
         let path = socketPath
         let log = log

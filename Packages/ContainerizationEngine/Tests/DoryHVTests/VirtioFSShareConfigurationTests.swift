@@ -38,20 +38,19 @@ struct VirtioFSShareConfigurationTests {
         #expect(!share.dax)
     }
 
-    @Test func parsesDaxSuffix() throws {
-        let share = try VirtioFSShareConfiguration(argument: "src=/Users/example/project:dax")
-        #expect(share.path == "/Users/example/project")
-        #expect(share.dax)
-        #expect(!share.readOnly)
-    }
-
-    @Test func parsesCombinedReadOnlyAndDaxSuffixesInAnyOrder() throws {
-        let a = try VirtioFSShareConfiguration(argument: "cache=/tmp/cache:ro:dax")
-        let b = try VirtioFSShareConfiguration(argument: "cache=/tmp/cache:dax:ro")
-        for share in [a, b] {
-            #expect(share.path == "/tmp/cache")
-            #expect(share.readOnly)
-            #expect(share.dax)
+    @Test func rejectsDaxForReadWriteAndReadOnlyHostSharesWithSafetyReason() {
+        for argument in [
+            "src=/Users/example/project:dax",
+            "cache=/tmp/cache:ro:dax",
+            "cache=/tmp/cache:dax:ro",
+        ] {
+            do {
+                _ = try VirtioFSShareConfiguration(argument: argument)
+                Issue.record("production host share unexpectedly accepted DAX: \(argument)")
+            } catch {
+                #expect(String(describing: error).contains("DAX host shares are disabled"))
+                #expect(String(describing: error).contains("fail-stop boundary"))
+            }
         }
     }
 
@@ -72,6 +71,12 @@ struct VirtioFSShareConfigurationTests {
         #expect(share.hiddenNames == VirtioFSShareConfiguration.sensitiveNames)
         #expect(share.hiddenNames.contains(".ssh"))
         #expect(share.hiddenNames.contains(".aws"))
+        #expect(share.hiddenNames.contains(".dory"))
+        #expect(share.hiddenNames.contains(".zsh_history"))
+        #expect(share.hiddenNames.contains(".bash_history"))
+        #expect(share.hiddenNames.contains(".codex"))
+        #expect(share.hiddenNames.contains(".orbstack"))
+        #expect(share.hiddenNames.contains(".colima"))
     }
 
     @Test func hideOptionAddsExplicitNames() throws {
@@ -93,23 +98,73 @@ struct VirtioFSShareConfigurationTests {
     @Test func makeBackendWithoutDaxHasNoDaxConfiguration() throws {
         let dir = FileManager.default.temporaryDirectory.path
         let share = try VirtioFSShareConfiguration(argument: "t=\(dir)")
-        let device = try share.makeBackend(daxGuestBase: GuestLayout.daxWindowBase)
+        let device = try share.makeBackend(daxGuestBase: GuestLayout.daxWindowBase, requestQueueCount: 3)
         #expect(device.daxConfiguration == nil)
+        #expect(device.requestQueueCount == 3)
     }
 
-    @Test func makeBackendWithDaxUsesProvidedGuestBase() throws {
+    @Test func makeBackendRechecksMutatedDaxFlag() throws {
         let dir = FileManager.default.temporaryDirectory.path
-        let share = try VirtioFSShareConfiguration(argument: "t=\(dir):dax")
-        let device = try share.makeBackend(daxGuestBase: GuestLayout.daxWindowBase)
-        #expect(device.daxConfiguration?.guestBase == GuestLayout.daxWindowBase)
-        #expect(device.sharedMemoryRegions.count == 1)
+        var share = try VirtioFSShareConfiguration(argument: "t=\(dir)")
+        share.dax = true
+        do {
+            _ = try share.makeBackend(daxGuestBase: GuestLayout.daxWindowBase)
+            Issue.record("mutating a validated configuration unexpectedly enabled DAX")
+        } catch {
+            #expect(String(describing: error).contains("DAX host shares are disabled"))
+        }
     }
 
-    @Test func makeBackendWithDaxButNoBaseThrows() {
-        let dir = FileManager.default.temporaryDirectory.path
+    @Test func writableShareTopologyRejectsAliasesAndNestedRoots() throws {
+        let home = try VirtioFSShareConfiguration(
+            tag: "home",
+            path: "/Users/example",
+            guestMountPoint: "/Users/example"
+        )
+        let nested = try VirtioFSShareConfiguration(
+            tag: "project",
+            path: "/Users/example/project",
+            guestMountPoint: "/workspace"
+        )
+        let alias = try VirtioFSShareConfiguration(
+            tag: "alias",
+            path: "/Users/example",
+            guestMountPoint: "/second"
+        )
+
         #expect(throws: (any Error).self) {
-            let share = try VirtioFSShareConfiguration(argument: "t=\(dir):dax")
-            _ = try share.makeBackend(daxGuestBase: nil)
+            try VirtioFSShareConfiguration.validateWritableTopology([home, nested])
+        }
+        #expect(throws: (any Error).self) {
+            try VirtioFSShareConfiguration.validateWritableTopology([home, alias])
+        }
+    }
+
+    @Test func topologyAllowsDisjointOrReadOnlyOnlyNestedShares() throws {
+        let first = try VirtioFSShareConfiguration(tag: "first", path: "/tmp/first")
+        let second = try VirtioFSShareConfiguration(tag: "second", path: "/tmp/second")
+        let readOnlyRoot = try VirtioFSShareConfiguration(
+            tag: "reference-root",
+            path: "/tmp/reference",
+            readOnly: true
+        )
+        let nestedReadOnly = try VirtioFSShareConfiguration(
+            tag: "reference",
+            path: "/tmp/reference/nested",
+            readOnly: true
+        )
+
+        try VirtioFSShareConfiguration.validateWritableTopology([
+            first, second, readOnlyRoot, nestedReadOnly,
+        ])
+
+        let nestedUnderWritable = try VirtioFSShareConfiguration(
+            tag: "read-only-alias",
+            path: "/tmp/first/reference",
+            readOnly: true
+        )
+        #expect(throws: (any Error).self) {
+            try VirtioFSShareConfiguration.validateWritableTopology([first, nestedUnderWritable])
         }
     }
 }

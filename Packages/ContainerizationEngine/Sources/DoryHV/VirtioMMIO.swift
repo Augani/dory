@@ -1,20 +1,41 @@
 import Foundation
 
+/// Defines which layer serializes queue notifications with device lifecycle changes.
+public enum VirtioKickSynchronization: Equatable, Sendable {
+    /// The transport invokes `handleKick` while holding its register/queue lock. This preserves the
+    /// historical behavior and is the safe default for backends that directly touch queue state.
+    case transportLocked
+    /// The backend accepts kicks after the transport lock is released. It must serialize its own
+    /// per-queue drains and use `withQueueLock` plus lifecycle generations around queue access.
+    case backendManaged
+}
+
 /// A virtio device backend: owns semantics, the transport owns the rings and registers.
 public protocol VirtioDeviceBackend: AnyObject {
     var deviceID: UInt32 { get }
     var deviceFeatures: UInt64 { get }
     var queueCount: Int { get }
     var configSpace: [UInt8] { get }
+    var kickSynchronization: VirtioKickSynchronization { get }
     /// Called on a queue notify; process available chains and push used ones.
     func handleKick(queue: Int, transport: VirtioMMIOTransport)
     /// Driver finished feature negotiation and set DRIVER_OK.
     func deviceReady(transport: VirtioMMIOTransport)
+    /// Driver reset the device. Called while transport access is serialized and before queues are
+    /// cleared, so backends can release retained guest buffers and fail outstanding operations.
+    func deviceReset(transport: VirtioMMIOTransport)
+    /// A QueueReady write changed (or reconfigured) a queue. Called synchronously while transport
+    /// access is serialized, after the queue has adopted its new ready state. Backends retaining
+    /// guest-owned descriptors must discard them before this callback returns.
+    func queueStateChanged(queue: Int, ready: Bool, transport: VirtioMMIOTransport)
     func writeConfig(offset: UInt64, value: UInt64, width: Int)
 }
 
 extension VirtioDeviceBackend {
+    public var kickSynchronization: VirtioKickSynchronization { .transportLocked }
     public func deviceReady(transport: VirtioMMIOTransport) {}
+    public func deviceReset(transport: VirtioMMIOTransport) {}
+    public func queueStateChanged(queue: Int, ready: Bool, transport: VirtioMMIOTransport) {}
     public func writeConfig(offset: UInt64, value: UInt64, width: Int) {}
 }
 
@@ -127,6 +148,21 @@ public final class VirtioMMIOTransport: MMIODevice {
     }
 
     public func write(offset: UInt64, value: UInt64, width: Int) {
+        // Virtio-fs processes independent request queues concurrently and fences every actual ring
+        // access itself. Validate the queue number under the transport lock, then invoke that
+        // explicitly opted-in backend without pinning unrelated MMIO/reset traffic behind an entire
+        // filesystem request. Every other backend retains the historical lock boundary below.
+        if offset == 0x050, backend.kickSynchronization == .backendManaged {
+            registerLock.lock()
+            let queue = Int(value)
+            let shouldKick = queue >= 0 && queue < queues.count
+            registerLock.unlock()
+            if shouldKick {
+                backend.handleKick(queue: queue, transport: self)
+            }
+            return
+        }
+
         registerLock.lock()
         defer { registerLock.unlock() }
         switch offset {
@@ -145,7 +181,8 @@ public final class VirtioMMIOTransport: MMIODevice {
             }
         case 0x044:
             withSelectedQueue { index in
-                if value & 1 == 1 {
+                let ready = value & 1 == 1
+                if ready {
                     let layout = pendingQueueLayout[index]
                     queues[index].configure(
                         size: layout.count,
@@ -157,6 +194,10 @@ public final class VirtioMMIOTransport: MMIODevice {
                 } else {
                     queues[index].setReady(false)
                 }
+                // QueueReady=1 is also a reconfiguration event when the queue was already ready.
+                // Notify on every write so a backend can synchronously revoke retained descriptors
+                // and any policy whose safety depends on the old queue epoch.
+                backend.queueStateChanged(queue: index, ready: ready, transport: self)
             }
         case 0x050:
             let queue = Int(value)
@@ -190,6 +231,7 @@ public final class VirtioMMIOTransport: MMIODevice {
     }
 
     private func resetDevice() {
+        backend.deviceReset(transport: self)
         for queue in queues { queue.reset() }
         pendingQueueLayout = Array(repeating: (0, 0, 0, 0), count: backend.queueCount)
         interruptStatus = 0

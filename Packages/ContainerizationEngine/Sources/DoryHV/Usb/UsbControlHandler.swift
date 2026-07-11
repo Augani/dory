@@ -21,9 +21,21 @@ public struct UsbAgentDetachRequest: Equatable, Sendable, Encodable {
     public var port: Int
 }
 
-public enum UsbControlError: Error, Equatable, Sendable {
+public enum UsbControlError: Error, Equatable, Sendable, CustomStringConvertible {
     case alreadyAttached(String)
     case notAttached(String)
+    case guestAgentRPCUnavailable
+
+    public var description: String {
+        switch self {
+        case .alreadyAttached(let busID):
+            return "USB device is already attached: \(busID)"
+        case .notAttached(let busID):
+            return "USB device is not attached: \(busID)"
+        case .guestAgentRPCUnavailable:
+            return "USB attach/detach is unavailable: dory-agent control protocol has no USB RPC"
+        }
+    }
 }
 
 /// The engine-side logic behind `dory usb attach/detach`: claim the host device, register it with the
@@ -32,6 +44,7 @@ public enum UsbControlError: Error, Equatable, Sendable {
 /// fails) is unit-testable without real hardware, a socket, or a running guest.
 public final class UsbControlHandler: @unchecked Sendable {
     private let manager: UsbipManager
+    private let ensureSupported: () throws -> Void
     private let openDevice: (String, HostUsbOpenMode) throws -> any UsbipExportedDevice
     private let notifyAttach: (UsbAgentAttachRequest) async throws -> Void
     private let notifyDetach: (UsbAgentDetachRequest) async throws -> Void
@@ -42,17 +55,22 @@ public final class UsbControlHandler: @unchecked Sendable {
 
     public init(
         manager: UsbipManager,
+        ensureSupported: @escaping () throws -> Void = {},
         openDevice: @escaping (String, HostUsbOpenMode) throws -> any UsbipExportedDevice,
         notifyAttach: @escaping (UsbAgentAttachRequest) async throws -> Void,
         notifyDetach: @escaping (UsbAgentDetachRequest) async throws -> Void
     ) {
         self.manager = manager
+        self.ensureSupported = ensureSupported
         self.openDevice = openDevice
         self.notifyAttach = notifyAttach
         self.notifyDetach = notifyDetach
     }
 
     public func attach(busID: String, mode: HostUsbOpenMode = .userAuthorized) async throws -> UsbAttachOutcome {
+        // Capability is checked before opening or claiming the host device. A missing guest RPC must
+        // fail closed; briefly seizing hardware and rolling back is still an observable disruption.
+        try ensureSupported()
         try lock.withLock {
             guard portByBusID[busID] == nil else { throw UsbControlError.alreadyAttached(busID) }
         }
@@ -79,6 +97,7 @@ public final class UsbControlHandler: @unchecked Sendable {
     }
 
     public func detach(busID: String) async throws {
+        try ensureSupported()
         let port = try lock.withLock { () -> Int in
             guard let port = portByBusID[busID] else { throw UsbControlError.notAttached(busID) }
             return port

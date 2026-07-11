@@ -114,6 +114,94 @@ struct FuseProtocolTests {
         }
     }
 
+    @Test func getattrPayloadRoundTripsFileHandle() throws {
+        let request = FuseGetattrIn(
+            flags: .fileHandle,
+            fileHandle: 0x0102_0304_0506_0708
+        )
+
+        let bytes = FuseProtocol.encodeGetattrIn(request)
+
+        #expect(bytes.count == FuseGetattrIn.byteCount)
+        #expect(bytes.leUInt32(at: 0) == FuseGetattrFlag.fileHandle.rawValue)
+        #expect(bytes.leUInt32(at: 4) == 0)
+        #expect(bytes.leUInt64(at: 8) == request.fileHandle)
+        #expect(try FuseProtocol.decodeGetattrIn(bytes) == request)
+        #expect(try FuseProtocol.decodeGetattrIn(bytes[...]) == request)
+    }
+
+    @Test func getattrPayloadRejectsShortFrame() {
+        #expect(throws: FuseProtocolError.shortFrame) {
+            _ = try FuseProtocol.decodeGetattrIn(
+                [UInt8](repeating: 0, count: FuseGetattrIn.byteCount - 1)
+            )
+        }
+    }
+
+    @Test func setattrPayloadRoundTripsEveryFuse738Field() throws {
+        let request = FuseSetattrIn(
+            valid: .allKnown,
+            fileHandle: 0x0102_0304_0506_0708,
+            size: 0x1112_1314_1516_1718,
+            lockOwner: 0x2122_2324_2526_2728,
+            atimeSeconds: -1,
+            mtimeSeconds: 0x3132_3334,
+            ctimeSeconds: -2,
+            atimeNsec: 123_456_789,
+            mtimeNsec: 222_333_444,
+            ctimeNsec: 999_999_999,
+            mode: 0o106755,
+            uid: 1_001,
+            gid: 1_002
+        )
+
+        let bytes = FuseProtocol.encodeSetattrIn(request)
+
+        #expect(bytes.count == FuseSetattrIn.byteCount)
+        #expect(bytes.leUInt32(at: 0) == (1 << 12) - 1)
+        #expect(bytes.leUInt64(at: 8) == request.fileHandle)
+        #expect(bytes.leUInt64(at: 16) == request.size)
+        #expect(bytes.leUInt64(at: 24) == request.lockOwner)
+        #expect(bytes.leUInt64(at: 32) == UInt64.max)
+        #expect(bytes.leUInt32(at: 56) == request.atimeNsec)
+        #expect(bytes.leUInt32(at: 68) == request.mode)
+        #expect(bytes.leUInt32(at: 76) == request.uid)
+        #expect(bytes.leUInt32(at: 80) == request.gid)
+        #expect(try FuseProtocol.decodeSetattrIn(bytes) == request)
+    }
+
+    @Test func setattrPayloadRejectsShortFrame() {
+        #expect(throws: FuseProtocolError.shortFrame) {
+            _ = try FuseProtocol.decodeSetattrIn([UInt8](repeating: 0, count: FuseSetattrIn.byteCount - 1))
+        }
+    }
+
+    @Test func forgetPayloadsRoundTripLookupCounts() throws {
+        let single = FuseForgetIn(lookupCount: 0x0102_0304_0506_0708)
+        let singleBytes = FuseProtocol.encodeForgetIn(single)
+        #expect(singleBytes.count == FuseForgetIn.byteCount)
+        #expect(singleBytes == [8, 7, 6, 5, 4, 3, 2, 1])
+        #expect(try FuseProtocol.decodeForgetIn(singleBytes) == single)
+
+        let batch = FuseBatchForgetIn(entries: [
+            FuseForgetOne(nodeID: 2, lookupCount: 3),
+            FuseForgetOne(nodeID: 9, lookupCount: 11),
+        ])
+        let batchBytes = FuseProtocol.encodeBatchForgetIn(batch)
+        #expect(batchBytes.count == FuseBatchForgetIn.headerByteCount + 2 * FuseForgetOne.byteCount)
+        #expect(batchBytes[0..<8].elementsEqual([2, 0, 0, 0, 0, 0, 0, 0]))
+        #expect(try FuseProtocol.decodeBatchForgetIn(batchBytes) == batch)
+    }
+
+    @Test func forgetPayloadsRejectShortFrames() {
+        #expect(throws: FuseProtocolError.shortFrame) {
+            _ = try FuseProtocol.decodeForgetIn([0, 1, 2])
+        }
+        #expect(throws: FuseProtocolError.shortFrame) {
+            _ = try FuseProtocol.decodeBatchForgetIn([2, 0, 0, 0, 0, 0, 0, 0] + [UInt8](repeating: 0, count: 16))
+        }
+    }
+
     @Test func setupMappingRoundTripsLittleEndianFields() throws {
         let request = FuseSetupMappingIn(
             fileHandle: 0x0102_0304_0506_0708,
@@ -166,5 +254,10 @@ private extension Array where Element == UInt8 {
             | UInt32(self[offset + 1]) << 8
             | UInt32(self[offset + 2]) << 16
             | UInt32(self[offset + 3]) << 24
+    }
+
+
+    func leUInt64(at offset: Int) -> UInt64 {
+        UInt64(leUInt32(at: offset)) | UInt64(leUInt32(at: offset + 4)) << 32
     }
 }

@@ -107,14 +107,29 @@ public final class Virtqueue {
         return availIndex != lastAvailIndex
     }
 
+    /// Resolves the next available descriptor without consuming it.
+    ///
+    /// Device backends use this to classify a request before crossing a publication boundary. The
+    /// caller must serialize the peek with `pop()` and queue reconfiguration, exactly as it would
+    /// any other ring access.
+    public func peek() throws -> VirtqueueChain? {
+        try nextChain(consume: false)
+    }
+
     public func pop() throws -> VirtqueueChain? {
+        try nextChain(consume: true)
+    }
+
+    private func nextChain(consume: Bool) throws -> VirtqueueChain? {
         guard ready, size > 0 else { return nil }
         let availIndex = try memory.read(UInt16.self, at: availRing + 2)
         guard availIndex != lastAvailIndex else { return nil }
 
         let slot = UInt64(lastAvailIndex % size)
         let head = try memory.read(UInt16.self, at: availRing + 4 + slot * 2)
-        lastAvailIndex &+= 1
+        if consume {
+            lastAvailIndex &+= 1
+        }
 
         var segments = [VirtqueueSegment]()
         try walkChain(startingAt: head, table: descriptorTable, tableSize: size, into: &segments, depth: 0)

@@ -1,5 +1,6 @@
 import DoryHV
 import Foundation
+import Synchronization
 
 /// `dory-hv engine`: the production mode SharedVMProvisioner spawns. Owns the full lifecycle:
 /// pulls docker:dind once, boots the VMM with networking, and publishes the Docker API at the
@@ -41,10 +42,34 @@ enum EngineMode {
         case venus
     }
 
-    /// gvproxy pid for the teardown path: stopping the helper must not orphan the sidecar.
-    nonisolated(unsafe) private static var sidecarPID: pid_t = 0
+    /// gvproxy is launched and stopped under the same lock so a shutdown signal cannot race the
+    /// post-spawn registration window or run cleanup twice. The forced-exit watchdog must call the
+    /// cleanup directly because `exit` does not unwind Swift `defer` blocks.
+    private static let sidecarLock = NSLock()
+    nonisolated(unsafe) private static var sidecarProcess: Process?
     nonisolated(unsafe) private static var signalSources: [any DispatchSourceSignal] = []
     nonisolated(unsafe) private static var memoryPressureSource: (any DispatchSourceMemoryPressure)?
+
+    private static func launchGVProxy(_ process: Process) throws {
+        sidecarLock.lock()
+        defer { sidecarLock.unlock() }
+        guard sidecarProcess == nil else {
+            throw VMError.invalidConfiguration("gvproxy sidecar is already registered")
+        }
+        try process.run()
+        sidecarProcess = process
+    }
+
+    private static func stopGVProxy(gracePeriod: TimeInterval = 2) {
+        sidecarLock.lock()
+        defer { sidecarLock.unlock() }
+        guard let process = sidecarProcess else { return }
+        let outcome = ChildProcessTerminator.terminateAndReap(process, gracePeriod: gracePeriod)
+        sidecarProcess = nil
+        if outcome == .killed {
+            note("gvproxy ignored SIGTERM for \(gracePeriod)s; sent SIGKILL and reaped it")
+        }
+    }
 
     /// SIGTERM/SIGINT ask the guest to power off (sync + unmount + PSCI) through the shutdown
     /// socket; the run loop then returns and the process exits cleanly with a consistent disk.
@@ -67,7 +92,7 @@ enum EngineMode {
                 }
                 DispatchQueue.global().asyncAfter(deadline: .now() + 12) {
                     note("guest did not stop in 12s, forcing exit")
-                    if sidecarPID > 0 { kill(sidecarPID, SIGTERM) }
+                    stopGVProxy()
                     exit(1)
                 }
             }
@@ -111,9 +136,7 @@ enum EngineMode {
         now: @escaping @Sendable () -> Date = Date.init
     ) async {
         let connection = vsock.connect(port: VsockPorts.agent)
-        defer { connection.close() }
-        let transport = AgentVsockTransport(connection: connection, readTimeoutNanoseconds: 2_000_000_000)
-        let channel = AgentChannel(transport: transport)
+        let channel = AgentChannel(connection: connection)
         let hostEpochNanoseconds = Int64((now().timeIntervalSince1970 * 1_000_000_000).rounded())
         do {
             let result = try await channel.syncClock(hostEpochNanoseconds: hostEpochNanoseconds)
@@ -146,6 +169,11 @@ enum EngineMode {
     }
 
     static func run(_ configuration: Configuration) async throws {
+        try DockerSocketBridge.validateSocketPath(configuration.engineSocket)
+        if let forwardSocket = configuration.agentVsockForward {
+            try AgentVsockForward.validateSocketPath(forwardSocket)
+        }
+        try VirtioFSShareConfiguration.validateWritableTopology(configuration.shares)
         let state = configuration.stateDirectory
         try FileManager.default.createDirectory(atPath: state, withIntermediateDirectories: true)
 
@@ -219,19 +247,42 @@ enum EngineMode {
         let vsock = VirtioVsock(guestCID: 3)
         backends.append(vsock)
         HostAIBridge(log: { note($0) }).attach(to: vsock)
-        backends.append(try bootConfigShare.makeBackend())
-        backends.append(try guestLogShare.makeBackend())
+        let requestedFuseQueues = ProcessInfo.processInfo.environment["DORY_FUSE_QUEUES"]
+            .flatMap(Int.init) ?? configuration.cpus
+        let fuseRequestQueues = min(8, max(1, requestedFuseQueues))
+        backends.append(try bootConfigShare.makeBackend(requestQueueCount: fuseRequestQueues))
+        backends.append(try guestLogShare.makeBackend(requestQueueCount: fuseRequestQueues))
+        var coherenceEndpoints = [HostShareCoherenceEndpoint]()
         for share in configuration.shares {
             let daxBase = share.dax ? GuestLayout.daxWindowBase + daxSlot * DaxWindow.defaultSize : nil
             if share.dax { daxSlot += 1 }
-            backends.append(try share.makeBackend(daxGuestBase: daxBase))
+            let backend = try share.makeBackend(
+                daxGuestBase: daxBase,
+                requestQueueCount: fuseRequestQueues
+            )
+            backends.append(backend)
+            // Read-only shares cannot accept the same-mode watcher nudge, but they still need host
+            // reverse invalidation so open-file page cache cannot stay stale. Keep metadata caching
+            // disabled and skip only the fsnotify approximation for those endpoints.
+            coherenceEndpoints.append(HostShareCoherenceEndpoint(
+                share: HostFSEventShare(
+                    hostRoot: share.path,
+                    guestRoot: share.guestMountPoint ?? "/mnt/dory/\(share.tag)"
+                ),
+                backend: backend,
+                watcherNudgesEnabled: !share.readOnly
+            ))
             note("sharing \(share.path) as virtiofs tag \(share.tag)\(share.readOnly ? " (ro)" : "")\(share.dax ? " (dax)" : "")")
         }
 
         let datapathSocket = state + "/net.sock"
         let apiSocket = state + "/gvproxy-api.sock"
+        let shutdownSocket = state + "/shutdown.sock"
         try? FileManager.default.removeItem(atPath: datapathSocket)
         try? FileManager.default.removeItem(atPath: apiSocket)
+        // Install before spawning gvproxy. A signal arriving during the remaining VM setup must use
+        // the watchdog cleanup path rather than taking the default signal action and orphaning it.
+        installGracefulShutdown(shutdownSocket: shutdownSocket)
         let gvproxy = Process()
         gvproxy.executableURL = URL(fileURLWithPath: configuration.gvproxyPath)
         gvproxy.arguments = [
@@ -241,14 +292,30 @@ enum EngineMode {
         ]
         gvproxy.standardOutput = FileHandle.standardError
         gvproxy.standardError = FileHandle.standardError
-        try gvproxy.run()
-        sidecarPID = gvproxy.processIdentifier
-        defer { gvproxy.terminate() }
+        let gvproxyTerminationExpected = Atomic<Bool>(false)
+        // gvproxy is the engine's only Internet path. If it dies, keeping the VM and Docker socket
+        // alive reports a false-running engine whose pulls and package installs simply hang. Stop the
+        // VM so doryd's bounded full-tier restart can rebuild the sidecar and every dependent socket.
+        // This callback deliberately takes no sidecarLock: stopGVProxy waits for termination while
+        // holding that lock, and Process invokes this handler as part of the same termination path.
+        gvproxy.terminationHandler = { process in
+            guard !gvproxyTerminationExpected.load(ordering: .acquiring) else { return }
+            let cause = process.terminationReason == .uncaughtSignal ? "signal" : "exit"
+            let detail = "gvproxy terminated (\(cause) \(process.terminationStatus))"
+            note(detail)
+            machine.requestStop(.crash(detail))
+        }
+        defer {
+            gvproxyTerminationExpected.store(true, ordering: .releasing)
+            stopGVProxy()
+        }
+        try launchGVProxy(gvproxy)
         for _ in 0..<100 {
             if FileManager.default.fileExists(atPath: datapathSocket) { break }
             usleep(50_000)
         }
-        backends.append(try VirtioNet(socketPath: state + "/vm-net.sock", remotePath: datapathSocket))
+        let virtioNet = try VirtioNet(socketPath: state + "/vm-net.sock", remotePath: datapathSocket)
+        backends.append(virtioNet)
         var directIPBridge: DirectIPBridge?
         if let config = configuration.directIP {
             do {
@@ -285,13 +352,16 @@ enum EngineMode {
         // silences every foreground `docker run`/`attach`, so we never republish engineSocket to one.
         // Connections before the guest agent listens fail fast and the app's readiness probe retries,
         // so nothing waits on the sidecar.
-        DockerSocketBridge(socketPath: configuration.engineSocket, log: { note($0) }).attach(to: vsock)
+        // The Rust dataplane cannot establish its authoritative agent channel without this forward.
+        // Bind it before publishing engine.sock and propagate any listener error out of run(), so a
+        // configured-but-impossible path terminates dory-hv instead of advertising a half-alive VM.
         if let forwardSocket = configuration.agentVsockForward {
-            AgentVsockForward(socketPath: forwardSocket, guestCID: 3, log: { note($0) }).attach(to: vsock)
+            try AgentVsockForward(socketPath: forwardSocket, guestCID: 3, log: { note($0) }).attach(to: vsock)
         }
-        let shutdownSocket = state + "/shutdown.sock"
+        // engine.sock is the sole Docker API endpoint, so its listener is just as required as the
+        // dataplane forward. Propagate bind/listen/chmod failures before entering machine.run().
+        try DockerSocketBridge(socketPath: configuration.engineSocket, log: { note($0) }).attach(to: vsock)
         publishForward(local: shutdownSocket, guestPort: 2377, apiSocket: apiSocket, label: "shutdown channel")
-        installGracefulShutdown(shutdownSocket: shutdownSocket)
         installClockSyncSignal(vsock: vsock)
         if reclaimModeIsSenpai {
             let reclaimSocket = state + "/reclaim.sock"
@@ -311,26 +381,17 @@ enum EngineMode {
         portForwarder.start()
         note("engine starting: \(configuration.memoryMB)MiB ceiling, \(configuration.cpus) cpus, socket \(configuration.engineSocket)")
 
-        // USB passthrough: the listener serves guest usbip dials on VsockPorts.usbip, and the control
-        // server drives `dory usb attach/detach` — it claims the host device, registers it with the
-        // manager, and tells the guest agent to dial. The listener is a no-op until a device is claimed.
+        // The host usbip bridge exists, but attach/detach is deliberately unavailable until the
+        // authoritative protobuf agent protocol has a real guest vhci RPC. The capability gate runs
+        // before HostUsbDeviceFactory.open, so commands fail closed without claiming host hardware.
         let usbipManager = UsbipManager()
         usbipManager.attachListener(to: vsock)
         let usbControlHandler = UsbControlHandler(
             manager: usbipManager,
+            ensureSupported: { throw UsbControlError.guestAgentRPCUnavailable },
             openDevice: { busID, mode in try HostUsbDeviceFactory.open(busID: busID, mode: mode) },
-            notifyAttach: { request in
-                let connection = vsock.connect(port: VsockPorts.agent)
-                defer { connection.close() }
-                let channel = AgentChannel(transport: AgentVsockTransport(connection: connection, readTimeoutNanoseconds: 10_000_000_000))
-                let _: UsbAgentReply = try await channel.call("usb.attach", request)
-            },
-            notifyDetach: { request in
-                let connection = vsock.connect(port: VsockPorts.agent)
-                defer { connection.close() }
-                let channel = AgentChannel(transport: AgentVsockTransport(connection: connection, readTimeoutNanoseconds: 10_000_000_000))
-                let _: UsbAgentReply = try await channel.call("usb.detach", request)
-            }
+            notifyAttach: { _ in throw UsbControlError.guestAgentRPCUnavailable },
+            notifyDetach: { _ in throw UsbControlError.guestAgentRPCUnavailable }
         )
         let usbControlServer = UsbControlServer(path: configuration.stateDirectory + "/usb-control.sock", handler: usbControlHandler)
         do { try usbControlServer.start() } catch { note("usb control server unavailable: \(error)") }
@@ -342,8 +403,78 @@ enum EngineMode {
             let released = memory.releasedBytes.load()
             let restored = memory.restoredBytes.load()
             note("reclaim gauge: released \(released >> 20)MiB, restored \(restored >> 20)MiB, net \(Int64(bitPattern: released &- restored) / 1_048_576)MiB")
+            let network = virtioNet.statistics
+            note("network gauge: tx \(network.transmitPackets)p/\(network.transmitBytes)B drops=\(network.transmitDrops), rx \(network.receivePackets)p/\(network.receiveBytes)B deferred=\(network.receiveDeferred) drops=\(network.receiveDrops) truncated=\(network.receiveTruncations)")
         }
         gauge.resume()
+
+        var hostFSEventRelay: HostFSEventRelay?
+        var cacheReadinessTask: Task<Void, Never>?
+        if !coherenceEndpoints.isEmpty {
+            let activeEndpoints = coherenceEndpoints
+            let coordinator = HostShareCoherenceCoordinator(
+                endpoints: activeEndpoints,
+                guestEvents: GuestFSEventBridge(vsock: vsock),
+                onDegraded: { note($0) },
+                onFatalRecoveryRequired: { reason in
+                    note("host-share coherence requires VM restart: \(reason)")
+                    machine.requestStop(.crash(reason))
+                }
+            )
+            let relay = HostFSEventRelay(
+                shares: activeEndpoints.map(\.share),
+                send: { changes in
+                    try await coordinator.process(changes)
+                    coordinator.relayDeliverySucceeded()
+                },
+                onFailure: { error in
+                    let message = String(describing: error)
+                    // This updates the readiness generation and drops response TTLs synchronously;
+                    // actor bookkeeping cannot race cache activation back on for a failed batch.
+                    coordinator.relayDeliveryFailed("host-share event relay failed: \(message)")
+                    note("host-share event relay: \(message)")
+                }
+            )
+            let relayStarted = relay.start()
+            try HostShareCoherenceStartupPolicy.requireEventRelay(
+                started: relayStarted,
+                productionShareCount: activeEndpoints.count
+            )
+            hostFSEventRelay = relay
+            let watcherCount = activeEndpoints.filter(\.watcherNudgesEnabled).count
+            note("host-share invalidation relay active for \(activeEndpoints.count) share(s), watcher nudges on \(watcherCount)")
+            // The VM has not entered its run loop yet, so FUSE INIT, the 16 stable notify
+            // buffers, and the guest agent arrive asynchronously. Poll only the fail-closed
+            // readiness predicate; no environment flag can bypass these gates.
+            if activeEndpoints.contains(where: \.watcherNudgesEnabled) {
+                cacheReadinessTask = Task.detached(priority: .userInitiated) {
+                    var lastError: String?
+                    let deadline = ProcessInfo.processInfo.systemUptime + 120
+                    while ProcessInfo.processInfo.systemUptime < deadline {
+                        guard !Task.isCancelled else { return }
+                        do {
+                            if try await coordinator.activateCachingIfReady() {
+                                note("host-share coherent metadata cache active (\(VirtioFS.maximumCoherentCacheValiditySeconds)s bounded TTL)")
+                                return
+                            }
+                        } catch {
+                            lastError = String(describing: error)
+                        }
+                        do {
+                            try await Task.sleep(nanoseconds: 100_000_000)
+                        } catch {
+                            return
+                        }
+                    }
+                    let detail = lastError.map { ": \($0)" } ?? ""
+                    note("host-share cache readiness timed out; zero-cache safety retained\(detail)")
+                }
+            }
+        }
+        defer {
+            cacheReadinessTask?.cancel()
+            hostFSEventRelay?.stop()
+        }
 
         let stop = try machine.run()
         directIPBridge?.stop()
@@ -460,7 +591,12 @@ enum EngineMode {
             "awk '$2==\"/var/lib/docker\"{print $4}' /proc/mounts >/var/log/dory-data-mount-options.log 2>&1 || true",
             "ip link set lo up",
             "ip link set eth0 up",
-            "udhcpc -i eth0 -q -n -t 5 -T 1 >/dev/null 2>&1 || true",
+            // Internet access is not optional for the Docker tier. Do not publish a healthy Docker
+            // socket around a guest with no address/default route/DNS: package managers then hang in
+            // a way that looks like a container or registry bug. Preserve the DHCP transcript in the
+            // host-visible guest log before powering off so the supervisor can retry the whole tier.
+            "udhcpc -i eth0 -q -n -t 5 -T 1 >/var/log/dory-dhcp.log 2>&1 || { echo DORY-DHCP-FAILED >&2; cat /var/log/dory-dhcp.log >&2; cp /var/log/dory-dhcp.log /mnt/dory-logs/network.log 2>/dev/null || true; sync; poweroff -f; exit 1; }",
+            "{ ip -details address show dev eth0; ip route show; echo RESOLV-CONF; cat /etc/resolv.conf; } >/mnt/dory-logs/network.log 2>&1 || true",
             "echo 2 > /sys/module/page_reporting/parameters/page_reporting_order 2>/dev/null",
             // Keep the normal kernel dentry/inode balance during active workloads. Free page
             // reporting and the idle cache cap below handle reclaim without making metadata-heavy
@@ -497,13 +633,17 @@ enum EngineMode {
             "dockerd -H unix:///var/run/docker.sock -H tcp://0.0.0.0:2375 --tls=false --log-level=warn --feature containerd-snapshotter=true $DORY_RUNTIME_ARGS >/var/log/dockerd.log 2>&1 & true",
             amd64Emulation ? BinfmtRegistration.dockerFallbackCommand() : "true",
             "( while true; do nc -l -p 2377 >/dev/null 2>&1; echo shutdown requested; sync; umount /var/lib/docker 2>/dev/null; sync; poweroff -f; done ) & true",
-            Self.hostPressureReclaimListener(),
+            GuestMemoryReclaimBootCommand.hostPressureListener(
+                experimentalSenpai: reclaimModeIsSenpai
+            ),
             // Idle memory reclaim. Default is a gentle pagecache-only drop_caches when the guest is
             // quiet (no compaction — it re-faults the pages free-page reporting already handed back;
             // no root memory.reclaim — write-rejected on the root cgroup). DORY_ENGINE_RECLAIM_MODE=senpai
             // swaps in a coldest-first, working-set-protected feeder (MGLRU min_ttl_ms + DAMON_RECLAIM,
             // memory.reclaim fallback) per the research §5. Kept opt-in until the memory A/B lands.
-            Self.reclaimLoopCommand(),
+            GuestMemoryReclaimBootCommand.idleLoop(
+                experimentalSenpai: reclaimModeIsSenpai
+            ),
             // Hand PID 1 to tini (docker-init, shipped in docker:dind) as a reaping init. exec
             // replaces the boot shell in place, so tini keeps PID 1 while dockerd and the loops
             // above continue as its children. Container shims double-fork and orphan their exited
@@ -514,34 +654,6 @@ enum EngineMode {
             "while true; do sleep 2147483647; done",
         ]
         return script.joined(separator: "\n") + "\n"
-    }
-
-    // Emits the idle-reclaim daemon for the boot script. Default "dropcaches" is the proven, gentle
-    // pagecache-only drop. "senpai" (DORY_ENGINE_RECLAIM_MODE=senpai) swaps in the research §5 feeder:
-    // MGLRU working-set protection, then in-kernel DAMON_RECLAIM if available (coldest-first, rate- and
-    // watermark-limited), else a PSI-gated per-cgroup memory.reclaim fallback. Opt-in until A/B'd.
-    private static func reclaimLoopCommand() -> String {
-        let quietGate = "set -- $(awk '/^cpu /{t=0; for(i=2;i<=NF;i++) t+=$i; print t,$5; exit}' /proc/stat); total=${1:-0}; idle=${2:-0}; quiet=0; if [ ${prev_total:-0} -gt 0 ]; then dt=$((total-prev_total)); di=$((idle-prev_idle)); [ $dt -gt 0 ] && [ $((100 - (di * 100 / dt))) -le 8 ] && quiet=1; fi; prev_total=$total; prev_idle=$idle; running=$(docker -H unix:///var/run/docker.sock ps -q 2>/dev/null | wc -l | tr -d ' '); if [ ${running:-0} -gt 0 ] && [ $quiet -eq 1 ]; then quiet_running_ticks=$((quiet_running_ticks+1)); else quiet_running_ticks=0; fi"
-
-        let dropCaches = "( prev_total=0; prev_idle=0; quiet_running_ticks=0; while true; do sleep 5; \(quietGate); [ $quiet_running_ticks -ge 2 ] || continue; c=$(awk '/^Cached:/{print $2; exit}' /proc/meminfo); [ ${c:-0} -gt 327680 ] && echo 1 > /proc/sys/vm/drop_caches 2>/dev/null; done ) & true"
-
-        let mode = ProcessInfo.processInfo.environment["DORY_ENGINE_RECLAIM_MODE"]?.lowercased() ?? "dropcaches"
-        guard mode == "senpai" else { return dropCaches }
-
-        let senpaiSetup = "[ -w /sys/kernel/mm/lru_gen/min_ttl_ms ] && echo 2000 > /sys/kernel/mm/lru_gen/min_ttl_ms 2>/dev/null; if [ -d /sys/module/damon_reclaim/parameters ]; then echo 2000000 > /sys/module/damon_reclaim/parameters/min_age 2>/dev/null; echo Y > /sys/module/damon_reclaim/parameters/enabled 2>/dev/null; damon=1; else damon=0; fi"
-        let psiGate = "psi=$(awk '/^some /{for(i=1;i<=NF;i++) if($i ~ /^avg10=/){split($i,a,\"=\"); print a[2]}}' /proc/pressure/memory 2>/dev/null); awk -v p=\"${psi:-0}\" 'BEGIN{exit !(p+0 < 1.0)}' || continue"
-        let cgroupReclaim = "for r in $(find /sys/fs/cgroup -maxdepth 4 -name memory.reclaim 2>/dev/null | grep -Ei 'docker|containerd|kubepods|system.slice'); do echo 67108864 > \"$r\" 2>/dev/null; done"
-
-        return "( \(senpaiSetup); prev_total=0; prev_idle=0; quiet_running_ticks=0; while true; do sleep 5; [ ${damon:-0} -eq 1 ] && continue; \(quietGate); [ $quiet_running_ticks -ge 2 ] || continue; \(psiGate); \(cgroupReclaim); done ) & true"
-    }
-
-    // Guest half of the P1.2 host-pressure tier: a listener the host pings (via reclaim.sock → tcp 2378)
-    // when macOS is under memory pressure. On a ping it drops pagecache and reclaims a large chunk from
-    // each container cgroup so free-page reporting can hand the pages back to the host immediately.
-    // Senpai-mode only; returns "true" (a no-op boot line) otherwise so the default engine is unchanged.
-    private static func hostPressureReclaimListener() -> String {
-        guard reclaimModeIsSenpai else { return "true" }
-        return "( while true; do nc -l -p 2378 >/dev/null 2>&1; sync; echo 1 > /proc/sys/vm/drop_caches 2>/dev/null; for r in $(find /sys/fs/cgroup -maxdepth 4 -name memory.reclaim 2>/dev/null | grep -Ei 'docker|containerd|kubepods|system.slice'); do echo 268435456 > \"$r\" 2>/dev/null; done; done ) & true"
     }
 
     private static func guestAgentStartCommand(shares: [VirtioFSShareConfiguration]) -> String {

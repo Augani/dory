@@ -1,158 +1,200 @@
+import Darwin
+import DoryCore
 import Foundation
 
-public protocol AgentByteTransport: AnyObject {
-    func readExact(_ count: Int) async throws -> [UInt8]
-    func writeAll(_ bytes: [UInt8]) async throws
+/// The typed guest-control surface consumed by the raw Hypervisor.framework engine.
+///
+/// The implementation is deliberately supplied by `DoryCore`: that module embeds the Rust
+/// `AgentClient`, which is the authoritative implementation of the versioned Hello handshake,
+/// little-endian framing, request/response mux, deadlines, and protobuf messages. Keeping those
+/// details out of this target prevents raw `dory-hv` from drifting away from doryd/dory-vmm again.
+protocol AgentControlRPC: AnyObject, Sendable {
+    func info() throws -> DoryAgentInfo
+    func clockSync(hostEpochNs: Int64) throws -> Bool
+    func portsWatch() throws -> DoryPortsSnapshot
+    func close()
 }
 
-public final class AgentVsockTransport: AgentByteTransport {
-    private let connection: VsockConnection
-    private let readTimeoutNanoseconds: UInt64
+extension DoryAgentControlHandle: AgentControlRPC {}
 
-    public init(connection: VsockConnection, readTimeoutNanoseconds: UInt64 = 10_000_000_000) {
+public enum AgentProtocolError: Error, Equatable, Sendable {
+    case connectionAlreadyConsumed
+    case invalidGuestPort(UInt32)
+    case socketPair(Int32)
+}
+
+/// A typed control channel over one connected guest vsock stream.
+///
+/// `VirtioVsock` is an in-process device rather than an OS file descriptor, while the shared Rust
+/// client intentionally accepts a normal byte-stream fd. A private unix socketpair bridges those
+/// two representations; `VsockUnixRelay` moves bytes unchanged, so all application-protocol work
+/// remains in Rust.
+public final class AgentChannel: @unchecked Sendable {
+    typealias ClientConnector = @Sendable (Int32) throws -> any AgentControlRPC
+
+    private final class ConnectionBox: @unchecked Sendable {
+        let connection: VsockConnection
+
+        init(_ connection: VsockConnection) {
+            self.connection = connection
+        }
+    }
+
+    private let lock = NSLock()
+    private let connector: ClientConnector
+    private var connection: VsockConnection?
+    private var relayConnection: VsockConnection?
+    private var client: (any AgentControlRPC)?
+
+    public init(connection: VsockConnection) {
+        self.connector = { try DoryCore.connectAgentControlOverFD($0) }
         self.connection = connection
-        self.readTimeoutNanoseconds = readTimeoutNanoseconds
     }
 
-    private static let minPollIntervalNanoseconds: UInt64 = 1_000_000
-    private static let maxPollIntervalNanoseconds: UInt64 = 16_000_000
-
-    public func readExact(_ count: Int) async throws -> [UInt8] {
-        guard count > 0 else { return [] }
-        var result = [UInt8]()
-        result.reserveCapacity(count)
-        var buffer = [UInt8](repeating: 0, count: count)
-        let deadline = DispatchTime.now().uptimeNanoseconds + readTimeoutNanoseconds
-        var pollInterval = Self.minPollIntervalNanoseconds
-        while result.count < count {
-            let read = try buffer.withUnsafeMutableBytes {
-                try connection.read(into: UnsafeMutableRawBufferPointer(rebasing: $0[0..<(count - result.count)]))
-            }
-            if read == 0 {
-                guard DispatchTime.now().uptimeNanoseconds < deadline else {
-                    throw AgentProtocolError.malformedFrame
-                }
-                try await Task.sleep(nanoseconds: pollInterval)
-                pollInterval = min(pollInterval * 2, Self.maxPollIntervalNanoseconds)
-                continue
-            }
-            result.append(contentsOf: buffer.prefix(read))
-            pollInterval = Self.minPollIntervalNanoseconds
-        }
-        return result
+    init(connection: VsockConnection, connector: @escaping ClientConnector) {
+        self.connector = connector
+        self.connection = connection
     }
 
-    public func writeAll(_ bytes: [UInt8]) async throws {
-        try connection.write(bytes)
-    }
-}
-
-public enum AgentProtocolError: Error, Equatable {
-    case frameTooLarge(Int)
-    case malformedFrame
-    case remoteError(code: Int, message: String)
-}
-
-public struct AgentFrameCodec {
-    public static let maximumFrameBytes = 16 * 1024 * 1024
-
-    public static func encode(_ payload: [UInt8]) throws -> [UInt8] {
-        do {
-            return try LengthPrefixCodec.encode(payload, maximumFrameBytes: maximumFrameBytes)
-        } catch {
-            throw mapped(error)
-        }
+    /// Test seam for checking the Swift-facing typed surface without duplicating the wire codec in
+    /// Swift tests. Rust's own client/agent integration tests cover the complete wire spine.
+    init(client: any AgentControlRPC) {
+        self.connector = { _ in throw AgentProtocolError.connectionAlreadyConsumed }
+        self.client = client
     }
 
-    public static func decodeLength(_ prefix: [UInt8]) throws -> Int {
-        do {
-            return try LengthPrefixCodec.decodeLength(prefix, maximumFrameBytes: maximumFrameBytes)
-        } catch {
-            throw mapped(error)
-        }
-    }
-
-    private static func mapped(_ error: Error) -> AgentProtocolError {
-        switch error {
-        case LengthPrefixCodecError.frameTooLarge(let size):
-            return .frameTooLarge(size)
-        case LengthPrefixCodecError.malformedPrefix:
-            return .malformedFrame
-        default:
-            return .malformedFrame
-        }
-    }
-}
-
-public final class AgentChannel {
-    private let transport: AgentByteTransport
-    private let encoder = JSONEncoder()
-    private let decoder = JSONDecoder()
-    private var nextID = 1
-
-    public init(transport: AgentByteTransport) {
-        self.transport = transport
+    public func info() async throws -> AgentInfo {
+        let raw = try await perform { try $0.info() }
+        return AgentInfo(
+            protocolVersion: raw.protocolVersion,
+            kernel: raw.kernel,
+            agentBuild: raw.agentBuild,
+            uptimeSeconds: raw.uptimeSeconds
+        )
     }
 
     public func syncClock(hostEpochNanoseconds: Int64) async throws -> ClockSyncResult {
-        try await call("clock.sync", ClockSyncParams(hostEpochNanoseconds: hostEpochNanoseconds))
+        let synced = try await perform { try $0.clockSync(hostEpochNs: hostEpochNanoseconds) }
+        return ClockSyncResult(synced: synced)
     }
 
     public func watchPorts() async throws -> AgentPortSnapshot {
-        try await call("ports.watch", EmptyAgentParams())
+        let raw = try await perform { try $0.portsWatch() }
+        return AgentPortSnapshot(
+            ports: try raw.ports.map {
+                AgentListenPort(protocol: $0.protocol, port: try checkedPort($0.port))
+            },
+            added: try raw.added.map {
+                AgentPortEvent(action: $0.action, protocol: $0.protocol, port: try checkedPort($0.port))
+            },
+            removed: try raw.removed.map {
+                AgentPortEvent(action: $0.action, protocol: $0.protocol, port: try checkedPort($0.port))
+            }
+        )
     }
 
-    public func call<P: Encodable, R: Decodable>(_ method: String, _ params: P) async throws -> R {
-        let id = nextID
-        nextID += 1
-        let request = Request(id: id, method: method, params: AnyEncodable(params))
-        let payload = Array(try encoder.encode(request))
-        try await transport.writeAll(AgentFrameCodec.encode(payload))
+    private func perform<Result: Sendable>(
+        _ operation: @escaping @Sendable (any AgentControlRPC) throws -> Result
+    ) async throws -> Result {
+        // UniFFI's AgentControl is intentionally blocking over its private Tokio runtime. Keep the
+        // cooperative Swift executor free while a handshake or RPC waits on guest I/O.
+        try await Task.detached { [self] in
+            try operation(connectedClient())
+        }.value
+    }
 
-        let prefix = try await transport.readExact(4)
-        let length = try AgentFrameCodec.decodeLength(prefix)
-        let responsePayload = try await transport.readExact(length)
-        let response = try decoder.decode(Response<R>.self, from: Data(responsePayload))
-        if let error = response.error {
-            throw AgentProtocolError.remoteError(code: error.code, message: error.message)
+    private func connectedClient() throws -> any AgentControlRPC {
+        lock.lock()
+        if let client {
+            lock.unlock()
+            return client
         }
-        guard let result = response.result else {
-            throw AgentProtocolError.malformedFrame
+        guard let connection else {
+            lock.unlock()
+            throw AgentProtocolError.connectionAlreadyConsumed
         }
-        return result
+        // A vsock stream cannot be replayed after a failed handshake. Consume it exactly once while
+        // holding the lock so concurrent first calls cannot start two relays on the same stream.
+        self.connection = nil
+        relayConnection = connection
+
+        var descriptors = [Int32](repeating: -1, count: 2)
+        guard socketpair(AF_UNIX, SOCK_STREAM, 0, &descriptors) == 0 else {
+            let code = errno
+            lock.unlock()
+            connection.close()
+            throw AgentProtocolError.socketPair(code)
+        }
+        let rustDescriptor = descriptors[0]
+        let relayDescriptor = descriptors[1]
+        let connectionBox = ConnectionBox(connection)
+        Thread.detachNewThread {
+            VsockUnixRelay.serve(client: relayDescriptor, connection: connectionBox.connection)
+        }
+
+        do {
+            // Ownership of rustDescriptor transfers to DoryCore even when the handshake fails.
+            let fresh = try connector(rustDescriptor)
+            client = fresh
+            lock.unlock()
+            return fresh
+        } catch {
+            lock.unlock()
+            // Rust owns/closes its socketpair fd on every return path, but a read EOF is only a
+            // half-close to the generic stream relay. Explicitly reset the vsock side so its other
+            // pump cannot wait forever on a silent guest after handshake timeout/failure.
+            connection.close()
+            throw error
+        }
     }
 
-    private struct Request: Encodable {
-        var id: Int
-        var method: String
-        var params: AnyEncodable
-    }
-
-    private struct Response<Result: Decodable>: Decodable {
-        var id: Int
-        var result: Result?
-        var error: RemoteError?
-    }
-
-    private struct RemoteError: Decodable {
-        var code: Int
-        var message: String
+    deinit {
+        lock.lock()
+        let unclaimedConnection = connection
+        let activeRelayConnection = relayConnection
+        let activeClient = client
+        connection = nil
+        relayConnection = nil
+        client = nil
+        lock.unlock()
+        // Closing the Rust endpoint first lets a healthy guest observe EOF; resetting the in-process
+        // vsock immediately afterwards deterministically wakes both detached relay pumps even if the
+        // guest never acknowledges shutdown.
+        activeClient?.close()
+        activeRelayConnection?.close()
+        unclaimedConnection?.close()
     }
 }
 
-public struct ClockSyncParams: Encodable, Equatable, Sendable {
-    public var hostEpochNanoseconds: Int64
+private func checkedPort(_ value: UInt32) throws -> UInt16 {
+    guard let port = UInt16(exactly: value) else {
+        throw AgentProtocolError.invalidGuestPort(value)
+    }
+    return port
+}
 
-    public init(hostEpochNanoseconds: Int64) {
-        self.hostEpochNanoseconds = hostEpochNanoseconds
+public struct AgentInfo: Codable, Equatable, Sendable {
+    public var protocolVersion: UInt32
+    public var kernel: String
+    public var agentBuild: String
+    public var uptimeSeconds: UInt64
+
+    public init(protocolVersion: UInt32, kernel: String, agentBuild: String, uptimeSeconds: UInt64) {
+        self.protocolVersion = protocolVersion
+        self.kernel = kernel
+        self.agentBuild = agentBuild
+        self.uptimeSeconds = uptimeSeconds
     }
 
     enum CodingKeys: String, CodingKey {
-        case hostEpochNanoseconds = "hostEpochNS"
+        case protocolVersion = "protocol_version"
+        case kernel
+        case agentBuild = "agent_build"
+        case uptimeSeconds = "uptime_seconds"
     }
 }
 
-public struct ClockSyncResult: Decodable, Equatable, Sendable {
+public struct ClockSyncResult: Equatable, Sendable {
     public var synced: Bool
 
     public init(synced: Bool) {
@@ -160,7 +202,7 @@ public struct ClockSyncResult: Decodable, Equatable, Sendable {
     }
 }
 
-public struct AgentListenPort: Decodable, Equatable, Sendable {
+public struct AgentListenPort: Equatable, Sendable {
     public var `protocol`: String
     public var port: UInt16
 
@@ -170,7 +212,7 @@ public struct AgentListenPort: Decodable, Equatable, Sendable {
     }
 }
 
-public struct AgentPortEvent: Decodable, Equatable, Sendable {
+public struct AgentPortEvent: Equatable, Sendable {
     public var action: String
     public var `protocol`: String
     public var port: UInt16
@@ -182,7 +224,7 @@ public struct AgentPortEvent: Decodable, Equatable, Sendable {
     }
 }
 
-public struct AgentPortSnapshot: Decodable, Equatable, Sendable {
+public struct AgentPortSnapshot: Equatable, Sendable {
     public var ports: [AgentListenPort]
     public var added: [AgentPortEvent]
     public var removed: [AgentPortEvent]
@@ -191,32 +233,5 @@ public struct AgentPortSnapshot: Decodable, Equatable, Sendable {
         self.ports = ports
         self.added = added
         self.removed = removed
-    }
-
-    enum CodingKeys: String, CodingKey {
-        case ports
-        case added
-        case removed
-    }
-
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        ports = try container.decodeIfPresent([AgentListenPort].self, forKey: .ports) ?? []
-        added = try container.decodeIfPresent([AgentPortEvent].self, forKey: .added) ?? []
-        removed = try container.decodeIfPresent([AgentPortEvent].self, forKey: .removed) ?? []
-    }
-}
-
-private struct EmptyAgentParams: Encodable {}
-
-private struct AnyEncodable: Encodable {
-    private let encodeBody: (Encoder) throws -> Void
-
-    init(_ value: some Encodable) {
-        self.encodeBody = value.encode(to:)
-    }
-
-    func encode(to encoder: Encoder) throws {
-        try encodeBody(encoder)
     }
 }

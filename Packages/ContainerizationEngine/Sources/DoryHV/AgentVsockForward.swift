@@ -77,16 +77,21 @@ public final class AgentVsockForward: @unchecked Sendable {
         self.log = log
     }
 
+    /// The maximum UTF-8 byte length accepted by macOS for a filesystem Unix-domain socket path.
+    public static let maximumSocketPathByteCount = VsockUnixRelay.maximumSocketPathByteCount
+
+    /// Lets the engine reject an impossible configured path before it creates disks or sidecars.
+    public static func validateSocketPath(_ socketPath: String) throws {
+        try VsockUnixRelay.validateSocketPath(socketPath)
+    }
+
     private final class VsockBox: @unchecked Sendable {
         let vsock: VirtioVsock
         init(_ vsock: VirtioVsock) { self.vsock = vsock }
     }
 
-    public func attach(to vsock: VirtioVsock) {
-        guard let listener = VsockUnixRelay.makeListener(socketPath: socketPath, mode: 0o600) else {
-            log("agent vsock forward could not listen on \(socketPath)")
-            return
-        }
+    public func attach(to vsock: VirtioVsock) throws {
+        let listener = try VsockUnixRelay.makeListener(socketPath: socketPath, mode: 0o600)
         let box = VsockBox(vsock)
         let path = socketPath
         let log = log

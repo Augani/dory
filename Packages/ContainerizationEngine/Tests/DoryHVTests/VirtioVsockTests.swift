@@ -169,6 +169,19 @@ import Testing
         #expect(reconstructed == payload)
     }
 
+    @Test func boundedHostWriteTimesOutWhenGuestStopsReturningCredit() throws {
+        let device = VirtioVsock(guestCID: 3)
+        let connection = device.connect(port: 1024)
+        _ = device.drainPendingGuestPackets()
+
+        #expect(throws: VsockConnectionWriteError.timedOut) {
+            try connection.write(
+                Array(repeating: UInt8(7), count: 256 * 1024 + 1),
+                timeoutNanoseconds: 5_000_000
+            )
+        }
+    }
+
     @Test func hostConnectionReadsGuestPayload() throws {
         let device = VirtioVsock(guestCID: 3)
         let connection = device.connect(port: 1024)

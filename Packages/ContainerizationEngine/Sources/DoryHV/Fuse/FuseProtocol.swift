@@ -16,6 +16,7 @@ public enum FuseOpcode: UInt32, Sendable {
     case unlink = 10
     case rmdir = 11
     case rename = 12
+    case link = 13
     case open = 14
     case read = 15
     case write = 16
@@ -98,6 +99,38 @@ public struct FuseOutHeader: Equatable, Sendable {
     }
 }
 
+public struct FuseForgetIn: Equatable, Sendable {
+    public static let byteCount = 8
+
+    public var lookupCount: UInt64
+
+    public init(lookupCount: UInt64) {
+        self.lookupCount = lookupCount
+    }
+}
+
+public struct FuseForgetOne: Equatable, Sendable {
+    public static let byteCount = 16
+
+    public var nodeID: UInt64
+    public var lookupCount: UInt64
+
+    public init(nodeID: UInt64, lookupCount: UInt64) {
+        self.nodeID = nodeID
+        self.lookupCount = lookupCount
+    }
+}
+
+public struct FuseBatchForgetIn: Equatable, Sendable {
+    public static let headerByteCount = 8
+
+    public var entries: [FuseForgetOne]
+
+    public init(entries: [FuseForgetOne]) {
+        self.entries = entries
+    }
+}
+
 public struct FuseInitIn: Equatable, Sendable {
     public static let byteCount = 16
 
@@ -164,12 +197,36 @@ public struct FuseInitFlag: OptionSet, Sendable {
     public static let bigWrites = FuseInitFlag(rawValue: 1 << 5)
     public static let autoInvalidateData = FuseInitFlag(rawValue: 1 << 12)
     public static let doReaddirplus = FuseInitFlag(rawValue: 1 << 13)
-    public static let readdirplusAuto = FuseInitFlag(rawValue: 1 << 14)
     public static let writebackCache = FuseInitFlag(rawValue: 1 << 16)
     public static let parallelDirops = FuseInitFlag(rawValue: 1 << 18)
     public static let maxPages = FuseInitFlag(rawValue: 1 << 22)
     public static let mapAlignment = FuseInitFlag(rawValue: 1 << 26)
     public static let handleKillprivV2 = FuseInitFlag(rawValue: 1 << 28)
+}
+
+public struct FuseGetattrFlag: OptionSet, Sendable {
+    public let rawValue: UInt32
+
+    public init(rawValue: UInt32) {
+        self.rawValue = rawValue
+    }
+
+    /// `fuse_getattr_in.fh` identifies the open file whose attributes are requested.
+    public static let fileHandle = FuseGetattrFlag(rawValue: 1 << 0)
+    public static let allKnown = FuseGetattrFlag.fileHandle
+}
+
+/// The fixed-size FUSE 7.x `fuse_getattr_in` payload.
+public struct FuseGetattrIn: Equatable, Sendable {
+    public static let byteCount = 16
+
+    public var flags: FuseGetattrFlag
+    public var fileHandle: UInt64
+
+    public init(flags: FuseGetattrFlag = [], fileHandle: UInt64 = 0) {
+        self.flags = flags
+        self.fileHandle = fileHandle
+    }
 }
 
 public struct FuseSetattrValid: OptionSet, Sendable {
@@ -186,6 +243,66 @@ public struct FuseSetattrValid: OptionSet, Sendable {
     public static let atime = FuseSetattrValid(rawValue: 1 << 4)
     public static let mtime = FuseSetattrValid(rawValue: 1 << 5)
     public static let fileHandle = FuseSetattrValid(rawValue: 1 << 6)
+    public static let atimeNow = FuseSetattrValid(rawValue: 1 << 7)
+    public static let mtimeNow = FuseSetattrValid(rawValue: 1 << 8)
+    public static let lockOwner = FuseSetattrValid(rawValue: 1 << 9)
+    public static let ctime = FuseSetattrValid(rawValue: 1 << 10)
+    public static let killSuidGid = FuseSetattrValid(rawValue: 1 << 11)
+
+    /// Every SETATTR flag defined by the FUSE 7.38 protocol negotiated by Dory.
+    public static let allKnown = FuseSetattrValid(rawValue: (1 << 12) - 1)
+}
+
+/// The fixed-size FUSE 7.x `fuse_setattr_in` payload.
+///
+/// Timestamp seconds are unsigned on the wire but carry a signed `time64_t` bit pattern. Keeping
+/// them signed here preserves pre-epoch timestamps while encoding the exact same 64 bits.
+public struct FuseSetattrIn: Equatable, Sendable {
+    public static let byteCount = 88
+
+    public var valid: FuseSetattrValid
+    public var fileHandle: UInt64
+    public var size: UInt64
+    public var lockOwner: UInt64
+    public var atimeSeconds: Int64
+    public var mtimeSeconds: Int64
+    public var ctimeSeconds: Int64
+    public var atimeNsec: UInt32
+    public var mtimeNsec: UInt32
+    public var ctimeNsec: UInt32
+    public var mode: UInt32
+    public var uid: UInt32
+    public var gid: UInt32
+
+    public init(
+        valid: FuseSetattrValid,
+        fileHandle: UInt64 = 0,
+        size: UInt64 = 0,
+        lockOwner: UInt64 = 0,
+        atimeSeconds: Int64 = 0,
+        mtimeSeconds: Int64 = 0,
+        ctimeSeconds: Int64 = 0,
+        atimeNsec: UInt32 = 0,
+        mtimeNsec: UInt32 = 0,
+        ctimeNsec: UInt32 = 0,
+        mode: UInt32 = 0,
+        uid: UInt32 = 0,
+        gid: UInt32 = 0
+    ) {
+        self.valid = valid
+        self.fileHandle = fileHandle
+        self.size = size
+        self.lockOwner = lockOwner
+        self.atimeSeconds = atimeSeconds
+        self.mtimeSeconds = mtimeSeconds
+        self.ctimeSeconds = ctimeSeconds
+        self.atimeNsec = atimeNsec
+        self.mtimeNsec = mtimeNsec
+        self.ctimeNsec = ctimeNsec
+        self.mode = mode
+        self.uid = uid
+        self.gid = gid
+    }
 }
 
 public struct FuseSetupMappingIn: Equatable, Sendable {
@@ -244,24 +361,81 @@ public enum FuseProtocol {
     public static let minimumMinorVersion: UInt32 = 27
     public static let eproto: Int32 = 71
 
-    // FUSE replies carry LINUX errno values, but the server computes with Darwin's <errno.h>. Most
-    // common codes coincide (ENOENT=2, EIO=5, EINVAL=22, EACCES=13, EBADF=9, EEXIST=17, ENOTDIR=20,
-    // EISDIR=21, EROFS=30, EBUSY=16), but several differ and MUST be translated — otherwise the guest
-    // misreads them. Critically, a Darwin ENOSYS(78) is Linux EREMCHG(78), so the kernel never sees
-    // "not implemented" and its statx->getattr and copy_file_range->read+write fallbacks never fire,
-    // which breaks every modern tool (node/npm use statx) on a bind mount even though busybox works.
+    // FUSE replies carry Linux errno values, but the server computes with Darwin's <errno.h>.
+    // Codes 1...10 and 12...34 are ABI-compatible; EDEADLK and every code from EAGAIN onward are
+    // not. Passing a Darwin code through can silently turn one error into an unrelated Linux error.
+    // For example, Darwin ENOSYS(78) is Linux EREMCHG(78), preventing the guest's statx->getattr and
+    // copy_file_range->read+write fallbacks. Keep this table exhaustive for Darwin's public errno
+    // range and fail closed to EIO for future or invalid values.
     public static func linuxErrno(_ darwin: Int32) -> Int32 {
         switch darwin {
-        case ENOSYS: return 38               // Darwin 78 -> Linux 38
-        case ENODATA: return 61              // Darwin 96 -> Linux 61 (== Linux ENOATTR)
-        case EOPNOTSUPP: return 95           // Darwin 102 -> Linux 95
-        case ENOTSUP: return 95              // Darwin 45 -> Linux 95 (ENOTSUP == EOPNOTSUPP on Linux)
-        case EPROTO: return eproto           // Darwin 100 -> Linux 71
-        case ELOOP: return 40                // Darwin 62 -> Linux 40
-        case ENAMETOOLONG: return 36         // Darwin 63 -> Linux 36
-        case ENOTEMPTY: return 39            // Darwin 66 -> Linux 39
-        case EOVERFLOW: return 75            // Darwin 84 -> Linux 75
-        default: return darwin
+        case 0, 1...10, 12...34:
+            return darwin
+        case EDEADLK: return 35
+        case EAGAIN: return 11
+        case EINPROGRESS: return 115
+        case EALREADY: return 114
+        case ENOTSOCK: return 88
+        case EDESTADDRREQ: return 89
+        case EMSGSIZE: return 90
+        case EPROTOTYPE: return 91
+        case ENOPROTOOPT: return 92
+        case EPROTONOSUPPORT: return 93
+        case ESOCKTNOSUPPORT: return 94
+        case ENOTSUP: return 95
+        case EPFNOSUPPORT: return 96
+        case EAFNOSUPPORT: return 97
+        case EADDRINUSE: return 98
+        case EADDRNOTAVAIL: return 99
+        case ENETDOWN: return 100
+        case ENETUNREACH: return 101
+        case ENETRESET: return 102
+        case ECONNABORTED: return 103
+        case ECONNRESET: return 104
+        case ENOBUFS: return 105
+        case EISCONN: return 106
+        case ENOTCONN: return 107
+        case ESHUTDOWN: return 108
+        case ETOOMANYREFS: return 109
+        case ETIMEDOUT: return 110
+        case ECONNREFUSED: return 111
+        case ELOOP: return 40
+        case ENAMETOOLONG: return 36
+        case EHOSTDOWN: return 112
+        case EHOSTUNREACH: return 113
+        case ENOTEMPTY: return 39
+        case EPROCLIM: return 11              // No Linux equivalent; retryable resource exhaustion.
+        case EUSERS: return 87
+        case EDQUOT: return 122
+        case ESTALE: return 116
+        case EREMOTE: return 66
+        case EBADRPC, ERPCMISMATCH, EPROGUNAVAIL, EPROGMISMATCH, EPROCUNAVAIL:
+            return eproto                    // Darwin RPC-only failures have no direct Linux errno.
+        case ENOLCK: return 37
+        case ENOSYS: return 38
+        case EFTYPE: return 22               // No Linux equivalent; inappropriate file type.
+        case EAUTH, ENEEDAUTH: return 13
+        case EPWROFF, EDEVERR: return 5
+        case EOVERFLOW: return 75
+        case EBADEXEC, EBADARCH, ESHLIBVERS, EBADMACHO: return 8
+        case ECANCELED: return 125
+        case EIDRM: return 43
+        case ENOMSG: return 42
+        case EILSEQ: return 84
+        case ENOATTR, ENODATA: return 61
+        case EBADMSG: return 74
+        case EMULTIHOP: return 72
+        case ENOLINK: return 67
+        case ENOSR: return 63
+        case ENOSTR: return 60
+        case EPROTO: return eproto
+        case ETIME: return 62
+        case EOPNOTSUPP, ENOPOLICY: return 95
+        case ENOTRECOVERABLE: return 131
+        case EOWNERDEAD: return 130
+        case EQFULL: return 105              // Linux ENOBUFS is the closest queue-capacity error.
+        case ENOTCAPABLE: return 13
+        default: return 5
         }
     }
 
@@ -319,6 +493,109 @@ public enum FuseProtocol {
             maxReadahead: data.leUInt32(at: 8),
             flags: data.leUInt32(at: 12)
         )
+    }
+
+    public static func decodeGetattrIn(_ data: [UInt8]) throws -> FuseGetattrIn {
+        try decodeGetattrIn(data[...])
+    }
+
+    public static func decodeGetattrIn(_ data: ArraySlice<UInt8>) throws -> FuseGetattrIn {
+        guard data.count >= FuseGetattrIn.byteCount else { throw FuseProtocolError.shortFrame }
+        return FuseGetattrIn(
+            flags: FuseGetattrFlag(rawValue: data.leUInt32(at: 0)),
+            fileHandle: data.leUInt64(at: 8)
+        )
+    }
+
+    public static func encodeGetattrIn(_ value: FuseGetattrIn) -> [UInt8] {
+        var data = [UInt8]()
+        data.reserveCapacity(FuseGetattrIn.byteCount)
+        data.appendLE(value.flags.rawValue)
+        data.appendLE(UInt32(0))
+        data.appendLE(value.fileHandle)
+        return data
+    }
+
+    public static func decodeSetattrIn(_ data: [UInt8]) throws -> FuseSetattrIn {
+        guard data.count >= FuseSetattrIn.byteCount else { throw FuseProtocolError.shortFrame }
+        return FuseSetattrIn(
+            valid: FuseSetattrValid(rawValue: data.leUInt32(at: 0)),
+            fileHandle: data.leUInt64(at: 8),
+            size: data.leUInt64(at: 16),
+            lockOwner: data.leUInt64(at: 24),
+            atimeSeconds: Int64(bitPattern: data.leUInt64(at: 32)),
+            mtimeSeconds: Int64(bitPattern: data.leUInt64(at: 40)),
+            ctimeSeconds: Int64(bitPattern: data.leUInt64(at: 48)),
+            atimeNsec: data.leUInt32(at: 56),
+            mtimeNsec: data.leUInt32(at: 60),
+            ctimeNsec: data.leUInt32(at: 64),
+            mode: data.leUInt32(at: 68),
+            uid: data.leUInt32(at: 76),
+            gid: data.leUInt32(at: 80)
+        )
+    }
+
+    public static func encodeSetattrIn(_ value: FuseSetattrIn) -> [UInt8] {
+        var data = [UInt8]()
+        data.reserveCapacity(FuseSetattrIn.byteCount)
+        data.appendLE(value.valid.rawValue)
+        data.appendLE(UInt32(0))
+        data.appendLE(value.fileHandle)
+        data.appendLE(value.size)
+        data.appendLE(value.lockOwner)
+        data.appendLE(UInt64(bitPattern: value.atimeSeconds))
+        data.appendLE(UInt64(bitPattern: value.mtimeSeconds))
+        data.appendLE(UInt64(bitPattern: value.ctimeSeconds))
+        data.appendLE(value.atimeNsec)
+        data.appendLE(value.mtimeNsec)
+        data.appendLE(value.ctimeNsec)
+        data.appendLE(value.mode)
+        data.appendLE(UInt32(0))
+        data.appendLE(value.uid)
+        data.appendLE(value.gid)
+        data.appendLE(UInt32(0))
+        return data
+    }
+
+    public static func decodeForgetIn(_ data: [UInt8]) throws -> FuseForgetIn {
+        guard data.count >= FuseForgetIn.byteCount else { throw FuseProtocolError.shortFrame }
+        return FuseForgetIn(lookupCount: data.leUInt64(at: 0))
+    }
+
+    public static func encodeForgetIn(_ value: FuseForgetIn) -> [UInt8] {
+        var data = [UInt8]()
+        data.appendLE(value.lookupCount)
+        return data
+    }
+
+    public static func decodeBatchForgetIn(_ data: [UInt8]) throws -> FuseBatchForgetIn {
+        guard data.count >= FuseBatchForgetIn.headerByteCount else { throw FuseProtocolError.shortFrame }
+        let count = Int(data.leUInt32(at: 0))
+        guard count <= (data.count - FuseBatchForgetIn.headerByteCount) / FuseForgetOne.byteCount else {
+            throw FuseProtocolError.shortFrame
+        }
+        var entries = [FuseForgetOne]()
+        entries.reserveCapacity(count)
+        var offset = FuseBatchForgetIn.headerByteCount
+        for _ in 0..<count {
+            entries.append(FuseForgetOne(
+                nodeID: data.leUInt64(at: offset),
+                lookupCount: data.leUInt64(at: offset + 8)
+            ))
+            offset += FuseForgetOne.byteCount
+        }
+        return FuseBatchForgetIn(entries: entries)
+    }
+
+    public static func encodeBatchForgetIn(_ value: FuseBatchForgetIn) -> [UInt8] {
+        var data = [UInt8]()
+        data.appendLE(UInt32(value.entries.count))
+        data.appendLE(UInt32(0))
+        for entry in value.entries {
+            data.appendLE(entry.nodeID)
+            data.appendLE(entry.lookupCount)
+        }
+        return data
     }
 
     public static func encodeInitOut(_ value: FuseInitOut) -> [UInt8] {

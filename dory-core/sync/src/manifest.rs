@@ -27,24 +27,86 @@ impl Manifest {
 /// and special files are skipped (only regular files replicate). Entries are sorted by path so a
 /// host and remote produce byte-identical ordering and the reconciler diff is stable.
 pub fn walk_manifest(root: &Path) -> std::io::Result<Manifest> {
+    walk_manifest_impl(root, &[], false)
+}
+
+/// Walk a tree while skipping named direct children of `root` before reading their metadata or
+/// contents. This is used for private implementation subtrees (for example resumable sync staging)
+/// that must not inflate or block a remote manifest snapshot. Vanished entries are tolerated here:
+/// an externally mutated remote may cause a harmless resend or require another convergence pass,
+/// whereas the host-source [`walk_manifest`] remains strict so it never deletes a remote file after
+/// silently omitting a raced local source entry.
+pub fn walk_manifest_excluding(
+    root: &Path,
+    excluded_root_children: &[&str],
+) -> std::io::Result<Manifest> {
+    walk_manifest_impl(root, excluded_root_children, true)
+}
+
+fn walk_manifest_impl(
+    root: &Path,
+    excluded_root_children: &[&str],
+    tolerate_not_found: bool,
+) -> std::io::Result<Manifest> {
     let mut entries = Vec::new();
-    walk_into(root, root, &mut entries)?;
+    walk_into(
+        root,
+        root,
+        excluded_root_children,
+        tolerate_not_found,
+        &mut entries,
+    )?;
     entries.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(Manifest { entries })
 }
 
-fn walk_into(root: &Path, dir: &Path, out: &mut Vec<FileEntry>) -> std::io::Result<()> {
-    for dirent in std::fs::read_dir(dir)? {
-        let dirent = dirent?;
+fn walk_into(
+    root: &Path,
+    dir: &Path,
+    excluded_root_children: &[&str],
+    tolerate_not_found: bool,
+    out: &mut Vec<FileEntry>,
+) -> std::io::Result<()> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) if tolerate_not_found && dir != root && e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(())
+        }
+        Err(e) => return Err(e),
+    };
+    for dirent in entries {
+        let dirent = match dirent {
+            Ok(dirent) => dirent,
+            Err(e) if tolerate_not_found && e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(e),
+        };
+        if dir == root
+            && dirent
+                .file_name()
+                .to_str()
+                .is_some_and(|name| excluded_root_children.contains(&name))
+        {
+            continue;
+        }
         let path = dirent.path();
         // symlink_metadata: do NOT follow symlinks (avoid escaping the tree / cycles).
-        let meta = std::fs::symlink_metadata(&path)?;
+        let meta = match std::fs::symlink_metadata(&path) {
+            Ok(meta) => meta,
+            Err(e) if tolerate_not_found && e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(e),
+        };
         let file_type = meta.file_type();
         if file_type.is_dir() {
-            walk_into(root, &path, out)?;
+            walk_into(root, &path, excluded_root_children, tolerate_not_found, out)?;
         } else if file_type.is_file() {
             let rel = relative_slash(root, &path);
-            let contents = std::fs::read(&path)?;
+            let contents = match std::fs::read(&path) {
+                Ok(contents) => contents,
+                Err(e) if tolerate_not_found && e.kind() == std::io::ErrorKind::NotFound => {
+                    continue
+                }
+                Err(e) => return Err(e),
+            };
             out.push(FileEntry {
                 path: rel,
                 size: meta.len(),
@@ -151,6 +213,21 @@ mod tests {
             p.transfer.is_empty() && p.delete.is_empty(),
             "same content -> nothing to do: {p:?}"
         );
+    }
+
+    #[test]
+    fn excluded_root_child_is_not_traversed_or_reported() {
+        let t = TempTree::new("excluded-private-tree");
+        t.write("keep.txt", "visible");
+        t.write(".private/staged.bin", "implementation detail");
+
+        let manifest = walk_manifest_excluding(&t.root, &[".private"]).unwrap();
+        let paths: Vec<&str> = manifest
+            .entries
+            .iter()
+            .map(|entry| entry.path.as_str())
+            .collect();
+        assert_eq!(paths, vec!["keep.txt"]);
     }
 
     #[test]

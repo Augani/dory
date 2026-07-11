@@ -13,6 +13,10 @@ pub const PORT_USBIP: u32 = 1025;
 pub const PORT_DOCKER: u32 = 1026;
 /// Interactive machine shell PTY byte stream, one connection per attached terminal.
 pub const PORT_SHELL: u32 = 1027;
+/// Host-to-guest bind-mount event batches. The host sends this only after virtio-fs cache
+/// invalidation has completed; the agent performs a same-mode metadata operation so Linux fsnotify
+/// and inotify-backed development tools observe the host edit natively.
+pub const PORT_FSEVENTS: u32 = 1028;
 
 /// Guest-initiated dial-back targets on the host (the AI bridge): the guest connects to
 /// `VMADDR_CID_HOST` on these ports and doryd forwards to `127.0.0.1:<same>`. The forwarding side

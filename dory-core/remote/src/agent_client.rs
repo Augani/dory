@@ -27,6 +27,7 @@ use crate::error::RemoteError;
 // otherwise hang `call` (and any FFI `block_on` above it) forever. Every RPC therefore carries a
 // deadline sized to its slowest legitimate completion.
 const CONTROL_DEADLINE: Duration = Duration::from_secs(30);
+const HANDSHAKE_DEADLINE: Duration = Duration::from_secs(10);
 const SYNC_MANIFEST_DEADLINE: Duration = Duration::from_secs(10 * 60);
 const SYNC_IO_DEADLINE: Duration = Duration::from_secs(2 * 60);
 const EXEC_GRACE: Duration = Duration::from_secs(30);
@@ -45,10 +46,24 @@ impl AgentClient {
     where
         S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
-        handshake(&mut stream, &Hello::current(build)).await?;
+        Self::connect_with_deadline(&mut stream, build, HANDSHAKE_DEADLINE).await?;
         Ok(AgentClient {
             mux: Mux::client(stream),
         })
+    }
+
+    async fn connect_with_deadline<S>(
+        stream: &mut S,
+        build: impl Into<String>,
+        deadline: Duration,
+    ) -> Result<(), RemoteError>
+    where
+        S: AsyncRead + AsyncWrite + Unpin,
+    {
+        tokio::time::timeout(deadline, handshake(stream, &Hello::current(build)))
+            .await
+            .map_err(|_| RemoteError::Timeout(deadline))??;
+        Ok(())
     }
 
     async fn call(&self, method: Method) -> Result<Res, RemoteError> {
@@ -337,6 +352,20 @@ mod tests {
             Err(RemoteError::Handshake(_)) => {}
             Err(other) => panic!("expected a handshake error, got {other:?}"),
             Ok(_) => panic!("expected a handshake error, got a connected client"),
+        }
+    }
+
+    #[tokio::test]
+    async fn silent_peer_times_out_during_handshake() {
+        let (mut client_stream, _silent_peer) = tokio::io::duplex(64 * 1024);
+        let deadline = std::time::Duration::from_millis(50);
+
+        let result =
+            AgentClient::connect_with_deadline(&mut client_stream, "doryd-test", deadline).await;
+
+        match result {
+            Err(RemoteError::Timeout(actual)) => assert_eq!(actual, deadline),
+            other => panic!("expected handshake timeout, got {other:?}"),
         }
     }
 }

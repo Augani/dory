@@ -363,6 +363,121 @@ import Testing
         func handleKick(queue: Int, transport: VirtioMMIOTransport) {}
     }
 
+    private final class KickOverlapProbe: @unchecked Sendable {
+        let entered = DispatchSemaphore(value: 0)
+        let release = DispatchSemaphore(value: 0)
+        private let lock = NSLock()
+        private var active = 0
+        private(set) var maximumActive = 0
+
+        func handleKick() {
+            lock.lock()
+            active += 1
+            maximumActive = max(maximumActive, active)
+            lock.unlock()
+            entered.signal()
+            release.wait()
+            lock.lock()
+            active -= 1
+            lock.unlock()
+        }
+    }
+
+    /// Deliberately relies on the protocol default: kicks must remain transport-serialized.
+    private final class DefaultKickBackend: VirtioDeviceBackend {
+        let deviceID: UInt32 = 1
+        let deviceFeatures: UInt64 = 0
+        let queueCount = 2
+        let configSpace: [UInt8] = []
+        let probe: KickOverlapProbe
+
+        init(probe: KickOverlapProbe) {
+            self.probe = probe
+        }
+
+        func handleKick(queue: Int, transport: VirtioMMIOTransport) {
+            probe.handleKick()
+        }
+    }
+
+    private final class ManagedKickBackend: VirtioDeviceBackend {
+        let deviceID: UInt32 = 2
+        let deviceFeatures: UInt64 = 0
+        let queueCount = 2
+        let configSpace: [UInt8] = []
+        let kickSynchronization: VirtioKickSynchronization = .backendManaged
+        let probe: KickOverlapProbe
+
+        init(probe: KickOverlapProbe) {
+            self.probe = probe
+        }
+
+        func handleKick(queue: Int, transport: VirtioMMIOTransport) {
+            probe.handleKick()
+        }
+    }
+
+    /// Models virtio-fs's lifecycle rule: a kick may perform host work without the register lock,
+    /// but its eventual ring access is admitted only if QueueReady/reset did not change its epoch.
+    private final class LifecycleManagedKickBackend: VirtioDeviceBackend, @unchecked Sendable {
+        let deviceID: UInt32 = 3
+        let deviceFeatures: UInt64 = 0
+        let queueCount = 2
+        let configSpace: [UInt8] = []
+        let kickSynchronization: VirtioKickSynchronization = .backendManaged
+        let entered = DispatchSemaphore(value: 0)
+        let release = DispatchSemaphore(value: 0)
+
+        private let lock = NSLock()
+        private var generations = [UInt64](repeating: 0, count: 2)
+        private var events: [String] = []
+        private var acceptedQueues: [Int] = []
+
+        func handleKick(queue: Int, transport: VirtioMMIOTransport) {
+            lock.lock()
+            let generation = generations[queue]
+            events.append("enter-\(queue)-\(generation)")
+            lock.unlock()
+            entered.signal()
+            release.wait()
+
+            let accepted = transport.withQueueLock { () -> Bool in
+                lock.lock()
+                let current = generations[queue] == generation
+                lock.unlock()
+                return current && transport.queues[queue].ready
+            }
+            lock.lock()
+            if accepted {
+                acceptedQueues.append(queue)
+            }
+            events.append("finish-\(queue)-\(accepted ? "accepted" : "discarded")")
+            lock.unlock()
+        }
+
+        func queueStateChanged(queue: Int, ready: Bool, transport: VirtioMMIOTransport) {
+            lock.lock()
+            generations[queue] &+= 1
+            events.append("ready-\(queue)-\(generations[queue])")
+            lock.unlock()
+        }
+
+        func deviceReset(transport: VirtioMMIOTransport) {
+            lock.lock()
+            for queue in generations.indices {
+                generations[queue] &+= 1
+            }
+            events.append("reset")
+            lock.unlock()
+        }
+
+        var snapshot: (events: [String], acceptedQueues: [Int]) {
+            lock.lock()
+            defer { lock.unlock() }
+            return (events, acceptedQueues)
+        }
+    }
+
     @Test func sharedMemoryRegistersExposeSelectedRegionAndMissingSentinel() throws {
         let memory = try GuestMemory(guestBase: GuestLayout.ramBase, size: 0x20_000)
         let backend = Backend(sharedMemoryRegions: [
@@ -382,6 +497,110 @@ import Testing
 
         #expect(transport.read(offset: 0x0B0, width: 4) == UInt64(UInt32.max))
         #expect(transport.read(offset: 0x0B4, width: 4) == UInt64(UInt32.max))
+    }
+
+    @Test func defaultBackendKicksRemainSerializedByTransport() throws {
+        let memory = try GuestMemory(guestBase: GuestLayout.ramBase, size: 0x20_000)
+        let probe = KickOverlapProbe()
+        let transport = VirtioMMIOTransport(
+            baseAddress: GuestLayout.virtioBase,
+            backend: DefaultKickBackend(probe: probe),
+            memory: memory
+        ) {}
+        let group = DispatchGroup()
+        let secondStarted = DispatchSemaphore(value: 0)
+
+        group.enter()
+        DispatchQueue.global().async {
+            transport.write(offset: 0x050, value: 0, width: 4)
+            group.leave()
+        }
+        #expect(probe.entered.wait(timeout: .now() + 2) == .success)
+
+        group.enter()
+        DispatchQueue.global().async {
+            secondStarted.signal()
+            transport.write(offset: 0x050, value: 1, width: 4)
+            group.leave()
+        }
+        #expect(secondStarted.wait(timeout: .now() + 2) == .success)
+        #expect(probe.entered.wait(timeout: .now() + 0.1) == .timedOut)
+
+        probe.release.signal()
+        #expect(probe.entered.wait(timeout: .now() + 2) == .success)
+        probe.release.signal()
+        #expect(group.wait(timeout: .now() + 2) == .success)
+        #expect(probe.maximumActive == 1)
+    }
+
+    @Test func backendManagedKicksCanOverlapAcrossQueues() throws {
+        let memory = try GuestMemory(guestBase: GuestLayout.ramBase, size: 0x20_000)
+        let probe = KickOverlapProbe()
+        let transport = VirtioMMIOTransport(
+            baseAddress: GuestLayout.virtioBase,
+            backend: ManagedKickBackend(probe: probe),
+            memory: memory
+        ) {}
+        let group = DispatchGroup()
+
+        for queue in 0..<2 {
+            group.enter()
+            DispatchQueue.global().async {
+                transport.write(offset: 0x050, value: UInt64(queue), width: 4)
+                group.leave()
+            }
+        }
+        #expect(probe.entered.wait(timeout: .now() + 2) == .success)
+        #expect(probe.entered.wait(timeout: .now() + 2) == .success)
+        #expect(probe.maximumActive == 2)
+
+        probe.release.signal()
+        probe.release.signal()
+        #expect(group.wait(timeout: .now() + 2) == .success)
+    }
+
+    @Test func backendManagedKickLifecycleGatesOrderResetAndQueueReconfigure() throws {
+        let memory = try GuestMemory(guestBase: GuestLayout.ramBase, size: 0x20_000)
+        let backend = LifecycleManagedKickBackend()
+        let transport = VirtioMMIOTransport(
+            baseAddress: GuestLayout.virtioBase,
+            backend: backend,
+            memory: memory
+        ) {}
+
+        for queue in 0..<2 {
+            transport.write(offset: 0x030, value: UInt64(queue), width: 4)
+            transport.write(offset: 0x044, value: 1, width: 4)
+        }
+
+        let group = DispatchGroup()
+        for queue in 0..<2 {
+            group.enter()
+            DispatchQueue.global().async {
+                transport.write(offset: 0x050, value: UInt64(queue), width: 4)
+                group.leave()
+            }
+        }
+        #expect(backend.entered.wait(timeout: .now() + 2) == .success)
+        #expect(backend.entered.wait(timeout: .now() + 2) == .success)
+
+        // Both writes must complete while the kick handlers are paused outside registerLock.
+        transport.write(offset: 0x030, value: 0, width: 4)
+        transport.write(offset: 0x044, value: 1, width: 4)
+        transport.write(offset: 0x070, value: 0, width: 4)
+
+        backend.release.signal()
+        backend.release.signal()
+        #expect(group.wait(timeout: .now() + 2) == .success)
+
+        let snapshot = backend.snapshot
+        let reconfigured = snapshot.events.firstIndex(of: "ready-0-2")
+        let reset = snapshot.events.firstIndex(of: "reset")
+        let finishedZero = snapshot.events.firstIndex(of: "finish-0-discarded")
+        let finishedOne = snapshot.events.firstIndex(of: "finish-1-discarded")
+        #expect(reconfigured != nil && finishedZero != nil && reconfigured! < finishedZero!)
+        #expect(reset != nil && finishedOne != nil && reset! < finishedOne!)
+        #expect(snapshot.acceptedQueues.isEmpty)
     }
 }
 

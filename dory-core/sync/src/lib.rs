@@ -8,7 +8,7 @@ mod manifest;
 mod plan;
 
 pub use hash::{hash_bytes, Hash, HASH_LEN};
-pub use manifest::{walk_manifest, FileEntry, Manifest};
+pub use manifest::{walk_manifest, walk_manifest_excluding, FileEntry, Manifest};
 pub use plan::{plan, SyncPlan};
 
 /// Chunk size for streamed file transfer. A create/build body is tiny; source trees are many small

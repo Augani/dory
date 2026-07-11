@@ -16,6 +16,12 @@ func fail(_ message: String) -> Never {
     exit(1)
 }
 
+do {
+    try HostFileDescriptorLimit.raiseSoftLimit()
+} catch {
+    fail("raise file-descriptor limit: \(error)")
+}
+
 struct Options {
     var kernel: String?
     var initfs: String?
@@ -44,7 +50,7 @@ func parseOptions(_ arguments: ArraySlice<String>) -> Options {
         case "--expose-docker": options.exposePort = iterator.next().flatMap(UInt16.init) ?? 0
         case "--timeout-sec": options.timeoutSeconds = iterator.next().flatMap(UInt64.init) ?? options.timeoutSeconds
         case "--share":
-            guard let value = iterator.next() else { fail("--share requires tag=/host/path[:ro|:rw][:dax]") }
+            guard let value = iterator.next() else { fail("--share requires tag=/host/path[:ro|:rw][:safe][:at=/guest/path]; DAX host shares are disabled") }
             do {
                 options.shares.append(try VirtioFSShareConfiguration(argument: value))
             } catch {
@@ -71,24 +77,6 @@ func exposeDockerPort(apiSocket: String, hostPort: UInt16) {
     try? task.run()
     task.waitUntilExit()
     FileHandle.standardError.write(Data("dory-hv: docker api exposed on 127.0.0.1:\(hostPort)\n".utf8))
-}
-
-private struct EmptyParams: Encodable {}
-
-private struct AgentInfo: Codable {
-    var kernel: String
-    var uptimeSeconds: Int64
-    var memoryTotal: UInt64
-    var memoryFree: UInt64
-    var protocolVersion: Int
-
-    enum CodingKeys: String, CodingKey {
-        case kernel
-        case uptimeSeconds = "uptime_seconds"
-        case memoryTotal = "memory_total"
-        case memoryFree = "memory_free"
-        case protocolVersion = "protocol_version"
-    }
 }
 
 private final class AgentPingResultBox: @unchecked Sendable {
@@ -186,10 +174,9 @@ func runAgentPing(_ options: Options) {
         Task.detached {
             while DispatchTime.now().uptimeNanoseconds < deadline {
                 let connection = vsock.connect(port: VsockPorts.agent)
-                let transport = AgentVsockTransport(connection: connection, readTimeoutNanoseconds: 2_000_000_000)
-                let channel = AgentChannel(transport: transport)
+                let channel = AgentChannel(connection: connection)
                 do {
-                    let info: AgentInfo = try await channel.call("info", EmptyParams())
+                    let info = try await channel.info()
                     result.set(.success(info))
                     semaphore.signal()
                     return
@@ -279,7 +266,10 @@ case "boot":
         for share in options.shares {
             let daxBase = share.dax ? GuestLayout.daxWindowBase + daxSlot * DaxWindow.defaultSize : nil
             if share.dax { daxSlot += 1 }
-            backends.append(try share.makeBackend(daxGuestBase: daxBase))
+            backends.append(try share.makeBackend(
+                daxGuestBase: daxBase,
+                requestQueueCount: min(8, max(1, options.cpus))
+            ))
             FileHandle.standardError.write(Data("dory-hv: sharing \(share.path) as virtiofs tag \(share.tag)\(share.readOnly ? " (ro)" : "")\(share.dax ? " (dax)" : "")\n".utf8))
         }
         backends.append(VirtioRng())
@@ -458,7 +448,7 @@ case "engine":
         case "--guest-agent":
             guestAgent = iterator.next()
         case "--share":
-            guard let value = iterator.next() else { fail("--share requires tag=/host/path[:ro|:rw][:dax]") }
+            guard let value = iterator.next() else { fail("--share requires tag=/host/path[:ro|:rw][:safe][:at=/guest/path]; DAX host shares are disabled") }
             do {
                 shares.append(try VirtioFSShareConfiguration(argument: value))
             } catch {

@@ -1,144 +1,152 @@
+import DoryCore
 import Foundation
 import Testing
 @testable import DoryHV
 
 @Suite struct AgentProtocolTests {
-    @Test func frameCodecUsesBigEndianLengthPrefix() throws {
-        let frame = try AgentFrameCodec.encode([1, 2, 3])
-        #expect(frame.prefix(4) == [0, 0, 0, 3])
-        #expect(try AgentFrameCodec.decodeLength(Array(frame.prefix(4))) == 3)
-        #expect(Array(frame.dropFirst(4)) == [1, 2, 3])
+    @Test func channelUsesSharedRustClientForInfoAndClockSync() async throws {
+        let client = StubAgentControlRPC()
+        client.infoResult = DoryAgentInfo(
+            protocolVersion: DoryCore.protocolVersion(),
+            kernel: "Linux 6.12.30-dory",
+            agentBuild: "dory-agent/0.1.0",
+            uptimeSeconds: 42
+        )
+        client.clockSyncResult = true
+        let channel = AgentChannel(client: client)
+
+        let info = try await channel.info()
+        let clock = try await channel.syncClock(hostEpochNanoseconds: 1_725_000_000_123_456_789)
+
+        #expect(info == AgentInfo(
+            protocolVersion: 1,
+            kernel: "Linux 6.12.30-dory",
+            agentBuild: "dory-agent/0.1.0",
+            uptimeSeconds: 42
+        ))
+        #expect(clock.synced)
+        #expect(client.clockSyncInputs == [1_725_000_000_123_456_789])
     }
 
-    @Test func frameCodecRejectsOversizedFrames() throws {
-        #expect(throws: AgentProtocolError.self) {
-            _ = try AgentFrameCodec.decodeLength([1, 0, 0, 1])
+    @Test func channelMapsTypedPortSnapshot() async throws {
+        let client = StubAgentControlRPC()
+        client.portsResult = DoryPortsSnapshot(
+            ports: [DoryListenPort(protocol: "tcp", port: 3_000)],
+            added: [DoryPortEvent(action: "added", protocol: "tcp6", port: 8_080)],
+            removed: [DoryPortEvent(action: "removed", protocol: "udp", port: 5_353)]
+        )
+        let channel = AgentChannel(client: client)
+
+        let snapshot = try await channel.watchPorts()
+
+        #expect(snapshot == AgentPortSnapshot(
+            ports: [AgentListenPort(protocol: "tcp", port: 3_000)],
+            added: [AgentPortEvent(action: "added", protocol: "tcp6", port: 8_080)],
+            removed: [AgentPortEvent(action: "removed", protocol: "udp", port: 5_353)]
+        ))
+    }
+
+    @Test func channelRejectsOutOfRangeGuestPort() async throws {
+        let client = StubAgentControlRPC()
+        client.portsResult = DoryPortsSnapshot(
+            ports: [DoryListenPort(protocol: "tcp", port: 65_536)],
+            added: [],
+            removed: []
+        )
+        let channel = AgentChannel(client: client)
+
+        await #expect(throws: AgentProtocolError.invalidGuestPort(65_536)) {
+            _ = try await channel.watchPorts()
         }
     }
 
-    @Test func callReturnsDecodedResult() async throws {
-        let transport = StubAgentTransport(responsePayload: #"{"id":1,"result":{"ok":true,"kernel":"6.12.30-dory"}}"#)
-        let channel = AgentChannel(transport: transport)
-        let result: PingResult = try await channel.call("ping", EmptyParams())
+    @Test func infoJSONUsesCurrentProtobufSurfaceNames() throws {
+        let info = AgentInfo(
+            protocolVersion: 1,
+            kernel: "Linux 6.12.30-dory",
+            agentBuild: "dory-agent/0.1.0",
+            uptimeSeconds: 42
+        )
 
-        #expect(result.ok)
-        #expect(result.kernel == "6.12.30-dory")
-        let request = try transport.decodedRequest()
-        #expect(request.method == "ping")
-        #expect(request.id == 1)
+        let json = try #require(try JSONSerialization.jsonObject(with: JSONEncoder().encode(info)) as? [String: Any])
+        #expect(json["protocol_version"] as? Int == 1)
+        #expect(json["agent_build"] as? String == "dory-agent/0.1.0")
+        #expect(json["uptime_seconds"] as? Int == 42)
+        #expect(json["memory_total"] == nil)
+        #expect(json["memory_free"] == nil)
     }
 
-    @Test func callThrowsRemoteErrors() async throws {
-        let transport = StubAgentTransport(responsePayload: #"{"id":1,"error":{"code":-32601,"message":"unknown method"}}"#)
-        let channel = AgentChannel(transport: transport)
-
-        await #expect(throws: AgentProtocolError.remoteError(code: -32601, message: "unknown method")) {
-            let _: PingResult = try await channel.call("missing", EmptyParams())
+    @Test func failedConnectClosesUnderlyingVsockToStopBothRelayPumps() async throws {
+        let connection = FailedConnectVsockConnection()
+        let channel = AgentChannel(connection: connection) { descriptor in
+            close(descriptor) // The real DoryCore connector also takes ownership on failure.
+            throw ConnectFailure.expected
         }
+
+        await #expect(throws: ConnectFailure.expected) {
+            _ = try await channel.info()
+        }
+        #expect(connection.closed)
     }
 
-    @Test func clockSyncUsesAgentTimestampKey() async throws {
-        let transport = StubAgentTransport(responsePayload: #"{"id":1,"result":{"synced":true}}"#)
-        let channel = AgentChannel(transport: transport)
+    @Test func successfulChannelDeinitDeterministicallyClosesRelayVsock() async throws {
+        let connection = FailedConnectVsockConnection()
+        let client = StubAgentControlRPC()
+        var channel: AgentChannel? = AgentChannel(connection: connection) { descriptor in
+            close(descriptor)
+            return client
+        }
 
-        let result = try await channel.syncClock(hostEpochNanoseconds: 1_725_000_000_123_456_789)
-        let request = try transport.decodedRequest()
-        let params: ClockParams = try transport.decodedParams()
+        _ = try await channel?.info()
+        #expect(!connection.closed)
+        channel = nil
+        #expect(connection.closed)
+    }
+}
 
-        #expect(result.synced)
-        #expect(request.method == "clock.sync")
-        #expect(params.hostEpochNS == 1_725_000_000_123_456_789)
+private enum ConnectFailure: Error, Equatable {
+    case expected
+}
+
+private final class FailedConnectVsockConnection: VsockConnection, @unchecked Sendable {
+    private let lock = NSLock()
+    private var isClosed = false
+
+    var closed: Bool { lock.withLock { isClosed } }
+    var isPeerClosed: Bool { closed }
+
+    func read(into buffer: UnsafeMutableRawBufferPointer) throws -> Int { 0 }
+    func write(_ bytes: [UInt8]) throws {}
+    func close() { lock.withLock { isClosed = true } }
+    func shutdownSend() {}
+}
+
+final class StubAgentControlRPC: AgentControlRPC, @unchecked Sendable {
+    private let lock = NSLock()
+    var infoResult = DoryAgentInfo(protocolVersion: 1, kernel: "", agentBuild: "", uptimeSeconds: 0)
+    var clockSyncResult = false
+    var portsResult = DoryPortsSnapshot(ports: [], added: [], removed: [])
+    private var storedClockSyncInputs: [Int64] = []
+
+    var clockSyncInputs: [Int64] {
+        lock.withLock { storedClockSyncInputs }
     }
 
-    @Test func vsockTransportReadsExactBytesAcrossFragments() async throws {
-        let connection = StubVsockConnection(chunks: [[1, 2], [3], [4, 5]])
-        let transport = AgentVsockTransport(connection: connection)
+    func info() throws -> DoryAgentInfo { infoResult }
 
-        #expect(try await transport.readExact(5) == [1, 2, 3, 4, 5])
-        try await transport.writeAll([9, 8, 7])
-        #expect(connection.written == [9, 8, 7])
+    func clockSync(hostEpochNs: Int64) throws -> Bool {
+        lock.withLock { storedClockSyncInputs.append(hostEpochNs) }
+        return clockSyncResult
     }
 
-    private struct EmptyParams: Encodable {}
+    func portsWatch() throws -> DoryPortsSnapshot { portsResult }
+    func close() {}
+}
 
-    private struct PingResult: Decodable {
-        var ok: Bool
-        var kernel: String
-    }
-
-    private struct CapturedRequest: Decodable {
-        var id: Int
-        var method: String
-    }
-
-    private struct Envelope<Params: Decodable>: Decodable {
-        var params: Params
-    }
-
-    private struct ClockParams: Decodable {
-        var hostEpochNS: Int64
-    }
-
-    private final class StubAgentTransport: AgentByteTransport {
-        private var response: [UInt8]
-        private(set) var written = [UInt8]()
-
-        init(responsePayload: String) {
-            self.response = (try? AgentFrameCodec.encode(Array(responsePayload.utf8))) ?? []
-        }
-
-        func readExact(_ count: Int) async throws -> [UInt8] {
-            let bytes = Array(response.prefix(count))
-            response.removeFirst(min(count, response.count))
-            return bytes
-        }
-
-        func writeAll(_ bytes: [UInt8]) async throws {
-            written.append(contentsOf: bytes)
-        }
-
-        func decodedRequest() throws -> CapturedRequest {
-            let length = try AgentFrameCodec.decodeLength(Array(written.prefix(4)))
-            let payload = Data(written.dropFirst(4).prefix(length))
-            return try JSONDecoder().decode(CapturedRequest.self, from: payload)
-        }
-
-        func decodedParams<Params: Decodable>() throws -> Params {
-            let length = try AgentFrameCodec.decodeLength(Array(written.prefix(4)))
-            let payload = Data(written.dropFirst(4).prefix(length))
-            return try JSONDecoder().decode(Envelope<Params>.self, from: payload).params
-        }
-    }
-
-    private final class StubVsockConnection: VsockConnection {
-        private var chunks: [[UInt8]]
-        private(set) var written = [UInt8]()
-
-        init(chunks: [[UInt8]]) {
-            self.chunks = chunks
-        }
-
-        func read(into buffer: UnsafeMutableRawBufferPointer) throws -> Int {
-            guard !chunks.isEmpty else { return 0 }
-            let chunk = chunks.removeFirst()
-            let count = min(buffer.count, chunk.count)
-            chunk.prefix(count).withUnsafeBytes { source in
-                buffer.baseAddress?.copyMemory(from: source.baseAddress!, byteCount: count)
-            }
-            if count < chunk.count {
-                chunks.insert(Array(chunk.dropFirst(count)), at: 0)
-            }
-            return count
-        }
-
-        func write(_ bytes: [UInt8]) throws {
-            written.append(contentsOf: bytes)
-        }
-
-        func close() { closed = true }
-        func shutdownSend() {}
-
-        private(set) var closed = false
-        var isPeerClosed: Bool { closed }
+private extension NSLock {
+    func withLock<Result>(_ body: () -> Result) -> Result {
+        lock()
+        defer { unlock() }
+        return body()
     }
 }

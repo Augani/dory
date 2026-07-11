@@ -1,23 +1,67 @@
 import Darwin
 import Foundation
 
+/// A Unix-domain listener failed before it could be published. Keep the syscall and errno in the
+/// error so required engine endpoints can fail startup with an actionable reason instead of
+/// degrading into a later timeout.
+public enum UnixSocketListenerError: Error, Equatable, CustomStringConvertible, Sendable {
+    case pathTooLong(path: String, utf8ByteCount: Int, maximumUTF8ByteCount: Int)
+    case embeddedNull(path: String)
+    case systemCall(operation: String, path: String, code: Int32)
+
+    public var description: String {
+        switch self {
+        case let .pathTooLong(path, actual, maximum):
+            return "unix socket path is \(actual) UTF-8 bytes (maximum \(maximum)): \(path)"
+        case let .embeddedNull(path):
+            return "unix socket path contains a NUL byte: \(path)"
+        case let .systemCall(operation, path, code):
+            let reason = String(cString: strerror(code))
+            return "cannot \(operation) unix socket \(path): errno \(code) (\(reason))"
+        }
+    }
+}
+
 /// The one unix⇄vsock byte relay, shared by every bridge that serves a unix socket in front of a
 /// guest vsock stream (`DockerSocketBridge`, `AgentVsockForward`). Both directions preserve
 /// half-close: a client SHUT_WR becomes a vsock SEND-only shutdown, and the guest's send-EOF
 /// becomes a SHUT_WR back to the client — a full close in either spot truncates docker attach.
 enum VsockUnixRelay {
-    static func makeListener(socketPath: String, mode: mode_t? = nil) -> Int32? {
-        unlink(socketPath)
+    /// Darwin's `sockaddr_un.sun_path` includes its trailing NUL. Validate UTF-8 bytes rather than
+    /// Swift characters: a multibyte path that looks short can still overflow the kernel field.
+    static let maximumSocketPathByteCount: Int = {
+        var address = sockaddr_un()
+        return MemoryLayout.size(ofValue: address.sun_path) - 1
+    }()
+
+    static func validateSocketPath(_ socketPath: String) throws {
+        let pathBytes = Array(socketPath.utf8)
+        guard !pathBytes.contains(0) else {
+            throw UnixSocketListenerError.embeddedNull(path: socketPath)
+        }
+        guard pathBytes.count <= maximumSocketPathByteCount else {
+            throw UnixSocketListenerError.pathTooLong(
+                path: socketPath,
+                utf8ByteCount: pathBytes.count,
+                maximumUTF8ByteCount: maximumSocketPathByteCount
+            )
+        }
+    }
+
+    static func makeListener(socketPath: String, mode: mode_t? = nil) throws -> Int32 {
+        try validateSocketPath(socketPath)
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
-        guard fd >= 0 else { return nil }
+        guard fd >= 0 else {
+            throw UnixSocketListenerError.systemCall(operation: "create", path: socketPath, code: errno)
+        }
+        guard unlink(socketPath) == 0 || errno == ENOENT else {
+            let code = errno
+            close(fd)
+            throw UnixSocketListenerError.systemCall(operation: "remove stale", path: socketPath, code: code)
+        }
         var address = sockaddr_un()
         address.sun_family = sa_family_t(AF_UNIX)
         let pathBytes = Array(socketPath.utf8)
-        let capacity = MemoryLayout.size(ofValue: address.sun_path) - 1
-        guard pathBytes.count <= capacity else {
-            close(fd)
-            return nil
-        }
         withUnsafeMutableBytes(of: &address.sun_path) { destination in
             pathBytes.withUnsafeBytes { source in
                 destination.baseAddress!.copyMemory(from: source.baseAddress!, byteCount: pathBytes.count)
@@ -29,14 +73,26 @@ enum VsockUnixRelay {
                 Darwin.bind(fd, $0, size)
             }
         }
-        guard bound == 0, Darwin.listen(fd, 64) == 0 else {
+        guard bound == 0 else {
+            let code = errno
             close(fd)
-            return nil
+            throw UnixSocketListenerError.systemCall(operation: "bind", path: socketPath, code: code)
+        }
+        guard Darwin.listen(fd, 64) == 0 else {
+            let code = errno
+            // Remove our pathname while the descriptor still owns the bound socket. Closing first
+            // would let another process bind a replacement that this cleanup could then unlink.
+            unlink(socketPath)
+            close(fd)
+            throw UnixSocketListenerError.systemCall(operation: "listen on", path: socketPath, code: code)
         }
         if let mode, chmod(socketPath, mode) != 0 {
-            close(fd)
+            let code = errno
+            // As above, retire the pathname before releasing the descriptor to avoid deleting a
+            // replacement socket in the close-to-unlink window.
             unlink(socketPath)
-            return nil
+            close(fd)
+            throw UnixSocketListenerError.systemCall(operation: "chmod", path: socketPath, code: code)
         }
         return fd
     }

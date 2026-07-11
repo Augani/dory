@@ -46,7 +46,7 @@ import Testing
         let device = VirtioVsock(guestCID: 3)
         let path = temporarySocketPath()
         defer { unlink(path) }
-        AgentVsockForward(socketPath: path, guestCID: 3).attach(to: device)
+        try AgentVsockForward(socketPath: path, guestCID: 3).attach(to: device)
 
         let guest = FakeGuestEcho(device: device, expect: [UInt8]("ping".utf8), reply: [UInt8]("pong".utf8))
         guest.start()
@@ -68,7 +68,7 @@ import Testing
         let device = VirtioVsock(guestCID: 3)
         let path = temporarySocketPath()
         defer { unlink(path) }
-        AgentVsockForward(socketPath: path, guestCID: 3).attach(to: device)
+        try AgentVsockForward(socketPath: path, guestCID: 3).attach(to: device)
 
         let client = try connectUnix(path)
         defer { close(client) }
@@ -83,7 +83,7 @@ import Testing
         let device = VirtioVsock(guestCID: 3)
         let path = temporarySocketPath()
         defer { unlink(path) }
-        AgentVsockForward(socketPath: path, guestCID: 3).attach(to: device)
+        try AgentVsockForward(socketPath: path, guestCID: 3).attach(to: device)
 
         let client = try connectUnix(path)
         defer { close(client) }
@@ -92,6 +92,73 @@ import Testing
 
         #expect(readToEOF(client).isEmpty)
         #expect(device.drainPendingGuestPackets().isEmpty)
+    }
+
+    @Test func configuredForwardRejectsAPathThatCannotFitSockaddrUn() {
+        let maximum = AgentVsockForward.maximumSocketPathByteCount
+        let path = "/" + String(repeating: "x", count: maximum)
+
+        #expect(throws: UnixSocketListenerError.pathTooLong(
+            path: path,
+            utf8ByteCount: maximum + 1,
+            maximumUTF8ByteCount: maximum
+        )) {
+            try AgentVsockForward(socketPath: path, guestCID: 3).attach(to: VirtioVsock(guestCID: 3))
+        }
+    }
+
+    @Test func listenerAcceptsTheExactDarwinSocketPathByteBoundary() throws {
+        let maximum = AgentVsockForward.maximumSocketPathByteCount
+        #expect(maximum == 103)
+        let prefix = "/tmp/dory-fwd-boundary-\(getpid())-\(UUID().uuidString)-"
+        let path = prefix + String(repeating: "x", count: maximum - prefix.utf8.count)
+        #expect(path.utf8.count == maximum)
+
+        let listener = try VsockUnixRelay.makeListener(socketPath: path, mode: 0o600)
+        defer {
+            unlink(path)
+            close(listener)
+        }
+        #expect(FileManager.default.fileExists(atPath: path))
+    }
+
+    @Test func validationUsesUTF8BytesAtTheMultibyteBoundary() throws {
+        let maximum = AgentVsockForward.maximumSocketPathByteCount
+        #expect(maximum == 103)
+        let exact = "/" + String(repeating: "é", count: 51)
+        #expect(exact.count == 52)
+        #expect(exact.utf8.count == maximum)
+        try AgentVsockForward.validateSocketPath(exact)
+
+        let overlong = exact + "x"
+        #expect(throws: UnixSocketListenerError.pathTooLong(
+            path: overlong,
+            utf8ByteCount: maximum + 1,
+            maximumUTF8ByteCount: maximum
+        )) {
+            try AgentVsockForward.validateSocketPath(overlong)
+        }
+    }
+
+    @Test func validationRejectsAnEmbeddedNullBeforeAnySyscall() {
+        let path = "/tmp/dory\0forward.sock"
+        #expect(throws: UnixSocketListenerError.embeddedNull(path: path)) {
+            try AgentVsockForward.validateSocketPath(path)
+        }
+    }
+
+    @Test func configuredForwardPropagatesBindFailure() {
+        let missingParent = "\(NSTemporaryDirectory())missing-forward-parent-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let path = missingParent + "/forward.sock"
+        try? FileManager.default.removeItem(atPath: missingParent)
+
+        #expect(throws: UnixSocketListenerError.systemCall(
+            operation: "bind",
+            path: path,
+            code: ENOENT
+        )) {
+            try AgentVsockForward(socketPath: path, guestCID: 3).attach(to: VirtioVsock(guestCID: 3))
+        }
     }
 }
 

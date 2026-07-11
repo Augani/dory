@@ -1,29 +1,190 @@
 import Darwin
 import Foundation
 
+private struct FuseResponseCachePolicy: Sendable {
+    let entryValiditySeconds: UInt64
+    let attrValiditySeconds: UInt64
+}
+
+/// A small fail-closed state machine shared by every FUSE response path. The only transition into
+/// the cacheable state is driven by VirtioFS after its notification channel passes every readiness
+/// gate. Environment variables and constructor flags cannot bypass that health check.
+private final class FuseCachePolicy: @unchecked Sendable {
+    /// Bound on entry/attr validity granted while the coherence channel is healthy. The reverse
+    /// notification queue is the primary coherence mechanism (host edits invalidate within the
+    /// FSEvents debounce, and event loss fail-stops the share), so this TTL is a backstop rather
+    /// than the freshness contract. Raising it from 1s removed the per-second re-LOOKUP storm of
+    /// every warm path during npm-scale workloads.
+    static let maximumValiditySeconds: UInt64 = 30
+    /// Negative dentries get a much shorter bound: directory-level FSEvents cannot name a
+    /// brand-new host file that the guest never resolved, so no INVAL_ENTRY can retire a stale
+    /// miss for an unknown name. One second caps that window while still absorbing the
+    /// LOOKUP(ENOENT)-before-CREATE round trip that dominates package-manager install storms.
+    static let negativeValiditySeconds: UInt64 = 1
+
+    private let lock = NSLock()
+    private var fuseInitCompleted = false
+    private var active = false
+
+    var isFuseInitCompleted: Bool {
+        lock.withLock { fuseInitCompleted }
+    }
+
+    var isActive: Bool {
+        lock.withLock { active }
+    }
+
+    var responsePolicy: FuseResponseCachePolicy {
+        lock.withLock {
+            let validity = active ? Self.maximumValiditySeconds : 0
+            return FuseResponseCachePolicy(
+                entryValiditySeconds: validity,
+                attrValiditySeconds: validity
+            )
+        }
+    }
+
+    var negativeEntryValiditySeconds: UInt64 {
+        lock.withLock { active ? Self.negativeValiditySeconds : 0 }
+    }
+
+    func markFuseInitCompleted() {
+        lock.withLock { fuseInitCompleted = true }
+    }
+
+    @discardableResult
+    func activate() -> Bool {
+        lock.withLock {
+            guard fuseInitCompleted else { return false }
+            active = true
+            return true
+        }
+    }
+
+    func deactivate(resetFuseInit: Bool) {
+        lock.withLock {
+            active = false
+            if resetFuseInit {
+                fuseInitCompleted = false
+            }
+        }
+    }
+}
+
 public final class FuseServer: @unchecked Sendable {
+    static let maximumCoherentCacheValiditySeconds = FuseCachePolicy.maximumValiditySeconds
+    static let negativeCoherentCacheValiditySeconds = FuseCachePolicy.negativeValiditySeconds
+
     private let hostFS: HostFS
     private let daxWindow: DaxWindow?
     private let writebackCache: Bool
     private let killPrivV2: Bool
-    private let deferReleaseClose: Bool
     private let fastCreateAttributes: Bool
-    private let negativeDentryCaching: Bool
-    private let entryValiditySeconds: UInt64
-    private let attrValiditySeconds: UInt64
+    private let cachePolicy = FuseCachePolicy()
     private let stats: FuseStats?
-    private let closeQueue = DispatchQueue(label: "dory-hv.fuse.close")
-    private let deferredCloseLock = NSLock()
-    private var deferredCloseFDs: [Int32] = []
-    private var deferredCloseScheduled = false
+    private let anomalyLog = FuseAnomalyLog()
     private let lock = NSLock()
-    private var nextHandle: UInt64 = 1
-    private var fileHandles: [UInt64: Int32] = [:]
+    private var nextFileHandle: UInt64 = 1
+    private var nextDirectoryHandle: UInt64 = 1
+    private var fileHandles: [UInt64: OpenFileHandle] = [:]
+    private var directoryHandles: [UInt64: OpenDirectoryHandle] = [:]
+    var fileOperationLoadedTestHook: (() -> Void)?
+    var directoryOperationLoadedTestHook: (() -> Void)?
+
+    /// Reference ownership is the fd lifetime fence. Request queues may process WRITE/READ and
+    /// RELEASE concurrently: removing the handle from `fileHandles` prevents new acquisitions,
+    /// while any request that already loaded it keeps this object (and therefore the fd) alive.
+    /// Closing in deinit makes RELEASE linearizable without a timer or a racy deferred-close queue.
+    private final class OpenFileHandle: @unchecked Sendable {
+        let fd: Int32
+        let nodeID: UInt64
+        let accessMode: HostFSAccessMode
+        let append: Bool
+        private let hostFS: HostFS
+
+        init(fd: Int32, nodeID: UInt64, accessMode: HostFSAccessMode, append: Bool, hostFS: HostFS) {
+            self.fd = fd
+            self.nodeID = nodeID
+            self.accessMode = accessMode
+            self.append = append
+            self.hostFS = hostFS
+        }
+
+        deinit {
+            hostFS.close(handle: fd)
+            hostFS.releaseOpenHandle(nodeID: nodeID)
+        }
+
+        var permitsWrite: Bool { accessMode != .readOnly }
+
+        func permitsRead(writebackCache: Bool) -> Bool {
+            accessMode != .writeOnly || writebackCache
+        }
+    }
+
+    private final class OpenDirectoryHandle: @unchecked Sendable {
+        let nodeID: UInt64
+        /// Linux treats `fuse_read_in.offset` as a cookie into one open directory stream. Rebuilding
+        /// the sorted listing for every page makes that cookie unstable when a consumer such as
+        /// `rm -rf` deletes page one before requesting page two: the remaining entries shift left
+        /// and are skipped. Keep one enumeration snapshot for the lifetime of the open handle.
+        /// Slots are never renumbered during this open-directory lifetime. A removed name becomes
+        /// nil instead of shifting later cookies left; newly discovered names append new slots.
+        var entries: [HostFSEntry?]?
+        private let hostFS: HostFS
+
+        init(nodeID: UInt64, entries: [HostFSEntry?]? = nil, hostFS: HostFS) {
+            self.nodeID = nodeID
+            self.entries = entries
+            self.hostFS = hostFS
+        }
+
+        deinit {
+            hostFS.releaseOpenHandle(nodeID: nodeID)
+        }
+    }
+
+    private enum RequestError: Error {
+        case badFileDescriptor
+    }
+
+    /// FUSE file handles are opaque 64-bit values. Keep directory handles in a tagged high-bit
+    /// namespace in addition to separate typed maps, so the two kinds can never collide.
+    private static let directoryHandleTag: UInt64 = 1 << 63
+    private static let handleSequenceMask: UInt64 = directoryHandleTag - 1
 
     private enum OpenFlag {
-        static let keepCache: UInt32 = 1 << 1
-        static let cacheDir: UInt32 = 1 << 3
         static let noFlush: UInt32 = 1 << 5
+    }
+
+    /// Flags in FUSE_OPEN/FUSE_CREATE are Linux ABI values. Only O_ACCMODE happens to match Darwin;
+    /// every other bit must be decoded explicitly before making a host syscall.
+    private enum LinuxOpenFlag {
+        static let accessMask: UInt32 = 0x3
+        static let exclusive: UInt32 = 0x80
+        static let truncate: UInt32 = 0x200
+        static let append: UInt32 = 0x400
+    }
+
+    private struct FileOpenIntent {
+        var accessMode: HostFSAccessMode
+        var append: Bool
+        var truncate: Bool
+        var exclusive: Bool
+
+        init?(wireFlags: UInt32) {
+            guard let accessMode = HostFSAccessMode(
+                rawValue: Int32(wireFlags & LinuxOpenFlag.accessMask)
+            ) else { return nil }
+            self.accessMode = accessMode
+            self.append = wireFlags & LinuxOpenFlag.append != 0
+            self.truncate = wireFlags & LinuxOpenFlag.truncate != 0
+            self.exclusive = wireFlags & LinuxOpenFlag.exclusive != 0
+        }
+    }
+
+    private func hostAccessMode(for intent: FileOpenIntent) -> HostFSAccessMode {
+        intent.accessMode == .writeOnly && writebackCache ? .readWrite : intent.accessMode
     }
 
     public init(
@@ -31,22 +192,22 @@ public final class FuseServer: @unchecked Sendable {
         daxWindow: DaxWindow? = nil,
         writebackCache: Bool? = nil,
         killPrivV2: Bool? = nil,
-        deferReleaseClose: Bool? = nil,
-        fastCreateAttributes: Bool? = nil,
-        negativeDentryCaching: Bool? = nil,
-        entryValiditySeconds: UInt64? = nil,
-        attrValiditySeconds: UInt64? = nil
+        deferReleaseClose _: Bool? = nil,
+        fastCreateAttributes: Bool? = nil
     ) {
         self.hostFS = hostFS
         self.daxWindow = daxWindow
         self.writebackCache = writebackCache ?? Self.writebackCacheEnabledFromEnvironment()
         self.killPrivV2 = killPrivV2 ?? Self.killPrivV2EnabledFromEnvironment()
-        self.deferReleaseClose = deferReleaseClose ?? Self.deferReleaseCloseEnabledFromEnvironment()
-        self.fastCreateAttributes = fastCreateAttributes ?? Self.fastCreateAttributesEnabledFromEnvironment()
-        self.negativeDentryCaching = negativeDentryCaching ?? Self.negativeDentryCachingEnabledFromEnvironment()
-        self.entryValiditySeconds = entryValiditySeconds ?? Self.timeoutFromEnvironment("DORY_FUSE_ENTRY_TIMEOUT")
-        self.attrValiditySeconds = attrValiditySeconds ?? Self.timeoutFromEnvironment("DORY_FUSE_ATTR_TIMEOUT")
+        // A synthetic create identity cannot distinguish the original inode from a host atomic
+        // replacement that lands before the first getattr/open. Production always records the real
+        // file key; tests may still opt in explicitly to exercise legacy reconciliation behavior.
+        self.fastCreateAttributes = fastCreateAttributes ?? false
         self.stats = FuseStats.fromEnvironment()
+    }
+
+    deinit {
+        resetConnection()
     }
 
     public func handle(request: [UInt8]) -> [UInt8] {
@@ -62,6 +223,23 @@ public final class FuseServer: @unchecked Sendable {
         return handle(header: header, opcode: opcode, request: request)
     }
 
+    var fuseInitCompleted: Bool { cachePolicy.isFuseInitCompleted }
+    var coherentCachingActive: Bool { cachePolicy.isActive }
+
+    func markFuseInitCompleted() {
+        cachePolicy.markFuseInitCompleted()
+    }
+
+    /// Internal by design: only VirtioFS owns the notification-health gates that make this safe.
+    @discardableResult
+    func activateCoherentCaching() -> Bool {
+        cachePolicy.activate()
+    }
+
+    func deactivateCoherentCaching(resetFuseInit: Bool = false) {
+        cachePolicy.deactivate(resetFuseInit: resetFuseInit)
+    }
+
     func handle(header: FuseInHeader, opcode: FuseOpcode, request: [UInt8]) -> [UInt8] {
         guard Int(header.length) <= request.count,
               header.length >= UInt32(FuseInHeader.byteCount) else {
@@ -75,21 +253,30 @@ public final class FuseServer: @unchecked Sendable {
             switch opcode {
             case .initOp:
                 let initIn = try FuseProtocol.decodeInitIn(Array(payload))
-                return FuseProtocol.negotiateInit(
+                let response = FuseProtocol.negotiateInit(
                     header: header,
                     request: initIn,
                     daxMapAlignmentLog2: daxWindow == nil ? nil : UInt16(log2(Double(DaxWindow.pageSize))),
                     writebackCache: writebackCache,
                     killPrivV2: killPrivV2
                 )
+                return response
             case .lookup:
                 return try handleLookup(header: header, payload: payload)
+            case .forget:
+                handleForget(header: header, payload: payload)
+                return []
+            case .batchForget:
+                handleBatchForget(payload: payload)
+                return []
             case .readlink:
                 return try handleReadlink(header: header)
             case .symlink:
                 return try handleSymlink(header: header, payload: payload)
+            case .link:
+                return try handleLink(header: header, payload: payload)
             case .getattr:
-                return try handleGetattr(header: header)
+                return try handleGetattr(header: header, payload: payload)
             case .setattr:
                 return try handleSetattr(header: header, payload: payload)
             case .open:
@@ -107,9 +294,12 @@ public final class FuseServer: @unchecked Sendable {
             case .fsync:
                 return try handleFsync(header: header, payload: payload)
             case .flush:
-                return successResponse(unique: header.unique, payload: [])
+                return handleFlush(header: header, payload: payload)
             case .getxattr:
-                return errorResponse(unique: header.unique, errno: ENODATA)
+                // ENOSYS (not ENODATA) latches fc->no_getxattr in the guest kernel, eliminating
+                // the per-file security.capability round trip on create/write storms. This server
+                // has no xattr storage, so "not implemented" is the accurate contract.
+                return errorResponse(unique: header.unique, errno: ENOSYS)
             case .setxattr:
                 return errorResponse(unique: header.unique, errno: EOPNOTSUPP)
             case .listxattr:
@@ -124,8 +314,10 @@ public final class FuseServer: @unchecked Sendable {
                 return try handleRmdir(header: header, payload: payload)
             case .rename:
                 return try handleRename(header: header, payload: payload)
-            case .release, .releasedir:
-                return handleRelease(header: header, payload: payload)
+            case .release:
+                return handleReleaseFile(header: header, payload: payload)
+            case .releasedir:
+                return handleReleaseDirectory(header: header, payload: payload)
             case .setupmapping:
                 return try handleSetupMapping(header: header, payload: payload)
             case .removemapping:
@@ -141,12 +333,38 @@ public final class FuseServer: @unchecked Sendable {
     private func handleLookup(header: FuseInHeader, payload: ArraySlice<UInt8>) throws -> [UInt8] {
         let name = try readCString(payload)
         guard let entry = try hostFS.lookupIfExists(parent: header.nodeID, name: name) else {
-            guard negativeDentryCaching else {
+            let validity = cachePolicy.negativeEntryValiditySeconds
+            guard validity > 0 else {
                 return errorResponse(unique: header.unique, errno: ENOENT)
             }
-            return successResponse(unique: header.unique, payload: encodeNegativeEntryOut())
+            return successResponse(unique: header.unique, payload: encodeNegativeEntryOut(validity: validity))
         }
+        hostFS.retainLookup(nodeID: entry.nodeID)
         return successResponse(unique: header.unique, payload: encodeEntryOut(entry.attributes))
+    }
+
+    /// A `fuse_entry_out` with `nodeid == 0` caches a bounded negative dentry. Grants no lookup
+    /// reference, so rollback's FORGET of node 0 is a no-op by construction.
+    private func encodeNegativeEntryOut(validity: UInt64) -> [UInt8] {
+        var payload = [UInt8](repeating: 0, count: 128)
+        withUnsafeBytes(of: validity.littleEndian) { bytes in
+            payload.replaceSubrange(16..<24, with: bytes)
+        }
+        return payload
+    }
+
+    private func handleForget(header: FuseInHeader, payload: ArraySlice<UInt8>) {
+        // FORGET is deliberately one-way. Even a malformed payload must not produce a FUSE reply.
+        guard let request = try? FuseProtocol.decodeForgetIn(Array(payload)) else { return }
+        hostFS.forgetLookup(nodeID: header.nodeID, count: request.lookupCount)
+    }
+
+    private func handleBatchForget(payload: ArraySlice<UInt8>) {
+        // BATCH_FORGET has the same no-reply contract as FORGET.
+        guard let request = try? FuseProtocol.decodeBatchForgetIn(Array(payload)) else { return }
+        for entry in request.entries {
+            hostFS.forgetLookup(nodeID: entry.nodeID, count: entry.lookupCount)
+        }
     }
 
     private func handleReadlink(header: FuseInHeader) throws -> [UInt8] {
@@ -156,55 +374,133 @@ public final class FuseServer: @unchecked Sendable {
     private func handleSymlink(header: FuseInHeader, payload: ArraySlice<UInt8>) throws -> [UInt8] {
         let values = try readCStrings(payload, count: 2)
         let entry = try hostFS.symlink(parent: header.nodeID, name: values[0], target: values[1])
+        hostFS.retainLookup(nodeID: entry.nodeID)
         return successResponse(unique: header.unique, payload: encodeEntryOut(entry.attributes))
     }
 
-    private func handleGetattr(header: FuseInHeader) throws -> [UInt8] {
-        let attrs = try hostFS.getattr(nodeID: header.nodeID)
+    private func handleLink(header: FuseInHeader, payload: ArraySlice<UInt8>) throws -> [UInt8] {
+        guard payload.count >= 8 else { return errorResponse(unique: header.unique, errno: EINVAL) }
+        let oldNodeID = payload.leUInt64(at: 0)
+        let name = try readCString(payload.dropFirst(8))
+        let entry = try hostFS.link(nodeID: oldNodeID, newParent: header.nodeID, name: name)
+        hostFS.retainLookup(nodeID: entry.nodeID)
+        return successResponse(unique: header.unique, payload: encodeEntryOut(entry.attributes))
+    }
+
+    private func handleGetattr(header: FuseInHeader, payload: ArraySlice<UInt8>) throws -> [UInt8] {
+        let attrs = try getattrAttributes(header: header, payload: payload)
         return successResponse(unique: header.unique, payload: encodeAttrOut(attrs))
     }
 
+    private func getattrAttributes(
+        header: FuseInHeader,
+        payload: ArraySlice<UInt8>
+    ) throws -> HostFSAttributes {
+        let request = try FuseProtocol.decodeGetattrIn(payload)
+        guard request.flags.rawValue & ~FuseGetattrFlag.allKnown.rawValue == 0 else {
+            throw HostFSError.invalidName("getattr flags")
+        }
+        guard request.flags.contains(.fileHandle) else {
+            return try hostFS.getattr(nodeID: header.nodeID)
+        }
+        guard let openHandle = loadFile(handle: request.fileHandle),
+              openHandle.nodeID == header.nodeID else {
+            throw RequestError.badFileDescriptor
+        }
+        return try hostFS.getattr(nodeID: header.nodeID, handle: openHandle.fd)
+    }
+
     private func handleSetattr(header: FuseInHeader, payload: ArraySlice<UInt8>) throws -> [UInt8] {
-        guard payload.count >= 88 else { return errorResponse(unique: header.unique, errno: EINVAL) }
-        let valid = FuseSetattrValid(rawValue: payload.leUInt32(at: 0))
-        let cachedAttrs = try hostFS.cachedAttributes(nodeID: header.nodeID)
-        if valid.contains(.mode) {
-            let requestedMode = payload.leUInt32(at: 68) & 0o7777
-            let currentMode = cachedAttrs.mode & 0o7777
-            guard requestedMode == currentMode else {
-                return errorResponse(unique: header.unique, errno: EOPNOTSUPP)
-            }
+        let wire = try FuseProtocol.decodeSetattrIn(Array(payload))
+        let valid = wire.valid
+        guard valid.rawValue & ~FuseSetattrValid.allKnown.rawValue == 0 else {
+            return errorResponse(unique: header.unique, errno: EINVAL)
         }
-        if valid.contains(.size) {
-            let size = payload.leUInt64(at: 16)
-            if valid.contains(.fileHandle), let fd = load(handle: payload.leUInt64(at: 8)) {
-                try hostFS.truncate(handle: fd, size: size)
-                // KILLPRIV_V2 delegates the suid/sgid kill on truncate to the server, same as WRITE.
-                // Clear unconditionally under V2 (clearPrivilegedBits no-ops when no priv bit is set),
-                // matching POSIX truncate semantics and the flag the kernel sets (FATTR_KILL_SUIDGID).
-                if killPrivV2 { try? hostFS.clearPrivilegedBits(handle: fd) }
-            } else {
-                try hostFS.truncate(nodeID: header.nodeID, size: size)
-                if killPrivV2 { try? hostFS.clearPrivilegedBits(nodeID: header.nodeID) }
-            }
-            return try successResponse(unique: header.unique, payload: encodeAttrOut(hostFS.getattr(nodeID: header.nodeID)))
+        guard !valid.contains(.atimeNow) || valid.contains(.atime),
+              !valid.contains(.mtimeNow) || valid.contains(.mtime) else {
+            return errorResponse(unique: header.unique, errno: EINVAL)
         }
-        return successResponse(unique: header.unique, payload: encodeAttrOut(cachedAttrs))
+        if valid.contains(.atime), !valid.contains(.atimeNow), wire.atimeNsec >= 1_000_000_000 {
+            return errorResponse(unique: header.unique, errno: EINVAL)
+        }
+        if valid.contains(.mtime), !valid.contains(.mtimeNow), wire.mtimeNsec >= 1_000_000_000 {
+            return errorResponse(unique: header.unique, errno: EINVAL)
+        }
+        if valid.contains(.ctime), wire.ctimeNsec >= 1_000_000_000 {
+            return errorResponse(unique: header.unique, errno: EINVAL)
+        }
+
+        let openHandle: OpenFileHandle?
+        if valid.contains(.fileHandle) {
+            guard let candidate = loadFile(handle: wire.fileHandle), candidate.nodeID == header.nodeID else {
+                anomalyLog.log(describeStaleHandle(wire.fileHandle, nodeID: header.nodeID, op: "SETATTR"))
+                return errorResponse(unique: header.unique, errno: EBADF)
+            }
+            if valid.contains(.size), !candidate.permitsWrite {
+                anomalyLog.log("SETATTR truncate on read-only handle=\(wire.fileHandle) node=\(header.nodeID)")
+                return errorResponse(unique: header.unique, errno: EBADF)
+            }
+            openHandle = candidate
+        } else {
+            openHandle = nil
+        }
+
+        let atime: HostFSTimestampUpdate? = valid.contains(.atime)
+            ? (valid.contains(.atimeNow)
+                ? .now
+                : .value(seconds: wire.atimeSeconds, nanoseconds: wire.atimeNsec))
+            : nil
+        let mtime: HostFSTimestampUpdate? = valid.contains(.mtime)
+            ? (valid.contains(.mtimeNow)
+                ? .now
+                : .value(seconds: wire.mtimeSeconds, nanoseconds: wire.mtimeNsec))
+            : nil
+        let request = HostFSSetattrRequest(
+            mode: valid.contains(.mode) ? wire.mode & 0o7777 : nil,
+            uid: valid.contains(.uid) ? wire.uid : nil,
+            gid: valid.contains(.gid) ? wire.gid : nil,
+            size: valid.contains(.size) ? wire.size : nil,
+            atime: atime,
+            mtime: mtime,
+            ctimeRequested: valid.contains(.ctime),
+            killSuidGid: valid.contains(.killSuidGid)
+        )
+        let attributes = try hostFS.applySetattr(
+            nodeID: header.nodeID,
+            handle: openHandle?.fd,
+            request: request
+        )
+        return successResponse(unique: header.unique, payload: encodeAttrOut(attributes))
     }
 
     private func handleOpen(header: FuseInHeader, payload: ArraySlice<UInt8>) throws -> [UInt8] {
         guard payload.count >= 8 else { return errorResponse(unique: header.unique, errno: EINVAL) }
-        let flags = Int32(bitPattern: payload.leUInt32(at: 0))
-        let fd = flags & O_ACCMODE == O_RDONLY
-            ? try hostFS.openRead(nodeID: header.nodeID)
-            : try hostFS.openReadWrite(nodeID: header.nodeID)
-        let handle = store(fd: fd)
-        return successResponse(unique: header.unique, payload: encodeOpenOut(handle: handle, openFlags: OpenFlag.keepCache | OpenFlag.noFlush))
+        guard let intent = FileOpenIntent(wireFlags: payload.leUInt32(at: 0)) else {
+            return errorResponse(unique: header.unique, errno: EINVAL)
+        }
+        // With writeback caching Linux may issue READ for an O_WRONLY handle. Production keeps
+        // writeback disabled; the opt-in mode therefore asks HostFS for a compatible RW descriptor
+        // while retaining the guest's logical WRONLY authorization below.
+        let hostAccess = hostAccessMode(for: intent)
+        let fd = try hostFS.openFileForFuseHandle(
+            nodeID: header.nodeID,
+            accessMode: hostAccess,
+            append: intent.append && !writebackCache
+        )
+        let handle = storeRetainedFile(
+            fd: fd,
+            nodeID: header.nodeID,
+            accessMode: intent.accessMode,
+            append: intent.append
+        )
+        return successResponse(unique: header.unique, payload: encodeOpenOut(handle: handle, openFlags: fileOpenFlags))
     }
 
     private func handleOpenDir(header: FuseInHeader) throws -> [UInt8] {
-        _ = try hostFS.getattr(nodeID: header.nodeID)
-        return successResponse(unique: header.unique, payload: encodeOpenOut(handle: header.nodeID, openFlags: OpenFlag.cacheDir))
+        let attributes = try hostFS.getattr(nodeID: header.nodeID)
+        guard attributes.isDirectory else { throw HostFSError.notDirectory(header.nodeID) }
+        let handle = try storeDirectory(nodeID: header.nodeID)
+        return successResponse(unique: header.unique, payload: encodeOpenOut(handle: handle, openFlags: directoryOpenFlags))
     }
 
     private func handleRead(header: FuseInHeader, payload: ArraySlice<UInt8>) throws -> [UInt8] {
@@ -212,10 +508,13 @@ public final class FuseServer: @unchecked Sendable {
         let handle = payload.leUInt64(at: 0)
         let offset = payload.leUInt64(at: 8)
         let size = min(Int(payload.leUInt32(at: 16)), HostFS.maxReadCount)
-        guard let fd = load(handle: handle) else {
+        guard let openHandle = loadFile(handle: handle),
+              openHandle.nodeID == header.nodeID,
+              openHandle.permitsRead(writebackCache: writebackCache) else {
+            anomalyLog.log(describeStaleHandle(handle, nodeID: header.nodeID, op: "READ"))
             return errorResponse(unique: header.unique, errno: EBADF)
         }
-        return try successResponse(unique: header.unique, payload: hostFS.read(handle: fd, offset: offset, count: size))
+        return try successResponse(unique: header.unique, payload: hostFS.read(handle: openHandle.fd, offset: offset, count: size))
     }
 
     /// Zero-copy READ: `preadv` the payload straight into the guest's device-writable descriptor
@@ -242,7 +541,10 @@ public final class FuseServer: @unchecked Sendable {
         guard let signedOffset = off_t(exactly: payload.leUInt64(at: 8)) else {
             return finish(errno: EINVAL, payloadBytes: 0)
         }
-        guard let fd = load(handle: payload.leUInt64(at: 0)) else {
+        guard let openHandle = loadFile(handle: payload.leUInt64(at: 0)),
+              openHandle.nodeID == header.nodeID,
+              openHandle.permitsRead(writebackCache: writebackCache) else {
+            anomalyLog.log(describeStaleHandle(payload.leUInt64(at: 0), nodeID: header.nodeID, op: "READ(direct)"))
             return finish(errno: EBADF, payloadBytes: 0)
         }
         let dataCapacity = min(size, totalCapacity - FuseOutHeader.byteCount)
@@ -266,29 +568,37 @@ public final class FuseServer: @unchecked Sendable {
             iovecs.append(iovec(iov_base: base, iov_len: take))
             remaining -= take
         }
-        let readCount = preadv(fd, iovecs, Int32(iovecs.count), signedOffset)
+        let readCount = preadv(openHandle.fd, iovecs, Int32(iovecs.count), signedOffset)
         guard readCount >= 0 else { return finish(errno: errno, payloadBytes: 0) }
         return finish(errno: 0, payloadBytes: Int(readCount))
     }
 
-    /// Direct LOOKUP miss response. Fresh file-create loops issue a negative LOOKUP before CREATE for
-    /// each path; returning ENOENT in place avoids allocating a tiny error frame thousands of times.
-    /// Existing entries fall back to the normal array path so the full entry payload stays centralized.
-    public func writeLookupMissResponse(header: FuseInHeader, payload: ArraySlice<UInt8>, writable: [VirtqueueSegment]) -> Int {
+    /// Complete direct LOOKUP response. Handling hits as well as misses here is important: probing for
+    /// a miss and then falling back on a hit performs the same descriptor-relative stat twice. Require
+    /// enough output space for either result before touching HostFS so an undersized chain can fall
+    /// back without registering an entry or acquiring a lookup reference.
+    public func writeLookupResponse(header: FuseInHeader, payload: ArraySlice<UInt8>, writable: [VirtqueueSegment]) -> Int {
+        let payloadBytes = 128
+        guard writable.reduce(0, { $0 + $1.length }) >= FuseOutHeader.byteCount + payloadBytes else {
+            return 0
+        }
         stats?.record(.lookup)
         do {
             let name = try readCString(payload)
-            guard try hostFS.lookupIfExists(parent: header.nodeID, name: name) == nil else {
-                return 0
+            guard let entry = try hostFS.lookupIfExists(parent: header.nodeID, name: name) else {
+                let validity = cachePolicy.negativeEntryValiditySeconds
+                guard validity > 0 else {
+                    return writeErrorResponse(unique: header.unique, errno: ENOENT, writable: writable)
+                }
+                var writer = FuseDirectResponseWriter(writable: writable)
+                writer.appendOutHeader(unique: header.unique, error: 0, payloadByteCount: payloadBytes)
+                writer.append(encodeNegativeEntryOut(validity: validity))
+                return writer.written
             }
-            guard negativeDentryCaching else {
-                return writeErrorResponse(unique: header.unique, errno: ENOENT, writable: writable)
-            }
-            let payloadBytes = 128
-            guard writable.reduce(0, { $0 + $1.length }) >= FuseOutHeader.byteCount + payloadBytes else { return 0 }
+            hostFS.retainLookup(nodeID: entry.nodeID)
             var writer = FuseDirectResponseWriter(writable: writable)
             writer.appendOutHeader(unique: header.unique, error: 0, payloadByteCount: payloadBytes)
-            appendNegativeEntryOut(to: &writer)
+            appendEntryOut(entry.attributes, to: &writer)
             return writer.written
         } catch {
             return writeErrorResponse(unique: header.unique, errno: mapError(error), writable: writable)
@@ -300,17 +610,22 @@ public final class FuseServer: @unchecked Sendable {
     /// shell-created files.
     public func writeGetXattrNoDataResponse(header: FuseInHeader, writable: [VirtqueueSegment]) -> Int {
         stats?.record(.getxattr)
-        return writeErrorResponse(unique: header.unique, errno: ENODATA, writable: writable)
+        // ENOSYS latches fc->no_getxattr guest-side; see the array-path getxattr case.
+        return writeErrorResponse(unique: header.unique, errno: ENOSYS, writable: writable)
     }
 
     /// Direct GETATTR response. Metadata-heavy create loops ask for attrs after create; emitting the
     /// fixed attr payload in place avoids another response allocation on that path.
-    public func writeGetattrResponse(header: FuseInHeader, writable: [VirtqueueSegment]) -> Int {
+    public func writeGetattrResponse(
+        header: FuseInHeader,
+        payload: ArraySlice<UInt8>,
+        writable: [VirtqueueSegment]
+    ) -> Int {
         stats?.record(.getattr)
         let payloadBytes = 104
         guard writable.reduce(0, { $0 + $1.length }) >= FuseOutHeader.byteCount + payloadBytes else { return 0 }
         do {
-            let attrs = try hostFS.getattr(nodeID: header.nodeID)
+            let attrs = try getattrAttributes(header: header, payload: payload)
             var writer = FuseDirectResponseWriter(writable: writable)
             writer.appendOutHeader(unique: header.unique, error: 0, payloadByteCount: payloadBytes)
             appendAttrOut(attrs, to: &writer)
@@ -331,21 +646,34 @@ public final class FuseServer: @unchecked Sendable {
             guard payload.count >= 16 else {
                 return writeErrorResponse(unique: header.unique, errno: EINVAL, writable: writable)
             }
-            let flags = Int32(bitPattern: payload.leUInt32(at: 0))
+            guard let intent = FileOpenIntent(wireFlags: payload.leUInt32(at: 0)) else {
+                return writeErrorResponse(unique: header.unique, errno: EINVAL, writable: writable)
+            }
             let mode = UInt16(truncatingIfNeeded: payload.leUInt32(at: 4))
             let name = try readCString(payload.dropFirst(16))
             let created = try hostFS.createFileAndOpen(
                 parent: header.nodeID,
                 name: name,
                 mode: mode,
-                flags: flags,
-                syntheticAttributes: fastCreateAttributes
+                accessMode: hostAccessMode(for: intent),
+                preferredIdentityAccessMode: .readWrite,
+                exclusive: intent.exclusive,
+                truncate: intent.truncate,
+                append: intent.append && !writebackCache,
+                syntheticAttributes: fastCreateAttributes,
+                retainOpenHandle: true
             )
-            let handle = store(fd: created.fd)
+            let handle = storeRetainedFile(
+                fd: created.fd,
+                nodeID: created.entry.nodeID,
+                accessMode: intent.accessMode,
+                append: intent.append
+            )
+            hostFS.retainLookup(nodeID: created.entry.nodeID)
             var writer = FuseDirectResponseWriter(writable: writable)
             writer.appendOutHeader(unique: header.unique, error: 0, payloadByteCount: payloadBytes)
             appendEntryOut(created.entry.attributes, to: &writer)
-            appendOpenOut(handle: handle, openFlags: OpenFlag.keepCache | OpenFlag.noFlush, to: &writer)
+            appendOpenOut(handle: handle, openFlags: fileOpenFlags, to: &writer)
             return writer.written
         } catch {
             return writeErrorResponse(unique: header.unique, errno: mapError(error), writable: writable)
@@ -364,7 +692,13 @@ public final class FuseServer: @unchecked Sendable {
             }
             let mode = UInt16(truncatingIfNeeded: payload.leUInt32(at: 0))
             let name = try readCString(payload.dropFirst(8))
-            let entry = try hostFS.mkdir(parent: header.nodeID, name: name, mode: mode)
+            let entry = try hostFS.mkdir(
+                parent: header.nodeID,
+                name: name,
+                mode: mode,
+                syntheticAttributes: fastCreateAttributes
+            )
+            hostFS.retainLookup(nodeID: entry.nodeID)
             var writer = FuseDirectResponseWriter(writable: writable)
             writer.appendOutHeader(unique: header.unique, error: 0, payloadByteCount: payloadBytes)
             appendEntryOut(entry.attributes, to: &writer)
@@ -410,19 +744,28 @@ public final class FuseServer: @unchecked Sendable {
             guard payload.count >= 40 + size else {
                 return writeErrorResponse(unique: header.unique, errno: EINVAL, writable: writable)
             }
-            guard let fd = load(handle: handle) else {
+            guard let openHandle = loadFile(handle: handle),
+                  openHandle.nodeID == header.nodeID,
+                  openHandle.permitsWrite else {
+                anomalyLog.log(describeStaleHandle(handle, nodeID: header.nodeID, op: "WRITE(direct)"))
                 return writeErrorResponse(unique: header.unique, errno: EBADF, writable: writable)
             }
+            fileOperationLoadedTestHook?()
             let written = try payload.withUnsafeBytes { raw -> Int in
                 let base = raw.baseAddress?.advanced(by: 40)
                 return try hostFS.write(
-                    handle: fd,
+                    handle: openHandle.fd,
                     offset: offset,
-                    bytes: UnsafeRawBufferPointer(start: base, count: size)
+                    bytes: UnsafeRawBufferPointer(start: base, count: size),
+                    append: openHandle.append && !writebackCache
                 )
             }
-            hostFS.recordWrite(nodeID: header.nodeID, offset: offset, count: written)
-            killPrivilegeBitsIfRequested(writeFlags: payload.leUInt32(at: 20), fd: fd)
+            if openHandle.append && !writebackCache {
+                try hostFS.recordAppendWrite(nodeID: header.nodeID, handle: openHandle.fd)
+            } else {
+                hostFS.recordWrite(nodeID: header.nodeID, offset: offset, count: written)
+            }
+            killPrivilegeBitsIfRequested(writeFlags: payload.leUInt32(at: 20), fd: openHandle.fd)
             var writer = FuseDirectResponseWriter(writable: writable)
             writer.appendOutHeader(unique: header.unique, error: 0, payloadByteCount: payloadBytes)
             writer.appendLE(UInt32(written))
@@ -437,18 +780,19 @@ public final class FuseServer: @unchecked Sendable {
     /// keeping it allocation-free makes the common success path cheaper without changing close
     /// ordering or deferred-close semantics.
     public func writeReleaseResponse(header: FuseInHeader, payload: ArraySlice<UInt8>, writable: [VirtqueueSegment]) -> Int {
-        stats?.record(.release)
+        guard let opcode = FuseOpcode(rawValue: header.opcode), opcode == .release || opcode == .releasedir else {
+            return writeErrorResponse(unique: header.unique, errno: EINVAL, writable: writable)
+        }
+        stats?.record(opcode)
         guard writable.reduce(0, { $0 + $1.length }) >= FuseOutHeader.byteCount else { return 0 }
         guard payload.count >= 8 else {
             return writeErrorResponse(unique: header.unique, errno: EINVAL, writable: writable)
         }
         let handle = payload.leUInt64(at: 0)
-        if let fd = remove(handle: handle) {
-            if deferReleaseClose {
-                enqueueDeferredClose(fd)
-            } else {
-                hostFS.close(handle: fd)
-            }
+        if opcode == .release {
+            releaseFile(handle: handle)
+        } else {
+            releaseDirectory(handle: handle)
         }
         return writeEmptySuccessResponse(unique: header.unique, writable: writable)
     }
@@ -460,6 +804,106 @@ public final class FuseServer: @unchecked Sendable {
         return writer.written
     }
 
+    /// Reverses only server-side lifetime grants from a successful response that never reached the
+    /// used ring. Host namespace/data mutations remain committed; the guest never received the
+    /// node or handle references that would otherwise authorize keeping these resources alive.
+    func rollbackUnpublishedResponse(
+        opcode: FuseOpcode,
+        writable: [VirtqueueSegment],
+        written: Int
+    ) {
+        guard let response = copyEncodedResponse(writable: writable, written: written) else { return }
+        rollbackUnpublishedResponse(opcode: opcode, response: response)
+    }
+
+    func rollbackUnpublishedResponse(opcode: FuseOpcode, response: [UInt8]) {
+        guard response.count >= FuseOutHeader.byteCount,
+              Int32(bitPattern: response.leUInt32(at: 4)) == 0 else { return }
+        let declaredLength = Int(response.leUInt32(at: 0))
+        guard declaredLength >= FuseOutHeader.byteCount, declaredLength <= response.count else { return }
+        let payloadStart = FuseOutHeader.byteCount
+
+        switch opcode {
+        case .lookup, .mkdir, .symlink, .link:
+            guard declaredLength >= payloadStart + 8 else { return }
+            hostFS.forgetLookup(nodeID: response.leUInt64(at: payloadStart), count: 1)
+        case .create:
+            guard declaredLength >= payloadStart + 128 + 8 else { return }
+            let nodeID = response.leUInt64(at: payloadStart)
+            let handle = response.leUInt64(at: payloadStart + 128)
+            anomalyLog.log("rollback CREATE handle=\(handle) node=\(nodeID)")
+            releaseFile(handle: handle)
+            hostFS.forgetLookup(nodeID: nodeID, count: 1)
+        case .open:
+            guard declaredLength >= payloadStart + 8 else { return }
+            anomalyLog.log("rollback OPEN handle=\(response.leUInt64(at: payloadStart))")
+            releaseFile(handle: response.leUInt64(at: payloadStart))
+        case .opendir:
+            guard declaredLength >= payloadStart + 8 else { return }
+            anomalyLog.log("rollback OPENDIR handle=\(response.leUInt64(at: payloadStart))")
+            releaseDirectory(handle: response.leUInt64(at: payloadStart))
+        case .readdirplus:
+            var recordStart = payloadStart
+            while recordStart < declaredLength {
+                let nameLengthOffset = recordStart + 128 + 16
+                guard nameLengthOffset + 4 <= declaredLength else { return }
+                let nameLength = Int(response.leUInt32(at: nameLengthOffset))
+                let recordLength = (128 + 24 + nameLength + 7) & ~7
+                guard recordLength >= 152, recordStart + recordLength <= declaredLength else { return }
+                hostFS.forgetLookup(nodeID: response.leUInt64(at: recordStart), count: 1)
+                recordStart += recordLength
+            }
+        default:
+            break
+        }
+    }
+
+    /// Starts a fresh FUSE connection lifetime. VirtioFS calls this only after every admitted
+    /// request from the previous transport epoch has finished using its descriptor snapshot.
+    func resetConnection() {
+        anomalyLog.log("resetConnection")
+        let openHandles: ([OpenFileHandle], [OpenDirectoryHandle]) = lock.withLock {
+            let files = Array(fileHandles.values)
+            let directories = Array(directoryHandles.values)
+            fileHandles.removeAll(keepingCapacity: false)
+            directoryHandles.removeAll(keepingCapacity: false)
+            return (files, directories)
+        }
+        // Keep the removed handles alive until after the table lock is released. Their deinits
+        // close descriptors and release HostFS open references after any in-flight request-owned
+        // references have also drained.
+        var openFiles = openHandles.0
+        var openDirectories = openHandles.1
+        openFiles.removeAll(keepingCapacity: false)
+        openDirectories.removeAll(keepingCapacity: false)
+        hostFS.resetFuseReferences()
+        cachePolicy.deactivate(resetFuseInit: true)
+    }
+
+    private func copyEncodedResponse(
+        writable: [VirtqueueSegment],
+        written: Int
+    ) -> [UInt8]? {
+        guard written >= FuseOutHeader.byteCount else { return nil }
+        var response = [UInt8]()
+        response.reserveCapacity(written)
+        var remaining = written
+        for segment in writable where remaining > 0 {
+            let take = min(segment.length, remaining)
+            response.append(contentsOf: UnsafeRawBufferPointer(start: segment.pointer, count: take))
+            remaining -= take
+        }
+        guard remaining == 0 else { return nil }
+        let declaredLength = Int(response.leUInt32(at: 0))
+        guard declaredLength >= FuseOutHeader.byteCount, declaredLength <= response.count else {
+            return nil
+        }
+        if declaredLength < response.count {
+            response.removeSubrange(declaredLength..<response.count)
+        }
+        return response
+    }
+
     private func writeErrorResponse(unique: UInt64, errno rawErrno: Int32, writable: [VirtqueueSegment]) -> Int {
         let errno = FuseProtocol.linuxErrno(rawErrno)
         guard writable.reduce(0, { $0 + $1.length }) >= FuseOutHeader.byteCount else { return 0 }
@@ -468,25 +912,102 @@ public final class FuseServer: @unchecked Sendable {
         return writer.written
     }
 
+    /// Removes every metadata-cache grant from an already encoded successful response. VirtioFS
+    /// calls this under its publish fence when a queue-health policy transition overtook a worker.
+    /// Copying is intentional: this is a cold race path, and it handles TTL fields split
+    /// across arbitrary writable descriptor segments without weakening the direct hot paths.
+    @discardableResult
+    func neutralizeCacheGrants(
+        opcode: FuseOpcode,
+        writable: [VirtqueueSegment],
+        written: Int
+    ) -> Bool {
+        guard var response = copyEncodedResponse(writable: writable, written: written) else { return false }
+        let declaredLength = response.count
+        // Errors and response kinds without entry/attribute validity cannot grant metadata cache.
+        guard Int32(bitPattern: response.leUInt32(at: 4)) == 0 else { return true }
+
+        func zeroUInt64(at offset: Int) -> Bool {
+            guard offset >= 0, offset + MemoryLayout<UInt64>.size <= declaredLength else {
+                return false
+            }
+            response.replaceSubrange(offset..<(offset + MemoryLayout<UInt64>.size), with: repeatElement(0, count: 8))
+            return true
+        }
+
+        let payloadStart = FuseOutHeader.byteCount
+        switch opcode {
+        case .lookup, .symlink, .link, .mkdir, .create:
+            // fuse_entry_out: nodeid, generation, entry_valid, attr_valid, ...
+            guard zeroUInt64(at: payloadStart + 16), zeroUInt64(at: payloadStart + 24) else {
+                return false
+            }
+        case .getattr, .setattr:
+            // fuse_attr_out begins with attr_valid.
+            guard zeroUInt64(at: payloadStart) else { return false }
+        case .readdirplus:
+            // Each packed record is fuse_entry_out (128 bytes) followed by fuse_dirent. Records are
+            // independently 8-byte aligned, so neutralize both validity fields in every entry.
+            var recordStart = payloadStart
+            while recordStart < declaredLength {
+                let nameLengthOffset = recordStart + 128 + 16
+                guard nameLengthOffset + 4 <= declaredLength,
+                      zeroUInt64(at: recordStart + 16),
+                      zeroUInt64(at: recordStart + 24) else {
+                    return false
+                }
+                let nameLength = Int(response.leUInt32(at: nameLengthOffset))
+                let unalignedLength = 128 + 24 + nameLength
+                let recordLength = (unalignedLength + 7) & ~7
+                guard recordLength >= 152, recordStart + recordLength <= declaredLength else {
+                    return false
+                }
+                recordStart += recordLength
+            }
+            guard recordStart == declaredLength else { return false }
+        default:
+            return true
+        }
+
+        var offset = 0
+        for segment in writable where offset < declaredLength {
+            let take = min(segment.length, declaredLength - offset)
+            response[offset..<(offset + take)].withUnsafeBytes { source in
+                segment.pointer.copyMemory(from: source.baseAddress!, byteCount: take)
+            }
+            offset += take
+        }
+        return offset == declaredLength
+    }
+
     private func handleWrite(header: FuseInHeader, payload: ArraySlice<UInt8>) throws -> [UInt8] {
         guard payload.count >= 40 else { return errorResponse(unique: header.unique, errno: EINVAL) }
         let handle = payload.leUInt64(at: 0)
         let offset = payload.leUInt64(at: 8)
         let size = Int(payload.leUInt32(at: 16))
         guard payload.count >= 40 + size else { return errorResponse(unique: header.unique, errno: EINVAL) }
-        guard let fd = load(handle: handle) else {
+        guard let openHandle = loadFile(handle: handle),
+              openHandle.nodeID == header.nodeID,
+              openHandle.permitsWrite else {
+            anomalyLog.log(describeStaleHandle(handle, nodeID: header.nodeID, op: "WRITE"))
             return errorResponse(unique: header.unique, errno: EBADF)
         }
+        fileOperationLoadedTestHook?()
         let written = try payload.withUnsafeBytes { raw -> Int in
             let base = raw.baseAddress?.advanced(by: 40)
             return try hostFS.write(
-                handle: fd,
+                handle: openHandle.fd,
                 offset: offset,
-                bytes: UnsafeRawBufferPointer(start: base, count: size)
+                bytes: UnsafeRawBufferPointer(start: base, count: size),
+                append: openHandle.append && !writebackCache
             )
         }
-        hostFS.recordWrite(nodeID: header.nodeID, offset: offset, count: written)
-        killPrivilegeBitsIfRequested(writeFlags: payload.leUInt32(at: 20), fd: fd)
+        if openHandle.append && !writebackCache {
+            try hostFS.recordAppendWrite(nodeID: header.nodeID, handle: openHandle.fd)
+        } else {
+            hostFS.recordWrite(nodeID: header.nodeID, offset: offset, count: written)
+        }
+        killPrivilegeBitsIfRequested(writeFlags: payload.leUInt32(at: 20), fd: openHandle.fd)
         return successResponse(unique: header.unique, payloadByteCount: 8) { response in
             response.appendLE(UInt32(written))
             response.appendLE(UInt32(0))
@@ -495,17 +1016,29 @@ public final class FuseServer: @unchecked Sendable {
 
     private func handleReadDirPlus(header: FuseInHeader, payload: ArraySlice<UInt8>) throws -> [UInt8] {
         guard payload.count >= 40 else { return errorResponse(unique: header.unique, errno: EINVAL) }
+        let handle = payload.leUInt64(at: 0)
         guard let offset = Int(exactly: payload.leUInt64(at: 8)) else {
             return errorResponse(unique: header.unique, errno: EINVAL)
         }
+        guard let entries = try directoryEntries(
+            handle: handle,
+            nodeID: header.nodeID,
+            refresh: offset == 0
+        ) else {
+            anomalyLog.log(describeStaleHandle(handle, nodeID: header.nodeID, op: "READDIRPLUS"))
+            return errorResponse(unique: header.unique, errno: EBADF)
+        }
         let maxSize = Int(payload.leUInt32(at: 16))
-        let entries = try hostFS.readdirplus(nodeID: header.nodeID)
         var data = [UInt8]()
-        for (index, entry) in entries.enumerated().dropFirst(offset) {
+        var retainedNodeIDs = [UInt64]()
+        for (index, optionalEntry) in entries.enumerated().dropFirst(offset) {
+            guard let entry = optionalEntry else { continue }
             let encoded = encodeDirentPlus(entry, offset: UInt64(index + 1))
             guard data.count + encoded.count <= maxSize else { break }
             data.append(contentsOf: encoded)
+            retainedNodeIDs.append(entry.nodeID)
         }
+        hostFS.retainLookups(nodeIDs: retainedNodeIDs)
         return successResponse(unique: header.unique, payload: data)
     }
 
@@ -539,30 +1072,70 @@ public final class FuseServer: @unchecked Sendable {
     private func handleFsync(header: FuseInHeader, payload: ArraySlice<UInt8>) throws -> [UInt8] {
         guard payload.count >= 16 else { return errorResponse(unique: header.unique, errno: EINVAL) }
         let handle = payload.leUInt64(at: 0)
-        guard let fd = load(handle: handle) else {
+        guard let openHandle = loadFile(handle: handle), openHandle.nodeID == header.nodeID else {
+            anomalyLog.log(describeStaleHandle(handle, nodeID: header.nodeID, op: "FSYNC"))
             return errorResponse(unique: header.unique, errno: EBADF)
         }
-        try hostFS.fsync(handle: fd)
+        try hostFS.fsync(handle: openHandle.fd)
         return successResponse(unique: header.unique, payload: [])
+    }
+
+    private func handleFlush(header: FuseInHeader, payload: ArraySlice<UInt8>) -> [UInt8] {
+        guard payload.count >= 24 else { return errorResponse(unique: header.unique, errno: EINVAL) }
+        guard let openHandle = loadFile(handle: payload.leUInt64(at: 0)),
+              openHandle.nodeID == header.nodeID else {
+            anomalyLog.log(describeStaleHandle(payload.leUInt64(at: 0), nodeID: header.nodeID, op: "FLUSH"))
+            return errorResponse(unique: header.unique, errno: EBADF)
+        }
+        return successResponse(unique: header.unique, payload: [])
+    }
+
+    public func writeFlushResponse(
+        header: FuseInHeader,
+        payload: ArraySlice<UInt8>,
+        writable: [VirtqueueSegment]
+    ) -> Int {
+        guard payload.count >= 24 else {
+            return writeErrorResponse(unique: header.unique, errno: EINVAL, writable: writable)
+        }
+        guard let openHandle = loadFile(handle: payload.leUInt64(at: 0)),
+              openHandle.nodeID == header.nodeID else {
+            anomalyLog.log(describeStaleHandle(payload.leUInt64(at: 0), nodeID: header.nodeID, op: "FLUSH(direct)"))
+            return writeErrorResponse(unique: header.unique, errno: EBADF, writable: writable)
+        }
+        return writeEmptySuccessResponse(unique: header.unique, writable: writable)
     }
 
     private func handleCreate(header: FuseInHeader, payload: ArraySlice<UInt8>) throws -> [UInt8] {
         guard payload.count >= 16 else { return errorResponse(unique: header.unique, errno: EINVAL) }
-        let flags = Int32(bitPattern: payload.leUInt32(at: 0))
+        guard let intent = FileOpenIntent(wireFlags: payload.leUInt32(at: 0)) else {
+            return errorResponse(unique: header.unique, errno: EINVAL)
+        }
         let mode = UInt16(truncatingIfNeeded: payload.leUInt32(at: 4))
         let name = try readCString(payload.dropFirst(16))
         let created = try hostFS.createFileAndOpen(
             parent: header.nodeID,
             name: name,
             mode: mode,
-            flags: flags,
-            syntheticAttributes: fastCreateAttributes
+            accessMode: hostAccessMode(for: intent),
+            preferredIdentityAccessMode: .readWrite,
+            exclusive: intent.exclusive,
+            truncate: intent.truncate,
+            append: intent.append && !writebackCache,
+            syntheticAttributes: fastCreateAttributes,
+            retainOpenHandle: true
         )
-        let handle = store(fd: created.fd)
+        let handle = storeRetainedFile(
+            fd: created.fd,
+            nodeID: created.entry.nodeID,
+            accessMode: intent.accessMode,
+            append: intent.append
+        )
         let entry = created.entry
+        hostFS.retainLookup(nodeID: entry.nodeID)
         return successResponse(unique: header.unique, payloadByteCount: 144) { response in
             appendEntryOut(entry.attributes, to: &response)
-            appendOpenOut(handle: handle, openFlags: OpenFlag.keepCache | OpenFlag.noFlush, to: &response)
+            appendOpenOut(handle: handle, openFlags: fileOpenFlags, to: &response)
         }
     }
 
@@ -570,7 +1143,13 @@ public final class FuseServer: @unchecked Sendable {
         guard payload.count >= 8 else { return errorResponse(unique: header.unique, errno: EINVAL) }
         let mode = UInt16(truncatingIfNeeded: payload.leUInt32(at: 0))
         let name = try readCString(payload.dropFirst(8))
-        let entry = try hostFS.mkdir(parent: header.nodeID, name: name, mode: mode)
+        let entry = try hostFS.mkdir(
+            parent: header.nodeID,
+            name: name,
+            mode: mode,
+            syntheticAttributes: fastCreateAttributes
+        )
+        hostFS.retainLookup(nodeID: entry.nodeID)
         return successResponse(unique: header.unique, payload: encodeEntryOut(entry.attributes))
     }
 
@@ -592,48 +1171,16 @@ public final class FuseServer: @unchecked Sendable {
         return successResponse(unique: header.unique, payload: [])
     }
 
-    private func handleRelease(header: FuseInHeader, payload: ArraySlice<UInt8>) -> [UInt8] {
+    private func handleReleaseFile(header: FuseInHeader, payload: ArraySlice<UInt8>) -> [UInt8] {
         guard payload.count >= 8 else { return errorResponse(unique: header.unique, errno: EINVAL) }
-        let handle = payload.leUInt64(at: 0)
-        if let fd = remove(handle: handle) {
-            if deferReleaseClose {
-                enqueueDeferredClose(fd)
-            } else {
-                hostFS.close(handle: fd)
-            }
-        }
+        releaseFile(handle: payload.leUInt64(at: 0))
         return successResponse(unique: header.unique, payload: [])
     }
 
-    private func enqueueDeferredClose(_ fd: Int32) {
-        let shouldSchedule = deferredCloseLock.withLock {
-            deferredCloseFDs.append(fd)
-            guard !deferredCloseScheduled else { return false }
-            deferredCloseScheduled = true
-            return true
-        }
-        guard shouldSchedule else { return }
-        closeQueue.async { [self] in
-            drainDeferredCloses()
-        }
-    }
-
-    private func drainDeferredCloses() {
-        while true {
-            let batch: [Int32] = deferredCloseLock.withLock {
-                guard !deferredCloseFDs.isEmpty else {
-                    deferredCloseScheduled = false
-                    return []
-                }
-                let fds = deferredCloseFDs
-                deferredCloseFDs.removeAll(keepingCapacity: true)
-                return fds
-            }
-            guard !batch.isEmpty else { return }
-            for fd in batch {
-                hostFS.close(handle: fd)
-            }
-        }
+    private func handleReleaseDirectory(header: FuseInHeader, payload: ArraySlice<UInt8>) -> [UInt8] {
+        guard payload.count >= 8 else { return errorResponse(unique: header.unique, errno: EINVAL) }
+        releaseDirectory(handle: payload.leUInt64(at: 0))
+        return successResponse(unique: header.unique, payload: [])
     }
 
     private func handleSetupMapping(header: FuseInHeader, payload: ArraySlice<UInt8>) throws -> [UInt8] {
@@ -641,6 +1188,11 @@ public final class FuseServer: @unchecked Sendable {
             return errorResponse(unique: header.unique, errno: ENOSYS)
         }
         let request = try FuseProtocol.decodeSetupMappingIn(Array(payload))
+        let knownMappingFlags = FuseSetupMappingFlag.read.rawValue
+            | FuseSetupMappingFlag.write.rawValue
+        guard request.flags & ~knownMappingFlags == 0 else {
+            return errorResponse(unique: header.unique, errno: EINVAL)
+        }
         // virtio-fs sends fh = -1 for inode-based DAX mappings; resolve the file from the node id.
         // The backend mmaps read-write (Apple's hv_vm_map rejects a read-only host region), so the
         // fd must be writable; a read-only file therefore falls back to plain FUSE reads via the
@@ -650,8 +1202,13 @@ public final class FuseServer: @unchecked Sendable {
         if request.fileHandle == UInt64.max {
             fd = try hostFS.openReadWrite(nodeID: header.nodeID)
             temporaryFD = fd
-        } else if let open = load(handle: request.fileHandle) {
-            fd = open
+        } else if let openHandle = loadFile(handle: request.fileHandle),
+                  openHandle.nodeID == header.nodeID,
+                  request.flags & FuseSetupMappingFlag.write.rawValue == 0
+                    || openHandle.permitsWrite,
+                  request.flags & FuseSetupMappingFlag.read.rawValue == 0
+                    || openHandle.permitsRead(writebackCache: false) {
+            fd = openHandle.fd
         } else {
             return errorResponse(unique: header.unique, errno: EBADF)
         }
@@ -669,21 +1226,133 @@ public final class FuseServer: @unchecked Sendable {
         return successResponse(unique: header.unique, payload: [])
     }
 
-    private func store(fd: Int32) -> UInt64 {
+    /// HostFS already reserved the node lifetime atomically with its identity duplicate. This map
+    /// insertion cannot fail, so ownership of both the fd and the open-handle reference transfers
+    /// directly to the returned FUSE handle.
+    private func storeRetainedFile(
+        fd: Int32,
+        nodeID: UInt64,
+        accessMode: HostFSAccessMode,
+        append: Bool
+    ) -> UInt64 {
         lock.withLock {
-            let handle = nextHandle
-            nextHandle += 1
-            fileHandles[handle] = fd
+            storeFileLocked(
+                fd: fd,
+                nodeID: nodeID,
+                accessMode: accessMode,
+                append: append
+            )
+        }
+    }
+
+    private func storeFileLocked(
+        fd: Int32,
+        nodeID: UInt64,
+        accessMode: HostFSAccessMode,
+        append: Bool
+    ) -> UInt64 {
+        let handle = allocateFileHandleLocked()
+        fileHandles[handle] = OpenFileHandle(
+            fd: fd,
+            nodeID: nodeID,
+            accessMode: accessMode,
+            append: append,
+            hostFS: hostFS
+        )
+        return handle
+    }
+
+    private func storeDirectory(nodeID: UInt64) throws -> UInt64 {
+        try hostFS.retainOpenHandle(nodeID: nodeID)
+        return lock.withLock {
+            let handle = allocateDirectoryHandleLocked()
+            directoryHandles[handle] = OpenDirectoryHandle(nodeID: nodeID, hostFS: hostFS)
             return handle
         }
     }
 
-    private func load(handle: UInt64) -> Int32? {
+    private func loadFile(handle: UInt64) -> OpenFileHandle? {
         lock.withLock { fileHandles[handle] }
     }
 
-    private func remove(handle: UInt64) -> Int32? {
-        lock.withLock { fileHandles.removeValue(forKey: handle) }
+    private func describeStaleHandle(_ handle: UInt64, nodeID: UInt64, op: String) -> String {
+        if handle & Self.directoryHandleTag != 0 {
+            guard let open = loadDirectory(handle: handle) else {
+                return "\(op) unknown dir handle=\(handle) node=\(nodeID)"
+            }
+            return "\(op) dir handle=\(handle) node=\(nodeID) handleNode=\(open.nodeID)"
+        }
+        guard let open = loadFile(handle: handle) else {
+            return "\(op) unknown handle=\(handle) node=\(nodeID)"
+        }
+        return "\(op) handle=\(handle) node=\(nodeID) handleNode=\(open.nodeID) mode=\(open.accessMode)"
+    }
+
+    private func loadDirectory(handle: UInt64) -> OpenDirectoryHandle? {
+        lock.withLock { directoryHandles[handle] }
+    }
+
+    private func directoryEntries(
+        handle: UInt64,
+        nodeID: UInt64,
+        refresh: Bool
+    ) throws -> [HostFSEntry?]? {
+        guard let directory = loadDirectory(handle: handle), directory.nodeID == nodeID else {
+            return nil
+        }
+        directoryOperationLoadedTestHook?()
+        let cached = lock.withLock { directory.entries }
+        if !refresh, let entries = cached { return entries }
+
+        // Host enumeration can perform many descriptor-relative stats; never hold the server's
+        // handle-table lock across it. If two first-page requests race, the first installed
+        // snapshot wins and both callers use that same stable cookie space.
+        let discovered = try hostFS.readdirplus(nodeID: nodeID)
+        return lock.withLock {
+            if !refresh, let entries = directory.entries { return entries }
+            if let entries = directory.entries {
+                var currentByName = Dictionary(uniqueKeysWithValues: discovered.map { ($0.name, $0) })
+                var stableSlots = entries.map { previous -> HostFSEntry? in
+                    guard let previous else { return nil }
+                    return currentByName.removeValue(forKey: previous.name)
+                }
+                // `discovered` is sorted, so additions are deterministic while existing cookies
+                // retain their original slot numbers. Replacements update attributes in place.
+                stableSlots.append(contentsOf: discovered.compactMap { currentByName[$0.name] })
+                directory.entries = stableSlots
+                return stableSlots
+            }
+            let initial = discovered.map(Optional.some)
+            directory.entries = initial
+            return initial
+        }
+    }
+
+    private func releaseFile(handle: UInt64) {
+        // Dropping the table's strong reference closes immediately only when no request queue is
+        // still using the handle. Otherwise OpenFileHandle.deinit runs after the last operation.
+        _ = lock.withLock { fileHandles.removeValue(forKey: handle) }
+    }
+
+    private func releaseDirectory(handle: UInt64) {
+        _ = lock.withLock { directoryHandles.removeValue(forKey: handle) }
+    }
+
+    private func allocateFileHandleLocked() -> UInt64 {
+        while true {
+            let handle = nextFileHandle
+            nextFileHandle = handle == Self.handleSequenceMask ? 1 : handle + 1
+            if fileHandles[handle] == nil { return handle }
+        }
+    }
+
+    private func allocateDirectoryHandleLocked() -> UInt64 {
+        while true {
+            let sequence = nextDirectoryHandle
+            nextDirectoryHandle = sequence == Self.handleSequenceMask ? 1 : sequence + 1
+            let handle = Self.directoryHandleTag | sequence
+            if directoryHandles[handle] == nil { return handle }
+        }
     }
 
     private func readCString(_ payload: ArraySlice<UInt8>) throws -> String {
@@ -734,51 +1403,11 @@ public final class FuseServer: @unchecked Sendable {
         return response
     }
 
-    // Default cache-validity window handed to the guest for looked-up entries and attributes. A zero
-    // attr_valid forces the guest to revalidate with a GETATTR on essentially every access and
-    // prevents the page cache from being trusted, collapsing read throughput to a FUSE round-trip
-    // per 4 KiB. One second is the cache=auto default (virtiofsd): the guest trusts cached metadata
-    // and data for up to a second, revalidating on open via mtime. `entryValiditySeconds` /
-    // `attrValiditySeconds` are the seam for P0.3: once the FSEvents notify path can invalidate the
-    // guest kernel cache on host-side changes, these can be raised to 5-30s. They stay at 1s until
-    // then, because a longer window without invalidation serves stale dentries/attrs.
-    static let defaultCacheValiditySeconds: UInt64 = 1
-
     private func encodeEntryOut(_ attrs: HostFSAttributes) -> [UInt8] {
         var data = [UInt8]()
         data.reserveCapacity(128)
         appendEntryOut(attrs, to: &data)
         return data
-    }
-
-    // Cacheable negative dentry: fuse_entry_out with nodeid=0 and a nonzero entry_valid. The guest
-    // kernel translates nodeid=0 to ENOENT for the syscall but caches the "does not exist" answer for
-    // entry_valid seconds, deleting the LOOKUP-miss that precedes every CREATE in a file-create storm.
-    private func encodeNegativeEntryOut() -> [UInt8] {
-        var data = [UInt8]()
-        data.reserveCapacity(128)
-        appendNegativeEntryOut(to: &data)
-        return data
-    }
-
-    private func appendNegativeEntryOut(to data: inout [UInt8]) {
-        data.appendLE(UInt64(0))                  // nodeid = 0 => negative dentry
-        data.appendLE(UInt64(0))                  // generation
-        data.appendLE(entryValiditySeconds)       // entry_valid
-        data.appendLE(UInt64(0))                  // attr_valid (unused for negatives)
-        data.appendLE(UInt32(0))                  // entry_valid_nsec
-        data.appendLE(UInt32(0))                  // attr_valid_nsec
-        for _ in 0..<11 { data.appendLE(UInt64(0)) }  // empty fuse_attr (88 bytes)
-    }
-
-    private func appendNegativeEntryOut(to writer: inout FuseDirectResponseWriter) {
-        writer.appendLE(UInt64(0))
-        writer.appendLE(UInt64(0))
-        writer.appendLE(entryValiditySeconds)
-        writer.appendLE(UInt64(0))
-        writer.appendLE(UInt32(0))
-        writer.appendLE(UInt32(0))
-        for _ in 0..<11 { writer.appendLE(UInt64(0)) }
     }
 
     private func encodeAttrOut(_ attrs: HostFSAttributes) -> [UInt8] {
@@ -796,34 +1425,38 @@ public final class FuseServer: @unchecked Sendable {
     }
 
     private func appendEntryOut(_ attrs: HostFSAttributes, to data: inout [UInt8]) {
+        let cache = cachePolicy.responsePolicy
         data.appendLE(attrs.nodeID)
         data.appendLE(UInt64(1))
-        data.appendLE(entryValiditySeconds)   // entry_valid
-        data.appendLE(attrValiditySeconds)    // attr_valid
+        data.appendLE(cache.entryValiditySeconds)   // entry_valid
+        data.appendLE(cache.attrValiditySeconds)    // attr_valid
         data.appendLE(UInt32(0))
         data.appendLE(UInt32(0))
         appendAttr(attrs, to: &data)
     }
 
     private func appendEntryOut(_ attrs: HostFSAttributes, to writer: inout FuseDirectResponseWriter) {
+        let cache = cachePolicy.responsePolicy
         writer.appendLE(attrs.nodeID)
         writer.appendLE(UInt64(1))
-        writer.appendLE(entryValiditySeconds)   // entry_valid
-        writer.appendLE(attrValiditySeconds)    // attr_valid
+        writer.appendLE(cache.entryValiditySeconds)   // entry_valid
+        writer.appendLE(cache.attrValiditySeconds)    // attr_valid
         writer.appendLE(UInt32(0))
         writer.appendLE(UInt32(0))
         appendAttr(attrs, to: &writer)
     }
 
     private func appendAttrOut(_ attrs: HostFSAttributes, to data: inout [UInt8]) {
-        data.appendLE(attrValiditySeconds)   // attr_valid
+        let cache = cachePolicy.responsePolicy
+        data.appendLE(cache.attrValiditySeconds)   // attr_valid
         data.appendLE(UInt32(0))
         data.appendLE(UInt32(0))
         appendAttr(attrs, to: &data)
     }
 
     private func appendAttrOut(_ attrs: HostFSAttributes, to writer: inout FuseDirectResponseWriter) {
-        writer.appendLE(attrValiditySeconds)   // attr_valid
+        let cache = cachePolicy.responsePolicy
+        writer.appendLE(cache.attrValiditySeconds)   // attr_valid
         writer.appendLE(UInt32(0))
         writer.appendLE(UInt32(0))
         appendAttr(attrs, to: &writer)
@@ -871,7 +1504,7 @@ public final class FuseServer: @unchecked Sendable {
         data.appendLE(attrs.mtimeNsec)
         data.appendLE(attrs.ctimeNsec)
         data.appendLE(attrs.mode)
-        data.appendLE(attrs.isDirectory ? UInt32(2) : UInt32(1))
+        data.appendLE(attrs.linkCount)
         data.appendLE(attrs.uid)
         data.appendLE(attrs.gid)
         data.appendLE(UInt32(0))
@@ -890,7 +1523,7 @@ public final class FuseServer: @unchecked Sendable {
         writer.appendLE(attrs.mtimeNsec)
         writer.appendLE(attrs.ctimeNsec)
         writer.appendLE(attrs.mode)
-        writer.appendLE(attrs.isDirectory ? UInt32(2) : UInt32(1))
+        writer.appendLE(attrs.linkCount)
         writer.appendLE(attrs.uid)
         writer.appendLE(attrs.gid)
         writer.appendLE(UInt32(0))
@@ -915,13 +1548,14 @@ public final class FuseServer: @unchecked Sendable {
     }
 
     private static func writebackCacheEnabledFromEnvironment() -> Bool {
-        // Default ON (P0.2): the guest is the effectively-exclusive writer of shared paths, so
-        // coalescing buffered writes is safe and removes the per-write round trip. Opt out with
-        // DORY_FUSE_WRITEBACK_CACHE=0 for the durability-strict benchmark arm.
+        // Default OFF: desktop shares are bidirectional. With FUSE writeback enabled, dirty guest
+        // pages can survive a reverse invalidation and later overwrite a host editor's change even
+        // after the notification barrier completes. Keep explicit opt-in for isolated experiments;
+        // production coherence requires write-through until dirty-page conflict handling exists.
         guard let value = ProcessInfo.processInfo.environment["DORY_FUSE_WRITEBACK_CACHE"]?.lowercased() else {
-            return true
+            return false
         }
-        return !["0", "false", "no", "off"].contains(value)
+        return ["1", "true", "yes", "on"].contains(value)
     }
 
     private static func killPrivV2EnabledFromEnvironment() -> Bool {
@@ -931,38 +1565,16 @@ public final class FuseServer: @unchecked Sendable {
         return !["0", "false", "no", "off"].contains(value)
     }
 
-    // Default OFF: caching negative lookups breaks tools that create a path in parallel right after a
-    // miss (npm's arborist fails `mkdir node_modules/<pkg>` with ENOENT because the just-created parent
-    // is still cached as a negative dentry). It is a real correctness regression on a bind mount and is
-    // not safe without the host-side FSEvents invalidation channel (P0.3), so it stays opt-in via
-    // DORY_FUSE_NEGATIVE_DENTRY=1 until that lands. The `touch`-storm microbenchmark win it gave does
-    // not justify breaking `npm install`.
-    private static func negativeDentryCachingEnabledFromEnvironment() -> Bool {
-        guard let value = ProcessInfo.processInfo.environment["DORY_FUSE_NEGATIVE_DENTRY"]?.lowercased() else {
-            return false
-        }
-        return ["1", "true", "yes", "on"].contains(value)
+    private var fileOpenFlags: UInt32 {
+        // FOPEN_KEEP_CACHE cannot be revoked from handles that were opened before notification
+        // health degraded. Metadata validity is bounded and fenceable; page-cache retention is not.
+        OpenFlag.noFlush
     }
 
-    private static func timeoutFromEnvironment(_ key: String) -> UInt64 {
-        guard let raw = ProcessInfo.processInfo.environment[key], let value = UInt64(raw) else {
-            return defaultCacheValiditySeconds
-        }
-        return value
-    }
-
-    private static func deferReleaseCloseEnabledFromEnvironment() -> Bool {
-        guard let value = ProcessInfo.processInfo.environment["DORY_FUSE_DEFER_CLOSE"]?.lowercased() else {
-            return true
-        }
-        return !["0", "false", "no", "off"].contains(value)
-    }
-
-    private static func fastCreateAttributesEnabledFromEnvironment() -> Bool {
-        guard let value = ProcessInfo.processInfo.environment["DORY_FUSE_FAST_CREATE"]?.lowercased() else {
-            return true
-        }
-        return !["0", "false", "no", "off"].contains(value)
+    private var directoryOpenFlags: UInt32 {
+        // FOPEN_CACHE_DIR has the same irrevocable lifetime problem as KEEP_CACHE. Directory entry
+        // and attribute TTLs are the only cache acceleration enabled by coherent mode.
+        0
     }
 
     private func mapError(_ error: Error) -> Int32 {
@@ -973,6 +1585,8 @@ public final class FuseServer: @unchecked Sendable {
             return EINVAL
         case HostFSError.notFound:
             return ENOENT
+        case HostFSError.staleIdentity:
+            return ESTALE
         case HostFSError.notDirectory:
             return ENOTDIR
         case HostFSError.notRegularFile:
@@ -981,10 +1595,16 @@ public final class FuseServer: @unchecked Sendable {
             return EROFS
         case HostFSError.permissionDenied:
             return EACCES
+        case HostFSError.operationNotSupported:
+            return EOPNOTSUPP
+        case let HostFSError.systemCall(_, code):
+            return code
         case FuseProtocolError.shortFrame:
             return EINVAL
         case FuseProtocolError.unsupportedMinor:
             return EPROTO
+        case RequestError.badFileDescriptor:
+            return EBADF
         case DaxWindowError.unaligned, DaxWindowError.outOfBounds, DaxWindowError.invalidWindow:
             return EINVAL
         case DaxWindowError.overlap:
@@ -996,6 +1616,24 @@ public final class FuseServer: @unchecked Sendable {
         default:
             return EIO
         }
+    }
+}
+
+/// A guest-held handle failing to resolve is a protocol invariant violation, never a workload
+/// condition. Log the first occurrences so field failures name their branch instead of surfacing
+/// only as an unexplained EBADF inside the container.
+private final class FuseAnomalyLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var budget = 50
+
+    func log(_ message: @autoclosure () -> String) {
+        let allowed: Bool = lock.withLock {
+            guard budget > 0 else { return false }
+            budget -= 1
+            return true
+        }
+        guard allowed else { return }
+        FileHandle.standardError.write(Data("dory-hv: fuse anomaly: \(message())\n".utf8))
     }
 }
 
@@ -1049,6 +1687,10 @@ private struct FuseDirectResponseWriter {
         appendLE(UInt32(FuseOutHeader.byteCount + payloadByteCount))
         appendLE(UInt32(bitPattern: error))
         appendLE(unique)
+    }
+
+    mutating func append(_ bytes: [UInt8]) {
+        bytes.withUnsafeBytes { append($0) }
     }
 
     mutating func appendLE(_ value: UInt32) {

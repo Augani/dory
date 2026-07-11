@@ -114,9 +114,18 @@ public struct VirtioVsockHeader: Equatable {
     }
 }
 
+public enum VsockConnectionWriteError: Error, Equatable, Sendable {
+    case timedOut
+    case connectionClosed
+}
+
 public protocol VsockConnection: AnyObject {
     func read(into buffer: UnsafeMutableRawBufferPointer) throws -> Int
     func write(_ bytes: [UInt8]) throws
+    /// Writes with a bounded credit wait. A nil timeout preserves the streaming bridges' existing
+    /// behavior; bounded control-plane calls use this so a guest that stops returning credit cannot
+    /// permanently occupy a host worker.
+    func write(_ bytes: [UInt8], timeoutNanoseconds: UInt64?) throws
     func close()
     /// Blocks until a subsequent `read(into:)` can return bytes, or until the peer closes. A nil
     /// timeout waits indefinitely. Implementations keep `read(into:)` nonblocking for callers that
@@ -134,6 +143,10 @@ public protocol VsockConnection: AnyObject {
 }
 
 public extension VsockConnection {
+    func write(_ bytes: [UInt8], timeoutNanoseconds: UInt64?) throws {
+        try write(bytes)
+    }
+
     func waitForReadable(timeoutNanoseconds: UInt64?) -> Bool {
         if isPeerClosed { return true }
         if let timeoutNanoseconds {
@@ -152,6 +165,9 @@ public enum VsockPorts {
     /// inside the engine VM with full half-close fidelity (the gvproxy unix forward this replaces
     /// tears the stream down on a client SHUT_WR, which is how `docker run` attaches output).
     public static let docker: UInt32 = 1026
+    /// Host-edit batches sent only after virtio-fs invalidation has completed. The guest agent turns
+    /// them into Linux VFS metadata operations so inotify-backed tools receive native events.
+    public static let fsevents: UInt32 = 1028
 }
 
 public final class VirtioVsock: VirtioDeviceBackend {
@@ -449,10 +465,17 @@ public final class VirtioVsock: VirtioDeviceBackend {
         }
 
         func write(_ bytes: [UInt8]) throws {
+            try write(bytes, timeoutNanoseconds: nil)
+        }
+
+        func write(_ bytes: [UInt8], timeoutNanoseconds: UInt64?) throws {
+            let deadline = timeoutNanoseconds.map {
+                ProcessInfo.processInfo.systemUptime + Double($0) / 1_000_000_000
+            }
             var offset = 0
             while offset < bytes.count {
                 let chunk = min(Self.writeChunk, bytes.count - offset)
-                guard waitForCredit(chunk: UInt32(chunk)) else { return }
+                try waitForCredit(chunk: UInt32(chunk), deadline: deadline)
                 condition.lock()
                 let credit = forwardCountValue
                 transmittedCount &+= UInt32(chunk)
@@ -462,9 +485,9 @@ public final class VirtioVsock: VirtioDeviceBackend {
             }
         }
 
-        /// Blocks until the peer's receive window admits `chunk` more bytes. Returns false when the
-        /// connection is no longer writable.
-        private func waitForCredit(chunk: UInt32) -> Bool {
+        /// Blocks until the peer's receive window admits `chunk` more bytes. The deadline covers the
+        /// whole write, not each chunk, so a trickle of credit cannot extend a control call forever.
+        private func waitForCredit(chunk: UInt32, deadline: TimeInterval?) throws {
             while true {
                 condition.lock()
                 let writable = !isClosed && !hostSendClosed
@@ -472,14 +495,27 @@ public final class VirtioVsock: VirtioDeviceBackend {
                 let allowance = peerBufferAllocation
                 if !writable {
                     condition.unlock()
-                    return false
+                    throw VsockConnectionWriteError.connectionClosed
                 }
                 if inFlight &+ chunk <= allowance {
                     condition.unlock()
-                    return true
+                    return
                 }
-                condition.wait()
-                condition.unlock()
+                if let deadline {
+                    let remaining = deadline - ProcessInfo.processInfo.systemUptime
+                    guard remaining > 0 else {
+                        condition.unlock()
+                        throw VsockConnectionWriteError.timedOut
+                    }
+                    let signalled = condition.wait(until: Date().addingTimeInterval(remaining))
+                    condition.unlock()
+                    if !signalled, ProcessInfo.processInfo.systemUptime >= deadline {
+                        throw VsockConnectionWriteError.timedOut
+                    }
+                } else {
+                    condition.wait()
+                    condition.unlock()
+                }
             }
         }
 

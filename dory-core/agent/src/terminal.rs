@@ -12,8 +12,8 @@ use std::path::Path;
 use std::ptr;
 use std::time::Duration;
 
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::io::unix::AsyncFd;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 struct ShellProcess {
     pid: libc::pid_t,
@@ -76,14 +76,7 @@ fn spawn_shell() -> io::Result<ShellProcess> {
     envp.push(ptr::null());
 
     let mut master: libc::c_int = -1;
-    let pid = unsafe {
-        libc::forkpty(
-            &mut master,
-            ptr::null_mut(),
-            ptr::null(),
-            ptr::null(),
-        )
-    };
+    let pid = unsafe { libc::forkpty(&mut master, ptr::null_mut(), ptr::null(), ptr::null()) };
     if pid < 0 {
         return Err(io::Error::last_os_error());
     }
@@ -143,7 +136,12 @@ async fn write_all_fd(fd: &AsyncFd<OwnedFd>, mut bytes: &[u8]) -> io::Result<()>
     while !bytes.is_empty() {
         let mut guard = fd.writable().await?;
         match guard.try_io(|inner| write_raw(inner.get_ref().as_raw_fd(), bytes)) {
-            Ok(Ok(0)) => return Err(io::Error::new(io::ErrorKind::WriteZero, "pty write returned zero")),
+            Ok(Ok(0)) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::WriteZero,
+                    "pty write returned zero",
+                ))
+            }
             Ok(Ok(n)) => bytes = &bytes[n..],
             Ok(Err(error)) => return Err(error),
             Err(_) => continue,
