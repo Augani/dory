@@ -32,10 +32,18 @@ public actor HostShareCoherenceCoordinator {
     /// reverse-notification wait. VirtioFS keeps its generic timeout; coherence uses this tighter
     /// deadline so the VM restart boundary wins before delayed dirty pages can overwrite host data.
     static let reverseInvalidationFailCloseDeadline: Duration = .seconds(1)
+    /// A loss-recovery sweep invalidates every known node, so its deadline scales with the sweep
+    /// size instead of borrowing the per-edit fail-close bound. Caching is already deactivated for
+    /// the whole recovery window, so a longer publication budget cannot extend staleness.
+    static let maximumLossRecoveryInvalidationDeadline: Duration = .seconds(60)
+    /// Recovery handles bursts (one loss marker per relay flush), but a stream that keeps losing
+    /// events faster than sweeps complete is not converging; fall back to the VM restart boundary.
+    static let maximumConsecutiveLossRecoveries = 5
 
     private let endpoints: [HostShareCoherenceEndpoint]
     private let guestEvents: any GuestFSEventSending
     private let onDegraded: @Sendable (String) -> Void
+    private let onRecovered: @Sendable (String) -> Void
     private let onFatalRecoveryRequired: @Sendable (String) -> Void
     private let relayHealth: RelayDeliveryHealth
     private var batchInProgress = false
@@ -47,18 +55,21 @@ public actor HostShareCoherenceCoordinator {
     private var deliveredNudges = Set<NudgeKey>()
     private var pendingNudgeOperation: PendingNudgeOperation?
     private var fatalRecoveryRequested = false
+    private var consecutiveLossRecoveries = 0
     private(set) public var isDegraded = false
 
     public init(
         endpoints: [HostShareCoherenceEndpoint],
         guestEvents: any GuestFSEventSending,
         onDegraded: @escaping @Sendable (String) -> Void = { _ in },
+        onRecovered: @escaping @Sendable (String) -> Void = { _ in },
         onFatalRecoveryRequired: @escaping @Sendable (String) -> Void = { _ in }
     ) {
         let sortedEndpoints = endpoints.sorted { $0.share.hostRoot.count > $1.share.hostRoot.count }
         self.endpoints = sortedEndpoints
         self.guestEvents = guestEvents
         self.onDegraded = onDegraded
+        self.onRecovered = onRecovered
         self.onFatalRecoveryRequired = onFatalRecoveryRequired
         self.relayHealth = RelayDeliveryHealth {
             // This callback runs synchronously on the relay failure path. Revoking response TTLs
@@ -76,9 +87,15 @@ public actor HostShareCoherenceCoordinator {
     /// `false` means "not ready" (or permanently degraded), so callers may poll during guest boot
     /// without treating an expected startup race as an engine failure.
     public func activateCachingIfReady() async throws -> Bool {
+        guard !batchInProgress else { return false }
+        return try await performActivation(requireNoBatch: true)
+    }
+
+    /// Loss recovery reactivates from inside its own batch, so the batch guard is parameterized:
+    /// the batch gate already serializes recovery against every other caller.
+    private func performActivation(requireNoBatch: Bool) async throws -> Bool {
         let cacheableEndpoints = endpoints.filter(\.watcherNudgesEnabled)
         guard !isDegraded,
-              !batchInProgress,
               pendingNudgeOperation == nil,
               !cacheableEndpoints.isEmpty else { return false }
         guard let relayGeneration = relayHealth.readyGeneration else { return false }
@@ -94,7 +111,7 @@ public actor HostShareCoherenceCoordinator {
         guard health.touched == 0,
               health.failed == 0,
               !isDegraded,
-              !batchInProgress else { return false }
+              !requireNoBatch || !batchInProgress else { return false }
 
         let activated = relayHealth.whileReady(generation: relayGeneration) {
             for endpoint in cacheableEndpoints {
@@ -149,11 +166,10 @@ public actor HostShareCoherenceCoordinator {
         defer { endBatch() }
         let requiresRescan = incoming.contains(where: \.requiresRescan)
         if requiresRescan {
-            requireFatalRecovery(
-                "FSEvents lost host-share changes; restarting VM to discard unknown descendant cache state"
-            )
+            try await recoverFromEventLoss(latestEventID: incoming.map(\.eventID).max() ?? 0)
             return
         }
+        consecutiveLossRecoveries = 0
         let changes = incoming
 
         let prepared = prepare(changes)
@@ -641,6 +657,89 @@ public actor HostShareCoherenceCoordinator {
         guard !isDegraded else { return }
         isDegraded = true
         onDegraded(reason)
+    }
+
+    /// Recovers from FSEvents loss in place instead of restarting the VM. The window is
+    /// fail-closed for freshness but not for availability: caching is deactivated first (new
+    /// grants are zero-TTL), every known path whose pinned identity no longer matches the disk
+    /// gets its identity-verified DELETE/ENTRY invalidation through the ordinary pipeline, and a
+    /// content+attribute sweep over every known node retires stale pages and attributes that an
+    /// in-place host write could have left behind. Entry invalidation stays identity-gated: a
+    /// verified-unchanged dentry must survive because fuse_reverse_inval_entry's d_invalidate
+    /// detaches container bind mounts beneath it. Negative dentries expire on their own 1 s bound.
+    /// Once the notification barrier acknowledges the sweep, caching is reactivated.
+    private func recoverFromEventLoss(latestEventID: UInt64) async throws {
+        consecutiveLossRecoveries += 1
+        guard consecutiveLossRecoveries <= Self.maximumConsecutiveLossRecoveries else {
+            requireFatalRecovery(
+                "FSEvents loss recurred \(consecutiveLossRecoveries) times without converging; restarting VM to discard unknown descendant cache state"
+            )
+            return
+        }
+        degrade("FSEvents lost host-share changes; recovering in place with caching disabled")
+
+        do {
+            let synthesizedFlags = UInt32(
+                kFSEventStreamEventFlagItemRemoved |
+                kFSEventStreamEventFlagItemRenamed
+            )
+            var staleChanges = [HostFSEventChange]()
+            for endpoint in endpoints {
+                for stalePath in endpoint.backend.hostFS.knownStaleHostPathsForNamespaceReconciliation() {
+                    guard let guestPath = endpoint.share.mapHostPathToGuest(stalePath) else { continue }
+                    staleChanges.append(HostFSEventChange(
+                        hostPath: stalePath,
+                        guestPath: guestPath,
+                        flags: synthesizedFlags,
+                        eventID: latestEventID
+                    ))
+                }
+            }
+            let prepared = prepare(staleChanges)
+            for item in prepared where !item.invalidations.isEmpty {
+                try await item.endpoint.backend.invalidateAtomically(
+                    item.invalidations,
+                    maximumBatchSize: max(1, min(128, item.endpoint.backend.notificationBacklogLimit)),
+                    timeout: Self.lossRecoveryDeadline(invalidationCount: item.invalidations.count)
+                )
+            }
+
+            for endpoint in endpoints {
+                let sweep = endpoint.backend.hostFS.knownNodeIDsForLossRecovery().map {
+                    VirtioFSInvalidation.inode(nodeID: $0, offset: 0, length: -1)
+                }
+                guard !sweep.isEmpty else { continue }
+                try await endpoint.backend.invalidateAtomically(
+                    sweep,
+                    maximumBatchSize: max(1, min(128, endpoint.backend.notificationBacklogLimit)),
+                    timeout: Self.lossRecoveryDeadline(invalidationCount: sweep.count)
+                )
+            }
+        } catch {
+            requireFatalRecovery(
+                "host-share loss recovery could not publish its invalidation sweep; restarting VM: \(error)"
+            )
+            return
+        }
+
+        // The sweep and barrier make the guest coherent again; the degrade latch can lift. If
+        // reactivation is not currently eligible (for example the notification buffers are being
+        // reposted), the share simply keeps running with zero-TTL grants, which is correct.
+        isDegraded = false
+        cacheExpiryDeadline = nil
+        let reactivated = (try? await performActivation(requireNoBatch: false)) ?? false
+        onRecovered(
+            reactivated
+                ? "host-share coherence recovered from FSEvents loss; caching reactivated"
+                : "host-share coherence recovered from FSEvents loss; running uncached until the channel is eligible again"
+        )
+    }
+
+    private static func lossRecoveryDeadline(invalidationCount: Int) -> Duration {
+        min(
+            Self.maximumLossRecoveryInvalidationDeadline,
+            .seconds(5) + .milliseconds(2 * invalidationCount)
+        )
     }
 
     private func requireFatalRecovery(_ reason: String) {

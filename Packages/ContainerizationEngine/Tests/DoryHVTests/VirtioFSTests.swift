@@ -784,6 +784,74 @@ struct VirtioFSTests {
         #expect(try FuseProtocol.decodeOutHeader(listing).error == 0)
     }
 
+    @Test func eventLossRecoversInPlaceWithHealthyNotificationChannel() async throws {
+        let harness = try VirtioFSNotificationHarness()
+        try harness.write("stale", to: "stale.txt")
+        try harness.write("alive", to: "alive.txt")
+        try harness.prepareCoherentCachingEligibility()
+
+        let guest = CoordinatorGuestFSEventSender()
+        let fatals = CoordinatorFatalRecorder()
+        let recoveries = CoordinatorFatalRecorder()
+        let coordinator = HostShareCoherenceCoordinator(
+            endpoints: [HostShareCoherenceEndpoint(
+                share: HostFSEventShare(hostRoot: harness.rootURL.path, guestRoot: "/workspace"),
+                backend: harness.fs
+            )],
+            guestEvents: guest,
+            onRecovered: { message in recoveries.append(message) },
+            onFatalRecoveryRequired: { reason in fatals.append(reason) }
+        )
+        #expect(try await coordinator.activateCachingIfReady())
+        #expect(harness.fs.coherentCachingActive)
+
+        // Pin both identities through real lookups, then remove one behind FSEvents' back —
+        // exactly the state a lost event window leaves behind.
+        let staleLookup = try harness.performFuseRequest(
+            makeFuseRequest(opcode: .lookup, unique: 21, payload: Array("stale.txt\0".utf8)),
+            queue: 2
+        )
+        #expect(Array(staleLookup.dropFirst(FuseOutHeader.byteCount)).leUInt64(at: 0) != 0)
+        let aliveLookup = try harness.performFuseRequest(
+            makeFuseRequest(opcode: .lookup, unique: 22, payload: Array("alive.txt\0".utf8)),
+            queue: 2
+        )
+        #expect(Array(aliveLookup.dropFirst(FuseOutHeader.byteCount)).leUInt64(at: 0) != 0)
+        try harness.remove("stale.txt")
+
+        let usedBefore = try harness.usedIndex(queue: 1)
+        let dropped = HostFSEventChange(
+            hostPath: harness.rootURL.path,
+            guestPath: "/workspace",
+            flags: UInt32(
+                kFSEventStreamEventFlagMustScanSubDirs |
+                kFSEventStreamEventFlagUserDropped
+            ),
+            eventID: 77
+        )
+        let done = CoordinatorFatalRecorder()
+        let processing = Task {
+            defer { done.append("done") }
+            try await coordinator.process([dropped])
+        }
+        var pumps = 0
+        while done.reasons.isEmpty, pumps < 512 {
+            _ = try? harness.acknowledgeConsumedInvalidations()
+            pumps += 1
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        try await processing.value
+
+        #expect(fatals.reasons.isEmpty)
+        #expect(await !coordinator.isDegraded)
+        #expect(!harness.fs.requestPublicationGateClosed)
+        // The recovery sweep actually published notifications and caching came back.
+        #expect(try harness.usedIndex(queue: 1) > usedBefore)
+        #expect(harness.fs.coherentCachingActive)
+        #expect(recoveries.reasons.count == 1)
+        #expect(recoveries.reasons[0].contains("caching reactivated"))
+    }
+
     @Test func coordinatorNotificationTimeoutFailsClosedWithinOneSecondPolicy() async throws {
         let harness = try VirtioFSNotificationHarness()
         try harness.write("old", to: "watched.txt")
@@ -1370,6 +1438,10 @@ private final class VirtioFSNotificationHarness {
     let transport: VirtioMMIOTransport
     private let requestIndexLock = NSLock()
     private var requestAvailIndices: [Int: UInt16] = [:]
+    private var lastSeenNotificationUsedIndex: UInt16 = 0
+    private var notificationAvailIndex: UInt16 = UInt16(
+        VirtioFS.requiredStableNotificationBufferCountForCaching
+    )
 
     var rootURL: URL { root.url }
 
@@ -1513,6 +1585,36 @@ private final class VirtioFSNotificationHarness {
             throw VirtioFSHarnessError.invalidResponseLength(length)
         }
         return try memory.readBytes(at: pending.responseAddress, count: Int(length))
+    }
+
+    /// Acknowledges every notification the device has consumed so far, exactly like the real
+    /// guest driver: read queue 1's used ring for consumed descriptor heads and repost those same
+    /// buffer addresses. Supports arbitrary-length streams such as a loss-recovery sweep.
+    @discardableResult
+    func acknowledgeConsumedInvalidations() throws -> Int {
+        let layout = queueLayout(1)
+        let used = try memory.read(UInt16.self, at: layout.used + 2)
+        var acked = 0
+        while lastSeenNotificationUsedIndex != used {
+            let slot = UInt64(lastSeenNotificationUsedIndex % 32)
+            let head = try memory.read(UInt32.self, at: layout.used + 4 + slot * 8)
+            let address = try memory.read(UInt64.self, at: layout.descriptor + UInt64(head) * 16)
+            lastSeenNotificationUsedIndex &+= 1
+            notificationAvailIndex &+= 1
+            let ringPosition = UInt16((UInt64(notificationAvailIndex) - 1) % 32)
+            try postWritableBuffer(
+                queue: 1,
+                descriptor: ringPosition,
+                address: address,
+                slot: ringPosition,
+                index: notificationAvailIndex
+            )
+            acked += 1
+        }
+        if acked > 0 {
+            fs.handleKick(queue: 1, transport: transport)
+        }
+        return acked
     }
 
     func acknowledgeFirstInvalidation() throws {

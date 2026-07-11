@@ -416,6 +416,7 @@ enum EngineMode {
                 endpoints: activeEndpoints,
                 guestEvents: GuestFSEventBridge(vsock: vsock),
                 onDegraded: { note($0) },
+                onRecovered: { note($0) },
                 onFatalRecoveryRequired: { reason in
                     note("host-share coherence requires VM restart: \(reason)")
                     machine.requestStop(.crash(reason))

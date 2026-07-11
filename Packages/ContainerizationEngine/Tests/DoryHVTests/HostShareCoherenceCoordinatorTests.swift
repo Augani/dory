@@ -35,7 +35,9 @@ struct HostShareCoherenceCoordinatorTests {
         #expect(!fixture.backend.coherentCachingActive)
     }
 
-    @Test func eventLossRequestsVMRestartInsteadOfPretendingRootInvalidationIsRecursive() async throws {
+    /// Without a working notification channel the loss-recovery sweep cannot publish, so the
+    /// fail-stop boundary remains the only safe answer for potentially stale open-file page cache.
+    @Test func eventLossWithoutNotificationChannelStillFailsStop() async throws {
         let first = try CoherenceFixture()
         let second = try CoherenceFixture()
         defer {
@@ -66,7 +68,7 @@ struct HostShareCoherenceCoordinatorTests {
         #expect(!second.backend.coherentCachingActive)
         #expect(await guest.sendCount == 0)
         #expect(fatals.reasons.count == 1)
-        #expect(fatals.reasons[0].contains("lost"))
+        #expect(fatals.reasons[0].contains("loss recovery could not publish"))
         #expect(fatals.gateSnapshots == [[true, true]])
         #expect(first.backend.requestPublicationGateClosed)
         #expect(second.backend.requestPublicationGateClosed)

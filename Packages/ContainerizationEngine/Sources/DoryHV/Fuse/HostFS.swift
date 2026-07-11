@@ -609,6 +609,13 @@ public final class HostFS: @unchecked Sendable {
     /// bounded-to-known-identities scan only for rename batches to synthesize the missing source
     /// invalidation.  It never discovers or registers new paths, and it only returns paths that
     /// the guest has already resolved through this HostFS instance.
+    /// Every node ID this share currently tracks, for the loss-recovery content/attribute sweep.
+    /// Over-invalidation is safe: an attribute/content invalidation drops clean cached state and
+    /// never touches dentries or the mounts beneath them.
+    public func knownNodeIDsForLossRecovery() -> [UInt64] {
+        lock.withLock { nodes.keys.sorted() }
+    }
+
     public func knownStaleHostPathsForNamespaceReconciliation() -> [String] {
         lock.withLock {
             idsByRelativePath.keys.compactMap { relativePath in
