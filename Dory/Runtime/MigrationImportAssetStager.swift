@@ -69,12 +69,13 @@ enum MigrationImportAssetStager {
     }
 }
 
-private enum MigrationCreatedAsset {
+enum MigrationCreatedAsset {
     case image(id: String)
     case volume(name: String, expectedLabels: [String: String])
+    case network(name: String, expectedLabels: [String: String])
 }
 
-private struct MigrationImportAssetStagingExecution {
+struct MigrationImportAssetStagingExecution {
     let session: MigrationImportStagingSession
     let environment: MigrationImportAssetStagingEnvironment
     var state: DoryOperationState
@@ -106,7 +107,9 @@ private struct MigrationImportAssetStagingExecution {
                 try await stageImage(object)
             case .volume:
                 try await stageVolume(object)
-            case .network, .writableLayer, .container:
+            case .network:
+                try await stageNetwork(object)
+            case .writableLayer, .container:
                 continue
             }
         }
@@ -270,6 +273,8 @@ private struct MigrationImportAssetStagingExecution {
                 await rollbackImage(id, failures: &failures)
             case let .volume(name, expectedLabels):
                 await rollbackVolume(name, expectedLabels: expectedLabels, failures: &failures)
+            case let .network(name, expectedLabels):
+                await rollbackNetwork(name, expectedLabels: expectedLabels, failures: &failures)
             }
         }
         return failures

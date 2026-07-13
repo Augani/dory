@@ -276,10 +276,14 @@ final class StrictMigrationRuntime: ContainerRuntime {
     var containerInspections: [String: [String: Any]] = [:]
     var networkInspections: [String: [String: Any]] = [:]
     var createdVolumes: [MigrationVolumeContract] = []
+    var createdNetworkRequests: [Data] = []
     var removedVolumes: [String] = []
+    var removedNetworks: [String] = []
     var removedImages: [String] = []
     var failVolumeRemoval = false
+    var failNetworkRemoval = false
     var failImageRemoval = false
+    var mutateCreatedNetworkContract = false
 
     init(
         identifier: String,
@@ -365,33 +369,6 @@ final class StrictMigrationRuntime: ContainerRuntime {
         snapshotValue.images.removeAll {
             MigrationOperationPlanBuilder.normalizedImageID($0.imageID) == normalized
         }
-    }
-
-    func proxyRequest(
-        method: String,
-        path: String,
-        headers: [(name: String, value: String)],
-        body: Data
-    ) async -> HTTPResponse? {
-        guard method == "GET" else { return nil }
-        if path == "/version" { return response(version) }
-        if path == "/info" { return response(info) }
-        if path.hasPrefix("/system/df") { return response(systemDiskUsage) }
-        if path.hasPrefix("/containers/"), path.hasSuffix("/json") {
-            let id = String(path.dropFirst("/containers/".count).dropLast("/json".count))
-            return response(containerInspections[id])
-        }
-        if path.hasPrefix("/networks/") {
-            let name = String(path.dropFirst("/networks/".count))
-            return response(networkInspections[name])
-        }
-        return nil
-    }
-
-    private func response(_ object: [String: Any]?) -> HTTPResponse? {
-        guard let object,
-              let data = try? JSONSerialization.data(withJSONObject: object) else { return nil }
-        return HTTPResponse(statusCode: 200, reason: "OK", headers: [:], body: data)
     }
 
     enum TestMutationFailure: Error { case injected }

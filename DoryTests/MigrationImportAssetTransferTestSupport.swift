@@ -1,0 +1,112 @@
+import DoryOperations
+import Foundation
+import Testing
+@testable import Dory
+
+@MainActor
+final class AssetStagingTransfers: MigrationImportAssetTransfers {
+    enum Failure: Error { case volume }
+    enum VolumeOutcome { case success, failure, cancelled }
+
+    var volumeOutcome = VolumeOutcome.success
+    var mutateTargetVolume = false
+    let sourceVolumeManifest = Data("source-volume-manifest".utf8)
+    let targetVolumeManifest = Data("target-volume-manifest".utf8)
+
+    func transferImage(
+        _ request: MigrationImageTransferRequest,
+        from source: any ContainerRuntime,
+        to target: any ContainerRuntime
+    ) async throws -> MigrationImageTransferReceipt {
+        let imageID = try #require(
+            MigrationImageTransferExecution.canonicalImageID(request.sourceImageID)
+        )
+        let digest = String(imageID.dropFirst("sha256:".count))
+        let fingerprint = try fingerprint(digest: digest)
+        let runtime = try #require(target as? StrictMigrationRuntime)
+        let preexisting = installImage(imageID, digest: digest, on: runtime)
+        let responseDigest = String(repeating: "c", count: 64)
+        let manifest = try MigrationImportAssetCanonical.data(MigrationImageVerificationManifest(
+            operationID: request.operationID,
+            sourceImageID: imageID,
+            loadedTargetImageID: imageID,
+            targetImageWasPreexisting: preexisting,
+            loadResponseSha256: responseDigest,
+            sourceBeforeTransfer: fingerprint,
+            sourceDuringTransfer: fingerprint,
+            sourceAfterTransfer: fingerprint,
+            verifiedTarget: fingerprint
+        ))
+        return MigrationImageTransferReceipt(
+            sourceBeforeTransfer: fingerprint,
+            sourceDuringTransfer: fingerprint,
+            sourceAfterTransfer: fingerprint,
+            verifiedTarget: fingerprint,
+            loadedTargetImageID: imageID,
+            targetImageWasPreexisting: preexisting,
+            loadResponseSha256: responseDigest,
+            verificationManifest: manifest,
+            verificationManifestSha256: MigrationImportAssetCanonical.digest(manifest)
+        )
+    }
+
+    private func fingerprint(digest: String) throws -> MigrationImageArchiveFingerprint {
+        try MigrationImageArchiveFingerprint(
+            configArchivePath: "config.json",
+            configBytes: 1,
+            configSha256: digest,
+            layers: [],
+            archiveBytes: 1,
+            archiveEntryCount: 1,
+            archiveSha256: String(repeating: "b", count: 64)
+        )
+    }
+
+    private func installImage(
+        _ imageID: String,
+        digest: String,
+        on runtime: StrictMigrationRuntime
+    ) -> Bool {
+        let preexisting = runtime.snapshotValue.images.contains {
+            MigrationOperationPlanBuilder.normalizedImageID($0.imageID) == digest
+        }
+        guard !preexisting else { return true }
+        runtime.snapshotValue.images.append(DockerImage(
+            repository: "<none>",
+            tag: "<none>",
+            imageID: imageID,
+            size: "1 B",
+            created: "now",
+            usedByCount: 0,
+            sizeBytes: 1
+        ))
+        return false
+    }
+
+    func transferVolume(
+        _ request: MigrationVolumeTransferRequest,
+        from source: any ContainerRuntime,
+        to target: any ContainerRuntime
+    ) async throws -> MigrationVolumeTransferReceipt {
+        switch volumeOutcome {
+        case .failure: throw Failure.volume
+        case .cancelled: throw CancellationError()
+        case .success: break
+        }
+        if mutateTargetVolume,
+           let runtime = target as? StrictMigrationRuntime,
+           !runtime.snapshotValue.volumes.isEmpty {
+            runtime.snapshotValue.volumes[0].options["external.drift"] = "true"
+        }
+        return MigrationVolumeTransferReceipt(
+            sourceManifest: sourceVolumeManifest,
+            targetManifest: targetVolumeManifest,
+            sourceManifestSha256: MigrationImportAssetCanonical.digest(sourceVolumeManifest),
+            targetManifestSha256: MigrationImportAssetCanonical.digest(targetVolumeManifest),
+            sourceEntryCount: 2,
+            verifiedTargetEntryCount: 2,
+            excludedSocketCount: 0,
+            containsDeviceNodes: false
+        )
+    }
+}

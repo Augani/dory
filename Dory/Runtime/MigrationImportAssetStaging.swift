@@ -6,6 +6,7 @@ enum MigrationImportAssetStagingError: Error, Sendable, Equatable, CustomStringC
     case invalidSession(String)
     case invalidSpecification(DoryOperationObjectKey)
     case targetDrift(DoryOperationObjectKey)
+    case targetRequest(String)
     case operationAndRollback(operation: String, rollback: [String])
     case operationAndJournal(operation: String, journal: String)
 
@@ -17,6 +18,8 @@ enum MigrationImportAssetStagingError: Error, Sendable, Equatable, CustomStringC
             return "migration asset specification is invalid for \(key)"
         case let .targetDrift(key):
             return "migration target changed before staging \(key)"
+        case let .targetRequest(detail):
+            return "migration target request failed: \(detail)"
         case let .operationAndRollback(operation, rollback):
             return "asset staging failed (\(operation)); rollback also failed: "
                 + rollback.joined(separator: "; ")
@@ -107,6 +110,33 @@ struct MigrationVolumeVerificationManifest: Codable, Sendable, Equatable {
     }
 }
 
+struct MigrationNetworkVerificationManifest: Codable, Sendable, Equatable {
+    static let schemaVersion = 1
+
+    let schemaVersion: Int
+    let operationID: UUID
+    let sourceNetwork: String
+    let targetNetwork: String
+    let specificationDigest: String
+    let inspectedContractDigest: String
+    let targetFingerprint: String
+
+    init(
+        operationID: UUID,
+        object: DoryOperationPlannedObject,
+        inspectedContractDigest: String,
+        targetFingerprint: String
+    ) {
+        schemaVersion = Self.schemaVersion
+        self.operationID = operationID
+        sourceNetwork = object.source.sourceID
+        targetNetwork = object.normalizedTargetName
+        specificationDigest = object.specificationDigest
+        self.inspectedContractDigest = inspectedContractDigest
+        self.targetFingerprint = targetFingerprint
+    }
+}
+
 enum MigrationImportAssetCanonical {
     static func data<T: Encodable>(_ value: T) throws -> Data {
         let encoder = JSONEncoder()
@@ -126,5 +156,44 @@ enum MigrationImportAssetCanonical {
             "specificationDigest": specificationDigest,
             "targetManifestDigest": targetManifestDigest
         ]))
+    }
+
+    static func networkCreateBody(_ specification: MigrationNetworkContract) throws -> Data {
+        guard var object = try JSONSerialization.jsonObject(
+            with: specification.portableCreateContract
+        ) as? [String: Any] else {
+            throw MigrationImportAssetStagingError.invalidSpecification(
+                .init(kind: .network, sourceID: specification.name)
+            )
+        }
+        object["Name"] = specification.name
+        object["CheckDuplicate"] = true
+        object["Labels"] = specification.labels
+        guard JSONSerialization.isValidJSONObject(object) else {
+            throw MigrationImportAssetStagingError.invalidSpecification(
+                .init(kind: .network, sourceID: specification.name)
+            )
+        }
+        return try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+    }
+
+    static func jsonContains(expected: Any, actual: Any) -> Bool {
+        if expected is NSNull { return actual is NSNull }
+        if let expected = expected as? [String: Any] {
+            guard let actual = actual as? [String: Any] else { return false }
+            return expected.allSatisfy { key, value in
+                guard let actualValue = actual[key] else { return false }
+                return jsonContains(expected: value, actual: actualValue)
+            }
+        }
+        if let expected = expected as? [Any] {
+            guard let actual = actual as? [Any], expected.count == actual.count else { return false }
+            return zip(expected, actual).allSatisfy {
+                jsonContains(expected: $0.0, actual: $0.1)
+            }
+        }
+        guard let expected = expected as? NSObject,
+              let actual = actual as? NSObject else { return false }
+        return expected.isEqual(actual)
     }
 }
