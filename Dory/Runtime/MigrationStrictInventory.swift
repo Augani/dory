@@ -17,6 +17,7 @@ enum MigrationStrictInventoryError: Error, Sendable, Equatable, CustomStringConv
 
 struct PreparedMigrationExecution: Sendable {
     let operation: PreparedMigrationOperation
+    let identity: MigrationOperationIdentity
     let sourceAuthority: MigrationDockerAuthority
     let targetAuthority: MigrationDockerAuthority
     let source: MigrationOperationSource
@@ -230,6 +231,7 @@ private extension MigrationStrictInventoryCollector {
         ))
         return PreparedMigrationExecution(
             operation: operation,
+            identity: identity,
             sourceAuthority: base.sourceAuthority,
             targetAuthority: base.targetAuthority,
             source: source,

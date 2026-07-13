@@ -15,7 +15,7 @@ enum MigrationDockerAuthorityError: Error, Sendable, Equatable, CustomStringConv
     }
 }
 
-struct MigrationDockerAuthority: Codable, Sendable, Equatable {
+nonisolated struct MigrationDockerAuthority: Codable, Sendable, Equatable {
     static let minimumAPI = DockerAPIVersion(major: 1, minor: 40)
     static let maximumAPI = DockerAPIVersion(major: 1, minor: 55)
 
@@ -44,28 +44,29 @@ struct MigrationDockerAuthority: Codable, Sendable, Equatable {
     }
 
     static func read(from runtime: any ContainerRuntime) async throws -> MigrationDockerAuthority {
-        guard runtime.supportsRawProxy else {
+        guard await runtime.supportsRawProxy else {
             throw MigrationDockerAuthorityError.unsupported("local raw Docker API is required")
         }
+        let socketAuthority = await runtime.migrationSourceIdentifier
         async let version = object(path: "/version", runtime: runtime)
         async let info = object(path: "/info", runtime: runtime)
         return try parse(
             version: await version,
             info: await info,
-            socketAuthority: runtime.migrationSourceIdentifier
+            socketAuthority: socketAuthority
         )
     }
 }
 
 private extension MigrationDockerAuthority {
-    struct DaemonIdentity: Codable {
+    nonisolated struct DaemonIdentity: Codable {
         let architecture: String
         let daemonID: String
         let dockerRootDirectory: String
         let osType: String
     }
 
-    static func object(
+    nonisolated static func object(
         path: String,
         runtime: any ContainerRuntime
     ) async throws -> [String: Any] {
@@ -84,7 +85,7 @@ private extension MigrationDockerAuthority {
         return object
     }
 
-    static func parse(
+    nonisolated static func parse(
         version: [String: Any],
         info: [String: Any],
         socketAuthority: String
@@ -136,23 +137,23 @@ private extension MigrationDockerAuthority {
         return authority
     }
 
-    static func string(_ value: Any?) -> String {
+    nonisolated static func string(_ value: Any?) -> String {
         (value as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     }
 
-    static func platformName(_ version: [String: Any]) -> String? {
+    nonisolated static func platformName(_ version: [String: Any]) -> String? {
         let name = string((version["Platform"] as? [String: Any])?["Name"])
         return name.isEmpty ? nil : name
     }
 
-    static func normalizedArchitecture(_ value: String) -> String {
+    nonisolated static func normalizedArchitecture(_ value: String) -> String {
         switch value.lowercased() {
         case "arm64", "aarch64": "arm64"
         default: value.lowercased()
         }
     }
 
-    static func digest<T: Encodable>(_ value: T) -> String {
+    nonisolated static func digest<T: Encodable>(_ value: T) -> String {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         let data = (try? encoder.encode(value)) ?? Data()
@@ -160,7 +161,7 @@ private extension MigrationDockerAuthority {
     }
 }
 
-struct DockerAPIVersion: Sendable, Equatable, Comparable {
+nonisolated struct DockerAPIVersion: Sendable, Equatable, Comparable {
     let major: Int
     let minor: Int
 

@@ -79,7 +79,7 @@ struct MigrationOperationOwnership: Sendable, Equatable {
     }
 }
 
-struct MigrationCapacityContract: Codable, Sendable, Equatable {
+nonisolated struct MigrationCapacityContract: Codable, Sendable, Equatable {
     let sourceVolumeBytes: [String: Int64]
     let sourceWritableLayerBytes: [String: Int64]
     let targetDockerBytes: Int64

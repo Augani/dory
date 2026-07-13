@@ -46,12 +46,12 @@ enum MigrationOperationPlanError: Error, Sendable, Equatable, CustomStringConver
 }
 
 /// The exact semantic plan and journal authority published before an import may mutate Docker.
-struct PreparedMigrationOperation: Sendable {
+nonisolated struct PreparedMigrationOperation: Sendable {
     let completenessPlan: DoryOperationCompletenessPlan
     let journalPlan: DoryOperationPlan
     let specifications: [DoryOperationSpecification]
 
-    func begin(in store: DoryOperationJournalStore) throws -> DoryOperationLease {
+    nonisolated func begin(in store: DoryOperationJournalStore) throws -> DoryOperationLease {
         try store.begin(
             journalPlan,
             completenessPlan: completenessPlan,
