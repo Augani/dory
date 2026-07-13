@@ -223,7 +223,8 @@ assert manifest.get("schemaVersion") == 2, "unexpected release manifest schema"
 assert manifest.get("version") == version, "release manifest version mismatch"
 assert str(manifest.get("build")) == build, "release manifest build mismatch"
 assert manifest.get("sourceCommit") == source_commit, "release manifest source commit mismatch"
-assert manifest.get("publicRelease") is True, "candidate is not marked public"
+assert manifest.get("publicRelease") is True or development_unnotarized == "1", \
+    "candidate is not marked public"
 assert manifest.get("bundleEngine") is True, "candidate omits the engine"
 assert manifest.get("notarized") is True or development_unnotarized == "1", \
     "candidate is not marked notarized"
@@ -235,6 +236,10 @@ required = {
     f"dory-engine-{version}-arm64.tar.gz", "appcast.xml",
     f"Dory-{version}.cdx.json",
 }
+if development_unnotarized == "1":
+    # A local Developer ID candidate cannot truthfully carry the public/notarized appcast contract.
+    # The completion record is permanently marked non-release-qualifying below.
+    required.discard("appcast.xml")
 records = manifest.get("artifacts")
 assert isinstance(records, list), "release manifest artifacts are missing"
 by_name = {record.get("name"): record for record in records}
@@ -330,6 +335,16 @@ codesign --verify --strict --deep "$APP"
 codesign -dv --verbose=4 "$APP" 2> "$WORKDIR/evidence/codesign-details.txt"
 grep -q 'Authority=Developer ID Application' "$WORKDIR/evidence/codesign-details.txt" \
   || die "candidate is not Developer ID signed"
+# shellcheck source=gvproxy-payload.sh
+source scripts/gvproxy-payload.sh
+GVPROXY="$APP/Contents/Helpers/gvproxy"
+GVPROXY_PROVENANCE="$APP/Contents/Resources/gvproxy-provenance.txt"
+PAYLOAD_INVENTORY="$APP/Contents/Resources/dory-payload-sha256.txt"
+dory_gvproxy_validate_overrides
+dory_verify_signed_gvproxy_payload "$GVPROXY" "$GVPROXY_PROVENANCE" "$PAYLOAD_INVENTORY" \
+  || die "candidate gvproxy is not bound to its reproducible build and signed payload inventory"
+CANDIDATE_GVPROXY_SHA="$(dory_gvproxy_file_sha256 "$GVPROXY")"
+CANDIDATE_GVPROXY_BUILD_SHA="$(dory_gvproxy_expected_sha256)"
 if [ "$DEVELOPMENT_UNNOTARIZED" = 0 ]; then
   xcrun stapler validate "$APP"
   spctl --assess --type execute --verbose=4 "$APP" \
@@ -342,8 +357,13 @@ else
   echo "development-only: notarization validation skipped" \
     > "$WORKDIR/evidence/notarization-development-skip.txt"
 fi
-scripts/verify-sparkle-update.sh "$APP" "$UPDATE_ZIP" "$BUILD_DIR/appcast.xml" \
-  > "$WORKDIR/evidence/sparkle-verification.txt"
+if [ "$DEVELOPMENT_UNNOTARIZED" = 0 ]; then
+  scripts/verify-sparkle-update.sh "$APP" "$UPDATE_ZIP" "$BUILD_DIR/appcast.xml" \
+    > "$WORKDIR/evidence/sparkle-verification.txt"
+else
+  echo "development-only: public Sparkle signing validation skipped" \
+    > "$WORKDIR/evidence/sparkle-development-skip.txt"
+fi
 for helper in dory-hv gvproxy dory-dataplane-proxy; do
   cmp "$RUNTIME_DIR/bin/$helper" "$APP/Contents/Helpers/$helper" \
     || die "standalone runtime $helper differs from the qualified app"
@@ -383,7 +403,9 @@ export DOCKER_CONFIG="$WORKDIR/docker-config"
 
 mkdir -p "$WORKDIR/evidence/gvproxy-qemu-switch"
 bounded 30 scripts/gvproxy-qemu-switch-gate.py \
-  "$APP/Contents/Helpers/gvproxy" \
+  "$GVPROXY" \
+  --expected-sha256 "$CANDIDATE_GVPROXY_SHA" \
+  --provenance "$GVPROXY_PROVENANCE" \
   --evidence "$WORKDIR/evidence/gvproxy-qemu-switch/manifest.txt" \
   > "$WORKDIR/evidence/gvproxy-qemu-switch.log" 2>&1 \
   || die "exact gvproxy independent bidirectional LAN switch-port gate failed"
@@ -392,9 +414,12 @@ for proof in lan_to_guest guest_to_lan; do
   grep -qx "$proof=PASS" "$qemu_switch_manifest" \
     || die "gvproxy QEMU switch evidence does not prove $proof"
 done
-grep -qx 'gvproxy_sha256=bd9183f5dbe2bd27d7ea57f2f2dd4d5ce26487eeb1fa8c82cd81bad4df50e0c0' \
+grep -qx "gvproxy_sha256=$CANDIDATE_GVPROXY_SHA" \
   "$qemu_switch_manifest" \
   || die "gvproxy QEMU switch gate used the wrong binary"
+grep -qx "gvproxy_build_sha256=$CANDIDATE_GVPROXY_BUILD_SHA" \
+  "$qemu_switch_manifest" \
+  || die "gvproxy QEMU switch gate used the wrong reproducible build"
 grep -qx 'release_qualifying=true' "$qemu_switch_manifest" \
   || die "gvproxy QEMU switch evidence is not release qualifying"
 
@@ -419,6 +444,8 @@ done
 bounded 1200 scripts/native-ipv6-gate.sh \
   --dory-hv "$RUNTIME_DIR/bin/dory-hv" \
   --gvproxy "$RUNTIME_DIR/bin/gvproxy" \
+  --gvproxy-provenance "$GVPROXY_PROVENANCE" \
+  --payload-inventory "$PAYLOAD_INVENTORY" \
   --kernel "$RUNTIME_DIR/share/dory/dory-hv-kernel-arm64.lzfse" \
   --rootfs "$RUNTIME_DIR/share/dory/dory-engine-rootfs.ext4.lzfse" \
   --docker "$DOCKER" \

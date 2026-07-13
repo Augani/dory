@@ -58,6 +58,26 @@ printf '%s\n' "$SOURCE_COMMIT" | grep -Eq '^[0-9a-f]{40}$' \
 printf '%s\n' "$PRIMARY_SHA256" | grep -Eq '^[0-9a-f]{64}$' \
   || die "primary Apple Silicon SHA-256 is invalid"
 
+UPDATE_ZIP="$BUILD_DIR/Dory-$VERSION-app-update.zip"
+[ -s "$UPDATE_ZIP" ] || die "candidate app-update ZIP is missing"
+CANDIDATE_GVPROXY_SHA="$(unzip -p "$UPDATE_ZIP" \
+  Dory.app/Contents/Helpers/gvproxy | shasum -a 256 | awk '{print $1}')"
+CANDIDATE_GVPROXY_BUILD_SHA="$(unzip -p "$UPDATE_ZIP" \
+  Dory.app/Contents/Resources/gvproxy-provenance.txt | awk -F= '
+    $1 == "verified_sha256" { count += 1; value = $2 }
+    END { if (count == 1) print value; else exit 1 }
+  ')" || die "candidate gvproxy provenance is missing its singular build hash"
+[ "$CANDIDATE_GVPROXY_BUILD_SHA" = \
+    bd9183f5dbe2bd27d7ea57f2f2dd4d5ce26487eeb1fa8c82cd81bad4df50e0c0 ] \
+  || die "candidate gvproxy provenance has the wrong reproducible-build hash"
+CANDIDATE_GVPROXY_INVENTORY_SHA="$(unzip -p "$UPDATE_ZIP" \
+  Dory.app/Contents/Resources/dory-payload-sha256.txt | awk '
+    $2 == "Contents/Helpers/gvproxy" { count += 1; value = $1 }
+    END { if (count == 1) print value; else exit 1 }
+  ')" || die "candidate payload inventory is missing its singular gvproxy hash"
+[ "$CANDIDATE_GVPROXY_INVENTORY_SHA" = "$CANDIDATE_GVPROXY_SHA" ] \
+  || die "candidate signed gvproxy is outside its payload inventory"
+
 COMPLETE="$QUALIFICATION/qualification.complete.json"
 EVIDENCE_MANIFEST="$QUALIFICATION/evidence/evidence-sha256.txt"
 [ -s "$COMPLETE" ] || die "completion record is missing"
@@ -470,9 +490,12 @@ grep -qx 'architecture=arm64' "$native_ipv6_manifest" \
   || die "retained native IPv6 evidence is not from Apple Silicon"
 grep -qx 'gvproxy_version=v0.8.9-dory1' "$native_ipv6_manifest" \
   || die "retained native IPv6 evidence used the wrong gvproxy derivative"
-grep -qx 'gvproxy_sha256=bd9183f5dbe2bd27d7ea57f2f2dd4d5ce26487eeb1fa8c82cd81bad4df50e0c0' \
+grep -qx "gvproxy_sha256=$CANDIDATE_GVPROXY_SHA" \
   "$native_ipv6_manifest" \
   || die "retained native IPv6 evidence used the wrong gvproxy binary"
+grep -qx "gvproxy_build_sha256=$CANDIDATE_GVPROXY_BUILD_SHA" \
+  "$native_ipv6_manifest" \
+  || die "retained native IPv6 evidence used the wrong reproducible gvproxy build"
 grep -qx 'release_qualifying=true' "$native_ipv6_manifest" \
   || die "retained native IPv6 evidence skipped real external IPv6 routing"
 
@@ -483,9 +506,12 @@ for proof in lan_to_guest guest_to_lan; do
 done
 grep -qx 'transport=qemu-unix-stream' "$qemu_switch_manifest" \
   || die "retained LAN switch evidence used the wrong transport"
-grep -qx 'gvproxy_sha256=bd9183f5dbe2bd27d7ea57f2f2dd4d5ce26487eeb1fa8c82cd81bad4df50e0c0' \
+grep -qx "gvproxy_sha256=$CANDIDATE_GVPROXY_SHA" \
   "$qemu_switch_manifest" \
   || die "retained LAN switch evidence used the wrong gvproxy binary"
+grep -qx "gvproxy_build_sha256=$CANDIDATE_GVPROXY_BUILD_SHA" \
+  "$qemu_switch_manifest" \
+  || die "retained LAN switch evidence used the wrong reproducible gvproxy build"
 grep -qx 'release_qualifying=true' "$qemu_switch_manifest" \
   || die "retained LAN switch evidence is not release qualifying"
 

@@ -78,6 +78,11 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("gvproxy", type=Path, help="exact gvproxy executable to validate")
     parser.add_argument("--expected-sha256", default=PINNED_SHA256)
+    parser.add_argument(
+        "--provenance",
+        type=Path,
+        help="signed-candidate provenance containing the pinned pre-signing verified_sha256",
+    )
     parser.add_argument("--evidence", type=Path, help="optional key=value evidence output")
     args = parser.parse_args()
 
@@ -87,6 +92,23 @@ def main() -> None:
     actual_sha = sha256(binary)
     if actual_sha != args.expected_sha256.lower():
         fail(f"SHA-256 mismatch (expected {args.expected_sha256.lower()}, got {actual_sha})")
+    build_sha = actual_sha
+    if args.provenance:
+        if not args.provenance.is_file():
+            fail(f"provenance is missing: {args.provenance}")
+        values = [
+            line.partition("=")[2].strip().lower()
+            for line in args.provenance.read_text(encoding="utf-8").splitlines()
+            if line.partition("=")[0] == "verified_sha256"
+        ]
+        if len(values) != 1:
+            fail("provenance must contain exactly one verified_sha256")
+        build_sha = values[0]
+        if build_sha != PINNED_SHA256:
+            fail(
+                "reproducible-build SHA-256 mismatch "
+                f"(expected {PINNED_SHA256}, got {build_sha})"
+            )
     identity = subprocess.run(
         [str(binary), "-version"], check=False, capture_output=True, text=True, timeout=5
     )
@@ -147,9 +169,10 @@ def main() -> None:
             args.evidence.write_text(
                 "\n".join(
                     [
-                        "schema=1",
+                        "schema=2",
                         f"gvproxy_path={binary}",
                         f"gvproxy_sha256={actual_sha}",
+                        f"gvproxy_build_sha256={build_sha}",
                         "transport=qemu-unix-stream",
                         "lan_to_guest=PASS",
                         "guest_to_lan=PASS",

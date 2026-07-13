@@ -5,6 +5,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 HV=""
 GVPROXY=""
+GVPROXY_PROVENANCE=""
+PAYLOAD_INVENTORY=""
 KERNEL=""
 ROOTFS=""
 DOCKER=""
@@ -19,6 +21,8 @@ Usage: scripts/native-ipv6-gate.sh --dory-hv PATH --gvproxy PATH --kernel PATH -
 
 Options:
   --workroot DIR       Evidence root
+  --gvproxy-provenance PATH  Signed-app gvproxy build provenance
+  --payload-inventory PATH   Signed-app payload digest inventory
   --external-ipv6 IP   Real IPv6 TCP endpoint used on a host with IPv6 routing
   --require-external   Fail unless the Mac has IPv6 routing and the container reaches the endpoint
   --keep-workload      Preserve disposable engine files
@@ -29,6 +33,8 @@ while [ "$#" -gt 0 ]; do
   case "$1" in
     --dory-hv) HV="${2:?missing path}"; shift 2 ;;
     --gvproxy) GVPROXY="${2:?missing path}"; shift 2 ;;
+    --gvproxy-provenance) GVPROXY_PROVENANCE="${2:?missing path}"; shift 2 ;;
+    --payload-inventory) PAYLOAD_INVENTORY="${2:?missing path}"; shift 2 ;;
     --kernel) KERNEL="${2:?missing path}"; shift 2 ;;
     --rootfs) ROOTFS="${2:?missing path}"; shift 2 ;;
     --docker) DOCKER="${2:?missing path}"; shift 2 ;;
@@ -51,8 +57,14 @@ done
 # shellcheck source=gvproxy-payload.sh
 source "$ROOT/scripts/gvproxy-payload.sh"
 dory_gvproxy_validate_overrides
-dory_verify_gvproxy_payload \
-  "$GVPROXY" "$(dory_gvproxy_version)" "$(dory_gvproxy_expected_sha256)"
+if [ -n "$GVPROXY_PROVENANCE$PAYLOAD_INVENTORY" ]; then
+  [ -n "$GVPROXY_PROVENANCE" ] && [ -n "$PAYLOAD_INVENTORY" ] \
+    || { echo "native IPv6 gate: signed gvproxy provenance and payload inventory must be supplied together" >&2; exit 64; }
+  dory_verify_signed_gvproxy_payload "$GVPROXY" "$GVPROXY_PROVENANCE" "$PAYLOAD_INVENTORY"
+else
+  dory_verify_gvproxy_payload \
+    "$GVPROXY" "$(dory_gvproxy_version)" "$(dory_gvproxy_expected_sha256)"
+fi
 
 RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$"
 RUN_ROOT="$WORKROOT/$RUN_ID"
@@ -222,6 +234,7 @@ cp "$STATE/guest-logs/network.log" "$EVIDENCE/guest-network.log"
   echo architecture=arm64
   echo gvproxy_version="$(dory_gvproxy_version)"
   echo gvproxy_sha256="$(dory_gvproxy_file_sha256 "$GVPROXY")"
+  echo gvproxy_build_sha256="$(dory_gvproxy_expected_sha256)"
   echo fresh_boot=PASS
   echo restart=PASS
   echo docker_bridge_ipv6=PASS

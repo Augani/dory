@@ -108,3 +108,66 @@ dory_verify_gvproxy_payload() {
     return 1
   fi
 }
+
+# A Developer ID signature changes a Mach-O file's SHA-256, so an exact release candidate has two
+# identities that must both remain bound: the reproducible pre-signing build hash in provenance and
+# the signed file hash sealed by the app's payload inventory. Never compare a signed helper directly
+# with DORY_GVPROXY_DEFAULT_SHA256; that would reject every correctly signed candidate.
+dory_verify_signed_gvproxy_payload() {
+  local file="$1" provenance="$2" inventory="$3"
+  local actual_sha expected_build_sha provenance_build_sha inventory_sha codesign_bin details
+
+  [ -s "$provenance" ] || {
+    echo "error: signed gvproxy provenance is missing: $provenance" >&2
+    return 1
+  }
+  [ -s "$inventory" ] || {
+    echo "error: signed gvproxy payload inventory is missing: $inventory" >&2
+    return 1
+  }
+  actual_sha="$(dory_gvproxy_file_sha256 "$file")" || return 1
+  dory_verify_gvproxy_payload "$file" "$(dory_gvproxy_version)" "$actual_sha" || return 1
+
+  expected_build_sha="$(dory_gvproxy_expected_sha256)"
+  provenance_build_sha="$(awk -F= '
+    $1 == "verified_sha256" { count += 1; value = $2 }
+    END { if (count == 1) print value; else exit 1 }
+  ' "$provenance")" || {
+    echo "error: gvproxy provenance must contain exactly one verified_sha256" >&2
+    return 1
+  }
+  if [ "$provenance_build_sha" != "$expected_build_sha" ]; then
+    echo "error: gvproxy reproducible-build SHA-256 mismatch (expected $expected_build_sha, got $provenance_build_sha)" >&2
+    return 1
+  fi
+
+  inventory_sha="$(awk '
+    $2 == "Contents/Helpers/gvproxy" { count += 1; value = $1 }
+    END { if (count == 1) print value; else exit 1 }
+  ' "$inventory")" || {
+    echo "error: payload inventory must contain exactly one Contents/Helpers/gvproxy entry" >&2
+    return 1
+  }
+  if [ "$inventory_sha" != "$actual_sha" ]; then
+    echo "error: signed gvproxy SHA-256 is not sealed by the payload inventory (expected $inventory_sha, got $actual_sha)" >&2
+    return 1
+  fi
+
+  codesign_bin="${DORY_CODESIGN_BIN:-$(command -v codesign 2>/dev/null || true)}"
+  [ -n "$codesign_bin" ] && [ -x "$codesign_bin" ] || {
+    echo "error: codesign is required to verify signed gvproxy" >&2
+    return 1
+  }
+  "$codesign_bin" --verify --strict "$file" >/dev/null 2>&1 || {
+    echo "error: signed gvproxy has an invalid code signature" >&2
+    return 1
+  }
+  details="$("$codesign_bin" -dv --verbose=4 "$file" 2>&1)" || {
+    echo "error: could not inspect signed gvproxy identity" >&2
+    return 1
+  }
+  printf '%s\n' "$details" | grep -q '^Authority=Developer ID Application' || {
+    echo "error: gvproxy is not signed with a Developer ID Application identity" >&2
+    return 1
+  }
+}

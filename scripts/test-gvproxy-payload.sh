@@ -35,6 +35,31 @@ PAYLOAD_SHA="$(shasum -a 256 "$PAYLOAD" | awk '{print $1}')"
 DORY_LIPO_BIN="$FAKE_LIPO" dory_verify_gvproxy_payload "$PAYLOAD" "v0.8.9-dory1" "$PAYLOAD_SHA" \
   || fail "valid universal payload was rejected"
 
+FAKE_CODESIGN="$TMP/codesign"
+cat > "$FAKE_CODESIGN" <<'SH'
+#!/bin/sh
+case "$1" in
+  --verify) exit 0 ;;
+  -dv) printf '%s\n' 'Authority=Developer ID Application: Fixture (TEAMID)' >&2; exit 0 ;;
+esac
+exit 64
+SH
+chmod 0755 "$FAKE_CODESIGN"
+PROVENANCE="$TMP/gvproxy-provenance.txt"
+INVENTORY="$TMP/dory-payload-sha256.txt"
+printf 'verified_sha256=%s\n' "$DORY_GVPROXY_DEFAULT_SHA256" > "$PROVENANCE"
+printf '%s  Contents/Helpers/gvproxy\n' "$PAYLOAD_SHA" > "$INVENTORY"
+DORY_LIPO_BIN="$FAKE_LIPO" DORY_CODESIGN_BIN="$FAKE_CODESIGN" \
+  dory_verify_signed_gvproxy_payload "$PAYLOAD" "$PROVENANCE" "$INVENTORY" \
+  || fail "valid signed-candidate identity chain was rejected"
+printf '%064d  Contents/Helpers/gvproxy\n' 0 > "$INVENTORY"
+if DORY_LIPO_BIN="$FAKE_LIPO" DORY_CODESIGN_BIN="$FAKE_CODESIGN" \
+  dory_verify_signed_gvproxy_payload "$PAYLOAD" "$PROVENANCE" "$INVENTORY" \
+  >/dev/null 2>&1; then
+  fail "signed candidate outside the payload inventory was accepted"
+fi
+printf '%s  Contents/Helpers/gvproxy\n' "$PAYLOAD_SHA" > "$INVENTORY"
+
 if DORY_LIPO_BIN="$FAKE_LIPO" dory_verify_gvproxy_payload \
   "$PAYLOAD" "v0.8.9-dory1" "0000000000000000000000000000000000000000000000000000000000000000" \
   >/dev/null 2>&1; then

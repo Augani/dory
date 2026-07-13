@@ -73,7 +73,7 @@ printf 'schema=2\narch=arm64\ngpu=1\ninput_sha256=fixture\n' \
   > "$RESOURCES/dory-kernel-build-arm64-gpu.stamp"
 (
   cd "$APP"
-  find Contents/Resources -type f ! -name dory-payload-sha256.txt -print \
+  find Contents/Helpers Contents/Resources -type f ! -name dory-payload-sha256.txt -print \
     | LC_ALL=C sort \
     | while IFS= read -r path; do shasum -a 256 "$path"; done
 ) > "$RESOURCES/dory-payload-sha256.txt"
@@ -249,7 +249,7 @@ sed 's/^features=native-ipv6-v1,source-preserving-lan-qemu-v1$/features=ipv4-onl
   "$TMP/gvproxy-provenance.valid.txt" > "$RESOURCES/gvproxy-provenance.txt"
 (
   cd "$APP"
-  find Contents/Resources -type f ! -name dory-payload-sha256.txt -print \
+  find Contents/Helpers Contents/Resources -type f ! -name dory-payload-sha256.txt -print \
     | LC_ALL=C sort \
     | while IFS= read -r path; do shasum -a 256 "$path"; done
 ) > "$RESOURCES/dory-payload-sha256.txt"
@@ -582,11 +582,13 @@ image=alpine:3.22@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 docker_cli_sha256=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 results_sha256=$bind_file_results_sha
 EOF
-cat > "$QUALIFICATION_FIXTURE/evidence/native-ipv6/run/manifest.txt" <<'EOF'
+fixture_gvproxy_sha="$(shasum -a 256 "$HELPERS/gvproxy" | awk '{print $1}')"
+cat > "$QUALIFICATION_FIXTURE/evidence/native-ipv6/run/manifest.txt" <<EOF
 status=PASS
 architecture=arm64
 gvproxy_version=v0.8.9-dory1
-gvproxy_sha256=bd9183f5dbe2bd27d7ea57f2f2dd4d5ce26487eeb1fa8c82cd81bad4df50e0c0
+gvproxy_sha256=$fixture_gvproxy_sha
+gvproxy_build_sha256=bd9183f5dbe2bd27d7ea57f2f2dd4d5ce26487eeb1fa8c82cd81bad4df50e0c0
 fresh_boot=PASS
 restart=PASS
 docker_bridge_ipv6=PASS
@@ -598,10 +600,11 @@ ipv6_localhost_publish=PASS
 external_ipv6_tcp=PASS
 release_qualifying=true
 EOF
-cat > "$QUALIFICATION_FIXTURE/evidence/gvproxy-qemu-switch/manifest.txt" <<'EOF'
+cat > "$QUALIFICATION_FIXTURE/evidence/gvproxy-qemu-switch/manifest.txt" <<EOF
 status=PASS
 transport=qemu-unix-stream
-gvproxy_sha256=bd9183f5dbe2bd27d7ea57f2f2dd4d5ce26487eeb1fa8c82cd81bad4df50e0c0
+gvproxy_sha256=$fixture_gvproxy_sha
+gvproxy_build_sha256=bd9183f5dbe2bd27d7ea57f2f2dd4d5ce26487eeb1fa8c82cd81bad4df50e0c0
 lan_to_guest=PASS
 guest_to_lan=PASS
 release_qualifying=true

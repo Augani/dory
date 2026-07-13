@@ -7,6 +7,8 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 VMM=""
 HV=""
 GVPROXY=""
+GVPROXY_PROVENANCE=""
+PAYLOAD_INVENTORY=""
 KERNEL=""
 ROOTFS=""
 DOCKER=""
@@ -36,6 +38,8 @@ Usage: scripts/vz-native-ipv6-gate.sh --dory-vmm PATH --gvproxy PATH --kernel PA
 Options:
   --dory-hv PATH       Helper used only to decompress .lzfse kernel/rootfs inputs
   --workroot DIR       Durable evidence root
+  --gvproxy-provenance PATH  Signed-app gvproxy build provenance
+  --payload-inventory PATH   Signed-app payload digest inventory
   --external-ipv6 IP   Real IPv6 TCP endpoint used on a host with IPv6 routing
   --require-external   Fail unless the host and container reach the IPv6 endpoint
   --require-sonoma     Fail unless this is macOS 14.x (the fallback's release target)
@@ -60,6 +64,8 @@ while [ "$#" -gt 0 ]; do
     --dory-vmm) VMM="${2:?missing path}"; shift 2 ;;
     --dory-hv) HV="${2:?missing path}"; shift 2 ;;
     --gvproxy) GVPROXY="${2:?missing path}"; shift 2 ;;
+    --gvproxy-provenance) GVPROXY_PROVENANCE="${2:?missing path}"; shift 2 ;;
+    --payload-inventory) PAYLOAD_INVENTORY="${2:?missing path}"; shift 2 ;;
     --kernel) KERNEL="${2:?missing path}"; shift 2 ;;
     --rootfs) ROOTFS="${2:?missing path}"; shift 2 ;;
     --docker) DOCKER="${2:?missing path}"; shift 2 ;;
@@ -149,8 +155,14 @@ fi
 # shellcheck source=gvproxy-payload.sh
 source "$ROOT/scripts/gvproxy-payload.sh"
 dory_gvproxy_validate_overrides
-dory_verify_gvproxy_payload \
-  "$GVPROXY" "$(dory_gvproxy_version)" "$(dory_gvproxy_expected_sha256)"
+if [ -n "$GVPROXY_PROVENANCE$PAYLOAD_INVENTORY" ]; then
+  [ -n "$GVPROXY_PROVENANCE" ] && [ -n "$PAYLOAD_INVENTORY" ] \
+    || { echo "VZ native IPv6 gate: signed gvproxy provenance and payload inventory must be supplied together" >&2; exit 64; }
+  dory_verify_signed_gvproxy_payload "$GVPROXY" "$GVPROXY_PROVENANCE" "$PAYLOAD_INVENTORY"
+else
+  dory_verify_gvproxy_payload \
+    "$GVPROXY" "$(dory_gvproxy_version)" "$(dory_gvproxy_expected_sha256)"
+fi
 
 RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$"
 RUN_ROOT="$WORKROOT/$RUN_ID"
@@ -794,6 +806,7 @@ if [ "$SOURCE_ENABLED" = 1 ] && [ "$SOURCE_RESULT" != PASS ]; then RELEASE_QUALI
   echo dory_vmm_sha256="$(shasum -a 256 "$VMM" | awk '{print $1}')"
   echo gvproxy_version="$(dory_gvproxy_version)"
   echo gvproxy_sha256="$(dory_gvproxy_file_sha256 "$GVPROXY")"
+  echo gvproxy_build_sha256="$(dory_gvproxy_expected_sha256)"
   echo fixture_image="$FIXTURE_IMAGE"
   echo vz_file_handle_network=PASS
   echo fresh_boot=PASS

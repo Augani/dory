@@ -1,6 +1,7 @@
 #!/bin/bash
 # Exact-artifact physical-peer certification for Dory's source-preserving LAN publication path.
 set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 APP=""
 RUNTIME=""
@@ -140,6 +141,17 @@ cmp "$RUNTIME/bin/dory-hv" "$APP/Contents/Helpers/dory-hv" \
 cmp "$RUNTIME/bin/gvproxy" "$APP/Contents/Helpers/gvproxy" \
   || die "runtime gvproxy differs from the candidate app"
 
+# shellcheck source=gvproxy-payload.sh
+source "$ROOT/scripts/gvproxy-payload.sh"
+GVPROXY_PROVENANCE="$APP/Contents/Resources/gvproxy-provenance.txt"
+PAYLOAD_INVENTORY="$APP/Contents/Resources/dory-payload-sha256.txt"
+dory_gvproxy_validate_overrides
+dory_verify_signed_gvproxy_payload \
+  "$APP/Contents/Helpers/gvproxy" "$GVPROXY_PROVENANCE" "$PAYLOAD_INVENTORY" \
+  || die "candidate gvproxy is not bound to its reproducible build and signed payload inventory"
+GVPROXY_SHA="$(dory_gvproxy_file_sha256 "$APP/Contents/Helpers/gvproxy")"
+GVPROXY_BUILD_SHA="$(dory_gvproxy_expected_sha256)"
+
 "$APP/Contents/MacOS/Dory" --register-network-helper \
   > "$WORKROOT/evidence/network-helper-registration.txt" 2>&1 \
   || die "the exact app's privileged helper is not enabled/approved"
@@ -151,6 +163,8 @@ sudo -n /sbin/pfctl -s References > "$WORKROOT/evidence/pf-references-before.txt
   > "$WORKROOT/evidence/ipv4-forwarding-before.txt"
 
 scripts/gvproxy-qemu-switch-gate.py "$APP/Contents/Helpers/gvproxy" \
+  --expected-sha256 "$GVPROXY_SHA" \
+  --provenance "$GVPROXY_PROVENANCE" \
   --evidence "$WORKROOT/evidence/gvproxy-switch.txt" \
   > "$WORKROOT/evidence/gvproxy-switch.log" 2>&1
 
@@ -468,7 +482,6 @@ done
 
 APP_SHA="$(shasum -a 256 "$APP/Contents/MacOS/Dory" | awk '{print $1}')"
 HV_SHA="$(shasum -a 256 "$RUNTIME/bin/dory-hv" | awk '{print $1}')"
-GVPROXY_SHA="$(shasum -a 256 "$RUNTIME/bin/gvproxy" | awk '{print $1}')"
 cat > "$WORKROOT/evidence/manifest.txt" <<EOF
 schema=1
 status=PASS
@@ -482,6 +495,7 @@ observed_source_ipv4=$SOURCE_IP
 app_executable_sha256=$APP_SHA
 dory_hv_sha256=$HV_SHA
 gvproxy_sha256=$GVPROXY_SHA
+gvproxy_build_sha256=$GVPROXY_BUILD_SHA
 tcp_source_preserved=PASS
 udp_source_preserved=PASS
 explicit_loopback_isolated=PASS
