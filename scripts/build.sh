@@ -310,6 +310,24 @@ PLIST
   rm -f "$entitlements"
 }
 
+bundle_debug_transfer_helper() {
+  local work app
+  work="$(mktemp -d "${TMPDIR:-/tmp}/dory-transfer-helper.XXXXXX")" || return 1
+  if ! scripts/build-transfer-helper.sh \
+    --image-output "$work/dory-transfer-helper-image-arm64.tar" \
+    --image-metadata-output "$work/dory-transfer-helper-image-arm64.json" >/dev/null; then
+    rm -rf "$work"
+    return 1
+  fi
+  for app in "$HOME"/Library/Developer/Xcode/DerivedData/Dory-*/Build/Products/Debug/Dory.app; do
+    [ -d "$app" ] || continue
+    mkdir -p "$app/Contents/Resources"
+    install -m0644 "$work/dory-transfer-helper-image-arm64.tar" "$app/Contents/Resources/"
+    install -m0644 "$work/dory-transfer-helper-image-arm64.json" "$app/Contents/Resources/"
+  done
+  rm -rf "$work"
+}
+
 resolve_symlink() {
   local source="$1" dir next
   while [ -L "$source" ]; do
@@ -586,6 +604,9 @@ if [ "$status" -eq 0 ]; then
 fi
 if [ "$status" -eq 0 ]; then
   bundle_doryd_swiftpm_helpers || status=$?
+fi
+if [ "$status" -eq 0 ]; then
+  bundle_debug_transfer_helper || status=$?
 fi
 if [ "$status" -eq 0 ]; then
   bundle_host_cli_helpers || status=$?

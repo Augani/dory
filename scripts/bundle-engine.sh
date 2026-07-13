@@ -23,6 +23,8 @@
 #   * Contents/Resources/dory-vm-initfs-<arch>.ext4.lzfse  — LZFSE VM initfs.
 #   * Contents/Resources/dory-agent-linux-<arch>           — guest relay/agent for host AI bridge
 #                                                           and future vsock control features.
+#   * Contents/Resources/dory-transfer-helper-image-arm64.tar — deterministic scratch image used
+#                                                               for exact named-volume transfer.
 #   * Contents/Resources/dory-engine-rootfs-<arch>.ext4.lzfse — offline dockerd rootfs selected by
 #                                                              doryd, including macOS 14 dory-vmm fallback.
 #   Assets are compressed by dory-hv (LZFSE) and decompressed in-process at first launch via Apple's
@@ -1217,6 +1219,19 @@ if [ -f "$RESOURCES/dory-engine-rootfs-$HOST_GUEST_ARCH.ext4.lzfse" ]; then
 fi
 
 write_doryd_launch_agent
+
+echo "==> Bundling deterministic named-volume transfer helper image…"
+scripts/build-transfer-helper.sh \
+  --image-output "$RESOURCES/dory-transfer-helper-image-arm64.tar" \
+  --image-metadata-output "$RESOURCES/dory-transfer-helper-image-arm64.json" >/dev/null
+TRANSFER_HELPER_METADATA="$(python3 scripts/build-transfer-helper-image.py \
+  --verify "$RESOURCES/dory-transfer-helper-image-arm64.tar" \
+  --expected-helper-sha256 "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["helperSha256"])' \
+    "$RESOURCES/dory-transfer-helper-image-arm64.json")")"
+[ "$TRANSFER_HELPER_METADATA" = \
+  "$(tr -d '\n' < "$RESOURCES/dory-transfer-helper-image-arm64.json")" ] \
+  || { echo "    ERROR: transfer-helper metadata mismatch" >&2; exit 1; }
+echo "    bundled Resources/dory-transfer-helper-image-arm64.tar"
 
 if [ "${DORY_BUNDLE_LEGACY:-0}" = "1" ]; then
   echo "==> DORY_BUNDLE_LEGACY=1: injecting the heavy offline payload (image tar + container toolchain)…"

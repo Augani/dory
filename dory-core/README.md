@@ -15,6 +15,7 @@ staticlib the Swift `doryd`/`dory-vmm` link. The two seams of the design are bot
 | `ffi` (`dory-ffi`) | host | **seam 2**: UniFFI staticlib (control-only: config/fds/stats, never data-plane bytes). Docker tier: `startDataplane(listenFd, …)` + `startDataplaneForward(listenFd, forwardSocketPath, cid, port, …)` + activity reporting. Guest control: `connectAgentOverForward(forwardSocketPath, cid) -> AgentControl`. Remote tier: `remoteConnect(config) -> RemoteAgent` with `.info()`/`.push(localRoot, remoteRoot)` (OpenSSH keys + host-key policy in, stats out; bytes stay in Rust). | ✅ built, 8 tests incl. real in-process forward/SSH servers + agent daemon paths; Swift consumer compiled, linked against the release staticlib, and ran |
 | `remote` (`dory-remote`) | **host** (doryd) | agent RPC over SSH: `AgentClient` (transport-agnostic handshake+mux+pb typed RPC) + `ssh` (russh 0.54 connect/key-auth/tunnel via direct-streamlocal or direct-tcpip; mandatory `HostKeyPolicy`) + `sync_push` (host-authoritative push driver over a `SyncTarget` trait). The same protobuf protocol that rides vsock rides an SSH channel. | ✅ built, tests incl. a full in-process real-russh loopback + host-key-rejection + real-agent-over-TCP + end-to-end sync convergence; host-only, not in the guest musl build |
 | `sync` (`dory-sync`) | host + guest | shared, pure: `FileEntry`/`Manifest`, `walk_manifest` (sha256 content hashes), and the host-authoritative reconciler `plan` (transfer where hash differs/missing, delete where remote-only). | ✅ built, 7 tests; cross-compiles to musl |
+| `transfer-helper` (`dory-transfer-helper`) | **guest helper container** (static Linux/arm64) | Canonical byte-path-safe volume manifests, strict archive-content preflight, xattr/ownership/mode/time repair, sparse-hole restoration, and exact target rescan. Sockets are explicit exclusions and device nodes fail closed. | ✅ built reproducibly; real Engine archive qualification |
 
 The `full_rpc_spine_over_mux` test in `agent` composes handshake → mux → dispatch → protobuf over an
 in-memory connection — the whole RPC path, minus the vsock transport.
@@ -38,6 +39,9 @@ cargo clippy --workspace --all-targets -- -D warnings
 # guest agent (Linux, static musl) — full link needs a musl cross-toolchain or a Linux CI runner:
 cargo check -p dory-agent --target aarch64-unknown-linux-musl
 cargo check -p dory-agent --target x86_64-unknown-linux-musl
+
+# exact named-volume helper (Apple Silicon launch):
+../scripts/build-transfer-helper.sh
 
 # regenerate the Swift bindings (seam 2):
 cargo build -p dory-ffi

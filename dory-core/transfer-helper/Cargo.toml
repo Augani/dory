@@ -1,0 +1,20 @@
+[package]
+name = "dory-transfer-helper"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[lib]
+name = "dory_transfer_helper"
+path = "src/lib.rs"
+
+[[bin]]
+name = "dory-transfer-helper"
+path = "src/main.rs"
+
+[dependencies]
+libc = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = { workspace = true }
+sha2 = "0.10"
+thiserror = { workspace = true }

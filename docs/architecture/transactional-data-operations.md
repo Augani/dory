@@ -3,7 +3,8 @@
 Status: accepted for Apple Silicon implementation on 2026-07-13.
 
 This contract governs competitor import, Dory-drive backup and restore, drive relocation, and
-on-disk upgrades. It refines the [Apple Silicon storage contract](apple-silicon-storage.md).
+forward updates to the public v1 drive schema. It refines the
+[Apple Silicon storage contract](apple-silicon-storage.md).
 Those workflows have different transfer formats, but they must not each invent their own locking,
 journaling, verification, rollback, or definition of success.
 
@@ -49,6 +50,12 @@ The first release fails before writes for remote engines, external volume driver
 overlay/macvlan/ipvlan networks, checkpoint restore, or a dependency cycle. Bind-mounted host data
 is validated and referenced at its canonical host path; it is not copied into a named volume.
 Intel-host support is a later product track.
+
+Dory is pre-launch, so no unreleased Dory data format is a compatibility target. Launch starts
+with one clean v1 drive schema and no pre-v1 discovery, adoption, or rollback gate. Competitor
+formats remain import sources. Once v1 is public, forward v1 updates use this same transactional
+protocol and retain the previously selected v1 drive until the updated drive passes production
+validation.
 
 ## Non-negotiable invariants
 
@@ -212,10 +219,12 @@ Apple Silicon launch it qualifies API 1.40 through 1.55, including both legacy `
 `VolumeUsage.Items` disk-usage responses. Capability checks cover image save/load, container
 archive GET/PUT, non-pausing commit, inspect fidelity, and ownership labels.
 
-If the source has volumes but no suitable image, Dory loads a bundled, digest-pinned arm64 scratch
-transfer image, creates stopped helper containers, and removes those operation-owned objects after
-success or rollback. The helper contains no registry dependency, executable, `VOLUME`, or startup
-requirement. Dory never chooses an arbitrary user image as an implicit transfer dependency.
+For volume work Dory loads a bundled, digest-pinned arm64 scratch image containing only the
+statically linked Dory transfer helper. It has no registry dependency, shell, package manager,
+`VOLUME`, or user startup requirement. Dory creates every helper container with network mode
+`none`; the helper runs only an explicit scan or metadata-repair command against the one mounted
+volume and is removed after success or rollback. Dory never chooses an arbitrary user image as an
+implicit transfer dependency.
 
 ## Quiescence contract
 
@@ -246,21 +255,48 @@ because Docker has no rename primitive for them. They remain staging objects: no
 container references them. Existing unlabeled names are fail-before-write conflicts. An earlier
 matching operation object may be resumed only after its contract is inspected and matched.
 
-Volume transfer uses a created-but-never-started helper container and Engine archive GET/PUT. Dory
-generates a deterministic manifest from the source archive and independently generates the same
-manifest by reading the target archive back. The manifest covers each path's:
+Volume transfer does not treat an Engine-produced tar stream as a complete inventory. Moby's
+container archive implementation emits PAX entries but records only the `security.capability`
+xattr, expands regular files instead of preserving sparse extents, and logs then continues when
+some entries cannot be added. Those behaviors are visible in the pinned upstream
+[archive path implementation](https://github.com/moby/moby/blob/d7ebce017b2fb9ed0bdb43887e3efce10ce7ca87/daemon/archive_unix.go)
+and [tar writer](https://github.com/moby/go-archive/blob/173ca9461288235ae1dce68b953072f96836012c/archive.go).
+Comparing a source archive with a target re-export could therefore agree on the same silent
+omission and produce a false success.
+
+Instead, while writers are stopped, the network-disabled bundled helper scans the source through a
+read-only mount before any target mutation. It writes a bounded, versioned, canonical manifest
+using byte-preserving path and link encodings. Dory then streams the daemon archive into a new
+operation-owned target volume with directory/non-directory replacement disabled. A target helper
+validates content and structure before repairing metadata that the daemon archive cannot carry,
+including xattrs/ACLs and sparse holes. Dory rescans both source and target; source-before must equal
+source-after, and the normalized target manifest must equal that unchanged source manifest. Any
+drift, omitted entry, extra target entry, failed repair, or cleanup failure aborts the operation and
+removes the partial target. The manifest covers the root and each path's:
 
 - byte content hash and size;
 - regular file, directory, symbolic link, hard-link group, FIFO, or supported device type;
 - mode, uid, gid, nanosecond modification time, and link target; and
 - supported xattrs and ACL representation.
 
-Archive paths containing `..`, absolute paths, escaping links, duplicate conflicting entries,
-invalid UTF-8 policy cases, integer overflow, or unsupported metadata fail before extraction.
-Sockets are never archived; a source socket is reported as a regenerated runtime object. Device
-nodes require an explicit supported policy rather than silent conversion. Sparse files inside a
-volume must preserve their logical length and data ranges or fail with an honest physical-space
-expansion estimate; this is independently qualified against every supported source engine.
+Archive paths containing `..`, absolute archive paths, escaping hard links, duplicate conflicting
+entries, embedded NUL, integer overflow, an over-limit manifest, or unsupported metadata fail
+before target mutation. Linux paths and symbolic-link targets are arbitrary bytes and are never
+made lossy through UTF-8 conversion.
+Sockets are not archived; each source socket is recorded as an explicitly excluded runtime object
+and must be absent before containers are published. Device nodes require an explicit supported
+policy rather than silent conversion. Sparse files must preserve logical length and ordered data
+ranges after repair; inability to discover or recreate them blocks the transfer. This behavior is
+independently qualified against every supported source engine.
+
+The implementation is the `dory-transfer-helper` static Linux/arm64 binary. Its build remaps source
+paths and has produced byte-identical binaries from independent target directories. The live
+`scripts/volume-transfer-gate.sh` test imports that exact digest as a scratch image, uses an
+immutable fixture image, transfers through Docker's public container archive boundary,
+independently rescans the unchanged source and repaired target, and removes only random
+operation-owned objects. The current real Dory-engine fixture covers raw non-UTF-8 names, binary
+xattrs, hard links, symlinks, FIFO, socket exclusion, nanosecond times, uid/gid/mode, and an 8 MiB
+sparse file that remains 8 KiB physically allocated after transfer.
 
 Only after every image, network, volume, and writable-layer snapshot in the closure verifies does
 the journal enter `readyToPublish`.
@@ -300,10 +336,10 @@ ranges, ext4 geometry, and clean shutdown marker. Dory then:
 Failure before the successful boot probe keeps or restores the old selection. Dory never deletes
 the source automatically; cleanup is a later explicit action naming its UUID and path.
 
-An upgrade is a sequence of idempotent, versioned transforms. It first creates a verified local
-rollback snapshot or refuses to proceed. Backend, partitioning, filesystem, and state-directory
-changes are explicit schema steps with compatibility probes. An update may not switch to an empty
-new layout merely because the old version is unknown.
+A post-launch v1 update is a sequence of idempotent, versioned transforms. It first creates a
+verified local rollback snapshot or refuses to proceed. Backend, partitioning, filesystem, and
+state-directory changes are explicit schema steps with compatibility probes. Pre-launch Dory
+layouts are deliberately not detected or adopted.
 
 ## Publication and exact completion
 

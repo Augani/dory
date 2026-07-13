@@ -17,6 +17,10 @@ grep -Fq 'scheme="Dory UI Tests"' scripts/test.sh \
   || { echo "test-release-outputs: DoryUITests requests are not routed to the UI scheme" >&2; exit 1; }
 grep -Fq 'if [ "${#test_args[@]}" -gt 0 ]' scripts/test.sh \
   || { echo "test-release-outputs: unfiltered app tests still expand an empty Bash 3 array" >&2; exit 1; }
+grep -Fq 'dory-transfer-helper-image-arm64.tar' scripts/bundle-engine.sh \
+  || { echo "test-release-outputs: release bundler omits the transfer-helper image" >&2; exit 1; }
+grep -Fq 'bundle_debug_transfer_helper' scripts/build.sh \
+  || { echo "test-release-outputs: debug bundler omits the transfer-helper image" >&2; exit 1; }
 
 VERSION="0.3.0"
 BUILD="42"
@@ -72,6 +76,22 @@ printf 'schema=2\narch=arm64\ninput_sha256=fixture\n' > "$RESOURCES/dory-initfs-
 printf 'gpu-kernel\n' > "$RESOURCES/dory-hv-kernel-gpu-arm64.lzfse"
 printf 'schema=2\narch=arm64\ngpu=1\ninput_sha256=fixture\n' \
   > "$RESOURCES/dory-kernel-build-arm64-gpu.stamp"
+TRANSFER_HELPER_FIXTURE="$TMP/dory-transfer-helper-fixture"
+python3 - "$TRANSFER_HELPER_FIXTURE" <<'PY'
+import struct, sys
+helper = bytearray(120)
+helper[:7] = b"\x7fELF\x02\x01\x01"
+struct.pack_into("<HHI", helper, 16, 2, 183, 1)
+struct.pack_into("<Q", helper, 24, 0x400000)
+struct.pack_into("<Q", helper, 32, 64)
+struct.pack_into("<HHH", helper, 52, 64, 56, 1)
+struct.pack_into("<I", helper, 64, 1)
+open(sys.argv[1], "wb").write(helper)
+PY
+python3 scripts/build-transfer-helper-image.py \
+  --helper "$TRANSFER_HELPER_FIXTURE" \
+  --output "$RESOURCES/dory-transfer-helper-image-arm64.tar" \
+  --metadata-output "$RESOURCES/dory-transfer-helper-image-arm64.json" >/dev/null
 (
   cd "$APP"
   find Contents/Helpers Contents/Resources -type f ! -name dory-payload-sha256.txt -print \

@@ -25,6 +25,11 @@ if ! bash scripts/test-host-cli-payload.sh; then
   exit 1
 fi
 
+if ! python3 scripts/test-transfer-helper-image.py; then
+  echo "ci-test: transfer-helper image archive tests failed" >&2
+  exit 1
+fi
+
 if ! bash scripts/test-release-outputs.sh; then
   echo "ci-test: public release output contract tests failed" >&2
   exit 1

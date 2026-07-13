@@ -670,6 +670,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "dory-transfer-helper"
+version = "0.0.0"
+dependencies = [
+ "libc",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "dunce"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"

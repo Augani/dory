@@ -1,0 +1,5 @@
+[toolchain]
+channel = "1.95.0"
+components = ["rustfmt", "clippy"]
+profile = "minimal"
+targets = ["aarch64-unknown-linux-musl", "x86_64-unknown-linux-musl"]

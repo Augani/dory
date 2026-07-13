@@ -57,6 +57,8 @@ fi
 for member in \
   Dory.app/Contents/Resources/dory-hv-kernel-gpu-arm64.lzfse \
   Dory.app/Contents/Resources/dory-kernel-build-arm64-gpu.stamp \
+  Dory.app/Contents/Resources/dory-transfer-helper-image-arm64.tar \
+  Dory.app/Contents/Resources/dory-transfer-helper-image-arm64.json \
   Dory.app/Contents/Resources/dory-payload-sha256.txt \
   Dory.app/Contents/Helpers/dory-dataplane-proxy \
   Dory.app/Contents/Helpers/docker-buildx \
@@ -191,6 +193,23 @@ GVPROXY_PROVENANCE="$RESOURCES/gvproxy-provenance.txt"
 [ ! -e "$RESOURCES/dory-initfs-build-amd64.stamp" ] || fail "arm64 app unexpectedly bundles Intel initfs assets"
 [ -s "$RESOURCES/dory-hv-kernel-gpu-arm64.lzfse" ] || fail "arm64 app has no verified Apple-silicon GPU kernel"
 [ -s "$RESOURCES/dory-kernel-build-arm64-gpu.stamp" ] || fail "arm64 app has no Apple-silicon GPU provenance"
+[ -s "$RESOURCES/dory-transfer-helper-image-arm64.tar" ] \
+  || fail "arm64 app has no named-volume transfer helper image"
+[ -s "$RESOURCES/dory-transfer-helper-image-arm64.json" ] \
+  || fail "arm64 app has no named-volume transfer helper metadata"
+TRANSFER_HELPER_SHA256="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["helperSha256"])' \
+  "$RESOURCES/dory-transfer-helper-image-arm64.json")" \
+  || fail "transfer-helper metadata is invalid"
+TRANSFER_VERIFIED_METADATA="$(python3 scripts/build-transfer-helper-image.py \
+  --verify "$RESOURCES/dory-transfer-helper-image-arm64.tar" \
+  --expected-helper-sha256 "$TRANSFER_HELPER_SHA256")" \
+  || fail "named-volume transfer helper image is invalid"
+[ "$TRANSFER_VERIFIED_METADATA" = "$(tr -d '\n' < "$RESOURCES/dory-transfer-helper-image-arm64.json")" ] \
+  || fail "transfer-helper metadata does not describe the exact archive"
+[ "$(shasum -a 256 "$RESOURCES/dory-transfer-helper-image-arm64.tar" | awk '{print $1}')" = \
+  "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["archiveSha256"])' \
+    "$RESOURCES/dory-transfer-helper-image-arm64.json")" ] \
+  || fail "transfer-helper image archive digest does not match its metadata"
 (cd "$APP" && shasum -a 256 -c Contents/Resources/dory-payload-sha256.txt >/dev/null) \
   || fail "arm64 app payload digest inventory does not match"
 

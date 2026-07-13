@@ -1,6 +1,16 @@
 [workspace]
 resolver = "2"
-members = ["proto", "pb", "agent", "dataplane", "ffi", "remote", "runc-wrapper", "sync"]
+members = [
+    "proto",
+    "pb",
+    "agent",
+    "dataplane",
+    "ffi",
+    "remote",
+    "runc-wrapper",
+    "sync",
+    "transfer-helper",
+]
 
 [workspace.package]
 edition = "2021"
