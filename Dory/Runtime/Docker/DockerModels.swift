@@ -48,6 +48,7 @@ struct DockerContainerSummary: Decodable, Sendable {
     var id: String
     var names: [String]?
     var image: String
+    var imageID: String?
     var command: String?
     var created: Int?
     var state: String?
@@ -56,10 +57,13 @@ struct DockerContainerSummary: Decodable, Sendable {
     var networkSettings: DockerNetworkSettingsSummary?
     var labels: [String: String]?
     var mounts: [DockerContainerMountSummary]?
+    var sizeRw: Int64?
+    var sizeRootFs: Int64?
     enum CodingKeys: String, CodingKey {
-        case id = "Id", names = "Names", image = "Image", command = "Command"
+        case id = "Id", names = "Names", image = "Image", imageID = "ImageID", command = "Command"
         case created = "Created", state = "State", status = "Status"
         case ports = "Ports", networkSettings = "NetworkSettings", labels = "Labels", mounts = "Mounts"
+        case sizeRw = "SizeRw", sizeRootFs = "SizeRootFs"
     }
 }
 

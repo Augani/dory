@@ -99,9 +99,16 @@ struct DockerMountBody: Encodable, Sendable {
     let source: String?
     let target: String
     let readOnly: Bool?
+    let consistency: String?
+    let bindOptions: DockerBindOptions?
+    let volumeOptions: DockerVolumeOptions?
+    let tmpfsOptions: DockerTmpfsOptions?
+    let imageOptions: DockerImageOptions?
 
     enum CodingKeys: String, CodingKey {
         case type = "Type", source = "Source", target = "Target", readOnly = "ReadOnly"
+        case consistency = "Consistency", bindOptions = "BindOptions", volumeOptions = "VolumeOptions"
+        case tmpfsOptions = "TmpfsOptions", imageOptions = "ImageOptions"
     }
 
     nonisolated init(_ mount: ContainerMount) {
@@ -109,6 +116,11 @@ struct DockerMountBody: Encodable, Sendable {
         source = mount.source
         target = mount.target
         readOnly = mount.readOnly ? true : nil
+        consistency = mount.consistency
+        bindOptions = mount.bindOptions
+        volumeOptions = mount.volumeOptions
+        tmpfsOptions = mount.tmpfsOptions
+        imageOptions = mount.imageOptions
     }
 }
 
@@ -192,6 +204,7 @@ struct DockerNetworkingConfigBody: Encodable, Sendable {
 struct DockerCreateBody: Encodable, Sendable {
     let Hostname: String?
     let Domainname: String?
+    let MacAddress: String?
     let User: String?
     let AttachStdin: Bool?
     let AttachStdout: Bool?
@@ -218,6 +231,7 @@ struct DockerCreateBody: Encodable, Sendable {
     init(spec: ContainerSpec) {
         Hostname = spec.hostname
         Domainname = spec.domainname
+        MacAddress = spec.macAddress
         User = spec.user
         AttachStdin = spec.attachStdin
         AttachStdout = spec.attachStdout
@@ -244,12 +258,22 @@ struct DockerCreateBody: Encodable, Sendable {
             let (key, hostPort, hostIP) = Self.parsePort(mapping)
             guard let key else { continue }
             exposed[key] = DockerEmptyObject()
-            if let hostPort { bindings[key] = [DockerPortBinding(HostPort: hostPort, HostIp: hostIP)] }
+            if let hostPort {
+                bindings[key, default: []].append(DockerPortBinding(HostPort: hostPort, HostIp: hostIP))
+            }
         }
         ExposedPorts = exposed
-        let binds = spec.volumes.filter(Self.isLegacyBind)
+        // Docker rejects a create request when the same destination is declared both in
+        // top-level `Volumes` and `HostConfig.Mounts` ("Duplicate mount point"). Runtime
+        // snapshots can carry image-declared volume targets alongside the concrete mount that
+        // satisfies them, so only emit targets that are not already represented by a mount.
+        let mountedTargets = Set(spec.mounts.map(\.target))
+        let binds = spec.volumes.filter(Self.isLegacyBind).filter {
+            guard let target = Self.legacyBindTarget($0) else { return true }
+            return !mountedTargets.contains(target)
+        }
         let volumeTargets = Self.unique(spec.volumeTargets + spec.volumes.filter { !Self.isLegacyBind($0) })
-            .filter { !$0.isEmpty }
+            .filter { !$0.isEmpty && !mountedTargets.contains($0) }
         Volumes = volumeTargets.isEmpty ? nil : Dictionary(uniqueKeysWithValues: volumeTargets.map { ($0, DockerEmptyObject()) })
         HostConfig = DockerHostConfigBody(
             PortBindings: bindings,
@@ -370,6 +394,20 @@ struct DockerCreateBody: Encodable, Sendable {
 
     nonisolated static func isLegacyBind(_ volume: String) -> Bool {
         volume.contains(":")
+    }
+
+    private nonisolated static func legacyBindTarget(_ volume: String) -> String? {
+        let pieces = volume.split(separator: ":", omittingEmptySubsequences: false).map(String.init)
+        guard pieces.count >= 2 else { return nil }
+        let mountModes: Set<String> = [
+            "ro", "rw", "z", "Z", "cached", "delegated", "consistent", "nocopy",
+            "private", "rprivate", "shared", "rshared", "slave", "rslave", "bind", "volume",
+        ]
+        let lastOptions = Set(pieces.last?.split(separator: ",").map(String.init) ?? [])
+        if pieces.count >= 3, !lastOptions.isDisjoint(with: mountModes) {
+            return pieces[pieces.count - 2]
+        }
+        return pieces.last
     }
 
     private nonisolated static func unique(_ values: [String]) -> [String] {

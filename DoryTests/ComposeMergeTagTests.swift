@@ -73,4 +73,29 @@ struct ComposeMergeTagTests {
         #expect(try YAMLParser.scalarOrFlow("!reset null") == .tagged(.reset, .null))
         #expect(try YAMLParser.scalarOrFlow("\"!reset\"") == .string("!reset"))
     }
+
+    @Test func blockOverrideAndResetTagsKeepTheirIndentedValues() throws {
+        let base = """
+        services:
+          web:
+            image: nginx:1
+            ports: ["8080:80"]
+            environment:
+              KEEP: base
+              DROP: base
+        """
+        let override = """
+        services:
+          web:
+            ports: !override
+              - "9090:90"
+            environment: !reset
+              REPLACED: value
+        """
+
+        let project = try ComposeParser.parse([base, override], projectName: "demo")
+        let web = try #require(project.service(named: "web"))
+        #expect(web.ports == ["9090:90"])
+        #expect(web.environment.isEmpty)
+    }
 }

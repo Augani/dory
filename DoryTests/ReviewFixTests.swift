@@ -4,6 +4,35 @@ import Foundation
 
 @MainActor
 struct ReviewFixTests {
+    @Test func dockerMigrationSourceIdentifierIsStablePrivateAndSourceSpecific() {
+        let first = DockerEngineRuntime(
+            socketPath: "/Users/example/.orbstack/run/docker.sock",
+            displayName: "OrbStack"
+        )
+        let same = DockerEngineRuntime(
+            socketPath: "/Users/example/.orbstack/run/docker.sock",
+            displayName: "Renamed OrbStack label"
+        )
+        let other = DockerEngineRuntime(
+            socketPath: "/Users/example/.docker/run/docker.sock",
+            displayName: "Docker Desktop"
+        )
+
+        #expect(first.migrationSourceIdentifier == same.migrationSourceIdentifier)
+        #expect(first.migrationSourceIdentifier != other.migrationSourceIdentifier)
+        #expect(first.migrationSourceIdentifier.hasPrefix("docker:"))
+        #expect(first.migrationSourceIdentifier.count == "docker:".count + 64)
+        #expect(!first.migrationSourceIdentifier.contains("/Users/example"))
+    }
+
+    @Test func dockerRuntimeClonePreservesConfiguredMigrationIdleTimeout() {
+        let runtime = DockerEngineRuntime(socketPath: "/tmp/dory-timeout-source.sock")
+            .withOperationIdleTimeout(42)
+
+        #expect(runtime.operationIdleTimeout == 42)
+        #expect(runtime.socketPath == "/tmp/dory-timeout-source.sock")
+    }
+
     // #1 + #2: shim create + lifecycle must not deadlock and must round-trip.
     @Test func shimCreateAndStartDoNotDeadlock() async throws {
         let path = shortSocketPath("dory-fix")
@@ -76,6 +105,7 @@ struct ReviewFixTests {
             "PortBindings":{
               "443/tcp":[{"HostIp":"::1","HostPort":"8443"}],
               "80/tcp":[{"HostIp":"127.0.0.1","HostPort":"8080"}],
+              "9000/tcp":[{"HostIp":"127.0.0.1","HostPort":""}],
               "53/udp":[{"HostPort":"5353"}]
             },
             "RestartPolicy":{"Name":"on-failure","MaximumRetryCount":3},
@@ -152,7 +182,7 @@ struct ReviewFixTests {
             StartInterval: 1_000_000_000
         ))
         #expect(spec.networkDisabled == true)
-        #expect(spec.ports == ["[::1]:8443:443", "5353:53/udp", "127.0.0.1:8080:80", "8443"])
+        #expect(spec.ports == ["[::1]:8443:443", "5353:53/udp", "127.0.0.1:8080:80", "127.0.0.1::9000", "8443"])
         #expect(spec.stopSignal == "SIGTERM")
         #expect(spec.stopTimeout == 15)
         #expect(spec.shell == ["/bin/sh", "-c"])
@@ -230,6 +260,8 @@ struct ReviewFixTests {
         #expect(portBindings["443/tcp"]?.first?["HostPort"] == "8443")
         #expect(portBindings["80/tcp"]?.first?["HostIp"] == "127.0.0.1")
         #expect(portBindings["80/tcp"]?.first?["HostPort"] == "8080")
+        #expect(portBindings["9000/tcp"]?.first?["HostIp"] == "127.0.0.1")
+        #expect(portBindings["9000/tcp"]?.first?["HostPort"] == "")
         #expect(portBindings["53/udp"]?.first?["HostIp"] == "0.0.0.0")
         #expect(portBindings["53/udp"]?.first?["HostPort"] == "5353")
         let restartPolicy = try #require(hostConfig["RestartPolicy"] as? [String: Any])
@@ -674,6 +706,52 @@ struct ReviewFixTests {
         let disconnectJSON = try #require(try JSONSerialization.jsonObject(with: disconnectBody) as? [String: Any])
         #expect(disconnectJSON["Container"] as? String == "web")
         #expect(disconnectJSON["Force"] as? Bool == true)
+    }
+
+    @Test func dockerShimTransparentlyPreservesRichNetworkContractsForDockerBackends() async throws {
+        let upstreamPath = shortSocketPath("dory-rich-network-upstream")
+        let publicPath = shortSocketPath("dory-rich-network-public")
+        let recorder = RequestRecorder()
+        let upstream = ShimHTTPServer(socketPath: upstreamPath) { request in
+            recorder.record(method: request.method, target: request.target, body: request.body)
+            return ShimResponse.json(Data(#"{"Id":"rich-network","Warning":""}"#.utf8), status: 201)
+        }
+        try upstream.start()
+        defer { upstream.stop() }
+
+        let runtime = DockerEngineRuntime(socketPath: upstreamPath, kind: .sharedVM)
+        let shim = DockerShim(runtime: runtime)
+        let server = ShimHTTPServer(socketPath: publicPath) { request in await shim.handle(request) }
+        try server.start()
+        defer { server.stop() }
+
+        let body = Data(#"""
+        {
+          "Name":"rich_default",
+          "Driver":"bridge",
+          "EnableIPv4":true,
+          "EnableIPv6":false,
+          "IPAM":{"Driver":"default","Config":[{"Subnet":"172.31.44.0/24","Gateway":"172.31.44.1"}]},
+          "Internal":true,
+          "Attachable":true,
+          "Options":{"com.docker.network.bridge.enable_icc":"false"},
+          "Labels":{"com.docker.compose.project":"rich"}
+        }
+        """#.utf8)
+        let response = try await UnixSocketHTTP(path: publicPath).send(HTTPRequest(
+            method: "POST",
+            path: "/v1.47/networks/create",
+            headers: [(name: "Content-Type", value: "application/json")],
+            body: body
+        ))
+
+        #expect(response.statusCode == 201)
+        #expect(recorder.requests.count == 1)
+        #expect(recorder.requests.first?.target == "/v1.47/networks/create")
+        let forwarded = try #require(recorder.requests.first?.body)
+        let forwardedJSON = try #require(try JSONSerialization.jsonObject(with: forwarded) as? NSDictionary)
+        let originalJSON = try #require(try JSONSerialization.jsonObject(with: body) as? NSDictionary)
+        #expect(forwardedJSON == originalJSON)
     }
 
     @Test func dockerEngineRuntimeUsesNativeImageTagEndpoint() async throws {

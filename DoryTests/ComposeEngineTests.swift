@@ -97,6 +97,12 @@ final class RecordingRuntime: ContainerRuntime {
         createdSpecs.append(spec)
         counter += 1
         let id = "id\(counter)"
+        let resolvedMounts = spec.mounts.map { mount -> ContainerMount in
+            guard mount.type == "volume", mount.source == nil else { return mount }
+            var mount = mount
+            mount.source = "anonymous-\(counter)"
+            return mount
+        }
         liveContainers.append(Container(id: id, name: spec.name, image: spec.image, status: .running,
             cpuPercent: 0, memoryDisplay: "0 MB", memoryLimitDisplay: "—", memoryFraction: 0,
             ports: Self.displayPorts(spec.ports),
@@ -106,7 +112,7 @@ final class RecordingRuntime: ContainerRuntime {
             volumes: spec.volumes,
             nanoCPUs: spec.nanoCPUs,
             memoryLimitBytes: spec.memoryLimitBytes,
-            mounts: spec.mounts,
+            mounts: resolvedMounts,
             volumeTargets: spec.volumeTargets,
             networks: spec.networks,
             networkEndpointSettings: spec.networkEndpointSettings,
@@ -178,7 +184,8 @@ final class RecordingRuntime: ContainerRuntime {
                 hostIP: parsed.hostIP,
                 hostPort: parsed.hostPort.flatMap(Int.init),
                 containerPort: containerPort,
-                proto: proto
+                proto: proto,
+                hasHostBinding: parsed.hostPort != nil
             )
         }
         return display.isEmpty ? "—" : display.joined(separator: ",")
@@ -431,6 +438,100 @@ struct ComposeEngineTests {
         #expect(runtime.startedIDs == ["id1"])
     }
 
+    @Test func externalAndConfiguredVolumesUseExactLifecycleAndMountNames() async throws {
+        let project = try ComposeParser.parse("""
+        services:
+          app:
+            image: busybox:latest
+            volumes:
+              - managed:/managed
+              - external:/external:ro
+              - type: volume
+                source: managed
+                target: /advanced
+                volume:
+                  nocopy: true
+        volumes:
+          managed:
+            name: exact-managed
+            driver: local
+            driver_opts:
+              type: none
+              o: bind
+              device: /Users/me/data
+            labels:
+              com.example.kind: data
+          external:
+            external: true
+            name: exact-external
+        """, projectName: "demo")
+        let runtime = RecordingRuntime()
+        runtime.volumes = [
+            Volume(name: "exact-external", size: "1 MB", driver: "local", usedBy: "—", created: "now"),
+        ]
+        let engine = ComposeEngine(runtime: runtime)
+
+        _ = try await engine.up(project)
+
+        #expect(runtime.volumesCreated == ["exact-managed"])
+        let request = try #require(runtime.volumeCreateRequests.first)
+        #expect(request.driver == "local")
+        #expect(request.driverOptions == ["type": "none", "o": "bind", "device": "/Users/me/data"])
+        #expect(request.labels["com.example.kind"] == "data")
+        #expect(request.labels["com.docker.compose.project"] == "demo")
+        #expect(request.labels["com.docker.compose.volume"] == "managed")
+        let spec = try #require(runtime.createdSpecs.first)
+        #expect(spec.volumes == ["exact-managed:/managed", "exact-external:/external:ro"])
+        #expect(spec.mounts.first?.source == "exact-managed")
+        #expect(spec.mounts.first?.volumeOptions?.NoCopy == true)
+
+        try await engine.down(project, removeVolumes: true)
+        #expect(runtime.volumesRemoved == ["exact-managed"])
+    }
+
+    @Test func missingExternalVolumeFailsBeforeAnyProjectMutation() async throws {
+        let project = try ComposeParser.parse("""
+        services:
+          app:
+            image: busybox:latest
+            volumes: [shared:/data]
+        volumes:
+          shared:
+            external: true
+        """, projectName: "demo")
+        let runtime = RecordingRuntime()
+        let engine = ComposeEngine(runtime: runtime)
+
+        await #expect(throws: ComposeError.missingExternalVolume(volume: "shared")) {
+            try await engine.up(project)
+        }
+        #expect(runtime.networksCreated.isEmpty)
+        #expect(runtime.volumesCreated.isEmpty)
+        #expect(runtime.createdSpecs.isEmpty)
+    }
+
+    @Test func imageAndAnonymousLongMountsPullAndFollowDownVolumeLifecycle() async throws {
+        let project = try ComposeParser.parse("""
+        services:
+          app:
+            image: busybox:latest
+            volumes:
+              - type: volume
+                target: /anonymous
+              - type: image
+                source: tools:latest
+                target: /opt/tools
+        """, projectName: "demo")
+        let runtime = RecordingRuntime()
+        let engine = ComposeEngine(runtime: runtime)
+
+        _ = try await engine.up(project, pullImages: true)
+        #expect(runtime.pulledImages == ["busybox:latest", "tools:latest"])
+
+        try await engine.down(project, removeVolumes: true)
+        #expect(runtime.volumesRemoved == ["anonymous-1"])
+    }
+
     @Test func downStopsAndRemovesProjectContainers() async throws {
         let project = try ComposeParser.parse(yaml, projectName: "demo")
         let runtime = RecordingRuntime()
@@ -493,6 +594,26 @@ struct ComposeEngineTests {
 
         try await engine.down(project)
         #expect(runtime.networksRemoved == ["demo_front", "demo_back"])
+    }
+
+    @Test func sharedServiceNamespacesUseTheDependencyContainerName() throws {
+        let project = try ComposeParser.parse("""
+        services:
+          db:
+            image: postgres:16
+          sidecar:
+            image: busybox
+            network_mode: service:db
+            ipc: service:db
+            pid: service:db
+        """, projectName: "demo")
+        let sidecar = try #require(project.service(named: "sidecar"))
+        let spec = ComposeEngine(runtime: RecordingRuntime()).spec(for: sidecar, in: project)
+
+        #expect(spec.networkMode == "container:demo-db-1")
+        #expect(spec.ipcMode == "container:demo-db-1")
+        #expect(spec.pidMode == "container:demo-db-1")
+        #expect(spec.networks.isEmpty)
     }
 
     @Test func upSkipsInactiveProfiledServices() async throws {

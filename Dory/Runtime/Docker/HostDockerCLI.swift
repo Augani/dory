@@ -10,12 +10,13 @@ enum HostDockerCLI {
     private static let beginSentinel = "# >>> dory cli >>>"
     private static let endSentinel = "# <<< dory cli <<<"
     private static let profiles = [".zprofile", ".zshrc", ".bash_profile", ".profile"]
-    static let linkedTools = ["docker", "docker-compose", "kubectl", "dory", "dory-doctor", "dorydctl"]
+    static let linkedTools = ["docker", "docker-buildx", "docker-compose", "kubectl", "dory", "dory-doctor", "dorydctl"]
 
     struct Status: Equatable {
         var dockerLinked: Bool
         var onPath: Bool
         var composeInstalled: Bool
+        var buildxInstalled: Bool
     }
 
     @discardableResult
@@ -27,15 +28,24 @@ enum HostDockerCLI {
                 symlink(source, to: binDir + "/\(tool)")
             }
         }
-        installComposePlugin()
+        _ = installComposePlugin()
+        _ = installBuildxPlugin()
         addToPath()
         return true
     }
 
-    static func installComposePlugin() {
-        guard let compose = helper("docker-compose") else { return }
+    @discardableResult
+    static func installComposePlugin() -> Bool {
+        guard let compose = helper("docker-compose") else { return false }
         try? FileManager.default.createDirectory(atPath: composePluginDir, withIntermediateDirectories: true)
-        symlink(compose, to: composePluginDir + "/docker-compose")
+        return installOwnedComposeSymlink(compose, to: composePluginDir + "/docker-compose")
+    }
+
+    @discardableResult
+    static func installBuildxPlugin() -> Bool {
+        guard let buildx = helper("docker-buildx") else { return false }
+        try? FileManager.default.createDirectory(atPath: composePluginDir, withIntermediateDirectories: true)
+        return installOwnedComposeSymlink(buildx, to: composePluginDir + "/docker-buildx")
     }
 
     static func remove() {
@@ -43,7 +53,8 @@ enum HostDockerCLI {
         for tool in linkedTools {
             try? fileManager.removeItem(atPath: binDir + "/\(tool)")
         }
-        try? fileManager.removeItem(atPath: composePluginDir + "/docker-compose")
+        removeOwnedComposeSymlink(at: composePluginDir + "/docker-compose")
+        removeOwnedComposeSymlink(at: composePluginDir + "/docker-buildx")
         removeFromPath()
     }
 
@@ -60,7 +71,8 @@ enum HostDockerCLI {
         return Status(
             dockerLinked: fileManager.fileExists(atPath: binDir + "/docker"),
             onPath: onPath,
-            composeInstalled: fileManager.fileExists(atPath: composePluginDir + "/docker-compose")
+            composeInstalled: fileManager.fileExists(atPath: composePluginDir + "/docker-compose"),
+            buildxInstalled: fileManager.fileExists(atPath: composePluginDir + "/docker-buildx")
         )
     }
 
@@ -88,6 +100,74 @@ enum HostDockerCLI {
         }
         try? fileManager.removeItem(atPath: destination)
         try? fileManager.createSymbolicLink(atPath: destination, withDestinationPath: source)
+    }
+
+    /// Installs Compose only when the destination is empty or is a symlink Dory already owns.
+    /// A user's regular file, directory, or third-party symlink is deliberately left untouched.
+    @discardableResult
+    static func installOwnedComposeSymlink(
+        _ source: String,
+        to destination: String,
+        home: String = NSHomeDirectory(),
+        bundleRoot: String = Bundle.main.bundleURL.path,
+        fileManager: FileManager = .default
+    ) -> Bool {
+        if let rawTarget = try? fileManager.destinationOfSymbolicLink(atPath: destination) {
+            let target = resolvedSymlinkTarget(rawTarget, at: destination)
+            if standardized(target) == standardized(source) { return true }
+            guard isDoryOwnedComposeTarget(target, desiredSource: source, home: home, bundleRoot: bundleRoot) else {
+                return false
+            }
+            do { try fileManager.removeItem(atPath: destination) } catch { return false }
+        } else if fileManager.fileExists(atPath: destination) {
+            return false
+        }
+        do {
+            try fileManager.createSymbolicLink(atPath: destination, withDestinationPath: source)
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    static func removeOwnedComposeSymlink(
+        at destination: String,
+        home: String = NSHomeDirectory(),
+        bundleRoot: String = Bundle.main.bundleURL.path,
+        fileManager: FileManager = .default
+    ) {
+        guard let rawTarget = try? fileManager.destinationOfSymbolicLink(atPath: destination) else { return }
+        let target = resolvedSymlinkTarget(rawTarget, at: destination)
+        guard isDoryOwnedComposeTarget(target, desiredSource: helper("docker-compose"), home: home, bundleRoot: bundleRoot) else {
+            return
+        }
+        try? fileManager.removeItem(atPath: destination)
+    }
+
+    static func isDoryOwnedComposeTarget(
+        _ target: String,
+        desiredSource: String?,
+        home: String,
+        bundleRoot: String
+    ) -> Bool {
+        let candidate = standardized(target)
+        if let desiredSource, candidate == standardized(desiredSource) { return true }
+        return isInside(candidate, root: standardized(home + "/.dory"))
+            || isInside(candidate, root: standardized(bundleRoot))
+    }
+
+    private static func resolvedSymlinkTarget(_ target: String, at destination: String) -> String {
+        guard !target.hasPrefix("/") else { return target }
+        return URL(fileURLWithPath: destination).deletingLastPathComponent()
+            .appendingPathComponent(target).standardizedFileURL.path
+    }
+
+    private static func standardized(_ path: String) -> String {
+        URL(fileURLWithPath: path).standardizedFileURL.path
+    }
+
+    private static func isInside(_ path: String, root: String) -> Bool {
+        path == root || path.hasPrefix(root + "/")
     }
 
     static func pathBlock(binDir: String = binDir) -> String {

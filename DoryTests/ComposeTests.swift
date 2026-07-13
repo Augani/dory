@@ -274,6 +274,127 @@ struct ComposeTests {
         #expect(project.service(named: "api")?.networks == ["back-tier", "front-tier"])
     }
 
+    @Test func sharedServiceNamespacesCreateImplicitDependencies() throws {
+        let project = try ComposeParser.parse("""
+        services:
+          db:
+            image: postgres:16
+          sidecar:
+            image: busybox
+            network_mode: service:db
+            ipc: service:db
+            pid: service:db
+        """, projectName: "demo")
+
+        let sidecar = try #require(project.service(named: "sidecar"))
+        #expect(sidecar.dependsOn == [ComposeDependency(service: "db", condition: .started)])
+        let order = try project.startOrder()
+        #expect(order.firstIndex(of: "db")! < order.firstIndex(of: "sidecar")!)
+    }
+
+    @Test func parsesLongMountsVolumeDefinitionsAndRelativeBindSources() throws {
+        let base = URL(fileURLWithPath: "/Users/test/project", isDirectory: true)
+        let yaml = """
+        services:
+          app:
+            image: busybox:latest
+            volumes:
+              - type: volume
+                source: data
+                target: /var/lib/app
+                read_only: true
+                volume:
+                  nocopy: true
+                  subpath: tenant-a
+              - type: bind
+                source: ./src
+                target: /workspace
+                bind:
+                  propagation: rshared
+                  create_host_path: false
+              - type: tmpfs
+                target: /run/cache
+                tmpfs:
+                  size: 64m
+                  mode: "0770"
+              - type: image
+                source: tools:latest
+                target: /opt/tools
+                image:
+                  subpath: bin
+        volumes:
+          data:
+            name: actual-data
+            driver: local
+            driver_opts:
+              type: none
+              o: bind
+              device: /Users/test/data
+            labels:
+              com.example.kind: database
+          shared:
+            external: true
+            name: company-shared
+        """
+
+        let project = try ComposeParser.parse(yaml, projectName: "demo", baseDirectory: base)
+        let service = try #require(project.service(named: "app"))
+
+        #expect(project.volumes == ["data", "shared"])
+        #expect(project.volumeDefinitions["data"] == ComposeVolumeDefinition(
+            key: "data",
+            name: "actual-data",
+            driver: "local",
+            driverOptions: ["type": "none", "o": "bind", "device": "/Users/test/data"],
+            labels: ["com.example.kind": "database"]
+        ))
+        #expect(project.volumeDefinitions["shared"]?.external == true)
+        #expect(project.volumeDefinitions["shared"]?.name == "company-shared")
+        #expect(service.volumes.isEmpty)
+        #expect(service.mounts.count == 4)
+        #expect(service.mounts[0].type == "volume")
+        #expect(service.mounts[0].source == "data")
+        #expect(service.mounts[0].readOnly)
+        #expect(service.mounts[0].volumeOptions == DockerVolumeOptions(NoCopy: true, Subpath: "tenant-a"))
+        #expect(service.mounts[1].source == "/Users/test/project/src")
+        #expect(service.mounts[1].bindOptions?.Propagation == "rshared")
+        #expect(service.mounts[1].bindOptions?.CreateMountpoint == false)
+        #expect(service.mounts[2].tmpfsOptions?.SizeBytes == 67_108_864)
+        #expect(service.mounts[2].tmpfsOptions?.Mode == 0o770)
+        #expect(service.mounts[3].imageOptions?.Subpath == "bin")
+    }
+
+    @Test func externalVolumeRejectsCreateAttributesAndUnsupportedMountTypes() {
+        #expect(throws: YAMLError.self) {
+            try ComposeParser.parse("""
+            services: {}
+            volumes:
+              shared:
+                external: true
+                driver: local
+            """, projectName: "demo")
+        }
+        #expect(throws: YAMLError.self) {
+            try ComposeParser.parse("""
+            services:
+              app:
+                image: busybox
+                volumes:
+                  - type: npipe
+                    source: //./pipe/docker_engine
+                    target: /pipe
+            """, projectName: "demo")
+        }
+        #expect(throws: YAMLError.self) {
+            try ComposeParser.parse("""
+            services:
+              app:
+                image: busybox
+                volumes: [undeclared:/data]
+            """, projectName: "demo")
+        }
+    }
+
     @Test func parsesCommonServiceCreateOptions() throws {
         let yaml = """
         services:

@@ -48,7 +48,8 @@ struct DockerEngineRuntimePerformanceTests {
             case "/containers/json":
                 return .json(Data(#"""
                 [
-                  {"Id":"c1","Names":["/web"],"Image":"nginx","State":"running","Status":"Up 5 seconds","Created":1710000000}
+                  {"Id":"c1","Names":["/web"],"Image":"nginx","State":"running","Status":"Up 5 seconds","Created":1710000000},
+                  {"Id":"c2","Names":["/database"],"Image":"postgres","State":"restarting","Status":"Restarting (1)","Created":1710000001}
                 ]
                 """#.utf8))
             case "/containers/c1/stats":
@@ -77,6 +78,66 @@ struct DockerEngineRuntimePerformanceTests {
         #expect(container.name == "web")
         #expect(container.cpuPercent == 0)
         #expect(container.memoryBytes == 0)
+        #expect(snapshot.containers.first { $0.id == "c2" }?.status == .running)
+    }
+
+    @Test func snapshotPreservesPausedContainerStateForMigration() async throws {
+        let path = Self.shortSocketPath("dory-paused-state")
+        let server = ShimHTTPServer(socketPath: path) { request in
+            switch request.path {
+            case "/containers/json":
+                return .json(Data(#"""
+                [{"Id":"paused-db","Names":["/database"],"Image":"postgres:16","State":"Paused","Status":"Up 1 minute (Paused)","Created":1710000000}]
+                """#.utf8))
+            case "/images/json", "/networks":
+                return .json(Data("[]".utf8))
+            case "/volumes":
+                return .json(Data(#"{"Volumes":[]}"#.utf8))
+            case "/version":
+                return .json(Data(#"{"Version":"29.0.0","ApiVersion":"1.47"}"#.utf8))
+            default:
+                return .empty(status: 404)
+            }
+        }
+        try server.start()
+        defer { server.stop() }
+
+        let snapshot = try await DockerEngineRuntime(socketPath: path).migrationSnapshot()
+
+        #expect(snapshot.containers.first?.status == .paused)
+    }
+
+    @Test func writableLayerInventoryNormalizesOnlyCreatedContainersToZero() async throws {
+        let path = Self.shortSocketPath("dory-writable-sizes")
+        let server = ShimHTTPServer(socketPath: path) { request in
+            guard request.path == "/containers/json" else { return .empty(status: 404) }
+            return .json(Data(#"""
+            [
+              {"Id":"exited","Image":"busybox","State":"exited","SizeRw":4096},
+              {"Id":"created","Image":"busybox","State":"created"}
+            ]
+            """#.utf8))
+        }
+        try server.start()
+        defer { server.stop() }
+
+        let sizes = try await DockerEngineRuntime(socketPath: path).migrationContainerWritableSizes()
+
+        #expect(sizes == ["exited": 4096, "created": 0])
+    }
+
+    @Test func writableLayerInventoryFailsClosedForMissingStoppedSize() async throws {
+        let path = Self.shortSocketPath("dory-writable-missing")
+        let server = ShimHTTPServer(socketPath: path) { request in
+            guard request.path == "/containers/json" else { return .empty(status: 404) }
+            return .json(Data(#"[{"Id":"stopped","Image":"busybox","State":"exited"}]"#.utf8))
+        }
+        try server.start()
+        defer { server.stop() }
+
+        await #expect(throws: RuntimeFeatureError.self) {
+            _ = try await DockerEngineRuntime(socketPath: path).migrationContainerWritableSizes()
+        }
     }
 
     private static func shortSocketPath(_ prefix: String) -> String {

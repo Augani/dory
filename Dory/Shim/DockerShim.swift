@@ -74,6 +74,27 @@ struct DockerShim: Sendable {
         // per-endpoint handlers, which keeps exec/attach/BuildKit bidirectional streams intact
         // without tunneling unrelated future requests on the same client connection.
 
+        // Network create/inspect carries driver, IPAM, internal/attachable/IPv6 flags, options,
+        // and static endpoint intent. Translating that rich contract into Dory's compact UI model
+        // silently discarded fields used by Compose and migration. A real Docker-backed runtime
+        // already implements these endpoints exactly, so keep them byte-for-byte transparent;
+        // mock/non-Docker runtimes retain the translated handlers below.
+        if runtime.supportsRawProxy, Self.isDockerNetworkRequest(method: method, path: path) {
+            guard let response = await runtime.proxyRequest(
+                method: method,
+                path: request.target,
+                headers: Self.proxyRequestHeaders(request),
+                body: request.body
+            ) else {
+                return errorResponse(502, "docker engine unavailable")
+            }
+            return ShimResponse(
+                status: response.statusCode,
+                headers: Self.proxyHeaders(response),
+                body: response.body
+            )
+        }
+
         switch (method, path) {
         case ("GET", "/_ping"), ("HEAD", "/_ping"):
             return ShimResponse(status: 200, headers: [
@@ -137,6 +158,12 @@ struct DockerShim: Sendable {
         default:
             return await routeParameterized(request, method: method, path: path)
         }
+    }
+
+    private static func isDockerNetworkRequest(method: String, path: String) -> Bool {
+        if path == "/networks" { return method == "GET" }
+        if path == "/networks/create" || path == "/networks/prune" { return method == "POST" }
+        return path.hasPrefix("/networks/") && (method == "GET" || method == "POST" || method == "DELETE")
     }
 
     private func routeParameterized(_ request: ParsedRequest, method: String, path: String) async -> ShimResponse {
@@ -340,6 +367,9 @@ struct DockerShim: Sendable {
         if normalizeSharedVMHostAliases(in: &hostConfig) {
             changed = true
         }
+        if normalizeSharedVMDockerSocketMounts(in: &hostConfig) {
+            changed = true
+        }
 
         var compatibilityError: String?
         if hasGPUDeviceRequest(hostConfig) {
@@ -375,6 +405,45 @@ struct DockerShim: Sendable {
             || host == "::1"
             || host == "0:0:0:0:0:0:0:1"
             || host.hasPrefix("127.")
+    }
+
+    private static func isDoryProxySocketPath(_ value: String) -> Bool {
+        value.hasSuffix("/.dory/dory.sock") || value.hasSuffix("/.dory/engine.sock")
+    }
+
+    private static func normalizeSharedVMDockerSocketMounts(in hostConfig: inout [String: Any]) -> Bool {
+        var changed = false
+        if var binds = hostConfig["Binds"] as? [Any] {
+            for index in binds.indices {
+                guard let raw = binds[index] as? String else { continue }
+                let parts = raw.split(separator: ":", omittingEmptySubsequences: false).map(String.init)
+                guard parts.count >= 2,
+                      parts[1] == "/var/run/docker.sock",
+                      isDoryProxySocketPath(parts[0]) else { continue }
+                let suffix = parts.count > 2 ? ":" + parts.dropFirst(2).joined(separator: ":") : ""
+                binds[index] = "/var/run/docker.sock:/var/run/docker.sock\(suffix)"
+                changed = true
+            }
+            if changed { hostConfig["Binds"] = binds }
+        }
+
+        if var mounts = hostConfig["Mounts"] as? [[String: Any]] {
+            var mountsChanged = false
+            for index in mounts.indices {
+                let target = (mounts[index]["Target"] ?? mounts[index]["Destination"]) as? String
+                guard mounts[index]["Type"] as? String == "bind",
+                      target == "/var/run/docker.sock",
+                      let source = mounts[index]["Source"] as? String,
+                      isDoryProxySocketPath(source) else { continue }
+                mounts[index]["Source"] = "/var/run/docker.sock"
+                mountsChanged = true
+            }
+            if mountsChanged {
+                hostConfig["Mounts"] = mounts
+                changed = true
+            }
+        }
+        return changed
     }
 
     private static func normalizeSharedVMHostAliases(in hostConfig: inout [String: Any]) -> Bool {
@@ -930,6 +999,11 @@ struct DockerShim: Sendable {
                     HostIp: mapping.hostIP ?? "0.0.0.0",
                     HostPort: String(hostPort)
                 ))
+            } else if mapping.hasHostBinding {
+                portMap[key, default: []].append(DockerHostBindingOut(
+                    HostIp: mapping.hostIP ?? "0.0.0.0",
+                    HostPort: ""
+                ))
             } else if portMap[key] == nil {
                 portMap[key] = []
             }
@@ -958,6 +1032,7 @@ struct DockerShim: Sendable {
             Config: DockerInspectConfigOut(
                 Hostname: container.hostname ?? "",
                 Domainname: container.domainname ?? "",
+                MacAddress: container.macAddress ?? "",
                 User: container.user ?? "",
                 AttachStdin: container.attachStdin ?? false,
                 AttachStdout: container.attachStdout ?? true,

@@ -2,6 +2,7 @@ import Foundation
 
 enum ComposeError: Error, Sendable, Equatable {
     case missingImage(service: String)
+    case missingExternalVolume(volume: String)
     case dependencyUnhealthy(service: String)
     case dependencyTimeout(service: String)
     case dependencyFailed(service: String)
@@ -31,11 +32,21 @@ final class ComposeEngine {
 
     @discardableResult
     func up(_ project: ComposeProject, pullImages: Bool = false, progress: (@MainActor (ComposeProgress) -> Void)? = nil) async throws -> [String: String] {
+        // Validate externally managed storage before creating even the default network. Compose
+        // must fail without partial project resources when an external volume is missing.
+        try await validateExternalVolumes(project)
         for network in projectNetworkKeys(project) {
             try await ensureProjectNetwork(name: networkName(project, network), labels: networkLabels(project, network: network))
         }
         for volume in project.volumes {
-            try await ensureProjectVolume(name: volumeName(project, volume), labels: volumeLabels(project, volume: volume))
+            let definition = volumeDefinition(project, volume)
+            guard !definition.external else { continue }
+            try await ensureProjectVolume(
+                name: resolvedVolumeName(project, volume),
+                driver: definition.driver,
+                labels: volumeLabels(project, volume: volume, definition: definition),
+                driverOptions: definition.driverOptions
+            )
         }
 
         var idByService: [String: String] = [:]
@@ -51,6 +62,13 @@ final class ComposeEngine {
             if pullImages {
                 progress?(ComposeProgress(service: serviceName, message: "Pulling \(image)"))
                 try await runtime.pull(image: image)
+                for mountImage in Set(service.mounts.compactMap { mount -> String? in
+                    guard mount.type == "image" else { return nil }
+                    return mount.source
+                }).sorted() {
+                    progress?(ComposeProgress(service: serviceName, message: "Pulling mount image \(mountImage)"))
+                    try await runtime.pull(image: mountImage)
+                }
             }
 
             progress?(ComposeProgress(service: serviceName, message: "Creating"))
@@ -70,11 +88,33 @@ final class ComposeEngine {
         }
     }
 
-    private func ensureProjectVolume(name: String, labels: [String: String]) async throws {
+    private func ensureProjectVolume(
+        name: String,
+        driver: String?,
+        labels: [String: String],
+        driverOptions: [String: String]
+    ) async throws {
         do {
-            try await runtime.createVolume(name: name, driver: nil, labels: labels, driverOptions: [:])
+            try await runtime.createVolume(
+                name: name,
+                driver: driver,
+                labels: labels,
+                driverOptions: driverOptions
+            )
         } catch {
             guard Self.isAlreadyExists(error) else { throw error }
+        }
+    }
+
+    private func validateExternalVolumes(_ project: ComposeProject) async throws {
+        let external = project.volumes.filter { volumeDefinition(project, $0).external }
+        guard !external.isEmpty else { return }
+        let existing = Set(try await runtime.snapshot().volumes.map(\.name))
+        for key in external {
+            let name = resolvedVolumeName(project, key)
+            guard existing.contains(name) else {
+                throw ComposeError.missingExternalVolume(volume: name)
+            }
         }
     }
 
@@ -93,6 +133,9 @@ final class ComposeEngine {
         let snapshot = try await runtime.snapshot()
         let prefix = "\(project.name)-"
         let projectContainers = snapshot.containers.filter { $0.name.hasPrefix(prefix) }
+        let attachedVolumeNames = Set(projectContainers.flatMap(\.mounts).compactMap { mount in
+            mount.type == "volume" ? mount.source : nil
+        })
         let order = (try? project.startOrder()) ?? []
         let ordered = Self.teardownOrder(containers: projectContainers, startOrder: order)
         for container in ordered {
@@ -104,7 +147,12 @@ final class ComposeEngine {
         }
         if removeVolumes {
             for volume in project.volumes {
-                try? await runtime.removeVolume(name: volumeName(project, volume))
+                guard !volumeDefinition(project, volume).external else { continue }
+                try? await runtime.removeVolume(name: resolvedVolumeName(project, volume))
+            }
+            let declaredNames = Set(project.volumes.map { resolvedVolumeName(project, $0) })
+            for anonymousVolume in attachedVolumeNames.subtracting(declaredNames).sorted() {
+                try? await runtime.removeVolume(name: anonymousVolume)
             }
         }
     }
@@ -131,6 +179,7 @@ final class ComposeEngine {
         ], uniquingKeysWith: { _, new in new })
         spec.networks = serviceNetworkKeys(service).map { networkName(project, $0) }
         spec.volumes = service.volumes.map { rewriteVolumeReference($0, in: project) }
+        spec.mounts = service.mounts.map { rewriteMountReference($0, in: project) }
         spec.restart = service.restart
         spec.memoryLimitBytes = service.memoryLimitBytes
         spec.hostname = service.hostname
@@ -141,7 +190,7 @@ final class ComposeEngine {
         spec.openStdin = service.stdinOpen
         spec.stopSignal = service.stopSignal
         spec.stopTimeout = stopTimeout
-        spec.networkMode = service.networkMode
+        spec.networkMode = namespaceMode(service.networkMode, in: project)
         spec.privileged = service.privileged
         spec.initProcessEnabled = service.initProcessEnabled
         spec.capAdd = service.capAdd
@@ -151,8 +200,8 @@ final class ComposeEngine {
         spec.dnsSearch = service.dnsSearch
         spec.extraHosts = service.extraHosts
         spec.groupAdd = service.groupAdd
-        spec.ipcMode = service.ipcMode
-        spec.pidMode = service.pidMode
+        spec.ipcMode = namespaceMode(service.ipcMode, in: project)
+        spec.pidMode = namespaceMode(service.pidMode, in: project)
         spec.usernsMode = service.usernsMode
         spec.readonlyRootfs = service.readOnly
         spec.shmSize = service.shmSize
@@ -181,15 +230,46 @@ final class ComposeEngine {
     private func networkLabels(_ project: ComposeProject, network: String) -> [String: String] {
         projectLabels(project).merging(["com.docker.compose.network": network], uniquingKeysWith: { _, new in new })
     }
-    private func volumeLabels(_ project: ComposeProject, volume: String) -> [String: String] {
-        projectLabels(project).merging(["com.docker.compose.volume": volume], uniquingKeysWith: { _, new in new })
+    private func volumeLabels(
+        _ project: ComposeProject,
+        volume: String,
+        definition: ComposeVolumeDefinition
+    ) -> [String: String] {
+        definition.labels.merging(
+            projectLabels(project).merging(
+                ["com.docker.compose.volume": volume],
+                uniquingKeysWith: { _, new in new }
+            ),
+            uniquingKeysWith: { _, reserved in reserved }
+        )
     }
 
     private func rewriteVolumeReference(_ reference: String, in project: ComposeProject) -> String {
         guard let separator = reference.firstIndex(of: ":") else { return reference }
         let source = String(reference[..<separator])
         guard project.volumes.contains(source) else { return reference }
-        return volumeName(project, source) + reference[separator...]
+        return resolvedVolumeName(project, source) + reference[separator...]
+    }
+
+    private func rewriteMountReference(_ mount: ContainerMount, in project: ComposeProject) -> ContainerMount {
+        guard mount.type.lowercased() == "volume",
+              let source = mount.source,
+              project.volumes.contains(source) else { return mount }
+        var rewritten = mount
+        rewritten.source = resolvedVolumeName(project, source)
+        return rewritten
+    }
+
+    private func volumeDefinition(_ project: ComposeProject, _ key: String) -> ComposeVolumeDefinition {
+        project.volumeDefinitions[key] ?? ComposeVolumeDefinition(key: key)
+    }
+
+    private func resolvedVolumeName(_ project: ComposeProject, _ key: String) -> String {
+        let definition = volumeDefinition(project, key)
+        if let name = definition.name?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty {
+            return name
+        }
+        return definition.external ? key : volumeName(project, key)
     }
 
     private func projectNetworkKeys(_ project: ComposeProject) -> [String] {
@@ -204,6 +284,16 @@ final class ComposeEngine {
     private func serviceNetworkKeys(_ service: ComposeService) -> [String] {
         if service.networkMode != nil { return [] }
         return service.networks.isEmpty ? ["default"] : service.networks
+    }
+
+    private func namespaceMode(_ mode: String?, in project: ComposeProject) -> String? {
+        guard let mode else { return nil }
+        let prefix = "service:"
+        guard mode.hasPrefix(prefix) else { return mode }
+        let service = String(mode.dropFirst(prefix.count))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !service.isEmpty else { return mode }
+        return "container:\(containerName(project, service))"
     }
 
     private func waitForCondition(_ dependency: ComposeDependency, project: ComposeProject, ids: [String: String]) async throws {

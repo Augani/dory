@@ -16,6 +16,41 @@ nonisolated struct ContainerMount: Sendable, Hashable {
     var source: String?
     var target: String
     var readOnly: Bool = false
+    var consistency: String? = nil
+    var bindOptions: DockerBindOptions? = nil
+    var volumeOptions: DockerVolumeOptions? = nil
+    var tmpfsOptions: DockerTmpfsOptions? = nil
+    var imageOptions: DockerImageOptions? = nil
+}
+
+nonisolated struct DockerBindOptions: Codable, Sendable, Hashable {
+    var Propagation: String? = nil
+    var NonRecursive: Bool? = nil
+    var CreateMountpoint: Bool? = nil
+    var ReadOnlyNonRecursive: Bool? = nil
+    var ReadOnlyForceRecursive: Bool? = nil
+}
+
+nonisolated struct DockerVolumeDriverConfig: Codable, Sendable, Hashable {
+    var Name: String? = nil
+    var Options: [String: String]? = nil
+}
+
+nonisolated struct DockerVolumeOptions: Codable, Sendable, Hashable {
+    var NoCopy: Bool? = nil
+    var Labels: [String: String]? = nil
+    var Subpath: String? = nil
+    var DriverConfig: DockerVolumeDriverConfig? = nil
+}
+
+nonisolated struct DockerTmpfsOptions: Codable, Sendable, Hashable {
+    var SizeBytes: Int64? = nil
+    var Mode: Int? = nil
+    var Options: [[String]]? = nil
+}
+
+nonisolated struct DockerImageOptions: Codable, Sendable, Hashable {
+    var Subpath: String? = nil
 }
 
 enum RuntimeKind: String, Sendable {
@@ -57,6 +92,7 @@ struct ContainerSpec: Sendable {
     var volumeTargets: [String] = []
     var hostname: String? = nil
     var domainname: String? = nil
+    var macAddress: String? = nil
     var user: String? = nil
     var workingDir: String? = nil
     var entrypoint: [String] = []
@@ -208,7 +244,17 @@ enum RuntimeFeatureError: Error, Sendable, Equatable, CustomStringConvertible {
 
 protocol ContainerRuntime: Sendable {
     var kind: RuntimeKind { get }
+    /// Stable identity for resumable migration ownership. `kind` alone is not enough because
+    /// OrbStack, Docker Desktop, Colima, and arbitrary sockets are all Docker runtimes.
+    var migrationSourceIdentifier: String { get }
     func snapshot() async throws -> RuntimeSnapshot
+    /// Migration cannot treat a failed images/volumes/networks endpoint as an empty inventory.
+    /// Interactive tables may remain partially available, but this read must be all-or-nothing.
+    func migrationSnapshot() async throws -> RuntimeSnapshot
+    /// Exact writable-layer bytes by container ID. Migration snapshots non-empty layers so files
+    /// created outside named volumes are not silently lost. Created containers may report no size
+    /// and are normalized to zero by Docker backends; every other omission fails closed.
+    func migrationContainerWritableSizes() async throws -> [String: Int64]
     func start(containerID: String) async throws
     func stop(containerID: String) async throws
     func restart(containerID: String) async throws
@@ -253,13 +299,27 @@ protocol ContainerRuntime: Sendable {
     func copyIn(containerID: String, path: String, archive: Data) async -> Bool
     func copyOutStream(containerID: String, path: String) -> AsyncThrowingStream<Data, Error>
     func copyIn(containerID: String, path: String, archiveStream: AsyncThrowingStream<Data, Error>) async -> Bool
+    func copyInThrowing(
+        containerID: String,
+        path: String,
+        archiveStream: AsyncThrowingStream<Data, Error>
+    ) async throws
     func build(contextTar: Data, query: String, registryHeaders: [(name: String, value: String)]) -> AsyncStream<Data>
     func commit(containerID: String, repo: String, tag: String, labels: [String: String]) async throws -> String
+    func commit(
+        containerID: String,
+        repo: String,
+        tag: String,
+        labels: [String: String],
+        pause: Bool
+    ) async throws -> String
     var supportsImageArchiveTransfer: Bool { get }
     func saveImage(reference: String) -> AsyncStream<Data>
+    func saveImageThrowing(reference: String) -> AsyncThrowingStream<Data, Error>
     func saveImages(references: [String]) async throws -> AsyncStream<Data>
     func loadImage(tar: Data) async throws
     func loadImage(stream: AsyncStream<Data>) async throws
+    func loadImageThrowing(stream: AsyncThrowingStream<Data, Error>) async throws
 
     // Raw passthrough for hijack/bidirectional endpoints (interactive exec, attach) — supported by
     // backends that front a Docker-compatible socket. Default: unsupported.
@@ -269,6 +329,12 @@ protocol ContainerRuntime: Sendable {
 }
 
 extension ContainerRuntime {
+    var migrationSourceIdentifier: String { kind.rawValue }
+    func migrationSnapshot() async throws -> RuntimeSnapshot { try await snapshot() }
+    func migrationContainerWritableSizes() async throws -> [String: Int64] {
+        let snapshot = try await migrationSnapshot()
+        return Dictionary(uniqueKeysWithValues: snapshot.containers.map { ($0.id, 0) })
+    }
     func pull(image: String, registryAuth: String?) async throws {}
     func pull(image: String) async throws { try await pull(image: image, registryAuth: nil) }
     func kill(containerID: String, signal: String?) async throws {
@@ -345,11 +411,39 @@ extension ContainerRuntime {
         }
         return await copyIn(containerID: containerID, path: path, archive: archive)
     }
+    func copyInThrowing(
+        containerID: String,
+        path: String,
+        archiveStream: AsyncThrowingStream<Data, Error>
+    ) async throws {
+        guard await copyIn(containerID: containerID, path: path, archiveStream: archiveStream) else {
+            throw RuntimeFeatureError.unsupported("volume archive copy failed")
+        }
+    }
     func build(contextTar: Data, query: String, registryHeaders: [(name: String, value: String)]) -> AsyncStream<Data> { AsyncStream { $0.finish() } }
     func build(contextTar: Data, query: String) -> AsyncStream<Data> { build(contextTar: contextTar, query: query, registryHeaders: []) }
     func commit(containerID: String, repo: String, tag: String, labels: [String: String]) async throws -> String { "" }
+    func commit(
+        containerID: String,
+        repo: String,
+        tag: String,
+        labels: [String: String],
+        pause: Bool
+    ) async throws -> String {
+        try await commit(containerID: containerID, repo: repo, tag: tag, labels: labels)
+    }
     var supportsImageArchiveTransfer: Bool { false }
     func saveImage(reference: String) -> AsyncStream<Data> { AsyncStream { $0.finish() } }
+    func saveImageThrowing(reference: String) -> AsyncThrowingStream<Data, Error> {
+        let stream = saveImage(reference: reference)
+        return AsyncThrowingStream { continuation in
+            let task = Task {
+                for await chunk in stream { continuation.yield(chunk) }
+                continuation.finish()
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
     func saveImages(references: [String]) async throws -> AsyncStream<Data> {
         guard references.count == 1, let reference = references.first else {
             throw RuntimeFeatureError.unsupported("multi-image save is not supported by \(kind.displayName)")
@@ -366,6 +460,15 @@ extension ContainerRuntime {
         }
         guard sawBytes else { throw HTTPError.connectionClosed }
         try await loadImage(tar: archive)
+    }
+    func loadImageThrowing(stream: AsyncThrowingStream<Data, Error>) async throws {
+        var chunks: [Data] = []
+        for try await chunk in stream { chunks.append(chunk) }
+        let replay = AsyncStream<Data> { continuation in
+            for chunk in chunks { continuation.yield(chunk) }
+            continuation.finish()
+        }
+        try await loadImage(stream: replay)
     }
     var supportsRawProxy: Bool { false }
     func proxyRequest(method: String, path: String, headers: [(name: String, value: String)], body: Data) async -> HTTPResponse? { nil }
@@ -396,8 +499,15 @@ struct DisconnectedRuntime: ContainerRuntime {
 }
 
 enum DockerImageOps {
-    nonisolated static func commitPath(container: String, repo: String, tag: String) -> String {
-        "/commit?container=\(queryValue(container))&repo=\(queryValue(repo))&tag=\(queryValue(tag))"
+    nonisolated static func commitPath(
+        container: String,
+        repo: String,
+        tag: String,
+        pause: Bool? = nil
+    ) -> String {
+        var path = "/commit?container=\(queryValue(container))&repo=\(queryValue(repo))&tag=\(queryValue(tag))"
+        if let pause { path += "&pause=\(pause ? 1 : 0)" }
+        return path
     }
 
     nonisolated static func tagPath(source: String, repo: String, tag: String) -> String {

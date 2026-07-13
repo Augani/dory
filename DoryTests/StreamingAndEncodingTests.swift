@@ -52,7 +52,7 @@ struct StreamingAndEncodingTests {
             name: "web",
             image: "nginx:alpine",
             environment: ["A": "b"],
-            ports: ["127.0.0.1:8080:80", "5353:53/udp", "443", "[::1]:9443:8443"],
+            ports: ["127.0.0.1:8080:80", "127.0.0.2:8081:80", "5353:53/udp", "443", "[::1]:9443:8443"],
             labels: ["x": "y"],
             volumes: ["/Users/me/app:/workspace:ro", "/cache"],
             nanoCPUs: 2_000_000_000,
@@ -62,6 +62,7 @@ struct StreamingAndEncodingTests {
                 ContainerMount(type: "volume", source: "tool-cache", target: "/tool-cache"),
             ],
             hostname: "web-host",
+            macAddress: "02:42:ac:11:00:0a",
             user: "1000:1000",
             workingDir: "/workspace",
             entrypoint: ["/bin/sh", "-lc"],
@@ -125,6 +126,7 @@ struct StreamingAndEncodingTests {
         let json = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
         #expect(json["Image"] as? String == "nginx:alpine")
         #expect(json["Hostname"] as? String == "web-host")
+        #expect(json["MacAddress"] as? String == "02:42:ac:11:00:0a")
         #expect(json["User"] as? String == "1000:1000")
         #expect(json["AttachStdin"] as? Bool == true)
         #expect(json["AttachStdout"] as? Bool == true)
@@ -151,6 +153,9 @@ struct StreamingAndEncodingTests {
         let portMaps = bindings?["80/tcp"] as? [[String: Any]]
         #expect(portMaps?.first?["HostPort"] as? String == "8080")
         #expect(portMaps?.first?["HostIp"] as? String == "127.0.0.1")
+        #expect(portMaps?.count == 2)
+        #expect(portMaps?.last?["HostPort"] as? String == "8081")
+        #expect(portMaps?.last?["HostIp"] as? String == "127.0.0.2")
         let udpMaps = bindings?["53/udp"] as? [[String: Any]]
         #expect(udpMaps?.first?["HostPort"] as? String == "5353")
         let ipv6Maps = bindings?["8443/tcp"] as? [[String: Any]]
@@ -210,6 +215,81 @@ struct StreamingAndEncodingTests {
         let ulimits = hostConfig?["Ulimits"] as? [[String: Any]]
         #expect(ulimits?.first?["Name"] as? String == "nofile")
         #expect((ulimits?.first?["Hard"] as? NSNumber)?.int64Value == 2_048)
+    }
+
+    @Test func createBodyDoesNotDeclareMountedTargetsTwice() throws {
+        let spec = ContainerSpec(
+            name: "database",
+            image: "postgres:17",
+            volumes: ["/Users/me/config:/etc/database:ro", "/cache"],
+            mounts: [
+                ContainerMount(type: "volume", source: "database-data", target: "/var/lib/postgresql/data"),
+                ContainerMount(type: "bind", source: "/Users/me/config", target: "/etc/database", readOnly: true),
+            ],
+            volumeTargets: ["/var/lib/postgresql/data", "/etc/database", "/cache"]
+        )
+
+        let data = try JSONEncoder().encode(DockerCreateBody(spec: spec))
+        let json = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let volumes = try #require(json["Volumes"] as? [String: Any])
+        let hostConfig = try #require(json["HostConfig"] as? [String: Any])
+        let mounts = try #require(hostConfig["Mounts"] as? [[String: Any]])
+
+        #expect(Set(volumes.keys) == ["/cache"])
+        #expect(hostConfig["Binds"] == nil)
+        #expect(mounts.compactMap { $0["Target"] as? String } == [
+            "/var/lib/postgresql/data",
+            "/etc/database",
+        ])
+    }
+
+    @Test func inspectStyleNamedMountUsesPortableVolumeNameNotDaemonPath() throws {
+        let data = Data(#"""
+        {
+          "Type": "volume",
+          "Name": "database-data",
+          "Source": "/var/lib/docker/volumes/database-data/_data",
+          "Destination": "/var/lib/postgresql/data",
+          "RW": true
+        }
+        """#.utf8)
+        let mount = try JSONDecoder().decode(DockerInboundMount.self, from: data).containerMount
+        #expect(mount == ContainerMount(
+            type: "volume",
+            source: "database-data",
+            target: "/var/lib/postgresql/data"
+        ))
+    }
+
+    @Test func advancedMountContractRoundTripsFromInspectToCreate() throws {
+        let data = Data(#"""
+        {
+          "Type":"tmpfs",
+          "Target":"/scratch",
+          "ReadOnly":true,
+          "Consistency":"delegated",
+          "TmpfsOptions":{"SizeBytes":67108864,"Mode":504,"Options":[["noexec"],["uid","1000"]]}
+        }
+        """#.utf8)
+        let mount = try #require(try JSONDecoder().decode(DockerInboundMount.self, from: data).containerMount)
+        let body = try JSONEncoder().encode(DockerCreateBody(spec: ContainerSpec(
+            name: "advanced-mount",
+            image: "alpine:3.20",
+            mounts: [mount]
+        )))
+        let root = try #require(try JSONSerialization.jsonObject(with: body) as? [String: Any])
+        let hostConfig = try #require(root["HostConfig"] as? [String: Any])
+        let mounts = try #require(hostConfig["Mounts"] as? [[String: Any]])
+        let encoded = try #require(mounts.first)
+        let tmpfs = try #require(encoded["TmpfsOptions"] as? [String: Any])
+
+        #expect(encoded["Type"] as? String == "tmpfs")
+        #expect(encoded["Target"] as? String == "/scratch")
+        #expect(encoded["ReadOnly"] as? Bool == true)
+        #expect(encoded["Consistency"] as? String == "delegated")
+        #expect((tmpfs["SizeBytes"] as? NSNumber)?.int64Value == 67_108_864)
+        #expect(tmpfs["Mode"] as? Int == 504)
+        #expect(tmpfs["Options"] as? [[String]] == [["noexec"], ["uid", "1000"]])
     }
 
     @Test func serializeResponseRoundTrips() throws {
@@ -301,16 +381,30 @@ struct StreamingAndEncodingTests {
         ])
     }
 
-    @Test func chunkedStreamDecoderStripsFraming() {
+    @Test func chunkedStreamDecoderStripsFraming() throws {
         let decoder = ChunkedStreamDecoder()
         #expect(String(data: decoder.feed(Data("5\r\nhello\r\n".utf8)), encoding: .utf8) == "hello")
         #expect(String(data: decoder.feed(Data("6\r\n world\r\n0\r\n\r\n".utf8)), encoding: .utf8) == " world")
+        #expect(decoder.completed)
+        try decoder.validateComplete()
     }
 
-    @Test func chunkedStreamDecoderWaitsForFullChunk() {
+    @Test func chunkedStreamDecoderStreamsPartialPayloadWithoutBufferingTheDeclaredChunk() {
         let decoder = ChunkedStreamDecoder()
-        #expect(decoder.feed(Data("5\r\nhel".utf8)).isEmpty) // partial chunk -> nothing yet
-        #expect(String(data: decoder.feed(Data("lo\r\n".utf8)), encoding: .utf8) == "hello")
+        #expect(String(data: decoder.feed(Data("5\r\nhel".utf8)), encoding: .utf8) == "hel")
+        #expect(String(data: decoder.feed(Data("lo\r\n".utf8)), encoding: .utf8) == "lo")
+    }
+
+    @Test func chunkedStreamDecoderRejectsTruncatedAndMalformedCompletion() {
+        let truncated = ChunkedStreamDecoder()
+        #expect(String(data: truncated.feed(Data("5\r\nhello\r\n".utf8)), encoding: .utf8) == "hello")
+        #expect(throws: HTTPError.incomplete) { try truncated.validateComplete() }
+
+        let malformed = ChunkedStreamDecoder()
+        // Payload can be forwarded before the invalid terminator arrives; completion still throws,
+        // so the downstream chunked request omits its final frame and cannot commit the archive.
+        #expect(String(data: malformed.feed(Data("5\r\nhelloXX".utf8)), encoding: .utf8) == "hello")
+        #expect(throws: HTTPError.malformedChunk) { try malformed.validateComplete() }
     }
 
     @Test func parsesChunkedRequestBody() throws {

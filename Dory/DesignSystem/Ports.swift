@@ -13,16 +13,26 @@ nonisolated struct ContainerPortMapping: Equatable, Sendable {
     var hostPort: Int?
     var containerPort: Int
     var proto: String
+    /// `true` when Docker has a HostConfig.PortBindings entry even if HostPort is empty and the
+    /// daemon has not assigned the requested ephemeral host port yet.
+    var hasHostBinding: Bool = false
 
     var dockerDisplay: String {
         let target = "\(containerPort)/\(proto)"
-        guard let hostPort else { return target }
+        guard let hostPort else {
+            guard hasHostBinding else { return target }
+            return "\((hostIP?.isEmpty == false ? hostIP : nil) ?? "0.0.0.0"):->\(target)"
+        }
         return "\((hostIP?.isEmpty == false ? hostIP : nil) ?? "0.0.0.0"):\(hostPort)->\(target)"
     }
 
     var containerSpec: String {
         let target = proto == "tcp" ? "\(containerPort)" : "\(containerPort)/\(proto)"
-        guard let hostPort else { return target }
+        guard let hostPort else {
+            guard hasHostBinding else { return target }
+            if let hostIP, !hostIP.isEmpty { return "\(hostIP)::\(target)" }
+            return ":\(target)"
+        }
         if let hostIP, !hostIP.isEmpty { return "\(hostIP):\(hostPort):\(target)" }
         return "\(hostPort):\(target)"
     }
@@ -34,12 +44,19 @@ nonisolated enum ContainerPortDisplay {
         return raw.split(separator: ",").compactMap { parseOne($0.trimmingCharacters(in: .whitespaces)) }
     }
 
-    static func dockerDisplay(hostIP: String? = nil, hostPort: Int?, containerPort: Int, proto: String? = nil) -> String {
+    static func dockerDisplay(
+        hostIP: String? = nil,
+        hostPort: Int?,
+        containerPort: Int,
+        proto: String? = nil,
+        hasHostBinding: Bool? = nil
+    ) -> String {
         ContainerPortMapping(
             hostIP: hostIP,
             hostPort: hostPort,
             containerPort: containerPort,
-            proto: normalizedProto(proto)
+            proto: normalizedProto(proto),
+            hasHostBinding: hasHostBinding ?? (hostPort != nil || hostIP?.isEmpty == false)
         ).dockerDisplay
     }
 
@@ -50,12 +67,12 @@ nonisolated enum ContainerPortDisplay {
             let right = String(part[range.upperBound...])
             guard let target = targetPort(right) else { return nil }
             let host = hostEndpoint(left)
-            guard let hostPort = host.port else { return nil }
             return ContainerPortMapping(
                 hostIP: host.ip,
-                hostPort: hostPort,
+                hostPort: host.port,
                 containerPort: target.port,
-                proto: target.proto
+                proto: target.proto,
+                hasHostBinding: true
             )
         }
         guard let target = targetPort(part) else { return nil }

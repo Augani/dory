@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 enum DockerFormat {
     nonisolated static func bytes(_ value: Int64?) -> String {
@@ -328,9 +329,11 @@ enum DockerEngineSourceActivator {
             return runtime
         }
 
+        guard !Task.isCancelled else { return nil }
         await start(source)
         let deadline = Date().addingTimeInterval(waitTimeout)
         while Date() < deadline {
+            guard !Task.isCancelled else { return nil }
             if let runtime = await detect(source: source, probeTimeout: probeTimeout) {
                 return runtime
             }
@@ -420,16 +423,51 @@ struct DockerEngineRuntime: ContainerRuntime {
     let kind: RuntimeKind
     let socketPath: String
     let displayName: String
+    let operationIdleTimeout: TimeInterval?
 
-    nonisolated init(socketPath: String, kind: RuntimeKind = .docker, displayName: String? = nil) {
+    nonisolated init(
+        socketPath: String,
+        kind: RuntimeKind = .docker,
+        displayName: String? = nil,
+        operationIdleTimeout: TimeInterval? = nil
+    ) {
         self.socketPath = socketPath
         self.kind = kind
         self.displayName = displayName ?? (kind == .docker
             ? DockerEngineSocketDiscovery.engineLabel(for: socketPath, home: NSHomeDirectory())
             : kind.displayName)
+        self.operationIdleTimeout = operationIdleTimeout
     }
 
-    private var http: UnixSocketHTTP { UnixSocketHTTP(path: socketPath) }
+    var migrationSourceIdentifier: String {
+        // Ownership authorizes replacement of same-source partial objects, so use a
+        // collision-resistant digest rather than a short non-cryptographic hash. The socket path
+        // distinguishes local Docker-compatible sources without exposing the user's home path in
+        // every migrated object's labels.
+        let digest = SHA256.hash(data: Data("\(kind.rawValue)\u{0}\(socketPath)".utf8))
+        let encoded = digest.map { String(format: "%02x", $0) }.joined()
+        // The display label is intentionally excluded: it is localized/user-facing and may change
+        // across releases. Ownership must remain stable for the same socket so partial imports can
+        // resume after an app update.
+        return "\(kind.rawValue):\(encoded)"
+    }
+
+    func withOperationIdleTimeout(_ timeout: TimeInterval?) -> DockerEngineRuntime {
+        DockerEngineRuntime(
+            socketPath: socketPath,
+            kind: kind,
+            displayName: displayName,
+            operationIdleTimeout: timeout
+        )
+    }
+
+    private var http: UnixSocketHTTP {
+        UnixSocketHTTP(
+            path: socketPath,
+            readChunk: operationIdleTimeout == nil ? 64 * 1024 : 1024 * 1024,
+            ioTimeout: operationIdleTimeout
+        )
+    }
     private var decoder: JSONDecoder { JSONDecoder() }
     private nonisolated static let detectionProbeTimeout: TimeInterval = 0.75
     private nonisolated static let statsProbeTimeout: TimeInterval = 2.5
@@ -490,7 +528,7 @@ struct DockerEngineRuntime: ContainerRuntime {
     }
 
     private func get<T: Decodable>(_ path: String, as type: T.Type, ioTimeout: TimeInterval? = nil) async throws -> T {
-        let client = UnixSocketHTTP(path: socketPath, ioTimeout: ioTimeout)
+        let client = UnixSocketHTTP(path: socketPath, ioTimeout: ioTimeout ?? operationIdleTimeout)
         let response = try await client.send(HTTPRequest(method: "GET", path: path, headers: [(name: "Accept", value: "application/json")]))
         guard response.isSuccess else {
             throw HTTPError.status(code: response.statusCode, message: String(data: response.body, encoding: .utf8) ?? "")
@@ -526,6 +564,59 @@ struct DockerEngineRuntime: ContainerRuntime {
             pods: [], machines: [],
             engineRunning: true, engineVersion: version?.version ?? "docker"
         )
+    }
+
+    /// Fail closed for migration inventory. The normal dashboard deliberately tolerates optional
+    /// table failures, but silently translating a timed-out `/volumes` or `/networks` request into
+    /// an empty array would produce an image-only partial import and misleading success report.
+    func migrationSnapshot() async throws -> RuntimeSnapshot {
+        async let containersRaw = get("/containers/json?all=1", as: [DockerContainerSummary].self)
+        async let imagesRaw = get("/images/json", as: [DockerImageSummary].self)
+        async let volumesRaw = get("/volumes", as: DockerVolumeList.self)
+        async let networksRaw = get("/networks", as: [DockerNetwork].self)
+        async let versionRaw = get("/version", as: DockerVersion.self)
+
+        let summaries = try await containersRaw
+        let imageSummaries = try await imagesRaw
+        let volumeList = try await volumesRaw
+        let networkSummaries = try await networksRaw
+        let version = try await versionRaw
+        let stats = await statsByID(for: summaries.filter { $0.state == "running" })
+        let containers = summaries.map { map($0, stats: stats[$0.id]) }
+        let images = imageSummaries.compactMap(mapImage)
+        let volumes = volumeList.volumes?.map(mapVolume) ?? []
+        let networks = networkSummaries.map(mapNetwork)
+
+        return RuntimeSnapshot(
+            containers: containers,
+            images: images,
+            volumes: volumes,
+            networks: networks,
+            pods: [],
+            machines: [],
+            engineRunning: true,
+            engineVersion: version.version ?? "docker"
+        )
+    }
+
+    func migrationContainerWritableSizes() async throws -> [String: Int64] {
+        let summaries = try await get(
+            "/containers/json?all=1&size=1",
+            as: [DockerContainerSummary].self
+        )
+        var result: [String: Int64] = [:]
+        for summary in summaries {
+            if let size = summary.sizeRw, size >= 0 {
+                result[summary.id] = size
+            } else if (summary.state ?? "").lowercased() == "created" {
+                result[summary.id] = 0
+            } else {
+                throw RuntimeFeatureError.unsupported(
+                    "Docker did not report writable-layer size for container \(summary.id)"
+                )
+            }
+        }
+        return result
     }
 
     func sampleCPU(containerID: String) async -> Double? {
@@ -588,12 +679,18 @@ struct DockerEngineRuntime: ContainerRuntime {
 
     private func map(_ summary: DockerContainerSummary, stats: DockerStats?) -> Container {
         let name = summary.names?.first.map { String($0.drop(while: { $0 == "/" })) } ?? summary.id.prefix(12).description
-        let status: RunState = summary.state == "running" ? .running : (summary.state == "paused" ? .paused : .stopped)
+        let normalizedState = (summary.state ?? "").lowercased()
+        let status: RunState = ["running", "restarting"].contains(normalizedState)
+            ? .running
+            : (normalizedState == "paused" ? .paused : .stopped)
         let endpointSettings = summary.networkSettings?.networks ?? [:]
         let ip = endpointSettings.values.compactMap(\.IPAddress).first(where: { !$0.isEmpty }) ?? "—"
         let networks = summary.networkSettings?.networks?.keys.sorted() ?? []
         let mounts = summary.mounts?.compactMap(\.containerMount) ?? []
-        let volumeTargets = mounts.map(\.target)
+        // Every list-endpoint mount is already a concrete bind/volume/tmpfs mount. Treating those
+        // destinations as image-declared anonymous volumes duplicates them during recreate; exact
+        // Config.Volumes are recovered from inspect when migration needs them.
+        let volumeTargets: [String] = []
         let memUsage = stats?.memoryStats?.usage
         let memLimit = stats?.memoryStats?.limit
         let fraction = (memUsage.flatMap { u in memLimit.map { l in l > 0 ? Double(u) / Double(l) : 0 } }) ?? 0
@@ -621,12 +718,14 @@ struct DockerEngineRuntime: ContainerRuntime {
             volumeTargets: volumeTargets,
             networks: networks,
             networkEndpointSettings: endpointSettings,
+            sourceImageID: summary.imageID,
             exitCode: DockerFormat.exitCode(from: summary.status)
         )
     }
 
     private func mapImage(_ summary: DockerImageSummary) -> DockerImage? {
-        let tag = summary.repoTags?.first(where: { $0 != "<none>:<none>" })
+        let tags = summary.repoTags?.filter { $0 != "<none>:<none>" } ?? []
+        let tag = tags.first
         let repository: String
         let tagValue: String
         if let tag, let colon = tag.lastIndex(of: ":") {
@@ -636,12 +735,15 @@ struct DockerEngineRuntime: ContainerRuntime {
             repository = tag ?? "<none>"
             tagValue = "<none>"
         }
-        let id = summary.id.replacingOccurrences(of: "sha256:", with: "").prefix(12)
-        return DockerImage(repository: repository, tag: tagValue, imageID: String(id),
+        // Keep the complete content digest for collision-safe migration/retry decisions. The table
+        // clips it visually, but copy/inspect/delete operations must not authorize by a 48-bit
+        // display abbreviation.
+        return DockerImage(repository: repository, tag: tagValue, imageID: summary.id,
                            size: DockerFormat.bytes(summary.size), created: DockerFormat.relative(unix: summary.created),
                            usedByCount: summary.containers.flatMap { $0 > 0 ? $0 : 0 } ?? 0,
                            sizeBytes: summary.size ?? 0, createdEpoch: summary.created ?? 0,
-                           labels: summary.labels ?? [:])
+                           labels: summary.labels ?? [:],
+                           additionalReferences: Array(tags.dropFirst()))
     }
 
     private func mapVolume(_ volume: DockerVolume) -> Volume {
@@ -819,8 +921,40 @@ struct DockerEngineRuntime: ContainerRuntime {
     }
 
     func commit(containerID: String, repo: String, tag: String, labels: [String: String]) async throws -> String {
+        try await performCommit(
+            containerID: containerID,
+            repo: repo,
+            tag: tag,
+            labels: labels,
+            pause: nil
+        )
+    }
+
+    func commit(
+        containerID: String,
+        repo: String,
+        tag: String,
+        labels: [String: String],
+        pause: Bool
+    ) async throws -> String {
+        try await performCommit(
+            containerID: containerID,
+            repo: repo,
+            tag: tag,
+            labels: labels,
+            pause: pause
+        )
+    }
+
+    private func performCommit(
+        containerID: String,
+        repo: String,
+        tag: String,
+        labels: [String: String],
+        pause: Bool?
+    ) async throws -> String {
         let body = try JSONSerialization.data(withJSONObject: ["Labels": labels])
-        let path = DockerImageOps.commitPath(container: containerID, repo: repo, tag: tag)
+        let path = DockerImageOps.commitPath(container: containerID, repo: repo, tag: tag, pause: pause)
         let response = try await http.send(HTTPRequest(method: "POST", path: path,
             headers: [(name: "Content-Type", value: "application/json")], body: body))
         guard response.isSuccess else {
@@ -840,6 +974,12 @@ struct DockerEngineRuntime: ContainerRuntime {
             let handle = client.stream(request, onChunk: { continuation.yield($0) }, onComplete: { continuation.finish() })
             continuation.onTermination = { _ in handle.close() }
         }
+    }
+
+    func saveImageThrowing(reference: String) -> AsyncThrowingStream<Data, Error> {
+        let encoded = DockerImageOps.pathComponent(reference)
+        let request = HTTPRequest(method: "GET", path: "/images/\(encoded)/get")
+        return http.successfulBodyStream(request)
     }
 
     func saveImages(references: [String]) async throws -> AsyncStream<Data> {
@@ -868,6 +1008,17 @@ struct DockerEngineRuntime: ContainerRuntime {
     func loadImage(stream: AsyncStream<Data>) async throws {
         let response = try await http.sendChunked(HTTPRequest(method: "POST", path: "/images/load",
             headers: [(name: "Content-Type", value: "application/x-tar")]), body: stream)
+        guard response.isSuccess else {
+            throw HTTPError.status(code: response.statusCode, message: String(decoding: response.body, as: UTF8.self))
+        }
+    }
+
+    func loadImageThrowing(stream: AsyncThrowingStream<Data, Error>) async throws {
+        let response = try await http.sendChunked(HTTPRequest(
+            method: "POST",
+            path: "/images/load",
+            headers: [(name: "Content-Type", value: "application/x-tar")]
+        ), body: stream)
         guard response.isSuccess else {
             throw HTTPError.status(code: response.statusCode, message: String(decoding: response.body, as: UTF8.self))
         }
@@ -965,40 +1116,34 @@ struct DockerEngineRuntime: ContainerRuntime {
     func copyOutStream(containerID: String, path: String) -> AsyncThrowingStream<Data, Error> {
         let encoded = DockerImageOps.queryValue(path)
         let request = HTTPRequest(method: "GET", path: "/containers/\(DockerImageOps.pathComponent(containerID))/archive?path=\(encoded)")
-        let client = http
-        return AsyncThrowingStream { continuation in
-            let handle = client.streamSuccessful(request, onChunk: { chunk in
-                if !chunk.isEmpty { continuation.yield(chunk) }
-            }, onComplete: { result in
-                switch result {
-                case .success: continuation.finish()
-                case .failure(let error): continuation.finish(throwing: error)
-                }
-            })
-            continuation.onTermination = { _ in handle.close() }
-        }
+        return http.successfulBodyStream(request)
     }
 
     func copyIn(containerID: String, path: String, archiveStream: AsyncThrowingStream<Data, Error>) async -> Bool {
+        (try? await copyInThrowing(
+            containerID: containerID,
+            path: path,
+            archiveStream: archiveStream
+        )) != nil
+    }
+
+    func copyInThrowing(
+        containerID: String,
+        path: String,
+        archiveStream: AsyncThrowingStream<Data, Error>
+    ) async throws {
         let encoded = DockerImageOps.queryValue(path)
-        let body = AsyncStream<Data> { continuation in
-            Task {
-                do {
-                    for try await chunk in archiveStream where !chunk.isEmpty {
-                        continuation.yield(chunk)
-                    }
-                } catch {
-                    // The chunked request will fail server-side if the archive stream ended mid-tar.
-                }
-                continuation.finish()
-            }
-        }
-        let response = try? await http.sendChunked(HTTPRequest(
+        let response = try await http.sendChunked(HTTPRequest(
             method: "PUT",
             path: "/containers/\(DockerImageOps.pathComponent(containerID))/archive?path=\(encoded)",
             headers: [(name: "Content-Type", value: "application/x-tar")]
-        ), body: body)
-        return response?.isSuccess ?? false
+        ), body: archiveStream)
+        guard response.isSuccess else {
+            throw HTTPError.status(
+                code: response.statusCode,
+                message: String(decoding: response.body, as: UTF8.self)
+            )
+        }
     }
 
     func containerExitCode(_ id: String) async -> Int? {

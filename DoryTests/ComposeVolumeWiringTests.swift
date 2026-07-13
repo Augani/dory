@@ -42,6 +42,7 @@ struct ComposeVolumeWiringTests {
               - other:/mnt/other
         volumes:
           data: {}
+          other: {}
         """)
 
         _ = try await engine.up(project)
@@ -51,7 +52,7 @@ struct ComposeVolumeWiringTests {
             "demo_data:/var/lib/data",
             "./html:/usr/share/nginx/html",
             "/cache",
-            "other:/mnt/other",
+            "demo_other:/mnt/other",
         ])
     }
 

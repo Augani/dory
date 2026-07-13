@@ -51,6 +51,31 @@ struct ComposeLogging: Sendable, Equatable {
     }
 }
 
+struct ComposeVolumeDefinition: Sendable, Equatable {
+    var key: String
+    var name: String?
+    var external: Bool
+    var driver: String?
+    var driverOptions: [String: String]
+    var labels: [String: String]
+
+    init(
+        key: String,
+        name: String? = nil,
+        external: Bool = false,
+        driver: String? = nil,
+        driverOptions: [String: String] = [:],
+        labels: [String: String] = [:]
+    ) {
+        self.key = key
+        self.name = name
+        self.external = external
+        self.driver = driver
+        self.driverOptions = driverOptions
+        self.labels = labels
+    }
+}
+
 struct ComposeService: Sendable, Equatable {
     var name: String
     var image: String?
@@ -60,6 +85,7 @@ struct ComposeService: Sendable, Equatable {
     var environment: [String: String]
     var ports: [String]
     var volumes: [String]
+    var mounts: [ContainerMount]
     var networks: [String]
     var dependsOn: [ComposeDependency]
     var restart: String?
@@ -116,6 +142,7 @@ struct ComposeService: Sendable, Equatable {
         environment: [String: String] = [:],
         ports: [String] = [],
         volumes: [String] = [],
+        mounts: [ContainerMount] = [],
         networks: [String] = [],
         dependsOn: [ComposeDependency] = [],
         restart: String? = nil,
@@ -171,6 +198,7 @@ struct ComposeService: Sendable, Equatable {
         self.environment = environment
         self.ports = ports
         self.volumes = volumes
+        self.mounts = mounts
         self.networks = networks
         self.dependsOn = dependsOn
         self.restart = restart
@@ -225,6 +253,7 @@ struct ComposeProject: Sendable, Equatable {
     var services: [ComposeService]
     var networks: [String]
     var volumes: [String]
+    var volumeDefinitions: [String: ComposeVolumeDefinition] = [:]
 
     func service(named name: String) -> ComposeService? { services.first { $0.name == name } }
 
@@ -241,16 +270,24 @@ enum ComposeParser {
         _ text: String,
         projectName: String,
         variables: [String: String] = [:],
-        activeProfiles: Set<String> = []
+        activeProfiles: Set<String> = [],
+        baseDirectory: URL? = nil
     ) throws -> ComposeProject {
-        try parse([text], projectName: projectName, variables: variables, activeProfiles: activeProfiles)
+        try parse(
+            [text],
+            projectName: projectName,
+            variables: variables,
+            activeProfiles: activeProfiles,
+            baseDirectory: baseDirectory
+        )
     }
 
     static func parse(
         _ texts: [String],
         projectName: String,
         variables: [String: String] = [:],
-        activeProfiles: Set<String> = []
+        activeProfiles: Set<String> = [],
+        baseDirectory: URL? = nil
     ) throws -> ComposeProject {
         guard !texts.isEmpty else { throw YAMLError.malformed("compose file list is empty") }
         let merged = try texts.reduce(YAMLValue.mapping([:])) { partial, text in
@@ -263,16 +300,28 @@ enum ComposeParser {
         }
 
         let servicesMap = root["services"]?.mappingValue ?? [:]
-        let services = servicesMap.keys.sorted().compactMap { name -> ComposeService? in
-            guard let value = servicesMap[name]?.mappingValue else { return nil }
-            return parseService(name: name, value: value)
-        }.filter {
-            serviceIsEnabled($0, activeProfiles: activeProfiles)
+        var services: [ComposeService] = []
+        for name in servicesMap.keys.sorted() {
+            guard let value = servicesMap[name]?.mappingValue else {
+                throw YAMLError.malformed("service \(name) is not a mapping")
+            }
+            let service = try parseService(name: name, value: value, baseDirectory: baseDirectory)
+            if serviceIsEnabled(service, activeProfiles: activeProfiles) {
+                services.append(service)
+            }
         }
 
         let networks = Array((root["networks"]?.mappingValue ?? [:]).keys).sorted()
-        let volumes = Array((root["volumes"]?.mappingValue ?? [:]).keys).sorted()
-        return ComposeProject(name: projectName, services: services, networks: networks, volumes: volumes)
+        let volumeDefinitions = try parseVolumeDefinitions(root["volumes"])
+        let volumes = volumeDefinitions.keys.sorted()
+        try validateVolumeReferences(services, definitions: volumeDefinitions)
+        return ComposeProject(
+            name: projectName,
+            services: services,
+            networks: networks,
+            volumes: volumes,
+            volumeDefinitions: volumeDefinitions
+        )
     }
 
     static func activeProfiles(from value: String?) -> Set<String> {
@@ -418,8 +467,20 @@ enum ComposeParser {
         return !Set(service.profiles).isDisjoint(with: activeProfiles)
     }
 
-    private static func parseService(name: String, value: [String: YAMLValue]) -> ComposeService {
+    private static func parseService(
+        name: String,
+        value: [String: YAMLValue],
+        baseDirectory: URL?
+    ) throws -> ComposeService {
         let memorySwappiness = value["mem_swappiness"].flatMap(parseInt64)
+        let serviceVolumes = try parseServiceVolumes(value["volumes"], baseDirectory: baseDirectory)
+        var dependencies = parseDependsOn(value["depends_on"])
+        for mode in [value["network_mode"], value["ipc"], value["pid"]]
+            .compactMap({ $0?.stringValue }) {
+            guard let dependency = serviceNamespaceTarget(mode),
+                  !dependencies.contains(where: { $0.service == dependency }) else { continue }
+            dependencies.append(ComposeDependency(service: dependency, condition: .started))
+        }
 
         return ComposeService(
             name: name,
@@ -429,9 +490,10 @@ enum ComposeParser {
             entrypoint: value["entrypoint"]?.stringList ?? [],
             environment: parseStringMap(value["environment"]),
             ports: value["ports"]?.stringList ?? [],
-            volumes: value["volumes"]?.stringList ?? [],
+            volumes: serviceVolumes.short,
+            mounts: serviceVolumes.long,
             networks: parseServiceNetworks(value["networks"]),
-            dependsOn: parseDependsOn(value["depends_on"]),
+            dependsOn: dependencies,
             restart: value["restart"]?.stringValue,
             healthcheck: parseHealthcheck(value["healthcheck"]),
             profiles: value["profiles"]?.stringList ?? [],
@@ -479,6 +541,200 @@ enum ComposeParser {
         )
     }
 
+    private static func parseVolumeDefinitions(
+        _ value: YAMLValue?
+    ) throws -> [String: ComposeVolumeDefinition] {
+        guard let value else { return [:] }
+        guard let definitions = value.mappingValue else {
+            throw YAMLError.malformed("top-level volumes must be a mapping")
+        }
+        var result: [String: ComposeVolumeDefinition] = [:]
+        for key in definitions.keys.sorted() {
+            guard let raw = definitions[key] else { continue }
+            if case .null = raw {
+                result[key] = ComposeVolumeDefinition(key: key)
+                continue
+            }
+            guard let map = raw.mappingValue else {
+                throw YAMLError.malformed("volume \(key) must be empty or a mapping")
+            }
+            var external = map["external"]?.boolValue ?? false
+            var externalName: String?
+            if let legacyExternal = map["external"]?.mappingValue {
+                external = true
+                externalName = legacyExternal["name"]?.stringValue
+            }
+            let explicitName = map["name"]?.stringValue ?? externalName
+            if external {
+                let invalid = Set(map.keys).subtracting(["external", "name"])
+                if !invalid.isEmpty {
+                    throw YAMLError.malformed(
+                        "external volume \(key) may only set external and name (found \(invalid.sorted().joined(separator: ", ")))"
+                    )
+                }
+            }
+            result[key] = ComposeVolumeDefinition(
+                key: key,
+                name: explicitName,
+                external: external,
+                driver: map["driver"]?.stringValue,
+                driverOptions: parseStringMap(map["driver_opts"]),
+                labels: parseStringMap(map["labels"])
+            )
+        }
+        return result
+    }
+
+    private static func parseServiceVolumes(
+        _ value: YAMLValue?,
+        baseDirectory: URL?
+    ) throws -> (short: [String], long: [ContainerMount]) {
+        guard let value else { return ([], []) }
+        let items: [YAMLValue]
+        switch value {
+        case let .sequence(sequence): items = sequence
+        case .string: items = [value]
+        case .null: return ([], [])
+        default: throw YAMLError.malformed("service volumes must be a sequence")
+        }
+
+        var short: [String] = []
+        var long: [ContainerMount] = []
+        for item in items {
+            if let specification = item.stringValue {
+                short.append(resolveShortBind(specification, baseDirectory: baseDirectory))
+                continue
+            }
+            guard let map = item.mappingValue else {
+                throw YAMLError.malformed("service volume entry must be a string or mapping")
+            }
+            long.append(try parseLongMount(map, baseDirectory: baseDirectory))
+        }
+        return (short, long)
+    }
+
+    private static func validateVolumeReferences(
+        _ services: [ComposeService],
+        definitions: [String: ComposeVolumeDefinition]
+    ) throws {
+        for service in services {
+            for specification in service.volumes {
+                guard let separator = specification.firstIndex(of: ":") else { continue }
+                let source = String(specification[..<separator])
+                guard !isHostPath(source), definitions[source] == nil else { continue }
+                throw YAMLError.malformed(
+                    "service \(service.name) refers to undefined volume \(source)"
+                )
+            }
+            for mount in service.mounts where mount.type == "volume" {
+                guard let source = mount.source, !source.isEmpty, definitions[source] == nil else { continue }
+                throw YAMLError.malformed(
+                    "service \(service.name) refers to undefined volume \(source)"
+                )
+            }
+        }
+    }
+
+    private static func isHostPath(_ source: String) -> Bool {
+        source.hasPrefix("/") || source == "." || source == ".."
+            || source.hasPrefix("./") || source.hasPrefix("../")
+    }
+
+    private static func parseLongMount(
+        _ map: [String: YAMLValue],
+        baseDirectory: URL?
+    ) throws -> ContainerMount {
+        guard let rawType = map["type"]?.stringValue?.lowercased(), !rawType.isEmpty else {
+            throw YAMLError.malformed("long-form service volume requires type")
+        }
+        guard let target = (map["target"] ?? map["destination"])?.stringValue,
+              target.hasPrefix("/") else {
+            throw YAMLError.malformed("long-form service volume requires an absolute target")
+        }
+        var source = map["source"]?.stringValue
+        let readOnly = map["read_only"]?.boolValue ?? false
+        let consistency = map["consistency"]?.stringValue
+        var bindOptions: DockerBindOptions?
+        var volumeOptions: DockerVolumeOptions?
+        var tmpfsOptions: DockerTmpfsOptions?
+        var imageOptions: DockerImageOptions?
+
+        switch rawType {
+        case "bind":
+            guard let rawSource = source, !rawSource.isEmpty else {
+                throw YAMLError.malformed("long-form bind mount requires source")
+            }
+            source = resolveBindSource(rawSource, baseDirectory: baseDirectory)
+            let options = map["bind"]?.mappingValue ?? [:]
+            bindOptions = DockerBindOptions(
+                Propagation: options["propagation"]?.stringValue,
+                CreateMountpoint: options["create_host_path"]?.boolValue
+            )
+        case "volume":
+            let options = map["volume"]?.mappingValue ?? [:]
+            volumeOptions = DockerVolumeOptions(
+                NoCopy: options["nocopy"]?.boolValue,
+                Subpath: options["subpath"]?.stringValue
+            )
+        case "tmpfs":
+            guard source == nil || source?.isEmpty == true else {
+                throw YAMLError.malformed("long-form tmpfs mount cannot set source")
+            }
+            source = nil
+            let options = map["tmpfs"]?.mappingValue ?? [:]
+            tmpfsOptions = DockerTmpfsOptions(
+                SizeBytes: options["size"].flatMap(parseByteSize),
+                Mode: options["mode"].flatMap(parseFileMode)
+            )
+        case "image":
+            guard let source, !source.isEmpty else {
+                throw YAMLError.malformed("long-form image mount requires source")
+            }
+            let options = map["image"]?.mappingValue ?? [:]
+            imageOptions = DockerImageOptions(Subpath: options["subpath"]?.stringValue)
+        case "npipe", "cluster":
+            throw YAMLError.malformed("service volume type \(rawType) is not supported on Dory's Linux VM")
+        default:
+            throw YAMLError.malformed("unknown service volume type \(rawType)")
+        }
+
+        return ContainerMount(
+            type: rawType,
+            source: source,
+            target: target,
+            readOnly: readOnly,
+            consistency: consistency,
+            bindOptions: bindOptions,
+            volumeOptions: volumeOptions,
+            tmpfsOptions: tmpfsOptions,
+            imageOptions: imageOptions
+        )
+    }
+
+    private static func resolveShortBind(_ specification: String, baseDirectory: URL?) -> String {
+        guard let separator = specification.firstIndex(of: ":") else { return specification }
+        let source = String(specification[..<separator])
+        let resolved = resolveBindSource(source, baseDirectory: baseDirectory)
+        guard resolved != source else { return specification }
+        return resolved + specification[separator...]
+    }
+
+    private static func resolveBindSource(_ source: String, baseDirectory: URL?) -> String {
+        guard source == "." || source == ".." || source.hasPrefix("./") || source.hasPrefix("../"),
+              let baseDirectory else { return source }
+        return baseDirectory.appendingPathComponent(source)
+            .standardizedFileURL.path
+    }
+
+    private static func parseFileMode(_ value: YAMLValue) -> Int? {
+        guard let raw = value.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !raw.isEmpty else { return nil }
+        if raw.allSatisfy({ ("0"..."7").contains(String($0)) }) {
+            return Int(raw, radix: 8)
+        }
+        return Int(raw)
+    }
+
     private static func parseDependsOn(_ value: YAMLValue?) -> [ComposeDependency] {
         switch value {
         case let .sequence(items):
@@ -491,6 +747,14 @@ enum ComposeParser {
         default:
             return []
         }
+    }
+
+    private static func serviceNamespaceTarget(_ mode: String) -> String? {
+        let prefix = "service:"
+        guard mode.hasPrefix(prefix) else { return nil }
+        let service = String(mode.dropFirst(prefix.count))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return service.isEmpty ? nil : service
     }
 
     private static func parseServiceNetworks(_ value: YAMLValue?) -> [String] {

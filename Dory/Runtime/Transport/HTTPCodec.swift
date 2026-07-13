@@ -29,23 +29,89 @@ nonisolated enum HTTPError: Error, Sendable, Equatable {
 /// Incrementally strips HTTP chunked-transfer framing from a byte stream, emitting payload bytes.
 nonisolated final class ChunkedStreamDecoder: @unchecked Sendable {
     private var buffer = [UInt8]()
+    private var remainingChunkBytes: Int?
+    private var expectsChunkTerminator = false
+    private var readingTrailers = false
+    private(set) var completed = false
+    private(set) var malformed = false
 
     func feed(_ data: Data) -> Data {
+        guard !completed, !malformed else { return Data() }
         buffer.append(contentsOf: data)
         var output = Data()
+        var consumed = 0
         while true {
-            guard let lineEnd = indexOfCRLF(from: 0) else { break }
-            let sizeText = String(bytes: buffer[0..<lineEnd], encoding: .utf8) ?? ""
+            if readingTrailers {
+                if buffer.count - consumed >= 2,
+                   buffer[consumed] == 13, buffer[consumed + 1] == 10 {
+                    consumed += 2
+                    completed = true
+                    break
+                }
+                if let trailerEnd = indexOfHeaderTerminator(from: consumed) {
+                    consumed = trailerEnd + 4
+                    completed = true
+                }
+                break
+            }
+            if expectsChunkTerminator {
+                guard buffer.count - consumed >= 2 else { break }
+                guard buffer[consumed] == 13, buffer[consumed + 1] == 10 else {
+                    malformed = true
+                    buffer.removeAll(keepingCapacity: false)
+                    consumed = 0
+                    break
+                }
+                consumed += 2
+                expectsChunkTerminator = false
+                continue
+            }
+            if let remaining = remainingChunkBytes {
+                guard remaining > 0 else {
+                    remainingChunkBytes = nil
+                    expectsChunkTerminator = true
+                    continue
+                }
+                let available = buffer.count - consumed
+                guard available > 0 else { break }
+                let count = min(remaining, available)
+                output.append(contentsOf: buffer[consumed..<(consumed + count)])
+                consumed += count
+                remainingChunkBytes = remaining - count
+                continue
+            }
+            guard let lineEnd = indexOfCRLF(from: consumed) else { break }
+            let sizeText = String(bytes: buffer[consumed..<lineEnd], encoding: .utf8) ?? ""
             let hex = sizeText.split(separator: ";").first.map(String.init) ?? sizeText
             guard let size = Int(hex.trimmingCharacters(in: .whitespaces), radix: 16),
-                  size >= 0, size <= HTTPCodec.maxChunkBytes else { buffer.removeAll(keepingCapacity: false); break }
-            let dataStart = lineEnd + 2
-            if size == 0 { buffer.removeAll(keepingCapacity: false); break }
-            guard buffer.count - dataStart >= size + 2 else { break }
-            output.append(contentsOf: buffer[dataStart..<dataStart + size])
-            buffer.removeFirst(dataStart + size + 2)
+                  size >= 0, size <= HTTPCodec.maxChunkBytes else {
+                malformed = true
+                buffer.removeAll(keepingCapacity: false)
+                consumed = 0
+                break
+            }
+            consumed = lineEnd + 2
+            if size == 0 {
+                readingTrailers = true
+                continue
+            }
+            remainingChunkBytes = size
         }
+        if consumed > 0 { buffer.removeFirst(consumed) }
         return output
+    }
+
+    func validateComplete() throws {
+        if malformed { throw HTTPError.malformedChunk }
+        if !completed { throw HTTPError.incomplete }
+    }
+
+    private func indexOfHeaderTerminator(from start: Int) -> Int? {
+        guard buffer.count - start >= 4 else { return nil }
+        for index in start...(buffer.count - 4) where buffer[index...(index + 3)].elementsEqual([13, 10, 13, 10]) {
+            return index
+        }
+        return nil
     }
 
     private func indexOfCRLF(from start: Int) -> Int? {

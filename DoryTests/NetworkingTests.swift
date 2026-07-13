@@ -221,11 +221,161 @@ struct NetworkingTests {
         }
     }
 
+    @Test func cancellingRequestClosesHungSocketPromptly() async throws {
+        let path = Self.shortSocketPath("dory-cancel-hung")
+        let server = try HangingUnixSocket(path: path)
+        defer { server.stop() }
+        let client = UnixSocketHTTP(path: path, ioTimeout: 5)
+        let request = Task {
+            try await client.send(HTTPRequest(method: "GET", path: "/version"))
+        }
+
+        try await Task.sleep(for: .milliseconds(50))
+        let cancelledAt = ContinuousClock.now
+        request.cancel()
+        do {
+            _ = try await request.value
+            Issue.record("expected cancelled request to fail")
+        } catch {
+            // Closing the descriptor can surface CancellationError, connectionClosed, or EBADF;
+            // the contract is that cancellation is prompt rather than waiting for the idle timer.
+        }
+        #expect(cancelledAt.duration(to: ContinuousClock.now) < .seconds(1))
+    }
+
+    @Test func chunkedUploadHonorsIOTimeoutWhenPeerNeverResponds() async throws {
+        let path = Self.shortSocketPath("dory-hung-chunked")
+        let server = try HangingUnixSocket(path: path)
+        defer { server.stop() }
+        let client = UnixSocketHTTP(path: path, ioTimeout: 0.05)
+        let body = AsyncStream<Data> { continuation in
+            continuation.yield(Data("archive".utf8))
+            continuation.finish()
+        }
+
+        do {
+            _ = try await client.sendChunked(
+                HTTPRequest(method: "POST", path: "/images/load"),
+                body: body
+            )
+            Issue.record("expected hung chunked upload to time out")
+        } catch let error as HTTPError {
+            guard case .socket(let message) = error else {
+                Issue.record("expected socket error, got \(error)")
+                return
+            }
+            #expect(message.contains("read"))
+        } catch {
+            Issue.record("expected HTTPError, got \(error)")
+        }
+    }
+
+    @Test func chunkedUploadPropagatesSourceArchiveFailureWithoutCompletingRequest() async throws {
+        let path = Self.shortSocketPath("dory-failed-chunked-source")
+        let server = try HangingUnixSocket(path: path)
+        defer { server.stop() }
+        let client = UnixSocketHTTP(path: path, ioTimeout: 1)
+        let body = AsyncThrowingStream<Data, Error> { continuation in
+            continuation.yield(Data("partial-archive".utf8))
+            continuation.finish(throwing: ArchiveStreamFixtureError.sourceReadFailed)
+        }
+
+        do {
+            _ = try await client.sendChunked(
+                HTTPRequest(method: "PUT", path: "/containers/helper/archive?path=%2Fdata"),
+                body: body
+            )
+            Issue.record("expected source archive failure")
+        } catch let error as ArchiveStreamFixtureError {
+            #expect(error == .sourceReadFailed)
+        } catch {
+            Issue.record("expected the source archive error, got \(error)")
+        }
+    }
+
+    @Test func successfulStreamReportsIdleTimeoutInsteadOfHangingForever() async throws {
+        let path = Self.shortSocketPath("dory-hung-stream")
+        let server = try HangingUnixSocket(path: path)
+        defer { server.stop() }
+        let client = UnixSocketHTTP(path: path, ioTimeout: 0.05)
+
+        let completion: Result<Void, Error> = await withCheckedContinuation { continuation in
+            _ = client.streamSuccessful(
+                HTTPRequest(method: "GET", path: "/images/example/get"),
+                onChunk: { _ in },
+                onComplete: { continuation.resume(returning: $0) }
+            )
+        }
+        switch completion {
+        case .success:
+            Issue.record("expected hung stream to report an idle timeout")
+        case .failure(let error as HTTPError):
+            guard case .socket(let message) = error else {
+                Issue.record("expected socket error, got \(error)")
+                return
+            }
+            #expect(message.contains("read"))
+        case .failure(let error):
+            Issue.record("expected HTTPError, got \(error)")
+        }
+    }
+
+    @Test func demandDrivenBodyStreamReportsIdleTimeout() async throws {
+        let path = Self.shortSocketPath("dory-hung-pull-stream")
+        let server = try HangingUnixSocket(path: path)
+        defer { server.stop() }
+        let client = UnixSocketHTTP(path: path, ioTimeout: 0.05)
+        var iterator = client.successfulBodyStream(
+            HTTPRequest(method: "GET", path: "/images/example/get")
+        ).makeAsyncIterator()
+
+        do {
+            _ = try await iterator.next()
+            Issue.record("expected demand-driven stream to time out")
+        } catch let error as HTTPError {
+            guard case .socket(let message) = error else {
+                Issue.record("expected socket error, got \(error)")
+                return
+            }
+            #expect(message.contains("read"))
+        } catch {
+            Issue.record("expected HTTPError, got \(error)")
+        }
+    }
+
+    @Test func cancellingDemandDrivenBodyReadClosesHungSocketPromptly() async throws {
+        let path = Self.shortSocketPath("dory-cancel-pull-stream")
+        let server = try HangingUnixSocket(path: path)
+        defer { server.stop() }
+        let client = UnixSocketHTTP(path: path, ioTimeout: 5)
+        let read = Task {
+            var iterator = client.successfulBodyStream(
+                HTTPRequest(method: "GET", path: "/containers/helper/archive")
+            ).makeAsyncIterator()
+            return try await iterator.next()
+        }
+
+        try await Task.sleep(for: .milliseconds(50))
+        let cancelledAt = ContinuousClock.now
+        read.cancel()
+        do {
+            _ = try await read.value
+            Issue.record("expected cancelled demand-driven read to fail")
+        } catch {
+            // Cancellation closes the descriptor and may surface cancellation, EBADF, or EOF.
+        }
+        #expect(cancelledAt.duration(to: ContinuousClock.now) < .seconds(1))
+    }
+
     private static func shortSocketPath(_ prefix: String) -> String {
         let path = "/tmp/\(prefix)-\(UUID().uuidString.prefix(8)).sock"
         try? FileManager.default.removeItem(atPath: path)
         return path
     }
+}
+
+private enum ArchiveStreamFixtureError: Error, Equatable {
+    case sourceReadFailed
 }
 
 private final class HangingUnixSocket {

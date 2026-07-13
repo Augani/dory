@@ -49,11 +49,7 @@ struct YAMLParser {
                 throw YAMLError.malformed("expected key: value, got '\(content)'")
             }
             index += 1
-            if rest.isEmpty {
-                map[key] = try parseChildBlock(parentIndent: indent)
-            } else {
-                map[key] = try Self.scalarOrFlow(rest)
-            }
+            map[key] = try parseMappingValue(rest, parentIndent: indent)
         }
         return .mapping(map)
     }
@@ -71,18 +67,13 @@ struct YAMLParser {
                 // Inline mapping item: "- key: value" plus any deeper continuation lines.
                 var map: [String: YAMLValue] = [:]
                 let childIndent = indent + 2
-                if rest.isEmpty {
-                    map[key] = try parseChildBlock(parentIndent: childIndent)
-                } else {
-                    map[key] = try Self.scalarOrFlow(rest)
-                }
+                map[key] = try parseMappingValue(rest, parentIndent: childIndent)
                 while index < lines.count, lines[index].indent >= childIndent,
                       !lines[index].content.hasPrefix("- ") {
                     let line = lines[index].content
                     guard let (k, r) = Self.splitKeyValue(line) else { break }
                     index += 1
-                    if r.isEmpty { map[k] = try parseChildBlock(parentIndent: childIndent) }
-                    else { map[k] = try Self.scalarOrFlow(r) }
+                    map[k] = try parseMappingValue(r, parentIndent: childIndent)
                 }
                 seq.append(.mapping(map))
             } else {
@@ -90,6 +81,20 @@ struct YAMLParser {
             }
         }
         return .sequence(seq)
+    }
+
+    private nonisolated mutating func parseMappingValue(
+        _ rest: String,
+        parentIndent: Int
+    ) throws -> YAMLValue {
+        if rest.isEmpty {
+            return try parseChildBlock(parentIndent: parentIndent)
+        }
+        if let (tag, remainder) = Self.mergeTag(rest), remainder.isEmpty,
+           index < lines.count, lines[index].indent > parentIndent {
+            return .tagged(tag, try parseChildBlock(parentIndent: parentIndent))
+        }
+        return try Self.scalarOrFlow(rest)
     }
 
     private nonisolated mutating func parseChildBlock(parentIndent: Int) throws -> YAMLValue {

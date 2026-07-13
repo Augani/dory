@@ -388,6 +388,7 @@ struct DockerInspectStateOut: Encodable, Sendable {
 struct DockerInspectConfigOut: Encodable, Sendable {
     let Hostname: String
     let Domainname: String
+    let MacAddress: String
     let User: String
     let AttachStdin: Bool
     let AttachStdout: Bool
@@ -426,9 +427,16 @@ struct DockerHostMountOut: Encodable, Sendable {
     let source: String?
     let target: String
     let readOnly: Bool?
+    let consistency: String?
+    let bindOptions: DockerBindOptions?
+    let volumeOptions: DockerVolumeOptions?
+    let tmpfsOptions: DockerTmpfsOptions?
+    let imageOptions: DockerImageOptions?
 
     enum CodingKeys: String, CodingKey {
         case type = "Type", source = "Source", target = "Target", readOnly = "ReadOnly"
+        case consistency = "Consistency", bindOptions = "BindOptions", volumeOptions = "VolumeOptions"
+        case tmpfsOptions = "TmpfsOptions", imageOptions = "ImageOptions"
     }
 
     nonisolated init(_ mount: ContainerMount) {
@@ -436,6 +444,11 @@ struct DockerHostMountOut: Encodable, Sendable {
         source = mount.source
         target = mount.target
         readOnly = mount.readOnly ? true : nil
+        consistency = mount.consistency
+        bindOptions = mount.bindOptions
+        volumeOptions = mount.volumeOptions
+        tmpfsOptions = mount.tmpfsOptions
+        imageOptions = mount.imageOptions
     }
 }
 
@@ -789,6 +802,7 @@ struct DockerContainerUpdateOut: Codable, Sendable {
 struct DockerCreateRequest: Decodable, Sendable {
     var Hostname: String?
     var Domainname: String?
+    var MacAddress: String?
     var User: String?
     var AttachStdin: Bool?
     var AttachStdout: Bool?
@@ -845,6 +859,7 @@ struct DockerCreateRequest: Decodable, Sendable {
             volumeTargets: (Volumes ?? [:]).keys.sorted(),
             hostname: Hostname,
             domainname: Domainname,
+            macAddress: MacAddress,
             user: User,
             workingDir: WorkingDir,
             entrypoint: Entrypoint?.values ?? [],
@@ -912,10 +927,16 @@ struct DockerCreateRequest: Decodable, Sendable {
         var seen = Set<String>()
         for key in bindings.keys.sorted() {
             let bindingList: [DockerInboundBinding]? = bindings[key] ?? nil
-            let specs = bindingList?.map { portSpec(key: key, binding: $0) } ?? [portSpec(key: key, binding: nil)]
+            let specs = bindingList?.isEmpty == false
+                ? bindingList!.map { portSpec(key: key, binding: $0) }
+                : [portSpec(key: key, binding: nil)]
             for spec in specs where seen.insert(spec).inserted { ports.append(spec) }
         }
         for key in exposedPorts.keys.sorted() {
+            // A published binding already implies the container port is exposed. Emitting the
+            // bare target as a second spec loses no information but creates a duplicate logical
+            // port during inspect/recreate migrations.
+            guard bindings[key] == nil else { continue }
             let spec = portSpec(key: key, binding: nil)
             if seen.insert(spec).inserted { ports.append(spec) }
         }
@@ -927,8 +948,9 @@ struct DockerCreateRequest: Decodable, Sendable {
         let port = pieces.first ?? key
         let proto = pieces.count > 1 ? pieces[1].lowercased() : "tcp"
         let target = proto == "tcp" ? port : "\(port)/\(proto)"
-        guard let host = binding?.HostPort, !host.isEmpty else { return target }
-        if let hostIP = binding?.HostIp, !hostIP.isEmpty {
+        guard let binding else { return target }
+        let host = binding.HostPort ?? ""
+        if let hostIP = binding.HostIp, !hostIP.isEmpty {
             return "\(publishHostIP(hostIP)):\(host):\(target)"
         }
         return "\(host):\(target)"
@@ -1110,20 +1132,36 @@ struct DockerInboundMount: Decodable, Sendable {
     var name: String?
     var readOnly: Bool?
     var rw: Bool?
+    var consistency: String?
+    var bindOptions: DockerBindOptions?
+    var volumeOptions: DockerVolumeOptions?
+    var tmpfsOptions: DockerTmpfsOptions?
+    var imageOptions: DockerImageOptions?
 
     enum CodingKeys: String, CodingKey {
         case type = "Type", source = "Source", target = "Target", destination = "Destination"
         case name = "Name", readOnly = "ReadOnly", rw = "RW"
+        case consistency = "Consistency", bindOptions = "BindOptions", volumeOptions = "VolumeOptions"
+        case tmpfsOptions = "TmpfsOptions", imageOptions = "ImageOptions"
     }
 
     var containerMount: ContainerMount? {
         let target = target ?? destination
         guard let target, !target.isEmpty else { return nil }
+        let normalizedType = (type ?? "volume").lowercased()
         return ContainerMount(
-            type: (type ?? "volume").lowercased(),
-            source: source ?? name,
+            type: normalizedType,
+            // Inspect responses expose a daemon-private Source path for named volumes as well as
+            // their portable Name. Reusing the private path on another engine turns it into an
+            // invalid volume name (or, worse, a host bind). Bind mounts still use Source.
+            source: normalizedType == "volume" ? (name ?? source) : source,
             target: target,
-            readOnly: readOnly ?? rw.map { !$0 } ?? false
+            readOnly: readOnly ?? rw.map { !$0 } ?? false,
+            consistency: consistency,
+            bindOptions: bindOptions,
+            volumeOptions: volumeOptions,
+            tmpfsOptions: tmpfsOptions,
+            imageOptions: imageOptions
         )
     }
 }
