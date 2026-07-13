@@ -78,11 +78,13 @@ enum MigrationOperationPlanBuilder {
         let volumeNames = try addVolumes(
             input.source.snapshot.volumes,
             target: input.target.snapshot.volumes,
+            ownership: input.ownership,
             to: &assembly
         )
         let networkNames = try addNetworks(
             input.source,
             target: input.target.snapshot.networks,
+            ownership: input.ownership,
             to: &assembly
         )
         let containerContext = MigrationContainerPlanningContext(
@@ -92,7 +94,8 @@ enum MigrationOperationPlanBuilder {
                 volumeNames: volumeNames,
                 networkNames: networkNames,
                 containerIdentityIndex: containerIdentityIndex(input.source.snapshot.containers)
-            )
+            ),
+            ownership: input.ownership
         )
         try addContainers(input.source, context: containerContext, to: &assembly)
         return try finalize(input, assembly: assembly)

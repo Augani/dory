@@ -53,6 +53,7 @@ extension MigrationOperationPlanBuilder {
     static func addVolumes(
         _ source: [Volume],
         target: [Volume],
+        ownership: MigrationOperationOwnership,
         to assembly: inout MigrationPlanAssembly
     ) throws -> Set<String> {
         let targetNames = Set(target.map(\.name))
@@ -61,11 +62,20 @@ extension MigrationOperationPlanBuilder {
                 throw MigrationOperationPlanError.targetCollision(kind: .volume, name: volume.name)
             }
             let key = DoryOperationObjectKey(kind: .volume, sourceID: volume.name)
-            let specification = try makeSpecification(MigrationVolumeContract(volume: volume))
+            let sourceContract = MigrationVolumeContract(volume: volume)
+            let specification = try makeSpecification(MigrationVolumeContract(
+                volume: volume,
+                labels: ownership.labels(
+                    existing: volume.labels,
+                    kind: .volume,
+                    sourceID: volume.name,
+                    targetID: volume.name
+                )
+            ))
             assembly.retain(specification)
             assembly.inventory.append(DoryOperationInventoryObject(
                 key: key,
-                sourceFingerprint: specification.digest,
+                sourceFingerprint: try digest(sourceContract),
                 specificationDigest: specification.digest
             ))
             assembly.intents.append(DoryOperationObjectIntent(
@@ -80,6 +90,7 @@ extension MigrationOperationPlanBuilder {
     static func addNetworks(
         _ source: MigrationOperationSource,
         target: [DoryNetwork],
+        ownership: MigrationOperationOwnership,
         to assembly: inout MigrationPlanAssembly
     ) throws -> Set<String> {
         let networks = source.snapshot.networks.filter { !defaultNetworks.contains($0.name) }
@@ -92,14 +103,24 @@ extension MigrationOperationPlanBuilder {
                 throw MigrationOperationPlanError.missingNetworkSpecification(network.name)
             }
             let key = DoryOperationObjectKey(kind: .network, sourceID: network.name)
-            let specification = try makeSpecification(MigrationNetworkContract(
+            let sourceContract = try MigrationNetworkContract(
                 network: network,
                 inspectedData: inspected
+            )
+            let specification = try makeSpecification(MigrationNetworkContract(
+                network: network,
+                inspectedData: inspected,
+                labels: ownership.labels(
+                    existing: network.labels,
+                    kind: .network,
+                    sourceID: network.name,
+                    targetID: network.name
+                )
             ))
             assembly.retain(specification)
             assembly.inventory.append(DoryOperationInventoryObject(
                 key: key,
-                sourceFingerprint: specification.digest,
+                sourceFingerprint: try digest(sourceContract),
                 specificationDigest: specification.digest
             ))
             assembly.intents.append(DoryOperationObjectIntent(
@@ -130,7 +151,7 @@ extension MigrationOperationPlanBuilder {
                 container,
                 specification: specification,
                 writableBytes: writableBytes,
-                context: context.dependencies,
+                context: context,
                 to: &assembly
             )
         }
@@ -140,7 +161,7 @@ extension MigrationOperationPlanBuilder {
         _ container: Container,
         specification: ContainerSpec,
         writableBytes: Int64,
-        context: MigrationContainerDependencyContext,
+        context: MigrationContainerPlanningContext,
         to assembly: inout MigrationPlanAssembly
     ) throws {
         let imageKey = try imageDependency(
@@ -152,7 +173,7 @@ extension MigrationOperationPlanBuilder {
             container: container,
             specification: specification,
             imageKey: imageKey,
-            context: context
+            context: context.dependencies
         )
         if writableBytes > 0 {
             let layerKey = try addWritableLayer(
@@ -164,7 +185,14 @@ extension MigrationOperationPlanBuilder {
             dependencies.append(layerKey)
         }
         let key = DoryOperationObjectKey(kind: .container, sourceID: container.id)
-        let persistedSpecification = try makeSpecification(specification)
+        var targetSpecification = specification
+        targetSpecification.labels = context.ownership.labels(
+            existing: specification.labels,
+            kind: .container,
+            sourceID: container.id,
+            targetID: container.name
+        )
+        let persistedSpecification = try makeSpecification(targetSpecification)
         assembly.retain(persistedSpecification)
         assembly.inventory.append(DoryOperationInventoryObject(
             key: key,

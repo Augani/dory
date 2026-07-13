@@ -1,4 +1,5 @@
 import DoryOperations
+import CryptoKit
 import Foundation
 
 struct MigrationOperationSource: Sendable {
@@ -30,6 +31,10 @@ struct MigrationOperationPlanningInput: Sendable {
     let capabilities: MigrationOperationCapabilityContract
     let capacity: MigrationCapacityContract
     let identity: MigrationOperationIdentity
+
+    var ownership: MigrationOperationOwnership {
+        MigrationOperationOwnership(identity: identity, sourceAuthorityID: source.authorityID)
+    }
 }
 
 struct MigrationOperationIdentity: Sendable {
@@ -38,6 +43,34 @@ struct MigrationOperationIdentity: Sendable {
 
     static func fresh() -> MigrationOperationIdentity {
         MigrationOperationIdentity(id: UUID(), createdAt: Date())
+    }
+}
+
+struct MigrationOperationOwnership: Sendable, Equatable {
+    let operationID: String
+    let sourceAuthorityHash: String
+
+    init(identity: MigrationOperationIdentity, sourceAuthorityID: String) {
+        operationID = identity.id.uuidString.lowercased()
+        sourceAuthorityHash = SHA256.hash(data: Data(sourceAuthorityID.utf8))
+            .map { String(format: "%02x", $0) }
+            .joined()
+    }
+
+    func labels(
+        existing: [String: String],
+        kind: DoryOperationObjectKind,
+        sourceID: String,
+        targetID: String
+    ) -> [String: String] {
+        var labels = existing
+        labels["dev.dory.operation.id"] = operationID
+        labels["dev.dory.source.authority"] = sourceAuthorityHash
+        labels["dev.dory.object.kind"] = kind.rawValue
+        labels["dev.dory.original.identity"] = sourceID
+        labels["dev.dory.target.identity"] = targetID
+        labels["dev.dory.operation.state"] = "published"
+        return labels
     }
 }
 
@@ -75,6 +108,7 @@ struct MigrationContainerDependencyContext {
 struct MigrationContainerPlanningContext {
     let targetNames: Set<String>
     let dependencies: MigrationContainerDependencyContext
+    let ownership: MigrationOperationOwnership
 }
 
 struct MigrationImageIdentity: Codable { let id: String }
@@ -112,10 +146,10 @@ struct MigrationVolumeContract: Codable {
     let labels: [String: String]
     let options: [String: String]
 
-    init(volume: Volume) {
+    init(volume: Volume, labels: [String: String]? = nil) {
         name = volume.name
         driver = volume.driver
-        labels = volume.labels
+        self.labels = labels ?? volume.labels
         options = volume.options
     }
 }
@@ -126,7 +160,11 @@ struct MigrationNetworkContract: Codable {
     let labels: [String: String]
     let portableCreateContract: Data
 
-    init(network: DoryNetwork, inspectedData: Data) throws {
+    init(
+        network: DoryNetwork,
+        inspectedData: Data,
+        labels: [String: String]? = nil
+    ) throws {
         guard let root = try? JSONSerialization.jsonObject(with: inspectedData) as? [String: Any],
               root["Name"] as? String == network.name,
               let inspectedDriver = root["Driver"] as? String,
@@ -149,7 +187,7 @@ struct MigrationNetworkContract: Codable {
         }
         name = network.name
         driver = network.driver
-        labels = network.labels
+        self.labels = labels ?? network.labels
         portableCreateContract = canonical
     }
 }

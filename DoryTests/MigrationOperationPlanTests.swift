@@ -33,7 +33,13 @@ struct MigrationOperationPlanTests {
         let apiSpecification = try #require(
             prepared.specifications.first { $0.digest == apiSpecificationDigest }
         )
-        #expect(try JSONDecoder().decode(ContainerSpec.self, from: apiSpecification.data).name == "api")
+        let apiTarget = try JSONDecoder().decode(ContainerSpec.self, from: apiSpecification.data)
+        #expect(apiTarget.name == "api")
+        #expect(apiTarget.labels["dev.dory.operation.id"] == "11111111-1111-1111-1111-111111111111")
+        #expect(apiTarget.labels["dev.dory.object.kind"] == "container")
+        #expect(apiTarget.labels["dev.dory.original.identity"] == "api-id")
+        #expect(apiTarget.labels["dev.dory.target.identity"] == "api")
+        #expect(apiTarget.labels["dev.dory.operation.state"] == "published")
     }
 
     @Test func planIsDeterministicAcrossInventoryOrdering() throws {
