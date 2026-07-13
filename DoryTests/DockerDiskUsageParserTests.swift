@@ -102,6 +102,57 @@ struct DockerDiskUsageParserTests {
         #expect(try DockerDiskUsageParser.namedVolumeSizes(from: response) == ["database": 42])
     }
 
+    @Test func totalUsageSupportsCurrentAggregateAndLegacyShapes() throws {
+        let current = try data([
+            "ImageUsage": ["TotalSize": 100],
+            "VolumeUsage": ["TotalSize": 200],
+            "ContainerUsage": ["TotalSize": 300],
+            "BuildCacheUsage": ["TotalSize": 400]
+        ])
+        let legacy = try data([
+            "LayersSize": 100,
+            "Volumes": [["UsageData": ["Size": 200]]],
+            "Containers": [
+                ["State": "running", "SizeRw": 300],
+                ["State": "created"]
+            ],
+            "BuildCache": [["Size": 400]]
+        ])
+
+        #expect(try DockerDiskUsageParser.totalDockerBytes(from: current) == 1_000)
+        #expect(try DockerDiskUsageParser.totalDockerBytes(from: legacy) == 1_000)
+    }
+
+    @Test func totalUsageFailsClosedOnIncompleteNegativeFractionalAndOverflowValues() throws {
+        let invalid: [[String: Any]] = [
+            ["ImageUsage": ["TotalSize": 1]],
+            [
+                "LayersSize": 1,
+                "Volumes": [["UsageData": ["Size": -1]]],
+                "Containers": [],
+                "BuildCache": []
+            ],
+            [
+                "LayersSize": 1,
+                "Volumes": [],
+                "Containers": [["State": "running", "SizeRw": 1.5]],
+                "BuildCache": []
+            ],
+            [
+                "ImageUsage": ["TotalSize": Int64.max],
+                "VolumeUsage": ["TotalSize": 1],
+                "ContainerUsage": ["TotalSize": 0],
+                "BuildCacheUsage": ["TotalSize": 0]
+            ]
+        ]
+
+        for object in invalid {
+            #expect(throws: DockerDiskUsageParserError.self) {
+                try DockerDiskUsageParser.totalDockerBytes(from: data(object))
+            }
+        }
+    }
+
     private func legacyVolumes(_ sizes: [String: Int64]) -> [[String: Any]] {
         sizes.sorted { $0.key < $1.key }.map { name, size in
             ["Name": name, "UsageData": ["Size": size, "RefCount": 0]]

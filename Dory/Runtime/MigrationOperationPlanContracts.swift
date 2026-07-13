@@ -41,7 +41,7 @@ struct MigrationOperationIdentity: Sendable {
     let id: UUID
     let createdAt: Date
 
-    static func fresh() -> MigrationOperationIdentity {
+    nonisolated static func fresh() -> MigrationOperationIdentity {
         MigrationOperationIdentity(id: UUID(), createdAt: Date())
     }
 }
@@ -51,7 +51,11 @@ struct MigrationOperationOwnership: Sendable, Equatable {
     let sourceAuthorityHash: String
 
     init(identity: MigrationOperationIdentity, sourceAuthorityID: String) {
-        operationID = identity.id.uuidString.lowercased()
+        self.init(operationID: identity.id, sourceAuthorityID: sourceAuthorityID)
+    }
+
+    init(operationID: UUID, sourceAuthorityID: String) {
+        self.operationID = operationID.uuidString.lowercased()
         sourceAuthorityHash = SHA256.hash(data: Data(sourceAuthorityID.utf8))
             .map { String(format: "%02x", $0) }
             .joined()

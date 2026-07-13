@@ -167,7 +167,7 @@ extension MigrationOperationPlanBuilder {
         let imageKey = try imageDependency(
             container: container,
             specification: specification,
-            index: context.imageIndex
+            index: context.dependencies.imageIndex
         )
         var dependencies = try containerObjectDependencies(
             container: container,
