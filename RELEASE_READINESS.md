@@ -12,13 +12,19 @@ intentionally separates verified evidence from claims that still need proof.
 
 **Architecture-first correction:** the focused migration fixes below proved individual semantics,
 but are not yet wired to the durable operation protocol shared by import, backup/restore, drive
-relocation, and upgrade. The shared private journal/state-machine layer now exists: immutable plan
-digests, monotonic legal transitions, a single mutation lease, atomic synced state, an append audit
-log recoverable from the authoritative state snapshot, terminal cancellation, drive-summary
-mirroring, and symlink/hard-link rejection pass 18 focused tests and the complete 296-test Swift
-package. Migration, backup/restore, relocation, and upgrade must now consume that layer; its
-existence alone is not release completion. The owned Alpine fixture also does not prove the user's
-full 79-volume, 14-container OrbStack inventory. The accepted
+relocation, and upgrade. The shared `DoryOperations` package is now linked by both the app and
+daemon stack. Its private journal/state-machine provides immutable plan digests, monotonic legal
+transitions, a single mutation lease, atomic synced state, a recoverable append audit log, terminal
+cancellation, drive-summary mirroring, and symlink/hard-link rejection. Its shared planner now
+computes a deterministic full dependency closure and topological order from exact source
+identities, binds target collision decisions and accepted final states, and evaluates completion
+as exact verified/post-publication mappings plus unchanged unselected-source and unowned-target
+inventories. Image-only evidence cannot complete a plan containing volumes, networks, writable
+layers, or containers. The 29 focused journal/planner tests and complete 307-test Swift package
+pass, and the Apple Silicon app builds against this same package with Xcode 26.6. Migration,
+backup/restore, relocation, and upgrade must now create, persist, execute, and reconcile these
+plans; the shared foundation alone is not release completion. The owned Alpine fixture also does
+not prove the user's full 79-volume, 14-container OrbStack inventory. The accepted
 [transactional data-operations contract](docs/architecture/transactional-data-operations.md)
 replaces further one-off migration patching with one plan → quiesce → stage → verify → publish →
 validate protocol, exact dependency closure, crash recovery at every transition, read-back volume
