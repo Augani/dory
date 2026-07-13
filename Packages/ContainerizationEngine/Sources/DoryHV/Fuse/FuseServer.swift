@@ -88,6 +88,11 @@ public final class FuseServer: @unchecked Sendable {
     private var nextDirectoryHandle: UInt64 = 1
     private var fileHandles: [UInt64: OpenFileHandle] = [:]
     private var directoryHandles: [UInt64: OpenDirectoryHandle] = [:]
+    private var lockOwners: [AdvisoryLockOwnerKey: AdvisoryLockDescriptor] = [:]
+    private let advisoryLockCondition = NSCondition()
+    private var pendingBlockingLocks: Set<UInt64> = []
+    private var pendingBlockingLockOwners: [UInt64: AdvisoryLockOwnerKey] = [:]
+    private var cancelledBlockingLocks: Set<UInt64> = []
     var fileOperationLoadedTestHook: (() -> Void)?
     var directoryOperationLoadedTestHook: (() -> Void)?
 
@@ -141,6 +146,44 @@ public final class FuseServer: @unchecked Sendable {
 
         deinit {
             hostFS.releaseOpenHandle(nodeID: nodeID)
+        }
+    }
+
+    private struct AdvisoryLockOwnerKey: Hashable {
+        let nodeID: UInt64
+        let owner: UInt64
+        let flock: Bool
+    }
+
+    /// macOS process locks alias inside one server process, so every guest lock owner receives an
+    /// independently reopened file description. OFD record locks and flock(2) then preserve the
+    /// kernel's owner isolation even though all FUSE requests execute inside dory-hv.
+    private final class AdvisoryLockDescriptor: @unchecked Sendable {
+        let fd: Int32
+        let usesFlock: Bool
+        let operationLock = NSLock()
+
+        init(fd: Int32, usesFlock: Bool) {
+            self.fd = fd
+            self.usesFlock = usesFlock
+        }
+
+        deinit {
+            // Explicitly clear the owner's complete lock set before close. Attached files use a
+            // genuinely independent open description, while Darwin's only safe reopen for an
+            // already-unlinked inode is /dev/fd and may alias its pinned source description.
+            if usesFlock {
+                _ = flock(fd, LOCK_UN)
+            } else {
+                var record = flock()
+                record.l_start = 0
+                record.l_len = 0
+                record.l_pid = 0
+                record.l_type = Int16(F_UNLCK)
+                record.l_whence = Int16(SEEK_SET)
+                _ = fcntl(fd, F_OFD_SETLK, &record)
+            }
+            Darwin.close(fd)
         }
     }
 
@@ -295,6 +338,15 @@ public final class FuseServer: @unchecked Sendable {
                 return try handleFsync(header: header, payload: payload)
             case .flush:
                 return handleFlush(header: header, payload: payload)
+            case .getlk:
+                return try handleGetLock(header: header, payload: payload)
+            case .setlk:
+                return try handleSetLock(header: header, payload: payload, blocking: false)
+            case .setlkw:
+                return try handleSetLock(header: header, payload: payload, blocking: true)
+            case .interrupt:
+                handleInterrupt(payload: payload)
+                return []
             case .getxattr:
                 // ENOSYS (not ENODATA) latches fc->no_getxattr in the guest kernel, eliminating
                 // the per-file security.capability round trip on create/write storms. This server
@@ -790,6 +842,9 @@ public final class FuseServer: @unchecked Sendable {
         }
         let handle = payload.leUInt64(at: 0)
         if opcode == .release {
+            if payload.count >= 24 {
+                releaseAdvisoryLocks(nodeID: header.nodeID, owner: payload.leUInt64(at: 16))
+            }
             releaseFile(handle: handle)
         } else {
             releaseDirectory(handle: handle)
@@ -862,22 +917,28 @@ public final class FuseServer: @unchecked Sendable {
     /// request from the previous transport epoch has finished using its descriptor snapshot.
     func resetConnection() {
         anomalyLog.log("resetConnection")
-        let openHandles: ([OpenFileHandle], [OpenDirectoryHandle]) = lock.withLock {
+        cancelAllBlockingLocks()
+        let openHandles: ([OpenFileHandle], [OpenDirectoryHandle], [AdvisoryLockDescriptor]) = lock.withLock {
             let files = Array(fileHandles.values)
             let directories = Array(directoryHandles.values)
+            let locks = Array(lockOwners.values)
             fileHandles.removeAll(keepingCapacity: false)
             directoryHandles.removeAll(keepingCapacity: false)
-            return (files, directories)
+            lockOwners.removeAll(keepingCapacity: false)
+            return (files, directories, locks)
         }
         // Keep the removed handles alive until after the table lock is released. Their deinits
         // close descriptors and release HostFS open references after any in-flight request-owned
         // references have also drained.
         var openFiles = openHandles.0
         var openDirectories = openHandles.1
+        var openLocks = openHandles.2
         openFiles.removeAll(keepingCapacity: false)
         openDirectories.removeAll(keepingCapacity: false)
+        openLocks.removeAll(keepingCapacity: false)
         hostFS.resetFuseReferences()
         cachePolicy.deactivate(resetFuseInit: true)
+        wakeAdvisoryLockWaiters()
     }
 
     private func copyEncodedResponse(
@@ -1087,6 +1148,7 @@ public final class FuseServer: @unchecked Sendable {
             anomalyLog.log(describeStaleHandle(payload.leUInt64(at: 0), nodeID: header.nodeID, op: "FLUSH"))
             return errorResponse(unique: header.unique, errno: EBADF)
         }
+        releaseAdvisoryLocks(nodeID: header.nodeID, owner: payload.leUInt64(at: 16))
         return successResponse(unique: header.unique, payload: [])
     }
 
@@ -1103,6 +1165,7 @@ public final class FuseServer: @unchecked Sendable {
             anomalyLog.log(describeStaleHandle(payload.leUInt64(at: 0), nodeID: header.nodeID, op: "FLUSH(direct)"))
             return writeErrorResponse(unique: header.unique, errno: EBADF, writable: writable)
         }
+        releaseAdvisoryLocks(nodeID: header.nodeID, owner: payload.leUInt64(at: 16))
         return writeEmptySuccessResponse(unique: header.unique, writable: writable)
     }
 
@@ -1173,8 +1236,282 @@ public final class FuseServer: @unchecked Sendable {
 
     private func handleReleaseFile(header: FuseInHeader, payload: ArraySlice<UInt8>) -> [UInt8] {
         guard payload.count >= 8 else { return errorResponse(unique: header.unique, errno: EINVAL) }
-        releaseFile(handle: payload.leUInt64(at: 0))
+        let handle = payload.leUInt64(at: 0)
+        if payload.count >= 24 {
+            releaseAdvisoryLocks(nodeID: header.nodeID, owner: payload.leUInt64(at: 16))
+        }
+        releaseFile(handle: handle)
         return successResponse(unique: header.unique, payload: [])
+    }
+
+    private struct FuseLockRequest {
+        let fileHandle: UInt64
+        let owner: UInt64
+        let start: UInt64
+        let end: UInt64
+        let type: UInt32
+        let pid: UInt32
+        let flags: UInt32
+
+        init(_ payload: ArraySlice<UInt8>) throws {
+            guard payload.count >= 48 else { throw FuseProtocolError.shortFrame }
+            fileHandle = payload.leUInt64(at: 0)
+            owner = payload.leUInt64(at: 8)
+            start = payload.leUInt64(at: 16)
+            end = payload.leUInt64(at: 24)
+            type = payload.leUInt32(at: 32)
+            pid = payload.leUInt32(at: 36)
+            flags = payload.leUInt32(at: 40)
+        }
+
+        var isFlock: Bool { flags & 1 != 0 }
+    }
+
+    private func handleGetLock(header: FuseInHeader, payload: ArraySlice<UInt8>) throws -> [UInt8] {
+        let request = try FuseLockRequest(payload)
+        guard request.flags & ~UInt32(1) == 0,
+              request.type == 0 || request.type == 1 else {
+            return errorResponse(unique: header.unique, errno: EINVAL)
+        }
+        guard let openHandle = loadFile(handle: request.fileHandle),
+              openHandle.nodeID == header.nodeID else {
+            return errorResponse(unique: header.unique, errno: EBADF)
+        }
+        // BSD flock has no query operation and Linux does not issue GETLK for flock requests.
+        guard !request.isFlock else {
+            return errorResponse(unique: header.unique, errno: EOPNOTSUPP)
+        }
+        let descriptor = try advisoryLockDescriptor(
+            nodeID: header.nodeID,
+            owner: request.owner,
+            flock: false,
+            openHandle: openHandle
+        )
+        var record = try darwinLockRecord(request)
+        let rc = descriptor.operationLock.withLock {
+            fcntl(descriptor.fd, F_OFD_GETLK, &record)
+        }
+        guard rc == 0 else { throw HostFSError.systemCall("F_OFD_GETLK", errno) }
+        var response = [UInt8]()
+        if record.l_type == F_UNLCK {
+            response.appendLE(UInt64(0))
+            response.appendLE(UInt64.max)
+            response.appendLE(UInt32(2)) // Linux F_UNLCK
+            response.appendLE(UInt32(0))
+        } else {
+            let start = UInt64(max(0, record.l_start))
+            let end: UInt64 = record.l_len == 0
+                ? UInt64.max
+                : start + UInt64(record.l_len - 1)
+            response.appendLE(start)
+            response.appendLE(end)
+            response.appendLE(record.l_type == F_RDLCK ? UInt32(0) : UInt32(1))
+            response.appendLE(UInt32(max(0, record.l_pid)))
+        }
+        return successResponse(unique: header.unique, payload: response)
+    }
+
+    private func handleSetLock(
+        header: FuseInHeader,
+        payload: ArraySlice<UInt8>,
+        blocking: Bool
+    ) throws -> [UInt8] {
+        let request = try FuseLockRequest(payload)
+        guard request.flags & ~UInt32(1) == 0,
+              request.type <= 2 else {
+            return errorResponse(unique: header.unique, errno: EINVAL)
+        }
+        guard let openHandle = loadFile(handle: request.fileHandle),
+              openHandle.nodeID == header.nodeID else {
+            return errorResponse(unique: header.unique, errno: EBADF)
+        }
+        if !request.isFlock, request.type == 1, !openHandle.permitsWrite {
+            return errorResponse(unique: header.unique, errno: EBADF)
+        }
+        let descriptor = try advisoryLockDescriptor(
+            nodeID: header.nodeID,
+            owner: request.owner,
+            flock: request.isFlock,
+            openHandle: openHandle
+        )
+        let rc: Int32
+        if request.isFlock {
+            var operation: Int32
+            switch request.type {
+            case 0: operation = LOCK_SH
+            case 1: operation = LOCK_EX
+            default: operation = LOCK_UN
+            }
+            if request.type != 2 { operation |= LOCK_NB }
+            rc = try performAdvisoryLock(
+                requestUnique: header.unique,
+                ownerKey: AdvisoryLockOwnerKey(
+                    nodeID: header.nodeID,
+                    owner: request.owner,
+                    flock: request.isFlock
+                ),
+                blocking: blocking && request.type != 2,
+                operation: request.isFlock ? "flock" : "F_OFD_SETLK"
+            ) {
+                descriptor.operationLock.withLock { flock(descriptor.fd, operation) }
+            }
+        } else {
+            rc = try performAdvisoryLock(
+                requestUnique: header.unique,
+                ownerKey: AdvisoryLockOwnerKey(
+                    nodeID: header.nodeID,
+                    owner: request.owner,
+                    flock: request.isFlock
+                ),
+                blocking: blocking && request.type != 2,
+                operation: "F_OFD_SETLK"
+            ) {
+                var record = try darwinLockRecord(request)
+                return descriptor.operationLock.withLock {
+                    fcntl(descriptor.fd, F_OFD_SETLK, &record)
+                }
+            }
+        }
+        guard rc == 0 else { throw HostFSError.systemCall(request.isFlock ? "flock" : "F_OFD_SETLK", errno) }
+        if request.type == 2 { wakeAdvisoryLockWaiters() }
+        return successResponse(unique: header.unique, payload: [])
+    }
+
+    /// A Darwin blocking fcntl/flock cannot be reliably cancelled from another FUSE queue. Poll
+    /// the nonblocking primitive at a short bounded interval instead, allowing FUSE_INTERRUPT and
+    /// transport reset to terminate SETLKW without leaking the request or blocking a vCPU.
+    private func performAdvisoryLock(
+        requestUnique: UInt64,
+        ownerKey: AdvisoryLockOwnerKey,
+        blocking: Bool,
+        operation: String,
+        attempt: () throws -> Int32
+    ) throws -> Int32 {
+        guard blocking else { return try attempt() }
+        advisoryLockCondition.withLock {
+            pendingBlockingLocks.insert(requestUnique)
+            pendingBlockingLockOwners[requestUnique] = ownerKey
+            cancelledBlockingLocks.remove(requestUnique)
+        }
+        defer {
+            advisoryLockCondition.withLock {
+                pendingBlockingLocks.remove(requestUnique)
+                pendingBlockingLockOwners.removeValue(forKey: requestUnique)
+                cancelledBlockingLocks.remove(requestUnique)
+            }
+        }
+        while true {
+            advisoryLockCondition.lock()
+            if cancelledBlockingLocks.contains(requestUnique) {
+                advisoryLockCondition.unlock()
+                throw HostFSError.systemCall(operation, EINTR)
+            }
+            let rc: Int32
+            do {
+                rc = try attempt()
+            } catch {
+                advisoryLockCondition.unlock()
+                throw error
+            }
+            if rc == 0 {
+                advisoryLockCondition.unlock()
+                return 0
+            }
+            let savedErrno = errno
+            guard savedErrno == EAGAIN || savedErrno == EACCES else {
+                advisoryLockCondition.unlock()
+                errno = savedErrno
+                return rc
+            }
+            _ = advisoryLockCondition.wait(until: Date(timeIntervalSinceNow: 0.025))
+            advisoryLockCondition.unlock()
+        }
+    }
+
+    private func handleInterrupt(payload: ArraySlice<UInt8>) {
+        guard payload.count >= 8 else { return }
+        let interruptedUnique = payload.leUInt64(at: 0)
+        advisoryLockCondition.withLock {
+            guard pendingBlockingLocks.contains(interruptedUnique) else { return }
+            cancelledBlockingLocks.insert(interruptedUnique)
+            advisoryLockCondition.broadcast()
+        }
+    }
+
+    private func cancelAllBlockingLocks() {
+        advisoryLockCondition.withLock {
+            cancelledBlockingLocks.formUnion(pendingBlockingLocks)
+            advisoryLockCondition.broadcast()
+        }
+    }
+
+    private func cancelBlockingLocks(nodeID: UInt64, owner: UInt64) {
+        advisoryLockCondition.withLock {
+            let requests = pendingBlockingLockOwners.compactMap { unique, key in
+                key.nodeID == nodeID && key.owner == owner ? unique : nil
+            }
+            cancelledBlockingLocks.formUnion(requests)
+            advisoryLockCondition.broadcast()
+        }
+    }
+
+    private func wakeAdvisoryLockWaiters() {
+        advisoryLockCondition.withLock { advisoryLockCondition.broadcast() }
+    }
+
+    private func advisoryLockDescriptor(
+        nodeID: UInt64,
+        owner: UInt64,
+        flock: Bool,
+        openHandle: OpenFileHandle
+    ) throws -> AdvisoryLockDescriptor {
+        let key = AdvisoryLockOwnerKey(nodeID: nodeID, owner: owner, flock: flock)
+        if let existing = lock.withLock({ lockOwners[key] }) { return existing }
+        // HostFS performs a contained openat() and verifies the inode identity, producing a new
+        // open description for each guest lock owner. This is essential on Darwin because simply
+        // opening /dev/fd aliases the source description and collapses different guest owners.
+        let fd = try hostFS.openFile(
+            nodeID: nodeID,
+            accessMode: openHandle.accessMode,
+            append: false
+        )
+        let candidate = AdvisoryLockDescriptor(fd: fd, usesFlock: flock)
+        return lock.withLock {
+            if let existing = lockOwners[key] { return existing }
+            lockOwners[key] = candidate
+            return candidate
+        }
+    }
+
+    private func darwinLockRecord(_ request: FuseLockRequest) throws -> flock {
+        guard request.start <= request.end,
+              request.start <= UInt64(Int64.max) else {
+            throw HostFSError.invalidName("lock range")
+        }
+        var record = flock()
+        record.l_start = off_t(request.start)
+        if request.end == UInt64.max || request.end >= UInt64(Int64.max) {
+            record.l_len = 0
+        } else {
+            let length = request.end - request.start + 1
+            guard length <= UInt64(Int64.max) else { throw HostFSError.invalidName("lock range") }
+            record.l_len = off_t(length)
+        }
+        record.l_pid = pid_t(request.pid)
+        record.l_type = Int16(request.type == 0 ? F_RDLCK : request.type == 1 ? F_WRLCK : F_UNLCK)
+        record.l_whence = Int16(SEEK_SET)
+        return record
+    }
+
+    private func releaseAdvisoryLocks(nodeID: UInt64, owner: UInt64) {
+        guard owner != 0 else { return }
+        cancelBlockingLocks(nodeID: nodeID, owner: owner)
+        var released: [AdvisoryLockDescriptor] = lock.withLock {
+            let keys = lockOwners.keys.filter { $0.nodeID == nodeID && $0.owner == owner }
+            return keys.compactMap { lockOwners.removeValue(forKey: $0) }
+        }
+        released.removeAll(keepingCapacity: false)
+        wakeAdvisoryLockWaiters()
     }
 
     private func handleReleaseDirectory(header: FuseInHeader, payload: ArraySlice<UInt8>) -> [UInt8] {

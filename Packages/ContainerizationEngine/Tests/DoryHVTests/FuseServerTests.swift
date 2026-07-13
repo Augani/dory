@@ -1907,12 +1907,6 @@ struct FuseServerTests {
                 mtimeNsec: 1_000_000_000
             ))
         ))
-        let unsupportedOwner = server.handle(request: request(
-            unique: 79,
-            opcode: .setattr,
-            nodeID: nodeID,
-            payload: FuseProtocol.encodeSetattrIn(FuseSetattrIn(valid: [.uid, .size], size: 2, uid: 0))
-        ))
         let unknownFlag = server.handle(request: request(
             unique: 80,
             opcode: .setattr,
@@ -1929,18 +1923,17 @@ struct FuseServerTests {
         ))
 
         #expect(try FuseProtocol.decodeOutHeader(invalidNanoseconds).error == -EINVAL)
-        #expect(try FuseProtocol.decodeOutHeader(unsupportedOwner).error == -FuseProtocol.linuxErrno(EOPNOTSUPP))
         #expect(try FuseProtocol.decodeOutHeader(unknownFlag).error == -EINVAL)
         #expect(try FuseProtocol.decodeOutHeader(shortFrame).error == -EINVAL)
         #expect(try Data(contentsOf: file) == Data("unchanged".utf8))
     }
 
-    @Test func setattrAcceptsExportedOwnershipWithoutChangingHostOwner() throws {
+    @Test func setattrAcceptsContainerOwnershipWithoutChangingHostOwner() throws {
         let root = try TestFuseServerRoot()
         try root.write("owned", to: "owner.txt")
         let file = root.url.appendingPathComponent("owner.txt")
         let before = try hostStat(file)
-        let server = try FuseServer(hostFS: HostFS(rootPath: root.url.path, guestUID: 1_234, guestGID: 5_678))
+        let server = try FuseServer(hostFS: HostFS(rootPath: root.url.path, guestUID: 1_000, guestGID: 1_000))
         let lookup = server.handle(request: request(
             unique: 82,
             opcode: .lookup,
@@ -1966,6 +1959,16 @@ struct FuseServerTests {
         #expect(payload(from: response).leUInt32(at: 88) == 5_678)
         #expect(after.st_uid == before.st_uid)
         #expect(after.st_gid == before.st_gid)
+
+        let refreshed = server.handle(request: request(
+            unique: 84,
+            opcode: .getattr,
+            nodeID: nodeID,
+            payload: FuseProtocol.encodeGetattrIn(FuseGetattrIn())
+        ))
+        #expect(try FuseProtocol.decodeOutHeader(refreshed).error == 0)
+        #expect(payload(from: refreshed).leUInt32(at: 84) == 1_234)
+        #expect(payload(from: refreshed).leUInt32(at: 88) == 5_678)
     }
 
     @Test func setattrValidatesFileHandleNodeAndSupportsUnlinkedOpenFiles() throws {
@@ -2557,6 +2560,362 @@ struct FuseServerTests {
         #expect(try FuseProtocol.decodeOutHeader(setup).error == -FuseProtocol.linuxErrno(ENOSYS))
         #expect(try FuseProtocol.decodeOutHeader(remove).error == -FuseProtocol.linuxErrno(ENOSYS))
     }
+
+    @Test func flockOwnersConflictShareAndReleaseIndependently() throws {
+        let root = try TestFuseServerRoot()
+        try root.write("lock me", to: "flock.txt")
+        let server = try FuseServer(hostFS: HostFS(rootPath: root.url.path))
+        let lookup = server.handle(request: request(
+            unique: 700,
+            opcode: .lookup,
+            nodeID: HostFS.rootNodeID,
+            payload: Array("flock.txt\0".utf8)
+        ))
+        let nodeID = payload(from: lookup).leUInt64(at: 0)
+        func open(_ unique: UInt64) throws -> UInt64 {
+            let response = server.handle(request: request(
+                unique: unique,
+                opcode: .open,
+                nodeID: nodeID,
+                payload: bytes(UInt32(2)) + bytes(UInt32(0)) // Linux O_RDWR
+            ))
+            #expect(try FuseProtocol.decodeOutHeader(response).error == 0)
+            return payload(from: response).leUInt64(at: 0)
+        }
+        let firstHandle = try open(701)
+        let secondHandle = try open(702)
+        let thirdHandle = try open(703)
+
+        func setLock(
+            _ unique: UInt64,
+            handle: UInt64,
+            owner: UInt64,
+            type: UInt32
+        ) throws -> Int32 {
+            let response = server.handle(request: request(
+                unique: unique,
+                opcode: .setlk,
+                nodeID: nodeID,
+                payload: lockPayload(handle: handle, owner: owner, type: type, flags: 1)
+            ))
+            return try FuseProtocol.decodeOutHeader(response).error
+        }
+
+        #expect(try setLock(704, handle: firstHandle, owner: 1, type: 1) == 0)
+        #expect(try setLock(705, handle: secondHandle, owner: 2, type: 1) == -FuseProtocol.linuxErrno(EAGAIN))
+        let unsupportedQuery = server.handle(request: request(
+            unique: 706,
+            opcode: .getlk,
+            nodeID: nodeID,
+            payload: lockPayload(handle: secondHandle, owner: 2, type: 1, flags: 1)
+        ))
+        #expect(try FuseProtocol.decodeOutHeader(unsupportedQuery).error == -FuseProtocol.linuxErrno(EOPNOTSUPP))
+
+        #expect(try setLock(707, handle: firstHandle, owner: 1, type: 2) == 0)
+        #expect(try setLock(708, handle: secondHandle, owner: 2, type: 0) == 0)
+        #expect(try setLock(709, handle: thirdHandle, owner: 3, type: 0) == 0)
+        #expect(try setLock(710, handle: firstHandle, owner: 1, type: 1) == -FuseProtocol.linuxErrno(EAGAIN))
+
+        let secondRelease = try directReleaseResponse(
+            server: server,
+            request: request(
+                unique: 711,
+                opcode: .release,
+                nodeID: nodeID,
+                payload: releasePayload(handle: secondHandle, owner: 2)
+            )
+        )
+        #expect(try FuseProtocol.decodeOutHeader(secondRelease).error == 0)
+        #expect(try setLock(712, handle: firstHandle, owner: 1, type: 1) == -FuseProtocol.linuxErrno(EAGAIN))
+
+        let thirdRelease = try directReleaseResponse(
+            server: server,
+            request: request(
+                unique: 713,
+                opcode: .release,
+                nodeID: nodeID,
+                payload: releasePayload(handle: thirdHandle, owner: 3)
+            )
+        )
+        #expect(try FuseProtocol.decodeOutHeader(thirdRelease).error == 0)
+        #expect(try setLock(714, handle: firstHandle, owner: 1, type: 1) == 0)
+    }
+
+    @Test func recordLocksPreserveRangesOwnersFlushAndConnectionReset() throws {
+        let root = try TestFuseServerRoot()
+        try root.write("012345678901234567890123456789", to: "record-lock.txt")
+        let hostFS = try HostFS(rootPath: root.url.path)
+        let server = FuseServer(hostFS: hostFS)
+        let lookup = server.handle(request: request(
+            unique: 720,
+            opcode: .lookup,
+            nodeID: HostFS.rootNodeID,
+            payload: Array("record-lock.txt\0".utf8)
+        ))
+        let nodeID = payload(from: lookup).leUInt64(at: 0)
+        func open(_ unique: UInt64) throws -> UInt64 {
+            let response = server.handle(request: request(
+                unique: unique,
+                opcode: .open,
+                nodeID: nodeID,
+                payload: bytes(UInt32(2)) + bytes(UInt32(0))
+            ))
+            #expect(try FuseProtocol.decodeOutHeader(response).error == 0)
+            return payload(from: response).leUInt64(at: 0)
+        }
+        let handles = try (0..<8).map { try open(721 + UInt64($0)) }
+        func setLock(
+            _ unique: UInt64,
+            handle: UInt64,
+            owner: UInt64,
+            start: UInt64,
+            end: UInt64,
+            type: UInt32
+        ) throws -> Int32 {
+            let response = server.handle(request: request(
+                unique: unique,
+                opcode: .setlk,
+                nodeID: nodeID,
+                payload: lockPayload(
+                    handle: handle,
+                    owner: owner,
+                    start: start,
+                    end: end,
+                    type: type
+                )
+            ))
+            return try FuseProtocol.decodeOutHeader(response).error
+        }
+
+        #expect(try setLock(730, handle: handles[0], owner: 11, start: 0, end: 9, type: 0) == 0)
+        #expect(try setLock(731, handle: handles[1], owner: 12, start: 0, end: 9, type: 0) == 0)
+        #expect(try setLock(732, handle: handles[2], owner: 13, start: 0, end: 9, type: 1) == -FuseProtocol.linuxErrno(EAGAIN))
+
+        let query = server.handle(request: request(
+            unique: 733,
+            opcode: .getlk,
+            nodeID: nodeID,
+            payload: lockPayload(handle: handles[2], owner: 13, start: 0, end: 9, type: 1)
+        ))
+        #expect(try FuseProtocol.decodeOutHeader(query).error == 0)
+        let queryPayload = payload(from: query)
+        #expect(queryPayload.leUInt64(at: 0) == 0)
+        #expect(queryPayload.leUInt64(at: 8) == 9)
+        #expect(queryPayload.leUInt32(at: 16) == 0) // Linux F_RDLCK
+
+        #expect(try setLock(734, handle: handles[2], owner: 13, start: 10, end: 19, type: 1) == 0)
+        #expect(try setLock(735, handle: handles[2], owner: 13, start: 10, end: 14, type: 2) == 0)
+        #expect(try setLock(736, handle: handles[3], owner: 14, start: 10, end: 14, type: 1) == 0)
+        #expect(try setLock(737, handle: handles[4], owner: 15, start: 15, end: 19, type: 1) == -FuseProtocol.linuxErrno(EAGAIN))
+
+        _ = server.handle(request: request(
+            unique: 738,
+            opcode: .flush,
+            nodeID: nodeID,
+            payload: flushPayload(handle: handles[0], owner: 11)
+        ))
+        #expect(try setLock(739, handle: handles[5], owner: 16, start: 0, end: 9, type: 1) == -FuseProtocol.linuxErrno(EAGAIN))
+        _ = server.handle(request: request(
+            unique: 740,
+            opcode: .flush,
+            nodeID: nodeID,
+            payload: flushPayload(handle: handles[1], owner: 12)
+        ))
+        #expect(try setLock(741, handle: handles[5], owner: 16, start: 0, end: 9, type: 1) == 0)
+
+        #expect(try setLock(742, handle: handles[6], owner: 17, start: 20, end: 29, type: 1) == 0)
+        server.resetConnection()
+
+        let replacement = try FuseServer(hostFS: HostFS(rootPath: root.url.path))
+        let replacementLookup = replacement.handle(request: request(
+            unique: 743,
+            opcode: .lookup,
+            nodeID: HostFS.rootNodeID,
+            payload: Array("record-lock.txt\0".utf8)
+        ))
+        let replacementNodeID = payload(from: replacementLookup).leUInt64(at: 0)
+        let replacementOpen = replacement.handle(request: request(
+            unique: 744,
+            opcode: .open,
+            nodeID: replacementNodeID,
+            payload: bytes(UInt32(2)) + bytes(UInt32(0))
+        ))
+        let replacementHandle = payload(from: replacementOpen).leUInt64(at: 0)
+        let afterReset = replacement.handle(request: request(
+            unique: 745,
+            opcode: .setlk,
+            nodeID: replacementNodeID,
+            payload: lockPayload(handle: replacementHandle, owner: 18, start: 20, end: 29, type: 1)
+        ))
+        #expect(try FuseProtocol.decodeOutHeader(afterReset).error == 0)
+    }
+
+    @Test func blockingRecordLockWaitsThenAcquiresWithoutLeaking() throws {
+        let root = try TestFuseServerRoot()
+        try root.write("blocking", to: "blocking-lock.txt")
+        let server = try FuseServer(hostFS: HostFS(rootPath: root.url.path))
+        let lookup = server.handle(request: request(
+            unique: 750,
+            opcode: .lookup,
+            nodeID: HostFS.rootNodeID,
+            payload: Array("blocking-lock.txt\0".utf8)
+        ))
+        let nodeID = payload(from: lookup).leUInt64(at: 0)
+        func open(_ unique: UInt64) -> UInt64 {
+            let response = server.handle(request: request(
+                unique: unique,
+                opcode: .open,
+                nodeID: nodeID,
+                payload: bytes(UInt32(2)) + bytes(UInt32(0))
+            ))
+            return payload(from: response).leUInt64(at: 0)
+        }
+        let firstHandle = open(751)
+        let secondHandle = open(752)
+        let firstLock = server.handle(request: request(
+            unique: 753,
+            opcode: .setlk,
+            nodeID: nodeID,
+            payload: lockPayload(handle: firstHandle, owner: 21, start: 0, end: 7, type: 1)
+        ))
+        #expect(try FuseProtocol.decodeOutHeader(firstLock).error == 0)
+
+        let started = DispatchSemaphore(value: 0)
+        let finished = DispatchSemaphore(value: 0)
+        let result = LockedResponse()
+        DispatchQueue.global(qos: .userInitiated).async {
+            started.signal()
+            result.store(server.handle(request: request(
+                unique: 754,
+                opcode: .setlkw,
+                nodeID: nodeID,
+                payload: lockPayload(handle: secondHandle, owner: 22, start: 0, end: 7, type: 1)
+            )))
+            finished.signal()
+        }
+        #expect(started.wait(timeout: .now() + 1) == .success)
+        #expect(finished.wait(timeout: .now() + 0.1) == .timedOut)
+
+        let unlock = server.handle(request: request(
+            unique: 755,
+            opcode: .setlk,
+            nodeID: nodeID,
+            payload: lockPayload(handle: firstHandle, owner: 21, start: 0, end: 7, type: 2)
+        ))
+        #expect(try FuseProtocol.decodeOutHeader(unlock).error == 0)
+        #expect(finished.wait(timeout: .now() + 2) == .success)
+        #expect(try FuseProtocol.decodeOutHeader(result.load()).error == 0)
+
+        let release = server.handle(request: request(
+            unique: 756,
+            opcode: .release,
+            nodeID: nodeID,
+            payload: releasePayload(handle: secondHandle, owner: 22)
+        ))
+        #expect(try FuseProtocol.decodeOutHeader(release).error == 0)
+        let reacquire = server.handle(request: request(
+            unique: 757,
+            opcode: .setlk,
+            nodeID: nodeID,
+            payload: lockPayload(handle: firstHandle, owner: 21, start: 0, end: 7, type: 1)
+        ))
+        #expect(try FuseProtocol.decodeOutHeader(reacquire).error == 0)
+    }
+
+    @Test func interruptCancelsBlockingRecordLockAndLeavesNoOwnerLock() throws {
+        let root = try TestFuseServerRoot()
+        try root.write("interrupt", to: "interrupt-lock.txt")
+        let server = try FuseServer(hostFS: HostFS(rootPath: root.url.path))
+        let lookup = server.handle(request: request(
+            unique: 760,
+            opcode: .lookup,
+            nodeID: HostFS.rootNodeID,
+            payload: Array("interrupt-lock.txt\0".utf8)
+        ))
+        let nodeID = payload(from: lookup).leUInt64(at: 0)
+        func open(_ unique: UInt64) -> UInt64 {
+            let response = server.handle(request: request(
+                unique: unique,
+                opcode: .open,
+                nodeID: nodeID,
+                payload: bytes(UInt32(2)) + bytes(UInt32(0))
+            ))
+            return payload(from: response).leUInt64(at: 0)
+        }
+        let firstHandle = open(761)
+        let secondHandle = open(762)
+        let ownerLock = server.handle(request: request(
+            unique: 763,
+            opcode: .setlk,
+            nodeID: nodeID,
+            payload: lockPayload(handle: firstHandle, owner: 31, start: 0, end: 7, type: 1)
+        ))
+        #expect(try FuseProtocol.decodeOutHeader(ownerLock).error == 0)
+
+        let started = DispatchSemaphore(value: 0)
+        let finished = DispatchSemaphore(value: 0)
+        let result = LockedResponse()
+        DispatchQueue.global(qos: .userInitiated).async {
+            started.signal()
+            result.store(server.handle(request: request(
+                unique: 764,
+                opcode: .setlkw,
+                nodeID: nodeID,
+                payload: lockPayload(handle: secondHandle, owner: 32, start: 0, end: 7, type: 1)
+            )))
+            finished.signal()
+        }
+        #expect(started.wait(timeout: .now() + 1) == .success)
+        #expect(finished.wait(timeout: .now() + 0.1) == .timedOut)
+
+        let interrupt = server.handle(request: request(
+            unique: 765,
+            opcode: .interrupt,
+            nodeID: HostFS.rootNodeID,
+            payload: bytes(UInt64(764))
+        ))
+        #expect(interrupt.isEmpty)
+        #expect(finished.wait(timeout: .now() + 1) == .success)
+        #expect(try FuseProtocol.decodeOutHeader(result.load()).error == -FuseProtocol.linuxErrno(EINTR))
+
+        let unlock = server.handle(request: request(
+            unique: 766,
+            opcode: .setlk,
+            nodeID: nodeID,
+            payload: lockPayload(handle: firstHandle, owner: 31, start: 0, end: 7, type: 2)
+        ))
+        #expect(try FuseProtocol.decodeOutHeader(unlock).error == 0)
+        let cleanAcquire = server.handle(request: request(
+            unique: 767,
+            opcode: .setlk,
+            nodeID: nodeID,
+            payload: lockPayload(handle: secondHandle, owner: 33, start: 0, end: 7, type: 1)
+        ))
+        #expect(try FuseProtocol.decodeOutHeader(cleanAcquire).error == 0)
+
+        let thirdHandle = open(768)
+        let releaseFinished = DispatchSemaphore(value: 0)
+        let releaseResult = LockedResponse()
+        DispatchQueue.global(qos: .userInitiated).async {
+            releaseResult.store(server.handle(request: request(
+                unique: 769,
+                opcode: .setlkw,
+                nodeID: nodeID,
+                payload: lockPayload(handle: thirdHandle, owner: 34, start: 0, end: 7, type: 1)
+            )))
+            releaseFinished.signal()
+        }
+        #expect(releaseFinished.wait(timeout: .now() + 0.1) == .timedOut)
+        let waiterRelease = server.handle(request: request(
+            unique: 770,
+            opcode: .release,
+            nodeID: nodeID,
+            payload: releasePayload(handle: thirdHandle, owner: 34)
+        ))
+        #expect(try FuseProtocol.decodeOutHeader(waiterRelease).error == 0)
+        #expect(releaseFinished.wait(timeout: .now() + 1) == .success)
+        #expect(try FuseProtocol.decodeOutHeader(releaseResult.load()).error == -FuseProtocol.linuxErrno(EINTR))
+    }
 }
 
 private func request(unique: UInt64, opcode: FuseOpcode, nodeID: UInt64, payload: [UInt8] = []) -> [UInt8] {
@@ -2593,6 +2952,45 @@ private func bytes(_ value: UInt32) -> [UInt8] {
 private func bytes(_ value: UInt64) -> [UInt8] {
     var value = value.littleEndian
     return withUnsafeBytes(of: &value) { Array($0) }
+}
+
+private func lockPayload(
+    handle: UInt64,
+    owner: UInt64,
+    start: UInt64 = 0,
+    end: UInt64 = .max,
+    type: UInt32,
+    pid: UInt32 = 42,
+    flags: UInt32 = 0
+) -> [UInt8] {
+    bytes(handle) + bytes(owner) + bytes(start) + bytes(end)
+        + bytes(type) + bytes(pid) + bytes(flags) + bytes(UInt32(0))
+}
+
+private func flushPayload(handle: UInt64, owner: UInt64) -> [UInt8] {
+    bytes(handle) + bytes(UInt32(0)) + bytes(UInt32(0)) + bytes(owner)
+}
+
+private func releasePayload(handle: UInt64, owner: UInt64) -> [UInt8] {
+    bytes(handle) + bytes(UInt32(0)) + bytes(UInt32(0)) + bytes(owner)
+}
+
+private func directReleaseResponse(server: FuseServer, request: [UInt8]) throws -> [UInt8] {
+    let header = try FuseProtocol.decodeInHeader(request)
+    let payload = request[FuseInHeader.byteCount..<Int(header.length)]
+    var destination = [UInt8](repeating: 0, count: FuseOutHeader.byteCount)
+    let count = destination.withUnsafeMutableBytes { buffer -> Int in
+        server.writeReleaseResponse(
+            header: header,
+            payload: payload,
+            writable: [VirtqueueSegment(
+                pointer: buffer.baseAddress!,
+                length: buffer.count,
+                isDeviceWritable: true
+            )]
+        )
+    }
+    return Array(destination.prefix(count))
 }
 
 private func directGetattrResponse(server: FuseServer, request: [UInt8]) throws -> [UInt8] {
@@ -2697,5 +3095,18 @@ private final class TestFuseServerRoot {
 
     func write(_ text: String, to relativePath: String) throws {
         try text.write(to: url.appendingPathComponent(relativePath), atomically: true, encoding: .utf8)
+    }
+}
+
+private final class LockedResponse: @unchecked Sendable {
+    private let lock = NSLock()
+    private var response: [UInt8] = []
+
+    func store(_ response: [UInt8]) {
+        lock.withLock { self.response = response }
+    }
+
+    func load() -> [UInt8] {
+        lock.withLock { response }
     }
 }

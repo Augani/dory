@@ -4,6 +4,26 @@ import Testing
 @testable import DoryHV
 
 struct HostFSTests {
+    @Test func statfsPreservesBlockCountsAboveDarwinStatvfs32BitLimit() {
+        var status = Darwin.statfs()
+        status.f_bsize = 4096
+        status.f_blocks = UInt64(UInt32.max) + 4_194_304
+        status.f_bfree = UInt64(UInt32.max) + 2_097_152
+        status.f_bavail = UInt64(UInt32.max) + 1_048_576
+        status.f_files = UInt64(UInt32.max) + 524_288
+        status.f_ffree = UInt64(UInt32.max) + 262_144
+
+        let translated = HostFS.hostFSStat(from: status)
+
+        #expect(translated.blockSize == 4096)
+        #expect(translated.blocks == status.f_blocks)
+        #expect(translated.blocksFree == status.f_bfree)
+        #expect(translated.blocksAvailable == status.f_bavail)
+        #expect(translated.files == status.f_files)
+        #expect(translated.filesFree == status.f_ffree)
+        #expect(translated.blocks * translated.blockSize > 16 * 1024 * 1024 * 1024 * 1024)
+    }
+
     @Test func inodeGenerationParticipatesInCanonicalIdentity() {
         let original = FileKey(
             device: 7,
@@ -472,6 +492,37 @@ struct HostFSTests {
                     entryName: "b.txt"
                 )
         )
+    }
+
+    @Test func virtualOwnershipFollowsHardLinksAndResetsForHostReplacement() throws {
+        let root = try TestHostFSRoot()
+        try root.write("original", to: "owned.txt")
+        let fs = try HostFS(rootPath: root.url.path, guestUID: 1_000, guestGID: 1_000)
+        let original = try fs.lookup(parent: HostFS.rootNodeID, name: "owned.txt")
+
+        let changed = try fs.applySetattr(
+            nodeID: original.nodeID,
+            request: HostFSSetattrRequest(uid: 999, gid: 998)
+        )
+        #expect(changed.uid == 999)
+        #expect(changed.gid == 998)
+
+        let alias = try fs.link(
+            nodeID: original.nodeID,
+            newParent: HostFS.rootNodeID,
+            name: "alias.txt"
+        )
+        #expect(alias.nodeID == original.nodeID)
+        #expect(alias.attributes.uid == 999)
+        #expect(alias.attributes.gid == 998)
+        #expect(try fs.getattr(nodeID: original.nodeID).uid == 999)
+
+        try root.write("replacement", to: "owned.txt")
+        let replacement = try fs.lookup(parent: HostFS.rootNodeID, name: "owned.txt")
+        #expect(replacement.nodeID != original.nodeID)
+        #expect(replacement.attributes.uid == 1_000)
+        #expect(replacement.attributes.gid == 1_000)
+        #expect(try fs.getattr(nodeID: original.nodeID).uid == 999)
     }
 
     @Test func unlinkingOneHardLinkKeepsCanonicalNodeAliveThroughItsOtherBinding() throws {
@@ -989,6 +1040,18 @@ struct HostFSTests {
         }
     }
 
+    @Test func fifoLookupDoesNotBlockAndIsRejectedBeforeGuestVFSOpen() throws {
+        let root = try TestHostFSRoot()
+        let fifoPath = root.url.appendingPathComponent("host-fifo").path
+        #expect(mkfifo(fifoPath, 0o600) == 0)
+        let fs = try HostFS(rootPath: root.url.path)
+
+        #expect(throws: HostFSError.operationNotSupported("special host file: host-fifo")) {
+            _ = try fs.lookup(parent: HostFS.rootNodeID, name: "host-fifo")
+        }
+        #expect(try fs.readdirplus(nodeID: HostFS.rootNodeID).isEmpty)
+    }
+
     @Test func createWriteFsyncRenameAndUnlinkAreVisibleOnHost() throws {
         let root = try TestHostFSRoot()
         let fs = try HostFS(rootPath: root.url.path)
@@ -1046,6 +1109,31 @@ struct HostFSTests {
 
         #expect(String(decoding: try fs.read(handle: oldRead, offset: 0, count: 32), as: UTF8.self) == "old")
         #expect(try String(contentsOf: root.url.appendingPathComponent("generated.txt"), encoding: .utf8) == "replacement")
+    }
+
+    @Test func exclusiveReadOnlyCreateWithModeZeroReturnsItsDescriptorAndCanBeUnlinked() throws {
+        let root = try TestHostFSRoot()
+        let fs = try HostFS(rootPath: root.url.path)
+        let path = root.url.appendingPathComponent("mode-zero.lock")
+
+        let created = try fs.createFileAndOpen(
+            parent: HostFS.rootNodeID,
+            name: "mode-zero.lock",
+            mode: 0,
+            accessMode: .readOnly,
+            preferredIdentityAccessMode: .readWrite,
+            exclusive: true,
+            syntheticAttributes: true,
+            retainOpenHandle: true
+        )
+        defer { fs.close(handle: created.fd) }
+
+        var status = stat()
+        #expect(fstat(created.fd, &status) == 0)
+        #expect(status.st_mode & 0o7777 == 0)
+        #expect(FileManager.default.fileExists(atPath: path.path))
+        try fs.unlink(parent: HostFS.rootNodeID, name: "mode-zero.lock")
+        #expect(!FileManager.default.fileExists(atPath: path.path))
     }
 
     @Test func preferredCreateIdentityFallsBackToRequestedAccessForRestrictiveHostWinner() throws {

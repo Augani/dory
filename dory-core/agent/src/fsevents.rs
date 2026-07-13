@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::ffi::CString;
 use std::io;
 use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
@@ -410,9 +411,21 @@ fn nudge_path_or_parent(path: &Path) -> io::Result<()> {
                 Err(error)
                     if matches!(
                         error.raw_os_error(),
-                        Some(libc::ENOENT | libc::ENOTDIR | libc::ELOOP)
+                        Some(libc::ENOENT) | Some(libc::ENOTDIR) | Some(libc::ELOOP)
                     ) =>
                 {
+                    candidate = current.parent();
+                    break;
+                }
+                Err(error)
+                    if matches!(error.raw_os_error(), Some(libc::EACCES) | Some(libc::EPERM)) =>
+                {
+                    // The host file may intentionally be write-only or mode 000. The macOS
+                    // virtio-fs server runs as the owning desktop user, so Linux root cannot make
+                    // an O_RDONLY open bypass those host permission bits. A write-only regular
+                    // file is retried with O_WRONLY inside nudge_exact; if neither access mode is
+                    // available, wake the nearest live directory watcher instead of retrying the
+                    // same permanently failing file until coherence restarts the VM.
                     candidate = current.parent();
                     break;
                 }
@@ -429,14 +442,30 @@ fn nudge_path_or_parent(path: &Path) -> io::Result<()> {
 fn nudge_exact(path: &Path) -> io::Result<()> {
     let c_path = CString::new(path.as_os_str().as_bytes())
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "path contains NUL"))?;
-    let fd = unsafe {
-        libc::open(
-            c_path.as_ptr(),
-            libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK,
-        )
-    };
+    let metadata = std::fs::symlink_metadata(path)?;
+    let access_modes = nudge_access_modes(metadata.permissions().mode());
+    let mut fd = -1;
+    let mut last_error = None;
+    for access_mode in access_modes {
+        fd = unsafe {
+            libc::open(
+                c_path.as_ptr(),
+                access_mode | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK,
+            )
+        };
+        if fd >= 0 {
+            break;
+        }
+        let error = io::Error::last_os_error();
+        let permission_error =
+            matches!(error.raw_os_error(), Some(libc::EACCES) | Some(libc::EPERM));
+        last_error = Some(error);
+        if !permission_error {
+            break;
+        }
+    }
     if fd < 0 {
-        return Err(io::Error::last_os_error());
+        return Err(last_error.unwrap_or_else(io::Error::last_os_error));
     }
 
     let result = (|| {
@@ -466,10 +495,21 @@ fn nudge_exact(path: &Path) -> io::Result<()> {
     result
 }
 
+fn nudge_access_modes(mode: u32) -> [libc::c_int; 2] {
+    let kind = mode & libc::S_IFMT as u32;
+    // A write-only host file cannot be reopened O_RDONLY by the unprivileged macOS VMM even when
+    // Linux's caller is root. O_WRONLY without O_TRUNC is sufficient for same-mode fchmod. Keep
+    // directories and ordinarily readable files on the read path first.
+    if kind == libc::S_IFREG as u32 && mode & 0o444 == 0 && mode & 0o222 != 0 {
+        [libc::O_WRONLY, libc::O_RDONLY]
+    } else {
+        [libc::O_RDONLY, libc::O_WRONLY]
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::fs::PermissionsExt;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Barrier};
 
@@ -579,6 +619,42 @@ mod tests {
             0o640
         );
         assert_eq!(std::fs::read(&file).unwrap(), b"unchanged");
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn nudge_write_only_file_uses_nontruncating_write_access_and_mode_zero_falls_back() {
+        let directory = unique_temp_dir();
+        let write_only = directory.join("write-only");
+        let inaccessible = directory.join("inaccessible");
+        std::fs::write(&write_only, b"preserved").unwrap();
+        std::fs::write(&inaccessible, b"also-preserved").unwrap();
+        std::fs::set_permissions(&write_only, std::fs::Permissions::from_mode(0o200)).unwrap();
+        std::fs::set_permissions(&inaccessible, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        assert_eq!(
+            nudge_access_modes(libc::S_IFREG as u32 | 0o200),
+            [libc::O_WRONLY, libc::O_RDONLY]
+        );
+        let outcome = nudge_paths(&[write_only.clone(), inaccessible.clone()]);
+        assert_eq!(outcome.failed_indices, Vec::<u32>::new());
+        assert_eq!(
+            std::fs::metadata(&write_only).unwrap().permissions().mode() & 0o7777,
+            0o200
+        );
+        assert_eq!(
+            std::fs::metadata(&inaccessible)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o7777,
+            0o000
+        );
+
+        std::fs::set_permissions(&write_only, std::fs::Permissions::from_mode(0o600)).unwrap();
+        std::fs::set_permissions(&inaccessible, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(std::fs::read(&write_only).unwrap(), b"preserved");
+        assert_eq!(std::fs::read(&inaccessible).unwrap(), b"also-preserved");
         std::fs::remove_dir_all(directory).unwrap();
     }
 

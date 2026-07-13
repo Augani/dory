@@ -42,6 +42,40 @@ struct HostFSEventRelayTests {
         let flattened = await sink.batches.flatMap { $0.map(\.guestPath) }
         #expect(flattened == ["/work/first", "/work/second"])
     }
+
+    @Test func broadExportObservesOnlyAccessedTopLevelRoots() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dory-fsevents-demand-\(UUID().uuidString)")
+        let projects = root.appendingPathComponent("Projects")
+        let state = root.appendingPathComponent(".dory")
+        let directFile = root.appendingPathComponent("compose.yaml")
+        try FileManager.default.createDirectory(at: projects, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: state, withIntermediateDirectories: true)
+        try Data("services: {}\n".utf8).write(to: directFile)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let share = HostFSEventShare(hostRoot: root.path, guestRoot: root.path)
+        #expect(share.topLevelObservationRoot(
+            forHostPath: projects.appendingPathComponent("Dory/Sources/App.swift").path
+        ) == projects.path)
+        #expect(share.topLevelObservationRoot(forHostPath: root.path) == nil)
+
+        let relay = HostFSEventRelay(
+            shares: [share],
+            observeRootsOnDemand: true,
+            send: { _ in }
+        )
+        #expect(relay.start())
+        defer { relay.stop() }
+        #expect(relay.observationRoots.isEmpty)
+        #expect(relay.observe(hostPath: projects.appendingPathComponent("Dory").path))
+        #expect(relay.observe(hostPath: projects.appendingPathComponent("Other").path))
+        #expect(relay.observationRoots == [projects.path])
+        #expect(relay.observe(hostPath: state.appendingPathComponent("bin").path))
+        #expect(relay.observe(hostPath: directFile.path))
+        #expect(Set(relay.observationRoots) == Set([projects.path, state.path, directFile.path]))
+        #expect(!relay.observationRoots.contains(root.path))
+    }
     @Test func productionSharesRequireAStartedRelayIncludingReadOnlyShares() throws {
         #expect(throws: HostShareCoherenceStartupError.eventRelayUnavailable(
             productionShareCount: 1

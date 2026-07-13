@@ -112,9 +112,10 @@ public enum HostFSTimestampUpdate: Equatable, Sendable {
     case now
 }
 
-/// Host-side subset of one FUSE SETATTR operation. Ownership is intentionally virtual: requests
-/// matching the exported guest identity are accepted without changing the macOS account that owns
-/// the shared tree, while any other identity is rejected before another field can be mutated.
+/// Host-side subset of one FUSE SETATTR operation. Ownership is intentionally virtual: container
+/// UID/GID changes are accepted without changing the macOS account that owns the shared tree. The
+/// export remains user-owned on the host while image entrypoints such as Postgres can perform their
+/// normal recursive `chown` before dropping privileges.
 public struct HostFSSetattrRequest: Equatable, Sendable {
     public var mode: UInt32?
     public var uid: UInt32?
@@ -238,6 +239,9 @@ public final class HostFS: @unchecked Sendable {
     /// this index instead of prefix-scanning every registered key, which turned each CREATE in an
     /// npm-scale install into an O(all known paths) string scan.
     private var knownChildNamesByParentPath: [String: Set<String>] = [:]
+    /// Called after the guest resolves a real host path. Production uses this to subscribe
+    /// FSEvents only to the accessed top-level project/volume instead of the entire export root.
+    private var eventObservationHandler: (@Sendable (String) -> Void)?
     private let lock = NSLock()
 
     /// Deterministic test seam for the narrow unlinkat-to-index-update window.
@@ -307,6 +311,16 @@ public final class HostFS: @unchecked Sendable {
         )
         self.idsByFileKey[FileKey(st)] = [Self.rootNodeID]
         self.idsByRelativePath["", default: []].append(Self.rootNodeID)
+    }
+
+    public func setEventObservationHandler(_ handler: (@Sendable (String) -> Void)?) {
+        lock.withLock { eventObservationHandler = handler }
+    }
+
+    private func notifyEventObservation(for relativePath: String) {
+        guard !relativePath.isEmpty else { return }
+        let handler = lock.withLock { eventObservationHandler }
+        handler?(rootPath + "/" + relativePath)
     }
 
     deinit {
@@ -383,7 +397,12 @@ public final class HostFS: @unchecked Sendable {
             throw HostFSError.staleIdentity(nodeID)
         }
 
-        let attrs = Self.attributes(from: st, nodeID: nodeID, uid: guestUID, gid: guestGID)
+        let attrs = Self.attributes(
+            from: st,
+            nodeID: nodeID,
+            uid: node.attributes.uid,
+            gid: node.attributes.gid
+        )
         if node.fileKey.isSynthetic {
             try reconcileSyntheticIdentity(nodeID: nodeID, from: identity)
             return attrs
@@ -713,6 +732,10 @@ public final class HostFS: @unchecked Sendable {
             throw HostFSError.notDirectory(parent)
         }
         let relative = join(parentNode.relativePath, name)
+        // Arm the narrow top-level observation root before the namespace stat becomes the lookup
+        // linearization point. A host replacement after this call is therefore observable before
+        // Linux can cache the positive result.
+        notifyEventObservation(for: relative)
         var st = stat()
         let result = fstatat(rootFD, cPath(relative), &st, Self.containedStatFlags)
         guard result == 0 else {
@@ -722,6 +745,15 @@ public final class HostFS: @unchecked Sendable {
                 return nil
             }
             throw HostFSError.systemCall("lookup \(relative)", savedErrno)
+        }
+        guard Self.isSupportedFileType(st.st_mode) else {
+            // Linux resolves FIFO open semantics in the VFS before a FUSE OPEN request reaches
+            // userspace. Advertising a host FIFO (or another special inode we cannot proxy) can
+            // therefore block a guest task forever even though openFile rejects non-regular files.
+            // Hide unsupported special files at lookup time so access fails promptly and cannot
+            // pin a VM request queue.
+            detachLookupMiss(relativePath: relative)
+            throw HostFSError.operationNotSupported("special host file: \(relative)")
         }
 
         // A real (non-synthetic) identity is already pinned for the common repeated-lookup case.
@@ -759,8 +791,8 @@ public final class HostFS: @unchecked Sendable {
             let attrs = Self.attributes(
                 from: status,
                 nodeID: currentID,
-                uid: guestUID,
-                gid: guestGID
+                uid: current.attributes.uid,
+                gid: current.attributes.gid
             )
             current.attributes = attrs
             current.linkCountIncludesAttachedBindings = true
@@ -1126,12 +1158,6 @@ public final class HostFS: @unchecked Sendable {
         handle suppliedFD: Int32? = nil,
         request: HostFSSetattrRequest
     ) throws -> HostFSAttributes {
-        if let uid = request.uid, uid != guestUID {
-            throw HostFSError.operationNotSupported("virtual uid \(uid)")
-        }
-        if let gid = request.gid, gid != guestGID {
-            throw HostFSError.operationNotSupported("virtual gid \(gid)")
-        }
         if request.requestsMutation, readOnly {
             throw HostFSError.readOnly
         }
@@ -1149,9 +1175,11 @@ public final class HostFS: @unchecked Sendable {
             return try applySetattr(request, nodeID: nodeID, handle: suppliedFD, initialStatus: initialStatus)
         }
 
-        // UID/GID matching the exported virtual identity and Linux ctime writeback are policy-only
-        // no-ops on macOS. Still return fresh backing attributes rather than the node cache.
+        // UID/GID and Linux ctime writeback are policy-only no-ops on macOS. UID/GID are retained in
+        // the FUSE node so the guest kernel can enforce the requested container ownership without
+        // changing the macOS user's ownership of the backing tree.
         guard request.requiresDescriptorMutation else {
+            updateVirtualOwnership(nodeID: nodeID, uid: request.uid, gid: request.gid)
             return try getattr(nodeID: nodeID)
         }
 
@@ -1229,7 +1257,18 @@ public final class HostFS: @unchecked Sendable {
             let savedErrno = errno
             throw HostFSError.systemCall("fstat setattr result", savedErrno)
         }
+        updateVirtualOwnership(nodeID: nodeID, uid: request.uid, gid: request.gid)
         return refreshCachedAttributes(nodeID: nodeID, from: current)
+    }
+
+    private func updateVirtualOwnership(nodeID: UInt64, uid: UInt32?, gid: UInt32?) {
+        guard uid != nil || gid != nil else { return }
+        lock.withLock {
+            guard var node = nodes[nodeID] else { return }
+            if let uid { node.attributes.uid = uid }
+            if let gid { node.attributes.gid = gid }
+            nodes[nodeID] = node
+        }
     }
 
     private func timestamp(_ update: HostFSTimestampUpdate?) throws -> timespec {
@@ -1281,14 +1320,26 @@ public final class HostFS: @unchecked Sendable {
     }
 
     private func refreshCachedAttributes(nodeID: UInt64, from info: stat) -> HostFSAttributes {
-        let attributes = Self.attributes(from: info, nodeID: nodeID, uid: guestUID, gid: guestGID)
         lock.withLock {
-            guard var node = nodes[nodeID] else { return }
+            guard var node = nodes[nodeID] else {
+                return Self.attributes(
+                    from: info,
+                    nodeID: nodeID,
+                    uid: guestUID,
+                    gid: guestGID
+                )
+            }
+            let attributes = Self.attributes(
+                from: info,
+                nodeID: nodeID,
+                uid: node.attributes.uid,
+                gid: node.attributes.gid
+            )
             node.attributes = attributes
             node.linkCountIncludesAttachedBindings = false
             nodes[nodeID] = node
+            return attributes
         }
-        return attributes
     }
 
     // Clears set-user-ID and, for write/truncate, set-group-ID only when the file is group-executable.
@@ -1661,8 +1712,8 @@ public final class HostFS: @unchecked Sendable {
             let attrs = Self.attributes(
                 from: linked,
                 nodeID: nodeID,
-                uid: guestUID,
-                gid: guestGID
+                uid: pinned.attributes.uid,
+                gid: pinned.attributes.gid
             )
             if var current = nodes[nodeID] {
                 current.attributes = attrs
@@ -1800,8 +1851,18 @@ public final class HostFS: @unchecked Sendable {
         guard savedErrno == 0 else {
             throw HostFSError.systemCall("readdir \(node.relativePath)", savedErrno)
         }
-        return try names.sorted()
-            .map { try lookup(parent: nodeID, name: $0) }
+        var entries: [HostFSEntry] = []
+        for name in names.sorted() {
+            do {
+                entries.append(try lookup(parent: nodeID, name: name))
+            } catch HostFSError.operationNotSupported {
+                // Unsupported host special files are intentionally absent from directory listings
+                // for the same reason direct lookup rejects them: FUSE cannot safely proxy their
+                // host-side blocking/IPC semantics.
+                continue
+            }
+        }
+        return entries
     }
 
     public func statfs() throws -> HostFSStat {
@@ -1810,6 +1871,13 @@ public final class HostFS: @unchecked Sendable {
             let savedErrno = errno
             throw HostFSError.systemCall("fstatfs", savedErrno)
         }
+        return Self.hostFSStat(from: st)
+    }
+
+    /// Darwin's POSIX `statvfs` compatibility structure truncates block counts to 32 bits, which
+    /// wraps host filesystems above 16 TiB at 4 KiB blocks. Keep the native `statfs` fields 64-bit
+    /// all the way into FUSE_STATFS so large external pools cannot become false-ENOSPC mounts.
+    static func hostFSStat(from st: Darwin.statfs) -> HostFSStat {
         let blockSize = UInt64(st.f_bsize)
         let blocks = UInt64(st.f_blocks)
         let blocksFree = UInt64(st.f_bfree)
@@ -2215,8 +2283,8 @@ public final class HostFS: @unchecked Sendable {
                 node.attributes = Self.attributes(
                     from: status,
                     nodeID: id,
-                    uid: guestUID,
-                    gid: guestGID
+                    uid: node.attributes.uid,
+                    gid: node.attributes.gid
                 )
                 node.linkCountIncludesAttachedBindings = true
                 reconciledLinkCount = true
@@ -2397,11 +2465,12 @@ public final class HostFS: @unchecked Sendable {
                             // and make this pathname resolve to the established canonical identity.
                             detachPathBindingLocked(nodeID: currentID, relativePath: relativePath)
                             bindPathLocked(nodeID: canonicalID, relativePath: relativePath)
+                            let canonicalOwner = nodes[canonicalID]?.attributes
                             let attrs = Self.attributes(
                                 from: st,
                                 nodeID: canonicalID,
-                                uid: guestUID,
-                                gid: guestGID
+                                uid: canonicalOwner?.uid ?? guestUID,
+                                gid: canonicalOwner?.gid ?? guestGID
                             )
                             if var canonical = nodes[canonicalID] {
                                 canonical.attributes = attrs
@@ -2421,7 +2490,12 @@ public final class HostFS: @unchecked Sendable {
                         current.fileKey = key
                         insertFileKeyIndexLocked(key, nodeID: currentID)
                     }
-                    let attrs = Self.attributes(from: st, nodeID: currentID, uid: guestUID, gid: guestGID)
+                    let attrs = Self.attributes(
+                        from: st,
+                        nodeID: currentID,
+                        uid: current.attributes.uid,
+                        gid: current.attributes.gid
+                    )
                     current.attributes = attrs
                     current.linkCountIncludesAttachedBindings = true
                     if retainOpenHandle {
@@ -2443,7 +2517,13 @@ public final class HostFS: @unchecked Sendable {
 
             if let canonicalID = canonicalNodeIDLocked(for: key) {
                 bindPathLocked(nodeID: canonicalID, relativePath: relativePath)
-                let attrs = Self.attributes(from: st, nodeID: canonicalID, uid: guestUID, gid: guestGID)
+                let canonicalOwner = nodes[canonicalID]?.attributes
+                let attrs = Self.attributes(
+                    from: st,
+                    nodeID: canonicalID,
+                    uid: canonicalOwner?.uid ?? guestUID,
+                    gid: canonicalOwner?.gid ?? guestGID
+                )
                 if var canonical = nodes[canonicalID] {
                     canonical.attributes = attrs
                     canonical.linkCountIncludesAttachedBindings = true
@@ -2478,6 +2558,7 @@ public final class HostFS: @unchecked Sendable {
         if !result.retainedIdentityFD {
             Darwin.close(identity.fd)
         }
+        notifyEventObservation(for: relativePath)
         return result.entry
     }
 
@@ -2523,7 +2604,7 @@ public final class HostFS: @unchecked Sendable {
     ) -> HostFSEntry {
         var ts = timespec()
         clock_gettime(CLOCK_REALTIME, &ts)
-        return lock.withLock {
+        let entry = lock.withLock {
             // CREATE/MKDIR should normally follow a negative lookup, but a raced host replacement
             // can leave an older identity registered at the same path. Never overwrite that node.
             detachLocked(
@@ -2562,6 +2643,8 @@ public final class HostFS: @unchecked Sendable {
             notePathKeyPresentLocked(relativePath)
             return HostFSEntry(name: name, nodeID: id, attributes: attrs)
         }
+        notifyEventObservation(for: relativePath)
+        return entry
     }
 
     private func join(_ parent: String, _ name: String) -> String {
@@ -2579,6 +2662,14 @@ public final class HostFS: @unchecked Sendable {
             ? Self.containedSymlinkOpenFlags
             : Self.containedOpenFlags
         let directoryFlag = fileType == mode_t(S_IFDIR) ? O_DIRECTORY : 0
+        // LOOKUP pins every visible host identity before FUSE OPEN can reject unsupported file
+        // kinds. Opening a FIFO read-only without O_NONBLOCK waits for a writer and can therefore
+        // wedge the request queue merely by resolving the pathname. Keep special-file identity
+        // discovery non-blocking; regular files, directories, and symlinks retain their existing
+        // open semantics.
+        // Always use O_NONBLOCK because the path may be replaced with a FIFO after the caller's
+        // namespace stat but before openat. It is inert for regular files and directories.
+        let nonBlockingFlag = O_NONBLOCK
         let accessCandidates: [Int32]
         if fileType == mode_t(S_IFREG), !readOnly {
             // One descriptor pins both identity and every access mode the host user currently has.
@@ -2594,7 +2685,8 @@ public final class HostFS: @unchecked Sendable {
             fd = openat(
                 rootFD,
                 cPath(relativePath),
-                O_EVTONLY | access | O_CLOEXEC | directoryFlag | containmentFlags
+                O_EVTONLY | access | O_CLOEXEC | directoryFlag | nonBlockingFlag
+                    | containmentFlags
             )
             if fd >= 0 { break }
             savedErrno = errno
@@ -2611,8 +2703,21 @@ public final class HostFS: @unchecked Sendable {
             Darwin.close(fd)
             throw HostFSError.systemCall("fstat identity \(relativePath)", savedErrno)
         }
+        guard Self.isSupportedFileType(status.st_mode) else {
+            Darwin.close(fd)
+            throw HostFSError.operationNotSupported("special host file: \(relativePath)")
+        }
         identityPinPostOpenTestHook?(relativePath, fd)
         return PinnedIdentity(fd: fd, status: status)
+    }
+
+    private static func isSupportedFileType(_ mode: mode_t) -> Bool {
+        switch mode & mode_t(S_IFMT) {
+        case mode_t(S_IFREG), mode_t(S_IFDIR), mode_t(S_IFLNK):
+            return true
+        default:
+            return false
+        }
     }
 
     /// Pins the identity of a just-created file with one duplicate of its open descriptor. The
@@ -2640,6 +2745,7 @@ public final class HostFS: @unchecked Sendable {
         }
         if status.st_mode & mode_t(S_IFMT) == mode_t(S_IFREG),
            accessMode != .readOnly,
+           status.st_mode & 0o222 != 0,
            !appendAlreadySet,
            fcntl(identityFD, F_SETFL, accessMode.darwinFlag | O_APPEND) != 0 {
             let savedErrno = errno
@@ -2744,8 +2850,8 @@ public final class HostFS: @unchecked Sendable {
                     canonical.attributes = Self.attributes(
                         from: info,
                         nodeID: canonicalID,
-                        uid: guestUID,
-                        gid: guestGID
+                        uid: canonical.attributes.uid,
+                        gid: canonical.attributes.gid
                     )
                     canonical.linkCountIncludesAttachedBindings = false
                     nodes[canonicalID] = canonical
@@ -2757,8 +2863,8 @@ public final class HostFS: @unchecked Sendable {
             current.attributes = Self.attributes(
                 from: info,
                 nodeID: nodeID,
-                uid: guestUID,
-                gid: guestGID
+                uid: current.attributes.uid,
+                gid: current.attributes.gid
             )
             current.linkCountIncludesAttachedBindings = false
             insertFileKeyIndexLocked(key, nodeID: nodeID)

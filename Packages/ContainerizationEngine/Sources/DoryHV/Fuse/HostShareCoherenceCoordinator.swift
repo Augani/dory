@@ -565,7 +565,6 @@ public actor HostShareCoherenceCoordinator {
         // identity, its inode data did not change merely because another name was replaced/removed;
         // touching its pages could spuriously conflict with a dirty mmap. The exact changed path has
         // deletion candidates and may still need content invalidation for its current replacement.
-        let hasNamespaceMutation = change.flags & namespaceMask != 0
         // APFS may coalesce a prior create and a later same-inode host write into one event. The
         // exact changed pathname must still invalidate its data pages even when that coalesced
         // namespace event has no stale identity; otherwise a dirty guest MAP_SHARED folio can

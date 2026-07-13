@@ -117,6 +117,21 @@ public struct HostFSEventShare: Sendable, Equatable {
         return guestRoot == "/" ? "/" + relative : guestRoot + "/" + relative
     }
 
+    /// Returns the narrowest stable FSEvents root for an accessed path: the first real child of
+    /// this broad export. Watching `$HOME/Projects` preserves arbitrary bind reachability without
+    /// subscribing the host daemon to every change anywhere under `$HOME`.
+    public func topLevelObservationRoot(forHostPath path: String) -> String? {
+        guard let (normalized, root) = normalizedPathAndRootInsideShare(path), normalized != root else {
+            return nil
+        }
+        let prefix = root == "/" ? "/" : root + "/"
+        let relative = normalized.dropFirst(prefix.count)
+        guard let first = relative.split(separator: "/", omittingEmptySubsequences: true).first else {
+            return nil
+        }
+        return root == "/" ? "/" + first : root + "/" + first
+    }
+
     /// Predicts the exact path the guest agent will chmod. Missing/deleted entries fall back to the
     /// nearest existing regular file or directory, but never above this share root. Symlinks are not
     /// nudged because the guest opens its final component with O_NOFOLLOW.
@@ -367,6 +382,7 @@ public final class HostFSEventRelay: @unchecked Sendable {
     private let batcher: FSEventBatcher
     private let debounceNanoseconds: UInt64
     private let onFailure: FailureHandler
+    private let observeRootsOnDemand: Bool
     private let queue = DispatchQueue(label: "dev.dory.hostfs.fsevents")
     /// CoreServices owns `queue` and can report UserDropped when its callback cannot drain quickly
     /// enough. URL normalization, share mapping, and pending-dictionary merging are substantially
@@ -374,8 +390,8 @@ public final class HostFSEventRelay: @unchecked Sendable {
     /// and return the FSEvents callback promptly.
     private let processingQueue = DispatchQueue(label: "dev.dory.hostfs.fsevents.processing")
     private let lock = NSLock()
-    private var stream: FSEventStreamRef?
-    private var callbackBox: CallbackBox?
+    private var streams: [String: FSEventStreamRef] = [:]
+    private var callbackBoxes: [String: CallbackBox] = [:]
     private var flushScheduled = false
     private var consecutiveFailures = 0
     private var running = false
@@ -409,6 +425,7 @@ public final class HostFSEventRelay: @unchecked Sendable {
     public init(
         shares: [HostFSEventShare],
         debounceMilliseconds: UInt64 = HostFSEventRelay.defaultDebounceMilliseconds,
+        observeRootsOnDemand: Bool = false,
         send: @escaping SendBatch,
         onFailure: @escaping FailureHandler = { _ in }
     ) {
@@ -419,6 +436,7 @@ public final class HostFSEventRelay: @unchecked Sendable {
             send: send
         )
         self.debounceNanoseconds = debounceMilliseconds * 1_000_000
+        self.observeRootsOnDemand = observeRootsOnDemand
         self.onFailure = onFailure
     }
 
@@ -428,10 +446,42 @@ public final class HostFSEventRelay: @unchecked Sendable {
 
     @discardableResult
     public func start() -> Bool {
-        guard stream == nil, !shares.isEmpty else { return stream != nil }
-        let paths = shares.map(\.hostRoot) as CFArray
+        guard !shares.isEmpty else { return false }
+        let alreadyRunning = lock.withLock { running }
+        if alreadyRunning { return true }
+        lock.withLock {
+            lifecycleGeneration &+= 1
+            running = true
+            flushScheduled = false
+            consecutiveFailures = 0
+        }
+        if observeRootsOnDemand { return true }
+        for root in shares.map(\.hostRoot) {
+            guard startStream(root: root) else {
+                stop()
+                return false
+            }
+        }
+        return true
+    }
+
+    /// Adds one narrow observation root without disturbing existing streams. This is synchronous:
+    /// the FUSE lookup that discovered the path does not return until the stream is live.
+    @discardableResult
+    public func observe(hostPath: String) -> Bool {
+        guard lock.withLock({ running }) else { return false }
+        let roots = shares.compactMap { $0.topLevelObservationRoot(forHostPath: hostPath) }
+        guard let root = roots.sorted(by: { $0.count > $1.count }).first else { return true }
+        if lock.withLock({ streams[root] != nil }) { return true }
+        return startStream(root: root)
+    }
+
+    public var observationRoots: [String] {
+        lock.withLock { streams.keys.sorted() }
+    }
+
+    private func startStream(root: String) -> Bool {
         let box = CallbackBox(relay: self)
-        callbackBox = box
         var context = FSEventStreamContext(
             version: 0,
             info: Unmanaged.passUnretained(box).toOpaque(),
@@ -462,58 +512,56 @@ public final class HostFSEventRelay: @unchecked Sendable {
                 box.relay?.recordFromStream(hostPaths: paths, flags: flags, eventIDs: ids)
             },
             &context,
-            paths,
+            [root] as CFArray,
             FSEventStreamEventId(kFSEventStreamEventIdSinceNow),
             0.05,
             Self.streamCreateFlags
         ) else {
-            callbackBox = nil
             onFailure(HostFSEventRelayError.streamCreationFailed)
             return false
-        }
-        stream = created
-        lock.withLock {
-            lifecycleGeneration &+= 1
-            running = true
-            flushScheduled = false
-            consecutiveFailures = 0
         }
         FSEventStreamSetDispatchQueue(created, queue)
         guard FSEventStreamStart(created) else {
             FSEventStreamInvalidate(created)
             FSEventStreamRelease(created)
-            stream = nil
-            callbackBox = nil
-            lock.withLock {
-                lifecycleGeneration &+= 1
-                running = false
-                flushScheduled = false
-            }
-            batcher.discardPending()
             onFailure(HostFSEventRelayError.streamStartFailed)
             return false
+        }
+        let accepted = lock.withLock { () -> Bool in
+            guard running, streams[root] == nil else { return false }
+            streams[root] = created
+            callbackBoxes[root] = box
+            return true
+        }
+        if !accepted {
+            FSEventStreamStop(created)
+            FSEventStreamInvalidate(created)
+            FSEventStreamRelease(created)
         }
         return true
     }
 
     public func stop() {
-        let existing = stream
-        self.stream = nil
-        lock.withLock {
+        let existing = lock.withLock { () -> (streams: [FSEventStreamRef], boxes: [CallbackBox]) in
+            let existingStreams = Array(streams.values)
+            let existingBoxes = Array(callbackBoxes.values)
+            streams.removeAll()
+            callbackBoxes.removeAll()
             lifecycleGeneration &+= 1
             running = false
             flushScheduled = false
             consecutiveFailures = 0
+            return (existingStreams, existingBoxes)
         }
         batcher.discardPending()
-        if let existing {
-            FSEventStreamStop(existing)
-            FSEventStreamInvalidate(existing)
-            FSEventStreamRelease(existing)
+        for stream in existing.streams {
+            FSEventStreamStop(stream)
+            FSEventStreamInvalidate(stream)
+            FSEventStreamRelease(stream)
         }
-        // The stream context stores an unretained pointer to this box. Keep it alive until stop,
-        // invalidation, and release have drained CoreServices' use of that context.
-        callbackBox = nil
+        // FSEventStreamContext retains an unretained pointer to each box. The local tuple keeps all
+        // boxes alive until every corresponding stream has stopped, invalidated, and released.
+        _ = existing.boxes
     }
 
     public func record(hostPaths: [String], flags: [UInt32], eventIDs: [UInt64]) {

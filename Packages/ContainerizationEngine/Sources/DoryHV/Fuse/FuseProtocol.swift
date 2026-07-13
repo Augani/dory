@@ -32,6 +32,9 @@ public enum FuseOpcode: UInt32, Sendable {
     case readdir = 28
     case releasedir = 29
     case fsyncdir = 30
+    case getlk = 31
+    case setlk = 32
+    case setlkw = 33
     case create = 35
     case interrupt = 36
     case bmap = 37
