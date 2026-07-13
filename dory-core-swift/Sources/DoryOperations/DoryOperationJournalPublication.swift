@@ -14,6 +14,7 @@ extension DoryOperationJournalStore {
         }
         try prepareRoot(fileManager: fileManager)
         let lock = try acquireMutationLock()
+        try requireNoUnfinishedOperation()
         let destination = operationDirectory(for: plan.id)
         guard !Self.pathEntryExists(destination) else {
             throw DoryOperationJournalError.operationExists(plan.id)
@@ -56,6 +57,17 @@ extension DoryOperationJournalStore {
         } catch {
             try? fileManager.removeItem(atPath: partial)
             throw error
+        }
+    }
+
+    private func requireNoUnfinishedOperation() throws {
+        if let unfinished = try list().first(where: {
+            $0.state.status != .completed && $0.state.status != .failed
+        }) {
+            throw DoryOperationJournalError.operationInUse(
+                "Dory operation \(unfinished.plan.id.uuidString.lowercased()) requires recovery "
+                    + "before another data operation can begin"
+            )
         }
     }
 

@@ -319,6 +319,25 @@ final class DoryOperationJournalTests: XCTestCase {
         withExtendedLifetime(first) {}
     }
 
+    func testAbandonedNonterminalJournalBlocksACompetingOperationUntilRecovery() throws {
+        let home = try temporaryHome(named: "abandoned-operation")
+        defer { try? FileManager.default.removeItem(at: home) }
+        let store = try DoryOperationJournalStore(home: home.path)
+        var abandonedLease: DoryOperationLease? = try store.begin(
+            operationPlan(kind: .competitorImport)
+        )
+        let abandonedID = try XCTUnwrap(abandonedLease?.operationID)
+        abandonedLease = nil
+
+        XCTAssertThrowsError(try store.begin(operationPlan(kind: .driveBackup))) { error in
+            guard case let DoryOperationJournalError.operationInUse(message) = error else {
+                return XCTFail("unexpected error: \(error)")
+            }
+            XCTAssertTrue(message.contains(abandonedID.uuidString.lowercased()))
+            XCTAssertTrue(message.contains("requires recovery"))
+        }
+    }
+
     func testDuplicateOperationIDCannotReplaceImmutablePlan() throws {
         let home = try temporaryHome(named: "duplicate")
         defer { try? FileManager.default.removeItem(at: home) }
