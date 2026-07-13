@@ -7,6 +7,104 @@ import XCTest
 // swiftlint:disable file_length
 // swiftlint:disable:next type_body_length
 final class DoryOperationJournalTests: XCTestCase {
+    private struct SemanticOperation {
+        let completenessPlan: DoryOperationCompletenessPlan
+        let journalPlan: DoryOperationPlan
+        let specifications: [DoryOperationSpecification]
+    }
+
+    func testBeginAtomicallyPublishesAndRebindsSemanticCompletenessPlan() throws {
+        let home = try temporaryHome(named: "semantic-plan")
+        defer { try? FileManager.default.removeItem(at: home) }
+        let store = try DoryOperationJournalStore(home: home.path)
+        let semantic = try semanticOperation()
+
+        let lease = try store.begin(
+            semantic.journalPlan,
+            completenessPlan: semantic.completenessPlan,
+            specifications: semantic.specifications
+        )
+
+        XCTAssertEqual(try lease.readCompletenessPlan(), semantic.completenessPlan)
+        XCTAssertEqual(
+            try lease.readSpecification(digest: semantic.specifications[0].digest),
+            semantic.specifications[0].data
+        )
+        XCTAssertEqual(
+            permissions(store.operationDirectory(for: semantic.journalPlan.id) + "/specs/completeness-plan.json"),
+            0o600
+        )
+        XCTAssertEqual(
+            permissions(store.operationDirectory(for: semantic.journalPlan.id) + "/specs/objects"),
+            0o700
+        )
+    }
+
+    func testSemanticPlanBindingMismatchPublishesNothing() throws {
+        let home = try temporaryHome(named: "semantic-mismatch")
+        defer { try? FileManager.default.removeItem(at: home) }
+        let store = try DoryOperationJournalStore(home: home.path)
+        let semantic = try semanticOperation()
+        let journalPlan = operationPlan(kind: .competitorImport)
+
+        XCTAssertThrowsError(try store.begin(
+            journalPlan,
+            completenessPlan: semantic.completenessPlan,
+            specifications: semantic.specifications
+        )) { error in
+            guard case DoryOperationJournalError.invalidPlan = error else {
+                return XCTFail("unexpected error: \(error)")
+            }
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: store.operationDirectory(for: journalPlan.id)))
+    }
+
+    func testSemanticPlanRequiresEveryExactContentAddressedSpecification() throws {
+        let home = try temporaryHome(named: "semantic-spec-missing")
+        defer { try? FileManager.default.removeItem(at: home) }
+        let store = try DoryOperationJournalStore(home: home.path)
+        let semantic = try semanticOperation()
+
+        XCTAssertThrowsError(try store.begin(
+            semantic.journalPlan,
+            completenessPlan: semantic.completenessPlan,
+            specifications: []
+        )) { error in
+            guard case DoryOperationJournalError.invalidPlan = error else {
+                return XCTFail("unexpected error: \(error)")
+            }
+        }
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: store.operationDirectory(for: semantic.journalPlan.id))
+        )
+    }
+
+    func testSemanticSpecificationTamperingFailsClosedOnResume() throws {
+        let home = try temporaryHome(named: "semantic-spec-tamper")
+        defer { try? FileManager.default.removeItem(at: home) }
+        let store = try DoryOperationJournalStore(home: home.path)
+        let semantic = try semanticOperation()
+        let lease = try store.begin(
+            semantic.journalPlan,
+            completenessPlan: semantic.completenessPlan,
+            specifications: semantic.specifications
+        )
+        let specification = semantic.specifications[0]
+        let path = store.operationDirectory(for: semantic.journalPlan.id)
+            + "/specs/objects/" + specification.digest
+        try Data("tampered\n".utf8).write(to: URL(fileURLWithPath: path))
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600],
+            ofItemAtPath: path
+        )
+
+        XCTAssertThrowsError(try lease.readCompletenessPlan()) { error in
+            guard case DoryOperationJournalError.invalidRecord = error else {
+                return XCTFail("unexpected error: \(error)")
+            }
+        }
+    }
+
     func testBeginPublishesPrivateImmutablePlanAndInitialAuditEvent() throws {
         let home = try temporaryHome(named: "begin")
         defer { try? FileManager.default.removeItem(at: home) }
@@ -428,6 +526,48 @@ final class DoryOperationJournalTests: XCTestCase {
             selectionDigest: String(repeating: "3", count: 64),
             dependencyClosureDigest: String(repeating: "4", count: 64),
             successCriteriaDigest: String(repeating: "5", count: 64)
+        )
+    }
+
+    private func semanticOperation() throws -> SemanticOperation {
+        let specification = try DoryOperationSpecification(canonical: [
+            "imageID": "sha256:source-image",
+            "reference": "example/source:latest"
+        ])
+        let image = DoryOperationObjectKey(kind: .image, sourceID: "source-image")
+        let completenessPlan = try DoryOperationPlanner.plan(
+            inventory: [DoryOperationInventoryObject(
+                key: image,
+                sourceFingerprint: OperationPlanningFixtures.digest("1"),
+                specificationDigest: specification.digest
+            )],
+            intents: [DoryOperationObjectIntent(
+                source: image,
+                normalizedTargetName: "example/source:latest",
+                acceptedFinalState: .present
+            )],
+            userSelection: [image],
+            context: OperationPlanningFixtures.context
+        )
+        let journalPlan = try DoryOperationPlan(
+            kind: .competitorImport,
+            createdAt: Date(timeIntervalSince1970: 1_700_000_000),
+            source: DoryOperationAuthority(
+                kind: .dockerEngine,
+                id: "source-authority",
+                fingerprint: OperationPlanningFixtures.digest("1")
+            ),
+            target: DoryOperationAuthority(
+                kind: .dockerEngine,
+                id: "target-authority",
+                fingerprint: OperationPlanningFixtures.digest("2")
+            ),
+            completenessPlan: completenessPlan
+        )
+        return SemanticOperation(
+            completenessPlan: completenessPlan,
+            journalPlan: journalPlan,
+            specifications: [specification]
         )
     }
 

@@ -47,6 +47,51 @@ public final class DoryOperationLease: @unchecked Sendable {
         return try store.readRecord(operationID)
     }
 
+    /// Reads and rebinds the immutable semantic plan. A missing, replaced, or edited plan makes
+    /// the journal unrecoverable instead of allowing an executor to guess what remains.
+    public func readCompletenessPlan() throws -> DoryOperationCompletenessPlan {
+        let record = try read()
+        let specificationsDirectory = try validatedSpecificationsDirectory()
+        let path = specificationsDirectory + "/completeness-plan.json"
+        let data = try DoryOperationJournalStore.secureRead(path, maximumBytes: 32 * 1_024 * 1_024)
+        guard let plan = try? JSONDecoder().decode(DoryOperationCompletenessPlan.self, from: data),
+              let binding = try? plan.journalBinding(),
+              binding.selectionDigest == record.plan.selectionDigest,
+              binding.dependencyClosureDigest == record.plan.dependencyClosureDigest,
+              binding.successCriteriaDigest == record.plan.successCriteriaDigest else {
+            throw DoryOperationJournalError.invalidRecord(path)
+        }
+        for digest in Set(plan.objects.map(\.specificationDigest)) {
+            _ = try readSpecification(digest: digest)
+        }
+        return plan
+    }
+
+    /// Reads one immutable content-addressed object specification and verifies its filename hash.
+    public func readSpecification(digest: String) throws -> Data {
+        guard DoryOperationJournalStore.isDigest(digest) else {
+            throw DoryOperationJournalError.invalidRecord(digest)
+        }
+        let specificationsDirectory = try validatedSpecificationsDirectory()
+        let objectsDirectory = specificationsDirectory + "/objects"
+        try DoryOperationJournalStore.validatePrivateDirectory(objectsDirectory)
+        let path = objectsDirectory + "/" + digest
+        let data = try DoryOperationJournalStore.secureRead(
+            path,
+            maximumBytes: DoryOperationSpecification.maximumBytes
+        )
+        guard !data.isEmpty, DoryOperationJournalStore.digest(data) == digest else {
+            throw DoryOperationJournalError.invalidRecord(path)
+        }
+        return data
+    }
+
+    private func validatedSpecificationsDirectory() throws -> String {
+        let directory = store.operationDirectory(for: operationID) + "/specs"
+        try DoryOperationJournalStore.validatePrivateDirectory(directory)
+        return directory
+    }
+
     @discardableResult
     public func transition(
         to phase: DoryOperationPhase,

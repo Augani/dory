@@ -11,7 +11,7 @@ struct RuntimeSnapshot: Sendable {
     var engineVersion: String = "1.4.0"
 }
 
-nonisolated struct ContainerMount: Sendable, Hashable {
+nonisolated struct ContainerMount: Codable, Sendable, Hashable {
     var type: String
     var source: String?
     var target: String
@@ -73,7 +73,7 @@ enum RuntimeKind: String, Sendable {
     nonisolated var isDockerCompatible: Bool { self == .docker || self == .sharedVM }
 }
 
-struct ContainerSpec: Sendable {
+struct ContainerSpec: Codable, Sendable {
     var name: String
     var image: String
     var platform: String? = nil
@@ -196,7 +196,7 @@ struct DockerLogConfig: Codable, Sendable, Equatable, Hashable {
     var Config: [String: String]? = nil
 }
 
-struct ContainerResourceUpdate: Sendable, Equatable, Hashable {
+struct ContainerResourceUpdate: Codable, Sendable, Equatable, Hashable {
     var nanoCPUs: Int64? = nil
     var cpuShares: Int64? = nil
     var cgroupParent: String? = nil
