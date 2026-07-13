@@ -106,6 +106,7 @@ enum MigrationOperationPlanBuilder {
         _ input: MigrationOperationPlanningInput
     ) throws {
         try validateCapabilities(input)
+        try validateImageIdentities(input.source.snapshot.images)
         let selectedContainerIDs = Set(input.source.snapshot.containers.map(\.id))
         guard Set(input.source.containerSpecifications.keys) == selectedContainerIDs else {
             throw MigrationOperationPlanError.incompleteInventory(
@@ -135,6 +136,18 @@ enum MigrationOperationPlanBuilder {
             throw MigrationOperationPlanError.incompleteInventory(
                 "target network inspections do not exactly match the target network inventory"
             )
+        }
+    }
+
+    private static func validateImageIdentities(_ images: [DockerImage]) throws {
+        var identities = Set<String>()
+        for image in images {
+            guard let identity = MigrationImageTransferExecution.canonicalImageID(image.imageID),
+                  identities.insert(identity).inserted else {
+                throw MigrationOperationPlanError.incompleteInventory(
+                    "source images do not have unique immutable sha256 identities"
+                )
+            }
         }
     }
 

@@ -10,7 +10,10 @@ struct MigrationOperationPlanTests {
         let objects = Dictionary(uniqueKeysWithValues: prepared.completenessPlan.objects.map {
             ($0.source, $0)
         })
-        let image = DoryOperationObjectKey(kind: .image, sourceID: "image-id")
+        let image = DoryOperationObjectKey(
+            kind: .image,
+            sourceID: String(repeating: "a", count: 64)
+        )
         let volume = DoryOperationObjectKey(kind: .volume, sourceID: "db-data")
         let network = DoryOperationObjectKey(kind: .network, sourceID: "backend")
         let layer = DoryOperationObjectKey(kind: .writableLayer, sourceID: "db-id")
@@ -62,6 +65,17 @@ struct MigrationOperationPlanTests {
         scenario.containerSpecifications["api-id"]?.networkMode = "container:missing-db"
 
         #expect(throws: MigrationOperationPlanError.self) {
+            try build(scenario)
+        }
+    }
+
+    @Test func malformedImageIdentityFailsBeforeJournalOrDockerWrites() throws {
+        var scenario = try makeScenario()
+        scenario.source.images[0].imageID = "sha256:not-a-content-digest"
+
+        #expect(throws: MigrationOperationPlanError.incompleteInventory(
+            "source images do not have unique immutable sha256 identities"
+        )) {
             try build(scenario)
         }
     }
@@ -119,7 +133,12 @@ struct MigrationOperationPlanTests {
     }
 
     @Test func unrelatedTargetContainerConfigurationIsBoundExactly() throws {
-        let existing = container(id: "existing-id", name: "existing", status: .stopped)
+        let existing = container(
+            id: "existing-id",
+            name: "existing",
+            status: .stopped,
+            imageID: "sha256:" + String(repeating: "a", count: 64)
+        )
         var firstScenario = try makeScenario()
         firstScenario.target = RuntimeSnapshot(containers: [existing], engineVersion: "27.5.1")
         var firstSpec = ContainerSpec(name: "existing", image: "ghcr.io/example/app:v1")
@@ -253,10 +272,11 @@ private extension MigrationOperationPlanTests {
     }
 
     func makeScenario() throws -> Scenario {
+        let imageID = "sha256:" + String(repeating: "a", count: 64)
         let image = DockerImage(
             repository: "ghcr.io/example/app",
             tag: "v1",
-            imageID: "sha256:image-id",
+            imageID: imageID,
             size: "12 MB",
             created: "now",
             usedByCount: 2,
@@ -276,8 +296,8 @@ private extension MigrationOperationPlanTests {
             subnet: "172.30.0.0/24",
             containerCount: 1
         )
-        let database = container(id: "db-id", name: "db", status: .stopped)
-        let api = container(id: "api-id", name: "api", status: .running)
+        let database = container(id: "db-id", name: "db", status: .stopped, imageID: imageID)
+        let api = container(id: "api-id", name: "api", status: .running, imageID: imageID)
         var databaseSpec = ContainerSpec(name: "db", image: "ghcr.io/example/app:v1")
         databaseSpec.mounts = [
             ContainerMount(type: "volume", source: "db-data", target: "/var/lib/db")
@@ -320,7 +340,7 @@ private extension MigrationOperationPlanTests {
         ], options: [.sortedKeys])
     }
 
-    func container(id: String, name: String, status: RunState) -> Container {
+    func container(id: String, name: String, status: RunState, imageID: String) -> Container {
         Container(
             id: id,
             name: name,
@@ -337,7 +357,7 @@ private extension MigrationOperationPlanTests {
             domain: "",
             command: "",
             restartPolicy: "no",
-            sourceImageID: "sha256:image-id"
+            sourceImageID: imageID
         )
     }
 

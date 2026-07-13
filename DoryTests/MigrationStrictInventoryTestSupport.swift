@@ -205,10 +205,11 @@ extension StrictInventoryTestCase {
     }
 
     private func sourceSnapshot() -> RuntimeSnapshot {
+        let imageID = "sha256:" + String(repeating: "a", count: 64)
         let image = DockerImage(
             repository: "ghcr.io/example/app",
             tag: "v1",
-            imageID: "sha256:image-id",
+            imageID: imageID,
             size: "12 MB",
             created: "now",
             usedByCount: 1,
@@ -229,7 +230,7 @@ extension StrictInventoryTestCase {
             containerCount: 1
         )
         return RuntimeSnapshot(
-            containers: [sourceContainer()],
+            containers: [sourceContainer(imageID: imageID)],
             images: [image],
             volumes: [volume],
             networks: [network],
@@ -237,7 +238,7 @@ extension StrictInventoryTestCase {
         )
     }
 
-    private func sourceContainer() -> Container {
+    private func sourceContainer(imageID: String) -> Container {
         Container(
             id: "container-id",
             name: "app",
@@ -254,7 +255,7 @@ extension StrictInventoryTestCase {
             domain: "",
             command: "",
             restartPolicy: "no",
-            sourceImageID: "sha256:image-id"
+            sourceImageID: imageID
         )
     }
 }
