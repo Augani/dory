@@ -32,6 +32,10 @@ public final class DoryOperationLease: @unchecked Sendable {
     private let lock: EngineStateDirectoryLock
     private let transitionLock = NSLock()
 
+    var operationDirectory: String {
+        store.operationDirectory(for: operationID)
+    }
+
     init(
         store: DoryOperationJournalStore,
         operationID: UUID,
@@ -269,12 +273,23 @@ public final class DoryOperationLease: @unchecked Sendable {
                 toStatus: request.status
             )
         }
+        if request.phase == .completed,
+           request.status == .completed,
+           hasSemanticCompletenessPlan() {
+            _ = try readCompletionLedger()
+        }
         guard request.expectedRevision < UInt64.max else {
             throw DoryOperationJournalError.invalidRecord(journalPath)
         }
         return DoryOperationPreparedTransition(
             record: record,
             result: try terminalResult(for: request, journalPath: journalPath)
+        )
+    }
+
+    private func hasSemanticCompletenessPlan() -> Bool {
+        DoryOperationJournalStore.pathEntryExists(
+            store.operationDirectory(for: operationID) + "/specs/completeness-plan.json"
         )
     }
 

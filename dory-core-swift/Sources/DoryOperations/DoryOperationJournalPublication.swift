@@ -23,9 +23,7 @@ extension DoryOperationJournalStore {
             + UUID().uuidString.lowercased() + ".partial"
         do {
             try Self.createPrivateDirectory(partial)
-            for component in ["specs", "manifests", "logs"] {
-                try Self.createPrivateDirectory(partial + "/" + component)
-            }
+            try Self.createOperationDirectories(in: partial)
             if completenessPlanData != nil {
                 try Self.createPrivateDirectory(partial + "/specs/objects")
             }
@@ -58,6 +56,18 @@ extension DoryOperationJournalStore {
         } catch {
             try? fileManager.removeItem(atPath: partial)
             throw error
+        }
+    }
+
+    private static func createOperationDirectories(in root: String) throws {
+        for component in [
+            "specs",
+            "manifests",
+            "logs",
+            "manifests/objects",
+            "manifests/evidence"
+        ] {
+            try createPrivateDirectory(root + "/" + component)
         }
     }
 
