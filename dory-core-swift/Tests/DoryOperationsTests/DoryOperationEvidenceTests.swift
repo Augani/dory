@@ -8,16 +8,21 @@ final class DoryOperationEvidenceTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: fixture.home) }
         let manifest = Data("{\"verified\":true}\n".utf8)
         let digest = try fixture.lease.publishManifest(manifest)
+        try advance(fixture.lease, to: .staging)
+        let staged = makeStaged(key: fixture.key, manifestDigest: digest)
+        try fixture.lease.publishStagedObject(staged)
+        try advance(fixture.lease, to: .publishing)
         let evidence = makeEvidence(key: fixture.key, manifestDigest: digest)
         try fixture.lease.publishObjectEvidence(evidence)
+        try advance(fixture.lease, to: .validating)
         let ledger = try makeLedger(plan: fixture.plan, evidence: [evidence])
 
         try fixture.lease.publishCompletionLedger(ledger)
 
         XCTAssertEqual(try fixture.lease.readManifest(digest: digest), manifest)
+        XCTAssertEqual(try fixture.lease.readStagedObjects(), [staged])
         XCTAssertEqual(try fixture.lease.readObjectEvidence(), [evidence])
         XCTAssertEqual(try fixture.lease.readCompletionLedger(), ledger)
-        try advanceToValidating(fixture.lease)
         let completed = try fixture.lease.transition(
             to: .completed,
             status: .completed,
@@ -30,7 +35,7 @@ final class DoryOperationEvidenceTests: XCTestCase {
     func testSemanticCompletionRequiresCompleteDurableLedger() throws {
         let fixture = try makeFixture(name: "missing-ledger")
         defer { try? FileManager.default.removeItem(at: fixture.home) }
-        try advanceToValidating(fixture.lease)
+        try advance(fixture.lease, to: .validating)
 
         XCTAssertThrowsError(try fixture.lease.transition(
             to: .completed,
@@ -51,6 +56,7 @@ final class DoryOperationEvidenceTests: XCTestCase {
         let digest = try fixture.lease.publishManifest(Data("manifest\n".utf8))
         let evidence = makeEvidence(key: fixture.key, manifestDigest: digest)
         let ledger = try makeLedger(plan: fixture.plan, evidence: [evidence])
+        try advance(fixture.lease, to: .validating)
 
         XCTAssertThrowsError(try fixture.lease.publishCompletionLedger(ledger)) { error in
             guard case DoryOperationJournalError.invalidRecord = error else {
@@ -63,8 +69,12 @@ final class DoryOperationEvidenceTests: XCTestCase {
         let fixture = try makeFixture(name: "tamper")
         defer { try? FileManager.default.removeItem(at: fixture.home) }
         let digest = try fixture.lease.publishManifest(Data("original\n".utf8))
+        try advance(fixture.lease, to: .staging)
+        try fixture.lease.publishStagedObject(makeStaged(key: fixture.key, manifestDigest: digest))
+        try advance(fixture.lease, to: .publishing)
         let evidence = makeEvidence(key: fixture.key, manifestDigest: digest)
         try fixture.lease.publishObjectEvidence(evidence)
+        try advance(fixture.lease, to: .validating)
         try fixture.lease.publishCompletionLedger(try makeLedger(plan: fixture.plan, evidence: [evidence]))
         let path = fixture.store.operationDirectory(for: fixture.operationID)
             + "/manifests/objects/" + digest
@@ -82,8 +92,12 @@ final class DoryOperationEvidenceTests: XCTestCase {
         let fixture = try makeFixture(name: "frozen")
         defer { try? FileManager.default.removeItem(at: fixture.home) }
         let digest = try fixture.lease.publishManifest(Data("manifest\n".utf8))
+        try advance(fixture.lease, to: .staging)
+        try fixture.lease.publishStagedObject(makeStaged(key: fixture.key, manifestDigest: digest))
+        try advance(fixture.lease, to: .publishing)
         let evidence = makeEvidence(key: fixture.key, manifestDigest: digest)
         try fixture.lease.publishObjectEvidence(evidence)
+        try advance(fixture.lease, to: .validating)
         try fixture.lease.publishCompletionLedger(try makeLedger(plan: fixture.plan, evidence: [evidence]))
 
         XCTAssertThrowsError(try fixture.lease.publishObjectEvidence(evidence)) { error in
@@ -91,6 +105,32 @@ final class DoryOperationEvidenceTests: XCTestCase {
                 return XCTFail("unexpected error: \(error)")
             }
         }
+    }
+
+    func testStagingAndFinalEvidenceAreDistinctAndPhaseBound() throws {
+        let fixture = try makeFixture(name: "staging-phase")
+        defer { try? FileManager.default.removeItem(at: fixture.home) }
+        let manifestDigest = try fixture.lease.publishManifest(Data("manifest\n".utf8))
+        let staged = makeStaged(key: fixture.key, manifestDigest: manifestDigest)
+
+        XCTAssertThrowsError(try fixture.lease.publishStagedObject(staged))
+        try advance(fixture.lease, to: .staging)
+        try fixture.lease.publishStagedObject(staged)
+        try fixture.lease.publishStagedObject(staged)
+        XCTAssertEqual(try fixture.lease.readStagedObjects(), [staged])
+
+        XCTAssertThrowsError(try fixture.lease.publishObjectEvidence(
+            makeEvidence(key: fixture.key, manifestDigest: manifestDigest)
+        ))
+        try advance(fixture.lease, to: .publishing)
+        let mismatched = DoryOperationObjectEvidence(
+            source: fixture.key,
+            verifiedTarget: DoryOperationTargetIdentity(id: "other", fingerprint: digest("a")),
+            postPublicationTarget: DoryOperationTargetIdentity(id: "other", fingerprint: digest("a")),
+            verificationManifestDigest: manifestDigest,
+            finalState: .present
+        )
+        XCTAssertThrowsError(try fixture.lease.publishObjectEvidence(mismatched))
     }
 }
 
@@ -194,6 +234,18 @@ private extension DoryOperationEvidenceTests {
         )
     }
 
+    func makeStaged(
+        key: DoryOperationObjectKey,
+        manifestDigest: String
+    ) -> DoryOperationStagedObject {
+        DoryOperationStagedObject(
+            source: key,
+            verifiedTarget: DoryOperationTargetIdentity(id: "target-image", fingerprint: digest("9")),
+            verificationManifestDigest: manifestDigest,
+            disposition: .createdOperationOwned
+        )
+    }
+
     func makeLedger(
         plan: DoryOperationCompletenessPlan,
         evidence: [DoryOperationObjectEvidence]
@@ -206,8 +258,12 @@ private extension DoryOperationEvidenceTests {
         )
     }
 
-    func advanceToValidating(_ lease: DoryOperationLease) throws {
+    func advance(
+        _ lease: DoryOperationLease,
+        to destination: DoryOperationPhase
+    ) throws {
         let phases: [DoryOperationPhase] = [
+            .planned,
             .quiescing,
             .staging,
             .verifying,
@@ -215,11 +271,16 @@ private extension DoryOperationEvidenceTests {
             .publishing,
             .validating
         ]
-        for (revision, phase) in phases.enumerated() {
-            try lease.transition(
+        var state = try lease.read().state
+        guard let start = phases.firstIndex(of: state.phase),
+              let end = phases.firstIndex(of: destination), start <= end else {
+            return XCTFail("invalid test phase transition")
+        }
+        for phase in phases.dropFirst(start + 1).prefix(end - start) {
+            state = try lease.transition(
                 to: phase,
                 status: .running,
-                expectedRevision: UInt64(revision),
+                expectedRevision: state.revision,
                 stepID: "phase.\(phase.rawValue)"
             )
         }

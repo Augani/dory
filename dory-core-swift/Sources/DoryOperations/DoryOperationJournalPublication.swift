@@ -77,6 +77,7 @@ extension DoryOperationJournalStore {
             "manifests",
             "logs",
             "manifests/objects",
+            "manifests/staged",
             "manifests/evidence"
         ] {
             try createPrivateDirectory(root + "/" + component)

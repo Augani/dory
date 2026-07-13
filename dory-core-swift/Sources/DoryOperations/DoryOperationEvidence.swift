@@ -1,5 +1,38 @@
 import Foundation
 
+public enum DoryOperationStagingDisposition: String, Codable, Sendable, Equatable {
+    case createdOperationOwned
+    case recoveredOperationOwned
+    case reusedPreexisting
+}
+
+/// Durable proof that one planned object was written and read back successfully, but has not yet
+/// been published to users. Final evidence is a separate record created after publication.
+public struct DoryOperationStagedObject: Codable, Sendable, Equatable {
+    public let source: DoryOperationObjectKey
+    public let verifiedTarget: DoryOperationTargetIdentity
+    public let verificationManifestDigest: String
+    public let disposition: DoryOperationStagingDisposition
+
+    public init(
+        source: DoryOperationObjectKey,
+        verifiedTarget: DoryOperationTargetIdentity,
+        verificationManifestDigest: String,
+        disposition: DoryOperationStagingDisposition
+    ) {
+        self.source = source
+        self.verifiedTarget = verifiedTarget
+        self.verificationManifestDigest = verificationManifestDigest
+        self.disposition = disposition
+    }
+
+    var isValid: Bool {
+        verifiedTarget.isValid
+            && DoryOperationJournalStore.isDigest(verificationManifestDigest)
+            && (disposition != .reusedPreexisting || source.kind == .image)
+    }
+}
+
 /// Durable, content-addressed verification data for one semantic operation. Manifests retain the
 /// exact read-back bytes used by an executor, while evidence files retain the verified target
 /// identity for every selected object. A semantic journal cannot transition to completed until a
@@ -43,34 +76,92 @@ extension DoryOperationLease {
         return data
     }
 
+    public func publishStagedObject(_ staged: DoryOperationStagedObject) throws {
+        try ensureEvidenceIsWritable()
+        let record = try read()
+        let plan = try readCompletenessPlan()
+        guard record.state.phase == .staging || record.state.phase == .verifying,
+              staged.isValid,
+              plan.selectedObjectKeys.contains(staged.source) else {
+            throw DoryOperationJournalError.invalidRecord("unplanned staged operation object")
+        }
+        _ = try readManifest(digest: staged.verificationManifestDigest)
+        let data = try DoryOperationJournalStore.encoded(staged, pretty: false)
+        let path = try stagedDirectory() + "/" + Self.evidenceFileName(for: staged.source)
+        if DoryOperationJournalStore.pathEntryExists(path) {
+            guard try DoryOperationJournalStore.secureRead(
+                path,
+                maximumBytes: DoryOperationSpecification.maximumBytes
+            ) == data else {
+                throw DoryOperationJournalError.invalidRecord(path)
+            }
+            return
+        }
+        try DoryOperationJournalStore.publish(data, to: path)
+    }
+
+    public func readStagedObjects() throws -> [DoryOperationStagedObject] {
+        let directory = try stagedDirectory()
+        let entries = try evidenceEntries(in: directory)
+        let selected = Set(try readCompletenessPlan().selectedObjectKeys)
+        var staged: [DoryOperationStagedObject] = []
+        for entry in entries {
+            let path = directory + "/" + entry
+            let data = try DoryOperationJournalStore.secureRead(
+                path,
+                maximumBytes: DoryOperationSpecification.maximumBytes
+            )
+            guard let item = try? JSONDecoder().decode(DoryOperationStagedObject.self, from: data),
+                  let canonical = try? DoryOperationJournalStore.encoded(item, pretty: false),
+                  item.isValid,
+                  selected.contains(item.source),
+                  entry == Self.evidenceFileName(for: item.source),
+                  data == canonical else {
+                throw DoryOperationJournalError.invalidRecord(path)
+            }
+            _ = try readManifest(digest: item.verificationManifestDigest)
+            staged.append(item)
+        }
+        return staged.sorted { $0.source < $1.source }
+    }
+
     public func publishObjectEvidence(_ evidence: DoryOperationObjectEvidence) throws {
         try ensureEvidenceIsWritable()
+        let record = try read()
         let plan = try readCompletenessPlan()
+        let staged = try readStagedObjects().first { $0.source == evidence.source }
         let completionPath = try manifestsDirectory() + "/completion-ledger.json"
-        guard evidence.isValid,
+        guard record.state.phase == .publishing || record.state.phase == .validating,
+              evidence.isValid,
               plan.selectedObjectKeys.contains(evidence.source),
+              staged?.verifiedTarget == evidence.verifiedTarget,
+              staged?.verificationManifestDigest == evidence.verificationManifestDigest,
               !DoryOperationJournalStore.pathEntryExists(completionPath) else {
             throw DoryOperationJournalError.invalidRecord("unplanned operation evidence")
         }
         _ = try readManifest(digest: evidence.verificationManifestDigest)
         let data = try DoryOperationJournalStore.encoded(evidence, pretty: false)
         let path = try evidenceDirectory() + "/" + Self.evidenceFileName(for: evidence.source)
+        if DoryOperationJournalStore.pathEntryExists(path) {
+            guard try DoryOperationJournalStore.secureRead(
+                path,
+                maximumBytes: DoryOperationSpecification.maximumBytes
+            ) == data else {
+                throw DoryOperationJournalError.invalidRecord(path)
+            }
+            return
+        }
         try DoryOperationJournalStore.publish(data, to: path)
     }
 
     public func readObjectEvidence() throws -> [DoryOperationObjectEvidence] {
         let directory = try evidenceDirectory()
-        let entries: [String]
-        do {
-            entries = try FileManager.default.contentsOfDirectory(atPath: directory)
-        } catch {
-            throw DoryOperationJournalError.filesystem(
-                "list operation evidence at \(directory): \(error)"
-            )
-        }
+        let entries = try evidenceEntries(in: directory)
+        let staged = Dictionary(uniqueKeysWithValues: try readStagedObjects().map {
+            ($0.source, $0)
+        })
         var evidence: [DoryOperationObjectEvidence] = []
-        for entry in entries.sorted() {
-            if Self.isUnpublishedPartial(entry) { continue }
+        for entry in entries {
             let path = directory + "/" + entry
             let data = try DoryOperationJournalStore.secureRead(
                 path,
@@ -79,6 +170,8 @@ extension DoryOperationLease {
             guard let item = try? JSONDecoder().decode(DoryOperationObjectEvidence.self, from: data),
                   let canonical = try? DoryOperationJournalStore.encoded(item, pretty: false),
                   item.isValid,
+                  staged[item.source]?.verifiedTarget == item.verifiedTarget,
+                  staged[item.source]?.verificationManifestDigest == item.verificationManifestDigest,
                   entry == Self.evidenceFileName(for: item.source),
                   data == canonical else {
                 throw DoryOperationJournalError.invalidRecord(path)
@@ -91,6 +184,9 @@ extension DoryOperationLease {
 
     public func publishCompletionLedger(_ ledger: DoryOperationCompletionLedger) throws {
         try ensureEvidenceIsWritable()
+        guard try read().state.phase == .validating else {
+            throw DoryOperationJournalError.invalidRecord("completion ledger phase")
+        }
         let plan = try readCompletenessPlan()
         let durableEvidence = try readObjectEvidence()
         let proposedEvidence = ledger.evidence.sorted { $0.source < $1.source }
@@ -139,6 +235,24 @@ extension DoryOperationLease {
         let directory = try manifestsDirectory() + "/evidence"
         try DoryOperationJournalStore.validatePrivateDirectory(directory)
         return directory
+    }
+
+    private func stagedDirectory() throws -> String {
+        let directory = try manifestsDirectory() + "/staged"
+        try DoryOperationJournalStore.validatePrivateDirectory(directory)
+        return directory
+    }
+
+    private func evidenceEntries(in directory: String) throws -> [String] {
+        do {
+            return try FileManager.default.contentsOfDirectory(atPath: directory)
+                .filter { !Self.isUnpublishedPartial($0) }
+                .sorted()
+        } catch {
+            throw DoryOperationJournalError.filesystem(
+                "list operation evidence at \(directory): \(error)"
+            )
+        }
     }
 
     private func ensureEvidenceIsWritable() throws {
