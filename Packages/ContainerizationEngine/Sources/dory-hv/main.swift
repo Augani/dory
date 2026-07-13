@@ -455,9 +455,7 @@ case "engine":
                 fail("engine --data-drive requires a non-empty absolute .dorydrive path")
             }
             do {
-                let environmentHome = ProcessInfo.processInfo.environment["HOME"]
-                    .flatMap { $0.hasPrefix("/") ? $0 : nil }
-                    ?? NSHomeDirectory()
+                let environmentHome = DoryDataDrive.processHome()
                 let drive = try DoryDataDrive(home: environmentHome, overrideRoot: value)
                 try drive.prepare()
                 dockerDataDisk = drive.engineDataDiskPath

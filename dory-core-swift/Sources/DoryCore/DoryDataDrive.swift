@@ -49,15 +49,18 @@ public struct DoryDataDrive: Sendable, Equatable {
     public let home: String
     public let root: String
 
-    public init(home: String = NSHomeDirectory(), overrideRoot: String? = nil) throws {
-        let standardizedHome = URL(fileURLWithPath: home).standardizedFileURL.path
+    public init(home: String = DoryDataDrive.processHome(), overrideRoot: String? = nil) throws {
+        guard home.hasPrefix("/") else {
+            throw DoryDataDriveError.invalidRoot(home)
+        }
+        let standardizedHome = try Self.canonicalPath(home)
         let candidate = overrideRoot?.trimmingCharacters(in: .whitespacesAndNewlines)
         let selected = candidate.flatMap { $0.isEmpty ? nil : $0 }
             ?? Self.defaultRoot(home: standardizedHome)
         guard selected.hasPrefix("/") else {
             throw DoryDataDriveError.invalidRoot(selected)
         }
-        let url = URL(fileURLWithPath: selected).standardizedFileURL
+        let url = URL(fileURLWithPath: try Self.canonicalPath(selected))
         guard url.path.hasPrefix("/"), url.lastPathComponent.hasSuffix(".dorydrive"), url.path != "/" else {
             throw DoryDataDriveError.invalidRoot(selected)
         }
@@ -91,11 +94,70 @@ public struct DoryDataDrive: Sendable, Equatable {
         self.root = url.path
     }
 
-    public static func defaultRoot(home: String = NSHomeDirectory()) -> String {
-        URL(fileURLWithPath: home)
+    public static func defaultRoot(home: String = DoryDataDrive.processHome()) -> String {
+        let canonicalHome = (try? canonicalPath(home)) ?? lexicalAbsolutePath(home)
+        return URL(fileURLWithPath: canonicalHome)
             .appendingPathComponent("Library/Application Support/Dory", isDirectory: true)
             .appendingPathComponent(bundleName, isDirectory: true)
-            .standardizedFileURL.path
+            .path
+    }
+
+    /// Returns the explicit process home used by launchd, the standalone runtime, and isolated
+    /// qualification homes. `NSHomeDirectory()` can remain bound to the login account even when a
+    /// caller intentionally supplies `HOME`, so it is only the fallback.
+    public static func processHome(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> String {
+        guard let home = environment["HOME"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+              home.hasPrefix("/") else {
+            return NSHomeDirectory()
+        }
+        return home
+    }
+
+    /// Produces one stable path spelling even when the destination does not exist yet. Foundation
+    /// may remove `/private` while standardizing an existing home but retain it for a missing
+    /// descendant. Canonicalize the deepest existing ancestor once, then append the missing suffix
+    /// so both sides of every authorization/identity comparison use the same filesystem spelling.
+    public static func canonicalPath(_ path: String) throws -> String {
+        guard path.hasPrefix("/") else {
+            throw DoryDataDriveError.invalidRoot(path)
+        }
+        let lexicalPath = lexicalAbsolutePath(path)
+        var ancestor = URL(fileURLWithPath: lexicalPath)
+        var missingComponents: [String] = []
+        while ancestor.path != "/", !pathEntryExists(ancestor.path) {
+            missingComponents.append(ancestor.lastPathComponent)
+            ancestor.deleteLastPathComponent()
+        }
+        guard pathEntryExists(ancestor.path) else {
+            throw DoryDataDriveError.filesystem("canonicalize Dory data-drive path: no existing ancestor for \(path)")
+        }
+        var canonical = ancestor.resolvingSymlinksInPath()
+        for component in missingComponents.reversed() {
+            canonical.appendPathComponent(component)
+        }
+        return canonical.path
+    }
+
+    private static func lexicalAbsolutePath(_ path: String) -> String {
+        var components: [String] = []
+        for component in URL(fileURLWithPath: path).pathComponents {
+            switch component {
+            case "/", "", ".":
+                continue
+            case "..":
+                if !components.isEmpty { components.removeLast() }
+            default:
+                components.append(component)
+            }
+        }
+        return "/" + components.joined(separator: "/")
+    }
+
+    private static func pathEntryExists(_ path: String) -> Bool {
+        var status = stat()
+        return path.withCString { lstat($0, &status) } == 0
     }
 
     public var manifestPath: String { root + "/drive.json" }

@@ -24,6 +24,60 @@ final class DoryDataDriveTests: XCTestCase {
         XCTAssertEqual(drive.root, "/Volumes/Work/Dory.dorydrive")
     }
 
+    func testExistingPrivateTmpHomeAndMissingDescendantShareOneCanonicalSpelling() throws {
+        let privateHome = "/private/tmp/dory-data-drive-alias-\(UUID().uuidString)"
+        try FileManager.default.createDirectory(atPath: privateHome, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: privateHome) }
+
+        let requested = privateHome + "/Library/Application Support/Dory/Dory.dorydrive"
+        let drive = try DoryDataDrive(home: privateHome, overrideRoot: requested)
+
+        XCTAssertEqual(drive.home, privateHome.replacingOccurrences(of: "/private/tmp/", with: "/tmp/"))
+        XCTAssertEqual(drive.root, drive.home + "/Library/Application Support/Dory/Dory.dorydrive")
+        XCTAssertNoThrow(try drive.prepare())
+    }
+
+    func testSymlinkedHomeAndOverrideResolveToPhysicalApplicationSupportRoot() throws {
+        let base = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dory-data-drive-symlink-\(UUID().uuidString)", isDirectory: true)
+        let physicalHome = base.appendingPathComponent("physical", isDirectory: true)
+        let aliasHome = base.appendingPathComponent("alias", isDirectory: true)
+        try FileManager.default.createDirectory(at: physicalHome, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(
+            atPath: aliasHome.path,
+            withDestinationPath: physicalHome.path
+        )
+        defer { try? FileManager.default.removeItem(at: base) }
+
+        let drive = try DoryDataDrive(
+            home: aliasHome.path,
+            overrideRoot: aliasHome.appendingPathComponent(
+                "Library/Application Support/Dory/Dory.dorydrive",
+                isDirectory: true
+            ).path
+        )
+
+        XCTAssertEqual(drive.home, physicalHome.path)
+        XCTAssertEqual(
+            drive.root,
+            physicalHome.appendingPathComponent(
+                "Library/Application Support/Dory/Dory.dorydrive",
+                isDirectory: true
+            ).path
+        )
+    }
+
+    func testProcessHomePrefersAbsoluteEnvironmentValue() {
+        XCTAssertEqual(
+            DoryDataDrive.processHome(environment: ["HOME": "/private/tmp/isolated-home"]),
+            "/private/tmp/isolated-home"
+        )
+        XCTAssertEqual(
+            DoryDataDrive.processHome(environment: ["HOME": "relative-home"]),
+            NSHomeDirectory()
+        )
+    }
+
     func testRejectsRelativeNonBundleAndTransientRoots() {
         XCTAssertThrowsError(try DoryDataDrive(home: "/Users/test", overrideRoot: "relative.dorydrive"))
         XCTAssertThrowsError(try DoryDataDrive(home: "/Users/test", overrideRoot: "/Volumes/Work/Dory"))
