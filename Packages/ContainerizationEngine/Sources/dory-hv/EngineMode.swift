@@ -22,9 +22,6 @@ enum EngineMode {
         var dockerDataDiskPath: String?
         /// Canonical root of the managed data drive, when one owns dockerDataDiskPath.
         var dataDriveRoot: String?
-        /// Ordered rollback sources to clone on first boot. The newest Dory layout is checked before
-        /// the v0.2 Apple-container store; an invalid newer source fails closed.
-        var legacyDockerDataDiskPaths: [String] = []
         /// Offline builds pass a decompressed engine rootfs here so first launch needs no network;
         /// online builds leave it nil and the engine fetches the image once.
         var bundledRootfs: String?
@@ -385,15 +382,10 @@ enum EngineMode {
         try? FileManager.default.removeItem(atPath: bootRootfs)
         try FileManager.default.copyItem(atPath: pristineRootfs, toPath: bootRootfs)
 
-        let dataDiskPreparation = try LegacyDockerDataDisk.prepare(
-            destination: dataDisk,
-            legacySources: configuration.legacyDockerDataDiskPaths
-        )
+        let dataDiskPreparation = try DockerDataDisk.prepare(destination: dataDisk)
         switch dataDiskPreparation {
         case .alreadyPresent:
             break
-        case .adoptedLegacy(let source):
-            note("first run: adopted a non-destructive clone of the legacy data drive from \(source)")
         case .createdBlank:
             note("first run: created docker data disk")
         }
@@ -404,9 +396,7 @@ enum EngineMode {
         case .alreadyPresent:
             // Host validation admits a non-ext4 existing file only when it has zero allocated
             // blocks, which is a first-boot sparse blank left by an interrupted earlier launch.
-            allowDockerDataFormat = try !LegacyDockerDataDisk.isExt4Image(at: dataDisk)
-        case .adoptedLegacy:
-            allowDockerDataFormat = false
+            allowDockerDataFormat = try !DockerDataDisk.isExt4Image(at: dataDisk)
         }
 
         let bootConfigShare = try writeBootConfiguration(stateDirectory: state, script: guestBootScript(

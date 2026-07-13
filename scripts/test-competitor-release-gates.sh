@@ -236,7 +236,7 @@ for fsevent_budget in fseventsd_rss_growth_mb fseventsd_cpu_percent; do
     || fail "exact endurance publication omits $fsevent_budget"
 done
 for data_drive_guard in protectedLocation unsupportedLocation MNT_LOCAL 'type == "apfs"'; do
-  grep -F "$data_drive_guard" dory-core-swift/Sources/DoryCore/DoryDataDrive.swift >/dev/null \
+  grep -F "$data_drive_guard" dory-core-swift/Sources/DoryOperations/DoryDataDrive.swift >/dev/null \
     || fail "managed data drive lost fail-closed guard: $data_drive_guard"
 done
 for data_drive_recovery_guard in \
@@ -274,8 +274,11 @@ grep -F 'body["EnableIPv6"] as? Bool == true' DoryTests/MigrationTests.swift >/d
 if grep -F 'native IPv6 networks are not supported' Dory/Runtime/MigrationAssistant.swift >/dev/null; then
   fail "migration still rejects native IPv6 networks"
 fi
-grep -F -- '--legacy-data-disk' scripts/runtime/dory-engine >/dev/null \
-  || fail "headless runtime has no explicit legacy recovery path"
+if grep -F -- '--legacy-data-disk' scripts/runtime/dory-engine \
+  dory-core-swift/Sources/DoryVMMKit/DoryVMM.swift \
+  Packages/ContainerizationEngine/Sources/dory-hv/main.swift >/dev/null; then
+  fail "public-v1 runtime still exposes a prelaunch Dory disk-adoption interface"
+fi
 grep -F 'dory-dataplane-proxy" --listen "$SOCK" --backend "$BACKEND_SOCK"' \
   scripts/runtime/dory-engine >/dev/null \
   || fail "headless runtime bypasses the Docker-create compatibility dataplane"
@@ -498,11 +501,11 @@ for required_recipe in \
   grep -F -- "$required_recipe" MACHINE_IMAGE_CONTRACT.md >/dev/null \
     || fail "the public supported machine-image recipe lost: $required_recipe"
 done
-grep -F '128 * 1024 * 1024 * 1024' dory-core-swift/Sources/DoryCore/LegacyDockerDataDisk.swift >/dev/null \
+grep -F '128 * 1024 * 1024 * 1024' dory-core-swift/Sources/DoryCore/DockerDataDisk.swift >/dev/null \
   || fail "the shared Docker data disk regressed below the sparse 128 GiB release capacity"
-grep -F 'invalidExistingDisk' dory-core-swift/Sources/DoryCore/LegacyDockerDataDisk.swift >/dev/null \
+grep -F 'invalidExistingDisk' dory-core-swift/Sources/DoryCore/DockerDataDisk.swift >/dev/null \
   || fail "an existing allocated non-ext4 Docker disk can reach first-boot formatting instead of failing closed"
-grep -F 'expectedExt4ImageBytes(at: destination) != nil' dory-core-swift/Sources/DoryCore/LegacyDockerDataDisk.swift >/dev/null \
+grep -F 'expectedExt4ImageBytes(at: destination) != nil' dory-core-swift/Sources/DoryCore/DockerDataDisk.swift >/dev/null \
   || fail "an ext4-magic file with invalid geometry can be enlarged before corruption is rejected"
 grep -F 'engineDiskUsableBytes: Int64 = 120 * 1024 * 1024 * 1024' Dory/Runtime/MigrationAssistant.swift >/dev/null \
   || fail "migration admission trusts sparse logical length instead of the guest-proven ext4 capacity"
@@ -632,8 +635,6 @@ grep -F 'successfulBodyStream' Dory/Runtime/Docker/DockerEngineRuntime.swift \
   || fail "multi-gigabyte migration archives are not demand-driven"
 grep -F 'namedVolumeSizes(on:' Dory/Runtime/MigrationAssistant.swift >/dev/null \
   || fail "migration volume capacity is not matched to the strict inventory by name"
-grep -F 'isLegacyMigrationOwned' Dory/Runtime/MigrationAssistant.swift >/dev/null \
-  || fail "legacy Dory migration artifacts have no safe upgrade classification"
 grep -F 'targetCollisionBlockers' Dory/Runtime/MigrationAssistant.swift >/dev/null \
   || fail "same-name target objects can still become an image-only partial import before the UI blocks"
 grep -F 'replaceableEmptyTargetVolumeNames' Dory/Runtime/MigrationAssistant.swift >/dev/null \
@@ -641,7 +642,7 @@ grep -F 'replaceableEmptyTargetVolumeNames' Dory/Runtime/MigrationAssistant.swif
 grep -F 'original empty target volume was restored' Dory/Runtime/MigrationAssistant.swift >/dev/null \
   || fail "a failed empty-volume adoption can erase the target's original metadata"
 grep -F 'original detached target network was restored' Dory/Runtime/MigrationAssistant.swift >/dev/null \
-  || fail "a failed legacy-network replacement can erase the target's original contract"
+  || fail "a failed source-network replacement can erase the target's original contract"
 grep -F 'imageContractsMatch' Dory/Runtime/MigrationAssistant.swift >/dev/null \
   || fail "daemon-normalized image IDs cannot be verified without weakening tag collisions"
 grep -F 'hostDiskPreflightAvailable' Dory/Runtime/MigrationAssistant.swift >/dev/null \
@@ -780,11 +781,8 @@ done
 grep -F 'DORY_RELEASE_QUALIFICATION_IMAGE' .github/workflows/release.yml \
   scripts/qualify-release-candidate.sh >/dev/null \
   || fail "release qualification does not receive the digest-pinned fixture image"
-grep -F 'DORY_RELEASE_UPGRADE_IMAGE' .github/workflows/release.yml \
-  scripts/release-upgrade-rollback-smoke.sh >/dev/null \
-  || fail "upgrade/rollback gate does not receive the digest-pinned fixture image"
 for exact_release_script in scripts/release-candidate-live-smoke.sh \
-  scripts/release-upgrade-rollback-smoke.sh scripts/qualify-release-candidate.sh; do
+  scripts/qualify-release-candidate.sh; do
   if grep -F 'alpine:latest' "$exact_release_script" >/dev/null; then
     fail "exact release path still contains a mutable Alpine tag: $exact_release_script"
   fi

@@ -70,14 +70,13 @@ The public Release workflow fails closed unless repository configuration include
   legacy fallback) and `HOMEBREW_TAP_DEPLOY_KEY`, an Ed25519 deploy key with write access only to
   `Augani/homebrew-dory`;
 - a clean physical Apple-silicon runner labeled `self-hosted`, `macOS`, `arm64`, `dory`, and
-  `release`, with the compatible Venus virglrenderer/MoltenVK runtime (the v0.2.0 upgrade fixture
-  also requires Apple's `container` CLI with its system already provisioned and running), at least
-  30 GiB free, and a persistent runner home shared by consecutive workflow jobs; and
+  `release`, with the compatible Venus virglrenderer/MoltenVK runtime, at least 30 GiB free, and a
+  persistent runner home shared by consecutive workflow jobs; and
 - only when explicitly running the later roadmap track (`DORY_ENABLE_INTEL_ROADMAP=1`), a physical
   Intel runner labeled `self-hosted`, `macOS`, `intel`, and `dory`. Intel is skipped by default and
   never blocks or contributes artifacts to the Apple-Silicon release.
 
-Release jobs rebuild guest assets from the release SHA, run clean-install plus upgrade/rollback
+Release jobs rebuild guest assets from the release SHA, run two independent clean-install
 candidate gates, then stage immutable artifacts without publishing. The dedicated runner executes
 the isolated 16→128 GiB growth/discard/persistence gate, then the bounded
 runtime/backpressure/restart gate followed by the eight-hour endurance and 25-hour

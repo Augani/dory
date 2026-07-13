@@ -30,9 +30,6 @@
 #   Assets are compressed by dory-hv (LZFSE) and decompressed in-process at first launch via Apple's
 #   Compression framework — no external zstd binary or dylib is bundled.
 #
-# Set DORY_BUNDLE_LEGACY=1 to additionally inject the heavy offline payload (the docker:dind image
-# tarball + Apple's `container` toolchain) for the legacy SharedVMProvisioner path — adds ~600MB.
-#
 # Run on an exported (pre-notarization) app so the payload is signed with the bundle:
 #   scripts/bundle-engine.sh release-build/export/Dory.app
 set -euo pipefail
@@ -1232,19 +1229,6 @@ TRANSFER_HELPER_METADATA="$(python3 scripts/build-transfer-helper-image.py \
   "$(tr -d '\n' < "$RESOURCES/dory-transfer-helper-image-arm64.json")" ] \
   || { echo "    ERROR: transfer-helper metadata mismatch" >&2; exit 1; }
 echo "    bundled Resources/dory-transfer-helper-image-arm64.tar"
-
-if [ "${DORY_BUNDLE_LEGACY:-0}" = "1" ]; then
-  echo "==> DORY_BUNDLE_LEGACY=1: injecting the heavy offline payload (image tar + container toolchain)…"
-  IMAGE="${DORY_ENGINE_IMAGE:-docker.io/library/docker:dind}"
-  CONTAINER_BIN="$(command -v container || true)"
-  [ -n "$CONTAINER_BIN" ] || { echo "container CLI not found; cannot bundle legacy payload"; exit 1; }
-  container image save "$IMAGE" -o "$RESOURCES/dory-engine-image.tar"
-  echo "    bundled Resources/dory-engine-image.tar ($(du -h "$RESOURCES/dory-engine-image.tar" | awk '{print $1}'))"
-  CELLAR="$(dirname "$(dirname "$(readlink -f "$CONTAINER_BIN" || echo "$CONTAINER_BIN")")")"
-  cp "$CONTAINER_BIN" "$HELPERS/container"
-  [ -d "$CELLAR/libexec" ] && cp -R "$CELLAR/libexec" "$HELPERS/libexec"
-  echo "    bundled Helpers/container + libexec"
-fi
 
 # Seal a deterministic digest inventory inside the app before its outer Developer ID signature is
 # applied. This gives support and release validation an exact map of every helper and guest asset,

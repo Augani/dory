@@ -3,12 +3,10 @@ import Foundation
 
 public enum DockerDataDiskPreparation: Sendable, Equatable {
     case alreadyPresent
-    case adoptedLegacy(source: String)
     case createdBlank
 }
 
 public enum DockerDataDiskError: Error, Sendable, Equatable, CustomStringConvertible {
-    case invalidLegacyDisk(String)
     case invalidExistingDisk(String)
     case truncatedDisk(path: String, actualBytes: Int64, expectedBytes: Int64)
     case syscall(String, Int32)
@@ -16,8 +14,6 @@ public enum DockerDataDiskError: Error, Sendable, Equatable, CustomStringConvert
 
     public var description: String {
         switch self {
-        case let .invalidLegacyDisk(path):
-            "legacy Docker data disk is not a valid ext4 image: \(path)"
         case let .invalidExistingDisk(path):
             "existing Docker data disk is neither ext4 nor an unallocated sparse blank: \(path); refusing to format possible user data"
         case let .truncatedDisk(path, actualBytes, expectedBytes):
@@ -30,25 +26,18 @@ public enum DockerDataDiskError: Error, Sendable, Equatable, CustomStringConvert
     }
 }
 
-/// Preserves the v0.2 Apple-container Docker store during the v0.3 engine cutover. Both engines
-/// mount an ext4 filesystem at `/var/lib/docker`, so an APFS clone retains image, container,
-/// network, and volume IDs without exporting and rebuilding them. The source is never moved,
-/// modified, or deleted: rollback continues to use the original disk.
-public enum LegacyDockerDataDisk {
+/// Creates and validates the one public-v1 Docker data disk. Existing bytes are never formatted or
+/// replaced unless the file is a host-proven, entirely unallocated sparse blank from an interrupted
+/// first launch.
+public enum DockerDataDisk {
     /// Logical capacity only: APFS keeps the backing file sparse and allocates physical blocks as
-    /// Docker writes them. 128 GiB avoids a hidden 16 GiB ceiling during engine migration without
+    /// Docker writes them. 128 GiB avoids a hidden 16 GiB ceiling during competitor import without
     /// reserving 128 GiB on the Mac.
     public static let blankDiskBytes: Int64 = 128 * 1024 * 1024 * 1024
-
-    public static func defaultSource(home: String = NSHomeDirectory()) -> String {
-        home + "/Library/Application Support/com.apple.container/volumes/dory-engine-data/volume.img"
-    }
 
     @discardableResult
     public static func prepare(
         destination: String,
-        legacySource: String = defaultSource(),
-        legacySources: [String]? = nil,
         blankSize: Int64 = blankDiskBytes,
         fileManager: FileManager = .default
     ) throws -> DockerDataDiskPreparation {
@@ -71,30 +60,7 @@ public enum LegacyDockerDataDisk {
         let partial = destination + ".partial"
         try? fileManager.removeItem(atPath: partial)
 
-        let sources = legacySources ?? [legacySource]
-        if let source = sources.first(where: { fileManager.fileExists(atPath: $0) }) {
-            guard try isExt4Image(at: source),
-                  try expectedExt4ImageBytes(at: source) != nil else {
-                throw DockerDataDiskError.invalidLegacyDisk(source)
-            }
-            try rejectTruncatedExt4Image(at: source)
-            guard clonefile(source, partial, 0) == 0 else {
-                throw DockerDataDiskError.syscall("clone legacy Docker data disk", errno)
-            }
-            do {
-                try growSparseFileIfNeeded(partial, minimumBytes: blankSize)
-                try sync(path: partial)
-                try fileManager.moveItem(atPath: partial, toPath: destination)
-                let marker = destination + ".migrated-from-legacy"
-                try? (source + "\n").write(toFile: marker, atomically: true, encoding: .utf8)
-                return .adoptedLegacy(source: source)
-            } catch {
-                try? fileManager.removeItem(atPath: partial)
-                throw error
-            }
-        }
-
-        let descriptor = open(partial, O_CREAT | O_EXCL | O_RDWR | O_CLOEXEC, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH)
+        let descriptor = open(partial, O_CREAT | O_EXCL | O_RDWR | O_CLOEXEC, S_IRUSR | S_IWUSR)
         guard descriptor >= 0 else { throw DockerDataDiskError.syscall("create Docker data disk", errno) }
         var failure: DockerDataDiskError?
         if ftruncate(descriptor, blankSize) != 0 {
@@ -118,7 +84,7 @@ public enum LegacyDockerDataDisk {
 
     public static func isExt4Image(at path: String) throws -> Bool {
         let descriptor = open(path, O_RDONLY | O_CLOEXEC)
-        guard descriptor >= 0 else { throw DockerDataDiskError.syscall("open legacy Docker data disk", errno) }
+        guard descriptor >= 0 else { throw DockerDataDiskError.syscall("open Docker data disk", errno) }
         defer { close(descriptor) }
         // EXT4_SUPER_MAGIC is the little-endian 16-bit value at offset 0x38 in the superblock,
         // whose base is byte 1024.
@@ -186,13 +152,6 @@ public enum LegacyDockerDataDisk {
                 expectedBytes: expectedBytes
             )
         }
-    }
-
-    private static func sync(path: String) throws {
-        let descriptor = open(path, O_RDONLY | O_CLOEXEC)
-        guard descriptor >= 0 else { throw DockerDataDiskError.syscall("open cloned Docker data disk", errno) }
-        defer { close(descriptor) }
-        guard fsync(descriptor) == 0 else { throw DockerDataDiskError.syscall("sync cloned Docker data disk", errno) }
     }
 
     private static func isUnallocatedSparseBlank(at path: String) throws -> Bool {

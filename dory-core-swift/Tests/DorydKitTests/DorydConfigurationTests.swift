@@ -578,7 +578,6 @@ final class DorydConfigurationTests: XCTestCase {
 
         let hv = try XCTUnwrap(env.dockerTierConfiguration()?.hvProcess)
         XCTAssertArgumentPair(hv.arguments, "--data-drive", drive)
-        XCTAssertFalse(hv.arguments.contains("--legacy-data-disk"))
         XCTAssertEqual(env.machineManagerConfiguration()?.stateDirectory, drive + "/machines")
     }
 

@@ -40,11 +40,6 @@ if ! bash scripts/test-make-dmg.sh; then
   exit 1
 fi
 
-if ! bash scripts/test-release-upgrade-rollback-smoke.sh; then
-  echo "ci-test: release upgrade/rollback safety tests failed" >&2
-  exit 1
-fi
-
 if ! bash scripts/test-verify-sparkle-update.sh; then
   echo "ci-test: Sparkle signature/key compatibility tests failed" >&2
   exit 1

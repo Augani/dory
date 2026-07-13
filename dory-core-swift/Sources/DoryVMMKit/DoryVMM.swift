@@ -13,7 +13,6 @@ public struct DoryVMMArguments: Sendable, Equatable {
     public var machineID: String?
     public var stateDirectory: String?
     public var dataDriveRoot: String?
-    public var legacyDockerDataDiskPaths: [String] = []
     public var kernelPath: String?
     public var rootfsPath: String?
     public var gvproxyPath: String?
@@ -97,8 +96,6 @@ public func parseDoryVMMArguments(_ raw: [String]) throws -> DoryVMMArguments {
             parsed.stateDirectory = try value(after: argument, from: raw, index: &index)
         case "--data-drive":
             parsed.dataDriveRoot = try value(after: argument, from: raw, index: &index)
-        case "--legacy-data-disk":
-            parsed.legacyDockerDataDiskPaths.append(try value(after: argument, from: raw, index: &index))
         case "--kernel":
             parsed.kernelPath = try value(after: argument, from: raw, index: &index)
         case "--rootfs":
@@ -183,9 +180,7 @@ public struct DoryVZMachineSpec: Sendable, Equatable {
     public var kernelCommandLine: String?
     public var shares: [DoryMachineShareConfiguration]
     public var environment: [String: String]
-    public var legacyDockerDataDiskPath: String?
     public var dockerDataDiskPath: String?
-    public var legacyDockerDataDiskPaths: [String]?
     public var nativeIPv6: Bool
     public var sourcePreservingLAN: Bool
 
@@ -199,9 +194,7 @@ public struct DoryVZMachineSpec: Sendable, Equatable {
         kernelCommandLine: String? = nil,
         shares: [DoryMachineShareConfiguration] = [],
         environment: [String: String] = [:],
-        legacyDockerDataDiskPath: String? = nil,
         dockerDataDiskPath: String? = nil,
-        legacyDockerDataDiskPaths: [String]? = nil,
         nativeIPv6: Bool = false,
         sourcePreservingLAN: Bool = false
     ) {
@@ -214,9 +207,7 @@ public struct DoryVZMachineSpec: Sendable, Equatable {
         self.kernelCommandLine = kernelCommandLine
         self.shares = shares
         self.environment = environment
-        self.legacyDockerDataDiskPath = legacyDockerDataDiskPath
         self.dockerDataDiskPath = dockerDataDiskPath
-        self.legacyDockerDataDiskPaths = legacyDockerDataDiskPaths
         self.nativeIPv6 = nativeIPv6
         self.sourcePreservingLAN = sourcePreservingLAN
     }
@@ -302,11 +293,7 @@ public enum DoryVZConfigurationBuilder {
             let dataDisk = spec.dockerDataDiskPath ?? (spec.stateDirectory + "/docker-data.ext4")
             let preparation: DockerDataDiskPreparation
             do {
-                preparation = try LegacyDockerDataDisk.prepare(
-                    destination: dataDisk,
-                    legacySource: spec.legacyDockerDataDiskPath ?? LegacyDockerDataDisk.defaultSource(),
-                    legacySources: spec.legacyDockerDataDiskPaths
-                )
+                preparation = try DockerDataDisk.prepare(destination: dataDisk)
             } catch {
                 throw DoryVZMachineError.storageAttachment("Docker data disk: \(error)")
             }
@@ -314,9 +301,7 @@ public enum DoryVZConfigurationBuilder {
             case .createdBlank:
                 allowDockerDataFormat = true
             case .alreadyPresent:
-                allowDockerDataFormat = try !LegacyDockerDataDisk.isExt4Image(at: dataDisk)
-            case .adoptedLegacy:
-                allowDockerDataFormat = false
+                allowDockerDataFormat = try !DockerDataDisk.isExt4Image(at: dataDisk)
             }
             dockerDataDiskPath = dataDisk
         }
@@ -647,7 +632,6 @@ public enum DoryVMMMain {
                 sshAgentSocketPath: arguments.sshAgentSocketPath,
                 publishHost: arguments.publishHost,
                 dataDriveRoot: arguments.dataDriveRoot,
-                legacyDockerDataDiskPaths: arguments.legacyDockerDataDiskPaths,
                 onRuntimeCreated: { coordinator.attach($0) }
             )
         }
@@ -712,7 +696,6 @@ public enum DoryVMMMain {
         sshAgentSocketPath: String?,
         publishHost: String,
         dataDriveRoot: String?,
-        legacyDockerDataDiskPaths: [String],
         onRuntimeCreated: (DoryVMMRuntime) -> Void
     ) throws -> DoryVMMRuntime {
         try FileManager.default.createDirectory(atPath: stateDirectory, withIntermediateDirectories: true)
@@ -774,7 +757,6 @@ public enum DoryVMMMain {
             shares: shares,
             environment: environment,
             dockerDataDiskPath: dataDrive?.engineDataDiskPath,
-            legacyDockerDataDiskPaths: legacyDockerDataDiskPaths,
             nativeIPv6: gvproxyNetwork != nil,
             sourcePreservingLAN: sourcePreservingLANClient != nil
         )

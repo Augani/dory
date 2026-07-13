@@ -104,8 +104,8 @@ done
   || { echo "managed data-drive gate: durable selected-drive record missing" >&2; exit 1; }
 selection_hash_before="$(shasum -a 256 "$SELECTION_RECORD" | awk '{print $1}')"
 cp "$SELECTION_RECORD" "$EVIDENCE/selection-before-runtime-reset.json"
-[ ! -e "$DRIVE/engine/docker-data.ext4.migrated-from-legacy" ] \
-  || { echo "managed data-drive gate: fresh launch silently adopted legacy data" >&2; exit 1; }
+[ ! -e "$DRIVE/engine/docker-data.ext4.partial" ] \
+  || { echo "managed data-drive gate: first-launch disk transaction was not finalized" >&2; exit 1; }
 HOME="$RUNTIME_HOME" "$RUNTIME/dory-engine" status >"$EVIDENCE/first-status.log"
 grep -F "data drive: $DRIVE" "$EVIDENCE/first-status.log" >/dev/null \
   || { echo "managed data-drive gate: status lost the selected drive" >&2; exit 1; }
@@ -258,7 +258,7 @@ import json, pathlib, sys
 data = json.loads(pathlib.Path(sys.argv[1]).read_text())
 import datetime, uuid
 assert data["kind"] == "dev.dory.data-drive"
-assert data["schemaVersion"] == 2
+assert data["schemaVersion"] == 1
 assert data["product"] == "Dory"
 uuid.UUID(data["id"])
 assert datetime.datetime.fromisoformat(data["createdAt"].replace("Z", "+00:00")).tzinfo

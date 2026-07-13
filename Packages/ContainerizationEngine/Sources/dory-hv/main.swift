@@ -467,7 +467,6 @@ case "engine":
     var stateDirectory: String?
     var dockerDataDisk: String?
     var dataDriveRoot: String?
-    var legacyDockerDataDisks: [String] = []
     var shares: [VirtioFSShareConfiguration] = []
     var directIPRequested = false
     var directIPSubnet: String?
@@ -515,13 +514,6 @@ case "engine":
             } catch {
                 fail("invalid Dory data drive: \(error)")
             }
-        case "--legacy-data-disk":
-            guard let value = iterator.next(), !value.isEmpty else {
-                fail("engine --legacy-data-disk requires a non-empty path")
-            }
-            legacyDockerDataDisks.append(value)
-        case "--no-legacy-data-import":
-            legacyDockerDataDisks.removeAll()
         case "--mem-mb": memoryMB = iterator.next().flatMap(UInt64.init) ?? memoryMB
         case "--cpus": cpus = iterator.next().flatMap(Int.init) ?? cpus
         case "--direct-ip":
@@ -572,7 +564,6 @@ case "engine":
         stateDirectory: stateDirectory,
         dockerDataDiskPath: dockerDataDisk,
         dataDriveRoot: dataDriveRoot,
-        legacyDockerDataDiskPaths: legacyDockerDataDisks,
         bundledRootfs: rootfs,
         shares: shares,
         directIP: directIPSubnet.map {

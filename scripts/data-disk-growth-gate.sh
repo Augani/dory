@@ -1,5 +1,5 @@
 #!/bin/bash
-# Proves an existing 16 GiB ext4 Docker disk grows safely under the exact bundled runtime.
+# Proves a smaller public-v1 ext4 Docker disk grows safely under the exact bundled runtime.
 set -euo pipefail
 
 usage() {
@@ -38,6 +38,7 @@ done
 [ -n "$RUNTIME" ] || { echo "data-disk growth gate: --runtime is required" >&2; exit 64; }
 [ -n "$DOCKER" ] || { echo "data-disk growth gate: --docker is required" >&2; exit 64; }
 [ -x "$RUNTIME/dory-engine" ] || { echo "data-disk growth gate: runtime supervisor not executable: $RUNTIME/dory-engine" >&2; exit 66; }
+[ -x "$RUNTIME/dory-hv" ] || { echo "data-disk growth gate: hypervisor not executable: $RUNTIME/dory-hv" >&2; exit 66; }
 [ -x "$DOCKER" ] || { echo "data-disk growth gate: Docker CLI not executable: $DOCKER" >&2; exit 66; }
 command -v python3 >/dev/null || { echo "data-disk growth gate: python3 is required" >&2; exit 69; }
 
@@ -58,7 +59,6 @@ RUN_ROOT="$WORKROOT/$RUN_ID"
 RUNTIME_HOME="${DORY_DATA_DISK_RUNTIME_HOME:-$HOME/.ddg-$$}"
 EVIDENCE="$RUN_ROOT/evidence"
 STATE="$RUNTIME_HOME/.dory"
-LEGACY_DISK="$STATE/hv/docker-data.ext4"
 DATA_DRIVE="$RUNTIME_HOME/Library/Application Support/Dory/Dory.dorydrive"
 DISK="$DATA_DRIVE/engine/docker-data.ext4"
 SOCKET="$STATE/engine.sock"
@@ -112,15 +112,18 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-# Preallocate the first GiB without changing the eventual 16 GiB legacy geometry. `nodiscard`
+# Create the canonical public-v1 drive before seeding its smaller ext4 image. Preallocate the first
+# GiB without changing the eventual 16 GiB geometry. `nodiscard`
 # deliberately leaves unused ext4 blocks physically allocated so the exact guest boot must issue
-# virtio DISCARD/fstrim and return them to APFS. This reproduces old Docker images that stay large
-# on the host after layers or volumes were deleted.
-dd if=/dev/zero of="$LEGACY_DISK" bs=1m count=1024 >/dev/null 2>&1
-truncate -s 16g "$LEGACY_DISK"
-"$MKE2FS" -q -F -t ext4 -E nodiscard "$LEGACY_DISK"
-BEFORE_LOGICAL="$(stat -f '%z' "$LEGACY_DISK")"
-BEFORE_ALLOCATED="$(( $(stat -f '%b' "$LEGACY_DISK") * 512 ))"
+# virtio DISCARD/fstrim and return them to APFS. This qualifies forward growth for public-v1 data
+# without importing any prelaunch Dory layout.
+HOME="$RUNTIME_HOME" "$RUNTIME/dory-hv" data-drive select "$DATA_DRIVE" \
+  >"$EVIDENCE/data-drive-select.txt"
+dd if=/dev/zero of="$DISK" bs=1m count=1024 >/dev/null 2>&1
+truncate -s 16g "$DISK"
+"$MKE2FS" -q -F -t ext4 -E nodiscard "$DISK"
+BEFORE_LOGICAL="$(stat -f '%z' "$DISK")"
+BEFORE_ALLOCATED="$(( $(stat -f '%b' "$DISK") * 512 ))"
 MIN_SEED_ALLOCATED=$((768 * 1024 * 1024))
 [ "$BEFORE_ALLOCATED" -ge "$MIN_SEED_ALLOCATED" ] || {
   echo "data-disk growth gate: discard-reclaim seed allocated only $BEFORE_ALLOCATED bytes" >&2
@@ -128,14 +131,10 @@ MIN_SEED_ALLOCATED=$((768 * 1024 * 1024))
 }
 
 START_BEGIN="$(date +%s)"
-HOME="$RUNTIME_HOME" "$RUNTIME/dory-engine" start --legacy-data-disk "$LEGACY_DISK" >"$EVIDENCE/start.log" 2>&1
+HOME="$RUNTIME_HOME" "$RUNTIME/dory-engine" start --data-drive "$DATA_DRIVE" >"$EVIDENCE/start.log" 2>&1
 START_SECONDS=$(( $(date +%s) - START_BEGIN ))
 [ "$START_SECONDS" -le 60 ] || {
   echo "data-disk growth gate: resize/fstrim startup took $START_SECONDS seconds" >&2
-  exit 1
-}
-[ -f "$DISK.migrated-from-legacy" ] || {
-  echo "data-disk growth gate: managed drive did not record legacy adoption" >&2
   exit 1
 }
 TRIM_LOG="$STATE/hv/guest-logs/data-trim.log"
@@ -164,7 +163,7 @@ DOCKER_HOST="unix://$SOCKET" "$DOCKER" run --name "$NAME" --rm -v "$NAME:/data" 
   sh -c "printf '%s' '$MARKER' > /data/marker"
 HOME="$RUNTIME_HOME" "$RUNTIME/dory-engine" stop >"$EVIDENCE/stop.log" 2>&1
 RESTART_BEGIN="$(date +%s)"
-HOME="$RUNTIME_HOME" "$RUNTIME/dory-engine" start --legacy-data-disk "$LEGACY_DISK" >"$EVIDENCE/restart.log" 2>&1
+HOME="$RUNTIME_HOME" "$RUNTIME/dory-engine" start --data-drive "$DATA_DRIVE" >"$EVIDENCE/restart.log" 2>&1
 RESTART_SECONDS=$(( $(date +%s) - RESTART_BEGIN ))
 [ "$RESTART_SECONDS" -le 60 ] || {
   echo "data-disk growth gate: post-growth restart took $RESTART_SECONDS seconds" >&2

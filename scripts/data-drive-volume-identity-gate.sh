@@ -76,7 +76,7 @@ import uuid
 
 manifest = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
 assert manifest["kind"] == "dev.dory.data-drive"
-assert manifest["schemaVersion"] == 2
+assert manifest["schemaVersion"] == 1
 assert manifest["id"].lower() == sys.argv[2]
 volume = manifest["volume"]
 assert volume["filesystem"] == "apfs"

@@ -6,7 +6,7 @@ Last updated: 2026-07-13
 
 **NO-GO for public release today.** Previously completed local gates remain useful evidence, but
 the release must not publish until the newly identified app-layer blockers and the physical
-release-host, credential, and exact upgrade/rollback gates below are complete. Intel is a later
+release-host, credential, and exact clean-v1 gates below are complete. Intel is a later
 roadmap phase and is not part of the Apple-Silicon-first release contract. This document
 intentionally separates verified evidence from claims that still need proof.
 
@@ -37,6 +37,15 @@ contract is implemented and qualified against the full real-inventory classes pl
 signed/notarized Apple Silicon artifact. A capacity or unowned-name blocker is acceptable only as a
 fail-before-write test; a separate full successful import with sufficient disposable storage is
 mandatory.
+
+**Clean-v1 scope:** Dory is being launched as a new product with no users, so unreleased Dory data
+layouts are not compatibility targets or release fixtures. The v0.2 upgrade/rollback gate and
+pre-launch state-adoption requirements have been removed. Competitor imports remain mandatory,
+and the public v1 schema must support crash-safe backup, restore, relocation, and forward updates
+after launch. The committed static Linux/arm64 transfer helper and deterministic scratch-image
+archive now prove source-before/source-after equality plus exact repaired-target equality through
+the real Docker archive boundary; the application executor still needs to orchestrate that
+primitive through the shared journal before release.
 
 **The signed `20260712T035458Z` app candidate is now superseded for app release purposes.** Its
 standalone engine completed the immutable eight-hour baseline, but the post-build
@@ -88,10 +97,11 @@ re-sign that artifact, then repeat the exact-candidate gates before replacing th
   resumes only migration-labeled partial objects. Bare source-only image IDs are rebound to a
   portable Dory reference, and failed container start/pause restoration removes the container
   created by that attempt so the next retry is not blocked by its name.
-- Dory Core tests passed, including non-destructive APFS cloning of the public v0.2 Docker data
-  disk, fail-closed validation of invalid legacy disks, and exclusive engine-state locking.
-- The latest Dory Core run passed **265 tests with zero failures**. The latest
-  ContainerizationEngine/DoryHV run passed **492 tests in 61
+- Historical Dory Core clone tests passed, but pre-launch Dory-disk adoption is no longer part of
+  the product or release contract. Exclusive engine-state locking and fail-closed v1 drive
+  validation remain required.
+- The latest Dory Core run passed **300 tests with zero failures**. The latest
+  ContainerizationEngine/DoryHV run passed **502 tests in 62
   suites**, including attachment of the
   persistent Docker data disk on the macOS 14 VZ path, state-lock contention, published-port host-IP
   planning, and virtiofs ownership behavior.
@@ -256,7 +266,7 @@ re-sign that artifact, then repeat the exact-candidate gates before replacing th
   current-source proofs; the same gates remain mandatory for the exact notarized artifact.
 - Rust formatting, clippy with warnings denied, and workspace tests passed.
 - Release-output, Sparkle key/signature, quarantine, cleanup, compatibility, readiness, benchmark
-  safety, and offline upgrade/rollback regression tests passed.
+  safety, and deterministic transfer-image regression tests passed.
 - The official `@devcontainers/cli` 0.87.0 passed against a disposable current-worktree engine:
   image resolution, create/start, exec, two-way workspace coherence, and exact object cleanup. This
   version-bound semantic evidence is now mandatory in the long release qualifier and publication
@@ -386,7 +396,7 @@ re-sign that artifact, then repeat the exact-candidate gates before replacing th
 - Current source also reads the ext4 superblock's declared filesystem length before attaching an
   existing Docker data disk. A disk whose sparse logical tail was truncated by macOS migration or a
   backup tool now fails closed with the actual and required byte lengths; focused valid, truncated,
-  and legacy-clone tests pass. The exact packaged runtime rejected a 4,194,304-byte disk whose ext4
+  and invalid-disk tests pass. The exact packaged runtime rejected a 4,194,304-byte disk whose ext4
   superblock required 8,388,608 bytes before VM attachment; evidence is
   `~/.dory-final-candidate/20260712T030022Z/truncated-disk-gate.txt`.
 - Exact-candidate virtiofs passed the Rancher Desktop bind-ownership reproduction: the guest saw
@@ -438,10 +448,10 @@ re-sign that artifact, then repeat the exact-candidate gates before replacing th
   `~/.dory-new-gate-evidence/20260713T-spaced-direct-bind-current-final`. This previously standalone
   gate is now part of final qualification, with retained verification of every phase, all host /
   directory / direct size and digest columns, image and Docker CLI identity, and result integrity.
-- Standalone legacy-data discovery is now resolved from the launcher's explicit `HOME`, not
-  Foundation's cached account home. A fresh isolated runtime proved zero initial containers and
-  volumes before its prune fixtures were loaded. The supervisor also rejects planted non-socket
-  paths and unrelated/recycled PID-file values.
+- The standalone public-v1 runtime no longer discovers or imports pre-launch Dory data. A fresh
+  isolated runtime proved zero initial containers and volumes before its prune fixtures were
+  loaded. The supervisor also rejects planted non-socket paths and unrelated/recycled PID-file
+  values.
 - The final signed bundle now includes pinned Docker Buildx v0.34.1 and installs Buildx/Compose
   plugins without replacing regular files or third-party symlinks. Using only the candidate's
   bundled Docker and Buildx clients, the exact engine rejected an anonymous private-registry pull,
@@ -516,9 +526,10 @@ re-sign that artifact, then repeat the exact-candidate gates before replacing th
   physical candidate smoke, requires a real `k8s-lab` install plus independent `kubectl`
   verification, and hashes the candidate `dorydctl`, kernel, and rootfs. Source validation is
   green, but no exact signed candidate contains these changes.
-- [ ] Run the exact public v0.2.0/16 → candidate → v0.2.0/16 upgrade/rollback gate on a clean release
-  account and prove stable image, network, container, and volume IDs, writable data, settings, and
-  running/stopped state.
+- [ ] Run both exact notarized app paths from empty release accounts and prove the clean v1 drive,
+  selected-drive authority, full Docker inventory, settings, stop/start persistence, crash
+  recovery, and uninstall-without-data-loss contracts. No pre-release Dory state may be discovered
+  or adopted.
 - [ ] Roadmap after the Apple Silicon release: run physical Intel validation before publishing any
   Intel or universal artifact. It is not a blocker for the current arm64 release.
 - [ ] Configure the dedicated GitHub release runners. A live API check on 2026-07-13 reports
@@ -708,5 +719,5 @@ reproducible campaign output and named hardware.
 ## Public-release exit criteria
 
 The decision changes to GO only when every release blocker above has an attached artifact, log, or
-runner URL; the exact signed/notarized bits pass the live and upgrade/rollback gates; the Homebrew
+runner URL; the exact signed/notarized bits pass both clean-v1 live gates; the Homebrew
 cask references those same immutable bits; and no P0/P1 failures remain open.

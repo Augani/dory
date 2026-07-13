@@ -15,10 +15,6 @@ final class DoryDataDriveTests: XCTestCase {
         XCTAssertEqual(drive.operationsDirectory, drive.root + "/operations")
         XCTAssertEqual(drive.backupsDirectory, drive.exportsDirectory)
         XCTAssertEqual(drive.lockPath, drive.root + "/drive.lock")
-        XCTAssertEqual(drive.legacyEngineDataDiskPaths, [
-            "/Users/test/.dory/hv/docker-data.ext4",
-            "/Users/test/Library/Application Support/com.apple.container/volumes/dory-engine-data/volume.img",
-        ])
     }
 
     func testExplicitExternalDriveIsStandardized() throws {
@@ -199,7 +195,7 @@ final class DoryDataDriveTests: XCTestCase {
         )
     }
 
-    func testPrepareUpgradesKnownDevelopmentManifestOnceAndRetainsPayload() throws {
+    func testPrepareRejectsPrelaunchManifestWithoutChangingPayload() throws {
         let base = FileManager.default.temporaryDirectory
             .appendingPathComponent("dory-data-drive-v1-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: base) }
@@ -208,7 +204,7 @@ final class DoryDataDriveTests: XCTestCase {
         try FileManager.default.createDirectory(at: engine, withIntermediateDirectories: true)
         let payload = Data("existing-docker-state".utf8)
         try payload.write(to: engine.appendingPathComponent("docker-data.ext4"))
-        try Data("{\"kind\":\"dev.dory.data-drive\",\"schemaVersion\":1}\n".utf8)
+        try Data("{\"kind\":\"dev.dory.data-drive\",\"schemaVersion\":2}\n".utf8)
             .write(to: root.appendingPathComponent("drive.json"))
         try FileManager.default.setAttributes(
             [.posixPermissions: 0o600],
@@ -216,12 +212,9 @@ final class DoryDataDriveTests: XCTestCase {
         )
         let drive = try DoryDataDrive(home: base.path, overrideRoot: root.path)
 
-        try drive.prepare()
-        let first = try drive.readManifest()
-        try drive.prepare()
-
-        XCTAssertEqual(first.schemaVersion, 2)
-        XCTAssertEqual(try drive.readManifest().id, first.id)
+        XCTAssertThrowsError(try drive.prepare()) { error in
+            XCTAssertEqual(error as? DoryDataDriveError, .invalidManifest(drive.manifestPath))
+        }
         XCTAssertEqual(
             try Data(contentsOf: engine.appendingPathComponent("docker-data.ext4")),
             payload
@@ -275,38 +268,4 @@ final class DoryDataDriveTests: XCTestCase {
         }
     }
 
-    func testAdoptsLegacyMachineDisksWithoutChangingRollbackSource() throws {
-        let base = FileManager.default.temporaryDirectory
-            .appendingPathComponent("dory-data-drive-machines-\(UUID().uuidString)", isDirectory: true)
-        defer { try? FileManager.default.removeItem(at: base) }
-        let legacy = base.appendingPathComponent(".dory/machines/dev", isDirectory: true)
-        try FileManager.default.createDirectory(at: legacy, withIntermediateDirectories: true)
-        let sourceDisk = legacy.appendingPathComponent("rootfs.ext4")
-        let sourceConfig = legacy.appendingPathComponent("machine.json")
-        let diskBytes = Data("durable-machine-disk".utf8)
-        try diskBytes.write(to: sourceDisk)
-        try Data("{\"id\":\"dev\"}\n".utf8).write(to: sourceConfig)
-        try FileManager.default.createSymbolicLink(
-            atPath: legacy.appendingPathComponent("current-rootfs").path,
-            withDestinationPath: "rootfs.ext4"
-        )
-        let drive = try DoryDataDrive(home: base.path)
-
-        XCTAssertEqual(
-            try drive.adoptLegacyMachinesIfNeeded(),
-            .adopted(source: base.path + "/.dory/machines")
-        )
-        XCTAssertEqual(
-            try Data(contentsOf: URL(fileURLWithPath: drive.machinesDirectory + "/dev/rootfs.ext4")),
-            diskBytes
-        )
-        XCTAssertEqual(try Data(contentsOf: sourceDisk), diskBytes)
-        XCTAssertEqual(
-            try FileManager.default.destinationOfSymbolicLink(
-                atPath: drive.machinesDirectory + "/dev/current-rootfs"
-            ),
-            "rootfs.ext4"
-        )
-        XCTAssertEqual(try drive.adoptLegacyMachinesIfNeeded(), .destinationAlreadyPopulated)
-    }
 }

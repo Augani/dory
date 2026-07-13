@@ -1537,20 +1537,13 @@ for required in ("--verify --ed-key-file -", "SUPublicEDKey", "Curve25519.Signin
 release_script = open("scripts/release.sh", encoding="utf-8").read()
 assert "scripts/verify-clean-release-source.sh ." in release_script, \
     "public release can claim HEAD while packaging dirty source"
-upgrade_step = "name: Exercise previous-release upgrade and rollback without state loss"
-assert upgrade_step in release, "public release never exercises previous-version upgrade/rollback"
-assert "scripts/release-upgrade-rollback-smoke.sh" in release, "upgrade/rollback step has no harness"
-assert '"${{ steps.build.outputs.app_update }}"' in release, \
-    "upgrade/rollback gate does not install the exact Sparkle archive"
-assert "release-build/appcast.xml" in release, "upgrade/rollback gate does not use the exact appcast"
-sparkle_install = open("scripts/release-upgrade-rollback-smoke.sh", encoding="utf-8").read()
-for required in ("build_pinned_sparkle_cli", "--check-immediately", "--allow-major-upgrades",
-                 "Sparkle-installed app tree differs from the exact candidate archive",
-                 "Sparkle reported success without terminating the previous app"):
-    assert required in sparkle_install, f"true Sparkle install/relaunch gate lacks: {required}"
-assert release.index(live_step) < release.index(sparkle_step) < release.index(upgrade_step) \
+assert "previous-release upgrade" not in release, \
+    "pre-launch Dory compatibility returned to the release workflow"
+assert "release-upgrade-rollback-smoke.sh" not in release, \
+    "pre-launch upgrade harness returned to the release workflow"
+assert release.index(live_step) < release.index(sparkle_step) \
     < release.index("name: Publish GitHub Release"), \
-    "upgrade/rollback gate does not run after both clean smokes and before publication"
+    "clean direct/Sparkle candidate smokes do not run before publication"
 candidate = release.split("  release_candidate:", 1)[1].split("\n  release_qualification:", 1)[0]
 qualification = release.split("  release_qualification:", 1)[1].split("\n  publish_release:", 1)[0]
 publication = release.split("  publish_release:", 1)[1].split("\n  publish-pages:", 1)[0]
@@ -1733,36 +1726,6 @@ for required in (
 ):
     assert required in live, f"exact candidate live gate lacks: {required}"
 
-upgrade = open("scripts/release-upgrade-rollback-smoke.sh", encoding="utf-8").read()
-for required in (
-    "browser_download_url",
-    "sha256:[0-9a-f]{64}",
-    "codesign --verify --strict --deep",
-    "xcrun stapler validate",
-    "TeamIdentifier=$TEAM_ID",
-    "STOPPED_ID",
-    "RUNNING_ID",
-    "stopped-volume data",
-    "running-volume data",
-    "stopped-container writable-layer data",
-    "running-container writable-layer data",
-    "custom network ID",
-    "pulled image ID",
-    "releaseUpgradeGateSentinel",
-    "dory.routeDockerCLI -bool false",
-    "DORYD_HOST_CLI",
-    "Gatekeeper assessments are disabled",
-    "source=Notarized Developer ID",
-    "Apple container system must already be provisioned and running",
-    "DORY_RELEASE_PHYSICAL_ARM64_CONFIRMED",
-    "mktemp -d",
-    "transition_to_candidate",
-    "exercise_exact_candidate",
-    "transition_to_previous",
-    "assert_persisted_resources rollback",
-    ".release-upgrade-gate-owner",
-):
-    assert required in upgrade, f"upgrade/rollback gate lacks: {required}"
 PY
 
 [ "$(/usr/libexec/PlistBuddy -c 'Print :SUFeedURL' Config/Dory-Info.plist)" = \
@@ -1805,7 +1768,7 @@ grep -q 'public releases must bundle the engine' "$TMP/public-policy.out" \
   || { echo "test-release-outputs: public release policy did not fail for the expected reason" >&2; exit 1; }
 
 bash -n scripts/release.sh scripts/bundle-engine.sh scripts/validate-release-outputs.sh \
-  scripts/release-candidate-live-smoke.sh scripts/release-upgrade-rollback-smoke.sh \
-  scripts/verify-sparkle-update.sh scripts/qualify-release-candidate.sh \
+  scripts/release-candidate-live-smoke.sh scripts/verify-sparkle-update.sh \
+  scripts/qualify-release-candidate.sh \
   scripts/verify-release-qualification.sh
 echo "test-release-outputs: PASS"

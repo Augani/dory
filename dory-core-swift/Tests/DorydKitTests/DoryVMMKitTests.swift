@@ -56,7 +56,6 @@ final class DoryVMMKitTests: XCTestCase {
             "--machine-id", "dev",
             "--state-dir", "/tmp/dory-machine-dev",
             "--data-drive", "/Volumes/Work/Dory.dorydrive",
-            "--legacy-data-disk", "/Users/test/.dory/hv/docker-data.ext4",
             "--kernel", "/tmp/vmlinux",
             "--rootfs", "/tmp/rootfs.raw",
             "--gvproxy", "/tmp/gvproxy",
@@ -74,7 +73,6 @@ final class DoryVMMKitTests: XCTestCase {
         XCTAssertEqual(arguments.machineID, "dev")
         XCTAssertEqual(arguments.stateDirectory, "/tmp/dory-machine-dev")
         XCTAssertEqual(arguments.dataDriveRoot, "/Volumes/Work/Dory.dorydrive")
-        XCTAssertEqual(arguments.legacyDockerDataDiskPaths, ["/Users/test/.dory/hv/docker-data.ext4"])
         XCTAssertEqual(arguments.kernelPath, "/tmp/vmlinux")
         XCTAssertEqual(arguments.rootfsPath, "/tmp/rootfs.raw")
         XCTAssertEqual(arguments.gvproxyPath, "/tmp/gvproxy")
@@ -240,7 +238,6 @@ final class DoryVMMKitTests: XCTestCase {
                 rootfsPath: rootfs,
                 memoryMB: 2048,
                 cpuCount: 2,
-                legacyDockerDataDiskPath: "\(base)/missing-legacy.img",
                 dockerDataDiskPath: driveDisk
             ),
             serialOutput: nil
@@ -354,8 +351,7 @@ final class DoryVMMKitTests: XCTestCase {
                 kernelPath: kernel,
                 rootfsPath: rootfs,
                 memoryMB: 2048,
-                cpuCount: 2,
-                legacyDockerDataDiskPath: "\(base)/missing-legacy.img"
+                cpuCount: 2
             ),
             serialOutput: nil
         )

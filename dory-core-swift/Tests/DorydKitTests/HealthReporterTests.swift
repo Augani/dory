@@ -108,7 +108,7 @@ final class HealthReporterTests: XCTestCase {
         XCTAssertEqual(check.data["path"], drive.root)
         XCTAssertEqual(check.data["available"], "true")
         XCTAssertEqual(check.data["drive_id"], try drive.readManifest().id.uuidString.lowercased())
-        XCTAssertEqual(check.data["schema_version"], "2")
+        XCTAssertEqual(check.data["schema_version"], "1")
         XCTAssertNotNil(check.data["created_at"])
         XCTAssertNotNil(check.data["filesystem"])
         XCTAssertEqual(check.data["engine_disk_logical_bytes"], "0")

@@ -96,8 +96,7 @@ public struct DoryDataDriveVolumeIdentity: Codable, Sendable, Equatable {
 public struct DoryDataDrive: Sendable, Equatable {
     public static let bundleName = "Dory.dorydrive"
     public static let manifestKind = "dev.dory.data-drive"
-    public static let schemaVersion = 2
-    private static let developmentSchemaVersion = 1
+    public static let schemaVersion = 1
 
     public let home: String
     public let root: String
@@ -228,24 +227,6 @@ public struct DoryDataDrive: Sendable, Equatable {
     public var backupsDirectory: String { exportsDirectory }
     public var lockPath: String { root + "/drive.lock" }
 
-    /// Explicit recovery candidates, ordered from the newest development layout to the oldest
-    /// Apple-container store. A fresh product launch never adopts them automatically; callers must
-    /// opt in, and adoption always clones without moving, editing, or deleting the rollback source.
-    public var legacyEngineDataDiskPaths: [String] {
-        [
-            home + "/.dory/hv/docker-data.ext4",
-            home + "/Library/Application Support/com.apple.container/volumes/dory-engine-data/volume.img",
-        ]
-    }
-
-    public var legacyMachinesDirectory: String { home + "/.dory/machines" }
-
-    public enum MachineAdoption: Sendable, Equatable {
-        case noLegacyData
-        case destinationAlreadyPopulated
-        case adopted(source: String)
-    }
-
     public enum Inspection: Sendable, Equatable {
         case absent
         case ready
@@ -279,10 +260,7 @@ public struct DoryDataDrive: Sendable, Equatable {
             defer { withExtendedLifetime(creationLock) {} }
             let manifest: DoryDataDriveManifest
             if fileManager.fileExists(atPath: manifestPath) {
-                manifest = try readOrUpgradeManifest(
-                    mountedVolume: mountedVolume,
-                    fileManager: fileManager
-                )
+                manifest = try readManifest(fileManager: fileManager)
             } else {
                 if fileManager.fileExists(atPath: root) {
                     let entries = try fileManager.contentsOfDirectory(atPath: root)
@@ -307,42 +285,6 @@ public struct DoryDataDrive: Sendable, Equatable {
         }
     }
 
-    /// Clones the pre-drive machine tree once. The rollback source is never moved or removed, and
-    /// an interrupted copy is confined to a uniquely named partial directory that is cleaned up.
-    @discardableResult
-    public func adoptLegacyMachinesIfNeeded(fileManager: FileManager = .default) throws -> MachineAdoption {
-        try prepare(fileManager: fileManager)
-        var legacyIsDirectory: ObjCBool = false
-        guard fileManager.fileExists(atPath: legacyMachinesDirectory, isDirectory: &legacyIsDirectory),
-              legacyIsDirectory.boolValue else {
-            return .noLegacyData
-        }
-        let existing = try fileManager.contentsOfDirectory(atPath: machinesDirectory)
-        guard existing.isEmpty else { return .destinationAlreadyPopulated }
-
-        let partial = root + "/.machines-adoption-\(UUID().uuidString).partial"
-        try? fileManager.removeItem(atPath: partial)
-        do {
-            try cloneTree(from: legacyMachinesDirectory, to: partial, fileManager: fileManager)
-            try fileManager.removeItem(atPath: machinesDirectory)
-            try fileManager.moveItem(atPath: partial, toPath: machinesDirectory)
-            try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: machinesDirectory)
-            try (legacyMachinesDirectory + "\n").write(
-                toFile: machinesDirectory + "/.migrated-from-legacy",
-                atomically: true,
-                encoding: .utf8
-            )
-            return .adopted(source: legacyMachinesDirectory)
-        } catch {
-            try? fileManager.removeItem(atPath: partial)
-            // Recreate the canonical empty directory if publication failed after removing it.
-            try? fileManager.createDirectory(atPath: machinesDirectory, withIntermediateDirectories: true)
-            throw DoryDataDriveError.filesystem(
-                "adopt legacy Dory machines from \(legacyMachinesDirectory): \(error)"
-            )
-        }
-    }
-
     public func validateManifest(fileManager: FileManager = .default) throws {
         let mountedVolume = try mountedExternalVolumeIdentity(fileManager: fileManager)
         let manifest = try readManifest(fileManager: fileManager)
@@ -356,25 +298,6 @@ public struct DoryDataDrive: Sendable, Equatable {
               manifest.isValid else {
             throw DoryDataDriveError.invalidManifest(manifestPath)
         }
-        return manifest
-    }
-
-    private func readOrUpgradeManifest(
-        mountedVolume: DoryDataDriveVolumeIdentity?,
-        fileManager: FileManager
-    ) throws -> DoryDataDriveManifest {
-        if let manifest = try? readManifest(fileManager: fileManager) {
-            return manifest
-        }
-        try requirePrivateRegularManifest()
-        guard let data = fileManager.contents(atPath: manifestPath),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              object["kind"] as? String == Self.manifestKind,
-              (object["schemaVersion"] as? NSNumber)?.intValue == Self.developmentSchemaVersion else {
-            throw DoryDataDriveError.invalidManifest(manifestPath)
-        }
-        let manifest = DoryDataDriveManifest(volume: mountedVolume)
-        try writeManifest(manifest, at: manifestPath, fileManager: fileManager)
         return manifest
     }
 
@@ -546,29 +469,4 @@ public struct DoryDataDrive: Sendable, Equatable {
         return volume.st_dev != parent.st_dev
     }
 
-    private func cloneTree(from source: String, to destination: String, fileManager: FileManager) throws {
-        try fileManager.createDirectory(atPath: destination, withIntermediateDirectories: true)
-        let entries = try fileManager.contentsOfDirectory(atPath: source)
-        for entry in entries {
-            let sourcePath = source + "/" + entry
-            let destinationPath = destination + "/" + entry
-            let attributes = try fileManager.attributesOfItem(atPath: sourcePath)
-            guard let type = attributes[.type] as? FileAttributeType else { continue }
-            switch type {
-            case .typeDirectory:
-                try cloneTree(from: sourcePath, to: destinationPath, fileManager: fileManager)
-            case .typeRegular:
-                if clonefile(sourcePath, destinationPath, 0) != 0 {
-                    try? fileManager.removeItem(atPath: destinationPath)
-                    try fileManager.copyItem(atPath: sourcePath, toPath: destinationPath)
-                }
-            case .typeSymbolicLink:
-                let target = try fileManager.destinationOfSymbolicLink(atPath: sourcePath)
-                try fileManager.createSymbolicLink(atPath: destinationPath, withDestinationPath: target)
-            default:
-                // Live handoff/control sockets and other transient nodes are intentionally rebuilt.
-                continue
-            }
-        }
-    }
 }

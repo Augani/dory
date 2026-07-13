@@ -2,7 +2,7 @@
 # dory-engine — Dory's container engine as a standalone, Colima-style runtime.
 #
 #   dory-engine start [--mem-mb N] [--cpus N] [--data-drive PATH]
-#                     [--no-legacy-data-import] [--amd64|--no-amd64]
+#                     [--amd64|--no-amd64]
 #                     [--gpu venus|--no-gpu] [--lan-visible|--no-lan-visible]
 #   dory-engine stop
 #   dory-engine status
@@ -264,8 +264,6 @@ cmd_start() {
       --mem-mb) [ "$#" -ge 2 ] || die "$1 requires a value"; mem_mb="$2"; shift 2 ;;
       --cpus) [ "$#" -ge 2 ] || die "$1 requires a value"; cpus="$2"; shift 2 ;;
       --data-drive) [ "$#" -ge 2 ] || die "$1 requires a value"; DATA_DRIVE="$2"; data_drive_explicit=1; shift 2 ;;
-      --legacy-data-disk) [ "$#" -ge 2 ] || die "$1 requires a value"; extra+=(--legacy-data-disk "$2"); shift 2 ;;
-      --no-legacy-data-import) extra+=(--no-legacy-data-import); shift ;;
       --amd64) amd64_enabled=1; shift ;;
       --no-amd64) amd64_enabled=0; shift ;;
       --gpu) [ "$#" -ge 2 ] || die "$1 requires a value"; gpu_mode="$2"; shift 2 ;;

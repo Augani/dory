@@ -453,8 +453,8 @@ jobs:
     name: Build, sign, notarize, and stage immutable candidate
     needs: [rust-workspace, prepublication-quality, guest-assets-arm64]
     # Publication is intentionally bound to the dedicated physical Apple-silicon release host.
-    # Hosted/nested runners are not eligible. Until v0.2.0 ages out as the prior public fixture,
-    # this host also needs Apple's container CLI with its system already provisioned and running.
+    # Hosted/nested runners are not eligible. Dory launches from one clean v1 data-drive schema;
+    # pre-release Dory formats are not release fixtures.
     runs-on: [self-hosted, macOS, arm64, dory, release]
     timeout-minutes: 720
     outputs:
@@ -678,17 +678,6 @@ jobs:
           DORY_RELEASE_SSH_CLIENT_IMAGE: ${{ vars.DORY_RELEASE_SSH_CLIENT_IMAGE }}
         run: scripts/release-candidate-live-smoke.sh "${{ steps.sparkle_candidate.outputs.app }}"
 
-      - name: Exercise previous-release upgrade and rollback without state loss
-        timeout-minutes: 60
-        env:
-          DORY_SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY || secrets.SPARKLE_ED_PRIVATE_KEY }}
-          DORY_RELEASE_UPGRADE_IMAGE: ${{ vars.DORY_RELEASE_ALPINE_IMAGE }}
-        run: |
-          scripts/release-upgrade-rollback-smoke.sh \
-            "${{ steps.sparkle_candidate.outputs.app }}" \
-            "${{ steps.build.outputs.app_update }}" \
-            release-build/appcast.xml
-
       - name: Upload live release-gate evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -699,7 +688,6 @@ jobs:
           path: |
             ${{ runner.temp }}/dory-arm64-host-facts.txt
             ${{ runner.temp }}/dory-release-live-*
-            ${{ runner.temp }}/dory-release-upgrade-*
 
       - name: Stage immutable public candidate for long qualification
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

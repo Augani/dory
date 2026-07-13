@@ -15,8 +15,8 @@ cask "dory" do
 
   app "Dory.app"
 
-  # Preserve ~/Library/Application Support/Dory/Dory.dorydrive: uninstall and --zap must never
-  # remove images, containers, volumes, networks, machines, or other user workload data.
+  # Preserve ~/Library/Application Support/Dory: uninstall and --zap must never remove the selected
+  # data-drive authority, images, containers, volumes, networks, machines, or other workload data.
   zap trash: [
     "~/.dory",
     "~/Library/Application Support/com.pythonxi.Dory",
