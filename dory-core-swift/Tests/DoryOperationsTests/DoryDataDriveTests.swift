@@ -1,4 +1,4 @@
-@testable import DoryCore
+@testable import DoryOperations
 import Foundation
 import XCTest
 

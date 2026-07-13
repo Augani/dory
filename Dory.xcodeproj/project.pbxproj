@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		AA00000000000000000000B3 /* SwiftTerm in Frameworks */ = {isa = PBXBuildFile; productRef = AA00000000000000000000B2 /* SwiftTerm */; };
 		AA00000000000000000000C3 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = AA00000000000000000000C2 /* Sparkle */; };
+		AA00000000000000000000D3 /* DoryOperations in Frameworks */ = {isa = PBXBuildFile; productRef = AA00000000000000000000D2 /* DoryOperations */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -56,6 +57,7 @@
 		3E705CEC2FE37C790094B33C /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			files = (
+				AA00000000000000000000D3 /* DoryOperations in Frameworks */,
 				AA00000000000000000000B3 /* SwiftTerm in Frameworks */,
 				AA00000000000000000000C3 /* Sparkle in Frameworks */,
 			);
@@ -112,6 +114,7 @@
 			);
 			name = Dory;
 			packageProductDependencies = (
+				AA00000000000000000000D2 /* DoryOperations */,
 				AA00000000000000000000B2 /* SwiftTerm */,
 				AA00000000000000000000C2 /* Sparkle */,
 			);
@@ -194,6 +197,7 @@
 			mainGroup = 3E705CE62FE37C790094B33C;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
+				AA00000000000000000000D1 /* XCLocalSwiftPackageReference "dory-core-swift" */,
 				AA00000000000000000000B1 /* XCRemoteSwiftPackageReference "SwiftTerm" */,
 				AA00000000000000000000C1 /* XCRemoteSwiftPackageReference "Sparkle" */,
 			);
@@ -594,6 +598,13 @@
 		};
 /* End XCConfigurationList section */
 
+/* Begin XCLocalSwiftPackageReference section */
+		AA00000000000000000000D1 /* XCLocalSwiftPackageReference "dory-core-swift" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = "dory-core-swift";
+		};
+/* End XCLocalSwiftPackageReference section */
+
 /* Begin XCRemoteSwiftPackageReference section */
 		AA00000000000000000000B1 /* XCRemoteSwiftPackageReference "SwiftTerm" */ = {
 			isa = XCRemoteSwiftPackageReference;
@@ -614,6 +625,11 @@
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
+		AA00000000000000000000D2 /* DoryOperations */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AA00000000000000000000D1 /* XCLocalSwiftPackageReference "dory-core-swift" */;
+			productName = DoryOperations;
+		};
 		AA00000000000000000000B2 /* SwiftTerm */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = AA00000000000000000000B1 /* XCRemoteSwiftPackageReference "SwiftTerm" */;

@@ -5,6 +5,7 @@ let package = Package(
     name: "dory-core-swift",
     platforms: [.macOS(.v14)],
     products: [
+        .library(name: "DoryOperations", targets: ["DoryOperations"]),
         .library(name: "DoryCore", targets: ["DoryCore"]),
         .library(name: "DorydKit", targets: ["DorydKit"]),
         .library(name: "DoryVMMKit", targets: ["DoryVMMKit"]),
@@ -16,9 +17,10 @@ let package = Package(
     ],
     targets: [
         .binaryTarget(name: "DoryFFI", path: "artifacts/DoryFFI.xcframework"),
+        .target(name: "DoryOperations"),
         .target(
             name: "DoryCore",
-            dependencies: ["DoryFFI"]
+            dependencies: ["DoryFFI", "DoryOperations"]
         ),
         .target(
             name: "DorydKit",
@@ -59,6 +61,10 @@ let package = Package(
         .testTarget(
             name: "DoryCoreTests",
             dependencies: ["DoryCore"]
+        ),
+        .testTarget(
+            name: "DoryOperationsTests",
+            dependencies: ["DoryOperations"]
         ),
         .testTarget(
             name: "DorydKitTests",
