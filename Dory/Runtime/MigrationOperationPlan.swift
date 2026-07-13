@@ -12,6 +12,7 @@ enum MigrationOperationPlanError: Error, Sendable, Equatable, CustomStringConver
     case invalidNetworkSpecification(String)
     case targetCollision(kind: DoryOperationObjectKind, name: String)
     case invalidWritableLayerSize(String)
+    case unsupportedCapability(String)
     case encoding(String)
 
     var description: String {
@@ -36,6 +37,8 @@ enum MigrationOperationPlanError: Error, Sendable, Equatable, CustomStringConver
             return "target already contains unrelated \(kind.rawValue) \(name)"
         case let .invalidWritableLayerSize(name):
             return "source container \(name) has an invalid writable-layer size"
+        case let .unsupportedCapability(detail):
+            return "migration capability preflight failed: \(detail)"
         case let .encoding(detail):
             return "cannot encode immutable migration plan: \(detail)"
         }
@@ -98,6 +101,24 @@ enum MigrationOperationPlanBuilder {
     private static func validateStrictInventory(
         _ input: MigrationOperationPlanningInput
     ) throws {
+        guard input.capabilities.sourceSupportsArchiveTransfer,
+              input.capabilities.targetSupportsArchiveTransfer else {
+            throw MigrationOperationPlanError.unsupportedCapability(
+                "both engines must support streaming image archives"
+            )
+        }
+        guard input.capabilities.sourceSupportsRawAPI,
+              input.capabilities.targetSupportsRawAPI else {
+            throw MigrationOperationPlanError.unsupportedCapability(
+                "both engines must expose the local raw Docker API"
+            )
+        }
+        if !input.source.snapshot.volumes.isEmpty,
+           input.capabilities.transferHelper == nil {
+            throw MigrationOperationPlanError.unsupportedCapability(
+                "named volumes require the signed arm64 transfer helper"
+            )
+        }
         let selectedContainerIDs = Set(input.source.snapshot.containers.map(\.id))
         guard Set(input.source.containerSpecifications.keys) == selectedContainerIDs else {
             throw MigrationOperationPlanError.incompleteInventory(

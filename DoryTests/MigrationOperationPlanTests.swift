@@ -143,6 +143,40 @@ struct MigrationOperationPlanTests {
             try build(scenario)
         }
     }
+
+    @Test func namedVolumesRequireTheSignedTransferHelperContract() throws {
+        var scenario = try makeScenario()
+        scenario.capabilities = MigrationOperationCapabilityContract(
+            sourceSupportsArchiveTransfer: true,
+            targetSupportsArchiveTransfer: true,
+            sourceSupportsRawAPI: true,
+            targetSupportsRawAPI: true,
+            transferHelper: nil
+        )
+
+        #expect(throws: MigrationOperationPlanError.unsupportedCapability(
+            "named volumes require the signed arm64 transfer helper"
+        )) {
+            try build(scenario)
+        }
+    }
+
+    @Test func missingRawAPIOrArchiveTransferBlocksPlanning() throws {
+        var scenario = try makeScenario()
+        scenario.capabilities = MigrationOperationCapabilityContract(
+            sourceSupportsArchiveTransfer: false,
+            targetSupportsArchiveTransfer: true,
+            sourceSupportsRawAPI: true,
+            targetSupportsRawAPI: true,
+            transferHelper: .appleSiliconV1
+        )
+
+        #expect(throws: MigrationOperationPlanError.unsupportedCapability(
+            "both engines must support streaming image archives"
+        )) {
+            try build(scenario)
+        }
+    }
 }
 
 @MainActor
@@ -154,6 +188,13 @@ private extension MigrationOperationPlanTests {
         var target = RuntimeSnapshot()
         var targetContainerSpecifications: [String: ContainerSpec] = [:]
         var targetNetworkInspections: [String: Data] = [:]
+        var capabilities = MigrationOperationCapabilityContract(
+            sourceSupportsArchiveTransfer: true,
+            targetSupportsArchiveTransfer: true,
+            sourceSupportsRawAPI: true,
+            targetSupportsRawAPI: true,
+            transferHelper: .appleSiliconV1
+        )
     }
 
     func build(_ scenario: Scenario) throws -> PreparedMigrationOperation {
@@ -174,12 +215,7 @@ private extension MigrationOperationPlanTests {
                 containerSpecifications: scenario.targetContainerSpecifications,
                 networkInspections: scenario.targetNetworkInspections
             ),
-            capabilities: MigrationOperationCapabilityContract(
-                sourceSupportsArchiveTransfer: true,
-                targetSupportsArchiveTransfer: true,
-                sourceSupportsRawAPI: true,
-                targetSupportsRawAPI: true
-            ),
+            capabilities: scenario.capabilities,
             capacity: capacity,
             identity: MigrationOperationIdentity(
                 id: operationID,

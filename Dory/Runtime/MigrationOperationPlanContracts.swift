@@ -21,6 +21,7 @@ struct MigrationOperationCapabilityContract: Codable, Sendable, Equatable {
     let targetSupportsArchiveTransfer: Bool
     let sourceSupportsRawAPI: Bool
     let targetSupportsRawAPI: Bool
+    let transferHelper: MigrationTransferHelperContract?
 }
 
 struct MigrationOperationPlanningInput: Sendable {
@@ -160,6 +161,7 @@ struct MigrationCapabilitySnapshot: Codable {
     let targetSupportsArchiveTransfer: Bool
     let sourceSupportsRawAPI: Bool
     let targetSupportsRawAPI: Bool
+    let transferHelper: MigrationTransferHelperContract?
 
     init(
         sourceEngineVersion: String,
@@ -172,6 +174,7 @@ struct MigrationCapabilitySnapshot: Codable {
         targetSupportsArchiveTransfer = contract.targetSupportsArchiveTransfer
         sourceSupportsRawAPI = contract.sourceSupportsRawAPI
         targetSupportsRawAPI = contract.targetSupportsRawAPI
+        transferHelper = contract.transferHelper
     }
 }
 
