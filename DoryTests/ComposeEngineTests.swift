@@ -327,7 +327,7 @@ final class RecordingRuntime: ContainerRuntime {
         committedImages.append((containerID, repo, tag, labels))
         return "sha256:commit\(committedImages.count)"
     }
-    var supportsImageArchiveTransfer: Bool { true }
+    nonisolated var supportsImageArchiveTransfer: Bool { true }
     func saveImage(reference: String) -> AsyncStream<Data> {
         savedImages.append(reference)
         let chunks = imageArchiveChunks

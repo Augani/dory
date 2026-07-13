@@ -76,7 +76,7 @@ nonisolated enum MigrationImageTarHeaderDecoder {
 }
 
 private extension MigrationImageTarHeaderDecoder {
-    static func decodePAXRecord(
+    nonisolated static func decodePAXRecord(
         _ payload: Data,
         cursor: Data.Index
     ) throws -> MigrationImagePAXRecord {
@@ -103,7 +103,7 @@ private extension MigrationImageTarHeaderDecoder {
         return MigrationImagePAXRecord(key: key, value: value, end: recordEnd)
     }
 
-    static func validateChecksum(_ header: Data.SubSequence) throws {
+    nonisolated static func validateChecksum(_ header: Data.SubSequence) throws {
         let stored = try number(header, range: 148..<156)
         var sum: UInt64 = 0
         for index in 0..<blockBytes {
@@ -116,7 +116,7 @@ private extension MigrationImageTarHeaderDecoder {
         }
     }
 
-    static func headerPath(_ header: Data.SubSequence) throws -> String {
+    nonisolated static func headerPath(_ header: Data.SubSequence) throws -> String {
         let name = try text(header, range: 0..<100)
         let prefix = try text(header, range: 345..<500)
         let path = prefix.isEmpty ? name : "\(prefix)/\(name)"
@@ -126,7 +126,7 @@ private extension MigrationImageTarHeaderDecoder {
         return path
     }
 
-    static func text(
+    nonisolated static func text(
         _ header: Data.SubSequence,
         range: Range<Int>
     ) throws -> String {
@@ -140,7 +140,7 @@ private extension MigrationImageTarHeaderDecoder {
         return value
     }
 
-    static func number(
+    nonisolated static func number(
         _ header: Data.SubSequence,
         range: Range<Int>
     ) throws -> UInt64 {
@@ -162,7 +162,7 @@ private extension MigrationImageTarHeaderDecoder {
         return value
     }
 
-    static func base256(_ field: Data.SubSequence) throws -> UInt64 {
+    nonisolated static func base256(_ field: Data.SubSequence) throws -> UInt64 {
         guard let first = field.first, first & 0x40 == 0 else {
             throw MigrationImageArchiveError.invalid("negative base-256 tar number")
         }

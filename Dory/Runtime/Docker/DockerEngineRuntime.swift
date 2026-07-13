@@ -964,7 +964,7 @@ struct DockerEngineRuntime: ContainerRuntime {
         return (try? JSONDecoder().decode(Out.self, from: response.body))?.Id ?? "\(repo):\(tag)"
     }
 
-    var supportsImageArchiveTransfer: Bool { true }
+    nonisolated var supportsImageArchiveTransfer: Bool { true }
 
     func saveImage(reference: String) -> AsyncStream<Data> {
         let encoded = DockerImageOps.pathComponent(reference)

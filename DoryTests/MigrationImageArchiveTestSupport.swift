@@ -39,6 +39,10 @@ enum MigrationImageArchiveTestSupport {
         var architecture = "arm64"
         var operatingSystem = "linux"
         var diffIDs: [String]?
+        var layerPayloads = [
+            Data("first deterministic rootfs layer".utf8),
+            Data("second deterministic rootfs layer".utf8)
+        ]
     }
 
     private struct ImageEntriesInput {
@@ -75,6 +79,13 @@ enum MigrationImageArchiveTestSupport {
         return fixture(options)
     }
 
+    static func fixture(layerPayloads: [Data]) -> MigrationImageArchiveTestFixture {
+        precondition(layerPayloads.count == 2)
+        var options = FixtureOptions()
+        options.layerPayloads = layerPayloads
+        return fixture(options)
+    }
+
     static func invalidConfigArchive(
         architecture: String = "arm64",
         operatingSystem: String = "linux",
@@ -90,10 +101,7 @@ enum MigrationImageArchiveTestSupport {
     private static func fixture(
         _ options: FixtureOptions
     ) -> MigrationImageArchiveTestFixture {
-        let layerPayloads = [
-            Data("first deterministic rootfs layer".utf8),
-            Data("second deterministic rootfs layer".utf8)
-        ]
+        let layerPayloads = options.layerPayloads
         let layerDigests = layerPayloads.map(sha256)
         let config = json([
             "architecture": options.architecture,

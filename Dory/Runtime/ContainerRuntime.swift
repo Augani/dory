@@ -313,14 +313,14 @@ protocol ContainerRuntime: Sendable {
         labels: [String: String],
         pause: Bool
     ) async throws -> String
-    var supportsImageArchiveTransfer: Bool { get }
+    nonisolated var supportsImageArchiveTransfer: Bool { get }
     func saveImage(reference: String) -> AsyncStream<Data>
     func saveImageThrowing(reference: String) -> AsyncThrowingStream<Data, Error>
     func saveImages(references: [String]) async throws -> AsyncStream<Data>
     func loadImage(tar: Data) async throws
     func loadImage(stream: AsyncStream<Data>) async throws
     func loadImageThrowing(stream: AsyncThrowingStream<Data, Error>) async throws
-    var supportsImageLoadReceipt: Bool { get }
+    nonisolated var supportsImageLoadReceipt: Bool { get }
     func loadImageThrowingWithResponse(
         stream: AsyncThrowingStream<Data, Error>
     ) async throws -> Data
@@ -436,7 +436,7 @@ extension ContainerRuntime {
     ) async throws -> String {
         try await commit(containerID: containerID, repo: repo, tag: tag, labels: labels)
     }
-    var supportsImageArchiveTransfer: Bool { false }
+    nonisolated var supportsImageArchiveTransfer: Bool { false }
     func saveImage(reference: String) -> AsyncStream<Data> { AsyncStream { $0.finish() } }
     func saveImageThrowing(reference: String) -> AsyncThrowingStream<Data, Error> {
         let stream = saveImage(reference: reference)
@@ -474,7 +474,7 @@ extension ContainerRuntime {
         }
         try await loadImage(stream: replay)
     }
-    var supportsImageLoadReceipt: Bool { false }
+    nonisolated var supportsImageLoadReceipt: Bool { false }
     func loadImageThrowingWithResponse(
         stream: AsyncThrowingStream<Data, Error>
     ) async throws -> Data {

@@ -70,7 +70,7 @@ nonisolated struct MigrationImageTarStreamParser {
 }
 
 private extension MigrationImageTarStreamParser {
-    mutating func process() throws {
+    nonisolated mutating func process() throws {
         while true {
             if terminated {
                 guard buffer[cursor...].allSatisfy({ $0 == 0 }) else {
@@ -91,7 +91,7 @@ private extension MigrationImageTarStreamParser {
         }
     }
 
-    mutating func consumeHeader() throws -> Bool {
+    nonisolated mutating func consumeHeader() throws -> Bool {
         guard buffer.count - cursor >= MigrationImageTarHeaderDecoder.blockBytes else { return false }
         let end = cursor + MigrationImageTarHeaderDecoder.blockBytes
         let header = buffer[cursor..<end]
@@ -108,7 +108,7 @@ private extension MigrationImageTarStreamParser {
         return true
     }
 
-    mutating func begin(_ header: MigrationImageTarHeader) throws {
+    nonisolated mutating func begin(_ header: MigrationImageTarHeader) throws {
         let role = try role(for: header.type)
         if role == .pax || role == .longName {
             guard pending.isEmpty, header.size <= Self.maximumMetadataBytes else {
@@ -149,7 +149,7 @@ private extension MigrationImageTarStreamParser {
         try finalizeEmptyActiveIfNeeded()
     }
 
-    private func role(for type: UInt8) throws -> EntryRole {
+    nonisolated private func role(for type: UInt8) throws -> EntryRole {
         switch type {
         case 0, UInt8(ascii: "0"): .regular
         case UInt8(ascii: "5"): .directory
@@ -162,7 +162,7 @@ private extension MigrationImageTarStreamParser {
         }
     }
 
-    mutating func consumeActive() throws -> Bool {
+    nonisolated mutating func consumeActive() throws -> Bool {
         guard var entry = active else { return true }
         guard entry.remainingBytes > 0 else {
             try finalizeActive(entry)
@@ -190,11 +190,11 @@ private extension MigrationImageTarStreamParser {
         return true
     }
 
-    mutating func finalizeEmptyActiveIfNeeded() throws {
+    nonisolated mutating func finalizeEmptyActiveIfNeeded() throws {
         if let active, active.remainingBytes == 0 { try finalizeActive(active) }
     }
 
-    private mutating func finalizeActive(_ entry: ActiveEntry) throws {
+    nonisolated private mutating func finalizeActive(_ entry: ActiveEntry) throws {
         switch entry.role {
         case .regular:
             let hasher = entry.hasher
@@ -241,7 +241,7 @@ private extension MigrationImageTarStreamParser {
         active = nil
     }
 
-    mutating func consumePadding() throws -> Bool {
+    nonisolated mutating func consumePadding() throws -> Bool {
         let available = buffer.count - cursor
         guard available > 0 else { return false }
         let count = paddingBytes > UInt64(available) ? available : Int(paddingBytes)
@@ -254,12 +254,12 @@ private extension MigrationImageTarStreamParser {
         return true
     }
 
-    func padding(for size: UInt64) -> UInt64 {
+    nonisolated func padding(for size: UInt64) -> UInt64 {
         let remainder = size % UInt64(MigrationImageTarHeaderDecoder.blockBytes)
         return remainder == 0 ? 0 : UInt64(MigrationImageTarHeaderDecoder.blockBytes) - remainder
     }
 
-    func normalizedPath(_ raw: String, directory: Bool) throws -> String {
+    nonisolated func normalizedPath(_ raw: String, directory: Bool) throws -> String {
         let path = directory && raw.hasSuffix("/") ? String(raw.dropLast()) : raw
         guard !path.isEmpty, !path.hasPrefix("/"), !path.hasSuffix("/"),
               path.utf8.count <= 4_096, !path.utf8.contains(0),
@@ -271,7 +271,7 @@ private extension MigrationImageTarStreamParser {
         return path
     }
 
-    private func shouldCapturePayload(
+    nonisolated private func shouldCapturePayload(
         path: String,
         size: UInt64,
         role: EntryRole
@@ -290,14 +290,14 @@ private extension MigrationImageTarStreamParser {
         return size <= MigrationImageArchiveManifest.maximumManifestBytes
     }
 
-    func isContentAddressedBlob(_ path: String) -> Bool {
+    nonisolated func isContentAddressedBlob(_ path: String) -> Bool {
         let components = path.split(separator: "/", omittingEmptySubsequences: false)
         return components.count == 3
             && components[0] == "blobs"
             && components[1] == "sha256"
     }
 
-    mutating func compactBuffer() {
+    nonisolated mutating func compactBuffer() {
         guard cursor > 0, cursor == buffer.count || cursor >= 1_024 * 1_024 else { return }
         buffer.removeSubrange(buffer.startIndex..<cursor)
         cursor = 0
@@ -305,5 +305,5 @@ private extension MigrationImageTarStreamParser {
 }
 
 private extension MigrationImageTarStreamParser {
-    static let jsonWhitespace: Set<UInt8> = [9, 10, 13, 32]
+    nonisolated static let jsonWhitespace: Set<UInt8> = [9, 10, 13, 32]
 }
