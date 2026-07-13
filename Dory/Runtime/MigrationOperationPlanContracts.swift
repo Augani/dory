@@ -152,7 +152,7 @@ struct MigrationImageContract: Codable {
     }
 }
 
-struct MigrationVolumeContract: Codable {
+struct MigrationVolumeContract: Codable, Sendable, Equatable {
     let name: String
     let driver: String
     let labels: [String: String]

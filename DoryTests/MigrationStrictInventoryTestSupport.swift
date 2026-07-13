@@ -275,6 +275,11 @@ final class StrictMigrationRuntime: ContainerRuntime {
     var systemDiskUsage: [String: Any]?
     var containerInspections: [String: [String: Any]] = [:]
     var networkInspections: [String: [String: Any]] = [:]
+    var createdVolumes: [MigrationVolumeContract] = []
+    var removedVolumes: [String] = []
+    var removedImages: [String] = []
+    var failVolumeRemoval = false
+    var failImageRemoval = false
 
     init(
         identifier: String,
@@ -316,6 +321,52 @@ final class StrictMigrationRuntime: ContainerRuntime {
         ExecResult(exitCode: 0, output: "")
     }
 
+    func createVolume(
+        name: String,
+        driver: String?,
+        labels: [String: String],
+        driverOptions: [String: String]
+    ) async throws {
+        let contract = MigrationVolumeContract(
+            volume: Volume(
+                name: name,
+                size: "0 B",
+                driver: driver ?? "local",
+                usedBy: "",
+                created: "now",
+                labels: labels,
+                options: driverOptions
+            )
+        )
+        createdVolumes.append(contract)
+        if !snapshotValue.volumes.contains(where: { $0.name == name }) {
+            snapshotValue.volumes.append(Volume(
+                name: name,
+                size: "0 B",
+                driver: driver ?? "local",
+                usedBy: "",
+                created: "now",
+                labels: labels,
+                options: driverOptions
+            ))
+        }
+    }
+
+    func removeVolume(name: String) async throws {
+        removedVolumes.append(name)
+        if failVolumeRemoval { throw TestMutationFailure.injected }
+        snapshotValue.volumes.removeAll { $0.name == name }
+    }
+
+    func removeImage(id: String) async throws {
+        removedImages.append(id)
+        if failImageRemoval { throw TestMutationFailure.injected }
+        let normalized = MigrationOperationPlanBuilder.normalizedImageID(id)
+        snapshotValue.images.removeAll {
+            MigrationOperationPlanBuilder.normalizedImageID($0.imageID) == normalized
+        }
+    }
+
     func proxyRequest(
         method: String,
         path: String,
@@ -342,4 +393,6 @@ final class StrictMigrationRuntime: ContainerRuntime {
               let data = try? JSONSerialization.data(withJSONObject: object) else { return nil }
         return HTTPResponse(statusCode: 200, reason: "OK", headers: [:], body: data)
     }
+
+    enum TestMutationFailure: Error { case injected }
 }
