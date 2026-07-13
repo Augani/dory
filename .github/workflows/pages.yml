@@ -17,7 +17,9 @@ permissions:
 
 concurrency:
   group: pages
-  cancel-in-progress: true
+  # Serialize with the release workflow's appcast deployment. A normal site edit must never cancel
+  # or overwrite the feed while a signed release is being published.
+  cancel-in-progress: false
 
 jobs:
   deploy:
@@ -26,8 +28,30 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@c915c33a16f01166c17c4e35fe1d4085a2d71adb # v4
+      - name: Preserve the currently deployed Sparkle feed
+        run: |
+          live="$RUNNER_TEMP/live-appcast.xml"
+          if curl -fsSL --retry 3 --retry-delay 2 --connect-timeout 15 --max-time 60 \
+              "https://augani.github.io/dory/appcast.xml?preserve=${{ github.run_id }}" \
+              -o "$live" \
+             && python3 - "$live" <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+
+          sparkle = "http://www.andymatuschak.org/xml-namespaces/sparkle"
+          root = ET.parse(sys.argv[1]).getroot()
+          item = root.find("./channel/item")
+          assert item is not None, "live appcast has no release item"
+          assert item.findtext(f"{{{sparkle}}}minimumSystemVersion") == "14.0", \
+              "live appcast has an invalid macOS floor"
+          PY
+          then
+            cp "$live" website/public/appcast.xml
+          else
+            echo "Live appcast is missing or invalid; retaining the checked-in macOS 14 bootstrap feed."
+          fi
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
           cache: npm
@@ -36,9 +60,9 @@ jobs:
         working-directory: website
       - run: npm run build
         working-directory: website
-      - uses: actions/configure-pages@v5
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
+      - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3
         with:
           path: docs-build
       - id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4

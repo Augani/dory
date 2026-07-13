@@ -2,7 +2,7 @@
   --font:
     -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Inter', 'Segoe UI', Roboto, sans-serif;
   --mono: 'SF Mono', ui-monospace, 'JetBrains Mono', Menlo, Consolas, monospace;
-  color-scheme: light only;
+  color-scheme: light;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
@@ -20,8 +20,8 @@ html {
 body {
   margin: 0;
   min-width: 320px;
-  background: #ffffff;
-  color: #0a0a0a;
+  background: #fbfdff;
+  color: #101b2c;
   font-family: var(--font);
 }
 
@@ -35,7 +35,7 @@ input {
 }
 
 ::selection {
-  background: #000000;
+  background: #147fe8;
   color: #ffffff;
 }
 

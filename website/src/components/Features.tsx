@@ -96,7 +96,12 @@ export function Features() {
             interpolation, <code>depends_on</code> ordering, and <code>service_healthy</code> waits via
             real health probes.
           </li>
-          <li>Migration imports images and containers from Docker Desktop or OrbStack after a confidence report.</li>
+          <li>
+            Migration preflights capacity and collisions, then imports image archives, container
+            writable layers, named-volume bytes, custom bridge networks, and full container
+            definitions from Docker Desktop or OrbStack. Live writers and unsafe conflicts block
+            before the first target write.
+          </li>
           <li>Managed settings export local policy for engine route, domains, file sharing, Auto-Idle, and telemetry none.</li>
           <li>First launch is guided end-to-end; full bundles already include the engine toolchain.</li>
           <li>

@@ -22,9 +22,12 @@ export function Footprint() {
             </p>
           </Reveal>
           <Reveal className="pcard">
-            <div className="big">~0%</div>
+            <div className="big">Measured</div>
             <div className="t">Idle CPU</div>
-            <p>An idle engine does nothing: no indexers, no phone-home, no fan spin-ups while you think.</p>
+            <p>
+              No indexers or phone-home loop. Every release candidate must pass an attributed
+              eight-hour CPU, memory, and descriptor plateau gate.
+            </p>
           </Reveal>
           <Reveal className="pcard">
             <div className="big">1 VM</div>

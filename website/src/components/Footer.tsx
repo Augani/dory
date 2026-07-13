@@ -27,7 +27,7 @@ export function Footer() {
           </div>
         </div>
         <p className="fine">
-          Made for macOS, Intel and Apple silicon · GPL-3.0 · © 2026 Dory contributors. Not affiliated
+          Made for Apple Silicon Macs · GPL-3.0 · © 2026 Dory contributors. Not affiliated
           with Docker, Inc. or OrbStack.
         </p>
       </div>

@@ -56,7 +56,7 @@ export function UnderTheHood() {
             <p>
               Dory boots one persistent Linux VM and runs <code className="inline-code">dockerd</code>
               inside it. virtiofs shares your home directory at the same path, so bind mounts resolve
-              with zero setup. Non-native images use qemu binfmt; amd64 is native on Intel.
+              with zero setup. Apple Silicon uses bundled FEX for amd64 images; Intel support is a later release track.
             </p>
             <div className="term">
               <span className="p">$</span> docker run -v ~/proj:/app alpine ls /app{'\n'}
