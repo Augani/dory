@@ -1,9 +1,53 @@
+diff --git a/FEXCore/Source/Utils/Allocator.cpp b/FEXCore/Source/Utils/Allocator.cpp
+index 83b2e6d0c..7850f8e6f 100644
+--- a/FEXCore/Source/Utils/Allocator.cpp
++++ b/FEXCore/Source/Utils/Allocator.cpp
+@@ -1,6 +1,7 @@
+ // SPDX-License-Identifier: MIT
+ #include "Utils/Allocator/HostAllocator.h"
+ #include "Utils/Allocator.h"
++#include "Common/FDUtils.h"
+ #include <FEXCore/Utils/Allocator.h>
+ #include <FEXCore/Utils/CompilerDefs.h>
+ #include <FEXCore/Utils/LogManager.h>
+@@ -216,7 +217,7 @@ fextl::vector<MemoryRegion> CollectMemoryGaps(uintptr_t Begin, uintptr_t End, in
+ fextl::vector<MemoryRegion> StealMemoryRegion(uintptr_t Begin, uintptr_t End) {
+   const uintptr_t StackLocation_u64 = reinterpret_cast<uintptr_t>(alloca(0));
+ 
+-  const int MapsFD = open("/proc/self/maps", O_RDONLY);
++  const int MapsFD = FEX::OpenHostProcFile("self/maps", O_RDONLY | O_CLOEXEC);
+   LogMan::Throw::AFmt(MapsFD != -1, "Failed to open /proc/self/maps");
+ 
+   auto Regions = CollectMemoryGaps(Begin, End, MapsFD);
 diff --git a/Source/Common/FDUtils.h b/Source/Common/FDUtils.h
-index d80a23d4..bfe4f530 100644
+index f4e1d6bb4..3c1ece501 100644
 --- a/Source/Common/FDUtils.h
 +++ b/Source/Common/FDUtils.h
-@@ -10,4 +10,30 @@ namespace FEX {
+@@ -9,9 +9,61 @@
  
+ namespace FEX {
+ 
++inline int HostProcFD {-1};
++
++inline void SetHostProcFD(int fd) {
++  HostProcFD = fd;
++}
++
++[[nodiscard]]
++inline int GetHostProcFD() {
++  return HostProcFD;
++}
++
++[[nodiscard]]
++inline int OpenHostProcFile(const char* RelativePath, int Flags) {
++  if (HostProcFD != -1) {
++    return openat(HostProcFD, RelativePath, Flags);
++  }
++
++  auto Path = fextl::fmt::format("/proc/{}", RelativePath);
++  return open(Path.c_str(), Flags);
++}
++
 +// FEX shares the host descriptor table with the translated process. Keep long-lived runtime
 +// handles out of the low range so guest allocation matches native Linux. This matters for POSIX
 +// shells such as dash, which only accept single-digit redirection operands: package managers may
@@ -32,12 +76,21 @@ index d80a23d4..bfe4f530 100644
 +
  [[nodiscard]]
  inline int get_fdpath(int fd, char* SymlinkPath) {
-   auto Path = fextl::fmt::format("/proc/self/fd/{}", fd);
+-  auto Path = fextl::fmt::format("/proc/self/fd/{}", fd);
++  auto Path = fextl::fmt::format("self/fd/{}", fd);
++  if (HostProcFD != -1) {
++    return readlinkat(HostProcFD, Path.c_str(), SymlinkPath, PATH_MAX);
++  }
++
++  Path = fextl::fmt::format("/proc/{}", Path);
+   return readlinkat(AT_FDCWD, Path.c_str(), SymlinkPath, PATH_MAX);
+ }
+ 
 diff --git a/Source/Common/FEXServerClient.cpp b/Source/Common/FEXServerClient.cpp
-index 16fcc02d..609e7a9a 100644
+index 6e2d084ab..d43475bad 100644
 --- a/Source/Common/FEXServerClient.cpp
 +++ b/Source/Common/FEXServerClient.cpp
-@@ -236,7 +236,7 @@ int GetServerFD() {
+@@ -236,11 +236,17 @@ int ConnectToServer(ConnectionOption ConnectionOption) {
  }
  
  bool SetupClient(std::string_view InterpreterPath) {
@@ -46,8 +99,77 @@ index 16fcc02d..609e7a9a 100644
    if (ServerFD == -1) {
      return false;
    }
+ 
++  int HostProcFD = FEX::RelocateInternalFD(FEXServerClient::RequestHostProcFD(ServerFD));
++  if (HostProcFD == -1 || fcntl(HostProcFD, F_SETFD, FD_CLOEXEC) == -1) {
++    return false;
++  }
++  FEX::SetHostProcFD(HostProcFD);
++
+   // If we were started in a container then we want to use the rootfs that they provided.
+   // In the pressure-vessel case this is a combination of our rootfs and the steam soldier runtime.
+   if (FEXCore::Config::FindContainer() != "pressure-vessel") {
+@@ -419,6 +425,10 @@ int RequestPIDFD(int ServerSocket) {
+   return RequestPIDFDPacket(ServerSocket, PacketType::TYPE_GET_PID_FD);
+ }
+ 
++int RequestHostProcFD(int ServerSocket) {
++  return RequestPIDFDPacket(ServerSocket, PacketType::TYPE_GET_HOST_PROC_FD);
++}
++
+ void PopulateCodeCache(int ServerSocket, int ProgramFD, bool HasMultiblock) {
+   fasio::error ec;
+   fasio::tcp_socket Socket {ServerSocket};
+diff --git a/Source/Common/FEXServerClient.h b/Source/Common/FEXServerClient.h
+index 3df6a46b9..c7d42a2ce 100644
+--- a/Source/Common/FEXServerClient.h
++++ b/Source/Common/FEXServerClient.h
+@@ -19,6 +19,7 @@ enum class PacketType {
+   TYPE_GET_LOG_FD,
+   TYPE_GET_ROOTFS_PATH,
+   TYPE_GET_PID_FD,
++  TYPE_GET_HOST_PROC_FD,
+   TYPE_POPULATE_CODE_CACHE,
+   TYPE_POPULATE_CODE_CACHE_NO_MULTIBLOCK,
+   TYPE_QUERY_CODE_MAP,
+@@ -124,6 +125,17 @@ fextl::string RequestRootFSPath(int ServerSocket);
+  */
+ int RequestPIDFD(int ServerSocket);
+ 
++/**
++ * @brief Request a descriptor for the server's procfs mount
++ *
++ * The descriptor keeps FEX functional when the translated process enters a chroot without procfs.
++ *
++ * @param ServerSocket - Socket to the server
++ *
++ * @return FD for the procfs root
++ */
++int RequestHostProcFD(int ServerSocket);
++
+ /**
+  * @brief Request FEXServer to populate the disk cache for the given executable
+  *        and any libraries referenced in its code map
+diff --git a/Source/Tools/FEXInterpreter/ELFCodeLoader.h b/Source/Tools/FEXInterpreter/ELFCodeLoader.h
+index 93df310e4..cb990036c 100644
+--- a/Source/Tools/FEXInterpreter/ELFCodeLoader.h
++++ b/Source/Tools/FEXInterpreter/ELFCodeLoader.h
+@@ -766,7 +766,12 @@ public:
+     // /proc/self/stat has 52 fields of at most 20 digits each (UINT64_MAX).
+     // 52*20 = 1040, so 2048 is a conservative upper bound
+     char stat_buffer[2048];
+-    ssize_t bytes_read = FEXCore::FileLoading::LoadFileToBuffer("/proc/self/stat", stat_buffer);
++    int stat_fd = FEX::OpenHostProcFile("self/stat", O_RDONLY | O_CLOEXEC);
++    if (stat_fd == -1) {
++      return false;
++    }
++    ssize_t bytes_read = read(stat_fd, stat_buffer, sizeof(stat_buffer));
++    close(stat_fd);
+ 
+     // Ensure we don't read past the end into garbage data
+     stat_buffer[std::clamp(bytes_read, 0L, static_cast<ssize_t>(sizeof(stat_buffer)) - 1)] = '\0';
 diff --git a/Source/Tools/FEXInterpreter/FEXInterpreter.cpp b/Source/Tools/FEXInterpreter/FEXInterpreter.cpp
-index 406fe428..f1a0aff8 100644
+index d0b639e8a..4f1e85036 100644
 --- a/Source/Tools/FEXInterpreter/FEXInterpreter.cpp
 +++ b/Source/Tools/FEXInterpreter/FEXInterpreter.cpp
 @@ -9,6 +9,7 @@ $end_info$
@@ -58,7 +180,8 @@ index 406fe428..f1a0aff8 100644
  #include "Common/HostFeatures.h"
  #include "Common/Linux/SBRKAllocations.h"
  #include "PortabilityInfo.h"
-@@ -120,6 +121,6 @@ void Init() {
+@@ -120,7 +121,7 @@ void Init() {
+     if (LogFile == "stderr") {
        LogFD = dup(STDERR_FILENO);
      } else if (LogFile == "server") {
 -      Logging::FEXServer::FEXServerFD = FEXServerClient::RequestLogFD(FEXServerClient::GetServerFD());
@@ -66,8 +189,7 @@ index 406fe428..f1a0aff8 100644
        if (FEXServer::FEXServerFD != -1) {
          LogMan::Throw::InstallHandler(Logging::FEXServer::AssertHandler);
          LogMan::Msg::InstallHandler(Logging::FEXServer::MsgHandler);
-@@ -129,6 +130,9 @@ void Init() {
-     if (LogFD == -1) {
+@@ -134,6 +135,9 @@ void Init() {
        LogMan::Msg::EFmt("Couldn't open log file. Going Silent.");
        Logging::SilentLog = true;
      } else {
@@ -76,7 +198,36 @@ index 406fe428..f1a0aff8 100644
 +      }
        OutputFD = LogFD;
      }
-@@ -574,6 +578,9 @@ int main(int argc, char** argv, char** const envp) {
+   }
+@@ -369,13 +373,26 @@ static int StealFEXFDFromEnv(const char* Env) {
+   return FEXFD;
+ }
+ 
++/**
++ * @brief Consume the private marker used to preserve binfmt state across a
++ * FEX self-exec. The marker is removed before the guest environment is built.
++ */
++static bool StealInterpreterInstalledFromEnv() {
++  const char* Value = getenv("FEX_INTERPRETER_INSTALLED");
++  const bool Installed = Value && strcmp(Value, "1") == 0;
++  if (Value) {
++    unsetenv("FEX_INTERPRETER_INSTALLED");
++  }
++  return Installed;
++}
++
+ int main(int argc, char** argv, char** const envp) {
+   auto SBRKPointer = FEX::SBRKAllocations::DisableSBRKAllocations();
+   FEXCore::Allocator::GLIBCScopedFault GLIBFaultScope;
+ 
+   const bool ExecutedWithFD = getauxval(AT_EXECFD) != 0;
+   const auto PortableInfo = FEX::ReadPortabilityInformation();
+-  const bool InterpreterInstalled = QueryInterpreterInstalled(ExecutedWithFD, PortableInfo);
++  const bool InterpreterInstalled = StealInterpreterInstalledFromEnv() || QueryInterpreterInstalled(ExecutedWithFD, PortableInfo);
+ 
+   int FEXFD {StealFEXFDFromEnv("FEX_EXECVEFD")};
+   int FEXSeccompFD {StealFEXFDFromEnv("FEX_SECCOMPFD")};
+@@ -574,6 +591,9 @@ int main(int argc, char** argv, char** const envp) {
    ThunkHandler->RegisterTLSState(ParentThread);
  
    SyscallHandler->DeserializeSeccompFD(ParentThread, FEXSeccompFD);
@@ -86,8 +237,32 @@ index 406fe428..f1a0aff8 100644
  
    // Load VDSO in to memory prior to mapping our ELFs.
    auto VDSOMapping = FEX::VDSO::LoadVDSOThunks(ParentThread->Thread, Loader.Is64BitMode(), SyscallHandler.get());
+diff --git a/Source/Tools/FEXServer/ProcessPipe.cpp b/Source/Tools/FEXServer/ProcessPipe.cpp
+index 16289ed17..b4d747e94 100644
+--- a/Source/Tools/FEXServer/ProcessPipe.cpp
++++ b/Source/Tools/FEXServer/ProcessPipe.cpp
+@@ -594,6 +594,19 @@ void HandleSocketData(fasio::tcp_socket& Socket) {
+       break;
+     }
+ 
++    case FEXServerClient::PacketType::TYPE_GET_HOST_PROC_FD: {
++      int FD = open("/proc", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
++      if (FD == -1) {
++        SendEmptyErrorPacket(Socket);
++      } else {
++        SendFDSuccessPacket(Socket, FD);
++        close(FD);
++      }
++
++      buffer += sizeof(FEXServerClient::FEXServerRequestPacket::Header);
++      break;
++    }
++
+     case FEXServerClient::PacketType::TYPE_POPULATE_CODE_CACHE:
+     case FEXServerClient::PacketType::TYPE_POPULATE_CODE_CACHE_NO_MULTIBLOCK: {
+       char Tmp[PATH_MAX];
 diff --git a/Source/Tools/LinuxEmulation/LinuxSyscalls/FileManagement.cpp b/Source/Tools/LinuxEmulation/LinuxSyscalls/FileManagement.cpp
-index b5a1a02d..1f3db006 100644
+index 41e5d3003..495f98236 100644
 --- a/Source/Tools/LinuxEmulation/LinuxSyscalls/FileManagement.cpp
 +++ b/Source/Tools/LinuxEmulation/LinuxSyscalls/FileManagement.cpp
 @@ -222,7 +222,7 @@ FileManager::FileManager(FEXCore::Context::Context* ctx)
@@ -99,12 +274,182 @@ index b5a1a02d..1f3db006 100644
      if (RootFSFD == -1) {
        RootFSFD = AT_FDCWD;
      } else {
-@@ -330,7 +330,7 @@ FileManager::FileManager(FEXCore::Context::Context* ctx)
+@@ -329,8 +329,9 @@ FileManager::FileManager(FEXCore::Context::Context* ctx)
+     }
    }
  
-   // Keep an fd open for /proc, to bypass chroot-style sandboxes
+-  // Keep an fd open for /proc, to bypass chroot-style sandboxes
 -  ProcFD = open("/proc", O_RDONLY | O_CLOEXEC);
-+  ProcFD = FEX::RelocateInternalFD(open("/proc", O_RDONLY | O_CLOEXEC));
++  // Use the procfs descriptor supplied by FEXServer so a translated process remains functional
++  // after entering a chroot that does not mount procfs.
++  ProcFD = FEX::GetHostProcFD();
    if (ProcFD != -1) {
      // Track the st_dev of /proc, to check for inode equality
      struct stat Buffer;
+@@ -460,14 +461,22 @@ fextl::string FileManager::GetEmulatedPath(const char* pathname, bool FollowSyml
+     return {};
+   }
+ 
+-  fextl::string Path = RootFSPath + pathname;
++  const auto RootedPath = [&RootFSPath](std::string_view Suffix) {
++    fextl::string Result = RootFSPath;
++    if (Result.ends_with('/') && Suffix.starts_with('/')) {
++      Suffix.remove_prefix(1);
++    }
++    Result += Suffix;
++    return Result;
++  };
++
++  fextl::string Path = RootedPath(pathname);
+   if (FollowSymlink) {
+     char Filename[PATH_MAX];
+     while (FEX::HLE::IsSymlink(AT_FDCWD, Path.c_str())) {
+       auto SymlinkSize = FEX::HLE::GetSymlink(AT_FDCWD, Path.c_str(), Filename, PATH_MAX - 1);
+       if (SymlinkSize > 0 && Filename[0] == '/') {
+-        Path = RootFSPath;
+-        Path += std::string_view(Filename, SymlinkSize);
++        Path = RootedPath(std::string_view(Filename, SymlinkSize));
+       } else {
+         break;
+       }
+diff --git a/Source/Tools/LinuxEmulation/LinuxSyscalls/Syscalls.cpp b/Source/Tools/LinuxEmulation/LinuxSyscalls/Syscalls.cpp
+index 1674f8951..d0514894b 100644
+--- a/Source/Tools/LinuxEmulation/LinuxSyscalls/Syscalls.cpp
++++ b/Source/Tools/LinuxEmulation/LinuxSyscalls/Syscalls.cpp
+@@ -9,6 +9,8 @@ $end_info$
+ 
+ #include "CodeLoader.h"
+ 
++#include "Common/FDUtils.h"
++
+ #include "FEXHeaderUtils/StringArgumentParser.h"
+ #include "Linux/Utils/ELFContainer.h"
+ #include "Linux/Utils/ELFParser.h"
+@@ -210,6 +212,7 @@ uint64_t ExecveHandler(FEXCore::Core::CpuStateFrame* Frame, const char* pathname
+   const bool IsFDExec = (Args.flags & AT_EMPTY_PATH) && strlen(pathname) == 0;
+   fextl::string FDExecEnv;
+   fextl::string FDSeccompEnv;
++  fextl::string InterpreterInstalledEnv;
+ 
+   fextl::string ShebangInterpreter {};
+ 
+@@ -312,28 +315,38 @@ uint64_t ExecveHandler(FEXCore::Core::CpuStateFrame* Frame, const char* pathname
+     return true;
+   }();
+ 
+-  // If the FEX interpreter is installed then just execve the ELF file
+-  // This will stay inside of our emulated environment since binfmt_misc will capture it
++  const auto IsX86ELF = [](ELFLoader::ELFContainer::ELFType ELFType) {
++    return ELFType == ELFLoader::ELFContainer::ELFType::TYPE_X86_32 ||
++           ELFType == ELFLoader::ELFContainer::ELFType::TYPE_X86_64;
++  };
++
++  // If the FEX interpreter is installed then let the kernel execute x86 ELFs
++  // and scripts whose interpreter is an x86 ELF. In both cases binfmt_misc
++  // will capture the final x86 executable. Treating an x86 shebang as an
++  // unsupported file unnecessarily self-execs FEX and bypasses the kernel's
++  // native shebang argument handling.
+   const bool IsBinfmtCompatible = SyscallHandler->IsInterpreterInstalled() && !NeedsFDCopy &&
+-                                  (Type == ELFLoader::ELFContainer::ELFType::TYPE_X86_32 || Type == ELFLoader::ELFContainer::ELFType::TYPE_X86_64);
++                                  (IsX86ELF(Type) || (IsShebang && IsX86ELF(InterpreterType)));
+ 
+   // We are trying to execute an ELF of a different architecture
+   // We can't know if we can support this without architecture specific checks and binfmt_misc parsing
+   // Just execve it and let the kernel handle the process
+   const bool IsOtherELF = Type == ELFLoader::ELFContainer::ELFType::TYPE_OTHER_ELF;
+ 
+-  // Need to copy over envp variables if we are appending data.
+-  // Only situation in which an envp copy needs to occur is if we are doing an FD execveat and binfmt_misc can't handle it.
+-  // Additional tasks that require envp copying in the future:
+-  // - seccomp inheritance
+-  // - FEXServer FD inheritance (unshare(CLONE_NEWNET))
+-  // - FD_CLOEXEC set on FD on anonymous file FD.
+-  const bool NeedsEnvpCopy = (IsFDExec && !(IsBinfmtCompatible || IsOtherELF)) || HasSeccomp || NeedsFDCopy;
+-
+   // We are trying to execute a shebang handled by a different architecture interpreter (e.g. /usr/bin/python from the host FS).
+   // In this case we just defer to the kernel.
+   const bool IsForeignShebang = (IsShebang && InterpreterType == ELFLoader::ELFContainer::ELFType::TYPE_OTHER_ELF);
+ 
++  // A FEX self-exec can run inside a container or chroot where binfmt_misc is
++  // not visible even though the current interpreter was launched through it.
++  // Preserve that already-known state for the new FEX instance.
++  const bool NeedsInterpreterPropagation = SyscallHandler->IsInterpreterInstalled() &&
++                                           !(IsBinfmtCompatible || IsOtherELF || IsForeignShebang);
++
++  // Need to copy over envp variables if we are appending data.
++  const bool NeedsEnvpCopy = (IsFDExec && !(IsBinfmtCompatible || IsOtherELF)) || HasSeccomp || NeedsFDCopy ||
++                             NeedsInterpreterPropagation;
++
+   if (NeedsEnvpCopy) {
+     if (envp) {
+       auto OldEnvp = envp;
+@@ -374,6 +387,11 @@ uint64_t ExecveHandler(FEXCore::Core::CpuStateFrame* Frame, const char* pathname
+       EnvpArgs.emplace_back(FDSeccompEnv.data());
+     }
+ 
++    if (NeedsInterpreterPropagation) {
++      InterpreterInstalledEnv = "FEX_INTERPRETER_INSTALLED=1";
++      EnvpArgs.emplace_back(InterpreterInstalledEnv.data());
++    }
++
+     // Emplace nullptr at the end to stop
+     EnvpArgs.emplace_back(nullptr);
+ 
+@@ -416,15 +434,21 @@ uint64_t ExecveHandler(FEXCore::Core::CpuStateFrame* Frame, const char* pathname
+   const char NullString[] = "";
+   fextl::vector<const char*> ExecveArgs = SyscallHandler->GetCodeLoader()->GetExecveArguments();
+ 
+-  if (argv) {
+-    // Overwrite the filename with the new one we are redirecting to
+-    ExecveArgs.emplace_back(Filename.c_str());
++  // Synthetic executable-path slot consumed by the new FEX instance.
++  ExecveArgs.emplace_back(Filename.c_str());
+ 
++  if (argv) {
+     auto OldArgv = argv;
+ 
+     // It is valid to provide nullptr first argument.
+     if (*OldArgv) {
+-      // Skip filename argument
++      // FEX_EXECVEFD is consumed like a binfmt_misc AT_EXECFD invocation: the
++      // first argument is the executable path and is removed by the loader.
++      // Preserve the caller's argv[0] after that synthetic path so fd-based
++      // exec does not silently drop the first real program argument.
++      if (IsFDExec) {
++        ExecveArgs.emplace_back(*OldArgv);
++      }
+       ++OldArgv;
+       while (*OldArgv) {
+         // Append the arguments together
+@@ -436,11 +460,28 @@ uint64_t ExecveHandler(FEXCore::Core::CpuStateFrame* Frame, const char* pathname
+       ExecveArgs.emplace_back(NullString);
+     }
+ 
+-    // Emplace nullptr at the end to stop
+-    ExecveArgs.emplace_back(nullptr);
++  } else if (IsFDExec) {
++    // Linux accepts a null argv for execveat and presents the new program with
++    // an empty argv[0]. The fd loader removes the synthetic path above, so an
++    // explicit empty argument is required to preserve that behavior.
++    ExecveArgs.emplace_back(NullString);
++  }
++
++  // Emplace nullptr at the end to stop, including for a null argv pointer.
++  ExecveArgs.emplace_back(nullptr);
++
++  // A translated process may enter a chroot without mounting procfs. Resolve
++  // self/exe relative to the procfs descriptor retained before the chroot. Do
++  // not use AT_EMPTY_PATH here: that changes AT_EXECFD and makes the new FEX
++  // instance interpret a normal self-exec as a binfmt invocation.
++  const int HostProcFD = FEX::GetHostProcFD();
++  if (HostProcFD == -1) {
++    CloseSeccompFD();
++    CloseFDExecFD();
++    return -ENOENT;
+   }
+ 
+-  Result = ::syscall(SYS_execveat, Args.dirfd, "/proc/self/exe", const_cast<char* const*>(ExecveArgs.data()), EnvpPtr, Args.flags);
++  Result = ::syscall(SYS_execveat, HostProcFD, "self/exe", const_cast<char* const*>(ExecveArgs.data()), EnvpPtr, 0);
+   CloseSeccompFD();
+   CloseFDExecFD();
+ 

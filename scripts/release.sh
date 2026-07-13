@@ -669,14 +669,13 @@ for requested in $RELEASE_VARIANTS; do
   if [ "${DORY_BUNDLE_ENGINE:-1}" = "1" ]; then
     echo "==> Bundling the self-contained engine for $VARIANT..."
     # A release consumes the exact stamped initfs. Opportunistically rewriting it with host-found
-    # agent/QEMU/toolbox binaries would make the signed guest vary by runner and escape provenance;
+    # agent or toolbox binaries would make the signed guest vary by runner and escape provenance;
     # add those tools to guest/initfs/PINS + build.sh before making them part of a release image.
     DORY_BUNDLE_ARCHES="$BUNDLE_ARCHES" \
     DORY_SWIFTPM_HELPER_ARCHES="$HELPER_ARCHES" \
     DORY_HOST_CLI_ARCHES="$HOST_CLI_ARCHES" \
     DORY_BUNDLE_NATIVE_ARCH="$NATIVE_GUEST_ARCH" \
     DORY_SKIP_AGENT_INJECT=1 \
-    DORY_SKIP_QEMU_INJECT=1 \
     DORY_SKIP_TOOLBOX_INJECT=1 \
     DORY_REQUIRE_BUNDLE_ASSETS="${DORY_REQUIRE_BUNDLE_ASSETS:-1}" \
       scripts/bundle-engine.sh "$APP"

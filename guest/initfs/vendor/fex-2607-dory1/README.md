@@ -1,8 +1,9 @@
 # Dory FEX-2607 container-FD isolation build
 
 These two arm64 ELF files are the exact FEX binaries shipped in Dory's private runtime bundle.
-They are linked directly to `/usr/lib/dory/fex/ld-linux-aarch64.so.1` with the private library
-RPATH `/usr/lib/dory/fex/lib`; the initfs builder installs the bytes without rewriting them.
+They are static PIE executables so the binfmt interpreter remains executable after translated tools
+enter nested chroots while remaining relocatable around guest VMA reservations. The initfs builder
+installs the bytes without rewriting them.
 
 Provenance:
 
@@ -10,10 +11,22 @@ Provenance:
 - tag: `FEX-2607` (annotated tag object `6efd1c099193bba708b68395738a31e9e5409e9a`)
 - source commit: `1cc4b93e7a71c883ec021b71359f136394dc1f3c`
 - Dory patch: `patches/fex-container-fd-isolation.patch`
-- patch SHA-256: `ce4b0d955a1c982b071c3d34b34f58e350526cd0b55b28980fbe0594abe1dc9b`
+- patch SHA-256: `374eb59a207c0356f548295552f235c0eeadcdbac360a64b01535933a1af8f8a`
 - builder: `ubuntu:24.04@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90`
-- FEX SHA-256: `385c2495a46f00450ffa62e641552b7f18928aa18f3d0a8b621c526ccf79e009`
-- FEXServer SHA-256: `9a4b098f004a5e9e1759ead38795f48bbc900e654d51e3bcf20d9921f00b2ef4`
+- Ubuntu archive snapshot: `20260713T120000Z`
+- snapshot CA bootstrap package SHA-256: `6bac2a01979e210d9eac1d4d56747ec709ea60654744d66705dc3c36e7629e50`
+- reproducible source epoch: `1783039651` (`2026-07-03T00:47:31Z`, the source commit timestamp)
+- build package inventory: `BUILD_PACKAGES.txt`
+- build package inventory SHA-256: `ad3b0e4ab4e53ac328b0209f592a6f86100f5ca2c17715f2b40ee9b130b0f0b1`
+- FEX SHA-256: `b862d2a4358b102b125ae50da357b189a5d4710a3be830ef3280cba400c7099b`
+- FEXServer SHA-256: `bbe8a34fc2ba4e606acd7e5b11d9b51da283835f40d2851e2ed39d35d28f2597`
+
+The rebuild initializes only the eight submodules required by the two production targets. The
+toolchain stage resolves packages from the immutable Ubuntu snapshot above and exports every
+installed package and version. `SOURCE_DATE_EPOCH` replaces compiler wall-clock macros, while
+`--no-cache-filter builder` forces each verification invocation to compile the binaries again and
+allows only the pinned toolchain layer to be reused. `BUILD_TESTING=False` excludes test-only
+submodule and binary inputs from the release build.
 
 The patch keeps translator-only descriptors out of the guest's normal low descriptor range by
 moving the FEX server socket, rootfs handle, `/proc` handle, and non-standard log handles to file
@@ -22,10 +35,30 @@ Guest-created descriptors and application behavior are otherwise unchanged. This
 translated descriptor-sensitive tools such as `mmdebstrap` from selecting descriptor 10 or 11 and
 then passing a multi-digit `>&N` redirection to Debian `dash`.
 
+The same patch lets FEXServer pass a read-only descriptor for the container's procfs mount over its
+abstract Unix socket. A translated process can therefore enter a nested chroot without mounting
+procfs there, while FEX still reads its own maps, stat, and descriptor metadata. No Dory runtime
+path or file is copied into the user-created rootfs.
+
+Nested execution follows Linux rather than package-specific exceptions. X86 shebangs are delegated
+to the kernel's binfmt path, FEX preserves its already-proven interpreter state only across the
+exceptional self-exec path, and private handoff variables are consumed before the guest environment
+is built. Descriptor-based `execveat` retains the caller's argument vector, including Linux's null
+`argv` behavior, while a `/` merged rootfs preserves canonical single-slash script paths. These
+invariants cover shell, `/usr/bin/env`, Python, child ELF, Docker exec, and inherited guest-seccomp
+chains inside ordinary containers and proc-less nested chroots.
+
+Static PIE linking is also part of the compatibility contract: a dynamically loaded native interpreter
+loses access to its ARM64 loader when an x86 process invokes `chroot`, causing nested package tools
+to fail with a misleading `No such file or directory`, while a fixed-address static interpreter can
+collide with guest VMA reservations. The shipped pair has no ELF interpreter or dynamic library
+dependencies and remains relocatable, so it is valid across both boundaries.
+
 Run `./rebuild.sh /absolute/output/directory` from this directory (or from any working directory)
-to fetch the exact source and submodules, apply the checked patch, build the pair, and verify that
-the output hashes still match the shipped artifacts. The checked-in binaries are the immutable
-release inputs; a changed toolchain or package archive cannot silently alter a Dory initfs.
+to fetch the exact source and required submodules, apply the checked patch, perform a fresh
+compilation, and verify that the output hashes and package inventory still match the shipped
+artifacts. The checked-in binaries and inventory are immutable release inputs; a changed source,
+patch, toolchain, package snapshot, or generated byte cannot silently alter a Dory initfs.
 
 FEX is distributed under the MIT license in `LICENSE.FEX`. The built initfs also carries the
 upstream Ubuntu package copyright inventory and third-party notices alongside the runtime.

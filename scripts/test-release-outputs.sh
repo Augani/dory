@@ -258,6 +258,8 @@ mkdir -p \
   "$QUALIFICATION_FIXTURE/evidence/default-platform-image/run" \
   "$QUALIFICATION_FIXTURE/evidence/nonnative-nix-gc/run" \
   "$QUALIFICATION_FIXTURE/evidence/nonnative-arch-pacman/run" \
+  "$QUALIFICATION_FIXTURE/evidence/nonnative-mmdebstrap/run" \
+  "$QUALIFICATION_FIXTURE/evidence/nonnative-exec-conformance/run" \
   "$QUALIFICATION_FIXTURE/evidence/ecr-registry/run" \
   "$QUALIFICATION_FIXTURE/evidence/bind-file-coherence/run" \
   "$QUALIFICATION_FIXTURE/evidence/native-ipv6/run" \
@@ -416,6 +418,12 @@ architecture=x86_64
 fresh_pull=PASS
 pacman_default_sandbox=PASS
 alpm_user_switch=PASS
+oci_default_runtime=dory-runc
+fex_handler=PASS
+fex_binfmt_flags=POCF
+fex_bundle_read_only=PASS
+fex_sha256=b862d2a4358b102b125ae50da357b189a5d4710a3be830ef3280cba400c7099b
+fex_server_sha256=bbe8a34fc2ba4e606acd7e5b11d9b51da283835f40d2851e2ed39d35d28f2597
 fzf_inventory=PASS
 fzf_runtime=PASS
 docker_api_after_build=PASS
@@ -423,6 +431,98 @@ owned_cleanup=PASS
 docker_cli_sha256=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 build_output_sha256=$arch_build_sha
 run_output_sha256=$arch_run_sha
+EOF
+cat > "$QUALIFICATION_FIXTURE/evidence/nonnative-mmdebstrap/run/build.err" <<'EOF'
+#1 RUN mmdebstrap --variant=minbase trixie /tmp/rootfs.tar
+#1 DONE
+EOF
+cat > "$QUALIFICATION_FIXTURE/evidence/nonnative-mmdebstrap/run/run.out" <<'EOF'
+architecture=x86_64
+fex_sha256=b862d2a4358b102b125ae50da357b189a5d4710a3be830ef3280cba400c7099b
+fex_server_sha256=bbe8a34fc2ba4e606acd7e5b11d9b51da283835f40d2851e2ed39d35d28f2597
+rootfs_archive_readable=PASS
+nested_chroot_no_proc=PASS
+nested_chroot_shebang=PASS
+private_marker_isolation=PASS
+EOF
+cat > "$QUALIFICATION_FIXTURE/evidence/nonnative-mmdebstrap/run/base-image-inspect.json" <<'EOF'
+[{"Id":"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","Os":"linux","Architecture":"amd64","RepoDigests":["debian@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"]}]
+EOF
+mm_build_sha="$(shasum -a 256 "$QUALIFICATION_FIXTURE/evidence/nonnative-mmdebstrap/run/build.err" | awk '{print $1}')"
+mm_run_sha="$(shasum -a 256 "$QUALIFICATION_FIXTURE/evidence/nonnative-mmdebstrap/run/run.out" | awk '{print $1}')"
+cat > "$QUALIFICATION_FIXTURE/evidence/nonnative-mmdebstrap/run/manifest.txt" <<EOF
+status=PASS
+orbstack_issue=2543
+base_image=debian@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+platform=linux/amd64
+architecture=x86_64
+fresh_pull=PASS
+reported_dockerfile_commands=PASS
+mmdebstrap_minbase_trixie=PASS
+bad_fd_number_absent=PASS
+oci_default_runtime=dory-runc
+fex_handler=PASS
+fex_binfmt_flags=POCF
+fex_bundle_read_only=PASS
+fex_sha256=b862d2a4358b102b125ae50da357b189a5d4710a3be830ef3280cba400c7099b
+fex_server_sha256=bbe8a34fc2ba4e606acd7e5b11d9b51da283835f40d2851e2ed39d35d28f2597
+rootfs_archive_readable=PASS
+nested_chroot_no_proc=PASS
+nested_chroot_shebang=PASS
+private_marker_isolation=PASS
+docker_api_after_build=PASS
+build_cache_cleanup=PASS
+owned_cleanup=PASS
+build_log_sha256=$mm_build_sha
+run_output_sha256=$mm_run_sha
+EOF
+cat > "$QUALIFICATION_FIXTURE/evidence/nonnative-exec-conformance/run/build.err" <<'EOF'
+#1 fd-exec-arguments-buildkit=PASS
+#2 fd-exec-null-argv-buildkit=PASS
+#3 seccomp-shebang-chain-buildkit=PASS
+EOF
+cat > "$QUALIFICATION_FIXTURE/evidence/nonnative-exec-conformance/run/seccomp-chain.out" <<'EOF'
+seccomp-shebang-chain-ok debian=13.5
+EOF
+cat > "$QUALIFICATION_FIXTURE/evidence/nonnative-exec-conformance/run/docker-exec.out" <<'EOF'
+Debian 'dpkg' package management program version 1.22.0 (amd64).
+EOF
+cat > "$QUALIFICATION_FIXTURE/evidence/nonnative-exec-conformance/run/base-image-inspect.json" <<'EOF'
+[{"Id":"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","Os":"linux","Architecture":"amd64","RepoDigests":["debian@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"]}]
+EOF
+cat > "$QUALIFICATION_FIXTURE/evidence/nonnative-exec-conformance/run/native-image-inspect.json" <<'EOF'
+[{"Id":"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","Os":"linux","Architecture":"arm64","RepoDigests":["alpine@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"]}]
+EOF
+exec_build_sha="$(shasum -a 256 "$QUALIFICATION_FIXTURE/evidence/nonnative-exec-conformance/run/build.err" | awk '{print $1}')"
+exec_seccomp_sha="$(shasum -a 256 "$QUALIFICATION_FIXTURE/evidence/nonnative-exec-conformance/run/seccomp-chain.out" | awk '{print $1}')"
+exec_docker_sha="$(shasum -a 256 "$QUALIFICATION_FIXTURE/evidence/nonnative-exec-conformance/run/docker-exec.out" | awk '{print $1}')"
+cat > "$QUALIFICATION_FIXTURE/evidence/nonnative-exec-conformance/run/manifest.txt" <<EOF
+status=PASS
+base_image=debian@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+native_image=alpine@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+platform=linux/amd64
+architecture=x86_64
+fresh_pulls=PASS
+oci_default_runtime=dory-runc
+fex_sha256=b862d2a4358b102b125ae50da357b189a5d4710a3be830ef3280cba400c7099b
+fex_server_sha256=bbe8a34fc2ba4e606acd7e5b11d9b51da283835f40d2851e2ed39d35d28f2597
+amd64_only_binfmt=PASS
+fex_binfmt_flags=POCF
+canonical_shebang_paths=PASS
+env_shebang_chain=PASS
+private_marker_isolation=PASS
+guest_seccomp_inheritance=PASS
+fd_exec_arguments=PASS
+fd_exec_null_argv=PASS
+buildkit_exec_matrix=PASS
+runtime_exec_matrix=PASS
+docker_exec_matrix=PASS
+docker_api_after_exec=PASS
+build_cache_cleanup=PASS
+owned_cleanup=PASS
+build_log_sha256=$exec_build_sha
+seccomp_output_sha256=$exec_seccomp_sha
+docker_exec_output_sha256=$exec_docker_sha
 EOF
 cat > "$QUALIFICATION_FIXTURE/evidence/ecr-registry/run/manifest.txt" <<'EOF'
 status=PASS
@@ -514,16 +614,34 @@ EOF
   for test in \
     published-port-handoff host-port-collision named-signal-delivery forwarded-connection-fds concurrent-proxy-backpressure \
     missing-source-cp restart-churn compose-port-restart network-route-conflict \
-    network-alias-restart-ip standalone-engine-restart named-volume named-volume-cp \
+    network-alias-restart-ip standalone-engine-restart named-volume-empty named-volume named-volume-cp \
     security-opt-label seccomp-profile bind-open-create-0200 bind-mount-option-contract \
     nested-bind-subvolume bind-special-file-fail-fast bind-open-fd-stability \
-    bind-hardlink-permissions healthcheck buildx-named-context buildkit-large-dockerfile \
+    bind-hardlink-permissions healthcheck buildx-named-context buildkit-default-arg \
+    image-save-stdout image-hardlink-missing-parent buildkit-large-dockerfile \
     buildkit-relative-temp-context dockerignore-layered-unignore \
     buildkit-concurrent-sessions container-resolver-contract container-dns-search \
     cleanup-restart-persistence; do
     printf '%s\tPASS\tok\n' "$test"
   done
 } > "$QUALIFICATION_FIXTURE/evidence/competitor-runtime/run/results.tsv"
+printf 'amd64_enabled=1\n' \
+  > "$QUALIFICATION_FIXTURE/evidence/competitor-runtime/run/engine-settings.txt"
+competitor_engine_settings_sha="$(
+  shasum -a 256 "$QUALIFICATION_FIXTURE/evidence/competitor-runtime/run/engine-settings.txt" \
+    | awk '{print $1}'
+)"
+cat > "$QUALIFICATION_FIXTURE/evidence/competitor-runtime/run/manifest.txt" <<EOF
+docker_bin_sha256=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+dory_engine_sha256=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+bin_dory_hv_sha256=cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+bin_gvproxy_sha256=dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+bin_dory_dataplane_proxy_sha256=eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
+share_dory_dory_hv_kernel_arm64_lzfse_sha256=ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+share_dory_dory_engine_rootfs_ext4_lzfse_sha256=1111111111111111111111111111111111111111111111111111111111111111
+share_dory_dory_agent_linux_arm64_sha256=2222222222222222222222222222222222222222222222222222222222222222
+engine_settings_sha256=$competitor_engine_settings_sha
+EOF
 cat > "$QUALIFICATION_FIXTURE/evidence/standalone-supervisor-recovery/manifest.txt" <<'EOF'
 status=PASS
 healthy_pidfile_repair=PASS
@@ -780,6 +898,8 @@ payload = {
     "defaultPlatformImageGate": "PASS",
     "nonnativeNixGCGate": "PASS",
     "nonnativeArchPacmanGate": "PASS",
+    "nonnativeMmdebstrapGate": "PASS",
+    "nonnativeExecConformanceGate": "PASS",
     "ecrRegistryRetryGate": "PASS",
     "bindFileCoherenceGate": "PASS",
     "powerAssertion": "PASS",

@@ -134,7 +134,7 @@ docker_e run --name "$CONTAINER" --platform linux/amd64 "$TAG" \
     fex_hash="$(sha256sum /usr/lib/dory/fex/FEX | awk "{print \$1}")"
     server_hash="$(sha256sum /usr/lib/dory/fex/FEXServer | awk "{print \$1}")"
     case "$fex_hash:$server_hash" in
-      385c2495a46f00450ffa62e641552b7f18928aa18f3d0a8b621c526ccf79e009:9a4b098f004a5e9e1759ead38795f48bbc900e654d51e3bcf20d9921f00b2ef4) ;;
+      b862d2a4358b102b125ae50da357b189a5d4710a3be830ef3280cba400c7099b:bbe8a34fc2ba4e606acd7e5b11d9b51da283835f40d2851e2ed39d35d28f2597) ;;
       *) exit 1;;
     esac
     echo "fex_sha256=$fex_hash"

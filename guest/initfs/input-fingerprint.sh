@@ -59,8 +59,10 @@ done
 if [ "$ARCH" = arm64 ]; then
   INPUTS+=(
     guest/initfs/vendor/fex-2607-dory1/Dockerfile
+    guest/initfs/vendor/fex-2607-dory1/Dockerfile.dockerignore
     guest/initfs/vendor/fex-2607-dory1/FEX
     guest/initfs/vendor/fex-2607-dory1/FEXServer
+    guest/initfs/vendor/fex-2607-dory1/BUILD_PACKAGES.txt
     guest/initfs/vendor/fex-2607-dory1/LICENSE.FEX
     guest/initfs/vendor/fex-2607-dory1/README.md
     guest/initfs/vendor/fex-2607-dory1/rebuild.sh

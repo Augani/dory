@@ -7,8 +7,12 @@
 # Docker static provides dockerd, containerd, runc, docker-init, docker-proxy, ctr, and docker.
 # crun is a faster optional OCI runtime; Dory keeps its runc-compatible path as the default.
 # Apple Silicon additionally embeds Dory's hash-locked FEX-Emu 2607 binaries, built from the
-# pinned tag plus patches/fex-container-fd-isolation.patch, and the minimum pinned Ubuntu Noble
-# arm64 runtime. The FEX package below supplies upstream data files and redistribution notices.
+# pinned tag plus patches/fex-container-fd-isolation.patch. The FEX executables are static PIE so
+# they survive nested chroots and remain relocatable around guest VMA reservations. The patch also
+# preserves Linux shebang, descriptor-exec, argument-vector, and guest-seccomp semantics through
+# nested process chains. Its compiler inputs are independently pinned by the vendor Dockerfile's
+# Ubuntu snapshot and BUILD_PACKAGES.txt inventory; the packages below supply upstream data files
+# and licensing notices.
 alpine_arm64 https://dl-cdn.alpinelinux.org/alpine/v3.21/releases/aarch64/alpine-minirootfs-3.21.7-aarch64.tar.gz d1d1a3fae5f4d6146e9742790a47fcb116199622cfb8439f218a4d5fbe5000da
 alpine_amd64 https://dl-cdn.alpinelinux.org/alpine/v3.21/releases/x86_64/alpine-minirootfs-3.21.7-x86_64.tar.gz 8cba1ea3e8b500ea986a313d8eecf3d5952a2a0d23a69117bb81c023d9ceac05
 docker_arm64 https://download.docker.com/linux/static/stable/aarch64/docker-29.6.1.tgz 917a4bb83565bcacb38c430f08daae8b59db3256331ac23f22394f0542509881
@@ -17,8 +21,6 @@ crun_arm64 https://github.com/containers/crun/releases/download/1.28/crun-1.28-l
 crun_amd64 https://github.com/containers/crun/releases/download/1.28/crun-1.28-linux-amd64 2aa6b7024a9c9f153895c0d11ae233d3758f54844011c3a039e3e89048d01d42
 fex_arm64 https://ppa.launchpadcontent.net/fex-emu/fex/ubuntu/pool/main/f/fex-emu-armv8.0/fex-emu-armv8.0_2607-1~n_arm64.deb 145247dfbde97bd845d8418c6cafd866a769aaf0906379b546944d6b7f10466b
 fex_libc6_arm64 https://ports.ubuntu.com/ubuntu-ports/pool/main/g/glibc/libc6_2.39-0ubuntu8_arm64.deb 04d7cb73e608b41713b63ef915577f7f5d75e95b1b33174e82e05687fdb6cfaf
-fex_libgcc_arm64 https://ports.ubuntu.com/ubuntu-ports/pool/main/g/gcc-14/libgcc-s1_14-20240412-0ubuntu1_arm64.deb bb1c262f2ac9aeb357d3344a06f22f1057306694f6200896775a03ecced08b13
-fex_libstdcxx_arm64 https://ports.ubuntu.com/ubuntu-ports/pool/main/g/gcc-14/libstdc++6_14-20240412-0ubuntu1_arm64.deb cd9ad360c8eee25e1fd9869303f4782eeaa47723594e85631c3def7ec42c3b08
 fex_gcc_base_arm64 https://ports.ubuntu.com/ubuntu-ports/pool/main/g/gcc-14/gcc-14-base_14-20240412-0ubuntu1_arm64.deb a473987e9704cbfa2c795b7c94b57f38ed2b27f7068c8338e1deed9bbf279877
 libeconf_arm64 https://dl-cdn.alpinelinux.org/alpine/v3.21/main/aarch64/libeconf-0.6.3-r0.apk db25f8abaf1ec61f5dcc0ff9b55271a3f6e43037e430b0c126ac000483e17dad
 libuuid_arm64 https://dl-cdn.alpinelinux.org/alpine/v3.21/main/aarch64/libuuid-2.40.4-r1.apk d392ac96027cbe5ca9bc270d2aa4e99747b0eae3cf65a0087f2c6f13a7382702

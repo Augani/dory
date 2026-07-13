@@ -52,6 +52,8 @@ for script in \
   scripts/default-platform-image-gate.sh \
   scripts/nonnative-nix-gc-gate.sh \
   scripts/nonnative-arch-pacman-gate.sh \
+  scripts/nonnative-mmdebstrap-gate.sh \
+  scripts/nonnative-exec-conformance-gate.sh \
   scripts/machine-resource-reconfiguration-gate.sh \
   scripts/long-lived-network-soak.sh \
   scripts/qualify-release-candidate.sh \
@@ -87,6 +89,8 @@ for name in (
     "scripts/ecr-registry-retry-gate.sh",
     "scripts/nonnative-nix-gc-gate.sh",
     "scripts/nonnative-arch-pacman-gate.sh",
+    "scripts/nonnative-mmdebstrap-gate.sh",
+    "scripts/nonnative-exec-conformance-gate.sh",
     "scripts/qualify-release-candidate.sh",
 ):
     source = Path(name).read_text(encoding="utf-8")
@@ -159,13 +163,31 @@ for arch_pacman_contract in fresh_pull pacman_default_sandbox alpm_user_switch f
     scripts/qualify-release-candidate.sh scripts/verify-release-qualification.sh >/dev/null \
     || fail "non-native Arch pacman qualification omits $arch_pacman_contract"
 done
+for mmdebstrap_contract in fresh_pull reported_dockerfile_commands mmdebstrap_minbase_trixie \
+  bad_fd_number_absent rootfs_archive_readable nested_chroot_no_proc nested_chroot_shebang \
+  private_marker_isolation build_cache_cleanup owned_cleanup; do
+  grep -F "$mmdebstrap_contract" scripts/nonnative-mmdebstrap-gate.sh \
+    scripts/qualify-release-candidate.sh scripts/verify-release-qualification.sh >/dev/null \
+    || fail "non-native mmdebstrap qualification omits $mmdebstrap_contract"
+done
+for exec_contract in fresh_pulls amd64_only_binfmt canonical_shebang_paths env_shebang_chain \
+  private_marker_isolation guest_seccomp_inheritance fd_exec_arguments fd_exec_null_argv \
+  buildkit_exec_matrix runtime_exec_matrix docker_exec_matrix build_cache_cleanup owned_cleanup; do
+  grep -F "$exec_contract" scripts/nonnative-exec-conformance-gate.sh \
+    scripts/qualify-release-candidate.sh scripts/verify-release-qualification.sh >/dev/null \
+    || fail "non-native exec qualification omits $exec_contract"
+done
 grep -F 'RUN pacman -Sy --noconfirm fzf' scripts/nonnative-arch-pacman-gate.sh >/dev/null \
   || fail "Arch pacman gate lost the competitor's exact Dockerfile command"
-for fex_contract in fex_arm64 fex_libc6_arm64 fex_libgcc_arm64 fex_libstdcxx_arm64 \
-  fex_gcc_base_arm64; do
+for fex_contract in fex_arm64 fex_libc6_arm64 fex_gcc_base_arm64; do
   grep -F "$fex_contract" guest/initfs/PINS >/dev/null \
     || fail "Apple Silicon FEX runtime omits provenance pin $fex_contract"
 done
+if grep -Eq '^fex_(libgcc|libstdcxx)_arm64 ' guest/initfs/PINS; then
+  fail "static Apple Silicon FEX runtime still carries obsolete dynamic-library payload pins"
+fi
+grep -F 'CMAKE_EXE_LINKER_FLAGS=-static-pie' guest/initfs/vendor/fex-2607-dory1/Dockerfile >/dev/null \
+  || fail "Apple Silicon FEX interpreter is not built to survive nested chroot boundaries"
 grep -F 'const REAL_RUNC: &str = "/usr/local/bin/runc.real"' \
   dory-core/runc-wrapper/src/main.rs >/dev/null \
   || fail "Dory OCI wrapper can recurse instead of delegating to the vendor runc"
@@ -262,6 +284,13 @@ grep -F 'engine requires explicit --state-dir' \
 grep -F 'mount -t binfmt_misc binfmt_misc /proc/sys/fs/binfmt_misc' \
   scripts/nonnative-build-smoke.sh scripts/readiness.sh >/dev/null \
   || fail "non-native readiness probes do not mount their container-local binfmt_misc view"
+if grep -Eq 'find_qemu_static|inject_qemu_into_initfs|DORY_QEMU_(X86_64|AARCH64)_STATIC' \
+    scripts/bundle-engine.sh; then
+  fail "app bundling can still depend on or inject an unpinned host qemu-user runtime"
+fi
+grep -F 'runtime_mount="$(awk "\$2 == \"/run/dory-fex\"' \
+  scripts/nonnative-mmdebstrap-gate.sh >/dev/null \
+  || fail "mmdebstrap post-build mount verification can escape its container shell quoting"
 grep -F 'same-inode-shrink' scripts/bind-file-coherence-gate.sh >/dev/null \
   || fail "bind coherence gate lost the stale-size shrink reproduction"
 for bind_file_contract in direct_single_file_bind direct_single_file_recreate_cycles path_with_spaces; do
@@ -850,6 +879,21 @@ if scripts/nonnative-arch-pacman-gate.sh \
   fail "non-native Arch pacman gate ran without its exact confirmation token"
 fi
 grep -q 'ISOLATED-DORY-NONNATIVE-ARCH-PACMAN' "$TMP/nonnative-arch.err"
+if scripts/nonnative-mmdebstrap-gate.sh \
+    --socket "$TMP/missing.sock" --docker "$TMP/missing" \
+    --base-image 'debian@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' \
+    > "$TMP/nonnative-mm.out" 2> "$TMP/nonnative-mm.err"; then
+  fail "non-native mmdebstrap gate ran without its exact confirmation token"
+fi
+grep -q 'ISOLATED-DORY-NONNATIVE-MMDEBSTRAP' "$TMP/nonnative-mm.err"
+if scripts/nonnative-exec-conformance-gate.sh \
+    --socket "$TMP/missing.sock" --docker "$TMP/missing" \
+    --base-image 'debian@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' \
+    --native-image 'alpine@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' \
+    > "$TMP/nonnative-exec.out" 2> "$TMP/nonnative-exec.err"; then
+  fail "non-native exec gate ran without its exact confirmation token"
+fi
+grep -q 'ISOLATED-DORY-NONNATIVE-EXEC' "$TMP/nonnative-exec.err"
 if scripts/ecr-registry-retry-gate.sh \
     --socket "$TMP/missing.sock" --docker "$TMP/missing" \
     --base-image 'alpine@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' \

@@ -16,6 +16,7 @@ LOCK_IMAGE="${DORY_SOURCE_GATE_IMAGE:-}"
 SSH_CLIENT_IMAGE="${DORY_RELEASE_SSH_CLIENT_IMAGE:-}"
 NONNATIVE_NIX_IMAGE="${DORY_RELEASE_NONNATIVE_NIX_IMAGE:-nixos/nix@sha256:898e3874bc80a8fbd7df6001b6c83d6e0c904a942e3a4cdf8a89881458333cac}"
 NONNATIVE_ARCH_IMAGE="${DORY_RELEASE_NONNATIVE_ARCH_IMAGE:-archlinux@sha256:2b4d67033863d9f495dfd0f52ad8b451fae84adb71b4bdf63f69d10643df2403}"
+NONNATIVE_DEBIAN_IMAGE="${DORY_RELEASE_NONNATIVE_DEBIAN_IMAGE:-debian@sha256:3a953985c225a97dfb5a8f1ddc6a3ecefefc35ef51f537075e08941305045a1e}"
 TESTCONTAINERS_VERSION="${DORY_RELEASE_TESTCONTAINERS_VERSION:-12.0.4}"
 DEVCONTAINERS_VERSION="${DORY_RELEASE_DEVCONTAINERS_VERSION:-0.87.0}"
 ACT_VERSION="${DORY_RELEASE_ACT_VERSION:-0.2.89}"
@@ -52,6 +53,7 @@ Options:
   --ssh-client-image REF     Digest-pinned image containing sh and ssh-add
   --nonnative-nix-image REF  Digest-pinned linux/amd64 Nix 2.34.7 image
   --nonnative-arch-image REF Digest-pinned linux/amd64 Arch image
+  --nonnative-debian-image REF Digest-pinned linux/amd64 Debian trixie image
   --testcontainers-version V Exact npm Testcontainers version (default: $TESTCONTAINERS_VERSION)
   --devcontainers-version V  Exact @devcontainers/cli version (default: $DEVCONTAINERS_VERSION)
   --act-version VERSION       Exact nektos/act version (default: $ACT_VERSION)
@@ -92,6 +94,7 @@ while [ "$#" -gt 0 ]; do
     --ssh-client-image) need_value "$1" "$#"; SSH_CLIENT_IMAGE="$2"; shift 2 ;;
     --nonnative-nix-image) need_value "$1" "$#"; NONNATIVE_NIX_IMAGE="$2"; shift 2 ;;
     --nonnative-arch-image) need_value "$1" "$#"; NONNATIVE_ARCH_IMAGE="$2"; shift 2 ;;
+    --nonnative-debian-image) need_value "$1" "$#"; NONNATIVE_DEBIAN_IMAGE="$2"; shift 2 ;;
     --testcontainers-version) need_value "$1" "$#"; TESTCONTAINERS_VERSION="$2"; shift 2 ;;
     --devcontainers-version) need_value "$1" "$#"; DEVCONTAINERS_VERSION="$2"; shift 2 ;;
     --act-version) need_value "$1" "$#"; ACT_VERSION="$2"; shift 2 ;;
@@ -161,6 +164,8 @@ printf '%s\n' "$NONNATIVE_NIX_IMAGE" | grep -Eq '^.+@sha256:[0-9a-f]{64}$' \
   || die "--nonnative-nix-image must be digest-pinned"
 printf '%s\n' "$NONNATIVE_ARCH_IMAGE" | grep -Eq '^.+@sha256:[0-9a-f]{64}$' \
   || die "--nonnative-arch-image must be digest-pinned"
+printf '%s\n' "$NONNATIVE_DEBIAN_IMAGE" | grep -Eq '^.+@sha256:[0-9a-f]{64}$' \
+  || die "--nonnative-debian-image must be digest-pinned"
 printf '%s\n' "$TESTCONTAINERS_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$' \
   || die "--testcontainers-version must be an exact npm semver"
 printf '%s\n' "$DEVCONTAINERS_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$' \
@@ -635,6 +640,35 @@ DOCKER_HOST="unix://$SOCKET" "$DOCKER" version > "$WORKDIR/evidence/docker-versi
 owned_engine_pids > "$WORKDIR/evidence/engine-pids-started.txt"
 [ -s "$WORKDIR/evidence/engine-pids-started.txt" ] \
   || die "no isolated candidate engine processes were attributable after start"
+bounded 1200 scripts/nonnative-exec-conformance-gate.sh \
+  --socket "$SOCKET" \
+  --docker "$DOCKER" \
+  --base-image "$NONNATIVE_DEBIAN_IMAGE" \
+  --native-image "$IMAGE" \
+  --workroot "$WORKDIR/evidence/nonnative-exec-conformance" \
+  --confirm ISOLATED-DORY-NONNATIVE-EXEC \
+  > "$WORKDIR/evidence/nonnative-exec-conformance.log" 2>&1 \
+  || die "linux/amd64 generic exec conformance gate failed"
+nonnative_exec_manifest="$(find "$WORKDIR/evidence/nonnative-exec-conformance" \
+  -name manifest.txt -type f -print -quit)"
+[ -s "$nonnative_exec_manifest" ] \
+  || die "non-native exec conformance evidence manifest is missing"
+for proof in status fresh_pulls amd64_only_binfmt canonical_shebang_paths env_shebang_chain \
+  private_marker_isolation guest_seccomp_inheritance fd_exec_arguments fd_exec_null_argv \
+  buildkit_exec_matrix runtime_exec_matrix docker_exec_matrix docker_api_after_exec \
+  build_cache_cleanup owned_cleanup; do
+  grep -qx "$proof=PASS" "$nonnative_exec_manifest" \
+    || die "non-native exec conformance evidence does not prove $proof"
+done
+grep -Fx "base_image=$NONNATIVE_DEBIAN_IMAGE" "$nonnative_exec_manifest" >/dev/null \
+  && grep -Fx "native_image=$IMAGE" "$nonnative_exec_manifest" >/dev/null \
+  || die "non-native exec conformance gate used the wrong fixtures"
+grep -qx 'oci_default_runtime=dory-runc' "$nonnative_exec_manifest" \
+  && grep -qx 'fex_binfmt_flags=POCF' "$nonnative_exec_manifest" \
+  && grep -qx 'platform=linux/amd64' "$nonnative_exec_manifest" \
+  && grep -qx 'architecture=x86_64' "$nonnative_exec_manifest" \
+  || die "non-native exec evidence omits the exact FEX/platform contract"
+
 bounded 600 scripts/default-platform-image-gate.sh \
   --socket "$SOCKET" \
   --docker "$DOCKER" \
@@ -705,6 +739,33 @@ grep -qx 'oci_default_runtime=dory-runc' "$nonnative_arch_manifest" \
   || die "non-native Arch pacman evidence omits the FEX runtime contract"
 grep -Fx "base_image=$NONNATIVE_ARCH_IMAGE" "$nonnative_arch_manifest" >/dev/null \
   || die "non-native Arch pacman gate used the wrong image"
+
+bounded 1800 scripts/nonnative-mmdebstrap-gate.sh \
+  --socket "$SOCKET" \
+  --docker "$DOCKER" \
+  --base-image "$NONNATIVE_DEBIAN_IMAGE" \
+  --workroot "$WORKDIR/evidence/nonnative-mmdebstrap" \
+  --confirm ISOLATED-DORY-NONNATIVE-MMDEBSTRAP \
+  > "$WORKDIR/evidence/nonnative-mmdebstrap.log" 2>&1 \
+  || die "linux/amd64 mmdebstrap nested-chroot gate failed"
+nonnative_mmdebstrap_manifest="$(find "$WORKDIR/evidence/nonnative-mmdebstrap" \
+  -name manifest.txt -type f -print -quit)"
+[ -s "$nonnative_mmdebstrap_manifest" ] \
+  || die "non-native mmdebstrap evidence manifest is missing"
+for proof in status fresh_pull reported_dockerfile_commands mmdebstrap_minbase_trixie \
+  bad_fd_number_absent fex_handler fex_bundle_read_only rootfs_archive_readable \
+  nested_chroot_no_proc nested_chroot_shebang private_marker_isolation \
+  docker_api_after_build build_cache_cleanup owned_cleanup; do
+  grep -qx "$proof=PASS" "$nonnative_mmdebstrap_manifest" \
+    || die "non-native mmdebstrap evidence does not prove $proof"
+done
+grep -Fx "base_image=$NONNATIVE_DEBIAN_IMAGE" "$nonnative_mmdebstrap_manifest" >/dev/null \
+  || die "non-native mmdebstrap gate used the wrong image"
+grep -qx 'oci_default_runtime=dory-runc' "$nonnative_mmdebstrap_manifest" \
+  && grep -qx 'fex_binfmt_flags=POCF' "$nonnative_mmdebstrap_manifest" \
+  && grep -qx 'platform=linux/amd64' "$nonnative_mmdebstrap_manifest" \
+  && grep -qx 'architecture=x86_64' "$nonnative_mmdebstrap_manifest" \
+  || die "non-native mmdebstrap evidence omits the exact FEX/platform contract"
 
 bounded 1800 scripts/ecr-registry-retry-gate.sh \
   --socket "$SOCKET" \
@@ -1227,6 +1288,8 @@ payload = {
     "defaultPlatformImageGate": "PASS",
     "nonnativeNixGCGate": "PASS",
     "nonnativeArchPacmanGate": "PASS",
+    "nonnativeMmdebstrapGate": "PASS",
+    "nonnativeExecConformanceGate": "PASS",
     "ecrRegistryRetryGate": "PASS",
     "bindFileCoherenceGate": "PASS",
     "powerAssertion": "PASS",

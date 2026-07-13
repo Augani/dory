@@ -231,7 +231,7 @@ grep -qx 'oci_default_runtime=dory-runc' "$nonnative_arch_manifest" \
   || die "retained non-native Arch pacman evidence omits the FEX runtime contract"
 fex_pair="$(sed -n 's/^fex_sha256=//p' "$nonnative_arch_manifest"):$(sed -n 's/^fex_server_sha256=//p' "$nonnative_arch_manifest")"
 case "$fex_pair" in
-  385c2495a46f00450ffa62e641552b7f18928aa18f3d0a8b621c526ccf79e009:9a4b098f004a5e9e1759ead38795f48bbc900e654d51e3bcf20d9921f00b2ef4) ;;
+  b862d2a4358b102b125ae50da357b189a5d4710a3be830ef3280cba400c7099b:bbe8a34fc2ba4e606acd7e5b11d9b51da283835f40d2851e2ed39d35d28f2597) ;;
   *) die "retained non-native Arch pacman evidence has an unverified FEX binary pair" ;;
 esac
 grep -Eq '^base_image=.+@sha256:[0-9a-f]{64}$' "$nonnative_arch_manifest" \
@@ -271,6 +271,114 @@ assert image.get("Os") == "linux" and image.get("Architecture") == "amd64", \
     "retained Arch image is not linux/amd64"
 assert any(value.endswith("@" + digest) for value in image.get("RepoDigests") or []), \
     "retained Arch digest differs from the manifest"
+PY
+
+nonnative_mm_manifest="$(single_evidence_file nonnative-mmdebstrap manifest.txt)"
+nonnative_mm_build="$(single_evidence_file nonnative-mmdebstrap build.err)"
+nonnative_mm_run="$(single_evidence_file nonnative-mmdebstrap run.out)"
+nonnative_mm_inspect="$(single_evidence_file nonnative-mmdebstrap base-image-inspect.json)"
+for proof in status fresh_pull reported_dockerfile_commands mmdebstrap_minbase_trixie \
+  bad_fd_number_absent fex_handler fex_bundle_read_only rootfs_archive_readable \
+  nested_chroot_no_proc nested_chroot_shebang private_marker_isolation \
+  docker_api_after_build build_cache_cleanup owned_cleanup; do
+  grep -qx "$proof=PASS" "$nonnative_mm_manifest" \
+    || die "retained non-native mmdebstrap evidence does not prove $proof"
+done
+grep -qx 'orbstack_issue=2543' "$nonnative_mm_manifest" \
+  && grep -qx 'platform=linux/amd64' "$nonnative_mm_manifest" \
+  && grep -qx 'architecture=x86_64' "$nonnative_mm_manifest" \
+  && grep -qx 'oci_default_runtime=dory-runc' "$nonnative_mm_manifest" \
+  && grep -qx 'fex_binfmt_flags=POCF' "$nonnative_mm_manifest" \
+  || die "retained non-native mmdebstrap evidence omits exact provenance"
+mm_fex_pair="$(sed -n 's/^fex_sha256=//p' "$nonnative_mm_manifest"):$(sed -n 's/^fex_server_sha256=//p' "$nonnative_mm_manifest")"
+case "$mm_fex_pair" in
+  b862d2a4358b102b125ae50da357b189a5d4710a3be830ef3280cba400c7099b:bbe8a34fc2ba4e606acd7e5b11d9b51da283835f40d2851e2ed39d35d28f2597) ;;
+  *) die "retained non-native mmdebstrap evidence has an unverified FEX binary pair" ;;
+esac
+expected_mm_build_sha="$(sed -n 's/^build_log_sha256=//p' "$nonnative_mm_manifest")"
+expected_mm_run_sha="$(sed -n 's/^run_output_sha256=//p' "$nonnative_mm_manifest")"
+[ "$expected_mm_build_sha" = "$(shasum -a 256 "$nonnative_mm_build" | awk '{print $1}')" ] \
+  && [ "$expected_mm_run_sha" = "$(shasum -a 256 "$nonnative_mm_run" | awk '{print $1}')" ] \
+  || die "retained non-native mmdebstrap output digest does not match"
+grep -Fq 'mmdebstrap --variant=minbase trixie /tmp/rootfs.tar' "$nonnative_mm_build" \
+  && grep -qx 'nested_chroot_no_proc=PASS' "$nonnative_mm_run" \
+  && grep -qx 'nested_chroot_shebang=PASS' "$nonnative_mm_run" \
+  && grep -qx 'private_marker_isolation=PASS' "$nonnative_mm_run" \
+  || die "retained non-native mmdebstrap raw evidence is incomplete"
+python3 - "$nonnative_mm_manifest" "$nonnative_mm_inspect" <<'PY'
+import json
+import pathlib
+import sys
+
+manifest, inspect_path = map(pathlib.Path, sys.argv[1:])
+properties = dict(line.split("=", 1) for line in manifest.read_text().splitlines() if "=" in line)
+digest = properties["base_image"].rsplit("@", 1)[1]
+payload = json.loads(inspect_path.read_text())
+assert isinstance(payload, list) and len(payload) == 1
+image = payload[0]
+assert image.get("Os") == "linux" and image.get("Architecture") == "amd64"
+assert any(value.endswith("@" + digest) for value in image.get("RepoDigests") or [])
+PY
+
+nonnative_exec_manifest="$(single_evidence_file nonnative-exec-conformance manifest.txt)"
+nonnative_exec_build="$(single_evidence_file nonnative-exec-conformance build.err)"
+nonnative_exec_seccomp="$(single_evidence_file nonnative-exec-conformance seccomp-chain.out)"
+nonnative_exec_docker_exec="$(single_evidence_file nonnative-exec-conformance docker-exec.out)"
+nonnative_exec_base_inspect="$(single_evidence_file nonnative-exec-conformance base-image-inspect.json)"
+nonnative_exec_native_inspect="$(single_evidence_file nonnative-exec-conformance native-image-inspect.json)"
+for proof in status fresh_pulls amd64_only_binfmt canonical_shebang_paths env_shebang_chain \
+  private_marker_isolation guest_seccomp_inheritance fd_exec_arguments fd_exec_null_argv \
+  buildkit_exec_matrix runtime_exec_matrix docker_exec_matrix docker_api_after_exec \
+  build_cache_cleanup owned_cleanup; do
+  grep -qx "$proof=PASS" "$nonnative_exec_manifest" \
+    || die "retained non-native exec evidence does not prove $proof"
+done
+grep -qx 'platform=linux/amd64' "$nonnative_exec_manifest" \
+  && grep -qx 'architecture=x86_64' "$nonnative_exec_manifest" \
+  && grep -qx 'oci_default_runtime=dory-runc' "$nonnative_exec_manifest" \
+  && grep -qx 'fex_binfmt_flags=POCF' "$nonnative_exec_manifest" \
+  || die "retained non-native exec evidence omits exact provenance"
+exec_fex_pair="$(sed -n 's/^fex_sha256=//p' "$nonnative_exec_manifest"):$(sed -n 's/^fex_server_sha256=//p' "$nonnative_exec_manifest")"
+case "$exec_fex_pair" in
+  b862d2a4358b102b125ae50da357b189a5d4710a3be830ef3280cba400c7099b:bbe8a34fc2ba4e606acd7e5b11d9b51da283835f40d2851e2ed39d35d28f2597) ;;
+  *) die "retained non-native exec evidence has an unverified FEX binary pair" ;;
+esac
+for evidence in \
+  "build_log_sha256:$nonnative_exec_build" \
+  "seccomp_output_sha256:$nonnative_exec_seccomp" \
+  "docker_exec_output_sha256:$nonnative_exec_docker_exec"; do
+  key="${evidence%%:*}"
+  path="${evidence#*:}"
+  expected="$(sed -n "s/^${key}=//p" "$nonnative_exec_manifest")"
+  [ "$expected" = "$(shasum -a 256 "$path" | awk '{print $1}')" ] \
+    || die "retained non-native exec digest does not match for $key"
+done
+for proof in fd-exec-arguments-buildkit fd-exec-null-argv-buildkit \
+  seccomp-shebang-chain-buildkit; do
+  grep -q "$proof=PASS" "$nonnative_exec_build" \
+    || die "retained BuildKit exec evidence omits $proof"
+done
+grep -q '^seccomp-shebang-chain-ok ' "$nonnative_exec_seccomp" \
+  && grep -q '^Debian .dpkg. package management program version' "$nonnative_exec_docker_exec" \
+  || die "retained runtime/docker exec output is incomplete"
+python3 - "$nonnative_exec_manifest" "$nonnative_exec_base_inspect" \
+  "$nonnative_exec_native_inspect" <<'PY'
+import json
+import pathlib
+import sys
+
+manifest = pathlib.Path(sys.argv[1])
+properties = dict(line.split("=", 1) for line in manifest.read_text().splitlines() if "=" in line)
+for key, path, architecture in (
+    ("base_image", sys.argv[2], "amd64"),
+    ("native_image", sys.argv[3], "arm64"),
+):
+    digest = properties[key].rsplit("@", 1)[1]
+    payload = json.loads(pathlib.Path(path).read_text())
+    assert isinstance(payload, list) and len(payload) == 1
+    image = payload[0]
+    assert image.get("Os") == "linux" and image.get("Architecture") == architecture
+    assert any(value.endswith("@" + digest) for value in image.get("RepoDigests") or [])
 PY
 
 ecr_manifest="$(single_evidence_file ecr-registry manifest.txt)"
@@ -858,6 +966,10 @@ assert qualification.get("nonnativeNixGCGate") == "PASS", \
     "linux/amd64 Nix garbage-collection qualification did not pass"
 assert qualification.get("nonnativeArchPacmanGate") == "PASS", \
     "linux/amd64 Arch pacman sandbox qualification did not pass"
+assert qualification.get("nonnativeMmdebstrapGate") == "PASS", \
+    "linux/amd64 mmdebstrap nested-chroot qualification did not pass"
+assert qualification.get("nonnativeExecConformanceGate") == "PASS", \
+    "linux/amd64 generic exec conformance qualification did not pass"
 assert qualification.get("ecrRegistryRetryGate") == "PASS", \
     "managed ECR interrupted-upload/retry qualification did not pass"
 assert qualification.get("bindFileCoherenceGate") == "PASS", \

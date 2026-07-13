@@ -136,7 +136,9 @@
   inside the app. Not raw GPU passthrough; fences and heavy async workloads are still maturing.
 - **Intel (x86/amd64) images** run on Apple silicon through Dory's bundled FEX runtime — enabled by
   default for new installs, on the same engine and network, with nested seccomp support for package
-  managers and BuildKit. No separate x86 VM or Rosetta install.
+  managers and BuildKit. No separate x86 VM or Rosetta install. The accepted runtime, data-drive,
+  and support boundaries are documented in
+  [the Apple Silicon architecture decision](docs/architecture/apple-silicon-runtime.md).
 
 **Zero-friction start**
 - On supported Macs, Dory ships its bundled engine, kernel, networking helper, Docker tools,

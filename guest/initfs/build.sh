@@ -190,38 +190,29 @@ require_file_hash() {
 }
 
 install_fex() {
-  local arch="$1" dest="$2" bundle work fex_hash server_hash vendor
-  local fex_root libc_root libgcc_root libstdcxx_root gcc_base_root
+  local arch="$1" dest="$2" bundle work fex_hash server_hash package_manifest_hash vendor
+  local fex_root libc_root gcc_base_root
   [ "$arch" = arm64 ] || return 0
   vendor="$INITFS_DIR/vendor/fex-2607-dory1"
   work="$(mktemp -d)"
   fex_root="$work/fex"
   libc_root="$work/libc"
-  libgcc_root="$work/libgcc"
-  libstdcxx_root="$work/libstdcxx"
   gcc_base_root="$work/gcc-base"
   extract_deb "$(fetch_pin fex_arm64)" "$fex_root"
   extract_deb "$(fetch_pin fex_libc6_arm64)" "$libc_root"
-  extract_deb "$(fetch_pin fex_libgcc_arm64)" "$libgcc_root"
-  extract_deb "$(fetch_pin fex_libstdcxx_arm64)" "$libstdcxx_root"
   extract_deb "$(fetch_pin fex_gcc_base_arm64)" "$gcc_base_root"
 
   bundle="$dest/usr/lib/dory/fex"
-  mkdir -p "$bundle/lib" "$bundle/share" "$bundle/licenses"
+  mkdir -p "$bundle/share" "$bundle/licenses" "$bundle/provenance"
   require_file_hash "$fex_root/usr/bin/FEX" 1acee202ec3a90bcba6b458504218fca201fbc8bc3cfaee372cc2c4be38a6fc1
   require_file_hash "$fex_root/usr/bin/FEXServer" b50bcd67b893f68f6963aba16fd89ba0df3d5b9126be09786fcd61d621708698
-  require_file_hash "$vendor/FEX" 385c2495a46f00450ffa62e641552b7f18928aa18f3d0a8b621c526ccf79e009
-  require_file_hash "$vendor/FEXServer" 9a4b098f004a5e9e1759ead38795f48bbc900e654d51e3bcf20d9921f00b2ef4
+  require_file_hash "$vendor/FEX" b862d2a4358b102b125ae50da357b189a5d4710a3be830ef3280cba400c7099b
+  require_file_hash "$vendor/FEXServer" bbe8a34fc2ba4e606acd7e5b11d9b51da283835f40d2851e2ed39d35d28f2597
+  require_file_hash "$vendor/BUILD_PACKAGES.txt" ad3b0e4ab4e53ac328b0209f592a6f86100f5ca2c17715f2b40ee9b130b0f0b1
   require_file_hash "$vendor/LICENSE.FEX" f34a779f56b36d22b20e1b990d23e583a6a7ca071331925fa46156441c77a1ee
   install -m0755 "$vendor/FEX" "$bundle/FEX"
   install -m0755 "$vendor/FEXServer" "$bundle/FEXServer"
-  install -m0755 "$libc_root/usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1" \
-    "$bundle/ld-linux-aarch64.so.1"
-  install -m0755 "$libc_root/usr/lib/aarch64-linux-gnu/libc.so.6" "$bundle/lib/libc.so.6"
-  install -m0644 "$libc_root/usr/lib/aarch64-linux-gnu/libm.so.6" "$bundle/lib/libm.so.6"
-  install -m0644 "$libgcc_root/usr/lib/aarch64-linux-gnu/libgcc_s.so.1" "$bundle/lib/libgcc_s.so.1"
-  install -m0644 "$libstdcxx_root/usr/lib/aarch64-linux-gnu/libstdc++.so.6.0.33" \
-    "$bundle/lib/libstdc++.so.6"
+  install -m0644 "$vendor/BUILD_PACKAGES.txt" "$bundle/provenance/BUILD_PACKAGES.txt"
   cp -R "$fex_root/usr/share/fex-emu/." "$bundle/share/"
   install -m0644 "$fex_root/usr/share/doc/fex-emu-armv8.0/copyright" \
     "$bundle/licenses/FEX-Emu.copyright"
@@ -231,25 +222,26 @@ install_fex() {
   install -m0644 "$gcc_base_root/usr/share/doc/gcc-14-base/copyright" \
     "$bundle/licenses/gcc-14-base.copyright"
 
-  require_file_hash "$bundle/FEX" 385c2495a46f00450ffa62e641552b7f18928aa18f3d0a8b621c526ccf79e009
-  require_file_hash "$bundle/FEXServer" 9a4b098f004a5e9e1759ead38795f48bbc900e654d51e3bcf20d9921f00b2ef4
-  require_file_hash "$bundle/ld-linux-aarch64.so.1" bd29514c1b45cc29b152011dd7c504e00dce240c19e4dd120196053873af9180
-  require_file_hash "$bundle/lib/libc.so.6" 9afdc5d81e698fae93da3d7f244c248ea9850c88002c4041314d46d6f42eba33
-  require_file_hash "$bundle/lib/libgcc_s.so.1" 2a417ca4e1da148b874d510c5356c2652eb934dd761a138454aefbeb61539fa2
-  require_file_hash "$bundle/lib/libm.so.6" 73339d71a889a70ac3f2b882b1fdd463ecf7896226bf12d1319edc63948c47fd
-  require_file_hash "$bundle/lib/libstdc++.so.6" 859f91df8be46cdf236694ea740ff20cf194b2e7f186a3c130b56684f14c8cad
+  require_file_hash "$bundle/FEX" b862d2a4358b102b125ae50da357b189a5d4710a3be830ef3280cba400c7099b
+  require_file_hash "$bundle/FEXServer" bbe8a34fc2ba4e606acd7e5b11d9b51da283835f40d2851e2ed39d35d28f2597
+  require_file_hash "$bundle/provenance/BUILD_PACKAGES.txt" ad3b0e4ab4e53ac328b0209f592a6f86100f5ca2c17715f2b40ee9b130b0f0b1
 
   fex_hash="$(sha256_file "$bundle/FEX")"
   server_hash="$(sha256_file "$bundle/FEXServer")"
+  package_manifest_hash="$(sha256_file "$bundle/provenance/BUILD_PACKAGES.txt")"
   {
     echo "FEX-Emu FEX-2607 (commit 1cc4b93e7a71c883ec021b71359f136394dc1f3c)"
-    echo "Dory container-FD isolation patch SHA-256 ce4b0d955a1c982b071c3d34b34f58e350526cd0b55b28980fbe0594abe1dc9b"
+    echo "Dory container-FD, chroot-proc, and nested-exec patch SHA-256 374eb59a207c0356f548295552f235c0eeadcdbac360a64b01535933a1af8f8a"
     echo "Build base ubuntu:24.04@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90"
+    echo "Build packages Ubuntu snapshot 20260713T120000Z"
+    echo "Build SOURCE_DATE_EPOCH=1783039651 (upstream source commit timestamp)"
+    echo "Build package inventory /usr/lib/dory/fex/provenance/BUILD_PACKAGES.txt"
+    echo "FEX and FEXServer are static PIE executables so binfmt execution survives nested chroot boundaries without fixed-address guest VMA collisions"
     echo "FEX data/notices package fex-emu-armv8.0_2607-1~n_arm64.deb"
-    echo "Ubuntu Noble libc6 2.39-0ubuntu8"
-    echo "Ubuntu Noble libgcc-s1/libstdc++6/gcc-14-base 14-20240412-0ubuntu1"
+    echo "Ubuntu Noble libc6/gcc runtime licensing notices are retained with the static binaries"
     echo "FEX_SHA256=$fex_hash"
     echo "FEXSERVER_SHA256=$server_hash"
+    echo "BUILD_PACKAGES_SHA256=$package_manifest_hash"
   } > "$bundle/licenses/SOURCES"
   rm -rf "$work"
 }

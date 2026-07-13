@@ -161,6 +161,27 @@ initfs_fex_changed="$(cd "$TMP_ROOT/initfs" && guest/initfs/input-fingerprint.sh
 assert_different "$initfs_base" "$initfs_fex_changed" "vendored FEX mutation did not invalidate initfs fingerprint"
 cp guest/initfs/vendor/fex-2607-dory1/FEX "$TMP_ROOT/initfs/guest/initfs/vendor/fex-2607-dory1/FEX"
 
+printf 'test mutation\n' >> "$TMP_ROOT/initfs/guest/initfs/vendor/fex-2607-dory1/BUILD_PACKAGES.txt"
+initfs_fex_packages_changed="$(cd "$TMP_ROOT/initfs" && guest/initfs/input-fingerprint.sh arm64)"
+assert_different "$initfs_base" "$initfs_fex_packages_changed" \
+  "vendored FEX build package inventory mutation did not invalidate initfs fingerprint"
+cp guest/initfs/vendor/fex-2607-dory1/BUILD_PACKAGES.txt \
+  "$TMP_ROOT/initfs/guest/initfs/vendor/fex-2607-dory1/BUILD_PACKAGES.txt"
+
+for required_rebuild_input in \
+  'https://snapshot.ubuntu.com/ubuntu/20260713T120000Z' \
+  'SOURCE_DATE_EPOCH=1783039651' \
+  '-DBUILD_TESTING=False'; do
+  assert_file_contains guest/initfs/vendor/fex-2607-dory1/Dockerfile "$required_rebuild_input"
+done
+assert_file_contains guest/initfs/vendor/fex-2607-dory1/rebuild.sh '--no-cache-filter builder'
+assert_file_contains guest/initfs/vendor/fex-2607-dory1/rebuild.sh \
+  'BUILD_PACKAGES_SHA256=ad3b0e4ab4e53ac328b0209f592a6f86100f5ca2c17715f2b40ee9b130b0f0b1'
+if grep -Fq -- 'submodule update --init --recursive' \
+    guest/initfs/vendor/fex-2607-dory1/rebuild.sh; then
+  fail "FEX rebuild initializes unrelated recursive submodules"
+fi
+
 mkdir -p "$TMP_ROOT/initfs/dory-core/ffi/src"
 printf 'unrelated workspace source\n' > "$TMP_ROOT/initfs/dory-core/ffi/src/unrelated.rs"
 initfs_unrelated="$(cd "$TMP_ROOT/initfs" && guest/initfs/input-fingerprint.sh arm64)"

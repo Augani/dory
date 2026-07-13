@@ -617,6 +617,27 @@ re-sign that artifact, then repeat the exact-candidate gates before replacing th
   `~/.dory-new-gate-evidence/20260713T-fex-production-final-source/20260713T084212Z-19899/manifest.txt`.
   The qualifier continues to forbid `--disable-sandbox`; final notarized-artifact replay remains
   mandatory.
+- [x] Replace package-specific translator fixes with one nested-exec contract. The pinned FEX patch
+  now delegates x86 shebangs to Linux binfmt, carries interpreter state only through exceptional
+  self-exec, consumes private handoff variables, preserves `execveat` arguments plus null `argv`,
+  normalizes merged-root paths, and retains guest seccomp through shell, `/usr/bin/env`, Python, and
+  child-ELF transitions. The fresh conformance gate passed the same matrix in BuildKit, Docker run,
+  and `docker exec` with only the production x86_64 `POCF` handler registered. The final FEX binary
+  is `b862d2a4358b102b125ae50da357b189a5d4710a3be830ef3280cba400c7099b`; exact notarized replay
+  remains mandatory alongside the OrbStack #2543 `mmdebstrap` and Apple #1628 pacman gates.
+- [x] Make the FEX release input reproducible rather than merely hash-locked. Two forced-fresh
+  317-step compilations produced byte-identical FEX/FEXServer binaries and the same 210-package
+  inventory from source commit `1cc4b93e7a71c883ec021b71359f136394dc1f3c`, patch SHA-256
+  `374eb59a207c0356f548295552f235c0eeadcdbac360a64b01535933a1af8f8a`, Ubuntu snapshot
+  `20260713T120000Z`, and source epoch `1783039651`. The app bundler no longer probes the build Mac
+  for qemu-user or injects unpinned translator bytes. The rebuilt initfs then passed generic
+  BuildKit/run/exec and inherited-seccomp conformance, Nix 2.34.7 GC, Arch's default pacman sandbox,
+  OrbStack #2543's exact mmdebstrap command plus a proc-less nested chroot, Node/npm/GNU-tar
+  BuildKit and runtime, and all 34 container/volume/network/Compose/restart regression rows. Every
+  gate returned the store to zero; prune plus graceful trim reduced the disposable data drive from
+  about 11 GiB allocated to 1.1 GiB. Minimal retained evidence is at
+  `~/.dory-new-gate-evidence/20260713T-deterministic-fex-final` (72 KiB). This certifies current
+  source/runtime architecture, not the still-required notarized public artifact.
 - [ ] Configure a dedicated disposable ECR repository and short-lived CI credentials, then certify
   authenticated manifest PUT and interrupted large-layer upload recovery on the exact notarized
   candidate. Local registry auth/push and a fresh Docker Hub manifest pull already pass, but Apple

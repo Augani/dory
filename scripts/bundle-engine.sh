@@ -531,46 +531,6 @@ SH
   echo "    injected /usr/bin/dory-agent into initfs"
 }
 
-find_qemu_static() {
-  local guest_arch="$1" qemu_name env_name
-  if [ "$guest_arch" = "amd64" ]; then
-    qemu_name="qemu-x86_64-static"
-    env_name="DORY_QEMU_X86_64_STATIC"
-  else
-    qemu_name="qemu-aarch64-static"
-    env_name="DORY_QEMU_AARCH64_STATIC"
-  fi
-  if [ -n "${!env_name:-}" ] && [ -x "${!env_name}" ]; then
-    printf '%s\n' "${!env_name}"; return 0
-  fi
-  for cand in "$(command -v "$qemu_name" 2>/dev/null)" \
-              "/opt/homebrew/bin/$qemu_name" \
-              "/usr/local/bin/$qemu_name" \
-              "/opt/homebrew/opt/qemu/bin/$qemu_name" \
-              "/usr/local/opt/qemu/bin/$qemu_name"; do
-    [ -n "$cand" ] && [ -x "$cand" ] && { printf '%s\n' "$cand"; return 0; }
-  done
-  return 1
-}
-
-inject_qemu_into_initfs() {
-  local image="$1" qemu="$2" guest_arch="$3" debugfs_bin qemu_name
-  [ "$guest_arch" = "amd64" ] && qemu_name="qemu-x86_64-static" || qemu_name="qemu-aarch64-static"
-  [ "${DORY_SKIP_QEMU_INJECT:-0}" = "1" ] && return 0
-  [ -n "$image" ] && [ -f "$image" ] || return 0
-  [ -n "$qemu" ] && [ -x "$qemu" ] || return 0
-  if ! debugfs_bin="$(find_debugfs)"; then
-    echo "    WARNING: debugfs not found; cannot inject $qemu_name"
-    return 0
-  fi
-  "$debugfs_bin" -w -R "mkdir /usr" "$image" >/dev/null 2>&1 || true
-  "$debugfs_bin" -w -R "mkdir /usr/bin" "$image" >/dev/null 2>&1 || true
-  "$debugfs_bin" -w -R "rm /usr/bin/$qemu_name" "$image" >/dev/null 2>&1 || true
-  "$debugfs_bin" -w -R "write $qemu /usr/bin/$qemu_name" "$image" >/dev/null
-  "$debugfs_bin" -w -R "sif /usr/bin/$qemu_name mode 0100755" "$image" >/dev/null
-  echo "    injected /usr/bin/$qemu_name into initfs"
-}
-
 is_linux_elf_for_arch() {
   local arch="$1" bin="$2" magic
   [ -n "$bin" ] && [ -r "$bin" ] || return 1
@@ -1156,7 +1116,7 @@ bundle_hv_gpu_kernel_for_arch() {
 }
 
 bundle_guest_assets_for_arch() {
-  local arch="$1" kernel_src initfs_src kernel_out initfs_raw initfs_out agent qemu_guest_arch qemu_static
+  local arch="$1" kernel_src initfs_src kernel_out initfs_raw initfs_out agent
   kernel_src="$(kernel_source_for_arch "$arch" || true)"
   initfs_src="$(initfs_source_for_arch "$arch" || true)"
   kernel_out="$RESOURCES/dory-vm-kernel-$arch.lzfse"
@@ -1174,13 +1134,6 @@ bundle_guest_assets_for_arch() {
   if [ -n "$initfs_src" ] && [ -f "$initfs_src" ]; then
     agent="$(guest_agent_source_for_arch "$arch" || true)"
     inject_dory_agent_into_initfs "$initfs_src" "$agent" "/tmp/dory-initfs-$arch-agent-$$.ext4"
-    [ "$arch" = "arm64" ] && qemu_guest_arch="amd64" || qemu_guest_arch="arm64"
-    qemu_static="$(find_qemu_static "$qemu_guest_arch" || true)"
-    if [ -n "$qemu_static" ]; then
-      inject_qemu_into_initfs "$INITFS_TO_BUNDLE" "$qemu_static" "$qemu_guest_arch"
-    else
-      echo "    WARNING: qemu static interpreter for $qemu_guest_arch not found; non-native binfmt will rely on runtime fallback"
-    fi
     inject_debug_toolbox_into_initfs "$INITFS_TO_BUNDLE" "$arch"
     install -m0644 "$INITFS_TO_BUNDLE" "$initfs_raw"
     echo "    bundled Resources/$(basename "$initfs_raw") ($(du -h "$initfs_raw" | awk '{print $1}'))"

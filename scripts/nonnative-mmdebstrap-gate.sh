@@ -122,6 +122,8 @@ if grep -Eqi 'bad fd number|cat >&10 returned|hooklistener errored' \
     "$WORKDIR/build.out" "$WORKDIR/build.err"; then
   die "mmdebstrap build logged OrbStack #2543's shell descriptor failure"
 fi
+grep -Fq 'mmdebstrap --variant=minbase trixie /tmp/rootfs.tar' "$WORKDIR/build.err" \
+  || die "mmdebstrap build log lost the exact reported command"
 
 docker_e image inspect "$TAG" > "$WORKDIR/built-image-inspect.json"
 python3 - "$WORKDIR/built-image-inspect.json" <<'PY'
@@ -151,7 +153,7 @@ docker_e run --name "$CONTAINER" --platform linux/amd64 --entrypoint sh "$TAG" -
   test -x /usr/lib/dory/fex/FEX
   test -x /usr/lib/dory/fex/FEXServer
   if touch /usr/lib/dory/fex/.dory-write-probe 2>/dev/null; then exit 1; fi
-  runtime_mount="$(awk '$2 == "/run/dory-fex" && $3 == "tmpfs" { print $4; exit }' /proc/mounts)"
+  runtime_mount="$(awk "\$2 == \"/run/dory-fex\" && \$3 == \"tmpfs\" { print \$4; exit }" /proc/mounts)"
   test -n "$runtime_mount"
   case ",$runtime_mount," in *,nosuid,*) ;; *) exit 1;; esac
   case ",$runtime_mount," in *,nodev,*) ;; *) exit 1;; esac
@@ -161,7 +163,7 @@ docker_e run --name "$CONTAINER" --platform linux/amd64 --entrypoint sh "$TAG" -
   fex_hash="$(sha256sum /usr/lib/dory/fex/FEX | awk "{print \$1}")"
   server_hash="$(sha256sum /usr/lib/dory/fex/FEXServer | awk "{print \$1}")"
   case "$fex_hash:$server_hash" in
-    385c2495a46f00450ffa62e641552b7f18928aa18f3d0a8b621c526ccf79e009:9a4b098f004a5e9e1759ead38795f48bbc900e654d51e3bcf20d9921f00b2ef4) ;;
+    b862d2a4358b102b125ae50da357b189a5d4710a3be830ef3280cba400c7099b:bbe8a34fc2ba4e606acd7e5b11d9b51da283835f40d2851e2ed39d35d28f2597) ;;
     *) exit 1;;
   esac
   test -s /tmp/rootfs.tar
@@ -176,6 +178,23 @@ docker_e run --name "$CONTAINER" --platform linux/amd64 --entrypoint sh "$TAG" -
   test -n "$debian_version"
   mmdebstrap_version="$(mmdebstrap --version)"
   echo "$mmdebstrap_version" | grep -Eq "^mmdebstrap [0-9]"
+  mkdir /tmp/dory-nested-root
+  tar -xf /tmp/rootfs.tar -C /tmp/dory-nested-root
+  test ! -e /tmp/dory-nested-root/proc/self
+  printf "%s\n" \
+    "#!/bin/sh" \
+    "set -eu" \
+    "test \"\$0\" = /dory-nested-probe" \
+    "test ! -e /proc/self" \
+    "test -z \"\${FEX_INTERPRETER_INSTALLED-}\"" \
+    "test -z \"\${FEX_EXECVEFD-}\"" \
+    "test -z \"\${FEX_SECCOMPFD-}\"" \
+    "test \"\$(/bin/uname -m)\" = x86_64" \
+    "/bin/echo nested-chroot-shebang-ok" \
+    > /tmp/dory-nested-root/dory-nested-probe
+  chmod 0755 /tmp/dory-nested-root/dory-nested-probe
+  chroot /tmp/dory-nested-root /dory-nested-probe > /tmp/nested-chroot.out
+  grep -qx nested-chroot-shebang-ok /tmp/nested-chroot.out
   echo "architecture=x86_64"
   echo "fex_sha256=$fex_hash"
   echo "fex_server_sha256=$server_hash"
@@ -184,6 +203,9 @@ docker_e run --name "$CONTAINER" --platform linux/amd64 --entrypoint sh "$TAG" -
   echo "rootfs_archive_bytes=$(wc -c < /tmp/rootfs.tar | tr -d " ")"
   echo "rootfs_archive_entries=$(wc -l < /tmp/rootfs.entries | tr -d " ")"
   echo "rootfs_archive_readable=PASS"
+  echo "nested_chroot_no_proc=PASS"
+  echo "nested_chroot_shebang=PASS"
+  echo "private_marker_isolation=PASS"
 ' > "$WORKDIR/run.out" 2> "$WORKDIR/run.err" \
   || die "generated linux/amd64 Debian rootfs archive verification failed"
 
@@ -199,6 +221,10 @@ grep -Eq '^rootfs_archive_entries=[1-9][0-9]+$' "$WORKDIR/run.out" \
   || die "bootstrapped rootfs archive inventory is invalid"
 grep -qx 'rootfs_archive_readable=PASS' "$WORKDIR/run.out" \
   || die "bootstrapped rootfs archive was not verified"
+grep -qx 'nested_chroot_no_proc=PASS' "$WORKDIR/run.out" \
+  && grep -qx 'nested_chroot_shebang=PASS' "$WORKDIR/run.out" \
+  && grep -qx 'private_marker_isolation=PASS' "$WORKDIR/run.out" \
+  || die "proc-less nested chroot execution contract failed"
 
 docker_e rm "$CONTAINER" > "$WORKDIR/container-delete.out"
 docker_e version > "$WORKDIR/docker-version-after.txt" \
@@ -239,13 +265,16 @@ fi
   grep -E '^(mmdebstrap_version|debian_version|rootfs_archive_bytes|rootfs_archive_entries)=' \
     "$WORKDIR/run.out"
   echo "rootfs_archive_readable=PASS"
+  echo "nested_chroot_no_proc=PASS"
+  echo "nested_chroot_shebang=PASS"
+  echo "private_marker_isolation=PASS"
   echo "docker_api_after_build=PASS"
   echo "build_cache_cleanup=PASS"
   echo "owned_cleanup=PASS"
   echo "docker_cli_sha256=$(shasum -a 256 "$DOCKER" | awk '{print $1}')"
   echo "dockerfile_sha256=$(shasum -a 256 "$CONTEXT/Dockerfile" | awk '{print $1}')"
   echo "base_inspect_sha256=$(shasum -a 256 "$WORKDIR/base-image-inspect.json" | awk '{print $1}')"
-  echo "build_output_sha256=$(shasum -a 256 "$WORKDIR/build.out" | awk '{print $1}')"
+  echo "build_log_sha256=$(shasum -a 256 "$WORKDIR/build.err" | awk '{print $1}')"
   echo "run_output_sha256=$(shasum -a 256 "$WORKDIR/run.out" | awk '{print $1}')"
   echo "completed_epoch=$(date +%s)"
 } > "$MANIFEST"
