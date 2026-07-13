@@ -163,3 +163,4 @@ scripts/__pycache__/
 
 #codex
 .codex-bench/
+.dory-build/

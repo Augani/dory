@@ -58,6 +58,7 @@ BEARER_RE = re.compile(r"Bearer\s+[A-Za-z0-9._~+/-]+=*", re.I)
 BASIC_RE = re.compile(r"Basic\s+[A-Za-z0-9._~+/-]+=*", re.I)
 # scheme://user:pass@ — keeps the scheme+user, drops the ':password@'.
 URL_CREDENTIAL_RE = re.compile(r"([a-z][a-z0-9+.-]*://[^\s:/@]+:)[^\s:/@]+@", re.I)
+DOCKER_CONTAINER_ID_RE = re.compile(r"\b[0-9a-f]{12,64}\b", re.I)
 
 
 def now_iso() -> str:
@@ -78,6 +79,11 @@ def idle_state_path() -> Path:
 
 def incidents_path() -> Path:
     return Path(os.environ.get("DORY_INCIDENTS", str(DEFAULT_INCIDENTS))).expanduser()
+
+
+def data_drive_path() -> Path:
+    configured = os.environ.get("DORYD_DATA_DRIVE") or os.environ.get("DORY_DATA_DRIVE")
+    return Path(configured or (HOME / "Library" / "Application Support" / "Dory" / "Dory.dorydrive")).expanduser()
 
 
 def shared_probe_root() -> Path:
@@ -1074,6 +1080,36 @@ class Doctor:
             status, code = "pass", "disk.host_ok"
             action = ""
         self.add("disk.host", status, code, "Host disk space", f"{format_bytes(free)} free of {format_bytes(total)}", action, **host)
+        drive = report.get("data_drive", {})
+        if drive.get("available"):
+            self.add(
+                "disk.dory_drive",
+                "pass",
+                "disk.dory_drive_ok",
+                "Dory data drive is ready",
+                f"{drive.get('path')} — {format_bytes(drive.get('allocated_bytes', 0))} physically allocated",
+                **drive,
+            )
+        elif drive.get("initialized") is False and not drive.get("error"):
+            self.add(
+                "disk.dory_drive",
+                "warn",
+                "disk.dory_drive_not_initialized",
+                "Dory data drive is not initialized",
+                str(drive.get("path")),
+                "Start Dory once to create its managed workload drive.",
+                **drive,
+            )
+        else:
+            self.add(
+                "disk.dory_drive",
+                "fail",
+                "disk.dory_drive_unavailable",
+                "Dory data drive is unavailable",
+                str(drive.get("error") or drive.get("path") or "invalid data-drive path"),
+                "Reconnect the configured drive or restore a valid Dory.dorydrive bundle before starting the engine.",
+                **drive,
+            )
         docker = report.get("docker", {})
         if docker.get("available"):
             self.add(
@@ -1082,6 +1118,21 @@ class Doctor:
                 "disk.docker_df_ok",
                 "Docker disk usage readable",
                 docker_summary(docker),
+                **docker,
+            )
+        elif docker.get("error_code") == "docker.snapshot_missing":
+            container_ids = list(docker.get("corrupt_container_ids") or [])
+            short_ids = ", ".join(item[:12] for item in container_ids) or "unknown"
+            self.add(
+                "disk.docker",
+                "fail",
+                "disk.docker_snapshot_missing",
+                "Docker container state is inconsistent",
+                f"Writable snapshot missing for stopped container metadata: {short_ids}",
+                (
+                    "Create a support bundle first if the container matters. Then run `dory cleanup --json` "
+                    "to review the unusable records; `dory cleanup --apply` removes them explicitly."
+                ),
                 **docker,
             )
         else:
@@ -1536,6 +1587,21 @@ def docker_summary(report: dict[str, Any]) -> str:
     )
 
 
+def docker_storage_inconsistency(message: str) -> dict[str, Any] | None:
+    """Classify Docker metadata that points at a missing containerd writable snapshot."""
+    lowered = message.lower()
+    snapshot_missing = "snapshot not found" in lowered or (
+        "rw layer" in lowered and ("not found" in lowered or "missing" in lowered)
+    )
+    if not snapshot_missing:
+        return None
+    container_ids = list(dict.fromkeys(match.lower() for match in DOCKER_CONTAINER_ID_RE.findall(message)))
+    return {
+        "error_code": "docker.snapshot_missing",
+        "corrupt_container_ids": container_ids,
+    }
+
+
 def disk_report(sock: Path | None = None) -> dict[str, Any]:
     sock = sock or socket_path()
     target = HOME
@@ -1550,6 +1616,7 @@ def disk_report(sock: Path | None = None) -> dict[str, Any]:
     except Exception as exc:
         host = {"path": str(target), "error": str(exc)}
 
+    drive = data_drive_report()
     docker: dict[str, Any] = {"available": False}
     try:
         status_code, _, body = unix_http(sock, "GET", "/system/df", timeout=5)
@@ -1571,7 +1638,20 @@ def disk_report(sock: Path | None = None) -> dict[str, Any]:
                 "build_cache_bytes": sum_int(item.get("Size") for item in build_cache),
             }
         else:
-            docker["error"] = f"HTTP {status_code}"
+            decoded = body.decode("utf-8", errors="replace")
+            try:
+                payload = json.loads(decoded or "{}")
+                message = str(payload.get("message") or decoded or f"HTTP {status_code}")
+            except (TypeError, ValueError):
+                message = decoded or f"HTTP {status_code}"
+            docker.update({
+                "http_status": status_code,
+                "message": compact(message),
+                "error": f"HTTP {status_code}: {compact(message)}",
+            })
+            inconsistency = docker_storage_inconsistency(message)
+            if inconsistency:
+                docker.update(inconsistency)
     except Exception as exc:
         docker["error"] = str(exc)
 
@@ -1583,7 +1663,64 @@ def disk_report(sock: Path | None = None) -> dict[str, Any]:
         "largest_log": largest_matching_file(state_root, ["*.log", "*.log.*", "*.err.log"]),
         "vm_disk_bytes": matched_size(state_root, ["*.raw", "*.qcow2", "*.img", "*.ext4", "*.vhd", "*.vhdx"]),
     }
-    return {"generated_at": now_iso(), "socket": str(sock), "host": host, "docker": docker, "state": state}
+    return {
+        "generated_at": now_iso(),
+        "socket": str(sock),
+        "host": host,
+        "data_drive": drive,
+        "docker": docker,
+        "state": state,
+    }
+
+
+def data_drive_report() -> dict[str, Any]:
+    path = data_drive_path()
+    report: dict[str, Any] = {"path": str(path), "available": False}
+    if not path.is_absolute() or path.suffix != ".dorydrive":
+        report["error"] = "Dory data drive must be an absolute .dorydrive bundle"
+        return report
+
+    parts = path.parts
+    if len(parts) >= 3 and parts[1] == "Volumes":
+        volume_root = Path("/") / parts[1] / parts[2]
+        try:
+            mounted = volume_root.is_dir() and volume_root.is_mount()
+        except OSError:
+            mounted = False
+        if not mounted:
+            report["error"] = f"Dory data drive volume is not mounted: {volume_root}"
+            report["volume_root"] = str(volume_root)
+            return report
+
+    if not path.exists():
+        report["initialized"] = False
+        return report
+    if not path.is_dir():
+        report["error"] = "configured Dory data drive is not a directory"
+        return report
+
+    manifest_path = path / "drive.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        report["error"] = f"invalid Dory data drive manifest: {exc}"
+        return report
+    if manifest.get("kind") != "dev.dory.data-drive" or manifest.get("schemaVersion") != 1:
+        report["error"] = "invalid or incompatible Dory data drive manifest"
+        return report
+
+    report.update({
+        "available": True,
+        "initialized": True,
+        "manifest": str(manifest_path),
+        "allocated_bytes": directory_size(path),
+    })
+    try:
+        usage = shutil.disk_usage(path)
+        report.update({"total_bytes": usage.total, "free_bytes": usage.free})
+    except OSError as exc:
+        report["filesystem_error"] = str(exc)
+    return report
 
 
 def cleanup_report(apply: bool = False, include_volumes: bool = False, log_max_bytes: int = 5_000_000) -> dict[str, Any]:
@@ -1636,6 +1773,19 @@ def cleanup_report(apply: bool = False, include_volumes: bool = False, log_max_b
                 "detail": "Volume cleanup skipped; pass --include-volumes to inspect this destructive cleanup action.",
                 "risk": "high",
             })
+    elif docker.get("error_code") == "docker.snapshot_missing" and docker.get("corrupt_container_ids"):
+        container_ids = list(docker["corrupt_container_ids"])
+        actions.append(cleanup_action(
+            target="inconsistent-containers",
+            apply=apply,
+            count=len(container_ids),
+            bytes_reclaimable=0,
+            command=["rm", "-f", *container_ids],
+            detail=(
+                f"{len(container_ids)} stopped container record(s) reference missing writable snapshots; "
+                "their writable-layer data is already unavailable"
+            ),
+        ))
     else:
         actions.append({
             "target": "docker",
@@ -1686,7 +1836,9 @@ def cleanup_action(
         "detail": detail,
         "count": count,
         "bytes_reclaimable": bytes_reclaimable,
-        "risk": "medium" if target == "build-cache" else "low",
+        "risk": "high" if target in {"inconsistent-containers", "unused-volumes"} else (
+            "medium" if target == "build-cache" else "low"
+        ),
         "command": ["docker", *command],
     }
     if not apply or (count == 0 and bytes_reclaimable == 0):
@@ -1768,7 +1920,10 @@ def directory_size(root: Path) -> int:
             except OSError:
                 continue
             if stat.S_ISREG(st.st_mode):
-                total += st.st_size
+                # Sparse VM/data disks can have a 128 GiB logical capacity while consuming only a
+                # few GiB on APFS. Report physical allocation so doctor/cleanup never presents the
+                # sparse ceiling as real host usage.
+                total += st.st_blocks * 512
     return total
 
 
@@ -1780,7 +1935,7 @@ def matched_size(root: Path, patterns: list[str]) -> int:
         for name in filenames:
             if any(fnmatch.fnmatch(name, pattern) for pattern in patterns):
                 try:
-                    total += (Path(dirpath) / name).stat().st_size
+                    total += (Path(dirpath) / name).stat().st_blocks * 512
                 except OSError:
                     pass
     return total
@@ -2720,6 +2875,7 @@ def compat_socket_state() -> dict[str, Any]:
         "dory_reachable": socket_reachable(dory),
         "docker_host": env_host,
         "docker_host_points_at_dory": bool(env_target) and env_target.resolve() == dory_resolved,
+        "testcontainers_socket_override": os.environ.get("TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE", "").strip(),
         "docker_context": os.environ.get("DOCKER_CONTEXT", "").strip(),
         "var_run_exists": VAR_RUN_DOCKER_SOCK.exists(),
         "var_run_is_dory": var_run_target == dory_resolved,
@@ -2829,8 +2985,18 @@ def check_compat_testcontainers(state: dict[str, Any]) -> list[CheckResult]:
     # /var/run/docker.sock. Ryuk (its reaper) also bind-mounts the docker socket, so a reachable,
     # named socket matters more here than anywhere else.
     if state["docker_host_points_at_dory"]:
-        detail = f"DOCKER_HOST={state['docker_host']} resolves to Dory."
-        return [CheckResult("compat.testcontainers", "pass", "compat.testcontainers.env_ok", "Testcontainers is pointed at Dory", detail)]
+        if state["testcontainers_socket_override"] == "/var/run/docker.sock":
+            detail = (
+                f"DOCKER_HOST={state['docker_host']} resolves to Dory and Ryuk will mount "
+                "the guest-local /var/run/docker.sock."
+            )
+            return [CheckResult("compat.testcontainers", "pass", "compat.testcontainers.env_ok", "Testcontainers is pointed at Dory", detail)]
+        return [CheckResult(
+            "compat.testcontainers", "warn", "compat.testcontainers.ryuk_socket",
+            "Testcontainers host is Dory, but Ryuk's socket path is ambiguous",
+            "The host-side Dory socket is reachable, but a container should mount the Docker daemon's guest-local socket.",
+            "export TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE=/var/run/docker.sock",
+        )]
     if state["var_run_is_dory"]:
         return [CheckResult(
             "compat.testcontainers", "pass", "compat.testcontainers.varrun_ok",
@@ -2838,8 +3004,9 @@ def check_compat_testcontainers(state: dict[str, Any]) -> list[CheckResult]:
             "/var/run/docker.sock resolves to Dory's socket; Ryuk and the default host detection work.",
         )]
     action = (
-        f"export DOCKER_HOST=unix://{state['dory_socket']} (and TESTCONTAINERS_RYUK_DISABLED=true "
-        "only if Ryuk cannot bind-mount the socket)."
+        f"export DOCKER_HOST=unix://{state['dory_socket']} "
+        "TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE=/var/run/docker.sock "
+        "(disable Ryuk only as a last-resort fallback)."
     )
     return [CheckResult(
         "compat.testcontainers", "fail", "compat.testcontainers.unresolved",
@@ -2860,7 +3027,7 @@ def check_compat_act(state: dict[str, Any]) -> list[CheckResult]:
         "compat.act", status, "compat.act.default_sock",
         "act defaults to /var/run/docker.sock",
         "act hard-codes /var/run/docker.sock unless told otherwise, and Dory does not create that path by default.",
-        f"Run `act --container-daemon-socket unix://{state['dory_socket']}` or export DOCKER_HOST.",
+        f"Export `DOCKER_HOST=unix://{state['dory_socket']}`, then run `act --container-daemon-socket unix:///var/run/docker.sock` so runner containers mount the daemon's guest-local socket.",
     )]
 
 
@@ -2910,10 +3077,10 @@ def check_compat_amd64(state: dict[str, Any]) -> list[CheckResult]:
             f"Host platform is {sys.platform}/{machine}; Dory's amd64 warning is specific to Apple silicon.",
         )]
     return [CheckResult(
-        "compat.amd64", "warn", "compat.amd64.qemu_limited",
-        "amd64 images use QEMU emulation",
-        "On Apple silicon, Dory's shared engine runs linux/amd64 images through qemu-user binfmt. Alpine/Debian-class images work, but heavy SQL Server, Oracle, AVX, or threading-heavy amd64 images may segfault under qemu-user.",
-        "Prefer native arm64 images when available; for one-off Rosetta-fast x86 runs use `dory vm --arch amd64 --rosetta -- <cmd>`. See COMPATIBILITY.md before adopting SQL Server or Oracle on Dory.",
+        "compat.amd64", "pass", "compat.amd64.fex",
+        "amd64 images use Dory's FEX runtime",
+        "On Apple silicon, Dory runs linux/amd64 images and BuildKit steps through its bundled FEX/binfmt runtime, including nested seccomp filters.",
+        "Prefer native arm64 images for maximum speed. Use `docker run --platform linux/amd64 ...` when an amd64 image is required.",
     )]
 
 
@@ -2971,7 +3138,9 @@ def compat_recipes() -> dict[str, dict[str, Any]]:
             "summary": "Set the Docker host so host auto-detection and Ryuk resolve Dory.",
             "steps": [
                 f"export DOCKER_HOST={host}",
-                "# If Ryuk cannot bind-mount the socket in your setup:",
+                "# Ryuk runs inside Dory's Linux VM; mount the daemon's guest-local socket:",
+                "export TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE=/var/run/docker.sock",
+                "# Last-resort fallback only if the installed Testcontainers version ignores the override:",
                 "export TESTCONTAINERS_RYUK_DISABLED=true",
                 "# If containers must reach the host, expose it explicitly:",
                 "export TESTCONTAINERS_HOST_OVERRIDE=host.docker.internal",
@@ -2980,14 +3149,14 @@ def compat_recipes() -> dict[str, dict[str, Any]]:
         },
         "act": {
             "title": "GitHub Actions act",
-            "summary": "act defaults to /var/run/docker.sock; tell it to use Dory instead.",
-            "steps": [f"act --container-daemon-socket {host}", f"# or: export DOCKER_HOST={host}"],
-            "verify": f"act --container-daemon-socket {host} -l",
+            "summary": "Route the host act process to Dory while mounting the daemon's guest-local socket inside runners.",
+            "steps": [f"export DOCKER_HOST={host}", "act --container-daemon-socket unix:///var/run/docker.sock"],
+            "verify": f"DOCKER_HOST={host} act --container-daemon-socket unix:///var/run/docker.sock -l",
         },
         "supabase": {
             "title": "Supabase local",
-            "summary": "Supabase's CLI drives Docker; point it at Dory.",
-            "steps": ["docker context use dory", f"# or: export DOCKER_HOST={host}", "supabase start"],
+            "summary": "Point the host CLI at Dory; Dory safely maps Vector's Docker socket bind inside the shared VM.",
+            "steps": [f"export DOCKER_HOST={host}", "supabase start"],
             "verify": "supabase status",
         },
         "localstack": {
@@ -3004,11 +3173,10 @@ def compat_recipes() -> dict[str, dict[str, Any]]:
         },
         "amd64": {
             "title": "linux/amd64 images on Apple silicon",
-            "summary": "Understand Dory's qemu-user path before choosing heavy x86-only images.",
+            "summary": "Use Dory's built-in FEX path for x86-only development images.",
             "steps": [
                 "docker run --rm --platform linux/amd64 alpine uname -m",
-                "# For heavy SQL Server/Oracle-class amd64 images, prefer native arm64 alternatives when available.",
-                "dory vm --arch amd64 --rosetta -- uname -m  # one-off Rosetta-fast x86 path",
+                "# Native arm64 images remain the fastest option when a publisher provides both platforms.",
             ],
             "verify": "dory compat --only amd64 --json",
         },

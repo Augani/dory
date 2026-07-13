@@ -40,6 +40,7 @@ resolve_cli() {
 
 CONTAINER_BIN="${DORY_CONTAINER_BIN:-$(resolve_cli container || printf '%s\n' /opt/homebrew/bin/container)}"
 DOCKER_BIN="${DORY_DOCKER_BIN:-$(resolve_cli docker || printf '%s\n' docker)}"
+DOCKER_BUILDX_BIN="${DORY_DOCKER_BUILDX_BIN:-$(resolve_cli docker-buildx || printf '%s\n' docker-buildx)}"
 DOCKER_COMPOSE_BIN="${DORY_DOCKER_COMPOSE_BIN:-$(resolve_cli docker-compose || printf '%s\n' docker-compose)}"
 KUBECTL_BIN="${DORY_KUBECTL_BIN:-$(resolve_cli kubectl || printf '%s\n' kubectl)}"
 
@@ -164,6 +165,9 @@ cli_tool_source() {
     docker-compose)
       first_executable "${DORY_DOCKER_COMPOSE_BIN:-}" "$DORY_SCRIPT_DIR/docker-compose" "$DORY_SCRIPT_DIR/../Helpers/docker-compose" "$HOME/.docker/cli-plugins/docker-compose" "$HOME/.dory/bin/docker-compose" "$(command -v docker-compose 2>/dev/null || true)"
       ;;
+    docker-buildx)
+      first_executable "${DORY_DOCKER_BUILDX_BIN:-}" "$DORY_SCRIPT_DIR/docker-buildx" "$DORY_SCRIPT_DIR/../Helpers/docker-buildx" "$HOME/.docker/cli-plugins/docker-buildx" "$HOME/.dory/bin/docker-buildx" "$(command -v docker-buildx 2>/dev/null || true)"
+      ;;
     kubectl)
       first_executable "${DORY_KUBECTL_BIN:-}" "$DORY_SCRIPT_DIR/kubectl" "$DORY_SCRIPT_DIR/../Helpers/kubectl" "$HOME/.dory/bin/kubectl" "$(command -v kubectl 2>/dev/null || true)"
       ;;
@@ -240,12 +244,12 @@ csv_append() {
 }
 
 install_emit_json() {
-  local action="$1" dry_run="$2" path_changed="$3" compose_installed="$4" linked_csv="$5" missing_csv="$6"
-  python3 - "$action" "$dry_run" "$HOME/.dory/bin" "$path_changed" "$compose_installed" "$linked_csv" "$missing_csv" <<'PY'
+  local action="$1" dry_run="$2" path_changed="$3" compose_installed="$4" buildx_installed="$5" linked_csv="$6" missing_csv="$7"
+  python3 - "$action" "$dry_run" "$HOME/.dory/bin" "$path_changed" "$compose_installed" "$buildx_installed" "$linked_csv" "$missing_csv" <<'PY'
 import json
 import sys
 
-action, dry_run, bin_dir, path_changed, compose_installed, linked_csv, missing_csv = sys.argv[1:8]
+action, dry_run, bin_dir, path_changed, compose_installed, buildx_installed, linked_csv, missing_csv = sys.argv[1:9]
 split = lambda value: [item for item in value.split(",") if item]
 print(json.dumps({
     "schema": "dev.dory.cli.install",
@@ -257,9 +261,25 @@ print(json.dumps({
     "missing": split(missing_csv),
     "pathProfileChanged": path_changed == "1",
     "composePluginInstalled": compose_installed == "1",
+    "buildxPluginInstalled": buildx_installed == "1",
 }, separators=(",", ":"), sort_keys=True))
 PY
 }
+
+docker_plugin_owned_by_dory() {
+  local plugin="$1" destination="$HOME/.docker/cli-plugins/$1" marker="$HOME/.dory/$1-plugin-owned" target recorded=""
+  [ -L "$destination" ] || return 1
+  target="$(readlink "$destination" 2>/dev/null || true)"
+  [ -n "$target" ] || return 1
+  [ ! -f "$marker" ] || recorded="$(cat "$marker" 2>/dev/null || true)"
+  [ -z "$recorded" ] || [ "$recorded" != "$target" ] || return 0
+  case "$target" in
+    "$HOME/.dory"/*|"$DORY_SCRIPT_DIR"/*|"$DORY_SCRIPT_DIR/../Helpers"/*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+compose_plugin_owned_by_dory() { docker_plugin_owned_by_dory docker-compose; }
 
 install_cmd() {
   local action="${1:-install}" json=0 dry_run=0
@@ -273,16 +293,23 @@ install_cmd() {
     esac
   done
 
-  local tools=(docker docker-compose kubectl dory dory-doctor dorydctl)
-  local linked_csv="" linked_words="" missing_csv="" tool source dest path_changed=0 compose_installed=0
+  local tools=(docker docker-buildx docker-compose kubectl dory dory-doctor dorydctl)
+  local linked_csv="" linked_words="" missing_csv="" tool source dest plugin_dest plugin_marker
+  local path_changed=0 compose_installed=0 buildx_installed=0
 
   if [ "$action" = "uninstall" ]; then
     if remove_path_blocks "$dry_run"; then path_changed=1; fi
     if [ "$dry_run" -eq 0 ]; then
       for tool in "${tools[@]}"; do rm -f "$HOME/.dory/bin/$tool"; done
-      rm -f "$HOME/.docker/cli-plugins/docker-compose"
+      for tool in docker-compose docker-buildx; do
+        if docker_plugin_owned_by_dory "$tool"; then
+          rm -f "$HOME/.docker/cli-plugins/$tool"
+        fi
+        rm -f "$HOME/.dory/$tool-plugin-owned"
+      done
+      rm -f "$HOME/.dory/compose-plugin-owned"
     fi
-    [ "$json" -eq 1 ] && install_emit_json "$action" "$dry_run" "$path_changed" 0 "" "" || echo "Dory shell integration removed."
+    [ "$json" -eq 1 ] && install_emit_json "$action" "$dry_run" "$path_changed" 0 0 "" "" || echo "Dory shell integration removed."
     return 0
   fi
 
@@ -299,12 +326,23 @@ install_cmd() {
           ln -s "$source" "$dest"
         fi
       fi
-      if [ "$tool" = "docker-compose" ]; then
-        compose_installed=1
+      if [ "$tool" = "docker-compose" ] || [ "$tool" = "docker-buildx" ]; then
+        [ "$tool" = "docker-compose" ] && compose_installed=1 || buildx_installed=1
+        plugin_dest="$HOME/.docker/cli-plugins/$tool"
+        plugin_marker="$HOME/.dory/$tool-plugin-owned"
         if [ "$dry_run" -eq 0 ]; then
-          if [ "$source" != "$HOME/.docker/cli-plugins/docker-compose" ]; then
-            rm -f "$HOME/.docker/cli-plugins/docker-compose"
-            ln -s "$source" "$HOME/.docker/cli-plugins/docker-compose"
+          if [ "$source" != "$plugin_dest" ]; then
+            if [ ! -e "$plugin_dest" ] && [ ! -L "$plugin_dest" ]; then
+              ln -s "$source" "$plugin_dest"
+              printf '%s\n' "$source" > "$plugin_marker"
+            elif docker_plugin_owned_by_dory "$tool"; then
+              rm -f "$plugin_dest"
+              ln -s "$source" "$plugin_dest"
+              printf '%s\n' "$source" > "$plugin_marker"
+            else
+              [ "$tool" = "docker-compose" ] && compose_installed=0 || buildx_installed=0
+              rm -f "$plugin_marker"
+            fi
           fi
         fi
       fi
@@ -315,7 +353,7 @@ install_cmd() {
   if install_path_block "$dry_run"; then path_changed=1; fi
 
   if [ "$json" -eq 1 ]; then
-    install_emit_json "$action" "$dry_run" "$path_changed" "$compose_installed" "$linked_csv" "$missing_csv"
+    install_emit_json "$action" "$dry_run" "$path_changed" "$compose_installed" "$buildx_installed" "$linked_csv" "$missing_csv"
   else
     echo "Dory shell integration installed in $HOME/.dory/bin"
     echo "Open a new terminal, then run: docker version"
@@ -664,7 +702,7 @@ body = {
     "Env": sorted([
         "BROWSER=dory-open",
         "container=docker",
-        "SSH_AUTH_SOCK=/opt/dory/bridge/credentials/ssh-agent.sock",
+        "SSH_AUTH_SOCK=/run/host-services/ssh-auth.sock",
         "GIT_ASKPASS=/usr/local/bin/dory-git-askpass",
         "DORY_GIT_ASKPASS_SOCK=/opt/dory/bridge/credentials/git-askpass.sock",
         *[f"{k}={v}" for k, v in env.items()],
@@ -852,7 +890,7 @@ body = {
     "Env": [
         "BROWSER=dory-open",
         "container=docker",
-        "SSH_AUTH_SOCK=/opt/dory/bridge/credentials/ssh-agent.sock",
+        "SSH_AUTH_SOCK=/run/host-services/ssh-auth.sock",
         "GIT_ASKPASS=/usr/local/bin/dory-git-askpass",
         "DORY_GIT_ASKPASS_SOCK=/opt/dory/bridge/credentials/git-askpass.sock",
     ],
@@ -1138,6 +1176,61 @@ dory_machine_has_option() {
   return 1
 }
 
+dory_machine_option_value() {
+  local option="$1" arg
+  shift
+  while [ "$#" -gt 0 ]; do
+    arg="${1:-}"
+    case "$arg" in
+      "$option") [ "$#" -ge 2 ] || return 2; printf '%s\n' "$2"; return 0 ;;
+      "$option"=*) printf '%s\n' "${arg#*=}"; return 0 ;;
+    esac
+    shift
+  done
+  return 1
+}
+
+verify_dory_machine_image_manifest() {
+  local manifest="$1" signature="$2" allowed_signers="$3" signer="$4" kernel="$5" rootfs="$6"
+  local expected kernel_expected rootfs_expected kernel_actual rootfs_actual
+  for file in "$manifest" "$signature" "$allowed_signers" "$kernel" "$rootfs"; do
+    [ -f "$file" ] || { echo "machine image verification input not found: $file" >&2; return 1; }
+  done
+  command -v ssh-keygen >/dev/null || { echo "ssh-keygen is required for signed machine images" >&2; return 1; }
+  command -v shasum >/dev/null || { echo "shasum is required for signed machine images" >&2; return 1; }
+  if ! ssh-keygen -Y verify -f "$allowed_signers" -I "$signer" -n dory-machine-image \
+      -s "$signature" < "$manifest" >/dev/null; then
+    echo "machine image manifest signature is invalid for signer $signer" >&2
+    return 1
+  fi
+  expected="$(python3 - "$manifest" <<'PY'
+import json, re, sys
+data = json.load(open(sys.argv[1], encoding="utf-8"))
+if data.get("schema") != "dev.dory.machine-image" or data.get("version") != 1:
+    raise SystemExit("unsupported machine image manifest schema/version")
+values = []
+for key in ("kernel", "rootfs"):
+    value = (data.get(key) or {}).get("sha256", "").lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", value):
+        raise SystemExit(f"invalid {key}.sha256 in machine image manifest")
+    values.append(value)
+print("\t".join(values))
+PY
+  )" || return 1
+  kernel_expected="${expected%%$'\t'*}"
+  rootfs_expected="${expected#*$'\t'}"
+  kernel_actual="$(shasum -a 256 "$kernel" | awk '{print $1}')"
+  rootfs_actual="$(shasum -a 256 "$rootfs" | awk '{print $1}')"
+  [ "$kernel_actual" = "$kernel_expected" ] || {
+    echo "machine kernel digest does not match signed manifest" >&2
+    return 1
+  }
+  [ "$rootfs_actual" = "$rootfs_expected" ] || {
+    echo "machine rootfs digest does not match signed manifest" >&2
+    return 1
+  }
+}
+
 dory_machine_env_allow_list() {
   local raw
   if [ "${DORY_MACHINE_ENV_ALLOW_LIST+x}" = "x" ]; then
@@ -1212,8 +1305,23 @@ doryd_machine_cmd() {
       ;;
     create)
       shift
-      name="${1:?usage: dory machine create <name> [--kernel PATH] [--rootfs PATH] [--memory-mb N] [--cpus N] [--share TAG=HOST:GUEST[:ro|rw]] [--env KEY=VALUE]}"
+      name="${1:?usage: dory machine create <name> [--kernel PATH] [--rootfs PATH] [--image-manifest PATH --image-signature PATH --image-allowed-signers PATH --image-signer ID] [--memory-mb N] [--cpus N] [--share TAG=HOST:GUEST[:ro|rw]] [--env KEY=VALUE]}"
       shift
+      local image_manifest="" image_signature="" image_allowed_signers="" image_signer="" forwarded=()
+      while [ "$#" -gt 0 ]; do
+        case "$1" in
+          --image-manifest) image_manifest="${2:?--image-manifest requires a path}"; shift 2 ;;
+          --image-signature) image_signature="${2:?--image-signature requires a path}"; shift 2 ;;
+          --image-allowed-signers) image_allowed_signers="${2:?--image-allowed-signers requires a path}"; shift 2 ;;
+          --image-signer) image_signer="${2:?--image-signer requires an identity}"; shift 2 ;;
+          --image-manifest=*|--image-signature=*|--image-allowed-signers=*|--image-signer=*)
+            echo "machine image trust options require a separate value, not --option=value" >&2
+            exit 2
+            ;;
+          *) forwarded+=("$1"); shift ;;
+        esac
+      done
+      set -- "${forwarded[@]}"
       args=("$name")
       if ! dory_machine_has_option --kernel "$@"; then
         local kernel
@@ -1230,6 +1338,17 @@ doryd_machine_cmd() {
       while IFS= read -r env_row; do
         [ -n "$env_row" ] && args+=(--env "$env_row")
       done < <(dory_machine_env_rows)
+      if [ -n "$image_manifest$image_signature$image_allowed_signers$image_signer" ]; then
+        [ -n "$image_manifest" ] && [ -n "$image_signature" ] && [ -n "$image_allowed_signers" ] && [ -n "$image_signer" ] || {
+          echo "signed machine images require --image-manifest, --image-signature, --image-allowed-signers, and --image-signer together" >&2
+          exit 2
+        }
+        local selected_kernel selected_rootfs
+        selected_kernel="$(dory_machine_option_value --kernel "${args[@]}" "$@")" || exit 2
+        selected_rootfs="$(dory_machine_option_value --rootfs "${args[@]}" "$@")" || exit 2
+        verify_dory_machine_image_manifest "$image_manifest" "$image_signature" \
+          "$image_allowed_signers" "$image_signer" "$selected_kernel" "$selected_rootfs" || exit 1
+      fi
       exec "$ctl" machine create "${args[@]}" "$@"
       ;;
     create|update|start|stop|delete|rm|status|provision|snapshots|snapshot)

@@ -13,7 +13,7 @@
 #                                   reporting, SMP, journaled data disk), signed with
 #                                   com.apple.security.hypervisor. Preferred where available.
 #   * Contents/Helpers/gvproxy    — userspace networking (Apache-2.0) for the dory-hv engine.
-#   * Contents/Helpers/docker, docker-compose, kubectl — host CLIs for clean-Mac Docker/Compose/k8s.
+#   * Contents/Helpers/docker, docker-buildx, docker-compose, kubectl — clean-Mac host CLIs.
 #   * Contents/Frameworks/libvirglrenderer.dylib, libMoltenVK.dylib — optional experimental
 #                                   Venus/Vulkan renderer payload for in-guest GPU acceleration.
 #   * Contents/Resources/dory-hv-kernel-<arch>             — raw kernel path used by doryd/dory-hv.
@@ -44,6 +44,11 @@ case "$APP" in
   *) APP="$(pwd)/$APP" ;;
 esac
 cd "$REPO_ROOT"
+
+# shellcheck source=gvproxy-payload.sh
+source scripts/gvproxy-payload.sh
+# shellcheck source=host-cli-payload.sh
+source scripts/host-cli-payload.sh
 
 RESOURCES="$APP/Contents/Resources"
 HELPERS="$APP/Contents/Helpers"
@@ -657,6 +662,8 @@ write_doryd_launch_agent() {
     <true/>
     <key>KeepAlive</key>
     <true/>
+    <key>ExitTimeOut</key>
+    <integer>45</integer>
     <key>ProcessType</key>
     <string>Interactive</string>
     <key>StandardOutPath</key>
@@ -684,7 +691,7 @@ bundle_doryd_helpers() {
 PLIST
 
   echo "==> Building + signing doryd launchd helpers ($configuration, arches: $(swiftpm_helper_arches))…"
-  for product in doryd dorydctl dory-vmm dory-network-helper; do
+  for product in doryd dorydctl dory-vmm dory-network-helper dory-dataplane-proxy; do
     helper="$HELPERS/$product"
     if [ "$product" = "dory-vmm" ]; then
       bundle_swiftpm_executable "dory-core-swift" "$configuration" "$product" "$helper" "$entitlements"
@@ -692,6 +699,10 @@ PLIST
       bundle_swiftpm_executable "dory-core-swift" "$configuration" "$product" "$helper"
     fi
   done
+  mkdir -p "$APP/Contents/Library/LaunchDaemons"
+  cp "$REPO_ROOT/Config/dev.dory.network-helper.plist" \
+    "$APP/Contents/Library/LaunchDaemons/dev.dory.network-helper.plist"
+  plutil -lint "$APP/Contents/Library/LaunchDaemons/dev.dory.network-helper.plist" >/dev/null
   rm -f "$entitlements"
 }
 
@@ -763,38 +774,60 @@ fi
 
 echo "==> Bundling gvproxy (userspace networking for the dory-hv engine)…"
 # gvproxy (gvisor-tap-vsock, Apache-2.0) gives the HV engine NAT/DNS with no restricted
-# entitlement. Prefer DORY_GVPROXY, else podman's copy, else PATH, else the pinned release.
-GVPROXY_VERSION="${DORY_GVPROXY_VERSION:-v0.8.6}"
+# entitlement. The normal path builds the hash-pinned upstream source plus Dory's audited IPv6
+# patch into a fresh deterministic binary.
+# DORY_GVPROXY is the only local-binary override, and it is subjected to the same verification.
+dory_gvproxy_validate_overrides
+GVPROXY_VERSION="$(dory_gvproxy_version)"
+GVPROXY_SHA256="$(dory_gvproxy_expected_sha256)"
 GVPROXY_SRC="${DORY_GVPROXY:-}"
-if [ -z "$GVPROXY_SRC" ]; then
-  for cand in /opt/homebrew/opt/podman/libexec/podman/gvproxy \
-              /usr/local/opt/podman/libexec/podman/gvproxy \
-              "$(command -v gvproxy 2>/dev/null)"; do
-    [ -n "$cand" ] && [ -x "$cand" ] || continue
-    if macho_has_arches "$cand" "$(host_cli_arches)"; then
-      GVPROXY_SRC="$cand"; break
-    fi
-    echo "    note: skipping $cand; missing release architectures ($(host_cli_arches))"
-  done
-fi
-if [ -z "$GVPROXY_SRC" ] || [ ! -x "$GVPROXY_SRC" ]; then
-  echo "    fetching gvproxy $GVPROXY_VERSION (gvisor-tap-vsock release)…"
-  GVPROXY_TMP="/tmp/dory-gvproxy-darwin"
-  if fetch_url "https://github.com/containers/gvisor-tap-vsock/releases/download/${GVPROXY_VERSION}/gvproxy-darwin" "$GVPROXY_TMP" 2>/dev/null; then
-    chmod +x "$GVPROXY_TMP"
+GVPROXY_TMP=""
+GVPROXY_SOURCE_KIND="explicit-override"
+GVPROXY_BUILD_PROVENANCE=""
+if [ -n "$GVPROXY_SRC" ]; then
+  if [ ! -f "$GVPROXY_SRC" ] || [ ! -x "$GVPROXY_SRC" ]; then
+    echo "    ERROR: explicit DORY_GVPROXY is not an executable file: $GVPROXY_SRC" >&2
+    exit 1
+  fi
+  echo "    using verified explicit DORY_GVPROXY override"
+else
+  GVPROXY_SOURCE_KIND="pinned-source-build"
+  GVPROXY_TMP="$(mktemp "${TMPDIR:-/tmp}/dory-gvproxy-${GVPROXY_VERSION}.XXXXXX")"
+  GVPROXY_BUILD_PROVENANCE="$GVPROXY_TMP.provenance"
+  echo "    building provenance-pinned dual-stack gvproxy $GVPROXY_VERSION…"
+  if scripts/build-gvproxy.sh --output "$GVPROXY_TMP" --provenance "$GVPROXY_BUILD_PROVENANCE"; then
     GVPROXY_SRC="$GVPROXY_TMP"
+  else
+    rm -f "$GVPROXY_TMP" "$GVPROXY_BUILD_PROVENANCE"
+    GVPROXY_TMP=""
+    GVPROXY_BUILD_PROVENANCE=""
   fi
 fi
 if [ -n "$GVPROXY_SRC" ] && [ -x "$GVPROXY_SRC" ]; then
-  if ! macho_has_arches "$GVPROXY_SRC" "$(host_cli_arches)"; then
-    echo "    ERROR: gvproxy at $GVPROXY_SRC is missing release architectures ($(host_cli_arches))" >&2
+  if ! dory_verify_gvproxy_payload "$GVPROXY_SRC" "$GVPROXY_VERSION" "$GVPROXY_SHA256"; then
+    rm -f "$GVPROXY_TMP" "$GVPROXY_BUILD_PROVENANCE"
     exit 1
   fi
   cp "$GVPROXY_SRC" "$HELPERS/gvproxy"
   codesign --force --options runtime --timestamp -s "${DORY_SIGN_ID:-Developer ID Application}" "$HELPERS/gvproxy" 2>/dev/null \
     || codesign --force -s - "$HELPERS/gvproxy"
-  echo "    bundled Helpers/gvproxy (from $GVPROXY_SRC)"
+  if [ -n "$GVPROXY_BUILD_PROVENANCE" ] && [ -s "$GVPROXY_BUILD_PROVENANCE" ]; then
+    cp "$GVPROXY_BUILD_PROVENANCE" "$RESOURCES/gvproxy-provenance.txt"
+    printf 'source=%s\n' "$GVPROXY_SOURCE_KIND" >> "$RESOURCES/gvproxy-provenance.txt"
+  else
+    {
+      printf 'version=%s\n' "$GVPROXY_VERSION"
+      printf 'verified_sha256=%s\n' "$GVPROXY_SHA256"
+      printf 'source=%s\n' "$GVPROXY_SOURCE_KIND"
+      printf 'source_env=DORY_GVPROXY\n'
+    } > "$RESOURCES/gvproxy-provenance.txt"
+  fi
+  rm -f "$GVPROXY_TMP" "$GVPROXY_BUILD_PROVENANCE"
+  GVPROXY_TMP=""
+  GVPROXY_BUILD_PROVENANCE=""
+  echo "    bundled verified dual-stack Helpers/gvproxy ($GVPROXY_VERSION, $GVPROXY_SOURCE_KIND)"
 else
+  rm -f "$GVPROXY_TMP" "$GVPROXY_BUILD_PROVENANCE"
   echo "    ERROR: could not obtain gvproxy — the dory-hv engine cannot run without it; refusing to ship a broken engine." >&2
   exit 1
 fi
@@ -812,32 +845,49 @@ echo "==> Bundling the host kubectl + docker CLIs (so k8s and the docker CLI nee
 # Darwin architecture and lipo them into one helper.
 
 download_host_cli_for_arch() {
-  local name="$1" arch="$2" out="$3" karch darch tgz work
+  local name="$1" arch="$2" out="$3" karch darch tgz work url expected_sha
+  expected_sha="$(dory_host_cli_expected_sha256 "$name" "$arch")"
   case "$name" in
     kubectl)
       karch="$(darwin_download_arch "$arch")"
-      fetch_url "https://dl.k8s.io/release/${KVER}/bin/darwin/${karch}/kubectl" "$out"
-      chmod 0755 "$out"
+      url="https://dl.k8s.io/release/${KVER}/bin/darwin/${karch}/kubectl"
+      fetch_url "$url" "$out" || return 1
+      dory_verify_host_cli_payload "$out" "$expected_sha" || return 1
+      chmod 0755 "$out" || return 1
       ;;
     docker)
       darch="$(docker_download_arch "$arch")"
       tgz="$(mktemp "${TMPDIR:-/tmp}/dory-docker-$arch.XXXXXX.tgz")"
       work="$(mktemp -d "${TMPDIR:-/tmp}/dory-docker-$arch.XXXXXX")"
-      fetch_url "https://download.docker.com/mac/static/stable/${darch}/docker-${DOCKER_CLI_VERSION}.tgz" "$tgz"
-      tar -xzf "$tgz" -C "$work" docker/docker
-      install -m0755 "$work/docker/docker" "$out"
+      url="https://download.docker.com/mac/static/stable/${darch}/docker-${DOCKER_CLI_VERSION}.tgz"
+      fetch_url "$url" "$tgz" || return 1
+      dory_verify_host_cli_payload "$tgz" "$expected_sha" || return 1
+      tar -xzf "$tgz" -C "$work" docker/docker || return 1
+      install -m0755 "$work/docker/docker" "$out" || return 1
       rm -rf "$tgz" "$work"
       ;;
     docker-compose)
       darch="$(docker_download_arch "$arch")"
-      fetch_url "https://github.com/docker/compose/releases/download/${COMPOSE_VER}/docker-compose-darwin-${darch}" "$out"
-      chmod 0755 "$out"
+      url="https://github.com/docker/compose/releases/download/${COMPOSE_VER}/docker-compose-darwin-${darch}"
+      fetch_url "$url" "$out" || return 1
+      dory_verify_host_cli_payload "$out" "$expected_sha" || return 1
+      chmod 0755 "$out" || return 1
+      ;;
+    docker-buildx)
+      darch="$(darwin_download_arch "$arch")"
+      url="https://github.com/docker/buildx/releases/download/${BUILDX_VER}/buildx-${BUILDX_VER}.darwin-${darch}"
+      fetch_url "$url" "$out" || return 1
+      dory_verify_host_cli_payload "$out" "$expected_sha" || return 1
+      chmod 0755 "$out" || return 1
       ;;
     *)
       echo "unknown host CLI: $name" >&2
       return 1
       ;;
   esac
+  printf 'name=%s version=%s arch=%s sha256=%s source_url=%s\n' \
+    "$name" "$(dory_host_cli_version "$name")" "$arch" "$expected_sha" "$url" \
+    >> "$HOST_CLI_PROVENANCE"
 }
 
 bundle_universal_host_cli() {
@@ -871,12 +921,18 @@ bundle_universal_host_cli() {
   echo "    bundled Helpers/$name${arch_info:+ ($arch_info)}"
 }
 
-KVER="${DORY_KUBECTL_VERSION:-v1.36.1}"
-DOCKER_CLI_VERSION="${DORY_DOCKER_CLI_VERSION:-29.0.1}"
-COMPOSE_VER="${DORY_DOCKER_COMPOSE_VERSION:-${DORY_COMPOSE_VERSION:-v2.39.2}}"
+dory_host_cli_validate_metadata
+KVER="$(dory_host_cli_version kubectl)"
+DOCKER_CLI_VERSION="$(dory_host_cli_version docker)"
+BUILDX_VER="$(dory_host_cli_version docker-buildx)"
+COMPOSE_VER="$(dory_host_cli_version docker-compose)"
+HOST_CLI_PROVENANCE="$RESOURCES/host-cli-provenance.txt"
+: > "$HOST_CLI_PROVENANCE"
 bundle_universal_host_cli kubectl
 bundle_universal_host_cli docker
+bundle_universal_host_cli docker-buildx
 bundle_universal_host_cli docker-compose
+LC_ALL=C sort -o "$HOST_CLI_PROVENANCE" "$HOST_CLI_PROVENANCE"
 
 # The `dory` CLI + its Python helper, so the in-app Health panel and `dory doctor`/`dory compat`
 # work on a clean Mac with nothing installed. They must sit together in Helpers so the
@@ -1066,6 +1122,11 @@ bundle_hv_gpu_kernel_for_arch() {
     rm -f "$kernel_out"
     return 0
   fi
+  if [ "$arch" != "arm64" ]; then
+    rm -f "$kernel_out"
+    echo "    note: Venus GPU is Apple-silicon-only; omitting unverified $arch GPU kernel"
+    return 0
+  fi
   override="$(hv_gpu_kernel_override_for_arch "$arch" || true)"
   if [ -n "$override" ] && [ "${DORY_ALLOW_UNVERIFIED_GUEST_ASSETS:-0}" != "1" ]; then
     echo "    ERROR: explicit $arch GPU kernel overrides require DORY_ALLOW_UNVERIFIED_GUEST_ASSETS=1 and are development-only" >&2
@@ -1075,6 +1136,10 @@ bundle_hv_gpu_kernel_for_arch() {
   if [ -n "$kernel_src" ] && [ -f "$kernel_src" ]; then
     if [ -z "$override" ] && ! DORY_EXPERIMENTAL_GPU=1 "$REPO_ROOT/guest/kernel/verify-build.sh" "$arch" >/dev/null 2>&1; then
       rm -f "$kernel_out"
+      if [ "${DORY_BUNDLE_VENUS_REQUIRED:-0}" = "1" ] || [ "${DORY_PUBLIC_RELEASE:-0}" = "1" ]; then
+        echo "    ERROR: required guest/out $arch GPU kernel is stale; rebuild it with DORY_EXPERIMENTAL_GPU=1 guest/kernel/build.sh $arch" >&2
+        exit 1
+      fi
       echo "    WARNING: omitting stale or unverified guest/out $arch GPU kernel; rebuild it with DORY_EXPERIMENTAL_GPU=1 guest/kernel/build.sh $arch" >&2
       return 0
     fi
@@ -1082,6 +1147,10 @@ bundle_hv_gpu_kernel_for_arch() {
     echo "    bundled Resources/$(basename "$kernel_out") ($(du -h "$kernel_out" | awk '{print $1}'), from $(du -h "$kernel_src" | awk '{print $1}'))"
   else
     rm -f "$kernel_out"
+    if [ "${DORY_BUNDLE_VENUS_REQUIRED:-0}" = "1" ] || [ "${DORY_PUBLIC_RELEASE:-0}" = "1" ]; then
+      echo "    ERROR: required Apple-silicon GPU kernel is missing; build with DORY_EXPERIMENTAL_GPU=1 guest/kernel/build.sh arm64" >&2
+      exit 1
+    fi
     echo "    note: no $arch GPU kernel found; build with DORY_EXPERIMENTAL_GPU=1 guest/kernel/build.sh $arch or set $(env_for_arch DORY_HV_GPU_KERNEL "$arch") (GPU acceleration will be unavailable)"
   fi
 }
@@ -1154,6 +1223,24 @@ for asset_arch in ${DORY_BUNDLE_ARCHES:-arm64 amd64}; do
   bundle_hv_gpu_kernel_for_arch "$asset_arch"
   bundle_guest_assets_for_arch "$asset_arch"
   bundle_engine_rootfs_for_arch "$asset_arch"
+  for stamp_kind in kernel initfs; do
+    stamp="$REPO_ROOT/guest/out/${stamp_kind}-build-$asset_arch.stamp"
+    if [ -s "$stamp" ]; then
+      install -m0644 "$stamp" "$RESOURCES/dory-${stamp_kind}-build-$asset_arch.stamp"
+    elif [ "${DORY_PUBLIC_RELEASE:-0}" = "1" ]; then
+      echo "    ERROR: public release is missing verified guest build stamp: $stamp" >&2
+      exit 1
+    fi
+  done
+  if [ "$asset_arch" = arm64 ] && [ "${DORY_BUNDLE_VENUS:-1}" = "1" ]; then
+    gpu_stamp="$REPO_ROOT/guest/out/kernel-build-arm64-gpu.stamp"
+    if [ -s "$gpu_stamp" ]; then
+      install -m0644 "$gpu_stamp" "$RESOURCES/dory-kernel-build-arm64-gpu.stamp"
+    elif [ "${DORY_BUNDLE_VENUS_REQUIRED:-0}" = "1" ] || [ "${DORY_PUBLIC_RELEASE:-0}" = "1" ]; then
+      echo "    ERROR: Venus-enabled release is missing verified GPU build stamp: $gpu_stamp" >&2
+      exit 1
+    fi
+  fi
 done
 
 HOST_GUEST_ARCH="$(native_guest_arch)"
@@ -1191,6 +1278,22 @@ if [ "${DORY_BUNDLE_LEGACY:-0}" = "1" ]; then
   echo "    bundled Helpers/container + libexec"
 fi
 
+# Seal a deterministic digest inventory inside the app before its outer Developer ID signature is
+# applied. This gives support and release validation an exact map of every helper and guest asset,
+# while the app signature protects the inventory itself from post-build edits.
+PAYLOAD_DIGESTS="$RESOURCES/dory-payload-sha256.txt"
+(
+  cd "$APP"
+  find Contents/Helpers Contents/Resources -type f \
+    ! -name 'dory-payload-sha256.txt' -print \
+    | LC_ALL=C sort \
+    | while IFS= read -r payload; do
+        shasum -a 256 "$payload"
+      done
+) > "$PAYLOAD_DIGESTS"
+[ -s "$PAYLOAD_DIGESTS" ] || { echo "    ERROR: payload digest inventory is empty" >&2; exit 1; }
+echo "    bundled Resources/dory-payload-sha256.txt"
+
 echo "==> Payload injected into $APP"
-echo "    Engine payload ≈ $(du -ch "$RESOURCES"/dory-hv-*.lzfse "$RESOURCES"/dory-vm-*.lzfse "$RESOURCES"/dory-engine-rootfs-*.ext4.lzfse "$HELPERS"/dory-hv "$HELPERS"/docker "$HELPERS"/docker-compose "$HELPERS"/kubectl "$FRAMEWORKS"/*.dylib 2>/dev/null | tail -1 | awk '{print $1}') on disk"
+echo "    Engine payload ≈ $(du -ch "$RESOURCES"/dory-hv-*.lzfse "$RESOURCES"/dory-vm-*.lzfse "$RESOURCES"/dory-engine-rootfs-*.ext4.lzfse "$HELPERS"/dory-hv "$HELPERS"/docker "$HELPERS"/docker-buildx "$HELPERS"/docker-compose "$HELPERS"/kubectl "$FRAMEWORKS"/*.dylib 2>/dev/null | tail -1 | awk '{print $1}') on disk"
 echo "    Re-sign the app bundle before notarization so the payload is sealed."

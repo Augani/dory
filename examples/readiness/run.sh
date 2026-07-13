@@ -50,7 +50,7 @@ Options:
 
 Env:
   DORY_APP                 Dory.app path (default: /Applications/Dory.app)
-  DORY_DOCKER_HOST         Docker host URI (default: unix://~/.dory/dory.sock)
+  DORY_DOCKER_HOST         Docker host URI (default: unix://\$HOME/.dory/dory.sock)
   DORY_KUBECONFIG          Kubeconfig path (default: ~/.kube/dory-config)
   DORY_K3S_IMAGE           k3s image for --with-kubernetes
   DORY_NEXTJS_PORT         Fixed localhost port for the Next.js app (default: 18081)

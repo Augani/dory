@@ -7,6 +7,31 @@
 set -u
 cd "$(dirname "$0")/.."
 
+usage() {
+  cat <<'EOF'
+Usage: scripts/build.sh [xcodebuild arguments]
+
+Builds the Debug Dory app with a full Xcode toolchain, then bundles and ad-hoc signs the local
+engine, daemon, Docker CLI, Compose, Buildx, and kubectl helpers. Extra arguments are forwarded to
+xcodebuild. This command creates a development app only; it does not create or publish a release.
+
+Useful environment controls:
+  DEVELOPER_DIR=PATH              Select a full Xcode toolchain
+  DORY_BUILD_DEBUG_HELPERS=0      Skip dory-hv/gvproxy bundling
+  DORY_BUILD_DORYD_HELPERS=0      Skip doryd/dory-vmm helper bundling
+  DORY_ALLOW_MISSING_GVPROXY=1    Permit an intentionally incomplete development bundle
+EOF
+}
+
+for argument in "$@"; do
+  case "$argument" in
+    -h|--help) usage; exit 0 ;;
+  esac
+done
+
+# shellcheck source=gvproxy-payload.sh
+source scripts/gvproxy-payload.sh
+
 find_xcode() {
   local dev app found
   for app in /Applications/Xcode.app /Applications/Xcode-*.app \
@@ -129,7 +154,8 @@ bundle_debug_engine_rootfs() {
 }
 
 bundle_debug_hv_helper() {
-  local pkg configuration hv_bin entitlements app helper gvproxy_src gvproxy_version gvproxy_tmp
+  local pkg configuration hv_bin entitlements app helper
+  local gvproxy_src gvproxy_version gvproxy_sha256 gvproxy_tmp
   [ "${DORY_BUILD_DEBUG_HELPERS:-1}" = "1" ] || return 0
   configuration="${DORY_DEBUG_HELPER_CONFIGURATION:-release}"
   pkg="Packages/ContainerizationEngine"
@@ -143,27 +169,28 @@ bundle_debug_hv_helper() {
   fi
   [ -x "$hv_bin" ] || { echo "error: dory-hv helper was not produced" >&2; return 1; }
 
-  gvproxy_version="${DORY_GVPROXY_VERSION:-v0.8.6}"
+  dory_gvproxy_validate_overrides || return 1
+  gvproxy_version="$(dory_gvproxy_version)"
+  gvproxy_sha256="$(dory_gvproxy_expected_sha256)"
   gvproxy_src="${DORY_GVPROXY:-}"
-  if [ -z "$gvproxy_src" ]; then
-    for cand in /opt/homebrew/opt/podman/libexec/podman/gvproxy \
-                /usr/local/opt/podman/libexec/podman/gvproxy \
-                /opt/homebrew/bin/gvproxy \
-                /usr/local/bin/gvproxy \
-                "$(command -v gvproxy 2>/dev/null)"; do
-      [ -n "$cand" ] && [ -x "$cand" ] && { gvproxy_src="$cand"; break; }
-    done
-  fi
-  if [ -z "$gvproxy_src" ] || [ ! -x "$gvproxy_src" ]; then
-    gvproxy_tmp="/tmp/dory-gvproxy-darwin"
-    if [ -x "$gvproxy_tmp" ]; then
+  gvproxy_tmp=""
+  if [ -n "$gvproxy_src" ]; then
+    # This is the only local-binary override. It is never trusted without the same checksum,
+    # universal-slice, and version checks as the pinned source build.
+    if [ ! -f "$gvproxy_src" ] || [ ! -x "$gvproxy_src" ]; then
+      echo "error: explicit DORY_GVPROXY is not an executable file: $gvproxy_src" >&2
+      return 1
+    fi
+    echo "note: using verified explicit DORY_GVPROXY override" >&2
+  else
+    gvproxy_tmp="$(mktemp "${TMPDIR:-/tmp}/dory-gvproxy-${gvproxy_version}.XXXXXX")" || return 1
+    echo "note: building provenance-pinned dual-stack gvproxy $gvproxy_version" >&2
+    if scripts/build-gvproxy.sh --output "$gvproxy_tmp" --provenance "$gvproxy_tmp.provenance"; then
       gvproxy_src="$gvproxy_tmp"
     else
-      echo "note: fetching gvproxy $gvproxy_version (gvisor-tap-vsock release)" >&2
-    fi
-    if [ -z "$gvproxy_src" ] && fetch_url "https://github.com/containers/gvisor-tap-vsock/releases/download/${gvproxy_version}/gvproxy-darwin" "$gvproxy_tmp" 2>/dev/null; then
-      chmod +x "$gvproxy_tmp"
-      gvproxy_src="$gvproxy_tmp"
+      rm -f "$gvproxy_tmp"
+      rm -f "$gvproxy_tmp.provenance"
+      gvproxy_tmp=""
     fi
   fi
   if [ -z "$gvproxy_src" ] || [ ! -x "$gvproxy_src" ]; then
@@ -173,6 +200,9 @@ bundle_debug_hv_helper() {
       echo "error: could not obtain gvproxy; set DORY_GVPROXY or DORY_ALLOW_MISSING_GVPROXY=1" >&2
       return 1
     fi
+  elif ! dory_verify_gvproxy_payload "$gvproxy_src" "$gvproxy_version" "$gvproxy_sha256"; then
+    rm -f "$gvproxy_tmp" "$gvproxy_tmp.provenance"
+    return 1
   fi
 
   entitlements="$(mktemp "${TMPDIR:-/tmp}/dory-hv-entitlements.XXXXXX")"
@@ -196,6 +226,16 @@ PLIST
       codesign --force --options runtime -s - "$app/Contents/Helpers/gvproxy" >/dev/null 2>&1 \
         || codesign --force -s - "$app/Contents/Helpers/gvproxy" >/dev/null
       xattr -cr "$app/Contents/Helpers/gvproxy" 2>/dev/null || true
+      if [ -n "$gvproxy_tmp" ] && [ -s "$gvproxy_tmp.provenance" ]; then
+        cp "$gvproxy_tmp.provenance" "$app/Contents/Resources/gvproxy-provenance.txt"
+        echo 'source=pinned-source-build' >> "$app/Contents/Resources/gvproxy-provenance.txt"
+      else
+        {
+          echo "version=$gvproxy_version"
+          echo "verified_sha256=$gvproxy_sha256"
+          echo 'source=explicit-override'
+        } > "$app/Contents/Resources/gvproxy-provenance.txt"
+      fi
     fi
     for arch in arm64 amd64; do
       if [ -f "guest/out/dory-agent-$arch" ]; then
@@ -223,6 +263,7 @@ PLIST
   done
 
   rm -f "$entitlements"
+  rm -f "$gvproxy_tmp" "$gvproxy_tmp.provenance"
 }
 
 bundle_doryd_swiftpm_helpers() {
@@ -260,6 +301,10 @@ PLIST
       xattr -cr "$helper" 2>/dev/null || true
     done
     write_doryd_launch_agent "$app"
+    mkdir -p "$app/Contents/Library/LaunchDaemons"
+    cp "Config/dev.dory.network-helper.plist" \
+      "$app/Contents/Library/LaunchDaemons/dev.dory.network-helper.plist"
+    plutil -lint "$app/Contents/Library/LaunchDaemons/dev.dory.network-helper.plist" >/dev/null
   done
 
   rm -f "$entitlements"
@@ -319,6 +364,14 @@ kubectl_darwin_arch() {
   esac
 }
 
+buildx_darwin_arch() {
+  case "$(host_arch)" in
+    arm64) printf 'arm64\n' ;;
+    x86_64) printf 'amd64\n' ;;
+    *) return 1 ;;
+  esac
+}
+
 download_docker_cli() {
   [ "${DORY_BUNDLE_HOST_CLI_DOWNLOADS:-1}" = "1" ] || return 1
   local version arch cache tgz tmp out
@@ -348,6 +401,21 @@ download_docker_compose() {
   [ -x "$out" ] && { printf '%s\n' "$out"; return 0; }
   mkdir -p "$cache"
   fetch_url "https://github.com/docker/compose/releases/download/$version/docker-compose-darwin-$arch" "$out" || return 1
+  chmod 0755 "$out"
+  xattr -cr "$out" 2>/dev/null || true
+  printf '%s\n' "$out"
+}
+
+download_docker_buildx() {
+  [ "${DORY_BUNDLE_HOST_CLI_DOWNLOADS:-1}" = "1" ] || return 1
+  local version arch cache out
+  version="${DORY_BUILDX_VERSION:-v0.34.1}"
+  arch="$(buildx_darwin_arch)" || return 1
+  cache="$(host_cli_cache_dir)"
+  out="$cache/docker-buildx-$version-$arch"
+  [ -x "$out" ] && { printf '%s\n' "$out"; return 0; }
+  mkdir -p "$cache"
+  fetch_url "https://github.com/docker/buildx/releases/download/$version/buildx-$version.darwin-$arch" "$out" || return 1
   chmod 0755 "$out"
   xattr -cr "$out" 2>/dev/null || true
   printf '%s\n' "$out"
@@ -385,14 +453,16 @@ copy_host_cli_helper() {
 }
 
 bundle_host_cli_helpers() {
-  local app docker docker_compose kubectl
+  local app docker docker_buildx docker_compose kubectl
   [ "${DORY_BUNDLE_HOST_CLI:-1}" = "1" ] || return 0
   docker="$(first_existing_cli "${DORY_DOCKER_CLI:-}" /Applications/Dory.app/Contents/Helpers/docker "$HOME/.dory/bin/docker" /opt/homebrew/bin/docker /usr/local/bin/docker "$(command -v docker 2>/dev/null || true)" || download_docker_cli || true)"
+  docker_buildx="$(first_existing_cli "${DORY_DOCKER_BUILDX:-}" /Applications/Dory.app/Contents/Helpers/docker-buildx "$HOME/.docker/cli-plugins/docker-buildx" "$HOME/.dory/bin/docker-buildx" /opt/homebrew/lib/docker/cli-plugins/docker-buildx /usr/local/lib/docker/cli-plugins/docker-buildx || download_docker_buildx || true)"
   docker_compose="$(first_existing_cli "${DORY_DOCKER_COMPOSE:-}" /Applications/Dory.app/Contents/Helpers/docker-compose "$HOME/.docker/cli-plugins/docker-compose" "$HOME/.dory/bin/docker-compose" /opt/homebrew/bin/docker-compose /usr/local/bin/docker-compose "$(command -v docker-compose 2>/dev/null || true)" || download_docker_compose || true)"
   kubectl="$(first_existing_cli "${DORY_KUBECTL:-}" /Applications/Dory.app/Contents/Helpers/kubectl "$HOME/.dory/bin/kubectl" /opt/homebrew/bin/kubectl /usr/local/bin/kubectl "$(command -v kubectl 2>/dev/null || true)" || download_kubectl || true)"
   for app in "$HOME"/Library/Developer/Xcode/DerivedData/Dory-*/Build/Products/Debug/Dory.app; do
     [ -d "$app" ] || continue
     copy_host_cli_helper "$app" docker "$docker"
+    copy_host_cli_helper "$app" docker-buildx "$docker_buildx"
     copy_host_cli_helper "$app" docker-compose "$docker_compose"
     copy_host_cli_helper "$app" kubectl "$kubectl"
     copy_host_cli_helper "$app" dory \
@@ -413,7 +483,7 @@ sign_debug_apps() {
   for app in "$HOME"/Library/Developer/Xcode/DerivedData/Dory-*/Build/Products/Debug/Dory.app; do
     [ -d "$app" ] || continue
     xattr -cr "$app" 2>/dev/null || true
-    for helper in docker docker-compose kubectl dory dory-doctor; do
+    for helper in docker docker-buildx docker-compose kubectl dory dory-doctor; do
       [ -f "$app/Contents/Helpers/$helper" ] || continue
       codesign --force -s - "$app/Contents/Helpers/$helper" >/dev/null 2>&1 || true
     done
@@ -497,6 +567,8 @@ write_doryd_launch_agent() {
     <true/>
     <key>KeepAlive</key>
     <true/>
+    <key>ExitTimeOut</key>
+    <integer>45</integer>
     <key>ProcessType</key>
     <string>Interactive</string>
     <key>StandardOutPath</key>

@@ -19,16 +19,19 @@
 #   DORY_DIRECT_IP_INTERFACE_FILE points at the helper-written utun interface file
 #   READINESS_FILE_WATCH_IMAGE for --file-watch (default: alpine image)
 #   READINESS_MACHINE_RECIPE, READINESS_MACHINE_RECIPE_COMMAND for --machine-recipe
-#   RUN_DEBUG_SHELL=0|1 (currently records an explicit unsupported skip)
+#   RUN_DEBUG_SHELL=0|1 (unsupported; an enabled probe fails in strict mode)
 #   RUN_CLOCK_SYNC=0|1, DORY_CLOCK_SYNC_TOLERANCE_MS
 #   RUN_GUEST_AGENT=0|1, DORY_HV_BIN, DORY_GUEST_KERNEL, DORY_GUEST_INITFS
 #   DORYD_CTL, DORYD_MACHINE_KERNEL, DORYD_MACHINE_ROOTFS for doryd per-VM machine checks
-#   RUN_USB=1 records an explicit unsupported skip until the agent has a vhci attach RPC
+#   RUN_USB=1 records unsupported until the agent has a vhci attach RPC (fails in strict mode)
 #   DORY_REQUIRE_VPN=1 makes --vpn fail when no active VPN-like interface or route is detected
+#   READINESS_STRICT=1 turns unavailable requested engines/probes into failures
+#   READINESS_REQUIRE_PHYSICAL_INTEL=1 requires this run to execute on a physical Intel Mac
+#   READINESS_REQUIRE_COMPETITOR=1 requires OrbStack or Docker Desktop in --engines
 #   STOP_ORBSTACK=1 to quit OrbStack before running Dory-only checks
 set -u
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ENGINES="${ENGINES:-dory}"
 ALPINE_IMAGE="${READINESS_ALPINE_IMAGE:-alpine:latest}"
 NGINX_IMAGE="${READINESS_NGINX_IMAGE:-nginx:alpine}"
@@ -55,6 +58,10 @@ RUN_DEBUG_SHELL="${RUN_DEBUG_SHELL:-0}"
 RUN_CLOCK_SYNC="${RUN_CLOCK_SYNC:-0}"
 CLOCK_SYNC_TOLERANCE_MS="${DORY_CLOCK_SYNC_TOLERANCE_MS:-100}"
 STOP_ORBSTACK="${STOP_ORBSTACK:-0}"
+STRICT="${READINESS_STRICT:-0}"
+REQUIRE_PHYSICAL_INTEL="${READINESS_REQUIRE_PHYSICAL_INTEL:-0}"
+REQUIRE_COMPETITOR="${READINESS_REQUIRE_COMPETITOR:-0}"
+PHYSICAL_INTEL_CONFIRMED="${READINESS_PHYSICAL_INTEL_CONFIRMED:-0}"
 
 RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$"
 RUN_SLUG="$(printf '%s' "$RUN_ID" | tr '[:upper:]' '[:lower:]' | tr -cd '[:alnum:]_.-')"
@@ -68,6 +75,7 @@ CASE_ID=0
 PASS_COUNT=0
 FAIL_COUNT=0
 SKIP_COUNT=0
+REQUIRED_UNAVAILABLE_COUNT=0
 CURRENT_ENGINE=""
 ENGINE_SOCK=""
 ENGINE_ID=""
@@ -101,6 +109,10 @@ Options:
   --debug-shell        Record the unavailable agent namespace-debug RPC explicitly
   --clock-sync         Run the typed doryd host-wake clock synchronization path
   --stop-orbstack      Quit OrbStack before Dory-only runs
+  --strict             Fail when a requested engine, tool, or enabled probe is unavailable
+  --require-physical-intel
+                       Require this run to execute on a physical Intel Mac (implies --strict)
+  --require-competitor Require OrbStack or Docker Desktop in --engines (implies --strict)
   -h, --help           Show this help
 
 Clock sync env:
@@ -110,6 +122,10 @@ doryd VM machine env:
   DORYD_CTL
   DORYD_MACHINE_KERNEL, DORYD_MACHINE_ROOTFS
   DORYD_MACHINE_MEMORY_MB, DORYD_MACHINE_CPUS
+
+External release gates:
+  READINESS_PHYSICAL_INTEL_CONFIRMED=1 may only be set on a physical Intel Mac after host facts
+  have been recorded. Emulation, Rosetta, and hosted nested-virtualization runs do not qualify.
 EOF
 }
 
@@ -136,10 +152,24 @@ while [ "$#" -gt 0 ]; do
     --debug-shell) RUN_DEBUG_SHELL=1; shift ;;
     --clock-sync) RUN_CLOCK_SYNC=1; shift ;;
     --stop-orbstack) STOP_ORBSTACK=1; shift ;;
+    --strict) STRICT=1; shift ;;
+    --require-physical-intel) REQUIRE_PHYSICAL_INTEL=1; STRICT=1; shift ;;
+    --require-competitor) REQUIRE_COMPETITOR=1; STRICT=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown option: $1" >&2; usage; exit 2 ;;
   esac
 done
+
+for value_name in STRICT REQUIRE_PHYSICAL_INTEL REQUIRE_COMPETITOR PHYSICAL_INTEL_CONFIRMED; do
+  value="${!value_name}"
+  case "$value" in
+    0|1) ;;
+    *) echo "$value_name must be 0 or 1" >&2; exit 2 ;;
+  esac
+done
+if [ "$REQUIRE_PHYSICAL_INTEL" = "1" ] || [ "$REQUIRE_COMPETITOR" = "1" ]; then
+  STRICT=1
+fi
 
 mkdir -p "$WORKDIR"
 printf 'status\tengine\ttest\tdetail\n' > "$RESULTS"
@@ -180,6 +210,87 @@ skip_case() {
   record SKIP "$1" "$2" "$3"
 }
 
+# An engine or probe selected by the caller is a requirement, not an optional omission. Keep the
+# legacy exploratory mode useful by recording a skip there, but make release/CI runs fail closed.
+required_unavailable_case() {
+  local engine="$1" test_name="$2" detail="$3"
+  REQUIRED_UNAVAILABLE_COUNT=$((REQUIRED_UNAVAILABLE_COUNT + 1))
+  if [ "$STRICT" = "1" ]; then
+    record FAIL "$engine" "$test_name" "STRICT REQUIRED — $detail"
+  else
+    record SKIP "$engine" "$test_name" "REQUIRED BUT UNAVAILABLE — $detail (rerun with --strict for a failing gate)"
+  fi
+}
+
+engine_list_has_competitor() {
+  local engine normalized old_ifs="$IFS"
+  IFS=','
+  for engine in $ENGINES; do
+    IFS="$old_ifs"
+    normalized="$(printf '%s' "$engine" | sed 's/^ *//;s/ *$//')"
+    case "$normalized" in
+      orbstack|docker-desktop|desktop) IFS="$old_ifs"; return 0 ;;
+    esac
+    IFS=','
+  done
+  IFS="$old_ifs"
+  return 1
+}
+
+physical_intel_host_confirmed() {
+  local translated nested arm64_capable
+  [ "$(host_guest_arch)" = "amd64" ] || return 1
+  [ "$PHYSICAL_INTEL_CONFIRMED" = "1" ] || return 1
+  translated="$(sysctl -in sysctl.proc_translated 2>/dev/null || printf '0')"
+  nested="$(sysctl -in kern.hv_vmm_present 2>/dev/null || printf '0')"
+  arm64_capable="$(sysctl -in hw.optional.arm64 2>/dev/null || printf '0')"
+  [ "$translated" != "1" ] && [ "$nested" != "1" ] && [ "$arm64_capable" != "1" ]
+}
+
+record_external_coverage() {
+  local competitor_state
+  if physical_intel_host_confirmed; then
+    record PASS "coverage" "physical Intel hardware gate" "confirmed physical Intel host"
+  elif [ "$REQUIRE_PHYSICAL_INTEL" = "1" ]; then
+    required_unavailable_case "coverage" "physical Intel hardware gate" \
+      "EXTERNAL GATE NOT COVERED — requires a confirmed physical Intel Mac; emulation/Rosetta is not evidence"
+  else
+    skip_case "coverage" "physical Intel hardware gate" \
+      "EXTERNAL GATE NOT COVERED — requires READINESS_PHYSICAL_INTEL_CONFIRMED=1 on a physical Intel Mac"
+  fi
+
+  if engine_list_has_competitor; then
+    competitor_state="$(awk -F '\t' '
+      $2 ~ /^(orbstack|docker-desktop|desktop)$/ {
+        seen = 1
+        if ($1 == "PASS") passed = 1
+        if ($1 == "FAIL") failed = 1
+        if ($1 == "SKIP" && $3 ~ /^all /) unavailable = 1
+      }
+      END {
+        if (seen && passed && !failed && !unavailable) print "pass"
+        else print "incomplete"
+      }
+    ' "$RESULTS")"
+    if [ "$competitor_state" = "pass" ]; then
+      record PASS "coverage" "same-host competitor correctness gate" \
+        "competitor engine completed its enabled correctness checks (not a performance claim)"
+    elif [ "$STRICT" = "1" ]; then
+      record FAIL "coverage" "same-host competitor correctness gate" \
+        "EXTERNAL GATE INCOMPLETE — inspect the competitor engine FAIL/required-SKIP rows"
+    else
+      skip_case "coverage" "same-host competitor correctness gate" \
+        "EXTERNAL GATE INCOMPLETE — competitor was requested but did not complete its enabled checks"
+    fi
+  elif [ "$REQUIRE_COMPETITOR" = "1" ]; then
+    required_unavailable_case "coverage" "same-host competitor correctness gate" \
+      "EXTERNAL GATE NOT COVERED — add orbstack or docker-desktop to --engines"
+  else
+    skip_case "coverage" "same-host competitor correctness gate" \
+      "EXTERNAL GATE NOT COVERED — this run includes no OrbStack or Docker Desktop engine"
+  fi
+}
+
 mb() {
   awk -v b="${1:-0}" 'BEGIN { printf "%.0f", b / 1048576 }'
 }
@@ -194,7 +305,7 @@ nonnative_guest_arch() {
 
 binfmt_handler_for_arch() {
   case "$1" in
-    amd64) printf '%s\n' "qemu-x86_64" ;;
+    amd64) printf '%s\n' "FEX-x86_64" ;;
     arm64) printf '%s\n' "qemu-aarch64" ;;
     *) echo "unsupported arch: $1" >&2; return 2 ;;
   esac
@@ -581,10 +692,105 @@ test_nonnative_arch() {
   name="$PREFIX-binfmt"
   docker_e run --rm --privileged --name "$name" --label "$LABEL_KEY=$RUN_ID" "$ALPINE_IMAGE" \
     sh -c 'handler="$1"
+           mkdir -p /proc/sys/fs/binfmt_misc
+           grep -qs " /proc/sys/fs/binfmt_misc " /proc/mounts \
+             || mount -t binfmt_misc binfmt_misc /proc/sys/fs/binfmt_misc
            test -e /proc/sys/fs/binfmt_misc/register || { echo "binfmt_misc not mounted" >&2; exit 1; }
            test -e "/proc/sys/fs/binfmt_misc/$handler" || { echo "$handler handler not registered" >&2; exit 1; }
            grep -qx enabled "/proc/sys/fs/binfmt_misc/$handler" || { echo "$handler handler not enabled" >&2; exit 1; }' sh "$handler"
   docker_e run --rm --platform "linux/$arch" --label "$LABEL_KEY=$RUN_ID" "$ALPINE_IMAGE" uname -m | grep -Eq "$pattern"
+}
+
+write_nonnative_node_fixture() {
+  local dir="$1"
+  mkdir -p "$dir/src" "$dir/scripts" "$dir/test" "$dir/vendor/dory-math"
+  cat > "$dir/package.json" <<'EOF'
+{
+  "name": "dory-nonnative-build-smoke",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@dory/math-fixture": "file:vendor/dory-math"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "node --test test/*.test.mjs"
+  }
+}
+EOF
+  cat > "$dir/package-lock.json" <<'EOF'
+{
+  "name": "dory-nonnative-build-smoke",
+  "version": "1.0.0",
+  "lockfileVersion": 3,
+  "requires": true,
+  "packages": {
+    "": {
+      "name": "dory-nonnative-build-smoke",
+      "version": "1.0.0",
+      "dependencies": {
+        "@dory/math-fixture": "file:vendor/dory-math"
+      }
+    },
+    "node_modules/@dory/math-fixture": {
+      "resolved": "vendor/dory-math",
+      "link": true
+    },
+    "vendor/dory-math": {
+      "name": "@dory/math-fixture",
+      "version": "1.0.0"
+    }
+  }
+}
+EOF
+  cat > "$dir/vendor/dory-math/package.json" <<'EOF'
+{
+  "name": "@dory/math-fixture",
+  "version": "1.0.0",
+  "type": "module",
+  "exports": "./index.mjs"
+}
+EOF
+  cat > "$dir/vendor/dory-math/index.mjs" <<'EOF'
+export function weightedChecksum(values) {
+  return values.reduce((total, value, index) => (total + value * (index + 1)) % 2147483647, 0);
+}
+EOF
+  cat > "$dir/src/app.mjs" <<'EOF'
+import { weightedChecksum } from '@dory/math-fixture';
+import { createHash } from 'node:crypto';
+import { pathToFileURL } from 'node:url';
+
+export function fingerprint(value) {
+  return createHash('sha256').update(value).digest('hex');
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  const checksum = weightedChecksum(Array.from({ length: 4096 }, (_, index) => index % 251));
+  console.log(`dory-nonnative-build-ok arch=${process.arch} checksum=${checksum} sha=${fingerprint('dory-readiness')}`);
+}
+EOF
+  cat > "$dir/scripts/build.mjs" <<'EOF'
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+
+const source = await readFile(new URL('../src/app.mjs', import.meta.url), 'utf8');
+await mkdir(new URL('../dist/', import.meta.url), { recursive: true });
+await writeFile(new URL('../dist/app.mjs', import.meta.url), `// generated by npm run build\n${source}`);
+EOF
+  cat > "$dir/test/app.test.mjs" <<'EOF'
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { weightedChecksum } from '@dory/math-fixture';
+import { fingerprint } from '../dist/app.mjs';
+
+test('built artifact executes on the requested architecture', () => {
+  assert.equal(process.arch, process.env.EXPECTED_NODE_ARCH);
+  assert.match(fingerprint('dory-readiness'), /^[0-9a-f]{64}$/);
+  assert.notEqual(fingerprint('dory-readiness'), fingerprint('wrong-input'));
+  assert.equal(weightedChecksum([3, 5, 7]), 34);
+});
+EOF
 }
 
 test_nonnative_build() {
@@ -598,25 +804,36 @@ test_nonnative_build() {
   esac
   dir="$WORKDIR/${ENGINE_ID}-nonnative-build"
   tag="dory-readiness-${ENGINE_ID}-${RUN_SLUG}:nonnative-$arch"
-  mkdir -p "$dir"
+  write_nonnative_node_fixture "$dir"
   cat > "$dir/Dockerfile" <<EOF
 FROM $NONNATIVE_BUILD_IMAGE
 LABEL $LABEL_KEY=$RUN_ID
 ARG EXPECTED_UNAME
 ARG EXPECTED_NODE_ARCH
 ENV EXPECTED_NODE_ARCH=\$EXPECTED_NODE_ARCH
+WORKDIR /workspace
 RUN actual="\$(uname -m)" \\
     && printf '%s\n' "\$actual" > /uname.txt \\
     && printf '%s\n' "\$actual" | grep -Eq "\$EXPECTED_UNAME"
 RUN node -e "if (process.arch !== process.env.EXPECTED_NODE_ARCH) { throw new Error(process.arch + ' != ' + process.env.EXPECTED_NODE_ARCH) } console.log(process.arch)" > /node-arch.txt
-RUN npm --version > /npm-version.txt
-CMD ["sh", "-c", "cat /uname.txt /node-arch.txt /npm-version.txt"]
+COPY package.json package-lock.json ./
+COPY vendor ./vendor
+RUN npm ci --ignore-scripts --no-audit --no-fund
+COPY src ./src
+COPY scripts ./scripts
+COPY test ./test
+RUN npm run build \\
+    && npm test \\
+    && node dist/app.mjs | tee /build-result.txt \\
+    && grep -q "dory-nonnative-build-ok arch=\$EXPECTED_NODE_ARCH" /build-result.txt
+CMD ["node", "dist/app.mjs"]
 EOF
   DOCKER_BUILDKIT=1 docker_e build --progress=plain --platform "linux/$arch" \
     --build-arg "EXPECTED_UNAME=$pattern" \
     --build-arg "EXPECTED_NODE_ARCH=$node_arch" \
     -t "$tag" "$dir"
-  docker_e run --rm --platform "linux/$arch" --label "$LABEL_KEY=$RUN_ID" "$tag" | grep -q "$node_arch"
+  docker_e run --rm --platform "linux/$arch" --label "$LABEL_KEY=$RUN_ID" "$tag" \
+    | grep -q "dory-nonnative-build-ok arch=$node_arch"
   docker_e rmi -f "$tag" >/dev/null
 }
 
@@ -708,8 +925,8 @@ test_vpn_coexistence() {
   vpn_snapshot "$dir"
   if vpn_detected "$dir"; then
     echo "VPN-like interface or route detected; artifacts: $dir"
-  elif [ "${DORY_REQUIRE_VPN:-0}" = "1" ]; then
-    echo "no VPN-like interface or route detected; artifacts: $dir"
+  elif [ "${DORY_REQUIRE_VPN:-0}" = "1" ] || [ "$STRICT" = "1" ]; then
+    echo "no VPN-like interface or route detected; strict VPN readiness requires a real active VPN; artifacts: $dir"
     return 1
   else
     echo "no VPN-like interface or route detected; recorded baseline artifacts: $dir"
@@ -1080,11 +1297,11 @@ run_engine() {
 
   note "$CURRENT_ENGINE ($ENGINE_SOCK)"
   if ! command -v docker >/dev/null 2>&1; then
-    skip_case "$CURRENT_ENGINE" "all Docker CLI checks" "docker CLI not found"
+    required_unavailable_case "$CURRENT_ENGINE" "all Docker CLI checks" "docker CLI not found"
     return
   fi
   if ! require_socket; then
-    skip_case "$CURRENT_ENGINE" "all checks" "socket not found: $ENGINE_SOCK"
+    required_unavailable_case "$CURRENT_ENGINE" "all checks" "requested engine socket not found: $ENGINE_SOCK"
     return
   fi
 
@@ -1117,10 +1334,10 @@ run_engine() {
 
   if [ "$RUN_NONNATIVE_ARCH" = "1" ]; then
     run_case "$CURRENT_ENGINE" "linux/$(nonnative_guest_arch) emulation" test_nonnative_arch
-    run_case "$CURRENT_ENGINE" "linux/$(nonnative_guest_arch) BuildKit node/npm build" test_nonnative_build
+    run_case "$CURRENT_ENGINE" "linux/$(nonnative_guest_arch) BuildKit npm ci + build + test" test_nonnative_build
   else
     skip_case "$CURRENT_ENGINE" "linux/$(nonnative_guest_arch) emulation" "disabled"
-    skip_case "$CURRENT_ENGINE" "linux/$(nonnative_guest_arch) BuildKit node/npm build" "disabled"
+    skip_case "$CURRENT_ENGINE" "linux/$(nonnative_guest_arch) BuildKit npm ci + build + test" "disabled"
   fi
 
   if [ "$RUN_ONLINE" = "1" ]; then
@@ -1142,7 +1359,11 @@ run_engine() {
   fi
 
   if [ "$RUN_VPN" = "1" ]; then
-    run_case "$CURRENT_ENGINE" "VPN coexistence userspace networking" test_vpn_coexistence
+    if is_dory_engine; then
+      run_case "$CURRENT_ENGINE" "VPN coexistence userspace networking" test_vpn_coexistence
+    else
+      skip_case "$CURRENT_ENGINE" "VPN coexistence userspace networking" "not applicable: this probe validates Dory's gvproxy coexistence contract"
+    fi
   else
     skip_case "$CURRENT_ENGINE" "VPN coexistence userspace networking" "enable with --vpn; set DORY_REQUIRE_VPN=1 to require an active VPN"
   fi
@@ -1184,7 +1405,7 @@ run_engine() {
   fi
 
   if [ "$RUN_ROSETTA" = "1" ] && [ "$(host_guest_arch)" = "amd64" ]; then
-    skip_case "$CURRENT_ENGINE" "Rosetta x86-64 machine execution" "N/A on Intel hosts; amd64 is native"
+    required_unavailable_case "$CURRENT_ENGINE" "Rosetta x86-64 machine execution" "probe is not applicable on Intel hosts; amd64 is native"
   elif [ "$RUN_ROSETTA" = "1" ]; then
     run_case "$CURRENT_ENGINE" "Rosetta x86-64 machine execution" test_rosetta
   else
@@ -1192,7 +1413,7 @@ run_engine() {
   fi
 
   if [ "$RUN_CLOCK_SYNC" = "1" ] && [ "$CURRENT_ENGINE" != "doryd" ]; then
-    skip_case "$CURRENT_ENGINE" "host wake clock sync" "typed clock-sync readiness is supported by the doryd engine only"
+    required_unavailable_case "$CURRENT_ENGINE" "host wake clock sync" "typed clock-sync readiness is supported by the doryd engine only"
   elif [ "$RUN_CLOCK_SYNC" = "1" ]; then
     run_case "$CURRENT_ENGINE" "host wake clock sync" test_clock_sync
   else
@@ -1200,13 +1421,13 @@ run_engine() {
   fi
 
   if [ "$RUN_USB" = "1" ]; then
-    skip_case "$CURRENT_ENGINE" "USB/IP hardware smoke" "dory-agent protocol v1 has no guest vhci attach/detach RPC"
+    required_unavailable_case "$CURRENT_ENGINE" "USB/IP hardware smoke" "unsupported: dory-agent protocol v1 has no guest vhci attach/detach RPC"
   else
     skip_case "$CURRENT_ENGINE" "USB/IP hardware smoke" "enable with --usb and DORY_USB_TEST_BUSID"
   fi
 
   if [ "$RUN_DEBUG_SHELL" = "1" ]; then
-    skip_case "$CURRENT_ENGINE" "debug shell via guest agent" "dory-agent protocol v1 has no namespace-debug RPC"
+    required_unavailable_case "$CURRENT_ENGINE" "debug shell via guest agent" "unsupported: dory-agent protocol v1 has no namespace-debug RPC"
   else
     skip_case "$CURRENT_ENGINE" "debug shell via guest agent" "enable with --debug-shell"
   fi
@@ -1220,10 +1441,18 @@ run_engine() {
 }
 
 write_summary() {
+  local strict_json=false physical_required_json=false competitor_required_json=false
+  [ "$STRICT" = "1" ] && strict_json=true
+  [ "$REQUIRE_PHYSICAL_INTEL" = "1" ] && physical_required_json=true
+  [ "$REQUIRE_COMPETITOR" = "1" ] && competitor_required_json=true
   cat > "$SUMMARY_JSON" <<EOF
 {
   "runId": "$RUN_ID",
   "engines": "$ENGINES",
+  "strict": $strict_json,
+  "requiredUnavailable": $REQUIRED_UNAVAILABLE_COUNT,
+  "physicalIntelRequired": $physical_required_json,
+  "competitorRequired": $competitor_required_json,
   "pass": $PASS_COUNT,
   "fail": $FAIL_COUNT,
   "skip": $SKIP_COUNT,
@@ -1233,11 +1462,16 @@ write_summary() {
 EOF
 }
 
+if [ "${READINESS_SOURCE_ONLY:-0}" = "1" ]; then
+  return 0 2>/dev/null || exit 0
+fi
+
 trap '{ cleanup_engine; write_summary; } >/dev/null 2>&1 || true' EXIT
 trap 'exit 130' INT TERM
 
 note "readiness run $RUN_ID"
 note "results: $RESULTS"
+note "mode: $([ "$STRICT" = "1" ] && printf strict || printf exploratory)"
 
 if [ "$STOP_ORBSTACK" = "1" ]; then
   note "stopping OrbStack before checks"
@@ -1254,9 +1488,11 @@ for engine in $ENGINES; do
 done
 IFS="$OLD_IFS"
 
+record_external_coverage
+
 write_summary
 
-note "summary: pass=$PASS_COUNT fail=$FAIL_COUNT skip=$SKIP_COUNT"
+note "summary: pass=$PASS_COUNT fail=$FAIL_COUNT skip=$SKIP_COUNT required-unavailable=$REQUIRED_UNAVAILABLE_COUNT"
 note "memory: $MEMORY_RESULTS"
 note "summary json: $SUMMARY_JSON"
 

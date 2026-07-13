@@ -140,7 +140,7 @@ scripts/dory agent guide --text | grep -q "Dory agent guide v1"
 scripts/dory agent guide --text | grep -q "doryd reconciles host tools automatically"
 
 mkdir -p "$TMP_HOME/fake-bin"
-for tool in docker docker-compose kubectl dorydctl; do
+for tool in docker docker-buildx docker-compose kubectl dorydctl; do
   cat > "$TMP_HOME/fake-bin/$tool" <<'SH'
 #!/bin/sh
 echo "$0 $*"
@@ -149,6 +149,7 @@ SH
 done
 
 install_json="$(DORY_DOCKER_BIN="$TMP_HOME/fake-bin/docker" \
+  DORY_DOCKER_BUILDX_BIN="$TMP_HOME/fake-bin/docker-buildx" \
   DORY_DOCKER_COMPOSE_BIN="$TMP_HOME/fake-bin/docker-compose" \
   DORY_KUBECTL_BIN="$TMP_HOME/fake-bin/kubectl" \
   DORYDCTL_BIN="$TMP_HOME/fake-bin/dorydctl" \
@@ -160,14 +161,17 @@ assert data["schema"] == "dev.dory.cli.install"
 assert data["action"] == "install"
 assert data["dryRun"] is False
 assert data["composePluginInstalled"] is True
+assert data["buildxPluginInstalled"] is True
 linked = set(data["linked"])
-assert {"docker", "docker-compose", "kubectl", "dory", "dory-doctor", "dorydctl"} <= linked
+assert {"docker", "docker-buildx", "docker-compose", "kubectl", "dory", "dory-doctor", "dorydctl"} <= linked
 assert os.path.islink(os.path.expanduser("~/.dory/bin/docker"))
 assert os.path.islink(os.path.expanduser("~/.docker/cli-plugins/docker-compose"))
+assert os.path.islink(os.path.expanduser("~/.docker/cli-plugins/docker-buildx"))
 assert "dory cli" in open(os.path.expanduser("~/.zprofile"), encoding="utf-8").read()
 '
 
 uninstall_json="$(DORY_DOCKER_BIN="$TMP_HOME/fake-bin/docker" \
+  DORY_DOCKER_BUILDX_BIN="$TMP_HOME/fake-bin/docker-buildx" \
   DORY_DOCKER_COMPOSE_BIN="$TMP_HOME/fake-bin/docker-compose" \
   DORY_KUBECTL_BIN="$TMP_HOME/fake-bin/kubectl" \
   DORYDCTL_BIN="$TMP_HOME/fake-bin/dorydctl" \
@@ -179,8 +183,32 @@ assert data["schema"] == "dev.dory.cli.install"
 assert data["action"] == "uninstall"
 assert not os.path.exists(os.path.expanduser("~/.dory/bin/docker"))
 assert not os.path.exists(os.path.expanduser("~/.docker/cli-plugins/docker-compose"))
+assert not os.path.exists(os.path.expanduser("~/.docker/cli-plugins/docker-buildx"))
 assert "dory cli" not in open(os.path.expanduser("~/.zprofile"), encoding="utf-8").read()
 '
+
+# A user's pre-existing Compose plugin is never replaced or removed by install/uninstall.
+mkdir -p "$TMP_HOME/.docker/cli-plugins"
+printf '%s\n' 'user-owned-compose' > "$TMP_HOME/.docker/cli-plugins/docker-compose"
+printf '%s\n' 'user-owned-buildx' > "$TMP_HOME/.docker/cli-plugins/docker-buildx"
+DORY_DOCKER_BIN="$TMP_HOME/fake-bin/docker" \
+  DORY_DOCKER_BUILDX_BIN="$TMP_HOME/fake-bin/docker-buildx" \
+  DORY_DOCKER_COMPOSE_BIN="$TMP_HOME/fake-bin/docker-compose" \
+  DORY_KUBECTL_BIN="$TMP_HOME/fake-bin/kubectl" \
+  DORYDCTL_BIN="$TMP_HOME/fake-bin/dorydctl" \
+  scripts/dory install --json | python3 -c '
+import json, sys
+data = json.load(sys.stdin)
+assert data["composePluginInstalled"] is False
+assert data["buildxPluginInstalled"] is False
+'
+test "$(cat "$TMP_HOME/.docker/cli-plugins/docker-compose")" = "user-owned-compose"
+test "$(cat "$TMP_HOME/.docker/cli-plugins/docker-buildx")" = "user-owned-buildx"
+DORY_DOCKER_BIN="$TMP_HOME/fake-bin/docker" \
+  DORY_DOCKER_BUILDX_BIN="$TMP_HOME/fake-bin/docker-buildx" \
+  scripts/dory uninstall --json >/dev/null
+test "$(cat "$TMP_HOME/.docker/cli-plugins/docker-compose")" = "user-owned-compose"
+test "$(cat "$TMP_HOME/.docker/cli-plugins/docker-buildx")" = "user-owned-buildx"
 
 DORYDCTL_BIN=/usr/bin/false DORY_DOCKER_BIN=/usr/bin/false scripts/dory wait engine --until not-running --timeout 0 --json | python3 -c '
 import json, sys
@@ -524,9 +552,86 @@ scripts/dory-doctor disk --json | python3 -c '
 import json, sys
 data = json.load(sys.stdin)
 assert "host" in data
+assert data["data_drive"]["path"].endswith("/Library/Application Support/Dory/Dory.dorydrive")
+assert data["data_drive"]["initialized"] is False
 assert "docker" in data
 assert data["docker"]["available"] is False
 '
+
+# A reachable Docker daemon can still have unusable container metadata after an interrupted
+# writable-snapshot transaction. Preserve the daemon's error, fail the doctor check explicitly,
+# and offer only a reviewable cleanup command for the already-missing writable layers.
+SNAPSHOT_SOCK="$TMP_HOME/snapshot-missing.sock"
+cat > "$TMP_HOME/snapshot-missing-server.py" <<'PY'
+import json
+import os
+import socket
+import sys
+
+path = sys.argv[1]
+try:
+    os.unlink(path)
+except FileNotFoundError:
+    pass
+server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+server.bind(path)
+server.listen(4)
+message = (
+    "failed to retrieve container list: rw layer snapshot not found for container "
+    "846e764c9e77f9b9f6983b2a7832ac3cf72eb95558b0c5414a4f55e1d4fa03ed"
+)
+body = json.dumps({"message": message}).encode()
+response = (
+    b"HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\nContent-Length: "
+    + str(len(body)).encode()
+    + b"\r\nConnection: close\r\n\r\n"
+    + body
+)
+for _ in range(3):
+    client, _ = server.accept()
+    client.recv(65536)
+    client.sendall(response)
+    client.close()
+server.close()
+PY
+python3 "$TMP_HOME/snapshot-missing-server.py" "$SNAPSHOT_SOCK" &
+SNAPSHOT_SERVER_PID=$!
+PIDS_TO_CLEAN+=("$SNAPSHOT_SERVER_PID")
+for _ in $(seq 1 50); do [ -S "$SNAPSHOT_SOCK" ] && break; sleep 0.02; done
+[ -S "$SNAPSHOT_SOCK" ]
+
+DORY_SOCK="$SNAPSHOT_SOCK" scripts/dory-doctor disk --json | python3 -c '
+import json, sys
+data = json.load(sys.stdin)
+docker = data["docker"]
+assert docker["available"] is False
+assert docker["error_code"] == "docker.snapshot_missing"
+assert docker["corrupt_container_ids"] == ["846e764c9e77f9b9f6983b2a7832ac3cf72eb95558b0c5414a4f55e1d4fa03ed"]
+assert "rw layer snapshot not found" in docker["error"]
+'
+
+snapshot_doctor="$(DORY_SOCK="$SNAPSHOT_SOCK" scripts/dory-doctor doctor --json --only disk 2>/dev/null || true)"
+printf '%s' "$snapshot_doctor" | python3 -c '
+import json, sys
+data = json.load(sys.stdin)
+check = next(item for item in data["results"] if item["id"] == "disk.docker")
+assert check["status"] == "fail"
+assert check["code"] == "disk.docker_snapshot_missing"
+assert check["data"]["corrupt_container_ids"][0].startswith("846e764c9e77")
+assert "dory cleanup --json" in check["action"]
+'
+
+DORY_SOCK="$SNAPSHOT_SOCK" scripts/dory-doctor cleanup --json | python3 -c '
+import json, sys
+data = json.load(sys.stdin)
+action = next(item for item in data["actions"] if item["target"] == "inconsistent-containers")
+assert action["status"] == "warn"
+assert action["risk"] == "high"
+assert action["applied"] is False
+assert action["command"][:3] == ["docker", "rm", "-f"]
+assert action["command"][3].startswith("846e764c9e77")
+'
+wait "$SNAPSHOT_SERVER_PID"
 
 mkdir -p "$TMP_HOME/.dory"
 python3 - "$TMP_HOME/.dory/engine.log" <<'PY'
@@ -812,10 +917,11 @@ tools = json.load(sys.stdin)["tools"]
 assert tools, "no recipes"
 for name, recipe in tools.items():
     assert recipe.get("verify"), f"{name} has no verification command"
+assert "export TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE=/var/run/docker.sock" in tools["testcontainers"]["steps"]
 '
 
 scripts/dory compat --recipe testcontainers | grep -q "Verify:"
-scripts/dory compat --recipe amd64 | grep -q "qemu-user"
+scripts/dory compat --recipe amd64 | grep -q "FEX"
 set +e
 scripts/dory compat --recipe no-such-tool >/dev/null 2>&1
 compat_rc=$?

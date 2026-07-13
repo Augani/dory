@@ -1,23 +1,32 @@
 #!/bin/bash
 # dory-engine — Dory's container engine as a standalone, Colima-style runtime.
 #
-#   dory-engine start [--mem-mb N] [--cpus N] [--amd64] [--gpu venus]
+#   dory-engine start [--mem-mb N] [--cpus N] [--data-drive PATH]
+#                     [--no-legacy-data-import] [--amd64|--no-amd64]
+#                     [--gpu venus|--no-gpu] [--lan-visible|--no-lan-visible]
 #   dory-engine stop
 #   dory-engine status
 #   dory-engine env
 #
-# Runs the same dory-hv engine the Dory app bundles, headless: one shared Linux VM with dockerd,
-# memory returned to macOS as workloads idle. The docker socket is published at
+# Runs the same dory-hv engine the Dory app bundles, headless: one shared Linux VM with dockerd and
+# guest free-page reporting. Pressure-triggered target reclaim is opt-in experimental behavior,
+# not a comparative memory claim. The docker socket is published at
 # ~/.dory/engine.sock; `dory-engine start` also creates and can switch to a `dory-engine`
 # docker context so plain `docker` works.
 set -euo pipefail
+umask 077
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BIN="$HERE/bin"
 SHARE="$HERE/share/dory"
 STATE="$HOME/.dory"
+DATA_DRIVE="${DORY_DATA_DRIVE:-$HOME/Library/Application Support/Dory/Dory.dorydrive}"
 SOCK="$STATE/engine.sock"
+BACKEND_SOCK="$STATE/hv/docker-backend.sock"
 PIDFILE="$STATE/engine-cli.pid"
+DATAPLANE_PIDFILE="$STATE/dataplane-cli.pid"
+DRIVEFILE="$STATE/data-drive.path"
+SETTINGSFILE="$STATE/engine-settings"
 LOGFILE="$STATE/engine.log"
 if [ "$(uname -m)" = "x86_64" ]; then
   GUEST_ARCH="amd64"
@@ -35,6 +44,33 @@ LOG_MAX_BYTES="${DORY_LOG_MAX_BYTES:-8388608}"
 
 note() { printf 'dory-engine: %s\n' "$*"; }
 die() { printf 'dory-engine: %s\n' "$*" >&2; exit 1; }
+
+remove_owned_socket_path() {
+  local path="$1"
+  [ ! -e "$path" ] && [ ! -L "$path" ] && return 0
+  [ ! -L "$path" ] && [ -S "$path" ] \
+    || die "refusing to replace non-socket or symlink path: $path"
+  rm -f "$path"
+}
+
+pid_alive() {
+  local pid="$1" state
+  case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+  kill -0 "$pid" 2>/dev/null || return 1
+  state="$(ps -p "$pid" -o state= 2>/dev/null | tr -d '[:space:]')"
+  case "$state" in ''|Z*) return 1 ;; esac
+  return 0
+}
+
+owned_pid() {
+  local pidfile="$1" expected="$2" pid command
+  [ -f "$pidfile" ] || return 1
+  pid="$(cat "$pidfile" 2>/dev/null)" || return 1
+  case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+  pid_alive "$pid" || return 1
+  command="$(ps -p "$pid" -o command= 2>/dev/null)" || return 1
+  case "$command" in *"$expected"*) printf '%s' "$pid" ;; *) return 1 ;; esac
+}
 
 rotate_log() {
   local file="$1" max="${2:-$LOG_MAX_BYTES}" size
@@ -54,39 +90,207 @@ rotate_log() {
 require_layout() {
   [ -x "$BIN/dory-hv" ] || die "missing $BIN/dory-hv (run from the extracted release directory)"
   [ -x "$BIN/gvproxy" ] || die "missing $BIN/gvproxy"
-  [ -f "$KERNEL_ASSET" ] || die "missing $GUEST_ARCH kernel asset"
+  [ -x "$BIN/dory-dataplane-proxy" ] || die "missing $BIN/dory-dataplane-proxy"
+  [ -f "$KERNEL_ASSET" ] || [ -f "$KERNEL" ] \
+    || die "missing $GUEST_ARCH kernel source and prepared cache"
 }
 
 engine_pid() {
-  [ -f "$PIDFILE" ] || return 1
   local pid
-  pid="$(cat "$PIDFILE" 2>/dev/null)" || return 1
-  [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null || return 1
-  printf '%s' "$pid"
+  if pid="$(owned_pid "$PIDFILE" "$BIN/dory-hv")"; then
+    printf '%s' "$pid"
+    return 0
+  fi
+  owned_dory_hv_pids
+}
+
+dataplane_pid() {
+  local pid
+  if pid="$(owned_pid "$DATAPLANE_PIDFILE" "$BIN/dory-dataplane-proxy")"; then
+    printf '%s' "$pid"
+    return 0
+  fi
+  owned_dataplane_pids
+}
+
+# A fast host shutdown can remove or fail to flush a pidfile while a helper survives. Recover only
+# processes whose command carries this HOME's exact private paths; a helper from another Dory
+# runtime cannot match. This is the same ownership rule used for reparented gvproxy below.
+owned_dory_hv_pids() {
+  ps -axo pid=,command= 2>/dev/null | awk \
+    -v state="$STATE/hv" -v backend="$BACKEND_SOCK" '
+      index($0, "/awk ") == 0 && index($0, "/dory-hv engine") && index($0, "--state-dir " state) &&
+      index($0, "--engine-sock " backend) && !found { print $1; found=1 }
+      END { exit found ? 0 : 1 }
+    '
+}
+
+# Bind a recovered process to the selected durable drive before reporting it as healthy. The
+# launcher deliberately puts --kernel immediately after --data-drive, so matching both tokens
+# gives the path an unambiguous right boundary even when it contains spaces. A missing/stale
+# data-drive.path file must never make a running engine silently adopt a caller's requested root.
+running_dory_hv_uses_drive() {
+  local wanted_pid="$1" wanted_drive="$2"
+  ps -axo pid=,command= 2>/dev/null | awk \
+    -v wanted_pid="$wanted_pid" \
+    -v state="$STATE/hv" \
+    -v backend="$BACKEND_SOCK" \
+    -v drive="$wanted_drive" '
+      $1 == wanted_pid && index($0, "/awk ") == 0 && index($0, "/dory-hv engine") &&
+      index($0, "--state-dir " state) && index($0, "--engine-sock " backend) &&
+      index($0, "--data-drive " drive " --kernel ") { found=1 }
+      END { exit found ? 0 : 1 }
+    '
+}
+
+owned_dataplane_pids() {
+  ps -axo pid=,command= 2>/dev/null | awk \
+    -v public="$SOCK" -v backend="$BACKEND_SOCK" '
+      index($0, "/awk ") == 0 && index($0, "/dory-dataplane-proxy") && index($0, "--listen " public) &&
+      index($0, "--backend " backend) && !found { print $1; found=1 }
+      END { exit found ? 0 : 1 }
+    '
+}
+
+# dory-hv normally owns and reaps gvproxy. If dory-hv itself must be SIGKILLed, gvproxy is
+# reparented and no pidfile exists for it. Match the gvproxy command plus this HOME's two exact
+# private socket paths before touching a process, so forced cleanup cannot affect another engine.
+# The executable path itself may retain redundant `//` components after launch while `$HERE` is
+# canonicalized by `pwd`, so the socket pair is the stable ownership identity.
+owned_gvproxy_pids() {
+  ps -axo pid=,command= 2>/dev/null | awk \
+    -v net="$STATE/hv/net.sock" \
+    -v api="$STATE/hv/gvproxy-api.sock" '
+      index($0, "/awk ") == 0 && index($0, "/gvproxy") && index($0, net) && index($0, api) {
+        print $1
+      }
+    '
+}
+
+pid_list_alive() {
+  local pid
+  for pid in $1; do
+    pid_alive "$pid" && return 0
+  done
+  return 1
+}
+
+signal_pid_list() {
+  local signal="$1" pids="$2" pid
+  for pid in $pids; do
+    kill "-$signal" "$pid" 2>/dev/null || true
+  done
+}
+
+reap_owned_gvproxy() {
+  local pids waited=0
+  pids="$(owned_gvproxy_pids)"
+  [ -n "$pids" ] || return 0
+  signal_pid_list TERM "$pids"
+  while pid_list_alive "$pids"; do
+    waited=$((waited + 1))
+    if [ "$waited" -ge 20 ]; then
+      signal_pid_list KILL "$pids"
+      break
+    fi
+    sleep 0.1
+  done
+}
+
+socket_ready_at() {
+  local socket="$1"
+  [ -S "$socket" ] || return 1
+  curl -sf --max-time 2 --unix-socket "$socket" http://d/_ping >/dev/null 2>&1
 }
 
 socket_ready() {
-  [ -S "$SOCK" ] || return 1
-  curl -sf --max-time 2 --unix-socket "$SOCK" http://d/_ping >/dev/null 2>&1
+  socket_ready_at "$SOCK"
 }
 
 cmd_start() {
   require_layout
-  local mem_mb=2048 cpus=4 extra=()
+  local mem_mb=2048 cpus=4 amd64_enabled=0 gpu_mode=none lan_visible=0
+  local orphaned_gvproxy key value data_drive_explicit=0 extra=()
+  if [ "$(uname -m)" != "x86_64" ]; then
+    # Apple Silicon releases advertise the bundled FEX path as ready on first launch. Persisted or
+    # explicit settings may opt out, but a plain start must never strand existing dory-runc
+    # containers by silently omitting the runtime after a restart.
+    amd64_enabled=1
+  fi
+  if [ -s "$SETTINGSFILE" ]; then
+    while IFS='=' read -r key value; do
+      case "$key" in
+        mem_mb) mem_mb="$value" ;;
+        cpus) cpus="$value" ;;
+        amd64_enabled) amd64_enabled="$value" ;;
+        gpu_mode) gpu_mode="$value" ;;
+        lan_visible) lan_visible="$value" ;;
+        ''|'#'*) ;;
+        *) die "invalid persisted engine setting: $key" ;;
+      esac
+    done < "$SETTINGSFILE"
+  fi
   while [ $# -gt 0 ]; do
     case "$1" in
-      --mem-mb) mem_mb="$2"; shift 2 ;;
-      --cpus) cpus="$2"; shift 2 ;;
-      --amd64) extra+=(--amd64); shift ;;
-      --gpu) extra+=(--gpu "$2"); shift 2 ;;
+      --mem-mb) [ "$#" -ge 2 ] || die "$1 requires a value"; mem_mb="$2"; shift 2 ;;
+      --cpus) [ "$#" -ge 2 ] || die "$1 requires a value"; cpus="$2"; shift 2 ;;
+      --data-drive) [ "$#" -ge 2 ] || die "$1 requires a value"; DATA_DRIVE="$2"; data_drive_explicit=1; shift 2 ;;
+      --legacy-data-disk) [ "$#" -ge 2 ] || die "$1 requires a value"; extra+=(--legacy-data-disk "$2"); shift 2 ;;
+      --no-legacy-data-import) extra+=(--no-legacy-data-import); shift ;;
+      --amd64) amd64_enabled=1; shift ;;
+      --no-amd64) amd64_enabled=0; shift ;;
+      --gpu) [ "$#" -ge 2 ] || die "$1 requires a value"; gpu_mode="$2"; shift 2 ;;
+      --no-gpu) gpu_mode=none; shift ;;
+      --lan-visible) lan_visible=1; shift ;;
+      --no-lan-visible) lan_visible=0; shift ;;
       *) die "unknown option $1" ;;
     esac
   done
 
-  if pid="$(engine_pid)" && socket_ready; then
+  case "$mem_mb" in ''|*[!0-9]*) die "--mem-mb must be a positive integer" ;; esac
+  [ "$mem_mb" -gt 0 ] || die "--mem-mb must be a positive integer"
+  case "$cpus" in ''|*[!0-9]*) die "--cpus must be a positive integer" ;; esac
+  [ "$cpus" -gt 0 ] || die "--cpus must be a positive integer"
+  case "$amd64_enabled" in 0|1) ;; *) die "invalid persisted amd64 setting: $amd64_enabled" ;; esac
+  case "$lan_visible" in 0|1) ;; *) die "invalid persisted LAN setting: $lan_visible" ;; esac
+  case "$gpu_mode" in none|venus) ;; *) die "invalid GPU mode: $gpu_mode" ;; esac
+  [ "$amd64_enabled" -eq 0 ] || extra+=(--amd64)
+  [ "$gpu_mode" = none ] || extra+=(--gpu "$gpu_mode")
+  [ "$lan_visible" -eq 0 ] || extra+=(--direct-ip --publish-host 0.0.0.0)
+
+  local recorded_drive=""
+  [ ! -s "$DRIVEFILE" ] || IFS= read -r recorded_drive < "$DRIVEFILE"
+  if [ "$data_drive_explicit" -eq 0 ] && [ -n "$recorded_drive" ]; then
+    DATA_DRIVE="$recorded_drive"
+  fi
+  local dataplane=""
+  if pid="$(engine_pid)" && dataplane="$(dataplane_pid)" && socket_ready; then
+    if [ -z "$recorded_drive" ]; then
+      running_dory_hv_uses_drive "$pid" "$DATA_DRIVE" \
+        || die "running engine data drive does not match requested $DATA_DRIVE; stop it before selecting another drive"
+      recorded_drive="$DATA_DRIVE"
+      printf '%s\n' "$recorded_drive" > "$DRIVEFILE"
+    else
+      [ "$recorded_drive" = "$DATA_DRIVE" ] \
+        || die "already running with data drive $recorded_drive (requested $DATA_DRIVE)"
+      running_dory_hv_uses_drive "$pid" "$recorded_drive" \
+        || die "running engine data drive does not match recorded drive $recorded_drive; stop it before recovery"
+    fi
+    # Repair metadata lost during an abrupt host shutdown so later status/stop operations retain
+    # their normal fast path instead of depending on process-table recovery.
+    printf '%s\n' "$pid" > "$PIDFILE"
+    printf '%s\n' "$dataplane" > "$DATAPLANE_PIDFILE"
     note "already running (pid $pid)"
     cmd_env
     return 0
+  fi
+
+  # An interrupted upgrade may leave one half of the old runtime alive. Only processes recorded in
+  # this runtime's own pidfiles are touched, and both are stopped before paths are reused.
+  orphaned_gvproxy="$(owned_gvproxy_pids)"
+  if engine_pid >/dev/null || dataplane_pid >/dev/null || [ -n "$orphaned_gvproxy" ]; then
+    note "stopping incomplete previous runtime…"
+    cmd_stop
   fi
 
   mkdir -p "$STATE/vm" "$STATE/bin"
@@ -106,30 +310,66 @@ cmd_start() {
   if [ -f "$AGENT_ASSET" ]; then
     cp "$AGENT_ASSET" "$AGENT_OUTPUT"
     chmod 0755 "$AGENT_OUTPUT"
+    # The home share uses the sensitive-name denylist, so ~/.dory is deliberately invisible to
+    # the guest. Stage the exact bundled agent through dory-hv's read-only boot-config share rather
+    # than silently falling back to the potentially older copy baked into the rootfs.
+    rootfs_args+=(--guest-agent "$AGENT_OUTPUT")
+  fi
+  if [ -n "${SSH_AUTH_SOCK:-}" ] && [ -S "$SSH_AUTH_SOCK" ]; then
+    rootfs_args+=(--ssh-agent-socket "$SSH_AUTH_SOCK")
   fi
 
-  note "starting engine (${mem_mb} MiB ceiling, $cpus cpus)…"
+  note "starting engine (${mem_mb} MiB ceiling, $cpus cpus, amd64=$amd64_enabled, gpu=$gpu_mode, lan-visible=$lan_visible)…"
   rotate_log "$LOGFILE"
-  rm -f "$SOCK"
+  remove_owned_socket_path "$SOCK"
+  remove_owned_socket_path "$BACKEND_SOCK"
   nohup "$BIN/dory-hv" engine \
-    --engine-sock "$SOCK" \
+    --engine-sock "$BACKEND_SOCK" \
+    --state-dir "$STATE/hv" \
+    --data-drive "$DATA_DRIVE" \
     --kernel "$KERNEL" \
     --gvproxy "$BIN/gvproxy" \
-    --mem-mb "$mem_mb" --cpus "$cpus" --direct-ip \
+    --mem-mb "$mem_mb" --cpus "$cpus" --direct-ipv6 \
     ${rootfs_args[@]+"${rootfs_args[@]}"} \
     ${extra[@]+"${extra[@]}"} \
     --share "home=$HOME:rw:at=$HOME:safe" \
+    --share "volumes=/Volumes:rw:at=/Volumes:safe" \
     >> "$LOGFILE" 2>&1 &
   echo $! > "$PIDFILE"
 
   local waited=0
-  until socket_ready; do
-    kill -0 "$(cat "$PIDFILE")" 2>/dev/null || die "engine exited during start — see $LOGFILE"
+  until socket_ready_at "$BACKEND_SOCK"; do
+    kill -0 "$(cat "$PIDFILE")" 2>/dev/null || { cmd_stop >/dev/null 2>&1 || true; die "engine exited during start — see $LOGFILE"; }
     waited=$((waited + 1))
-    [ "$waited" -ge 120 ] && die "engine did not become ready in 120s — see $LOGFILE"
+    [ "$waited" -ge 120 ] && { cmd_stop >/dev/null 2>&1 || true; die "engine did not become ready in 120s — see $LOGFILE"; }
+    sleep 1
+  done
+
+  # Keep the public socket behind the same request dataplane used by Dory.app. In particular this
+  # normalizes loopback HostIp bindings before dockerd sees them, making TCP and UDP `-p
+  # 127.0.0.1:…` work through gvproxy without widening the host-side listener.
+  nohup "$BIN/dory-dataplane-proxy" --listen "$SOCK" --backend "$BACKEND_SOCK" \
+    >> "$LOGFILE" 2>&1 &
+  echo $! > "$DATAPLANE_PIDFILE"
+  until socket_ready; do
+    kill -0 "$(cat "$PIDFILE")" 2>/dev/null || { cmd_stop >/dev/null 2>&1 || true; die "engine exited while starting dataplane — see $LOGFILE"; }
+    kill -0 "$(cat "$DATAPLANE_PIDFILE")" 2>/dev/null || { cmd_stop >/dev/null 2>&1 || true; die "dataplane exited during start — see $LOGFILE"; }
+    waited=$((waited + 1))
+    [ "$waited" -ge 120 ] && { cmd_stop >/dev/null 2>&1 || true; die "dataplane did not become ready in 120s — see $LOGFILE"; }
     sleep 1
   done
   note "ready in ${waited}s"
+  printf '%s\n' "$DATA_DRIVE" > "$DRIVEFILE"
+  local settings_tmp="$SETTINGSFILE.tmp.$$"
+  {
+    printf 'mem_mb=%s\n' "$mem_mb"
+    printf 'cpus=%s\n' "$cpus"
+    printf 'amd64_enabled=%s\n' "$amd64_enabled"
+    printf 'gpu_mode=%s\n' "$gpu_mode"
+    printf 'lan_visible=%s\n' "$lan_visible"
+  } > "$settings_tmp"
+  chmod 0600 "$settings_tmp"
+  mv -f "$settings_tmp" "$SETTINGSFILE"
 
   if command -v docker >/dev/null 2>&1; then
     docker context inspect dory-engine >/dev/null 2>&1 \
@@ -140,34 +380,53 @@ cmd_start() {
 }
 
 cmd_stop() {
-  local pid
-  if ! pid="$(engine_pid)"; then
+  local pid dataplane gvproxy_pids
+  dataplane="$(dataplane_pid 2>/dev/null || true)"
+  pid="$(engine_pid 2>/dev/null || true)"
+  gvproxy_pids="$(owned_gvproxy_pids)"
+  if [ -z "$pid" ] && [ -z "$dataplane" ] && [ -z "$gvproxy_pids" ]; then
     note "not running"
-    rm -f "$PIDFILE"
+    rm -f "$PIDFILE" "$DATAPLANE_PIDFILE"
+    [ ! -S "$SOCK" ] || rm -f "$SOCK"
+    [ ! -S "$BACKEND_SOCK" ] || rm -f "$BACKEND_SOCK"
     return 0
   fi
   note "stopping (graceful)…"
-  kill "$pid" 2>/dev/null || true
+  [ -z "$dataplane" ] || kill "$dataplane" 2>/dev/null || true
+  [ -z "$pid" ] || kill "$pid" 2>/dev/null || true
+  # Keep gvproxy alive while dory-hv asks the guest shutdown listener to stop dockerd, sync,
+  # unmount the data drive, and power off. Killing gvproxy here races that forwarded request and
+  # makes dory-hv exit as a network-helper crash before Docker metadata is durable; deleted objects
+  # can then reappear on the next boot. Once dory-hv is gone, reap any surviving/reparented gvproxy.
   local waited=0
-  while kill -0 "$pid" 2>/dev/null; do
+  while { [ -n "$pid" ] && pid_alive "$pid"; } || \
+        { [ -n "$dataplane" ] && pid_alive "$dataplane"; }; do
     waited=$((waited + 1))
     if [ "$waited" -ge 20 ]; then
       note "forcing shutdown"
-      kill -9 "$pid" 2>/dev/null || true
+      [ -z "$dataplane" ] || kill -9 "$dataplane" 2>/dev/null || true
+      [ -z "$pid" ] || kill -9 "$pid" 2>/dev/null || true
       break
     fi
     sleep 1
   done
-  rm -f "$PIDFILE"
+  # Rescan after dory-hv exits in case gvproxy was reparented during the stop race.
+  reap_owned_gvproxy
+  rm -f "$PIDFILE" "$DATAPLANE_PIDFILE"
+  [ ! -S "$SOCK" ] || rm -f "$SOCK"
+  [ ! -S "$BACKEND_SOCK" ] || rm -f "$BACKEND_SOCK"
   note "stopped"
 }
 
 cmd_status() {
-  if pid="$(engine_pid)"; then
+  if pid="$(engine_pid)" && dataplane="$(dataplane_pid)"; then
     if socket_ready; then
       local api_version
       api_version="$(curl -sf --max-time 2 --unix-socket "$SOCK" http://d/version 2>/dev/null | sed -n 's/.*"ApiVersion":"\([^"]*\)".*/\1/p' | head -1)"
-      note "running (pid $pid, docker api ${api_version:-unknown}) at unix://$SOCK"
+      local active_drive="$DATA_DRIVE"
+      [ ! -s "$DRIVEFILE" ] || IFS= read -r active_drive < "$DRIVEFILE"
+      note "running (engine pid $pid, dataplane pid $dataplane, docker api ${api_version:-unknown}) at unix://$SOCK"
+      note "data drive: $active_drive"
     else
       note "starting (pid $pid) — socket not ready yet"
     fi

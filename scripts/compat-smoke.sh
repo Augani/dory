@@ -50,7 +50,7 @@ if [ -S "$ENGINE_SOCK" ] && curl -fsS --max-time 3 --unix-socket "$ENGINE_SOCK" 
   export DOCKER_HOST="unix://$ENGINE_SOCK"
   DOCKER_BIN="${DORY_DOCKER_BIN:-$(command -v docker || echo docker)}"
 
-  "$DOCKER_BIN" run --rm alpine:latest true
+  "$DOCKER_BIN" run --rm "${DORY_COMPAT_IMAGE:-alpine:latest}" true
   echo "compat-smoke: docker run against the Dory socket OK (Testcontainers/LocalStack host detection path)"
 
   if command -v act >/dev/null 2>&1; then
@@ -65,7 +65,8 @@ jobs:
     steps:
       - run: "true"
 YAML
-    ( cd "$ACT_DIR" && act --container-daemon-socket "unix://$ENGINE_SOCK" -l >/dev/null )
+    ( cd "$ACT_DIR" && DOCKER_HOST="unix://$ENGINE_SOCK" \
+      act --container-daemon-socket unix:///var/run/docker.sock -l >/dev/null )
     echo "compat-smoke: act enumerated workflows against the Dory socket"
   else
     echo "compat-smoke: act not installed; skipped its engine smoke"
