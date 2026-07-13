@@ -65,6 +65,42 @@ struct MigrationTransferHelperAssetTests {
         }
         #expect(runtime.tags.isEmpty)
     }
+
+    @Test func cleanupRestoresHelperThatWasAlreadyDangling() async throws {
+        let fixture = try makeFixture()
+        let runtime = TransferHelperRuntime(metadata: fixture.asset.metadata)
+        runtime.imagePresent = true
+        let operationID = try #require(
+            UUID(uuidString: "33333333-3333-3333-3333-333333333333")
+        )
+
+        let installation = try await fixture.asset.install(on: runtime, operationID: operationID)
+        try await fixture.asset.removeInstallation(installation, from: runtime)
+
+        #expect(installation.restoreDanglingImageAfterCleanup)
+        #expect(runtime.removedImages == [installation.ownershipReference])
+        #expect(runtime.loadedArchives == [fixture.archive, fixture.archive])
+        #expect(runtime.imagePresent)
+    }
+
+    @Test func failedTagRollsBackAHelperImageThatWasNotPreviouslyPresent() async throws {
+        let fixture = try makeFixture()
+        let runtime = TransferHelperRuntime(metadata: fixture.asset.metadata)
+        runtime.failTag = true
+        let operationID = try #require(
+            UUID(uuidString: "55555555-5555-5555-5555-555555555555")
+        )
+
+        await #expect(throws: Error.self) {
+            try await fixture.asset.install(on: runtime, operationID: operationID)
+        }
+
+        #expect(runtime.removedImages == [
+            "dory.internal/operation-55555555-5555-5555-5555-555555555555:transfer-helper",
+            fixture.asset.metadata.imageConfigDigest
+        ])
+        #expect(!runtime.imagePresent)
+    }
 }
 
 @MainActor
@@ -130,13 +166,19 @@ private final class TransferHelperRuntime: ContainerRuntime {
     var loadedArchives: [Data] = []
     var inspectedImageIDs: [String] = []
     var tags: [ImageTag] = []
+    var removedImages: [String] = []
     var overrideArchitecture: String?
+    var imagePresent = false
+    var failTag = false
 
     init(metadata: MigrationTransferHelperMetadata) {
         self.metadata = metadata
     }
 
-    func loadImage(tar: Data) async throws { loadedArchives.append(tar) }
+    func loadImage(tar: Data) async throws {
+        loadedArchives.append(tar)
+        imagePresent = true
+    }
 
     func proxyRequest(
         method: String,
@@ -144,12 +186,13 @@ private final class TransferHelperRuntime: ContainerRuntime {
         headers: [(name: String, value: String)],
         body: Data
     ) async -> HTTPResponse? {
-        guard method == "GET", path.hasPrefix("/images/") else { return nil }
+        guard method == "GET", path.hasPrefix("/images/"), imagePresent else { return nil }
         inspectedImageIDs.append(metadata.imageConfigDigest)
         let object: [String: Any] = [
             "Id": metadata.imageConfigDigest,
             "Architecture": overrideArchitecture ?? "arm64",
             "Os": "linux",
+            "RepoTags": [],
             "Config": [
                 "Entrypoint": ["/dory-transfer-helper"],
                 "User": "0",
@@ -167,7 +210,13 @@ private final class TransferHelperRuntime: ContainerRuntime {
     }
 
     func tagImage(source: String, repo: String, tag: String) async throws {
+        if failTag { throw RuntimeFeatureError.unsupported("injected tag failure") }
         tags.append(ImageTag(source: source, repository: repo, tag: tag))
+    }
+
+    func removeImage(id: String) async throws {
+        removedImages.append(id)
+        imagePresent = false
     }
 
     func snapshot() async throws -> RuntimeSnapshot { RuntimeSnapshot() }
