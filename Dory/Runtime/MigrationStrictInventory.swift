@@ -83,6 +83,7 @@ enum MigrationStrictInventoryCollector {
         let capabilities = MigrationOperationCapabilityContract(
             sourceSupportsArchiveTransfer: sourceRuntime.supportsImageArchiveTransfer,
             targetSupportsArchiveTransfer: targetRuntime.supportsImageArchiveTransfer,
+            targetSupportsImageLoadReceipt: targetRuntime.supportsImageLoadReceipt,
             sourceSupportsRawAPI: sourceRuntime.supportsRawProxy,
             targetSupportsRawAPI: targetRuntime.supportsRawProxy,
             transferHelper: base.sourceSnapshot.volumes.isEmpty ? nil : transferHelper

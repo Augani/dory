@@ -736,7 +736,24 @@ struct DockerShim: Sendable {
 
     private func loadImage(_ request: ParsedRequest) async -> ShimResponse {
         do {
-            try await runtime.loadImage(tar: request.body)
+            if runtime.supportsImageLoadReceipt {
+                let archive = request.body
+                let stream = AsyncThrowingStream<Data, Error> { continuation in
+                    continuation.yield(archive)
+                    continuation.finish()
+                }
+                let response = try await runtime.loadImageThrowingWithResponse(stream: stream)
+                guard !response.isEmpty else {
+                    return errorResponse(502, "target engine returned an empty image-load response")
+                }
+                return ShimResponse(
+                    status: 200,
+                    headers: [(name: "Content-Type", value: "application/json")],
+                    body: response
+                )
+            } else {
+                try await runtime.loadImage(tar: request.body)
+            }
             let line = (try? JSONEncoder().encode(DockerImageLoadOut(stream: "Loaded image\n"))) ?? Data()
             return ShimResponse(status: 200, headers: [(name: "Content-Type", value: "application/json")],
                                 body: line + Data("\n".utf8))

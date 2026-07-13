@@ -104,24 +104,7 @@ enum MigrationOperationPlanBuilder {
     private static func validateStrictInventory(
         _ input: MigrationOperationPlanningInput
     ) throws {
-        guard input.capabilities.sourceSupportsArchiveTransfer,
-              input.capabilities.targetSupportsArchiveTransfer else {
-            throw MigrationOperationPlanError.unsupportedCapability(
-                "both engines must support streaming image archives"
-            )
-        }
-        guard input.capabilities.sourceSupportsRawAPI,
-              input.capabilities.targetSupportsRawAPI else {
-            throw MigrationOperationPlanError.unsupportedCapability(
-                "both engines must expose the local raw Docker API"
-            )
-        }
-        if !input.source.snapshot.volumes.isEmpty,
-           input.capabilities.transferHelper == nil {
-            throw MigrationOperationPlanError.unsupportedCapability(
-                "named volumes require the signed arm64 transfer helper"
-            )
-        }
+        try validateCapabilities(input)
         let selectedContainerIDs = Set(input.source.snapshot.containers.map(\.id))
         guard Set(input.source.containerSpecifications.keys) == selectedContainerIDs else {
             throw MigrationOperationPlanError.incompleteInventory(
@@ -150,6 +133,35 @@ enum MigrationOperationPlanBuilder {
         guard Set(target.networkInspections.keys) == Set(target.snapshot.networks.map(\.name)) else {
             throw MigrationOperationPlanError.incompleteInventory(
                 "target network inspections do not exactly match the target network inventory"
+            )
+        }
+    }
+
+    private static func validateCapabilities(
+        _ input: MigrationOperationPlanningInput
+    ) throws {
+        let capabilities = input.capabilities
+        guard capabilities.sourceSupportsArchiveTransfer,
+              capabilities.targetSupportsArchiveTransfer else {
+            throw MigrationOperationPlanError.unsupportedCapability(
+                "both engines must support streaming image archives"
+            )
+        }
+        guard capabilities.targetSupportsImageLoadReceipt else {
+            throw MigrationOperationPlanError.unsupportedCapability(
+                "the target engine must return an immutable image-load receipt"
+            )
+        }
+        guard capabilities.sourceSupportsRawAPI,
+              capabilities.targetSupportsRawAPI else {
+            throw MigrationOperationPlanError.unsupportedCapability(
+                "both engines must expose the local raw Docker API"
+            )
+        }
+        if !input.source.snapshot.volumes.isEmpty,
+           capabilities.transferHelper == nil {
+            throw MigrationOperationPlanError.unsupportedCapability(
+                "named volumes require the signed arm64 transfer helper"
             )
         }
     }

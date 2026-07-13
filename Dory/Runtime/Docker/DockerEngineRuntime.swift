@@ -1014,6 +1014,14 @@ struct DockerEngineRuntime: ContainerRuntime {
     }
 
     func loadImageThrowing(stream: AsyncThrowingStream<Data, Error>) async throws {
+        _ = try await loadImageThrowingWithResponse(stream: stream)
+    }
+
+    nonisolated var supportsImageLoadReceipt: Bool { true }
+
+    func loadImageThrowingWithResponse(
+        stream: AsyncThrowingStream<Data, Error>
+    ) async throws -> Data {
         let response = try await http.sendChunked(HTTPRequest(
             method: "POST",
             path: "/images/load",
@@ -1022,6 +1030,7 @@ struct DockerEngineRuntime: ContainerRuntime {
         guard response.isSuccess else {
             throw HTTPError.status(code: response.statusCode, message: String(decoding: response.body, as: UTF8.self))
         }
+        return response.body
     }
 
     func start(containerID: String) async throws { try await post("/containers/\(DockerImageOps.pathComponent(containerID))/start") }

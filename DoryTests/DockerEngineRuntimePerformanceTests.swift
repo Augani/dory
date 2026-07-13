@@ -2,7 +2,45 @@ import Foundation
 import Testing
 @testable import Dory
 
+@MainActor
 struct DockerEngineRuntimePerformanceTests {
+    @Test func imageLoadReturnsTheExactEngineReceipt() async throws {
+        let path = Self.shortSocketPath("dory-image-load-receipt")
+        let archive = Data("streamed image archive".utf8)
+        let receipt = Data(
+            (#"{"stream":"Loaded image ID: sha256:"}"#
+                + String(repeating: "d", count: 64)
+                + #"\n"}"#
+                + "\r\n").utf8
+        )
+        let server = ShimHTTPServer(socketPath: path) { request in
+            guard request.method == "POST",
+                  request.path == "/images/load",
+                  request.headers["content-type"] == "application/x-tar",
+                  request.body == archive else {
+                return .text("unexpected image-load request", status: 400)
+            }
+            return ShimResponse(
+                status: 200,
+                headers: [(name: "Content-Type", value: "application/json")],
+                body: receipt
+            )
+        }
+        try server.start()
+        defer { server.stop() }
+        let runtime = DockerEngineRuntime(socketPath: path)
+        let stream = AsyncThrowingStream<Data, Error> { continuation in
+            continuation.yield(archive.prefix(7))
+            continuation.yield(archive.dropFirst(7))
+            continuation.finish()
+        }
+
+        let response = try await runtime.loadImageThrowingWithResponse(stream: stream)
+
+        #expect(runtime.supportsImageLoadReceipt)
+        #expect(response == receipt)
+    }
+
     @Test func statsCollectionCapsConcurrentProbes() async {
         let limit = 4
         let containers = (0..<20).map { index in
@@ -48,8 +86,14 @@ struct DockerEngineRuntimePerformanceTests {
             case "/containers/json":
                 return .json(Data(#"""
                 [
-                  {"Id":"c1","Names":["/web"],"Image":"nginx","State":"running","Status":"Up 5 seconds","Created":1710000000},
-                  {"Id":"c2","Names":["/database"],"Image":"postgres","State":"restarting","Status":"Restarting (1)","Created":1710000001}
+                  {
+                    "Id":"c1","Names":["/web"],"Image":"nginx","State":"running",
+                    "Status":"Up 5 seconds","Created":1710000000
+                  },
+                  {
+                    "Id":"c2","Names":["/database"],"Image":"postgres","State":"restarting",
+                    "Status":"Restarting (1)","Created":1710000001
+                  }
                 ]
                 """#.utf8))
             case "/containers/c1/stats":
@@ -87,7 +131,10 @@ struct DockerEngineRuntimePerformanceTests {
             switch request.path {
             case "/containers/json":
                 return .json(Data(#"""
-                [{"Id":"paused-db","Names":["/database"],"Image":"postgres:16","State":"Paused","Status":"Up 1 minute (Paused)","Created":1710000000}]
+                [{
+                  "Id":"paused-db","Names":["/database"],"Image":"postgres:16",
+                  "State":"Paused","Status":"Up 1 minute (Paused)","Created":1710000000
+                }]
                 """#.utf8))
             case "/images/json", "/networks":
                 return .json(Data("[]".utf8))

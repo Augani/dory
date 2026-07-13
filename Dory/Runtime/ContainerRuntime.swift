@@ -320,6 +320,10 @@ protocol ContainerRuntime: Sendable {
     func loadImage(tar: Data) async throws
     func loadImage(stream: AsyncStream<Data>) async throws
     func loadImageThrowing(stream: AsyncThrowingStream<Data, Error>) async throws
+    var supportsImageLoadReceipt: Bool { get }
+    func loadImageThrowingWithResponse(
+        stream: AsyncThrowingStream<Data, Error>
+    ) async throws -> Data
 
     // Raw passthrough for hijack/bidirectional endpoints (interactive exec, attach) — supported by
     // backends that front a Docker-compatible socket. Default: unsupported.
@@ -469,6 +473,13 @@ extension ContainerRuntime {
             continuation.finish()
         }
         try await loadImage(stream: replay)
+    }
+    var supportsImageLoadReceipt: Bool { false }
+    func loadImageThrowingWithResponse(
+        stream: AsyncThrowingStream<Data, Error>
+    ) async throws -> Data {
+        try await loadImageThrowing(stream: stream)
+        return Data()
     }
     var supportsRawProxy: Bool { false }
     func proxyRequest(method: String, path: String, headers: [(name: String, value: String)], body: Data) async -> HTTPResponse? { nil }

@@ -264,6 +264,7 @@ final class StrictMigrationRuntime: ContainerRuntime {
     nonisolated let kind: RuntimeKind
     nonisolated let migrationSourceIdentifier: String
     nonisolated let supportsImageArchiveTransfer = true
+    nonisolated let supportsImageLoadReceipt = true
     nonisolated let supportsRawProxy = true
 
     var snapshotValue = RuntimeSnapshot(engineVersion: "27.5.1")

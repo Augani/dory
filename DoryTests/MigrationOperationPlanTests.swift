@@ -155,6 +155,7 @@ struct MigrationOperationPlanTests {
         scenario.capabilities = MigrationOperationCapabilityContract(
             sourceSupportsArchiveTransfer: true,
             targetSupportsArchiveTransfer: true,
+            targetSupportsImageLoadReceipt: true,
             sourceSupportsRawAPI: true,
             targetSupportsRawAPI: true,
             transferHelper: nil
@@ -172,6 +173,7 @@ struct MigrationOperationPlanTests {
         scenario.capabilities = MigrationOperationCapabilityContract(
             sourceSupportsArchiveTransfer: false,
             targetSupportsArchiveTransfer: true,
+            targetSupportsImageLoadReceipt: true,
             sourceSupportsRawAPI: true,
             targetSupportsRawAPI: true,
             transferHelper: .appleSiliconV1
@@ -183,10 +185,29 @@ struct MigrationOperationPlanTests {
             try build(scenario)
         }
     }
+
+    @Test func missingImmutableImageLoadReceiptBlocksPlanning() throws {
+        var scenario = try makeScenario()
+        scenario.capabilities = MigrationOperationCapabilityContract(
+            sourceSupportsArchiveTransfer: true,
+            targetSupportsArchiveTransfer: true,
+            targetSupportsImageLoadReceipt: false,
+            sourceSupportsRawAPI: true,
+            targetSupportsRawAPI: true,
+            transferHelper: .appleSiliconV1
+        )
+
+        #expect(throws: MigrationOperationPlanError.unsupportedCapability(
+            "the target engine must return an immutable image-load receipt"
+        )) {
+            try build(scenario)
+        }
+    }
 }
 
 @MainActor
 private extension MigrationOperationPlanTests {
+    @MainActor
     struct Scenario {
         var source: RuntimeSnapshot
         var containerSpecifications: [String: ContainerSpec]
@@ -197,6 +218,7 @@ private extension MigrationOperationPlanTests {
         var capabilities = MigrationOperationCapabilityContract(
             sourceSupportsArchiveTransfer: true,
             targetSupportsArchiveTransfer: true,
+            targetSupportsImageLoadReceipt: true,
             sourceSupportsRawAPI: true,
             targetSupportsRawAPI: true,
             transferHelper: .appleSiliconV1
