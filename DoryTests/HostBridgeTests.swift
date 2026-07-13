@@ -195,7 +195,7 @@ struct HostBridgeTests {
         let body = MachineService.createBody(name: "dev", distro: MachineDistro.forFamily("ubuntu")!, arch: .arm64, imageTag: "img", keepaliveOnly: true)
         let env = body["Env"] as! [String]
         #expect(env.contains("BROWSER=dory-open"))
-        #expect(env.contains("SSH_AUTH_SOCK=/opt/dory/bridge/credentials/ssh-agent.sock"))
+        #expect(env.contains("SSH_AUTH_SOCK=/run/host-services/ssh-auth.sock"))
         #expect(env.contains("GIT_ASKPASS=/usr/local/bin/dory-git-askpass"))
     }
 

@@ -220,6 +220,29 @@ struct RuntimeSupportTests {
         #expect(config.headroomMB == 512)
     }
 
+    @Test func appleSiliconDefaultsAmd64TranslationOnButPreservesExplicitOptOut() throws {
+        let suiteName = "DoryTests.amd64-default.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let appleSilicon = MacHostPlatform(major: 26, minor: 0, patch: 0, architecture: "arm64")
+        let intel = MacHostPlatform(major: 26, minor: 0, patch: 0, architecture: "x86_64")
+
+        #expect(SharedVMProvisioner.Config.amd64EmulationEnabled(
+            defaults: defaults,
+            platform: appleSilicon
+        ))
+        defaults.set(false, forKey: SharedVMProvisioner.Config.rosettaX86Key)
+        #expect(!SharedVMProvisioner.Config.amd64EmulationEnabled(
+            defaults: defaults,
+            platform: appleSilicon
+        ))
+        defaults.set(true, forKey: SharedVMProvisioner.Config.rosettaX86Key)
+        #expect(!SharedVMProvisioner.Config.amd64EmulationEnabled(
+            defaults: defaults,
+            platform: intel
+        ))
+    }
+
     @Test func sharedVMMemoryParserHandlesDockerStyleUnits() {
         #expect(SharedVMProvisioner.memoryStringToMB("2G") == 2048)
         #expect(SharedVMProvisioner.memoryStringToMB("1536M") == 1536)
@@ -236,6 +259,7 @@ struct RuntimeSupportTests {
         )
 
         #expect(arguments.contains("--direct-ip"))
+        #expect(arguments.contains("--direct-ipv6"))
         #expect(argumentValue(after: "--kernel", in: arguments) == "/tmp/kernel")
         #expect(argumentValue(after: "--gvproxy", in: arguments) == "/tmp/gvproxy")
         #expect(argumentValue(after: "--rootfs", in: arguments) == "/tmp/rootfs.ext4")
@@ -254,6 +278,7 @@ struct RuntimeSupportTests {
 
         let home = NSHomeDirectory()
         #expect(argumentValue(after: "--share", in: arguments) == "home=\(home):rw:at=\(home):safe")
+        #expect(arguments.contains("volumes=/Volumes:rw:at=/Volumes:safe"))
     }
 
     @Test func sharedVMEngineArgumentsRejectLegacyDaxPreferenceExplicitly() {
@@ -329,6 +354,17 @@ struct RuntimeSupportTests {
         #expect(SharedVMProvisioner.vmInitfsResourceName(arch: "amd64") == "dory-vm-initfs-amd64.ext4")
     }
 
+    @Test func venusGPUIsExplicitlyAppleSiliconOnly() {
+        #expect(SharedVMProvisioner.venusArchitectureSupported(arch: "arm64"))
+        #expect(!SharedVMProvisioner.venusArchitectureSupported(arch: "amd64"))
+        #expect(!SharedVMProvisioner.venusRuntimeAvailable(environment: [:], arch: "amd64"))
+        #expect(!SharedVMProvisioner.venusRuntimeAvailable(
+            environment: [:],
+            arch: "arm64",
+            platform: MacHostPlatform(major: 14, minor: 7, patch: 0, architecture: "arm64")
+        ))
+    }
+
     @Test func sharedVMHelperDevCandidatesCoverUniversalOutAndHostArchBuilds() {
         let arm64 = SharedVMProvisioner.helperDevCandidates(named: "dory-hv", cwd: "/repo", hostArch: "arm64")
         let amd64 = SharedVMProvisioner.helperDevCandidates(named: "dory-hv", cwd: "/repo", hostArch: "amd64")
@@ -347,7 +383,7 @@ struct RuntimeSupportTests {
         let arm64 = try JSONSerialization.jsonObject(with: SharedVMProvisioner.binfmtInstallBody(for: .arm64)) as? [String: Any]
         let amd64 = try JSONSerialization.jsonObject(with: SharedVMProvisioner.binfmtInstallBody(for: .amd64)) as? [String: Any]
 
-        #expect(arm64?["Image"] as? String == "tonistiigi/binfmt")
+        #expect(arm64?["Image"] as? String == SharedVMProvisioner.pinnedBinfmtImage)
         #expect(arm64?["Cmd"] as? [String] == ["--install", "arm64"])
         #expect(amd64?["Cmd"] as? [String] == ["--install", "amd64"])
         let hostConfig = arm64?["HostConfig"] as? [String: Any]

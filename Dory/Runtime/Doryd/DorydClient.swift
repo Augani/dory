@@ -18,6 +18,7 @@ nonisolated protocol DorydControlXPC {
     func machineUpdate(_ machineID: String, config: NSDictionary, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineDelete(_ machineID: String, reply: @escaping (Bool, String) -> Void)
     func machineList(reply: @escaping (NSArray, String) -> Void)
+    func machineStats(_ machineID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineExec(_ machineID: String, request: NSDictionary, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineProvision(_ machineID: String, request: NSDictionary, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineSnapshot(_ machineID: String, request: NSDictionary, reply: @escaping (Bool, NSDictionary, String) -> Void)
@@ -135,6 +136,18 @@ nonisolated struct DorydMachineExecResult: Sendable, Equatable {
     var timedOut: Bool
     var stdoutTruncated: Bool
     var stderrTruncated: Bool
+}
+
+nonisolated struct DorydMachineStats: Sendable, Equatable {
+    var cpuPercent: Double
+    var memoryUsedBytes: UInt64
+    var memoryTotalBytes: UInt64
+    var networkReceiveBytes: UInt64
+    var networkTransmitBytes: UInt64
+    var blockReadBytes: UInt64
+    var blockWriteBytes: UInt64
+    var processCount: UInt64
+    var uptimeSeconds: Double
 }
 
 nonisolated struct DorydMachineProvisionResult: Sendable, Equatable {
@@ -390,6 +403,9 @@ enum DorydClientError: Error, Sendable, CustomStringConvertible {
 
 nonisolated final class DorydClient: @unchecked Sendable {
     private static let engineColdStartTimeout: TimeInterval = 240
+    // doryd gives dockerd and dory-hv up to 30 seconds to quiesce before its final fallback.
+    // Keep the UI connection alive past that bound so a safe stop is not reported as a timeout.
+    private static let engineShutdownTimeout: TimeInterval = 45
 
     private enum Target {
         case machService(String)
@@ -487,13 +503,13 @@ nonisolated final class DorydClient: @unchecked Sendable {
     }
 
     func engineStop() async throws -> DorydCommandResult {
-        try await command { proxy, reply in
+        try await withTimeout(atLeast: Self.engineShutdownTimeout).command { proxy, reply in
             proxy.engineStop(reply: reply)
         }
     }
 
     func engineSleep() async throws -> DorydCommandResult {
-        try await command { proxy, reply in
+        try await withTimeout(atLeast: Self.engineShutdownTimeout).command { proxy, reply in
             proxy.engineSleep(reply: reply)
         }
     }
@@ -616,6 +632,14 @@ nonisolated final class DorydClient: @unchecked Sendable {
             proxy.machineExec(machineID, request: request, reply: reply)
         } decode: {
             Self.machineExecResult(from: $0)
+        }
+    }
+
+    func machineStats(_ machineID: String) async throws -> DorydMachineStats {
+        try await withTimeout(atLeast: 10).statusCommand { proxy, reply in
+            proxy.machineStats(machineID, reply: reply)
+        } decode: {
+            Self.machineStats(from: $0)
         }
     }
 
@@ -1069,6 +1093,34 @@ nonisolated final class DorydClient: @unchecked Sendable {
             timedOut: (dictionary["timedOut"] as? Bool) ?? false,
             stdoutTruncated: (dictionary["stdoutTruncated"] as? Bool) ?? false,
             stderrTruncated: (dictionary["stderrTruncated"] as? Bool) ?? false
+        )
+    }
+
+    nonisolated private static func machineStats(from dictionary: NSDictionary) -> DorydMachineStats? {
+        guard dictionary["schema"] as? String == "dev.dory.machine.stats",
+              int(dictionary["version"]) == 1,
+              let cpuPercent = double(dictionary["cpuPercent"]),
+              let memoryUsedBytes = uint64(dictionary["memoryUsedBytes"]),
+              let memoryTotalBytes = uint64(dictionary["memoryTotalBytes"]),
+              let networkReceiveBytes = uint64(dictionary["networkReceiveBytes"]),
+              let networkTransmitBytes = uint64(dictionary["networkTransmitBytes"]),
+              let blockReadBytes = uint64(dictionary["blockReadBytes"]),
+              let blockWriteBytes = uint64(dictionary["blockWriteBytes"]),
+              let processCount = uint64(dictionary["processCount"]),
+              let uptimeSeconds = double(dictionary["uptimeSeconds"]),
+              cpuPercent >= 0, cpuPercent <= 100, memoryUsedBytes <= memoryTotalBytes else {
+            return nil
+        }
+        return DorydMachineStats(
+            cpuPercent: cpuPercent,
+            memoryUsedBytes: memoryUsedBytes,
+            memoryTotalBytes: memoryTotalBytes,
+            networkReceiveBytes: networkReceiveBytes,
+            networkTransmitBytes: networkTransmitBytes,
+            blockReadBytes: blockReadBytes,
+            blockWriteBytes: blockWriteBytes,
+            processCount: processCount,
+            uptimeSeconds: uptimeSeconds
         )
     }
 

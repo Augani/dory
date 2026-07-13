@@ -57,8 +57,24 @@ struct MachineProvisionerTests {
     @Test func installsCredentialForwardingShim() {
         let s = MachineProvisioner.script(identity: id(), pkg: .apt, isSystemd: true, includeSSH: false)
         #expect(s.contains("/etc/profile.d/dory-credentials.sh"))
-        #expect(s.contains("SSH_AUTH_SOCK=/opt/dory/bridge/credentials/ssh-agent.sock"))
+        #expect(s.contains("SSH_AUTH_SOCK=/run/host-services/ssh-auth.sock"))
         #expect(s.contains("/usr/local/bin/dory-git-askpass"))
         #expect(s.contains("DORY_GIT_ASKPASS_SOCK=/opt/dory/bridge/credentials/git-askpass.sock"))
+    }
+
+    @Test func requiredMachineSetupRejectsNonzeroExit() {
+        #expect(throws: MachineError.self) {
+            try MachineService.requireSuccessfulSetup(
+                ExecResult(exitCode: 23, output: "provisioning fixture failed"),
+                stage: "Identity setup"
+            )
+        }
+    }
+
+    @Test func requiredMachineSetupAcceptsZeroExit() throws {
+        try MachineService.requireSuccessfulSetup(
+            ExecResult(exitCode: 0, output: "ok"),
+            stage: "Identity setup"
+        )
     }
 }

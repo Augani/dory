@@ -8,6 +8,16 @@ struct DockerImageOpsTests {
         #expect(path == "/commit?container=dory-machine-dev&repo=dory-snapshot%2Fdev&tag=s1700000000")
     }
 
+    @Test func migrationCommitCanExplicitlyAvoidPausingSourceContainer() {
+        let path = DockerImageOps.commitPath(
+            container: "running-source",
+            repo: "dory-migration-temporary/snapshot",
+            tag: "fixture",
+            pause: false
+        )
+        #expect(path == "/commit?container=running-source&repo=dory-migration-temporary%2Fsnapshot&tag=fixture&pause=0")
+    }
+
     @Test func queryValueEscapesQueryDelimiters() {
         #expect(DockerImageOps.queryValue("/tmp/a&b?c=d+e") == "%2Ftmp%2Fa%26b%3Fc%3Dd%2Be")
     }

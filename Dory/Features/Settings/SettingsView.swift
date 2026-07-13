@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct SettingsView: View {
@@ -130,18 +131,26 @@ struct SettingsView: View {
                         .font(.system(size: 11.5)).foregroundStyle(p.text3)
                 }
                 Button {
-                    Task { await store.importFromDocker() }
+                    if store.migrationBusy {
+                        store.cancelMigrationImport()
+                    } else {
+                        store.beginImportFromDocker()
+                    }
                 } label: {
                     HStack(spacing: 8) {
                         if store.migrationBusy { ProgressView().controlSize(.small) }
-                        Text(store.migrationBusy ? "Importing…" : "Import from Engine")
+                        Text(store.migrationBusy
+                            ? "Cancel Import"
+                            : (store.migrationInventory?.isImportBlocked == true
+                                ? "Recheck & Import"
+                                : "Import from Engine"))
                             .font(.system(size: 12.5, weight: .semibold)).foregroundStyle(.white)
                     }
                     .padding(.horizontal, 16).padding(.vertical, 9)
                     .background(p.accent.opacity(store.migrationBusy ? 0.6 : 1), in: RoundedRectangle(cornerRadius: 8))
                 }
                 .buttonStyle(.plain)
-                .disabled(store.migrationBusy || store.migrationSources.isEmpty || store.runtimeKind != .sharedVM)
+                .disabled(store.migrationSources.isEmpty || store.runtimeKind != .sharedVM)
                 .accessibilityIdentifier("migrate-import")
                 if store.migrationInventory != nil && store.runtimeKind != .sharedVM {
                     Text("Switch to Dory's daemon engine (Engine & Daemon tab) to import.")
@@ -158,6 +167,17 @@ struct SettingsView: View {
                         }
                         if failures.count > 8 {
                             Text("+ \(failures.count - 8) more").font(.system(size: 11)).foregroundStyle(p.text3)
+                        }
+                    }
+                }
+                if let warnings = store.migrationSummary?.warnings, !warnings.isEmpty {
+                    VStack(alignment: .leading, spacing: 3) {
+                        ForEach(warnings.prefix(8), id: \.self) { warning in
+                            Text("• \(warning)").font(.system(size: 11)).foregroundStyle(p.amber)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        if warnings.count > 8 {
+                            Text("+ \(warnings.count - 8) more").font(.system(size: 11)).foregroundStyle(p.text3)
                         }
                     }
                 }
@@ -182,21 +202,29 @@ struct SettingsView: View {
                 preflightStat("\(inv.images)", "images")
                 preflightStat("\(inv.containers)", "containers")
                 preflightStat("\(inv.volumes)", "volumes")
-                preflightStat(inv.estimatedImageDiskDisplay, "image disk")
+                preflightStat(inv.requiredHostDiskDisplay, "space needed")
             }
             HStack(spacing: 7) {
-                Glyph(glyph: .shield, size: 12, color: inv.confidenceLabel == "High confidence" ? p.green : p.amber)
+                Glyph(glyph: .shield, size: 12, color: inv.confidenceLabel == "High confidence" ? p.green : (inv.confidenceLabel == "Blocked" ? p.red : p.amber))
                 Text("\(inv.confidenceLabel) from \(inv.sourceName). \(inv.sourceName) is read only until you start the import, and aborting before import writes nothing.")
                     .font(.system(size: 11.5, weight: .semibold)).foregroundStyle(p.text2).lineSpacing(3)
             }
             preflightList("Transfers", inv.transferItems, color: p.text2)
-            preflightList("Needs attention", inv.attentionItems, color: inv.confidenceLabel == "High confidence" ? p.text3 : p.amber)
+            preflightList("Needs attention", inv.attentionItems, color: inv.confidenceLabel == "High confidence" ? p.text3 : (inv.confidenceLabel == "Blocked" ? p.red : p.amber))
+            if !inv.targetCollisionBlockers.isEmpty {
+                preflightList(
+                    "Target conflicts — resolve all",
+                    inv.targetCollisionBlockers,
+                    color: p.red,
+                    limit: 20
+                )
+            }
             Text("Images are copied and containers recreated on Dory. Compose labels, ports, and detected networks are preserved where the source engine exposes them.")
                 .font(.system(size: 11.5)).foregroundStyle(p.text2).lineSpacing(3)
             if inv.volumes > 0 {
                 HStack(alignment: .top, spacing: 6) {
-                    Glyph(glyph: .shield, size: 12, color: p.amber)
-                    Text("Volume **data** isn't copied automatically — your \(inv.volumes) named volume\(inv.volumes == 1 ? "" : "s") stay in \(inv.sourceName). Re-mount or re-create them in Dory.")
+                    Glyph(glyph: .shield, size: 12, color: p.green)
+                    Text("Dory copies all \(inv.volumes) named volume\(inv.volumes == 1 ? "" : "s") through read-only source mounts. Keep \(inv.sourceName) installed until you validate the imported data; Dory never deletes the source volumes.")
                         .font(.system(size: 11)).foregroundStyle(p.text3).lineSpacing(3)
                 }
                 .padding(.top, 2)
@@ -207,16 +235,21 @@ struct SettingsView: View {
         .background(p.bgInput, in: RoundedRectangle(cornerRadius: 9))
     }
 
-    private func preflightList(_ title: String, _ items: [String], color: Color) -> some View {
+    private func preflightList(
+        _ title: String,
+        _ items: [String],
+        color: Color,
+        limit: Int = 5
+    ) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(title.uppercased())
                 .font(.system(size: 9.5, weight: .bold)).foregroundStyle(p.text3).tracking(0.4)
-            ForEach(items.prefix(5), id: \.self) { item in
+            ForEach(items.prefix(limit), id: \.self) { item in
                 Text("• \(item)").font(.system(size: 11)).foregroundStyle(color).lineSpacing(2)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
-            if items.count > 5 {
-                Text("+ \(items.count - 5) more").font(.system(size: 11)).foregroundStyle(p.text3)
+            if items.count > limit {
+                Text("+ \(items.count - limit) more").font(.system(size: 11)).foregroundStyle(p.text3)
             }
         }
         .padding(.top, 2)
@@ -232,14 +265,14 @@ struct SettingsView: View {
     private var comparisonTable: some View {
         VStack(spacing: 0) {
             comparisonHeader
-            comparisonRow("Free for commercial use", .yes, .no("$8/user/mo"), .no("Paid for business"), divider: true)
+            comparisonRow("Free for all commercial use", .yes, .no("$8/mo annual"), .no("Paid for large orgs"), divider: true)
             comparisonRow("Open source", .yes, .no(nil), .no(nil), divider: true)
-            comparisonRow("Low memory daemon engine", .yes, .yes, .no(nil), divider: true)
+            comparisonRow("One shared VM engine", .yes, .yes, .no(nil), divider: true)
             comparisonRow("Hypervisor-backed virtualization", .yes, .yes, .no(nil), divider: true)
             comparisonRow("*.local domains + HTTPS", .yes, .yes, .no(nil), divider: true)
             comparisonRow("Drop-in docker & kubectl", .yes, .yes, .yes, divider: true)
             comparisonRow("Kubernetes built-in", .yes, .yes, .yes, divider: true)
-            comparisonRow("x86 / amd64 images", .partial, .yes, .partial, divider: false)
+            comparisonRow("Common x86 / amd64 images", .yes, .yes, .yes, divider: false)
         }
         .background(p.bgElevated, in: RoundedRectangle(cornerRadius: 11))
         .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(p.border))
@@ -421,7 +454,7 @@ struct SettingsView: View {
         .overlay(alignment: .bottom) { Rectangle().fill(p.border).frame(height: 1) }
     }
 
-    private enum Cell { case yes, no(String?), partial }
+    private enum Cell { case yes, no(String?) }
 
     private func comparisonRow(_ label: String, _ dory: Cell, _ orb: Cell, _ docker: Cell, divider: Bool) -> some View {
         HStack(spacing: 0) {
@@ -440,8 +473,6 @@ struct SettingsView: View {
             switch cell {
             case .yes:
                 Glyph(glyph: .shield, size: 13, color: p.green)
-            case .partial:
-                Text("~").font(.system(size: 15, weight: .bold)).foregroundStyle(p.amber)
             case .no(let note):
                 VStack(spacing: 1) {
                     Text("✕").font(.system(size: 12, weight: .bold)).foregroundStyle(p.text3)
@@ -584,6 +615,9 @@ struct SettingsView: View {
         let cores = ProcessInfo.processInfo.processorCount
         let ramGB = Double(ProcessInfo.processInfo.physicalMemory) / 1_073_741_824
         return VStack(alignment: .leading, spacing: 20) {
+            groupLabel("DATA DRIVE")
+            dataDrivePanel
+
             groupLabel("DORY PROCESSES")
             processMemoryPanel
 
@@ -593,6 +627,57 @@ struct SettingsView: View {
             infoPanel("Dory tracks the app, doryd, the engine VM, machine VMs, networking helpers, and bundled CLI helpers separately. Auto-Idle is handled by doryd, so the engine VM can sleep when no workload needs it while state remains on disk.")
         }
         .task { await store.refreshProcessMemory() }
+    }
+
+    private var dataDriveURL: URL {
+        let environment = ProcessInfo.processInfo.environment
+        let configured = environment["DORYD_DATA_DRIVE"] ?? environment["DORY_DATA_DRIVE"]
+        if let configured, !configured.isEmpty {
+            return URL(fileURLWithPath: configured).standardizedFileURL
+        }
+        return FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/Dory/Dory.dorydrive", isDirectory: true)
+    }
+
+    private var dataDrivePanel: some View {
+        let url = dataDriveURL
+        let exists = FileManager.default.fileExists(atPath: url.path)
+        return VStack(alignment: .leading, spacing: 11) {
+            HStack(spacing: 10) {
+                Image(systemName: "externaldrive.fill")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(exists ? p.green : p.amber)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(exists ? "Managed drive ready" : "Managed drive initializes on first start")
+                        .font(.system(size: 12.5, weight: .semibold))
+                        .foregroundStyle(p.text)
+                    Text(url.path)
+                        .font(.system(size: 11.5, design: .monospaced))
+                        .foregroundStyle(p.text3)
+                        .lineLimit(2)
+                        .textSelection(.enabled)
+                }
+                Spacer(minLength: 0)
+                Button("Reveal in Finder") {
+                    if exists {
+                        NSWorkspace.shared.activateFileViewerSelecting([url])
+                    } else {
+                        NSWorkspace.shared.open(url.deletingLastPathComponent())
+                    }
+                }
+                .buttonStyle(.bordered)
+                .disabled(!exists)
+                .accessibilityIdentifier("reveal-data-drive")
+            }
+            Text("Images, containers, named volumes, machine disks, snapshots, and backups live together here. Runtime sockets and replaceable logs remain in ~/.dory.")
+                .font(.system(size: 11.5))
+                .foregroundStyle(p.text2)
+                .lineSpacing(3)
+        }
+        .padding(15)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(p.bgElevated, in: RoundedRectangle(cornerRadius: 11))
+        .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(p.border))
     }
 
     private func resourceMeter(_ label: String, _ value: String, _ fraction: Double) -> some View {
@@ -904,7 +989,7 @@ struct SettingsView: View {
                 VStack(spacing: 0) {
                     toggleRow(
                         "Run Intel (x86/amd64) images",
-                        "Run amd64 images (SQL Server, Oracle, older x86 builds) on Dory's daemon engine through QEMU emulation. Emulated x86 is slower than native arm64; leave off when you don't need it to keep the guest lean. Restarts the engine.",
+                        "Use Dory's built-in FEX runtime for amd64 images and BuildKit workloads, including nested seccomp sandboxes. Enabled by default on new Apple Silicon installs; native arm64 images remain faster. Restarts the engine.",
                         isOn: Binding(get: { store.rosettaX86Enabled }, set: { on in Task { await store.setRosettaX86(on) } }),
                         divider: false,
                         disabled: !onShared
@@ -939,8 +1024,11 @@ struct SettingsView: View {
             if !onShared {
                 Text("Switch to Dory's shared engine above to use GPU acceleration.")
                     .font(.system(size: 11.5)).foregroundStyle(p.text3).padding(.top, 8)
+            } else if !store.gpuArchitectureSupported {
+                Text("In-guest Venus GPU acceleration is currently supported and release-verified only on Apple silicon. Intel Macs can still reach Metal-backed host services such as Ollama or LM Studio at host.dory.internal.")
+                    .font(.system(size: 11.5)).foregroundStyle(p.text3).lineSpacing(3).padding(.top, 8)
             } else if !store.gpuRuntimeAvailable {
-                Text("Install or bundle the Venus runtime (virglrenderer plus MoltenVK) to enable this. Until then, run a Metal-backed host service such as Ollama, LM Studio, or MLX and reach it from containers at host.dory.internal on ports 11434, 1234, and 18190.")
+                Text("Install or bundle the provenance-verified GPU kernel and Venus runtime (virglrenderer plus MoltenVK) to enable this. Until then, run a Metal-backed host service such as Ollama, LM Studio, or MLX and reach it from containers at host.dory.internal on ports 11434, 1234, and 18190.")
                     .font(.system(size: 11.5)).foregroundStyle(p.text3).lineSpacing(3).padding(.top, 8)
             }
         }
@@ -1046,11 +1134,15 @@ struct SettingsView: View {
             HStack(spacing: 10) {
                 Circle().fill(available ? p.green : p.text3).frame(width: 8, height: 8)
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(available ? "Venus GPU runtime detected" : "Venus GPU runtime not found")
+                    Text(available
+                        ? "Venus GPU runtime detected"
+                        : (store.gpuArchitectureSupported ? "Venus GPU runtime not found" : "Venus GPU requires Apple silicon"))
                         .font(.system(size: 13, weight: .semibold)).foregroundStyle(p.text)
                     Text(available
-                        ? "A Venus-capable virglrenderer and a MoltenVK ICD are available to the engine."
-                        : "Needs a Venus-capable libvirglrenderer and a MoltenVK ICD, either bundled in the app or installed via the krunkit tap (brew install slp/krunkit/virglrenderer molten-vk libepoxy).")
+                        ? "A verified GPU kernel, Venus-capable virglrenderer, and MoltenVK ICD are available to the engine."
+                        : (store.gpuArchitectureSupported
+                            ? "Needs the GPU kernel plus a Venus-capable libvirglrenderer and MoltenVK ICD, bundled in the app or installed for development."
+                            : "Intel Venus is not advertised: no physical Intel result or x86 GPU kernel has been release-verified."))
                         .font(.system(size: 11.5)).foregroundStyle(p.text3).lineLimit(3)
                 }
                 Spacer(minLength: 0)
@@ -1166,8 +1258,8 @@ struct SettingsView: View {
             groupLabel("LAN ACCESS").padding(.top, 22)
             VStack(spacing: 0) {
                 toggleRow(
-                    "Make published ports LAN-visible",
-                    "Off (default): published ports are reachable only from this Mac (localhost). On: bind them so other devices on your local network can reach your containers. Takes effect for newly published ports or after an engine restart.",
+                    "Source-preserving LAN access",
+                    "Off (default): published ports are reachable only from this Mac. On: authorized packet routing lets LAN and Tailscale clients reach containers without replacing their source IP. Takes effect after the engine restarts.",
                     isOn: Binding(get: { store.lanVisible }, set: { on in Task { await store.setLanVisible(on) } }),
                     divider: false
                 )
@@ -1175,7 +1267,7 @@ struct SettingsView: View {
             .background(p.bgElevated, in: RoundedRectangle(cornerRadius: 11))
             .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(p.border))
 
-            Text("With LAN access off, published container ports stay reachable only at localhost on this Mac. Containers use Docker's default bridge network (172.17.0.0/16).")
+            Text("Dory never widens an explicit 127.0.0.1 or ::1 binding. Enabling LAN access requires macOS approval for Dory's signed root networking service; the generic gvproxy hop is not used for remote clients.")
                 .font(.system(size: 11.5)).foregroundStyle(p.text3).lineSpacing(3)
                 .padding(.top, 14)
         }

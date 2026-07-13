@@ -66,6 +66,47 @@ struct SharedVMCreateCompatibilityTests {
         #expect(message.contains("host.dory.internal"))
     }
 
+    @Test func sharedVMCreateRebindsOnlyDoryProxySocketMountsToTheGuestDaemon() async throws {
+        let capture = SharedVMProxyCapture()
+        let shim = DockerShim(runtime: SharedVMProxyRuntime(capture: capture))
+        let body = Data(#"""
+        {
+          "Image":"supabase/vector:test",
+          "HostConfig":{
+            "Binds":[
+              "/Users/test/.dory/engine.sock:/var/run/docker.sock:ro",
+              "/Users/test/work:/workspace:rw"
+            ],
+            "Mounts":[
+              {"Type":"bind","Source":"/Users/test/.dory/dory.sock","Target":"/var/run/docker.sock","ReadOnly":true},
+              {"Type":"bind","Source":"/Users/test/.docker/run/docker.sock","Target":"/var/run/docker.sock"},
+              {"Type":"bind","Source":"/Users/test/.dory/engine.sock","Target":"/workspace"}
+            ]
+          }
+        }
+        """#.utf8)
+
+        let response = await shim.handle(ParsedRequest(
+            method: "POST",
+            target: "/v1.47/containers/create?name=vector",
+            headers: ["content-type": "application/json"],
+            body: body
+        ))
+
+        #expect(response.status == 201)
+        let json = try #require(capture.lastJSON)
+        let hostConfig = try #require(json["HostConfig"] as? [String: Any])
+        let binds = try #require(hostConfig["Binds"] as? [String])
+        #expect(binds == [
+            "/var/run/docker.sock:/var/run/docker.sock:ro",
+            "/Users/test/work:/workspace:rw",
+        ])
+        let mounts = try #require(hostConfig["Mounts"] as? [[String: Any]])
+        #expect(mounts[0]["Source"] as? String == "/var/run/docker.sock")
+        #expect(mounts[1]["Source"] as? String == "/Users/test/.docker/run/docker.sock")
+        #expect(mounts[2]["Source"] as? String == "/Users/test/.dory/engine.sock")
+    }
+
     @Test func sharedVMCreateTranslatesDockerGPURequestsWhenExperimentalVenusIsEnabled() async throws {
         let previous = getenv("DORY_EXPERIMENTAL_GPU").map { String(cString: $0) }
         setenv("DORY_EXPERIMENTAL_GPU", "venus", 1)

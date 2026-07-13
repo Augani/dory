@@ -139,14 +139,13 @@ nonisolated enum SharedVMProvisioner {
         /// generous cap costs nothing until workloads actually use it; env vars can raise it.
         var memory: String
         var headroomMB: Int
-        /// Opt-in x86/amd64 via Rosetta: runs the Virtualization.framework engine (which supports
-        /// Rosetta) instead of dory-hv, so heavy amd64 images like SQL Server run reliably (proven).
-        /// Trades away dory-hv's memory advantage while on, so it is a manual Settings toggle.
+        /// Legacy property/key name for Dory's Apple Silicon FEX mode. The daemon stays on dory-hv
+        /// and registers FEX inside its arm64 guest; this is not the retired app-owned Rosetta path.
         var rosettaX86: Bool
         /// Opt-in experimental GPU acceleration: attaches a virtio-gpu/Venus device backed by
         /// virglrenderer + MoltenVK so Vulkan and compute workloads inside containers reach Apple
-        /// Metal. Fails closed to headless when the host Venus runtime is missing, so it is a manual
-        /// Settings toggle and takes effect on the next engine start.
+        /// Metal. Missing runtime/kernel assets refuse the GPU boot instead of silently selecting a
+        /// headless kernel, so it is a manual Settings toggle and takes effect on the next start.
         var gpuVenus: Bool
         /// Retained only to detect and reject the former hidden DAX preference explicitly. Direct DAX
         /// mappings bypass the FUSE request fail-stop boundary, so neither read-write nor read-only host
@@ -156,13 +155,13 @@ nonisolated enum SharedVMProvisioner {
         nonisolated static let rosettaX86Key = "dory.rosettaX86Enabled"
         nonisolated static let gpuVenusKey = "dory.experimentalGPU"
         nonisolated static let daxDataSharesKey = "dory.daxDataShares"
-        static let rosettaEngineMemoryMB = 3072
+        static let amd64EmulationMemoryMB = 3072
 
         nonisolated init(
             cpus: Int = 4,
             memory: String = "\(SharedVMProvisioner.defaultEngineMemoryMB)M",
             headroomMB: Int = SharedVMProvisioner.defaultEngineHeadroomMB,
-            rosettaX86: Bool = UserDefaults.standard.bool(forKey: Config.rosettaX86Key),
+            rosettaX86: Bool = Config.amd64EmulationEnabled(),
             gpuVenus: Bool = UserDefaults.standard.bool(forKey: Config.gpuVenusKey),
             daxDataShares: [String] = (UserDefaults.standard.array(forKey: Config.daxDataSharesKey) as? [String]) ?? []
         ) {
@@ -178,19 +177,33 @@ nonisolated enum SharedVMProvisioner {
             SharedVMProvisioner.memoryStringToMB(memory) ?? SharedVMProvisioner.defaultEngineMemoryMB
         }
 
+        /// FEX is part of the Apple Silicon guest and is safe for native arm64 containers, so new
+        /// installations enable the common amd64-image contract by default. An explicit saved false
+        /// remains an opt-out; Intel stays native and does not receive the flag.
+        nonisolated static func amd64EmulationEnabled(
+            defaults: UserDefaults = .standard,
+            platform: MacHostPlatform = .current()
+        ) -> Bool {
+            guard platform.isAppleSilicon else { return false }
+            if defaults.object(forKey: rosettaX86Key) != nil {
+                return defaults.bool(forKey: rosettaX86Key)
+            }
+            return true
+        }
+
         /// Sizes the engine to the host instead of the fixed 4 vCPU / 2048 MiB literals: reserve two
         /// logical cores for macOS + the app, and set a memory ceiling of half the host RAM (never
         /// exceeding host-4GiB, never below the 2048/3072 MiB floor). The ceiling is elastic — dory-hv's
         /// free-page reporting hands idle guest memory back to the host — so a generous cap costs nothing
         /// at idle while letting Compose/parallel workloads use the cores and RAM a real machine has.
         nonisolated static func hostScaled(
-            rosettaX86: Bool = UserDefaults.standard.bool(forKey: Config.rosettaX86Key),
+            rosettaX86: Bool = Config.amd64EmulationEnabled(),
             gpuVenus: Bool = UserDefaults.standard.bool(forKey: Config.gpuVenusKey)
         ) -> Config {
             let info = ProcessInfo.processInfo
             let cpus = max(4, info.activeProcessorCount - 2)
             let hostMB = Int(info.physicalMemory / (1024 * 1024))
-            let floorMB = rosettaX86 ? rosettaEngineMemoryMB : SharedVMProvisioner.defaultEngineMemoryMB
+            let floorMB = rosettaX86 ? amd64EmulationMemoryMB : SharedVMProvisioner.defaultEngineMemoryMB
             let engineMB = max(floorMB, min(hostMB / 2, hostMB - 4096))
             return Config(cpus: cpus, memory: "\(engineMB)M", rosettaX86: rosettaX86, gpuVenus: gpuVenus)
         }
@@ -225,12 +238,30 @@ nonisolated enum SharedVMProvisioner {
     }
 
     /// Whether the host Venus GPU runtime (a virglrenderer dylib plus a MoltenVK ICD) is present,
-    /// bundled in the app or installed via Homebrew. Enabling GPU acceleration without it makes the
-    /// engine fall back to headless, so the Settings toggle gates on this to stay honest.
+    /// bundled in the app or installed via Homebrew. The toggle also requires the dedicated arm64
+    /// GPU kernel: a headless-kernel fallback would claim GPU mode while booting the wrong guest.
+    nonisolated static func venusArchitectureSupported(arch: String = engineArch) -> Bool {
+        arch == "arm64"
+    }
+
     static func venusRuntimeAvailable(
-        environment: [String: String] = ProcessInfo.processInfo.environment
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        arch: String = engineArch,
+        platform: MacHostPlatform = .current()
     ) -> Bool {
         let fileManager = FileManager.default
+        guard venusArchitectureSupported(arch: arch),
+              platform.isAppleSilicon,
+              DoryHVSupport.evaluate(platform: platform).isSupported else { return false }
+        let gpuKernelOverrides = [
+            environment["DORYD_HV_GPU_KERNEL_ARM64"],
+            environment["DORYD_HV_GPU_KERNEL"],
+            environment["DORY_HV_GPU_KERNEL_ARM64"],
+            environment["DORY_HV_GPU_KERNEL"],
+        ].compactMap { $0 }
+        let hasGPUKernel = gpuKernelOverrides.contains(where: { fileManager.fileExists(atPath: $0) })
+            || Bundle.main.url(forResource: hvGPUKernelResourceName(arch: arch), withExtension: "lzfse") != nil
+        guard hasGPUKernel else { return false }
         let rendererCandidates = [
             environment["DORY_VIRGLRENDERER_PATH"],
             environment["DORY_VIRGLRENDERER"],
@@ -482,6 +513,7 @@ nonisolated enum SharedVMProvisioner {
             "--mem-mb", String(config.memoryMB),
             "--cpus", String(config.cpus),
             "--direct-ip",
+            "--direct-ipv6",
         ]
         if let rootfs {
             arguments.append(contentsOf: ["--rootfs", rootfs])
@@ -492,8 +524,8 @@ nonisolated enum SharedVMProvisioner {
         if config.gpuVenus || ProcessInfo.processInfo.environment["DORY_EXPERIMENTAL_GPU"] == "venus" {
             arguments.append(contentsOf: ["--gpu", "venus"])
         }
-        // Opt-in x86/amd64 emulation: the guest registers a qemu binfmt handler so `--platform
-        // linux/amd64` images run on the arm64 dory-hv engine. Off by default to keep the guest lean.
+        // Apple Silicon x86/amd64 translation: the guest registers FEX and its OCI wrapper so
+        // `--platform linux/amd64` images and BuildKit RUN steps keep their seccomp contract.
         if config.rosettaX86 {
             arguments.append("--amd64")
         }
@@ -504,6 +536,13 @@ nonisolated enum SharedVMProvisioner {
         // container as defense-in-depth; per-bind-mount on-demand sharing is the stronger follow-up.
         let home = NSHomeDirectory()
         arguments.append(contentsOf: ["--share", "home=\(home):rw:at=\(home):safe"])
+        // Make explicitly requested Docker bind mounts from removable/external drives resolve at
+        // their native macOS paths. Sharing the /Volumes directory does not mount it into a
+        // container by itself; dockerd still exposes only paths named by a bind-mount request. Keep
+        // the same sensitive-name denylist as the home share so a broad bind cannot reveal common
+        // credential stores accidentally. A missing or inaccessible physical drive then fails at
+        // Docker's normal bind-path validation instead of silently creating guest-only data.
+        arguments.append(contentsOf: ["--share", "volumes=/Volumes:rw:at=/Volumes:safe"])
         // Opt-in LAN visibility: the engine binds published ports to 0.0.0.0 instead of loopback.
         // Off by default and read strictly (see lanVisibleFromConfig) so ports are never silently
         // exposed to the local network.
@@ -560,13 +599,25 @@ nonisolated enum SharedVMProvisioner {
     }
 
     private static func hvKernelPath(gpu: Bool = false) async -> String? {
+        if gpu {
+            guard venusArchitectureSupported() else { return nil }
+            for key in ["DORY_HV_GPU_KERNEL_ARM64", "DORY_HV_GPU_KERNEL"] {
+                if let override = ProcessInfo.processInfo.environment[key],
+                   !override.isEmpty, FileManager.default.fileExists(atPath: override) {
+                    return override
+                }
+            }
+            if let bundled = await prepareCompressedResource(
+                resource: hvGPUKernelResourceName(),
+                outputName: hvGPUKernelOutputName()
+            ) {
+                return bundled
+            }
+            return nil
+        }
         if let override = ProcessInfo.processInfo.environment["DORY_HV_KERNEL"],
            !override.isEmpty, FileManager.default.fileExists(atPath: override) {
             return override
-        }
-        if gpu,
-           let bundled = await prepareCompressedResource(resource: hvGPUKernelResourceName(), outputName: hvGPUKernelOutputName()) {
-            return bundled
         }
         if let bundled = await prepareCompressedResource(resource: hvKernelResourceName(), outputName: hvKernelOutputName()) {
             return bundled
@@ -721,12 +772,15 @@ nonisolated enum SharedVMProvisioner {
         return candidates.first { FileManager.default.fileExists(atPath: $0) }
     }
 
-    /// Register the non-native CPU architecture in the shared VM. On Apple silicon this installs
-    /// amd64; on Intel it installs arm64. Idempotent when the handler is already registered.
+    nonisolated static let pinnedBinfmtImage = "tonistiigi/binfmt@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0"
+
+    /// FEX is registered before dockerd starts on Apple Silicon. Keep only the digest-pinned QEMU
+    /// installer for the later Intel-host arm64 track.
     static func ensureEmulation(for arch: MachineArch = .nonNativeHost) async {
         guard !arch.isNative else { return }
+        if MachineArch.host == .arm64, arch == .amd64 { return }
         let runtime = DockerEngineRuntime(socketPath: socketPath, kind: .sharedVM)
-        try? await runtime.pull(image: "tonistiigi/binfmt")
+        try? await runtime.pull(image: pinnedBinfmtImage)
         let body = binfmtInstallBody(for: arch)
         let encodedName = DockerImageOps.queryValue("dory-binfmt")
         guard let create = await runtime.proxyRequest(method: "POST", path: "/containers/create?name=\(encodedName)",
@@ -737,7 +791,7 @@ nonisolated enum SharedVMProvisioner {
     }
 
     nonisolated static func binfmtInstallBody(for arch: MachineArch) -> Data {
-        Data(#"{"Image":"tonistiigi/binfmt","Cmd":["--install","\#(arch.rawValue)"],"HostConfig":{"Privileged":true,"AutoRemove":true}}"#.utf8)
+        Data(#"{"Image":"\#(pinnedBinfmtImage)","Cmd":["--install","\#(arch.rawValue)"],"HostConfig":{"Privileged":true,"AutoRemove":true}}"#.utf8)
     }
 
     private static func decodeId(_ data: Data) -> String? {

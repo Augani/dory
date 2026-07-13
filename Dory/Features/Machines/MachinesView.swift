@@ -389,6 +389,7 @@ private struct MachineEditSheet: View {
                     Text("\(cpus) \(cpus == 1 ? "core" : "cores")")
                         .font(.system(size: 12.5)).foregroundStyle(p.text)
                 }
+                .accessibilityIdentifier("edit-machine-cpus")
                 .frame(width: 180)
             }
             VStack(alignment: .leading, spacing: 9) {
@@ -396,6 +397,7 @@ private struct MachineEditSheet: View {
                 Stepper(value: $memoryGB, in: 1...16) {
                     Text("\(memoryGB) GB").font(.system(size: 12.5)).foregroundStyle(p.text)
                 }
+                .accessibilityIdentifier("edit-machine-memory")
                 .frame(width: 180)
             }
             Spacer(minLength: 0)

@@ -86,4 +86,40 @@ final class DoryScreensUITests: XCTestCase {
         assertText("Pull Image")
         app.buttons["Cancel"].firstMatch.click()
     }
+
+    func testNewMachineResourceControlsReachTheirBoundsWithoutCrashing() {
+        nav("machines")
+        let create = app.buttons["create-first-machine"]
+        XCTAssertTrue(create.waitForExistence(timeout: 4))
+        create.click()
+        XCTAssertTrue(app.buttons["customize-machine"].waitForExistence(timeout: 4))
+        app.buttons["customize-machine"].click()
+        let advanced = app.buttons["new-machine-advanced-toggle"]
+        XCTAssertTrue(advanced.waitForExistence(timeout: 4))
+        advanced.click()
+        XCTAssertEqual(advanced.value as? String, "Expanded")
+
+        let cpuIncrement = app.buttons["new-machine-cpus-increment"]
+        let cpuDecrement = app.buttons["new-machine-cpus-decrement"]
+        let memoryIncrement = app.buttons["new-machine-memory-increment"]
+        let memoryDecrement = app.buttons["new-machine-memory-decrement"]
+        XCTAssertTrue(cpuIncrement.waitForExistence(timeout: 4))
+        XCTAssertTrue(memoryIncrement.waitForExistence(timeout: 4))
+        XCTAssertTrue(cpuIncrement.isHittable)
+        XCTAssertTrue(memoryIncrement.isHittable)
+        for _ in 0..<6 { cpuIncrement.click() }
+        for _ in 0..<14 { memoryIncrement.click() }
+        XCTAssertFalse(cpuIncrement.isEnabled)
+        XCTAssertFalse(memoryIncrement.isEnabled)
+        XCTAssertTrue(app.staticTexts["8 cores"].exists)
+        XCTAssertTrue(app.staticTexts["16 GB"].exists)
+        for _ in 0..<7 { cpuDecrement.click() }
+        for _ in 0..<15 { memoryDecrement.click() }
+        XCTAssertFalse(cpuDecrement.isEnabled)
+        XCTAssertFalse(memoryDecrement.isEnabled)
+        XCTAssertTrue(app.staticTexts["1 core"].exists)
+        XCTAssertTrue(app.staticTexts["1 GB"].exists)
+        app.buttons["Cancel"].firstMatch.click()
+        assertText("Linux Machines")
+    }
 }

@@ -14,7 +14,12 @@ final class DoryAppDelegate: NSObject, NSApplicationDelegate {
             || ProcessInfo.processInfo.environment["DORY_UI_TEST"] == "1"
     }
 
+    static func isNetworkHelperRegistration(arguments: [String] = CommandLine.arguments) -> Bool {
+        arguments.dropFirst().contains("--register-network-helper")
+    }
+
     static func exitDuplicateInstanceIfNeeded() {
+        guard !isNetworkHelperRegistration() else { return }
         guard !isTestHost, let bundleIdentifier = Bundle.main.bundleIdentifier else { return }
         guard acquireInstanceLock() else {
             runningInstance(bundleIdentifier: bundleIdentifier)?.activate(options: [.activateAllWindows])
@@ -93,6 +98,19 @@ final class DoryAppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         guard !Self.isTestHost else { return }
+        if Self.isNetworkHelperRegistration() {
+            Task {
+                do {
+                    try await AppStore.refreshPrivilegedNetworkDaemonFromCurrentBundle()
+                    FileHandle.standardOutput.write(Data("network-helper=enabled\n".utf8))
+                    exit(EXIT_SUCCESS)
+                } catch {
+                    FileHandle.standardError.write(Data("network-helper=error: \(error.localizedDescription)\n".utf8))
+                    exit(78)
+                }
+            }
+            return
+        }
         NSApp.setActivationPolicy(.accessory)
         Self.refreshMenuBarVisibility()
         Task { @MainActor in

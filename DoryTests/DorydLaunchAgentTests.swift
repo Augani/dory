@@ -145,6 +145,8 @@ struct DorydLaunchAgentTests {
         #expect(plist.contains("<string>\(contentsURL.appendingPathComponent("Resources").path)</string>"))
         #expect(plist.contains("<key>DORYD_HOST_CLI</key>"))
         #expect(plist.contains("<string>1</string>"))
+        #expect(plist.contains("<key>DORYD_AMD64</key>"))
+        #expect(plist.contains("<key>DORYD_GPU</key>"))
         let sizing = DorydLaunchAgent.Configuration()
         #expect(plist.contains("<key>DORYD_CPUS</key>"))
         #expect(plist.contains("<string>\(sizing.cpuCount)</string>"))
@@ -164,7 +166,8 @@ struct DorydLaunchAgentTests {
     }
 
     @Test func defaultEngineResourcesScaleWithHostCapacity() {
-        #expect(DorydLaunchAgent.Configuration.hostScaledCPUCount(activeProcessorCount: 12) == 10)
+        #expect(DorydLaunchAgent.Configuration.hostScaledCPUCount(activeProcessorCount: 12) == 6)
+        #expect(DorydLaunchAgent.Configuration.hostScaledCPUCount(activeProcessorCount: 8) == 6)
         #expect(DorydLaunchAgent.Configuration.hostScaledCPUCount(activeProcessorCount: 4) == 4)
         #expect(DorydLaunchAgent.Configuration.hostScaledCPUCount(activeProcessorCount: 2) == 2)
         #expect(DorydLaunchAgent.Configuration.hostScaledMemoryMB(physicalMemory: 16 * 1024 * 1024 * 1024) == 8192)
@@ -221,6 +224,28 @@ struct DorydLaunchAgentTests {
         #expect(ok)
         #expect(plist.contains("<string>team.dory.local</string>"))
         #expect(recorder.commands.map { $0.first ?? "" } == ["print", "bootout", "bootstrap", "kickstart"])
+
+        let rejectingRecorder = LaunchctlRecorder(
+            printOutput:
+            """
+            gui/501/dev.dory.doryd = {
+                path = \(plistURL.path)
+                state = running
+                program = \(dorydURL.path)
+            }
+            """,
+            bootoutStatus: 5,
+            bootoutStderr: "Boot-out failed: operation not permitted"
+        )
+        let rejected = await DorydLaunchAgent.ensureCurrent(
+            bundle: bundle,
+            launchAgentsDirectory: launchAgentsDirectory,
+            configuration: DorydLaunchAgent.Configuration(domainSuffix: "rejected.dory.local")
+        ) { arguments in
+            rejectingRecorder.run(arguments)
+        }
+        #expect(!rejected)
+        #expect(rejectingRecorder.commands.map { $0.first ?? "" } == ["print", "bootout"])
     }
 
     @Test func ensureCurrentRetriesBootstrapAfterReplacingLaunchAgent() async throws {
@@ -316,6 +341,49 @@ struct DorydLaunchAgentTests {
         #expect(plist.contains("<string>6</string>"))
         #expect(plist.contains("<key>DORYD_MEMORY_MB</key>"))
         #expect(plist.contains("<string>4096</string>"))
+        #expect(plist.contains("<key>ExitTimeOut</key>"))
+        #expect(plist.contains("<integer>\(DorydLaunchAgent.exitTimeoutSeconds)</integer>"))
+        #expect(DorydLaunchAgent.exitTimeoutSeconds > 30)
+    }
+
+    @Test func launchAgentCarriesExplicitPersistedEngineChoices() throws {
+        let plist = DorydLaunchAgent.launchAgentPlist(
+            program: "/Applications/Dory.app/Contents/Helpers/doryd",
+            helpersDirectory: URL(fileURLWithPath: "/Applications/Dory.app/Contents/Helpers"),
+            configuration: DorydLaunchAgent.Configuration(
+                amd64EmulationEnabled: true,
+                gpuVenusEnabled: true,
+                sshAuthSock: "/private/tmp/com.apple.launchd.fixture/Listeners"
+            )
+        )
+        let data = try #require(plist.data(using: .utf8))
+        let root = try #require(
+            try PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any]
+        )
+        let environment = try #require(root["EnvironmentVariables"] as? [String: String])
+
+        #expect(environment["DORYD_AMD64"] == "1")
+        #expect(environment["DORYD_GPU"] == "venus")
+        #expect(
+            environment["DORYD_SSH_AUTH_SOCK"]
+                == "/private/tmp/com.apple.launchd.fixture/Listeners"
+        )
+        #expect(root["ExitTimeOut"] as? Int == DorydLaunchAgent.exitTimeoutSeconds)
+    }
+
+    @Test func launchAgentEngineChoicesAreOptInByDefault() throws {
+        let plist = DorydLaunchAgent.launchAgentPlist(
+            program: "/Applications/Dory.app/Contents/Helpers/doryd",
+            helpersDirectory: URL(fileURLWithPath: "/Applications/Dory.app/Contents/Helpers")
+        )
+        let data = try #require(plist.data(using: .utf8))
+        let root = try #require(
+            try PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any]
+        )
+        let environment = try #require(root["EnvironmentVariables"] as? [String: String])
+
+        #expect(environment["DORYD_AMD64"] == "0")
+        #expect(environment["DORYD_GPU"] == "off")
     }
 
     @Test func launchAgentDoesNotOwnRuntimeModePolicy() {

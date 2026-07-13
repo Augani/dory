@@ -87,11 +87,15 @@ struct Container: Identifiable, Hashable, Sendable {
     var volumeTargets: [String] = []
     var networks: [String] = []
     var networkEndpointSettings: [String: DockerEndpointSettings] = [:]
+    /// Full source-daemon image content ID used as a lossless migration fallback when the
+    /// container's original tag is no longer present in RepoTags.
+    var sourceImageID: String? = nil
     var exitCode: Int? = nil
     var commandArgs: [String] = []
     var entrypoint: [String] = []
     var hostname: String? = nil
     var domainname: String? = nil
+    var macAddress: String? = nil
     var user: String? = nil
     var workingDir: String? = nil
     var shell: [String] = []
@@ -163,6 +167,9 @@ struct DockerImage: Identifiable, Hashable, Sendable {
     var sizeBytes: Int64 = 0
     var createdEpoch: Int = 0
     var labels: [String: String] = [:]
+    /// Additional RepoTags for the same image ID. The table keeps one row per image while
+    /// migrations still copy every user-visible tag.
+    var additionalReferences: [String] = []
     var id: String { imageID.isEmpty ? "\(repository):\(tag)" : imageID }
 
     var usedLabel: String { usedByCount > 0 ? "\(usedByCount) container\(usedByCount > 1 ? "s" : "")" : "Unused" }

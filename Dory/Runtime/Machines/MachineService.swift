@@ -204,43 +204,77 @@ struct MachineService: Sendable {
             tag = try await MachineImageBuilder.ensureImage(distro, arch: arch, runtime: runtime, progress: progress)
         }
 
-        progress("Creating \(name)…")
-        try await createContainer(name: name, distro: distro, arch: arch, imageTag: tag, keepaliveOnly: false, recipe: recipe, settings: settings)
-        progress("Starting \(name)…")
-        try await runtime.start(containerID: Self.containerName(for: name))
+        let containerName = Self.containerName(for: name)
+        var containerCreated = false
+        do {
+            progress("Creating \(name)…")
+            try await createContainer(name: name, distro: distro, arch: arch, imageTag: tag,
+                                      keepaliveOnly: false, recipe: recipe, settings: settings)
+            containerCreated = true
+            progress("Starting \(name)…")
+            try await runtime.start(containerID: containerName)
 
-        if distro.boot == .systemd {
-            var exited = false
-            for _ in 0..<8 {
-                try? await Task.sleep(for: .seconds(1))
-                if await !isRunning(name: name) { exited = true; break }
+            if distro.boot == .systemd {
+                var exited = false
+                for _ in 0..<8 {
+                    try? await Task.sleep(for: .seconds(1))
+                    if await !isRunning(name: name) { exited = true; break }
+                }
+                if exited {
+                    progress("systemd did not come up on this image — falling back to a shell machine…")
+                    try await runtime.remove(containerID: containerName)
+                    containerCreated = false
+                    try await createContainer(name: name, distro: distro, arch: arch, imageTag: tag,
+                                              keepaliveOnly: true, recipe: recipe, settings: settings)
+                    containerCreated = true
+                    try await runtime.start(containerID: containerName)
+                }
             }
-            if exited {
-                progress("systemd did not come up on this image — falling back to a shell machine…")
-                try? await runtime.remove(containerID: Self.containerName(for: name))
-                try await createContainer(name: name, distro: distro, arch: arch, imageTag: tag, keepaliveOnly: true, recipe: recipe, settings: settings)
-                try await runtime.start(containerID: Self.containerName(for: name))
-            }
-        }
 
-        if let identity = settings.identity {
-            progress("Setting up \(identity.username)…")
-            let script = MachineProvisioner.script(identity: identity, pkg: distro.pkg, isSystemd: distro.boot == .systemd, includeSSH: true)
-            let result = try? await runtime.exec(containerID: Self.containerName(for: name), command: ["/bin/sh", "-c", script])
-            if let result, !result.succeeded {
-                progress("Identity setup reported: \(result.output)")
+            if let identity = settings.identity {
+                progress("Setting up \(identity.username)…")
+                let script = MachineProvisioner.script(identity: identity, pkg: distro.pkg,
+                                                        isSystemd: distro.boot == .systemd,
+                                                        includeSSH: true)
+                let result = try await runtime.exec(
+                    containerID: containerName,
+                    command: ["/bin/sh", "-c", script]
+                )
+                try Self.requireSuccessfulSetup(result, stage: "Identity setup")
             }
+            progress("Installing gh, claude, and socat (best-effort)…")
+            let nodeProbe = try? await runtime.exec(
+                containerID: containerName,
+                command: ["/bin/sh", "-c", "command -v node >/dev/null 2>&1 && echo yes || echo no"]
+            )
+            let hasNode = (nodeProbe?.output ?? "").contains("yes")
+            let toolScript = MachineProvisioner.toolInstallScript(pkg: distro.pkg, hasNode: hasNode)
+            let toolResult = try? await runtime.exec(
+                containerID: containerName,
+                command: ["/bin/sh", "-c", toolScript]
+            )
+            if let toolResult, !toolResult.succeeded {
+                progress("Tool install reported: \(toolResult.output)")
+            }
+            progress("Machine \(name) is ready.")
+        } catch {
+            var cleanupFailure: Error?
+            if containerCreated {
+                progress("Setup failed. Removing the incomplete machine…")
+                try? await runtime.stop(containerID: containerName)
+                do {
+                    try await runtime.remove(containerID: containerName)
+                } catch {
+                    cleanupFailure = error
+                }
+            }
+            if let cleanupFailure {
+                throw MachineError.createFailed(
+                    "\(error); cleanup of incomplete machine also failed: \(cleanupFailure)"
+                )
+            }
+            throw error
         }
-        progress("Installing gh, claude, and socat (best-effort)…")
-        let nodeProbe = try? await runtime.exec(containerID: Self.containerName(for: name),
-                                                command: ["/bin/sh", "-c", "command -v node >/dev/null 2>&1 && echo yes || echo no"])
-        let hasNode = (nodeProbe?.output ?? "").contains("yes")
-        let toolScript = MachineProvisioner.toolInstallScript(pkg: distro.pkg, hasNode: hasNode)
-        let toolResult = try? await runtime.exec(containerID: Self.containerName(for: name), command: ["/bin/sh", "-c", toolScript])
-        if let toolResult, !toolResult.succeeded {
-            progress("Tool install reported: \(toolResult.output)")
-        }
-        progress("Machine \(name) is ready.")
     }
 
     func create(name: String, recipe: DevRecipe, progress: @escaping @Sendable (String) -> Void) async throws {
@@ -375,10 +409,14 @@ struct MachineService: Sendable {
     }
 
     private func ensureEmulation(for arch: MachineArch, progress: @escaping @Sendable (String) -> Void) async {
+        if MachineArch.host == .arm64, arch == .amd64 {
+            progress("Using Dory's built-in FEX amd64 runtime…")
+            return
+        }
         progress("Enabling \(arch.shortLabel) emulation…")
-        try? await runtime.pull(image: "tonistiigi/binfmt")
+        try? await runtime.pull(image: SharedVMProvisioner.pinnedBinfmtImage)
         guard let body = try? JSONSerialization.data(withJSONObject: [
-            "Image": "tonistiigi/binfmt",
+            "Image": SharedVMProvisioner.pinnedBinfmtImage,
             "Cmd": ["--install", arch.rawValue],
             "HostConfig": ["Privileged": true, "AutoRemove": true] as [String: Any],
         ]) else { return }
@@ -524,6 +562,18 @@ extension MachineService {
         ]
     }
 
+    static func requireSuccessfulSetup(_ result: ExecResult, stage: String) throws {
+        guard result.succeeded else {
+            let normalized = result.output
+                .replacingOccurrences(of: "\0", with: "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let detail = String(normalized.prefix(4_096))
+            throw MachineError.createFailed(
+                "\(stage) failed with exit code \(result.exitCode)\(detail.isEmpty ? "" : ": \(detail)")"
+            )
+        }
+    }
+
     static func fallbackUID(for username: String) -> Int {
         username == NSUserName() ? Int(getuid()) : 501
     }
@@ -621,7 +671,7 @@ extension MachineService {
     static func machineEnv(settings: MachineSettings) -> [String] {
         let credentialsDir = "\(DoryCredentialShim.bridgeGuestDir)/credentials"
         let credentialEnv = [
-            "SSH_AUTH_SOCK=\(credentialsDir)/ssh-agent.sock",
+            "SSH_AUTH_SOCK=\(DoryCredentialShim.guestSSHAuthSockPath)",
             "GIT_ASKPASS=\(DoryCredentialShim.gitAskpassPath)",
             "DORY_GIT_ASKPASS_SOCK=\(credentialsDir)/git-askpass.sock",
         ]

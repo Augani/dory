@@ -45,16 +45,16 @@ struct OnboardingView: View {
 
     private var welcomeStep: some View {
         VStack(spacing: 0) {
-            Text("Run containers on Mac\nwithout the memory tax")
+            Text("Run containers on Mac\nwith one shared engine")
                 .font(.system(size: 21, weight: .heavy)).foregroundStyle(p.text)
                 .multilineTextAlignment(.center).lineSpacing(2).fixedSize(horizontal: false, vertical: true)
                 .padding(.bottom, 8)
-            Text("A self-contained Mac-native engine for Docker, Compose, and Kubernetes. One shared VM, a fraction of the RAM — and your tools just work.")
+            Text("A self-contained Mac-native engine for Docker, Compose, and Kubernetes. One shared Linux VM — and your tools just work.")
                 .font(.system(size: 13)).foregroundStyle(p.text2).multilineTextAlignment(.center).lineSpacing(3)
                 .padding(.bottom, 22)
 
             VStack(spacing: 12) {
-                feature(.shield, p.green, p.greenWeak, "Up to 4.7× less memory", "One shared VM instead of one per container.")
+                feature(.shield, p.green, p.greenWeak, "One shared Linux engine", "All containers share one managed VM.")
                 feature(.eye, p.accentText, p.accentWeak, "Bundled docker, Compose & kubectl", "Dory ships the tools and points them at its engine.")
                 feature(.networks, p.amber, p.amberWeak, "Automatic *.dory.local domains", "Every container on a real HTTPS URL.")
             }

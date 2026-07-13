@@ -65,16 +65,24 @@ struct NewMachineSheet: View {
         VStack(spacing: 0) {
             header
             Divider().overlay(p.border)
-            ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    if !engineReady { engineNotice }
-                    distroSection
-                    devEnvironmentSection
-                    identitySection
-                    optionsRow
-                    advancedSection
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 18) {
+                        if !engineReady { engineNotice }
+                        distroSection
+                        devEnvironmentSection
+                        identitySection
+                        optionsRow
+                        advancedSection
+                    }
+                    .padding(20)
                 }
-                .padding(20)
+                .onChange(of: advancedExpanded) { _, isExpanded in
+                    guard isExpanded else { return }
+                    DispatchQueue.main.async {
+                        proxy.scrollTo("new-machine-resource-controls", anchor: .center)
+                    }
+                }
             }
             Divider().overlay(p.border)
             footer
@@ -367,39 +375,115 @@ struct NewMachineSheet: View {
     }
 
     private var advancedSection: some View {
-        DisclosureGroup(isExpanded: $advancedExpanded) {
-            VStack(alignment: .leading, spacing: 16) {
-                resourceRow
-                mountsBlock
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                advancedExpanded.toggle()
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: advancedExpanded ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 9, weight: .semibold))
+                    Text("ADVANCED")
+                        .font(.system(size: 10.5, weight: .semibold))
+                        .tracking(0.5)
+                    Spacer(minLength: 0)
+                }
+                .foregroundStyle(p.text3)
+                .contentShape(Rectangle())
             }
-            .padding(.top, 12)
-        } label: {
-            Text("ADVANCED")
-                .font(.system(size: 10.5, weight: .semibold)).foregroundStyle(p.text3).tracking(0.5)
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("new-machine-advanced-toggle")
+            .accessibilityLabel("Advanced")
+            .accessibilityValue(advancedExpanded ? "Expanded" : "Collapsed")
+
+            if advancedExpanded {
+                VStack(alignment: .leading, spacing: 16) {
+                    resourceRow
+                    mountsBlock
+                }
+                .padding(.top, 12)
+            }
         }
-        .tint(p.accent)
     }
 
     private var resourceRow: some View {
         HStack(alignment: .top, spacing: 24) {
             VStack(alignment: .leading, spacing: 9) {
                 sectionLabel("CPUS")
-                Stepper(value: $cpus, in: 1...8) {
-                    Text("\(cpus) \(cpus == 1 ? "core" : "cores")")
-                        .font(.system(size: 12.5)).foregroundStyle(p.text)
-                }
-                .frame(width: 180)
+                boundedResourceControl(
+                    value: $cpus,
+                    range: 1...8,
+                    display: { "\($0) \($0 == 1 ? "core" : "cores")" },
+                    valueIdentifier: "new-machine-cpus-value",
+                    decrementIdentifier: "new-machine-cpus-decrement",
+                    incrementIdentifier: "new-machine-cpus-increment"
+                )
             }
             VStack(alignment: .leading, spacing: 9) {
                 sectionLabel("MEMORY")
-                Stepper(value: $memoryGB, in: 1...16) {
-                    Text("\(memoryGB) GB")
-                        .font(.system(size: 12.5)).foregroundStyle(p.text)
-                }
-                .frame(width: 180)
+                boundedResourceControl(
+                    value: $memoryGB,
+                    range: 1...16,
+                    display: { "\($0) GB" },
+                    valueIdentifier: "new-machine-memory-value",
+                    decrementIdentifier: "new-machine-memory-decrement",
+                    incrementIdentifier: "new-machine-memory-increment"
+                )
             }
             Spacer(minLength: 0)
         }
+        .id("new-machine-resource-controls")
+    }
+
+    private func boundedResourceControl(
+        value: Binding<Int>,
+        range: ClosedRange<Int>,
+        display: @escaping (Int) -> String,
+        valueIdentifier: String,
+        decrementIdentifier: String,
+        incrementIdentifier: String
+    ) -> some View {
+        let current = value.wrappedValue
+        let renderedValue = display(current)
+        let canDecrement = current > range.lowerBound
+        let canIncrement = current < range.upperBound
+        return HStack(spacing: 8) {
+            Button {
+                value.wrappedValue = max(range.lowerBound, value.wrappedValue - 1)
+            } label: {
+                Image(systemName: "minus")
+                    .font(.system(size: 10, weight: .bold))
+                    .frame(width: 26, height: 24)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(canDecrement ? p.text2 : p.text3.opacity(0.45))
+            .background(p.bgInput, in: RoundedRectangle(cornerRadius: 7))
+            .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(p.border))
+            .disabled(!canDecrement)
+            .accessibilityIdentifier(decrementIdentifier)
+            .accessibilityLabel("Decrease \(renderedValue)")
+
+            Text(renderedValue)
+                .font(.system(size: 12.5))
+                .foregroundStyle(p.text)
+                .frame(minWidth: 74)
+                .accessibilityIdentifier(valueIdentifier)
+
+            Button {
+                value.wrappedValue = min(range.upperBound, value.wrappedValue + 1)
+            } label: {
+                Image(systemName: "plus")
+                    .font(.system(size: 10, weight: .bold))
+                    .frame(width: 26, height: 24)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(canIncrement ? p.text2 : p.text3.opacity(0.45))
+            .background(p.bgInput, in: RoundedRectangle(cornerRadius: 7))
+            .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(p.border))
+            .disabled(!canIncrement)
+            .accessibilityIdentifier(incrementIdentifier)
+            .accessibilityLabel("Increase \(renderedValue)")
+        }
+        .frame(width: 180, alignment: .leading)
     }
 
     private var mountsBlock: some View {

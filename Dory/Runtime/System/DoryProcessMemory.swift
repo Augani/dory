@@ -134,7 +134,7 @@ nonisolated enum DoryProcessMemorySampler {
             return .machineVM
         case "gvproxy", "dory-network-helper":
             return .networking
-        case "dory", "dory-doctor", "dory-idle-proxy", "docker", "docker-compose", "kubectl":
+        case "dory", "dory-doctor", "dory-idle-proxy", "docker", "docker-buildx", "docker-compose", "kubectl":
             return isBundledHelperPath(path) ? .helper : nil
         default:
             return nil

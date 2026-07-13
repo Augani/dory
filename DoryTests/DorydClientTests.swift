@@ -76,6 +76,19 @@ struct DorydClientTests {
         #expect(recorder.commands.isEmpty)
     }
 
+    @Test func engineStopAndSleepOutliveTheDefaultControlTimeout() async throws {
+        let listener = NSXPCListener.anonymous()
+        let service = FakeDorydService(engineShutdownReplyDelay: 0.05)
+        let delegate = FakeDorydListenerDelegate(service: service)
+        listener.delegate = delegate
+        listener.resume()
+        defer { listener.invalidate() }
+
+        let client = DorydClient(endpoint: listener.endpoint, timeout: 0.01)
+        #expect(try await client.engineStop() == DorydCommandResult(ok: true, message: ""))
+        #expect(try await client.engineSleep() == DorydCommandResult(ok: true, message: ""))
+    }
+
     @MainActor
     @Test func readsDoctorJSONAndIncidentsOverXPC() async throws {
         let listener = NSXPCListener.anonymous()
@@ -109,6 +122,7 @@ struct DorydClientTests {
             environment: ["FOO": "bar"]
         ))
         let startedMachine = try await client.machineStart("dev")
+        let machineStats = try await client.machineStats("dev")
         let execResult = try await client.machineExec("dev", argv: ["/bin/sh", "-lc", "cargo --version"])
         let provisionedMachine = try await client.machineProvision("dev", recipe: "rust")
         let snapshot = try await client.machineSnapshot(
@@ -197,6 +211,10 @@ struct DorydClientTests {
         #expect(startedMachine.environment == ["FOO": "bar"])
         #expect(execResult.stdout == "cargo 1.0\n")
         #expect(execResult.exitCode == 0)
+        #expect(machineStats.cpuPercent == 12.5)
+        #expect(machineStats.memoryUsedBytes == 1_073_741_824)
+        #expect(machineStats.memoryTotalBytes == 2_147_483_648)
+        #expect(machineStats.processCount == 12)
         #expect(provisionedMachine.recipeID == "rust")
         #expect(provisionedMachine.verify.stdout == "cargo 1.0\n")
         #expect(snapshot.id == "s1")
@@ -366,13 +384,16 @@ struct DorydClientTests {
         await store.connectBackend()
         store.loadMachines()
         try await waitUntil {
-            store.machines.contains { $0.name == "dev" }
+            store.machines.contains {
+                $0.name == "dev" && $0.cpuPercent == 12.5 && $0.memoryDisplay == "1 GB / 2 GB"
+            }
         }
 
         var machine = try #require(store.machines.first { $0.name == "dev" })
         #expect(machine.distro == "Dory VM")
         #expect(machine.status == .running)
-        #expect(machine.memoryDisplay == "2048 MB")
+        #expect(machine.cpuPercent == 12.5)
+        #expect(machine.memoryDisplay == "1 GB / 2 GB")
         #expect(machine.ip == "192.168.215.40")
         #expect(machine.mounts == [MountPair(host: "/Users/me/src", guest: "/workspace/src", readOnly: true)])
         #expect(machine.containerID.isEmpty)
@@ -411,7 +432,8 @@ struct DorydClientTests {
         )
         #expect(editResult == nil)
         try await waitUntil {
-            service.machineUpdateCount == 1 && store.machines.first { $0.name == "dev" }?.memoryDisplay == "4096 MB"
+            service.machineUpdateCount == 1
+                && store.machines.first { $0.name == "dev" }?.memoryDisplay == "2 GB / 4 GB"
         }
         #expect((service.latestMachineUpdateConfig?["memoryMB"] as? NSNumber)?.uint64Value == 4096)
         #expect((service.latestMachineUpdateConfig?["cpuCount"] as? NSNumber)?.intValue == 4)
@@ -558,6 +580,56 @@ struct DorydClientTests {
         #expect(store.machineCreated?.name == "vmdev")
         #expect(store.machineCreationLog.contains("Provisioning Rust"))
         #expect(store.machineCreationLog.contains("cargo 1.0"))
+    }
+
+    @MainActor
+    @Test func failedRequiredMachineProvisioningRollsBackNewDefinition() async throws {
+        let base = "/tmp/damc-provision-failure-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let socketPath = base + "/doryd.sock"
+        defer { try? FileManager.default.removeItem(atPath: base) }
+
+        let shim = DockerShim(runtime: MockRuntime())
+        let dockerServer = ShimHTTPServer(socketPath: socketPath) { request in
+            await shim.handle(request)
+        }
+        try dockerServer.start()
+        defer { dockerServer.stop() }
+
+        let listener = NSXPCListener.anonymous()
+        let service = FakeDorydService(socketPath: socketPath)
+        service.setMachineProvisionResult(ok: false, message: "fixture install failed")
+        let delegate = FakeDorydListenerDelegate(service: service)
+        listener.delegate = delegate
+        listener.resume()
+        defer { listener.invalidate() }
+
+        let store = AppStore(
+            dorydClient: DorydClient(endpoint: listener.endpoint),
+            useDorydEngine: true,
+            environment: [
+                "DORYD_MACHINE_KERNEL": "/vm/Image",
+                "DORYD_MACHINE_ROOTFS": "/vm/rootfs.raw",
+            ]
+        )
+        store.routeDockerCLI = false
+
+        await store.connectBackend()
+        let result = await store.createMachine(
+            image: "not-a-docker-image",
+            name: "vmfailed",
+            recipe: DevRecipe.forID("rust")
+        )
+
+        #expect(result?.contains("fixture install failed") == true)
+        #expect(service.machineCreateCount == 1)
+        #expect(service.machineStartCount == 1)
+        #expect(service.machineProvisionCount == 1)
+        #expect(service.machineDeleteCount == 1)
+        #expect(store.machineCreated == nil)
+        #expect(store.machineCreationLog.contains("Setup failed. Removing the incomplete machine"))
+        #expect(store.machineCreationLog.contains("Incomplete machine removed"))
+        #expect(!store.machineCreationLog.contains("Machine created and started"))
+        #expect(!store.machines.contains { $0.name == "vmfailed" })
     }
 
     @MainActor
@@ -813,6 +885,147 @@ struct DorydClientTests {
     }
 
     @MainActor
+    @Test func daemonOwnedAMD64SettingRestartsAndReconnectsWithExplicitLaunchAgentChoice() async throws {
+        guard MacHostPlatform.current().isAppleSilicon else { return }
+        let key = SharedVMProvisioner.Config.rosettaX86Key
+        let previousDefault = UserDefaults.standard.object(forKey: key)
+        defer {
+            if let previousDefault { UserDefaults.standard.set(previousDefault, forKey: key) }
+            else { UserDefaults.standard.removeObject(forKey: key) }
+        }
+        UserDefaults.standard.set(false, forKey: key)
+
+        let base = "/tmp/doryd-setting-success-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let socketPath = base + "/doryd.sock"
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let workloadRecorder = WorkloadStartRecorder()
+        let shim = DockerShim(runtime: RecordingWorkloadRuntime(recorder: workloadRecorder))
+        let dockerServer = ShimHTTPServer(socketPath: socketPath) { request in await shim.handle(request) }
+        try dockerServer.start()
+        defer { dockerServer.stop() }
+
+        let listener = NSXPCListener.anonymous()
+        let service = FakeDorydService(socketPath: socketPath)
+        let delegate = FakeDorydListenerDelegate(service: service)
+        listener.delegate = delegate
+        listener.resume()
+        defer { listener.invalidate() }
+        let launchAgent = LaunchAgentConfigurationRecorder()
+
+        let store = AppStore(
+            dorydClient: DorydClient(endpoint: listener.endpoint),
+            useDorydEngine: true,
+            dorydLaunchAgentEnsurer: { configuration in launchAgent.ensure(configuration) }
+        )
+        store.routeDockerCLI = false
+        await store.connectBackend()
+        await store.setRosettaX86(true)
+
+        #expect(service.engineStopCount == 1)
+        #expect(service.engineStartCount == 1)
+        #expect(launchAgent.configurations.last?.amd64EmulationEnabled == true)
+        #expect(launchAgent.configurations.last?.gpuVenusEnabled == false)
+        #expect(store.rosettaX86Enabled)
+        #expect(UserDefaults.standard.bool(forKey: key))
+        #expect(store.loadState == .ready)
+        #expect(store.dorydRuntimeActive)
+        #expect(store.settingsNotice?.kind == .success)
+        #expect(store.settingsNotice?.message == "x86/amd64 emulation enabled.")
+        let restarted = await workloadRecorder.startedIDs
+        #expect(Set(restarted) == Set(MockData.containers.filter(\.isRunning).map(\.id)))
+        #expect(!restarted.contains("c5"))
+    }
+
+    @MainActor
+    @Test func manualDaemonRestartRestoresOnlyPreviouslyRunningWorkloads() async throws {
+        let base = "/tmp/doryd-manual-restart-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let socketPath = base + "/doryd.sock"
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let workloadRecorder = WorkloadStartRecorder()
+        let shim = DockerShim(runtime: RecordingWorkloadRuntime(recorder: workloadRecorder))
+        let dockerServer = ShimHTTPServer(socketPath: socketPath) { request in await shim.handle(request) }
+        try dockerServer.start()
+        defer { dockerServer.stop() }
+
+        let listener = NSXPCListener.anonymous()
+        let service = FakeDorydService(socketPath: socketPath)
+        let delegate = FakeDorydListenerDelegate(service: service)
+        listener.delegate = delegate
+        listener.resume()
+        defer { listener.invalidate() }
+        let launchAgent = LaunchAgentConfigurationRecorder()
+
+        let store = AppStore(
+            dorydClient: DorydClient(endpoint: listener.endpoint),
+            useDorydEngine: true,
+            dorydLaunchAgentEnsurer: { configuration in launchAgent.ensure(configuration) }
+        )
+        store.routeDockerCLI = false
+        await store.connectBackend()
+        await store.restartEngine()
+
+        #expect(service.engineStopCount == 1)
+        #expect(service.engineStartCount == 1)
+        #expect(store.loadState == .ready)
+        #expect(store.dorydRuntimeActive)
+        #expect(store.settingsNotice?.kind == .success)
+        let restarted = await workloadRecorder.startedIDs
+        #expect(Set(restarted) == Set(MockData.containers.filter(\.isRunning).map(\.id)))
+        #expect(!restarted.contains("c5"))
+    }
+
+    @MainActor
+    @Test func daemonOwnedSettingRollsBackWhenLaunchAgentRejectsNewConfiguration() async throws {
+        guard MacHostPlatform.current().isAppleSilicon else { return }
+        let key = SharedVMProvisioner.Config.rosettaX86Key
+        let previousDefault = UserDefaults.standard.object(forKey: key)
+        defer {
+            if let previousDefault { UserDefaults.standard.set(previousDefault, forKey: key) }
+            else { UserDefaults.standard.removeObject(forKey: key) }
+        }
+        UserDefaults.standard.set(false, forKey: key)
+
+        let base = "/tmp/doryd-setting-rollback-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let socketPath = base + "/doryd.sock"
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let workloadRecorder = WorkloadStartRecorder(failingIDs: ["c3"])
+        let shim = DockerShim(runtime: RecordingWorkloadRuntime(recorder: workloadRecorder))
+        let dockerServer = ShimHTTPServer(socketPath: socketPath) { request in await shim.handle(request) }
+        try dockerServer.start()
+        defer { dockerServer.stop() }
+
+        let listener = NSXPCListener.anonymous()
+        let service = FakeDorydService(socketPath: socketPath)
+        let delegate = FakeDorydListenerDelegate(service: service)
+        listener.delegate = delegate
+        listener.resume()
+        defer { listener.invalidate() }
+        let launchAgent = LaunchAgentConfigurationRecorder(rejectAMD64: true)
+
+        let store = AppStore(
+            dorydClient: DorydClient(endpoint: listener.endpoint),
+            useDorydEngine: true,
+            dorydLaunchAgentEnsurer: { configuration in launchAgent.ensure(configuration) }
+        )
+        store.routeDockerCLI = false
+        await store.connectBackend()
+        await store.setRosettaX86(true)
+
+        #expect(service.engineStopCount == 1)
+        #expect(service.engineStartCount == 1)
+        #expect(launchAgent.configurations.map(\.amd64EmulationEnabled) == [false, true, false])
+        #expect(!store.rosettaX86Enabled)
+        #expect(!UserDefaults.standard.bool(forKey: key))
+        #expect(store.loadState == .ready)
+        #expect(store.dorydRuntimeActive)
+        #expect(store.settingsNotice?.kind == .failure)
+        #expect(store.settingsNotice?.message.contains("previous setting was restored") == true)
+        #expect(store.settingsNotice?.message.contains("web-api") == true)
+        let rollbackRestarted = await workloadRecorder.startedIDs
+        #expect(Set(rollbackRestarted) == Set(MockData.containers.filter(\.isRunning).map(\.id)))
+    }
+
+    @MainActor
     @Test func idleSettingsRollbackWhenRequiredDorydIsUnavailable() async throws {
         let listener = NSXPCListener.anonymous()
         let service = FakeDorydService()
@@ -905,10 +1118,82 @@ struct DorydClientTests {
 #endif
 }
 
+private enum WorkloadStartFixtureError: LocalizedError {
+    case rejected(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .rejected(let id): "fixture rejected start for \(id)"
+        }
+    }
+}
+
+private actor WorkloadStartRecorder {
+    private(set) var startedIDs: [String] = []
+    private let failingIDs: Set<String>
+
+    init(failingIDs: Set<String> = []) {
+        self.failingIDs = failingIDs
+    }
+
+    func recordStart(_ id: String) throws {
+        startedIDs.append(id)
+        if failingIDs.contains(id) {
+            throw WorkloadStartFixtureError.rejected(id)
+        }
+    }
+}
+
+private struct RecordingWorkloadRuntime: ContainerRuntime {
+    let kind: RuntimeKind = .mock
+    let recorder: WorkloadStartRecorder
+
+    func snapshot() async throws -> RuntimeSnapshot { try await MockRuntime().snapshot() }
+    func start(containerID: String) async throws { try await recorder.recordStart(containerID) }
+    func stop(containerID: String) async throws {}
+    func restart(containerID: String) async throws {}
+    func remove(containerID: String) async throws {}
+    func pull(image: String, registryAuth: String?) async throws {}
+    func create(_ spec: ContainerSpec) async throws -> String { "recording-\(spec.name)" }
+    func exec(containerID: String, command: [String]) async throws -> ExecResult {
+        ExecResult(exitCode: 0, output: "")
+    }
+    func createNetwork(name: String, labels: [String: String]) async throws {}
+    func removeNetwork(name: String) async throws {}
+    func removeVolume(name: String) async throws {}
+    func logs(containerID: String) async throws -> [LogLine] { [] }
+    func env(containerID: String) async throws -> [EnvVar] { [] }
+}
+
+private final class LaunchAgentConfigurationRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private let rejectAMD64: Bool
+    private var recorded: [DorydLaunchAgent.Configuration] = []
+
+    init(rejectAMD64: Bool = false) {
+        self.rejectAMD64 = rejectAMD64
+    }
+
+    var configurations: [DorydLaunchAgent.Configuration] {
+        lock.lock()
+        defer { lock.unlock() }
+        return recorded
+    }
+
+    func ensure(_ configuration: DorydLaunchAgent.Configuration) -> Bool {
+        lock.lock()
+        recorded.append(configuration)
+        lock.unlock()
+        return !(rejectAMD64 && configuration.amd64EmulationEnabled)
+    }
+}
+
 private final class FakeDorydService: NSObject, DorydControlXPC {
     let socketPath: String
+    let engineShutdownReplyDelay: TimeInterval
     private let lock = NSLock()
     private var _engineStartCount = 0
+    private var _engineStopCount = 0
     private var _engineWakeCount = 0
     private var _engineSleepCount = 0
     private var _engineState = "running"
@@ -955,6 +1240,8 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
     private var _machineCreateCount = 0
     private var _machineUpdateCount = 0
     private var _machineProvisionCount = 0
+    private var _machineProvisionOK = true
+    private var _machineProvisionMessage = ""
     private var _machineSnapshotCount = 0
     private var _machineCloneSnapshotCount = 0
     private var _machineRestoreSnapshotCount = 0
@@ -966,6 +1253,10 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
     var engineStartCount: Int {
         lock.lock(); defer { lock.unlock() }
         return _engineStartCount
+    }
+    var engineStopCount: Int {
+        lock.lock(); defer { lock.unlock() }
+        return _engineStopCount
     }
     var engineWakeCount: Int {
         lock.lock(); defer { lock.unlock() }
@@ -1032,8 +1323,12 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
         return networkRouteBatches.last ?? []
     }
 
-    init(socketPath: String = "/tmp/doryd-test.sock") {
+    init(
+        socketPath: String = "/tmp/doryd-test.sock",
+        engineShutdownReplyDelay: TimeInterval = 0
+    ) {
         self.socketPath = socketPath
+        self.engineShutdownReplyDelay = engineShutdownReplyDelay
     }
 
     func setEngineStatus(_ state: String, detail: String = "ok") {
@@ -1047,6 +1342,13 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
         lock.lock()
         _engineStartOK = ok
         _engineStartMessage = message
+        lock.unlock()
+    }
+
+    func setMachineProvisionResult(ok: Bool, message: String = "") {
+        lock.lock()
+        _machineProvisionOK = ok
+        _machineProvisionMessage = message
         lock.unlock()
     }
 
@@ -1092,10 +1394,21 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
     }
 
     func engineStop(reply: @escaping (Bool, String) -> Void) {
+        if engineShutdownReplyDelay > 0 {
+            Thread.sleep(forTimeInterval: engineShutdownReplyDelay)
+        }
+        lock.lock()
+        _engineStopCount += 1
+        _engineState = "stopped"
+        _engineDetail = "stopped"
+        lock.unlock()
         reply(true, "")
     }
 
     func engineSleep(reply: @escaping (Bool, String) -> Void) {
+        if engineShutdownReplyDelay > 0 {
+            Thread.sleep(forTimeInterval: engineShutdownReplyDelay)
+        }
         lock.lock(); _engineSleepCount += 1; lock.unlock()
         reply(true, "")
     }
@@ -1231,6 +1544,25 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
         reply(rows as NSArray, "")
     }
 
+    func machineStats(_ machineID: String, reply: @escaping (Bool, NSDictionary, String) -> Void) {
+        lock.lock()
+        let total = (Self.uint64(machines[machineID]?["memoryMB"]) ?? 2048) * 1_048_576
+        lock.unlock()
+        reply(true, [
+            "schema": "dev.dory.machine.stats",
+            "version": 1,
+            "cpuPercent": 12.5,
+            "memoryUsedBytes": total / 2,
+            "memoryTotalBytes": total,
+            "networkReceiveBytes": UInt64(100),
+            "networkTransmitBytes": UInt64(200),
+            "blockReadBytes": UInt64(300),
+            "blockWriteBytes": UInt64(400),
+            "processCount": UInt64(12),
+            "uptimeSeconds": 98.765,
+        ] as NSDictionary, "")
+    }
+
     func machineExec(_ machineID: String, request: NSDictionary, reply: @escaping (Bool, NSDictionary, String) -> Void) {
         reply(true, Self.execRow(stdout: "cargo 1.0\n"), "")
     }
@@ -1240,7 +1572,13 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
         lock.lock()
         _machineProvisionCount += 1
         _latestMachineProvisionRecipe = recipe
+        let ok = _machineProvisionOK
+        let message = _machineProvisionMessage
         lock.unlock()
+        guard ok else {
+            reply(false, [:], message)
+            return
+        }
         reply(true, [
             "recipeID": recipe,
             "install": Self.execRow(stdout: "installed \(recipe)\n"),

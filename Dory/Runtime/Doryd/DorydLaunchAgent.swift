@@ -5,6 +5,10 @@ enum DorydLaunchAgent {
     static let label = "dev.dory.doryd"
     static let stateDirectory = "\(NSHomeDirectory())/.dory"
     static let logPath = "\(NSHomeDirectory())/.dory/doryd.log"
+    // Docker gets 20 seconds, dory-hv gets 25, and doryd gets 30 before its own last resort.
+    // launchd's system default is only five seconds on current macOS, so make upgrade/logout
+    // replacement honor the same graceful shutdown contract as an explicit engine stop.
+    static let exitTimeoutSeconds = 45
     private static let bootstrapRetryCount = 20
 
     struct Install: Sendable, Equatable {
@@ -20,8 +24,16 @@ enum DorydLaunchAgent {
         var httpProxyPort: UInt16
         var httpsProxyPort: UInt16
         var hostCLIEnabled: Bool
+        /// Enables Dory's FEX/binfmt runtime in the native arm64 guest. Keeping this in the
+        /// LaunchAgent makes the persisted Settings choice authoritative for doryd.
+        var amd64EmulationEnabled: Bool
+        /// Explicit opt-in for the Venus device and its dedicated GPU-enabled guest kernel.
+        var gpuVenusEnabled: Bool
         var cpuCount: UInt16
         var memoryMB: UInt32
+        /// Current per-login macOS SSH agent. dory-hv validates ownership and socket type on every
+        /// guest connection; nil keeps the guest well-known socket fail-closed.
+        var sshAuthSock: String?
 
         nonisolated init(
             domainSuffix: String = "dory.local",
@@ -30,8 +42,11 @@ enum DorydLaunchAgent {
             httpProxyPort: UInt16 = 8080,
             httpsProxyPort: UInt16 = 8443,
             hostCLIEnabled: Bool = true,
+            amd64EmulationEnabled: Bool = false,
+            gpuVenusEnabled: Bool = false,
             cpuCount: UInt16? = nil,
-            memoryMB: UInt32? = nil
+            memoryMB: UInt32? = nil,
+            sshAuthSock: String? = nil
         ) {
             self.domainSuffix = domainSuffix
             self.idleSleepAfterSeconds = idleSleepAfterSeconds
@@ -39,15 +54,21 @@ enum DorydLaunchAgent {
             self.httpProxyPort = httpProxyPort
             self.httpsProxyPort = httpsProxyPort
             self.hostCLIEnabled = hostCLIEnabled
+            self.amd64EmulationEnabled = amd64EmulationEnabled
+            self.gpuVenusEnabled = gpuVenusEnabled
             self.cpuCount = max(1, cpuCount ?? Self.hostScaledCPUCount())
             self.memoryMB = max(256, memoryMB ?? Self.hostScaledMemoryMB())
+            self.sshAuthSock = sshAuthSock.flatMap {
+                $0.hasPrefix("/") && !$0.contains("\0") ? $0 : nil
+            }
         }
 
-        /// Reserve two logical cores for macOS. The memory value is a ceiling, not an idle
-        /// reservation: dory-hv's free-page reporting returns unused guest pages to the host.
+        /// Reserve two logical cores for macOS and cap at the measured six-vCPU sweet spot. The
+        /// memory value is a ceiling, not an idle reservation: dory-hv's free-page reporting returns
+        /// unused guest pages to the host.
         nonisolated static func hostScaledCPUCount(activeProcessorCount: Int = ProcessInfo.processInfo.activeProcessorCount) -> UInt16 {
             let available = max(1, activeProcessorCount)
-            return UInt16(clamping: min(available, max(4, available - 2)))
+            return UInt16(clamping: min(6, min(available, max(4, available - 2))))
         }
 
         nonisolated static func hostScaledMemoryMB(physicalMemory: UInt64 = ProcessInfo.processInfo.physicalMemory) -> UInt32 {
@@ -119,7 +140,8 @@ enum DorydLaunchAgent {
                 runner: runner
             )
         case .replace:
-            _ = await runner(["bootout", service])
+            let bootout = await runner(["bootout", service])
+            guard bootout.ok || isMissingServiceError(bootout.stderr) else { return false }
             return await bootstrapAndKickstart(
                 uid: uid,
                 plistPath: current.plistPath,
@@ -137,7 +159,7 @@ enum DorydLaunchAgent {
         runner: @escaping Runner = runLaunchctl
     ) async -> Bool {
         let result = await runner(["bootout", serviceTarget(uid: uid)])
-        return result.ok || result.stderr.localizedCaseInsensitiveContains("No such process")
+        return result.ok || isMissingServiceError(result.stderr)
     }
 
     @discardableResult
@@ -170,15 +192,15 @@ enum DorydLaunchAgent {
         for attempt in 0..<bootstrapRetryCount {
             let bootstrapped = await runner(["bootstrap", domain, plistPath])
             if bootstrapped.ok {
-                _ = await runner(["kickstart", "-k", service])
-                return true
+                let kickstarted = await runner(["kickstart", "-k", service])
+                if kickstarted.ok { return true }
             }
 
             let print = await runner(["print", service])
             let status = print.ok ? parseStatus(print.stdout) : nil
             if let status, status.loaded, normalize(status.plistPath) == normalize(plistPath) {
-                _ = await runner(["kickstart", "-k", service])
-                return true
+                let kickstarted = await runner(["kickstart", "-k", service])
+                if kickstarted.ok { return true }
             }
 
             if attempt < bootstrapRetryCount - 1 {
@@ -286,6 +308,11 @@ enum DorydLaunchAgent {
         return URL(fileURLWithPath: path).standardizedFileURL.path
     }
 
+    private static func isMissingServiceError(_ message: String) -> Bool {
+        message.localizedCaseInsensitiveContains("No such process")
+            || message.localizedCaseInsensitiveContains("Could not find service")
+    }
+
     private static func defaultLaunchAgentsDirectory() -> URL? {
         FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first?
             .appendingPathComponent("LaunchAgents", isDirectory: true)
@@ -316,6 +343,12 @@ enum DorydLaunchAgent {
             .deletingLastPathComponent()
             .appendingPathComponent("Resources", isDirectory: true)
             .path
+        let sshAgentEnvironment = configuration.sshAuthSock.map {
+            """
+                <key>DORYD_SSH_AUTH_SOCK</key>
+                <string>\(xmlEscaped($0))</string>
+            """
+        } ?? ""
         return """
         <?xml version="1.0" encoding="UTF-8"?>
         <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -346,10 +379,15 @@ enum DorydLaunchAgent {
                 <string>\(xmlEscaped(resourcesDirectory))</string>
                 <key>DORYD_HOST_CLI</key>
                 <string>\(configuration.hostCLIEnabled ? "1" : "0")</string>
+                <key>DORYD_AMD64</key>
+                <string>\(configuration.amd64EmulationEnabled ? "1" : "0")</string>
+                <key>DORYD_GPU</key>
+                <string>\(configuration.gpuVenusEnabled ? "venus" : "off")</string>
                 <key>DORYD_CPUS</key>
                 <string>\(configuration.cpuCount)</string>
                 <key>DORYD_MEMORY_MB</key>
                 <string>\(configuration.memoryMB)</string>
+            \(sshAgentEnvironment)
                 <key>DORYD_HV_RESTART_LIMIT</key>
                 <string>3</string>
                 <key>DORYD_HV_RESTART_DELAY</key>
@@ -371,6 +409,8 @@ enum DorydLaunchAgent {
             <true/>
             <key>KeepAlive</key>
             <true/>
+            <key>ExitTimeOut</key>
+            <integer>\(exitTimeoutSeconds)</integer>
             <key>ProcessType</key>
             <string>Interactive</string>
             <key>StandardOutPath</key>

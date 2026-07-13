@@ -53,6 +53,11 @@ struct AgentModeTests {
         #expect(DoryAppDelegate.instanceLockPath(home: "/Users/test") == "/Users/test/.dory/dory-app.lock")
     }
 
+    @Test func networkHelperRegistrationModeIsExplicit() {
+        #expect(DoryAppDelegate.isNetworkHelperRegistration(arguments: ["Dory", "--register-network-helper"]))
+        #expect(!DoryAppDelegate.isNetworkHelperRegistration(arguments: ["Dory", "--other"]))
+    }
+
     @Test func windowGateInertUnderTests() {
         #expect(DoryAppDelegate.isTestHost == true)
         let store = AppStore()
