@@ -434,7 +434,9 @@ drive_summary="$(find "$WORKDIR/evidence/managed-data-drive" -name summary.txt -
 [ -s "$drive_summary" ] || die "managed data-drive summary is missing"
 for proof in status fresh_drive_default explicit_drive_status running_drive_mismatch_rejected \
   lost_drive_identity_recovered lost_drive_identity_mismatch_rejected alternate_drive_untouched \
-  unwritable_drive_rejected_cleanly missing_external_drive_rejected concurrent_attach_rejected image_persistence \
+  unwritable_drive_rejected_cleanly missing_external_drive_rejected concurrent_attach_rejected \
+  alias_concurrent_attach_rejected manifest_uuid_identity image_persistence \
+  stopped_missing_selected_drive_rejected \
   container_writable_layer_persistence named_volume_persistence custom_network_persistence \
   transient_runtime_replacement; do
   grep -qx "$proof=PASS" "$drive_summary" \

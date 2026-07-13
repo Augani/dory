@@ -8,8 +8,13 @@ final class DoryDataDriveTests: XCTestCase {
 
         XCTAssertEqual(drive.root, "/Users/test/Library/Application Support/Dory/Dory.dorydrive")
         XCTAssertEqual(drive.engineDataDiskPath, drive.root + "/engine/docker-data.ext4")
+        XCTAssertEqual(drive.kubernetesDirectory, drive.root + "/kubernetes")
         XCTAssertEqual(drive.machinesDirectory, drive.root + "/machines")
-        XCTAssertEqual(drive.backupsDirectory, drive.root + "/backups")
+        XCTAssertEqual(drive.snapshotsDirectory, drive.root + "/snapshots")
+        XCTAssertEqual(drive.exportsDirectory, drive.root + "/exports")
+        XCTAssertEqual(drive.operationsDirectory, drive.root + "/operations")
+        XCTAssertEqual(drive.backupsDirectory, drive.exportsDirectory)
+        XCTAssertEqual(drive.lockPath, drive.root + "/drive.lock")
         XCTAssertEqual(drive.legacyEngineDataDiskPaths, [
             "/Users/test/.dory/hv/docker-data.ext4",
             "/Users/test/Library/Application Support/com.apple.container/volumes/dory-engine-data/volume.img",
@@ -88,6 +93,10 @@ final class DoryDataDriveTests: XCTestCase {
                 .unsupportedLocation("/Users/test/Storage/Dory.dorydrive")
             )
         }
+        XCTAssertThrowsError(try DoryDataDrive(
+            home: "/Users/test",
+            overrideRoot: "/Users/test/Library/Application Support/Dory/Bad\nDrive.dorydrive"
+        ))
     }
 
     func testRejectsPrivacyProtectedHomeLocationsThatLaunchAgentCannotReauthorize() {
@@ -115,9 +124,17 @@ final class DoryDataDriveTests: XCTestCase {
         try drive.prepare()
 
         XCTAssertTrue(FileManager.default.fileExists(atPath: drive.engineDirectory))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: drive.kubernetesDirectory))
         XCTAssertTrue(FileManager.default.fileExists(atPath: drive.machinesDirectory))
-        XCTAssertTrue(FileManager.default.fileExists(atPath: drive.backupsDirectory))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: drive.snapshotsDirectory))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: drive.exportsDirectory))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: drive.operationsDirectory))
         XCTAssertNoThrow(try drive.validateManifest())
+        let manifest = try drive.readManifest()
+        XCTAssertEqual(manifest.kind, DoryDataDrive.manifestKind)
+        XCTAssertEqual(manifest.schemaVersion, DoryDataDrive.schemaVersion)
+        XCTAssertEqual(manifest.product, "Dory")
+        XCTAssertEqual(try drive.readManifest().id, manifest.id)
         let attributes = try FileManager.default.attributesOfItem(atPath: drive.root)
         XCTAssertEqual((attributes[.posixPermissions] as? NSNumber)?.intValue, 0o700)
         XCTAssertEqual(try drive.inspect(), .ready)
@@ -156,6 +173,58 @@ final class DoryDataDriveTests: XCTestCase {
         XCTAssertThrowsError(try drive.prepare()) { error in
             XCTAssertEqual(error as? DoryDataDriveError, .invalidManifest(drive.manifestPath))
         }
+    }
+
+    func testPrepareRejectsManifestSymlinkWithoutFollowingIt() throws {
+        let base = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dory-data-drive-manifest-link-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: base) }
+        let root = base.appendingPathComponent("Library/Application Support/Dory/Dory.dorydrive", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let target = base.appendingPathComponent("foreign-drive.json")
+        try Data(#"{"kind":"dev.dory.data-drive","schemaVersion":1}"#.utf8).write(to: target)
+        try FileManager.default.createSymbolicLink(
+            atPath: root.appendingPathComponent("drive.json").path,
+            withDestinationPath: target.path
+        )
+        let drive = try DoryDataDrive(home: base.path, overrideRoot: root.path)
+
+        XCTAssertThrowsError(try drive.prepare()) { error in
+            XCTAssertEqual(error as? DoryDataDriveError, .invalidManifest(drive.manifestPath))
+        }
+        XCTAssertEqual(
+            try Data(contentsOf: target),
+            Data(#"{"kind":"dev.dory.data-drive","schemaVersion":1}"#.utf8)
+        )
+    }
+
+    func testPrepareUpgradesKnownDevelopmentManifestOnceAndRetainsPayload() throws {
+        let base = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dory-data-drive-v1-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: base) }
+        let root = base.appendingPathComponent("Library/Application Support/Dory/Dory.dorydrive", isDirectory: true)
+        let engine = root.appendingPathComponent("engine", isDirectory: true)
+        try FileManager.default.createDirectory(at: engine, withIntermediateDirectories: true)
+        let payload = Data("existing-docker-state".utf8)
+        try payload.write(to: engine.appendingPathComponent("docker-data.ext4"))
+        try Data("{\"kind\":\"dev.dory.data-drive\",\"schemaVersion\":1}\n".utf8)
+            .write(to: root.appendingPathComponent("drive.json"))
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600],
+            ofItemAtPath: root.appendingPathComponent("drive.json").path
+        )
+        let drive = try DoryDataDrive(home: base.path, overrideRoot: root.path)
+
+        try drive.prepare()
+        let first = try drive.readManifest()
+        try drive.prepare()
+
+        XCTAssertEqual(first.schemaVersion, 2)
+        XCTAssertEqual(try drive.readManifest().id, first.id)
+        XCTAssertEqual(
+            try Data(contentsOf: engine.appendingPathComponent("docker-data.ext4")),
+            payload
+        )
     }
 
     func testPrepareRejectsPopulatedUnmarkedBundle() throws {

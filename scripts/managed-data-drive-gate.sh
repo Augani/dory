@@ -56,6 +56,7 @@ VOLUME="$NAME-volume"
 NETWORK="$NAME-network"
 MARKER="marker-$RUN_ID"
 OTHER_DRIVE="$RUNTIME_HOME/Library/Application Support/Dory/Other.dorydrive"
+ALIAS_HOME="${TMPDIR:-/tmp}/dory-md-alias-$PPID-$$"
 
 [ ! -e "$RUNTIME_HOME" ] || { echo "managed data-drive gate: isolated HOME exists: $RUNTIME_HOME" >&2; exit 73; }
 mkdir -p "$RUNTIME_HOME" "$EVIDENCE"
@@ -75,6 +76,7 @@ cleanup() {
     DOCKER_HOST="unix://$SOCKET" "$DOCKER" network rm "$NETWORK" >/dev/null 2>&1 || true
   fi
   HOME="$RUNTIME_HOME" "$RUNTIME/dory-engine" stop >/dev/null 2>&1 || true
+  rm -f "$ALIAS_HOME"
   if [ "$status" -ne 0 ]; then
     [ ! -f "$STATE/engine.log" ] || cp "$STATE/engine.log" "$EVIDENCE/failure-engine.log"
     [ ! -f "$FIRST_STATE/engine.log" ] || cp "$FIRST_STATE/engine.log" "$EVIDENCE/failure-first-engine.log"
@@ -88,6 +90,12 @@ trap cleanup EXIT INT TERM
 HOME="$RUNTIME_HOME" "$RUNTIME/dory-engine" start --data-drive "$DRIVE" \
   >"$EVIDENCE/first-start.log" 2>&1
 [ -f "$DRIVE/drive.json" ] || { echo "managed data-drive gate: manifest missing" >&2; exit 1; }
+for directory in engine kubernetes machines snapshots exports operations; do
+  [ -d "$DRIVE/$directory" ] \
+    || { echo "managed data-drive gate: durable directory missing: $directory" >&2; exit 1; }
+done
+[ -s "$STATE/data-drive.id" ] \
+  || { echo "managed data-drive gate: drive UUID ownership record missing" >&2; exit 1; }
 [ ! -e "$DRIVE/engine/docker-data.ext4.migrated-from-legacy" ] \
   || { echo "managed data-drive gate: fresh launch silently adopted legacy data" >&2; exit 1; }
 HOME="$RUNTIME_HOME" "$RUNTIME/dory-engine" status >"$EVIDENCE/first-status.log"
@@ -164,8 +172,10 @@ if HOME="$RUNTIME_HOME" "$RUNTIME/bin/dory-hv" engine --data-drive "$MISSING" \
 fi
 grep -F 'data drive volume is not mounted' "$EVIDENCE/missing-volume.err" >/dev/null
 
+ln -s "$RUNTIME_HOME" "$ALIAS_HOME"
+ALIAS_DRIVE="$ALIAS_HOME/Library/Application Support/Dory/Dory.dorydrive"
 if HOME="$RUNTIME_HOME" "$RUNTIME/bin/dory-hv" engine \
-    --state-dir "$RUNTIME_HOME/second-state" --data-drive "$DRIVE" \
+    --state-dir "$RUNTIME_HOME/second-state" --data-drive "$ALIAS_DRIVE" \
     --kernel "$STATE/vm/dory-hv-kernel-arm64" --gvproxy "$RUNTIME/bin/gvproxy" \
     --rootfs "$STATE/vm/dory-engine-rootfs.ext4" --engine-sock "$RUNTIME_HOME/second.sock" \
     >"$EVIDENCE/second-attach.out" 2>"$EVIDENCE/second-attach.err"; then
@@ -214,10 +224,29 @@ HOME="$RUNTIME_HOME" "$RUNTIME/dory-engine" stop >"$EVIDENCE/final-stop.log" 2>&
 cp "$STATE/engine.log" "$EVIDENCE/final-engine.log"
 cp "$DRIVE/drive.json" "$EVIDENCE/drive.json"
 
+# A detached, renamed, or replaced selected drive must never turn into a fresh empty store at the
+# remembered path. Keep the original as rollback while proving the stopped launcher fails closed.
+PARKED_DRIVE="$DRIVE.parked"
+mv "$DRIVE" "$PARKED_DRIVE"
+if HOME="$RUNTIME_HOME" "$RUNTIME/dory-engine" start --data-drive "$DRIVE" \
+    >"$EVIDENCE/stopped-missing-drive.out" 2>"$EVIDENCE/stopped-missing-drive.err"; then
+  echo "managed data-drive gate: stopped runtime silently created a replacement selected drive" >&2
+  exit 1
+fi
+grep -F 'refusing to create a replacement' "$EVIDENCE/stopped-missing-drive.err" >/dev/null
+[ ! -e "$DRIVE" ] \
+  || { echo "managed data-drive gate: missing selected drive left a shadow replacement" >&2; exit 1; }
+mv "$PARKED_DRIVE" "$DRIVE"
+
 python3 - "$EVIDENCE/drive.json" <<'PY'
 import json, pathlib, sys
 data = json.loads(pathlib.Path(sys.argv[1]).read_text())
-assert data == {"kind": "dev.dory.data-drive", "schemaVersion": 1}
+import datetime, uuid
+assert data["kind"] == "dev.dory.data-drive"
+assert data["schemaVersion"] == 2
+assert data["product"] == "Dory"
+uuid.UUID(data["id"])
+assert datetime.datetime.fromisoformat(data["createdAt"].replace("Z", "+00:00")).tzinfo
 PY
 
 {
@@ -232,6 +261,9 @@ PY
   printf 'unwritable_drive_rejected_cleanly=PASS\n'
   printf 'missing_external_drive_rejected=PASS\n'
   printf 'concurrent_attach_rejected=PASS\n'
+  printf 'alias_concurrent_attach_rejected=PASS\n'
+  printf 'manifest_uuid_identity=PASS\n'
+  printf 'stopped_missing_selected_drive_rejected=PASS\n'
   printf 'image_persistence=PASS\n'
   printf 'container_writable_layer_persistence=PASS\n'
   printf 'named_volume_persistence=PASS\n'

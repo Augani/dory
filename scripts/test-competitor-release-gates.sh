@@ -244,7 +244,10 @@ for data_drive_recovery_guard in \
   lost_drive_identity_recovered \
   lost_drive_identity_mismatch_rejected \
   alternate_drive_untouched \
-  unwritable_drive_rejected_cleanly; do
+  unwritable_drive_rejected_cleanly \
+  alias_concurrent_attach_rejected \
+  manifest_uuid_identity \
+  stopped_missing_selected_drive_rejected; do
   grep -F "$data_drive_recovery_guard" scripts/runtime/dory-engine \
     scripts/managed-data-drive-gate.sh scripts/qualify-release-candidate.sh \
     scripts/verify-release-qualification.sh >/dev/null \

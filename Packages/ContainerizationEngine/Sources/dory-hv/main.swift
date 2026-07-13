@@ -207,10 +207,35 @@ func runAgentPing(_ options: Options) {
 
 let arguments = Array(CommandLine.arguments.dropFirst())
 guard let command = arguments.first else {
-    fail("usage: dory-hv <smoke|madvtest|daxprobe|boot|agent-ping|engine|usb> [--kernel path] [--mem-mb N] [--cpus N] [--cmdline s] [--state-dir path]")
+    fail("usage: dory-hv <smoke|madvtest|daxprobe|boot|agent-ping|data-drive|engine|usb> [options]")
 }
 
 switch command {
+case "data-drive":
+    guard arguments.count == 3 else {
+        fail("usage: dory-hv data-drive <resolve|prepare|id> <absolute .dorydrive path>")
+    }
+    let operation = arguments[1]
+    let requestedPath = arguments[2]
+    do {
+        let drive = try DoryDataDrive(
+            home: DoryDataDrive.processHome(),
+            overrideRoot: requestedPath
+        )
+        switch operation {
+        case "resolve":
+            print(drive.root)
+        case "prepare":
+            try drive.prepare()
+            print(try drive.readManifest().id.uuidString.lowercased())
+        case "id":
+            print(try drive.readManifest().id.uuidString.lowercased())
+        default:
+            fail("usage: dory-hv data-drive <resolve|prepare|id> <absolute .dorydrive path>")
+        }
+    } catch {
+        fail("data-drive \(operation) failed: \(error)")
+    }
 case "lzfse":
     let sub = arguments.dropFirst().first
     let paths = Array(arguments.dropFirst(2))
@@ -415,6 +440,7 @@ case "engine":
     var rootfs: String?
     var stateDirectory: String?
     var dockerDataDisk: String?
+    var dataDriveRoot: String?
     var legacyDockerDataDisks: [String] = []
     var shares: [VirtioFSShareConfiguration] = []
     var directIPRequested = false
@@ -459,6 +485,7 @@ case "engine":
                 let drive = try DoryDataDrive(home: environmentHome, overrideRoot: value)
                 try drive.prepare()
                 dockerDataDisk = drive.engineDataDiskPath
+                dataDriveRoot = drive.root
             } catch {
                 fail("invalid Dory data drive: \(error)")
             }
@@ -518,6 +545,7 @@ case "engine":
         cpus: cpus,
         stateDirectory: stateDirectory,
         dockerDataDiskPath: dockerDataDisk,
+        dataDriveRoot: dataDriveRoot,
         legacyDockerDataDiskPaths: legacyDockerDataDisks,
         bundledRootfs: rootfs,
         shares: shares,

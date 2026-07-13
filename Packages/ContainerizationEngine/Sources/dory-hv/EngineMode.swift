@@ -20,6 +20,8 @@ enum EngineMode {
         var stateDirectory: String
         /// Durable user-data drive path. Runtime sockets/rootfs clones stay in stateDirectory.
         var dockerDataDiskPath: String?
+        /// Canonical root of the managed data drive, when one owns dockerDataDiskPath.
+        var dataDriveRoot: String?
         /// Ordered rollback sources to clone on first boot. The newest Dory layout is checked before
         /// the v0.2 Apple-container store; an invalid newer source fails closed.
         var legacyDockerDataDiskPaths: [String] = []
@@ -353,9 +355,17 @@ enum EngineMode {
         let dataDisk = URL(fileURLWithPath: configuration.dockerDataDiskPath ?? (state + "/docker-data.ext4"))
             .standardizedFileURL.path
         let dataDiskDirectory = URL(fileURLWithPath: dataDisk).deletingLastPathComponent().path
-        let dataDriveLock: EngineStateDirectoryLock? = dataDiskDirectory == state
-            ? nil
-            : try EngineStateDirectoryLock(stateDirectory: dataDiskDirectory)
+        let dataDriveLock: EngineStateDirectoryLock?
+        if let dataDriveRoot = configuration.dataDriveRoot {
+            dataDriveLock = try EngineStateDirectoryLock(
+                stateDirectory: dataDriveRoot,
+                lockFileName: "drive.lock"
+            )
+        } else if dataDiskDirectory != state {
+            dataDriveLock = try EngineStateDirectoryLock(stateDirectory: dataDiskDirectory)
+        } else {
+            dataDriveLock = nil
+        }
         defer { withExtendedLifetime(dataDriveLock) {} }
 
         // Both one-time artifacts are built at a temp path and atomically renamed into place, so an

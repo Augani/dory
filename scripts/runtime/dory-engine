@@ -26,6 +26,7 @@ BACKEND_SOCK="$STATE/hv/docker-backend.sock"
 PIDFILE="$STATE/engine-cli.pid"
 DATAPLANE_PIDFILE="$STATE/dataplane-cli.pid"
 DRIVEFILE="$STATE/data-drive.path"
+DRIVEIDFILE="$STATE/data-drive.id"
 SETTINGSFILE="$STATE/engine-settings"
 LOGFILE="$STATE/engine.log"
 if [ "$(uname -m)" = "x86_64" ]; then
@@ -51,6 +52,13 @@ remove_owned_socket_path() {
   [ ! -L "$path" ] && [ -S "$path" ] \
     || die "refusing to replace non-socket or symlink path: $path"
   rm -f "$path"
+}
+
+validate_owned_socket_path() {
+  local path="$1"
+  [ ! -e "$path" ] && [ ! -L "$path" ] && return 0
+  [ ! -L "$path" ] && [ -S "$path" ] \
+    || die "refusing to replace non-socket or symlink path: $path"
 }
 
 pid_alive() {
@@ -207,10 +215,28 @@ socket_ready() {
   socket_ready_at "$SOCK"
 }
 
+write_drive_identity() {
+  local path="$1" id="$2" path_tmp id_tmp
+  path_tmp="$(mktemp "$STATE/.data-drive.path.XXXXXX")" \
+    || die "cannot create data-drive path identity transaction"
+  id_tmp="$(mktemp "$STATE/.data-drive.id.XXXXXX")" || {
+    rm -f "$path_tmp"
+    die "cannot create data-drive UUID identity transaction"
+  }
+  printf '%s\n' "$path" > "$path_tmp"
+  printf '%s\n' "$id" > "$id_tmp"
+  chmod 0600 "$path_tmp" "$id_tmp"
+  mv -f "$path_tmp" "$DRIVEFILE"
+  mv -f "$id_tmp" "$DRIVEIDFILE"
+}
+
 cmd_start() {
   require_layout
+  validate_owned_socket_path "$SOCK"
+  validate_owned_socket_path "$BACKEND_SOCK"
   local mem_mb=2048 cpus=4 amd64_enabled=0 gpu_mode=none lan_visible=0
   local orphaned_gvproxy key value data_drive_explicit=0 extra=()
+  local pid="" dataplane="" runtime_running=0
   if [ "$(uname -m)" != "x86_64" ]; then
     # Apple Silicon releases advertise the bundled FEX path as ready on first launch. Persisted or
     # explicit settings may opt out, but a plain start must never strand existing dory-runc
@@ -258,24 +284,50 @@ cmd_start() {
   [ "$gpu_mode" = none ] || extra+=(--gpu "$gpu_mode")
   [ "$lan_visible" -eq 0 ] || extra+=(--direct-ip --publish-host 0.0.0.0)
 
-  local recorded_drive=""
+  # Recover incomplete prior ownership before depending on the replacement helper. This keeps a
+  # damaged or interrupted upgrade from stranding the old VM/gvproxy processes indefinitely.
+  if pid="$(engine_pid)" && dataplane="$(dataplane_pid)" && socket_ready; then
+    runtime_running=1
+  else
+    orphaned_gvproxy="$(owned_gvproxy_pids)"
+    if engine_pid >/dev/null || dataplane_pid >/dev/null || [ -n "$orphaned_gvproxy" ]; then
+      note "stopping incomplete previous runtime…"
+      cmd_stop
+    fi
+  fi
+
+  # Resolve policy and filesystem aliases through the same Swift storage library used by both
+  # VMMs. This is read-only: a wrong drive requested while another engine is live must not create
+  # even an empty alternate bundle.
+  DATA_DRIVE="$("$BIN/dory-hv" data-drive resolve "$DATA_DRIVE")" \
+    || die "cannot resolve requested data drive"
+
+  local recorded_drive="" recorded_drive_id="" drive_id=""
   [ ! -s "$DRIVEFILE" ] || IFS= read -r recorded_drive < "$DRIVEFILE"
+  [ ! -s "$DRIVEIDFILE" ] || IFS= read -r recorded_drive_id < "$DRIVEIDFILE"
+  if [ -n "$recorded_drive" ]; then
+    recorded_drive="$("$BIN/dory-hv" data-drive resolve "$recorded_drive")" \
+      || die "recorded data drive path is invalid"
+  fi
   if [ "$data_drive_explicit" -eq 0 ] && [ -n "$recorded_drive" ]; then
     DATA_DRIVE="$recorded_drive"
   fi
-  local dataplane=""
-  if pid="$(engine_pid)" && dataplane="$(dataplane_pid)" && socket_ready; then
+  if [ "$runtime_running" -eq 1 ]; then
     if [ -z "$recorded_drive" ]; then
       running_dory_hv_uses_drive "$pid" "$DATA_DRIVE" \
         || die "running engine data drive does not match requested $DATA_DRIVE; stop it before selecting another drive"
       recorded_drive="$DATA_DRIVE"
-      printf '%s\n' "$recorded_drive" > "$DRIVEFILE"
     else
       [ "$recorded_drive" = "$DATA_DRIVE" ] \
         || die "already running with data drive $recorded_drive (requested $DATA_DRIVE)"
       running_dory_hv_uses_drive "$pid" "$recorded_drive" \
         || die "running engine data drive does not match recorded drive $recorded_drive; stop it before recovery"
     fi
+    drive_id="$("$BIN/dory-hv" data-drive id "$recorded_drive")" \
+      || die "running engine data-drive identity is unreadable"
+    [ -z "$recorded_drive_id" ] || [ "$recorded_drive_id" = "$drive_id" ] \
+      || die "running engine data-drive UUID does not match recorded identity"
+    write_drive_identity "$recorded_drive" "$drive_id"
     # Repair metadata lost during an abrupt host shutdown so later status/stop operations retain
     # their normal fast path instead of depending on process-table recovery.
     printf '%s\n' "$pid" > "$PIDFILE"
@@ -285,12 +337,14 @@ cmd_start() {
     return 0
   fi
 
-  # An interrupted upgrade may leave one half of the old runtime alive. Only processes recorded in
-  # this runtime's own pidfiles are touched, and both are stopped before paths are reused.
-  orphaned_gvproxy="$(owned_gvproxy_pids)"
-  if engine_pid >/dev/null || dataplane_pid >/dev/null || [ -n "$orphaned_gvproxy" ]; then
-    note "stopping incomplete previous runtime…"
-    cmd_stop
+  if [ -n "$recorded_drive_id" ] && [ "$recorded_drive" = "$DATA_DRIVE" ]; then
+    drive_id="$("$BIN/dory-hv" data-drive id "$DATA_DRIVE")" \
+      || die "selected data drive is missing or its identity is unreadable; refusing to create a replacement"
+    [ "$recorded_drive_id" = "$drive_id" ] \
+      || die "selected data-drive UUID does not match recorded identity"
+  else
+    drive_id="$("$BIN/dory-hv" data-drive prepare "$DATA_DRIVE")" \
+      || die "cannot prepare data drive $DATA_DRIVE"
   fi
 
   mkdir -p "$STATE/vm" "$STATE/bin"
@@ -359,7 +413,7 @@ cmd_start() {
     sleep 1
   done
   note "ready in ${waited}s"
-  printf '%s\n' "$DATA_DRIVE" > "$DRIVEFILE"
+  write_drive_identity "$DATA_DRIVE" "$drive_id"
   local settings_tmp="$SETTINGSFILE.tmp.$$"
   {
     printf 'mem_mb=%s\n' "$mem_mb"
@@ -424,9 +478,11 @@ cmd_status() {
       local api_version
       api_version="$(curl -sf --max-time 2 --unix-socket "$SOCK" http://d/version 2>/dev/null | sed -n 's/.*"ApiVersion":"\([^"]*\)".*/\1/p' | head -1)"
       local active_drive="$DATA_DRIVE"
+      local active_drive_id="unknown"
       [ ! -s "$DRIVEFILE" ] || IFS= read -r active_drive < "$DRIVEFILE"
+      [ ! -s "$DRIVEIDFILE" ] || IFS= read -r active_drive_id < "$DRIVEIDFILE"
       note "running (engine pid $pid, dataplane pid $dataplane, docker api ${api_version:-unknown}) at unix://$SOCK"
-      note "data drive: $active_drive"
+      note "data drive: $active_drive (id $active_drive_id)"
     else
       note "starting (pid $pid) — socket not ready yet"
     fi

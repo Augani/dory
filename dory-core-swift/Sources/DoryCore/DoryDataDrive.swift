@@ -36,6 +36,35 @@ public enum DoryDataDriveError: Error, Sendable, Equatable, CustomStringConverti
     }
 }
 
+public struct DoryDataDriveManifest: Codable, Sendable, Equatable {
+    public let kind: String
+    public let schemaVersion: Int
+    public let id: UUID
+    public let product: String
+    public let createdAt: String
+
+    public init(id: UUID = UUID(), createdAt: Date = Date()) {
+        kind = DoryDataDrive.manifestKind
+        schemaVersion = DoryDataDrive.schemaVersion
+        self.id = id
+        product = "Dory"
+        self.createdAt = Self.timestampFormatter.string(from: createdAt)
+    }
+
+    fileprivate var isValid: Bool {
+        kind == DoryDataDrive.manifestKind
+            && schemaVersion == DoryDataDrive.schemaVersion
+            && product == "Dory"
+            && Self.timestampFormatter.date(from: createdAt) != nil
+    }
+
+    private static var timestampFormatter: ISO8601DateFormatter {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }
+}
+
 /// Canonical durable storage for Dory-owned workload data.
 ///
 /// Runtime sockets, logs, prepared kernels, and replaceable root filesystems stay under `~/.dory`.
@@ -44,20 +73,21 @@ public enum DoryDataDriveError: Error, Sendable, Equatable, CustomStringConverti
 public struct DoryDataDrive: Sendable, Equatable {
     public static let bundleName = "Dory.dorydrive"
     public static let manifestKind = "dev.dory.data-drive"
-    public static let schemaVersion = 1
+    public static let schemaVersion = 2
+    private static let developmentSchemaVersion = 1
 
     public let home: String
     public let root: String
 
     public init(home: String = DoryDataDrive.processHome(), overrideRoot: String? = nil) throws {
-        guard home.hasPrefix("/") else {
+        guard home.hasPrefix("/"), !Self.hasControlCharacter(home) else {
             throw DoryDataDriveError.invalidRoot(home)
         }
         let standardizedHome = try Self.canonicalPath(home)
         let candidate = overrideRoot?.trimmingCharacters(in: .whitespacesAndNewlines)
         let selected = candidate.flatMap { $0.isEmpty ? nil : $0 }
             ?? Self.defaultRoot(home: standardizedHome)
-        guard selected.hasPrefix("/") else {
+        guard selected.hasPrefix("/"), !Self.hasControlCharacter(selected) else {
             throw DoryDataDriveError.invalidRoot(selected)
         }
         let url = URL(fileURLWithPath: try Self.canonicalPath(selected))
@@ -160,11 +190,20 @@ public struct DoryDataDrive: Sendable, Equatable {
         return path.withCString { lstat($0, &status) } == 0
     }
 
+    private static func hasControlCharacter(_ path: String) -> Bool {
+        path.unicodeScalars.contains { $0.value < 0x20 || $0.value == 0x7f }
+    }
+
     public var manifestPath: String { root + "/drive.json" }
     public var engineDirectory: String { root + "/engine" }
     public var engineDataDiskPath: String { engineDirectory + "/docker-data.ext4" }
+    public var kubernetesDirectory: String { root + "/kubernetes" }
     public var machinesDirectory: String { root + "/machines" }
-    public var backupsDirectory: String { root + "/backups" }
+    public var snapshotsDirectory: String { root + "/snapshots" }
+    public var exportsDirectory: String { root + "/exports" }
+    public var operationsDirectory: String { root + "/operations" }
+    public var backupsDirectory: String { exportsDirectory }
+    public var lockPath: String { root + "/drive.lock" }
 
     /// Explicit recovery candidates, ordered from the newest development layout to the oldest
     /// Apple-container store. A fresh product launch never adopts them automatically; callers must
@@ -207,8 +246,15 @@ public struct DoryDataDrive: Sendable, Equatable {
     public func prepare(fileManager: FileManager = .default) throws {
         do {
             try requireMountedExternalVolume(fileManager: fileManager)
+            let parent = URL(fileURLWithPath: root).deletingLastPathComponent().path
+            try fileManager.createDirectory(atPath: parent, withIntermediateDirectories: true)
+            let creationLock = try EngineStateDirectoryLock(
+                stateDirectory: parent,
+                lockFileName: ".\(URL(fileURLWithPath: root).lastPathComponent).creation.lock"
+            )
+            defer { withExtendedLifetime(creationLock) {} }
             if fileManager.fileExists(atPath: manifestPath) {
-                try validateManifest(fileManager: fileManager)
+                _ = try readOrUpgradeManifest(fileManager: fileManager)
             } else {
                 if fileManager.fileExists(atPath: root) {
                     let entries = try fileManager.contentsOfDirectory(atPath: root)
@@ -216,10 +262,9 @@ public struct DoryDataDrive: Sendable, Equatable {
                         throw DoryDataDriveError.populatedUnmarkedBundle(root)
                     }
                 }
-                try fileManager.createDirectory(atPath: root, withIntermediateDirectories: true)
-                try writeManifest(fileManager: fileManager)
+                try createFreshBundle(fileManager: fileManager)
             }
-            for directory in [root, engineDirectory, machinesDirectory, backupsDirectory] {
+            for directory in durableDirectories(root: root) {
                 try fileManager.createDirectory(atPath: directory, withIntermediateDirectories: true)
                 try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory)
             }
@@ -267,24 +312,123 @@ public struct DoryDataDrive: Sendable, Equatable {
     }
 
     public func validateManifest(fileManager: FileManager = .default) throws {
+        _ = try readManifest(fileManager: fileManager)
+    }
+
+    public func readManifest(fileManager: FileManager = .default) throws -> DoryDataDriveManifest {
+        try requirePrivateRegularManifest()
+        guard let data = fileManager.contents(atPath: manifestPath),
+              let manifest = try? JSONDecoder().decode(DoryDataDriveManifest.self, from: data),
+              manifest.isValid else {
+            throw DoryDataDriveError.invalidManifest(manifestPath)
+        }
+        return manifest
+    }
+
+    private func readOrUpgradeManifest(fileManager: FileManager) throws -> DoryDataDriveManifest {
+        if let manifest = try? readManifest(fileManager: fileManager) {
+            return manifest
+        }
+        try requirePrivateRegularManifest()
         guard let data = fileManager.contents(atPath: manifestPath),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               object["kind"] as? String == Self.manifestKind,
-              (object["schemaVersion"] as? NSNumber)?.intValue == Self.schemaVersion else {
+              (object["schemaVersion"] as? NSNumber)?.intValue == Self.developmentSchemaVersion else {
+            throw DoryDataDriveError.invalidManifest(manifestPath)
+        }
+        let manifest = DoryDataDriveManifest()
+        try writeManifest(manifest, at: manifestPath, fileManager: fileManager)
+        return manifest
+    }
+
+    private func requirePrivateRegularManifest() throws {
+        var status = stat()
+        guard manifestPath.withCString({ lstat($0, &status) }) == 0,
+              status.st_mode & S_IFMT == S_IFREG,
+              status.st_uid == getuid(),
+              status.st_mode & 0o077 == 0,
+              status.st_nlink == 1 else {
             throw DoryDataDriveError.invalidManifest(manifestPath)
         }
     }
 
-    private func writeManifest(fileManager: FileManager) throws {
-        let data = try JSONSerialization.data(
-            withJSONObject: [
-                "kind": Self.manifestKind,
-                "schemaVersion": Self.schemaVersion,
-            ],
-            options: [.prettyPrinted, .sortedKeys]
-        ) + Data("\n".utf8)
-        try data.write(to: URL(fileURLWithPath: manifestPath), options: [.atomic])
-        try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: manifestPath)
+    private func createFreshBundle(fileManager: FileManager) throws {
+        let destination = URL(fileURLWithPath: root)
+        let parent = destination.deletingLastPathComponent().path
+        let partial = parent + "/.\(destination.lastPathComponent).\(UUID().uuidString).partial"
+        try? fileManager.removeItem(atPath: partial)
+        do {
+            for directory in durableDirectories(root: partial) {
+                try fileManager.createDirectory(atPath: directory, withIntermediateDirectories: true)
+                try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory)
+            }
+            try writeManifest(
+                DoryDataDriveManifest(),
+                at: partial + "/drive.json",
+                fileManager: fileManager
+            )
+            try Self.syncDirectory(partial)
+            if fileManager.fileExists(atPath: root) {
+                let entries = try fileManager.contentsOfDirectory(atPath: root)
+                guard entries.isEmpty else {
+                    throw DoryDataDriveError.populatedUnmarkedBundle(root)
+                }
+                try fileManager.removeItem(atPath: root)
+            }
+            try fileManager.moveItem(atPath: partial, toPath: root)
+            try Self.syncDirectory(parent)
+        } catch {
+            try? fileManager.removeItem(atPath: partial)
+            throw error
+        }
+    }
+
+    private func durableDirectories(root: String) -> [String] {
+        [
+            root,
+            root + "/engine",
+            root + "/kubernetes",
+            root + "/machines",
+            root + "/snapshots",
+            root + "/exports",
+            root + "/operations",
+        ]
+    }
+
+    private func writeManifest(
+        _ manifest: DoryDataDriveManifest,
+        at path: String,
+        fileManager: FileManager
+    ) throws {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        let data = try encoder.encode(manifest) + Data("\n".utf8)
+        try data.write(to: URL(fileURLWithPath: path), options: [.atomic])
+        try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path)
+        try Self.syncFile(path)
+        try Self.syncDirectory(URL(fileURLWithPath: path).deletingLastPathComponent().path)
+    }
+
+    private static func syncFile(_ path: String) throws {
+        let descriptor = path.withCString { Darwin.open($0, O_RDONLY | O_CLOEXEC | O_NOFOLLOW) }
+        guard descriptor >= 0 else {
+            throw DoryDataDriveError.filesystem("open Dory data-drive file for sync at \(path): errno \(errno)")
+        }
+        defer { Darwin.close(descriptor) }
+        guard Darwin.fsync(descriptor) == 0 else {
+            throw DoryDataDriveError.filesystem("sync Dory data-drive file at \(path): errno \(errno)")
+        }
+    }
+
+    private static func syncDirectory(_ path: String) throws {
+        let descriptor = path.withCString { Darwin.open($0, O_RDONLY | O_CLOEXEC) }
+        guard descriptor >= 0 else {
+            throw DoryDataDriveError.filesystem("open Dory data-drive directory for sync at \(path): errno \(errno)")
+        }
+        defer { Darwin.close(descriptor) }
+        guard Darwin.fsync(descriptor) == 0 else {
+            throw DoryDataDriveError.filesystem("sync Dory data-drive directory at \(path): errno \(errno)")
+        }
     }
 
     private func requireMountedExternalVolume(fileManager: FileManager) throws {

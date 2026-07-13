@@ -29,6 +29,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -1705,7 +1706,18 @@ def data_drive_report() -> dict[str, Any]:
     except (OSError, ValueError) as exc:
         report["error"] = f"invalid Dory data drive manifest: {exc}"
         return report
-    if manifest.get("kind") != "dev.dory.data-drive" or manifest.get("schemaVersion") != 1:
+    try:
+        drive_id = str(uuid.UUID(str(manifest.get("id"))))
+        created_at = dt.datetime.fromisoformat(str(manifest.get("createdAt")).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        report["error"] = "invalid Dory data drive identity or creation timestamp"
+        return report
+    if (
+        manifest.get("kind") != "dev.dory.data-drive"
+        or manifest.get("schemaVersion") != 2
+        or manifest.get("product") != "Dory"
+        or created_at.tzinfo is None
+    ):
         report["error"] = "invalid or incompatible Dory data drive manifest"
         return report
 
@@ -1713,6 +1725,9 @@ def data_drive_report() -> dict[str, Any]:
         "available": True,
         "initialized": True,
         "manifest": str(manifest_path),
+        "drive_id": drive_id,
+        "schema_version": manifest["schemaVersion"],
+        "created_at": manifest["createdAt"],
         "allocated_bytes": directory_size(path),
     })
     try:

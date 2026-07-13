@@ -107,6 +107,12 @@ final class HealthReporterTests: XCTestCase {
         XCTAssertEqual(check.code, "disk.dory_drive_ok")
         XCTAssertEqual(check.data["path"], drive.root)
         XCTAssertEqual(check.data["available"], "true")
+        XCTAssertEqual(check.data["drive_id"], try drive.readManifest().id.uuidString.lowercased())
+        XCTAssertEqual(check.data["schema_version"], "2")
+        XCTAssertNotNil(check.data["created_at"])
+        XCTAssertNotNil(check.data["filesystem"])
+        XCTAssertEqual(check.data["engine_disk_logical_bytes"], "0")
+        XCTAssertEqual(check.data["engine_disk_allocated_bytes"], "0")
         XCTAssertGreaterThan(Int(check.data["allocated_bytes"] ?? "0") ?? 0, 0)
     }
 

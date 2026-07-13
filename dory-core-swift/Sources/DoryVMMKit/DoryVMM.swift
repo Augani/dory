@@ -614,7 +614,10 @@ public enum DoryVMMMain {
             if let dataDriveRoot = arguments.dataDriveRoot, machineID == "docker" {
                 let drive = try DoryDataDrive(overrideRoot: dataDriveRoot)
                 try drive.prepare()
-                dataDriveLock = try EngineStateDirectoryLock(stateDirectory: drive.engineDirectory)
+                dataDriveLock = try EngineStateDirectoryLock(
+                    stateDirectory: drive.root,
+                    lockFileName: "drive.lock"
+                )
             } else {
                 dataDriveLock = nil
             }

@@ -25,13 +25,22 @@ public final class EngineStateDirectoryLock: @unchecked Sendable {
     public let path: String
     private let descriptor: Int32
 
-    public init(stateDirectory: String) throws {
+    public init(stateDirectory: String, lockFileName: String = "engine.lock") throws {
         let standardizedState = URL(fileURLWithPath: stateDirectory).standardizedFileURL.path
         try FileManager.default.createDirectory(
             atPath: standardizedState,
             withIntermediateDirectories: true
         )
-        path = standardizedState + "/engine.lock"
+        guard !lockFileName.isEmpty,
+              lockFileName != ".",
+              lockFileName != "..",
+              !lockFileName.contains("/") else {
+            throw EngineStateDirectoryLockError.cannotOpen(
+                path: standardizedState + "/" + lockFileName,
+                errno: EINVAL
+            )
+        }
+        path = standardizedState + "/" + lockFileName
 
         let opened = path.withCString {
             Darwin.open($0, O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, mode_t(0o600))

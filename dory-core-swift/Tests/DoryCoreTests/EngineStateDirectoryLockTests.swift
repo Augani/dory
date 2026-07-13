@@ -45,6 +45,22 @@ final class EngineStateDirectoryLockTests: XCTestCase {
         withExtendedLifetime((first, second)) {}
     }
 
+    func testSupportsASeparateDriveLifetimeLockInTheBundleRoot() throws {
+        let drive = temporaryStateDirectory() + ".dorydrive"
+        defer { try? FileManager.default.removeItem(atPath: drive) }
+
+        let first = try EngineStateDirectoryLock(
+            stateDirectory: drive,
+            lockFileName: "drive.lock"
+        )
+        XCTAssertEqual(first.path, drive + "/drive.lock")
+        XCTAssertThrowsError(try EngineStateDirectoryLock(
+            stateDirectory: drive + "/./",
+            lockFileName: "drive.lock"
+        ))
+        withExtendedLifetime(first) {}
+    }
+
     private func temporaryStateDirectory() -> String {
         FileManager.default.temporaryDirectory
             .appendingPathComponent("dory-engine-lock-\(UUID().uuidString)", isDirectory: true)

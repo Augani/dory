@@ -1305,11 +1305,23 @@ public final class HealthReporter: @unchecked Sendable {
                     data: ["path": drive.root, "available": "false"]
                 )
             case .ready:
+                let manifest = try drive.readManifest(fileManager: fileManager)
                 let allocated = allocatedDirectoryBytes(at: drive.root)
+                var diskStatus = stat()
+                let hasDiskStatus = stat(drive.engineDataDiskPath, &diskStatus) == 0
+                let diskLogical = hasDiskStatus ? max(0, Int64(diskStatus.st_size)) : 0
+                let diskAllocated = hasDiskStatus ? max(0, Int64(diskStatus.st_blocks)) * 512 : 0
                 var stats = statfs()
                 let hasFilesystemStats = statfs(drive.root, &stats) == 0
                 let free = hasFilesystemStats ? UInt64(stats.f_bavail) * UInt64(stats.f_bsize) : 0
                 let total = hasFilesystemStats ? UInt64(stats.f_blocks) * UInt64(stats.f_bsize) : 0
+                let filesystem = hasFilesystemStats
+                    ? withUnsafePointer(to: &stats.f_fstypename) {
+                        $0.withMemoryRebound(to: CChar.self, capacity: Int(MFSNAMELEN)) {
+                            String(cString: $0)
+                        }
+                    }
+                    : "unknown"
                 return HealthCheck(
                     id: "disk.dory_drive",
                     status: .pass,
@@ -1318,10 +1330,16 @@ public final class HealthReporter: @unchecked Sendable {
                     detail: "\(drive.root) — \(formatBytes(Int64(allocated))) physically allocated",
                     data: [
                         "path": drive.root,
+                        "drive_id": manifest.id.uuidString.lowercased(),
+                        "schema_version": String(manifest.schemaVersion),
+                        "created_at": manifest.createdAt,
                         "available": "true",
                         "allocated_bytes": String(allocated),
+                        "engine_disk_logical_bytes": String(diskLogical),
+                        "engine_disk_allocated_bytes": String(diskAllocated),
                         "free_bytes": String(free),
                         "total_bytes": String(total),
+                        "filesystem": filesystem,
                         "manifest": drive.manifestPath,
                     ]
                 )
