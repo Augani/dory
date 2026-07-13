@@ -656,6 +656,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "dory-runc-wrapper"
+version = "0.0.0"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
 name = "dory-sync"
 version = "0.0.0"
 dependencies = [

@@ -1,0 +1,110 @@
+diff --git a/Source/Common/FDUtils.h b/Source/Common/FDUtils.h
+index d80a23d4..bfe4f530 100644
+--- a/Source/Common/FDUtils.h
++++ b/Source/Common/FDUtils.h
+@@ -10,4 +10,30 @@ namespace FEX {
+ 
++// FEX shares the host descriptor table with the translated process. Keep long-lived runtime
++// handles out of the low range so guest allocation matches native Linux. This matters for POSIX
++// shells such as dash, which only accept single-digit redirection operands: package managers may
++// legitimately pass a newly allocated descriptor to `sh -c`, and one leaked runtime handle can
++// turn fd 9 into fd 10.
++[[nodiscard]]
++inline int RelocateInternalFD(int fd) {
++  constexpr int INTERNAL_FD_BASE = 256;
++  if (fd < 0 || fd >= INTERNAL_FD_BASE) {
++    return fd;
++  }
++
++  const int OriginalFlags = fcntl(fd, F_GETFD);
++  const int Relocated = fcntl(fd, F_DUPFD_CLOEXEC, INTERNAL_FD_BASE);
++  if (Relocated == -1) {
++    return fd;
++  }
++  if (OriginalFlags != -1 && fcntl(Relocated, F_SETFD, OriginalFlags) == -1) {
++    close(Relocated);
++    return fd;
++  }
++
++  close(fd);
++  return Relocated;
++}
++
+ [[nodiscard]]
+ inline int get_fdpath(int fd, char* SymlinkPath) {
+   auto Path = fextl::fmt::format("/proc/self/fd/{}", fd);
+diff --git a/Source/Common/FEXServerClient.cpp b/Source/Common/FEXServerClient.cpp
+index 16fcc02d..609e7a9a 100644
+--- a/Source/Common/FEXServerClient.cpp
++++ b/Source/Common/FEXServerClient.cpp
+@@ -236,7 +236,7 @@ int GetServerFD() {
+ }
+ 
+ bool SetupClient(std::string_view InterpreterPath) {
+-  ServerFD = FEXServerClient::ConnectToAndStartServer(InterpreterPath);
++  ServerFD = FEX::RelocateInternalFD(FEXServerClient::ConnectToAndStartServer(InterpreterPath));
+   if (ServerFD == -1) {
+     return false;
+   }
+diff --git a/Source/Tools/FEXInterpreter/FEXInterpreter.cpp b/Source/Tools/FEXInterpreter/FEXInterpreter.cpp
+index 406fe428..f1a0aff8 100644
+--- a/Source/Tools/FEXInterpreter/FEXInterpreter.cpp
++++ b/Source/Tools/FEXInterpreter/FEXInterpreter.cpp
+@@ -9,6 +9,7 @@ $end_info$
+ #include "Common/ArgumentLoader.h"
+ #include "Common/FEXServerClient.h"
+ #include "Common/Config.h"
++#include "Common/FDUtils.h"
+ #include "Common/HostFeatures.h"
+ #include "Common/Linux/SBRKAllocations.h"
+ #include "PortabilityInfo.h"
+@@ -120,6 +121,6 @@ void Init() {
+       LogFD = dup(STDERR_FILENO);
+     } else if (LogFile == "server") {
+-      Logging::FEXServer::FEXServerFD = FEXServerClient::RequestLogFD(FEXServerClient::GetServerFD());
++      Logging::FEXServer::FEXServerFD = FEX::RelocateInternalFD(FEXServerClient::RequestLogFD(FEXServerClient::GetServerFD()));
+       if (FEXServer::FEXServerFD != -1) {
+         LogMan::Throw::InstallHandler(Logging::FEXServer::AssertHandler);
+         LogMan::Msg::InstallHandler(Logging::FEXServer::MsgHandler);
+@@ -129,6 +130,9 @@ void Init() {
+     if (LogFD == -1) {
+       LogMan::Msg::EFmt("Couldn't open log file. Going Silent.");
+       Logging::SilentLog = true;
+     } else {
++      if (LogFD > STDERR_FILENO) {
++        LogFD = FEX::RelocateInternalFD(LogFD);
++      }
+       OutputFD = LogFD;
+     }
+@@ -574,6 +578,9 @@ int main(int argc, char** argv, char** const envp) {
+   ThunkHandler->RegisterTLSState(ParentThread);
+ 
+   SyscallHandler->DeserializeSeccompFD(ParentThread, FEXSeccompFD);
++  if (FEXSeccompFD != -1) {
++    close(FEXSeccompFD);
++  }
+ 
+   // Load VDSO in to memory prior to mapping our ELFs.
+   auto VDSOMapping = FEX::VDSO::LoadVDSOThunks(ParentThread->Thread, Loader.Is64BitMode(), SyscallHandler.get());
+diff --git a/Source/Tools/LinuxEmulation/LinuxSyscalls/FileManagement.cpp b/Source/Tools/LinuxEmulation/LinuxSyscalls/FileManagement.cpp
+index b5a1a02d..1f3db006 100644
+--- a/Source/Tools/LinuxEmulation/LinuxSyscalls/FileManagement.cpp
++++ b/Source/Tools/LinuxEmulation/LinuxSyscalls/FileManagement.cpp
+@@ -222,7 +222,7 @@ FileManager::FileManager(FEXCore::Context::Context* ctx)
+   }
+ 
+   if (!LDPath().empty()) {
+-    RootFSFD = open(LDPath().c_str(), O_DIRECTORY | O_PATH | O_CLOEXEC);
++    RootFSFD = FEX::RelocateInternalFD(open(LDPath().c_str(), O_DIRECTORY | O_PATH | O_CLOEXEC));
+     if (RootFSFD == -1) {
+       RootFSFD = AT_FDCWD;
+     } else {
+@@ -330,7 +330,7 @@ FileManager::FileManager(FEXCore::Context::Context* ctx)
+   }
+ 
+   // Keep an fd open for /proc, to bypass chroot-style sandboxes
+-  ProcFD = open("/proc", O_RDONLY | O_CLOEXEC);
++  ProcFD = FEX::RelocateInternalFD(open("/proc", O_RDONLY | O_CLOEXEC));
+   if (ProcFD != -1) {
+     // Track the st_dev of /proc, to check for inode equality
+     struct stat Buffer;

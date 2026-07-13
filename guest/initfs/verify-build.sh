@@ -60,6 +60,10 @@ DEBUGFS="$(find_debugfs)" || fail "debugfs is required to validate the initfs co
 for required in \
   /bin/sh \
   /sbin/init \
+  /sbin/e2fsck \
+  /sbin/fstrim \
+  /usr/sbin/dumpe2fs \
+  /usr/sbin/resize2fs \
   /usr/bin/dory-agent \
   /usr/local/bin/containerd \
   /usr/local/bin/crun \
@@ -71,14 +75,72 @@ for required in \
     || fail "$IMAGE is missing required guest path $required"
 done
 
+if [ "$ARCH" = arm64 ]; then
+  for required in \
+    /usr/local/bin/dory-runc \
+    /usr/local/bin/runc.real \
+    /usr/lib/dory/fex/FEX \
+    /usr/lib/dory/fex/FEXServer \
+    /usr/lib/dory/fex/ld-linux-aarch64.so.1 \
+    /usr/lib/dory/fex/lib/libc.so.6 \
+    /usr/lib/dory/fex/lib/libgcc_s.so.1 \
+    /usr/lib/dory/fex/lib/libm.so.6 \
+    /usr/lib/dory/fex/lib/libstdc++.so.6 \
+    /usr/lib/dory/fex/licenses/FEX-Emu.copyright \
+    /usr/lib/dory/fex/licenses/libc6.copyright \
+    /usr/lib/dory/fex/licenses/gcc-14-base.copyright; do
+    "$DEBUGFS" -R "stat $required" "$IMAGE" 2>&1 | grep -q '^Inode:' \
+      || fail "$IMAGE is missing required Apple Silicon FEX path $required"
+  done
+fi
+
 AGENT_DUMP="$(mktemp /tmp/dory-agent-verify.XXXXXX)"
+FEX_DUMP=""
+FEX_SERVER_DUMP=""
+DORY_RUNC_DUMP=""
+RUNC_REAL_DUMP=""
 cleanup() {
-  rm -f "$AGENT_DUMP"
+  rm -f "$AGENT_DUMP" "$FEX_DUMP" "$FEX_SERVER_DUMP" "$DORY_RUNC_DUMP" "$RUNC_REAL_DUMP"
 }
 trap cleanup EXIT
 "$DEBUGFS" -R "dump /usr/bin/dory-agent $AGENT_DUMP" "$IMAGE" >/dev/null 2>&1 \
   || fail "could not extract /usr/bin/dory-agent from $IMAGE"
 [ "$(shasum -a 256 "$AGENT_DUMP" | awk '{print $1}')" = "$(shasum -a 256 "$AGENT" | awk '{print $1}')" ] \
   || fail "$IMAGE embeds a different dory-agent than $AGENT"
+
+if [ "$ARCH" = arm64 ]; then
+  "$DEBUGFS" -R 'stat /usr/local/bin/runc' "$IMAGE" 2>&1 \
+    | grep -q 'Fast link dest: "dory-runc"' \
+    || fail "$IMAGE does not route BuildKit's conventional runc path through dory-runc"
+  FEX_DUMP="$(mktemp /tmp/dory-fex-verify.XXXXXX)"
+  FEX_SERVER_DUMP="$(mktemp /tmp/dory-fex-server-verify.XXXXXX)"
+  DORY_RUNC_DUMP="$(mktemp /tmp/dory-runc-verify.XXXXXX)"
+  RUNC_REAL_DUMP="$(mktemp /tmp/dory-runc-real-verify.XXXXXX)"
+  "$DEBUGFS" -R "dump /usr/lib/dory/fex/FEX $FEX_DUMP" "$IMAGE" >/dev/null 2>&1 \
+    || fail "could not extract the FEX interpreter"
+  "$DEBUGFS" -R "dump /usr/lib/dory/fex/FEXServer $FEX_SERVER_DUMP" "$IMAGE" >/dev/null 2>&1 \
+    || fail "could not extract FEXServer"
+  "$DEBUGFS" -R "dump /usr/local/bin/dory-runc $DORY_RUNC_DUMP" "$IMAGE" >/dev/null 2>&1 \
+    || fail "could not extract dory-runc"
+  "$DEBUGFS" -R "dump /usr/local/bin/runc.real $RUNC_REAL_DUMP" "$IMAGE" >/dev/null 2>&1 \
+    || fail "could not extract runc.real"
+  FEX_PAIR="$(shasum -a 256 "$FEX_DUMP" | awk '{print $1}'):$(shasum -a 256 "$FEX_SERVER_DUMP" | awk '{print $1}')"
+  case "$FEX_PAIR" in
+    385c2495a46f00450ffa62e641552b7f18928aa18f3d0a8b621c526ccf79e009:9a4b098f004a5e9e1759ead38795f48bbc900e654d51e3bcf20d9921f00b2ef4) ;;
+    *) fail "$IMAGE contains an unverified relocated FEX binary pair" ;;
+  esac
+  [ "$(patchelf --print-interpreter "$FEX_DUMP")" = /usr/lib/dory/fex/ld-linux-aarch64.so.1 ] \
+    || fail "$IMAGE FEX interpreter does not use Dory's private loader"
+  [ "$(patchelf --print-rpath "$FEX_DUMP")" = /usr/lib/dory/fex/lib ] \
+    || fail "$IMAGE FEX interpreter does not use Dory's private library path"
+  [ "$(patchelf --print-interpreter "$FEX_SERVER_DUMP")" = /usr/lib/dory/fex/ld-linux-aarch64.so.1 ] \
+    || fail "$IMAGE FEXServer does not use Dory's private loader"
+  [ "$(patchelf --print-rpath "$FEX_SERVER_DUMP")" = /usr/lib/dory/fex/lib ] \
+    || fail "$IMAGE FEXServer does not use Dory's private library path"
+  file "$DORY_RUNC_DUMP" | grep -Eq 'ELF 64-bit.*(ARM aarch64|arm64).*(static-pie|statically) linked' \
+    || fail "$IMAGE dory-runc is not a static arm64 Linux binary"
+  file "$RUNC_REAL_DUMP" | grep -Eq 'ELF 64-bit.*(ARM aarch64|arm64).*(static-pie|statically) linked' \
+    || fail "$IMAGE runc.real is not Docker's static arm64 runtime"
+fi
 
 echo "verified $ARCH initfs input fingerprint $EXPECTED_INPUT"

@@ -1,6 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 cd "$(dirname "$0")"
+source ./config-policy.sh
 
 ARCH="${1:-arm64}"
 OUT="${DORY_KERNEL_OUT_DIR:-../out}"
@@ -110,13 +111,8 @@ REQUIRED_POLICIES="$({
 while IFS= read -r expected; do
   symbol="${expected%%=*}"
   value="${expected#*=}"
-  if [ "$value" = "n" ]; then
-    grep -Fqx "# $symbol is not set" "$CONFIG" \
-      || fail "$CONFIG does not honor required policy $expected"
-  else
-    grep -Fqx "$expected" "$CONFIG" \
-      || fail "$CONFIG does not honor required policy $expected"
-  fi
+  dory_kernel_config_honors_policy "$CONFIG" "$symbol" "$value" \
+    || fail "$CONFIG does not honor required policy $expected"
 done <<< "$REQUIRED_POLICIES"
 
 echo "verified $ARCH kernel input fingerprint $EXPECTED_INPUT"

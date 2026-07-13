@@ -2,3 +2,10 @@ KERNEL_VERSION=6.12.30
 KERNEL_URL=https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.12.30.tar.xz
 KERNEL_SHA256=df046a48971e40ce0b2e003e7e55b6b1e7da2912120eb216d5d6c8450c9cf82e
 KERNEL_BUILDER_IMAGE=debian:12-slim@sha256:60eac759739651111db372c07be67863818726f754804b8707c90979bda511df
+
+# Stable build identity. These values are part of the kernel input fingerprint and are passed into
+# the isolated builder so identical source/config/patch inputs produce byte-identical artifacts.
+KERNEL_SOURCE_DATE_EPOCH=0
+KERNEL_BUILD_USER=dory
+KERNEL_BUILD_HOST=builder
+KERNEL_BUILD_VERSION=1

@@ -1,0 +1,348 @@
+diff --git a/pkg/services/dns/dns.go b/pkg/services/dns/dns.go
+index 9f86fe8..476d991 100644
+--- a/pkg/services/dns/dns.go
++++ b/pkg/services/dns/dns.go
+@@ -144,6 +144,26 @@ func (h *dnsHandler) addAnswers(m *dns.Msg) {
+ 					A: ip.IP.To4(),
+ 				})
+ 			}
++		case dns.TypeAAAA:
++			ips, err := resolver.LookupIPAddr(context.TODO(), q.Name)
++			if err != nil {
++				m.Rcode = dns.RcodeNameError
++				return
++			}
++			for _, ip := range ips {
++				if ip.IP.To4() != nil || ip.IP.To16() == nil {
++					continue
++				}
++				m.Answer = append(m.Answer, &dns.AAAA{
++					Hdr: dns.RR_Header{
++						Name:   q.Name,
++						Rrtype: dns.TypeAAAA,
++						Class:  dns.ClassINET,
++						Ttl:    0,
++					},
++					AAAA: ip.IP.To16(),
++				})
++			}
+ 		case dns.TypeCNAME:
+ 			cname, err := resolver.LookupCNAME(context.TODO(), q.Name)
+ 			if err != nil {
+diff --git a/pkg/services/dns/dns_test.go b/pkg/services/dns/dns_test.go
+index 211d90f..8065261 100644
+--- a/pkg/services/dns/dns_test.go
++++ b/pkg/services/dns/dns_test.go
+@@ -364,6 +364,24 @@ func TestDNS(t *testing.T) {
+ 	}
+ }
+ 
++func TestAAAAAnswers(t *testing.T) {
++	upstream := &mockdns.Resolver{
++		Zones: map[string]mockdns.Zone{
++			"dual.test.": {
++				A:    []string{"192.0.2.10"},
++				AAAA: []string{"2001:db8::10"},
++			},
++		},
++	}
++	server, err := NewWithUpstreamResolver(nil, nil, nil, upstream)
++	require.NoError(t, err)
++	message := new(dns.Msg)
++	message.SetQuestion("dual.test.", dns.TypeAAAA)
++	server.handler.addAnswers(message)
++	require.Len(t, message.Answer, 1)
++	require.Equal(t, "2001:db8::10", message.Answer[0].(*dns.AAAA).AAAA.String())
++}
++
+ func startDNSServer(upstream upstreamResolver) (string, func(), error) {
+ 	udpConn, err := net.ListenPacket("udp", "127.0.0.1:5354")
+ 	if err != nil {
+diff --git a/pkg/tap/switch.go b/pkg/tap/switch.go
+index 944b618..2fb63ee 100644
+--- a/pkg/tap/switch.go
++++ b/pkg/tap/switch.go
+@@ -134,7 +134,7 @@ func (e *Switch) txPkt(pkt *stack.PacketBuffer) error {
+ 	if size < 0 {
+ 		return fmt.Errorf("packet size out of range")
+ 	}
+-	if dst == header.EthernetBroadcastAddress {
++	if dst == header.EthernetBroadcastAddress || isEthernetMulticast(dst) {
+ 		e.camLock.RLock()
+ 		srcID, ok := e.cam[src]
+ 		if !ok {
+@@ -294,7 +294,9 @@ func (e *Switch) rxBuf(_ context.Context, id int, buf []byte) {
+ 		}
+ 		pkt.DecRef()
+ 	}
+-	if eth.DestinationAddress() == e.gateway.LinkAddress() || eth.DestinationAddress() == header.EthernetBroadcastAddress {
++	if eth.DestinationAddress() == e.gateway.LinkAddress() ||
++		eth.DestinationAddress() == header.EthernetBroadcastAddress ||
++		isEthernetMulticast(eth.DestinationAddress()) {
+ 		data := buffer.MakeWithData(buf)
+ 		data.TrimFront(header.EthernetMinimumSize)
+ 		pkt := stack.NewPacketBuffer(stack.PacketBufferOptions{
+@@ -307,6 +309,10 @@ func (e *Switch) rxBuf(_ context.Context, id int, buf []byte) {
+ 	atomic.AddUint64(&e.Received, uint64(len(buf)))
+ }
+ 
++func isEthernetMulticast(address tcpip.LinkAddress) bool {
++	return len(address) == header.EthernetAddressSize && address[0]&1 == 1
++}
++
+ func protocolImplementation(protocol types.Protocol) protocol {
+ 	switch protocol {
+ 	case types.QemuProtocol:
+diff --git a/pkg/tap/switch_ipv6_test.go b/pkg/tap/switch_ipv6_test.go
+new file mode 100644
+index 0000000..d1af9f6
+--- /dev/null
++++ b/pkg/tap/switch_ipv6_test.go
+@@ -0,0 +1,15 @@
++package tap
++
++import (
++	"testing"
++
++	"github.com/stretchr/testify/require"
++	"gvisor.dev/gvisor/pkg/tcpip"
++)
++
++func TestEthernetMulticastClassification(t *testing.T) {
++	require.True(t, isEthernetMulticast(tcpip.LinkAddress("\x33\x33\xff\x00\x00\x01")))
++	require.True(t, isEthernetMulticast(tcpip.LinkAddress("\x01\x00\x5e\x00\x00\xfb")))
++	require.False(t, isEthernetMulticast(tcpip.LinkAddress("\x5a\x94\xef\xe4\x0c\xdd")))
++	require.False(t, isEthernetMulticast(tcpip.LinkAddress("short")))
++}
+diff --git a/pkg/types/configuration.go b/pkg/types/configuration.go
+index cf56dc3..1e9eb42 100644
+--- a/pkg/types/configuration.go
++++ b/pkg/types/configuration.go
+@@ -22,6 +22,11 @@ type Configuration struct {
+ 	// IP address of the virtual gateway
+ 	GatewayIP string `yaml:"gatewayIP,omitempty"`
+ 
++	// Optional IPv6 network and gateway. When set together, the same virtual Ethernet segment is
++	// dual-stack; IPv6 is omitted by default for compatibility with existing consumers.
++	IPv6Subnet    string `yaml:"ipv6Subnet,omitempty"`
++	IPv6GatewayIP string `yaml:"ipv6GatewayIP,omitempty"`
++
+ 	// MAC address of the virtual gateway
+ 	GatewayMacAddress string `yaml:"gatewayMacAddress,omitempty"`
+ 
+diff --git a/pkg/types/version.go b/pkg/types/version.go
+index c371601..97079b7 100644
+--- a/pkg/types/version.go
++++ b/pkg/types/version.go
+@@ -40,9 +40,6 @@ func (ver *version) ShowVersion() bool {
+ 
+ func moduleVersion() string {
+ 	switch {
+-	// This will be substituted when building from a GitHub tarball
+-	case !strings.HasPrefix(gitArchiveVersion, "$Format:"):
+-		return gitArchiveVersion
+ 	// This will be set when building from git using make
+ 	case gitVersion != "":
+ 		if !strings.HasPrefix(gitVersion, "v") {
+@@ -56,6 +53,10 @@ func moduleVersion() string {
+ 
+ 		}
+ 		return gitVersion
++	// This will be substituted when building from a GitHub tarball. A deliberate linker-provided
++	// Dory patch version takes precedence so the audited derivative cannot identify as upstream.
++	case !strings.HasPrefix(gitArchiveVersion, "$Format:"):
++		return gitArchiveVersion
+ 	// moduleVersionFromBuildInfo() will be set when using `go install`
+ 	default:
+ 		return moduleVersionFromBuildInfo()
+diff --git a/pkg/virtualnetwork/services.go b/pkg/virtualnetwork/services.go
+index 57c5daf..5319d96 100644
+--- a/pkg/virtualnetwork/services.go
++++ b/pkg/virtualnetwork/services.go
+@@ -53,7 +53,16 @@ func addServices(configuration *types.Configuration, s *stack.Stack, ipPool *tap
+ func parseNATTable(configuration *types.Configuration) map[tcpip.Address]tcpip.Address {
+ 	translation := make(map[tcpip.Address]tcpip.Address)
+ 	for source, destination := range configuration.NAT {
+-		translation[tcpip.AddrFrom4Slice(net.ParseIP(source).To4())] = tcpip.AddrFrom4Slice(net.ParseIP(destination).To4())
++		sourceIP := net.ParseIP(source)
++		destinationIP := net.ParseIP(destination)
++		if sourceIP == nil || destinationIP == nil || (sourceIP.To4() == nil) != (destinationIP.To4() == nil) {
++			continue
++		}
++		if sourceIP.To4() != nil {
++			translation[tcpip.AddrFrom4Slice(sourceIP.To4())] = tcpip.AddrFrom4Slice(destinationIP.To4())
++		} else {
++			translation[tcpip.AddrFrom16Slice(sourceIP.To16())] = tcpip.AddrFrom16Slice(destinationIP.To16())
++		}
+ 	}
+ 	return translation
+ }
+diff --git a/pkg/virtualnetwork/services_ipv6_test.go b/pkg/virtualnetwork/services_ipv6_test.go
+new file mode 100644
+index 0000000..314b8b6
+--- /dev/null
++++ b/pkg/virtualnetwork/services_ipv6_test.go
+@@ -0,0 +1,22 @@
++package virtualnetwork
++
++import (
++	"testing"
++
++	"github.com/containers/gvisor-tap-vsock/pkg/types"
++	"github.com/stretchr/testify/require"
++	"gvisor.dev/gvisor/pkg/tcpip"
++)
++
++func TestParseNATTableSupportsBothAddressFamilies(t *testing.T) {
++	table := parseNATTable(&types.Configuration{NAT: map[string]string{
++		"192.168.127.254":     "127.0.0.1",
++		"fd7d:6f72:7900::1":   "::1",
++		"fd7d:6f72:7900::bad": "not-an-ip",
++		"fd7d:6f72:7900::4":   "127.0.0.1",
++	}})
++	require.Equal(t, tcpip.AddrFrom4([4]byte{127, 0, 0, 1}), table[tcpip.AddrFrom4([4]byte{192, 168, 127, 254})])
++	require.Equal(t, tcpip.AddrFrom16([16]byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}),
++		table[tcpip.AddrFrom16([16]byte{0xfd, 0x7d, 0x6f, 0x72, 0x79, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1})])
++	require.Len(t, table, 2)
++}
+diff --git a/pkg/virtualnetwork/virtualnetwork.go b/pkg/virtualnetwork/virtualnetwork.go
+index c7d3255..7eafb20 100644
+--- a/pkg/virtualnetwork/virtualnetwork.go
++++ b/pkg/virtualnetwork/virtualnetwork.go
+@@ -15,6 +15,7 @@ import (
+ 	"gvisor.dev/gvisor/pkg/tcpip/link/sniffer"
+ 	"gvisor.dev/gvisor/pkg/tcpip/network/arp"
+ 	"gvisor.dev/gvisor/pkg/tcpip/network/ipv4"
++	"gvisor.dev/gvisor/pkg/tcpip/network/ipv6"
+ 	"gvisor.dev/gvisor/pkg/tcpip/stack"
+ 	"gvisor.dev/gvisor/pkg/tcpip/transport/icmp"
+ 	"gvisor.dev/gvisor/pkg/tcpip/transport/tcp"
+@@ -107,16 +108,25 @@ func (n *VirtualNetwork) BytesReceived() uint64 {
+ }
+ 
+ func createStack(configuration *types.Configuration, endpoint stack.LinkEndpoint) (*stack.Stack, error) {
++	networkProtocols := []stack.NetworkProtocolFactory{
++		ipv4.NewProtocol,
++		arp.NewProtocol,
++	}
++	transportProtocols := []stack.TransportProtocolFactory{
++		tcp.NewProtocol,
++		udp.NewProtocol,
++		icmp.NewProtocol4,
++	}
++	if configuration.IPv6Subnet != "" || configuration.IPv6GatewayIP != "" {
++		if configuration.IPv6Subnet == "" || configuration.IPv6GatewayIP == "" {
++			return nil, errors.New("ipv6Subnet and ipv6GatewayIP must be configured together")
++		}
++		networkProtocols = append(networkProtocols, ipv6.NewProtocol)
++		transportProtocols = append(transportProtocols, icmp.NewProtocol6)
++	}
+ 	s := stack.New(stack.Options{
+-		NetworkProtocols: []stack.NetworkProtocolFactory{
+-			ipv4.NewProtocol,
+-			arp.NewProtocol,
+-		},
+-		TransportProtocols: []stack.TransportProtocolFactory{
+-			tcp.NewProtocol,
+-			udp.NewProtocol,
+-			icmp.NewProtocol4,
+-		},
++		NetworkProtocols:   networkProtocols,
++		TransportProtocols: transportProtocols,
+ 	})
+ 
+ 	if err := s.CreateNIC(1, endpoint); err != nil {
+@@ -130,6 +140,25 @@ func createStack(configuration *types.Configuration, endpoint stack.LinkEndpoint
+ 		return nil, errors.New(err.String())
+ 	}
+ 
++	if configuration.IPv6Subnet != "" {
++		gateway := net.ParseIP(configuration.IPv6GatewayIP)
++		_, parsedIPv6Subnet, parseErr := net.ParseCIDR(configuration.IPv6Subnet)
++		if gateway == nil || gateway.To4() != nil || parseErr != nil || parsedIPv6Subnet.IP.To4() != nil {
++			return nil, errors.New("invalid IPv6 gateway or subnet")
++		}
++		prefix, _ := parsedIPv6Subnet.Mask.Size()
++		gatewayAddress := tcpip.AddrFrom16Slice(gateway.To16())
++		if err := s.AddProtocolAddress(1, tcpip.ProtocolAddress{
++			Protocol: ipv6.ProtocolNumber,
++			AddressWithPrefix: tcpip.AddressWithPrefix{
++				Address:   gatewayAddress,
++				PrefixLen: prefix,
++			},
++		}, stack.AddressProperties{}); err != nil {
++			return nil, errors.New(err.String())
++		}
++	}
++
+ 	s.SetSpoofing(1, true)
+ 	s.SetPromiscuousMode(1, true)
+ 
+@@ -142,13 +171,25 @@ func createStack(configuration *types.Configuration, endpoint stack.LinkEndpoint
+ 	if err != nil {
+ 		return nil, fmt.Errorf("cannot parse subnet: %w", err)
+ 	}
+-	s.SetRouteTable([]tcpip.Route{
++	routes := []tcpip.Route{
+ 		{
+ 			Destination: subnet,
+ 			Gateway:     tcpip.Address{},
+ 			NIC:         1,
+ 		},
+-	})
++	}
++	if configuration.IPv6Subnet != "" {
++		_, parsedIPv6Subnet, _ := net.ParseCIDR(configuration.IPv6Subnet)
++		ipv6Subnet, subnetErr := tcpip.NewSubnet(
++			tcpip.AddrFrom16Slice(parsedIPv6Subnet.IP.To16()),
++			tcpip.MaskFromBytes(parsedIPv6Subnet.Mask),
++		)
++		if subnetErr != nil {
++			return nil, fmt.Errorf("cannot parse IPv6 subnet: %w", subnetErr)
++		}
++		routes = append(routes, tcpip.Route{Destination: ipv6Subnet, NIC: 1})
++	}
++	s.SetRouteTable(routes)
+ 
+ 	return s, nil
+ }
+diff --git a/pkg/virtualnetwork/ipv6_test.go b/pkg/virtualnetwork/ipv6_test.go
+new file mode 100644
+index 0000000..914a8a1
+--- /dev/null
++++ b/pkg/virtualnetwork/ipv6_test.go
+@@ -0,0 +1,34 @@
++package virtualnetwork
++
++import (
++	"testing"
++
++	"github.com/containers/gvisor-tap-vsock/pkg/tap"
++	"github.com/containers/gvisor-tap-vsock/pkg/types"
++	"github.com/stretchr/testify/require"
++)
++
++func TestCreateStackDualStack(t *testing.T) {
++	endpoint, err := tap.NewLinkEndpoint(false, 1500, "5a:94:ef:e4:0c:dd", "192.168.127.1", nil)
++	require.NoError(t, err)
++	_, err = createStack(&types.Configuration{
++		Subnet:        "192.168.127.0/24",
++		GatewayIP:     "192.168.127.1",
++		IPv6Subnet:    "fd7d:6f72:7900::/64",
++		IPv6GatewayIP: "fd7d:6f72:7900::1",
++	}, endpoint)
++	require.NoError(t, err)
++}
++
++func TestCreateStackRejectsIncompleteOrInvalidIPv6(t *testing.T) {
++	for _, configuration := range []types.Configuration{
++		{Subnet: "192.168.127.0/24", GatewayIP: "192.168.127.1", IPv6Subnet: "fd7d:6f72:7900::/64"},
++		{Subnet: "192.168.127.0/24", GatewayIP: "192.168.127.1", IPv6GatewayIP: "fd7d:6f72:7900::1"},
++		{Subnet: "192.168.127.0/24", GatewayIP: "192.168.127.1", IPv6Subnet: "fd7d:6f72:7900::/129", IPv6GatewayIP: "fd7d:6f72:7900::1"},
++	} {
++		endpoint, err := tap.NewLinkEndpoint(false, 1500, "5a:94:ef:e4:0c:dd", "192.168.127.1", nil)
++		require.NoError(t, err)
++		_, err = createStack(&configuration, endpoint)
++		require.Error(t, err)
++	}
++}

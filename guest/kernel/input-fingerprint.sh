@@ -40,7 +40,7 @@ fi
 {
   printf 'schema=2\narch=%s\ngpu=%s\nkernel_version=%s\nkernel_url=%s\nkernel_sha256=%s\nbuilder_image=%s\n' \
     "$ARCH" "$GPU" "$KERNEL_VERSION" "$KERNEL_URL" "$KERNEL_SHA256" "$KERNEL_BUILDER_IMAGE"
-  for input in build.sh PINS "${CONFIGS[@]}" "${PATCHES[@]}"; do
+  for input in build.sh docker-endpoint.sh PINS "${CONFIGS[@]}" "${PATCHES[@]}"; do
     printf 'input=%s\n' "$input"
     shasum -a 256 "$input"
   done

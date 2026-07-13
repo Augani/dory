@@ -105,8 +105,9 @@ linux_linker_for_target() {
   return 1
 }
 
-build_rust_agent() {
-  local arch="$1" destination="$2" target agent linker env_name rustflags
+build_rust_guest_tools() {
+  local arch="$1" agent_destination="$2" wrapper_destination="$3"
+  local target agent wrapper linker env_name rustflags
   target="$(rust_target_for_arch "$arch")"
   linker="$(linux_linker_for_target "$target")"
   env_name="CARGO_TARGET_$(printf '%s' "$target" | tr '[:lower:]-' '[:upper:]_')_LINKER"
@@ -115,10 +116,13 @@ build_rust_agent() {
     rustflags="$rustflags -C linker-flavor=ld.lld"
   fi
   rustup target add "$target" >/dev/null
-  ( cd "$ROOT/dory-core" && env "$env_name=$linker" RUSTFLAGS="$rustflags" cargo build --locked -p dory-agent --release --target "$target" )
+  ( cd "$ROOT/dory-core" && env "$env_name=$linker" RUSTFLAGS="$rustflags" cargo build --locked -p dory-agent -p dory-runc-wrapper --release --target "$target" )
   agent="$ROOT/dory-core/target/$target/release/dory-agent"
+  wrapper="$ROOT/dory-core/target/$target/release/dory-runc"
   [ -x "$agent" ] || { echo "Rust dory-agent was not produced for $target" >&2; exit 1; }
-  install -m0755 "$agent" "$destination"
+  [ -x "$wrapper" ] || { echo "Rust dory-runc was not produced for $target" >&2; exit 1; }
+  install -m0755 "$agent" "$agent_destination"
+  install -m0755 "$wrapper" "$wrapper_destination"
 }
 
 extract_tar() {
@@ -139,8 +143,8 @@ install_docker_static() {
   rm -rf "$tmp"
 }
 
-# crun is a single static ELF (no shared-lib deps); install it beside runc as dockerd's
-# default-runtime. runc stays available so `docker run --runtime runc` still works.
+# crun is a single static ELF (no shared-lib deps); install it beside Docker's default runc runtime
+# for explicit `docker run --runtime crun` use.
 install_crun() {
   local arch="$1" dest="$2" bin
   bin="$(fetch_pin "crun_${arch}")"
@@ -157,9 +161,102 @@ extract_apk() {
     --exclude '.pre-*'
 }
 
+extract_deb() {
+  local deb="$1" dest="$2" member
+  command -v ar >/dev/null 2>&1 || { echo "ar is required to extract pinned FEX packages" >&2; exit 1; }
+  mkdir -p "$dest"
+  for member in data.tar.zst data.tar.xz data.tar.gz; do
+    if ar t "$deb" | grep -qx "$member"; then
+      case "$member" in
+        data.tar.zst) ar -p "$deb" "$member" | tar --zstd -xf - -C "$dest" ;;
+        data.tar.xz) ar -p "$deb" "$member" | tar -xJf - -C "$dest" ;;
+        data.tar.gz) ar -p "$deb" "$member" | tar -xzf - -C "$dest" ;;
+      esac
+      return 0
+    fi
+  done
+  echo "unsupported Debian payload in $deb" >&2
+  exit 1
+}
+
+require_file_hash() {
+  local path="$1" expected="$2" actual
+  [ -f "$path" ] || { echo "missing pinned FEX runtime file: $path" >&2; exit 1; }
+  actual="$(sha256_file "$path")"
+  [ "$actual" = "$expected" ] || {
+    echo "unexpected FEX runtime file hash for $path: expected $expected got $actual" >&2
+    exit 1
+  }
+}
+
+install_fex() {
+  local arch="$1" dest="$2" bundle work fex_hash server_hash vendor
+  local fex_root libc_root libgcc_root libstdcxx_root gcc_base_root
+  [ "$arch" = arm64 ] || return 0
+  vendor="$INITFS_DIR/vendor/fex-2607-dory1"
+  work="$(mktemp -d)"
+  fex_root="$work/fex"
+  libc_root="$work/libc"
+  libgcc_root="$work/libgcc"
+  libstdcxx_root="$work/libstdcxx"
+  gcc_base_root="$work/gcc-base"
+  extract_deb "$(fetch_pin fex_arm64)" "$fex_root"
+  extract_deb "$(fetch_pin fex_libc6_arm64)" "$libc_root"
+  extract_deb "$(fetch_pin fex_libgcc_arm64)" "$libgcc_root"
+  extract_deb "$(fetch_pin fex_libstdcxx_arm64)" "$libstdcxx_root"
+  extract_deb "$(fetch_pin fex_gcc_base_arm64)" "$gcc_base_root"
+
+  bundle="$dest/usr/lib/dory/fex"
+  mkdir -p "$bundle/lib" "$bundle/share" "$bundle/licenses"
+  require_file_hash "$fex_root/usr/bin/FEX" 1acee202ec3a90bcba6b458504218fca201fbc8bc3cfaee372cc2c4be38a6fc1
+  require_file_hash "$fex_root/usr/bin/FEXServer" b50bcd67b893f68f6963aba16fd89ba0df3d5b9126be09786fcd61d621708698
+  require_file_hash "$vendor/FEX" 385c2495a46f00450ffa62e641552b7f18928aa18f3d0a8b621c526ccf79e009
+  require_file_hash "$vendor/FEXServer" 9a4b098f004a5e9e1759ead38795f48bbc900e654d51e3bcf20d9921f00b2ef4
+  require_file_hash "$vendor/LICENSE.FEX" f34a779f56b36d22b20e1b990d23e583a6a7ca071331925fa46156441c77a1ee
+  install -m0755 "$vendor/FEX" "$bundle/FEX"
+  install -m0755 "$vendor/FEXServer" "$bundle/FEXServer"
+  install -m0755 "$libc_root/usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1" \
+    "$bundle/ld-linux-aarch64.so.1"
+  install -m0755 "$libc_root/usr/lib/aarch64-linux-gnu/libc.so.6" "$bundle/lib/libc.so.6"
+  install -m0644 "$libc_root/usr/lib/aarch64-linux-gnu/libm.so.6" "$bundle/lib/libm.so.6"
+  install -m0644 "$libgcc_root/usr/lib/aarch64-linux-gnu/libgcc_s.so.1" "$bundle/lib/libgcc_s.so.1"
+  install -m0644 "$libstdcxx_root/usr/lib/aarch64-linux-gnu/libstdc++.so.6.0.33" \
+    "$bundle/lib/libstdc++.so.6"
+  cp -R "$fex_root/usr/share/fex-emu/." "$bundle/share/"
+  install -m0644 "$fex_root/usr/share/doc/fex-emu-armv8.0/copyright" \
+    "$bundle/licenses/FEX-Emu.copyright"
+  install -m0644 "$vendor/LICENSE.FEX" "$bundle/licenses/FEX-Emu-MIT"
+  install -m0644 "$libc_root/usr/share/doc/libc6/copyright" \
+    "$bundle/licenses/libc6.copyright"
+  install -m0644 "$gcc_base_root/usr/share/doc/gcc-14-base/copyright" \
+    "$bundle/licenses/gcc-14-base.copyright"
+
+  require_file_hash "$bundle/FEX" 385c2495a46f00450ffa62e641552b7f18928aa18f3d0a8b621c526ccf79e009
+  require_file_hash "$bundle/FEXServer" 9a4b098f004a5e9e1759ead38795f48bbc900e654d51e3bcf20d9921f00b2ef4
+  require_file_hash "$bundle/ld-linux-aarch64.so.1" bd29514c1b45cc29b152011dd7c504e00dce240c19e4dd120196053873af9180
+  require_file_hash "$bundle/lib/libc.so.6" 9afdc5d81e698fae93da3d7f244c248ea9850c88002c4041314d46d6f42eba33
+  require_file_hash "$bundle/lib/libgcc_s.so.1" 2a417ca4e1da148b874d510c5356c2652eb934dd761a138454aefbeb61539fa2
+  require_file_hash "$bundle/lib/libm.so.6" 73339d71a889a70ac3f2b882b1fdd463ecf7896226bf12d1319edc63948c47fd
+  require_file_hash "$bundle/lib/libstdc++.so.6" 859f91df8be46cdf236694ea740ff20cf194b2e7f186a3c130b56684f14c8cad
+
+  fex_hash="$(sha256_file "$bundle/FEX")"
+  server_hash="$(sha256_file "$bundle/FEXServer")"
+  {
+    echo "FEX-Emu FEX-2607 (commit 1cc4b93e7a71c883ec021b71359f136394dc1f3c)"
+    echo "Dory container-FD isolation patch SHA-256 ce4b0d955a1c982b071c3d34b34f58e350526cd0b55b28980fbe0594abe1dc9b"
+    echo "Build base ubuntu:24.04@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90"
+    echo "FEX data/notices package fex-emu-armv8.0_2607-1~n_arm64.deb"
+    echo "Ubuntu Noble libc6 2.39-0ubuntu8"
+    echo "Ubuntu Noble libgcc-s1/libstdc++6/gcc-14-base 14-20240412-0ubuntu1"
+    echo "FEX_SHA256=$fex_hash"
+    echo "FEXSERVER_SHA256=$server_hash"
+  } > "$bundle/licenses/SOURCES"
+  rm -rf "$work"
+}
+
 install_ext4_tools() {
   local arch="$1" dest="$2" pkg apk
-  for pkg in libeconf libuuid libcom_err libblkid e2fsprogs-libs e2fsprogs; do
+  for pkg in libeconf libuuid libcom_err libblkid e2fsprogs-libs e2fsprogs e2fsprogs-extra; do
     apk="$(fetch_pin "${pkg}_${arch}")"
     extract_apk "$apk" "$dest"
   done
@@ -177,7 +274,7 @@ install_iptables() {
 }
 
 write_runtime_files() {
-  local rootfs="$1" agent="$2"
+  local arch="$1" rootfs="$2" agent="$3" wrapper="$4"
   mkdir -p "$rootfs"/{dev,proc,sys,run,tmp,var/log,var/run,var/lib/docker,usr/bin,usr/local/bin,etc,sbin}
   rm -f "$rootfs/sbin/init"
   cp "$INITFS_DIR/init" "$rootfs/sbin/init"
@@ -186,6 +283,13 @@ write_runtime_files() {
     install -m0755 "$agent" "$rootfs/usr/bin/dory-agent"
   else
     echo "WARNING: $agent not found; guest/initfs/build.sh should have built the Rust dory-agent" >&2
+  fi
+  if [ "$arch" = arm64 ]; then
+    [ -x "$wrapper" ] || { echo "Rust dory-runc wrapper was not produced" >&2; exit 1; }
+    [ -x "$rootfs/usr/local/bin/runc" ] || { echo "Docker's runc binary is missing" >&2; exit 1; }
+    mv "$rootfs/usr/local/bin/runc" "$rootfs/usr/local/bin/runc.real"
+    install -m0755 "$wrapper" "$rootfs/usr/local/bin/dory-runc"
+    ln -s dory-runc "$rootfs/usr/local/bin/runc"
   fi
   cat > "$rootfs/etc/resolv.conf" <<'EOF'
 nameserver 192.168.127.1
@@ -198,7 +302,7 @@ EOF
 
 build_arch() {
   local arch="$1" alpine_key docker_key alpine_tar docker_tar rootfs image mke2fs
-  local input_fingerprint final_fingerprint agent final_agent final_image final_stamp stamp stamp_tmp staging
+  local input_fingerprint final_fingerprint agent wrapper final_agent final_image final_stamp stamp stamp_tmp staging
   if [ "${DORY_INITFS_SKIP_RUST_AGENT_BUILD:-0}" = "1" ]; then
     echo "DORY_INITFS_SKIP_RUST_AGENT_BUILD cannot produce a provenance-verified initfs; use a DORY_INITFS_* release override together with DORY_ALLOW_UNVERIFIED_GUEST_ASSETS=1 for an explicit development-only escape" >&2
     exit 64
@@ -207,8 +311,9 @@ build_arch() {
   staging="$(mktemp -d "$OUT_DIR/.initfs-build-$arch.XXXXXX")"
   ACTIVE_STAGING="$staging"
   agent="$staging/dory-agent-$arch"
+  wrapper="$staging/dory-runc-$arch"
   image="$staging/initfs-$arch.ext4"
-  build_rust_agent "$arch" "$agent"
+  build_rust_guest_tools "$arch" "$agent" "$wrapper"
   alpine_key="alpine_$arch"
   docker_key="docker_$arch"
   alpine_tar="$(fetch_pin "$alpine_key")"
@@ -222,11 +327,13 @@ build_arch() {
   install_iptables "$arch" "$rootfs"
   install_docker_static "$docker_tar" "$rootfs"
   install_crun "$arch" "$rootfs"
-  write_runtime_files "$rootfs" "$agent"
+  install_fex "$arch" "$rootfs"
+  write_runtime_files "$arch" "$rootfs" "$agent" "$wrapper"
 
   truncate -s "${SIZE_MB}m" "$image"
   "$mke2fs" -q -F -t ext4 -L dory-initfs -d "$rootfs" "$image"
   rm -rf "$rootfs"
+  rm -f "$wrapper"
   ACTIVE_ROOTFS=""
   final_fingerprint="$($INITFS_DIR/input-fingerprint.sh "$arch")"
   [ "$final_fingerprint" = "$input_fingerprint" ] || {

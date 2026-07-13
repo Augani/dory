@@ -5,25 +5,35 @@
 #
 # Alpine minirootfs provides /bin/sh, BusyBox applets, udhcpc, nc, and base device/mount tooling.
 # Docker static provides dockerd, containerd, runc, docker-init, docker-proxy, ctr, and docker.
-# crun is a faster OCI runtime set as dockerd's default-runtime (runc stays as a fallback).
+# crun is a faster optional OCI runtime; Dory keeps its runc-compatible path as the default.
+# Apple Silicon additionally embeds Dory's hash-locked FEX-Emu 2607 binaries, built from the
+# pinned tag plus patches/fex-container-fd-isolation.patch, and the minimum pinned Ubuntu Noble
+# arm64 runtime. The FEX package below supplies upstream data files and redistribution notices.
 alpine_arm64 https://dl-cdn.alpinelinux.org/alpine/v3.21/releases/aarch64/alpine-minirootfs-3.21.7-aarch64.tar.gz d1d1a3fae5f4d6146e9742790a47fcb116199622cfb8439f218a4d5fbe5000da
 alpine_amd64 https://dl-cdn.alpinelinux.org/alpine/v3.21/releases/x86_64/alpine-minirootfs-3.21.7-x86_64.tar.gz 8cba1ea3e8b500ea986a313d8eecf3d5952a2a0d23a69117bb81c023d9ceac05
 docker_arm64 https://download.docker.com/linux/static/stable/aarch64/docker-29.6.1.tgz 917a4bb83565bcacb38c430f08daae8b59db3256331ac23f22394f0542509881
 docker_amd64 https://download.docker.com/linux/static/stable/x86_64/docker-29.6.1.tgz b0df4a43a98d7ecb708acbdb5a34a3416e13b6e39bcbbdf296f51f0f3442b29f
 crun_arm64 https://github.com/containers/crun/releases/download/1.28/crun-1.28-linux-arm64 cc1e8ec89aef1422e0741be196f9ed099e2e09d2f48f30f27cd44a22ef1f0342
 crun_amd64 https://github.com/containers/crun/releases/download/1.28/crun-1.28-linux-amd64 2aa6b7024a9c9f153895c0d11ae233d3758f54844011c3a039e3e89048d01d42
+fex_arm64 https://ppa.launchpadcontent.net/fex-emu/fex/ubuntu/pool/main/f/fex-emu-armv8.0/fex-emu-armv8.0_2607-1~n_arm64.deb 145247dfbde97bd845d8418c6cafd866a769aaf0906379b546944d6b7f10466b
+fex_libc6_arm64 https://ports.ubuntu.com/ubuntu-ports/pool/main/g/glibc/libc6_2.39-0ubuntu8_arm64.deb 04d7cb73e608b41713b63ef915577f7f5d75e95b1b33174e82e05687fdb6cfaf
+fex_libgcc_arm64 https://ports.ubuntu.com/ubuntu-ports/pool/main/g/gcc-14/libgcc-s1_14-20240412-0ubuntu1_arm64.deb bb1c262f2ac9aeb357d3344a06f22f1057306694f6200896775a03ecced08b13
+fex_libstdcxx_arm64 https://ports.ubuntu.com/ubuntu-ports/pool/main/g/gcc-14/libstdc++6_14-20240412-0ubuntu1_arm64.deb cd9ad360c8eee25e1fd9869303f4782eeaa47723594e85631c3def7ec42c3b08
+fex_gcc_base_arm64 https://ports.ubuntu.com/ubuntu-ports/pool/main/g/gcc-14/gcc-14-base_14-20240412-0ubuntu1_arm64.deb a473987e9704cbfa2c795b7c94b57f38ed2b27f7068c8338e1deed9bbf279877
 libeconf_arm64 https://dl-cdn.alpinelinux.org/alpine/v3.21/main/aarch64/libeconf-0.6.3-r0.apk db25f8abaf1ec61f5dcc0ff9b55271a3f6e43037e430b0c126ac000483e17dad
 libuuid_arm64 https://dl-cdn.alpinelinux.org/alpine/v3.21/main/aarch64/libuuid-2.40.4-r1.apk d392ac96027cbe5ca9bc270d2aa4e99747b0eae3cf65a0087f2c6f13a7382702
 libcom_err_arm64 https://dl-cdn.alpinelinux.org/alpine/v3.21/main/aarch64/libcom_err-1.47.1-r1.apk 0798fedbc002cada8e74a7cb4cdae885e5f0c1b5fd59b15af5b2903b95d30153
 libblkid_arm64 https://dl-cdn.alpinelinux.org/alpine/v3.21/main/aarch64/libblkid-2.40.4-r1.apk 61339f8737b05062f662cfc30c65cb34f10ccc53573846653551c66156c4aa0b
 e2fsprogs-libs_arm64 https://dl-cdn.alpinelinux.org/alpine/v3.21/main/aarch64/e2fsprogs-libs-1.47.1-r1.apk c817ddefbfa19245cce0c62820a1eb50c771f4999232d0a1c9e57521a58508d3
 e2fsprogs_arm64 https://dl-cdn.alpinelinux.org/alpine/v3.21/main/aarch64/e2fsprogs-1.47.1-r1.apk c28dddb51a40a91820a9f0dcd32f19abf23c8256543d7afc4f87363b28885a66
+e2fsprogs-extra_arm64 https://dl-cdn.alpinelinux.org/alpine/v3.21/main/aarch64/e2fsprogs-extra-1.47.1-r1.apk 4dca4ea3613659ff12ba132afdcff8787a3f85ca3dc00951c1d8c163e76dbeb3
 libeconf_amd64 https://dl-cdn.alpinelinux.org/alpine/v3.21/main/x86_64/libeconf-0.6.3-r0.apk 9bcd1c0d8fafa5532a0fe3c76a24dbbe06ef05d2f2c106c55074552251b446f0
 libuuid_amd64 https://dl-cdn.alpinelinux.org/alpine/v3.21/main/x86_64/libuuid-2.40.4-r1.apk 67dd6b9a714841008389bfa5cb4e42fd0539cd873eaf904481babee49eb11454
 libcom_err_amd64 https://dl-cdn.alpinelinux.org/alpine/v3.21/main/x86_64/libcom_err-1.47.1-r1.apk 71bd3a0c8590da126ac8372e0f2dd78007bc1f6471580e4d632cf2fa960dabeb
 libblkid_amd64 https://dl-cdn.alpinelinux.org/alpine/v3.21/main/x86_64/libblkid-2.40.4-r1.apk 74dbd807a8e2a7e88bbdbd0a30329c467e7d6512c03644e373ef12d14d28e817
 e2fsprogs-libs_amd64 https://dl-cdn.alpinelinux.org/alpine/v3.21/main/x86_64/e2fsprogs-libs-1.47.1-r1.apk 728d6d3c4d2f3a8d4384f64b00811f47c2ad1760f52b9e1ac82f88216c8fcbb3
 e2fsprogs_amd64 https://dl-cdn.alpinelinux.org/alpine/v3.21/main/x86_64/e2fsprogs-1.47.1-r1.apk f778a891aa832f40cf3be200b8ac346540c87fb90063e843f0d74044cff0b9c5
+e2fsprogs-extra_amd64 https://dl-cdn.alpinelinux.org/alpine/v3.21/main/x86_64/e2fsprogs-extra-1.47.1-r1.apk 7927e944dcf7b4d3bede7a3fde42fbaa38c3bf5d6c68c4460ded9bd40f7789db
 # iptables (+ libmnl/libnftnl deps) — dockerd needs the `iptables` userspace to build the default
 # bridge's NAT/filter chains; without it dockerd aborts at init with "iptables not found". The apk
 # ships /usr/sbin/iptables -> xtables-nft-multi (nft backend; the dory kernel has NF_TABLES built in).

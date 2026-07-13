@@ -28,10 +28,14 @@ INPUTS=(
   dory-core/Cargo.toml
 )
 
-# Only the dory-agent package and its local transitive dependencies affect this binary. Hashing
+# Only the guest Rust packages and their local transitive dependencies affect these binaries. Hashing
 # unrelated workspace crates made a UI/FFI-only change invalidate a perfectly current initfs, while
 # omitting protobuf sources let a protocol change falsely pass verification.
-for package in agent pb proto sync; do
+for package in agent pb proto runc-wrapper sync; do
+  [ -d "dory-core/$package" ] || {
+    echo "missing required guest Rust package: dory-core/$package" >&2
+    exit 1
+  }
   while IFS= read -r input; do
     INPUTS+=("$input")
   done < <(
@@ -51,6 +55,18 @@ for optional in \
   dory-core/rust-toolchain dory-core/rust-toolchain.toml; do
   [ ! -f "$optional" ] || INPUTS+=("$optional")
 done
+
+if [ "$ARCH" = arm64 ]; then
+  INPUTS+=(
+    guest/initfs/vendor/fex-2607-dory1/Dockerfile
+    guest/initfs/vendor/fex-2607-dory1/FEX
+    guest/initfs/vendor/fex-2607-dory1/FEXServer
+    guest/initfs/vendor/fex-2607-dory1/LICENSE.FEX
+    guest/initfs/vendor/fex-2607-dory1/README.md
+    guest/initfs/vendor/fex-2607-dory1/rebuild.sh
+    patches/fex-container-fd-isolation.patch
+  )
+fi
 
 if command -v rust-lld >/dev/null 2>&1; then
   LINKER="$(command -v rust-lld)"

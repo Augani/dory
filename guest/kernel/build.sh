@@ -2,6 +2,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 source PINS
+source ./docker-endpoint.sh
 
 ARCH="${1:-arm64}"
 OUT="$(pwd)/../out"
@@ -11,6 +12,34 @@ case "$GPU" in
   0|1) ;;
   *) echo "DORY_EXPERIMENTAL_GPU must be 0 or 1" >&2; exit 64 ;;
 esac
+
+case "$KERNEL_SOURCE_DATE_EPOCH" in
+  ''|*[!0-9]*) echo "KERNEL_SOURCE_DATE_EPOCH must be a non-negative integer" >&2; exit 64 ;;
+esac
+case "$KERNEL_BUILD_VERSION" in
+  ''|*[!0-9]*) echo "KERNEL_BUILD_VERSION must be a non-negative integer" >&2; exit 64 ;;
+esac
+for build_identity in "$KERNEL_BUILD_USER" "$KERNEL_BUILD_HOST"; do
+  case "$build_identity" in
+    ''|*[!A-Za-z0-9._-]*)
+      echo "kernel build user/host must contain only letters, digits, dot, underscore, or dash" >&2
+      exit 64
+      ;;
+  esac
+done
+
+DOCKER_BIN="${DORY_KERNEL_DOCKER_BIN:-$(command -v docker || true)}"
+[ -n "$DOCKER_BIN" ] && [ -x "$DOCKER_BIN" ] || {
+  echo "docker CLI not found; set DORY_KERNEL_DOCKER_BIN to an executable" >&2
+  exit 1
+}
+DOCKER_ENDPOINT="$(dory_kernel_resolve_docker_endpoint "$DOCKER_BIN" "${DORY_KERNEL_DOCKER_HOST:-}")" || {
+  echo "could not resolve the selected Docker endpoint" >&2
+  exit 1
+}
+docker_cmd() {
+  dory_kernel_docker "$DOCKER_BIN" "$DOCKER_ENDPOINT" "$@"
+}
 
 case "$ARCH" in
   arm64)
@@ -60,7 +89,7 @@ CID=""
 STAGING=""
 cleanup() {
   if [ -n "$CID" ]; then
-    docker rm -f "$CID" >/dev/null 2>&1 || true
+    docker_cmd rm -f "$CID" >/dev/null 2>&1 || true
   fi
   if [ -n "$STAGING" ]; then
     rm -rf "$STAGING"
@@ -68,8 +97,17 @@ cleanup() {
 }
 trap cleanup EXIT
 
-CID="$(docker create --platform "$PLATFORM" \
+CID="$(docker_cmd create --platform "$PLATFORM" \
   -e ARCH="$MAKE_ARCH" \
+  -e LC_ALL=C \
+  -e TZ=UTC \
+  -e SOURCE_DATE_EPOCH="$KERNEL_SOURCE_DATE_EPOCH" \
+  -e KBUILD_BUILD_TIMESTAMP="@$KERNEL_SOURCE_DATE_EPOCH" \
+  -e KBUILD_BUILD_USER="$KERNEL_BUILD_USER" \
+  -e KBUILD_BUILD_HOST="$KERNEL_BUILD_HOST" \
+  -e KBUILD_BUILD_VERSION="$KERNEL_BUILD_VERSION" \
+  -e KCONFIG_NOTIMESTAMP=1 \
+  -e ZERO_AR_DATE=1 \
   -e DORY_KERNEL_ARCH="$ARCH" \
   -e DORY_KERNEL_CONFIGS="$CONFIGS" \
   -e DORY_KERNEL_CONFIG_TARB64="$CONFIG_TARB64" \
@@ -132,10 +170,10 @@ CID="$(docker create --platform "$PLATFORM" \
   mv "$STAMP_TMP" "$STAMP"
 ')"
 
-docker start -a "$CID"
+docker_cmd start -a "$CID"
 STAGING="$(mktemp -d "$OUT/.kernel-build-$ARCH.XXXXXX")"
-docker cp "$CID:/out/." "$STAGING/"
-docker rm "$CID" >/dev/null
+docker_cmd cp "$CID:/out/." "$STAGING/"
+docker_cmd rm "$CID" >/dev/null
 CID=""
 
 DORY_EXPERIMENTAL_GPU="$GPU" DORY_KERNEL_OUT_DIR="$STAGING" ./verify-build.sh "$ARCH"

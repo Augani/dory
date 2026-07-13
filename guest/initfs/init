@@ -15,6 +15,41 @@ mountpoint /tmp || mount -t tmpfs tmpfs /tmp 2>/dev/null || true
 mkdir -p /sys/fs/cgroup
 mountpoint /sys/fs/cgroup || mount -t cgroup2 none /sys/fs/cgroup 2>/dev/null || true
 
+# The production VMM normally supplies its own boot script through dorycfg. Keep this standalone
+# init path equivalent: Apple Silicon initfs images carry FEX and must never fall back to QEMU's
+# seccomp-incomplete x86-64 translation.
+DORY_AMD64_RUNTIME_ARGS=""
+if [ -x /usr/lib/dory/fex/FEX ]; then
+  if [ ! -x /usr/lib/dory/fex/FEXServer ] || [ ! -x /usr/local/bin/dory-runc ]; then
+    echo "DORY: incomplete FEX runtime"
+    sync
+    poweroff -f
+    exit 1
+  fi
+  mkdir -p /proc/sys/fs/binfmt_misc
+  mountpoint /proc/sys/fs/binfmt_misc || mount -t binfmt_misc binfmt_misc /proc/sys/fs/binfmt_misc || {
+    echo "DORY: binfmt_misc unavailable for FEX"
+    sync
+    poweroff -f
+    exit 1
+  }
+  if [ -e /proc/sys/fs/binfmt_misc/qemu-x86_64 ]; then
+    printf '%s' -1 > /proc/sys/fs/binfmt_misc/qemu-x86_64 || exit 1
+  fi
+  if [ ! -e /proc/sys/fs/binfmt_misc/FEX-x86_64 ]; then
+    printf '%s' ':FEX-x86_64:M::\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\x3e\x00:\xff\xff\xff\xff\xff\xff\xff\x00\xff\xff\xff\xff\xff\xff\xff\xff\xfe\xff\xff\xff:/usr/lib/dory/fex/FEX:POCF' > /proc/sys/fs/binfmt_misc/register || exit 1
+  fi
+  if ! grep -qx enabled /proc/sys/fs/binfmt_misc/FEX-x86_64 \
+    || ! grep -qx 'interpreter /usr/lib/dory/fex/FEX' /proc/sys/fs/binfmt_misc/FEX-x86_64 \
+    || ! grep -qx 'flags: POCF' /proc/sys/fs/binfmt_misc/FEX-x86_64; then
+    echo "DORY: invalid FEX binfmt registration"
+    sync
+    poweroff -f
+    exit 1
+  fi
+  DORY_AMD64_RUNTIME_ARGS="--add-runtime dory-runc=/usr/local/bin/dory-runc --default-runtime dory-runc"
+fi
+
 mkdir -p /mnt/dory-config
 if mount -t virtiofs dorycfg /mnt/dory-config 2>/dev/null; then
   if [ -r /mnt/dory-config/boot.sh ]; then
@@ -39,21 +74,60 @@ if ip link show eth0 >/dev/null 2>&1; then
 fi
 
 if [ -b /dev/vdb ]; then
-  mount -t ext4 /dev/vdb /var/lib/docker 2>/dev/null || {
+  if blkid /dev/vdb 2>/dev/null | grep -q 'TYPE="ext4"'; then
+    DORY_DATA_DEVICE_BYTES=$(blockdev --getsize64 /dev/vdb 2>/dev/null || true)
+    DORY_DATA_GEOMETRY=$(dumpe2fs -h /dev/vdb 2>/dev/null | awk '/^Block count:/{blocks=$3} /^Block size:/{size=$3} END{if(blocks && size) print blocks, size}')
+    set -- $DORY_DATA_GEOMETRY
+    DORY_DATA_FS_BLOCKS=${1:-}
+    DORY_DATA_FS_BLOCK_SIZE=${2:-}
+    DORY_DATA_GROW_STATUS=0
+    case "$DORY_DATA_DEVICE_BYTES:$DORY_DATA_FS_BLOCKS:$DORY_DATA_FS_BLOCK_SIZE" in
+      *[!0-9:]*) DORY_DATA_GROW_STATUS=2 ;;
+      ::*|*::*|*::) DORY_DATA_GROW_STATUS=2 ;;
+      *)
+        DORY_DATA_FS_BYTES=$((DORY_DATA_FS_BLOCKS * DORY_DATA_FS_BLOCK_SIZE))
+        if [ "$DORY_DATA_FS_BYTES" -gt "$DORY_DATA_DEVICE_BYTES" ]; then
+          DORY_DATA_GROW_STATUS=2
+        elif [ $((DORY_DATA_FS_BYTES + DORY_DATA_FS_BLOCK_SIZE)) -le "$DORY_DATA_DEVICE_BYTES" ]; then
+          e2fsck -p /dev/vdb >/var/log/dory-data-resize.log 2>&1
+          status=$?
+          if [ "$status" -gt 1 ] || ! resize2fs /dev/vdb >>/var/log/dory-data-resize.log 2>&1; then
+            DORY_DATA_GROW_STATUS=2
+          fi
+        else
+          echo "ext4 already spans block device" >/var/log/dory-data-resize.log
+        fi
+        ;;
+    esac
+    if [ "$DORY_DATA_GROW_STATUS" -ne 0 ]; then
+      echo "DORY: failed to grow /dev/vdb"
+      cat /var/log/dory-data-resize.log 2>/dev/null || true
+      sync
+      poweroff -f
+      exit 1
+    fi
+  fi
+  mount -t ext4 /dev/vdb /var/lib/docker 2>/dev/null && {
+    fstrim -v /var/lib/docker >/var/log/dory-data-trim.log 2>&1 || true
+  } || {
     echo "DORY: failed to mount /dev/vdb at /var/lib/docker"
+    echo "DORY: refusing to start dockerd without its persistent data disk"
+    sync
+    poweroff -f
+    exit 1
   }
 fi
 
 if [ -x /usr/local/bin/dockerd ]; then
-  # crun is faster than runc but opens cgroup-v2 io.max unconditionally, so it only works on a kernel
-  # built with CONFIG_BLK_DEV_THROTTLING. Default to crun only when a probe cgroup exposes io.max;
-  # otherwise fall back to runc (which tolerates its absence).
+  # Keep runc as Docker's compatibility default. Register crun for explicit opt-in only when the
+  # kernel exposes io.max; crun 1.28 otherwise also breaks `docker update --restart` while reopening
+  # /dev/stdin.
   DORY_RUNTIME_ARGS=""
   if [ -x /usr/local/bin/crun ]; then
     echo +io > /sys/fs/cgroup/cgroup.subtree_control 2>/dev/null
     mkdir -p /sys/fs/cgroup/.dory-crun-probe 2>/dev/null
     if [ -e /sys/fs/cgroup/.dory-crun-probe/io.max ]; then
-      DORY_RUNTIME_ARGS="--add-runtime crun=/usr/local/bin/crun --default-runtime crun"
+      DORY_RUNTIME_ARGS="--add-runtime crun=/usr/local/bin/crun"
     fi
     rmdir /sys/fs/cgroup/.dory-crun-probe 2>/dev/null
   fi
@@ -61,12 +135,26 @@ if [ -x /usr/local/bin/dockerd ]; then
   /usr/local/bin/dockerd \
     -H unix:///var/run/docker.sock \
     -H tcp://0.0.0.0:2375 \
-    --tls=false $DORY_RUNTIME_ARGS >/var/log/dockerd.log 2>&1 &
+    --tls=false $DORY_RUNTIME_ARGS $DORY_AMD64_RUNTIME_ARGS >/var/log/dockerd.log 2>&1 &
 fi
 
 ( while true; do
     nc -l -p 2377 >/dev/null 2>&1
     echo "DORY: shutdown requested"
+    DORY_DOCKERD_PID=$(cat /var/run/docker.pid 2>/dev/null || pidof dockerd 2>/dev/null || true)
+    if [ -n "$DORY_DOCKERD_PID" ]; then
+      kill -TERM $DORY_DOCKERD_PID 2>/dev/null || true
+      DORY_DOCKERD_WAIT=0
+      while kill -0 $DORY_DOCKERD_PID 2>/dev/null && [ "$DORY_DOCKERD_WAIT" -lt 100 ]; do
+        sleep 0.1
+        DORY_DOCKERD_WAIT=$((DORY_DOCKERD_WAIT + 1))
+      done
+      if kill -0 $DORY_DOCKERD_PID 2>/dev/null; then
+        kill -KILL $DORY_DOCKERD_PID 2>/dev/null || true
+        sleep 1
+      fi
+    fi
+    fstrim -v /var/lib/docker >/var/log/dory-data-trim.log 2>&1 || true
     sync
     umount /var/lib/docker 2>/dev/null || true
     sync

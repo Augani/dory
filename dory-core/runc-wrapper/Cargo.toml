@@ -1,0 +1,16 @@
+[package]
+name = "dory-runc-wrapper"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde_json.workspace = true
+
+[lib]
+name = "dory_runc_wrapper"
+path = "src/lib.rs"
+
+[[bin]]
+name = "dory-runc"
+path = "src/main.rs"
