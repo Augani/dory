@@ -10,6 +10,19 @@ release-host, credential, and exact upgrade/rollback gates below are complete. I
 roadmap phase and is not part of the Apple-Silicon-first release contract. This document
 intentionally separates verified evidence from claims that still need proof.
 
+**Architecture-first correction:** the focused migration fixes below proved individual semantics,
+but they do not yet provide a durable operation journal shared by import, backup/restore, drive
+relocation, and upgrade. The owned Alpine fixture also does not prove the user's full 79-volume,
+14-container OrbStack inventory. The accepted
+[transactional data-operations contract](docs/architecture/transactional-data-operations.md)
+replaces further one-off migration patching with one plan → quiesce → stage → verify → publish →
+validate protocol, exact dependency closure, crash recovery at every transition, read-back volume
+manifests, and a mechanical completeness equation. Public release remains blocked until that
+contract is implemented and qualified against the full real-inventory classes plus the exact
+signed/notarized Apple Silicon artifact. A capacity or unowned-name blocker is acceptable only as a
+fail-before-write test; a separate full successful import with sufficient disposable storage is
+mandatory.
+
 **The signed `20260712T035458Z` app candidate is now superseded for app release purposes.** Its
 standalone engine completed the immutable eight-hour baseline, but the post-build
 migration audit found release blockers in the app layer: a stale panel says volume data is not

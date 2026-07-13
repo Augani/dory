@@ -95,7 +95,8 @@ panicked at startup. Dory must not make users copy its raw disk by hand.
 
 ## State transitions
 
-Every destructive-looking operation is actually a publish-after-verify transaction:
+Every destructive-looking operation is a publish-after-verify transaction governed by the shared
+[transactional data-operations contract](transactional-data-operations.md):
 
 - **First creation:** build a sibling partial bundle, write and sync its manifest, create private
   subdirectories, then atomically publish it.
@@ -125,10 +126,10 @@ Dory provides two separate workflows because they solve different problems:
    created only after every required image, network, and volume passes verification.
 
 Competitor migration uses the semantic path, not another vendor's private disk format. The source
-daemon remains untouched, live source volumes are rejected unless the user stops or pauses all
-writers, target conflicts fail before mutation, partial target objects are removed, and retries
-are ownership-labelled and idempotent. Images-only success is a failed migration when the selected
-containers or volumes were not reproduced.
+daemon remains authoritative, mutable source volumes require stopped writers, target conflicts
+fail before mutation, partial target objects are removed, and retries are ownership-labelled and
+idempotent. Images-only success is a failed migration when the selected containers or volumes were
+not reproduced.
 
 ## Recovery and observability
 

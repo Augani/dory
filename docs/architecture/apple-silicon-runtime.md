@@ -13,8 +13,9 @@ Dory ships one Apple Silicon product architecture:
    volumes, networks, machine disks, and Kubernetes state. Transient sockets, PID files, logs, and
    prepared boot assets remain replaceable runtime state. Uninstall never silently deletes the data
    drive. Canonical identity, relocation, backup, migration, and recovery follow the separate
-   [Apple Silicon storage contract](apple-silicon-storage.md); a raw sparse disk is never presented
-   as the user's portable backup format.
+   [Apple Silicon storage contract](apple-silicon-storage.md) and shared
+   [transactional data-operations contract](transactional-data-operations.md); a raw sparse disk
+   is never presented as the user's portable backup format.
 3. Arm64 is native. Common `linux/amd64` images use one provenance-pinned FEX-Emu 2607 runtime,
    registered only for x86_64. There is no production qemu-user fallback and no workload-name
    heuristic. Missing or mismatched FEX state fails closed before the OCI runtime starts a user
