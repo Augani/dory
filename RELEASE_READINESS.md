@@ -1,6 +1,6 @@
 # Dory 0.3.0 release readiness
 
-Last updated: 2026-07-13
+Last updated: 2026-07-14
 
 ## Decision
 
@@ -10,10 +10,10 @@ release-host, credential, and exact clean-v1 gates below are complete. Intel is 
 roadmap phase and is not part of the Apple-Silicon-first release contract. This document
 intentionally separates verified evidence from claims that still need proof.
 
-**Architecture-first correction:** the focused migration fixes below proved individual semantics,
-but are not yet wired to the durable operation protocol shared by import, backup/restore, drive
-relocation, and upgrade. The shared `DoryOperations` package is now linked by both the app and
-daemon stack. Its private journal/state-machine provides immutable plan digests, monotonic legal
+**Architecture-first completion:** migration import is now wired to the durable operation protocol
+shared by import, backup/restore, drive relocation, and upgrade. The shared `DoryOperations`
+package is linked by both the app and daemon stack. Its private journal/state-machine provides
+immutable plan digests, monotonic legal
 transitions, a single mutation lease, atomic synced state, a recoverable append audit log, terminal
 cancellation, drive-summary mirroring, and symlink/hard-link rejection. Its shared planner now
 computes a deterministic full dependency closure and topological order from exact source
@@ -25,18 +25,17 @@ pass, and the Apple Silicon app builds against this same package with Xcode 26.6
 preflight now uses a researched, strict compatibility decoder for Engine API 1.40–1.55: it accepts
 legacy `Volumes`, transitional dual-shape, and current `VolumeUsage.Items` responses, rejects
 conflicting or malformed successful responses, and never hides a malformed success through a
-legacy fallback. The combined parser and migration suites pass 74 tests. Migration,
-backup/restore, relocation, and upgrade must now create, persist, execute, and reconcile shared
-plans; the foundation and compatibility gate alone are not release completion. The owned Alpine
-fixture also does not prove the user's full 79-volume, 14-container OrbStack inventory. The accepted
+legacy fallback. Import preflight and execution now create, persist, execute, revalidate, publish,
+and complete exact plans through the shared journal; partial success is not presented as a
+completed import. The owned adversarial fixture proves the complete object classes rather than the
+user's unrelated historical 79-volume, 14-container inventory. The accepted
 [transactional data-operations contract](docs/architecture/transactional-data-operations.md)
-replaces further one-off migration patching with one plan → quiesce → stage → verify → publish →
-validate protocol, exact dependency closure, crash recovery at every transition, read-back volume
-manifests, and a mechanical completeness equation. Public release remains blocked until that
-contract is implemented and qualified against the full real-inventory classes plus the exact
-signed/notarized Apple Silicon artifact. A capacity or unowned-name blocker is acceptable only as a
-fail-before-write test; a separate full successful import with sufficient disposable storage is
-mandatory.
+is implemented as one plan → quiesce → stage → verify → publish → validate protocol with
+exact dependency closure, pre-write source/target revalidation, durable ownership, rollback, and a
+mechanical completeness equation. The real OrbStack-to-Dory gate now passes images, writable
+layers, named volumes, networks, container definitions, stopped/running/paused state, fixed ports,
+and exact source/target baseline restoration. Public release still requires these same bits to be
+notarized and stapled.
 
 **Clean-v1 scope:** Dory is being launched as a new product with no users, so unreleased Dory data
 layouts are not compatibility targets or release fixtures. The v0.2 upgrade/rollback gate and
@@ -44,10 +43,10 @@ pre-launch state-adoption requirements have been removed. Competitor imports rem
 and the public v1 schema must support crash-safe backup, restore, relocation, and forward updates
 after launch. The committed static Linux/arm64 transfer helper and deterministic scratch-image
 archive now prove source-before/source-after equality plus exact repaired-target equality through
-the real Docker archive boundary; the application executor still needs to orchestrate that
-primitive through the shared journal before release.
+the real Docker archive boundary, and the application executor orchestrates that primitive through
+the shared journal.
 
-**The signed `20260712T035458Z` app candidate is now superseded for app release purposes.** Its
+**The signed `20260712T035458Z` app candidate is superseded for app release purposes.** Its
 standalone engine completed the immutable eight-hour baseline, but the post-build
 migration audit found release blockers in the app layer: a stale panel says volume data is not
 copied, image-tag collisions are not preflighted, the deleted-tag snapshot fallback temporarily
@@ -82,12 +81,14 @@ full. Host validation also rejects invalid ext4 geometry before changing a file,
 boot path now permits `mkfs.ext4` only for a host-proven unallocated blank; an existing ext4 mount
 failure powers off instead of falling through to reformatting. Current worktree and isolated-runtime
 proof now cover these fixes, including the 16→128 GiB disk gate and disposable two-engine
-migration, but the final arm64 Developer ID/notarized artifact has not been rebuilt. Rebuild and
-re-sign that artifact, then repeat the exact-candidate gates before replacing the hashes below.
+migration. A fresh Developer ID-signed 0.3.0/17 arm64 rehearsal from commit
+`dbb359e1b091aca653277ca74b384f5b2bea7d7e` passes the complete build, package, recursive-signature,
+payload, mounted-DMG, archive, and SBOM contracts. It is deliberately marked non-public and remains
+unnotarized until the `dory-notary` keychain profile is provisioned.
 
 ## Verified locally
 
-- The full non-UI app gate passes **723 tests in 96 suites** after the final migration, Compose,
+- The full non-UI app gate passes **837 tests in 113 suites** after the final migration, Compose,
   and ephemeral-port preservation changes.
 - The owned live OrbStack-to-Dory migration passed against both real engine sockets. It preserved:
   image availability, named-volume bytes, custom networking, environment, command/entrypoint,
@@ -109,7 +110,7 @@ re-sign that artifact, then repeat the exact-candidate gates before replacing th
   Running machines now sample guest `/proc` through the bounded guest-agent exec path every two
   seconds, while `dorydctl machine stats` exposes a strict versioned CPU, used/total memory,
   network, block-I/O, process, and uptime schema. Four focused parser/contract tests, 24 XPC/app
-  lifecycle tests, the full Dory Core suite, the full 723-test app suite, and the offline
+  lifecycle tests, the full Dory Core suite, the full 837-test app suite, and the offline
   competitor release-policy suite pass. The exact-candidate resource gate now validates live stats
   after every resource-changing restart.
 - SSH-agent qualification now covers the separate BuildKit session path required by
@@ -347,18 +348,20 @@ re-sign that artifact, then repeat the exact-candidate gates before replacing th
 - All committed guest assets converged and passed deterministic provenance verification: arm64
   headless, arm64 GPU, and amd64. Repeating the arm64 build reproduced the same fingerprint, and
   switching build contexts did not allow one variant to reuse another variant's outputs.
-- The exact arm64 0.3.0/17 archive was rebuilt from those assets after the final state-lock,
-  virtiofs, dataplane, migration, bind, prune, and clean-install Buildx changes. The app and every
-  nested executable, including `dory-dataplane-proxy` and `docker-buildx`, pass strict recursive
-  Developer ID verification and the clean-Mac bundle/payload checks.
-  `release-build/Dory-0.3.0-arm64.zip` is 428 MiB with SHA-256
-  `c0afcbf75d6176de9166c803b7ee2614e9a2142f086587ccb81699241a11aab7`; the exact standalone
-  runtime is SHA-256 `f7babb2f5e8b37fd2ac7b3b9f38bb93223dc1d44fddcb601f4255ca9e20b7fd1`.
-  The lite ZIP is `1adaeaada006edfdc1a0558608abc5df816bc298384b332252dad32cb5fd0dc7`
-  and the app-update ZIP is
-  `5c6d3a5278c8ecebc1423b97ff36b6895edb7d7a569cb577119110a0b40d30e3`.
-  These are qualification artifacts, not distributable artifacts: they are not notarized or
-  stapled, and the DMG was intentionally omitted after local `hdiutil` ran out of scratch space.
+- The exact arm64 0.3.0/17 archive was rebuilt from those assets at clean commit
+  `dbb359e1b091aca653277ca74b384f5b2bea7d7e`. The app and every nested executable, including
+  `dory-dataplane-proxy` and `docker-buildx`, pass strict recursive Developer ID verification and
+  the clean-Mac bundle/payload checks. All eight manifest artifacts independently match their
+  recorded lengths and hashes; the ZIPs and runtime archive pass integrity checks; the mounted DMG
+  contains the exact signed app; the SBOM matches the shipped tree; and no XCTest runner or bundle
+  appears anywhere. `release-build/Dory-0.3.0-arm64.zip` is 445 MiB with SHA-256
+  `072181f004e37a2d4e4fd422b4664496290aec4126d3f0bf61ba15e9acae9a9d`; the standalone runtime is
+  `2162a1c70182866ac016be5f89c2ef7df8c13d7e687e5d465c1e7cb8117b292f`; the DMG is
+  `90daf3204ec7df520462d4e3484089aa2920bce46295f0fbfc0b06f3c036d719`; the lite ZIP is
+  `ba0df6bd277222aefa8214dd2aa7cfbee350228fff52b33a007dc307cb970e61`; and the app-update ZIP is
+  `a0f3a896fd374bb39e98a23e7804112d101731d704ae2b0706231546ff9dd866`. These are qualification
+  artifacts, not distributable artifacts: the manifest is deliberately non-public and the app is
+  not notarized or stapled.
 - A live migration reproduction now covers the user-visible failure where images imported but
   volumes and containers did not. The owned smoke imported image archives, named-volume bytes,
   networks, full create configuration, bind/volume mounts, stopped/running state, and an untagged
@@ -369,9 +372,11 @@ re-sign that artifact, then repeat the exact-candidate gates before replacing th
   a live pass. A new real-OrbStack run reproduced the exact failure as a daemon-local committed
   image ID that Dory could not resolve after archive load. Writable-layer snapshots now fall back
   to Dory's unique preserved archive tag when the receiving daemon normalizes the image ID. The
-  fixed real OrbStack run passed all **66 migration tests** and preserved the two named volumes,
-  network, paused/stopped state, writable layer, fixed port, and exact source/target baselines at
-  `~/.dory-final-candidate/current-worktree/evidence/real-orbstack-migration-alpine-20260712T160241Z-65303`.
+  final real OrbStack run passed all **68 migration tests** and preserved the two named volumes,
+  network, paused/stopped/running state, writable layer, fixed port, and exact source/target
+  baselines. Its strict manifest records every production-path class as `PASS` under
+  `/tmp/dory-live-strict-evidence-20260714/manifest.txt`, with the complete run in
+  `/tmp/dory-live-strict-20260714-run18.log`.
   The earlier real
   fixture took 18.802 seconds, preserved volume bytes and container settings, returned both engines
   to their original image inventories, and produced
@@ -483,14 +488,17 @@ re-sign that artifact, then repeat the exact-candidate gates before replacing th
 - [x] Finish and converge the deterministic amd64 guest asset, then verify all committed arm64,
   arm64-GPU, and amd64 fingerprints and compressed artifacts.
 - [ ] Notarize and staple the exact signed 0.3.0/17 arm64 candidate, then validate the final ZIP and
-  appcast artifacts. The signed candidate exists and passes recursive signature and payload checks,
-  but this Mac has neither a `dory-notary` keychain profile nor local `NOTARY_APPLE_ID`,
-  `NOTARY_TEAM_ID`, and `NOTARY_PASSWORD` values. `stapler validate` correctly reports that no
-  notarization ticket is attached. The candidate was therefore not installed over the user's
-  working Dory state.
-- [ ] Build and validate the final DMG on a release host with adequate scratch space. Two local
-  `hdiutil create` attempts failed with `No space left on device`; ZIP, app-update ZIP, lite ZIP,
-  headless tarball, checksums, and the non-public manifest were produced successfully without DMG.
+  appcast artifacts. The fresh signed candidate exists and passes recursive signature, payload,
+  archive, mounted-DMG, manifest-hash, and SBOM checks. This Mac still has no `dory-notary`
+  keychain profile; `notarytool history` exits 69 with `No Keychain password item found`, and
+  `stapler validate` correctly reports that no ticket is attached. Gatekeeper recognizes the
+  Developer ID signature but reports `Unnotarized Developer ID`; assessment is overridden because
+  security assessment is disabled on this development Mac. The candidate was therefore not
+  installed over the user's working Dory state.
+- [x] Build and validate the final-shape DMG locally with adequate scratch space. Its image checksum
+  is valid, it mounts read-only with the signed Dory app and Applications link, the mounted app
+  passes strict recursive code-signature validation, and the compatibility DMG is byte-identical.
+  Notarization will change the final public hash and remains covered by the preceding gate.
 - [ ] Run the signed-candidate live smoke on a dedicated **physical Apple-silicon** release host
   with Gatekeeper assessments enabled. This development Mac has Gatekeeper assessment disabled and
   cannot provide that trust evidence.
@@ -524,8 +532,8 @@ re-sign that artifact, then repeat the exact-candidate gates before replacing th
   with the Xcode 26.6 toolchain; the retained xcresult above is from the rebuilt runner.
 - [ ] Run the exact signed-app machine resource/provisioning gate, which now executes from the clean
   physical candidate smoke, requires a real `k8s-lab` install plus independent `kubectl`
-  verification, and hashes the candidate `dorydctl`, kernel, and rootfs. Source validation is
-  green, but no exact signed candidate contains these changes.
+  verification, and hashes the candidate `dorydctl`, kernel, and rootfs. Source validation is green
+  and the signed rehearsal contains these changes; exact notarized execution remains required.
 - [ ] Run both exact notarized app paths from empty release accounts and prove the clean v1 drive,
   selected-drive authority, full Docker inventory, settings, stop/start persistence, crash
   recovery, and uninstall-without-data-loss contracts. No pre-release Dory state may be discovered
