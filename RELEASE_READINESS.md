@@ -406,6 +406,16 @@ to the final release tag rather than representing this candidate as built from c
   `/tmp/dory-public-release-0.3.0-18-06e8c775.log`; independent output validation is retained at
   `/tmp/dory-final-release-output-validation-06e8c775.log`; and exact appcast/archive verification
   is retained at `/tmp/dory-final-sparkle-verification-06e8c775.log`.
+- The real Sparkle install gate's safe build-only mode passed against that exact candidate. It
+  independently revalidated the manifest-bound app-update ZIP, appcast, SBOM, embedded Ed25519
+  key, notarized app, and exact app tree, then built and strictly verified the official
+  `sparkle-cli` from the `Package.resolved`-pinned Sparkle 2.9.4 revision
+  `b6496a74a087257ef5e6da1c5b29a447a60f5bd7`. The evidence correctly records
+  `release_qualifying=false`: no install or relaunch was attempted in this active development
+  account. Its retained manifest is
+  `/tmp/dory-sparkle-build-only-20260714/20260714T071208Z-36950/evidence/manifest.txt`, SHA-256
+  `a7efceec2165b2d5f37ffaaa77e5cdeeba8528833f409ddc7c48f065e204e519`. The 338 MiB superseded
+  DerivedData build was removed after the durable evidence was captured.
 - The exact standalone runtime and Docker CLI from that notarized candidate passed the complete
   **34-row** competitor regression campaign in a fresh isolated 8 GiB/6-CPU engine with FEX
   enabled: 2,000 forwarded connections, 20 container restarts, deliberate six-stream proxy
@@ -682,8 +692,10 @@ to the final release tag rather than representing this candidate as built from c
   release workflow now builds the updater CLI from the `Package.resolved`-pinned Sparkle 2.9.4
   revision, feeds it the byte-identical signed archive, requires the running previous app to exit
   and a different candidate PID to relaunch, compares the complete installed app tree, revalidates
-  Gatekeeper, preserves workload/settings state, and rolls back. Its offline/fail-closed tests and
-  pinned-tool build pass locally; exact-candidate execution still requires the clean release user.
+  Gatekeeper, preserves application-support and preference sentinels, restores the lower-build
+  fixture, and returns the release account to its initial empty state. Its offline/fail-closed
+  tests and pinned-tool build pass locally; exact-candidate execution still requires the clean
+  release user with Gatekeeper enabled.
 - [x] Pass the exact signed `Dory UI Tests` scheme after the user approved macOS's one-time
   UI-automation request. All eight tests passed with zero failures or skips, including the full
   CPU/memory boundary flow; the retained xcresult is bound to the Apple-Silicon host and records
