@@ -43,6 +43,24 @@ notarize() {
   fi
 }
 
+validate_notary_credentials() {
+  if [ -n "${NOTARY_APPLE_ID:-}" ]; then
+    echo "==> Validating notarytool environment credentials..."
+    xcrun notarytool history \
+      --apple-id "$NOTARY_APPLE_ID" \
+      --team-id "$NOTARY_TEAM_ID" \
+      --password "$NOTARY_PASSWORD" \
+      --output-format json >/dev/null 2>&1 \
+      || release_error "notarytool environment credentials are unavailable or invalid"
+  else
+    echo "==> Validating notarytool keychain profile '$NOTARY_PROFILE'..."
+    xcrun notarytool history \
+      --keychain-profile "$NOTARY_PROFILE" \
+      --output-format json >/dev/null 2>&1 \
+      || release_error "notarytool keychain profile '$NOTARY_PROFILE' is unavailable or invalid; configure it with 'xcrun notarytool store-credentials $NOTARY_PROFILE --apple-id <apple-id> --team-id $NOTARY_TEAM_ID'"
+  fi
+}
+
 sha256_file() {
   shasum -a 256 "$1" | awk '{print $1}'
 }
@@ -366,6 +384,7 @@ preflight_release() {
     else
       echo "==> Using notarytool keychain profile '$NOTARY_PROFILE' (set NOTARY_APPLE_ID/NOTARY_TEAM_ID/NOTARY_PASSWORD in CI)."
     fi
+    validate_notary_credentials
   fi
 }
 

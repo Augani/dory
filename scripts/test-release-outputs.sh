@@ -1767,6 +1767,49 @@ fi
 grep -q 'public releases must bundle the engine' "$TMP/public-policy.out" \
   || { echo "test-release-outputs: public release policy did not fail for the expected reason" >&2; exit 1; }
 
+NOTARY_BIN="$TMP/notary-bin"
+mkdir -p "$NOTARY_BIN"
+cat > "$NOTARY_BIN/xcrun" <<'SH'
+#!/bin/bash
+set -euo pipefail
+[ "${1:-}" = notarytool ]
+[ "${2:-}" = history ]
+case " $* " in
+  " notarytool history --keychain-profile valid-profile --output-format json ") exit 0 ;;
+  " notarytool history --apple-id valid@example.com --team-id VALIDTEAM --password valid-password --output-format json ") exit 0 ;;
+  *) exit 69 ;;
+esac
+SH
+chmod 0755 "$NOTARY_BIN/xcrun"
+
+if (
+  export PATH="$NOTARY_BIN:$PATH" DORY_RELEASE_SOURCE_ONLY=1
+  source scripts/release.sh "$VERSION" "$BUILD"
+  NOTARY_PROFILE=missing-profile
+  validate_notary_credentials
+) >"$TMP/notary-missing.out" 2>&1; then
+  echo "test-release-outputs: release preflight accepted a missing notarytool profile" >&2
+  exit 1
+fi
+grep -q "keychain profile 'missing-profile' is unavailable or invalid" "$TMP/notary-missing.out" \
+  || { echo "test-release-outputs: missing notary profile failed for the wrong reason" >&2; exit 1; }
+
+(
+  export PATH="$NOTARY_BIN:$PATH" DORY_RELEASE_SOURCE_ONLY=1
+  source scripts/release.sh "$VERSION" "$BUILD"
+  NOTARY_PROFILE=valid-profile
+  validate_notary_credentials
+) >"$TMP/notary-profile-valid.out" 2>&1
+
+(
+  export PATH="$NOTARY_BIN:$PATH" DORY_RELEASE_SOURCE_ONLY=1
+  source scripts/release.sh "$VERSION" "$BUILD"
+  NOTARY_APPLE_ID=valid@example.com
+  NOTARY_TEAM_ID=VALIDTEAM
+  NOTARY_PASSWORD=valid-password
+  validate_notary_credentials
+) >"$TMP/notary-environment-valid.out" 2>&1
+
 bash -n scripts/release.sh scripts/bundle-engine.sh scripts/validate-release-outputs.sh \
   scripts/release-candidate-live-smoke.sh scripts/verify-sparkle-update.sh \
   scripts/qualify-release-candidate.sh \
