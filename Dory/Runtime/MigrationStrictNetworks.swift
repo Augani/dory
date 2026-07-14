@@ -41,11 +41,18 @@ private extension MigrationStrictInventoryCollector {
         let ingress = object["Ingress"] as? Bool ?? false
         let configOnly = object["ConfigOnly"] as? Bool ?? false
         let configFrom = object["ConfigFrom"] as? [String: Any] ?? [:]
+        // Docker serializes an ordinary, independent bridge network as
+        // `ConfigFrom: {"Network":""}`. Only a non-empty source network carries an external
+        // configuration dependency; the empty sentinel is portable local state.
+        let configFromIsIndependent = configFrom.isEmpty || (
+            Set(configFrom.keys) == ["Network"]
+                && (configFrom["Network"] as? String)?.isEmpty == true
+        )
         guard driver == "bridge",
               scope == "local",
               !ingress,
               !configOnly,
-              configFrom.isEmpty else {
+              configFromIsIndependent else {
             throw MigrationStrictInventoryError.unsupported(
                 "network \(network.name) depends on non-local bridge or swarm state"
             )

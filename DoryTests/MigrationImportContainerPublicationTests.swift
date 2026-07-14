@@ -111,7 +111,7 @@ struct MigrationImportContainerPublicationTests: StrictInventoryTestCase {
         #expect(record.state.status == .failed)
     }
 
-    @Test func unownedTargetDriftIsPreservedWhilePublishedClosureRollsBack() async throws {
+    @Test func unownedTargetDriftIsPreservedBeforeAnyWrite() async throws {
         let context = try await makeContext(name: "unowned-target-drift") { _ in }
         defer { context.cleanup() }
         let unrelatedID = "sha256:" + String(repeating: "f", count: 64)
@@ -137,7 +137,7 @@ struct MigrationImportContainerPublicationTests: StrictInventoryTestCase {
         #expect(context.fixture.target.snapshotValue.volumes.isEmpty)
         #expect(context.fixture.target.snapshotValue.networks.isEmpty)
         let record = try context.session.lease.read()
-        #expect(record.state.phase == .validating)
+        #expect(record.state.phase == .staging)
         #expect(record.state.status == .failed)
     }
 

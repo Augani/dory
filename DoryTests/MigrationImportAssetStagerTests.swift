@@ -106,7 +106,9 @@ struct MigrationImportAssetStagerTests: StrictInventoryTestCase {
             sizeBytes: 1
         ))
 
-        await #expect(throws: MigrationImportAssetStagingError.targetDrift(object.source)) {
+        await #expect(throws: MigrationImportAssetStagingError.invalidSession(
+            "unowned target objects changed during migration"
+        )) {
             _ = try await MigrationImportAssetStager.stage(
                 session: context.session,
                 environment: context.environment
@@ -121,11 +123,6 @@ struct MigrationImportAssetStagerTests: StrictInventoryTestCase {
     @Test func independentlyIntroducedNetworkIsTargetDriftAndIsNeverDeleted() async throws {
         let context = try await makeContext(name: "network-race")
         defer { context.cleanup() }
-        let object = try #require(
-            context.session.prepared.operation.completenessPlan.objects.first {
-                $0.source.kind == .network
-            }
-        )
         context.fixture.target.snapshotValue.networks.append(DoryNetwork(
             name: "backend",
             driver: "bridge",
@@ -135,7 +132,9 @@ struct MigrationImportAssetStagerTests: StrictInventoryTestCase {
             labels: ["external.owner": "true"]
         ))
 
-        await #expect(throws: MigrationImportAssetStagingError.targetDrift(object.source)) {
+        await #expect(throws: MigrationImportAssetStagingError.invalidSession(
+            "unowned target network backend cannot be re-inspected"
+        )) {
             _ = try await MigrationImportAssetStager.stage(
                 session: context.session,
                 environment: context.environment

@@ -36,6 +36,27 @@ struct MigrationStrictInventoryRejectionTests: StrictInventoryTestCase {
         }
     }
 
+    @Test func emptyDockerConfigFromSentinelIsPortableButARealDependencyIsRejected() async throws {
+        do {
+            let fixture = makeFixture()
+            var inspection = networkInspection()
+            inspection["ConfigFrom"] = ["Network": ""]
+            fixture.source.networkInspections["backend"] = inspection
+            _ = try await collect(fixture)
+        }
+        do {
+            let fixture = makeFixture()
+            var inspection = networkInspection()
+            inspection["ConfigFrom"] = ["Network": "swarm-config"]
+            fixture.source.networkInspections["backend"] = inspection
+            await #expect(throws: MigrationStrictInventoryError.unsupported(
+                "network backend depends on non-local bridge or swarm state"
+            )) {
+                _ = try await collect(fixture)
+            }
+        }
+    }
+
     @Test func deviceCustomRuntimeAndOutsideHomeBindsAreRejected() async {
         do {
             let fixture = makeFixture()

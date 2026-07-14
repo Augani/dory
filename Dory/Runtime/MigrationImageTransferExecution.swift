@@ -71,7 +71,6 @@ nonisolated struct MigrationImageTransferExecution {
     let source: any ContainerRuntime
     let target: any ContainerRuntime
     var targetBefore: MigrationImageTargetInventory?
-    var cleanupImageID: String?
     var loadAttempted = false
     var cleanupRequired = false
 
@@ -82,15 +81,13 @@ nonisolated struct MigrationImageTransferExecution {
         guard expectedImageID == sourceReference else {
             throw MigrationImageTransferError.sourceDrift
         }
-        try await prepareTarget(expectedImageID: expectedImageID)
+        try await prepareTarget()
         let loaded = try await loadSource(reference: sourceReference)
         let loadReceipt = loaded.receipt
-        guard loadReceipt.loadedImageID == expectedImageID else {
-            throw MigrationImageTransferError.loadIdentityMismatch(
-                expected: expectedImageID,
-                actual: loadReceipt.loadedImageID
-            )
-        }
+        try await recordLoadedTarget(
+            expectedSemanticIdentity: expectedImageID,
+            actualID: loadReceipt.loadedImageID
+        )
         let sourceDuring = loaded.sourceFingerprint
         guard sameSourceContent(sourceBefore, sourceDuring) else {
             throw MigrationImageTransferError.sourceDrift
@@ -100,7 +97,7 @@ nonisolated struct MigrationImageTransferExecution {
             throw MigrationImageTransferError.sourceDrift
         }
         let verifiedTarget = try await fingerprint(target, reference: loadReceipt.loadedImageID)
-        guard verifiedTarget.semanticIdentity == sourceBefore.semanticIdentity else {
+        guard sameSourceContent(sourceBefore, verifiedTarget) else {
             throw MigrationImageTransferError.targetMismatch
         }
         return try makeReceipt(MigrationVerifiedImageTransfer(
@@ -157,16 +154,25 @@ extension MigrationImageTransferExecution {
     }
 
     mutating func cleanup() async -> [String] {
-        guard loadAttempted, cleanupRequired, let cleanupImageID else { return [] }
+        guard loadAttempted else { return [] }
         var failures: [String] = []
-        do {
-            try await target.removeImage(id: cleanupImageID)
-        } catch {
-            failures.append("remove staged target image \(cleanupImageID): \(error)")
-        }
         guard let targetBefore else {
             failures.append("target inventory baseline disappeared")
             return failures
+        }
+        do {
+            let current = try await targetInventory()
+            let baselineIDs = Set(targetBefore.entries.map(\.id))
+            let addedIDs = current.entries.map(\.id).filter { !baselineIDs.contains($0) }
+            for imageID in addedIDs.sorted() {
+                do {
+                    try await target.removeImage(id: imageID)
+                } catch {
+                    failures.append("remove staged target image \(imageID): \(error)")
+                }
+            }
+        } catch {
+            failures.append("read staged target image inventory: \(error)")
         }
         do {
             let after = try await targetInventory()
@@ -188,13 +194,26 @@ private extension MigrationImageTransferExecution {
         return reference
     }
 
-    mutating func prepareTarget(
-        expectedImageID: String
-    ) async throws {
+    mutating func prepareTarget() async throws {
         let initialTarget = try await targetInventory()
         targetBefore = initialTarget
-        cleanupImageID = expectedImageID
-        cleanupRequired = !initialTarget.contains(expectedImageID)
+    }
+
+    mutating func recordLoadedTarget(
+        expectedSemanticIdentity: String,
+        actualID: String
+    ) async throws {
+        guard let targetBefore else {
+            throw MigrationImageTransferError.targetInventory("image baseline disappeared")
+        }
+        let current = try await targetInventory()
+        guard current.contains(actualID) else {
+            throw MigrationImageTransferError.loadIdentityMismatch(
+                expected: expectedSemanticIdentity,
+                actual: actualID
+            )
+        }
+        cleanupRequired = !targetBefore.contains(actualID)
     }
 
     mutating func loadSource(

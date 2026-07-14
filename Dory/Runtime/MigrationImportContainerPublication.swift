@@ -190,11 +190,26 @@ extension MigrationImportAssetStagingExecution {
         let matches = try await environment.target.migrationSnapshot().containers.filter {
             $0.name == definition.specification.name
         }
-        guard matches.count == 1,
-              matches[0].id == containerID,
-              matches[0].labels == definition.specification.labels,
-              matches[0].status == object.acceptedFinalState.runtimeState else {
-            throw MigrationImportAssetStagingError.targetDrift(object.source)
+        guard matches.count == 1 else {
+            throw MigrationImportAssetStagingError.invalidSession(
+                "published container count changed for \(object.source)"
+            )
+        }
+        guard matches[0].id == containerID else {
+            throw MigrationImportAssetStagingError.invalidSession(
+                "published container identity changed for \(object.source)"
+            )
+        }
+        guard matches[0].labels == definition.specification.labels else {
+            throw MigrationImportAssetStagingError.invalidSession(
+                "published container labels changed for \(object.source)"
+            )
+        }
+        guard matches[0].status == object.acceptedFinalState.runtimeState else {
+            throw MigrationImportAssetStagingError.invalidSession(
+                "published container state for \(object.source) is \(matches[0].status.rawValue), "
+                    + "expected \(object.acceptedFinalState.runtimeState.rawValue)"
+            )
         }
         let inspected = try await MigrationContainerInspector.inspect(
             matches[0],
@@ -202,9 +217,14 @@ extension MigrationImportAssetStagingExecution {
             sharedHome: environment.sharedHome,
             validatePortability: false
         )
-        guard try MigrationImportAssetCanonical.data(inspected)
-                == MigrationImportAssetCanonical.data(definition.specification) else {
-            throw MigrationImportAssetStagingError.targetDrift(object.source)
+        let inspectedData = try MigrationImportAssetCanonical.data(inspected)
+        let expectedData = try MigrationImportAssetCanonical.data(definition.specification)
+        guard inspectedData == expectedData else {
+            throw MigrationImportAssetStagingError.invalidSession(
+                "published container definition changed for \(object.source) in fields "
+                    + changedContainerSpecificationFields(expectedData, inspectedData)
+                        .joined(separator: ",")
+            )
         }
     }
 

@@ -155,4 +155,39 @@ struct MigrationStrictInventoryTests: StrictInventoryTestCase {
         #expect(mount.readOnly)
         #expect(mount.volumeOptions?.NoCopy == true)
     }
+
+    @Test func dockerDefaultOOMKillSettingIsCanonicalButExplicitDisableIsPreserved() async throws {
+        do {
+            let fixture = makeFixture()
+            var inspection = containerInspection(mount: volumeMount)
+            var hostConfig = try #require(inspection["HostConfig"] as? [String: Any])
+            hostConfig["OomKillDisable"] = false
+            inspection["HostConfig"] = hostConfig
+            fixture.source.containerInspections["container-id"] = inspection
+
+            let prepared = try await collect(fixture)
+            let container = try specification(
+                kind: .container,
+                in: prepared,
+                as: ContainerSpec.self
+            )
+            #expect(container.resources.oomKillDisable == nil)
+        }
+        do {
+            let fixture = makeFixture()
+            var inspection = containerInspection(mount: volumeMount)
+            var hostConfig = try #require(inspection["HostConfig"] as? [String: Any])
+            hostConfig["OomKillDisable"] = true
+            inspection["HostConfig"] = hostConfig
+            fixture.source.containerInspections["container-id"] = inspection
+
+            let prepared = try await collect(fixture)
+            let container = try specification(
+                kind: .container,
+                in: prepared,
+                as: ContainerSpec.self
+            )
+            #expect(container.resources.oomKillDisable == true)
+        }
+    }
 }

@@ -10,6 +10,9 @@ struct MigrationTransferHelperAssetTests {
         #expect(fixture.asset.archive == fixture.archive)
         #expect(fixture.asset.metadata.archiveSha256 == fixture.pins.archiveSha256)
         #expect(fixture.asset.metadata.platform == "linux/arm64")
+        #expect(String(decoding: fixture.metadataData, as: UTF8.self).contains(
+            #""platform":"linux/arm64""#
+        ))
     }
 
     @Test func archiveOrMetadataDriftFailsClosed() throws {
@@ -55,6 +58,18 @@ struct MigrationTransferHelperAssetTests {
         ))
     }
 
+    @Test func installationUsesContainerdManifestReceiptAfterExactContentInspection() async throws {
+        let fixture = try makeFixture()
+        let manifestID = "sha256:" + String(repeating: "d", count: 64)
+        let runtime = TransferHelperRuntime(metadata: fixture.asset.metadata, engineImageID: manifestID)
+
+        let installation = try await fixture.asset.install(on: runtime, operationID: UUID())
+
+        #expect(installation.imageID == manifestID)
+        #expect(runtime.tags.map(\.source) == [manifestID])
+        #expect(runtime.inspectedImageIDs == [manifestID])
+    }
+
     @Test func installationRejectsEngineThatReportsDifferentImageBytes() async throws {
         let fixture = try makeFixture()
         let runtime = TransferHelperRuntime(metadata: fixture.asset.metadata)
@@ -96,8 +111,7 @@ struct MigrationTransferHelperAssetTests {
         }
 
         #expect(runtime.removedImages == [
-            "dory.internal/operation-55555555-5555-5555-5555-555555555555:transfer-helper",
-            fixture.asset.metadata.imageConfigDigest
+            "dory.internal/operation-55555555-5555-5555-5555-555555555555:transfer-helper"
         ])
         #expect(!runtime.imagePresent)
     }
@@ -134,7 +148,7 @@ private extension MigrationTransferHelperAssetTests {
             schemaVersion: 1
         )
         let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys]
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         var metadataData = try encoder.encode(metadata)
         metadataData.append(0x0A)
         return Fixture(
@@ -160,9 +174,11 @@ private final class TransferHelperRuntime: ContainerRuntime {
 
     let kind: RuntimeKind = .docker
     nonisolated let supportsImageArchiveTransfer = true
+    nonisolated let supportsImageLoadReceipt = true
     nonisolated let supportsRawProxy = true
 
     let metadata: MigrationTransferHelperMetadata
+    let engineImageID: String
     var loadedArchives: [Data] = []
     var inspectedImageIDs: [String] = []
     var tags: [ImageTag] = []
@@ -171,13 +187,23 @@ private final class TransferHelperRuntime: ContainerRuntime {
     var imagePresent = false
     var failTag = false
 
-    init(metadata: MigrationTransferHelperMetadata) {
+    init(metadata: MigrationTransferHelperMetadata, engineImageID: String? = nil) {
         self.metadata = metadata
+        self.engineImageID = engineImageID ?? metadata.imageConfigDigest
     }
 
     func loadImage(tar: Data) async throws {
         loadedArchives.append(tar)
         imagePresent = true
+    }
+
+    func loadImageThrowingWithResponse(
+        stream: AsyncThrowingStream<Data, Error>
+    ) async throws -> Data {
+        var bytes = Data()
+        for try await chunk in stream { bytes.append(chunk) }
+        try await loadImage(tar: bytes)
+        return Data((#"{"stream":"Loaded image ID: \#(engineImageID)\n"}"# + "\r\n").utf8)
     }
 
     func proxyRequest(
@@ -187,9 +213,9 @@ private final class TransferHelperRuntime: ContainerRuntime {
         body: Data
     ) async -> HTTPResponse? {
         guard method == "GET", path.hasPrefix("/images/"), imagePresent else { return nil }
-        inspectedImageIDs.append(metadata.imageConfigDigest)
+        inspectedImageIDs.append(engineImageID)
         let object: [String: Any] = [
-            "Id": metadata.imageConfigDigest,
+            "Id": engineImageID,
             "Architecture": overrideArchitecture ?? "arm64",
             "Os": "linux",
             "RepoTags": [],
@@ -219,7 +245,18 @@ private final class TransferHelperRuntime: ContainerRuntime {
         imagePresent = false
     }
 
-    func snapshot() async throws -> RuntimeSnapshot { RuntimeSnapshot() }
+    func snapshot() async throws -> RuntimeSnapshot {
+        guard imagePresent else { return RuntimeSnapshot() }
+        return RuntimeSnapshot(images: [DockerImage(
+            repository: "<none>",
+            tag: "<none>",
+            imageID: engineImageID,
+            size: "1 KB",
+            created: "now",
+            usedByCount: 0,
+            sizeBytes: 1_024
+        )])
+    }
     func start(containerID: String) async throws {}
     func stop(containerID: String) async throws {}
     func restart(containerID: String) async throws {}

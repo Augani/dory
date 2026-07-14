@@ -61,9 +61,10 @@ extension MigrationImportAssetStagingExecution {
         if !receipt.targetImageWasPreexisting {
             created.append(.image(id: receipt.loadedTargetImageID))
         }
-        guard !receipt.targetImageWasPreexisting,
-              MigrationImageTransferExecution.canonicalImageID(receipt.loadedTargetImageID)
-                == MigrationImageTransferExecution.canonicalImageID(committedID) else {
+        guard MigrationImageTransferExecution.canonicalImageID(receipt.loadedTargetImageID) != nil,
+              MigrationImageTransferExecution.canonicalImageID(
+                receipt.verifiedTarget.semanticIdentity
+              ) == MigrationImageTransferExecution.canonicalImageID(committedID) else {
             throw MigrationImportAssetStagingError.targetDrift(object.source)
         }
         let imageManifestDigest = try session.lease.publishManifest(receipt.verificationManifest)
@@ -139,7 +140,9 @@ extension MigrationImportAssetStagingExecution {
                 fingerprint: capture.receipt.verifiedTarget.archiveContractSha256
             ),
             verificationManifestDigest: manifestDigest,
-            disposition: .createdOperationOwned
+            disposition: capture.receipt.targetImageWasPreexisting
+                ? .reusedPreexisting
+                : .createdOperationOwned
         ))
         state = try session.lease.transition(
             to: .staging,

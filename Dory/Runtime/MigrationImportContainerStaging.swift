@@ -146,7 +146,9 @@ extension MigrationImportAssetStagingExecution {
               let plannedBytes = session.prepared.source.writableLayerSizes[
                 object.source.sourceID
               ] else {
-            throw MigrationImportAssetStagingError.targetDrift(object.source)
+            throw MigrationImportAssetStagingError.invalidSession(
+                "source container lifecycle changed for \(object.source)"
+            )
         }
         let inspected = try await MigrationContainerInspector.inspect(
             current[0],
@@ -154,10 +156,51 @@ extension MigrationImportAssetStagingExecution {
             sharedHome: environment.sharedHome
         )
         let sizes = try await environment.source.migrationContainerWritableSizes()
-        guard try MigrationImportAssetCanonical.data(inspected)
-                == MigrationImportAssetCanonical.data(planned),
-              sizes[object.source.sourceID] == plannedBytes else {
-            throw MigrationImportAssetStagingError.targetDrift(object.source)
+        let inspectedData = try MigrationImportAssetCanonical.data(inspected)
+        let plannedData = try MigrationImportAssetCanonical.data(planned)
+        guard inspectedData == plannedData else {
+            throw MigrationImportAssetStagingError.invalidSession(
+                "source container definition changed for \(object.source) in fields "
+                    + changedContainerSpecificationFields(plannedData, inspectedData)
+                        .joined(separator: ",")
+            )
+        }
+        guard sizes[object.source.sourceID] == plannedBytes else {
+            throw MigrationImportAssetStagingError.invalidSession(
+                "source writable layer changed for \(object.source): expected \(plannedBytes), "
+                    + "observed \(sizes[object.source.sourceID].map(String.init) ?? "missing")"
+            )
+        }
+    }
+
+    func changedContainerSpecificationFields(
+        _ planned: Data,
+        _ current: Data
+    ) -> [String] {
+        guard let lhs = try? JSONSerialization.jsonObject(with: planned) as? [String: Any],
+              let rhs = try? JSONSerialization.jsonObject(with: current) as? [String: Any] else {
+            return ["unparseable"]
+        }
+        return changedJSONPaths(lhs, rhs, prefix: "")
+    }
+
+    func changedJSONPaths(
+        _ lhs: [String: Any],
+        _ rhs: [String: Any],
+        prefix: String
+    ) -> [String] {
+        Set(lhs.keys).union(rhs.keys).sorted().flatMap { key -> [String] in
+            let path = prefix.isEmpty ? key : "\(prefix).\(key)"
+            switch (lhs[key], rhs[key]) {
+            case let (left as [String: Any], right as [String: Any]):
+                return changedJSONPaths(left, right, prefix: path)
+            case (nil, nil):
+                return []
+            case let (left?, right?) where (left as AnyObject).isEqual(right):
+                return []
+            default:
+                return [path]
+            }
         }
     }
 
@@ -165,10 +208,14 @@ extension MigrationImportAssetStagingExecution {
         _ object: DoryOperationPlannedObject
     ) async throws {
         let snapshot = try await environment.target.migrationSnapshot()
-        guard !snapshot.containers.contains(where: {
+        let collisions = snapshot.containers.filter {
             $0.name == object.normalizedTargetName
-        }) else {
-            throw MigrationImportAssetStagingError.targetDrift(object.source)
+        }
+        guard collisions.isEmpty else {
+            throw MigrationImportAssetStagingError.invalidSession(
+                "target container name \(object.normalizedTargetName) appeared as "
+                    + collisions.map(\.id).joined(separator: ",")
+            )
         }
     }
 }

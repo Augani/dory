@@ -124,9 +124,15 @@ struct MigrationImportAssetStagingExecution {
         if !receipt.targetImageWasPreexisting {
             created.append(.image(id: receipt.loadedTargetImageID))
         }
-        guard expectedPreexisting == receipt.targetImageWasPreexisting,
-              MigrationImageTransferExecution.canonicalImageID(receipt.loadedTargetImageID)
-                == MigrationImageTransferExecution.canonicalImageID(object.source.sourceID) else {
+        // Docker's classic and containerd image stores expose different immutable IDs for the
+        // same archive (config digest versus OCI manifest digest). The independently re-saved
+        // archive fingerprint is the cross-engine identity proof. A planned reuse must remain a
+        // reuse; a planned create may safely discover already-present, byte-verified content.
+        guard (!expectedPreexisting || receipt.targetImageWasPreexisting),
+              MigrationImageTransferExecution.canonicalImageID(receipt.loadedTargetImageID) != nil,
+              MigrationImageTransferExecution.canonicalImageID(
+                receipt.verifiedTarget.semanticIdentity
+              ) == MigrationImageTransferExecution.canonicalImageID(object.source.sourceID) else {
             throw MigrationImportAssetStagingError.targetDrift(object.source)
         }
         let manifestDigest = try session.lease.publishManifest(receipt.verificationManifest)
@@ -334,6 +340,11 @@ struct MigrationImportAssetStagingExecution {
 
 extension MigrationImportAssetStagingExecution {
     mutating func stage() async throws -> DoryOperationState {
+        // The staging session can sit open while another actor mutates either daemon. Recheck the
+        // complete source closure and unowned target baseline immediately before the first write.
+        try await requireExactAuthoritiesAndSourceClosure()
+        _ = try verifiedUnselectedSourceInventoryDigest()
+        _ = try await verifiedUnownedTargetInventoryDigest(staged: [])
         for object in session.prepared.operation.completenessPlan.objects {
             try Task.checkCancellation()
             switch object.source.kind {

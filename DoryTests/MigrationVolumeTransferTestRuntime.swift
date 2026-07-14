@@ -58,6 +58,7 @@ final class VolumeTransferRuntime: ContainerRuntime {
 
     let kind: RuntimeKind = .docker
     nonisolated let supportsImageArchiveTransfer = true
+    nonisolated let supportsImageLoadReceipt = true
     nonisolated let supportsRawProxy = true
     let metadata: MigrationTransferHelperMetadata
     let side: Side
@@ -93,6 +94,16 @@ final class VolumeTransferRuntime: ContainerRuntime {
     }
 
     func loadImage(tar: Data) async throws { imagePresent = true }
+
+    func loadImageThrowingWithResponse(
+        stream: AsyncThrowingStream<Data, Error>
+    ) async throws -> Data {
+        for try await _ in stream {}
+        imagePresent = true
+        return Data((
+            #"{"stream":"Loaded image ID: \#(metadata.imageConfigDigest)\n"}"# + "\n"
+        ).utf8)
+    }
 
     func tagImage(source: String, repo: String, tag: String) async throws {}
 

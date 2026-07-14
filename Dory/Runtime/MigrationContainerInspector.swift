@@ -37,6 +37,11 @@ enum MigrationContainerInspector {
             throw MigrationContainerInspectionError.invalid(container.name)
         }
         var specification = request.spec(name: container.name)
+        // Docker daemons may report the disabled OOM-killer override as either
+        // omitted or false. Both mean the default (OOM killing remains enabled).
+        if specification.resources.oomKillDisable == false {
+            specification.resources.oomKillDisable = nil
+        }
         specification.networks.removeAll { MigrationOperationPlanBuilder.defaultNetworks.contains($0) }
         specification.networkEndpointSettings = portableEndpoints(
             specification.networkEndpointSettings

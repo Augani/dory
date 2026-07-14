@@ -99,7 +99,10 @@ struct MigrationTransferHelperAsset: Sendable, Equatable {
             throw MigrationTransferHelperError.invalidAsset("metadata is not the exact v1 schema")
         }
         let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys]
+        // Match the deterministic image builder's RFC 8259 representation exactly. JSONEncoder
+        // otherwise escapes the harmless slash in `linux/arm64`, producing bytes the bundled
+        // Python builder never emits.
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         var canonicalMetadata = try encoder.encode(metadata)
         canonicalMetadata.append(0x0A)
         guard canonicalMetadata == metadataData else {

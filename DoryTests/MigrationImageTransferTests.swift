@@ -65,6 +65,23 @@ struct MigrationImageTransferTests {
             == receipt.sourceDuringTransfer.archiveContractSha256)
     }
 
+    @Test func acceptsContainerdManifestIDWhenTheResavedArchiveIsExactlyIdentical() async throws {
+        let fixture = ImageTransferFixture()
+        let manifestID = "sha256:" + String(repeating: "d", count: 64)
+        let target = fixture.targetRuntime(loadedImageID: manifestID)
+
+        let receipt = try await MigrationImageTransfer().transfer(
+            fixture.request,
+            from: fixture.sourceRuntime(),
+            to: target
+        )
+
+        #expect(receipt.loadedTargetImageID == manifestID)
+        #expect(receipt.verifiedTarget.semanticIdentity == fixture.imageID)
+        #expect(!receipt.targetImageWasPreexisting)
+        #expect(target.savedReferences == [manifestID])
+    }
+
     @Test func sourceDriftDuringTransferRollsBackTheNewTargetImage() async throws {
         let fixture = ImageTransferFixture()
         let changed = fixture.changedContentFixture()
@@ -184,7 +201,7 @@ struct MigrationImageTransferTests {
             try await MigrationImageTransfer().transfer(fixture.request, from: source, to: target)
         }
 
-        #expect(target.removedImages == [fixture.imageID])
+        #expect(target.removedImages.isEmpty)
         #expect(!target.imagePresent)
     }
 
@@ -285,14 +302,16 @@ private struct ImageTransferFixture {
         targetArchive: Data? = nil,
         loadResponse: Data? = nil,
         preexisting: Bool = false,
-        supportsReceipts: Bool = true
+        supportsReceipts: Bool = true,
+        loadedImageID: String? = nil
     ) -> ImageTransferRuntime {
-        ImageTransferRuntime(
+        let targetImageID = loadedImageID ?? imageID
+        return ImageTransferRuntime(
             side: .target,
-            imageID: imageID,
+            imageID: targetImageID,
             sourceEmissions: [],
             targetArchive: targetArchive ?? sourceFixture.archive,
-            loadResponse: loadResponse,
+            loadResponse: loadResponse ?? ImageTransferRuntime.response(for: targetImageID),
             preexisting: preexisting,
             supportsReceipts: supportsReceipts
         )

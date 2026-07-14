@@ -277,7 +277,7 @@ struct TransferFixture {
             schemaVersion: 1
         )
         let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys]
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         var metadataData = try encoder.encode(metadata)
         metadataData.append(0x0A)
         asset = try MigrationTransferHelperAsset(
