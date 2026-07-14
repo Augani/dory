@@ -21,7 +21,9 @@ runtime reset, or Homebrew uninstall:
 The default drive is `~/Library/Application Support/Dory/Dory.dorydrive`. A user-selected drive is
 a `.dorydrive` bundle on mounted local APFS storage under `/Volumes`. Sockets, PID files, bounded
 logs, decompressed kernels, disposable root filesystems, and other reproducible boot assets remain
-under `~/.dory` and may be replaced without affecting the drive.
+under `~/.dory` and may be replaced without affecting the drive. doryd owns `~/.dory/hv`; the
+headless archive owns `~/.dory/standalone` and exposes only its public Docker socket at
+`~/.dory/engine.sock`. Neither supervisor matches or cleans the other's private helper paths.
 
 The app, daemon, standalone launcher, raw Hypervisor.framework VMM, Virtualization.framework
 fallback, doctor, migration assistant, release gates, and UI must all use the same storage library.

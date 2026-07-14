@@ -10,6 +10,10 @@ Dory has four separate runtime roles. Keeping these roles separate is part of th
 - `doryd` owns durable runtime state and engine lifecycle. Runtime mode and idle policy are read from `~/.dory/config.json` through `IdlePolicyStore`; doryd decides whether the Docker tier starts immediately or arms its socket for wake-on-use.
 - `launchd` owns only daemon supervision. Its plist points at the bundled helpers, static ports, static domain suffix, logging, and KeepAlive/RunAtLoad. It must not carry user runtime mode.
 - Helpers own execution. `dory-hv` owns the Docker VM, `dory-vmm` owns machine VMs, `gvproxy` owns userspace networking transport, and bundled CLI helpers are reconciled into `~/.dory/bin`.
+- The headless archive is a separate delivery shape controlled only by `dory-engine`. It publishes
+  `~/.dory/engine.sock`, keeps every private helper path under `~/.dory/standalone`, and cannot
+  attach the selected drive while `doryd` holds selection authority. Its stop/recovery matching
+  must never signal helpers under doryd's `~/.dory/hv` state.
 
 ## Startup Contract
 
@@ -43,6 +47,8 @@ Docker reachability is a product invariant, not a benchmark convenience.
 - App terminal affordances may resolve private helpers for internal diagnostics, but user-facing machine shells require the stable `dory` command. `TerminalSession` must not carry bundle-private `dorydctl` paths.
 - Opening Dory means "make Docker usable now." The app may promote a stopped or sleeping doryd-owned Docker tier to running, but doryd remains the owner of durable runtime mode and later sleep decisions.
 - If doryd cannot start the Docker tier, the app must leave the backend as disconnected instead of silently falling back to another local Docker engine while the preference is Dory.
+- The app-bundled `dory` command controls the engine only through `dorydctl`. The old app-owned
+  socket fallback is not a recovery path; the headless archive uses its own `dory-engine` command.
 
 ## Regression Guards
 

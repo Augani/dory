@@ -277,8 +277,8 @@ MIGRATION_SOURCE_SOCKET="$MIGRATION_SOURCE_HOME/.dory/engine.sock"
 python3 - \
   "$SOCKET" \
   "$MIGRATION_SOURCE_SOCKET" \
-  "$ENGINE_HOME/.dory/hv/docker-backend.sock" \
-  "$ENGINE_HOME/.dory/hv/gvproxy-api.sock" <<'PY'
+  "$ENGINE_HOME/.dory/standalone/hv/docker-backend.sock" \
+  "$ENGINE_HOME/.dory/standalone/hv/gvproxy-api.sock" <<'PY'
 import os
 import sys
 
@@ -642,17 +642,18 @@ done
 
 supervisor_evidence="$WORKDIR/evidence/standalone-supervisor-recovery"
 mkdir -p "$supervisor_evidence"
-initial_engine_pid="$(cat "$ENGINE_HOME/.dory/engine-cli.pid")"
-initial_dataplane_pid="$(cat "$ENGINE_HOME/.dory/dataplane-cli.pid")"
-rm -f "$ENGINE_HOME/.dory/engine-cli.pid" "$ENGINE_HOME/.dory/dataplane-cli.pid"
+initial_engine_pid="$(cat "$ENGINE_HOME/.dory/standalone/engine-cli.pid")"
+initial_dataplane_pid="$(cat "$ENGINE_HOME/.dory/standalone/dataplane-cli.pid")"
+rm -f "$ENGINE_HOME/.dory/standalone/engine-cli.pid" \
+  "$ENGINE_HOME/.dory/standalone/dataplane-cli.pid"
 bounded 30 env HOME="$ENGINE_HOME" "$RUNTIME" start --mem-mb 8192 --cpus 6 --amd64 \
   > "$supervisor_evidence/pidfile-repair.out" \
   2> "$supervisor_evidence/pidfile-repair.err" \
   || die "exact standalone runtime did not repair lost healthy PID metadata"
 grep -q 'already running' "$supervisor_evidence/pidfile-repair.out" \
   || die "lost PID metadata caused a healthy engine restart"
-repaired_engine_pid="$(cat "$ENGINE_HOME/.dory/engine-cli.pid")"
-repaired_dataplane_pid="$(cat "$ENGINE_HOME/.dory/dataplane-cli.pid")"
+repaired_engine_pid="$(cat "$ENGINE_HOME/.dory/standalone/engine-cli.pid")"
+repaired_dataplane_pid="$(cat "$ENGINE_HOME/.dory/standalone/dataplane-cli.pid")"
 [ "$repaired_engine_pid" = "$initial_engine_pid" ] \
   && [ "$repaired_dataplane_pid" = "$initial_dataplane_pid" ] \
   || die "healthy PID metadata repair changed the running helper identities"
@@ -665,7 +666,7 @@ for _ in $(seq 1 100); do
   [ "$process_state" = Z ] && break
   sleep 0.05
 done
-rm -f "$ENGINE_HOME/.dory/dataplane-cli.pid"
+rm -f "$ENGINE_HOME/.dory/standalone/dataplane-cli.pid"
 bounded 90 env HOME="$ENGINE_HOME" "$RUNTIME" start --mem-mb 8192 --cpus 6 --amd64 \
   > "$supervisor_evidence/incomplete-runtime-recovery.out" \
   2> "$supervisor_evidence/incomplete-runtime-recovery.err" \
@@ -673,14 +674,14 @@ bounded 90 env HOME="$ENGINE_HOME" "$RUNTIME" start --mem-mb 8192 --cpus 6 --amd
 grep -q 'stopping incomplete previous runtime' \
   "$supervisor_evidence/incomplete-runtime-recovery.out" \
   || die "dead dataplane did not trigger incomplete-runtime recovery"
-recovered_engine_pid="$(cat "$ENGINE_HOME/.dory/engine-cli.pid")"
-recovered_dataplane_pid="$(cat "$ENGINE_HOME/.dory/dataplane-cli.pid")"
+recovered_engine_pid="$(cat "$ENGINE_HOME/.dory/standalone/engine-cli.pid")"
+recovered_dataplane_pid="$(cat "$ENGINE_HOME/.dory/standalone/dataplane-cli.pid")"
 [ "$recovered_engine_pid" != "$initial_engine_pid" ] \
   && [ "$recovered_dataplane_pid" != "$initial_dataplane_pid" ] \
   || die "incomplete-runtime recovery did not create a new helper pair"
 [ "$(curl -fsS --max-time 5 --unix-socket "$SOCKET" http://d/_ping)" = OK ] \
   || die "Docker API did not recover after exact standalone supervisor repair"
-grep 'engine stopped:' "$ENGINE_HOME/.dory/engine.log" | tail -1 \
+grep 'engine stopped:' "$ENGINE_HOME/.dory/standalone/engine.log" | tail -1 \
   > "$supervisor_evidence/recovery-shutdown.txt"
 grep -qx 'dory-hv: engine stopped: powerOff' \
   "$supervisor_evidence/recovery-shutdown.txt" \
@@ -994,7 +995,7 @@ grep -qx 'status=PASS' "$kubernetes_tooling_manifest" \
 
 bounded 1800 scripts/competitor-runtime-regression-gate.sh \
   --socket "$SOCKET" \
-  --state-dir "$ENGINE_HOME/.dory" \
+  --state-dir "$ENGINE_HOME/.dory/standalone" \
   --image "$IMAGE" \
   --workroot "$ENGINE_HOME/gate-evidence/competitor-runtime" \
   --connections 2000 \
@@ -1200,13 +1201,13 @@ done
 
 scripts/endurance-reliability-soak.sh \
   --socket "$SOCKET" \
-  --state-dir "$ENGINE_HOME/.dory" \
+  --state-dir "$ENGINE_HOME/.dory/standalone" \
   --duration "$ENDURANCE_DURATION" \
   --compose-every 5 \
   --settle 2 \
   --workroot "$ENGINE_HOME/gate-evidence/endurance" \
   --min-free-gb "$MIN_FREE_GB" \
-  --process-pattern "$ENGINE_HOME/.dory" \
+  --process-pattern "$ENGINE_HOME/.dory/standalone" \
   > "$WORKDIR/evidence/endurance.log" 2>&1 &
 ENDURANCE_PID=$!
 

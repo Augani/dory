@@ -202,7 +202,7 @@ The production release ships arm64 artifacts only:
 | `Dory-x.y.z-arm64.dmg` / `.zip` | **Full app** optimized for Apple silicon — zero prerequisites, works on a clean Mac |
 | `Dory-x.y.z.dmg` / `.zip` | Compatibility alias for the arm64 build, used by the Homebrew cask |
 | `Dory-x.y.z-lite.zip` | **App only** (~6 MB) — front an engine you already run (Colima, Docker Desktop, OrbStack, Rancher Desktop, Podman) |
-| `dory-engine-x.y.z-arm64.tar.gz` | **Headless engine runtime**, no GUI — `./dory-engine start`, then `docker context use dory-engine`. Colima-style; FEX/amd64 is on by default and `--no-amd64` is the opt-out. |
+| `dory-engine-x.y.z-arm64.tar.gz` | **Headless engine runtime**, no GUI — `./dory-engine start`, then `docker context use dory-engine`. Its private runtime state stays under `~/.dory/standalone`; FEX/amd64 is on by default and `--no-amd64` is the opt-out. |
 
 ## Uninstall
 

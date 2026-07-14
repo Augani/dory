@@ -324,6 +324,18 @@ assert data["matched"] is True
 '
 
 set +e
+unavailable_engine="$(DORYDCTL_BIN=/usr/bin/false scripts/dory engine status --json)"
+unavailable_engine_rc=$?
+set -e
+test "$unavailable_engine_rc" -eq 1
+printf '%s' "$unavailable_engine" | python3 -c '
+import json, sys
+data = json.load(sys.stdin)
+assert data["state"] == "unavailable"
+assert "doryd control is unavailable" in data["detail"]
+'
+
+set +e
 wait_json="$(DORYDCTL_BIN=/usr/bin/false DORY_DOCKER_BIN=/usr/bin/false scripts/dory wait engine --until running --timeout 0 --json)"
 wait_rc=$?
 set -e

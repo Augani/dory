@@ -48,11 +48,12 @@ RUNTIME_HOME="${DORY_MANAGED_DRIVE_RUNTIME_HOME:-${TMPDIR:-/tmp}}"
 if [ -z "${DORY_MANAGED_DRIVE_RUNTIME_HOME:-}" ]; then
   RUNTIME_HOME="${RUNTIME_HOME%/}/dory-md-$PPID-$$"
 fi
-STATE="$RUNTIME_HOME/.dory"
-FIRST_STATE="$RUNTIME_HOME/.dory-first-runtime"
+DORY_ROOT="$RUNTIME_HOME/.dory"
+STATE="$DORY_ROOT/standalone"
+FIRST_STATE="$RUNTIME_HOME/.dory-first-standalone-runtime"
 DRIVE="$RUNTIME_HOME/Library/Application Support/Dory/Dory.dorydrive"
 SELECTION_RECORD="$RUNTIME_HOME/Library/Application Support/Dory/data-drive-selection.json"
-SOCKET="$STATE/engine.sock"
+SOCKET="$DORY_ROOT/engine.sock"
 ENGINE_PIDFILE="$STATE/engine-cli.pid"
 DATAPLANE_PIDFILE="$STATE/dataplane-cli.pid"
 NAME="dory-drive-${RUN_ID//[^a-zA-Z0-9]/}"
@@ -303,7 +304,7 @@ HOME="$RUNTIME_HOME" "$RUNTIME/dory-engine" start \
 HOME="$RUNTIME_HOME" "$RUNTIME/dory-engine" status >"$EVIDENCE/status-after-runtime-reset.log"
 grep -F "data drive: $DRIVE" "$EVIDENCE/status-after-runtime-reset.log" >/dev/null \
   || { echo "managed data-drive gate: fresh runtime did not recover its durable drive" >&2; exit 1; }
-export DOCKER_HOST="unix://$STATE/engine.sock"
+export DOCKER_HOST="unix://$SOCKET"
 "$DOCKER" image inspect "$IMAGE" >"$EVIDENCE/image-after.json"
 "$DOCKER" container inspect "$NAME" >"$EVIDENCE/container-after.json"
 "$DOCKER" volume inspect "$VOLUME" >"$EVIDENCE/volume-after.json"

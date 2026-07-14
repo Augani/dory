@@ -157,6 +157,14 @@ final class DorydServiceTests: XCTestCase {
         wait(for: [got], timeout: 5)
         XCTAssertEqual(state, "unconfigured")
         XCTAssertTrue(message.contains("not configured"))
+
+        let stopped = expectation(description: "engineStop unconfigured reply")
+        proxy.engineStop { ok, detail in
+            XCTAssertFalse(ok)
+            XCTAssertTrue(detail.contains("not configured"))
+            stopped.fulfill()
+        }
+        wait(for: [stopped], timeout: 5)
     }
 
     func testEngineStartAndStopOverXPCDriveDockerTier() throws {

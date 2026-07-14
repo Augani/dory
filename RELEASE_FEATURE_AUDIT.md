@@ -66,8 +66,13 @@ of scope so each fix remains reviewable.
   rejected a mismatched drive without replacing either identity. Pre-release records, foreign
   bundles, symlinks, hard links, oversized records, unsafe permissions, and concurrent mutation
   fail closed; the full 354-test core suite passed after removing a diagnostics reread race.
-- [ ] App, `doryd`, launchd, `dory-hv`, gvproxy, dataplane, and CLI ownership boundaries match
+- [x] App, `doryd`, launchd, `dory-hv`, gvproxy, dataplane, and CLI ownership boundaries match
   `ARCHITECTURE.md` with no competing lifecycle owner.
+  Local source evidence: signed LaunchAgent helper/resource paths fail closed; app and CLI Dory
+  selection cannot fall back to an external or legacy app-owned engine; the headless archive keeps
+  private state and process cleanup under `~/.dory/standalone`; ordinary stop/start teardown and
+  supervised recovery publish one deterministic owner. The 358-test core suite and 57 focused app
+  tests passed, together with the competitor-release and CLI doctor regression gates.
 - [ ] Always-on, manual, auto-idle, and battery-saver start/wake/sleep behavior is deterministic,
   including concurrent cold-wake clients, app quit/relaunch, daemon crash, and host restart.
 - [x] The selected `.dorydrive` is the sole durable workload store; transient runtime replacement,

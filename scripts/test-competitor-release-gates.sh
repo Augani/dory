@@ -101,6 +101,21 @@ for name in (
         compile(block, f"{name}:heredoc-{index}", "exec")
 PY
 bash -n scripts/dory
+grep -F 'STATE="$DORY_ROOT/standalone"' scripts/runtime/dory-engine >/dev/null \
+  || fail "standalone runtime private state can overlap doryd ownership"
+if grep -F 'Legacy app-shim fallback' scripts/dory >/dev/null; then
+  fail "app CLI retained the competing legacy app-owned engine fallback"
+fi
+python3 - <<'PY'
+from pathlib import Path
+
+source = Path("Dory/Models/AppStore.swift").read_text(encoding="utf-8")
+start = source.index("        case .dory:")
+end = source.index("    private func connectDorydBackend", start)
+assert "DockerEngineRuntime.detect" not in source[start:end], (
+    "Dory preference silently falls back to an external engine"
+)
+PY
 grep -F -- '--state-dir "$STATE/hv"' scripts/runtime/dory-engine >/dev/null \
   || fail "headless runtime does not isolate dory-hv/gvproxy state beneath its own HOME"
 grep -F -- '--data-drive "$DATA_DRIVE"' scripts/runtime/dory-engine >/dev/null \
@@ -1092,7 +1107,7 @@ rm -rf "$short_runtime_home"
 runtime_home="$short_runtime_home"
 runtime_arch=arm64
 [ "$(uname -m)" = x86_64 ] && runtime_arch=amd64
-mkdir -p "$runtime/bin" "$runtime/share/dory" "$runtime_home/.dory/vm"
+mkdir -p "$runtime/bin" "$runtime/share/dory" "$runtime_home/.dory/standalone/vm"
 cp scripts/runtime/dory-engine "$runtime/dory-engine"
 chmod +x "$runtime/dory-engine"
 for helper in dory-hv gvproxy dory-dataplane-proxy; do
@@ -1100,8 +1115,8 @@ for helper in dory-hv gvproxy dory-dataplane-proxy; do
   chmod +x "$runtime/bin/$helper"
 done
 printf 'kernel-asset\n' > "$runtime/share/dory/dory-hv-kernel-$runtime_arch.lzfse"
-printf 'prepared-kernel\n' > "$runtime_home/.dory/vm/dory-hv-kernel-$runtime_arch"
-touch "$runtime_home/.dory/vm/dory-hv-kernel-$runtime_arch"
+printf 'prepared-kernel\n' > "$runtime_home/.dory/standalone/vm/dory-hv-kernel-$runtime_arch"
+touch "$runtime_home/.dory/standalone/vm/dory-hv-kernel-$runtime_arch"
 printf 'do-not-delete\n' > "$runtime_home/.dory/engine.sock"
 if HOME="$runtime_home" "$runtime/dory-engine" start > "$TMP/runtime-file.out" 2> "$TMP/runtime-file.err"; then
   fail "standalone runtime replaced a regular file planted at engine.sock"
@@ -1109,8 +1124,8 @@ fi
 grep -q 'refusing to replace non-socket or symlink path' "$TMP/runtime-file.err"
 grep -qx 'do-not-delete' "$runtime_home/.dory/engine.sock" \
   || fail "standalone runtime changed the planted engine.sock file"
-printf '%s\n' "$$" > "$runtime_home/.dory/engine-cli.pid"
-printf '%s\n' "$$" > "$runtime_home/.dory/dataplane-cli.pid"
+printf '%s\n' "$$" > "$runtime_home/.dory/standalone/engine-cli.pid"
+printf '%s\n' "$$" > "$runtime_home/.dory/standalone/dataplane-cli.pid"
 if HOME="$runtime_home" "$runtime/dory-engine" status > "$TMP/runtime-pid.out" 2>&1; then
   fail "standalone runtime trusted unrelated recycled PIDs"
 fi
@@ -1120,9 +1135,9 @@ grep -q 'not running' "$TMP/runtime-pid.out"
 # owning process is gone. Stop must remove only stale socket nodes, and the following start must
 # advance to a fresh helper launch instead of treating connection-refused state as running.
 rm -f "$runtime_home/.dory/engine.sock"
-mkdir -p "$runtime_home/.dory/hv"
+mkdir -p "$runtime_home/.dory/standalone/hv"
 python3 - "$runtime_home/.dory/engine.sock" \
-  "$runtime_home/.dory/hv/docker-backend.sock" <<'PY'
+  "$runtime_home/.dory/standalone/hv/docker-backend.sock" <<'PY'
 import os
 import socket
 import sys
@@ -1136,13 +1151,14 @@ for path in sys.argv[1:]:
     listener.bind(path)
     listener.close()
 PY
-printf '999999\n' > "$runtime_home/.dory/engine-cli.pid"
-printf '999998\n' > "$runtime_home/.dory/dataplane-cli.pid"
+printf '999999\n' > "$runtime_home/.dory/standalone/engine-cli.pid"
+printf '999998\n' > "$runtime_home/.dory/standalone/dataplane-cli.pid"
 HOME="$runtime_home" "$runtime/dory-engine" stop > "$TMP/runtime-stale-stop.out" 2>&1
 grep -q 'not running' "$TMP/runtime-stale-stop.out"
 for stale in "$runtime_home/.dory/engine.sock" \
-  "$runtime_home/.dory/hv/docker-backend.sock" \
-  "$runtime_home/.dory/engine-cli.pid" "$runtime_home/.dory/dataplane-cli.pid"; do
+  "$runtime_home/.dory/standalone/hv/docker-backend.sock" \
+  "$runtime_home/.dory/standalone/engine-cli.pid" \
+  "$runtime_home/.dory/standalone/dataplane-cli.pid"; do
   [ ! -e "$stale" ] || fail "standalone runtime retained stale shutdown state: $stale"
 done
 
@@ -1158,12 +1174,12 @@ EOF
 cp "$runtime/bin/dory-hv" "$runtime/bin/dory-dataplane-proxy"
 chmod +x "$runtime/bin/dory-hv" "$runtime/bin/dory-dataplane-proxy"
 "$runtime/bin/dory-hv" engine \
-  --engine-sock "$runtime_home/.dory/hv/docker-backend.sock" \
-  --state-dir "$runtime_home/.dory/hv" &
+  --engine-sock "$runtime_home/.dory/standalone/hv/docker-backend.sock" \
+  --state-dir "$runtime_home/.dory/standalone/hv" &
 orphan_hv_pid=$!
 "$runtime/bin/dory-dataplane-proxy" \
   --listen "$runtime_home/.dory/engine.sock" \
-  --backend "$runtime_home/.dory/hv/docker-backend.sock" &
+  --backend "$runtime_home/.dory/standalone/hv/docker-backend.sock" &
 orphan_dataplane_pid=$!
 mkdir -p "$TMP/foreign-helper"
 cp "$runtime/bin/dory-hv" "$TMP/foreign-helper/dory-hv"
@@ -1204,10 +1220,25 @@ trap 'exit 0' TERM INT
 while :; do sleep 1; done
 EOF
 chmod +x "$runtime/bin/gvproxy"
-mkdir -p "$runtime_home/.dory/hv"
+mkdir -p "$runtime_home/.dory/hv" "$runtime_home/.dory/standalone/hv"
+
+# doryd and the standalone archive can coexist in one account, but only doryd owns ~/.dory/hv.
+# Stopping the standalone supervisor must not signal an app-owned gvproxy carrying those paths.
 "$runtime/bin/gvproxy" \
   -listen-vfkit "unixgram://$runtime_home/.dory/hv/net.sock" \
   -listen "unix://$runtime_home/.dory/hv/gvproxy-api.sock" &
+app_gvproxy_pid=$!
+test_pids="$test_pids $app_gvproxy_pid"
+sleep 0.2
+HOME="$runtime_home" "$runtime/dory-engine" stop > "$TMP/runtime-app-owner-stop.out" 2>&1
+kill -0 "$app_gvproxy_pid" 2>/dev/null \
+  || fail "standalone runtime killed doryd's app-owned gvproxy"
+kill "$app_gvproxy_pid" 2>/dev/null || true
+wait "$app_gvproxy_pid" 2>/dev/null || true
+
+"$runtime/bin/gvproxy" \
+  -listen-vfkit "unixgram://$runtime_home/.dory/standalone/hv/net.sock" \
+  -listen "unix://$runtime_home/.dory/standalone/hv/gvproxy-api.sock" &
 orphan_pid=$!
 test_pids="$test_pids $orphan_pid"
 sleep 0.2

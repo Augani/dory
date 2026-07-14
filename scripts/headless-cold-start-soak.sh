@@ -97,13 +97,13 @@ run_bounded() {
 capture_diagnostics() {
   local home="$1" dir="$2"
   mkdir -p "$dir"
-  cp "$home/.dory/engine.log" "$dir/engine.log" 2>/dev/null || true
-  cp "$home/.dory/engine-cli.pid" "$dir/engine-cli.pid" 2>/dev/null || true
+  cp "$home/.dory/standalone/engine.log" "$dir/engine.log" 2>/dev/null || true
+  cp "$home/.dory/standalone/engine-cli.pid" "$dir/engine-cli.pid" 2>/dev/null || true
   ps -axo pid,ppid,state,%cpu,rss,etime,command > "$dir/processes.txt" 2>&1 || true
   vm_stat > "$dir/vm-stat.txt" 2>&1 || true
   df -h > "$dir/df.txt" 2>&1 || true
-  if [ -f "$home/.dory/engine-cli.pid" ]; then
-    pid="$(cat "$home/.dory/engine-cli.pid" 2>/dev/null || true)"
+  if [ -f "$home/.dory/standalone/engine-cli.pid" ]; then
+    pid="$(cat "$home/.dory/standalone/engine-cli.pid" 2>/dev/null || true)"
     [ -n "$pid" ] && lsof -n -P -p "$pid" > "$dir/lsof.txt" 2>&1 || true
   fi
   find "$home/.dory" -ls > "$dir/state-tree.txt" 2>&1 || true
@@ -112,8 +112,8 @@ capture_diagnostics() {
 force_owned_stop() {
   local home="$1" pid=""
   HOME="$home" "$RUNTIME/dory-engine" stop >/dev/null 2>&1 || true
-  if [ -f "$home/.dory/engine-cli.pid" ]; then
-    pid="$(cat "$home/.dory/engine-cli.pid" 2>/dev/null || true)"
+  if [ -f "$home/.dory/standalone/engine-cli.pid" ]; then
+    pid="$(cat "$home/.dory/standalone/engine-cli.pid" 2>/dev/null || true)"
     [ -n "$pid" ] && kill -KILL "$pid" 2>/dev/null || true
   fi
 }
@@ -134,7 +134,8 @@ while [ "$cycle" -le "$CYCLES" ]; do
   [ ! -e "$home" ] || die "isolated cycle HOME already exists: $home"
   mkdir -p "$home" "$diag"
   cleanup_home="$home"
-  python3 - "$home/.dory/engine.sock" "$home/.dory/hv/docker-backend.sock" <<'PY'
+  python3 - "$home/.dory/engine.sock" \
+    "$home/.dory/standalone/hv/docker-backend.sock" <<'PY'
 import os
 import sys
 
@@ -160,7 +161,7 @@ PY
   curl -fsS --max-time 5 --unix-socket "$socket" http://d/version > "$diag-version.json"
   curl -fsS --max-time 5 --unix-socket "$socket" http://d/info > "$diag-info.json"
 
-  pid="$(cat "$home/.dory/engine-cli.pid")"
+  pid="$(cat "$home/.dory/standalone/engine-cli.pid")"
   kill -0 "$pid"
   stopped="$(date +%s)"
   if run_bounded "$STOP_TIMEOUT" "$diag/stop.log" env HOME="$home" "$RUNTIME/dory-engine" stop; then

@@ -158,6 +158,84 @@ final class DorydConfigurationTests: XCTestCase {
         XCTAssertNil(env.dockerTierConfiguration())
     }
 
+    func testSupportedRawHVHostDoesNotReplaceMissingExplicitHelperWithBundledFallback() throws {
+        let directory = "/tmp/doryd-config-missing-explicit-hv-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let helpers = directory + "/Dory.app/Contents/Helpers"
+        let resources = directory + "/Dory.app/Contents/Resources"
+        try FileManager.default.createDirectory(atPath: helpers, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(atPath: resources, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+
+        let doryd = try executableFixture(at: helpers + "/doryd")
+        _ = try executableFixture(at: helpers + "/dory-hv")
+        _ = try executableFixture(at: helpers + "/dory-vmm")
+        _ = try executableFixture(at: helpers + "/gvproxy")
+        FileManager.default.createFile(
+            atPath: resources + "/dory-hv-kernel-\(supportedRawHVGuestArch())",
+            contents: Data()
+        )
+
+        let environment = DorydEnvironment(values: [
+            "DORYD_HOME": directory + "/home",
+            "DORYD_HV_HELPER": helpers + "/missing-dory-hv",
+        ], cwd: directory, executablePath: doryd, hostPlatform: supportedRawHVPlatform())
+
+        XCTAssertNil(environment.dockerTierConfiguration())
+    }
+
+    func testSupportedRawHVHostDoesNotReplaceMissingExplicitGVProxyWithBundledFallback() throws {
+        let directory = "/tmp/doryd-config-missing-explicit-gvproxy-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let helpers = directory + "/Dory.app/Contents/Helpers"
+        let resources = directory + "/Dory.app/Contents/Resources"
+        try FileManager.default.createDirectory(atPath: helpers, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(atPath: resources, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+
+        let doryd = try executableFixture(at: helpers + "/doryd")
+        let helper = try executableFixture(at: helpers + "/dory-hv")
+        _ = try executableFixture(at: helpers + "/gvproxy")
+        FileManager.default.createFile(
+            atPath: resources + "/dory-hv-kernel-\(supportedRawHVGuestArch())",
+            contents: Data()
+        )
+
+        let environment = DorydEnvironment(values: [
+            "DORYD_HOME": directory + "/home",
+            "DORYD_HV_HELPER": helper,
+            "DORYD_GVPROXY": helpers + "/missing-gvproxy",
+        ], cwd: directory, executablePath: doryd, hostPlatform: supportedRawHVPlatform())
+
+        XCTAssertNil(environment.dockerTierConfiguration())
+    }
+
+    func testExplicitResourceDirectoryDoesNotFallBackToAnotherBundleDirectory() throws {
+        let directory = "/tmp/doryd-config-explicit-resources-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let helpers = directory + "/Dory.app/Contents/Helpers"
+        let resources = directory + "/Dory.app/Contents/Resources"
+        let selectedResources = directory + "/selected-resources"
+        try FileManager.default.createDirectory(atPath: helpers, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(atPath: resources, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(atPath: selectedResources, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+
+        let doryd = try executableFixture(at: helpers + "/doryd")
+        let helper = try executableFixture(at: helpers + "/dory-hv")
+        let gvproxy = try executableFixture(at: helpers + "/gvproxy")
+        FileManager.default.createFile(
+            atPath: resources + "/dory-hv-kernel-\(supportedRawHVGuestArch())",
+            contents: Data()
+        )
+
+        let environment = DorydEnvironment(values: [
+            "DORYD_HOME": directory + "/home",
+            "DORYD_HV_HELPER": helper,
+            "DORYD_GVPROXY": gvproxy,
+            "DORYD_RESOURCES_DIR": selectedResources,
+        ], cwd: directory, executablePath: doryd, hostPlatform: supportedRawHVPlatform())
+
+        XCTAssertNil(environment.dockerTierConfiguration())
+    }
+
     func testDockerTierFindsBundledRuntimeResourcesByHostArchitecture() throws {
         let directory = "/tmp/doryd-config-bundle-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         let helpers = directory + "/Dory.app/Contents/Helpers"
@@ -802,6 +880,14 @@ final class DorydConfigurationTests: XCTestCase {
         DorydHostPlatform(architecture: .x86_64, macOSMajorVersion: 15)
         #else
         DorydHostPlatform(architecture: .arm64, macOSMajorVersion: 15)
+        #endif
+    }
+
+    private func supportedRawHVGuestArch() -> String {
+        #if arch(x86_64)
+        "amd64"
+        #else
+        "arm64"
         #endif
     }
 

@@ -19,9 +19,10 @@ umask 077
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BIN="$HERE/bin"
 SHARE="$HERE/share/dory"
-STATE="$HOME/.dory"
+DORY_ROOT="$HOME/.dory"
+STATE="$DORY_ROOT/standalone"
 DATA_DRIVE="${DORY_DATA_DRIVE:-$HOME/Library/Application Support/Dory/Dory.dorydrive}"
-SOCK="$STATE/engine.sock"
+SOCK="$DORY_ROOT/engine.sock"
 BACKEND_SOCK="$STATE/hv/docker-backend.sock"
 PIDFILE="$STATE/engine-cli.pid"
 DATAPLANE_PIDFILE="$STATE/dataplane-cli.pid"
@@ -122,8 +123,8 @@ dataplane_pid() {
 }
 
 # A fast host shutdown can remove or fail to flush a pidfile while a helper survives. Recover only
-# processes whose command carries this HOME's exact private paths; a helper from another Dory
-# runtime cannot match. This is the same ownership rule used for reparented gvproxy below.
+# processes whose command carries this standalone runtime's exact private paths; helpers owned by
+# doryd use ~/.dory/hv and cannot match. This is the same rule used for reparented gvproxy below.
 owned_dory_hv_pids() {
   ps -axo pid=,command= 2>/dev/null | awk \
     -v state="$STATE/hv" -v backend="$BACKEND_SOCK" '

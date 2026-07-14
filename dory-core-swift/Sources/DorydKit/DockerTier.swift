@@ -402,7 +402,7 @@ public final class DockerTier: @unchecked Sendable {
         }
     }
 
-    private func launchFreshTier(epoch: UInt64) throws {
+    private func launchFreshTier(epoch: UInt64, publishFailure: Bool = true) throws {
         var startedHelper: (any DockerManagedProcess)?
         var startedResources: DataplaneResources?
         do {
@@ -485,7 +485,7 @@ public final class DockerTier: @unchecked Sendable {
                 }
                 activeHelperGeneration = nil
                 helperStartedAt = nil
-                state = .failed
+                state = publishFailure ? .failed : .starting
                 lastError = "\(error)"
             } else {
                 ownsLifecycle = false
@@ -1265,7 +1265,7 @@ public final class DockerTier: @unchecked Sendable {
 
         do {
             cleanupStaleHelpers()
-            try launchFreshTier(epoch: epoch)
+            try launchFreshTier(epoch: epoch, publishFailure: false)
         } catch TierError.startCancelled {
             return
         } catch {
@@ -1280,7 +1280,7 @@ public final class DockerTier: @unchecked Sendable {
         lock.lock()
         guard !terminalShutdown,
               lifecycleEpoch == epoch,
-              state == .failed else {
+              state == .starting else {
             lock.unlock()
             return
         }
@@ -1302,6 +1302,7 @@ public final class DockerTier: @unchecked Sendable {
             restart = nil
             restartWorkItem = nil
             delay = 0
+            state = .failed
             lastError = "automatic restart limit (\(policy.maxRestarts)) exhausted after launch failure: \(error)"
         }
         lock.unlock()
@@ -1414,18 +1415,21 @@ public final class DockerTier: @unchecked Sendable {
             lastError = nil
             idleController?.setSleeping(false)
         }
-        lock.unlock()
 
         // Cancel any in-flight wake so it stops resuming; it also re-checks state under
         // the lock and discards a freshly started helper now that state != .sleeping.
         inFlightWake?.cancel()
         queuedRestart?.cancel()
 
+        // Keep lifecycle ownership until every old endpoint is gone. Releasing this lock after
+        // publishing `.stopped` would let a concurrent start bind replacement sockets that this
+        // older teardown could subsequently unlink.
+        removeRuntimeSockets()
         currentDataplane?.shutdown()
         currentActivityServer?.stop()
         agentControl?.disconnect()
         currentHelper?.stop()
-        removeRuntimeSockets()
+        lock.unlock()
     }
 
     deinit {

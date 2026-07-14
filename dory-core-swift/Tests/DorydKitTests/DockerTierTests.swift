@@ -395,6 +395,81 @@ final class DockerTierTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: tier.socketPath))
     }
 
+    func testConcurrentRestartWaitsForOrdinaryStopEndpointTeardown() throws {
+        let base = "/tmp/dory-tier-stop-start-barrier-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+
+        let readyMarker = base + "/ready"
+        let stopMarker = base + "/stopping"
+        let helperProgram = """
+        import os, signal, time
+        def stop(_signal, _frame):
+            open(os.environ["DORY_STOP_MARKER"], "w").close()
+            time.sleep(0.5)
+            raise SystemExit(0)
+        signal.signal(signal.SIGTERM, stop)
+        open(os.environ["DORY_READY_MARKER"], "w").close()
+        while True:
+            time.sleep(0.02)
+        """
+
+        let tier = DockerTier(
+            configuration: DockerTierConfiguration(
+                home: base + "/home",
+                forwardSocketPath: base + "/forward.sock",
+                hvProcess: HvProcessConfiguration(
+                    executablePath: "/usr/bin/python3",
+                    arguments: ["-c", helperProgram],
+                    environment: [
+                        "DORY_READY_MARKER": readyMarker,
+                        "DORY_STOP_MARKER": stopMarker,
+                    ]
+                )
+            ),
+            dockerReadyWaiter: { _, _, shouldContinue in
+                waitUntil(timeout: 2) {
+                    shouldContinue() && FileManager.default.fileExists(atPath: readyMarker)
+                }
+            }
+        )
+        defer { tier.stop() }
+
+        try tier.start()
+        let originalPID = try XCTUnwrap(tier.status().hvPID)
+        let stopFinished = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            tier.stop()
+            stopFinished.signal()
+        }
+        XCTAssertTrue(waitUntil(timeout: 2) {
+            FileManager.default.fileExists(atPath: stopMarker)
+        })
+
+        let restartFinished = DispatchSemaphore(value: 0)
+        let restartError = LockedErrorBox()
+        DispatchQueue.global().async {
+            do {
+                try tier.start()
+            } catch {
+                restartError.set(error)
+            }
+            restartFinished.signal()
+        }
+
+        XCTAssertEqual(
+            restartFinished.wait(timeout: .now() + 0.15),
+            .timedOut,
+            "a replacement lifecycle must not bind while the older stop still owns teardown"
+        )
+        XCTAssertEqual(stopFinished.wait(timeout: .now() + 2), .success)
+        XCTAssertEqual(restartFinished.wait(timeout: .now() + 2), .success)
+        XCTAssertNil(restartError.value)
+        XCTAssertEqual(tier.status().state, .running)
+        XCTAssertNotEqual(tier.status().hvPID, originalPID)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: tier.socketPath))
+    }
+
     func testDaemonShutdownCancelsAcceptedStartAndLatchesAgainstRetry() throws {
         let base = "/tmp/dory-tier-terminal-start-race-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)

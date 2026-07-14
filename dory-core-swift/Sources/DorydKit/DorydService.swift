@@ -74,7 +74,11 @@ public final class DorydService: NSObject, DorydControl {
     }
 
     public func engineStop(reply: @escaping (Bool, String) -> Void) {
-        dockerTier?.stop()
+        guard let dockerTier else {
+            reply(false, "docker tier is not configured")
+            return
+        }
+        dockerTier.stop()
         incidentWriter?.record(type: "engine.stop", detail: "docker tier stopped")
         reply(true, "")
     }

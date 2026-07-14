@@ -2303,18 +2303,20 @@ print("Keep Kubernetes awake: {}".format(policy.get("keepKubernetesAwake")))
   doctor_cmd idle "${args[@]}"
 }
 
-_engine_socket_up() { curl -sf --max-time "${2:-3}" --unix-socket "$1" http://d/_ping >/dev/null 2>&1; }
-
 engine_cmd() {
-  local action="${1:-status}" json=0 ctl out state detail message rc esock="$HOME/.dory/engine.sock" dsock="$HOME/.dory/dory.sock"
+  local action="${1:-status}" json=0 ctl out state detail message rc
   [ "$#" -eq 0 ] || shift
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --json) json=1; shift ;;
-      -h|--help) echo "usage: dory engine status|wake|sleep [--json]"; return 0 ;;
+      -h|--help) echo "usage: dory engine status|wake|start|sleep|stop [--json]"; return 0 ;;
       *) echo "unknown engine option: $1" >&2; exit 2 ;;
     esac
   done
+  case "$action" in
+    status|wake|start|sleep|stop) ;;
+    *) echo "usage: dory engine status|wake|start|sleep|stop [--json]" >&2; return 64 ;;
+  esac
 
   if ctl="$(dorydctl_bin 2>/dev/null)"; then
     case "$action" in
@@ -2369,66 +2371,16 @@ engine_cmd() {
     esac
   fi
 
-  # Legacy app-shim fallback: engine.sock answers only when awake; dory.sock answers while the app is
-  # up and can wake the old app-owned engine on a real API call.
-  case "$action" in
-    status)
-      if [ "$json" -eq 1 ]; then
-        local fallback_state fallback_detail
-        if _engine_socket_up "$esock"; then
-          fallback_state="running"; fallback_detail=""
-        elif _engine_socket_up "$dsock"; then
-          fallback_state="sleeping"; fallback_detail="legacy app shim is reachable"
-        else
-          fallback_state="not-running"; fallback_detail="open the Dory app or start doryd"
-        fi
-        python3 - "$fallback_state" "$fallback_detail" <<'PY'
+  detail="doryd control is unavailable; reopen or reinstall Dory to repair its bundled CLI"
+  if [ "$json" -eq 1 ] && [ "$action" = status ]; then
+    python3 - "$detail" <<'PY'
 import json, sys
-print(json.dumps({"state": sys.argv[1], "detail": sys.argv[2]}, separators=(",", ":"), sort_keys=True))
+print(json.dumps({"state": "unavailable", "detail": sys.argv[1]}, separators=(",", ":"), sort_keys=True))
 PY
-        return 0
-      fi
-      if _engine_socket_up "$esock"; then
-        echo "Dory engine: running"
-      elif _engine_socket_up "$dsock"; then
-        echo "Dory engine: sleeping (idle) — docker use or 'dory engine wake' resumes it"
-      else
-        echo "Dory engine: not running — open the Dory app to start it"
-      fi
-      ;;
-    wake|start)
-      if _engine_socket_up "$esock"; then
-        echo "Dory engine: already running"
-      elif _engine_socket_up "$dsock"; then
-        # A real API call through the app's shim triggers the wake, but the shim answers /version
-        # even while the engine is down, so that response is NOT proof. Confirm by the real engine
-        # socket coming up.
-        curl -s --max-time 90 --unix-socket "$dsock" http://d/version >/dev/null 2>&1 || true
-        local waited=0
-        while [ "$waited" -lt 30 ]; do
-          if _engine_socket_up "$esock"; then
-            echo "Dory engine: awake"
-            return 0
-          fi
-          sleep 1
-          waited=$((waited + 1))
-        done
-        echo "Dory engine: wake requested but the engine did not come up — see ~/.dory/engine.log" >&2
-        exit 1
-      else
-        echo "Dory's engine is managed by the Dory app. Open Dory to start it." >&2
-        exit 1
-      fi
-      ;;
-    sleep|stop)
-      echo "dorydctl not found; Dory's legacy app-owned engine sleeps on its own when idle. Open the Dory app Settings to enable Auto-Idle." >&2
-      exit 1
-      ;;
-    *)
-      echo "usage: dory engine status|wake|sleep [--json]" >&2
-      exit 64
-      ;;
-  esac
+  else
+    echo "Dory engine: $detail" >&2
+  fi
+  return 1
 }
 
 absolute_cli_path() {
@@ -2741,13 +2693,7 @@ except Exception:
     pass' 2>/dev/null || true)"
     [ -n "$state" ] && { printf '%s\n' "$state"; return 0; }
   fi
-  if _engine_socket_up "$HOME/.dory/engine.sock" 1; then
-    printf '%s\n' "running"
-  elif _engine_socket_up "$HOME/.dory/dory.sock" 1; then
-    printf '%s\n' "sleeping"
-  else
-    printf '%s\n' "not-running"
-  fi
+  printf '%s\n' "not-running"
 }
 
 container_current_state() {

@@ -705,11 +705,10 @@ final class AppStore {
             } else {
                 sharedVMStatus = Self.sharedVMUnavailableStatus(support)
             }
-            if let docker = await DockerEngineRuntime.detect() {
-                runtime = docker; await reload()
-            } else {
-                loadState = .engineOff
-            }
+            // A Dory preference is an ownership decision. External engines are selected only
+            // through the explicit Existing Engine option, never as a silent recovery backend.
+            runtime = DisconnectedRuntime()
+            loadState = .engineOff
         }
     }
 

@@ -143,7 +143,9 @@ capture_host_tcp() {
   local phase="$1" output pid
   output="$WORKDIR/$phase-host-tcp.txt"
   : > "$output"
-  for pidfile in "$OFFLINE_HOME/.dory/engine-cli.pid" "$OFFLINE_HOME/.dory/dataplane-cli.pid"; do
+  for pidfile in \
+    "$OFFLINE_HOME/.dory/standalone/engine-cli.pid" \
+    "$OFFLINE_HOME/.dory/standalone/dataplane-cli.pid"; do
     [ -s "$pidfile" ] || continue
     pid="$(cat "$pidfile")"
     lsof -nP -a -p "$pid" -iTCP >> "$output" 2>/dev/null || true
@@ -168,8 +170,8 @@ run_bounded "$START_TIMEOUT" "$WORKDIR/fresh-start.log" \
   || die "fresh exact-bundle boot failed or exceeded $START_TIMEOUT seconds"
 probe fresh
 capture_host_tcp fresh
-prepared_kernel="$OFFLINE_HOME/.dory/vm/dory-hv-kernel-arm64"
-prepared_rootfs="$OFFLINE_HOME/.dory/vm/dory-engine-rootfs.ext4"
+prepared_kernel="$OFFLINE_HOME/.dory/standalone/vm/dory-hv-kernel-arm64"
+prepared_rootfs="$OFFLINE_HOME/.dory/standalone/vm/dory-engine-rootfs.ext4"
 [ -s "$prepared_kernel" ] || die "fresh boot did not prepare the bundled kernel"
 [ -s "$prepared_rootfs" ] || die "fresh boot did not prepare the bundled rootfs"
 prepared_kernel_sha="$(shasum -a 256 "$prepared_kernel" | awk '{print $1}')"
@@ -177,7 +179,7 @@ prepared_rootfs_sha="$(shasum -a 256 "$prepared_rootfs" | awk '{print $1}')"
 run_bounded "$STOP_TIMEOUT" "$WORKDIR/fresh-stop.log" \
   "${offline_env[@]}" "$RUNTIME_COPY/dory-engine" stop \
   || die "fresh exact-bundle stop failed or exceeded $STOP_TIMEOUT seconds"
-cp "$OFFLINE_HOME/.dory/engine.log" "$WORKDIR/fresh-engine.log"
+cp "$OFFLINE_HOME/.dory/standalone/engine.log" "$WORKDIR/fresh-engine.log"
 
 mv "$kernel_asset" "$HIDDEN_ASSETS/"
 mv "$rootfs_asset" "$HIDDEN_ASSETS/"
@@ -196,7 +198,7 @@ capture_host_tcp cached
 run_bounded "$STOP_TIMEOUT" "$WORKDIR/cached-stop.log" \
   "${offline_env[@]}" "$RUNTIME_COPY/dory-engine" stop \
   || die "cached offline stop failed or exceeded $STOP_TIMEOUT seconds"
-cp "$OFFLINE_HOME/.dory/engine.log" "$WORKDIR/cached-engine.log"
+cp "$OFFLINE_HOME/.dory/standalone/engine.log" "$WORKDIR/cached-engine.log"
 grep -Fq 'ready in' "$WORKDIR/fresh-start.log" || die "fresh boot never reported readiness"
 grep -Fq 'ready in' "$WORKDIR/cached-start.log" || die "cached offline boot never reported readiness"
 ! grep -Fq 'preparing kernel' "$WORKDIR/cached-start.log" \

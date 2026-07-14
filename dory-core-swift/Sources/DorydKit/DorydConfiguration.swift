@@ -136,6 +136,13 @@ public struct DorydEnvironment: Sendable {
             return nil
         }
 
+        // On a host that supports the release raw-HV engine, its helper set is authoritative.
+        // Falling through to a development-tree or VZ executable when one of those exact helpers
+        // is missing can run a different implementation than the signed app selected.
+        if rawHVSupported, hvProcess == nil, !explicitForward {
+            return nil
+        }
+
         if hvProcess == nil, !explicitForward,
            let vmmProcess = vmmDockerProcessConfiguration(stateDirectory: stateDirectory) {
             let dockerdSocket = "\(stateDirectory)/dockerd.sock"
@@ -524,8 +531,8 @@ public struct DorydEnvironment: Sendable {
     }
 
     private func executablePath(firstOf keys: [String], fallbackCandidates: [String]) -> String? {
-        if let explicit = path(firstOf: keys), FileManager.default.isExecutableFile(atPath: explicit) {
-            return explicit
+        if let explicit = path(firstOf: keys) {
+            return FileManager.default.isExecutableFile(atPath: explicit) ? explicit : nil
         }
         return fallbackCandidates.first { FileManager.default.isExecutableFile(atPath: $0) }
     }
@@ -685,8 +692,10 @@ public struct DorydEnvironment: Sendable {
     }
 
     private var resourceDirectories: [String] {
-        [
-            string("DORYD_RESOURCES_DIR"),
+        if let explicit = string("DORYD_RESOURCES_DIR"), !explicit.isEmpty {
+            return [explicit]
+        }
+        return [
             bundleResourcesDirectory,
             "\(cwd)/Resources",
             "\(cwd)/../Resources",
