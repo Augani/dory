@@ -142,6 +142,13 @@ PARALLEL_BUILD_REPOSITORY="dory-parallel-build"
 ROUTE_NETWORK="$OWNER-route"
 CONFLICT_NETWORK="$OWNER-route-conflict"
 ALIAS_NETWORK="$OWNER-alias"
+NETWORK_METADATA="$OWNER-network-metadata"
+NETWORK_METADATA_OCTET=$((($$ % 200) + 20))
+NETWORK_METADATA_SUBNET="198.18.${NETWORK_METADATA_OCTET}.0/24"
+NETWORK_METADATA_RANGE="198.18.${NETWORK_METADATA_OCTET}.128/25"
+NETWORK_METADATA_GATEWAY="198.18.${NETWORK_METADATA_OCTET}.1"
+NETWORK_METADATA_RESERVED="198.18.${NETWORK_METADATA_OCTET}.2"
+NETWORK_METADATA_STATIC_IP="198.18.${NETWORK_METADATA_OCTET}.129"
 ALIAS_CONTAINER="$OWNER-alias-server"
 PORT_COLLISION_CONTAINER="$OWNER-port-collision"
 SIGNAL_CONTAINER="$OWNER-signal"
@@ -228,6 +235,7 @@ cleanup() {
   docker_e network rm "$CONFLICT_NETWORK" >/dev/null 2>&1 || true
   docker_e network rm "$ROUTE_NETWORK" >/dev/null 2>&1 || true
   docker_e network rm "$ALIAS_NETWORK" >/dev/null 2>&1 || true
+  docker_e network rm "$NETWORK_METADATA" >/dev/null 2>&1 || true
   docker_e image rm -f "$BUILD_TAG" >/dev/null 2>&1 || true
   docker_e image rm -f "$RELATIVE_BUILD_TAG" >/dev/null 2>&1 || true
   docker_e image rm -f "$DOCKERIGNORE_BUILD_TAG" >/dev/null 2>&1 || true
@@ -700,6 +708,112 @@ bounded_capture 5 "$WORKDIR/network-post-conflict-inspect.out" "$WORKDIR/network
 docker_e network disconnect "$ROUTE_NETWORK" "$SERVER_A"
 docker_e network rm "$ROUTE_NETWORK" >/dev/null
 pass network-route-conflict "overlap failed promptly; unrelated container API and port stayed healthy"
+
+bounded_capture 10 "$WORKDIR/network-metadata-create.out" \
+  "$WORKDIR/network-metadata-create.err" env DOCKER_HOST="unix://$SOCKET" \
+  "$DOCKER_BIN" network create --driver bridge --internal --attachable \
+  --subnet "$NETWORK_METADATA_SUBNET" --ip-range "$NETWORK_METADATA_RANGE" \
+  --gateway "$NETWORK_METADATA_GATEWAY" \
+  --aux-address "reserved=$NETWORK_METADATA_RESERVED" \
+  --opt com.docker.network.bridge.enable_icc=true \
+  --label "dev.dory.compatibility=$OWNER" \
+  --label dev.dory.network-contract=original "$NETWORK_METADATA" \
+  || die "custom network creation failed or exceeded ten seconds"
+docker_e network inspect "$NETWORK_METADATA" > "$WORKDIR/network-metadata-before.json"
+python3 - "$WORKDIR/network-metadata-before.json" "$NETWORK_METADATA" "$OWNER" \
+  "$NETWORK_METADATA_SUBNET" "$NETWORK_METADATA_RANGE" "$NETWORK_METADATA_GATEWAY" \
+  "$NETWORK_METADATA_RESERVED" <<'PY'
+import json
+import sys
+
+path, expected_name, expected_owner, subnet, ip_range, gateway, reserved = sys.argv[1:]
+with open(path, encoding="utf-8") as handle:
+    networks = json.load(handle)
+assert len(networks) == 1, f"expected one inspected network, got {len(networks)}"
+network = networks[0]
+assert network["Name"] == expected_name, network
+assert network["Driver"] == "bridge" and network["Scope"] == "local", network
+assert network["Internal"] is True and network["Attachable"] is True, network
+assert network["Ingress"] is False, network
+assert network["Labels"]["dev.dory.compatibility"] == expected_owner, network
+assert network["Labels"]["dev.dory.network-contract"] == "original", network
+assert network["Options"]["com.docker.network.bridge.enable_icc"] == "true", network
+assert network["IPAM"]["Driver"] == "default", network
+config = network["IPAM"]["Config"]
+assert len(config) == 1, config
+assert config[0]["Subnet"] == subnet, config
+assert config[0]["IPRange"] == ip_range, config
+assert config[0]["Gateway"] == gateway, config
+assert config[0]["AuxiliaryAddresses"] == {"reserved": reserved}, config
+PY
+filtered_networks="$(docker_e network ls --format '{{.Name}}' \
+  --filter "label=dev.dory.compatibility=$OWNER" \
+  --filter label=dev.dory.network-contract=original)"
+[ "$filtered_networks" = "$NETWORK_METADATA" ] \
+  || die "filtered network listing returned unexpected objects: $filtered_networks"
+set +e
+bounded_capture 10 "$WORKDIR/network-duplicate-create.out" \
+  "$WORKDIR/network-duplicate-create.err" env DOCKER_HOST="unix://$SOCKET" \
+  "$DOCKER_BIN" network create --label dev.dory.network-contract=mutated "$NETWORK_METADATA"
+network_duplicate_rc=$?
+set -e
+[ "$network_duplicate_rc" -ne 0 ] || die "duplicate network name was accepted"
+[ "$network_duplicate_rc" -ne 124 ] || die "duplicate network creation wedged for ten seconds"
+grep -Eiq 'already exists|conflict' \
+  "$WORKDIR/network-duplicate-create.out" "$WORKDIR/network-duplicate-create.err" \
+  || die "duplicate network rejection did not report the conflict"
+docker_e network inspect "$NETWORK_METADATA" > "$WORKDIR/network-metadata-after.json"
+python3 - "$WORKDIR/network-metadata-before.json" "$WORKDIR/network-metadata-after.json" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as before_handle:
+    before = json.load(before_handle)
+with open(sys.argv[2], encoding="utf-8") as after_handle:
+    after = json.load(after_handle)
+assert after == before, "duplicate create mutated existing network metadata"
+PY
+bounded_capture 10 "$WORKDIR/network-connect.out" "$WORKDIR/network-connect.err" \
+  env DOCKER_HOST="unix://$SOCKET" "$DOCKER_BIN" network connect \
+  --alias metadata-api --ip "$NETWORK_METADATA_STATIC_IP" "$NETWORK_METADATA" "$SERVER_A" \
+  || die "network connect failed or exceeded ten seconds"
+docker_e container inspect "$SERVER_A" > "$WORKDIR/network-connected-container.json"
+python3 - "$WORKDIR/network-connected-container.json" "$NETWORK_METADATA" \
+  "$NETWORK_METADATA_STATIC_IP" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    containers = json.load(handle)
+endpoint = containers[0]["NetworkSettings"]["Networks"][sys.argv[2]]
+assert endpoint["IPAddress"] == sys.argv[3], endpoint
+assert "metadata-api" in endpoint["Aliases"], endpoint
+PY
+set +e
+bounded_capture 10 "$WORKDIR/network-in-use-remove.out" "$WORKDIR/network-in-use-remove.err" \
+  env DOCKER_HOST="unix://$SOCKET" "$DOCKER_BIN" network rm "$NETWORK_METADATA"
+network_in_use_rc=$?
+set -e
+[ "$network_in_use_rc" -ne 0 ] || die "in-use network was removed"
+[ "$network_in_use_rc" -ne 124 ] || die "in-use network removal wedged for ten seconds"
+grep -Eiq 'active endpoints|in use' \
+  "$WORKDIR/network-in-use-remove.out" "$WORKDIR/network-in-use-remove.err" \
+  || die "in-use network rejection did not report active endpoints"
+wait_http "$port" server-a || die "network lifecycle operations broke the published port"
+bounded_capture 10 "$WORKDIR/network-disconnect.out" "$WORKDIR/network-disconnect.err" \
+  env DOCKER_HOST="unix://$SOCKET" "$DOCKER_BIN" network disconnect \
+  "$NETWORK_METADATA" "$SERVER_A" \
+  || die "network disconnect failed or exceeded ten seconds"
+[ -z "$(docker_e inspect -f "{{with index .NetworkSettings.Networks \"$NETWORK_METADATA\"}}{{.NetworkID}}{{end}}" "$SERVER_A")" ] \
+  || die "network disconnect left the container attached"
+bounded_capture 10 "$WORKDIR/network-metadata-remove.out" \
+  "$WORKDIR/network-metadata-remove.err" env DOCKER_HOST="unix://$SOCKET" \
+  "$DOCKER_BIN" network rm "$NETWORK_METADATA" \
+  || die "explicit network removal failed or exceeded ten seconds"
+docker_e network inspect "$NETWORK_METADATA" >/dev/null 2>&1 \
+  && die "explicitly removed network is still inspectable"
+pass network-api-lifecycle \
+  "IPAM/options/labels, filters, conflict safety, static-IP alias connect, in-use reject, disconnect, and remove matched Docker"
 
 # Higher-level Compose/dev-environment tools depend on attachment-scoped aliases. Prove both aliases
 # and the primary container name resolve only on the owned custom network, then preserve the exact
@@ -1384,6 +1498,8 @@ leftover_networks="$(docker_e network ls -q --filter "label=dev.dory.compatibili
 docker_e volume inspect "$VOLUME" >/dev/null 2>&1 && die "owned volume cleanup failed"
 docker_e volume inspect "$VOLUME_METADATA" >/dev/null 2>&1 \
   && die "owned metadata volume cleanup failed"
+docker_e network inspect "$NETWORK_METADATA" >/dev/null 2>&1 \
+  && die "owned metadata network cleanup failed"
 docker_e image inspect "$BUILD_TAG" >/dev/null 2>&1 && die "owned build image cleanup failed"
 docker_e image inspect "$DEFAULT_ARG_BUILD_TAG" >/dev/null 2>&1 \
   && die "owned default-ARG build image cleanup failed"
@@ -1406,6 +1522,8 @@ if [ -n "$RUNTIME" ]; then
     && die "owned volume reappeared after engine restart"
   docker_e volume inspect "$VOLUME_METADATA" >/dev/null 2>&1 \
     && die "owned metadata volume reappeared after engine restart"
+  docker_e network inspect "$NETWORK_METADATA" >/dev/null 2>&1 \
+    && die "owned metadata network reappeared after engine restart"
   docker_e image inspect "$BUILD_TAG" >/dev/null 2>&1 \
     && die "owned build image reappeared after engine restart"
   pass cleanup-restart-persistence \

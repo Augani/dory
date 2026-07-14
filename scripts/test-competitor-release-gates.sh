@@ -440,6 +440,19 @@ done
 grep -F 'volume-api-lifecycle' scripts/qualify-release-candidate.sh \
   scripts/verify-release-qualification.sh >/dev/null \
   || fail "exact release qualification no longer requires the complete volume lifecycle proof"
+grep -F 'pass network-api-lifecycle' scripts/competitor-runtime-regression-gate.sh >/dev/null \
+  || fail "competitor runtime gate lost the complete network lifecycle proof"
+for network_contract in \
+  'dev.dory.network-contract=original' \
+  'duplicate create mutated existing network metadata' \
+  'in-use network was removed' \
+  'static-IP alias connect'; do
+  grep -F "$network_contract" scripts/competitor-runtime-regression-gate.sh >/dev/null \
+    || fail "competitor runtime gate lost network contract: $network_contract"
+done
+grep -F 'network-api-lifecycle' scripts/qualify-release-candidate.sh \
+  scripts/verify-release-qualification.sh >/dev/null \
+  || fail "exact release qualification no longer requires the complete network lifecycle proof"
 grep -F 'os.O_CREAT | os.O_EXCL | os.O_RDONLY' scripts/bind-advisory-lock-probe.py >/dev/null \
   || fail "bind gate lost the exact mode-0000 exclusive-create reproduction"
 grep -F 'create_excl_readonly_mode0000_unlink=PASS' scripts/bind-advisory-lock-gate.sh \
@@ -554,7 +567,8 @@ grep -F 'kubectl version --client=true' scripts/machine-resource-reconfiguration
 grep -F 'lima-vm/lima/issues/5225' COMPETITOR_ISSUE_COVERAGE.md >/dev/null \
   || fail "competitor coverage omits Lima's silent machine provisioning failure"
 for runtime_regression in nested-bind-subvolume buildkit-relative-temp-context \
-  network-alias-restart-ip named-volume-empty named-volume-cp volume-api-lifecycle dockerignore-layered-unignore \
+  network-api-lifecycle network-alias-restart-ip named-volume-empty named-volume-cp \
+  volume-api-lifecycle dockerignore-layered-unignore \
   buildkit-default-arg 'ARG TAG="${TAG:-latest}"' \
   image-save-stdout 'nonzero bytes follow the tar EOF records' \
   image-hardlink-missing-parent 'link to bin/app' \
@@ -1224,30 +1238,65 @@ done
 # Reproduce Lima #5087 defensively: dory-hv and the dataplane may survive while their pidfiles are
 # lost. The launcher must rediscover only helpers carrying this HOME's exact private paths, stop
 # them, and continue to a fresh launch attempt. An identical helper name with foreign paths must
-# not be touched.
-cat > "$runtime/bin/dory-hv" <<'EOF'
-#!/bin/sh
-trap 'exit 0' TERM INT
-while :; do sleep 0.1; done
+# not be touched. Use a native executable for the old helpers so replacing their on-disk paths
+# models an app upgrade: the already-mapped processes must remain alive until the supervisor
+# explicitly stops them. A copied native interpreter keeps the fixture independent of the
+# replacement paths without consuming CPU while it waits.
+helper_cwd="$TMP/native-helper"
+mkdir -p "$helper_cwd"
+cat > "$helper_cwd/engine" <<'EOF'
+$SIG{TERM} = sub { exit 0 };
+$SIG{INT} = sub { exit 0 };
+while (1) { sleep 60; }
 EOF
+cp /usr/bin/perl "$runtime/bin/dory-hv"
 cp "$runtime/bin/dory-hv" "$runtime/bin/dory-dataplane-proxy"
 chmod +x "$runtime/bin/dory-hv" "$runtime/bin/dory-dataplane-proxy"
+cd "$helper_cwd"
 "$runtime/bin/dory-hv" engine \
   --engine-sock "$runtime_home/.dory/standalone/hv/docker-backend.sock" \
-  --state-dir "$runtime_home/.dory/standalone/hv" &
+  --state-dir "$runtime_home/.dory/standalone/hv" > /dev/null &
 orphan_hv_pid=$!
-"$runtime/bin/dory-dataplane-proxy" \
+"$runtime/bin/dory-dataplane-proxy" engine \
   --listen "$runtime_home/.dory/engine.sock" \
-  --backend "$runtime_home/.dory/standalone/hv/docker-backend.sock" &
+  --backend "$runtime_home/.dory/standalone/hv/docker-backend.sock" > /dev/null &
 orphan_dataplane_pid=$!
 mkdir -p "$TMP/foreign-helper"
 cp "$runtime/bin/dory-hv" "$TMP/foreign-helper/dory-hv"
 chmod +x "$TMP/foreign-helper/dory-hv"
 "$TMP/foreign-helper/dory-hv" engine \
-  --engine-sock "$TMP/unrelated-backend.sock" --state-dir "$TMP/unrelated-state" &
+  --engine-sock "$TMP/unrelated-backend.sock" --state-dir "$TMP/unrelated-state" > /dev/null &
 unrelated_hv_pid=$!
+cd "$ROOT"
 test_pids="$test_pids $orphan_hv_pid $orphan_dataplane_pid $unrelated_hv_pid"
-sleep 0.2
+wait_for_process_contract() {
+  local pid="$1" token command attempt matched
+  shift
+  for ((attempt = 0; attempt < 200; attempt++)); do
+    command="$(ps -p "$pid" -o command= 2>/dev/null || true)"
+    matched=1
+    for token in "$@"; do
+      case "$command" in *"$token"*) ;; *) matched=0; break ;; esac
+    done
+    [ "$matched" -eq 0 ] || return 0
+    kill -0 "$pid" 2>/dev/null \
+      || fail "supervisor fixture exited before publishing its process contract: $*"
+    sleep 0.01
+  done
+  fail "supervisor fixture did not publish its process contract: $*"
+}
+wait_for_process_contract "$orphan_hv_pid" \
+  "$runtime/bin/dory-hv engine" \
+  "--engine-sock $runtime_home/.dory/standalone/hv/docker-backend.sock" \
+  "--state-dir $runtime_home/.dory/standalone/hv"
+wait_for_process_contract "$orphan_dataplane_pid" \
+  "$runtime/bin/dory-dataplane-proxy" \
+  "--listen $runtime_home/.dory/engine.sock" \
+  "--backend $runtime_home/.dory/standalone/hv/docker-backend.sock"
+wait_for_process_contract "$unrelated_hv_pid" \
+  "$TMP/foreign-helper/dory-hv engine" \
+  "--engine-sock $TMP/unrelated-backend.sock" \
+  "--state-dir $TMP/unrelated-state"
 for helper in dory-hv dory-dataplane-proxy; do
   printf '#!/bin/sh\nexit 99\n' > "$runtime/bin/$helper.next"
   chmod +x "$runtime/bin/$helper.next"
@@ -1257,8 +1306,16 @@ if HOME="$runtime_home" "$runtime/dory-engine" start \
     > "$TMP/runtime-orphan-recovery.out" 2> "$TMP/runtime-orphan-recovery.err"; then
   fail "standalone runtime unexpectedly started with the intentional exit-99 helper"
 fi
-grep -q 'stopping incomplete previous runtime' "$TMP/runtime-orphan-recovery.out" \
-  || fail "standalone runtime did not detect its pidfile-less helpers"
+if ! grep -q 'stopping incomplete previous runtime' "$TMP/runtime-orphan-recovery.out"; then
+  printf '%s\n' '--- orphan recovery stdout ---' >&2
+  sed -n '1,120p' "$TMP/runtime-orphan-recovery.out" >&2
+  printf '%s\n' '--- orphan recovery stderr ---' >&2
+  sed -n '1,120p' "$TMP/runtime-orphan-recovery.err" >&2
+  printf '%s\n' '--- fixture process table ---' >&2
+  ps -p "$orphan_hv_pid,$orphan_dataplane_pid,$unrelated_hv_pid" \
+    -o pid=,state=,command= >&2 || true
+  fail "standalone runtime did not detect its pidfile-less helpers"
+fi
 wait "$orphan_hv_pid" 2>/dev/null || true
 wait "$orphan_dataplane_pid" 2>/dev/null || true
 kill -0 "$orphan_hv_pid" 2>/dev/null \

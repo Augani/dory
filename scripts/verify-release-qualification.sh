@@ -671,7 +671,7 @@ grep -q $'\tFAIL\t' "$competitor_results" \
   && die "retained competitor runtime evidence contains a failed row"
 for proof in \
   published-port-handoff host-port-collision named-signal-delivery forwarded-connection-fds concurrent-proxy-backpressure \
-  missing-source-cp restart-churn compose-port-restart network-route-conflict \
+  missing-source-cp restart-churn compose-port-restart network-route-conflict network-api-lifecycle \
   network-alias-restart-ip standalone-engine-restart named-volume-empty named-volume named-volume-cp volume-api-lifecycle \
   security-opt-label seccomp-profile bind-open-create-0200 bind-mount-option-contract \
   nested-bind-subvolume bind-special-file-fail-fast bind-open-fd-stability \
@@ -957,6 +957,7 @@ required_competitor_tests = {
     "forwarded-connection-fds",
     "concurrent-proxy-backpressure",
     "missing-source-cp", "restart-churn", "compose-port-restart", "network-route-conflict",
+    "network-api-lifecycle",
     "standalone-engine-restart", "named-volume-empty", "named-volume", "named-volume-cp",
     "volume-api-lifecycle", "security-opt-label", "seccomp-profile",
     "bind-open-create-0200",

@@ -714,7 +714,7 @@ struct ReviewFixTests {
         let recorder = RequestRecorder()
         let upstream = ShimHTTPServer(socketPath: upstreamPath) { request in
             recorder.record(method: request.method, target: request.target, body: request.body)
-            return ShimResponse.json(Data(#"{"Id":"rich-network","Warning":""}"#.utf8), status: 201)
+            return ShimResponse.json(Data(#"{"Id":"rich-network","Warning":""}"#.utf8), status: 202)
         }
         try upstream.start()
         defer { upstream.stop() }
@@ -738,20 +738,48 @@ struct ReviewFixTests {
           "Labels":{"com.docker.compose.project":"rich"}
         }
         """#.utf8)
-        let response = try await UnixSocketHTTP(path: publicPath).send(HTTPRequest(
-            method: "POST",
-            path: "/v1.47/networks/create",
-            headers: [(name: "Content-Type", value: "application/json")],
-            body: body
-        ))
+        let connectBody = Data(#"{"Container":"web","EndpointConfig":{"Aliases":["api"],"IPAMConfig":{"IPv4Address":"172.31.44.10"}}}"#.utf8)
+        let disconnectBody = Data(#"{"Container":"web","Force":false}"#.utf8)
+        let requests = [
+            HTTPRequest(
+                method: "POST", path: "/v1.47/networks/create",
+                headers: [(name: "Content-Type", value: "application/json")], body: body
+            ),
+            HTTPRequest(
+                method: "GET",
+                path: "/v1.47/networks?filters=%7B%22label%22%3A%5B%22owned%3Dyes%22%5D%7D"
+            ),
+            HTTPRequest(
+                method: "GET", path: "/v1.47/networks/rich_default?verbose=true&scope=local"
+            ),
+            HTTPRequest(
+                method: "POST", path: "/v1.47/networks/rich_default/connect",
+                headers: [(name: "Content-Type", value: "application/json")], body: connectBody
+            ),
+            HTTPRequest(
+                method: "POST", path: "/v1.47/networks/rich_default/disconnect",
+                headers: [(name: "Content-Type", value: "application/json")], body: disconnectBody
+            ),
+            HTTPRequest(method: "DELETE", path: "/v1.47/networks/rich_default"),
+            HTTPRequest(
+                method: "POST",
+                path: "/v1.47/networks/prune?filters=%7B%22label%22%3A%5B%22owned%3Dyes%22%5D%7D"
+            ),
+        ]
+        for request in requests {
+            let response = try await UnixSocketHTTP(path: publicPath).send(request)
+            #expect(response.statusCode == 202)
+        }
 
-        #expect(response.statusCode == 201)
-        #expect(recorder.requests.count == 1)
-        #expect(recorder.requests.first?.target == "/v1.47/networks/create")
+        try #require(recorder.requests.count == requests.count)
+        #expect(recorder.requests.map(\.method) == requests.map(\.method))
+        #expect(recorder.requests.map(\.target) == requests.map(\.path))
         let forwarded = try #require(recorder.requests.first?.body)
         let forwardedJSON = try #require(try JSONSerialization.jsonObject(with: forwarded) as? NSDictionary)
         let originalJSON = try #require(try JSONSerialization.jsonObject(with: body) as? NSDictionary)
         #expect(forwardedJSON == originalJSON)
+        #expect(recorder.requests[3].body == connectBody)
+        #expect(recorder.requests[4].body == disconnectBody)
     }
 
     @Test func dockerEngineRuntimeUsesNativeImageTagEndpoint() async throws {

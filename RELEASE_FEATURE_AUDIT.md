@@ -136,8 +136,19 @@ of scope so each fix remains reviewable.
   and deletion persistence after engine restart. The mandatory destructive gate separately proves
   active volume bytes survive unfiltered prune while unused volumes are removed, and managed-drive,
   growth, and migration gates cover restart persistence, capacity changes, metadata, and collisions.
-- [ ] Networks: bridge/DNS/search/aliases/IPAM/options/fixed ports/connect/disconnect/remove/prune and
+- [x] Networks: bridge/DNS/search/aliases/IPAM/options/fixed ports/connect/disconnect/remove/prune and
   restart persistence are sound.
+  Shipping doryd forwards native dockerd network APIs; the Docker-backed fallback preserves exact
+  list/create/inspect/connect/disconnect/delete/prune targets, queries, bodies, statuses, and errors.
+  Focused Swift coverage now exercises the entire rich proxy contract, and the 846-test app suite
+  passes. The integrated live gate proves bridge options, internal/attachable flags, explicit
+  subnet/range/gateway/auxiliary IPAM, labels and exact filters, duplicate-name and overlapping-subnet
+  rejection without metadata mutation, static-IP alias connect, active-endpoint remove rejection,
+  disconnect/delete, and published-port liveness. Its separate DNS path keeps primary and two alias
+  names network-scoped with the same IP after stop/start. Managed-drive persistence preserves the
+  network identity across transient-runtime replacement; unfiltered prune preserves attached networks
+  and removes unused ones; cleanup stays deleted after engine restart. Native IPv6, LAN source-IP,
+  VPN, physical sleep, and privileged host networking remain explicitly owned by section 6.
 - [ ] Cleanup is ownership-scoped and idempotent; failure or cancellation cannot delete unrelated
   objects or leave retry-blocking partial state.
 - [ ] Concurrent API/backpressure, restart churn, FD/resource bounds, error mapping, and unsupported
