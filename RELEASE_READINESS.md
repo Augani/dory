@@ -4,10 +4,10 @@ Last updated: 2026-07-14
 
 ## Decision
 
-**NO-GO for public release today.** Previously completed local gates remain useful evidence, but
-the release must not publish until the newly identified app-layer blockers and the physical
-release-host, credential, and exact clean-v1 gates below are complete. Intel is a later
-roadmap phase and is not part of the Apple-Silicon-first release contract. This document
+**NO-GO for public release today.** The Apple Silicon candidate is signed, notarized, stapled, and
+cryptographically qualified, but the release must not publish until the remaining physical
+release-host, external-infrastructure, endurance, and exact clean-v1 gates below are complete.
+Intel is a later roadmap phase and is not part of the Apple-Silicon-first release contract. This document
 intentionally separates verified evidence from claims that still need proof.
 
 **Architecture-first completion:** migration import is now wired to the durable operation protocol
@@ -35,7 +35,7 @@ exact dependency closure, pre-write source/target revalidation, durable ownershi
 mechanical completeness equation. The real OrbStack-to-Dory gate now passes images, writable
 layers, named volumes, networks, container definitions, stopped/running/paused state, fixed ports,
 and exact source/target baseline restoration. Public release still requires these same bits to be
-notarized and stapled.
+replayed through the exact notarized candidate on the physical release host.
 
 **Clean-v1 scope:** Dory is being launched as a new product with no users, so unreleased Dory data
 layouts are not compatibility targets or release fixtures. The v0.2 upgrade/rollback gate and
@@ -94,7 +94,21 @@ proof now cover these fixes, including the 16→128 GiB disk gate and disposable
 migration. A fresh Developer ID-signed 0.3.0/18 arm64 rehearsal from commit
 `85775703c1eddb77925237fc93c46146ac6bfb8a` passes the complete build, package, recursive-signature,
 payload, mounted-DMG, archive, and SBOM contracts. It is deliberately marked non-public and remains
-unnotarized until the `dory-notary` keychain profile is provisioned.
+historical evidence only; the current notarized candidate below supersedes it.
+
+**Current Apple Silicon qualification candidate:** the public-shape 0.3.0/18 artifact set was built
+from clean source commit `06e8c77592cc318e971529ada0ec3a93d67bb40a` with Xcode 26.6. Apple accepted
+the main app (`429800ad-8ef4-484c-bba8-0553c6e09aa2`), signed DMG
+(`e6fecfb6-3ea9-41b1-8e60-579bd5798333`), lite app
+(`56b93cc4-bf4e-438a-b40c-0a8055094c92`), and self-contained Sparkle update
+(`8ad229d6-488e-4c5a-b481-ba0c7d7951e5`). Every container is Developer ID signed with a secure
+timestamp where applicable, every Apple ticket is stapled, and Gatekeeper identifies the app and
+DMG as `Notarized Developer ID`. Independent release-output validation passes against the
+schema-2 manifest, and the exact appcast archive's Ed25519 signature verifies against the public
+key embedded in the shipped app. The qualification-only verification improvement at current commit
+`5674a621` does not alter the candidate; the manifest intentionally remains bound to its exact
+source commit. A release published after the remaining physical gates must be rebuilt and rebound
+to the final release tag rather than representing this candidate as built from current HEAD.
 
 ## Verified locally
 
@@ -381,6 +395,17 @@ unnotarized until the `dory-notary` keychain profile is provisioned.
   `dde985828413fe724acdc03466a28fb94fb77eaed2be3b1f8ac1c8a0620e98e6`. These are qualification
   artifacts, not distributable artifacts: the manifest is deliberately non-public and the app is
   not notarized or stapled.
+- The superseding Apple Silicon public-shape candidate is fully notarized and stapled. Its final
+  SHA-256 values are: app ZIP
+  `b041287c895f205d8feeab2236eac46f56de863784ae5d2bd552cc2e3850df12`, signed DMG
+  `cbb8f652f40a53ca1c66785cd0e1c108e3c4a1deb20e9feb3d59c54d8d379c15`, lite ZIP
+  `3c1335141e315e7d52a1c0673eeb34a59bd120f2acd1feff468198263d26d862`, app-update ZIP
+  `060372dd3cb2d7bcefd9336ff684a555a4cf32049829032506026ed62ab9b57f`, standalone runtime
+  `3628fc4613db5bf42ac1ecb0151eba7c23b9aa6c7e844c16fc1a1b0c88e06e12`, and exact-tree SBOM
+  `44c0eac3e9cae57f898973802ec5d5cb369e0a3d114f81d4f9591ff8d1cf935d`. The complete build log is
+  `/tmp/dory-public-release-0.3.0-18-06e8c775.log`; independent output validation is retained at
+  `/tmp/dory-final-release-output-validation-06e8c775.log`; and exact appcast/archive verification
+  is retained at `/tmp/dory-final-sparkle-verification-06e8c775.log`.
 - A live migration reproduction now covers the user-visible failure where images imported but
   volumes and containers did not. The owned smoke imported image archives, named-volume bytes,
   networks, full create configuration, bind/volume mounts, stopped/running state, and an untagged
@@ -506,18 +531,18 @@ unnotarized until the `dory-notary` keychain profile is provisioned.
 
 - [x] Finish and converge the deterministic amd64 guest asset, then verify all committed arm64,
   arm64-GPU, and amd64 fingerprints and compressed artifacts.
-- [ ] Notarize and staple the exact signed 0.3.0/18 arm64 candidate, then validate the final ZIP and
-  appcast artifacts. The fresh signed candidate exists and passes recursive signature, payload,
-  archive, mounted-DMG, manifest-hash, and SBOM checks. This Mac still has no `dory-notary`
-  keychain profile; `notarytool history` exits 69 with `No Keychain password item found`, and
-  `stapler validate` correctly reports that no ticket is attached. Gatekeeper recognizes the
-  Developer ID signature but reports `Unnotarized Developer ID`; assessment is overridden because
-  security assessment is disabled on this development Mac. The candidate was therefore not
-  installed over the user's working Dory state.
+- [x] Notarize and staple the exact signed 0.3.0/18 arm64 qualification candidate, then validate the
+  final ZIP, signed DMG, lite ZIP, self-contained app-update ZIP, appcast, runtime archive, manifest,
+  and SBOM. All four Apple submissions are accepted, every ticket validates, the app and DMG report
+  `source=Notarized Developer ID`, the DMG has a secure-timestamped Developer ID signature, all
+  manifest hashes match, and the exact app-update Ed25519 signature verifies against the public key
+  embedded in the shipped app. The candidate is bound to source commit `06e8c775`; it must be
+  rebuilt from the final tag after the remaining physical gates.
 - [x] Build and validate the final-shape DMG locally with adequate scratch space. Its image checksum
   is valid, it mounts read-only with the signed Dory app and Applications link, the mounted app
   passes strict recursive code-signature validation, and the compatibility DMG is byte-identical.
-  Notarization will change the final public hash and remains covered by the preceding gate.
+  The DMG itself is now Developer ID signed with a secure timestamp, notarized, stapled, and
+  independently accepted by Gatekeeper as `Notarized Developer ID`.
 - [ ] Run the signed-candidate live smoke on a dedicated **physical Apple-silicon** release host
   with Gatekeeper assessments enabled. This development Mac has Gatekeeper assessment disabled and
   cannot provide that trust evidence.
