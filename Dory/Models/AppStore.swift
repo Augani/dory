@@ -3198,7 +3198,10 @@ final class AppStore {
     }
 
     func importFromDocker() async {
-        guard runtimeKind == .sharedVM else { migrationStatus = "Switch to Dory's shared VM first, then import"; return }
+        guard runtimeKind == .sharedVM else {
+            migrationStatus = "Switch to Dory's shared VM first, then import"
+            return
+        }
         guard !migrationBusy else { return }
         guard let selectedSource = selectedMigrationSource() else {
             migrationStatus = "No import source selected."
@@ -3233,70 +3236,41 @@ final class AppStore {
         } else {
             target = runtime
         }
-        guard var latestInventory = await MigrationAssistant.preflight(from: source, to: target) else {
-            migrationStatus = (try? await source.migrationSnapshot()) != nil
-                ? "Import stopped before writing because Dory's target engine could not be read. Restart Dory's engine, then retry."
-                : "Import stopped before writing because Dory could not refresh the source inventory."
-            showSettingsFailure(migrationStatus)
-            return
-        }
-        if let availableHostBytes = Self.availableHostDiskBytes() {
-            latestInventory.availableHostBytes = availableHostBytes
-            latestInventory.hostDiskPreflightAvailable = true
-        } else {
-            latestInventory.hostDiskPreflightAvailable = false
-        }
-        migrationInventory = latestInventory
-        guard !latestInventory.isImportBlocked else {
-            if latestInventory.isHostDiskUnknown {
-                migrationStatus = "Import stopped before writing because macOS did not report available disk space."
-            } else if latestInventory.isHostDiskInsufficient {
-                migrationStatus = "Import stopped before writing: free at least \(latestInventory.additionalHostDiskDisplay) more; about \(latestInventory.requiredHostDiskDisplay) is required, but \(latestInventory.availableHostDiskDisplay) is available. Restart Dory's engine first if data was recently pruned."
-            } else if latestInventory.isEngineDiskInsufficient {
-                migrationStatus = "Import stopped before writing because Dory's \(latestInventory.engineDiskCapacityDisplay) engine disk would need about \(latestInventory.requiredEngineDiskDisplay)."
-            } else if latestInventory.isVolumeSizeUnknown {
-                migrationStatus = "Import stopped before writing because the source engine did not report every named-volume size."
-            } else if latestInventory.isContainerWritableSizeUnknown {
-                migrationStatus = "Import stopped before writing because the source engine did not report every container writable-layer size."
-            } else if latestInventory.isVolumeHelperUnavailable {
-                migrationStatus = "Import stopped before writing because the source has named volumes but no usable image for safe volume transfer."
-            } else if latestInventory.isTargetUsageUnknown {
-                migrationStatus = "Import stopped before writing because Dory could not measure its existing Docker data usage."
-            } else if latestInventory.isLiveVolumeCopyUnsafe {
-                migrationStatus = "Import stopped before writing because running source containers are still writing named-volume data. Stop or pause them, then retry."
-            } else if latestInventory.isLiveWritableLayerSnapshotUnsafe {
-                migrationStatus = "Import stopped before writing because running source containers have writable-layer changes. Stop or pause them, then retry."
-            } else if latestInventory.isTargetCollisionBlocked {
-                let count = latestInventory.targetCollisionBlockers.count
-                migrationStatus = "Import stopped before writing because Dory has \(count) same-name target conflict\(count == 1 ? "" : "s") it cannot safely overwrite. Back them up and resolve the listed objects, or use a clean Dory engine."
-            } else {
-                migrationStatus = "Import stopped before writing because a source container contract is not portable to Dory."
+        migrationStatus = "Starting exact import validation…"
+        let summary: MigrationSummary
+        do {
+            summary = try await MigrationImportCoordinator.migrate(
+                from: source,
+                to: target
+            ) { message in
+                Task { @MainActor in self.migrationStatus = message }
             }
+        } catch is CancellationError {
+            migrationStatus = "Import cancelled safely. No partial import was accepted."
+            migrationSummary = MigrationSummary(failures: [migrationStatus])
             showSettingsFailure(migrationStatus)
+            await reload()
             return
-        }
-        migrationStatus = "Starting import…"
-        let summary = await MigrationAssistant.migrate(from: source, to: target) { message in
-            Task { @MainActor in self.migrationStatus = message }
+        } catch {
+            let detail = String(describing: error)
+            migrationStatus = "Import did not complete. No partial result was accepted."
+            migrationSummary = MigrationSummary(failures: [detail])
+            showSettingsFailure("\(migrationStatus) \(detail)")
+            await reload()
+            return
         }
         migrationSummary = summary
-        var base = "Imported \(summary.imagesImported.count) images, \(summary.volumesCopied.count) volumes, \(summary.networksCreated.count) networks, \(summary.containersMigrated.count) containers"
+        var base = "Imported \(summary.imagesImported.count) images, "
+            + "\(summary.volumesCopied.count) volumes, "
+            + "\(summary.networksCreated.count) networks, "
+            + "\(summary.containersMigrated.count) containers"
         if !summary.containersAwaitingSourcePorts.isEmpty {
-            base += "; \(summary.containersAwaitingSourcePorts.count) container\(summary.containersAwaitingSourcePorts.count == 1 ? " is" : "s are") waiting for the source engine to release host ports"
+            let count = summary.containersAwaitingSourcePorts.count
+            base += "; \(count) container\(count == 1 ? " is" : "s are") "
+                + "waiting for the source engine to release host ports"
         }
-        let cancelled = summary.failures.contains { $0.lowercased().contains("migration cancelled") }
-        migrationStatus = cancelled
-            ? "Import cancelled safely. \(base); source objects were preserved."
-            : (summary.failures.isEmpty
-                ? base
-                : "Import incomplete: \(base). Review \(summary.failures.count) failure\(summary.failures.count == 1 ? "" : "s") below; source objects were preserved.")
-        if cancelled {
-            showSettingsFailure(migrationStatus)
-        } else if summary.failures.isEmpty {
-            showSettingsSuccess("\(base) from \(source.displayName).")
-        } else {
-            showSettingsFailure("Import from \(source.displayName) is incomplete. Review the listed failures and retry after resolving them.")
-        }
+        migrationStatus = base
+        showSettingsSuccess("\(base) from \(source.displayName).")
         await reload()
     }
 
