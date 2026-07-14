@@ -559,7 +559,7 @@ unnotarized until the `dory-notary` keychain profile is provisioned.
   or adopted.
 - [ ] Roadmap after the Apple Silicon release: run physical Intel validation before publishing any
   Intel or universal artifact. It is not a blocker for the current arm64 release.
-- [ ] Configure the dedicated GitHub release runners. A live API check on 2026-07-13 reports
+- [ ] Configure the dedicated GitHub release runners. A live API check on 2026-07-14 reports
   **zero** self-hosted runners. Release jobs require the `release`, `sonoma`, and `lan` label sets
   in addition to `[self-hosted, macOS, arm64, dory]`. The Apple-silicon release runner also needs at
   least 30 GiB free and a persistent HOME shared by the qualification and fresh-token publication
@@ -597,13 +597,14 @@ unnotarized until the `dory-notary` keychain profile is provisioned.
   `DORY_TAILSCALE_PEER_SSH`, `DORY_TAILSCALE_HOST_IPV4`). The digest-pinned
   `DORY_SOURCE_GATE_IMAGE`, `DORY_RELEASE_ALPINE_IMAGE`,
   `DORY_RELEASE_NONNATIVE_BUILD_IMAGE`, and `DORY_RELEASE_SSH_CLIENT_IMAGE` repository variables
-  were configured and live-verified on 2026-07-13; every reference contains an exact `@sha256:`
+  were configured and live-reverified on 2026-07-14; every reference contains an exact `@sha256:`
   digest. Still set `DORY_CORPORATE_DNS_SERVER`,
   `DORY_CORPORATE_VPN_PROBE_HOST`, and `DORY_CORPORATE_VPN_PROBE_URL`; the URL must use the exact
-  split-DNS hostname over HTTPS, plus `DORY_EXTERNAL_VOLUME_TEST_ROOT` for the marked physical APFS
-  test volume. The live API check confirms the tap deploy key is configured, while the four
-  environment-specific variables and four physical-peer secrets are absent; the six Developer ID,
-  keychain, notarization, and Sparkle secret names are present. GitHub does not expose secret
+  split-DNS hostname over HTTPS, `DORY_TAILSCALE_EXIT_NODE` for real exit-node route churn, plus
+  `DORY_EXTERNAL_VOLUME_TEST_ROOT` for the marked physical APFS test volume. The live API check
+  confirms the tap deploy key is configured, while the five environment-specific variables and
+  four physical-peer secrets are absent; the six Developer ID, keychain, notarization, and Sparkle
+  secret names are present. GitHub does not expose secret
   values, so the five-minute release preflight validates presence, image pinning, and an
   authenticated dry-run tap push before any build starts.
 - [ ] Execute the real Sparkle updater install/relaunch gate on the exact notarized candidate. The
