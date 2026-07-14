@@ -10,6 +10,20 @@ work; the closure column says which. Intel-host support is a later product track
 as Apple Silicon incompleteness. The common-amd64-image contract uses Dory's bundled FEX runtime;
 untested x86-only products remain outside that advertised contract.
 
+The notarized 0.3.0/18 Apple Silicon candidate built from
+`06e8c77592cc318e971529ada0ec3a93d67bb40a` has now passed the complete 34-row bounded
+Docker/runtime campaign with its exact bundled Docker CLI and standalone engine: all 34 rows passed,
+including concurrent backpressure, named signals, 2,000 forwarded connections, 20 restarts,
+host-port collision/recovery, Compose and engine restart continuity, bind/FD/hard-link behavior,
+healthchecks, DNS/search isolation, named-volume copy, BuildKit concurrency, image archive/import,
+and cleanup persistence. The retained evidence at
+`/tmp/dory-exact-runtime-evidence-20260714T064643Z` is bound to the candidate commit and every
+runtime payload hash; manifest SHA-256 is
+`aeb84256209d52e4ddbdc245c62942c3f02452d1dda6d4c45d5e253baa5474bb`. This removes the bounded
+runtime uncertainty from the affected rows. It does not waive rows whose closure also requires the
+final tagged rebuild, eight/25-hour duration, a clean app/update install, physical sleep/networking,
+or external APFS media.
+
 | Competitor failure class | Dory coverage | Remaining release action |
 |---|---|---|
 | OrbStack [Wi-Fi failure after sleep](https://github.com/orbstack/orbstack/issues/702), Colima [sleep failure](https://github.com/abiosoft/colima/issues/460), Rancher Desktop [socket failure after sleep](https://github.com/rancher-sandbox/rancher-desktop/issues/1274) | **LAUNCH BLOCKER — exact physical certification**. Wake/clock repair and bounded lifecycle tests exist. The notarized direct-candidate workflow now binds the exact app/Docker/doryd/dory-hv hashes and commit/run/attempt, schedules a hardware wake, physically sleeps the Apple-Silicon Mac five times, and requires unchanged default route, scoped DNS/search state, proxies, `/etc/resolver`, associated Wi-Fi, an active VPN, the configured corporate resolver, internal host/container HTTPS reachability, and Docker API recovery after every wake. Publication semantically rejects immediate-return sleep, missing schedule/pmset logs, incomplete/failed cycles, changed network contracts, different candidate binaries, or a different private network contract. | Execute the five-cycle gate on the dedicated physical release Mac while its corporate split-DNS VPN is active. It requires the exact `SLEEP-AND-WAKE-THIS-MAC` token and passwordless `pmset` only on that clean runner; ordinary development tests never sleep the user's Mac. |

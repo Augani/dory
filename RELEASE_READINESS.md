@@ -406,6 +406,22 @@ to the final release tag rather than representing this candidate as built from c
   `/tmp/dory-public-release-0.3.0-18-06e8c775.log`; independent output validation is retained at
   `/tmp/dory-final-release-output-validation-06e8c775.log`; and exact appcast/archive verification
   is retained at `/tmp/dory-final-sparkle-verification-06e8c775.log`.
+- The exact standalone runtime and Docker CLI from that notarized candidate passed the complete
+  **34-row** competitor regression campaign in a fresh isolated 8 GiB/6-CPU engine with FEX
+  enabled: 2,000 forwarded connections, 20 container restarts, deliberate six-stream proxy
+  backpressure with twelve independent control probes, named signal delivery, host-port collision
+  recovery, Compose and full-engine restart continuity, bind/special-file/FD/hard-link semantics,
+  healthchecks, DNS/search isolation, named volumes and `docker cp`, concurrent BuildKit sessions,
+  image archive/hard-link import, and post-restart cleanup persistence all passed. The retained
+  manifest is explicitly bound to candidate source `06e8c77592cc318e971529ada0ec3a93d67bb40a`,
+  Docker SHA-256 `2e3639bd136b38821b39ba532098ec86fb68874e86da9450c78e9c3f5dbcdfcf`,
+  launcher SHA-256 `38cdba5d153be55871f5f06baa301c2b68d3fc4828aea9d63aa3ed39f30f2385`,
+  and every runtime payload hash. Evidence is retained at
+  `/tmp/dory-exact-runtime-evidence-20260714T064643Z`; manifest SHA-256 is
+  `aeb84256209d52e4ddbdc245c62942c3f02452d1dda6d4c45d5e253baa5474bb` and result-table
+  SHA-256 is `cb61f7372b8e75d14192751762ab8b72d350b3dbabf8a0c679902ab9b1d25224`.
+  Qualification and publication now reject competitor evidence whose source commit differs from
+  the immutable release manifest; ordinary development runs may still default to repository HEAD.
 - A live migration reproduction now covers the user-visible failure where images imported but
   volumes and containers did not. The owned smoke imported image archives, named-volume bytes,
   networks, full create configuration, bind/volume mounts, stopped/running state, and an untagged
@@ -543,6 +559,11 @@ to the final release tag rather than representing this candidate as built from c
   passes strict recursive code-signature validation, and the compatibility DMG is byte-identical.
   The DMG itself is now Developer ID signed with a secure timestamp, notarized, stapled, and
   independently accepted by Gatekeeper as `Notarized Developer ID`.
+- [x] Run the exact notarized candidate's complete 34-row Docker/runtime competitor campaign and
+  bind its retained evidence to the candidate source commit plus exact Docker, launcher, dory-hv,
+  gvproxy, dataplane, kernel, rootfs, and guest-agent hashes. All rows passed and isolated runtime
+  cleanup passed. The final tagged rebuild must repeat the same mandatory gate because release
+  tooling and documentation commits followed this candidate build.
 - [ ] Run the signed-candidate live smoke on a dedicated **physical Apple-silicon** release host
   with Gatekeeper assessments enabled. This development Mac has Gatekeeper assessment disabled and
   cannot provide that trust evidence.
