@@ -40,8 +40,8 @@ struct MigrationStrictInventoryTests: StrictInventoryTestCase {
             #expect(labels["dev.dory.operation.id"] == fixture.identity.id.uuidString.lowercased())
             #expect(labels["dev.dory.source.authority"] == prepared.ownership.sourceAuthorityHash)
         }
-        #expect(volume.labels["dev.dory.operation.state"] == "staging")
-        #expect(network.labels["dev.dory.operation.state"] == "staging")
+        #expect(volume.labels["dev.dory.operation.state"] == "published")
+        #expect(network.labels["dev.dory.operation.state"] == "published")
         #expect(container.labels["dev.dory.operation.state"] == "published")
         #expect(container.mounts.first?.source == "db-data")
         #expect(container.networkEndpointSettings["backend"]?.EndpointID == nil)

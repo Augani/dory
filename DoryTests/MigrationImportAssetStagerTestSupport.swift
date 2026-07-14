@@ -94,10 +94,10 @@ extension MigrationImportAssetStagerTests {
         #expect(context.fixture.target.snapshotValue.images.count == 2)
         let volume = try #require(context.fixture.target.snapshotValue.volumes.first)
         #expect(volume.name == "db-data")
-        #expect(volume.labels["dev.dory.operation.state"] == "staging")
+        #expect(volume.labels["dev.dory.operation.state"] == "published")
         let network = try #require(context.fixture.target.snapshotValue.networks.first)
         #expect(network.name == "backend")
-        #expect(network.labels["dev.dory.operation.state"] == "staging")
+        #expect(network.labels["dev.dory.operation.state"] == "published")
         #expect(try context.session.lease.events().map(\.stepID).suffix(7) == [
             "staging.container-definition-verified",
             "verifying.staged-closure",

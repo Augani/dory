@@ -4,6 +4,7 @@ import Foundation
 nonisolated enum MigrationImportTransactionError: Error, Sendable, Equatable, CustomStringConvertible {
     case planDrift
     case insufficientHostStorage(required: Int64, available: Int64)
+    case unfinishedOperation(UUID, DoryOperationPhase, DoryOperationStatus)
     case operationAndJournal(operation: String, journal: String)
 
     var description: String {
@@ -12,6 +13,9 @@ nonisolated enum MigrationImportTransactionError: Error, Sendable, Equatable, Cu
             return "source, target, capability, or capacity inventory changed after planning"
         case let .insufficientHostStorage(required, available):
             return "host storage changed after planning: \(required) bytes required, \(available) available"
+        case let .unfinishedOperation(id, phase, status):
+            return "migration operation \(id.uuidString.lowercased()) is still "
+                + "\(phase.rawValue)/\(status.rawValue); recover it before starting another import"
         case let .operationAndJournal(operation, journal):
             return "migration preflight failed (\(operation)); recording terminal state also failed: \(journal)"
         }
@@ -43,6 +47,7 @@ nonisolated enum MigrationImportTransaction {
         prepared: PreparedMigrationExecution,
         environment: MigrationImportTransactionEnvironment
     ) async throws -> MigrationImportStagingSession {
+        try requireNoUnfinishedOperation(in: environment.journalStore)
         let lease = try prepared.operation.begin(in: environment.journalStore)
         var state = try lease.read().state
         do {
@@ -84,6 +89,20 @@ nonisolated enum MigrationImportTransaction {
 }
 
 private extension MigrationImportTransaction {
+    nonisolated static func requireNoUnfinishedOperation(
+        in store: DoryOperationJournalStore
+    ) throws {
+        if let record = try store.list().first(where: {
+            $0.state.status != .completed && $0.state.status != .failed
+        }) {
+            throw MigrationImportTransactionError.unfinishedOperation(
+                record.plan.id,
+                record.state.phase,
+                record.state.status
+            )
+        }
+    }
+
     nonisolated static func publishBaselines(
         _ prepared: PreparedMigrationExecution,
         lease: DoryOperationLease

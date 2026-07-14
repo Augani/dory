@@ -96,6 +96,34 @@ struct MigrationImportTransactionTests: StrictInventoryTestCase {
         #expect(record.state.status == .failed)
         #expect(record.state.revision == 3)
     }
+
+    @Test func unfinishedJournalBlocksAnotherImportBeforePublishingItsPlan() async throws {
+        let fixture = makeFixture()
+        let prepared = try await collect(fixture)
+        let home = try temporaryHome()
+        defer { try? FileManager.default.removeItem(atPath: home) }
+        let store = try DoryOperationJournalStore(home: home)
+        do {
+            _ = try prepared.operation.begin(in: store)
+        }
+
+        await #expect(throws: MigrationImportTransactionError.unfinishedOperation(
+            prepared.identity.id,
+            .planned,
+            .running
+        )) {
+            _ = try await MigrationImportTransaction.openStagingSession(
+                prepared: prepared,
+                environment: environment(fixture, store: store, home: home)
+            )
+        }
+
+        #expect(try store.list().count == 1)
+        #expect(fixture.target.snapshotValue.containers.isEmpty)
+        #expect(fixture.target.snapshotValue.images.isEmpty)
+        #expect(fixture.target.snapshotValue.volumes.isEmpty)
+        #expect(fixture.target.snapshotValue.networks.isEmpty)
+    }
 }
 
 private extension MigrationImportTransactionTests {

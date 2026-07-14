@@ -74,7 +74,10 @@ struct MigrationOperationOwnership: Sendable, Equatable {
         labels["dev.dory.object.kind"] = kind.rawValue
         labels["dev.dory.original.identity"] = sourceID
         labels["dev.dory.target.identity"] = targetID
-        labels["dev.dory.operation.state"] = kind == .container ? "published" : "staging"
+        // Docker cannot relabel images, local volumes, or local networks. These labels describe
+        // the final object identity; the crash-safe operation journal remains authoritative for
+        // whether the complete import is still running, needs recovery, or has completed.
+        labels["dev.dory.operation.state"] = "published"
         return labels
     }
 }
