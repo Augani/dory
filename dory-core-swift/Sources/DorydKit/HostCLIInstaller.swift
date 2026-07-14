@@ -19,12 +19,12 @@ public struct HostCLIRemoveResult: Sendable, Equatable {
     public var pathProfileChanged: Bool
     public var composePluginRemoved: Bool
     public var buildxPluginRemoved: Bool
+    public var dockerContextRemoved: Bool
+    public var dockerContextError: String?
 }
 
 /// Per-user terminal integration owned by doryd. When the daemon is running from the app bundle,
 /// fresh terminals should already have Dory's docker, Compose, kubectl, dory, and support tools.
-public typealias HostCLICommandRunner = @Sendable (_ executable: String, _ arguments: [String], _ environment: [String: String]) -> Int32
-
 public struct HostCLIInstaller: Sendable {
     private static let beginSentinel = "# >>> dory cli >>>"
     private static let endSentinel = "# <<< dory cli <<<"
@@ -46,7 +46,7 @@ public struct HostCLIInstaller: Sendable {
         self.home = home
         self.helpersDirectory = helpersDirectory
         self.dockerSocketPath = dockerSocketPath ?? "\(home)/.dory/dory.sock"
-        self.commandRunner = commandRunner ?? Self.runCommand
+        self.commandRunner = commandRunner ?? runHostCLICommand
     }
 
     public init(
@@ -57,7 +57,7 @@ public struct HostCLIInstaller: Sendable {
         self.home = environment.home
         self.helpersDirectory = Self.helpersDirectory(environment: environment)
         self.dockerSocketPath = dockerSocketPath ?? "\(environment.home)/.dory/dory.sock"
-        self.commandRunner = commandRunner ?? Self.runCommand
+        self.commandRunner = commandRunner ?? runHostCLICommand
     }
 
     @discardableResult
@@ -91,7 +91,8 @@ public struct HostCLIInstaller: Sendable {
                 buildxPluginInstalled = installOwnedPluginSymlink(source, to: "\(composePluginDir)/docker-buildx")
             }
         }
-        let dockerContext = reconcileDockerContext()
+        let dockerContext = dockerContextManager()?.reconcile()
+            ?? HostDockerContextResult(succeeded: false, error: "docker helper is missing")
 
         return HostCLIInstallResult(
             linked: linked,
@@ -99,7 +100,7 @@ public struct HostCLIInstaller: Sendable {
             pathProfileChanged: addToPath(),
             composePluginInstalled: composePluginInstalled,
             buildxPluginInstalled: buildxPluginInstalled,
-            dockerContextReconciled: dockerContext.ok,
+            dockerContextReconciled: dockerContext.succeeded,
             dockerContextError: dockerContext.error
         )
     }
@@ -111,6 +112,8 @@ public struct HostCLIInstaller: Sendable {
         let composePlugin = "\(home)/.docker/cli-plugins/docker-compose"
         let buildxPlugin = "\(home)/.docker/cli-plugins/docker-buildx"
         var removed: [String] = []
+        let dockerContext = dockerContextManager()?.remove()
+            ?? HostDockerContextResult(succeeded: false, error: "docker helper is missing")
 
         for tool in Self.tools {
             let path = "\(binDir)/\(tool)"
@@ -127,7 +130,9 @@ public struct HostCLIInstaller: Sendable {
             removed: removed,
             pathProfileChanged: removeFromPath(),
             composePluginRemoved: hadComposePlugin,
-            buildxPluginRemoved: hadBuildxPlugin
+            buildxPluginRemoved: hadBuildxPlugin,
+            dockerContextRemoved: dockerContext.succeeded,
+            dockerContextError: dockerContext.error
         )
     }
 
@@ -141,16 +146,18 @@ public struct HostCLIInstaller: Sendable {
         return content + separator + pathBlock(binDir: binDir)
     }
 
-    public static func removingPathBlock(from content: String) -> String {
+    public static func removingPathBlock(from content: String) -> String? {
         guard content.contains(beginSentinel) else { return content }
         var output: [String] = []
         var skipping = false
         for line in content.components(separatedBy: "\n") {
             if line == beginSentinel {
+                guard !skipping else { return nil }
                 skipping = true
                 continue
             }
             if line == endSentinel {
+                guard skipping else { return nil }
                 skipping = false
                 continue
             }
@@ -158,6 +165,7 @@ public struct HostCLIInstaller: Sendable {
                 output.append(line)
             }
         }
+        guard !skipping else { return nil }
         return output.joined(separator: "\n")
     }
 
@@ -250,57 +258,16 @@ public struct HostCLIInstaller: Sendable {
         path == root || path.hasPrefix(root + "/")
     }
 
-    private func reconcileDockerContext() -> (ok: Bool, error: String?) {
-        guard let docker = sourcePath(for: "docker") else {
-            return (false, "docker helper is missing")
-        }
-        let host = "unix://\(dockerSocketPath)"
-        let environment = dockerCommandEnvironment()
-        let inspect = commandRunner(docker, ["context", "inspect", "dory"], environment)
-        let configure: Int32
-        if inspect == 0 {
-            configure = commandRunner(docker, ["context", "update", "dory", "--docker", "host=\(host)"], environment)
-        } else {
-            configure = commandRunner(
-                docker,
-                ["context", "create", "dory", "--description", "Dory", "--docker", "host=\(host)"],
-                environment
-            )
-        }
-        guard configure == 0 else {
-            return (false, "docker context \(inspect == 0 ? "update" : "create") failed with status \(configure)")
-        }
-        let use = commandRunner(docker, ["context", "use", "dory"], environment)
-        guard use == 0 else {
-            return (false, "docker context use failed with status \(use)")
-        }
-        return (true, nil)
-    }
-
-    private func dockerCommandEnvironment() -> [String: String] {
+    private func dockerContextManager() -> HostDockerContextManager? {
+        guard let docker = sourcePath(for: "docker") else { return nil }
         var environment = ProcessInfo.processInfo.environment
         environment["HOME"] = home
-        return environment
-    }
-
-    private static func runCommand(
-        executable: String,
-        arguments: [String],
-        environment: [String: String]
-    ) -> Int32 {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: executable)
-        process.arguments = arguments
-        process.environment = environment
-        process.standardOutput = Pipe()
-        process.standardError = Pipe()
-        do {
-            try process.run()
-        } catch {
-            return 127
-        }
-        process.waitUntilExit()
-        return process.terminationStatus
+        return HostDockerContextManager(
+            docker: docker,
+            socketPath: dockerSocketPath,
+            environment: environment,
+            commandRunner: commandRunner
+        )
     }
 
     @discardableResult
@@ -324,11 +291,12 @@ public struct HostCLIInstaller: Sendable {
         let binDir = "\(home)/.dory/bin"
         var changed = false
         for name in Self.profiles {
-            let path = "\(home)/\(name)"
-            guard fileManager.fileExists(atPath: path),
-                  let content = try? String(contentsOfFile: path, encoding: .utf8) else { continue }
+            let profileURL = URL(fileURLWithPath: "\(home)/\(name)")
+            guard fileManager.fileExists(atPath: profileURL.path) else { continue }
+            let targetURL = profileURL.resolvingSymlinksInPath()
+            guard let content = try? String(contentsOf: targetURL, encoding: .utf8) else { continue }
             guard let updated = Self.appendingPathBlock(to: content, binDir: binDir) else { continue }
-            if (try? updated.write(toFile: path, atomically: true, encoding: .utf8)) != nil {
+            if (try? updated.write(to: targetURL, atomically: true, encoding: .utf8)) != nil {
                 changed = true
             }
         }
@@ -343,11 +311,12 @@ public struct HostCLIInstaller: Sendable {
     private func removeFromPath() -> Bool {
         var changed = false
         for name in Self.profiles {
-            let path = "\(home)/\(name)"
-            guard let content = try? String(contentsOfFile: path, encoding: .utf8),
+            let profileURL = URL(fileURLWithPath: "\(home)/\(name)")
+            let targetURL = profileURL.resolvingSymlinksInPath()
+            guard let content = try? String(contentsOf: targetURL, encoding: .utf8),
                   content.contains(Self.beginSentinel) else { continue }
-            let stripped = Self.removingPathBlock(from: content)
-            if (try? stripped.write(toFile: path, atomically: true, encoding: .utf8)) != nil {
+            guard let stripped = Self.removingPathBlock(from: content) else { continue }
+            if (try? stripped.write(to: targetURL, atomically: true, encoding: .utf8)) != nil {
                 changed = true
             }
         }

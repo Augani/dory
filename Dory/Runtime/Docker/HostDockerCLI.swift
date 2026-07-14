@@ -9,7 +9,7 @@ enum HostDockerCLI {
     private static let composePluginDir = NSHomeDirectory() + "/.docker/cli-plugins"
     private static let beginSentinel = "# >>> dory cli >>>"
     private static let endSentinel = "# <<< dory cli <<<"
-    private static let profiles = [".zprofile", ".zshrc", ".bash_profile", ".profile"]
+    private static let profiles = [".zprofile", ".zshrc", ".bash_profile", ".bashrc", ".profile"]
     static let linkedTools = ["docker", "docker-buildx", "docker-compose", "kubectl", "dory", "dory-doctor", "dorydctl"]
 
     struct Status: Equatable {
@@ -182,16 +182,25 @@ enum HostDockerCLI {
         return content + separator + pathBlock(binDir: binDir)
     }
 
-    /// Strips the Dory PATH block (and nothing else) from profile content.
-    static func removingPathBlock(from content: String) -> String {
+    /// Strips a complete Dory PATH block and rejects damaged marker pairs.
+    static func removingPathBlock(from content: String) -> String? {
         guard content.contains(beginSentinel) else { return content }
         var out: [String] = []
         var skipping = false
         for line in content.components(separatedBy: "\n") {
-            if line == beginSentinel { skipping = true; continue }
-            if line == endSentinel { skipping = false; continue }
+            if line == beginSentinel {
+                guard !skipping else { return nil }
+                skipping = true
+                continue
+            }
+            if line == endSentinel {
+                guard skipping else { return nil }
+                skipping = false
+                continue
+            }
             if !skipping { out.append(line) }
         }
+        guard !skipping else { return nil }
         return out.joined(separator: "\n")
     }
 
@@ -199,12 +208,13 @@ enum HostDockerCLI {
         let fileManager = FileManager.default
         var wroteAny = false
         for name in profiles {
-            let path = NSHomeDirectory() + "/" + name
-            guard fileManager.fileExists(atPath: path),
-                  let content = try? String(contentsOfFile: path, encoding: .utf8) else { continue }
+            let profileURL = URL(fileURLWithPath: NSHomeDirectory() + "/" + name)
+            guard fileManager.fileExists(atPath: profileURL.path) else { continue }
+            let targetURL = profileURL.resolvingSymlinksInPath()
+            guard let content = try? String(contentsOf: targetURL, encoding: .utf8) else { continue }
             wroteAny = true
             guard let updated = appendingPathBlock(to: content) else { continue }
-            try? updated.write(toFile: path, atomically: true, encoding: .utf8)
+            try? updated.write(to: targetURL, atomically: true, encoding: .utf8)
         }
         if !wroteAny {
             try? pathBlock().write(toFile: NSHomeDirectory() + "/.zprofile", atomically: true, encoding: .utf8)
@@ -213,10 +223,12 @@ enum HostDockerCLI {
 
     private static func removeFromPath() {
         for name in profiles {
-            let path = NSHomeDirectory() + "/" + name
-            guard let content = try? String(contentsOfFile: path, encoding: .utf8),
+            let profileURL = URL(fileURLWithPath: NSHomeDirectory() + "/" + name)
+            let targetURL = profileURL.resolvingSymlinksInPath()
+            guard let content = try? String(contentsOf: targetURL, encoding: .utf8),
                   content.contains(beginSentinel) else { continue }
-            try? removingPathBlock(from: content).write(toFile: path, atomically: true, encoding: .utf8)
+            guard let stripped = removingPathBlock(from: content) else { continue }
+            try? stripped.write(to: targetURL, atomically: true, encoding: .utf8)
         }
     }
 }

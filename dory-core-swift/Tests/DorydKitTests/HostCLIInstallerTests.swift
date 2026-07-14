@@ -71,7 +71,7 @@ final class HostCLIInstallerTests: XCTestCase {
 
         XCTAssertTrue(result.dockerContextReconciled)
         XCTAssertEqual(recorder.calls.map(\.arguments), [
-            ["context", "inspect", "dory"],
+            ["context", "inspect", "dory", "--format", "{{.Endpoints.docker.Host}}"],
             ["context", "create", "dory", "--description", "Dory", "--docker", "host=unix://\(home)/.dory/dory.sock"],
             ["context", "use", "dory"],
         ])
@@ -100,9 +100,33 @@ final class HostCLIInstallerTests: XCTestCase {
 
         XCTAssertTrue(result.dockerContextReconciled)
         XCTAssertEqual(recorder.calls.map(\.arguments), [
-            ["context", "inspect", "dory"],
-            ["context", "update", "dory", "--docker", "host=unix://\(home)/.dory/dory.sock"],
-            ["context", "use", "dory"],
+            ["context", "inspect", "dory", "--format", "{{.Endpoints.docker.Host}}"],
+        ])
+    }
+
+    func testInstallerDoesNotTakeOverForeignDoryContext() throws {
+        let directory = "/tmp/doryd-cli-context-foreign-\(getpid())-\(UUID().uuidString)"
+        let home = directory + "/home"
+        let helpers = directory + "/Dory.app/Contents/Helpers"
+        try FileManager.default.createDirectory(atPath: helpers, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(atPath: home, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+
+        for tool in ["docker", "docker-buildx", "docker-compose", "kubectl", "dory", "dory-doctor", "dorydctl"] {
+            _ = try executableFixture(at: helpers + "/\(tool)")
+        }
+        let recorder = HostCLICommandRecorder(inspectStatus: 0, inspectHost: "ssh://foreign.example")
+
+        let result = HostCLIInstaller(
+            home: home,
+            helpersDirectory: helpers,
+            commandRunner: recorder.run
+        ).install()
+
+        XCTAssertFalse(result.dockerContextReconciled)
+        XCTAssertEqual(result.dockerContextError, "Docker context 'dory' is already owned by ssh://foreign.example")
+        XCTAssertEqual(recorder.calls.map(\.arguments), [
+            ["context", "inspect", "dory", "--format", "{{.Endpoints.docker.Host}}"],
         ])
     }
 
@@ -131,6 +155,39 @@ final class HostCLIInstallerTests: XCTestCase {
         XCTAssertNil(HostCLIInstaller.appendingPathBlock(to: once, binDir: "/home/u/.dory/bin"))
         XCTAssertTrue(once.contains("case \":$PATH:\" in"))
         XCTAssertTrue(once.contains("DORY_CLI_BIN=\"/home/u/.dory/bin\""))
+    }
+
+    func testPathBlockRemovalRejectsMalformedMarkersWithoutDroppingUserContent() {
+        let content = "export BEFORE=1\n# >>> dory cli >>>\nexport AFTER=1\n"
+
+        XCTAssertNil(HostCLIInstaller.removingPathBlock(from: content))
+    }
+
+    func testInstallerPreservesSymlinkedProfileAndRemovesOnlyOwnedBlock() throws {
+        let directory = "/tmp/doryd-cli-symlink-profile-\(getpid())-\(UUID().uuidString)"
+        let home = directory + "/home"
+        let helpers = directory + "/Dory.app/Contents/Helpers"
+        let dotfiles = directory + "/dotfiles"
+        try FileManager.default.createDirectory(atPath: helpers, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(atPath: home, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(atPath: dotfiles, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+
+        for tool in ["docker", "docker-buildx", "docker-compose", "kubectl", "dory", "dory-doctor", "dorydctl"] {
+            _ = try executableFixture(at: helpers + "/\(tool)")
+        }
+        let target = dotfiles + "/zprofile"
+        try "export USER_SETTING=1\n".write(toFile: target, atomically: true, encoding: .utf8)
+        try FileManager.default.createSymbolicLink(atPath: home + "/.zprofile", withDestinationPath: target)
+
+        let installer = HostCLIInstaller(home: home, helpersDirectory: helpers)
+        XCTAssertTrue(installer.install().pathProfileChanged)
+        XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: home + "/.zprofile"), target)
+        XCTAssertTrue(try String(contentsOfFile: target, encoding: .utf8).contains("dory cli"))
+
+        XCTAssertTrue(installer.remove().pathProfileChanged)
+        XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: home + "/.zprofile"), target)
+        XCTAssertEqual(try String(contentsOfFile: target, encoding: .utf8), "export USER_SETTING=1\n\n")
     }
 
     func testInstallerCreatesLoginAndInteractiveZshProfilesForCleanHome() throws {
@@ -175,6 +232,8 @@ final class HostCLIInstallerTests: XCTestCase {
         XCTAssertTrue(result.removed.contains("docker"))
         XCTAssertTrue(result.composePluginRemoved)
         XCTAssertTrue(result.buildxPluginRemoved)
+        XCTAssertTrue(result.dockerContextRemoved)
+        XCTAssertNil(result.dockerContextError)
         XCTAssertTrue(result.pathProfileChanged)
         XCTAssertFalse(FileManager.default.fileExists(atPath: home + "/.dory/bin/docker"))
         XCTAssertFalse(FileManager.default.fileExists(atPath: home + "/.docker/cli-plugins/docker-compose"))
@@ -247,7 +306,21 @@ final class HostCLIInstallerTests: XCTestCase {
     }
 
     private func executableFixture(at path: String) throws -> String {
-        try "#!/bin/sh\nexit 0\n".write(toFile: path, atomically: true, encoding: .utf8)
+        let contents: String
+        if URL(fileURLWithPath: path).lastPathComponent == "docker" {
+            contents = """
+            #!/bin/sh
+            if [ "${1:-} ${2:-}" = "context inspect" ]; then
+              printf 'unix://%s/.dory/dory.sock\\n' "$HOME"
+            elif [ "${1:-} ${2:-}" = "context show" ]; then
+              printf 'dory\\n'
+            fi
+            exit 0
+            """
+        } else {
+            contents = "#!/bin/sh\nexit 0\n"
+        }
+        try contents.write(toFile: path, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: path)
         return path
     }
@@ -262,10 +335,12 @@ private final class HostCLICommandRecorder: @unchecked Sendable {
 
     private let lock = NSLock()
     private let inspectStatus: Int32
+    private let inspectHost: String?
     private var recorded: [Call] = []
 
-    init(inspectStatus: Int32) {
+    init(inspectStatus: Int32, inspectHost: String? = nil) {
         self.inspectStatus = inspectStatus
+        self.inspectHost = inspectHost
     }
 
     var calls: [Call] {
@@ -274,13 +349,17 @@ private final class HostCLICommandRecorder: @unchecked Sendable {
         return recorded
     }
 
-    func run(executable: String, arguments: [String], environment: [String: String]) -> Int32 {
+    func run(executable: String, arguments: [String], environment: [String: String]) -> HostCLICommandResult {
         lock.lock()
         recorded.append(Call(executable: executable, arguments: arguments, environment: environment))
         lock.unlock()
-        if arguments == ["context", "inspect", "dory"] {
-            return inspectStatus
+        if arguments == ["context", "inspect", "dory", "--format", "{{.Endpoints.docker.Host}}"] {
+            let host = inspectHost ?? "unix://\(environment["HOME"]!)/.dory/dory.sock"
+            return HostCLICommandResult(status: inspectStatus, stdout: inspectStatus == 0 ? host + "\n" : "")
         }
-        return 0
+        if arguments == ["context", "show"] {
+            return HostCLICommandResult(status: 0, stdout: "dory\n")
+        }
+        return HostCLICommandResult(status: 0)
     }
 }

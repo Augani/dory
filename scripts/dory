@@ -159,7 +159,7 @@ EOF
 
 DORY_CLI_BEGIN="# >>> dory cli >>>"
 DORY_CLI_END="# <<< dory cli <<<"
-DORY_CLI_PROFILES=(".zprofile" ".zshrc" ".bash_profile" ".profile")
+DORY_CLI_PROFILES=(".zprofile" ".zshrc" ".bash_profile" ".bashrc" ".profile")
 
 install_usage() {
   echo "usage: dory install|uninstall [--json] [--dry-run]" >&2
@@ -204,23 +204,62 @@ profile_contains_dory_block() {
   [ -f "$profile" ] && grep -Fq "$DORY_CLI_BEGIN" "$profile"
 }
 
+profile_has_well_formed_dory_blocks() {
+  local profile="$1"
+  awk -v begin="$DORY_CLI_BEGIN" -v end="$DORY_CLI_END" '
+    $0 == begin {
+      if (inside) exit 1
+      inside = 1
+      count += 1
+      next
+    }
+    $0 == end {
+      if (!inside) exit 1
+      inside = 0
+      next
+    }
+    END {
+      if (inside || count == 0) exit 1
+    }
+  ' "$profile"
+}
+
+profile_write_target() {
+  local profile="$1" resolved
+  resolved="$(realpath "$profile" 2>/dev/null || true)"
+  [ -n "$resolved" ] && [ -f "$resolved" ] && printf '%s\n' "$resolved" || printf '%s\n' "$profile"
+}
+
+replace_profile() {
+  local profile="$1" content="$2" target mode tmp
+  target="$(profile_write_target "$profile")"
+  tmp="$(mktemp "${target}.dory.XXXXXX")"
+  mode="$(stat -f '%Lp' "$target" 2>/dev/null || printf 600)"
+  printf '%s' "$content" > "$tmp"
+  chmod "$mode" "$tmp"
+  mv "$tmp" "$target"
+}
+
 install_path_block() {
   local dry_run="$1" profile content updated_any=0 saw_profile=0
   for name in "${DORY_CLI_PROFILES[@]}"; do
     profile="$HOME/$name"
     [ -e "$profile" ] || continue
     saw_profile=1
-    profile_contains_dory_block "$profile" && continue
+    if profile_contains_dory_block "$profile"; then
+      profile_has_well_formed_dory_blocks "$profile" \
+        || echo "Dory left malformed shell markers untouched in $profile" >&2
+      continue
+    fi
     updated_any=1
     if [ "$dry_run" -eq 1 ]; then
       continue
     fi
-    content="$(cat "$profile" 2>/dev/null || true)"
-    {
-      printf '%s' "$content"
-      case "$content" in ""|*$'\n') printf '\n' ;; *) printf '\n\n' ;; esac
-      cli_path_block
-    } > "$profile"
+    content="$(cat "$profile" 2>/dev/null; printf x)"
+    content="${content%x}"
+    case "$content" in ""|*$'\n') content="${content}"$'\n' ;; *) content="${content}"$'\n\n' ;; esac
+    content="${content}$(cli_path_block)"$'\n'
+    replace_profile "$profile" "$content"
   done
   if [ "$saw_profile" -eq 0 ]; then
     updated_any=1
@@ -230,19 +269,25 @@ install_path_block() {
 }
 
 remove_path_blocks() {
-  local dry_run="$1" profile tmp changed=0
+  local dry_run="$1" profile content stripped changed=0
   for name in "${DORY_CLI_PROFILES[@]}"; do
     profile="$HOME/$name"
     profile_contains_dory_block "$profile" || continue
+    if ! profile_has_well_formed_dory_blocks "$profile"; then
+      echo "Dory left malformed shell markers untouched in $profile" >&2
+      continue
+    fi
     changed=1
     [ "$dry_run" -eq 1 ] && continue
-    tmp="$(mktemp -t dory-profile.XXXXXX)"
-    awk -v begin="$DORY_CLI_BEGIN" -v end="$DORY_CLI_END" '
+    content="$(cat "$profile"; printf x)"
+    content="${content%x}"
+    stripped="$(printf '%s' "$content" | awk -v begin="$DORY_CLI_BEGIN" -v end="$DORY_CLI_END" '
       $0 == begin { skipping = 1; next }
       $0 == end { skipping = 0; next }
       !skipping { print }
-    ' "$profile" > "$tmp"
-    mv "$tmp" "$profile"
+    '; printf x)"
+    stripped="${stripped%x}"
+    replace_profile "$profile" "$stripped"
   done
   [ "$changed" -eq 1 ]
 }
@@ -253,12 +298,12 @@ csv_append() {
 }
 
 install_emit_json() {
-  local action="$1" dry_run="$2" path_changed="$3" compose_installed="$4" buildx_installed="$5" linked_csv="$6" missing_csv="$7"
-  python3 - "$action" "$dry_run" "$HOME/.dory/bin" "$path_changed" "$compose_installed" "$buildx_installed" "$linked_csv" "$missing_csv" <<'PY'
+  local action="$1" dry_run="$2" path_changed="$3" compose_installed="$4" buildx_installed="$5" linked_csv="$6" missing_csv="$7" context_reconciled="$8" context_removed="$9"
+  python3 - "$action" "$dry_run" "$HOME/.dory/bin" "$path_changed" "$compose_installed" "$buildx_installed" "$linked_csv" "$missing_csv" "$context_reconciled" "$context_removed" <<'PY'
 import json
 import sys
 
-action, dry_run, bin_dir, path_changed, compose_installed, buildx_installed, linked_csv, missing_csv = sys.argv[1:9]
+action, dry_run, bin_dir, path_changed, compose_installed, buildx_installed, linked_csv, missing_csv, context_reconciled, context_removed = sys.argv[1:11]
 split = lambda value: [item for item in value.split(",") if item]
 print(json.dumps({
     "schema": "dev.dory.cli.install",
@@ -271,8 +316,42 @@ print(json.dumps({
     "pathProfileChanged": path_changed == "1",
     "composePluginInstalled": compose_installed == "1",
     "buildxPluginInstalled": buildx_installed == "1",
+    "dockerContextReconciled": context_reconciled == "1",
+    "dockerContextRemoved": context_removed == "1",
 }, separators=(",", ":"), sort_keys=True))
 PY
+}
+
+docker_context_host() {
+  local docker="$1"
+  "$docker" context inspect dory --format '{{.Endpoints.docker.Host}}' 2>/dev/null \
+    | tail -n 1 | tr -d '\r\n'
+}
+
+reconcile_docker_context() {
+  local docker="$1" dry_run="$2" desired="unix://$DORY_SOCK" existing
+  existing="$(docker_context_host "$docker" || true)"
+  if [ -n "$existing" ] && [ "$existing" != "$desired" ]; then
+    echo "Dory did not replace the existing 'dory' Docker context ($existing)." >&2
+    return 1
+  fi
+  [ -z "$existing" ] || return 0
+  if [ "$dry_run" -eq 1 ]; then return 0; fi
+  "$docker" context create dory --description Dory --docker "host=$desired" >/dev/null \
+    || return 1
+  "$docker" context use dory >/dev/null
+}
+
+remove_docker_context() {
+  local docker="$1" dry_run="$2" desired="unix://$DORY_SOCK" existing current
+  existing="$(docker_context_host "$docker" || true)"
+  [ "$existing" = "$desired" ] || return 1
+  if [ "$dry_run" -eq 1 ]; then return 0; fi
+  current="$("$docker" context show 2>/dev/null | tail -n 1 | tr -d '\r\n' || true)"
+  if [ "$current" = dory ]; then
+    "$docker" context use default >/dev/null || return 1
+  fi
+  "$docker" context rm -f dory >/dev/null
 }
 
 docker_plugin_owned_by_dory() {
@@ -305,8 +384,13 @@ install_cmd() {
   local tools=(docker docker-buildx docker-compose kubectl dory dory-doctor dorydctl)
   local linked_csv="" linked_words="" missing_csv="" tool source dest plugin_dest plugin_marker
   local path_changed=0 compose_installed=0 buildx_installed=0
+  local context_reconciled=0 context_removed=0 docker_source=""
 
   if [ "$action" = "uninstall" ]; then
+    docker_source="$(cli_tool_source docker 2>/dev/null || true)"
+    if [ -n "$docker_source" ] && remove_docker_context "$docker_source" "$dry_run"; then
+      context_removed=1
+    fi
     if remove_path_blocks "$dry_run"; then path_changed=1; fi
     if [ "$dry_run" -eq 0 ]; then
       for tool in "${tools[@]}"; do rm -f "$HOME/.dory/bin/$tool"; done
@@ -318,7 +402,7 @@ install_cmd() {
       done
       rm -f "$HOME/.dory/compose-plugin-owned"
     fi
-    [ "$json" -eq 1 ] && install_emit_json "$action" "$dry_run" "$path_changed" 0 0 "" "" || echo "Dory shell integration removed."
+    [ "$json" -eq 1 ] && install_emit_json "$action" "$dry_run" "$path_changed" 0 0 "" "" 0 "$context_removed" || echo "Dory shell integration removed."
     return 0
   fi
 
@@ -360,9 +444,13 @@ install_cmd() {
     fi
   done
   if install_path_block "$dry_run"; then path_changed=1; fi
+  docker_source="$(cli_tool_source docker 2>/dev/null || true)"
+  if [ -n "$docker_source" ] && reconcile_docker_context "$docker_source" "$dry_run"; then
+    context_reconciled=1
+  fi
 
   if [ "$json" -eq 1 ]; then
-    install_emit_json "$action" "$dry_run" "$path_changed" "$compose_installed" "$buildx_installed" "$linked_csv" "$missing_csv"
+    install_emit_json "$action" "$dry_run" "$path_changed" "$compose_installed" "$buildx_installed" "$linked_csv" "$missing_csv" "$context_reconciled" 0
   else
     echo "Dory shell integration installed in $HOME/.dory/bin"
     echo "Open a new terminal, then run: docker version"

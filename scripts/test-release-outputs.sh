@@ -1555,6 +1555,15 @@ assert "source_preserving_lan_certification, homebrew_cask_audit" in release, \
     "publication can run before the isolated Homebrew audit"
 assert release.index(homebrew_audit) < release.index("name: Publish GitHub Release"), \
     "Homebrew audit runs after publication"
+cask = open("Casks/dory.rb", encoding="utf-8").read()
+for required in (
+    'system_command "#{appdir}/Dory.app/Contents/Helpers/dory", args: ["install"]',
+    'uninstall launchctl: "dev.dory.doryd"',
+    'quit:      "com.pythonxi.Dory"',
+    'executable: "#{appdir}/Dory.app/Contents/Helpers/dory"',
+    'args:       ["uninstall"]',
+):
+    assert required in cask, f"Homebrew cask omits lifecycle cleanup: {required}"
 sparkle_step = "scripts/sparkle-install-relaunch-gate.sh"
 assert sparkle_step in release, "public release never exercises the real Sparkle installer"
 assert 'scripts/release-candidate-live-smoke.sh "${{ steps.sparkle_candidate.outputs.app }}"' not in release, \

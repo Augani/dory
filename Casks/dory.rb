@@ -15,6 +15,17 @@ cask "dory" do
 
   app "Dory.app"
 
+  postflight do
+    system_command "#{appdir}/Dory.app/Contents/Helpers/dory", args: ["install"]
+  end
+
+  uninstall launchctl: "dev.dory.doryd",
+            quit:      "com.pythonxi.Dory",
+            script:    {
+              executable: "#{appdir}/Dory.app/Contents/Helpers/dory",
+              args:       ["uninstall"],
+            }
+
   # Preserve ~/Library/Application Support/Dory: uninstall and --zap must never remove the selected
   # data-drive authority, images, containers, volumes, networks, machines, or other workload data.
   zap trash: [

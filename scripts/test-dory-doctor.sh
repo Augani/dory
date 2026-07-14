@@ -147,6 +147,32 @@ echo "$0 $*"
 SH
   chmod +x "$TMP_HOME/fake-bin/$tool"
 done
+cat > "$TMP_HOME/fake-bin/docker" <<'SH'
+#!/bin/sh
+set -eu
+case "${1:-} ${2:-}" in
+  "context inspect")
+    test -s "$HOME/.fake-dory-context"
+    cat "$HOME/.fake-dory-context"
+    ;;
+  "context create")
+    for argument in "$@"; do
+      case "$argument" in host=*) printf '%s\n' "${argument#host=}" > "$HOME/.fake-dory-context" ;; esac
+    done
+    ;;
+  "context use")
+    printf '%s\n' "${3:-default}" > "$HOME/.fake-current-context"
+    ;;
+  "context show")
+    cat "$HOME/.fake-current-context" 2>/dev/null || printf 'default\n'
+    ;;
+  "context rm")
+    rm -f "$HOME/.fake-dory-context"
+    ;;
+  *) ;;
+esac
+SH
+chmod +x "$TMP_HOME/fake-bin/docker"
 
 install_json="$(DORY_DOCKER_BIN="$TMP_HOME/fake-bin/docker" \
   DORY_DOCKER_BUILDX_BIN="$TMP_HOME/fake-bin/docker-buildx" \
@@ -162,6 +188,7 @@ assert data["action"] == "install"
 assert data["dryRun"] is False
 assert data["composePluginInstalled"] is True
 assert data["buildxPluginInstalled"] is True
+assert data["dockerContextReconciled"] is True
 linked = set(data["linked"])
 assert {"docker", "docker-buildx", "docker-compose", "kubectl", "dory", "dory-doctor", "dorydctl"} <= linked
 assert os.path.islink(os.path.expanduser("~/.dory/bin/docker"))
@@ -181,11 +208,46 @@ import json, os, sys
 data = json.load(sys.stdin)
 assert data["schema"] == "dev.dory.cli.install"
 assert data["action"] == "uninstall"
+assert data["dockerContextRemoved"] is True
 assert not os.path.exists(os.path.expanduser("~/.dory/bin/docker"))
 assert not os.path.exists(os.path.expanduser("~/.docker/cli-plugins/docker-compose"))
 assert not os.path.exists(os.path.expanduser("~/.docker/cli-plugins/docker-buildx"))
 assert "dory cli" not in open(os.path.expanduser("~/.zprofile"), encoding="utf-8").read()
 '
+test ! -e "$TMP_HOME/.fake-dory-context"
+test "$(cat "$TMP_HOME/.fake-current-context")" = default
+
+# A damaged marker never causes uninstall to discard the rest of a user's profile.
+printf '%s\n' 'export KEEP_BEFORE=1' '# >>> dory cli >>>' 'export KEEP_AFTER=1' > "$TMP_HOME/.zprofile"
+malformed_uninstall="$(DORY_DOCKER_BIN="$TMP_HOME/fake-bin/docker" scripts/dory uninstall --json 2>"$TMP_HOME/malformed-uninstall.err")"
+printf '%s' "$malformed_uninstall" | python3 -c '
+import json, sys
+data = json.load(sys.stdin)
+assert data["pathProfileChanged"] is False
+'
+grep -q 'left malformed shell markers untouched' "$TMP_HOME/malformed-uninstall.err"
+grep -q '^export KEEP_AFTER=1$' "$TMP_HOME/.zprofile"
+rm -f "$TMP_HOME/.zprofile"
+
+# A context named dory that points elsewhere belongs to the user and is never overwritten.
+printf '%s\n' 'ssh://foreign.example' > "$TMP_HOME/.fake-dory-context"
+foreign_install="$(DORY_DOCKER_BIN="$TMP_HOME/fake-bin/docker" \
+  DORY_DOCKER_BUILDX_BIN="$TMP_HOME/fake-bin/docker-buildx" \
+  DORY_DOCKER_COMPOSE_BIN="$TMP_HOME/fake-bin/docker-compose" \
+  DORY_KUBECTL_BIN="$TMP_HOME/fake-bin/kubectl" \
+  DORYDCTL_BIN="$TMP_HOME/fake-bin/dorydctl" \
+  scripts/dory install --json 2>"$TMP_HOME/foreign-context.err")"
+printf '%s' "$foreign_install" | python3 -c '
+import json, sys
+data = json.load(sys.stdin)
+assert data["dockerContextReconciled"] is False
+'
+grep -q "did not replace the existing 'dory' Docker context" "$TMP_HOME/foreign-context.err"
+test "$(cat "$TMP_HOME/.fake-dory-context")" = 'ssh://foreign.example'
+DORY_DOCKER_BIN="$TMP_HOME/fake-bin/docker" scripts/dory uninstall --json \
+  | python3 -c 'import json, sys; assert json.load(sys.stdin)["dockerContextRemoved"] is False'
+test "$(cat "$TMP_HOME/.fake-dory-context")" = 'ssh://foreign.example'
+rm -f "$TMP_HOME/.fake-dory-context"
 
 # A user's pre-existing Compose plugin is never replaced or removed by install/uninstall.
 mkdir -p "$TMP_HOME/.docker/cli-plugins"

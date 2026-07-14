@@ -24,16 +24,16 @@ struct HostDockerCLITests {
         #expect(updated.contains("/b:$PATH"))
     }
 
-    @Test func appendIsIdempotent() {
+    @Test func appendIsIdempotent() throws {
         let once = HostDockerCLI.appendingPathBlock(to: "x\n", binDir: "/b")
-        let content = try! #require(once)
+        let content = try #require(once)
         #expect(HostDockerCLI.appendingPathBlock(to: content, binDir: "/b") == nil)
     }
 
     @Test func removeStripsOnlyTheDoryBlock() throws {
         let original = "export FOO=1\nexport BAR=2\n"
         let withBlock = try #require(HostDockerCLI.appendingPathBlock(to: original, binDir: "/b"))
-        let stripped = HostDockerCLI.removingPathBlock(from: withBlock)
+        let stripped = try #require(HostDockerCLI.removingPathBlock(from: withBlock))
         #expect(!stripped.contains("dory cli"))
         #expect(stripped.contains("export FOO=1"))
         #expect(stripped.contains("export BAR=2"))
@@ -42,6 +42,11 @@ struct HostDockerCLITests {
     @Test func removeIsNoOpWhenBlockAbsent() {
         let original = "export FOO=1\n"
         #expect(HostDockerCLI.removingPathBlock(from: original) == original)
+    }
+
+    @Test func removeRejectsAnUnterminatedOwnedBlock() {
+        let damaged = "export BEFORE=1\n# >>> dory cli >>>\nexport AFTER=1\n"
+        #expect(HostDockerCLI.removingPathBlock(from: damaged) == nil)
     }
 
     @Test func composeOwnershipRecognizesOnlyDoryControlledTargets() {
@@ -66,44 +71,44 @@ struct HostDockerCLITests {
     }
 
     @Test func composeInstallAndRemovalNeverTouchUnownedDestinations() throws {
-        let fm = FileManager.default
-        let root = fm.temporaryDirectory.appendingPathComponent("dory-compose-ownership-\(UUID().uuidString)")
+        let fileManager = FileManager.default
+        let root = fileManager.temporaryDirectory.appendingPathComponent("dory-compose-ownership-\(UUID().uuidString)")
         let home = root.appendingPathComponent("home")
         let bundle = root.appendingPathComponent("Dory.app")
         let helper = bundle.appendingPathComponent("Contents/Helpers/docker-compose")
         let destination = home.appendingPathComponent(".docker/cli-plugins/docker-compose")
-        try fm.createDirectory(at: helper.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try fm.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: helper.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
         try Data("dory".utf8).write(to: helper)
-        defer { try? fm.removeItem(at: root) }
+        defer { try? fileManager.removeItem(at: root) }
 
         try Data("user-compose".utf8).write(to: destination)
         #expect(!HostDockerCLI.installOwnedComposeSymlink(
-            helper.path, to: destination.path, home: home.path, bundleRoot: bundle.path, fileManager: fm
+            helper.path, to: destination.path, home: home.path, bundleRoot: bundle.path, fileManager: fileManager
         ))
         #expect(try String(contentsOf: destination, encoding: .utf8) == "user-compose")
         HostDockerCLI.removeOwnedComposeSymlink(
-            at: destination.path, home: home.path, bundleRoot: bundle.path, fileManager: fm
+            at: destination.path, home: home.path, bundleRoot: bundle.path, fileManager: fileManager
         )
         #expect(try String(contentsOf: destination, encoding: .utf8) == "user-compose")
 
-        try fm.removeItem(at: destination)
-        try fm.createSymbolicLink(atPath: destination.path, withDestinationPath: "/opt/homebrew/bin/docker-compose")
+        try fileManager.removeItem(at: destination)
+        try fileManager.createSymbolicLink(atPath: destination.path, withDestinationPath: "/opt/homebrew/bin/docker-compose")
         #expect(!HostDockerCLI.installOwnedComposeSymlink(
-            helper.path, to: destination.path, home: home.path, bundleRoot: bundle.path, fileManager: fm
+            helper.path, to: destination.path, home: home.path, bundleRoot: bundle.path, fileManager: fileManager
         ))
         HostDockerCLI.removeOwnedComposeSymlink(
-            at: destination.path, home: home.path, bundleRoot: bundle.path, fileManager: fm
+            at: destination.path, home: home.path, bundleRoot: bundle.path, fileManager: fileManager
         )
-        #expect((try? fm.destinationOfSymbolicLink(atPath: destination.path)) == "/opt/homebrew/bin/docker-compose")
+        #expect((try? fileManager.destinationOfSymbolicLink(atPath: destination.path)) == "/opt/homebrew/bin/docker-compose")
 
-        try fm.removeItem(at: destination)
+        try fileManager.removeItem(at: destination)
         #expect(HostDockerCLI.installOwnedComposeSymlink(
-            helper.path, to: destination.path, home: home.path, bundleRoot: bundle.path, fileManager: fm
+            helper.path, to: destination.path, home: home.path, bundleRoot: bundle.path, fileManager: fileManager
         ))
         HostDockerCLI.removeOwnedComposeSymlink(
-            at: destination.path, home: home.path, bundleRoot: bundle.path, fileManager: fm
+            at: destination.path, home: home.path, bundleRoot: bundle.path, fileManager: fileManager
         )
-        #expect(!fm.fileExists(atPath: destination.path))
+        #expect(!fileManager.fileExists(atPath: destination.path))
     }
 }
