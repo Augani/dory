@@ -558,6 +558,29 @@ assert "docker" in data
 assert data["docker"]["available"] is False
 '
 
+# A clean launch creates the public v1 data model. Keep diagnostics on that exact schema so a
+# healthy first install cannot be reported as an incompatible data drive.
+FIRST_LAUNCH_DRIVE="$TMP_HOME/Library/Application Support/Dory/Dory.dorydrive"
+mkdir -p "$FIRST_LAUNCH_DRIVE"
+cat > "$FIRST_LAUNCH_DRIVE/drive.json" <<'JSON'
+{
+  "createdAt": "2026-07-14T00:00:00Z",
+  "id": "11111111-1111-4111-8111-111111111111",
+  "kind": "dev.dory.data-drive",
+  "product": "Dory",
+  "schemaVersion": 1
+}
+JSON
+chmod 600 "$FIRST_LAUNCH_DRIVE/drive.json"
+DORY_DATA_DRIVE="$FIRST_LAUNCH_DRIVE" scripts/dory-doctor disk --json | python3 -c '
+import json, sys
+drive = json.load(sys.stdin)["data_drive"]
+assert drive["available"] is True
+assert drive["initialized"] is True
+assert drive["schema_version"] == 1
+assert drive["drive_id"] == "11111111-1111-4111-8111-111111111111"
+'
+
 # A reachable Docker daemon can still have unusable container metadata after an interrupted
 # writable-snapshot transaction. Preserve the daemon's error, fail the doctor check explicitly,
 # and offer only a reviewable cleanup command for the already-missing writable layers.

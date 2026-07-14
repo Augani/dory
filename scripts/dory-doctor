@@ -60,6 +60,7 @@ BASIC_RE = re.compile(r"Basic\s+[A-Za-z0-9._~+/-]+=*", re.I)
 # scheme://user:pass@ — keeps the scheme+user, drops the ':password@'.
 URL_CREDENTIAL_RE = re.compile(r"([a-z][a-z0-9+.-]*://[^\s:/@]+:)[^\s:/@]+@", re.I)
 DOCKER_CONTAINER_ID_RE = re.compile(r"\b[0-9a-f]{12,64}\b", re.I)
+DORY_DATA_DRIVE_SCHEMA_VERSION = 1
 
 
 def now_iso() -> str:
@@ -1724,7 +1725,7 @@ def data_drive_report() -> dict[str, Any]:
         return report
     if (
         manifest.get("kind") != "dev.dory.data-drive"
-        or manifest.get("schemaVersion") != 2
+        or manifest.get("schemaVersion") != DORY_DATA_DRIVE_SCHEMA_VERSION
         or manifest.get("product") != "Dory"
         or created_at.tzinfo is None
     ):
