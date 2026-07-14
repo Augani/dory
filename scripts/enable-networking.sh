@@ -165,7 +165,7 @@ apply_live_doryd_plan() {
   if [ "${#PRIVILEGED_FORWARDS[@]}" -gt 0 ]; then
     echo "    note: live doryd plans ignore --forward; doryd discovers Docker-published low TCP ports automatically."
   fi
-  local helper_args=(--plan-json "$plan")
+  local helper_args=(--plan-json "$plan" --owner-uid "$(id -u)")
   [ "$REMOVE" = "0" ] || helper_args+=(--remove)
   if [ "$DRY_RUN" = "1" ]; then
     helper_args+=(--dry-run)

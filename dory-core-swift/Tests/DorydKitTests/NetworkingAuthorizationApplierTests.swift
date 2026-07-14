@@ -82,6 +82,24 @@ final class NetworkingAuthorizationApplierTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: root + "/etc/resolver/dory.local"))
         XCTAssertTrue(recorder.commands.isEmpty)
         XCTAssertTrue(results.allSatisfy(\.dryRun))
+
+        let stateDirectory = root + "/private/var/db/dev.dory"
+        let statePath = stateDirectory + "/network-authorization.json"
+        try FileManager.default.createDirectory(
+            atPath: stateDirectory,
+            withIntermediateDirectories: true
+        )
+        try Data("root-only-state".utf8).write(to: URL(fileURLWithPath: statePath))
+        XCTAssertEqual(chmod(statePath, 0o000), 0)
+
+        let removalResults = try NetworkingAuthorizationApplier(
+            fileSystemRoot: root,
+            dryRun: true,
+            runCommand: recorder.run
+        ).remove(plan)
+
+        XCTAssertTrue(removalResults.allSatisfy(\.dryRun))
+        XCTAssertTrue(recorder.commands.isEmpty)
     }
 
     func testMissingLocalCADoesNotPartiallyApplyPlan() throws {
@@ -194,11 +212,236 @@ final class NetworkingAuthorizationApplierTests: XCTestCase {
             atPath: root + "/var/run/dev.dory/system-pf-enable-token"
         ))
     }
+
+    func testPersistedOwnershipMigratesSuffixAndRemovesInstalledPlanFromAStaleRequest() throws {
+        let root = temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let recorder = CommandRecorder()
+        let first = try NetworkingAuthorizationPlan.make(configuration: NetworkingConfiguration(
+            suffix: "dory.local",
+            dnsPort: 15353,
+            localCACertificatePath: nil
+        ))
+        let second = try NetworkingAuthorizationPlan.make(configuration: NetworkingConfiguration(
+            suffix: "dev.dory.local",
+            dnsPort: 15354,
+            httpProxyPort: 18081,
+            localCACertificatePath: nil
+        ))
+        let applier = NetworkingAuthorizationApplier(
+            fileSystemRoot: root,
+            ownerUID: 501,
+            runCommand: recorder.run
+        )
+
+        _ = try applier.apply(first)
+        _ = try applier.apply(second)
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root + "/etc/resolver/dory.local"))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: root + "/etc/resolver/dev.dory.local"))
+        XCTAssertEqual(
+            try permissions(atPath: root + "/private/var/db/dev.dory/network-authorization.json"),
+            0o600
+        )
+        XCTAssertEqual(recorder.commands.filter { $0 == ["/sbin/pfctl", "-E"] }.count, 1)
+
+        _ = try applier.remove(first)
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root + "/etc/resolver/dev.dory.local"))
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: root + "/private/var/db/dev.dory/network-authorization.json"
+        ))
+    }
+
+    func testPersistedAuthorizationRejectsAnotherUser() throws {
+        let root = temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let plan = try NetworkingAuthorizationPlan.make(configuration: NetworkingConfiguration(
+            dnsPort: 15353,
+            localCACertificatePath: nil
+        ))
+        _ = try NetworkingAuthorizationApplier(
+            fileSystemRoot: root,
+            ownerUID: 501,
+            runCommand: CommandRecorder().run
+        ).apply(plan)
+
+        XCTAssertThrowsError(try NetworkingAuthorizationApplier(
+            fileSystemRoot: root,
+            ownerUID: 502,
+            runCommand: CommandRecorder().run
+        ).apply(plan)) { error in
+            XCTAssertEqual(
+                error as? NetworkingAuthorizationApplyError,
+                .ownerMismatch(expected: 501, actual: 502)
+            )
+        }
+    }
+
+    func testPersistsExactCAForRemovalAfterUserCopyDisappears() throws {
+        let root = temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let caPath = root + "/Users/test/.dory/ca/ca.crt"
+        try FileManager.default.createDirectory(
+            atPath: (caPath as NSString).deletingLastPathComponent,
+            withIntermediateDirectories: true
+        )
+        try Data("fixture-ca".utf8).write(to: URL(fileURLWithPath: caPath))
+        let plan = try NetworkingAuthorizationPlan.make(configuration: NetworkingConfiguration(
+            dnsPort: 15353,
+            localCACertificatePath: "/Users/test/.dory/ca/ca.crt"
+        ))
+        let recorder = CommandRecorder()
+        let applier = NetworkingAuthorizationApplier(
+            fileSystemRoot: root,
+            ownerUID: getuid(),
+            runCommand: recorder.run
+        )
+
+        _ = try applier.apply(plan)
+
+        let snapshot = root + "/private/var/db/dev.dory/local-ca.crt"
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: snapshot)), Data("fixture-ca".utf8))
+        XCTAssertEqual(try permissions(atPath: snapshot), 0o600)
+        XCTAssertTrue(recorder.commands.contains([
+            "/usr/bin/security", "add-trusted-cert", "-d", "-r", "trustRoot",
+            "-k", "/Library/Keychains/System.keychain", snapshot,
+        ]))
+        try FileManager.default.removeItem(atPath: caPath)
+
+        _ = try applier.remove(plan)
+
+        XCTAssertTrue(recorder.commands.contains([
+            "/usr/bin/security", "remove-trusted-cert", "-d", snapshot,
+        ]))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: snapshot))
+    }
+
+    func testSignedReconcileCannotCreateAuthorizationAndTracksLiveLowPortsForOwner() throws {
+        let root = temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let initial = try NetworkingAuthorizationPlan.make(configuration: NetworkingConfiguration(
+            dnsPort: 15353,
+            localCACertificatePath: nil
+        ))
+        let updated = try NetworkingAuthorizationPlan.make(configuration: NetworkingConfiguration(
+            dnsPort: 15353,
+            privilegedTCPForwards: [
+                PrivilegedTCPForward(listenPort: 25, targetPort: 60_025),
+            ],
+            localCACertificatePath: nil
+        ))
+        let recorder = CommandRecorder()
+        let applier = NetworkingAuthorizationApplier(
+            fileSystemRoot: root,
+            runCommand: recorder.run
+        )
+
+        XCTAssertFalse(try applier.reconcileIfAuthorized(updated, clientUID: 501))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root + "/etc/resolver/dory.local"))
+        _ = try NetworkingAuthorizationApplier(
+            fileSystemRoot: root,
+            ownerUID: 501,
+            runCommand: recorder.run
+        ).apply(initial)
+        XCTAssertTrue(try applier.reconcileIfAuthorized(updated, clientUID: 501))
+        XCTAssertTrue(try String(
+            contentsOfFile: root + "/etc/pf.anchors/dev.dory"
+        ).contains("port 25 -> 127.0.0.1 port 60025"))
+
+        XCTAssertThrowsError(try applier.reconcileIfAuthorized(updated, clientUID: 502)) { error in
+            XCTAssertEqual(
+                error as? NetworkingAuthorizationApplyError,
+                .ownerMismatch(expected: 501, actual: 502)
+            )
+        }
+    }
+
+    func testFailedOldCARemovalDoesNotRemoveItAgainDuringRollback() throws {
+        let root = temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let caPath = root + "/Users/test/.dory/ca/ca.crt"
+        try FileManager.default.createDirectory(
+            atPath: (caPath as NSString).deletingLastPathComponent,
+            withIntermediateDirectories: true
+        )
+        try Data("old-ca".utf8).write(to: URL(fileURLWithPath: caPath))
+        let plan = try NetworkingAuthorizationPlan.make(configuration: NetworkingConfiguration(
+            dnsPort: 15353,
+            localCACertificatePath: "/Users/test/.dory/ca/ca.crt"
+        ))
+        let recorder = CommandRecorder()
+        let applier = NetworkingAuthorizationApplier(
+            fileSystemRoot: root,
+            ownerUID: getuid(),
+            runCommand: recorder.run
+        )
+        _ = try applier.apply(plan)
+        try Data("new-ca".utf8).write(to: URL(fileURLWithPath: caPath))
+
+        let snapshot = root + "/private/var/db/dev.dory/local-ca.crt"
+        let removeTrust = [
+            "/usr/bin/security", "remove-trusted-cert", "-d", snapshot,
+        ]
+        recorder.failNext(removeTrust)
+
+        XCTAssertThrowsError(try applier.apply(plan))
+        XCTAssertEqual(recorder.commands.filter { $0 == removeTrust }.count, 1)
+        XCTAssertEqual(
+            try Data(contentsOf: URL(fileURLWithPath: snapshot)),
+            Data("old-ca".utf8)
+        )
+
+        _ = try applier.apply(plan)
+        XCTAssertEqual(
+            try Data(contentsOf: URL(fileURLWithPath: snapshot)),
+            Data("new-ca".utf8)
+        )
+    }
+
+    func testRemovalFailureRestoresTrustAndLeavesOwnedFilesRetryable() throws {
+        let root = temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let caPath = root + "/Users/test/.dory/ca/ca.crt"
+        try FileManager.default.createDirectory(
+            atPath: (caPath as NSString).deletingLastPathComponent,
+            withIntermediateDirectories: true
+        )
+        try Data("fixture-ca".utf8).write(to: URL(fileURLWithPath: caPath))
+        let plan = try NetworkingAuthorizationPlan.make(configuration: NetworkingConfiguration(
+            dnsPort: 15353,
+            localCACertificatePath: "/Users/test/.dory/ca/ca.crt"
+        ))
+        let recorder = CommandRecorder()
+        let applier = NetworkingAuthorizationApplier(
+            fileSystemRoot: root,
+            ownerUID: getuid(),
+            runCommand: recorder.run
+        )
+        _ = try applier.apply(plan)
+        recorder.failNext([
+            "/sbin/pfctl", "-a", "com.apple/dev.dory", "-F", "all",
+        ])
+
+        XCTAssertThrowsError(try applier.remove(plan))
+
+        let snapshot = root + "/private/var/db/dev.dory/local-ca.crt"
+        XCTAssertTrue(FileManager.default.fileExists(atPath: root + "/etc/resolver/dory.local"))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: root + "/etc/pf.anchors/dev.dory"))
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: root + "/private/var/db/dev.dory/network-authorization.json"
+        ))
+        XCTAssertTrue(recorder.commands.suffix(2).contains([
+            "/usr/bin/security", "add-trusted-cert", "-d", "-r", "trustRoot",
+            "-k", "/Library/Keychains/System.keychain", snapshot,
+        ]))
+    }
 }
 
 private final class CommandRecorder: @unchecked Sendable {
     private let lock = NSLock()
     private var storage: [[String]] = []
+    private var failingCommand: [String]?
 
     var commands: [[String]] {
         lock.lock()
@@ -206,15 +449,28 @@ private final class CommandRecorder: @unchecked Sendable {
         return storage
     }
 
+    func failNext(_ command: [String]) {
+        lock.lock()
+        failingCommand = command
+        lock.unlock()
+    }
+
     func run(_ command: [String]) throws -> String {
         lock.lock()
         storage.append(command)
+        let shouldFail = failingCommand == command
+        if shouldFail { failingCommand = nil }
         lock.unlock()
+        if shouldFail { throw CommandRecorderError.injectedFailure }
         if command == ["/sbin/pfctl", "-E"] {
             return "pf enabled\nToken : 424242\n"
         }
         return ""
     }
+}
+
+private enum CommandRecorderError: Error {
+    case injectedFailure
 }
 
 private func temporaryRoot() -> String {

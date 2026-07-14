@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import Darwin
 import DoryOperations
 import Observation
 import ServiceManagement
@@ -1681,7 +1682,7 @@ final class AppStore {
             // Feed the immutable plan through the privileged command's standard input. A
             // user-writable temporary file would leave a race between the admin prompt and the
             // root helper opening the plan.
-            let command = "/usr/bin/printf %s \(Self.shellQuote(encodedPlan)) | /usr/bin/base64 -D | \(Self.shellQuote(helper)) --plan-json -\(operation)"
+            let command = "/usr/bin/printf %s \(Self.shellQuote(encodedPlan)) | /usr/bin/base64 -D | \(Self.shellQuote(helper)) --plan-json - --owner-uid \(getuid())\(operation)"
             let script = "do shell script \(Self.appleScriptString(command)) with administrator privileges"
             let result = await Shell.runAsyncResult("/usr/bin/osascript", ["-e", script])
             if result.exit == 0 {

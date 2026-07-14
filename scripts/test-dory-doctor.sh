@@ -510,6 +510,7 @@ while [ "$#" -gt 0 ]; do
     --plan-json) plan="$2"; shift 2 ;;
     --dry-run) dry=1; shift ;;
     --remove) remove=1; shift ;;
+    --owner-uid) test "$2" = "$(id -u)"; shift 2 ;;
     --file-system-root) root="$2"; shift 2 ;;
     *) echo "unexpected helper args: $*" >&2; exit 64 ;;
   esac

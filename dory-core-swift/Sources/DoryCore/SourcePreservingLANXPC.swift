@@ -5,13 +5,22 @@ import Foundation
         _ request: NSData,
         withReply reply: @escaping (NSData?, NSString?) -> Void
     )
+
+    func reconcileAuthorizedNetworking(
+        _ request: NSData,
+        withReply reply: @escaping (Bool, NSString?) -> Void
+    )
 }
 
 public enum DoryPrivilegedNetworkXPC {
     public static let serviceName = "dev.dory.network-helper"
     public static let teamID = "864H636QW4"
-    public static let productionPeerRequirement =
+    private static let teamRequirement =
         "anchor apple generic and certificate leaf[subject.OU] = \"\(teamID)\""
+    public static let productionClientRequirement =
+        "\(teamRequirement) and (identifier \"doryd\" or identifier \"dory-vmm\" or identifier \"dory-hv\")"
+    public static let productionHelperRequirement =
+        "\(teamRequirement) and identifier \"dory-network-helper\""
 }
 
 public enum SourcePreservingLANClientError: Error, Sendable, CustomStringConvertible {
@@ -52,7 +61,7 @@ public final class SourcePreservingLANPrivilegedClient: SourcePreservingLANApply
     public func apply(_ request: SourcePreservingLANRequest) throws -> SourcePreservingLANResponse {
         let connection = connectionFactory()
         connection.remoteObjectInterface = NSXPCInterface(with: DoryPrivilegedNetworkControl.self)
-        connection.setCodeSigningRequirement(DoryPrivilegedNetworkXPC.productionPeerRequirement)
+        connection.setCodeSigningRequirement(DoryPrivilegedNetworkXPC.productionHelperRequirement)
         connection.resume()
         defer { connection.invalidate() }
 

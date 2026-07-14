@@ -88,6 +88,22 @@ let networkRouteReconciler = networkingController.map { controller in
         interval: dorydEnvironment.networkRouteReconcileIntervalSeconds
     )
 }
+let authorizedNetworkingReconciler = networkingController.map { controller in
+    AuthorizedNetworkingReconciler(
+        networkingController: controller,
+        interval: dorydEnvironment.networkRouteReconcileIntervalSeconds,
+        publishedPorts: {
+            if let ports = dockerTier?.currentDockerPublishedPorts() {
+                return ports
+            }
+            _ = try? dockerTier?.refreshPublishedPorts()
+            return dockerTier?.currentPublishedPorts() ?? []
+        },
+        failureHandler: { detail in
+            incidentWriter.record(type: "network.authorization_reconcile_failed", detail: detail)
+        }
+    )
+}
 let dnsTargets = wakeDNSProbeTargets(env["DORYD_WAKE_DNS_PROBES"])
 let idlePolicyStore = IdlePolicyStore(home: dorydEnvironment.home, environment: env) {
     dockerTier?.containerSummariesForIdle() ?? .ok([])
@@ -158,6 +174,7 @@ private let shutdownCoordinator = DorydShutdownCoordinator(
     idleSleepScheduler: idleSleepScheduler,
     wakeCoordinator: wakeCoordinator,
     networkRouteReconciler: networkRouteReconciler,
+    authorizedNetworkingReconciler: authorizedNetworkingReconciler,
     kubernetesRouteProvider: kubernetesRouteProvider,
     networkingController: networkingController,
     dockerTier: dockerTier,
@@ -230,6 +247,7 @@ if let networkingController {
         try networkingController.start()
         let routeCount = networkRouteReconciler?.reconcileNow().count ?? 0
         networkRouteReconciler?.start()
+        authorizedNetworkingReconciler?.start()
         let status = networkingController.status()
         FileHandle.standardError.write(Data("doryd: DNS serving \(status.suffix) on \(status.dnsBindAddress):\(status.dnsPort), \(routeCount) route(s)\n".utf8))
     } catch {
@@ -246,6 +264,7 @@ private final class DorydShutdownCoordinator {
     private let idleSleepScheduler: IdleSleepScheduler?
     private let wakeCoordinator: HostWakeCoordinator
     private let networkRouteReconciler: NetworkRouteReconciler?
+    private let authorizedNetworkingReconciler: AuthorizedNetworkingReconciler?
     private let kubernetesRouteProvider: KubernetesServiceRouteProvider?
     private let networkingController: NetworkingController?
     private let dockerTier: DockerTier?
@@ -267,6 +286,7 @@ private final class DorydShutdownCoordinator {
         idleSleepScheduler: IdleSleepScheduler?,
         wakeCoordinator: HostWakeCoordinator,
         networkRouteReconciler: NetworkRouteReconciler?,
+        authorizedNetworkingReconciler: AuthorizedNetworkingReconciler?,
         kubernetesRouteProvider: KubernetesServiceRouteProvider?,
         networkingController: NetworkingController?,
         dockerTier: DockerTier?,
@@ -279,6 +299,7 @@ private final class DorydShutdownCoordinator {
         self.idleSleepScheduler = idleSleepScheduler
         self.wakeCoordinator = wakeCoordinator
         self.networkRouteReconciler = networkRouteReconciler
+        self.authorizedNetworkingReconciler = authorizedNetworkingReconciler
         self.kubernetesRouteProvider = kubernetesRouteProvider
         self.networkingController = networkingController
         self.dockerTier = dockerTier
@@ -311,6 +332,7 @@ private final class DorydShutdownCoordinator {
         idleSleepScheduler?.stop()
         wakeCoordinator.stop()
         networkRouteReconciler?.stop()
+        authorizedNetworkingReconciler?.stop()
         kubernetesRouteProvider?.stop()
         networkingController?.stop()
         remoteManager.disconnectAll()

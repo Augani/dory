@@ -5,6 +5,8 @@ public enum NetworkingAuthorizationApplyError: Error, Sendable, Equatable, Custo
     case missingPayload(String)
     case unsafeRequest(String)
     case commandFailed(String, String)
+    case ownerMismatch(expected: uid_t, actual: uid_t)
+    case notAuthorized
 
     public var description: String {
         switch self {
@@ -14,6 +16,10 @@ public enum NetworkingAuthorizationApplyError: Error, Sendable, Equatable, Custo
             return "networking authorization request is not allowed: \(id)"
         case let .commandFailed(id, message):
             return "networking authorization command failed for \(id): \(message)"
+        case let .ownerMismatch(expected, actual):
+            return "networking authorization belongs to uid \(expected), not uid \(actual)"
+        case .notAuthorized:
+            return "system networking has not been authorized"
         }
     }
 }
@@ -45,19 +51,26 @@ public struct NetworkingAuthorizationApplier: Sendable {
     private static let pfAnchorName = "com.apple/dev.dory"
     private static let pfAnchorPath = "/etc/pf.anchors/dev.dory"
     private static let pfTokenPath = "/var/run/dev.dory/system-pf-enable-token"
+    private static let mutationLockPath = "/var/run/dev.dory/system-network.lock"
+    private static let authorizationStatePath = "/private/var/db/dev.dory/network-authorization.json"
+    private static let trustedCASnapshotPath = "/private/var/db/dev.dory/local-ca.crt"
     private static let maximumManagedFileBytes = 1 << 20
 
     public var fileSystemRoot: String
     public var dryRun: Bool
+    public var ownerUID: uid_t?
     private let runCommand: @Sendable ([String]) throws -> String
+    private var requiresExistingAuthorization = false
 
     public init(
         fileSystemRoot: String = "/",
         dryRun: Bool = false,
+        ownerUID: uid_t? = nil,
         runCommand: (@Sendable ([String]) throws -> String)? = nil
     ) {
         self.fileSystemRoot = fileSystemRoot
         self.dryRun = dryRun
+        self.ownerUID = ownerUID
         self.runCommand = runCommand ?? NetworkingAuthorizationApplier.runCommand
     }
 
@@ -69,21 +82,64 @@ public struct NetworkingAuthorizationApplier: Sendable {
         guard !dryRun else {
             return try plan.requests.map { try result(for: $0, removing: false) }
         }
+        let mutationLock = try acquireMutationLock()
+        defer { releaseMutationLock(mutationLock) }
 
-        let fileRequests = plan.requests.filter {
-            $0.kind == .resolverFile || $0.kind == .pfAnchor
+        let installedState = try readAuthorizationState()
+        if requiresExistingAuthorization, installedState == nil {
+            throw NetworkingAuthorizationApplyError.notAuthorized
         }
-        let snapshots = try fileRequests.map { request -> ManagedFileSnapshot in
-            guard let path = request.filePath else {
-                throw NetworkingAuthorizationApplyError.missingPayload(request.id)
-            }
-            return ManagedFileSnapshot(path: path, contents: try readManagedFile(path: path))
+        let resolvedOwnerUID = try authorizationOwner(installedState: installedState)
+        if let installedState {
+            try validateStoredState(installedState)
         }
+        let newCertificate = try certificateData(plan.requests, ownerUID: resolvedOwnerUID)
+        let oldCertificate = try readSafeRegularFile(
+            path: Self.trustedCASnapshotPath,
+            requiredOwnerUID: fileSystemRoot == "/" ? 0 : nil
+        )
+        if installedState == nil, oldCertificate != nil {
+            throw NetworkingAuthorizationApplyError.unsafeRequest(Self.trustedCASnapshotPath)
+        }
+
+        let oldPlan = installedState?.plan
+        let managedPaths = Set<String>((plan.requests + (oldPlan?.requests ?? [])).compactMap { request in
+            guard request.kind == .resolverFile || request.kind == .pfAnchor else { return nil }
+            return request.filePath
+        })
+        let snapshots = try managedPaths.sorted().map { path in
+            ManagedFileSnapshot(path: path, contents: try readManagedFile(path: path))
+        }
+        if let oldPlan {
+            try preflightRemoval(oldPlan.requests)
+        }
+        let stateSnapshot = try readManagedFile(path: Self.authorizationStatePath)
+        let certificateSnapshot = oldCertificate
+        let oldResolverPath = oldPlan?.requests.first { $0.kind == .resolverFile }?.filePath
+        let newResolverPath = plan.requests.first { $0.kind == .resolverFile }?.filePath
         let hadPFToken = try readPFToken() != nil
         var acquiredPFToken = false
-        var trustPathAttempted: String?
+        var newTrustAddAttempted = false
+        var oldTrustRemoved = false
+        let trustChanged = oldCertificate != newCertificate
 
         do {
+            if let oldResolverPath, oldResolverPath != newResolverPath {
+                try removeManagedFile(path: oldResolverPath)
+            }
+            if trustChanged, oldCertificate != nil {
+                try removeSystemTrust(certificatePath: Self.trustedCASnapshotPath)
+                oldTrustRemoved = true
+            }
+            if trustChanged, let newCertificate {
+                try writeManagedFile(
+                    path: Self.trustedCASnapshotPath,
+                    data: newCertificate,
+                    permissions: 0o600
+                )
+            } else if trustChanged {
+                try removeManagedFile(path: Self.trustedCASnapshotPath)
+            }
             var results: [NetworkingAuthorizationApplyResult] = []
             for request in plan.requests {
                 switch request.kind {
@@ -96,23 +152,44 @@ public struct NetworkingAuthorizationApplier: Sendable {
                     _ = try runOutput(request.command, requestID: request.id)
                     acquiredPFToken = try ensurePFEnabled(requestID: request.id)
                 case .localCATrust:
-                    guard let filePath = request.filePath else {
+                    guard request.filePath != nil else {
                         throw NetworkingAuthorizationApplyError.missingPayload(request.id)
                     }
-                    trustPathAttempted = filePath
-                    _ = try runOutput(request.command, requestID: request.id)
+                    if trustChanged {
+                        newTrustAddAttempted = true
+                        try addSystemTrust(
+                            certificatePath: Self.trustedCASnapshotPath,
+                            requestID: request.id
+                        )
+                    }
                 }
                 results.append(try result(for: request, removing: false))
             }
+            try persistAuthorizationState(
+                NetworkingAuthorizationState(ownerUID: resolvedOwnerUID, plan: plan)
+            )
             return results
         } catch {
-            if let trustPathAttempted {
-                _ = try? runCommand([
-                    "/usr/bin/security", "remove-trusted-cert", "-d", rootedPath(trustPathAttempted),
-                ])
+            if newTrustAddAttempted {
+                try? removeSystemTrust(certificatePath: Self.trustedCASnapshotPath)
+            }
+            if let certificateSnapshot {
+                try? writeManagedFile(
+                    path: Self.trustedCASnapshotPath,
+                    data: certificateSnapshot,
+                    permissions: 0o600
+                )
+            } else {
+                try? removeManagedFile(path: Self.trustedCASnapshotPath)
+            }
+            if oldTrustRemoved, certificateSnapshot != nil {
+                try? addSystemTrust(
+                    certificatePath: Self.trustedCASnapshotPath,
+                    requestID: "trust.local-ca.rollback"
+                )
             }
             if acquiredPFToken {
-                try? releaseOwnedPFToken()
+                _ = try? releaseOwnedPFToken()
             }
             for snapshot in snapshots.reversed() {
                 if let contents = snapshot.contents {
@@ -120,6 +197,15 @@ public struct NetworkingAuthorizationApplier: Sendable {
                 } else {
                     try? removeManagedFile(path: snapshot.path)
                 }
+            }
+            if let stateSnapshot {
+                try? writeManagedFile(
+                    path: Self.authorizationStatePath,
+                    data: stateSnapshot,
+                    permissions: 0o600
+                )
+            } else {
+                try? removeManagedFile(path: Self.authorizationStatePath)
             }
             if let oldAnchor = snapshots.first(where: { $0.path == Self.pfAnchorPath })?.contents,
                hadPFToken,
@@ -136,43 +222,140 @@ public struct NetworkingAuthorizationApplier: Sendable {
         }
     }
 
+    /// Reconciles an already authorized user's canonical plan without another password prompt.
+    /// A signed per-user doryd may update ports or suffixes, but it can never create the initial
+    /// system authorization or take over another user's authorization.
+    @discardableResult
+    public func reconcileIfAuthorized(
+        _ plan: NetworkingAuthorizationPlan,
+        clientUID: uid_t
+    ) throws -> Bool {
+        var constrained = self
+        constrained.ownerUID = clientUID
+        constrained.requiresExistingAuthorization = true
+        do {
+            _ = try constrained.apply(plan)
+            return true
+        } catch NetworkingAuthorizationApplyError.notAuthorized {
+            return false
+        }
+    }
+
     @discardableResult
     public func remove(_ plan: NetworkingAuthorizationPlan) throws -> [NetworkingAuthorizationApplyResult] {
         let expected = try expectedPlan(for: plan)
         try validate(plan: plan, expected: expected)
-        try preflightRemoval(plan.requests)
+        let mutationLock: Int32? = dryRun ? nil : try acquireMutationLock()
+        defer {
+            if let mutationLock { releaseMutationLock(mutationLock) }
+        }
+        let installedState = dryRun ? nil : try readAuthorizationState()
+        if let installedState {
+            try validateStoredState(installedState)
+            if let ownerUID, ownerUID != installedState.ownerUID {
+                throw NetworkingAuthorizationApplyError.ownerMismatch(
+                    expected: installedState.ownerUID,
+                    actual: ownerUID
+                )
+            }
+        }
+        let installedPlan = installedState?.plan ?? plan
+        try preflightRemoval(installedPlan.requests)
         guard !dryRun else {
-            return try plan.requests.reversed().map { try result(for: $0, removing: true) }
+            return try installedPlan.requests.reversed().map { try result(for: $0, removing: true) }
         }
 
-        if let trust = plan.requests.first(where: { $0.kind == .localCATrust }),
-           let path = trust.filePath {
-            _ = try runOutput(
-                ["/usr/bin/security", "remove-trusted-cert", "-d", rootedPath(path)],
-                requestID: trust.id
-            )
-        }
-        _ = try runOutput(
-            ["/sbin/pfctl", "-a", Self.pfAnchorName, "-F", "all"],
-            requestID: "pf.dev.dory.disable"
+        let persistedCertificate = try readSafeRegularFile(
+            path: Self.trustedCASnapshotPath,
+            requiredOwnerUID: fileSystemRoot == "/" ? 0 : nil
         )
-        try releaseOwnedPFToken()
-        for request in plan.requests.reversed()
-        where request.kind == .resolverFile || request.kind == .pfAnchor {
-            guard let path = request.filePath else {
-                throw NetworkingAuthorizationApplyError.missingPayload(request.id)
-            }
-            try removeManagedFile(path: path)
+        let managedPaths = installedPlan.requests.compactMap { request -> String? in
+            guard request.kind == .resolverFile || request.kind == .pfAnchor else { return nil }
+            return request.filePath
         }
-        return try plan.requests.reversed().map { try result(for: $0, removing: true) }
+        let snapshots = try managedPaths.map {
+            ManagedFileSnapshot(path: $0, contents: try readManagedFile(path: $0))
+        }
+        let stateSnapshot = try readManagedFile(path: Self.authorizationStatePath)
+        let hadPFToken = try readPFToken() != nil
+        var trustPath: String?
+        if let trust = installedPlan.requests.first(where: { $0.kind == .localCATrust }),
+           let path = trust.filePath {
+            if persistedCertificate != nil {
+                trustPath = Self.trustedCASnapshotPath
+            } else if try isSafeRegularFile(path) {
+                trustPath = path
+            } else {
+                throw NetworkingAuthorizationApplyError.missingPayload(trust.id)
+            }
+        }
+        var trustRemoved = false
+        var tokenReleased = false
+        do {
+            if let trustPath {
+                try removeSystemTrust(certificatePath: trustPath)
+                trustRemoved = true
+            }
+            _ = try runOutput(
+                ["/sbin/pfctl", "-a", Self.pfAnchorName, "-F", "all"],
+                requestID: "pf.dev.dory.disable"
+            )
+            tokenReleased = try releaseOwnedPFToken()
+            for path in managedPaths.reversed() {
+                try removeManagedFile(path: path)
+            }
+            try removeManagedFile(path: Self.trustedCASnapshotPath)
+            try removeManagedFile(path: Self.authorizationStatePath)
+        } catch {
+            for snapshot in snapshots {
+                if let contents = snapshot.contents {
+                    try? writeManagedFile(path: snapshot.path, data: contents, permissions: 0o644)
+                }
+            }
+            if let stateSnapshot {
+                try? writeManagedFile(
+                    path: Self.authorizationStatePath,
+                    data: stateSnapshot,
+                    permissions: 0o600
+                )
+            }
+            if let persistedCertificate {
+                try? writeManagedFile(
+                    path: Self.trustedCASnapshotPath,
+                    data: persistedCertificate,
+                    permissions: 0o600
+                )
+            }
+            let hadAnchor = snapshots.contains {
+                $0.path == Self.pfAnchorPath && $0.contents != nil
+            }
+            if hadAnchor, tokenReleased || !hadPFToken {
+                _ = try? ensurePFEnabled(requestID: "pf.dev.dory.remove.rollback")
+            }
+            if hadAnchor {
+                _ = try? runCommand([
+                    "/sbin/pfctl", "-a", Self.pfAnchorName, "-f", Self.pfAnchorPath,
+                ])
+            }
+            if trustRemoved, let trustPath {
+                try? addSystemTrust(
+                    certificatePath: trustPath,
+                    requestID: "trust.local-ca.remove.rollback"
+                )
+            }
+            throw error
+        }
+        return try installedPlan.requests.reversed().map { try result(for: $0, removing: true) }
     }
 
     /// The resolver and CA trust are persistent files, while PF's enable reference and loaded
     /// anchor are boot-scoped. The root launch daemon calls this on every launch so an explicitly
     /// authorized installation survives reboot without accumulating PF references.
     public func restorePFIfAuthorized() throws {
-        guard !dryRun,
-              let anchor = try readManagedFile(path: Self.pfAnchorPath),
+        guard !dryRun else { return }
+        let mutationLock = try acquireMutationLock()
+        defer { releaseMutationLock(mutationLock) }
+        guard let anchor = try readManagedFile(path: Self.pfAnchorPath),
               anchor.starts(with: Self.managedMarker) else {
             return
         }
@@ -208,6 +391,83 @@ public struct NetworkingAuthorizationApplier: Sendable {
                 throw NetworkingAuthorizationApplyError.unsafeRequest(submitted.id)
             }
         }
+    }
+
+    private func authorizationOwner(
+        installedState: NetworkingAuthorizationState?
+    ) throws -> uid_t {
+        if let installedState {
+            if let ownerUID, ownerUID != installedState.ownerUID {
+                throw NetworkingAuthorizationApplyError.ownerMismatch(
+                    expected: installedState.ownerUID,
+                    actual: ownerUID
+                )
+            }
+            return installedState.ownerUID
+        }
+        if let ownerUID { return ownerUID }
+        if fileSystemRoot != "/" { return getuid() }
+        throw NetworkingAuthorizationApplyError.unsafeRequest("owner-uid")
+    }
+
+    private func validateStoredState(_ state: NetworkingAuthorizationState) throws {
+        guard state.version == 1 else {
+            throw NetworkingAuthorizationApplyError.unsafeRequest("authorization-state-version")
+        }
+        let expected = try expectedPlan(for: state.plan)
+        try validate(plan: state.plan, expected: expected)
+    }
+
+    private func certificateData(
+        _ requests: [NetworkingAuthorizationRequest],
+        ownerUID: uid_t
+    ) throws -> Data? {
+        guard let request = requests.first(where: { $0.kind == .localCATrust }),
+              let path = request.filePath else {
+            return nil
+        }
+        guard let data = try readSafeRegularFile(path: path, requiredOwnerUID: ownerUID) else {
+            throw NetworkingAuthorizationApplyError.missingPayload(request.id)
+        }
+        return data
+    }
+
+    private func readAuthorizationState() throws -> NetworkingAuthorizationState? {
+        guard let data = try readManagedFile(path: Self.authorizationStatePath) else {
+            return nil
+        }
+        let payload = data.dropFirst(Self.managedMarker.count)
+        do {
+            return try JSONDecoder().decode(NetworkingAuthorizationState.self, from: payload)
+        } catch {
+            throw NetworkingAuthorizationApplyError.unsafeRequest("authorization-state")
+        }
+    }
+
+    private func persistAuthorizationState(_ state: NetworkingAuthorizationState) throws {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        var data = Self.managedMarker
+        data.append(try encoder.encode(state))
+        data.append(0x0A)
+        try writeManagedFile(
+            path: Self.authorizationStatePath,
+            data: data,
+            permissions: 0o600
+        )
+    }
+
+    private func addSystemTrust(certificatePath: String, requestID: String) throws {
+        _ = try runOutput([
+            "/usr/bin/security", "add-trusted-cert", "-d", "-r", "trustRoot",
+            "-k", "/Library/Keychains/System.keychain", rootedPath(certificatePath),
+        ], requestID: requestID)
+    }
+
+    private func removeSystemTrust(certificatePath: String) throws {
+        _ = try runOutput([
+            "/usr/bin/security", "remove-trusted-cert", "-d", rootedPath(certificatePath),
+        ], requestID: "trust.local-ca.remove")
     }
 
     private func result(
@@ -270,7 +530,7 @@ public struct NetworkingAuthorizationApplier: Sendable {
                     throw NetworkingAuthorizationApplyError.unsafeRequest(request.id)
                 }
             case .localCATrust:
-                guard let path = request.filePath, try isSafeRegularFile(path) else {
+                guard request.filePath != nil else {
                     throw NetworkingAuthorizationApplyError.missingPayload(request.id)
                 }
             case .pfEnable:
@@ -297,18 +557,43 @@ public struct NetworkingAuthorizationApplier: Sendable {
     private func writeManagedFile(path: String, data: Data, permissions: mode_t) throws {
         let target = rootedPath(path)
         let directory = (target as NSString).deletingLastPathComponent
-        try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
+        try ensureOwnedDirectory(directory, requestID: path)
         let temporary = "\(target).tmp.\(UUID().uuidString)"
-        try data.write(to: URL(fileURLWithPath: temporary), options: .atomic)
-        guard chmod(temporary, permissions) == 0 else {
+        let descriptor = open(
+            temporary,
+            O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC,
+            permissions
+        )
+        guard descriptor >= 0 else {
+            throw NetworkingAuthorizationApplyError.commandFailed(
+                path,
+                String(cString: strerror(errno))
+            )
+        }
+        var descriptorOpen = true
+        defer {
+            if descriptorOpen { close(descriptor) }
+            _ = unlink(temporary)
+        }
+        try writeAll(
+            descriptor: descriptor,
+            bytes: Array(data),
+            requestID: path
+        )
+        guard fchmod(descriptor, permissions) == 0, fsync(descriptor) == 0 else {
             let code = errno
-            try? FileManager.default.removeItem(atPath: temporary)
             throw NetworkingAuthorizationApplyError.commandFailed(path, String(cString: strerror(code)))
         }
+        close(descriptor)
+        descriptorOpen = false
         if rename(temporary, target) != 0 {
             let code = errno
-            try? FileManager.default.removeItem(atPath: temporary)
             throw NetworkingAuthorizationApplyError.commandFailed(path, String(cString: strerror(code)))
+        }
+        let directoryDescriptor = open(directory, O_RDONLY | O_CLOEXEC)
+        if directoryDescriptor >= 0 {
+            _ = fsync(directoryDescriptor)
+            close(directoryDescriptor)
         }
     }
 
@@ -350,9 +635,78 @@ public struct NetworkingAuthorizationApplier: Sendable {
         }
     }
 
+    private func ensureOwnedDirectory(_ directory: String, requestID: String) throws {
+        if fileSystemRoot != "/" {
+            try FileManager.default.createDirectory(
+                atPath: directory,
+                withIntermediateDirectories: true,
+                attributes: [.posixPermissions: 0o755]
+            )
+        } else if mkdir(directory, 0o755) != 0, errno != EEXIST {
+            throw NetworkingAuthorizationApplyError.commandFailed(
+                requestID,
+                String(cString: strerror(errno))
+            )
+        }
+        var info = stat()
+        guard lstat(directory, &info) == 0,
+              info.st_mode & S_IFMT == S_IFDIR,
+              fileSystemRoot != "/" || (info.st_uid == 0 && info.st_mode & 0o022 == 0) else {
+            throw NetworkingAuthorizationApplyError.unsafeRequest(requestID)
+        }
+    }
+
+    private func acquireMutationLock() throws -> Int32 {
+        let path = rootedPath(Self.mutationLockPath)
+        try ensureOwnedDirectory(
+            (path as NSString).deletingLastPathComponent,
+            requestID: Self.mutationLockPath
+        )
+        let descriptor = open(path, O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        guard descriptor >= 0 else {
+            throw NetworkingAuthorizationApplyError.commandFailed(
+                Self.mutationLockPath,
+                String(cString: strerror(errno))
+            )
+        }
+        var info = stat()
+        guard fstat(descriptor, &info) == 0,
+              info.st_mode & S_IFMT == S_IFREG,
+              info.st_nlink == 1,
+              fileSystemRoot != "/" || info.st_uid == 0 else {
+            close(descriptor)
+            throw NetworkingAuthorizationApplyError.unsafeRequest(Self.mutationLockPath)
+        }
+        let deadline = Date().addingTimeInterval(15)
+        while flock(descriptor, LOCK_EX | LOCK_NB) != 0 {
+            let code = errno
+            guard code == EWOULDBLOCK, Date() < deadline else {
+                close(descriptor)
+                let message = code == EWOULDBLOCK
+                    ? "timed out waiting for the networking mutation lock"
+                    : String(cString: strerror(code))
+                throw NetworkingAuthorizationApplyError.commandFailed(
+                    Self.mutationLockPath,
+                    message
+                )
+            }
+            usleep(50_000)
+        }
+        return descriptor
+    }
+
+    private func releaseMutationLock(_ descriptor: Int32) {
+        _ = flock(descriptor, LOCK_UN)
+        close(descriptor)
+    }
+
     private func isSafeRegularFile(_ path: String) throws -> Bool {
+        try safeRegularFileOwner(path) != nil
+    }
+
+    private func safeRegularFileOwner(_ path: String) throws -> uid_t? {
         let descriptor = open(rootedPath(path), O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
-        if descriptor < 0, errno == ENOENT { return false }
+        if descriptor < 0, errno == ENOENT { return nil }
         guard descriptor >= 0 else {
             throw NetworkingAuthorizationApplyError.unsafeRequest(path)
         }
@@ -361,9 +715,44 @@ public struct NetworkingAuthorizationApplier: Sendable {
         guard fstat(descriptor, &info) == 0 else {
             throw NetworkingAuthorizationApplyError.unsafeRequest(path)
         }
-        return info.st_mode & S_IFMT == S_IFREG
-            && info.st_size > 0
-            && info.st_size <= Self.maximumManagedFileBytes
+        guard info.st_mode & S_IFMT == S_IFREG,
+              info.st_size > 0,
+              info.st_size <= Self.maximumManagedFileBytes else {
+            return nil
+        }
+        return info.st_uid
+    }
+
+    private func readSafeRegularFile(
+        path: String,
+        requiredOwnerUID: uid_t?
+    ) throws -> Data? {
+        let descriptor = open(rootedPath(path), O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        if descriptor < 0, errno == ENOENT { return nil }
+        guard descriptor >= 0 else {
+            throw NetworkingAuthorizationApplyError.unsafeRequest(path)
+        }
+        defer { close(descriptor) }
+        var info = stat()
+        guard fstat(descriptor, &info) == 0,
+              info.st_mode & S_IFMT == S_IFREG,
+              info.st_nlink == 1,
+              info.st_size > 0,
+              info.st_size <= Self.maximumManagedFileBytes else {
+            throw NetworkingAuthorizationApplyError.unsafeRequest(path)
+        }
+        if let requiredOwnerUID, info.st_uid != requiredOwnerUID {
+            throw NetworkingAuthorizationApplyError.ownerMismatch(
+                expected: requiredOwnerUID,
+                actual: info.st_uid
+            )
+        }
+        return try readAll(
+            descriptor: descriptor,
+            expectedBytes: Int(info.st_size),
+            maximumBytes: Self.maximumManagedFileBytes,
+            requestID: path
+        )
     }
 
     private func ensurePFEnabled(requestID: String) throws -> Bool {
@@ -387,11 +776,7 @@ public struct NetworkingAuthorizationApplier: Sendable {
     private func persistPFToken(_ token: String) throws {
         let path = rootedPath(Self.pfTokenPath)
         let directory = (path as NSString).deletingLastPathComponent
-        try FileManager.default.createDirectory(
-            atPath: directory,
-            withIntermediateDirectories: true,
-            attributes: [.posixPermissions: 0o755]
-        )
+        try ensureOwnedDirectory(directory, requestID: Self.pfTokenPath)
         let descriptor = open(path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
         guard descriptor >= 0 else {
             throw NetworkingAuthorizationApplyError.commandFailed(
@@ -502,13 +887,15 @@ public struct NetworkingAuthorizationApplier: Sendable {
         }
     }
 
-    private func releaseOwnedPFToken() throws {
-        guard let token = try readPFToken() else { return }
+    @discardableResult
+    private func releaseOwnedPFToken() throws -> Bool {
+        guard let token = try readPFToken() else { return false }
         _ = try runOutput(
             ["/sbin/pfctl", "-X", token],
             requestID: "pf.dev.dory.disable"
         )
         try removeManagedFile(path: Self.pfTokenPath)
+        return true
     }
 
     private func rootedPath(_ absolutePath: String) -> String {
@@ -525,4 +912,10 @@ public struct NetworkingAuthorizationApplier: Sendable {
 private struct ManagedFileSnapshot {
     var path: String
     var contents: Data?
+}
+
+private struct NetworkingAuthorizationState: Codable {
+    var version = 1
+    var ownerUID: uid_t
+    var plan: NetworkingAuthorizationPlan
 }

@@ -32,7 +32,7 @@ public final class SourcePreservingLANPrivilegedDaemon: NSObject, NSXPCListenerD
         shouldAcceptNewConnection newConnection: NSXPCConnection
     ) -> Bool {
         let clientUID = newConnection.effectiveUserIdentifier
-        newConnection.setCodeSigningRequirement(DoryPrivilegedNetworkXPC.productionPeerRequirement)
+        newConnection.setCodeSigningRequirement(DoryPrivilegedNetworkXPC.productionClientRequirement)
         newConnection.exportedInterface = NSXPCInterface(with: DoryPrivilegedNetworkControl.self)
         newConnection.exportedObject = SourcePreservingLANPrivilegedService(
             controller: controller,
@@ -62,6 +62,26 @@ private final class SourcePreservingLANPrivilegedService: NSObject, DoryPrivileg
             reply(try JSONEncoder().encode(response) as NSData, nil)
         } catch {
             reply(nil, "\(error)" as NSString)
+        }
+    }
+
+    func reconcileAuthorizedNetworking(
+        _ request: NSData,
+        withReply reply: @escaping (Bool, NSString?) -> Void
+    ) {
+        do {
+            let data = request as Data
+            guard data.count <= 1 << 20 else {
+                throw NetworkingAuthorizationApplyError.unsafeRequest("authorization-plan-size")
+            }
+            let plan = try JSONDecoder().decode(NetworkingAuthorizationPlan.self, from: data)
+            let reconciled = try NetworkingAuthorizationApplier().reconcileIfAuthorized(
+                plan,
+                clientUID: clientUID
+            )
+            reply(reconciled, nil)
+        } catch {
+            reply(false, "\(error)" as NSString)
         }
     }
 }

@@ -14,11 +14,12 @@ struct HelperOptions {
     var dryRun = false
     var remove = false
     var fileSystemRoot = "/"
+    var ownerUID: uid_t?
 }
 
 func usage() -> String {
     """
-    usage: dory-network-helper --plan-json <path|-> [--dry-run] [--remove] [--file-system-root <path>]
+    usage: dory-network-helper --plan-json <path|-> [--dry-run] [--remove] [--owner-uid <uid>] [--file-system-root <path>]
     """
 }
 
@@ -37,6 +38,11 @@ func parseOptions(_ arguments: [String]) throws -> HelperOptions {
             options.dryRun = true
         case "--remove":
             options.remove = true
+        case "--owner-uid":
+            guard index < arguments.endIndex,
+                  let value = uid_t(arguments[index]) else { throw HelperError.usage }
+            options.ownerUID = value
+            index = arguments.index(after: index)
         case "--file-system-root":
             guard index < arguments.endIndex else { throw HelperError.usage }
             options.fileSystemRoot = arguments[index]
@@ -139,7 +145,8 @@ do {
     let plan = try readPlan(path: planPath)
     let applier = NetworkingAuthorizationApplier(
         fileSystemRoot: options.fileSystemRoot,
-        dryRun: options.dryRun
+        dryRun: options.dryRun,
+        ownerUID: options.ownerUID
     )
     let results = try options.remove ? applier.remove(plan) : applier.apply(plan)
     let encoder = JSONEncoder()

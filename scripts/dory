@@ -1338,6 +1338,7 @@ network_authorize_cmd() {
 
   args=(--plan-json "$plan_path")
   [ "$dry_run" -eq 1 ] && args+=(--dry-run)
+  args+=(--owner-uid "${SUDO_UID:-$(id -u)}")
   [ "$operation" = "deauthorize" ] && args+=(--remove)
   [ -n "$fs_root" ] && args+=(--file-system-root "$fs_root")
   set +e
