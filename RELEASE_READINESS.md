@@ -412,10 +412,12 @@ to the final release tag rather than representing this candidate as built from c
   `sparkle-cli` from the `Package.resolved`-pinned Sparkle 2.9.4 revision
   `b6496a74a087257ef5e6da1c5b29a447a60f5bd7`. The evidence correctly records
   `release_qualifying=false`: no install or relaunch was attempted in this active development
-  account. Its retained manifest is
-  `/tmp/dory-sparkle-build-only-20260714/20260714T071208Z-36950/evidence/manifest.txt`, SHA-256
-  `a7efceec2165b2d5f37ffaaa77e5cdeeba8528833f409ddc7c48f065e204e519`. The 338 MiB superseded
-  DerivedData build was removed after the durable evidence was captured.
+  account. The manifest records the exact update ZIP, appcast, release manifest, SBOM, and gate
+  script hashes. It is retained at
+  `/tmp/dory-sparkle-build-only-bound-20260714/20260714T071851Z-73452/evidence/manifest.txt`, SHA-256
+  `0f2aca6c21be465c4bbbbec4a271f8ebfa884f7aea91831a9e12f80bae7b8f56`. The 338 MiB superseded
+  DerivedData build and the earlier unbound proof were removed after the durable evidence was
+  captured.
 - The exact standalone runtime and Docker CLI from that notarized candidate passed the complete
   **34-row** competitor regression campaign in a fresh isolated 8 GiB/6-CPU engine with FEX
   enabled: 2,000 forwarded connections, 20 container restarts, deliberate six-stream proxy
