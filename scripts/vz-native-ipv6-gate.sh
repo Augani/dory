@@ -168,8 +168,9 @@ RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$"
 RUN_ROOT="$WORKROOT/$RUN_ID"
 EVIDENCE="$RUN_ROOT/evidence"
 WORK="$RUN_ROOT/work"
+TEST_HOME="$WORK/home"
 STATE="$WORK/s"
-DRIVE="$WORK/D.dorydrive"
+DRIVE="$TEST_HOME/Library/Application Support/Dory/Dory.dorydrive"
 HANDOFF="$WORK/h.sock"
 HANDOFF_JSON="$WORK/handoff.json"
 PORT_FILE="$WORK/host-port"
@@ -388,7 +389,7 @@ start_vmm() {
   if [ -n "$SSH_CLIENT_IMAGE" ]; then
     ssh_agent_args=(--ssh-agent-socket "$SSH_AUTH_SOCK")
   fi
-  "$VMM" \
+  HOME="$TEST_HOME" "$VMM" \
     --machine-id docker --state-dir "$STATE" --data-drive "$DRIVE" \
     --kernel "$KERNEL" --rootfs "$ROOTFS" --gvproxy "$GVPROXY" \
     --handoff-sock "$HANDOFF" --memory-mb 2048 --cpus 2 \

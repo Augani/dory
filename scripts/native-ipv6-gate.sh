@@ -71,7 +71,7 @@ RUN_ROOT="$WORKROOT/$RUN_ID"
 EVIDENCE="$RUN_ROOT/evidence"
 HOME_ROOT="${TMPDIR:-/tmp}/dory-ni6-$$"
 STATE="$HOME_ROOT/s"
-DRIVE="$HOME_ROOT/D.dorydrive"
+DRIVE="$HOME_ROOT/Library/Application Support/Dory/Dory.dorydrive"
 SOCKET="$HOME_ROOT/e.sock"
 PORT_FILE="$HOME_ROOT/host-port"
 ENGINE_PID=""
@@ -141,7 +141,7 @@ HOST_PORT="$(cat "$PORT_FILE")"
 
 start_engine() {
   cycle="$1"
-  "$HV" engine \
+  HOME="$HOME_ROOT" "$HV" engine \
     --state-dir "$STATE" --data-drive "$DRIVE" \
     --kernel "$KERNEL" --gvproxy "$GVPROXY" --rootfs "$ROOTFS" \
     --engine-sock "$SOCKET" --direct-ipv6 \

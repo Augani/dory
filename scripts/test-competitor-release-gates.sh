@@ -230,6 +230,14 @@ grep -F -- '--direct-ipv6' scripts/runtime/dory-engine \
   || fail "native IPv6 is not enabled by every production dory-hv launcher"
 grep -F 'scripts/native-ipv6-gate.sh' scripts/qualify-release-candidate.sh >/dev/null \
   || fail "release qualification omits the exact-artifact native IPv6 gate"
+for ipv6_gate in scripts/native-ipv6-gate.sh scripts/vz-native-ipv6-gate.sh; do
+  grep -F 'Library/Application Support/Dory/Dory.dorydrive' "$ipv6_gate" >/dev/null \
+    || fail "IPv6 qualification uses a data drive outside the production-authorized root: $ipv6_gate"
+done
+grep -F 'HOME="$HOME_ROOT" "$HV" engine' scripts/native-ipv6-gate.sh >/dev/null \
+  || fail "native IPv6 qualification does not bind data-drive validation to its isolated home"
+grep -F 'HOME="$TEST_HOME" "$VMM"' scripts/vz-native-ipv6-gate.sh >/dev/null \
+  || fail "VZ IPv6 qualification does not bind data-drive validation to its isolated home"
 grep -F 'observeRootsOnDemand: true' \
   Packages/ContainerizationEngine/Sources/dory-hv/EngineMode.swift >/dev/null \
   || fail "production host shares returned to whole-root FSEvents observation"
