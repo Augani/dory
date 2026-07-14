@@ -1535,6 +1535,18 @@ for required in ("--verify --ed-key-file -", "SUPublicEDKey", "Curve25519.Signin
     assert required in sparkle_verify, f"Sparkle verification gate lacks: {required}"
 
 release_script = open("scripts/release.sh", encoding="utf-8").read()
+for required in (
+    "scripts/sign-sparkle-for-distribution.sh",
+    "scripts/verify-distribution-signatures.sh",
+):
+    assert required in release_script, f"release omits nested distribution signing gate: {required}"
+sparkle_signing = open("scripts/sign-sparkle-for-distribution.sh", encoding="utf-8").read()
+for required in ("Installer.xpc", "Downloader.xpc", "Autoupdate", "Updater.app",
+                 "--preserve-metadata=entitlements", "--timestamp"):
+    assert required in sparkle_signing, f"Sparkle distribution signing omits: {required}"
+assert "--deep" not in "\n".join(
+    line for line in sparkle_signing.splitlines() if not line.lstrip().startswith("#")
+), "Sparkle distribution signer uses unsafe --deep signing"
 assert "scripts/verify-clean-release-source.sh ." in release_script, \
     "public release can claim HEAD while packaging dirty source"
 assert "previous-release upgrade" not in release, \
@@ -1811,6 +1823,7 @@ grep -q "keychain profile 'missing-profile' is unavailable or invalid" "$TMP/not
 ) >"$TMP/notary-environment-valid.out" 2>&1
 
 bash -n scripts/release.sh scripts/bundle-engine.sh scripts/validate-release-outputs.sh \
+  scripts/sign-sparkle-for-distribution.sh scripts/verify-distribution-signatures.sh \
   scripts/release-candidate-live-smoke.sh scripts/verify-sparkle-update.sh \
   scripts/qualify-release-candidate.sh \
   scripts/verify-release-qualification.sh

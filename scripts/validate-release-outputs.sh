@@ -9,6 +9,7 @@ cd "$ROOT"
 BUILD_DIR="${1:?usage: validate-release-outputs.sh <build-dir> <version> <build>}"
 VERSION="${2:?usage: validate-release-outputs.sh <build-dir> <version> <build>}"
 BUILD="${3:?usage: validate-release-outputs.sh <build-dir> <version> <build>}"
+TEAM="${NOTARY_TEAM_ID:-864H636QW4}"
 
 fail() {
   echo "release outputs error: $*" >&2
@@ -266,13 +267,8 @@ require_gvproxy_provenance source pinned-source-build
 if [ "${DORY_RELEASE_OUTPUTS_SKIP_PLATFORM_VALIDATION:-0}" != "1" ]; then
   [ "$(lipo -archs "$GVPROXY")" = "x86_64 arm64" ] \
     || fail "bundled gvproxy architecture contract changed"
-  codesign_details=""
-  codesign --verify --strict --deep --verbose=2 "$APP"
+  scripts/verify-distribution-signatures.sh "$APP" "$TEAM"
   codesign --verify --strict --verbose=2 "$NETWORK_HELPER"
-  codesign_details="$(codesign -dv --verbose=4 "$APP" 2>&1)" \
-    || fail "could not inspect code signature for arm64 app"
-  printf '%s\n' "$codesign_details" | grep 'Authority=Developer ID Application' >/dev/null \
-    || fail "arm64 app is not Developer ID signed"
   xcrun stapler validate "$APP"
   spctl --assess --type execute --verbose=4 "$APP"
 fi

@@ -352,7 +352,7 @@ preflight_guest_assets() {
 preflight_release() {
   local requested
   echo "==> Release preflight..."
-  for tool in xcodebuild codesign xcrun ditto lipo shasum plutil security; do
+  for tool in xcodebuild codesign xcrun ditto file lipo shasum plutil security; do
     require_tool "$tool"
   done
   preflight_public_release
@@ -414,6 +414,9 @@ verify_codesign() {
   echo "==> Verifying code signature for $app..."
   codesign --verify --strict --deep --verbose=2 "$app"
   verify_developer_id_signature "$app"
+  if [ "${DORY_REQUIRE_DEVELOPER_ID_SIGNATURES:-1}" = "1" ] && [ "$SIGN_IDENTITY" != "-" ]; then
+    scripts/verify-distribution-signatures.sh "$app" "$TEAM"
+  fi
 }
 
 verify_developer_id_signature() {
@@ -702,6 +705,7 @@ for requested in $RELEASE_VARIANTS; do
     echo "==> WARNING: producing a development app without bundled engine assets for $VARIANT."
   fi
 
+  scripts/sign-sparkle-for-distribution.sh "$APP" "$SIGN_IDENTITY"
   sign_app "$APP"
   if [ "${DORY_BUNDLE_ENGINE:-1}" = "1" ]; then
     verify_full_bundle "$APP"
