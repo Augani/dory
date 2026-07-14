@@ -3,6 +3,46 @@ import DoryCore
 import XCTest
 
 final class MachineManagerTests: XCTestCase {
+    func testShareArgumentsRoundTripDelimiterHeavyPathsAndJSON() throws {
+        let shares = [
+            DoryMachineShareConfiguration(
+                tag: "source.one",
+                hostPath: "/Volumes/Work: 2026/日本語/src",
+                guestPath: "/workspace/client: app/日本語",
+                readOnly: false
+            ),
+            DoryMachineShareConfiguration(
+                tag: "cache",
+                hostPath: "/tmp/cache:one",
+                guestPath: "/var/cache/build:one",
+                readOnly: true
+            ),
+        ]
+
+        for share in shares {
+            XCTAssertTrue(share.argumentValue.hasPrefix("dory-share-v1."))
+            XCTAssertEqual(try DoryMachineShareConfiguration(argument: share.argumentValue), share)
+
+            let json = try XCTUnwrap(String(
+                data: JSONEncoder().encode(share),
+                encoding: .utf8
+            ))
+            XCTAssertEqual(try DoryMachineShareConfiguration(argument: json), share)
+        }
+
+        XCTAssertEqual(
+            try DoryMachineShareConfiguration(argument: "src=/tmp/src:/workspace/src:ro"),
+            DoryMachineShareConfiguration(
+                tag: "src",
+                hostPath: "/tmp/src",
+                guestPath: "/workspace/src",
+                readOnly: true
+            )
+        )
+        XCTAssertThrowsError(try DoryMachineShareConfiguration(argument: "dory-share-v1.invalid"))
+        XCTAssertThrowsError(try DoryMachineShareConfiguration(argument: "{\"tag\":1}"))
+    }
+
     func testCreateStartStopDeleteMachineProcess() throws {
         let base = "/tmp/dory-machine-manager-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         let manager = MachineManager(configuration: MachineManagerConfiguration(
@@ -495,6 +535,8 @@ final class MachineManagerTests: XCTestCase {
         try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
         let argsPath = "\(base)/argv.txt"
         let helperPath = "\(base)/record-vmm.sh"
+        let sharePath = "\(base)/share: build 日本語"
+        try FileManager.default.createDirectory(atPath: sharePath, withIntermediateDirectories: true)
         try """
         #!/bin/sh
         printf '%s\n' "$@" > "\(argsPath)"
@@ -513,12 +555,30 @@ final class MachineManagerTests: XCTestCase {
             id: "dev",
             kernelPath: "/tmp/kernel",
             rootfsPath: "/tmp/rootfs",
+            shares: [
+                DoryMachineShareConfiguration(
+                    tag: "src",
+                    hostPath: sharePath,
+                    guestPath: "/workspace/client: app 日本語"
+                ),
+            ],
             environment: ["APP_ENV": "dev"]
         ))
         _ = try manager.start(id: "dev")
 
         let args = try waitForFileContent(argsPath)
         XCTAssertTrue(args.contains("--env\nAPP_ENV=dev"))
+        let rows = args.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        let shareFlagIndex = try XCTUnwrap(rows.firstIndex(of: "--share"))
+        let wireShare = rows[shareFlagIndex + 1]
+        XCTAssertEqual(
+            try DoryMachineShareConfiguration(argument: wireShare),
+            DoryMachineShareConfiguration(
+                tag: "src",
+                hostPath: sharePath,
+                guestPath: "/workspace/client: app 日本語"
+            )
+        )
     }
 
     func testLegacyMachineDefinitionsLoadWithoutShareField() throws {

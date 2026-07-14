@@ -734,6 +734,18 @@ grep -F 'testCloneStartFailureDeletesTheNewMachineDefinition' \
 grep -F 'testManagerRemovesInterruptedMachineMetadataOnStartup' \
   dory-core-swift/Tests/DorydKitTests/MachineManagerTests.swift >/dev/null \
   || fail "interrupted machine definition publication can accumulate hidden metadata"
+grep -F 'private static let wirePrefix = "dory-share-v1"' \
+  dory-core-swift/Sources/DorydKit/MachineManager.swift >/dev/null \
+  || fail "machine share arguments can confuse legal path delimiters with protocol fields"
+grep -F 'homeShare.argumentValue' \
+  dory-core-swift/Sources/DorydKit/DorydConfiguration.swift >/dev/null \
+  || fail "the default home share bypasses the delimiter-safe machine share protocol"
+grep -F 'testShareArgumentsRoundTripDelimiterHeavyPathsAndJSON' \
+  dory-core-swift/Tests/DorydKitTests/MachineManagerTests.swift >/dev/null \
+  || fail "machine shares no longer prove colon, space, and Unicode path round trips"
+grep -F 'Share JSON supports delimiter-heavy paths:' \
+  dory-core-swift/Sources/dorydctl/main.swift >/dev/null \
+  || fail "the machine CLI does not document its unambiguous delimiter-heavy share syntax"
 for required_recipe in \
   'guest/kernel/build.sh arm64' \
   'guest/initfs/build.sh arm64' \

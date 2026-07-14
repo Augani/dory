@@ -154,8 +154,8 @@ func usage(exitCode: Int32 = 2) -> Never {
           dorydctl [global] machine list
           dorydctl [global] machine status NAME
           dorydctl [global] machine stats NAME
-          dorydctl [global] machine create NAME --kernel PATH --rootfs PATH [--memory-mb N] [--cpus N] [--address IPv4] [--share TAG=HOST:GUEST[:ro|rw]] [--env KEY=VALUE]
-          dorydctl [global] machine update NAME [--memory-mb N] [--cpus N] [--address IPv4 | --clear-address] [--share TAG=HOST:GUEST[:ro|rw] ... | --clear-shares] [--env KEY=VALUE ... | --clear-env]
+          dorydctl [global] machine create NAME --kernel PATH --rootfs PATH [--memory-mb N] [--cpus N] [--address IPv4] [--share TAG=HOST:GUEST[:ro|rw] | JSON] [--env KEY=VALUE]
+          dorydctl [global] machine update NAME [--memory-mb N] [--cpus N] [--address IPv4 | --clear-address] [--share TAG=HOST:GUEST[:ro|rw] | JSON ... | --clear-shares] [--env KEY=VALUE ... | --clear-env]
           dorydctl [global] machine start|stop|delete NAME
           dorydctl [global] machine exec NAME [--json] [--cwd PATH] [--env KEY=VALUE] [--timeout-ms N] [--output-limit-bytes N] -- COMMAND [ARG...]
           dorydctl [global] machine shell NAME
@@ -178,6 +178,8 @@ func usage(exitCode: Int32 = 2) -> Never {
           dorydctl [global] health
           dorydctl [global] doctor-json
           dorydctl [global] incidents [--limit N]
+
+        Share JSON supports delimiter-heavy paths: {"tag":"src","hostPath":"/path:with:colons","guestPath":"/workspace/src","readOnly":false}
         """
     )
     exit(exitCode)
@@ -778,7 +780,7 @@ func runMachine(cursor: inout ArgumentCursor, client: DorydCtlClient) throws {
 }
 
 func runMachineUpdate(cursor: inout ArgumentCursor, client: DorydCtlClient) throws {
-    let usage = "usage: dorydctl machine update NAME [--memory-mb N] [--cpus N] [--address IPv4 | --clear-address] [--share TAG=HOST:GUEST[:ro|rw] ... | --clear-shares] [--env KEY=VALUE ... | --clear-env]"
+    let usage = "usage: dorydctl machine update NAME [--memory-mb N] [--cpus N] [--address IPv4 | --clear-address] [--share TAG=HOST:GUEST[:ro|rw] | JSON ... | --clear-shares] [--env KEY=VALUE ... | --clear-env]"
     let name = try cursor.take(usage)
     var config: [String: Any] = [:]
     if let memory = try cursor.optionValue("--memory-mb") {

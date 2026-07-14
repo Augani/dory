@@ -1513,7 +1513,7 @@ doryd_machine_cmd() {
       ;;
     create)
       shift
-      name="${1:?usage: dory machine create <name> [--kernel PATH] [--rootfs PATH] [--image-manifest PATH --image-signature PATH --image-allowed-signers PATH --image-signer ID] [--memory-mb N] [--cpus N] [--share TAG=HOST:GUEST[:ro|rw]] [--env KEY=VALUE]}"
+      name="${1:?usage: dory machine create <name> [--kernel PATH] [--rootfs PATH] [--image-manifest PATH --image-signature PATH --image-allowed-signers PATH --image-signer ID] [--memory-mb N] [--cpus N] [--share TAG=HOST:GUEST[:ro|rw] or JSON] [--env KEY=VALUE]}"
       shift
       local image_manifest="" image_signature="" image_allowed_signers="" image_signer="" forwarded=()
       while [ "$#" -gt 0 ]; do

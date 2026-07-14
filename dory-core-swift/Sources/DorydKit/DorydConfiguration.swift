@@ -405,7 +405,12 @@ public struct DorydEnvironment: Sendable {
             arguments.append(contentsOf: ["--ssh-agent-socket", sshAuthSock])
         }
         if bool("DORYD_SHARE_HOME", default: true) {
-            arguments.append(contentsOf: ["--share", "home=\(home):\(home):rw"])
+            let homeShare = DoryMachineShareConfiguration(
+                tag: "home",
+                hostPath: home,
+                guestPath: home
+            )
+            arguments.append(contentsOf: ["--share", homeShare.argumentValue])
         }
         if string("DORYD_PUBLISH_HOST") == "0.0.0.0" {
             arguments.append(contentsOf: ["--publish-host", "0.0.0.0"])

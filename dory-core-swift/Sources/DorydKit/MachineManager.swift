@@ -31,6 +31,8 @@ public struct MachineManagerConfiguration: Sendable, Equatable {
 }
 
 public struct DoryMachineShareConfiguration: Sendable, Equatable, Hashable, Codable {
+    private static let wirePrefix = "dory-share-v1"
+
     public var tag: String
     public var hostPath: String
     public var guestPath: String
@@ -49,6 +51,34 @@ public struct DoryMachineShareConfiguration: Sendable, Equatable, Hashable, Coda
     }
 
     public init(argument: String) throws {
+        if argument.hasPrefix("\(Self.wirePrefix).") {
+            let components = argument.split(separator: ".", omittingEmptySubsequences: false).map(String.init)
+            guard components.count == 5,
+                  components[0] == Self.wirePrefix,
+                  let tag = Self.decodeWireField(components[1]),
+                  let hostPath = Self.decodeWireField(components[2]),
+                  let guestPath = Self.decodeWireField(components[3]),
+                  ["ro", "rw"].contains(components[4]) else {
+                throw MachineManagerError.invalidShare(argument)
+            }
+            self.init(
+                tag: tag,
+                hostPath: hostPath,
+                guestPath: guestPath,
+                readOnly: components[4] == "ro"
+            )
+            try validate()
+            return
+        }
+        if argument.first == "{" {
+            guard let data = argument.data(using: .utf8),
+                  let decoded = try? JSONDecoder().decode(Self.self, from: data) else {
+                throw MachineManagerError.invalidShare(argument)
+            }
+            self = decoded
+            try validate()
+            return
+        }
         guard let equals = argument.firstIndex(of: "="), equals != argument.startIndex else {
             throw MachineManagerError.invalidShare(argument)
         }
@@ -78,7 +108,13 @@ public struct DoryMachineShareConfiguration: Sendable, Equatable, Hashable, Coda
     }
 
     public var argumentValue: String {
-        "\(tag)=\(hostPath):\(guestPath):\(readOnly ? "ro" : "rw")"
+        [
+            Self.wirePrefix,
+            Self.encodeWireField(tag),
+            Self.encodeWireField(hostPath),
+            Self.encodeWireField(guestPath),
+            readOnly ? "ro" : "rw",
+        ].joined(separator: ".")
     }
 
     public func validate() throws {
@@ -93,6 +129,15 @@ public struct DoryMachineShareConfiguration: Sendable, Equatable, Hashable, Coda
         guard guestPath.hasPrefix("/"), guestPath != "/", !guestPath.contains("\0") else {
             throw MachineManagerError.invalidShare(guestPath)
         }
+    }
+
+    private static func encodeWireField(_ value: String) -> String {
+        Data(value.utf8).base64EncodedString()
+    }
+
+    private static func decodeWireField(_ value: String) -> String? {
+        guard let data = Data(base64Encoded: value) else { return nil }
+        return String(data: data, encoding: .utf8)
     }
 }
 
