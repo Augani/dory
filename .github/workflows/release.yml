@@ -1175,6 +1175,8 @@ jobs:
               "sbom": "PASS",
               "first_launch": "PASS",
               "data_drive_preserved": "PASS",
+              "zap_preserved_data": "PASS",
+              "zap_removed_transient_state": "PASS",
               "profile_restoration": "PASS",
               "status": "PASS",
           }

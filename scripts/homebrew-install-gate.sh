@@ -86,6 +86,7 @@ PLIST="$HOME/Library/LaunchAgents/dev.dory.doryd.plist"
 STATE="$HOME/.dory"
 APP_SUPPORT="$HOME/Library/Application Support/Dory"
 DRIVE="$APP_SUPPORT/Dory.dorydrive"
+SELECTION="$APP_SUPPORT/data-drive-selection.json"
 PREF_DOMAIN="com.pythonxi.Dory"
 BREW_BIN="$(brew --prefix)/bin/dory"
 TAP="doryci/release-install"
@@ -156,6 +157,7 @@ PY
 
 SERVER_PID=""
 MUTATION_STARTED=0
+TRASH_MARKER=""
 cleanup() {
   set +e
   if [ "$MUTATION_STARTED" -eq 1 ]; then
@@ -175,6 +177,15 @@ cleanup() {
   brew untap --force "$TAP" >/dev/null 2>&1 || true
   [ -z "$SERVER_PID" ] || kill "$SERVER_PID" >/dev/null 2>&1 || true
   [ -z "$SERVER_PID" ] || wait "$SERVER_PID" >/dev/null 2>&1 || true
+  if [ -n "$TRASH_MARKER" ] && [ -d "$HOME/.Trash" ]; then
+    while IFS= read -r trashed; do
+      case "$(basename "$trashed")" in
+        .dory|.dory\ *|com.pythonxi.Dory.plist|com.pythonxi.Dory.plist\ *|com.pythonxi.Dory|com.pythonxi.Dory\ *)
+          rm -rf "$trashed"
+          ;;
+      esac
+    done < <(find "$HOME/.Trash" -mindepth 1 -maxdepth 1 -newer "$TRASH_MARKER" -print 2>/dev/null)
+  fi
   python3 - "$HOME" "$WORKROOT/private-profiles/profiles.json" <<'PY'
 import json, os, pathlib, shutil, sys
 
@@ -281,6 +292,7 @@ done
 "$APP/Contents/Helpers/docker" -H "unix://$STATE/dory.sock" version \
   >"$EVIDENCE/docker-version.txt"
 [ -s "$DRIVE/drive.json" ] || die "first launch did not create the durable Dory drive"
+[ -s "$SELECTION" ] || die "first launch did not record the selected Dory drive"
 python3 - "$DRIVE/drive.json" <<'PY'
 import json, pathlib, sys, uuid
 data = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
@@ -290,6 +302,7 @@ assert data["product"] == "Dory"
 uuid.UUID(data["id"])
 PY
 PRESERVATION_SENTINEL="$DRIVE/homebrew-uninstall-preservation.txt"
+SELECTION_SHA="$(shasum -a 256 "$SELECTION" | awk '{print $1}')"
 printf 'source_commit=%s\nzip_sha256=%s\n' "$SOURCE_COMMIT" "$ZIP_SHA" \
   > "$PRESERVATION_SENTINEL"
 cp -p "$APP/Contents/Helpers/docker" "$WORKROOT/candidate-docker"
@@ -327,6 +340,8 @@ done
   && [ ! -L "$HOME/.docker/cli-plugins/docker-buildx" ] \
   || die "Homebrew uninstall left the owned Buildx plugin"
 [ -f "$PRESERVATION_SENTINEL" ] || die "Homebrew uninstall removed the durable Dory drive"
+[ "$(shasum -a 256 "$SELECTION" | awk '{print $1}')" = "$SELECTION_SHA" ] \
+  || die "Homebrew uninstall changed the selected-drive authority"
 grep -qx "source_commit=$SOURCE_COMMIT" "$PRESERVATION_SENTINEL"
 grep -qx "zip_sha256=$ZIP_SHA" "$PRESERVATION_SENTINEL"
 
@@ -349,6 +364,41 @@ for row in json.loads(pathlib.Path(sys.argv[2]).read_text(encoding="utf-8")):
     assert stat.S_IMODE(target.stat().st_mode) == row["mode"], f"profile mode changed: {path}"
 PY
 
+# Zap is intentionally stronger than uninstall, but the user's selected drive remains out of scope.
+TRASH_MARKER="$WORKROOT/pre-zap-trash-marker"
+touch "$TRASH_MARKER"
+brew install --cask --require-sha --appdir=/Applications "$CASK" \
+  >"$EVIDENCE/brew-reinstall-for-zap.log" 2>&1
+[ -d "$APP" ] || die "Homebrew could not reinstall Dory for zap certification"
+brew uninstall --cask --zap "$CASK" >"$EVIDENCE/brew-zap.log" 2>&1
+[ ! -e "$APP" ] || die "Homebrew zap left Dory.app installed"
+[ ! -e "$STATE" ] || die "Homebrew zap left transient Dory state"
+[ ! -e "$HOME/Library/Preferences/$PREF_DOMAIN.plist" ] \
+  || die "Homebrew zap left Dory preferences"
+[ -f "$PRESERVATION_SENTINEL" ] || die "Homebrew zap removed the durable Dory drive"
+[ "$(shasum -a 256 "$SELECTION" | awk '{print $1}')" = "$SELECTION_SHA" ] \
+  || die "Homebrew zap changed the selected-drive authority"
+HOME="$HOME" "$WORKROOT/candidate-docker" context inspect dory >/dev/null 2>&1 \
+  && die "Homebrew zap left the Dory Docker context"
+python3 - "$HOME" "$WORKROOT/private-profiles/profiles.json" <<'PY'
+import hashlib, json, os, pathlib, stat, sys
+
+home = pathlib.Path(sys.argv[1])
+for row in json.loads(pathlib.Path(sys.argv[2]).read_text(encoding="utf-8")):
+    path = home / row["name"]
+    if row["kind"] == "missing":
+        assert not path.exists() and not path.is_symlink(), f"created profile remains after zap: {path}"
+        continue
+    assert path.exists() or path.is_symlink(), f"profile is missing after zap: {path}"
+    if row["kind"] == "symlink":
+        assert path.is_symlink() and os.readlink(path) == row["link"], f"profile symlink changed after zap: {path}"
+    else:
+        assert not path.is_symlink(), f"profile became a symlink after zap: {path}"
+    target = path.resolve(strict=True)
+    assert hashlib.sha256(target.read_bytes()).hexdigest() == row["sha256"], f"profile bytes changed after zap: {path}"
+    assert stat.S_IMODE(target.stat().st_mode) == row["mode"], f"profile mode changed after zap: {path}"
+PY
+
 brew --version > "$EVIDENCE/brew-version.txt"
 sw_vers > "$EVIDENCE/macos-version.txt"
 {
@@ -363,6 +413,8 @@ sw_vers > "$EVIDENCE/macos-version.txt"
   printf 'sbom=PASS\n'
   printf 'first_launch=PASS\n'
   printf 'data_drive_preserved=PASS\n'
+  printf 'zap_preserved_data=PASS\n'
+  printf 'zap_removed_transient_state=PASS\n'
   printf 'profile_restoration=PASS\n'
   printf 'status=PASS\n'
 } > "$EVIDENCE/manifest.txt"

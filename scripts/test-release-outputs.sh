@@ -1680,6 +1680,9 @@ for required in (
     'curl -fsS --max-time 2 --unix-socket "$STATE/dory.sock"',
     'brew uninstall --cask "$CASK"',
     'data_drive_preserved=PASS',
+    'brew uninstall --cask --zap "$CASK"',
+    'zap_preserved_data=PASS',
+    'zap_removed_transient_state=PASS',
     'profile_restoration=PASS',
 ):
     assert required in homebrew_gate, f"Homebrew install certification omits: {required}"
