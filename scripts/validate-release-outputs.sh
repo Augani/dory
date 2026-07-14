@@ -16,6 +16,55 @@ fail() {
   exit 1
 }
 
+validate_app_zip_layout() {
+  local archive="$1" label="$2"
+  python3 - "$archive" <<'PY' || fail "$label has an unsafe or unexpected archive layout"
+import pathlib
+import sys
+import zipfile
+
+with zipfile.ZipFile(sys.argv[1]) as archive:
+    names = set()
+    for item in archive.infolist():
+        name = item.filename
+        path = pathlib.PurePosixPath(name)
+        assert name and "\\" not in name, f"invalid ZIP member: {name!r}"
+        assert name not in names, f"duplicate ZIP member: {name!r}"
+        names.add(name)
+        assert not path.is_absolute(), f"absolute ZIP member: {name!r}"
+        assert ".." not in path.parts, f"traversing ZIP member: {name!r}"
+        assert path.parts[0] == "Dory.app", f"unexpected top-level ZIP member: {name!r}"
+    assert "Dory.app/Contents/MacOS/Dory" in names, "Dory executable is absent"
+PY
+}
+
+validate_app_symlinks() {
+  local app="$1" label="$2"
+  python3 - "$app" <<'PY' || fail "$label contains a symlink that escapes Dory.app"
+import os
+import pathlib
+import sys
+
+root = pathlib.Path(sys.argv[1]).resolve()
+for directory, names, files in os.walk(root, followlinks=False):
+    for name in names + files:
+        path = pathlib.Path(directory, name)
+        if path.is_symlink():
+            target = path.resolve(strict=False)
+            assert os.path.commonpath((root, target)) == str(root), f"{path} -> {os.readlink(path)}"
+PY
+}
+
+EXTRACT_ROOT=""
+DMG_MOUNT=""
+cleanup() {
+  if [ -n "$DMG_MOUNT" ]; then
+    hdiutil detach "$DMG_MOUNT" -quiet >/dev/null 2>&1 || true
+  fi
+  [ -z "$EXTRACT_ROOT" ] || rm -rf "$EXTRACT_ROOT"
+}
+trap cleanup EXIT
+
 required_artifacts=(
   "Dory-$VERSION-arm64.zip"
   "Dory-$VERSION.zip"
@@ -49,8 +98,29 @@ scripts/verify-release-sbom.py \
   "$(shasum -a 256 "$BUILD_DIR/Dory-$VERSION-arm64.dmg" | awk '{print $1}')" ] \
   || fail "compatibility DMG is not byte-identical to the arm64 DMG"
 
+EXTRACT_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/dory-release-archives.XXXXXX")"
+DIRECT_ZIP="$BUILD_DIR/Dory-$VERSION-arm64.zip"
+DIRECT_MEMBERS="$(unzip -Z1 "$DIRECT_ZIP")" || fail "arm64 ZIP is unreadable"
+validate_app_zip_layout "$DIRECT_ZIP" "arm64 ZIP"
+if printf '%s\n' "$DIRECT_MEMBERS" \
+  | grep -Eiq '(^|/)([^/]*(Tests?|UITests)-Runner\.app|[^/]+\.xctest)(/|$)'; then
+  fail "arm64 ZIP contains an XCTest runner or test bundle"
+fi
+DIRECT_EXTRACT="$EXTRACT_ROOT/direct"
+mkdir -p "$DIRECT_EXTRACT"
+ditto -x -k "$DIRECT_ZIP" "$DIRECT_EXTRACT" || fail "arm64 ZIP could not be extracted"
+DIRECT_APP="$DIRECT_EXTRACT/Dory.app"
+validate_app_symlinks "$DIRECT_APP" "arm64 ZIP"
+scripts/verify-release-sbom.py \
+  --sbom "$BUILD_DIR/Dory-$VERSION.cdx.json" \
+  --app "$DIRECT_APP" \
+  --version "$VERSION" \
+  --source-commit "$SBOM_SOURCE_COMMIT" >/dev/null \
+  || fail "arm64 ZIP app differs from the SBOM-bound release app tree"
+
 UPDATE_ZIP="$BUILD_DIR/Dory-$VERSION-app-update.zip"
 UPDATE_MEMBERS="$(unzip -Z1 "$UPDATE_ZIP")" || fail "Sparkle app-update ZIP is unreadable"
+validate_app_zip_layout "$UPDATE_ZIP" "Sparkle app-update ZIP"
 if printf '%s\n' "$UPDATE_MEMBERS" \
   | grep -Eiq '(^|/)([^/]*(Tests?|UITests)-Runner\.app|[^/]+\.xctest)(/|$)'; then
   fail "Sparkle app-update ZIP contains an XCTest runner or test bundle"
@@ -68,11 +138,62 @@ for member in \
     || fail "Sparkle app-update ZIP omits required self-contained payload: $member"
 done
 
+UPDATE_EXTRACT="$EXTRACT_ROOT/update"
+mkdir -p "$UPDATE_EXTRACT"
+ditto -x -k "$UPDATE_ZIP" "$UPDATE_EXTRACT" \
+  || fail "Sparkle app-update ZIP could not be extracted"
+UPDATE_APP="$UPDATE_EXTRACT/Dory.app"
+validate_app_symlinks "$UPDATE_APP" "Sparkle app-update ZIP"
+[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' \
+  "$UPDATE_APP/Contents/Info.plist")" = "$VERSION" ] \
+  || fail "Sparkle app-update marketing version does not match $VERSION"
+[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' \
+  "$UPDATE_APP/Contents/Info.plist")" = "$BUILD" ] \
+  || fail "Sparkle app-update build does not match $BUILD"
+scripts/verify-release-sbom.py \
+  --sbom "$BUILD_DIR/Dory-$VERSION.cdx.json" \
+  --app "$UPDATE_APP" \
+  --version "$VERSION" \
+  --source-commit "$SBOM_SOURCE_COMMIT" >/dev/null \
+  || fail "Sparkle app-update differs from the SBOM-bound direct app tree"
+
+LITE_ZIP="$BUILD_DIR/Dory-$VERSION-lite.zip"
+LITE_MEMBERS="$(unzip -Z1 "$LITE_ZIP")" || fail "lite ZIP is unreadable"
+validate_app_zip_layout "$LITE_ZIP" "lite ZIP"
+if printf '%s\n' "$LITE_MEMBERS" \
+  | grep -Eiq '(^|/)([^/]*(Tests?|UITests)-Runner\.app|[^/]+\.xctest)(/|$)'; then
+  fail "lite ZIP contains an XCTest runner or test bundle"
+fi
+for forbidden in \
+  Dory.app/Contents/Helpers/doryd \
+  Dory.app/Contents/Helpers/dory-hv \
+  Dory.app/Contents/Resources/dory-engine-rootfs.ext4.lzfse \
+  Dory.app/Contents/Resources/dory-payload-sha256.txt; do
+  if grep -Fxq "$forbidden" <<< "$LITE_MEMBERS"; then
+    fail "lite ZIP unexpectedly contains bundled engine payload: $forbidden"
+  fi
+done
+
+LITE_EXTRACT="$EXTRACT_ROOT/lite"
+mkdir -p "$LITE_EXTRACT"
+ditto -x -k "$LITE_ZIP" "$LITE_EXTRACT" \
+  || fail "lite ZIP could not be extracted"
+LITE_APP="$LITE_EXTRACT/Dory.app"
+validate_app_symlinks "$LITE_APP" "lite ZIP"
+LITE_INFO="$LITE_APP/Contents/Info.plist"
+[ -x "$LITE_APP/Contents/MacOS/Dory" ] || fail "lite ZIP has no executable Dory app"
+[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$LITE_INFO")" = "$VERSION" ] \
+  || fail "lite app marketing version does not match $VERSION"
+[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$LITE_INFO")" = "$BUILD" ] \
+  || fail "lite app build does not match $BUILD"
+
 python3 - "$BUILD_DIR" "$VERSION" "$BUILD" <<'PY'
 import base64
+import email.utils
 import hashlib
 import json
 import os
+import re
 import sys
 import urllib.parse
 import xml.etree.ElementTree as ET
@@ -136,24 +257,64 @@ assert sbom_record.get("kind") == "cyclonedx-json", "SBOM artifact kind mismatch
 
 sparkle = "http://www.andymatuschak.org/xml-namespaces/sparkle"
 root = ET.parse(os.path.join(build_dir, "appcast.xml")).getroot()
-item = root.find("./channel/item")
-assert item is not None, "appcast has no current item"
+assert root.tag == "rss" and root.attrib.get("version") == "2.0", "appcast root is invalid"
+channel = root.find("channel")
+assert channel is not None, "appcast has no channel"
+assert channel.findtext("title") == "Dory", "appcast channel identity mismatch"
+assert channel.findtext("link") == "https://augani.github.io/dory/appcast.xml", "appcast link mismatch"
+items = channel.findall("item")
+assert items, "appcast has no current item"
+item = items[0]
 assert item.findtext(f"{{{sparkle}}}version") == build, "appcast build mismatch"
 assert item.findtext(f"{{{sparkle}}}shortVersionString") == version, "appcast version mismatch"
-assert item.findtext(f"{{{sparkle}}}minimumSystemVersion") == "14.0", "appcast macOS floor mismatch"
-enclosure = item.find("enclosure")
-assert enclosure is not None, "appcast item has no enclosure"
 expected_name = f"Dory-{version}-app-update.zip"
-actual_name = os.path.basename(urllib.parse.urlparse(enclosure.attrib.get("url", "")).path)
-assert actual_name == expected_name, f"appcast points at {actual_name!r}, expected {expected_name!r}"
 artifact_path = os.path.join(build_dir, expected_name)
-assert enclosure.attrib.get("length") == str(os.path.getsize(artifact_path)), "appcast length mismatch"
-signature = enclosure.attrib.get(f"{{{sparkle}}}edSignature", "")
-try:
-    decoded = base64.b64decode(signature, validate=True)
-except Exception as error:
-    raise AssertionError(f"appcast EdDSA signature is not valid base64: {error}") from error
-assert len(decoded) == 64, f"appcast EdDSA signature decoded to {len(decoded)} bytes, expected 64"
+seen_builds = set()
+seen_versions = set()
+for index, release_item in enumerate(items):
+    release_build = release_item.findtext(f"{{{sparkle}}}version", "")
+    release_version = release_item.findtext(f"{{{sparkle}}}shortVersionString", "")
+    assert release_build.isdigit() and int(release_build) > 0, "appcast item build is invalid"
+    assert re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?", release_version), \
+        "appcast item version is invalid"
+    assert release_build not in seen_builds, f"duplicate appcast build: {release_build}"
+    assert release_version not in seen_versions, f"duplicate appcast version: {release_version}"
+    seen_builds.add(release_build)
+    seen_versions.add(release_version)
+    assert release_item.findtext(f"{{{sparkle}}}minimumSystemVersion") == "14.0", \
+        f"appcast {release_version} macOS floor mismatch"
+    publication_date = release_item.findtext("pubDate", "")
+    assert email.utils.parsedate_to_datetime(publication_date).tzinfo is not None, \
+        f"appcast {release_version} publication date is invalid"
+    enclosure = release_item.find("enclosure")
+    assert enclosure is not None, f"appcast {release_version} item has no enclosure"
+    parsed_url = urllib.parse.urlparse(enclosure.attrib.get("url", ""))
+    actual_name = os.path.basename(parsed_url.path)
+    expected_prefix = f"/Augani/dory/releases/download/v{release_version}/"
+    assert parsed_url.scheme == "https" and parsed_url.netloc == "github.com", \
+        f"appcast {release_version} enclosure is not on GitHub"
+    assert parsed_url.path.startswith(expected_prefix), \
+        f"appcast {release_version} enclosure is outside its versioned Dory release"
+    assert actual_name.startswith(f"Dory-{release_version}") and actual_name.endswith(".zip"), \
+        f"appcast {release_version} enclosure filename is invalid"
+    assert enclosure.attrib.get("type") == "application/octet-stream", \
+        f"appcast {release_version} enclosure type is invalid"
+    length = enclosure.attrib.get("length", "")
+    assert length.isdigit() and int(length) > 0, f"appcast {release_version} length is invalid"
+    signature = enclosure.attrib.get(f"{{{sparkle}}}edSignature", "")
+    try:
+        decoded = base64.b64decode(signature, validate=True)
+    except Exception as error:
+        raise AssertionError(f"appcast {release_version} EdDSA signature is invalid: {error}") from error
+    assert len(decoded) == 64, \
+        f"appcast {release_version} EdDSA signature decoded to {len(decoded)} bytes, expected 64"
+    if index == 0:
+        assert actual_name == expected_name, \
+            f"appcast points at {actual_name!r}, expected {expected_name!r}"
+        assert length == str(os.path.getsize(artifact_path)), "appcast length mismatch"
+    else:
+        assert int(release_build) < int(build), \
+            f"historical appcast build {release_build} is not older than {build}"
 PY
 
 APP="$BUILD_DIR/export-arm64/Dory.app"
@@ -277,6 +438,30 @@ if [ "${DORY_RELEASE_OUTPUTS_SKIP_PLATFORM_VALIDATION:-0}" != "1" ]; then
   grep -Fx 'source=Notarized Developer ID' <<< "$app_assessment" >/dev/null \
     || fail "arm64 app is not accepted as Notarized Developer ID"
 
+  scripts/verify-distribution-signatures.sh "$DIRECT_APP" "$TEAM"
+  xcrun stapler validate "$DIRECT_APP"
+  direct_assessment="$(spctl --assess --type execute --verbose=4 "$DIRECT_APP" 2>&1)" \
+    || fail "Gatekeeper rejected the extracted arm64 ZIP app"
+  printf '%s\n' "$direct_assessment"
+  grep -Fx 'source=Notarized Developer ID' <<< "$direct_assessment" >/dev/null \
+    || fail "extracted arm64 ZIP app is not accepted as Notarized Developer ID"
+
+  scripts/verify-distribution-signatures.sh "$UPDATE_APP" "$TEAM"
+  xcrun stapler validate "$UPDATE_APP"
+  update_assessment="$(spctl --assess --type execute --verbose=4 "$UPDATE_APP" 2>&1)" \
+    || fail "Gatekeeper rejected Sparkle app-update"
+  printf '%s\n' "$update_assessment"
+  grep -Fx 'source=Notarized Developer ID' <<< "$update_assessment" >/dev/null \
+    || fail "Sparkle app-update is not accepted as Notarized Developer ID"
+
+  scripts/verify-distribution-signatures.sh "$LITE_APP" "$TEAM"
+  xcrun stapler validate "$LITE_APP"
+  lite_assessment="$(spctl --assess --type execute --verbose=4 "$LITE_APP" 2>&1)" \
+    || fail "Gatekeeper rejected lite app"
+  printf '%s\n' "$lite_assessment"
+  grep -Fx 'source=Notarized Developer ID' <<< "$lite_assessment" >/dev/null \
+    || fail "lite app is not accepted as Notarized Developer ID"
+
   codesign --verify --strict --verbose=2 "$DMG" \
     || fail "arm64 DMG signature is invalid"
   dmg_codesign="$(codesign -d --verbose=4 "$DMG" 2>&1)" \
@@ -293,6 +478,50 @@ if [ "${DORY_RELEASE_OUTPUTS_SKIP_PLATFORM_VALIDATION:-0}" != "1" ]; then
   printf '%s\n' "$dmg_assessment"
   grep -Fx 'source=Notarized Developer ID' <<< "$dmg_assessment" >/dev/null \
     || fail "arm64 DMG is not accepted as Notarized Developer ID"
+
+  ATTACH_PLIST="$EXTRACT_ROOT/dmg-attach.plist"
+  if command -v diskutil >/dev/null 2>&1 \
+    && diskutil image attach --help >/dev/null 2>&1; then
+    diskutil image attach --readOnly --nobrowse --plist "$DMG" > "$ATTACH_PLIST"
+  else
+    hdiutil attach -readonly -nobrowse -plist "$DMG" > "$ATTACH_PLIST"
+  fi
+  DMG_MOUNT="$(python3 - "$ATTACH_PLIST" <<'PY'
+import plistlib
+import sys
+
+with open(sys.argv[1], "rb") as handle:
+    payload = plistlib.load(handle)
+mounts = [row["mount-point"] for row in payload.get("system-entities", []) if row.get("mount-point")]
+assert len(mounts) == 1, f"expected one mounted volume, found {mounts}"
+print(mounts[0])
+PY
+)" || fail "could not identify the mounted DMG volume"
+  [ -d "$DMG_MOUNT/Dory.app" ] || fail "mounted DMG has no Dory.app"
+  [ "$(find "$DMG_MOUNT" -maxdepth 1 -type d -name Dory.app -print | wc -l | tr -d ' ')" = 1 ] \
+    || fail "mounted DMG does not contain exactly one Dory.app"
+  [ -L "$DMG_MOUNT/Applications" ] \
+    && [ "$(readlink "$DMG_MOUNT/Applications")" = /Applications ] \
+    || fail "mounted DMG has no Applications shortcut"
+  mount | grep -F " on $DMG_MOUNT (" | grep -F 'read-only' >/dev/null \
+    || fail "release DMG did not mount read-only"
+  MOUNTED_APP="$DMG_MOUNT/Dory.app"
+  validate_app_symlinks "$MOUNTED_APP" "mounted DMG app"
+  scripts/verify-release-sbom.py \
+    --sbom "$BUILD_DIR/Dory-$VERSION.cdx.json" \
+    --app "$MOUNTED_APP" \
+    --version "$VERSION" \
+    --source-commit "$SBOM_SOURCE_COMMIT" >/dev/null \
+    || fail "mounted DMG app differs from the SBOM-bound direct app tree"
+  scripts/verify-distribution-signatures.sh "$MOUNTED_APP" "$TEAM"
+  xcrun stapler validate "$MOUNTED_APP"
+  mounted_assessment="$(spctl --assess --type execute --verbose=4 "$MOUNTED_APP" 2>&1)" \
+    || fail "Gatekeeper rejected the app inside the mounted DMG"
+  printf '%s\n' "$mounted_assessment"
+  grep -Fx 'source=Notarized Developer ID' <<< "$mounted_assessment" >/dev/null \
+    || fail "mounted DMG app is not accepted as Notarized Developer ID"
+  hdiutil detach "$DMG_MOUNT" -quiet
+  DMG_MOUNT=""
 fi
 
 echo "release outputs: PASS ($VERSION build $BUILD)"

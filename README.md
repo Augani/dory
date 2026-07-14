@@ -237,7 +237,7 @@ that can access an SSH agent can request signatures, so grant this mount only to
 - **On an install without bundled engine assets**, Dory runs as a native app against any
   Docker-compatible engine you install (Colima, Docker Desktop, Rancher Desktop, Podman, or
   OrbStack).
-- Xcode 26 or later (to build from source).
+- Xcode 26 or later for development; public release builds are pinned to Xcode 26.6.
 
 ## Build & run from source
 

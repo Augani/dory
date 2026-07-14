@@ -17,7 +17,8 @@ set -euo pipefail
 # Prefer an explicit DEVELOPER_DIR; otherwise pick up a local Xcode install, else fall back to
 # the Xcode already selected by xcode-select (CI runners set this themselves).
 if [ -z "${DEVELOPER_DIR:-}" ]; then
-  for app in /Applications/Xcode.app /Applications/Xcode-*.app "$HOME"/Applications/Xcode*.app; do
+  for app in /Applications/Xcode-26.6.0-Release.Candidate.app \
+             /Applications/Xcode.app /Applications/Xcode-*.app "$HOME"/Applications/Xcode*.app; do
     [ -x "$app/Contents/Developer/usr/bin/xcodebuild" ] && { export DEVELOPER_DIR="$app/Contents/Developer"; break; }
   done
 fi
@@ -34,6 +35,7 @@ NOTARY_TEAM_ID="${NOTARY_TEAM_ID:-$TEAM}"
 RELEASE_VARIANTS="${DORY_RELEASE_VARIANTS:-arm64}"
 SIGN_IDENTITY="${DORY_SIGN_ID:-Developer ID Application}"
 SOURCE_COMMIT="${DORY_RELEASE_SOURCE_COMMIT:-$(git rev-parse HEAD 2>/dev/null || true)}"
+DERIVED_DATA_DIR=""
 
 notarize() {
   if [ -n "${NOTARY_APPLE_ID:-}" ]; then
@@ -142,6 +144,27 @@ require_tool() {
   command -v "$1" >/dev/null 2>&1 || release_error "required tool '$1' not found"
 }
 
+validate_release_build_dir() {
+  local candidate
+  candidate="$(python3 - "$BUILD_DIR" <<'PY'
+import os
+import sys
+
+print(os.path.realpath(os.path.abspath(sys.argv[1])))
+PY
+)"
+  case "$(basename "$candidate")" in
+    release-build*) ;;
+    *) release_error "DORY_RELEASE_BUILD_DIR must be a dedicated release-build* directory: $candidate" ;;
+  esac
+  case "$candidate" in
+    /|"$HOME"|"$(pwd -P)") release_error "refusing unsafe release build directory: $candidate" ;;
+  esac
+  [ ! -L "$BUILD_DIR" ] || release_error "release build directory cannot be a symlink: $BUILD_DIR"
+  BUILD_DIR="$candidate"
+  DERIVED_DATA_DIR="$BUILD_DIR/DerivedData"
+}
+
 preflight_macos_floor() {
   grep -q 'depends_on macos: :sonoma' Casks/dory.rb \
     || release_error "Homebrew cask must keep macOS 14 Sonoma support"
@@ -150,6 +173,14 @@ preflight_macos_floor() {
     grep -q '<sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>' "$appcast" \
       || release_error "$appcast must advertise Sparkle minimumSystemVersion 14.0"
   done
+}
+
+preflight_public_toolchain() {
+  local version
+  version="$(xcodebuild -version)"
+  printf '%s\n' "$version" | grep -Fx 'Xcode 26.6' >/dev/null \
+    && printf '%s\n' "$version" | grep -Fx 'Build version 17F109' >/dev/null \
+    || release_error "public releases require the pinned Xcode 26.6 build 17F109 toolchain"
 }
 
 preflight_public_release() {
@@ -167,6 +198,7 @@ preflight_public_release() {
     || release_error "public release source commit must be a full lowercase Git SHA: ${SOURCE_COMMIT:-missing}"
   [ "$SOURCE_COMMIT" = "$(git rev-parse HEAD)" ] \
     || release_error "public release source commit $SOURCE_COMMIT does not match checkout $(git rev-parse HEAD)"
+  preflight_public_toolchain
 
   [ "${DORY_BUNDLE_ENGINE:-1}" = "1" ] \
     || release_error "public releases must bundle the engine"
@@ -206,8 +238,24 @@ preflight_public_release() {
     || release_error "public releases must generate DMGs"
   [ -z "${DORY_APPCAST_ZIP:-}" ] \
     || release_error "public releases cannot redirect the appcast to an external ZIP override"
+  [ "${DORY_RELEASE_ASSET_BASE_URL:-https://github.com/Augani/dory/releases/download/v$VERSION}" = \
+    "https://github.com/Augani/dory/releases/download/v$VERSION" ] \
+    || release_error "public release assets must use the versioned Augani/dory GitHub release URL"
+  [ -z "${DORY_APPCAST_ARTIFACT_URL:-}" ] \
+    || release_error "public releases cannot override the appcast artifact URL"
+  [ "${DORY_APPCAST_LINK:-https://augani.github.io/dory/appcast.xml}" = \
+    "https://augani.github.io/dory/appcast.xml" ] \
+    || release_error "public releases must use Dory's production Sparkle feed URL"
+  [ "${DORY_APPCAST_MINIMUM_SYSTEM_VERSION:-14.0}" = "14.0" ] \
+    || release_error "public releases must keep the declared macOS 14 minimum"
+  [ "${DORY_APPCAST_TITLE:-Dory}" = "Dory" ] \
+    || release_error "public releases must keep the Dory appcast identity"
+  [ -z "${DORY_APPCAST_PUBDATE:-}" ] \
+    || release_error "public releases cannot override the appcast publication date"
   [ -z "${DORY_SPARKLE_ED_SIGNATURE:-}" ] \
     || release_error "public releases must create the Sparkle signature from the configured private key"
+  [ -z "${DORY_SPARKLE_SIGN_UPDATE:-}" ] \
+    || release_error "public releases must use sign_update from the release build's pinned Sparkle package"
 
   local cli_version
   cli_version="$(sed -nE 's/^DORY_CLI_VERSION="([^"]+)"$/\1/p' scripts/dory | head -1)"
@@ -352,9 +400,10 @@ preflight_guest_assets() {
 preflight_release() {
   local requested
   echo "==> Release preflight..."
-  for tool in xcodebuild codesign xcrun ditto file lipo shasum plutil security; do
+  for tool in xcodebuild codesign xcrun ditto file lipo shasum plutil security python3 tar unzip; do
     require_tool "$tool"
   done
+  validate_release_build_dir
   preflight_public_release
   preflight_macos_floor
   preflight_guest_assets
@@ -557,7 +606,7 @@ archive_variant() {
   local variant="$1" archive="$2"
   echo "==> Archiving + signing Dory $VERSION $variant (Developer ID, team $TEAM, archs: $XCODE_ARCHS)..."
   xcodebuild -project Dory.xcodeproj -scheme Dory -configuration Release \
-    -destination 'generic/platform=macOS' -archivePath "$archive" \
+    -destination 'generic/platform=macOS' -derivedDataPath "$DERIVED_DATA_DIR" -archivePath "$archive" \
     ARCHS="$XCODE_ARCHS" \
     ONLY_ACTIVE_ARCH=NO \
     MARKETING_VERSION="$VERSION" \
@@ -710,6 +759,12 @@ for requested in $RELEASE_VARIANTS; do
   DMG="$BUILD_DIR/Dory-$VERSION-$VARIANT_SUFFIX.dmg"
 
   archive_variant "$VARIANT" "$ARCHIVE"
+  if [ -z "${DORY_SPARKLE_SIGN_UPDATE:-}" ]; then
+    DORY_SPARKLE_SIGN_UPDATE="$DERIVED_DATA_DIR/SourcePackages/artifacts/sparkle/Sparkle/bin/sign_update"
+    [ -x "$DORY_SPARKLE_SIGN_UPDATE" ] \
+      || release_error "pinned Sparkle sign_update was not produced by this release build"
+    export DORY_SPARKLE_SIGN_UPDATE
+  fi
   [ -n "$FIRST_ARCHIVE" ] || FIRST_ARCHIVE="$ARCHIVE"
   [ "$VARIANT" = "universal" ] && UNIVERSAL_ARCHIVE="$ARCHIVE"
 
@@ -801,6 +856,7 @@ if [ "${DORY_BUNDLE_ENGINE:-1}" = "1" ] && [ "${DORY_BUILD_LITE:-1}" = "1" ]; th
       echo "==> Notarizing lite app..."
       notarize "$LITE_ZIP"
       xcrun stapler staple "$LITE_APP"
+      validate_stapled_app "$LITE_APP"
       zip_app "$LITE_APP" "$LITE_ZIP"
     fi
   fi
@@ -819,9 +875,10 @@ if [ "${DORY_BUNDLE_ENGINE:-1}" = "1" ] && [ "${DORY_BUILD_APP_UPDATE:-1}" = "1"
     UPDATE_APP="$UPDATE_DIR/Dory.app"
     rm -rf "$UPDATE_DIR"
     mkdir -p "$UPDATE_DIR"
-    cp -R "$UPDATE_SOURCE_APP" "$UPDATE_DIR/"
+    ditto "$UPDATE_SOURCE_APP" "$UPDATE_APP"
     scripts/validate-app-update-payload.sh "$UPDATE_APP" "$UPDATE_ARCHES"
-    sign_app "$UPDATE_APP"
+    # The SBOM inventories the exact notarized full app. Re-signing this copy would change the main
+    # executable and CodeResources, making Sparkle install different bytes than the direct app.
     verify_codesign "$UPDATE_APP"
     APP_UPDATE_ZIP="$BUILD_DIR/Dory-$VERSION-app-update.zip"
     finish_zip_update_artifact "$UPDATE_APP" "$APP_UPDATE_ZIP"

@@ -28,7 +28,10 @@ APP="$TMP/export-arm64/Dory.app"
 RESOURCES="$APP/Contents/Resources"
 HELPERS="$APP/Contents/Helpers"
 LAUNCH_DAEMONS="$APP/Contents/Library/LaunchDaemons"
-mkdir -p "$RESOURCES" "$HELPERS" "$LAUNCH_DAEMONS"
+MACOS="$APP/Contents/MacOS"
+mkdir -p "$RESOURCES" "$HELPERS" "$LAUNCH_DAEMONS" "$MACOS"
+printf '#!/bin/sh\nexit 0\n' > "$MACOS/Dory"
+chmod 0755 "$MACOS/Dory"
 for helper in dory-dataplane-proxy docker-buildx dory-network-helper dory-hv; do
   printf '#!/bin/sh\nexit 0\n' > "$HELPERS/$helper"
   chmod 0755 "$HELPERS/$helper"
@@ -110,6 +113,20 @@ artifacts=(
 for artifact in "${artifacts[@]}"; do
   printf 'fixture:%s\n' "$artifact" > "$TMP/$artifact"
 done
+rm "$TMP/Dory-$VERSION-arm64.zip"
+mkdir -p "$TMP/direct-payload"
+cp -R "$APP" "$TMP/direct-payload/"
+(cd "$TMP/direct-payload" && /usr/bin/zip -qry "$TMP/Dory-$VERSION-arm64.zip" Dory.app)
+rm "$TMP/Dory-$VERSION-lite.zip"
+mkdir -p "$TMP/lite-payload"
+cp -R "$APP" "$TMP/lite-payload/"
+rm -rf \
+  "$TMP/lite-payload/Dory.app/Contents/Helpers" \
+  "$TMP/lite-payload/Dory.app/Contents/Library/LaunchDaemons"
+rm -f \
+  "$TMP/lite-payload/Dory.app/Contents/Resources/dory-engine-rootfs.ext4.lzfse" \
+  "$TMP/lite-payload/Dory.app/Contents/Resources/dory-payload-sha256.txt"
+(cd "$TMP/lite-payload" && /usr/bin/zip -qry "$TMP/Dory-$VERSION-lite.zip" Dory.app)
 rm -f "$TMP/dory-engine-$VERSION-arm64.tar.gz"
 mkdir -p "$TMP/runtime-payload/dory-engine-$VERSION-arm64/bin"
 cp "$HELPERS/dory-hv" "$TMP/runtime-payload/dory-engine-$VERSION-arm64/bin/dory-hv"
@@ -146,11 +163,15 @@ signature = base64.b64encode(b"\0" * 64).decode()
 update = os.path.join(root, f"Dory-{version}-app-update.zip")
 appcast = f'''<?xml version="1.0"?>
 <rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
-<channel><item>
+<channel>
+<title>Dory</title>
+<link>https://augani.github.io/dory/appcast.xml</link>
+<item>
+<pubDate>Tue, 14 Jul 2026 12:00:00 +0000</pubDate>
 <sparkle:version>{build}</sparkle:version>
 <sparkle:shortVersionString>{version}</sparkle:shortVersionString>
 <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
-<enclosure url="https://github.com/Augani/dory/releases/download/v{version}/Dory-{version}-app-update.zip" sparkle:edSignature="{signature}" length="{os.path.getsize(update)}" />
+<enclosure url="https://github.com/Augani/dory/releases/download/v{version}/Dory-{version}-app-update.zip" sparkle:edSignature="{signature}" length="{os.path.getsize(update)}" type="application/octet-stream" />
 </item></channel></rss>'''
 with open(os.path.join(root, "appcast.xml"), "w", encoding="utf-8") as handle:
     handle.write(appcast)
@@ -179,6 +200,56 @@ PY
 
 DORY_RELEASE_OUTPUTS_SKIP_PLATFORM_VALIDATION=1 \
   scripts/validate-release-outputs.sh "$TMP" "$VERSION" "$BUILD" >/dev/null
+
+cp "$TMP/Dory-$VERSION-app-update.zip" "$TMP/app-update.sbom-valid.zip"
+cp "$TMP/appcast.xml" "$TMP/appcast.sbom-valid.xml"
+cp "$TMP/release-manifest.json" "$TMP/release-manifest.update-sbom-valid.json"
+rm -rf "$TMP/update-sbom-tamper"
+mkdir -p "$TMP/update-sbom-tamper"
+ditto -x -k "$TMP/Dory-$VERSION-app-update.zip" "$TMP/update-sbom-tamper"
+printf 'changed-after-sbom\n' >> "$TMP/update-sbom-tamper/Dory.app/Contents/MacOS/Dory"
+rm "$TMP/Dory-$VERSION-app-update.zip"
+(cd "$TMP/update-sbom-tamper" && \
+  /usr/bin/zip -qry "$TMP/Dory-$VERSION-app-update.zip" Dory.app)
+python3 - "$TMP" "$VERSION" <<'PY'
+import hashlib
+import json
+import os
+import sys
+import xml.etree.ElementTree as ET
+
+root, version = sys.argv[1:]
+update_name = f"Dory-{version}-app-update.zip"
+update_path = os.path.join(root, update_name)
+appcast_path = os.path.join(root, "appcast.xml")
+tree = ET.parse(appcast_path)
+enclosure = tree.getroot().find("./channel/item/enclosure")
+assert enclosure is not None
+enclosure.set("length", str(os.path.getsize(update_path)))
+tree.write(appcast_path, encoding="utf-8", xml_declaration=True)
+
+manifest_path = os.path.join(root, "release-manifest.json")
+with open(manifest_path, encoding="utf-8") as handle:
+    manifest = json.load(handle)
+records = {record["name"]: record for record in manifest["artifacts"]}
+for name in (update_name, "appcast.xml"):
+    path = os.path.join(root, name)
+    records[name]["bytes"] = os.path.getsize(path)
+    records[name]["sha256"] = hashlib.sha256(open(path, "rb").read()).hexdigest()
+with open(manifest_path, "w", encoding="utf-8") as handle:
+    json.dump(manifest, handle)
+PY
+if DORY_RELEASE_OUTPUTS_SKIP_PLATFORM_VALIDATION=1 \
+  scripts/validate-release-outputs.sh "$TMP" "$VERSION" "$BUILD" \
+  >"$TMP/update-sbom.out" 2>&1; then
+  echo "test-release-outputs: accepted a Sparkle app that differs from the direct-app SBOM" >&2
+  exit 1
+fi
+grep -q 'SBOM-bound direct app tree' "$TMP/update-sbom.out" \
+  || { echo "test-release-outputs: changed Sparkle app failed for the wrong reason" >&2; exit 1; }
+mv "$TMP/app-update.sbom-valid.zip" "$TMP/Dory-$VERSION-app-update.zip"
+mv "$TMP/appcast.sbom-valid.xml" "$TMP/appcast.xml"
+mv "$TMP/release-manifest.update-sbom-valid.json" "$TMP/release-manifest.json"
 
 # Installed apps commonly live only two path components below the filesystem root
 # (for example, /Applications/Dory.app). The portability check must not treat the root
@@ -1469,6 +1540,12 @@ grep -q "DORY_BUNDLE_VENUS_REQUIRED: '1'" .github/workflows/release.yml \
   || { echo "test-release-outputs: workflow does not require its advertised Venus payload" >&2; exit 1; }
 grep -q 'DORY_EXPERIMENTAL_GPU=1 guest/kernel/verify-build.sh arm64' scripts/release.sh \
   || { echo "test-release-outputs: release preflight does not verify the arm64 GPU provenance" >&2; exit 1; }
+grep -q '/Applications/Xcode-26.6.0-Release.Candidate.app' scripts/release.sh \
+  || { echo "test-release-outputs: release script does not prefer the pinned Xcode 26.6 toolchain" >&2; exit 1; }
+grep -q -- '-derivedDataPath "$DERIVED_DATA_DIR"' scripts/release.sh \
+  || { echo "test-release-outputs: release build does not isolate its Swift package artifacts" >&2; exit 1; }
+grep -q 'release-build/DerivedData' .github/workflows/release.yml \
+  || { echo "test-release-outputs: Sparkle qualification ignores the release build checkout" >&2; exit 1; }
 if grep -R -n -E '~0%|4\.7x|122 MB|574 MB' README.md website/src; then
   echo "test-release-outputs: unqualified legacy idle-memory/CPU marketing claim returned" >&2
   exit 1
@@ -1619,11 +1696,15 @@ for required in (
     "scripts/sign-sparkle-for-distribution.sh",
     "scripts/verify-distribution-signatures.sh",
     'scripts/sign-sparkle-for-distribution.sh "$LITE_APP"',
+    'validate_stapled_app "$LITE_APP"',
+    'ditto "$UPDATE_SOURCE_APP" "$UPDATE_APP"',
     'sign_dmg "$dmg"',
     'verify_dmg_signature "$dmg"',
     'source=Notarized Developer ID',
 ):
     assert required in release_script, f"release omits nested distribution signing gate: {required}"
+assert 'sign_app "$UPDATE_APP"' not in release_script, \
+    "Sparkle app update is re-signed after the direct-app SBOM is generated"
 sparkle_signing = open("scripts/sign-sparkle-for-distribution.sh", encoding="utf-8").read()
 for required in ("Installer.xpc", "Downloader.xpc", "Autoupdate", "Updater.app",
                  "--preserve-metadata=entitlements", "--timestamp"):
@@ -1852,6 +1933,90 @@ if (DORY_RELEASE_SOURCE_COMMIT=not-a-commit DORY_RELEASE_SOURCE_ONLY=1; \
 fi
 grep -q 'source commit must be a full lowercase Git SHA' "$TMP/source-commit.out" \
   || { echo "test-release-outputs: source commit policy failed for the wrong reason" >&2; exit 1; }
+
+if (DORY_RELEASE_SOURCE_ONLY=1; source scripts/release.sh "$VERSION" "$BUILD"; \
+  BUILD_DIR=/; validate_release_build_dir) >"$TMP/unsafe-build-dir.out" 2>&1; then
+  echo "test-release-outputs: release accepted the filesystem root as its build directory" >&2
+  exit 1
+fi
+grep -q 'dedicated release-build' "$TMP/unsafe-build-dir.out" \
+  || { echo "test-release-outputs: unsafe build directory failed for the wrong reason" >&2; exit 1; }
+
+if (DORY_RELEASE_SOURCE_ONLY=1; source scripts/release.sh "$VERSION" "$BUILD"; \
+  BUILD_DIR="$TMP/not-a-build"; validate_release_build_dir) >"$TMP/bad-build-name.out" 2>&1; then
+  echo "test-release-outputs: release accepted a non-release build directory" >&2
+  exit 1
+fi
+grep -q 'dedicated release-build' "$TMP/bad-build-name.out" \
+  || { echo "test-release-outputs: build-directory name guard failed for the wrong reason" >&2; exit 1; }
+
+(
+  DORY_RELEASE_SOURCE_ONLY=1 source scripts/release.sh "$VERSION" "$BUILD"
+  BUILD_DIR="$TMP/release-build-safe"
+  validate_release_build_dir
+  expected_build_dir="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' \
+    "$TMP/release-build-safe")"
+  [ "$BUILD_DIR" = "$expected_build_dir" ]
+  [ "$DERIVED_DATA_DIR" = "$expected_build_dir/DerivedData" ]
+) || { echo "test-release-outputs: dedicated release build directory was rejected" >&2; exit 1; }
+
+mkdir -p "$TMP/release-build-target"
+ln -s "$TMP/release-build-target" "$TMP/release-build-link"
+if (DORY_RELEASE_SOURCE_ONLY=1; source scripts/release.sh "$VERSION" "$BUILD"; \
+  BUILD_DIR="$TMP/release-build-link"; validate_release_build_dir) >"$TMP/symlink-build-dir.out" 2>&1; then
+  echo "test-release-outputs: release accepted a symlink build directory" >&2
+  exit 1
+fi
+grep -Eq 'cannot be a symlink|dedicated release-build' "$TMP/symlink-build-dir.out" \
+  || { echo "test-release-outputs: symlink build directory failed for the wrong reason" >&2; exit 1; }
+
+XCODE_BIN="$TMP/xcode-bin"
+mkdir -p "$XCODE_BIN"
+cat > "$XCODE_BIN/xcodebuild" <<'SH'
+#!/bin/sh
+printf 'Xcode 27.0\nBuild version 18A1\n'
+SH
+chmod 0755 "$XCODE_BIN/xcodebuild"
+if (
+  export PATH="$XCODE_BIN:$PATH" DORY_RELEASE_SOURCE_ONLY=1
+  source scripts/release.sh "$VERSION" "$BUILD"
+  preflight_public_toolchain
+) >"$TMP/wrong-xcode.out" 2>&1; then
+  echo "test-release-outputs: public release accepted a non-pinned Xcode" >&2
+  exit 1
+fi
+grep -q 'require the pinned Xcode 26.6 build 17F109 toolchain' "$TMP/wrong-xcode.out" \
+  || { echo "test-release-outputs: Xcode pin failed for the wrong reason" >&2; exit 1; }
+
+cat > "$XCODE_BIN/xcodebuild" <<'SH'
+#!/bin/sh
+printf 'Xcode 26.6\nBuild version 17F999\n'
+SH
+if (
+  export PATH="$XCODE_BIN:$PATH" DORY_RELEASE_SOURCE_ONLY=1
+  source scripts/release.sh "$VERSION" "$BUILD"
+  preflight_public_toolchain
+) >"$TMP/wrong-xcode-build.out" 2>&1; then
+  echo "test-release-outputs: public release accepted the wrong Xcode 26.6 build" >&2
+  exit 1
+fi
+grep -q 'require the pinned Xcode 26.6 build 17F109 toolchain' "$TMP/wrong-xcode-build.out" \
+  || { echo "test-release-outputs: Xcode build pin failed for the wrong reason" >&2; exit 1; }
+
+if (
+  export DORY_RELEASE_SOURCE_ONLY=1 \
+    DORY_PUBLIC_RELEASE=1 \
+    DORY_BUNDLE_VENUS_REQUIRED=1 \
+    DORY_RELEASE_SOURCE_COMMIT="$(git rev-parse HEAD)" \
+    DORY_RELEASE_ASSET_BASE_URL=https://updates.example.invalid/dory
+  source scripts/release.sh "$VERSION" "$BUILD"
+  preflight_public_release
+) >"$TMP/appcast-origin.out" 2>&1; then
+  echo "test-release-outputs: public release accepted a foreign appcast asset origin" >&2
+  exit 1
+fi
+grep -q 'versioned Augani/dory GitHub release URL' "$TMP/appcast-origin.out" \
+  || { echo "test-release-outputs: foreign appcast origin failed for the wrong reason" >&2; exit 1; }
 
 if (DORY_RELEASE_SOURCE_ONLY=1; source scripts/release.sh "$VERSION" "$BUILD"; \
   DORY_PUBLIC_RELEASE=1 DORY_BUNDLE_VENUS=0 DORY_BUNDLE_VENUS_REQUIRED=1 \

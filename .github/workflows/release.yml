@@ -406,7 +406,7 @@ jobs:
           test "$(sysctl -in kern.hv_vmm_present 2>/dev/null || printf 0)" != 1
           test "$(sysctl -in hw.optional.arm64 2>/dev/null || printf 0)" != 1
           echo 'READINESS_PHYSICAL_INTEL_CONFIRMED=1' >> "$GITHUB_ENV"
-          echo "INTEL_BUILD_DIR=$RUNNER_TEMP/dory-intel-release-$GITHUB_RUN_ID" >> "$GITHUB_ENV"
+          echo "INTEL_BUILD_DIR=$RUNNER_TEMP/release-build-intel-$GITHUB_RUN_ID" >> "$GITHUB_ENV"
           echo "READINESS_WORKDIR=$RUNNER_TEMP/dory-readiness" >> "$GITHUB_ENV"
       - name: Ensure Metal toolchain (SwiftTerm ships Metal shaders)
         run: xcodebuild -downloadComponent MetalToolchain || true
@@ -683,8 +683,11 @@ jobs:
               sparkle_source="$checkout"
               break
             fi
-          done < <(find "$HOME/Library/Developer/Xcode/DerivedData" \
-            -type d -path '*/SourcePackages/checkouts/Sparkle' -prune -print)
+          done < <({
+            find release-build/DerivedData -type d -path '*/SourcePackages/checkouts/Sparkle' -prune -print
+            find "$HOME/Library/Developer/Xcode/DerivedData" \
+              -type d -path '*/SourcePackages/checkouts/Sparkle' -prune -print
+          } | awk '!seen[$0]++')
           test -n "$sparkle_source"
           printf 'path=%s\n' "$sparkle_source" >> "$GITHUB_OUTPUT"
 
