@@ -121,6 +121,15 @@ dory — Dory CLI
                                Show doryd Auto-Idle sleep/wake transitions
   dory engine sleep|wake|status
                                Stop, start, or check the headless engine
+  dory data path               Print the selected .dorydrive path
+  dory data backup <archive.dorybackup>
+                               Back up the stopped Dory engine with sparse, verified chunks
+  dory data verify <archive.dorybackup>
+                               Verify every backup manifest, chunk, and completion marker
+  dory data restore <archive.dorybackup> <target.dorydrive>
+                               Restore to a new verified drive without replacing existing data
+  dory data use <target.dorydrive>
+                               Select a restored drive with the same durable drive identity
   dory agent guide [--json|--text]
                                Emit a versioned CLI capability map for coding agents
   dory mcp serve [--read-only]
@@ -2224,6 +2233,68 @@ PY
   esac
 }
 
+absolute_cli_path() {
+  case "$1" in
+    /*) printf '%s\n' "$1" ;;
+    *) printf '%s/%s\n' "$PWD" "$1" ;;
+  esac
+}
+
+data_cmd() {
+  local action="${1:-path}" helper source archive target output
+  [ "$#" -eq 0 ] || shift
+  helper="$(hv_helper || true)"
+  [ -n "$helper" ] || {
+    echo "Dory's signed data-drive helper is unavailable; reinstall Dory or open the app once." >&2
+    exit 1
+  }
+  case "$action" in
+    path)
+      [ "$#" -eq 0 ] || { echo "usage: dory data path" >&2; exit 2; }
+      "$helper" data-drive selected-path || {
+        echo "No Dory data drive is selected yet; open Dory once to initialize it." >&2
+        exit 1
+      }
+      ;;
+    backup)
+      [ "$#" -eq 1 ] || { echo "usage: dory data backup <archive.dorybackup>" >&2; exit 2; }
+      source="$("$helper" data-drive selected-path)" || {
+        echo "No Dory data drive is selected yet; open Dory once to initialize it." >&2
+        exit 1
+      }
+      archive="$(absolute_cli_path "$1")"
+      "$helper" data-drive backup "$source" "$archive"
+      ;;
+    verify)
+      [ "$#" -eq 1 ] || { echo "usage: dory data verify <archive.dorybackup>" >&2; exit 2; }
+      archive="$(absolute_cli_path "$1")"
+      "$helper" data-drive verify-backup "$archive"
+      ;;
+    restore)
+      [ "$#" -eq 2 ] || {
+        echo "usage: dory data restore <archive.dorybackup> <target.dorydrive>" >&2
+        exit 2
+      }
+      archive="$(absolute_cli_path "$1")"
+      target="$(absolute_cli_path "$2")"
+      "$helper" data-drive restore "$archive" "$target"
+      ;;
+    use)
+      [ "$#" -eq 1 ] || { echo "usage: dory data use <target.dorydrive>" >&2; exit 2; }
+      target="$(absolute_cli_path "$1")"
+      output="$("$helper" data-drive bind-existing "$target")"
+      printf 'Selected Dory data drive %s at %s\n' "$output" "$target"
+      ;;
+    -h|--help|help)
+      echo "usage: dory data path|backup|verify|restore|use ..."
+      ;;
+    *)
+      echo "usage: dory data path|backup|verify|restore|use ..." >&2
+      exit 2
+      ;;
+  esac
+}
+
 wait_emit_json() {
   python3 - "$1" "$2" "$3" "$4" "$5" "$6" "$7" <<'PY'
 import json
@@ -3239,6 +3310,7 @@ case "${1:-help}" in
                     *) doctor_cmd idle "$@" ;;
                   esac ;;
   engine)         shift; engine_cmd "$@" ;;
+  data)           shift; data_cmd "$@" ;;
   agent)          shift; agent_cmd "$@" ;;
   mcp)            shift; mcp_cmd "$@" ;;
   sandbox)        shift; sandbox_cmd "$@" ;;

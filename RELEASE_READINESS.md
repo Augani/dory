@@ -20,8 +20,8 @@ computes a deterministic full dependency closure and topological order from exac
 identities, binds target collision decisions and accepted final states, and evaluates completion
 as exact verified/post-publication mappings plus unchanged unselected-source and unowned-target
 inventories. Image-only evidence cannot complete a plan containing volumes, networks, writable
-layers, or containers. The 29 focused journal/planner tests and complete 307-test Swift package
-pass, and the Apple Silicon app builds against this same package with Xcode 26.6. Volume inventory
+layers, or containers. The complete Swift package and non-UI app suites pass, and the Apple Silicon
+app builds against this same package with Xcode 26.6. Volume inventory
 preflight now uses a researched, strict compatibility decoder for Engine API 1.40–1.55: it accepts
 legacy `Volumes`, transitional dual-shape, and current `VolumeUsage.Items` responses, rejects
 conflicting or malformed successful responses, and never hides a malformed success through a
@@ -44,7 +44,17 @@ and the public v1 schema must support crash-safe backup, restore, relocation, an
 after launch. The committed static Linux/arm64 transfer helper and deterministic scratch-image
 archive now prove source-before/source-after equality plus exact repaired-target equality through
 the real Docker archive boundary, and the application executor orchestrates that primitive through
-the shared journal.
+the shared journal. Full `.dorybackup` creation and restore now use that journal too: backup holds
+the production drive lock, discovers sparse extents with `SEEK_DATA`/`SEEK_HOLE`, deduplicates
+bounded SHA-256 chunks, verifies read-back, and publishes with an exclusive rename plus completion
+marker. Restore validates every path, length, chunk, and marker before allocation; reconstructs
+holes without writing zero ranges; preserves links, xattrs, ACLs, ownership, modes, and nanosecond
+times; rebinds external-volume identity; inventories the rebuilt drive; and never overwrites a
+target. Eight adversarial tests cover busy-drive refusal, sparse and metadata fidelity, hard links,
+deduplication, incomplete and corrupt archives, unsupported entries, no-overwrite behavior, and
+crash resumption on both sides of publication. The real `dory data backup|verify|restore|use` CLI
+gate also passes a sparse/xattr round trip. Exact notarized-candidate and physical cross-volume/
+Time Machine campaigns remain release evidence gates.
 
 **The signed `20260712T035458Z` app candidate is superseded for app release purposes.** Its
 standalone engine completed the immutable eight-hour baseline, but the post-build

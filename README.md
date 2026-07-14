@@ -47,7 +47,7 @@
   unchanged, with the engine socket promoted over vsock so stdout, stderr, attach/exec, and stdin
   EOF behave like a normal Docker daemon.
 - **One managed data drive.** Images, containers, named volumes, custom networks, machine disks,
-  snapshots, and backups live together at
+  snapshots, and local exports live together at
   `~/Library/Application Support/Dory/Dory.dorydrive`. Replaceable sockets, logs, kernels, and VM
   boot state stay in `~/.dory`; deleting or rebuilding that runtime state does not delete workloads.
   Dory remembers the selected drive outside that cache and binds external drives to their APFS
@@ -59,6 +59,14 @@
   `/Volumes`; privacy-protected Desktop, Documents, Downloads, iCloud, and CloudStorage paths are
   rejected before the engine starts so a
   cold launch cannot depend on a transient macOS permission grant.
+- **Full-drive backup that does not inflate sparse disks.** With the engine stopped,
+  `dory data backup ./Dory-Backup.dorybackup` writes bounded content-addressed chunks to a private
+  sibling partial, reads every chunk back, and publishes the archive only after its
+  manifest-bound completion marker is durable. `dory data verify` rejects incomplete, truncated,
+  tampered, or path-escaping archives. `dory data restore BACKUP TARGET.dorydrive` rebuilds sparse
+  extents and filesystem metadata into a new partial drive, independently inventories it, and
+  refuses to replace any existing drive. Full-drive backups intentionally live outside the drive
+  they protect; `dory data use TARGET.dorydrive` is a separate explicit selection step.
 - **Native, not Electron.** One Swift/SwiftUI app: menu-bar agent + full dashboard, launch
   animation to launch-at-login, light and dark. No Chromium, no Node, no telemetry.
 

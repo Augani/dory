@@ -213,7 +213,7 @@ guard let command = arguments.first else {
 switch command {
 case "data-drive":
     guard arguments.count >= 2 else {
-        fail("usage: dory-hv data-drive <resolve|prepare|id|selected-path|select|bind-existing> [path]")
+        fail("usage: dory-hv data-drive <resolve|prepare|id|selected-path|select|bind-existing|backup|verify-backup|restore> [paths]")
     }
     let operation = arguments[1]
     do {
@@ -256,8 +256,34 @@ case "data-drive":
             let drive = try DoryDataDrive(home: home, overrideRoot: arguments[2])
             try drive.validateManifest()
             print(try drive.readManifest().id.uuidString.lowercased())
+        case "backup":
+            guard arguments.count == 4 else {
+                fail("usage: dory-hv data-drive backup <source.dorydrive> <archive.dorybackup>")
+            }
+            let drive = try DoryDataDrive(home: home, overrideRoot: arguments[2])
+            let result = try DoryDataDriveTransaction.backup(from: drive, to: arguments[3])
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            print(String(decoding: try encoder.encode(result), as: UTF8.self))
+        case "verify-backup":
+            guard arguments.count == 3 else {
+                fail("usage: dory-hv data-drive verify-backup <archive.dorybackup>")
+            }
+            let result = try DoryDataDriveArchive.verifyBackup(at: arguments[2])
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            print(String(decoding: try encoder.encode(result), as: UTF8.self))
+        case "restore":
+            guard arguments.count == 4 else {
+                fail("usage: dory-hv data-drive restore <archive.dorybackup> <target.dorydrive>")
+            }
+            let drive = try DoryDataDrive(home: home, overrideRoot: arguments[3])
+            let result = try DoryDataDriveTransaction.restore(at: arguments[2], to: drive)
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            print(String(decoding: try encoder.encode(result), as: UTF8.self))
         default:
-            fail("usage: dory-hv data-drive <resolve|prepare|id|selected-path|select|bind-existing> [path]")
+            fail("usage: dory-hv data-drive <resolve|prepare|id|selected-path|select|bind-existing|backup|verify-backup|restore> [paths]")
         }
     } catch {
         fail("data-drive \(operation) failed: \(error)")

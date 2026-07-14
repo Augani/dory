@@ -57,7 +57,19 @@ public struct DoryDataDriveManifest: Codable, Sendable, Equatable {
         self.volume = volume
     }
 
-    fileprivate var isValid: Bool {
+    fileprivate init(
+        preserving source: DoryDataDriveManifest,
+        volume: DoryDataDriveVolumeIdentity?
+    ) {
+        kind = source.kind
+        schemaVersion = source.schemaVersion
+        id = source.id
+        product = source.product
+        createdAt = source.createdAt
+        self.volume = volume
+    }
+
+    var isValid: Bool {
         kind == DoryDataDrive.manifestKind
             && schemaVersion == DoryDataDrive.schemaVersion
             && product == "Dory"
@@ -299,6 +311,33 @@ public struct DoryDataDrive: Sendable, Equatable {
             throw DoryDataDriveError.invalidManifest(manifestPath)
         }
         return manifest
+    }
+
+    /// Rebinds a restored drive to the APFS volume that will contain it while preserving the
+    /// drive's durable identity. A copied external-volume UUID must never make intact restored
+    /// data appear corrupt merely because the user restored it to another supported disk.
+    func restoredManifest(
+        preserving source: DoryDataDriveManifest,
+        fileManager: FileManager = .default
+    ) throws -> DoryDataDriveManifest {
+        guard source.isValid else {
+            throw DoryDataDriveError.invalidManifest(manifestPath)
+        }
+        return DoryDataDriveManifest(
+            preserving: source,
+            volume: try mountedExternalVolumeIdentity(fileManager: fileManager)
+        )
+    }
+
+    func writeRestoredManifest(
+        _ manifest: DoryDataDriveManifest,
+        into root: String,
+        fileManager: FileManager = .default
+    ) throws {
+        guard manifest.isValid else {
+            throw DoryDataDriveError.invalidManifest(root + "/drive.json")
+        }
+        try writeManifest(manifest, at: root + "/drive.json", fileManager: fileManager)
     }
 
     private func requirePrivateRegularManifest() throws {

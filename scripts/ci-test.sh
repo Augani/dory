@@ -60,6 +60,11 @@ if ! bash scripts/test-readiness-offline.sh; then
   exit 1
 fi
 
+if ! bash scripts/test-data-drive-backup.sh; then
+  echo "ci-test: sparse data-drive backup/restore tests failed" >&2
+  exit 1
+fi
+
 if ! bash scripts/test-competitor-release-gates.sh; then
   echo "ci-test: competitor-derived release gate tests failed" >&2
   exit 1
