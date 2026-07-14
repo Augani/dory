@@ -278,6 +278,13 @@ final class StrictMigrationRuntime: ContainerRuntime {
     var createdVolumes: [MigrationVolumeContract] = []
     var createdNetworkRequests: [Data] = []
     var commitRequests: [StrictCommitRequest] = []
+    var createdContainers: [StrictCreatedContainer] = []
+    var startedContainers: [String] = []
+    var pausedContainers: [String] = []
+    var removedContainers: [String] = []
+    var failContainerStart = false
+    var failContainerPause = false
+    var failContainerRemoval = false
     var removedVolumes: [String] = []
     var removedNetworks: [String] = []
     var removedImages: [String] = []
@@ -315,13 +322,10 @@ final class StrictMigrationRuntime: ContainerRuntime {
     func snapshot() async throws -> RuntimeSnapshot { snapshotValue }
     func migrationSnapshot() async throws -> RuntimeSnapshot { snapshotValue }
     func migrationContainerWritableSizes() async throws -> [String: Int64] { writableSizes }
-    func start(containerID: String) async throws {}
     func stop(containerID: String) async throws {}
     func restart(containerID: String) async throws {}
-    func remove(containerID: String) async throws {}
     func logs(containerID: String) async throws -> [LogLine] { [] }
     func env(containerID: String) async throws -> [EnvVar] { [] }
-    func create(_ spec: ContainerSpec) async throws -> String { "created" }
     func exec(containerID: String, command: [String]) async throws -> ExecResult {
         ExecResult(exitCode: 0, output: "")
     }

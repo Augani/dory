@@ -74,6 +74,7 @@ enum MigrationCreatedAsset {
     case sourceImage(reference: String, expectedLabels: [String: String])
     case volume(name: String, expectedLabels: [String: String])
     case network(name: String, expectedLabels: [String: String])
+    case container(name: String, expectedLabels: [String: String])
 }
 
 struct MigrationImportAssetStagingExecution {
@@ -113,9 +114,10 @@ struct MigrationImportAssetStagingExecution {
             case .writableLayer:
                 try await stageWritableLayer(object)
             case .container:
-                continue
+                try await stageContainerDefinition(object)
             }
         }
+        try await publishContainers()
         return state
     }
 
@@ -280,6 +282,8 @@ struct MigrationImportAssetStagingExecution {
                 await rollbackVolume(name, expectedLabels: expectedLabels, failures: &failures)
             case let .network(name, expectedLabels):
                 await rollbackNetwork(name, expectedLabels: expectedLabels, failures: &failures)
+            case let .container(name, expectedLabels):
+                await rollbackContainer(name, expectedLabels: expectedLabels, failures: &failures)
             }
         }
         return failures

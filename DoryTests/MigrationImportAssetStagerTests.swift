@@ -14,11 +14,13 @@ struct MigrationImportAssetStagerTests: StrictInventoryTestCase {
             environment: context.environment
         )
 
-        #expect(state.phase == .staging)
+        #expect(state.phase == .publishing)
         #expect(state.status == .running)
-        #expect(state.revision == 7)
+        #expect(state.revision == 12)
         let staged = try context.session.lease.readStagedObjects()
-        #expect(staged.map(\.source.kind) == [.image, .network, .volume, .writableLayer])
+        #expect(staged.map(\.source.kind) == [
+            .container, .image, .network, .volume, .writableLayer
+        ])
         #expect(staged.allSatisfy { $0.disposition == .createdOperationOwned })
         #expect(context.fixture.target.snapshotValue.images.count == 2)
         let volume = try #require(context.fixture.target.snapshotValue.volumes.first)
@@ -27,11 +29,12 @@ struct MigrationImportAssetStagerTests: StrictInventoryTestCase {
         let network = try #require(context.fixture.target.snapshotValue.networks.first)
         #expect(network.name == "backend")
         #expect(network.labels["dev.dory.operation.state"] == "staging")
-        #expect(try context.session.lease.events().map(\.stepID).suffix(4) == [
-            "staging.image-verified",
-            "staging.network-verified",
-            "staging.volume-verified",
-            "staging.writable-layer-verified"
+        #expect(try context.session.lease.events().map(\.stepID).suffix(5) == [
+            "staging.container-definition-verified",
+            "verifying.staged-closure",
+            "publication.ready",
+            "publication.begin",
+            "publication.container-verified"
         ])
         #expect(context.fixture.source.commitRequests.count == 1)
         #expect(context.fixture.source.commitRequests[0].pause == false)
@@ -56,6 +59,7 @@ struct MigrationImportAssetStagerTests: StrictInventoryTestCase {
 
         try verifyNetworkEvidence(staged, context: context)
         try verifyWritableLayerEvidence(staged, context: context)
+        try verifyContainerDefinition(staged, context: context)
     }
 
     @Test func laterAssetFailureRollsBackEveryCreatedTargetAndFailsTerminally() async throws {
@@ -279,97 +283,5 @@ struct MigrationImportAssetStagerTests: StrictInventoryTestCase {
         #expect(record.state.status == .needsRecovery)
         #expect(record.state.lastEvent.recoveryAction == "rollback.retry")
     }
-}
 
-@MainActor
-private extension MigrationImportAssetStagerTests {
-    struct Context {
-        let fixture: StrictInventoryFixture
-        let session: MigrationImportStagingSession
-        let environment: MigrationImportAssetStagingEnvironment
-        let transfers: AssetStagingTransfers
-        let home: URL
-
-        func cleanup() {
-            try? FileManager.default.removeItem(at: home)
-        }
-    }
-
-    func makeContext(name: String) async throws -> Context {
-        let fixture = makeFixture()
-        let prepared = try await collect(fixture)
-        let home = FileManager.default.temporaryDirectory
-            .appendingPathComponent("dory-asset-stager-\(name)-\(UUID().uuidString)")
-        let store = try DoryOperationJournalStore(home: home.path)
-        let session = try await MigrationImportTransaction.openStagingSession(
-            prepared: prepared,
-            environment: MigrationImportTransactionEnvironment(
-                source: fixture.source,
-                target: fixture.target,
-                journalStore: store,
-                currentAvailableHostBytes: prepared.capacity.availableHostBytes,
-                transferHelper: .appleSiliconV1,
-                sharedHome: "/Users/test",
-                hostArchitecture: "arm64"
-            )
-        )
-        let transfers = AssetStagingTransfers()
-        return Context(
-            fixture: fixture,
-            session: session,
-            environment: MigrationImportAssetStagingEnvironment(
-                source: fixture.source,
-                target: fixture.target,
-                transfers: transfers,
-                sharedHome: "/Users/test"
-            ),
-            transfers: transfers,
-            home: home
-        )
-    }
-
-    func verifyNetworkEvidence(
-        _ staged: [DoryOperationStagedObject],
-        context: Context
-    ) throws {
-        let evidence = try #require(staged.first { $0.source.kind == .network })
-        let manifestData = try context.session.lease.readManifest(
-            digest: evidence.verificationManifestDigest
-        )
-        let manifest = try JSONDecoder().decode(
-            MigrationNetworkVerificationManifest.self,
-            from: manifestData
-        )
-        #expect(manifest.operationID == context.fixture.identity.id)
-        #expect(manifest.sourceNetwork == "backend")
-        let inspectedContract = try context.session.lease.readManifest(
-            digest: manifest.inspectedContractDigest
-        )
-        let inspected = try #require(
-            JSONSerialization.jsonObject(with: inspectedContract) as? [String: Any]
-        )
-        #expect(inspected["Driver"] as? String == "bridge")
-        #expect((inspected["IPAM"] as? [String: Any])?["Driver"] as? String == "default")
-    }
-
-    func verifyWritableLayerEvidence(
-        _ staged: [DoryOperationStagedObject],
-        context: Context
-    ) throws {
-        let evidence = try #require(staged.first { $0.source.kind == .writableLayer })
-        let manifestData = try context.session.lease.readManifest(
-            digest: evidence.verificationManifestDigest
-        )
-        let manifest = try JSONDecoder().decode(
-            MigrationLayerVerificationManifest.self,
-            from: manifestData
-        )
-        #expect(manifest.operationID == context.fixture.identity.id)
-        #expect(manifest.sourceContainerID == "container-id")
-        #expect(manifest.logicalBytes == 1_024)
-        #expect(manifest.committedSourceImageID == manifest.loadedTargetImageID)
-        _ = try context.session.lease.readManifest(
-            digest: manifest.imageVerificationManifestDigest
-        )
-    }
 }
