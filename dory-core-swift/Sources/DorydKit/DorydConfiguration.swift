@@ -1,3 +1,4 @@
+import CryptoKit
 import Darwin
 import DoryCore
 import Foundation
@@ -362,7 +363,7 @@ public struct DorydEnvironment: Sendable {
                     stateDirectory: stateDirectory
                 ),
               let rootfs = existingPath(firstOf: ["DORYD_VMM_ROOTFS", "DORYD_ENGINE_ROOTFS", "DORY_ENGINE_ROOTFS"])
-                ?? preparedPersistentBundledCompressedResource(
+                ?? preparedBundledCompressedResource(
                     named: ["dory-engine-rootfs-\(hostGuestArch).ext4", "dory-engine-rootfs.ext4", "dory-vm-initfs-\(hostGuestArch).ext4"],
                     outputName: "dory-vz-engine-rootfs-\(hostGuestArch).ext4",
                     stateDirectory: stateDirectory
@@ -666,33 +667,6 @@ public struct DorydEnvironment: Sendable {
         outputName: String,
         stateDirectory: String
     ) -> String? {
-        preparedBundledCompressedResource(
-            named: names,
-            outputName: outputName,
-            stateDirectory: stateDirectory,
-            refreshIfSourceNewer: true
-        )
-    }
-
-    private func preparedPersistentBundledCompressedResource(
-        named names: [String],
-        outputName: String,
-        stateDirectory: String
-    ) -> String? {
-        preparedBundledCompressedResource(
-            named: names,
-            outputName: outputName,
-            stateDirectory: stateDirectory,
-            refreshIfSourceNewer: false
-        )
-    }
-
-    private func preparedBundledCompressedResource(
-        named names: [String],
-        outputName: String,
-        stateDirectory: String,
-        refreshIfSourceNewer: Bool
-    ) -> String? {
         for directory in resourceDirectories {
             for name in names {
                 let source = URL(fileURLWithPath: directory)
@@ -702,8 +676,7 @@ public struct DorydEnvironment: Sendable {
                 return prepareCompressedResource(
                     source: source,
                     outputName: outputName,
-                    stateDirectory: stateDirectory,
-                    refreshIfSourceNewer: refreshIfSourceNewer
+                    stateDirectory: stateDirectory
                 )
             }
         }
@@ -742,44 +715,131 @@ public struct DorydEnvironment: Sendable {
     private func prepareCompressedResource(
         source: URL,
         outputName: String,
-        stateDirectory: String,
-        refreshIfSourceNewer: Bool
+        stateDirectory: String
     ) -> String? {
         let directory = URL(fileURLWithPath: stateDirectory)
             .appendingPathComponent("assets", isDirectory: true)
         let output = directory.appendingPathComponent(outputName)
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            if !FileManager.default.fileExists(atPath: output.path)
-                || (refreshIfSourceNewer && shouldRefreshAsset(source: source, output: output)) {
-                let temporary = directory.appendingPathComponent("\(outputName).partial-\(UUID().uuidString)")
-                do {
+            return try withAssetPreparationLock(directory: directory, outputName: outputName) {
+                try removeAbandonedAssetPartials(directory: directory, outputName: outputName)
+                let identity = try compressedResourceIdentity(source: source)
+                let identityPath = output.appendingPathExtension("source-identity")
+                let recordedIdentity = try? String(contentsOf: identityPath, encoding: .utf8)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                if !preparedAssetExists(at: output) || recordedIdentity != identity {
+                    let temporary = directory.appendingPathComponent("\(outputName).partial-\(UUID().uuidString)")
+                    defer { try? FileManager.default.removeItem(at: temporary) }
                     try DorydLZFSE.decompress(source: source.path, destination: temporary.path)
-                    _ = try? FileManager.default.removeItem(at: output)
-                    try FileManager.default.moveItem(at: temporary, to: output)
-                } catch {
-                    try? FileManager.default.removeItem(at: temporary)
-                    FileHandle.standardError.write(Data(
-                        "doryd: failed to prepare \(source.lastPathComponent): \(error)\n".utf8
-                    ))
-                    return nil
+                    guard Darwin.rename(temporary.path, output.path) == 0 else {
+                        throw posixError(path: output.path, code: errno)
+                    }
+                    // Publish identity last. A crash after the rootfs rename but before this write
+                    // causes one safe repeat on the next run instead of trusting an unbound cache.
+                    try Data((identity + "\n").utf8).write(to: identityPath, options: .atomic)
                 }
+                return preparedAssetExists(at: output) ? output.path : nil
             }
-            return FileManager.default.fileExists(atPath: output.path) ? output.path : nil
         } catch {
+            FileHandle.standardError.write(Data(
+                "doryd: failed to prepare \(source.lastPathComponent): \(error)\n".utf8
+            ))
             return nil
         }
     }
 
-    private func shouldRefreshAsset(source: URL, output: URL) -> Bool {
-        guard FileManager.default.fileExists(atPath: output.path) else { return true }
-        let sourceValues = try? source.resourceValues(forKeys: [.contentModificationDateKey])
-        let outputValues = try? output.resourceValues(forKeys: [.contentModificationDateKey])
-        if let sourceDate = sourceValues?.contentModificationDate,
-           let outputDate = outputValues?.contentModificationDate {
-            return outputDate < sourceDate
+    /// Serializes preparation across duplicate daemon/configuration processes. The lock is stable
+    /// while per-attempt files are unique, so a process killed during decompression leaves a file
+    /// that the next lock owner can identify and unlink without racing an active writer.
+    private func withAssetPreparationLock<T>(
+        directory: URL,
+        outputName: String,
+        operation: () throws -> T
+    ) throws -> T {
+        let lock = directory.appendingPathComponent(".\(outputName).prepare.lock")
+        let descriptor = lock.path.withCString {
+            Darwin.open($0, O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, mode_t(0o600))
         }
-        return false
+        guard descriptor >= 0 else { throw posixError(path: lock.path, code: errno) }
+        defer { Darwin.close(descriptor) }
+
+        var status = stat()
+        guard fstat(descriptor, &status) == 0,
+              status.st_mode & S_IFMT == S_IFREG,
+              status.st_uid == getuid(),
+              status.st_nlink == 1 else {
+            throw posixError(path: lock.path, code: EINVAL)
+        }
+        _ = Darwin.fchmod(descriptor, mode_t(0o600))
+        while flock(descriptor, LOCK_EX) != 0 {
+            guard errno == EINTR else { throw posixError(path: lock.path, code: errno) }
+        }
+        defer { _ = flock(descriptor, LOCK_UN) }
+        return try operation()
+    }
+
+    private func removeAbandonedAssetPartials(directory: URL, outputName: String) throws {
+        let prefix = "\(outputName).partial-"
+        let entries = try FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: nil
+        )
+        for entry in entries where entry.lastPathComponent.hasPrefix(prefix) {
+            var status = stat()
+            guard lstat(entry.path, &status) == 0 else {
+                if errno == ENOENT { continue }
+                throw posixError(path: entry.path, code: errno)
+            }
+            let kind = status.st_mode & S_IFMT
+            guard kind == S_IFREG || kind == S_IFLNK else { continue }
+            guard Darwin.unlink(entry.path) == 0 || errno == ENOENT else {
+                throw posixError(path: entry.path, code: errno)
+            }
+        }
+    }
+
+    private func preparedAssetExists(at url: URL) -> Bool {
+        var status = stat()
+        return lstat(url.path, &status) == 0
+            && status.st_mode & S_IFMT == S_IFREG
+            && status.st_uid == getuid()
+            && status.st_nlink == 1
+    }
+
+    /// Bind the cache to content rather than comparing unrelated mtimes (compressed bundle source
+    /// versus locally decompressed output). Public bundles already contain the signed payload
+    /// manifest, so their identity lookup is O(1); source/development layouts hash the compressed
+    /// input directly and retain the same correctness contract.
+    private func compressedResourceIdentity(source: URL) throws -> String {
+        let payload = source.deletingLastPathComponent().appendingPathComponent("dory-payload-sha256.txt")
+        if let text = try? String(contentsOf: payload, encoding: .utf8) {
+            let suffix = "  Contents/Resources/\(source.lastPathComponent)"
+            for line in text.split(whereSeparator: \.isNewline).map(String.init)
+            where line.count == 64 + suffix.count && line.hasSuffix(suffix) {
+                let digest = String(line.prefix(64))
+                if digest.allSatisfy(\.isHexDigit), digest == digest.lowercased() {
+                    return "sha256:\(digest)"
+                }
+            }
+        }
+
+        let handle = try FileHandle(forReadingFrom: source)
+        defer { try? handle.close() }
+        var hasher = SHA256()
+        while let data = try handle.read(upToCount: 1_048_576), !data.isEmpty {
+            hasher.update(data: data)
+        }
+        let digest = hasher.finalize().map { String(format: "%02x", $0) }.joined()
+        return "sha256:\(digest)"
+    }
+
+    private func posixError(path: String, code: Int32) -> NSError {
+        NSError(
+            domain: NSPOSIXErrorDomain,
+            code: Int(code),
+            userInfo: [NSFilePathErrorKey: path]
+        )
     }
 
     private func string(_ key: String) -> String? {

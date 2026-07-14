@@ -595,6 +595,24 @@ grep -F 'e2fsprogs-extra_amd64' guest/initfs/PINS >/dev/null \
   || fail "amd64 guest resize2fs artifact is not provenance-pinned"
 grep -F 'st.st_blocks * 512' scripts/dory-doctor >/dev/null \
   || fail "doctor reports sparse VM logical capacity as physical host usage"
+for prepared_asset_contract in \
+  'withAssetPreparationLock' \
+  'removeAbandonedAssetPartials' \
+  'compressedResourceIdentity' \
+  'Darwin.rename(temporary.path, output.path)'; do
+  grep -F "$prepared_asset_contract" dory-core-swift/Sources/DorydKit/DorydConfiguration.swift >/dev/null \
+    || fail "bundled rootfs preparation lost contract: $prepared_asset_contract"
+done
+for prepared_asset_test in \
+  'testDockerTierRemovesOnlyAbandonedPartialsForItsPreparedRootfs' \
+  'testConcurrentDockerTierPreparationPublishesOneCompleteRootfsAndNoPartials' \
+  'testDockerTierRefreshesPreparedRootfsWhenCompressedContentChangesWithoutNewerMtime'; do
+  grep -F "$prepared_asset_test" dory-core-swift/Tests/DorydKitTests/DorydConfigurationTests.swift >/dev/null \
+    || fail "bundled rootfs preparation lost regression: $prepared_asset_test"
+done
+grep -F 'removesAbandonedPartialEvenWhenPristineAndStampAreCurrent' \
+  Packages/ContainerizationEngine/Tests/DoryHVTests/RootfsPristineRefreshTests.swift >/dev/null \
+  || fail "dory-hv pristine-rootfs refresh can leak an interrupted partial forever"
 if grep -F "Volume **data** isn't copied automatically" Dory/Features/Settings/SettingsView.swift >/dev/null; then
   fail "migration UI still incorrectly claims that named-volume data is not copied"
 fi

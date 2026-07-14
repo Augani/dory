@@ -324,6 +324,10 @@ final class DorydConfigurationTests: XCTestCase {
         let compressedRootfs = resources + "/dory-engine-rootfs-\(guestArch).ext4.lzfse"
         try Data("rootfs-fixture".utf8).write(to: URL(fileURLWithPath: rootfs))
         try DorydLZFSE.compress(source: rootfs, destination: compressedRootfs)
+        let manifestDigest = String(repeating: "a", count: 64)
+        try Data(
+            "\(manifestDigest)  Contents/Resources/dory-engine-rootfs-\(guestArch).ext4.lzfse\n".utf8
+        ).write(to: URL(fileURLWithPath: resources + "/dory-payload-sha256.txt"))
 
         let env = DorydEnvironment(values: [
             "DORYD_HOME": directory + "/home",
@@ -334,6 +338,171 @@ final class DorydConfigurationTests: XCTestCase {
         let preparedRootfs = state + "/assets/dory-engine-rootfs-\(guestArch).ext4"
         XCTAssertArgumentPair(hv.arguments, "--rootfs", preparedRootfs)
         XCTAssertEqual(FileManager.default.contents(atPath: preparedRootfs), Data("rootfs-fixture".utf8))
+        XCTAssertEqual(
+            try String(contentsOfFile: preparedRootfs + ".source-identity", encoding: .utf8),
+            "sha256:\(manifestDigest)\n"
+        )
+    }
+
+    func testDockerTierRemovesOnlyAbandonedPartialsForItsPreparedRootfs() throws {
+        let directory = "/tmp/doryd-config-rootfs-cleanup-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let helpers = directory + "/Dory.app/Contents/Helpers"
+        let resources = directory + "/Dory.app/Contents/Resources"
+        let state = directory + "/state"
+        let assets = state + "/assets"
+        try FileManager.default.createDirectory(atPath: helpers, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(atPath: resources, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(atPath: assets, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+
+        let doryd = try executableFixture(at: helpers + "/doryd")
+        _ = try executableFixture(at: helpers + "/dory-hv")
+        _ = try executableFixture(at: helpers + "/gvproxy")
+        #if arch(x86_64)
+        let guestArch = "amd64"
+        #else
+        let guestArch = "arm64"
+        #endif
+        FileManager.default.createFile(atPath: resources + "/dory-hv-kernel-\(guestArch)", contents: Data())
+        let source = directory + "/fixture-rootfs.ext4"
+        try Data("bundled-rootfs".utf8).write(to: URL(fileURLWithPath: source))
+        try DorydLZFSE.compress(
+            source: source,
+            destination: resources + "/dory-engine-rootfs-\(guestArch).ext4.lzfse"
+        )
+
+        let output = assets + "/dory-engine-rootfs-\(guestArch).ext4"
+        let environment = DorydEnvironment(values: [
+            "DORYD_HOME": directory + "/home",
+            "DORYD_STATE_DIR": state,
+        ], cwd: directory, executablePath: doryd, hostPlatform: supportedRawHVPlatform())
+        _ = try XCTUnwrap(environment.dockerTierConfiguration()?.hvProcess)
+        XCTAssertEqual(FileManager.default.contents(atPath: output), Data("bundled-rootfs".utf8))
+
+        // The VZ backend may mutate its writable system rootfs during the current app version.
+        // A matching source identity preserves those changes while cleanup removes crash residue.
+        try Data("already-prepared".utf8).write(to: URL(fileURLWithPath: output))
+        let abandoned = output + ".partial-crashed"
+        let abandonedLink = output + ".partial-symlink"
+        let reservedDirectory = output + ".partial-directory"
+        let unrelated = assets + "/other-rootfs.ext4.partial-crashed"
+        try Data(repeating: 0xA5, count: 1_024 * 1_024).write(to: URL(fileURLWithPath: abandoned))
+        try FileManager.default.createSymbolicLink(atPath: abandonedLink, withDestinationPath: output)
+        try FileManager.default.createDirectory(atPath: reservedDirectory, withIntermediateDirectories: false)
+        try Data("keep".utf8).write(to: URL(fileURLWithPath: unrelated))
+
+        let hv = try XCTUnwrap(environment.dockerTierConfiguration()?.hvProcess)
+
+        XCTAssertArgumentPair(hv.arguments, "--rootfs", output)
+        XCTAssertEqual(FileManager.default.contents(atPath: output), Data("already-prepared".utf8))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: abandoned))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: abandonedLink))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: reservedDirectory))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: unrelated))
+    }
+
+    func testDockerTierRefreshesPreparedRootfsWhenCompressedContentChangesWithoutNewerMtime() throws {
+        let directory = "/tmp/doryd-config-rootfs-identity-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let helpers = directory + "/Dory.app/Contents/Helpers"
+        let resources = directory + "/Dory.app/Contents/Resources"
+        let state = directory + "/state"
+        try FileManager.default.createDirectory(atPath: helpers, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(atPath: resources, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+
+        let doryd = try executableFixture(at: helpers + "/doryd")
+        _ = try executableFixture(at: helpers + "/dory-hv")
+        _ = try executableFixture(at: helpers + "/gvproxy")
+        #if arch(x86_64)
+        let guestArch = "amd64"
+        #else
+        let guestArch = "arm64"
+        #endif
+        FileManager.default.createFile(atPath: resources + "/dory-hv-kernel-\(guestArch)", contents: Data())
+        let source = directory + "/fixture-rootfs.ext4"
+        let compressed = resources + "/dory-engine-rootfs-\(guestArch).ext4.lzfse"
+        let first = Data("rootfs-version-0001".utf8)
+        let second = Data("rootfs-version-0002".utf8)
+        try first.write(to: URL(fileURLWithPath: source))
+        try DorydLZFSE.compress(source: source, destination: compressed)
+
+        let environment = DorydEnvironment(values: [
+            "DORYD_HOME": directory + "/home",
+            "DORYD_STATE_DIR": state,
+        ], cwd: directory, executablePath: doryd, hostPlatform: supportedRawHVPlatform())
+        let output = state + "/assets/dory-engine-rootfs-\(guestArch).ext4"
+        _ = try XCTUnwrap(environment.dockerTierConfiguration()?.hvProcess)
+        XCTAssertEqual(FileManager.default.contents(atPath: output), first)
+
+        try second.write(to: URL(fileURLWithPath: source))
+        try DorydLZFSE.compress(source: source, destination: compressed)
+        let deliberatelyOldDate = Date(timeIntervalSince1970: 946_684_800)
+        try FileManager.default.setAttributes([.modificationDate: deliberatelyOldDate], ofItemAtPath: compressed)
+        let sourceDate = try XCTUnwrap(
+            FileManager.default.attributesOfItem(atPath: compressed)[.modificationDate] as? Date
+        )
+        let preparedDate = try XCTUnwrap(
+            FileManager.default.attributesOfItem(atPath: output)[.modificationDate] as? Date
+        )
+        XCTAssertLessThan(sourceDate, preparedDate)
+
+        _ = try XCTUnwrap(environment.dockerTierConfiguration()?.hvProcess)
+        XCTAssertEqual(FileManager.default.contents(atPath: output), second)
+        let identity = try XCTUnwrap(
+            String(contentsOfFile: output + ".source-identity", encoding: .utf8)
+        )
+        XCTAssertTrue(identity.hasPrefix("sha256:"))
+    }
+
+    func testConcurrentDockerTierPreparationPublishesOneCompleteRootfsAndNoPartials() async throws {
+        let directory = "/tmp/doryd-config-rootfs-concurrent-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let helpers = directory + "/Dory.app/Contents/Helpers"
+        let resources = directory + "/Dory.app/Contents/Resources"
+        let state = directory + "/state"
+        try FileManager.default.createDirectory(atPath: helpers, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(atPath: resources, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+
+        let doryd = try executableFixture(at: helpers + "/doryd")
+        _ = try executableFixture(at: helpers + "/dory-hv")
+        _ = try executableFixture(at: helpers + "/gvproxy")
+        #if arch(x86_64)
+        let guestArch = "amd64"
+        #else
+        let guestArch = "arm64"
+        #endif
+        FileManager.default.createFile(atPath: resources + "/dory-hv-kernel-\(guestArch)", contents: Data())
+        let expected = Data(repeating: 0x5A, count: 4 * 1_024 * 1_024)
+        let source = directory + "/fixture-rootfs.ext4"
+        try expected.write(to: URL(fileURLWithPath: source))
+        try DorydLZFSE.compress(
+            source: source,
+            destination: resources + "/dory-engine-rootfs-\(guestArch).ext4.lzfse"
+        )
+        let environment = DorydEnvironment(values: [
+            "DORYD_HOME": directory + "/home",
+            "DORYD_STATE_DIR": state,
+        ], cwd: directory, executablePath: doryd, hostPlatform: supportedRawHVPlatform())
+        let expectedPath = state + "/assets/dory-engine-rootfs-\(guestArch).ext4"
+
+        let preparedPaths = await withTaskGroup(of: String?.self, returning: [String?].self) { group in
+            for _ in 0..<8 {
+                group.addTask {
+                    guard let arguments = environment.dockerTierConfiguration()?.hvProcess?.arguments,
+                          let index = arguments.firstIndex(of: "--rootfs"),
+                          arguments.indices.contains(index + 1) else { return nil }
+                    return arguments[index + 1]
+                }
+            }
+            var paths: [String?] = []
+            for await path in group { paths.append(path) }
+            return paths
+        }
+
+        XCTAssertEqual(preparedPaths.compactMap { $0 }, Array(repeating: expectedPath, count: 8))
+        XCTAssertEqual(FileManager.default.contents(atPath: expectedPath), expected)
+        let entries = try FileManager.default.contentsOfDirectory(atPath: state + "/assets")
+        XCTAssertFalse(entries.contains { $0.hasPrefix("dory-engine-rootfs-\(guestArch).ext4.partial-") })
     }
 
     func testDockerTierFindsResourcesFromLaunchAgentResourceDirectory() throws {
@@ -430,7 +599,8 @@ final class DorydConfigurationTests: XCTestCase {
         XCTAssertEqual(vmm.executablePath, helper)
         XCTAssertEqual(vmm.handoffSocketPath, state + "/dory-vmm-docker-handoff.sock")
         XCTAssertArgumentPair(vmm.arguments, "--kernel", state + "/assets/dory-vm-kernel-\(guestArch)")
-        XCTAssertArgumentPair(vmm.arguments, "--rootfs", state + "/assets/dory-vz-engine-rootfs-\(guestArch).ext4")
+        let preparedRootfs = state + "/assets/dory-vz-engine-rootfs-\(guestArch).ext4"
+        XCTAssertArgumentPair(vmm.arguments, "--rootfs", preparedRootfs)
         XCTAssertArgumentPair(vmm.arguments, "--gvproxy", gvproxy)
         XCTAssertArgumentPair(vmm.arguments, "--publish-host", "0.0.0.0")
         XCTAssertArgumentPair(
@@ -439,7 +609,18 @@ final class DorydConfigurationTests: XCTestCase {
             "/private/tmp/com.apple.launchd.fixture/Listeners"
         )
         XCTAssertArgumentPair(vmm.arguments, "--cmdline", "console=hvc0 root=/dev/vda rw rootwait panic=1 dory.machine_id=docker dory.home=\(directory)/home")
-        XCTAssertEqual(FileManager.default.contents(atPath: state + "/assets/dory-vz-engine-rootfs-\(guestArch).ext4"), Data("vmm-rootfs-fixture".utf8))
+        XCTAssertEqual(FileManager.default.contents(atPath: preparedRootfs), Data("vmm-rootfs-fixture".utf8))
+
+        // Sonoma uses this writable VZ rootfs path. A new bundle identity must replace the old
+        // system image while the same identity remains persistent between launches.
+        try Data("vmm-rootfs-upgrade".utf8).write(to: URL(fileURLWithPath: rootfs))
+        try DorydLZFSE.compress(
+            source: rootfs,
+            destination: resources + "/dory-engine-rootfs-\(guestArch).ext4.lzfse"
+        )
+        let upgradedVmm = try XCTUnwrap(env.dockerTierConfiguration()?.vmmProcess)
+        XCTAssertArgumentPair(upgradedVmm.arguments, "--rootfs", preparedRootfs)
+        XCTAssertEqual(FileManager.default.contents(atPath: preparedRootfs), Data("vmm-rootfs-upgrade".utf8))
     }
 
     func testCanDisableAgentControl() throws {

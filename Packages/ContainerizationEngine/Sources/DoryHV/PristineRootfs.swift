@@ -36,20 +36,25 @@ public enum PristineRootfs {
 
         let installed = FileManager.default.fileExists(atPath: pristine)
         let recordedStamp = try? String(contentsOfFile: stampPath, encoding: .utf8)
+        let temporary = pristine + ".partial"
+        // A SIGKILL can bypass defer/catch cleanup. This runs while EngineMode owns the state lock,
+        // so an exact-name partial cannot belong to another active installer.
+        try? FileManager.default.removeItem(atPath: temporary)
         guard !installed || recordedStamp != identity else { return }
 
         log(installed
             ? "engine rootfs changed; reinstalling pristine…"
             : "first run: installing bundled engine rootfs (one-time, offline)…")
 
-        let temporary = pristine + ".partial"
-        try? FileManager.default.removeItem(atPath: temporary)
+        defer { try? FileManager.default.removeItem(atPath: temporary) }
         try FileManager.default.copyItem(atPath: bundledRootfs, toPath: temporary)
         try fsyncFile(temporary)
-        // moveItem cannot overwrite, so drop any prior pristine first. A crash in this window leaves
-        // no pristine, which the absent-means-stale rule reinstalls on the next boot.
-        try? FileManager.default.removeItem(atPath: pristine)
-        try FileManager.default.moveItem(atPath: temporary, toPath: pristine)
+        // Same-directory rename atomically replaces an older pristine. The engine state lock
+        // serializes callers, so a crash exposes either the complete old rootfs or the complete new
+        // rootfs; the next run also removes any abandoned partial before copying.
+        guard Darwin.rename(temporary, pristine) == 0 else {
+            throw VMError.invalidConfiguration("cannot publish \(pristine): errno \(errno)")
+        }
         // Stamp last: a crash before it lands leaves an absent/old stamp, and absent-means-stale
         // re-heals on the next boot rather than trusting a half-updated pair.
         try Data(identity.utf8).write(to: URL(fileURLWithPath: stampPath), options: .atomic)

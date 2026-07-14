@@ -64,6 +64,21 @@ import Testing
         #expect(try modificationDate(ofFile: pristine) == before)
     }
 
+    @Test func removesAbandonedPartialEvenWhenPristineAndStampAreCurrent() throws {
+        let state = try makeStateDirectory()
+        defer { try? FileManager.default.removeItem(atPath: state) }
+        let bundle = try writeFixture(in: state, named: "bundle.ext4", contents: "bundle-content")
+        let pristine = try writeFixture(in: state, named: "rootfs-pristine.ext4", contents: "sentinel-unchanged")
+        let identity = try PristineRootfs.identity(ofBundledRootfs: bundle)
+        _ = try writeFixture(in: state, named: "rootfs-pristine.stamp", contents: identity)
+        let partial = try writeFixture(in: state, named: "rootfs-pristine.ext4.partial", contents: "crash-residue")
+
+        try PristineRootfs.ensure(state: state, bundledRootfs: bundle)
+
+        #expect(!FileManager.default.fileExists(atPath: partial))
+        #expect(contents(ofFile: pristine) == "sentinel-unchanged")
+    }
+
     private func makeStateDirectory() throws -> String {
         let directory = NSTemporaryDirectory() + "dory-pristine-\(UUID().uuidString)"
         try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
