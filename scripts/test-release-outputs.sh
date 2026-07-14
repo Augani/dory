@@ -21,6 +21,12 @@ grep -Fq 'dory-transfer-helper-image-arm64.tar' scripts/bundle-engine.sh \
   || { echo "test-release-outputs: release bundler omits the transfer-helper image" >&2; exit 1; }
 grep -Fq 'bundle_debug_transfer_helper' scripts/build.sh \
   || { echo "test-release-outputs: debug bundler omits the transfer-helper image" >&2; exit 1; }
+grep -Fq '_ = DoryUpdater.shared' Dory/Models/AppStore.swift \
+  || { echo "test-release-outputs: app launch no longer starts Sparkle" >&2; exit 1; }
+if rg -q 'dory\.autoUpdate|automaticallyChecksForUpdates' Dory; then
+  echo "test-release-outputs: app code overrides Sparkle automatic-check consent" >&2
+  exit 1
+fi
 
 VERSION="0.3.0"
 BUILD="42"

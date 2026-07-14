@@ -20,9 +20,4 @@ final class DoryUpdater {
     func checkForUpdates() {
         updaterController.checkForUpdates(nil)
     }
-
-    var automaticallyChecks: Bool {
-        get { updater.automaticallyChecksForUpdates }
-        set { updater.automaticallyChecksForUpdates = newValue }
-    }
 }

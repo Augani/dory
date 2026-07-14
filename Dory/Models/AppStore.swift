@@ -57,7 +57,6 @@ final class AppStore {
 
     var launchAtLogin = false
     var showMenuBarIcon = true
-    var autoUpdate = false
     var routeDockerCLI = true
     var keepDorydRunningAfterQuit = false
     var machineEnvAllowList: [String] = MachineEnvImport.defaultNames
@@ -197,8 +196,8 @@ final class AppStore {
             launchAtLogin = SMAppService.mainApp.status == .enabled
             if let v = UserDefaults.standard.object(forKey: Self.menuBarIconKey) as? Bool { showMenuBarIcon = v }
             if isAgentMode { showMenuBarIcon = true }
-            if let v = UserDefaults.standard.object(forKey: Self.autoUpdateKey) as? Bool { autoUpdate = v }
-            DoryUpdater.shared.automaticallyChecks = autoUpdate
+            // Let Sparkle load its own consent and scheduling preferences.
+            _ = DoryUpdater.shared
             if let v = UserDefaults.standard.object(forKey: Self.routeDockerKey) as? Bool { routeDockerCLI = v }
             if let v = UserDefaults.standard.object(forKey: Self.keepDorydRunningAfterQuitKey) as? Bool { keepDorydRunningAfterQuit = v }
             if let raw = UserDefaults.standard.string(forKey: Self.machineEnvAllowListKey) {
@@ -273,7 +272,6 @@ final class AppStore {
     static let onboardingDoneKey = "dory.hasCompletedOnboarding"
     static let appearanceKey = "dory.appearance"
     static let menuBarIconKey = "dory.showMenuBarIcon"
-    static let autoUpdateKey = "dory.autoUpdate"
     static let routeDockerKey = "dory.routeDockerCLI"
     static let keepDorydRunningAfterQuitKey = "dory.keepDorydRunningAfterQuit"
     static let machineEnvAllowListKey = "dory.machineEnvAllowList"
@@ -421,13 +419,6 @@ final class AppStore {
 
     func setContainerScope(_ scope: ContainerScope) {
         containerScope = scope
-    }
-
-    func setAutoUpdate(_ on: Bool) {
-        autoUpdate = on
-        UserDefaults.standard.set(on, forKey: Self.autoUpdateKey)
-        DoryUpdater.shared.automaticallyChecks = on
-        showSettingsSuccess(on ? "Automatic update checks enabled." : "Automatic update checks disabled.")
     }
 
     func setKubernetesVersion(_ version: KubeVersion) {
