@@ -258,6 +258,9 @@ for data_drive_recovery_guard in \
   lost_drive_identity_recovered \
   lost_drive_identity_mismatch_rejected \
   alternate_drive_untouched \
+  first_launch_resume_before_drive \
+  first_launch_resume_after_drive \
+  first_launch_identity_mismatch_rejected \
   unwritable_drive_rejected_cleanly \
   alias_concurrent_attach_rejected \
   manifest_uuid_identity \
@@ -548,8 +551,13 @@ grep -F '128 * 1024 * 1024 * 1024' dory-core-swift/Sources/DoryOperations/Docker
   || fail "the shared Docker data disk regressed below the sparse 128 GiB release capacity"
 grep -F 'invalidExistingDisk' dory-core-swift/Sources/DoryOperations/DockerDataDisk.swift >/dev/null \
   || fail "an existing allocated non-ext4 Docker disk can reach first-boot formatting instead of failing closed"
-grep -F 'expectedExt4ImageBytes(at: destination) != nil' dory-core-swift/Sources/DoryOperations/DockerDataDisk.swift >/dev/null \
+python3 - dory-core-swift/Sources/DoryOperations/DockerDataDisk.swift <<'PY' \
   || fail "an ext4-magic file with invalid geometry can be enlarged before corruption is rejected"
+import pathlib, sys
+source = pathlib.Path(sys.argv[1]).read_text()
+existing = source[source.index("if try pathEntryExists"):source.index("try fileManager.createDirectory")]
+assert existing.index("try validateContents") < existing.index("ftruncate(descriptor")
+PY
 grep -F 'engineDiskUsableBytes: Int64 = 120 * 1024 * 1024 * 1024' Dory/Runtime/MigrationAssistant.swift >/dev/null \
   || fail "migration admission trusts sparse logical length instead of the guest-proven ext4 capacity"
 for resize_source in \

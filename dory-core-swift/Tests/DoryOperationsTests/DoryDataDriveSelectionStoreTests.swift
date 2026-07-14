@@ -3,6 +3,120 @@ import Foundation
 import XCTest
 
 final class DoryDataDriveSelectionStoreTests: XCTestCase {
+    func testFirstLaunchPublishesReadySchemaTwoSelection() throws {
+        let base = try temporaryHome(named: "first-launch-ready")
+        defer { try? FileManager.default.removeItem(at: base) }
+        let store = try DoryDataDriveSelectionStore(home: base.path)
+
+        let drive = try store.prepareSelection()
+        let selection = try XCTUnwrap(store.read())
+
+        XCTAssertEqual(selection.schemaVersion, 2)
+        XCTAssertEqual(selection.phase, .ready)
+        XCTAssertEqual(selection.driveID, try drive.readManifest().id)
+        XCTAssertEqual(selection.canonicalPath, drive.root)
+    }
+
+    func testInterruptedFirstLaunchResumesBeforeDrivePublication() throws {
+        let base = try temporaryHome(named: "resume-before-drive")
+        defer { try? FileManager.default.removeItem(at: base) }
+        let store = try DoryDataDriveSelectionStore(home: base.path)
+        let drive = try DoryDataDrive(home: base.path)
+        let intendedID = UUID()
+        try writeSelectionFixture(
+            store: store,
+            driveID: intendedID,
+            path: drive.root,
+            phase: .provisioning
+        )
+
+        let resumed = try store.prepareSelection()
+
+        XCTAssertEqual(try resumed.readManifest().id, intendedID)
+        XCTAssertEqual(try store.read()?.phase, .ready)
+        XCTAssertEqual(try store.read()?.driveID, intendedID)
+    }
+
+    func testInterruptedFirstLaunchResumesAfterDrivePublication() throws {
+        let base = try temporaryHome(named: "resume-after-drive")
+        defer { try? FileManager.default.removeItem(at: base) }
+        let store = try DoryDataDriveSelectionStore(home: base.path)
+        let drive = try DoryDataDrive(home: base.path)
+        let intendedID = UUID()
+        try drive.prepare(initialManifestID: intendedID)
+        try writeSelectionFixture(
+            store: store,
+            driveID: intendedID,
+            path: drive.root,
+            phase: .provisioning
+        )
+
+        let resumed = try store.prepareSelection()
+
+        XCTAssertEqual(try resumed.readManifest().id, intendedID)
+        XCTAssertEqual(try store.read()?.phase, .ready)
+    }
+
+    func testInterruptedFirstLaunchRefusesDifferentDriveIdentity() throws {
+        let base = try temporaryHome(named: "resume-mismatch")
+        defer { try? FileManager.default.removeItem(at: base) }
+        let store = try DoryDataDriveSelectionStore(home: base.path)
+        let drive = try DoryDataDrive(home: base.path)
+        let intendedID = UUID()
+        let foreignID = UUID()
+        try drive.prepare(initialManifestID: foreignID)
+        try writeSelectionFixture(
+            store: store,
+            driveID: intendedID,
+            path: drive.root,
+            phase: .provisioning
+        )
+
+        XCTAssertThrowsError(try store.prepareSelection()) { error in
+            XCTAssertEqual(
+                error as? DoryDataDriveError,
+                .unexpectedManifestIdentity(
+                    path: drive.root,
+                    expected: intendedID,
+                    actual: foreignID
+                )
+            )
+        }
+        XCTAssertEqual(try drive.readManifest().id, foreignID)
+        XCTAssertEqual(try store.read()?.phase, .provisioning)
+        XCTAssertThrowsError(try store.inspectSelection()) { error in
+            XCTAssertEqual(
+                error as? DoryDataDriveSelectionError,
+                .provisioningIncomplete(path: drive.root, id: intendedID)
+            )
+        }
+    }
+
+    func testPreReleaseAndOversizedSelectionRecordsAreRejected() throws {
+        let base = try temporaryHome(named: "selection-schema")
+        defer { try? FileManager.default.removeItem(at: base) }
+        let store = try DoryDataDriveSelectionStore(home: base.path)
+        let drive = try DoryDataDrive(home: base.path)
+        try FileManager.default.createDirectory(
+            at: URL(fileURLWithPath: store.path).deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data("""
+        {"schemaVersion":1,"driveID":"\(UUID().uuidString)","canonicalPath":"\(drive.root)","selectedAt":"2026-07-14T00:00:00.000Z"}
+        """.utf8).write(to: URL(fileURLWithPath: store.path))
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: store.path)
+
+        XCTAssertThrowsError(try store.read()) { error in
+            XCTAssertEqual(error as? DoryDataDriveSelectionError, .invalidRecord(store.path))
+        }
+
+        try Data(repeating: 0x41, count: 1_048_577).write(to: URL(fileURLWithPath: store.path))
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: store.path)
+        XCTAssertThrowsError(try store.read()) { error in
+            XCTAssertEqual(error as? DoryDataDriveSelectionError, .invalidRecord(store.path))
+        }
+    }
+
     func testSelectionAuthorityExcludesConcurrentMutation() throws {
         let base = try temporaryHome(named: "authority")
         defer { try? FileManager.default.removeItem(at: base) }
@@ -226,5 +340,25 @@ final class DoryDataDriveSelectionStoreTests: XCTestCase {
         )
         try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
         return base
+    }
+
+    private func writeSelectionFixture(
+        store: DoryDataDriveSelectionStore,
+        driveID: UUID,
+        path: String,
+        phase: DoryDataDriveSelectionPhase
+    ) throws {
+        let parent = URL(fileURLWithPath: store.path).deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
+        let record: [String: Any] = [
+            "schemaVersion": DoryDataDriveSelection.schemaVersion,
+            "phase": phase.rawValue,
+            "driveID": driveID.uuidString,
+            "canonicalPath": path,
+            "selectedAt": "2026-07-14T00:00:00.000Z",
+        ]
+        let data = try JSONSerialization.data(withJSONObject: record, options: [.sortedKeys])
+        try data.write(to: URL(fileURLWithPath: store.path))
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: store.path)
     }
 }

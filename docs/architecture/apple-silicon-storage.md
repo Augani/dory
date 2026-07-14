@@ -76,8 +76,10 @@ attaches storage. A populated directory without a valid Dory manifest is never a
 engine cannot attach the same drive, even through a different path alias.
 
 The selected-drive authority is a separate private, atomically published control record at
-`~/Library/Application Support/Dory/data-drive-selection.json`. It stores the drive UUID, external
-APFS volume UUID, last canonical path, and a minimal macOS bookmark. It deliberately does not live
+`~/Library/Application Support/Dory/data-drive-selection.json`. Its schema-2 `provisioning` →
+`ready` transaction records the intended drive UUID before first creation, so a crash can resume
+the same drive without adopting an unrelated bundle. The ready record stores the drive UUID,
+external APFS volume UUID, last canonical path, and a minimal macOS bookmark. It does not live
 under `~/.dory`: replacing every runtime socket, PID, log, kernel, and rootfs cache cannot make Dory
 forget an external drive and initialize an empty default. A resolved bookmark is accepted only
 after the drive and volume UUIDs match; a missing drive or same-name replacement volume fails

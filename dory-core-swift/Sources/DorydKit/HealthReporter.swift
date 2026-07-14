@@ -1291,10 +1291,16 @@ public final class HealthReporter: @unchecked Sendable {
         let configuredRoot = environment["DORYD_DATA_DRIVE"] ?? environment["DORY_DATA_DRIVE"]
         do {
             let selectionStore = try DoryDataDriveSelectionStore(home: home)
-            let drive = try selectionStore.inspectSelection(
+            let selectedDrive = try selectionStore.inspectSelection(
                 requestedRoot: configuredRoot,
                 fileManager: fileManager
-            ) ?? DoryDataDrive(home: home, overrideRoot: configuredRoot)
+            )
+            let drive: DoryDataDrive
+            if let selectedDrive {
+                drive = selectedDrive
+            } else {
+                drive = try DoryDataDrive(home: home, overrideRoot: configuredRoot)
+            }
             switch try drive.inspect(fileManager: fileManager) {
             case .absent:
                 return HealthCheck(
@@ -1307,7 +1313,7 @@ public final class HealthReporter: @unchecked Sendable {
                     data: ["path": drive.root, "available": "false"]
                 )
             case .ready:
-                guard try selectionStore.read(fileManager: fileManager) != nil else {
+                guard selectedDrive != nil else {
                     throw DoryDataDriveSelectionError.unselectedExistingDrive(drive.root)
                 }
                 let manifest = try drive.readManifest(fileManager: fileManager)

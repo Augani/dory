@@ -451,10 +451,19 @@ sparse_allocation=PASS
 discard_reclaim=PASS
 boot_trim_evidence=PASS
 named_volume_restart_persistence=PASS
+capacity_api=PASS
+running_growth_rejected=PASS
+forced_offline_check=PASS
+guest_resize_evidence=PASS
+explicit_capacity_growth=PASS
+explicit_growth_named_volume_persistence=PASS
 EOF
 cat > "$QUALIFICATION_FIXTURE/evidence/managed-data-drive/run/summary.txt" <<'EOF'
 status=PASS
 fresh_drive_default=PASS
+first_launch_resume_before_drive=PASS
+first_launch_resume_after_drive=PASS
+first_launch_identity_mismatch_rejected=PASS
 explicit_drive_status=PASS
 running_drive_mismatch_rejected=PASS
 lost_drive_identity_recovered=PASS

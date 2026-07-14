@@ -110,7 +110,8 @@ import sys
 import uuid
 
 selection = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
-assert selection["schemaVersion"] == 1
+assert selection["schemaVersion"] == 2
+assert selection["phase"] == "ready"
 assert selection["canonicalPath"] == sys.argv[2]
 assert selection["driveID"].lower() == sys.argv[3]
 assert str(uuid.UUID(selection["volumeUUID"])) == str(uuid.UUID(sys.argv[4]))

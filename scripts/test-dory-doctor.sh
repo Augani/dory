@@ -689,7 +689,8 @@ cat > "$FIRST_LAUNCH_SELECTION" <<JSON
 {
   "canonicalPath": "$FIRST_LAUNCH_DRIVE",
   "driveID": "11111111-1111-4111-8111-111111111111",
-  "schemaVersion": 1,
+  "phase": "ready",
+  "schemaVersion": 2,
   "selectedAt": "2026-07-14T00:00:00.000Z"
 }
 JSON
@@ -703,6 +704,45 @@ assert drive["path"].endswith("/Selected.dorydrive")
 assert drive["schema_version"] == 1
 assert drive["drive_id"] == "11111111-1111-4111-8111-111111111111"
 '
+python3 - "$FIRST_LAUNCH_SELECTION" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+record = json.loads(path.read_text())
+record["phase"] = "provisioning"
+record["bookmark"] = "AQ=="
+path.write_text(json.dumps(record, sort_keys=True) + "\n")
+PY
+scripts/dory-doctor disk --json | python3 -c '
+import json, sys
+drive = json.load(sys.stdin)["data_drive"]
+assert drive["available"] is False
+assert drive["selection_error"] is True
+assert "provisioning" not in drive
+assert "incompatible schema" in drive["error"]
+'
+python3 - "$FIRST_LAUNCH_SELECTION" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+record = json.loads(path.read_text())
+record.pop("bookmark")
+path.write_text(json.dumps(record, sort_keys=True) + "\n")
+PY
+scripts/dory-doctor disk --json | python3 -c '
+import json, sys
+drive = json.load(sys.stdin)["data_drive"]
+assert drive["available"] is False
+assert drive["provisioning"] is True
+assert drive["selection_error"] is True
+assert "start Dory again" in drive["error"]
+'
+python3 - "$FIRST_LAUNCH_SELECTION" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+record = json.loads(path.read_text())
+record["phase"] = "ready"
+path.write_text(json.dumps(record, sort_keys=True) + "\n")
+PY
+chmod 600 "$FIRST_LAUNCH_SELECTION"
 
 # A reachable Docker daemon can still have unusable container metadata after an interrupted
 # writable-snapshot transaction. Preserve the daemon's error, fail the doctor check explicitly,

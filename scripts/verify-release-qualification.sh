@@ -118,7 +118,9 @@ grep -qx 'status=PASS' "$growth_summary" \
   || die "retained data-disk growth evidence is not release qualifying"
 
 drive_summary="$(single_evidence_file managed-data-drive summary.txt)"
-for proof in status fresh_drive_default explicit_drive_status running_drive_mismatch_rejected \
+for proof in status fresh_drive_default first_launch_resume_before_drive \
+  first_launch_resume_after_drive first_launch_identity_mismatch_rejected \
+  explicit_drive_status running_drive_mismatch_rejected \
   lost_drive_identity_recovered lost_drive_identity_mismatch_rejected alternate_drive_untouched \
   unwritable_drive_rejected_cleanly missing_external_drive_rejected concurrent_attach_rejected \
   alias_concurrent_attach_rejected manifest_uuid_identity image_persistence \

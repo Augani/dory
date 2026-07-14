@@ -434,7 +434,9 @@ bounded 900 scripts/managed-data-drive-gate.sh \
   || die "managed data-drive persistence/fail-closed gate failed"
 drive_summary="$(find "$WORKDIR/evidence/managed-data-drive" -name summary.txt -type f -print -quit)"
 [ -s "$drive_summary" ] || die "managed data-drive summary is missing"
-for proof in status fresh_drive_default explicit_drive_status running_drive_mismatch_rejected \
+for proof in status fresh_drive_default first_launch_resume_before_drive \
+  first_launch_resume_after_drive first_launch_identity_mismatch_rejected \
+  explicit_drive_status running_drive_mismatch_rejected \
   lost_drive_identity_recovered lost_drive_identity_mismatch_rejected alternate_drive_untouched \
   unwritable_drive_rejected_cleanly missing_external_drive_rejected concurrent_attach_rejected \
   alias_concurrent_attach_rejected manifest_uuid_identity image_persistence \

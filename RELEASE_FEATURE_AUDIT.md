@@ -59,8 +59,13 @@ of scope so each fix remains reviewable.
 
 ## 2. App onboarding, daemon lifecycle, and durable drive
 
-- [ ] First launch from an empty account creates exactly one supported v1 layout and does not adopt
+- [x] First launch from an empty account creates exactly one supported v1 layout and does not adopt
   unreleased/foreign Dory state.
+  Local source evidence: schema-2 `provisioning` -> `ready` selection publication is resumable on
+  either side of drive publication; the exact signed helper passed both interruption points and
+  rejected a mismatched drive without replacing either identity. Pre-release records, foreign
+  bundles, symlinks, hard links, oversized records, unsafe permissions, and concurrent mutation
+  fail closed; the full 354-test core suite passed after removing a diagnostics reread race.
 - [ ] App, `doryd`, launchd, `dory-hv`, gvproxy, dataplane, and CLI ownership boundaries match
   `ARCHITECTURE.md` with no competing lifecycle owner.
 - [ ] Always-on, manual, auto-idle, and battery-saver start/wake/sleep behavior is deterministic,

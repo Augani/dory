@@ -61,6 +61,7 @@ BASIC_RE = re.compile(r"Basic\s+[A-Za-z0-9._~+/-]+=*", re.I)
 URL_CREDENTIAL_RE = re.compile(r"([a-z][a-z0-9+.-]*://[^\s:/@]+:)[^\s:/@]+@", re.I)
 DOCKER_CONTAINER_ID_RE = re.compile(r"\b[0-9a-f]{12,64}\b", re.I)
 DORY_DATA_DRIVE_SCHEMA_VERSION = 1
+DORY_DATA_DRIVE_SELECTION_SCHEMA_VERSION = 2
 
 
 def now_iso() -> str:
@@ -83,56 +84,90 @@ def incidents_path() -> Path:
     return Path(os.environ.get("DORY_INCIDENTS", str(DEFAULT_INCIDENTS))).expanduser()
 
 
+def read_private_json_record(path: Path, maximum_bytes: int) -> dict[str, Any]:
+    descriptor = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+    try:
+        metadata = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_uid != os.getuid()
+            or stat.S_IMODE(metadata.st_mode) & 0o077
+            or metadata.st_nlink != 1
+            or metadata.st_size < 0
+            or metadata.st_size > maximum_bytes
+        ):
+            raise ValueError("record is not a bounded private owner-only regular file")
+        chunks: list[bytes] = []
+        remaining = maximum_bytes + 1
+        while remaining > 0:
+            chunk = os.read(descriptor, min(64 * 1024, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        contents = b"".join(chunks)
+        if len(contents) > maximum_bytes:
+            raise ValueError("record exceeds its size limit")
+        candidate = json.loads(contents.decode("utf-8"))
+        if not isinstance(candidate, dict):
+            raise ValueError("record root is not an object")
+        return candidate
+    finally:
+        os.close(descriptor)
+
+
 def data_drive_selection() -> tuple[Path, dict[str, Any] | None, str | None]:
     configured = os.environ.get("DORYD_DATA_DRIVE") or os.environ.get("DORY_DATA_DRIVE")
     record_path = HOME / "Library" / "Application Support" / "Dory" / "data-drive-selection.json"
     selection: dict[str, Any] | None = None
-    descriptor = -1
     try:
-        descriptor = os.open(record_path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+        candidate = read_private_json_record(record_path, 1_048_576)
     except FileNotFoundError:
-        pass
-    except OSError as exc:
+        candidate = None
+    except (OSError, ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         default = HOME / "Library" / "Application Support" / "Dory" / "Dory.dorydrive"
         return Path(configured).expanduser() if configured else default, None, f"invalid Dory selected-drive record: {exc}"
-    if descriptor >= 0:
+    if candidate is not None:
         try:
-            metadata = os.fstat(descriptor)
-            if (
-                not stat.S_ISREG(metadata.st_mode)
-                or metadata.st_uid != os.getuid()
-                or stat.S_IMODE(metadata.st_mode) & 0o077
-                or metadata.st_nlink != 1
-            ):
-                raise ValueError("selection record is not a private owner-only regular file")
-            contents = os.read(descriptor, 1_048_577)
-            if len(contents) > 1_048_576:
-                raise ValueError("selection record exceeds 1 MiB")
-            candidate = json.loads(contents.decode("utf-8"))
             selected_at = dt.datetime.fromisoformat(str(candidate.get("selectedAt", "")).replace("Z", "+00:00"))
             canonical_path = str(candidate.get("canonicalPath", ""))
             drive_id = str(uuid.UUID(str(candidate.get("driveID"))))
+            phase = str(candidate.get("phase", ""))
             volume_uuid = candidate.get("volumeUUID")
+            bookmark = candidate.get("bookmark")
             if volume_uuid is not None:
                 volume_uuid = str(uuid.UUID(str(volume_uuid)))
             if (
-                candidate.get("schemaVersion") != 1
+                candidate.get("schemaVersion") != DORY_DATA_DRIVE_SELECTION_SCHEMA_VERSION
+                or phase not in ("provisioning", "ready")
                 or not canonical_path.startswith("/")
                 or selected_at.tzinfo is None
+                or (phase == "provisioning" and (volume_uuid is not None or bookmark is not None))
+                or (
+                    phase == "ready"
+                    and not (
+                        (volume_uuid is None and bookmark is None)
+                        or (volume_uuid is not None and isinstance(bookmark, str) and bool(bookmark))
+                    )
+                )
             ):
                 raise ValueError("selection record has an incompatible schema")
             selection = {
                 "canonicalPath": canonical_path,
                 "driveID": drive_id,
+                "phase": phase,
                 "volumeUUID": volume_uuid,
             }
         except (OSError, TypeError, ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
             default = HOME / "Library" / "Application Support" / "Dory" / "Dory.dorydrive"
             return Path(configured).expanduser() if configured else default, None, f"invalid Dory selected-drive record: {exc}"
-        finally:
-            os.close(descriptor)
 
     resolved = selection.get("canonicalPath") if selection else None
+    if selection is not None and selection["phase"] == "provisioning":
+        return Path(configured or str(resolved)), selection, (
+            f"Dory first-launch provisioning for drive {selection['driveID']} is incomplete at "
+            f"{resolved}; start Dory again to resume it"
+        )
     helper = dory_hv_bin()
     if selection is not None and configured is None and helper is not None:
         try:
@@ -1177,6 +1212,16 @@ class Doctor:
                 "Start Dory once to create its managed workload drive.",
                 **drive,
             )
+        elif drive.get("provisioning"):
+            self.add(
+                "disk.dory_drive",
+                "fail",
+                "disk.dory_drive_provisioning_incomplete",
+                "Dory data drive provisioning is incomplete",
+                str(drive.get("error") or drive.get("path")),
+                "Start Dory again to resume the same first-launch transaction.",
+                **drive,
+            )
         elif drive.get("unselected"):
             path = str(drive.get("path") or "invalid data-drive path")
             self.add(
@@ -1767,6 +1812,8 @@ def data_drive_report() -> dict[str, Any]:
     if selection_error:
         report["error"] = selection_error
         report["selection_error"] = True
+        if selection is not None and selection.get("phase") == "provisioning":
+            report["provisioning"] = True
         return report
     if not path.is_absolute() or path.suffix != ".dorydrive":
         report["error"] = "Dory data drive must be an absolute .dorydrive bundle"
@@ -1799,8 +1846,8 @@ def data_drive_report() -> dict[str, Any]:
 
     manifest_path = path / "drive.json"
     try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
+        manifest = read_private_json_record(manifest_path, 64 * 1024)
+    except (OSError, ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         report["error"] = f"invalid Dory data drive manifest: {exc}"
         return report
     try:

@@ -293,13 +293,17 @@ done
   >"$EVIDENCE/docker-version.txt"
 [ -s "$DRIVE/drive.json" ] || die "first launch did not create the durable Dory drive"
 [ -s "$SELECTION" ] || die "first launch did not record the selected Dory drive"
-python3 - "$DRIVE/drive.json" <<'PY'
+python3 - "$DRIVE/drive.json" "$SELECTION" <<'PY'
 import json, pathlib, sys, uuid
 data = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+selection = json.loads(pathlib.Path(sys.argv[2]).read_text(encoding="utf-8"))
 assert data["kind"] == "dev.dory.data-drive"
 assert data["schemaVersion"] == 1
 assert data["product"] == "Dory"
-uuid.UUID(data["id"])
+drive_id = uuid.UUID(data["id"])
+assert selection["schemaVersion"] == 2
+assert selection["phase"] == "ready"
+assert uuid.UUID(selection["driveID"]) == drive_id
 PY
 PRESERVATION_SENTINEL="$DRIVE/homebrew-uninstall-preservation.txt"
 SELECTION_SHA="$(shasum -a 256 "$SELECTION" | awk '{print $1}')"

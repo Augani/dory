@@ -10,6 +10,8 @@ public enum DoryDataDriveError: Error, Sendable, Equatable, CustomStringConverti
     case unavailableVolume(String)
     case unsupportedVolume(String)
     case populatedUnmarkedBundle(String)
+    case unsafeDirectory(String)
+    case unexpectedManifestIdentity(path: String, expected: UUID, actual: UUID)
     case filesystem(String)
 
     public var description: String {
@@ -30,6 +32,11 @@ public enum DoryDataDriveError: Error, Sendable, Equatable, CustomStringConverti
             "Dory data drive volume must be local APFS storage: \(path)"
         case let .populatedUnmarkedBundle(path):
             "refusing to adopt a populated unmarked data-drive bundle: \(path)"
+        case let .unsafeDirectory(path):
+            "Dory data-drive directory must be a private, owner-controlled directory: \(path)"
+        case let .unexpectedManifestIdentity(path, expected, actual):
+            "Dory data-drive identity changed during first-launch provisioning at \(path): expected "
+                + "\(expected.uuidString.lowercased()), found \(actual.uuidString.lowercased())"
         case let .filesystem(message):
             message
         }
@@ -248,19 +255,21 @@ public struct DoryDataDrive: Sendable, Equatable {
     /// check cannot accidentally recreate an unmounted external drive on the Mac's internal disk.
     public func inspect(fileManager: FileManager = .default) throws -> Inspection {
         let mountedVolume = try mountedExternalVolumeIdentity(fileManager: fileManager)
-        var isDirectory: ObjCBool = false
-        guard fileManager.fileExists(atPath: root, isDirectory: &isDirectory) else {
-            return .absent
-        }
-        guard isDirectory.boolValue else {
-            throw DoryDataDriveError.invalidRoot(root)
-        }
+        guard try Self.inspectPrivateDirectory(root) else { return .absent }
         let manifest = try readManifest(fileManager: fileManager)
         try validateVolumeIdentity(manifest, mountedVolume: mountedVolume)
         return .ready
     }
 
     public func prepare(fileManager: FileManager = .default) throws {
+        try prepare(expectedManifestID: nil, fileManager: fileManager)
+    }
+
+    public func prepare(initialManifestID: UUID, fileManager: FileManager = .default) throws {
+        try prepare(expectedManifestID: initialManifestID, fileManager: fileManager)
+    }
+
+    private func prepare(expectedManifestID: UUID?, fileManager: FileManager) throws {
         do {
             let mountedVolume = try mountedExternalVolumeIdentity(fileManager: fileManager)
             let parent = URL(fileURLWithPath: root).deletingLastPathComponent().path
@@ -273,6 +282,13 @@ public struct DoryDataDrive: Sendable, Equatable {
             let manifest: DoryDataDriveManifest
             if fileManager.fileExists(atPath: manifestPath) {
                 manifest = try readManifest(fileManager: fileManager)
+                if let expectedManifestID, manifest.id != expectedManifestID {
+                    throw DoryDataDriveError.unexpectedManifestIdentity(
+                        path: root,
+                        expected: expectedManifestID,
+                        actual: manifest.id
+                    )
+                }
             } else {
                 if fileManager.fileExists(atPath: root) {
                     let entries = try fileManager.contentsOfDirectory(atPath: root)
@@ -281,14 +297,14 @@ public struct DoryDataDrive: Sendable, Equatable {
                     }
                 }
                 manifest = try createFreshBundle(
+                    manifestID: expectedManifestID ?? UUID(),
                     mountedVolume: mountedVolume,
                     fileManager: fileManager
                 )
             }
             try validateVolumeIdentity(manifest, mountedVolume: mountedVolume)
             for directory in durableDirectories(root: root) {
-                try fileManager.createDirectory(atPath: directory, withIntermediateDirectories: true)
-                try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory)
+                try Self.ensurePrivateDirectory(directory, fileManager: fileManager)
             }
         } catch let error as DoryDataDriveError {
             throw error
@@ -304,8 +320,7 @@ public struct DoryDataDrive: Sendable, Equatable {
     }
 
     public func readManifest(fileManager: FileManager = .default) throws -> DoryDataDriveManifest {
-        try requirePrivateRegularManifest()
-        guard let data = fileManager.contents(atPath: manifestPath),
+        guard let data = try? PrivateRecordFile.read(at: manifestPath, maximumBytes: 64 * 1024),
               let manifest = try? JSONDecoder().decode(DoryDataDriveManifest.self, from: data),
               manifest.isValid else {
             throw DoryDataDriveError.invalidManifest(manifestPath)
@@ -340,31 +355,29 @@ public struct DoryDataDrive: Sendable, Equatable {
         try writeManifest(manifest, at: root + "/drive.json", fileManager: fileManager)
     }
 
-    private func requirePrivateRegularManifest() throws {
-        var status = stat()
-        guard manifestPath.withCString({ lstat($0, &status) }) == 0,
-              status.st_mode & S_IFMT == S_IFREG,
-              status.st_uid == getuid(),
-              status.st_mode & 0o077 == 0,
-              status.st_nlink == 1 else {
-            throw DoryDataDriveError.invalidManifest(manifestPath)
-        }
-    }
-
     private func createFreshBundle(
+        manifestID: UUID,
         mountedVolume: DoryDataDriveVolumeIdentity?,
         fileManager: FileManager
     ) throws -> DoryDataDriveManifest {
         let destination = URL(fileURLWithPath: root)
         let parent = destination.deletingLastPathComponent().path
-        let partial = parent + "/.\(destination.lastPathComponent).\(UUID().uuidString).partial"
-        try? fileManager.removeItem(atPath: partial)
+        let partial = parent + "/.\(destination.lastPathComponent)."
+            + "\(manifestID.uuidString.lowercased()).partial"
+        if Self.pathEntryExists(partial) {
+            do {
+                try fileManager.removeItem(atPath: partial)
+            } catch {
+                throw DoryDataDriveError.filesystem(
+                    "remove interrupted Dory data-drive publication at \(partial): \(error)"
+                )
+            }
+        }
         do {
             for directory in durableDirectories(root: partial) {
-                try fileManager.createDirectory(atPath: directory, withIntermediateDirectories: true)
-                try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory)
+                try Self.ensurePrivateDirectory(directory, fileManager: fileManager)
             }
-            let manifest = DoryDataDriveManifest(volume: mountedVolume)
+            let manifest = DoryDataDriveManifest(id: manifestID, volume: mountedVolume)
             try writeManifest(
                 manifest,
                 at: partial + "/drive.json",
@@ -414,7 +427,9 @@ public struct DoryDataDrive: Sendable, Equatable {
     }
 
     private static func syncFile(_ path: String) throws {
-        let descriptor = path.withCString { Darwin.open($0, O_RDONLY | O_CLOEXEC | O_NOFOLLOW) }
+        let descriptor = path.withCString {
+            Darwin.open($0, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
+        }
         guard descriptor >= 0 else {
             throw DoryDataDriveError.filesystem("open Dory data-drive file for sync at \(path): errno \(errno)")
         }
@@ -425,7 +440,9 @@ public struct DoryDataDrive: Sendable, Equatable {
     }
 
     private static func syncDirectory(_ path: String) throws {
-        let descriptor = path.withCString { Darwin.open($0, O_RDONLY | O_CLOEXEC) }
+        let descriptor = path.withCString {
+            Darwin.open($0, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW)
+        }
         guard descriptor >= 0 else {
             throw DoryDataDriveError.filesystem("open Dory data-drive directory for sync at \(path): errno \(errno)")
         }
@@ -506,6 +523,45 @@ public struct DoryDataDrive: Sendable, Equatable {
             return false
         }
         return volume.st_dev != parent.st_dev
+    }
+
+    private static func inspectPrivateDirectory(_ path: String) throws -> Bool {
+        let descriptor = path.withCString {
+            Darwin.open($0, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW)
+        }
+        guard descriptor >= 0 else {
+            if errno == ENOENT { return false }
+            throw DoryDataDriveError.unsafeDirectory(path)
+        }
+        defer { Darwin.close(descriptor) }
+        var status = stat()
+        guard Darwin.fstat(descriptor, &status) == 0,
+              status.st_mode & S_IFMT == S_IFDIR,
+              status.st_uid == getuid(),
+              status.st_mode & 0o077 == 0 else {
+            throw DoryDataDriveError.unsafeDirectory(path)
+        }
+        return true
+    }
+
+    private static func ensurePrivateDirectory(_ path: String, fileManager: FileManager) throws {
+        if !pathEntryExists(path) {
+            try fileManager.createDirectory(atPath: path, withIntermediateDirectories: true)
+        }
+        let descriptor = path.withCString {
+            Darwin.open($0, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW)
+        }
+        guard descriptor >= 0 else {
+            throw DoryDataDriveError.unsafeDirectory(path)
+        }
+        defer { Darwin.close(descriptor) }
+        var status = stat()
+        guard Darwin.fstat(descriptor, &status) == 0,
+              status.st_mode & S_IFMT == S_IFDIR,
+              status.st_uid == getuid(),
+              Darwin.fchmod(descriptor, 0o700) == 0 else {
+            throw DoryDataDriveError.unsafeDirectory(path)
+        }
     }
 
 }

@@ -10,6 +10,8 @@ public enum DoryDataDriveSelectionError: Error, Sendable, Equatable, CustomStrin
     case selectedDriveInUse(path: String, detail: String)
     case selectedDriveUnavailable(path: String, id: UUID)
     case selectedDriveMismatch(expected: UUID, actual: UUID?, path: String)
+    case provisioningIncomplete(path: String, id: UUID)
+    case provisioningPathMismatch(expected: String, actual: String)
     case filesystem(String)
 
     public var description: String {
@@ -36,6 +38,11 @@ public enum DoryDataDriveSelectionError: Error, Sendable, Equatable, CustomStrin
             return "selected Dory data-drive UUID mismatch at \(path): expected "
                 + "\(expected.uuidString.lowercased()), found "
                 + "\(actual?.uuidString.lowercased() ?? "no initialized drive")"
+        case let .provisioningIncomplete(path, id):
+            return "Dory first-launch provisioning for drive \(id.uuidString.lowercased()) is incomplete "
+                + "at \(path); start Dory again to resume it"
+        case let .provisioningPathMismatch(expected, actual):
+            return "Dory first-launch provisioning is bound to \(expected), not \(actual)"
         case let .filesystem(message):
             return message
         }
@@ -57,10 +64,16 @@ public final class DoryDataDriveSelectionAuthority: @unchecked Sendable {
     }
 }
 
+public enum DoryDataDriveSelectionPhase: String, Codable, Sendable, Equatable {
+    case provisioning
+    case ready
+}
+
 public struct DoryDataDriveSelection: Codable, Sendable, Equatable {
-    public static let schemaVersion = 1
+    public static let schemaVersion = 2
 
     public let schemaVersion: Int
+    public let phase: DoryDataDriveSelectionPhase
     public let driveID: UUID
     public let canonicalPath: String
     public let volumeUUID: UUID?
@@ -68,6 +81,7 @@ public struct DoryDataDriveSelection: Codable, Sendable, Equatable {
     public let selectedAt: String
 
     fileprivate init(
+        phase: DoryDataDriveSelectionPhase,
         driveID: UUID,
         canonicalPath: String,
         volumeUUID: UUID?,
@@ -75,6 +89,7 @@ public struct DoryDataDriveSelection: Codable, Sendable, Equatable {
         selectedAt: Date = Date()
     ) {
         schemaVersion = Self.schemaVersion
+        self.phase = phase
         self.driveID = driveID
         self.canonicalPath = canonicalPath
         self.volumeUUID = volumeUUID
@@ -89,6 +104,13 @@ public struct DoryDataDriveSelection: Codable, Sendable, Equatable {
               canonicalPath.hasPrefix("/"),
               canonicalPath.unicodeScalars.allSatisfy({ $0.value >= 0x20 && $0.value != 0x7f }) else {
             return false
+        }
+        switch phase {
+        case .provisioning:
+            guard volumeUUID == nil, bookmark == nil else { return false }
+        case .ready:
+            guard (volumeUUID == nil && bookmark == nil)
+                || (volumeUUID != nil && bookmark?.isEmpty == false) else { return false }
         }
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -119,16 +141,7 @@ public struct DoryDataDriveSelectionStore: Sendable, Equatable {
                     "Dory selected-drive state directory must not traverse a symlink: \(parent)"
                 )
             }
-            try FileManager.default.createDirectory(atPath: parent, withIntermediateDirectories: true)
-            var parentStatus = stat()
-            guard parent.withCString({ lstat($0, &parentStatus) }) == 0,
-                  parentStatus.st_mode & S_IFMT == S_IFDIR,
-                  parentStatus.st_uid == getuid() else {
-                throw DoryDataDriveSelectionError.filesystem(
-                    "Dory selected-drive state directory is not an owner-controlled directory: \(parent)"
-                )
-            }
-            try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: parent)
+            try Self.ensurePrivateDirectory(parent, fileManager: .default)
             return DoryDataDriveSelectionAuthority(
                 storePath: path,
                 lock: try EngineStateDirectoryLock(
@@ -147,15 +160,15 @@ public struct DoryDataDriveSelectionStore: Sendable, Equatable {
     }
 
     public func read(fileManager: FileManager = .default) throws -> DoryDataDriveSelection? {
-        guard fileManager.fileExists(atPath: path) else { return nil }
-        var status = stat()
-        guard path.withCString({ lstat($0, &status) }) == 0,
-              status.st_mode & S_IFMT == S_IFREG,
-              status.st_uid == getuid(),
-              status.st_mode & 0o077 == 0,
-              status.st_nlink == 1,
-              let data = fileManager.contents(atPath: path),
-              let selection = try? JSONDecoder().decode(DoryDataDriveSelection.self, from: data),
+        let data: Data
+        do {
+            data = try PrivateRecordFile.read(at: path, maximumBytes: 1_048_576)
+        } catch PrivateRecordFileError.missing {
+            return nil
+        } catch {
+            throw DoryDataDriveSelectionError.invalidRecord(path)
+        }
+        guard let selection = try? JSONDecoder().decode(DoryDataDriveSelection.self, from: data),
               selection.isStructurallyValid,
               (try? DoryDataDrive(home: home, overrideRoot: selection.canonicalPath)) != nil else {
             throw DoryDataDriveSelectionError.invalidRecord(path)
@@ -165,6 +178,16 @@ public struct DoryDataDriveSelectionStore: Sendable, Equatable {
 
     public func selectedPath(fileManager: FileManager = .default) throws -> String? {
         guard let selection = try read(fileManager: fileManager) else { return nil }
+        guard selection.phase == .ready else {
+            throw DoryDataDriveSelectionError.provisioningIncomplete(
+                path: selection.canonicalPath,
+                id: selection.driveID
+            )
+        }
+        return resolvedPath(for: selection)
+    }
+
+    private func resolvedPath(for selection: DoryDataDriveSelection) -> String {
         guard let bookmark = selection.bookmark else { return selection.canonicalPath }
         var stale = false
         guard let resolved = try? URL(
@@ -199,18 +222,50 @@ public struct DoryDataDriveSelectionStore: Sendable, Equatable {
     ) throws -> DoryDataDrive {
         try withAuthority(providedAuthority) {
             let existing = try read(fileManager: fileManager)
-            let selectedRoot = try requestedRoot ?? selectedPath(fileManager: fileManager)
+            let selectedRoot: String?
+            if let requestedRoot {
+                selectedRoot = requestedRoot
+            } else if let existing, existing.phase == .provisioning {
+                selectedRoot = existing.canonicalPath
+            } else if let existing {
+                selectedRoot = resolvedPath(for: existing)
+            } else {
+                selectedRoot = nil
+            }
             let drive = try DoryDataDrive(home: home, overrideRoot: selectedRoot)
 
             guard let existing else {
                 switch try drive.inspect(fileManager: fileManager) {
                 case .absent:
-                    try drive.prepare(fileManager: fileManager)
-                    try writeSelection(for: drive, fileManager: fileManager)
-                    return drive
+                    let pending = DoryDataDriveSelection(
+                        phase: .provisioning,
+                        driveID: UUID(),
+                        canonicalPath: drive.root,
+                        volumeUUID: nil,
+                        bookmark: nil
+                    )
+                    try writeSelection(pending, fileManager: fileManager)
+                    return try finishProvisioning(
+                        drive,
+                        selection: pending,
+                        fileManager: fileManager
+                    )
                 case .ready:
                     throw DoryDataDriveSelectionError.unselectedExistingDrive(drive.root)
                 }
+            }
+            if existing.phase == .provisioning {
+                guard drive.root == existing.canonicalPath else {
+                    throw DoryDataDriveSelectionError.provisioningPathMismatch(
+                        expected: existing.canonicalPath,
+                        actual: drive.root
+                    )
+                }
+                return try finishProvisioning(
+                    drive,
+                    selection: existing,
+                    fileManager: fileManager
+                )
             }
             return try verify(
                 drive,
@@ -230,7 +285,13 @@ public struct DoryDataDriveSelectionStore: Sendable, Equatable {
         fileManager: FileManager = .default
     ) throws -> DoryDataDrive? {
         guard let existing = try read(fileManager: fileManager) else { return nil }
-        let selectedRoot = try requestedRoot ?? selectedPath(fileManager: fileManager)
+        guard existing.phase == .ready else {
+            throw DoryDataDriveSelectionError.provisioningIncomplete(
+                path: existing.canonicalPath,
+                id: existing.driveID
+            )
+        }
+        let selectedRoot = requestedRoot ?? resolvedPath(for: existing)
         let drive = try DoryDataDrive(home: home, overrideRoot: selectedRoot)
         return try verify(
             drive,
@@ -292,6 +353,12 @@ public struct DoryDataDriveSelectionStore: Sendable, Equatable {
     ) throws -> DoryDataDrive {
         let drive = try DoryDataDrive(home: home, overrideRoot: requestedRoot)
         let existing = try read(fileManager: fileManager)
+        if let existing, existing.phase == .provisioning {
+            throw DoryDataDriveSelectionError.provisioningIncomplete(
+                path: existing.canonicalPath,
+                id: existing.driveID
+            )
+        }
         guard try drive.inspect(fileManager: fileManager) == .ready else {
             throw DoryDataDriveSelectionError.uninitializedDrive(drive.root)
         }
@@ -331,13 +398,14 @@ public struct DoryDataDriveSelectionStore: Sendable, Equatable {
         fileManager: FileManager
     ) throws -> [EngineStateDirectoryLock] {
         var roots: Set<String> = [target.root]
-        if let existing,
-           let currentPath = try selectedPath(fileManager: fileManager),
-           let current = try? DoryDataDrive(home: home, overrideRoot: currentPath),
-           current.root != target.root,
-           (try? current.inspect(fileManager: fileManager)) == .ready,
-           (try? current.readManifest(fileManager: fileManager).id) == existing.driveID {
-            roots.insert(current.root)
+        if let existing, existing.phase == .ready {
+            let currentPath = resolvedPath(for: existing)
+            if let current = try? DoryDataDrive(home: home, overrideRoot: currentPath),
+               current.root != target.root,
+               (try? current.inspect(fileManager: fileManager)) == .ready,
+               (try? current.readManifest(fileManager: fileManager).id) == existing.driveID {
+                roots.insert(current.root)
+            }
         }
         return try roots.sorted().map { root in
             do {
@@ -361,6 +429,12 @@ public struct DoryDataDriveSelectionStore: Sendable, Equatable {
         repairLayout: Bool,
         fileManager: FileManager
     ) throws -> DoryDataDrive {
+        guard selection.phase == .ready else {
+            throw DoryDataDriveSelectionError.provisioningIncomplete(
+                path: selection.canonicalPath,
+                id: selection.driveID
+            )
+        }
         guard try drive.inspect(fileManager: fileManager) == .ready else {
             throw DoryDataDriveSelectionError.selectedDriveUnavailable(
                 path: drive.root,
@@ -410,21 +484,32 @@ public struct DoryDataDriveSelectionStore: Sendable, Equatable {
             bookmark = nil
         }
         let selection = DoryDataDriveSelection(
+            phase: .ready,
             driveID: manifest.id,
             canonicalPath: drive.root,
             volumeUUID: manifest.volume?.uuid,
             bookmark: bookmark
         )
+        try writeSelection(selection, fileManager: fileManager)
+    }
+
+    private func finishProvisioning(
+        _ drive: DoryDataDrive,
+        selection: DoryDataDriveSelection,
+        fileManager: FileManager
+    ) throws -> DoryDataDrive {
+        try drive.prepare(initialManifestID: selection.driveID, fileManager: fileManager)
+        try writeSelection(for: drive, fileManager: fileManager)
+        return drive
+    }
+
+    private func writeSelection(
+        _ selection: DoryDataDriveSelection,
+        fileManager: FileManager
+    ) throws {
         do {
             let parent = URL(fileURLWithPath: path).deletingLastPathComponent().path
-            try fileManager.createDirectory(atPath: parent, withIntermediateDirectories: true)
-            var parentStatus = stat()
-            guard parent.withCString({ lstat($0, &parentStatus) }) == 0,
-                  parentStatus.st_mode & S_IFMT == S_IFDIR,
-                  parentStatus.st_uid == getuid() else {
-                throw DoryDataDriveSelectionError.invalidRecord(path)
-            }
-            try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: parent)
+            try Self.ensurePrivateDirectory(parent, fileManager: fileManager)
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             let data = try encoder.encode(selection) + Data("\n".utf8)
@@ -499,7 +584,9 @@ public struct DoryDataDriveSelectionStore: Sendable, Equatable {
     }
 
     private static func sync(_ path: String) throws {
-        let descriptor = path.withCString { Darwin.open($0, O_RDONLY | O_CLOEXEC | O_NOFOLLOW) }
+        let descriptor = path.withCString {
+            Darwin.open($0, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW)
+        }
         guard descriptor >= 0 else {
             throw DoryDataDriveSelectionError.filesystem(
                 "open Dory selected-drive state for sync at \(path): errno \(errno)"
@@ -509,6 +596,28 @@ public struct DoryDataDriveSelectionStore: Sendable, Equatable {
         guard Darwin.fsync(descriptor) == 0 else {
             throw DoryDataDriveSelectionError.filesystem(
                 "sync Dory selected-drive state at \(path): errno \(errno)"
+            )
+        }
+    }
+
+    private static func ensurePrivateDirectory(_ path: String, fileManager: FileManager) throws {
+        try fileManager.createDirectory(atPath: path, withIntermediateDirectories: true)
+        let descriptor = path.withCString {
+            Darwin.open($0, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW)
+        }
+        guard descriptor >= 0 else {
+            throw DoryDataDriveSelectionError.filesystem(
+                "Dory selected-drive state directory is unsafe: \(path)"
+            )
+        }
+        defer { Darwin.close(descriptor) }
+        var status = stat()
+        guard Darwin.fstat(descriptor, &status) == 0,
+              status.st_mode & S_IFMT == S_IFDIR,
+              status.st_uid == getuid(),
+              Darwin.fchmod(descriptor, 0o700) == 0 else {
+            throw DoryDataDriveSelectionError.filesystem(
+                "Dory selected-drive state directory is not owner controlled: \(path)"
             )
         }
     }

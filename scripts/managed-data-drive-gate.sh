@@ -91,6 +91,88 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
+seed_provisioning_selection() {
+  local home="$1" drive="$2" drive_id="$3"
+  local selection="$home/Library/Application Support/Dory/data-drive-selection.json"
+  mkdir -p "$(dirname "$selection")"
+  python3 - "$selection" "$drive" "$drive_id" <<'PY'
+import json, pathlib, sys
+path, drive, drive_id = sys.argv[1:]
+record = {
+    "canonicalPath": drive,
+    "driveID": drive_id,
+    "phase": "provisioning",
+    "schemaVersion": 2,
+    "selectedAt": "2026-07-14T00:00:00.000Z",
+}
+pathlib.Path(path).write_text(json.dumps(record, sort_keys=True) + "\n")
+PY
+  chmod 0600 "$selection"
+}
+
+assert_ready_selection() {
+  local home="$1" drive="$2" expected_id="$3"
+  python3 - "$drive/drive.json" \
+    "$home/Library/Application Support/Dory/data-drive-selection.json" "$expected_id" <<'PY'
+import json, pathlib, sys, uuid
+manifest = json.loads(pathlib.Path(sys.argv[1]).read_text())
+selection = json.loads(pathlib.Path(sys.argv[2]).read_text())
+expected = uuid.UUID(sys.argv[3])
+assert uuid.UUID(manifest["id"]) == expected
+assert selection["schemaVersion"] == 2
+assert selection["phase"] == "ready"
+assert uuid.UUID(selection["driveID"]) == expected
+PY
+}
+
+BOOTSTRAP_BEFORE_HOME="$RUN_ROOT/first-launch-before-drive"
+BOOTSTRAP_BEFORE_DRIVE="$BOOTSTRAP_BEFORE_HOME/Library/Application Support/Dory/Dory.dorydrive"
+mkdir -p "$BOOTSTRAP_BEFORE_HOME"
+bootstrap_before_id="$(uuidgen)"
+seed_provisioning_selection "$BOOTSTRAP_BEFORE_HOME" "$BOOTSTRAP_BEFORE_DRIVE" "$bootstrap_before_id"
+bootstrap_before_partial="$(dirname "$BOOTSTRAP_BEFORE_DRIVE")/.Dory.dorydrive.$(
+  printf '%s' "$bootstrap_before_id" | tr '[:upper:]' '[:lower:]'
+).partial"
+mkdir -p "$bootstrap_before_partial"
+printf 'abandoned before publication\n' > "$bootstrap_before_partial/abandoned"
+HOME="$BOOTSTRAP_BEFORE_HOME" "$RUNTIME/bin/dory-hv" data-drive select "$BOOTSTRAP_BEFORE_DRIVE" \
+  >"$EVIDENCE/first-launch-resume-before-drive.txt"
+assert_ready_selection "$BOOTSTRAP_BEFORE_HOME" "$BOOTSTRAP_BEFORE_DRIVE" "$bootstrap_before_id"
+[ ! -e "$bootstrap_before_partial" ] \
+  || { echo "managed data-drive gate: first-launch retry left its partial bundle" >&2; exit 1; }
+
+BOOTSTRAP_AFTER_HOME="$RUN_ROOT/first-launch-after-drive"
+BOOTSTRAP_AFTER_DRIVE="$BOOTSTRAP_AFTER_HOME/Library/Application Support/Dory/Dory.dorydrive"
+mkdir -p "$BOOTSTRAP_AFTER_HOME"
+bootstrap_after_id="$(HOME="$BOOTSTRAP_AFTER_HOME" "$RUNTIME/bin/dory-hv" data-drive prepare "$BOOTSTRAP_AFTER_DRIVE")"
+seed_provisioning_selection "$BOOTSTRAP_AFTER_HOME" "$BOOTSTRAP_AFTER_DRIVE" "$bootstrap_after_id"
+HOME="$BOOTSTRAP_AFTER_HOME" "$RUNTIME/bin/dory-hv" data-drive select "$BOOTSTRAP_AFTER_DRIVE" \
+  >"$EVIDENCE/first-launch-resume-after-drive.txt"
+assert_ready_selection "$BOOTSTRAP_AFTER_HOME" "$BOOTSTRAP_AFTER_DRIVE" "$bootstrap_after_id"
+
+BOOTSTRAP_MISMATCH_HOME="$RUN_ROOT/first-launch-mismatch"
+BOOTSTRAP_MISMATCH_DRIVE="$BOOTSTRAP_MISMATCH_HOME/Library/Application Support/Dory/Dory.dorydrive"
+mkdir -p "$BOOTSTRAP_MISMATCH_HOME"
+bootstrap_actual_id="$(HOME="$BOOTSTRAP_MISMATCH_HOME" "$RUNTIME/bin/dory-hv" data-drive prepare "$BOOTSTRAP_MISMATCH_DRIVE")"
+bootstrap_expected_id="$(uuidgen)"
+seed_provisioning_selection "$BOOTSTRAP_MISMATCH_HOME" "$BOOTSTRAP_MISMATCH_DRIVE" "$bootstrap_expected_id"
+if HOME="$BOOTSTRAP_MISMATCH_HOME" "$RUNTIME/bin/dory-hv" data-drive select "$BOOTSTRAP_MISMATCH_DRIVE" \
+    >"$EVIDENCE/first-launch-mismatch.out" 2>"$EVIDENCE/first-launch-mismatch.err"; then
+  echo "managed data-drive gate: interrupted first launch adopted a different drive identity" >&2
+  exit 1
+fi
+grep -F 'identity changed during first-launch provisioning' "$EVIDENCE/first-launch-mismatch.err" >/dev/null
+python3 - "$BOOTSTRAP_MISMATCH_DRIVE/drive.json" \
+  "$BOOTSTRAP_MISMATCH_HOME/Library/Application Support/Dory/data-drive-selection.json" \
+  "$bootstrap_actual_id" "$bootstrap_expected_id" <<'PY'
+import json, pathlib, sys, uuid
+manifest = json.loads(pathlib.Path(sys.argv[1]).read_text())
+selection = json.loads(pathlib.Path(sys.argv[2]).read_text())
+assert uuid.UUID(manifest["id"]) == uuid.UUID(sys.argv[3])
+assert selection["phase"] == "provisioning"
+assert uuid.UUID(selection["driveID"]) == uuid.UUID(sys.argv[4])
+PY
+
 HOME="$RUNTIME_HOME" "$RUNTIME/dory-engine" start --data-drive "$DRIVE" \
   >"$EVIDENCE/first-start.log" 2>&1
 [ -f "$DRIVE/drive.json" ] || { echo "managed data-drive gate: manifest missing" >&2; exit 1; }
@@ -253,21 +335,28 @@ grep -F 'refusing to create a replacement' "$EVIDENCE/stopped-missing-drive.err"
   || { echo "managed data-drive gate: missing selected drive left a shadow replacement" >&2; exit 1; }
 mv "$PARKED_DRIVE" "$DRIVE"
 
-python3 - "$EVIDENCE/drive.json" <<'PY'
+python3 - "$EVIDENCE/drive.json" "$SELECTION_RECORD" <<'PY'
 import json, pathlib, sys
 data = json.loads(pathlib.Path(sys.argv[1]).read_text())
+selection = json.loads(pathlib.Path(sys.argv[2]).read_text())
 import datetime, uuid
 assert data["kind"] == "dev.dory.data-drive"
 assert data["schemaVersion"] == 1
 assert data["product"] == "Dory"
-uuid.UUID(data["id"])
+drive_id = uuid.UUID(data["id"])
 assert datetime.datetime.fromisoformat(data["createdAt"].replace("Z", "+00:00")).tzinfo
+assert selection["schemaVersion"] == 2
+assert selection["phase"] == "ready"
+assert uuid.UUID(selection["driveID"]) == drive_id
 PY
 
 {
   printf 'status=PASS\n'
   printf 'architecture=arm64\n'
   printf 'fresh_drive_default=PASS\n'
+  printf 'first_launch_resume_before_drive=PASS\n'
+  printf 'first_launch_resume_after_drive=PASS\n'
+  printf 'first_launch_identity_mismatch_rejected=PASS\n'
   printf 'explicit_drive_status=PASS\n'
   printf 'running_drive_mismatch_rejected=PASS\n'
   printf 'lost_drive_identity_recovered=PASS\n'

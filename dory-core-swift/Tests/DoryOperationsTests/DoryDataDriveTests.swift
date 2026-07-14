@@ -195,6 +195,89 @@ final class DoryDataDriveTests: XCTestCase {
         )
     }
 
+    func testManifestHardLinkAndOversizedRecordAreRejected() throws {
+        let base = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dory-data-drive-manifest-bounds-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: base) }
+        let drive = try DoryDataDrive(home: base.path)
+        try drive.prepare()
+        let hardLink = base.appendingPathComponent("drive-manifest-hard-link.json")
+        try FileManager.default.linkItem(atPath: drive.manifestPath, toPath: hardLink.path)
+
+        XCTAssertThrowsError(try drive.readManifest()) { error in
+            XCTAssertEqual(error as? DoryDataDriveError, .invalidManifest(drive.manifestPath))
+        }
+
+        try FileManager.default.removeItem(at: hardLink)
+        try Data(repeating: 0x41, count: 65_537).write(to: URL(fileURLWithPath: drive.manifestPath))
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: drive.manifestPath)
+        XCTAssertThrowsError(try drive.readManifest()) { error in
+            XCTAssertEqual(error as? DoryDataDriveError, .invalidManifest(drive.manifestPath))
+        }
+    }
+
+    func testPrepareRejectsSymlinkedDurableDirectoryWithoutChangingTarget() throws {
+        let base = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dory-data-drive-directory-link-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: base) }
+        let drive = try DoryDataDrive(home: base.path)
+        try drive.prepare()
+        let target = base.appendingPathComponent("foreign-directory", isDirectory: true)
+        try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: target.path)
+        try FileManager.default.removeItem(atPath: drive.exportsDirectory)
+        try FileManager.default.createSymbolicLink(
+            atPath: drive.exportsDirectory,
+            withDestinationPath: target.path
+        )
+
+        XCTAssertThrowsError(try drive.prepare()) { error in
+            XCTAssertEqual(error as? DoryDataDriveError, .unsafeDirectory(drive.exportsDirectory))
+        }
+        let attributes = try FileManager.default.attributesOfItem(atPath: target.path)
+        XCTAssertEqual((attributes[.posixPermissions] as? NSNumber)?.intValue, 0o755)
+    }
+
+    func testExpectedFirstLaunchIdentityCannotAdoptAnotherDrive() throws {
+        let base = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dory-data-drive-expected-id-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: base) }
+        let drive = try DoryDataDrive(home: base.path)
+        let actual = UUID()
+        let expected = UUID()
+        try drive.prepare(initialManifestID: actual)
+
+        XCTAssertThrowsError(try drive.prepare(initialManifestID: expected)) { error in
+            XCTAssertEqual(
+                error as? DoryDataDriveError,
+                .unexpectedManifestIdentity(path: drive.root, expected: expected, actual: actual)
+            )
+        }
+        XCTAssertEqual(try drive.readManifest().id, actual)
+    }
+
+    func testExpectedFirstLaunchIdentityRemovesItsInterruptedPartialBundle() throws {
+        let base = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dory-data-drive-partial-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: base) }
+        let drive = try DoryDataDrive(home: base.path)
+        let intendedID = UUID()
+        let destination = URL(fileURLWithPath: drive.root)
+        let partial = destination.deletingLastPathComponent().appendingPathComponent(
+            ".\(destination.lastPathComponent).\(intendedID.uuidString.lowercased()).partial",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: partial, withIntermediateDirectories: true)
+        let abandoned = partial.appendingPathComponent("abandoned")
+        try Data("not published".utf8).write(to: abandoned)
+
+        try drive.prepare(initialManifestID: intendedID)
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: partial.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: abandoned.path))
+        XCTAssertEqual(try drive.readManifest().id, intendedID)
+    }
+
     func testPrepareRejectsPrelaunchManifestWithoutChangingPayload() throws {
         let base = FileManager.default.temporaryDirectory
             .appendingPathComponent("dory-data-drive-v1-\(UUID().uuidString)", isDirectory: true)
