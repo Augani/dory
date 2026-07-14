@@ -9,6 +9,8 @@ enum HostDockerCLI {
     private static let composePluginDir = NSHomeDirectory() + "/.docker/cli-plugins"
     private static let beginSentinel = "# >>> dory cli >>>"
     private static let endSentinel = "# <<< dory cli <<<"
+    private static let restoreNoTrailingNewline = "# dory:restore-no-trailing-newline"
+    private static let removeEmptyProfile = "# dory:remove-empty-profile"
     private static let profiles = [".zprofile", ".zshrc", ".bash_profile", ".bashrc", ".profile"]
     static let linkedTools = ["docker", "docker-buildx", "docker-compose", "kubectl", "dory", "dory-doctor", "dorydctl"]
 
@@ -170,16 +172,27 @@ enum HostDockerCLI {
         path == root || path.hasPrefix(root + "/")
     }
 
-    static func pathBlock(binDir: String = binDir) -> String {
-        "\(beginSentinel)\nexport PATH=\"\(binDir):$PATH\"\n\(endSentinel)\n"
+    static func pathBlock(
+        binDir: String = binDir,
+        restoreTrailingNewline: Bool = false,
+        removeProfileWhenEmpty: Bool = false
+    ) -> String {
+        var metadata = ""
+        if restoreTrailingNewline { metadata += "\(restoreNoTrailingNewline)\n" }
+        if removeProfileWhenEmpty { metadata += "\(removeEmptyProfile)\n" }
+        return "\(beginSentinel)\n\(metadata)export PATH=\"\(binDir):$PATH\"\n\(endSentinel)\n"
     }
 
     /// Appends the PATH block to profile content, or returns nil when it is already present so the
     /// caller can skip the write. Pure so it can be unit-tested without touching real profiles.
     static func appendingPathBlock(to content: String, binDir: String = binDir) -> String? {
         guard !content.contains(beginSentinel) else { return nil }
-        let separator = content.isEmpty || content.hasSuffix("\n") ? "\n" : "\n\n"
-        return content + separator + pathBlock(binDir: binDir)
+        let restoreTrailingNewline = !content.isEmpty && !content.hasSuffix("\n")
+        let separator = restoreTrailingNewline ? "\n" : ""
+        return content + separator + pathBlock(
+            binDir: binDir,
+            restoreTrailingNewline: restoreTrailingNewline
+        )
     }
 
     /// Strips a complete Dory PATH block and rejects damaged marker pairs.
@@ -187,21 +200,32 @@ enum HostDockerCLI {
         guard content.contains(beginSentinel) else { return content }
         var out: [String] = []
         var skipping = false
-        for line in content.components(separatedBy: "\n") {
+        var restoreTrailingNewline = false
+        var trimFinalSeparator = false
+        let lines = content.components(separatedBy: "\n")
+        for (index, line) in lines.enumerated() {
             if line == beginSentinel {
                 guard !skipping else { return nil }
                 skipping = true
+                restoreTrailingNewline = false
                 continue
             }
             if line == endSentinel {
                 guard skipping else { return nil }
                 skipping = false
+                trimFinalSeparator = restoreTrailingNewline
+                    && (index == lines.count - 1 || (index == lines.count - 2 && lines.last == ""))
                 continue
+            }
+            if skipping, line == restoreNoTrailingNewline {
+                restoreTrailingNewline = true
             }
             if !skipping { out.append(line) }
         }
         guard !skipping else { return nil }
-        return out.joined(separator: "\n")
+        var result = out.joined(separator: "\n")
+        if trimFinalSeparator, result.hasSuffix("\n") { result.removeLast() }
+        return result
     }
 
     private static func addToPath() {
@@ -217,7 +241,8 @@ enum HostDockerCLI {
             try? updated.write(to: targetURL, atomically: true, encoding: .utf8)
         }
         if !wroteAny {
-            try? pathBlock().write(toFile: NSHomeDirectory() + "/.zprofile", atomically: true, encoding: .utf8)
+            try? pathBlock(removeProfileWhenEmpty: true)
+                .write(toFile: NSHomeDirectory() + "/.zprofile", atomically: true, encoding: .utf8)
         }
     }
 
@@ -228,7 +253,12 @@ enum HostDockerCLI {
             guard let content = try? String(contentsOf: targetURL, encoding: .utf8),
                   content.contains(beginSentinel) else { continue }
             guard let stripped = removingPathBlock(from: content) else { continue }
-            try? stripped.write(to: targetURL, atomically: true, encoding: .utf8)
+            if content.contains(removeEmptyProfile), stripped.isEmpty,
+               (try? FileManager.default.destinationOfSymbolicLink(atPath: profileURL.path)) == nil {
+                try? FileManager.default.removeItem(at: targetURL)
+            } else {
+                try? stripped.write(to: targetURL, atomically: true, encoding: .utf8)
+            }
         }
     }
 }

@@ -28,6 +28,8 @@ public struct HostCLIRemoveResult: Sendable, Equatable {
 public struct HostCLIInstaller: Sendable {
     private static let beginSentinel = "# >>> dory cli >>>"
     private static let endSentinel = "# <<< dory cli <<<"
+    private static let restoreNoTrailingNewline = "# dory:restore-no-trailing-newline"
+    private static let removeEmptyProfile = "# dory:remove-empty-profile"
     private static let tools = ["docker", "docker-buildx", "docker-compose", "kubectl", "dory", "dory-doctor", "dorydctl"]
     private static let profiles = [".zprofile", ".zshrc", ".bash_profile", ".bashrc", ".profile"]
     private static let defaultProfiles = [".zprofile", ".zshrc"]
@@ -136,37 +138,59 @@ public struct HostCLIInstaller: Sendable {
         )
     }
 
-    public static func pathBlock(binDir: String) -> String {
-        "\(beginSentinel)\nDORY_CLI_BIN=\"\(binDir)\"\ncase \":$PATH:\" in\n  *\":$DORY_CLI_BIN:\"*) ;;\n  *) export PATH=\"$DORY_CLI_BIN:$PATH\" ;;\nesac\n\(endSentinel)\n"
+    public static func pathBlock(
+        binDir: String,
+        restoreTrailingNewline: Bool = false,
+        removeProfileWhenEmpty: Bool = false
+    ) -> String {
+        var metadata = ""
+        if restoreTrailingNewline { metadata += "\(restoreNoTrailingNewline)\n" }
+        if removeProfileWhenEmpty { metadata += "\(removeEmptyProfile)\n" }
+        return "\(beginSentinel)\n\(metadata)DORY_CLI_BIN=\"\(binDir)\"\ncase \":$PATH:\" in\n  *\":$DORY_CLI_BIN:\"*) ;;\n  *) export PATH=\"$DORY_CLI_BIN:$PATH\" ;;\nesac\n\(endSentinel)\n"
     }
 
     public static func appendingPathBlock(to content: String, binDir: String) -> String? {
         guard !content.contains(beginSentinel) else { return nil }
-        let separator = content.isEmpty || content.hasSuffix("\n") ? "\n" : "\n\n"
-        return content + separator + pathBlock(binDir: binDir)
+        let restoreTrailingNewline = !content.isEmpty && !content.hasSuffix("\n")
+        let separator = restoreTrailingNewline ? "\n" : ""
+        return content + separator + pathBlock(
+            binDir: binDir,
+            restoreTrailingNewline: restoreTrailingNewline
+        )
     }
 
     public static func removingPathBlock(from content: String) -> String? {
         guard content.contains(beginSentinel) else { return content }
         var output: [String] = []
         var skipping = false
-        for line in content.components(separatedBy: "\n") {
+        var restoreTrailingNewline = false
+        var trimFinalSeparator = false
+        let lines = content.components(separatedBy: "\n")
+        for (index, line) in lines.enumerated() {
             if line == beginSentinel {
                 guard !skipping else { return nil }
                 skipping = true
+                restoreTrailingNewline = false
                 continue
             }
             if line == endSentinel {
                 guard skipping else { return nil }
                 skipping = false
+                trimFinalSeparator = restoreTrailingNewline
+                    && (index == lines.count - 1 || (index == lines.count - 2 && lines.last == ""))
                 continue
+            }
+            if skipping, line == restoreNoTrailingNewline {
+                restoreTrailingNewline = true
             }
             if !skipping {
                 output.append(line)
             }
         }
         guard !skipping else { return nil }
-        return output.joined(separator: "\n")
+        var result = output.joined(separator: "\n")
+        if trimFinalSeparator, result.hasSuffix("\n") { result.removeLast() }
+        return result
     }
 
     private static func helpersDirectory(environment: DorydEnvironment) -> String? {
@@ -301,7 +325,8 @@ public struct HostCLIInstaller: Sendable {
             }
         }
         for name in Self.defaultProfiles where !fileManager.fileExists(atPath: "\(home)/\(name)") {
-            if (try? Self.pathBlock(binDir: binDir).write(toFile: "\(home)/\(name)", atomically: true, encoding: .utf8)) != nil {
+            if (try? Self.pathBlock(binDir: binDir, removeProfileWhenEmpty: true)
+                .write(toFile: "\(home)/\(name)", atomically: true, encoding: .utf8)) != nil {
                 changed = true
             }
         }
@@ -316,7 +341,15 @@ public struct HostCLIInstaller: Sendable {
             guard let content = try? String(contentsOf: targetURL, encoding: .utf8),
                   content.contains(Self.beginSentinel) else { continue }
             guard let stripped = Self.removingPathBlock(from: content) else { continue }
-            if (try? stripped.write(to: targetURL, atomically: true, encoding: .utf8)) != nil {
+            let removeProfile = content.contains(Self.removeEmptyProfile) && stripped.isEmpty
+                && (try? FileManager.default.destinationOfSymbolicLink(atPath: profileURL.path)) == nil
+            let updated: Bool
+            if removeProfile {
+                updated = (try? FileManager.default.removeItem(at: targetURL)) != nil
+            } else {
+                updated = (try? stripped.write(to: targetURL, atomically: true, encoding: .utf8)) != nil
+            }
+            if updated {
                 changed = true
             }
         }

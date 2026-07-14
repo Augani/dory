@@ -34,9 +34,14 @@ struct HostDockerCLITests {
         let original = "export FOO=1\nexport BAR=2\n"
         let withBlock = try #require(HostDockerCLI.appendingPathBlock(to: original, binDir: "/b"))
         let stripped = try #require(HostDockerCLI.removingPathBlock(from: withBlock))
-        #expect(!stripped.contains("dory cli"))
-        #expect(stripped.contains("export FOO=1"))
-        #expect(stripped.contains("export BAR=2"))
+        #expect(stripped == original)
+    }
+
+    @Test func removeRestoresProfileWithoutTrailingNewline() throws {
+        let original = "export FOO=1"
+        let withBlock = try #require(HostDockerCLI.appendingPathBlock(to: original, binDir: "/b"))
+        #expect(withBlock.contains("# dory:restore-no-trailing-newline"))
+        #expect(HostDockerCLI.removingPathBlock(from: withBlock) == original)
     }
 
     @Test func removeIsNoOpWhenBlockAbsent() {

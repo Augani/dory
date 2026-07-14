@@ -159,6 +159,8 @@ EOF
 
 DORY_CLI_BEGIN="# >>> dory cli >>>"
 DORY_CLI_END="# <<< dory cli <<<"
+DORY_CLI_RESTORE_NO_NEWLINE="# dory:restore-no-trailing-newline"
+DORY_CLI_REMOVE_EMPTY_PROFILE="# dory:remove-empty-profile"
 DORY_CLI_PROFILES=(".zprofile" ".zshrc" ".bash_profile" ".bashrc" ".profile")
 
 install_usage() {
@@ -196,7 +198,11 @@ cli_tool_source() {
 }
 
 cli_path_block() {
-  printf '%s\nexport PATH="%s:$PATH"\n%s\n' "$DORY_CLI_BEGIN" "$HOME/.dory/bin" "$DORY_CLI_END"
+  local restore_no_newline="${1:-0}" remove_empty_profile="${2:-0}"
+  printf '%s\n' "$DORY_CLI_BEGIN"
+  [ "$restore_no_newline" -eq 0 ] || printf '%s\n' "$DORY_CLI_RESTORE_NO_NEWLINE"
+  [ "$remove_empty_profile" -eq 0 ] || printf '%s\n' "$DORY_CLI_REMOVE_EMPTY_PROFILE"
+  printf 'export PATH="%s:$PATH"\n%s\n' "$HOME/.dory/bin" "$DORY_CLI_END"
 }
 
 profile_contains_dory_block() {
@@ -241,7 +247,7 @@ replace_profile() {
 }
 
 install_path_block() {
-  local dry_run="$1" profile content updated_any=0 saw_profile=0
+  local dry_run="$1" profile content block separator restore_no_newline updated_any=0 saw_profile=0
   for name in "${DORY_CLI_PROFILES[@]}"; do
     profile="$HOME/$name"
     [ -e "$profile" ] || continue
@@ -257,19 +263,25 @@ install_path_block() {
     fi
     content="$(cat "$profile" 2>/dev/null; printf x)"
     content="${content%x}"
-    case "$content" in ""|*$'\n') content="${content}"$'\n' ;; *) content="${content}"$'\n\n' ;; esac
-    content="${content}$(cli_path_block)"$'\n'
+    separator=""
+    restore_no_newline=0
+    case "$content" in
+      ""|*$'\n') ;;
+      *) separator=$'\n'; restore_no_newline=1 ;;
+    esac
+    block="$(cli_path_block "$restore_no_newline" 0)"
+    content="${content}${separator}${block}"$'\n'
     replace_profile "$profile" "$content"
   done
   if [ "$saw_profile" -eq 0 ]; then
     updated_any=1
-    [ "$dry_run" -eq 1 ] || cli_path_block > "$HOME/.zprofile"
+    [ "$dry_run" -eq 1 ] || cli_path_block 0 1 > "$HOME/.zprofile"
   fi
   [ "$updated_any" -eq 1 ]
 }
 
 remove_path_blocks() {
-  local dry_run="$1" profile content stripped changed=0
+  local dry_run="$1" profile target stripped remove_empty_profile changed=0
   for name in "${DORY_CLI_PROFILES[@]}"; do
     profile="$HOME/$name"
     profile_contains_dory_block "$profile" || continue
@@ -279,15 +291,52 @@ remove_path_blocks() {
     fi
     changed=1
     [ "$dry_run" -eq 1 ] && continue
-    content="$(cat "$profile"; printf x)"
-    content="${content%x}"
-    stripped="$(printf '%s' "$content" | awk -v begin="$DORY_CLI_BEGIN" -v end="$DORY_CLI_END" '
-      $0 == begin { skipping = 1; next }
-      $0 == end { skipping = 0; next }
-      !skipping { print }
-    '; printf x)"
+    remove_empty_profile=0
+    grep -Fq "$DORY_CLI_REMOVE_EMPTY_PROFILE" "$profile" && remove_empty_profile=1
+    stripped="$(python3 - "$profile" \
+      "$DORY_CLI_BEGIN" "$DORY_CLI_END" "$DORY_CLI_RESTORE_NO_NEWLINE" <<'PY'
+import sys
+
+path, begin, end, restore_marker = sys.argv[1:5]
+with open(path, encoding="utf-8", newline="") as handle:
+    lines = handle.read().splitlines(keepends=True)
+output = []
+inside = False
+restore = False
+trim_final_separator = False
+for index, raw in enumerate(lines):
+    line = raw.rstrip("\r\n")
+    if line == begin:
+        if inside:
+            raise SystemExit(2)
+        inside = True
+        restore = False
+        continue
+    if line == end:
+        if not inside:
+            raise SystemExit(2)
+        inside = False
+        trim_final_separator = restore and index == len(lines) - 1
+        continue
+    if inside:
+        restore = restore or line == restore_marker
+        continue
+    output.append(raw)
+if inside:
+    raise SystemExit(2)
+result = "".join(output)
+if trim_final_separator and result.endswith("\n"):
+    result = result[:-1]
+sys.stdout.write(result)
+PY
+    printf x)"
     stripped="${stripped%x}"
-    replace_profile "$profile" "$stripped"
+    target="$(profile_write_target "$profile")"
+    if [ "$remove_empty_profile" -eq 1 ] && [ -z "$stripped" ] && [ ! -L "$profile" ]; then
+      rm -f "$target"
+    else
+      replace_profile "$profile" "$stripped"
+    fi
   done
   [ "$changed" -eq 1 ]
 }

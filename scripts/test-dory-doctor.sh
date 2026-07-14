@@ -212,10 +212,18 @@ assert data["dockerContextRemoved"] is True
 assert not os.path.exists(os.path.expanduser("~/.dory/bin/docker"))
 assert not os.path.exists(os.path.expanduser("~/.docker/cli-plugins/docker-compose"))
 assert not os.path.exists(os.path.expanduser("~/.docker/cli-plugins/docker-buildx"))
-assert "dory cli" not in open(os.path.expanduser("~/.zprofile"), encoding="utf-8").read()
+assert not os.path.exists(os.path.expanduser("~/.zprofile"))
 '
 test ! -e "$TMP_HOME/.fake-dory-context"
 test "$(cat "$TMP_HOME/.fake-current-context")" = default
+
+# Existing profile bytes, including a missing final newline, survive an install/uninstall cycle.
+printf '%s' 'export USER_SETTING=1' > "$TMP_HOME/.zprofile"
+profile_before="$(shasum -a 256 "$TMP_HOME/.zprofile" | awk '{print $1}')"
+DORY_DOCKER_BIN="$TMP_HOME/fake-bin/docker" scripts/dory install --json >/dev/null
+DORY_DOCKER_BIN="$TMP_HOME/fake-bin/docker" scripts/dory uninstall --json >/dev/null
+test "$(shasum -a 256 "$TMP_HOME/.zprofile" | awk '{print $1}')" = "$profile_before"
+rm -f "$TMP_HOME/.zprofile"
 
 # A damaged marker never causes uninstall to discard the rest of a user's profile.
 printf '%s\n' 'export KEEP_BEFORE=1' '# >>> dory cli >>>' 'export KEEP_AFTER=1' > "$TMP_HOME/.zprofile"

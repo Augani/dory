@@ -155,6 +155,18 @@ final class HostCLIInstallerTests: XCTestCase {
         XCTAssertNil(HostCLIInstaller.appendingPathBlock(to: once, binDir: "/home/u/.dory/bin"))
         XCTAssertTrue(once.contains("case \":$PATH:\" in"))
         XCTAssertTrue(once.contains("DORY_CLI_BIN=\"/home/u/.dory/bin\""))
+        XCTAssertEqual(HostCLIInstaller.removingPathBlock(from: once), "export FOO=1\n")
+    }
+
+    func testPathBlockRemovalRestoresMissingTrailingNewline() throws {
+        let original = "export FOO=1"
+        let installed = try XCTUnwrap(HostCLIInstaller.appendingPathBlock(
+            to: original,
+            binDir: "/home/u/.dory/bin"
+        ))
+
+        XCTAssertTrue(installed.contains("# dory:restore-no-trailing-newline"))
+        XCTAssertEqual(HostCLIInstaller.removingPathBlock(from: installed), original)
     }
 
     func testPathBlockRemovalRejectsMalformedMarkersWithoutDroppingUserContent() {
@@ -187,7 +199,7 @@ final class HostCLIInstallerTests: XCTestCase {
 
         XCTAssertTrue(installer.remove().pathProfileChanged)
         XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: home + "/.zprofile"), target)
-        XCTAssertEqual(try String(contentsOfFile: target, encoding: .utf8), "export USER_SETTING=1\n\n")
+        XCTAssertEqual(try String(contentsOfFile: target, encoding: .utf8), "export USER_SETTING=1\n")
     }
 
     func testInstallerCreatesLoginAndInteractiveZshProfilesForCleanHome() throws {
@@ -209,7 +221,12 @@ final class HostCLIInstallerTests: XCTestCase {
             let content = try String(contentsOfFile: home + "/\(profile)", encoding: .utf8)
             XCTAssertTrue(content.contains("DORY_CLI_BIN=\"\(home)/.dory/bin\""), profile)
             XCTAssertTrue(content.contains("case \":$PATH:\" in"), profile)
+            XCTAssertTrue(content.contains("# dory:remove-empty-profile"), profile)
         }
+
+        XCTAssertTrue(HostCLIInstaller(home: home, helpersDirectory: helpers).remove().pathProfileChanged)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: home + "/.zprofile"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: home + "/.zshrc"))
     }
 
     func testRemoveUnlinksToolsComposePluginAndPathBlock() throws {
@@ -238,8 +255,8 @@ final class HostCLIInstallerTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: home + "/.dory/bin/docker"))
         XCTAssertFalse(FileManager.default.fileExists(atPath: home + "/.docker/cli-plugins/docker-compose"))
         XCTAssertFalse(FileManager.default.fileExists(atPath: home + "/.docker/cli-plugins/docker-buildx"))
-        let profile = try String(contentsOfFile: home + "/.zprofile", encoding: .utf8)
-        XCTAssertFalse(profile.contains("dory cli"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: home + "/.zprofile"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: home + "/.zshrc"))
     }
 
     func testReconcilerRestoresMissingLinks() throws {
