@@ -1,6 +1,6 @@
 #!/bin/bash
 # Scrub transient Xcode products that macOS may reject as "damaged" after
-# DerivedData provenance/quarantine metadata is stamped onto test host bundles.
+# DerivedData quarantine metadata is stamped onto test host bundles.
 set -euo pipefail
 
 strip_test_products=0
@@ -31,9 +31,18 @@ unregister_launchservices() {
   "$lsregister" -u "$app" >/dev/null 2>&1 || true
 }
 
-clear_xattrs() {
-  local app="$1"
-  [ -d "$app" ] || return 0
+has_quarantine_xattrs() {
+  local app="$1" item
+  while IFS= read -r -d '' item; do
+    if xattr -p com.apple.quarantine "$item" >/dev/null 2>&1; then
+      return 0
+    fi
+  done < <(find "$app" -print0)
+  return 1
+}
+
+scrub_xattrs_once() {
+  local app="$1" item
   xattr -cr "$app" 2>/dev/null || true
   xattr -dr com.apple.provenance "$app" 2>/dev/null || true
   xattr -dr com.apple.quarantine "$app" 2>/dev/null || true
@@ -41,6 +50,30 @@ clear_xattrs() {
     xattr -d com.apple.provenance "$item" 2>/dev/null || true
     xattr -d com.apple.quarantine "$item" 2>/dev/null || true
   done < <(find "$app" -print0)
+}
+
+clear_xattrs() {
+  local app="$1" attempt item
+  [ -d "$app" ] || return 0
+  for attempt in $(seq 1 5); do
+    scrub_xattrs_once "$app"
+    if ! has_quarantine_xattrs "$app"; then
+      # Require quarantine to remain clear across a short quiescence window before handing the
+      # bundle back to LaunchServices. com.apple.provenance is system-managed and may remain
+      # protected by SIP, so its deletion is deliberately best-effort rather than a launch gate.
+      sleep 0.05
+      has_quarantine_xattrs "$app" || return 0
+    fi
+    sleep 0.05
+  done
+  echo "clean-xcode-products: could not clear quarantine metadata from $app" >&2
+  while IFS= read -r -d '' item; do
+    if xattr -p com.apple.quarantine "$item" >/dev/null 2>&1; then
+      echo "clean-xcode-products: quarantine persisted on $item" >&2
+      xattr -d com.apple.quarantine "$item" >&2 || true
+    fi
+  done < <(find "$app" -print0)
+  return 1
 }
 
 registered_test_runners() {

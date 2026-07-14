@@ -57,6 +57,14 @@ if [ -z "${DEVELOPER_DIR:-}" ]; then
   fi
 fi
 
+# Hosted macOS tests launch a second Dory.app with the production bundle identifier. LaunchServices
+# can route that request to an already-running installed copy and then report the test host as
+# damaged (IDELaunchErrorDomain Code 20). Fail with the real remedy before spending time building.
+if pgrep -f '/Dory\.app/Contents/MacOS/Dory([[:space:]]|$)' >/dev/null 2>&1; then
+  echo "error: quit every running Dory GUI before hosted tests; duplicate com.pythonxi.Dory apps cause LaunchServices Code 20" >&2
+  exit 1
+fi
+
 cleanup_test_products() {
   scripts/clean-xcode-products.sh
 }
@@ -78,10 +86,9 @@ xcodebuild "${xcode_args[@]}" build-for-testing
 # pin it back to 77 before the test phase. Only rewrites that one line.
 sed -i '' 's/objectVersion = 110;/objectVersion = 77;/' Dory.xcodeproj/project.pbxproj 2>/dev/null || true
 
-# macOS 27 stamps DerivedData products with provenance metadata that syspolicyd rejects
-# once XCTest injects its test-host libraries. Clearing it from the transient build products
-# keeps the hosted unit-test host (Dory.app) and the UI-test runner (DoryUITests-Runner.app)
-# launchable without changing source files.
+# Clear quarantine from transient products and unregister stale test bundles before XCTest launch.
+# The system-managed provenance attribute is only removed best-effort because SIP may protect it;
+# it is not itself a failed Gatekeeper assessment.
 scripts/clean-xcode-products.sh
 
 if [ "${#test_args[@]}" -gt 0 ]; then
