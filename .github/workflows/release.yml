@@ -661,6 +661,33 @@ jobs:
             > "$candidate_root/evidence/sparkle-verification.txt"
           printf 'app=%s\n' "$candidate_root/extracted/Dory.app" >> "$GITHUB_OUTPUT"
 
+      - name: Resolve the exact release-build Sparkle source checkout
+        id: sparkle_source
+        run: |
+          set -euo pipefail
+          revision="$(python3 - <<'PY'
+          import json
+
+          with open("Dory.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved", encoding="utf-8") as handle:
+              payload = json.load(handle)
+          pins = [pin for pin in payload["pins"] if pin["identity"] == "sparkle"]
+          assert len(pins) == 1, "expected one Sparkle package pin"
+          assert pins[0]["state"].get("version") == "2.9.4", "unexpected Sparkle release pin"
+          print(pins[0]["state"]["revision"])
+          PY
+          )"
+          sparkle_source=""
+          while IFS= read -r checkout; do
+            if [ "$(git -C "$checkout" rev-parse HEAD 2>/dev/null || true)" = "$revision" ] \
+              && [ -z "$(git -C "$checkout" status --porcelain --untracked-files=no)" ]; then
+              sparkle_source="$checkout"
+              break
+            fi
+          done < <(find "$HOME/Library/Developer/Xcode/DerivedData" \
+            -type d -path '*/SourcePackages/checkouts/Sparkle' -prune -print)
+          test -n "$sparkle_source"
+          printf 'path=%s\n' "$sparkle_source" >> "$GITHUB_OUTPUT"
+
       - name: Exercise the notarized direct-download candidate on a clean physical Mac
         timeout-minutes: 30
         env:
@@ -679,12 +706,21 @@ jobs:
       - name: Exercise the exact Sparkle update candidate on a clean physical Mac
         timeout-minutes: 20
         env:
-          DORY_RELEASE_EXTERNAL_VOLUME_ROOT: ${{ vars.DORY_EXTERNAL_VOLUME_TEST_ROOT }}
-          DORY_RELEASE_LOCK_IMAGE: ${{ vars.DORY_SOURCE_GATE_IMAGE }}
-          DORY_RELEASE_FIXTURE_IMAGE: ${{ vars.DORY_RELEASE_ALPINE_IMAGE }}
-          DORY_RELEASE_NONNATIVE_BUILD_IMAGE: ${{ vars.DORY_RELEASE_NONNATIVE_BUILD_IMAGE }}
-          DORY_RELEASE_SSH_CLIENT_IMAGE: ${{ vars.DORY_RELEASE_SSH_CLIENT_IMAGE }}
-        run: scripts/release-candidate-live-smoke.sh "${{ steps.sparkle_candidate.outputs.app }}"
+          DORY_RELEASE_CLEAN_USER: '1'
+        run: |
+          scripts/sparkle-install-relaunch-gate.sh \
+            --candidate-app "${{ steps.sparkle_candidate.outputs.app }}" \
+            --update-zip "${{ steps.build.outputs.app_update }}" \
+            --appcast release-build/appcast.xml \
+            --release-manifest release-build/release-manifest.json \
+            --sbom "release-build/Dory-${{ steps.ver.outputs.version }}.cdx.json" \
+            --sparkle-source "${{ steps.sparkle_source.outputs.path }}" \
+            --version "${{ steps.ver.outputs.version }}" \
+            --build "${{ github.run_number }}" \
+            --source-commit "$GITHUB_SHA" \
+            --signing-identity "Developer ID Application" \
+            --workroot "$RUNNER_TEMP/dory-release-live-sparkle" \
+            --confirm CLEAN-RELEASE-USER-SPARKLE-INSTALL
 
       - name: Upload live release-gate evidence
         if: always()

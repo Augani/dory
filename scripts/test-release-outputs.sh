@@ -1532,11 +1532,47 @@ assert "source_preserving_lan_certification, homebrew_cask_audit" in release, \
     "publication can run before the isolated Homebrew audit"
 assert release.index(homebrew_audit) < release.index("name: Publish GitHub Release"), \
     "Homebrew audit runs after publication"
-sparkle_step = 'scripts/release-candidate-live-smoke.sh "${{ steps.sparkle_candidate.outputs.app }}"'
-assert sparkle_step in release, "public release never launches the exact Sparkle update app"
+sparkle_step = "scripts/sparkle-install-relaunch-gate.sh"
+assert sparkle_step in release, "public release never exercises the real Sparkle installer"
+assert 'scripts/release-candidate-live-smoke.sh "${{ steps.sparkle_candidate.outputs.app }}"' not in release, \
+    "public release still substitutes a direct app launch for the Sparkle installer"
 assert "UPDATE_ZIP: ${{ steps.build.outputs.app_update }}" in release, "Sparkle gate does not extract the final update ZIP"
 assert "Sparkle candidate ZIP differs from release manifest" in release, "extracted Sparkle candidate is not manifest-bound"
 assert "scripts/verify-sparkle-update.sh" in release, "release never verifies the Sparkle signature/key compatibility"
+candidate = release.split("  release_candidate:", 1)[1].split("\n  release_qualification:", 1)[0]
+for required in (
+    "name: Resolve the exact release-build Sparkle source checkout",
+    "DORY_RELEASE_CLEAN_USER: '1'",
+    '--candidate-app "${{ steps.sparkle_candidate.outputs.app }}"',
+    '--update-zip "${{ steps.build.outputs.app_update }}"',
+    "--appcast release-build/appcast.xml",
+    "--release-manifest release-build/release-manifest.json",
+    '--sbom "release-build/Dory-${{ steps.ver.outputs.version }}.cdx.json"',
+    '--sparkle-source "${{ steps.sparkle_source.outputs.path }}"',
+    '--version "${{ steps.ver.outputs.version }}"',
+    '--build "${{ github.run_number }}"',
+    '--source-commit "$GITHUB_SHA"',
+    '--signing-identity "Developer ID Application"',
+    '--workroot "$RUNNER_TEMP/dory-release-live-sparkle"',
+    "--confirm CLEAN-RELEASE-USER-SPARKLE-INSTALL",
+):
+    assert required in candidate, f"real Sparkle workflow gate omits: {required}"
+sparkle_install = open("scripts/sparkle-install-relaunch-gate.sh", encoding="utf-8").read()
+for required in (
+    'SPARKLE_VERSION" = 2.9.4',
+    'git -C "$SPARKLE_SOURCE" rev-parse HEAD',
+    '-scheme sparkle-cli',
+    '-onlyUsePackageVersionsFromResolvedFile',
+    'python3 -m http.server',
+    'GET /appcast.xml ',
+    'GET /$UPDATE_NAME ',
+    'NEW_PID" != "$OLD_PID',
+    'verify-release-sbom.py" --sbom "$SBOM" --app "$INSTALL_APP',
+    "source=Notarized Developer ID",
+    "rollback_fixture_restored=PASS",
+    "initial_clean_user_state_restored=PASS",
+):
+    assert required in sparkle_install, f"real Sparkle installer gate omits: {required}"
 sparkle_verify = open("scripts/verify-sparkle-update.sh", encoding="utf-8").read()
 for required in ("--verify --ed-key-file -", "SUPublicEDKey", "Curve25519.Signing.PrivateKey",
                  "Curve25519.Signing.PublicKey", "isValidSignature", "secret.count == 96"):
@@ -1568,7 +1604,6 @@ assert "release-upgrade-rollback-smoke.sh" not in release, \
 assert release.index(live_step) < release.index(sparkle_step) \
     < release.index("name: Publish GitHub Release"), \
     "clean direct/Sparkle candidate smokes do not run before publication"
-candidate = release.split("  release_candidate:", 1)[1].split("\n  release_qualification:", 1)[0]
 qualification = release.split("  release_qualification:", 1)[1].split("\n  publish_release:", 1)[0]
 publication = release.split("  publish_release:", 1)[1].split("\n  publish-pages:", 1)[0]
 assert "name: Publish GitHub Release" not in candidate, "candidate job can publish before duration qualification"
@@ -1851,9 +1886,40 @@ grep -q "keychain profile 'missing-profile' is unavailable or invalid" "$TMP/not
   validate_notary_credentials
 ) >"$TMP/notary-environment-valid.out" 2>&1
 
+sparkle_arming_args=(
+  --candidate-app /not-inspected-before-arming/Dory.app
+  --update-zip /not-inspected-before-arming/update.zip
+  --appcast /not-inspected-before-arming/appcast.xml
+  --release-manifest /not-inspected-before-arming/release-manifest.json
+  --sbom /not-inspected-before-arming/sbom.json
+  --sparkle-source /not-inspected-before-arming/Sparkle
+  --version 1.0.0
+  --build 2
+  --source-commit 0123456789abcdef0123456789abcdef01234567
+)
+if DORY_RELEASE_CLEAN_USER=1 scripts/sparkle-install-relaunch-gate.sh \
+  "${sparkle_arming_args[@]}" >"$TMP/sparkle-missing-confirm.out" 2>&1; then
+  echo "test-release-outputs: live Sparkle gate accepted missing confirmation" >&2
+  exit 1
+fi
+grep -q 'full execution requires --confirm CLEAN-RELEASE-USER-SPARKLE-INSTALL' \
+  "$TMP/sparkle-missing-confirm.out" \
+  || { echo "test-release-outputs: live Sparkle confirmation failed for the wrong reason" >&2; exit 1; }
+if env -u DORY_RELEASE_CLEAN_USER scripts/sparkle-install-relaunch-gate.sh \
+  "${sparkle_arming_args[@]}" \
+  --confirm CLEAN-RELEASE-USER-SPARKLE-INSTALL \
+  >"$TMP/sparkle-missing-clean-user.out" 2>&1; then
+  echo "test-release-outputs: live Sparkle gate accepted a non-release account" >&2
+  exit 1
+fi
+grep -q 'full execution requires DORY_RELEASE_CLEAN_USER=1' \
+  "$TMP/sparkle-missing-clean-user.out" \
+  || { echo "test-release-outputs: live Sparkle clean-user guard failed for the wrong reason" >&2; exit 1; }
+
 bash -n scripts/release.sh scripts/bundle-engine.sh scripts/validate-release-outputs.sh \
   scripts/sign-sparkle-for-distribution.sh scripts/verify-distribution-signatures.sh \
   scripts/release-candidate-live-smoke.sh scripts/verify-sparkle-update.sh \
+  scripts/sparkle-install-relaunch-gate.sh \
   scripts/qualify-release-candidate.sh \
   scripts/verify-release-qualification.sh
 echo "test-release-outputs: PASS"

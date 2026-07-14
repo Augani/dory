@@ -60,6 +60,7 @@ for script in \
   scripts/verify-release-qualification.sh \
   scripts/verify-competitor-coverage-matrix.sh \
   scripts/sign-machine-image-manifest.sh \
+  scripts/sparkle-install-relaunch-gate.sh \
   scripts/generate-release-sbom.py \
   scripts/verify-release-sbom.py \
   scripts/nonnative-build-smoke.sh; do
