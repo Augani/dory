@@ -31,7 +31,7 @@ enum MigrationImportAssetStager {
         let current: DoryOperationState
         do {
             current = try session.lease.read().state
-            if rollback.isEmpty {
+            if rollback.isEmpty, !requiresRecovery(operation) {
                 if operation is CancellationError {
                     _ = try session.lease.cancelAfterRollback(
                         expectedRevision: current.revision,
@@ -67,6 +67,16 @@ enum MigrationImportAssetStager {
             rollback: rollback
         )
     }
+
+    private static func requiresRecovery(_ error: Error) -> Bool {
+        if let error = error as? MigrationImageTransferError {
+            return error.leavesOwnedArtifacts
+        }
+        if let error = error as? MigrationVolumeTransferError {
+            return error.leavesOwnedArtifacts
+        }
+        return false
+    }
 }
 
 enum MigrationCreatedAsset {
@@ -99,26 +109,6 @@ struct MigrationImportAssetStagingExecution {
         self.session = session
         self.environment = environment
         state = current
-    }
-
-    mutating func stage() async throws -> DoryOperationState {
-        for object in session.prepared.operation.completenessPlan.objects {
-            try Task.checkCancellation()
-            switch object.source.kind {
-            case .image:
-                try await stageImage(object)
-            case .volume:
-                try await stageVolume(object)
-            case .network:
-                try await stageNetwork(object)
-            case .writableLayer:
-                try await stageWritableLayer(object)
-            case .container:
-                try await stageContainerDefinition(object)
-            }
-        }
-        try await publishContainers()
-        return state
     }
 
     mutating func stageImage(_ object: DoryOperationPlannedObject) async throws {
@@ -339,5 +329,28 @@ struct MigrationImportAssetStagingExecution {
             "dev.dory.operation.state"
         ]
         return keys.allSatisfy { labels[$0] != nil && labels[$0] == expected[$0] }
+    }
+}
+
+extension MigrationImportAssetStagingExecution {
+    mutating func stage() async throws -> DoryOperationState {
+        for object in session.prepared.operation.completenessPlan.objects {
+            try Task.checkCancellation()
+            switch object.source.kind {
+            case .image:
+                try await stageImage(object)
+            case .volume:
+                try await stageVolume(object)
+            case .network:
+                try await stageNetwork(object)
+            case .writableLayer:
+                try await stageWritableLayer(object)
+            case .container:
+                try await stageContainerDefinition(object)
+            }
+        }
+        try await publishContainers()
+        try await validateAndComplete()
+        return state
     }
 }

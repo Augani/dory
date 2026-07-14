@@ -44,6 +44,18 @@ protocol MigrationImportAssetTransfers: Sendable {
         from source: any ContainerRuntime,
         to target: any ContainerRuntime
     ) async throws -> MigrationVolumeTransferReceipt
+
+    func verifyImage(
+        _ request: MigrationImageReadbackRequest,
+        from source: any ContainerRuntime,
+        to target: any ContainerRuntime
+    ) async throws -> MigrationImageReadbackReceipt
+
+    func verifyVolume(
+        _ request: MigrationVolumeTransferRequest,
+        from source: any ContainerRuntime,
+        to target: any ContainerRuntime
+    ) async throws -> MigrationVolumeTransferReceipt
 }
 
 struct MigrationImportLiveAssetTransfers: MigrationImportAssetTransfers {
@@ -63,6 +75,26 @@ struct MigrationImportLiveAssetTransfers: MigrationImportAssetTransfers {
         to target: any ContainerRuntime
     ) async throws -> MigrationVolumeTransferReceipt {
         try await MigrationVolumeTransfer(helperAsset: helperAsset).transfer(
+            request,
+            from: source,
+            to: target
+        )
+    }
+
+    func verifyImage(
+        _ request: MigrationImageReadbackRequest,
+        from source: any ContainerRuntime,
+        to target: any ContainerRuntime
+    ) async throws -> MigrationImageReadbackReceipt {
+        try await MigrationImageReadback.verify(request, from: source, to: target)
+    }
+
+    func verifyVolume(
+        _ request: MigrationVolumeTransferRequest,
+        from source: any ContainerRuntime,
+        to target: any ContainerRuntime
+    ) async throws -> MigrationVolumeTransferReceipt {
+        try await MigrationVolumeTransfer(helperAsset: helperAsset).verify(
             request,
             from: source,
             to: target

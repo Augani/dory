@@ -37,6 +37,13 @@ enum MigrationVolumeTransferError: Error, Sendable, Equatable, CustomStringConve
             return "volume transfer failed (\(operation)); cleanup also failed: \(cleanup.joined(separator: "; "))"
         }
     }
+
+    var leavesOwnedArtifacts: Bool {
+        switch self {
+        case .cleanup, .operationAndCleanup: true
+        default: false
+        }
+    }
 }
 
 /// Executes the v1 named-volume contract through public Docker APIs only. The target volume must
@@ -74,6 +81,40 @@ struct MigrationVolumeTransfer: Sendable {
         guard cleanup.isEmpty else { throw MigrationVolumeTransferError.cleanup(cleanup) }
         guard let completedReceipt else {
             throw MigrationVolumeTransferError.helper("verification receipt disappeared")
+        }
+        return completedReceipt
+    }
+
+    func verify(
+        _ request: MigrationVolumeTransferRequest,
+        from source: any ContainerRuntime,
+        to target: any ContainerRuntime
+    ) async throws -> MigrationVolumeTransferReceipt {
+        try Self.validate(request)
+        var execution = MigrationVolumeTransferExecution(
+            helperAsset: helperAsset,
+            request: request,
+            source: source,
+            target: target
+        )
+        var completedReceipt: MigrationVolumeTransferReceipt?
+        var operationError: Error?
+        do {
+            completedReceipt = try await execution.verify()
+        } catch {
+            operationError = error
+        }
+        let cleanup = await execution.cleanup()
+        if let operationError {
+            if cleanup.isEmpty { throw operationError }
+            throw MigrationVolumeTransferError.operationAndCleanup(
+                operation: String(describing: operationError),
+                cleanup: cleanup
+            )
+        }
+        guard cleanup.isEmpty else { throw MigrationVolumeTransferError.cleanup(cleanup) }
+        guard let completedReceipt else {
+            throw MigrationVolumeTransferError.helper("read-back verification receipt disappeared")
         }
         return completedReceipt
     }

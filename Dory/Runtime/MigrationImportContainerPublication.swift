@@ -1,7 +1,7 @@
 import DoryOperations
 import Foundation
 
-private struct MigrationStagedContainerDefinition {
+struct MigrationStagedContainerDefinition {
     let staged: DoryOperationStagedObject
     let manifest: MigrationContainerDefinitionManifest
     let specification: ContainerSpec
@@ -118,7 +118,7 @@ extension MigrationImportAssetStagingExecution {
         )
     }
 
-    private func stagedContainerDefinition(
+    func stagedContainerDefinition(
         _ object: DoryOperationPlannedObject
     ) throws -> MigrationStagedContainerDefinition {
         let staged = try session.lease.readStagedObjects().first { $0.source == object.source }
@@ -182,7 +182,7 @@ extension MigrationImportAssetStagingExecution {
         }
     }
 
-    private func verifyPublishedContainer(
+    func verifyPublishedContainer(
         _ containerID: String,
         object: DoryOperationPlannedObject,
         definition: MigrationStagedContainerDefinition
@@ -242,7 +242,7 @@ extension MigrationImportAssetStagingExecution {
     }
 }
 
-private extension DoryOperationAcceptedFinalState {
+extension DoryOperationAcceptedFinalState {
     var runtimeState: RunState {
         switch self {
         case .running: return .running

@@ -10,6 +10,11 @@ final class AssetStagingTransfers: MigrationImportAssetTransfers {
 
     var volumeOutcome = VolumeOutcome.success
     var mutateTargetVolume = false
+    var mutateFinalImageReadback = false
+    var mutateFinalVolumeReadback = false
+    var failFinalVolumeCleanup = false
+    var imageReadbackRequests: [MigrationImageReadbackRequest] = []
+    var volumeReadbackRequests: [MigrationVolumeTransferRequest] = []
     let sourceVolumeManifest = Data("source-volume-manifest".utf8)
     let targetVolumeManifest = Data("target-volume-manifest".utf8)
 
@@ -103,6 +108,54 @@ final class AssetStagingTransfers: MigrationImportAssetTransfers {
             targetManifest: targetVolumeManifest,
             sourceManifestSha256: MigrationImportAssetCanonical.digest(sourceVolumeManifest),
             targetManifestSha256: MigrationImportAssetCanonical.digest(targetVolumeManifest),
+            sourceEntryCount: 2,
+            verifiedTargetEntryCount: 2,
+            excludedSocketCount: 0,
+            containsDeviceNodes: false
+        )
+    }
+
+    func verifyImage(
+        _ request: MigrationImageReadbackRequest,
+        from source: any ContainerRuntime,
+        to target: any ContainerRuntime
+    ) async throws -> MigrationImageReadbackReceipt {
+        imageReadbackRequests.append(request)
+        let targetID = try #require(
+            MigrationImageTransferExecution.canonicalImageID(request.targetImageID)
+        )
+        let targetDigest = String(targetID.dropFirst("sha256:".count))
+        let sourceFingerprint = try request.sourceImageID.map { sourceID in
+            let canonical = try #require(
+                MigrationImageTransferExecution.canonicalImageID(sourceID)
+            )
+            return try fingerprint(digest: String(canonical.dropFirst("sha256:".count)))
+        }
+        return MigrationImageReadbackReceipt(
+            source: sourceFingerprint,
+            target: try fingerprint(digest: mutateFinalImageReadback
+                ? String(repeating: "e", count: 64)
+                : targetDigest)
+        )
+    }
+
+    func verifyVolume(
+        _ request: MigrationVolumeTransferRequest,
+        from source: any ContainerRuntime,
+        to target: any ContainerRuntime
+    ) async throws -> MigrationVolumeTransferReceipt {
+        volumeReadbackRequests.append(request)
+        if failFinalVolumeCleanup {
+            throw MigrationVolumeTransferError.cleanup(["injected helper cleanup failure"])
+        }
+        let targetManifest = mutateFinalVolumeReadback
+            ? Data("changed-target-volume-manifest".utf8)
+            : self.targetVolumeManifest
+        return MigrationVolumeTransferReceipt(
+            sourceManifest: sourceVolumeManifest,
+            targetManifest: targetManifest,
+            sourceManifestSha256: MigrationImportAssetCanonical.digest(sourceVolumeManifest),
+            targetManifestSha256: MigrationImportAssetCanonical.digest(targetManifest),
             sourceEntryCount: 2,
             verifiedTargetEntryCount: 2,
             excludedSocketCount: 0,

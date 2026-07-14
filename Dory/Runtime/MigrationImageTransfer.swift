@@ -43,6 +43,13 @@ nonisolated enum MigrationImageTransferError: Error, Sendable, Equatable, Custom
             return "image transfer failed (\(operation)); cleanup also failed: \(cleanup.joined(separator: "; "))"
         }
     }
+
+    var leavesOwnedArtifacts: Bool {
+        switch self {
+        case .cleanup, .operationAndCleanup: true
+        default: false
+        }
+    }
 }
 
 /// Stages one immutable, untagged linux/arm64 image without buffering its archive or publishing

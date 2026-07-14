@@ -67,6 +67,18 @@ struct MigrationVolumeTransferExecution {
         return receipt(source: initial, target: verifiedTarget)
     }
 
+    mutating func verify() async throws -> MigrationVolumeTransferReceipt {
+        let images = try await installHelpers()
+        let initial = try await scanInitialSource(image: images.source)
+        let verifiedTarget = try await scanVerifiedTarget(image: images.target)
+        try await verifySourceUnchanged(initial: initial, image: images.source)
+        guard verifiedTarget.manifest == initial.manifest.normalizedTarget,
+              initial.manifest.socketCount > 0 || verifiedTarget.bytes == initial.bytes else {
+            throw MigrationVolumeTransferError.targetMismatch
+        }
+        return receipt(source: initial, target: verifiedTarget)
+    }
+
     mutating func installHelpers() async throws -> (source: String, target: String) {
         artifacts.sourceInstallation = try await helperAsset.install(
             on: source,

@@ -247,7 +247,7 @@ struct MigrationTarArchiveTests {
 }
 
 @MainActor
-private struct TransferFixture {
+struct TransferFixture {
     let asset: MigrationTransferHelperAsset
     let request: MigrationVolumeTransferRequest
     let sourceManifest: Data

@@ -16,7 +16,8 @@ struct MigrationImportContainerPublicationTests: StrictInventoryTestCase {
             environment: context.environment
         )
 
-        #expect(state.phase == .publishing)
+        #expect(state.phase == .completed)
+        #expect(state.status == .completed)
         #expect(context.fixture.target.snapshotValue.containers[0].status == .paused)
         #expect(context.fixture.target.startedContainers == ["strict-created-1"])
         #expect(context.fixture.target.pausedContainers == ["strict-created-1"])
@@ -67,6 +68,100 @@ struct MigrationImportContainerPublicationTests: StrictInventoryTestCase {
         #expect(record.state.status == .needsRecovery)
         #expect(record.state.lastEvent.recoveryAction == "rollback.retry")
     }
+
+    @Test func finalImageReadbackDriftRollsBackThePublishedClosure() async throws {
+        let context = try await makeContext(name: "final-image-drift") { _ in }
+        defer { context.cleanup() }
+        context.transfers.mutateFinalImageReadback = true
+
+        await #expect(throws: MigrationImportAssetStagingError.self) {
+            _ = try await MigrationImportAssetStager.stage(
+                session: context.session,
+                environment: context.environment
+            )
+        }
+
+        #expect(context.fixture.target.snapshotValue.containers.isEmpty)
+        #expect(context.fixture.target.snapshotValue.images.isEmpty)
+        #expect(context.fixture.target.snapshotValue.volumes.isEmpty)
+        #expect(context.fixture.target.snapshotValue.networks.isEmpty)
+        let record = try context.session.lease.read()
+        #expect(record.state.phase == .validating)
+        #expect(record.state.status == .failed)
+    }
+
+    @Test func finalVolumeReadbackDriftRollsBackThePublishedClosure() async throws {
+        let context = try await makeContext(name: "final-volume-drift") { _ in }
+        defer { context.cleanup() }
+        context.transfers.mutateFinalVolumeReadback = true
+
+        await #expect(throws: MigrationImportAssetStagingError.self) {
+            _ = try await MigrationImportAssetStager.stage(
+                session: context.session,
+                environment: context.environment
+            )
+        }
+
+        #expect(context.fixture.target.snapshotValue.containers.isEmpty)
+        #expect(context.fixture.target.snapshotValue.images.isEmpty)
+        #expect(context.fixture.target.snapshotValue.volumes.isEmpty)
+        #expect(context.fixture.target.snapshotValue.networks.isEmpty)
+        let record = try context.session.lease.read()
+        #expect(record.state.phase == .validating)
+        #expect(record.state.status == .failed)
+    }
+
+    @Test func unownedTargetDriftIsPreservedWhilePublishedClosureRollsBack() async throws {
+        let context = try await makeContext(name: "unowned-target-drift") { _ in }
+        defer { context.cleanup() }
+        let unrelatedID = "sha256:" + String(repeating: "f", count: 64)
+        context.fixture.target.snapshotValue.images.append(DockerImage(
+            repository: "unrelated",
+            tag: "latest",
+            imageID: unrelatedID,
+            size: "1 B",
+            created: "now",
+            usedByCount: 0,
+            sizeBytes: 1
+        ))
+
+        await #expect(throws: MigrationImportAssetStagingError.self) {
+            _ = try await MigrationImportAssetStager.stage(
+                session: context.session,
+                environment: context.environment
+            )
+        }
+
+        #expect(context.fixture.target.snapshotValue.images.map(\.imageID) == [unrelatedID])
+        #expect(context.fixture.target.snapshotValue.containers.isEmpty)
+        #expect(context.fixture.target.snapshotValue.volumes.isEmpty)
+        #expect(context.fixture.target.snapshotValue.networks.isEmpty)
+        let record = try context.session.lease.read()
+        #expect(record.state.phase == .validating)
+        #expect(record.state.status == .failed)
+    }
+
+    @Test func finalHelperCleanupFailureRequiresRecoveryAfterObjectRollback() async throws {
+        let context = try await makeContext(name: "final-helper-cleanup") { _ in }
+        defer { context.cleanup() }
+        context.transfers.failFinalVolumeCleanup = true
+
+        await #expect(throws: MigrationVolumeTransferError.self) {
+            _ = try await MigrationImportAssetStager.stage(
+                session: context.session,
+                environment: context.environment
+            )
+        }
+
+        #expect(context.fixture.target.snapshotValue.containers.isEmpty)
+        #expect(context.fixture.target.snapshotValue.images.isEmpty)
+        #expect(context.fixture.target.snapshotValue.volumes.isEmpty)
+        #expect(context.fixture.target.snapshotValue.networks.isEmpty)
+        let record = try context.session.lease.read()
+        #expect(record.state.phase == .validating)
+        #expect(record.state.status == .needsRecovery)
+        #expect(record.state.lastEvent.recoveryAction == "rollback.retry")
+    }
 }
 
 @MainActor
@@ -75,6 +170,7 @@ private extension MigrationImportContainerPublicationTests {
         let fixture: StrictInventoryFixture
         let session: MigrationImportStagingSession
         let environment: MigrationImportAssetStagingEnvironment
+        let transfers: AssetStagingTransfers
         let home: URL
 
         func cleanup() {
@@ -114,6 +210,7 @@ private extension MigrationImportContainerPublicationTests {
                 transfers: transfers,
                 sharedHome: "/Users/test"
             ),
+            transfers: transfers,
             home: home
         )
     }
