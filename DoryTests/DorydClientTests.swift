@@ -177,6 +177,7 @@ struct DorydClientTests {
         ])
         let networkStatus = try await client.networkStatus()
         let networkPlan = try await client.networkAuthorizationPlan()
+        let repairedNetwork = try await client.repairSubsystem("dns")
         let balloonPlan = try await client.balloonStatus()
         let reconciledBalloonPlan = try await client.balloonReconcile()
         let idleStatus = try await client.idleStatus()
@@ -258,6 +259,7 @@ struct DorydClientTests {
             DorydPrivilegedTCPForward(listenPort: 25, targetPort: 1025),
         ])
         #expect(networkPlan.requests.map(\.kind) == ["resolverFile"])
+        #expect(repairedNetwork == DorydCommandResult(ok: true, message: "repaired dns"))
         #expect(balloonPlan.host.pressure == "warning")
         #expect(balloonPlan.applicableTargets.map(\.id) == ["docker"])
         #expect(reconciledBalloonPlan.host.pressure == "warning")
@@ -272,6 +274,23 @@ struct DorydClientTests {
         #expect(incidents == [
             Incident(at: "2026-07-07T00:00:00Z", type: "engine.start", detail: "started")
         ])
+    }
+
+    @MainActor
+    @Test func healthRecoveryUsesDaemonOwnedSubsystemRepair() async {
+        let listener = NSXPCListener.anonymous()
+        let service = FakeDorydService()
+        let delegate = FakeDorydListenerDelegate(service: service)
+        listener.delegate = delegate
+        listener.resume()
+        defer { listener.invalidate() }
+
+        let store = AppStore(dorydClient: DorydClient(endpoint: listener.endpoint))
+        await store.runRepairTarget("dns")
+
+        #expect(service.repairTargets == ["dns"])
+        #expect(store.healthActionError == nil)
+        #expect(!store.healthActionInFlight)
     }
 
     @MainActor
@@ -1210,6 +1229,7 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
         "showWakeNotifications": true,
     ]
     private var networkRouteBatches: [[DorydDomainRoute]] = []
+    private var _repairTargets: [String] = []
     private var machines: [String: NSDictionary] = [
         "dev": FakeDorydService.machineRow(
             id: "dev",
@@ -1317,6 +1337,10 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
     var latestMachineProvisionRecipe: String? {
         lock.lock(); defer { lock.unlock() }
         return _latestMachineProvisionRecipe
+    }
+    var repairTargets: [String] {
+        lock.lock(); defer { lock.unlock() }
+        return _repairTargets
     }
     var latestNetworkRoutes: [DorydDomainRoute] {
         lock.lock(); defer { lock.unlock() }
@@ -1739,6 +1763,11 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
                 ],
             ],
         ] as NSDictionary, "")
+    }
+
+    func repairSubsystem(_ target: String, reply: @escaping (Bool, String) -> Void) {
+        lock.lock(); _repairTargets.append(target); lock.unlock()
+        reply(true, "repaired \(target)")
     }
 
     func balloonStatus(reply: @escaping (NSDictionary, String) -> Void) {

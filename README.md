@@ -101,12 +101,12 @@
 - `dory support bundle` writes one redacted diagnostic zip and prints the path to attach to a
   GitHub issue; `dory logs collect` is the same support-safe collection flow for users who think
   in logs first.
-- `dory mode` and `dory idle status` expose the Auto-Idle foundation; `dory idle proxy` can run
-  the opt-in always-listening socket proxy for headless dogfooding. The proxy wakes a sleeping
-  headless engine on Docker API use, forwards the request, and records its idle/wake state.
-- In the app-managed path, opening Dory is an explicit wake signal: the app asks `doryd` to make
-  Docker usable, while the idle policy can later stop an empty engine without discarding Docker or
-  machine state.
+- `dory mode` and `dory idle status` control daemon-owned Auto-Idle. `doryd` keeps the Docker socket
+  available while the heavy engine sleeps, coalesces concurrent wake requests, records blockers and
+  every sleep/wake transition, and stops only after the configured policy proves the engine idle.
+- The Health screen explains why Dory is awake, shows the incident timeline, and exposes bounded
+  in-place repairs for DNS, domains, routes, published ports, and the guest agent. A workload-aware
+  engine restart is separate and explicit.
 
 **Kubernetes, one click**
 - k3s inside the shared VM with selectable Kubernetes versions.

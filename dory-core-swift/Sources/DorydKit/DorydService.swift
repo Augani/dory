@@ -9,6 +9,7 @@ public final class DorydService: NSObject, DorydControl {
     private let machineManager: MachineManager?
     private let remoteManager: RemoteMachineManager?
     private let networkingController: NetworkingController?
+    private let networkRouteRepair: (@Sendable () -> Int)?
     private let balloonController: BalloonController
     private let idlePolicyStore: IdlePolicyStore
     private let idleSleepScheduler: IdleSleepScheduler?
@@ -21,6 +22,7 @@ public final class DorydService: NSObject, DorydControl {
         machineManager: MachineManager? = nil,
         remoteManager: RemoteMachineManager? = nil,
         networkingController: NetworkingController? = nil,
+        networkRouteRepair: (@Sendable () -> Int)? = nil,
         balloonController: BalloonController? = nil,
         idlePolicyStore: IdlePolicyStore? = nil,
         idleSleepScheduler: IdleSleepScheduler? = nil,
@@ -32,6 +34,7 @@ public final class DorydService: NSObject, DorydControl {
         self.machineManager = machineManager
         self.remoteManager = remoteManager
         self.networkingController = networkingController
+        self.networkRouteRepair = networkRouteRepair
         self.balloonController = balloonController ?? BalloonController(
             actuator: DorydBalloonActuator(machineManager: machineManager)
         )
@@ -585,6 +588,58 @@ public final class DorydService: NSObject, DorydControl {
         }
     }
 
+    public func repairSubsystem(_ target: String, reply: @escaping (Bool, String) -> Void) {
+        do {
+            let detail: String
+            switch target {
+            case "dns":
+                _ = networkRouteRepair?()
+                guard let networkingController else { throw SubsystemRepairError.unavailable("networking is not configured") }
+                let status = try networkingController.repair(.dns)
+                detail = "DNS listener restarted on \(status.dnsBindAddress):\(status.dnsPort) with \(status.routes.count) route(s)"
+            case "domains":
+                let routeCount = networkRouteRepair?()
+                guard let networkingController else { throw SubsystemRepairError.unavailable("networking is not configured") }
+                let status = try networkingController.repair(.domains)
+                detail = "domain proxies restarted with \(routeCount ?? status.routes.count) route(s)"
+            case "routes":
+                guard let networkRouteRepair else { throw SubsystemRepairError.unavailable("route reconciler is not configured") }
+                let routeCount = networkRouteRepair()
+                guard let networkingController else { throw SubsystemRepairError.unavailable("networking is not configured") }
+                _ = try networkingController.repair(.routes)
+                detail = "reconciled \(routeCount) domain route(s)"
+            case "ports":
+                guard let dockerTier else { throw SubsystemRepairError.unavailable("docker tier is not configured") }
+                let diff = try dockerTier.repairPublishedPorts()
+                let count = dockerTier.currentPublishedPorts()?.count ?? 0
+                detail = "requested immediate gvproxy reconciliation; validated \(count) published port(s), added \(diff?.added.count ?? 0), removed \(diff?.removed.count ?? 0)"
+            case "guest-agent":
+                guard let dockerTier else { throw SubsystemRepairError.unavailable("docker tier is not configured") }
+                let result = dockerTier.syncAgentClock(now: Date())
+                guard result.attempted, result.synced else {
+                    throw SubsystemRepairError.unavailable(result.error ?? "guest agent did not acknowledge a fresh RPC")
+                }
+                detail = "guest agent reconnected and acknowledged clock synchronization"
+            case "dockerd", "docker-api":
+                guard let dockerTier else { throw SubsystemRepairError.unavailable("docker tier is not configured") }
+                switch dockerTier.containerSummariesForIdle() {
+                case .ok(let containers):
+                    detail = "Docker API is reachable; \(containers.count) container(s) visible"
+                case .unavailable(let reason):
+                    throw SubsystemRepairError.unavailable("Docker API remains unreachable: \(reason). Use the explicit workload-aware engine restart.")
+                }
+            default:
+                throw SubsystemRepairError.invalidTarget(target)
+            }
+            incidentWriter?.record(type: "repair.\(target)", detail: detail)
+            reply(true, detail)
+        } catch {
+            let detail = "\(error)"
+            incidentWriter?.record(type: "repair.\(target)_failed", detail: detail)
+            reply(false, detail)
+        }
+    }
+
     public func balloonStatus(reply: @escaping (NSDictionary, String) -> Void) {
         do {
             reply(try balloonController.currentPlan(guests: memoryGuests()).xpcDictionary, "")
@@ -717,6 +772,20 @@ private final class DorydBalloonActuator: BalloonActuator, @unchecked Sendable {
 
     func apply(targets: [BalloonTarget]) throws {
         try machineManager?.applyBalloonTargets(targets)
+    }
+}
+
+private enum SubsystemRepairError: Error, CustomStringConvertible {
+    case invalidTarget(String)
+    case unavailable(String)
+
+    var description: String {
+        switch self {
+        case .invalidTarget(let target):
+            return "unsupported repair target: \(target)"
+        case .unavailable(let detail):
+            return detail
+        }
     }
 }
 

@@ -75,11 +75,18 @@ public struct NetworkingStatus: Sendable, Equatable {
     }
 }
 
+public enum NetworkingRepairTarget: String, Sendable {
+    case dns
+    case domains
+    case routes
+}
+
 public final class NetworkingController: @unchecked Sendable {
     private let configuration: NetworkingConfiguration
     private let router: DomainRouter
     private let dnsServer: DoryDNSServer
     private let httpProxy: DoryHTTPProxyServer
+    private let controlLock = NSLock()
     private var tlsProxy: DoryTLSProxyServer?
 
     public init(configuration: NetworkingConfiguration = NetworkingConfiguration()) {
@@ -99,6 +106,12 @@ public final class NetworkingController: @unchecked Sendable {
     }
 
     public func start() throws {
+        controlLock.lock()
+        defer { controlLock.unlock() }
+        try startLocked()
+    }
+
+    private func startLocked() throws {
         do {
             try dnsServer.start()
             try httpProxy.start()
@@ -136,6 +149,12 @@ public final class NetworkingController: @unchecked Sendable {
     }
 
     public func stop() {
+        controlLock.lock()
+        defer { controlLock.unlock() }
+        stopLocked()
+    }
+
+    private func stopLocked() {
         dnsServer.stop()
         httpProxy.stop()
         tlsProxy?.stop()
@@ -143,12 +162,24 @@ public final class NetworkingController: @unchecked Sendable {
     }
 
     public func replaceRoutes(_ routes: [DomainRoute]) {
+        controlLock.lock()
+        defer { controlLock.unlock() }
+        replaceRoutesLocked(routes)
+    }
+
+    private func replaceRoutesLocked(_ routes: [DomainRoute]) {
         dnsServer.updateRoutes(routes)
         httpProxy.updateRoutes(routes)
         tlsProxy?.updateRoutes(routes)
     }
 
     public func status() -> NetworkingStatus {
+        controlLock.lock()
+        defer { controlLock.unlock() }
+        return statusLocked()
+    }
+
+    private func statusLocked() -> NetworkingStatus {
         NetworkingStatus(
             mode: tlsProxy?.isRunning == true ? "high-port-dns-http-https-proxy" : "high-port-dns-http-proxy",
             suffix: configuration.suffix,
@@ -163,6 +194,33 @@ public final class NetworkingController: @unchecked Sendable {
         )
     }
 
+    /// Restarts one host networking component without touching the VM or its workloads. Routes are
+    /// retained by each listener, so a repair cannot briefly publish an empty routing table.
+    @discardableResult
+    public func repair(_ target: NetworkingRepairTarget) throws -> NetworkingStatus {
+        controlLock.lock()
+        defer { controlLock.unlock() }
+        switch target {
+        case .dns:
+            dnsServer.stop()
+            try dnsServer.start()
+        case .domains:
+            httpProxy.stop()
+            tlsProxy?.stop()
+            do {
+                try httpProxy.start()
+                try tlsProxy?.start()
+            } catch {
+                httpProxy.stop()
+                tlsProxy?.stop()
+                throw error
+            }
+        case .routes:
+            replaceRoutesLocked(dnsServer.currentRoutes())
+        }
+        return statusLocked()
+    }
+
     private static func ephemeralPassword() -> String {
         var generator = SystemRandomNumberGenerator()
         return (0..<24)
@@ -171,6 +229,8 @@ public final class NetworkingController: @unchecked Sendable {
     }
 
     public func authorizationPlan(additionalPrivilegedTCPForwards: [PrivilegedTCPForward] = []) throws -> NetworkingAuthorizationPlan {
+        controlLock.lock()
+        defer { controlLock.unlock() }
         var live = configuration
         let activeDNSPort = dnsServer.port
         if activeDNSPort != 0 {

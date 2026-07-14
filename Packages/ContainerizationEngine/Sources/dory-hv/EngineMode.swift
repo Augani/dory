@@ -137,6 +137,16 @@ enum EngineMode {
         signalSources.append(source)
     }
 
+    private static func installPortReconcileSignal(portForwarder: PortForwarder) {
+        signal(SIGUSR2, SIG_IGN)
+        let source = DispatchSource.makeSignalSource(signal: SIGUSR2, queue: .global())
+        source.setEventHandler {
+            portForwarder.reconcileNow()
+        }
+        source.resume()
+        signalSources.append(source)
+    }
+
     private static func syncGuestClock(
         vsock: VirtioVsock,
         reason: String,
@@ -612,6 +622,7 @@ enum EngineMode {
             sourcePreservingLANGVProxySocketPath: sourcePreservingLANClient == nil ? nil : lanDatapathSocket,
             log: { note($0) }
         )
+        installPortReconcileSignal(portForwarder: portForwarder)
         portForwarder.start()
         let gvproxyDatapathTask = monitorGVProxyDatapath(
             healthSocket: gvproxyHealthSocket,

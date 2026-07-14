@@ -170,7 +170,7 @@ func usage(exitCode: Int32 = 2) -> Never {
           dorydctl [global] remote connect NAME --host HOST --user USER --private-key-id ID --remote-root PATH (--host-key KEY | --known-hosts PATH) [--port N] [--endpoint-unix PATH | --endpoint-tcp HOST:PORT]
           dorydctl [global] remote push NAME --local-root PATH [--remote-root PATH]
           dorydctl [global] remote status NAME
-          dorydctl [global] network status|authorization-plan
+          dorydctl [global] network status|authorization-plan|repair
           dorydctl [global] network replace-routes --json PATH|-
           dorydctl [global] network set-route HOST ADDRESS [--port N]
           dorydctl [global] balloon status|reconcile
@@ -560,7 +560,7 @@ func runRemote(cursor: inout ArgumentCursor, client: DorydCtlClient) throws {
 }
 
 func runNetwork(cursor: inout ArgumentCursor, client: DorydCtlClient) throws {
-    let subcommand = try cursor.take("usage: dorydctl network status|authorization-plan|replace-routes|set-route")
+    let subcommand = try cursor.take("usage: dorydctl network status|authorization-plan|repair|replace-routes|set-route")
     switch subcommand {
     case "status":
         let status: NSDictionary = try client.call { proxy, finish in
@@ -576,6 +576,15 @@ func runNetwork(cursor: inout ArgumentCursor, client: DorydCtlClient) throws {
             }
         }
         try emitJSON(plan)
+    case "repair":
+        let target = try cursor.take("usage: dorydctl network repair dns|domains|routes|ports|guest-agent|docker-api")
+        guard ["dns", "domains", "routes", "ports", "guest-agent", "docker-api"].contains(target),
+              cursor.values.isEmpty else {
+            throw DorydCtlError.usage("usage: dorydctl network repair dns|domains|routes|ports|guest-agent|docker-api")
+        }
+        try emitCommandResult(try client.command { proxy, reply in
+            proxy.repairSubsystem(target, reply: reply)
+        })
     case "replace-routes":
         let jsonPath = try requiredOption(
             "--json",

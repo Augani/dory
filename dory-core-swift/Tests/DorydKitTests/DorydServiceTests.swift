@@ -729,10 +729,15 @@ final class DorydServiceTests: XCTestCase {
         )
         try tier.start()
         defer { tier.stop() }
+        let routeRepair = ServiceRepairCounter()
         let service = DorydService(
             socketPath: "/tmp/doryd-test.sock",
             dockerTier: tier,
-            networkingController: networking
+            networkingController: networking,
+            networkRouteRepair: {
+                routeRepair.increment()
+                return 1
+            }
         )
         let listener = makeAnonymousListener(service: service)
         listener.resume()
@@ -795,6 +800,42 @@ final class DorydServiceTests: XCTestCase {
         let requests = try XCTUnwrap(authorization["requests"] as? [NSDictionary])
         XCTAssertTrue(requests.contains { $0["kind"] as? String == "resolverFile" })
         XCTAssertTrue(requests.contains { $0["kind"] as? String == "pfAnchor" })
+
+        for target in ["dns", "domains", "routes", "guest-agent"] {
+            let repairReply = expectation(description: "repair \(target) reply")
+            proxy.repairSubsystem(target) { ok, message in
+                XCTAssertTrue(ok, message)
+                XCTAssertFalse(message.isEmpty)
+                repairReply.fulfill()
+            }
+            wait(for: [repairReply], timeout: 5)
+        }
+        XCTAssertEqual(routeRepair.value, 3)
+
+        let unavailableDockerReply = expectation(description: "unavailable Docker API repair reply")
+        proxy.repairSubsystem("dockerd") { ok, message in
+            XCTAssertFalse(ok)
+            XCTAssertTrue(message.contains("Docker API remains unreachable"))
+            unavailableDockerReply.fulfill()
+        }
+        wait(for: [unavailableDockerReply], timeout: 5)
+
+        let repairedStatusReply = expectation(description: "repaired network status reply")
+        proxy.networkStatus { body, message in
+            XCTAssertEqual(message, "")
+            XCTAssertEqual(body["dnsRunning"] as? Bool, true)
+            XCTAssertEqual(body["httpProxyRunning"] as? Bool, true)
+            repairedStatusReply.fulfill()
+        }
+        wait(for: [repairedStatusReply], timeout: 5)
+
+        let invalidRepairReply = expectation(description: "invalid repair reply")
+        proxy.repairSubsystem("erase-everything") { ok, message in
+            XCTAssertFalse(ok)
+            XCTAssertTrue(message.contains("unsupported repair target"))
+            invalidRepairReply.fulfill()
+        }
+        wait(for: [invalidRepairReply], timeout: 5)
     }
 
     func testMachineLifecycleOverXPC() throws {
@@ -1456,6 +1497,23 @@ private final class ServiceRecordingMachineBalloonController: MachineBalloonCont
     func setBalloonTarget(socketPath: String, targetMB: UInt64) throws {
         lock.lock()
         applies.append(Apply(socketPath: socketPath, targetMB: targetMB))
+        lock.unlock()
+    }
+}
+
+private final class ServiceRepairCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+
+    var value: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return count
+    }
+
+    func increment() {
+        lock.lock()
+        count += 1
         lock.unlock()
     }
 }

@@ -3588,6 +3588,12 @@ def repair_routes(apply: bool) -> dict[str, Any]:
             "detail": f"{len(conflicts)} conflicting published port rows found",
             "next": "stop one of the containers using the same host port, then rerun `dory routes`",
         }
+    if apply:
+        repair = dorydctl_json(["network", "repair", "routes"], timeout=10)
+        if repair.get("available"):
+            if not repair.get("ok"):
+                return {"target": "routes", "status": "fail", "detail": repair.get("error", "doryd route repair failed")}
+            return {"target": "routes", "status": "pass", "detail": repair["body"].get("message", "routes reconciled")}
     return {"target": "routes", "status": "pass", "detail": f"{len(table['ports'])} port route(s), {len(table['domains'])} domain route(s) readable"}
 
 
@@ -3611,13 +3617,17 @@ def repair_dns(apply: bool) -> dict[str, Any]:
             "detail": detail,
             "next": "run `dory repair dns --apply` to flush the macOS DNS cache if *.dory.local is stale",
         }
+    daemon_repair = dorydctl_json(["network", "repair", "dns"], timeout=10)
+    if daemon_repair.get("available") and not daemon_repair.get("ok"):
+        return {"target": "dns", "status": "fail", "detail": daemon_repair.get("error", "doryd DNS repair failed")}
     flush = subprocess.run(["dscacheutil", "-flushcache"], text=True, capture_output=True, timeout=15)
     hup = subprocess.run(["killall", "-HUP", "mDNSResponder"], text=True, capture_output=True, timeout=15)
     if flush.returncode != 0:
         return {"target": "dns", "status": "fail", "detail": compact(flush.stderr or flush.stdout)}
     if hup.returncode != 0:
         return {"target": "dns", "status": "warn", "detail": f"DNS cache flushed; mDNSResponder HUP failed: {compact(hup.stderr or hup.stdout)}"}
-    return {"target": "dns", "status": "pass", "detail": "macOS DNS cache flushed"}
+    daemon_detail = daemon_repair.get("body", {}).get("message") if daemon_repair.get("ok") else None
+    return {"target": "dns", "status": "pass", "detail": "; ".join(filter(None, [daemon_detail, "macOS DNS cache flushed"]))}
 
 
 def repair_domains(apply: bool) -> dict[str, Any]:
@@ -3628,11 +3638,14 @@ def repair_domains(apply: bool) -> dict[str, Any]:
     resolver = Path(f"/etc/resolver/{DOMAIN_SUFFIX}")
     if apply:
         dns = repair_dns(True)
+        domains = dorydctl_json(["network", "repair", "domains"], timeout=10)
+        if domains.get("available") and not domains.get("ok"):
+            return {"target": "domains", "status": "fail", "detail": domains.get("error", "doryd domain repair failed")}
+        daemon_detail = domains.get("body", {}).get("message") if domains.get("ok") else None
         return {
             "target": "domains",
             "status": dns.get("status", "warn"),
-            "detail": f"{domains} inferred domain route(s); {dns.get('detail')}",
-            "next": "restart Dory if the reverse proxy listener itself is wedged",
+            "detail": "; ".join(filter(None, [f"{len(table.get('domains', []))} inferred domain route(s)", daemon_detail, dns.get("detail")])),
         }
     return {
         "target": "domains",
@@ -3654,10 +3667,20 @@ def repair_ports(apply: bool) -> dict[str, Any]:
             "detail": f"{len(conflicts)} conflicting published port route(s)",
             "next": "stop one of the conflicting containers; Dory will reconcile route ownership automatically",
         }
+    if apply:
+        repair = dorydctl_json(["network", "repair", "ports"], timeout=10)
+        if repair.get("available"):
+            if not repair.get("ok"):
+                return {"target": "ports", "status": "fail", "detail": repair.get("error", "doryd port repair failed")}
+            return {"target": "ports", "status": "pass", "detail": repair["body"].get("message", "published ports reconciled")}
     return {"target": "ports", "status": "pass", "detail": f"{len(table.get('ports', []))} published port route(s) readable; no conflicts"}
 
 
 def repair_dockerd(apply: bool, restart_engine: bool = False, allow_engine_escalation: bool = True) -> dict[str, Any]:
+    if apply:
+        repair = dorydctl_json(["network", "repair", "docker-api"], timeout=12)
+        if repair.get("ok"):
+            return {"target": "dockerd", "status": "pass", "detail": repair["body"].get("message", "Docker API reachable")}
     try:
         # Give a busy or still-booting dockerd time to answer before declaring it wedged and
         # escalating to a disruptive engine bounce.
@@ -3685,6 +3708,12 @@ def repair_dockerd(apply: bool, restart_engine: bool = False, allow_engine_escal
 
 
 def repair_guest_agent(apply: bool) -> dict[str, Any]:
+    if apply:
+        repair = dorydctl_json(["network", "repair", "guest-agent"], timeout=12)
+        if repair.get("available"):
+            if repair.get("ok"):
+                return {"target": "guest-agent", "status": "pass", "detail": repair["body"].get("message", "guest agent reconnected")}
+            return {"target": "guest-agent", "status": "fail", "detail": repair.get("error", "guest agent repair failed")}
     pid = shared_engine_pid()
     if not pid:
         return {

@@ -17,6 +17,7 @@ final class PortForwarder: MachinePortForwarding, @unchecked Sendable {
     private let sourcePreservingLANSessionID: String?
     private let sourcePreservingLANGVProxySocketPath: String?
     private let log: (String) -> Void
+    private let queue = DispatchQueue(label: "dev.dory.hv.port-forwarder")
     private let timer: any DispatchSourceTimer
     private var exposed = Set<PublishedPortForward>()
     private var lastForwardFailureLog: [PublishedPortForward: Date] = [:]
@@ -41,12 +42,18 @@ final class PortForwarder: MachinePortForwarding, @unchecked Sendable {
         self.sourcePreservingLANSessionID = sourcePreservingLANSessionID
         self.sourcePreservingLANGVProxySocketPath = sourcePreservingLANGVProxySocketPath
         self.log = log
-        self.timer = DispatchSource.makeTimerSource(queue: .global())
+        self.timer = DispatchSource.makeTimerSource(queue: queue)
         timer.schedule(deadline: .now() + 3, repeating: 2)
         timer.setEventHandler { [weak self] in self?.sync() }
     }
 
     func start() { timer.resume() }
+
+    /// Coalesces manual repair with the normal two-second reconciliation loop on the same serial
+    /// queue, keeping the tracked forward set race-free.
+    func reconcileNow() {
+        queue.async { [weak self] in self?.sync() }
+    }
 
     private func sync() {
         guard let ports = publishedPorts() else { return }  // docker not ready or unreachable

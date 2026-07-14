@@ -100,6 +100,11 @@ unnotarized until the `dory-notary` keychain profile is provisioned.
 
 - The full non-UI app gate passes **837 tests in 113 suites** after the final migration, Compose,
   and ephemeral-port preservation changes.
+- Recovery is now daemon-owned instead of a UI shell-out for live subsystems. Focused XPC and app
+  tests pass DNS/domain listener restart, route re-derivation, guest-agent RPC recovery, Docker API
+  fail-closed reporting, incident attribution, and invalid-target rejection. dory-hv now serializes
+  ordinary and manually requested gvproxy port reconciliation; the CLI and Health screen use the
+  same repair contract. `scripts/test-dory-doctor.sh` and the 26-test DorydClient suite pass.
 - The owned live OrbStack-to-Dory migration passed against both real engine sockets. It preserved:
   image availability, named-volume bytes, custom networking, environment, command/entrypoint,
   mounts, restart policy, and running state. It covers deleted tags, normalized cross-daemon image

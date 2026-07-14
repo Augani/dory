@@ -148,7 +148,9 @@ Useful knobs:
 (`1053` by default), starts the high-port HTTP proxy, and starts a high-port TLS proxy backed by a
 `DoryLocalCA` identity. The XPC surface exposes
 `networkReplaceRoutes` for app-fed `{hostname,address,port}` route tables and `networkStatus` for the
-active suffix, ports, listener state, and route list.
+active suffix, ports, listener state, and route list. `repairSubsystem` gives the app and
+`dorydctl network repair` one bounded path for DNS/domain listener restart, route re-derivation,
+immediate gvproxy port reconciliation, guest-agent RPC recovery, and Docker API verification.
 
 This intentionally does not mutate `/etc/resolver`, pf, or the system trust store. Those remain
 separately-authorized privileged helper work.

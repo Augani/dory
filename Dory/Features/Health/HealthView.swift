@@ -208,8 +208,8 @@ struct HealthView: View {
             ("routes", "Refresh routes"),
             ("domains", "Refresh domains"),
             ("ports", "Reforward ports"),
-            ("dockerd", "Restart dockerd"),
-            ("guest-agent", "Wake guest agent"),
+            ("dockerd", "Check Docker API"),
+            ("guest-agent", "Reconnect guest agent"),
         ]
     }
 
@@ -233,7 +233,7 @@ struct HealthView: View {
                     .accessibilityIdentifier("recover-\(action.target)")
                 }
             }
-            Text("Each action repairs one subsystem in place — no VM restart, no lost containers or volumes.")
+            Text("These actions repair or verify one subsystem in place. Workload-aware engine restart stays separate and explicit.")
                 .font(.system(size: 11)).foregroundStyle(p.text3)
         }
     }

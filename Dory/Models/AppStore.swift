@@ -2294,9 +2294,16 @@ final class AppStore {
         guard !healthActionInFlight else { return }
         healthActionInFlight = true
         healthActionError = nil
-        let result = await HealthDiagnostics.runControl(["repair", target, "--apply"])
-        if !result.ok {
-            healthActionError = result.output.isEmpty ? "Repair \(target) failed" : result.output
+        if ["dns", "routes", "domains", "ports", "dockerd", "guest-agent"].contains(target),
+           let result = try? await dorydClient.repairSubsystem(target) {
+            if !result.ok {
+                healthActionError = result.message.isEmpty ? "Repair \(target) failed" : result.message
+            }
+        } else {
+            let result = await HealthDiagnostics.runControl(["repair", target, "--apply"])
+            if !result.ok {
+                healthActionError = result.output.isEmpty ? "Repair \(target) failed" : result.output
+            }
         }
         healthActionInFlight = false
         await loadHealth()

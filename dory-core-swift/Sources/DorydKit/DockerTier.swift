@@ -97,6 +97,7 @@ public final class DockerTier: @unchecked Sendable {
         case startCancelled
         case daemonShuttingDown
         case wakeFailed(String)
+        case repairUnavailable(String)
 
         public var description: String {
             switch self {
@@ -118,6 +119,8 @@ public final class DockerTier: @unchecked Sendable {
                 return "docker tier cannot start while doryd is shutting down"
             case .wakeFailed(let message):
                 return message.isEmpty ? "docker tier did not wake" : message
+            case .repairUnavailable(let message):
+                return message
             }
         }
     }
@@ -690,6 +693,27 @@ public final class DockerTier: @unchecked Sendable {
         lock.unlock()
         guard currentState == .running else { return nil }
         return try portPublisher.refresh(from: agentControl)
+    }
+
+    /// Forces dory-hv's gvproxy publisher to reconcile immediately, then validates the guest-agent
+    /// port snapshot used by privileged and diagnostic surfaces. The VMM helper path has no gvproxy
+    /// publisher and therefore fails closed instead of delivering SIGUSR2 to an unrelated process.
+    public func repairPublishedPorts() throws -> PortPublishDiff? {
+        lock.lock()
+        let currentState = state
+        let helperPID = helperProcess?.pid
+        let supportsSignal = configuration.hvProcess != nil
+        lock.unlock()
+        guard currentState == .running else {
+            throw TierError.repairUnavailable("docker tier is \(currentState.rawValue)")
+        }
+        guard supportsSignal, let helperPID else {
+            throw TierError.repairUnavailable("dory-hv port reconciliation is unavailable")
+        }
+        guard kill(helperPID, SIGUSR2) == 0 else {
+            throw TierError.repairUnavailable("could not signal dory-hv pid \(helperPID): \(String(cString: strerror(errno)))")
+        }
+        return try refreshPublishedPorts()
     }
 
     public func currentPublishedPorts() -> [DoryListenPort]? {

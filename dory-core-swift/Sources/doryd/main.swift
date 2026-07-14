@@ -125,12 +125,19 @@ let idleSleepScheduler = dockerTier.flatMap { tier -> IdleSleepScheduler? in
     )
 }
 
+let repairRoutes: (@Sendable () -> Int)?
+if let networkRouteReconciler {
+    repairRoutes = { networkRouteReconciler.reconcileNow().count }
+} else {
+    repairRoutes = nil
+}
 let service = DorydService(
     socketPath: socketPath,
     dockerTier: dockerTier,
     machineManager: machineManager,
     remoteManager: remoteManager,
     networkingController: networkingController,
+    networkRouteRepair: repairRoutes,
     idlePolicyStore: idlePolicyStore,
     idleSleepScheduler: idleSleepScheduler,
     incidentWriter: incidentWriter

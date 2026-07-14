@@ -34,6 +34,7 @@ nonisolated protocol DorydControlXPC {
     func networkReplaceRoutes(_ routes: NSArray, reply: @escaping (Bool, String) -> Void)
     func networkStatus(reply: @escaping (NSDictionary, String) -> Void)
     func networkAuthorizationPlan(reply: @escaping (NSDictionary, String) -> Void)
+    func repairSubsystem(_ target: String, reply: @escaping (Bool, String) -> Void)
     func balloonStatus(reply: @escaping (NSDictionary, String) -> Void)
     func balloonReconcile(reply: @escaping (NSDictionary, String) -> Void)
     func idleStatus(reply: @escaping (NSDictionary, String) -> Void)
@@ -802,6 +803,12 @@ nonisolated final class DorydClient: @unchecked Sendable {
                     finish(.failure(DorydClientError.daemon(error.isEmpty ? "invalid networking authorization plan" : error)))
                 }
             }
+        }
+    }
+
+    func repairSubsystem(_ target: String) async throws -> DorydCommandResult {
+        try await command { proxy, reply in
+            proxy.repairSubsystem(target, reply: reply)
         }
     }
 

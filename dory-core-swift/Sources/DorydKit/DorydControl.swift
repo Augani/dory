@@ -36,6 +36,7 @@ import Foundation
     func networkReplaceRoutes(_ routes: NSArray, reply: @escaping (Bool, String) -> Void)
     func networkStatus(reply: @escaping (NSDictionary, String) -> Void)
     func networkAuthorizationPlan(reply: @escaping (NSDictionary, String) -> Void)
+    func repairSubsystem(_ target: String, reply: @escaping (Bool, String) -> Void)
     func balloonStatus(reply: @escaping (NSDictionary, String) -> Void)
     func balloonReconcile(reply: @escaping (NSDictionary, String) -> Void)
     func idleStatus(reply: @escaping (NSDictionary, String) -> Void)
