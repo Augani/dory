@@ -1329,7 +1329,7 @@ struct SettingsView: View {
                             .foregroundStyle(p.text2)
                             .padding(.horizontal, 13)
                             .padding(.vertical, 7)
-                            .background(p.bg, in: RoundedRectangle(cornerRadius: 7))
+                            .background(p.bgInput, in: RoundedRectangle(cornerRadius: 7))
                             .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(p.border))
                     }
                     .buttonStyle(.plain)
