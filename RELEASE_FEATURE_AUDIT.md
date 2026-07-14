@@ -116,7 +116,7 @@ of scope so each fix remains reviewable.
   archive integrity, registry auth, interrupted upload, and default-storage accounting are sound.
   Shipping doryd forwards native dockerd image APIs without translation; the Docker-backed fallback
   now also proxies bounded image metadata/auth/prune/storage requests with their exact target,
-  headers, body, status, and flags. Focused Xcode coverage passes all 12 shim server tests. Two
+  headers, body, status, and flags. Focused Xcode coverage passes all 13 shim server tests. Two
   disposable live Dory runs pass the strengthened private-registry and destructive-prune gates:
   digest-pinned registry pull, rejected anonymous access, login, authenticated pull/run, BuildKit
   auth and secret non-leakage, push, inspect/history, save/load identity, tag/remove, filtered prune,
@@ -125,8 +125,17 @@ of scope so each fix remains reviewable.
   manifests with source, fixture, Docker, Buildx, and archive hashes. Existing mandatory gates add
   unqualified arm64 multi-platform selection and storage reconciliation, strict stdout save-tar EOF,
   missing-parent hard-link import/export, and real ECR interrupted-upload resume/repeated PUT/repull.
-- [ ] Volumes: create/copy/inspect/list/remove/prune, labels/options, ownership, restart persistence,
+- [x] Volumes: create/copy/inspect/list/remove/prune, labels/options, ownership, restart persistence,
   collision handling, and in-use safety are sound.
+  Shipping doryd preserves native dockerd volume requests. The Docker-backed fallback now proxies
+  bounded volume targets, queries, headers, bodies, statuses, and errors without reducing them to the
+  UI model. The focused 13-test shim suite proves exact list/create/inspect/delete/prune forwarding.
+  A disposable live engine and the integrated competitor gate passed exact driver/options/labels,
+  filtered listing, same-name idempotency without mutation, fresh-root emptiness, persisted marker
+  bytes, bounded in-use rejection, 1 MiB host-to-volume-to-host copy, API liveness, explicit removal,
+  and deletion persistence after engine restart. The mandatory destructive gate separately proves
+  active volume bytes survive unfiltered prune while unused volumes are removed, and managed-drive,
+  growth, and migration gates cover restart persistence, capacity changes, metadata, and collisions.
 - [ ] Networks: bridge/DNS/search/aliases/IPAM/options/fixed ports/connect/disconnect/remove/prune and
   restart persistence are sound.
 - [ ] Cleanup is ownership-scoped and idempotent; failure or cancellation cannot delete unrelated

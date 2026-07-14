@@ -877,7 +877,7 @@ EOF
   for test in \
     published-port-handoff host-port-collision named-signal-delivery forwarded-connection-fds concurrent-proxy-backpressure \
     missing-source-cp restart-churn compose-port-restart network-route-conflict \
-    network-alias-restart-ip standalone-engine-restart named-volume-empty named-volume named-volume-cp \
+    network-alias-restart-ip standalone-engine-restart named-volume-empty named-volume named-volume-cp volume-api-lifecycle \
     security-opt-label seccomp-profile bind-open-create-0200 bind-mount-option-contract \
     nested-bind-subvolume bind-special-file-fail-fast bind-open-fd-stability \
     bind-hardlink-permissions healthcheck buildx-named-context buildkit-default-arg \

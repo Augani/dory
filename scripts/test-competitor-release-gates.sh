@@ -427,6 +427,19 @@ grep -F 'pass container-api-lifecycle' scripts/competitor-runtime-regression-gat
 grep -F 'container-api-lifecycle' scripts/qualify-release-candidate.sh \
   scripts/verify-release-qualification.sh >/dev/null \
   || fail "exact release qualification no longer requires the complete container lifecycle proof"
+grep -F 'pass volume-api-lifecycle' scripts/competitor-runtime-regression-gate.sh >/dev/null \
+  || fail "competitor runtime gate lost the complete volume lifecycle proof"
+for volume_contract in \
+  'dev.dory.volume-contract=original' \
+  'same-name create mutated existing volume metadata' \
+  'in-use named volume was removed' \
+  'explicit volume removal failed or exceeded ten seconds'; do
+  grep -F "$volume_contract" scripts/competitor-runtime-regression-gate.sh >/dev/null \
+    || fail "competitor runtime gate lost volume contract: $volume_contract"
+done
+grep -F 'volume-api-lifecycle' scripts/qualify-release-candidate.sh \
+  scripts/verify-release-qualification.sh >/dev/null \
+  || fail "exact release qualification no longer requires the complete volume lifecycle proof"
 grep -F 'os.O_CREAT | os.O_EXCL | os.O_RDONLY' scripts/bind-advisory-lock-probe.py >/dev/null \
   || fail "bind gate lost the exact mode-0000 exclusive-create reproduction"
 grep -F 'create_excl_readonly_mode0000_unlink=PASS' scripts/bind-advisory-lock-gate.sh \
@@ -541,7 +554,7 @@ grep -F 'kubectl version --client=true' scripts/machine-resource-reconfiguration
 grep -F 'lima-vm/lima/issues/5225' COMPETITOR_ISSUE_COVERAGE.md >/dev/null \
   || fail "competitor coverage omits Lima's silent machine provisioning failure"
 for runtime_regression in nested-bind-subvolume buildkit-relative-temp-context \
-  network-alias-restart-ip named-volume-empty named-volume-cp dockerignore-layered-unignore \
+  network-alias-restart-ip named-volume-empty named-volume-cp volume-api-lifecycle dockerignore-layered-unignore \
   buildkit-default-arg 'ARG TAG="${TAG:-latest}"' \
   image-save-stdout 'nonzero bytes follow the tar EOF records' \
   image-hardlink-missing-parent 'link to bin/app' \

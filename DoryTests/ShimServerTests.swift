@@ -354,8 +354,8 @@ struct ShimServerTests {
     @MainActor
     @Test func dockerBackedImageMetadataPreservesExactRequests() async throws {
         let path = shortSocketPath("dory-image-proxy")
-        let capture = BufferedImageProxyCapture()
-        let shim = DockerShim(runtime: BufferedImageProxyRuntime(capture: capture))
+        let capture = BufferedObjectProxyCapture()
+        let shim = DockerShim(runtime: BufferedObjectProxyRuntime(capture: capture))
         let server = ShimHTTPServer(socketPath: path) { request in await shim.handle(request) }
         try server.start()
         defer { server.stop() }
@@ -393,6 +393,44 @@ struct ShimServerTests {
         #expect(requests.map(\.method) == methods + ["POST"])
         #expect(requests.last?.registryAuth == "opaque-auth")
         #expect(requests.last?.body == authBody)
+    }
+
+    @MainActor
+    @Test func dockerBackedVolumeMetadataPreservesExactRequests() async throws {
+        let path = shortSocketPath("dory-volume-proxy")
+        let capture = BufferedObjectProxyCapture()
+        let shim = DockerShim(runtime: BufferedObjectProxyRuntime(capture: capture))
+        let server = ShimHTTPServer(socketPath: path) { request in await shim.handle(request) }
+        try server.start()
+        defer { server.stop() }
+        let client = UnixSocketHTTP(path: path)
+        let targets = [
+            "/v1.47/volumes?filters=%7B%22label%22%3A%5B%22owned%3Dyes%22%5D%7D",
+            "/v1.47/volumes/dory%2Fdata",
+            "/v1.47/volumes/dory%2Fdata?force=0",
+            "/v1.47/volumes/prune?filters=%7B%22label%22%3A%5B%22owned%3Dyes%22%5D%7D",
+        ]
+        let methods = ["GET", "GET", "DELETE", "POST"]
+        for (method, target) in zip(methods, targets) {
+            let response = try await client.send(HTTPRequest(method: method, path: target))
+            #expect(response.statusCode == 202)
+            #expect(response.body == Data("proxied".utf8))
+        }
+
+        let createBody = Data(#"{"Name":"dory-data","Driver":"local","DriverOpts":{"type":"tmpfs","o":"size=4m"},"Labels":{"owned":"yes"}}"#.utf8)
+        let create = try await client.send(HTTPRequest(
+            method: "POST",
+            path: "/v1.47/volumes/create",
+            headers: [(name: "Content-Type", value: "application/json")],
+            body: createBody
+        ))
+        #expect(create.statusCode == 202)
+
+        let requests = capture.requests
+        #expect(requests.map(\.path) == targets + ["/v1.47/volumes/create"])
+        #expect(requests.map(\.method) == methods + ["POST"])
+        #expect(requests.last?.contentType == "application/json")
+        #expect(requests.last?.body == createBody)
     }
 
     @MainActor
@@ -606,18 +644,19 @@ private struct ImageFilterRuntime: ContainerRuntime {
     func exec(containerID: String, command: [String]) async throws -> ExecResult { ExecResult(exitCode: 0, output: "") }
 }
 
-private struct BufferedImageProxyRequest: Sendable {
+private struct BufferedObjectProxyRequest: Sendable {
     let method: String
     let path: String
     let registryAuth: String?
+    let contentType: String?
     let body: Data
 }
 
-private final class BufferedImageProxyCapture: @unchecked Sendable {
+private final class BufferedObjectProxyCapture: @unchecked Sendable {
     private let lock = NSLock()
-    private var captured: [BufferedImageProxyRequest] = []
+    private var captured: [BufferedObjectProxyRequest] = []
 
-    var requests: [BufferedImageProxyRequest] {
+    var requests: [BufferedObjectProxyRequest] {
         lock.lock()
         defer { lock.unlock() }
         return captured
@@ -630,19 +669,20 @@ private final class BufferedImageProxyCapture: @unchecked Sendable {
         body: Data
     ) {
         lock.lock()
-        captured.append(BufferedImageProxyRequest(
+        captured.append(BufferedObjectProxyRequest(
             method: method,
             path: path,
             registryAuth: headers.first { $0.name == "x-registry-auth" }?.value,
+            contentType: headers.first { $0.name == "content-type" }?.value,
             body: body
         ))
         lock.unlock()
     }
 }
 
-private struct BufferedImageProxyRuntime: ContainerRuntime {
+private struct BufferedObjectProxyRuntime: ContainerRuntime {
     let kind: RuntimeKind = .sharedVM
-    let capture: BufferedImageProxyCapture
+    let capture: BufferedObjectProxyCapture
     var supportsRawProxy: Bool { true }
 
     func snapshot() async throws -> RuntimeSnapshot { RuntimeSnapshot() }

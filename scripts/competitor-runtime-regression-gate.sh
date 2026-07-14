@@ -129,6 +129,7 @@ UNHEALTHY_CONTAINER="$OWNER-unhealthy"
 NO_HEALTH_CONTAINER="$OWNER-no-health"
 VOLUME="$OWNER-volume"
 VOLUME_CP_CONTAINER="$OWNER-volume-cp"
+VOLUME_METADATA="$OWNER-volume-metadata"
 BUILD_TAG="dory-compatibility:$RUN_ID"
 RELATIVE_BUILD_TAG="dory-relative-build:$RUN_ID"
 DOCKERIGNORE_BUILD_TAG="dory-dockerignore-build:$RUN_ID"
@@ -223,7 +224,7 @@ cleanup() {
   docker_e ps -aq --filter "label=dev.dory.compatibility=$OWNER" 2>/dev/null | while IFS= read -r id; do
     [ -n "$id" ] && docker_e rm -f -v "$id" >/dev/null 2>&1 || true
   done
-  docker_e volume rm -f "$VOLUME" >/dev/null 2>&1 || true
+  docker_e volume rm -f "$VOLUME" "$VOLUME_METADATA" >/dev/null 2>&1 || true
   docker_e network rm "$CONFLICT_NETWORK" >/dev/null 2>&1 || true
   docker_e network rm "$ROUTE_NETWORK" >/dev/null 2>&1 || true
   docker_e network rm "$ALIAS_NETWORK" >/dev/null 2>&1 || true
@@ -772,6 +773,55 @@ if [ -n "$RUNTIME" ]; then
 fi
 
 docker_e volume create --label "dev.dory.compatibility=$OWNER" "$VOLUME" >/dev/null
+docker_e volume create --driver local \
+  --label "dev.dory.compatibility=$OWNER" \
+  --label dev.dory.volume-contract=original \
+  --opt type=tmpfs --opt device=tmpfs --opt o=size=4m \
+  "$VOLUME_METADATA" >/dev/null
+docker_e volume inspect "$VOLUME_METADATA" > "$WORKDIR/volume-metadata-before.json"
+python3 - "$WORKDIR/volume-metadata-before.json" "$VOLUME_METADATA" "$OWNER" <<'PY'
+import json
+import sys
+
+path, expected_name, expected_owner = sys.argv[1:]
+with open(path, encoding="utf-8") as handle:
+    volumes = json.load(handle)
+assert len(volumes) == 1, f"expected one inspected volume, got {len(volumes)}"
+volume = volumes[0]
+assert volume["Name"] == expected_name, volume
+assert volume["Driver"] == "local", volume
+assert volume["Scope"] == "local", volume
+assert volume["Labels"]["dev.dory.compatibility"] == expected_owner, volume
+assert volume["Labels"]["dev.dory.volume-contract"] == "original", volume
+assert volume["Options"] == {"type": "tmpfs", "device": "tmpfs", "o": "size=4m"}, volume
+PY
+filtered_volumes="$(docker_e volume ls -q \
+  --filter "label=dev.dory.compatibility=$OWNER" \
+  --filter label=dev.dory.volume-contract=original)"
+[ "$filtered_volumes" = "$VOLUME_METADATA" ] \
+  || die "filtered volume listing returned unexpected objects: $filtered_volumes"
+same_volume="$(docker_e volume create --driver local \
+  --label dev.dory.volume-contract=mutated \
+  --opt type=none --opt device=/tmp --opt o=bind "$VOLUME_METADATA")"
+[ "$same_volume" = "$VOLUME_METADATA" ] \
+  || die "same-name volume creation returned the wrong identity: $same_volume"
+docker_e volume inspect "$VOLUME_METADATA" > "$WORKDIR/volume-metadata-after.json"
+python3 - "$WORKDIR/volume-metadata-before.json" "$WORKDIR/volume-metadata-after.json" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as before_handle:
+    before = json.load(before_handle)
+with open(sys.argv[2], encoding="utf-8") as after_handle:
+    after = json.load(after_handle)
+assert after == before, "same-name create mutated existing volume metadata"
+PY
+bounded_capture 10 "$WORKDIR/volume-metadata-remove.out" \
+  "$WORKDIR/volume-metadata-remove.err" env DOCKER_HOST="unix://$SOCKET" \
+  "$DOCKER_BIN" volume rm "$VOLUME_METADATA" \
+  || die "explicit volume removal failed or exceeded ten seconds"
+docker_e volume inspect "$VOLUME_METADATA" >/dev/null 2>&1 \
+  && die "explicitly removed volume is still inspectable"
 volume_initial_entries="$(docker_e run --rm --label "dev.dory.compatibility=$OWNER" \
   -v "$VOLUME:/data" "$ALPINE_IMAGE" \
   find /data -mindepth 1 -maxdepth 1 -print)"
@@ -798,6 +848,20 @@ Path(sys.argv[1]).write_bytes(bytes(range(256)) * 4096)
 PY
 docker_e run -d --name "$VOLUME_CP_CONTAINER" --label "dev.dory.compatibility=$OWNER" \
   -v "$VOLUME:/data" "$ALPINE_IMAGE" sleep 300 >/dev/null
+set +e
+bounded_capture 10 "$WORKDIR/volume-in-use-remove.out" "$WORKDIR/volume-in-use-remove.err" \
+  env DOCKER_HOST="unix://$SOCKET" "$DOCKER_BIN" volume rm "$VOLUME"
+volume_in_use_rc=$?
+set -e
+[ "$volume_in_use_rc" -ne 0 ] || die "in-use named volume was removed"
+[ "$volume_in_use_rc" -ne 124 ] || die "in-use named-volume removal wedged for ten seconds"
+grep -Eiq 'in use|is being used' \
+  "$WORKDIR/volume-in-use-remove.out" "$WORKDIR/volume-in-use-remove.err" \
+  || die "in-use volume rejection did not report the conflict"
+docker_e volume inspect "$VOLUME" >/dev/null \
+  || die "in-use volume rejection removed the volume metadata"
+docker_e exec "$VOLUME_CP_CONTAINER" grep -qx "$marker" /data/marker \
+  || die "in-use volume rejection damaged persisted bytes"
 bounded_capture 10 "$WORKDIR/volume-cp-in.out" "$WORKDIR/volume-cp-in.err" \
   env DOCKER_HOST="unix://$SOCKET" "$DOCKER_BIN" cp \
   "$volume_cp_in" "$VOLUME_CP_CONTAINER:/data/from-host.bin" \
@@ -815,6 +879,8 @@ bounded_capture 5 "$WORKDIR/volume-cp-version.out" "$WORKDIR/volume-cp-version.e
   || die "Docker API wedged after named-volume copy"
 docker_e rm -f "$VOLUME_CP_CONTAINER" >/dev/null
 pass named-volume-cp "1MiB exact bytes copied host->mounted volume->host; Docker API remained responsive"
+pass volume-api-lifecycle \
+  "driver/labels/options, filtered list, same-name identity, in-use rejection, and explicit remove matched Docker"
 
 docker_e run --rm --label "dev.dory.compatibility=$OWNER" \
   --security-opt label=disable "$ALPINE_IMAGE" true
@@ -1316,6 +1382,8 @@ leftovers="$(docker_e ps -aq --filter "label=dev.dory.compatibility=$OWNER" 2>/d
 leftover_networks="$(docker_e network ls -q --filter "label=dev.dory.compatibility=$OWNER" 2>/dev/null || true)"
 [ -z "$leftover_networks" ] || die "owned network cleanup failed: $leftover_networks"
 docker_e volume inspect "$VOLUME" >/dev/null 2>&1 && die "owned volume cleanup failed"
+docker_e volume inspect "$VOLUME_METADATA" >/dev/null 2>&1 \
+  && die "owned metadata volume cleanup failed"
 docker_e image inspect "$BUILD_TAG" >/dev/null 2>&1 && die "owned build image cleanup failed"
 docker_e image inspect "$DEFAULT_ARG_BUILD_TAG" >/dev/null 2>&1 \
   && die "owned default-ARG build image cleanup failed"
@@ -1336,6 +1404,8 @@ if [ -n "$RUNTIME" ]; then
     || die "owned networks reappeared after engine restart"
   docker_e volume inspect "$VOLUME" >/dev/null 2>&1 \
     && die "owned volume reappeared after engine restart"
+  docker_e volume inspect "$VOLUME_METADATA" >/dev/null 2>&1 \
+    && die "owned metadata volume reappeared after engine restart"
   docker_e image inspect "$BUILD_TAG" >/dev/null 2>&1 \
     && die "owned build image reappeared after engine restart"
   pass cleanup-restart-persistence \

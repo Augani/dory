@@ -74,31 +74,9 @@ struct DockerShim: Sendable {
         // per-endpoint handlers, which keeps exec/attach/BuildKit bidirectional streams intact
         // without tunneling unrelated future requests on the same client connection.
 
-        // Network create/inspect carries driver, IPAM, internal/attachable/IPv6 flags, options,
-        // and static endpoint intent. Translating that rich contract into Dory's compact UI model
-        // silently discarded fields used by Compose and migration. A real Docker-backed runtime
-        // already implements these endpoints exactly, so keep them byte-for-byte transparent;
-        // mock/non-Docker runtimes retain the translated handlers below.
-        if runtime.supportsRawProxy, Self.isDockerNetworkRequest(method: method, path: path) {
-            guard let response = await runtime.proxyRequest(
-                method: method,
-                path: request.target,
-                headers: Self.proxyRequestHeaders(request),
-                body: request.body
-            ) else {
-                return errorResponse(502, "docker engine unavailable")
-            }
-            return ShimResponse(
-                status: response.statusCode,
-                headers: Self.proxyHeaders(response),
-                body: response.body
-            )
-        }
-
-        // Docker-backed fallback runtimes already own the complete image metadata contract.
-        // Proxy bounded responses directly so filters, prune scope, delete flags, auth payloads,
-        // status codes, and storage accounting cannot be weakened by the translated test model.
-        if runtime.supportsRawProxy, Self.isBufferedDockerImageRequest(method: method, path: path) {
+        // Docker-backed runtimes own these complete bounded API contracts. Keep filters, options,
+        // flags, payloads, and status codes byte-transparent; mock runtimes use the handlers below.
+        if runtime.supportsRawProxy, Self.isBufferedDockerObjectRequest(method: method, path: path) {
             guard let response = await runtime.proxyRequest(
                 method: method,
                 path: request.target,
@@ -185,6 +163,12 @@ struct DockerShim: Sendable {
         return path.hasPrefix("/networks/") && (method == "GET" || method == "POST" || method == "DELETE")
     }
 
+    private static func isDockerVolumeRequest(method: String, path: String) -> Bool {
+        if path == "/volumes" { return method == "GET" }
+        if path == "/volumes/create" || path == "/volumes/prune" { return method == "POST" }
+        return path.hasPrefix("/volumes/") && (method == "GET" || method == "DELETE")
+    }
+
     private static func isBufferedDockerImageRequest(method: String, path: String) -> Bool {
         if method == "POST", path == "/auth" || path == "/images/prune" { return true }
         if method == "GET", path == "/images/json" || path == "/images/search" || path == "/system/df" {
@@ -194,6 +178,12 @@ struct DockerShim: Sendable {
         if method == "DELETE" { return true }
         if method == "GET", path.hasSuffix("/json") || path.hasSuffix("/history") { return true }
         return method == "POST" && path.hasSuffix("/tag")
+    }
+
+    private static func isBufferedDockerObjectRequest(method: String, path: String) -> Bool {
+        isDockerNetworkRequest(method: method, path: path)
+            || isBufferedDockerImageRequest(method: method, path: path)
+            || isDockerVolumeRequest(method: method, path: path)
     }
 
     private func routeParameterized(_ request: ParsedRequest, method: String, path: String) async -> ShimResponse {
