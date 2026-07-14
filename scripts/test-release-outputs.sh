@@ -620,6 +620,8 @@ authenticated_login=PASS
 authenticated_pull_run=PASS
 buildkit_registry_auth=PASS
 buildkit_secret_nonleak=PASS
+buildkit_registry_cache_export=PASS
+buildkit_registry_cache_import=PASS
 registry_push=PASS
 image_inspect_history=PASS
 image_save_load_identity=PASS
@@ -886,7 +888,8 @@ EOF
     bind-hardlink-permissions healthcheck buildx-named-context buildkit-default-arg \
     image-save-stdout image-hardlink-missing-parent buildkit-large-dockerfile \
     buildkit-relative-temp-context dockerignore-layered-unignore \
-    buildkit-concurrent-sessions container-resolver-contract container-dns-search \
+    buildkit-concurrent-sessions buildkit-cache-cancellation \
+    container-resolver-contract container-dns-search \
     cleanup-restart-persistence container-api-lifecycle; do
     printf '%s\tPASS\tok\n' "$test"
   done
@@ -901,6 +904,7 @@ cat > "$QUALIFICATION_FIXTURE/evidence/competitor-runtime/run/manifest.txt" <<EO
 source_commit=0123456789abcdef0123456789abcdef01234567
 docker_bin_sha256=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 compose_bin_sha256=$fixture_compose_sha
+buildx_bin_sha256=$fixture_buildx_sha
 dory_engine_sha256=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 bin_dory_hv_sha256=$DORY_HV_SHA
 bin_gvproxy_sha256=dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd

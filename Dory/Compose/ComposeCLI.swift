@@ -1,267 +1,4 @@
 import Foundation
-import Darwin
-
-nonisolated struct ComposeCommandRequest: Sendable, Equatable {
-    enum OutputPolicy: Sendable, Equatable {
-        case complete(maxBytes: Int)
-        case tail(maxBytes: Int)
-    }
-
-    var executableURL: URL
-    var arguments: [String]
-    var workingDirectoryURL: URL
-    var environment: [String: String]
-    var timeout: TimeInterval
-    var outputPolicy: OutputPolicy
-}
-
-nonisolated struct ComposeCommandResult: Sendable, Equatable {
-    var terminationStatus: Int32
-    var stdout: String
-    var stderr: String
-    var outputTruncated: Bool
-}
-
-nonisolated protocol ComposeCommandRunning: Sendable {
-    func run(_ request: ComposeCommandRequest) async throws -> ComposeCommandResult
-}
-
-nonisolated enum ComposeProcessError: Error, LocalizedError, Sendable, Equatable {
-    case launch(String)
-    case timedOut(TimeInterval)
-
-    var errorDescription: String? {
-        switch self {
-        case .launch(let message): "Could not start Docker Compose: \(message)"
-        case .timedOut(let seconds): "Docker Compose timed out after \(Int(seconds)) seconds"
-        }
-    }
-}
-
-/// Executes Compose without a shell, drains both output streams concurrently, bounds retained
-/// output, and terminates commands that are cancelled or exceed their operation deadline.
-nonisolated final class ComposeProcessRunner: ComposeCommandRunning, @unchecked Sendable {
-    func run(_ request: ComposeCommandRequest) async throws -> ComposeCommandResult {
-        let execution = ComposeProcessExecution(request: request)
-        return try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { continuation in
-                execution.start { continuation.resume(with: $0) }
-            }
-        } onCancel: {
-            execution.cancel()
-        }
-    }
-}
-
-nonisolated private final class ComposeProcessExecution: @unchecked Sendable {
-    private let request: ComposeCommandRequest
-    private let lock = NSLock()
-    private var process: Process?
-    private var completion: ((Result<ComposeCommandResult, Error>) -> Void)?
-    private var completed = false
-    private var cancelled = false
-    private var timedOut = false
-    private var watchdog: DispatchWorkItem?
-    private var forcedKill: DispatchWorkItem?
-
-    init(request: ComposeCommandRequest) {
-        self.request = request
-    }
-
-    func start(completion: @escaping (Result<ComposeCommandResult, Error>) -> Void) {
-        lock.lock()
-        self.completion = completion
-        let wasCancelled = cancelled
-        lock.unlock()
-
-        if wasCancelled {
-            finish(.failure(CancellationError()))
-            return
-        }
-        DispatchQueue.global(qos: .userInitiated).async { [self] in launch() }
-    }
-
-    func cancel() {
-        let running: Process?
-        lock.lock()
-        guard !completed else { lock.unlock(); return }
-        cancelled = true
-        running = process
-        lock.unlock()
-        if let running { terminate(running) }
-    }
-
-    private func launch() {
-        let process = Process()
-        process.executableURL = request.executableURL
-        process.arguments = request.arguments
-        process.currentDirectoryURL = request.workingDirectoryURL
-        process.environment = request.environment
-        process.standardInput = FileHandle.nullDevice
-
-        let stdoutPipe = Pipe()
-        let stderrPipe = Pipe()
-        process.standardOutput = stdoutPipe
-        process.standardError = stderrPipe
-
-        let stdout = BoundedProcessOutput(policy: request.outputPolicy)
-        let stderr = BoundedProcessOutput(policy: request.outputPolicy)
-        let readers = DispatchGroup()
-
-        lock.lock()
-        self.process = process
-        lock.unlock()
-
-        do {
-            try process.run()
-        } catch {
-            finish(.failure(ComposeProcessError.launch(error.localizedDescription)))
-            return
-        }
-
-        lock.lock()
-        let shouldCancel = cancelled
-        lock.unlock()
-
-        readers.enter()
-        DispatchQueue.global(qos: .userInitiated).async {
-            Self.drain(stdoutPipe.fileHandleForReading, into: stdout)
-            readers.leave()
-        }
-        readers.enter()
-        DispatchQueue.global(qos: .userInitiated).async {
-            Self.drain(stderrPipe.fileHandleForReading, into: stderr)
-            readers.leave()
-        }
-
-        if shouldCancel { terminate(process) }
-        installWatchdog(for: process)
-        process.waitUntilExit()
-        cancelWatchdog()
-        readers.wait()
-
-        lock.lock()
-        let didCancel = cancelled
-        let didTimeOut = timedOut
-        lock.unlock()
-
-        if didCancel {
-            finish(.failure(CancellationError()))
-        } else if didTimeOut {
-            finish(.failure(ComposeProcessError.timedOut(request.timeout)))
-        } else {
-            finish(.success(ComposeCommandResult(
-                terminationStatus: process.terminationStatus,
-                stdout: stdout.string,
-                stderr: stderr.string,
-                outputTruncated: stdout.truncated || stderr.truncated
-            )))
-        }
-    }
-
-    private func installWatchdog(for process: Process) {
-        let item = DispatchWorkItem { [weak self, weak process] in
-            guard let self, let process else { return }
-            lock.lock()
-            guard !completed, process.isRunning else { lock.unlock(); return }
-            timedOut = true
-            lock.unlock()
-            terminate(process)
-        }
-        lock.lock()
-        watchdog = item
-        lock.unlock()
-        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + request.timeout, execute: item)
-    }
-
-    private func terminate(_ process: Process) {
-        guard process.isRunning else { return }
-        process.terminate()
-        let item = DispatchWorkItem { [weak process] in
-            guard let process, process.isRunning else { return }
-            _ = kill(process.processIdentifier, SIGKILL)
-        }
-        lock.lock()
-        forcedKill?.cancel()
-        forcedKill = item
-        lock.unlock()
-        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 2, execute: item)
-    }
-
-    private func cancelWatchdog() {
-        lock.lock()
-        watchdog?.cancel()
-        forcedKill?.cancel()
-        lock.unlock()
-    }
-
-    private func finish(_ result: Result<ComposeCommandResult, Error>) {
-        let callback: ((Result<ComposeCommandResult, Error>) -> Void)?
-        lock.lock()
-        guard !completed else { lock.unlock(); return }
-        completed = true
-        watchdog?.cancel()
-        forcedKill?.cancel()
-        callback = completion
-        completion = nil
-        process = nil
-        lock.unlock()
-        callback?(result)
-    }
-
-    private static func drain(_ handle: FileHandle, into output: BoundedProcessOutput) {
-        while true {
-            let data = handle.readData(ofLength: 64 * 1024)
-            if data.isEmpty { return }
-            output.append(data)
-        }
-    }
-}
-
-nonisolated private final class BoundedProcessOutput: @unchecked Sendable {
-    private let policy: ComposeCommandRequest.OutputPolicy
-    private let lock = NSLock()
-    private var data = Data()
-    private var didTruncate = false
-
-    init(policy: ComposeCommandRequest.OutputPolicy) {
-        self.policy = policy
-    }
-
-    func append(_ chunk: Data) {
-        lock.lock()
-        defer { lock.unlock() }
-        switch policy {
-        case .complete(let maxBytes):
-            let remaining = max(0, maxBytes - data.count)
-            if chunk.count > remaining { didTruncate = true }
-            if remaining > 0 { data.append(chunk.prefix(remaining)) }
-        case .tail(let maxBytes):
-            if chunk.count >= maxBytes {
-                data = Data(chunk.suffix(maxBytes))
-                didTruncate = true
-                return
-            }
-            data.append(chunk)
-            if data.count > maxBytes {
-                data.removeFirst(data.count - maxBytes)
-                didTruncate = true
-            }
-        }
-    }
-
-    var string: String {
-        lock.lock()
-        defer { lock.unlock() }
-        return String(decoding: data, as: UTF8.self)
-    }
-
-    var truncated: Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return didTruncate
-    }
-}
 
 nonisolated struct ComposeProjectContext: Sendable, Equatable {
     let name: String
@@ -312,7 +49,7 @@ nonisolated struct ComposeCLI {
     let executableURL: URL
     let socketPath: String
     let baseEnvironment: [String: String]
-    let runner: any ComposeCommandRunning
+    let runner: any ToolCommandRunning
 
     func resolve(files: [URL]) async throws -> ComposeProjectContext {
         let files = try validatedFiles(files)
@@ -445,10 +182,10 @@ nonisolated struct ComposeCLI {
         context: ComposeProjectContext,
         arguments commandArguments: [String],
         timeout: TimeInterval,
-        outputPolicy: ComposeCommandRequest.OutputPolicy,
+        outputPolicy: ToolCommandRequest.OutputPolicy,
         includeProjectName: Bool,
         allProfiles: Bool
-    ) -> ComposeCommandRequest {
+    ) -> ToolCommandRequest {
         var arguments = ["--ansi", "never", "--progress", "plain"]
         arguments += ["--project-directory", context.workingDirectory.path]
         for environmentFile in context.environmentFiles {
@@ -458,7 +195,7 @@ nonisolated struct ComposeCLI {
         if includeProjectName { arguments += ["--project-name", context.name] }
         if allProfiles { arguments += ["--profile", "*"] }
         arguments += commandArguments
-        return ComposeCommandRequest(
+        return ToolCommandRequest(
             executableURL: executableURL,
             arguments: arguments,
             workingDirectoryURL: context.workingDirectory,
@@ -541,7 +278,7 @@ nonisolated struct ComposeCLI {
         return result
     }
 
-    private func check(_ result: ComposeCommandResult, action: String) throws {
+    private func check(_ result: ToolCommandResult, action: String) throws {
         guard result.terminationStatus != 0 else { return }
         throw ComposeCLIError.commandFailed(
             action: action,

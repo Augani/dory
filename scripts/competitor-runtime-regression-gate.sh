@@ -2,7 +2,7 @@
 # Live, run-scoped regressions for competitor failures involving published ports, forwarded-
 # connection descriptor leaks, concurrent-proxy head-of-line blocking, wedged container operations,
 # missing-source docker cp, complete Compose v2 lifecycle semantics, restrictive bind creates,
-# healthchecks, named BuildKit contexts,
+# healthchecks, named BuildKit contexts, BuildKit cache round-trips and cancellation recovery,
 # resolver search leakage, network-scoped aliases/restart IP continuity, named-volume copy, clean
 # image archive streams, missing-parent hard links, default BuildKit ARG expansion, exact Docker
 # ignore precedence, and named volumes.
@@ -17,6 +17,7 @@ RESTARTS="${DORY_COMPAT_RESTARTS:-20}"
 FD_GROWTH_BUDGET="${DORY_COMPAT_FD_GROWTH_BUDGET:-8}"
 DOCKER_BIN="${DORY_COMPAT_DOCKER_BIN:-docker}"
 COMPOSE_BIN="${DORY_COMPAT_COMPOSE_BIN:-}"
+BUILDX_BIN="${DORY_COMPAT_BUILDX_BIN:-}"
 RUNTIME="${DORY_COMPAT_RUNTIME:-}"
 RUNTIME_HOME="${DORY_COMPAT_RUNTIME_HOME:-$(dirname "$STATE_DIR")}"
 SOURCE_COMMIT="${DORY_COMPAT_SOURCE_COMMIT:-}"
@@ -35,6 +36,7 @@ Options:
   --fd-growth N         Aggregate post-connection FD budget (default: $FD_GROWTH_BUDGET)
   --docker PATH         Docker CLI to qualify (default: docker from PATH)
   --compose PATH        Compose v2 executable to qualify (default: Docker CLI plugin)
+  --buildx PATH         Buildx executable to qualify (default: Docker CLI plugin)
   --runtime PATH        Optional standalone dory-engine launcher for an engine-restart test
   --runtime-home PATH   Isolated HOME owned by that launcher (default: parent of state dir)
   --source-commit SHA   Exact 40-character source commit for release-artifact evidence
@@ -59,6 +61,7 @@ while [ "$#" -gt 0 ]; do
     --fd-growth) need_value "$1" "$#"; FD_GROWTH_BUDGET="$2"; shift 2 ;;
     --docker) need_value "$1" "$#"; DOCKER_BIN="$2"; shift 2 ;;
     --compose) need_value "$1" "$#"; COMPOSE_BIN="$2"; shift 2 ;;
+    --buildx) need_value "$1" "$#"; BUILDX_BIN="$2"; shift 2 ;;
     --runtime) need_value "$1" "$#"; RUNTIME="$2"; shift 2 ;;
     --runtime-home) need_value "$1" "$#"; RUNTIME_HOME="$2"; shift 2 ;;
     --source-commit) need_value "$1" "$#"; SOURCE_COMMIT="$2"; shift 2 ;;
@@ -99,25 +102,55 @@ if [ -n "$COMPOSE_BIN" ]; then
     command -v "$COMPOSE_BIN" >/dev/null || die "Compose v2 helper is unavailable: $COMPOSE_BIN"
   fi
 fi
+if [ -n "$BUILDX_BIN" ]; then
+  if [[ "$BUILDX_BIN" == */* ]]; then
+    [ -x "$BUILDX_BIN" ] || die "Buildx helper is not executable: $BUILDX_BIN"
+  else
+    command -v "$BUILDX_BIN" >/dev/null || die "Buildx helper is unavailable: $BUILDX_BIN"
+  fi
+fi
 [ -S "$SOCKET" ] || die "Dory socket is unavailable: $SOCKET"
 [ -d "$STATE_DIR" ] || die "Dory state directory is unavailable: $STATE_DIR"
 mkdir -p "$WORKROOT"
 
-docker_e() { DOCKER_HOST="unix://$SOCKET" "$DOCKER_BIN" "$@"; }
+docker_e() {
+  env -u DOCKER_API_VERSION -u DOCKER_AUTH_CONFIG -u DOCKER_CERT_PATH \
+    -u DOCKER_CONTEXT -u DOCKER_CUSTOM_HEADERS -u DOCKER_DEFAULT_PLATFORM \
+    -u DOCKER_TLS -u DOCKER_TLS_VERIFY DOCKER_HOST="unix://$SOCKET" \
+    "$DOCKER_BIN" "$@"
+}
 compose_e() {
   if [ -n "$COMPOSE_BIN" ]; then
-    env -u DOCKER_CONTEXT -u COMPOSE_FILE -u COMPOSE_PATH_SEPARATOR \
+    env -u DOCKER_API_VERSION -u DOCKER_AUTH_CONFIG -u DOCKER_CERT_PATH \
+      -u DOCKER_CONTEXT -u DOCKER_CUSTOM_HEADERS -u DOCKER_DEFAULT_PLATFORM \
+      -u DOCKER_TLS -u DOCKER_TLS_VERIFY -u COMPOSE_FILE -u COMPOSE_PATH_SEPARATOR \
       DOCKER_HOST="unix://$SOCKET" COMPOSE_MENU=0 "$COMPOSE_BIN" "$@"
   else
-    env -u DOCKER_CONTEXT -u COMPOSE_FILE -u COMPOSE_PATH_SEPARATOR \
+    env -u DOCKER_API_VERSION -u DOCKER_AUTH_CONFIG -u DOCKER_CERT_PATH \
+      -u DOCKER_CONTEXT -u DOCKER_CUSTOM_HEADERS -u DOCKER_DEFAULT_PLATFORM \
+      -u DOCKER_TLS -u DOCKER_TLS_VERIFY -u COMPOSE_FILE -u COMPOSE_PATH_SEPARATOR \
       DOCKER_HOST="unix://$SOCKET" COMPOSE_MENU=0 "$DOCKER_BIN" compose "$@"
   fi
+}
+buildx_e() {
+  local -a command
+  if [ -n "$BUILDX_BIN" ]; then
+    command=("$BUILDX_BIN")
+  else
+    command=("$DOCKER_BIN" buildx)
+  fi
+  env -u DOCKER_API_VERSION -u DOCKER_AUTH_CONFIG -u DOCKER_CERT_PATH \
+    -u DOCKER_CONTEXT -u DOCKER_CUSTOM_HEADERS -u DOCKER_DEFAULT_PLATFORM \
+    -u DOCKER_TLS -u DOCKER_TLS_VERIFY -u BUILDKIT_HOST -u BUILDKIT_COLORS -u BUILDX_BUILDER \
+    -u BUILDX_CONFIG -u BUILDX_EXPERIMENTAL -u BUILDX_NO_DEFAULT_LOAD \
+    DOCKER_HOST="unix://$SOCKET" BUILDKIT_PROGRESS=plain NO_COLOR=1 \
+    "${command[@]}" "$@"
 }
 docker_e version >/dev/null || die "Docker API is not ready at $SOCKET"
 docker_e image inspect "$ALPINE_IMAGE" >/dev/null 2>&1 \
   || die "required offline image is missing: $ALPINE_IMAGE"
 compose_e version >/dev/null 2>&1 || die "Docker Compose v2 is unavailable"
-docker_e buildx version >/dev/null 2>&1 || die "Docker Buildx plugin is unavailable"
+buildx_e version >/dev/null 2>&1 || die "Docker Buildx is unavailable"
 if [ -n "$RUNTIME" ]; then
   [ -x "$RUNTIME" ] || die "standalone runtime is not executable: $RUNTIME"
   [ -d "$RUNTIME_HOME" ] || die "standalone runtime HOME is unavailable: $RUNTIME_HOME"
@@ -159,6 +192,9 @@ DEFAULT_ARG_BUILD_TAG="dory-default-arg-build:$RUN_ID"
 HARDLINK_IMPORT_TAG="dory-hardlink-import:$RUN_ID"
 HARDLINK_IMPORT_CONTAINER="$OWNER-hardlink-import"
 PARALLEL_BUILD_REPOSITORY="dory-parallel-build"
+BUILDKIT_CACHE_TAG="dory-buildkit-cache:$RUN_ID"
+BUILDKIT_RECOVERY_TAG="dory-buildkit-recovery:$RUN_ID"
+BUILDKIT_CANCEL_TAG="dory-buildkit-cancel:$RUN_ID"
 ROUTE_NETWORK="$OWNER-route"
 CONFLICT_NETWORK="$OWNER-route-conflict"
 ALIAS_NETWORK="$OWNER-alias"
@@ -193,6 +229,7 @@ printf 'test\tstatus\tdetail\n' > "$RESULTS"
   echo "fd_growth_budget=$FD_GROWTH_BUDGET"
   echo "docker_bin=$DOCKER_BIN"
   echo "compose_bin=${COMPOSE_BIN:-docker-cli-plugin}"
+  echo "buildx_bin=${BUILDX_BIN:-docker-cli-plugin}"
   echo "runtime=${RUNTIME:-none}"
   echo "runtime_home=$RUNTIME_HOME"
   [ -z "$SOURCE_COMMIT" ] || echo "source_commit=$SOURCE_COMMIT"
@@ -210,6 +247,13 @@ if [ -n "$compose_bin_resolved" ]; then
     *) compose_bin_resolved="$(command -v "$compose_bin_resolved")" ;;
   esac
 fi
+buildx_bin_resolved="$BUILDX_BIN"
+if [ -n "$buildx_bin_resolved" ]; then
+  case "$buildx_bin_resolved" in
+    */*) ;;
+    *) buildx_bin_resolved="$(command -v "$buildx_bin_resolved")" ;;
+  esac
+fi
 {
   echo "docker_bin_resolved=$docker_bin_resolved"
   echo "docker_bin_sha256=$(shasum -a 256 "$docker_bin_resolved" | awk '{print $1}')"
@@ -218,6 +262,12 @@ fi
     echo "compose_bin_sha256=$(shasum -a 256 "$compose_bin_resolved" | awk '{print $1}')"
   else
     echo "compose_bin_resolved=docker-cli-plugin"
+  fi
+  if [ -n "$buildx_bin_resolved" ]; then
+    echo "buildx_bin_resolved=$buildx_bin_resolved"
+    echo "buildx_bin_sha256=$(shasum -a 256 "$buildx_bin_resolved" | awk '{print $1}')"
+  else
+    echo "buildx_bin_resolved=docker-cli-plugin"
   fi
   if [ -n "$RUNTIME" ]; then
     runtime_dir="$(cd "$(dirname "$RUNTIME")" && pwd -P)"
@@ -237,6 +287,16 @@ fi
 } >> "$MANIFEST"
 
 cleanup() {
+  if [ -n "${CANCEL_BUILDX_PID:-}" ]; then
+    kill -TERM "$CANCEL_BUILDX_PID" >/dev/null 2>&1 || true
+    sleep 0.2
+    kill -KILL "$CANCEL_BUILDX_PID" >/dev/null 2>&1 || true
+    wait "$CANCEL_BUILDX_PID" 2>/dev/null || true
+    CANCEL_BUILDX_PID=""
+  fi
+  if [ -n "${buildkit_cache_dir:-}" ]; then
+    rm -rf "$buildkit_cache_dir"
+  fi
   if [ -n "$HOST_COLLISION_PID" ]; then
     kill "$HOST_COLLISION_PID" >/dev/null 2>&1 || true
     wait "$HOST_COLLISION_PID" 2>/dev/null || true
@@ -288,6 +348,9 @@ cleanup() {
   docker_e image rm -f "$DEFAULT_ARG_BUILD_TAG" >/dev/null 2>&1 || true
   docker_e image rm -f "$DEFAULT_ARG_BASE_REPOSITORY:latest" >/dev/null 2>&1 || true
   docker_e image rm -f "$HARDLINK_IMPORT_TAG" >/dev/null 2>&1 || true
+  docker_e image rm -f "$BUILDKIT_CACHE_TAG" >/dev/null 2>&1 || true
+  docker_e image rm -f "$BUILDKIT_RECOVERY_TAG" >/dev/null 2>&1 || true
+  docker_e image rm -f "$BUILDKIT_CANCEL_TAG" >/dev/null 2>&1 || true
   local parallel_index
   for parallel_index in 1 2 3 4; do
     docker_e image rm -f "$PARALLEL_BUILD_REPOSITORY:$RUN_ID-$parallel_index" >/dev/null 2>&1 || true
@@ -1502,7 +1565,7 @@ RUN grep -qx 'named-context-$RUN_ID' /payload.txt
 LABEL dev.dory.compatibility="$OWNER"
 CMD ["cat", "/payload.txt"]
 EOF
-docker_e buildx build --progress plain --load \
+buildx_e --builder default build --progress plain --load \
   --build-context "fixture=$WORKDIR/named-context" \
   --build-context "base=docker-image://$ALPINE_IMAGE" \
   -t "$BUILD_TAG" "$WORKDIR/build" > "$WORKDIR/buildx.out" 2> "$WORKDIR/buildx.err"
@@ -1753,6 +1816,100 @@ done
 pass buildkit-concurrent-sessions \
   "four overlapping required-secret builds produced four isolated exact context payloads"
 
+# BuildKit regressions have left cache exporters or cancelled solves alive while later clients hang.
+# Prove the exact bundled Buildx can round-trip a local cache, cancel an active solve promptly, and
+# complete a fresh solve plus Docker API probe without restarting the engine.
+buildkit_cache_context="$WORKDIR/buildkit-cache-context"
+buildkit_cache_dir="$WORKDIR/buildkit-local-cache"
+mkdir -p "$buildkit_cache_context"
+printf 'cache-roundtrip-%s\n' "$RUN_ID" > "$buildkit_cache_context/payload.txt"
+cat > "$buildkit_cache_context/Dockerfile" <<EOF
+FROM $ALPINE_IMAGE
+COPY payload.txt /payload.txt
+RUN cp /payload.txt /marker
+LABEL dev.dory.compatibility="$OWNER"
+CMD ["cat", "/marker"]
+EOF
+bounded_capture 120 "$WORKDIR/buildkit-cache-export.out" \
+  "$WORKDIR/buildkit-cache-export.err" buildx_e --builder default build \
+  --progress plain --cache-to "type=local,dest=$buildkit_cache_dir,mode=max" \
+  --load --tag "$BUILDKIT_CACHE_TAG" -- "$buildkit_cache_context" \
+  || die "BuildKit local-cache export failed or exceeded 120 seconds"
+[ -s "$buildkit_cache_dir/index.json" ] || die "BuildKit local-cache export omitted index.json"
+[ "$(docker_e run --rm --label "dev.dory.compatibility=$OWNER" "$BUILDKIT_CACHE_TAG")" = \
+  "cache-roundtrip-$RUN_ID" ] || die "BuildKit cache-export image produced the wrong payload"
+docker_e image rm "$BUILDKIT_CACHE_TAG" >/dev/null
+bounded_capture 120 "$WORKDIR/buildkit-cache-import.out" \
+  "$WORKDIR/buildkit-cache-import.err" buildx_e --builder default build \
+  --progress plain --cache-from "type=local,src=$buildkit_cache_dir" \
+  --load --tag "$BUILDKIT_CACHE_TAG" -- "$buildkit_cache_context" \
+  || die "BuildKit local-cache import failed or exceeded 120 seconds"
+grep -q 'CACHED' "$WORKDIR/buildkit-cache-import.out" "$WORKDIR/buildkit-cache-import.err" \
+  || die "BuildKit local-cache import did not reuse an exported result"
+[ "$(docker_e run --rm --label "dev.dory.compatibility=$OWNER" "$BUILDKIT_CACHE_TAG")" = \
+  "cache-roundtrip-$RUN_ID" ] || die "BuildKit cache-import image produced the wrong payload"
+shasum -a 256 "$buildkit_cache_dir/index.json" > "$WORKDIR/buildkit-local-cache-index.sha256"
+rm -rf "$buildkit_cache_dir"
+
+buildkit_cancel_context="$WORKDIR/buildkit-cancel-context"
+mkdir -p "$buildkit_cancel_context"
+cat > "$buildkit_cancel_context/Dockerfile" <<EOF
+FROM $ALPINE_IMAGE
+RUN echo buildkit-cancellation-started-$RUN_ID && sleep 300
+LABEL dev.dory.compatibility="$OWNER"
+EOF
+buildx_e --builder default build --progress plain --load \
+  --tag "$BUILDKIT_CANCEL_TAG" -- "$buildkit_cancel_context" \
+  > "$WORKDIR/buildkit-cancel.out" 2> "$WORKDIR/buildkit-cancel.err" &
+CANCEL_BUILDX_PID=$!
+cancel_started=$SECONDS
+while kill -0 "$CANCEL_BUILDX_PID" 2>/dev/null \
+    && ! grep -q "buildkit-cancellation-started-$RUN_ID" \
+      "$WORKDIR/buildkit-cancel.out" "$WORKDIR/buildkit-cancel.err"; do
+  [ $((SECONDS - cancel_started)) -lt 60 ] || break
+  sleep 0.1
+done
+grep -q "buildkit-cancellation-started-$RUN_ID" \
+  "$WORKDIR/buildkit-cancel.out" "$WORKDIR/buildkit-cancel.err" \
+  || die "BuildKit cancellation fixture did not enter its active solve"
+kill -TERM "$CANCEL_BUILDX_PID"
+cancel_deadline=$((SECONDS + 10))
+while kill -0 "$CANCEL_BUILDX_PID" 2>/dev/null && [ "$SECONDS" -lt "$cancel_deadline" ]; do
+  sleep 0.1
+done
+if kill -0 "$CANCEL_BUILDX_PID" 2>/dev/null; then
+  kill -KILL "$CANCEL_BUILDX_PID" 2>/dev/null || true
+  wait "$CANCEL_BUILDX_PID" 2>/dev/null || true
+  CANCEL_BUILDX_PID=""
+  die "Buildx client did not terminate within ten seconds of cancellation"
+fi
+set +e
+wait "$CANCEL_BUILDX_PID"
+cancel_rc=$?
+set -e
+CANCEL_BUILDX_PID=""
+[ "$cancel_rc" -ne 0 ] || die "cancelled BuildKit solve unexpectedly succeeded"
+! docker_e image inspect "$BUILDKIT_CANCEL_TAG" >/dev/null 2>&1 \
+  || die "cancelled BuildKit solve published an image"
+
+cat > "$buildkit_cancel_context/Dockerfile" <<EOF
+FROM $ALPINE_IMAGE
+RUN printf '%s\n' 'post-cancel-$RUN_ID' > /marker
+LABEL dev.dory.compatibility="$OWNER"
+CMD ["cat", "/marker"]
+EOF
+bounded_capture 60 "$WORKDIR/buildkit-post-cancel.out" \
+  "$WORKDIR/buildkit-post-cancel.err" buildx_e --builder default build \
+  --progress plain --load --tag "$BUILDKIT_RECOVERY_TAG" -- "$buildkit_cancel_context" \
+  || die "fresh BuildKit solve failed or exceeded 60 seconds after cancellation"
+[ "$(docker_e run --rm --label "dev.dory.compatibility=$OWNER" "$BUILDKIT_RECOVERY_TAG")" = \
+  "post-cancel-$RUN_ID" ] || die "post-cancellation BuildKit solve produced the wrong payload"
+bounded_capture 10 "$WORKDIR/buildkit-post-cancel-version.out" \
+  "$WORKDIR/buildkit-post-cancel-version.err" docker_e version \
+  || die "Docker API failed or exceeded ten seconds after BuildKit cancellation"
+pass buildkit-cache-cancellation \
+  "local cache export/import reused exact output; active solve cancelled within 10s; fresh solve and API recovered without restart"
+
 docker_e run --rm --label "dev.dory.compatibility=$OWNER" "$ALPINE_IMAGE" sh -ec \
   'grep -q "^nameserver[[:space:]]" /etc/resolv.conf; ! grep -q "^search[[:space:]]" /etc/resolv.conf'
 pass container-resolver-contract "nameserver present; no stale search directive"
@@ -1781,6 +1938,12 @@ docker_e image inspect "$DEFAULT_ARG_BUILD_TAG" >/dev/null 2>&1 \
   && die "owned default-ARG build image cleanup failed"
 docker_e image inspect "$HARDLINK_IMPORT_TAG" >/dev/null 2>&1 \
   && die "owned hard-link import image cleanup failed"
+docker_e image inspect "$BUILDKIT_CACHE_TAG" >/dev/null 2>&1 \
+  && die "owned BuildKit cache-roundtrip image cleanup failed"
+docker_e image inspect "$BUILDKIT_RECOVERY_TAG" >/dev/null 2>&1 \
+  && die "owned BuildKit recovery image cleanup failed"
+docker_e image inspect "$BUILDKIT_CANCEL_TAG" >/dev/null 2>&1 \
+  && die "cancelled BuildKit image appeared during cleanup"
 if [ -n "$RUNTIME" ]; then
   bounded_capture 30 "$WORKDIR/cleanup-persistence-stop.out" \
     "$WORKDIR/cleanup-persistence-stop.err" env HOME="$RUNTIME_HOME" "$RUNTIME" stop \
@@ -1802,6 +1965,10 @@ if [ -n "$RUNTIME" ]; then
     && die "owned metadata network reappeared after engine restart"
   docker_e image inspect "$BUILD_TAG" >/dev/null 2>&1 \
     && die "owned build image reappeared after engine restart"
+  docker_e image inspect "$BUILDKIT_CACHE_TAG" >/dev/null 2>&1 \
+    && die "owned BuildKit cache-roundtrip image reappeared after engine restart"
+  docker_e image inspect "$BUILDKIT_RECOVERY_TAG" >/dev/null 2>&1 \
+    && die "owned BuildKit recovery image reappeared after engine restart"
   pass cleanup-restart-persistence \
     "owned containers, networks, volume, and build image stayed deleted after engine restart"
 fi

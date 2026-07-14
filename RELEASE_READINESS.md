@@ -112,16 +112,20 @@ to the final release tag rather than representing this candidate as built from c
 
 ## Verified locally
 
-- The full non-UI app gate passes **814 tests in 110 suites** after the final migration, Compose,
+- The full non-UI app gate passes **819 tests in 111 suites** after the final migration, Compose,
   ephemeral-port preservation, and daemon-owned recovery changes.
 - Compose GUI lifecycle is now delegated to the bundled official Compose v2 helper instead of a
-  partial in-app parser/reconciler. Fourteen focused tests pass exact socket/environment isolation,
-  native-label recovery, multi-file arguments, all-profile lifecycle, secret-safe failures,
-  bounded concurrent output, timeout/cancellation, and shell-injection resistance. The strengthened
-  disposable-engine campaign passes all 38 rows, including `.env`/`!reset` merge, completed and
+  partial in-app parser/reconciler. Nineteen focused Compose/Buildx/process tests pass exact
+  socket/environment isolation, native-label recovery, multi-file arguments, all-profile lifecycle,
+  literal shell-like build paths, bounded streaming output, secret-safe failures,
+  timeout/cancellation, and shell-injection resistance. The strengthened disposable-engine
+  campaign passes all 39 rows, including `.env`/`!reset` merge, completed and
   healthy dependencies, profile isolation, real orphan cleanup, bind/named-volume/custom/external
-  networking, restart/start/stop/logs, data-safe `down`, and cleanup persistence. Qualification and
-  publication now bind this proof to the exact Compose-helper digest as well as the Docker CLI.
+  networking, restart/start/stop/logs, data-safe `down`, BuildKit local-cache reuse, active-solve
+  cancellation, a fresh post-cancel solve/API probe, and cleanup persistence. Qualification and
+  publication bind these proofs to the exact Compose and Buildx helper digests as well as the
+  Docker CLI. The authenticated private-registry gate separately passes registry-cache
+  export/import with isolated credentials and exact cleanup.
 - Recovery is now daemon-owned instead of a UI shell-out for live subsystems. Focused XPC and app
   tests pass DNS/domain listener restart, route re-derivation, guest-agent RPC recovery, Docker API
   fail-closed reporting, incident attribution, and invalid-target rejection. dory-hv now serializes
@@ -559,7 +563,10 @@ to the final release tag rather than representing this candidate as built from c
   plugins without replacing regular files or third-party symlinks. Using only the candidate's
   bundled Docker and Buildx clients, the exact engine rejected an anonymous private-registry pull,
   accepted login, pulled and ran the image, authenticated a normal `docker build`, kept a random
-  BuildKit secret out of image history, pushed, and survived save/load. Evidence:
+  BuildKit secret out of image history, pushed, and survived save/load. The strengthened
+  current-source gate also exports and re-imports an authenticated registry cache; a disposable
+  candidate-engine replay passed both cache directions and exact cleanup, while the final retained
+  artifact replay remains mandatory. Earlier exact-candidate evidence:
   `~/.dory-exact-candidate/20260712T012352Z/home/evidence/final-bundle-private-registry/20260712T020743Z-61149`.
 - The competitor-derived offline gate and `git diff --check` pass after the latest state-lock,
   binfmt, image-trust, network-contract, and ownership additions.

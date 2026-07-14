@@ -178,6 +178,7 @@ struct BuildImageSheet: View {
     @State private var tag = ""
     @State private var building = false
     @State private var output = ""
+    @State private var buildTask: Task<Void, Never>?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -192,12 +193,14 @@ struct BuildImageSheet: View {
                     Spacer(minLength: 0)
                     Button("Choose…") { chooseContext() }
                         .buttonStyle(.plain).font(.system(size: 12, weight: .semibold)).foregroundStyle(p.accentText)
+                        .disabled(building)
                 }
                 .padding(.horizontal, 10).padding(.vertical, 8)
                 .background(p.bgInput, in: RoundedRectangle(cornerRadius: 8))
                 .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(p.border))
             }
             SheetField(label: "IMAGE TAG", placeholder: "myapp:latest", text: $tag, mono: true)
+                .disabled(building)
             if building || !output.isEmpty {
                 ScrollViewReader { proxy in
                     ScrollView {
@@ -209,12 +212,12 @@ struct BuildImageSheet: View {
                     .frame(height: 190)
                     .padding(10)
                     .background(p.monoBg, in: RoundedRectangle(cornerRadius: 8))
-                    .onChange(of: output) { _, _ in withAnimation { proxy.scrollTo("logEnd", anchor: .bottom) } }
+                    .onChange(of: output) { _, _ in proxy.scrollTo("logEnd", anchor: .bottom) }
                 }
             }
             HStack(spacing: 8) {
                 Spacer()
-                Button("Close") { store.activeSheet = nil }
+                Button(building ? "Cancel" : "Close") { closeOrCancel() }
                     .buttonStyle(.plain).font(.system(size: 13, weight: .medium)).foregroundStyle(p.text2)
                     .padding(.horizontal, 14).padding(.vertical, 7)
                     .background(p.bgElevated, in: RoundedRectangle(cornerRadius: 8))
@@ -235,6 +238,7 @@ struct BuildImageSheet: View {
         .padding(22)
         .frame(width: 520)
         .background(p.bgWindow)
+        .onDisappear { buildTask?.cancel() }
     }
 
     private func chooseContext() {
@@ -250,12 +254,37 @@ struct BuildImageSheet: View {
         guard let dir = contextDir else { return }
         building = true
         output = ""
-        Task {
+        let task = Task {
             for await line in store.buildImage(contextDir: dir, tag: tag) {
-                output += line + "\n"
+                appendOutput(line)
             }
+            if Task.isCancelled { appendOutput("Build cancelled.") }
             building = false
+            buildTask = nil
         }
+        buildTask = task
+    }
+
+    private func closeOrCancel() {
+        if building {
+            appendOutput("Cancelling…")
+            buildTask?.cancel()
+        } else {
+            store.activeSheet = nil
+        }
+    }
+
+    private func appendOutput(_ line: String) {
+        output.append(contentsOf: line)
+        output.append("\n")
+        let maximumBytes = 512 * 1024
+        guard output.utf8.count > maximumBytes else { return }
+
+        var retained = Data(output.utf8).suffix(384 * 1024)
+        if let newline = retained.firstIndex(of: 0x0A) {
+            retained.removeSubrange(...newline)
+        }
+        output = "[Earlier output omitted]\n" + String(decoding: retained, as: UTF8.self)
     }
 }
 

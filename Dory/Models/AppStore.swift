@@ -156,7 +156,8 @@ final class AppStore {
     @ObservationIgnored private let dorydLaunchAgentEnsurer: @Sendable (DorydLaunchAgent.Configuration) async -> Bool
     @ObservationIgnored private let environment: [String: String]
     @ObservationIgnored private let machineEnvResolver: @Sendable ([String]) async -> [String: String]
-    @ObservationIgnored private let composeCommandRunner: any ComposeCommandRunning
+    @ObservationIgnored private let composeCommandRunner: any ToolCommandRunning
+    @ObservationIgnored private let buildCommandRunner: any ToolCommandRunning
     @ObservationIgnored private var runtimeOwnedByDoryd = false
     @ObservationIgnored private var daemonSocketPath: String?
     @ObservationIgnored private var engineSettingChangeInFlight = false
@@ -169,7 +170,8 @@ final class AppStore {
         useDorydEngine: Bool? = nil,
         dorydLaunchAgentEnsurer: (@Sendable (DorydLaunchAgent.Configuration) async -> Bool)? = nil,
         environment: [String: String] = ProcessInfo.processInfo.environment,
-        composeCommandRunner: any ComposeCommandRunning = ComposeProcessRunner(),
+        composeCommandRunner: any ToolCommandRunning = BoundedToolProcessRunner(),
+        buildCommandRunner: any ToolCommandRunning = BoundedToolProcessRunner(),
         machineEnvResolver: @escaping @Sendable ([String]) async -> [String: String] = { names in
             await MachineEnvImport.resolve(names: names)
         }
@@ -178,6 +180,7 @@ final class AppStore {
         let dorydFlags = Self.dorydEngineFlags(environment: env)
         self.environment = env
         self.composeCommandRunner = composeCommandRunner
+        self.buildCommandRunner = buildCommandRunner
         self.machineEnvResolver = machineEnvResolver
         self.dorydClient = dorydClient
         self.dorydEngineEnabled = useDorydEngine ?? dorydFlags.enabled
@@ -3103,30 +3106,47 @@ final class AppStore {
     }
 
     func buildImage(contextDir: URL, tag: String) -> AsyncStream<String> {
-        AsyncStream { cont in
-            Task { [weak self] in
-                guard let self else { cont.finish(); return }
+        AsyncStream(bufferingPolicy: .bufferingNewest(512)) { continuation in
+            let task = Task { [weak self] in
+                guard let self else { continuation.finish(); return }
                 guard self.runtimeKind.isDockerCompatible else {
-                    cont.yield("Image build needs Dory's shared VM or a Docker engine"); cont.finish(); return
+                    continuation.yield("ERROR: Image build needs Dory's shared VM or a Docker engine")
+                    continuation.finish()
+                    return
                 }
-                cont.yield("Packaging build context…")
-                let tar = await Task.detached { AppStore.tarDirectory(contextDir) }.value
-                guard let tar else { cont.yield("Could not read build context at \(contextDir.path)"); cont.finish(); return }
-                let q = tag.isEmpty ? "" : "t=" + DockerImageOps.queryValue(tag)
-                var buffer = Data()
-                for await chunk in self.runtime.build(contextTar: tar, query: q) {
-                    buffer.append(chunk)
-                    while let nl = buffer.firstIndex(of: 0x0A) {
-                        let line = Data(buffer[buffer.startIndex..<nl])
-                        buffer.removeSubrange(buffer.startIndex...nl)
-                        if let text = AppStore.parseBuildLine(line) { cont.yield(text) }
+                do {
+                    let cli = try self.buildxCLI()
+                    continuation.yield("Building with Docker Buildx…")
+                    try await cli.build(contextDirectory: contextDir, tag: tag) { line in
+                        continuation.yield(line)
                     }
+                    try Task.checkCancellation()
+                    await self.reload()
+                    continuation.yield("Build complete.")
+                } catch is CancellationError {
+                    continuation.yield("Build cancelled.")
+                } catch {
+                    continuation.yield("ERROR: \(error.localizedDescription)")
                 }
-                if !buffer.isEmpty, let text = AppStore.parseBuildLine(buffer) { cont.yield(text) }
-                await self.reload()
-                cont.finish()
+                continuation.finish()
             }
+            continuation.onTermination = { @Sendable _ in task.cancel() }
         }
+    }
+
+    private func buildxCLI() throws -> BuildxCLI {
+        guard let executable = HostDockerCLI.bundledTool("docker-buildx") else {
+            throw BuildxCLIError.helperUnavailable
+        }
+        guard let docker = runtime as? DockerEngineRuntime else {
+            throw BuildxCLIError.socketUnavailable
+        }
+        return BuildxCLI(
+            executableURL: URL(fileURLWithPath: executable),
+            socketPath: docker.socketPath,
+            baseEnvironment: environment,
+            runner: buildCommandRunner
+        )
     }
 
     func applyKubernetesYAML(_ yaml: String) async -> String? {

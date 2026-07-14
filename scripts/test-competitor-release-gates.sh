@@ -147,6 +147,10 @@ grep -F 'lima-vm/lima/issues/5188' COMPETITOR_ISSUE_COVERAGE.md >/dev/null \
   || fail "competitor coverage omits Lima's cached-image HEAD failure"
 grep -F 'docker/for-mac/issues/7825' COMPETITOR_ISSUE_COVERAGE.md >/dev/null \
   || fail "competitor coverage omits Docker Desktop's file-share backend-switch kernel crash"
+for buildkit_issue in moby/buildkit/issues/6008 moby/buildkit/issues/6209 docker/buildx/issues/556; do
+  grep -F "$buildkit_issue" COMPETITOR_ISSUE_COVERAGE.md >/dev/null \
+    || fail "competitor coverage omits $buildkit_issue"
+done
 if grep -R -Eis 'grpc.?fuse' Dory Packages/ContainerizationEngine/Sources \
     dory-core-swift/Sources >/dev/null; then
   fail "production source introduced a switchable gRPC FUSE backend"
@@ -160,7 +164,8 @@ done
 grep -F '# Intentionally no --platform here.' scripts/default-platform-image-gate.sh >/dev/null \
   || fail "default platform image gate no longer documents the unqualified pull"
 for private_registry_contract in registry_fixture_arm64 unauthenticated_pull_rejected authenticated_login \
-  authenticated_pull_run buildkit_registry_auth buildkit_secret_nonleak registry_push \
+  authenticated_pull_run buildkit_registry_auth buildkit_secret_nonleak \
+  buildkit_registry_cache_export buildkit_registry_cache_import registry_push \
   image_inspect_history image_save_load_identity image_tag_remove filtered_image_prune \
   owned_cleanup isolated_credential_cleanup; do
   grep -F "$private_registry_contract" scripts/private-registry-auth-gate.sh \
@@ -472,6 +477,23 @@ grep -F -- '--compose "$COMPOSE"' scripts/qualify-release-candidate.sh >/dev/nul
 grep -F 'compose_bin_sha256' scripts/qualify-release-candidate.sh \
   scripts/verify-release-qualification.sh >/dev/null \
   || fail "Compose qualification evidence is not bound to the candidate helper digest"
+grep -F 'pass buildkit-cache-cancellation' scripts/competitor-runtime-regression-gate.sh >/dev/null \
+  || fail "competitor runtime gate lost BuildKit cache/cancellation recovery proof"
+for buildkit_recovery_contract in \
+  'type=local,dest=$buildkit_cache_dir,mode=max' \
+  'type=local,src=$buildkit_cache_dir' \
+  'buildkit-local-cache-index.sha256' \
+  'rm -rf "$buildkit_cache_dir"' \
+  'Buildx client did not terminate within ten seconds of cancellation' \
+  'fresh BuildKit solve failed or exceeded 60 seconds after cancellation'; do
+  grep -F -- "$buildkit_recovery_contract" scripts/competitor-runtime-regression-gate.sh >/dev/null \
+    || fail "competitor runtime gate lost BuildKit recovery contract: $buildkit_recovery_contract"
+done
+grep -F -- '--buildx "$BUILDX"' scripts/qualify-release-candidate.sh >/dev/null \
+  || fail "exact release qualification does not execute the candidate Buildx helper"
+grep -F 'buildx_bin_sha256' scripts/qualify-release-candidate.sh \
+  scripts/verify-release-qualification.sh >/dev/null \
+  || fail "BuildKit qualification evidence is not bound to the candidate helper digest"
 grep -F 'os.O_CREAT | os.O_EXCL | os.O_RDONLY' scripts/bind-advisory-lock-probe.py >/dev/null \
   || fail "bind gate lost the exact mode-0000 exclusive-create reproduction"
 grep -F 'create_excl_readonly_mode0000_unlink=PASS' scripts/bind-advisory-lock-gate.sh \
@@ -591,7 +613,7 @@ for runtime_regression in nested-bind-subvolume buildkit-relative-temp-context \
   buildkit-default-arg 'ARG TAG="${TAG:-latest}"' \
   image-save-stdout 'nonzero bytes follow the tar EOF records' \
   image-hardlink-missing-parent 'link to bin/app' \
-  buildkit-concurrent-sessions buildkit-large-dockerfile seccomp-profile \
+  buildkit-concurrent-sessions buildkit-cache-cancellation buildkit-large-dockerfile seccomp-profile \
   'SCMP_ACT_ERRNO' '65536' named-signal-delivery '--signal USR1' \
   container-dns-search '--dns-search dev.dory.test' bind-mount-option-contract \
   'unsupported nosuid bind option was silently accepted' \

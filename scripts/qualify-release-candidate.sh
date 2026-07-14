@@ -334,9 +334,11 @@ RUNTIME="$RUNTIME_DIR/dory-engine"
 CANDIDATE_DORY_HV_SHA="$(shasum -a 256 "$RUNTIME_DIR/bin/dory-hv" | awk '{print $1}')"
 DOCKER="$APP/Contents/Helpers/docker"
 COMPOSE="$APP/Contents/Helpers/docker-compose"
+BUILDX="$APP/Contents/Helpers/docker-buildx"
 KUBECTL="$APP/Contents/Helpers/kubectl"
 [ -x "$RUNTIME" ] || die "standalone runtime launcher is missing"
 [ -x "$DOCKER" ] || die "candidate Docker CLI is missing"
+[ -x "$BUILDX" ] || die "candidate Buildx helper is missing"
 [ -x "$KUBECTL" ] || die "candidate kubectl CLI is missing"
 [ -x "$COMPOSE" ] || die "candidate Compose plugin is missing"
 
@@ -809,7 +811,8 @@ private_registry_manifest="$(find "$WORKDIR/evidence/private-registry-auth" \
   -name manifest.txt -type f -print -quit)"
 [ -s "$private_registry_manifest" ] || die "private-registry evidence manifest is missing"
 for proof in status registry_fixture_arm64 unauthenticated_pull_rejected authenticated_login \
-  authenticated_pull_run buildkit_registry_auth buildkit_secret_nonleak registry_push \
+  authenticated_pull_run buildkit_registry_auth buildkit_secret_nonleak \
+  buildkit_registry_cache_export buildkit_registry_cache_import registry_push \
   image_inspect_history image_save_load_identity image_tag_remove filtered_image_prune \
   owned_cleanup isolated_credential_cleanup; do
   grep -qx "$proof=PASS" "$private_registry_manifest" \
@@ -1076,6 +1079,7 @@ bounded 1800 scripts/competitor-runtime-regression-gate.sh \
   --fd-growth 8 \
   --docker "$DOCKER" \
   --compose "$COMPOSE" \
+  --buildx "$BUILDX" \
   --runtime "$RUNTIME" \
   --runtime-home "$ENGINE_HOME" \
   --source-commit "$SOURCE_COMMIT" \
@@ -1088,10 +1092,13 @@ competitor_manifest="$(dirname "$competitor_results")/manifest.txt"
 [ -s "$competitor_manifest" ] || die "competitor runtime manifest is missing"
 competitor_docker_sha="$(shasum -a 256 "$DOCKER" | awk '{print $1}')"
 competitor_compose_sha="$(shasum -a 256 "$COMPOSE" | awk '{print $1}')"
+competitor_buildx_sha="$(shasum -a 256 "$BUILDX" | awk '{print $1}')"
 grep -qx "docker_bin_sha256=$competitor_docker_sha" "$competitor_manifest" \
   || die "competitor runtime manifest is not bound to the qualified Docker CLI"
 grep -qx "compose_bin_sha256=$competitor_compose_sha" "$competitor_manifest" \
   || die "competitor runtime manifest is not bound to the qualified Compose v2 helper"
+grep -qx "buildx_bin_sha256=$competitor_buildx_sha" "$competitor_manifest" \
+  || die "competitor runtime manifest is not bound to the qualified Buildx helper"
 grep -qx "source_commit=$SOURCE_COMMIT" "$competitor_manifest" \
   || die "competitor runtime manifest is not bound to the qualified source commit"
 grep -Eq '^dory_engine_sha256=[0-9a-f]{64}$' "$competitor_manifest" \
@@ -1116,7 +1123,8 @@ for proof in \
   bind-special-file-fail-fast bind-open-fd-stability bind-hardlink-permissions healthcheck \
   buildx-named-context buildkit-default-arg image-save-stdout image-hardlink-missing-parent \
   buildkit-large-dockerfile buildkit-relative-temp-context dockerignore-layered-unignore \
-  buildkit-concurrent-sessions container-resolver-contract container-dns-search \
+  buildkit-concurrent-sessions buildkit-cache-cancellation \
+  container-resolver-contract container-dns-search \
   cleanup-restart-persistence; do
   awk -F '\t' -v proof="$proof" \
     '$1 == proof && $2 == "PASS" { found=1 } END { exit !found }' "$competitor_results" \

@@ -8,7 +8,7 @@ struct ComposeCLITests {
         let fixture = try ComposeFixture()
         defer { fixture.remove() }
         let runner = ScriptedComposeRunner([
-            .success(ComposeCommandResult(
+            .success(ToolCommandResult(
                 terminationStatus: 0,
                 stdout: #"{"name":"demo","services":{}}"#,
                 stderr: "",
@@ -305,7 +305,7 @@ struct ComposeCLITests {
           i=$((i + 1))
         done
         """
-        let result = try await ComposeProcessRunner().run(processRequest(
+        let result = try await BoundedToolProcessRunner().run(processRequest(
             executable: "/bin/sh",
             arguments: ["-c", script],
             timeout: 15,
@@ -321,8 +321,8 @@ struct ComposeCLITests {
     }
 
     @Test func processRunnerTimesOutAndCancellationStopsTheChild() async throws {
-        await #expect(throws: ComposeProcessError.self) {
-            try await ComposeProcessRunner().run(processRequest(
+        await #expect(throws: ToolProcessError.self) {
+            try await BoundedToolProcessRunner().run(processRequest(
                 executable: "/bin/sh",
                 arguments: ["-c", "trap '' TERM; while :; do sleep 1; done"],
                 timeout: 0.1,
@@ -331,7 +331,7 @@ struct ComposeCLITests {
         }
 
         let task = Task {
-            try await ComposeProcessRunner().run(processRequest(
+            try await BoundedToolProcessRunner().run(processRequest(
                 executable: "/bin/sleep",
                 arguments: ["30"],
                 timeout: 60,
@@ -344,7 +344,7 @@ struct ComposeCLITests {
 
         for _ in 0..<20 {
             let launchWindowTask = Task {
-                try await ComposeProcessRunner().run(processRequest(
+                try await BoundedToolProcessRunner().run(processRequest(
                     executable: "/bin/sleep",
                     arguments: ["30"],
                     timeout: 5,
@@ -360,7 +360,7 @@ struct ComposeCLITests {
     @Test func processRunnerNeverInterpretsArgumentsThroughAShell() async throws {
         let literal = "$(touch /tmp/dory-compose-must-not-exist);$HOME;*"
         try? FileManager.default.removeItem(atPath: "/tmp/dory-compose-must-not-exist")
-        let result = try await ComposeProcessRunner().run(processRequest(
+        let result = try await BoundedToolProcessRunner().run(processRequest(
             executable: "/usr/bin/printf",
             arguments: ["%s", literal],
             timeout: 5,
@@ -373,7 +373,24 @@ struct ComposeCLITests {
         #expect(!FileManager.default.fileExists(atPath: "/tmp/dory-compose-must-not-exist"))
     }
 
-    private func testCLI(runner: any ComposeCommandRunning) -> ComposeCLI {
+    @Test func processRunnerStreamsBothPipesBeforeReturningTheBoundedResult() async throws {
+        let streamed = LockedToolStreams()
+        var request = processRequest(
+            executable: "/bin/sh",
+            arguments: ["-c", "printf 'out-one\\nout-two\\n'; printf 'err-one\\n' >&2"],
+            timeout: 5,
+            policy: .tail(maxBytes: 4096)
+        )
+        request.outputHandler = { stream, data in streamed.append(data, to: stream) }
+
+        let result = try await BoundedToolProcessRunner().run(request)
+
+        #expect(result.terminationStatus == 0)
+        #expect(streamed.stdout == "out-one\nout-two\n")
+        #expect(streamed.stderr == "err-one\n")
+    }
+
+    private func testCLI(runner: any ToolCommandRunning) -> ComposeCLI {
         ComposeCLI(
             executableURL: URL(fileURLWithPath: "/usr/bin/true"),
             socketPath: "/tmp/dory.sock",
@@ -386,9 +403,9 @@ struct ComposeCLITests {
         executable: String,
         arguments: [String],
         timeout: TimeInterval,
-        policy: ComposeCommandRequest.OutputPolicy
-    ) -> ComposeCommandRequest {
-        ComposeCommandRequest(
+        policy: ToolCommandRequest.OutputPolicy
+    ) -> ToolCommandRequest {
+        ToolCommandRequest(
             executableURL: URL(fileURLWithPath: executable),
             arguments: arguments,
             workingDirectoryURL: FileManager.default.temporaryDirectory,
@@ -399,31 +416,58 @@ struct ComposeCLITests {
     }
 }
 
-nonisolated private final class ScriptedComposeRunner: ComposeCommandRunning, @unchecked Sendable {
+nonisolated private final class LockedToolStreams: @unchecked Sendable {
     private let lock = NSLock()
-    private var results: [Result<ComposeCommandResult, Error>]
-    private var recorded: [ComposeCommandRequest] = []
+    private var stdoutData = Data()
+    private var stderrData = Data()
 
-    init(_ results: [Result<ComposeCommandResult, Error>]) {
+    func append(_ data: Data, to stream: ToolProcessStream) {
+        lock.lock()
+        switch stream {
+        case .stdout: stdoutData.append(data)
+        case .stderr: stderrData.append(data)
+        }
+        lock.unlock()
+    }
+
+    var stdout: String {
+        lock.lock()
+        defer { lock.unlock() }
+        return String(decoding: stdoutData, as: UTF8.self)
+    }
+
+    var stderr: String {
+        lock.lock()
+        defer { lock.unlock() }
+        return String(decoding: stderrData, as: UTF8.self)
+    }
+}
+
+nonisolated private final class ScriptedComposeRunner: ToolCommandRunning, @unchecked Sendable {
+    private let lock = NSLock()
+    private var results: [Result<ToolCommandResult, Error>]
+    private var recorded: [ToolCommandRequest] = []
+
+    init(_ results: [Result<ToolCommandResult, Error>]) {
         self.results = results
     }
 
-    var requests: [ComposeCommandRequest] {
+    var requests: [ToolCommandRequest] {
         lock.lock()
         defer { lock.unlock() }
         return recorded
     }
 
-    func run(_ request: ComposeCommandRequest) async throws -> ComposeCommandResult {
+    func run(_ request: ToolCommandRequest) async throws -> ToolCommandResult {
         try nextResult(for: request).get()
     }
 
-    private func nextResult(for request: ComposeCommandRequest) -> Result<ComposeCommandResult, Error> {
+    private func nextResult(for request: ToolCommandRequest) -> Result<ToolCommandResult, Error> {
         lock.lock()
         defer { lock.unlock() }
         recorded.append(request)
         return results.isEmpty
-            ? .failure(ComposeProcessError.launch("unexpected invocation"))
+            ? .failure(ToolProcessError.launch("unexpected invocation"))
             : results.removeFirst()
     }
 }

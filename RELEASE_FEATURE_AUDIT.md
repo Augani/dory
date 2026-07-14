@@ -156,14 +156,26 @@ of scope so each fix remains reviewable.
 
 ## 4. Compose and BuildKit/buildx
 
-- [ ] Compose v2 project lifecycle, dependency order, health, profiles, environment, bind/volume/
+- [x] Compose v2 project lifecycle, dependency order, health, profiles, environment, bind/volume/
   network semantics, logs, restart continuity, `down`, and exact cleanup are covered.
-- [ ] BuildKit/buildx handles concurrent builds, cache, secrets, SSH mounts, large Dockerfiles,
+- [x] BuildKit/buildx handles concurrent builds, cache, secrets, SSH mounts, large Dockerfiles,
   cancellation, daemon restart, multi-stage builds, and supported non-native execution.
-- [ ] Bundled plugins are version/digest bound, discovered on every supported install path, and do
+- [x] Bundled plugins are version/digest bound, discovered on every supported install path, and do
   not depend on another container product.
-- [ ] Failure messages distinguish Docker API, build executor, registry, guest, and host-share
+- [x] Failure messages distinguish Docker API, build executor, registry, guest, and host-share
   faults without leaking credentials.
+  Local source evidence: the GUI now passes the selected directory directly to Dory's bundled
+  Buildx v0.34.1, pins the exact Docker socket and default builder, strips ambient builder/context
+  controls, honors `.dockerignore`, streams bounded plain progress, and terminates the helper on
+  cancellation or sheet dismissal. It no longer tars the whole context into app memory or uses the
+  legacy Docker build upload for user-selected folders. Nineteen focused Buildx/Compose/process
+  tests pass literal shell-like paths, exact argument/environment isolation, split stdout/stderr,
+  timeout/cancellation, bounded retention, secret-safe failure text, and native Compose recovery.
+  A disposable candidate-engine replay passed all 39 competitor rows: four concurrent secret
+  sessions, named contexts, default ARGs, relative/large/ignored contexts, local cache export/import,
+  cancellation within ten seconds, a fresh post-cancel build, API liveness, restart, and exact
+  cleanup. The authenticated private-registry gate separately passed registry-cache export/import,
+  secret non-leakage, push/save/load/prune, exact candidate Buildx hashing, and credential cleanup.
 - [ ] Exact-candidate Compose and BuildKit evidence is retained.
 
 ## 5. Host filesystem sharing and bind mounts

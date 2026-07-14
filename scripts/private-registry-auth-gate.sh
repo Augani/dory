@@ -84,6 +84,7 @@ NAME="dory-private-registry-$RUN_ID"
 VOLUME="dory-private-registry-data-$RUN_ID"
 SOURCE_REF="localhost:$PORT/dory-auth-probe:source"
 BUILT_REF="localhost:$PORT/dory-auth-probe:built"
+CACHE_REF="localhost:$PORT/dory-auth-probe:cache-$RUN_ID"
 LOADED_REF="dory-auth-probe:$RUN_ID"
 USER_NAME=doryprobe
 PASSWORD="$(openssl rand -hex 16)"
@@ -92,7 +93,19 @@ ISOLATED_CREDENTIAL_CLEANUP=FAIL
 mkdir -p "$CONFIG/cli-plugins" "$UNAUTH_CONFIG" "$AUTH"
 ln -s "$BUILDX" "$CONFIG/cli-plugins/docker-buildx"
 
-docker_e() { DOCKER_CONFIG="$CONFIG" DOCKER_HOST="unix://$SOCKET" "$DOCKER" "$@"; }
+docker_e() {
+  env -u DOCKER_API_VERSION -u DOCKER_AUTH_CONFIG -u DOCKER_CERT_PATH \
+    -u DOCKER_CONTEXT -u DOCKER_CUSTOM_HEADERS -u DOCKER_DEFAULT_PLATFORM \
+    -u DOCKER_TLS -u DOCKER_TLS_VERIFY DOCKER_CONFIG="$CONFIG" \
+    DOCKER_HOST="unix://$SOCKET" "$DOCKER" "$@"
+}
+buildx_e() {
+  env -u DOCKER_API_VERSION -u DOCKER_AUTH_CONFIG -u DOCKER_CERT_PATH \
+    -u DOCKER_CONTEXT -u DOCKER_CUSTOM_HEADERS -u DOCKER_DEFAULT_PLATFORM \
+    -u DOCKER_TLS -u DOCKER_TLS_VERIFY -u BUILDKIT_HOST -u BUILDX_BUILDER -u BUILDX_CONFIG \
+    DOCKER_CONFIG="$CONFIG" DOCKER_HOST="unix://$SOCKET" BUILDKIT_PROGRESS=plain \
+    NO_COLOR=1 "$BUILDX" --builder default "$@"
+}
 wait_registry_ready() {
   local phase="$1" running
   for _ in $(seq 1 100); do
@@ -163,7 +176,10 @@ docker_e run -d --name "$NAME" --network host \
   -e REGISTRY_AUTH_HTPASSWD_PATH=/auth/htpasswd "$REGISTRY_IMAGE" >/dev/null
 wait_registry_ready authenticated
 
-if DOCKER_CONFIG="$UNAUTH_CONFIG" DOCKER_HOST="unix://$SOCKET" "$DOCKER" pull "$SOURCE_REF" \
+if env -u DOCKER_API_VERSION -u DOCKER_AUTH_CONFIG -u DOCKER_CERT_PATH \
+    -u DOCKER_CONTEXT -u DOCKER_CUSTOM_HEADERS -u DOCKER_DEFAULT_PLATFORM \
+    -u DOCKER_TLS -u DOCKER_TLS_VERIFY DOCKER_CONFIG="$UNAUTH_CONFIG" \
+    DOCKER_HOST="unix://$SOCKET" "$DOCKER" pull "$SOURCE_REF" \
     > "$WORKDIR/unauth.out" 2>&1; then
   die "unauthenticated pull unexpectedly succeeded"
 fi
@@ -181,8 +197,16 @@ printf '%s' "$SECRET_VALUE" > "$WORKDIR/secret.txt"
   printf 'RUN --mount=type=secret,id=probe test "$(sha256sum /run/secrets/probe | awk '\''{print $1}'\'')" = %s\n' "$SECRET_SHA"
   printf 'RUN test ! -e /run/secrets/probe\n'
 } > "$WORKDIR/Dockerfile"
-DOCKER_BUILDKIT=1 docker_e build --pull --secret "id=probe,src=$WORKDIR/secret.txt" \
-  -t "$BUILT_REF" "$WORKDIR" > "$WORKDIR/build.out"
+buildx_e build --progress plain --pull --secret "id=probe,src=$WORKDIR/secret.txt" \
+  --cache-to "type=registry,ref=$CACHE_REF,mode=max" --load \
+  -t "$BUILT_REF" -- "$WORKDIR" > "$WORKDIR/build.out" 2> "$WORKDIR/build.err"
+docker_e image rm "$BUILT_REF" >/dev/null
+buildx_e build --progress plain --pull --secret "id=probe,src=$WORKDIR/secret.txt" \
+  --cache-from "type=registry,ref=$CACHE_REF" --load \
+  -t "$BUILT_REF" -- "$WORKDIR" \
+  > "$WORKDIR/cache-import-build.out" 2> "$WORKDIR/cache-import-build.err"
+grep -q 'CACHED' "$WORKDIR/cache-import-build.out" "$WORKDIR/cache-import-build.err" \
+  || die "authenticated registry cache import did not reuse the exported result"
 docker_e push "$BUILT_REF" > "$WORKDIR/push-built.out"
 docker_e image inspect "$BUILT_REF" > "$WORKDIR/built-image-inspect.json"
 docker_e history --no-trunc "$BUILT_REF" > "$WORKDIR/built-image-history.txt"
@@ -235,6 +259,8 @@ authenticated_login=PASS
 authenticated_pull_run=PASS
 buildkit_registry_auth=PASS
 buildkit_secret_nonleak=PASS
+buildkit_registry_cache_export=PASS
+buildkit_registry_cache_import=PASS
 registry_push=PASS
 image_inspect_history=PASS
 image_save_load_identity=PASS

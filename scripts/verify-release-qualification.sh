@@ -261,7 +261,8 @@ private_registry_archive_list="$(single_evidence_file \
 private_registry_inspect="$(single_evidence_file \
   private-registry-auth registry-image-inspect.json)"
 for proof in status registry_fixture_arm64 unauthenticated_pull_rejected authenticated_login \
-  authenticated_pull_run buildkit_registry_auth buildkit_secret_nonleak registry_push \
+  authenticated_pull_run buildkit_registry_auth buildkit_secret_nonleak \
+  buildkit_registry_cache_export buildkit_registry_cache_import registry_push \
   image_inspect_history image_save_load_identity image_tag_remove filtered_image_prune \
   owned_cleanup isolated_credential_cleanup; do
   grep -qx "$proof=PASS" "$private_registry_manifest" \
@@ -652,7 +653,8 @@ competitor_manifest="$(single_evidence_file competitor-runtime manifest.txt)"
   || die "retained competitor runtime evidence has no result rows"
 grep -qx "source_commit=$SOURCE_COMMIT" "$competitor_manifest" \
   || die "retained competitor runtime evidence used the wrong source commit"
-for digest_key in docker_bin_sha256 compose_bin_sha256 dory_engine_sha256 bin_dory_hv_sha256 \
+for digest_key in docker_bin_sha256 compose_bin_sha256 buildx_bin_sha256 \
+  dory_engine_sha256 bin_dory_hv_sha256 \
   bin_gvproxy_sha256 bin_dory_dataplane_proxy_sha256 \
   share_dory_dory_hv_kernel_arm64_lzfse_sha256 \
   share_dory_dory_engine_rootfs_ext4_lzfse_sha256 \
@@ -670,8 +672,11 @@ grep -qx 'amd64_enabled=1' "$competitor_settings" \
   || die "retained competitor engine settings do not match their digest"
 competitor_docker_sha256="$(sed -n 's/^docker_bin_sha256=//p' "$competitor_manifest")"
 competitor_compose_sha256="$(sed -n 's/^compose_bin_sha256=//p' "$competitor_manifest")"
+competitor_buildx_sha256="$(sed -n 's/^buildx_bin_sha256=//p' "$competitor_manifest")"
 [ "$competitor_compose_sha256" = "$CANDIDATE_COMPOSE_SHA" ] \
   || die "retained competitor evidence used the wrong Compose v2 helper"
+[ "$competitor_buildx_sha256" = "$CANDIDATE_BUILDX_SHA" ] \
+  || die "retained competitor evidence used the wrong Buildx helper"
 grep -q $'\tFAIL\t' "$competitor_results" \
   && die "retained competitor runtime evidence contains a failed row"
 for proof in \
@@ -684,7 +689,8 @@ for proof in \
   bind-hardlink-permissions healthcheck buildx-named-context buildkit-default-arg \
   image-save-stdout image-hardlink-missing-parent buildkit-large-dockerfile \
   buildkit-relative-temp-context dockerignore-layered-unignore \
-  buildkit-concurrent-sessions container-resolver-contract container-dns-search \
+  buildkit-concurrent-sessions buildkit-cache-cancellation \
+  container-resolver-contract container-dns-search \
   cleanup-restart-persistence; do
   awk -F '\t' -v proof="$proof" \
     '$1 == proof && $2 == "PASS" { found=1 } END { exit !found }' "$competitor_results" \
@@ -971,7 +977,7 @@ required_competitor_tests = {
     "bind-mount-option-contract",
     "healthcheck", "buildx-named-context", "buildkit-default-arg", "image-save-stdout",
     "image-hardlink-missing-parent", "buildkit-large-dockerfile",
-    "buildkit-concurrent-sessions",
+    "buildkit-concurrent-sessions", "buildkit-cache-cancellation",
     "container-resolver-contract", "container-dns-search", "cleanup-restart-persistence",
 }
 with open(competitor_path, encoding="utf-8", newline="") as handle:

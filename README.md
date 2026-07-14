@@ -81,7 +81,9 @@
 **Docker, complete**
 - Containers with live stats, logs, embedded terminal, env inspection; create / start / stop /
   restart / delete from the UI or CLI.
-- Images: pull, **build** from a context folder, run, prune, **registry sign-in**, full inspect.
+- Images: pull, **build** from a context folder with the bundled Buildx and native `.dockerignore`
+  handling, cancel a live build with bounded streaming logs, run, prune, **registry sign-in**, and
+  full inspect. Dory never buffers the entire build context in app memory.
 - Volumes (with a file browser) and networks (subnet / gateway / attached-container inspect).
 - Bind mounts keep native macOS paths for both your home and attached drives under `/Volumes`, so
   `-v /Volumes/MySSD/project:/app` targets the real external disk instead of guest-only storage.
