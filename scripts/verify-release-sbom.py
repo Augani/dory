@@ -25,6 +25,13 @@ def properties(rows: object) -> dict[str, str]:
     return result
 
 
+def leaks_runner_local_path(serialized: str, app: pathlib.Path) -> bool:
+    app_parent_root = app.resolve().parent.parent
+    filesystem_root = pathlib.Path(app_parent_root.anchor)
+    leaks_app_parent = app_parent_root != filesystem_root and str(app_parent_root) in serialized
+    return leaks_app_parent or "/Users/" in serialized
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--sbom", required=True, type=pathlib.Path)
@@ -59,7 +66,7 @@ def main() -> None:
     if document.get("dependencies") != expected_dependencies:
         raise ValueError("release SBOM dependency inventory mismatch")
     serialized = args.sbom.read_text(encoding="utf-8")
-    if str(args.app.parent.parent) in serialized or "/Users/" in serialized:
+    if leaks_runner_local_path(serialized, args.app):
         raise ValueError("release SBOM leaks a runner-local path")
     print("release CycloneDX SBOM: PASS")
 

@@ -180,6 +180,23 @@ PY
 DORY_RELEASE_OUTPUTS_SKIP_PLATFORM_VALIDATION=1 \
   scripts/validate-release-outputs.sh "$TMP" "$VERSION" "$BUILD" >/dev/null
 
+# Installed apps commonly live only two path components below the filesystem root
+# (for example, /Applications/Dory.app). The portability check must not treat the root
+# slash itself as a runner-local path and therefore reject every valid JSON document.
+python3 - scripts/verify-release-sbom.py <<'PY'
+import importlib.util
+import pathlib
+import sys
+
+spec = importlib.util.spec_from_file_location("verify_release_sbom", sys.argv[1])
+assert spec is not None and spec.loader is not None
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+portable = '{"bomFormat":"CycloneDX","component":"Dory.app/Contents/MacOS/Dory"}'
+assert not module.leaks_runner_local_path(portable, pathlib.Path("/Applications/Dory.app"))
+assert module.leaks_runner_local_path(portable + ' "/Users/ci/release"', pathlib.Path("/Applications/Dory.app"))
+PY
+
 cp "$TMP/Dory-$VERSION.cdx.json" "$TMP/Dory-$VERSION.cdx.valid.json"
 cp "$TMP/release-manifest.json" "$TMP/release-manifest.sbom-valid.json"
 python3 - "$TMP" "$VERSION" <<'PY'
