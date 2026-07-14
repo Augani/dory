@@ -458,6 +458,9 @@ if grep -F 'local label="$1" cpus="$2" memory="$3" status=' \
     scripts/machine-resource-reconfiguration-gate.sh >/dev/null; then
   fail "machine resource gate references a strict-mode local before it is initialized"
 fi
+grep -F 'did not become ready within 180 seconds' \
+  scripts/machine-resource-reconfiguration-gate.sh >/dev/null \
+  || fail "machine resource gate no longer waits for asynchronous VMM readiness"
 grep -F 'machine update "$MACHINE" --cpus 9' \
   scripts/machine-resource-reconfiguration-gate.sh >/dev/null \
   || fail "machine resource gate no longer proves out-of-contract CPU rejection"

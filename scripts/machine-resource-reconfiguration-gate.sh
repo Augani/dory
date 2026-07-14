@@ -83,8 +83,17 @@ ctl machine start "$MACHINE" > "$WORKDIR/start.json"
 
 verify_status() {
   local label="$1" cpus="$2" memory="$3"
-  local status="$WORKDIR/status-$label.json" stats="$WORKDIR/stats-$label.json"
-  ctl machine status "$MACHINE" > "$status"
+  local status="$WORKDIR/status-$label.json" stats="$WORKDIR/stats-$label.json" state=""
+  for _ in $(seq 1 360); do
+    ctl machine status "$MACHINE" > "$status"
+    state="$(jq -r '.state' "$status")"
+    case "$state" in
+      running) break ;;
+      failed|stopped) die "$label machine entered terminal state: $state" ;;
+    esac
+    sleep 0.5
+  done
+  [ "$state" = running ] || die "$label machine did not become ready within 180 seconds"
   jq -e --argjson cpus "$cpus" --argjson memory "$memory" \
     '.state == "running" and .cpuCount == $cpus and .memoryMB == $memory' "$status" >/dev/null \
     || die "$label status does not report running cpus=$cpus memoryMB=$memory"
