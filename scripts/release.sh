@@ -437,10 +437,14 @@ validate_stapled_app() {
 }
 
 validate_stapled_dmg() {
-  local dmg="$1"
+  local dmg="$1" assessment
   echo "==> Validating stapled DMG ticket + Gatekeeper assessment..."
   xcrun stapler validate "$dmg"
-  spctl --assess --type open --context context:primary-signature --verbose=4 "$dmg"
+  assessment="$(spctl --assess --type open --context context:primary-signature --verbose=4 "$dmg" 2>&1)" \
+    || release_error "Gatekeeper rejected stapled DMG: $dmg"
+  printf '%s\n' "$assessment"
+  printf '%s\n' "$assessment" | grep -Fx 'source=Notarized Developer ID' >/dev/null \
+    || release_error "stapled DMG is not accepted as Notarized Developer ID: $dmg"
 }
 
 verify_full_bundle() {
@@ -523,6 +527,32 @@ PLIST
   codesign --force --options runtime --timestamp --entitlements "$entitlements" --sign "$SIGN_IDENTITY" "$app"
 }
 
+sign_dmg() {
+  local dmg="$1"
+  echo "==> Signing $(basename "$dmg") (Developer ID + secure timestamp)..."
+  if [ "$SIGN_IDENTITY" = "-" ]; then
+    codesign --force --sign - "$dmg"
+  else
+    codesign --force --timestamp --sign "$SIGN_IDENTITY" "$dmg"
+  fi
+}
+
+verify_dmg_signature() {
+  local dmg="$1" details
+  codesign --verify --strict --verbose=2 "$dmg" \
+    || release_error "disk image signature is invalid: $dmg"
+  [ "${DORY_REQUIRE_DEVELOPER_ID_SIGNATURES:-1}" = "1" ] || return 0
+  [ "$SIGN_IDENTITY" != "-" ] || return 0
+  details="$(codesign -d --verbose=4 "$dmg" 2>&1)" \
+    || release_error "could not inspect disk image signature: $dmg"
+  printf '%s\n' "$details" | grep -F 'Authority=Developer ID Application:' >/dev/null \
+    || release_error "disk image is not signed by a Developer ID Application certificate: $dmg"
+  printf '%s\n' "$details" | grep -F "TeamIdentifier=$TEAM" >/dev/null \
+    || release_error "disk image is not signed by expected team $TEAM: $dmg"
+  printf '%s\n' "$details" | grep -E '^Timestamp=' >/dev/null \
+    || release_error "disk image signature has no secure timestamp: $dmg"
+}
+
 archive_variant() {
   local variant="$1" archive="$2"
   echo "==> Archiving + signing Dory $VERSION $variant (Developer ID, team $TEAM, archs: $XCODE_ARCHS)..."
@@ -560,6 +590,8 @@ finish_app_artifact() {
   if [ "${DORY_MAKE_DMG:-1}" = "1" ]; then
     echo "==> Building DMG $dmg..."
     scripts/make-dmg.sh "$app" "$VERSION" "$dmg"
+    sign_dmg "$dmg"
+    verify_dmg_signature "$dmg"
     if [ "${DORY_SKIP_NOTARIZE:-0}" = "1" ]; then
       echo "==> Skipping notarization for $dmg (DORY_SKIP_NOTARIZE=1)"
     else
@@ -758,6 +790,7 @@ if [ "${DORY_BUNDLE_ENGINE:-1}" = "1" ] && [ "${DORY_BUILD_LITE:-1}" = "1" ]; th
     rm -rf "$LITE_DIR"
     mkdir -p "$LITE_DIR"
     cp -R "$LITE_ARCHIVE/Products/Applications/Dory.app" "$LITE_DIR/"
+    scripts/sign-sparkle-for-distribution.sh "$LITE_APP" "$SIGN_IDENTITY"
     sign_app "$LITE_APP"
     verify_codesign "$LITE_APP"
     LITE_ZIP="$BUILD_DIR/Dory-$VERSION-lite.zip"

@@ -1538,6 +1538,10 @@ release_script = open("scripts/release.sh", encoding="utf-8").read()
 for required in (
     "scripts/sign-sparkle-for-distribution.sh",
     "scripts/verify-distribution-signatures.sh",
+    'scripts/sign-sparkle-for-distribution.sh "$LITE_APP"',
+    'sign_dmg "$dmg"',
+    'verify_dmg_signature "$dmg"',
+    'source=Notarized Developer ID',
 ):
     assert required in release_script, f"release omits nested distribution signing gate: {required}"
 sparkle_signing = open("scripts/sign-sparkle-for-distribution.sh", encoding="utf-8").read()

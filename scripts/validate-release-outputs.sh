@@ -265,12 +265,34 @@ require_gvproxy_provenance source pinned-source-build
   || fail "bundled gvproxy does not identify as v0.8.9-dory1"
 
 if [ "${DORY_RELEASE_OUTPUTS_SKIP_PLATFORM_VALIDATION:-0}" != "1" ]; then
+  DMG="$BUILD_DIR/Dory-$VERSION-arm64.dmg"
   [ "$(lipo -archs "$GVPROXY")" = "x86_64 arm64" ] \
     || fail "bundled gvproxy architecture contract changed"
   scripts/verify-distribution-signatures.sh "$APP" "$TEAM"
   codesign --verify --strict --verbose=2 "$NETWORK_HELPER"
   xcrun stapler validate "$APP"
-  spctl --assess --type execute --verbose=4 "$APP"
+  app_assessment="$(spctl --assess --type execute --verbose=4 "$APP" 2>&1)" \
+    || fail "Gatekeeper rejected arm64 app"
+  printf '%s\n' "$app_assessment"
+  grep -Fx 'source=Notarized Developer ID' <<< "$app_assessment" >/dev/null \
+    || fail "arm64 app is not accepted as Notarized Developer ID"
+
+  codesign --verify --strict --verbose=2 "$DMG" \
+    || fail "arm64 DMG signature is invalid"
+  dmg_codesign="$(codesign -d --verbose=4 "$DMG" 2>&1)" \
+    || fail "could not inspect arm64 DMG signature"
+  grep -F 'Authority=Developer ID Application:' <<< "$dmg_codesign" >/dev/null \
+    || fail "arm64 DMG is not Developer ID signed"
+  grep -F "TeamIdentifier=$TEAM" <<< "$dmg_codesign" >/dev/null \
+    || fail "arm64 DMG is signed by the wrong team"
+  grep -E '^Timestamp=' <<< "$dmg_codesign" >/dev/null \
+    || fail "arm64 DMG signature has no secure timestamp"
+  xcrun stapler validate "$DMG"
+  dmg_assessment="$(spctl --assess --type open --context context:primary-signature --verbose=4 "$DMG" 2>&1)" \
+    || fail "Gatekeeper rejected arm64 DMG"
+  printf '%s\n' "$dmg_assessment"
+  grep -Fx 'source=Notarized Developer ID' <<< "$dmg_assessment" >/dev/null \
+    || fail "arm64 DMG is not accepted as Notarized Developer ID"
 fi
 
 echo "release outputs: PASS ($VERSION build $BUILD)"

@@ -40,6 +40,11 @@ if ! bash scripts/test-make-dmg.sh; then
   exit 1
 fi
 
+if ! bash scripts/test-dmg-distribution-signing.sh; then
+  echo "ci-test: disk-image distribution signing tests failed" >&2
+  exit 1
+fi
+
 if ! bash scripts/test-verify-sparkle-update.sh; then
   echo "ci-test: Sparkle signature/key compatibility tests failed" >&2
   exit 1
