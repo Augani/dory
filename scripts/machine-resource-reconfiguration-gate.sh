@@ -82,7 +82,8 @@ OWNED=1
 ctl machine start "$MACHINE" > "$WORKDIR/start.json"
 
 verify_status() {
-  local label="$1" cpus="$2" memory="$3" status="$WORKDIR/status-$label.json" stats="$WORKDIR/stats-$label.json"
+  local label="$1" cpus="$2" memory="$3"
+  local status="$WORKDIR/status-$label.json" stats="$WORKDIR/stats-$label.json"
   ctl machine status "$MACHINE" > "$status"
   jq -e --argjson cpus "$cpus" --argjson memory "$memory" \
     '.state == "running" and .cpuCount == $cpus and .memoryMB == $memory' "$status" >/dev/null \

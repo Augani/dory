@@ -454,6 +454,10 @@ grep -F 'sshAgentForwardingGate' scripts/qualify-release-candidate.sh \
 grep -F 'machine update "$MACHINE" --cpus 8 --memory-mb 16384' \
   scripts/machine-resource-reconfiguration-gate.sh >/dev/null \
   || fail "machine resource gate no longer reaches the advertised CPU/memory maximum"
+if grep -F 'local label="$1" cpus="$2" memory="$3" status=' \
+    scripts/machine-resource-reconfiguration-gate.sh >/dev/null; then
+  fail "machine resource gate references a strict-mode local before it is initialized"
+fi
 grep -F 'machine update "$MACHINE" --cpus 9' \
   scripts/machine-resource-reconfiguration-gate.sh >/dev/null \
   || fail "machine resource gate no longer proves out-of-contract CPU rejection"
