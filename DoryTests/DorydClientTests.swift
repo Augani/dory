@@ -752,6 +752,32 @@ struct DorydClientTests {
             cpuCount: 3,
             environment: ["APP_ENV": "dev"]
         ))
+
+        let invalidResources = AppStore.dorydMachineConfiguration(
+            name: "vmdev",
+            settings: .default,
+            environment: [
+                "DORYD_GUEST_KERNEL": "/vm/Image",
+                "DORYD_GUEST_ROOTFS": "/vm/rootfs.raw",
+                "DORYD_MACHINE_MEMORY_MB": "0",
+                "DORYD_MACHINE_CPUS": "0",
+            ]
+        )
+        #expect(invalidResources?.memoryMB == 0)
+        #expect(invalidResources?.cpuCount == 0)
+
+        let malformedResources = AppStore.dorydMachineConfiguration(
+            name: "vmdev",
+            settings: .default,
+            environment: [
+                "DORYD_GUEST_KERNEL": "/vm/Image",
+                "DORYD_GUEST_ROOTFS": "/vm/rootfs.raw",
+                "DORYD_MACHINE_MEMORY_MB": "invalid",
+                "DORYD_MACHINE_CPUS": "invalid",
+            ]
+        )
+        #expect(malformedResources?.memoryMB == 0)
+        #expect(malformedResources?.cpuCount == 0)
     }
 
     @MainActor

@@ -120,7 +120,7 @@ public struct DoryMachineConfiguration: Sendable, Equatable, Hashable, Codable {
         self.kernelPath = kernelPath
         self.rootfsPath = rootfsPath
         self.memoryMB = memoryMB
-        self.cpuCount = max(1, cpuCount)
+        self.cpuCount = cpuCount
         self.address = address
         self.shares = shares
         self.environment = environment
@@ -387,6 +387,15 @@ public final class MachineManager: @unchecked Sendable {
         guard var entry = machines[id] else {
             lock.unlock()
             throw MachineManagerError.unknownMachine(id)
+        }
+        do {
+            try Self.validateResources(
+                memoryMB: entry.configuration.memoryMB,
+                cpuCount: entry.configuration.cpuCount
+            )
+        } catch {
+            lock.unlock()
+            throw error
         }
         if entry.process?.isRunning == true {
             lock.unlock()
@@ -824,6 +833,7 @@ public final class MachineManager: @unchecked Sendable {
             guard Self.isValidID(snapshot.machineID), Self.isValidID(snapshot.id) else {
                 throw MachineManagerError.persistence("invalid snapshot metadata")
             }
+            try Self.validateResources(memoryMB: snapshot.memoryMB, cpuCount: snapshot.cpuCount)
             if FileManager.default.fileExists(atPath: snapshotMetadataPath(machineID: snapshot.machineID, snapshotID: snapshot.id)) ||
                 FileManager.default.fileExists(atPath: snapshotRootfsPath(machineID: snapshot.machineID, snapshotID: snapshot.id)) {
                 snapshot.id = Self.generatedSnapshotID(prefix: "import")
@@ -1173,6 +1183,7 @@ public final class MachineManager: @unchecked Sendable {
               snapshot.machineID == machineID,
               snapshot.id == snapshotID,
               snapshot.rootfsPath == expectedRootfsPath,
+              (try? Self.validateResources(memoryMB: snapshot.memoryMB, cpuCount: snapshot.cpuCount)) != nil,
               Self.isPrivateRegularFile(path: expectedRootfsPath) else {
             throw MachineManagerError.unknownSnapshot(snapshotID)
         }

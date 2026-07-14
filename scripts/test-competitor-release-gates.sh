@@ -702,6 +702,23 @@ grep -F 'testSnapshotDeleteFailurePreservesVisibleSnapshot' \
 grep -F 'testManagerRemovesInterruptedSnapshotArtifactsOnStartup' \
   dory-core-swift/Tests/DorydKitTests/MachineManagerTests.swift >/dev/null \
   || fail "interrupted machine snapshot transactions can accumulate hidden data-drive storage"
+grep -F 'testPersistedInvalidResourcesCannotReachTheVMM' \
+  dory-core-swift/Tests/DorydKitTests/MachineManagerTests.swift >/dev/null \
+  || fail "invalid persisted machine resources can reach the VMM and be silently changed"
+grep -F 'testImportSnapshotRejectsInvalidResourcesBeforeExtractingRootfs' \
+  dory-core-swift/Tests/DorydKitTests/MachineManagerTests.swift >/dev/null \
+  || fail "invalid machine snapshot resources can allocate hidden data-drive storage"
+grep -F 'testVMMResourcesAreNeverSilentlyClamped' \
+  dory-core-swift/Tests/DorydKitTests/DoryVMMKitTests.swift >/dev/null \
+  || fail "the VMM no longer proves invalid resource values are rejected without mutation"
+grep -F 'configuration.cpuCount = spec.cpuCount' \
+  dory-core-swift/Sources/DoryVMMKit/DoryVMM.swift >/dev/null \
+  || fail "the VMM can silently change the machine CPU count"
+grep -F 'configuration.memorySize = memorySize' \
+  dory-core-swift/Sources/DoryVMMKit/DoryVMM.swift >/dev/null \
+  || fail "the VMM can silently change the machine memory size"
+grep -F 'malformedResources?.cpuCount == 0' DoryTests/DorydClientTests.swift >/dev/null \
+  || fail "malformed app machine resource overrides can silently fall back to defaults"
 for required_recipe in \
   'guest/kernel/build.sh arm64' \
   'guest/initfs/build.sh arm64' \

@@ -107,6 +107,53 @@ final class DoryVMMKitTests: XCTestCase {
         }
     }
 
+    func testVMMResourcesAreNeverSilentlyClamped() throws {
+        let arguments = try parseDoryVMMArguments([
+            "--memory-mb", "0",
+            "--cpus", "0",
+        ])
+        XCTAssertEqual(arguments.memoryMB, 0)
+        XCTAssertEqual(arguments.cpuCount, 0)
+        XCTAssertThrowsError(try parseDoryVMMArguments([
+            "--cpus", "18446744073709551615",
+        ])) { error in
+            XCTAssertEqual(
+                error as? DoryVMMArgumentError,
+                .invalidInteger("--cpus", "18446744073709551615")
+            )
+        }
+
+        let spec = DoryVZMachineSpec(
+            machineID: "dev",
+            stateDirectory: "/tmp/dev",
+            kernelPath: "/tmp/kernel",
+            rootfsPath: "/tmp/rootfs",
+            memoryMB: 2048,
+            cpuCount: 0
+        )
+        XCTAssertEqual(spec.cpuCount, 0)
+        XCTAssertThrowsError(try DoryVZConfigurationBuilder.makeConfiguration(
+            spec: spec,
+            serialOutput: nil
+        )) { error in
+            XCTAssertTrue("\(error)".contains("unsupported cpuCount: 0"))
+        }
+
+        XCTAssertThrowsError(try DoryVZConfigurationBuilder.makeConfiguration(
+            spec: DoryVZMachineSpec(
+                machineID: "dev",
+                stateDirectory: "/tmp/dev",
+                kernelPath: "/tmp/kernel",
+                rootfsPath: "/tmp/rootfs",
+                memoryMB: 0,
+                cpuCount: 1
+            ),
+            serialOutput: nil
+        )) { error in
+            XCTAssertTrue("\(error)".contains("unsupported memoryMB: 0"))
+        }
+    }
+
     func testSonomaGVProxyPlanIsNativeIPv6AndDockerDualStack() {
         let plan = DoryVMMNativeIPv6Plan()
         XCTAssertTrue(plan.gvproxyYAML.contains("ipv6Subnet: fd7d:6f72:7900::/64"))
@@ -188,6 +235,8 @@ final class DoryVMMKitTests: XCTestCase {
         XCTAssertEqual(configuration.socketDevices.count, 1)
         XCTAssertTrue(configuration.socketDevices.first is VZVirtioSocketDeviceConfiguration)
         XCTAssertEqual(configuration.networkDevices.count, 1)
+        XCTAssertEqual(configuration.cpuCount, 2)
+        XCTAssertEqual(configuration.memorySize, 2048 * 1024 * 1024)
         let network = try XCTUnwrap(configuration.networkDevices.first as? VZVirtioNetworkDeviceConfiguration)
         XCTAssertTrue(network.attachment is VZNATNetworkDeviceAttachment)
         XCTAssertEqual(configuration.memoryBalloonDevices.count, 1)

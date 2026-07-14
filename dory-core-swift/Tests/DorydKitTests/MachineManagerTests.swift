@@ -181,6 +181,39 @@ final class MachineManagerTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: "\(base)/machines/../snapshots"))
     }
 
+    func testImportSnapshotRejectsInvalidResourcesBeforeExtractingRootfs() throws {
+        let base = "/tmp/dory-machine-import-resources-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let manager = MachineManager(configuration: MachineManagerConfiguration(
+            vmmExecutablePath: "/bin/sleep",
+            stateDirectory: "\(base)/machines",
+            baseArguments: ["30"],
+            passMachineArguments: false,
+            requiresReadyHandoff: false
+        ))
+        let bundlePath = "\(base)/invalid-resources.dorymachine"
+        try writeMachineBundle(
+            toPath: bundlePath,
+            snapshot: DoryMachineSnapshot(
+                id: "s1",
+                machineID: "dev",
+                note: "",
+                createdISO: "2026-07-07T00:00:00Z",
+                rootfsPath: "/ignored",
+                sizeBytes: 0,
+                kernelPath: "/tmp/kernel",
+                memoryMB: 2048,
+                cpuCount: 0
+            ),
+            rootfs: Data("invalid".utf8)
+        )
+
+        XCTAssertThrowsError(try manager.importSnapshot(fromPath: bundlePath))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: "\(base)/machines/dev/snapshots/s1.ext4"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: "\(base)/machines/dev/snapshots/s1.json"))
+    }
+
     func testRestoreSnapshotLeavesLiveRootfsIntactWhenCopyFails() throws {
         let base = "/tmp/dory-machine-restore-atomic-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
@@ -473,6 +506,33 @@ final class MachineManagerTests: XCTestCase {
         XCTAssertEqual(loaded.first?.environment, [:])
     }
 
+    func testPersistedInvalidResourcesCannotReachTheVMM() throws {
+        let base = "/tmp/dory-machine-invalid-persisted-resources-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        try FileManager.default.createDirectory(atPath: "\(base)/dev", withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        try Data("""
+        {
+          "id": "dev",
+          "kernelPath": "/tmp/kernel",
+          "rootfsPath": "/tmp/rootfs",
+          "memoryMB": 2048,
+          "cpuCount": 0
+        }
+        """.utf8).write(to: URL(fileURLWithPath: "\(base)/dev/machine.json"))
+        let manager = MachineManager(configuration: MachineManagerConfiguration(
+            vmmExecutablePath: "/bin/sleep",
+            stateDirectory: base,
+            baseArguments: ["30"],
+            passMachineArguments: false,
+            requiresReadyHandoff: false
+        ))
+
+        XCTAssertEqual(manager.status(id: "dev")?.cpuCount, 0)
+        XCTAssertThrowsError(try manager.start(id: "dev"))
+        XCTAssertEqual(manager.status(id: "dev")?.state, .stopped)
+        XCTAssertNil(manager.status(id: "dev")?.pid)
+    }
+
     func testUpdatePersistsMachineResourcesAndRestartsRunningMachine() throws {
         let base = "/tmp/dory-machine-update-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         let share = "\(base)-share"
@@ -565,14 +625,21 @@ final class MachineManagerTests: XCTestCase {
             requiresReadyHandoff: false
         ))
 
-        for (memory, cpus) in [(UInt64(1023), 2), (UInt64(16 * 1024 + 1), 2), (UInt64(2048), 9)] {
-            XCTAssertThrowsError(try manager.create(DoryMachineConfiguration(
+        for (memory, cpus) in [
+            (UInt64(1023), 2),
+            (UInt64(16 * 1024 + 1), 2),
+            (UInt64(2048), 0),
+            (UInt64(2048), 9),
+        ] {
+            let configuration = DoryMachineConfiguration(
                 id: "invalid-\(memory)-\(cpus)",
                 kernelPath: "/tmp/kernel",
                 rootfsPath: "/tmp/rootfs",
                 memoryMB: memory,
                 cpuCount: cpus
-            )))
+            )
+            XCTAssertEqual(configuration.cpuCount, cpus)
+            XCTAssertThrowsError(try manager.create(configuration))
         }
 
         _ = try manager.create(DoryMachineConfiguration(

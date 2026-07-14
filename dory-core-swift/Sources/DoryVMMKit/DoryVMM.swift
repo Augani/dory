@@ -109,7 +109,7 @@ public func parseDoryVMMArguments(_ raw: [String]) throws -> DoryVMMArguments {
         case "--memory-mb":
             parsed.memoryMB = try uint64Value(after: argument, from: raw, index: &index)
         case "--cpus":
-            parsed.cpuCount = max(1, Int(try uint64Value(after: argument, from: raw, index: &index)))
+            parsed.cpuCount = try intValue(after: argument, from: raw, index: &index)
         case "--cmdline":
             parsed.kernelCommandLine = try value(after: argument, from: raw, index: &index)
         case "--handoff-sock":
@@ -170,6 +170,14 @@ private func uint64Value(after flag: String, from raw: [String], index: inout Ar
     return value
 }
 
+private func intValue(after flag: String, from raw: [String], index: inout Array<String>.Index) throws -> Int {
+    let rawValue = try value(after: flag, from: raw, index: &index)
+    guard let value = Int(rawValue) else {
+        throw DoryVMMArgumentError.invalidInteger(flag, rawValue)
+    }
+    return value
+}
+
 public struct DoryVZMachineSpec: Sendable, Equatable {
     public var machineID: String
     public var stateDirectory: String
@@ -203,7 +211,7 @@ public struct DoryVZMachineSpec: Sendable, Equatable {
         self.kernelPath = kernelPath
         self.rootfsPath = rootfsPath
         self.memoryMB = memoryMB
-        self.cpuCount = max(1, cpuCount)
+        self.cpuCount = cpuCount
         self.kernelCommandLine = kernelCommandLine
         self.shares = shares
         self.environment = environment
@@ -258,6 +266,18 @@ public enum DoryVZConfigurationBuilder {
         networkAttachment: VZNetworkDeviceAttachment? = nil
     ) throws -> VZVirtualMachineConfiguration {
         let fileManager = FileManager.default
+        let (memorySize, memoryOverflow) = spec.memoryMB.multipliedReportingOverflow(by: 1024 * 1024)
+        let minimumMemorySize = VZVirtualMachineConfiguration.minimumAllowedMemorySize
+        let maximumMemorySize = VZVirtualMachineConfiguration.maximumAllowedMemorySize
+        guard !memoryOverflow,
+              (minimumMemorySize...maximumMemorySize).contains(memorySize) else {
+            throw DoryVZMachineError.validation("unsupported memoryMB: \(spec.memoryMB)")
+        }
+        let minimumCPUCount = Int(VZVirtualMachineConfiguration.minimumAllowedCPUCount)
+        let maximumCPUCount = Int(VZVirtualMachineConfiguration.maximumAllowedCPUCount)
+        guard (minimumCPUCount...maximumCPUCount).contains(spec.cpuCount) else {
+            throw DoryVZMachineError.validation("unsupported cpuCount: \(spec.cpuCount)")
+        }
         if spec.nativeIPv6, networkAttachment == nil {
             throw DoryVZMachineError.validation(
                 "native IPv6 requires the gvproxy file-handle network attachment"
@@ -275,8 +295,8 @@ public enum DoryVZConfigurationBuilder {
 
         let configuration = VZVirtualMachineConfiguration()
         configuration.bootLoader = bootLoader
-        configuration.cpuCount = clampedCPUCount(spec.cpuCount)
-        configuration.memorySize = clampedMemorySize(megabytes: spec.memoryMB)
+        configuration.cpuCount = spec.cpuCount
+        configuration.memorySize = memorySize
         configuration.entropyDevices = [VZVirtioEntropyDeviceConfiguration()]
         configuration.memoryBalloonDevices = [VZVirtioTraditionalMemoryBalloonDeviceConfiguration()]
         configuration.socketDevices = [VZVirtioSocketDeviceConfiguration()]
@@ -542,19 +562,6 @@ public enum DoryVZConfigurationBuilder {
         "'\(value.replacingOccurrences(of: "'", with: "'\\''"))'"
     }
 
-    private static func clampedMemorySize(megabytes: UInt64) -> UInt64 {
-        let bytes = megabytes * 1024 * 1024
-        return min(
-            max(bytes, VZVirtualMachineConfiguration.minimumAllowedMemorySize),
-            VZVirtualMachineConfiguration.maximumAllowedMemorySize
-        )
-    }
-
-    private static func clampedCPUCount(_ count: Int) -> Int {
-        let minCount = Int(VZVirtualMachineConfiguration.minimumAllowedCPUCount)
-        let maxCount = Int(VZVirtualMachineConfiguration.maximumAllowedCPUCount)
-        return min(max(count, minCount), maxCount)
-    }
 }
 
 public enum DoryVMMMain {

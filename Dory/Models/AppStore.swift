@@ -4029,18 +4029,26 @@ final class AppStore {
         guard let kernel, let rootfs else {
             return nil
         }
-        let memoryMB = environment["DORYD_MACHINE_MEMORY_MB"].flatMap(UInt64.init)
-            ?? settings.memoryMB.flatMap { UInt64(exactly: $0) }
-            ?? 2048
-        let cpuCount = environment["DORYD_MACHINE_CPUS"].flatMap(Int.init)
-            ?? settings.cpus
-            ?? 2
+        let memoryMB: UInt64
+        if let rawMemory = environment["DORYD_MACHINE_MEMORY_MB"] {
+            memoryMB = UInt64(rawMemory) ?? 0
+        } else if let configuredMemory = settings.memoryMB {
+            memoryMB = UInt64(exactly: configuredMemory) ?? 0
+        } else {
+            memoryMB = 2048
+        }
+        let cpuCount: Int
+        if let rawCPUCount = environment["DORYD_MACHINE_CPUS"] {
+            cpuCount = Int(rawCPUCount) ?? 0
+        } else {
+            cpuCount = settings.cpus ?? 2
+        }
         return DorydMachineConfiguration(
             id: name,
             kernelPath: kernel,
             rootfsPath: rootfs,
-            memoryMB: max(1, memoryMB),
-            cpuCount: max(1, cpuCount),
+            memoryMB: memoryMB,
+            cpuCount: cpuCount,
             address: address,
             shares: dorydShares(from: settings.mounts),
             environment: settings.env
