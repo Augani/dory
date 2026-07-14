@@ -237,12 +237,15 @@ profile_write_target() {
 }
 
 replace_profile() {
-  local profile="$1" content="$2" target mode tmp
+  local profile="$1" content="$2" target tmp
   target="$(profile_write_target "$profile")"
   tmp="$(mktemp "${target}.dory.XXXXXX")"
-  mode="$(stat -f '%Lp' "$target" 2>/dev/null || printf 600)"
+  if [ -f "$target" ]; then
+    /bin/cp -p "$target" "$tmp"
+  else
+    chmod 600 "$tmp"
+  fi
   printf '%s' "$content" > "$tmp"
-  chmod "$mode" "$tmp"
   mv "$tmp" "$target"
 }
 

@@ -1641,8 +1641,39 @@ assert "source_preserving_lan_certification, homebrew_cask_audit" in release, \
     "publication can run before the isolated Homebrew audit"
 assert release.index(homebrew_audit) < release.index("name: Publish GitHub Release"), \
     "Homebrew audit runs after publication"
+homebrew_install = release.split("  homebrew_install_certification:", 1)[1].split("\n  release_qualification:", 1)[0]
+for required in (
+    "name: Clean exact-candidate Homebrew install and uninstall",
+    "runs-on: [self-hosted, macOS, arm64, dory, release]",
+    "scripts/homebrew-install-gate.sh",
+    "DORY_RELEASE_CLEAN_USER: '1'",
+    "--confirm CLEAN-RELEASE-USER-HOMEBREW-INSTALL",
+    "dory-homebrew-install-evidence-${{ github.sha }}-${{ github.run_attempt }}",
+):
+    assert required in homebrew_install, f"exact-candidate Homebrew install gate omits: {required}"
+assert "Verify Homebrew install evidence binding" in release, \
+    "publication does not revalidate Homebrew install evidence"
+assert release.index("name: Clean exact-candidate Homebrew install and uninstall") \
+    < release.index("name: Exact candidate 8-hour + 25-hour qualification"), \
+    "duration qualification can occupy the physical runner before Homebrew certification"
+homebrew_gate = open("scripts/homebrew-install-gate.sh", encoding="utf-8").read()
+for required in (
+    "validate-release-metadata.py",
+    "brew install --cask --require-sha --appdir=/Applications",
+    "xattr -p com.apple.quarantine",
+    "spctl --assess --type execute",
+    'verify-release-sbom.py" --sbom "$SBOM" --app "$APP"',
+    'open -n "$APP"',
+    'curl -fsS --max-time 2 --unix-socket "$STATE/dory.sock"',
+    'brew uninstall --cask "$CASK"',
+    'data_drive_preserved=PASS',
+    'profile_restoration=PASS',
+):
+    assert required in homebrew_gate, f"Homebrew install certification omits: {required}"
 cask = open("Casks/dory.rb", encoding="utf-8").read()
 for required in (
+    "auto_updates true",
+    'binary "#{appdir}/Dory.app/Contents/Helpers/dory"',
     'system_command "#{appdir}/Dory.app/Contents/Helpers/dory", args: ["install"]',
     'uninstall launchctl: "dev.dory.doryd"',
     'quit:      "com.pythonxi.Dory"',
@@ -1657,7 +1688,7 @@ assert 'scripts/release-candidate-live-smoke.sh "${{ steps.sparkle_candidate.out
 assert "UPDATE_ZIP: ${{ steps.build.outputs.app_update }}" in release, "Sparkle gate does not extract the final update ZIP"
 assert "Sparkle candidate ZIP differs from release manifest" in release, "extracted Sparkle candidate is not manifest-bound"
 assert "scripts/verify-sparkle-update.sh" in release, "release never verifies the Sparkle signature/key compatibility"
-candidate = release.split("  release_candidate:", 1)[1].split("\n  release_qualification:", 1)[0]
+candidate = release.split("  release_candidate:", 1)[1].split("\n  homebrew_install_certification:", 1)[0]
 for required in (
     "name: Resolve the exact release-build Sparkle source checkout",
     "DORY_RELEASE_CLEAN_USER: '1'",
@@ -1730,12 +1761,13 @@ assert "release-upgrade-rollback-smoke.sh" not in release, \
 assert release.index(live_step) < release.index(sparkle_step) \
     < release.index("name: Publish GitHub Release"), \
     "clean direct/Sparkle candidate smokes do not run before publication"
-qualification = release.split("  release_qualification:", 1)[1].split("\n  publish_release:", 1)[0]
+qualification = release.split("  release_qualification:", 1)[1].split("\n  sonoma_vz_certification:", 1)[0]
 publication = release.split("  publish_release:", 1)[1].split("\n  publish-pages:", 1)[0]
 assert "name: Publish GitHub Release" not in candidate, "candidate job can publish before duration qualification"
 assert "dory-release-candidate-${{ github.sha }}-${{ github.run_attempt }}" in candidate, \
     "candidate artifacts are not SHA/rerun-bound"
-assert "needs: release_candidate" in qualification, "duration qualification can run without a built candidate"
+assert "needs: [release_candidate, homebrew_install_certification]" in qualification, \
+    "duration qualification can run before the built candidate passes Homebrew installation"
 assert "timeout-minutes: 1800" in qualification, "25-hour qualification cannot finish before job timeout"
 assert "persist-credentials: false" in qualification, "long qualification retains an expiring Git credential"
 assert "scripts/qualify-release-candidate.sh" in qualification, "release omits the duration qualification harness"
@@ -1747,7 +1779,7 @@ assert "/Applications/Xcode-26.6.0-Release.Candidate.app" in qualification, \
 assert qualification.index("name: Select the pinned Xcode 26.6 release toolchain") \
     < qualification.index("scripts/qualify-release-candidate.sh"), \
     "duration qualification selects Xcode after starting the qualifier"
-assert "needs: [release_candidate, release_qualification, sonoma_vz_certification, source_preserving_lan_certification, homebrew_cask_audit]" in publication, \
+assert "needs: [release_candidate, release_qualification, sonoma_vz_certification, source_preserving_lan_certification, homebrew_cask_audit, homebrew_install_certification]" in publication, \
     "publication is not blocked on duration, Sonoma VZ, source-preservation, and Homebrew certification"
 assert "permissions:\n      contents: write" in publication, "publication job lacks explicit release permission"
 assert "permissions:\n  contents: read" in release, "non-publication release jobs inherit contents:write"
@@ -1896,7 +1928,7 @@ assert "vars.DORY_ENABLE_INTEL_ROADMAP == '1'" in intel, "Intel roadmap gate run
 assert "runs-on: [self-hosted, macOS, intel, dory]" in intel, "Intel gate can run on emulation/hosted virtualization"
 assert "READINESS_PHYSICAL_INTEL_CONFIRMED=1" in intel, "Intel gate never records confirmed host facts"
 assert "DORY_RELEASE_LIVE_REQUIRE_PHYSICAL_INTEL: '1'" in intel, "Intel candidate skips strict physical readiness"
-release_job = release.split("\n  release_candidate:", 1)[1].split("\n  release_qualification:", 1)[0]
+release_job = release.split("\n  release_candidate:", 1)[1].split("\n  homebrew_install_certification:", 1)[0]
 assert "needs: [rust-workspace, prepublication-quality, guest-assets-arm64]" in release_job, \
     "Apple Silicon candidate depends on out-of-scope release jobs"
 assert "DORY_RELEASE_VARIANTS: 'arm64'" in release_job, "public release is not arm64-only"

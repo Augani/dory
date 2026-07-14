@@ -9,11 +9,13 @@ cask "dory" do
   desc "Native Docker and Linux container runtime"
   homepage "https://github.com/Augani/dory"
 
+  auto_updates true
   # Dory's first public production track is Apple Silicon. Intel support remains on the roadmap.
   depends_on arch: :arm64
   depends_on macos: :sonoma
 
   app "Dory.app"
+  binary "#{appdir}/Dory.app/Contents/Helpers/dory"
 
   postflight do
     system_command "#{appdir}/Dory.app/Contents/Helpers/dory", args: ["install"]
@@ -33,4 +35,6 @@ cask "dory" do
     "~/Library/Application Support/com.pythonxi.Dory",
     "~/Library/Preferences/com.pythonxi.Dory.plist",
   ]
+
+  caveats "Open Dory once to start its engine."
 end

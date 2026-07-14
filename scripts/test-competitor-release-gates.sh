@@ -790,7 +790,7 @@ for proof in ssh_agent_forwarding ssh_agent_fresh_boot ssh_agent_restart; do
 done
 grep -F 'sonoma_vz_certification' .github/workflows/release.yml >/dev/null \
   || fail "public release is not blocked by Sonoma VZ certification"
-grep -F 'needs: [release_candidate, release_qualification, sonoma_vz_certification, source_preserving_lan_certification, homebrew_cask_audit]' \
+grep -F 'needs: [release_candidate, release_qualification, sonoma_vz_certification, source_preserving_lan_certification, homebrew_cask_audit, homebrew_install_certification]' \
   .github/workflows/release.yml >/dev/null \
   || fail "publication can bypass Sonoma VZ, physical source-preservation, or Homebrew certification"
 grep -F 'source_preserving_lan_certification' .github/workflows/release.yml >/dev/null \

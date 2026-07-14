@@ -751,9 +751,46 @@ jobs:
             release-build/appcast.xml
             release-build/release-manifest.json
 
+  homebrew_install_certification:
+    name: Clean exact-candidate Homebrew install and uninstall
+    needs: release_candidate
+    runs-on: [self-hosted, macOS, arm64, dory, release]
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@c915c33a16f01166c17c4e35fe1d4085a2d71adb # v4
+        with:
+          persist-credentials: false
+      - name: Download the immutable candidate
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: dory-release-candidate-${{ github.sha }}-${{ github.run_attempt }}
+          path: release-build
+      - name: Install, launch, and uninstall through Homebrew under normal quarantine
+        env:
+          DORY_RELEASE_CLEAN_USER: '1'
+          VERSION: ${{ needs.release_candidate.outputs.version }}
+        run: |
+          scripts/homebrew-install-gate.sh \
+            --candidate-dir release-build \
+            --version "$VERSION" \
+            --build "${{ github.run_number }}" \
+            --source-commit "$GITHUB_SHA" \
+            --workroot "$RUNNER_TEMP/dory-homebrew-install" \
+            --confirm CLEAN-RELEASE-USER-HOMEBREW-INSTALL
+      - name: Retain Homebrew install evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: dory-homebrew-install-evidence-${{ github.sha }}-${{ github.run_attempt }}
+          retention-days: 90
+          if-no-files-found: warn
+          path: ${{ runner.temp }}/dory-homebrew-install/evidence
+
   release_qualification:
     name: Exact candidate 8-hour + 25-hour qualification
-    needs: release_candidate
+    needs: [release_candidate, homebrew_install_certification]
     runs-on: [self-hosted, macOS, arm64, dory, release]
     timeout-minutes: 1800
     permissions:
@@ -1024,7 +1061,7 @@ jobs:
 
   publish_release:
     name: Publish only the exact qualified candidate
-    needs: [release_candidate, release_qualification, sonoma_vz_certification, source_preserving_lan_certification, homebrew_cask_audit]
+    needs: [release_candidate, release_qualification, sonoma_vz_certification, source_preserving_lan_certification, homebrew_cask_audit, homebrew_install_certification]
     runs-on: [self-hosted, macOS, arm64, dory, release]
     timeout-minutes: 120
     permissions:
@@ -1059,6 +1096,11 @@ jobs:
         with:
           name: dory-homebrew-audit-evidence-${{ github.sha }}-${{ github.run_attempt }}
           path: homebrew-audit-evidence
+      - name: Download exact-candidate Homebrew install evidence
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: dory-homebrew-install-evidence-${{ github.sha }}-${{ github.run_attempt }}
+          path: homebrew-install-evidence
       - name: Verify Homebrew audit evidence binding
         env:
           VERSION: ${{ needs.release_candidate.outputs.version }}
@@ -1091,6 +1133,43 @@ jobs:
           test -s homebrew-audit-evidence/dory.rb
           grep -qF "version \"$VERSION\"" homebrew-audit-evidence/dory.rb
           grep -qF "sha256 \"$ARM64_SHA256\"" homebrew-audit-evidence/dory.rb
+      - name: Verify Homebrew install evidence binding
+        env:
+          VERSION: ${{ needs.release_candidate.outputs.version }}
+          ARM64_SHA256: ${{ needs.release_candidate.outputs.sha256 }}
+        run: |
+          python3 - \
+            homebrew-install-evidence/manifest.txt \
+            "$GITHUB_SHA" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" \
+            "$VERSION" "${{ github.run_number }}" "$ARM64_SHA256" <<'PY'
+          import sys
+
+          path, commit, run_id, attempt, version, build, digest = sys.argv[1:8]
+          values = {}
+          with open(path, encoding="utf-8") as handle:
+              for line in handle:
+                  key, separator, value = line.rstrip("\n").partition("=")
+                  if not separator or key in values:
+                      raise SystemExit(f"malformed Homebrew install evidence: {line!r}")
+                  values[key] = value
+          expected = {
+              "source_commit": commit,
+              "run_id": run_id,
+              "run_attempt": attempt,
+              "version": version,
+              "build": build,
+              "zip_sha256": digest,
+              "normal_quarantine": "PASS",
+              "gatekeeper": "PASS",
+              "sbom": "PASS",
+              "first_launch": "PASS",
+              "data_drive_preserved": "PASS",
+              "profile_restoration": "PASS",
+              "status": "PASS",
+          }
+          if values != expected:
+              raise SystemExit(f"Homebrew install evidence mismatch: {values!r} != {expected!r}")
+          PY
       - name: Verify physical sleep/wake evidence binding
         env:
           VERSION: ${{ needs.release_candidate.outputs.version }}

@@ -219,10 +219,13 @@ test "$(cat "$TMP_HOME/.fake-current-context")" = default
 
 # Existing profile bytes, including a missing final newline, survive an install/uninstall cycle.
 printf '%s' 'export USER_SETTING=1' > "$TMP_HOME/.zprofile"
+chmod 640 "$TMP_HOME/.zprofile"
 profile_before="$(shasum -a 256 "$TMP_HOME/.zprofile" | awk '{print $1}')"
+profile_mode_before="$(stat -f '%Lp' "$TMP_HOME/.zprofile")"
 DORY_DOCKER_BIN="$TMP_HOME/fake-bin/docker" scripts/dory install --json >/dev/null
 DORY_DOCKER_BIN="$TMP_HOME/fake-bin/docker" scripts/dory uninstall --json >/dev/null
 test "$(shasum -a 256 "$TMP_HOME/.zprofile" | awk '{print $1}')" = "$profile_before"
+test "$(stat -f '%Lp' "$TMP_HOME/.zprofile")" = "$profile_mode_before"
 rm -f "$TMP_HOME/.zprofile"
 
 # A damaged marker never causes uninstall to discard the rest of a user's profile.
