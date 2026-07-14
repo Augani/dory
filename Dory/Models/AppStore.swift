@@ -59,7 +59,7 @@ final class AppStore {
     var launchAtLogin = false
     var showMenuBarIcon = true
     var routeDockerCLI = true
-    var keepDorydRunningAfterQuit = false
+    var keepDorydRunningAfterQuit = true
     var machineEnvAllowList: [String] = MachineEnvImport.defaultNames
     var openLoginsOnMac = true
     var dockerHostConflict: DockerHostConflict.Conflict?
@@ -203,7 +203,7 @@ final class AppStore {
             // Let Sparkle load its own consent and scheduling preferences.
             _ = DoryUpdater.shared
             if let v = UserDefaults.standard.object(forKey: Self.routeDockerKey) as? Bool { routeDockerCLI = v }
-            if let v = UserDefaults.standard.object(forKey: Self.keepDorydRunningAfterQuitKey) as? Bool { keepDorydRunningAfterQuit = v }
+            keepDorydRunningAfterQuit = Self.resolvedKeepDorydRunningAfterQuit(defaults: .standard)
             if let raw = UserDefaults.standard.string(forKey: Self.machineEnvAllowListKey) {
                 machineEnvAllowList = MachineEnvImport.parse(raw)
             }
@@ -285,6 +285,10 @@ final class AppStore {
     static let containerDetailWidthKey = "dory.containerDetailWidth"
     static let containerScopeKey = "dory.containerScope"
     static let kubernetesVersionKey = "dory.kubernetesVersion"
+
+    static func resolvedKeepDorydRunningAfterQuit(defaults: UserDefaults) -> Bool {
+        (defaults.object(forKey: keepDorydRunningAfterQuitKey) as? Bool) ?? true
+    }
     nonisolated static let localDorydCapabilityCatalog: [LocalDorydCapability] = [
         LocalDorydCapability(
             id: "support-bundle",

@@ -7,7 +7,9 @@ Dory has four separate runtime roles. Keeping these roles separate is part of th
 ## Owners
 
 - `Dory.app` owns user intent and presentation. It opens settings, shows success/failure notices, reconciles the installed LaunchAgent, and asks `doryd` to start/wake/sleep the engine over XPC.
-- `doryd` owns durable runtime state and engine lifecycle. Runtime mode and idle policy are read from `~/.dory/config.json` through `IdlePolicyStore`; doryd decides whether the Docker tier starts immediately or arms its socket for wake-on-use.
+- `doryd` owns durable runtime state and engine lifecycle. Runtime mode, idle policy, and the last
+  confirmed running/sleeping intent are read from `~/.dory/config.json` through `IdlePolicyStore`;
+  doryd decides whether the Docker tier starts immediately or arms its socket for wake-on-use.
 - `launchd` owns only daemon supervision. Its plist points at the bundled helpers, static ports, static domain suffix, logging, and KeepAlive/RunAtLoad. It must not carry user runtime mode.
 - Helpers own execution. `dory-hv` owns the Docker VM, `dory-vmm` owns machine VMs, `gvproxy` owns userspace networking transport, and bundled CLI helpers are reconciled into `~/.dory/bin`.
 - The headless archive is a separate delivery shape controlled only by `dory-engine`. It publishes
@@ -20,7 +22,9 @@ Dory has four separate runtime roles. Keeping these roles separate is part of th
 On daemon launch:
 
 - `always-on` starts the Docker tier immediately.
-- `manual`, `auto-idle`, and `battery-saver` arm the Docker socket without treating launchd environment as policy.
+- `manual`, `auto-idle`, and `battery-saver` restore the last confirmed running/sleeping intent.
+  A daemon crash or host restart cannot turn a previously running workload into an indefinitely
+  sleeping engine, and a deliberate Auto-Idle sleep cannot be undone by launchd supervision.
 - `battery-saver` preserves the configured Auto-Idle delay but caps its effective delay at five minutes.
 - `DORYD_FORCE_AUTOSTART_DOCKER_TIER=1` is reserved for development smoke tests.
 
@@ -29,6 +33,8 @@ On app launch:
 - the app reconciles the LaunchAgent from the installed bundle;
 - if doryd is available but the engine is not running, the app promotes the engine to running so Docker commands work after opening Dory;
 - idle policy decides whether doryd may sleep the engine again later.
+- doryd remains available after the app quits by default. Explicit opt-out stops the job and removes
+  its owned LaunchAgent plist so it cannot return at the next login; reopening Dory recreates it.
 
 On settings changes:
 
@@ -56,6 +62,8 @@ Keep tests around these boundaries:
 
 - LaunchAgent plist generation must not include `DORYD_AUTOSTART_DOCKER_TIER`.
 - stale launchd runtime hints must not override persisted runtime mode.
+- terminal daemon shutdown must not replace a confirmed running intent with sleeping; ordinary
+  engine sleep/stop and successful wake/start must update that intent in lifecycle order.
 - the stable user command for machines is `dory machine shell <name>`, not a full helper path.
 - legacy terminal-session payloads that contain private helper paths decode without reusing those paths.
 

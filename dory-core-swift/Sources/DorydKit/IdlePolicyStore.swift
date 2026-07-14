@@ -83,6 +83,7 @@ public final class IdlePolicyStore: @unchecked Sendable {
     }
 
     private static let runtimeModes = Set(["manual", "auto-idle", "always-on", "battery-saver"])
+    private static let engineDesiredStates = Set(["running", "sleeping"])
     // ISO8601DateFormatter isn't Sendable, but only its `string(from:)` is called here and that read
     // path is thread-safe; sharing one instance avoids reallocating a formatter on every status().
     nonisolated(unsafe) private static let iso8601Formatter = ISO8601DateFormatter()
@@ -128,6 +129,12 @@ public final class IdlePolicyStore: @unchecked Sendable {
         return runtimeMode(from: loadConfigLocked())
     }
 
+    public func currentEngineDesiredState() -> String {
+        lock.lock()
+        defer { lock.unlock() }
+        return engineDesiredState(from: loadConfigLocked())
+    }
+
     public func managedEngineSleepEnabled() -> Bool {
         lock.lock()
         defer { lock.unlock() }
@@ -156,6 +163,7 @@ public final class IdlePolicyStore: @unchecked Sendable {
         return [
             "generated_at": Self.iso8601Formatter.string(from: Date()),
             "mode": snapshot.mode,
+            "engine_desired_state": snapshot.engineDesiredState,
             "auto_idle_enabled": Self.autoIdleEnabled(snapshot.mode),
             "sleep_after_minutes": snapshot.policy.sleepAfterMinutes,
             "effective_sleep_after_minutes": Self.effectiveSleepAfterMinutes(
@@ -209,6 +217,22 @@ public final class IdlePolicyStore: @unchecked Sendable {
             throw error
         }
         return status()
+    }
+
+    public func setEngineDesiredState(_ state: String) throws {
+        guard Self.engineDesiredStates.contains(state) else {
+            throw StoreError.invalidValue(state)
+        }
+        lock.lock()
+        do {
+            var config = loadConfigLocked()
+            config["engineDesiredState"] = state
+            try saveConfigLocked(config)
+            lock.unlock()
+        } catch {
+            lock.unlock()
+            throw error
+        }
     }
 
     @discardableResult
@@ -288,6 +312,7 @@ public final class IdlePolicyStore: @unchecked Sendable {
 
     private struct PolicySnapshot {
         var mode: String
+        var engineDesiredState: String
         var policy: DoryIdlePolicy
         var blockers: [NSDictionary]
     }
@@ -296,6 +321,7 @@ public final class IdlePolicyStore: @unchecked Sendable {
         lock.lock()
         let config = loadConfigLocked()
         let mode = runtimeMode(from: config)
+        let desiredState = engineDesiredState(from: config)
         let policy = policy(from: config)
         lock.unlock()
 
@@ -306,7 +332,12 @@ public final class IdlePolicyStore: @unchecked Sendable {
                 "path": kubeconfigPath,
             ] as NSDictionary)
         }
-        return PolicySnapshot(mode: mode, policy: policy, blockers: blockers)
+        return PolicySnapshot(
+            mode: mode,
+            engineDesiredState: desiredState,
+            policy: policy,
+            blockers: blockers
+        )
     }
 
     private func loadConfigLocked() -> [String: Any] {
@@ -326,6 +357,9 @@ public final class IdlePolicyStore: @unchecked Sendable {
         }
         if config["runtimeMode"] == nil {
             config["runtimeMode"] = defaults["runtimeMode"]
+        }
+        if config["engineDesiredState"] == nil {
+            config["engineDesiredState"] = defaults["engineDesiredState"]
         }
         var idle = defaults["idle"] as? [String: Any] ?? [:]
         if let persisted = config["idle"] as? [String: Any] {
@@ -371,6 +405,11 @@ public final class IdlePolicyStore: @unchecked Sendable {
         return Self.runtimeModes.contains(mode) ? mode : "always-on"
     }
 
+    private func engineDesiredState(from config: [String: Any]) -> String {
+        let state = (config["engineDesiredState"] as? String) ?? "running"
+        return Self.engineDesiredStates.contains(state) ? state : "running"
+    }
+
     private func policy(from config: [String: Any]) -> DoryIdlePolicy {
         DoryIdlePolicy(dictionary: config["idle"] as? [String: Any] ?? defaultIdlePolicy())
     }
@@ -404,6 +443,7 @@ public final class IdlePolicyStore: @unchecked Sendable {
     private func defaultConfig() -> [String: Any] {
         [
             "runtimeMode": "always-on",
+            "engineDesiredState": "running",
             "idle": defaultIdlePolicy(),
             "network": [
                 "probes": [],

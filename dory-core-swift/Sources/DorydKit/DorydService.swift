@@ -39,9 +39,10 @@ public final class DorydService: NSObject, DorydControl {
         self.balloonController = balloonController ?? BalloonController(
             actuator: DorydBalloonActuator(machineManager: machineManager)
         )
-        self.idlePolicyStore = idlePolicyStore ?? IdlePolicyStore(dockerContainers: {
+        let resolvedIdlePolicyStore = idlePolicyStore ?? IdlePolicyStore(dockerContainers: {
             dockerTier?.containerSummariesForIdle() ?? .ok([])
         })
+        self.idlePolicyStore = resolvedIdlePolicyStore
         self.idleSleepScheduler = idleSleepScheduler
         self.healthReporter = healthReporter ?? HealthReporter(
             socketPath: socketPath,
@@ -50,6 +51,31 @@ public final class DorydService: NSObject, DorydControl {
             remoteManager: remoteManager
         )
         self.incidentWriter = incidentWriter
+        if let idlePolicyStore {
+            dockerTier?.setLifecycleStateObserver { state in
+                let desiredState: String
+                switch state {
+                case .running:
+                    desiredState = "running"
+                case .sleeping, .stopped:
+                    desiredState = "sleeping"
+                case .starting, .failed:
+                    return
+                }
+                do {
+                    try idlePolicyStore.setEngineDesiredState(desiredState)
+                    incidentWriter?.record(
+                        type: "engine.lifecycle",
+                        detail: "docker tier \(state.rawValue)"
+                    )
+                } catch {
+                    incidentWriter?.record(
+                        type: "engine.desired_state_failed",
+                        detail: "\(desiredState): \(error)"
+                    )
+                }
+            }
+        }
     }
 
     public func protocolVersion(reply: @escaping (UInt32) -> Void) {

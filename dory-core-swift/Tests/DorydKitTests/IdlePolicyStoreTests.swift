@@ -28,8 +28,28 @@ final class IdlePolicyStoreTests: XCTestCase {
 
         XCTAssertEqual(policy.sleepAfterMinutes, 15)
         XCTAssertEqual(store.currentRuntimeMode(), "always-on")
+        XCTAssertEqual(store.currentEngineDesiredState(), "running")
         XCTAssertFalse(store.schedulerConfiguration(base: IdleSleepConfiguration()).enabled)
         XCTAssertFalse(FileManager.default.fileExists(atPath: configPath + ".corrupt"))
+    }
+
+    func testEngineDesiredStatePersistsWithoutChangingRuntimeMode() throws {
+        let directory = NSTemporaryDirectory() + "dory-engine-intent-\(getpid())-\(UUID().uuidString)"
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+        let configPath = directory + "/config.json"
+        let environment = ["DORY_CONFIG": configPath]
+        let store = IdlePolicyStore(environment: environment)
+
+        _ = try store.setRuntimeMode("auto-idle")
+        try store.setEngineDesiredState("sleeping")
+
+        let reloaded = IdlePolicyStore(environment: environment)
+        XCTAssertEqual(reloaded.currentRuntimeMode(), "auto-idle")
+        XCTAssertEqual(reloaded.currentEngineDesiredState(), "sleeping")
+
+        try reloaded.setEngineDesiredState("running")
+        XCTAssertEqual(store.currentEngineDesiredState(), "running")
+        XCTAssertThrowsError(try store.setEngineDesiredState("stopped"))
     }
 
     func testManagedEngineSleepFollowsRuntimeMode() throws {

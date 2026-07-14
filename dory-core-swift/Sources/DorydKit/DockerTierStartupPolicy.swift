@@ -3,12 +3,16 @@ import Foundation
 public enum DockerTierStartupPolicy {
     public static func shouldAutostartDockerTier(
         environment: [String: String],
-        persistedRuntimeMode: @autoclosure () -> String
+        persistedRuntimeMode: @autoclosure () -> String,
+        persistedEngineDesiredState: @autoclosure () -> String
     ) -> Bool {
         if isTruthy(environment["DORYD_FORCE_AUTOSTART_DOCKER_TIER"]) {
             return true
         }
-        return persistedRuntimeMode() == "always-on"
+        if persistedRuntimeMode() == "always-on" {
+            return true
+        }
+        return persistedEngineDesiredState() == "running"
     }
 
     private static func isTruthy(_ value: String?) -> Bool {

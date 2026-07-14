@@ -390,6 +390,19 @@ struct DorydLaunchAgentTests {
         #expect(recorder.commands == [["bootout", "gui/501/dev.dory.doryd"]])
     }
 
+    @Test func optOutRemovalPreventsLaunchAgentReloadAtNextLogin() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("DorydLaunchAgentOptOut-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let plist = directory.appendingPathComponent("\(DorydLaunchAgent.label).plist")
+        try "fixture".write(to: plist, atomically: true, encoding: .utf8)
+
+        #expect(DorydLaunchAgent.removeCurrentPlist(launchAgentsDirectory: directory))
+        #expect(!FileManager.default.fileExists(atPath: plist.path))
+        #expect(DorydLaunchAgent.removeCurrentPlist(launchAgentsDirectory: directory))
+    }
+
     @Test func launchAgentCanDisableDaemonHostCLIRepair() {
         let plist = DorydLaunchAgent.launchAgentPlist(
             program: "/Applications/Dory.app/Contents/Helpers/doryd",

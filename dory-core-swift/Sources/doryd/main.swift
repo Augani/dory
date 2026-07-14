@@ -116,7 +116,8 @@ let wakeCoordinator = HostWakeCoordinator(
 let socketPath = dockerTier?.socketPath ?? socket.path
 let shouldAutostartDockerTier = DockerTierStartupPolicy.shouldAutostartDockerTier(
     environment: env,
-    persistedRuntimeMode: idlePolicyStore.currentRuntimeMode()
+    persistedRuntimeMode: idlePolicyStore.currentRuntimeMode(),
+    persistedEngineDesiredState: idlePolicyStore.currentEngineDesiredState()
 )
 let idleSleepScheduler = dockerTier.flatMap { tier -> IdleSleepScheduler? in
     guard let baseConfiguration = dorydEnvironment.idleSleepConfiguration() else { return nil }

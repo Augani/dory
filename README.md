@@ -187,7 +187,9 @@ brew install --cask Augani/dory/dory
 ```
 
 Homebrew links the `dory` CLI and installs Dory's bundled Docker, Compose, Buildx, and `kubectl`
-integration. Open Dory once to start the engine; no separate Docker installation is required.
+integration. Open Dory once to start the engine; no separate Docker installation is required. The
+daemon and Docker socket remain available after the window closes or the app exits unless you
+explicitly turn off **Keep doryd running after quit** in Settings.
 
 …or download the notarized `.dmg` from [Releases](https://github.com/Augani/dory/releases/latest),
 drag Dory to Applications, and open it. First launch guides you through the rest; supported Macs do

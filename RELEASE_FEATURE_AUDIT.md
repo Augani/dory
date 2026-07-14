@@ -73,8 +73,15 @@ of scope so each fix remains reviewable.
   private state and process cleanup under `~/.dory/standalone`; ordinary stop/start teardown and
   supervised recovery publish one deterministic owner. The 358-test core suite and 57 focused app
   tests passed, together with the competitor-release and CLI doctor regression gates.
-- [ ] Always-on, manual, auto-idle, and battery-saver start/wake/sleep behavior is deterministic,
+- [x] Always-on, manual, auto-idle, and battery-saver start/wake/sleep behavior is deterministic,
   including concurrent cold-wake clients, app quit/relaunch, daemon crash, and host restart.
+  Local source evidence: doryd persists each confirmed running/sleeping transition in lifecycle
+  order, restores it for idle-capable modes, always starts Always On, and does not overwrite a
+  running intent during terminal shutdown. The daemon remains available after app quit by default;
+  explicit opt-out removes its owned LaunchAgent so it stays off at the next login. Battery Saver's
+  five-minute cap, policy rollback, idle blockers, stop/wake races, and coalesced wake behavior are
+  covered. The full 361-test core suite, 36 focused signed app tests, competitor-release gate, and
+  CLI doctor gate passed.
 - [x] The selected `.dorydrive` is the sole durable workload store; transient runtime replacement,
   lock contention, missing/replaced drives, permissions, capacity, grow, trim, and relocation fail
   safely without formatting or shadow data.

@@ -184,6 +184,28 @@ enum DorydLaunchAgent {
         return process.terminationStatus == 0 || err.localizedCaseInsensitiveContains("No such process")
     }
 
+    @discardableResult
+    static func stopAndRemoveCurrentSynchronously(uid: uid_t = getuid()) -> Bool {
+        let stopped = bootoutCurrentSynchronously(uid: uid)
+        let removed = removeCurrentPlist()
+        return stopped && removed
+    }
+
+    @discardableResult
+    static func removeCurrentPlist(launchAgentsDirectory: URL? = nil) -> Bool {
+        guard let directory = launchAgentsDirectory ?? defaultLaunchAgentsDirectory() else {
+            return false
+        }
+        let plist = directory.appendingPathComponent("\(label).plist")
+        guard FileManager.default.fileExists(atPath: plist.path) else { return true }
+        do {
+            try FileManager.default.removeItem(at: plist)
+            return true
+        } catch {
+            return false
+        }
+    }
+
     private static func bootstrapAndKickstart(
         uid: uid_t,
         plistPath: String,

@@ -96,6 +96,7 @@ final class DorydServiceTests: XCTestCase {
         }
         wait(for: [statusReply], timeout: 5)
         XCTAssertEqual(status["mode"] as? String, "always-on")
+        XCTAssertEqual(status["engine_desired_state"] as? String, "running")
         XCTAssertEqual(status["auto_idle_enabled"] as? Bool, false)
         XCTAssertEqual(status["sleep_after_minutes"] as? Int, 15)
         XCTAssertEqual((status["blockers"] as? [NSDictionary])?.count, 2)
@@ -174,7 +175,12 @@ final class DorydServiceTests: XCTestCase {
             home: home,
             forwardSocketPath: home + "/forward.sock"
         ))
-        let service = DorydService(socketPath: tier.socketPath, dockerTier: tier)
+        let idlePolicyStore = IdlePolicyStore(home: home, environment: [:])
+        let service = DorydService(
+            socketPath: tier.socketPath,
+            dockerTier: tier,
+            idlePolicyStore: idlePolicyStore
+        )
         let listener = makeAnonymousListener(service: service)
         listener.resume()
         defer {
@@ -199,6 +205,7 @@ final class DorydServiceTests: XCTestCase {
         }
         wait(for: [start], timeout: 5)
         XCTAssertTrue(startOK, startMessage)
+        XCTAssertEqual(idlePolicyStore.currentEngineDesiredState(), "running")
 
         let status = expectation(description: "engineStatus reply")
         var state = ""
@@ -218,6 +225,7 @@ final class DorydServiceTests: XCTestCase {
         wait(for: [stop], timeout: 5)
         XCTAssertTrue(stopOK)
         XCTAssertEqual(tier.status().state, .stopped)
+        XCTAssertEqual(idlePolicyStore.currentEngineDesiredState(), "sleeping")
 
         let wake = expectation(description: "engineWake after stop reply")
         var wakeOK = false
@@ -230,6 +238,7 @@ final class DorydServiceTests: XCTestCase {
         wait(for: [wake], timeout: 5)
         XCTAssertTrue(wakeOK, wakeMessage)
         XCTAssertEqual(tier.status().state, .running)
+        XCTAssertEqual(idlePolicyStore.currentEngineDesiredState(), "running")
     }
 
     func testKeepAwakeModePromotesSleepingEngineBeforeReportingApplied() throws {

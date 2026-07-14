@@ -188,6 +188,53 @@ final class DockerTierTests: XCTestCase {
         XCTAssertFalse(idle.snapshot.sleeping)
     }
 
+    func testLifecycleObserverTracksSleepAndColdWake() async throws {
+        let base = "/tmp/dory-tier-intent-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+
+        let states = LockedTierStates()
+        let tier = DockerTier(
+            configuration: DockerTierConfiguration(
+                home: base + "/home",
+                forwardSocketPath: base + "/forward.sock",
+                activitySocketPath: base + "/activity.sock",
+                hvProcess: HvProcessConfiguration(executablePath: "/bin/sleep", arguments: ["30"])
+            ),
+            idleController: IdleController(),
+            containerActivityProbe: { _ in .empty },
+            dockerReadyWaiter: { _, _, _ in true }
+        )
+        tier.setLifecycleStateObserver { states.append($0) }
+        defer { tier.shutdown() }
+
+        try tier.start()
+        XCTAssertTrue(tier.sleepForIdle(idleAfter: 0))
+        await tier.ensureAwake()
+
+        XCTAssertEqual(states.value, [.running, .sleeping, .running])
+        XCTAssertEqual(tier.status().state, .running)
+    }
+
+    func testTerminalDaemonShutdownDoesNotReplaceRunningIntentWithStopped() throws {
+        let base = "/tmp/dory-tier-shutdown-intent-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+
+        let states = LockedTierStates()
+        let tier = DockerTier(configuration: DockerTierConfiguration(
+            home: base + "/home",
+            forwardSocketPath: base + "/forward.sock"
+        ))
+        tier.setLifecycleStateObserver { states.append($0) }
+
+        try tier.start()
+        tier.shutdown()
+
+        XCTAssertEqual(states.value, [.running])
+        XCTAssertEqual(tier.status().state, .stopped)
+    }
+
     func testStartFromSleepingThrowsWhenWakeDoesNotReachDocker() throws {
         let base = "/tmp/dory-tier-wake-fails-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
@@ -1378,6 +1425,23 @@ private final class LockedInt: @unchecked Sendable {
         let value = stored
         lock.unlock()
         return value
+    }
+}
+
+private final class LockedTierStates: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: [DockerTierState] = []
+
+    var value: [DockerTierState] {
+        lock.lock()
+        defer { lock.unlock() }
+        return stored
+    }
+
+    func append(_ state: DockerTierState) {
+        lock.lock()
+        stored.append(state)
+        lock.unlock()
     }
 }
 

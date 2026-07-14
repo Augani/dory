@@ -158,6 +158,7 @@ public final class DockerTier: @unchecked Sendable {
     private var lifecycleEpoch: UInt64 = 0
     private var restartWorkItem: DispatchWorkItem?
     private var terminalShutdown = false
+    private var lifecycleStateObserver: @Sendable (DockerTierState) -> Void = { _ in }
 
     public init(
         configuration: DockerTierConfiguration,
@@ -209,6 +210,16 @@ public final class DockerTier: @unchecked Sendable {
             self.portPublisher = nil
         }
         cleanupStaleHelpers()
+    }
+
+    /// Called in lifecycle order while the tier lock is held. The observer must not call back into
+    /// DockerTier; doryd uses it only to persist the confirmed running/sleeping intent.
+    public func setLifecycleStateObserver(
+        _ observer: @escaping @Sendable (DockerTierState) -> Void
+    ) {
+        lock.lock()
+        lifecycleStateObserver = observer
+        lock.unlock()
     }
 
     public var socketPath: String {
@@ -467,6 +478,7 @@ public final class DockerTier: @unchecked Sendable {
             state = .running
             lastError = nil
             idleController?.setSleeping(false)
+            lifecycleStateObserver(.running)
             lock.unlock()
             startedResources = nil
         } catch {
@@ -535,7 +547,7 @@ public final class DockerTier: @unchecked Sendable {
     public func stop() {
         idleController?.beginControlOperation()
         defer { idleController?.endControlOperation() }
-        tearDown(markStopped: true)
+        tearDown(markStopped: true, publishStoppedIntent: true)
     }
 
     /// Permanently close this tier for daemon process shutdown.
@@ -668,6 +680,7 @@ public final class DockerTier: @unchecked Sendable {
             lastError = nil
             agentControl?.disconnect()
             currentHelper.stop()
+            lifecycleStateObserver(.sleeping)
             lock.unlock()
             return true
         case .active, .unknown:
@@ -680,6 +693,7 @@ public final class DockerTier: @unchecked Sendable {
                 return false
             }
             lastError = nil
+            lifecycleStateObserver(.sleeping)
             lock.unlock()
             return true
         }
@@ -979,6 +993,7 @@ public final class DockerTier: @unchecked Sendable {
                 helperStartedAt = Date()
                 lastError = nil
                 wakeTask = nil
+                lifecycleStateObserver(.running)
                 lock.unlock()
                 idleController?.setSleeping(false)
                 idleController?.touch()
@@ -1058,6 +1073,7 @@ public final class DockerTier: @unchecked Sendable {
                 helperStartedAt = Date()
                 lastError = nil
                 wakeTask = nil
+                lifecycleStateObserver(.running)
                 lock.unlock()
                 idleController?.setSleeping(false)
                 idleController?.touch()
@@ -1389,7 +1405,11 @@ public final class DockerTier: @unchecked Sendable {
         }
     }
 
-    private func tearDown(markStopped: Bool, extraHelper: (any DockerManagedProcess)? = nil) {
+    private func tearDown(
+        markStopped: Bool,
+        publishStoppedIntent: Bool = false,
+        extraHelper: (any DockerManagedProcess)? = nil
+    ) {
         let currentDataplane: DoryDataplaneHandle?
         let currentHelper: (any DockerManagedProcess)?
         let currentActivityServer: DataplaneActivityServer?
@@ -1414,6 +1434,9 @@ public final class DockerTier: @unchecked Sendable {
             unexpectedRestartCount = 0
             lastError = nil
             idleController?.setSleeping(false)
+            if publishStoppedIntent, !terminalShutdown {
+                lifecycleStateObserver(.stopped)
+            }
         }
 
         // Cancel any in-flight wake so it stops resuming; it also re-checks state under
