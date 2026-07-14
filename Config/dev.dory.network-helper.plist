@@ -19,6 +19,6 @@
     <key>ProcessType</key>
     <string>Interactive</string>
     <key>RunAtLoad</key>
-    <false/>
+    <true/>
 </dict>
 </plist>

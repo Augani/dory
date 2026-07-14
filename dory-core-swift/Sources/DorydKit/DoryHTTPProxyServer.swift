@@ -19,6 +19,7 @@ public final class DoryHTTPProxyServer: @unchecked Sendable {
     private let bindAddress: String
     private let requestedPort: UInt16
     private let router: DomainRouter
+    private let connectionBudget: DoryConnectionBudget
     private let lock = NSLock()
     private var routes: [DomainRoute]
     private var fd: Int32 = -1
@@ -28,12 +29,14 @@ public final class DoryHTTPProxyServer: @unchecked Sendable {
         bindAddress: String = "127.0.0.1",
         port: UInt16,
         router: DomainRouter = DomainRouter(),
-        routes: [DomainRoute] = []
+        routes: [DomainRoute] = [],
+        maximumConnections: Int = 256
     ) {
         self.bindAddress = bindAddress
         self.requestedPort = port
         self.router = router
         self.routes = routes
+        self.connectionBudget = DoryConnectionBudget(limit: maximumConnections)
     }
 
     public var port: UInt16 {
@@ -46,6 +49,10 @@ public final class DoryHTTPProxyServer: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return fd >= 0
+    }
+
+    var activeConnectionCount: Int {
+        connectionBudget.activeCount
     }
 
     public func updateRoutes(_ routes: [DomainRoute]) {
@@ -146,17 +153,34 @@ public final class DoryHTTPProxyServer: @unchecked Sendable {
                     return
                 }
             }
+            guard let lease = connectionBudget.tryAcquire() else {
+                shutdown(client, SHUT_RDWR)
+                close(client)
+                continue
+            }
             // Bound the header read so a client that connects and never speaks cannot
             // pin a handler thread forever.
             var headerTimeout = timeval(tv_sec: 15, tv_usec: 0)
             setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &headerTimeout, socklen_t(MemoryLayout<timeval>.size))
-            Thread.detachNewThread { [weak self] in
-                self?.handle(client)
+            Thread.detachNewThread { [weak self, lease] in
+                guard let self else {
+                    shutdown(client, SHUT_RDWR)
+                    close(client)
+                    lease.release()
+                    return
+                }
+                self.handle(client, lease: lease)
             }
         }
     }
 
-    private func handle(_ client: Int32) {
+    private func handle(_ client: Int32, lease: DoryConnectionLease) {
+        var relayOwnsLease = false
+        defer {
+            if !relayOwnsLease {
+                lease.release()
+            }
+        }
         var buffer = Data()
         var bytes = [UInt8](repeating: 0, count: 16 * 1024)
         for _ in 0..<64 {
@@ -184,10 +208,14 @@ public final class DoryHTTPProxyServer: @unchecked Sendable {
         }
         // Relays get a generous idle timeout on both ends so a wedged connection is
         // eventually reclaimed instead of leaking a pump thread and its fds forever.
-        var relayTimeout = timeval(tv_sec: 300, tv_usec: 0)
-        setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &relayTimeout, socklen_t(MemoryLayout<timeval>.size))
-        setsockopt(upstream, SOL_SOCKET, SO_RCVTIMEO, &relayTimeout, socklen_t(MemoryLayout<timeval>.size))
-        DoryTCP.bidirectionalCopy(client: client, upstream: upstream)
+        DoryTCP.configureRelayTimeout(client)
+        DoryTCP.configureRelayTimeout(upstream)
+        DoryTCP.bidirectionalCopy(
+            client: client,
+            upstream: upstream,
+            onClose: { lease.release() }
+        )
+        relayOwnsLease = true
     }
 
     private func route(for host: String) -> DomainRoute? {
@@ -277,6 +305,12 @@ private func httpProxyIPv4SocketAddress(bindAddress: String, port: UInt16) throw
 }
 
 enum DoryTCP {
+    static func configureRelayTimeout(_ fd: Int32, seconds: Int = 300) {
+        var timeout = timeval(tv_sec: seconds, tv_usec: 0)
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+    }
+
     static func connect(host: String, port: UInt16, timeout: TimeInterval = 10) -> Int32? {
         let fd = socket(AF_INET, SOCK_STREAM, 0)
         guard fd >= 0 else { return nil }
@@ -339,12 +373,14 @@ enum DoryTCP {
         private let lock = NSLock()
         private let client: Int32
         private let upstream: Int32
+        private let onClose: @Sendable () -> Void
         private var finished = 0
         private var closed = false
 
-        init(client: Int32, upstream: Int32) {
+        init(client: Int32, upstream: Int32, onClose: @escaping @Sendable () -> Void) {
             self.client = client
             self.upstream = upstream
+            self.onClose = onClose
         }
 
         func clientPumpFinished() {
@@ -360,18 +396,26 @@ enum DoryTCP {
 
         private func settle() {
             lock.lock()
-            defer { lock.unlock() }
             finished += 1
-            if finished >= 2, !closed {
+            let shouldClose = finished >= 2 && !closed
+            if shouldClose {
                 closed = true
+            }
+            lock.unlock()
+            if shouldClose {
                 close(client)
                 close(upstream)
+                onClose()
             }
         }
     }
 
-    static func bidirectionalCopy(client: Int32, upstream: Int32) {
-        let connection = ProxyConnection(client: client, upstream: upstream)
+    static func bidirectionalCopy(
+        client: Int32,
+        upstream: Int32,
+        onClose: @escaping @Sendable () -> Void = {}
+    ) {
+        let connection = ProxyConnection(client: client, upstream: upstream, onClose: onClose)
         func pump(_ from: Int32, _ to: Int32, onFinish: @escaping @Sendable () -> Void) {
             Thread.detachNewThread {
                 var buffer = [UInt8](repeating: 0, count: 32 * 1024)
@@ -397,5 +441,61 @@ enum DoryTCP {
         }
         pump(client, upstream, onFinish: { connection.clientPumpFinished() })
         pump(upstream, client, onFinish: { connection.upstreamPumpFinished() })
+    }
+}
+
+final class DoryConnectionBudget: @unchecked Sendable {
+    private let limit: Int
+    private let lock = NSLock()
+    private var count = 0
+
+    init(limit: Int) {
+        self.limit = max(1, limit)
+    }
+
+    var activeCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return count
+    }
+
+    func tryAcquire() -> DoryConnectionLease? {
+        lock.lock()
+        guard count < limit else {
+            lock.unlock()
+            return nil
+        }
+        count += 1
+        lock.unlock()
+        return DoryConnectionLease(budget: self)
+    }
+
+    fileprivate func release() {
+        lock.lock()
+        count = max(0, count - 1)
+        lock.unlock()
+    }
+}
+
+final class DoryConnectionLease: @unchecked Sendable {
+    private let lock = NSLock()
+    private weak var budget: DoryConnectionBudget?
+    private var released = false
+
+    fileprivate init(budget: DoryConnectionBudget) {
+        self.budget = budget
+    }
+
+    func release() {
+        lock.lock()
+        let shouldRelease = !released
+        released = true
+        let budget = shouldRelease ? budget : nil
+        lock.unlock()
+        budget?.release()
+    }
+
+    deinit {
+        release()
     }
 }

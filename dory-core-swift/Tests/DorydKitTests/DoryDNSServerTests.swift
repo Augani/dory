@@ -30,6 +30,19 @@ final class DoryDNSServerTests: XCTestCase {
         XCTAssertTrue(response.answers.isEmpty)
     }
 
+    func testKnownHostAAAAIsNoErrorWithoutAnIPv4ShapedAnswer() throws {
+        let server = DoryDNSServer(port: 0, routes: [
+            DomainRoute(hostname: "web.dory.local", address: "127.0.0.42"),
+        ])
+        try server.start()
+        defer { server.stop() }
+
+        let response = try queryDNS(hostname: "web.dory.local", qtype: 28, port: server.port)
+
+        XCTAssertEqual(response.rcode, 0)
+        XCTAssertTrue(response.answers.isEmpty)
+    }
+
     func testRoutesCanBeReplacedWhileRunning() throws {
         let server = DoryDNSServer(port: 0)
         try server.start()
@@ -54,7 +67,7 @@ private enum DNSTestError: Error {
     case malformedResponse
 }
 
-private func queryDNS(hostname: String, port: UInt16) throws -> DNSParsedResponse {
+private func queryDNS(hostname: String, qtype: UInt16 = 1, port: UInt16) throws -> DNSParsedResponse {
     let fd = socket(AF_INET, SOCK_DGRAM, 0)
     guard fd >= 0 else { throw DNSTestError.syscall("socket", errno) }
     defer { close(fd) }
@@ -62,7 +75,7 @@ private func queryDNS(hostname: String, port: UInt16) throws -> DNSParsedRespons
     var timeout = timeval(tv_sec: 2, tv_usec: 0)
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
 
-    let packet = dnsQuery(hostname: hostname)
+    let packet = dnsQuery(hostname: hostname, qtype: qtype)
     var address = sockaddr_in()
     address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
     address.sin_family = sa_family_t(AF_INET)
@@ -89,7 +102,7 @@ private func queryDNS(hostname: String, port: UInt16) throws -> DNSParsedRespons
     return try parseDNSResponse(Array(buffer.prefix(got)))
 }
 
-private func dnsQuery(hostname: String) -> [UInt8] {
+private func dnsQuery(hostname: String, qtype: UInt16) -> [UInt8] {
     var out: [UInt8] = []
     appendUInt16(0x1234, to: &out)
     appendUInt16(0x0100, to: &out)
@@ -102,7 +115,7 @@ private func dnsQuery(hostname: String) -> [UInt8] {
         out.append(contentsOf: label.utf8)
     }
     out.append(0)
-    appendUInt16(1, to: &out)
+    appendUInt16(qtype, to: &out)
     appendUInt16(1, to: &out)
     return out
 }

@@ -177,8 +177,15 @@ public final class DoryDNSServer: @unchecked Sendable {
         lock.lock()
         let currentRoutes = routes
         lock.unlock()
-        let address = router.resolve(query.hostname, in: currentRoutes).flatMap(IPv4Address.init)
-        return DNSResponse(query: query, address: query.qtype == 1 ? address : nil).bytes
+        let routeAddress = router.resolve(query.hostname, in: currentRoutes).flatMap(IPv4Address.init)
+        let responseCode: UInt16
+        if query.qclass != 1 {
+            responseCode = 5
+        } else {
+            responseCode = routeAddress == nil ? 3 : 0
+        }
+        let answer = query.qclass == 1 && query.qtype == 1 ? routeAddress : nil
+        return DNSResponse(query: query, address: answer, responseCode: responseCode).bytes
     }
 
     deinit {
@@ -192,12 +199,17 @@ private struct DNSQuery {
     var question: [UInt8]
     var hostname: String
     var qtype: UInt16
+    var qclass: UInt16
 
     init?(_ packet: [UInt8]) {
         guard packet.count >= 12 else { return nil }
         id = readUInt16(packet, 0)
         flags = readUInt16(packet, 2)
-        guard readUInt16(packet, 4) > 0 else { return nil }
+        guard flags & 0x8000 == 0,
+              flags & 0x7800 == 0,
+              readUInt16(packet, 4) == 1 else {
+            return nil
+        }
 
         var offset = 12
         var labels: [String] = []
@@ -211,6 +223,7 @@ private struct DNSQuery {
         }
         guard offset + 4 <= packet.count else { return nil }
         qtype = readUInt16(packet, offset)
+        qclass = readUInt16(packet, offset + 2)
         question = Array(packet[12..<offset + 4])
         hostname = labels.joined(separator: ".")
     }
@@ -219,14 +232,14 @@ private struct DNSQuery {
 private struct DNSResponse {
     var query: DNSQuery
     var address: IPv4Address?
+    var responseCode: UInt16
 
     var bytes: [UInt8] {
-        let found = address != nil
         var out: [UInt8] = []
         appendUInt16(query.id, to: &out)
-        appendUInt16(0x8000 | (query.flags & 0x0100) | 0x0080 | (found ? 0 : 3), to: &out)
+        appendUInt16(0x8000 | (query.flags & 0x0100) | 0x0080 | responseCode, to: &out)
         appendUInt16(1, to: &out)
-        appendUInt16(found ? 1 : 0, to: &out)
+        appendUInt16(address == nil ? 0 : 1, to: &out)
         appendUInt16(0, to: &out)
         appendUInt16(0, to: &out)
         out.append(contentsOf: query.question)

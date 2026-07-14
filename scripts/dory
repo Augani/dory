@@ -102,6 +102,8 @@ dory — Dory CLI
                                Print doryd's resolver, pf, TLS, and low-port authorization plan
   dory network authorize [--json] [--dry-run|--apply]
                                Dry-run or apply doryd's local-domain and privileged-port plan
+  dory network deauthorize [--json] [--dry-run|--apply]
+                               Dry-run or remove Dory-owned system networking integration
   dory network --lan-visible on|off
                                Publish ports to the local network, or restrict to localhost
   dory mount [--json]           Validate bind mount read/write and host-edit visibility
@@ -1208,10 +1210,11 @@ network_authorization_usage() {
 usage:
   dory network authorization-plan [--json]
   dory network authorize [--json] [--dry-run|--apply] [--plan-json PATH] [--file-system-root PATH]
+  dory network deauthorize [--json] [--dry-run|--apply] [--plan-json PATH] [--file-system-root PATH]
 
-`authorize` defaults to --dry-run. Use --apply only when you intend to write /etc/resolver,
-install Dory's pf anchor, enable pf, and trust the local CA. Applying requires admin privileges;
-use the Settings button for the guided macOS prompt, or run from an already-root shell.
+Both mutations default to --dry-run. Authorize --apply installs Dory's resolver, owned pf
+reference, and local CA trust. Deauthorize --apply removes that exact owned integration.
+Applying requires admin privileges; use Settings for the guided macOS prompt, or run from root.
 EOF
 }
 
@@ -1233,14 +1236,15 @@ for request in plan.get("requests") or []:
 }
 
 network_authorize_json() {
-  local plan_path="$1" dry_run="$2" results_path="$3"
-  python3 - "$plan_path" "$dry_run" "$results_path" <<'PY'
+  local plan_path="$1" dry_run="$2" results_path="$3" operation="$4"
+  python3 - "$plan_path" "$dry_run" "$results_path" "$operation" <<'PY'
 import json
 import sys
 
 plan_path = sys.argv[1]
 dry_run = sys.argv[2] == "1"
 results_path = sys.argv[3]
+operation = sys.argv[4]
 plan = json.load(open(plan_path, encoding="utf-8"))
 results = json.load(open(results_path, encoding="utf-8"))
 print(json.dumps({
@@ -1248,6 +1252,7 @@ print(json.dumps({
     "version": 1,
     "dryRun": dry_run,
     "applied": not dry_run,
+    "operation": operation,
     "suffix": plan.get("suffix"),
     "degradedMode": plan.get("degradedMode"),
     "authorizedMode": plan.get("authorizedMode"),
@@ -1258,18 +1263,19 @@ PY
 }
 
 network_authorize_text() {
-  local plan_path="$1" dry_run="$2" results_path="$3"
-  python3 - "$plan_path" "$dry_run" "$results_path" <<'PY'
+  local plan_path="$1" dry_run="$2" results_path="$3" operation="$4"
+  python3 - "$plan_path" "$dry_run" "$results_path" "$operation" <<'PY'
 import json
 import sys
 
 plan_path = sys.argv[1]
 dry_run = sys.argv[2] == "1"
 results_path = sys.argv[3]
+operation = sys.argv[4]
 plan = json.load(open(plan_path, encoding="utf-8"))
 results = json.load(open(results_path, encoding="utf-8"))
 mode = "dry-run" if dry_run else "applied"
-print(f"Dory networking authorization {mode} for {plan.get('suffix', 'unknown')}:")
+print(f"Dory networking {operation} {mode} for {plan.get('suffix', 'unknown')}:")
 for item in results:
     print(f"  - {item.get('action', '?')} {item.get('target', '?')}")
 forwards = plan.get("privilegedTCPForwards") or []
@@ -1301,6 +1307,8 @@ network_authorization_plan_cmd() {
 }
 
 network_authorize_cmd() {
+  local operation="${1:?network authorization operation required}"
+  shift
   local json=0 dry_run=1 apply=0 plan_path="" fs_root="" helper ctl tmp="" results_tmp="" out rc args=()
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -1324,12 +1332,13 @@ network_authorize_cmd() {
 
   if [ "$apply" -eq 1 ] && [ "$(id -u)" -ne 0 ]; then
     [ -z "$tmp" ] || rm -f "$tmp"
-    echo "dory network authorize --apply needs admin privileges. Use Dory Settings > Network > Authorize, or rerun from an already-root shell." >&2
+    echo "dory network $operation --apply needs admin privileges. Use Dory Settings > Network, or rerun from root." >&2
     exit 1
   fi
 
   args=(--plan-json "$plan_path")
   [ "$dry_run" -eq 1 ] && args+=(--dry-run)
+  [ "$operation" = "deauthorize" ] && args+=(--remove)
   [ -n "$fs_root" ] && args+=(--file-system-root "$fs_root")
   set +e
   out="$("$helper" "${args[@]}" 2>&1)"
@@ -1343,9 +1352,9 @@ network_authorize_cmd() {
   results_tmp="$(mktemp -t dory-network-results.XXXXXX.json)"
   printf '%s\n' "$out" > "$results_tmp"
   if [ "$json" -eq 1 ]; then
-    network_authorize_json "$plan_path" "$dry_run" "$results_tmp"
+    network_authorize_json "$plan_path" "$dry_run" "$results_tmp" "$operation"
   else
-    network_authorize_text "$plan_path" "$dry_run" "$results_tmp"
+    network_authorize_text "$plan_path" "$dry_run" "$results_tmp" "$operation"
   fi
   rm -f "$results_tmp"
   [ -z "$tmp" ] || rm -f "$tmp"
@@ -1354,7 +1363,8 @@ network_authorize_cmd() {
 network_cmd() {
   case "${1:-}" in
     authorization-plan|auth-plan) shift || true; network_authorization_plan_cmd "$@" ;;
-    authorize) shift || true; network_authorize_cmd "$@" ;;
+    authorize) shift || true; network_authorize_cmd authorize "$@" ;;
+    deauthorize) shift || true; network_authorize_cmd deauthorize "$@" ;;
     -h|--help) doctor_cmd network --help ;;
     *) doctor_cmd network "$@" ;;
   esac

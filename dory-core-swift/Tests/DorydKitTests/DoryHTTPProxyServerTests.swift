@@ -3,6 +3,25 @@ import Darwin
 import XCTest
 
 final class DoryHTTPProxyServerTests: XCTestCase {
+    func testConnectionBudgetRejectsOverflowAndReleasesExactlyOnce() throws {
+        let budget = DoryConnectionBudget(limit: 2)
+        let first = try XCTUnwrap(budget.tryAcquire())
+        let second = try XCTUnwrap(budget.tryAcquire())
+
+        XCTAssertEqual(budget.activeCount, 2)
+        XCTAssertNil(budget.tryAcquire())
+
+        first.release()
+        first.release()
+        XCTAssertEqual(budget.activeCount, 1)
+
+        let replacement = try XCTUnwrap(budget.tryAcquire())
+        XCTAssertEqual(budget.activeCount, 2)
+        second.release()
+        replacement.release()
+        XCTAssertEqual(budget.activeCount, 0)
+    }
+
     func testProxiesHostHeaderToMatchingRoute() throws {
         let backend = TinyHTTPBackend(responseBody: "hello from backend")
         try backend.start()

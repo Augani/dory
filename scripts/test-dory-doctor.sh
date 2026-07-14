@@ -502,12 +502,14 @@ chmod +x "$TMP_HOME/fake-dorydctl"
 cat > "$TMP_HOME/fake-dory-network-helper" <<'SH'
 #!/bin/sh
 dry=0
+remove=0
 plan=""
 root="/"
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --plan-json) plan="$2"; shift 2 ;;
     --dry-run) dry=1; shift ;;
+    --remove) remove=1; shift ;;
     --file-system-root) root="$2"; shift 2 ;;
     *) echo "unexpected helper args: $*" >&2; exit 64 ;;
   esac
@@ -515,7 +517,11 @@ done
 test "$dry" = "1" || { echo "expected --dry-run" >&2; exit 64; }
 test "$root" != "/" || { echo "expected test file-system root" >&2; exit 64; }
 test -s "$plan" || { echo "missing plan" >&2; exit 64; }
-printf '[{"id":"resolver.dory.local","kind":"resolverFile","action":"write-file","target":"/etc/resolver/dory.local","dryRun":true},{"id":"pf.dev.dory.enable","kind":"pfEnable","action":"run-command","target":"/sbin/pfctl -a com.apple/dev.dory -f /etc/pf.anchors/dev.dory","dryRun":true}]\n'
+if [ "$remove" = "1" ]; then
+  printf '[{"id":"pf.dev.dory.enable","kind":"pfEnable","action":"release-pf-reference","target":"com.apple/dev.dory","dryRun":true},{"id":"resolver.dory.local","kind":"resolverFile","action":"remove-file","target":"/etc/resolver/dory.local","dryRun":true}]\n'
+else
+  printf '[{"id":"resolver.dory.local","kind":"resolverFile","action":"write-file","target":"/etc/resolver/dory.local","dryRun":true},{"id":"pf.dev.dory.enable","kind":"pfEnable","action":"run-command","target":"/sbin/pfctl -a com.apple/dev.dory -f /etc/pf.anchors/dev.dory","dryRun":true}]\n'
+fi
 SH
 chmod +x "$TMP_HOME/fake-dory-network-helper"
 
@@ -541,9 +547,19 @@ data = json.load(sys.stdin)
 assert data["schema"] == "dev.dory.network.authorization"
 assert data["dryRun"] is True
 assert data["applied"] is False
+assert data["operation"] == "authorize"
 assert data["suffix"] == "dory.local"
 assert data["privilegedTCPForwards"][0]["targetPort"] == 60025
 assert {item["id"] for item in data["results"]} == {"resolver.dory.local", "pf.dev.dory.enable"}
+'
+DORYDCTL_BIN="$TMP_HOME/fake-dorydctl" DORY_NETWORK_HELPER_BIN="$TMP_HOME/fake-dory-network-helper" \
+  scripts/dory network deauthorize --json --dry-run --file-system-root "$TMP_HOME/network-root" | python3 -c '
+import json, sys
+data = json.load(sys.stdin)
+assert data["operation"] == "deauthorize"
+assert data["dryRun"] is True
+assert data["applied"] is False
+assert {item["action"] for item in data["results"]} == {"release-pf-reference", "remove-file"}
 '
 DORYDCTL_BIN="$TMP_HOME/fake-dorydctl" scripts/dory machine exec dev --json -- /bin/echo ok | python3 -c '
 import json, sys

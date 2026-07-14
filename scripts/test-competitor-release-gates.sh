@@ -1061,10 +1061,12 @@ assert not any(line.strip().startswith("search ") for line in payload.splitlines
     "doryd resolver plan contaminates the system-wide search list"
 
 shell = Path("scripts/enable-networking.sh").read_text()
-start = shell.index('sudo tee "/etc/resolver/$SUFFIX"')
-payload = shell[start:].split("<<EOF", 1)[1].split("\nEOF", 1)[0]
-assert not any(line.strip().startswith("search ") for line in payload.splitlines()), \
-    "legacy resolver installer contaminates the system-wide search list"
+assert 'sudo tee "/etc/resolver/' not in shell, \
+    "network setup retains an unvalidated resolver-file fallback"
+assert "sudo pfctl -E" not in shell, \
+    "network setup can still leak an untracked PF enable reference"
+assert "--remove" in shell and "dory-network-helper" in shell, \
+    "network setup removal bypasses the authoritative ownership-aware helper"
 PY
 
 # Destructive/disruptive paths must fail during argument validation, before sockets, pmset, Docker,

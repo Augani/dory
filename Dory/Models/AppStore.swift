@@ -1651,8 +1651,16 @@ final class AppStore {
     }
 
     func authorizeLocalNetworking() async {
+        await setLocalNetworkingAuthorization(removing: false)
+    }
+
+    func deauthorizeLocalNetworking() async {
+        await setLocalNetworkingAuthorization(removing: true)
+    }
+
+    private func setLocalNetworkingAuthorization(removing: Bool) async {
         guard runtimeOwnedByDoryd else {
-            networkingAuthorizationMessage = "Start Dory's daemon-managed engine before authorizing local domains."
+            networkingAuthorizationMessage = "Start Dory's daemon-managed engine before changing local-domain authorization."
             return
         }
         guard !networkingAuthorizationInFlight else { return }
@@ -1660,8 +1668,6 @@ final class AppStore {
         networkingAuthorizationMessage = nil
         defer { networkingAuthorizationInFlight = false }
 
-        let planURL = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("dory-networking-\(UUID().uuidString).json")
         do {
             try Self.ensurePrivilegedNetworkDaemon()
             guard let helper = Self.bundledHelper("dory-network-helper") else {
@@ -1670,12 +1676,20 @@ final class AppStore {
             let plan = try await dorydClient.networkAuthorizationPlan()
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            try encoder.encode(plan).write(to: planURL, options: .atomic)
-            let command = "\(Self.shellQuote(helper)) --plan-json \(Self.shellQuote(planURL.path))"
+            let encodedPlan = try encoder.encode(plan).base64EncodedString()
+            let operation = removing ? " --remove" : ""
+            // Feed the immutable plan through the privileged command's standard input. A
+            // user-writable temporary file would leave a race between the admin prompt and the
+            // root helper opening the plan.
+            let command = "/usr/bin/printf %s \(Self.shellQuote(encodedPlan)) | /usr/bin/base64 -D | \(Self.shellQuote(helper)) --plan-json -\(operation)"
             let script = "do shell script \(Self.appleScriptString(command)) with administrator privileges"
             let result = await Shell.runAsyncResult("/usr/bin/osascript", ["-e", script])
             if result.exit == 0 {
-                networkingAuthorizationMessage = "Dory networking is authorized for \(plan.suffix). \(Self.networkingAuthorizationSummary(plan))"
+                if removing {
+                    networkingAuthorizationMessage = "Dory-owned resolver, PF reference, and local CA trust were removed for \(plan.suffix)."
+                } else {
+                    networkingAuthorizationMessage = "Dory networking is authorized for \(plan.suffix). \(Self.networkingAuthorizationSummary(plan))"
+                }
             } else {
                 let output = result.output.trimmingCharacters(in: .whitespacesAndNewlines)
                 networkingAuthorizationMessage = output.isEmpty ? "Local domain authorization was cancelled or failed." : output
@@ -1683,7 +1697,6 @@ final class AppStore {
         } catch {
             networkingAuthorizationMessage = "Local domain authorization failed: \(error.localizedDescription)"
         }
-        try? FileManager.default.removeItem(at: planURL)
     }
 
     nonisolated static func networkingAuthorizationSummary(_ plan: DorydNetworkingAuthorizationPlan) -> String {

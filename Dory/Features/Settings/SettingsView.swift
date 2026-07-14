@@ -1321,6 +1321,19 @@ struct SettingsView: View {
                     }
                     .buttonStyle(.plain)
                     .disabled(!store.dorydRuntimeActive || store.networkingAuthorizationInFlight)
+                    Button {
+                        Task { await store.deauthorizeLocalNetworking() }
+                    } label: {
+                        Text("Remove")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(p.text2)
+                            .padding(.horizontal, 13)
+                            .padding(.vertical, 7)
+                            .background(p.bg, in: RoundedRectangle(cornerRadius: 7))
+                            .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(p.border))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!store.dorydRuntimeActive || store.networkingAuthorizationInFlight)
                 }
                 if let message = store.networkingAuthorizationMessage, !message.isEmpty {
                     Text(message)

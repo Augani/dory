@@ -16,6 +16,13 @@ public final class SourcePreservingLANPrivilegedDaemon: NSObject, NSXPCListenerD
 
     public func run() -> Never {
         controller.clearStaleAnchor()
+        do {
+            try NetworkingAuthorizationApplier().restorePFIfAuthorized()
+        } catch {
+            FileHandle.standardError.write(
+                Data("dory-network-helper: authorized PF restore failed: \(error)\n".utf8)
+            )
+        }
         listener.resume()
         dispatchMain()
     }

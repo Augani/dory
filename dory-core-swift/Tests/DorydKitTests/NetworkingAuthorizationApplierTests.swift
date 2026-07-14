@@ -18,10 +18,12 @@ final class NetworkingAuthorizationApplierTests: XCTestCase {
             localCACertificatePath: nil
         ))
 
-        let results = try NetworkingAuthorizationApplier(
+        let applier = NetworkingAuthorizationApplier(
             fileSystemRoot: root,
             runCommand: recorder.run
-        ).apply(plan)
+        )
+        let results = try applier.apply(plan)
+        _ = try applier.apply(plan)
 
         let resolver = root + "/etc/resolver/dory.local"
         let anchor = root + "/etc/pf.anchors/dev.dory"
@@ -39,8 +41,27 @@ final class NetworkingAuthorizationApplierTests: XCTestCase {
         XCTAssertEqual(recorder.commands, [
             ["/sbin/pfctl", "-a", "com.apple/dev.dory", "-f", "/etc/pf.anchors/dev.dory"],
             ["/sbin/pfctl", "-E"],
+            ["/sbin/pfctl", "-a", "com.apple/dev.dory", "-f", "/etc/pf.anchors/dev.dory"],
         ])
         XCTAssertEqual(results.map(\.kind), [.resolverFile, .pfAnchor, .pfEnable])
+        XCTAssertEqual(
+            try String(contentsOfFile: root + "/var/run/dev.dory/system-pf-enable-token"),
+            "424242\n"
+        )
+
+        let removed = try applier.remove(plan)
+        XCTAssertEqual(removed.map(\.action), [
+            "release-pf-reference", "remove-file", "remove-file",
+        ])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: resolver))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: anchor))
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: root + "/var/run/dev.dory/system-pf-enable-token"
+        ))
+        XCTAssertEqual(recorder.commands.suffix(2), [
+            ["/sbin/pfctl", "-a", "com.apple/dev.dory", "-F", "all"],
+            ["/sbin/pfctl", "-X", "424242"],
+        ])
     }
 
     func testDryRunDoesNotWriteOrRunCommands() throws {
@@ -119,6 +140,60 @@ final class NetworkingAuthorizationApplierTests: XCTestCase {
             XCTAssertEqual(error as? NetworkingAuthorizationApplyError, .unsafeRequest("request-set"))
         }
     }
+
+    func testRejectsForeignManagedPathWithoutChangingIt() throws {
+        let root = temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let resolver = root + "/etc/resolver/dory.local"
+        try FileManager.default.createDirectory(
+            atPath: (resolver as NSString).deletingLastPathComponent,
+            withIntermediateDirectories: true
+        )
+        try Data("owned by another tool\n".utf8).write(to: URL(fileURLWithPath: resolver))
+        let plan = try NetworkingAuthorizationPlan.make(configuration: NetworkingConfiguration(
+            dnsPort: 15353,
+            localCACertificatePath: nil
+        ))
+
+        XCTAssertThrowsError(try NetworkingAuthorizationApplier(
+            fileSystemRoot: root,
+            runCommand: CommandRecorder().run
+        ).apply(plan)) { error in
+            XCTAssertEqual(
+                error as? NetworkingAuthorizationApplyError,
+                .unsafeRequest("/etc/resolver/dory.local")
+            )
+        }
+        XCTAssertEqual(try String(contentsOfFile: resolver), "owned by another tool\n")
+    }
+
+    func testRestoreReloadsOwnedAnchorAndReacquiresOnlyAMissingToken() throws {
+        let root = temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let recorder = CommandRecorder()
+        let plan = try NetworkingAuthorizationPlan.make(configuration: NetworkingConfiguration(
+            dnsPort: 15353,
+            localCACertificatePath: nil
+        ))
+        let applier = NetworkingAuthorizationApplier(
+            fileSystemRoot: root,
+            runCommand: recorder.run
+        )
+        _ = try applier.apply(plan)
+        try FileManager.default.removeItem(
+            atPath: root + "/var/run/dev.dory/system-pf-enable-token"
+        )
+
+        try applier.restorePFIfAuthorized()
+
+        XCTAssertEqual(
+            recorder.commands.filter { $0 == ["/sbin/pfctl", "-E"] }.count,
+            2
+        )
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: root + "/var/run/dev.dory/system-pf-enable-token"
+        ))
+    }
 }
 
 private final class CommandRecorder: @unchecked Sendable {
@@ -135,6 +210,9 @@ private final class CommandRecorder: @unchecked Sendable {
         lock.lock()
         storage.append(command)
         lock.unlock()
+        if command == ["/sbin/pfctl", "-E"] {
+            return "pf enabled\nToken : 424242\n"
+        }
         return ""
     }
 }

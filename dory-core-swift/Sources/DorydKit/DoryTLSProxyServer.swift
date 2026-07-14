@@ -21,10 +21,12 @@ public final class DoryTLSProxyServer: @unchecked Sendable {
     private let requestedPort: UInt16
     private let identity: SecIdentity
     private let router: DomainRouter
+    private let connectionBudget: DoryConnectionBudget
     private let lock = NSLock()
     private var routes: [DomainRoute]
     private var listener: NWListener?
     private var listenerState: TLSListenerState?
+    private var activeConnections: [ObjectIdentifier: ActiveTLSConnection] = [:]
     private var activePort: UInt16 = 0
     private let queue = DispatchQueue(label: "dev.dory.doryd.tls-proxy")
 
@@ -33,7 +35,8 @@ public final class DoryTLSProxyServer: @unchecked Sendable {
         p12Path: String,
         password: String,
         router: DomainRouter = DomainRouter(),
-        routes: [DomainRoute] = []
+        routes: [DomainRoute] = [],
+        maximumConnections: Int = 256
     ) throws {
         guard let identity = Self.loadIdentity(p12Path: p12Path, password: password) else {
             throw DoryTLSProxyServerError.identity(p12Path)
@@ -42,6 +45,7 @@ public final class DoryTLSProxyServer: @unchecked Sendable {
         self.identity = identity
         self.router = router
         self.routes = routes
+        self.connectionBudget = DoryConnectionBudget(limit: maximumConnections)
     }
 
     public var port: UInt16 {
@@ -54,6 +58,10 @@ public final class DoryTLSProxyServer: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return listener != nil
+    }
+
+    var activeConnectionCount: Int {
+        connectionBudget.activeCount
     }
 
     public func updateRoutes(_ routes: [DomainRoute]) {
@@ -131,29 +139,71 @@ public final class DoryTLSProxyServer: @unchecked Sendable {
         lock.lock()
         let current = listener
         let currentState = listenerState
+        let connections = Array(activeConnections.values)
         listener = nil
         listenerState = nil
+        activeConnections.removeAll()
         activePort = 0
         lock.unlock()
         current?.cancel()
+        for active in connections {
+            active.lease.release()
+            active.connection.cancel()
+        }
         if current != nil {
             _ = currentState?.waitUntilCancelled()
         }
     }
 
     private func accept(_ client: NWConnection) {
+        guard let lease = connectionBudget.tryAcquire() else {
+            client.cancel()
+            return
+        }
+        let identifier = ObjectIdentifier(client)
+        lock.lock()
+        guard listener != nil else {
+            lock.unlock()
+            lease.release()
+            client.cancel()
+            return
+        }
+        activeConnections[identifier] = ActiveTLSConnection(
+            connection: client,
+            lease: lease,
+            awaitingHeader: true
+        )
+        lock.unlock()
+        client.stateUpdateHandler = { [weak self] state in
+            switch state {
+            case .failed, .cancelled:
+                self?.finishConnection(identifier)
+            default:
+                break
+            }
+        }
         client.start(queue: queue)
-        readHead(client, buffer: Data())
+        queue.asyncAfter(deadline: .now() + 15) { [weak self] in
+            self?.cancelIfAwaitingHeader(identifier)
+        }
+        readHead(client, identifier: identifier, buffer: Data())
     }
 
-    private func readHead(_ client: NWConnection, buffer: Data) {
+    private func readHead(_ client: NWConnection, identifier: ObjectIdentifier, buffer: Data) {
         client.receive(minimumIncompleteLength: 1, maximumLength: 16 * 1024) { [weak self] data, _, isComplete, error in
-            guard let self else { return }
+            guard let self else {
+                client.cancel()
+                return
+            }
             var accumulated = buffer
             if let data {
                 accumulated.append(data)
             }
             if accumulated.range(of: Data([13, 10, 13, 10])) != nil {
+                guard self.markHeaderReceived(identifier) else {
+                    client.cancel()
+                    return
+                }
                 self.route(client, head: accumulated)
                 return
             }
@@ -161,8 +211,33 @@ public final class DoryTLSProxyServer: @unchecked Sendable {
                 client.cancel()
                 return
             }
-            self.readHead(client, buffer: accumulated)
+            self.readHead(client, identifier: identifier, buffer: accumulated)
         }
+    }
+
+    private func markHeaderReceived(_ identifier: ObjectIdentifier) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard var active = activeConnections[identifier] else { return false }
+        active.awaitingHeader = false
+        activeConnections[identifier] = active
+        return true
+    }
+
+    private func cancelIfAwaitingHeader(_ identifier: ObjectIdentifier) {
+        lock.lock()
+        let connection = activeConnections[identifier].flatMap {
+            $0.awaitingHeader ? $0.connection : nil
+        }
+        lock.unlock()
+        connection?.cancel()
+    }
+
+    private func finishConnection(_ identifier: ObjectIdentifier) {
+        lock.lock()
+        let active = activeConnections.removeValue(forKey: identifier)
+        lock.unlock()
+        active?.lease.release()
     }
 
     private func route(_ client: NWConnection, head: Data) {
@@ -175,6 +250,7 @@ public final class DoryTLSProxyServer: @unchecked Sendable {
             writeBadGateway(client, body: "Dory: backend unavailable\n")
             return
         }
+        DoryTCP.configureRelayTimeout(upstreamFD)
         // Own the fd before the first write so a failed write cannot leak it.
         let upstream = FDOwner(upstreamFD)
         guard (try? DoryTCP.writeAll(upstream.raw, request)) != nil else {
@@ -218,7 +294,10 @@ public final class DoryTLSProxyServer: @unchecked Sendable {
                 client.send(content: chunk, completion: .contentProcessed { _ in
                     sent.signal()
                 })
-                sent.wait()
+                if sent.wait(timeout: .now() + 300) == .timedOut {
+                    client.cancel()
+                    break
+                }
             }
             client.send(content: nil, completion: .contentProcessed { _ in
                 client.cancel()
@@ -295,6 +374,12 @@ public final class DoryTLSProxyServer: @unchecked Sendable {
     deinit {
         stop()
     }
+}
+
+private struct ActiveTLSConnection {
+    var connection: NWConnection
+    var lease: DoryConnectionLease
+    var awaitingHeader: Bool
 }
 
 private final class TLSListenerState: @unchecked Sendable {

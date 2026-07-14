@@ -12,12 +12,13 @@ if CommandLine.arguments.dropFirst().first == "--daemon" {
 struct HelperOptions {
     var planPath: String?
     var dryRun = false
+    var remove = false
     var fileSystemRoot = "/"
 }
 
 func usage() -> String {
     """
-    usage: dory-network-helper --plan-json <path|-> [--dry-run] [--file-system-root <path>]
+    usage: dory-network-helper --plan-json <path|-> [--dry-run] [--remove] [--file-system-root <path>]
     """
 }
 
@@ -34,6 +35,8 @@ func parseOptions(_ arguments: [String]) throws -> HelperOptions {
             index = arguments.index(after: index)
         case "--dry-run":
             options.dryRun = true
+        case "--remove":
+            options.remove = true
         case "--file-system-root":
             guard index < arguments.endIndex else { throw HelperError.usage }
             options.fileSystemRoot = arguments[index]
@@ -51,6 +54,7 @@ enum HelperError: Error, CustomStringConvertible {
     case missingPlanPath
     case planTooLarge
     case readTimeout
+    case unsafeFileSystemRoot
 
     var description: String {
         switch self {
@@ -62,6 +66,8 @@ enum HelperError: Error, CustomStringConvertible {
             return "plan exceeds maximum size of \(maxPlanBytes) bytes"
         case .readTimeout:
             return "timed out reading plan from standard input"
+        case .unsafeFileSystemRoot:
+            return "--file-system-root is available only with --dry-run"
         }
     }
 }
@@ -127,11 +133,15 @@ final class StandardInputReadBox: @unchecked Sendable {
 do {
     let options = try parseOptions(Array(CommandLine.arguments.dropFirst()))
     guard let planPath = options.planPath else { throw HelperError.missingPlanPath }
+    guard options.fileSystemRoot == "/" || options.dryRun else {
+        throw HelperError.unsafeFileSystemRoot
+    }
     let plan = try readPlan(path: planPath)
-    let results = try NetworkingAuthorizationApplier(
+    let applier = NetworkingAuthorizationApplier(
         fileSystemRoot: options.fileSystemRoot,
         dryRun: options.dryRun
-    ).apply(plan)
+    )
+    let results = try options.remove ? applier.remove(plan) : applier.apply(plan)
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
     FileHandle.standardOutput.write(try encoder.encode(results))
