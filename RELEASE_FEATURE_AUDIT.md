@@ -102,8 +102,16 @@ of scope so each fix remains reviewable.
 
 ## 3. Docker Engine API and object lifecycle
 
-- [ ] Containers: create/start/stop/kill/restart/pause/exec/logs/attach/wait/health/stats/remove and
+- [x] Containers: create/start/stop/kill/restart/pause/exec/logs/attach/wait/health/stats/remove and
   named Linux signal behavior are Docker-compatible and deadline bounded.
+  Local source evidence: doryd's Rust dataplane preserves every dockerd route, query, response, and
+  streaming boundary except the documented shared-VM create rewrite and bounded host-port start
+  preflight. An unavailable/malformed preflight inspection now blocks start instead of failing open,
+  while dockerd's own non-200 start errors remain authoritative. The 42-test dataplane suite covers
+  named signals, timeout/delete flags, wait/log/stats queries, attach/exec hijack half-close, create
+  bounds, keep-alive reuse, and preflight failure. The exact-candidate competitor gate now requires a
+  bounded create/start/pause/unpause/interactive-exec/logs/stats/restart/stop/kill/attach/wait/remove
+  campaign in addition to named-signal, healthcheck, churn, and backpressure proofs.
 - [ ] Images: pull/load/save/import/export/tag/inspect/history/remove/prune, multi-platform defaults,
   archive integrity, registry auth, interrupted upload, and default-storage accounting are sound.
 - [ ] Volumes: create/copy/inspect/list/remove/prune, labels/options, ownership, restart persistence,

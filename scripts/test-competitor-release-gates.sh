@@ -381,6 +381,17 @@ for start_preflight in dory-core/dataplane/src/classify.rs dory-core/dataplane/s
   grep -F 'ContainerStartPreflight' "$start_preflight" >/dev/null \
     || fail "$start_preflight allows Docker container starts to bypass macOS host-port preflight"
 done
+grep -F 'container_start_preflight_fails_closed_when_inspect_transport_fails' \
+  dory-core/dataplane/src/serve.rs >/dev/null \
+  || fail "container start preflight can fail open when dockerd inspection is unavailable"
+grep -F 'container_lifecycle_contract_preserves_routes_and_queries' \
+  dory-core/dataplane/src/classify.rs >/dev/null \
+  || fail "Docker container lifecycle routes no longer retain their byte-transparent contract"
+grep -F 'pass container-api-lifecycle' scripts/competitor-runtime-regression-gate.sh >/dev/null \
+  || fail "competitor runtime gate lost the bounded complete container lifecycle proof"
+grep -F 'container-api-lifecycle' scripts/qualify-release-candidate.sh \
+  scripts/verify-release-qualification.sh >/dev/null \
+  || fail "exact release qualification no longer requires the complete container lifecycle proof"
 grep -F 'os.O_CREAT | os.O_EXCL | os.O_RDONLY' scripts/bind-advisory-lock-probe.py >/dev/null \
   || fail "bind gate lost the exact mode-0000 exclusive-create reproduction"
 grep -F 'create_excl_readonly_mode0000_unlink=PASS' scripts/bind-advisory-lock-gate.sh \

@@ -1,4 +1,4 @@
-//! Route a docker request to one of three dispositions. Everything is passthrough now that the
+//! Route a Docker request to one of four dispositions. Everything is passthrough now that the
 //! backend is a real `dockerd`; the exceptions are the streaming/hijack endpoints (which must not be
 //! buffered — buffering `build`/`load` reintroduces the `/wait`-before-`/start` deadlock) and
 //! container create (which needs the compatibility rewrites).
@@ -86,6 +86,42 @@ mod tests {
             disp("POST /containers/name/start HTTP/1.1\r\n\r\n"),
             Disposition::ContainerStartPreflight
         );
+    }
+
+    #[test]
+    fn container_lifecycle_contract_preserves_routes_and_queries() {
+        let passthrough = [
+            ("POST", "/v1.47/containers/demo/stop?t=7"),
+            ("POST", "/v1.47/containers/demo/kill?signal=SIGUSR1"),
+            ("POST", "/v1.47/containers/demo/restart?t=5"),
+            ("POST", "/v1.47/containers/demo/pause"),
+            ("POST", "/v1.47/containers/demo/unpause"),
+            ("POST", "/v1.47/containers/demo/wait?condition=next-exit"),
+            ("POST", "/v1.47/containers/demo/exec"),
+            (
+                "GET",
+                "/v1.47/containers/demo/logs?follow=1&stdout=1&stderr=1",
+            ),
+            ("GET", "/v1.47/containers/demo/stats?stream=1&one-shot=0"),
+            ("DELETE", "/v1.47/containers/demo?force=1&v=1"),
+        ];
+
+        for (method, target) in passthrough {
+            let request = format!("{method} {target} HTTP/1.1\r\nHost: d\r\n\r\n");
+            let head = parse_head(request.as_bytes()).expect("parse lifecycle request");
+            assert_eq!(head.raw_target, target);
+            assert_eq!(classify(&head), Disposition::Passthrough, "{target}");
+        }
+
+        for target in [
+            "/v1.47/containers/demo/attach?stdin=1&stdout=1&stream=1",
+            "/v1.47/exec/exec-id/start",
+        ] {
+            let request = format!("POST {target} HTTP/1.1\r\nHost: d\r\n\r\n");
+            let head = parse_head(request.as_bytes()).expect("parse stream request");
+            assert_eq!(head.raw_target, target);
+            assert_eq!(classify(&head), Disposition::Hijack, "{target}");
+        }
     }
 
     #[test]

@@ -144,6 +144,8 @@ ALIAS_NETWORK="$OWNER-alias"
 ALIAS_CONTAINER="$OWNER-alias-server"
 PORT_COLLISION_CONTAINER="$OWNER-port-collision"
 SIGNAL_CONTAINER="$OWNER-signal"
+LIFECYCLE_CONTAINER="$OWNER-lifecycle"
+ATTACH_CONTAINER="$OWNER-attach-wait"
 MOUNT_OPTION_CONTAINER="$OWNER-mount-option"
 READ_ONLY_MOUNT_CONTAINER="$OWNER-mount-read-only"
 HOST_COLLISION_PID=""
@@ -416,6 +418,98 @@ bounded_capture 5 "$WORKDIR/post-signal-version.out" "$WORKDIR/post-signal-versi
 docker_e rm -f "$SIGNAL_CONTAINER" >/dev/null
 pass named-signal-delivery \
   "named USR1 reached container init and detached exec process; init and Docker API remained live"
+
+bounded_capture 10 "$WORKDIR/lifecycle-create.out" "$WORKDIR/lifecycle-create.err" \
+  env DOCKER_HOST="unix://$SOCKET" "$DOCKER_BIN" create \
+  --name "$LIFECYCLE_CONTAINER" --label "dev.dory.compatibility=$OWNER" \
+  "$ALPINE_IMAGE" sh -c 'printf "lifecycle-started\n"; while :; do sleep 1; done' \
+  || die "container lifecycle create failed or exceeded 10 seconds"
+bounded_capture 10 "$WORKDIR/lifecycle-start.out" "$WORKDIR/lifecycle-start.err" \
+  env DOCKER_HOST="unix://$SOCKET" "$DOCKER_BIN" start "$LIFECYCLE_CONTAINER" \
+  || die "container lifecycle start failed or exceeded 10 seconds"
+bounded_capture 10 "$WORKDIR/lifecycle-pause.out" "$WORKDIR/lifecycle-pause.err" \
+  env DOCKER_HOST="unix://$SOCKET" "$DOCKER_BIN" pause "$LIFECYCLE_CONTAINER" \
+  || die "container pause failed or exceeded 10 seconds"
+[ "$(docker_e inspect -f '{{.State.Status}}' "$LIFECYCLE_CONTAINER")" = paused ] \
+  || die "container did not enter paused state"
+bounded_capture 10 "$WORKDIR/lifecycle-unpause.out" "$WORKDIR/lifecycle-unpause.err" \
+  env DOCKER_HOST="unix://$SOCKET" "$DOCKER_BIN" unpause "$LIFECYCLE_CONTAINER" \
+  || die "container unpause failed or exceeded 10 seconds"
+[ "$(docker_e inspect -f '{{.State.Status}}' "$LIFECYCLE_CONTAINER")" = running ] \
+  || die "container did not return to running state"
+python3 - "$SOCKET" "$DOCKER_BIN" "$LIFECYCLE_CONTAINER" \
+  "$WORKDIR/lifecycle-exec.out" "$WORKDIR/lifecycle-exec.err" <<'PY'
+import os
+import pathlib
+import subprocess
+import sys
+
+socket_path, docker, container, stdout_path, stderr_path = sys.argv[1:]
+environment = os.environ.copy()
+environment["DOCKER_HOST"] = "unix://" + socket_path
+completed = subprocess.run(
+    [docker, "exec", "-i", container, "sh", "-c", 'read line; printf "exec:%s\\n" "$line"'],
+    input=b"stdin-marker\n",
+    stdout=subprocess.PIPE,
+    stderr=subprocess.PIPE,
+    timeout=10,
+    env=environment,
+    check=False,
+)
+pathlib.Path(stdout_path).write_bytes(completed.stdout)
+pathlib.Path(stderr_path).write_bytes(completed.stderr)
+if completed.returncode != 0 or completed.stdout != b"exec:stdin-marker\n":
+    raise SystemExit("interactive exec did not preserve stdin EOF and exact output")
+PY
+bounded_capture 10 "$WORKDIR/lifecycle-logs.out" "$WORKDIR/lifecycle-logs.err" \
+  env DOCKER_HOST="unix://$SOCKET" "$DOCKER_BIN" logs "$LIFECYCLE_CONTAINER" \
+  || die "container logs failed or exceeded 10 seconds"
+grep -qx 'lifecycle-started' "$WORKDIR/lifecycle-logs.out" \
+  || die "container logs lost exact stdout"
+bounded_capture 10 "$WORKDIR/lifecycle-stats.out" "$WORKDIR/lifecycle-stats.err" \
+  env DOCKER_HOST="unix://$SOCKET" "$DOCKER_BIN" stats --no-stream \
+  --format '{{.Name}}' "$LIFECYCLE_CONTAINER" \
+  || die "container stats failed or exceeded 10 seconds"
+grep -qx "$LIFECYCLE_CONTAINER" "$WORKDIR/lifecycle-stats.out" \
+  || die "container stats returned the wrong object"
+bounded_capture 10 "$WORKDIR/lifecycle-restart.out" "$WORKDIR/lifecycle-restart.err" \
+  env DOCKER_HOST="unix://$SOCKET" "$DOCKER_BIN" restart -t 2 "$LIFECYCLE_CONTAINER" \
+  || die "container restart failed or exceeded 10 seconds"
+bounded_capture 10 "$WORKDIR/lifecycle-stop.out" "$WORKDIR/lifecycle-stop.err" \
+  env DOCKER_HOST="unix://$SOCKET" "$DOCKER_BIN" stop -t 2 "$LIFECYCLE_CONTAINER" \
+  || die "container stop failed or exceeded 10 seconds"
+[ "$(docker_e inspect -f '{{.State.Running}}' "$LIFECYCLE_CONTAINER")" = false ] \
+  || die "container remained running after stop"
+docker_e start "$LIFECYCLE_CONTAINER" >/dev/null
+bounded_capture 10 "$WORKDIR/lifecycle-kill.out" "$WORKDIR/lifecycle-kill.err" \
+  env DOCKER_HOST="unix://$SOCKET" "$DOCKER_BIN" kill --signal KILL "$LIFECYCLE_CONTAINER" \
+  || die "container kill failed or exceeded 10 seconds"
+[ "$(docker_e inspect -f '{{.State.Running}}' "$LIFECYCLE_CONTAINER")" = false ] \
+  || die "container remained running after SIGKILL"
+
+docker_e create --name "$ATTACH_CONTAINER" --label "dev.dory.compatibility=$OWNER" \
+  "$ALPINE_IMAGE" sh -c 'printf "attach-output\n"' >/dev/null
+bounded_capture 15 "$WORKDIR/lifecycle-wait.out" "$WORKDIR/lifecycle-wait.err" \
+  env DOCKER_HOST="unix://$SOCKET" "$DOCKER_BIN" wait "$ATTACH_CONTAINER" &
+wait_pid=$!
+sleep 0.2
+bounded_capture 10 "$WORKDIR/lifecycle-attach.out" "$WORKDIR/lifecycle-attach.err" \
+  env DOCKER_HOST="unix://$SOCKET" "$DOCKER_BIN" start --attach "$ATTACH_CONTAINER" \
+  || die "container attach failed or exceeded 10 seconds"
+wait "$wait_pid" || die "container wait failed or exceeded 15 seconds"
+grep -qx 'attach-output' "$WORKDIR/lifecycle-attach.out" \
+  || die "container attach lost exact stdout"
+grep -qx '0' "$WORKDIR/lifecycle-wait.out" \
+  || die "container wait returned the wrong exit status"
+bounded_capture 10 "$WORKDIR/lifecycle-remove.out" "$WORKDIR/lifecycle-remove.err" \
+  env DOCKER_HOST="unix://$SOCKET" "$DOCKER_BIN" rm "$LIFECYCLE_CONTAINER" "$ATTACH_CONTAINER" \
+  || die "container remove failed or exceeded 10 seconds"
+docker_e inspect "$LIFECYCLE_CONTAINER" >/dev/null 2>&1 \
+  && die "removed lifecycle container is still inspectable"
+docker_e inspect "$ATTACH_CONTAINER" >/dev/null 2>&1 \
+  && die "removed attach/wait container is still inspectable"
+pass container-api-lifecycle \
+  "create/start/pause/unpause/exec/logs/stats/restart/stop/kill/attach/wait/remove were exact and deadline bounded"
 
 before_fd="$(sample_fds "$WORKDIR/fds-before.tsv")"
 python3 - "$port" "$CONNECTIONS" <<'PY'

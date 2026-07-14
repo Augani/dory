@@ -21,7 +21,7 @@ experiments; the shipping shared-VM path fronts a real `dockerd` socket.
 |---|---|---|
 | `docker version` / `info` / `_ping` | ✅ | Docker backend: real engine response (transparent passthrough). Mock/translated test runtimes: Dory-branded. Verified with the real `docker` CLI |
 | `docker ps` / list containers | ✅ | Real containers, correct names/status/ports/timestamps; supports `id`, `name`, `status`, `label`, `ancestor`, `before`, `since`, `exited`, `health`, `volume`, `network`, `publish`, and `expose` filters; `size=1` adds `SizeRw`/`SizeRootFs` for `docker ps -s` |
-| Container start / stop / restart / remove | ✅ | `POST /containers/{id}/...`, `DELETE /containers/{id}` |
+| Container lifecycle | ✅ | Create/start/stop/kill/restart/pause/unpause/wait/remove requests retain Docker's exact routes, query flags, statuses, and errors. Shared-VM create adds host reachability/socket compatibility fields; start performs a bounded, fail-closed macOS host-port collision preflight before forwarding. Named Linux signals remain names end to end. |
 | `docker images` / list | ✅ | Translated from the runtime snapshot (mock/translated test runtimes), including `reference`, `label`, `dangling`, `before`, and `since` filters on `/images/json` |
 | Container create (with body) | ✅ | image, cmd, env, ports, labels, network/network-disabled DNS, DNS domain, restart policy, platform query, cidfile, runtime handler; image refs starting with `-` rejected at the boundary |
 | Container inspect | ✅ | `GET /containers/{id}/json`; includes common create-time `Config`/`HostConfig` fields, port bindings, mounts, and `NetworkSettings.Networks`; `size=1` adds `SizeRw`/`SizeRootFs` for `docker inspect --size` |
@@ -35,7 +35,7 @@ experiments; the shipping shared-VM path fronts a real `dockerd` socket.
 | Network list / create / remove / connect / disconnect | ✅ | Docker/shared-VM backends proxy/forward native dockerd network APIs; translated test runtimes keep coverage for `id`, `name`, `driver`, `scope`, `type`, and `label` filters |
 | Volume list / create / remove / prune | ✅ | `GET /volumes` includes `name`, `driver`, `dangling`, and `label` filters on translated backends; `POST /volumes/create`, `DELETE /volumes/{id}`, `POST /volumes/prune` |
 | System disk usage (`docker system df`) | ✅ | `GET /system/df`; translated from runtime snapshot images, containers, volumes, and empty BuildKit cache when unavailable |
-| Logs (`docker logs`, `-f`) | ✅ | Docker backend: live follow proxied verbatim. Mock/translated test runtimes: Docker raw-stream frames with `tail`, `timestamps`, stdout/stderr suppression, and finite follow via runtime streaming |
+| Logs (`docker logs`, `-f`) | ✅ | Docker backend: live follow proxied verbatim with client cancellation/backpressure. Mock/translated test runtimes: Docker raw-stream frames with `tail`, `timestamps`, stdout/stderr suppression, and finite follow via runtime streaming |
 | Stats (mem live, CPU%) | ✅ | Docker backend: `docker stats` streamed through the proxy. Mock/translated test runtimes: two-sample CPU sampler |
 | Events (`docker events`) | ✅ | Docker backend: proxied (live engine events). Mock/translated test runtimes: synthesized via `EventSynthesizer` |
 | `docker exec` (`-i`, `-it` TTY) + `attach` | ✅ | Bidirectional hijack proxy with correct half-close (stdin EOF) + exit codes; TTY (`/dev/pts/0`) verified |

@@ -5,8 +5,8 @@
 //!
 //! This crate holds the pure, unit-tested logic (head parse, classify, create rewrite). The socket
 //! accept loop + vsock dial + the [`dory_proto::half_close`] splice are wired by the embedding VMM
-//! process (which owns the captive vsock fds); the serving loop classifies each connection via
-//! [`classify::classify`] once the head has arrived.
+//! process (which owns the captive vsock fds); the serving loop classifies every request on a
+//! keep-alive connection via [`classify::classify`].
 
 pub mod classify;
 pub mod create_rewrite;

@@ -863,7 +863,8 @@ assert int(growth["guest_ext4_bytes"]) >= int(growth["minimum_guest_bytes"]), \
     "guest ext4 capacity stayed below its required floor"
 
 required_competitor_tests = {
-    "published-port-handoff", "host-port-collision", "named-signal-delivery", "forwarded-connection-fds",
+    "published-port-handoff", "host-port-collision", "named-signal-delivery", "container-api-lifecycle",
+    "forwarded-connection-fds",
     "concurrent-proxy-backpressure",
     "missing-source-cp", "restart-churn", "compose-port-restart", "network-route-conflict",
     "standalone-engine-restart", "named-volume-empty", "named-volume", "security-opt-label", "seccomp-profile",

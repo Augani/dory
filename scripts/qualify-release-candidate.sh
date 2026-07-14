@@ -1029,7 +1029,8 @@ grep -qx 'amd64_enabled=1' "$(dirname "$competitor_results")/engine-settings.txt
 grep -q $'\tFAIL\t' "$competitor_results" \
   && die "competitor runtime results contain a failed row"
 for proof in \
-  published-port-handoff host-port-collision named-signal-delivery forwarded-connection-fds \
+  published-port-handoff host-port-collision named-signal-delivery container-api-lifecycle \
+  forwarded-connection-fds \
   concurrent-proxy-backpressure missing-source-cp restart-churn compose-port-restart \
   network-route-conflict network-alias-restart-ip standalone-engine-restart \
   named-volume-empty named-volume named-volume-cp security-opt-label seccomp-profile \

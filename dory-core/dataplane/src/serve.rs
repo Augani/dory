@@ -311,13 +311,29 @@ async fn inspect_container_for_start<B: Backend>(
 }
 
 async fn preflight_container_start<B: Backend>(backend: &B, start_path: &str) -> Option<String> {
-    let inspect = timeout(
+    let inspect = match timeout(
         Duration::from_secs(3),
         inspect_container_for_start(backend, start_path),
     )
     .await
-    .ok()?
-    .ok()?;
+    {
+        Ok(Ok(body)) => body,
+        // A non-200 inspect response means dockerd already knows why this container cannot be
+        // started. Forward the original start request so the client receives dockerd's exact
+        // status and message instead of replacing it with a Dory preflight error.
+        Ok(Err(error)) if error.kind() == std::io::ErrorKind::NotFound => return None,
+        Ok(Err(error)) => {
+            return Some(format!(
+                "could not verify macOS host ports before container start: {error}"
+            ));
+        }
+        Err(_) => {
+            return Some(
+                "could not verify macOS host ports before container start: inspect timed out"
+                    .to_string(),
+            );
+        }
+    };
     let mut last_error = None;
     // A prior Dory container may have just stopped. Give the two-second host-forwarder reconcile
     // interval time to release its listener before treating it as an external collision.
@@ -558,7 +574,7 @@ impl<B: Backend> Proxy<B> {
 
             match classify(&head) {
                 Disposition::Hijack => {
-                    // The connection stops being HTTP here (attach/exec upgrade, build/pull
+                    // The connection stops being HTTP here (attach/exec upgrade, build/load
                     // stream): replay what is buffered and splice the rest raw.
                     let upstream_write = self.upstream().await?;
                     upstream_write.write_all(&buf).await?;
@@ -1014,6 +1030,23 @@ mod tests {
         chunked: bool,
     }
 
+    struct FailingInspectBackend;
+
+    impl Backend for FailingInspectBackend {
+        type Stream = UnixStream;
+
+        fn connect(
+            &self,
+        ) -> Pin<Box<dyn Future<Output = std::io::Result<UnixStream>> + Send + '_>> {
+            Box::pin(async {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::ConnectionRefused,
+                    "fixture inspect transport failed",
+                ))
+            })
+        }
+    }
+
     impl Backend for StaticInspectBackend {
         type Stream = UnixStream;
 
@@ -1164,6 +1197,22 @@ mod tests {
 
         assert!(error.contains(&port.to_string()), "got: {error}");
         assert!(error.contains("tcp"), "got: {error}");
+    }
+
+    #[tokio::test]
+    async fn container_start_preflight_fails_closed_when_inspect_transport_fails() {
+        let error = preflight_container_start(&FailingInspectBackend, "/containers/demo/start")
+            .await
+            .expect("an unverifiable host-port set must block start");
+
+        assert!(
+            error.contains("could not verify macOS host ports"),
+            "got: {error}"
+        );
+        assert!(
+            error.contains("fixture inspect transport failed"),
+            "got: {error}"
+        );
     }
 
     #[tokio::test]
