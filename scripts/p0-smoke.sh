@@ -48,6 +48,19 @@ resolve_dory_cli() {
   printf '%s\n' "$candidate"
 }
 
+resolve_dorydctl() {
+  local candidate="${DORYDCTL_BIN:-}"
+  if [ -z "$candidate" ] && [ -n "${DORY_APP:-}" ]; then
+    candidate="${DORY_APP%/}/Contents/Helpers/dorydctl"
+  fi
+  [ -n "$candidate" ] || candidate="$HOME/.dory/bin/dorydctl"
+  if [ ! -x "$candidate" ]; then
+    echo "p0-smoke: dorydctl is not executable: $candidate" >&2
+    return 1
+  fi
+  printf '%s\n' "$candidate"
+}
+
 wake_engine_and_capture_status() {
   local status_file="$1" dory_cli="${DORY_CLI_BIN:?DORY_CLI_BIN is required}"
   "$dory_cli" engine wake >/dev/null
@@ -183,11 +196,46 @@ wait_http() {
   return 1
 }
 
+repair_subsystem() {
+  local target="$1" output
+  output="$WORKDIR/repair-$target.json"
+  "$DORYDCTL_BIN" network repair "$target" > "$output"
+  python3 - "$output" "$target" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    payload = json.load(handle)
+if payload.get("ok") is not True or not payload.get("message"):
+    raise SystemExit(f"{sys.argv[2]} repair did not return a successful attributed result")
+PY
+}
+
+subsystem_recovery_smoke() {
+  local hv_log="$HOME/.dory/hv/dory-hv.log" before after=0
+  for target in dns domains routes guest-agent docker-api; do
+    repair_subsystem "$target"
+  done
+
+  before="$(grep -Fc 'manual port reconcile requested' "$hv_log" 2>/dev/null || true)"
+  repair_subsystem ports
+  for _ in $(seq 1 40); do
+    after="$(grep -Fc 'manual port reconcile requested' "$hv_log" 2>/dev/null || true)"
+    [ "$after" -gt "$before" ] && break
+    sleep 0.1
+  done
+  [ "$after" -gt "$before" ] || {
+    echo "p0-smoke: dory-hv did not acknowledge the manual published-port reconciliation" >&2
+    return 1
+  }
+}
+
 main() {
   cd "$ROOT"
   DORY_SOCK="${DORY_SOCK:-$HOME/.dory/dory.sock}"
   DOCKER_BIN="$(resolve_docker_bin)"
   DORY_CLI_BIN="$(resolve_dory_cli)"
+  DORYDCTL_BIN="$(resolve_dorydctl)"
   # Keep every nested doctor/compatibility probe on the same release-candidate CLI.
   export DORY_DOCKER_BIN="$DOCKER_BIN" DORY_CLI_BIN
   if [ -n "${DORY_APP:-}" ]; then
@@ -237,6 +285,8 @@ services:
 YAML
 
   docker_e compose -p "$PROJECT" -f "$WORKDIR/compose.yaml" up -d
+  wait_http "http://127.0.0.1:${PORT}" "dory-p0-smoke"
+  subsystem_recovery_smoke
   wait_http "http://127.0.0.1:${PORT}" "dory-p0-smoke"
   docker_e compose -p "$PROJECT" -f "$WORKDIR/compose.yaml" ps --format json > "$WORKDIR/compose-ps.json"
   compose_down

@@ -98,13 +98,17 @@ unnotarized until the `dory-notary` keychain profile is provisioned.
 
 ## Verified locally
 
-- The full non-UI app gate passes **837 tests in 113 suites** after the final migration, Compose,
-  and ephemeral-port preservation changes.
+- The full non-UI app gate passes **838 tests in 113 suites** after the final migration, Compose,
+  ephemeral-port preservation, and daemon-owned recovery changes.
 - Recovery is now daemon-owned instead of a UI shell-out for live subsystems. Focused XPC and app
   tests pass DNS/domain listener restart, route re-derivation, guest-agent RPC recovery, Docker API
   fail-closed reporting, incident attribution, and invalid-target rejection. dory-hv now serializes
   ordinary and manually requested gvproxy port reconciliation; the CLI and Health screen use the
-  same repair contract. `scripts/test-dory-doctor.sh` and the 26-test DorydClient suite pass.
+  same repair contract. `scripts/test-dory-doctor.sh`, `scripts/test-p0-smoke.sh`, the 26-test
+  DorydClient suite, and the competitor-derived release-policy gate pass. The strict live P0 gate
+  now requires successful attributed results for all six recovery targets, observes dory-hv's
+  published-port reconciliation acknowledgement, and proves the published HTTP workload remains
+  reachable afterward.
 - The owned live OrbStack-to-Dory migration passed against both real engine sockets. It preserved:
   image availability, named-volume bytes, custom networking, environment, command/entrypoint,
   mounts, restart policy, and running state. It covers deleted tags, normalized cross-daemon image
@@ -116,16 +120,15 @@ unnotarized until the `dory-notary` keychain profile is provisioned.
 - Historical Dory Core clone tests passed, but pre-launch Dory-disk adoption is no longer part of
   the product or release contract. Exclusive engine-state locking and fail-closed v1 drive
   validation remain required.
-- The latest Dory Core run passed **300 tests with zero failures**. The latest
-  ContainerizationEngine/DoryHV run passed **502 tests in 62
-  suites**, including attachment of the
+- The latest Dory Core run passed **320 tests with zero failures**. The latest
+  ContainerizationEngine/DoryHV run passed **502 tests in 62 suites**, including attachment of the
   persistent Docker data disk on the macOS 14 VZ path, state-lock contention, published-port host-IP
   planning, and virtiofs ownership behavior.
 - Linux-machine cards no longer claim allocated RAM is usage or display fabricated `0.0%` CPU.
   Running machines now sample guest `/proc` through the bounded guest-agent exec path every two
   seconds, while `dorydctl machine stats` exposes a strict versioned CPU, used/total memory,
   network, block-I/O, process, and uptime schema. Four focused parser/contract tests, 24 XPC/app
-  lifecycle tests, the full Dory Core suite, the full 837-test app suite, and the offline
+  lifecycle tests, the full Dory Core suite, the full 838-test app suite, and the offline
   competitor release-policy suite pass. The exact-candidate resource gate now validates live stats
   after every resource-changing restart.
 - SSH-agent qualification now covers the separate BuildKit session path required by

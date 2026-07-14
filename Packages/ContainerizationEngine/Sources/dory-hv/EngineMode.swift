@@ -141,6 +141,7 @@ enum EngineMode {
         signal(SIGUSR2, SIG_IGN)
         let source = DispatchSource.makeSignalSource(signal: SIGUSR2, queue: .global())
         source.setEventHandler {
+            note("manual port reconcile requested")
             portForwarder.reconcileNow()
         }
         source.resume()

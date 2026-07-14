@@ -15,7 +15,8 @@ APP="$TMP_ROOT/Dory Candidate.app"
 EXPLICIT_DOCKER="$TMP_ROOT/explicit-docker"
 mkdir -p "$PATH_BIN" "$APP/Contents/Helpers"
 
-for cli in "$PATH_BIN/docker" "$APP/Contents/Helpers/docker" "$APP/Contents/Helpers/dory" "$EXPLICIT_DOCKER"; do
+for cli in "$PATH_BIN/docker" "$APP/Contents/Helpers/docker" "$APP/Contents/Helpers/dory" \
+  "$APP/Contents/Helpers/dorydctl" "$EXPLICIT_DOCKER"; do
   cat > "$cli" <<'SH'
 #!/bin/sh
 exit 0
@@ -55,6 +56,14 @@ if DORY_CLI_BIN= DORY_APP="$MISSING_APP" resolve_dory_cli > /dev/null 2> "$TMP_R
   exit 1
 fi
 grep -q 'Dory CLI is not executable' "$TMP_ROOT/missing-dory.err"
+
+resolved="$(DORYDCTL_BIN= DORY_APP="$APP" resolve_dorydctl)"
+assert_eq "$APP/Contents/Helpers/dorydctl" "$resolved" "DORY_APP bundled dorydctl"
+if DORYDCTL_BIN= DORY_APP="$MISSING_APP" resolve_dorydctl > /dev/null 2> "$TMP_ROOT/missing-dorydctl.err"; then
+  echo "test-p0-smoke: DORY_APP without bundled dorydctl unexpectedly used another binary" >&2
+  exit 1
+fi
+grep -q 'dorydctl is not executable' "$TMP_ROOT/missing-dorydctl.err"
 
 WAKE_STATE="$TMP_ROOT/wake-state"
 WAKE_LOG="$TMP_ROOT/wake.log"
@@ -135,5 +144,28 @@ stop_wake_storage_smoke
 expected_calls="$(printf 'engine sleep --json\nengine wake\nengine status --json')"
 assert_eq "$expected_calls" "$(cat "$WAKE_LOG")" "release stop/wake order"
 [ -z "$PERSISTENT_CONTAINER" ] || { echo "test-p0-smoke: persistent fixture was not cleaned" >&2; exit 1; }
+
+# Every recovery command must return an attributed success, and the port request must be observed
+# by dory-hv rather than merely accepted by doryd.
+RECOVERY_HOME="$TMP_ROOT/recovery-home"
+WORKDIR="$TMP_ROOT/recovery-work"
+DORYDCTL_BIN="$TMP_ROOT/fake-dorydctl"
+mkdir -p "$RECOVERY_HOME/.dory/hv" "$WORKDIR"
+: > "$RECOVERY_HOME/.dory/hv/dory-hv.log"
+cat > "$DORYDCTL_BIN" <<'SH'
+#!/bin/bash
+set -euo pipefail
+target="${3:?missing repair target}"
+if [ "$target" = ports ]; then
+  printf 'manual port reconcile requested\n' >> "$HOME/.dory/hv/dory-hv.log"
+fi
+printf '{"ok":true,"message":"repaired %s"}\n' "$target"
+SH
+chmod +x "$DORYDCTL_BIN"
+HOME="$RECOVERY_HOME" subsystem_recovery_smoke
+for target in dns domains routes guest-agent docker-api ports; do
+  [ -s "$WORKDIR/repair-$target.json" ] \
+    || { echo "test-p0-smoke: missing $target recovery evidence" >&2; exit 1; }
+done
 
 echo "test-p0-smoke: PASS"
