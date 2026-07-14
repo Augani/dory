@@ -38,7 +38,7 @@ done
 [ -n "$RUNTIME" ] || { echo "data-disk growth gate: --runtime is required" >&2; exit 64; }
 [ -n "$DOCKER" ] || { echo "data-disk growth gate: --docker is required" >&2; exit 64; }
 [ -x "$RUNTIME/dory-engine" ] || { echo "data-disk growth gate: runtime supervisor not executable: $RUNTIME/dory-engine" >&2; exit 66; }
-[ -x "$RUNTIME/dory-hv" ] || { echo "data-disk growth gate: hypervisor not executable: $RUNTIME/dory-hv" >&2; exit 66; }
+[ -x "$RUNTIME/bin/dory-hv" ] || { echo "data-disk growth gate: hypervisor not executable: $RUNTIME/bin/dory-hv" >&2; exit 66; }
 [ -x "$DOCKER" ] || { echo "data-disk growth gate: Docker CLI not executable: $DOCKER" >&2; exit 66; }
 command -v python3 >/dev/null || { echo "data-disk growth gate: python3 is required" >&2; exit 69; }
 
@@ -117,7 +117,7 @@ trap cleanup EXIT INT TERM
 # deliberately leaves unused ext4 blocks physically allocated so the exact guest boot must issue
 # virtio DISCARD/fstrim and return them to APFS. This qualifies forward growth for public-v1 data
 # without importing any prelaunch Dory layout.
-HOME="$RUNTIME_HOME" "$RUNTIME/dory-hv" data-drive select "$DATA_DRIVE" \
+HOME="$RUNTIME_HOME" "$RUNTIME/bin/dory-hv" data-drive select "$DATA_DRIVE" \
   >"$EVIDENCE/data-drive-select.txt"
 dd if=/dev/zero of="$DISK" bs=1m count=1024 >/dev/null 2>&1
 truncate -s 16g "$DISK"

@@ -568,6 +568,8 @@ for resize_source in \
 done
 grep -F 'sparse_allocation=PASS' scripts/data-disk-growth-gate.sh >/dev/null \
   || fail "the data-disk growth gate does not prove 128 GiB remains sparsely allocated on the host"
+grep -F '"$RUNTIME/bin/dory-hv" data-drive select' scripts/data-disk-growth-gate.sh >/dev/null \
+  || fail "the data-disk growth gate does not use the public runtime archive layout"
 grep -F 'DORY_DATA_DISK_RUNTIME_HOME:-$HOME/.ddg-$$' scripts/data-disk-growth-gate.sh >/dev/null \
   || fail "the data-disk growth gate can exceed the macOS Unix socket path limit"
 grep -F 'home="$HOME/.dcs-$$-$cycle"' scripts/headless-cold-start-soak.sh >/dev/null \
