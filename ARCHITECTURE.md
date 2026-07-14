@@ -17,6 +17,7 @@ On daemon launch:
 
 - `always-on` starts the Docker tier immediately.
 - `manual`, `auto-idle`, and `battery-saver` arm the Docker socket without treating launchd environment as policy.
+- `battery-saver` preserves the configured Auto-Idle delay but caps its effective delay at five minutes.
 - `DORYD_FORCE_AUTOSTART_DOCKER_TIER=1` is reserved for development smoke tests.
 
 On app launch:

@@ -15,6 +15,7 @@ public final class DorydService: NSObject, DorydControl {
     private let idleSleepScheduler: IdleSleepScheduler?
     private let healthReporter: HealthReporter
     private let incidentWriter: IncidentWriter?
+    private let runtimeModeLock = NSLock()
 
     public init(
         socketPath: String,
@@ -69,18 +70,7 @@ public final class DorydService: NSObject, DorydControl {
     }
 
     public func engineStart(reply: @escaping (Bool, String) -> Void) {
-        guard let dockerTier else {
-            reply(false, "docker tier is not configured")
-            return
-        }
-        do {
-            try dockerTier.start()
-            incidentWriter?.record(type: "engine.start", detail: "docker tier started")
-            reply(true, "")
-        } catch {
-            incidentWriter?.record(type: "engine.start_failed", detail: "\(error)")
-            reply(false, "\(error)")
-        }
+        promoteEngine(event: "start", reply: reply)
     }
 
     public func engineStop(reply: @escaping (Bool, String) -> Void) {
@@ -113,20 +103,7 @@ public final class DorydService: NSObject, DorydControl {
     }
 
     public func engineWake(reply: @escaping (Bool, String) -> Void) {
-        guard let dockerTier else {
-            reply(false, "docker tier is not configured")
-            return
-        }
-        let replyBox = EngineReply(reply)
-        let incidentWriter = incidentWriter
-        Task.detached {
-            await dockerTier.ensureAwake()
-            let status = dockerTier.status()
-            if status.state == .running {
-                incidentWriter?.record(type: "engine.wake", detail: "manual XPC wake")
-            }
-        replyBox.reply(status.state == .running, status.lastError ?? "")
-        }
+        promoteEngine(event: "wake", reply: reply)
     }
 
     public func dockerAgentInfo(reply: @escaping (NSDictionary, String) -> Void) {
@@ -671,18 +648,44 @@ public final class DorydService: NSObject, DorydControl {
     }
 
     public func idleSetMode(_ mode: String, reply: @escaping (Bool, NSDictionary, String) -> Void) {
+        runtimeModeLock.lock()
+        defer { runtimeModeLock.unlock() }
+        let previousMode = idlePolicyStore.currentRuntimeMode()
         do {
-            let status = try idlePolicyStore.setRuntimeMode(mode)
+            _ = try idlePolicyStore.setRuntimeMode(mode)
             updateIdleSleepScheduler()
-            incidentWriter?.record(type: "idle.mode", detail: mode)
+            let appliedMode = idlePolicyStore.currentRuntimeMode()
+            if Self.runtimeModeKeepsEngineAwake(appliedMode) {
+                guard let dockerTier else {
+                    throw DockerTier.TierError.wakeFailed("docker tier is not configured")
+                }
+                try dockerTier.promoteToRunning()
+            }
+            let status = idlePolicyStore.status()
+            incidentWriter?.record(type: "idle.mode", detail: appliedMode)
             reply(true, status, "")
         } catch {
+            if idlePolicyStore.currentRuntimeMode() != previousMode {
+                do {
+                    _ = try idlePolicyStore.setRuntimeMode(previousMode)
+                    updateIdleSleepScheduler()
+                } catch {
+                    incidentWriter?.record(
+                        type: "idle.mode_rollback_failed",
+                        detail: "requested=\(mode) previous=\(previousMode): \(error)"
+                    )
+                    reply(false, idlePolicyStore.status(), "idle mode failed and its previous value could not be restored: \(error)")
+                    return
+                }
+            }
             incidentWriter?.record(type: "idle.mode_failed", detail: "\(error)")
-            reply(false, [:], "\(error)")
+            reply(false, idlePolicyStore.status(), "\(error)")
         }
     }
 
     public func idleSetPolicy(_ key: String, value: String, reply: @escaping (Bool, NSDictionary, String) -> Void) {
+        runtimeModeLock.lock()
+        defer { runtimeModeLock.unlock() }
         do {
             let status = try idlePolicyStore.setPolicy(key: key, value: value)
             updateIdleSleepScheduler()
@@ -740,6 +743,29 @@ public final class DorydService: NSObject, DorydControl {
         guard let idleSleepScheduler else { return }
         let configuration = idlePolicyStore.schedulerConfiguration(base: idleSleepScheduler.currentConfiguration)
         idleSleepScheduler.update(configuration: configuration)
+    }
+
+    private func promoteEngine(event: String, reply: @escaping (Bool, String) -> Void) {
+        guard let dockerTier else {
+            reply(false, "docker tier is not configured")
+            return
+        }
+        let replyBox = EngineReply(reply)
+        let incidentWriter = incidentWriter
+        Task.detached {
+            do {
+                try dockerTier.promoteToRunning()
+                incidentWriter?.record(type: "engine.\(event)", detail: "docker tier running")
+                replyBox.reply(true, "")
+            } catch {
+                incidentWriter?.record(type: "engine.\(event)_failed", detail: "\(error)")
+                replyBox.reply(false, "\(error)")
+            }
+        }
+    }
+
+    private static func runtimeModeKeepsEngineAwake(_ mode: String) -> Bool {
+        mode == "always-on" || mode == "manual"
     }
 
     private func currentPublishedPorts() -> [DoryListenPort] {

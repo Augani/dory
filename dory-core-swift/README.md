@@ -84,8 +84,9 @@ The Swift side binds `~/.dory/dory.sock`, hands that listener fd to the Rust
 Installed builds do not encode runtime mode in the LaunchAgent. `doryd` reads the persisted
 runtime policy from `~/.dory/config.json`: `always-on` starts the Docker tier on daemon launch,
 while `manual`, `auto-idle`, and `battery-saver` arm the socket until the app or Docker traffic
-wakes it. `DORYD_FORCE_AUTOSTART_DOCKER_TIER=1` is only a development override for one-off
-smoke tests.
+wakes it. Battery Saver caps the effective idle delay at five minutes without overwriting the
+user's configured Auto-Idle delay. `DORYD_FORCE_AUTOSTART_DOCKER_TIER=1` is only a development
+override for one-off smoke tests.
 
 When `DORYD_ACTIVITY_SOCK` is set, or by default under `DORYD_STATE_DIR`, doryd starts a private
 activity socket. The dataplane reports meaningful docker connections there (`/_ping` is ignored),

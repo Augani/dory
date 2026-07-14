@@ -403,7 +403,9 @@ enum DorydClientError: Error, Sendable, CustomStringConvertible {
 }
 
 nonisolated final class DorydClient: @unchecked Sendable {
-    private static let engineColdStartTimeout: TimeInterval = 240
+    // The daemon owns a 240-second promotion deadline. Leave enough client-side margin for the
+    // daemon to return its exact outcome instead of replacing it with a simultaneous UI timeout.
+    private static let engineColdStartTimeout: TimeInterval = 250
     // doryd gives dockerd and dory-hv up to 30 seconds to quiesce before its final fallback.
     // Keep the UI connection alive past that bound so a safe stop is not reported as a timeout.
     private static let engineShutdownTimeout: TimeInterval = 45
@@ -869,7 +871,7 @@ nonisolated final class DorydClient: @unchecked Sendable {
     }
 
     func idleSetMode(_ mode: String) async throws -> IdleStatus {
-        try await statusCommand { proxy, reply in
+        try await withTimeout(atLeast: Self.engineColdStartTimeout).statusCommand { proxy, reply in
             proxy.idleSetMode(mode, reply: reply)
         } decode: {
             Self.decoded(IdleStatus.self, from: $0)

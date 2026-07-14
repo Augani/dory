@@ -2255,7 +2255,7 @@ final class AppStore {
         }
         healthLoadToken &+= 1
         let token = healthLoadToken
-        let snapshot = await HealthDiagnostics.load(active: active)
+        let snapshot = await HealthDiagnostics.load(active: active, dorydClient: dorydClient)
         // Only the most recently started load may publish; a slower passive run must not clobber a
         // fresher active snapshot (or vice versa).
         if token == healthLoadToken {

@@ -49,4 +49,27 @@ final class IdlePolicyStoreTests: XCTestCase {
         try store.setRuntimeMode("manual")
         XCTAssertFalse(store.managedEngineSleepEnabled())
     }
+
+    func testBatterySaverCapsEffectiveDelayWithoutChangingConfiguredPolicy() throws {
+        let directory = NSTemporaryDirectory() + "dory-idle-battery-\(getpid())-\(UUID().uuidString)"
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+        let configPath = directory + "/config.json"
+        let store = IdlePolicyStore(environment: ["DORY_CONFIG": configPath])
+        try store.setPolicy(key: "sleepAfterMinutes", value: "30")
+
+        try store.setRuntimeMode("auto-idle")
+        XCTAssertEqual(
+            store.schedulerConfiguration(base: IdleSleepConfiguration()).idleAfterSeconds,
+            30 * 60
+        )
+
+        let status = try store.setRuntimeMode("battery-saver")
+        XCTAssertEqual(status["sleep_after_minutes"] as? Int, 30)
+        XCTAssertEqual(status["effective_sleep_after_minutes"] as? Int, 5)
+        XCTAssertEqual(
+            store.schedulerConfiguration(base: IdleSleepConfiguration()).idleAfterSeconds,
+            5 * 60
+        )
+        XCTAssertEqual(store.currentPolicy().sleepAfterMinutes, 30)
+    }
 }

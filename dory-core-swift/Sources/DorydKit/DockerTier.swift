@@ -94,6 +94,7 @@ public final class DockerTier: @unchecked Sendable {
         case resumeFailed(pid: Int32?)
         case readyTimeout
         case helperExited(String)
+        case promotionTimeout
         case startCancelled
         case daemonShuttingDown
         case wakeFailed(String)
@@ -113,6 +114,8 @@ public final class DockerTier: @unchecked Sendable {
                 return "docker tier did not become ready after wake"
             case .helperExited(let detail):
                 return "docker tier helper \(detail)"
+            case .promotionTimeout:
+                return "docker tier did not reach running state before the promotion deadline"
             case .startCancelled:
                 return "docker tier start was cancelled"
             case .daemonShuttingDown:
@@ -361,6 +364,42 @@ public final class DockerTier: @unchecked Sendable {
         lock.unlock()
 
         try launchFreshTier(epoch: startEpoch)
+    }
+
+    /// Promote every recoverable lifecycle shape to one confirmed running state.
+    ///
+    /// App opens, explicit XPC start/wake calls, and runtime-mode changes all use this operation.
+    /// It waits behind an in-flight cold wake instead of racing a second helper launch, and it can
+    /// restart a tier that an explicit engine stop left fully stopped.
+    public func promoteToRunning(timeout: TimeInterval = 240) throws {
+        let deadline = Date().addingTimeInterval(max(1, timeout))
+        var attemptedPromotion = false
+
+        while true {
+            let snapshot = status()
+            switch snapshot.state {
+            case .running:
+                return
+            case .starting:
+                break
+            case .sleeping, .stopped, .failed:
+                guard !attemptedPromotion else {
+                    throw TierError.wakeFailed(
+                        snapshot.lastError ?? "docker tier stopped before promotion completed"
+                    )
+                }
+                attemptedPromotion = true
+                do {
+                    try start()
+                } catch {
+                    let afterStart = status()
+                    guard afterStart.state == .starting else { throw error }
+                }
+            }
+
+            guard Date() < deadline else { throw TierError.promotionTimeout }
+            Thread.sleep(forTimeInterval: 0.05)
+        }
     }
 
     private func launchFreshTier(epoch: UInt64) throws {
@@ -870,13 +909,20 @@ public final class DockerTier: @unchecked Sendable {
 
     private func wakeTaskForEnsureAwake() -> Task<Void, Never>? {
         lock.lock()
-        if terminalShutdown || state != .sleeping {
+        if terminalShutdown {
             lock.unlock()
             return nil
         }
+        // A request that arrives after the first wake has changed the tier to `starting` must
+        // still await that exact promotion. Acknowledging it early makes the dataplane connect to
+        // a backend that is not ready yet and turns a healthy cold boot into a client-visible EOF.
         if let wakeTask {
             lock.unlock()
             return wakeTask
+        }
+        if state != .sleeping {
+            lock.unlock()
+            return nil
         }
         let task = Task.detached { [weak self] in
             if let self {

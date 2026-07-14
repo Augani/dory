@@ -54,13 +54,13 @@ struct DoctorReport: Decodable, Sendable {
     let results: [DoctorCheck]
 }
 
-struct IdleProxyState: Decodable, Sendable, Hashable {
+nonisolated struct IdleProxyState: Decodable, Sendable, Hashable {
     let state: String?
     let detail: String?
     let available: Bool?
 }
 
-struct IdleBlocker: Decodable, Sendable, Hashable {
+nonisolated struct IdleBlocker: Decodable, Sendable, Hashable {
     let type: String
     let detail: String
 
@@ -107,14 +107,14 @@ struct IdleBlocker: Decodable, Sendable, Hashable {
     }
 }
 
-func decodeFlexibleInt<Key: CodingKey>(_ container: KeyedDecodingContainer<Key>, _ key: Key) -> Int? {
+nonisolated func decodeFlexibleInt<Key: CodingKey>(_ container: KeyedDecodingContainer<Key>, _ key: Key) -> Int? {
     if let value = try? container.decode(Int.self, forKey: key) { return value }
     if let value = try? container.decode(Double.self, forKey: key) { return Int(value) }
     if let value = try? container.decode(String.self, forKey: key) { return Int(value) }
     return nil
 }
 
-struct IdlePolicy: Decodable, Sendable, Hashable {
+nonisolated struct IdlePolicy: Decodable, Sendable, Hashable {
     var sleepAfterMinutes: Int
     var keepPublishedPortsAwake: Bool
     var keepKubernetesAwake: Bool
@@ -151,11 +151,12 @@ struct IdlePolicy: Decodable, Sendable, Hashable {
     }
 }
 
-struct IdleStatus: Decodable, Sendable {
+nonisolated struct IdleStatus: Decodable, Sendable {
     let mode: String
     let autoIdleEnabled: Bool
     let canSleep: Bool
     let sleepAfterMinutes: Int?
+    let effectiveSleepAfterMinutes: Int?
     let blockers: [IdleBlocker]
     let proxyState: IdleProxyState?
     let policy: IdlePolicy?
@@ -165,6 +166,7 @@ struct IdleStatus: Decodable, Sendable {
         case autoIdleEnabled = "auto_idle_enabled"
         case canSleep = "can_sleep"
         case sleepAfterMinutes = "sleep_after_minutes"
+        case effectiveSleepAfterMinutes = "effective_sleep_after_minutes"
         case proxyState = "proxy_state"
     }
 
@@ -176,13 +178,14 @@ struct IdleStatus: Decodable, Sendable {
         autoIdleEnabled = (try? container.decode(Bool.self, forKey: .autoIdleEnabled)) ?? false
         canSleep = (try? container.decode(Bool.self, forKey: .canSleep)) ?? true
         sleepAfterMinutes = decodeFlexibleInt(container, .sleepAfterMinutes)
+        effectiveSleepAfterMinutes = decodeFlexibleInt(container, .effectiveSleepAfterMinutes)
         blockers = (try? container.decode([IdleBlocker].self, forKey: .blockers)) ?? []
         proxyState = try? container.decode(IdleProxyState.self, forKey: .proxyState)
         policy = try? container.decode(IdlePolicy.self, forKey: .policy)
     }
 }
 
-struct IdleHistoryEntry: Decodable, Sendable, Hashable {
+nonisolated struct IdleHistoryEntry: Decodable, Sendable, Hashable {
     let at: String
     let state: String
     let detail: String?
@@ -206,7 +209,7 @@ struct SupportBundleResult: Decodable, Sendable, Equatable {
     let share: String
 }
 
-struct FailableDecodable<Wrapped: Decodable>: Decodable {
+nonisolated struct FailableDecodable<Wrapped: Decodable>: Decodable {
     let value: Wrapped?
     init(from decoder: Decoder) throws {
         value = try? Wrapped(from: decoder)
@@ -281,13 +284,21 @@ enum DoryCLI {
 
 enum HealthDiagnostics {
     static func load(active: Bool) async -> HealthSnapshot {
+        await load(active: active, dorydClient: DorydClient())
+    }
+
+    static func load(active: Bool, dorydClient: DorydClient) async -> HealthSnapshot {
         await load(
             active: active,
             cli: DoryCLI.url(),
-            daemonHealthJSON: { active in await dorydHealthJSON(active: active) },
-            daemonIncidents: { limit in await dorydIncidents(limit: limit) },
-            daemonIdleStatus: { await dorydIdleStatus() },
-            daemonIdleHistory: { limit in await dorydIdleHistory(limit: limit) },
+            daemonHealthJSON: { active in
+                guard !active else { return nil }
+                if let health = try? await dorydClient.healthJSON() { return health }
+                return try? await dorydClient.doctorJSON()
+            },
+            daemonIncidents: { limit in try? await dorydClient.incidents(limit: limit) },
+            daemonIdleStatus: { try? await dorydClient.idleStatus() },
+            daemonIdleHistory: { limit in try? await dorydClient.idleHistory(limit: limit) },
             runCLI: { cli, arguments, timeout in await run(cli, arguments, timeout: timeout) }
         )
     }
@@ -444,27 +455,6 @@ enum HealthDiagnostics {
             }
             return (process.terminationStatus == 0, stdout, stderr)
         }.value
-    }
-
-    private static func dorydHealthJSON(active: Bool) async -> String? {
-        guard !active else { return nil }
-        let client = DorydClient()
-        if let health = try? await client.healthJSON() {
-            return health
-        }
-        return try? await client.doctorJSON()
-    }
-
-    private static func dorydIncidents(limit: Int) async -> [Incident]? {
-        try? await DorydClient().incidents(limit: limit)
-    }
-
-    private static func dorydIdleStatus() async -> IdleStatus? {
-        try? await DorydClient().idleStatus()
-    }
-
-    private static func dorydIdleHistory(limit: Int) async -> [IdleHistoryEntry]? {
-        try? await DorydClient().idleHistory(limit: limit)
     }
 
     private static func childEnvironment() -> [String: String] {

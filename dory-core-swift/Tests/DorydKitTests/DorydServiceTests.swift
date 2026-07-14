@@ -111,9 +111,9 @@ final class DorydServiceTests: XCTestCase {
         XCTAssertEqual(updated["sleep_after_minutes"] as? Int, 30)
 
         let modeReply = expectation(description: "set idle mode")
-        proxy.idleSetMode("manual") { ok, body, message in
+        proxy.idleSetMode("auto-idle") { ok, body, message in
             XCTAssertTrue(ok, message)
-            XCTAssertEqual(body["mode"] as? String, "manual")
+            XCTAssertEqual(body["mode"] as? String, "auto-idle")
             modeReply.fulfill()
         }
         wait(for: [modeReply], timeout: 5)
@@ -130,7 +130,7 @@ final class DorydServiceTests: XCTestCase {
 
         let persisted = try Data(contentsOf: doryDir.appendingPathComponent("config.json"))
         let config = try XCTUnwrap(JSONSerialization.jsonObject(with: persisted) as? [String: Any])
-        XCTAssertEqual(config["runtimeMode"] as? String, "manual")
+        XCTAssertEqual(config["runtimeMode"] as? String, "auto-idle")
         XCTAssertEqual((config["idle"] as? [String: Any])?["sleepAfterMinutes"] as? Int, 30)
     }
 
@@ -210,6 +210,93 @@ final class DorydServiceTests: XCTestCase {
         wait(for: [stop], timeout: 5)
         XCTAssertTrue(stopOK)
         XCTAssertEqual(tier.status().state, .stopped)
+
+        let wake = expectation(description: "engineWake after stop reply")
+        var wakeOK = false
+        var wakeMessage = ""
+        proxy.engineWake { ok, message in
+            wakeOK = ok
+            wakeMessage = message
+            wake.fulfill()
+        }
+        wait(for: [wake], timeout: 5)
+        XCTAssertTrue(wakeOK, wakeMessage)
+        XCTAssertEqual(tier.status().state, .running)
+    }
+
+    func testKeepAwakeModePromotesSleepingEngineBeforeReportingApplied() throws {
+        let home = "/tmp/doryd-mode-promote-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        defer { try? FileManager.default.removeItem(atPath: home) }
+        let store = IdlePolicyStore(home: home, environment: [:])
+        _ = try store.setRuntimeMode("auto-idle")
+        let tier = DockerTier(
+            configuration: DockerTierConfiguration(
+                home: home,
+                forwardSocketPath: home + "/forward.sock",
+                activitySocketPath: home + "/activity.sock",
+                hvProcess: HvProcessConfiguration(executablePath: "/bin/sleep", arguments: ["30"])
+            ),
+            idleController: IdleController(),
+            dockerReadyWaiter: { _, _, _ in true }
+        )
+        try tier.armSleeping()
+        defer { tier.stop() }
+        let service = DorydService(
+            socketPath: tier.socketPath,
+            dockerTier: tier,
+            idlePolicyStore: store
+        )
+
+        var applied = false
+        var returnedMode = ""
+        service.idleSetMode("manual") { ok, status, message in
+            applied = ok
+            returnedMode = status["mode"] as? String ?? ""
+            XCTAssertEqual(message, "")
+        }
+
+        XCTAssertTrue(applied)
+        XCTAssertEqual(returnedMode, "manual")
+        XCTAssertEqual(store.currentRuntimeMode(), "manual")
+        XCTAssertEqual(tier.status().state, .running)
+    }
+
+    func testKeepAwakeModeRollsBackWhenEngineCannotStart() throws {
+        let home = "/tmp/doryd-mode-rollback-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        defer { try? FileManager.default.removeItem(atPath: home) }
+        let store = IdlePolicyStore(home: home, environment: [:])
+        _ = try store.setRuntimeMode("auto-idle")
+        let tier = DockerTier(
+            configuration: DockerTierConfiguration(
+                home: home,
+                forwardSocketPath: home + "/forward.sock",
+                activitySocketPath: home + "/activity.sock",
+                hvProcess: HvProcessConfiguration(executablePath: home + "/missing-dory-hv")
+            ),
+            idleController: IdleController(),
+            dockerReadyWaiter: { _, _, _ in false }
+        )
+        try tier.armSleeping()
+        defer { tier.stop() }
+        let service = DorydService(
+            socketPath: tier.socketPath,
+            dockerTier: tier,
+            idlePolicyStore: store
+        )
+
+        var applied = true
+        var returnedMode = ""
+        var failure = ""
+        service.idleSetMode("always-on") { ok, status, message in
+            applied = ok
+            returnedMode = status["mode"] as? String ?? ""
+            failure = message
+        }
+
+        XCTAssertFalse(applied)
+        XCTAssertEqual(returnedMode, "auto-idle")
+        XCTAssertEqual(store.currentRuntimeMode(), "auto-idle")
+        XCTAssertTrue(failure.contains("missing"), failure)
     }
 
     func testEngineSleepOverXPCStopsEmptyHelperAndIsIdempotent() throws {

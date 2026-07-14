@@ -492,7 +492,8 @@ struct HealthView: View {
             return "Auto-Idle is off (mode: \(idle.mode)). The engine stays resident until stopped."
         }
         if idle.canSleep {
-            let minutes = idle.sleepAfterMinutes.map { " after \($0)m idle" } ?? ""
+            let minutes = (idle.effectiveSleepAfterMinutes ?? idle.sleepAfterMinutes)
+                .map { " after \($0)m idle" } ?? ""
             return "No active workloads — the engine may sleep\(minutes)."
         }
         return "\(idle.blockers.count) workload\(idle.blockers.count == 1 ? "" : "s") keeping the engine awake."

@@ -579,6 +579,79 @@ final class DockerTierTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: tier.socketPath))
     }
 
+    func testClientArrivingDuringColdWakeWaitsForSamePromotion() async throws {
+        let base = "/tmp/dory-tier-late-wake-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+
+        let readyWaitEntered = DispatchSemaphore(value: 0)
+        let releaseReadyWait = DispatchSemaphore(value: 0)
+        let lateWakeFinished = DispatchSemaphore(value: 0)
+        let tier = DockerTier(
+            configuration: DockerTierConfiguration(
+                home: base + "/home",
+                forwardSocketPath: base + "/forward.sock",
+                activitySocketPath: base + "/activity.sock",
+                hvProcess: HvProcessConfiguration(
+                    executablePath: "/bin/sleep",
+                    arguments: ["30"]
+                )
+            ),
+            idleController: IdleController(),
+            dockerReadyWaiter: { _, _, shouldContinue in
+                readyWaitEntered.signal()
+                _ = releaseReadyWait.wait(timeout: .now() + 2)
+                return shouldContinue()
+            }
+        )
+        try tier.armSleeping()
+        defer { tier.stop() }
+
+        let firstWake = Task { await tier.ensureAwake() }
+        XCTAssertEqual(readyWaitEntered.wait(timeout: .now() + 2), .success)
+        XCTAssertEqual(tier.status().state, .starting)
+
+        let lateWake = Task {
+            await tier.ensureAwake()
+            lateWakeFinished.signal()
+        }
+        XCTAssertEqual(lateWakeFinished.wait(timeout: .now() + 0.1), .timedOut)
+
+        releaseReadyWait.signal()
+        await firstWake.value
+        await lateWake.value
+        XCTAssertEqual(tier.status().state, .running)
+    }
+
+    func testPromotionRestartsExplicitlyStoppedTier() throws {
+        let base = "/tmp/dory-tier-promote-stopped-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+
+        let tier = DockerTier(
+            configuration: DockerTierConfiguration(
+                home: base + "/home",
+                forwardSocketPath: base + "/forward.sock",
+                activitySocketPath: base + "/activity.sock",
+                hvProcess: HvProcessConfiguration(
+                    executablePath: "/bin/sleep",
+                    arguments: ["30"]
+                )
+            ),
+            idleController: IdleController(),
+            dockerReadyWaiter: { _, _, _ in true }
+        )
+        defer { tier.stop() }
+
+        try tier.start()
+        tier.stop()
+        XCTAssertEqual(tier.status().state, .stopped)
+
+        try tier.promoteToRunning(timeout: 2)
+        XCTAssertEqual(tier.status().state, .running)
+        XCTAssertNotNil(tier.status().hvPID)
+    }
+
     func testIdleSleepSuspendsHelperAndWakeResumesSameProcess() async throws {
         let base = "/tmp/dory-tier-sleep-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)

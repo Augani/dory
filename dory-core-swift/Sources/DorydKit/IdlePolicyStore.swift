@@ -142,7 +142,10 @@ public final class IdlePolicyStore: @unchecked Sendable {
         let policy = policy(from: config)
         return IdleSleepConfiguration(
             enabled: Self.autoIdleEnabled(mode),
-            idleAfterSeconds: TimeInterval(policy.sleepAfterMinutes * 60),
+            idleAfterSeconds: TimeInterval(Self.effectiveSleepAfterMinutes(
+                mode: mode,
+                configuredMinutes: policy.sleepAfterMinutes
+            ) * 60),
             checkIntervalSeconds: base.checkIntervalSeconds
         )
     }
@@ -155,6 +158,10 @@ public final class IdlePolicyStore: @unchecked Sendable {
             "mode": snapshot.mode,
             "auto_idle_enabled": Self.autoIdleEnabled(snapshot.mode),
             "sleep_after_minutes": snapshot.policy.sleepAfterMinutes,
+            "effective_sleep_after_minutes": Self.effectiveSleepAfterMinutes(
+                mode: snapshot.mode,
+                configuredMinutes: snapshot.policy.sleepAfterMinutes
+            ),
             "can_sleep": snapshot.blockers.isEmpty,
             "blockers": snapshot.blockers,
             "proxy_state": readProxyState(),
@@ -417,6 +424,10 @@ public final class IdlePolicyStore: @unchecked Sendable {
 
     private static func autoIdleEnabled(_ mode: String) -> Bool {
         mode == "auto-idle" || mode == "battery-saver"
+    }
+
+    private static func effectiveSleepAfterMinutes(mode: String, configuredMinutes: Int) -> Int {
+        mode == "battery-saver" ? min(5, configuredMinutes) : configuredMinutes
     }
 
     private static func parseBool(_ raw: String) -> Bool? {

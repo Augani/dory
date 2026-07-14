@@ -2179,6 +2179,13 @@ import json, sys
 data = json.load(sys.stdin)
 print("Mode: {}".format(data.get("mode", "unknown")))
 print("Auto-Idle enabled: {}".format("yes" if data.get("auto_idle_enabled") else "no"))
+configured = data.get("sleep_after_minutes")
+effective = data.get("effective_sleep_after_minutes", configured)
+if configured is not None:
+    if effective != configured:
+        print("Sleep after idle: {} minutes effective ({} configured)".format(effective, configured))
+    else:
+        print("Sleep after idle: {} minutes".format(configured))
 print("Can sleep now: {}".format("yes" if data.get("can_sleep") else "no"))
 state = data.get("proxy_state") or {}
 print("Doryd idle state: {} ({})".format(state.get("state", "unknown"), state.get("detail", "no state")))
@@ -2206,7 +2213,7 @@ mode_cmd() {
     if [ "$mode" = "show" ]; then
       out="$("$ctl" --timeout 5 idle status 2>/dev/null)"
     else
-      out="$("$ctl" --timeout 5 idle mode "$mode" 2>/dev/null)"
+      out="$("$ctl" --timeout 250 idle mode "$mode" 2>/dev/null)"
     fi
     rc=$?
     set -e
@@ -2279,6 +2286,9 @@ data = json.load(sys.stdin)
 policy = data.get("policy") or {}
 print("Set idle policy. Mode: {}".format(data.get("mode", "unknown")))
 print("Sleep after idle: {} minutes".format(policy.get("sleepAfterMinutes")))
+effective = data.get("effective_sleep_after_minutes")
+if effective is not None and effective != policy.get("sleepAfterMinutes"):
+    print("Effective sleep delay: {} minutes".format(effective))
 print("Keep published ports awake: {}".format(policy.get("keepPublishedPortsAwake")))
 print("Keep Kubernetes awake: {}".format(policy.get("keepKubernetesAwake")))
 '
@@ -2327,9 +2337,9 @@ engine_cmd() {
         fi
         ;;
       wake|start)
-        if [ "$json" -eq 1 ]; then exec "$ctl" --timeout 90 engine wake; fi
+        if [ "$json" -eq 1 ]; then exec "$ctl" --timeout 250 engine wake; fi
         set +e
-        out="$("$ctl" --timeout 90 engine wake 2>&1)"
+        out="$("$ctl" --timeout 250 engine wake 2>&1)"
         rc=$?
         set -e
         if [ "$rc" -eq 0 ]; then

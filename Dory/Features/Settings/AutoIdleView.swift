@@ -7,7 +7,7 @@ struct AutoIdleView: View {
     private let modes: [(id: String, title: String, detail: String)] = [
         ("always-on", "Always On", "Dory starts the engine when the app opens and keeps it running."),
         ("auto-idle", "Auto-Idle", "Dory starts on app open; doryd sleeps it after idle time."),
-        ("battery-saver", "Battery Saver", "Auto-Idle with the same blockers and sleep policy."),
+        ("battery-saver", "Battery Saver", "Auto-Idle with the same blockers and a 5-minute maximum idle delay."),
         ("manual", "Manual Stop", "Dory keeps the engine running until you stop it."),
     ]
 
