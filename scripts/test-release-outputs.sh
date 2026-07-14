@@ -1522,8 +1522,14 @@ assert "runs-on: macos-15" in release, "Homebrew audit still depends on the phys
 assert "dory-release-candidate-${{ github.sha }}-${{ github.run_attempt }}" in release, \
     "Homebrew audit is not bound to the immutable candidate artifact"
 assert "brew style \"$audit_root/Casks/dory.rb\"" in release, "staged cask skips Homebrew style"
-assert "brew audit --cask --strict \"$audit_root/Casks/dory.rb\"" in release, \
-    "staged cask skips strict Homebrew audit"
+assert "brew tap-new \"$audit_tap\"" in release, \
+    "staged cask is not loaded through a supported temporary Homebrew tap"
+assert "brew audit --cask --strict \"$audit_tap/dory\"" in release, \
+    "staged cask skips the current name-based strict Homebrew audit"
+assert "brew untap --force \"$audit_tap\"" in release, \
+    "staged cask audit does not clean up its temporary tap"
+assert "brew audit --cask --strict \"$audit_root/Casks/dory.rb\"" not in release, \
+    "staged cask still uses Homebrew's disabled path-based audit"
 assert "dory-homebrew-audit-evidence-${{ github.sha }}-${{ github.run_attempt }}" in release, \
     "Homebrew audit evidence is not retained and rerun-bound"
 assert "Verify Homebrew audit evidence binding" in release, \

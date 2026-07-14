@@ -984,9 +984,13 @@ jobs:
           ARM64_SHA256: ${{ needs.release_candidate.outputs.sha256 }}
         run: |
           set -euo pipefail
-          audit_root="$RUNNER_TEMP/dory-homebrew-audit"
+          audit_tap="doryci/release-audit"
           evidence="$RUNNER_TEMP/dory-homebrew-audit-evidence"
-          rm -rf "$audit_root" "$evidence"
+          rm -rf "$evidence"
+          brew untap --force "$audit_tap" >/dev/null 2>&1 || true
+          trap 'brew untap --force "$audit_tap" >/dev/null 2>&1 || true' EXIT
+          brew tap-new "$audit_tap" >/dev/null
+          audit_root="$(brew --repository "$audit_tap")"
           mkdir -p "$audit_root/Casks" "$evidence"
           actual_sha="$(shasum -a 256 "release-build/Dory-$VERSION.zip" | awk '{print $1}')"
           test "$actual_sha" = "$ARM64_SHA256"
@@ -998,7 +1002,7 @@ jobs:
           grep -qF "version \"$VERSION\"" "$audit_root/Casks/dory.rb"
           grep -qF "sha256 \"$ARM64_SHA256\"" "$audit_root/Casks/dory.rb"
           brew style "$audit_root/Casks/dory.rb" 2>&1 | tee "$evidence/style.log"
-          brew audit --cask --strict "$audit_root/Casks/dory.rb" 2>&1 \
+          brew audit --cask --strict "$audit_tap/dory" 2>&1 \
             | tee "$evidence/audit.log"
           cp "$audit_root/Casks/dory.rb" "$evidence/dory.rb"
           brew --version > "$evidence/brew-version.txt"
