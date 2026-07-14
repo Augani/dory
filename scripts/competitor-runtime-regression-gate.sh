@@ -17,6 +17,7 @@ FD_GROWTH_BUDGET="${DORY_COMPAT_FD_GROWTH_BUDGET:-8}"
 DOCKER_BIN="${DORY_COMPAT_DOCKER_BIN:-docker}"
 RUNTIME="${DORY_COMPAT_RUNTIME:-}"
 RUNTIME_HOME="${DORY_COMPAT_RUNTIME_HOME:-$(dirname "$STATE_DIR")}"
+SOURCE_COMMIT="${DORY_COMPAT_SOURCE_COMMIT:-}"
 
 usage() {
   cat <<EOF
@@ -33,6 +34,7 @@ Options:
   --docker PATH         Docker CLI to qualify (default: docker from PATH)
   --runtime PATH        Optional standalone dory-engine launcher for an engine-restart test
   --runtime-home PATH   Isolated HOME owned by that launcher (default: parent of state dir)
+  --source-commit SHA   Exact 40-character source commit for release-artifact evidence
   -h, --help
 
 The gate never pulls an image. Every container, volume, Compose project, and built image is
@@ -55,6 +57,7 @@ while [ "$#" -gt 0 ]; do
     --docker) need_value "$1" "$#"; DOCKER_BIN="$2"; shift 2 ;;
     --runtime) need_value "$1" "$#"; RUNTIME="$2"; shift 2 ;;
     --runtime-home) need_value "$1" "$#"; RUNTIME_HOME="$2"; shift 2 ;;
+    --source-commit) need_value "$1" "$#"; SOURCE_COMMIT="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown option: $1" ;;
   esac
@@ -70,6 +73,12 @@ nonnegative_integer() {
 positive_integer connections "$CONNECTIONS"
 positive_integer restarts "$RESTARTS"
 nonnegative_integer fd-growth "$FD_GROWTH_BUDGET"
+if [ -n "$SOURCE_COMMIT" ]; then
+  printf '%s\n' "$SOURCE_COMMIT" | grep -Eq '^[0-9a-f]{40}$' \
+    || die "source commit must be a full lowercase Git SHA"
+else
+  SOURCE_COMMIT="$(git rev-parse HEAD 2>/dev/null || true)"
+fi
 
 for command in cmp curl lsof mkfifo ps python3 shasum stat tar; do
   command -v "$command" >/dev/null || die "missing required command: $command"
@@ -154,6 +163,7 @@ printf 'test\tstatus\tdetail\n' > "$RESULTS"
   echo "docker_bin=$DOCKER_BIN"
   echo "runtime=${RUNTIME:-none}"
   echo "runtime_home=$RUNTIME_HOME"
+  [ -z "$SOURCE_COMMIT" ] || echo "source_commit=$SOURCE_COMMIT"
   echo "started_epoch=$(date +%s)"
 } > "$MANIFEST"
 docker_bin_resolved="$DOCKER_BIN"
@@ -164,8 +174,6 @@ esac
 {
   echo "docker_bin_resolved=$docker_bin_resolved"
   echo "docker_bin_sha256=$(shasum -a 256 "$docker_bin_resolved" | awk '{print $1}')"
-  source_commit="$(git rev-parse HEAD 2>/dev/null || true)"
-  [ -z "$source_commit" ] || echo "source_commit=$source_commit"
   if [ -n "$RUNTIME" ]; then
     runtime_dir="$(cd "$(dirname "$RUNTIME")" && pwd -P)"
     for runtime_file in \

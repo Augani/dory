@@ -989,6 +989,7 @@ bounded 1800 scripts/competitor-runtime-regression-gate.sh \
   --docker "$DOCKER" \
   --runtime "$RUNTIME" \
   --runtime-home "$ENGINE_HOME" \
+  --source-commit "$SOURCE_COMMIT" \
   > "$WORKDIR/evidence/competitor-runtime.log" 2>&1 \
   || die "bounded competitor runtime/backpressure/restart gate failed"
 competitor_results="$(find "$ENGINE_HOME/gate-evidence/competitor-runtime" \
@@ -999,6 +1000,8 @@ competitor_manifest="$(dirname "$competitor_results")/manifest.txt"
 competitor_docker_sha="$(shasum -a 256 "$DOCKER" | awk '{print $1}')"
 grep -qx "docker_bin_sha256=$competitor_docker_sha" "$competitor_manifest" \
   || die "competitor runtime manifest is not bound to the qualified Docker CLI"
+grep -qx "source_commit=$SOURCE_COMMIT" "$competitor_manifest" \
+  || die "competitor runtime manifest is not bound to the qualified source commit"
 grep -Eq '^dory_engine_sha256=[0-9a-f]{64}$' "$competitor_manifest" \
   || die "competitor runtime manifest omits the launcher digest"
 grep -Eq '^bin_dory_hv_sha256=[0-9a-f]{64}$' "$competitor_manifest" \

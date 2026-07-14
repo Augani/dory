@@ -548,6 +548,8 @@ competitor_results="$(single_evidence_file competitor-runtime results.tsv)"
 competitor_manifest="$(single_evidence_file competitor-runtime manifest.txt)"
 [ "$(wc -l < "$competitor_results" | tr -d ' ')" -gt 1 ] \
   || die "retained competitor runtime evidence has no result rows"
+grep -qx "source_commit=$SOURCE_COMMIT" "$competitor_manifest" \
+  || die "retained competitor runtime evidence used the wrong source commit"
 for digest_key in docker_bin_sha256 dory_engine_sha256 bin_dory_hv_sha256 \
   bin_gvproxy_sha256 bin_dory_dataplane_proxy_sha256 \
   share_dory_dory_hv_kernel_arm64_lzfse_sha256 \

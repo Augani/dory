@@ -474,6 +474,11 @@ grep -F 'ingress_only_network_policy_egress=PASS' \
 grep -F 'standalone bind fixture workroot must be inside runtime HOME' \
   scripts/competitor-runtime-regression-gate.sh >/dev/null \
   || fail "standalone competitor gate can mistake an unshared guest path for a host bind"
+grep -F -- '--source-commit "$SOURCE_COMMIT"' scripts/qualify-release-candidate.sh >/dev/null \
+  || fail "exact release qualification does not bind competitor evidence to its source commit"
+grep -F 'source_commit=$SOURCE_COMMIT' scripts/qualify-release-candidate.sh \
+  scripts/verify-release-qualification.sh >/dev/null \
+  || fail "release qualification does not verify competitor evidence source identity"
 for standalone_setting in 'SETTINGSFILE="$STATE/engine-settings"' '--no-amd64' \
   'amd64_enabled=1' 'DATA_DRIVE="$recorded_drive"' \
   'restart-policy container did not resume within 20 seconds'; do
@@ -969,6 +974,11 @@ if scripts/competitor-runtime-regression-gate.sh --connections 0 > "$TMP/compat.
   fail "runtime compatibility gate accepted zero forwarded connections"
 fi
 grep -q 'connections must be a positive integer' "$TMP/compat.err"
+if scripts/competitor-runtime-regression-gate.sh \
+    --source-commit not-a-commit > "$TMP/compat-source.out" 2> "$TMP/compat-source.err"; then
+  fail "runtime compatibility gate accepted an invalid source commit"
+fi
+grep -q 'source commit must be a full lowercase Git SHA' "$TMP/compat-source.err"
 if scripts/restart-pressure-soak.sh --duration 0 > "$TMP/pressure.out" 2> "$TMP/pressure.err"; then
   fail "restart pressure gate accepted zero duration"
 fi

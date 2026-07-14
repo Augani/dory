@@ -693,6 +693,7 @@ competitor_engine_settings_sha="$(
     | awk '{print $1}'
 )"
 cat > "$QUALIFICATION_FIXTURE/evidence/competitor-runtime/run/manifest.txt" <<EOF
+source_commit=0123456789abcdef0123456789abcdef01234567
 docker_bin_sha256=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 dory_engine_sha256=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 bin_dory_hv_sha256=$DORY_HV_SHA
