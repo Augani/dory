@@ -13,7 +13,7 @@ struct DoryApp: App {
         signal(SIGPIPE, SIG_IGN)
         DoryAppDelegate.exitDuplicateInstanceIfNeeded()
         let store = AppStore()
-        if !DoryAppDelegate.isNetworkHelperRegistration() {
+        if !DoryAppDelegate.isNetworkHelperMaintenance() {
             store.startBackendIfNeeded()
             DoryAppDelegate.configureMenuBar(store: store)
         }

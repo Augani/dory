@@ -18,8 +18,17 @@ final class DoryAppDelegate: NSObject, NSApplicationDelegate {
         arguments.dropFirst().contains("--register-network-helper")
     }
 
+    static func isNetworkHelperUnregistration(arguments: [String] = CommandLine.arguments) -> Bool {
+        arguments.dropFirst().contains("--unregister-network-helper")
+    }
+
+    static func isNetworkHelperMaintenance(arguments: [String] = CommandLine.arguments) -> Bool {
+        isNetworkHelperRegistration(arguments: arguments)
+            || isNetworkHelperUnregistration(arguments: arguments)
+    }
+
     static func exitDuplicateInstanceIfNeeded() {
-        guard !isNetworkHelperRegistration() else { return }
+        guard !isNetworkHelperMaintenance() else { return }
         guard !isTestHost, let bundleIdentifier = Bundle.main.bundleIdentifier else { return }
         guard acquireInstanceLock() else {
             runningInstance(bundleIdentifier: bundleIdentifier)?.activate(options: [.activateAllWindows])
@@ -98,11 +107,17 @@ final class DoryAppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         guard !Self.isTestHost else { return }
-        if Self.isNetworkHelperRegistration() {
+        if Self.isNetworkHelperMaintenance() {
+            let enabling = Self.isNetworkHelperRegistration()
             Task {
                 do {
-                    try await AppStore.refreshPrivilegedNetworkDaemonFromCurrentBundle()
-                    FileHandle.standardOutput.write(Data("network-helper=enabled\n".utf8))
+                    if enabling {
+                        try await AppStore.refreshPrivilegedNetworkDaemonFromCurrentBundle()
+                    } else {
+                        try await AppStore.unregisterPrivilegedNetworkDaemon()
+                    }
+                    let state = enabling ? "enabled" : "disabled"
+                    FileHandle.standardOutput.write(Data("network-helper=\(state)\n".utf8))
                     exit(EXIT_SUCCESS)
                 } catch {
                     FileHandle.standardError.write(Data("network-helper=error: \(error.localizedDescription)\n".utf8))

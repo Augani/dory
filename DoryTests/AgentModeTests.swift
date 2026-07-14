@@ -56,6 +56,10 @@ struct AgentModeTests {
     @Test func networkHelperRegistrationModeIsExplicit() {
         #expect(DoryAppDelegate.isNetworkHelperRegistration(arguments: ["Dory", "--register-network-helper"]))
         #expect(!DoryAppDelegate.isNetworkHelperRegistration(arguments: ["Dory", "--other"]))
+        #expect(DoryAppDelegate.isNetworkHelperUnregistration(arguments: ["Dory", "--unregister-network-helper"]))
+        #expect(!DoryAppDelegate.isNetworkHelperUnregistration(arguments: ["Dory", "--other"]))
+        #expect(DoryAppDelegate.isNetworkHelperMaintenance(arguments: ["Dory", "--register-network-helper"]))
+        #expect(DoryAppDelegate.isNetworkHelperMaintenance(arguments: ["Dory", "--unregister-network-helper"]))
     }
 
     @Test func windowGateInertUnderTests() {

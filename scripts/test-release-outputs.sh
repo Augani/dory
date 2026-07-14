@@ -30,6 +30,10 @@ grep -Fq 'bundle_debug_transfer_helper' scripts/build.sh \
   || { echo "test-release-outputs: debug bundler omits the transfer-helper image" >&2; exit 1; }
 grep -Fq '_ = DoryUpdater.shared' Dory/Models/AppStore.swift \
   || { echo "test-release-outputs: app launch no longer starts Sparkle" >&2; exit 1; }
+grep -Fq -- '--unregister-network-helper' Dory/App/AppDelegate.swift \
+  || { echo "test-release-outputs: app cannot unregister its privileged helper" >&2; exit 1; }
+grep -Fq -- '--unregister-network-helper' scripts/dory \
+  || { echo "test-release-outputs: ordinary uninstall leaves the privileged helper registered" >&2; exit 1; }
 if rg -q 'dory\.autoUpdate|automaticallyChecksForUpdates' Dory; then
   echo "test-release-outputs: app code overrides Sparkle automatic-check consent" >&2
   exit 1

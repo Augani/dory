@@ -68,6 +68,7 @@ printf 'ProductName:\tmacOS\nProductVersion:\t14.7\nBuildVersion:\t23H124\n'
 SH
 cat > "$TMP_HOME/fake-system-bin/launchctl" <<'SH'
 #!/bin/sh
+printf '%s\n' "$*" >> "$HOME/.fake-launchctl-commands"
 printf 'service = dev.dory.doryd\nstate = running\ntoken=supersecret\n'
 SH
 cat > "$TMP_HOME/fake-system-bin/log" <<'SH'
@@ -76,6 +77,7 @@ printf '2026-07-08 00:00:00.000 Dory[123]: Authorization: Bearer secret-token\n'
 SH
 chmod +x "$TMP_HOME/fake-system-bin/sw_vers" "$TMP_HOME/fake-system-bin/launchctl" "$TMP_HOME/fake-system-bin/log"
 export PATH="$TMP_HOME/fake-system-bin:$PATH"
+export DORY_LAUNCHCTL_BIN="$TMP_HOME/fake-system-bin/launchctl"
 
 python3 -m py_compile scripts/dory-doctor
 python3 -m py_compile scripts/dory-idle-proxy
@@ -173,6 +175,13 @@ case "${1:-} ${2:-}" in
 esac
 SH
 chmod +x "$TMP_HOME/fake-bin/docker"
+cat > "$TMP_HOME/fake-bin/Dory-maintenance" <<'SH'
+#!/bin/sh
+test "${1:-}" = --unregister-network-helper
+printf '%s\n' "$*" >> "$HOME/.fake-app-maintenance-commands"
+printf 'network-helper=disabled\n'
+SH
+chmod +x "$TMP_HOME/fake-bin/Dory-maintenance"
 
 install_json="$(DORY_DOCKER_BIN="$TMP_HOME/fake-bin/docker" \
   DORY_DOCKER_BUILDX_BIN="$TMP_HOME/fake-bin/docker-buildx" \
@@ -197,11 +206,19 @@ assert os.path.islink(os.path.expanduser("~/.docker/cli-plugins/docker-buildx"))
 assert "dory cli" in open(os.path.expanduser("~/.zprofile"), encoding="utf-8").read()
 '
 
+launch_agent="$TMP_HOME/Library/LaunchAgents/dev.dory.doryd.plist"
+mkdir -p "$(dirname "$launch_agent")"
+plutil -create xml1 "$launch_agent"
+plutil -insert Label -string dev.dory.doryd "$launch_agent"
+plutil -insert ProgramArguments \
+  -json '["/Applications/Dory.app/Contents/Helpers/doryd"]' "$launch_agent"
+
 uninstall_json="$(DORY_DOCKER_BIN="$TMP_HOME/fake-bin/docker" \
   DORY_DOCKER_BUILDX_BIN="$TMP_HOME/fake-bin/docker-buildx" \
   DORY_DOCKER_COMPOSE_BIN="$TMP_HOME/fake-bin/docker-compose" \
   DORY_KUBECTL_BIN="$TMP_HOME/fake-bin/kubectl" \
   DORYDCTL_BIN="$TMP_HOME/fake-bin/dorydctl" \
+  DORY_APP_BIN="$TMP_HOME/fake-bin/Dory-maintenance" \
   scripts/dory uninstall --json)"
 printf '%s' "$uninstall_json" | python3 -c '
 import json, os, sys
@@ -213,9 +230,24 @@ assert not os.path.exists(os.path.expanduser("~/.dory/bin/docker"))
 assert not os.path.exists(os.path.expanduser("~/.docker/cli-plugins/docker-compose"))
 assert not os.path.exists(os.path.expanduser("~/.docker/cli-plugins/docker-buildx"))
 assert not os.path.exists(os.path.expanduser("~/.zprofile"))
+assert not os.path.exists(os.path.expanduser("~/Library/LaunchAgents/dev.dory.doryd.plist"))
 '
 test ! -e "$TMP_HOME/.fake-dory-context"
 test "$(cat "$TMP_HOME/.fake-current-context")" = default
+grep -Fxq "bootout gui/$(id -u)/dev.dory.doryd" "$TMP_HOME/.fake-launchctl-commands"
+grep -Fxq -- '--unregister-network-helper' "$TMP_HOME/.fake-app-maintenance-commands"
+
+# Uninstall never follows or deletes a foreign LaunchAgent symlink.
+printf '%s\n' 'user-owned' > "$TMP_HOME/user-owned-launch-agent"
+ln -s "$TMP_HOME/user-owned-launch-agent" "$launch_agent"
+if DORY_DOCKER_BIN="$TMP_HOME/fake-bin/docker" scripts/dory uninstall --json \
+  >"$TMP_HOME/symlinked-launch-agent.out" 2>"$TMP_HOME/symlinked-launch-agent.err"; then
+  echo "dory uninstall removed a symlinked LaunchAgent" >&2
+  exit 1
+fi
+grep -q 'left a symlinked LaunchAgent untouched' "$TMP_HOME/symlinked-launch-agent.err"
+test "$(cat "$TMP_HOME/user-owned-launch-agent")" = user-owned
+rm -f "$launch_agent" "$TMP_HOME/user-owned-launch-agent"
 
 # Existing profile bytes, including a missing final newline, survive an install/uninstall cycle.
 printf '%s' 'export USER_SETTING=1' > "$TMP_HOME/.zprofile"

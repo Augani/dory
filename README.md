@@ -197,6 +197,20 @@ The production release ships arm64 artifacts only:
 | `Dory-x.y.z-lite.zip` | **App only** (~6 MB) — front an engine you already run (Colima, Docker Desktop, OrbStack, Rancher Desktop, Podman) |
 | `dory-engine-x.y.z-arm64.tar.gz` | **Headless engine runtime**, no GUI — `./dory-engine start`, then `docker context use dory-engine`. Colima-style; FEX/amd64 is on by default and `--no-amd64` is the opt-out. |
 
+## Uninstall
+
+Homebrew stops Dory and removes its CLI, Docker context, plugins, LaunchAgent, and approved network
+helper automatically:
+
+```sh
+brew uninstall --cask Augani/dory/dory
+```
+
+For a DMG installation, quit Dory and run `dory uninstall` before deleting `Dory.app`. Ordinary
+uninstall and Homebrew `--zap` both preserve the selected `.dorydrive`, including images,
+containers, volumes, networks, and machines. Dory never treats app removal as permission to erase
+workload data.
+
 ## Engine backends
 
 Dory defaults to its own engine, and **Settings → Engine Backend** switches it Colima-style — no

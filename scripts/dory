@@ -76,7 +76,7 @@ dory — Dory CLI
   dory install [--json] [--dry-run]
                                Manual recovery for doryd's per-user terminal integration for docker, compose, kubectl, and dory
   dory uninstall [--json] [--dry-run]
-                               Remove Dory shell integration from ~/.dory/bin and shell profiles
+                               Stop Dory services and remove runtime/shell integration; preserve workload data
   dory shell <container>       Open an interactive shell in a container
   dory debug <container> [-- cmd...]
                                Reserved for a future agent namespace-debug RPC (currently unavailable)
@@ -344,6 +344,50 @@ PY
   [ "$changed" -eq 1 ]
 }
 
+remove_dory_launch_agent() {
+  local dry_run="$1" plist="$HOME/Library/LaunchAgents/dev.dory.doryd.plist"
+  local launchctl_bin="${DORY_LAUNCHCTL_BIN:-/bin/launchctl}" service output label program
+  service="gui/$(id -u)/dev.dory.doryd"
+  if [ "$dry_run" -eq 0 ]; then
+    if ! output="$("$launchctl_bin" bootout "$service" 2>&1)"; then
+      case "$output" in
+        *"No such process"*|*"Could not find service"*) ;;
+        *) echo "Dory could not stop its LaunchAgent: $output" >&2; return 1 ;;
+      esac
+    fi
+  fi
+  [ -e "$plist" ] || [ -L "$plist" ] || return 0
+  if [ -L "$plist" ]; then
+    echo "Dory left a symlinked LaunchAgent untouched: $plist" >&2
+    return 1
+  fi
+  label="$(/usr/bin/plutil -extract Label raw -o - "$plist" 2>/dev/null || true)"
+  program="$(/usr/bin/plutil -extract ProgramArguments.0 raw -o - "$plist" 2>/dev/null || true)"
+  if [ "$label" != dev.dory.doryd ]; then
+    echo "Dory left a LaunchAgent with an unexpected label untouched: $plist" >&2
+    return 1
+  fi
+  case "$program" in
+    */Dory.app/Contents/Helpers/doryd) ;;
+    *) echo "Dory left a LaunchAgent with an unexpected program untouched: $plist" >&2; return 1 ;;
+  esac
+  [ "$dry_run" -eq 1 ] || rm -f "$plist"
+}
+
+unregister_privileged_network_helper() {
+  local dry_run="$1" app_bin="${DORY_APP_BIN:-$DORY_SCRIPT_DIR/../MacOS/Dory}" output
+  [ -x "$app_bin" ] || return 0
+  [ "$dry_run" -eq 0 ] || return 0
+  if ! output="$("$app_bin" --unregister-network-helper 2>&1)"; then
+    echo "Dory could not unregister its privileged network helper: $output" >&2
+    return 1
+  fi
+  printf '%s\n' "$output" | grep -Fx 'network-helper=disabled' >/dev/null || {
+    echo "Dory could not confirm privileged network helper removal." >&2
+    return 1
+  }
+}
+
 csv_append() {
   local list="$1" item="$2"
   [ -n "$list" ] && printf '%s,%s' "$list" "$item" || printf '%s' "$item"
@@ -439,6 +483,8 @@ install_cmd() {
   local context_reconciled=0 context_removed=0 docker_source=""
 
   if [ "$action" = "uninstall" ]; then
+    remove_dory_launch_agent "$dry_run" || return 1
+    unregister_privileged_network_helper "$dry_run" || return 1
     docker_source="$(cli_tool_source docker 2>/dev/null || true)"
     if [ -n "$docker_source" ] && remove_docker_context "$docker_source" "$dry_run"; then
       context_removed=1
@@ -454,7 +500,7 @@ install_cmd() {
       done
       rm -f "$HOME/.dory/compose-plugin-owned"
     fi
-    [ "$json" -eq 1 ] && install_emit_json "$action" "$dry_run" "$path_changed" 0 0 "" "" 0 "$context_removed" || echo "Dory shell integration removed."
+    [ "$json" -eq 1 ] && install_emit_json "$action" "$dry_run" "$path_changed" 0 0 "" "" 0 "$context_removed" || echo "Dory services and shell integration removed; workload data was preserved."
     return 0
   fi
 

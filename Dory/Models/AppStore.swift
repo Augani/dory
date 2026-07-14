@@ -182,7 +182,9 @@ final class AppStore {
         self.dorydLaunchAgentEnsurer = dorydLaunchAgentEnsurer ?? { configuration in
             await DorydLaunchAgent.ensureCurrent(configuration: configuration)
         }
-        let realLaunch = env["DORY_SECTION"] == nil && env["DORY_APPEARANCE"] == nil
+        let networkHelperMaintenance = DoryAppDelegate.isNetworkHelperMaintenance()
+        let realLaunch = !networkHelperMaintenance
+            && env["DORY_SECTION"] == nil && env["DORY_APPEARANCE"] == nil
             && env["XCTestConfigurationFilePath"] == nil && env["DORY_UI_TEST"] != "1"
         // Every launch starts disconnected (empty, engine-off) until a real engine connects: the app
         // ships no demo data. Tests inject their own fixture runtime through the parameter.
@@ -259,7 +261,8 @@ final class AppStore {
             if parsed == .inspectNetwork { inspectedNetwork = networks.first(where: { $0.containerCount > 0 }) ?? networks.first }
         }
         let snapshotMode = env["DORY_SECTION"] != nil || env["DORY_SHEET"] != nil || env["DORY_DETAIL_TAB"] != nil
-        let testMode = env["XCTestConfigurationFilePath"] != nil || env["XCTestSessionIdentifier"] != nil || env["DORY_UI_TEST"] == "1"
+        let testMode = networkHelperMaintenance || env["XCTestConfigurationFilePath"] != nil
+            || env["XCTestSessionIdentifier"] != nil || env["DORY_UI_TEST"] == "1"
         isSnapshotMode = snapshotMode
         if snapshotMode || testMode { launchSplashComplete = true }
         if env["DORY_ONBOARDING"] == "1" {
@@ -1612,6 +1615,26 @@ final class AppStore {
         guard service.status == .enabled else {
             SMAppService.openSystemSettingsLoginItems()
             throw NetworkingAuthorizationUIError.daemonApprovalRequired
+        }
+    }
+
+    nonisolated static func unregisterPrivilegedNetworkDaemon() async throws {
+        let service = SMAppService.daemon(plistName: "dev.dory.network-helper.plist")
+        switch service.status {
+        case .enabled, .requiresApproval:
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                service.unregister { error in
+                    if let error {
+                        continuation.resume(throwing: error)
+                    } else {
+                        continuation.resume()
+                    }
+                }
+            }
+        case .notRegistered, .notFound:
+            return
+        @unknown default:
+            throw NetworkingAuthorizationUIError.daemonUnavailable
         }
     }
 
