@@ -56,6 +56,11 @@ jobs:
           sysctl -n machdep.cpu.brand_string
           sysctl kern.hv_support
           test "$(uname -m)" = "x86_64"
+          test "$(sysctl -n kern.hv_support)" = 1
+          test "$(sysctl -in sysctl.proc_translated 2>/dev/null || printf 0)" != 1
+          test "$(sysctl -in kern.hv_vmm_present 2>/dev/null || printf 0)" != 1
+          test "$(sysctl -in hw.optional.arm64 2>/dev/null || printf 0)" != 1
+          case "$(sysctl -n hw.model)" in VirtualMac*) exit 1 ;; esac
 
       - name: Build shared Rust guest-control client
         run: scripts/build-dory-ffi-xcframework.sh

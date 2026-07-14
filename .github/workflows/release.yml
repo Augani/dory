@@ -253,46 +253,6 @@ jobs:
             guest/out/dory-agent-arm64
             guest/out/initfs-build-arm64.stamp
 
-  guest-assets-amd64:
-    if: ${{ vars.DORY_ENABLE_INTEL_ROADMAP == '1' }}
-    name: Build verified amd64 guest assets
-    needs: release-configuration
-    runs-on: ubuntu-latest
-    timeout-minutes: 180
-    steps:
-      - uses: actions/checkout@c915c33a16f01166c17c4e35fe1d4085a2d71adb # v4
-      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
-      - name: Install guest build prerequisites
-        run: sudo apt-get update && sudo apt-get install -y binutils e2fsprogs file patchelf zstd
-      - name: Expose rust-lld for the static Linux guest agent
-        run: |
-          rust_lld="$(find "$(rustc --print sysroot)/lib/rustlib" -type f -name rust-lld | head -1)"
-          test -x "$rust_lld"
-          mkdir -p "$RUNNER_TEMP/rust-lld-bin"
-          ln -sf "$rust_lld" "$RUNNER_TEMP/rust-lld-bin/rust-lld"
-          echo "$RUNNER_TEMP/rust-lld-bin" >> "$GITHUB_PATH"
-      - name: Build and verify kernel and initfs payloads
-        run: |
-          DORY_EXPERIMENTAL_GPU=0 guest/kernel/build.sh amd64
-          guest/initfs/build.sh amd64
-          DORY_EXPERIMENTAL_GPU=0 guest/kernel/verify-build.sh amd64
-          guest/initfs/verify-build.sh amd64
-      - name: Upload same-commit amd64 guest payload
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: dory-guest-amd64-${{ github.sha }}
-          retention-days: 30
-          if-no-files-found: error
-          path: |
-            guest/out/vmlinux-x86
-            guest/out/vmlinux-x86.zst
-            guest/out/bzImage-x86
-            guest/out/config-amd64
-            guest/out/kernel-build-amd64.stamp
-            guest/out/initfs-amd64.ext4
-            guest/out/dory-agent-amd64
-            guest/out/initfs-build-amd64.stamp
-
   prepublication-quality:
     name: macOS pre-publication quality gate
     needs: release-configuration
@@ -349,114 +309,6 @@ jobs:
             CODE_SIGNING_ALLOWED=YES \
             CODE_SIGNING_REQUIRED=YES \
             CODE_SIGN_IDENTITY=-
-      - name: Cross-compile Intel app slice
-        run: |
-          xcodebuild build \
-            -project Dory.xcodeproj \
-            -scheme Dory \
-            -destination 'generic/platform=macOS' \
-            -derivedDataPath "$RUNNER_TEMP/dory-x86-derived-data" \
-            ARCHS=x86_64 \
-            ONLY_ACTIVE_ARCH=NO \
-            CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO
-
-  physical-intel-quality:
-    if: ${{ vars.DORY_ENABLE_INTEL_ROADMAP == '1' }}
-    name: Physical Intel current-commit release gate
-    needs: [prepublication-quality, guest-assets-amd64]
-    runs-on: [self-hosted, macOS, intel, dory]
-    timeout-minutes: 180
-    steps:
-      - uses: actions/checkout@c915c33a16f01166c17c4e35fe1d4085a2d71adb # v4
-        with:
-          fetch-depth: 0
-      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
-      - name: Download same-commit amd64 guest payload
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: dory-guest-amd64-${{ github.sha }}
-          path: guest/out
-      - name: Independently verify downloaded amd64 guest provenance
-        run: |
-          DORY_EXPERIMENTAL_GPU=0 guest/kernel/verify-build.sh amd64
-          guest/initfs/verify-build.sh amd64
-      - name: Select newest installed Xcode
-        run: |
-          newest="$(find /Applications -maxdepth 1 -name 'Xcode*.app' -type d | sort -V | tail -1)"
-          test -n "$newest"
-          echo "selected: $newest"
-          echo "DEVELOPER_DIR=$newest/Contents/Developer" >> "$GITHUB_ENV"
-      - name: Record and prove physical Intel host facts
-        run: |
-          facts="$RUNNER_TEMP/dory-intel-host-facts.txt"
-          {
-            sw_vers
-            uname -a
-            printf 'hw.model='; sysctl -n hw.model
-            printf 'cpu='; sysctl -n machdep.cpu.brand_string
-            printf 'kern.hv_support='; sysctl -n kern.hv_support
-            printf 'sysctl.proc_translated='; sysctl -in sysctl.proc_translated 2>/dev/null || printf '0\n'
-            printf 'kern.hv_vmm_present='; sysctl -in kern.hv_vmm_present 2>/dev/null || printf '0\n'
-            printf 'hw.optional.arm64='; sysctl -in hw.optional.arm64 2>/dev/null || printf '0\n'
-          } | tee "$facts"
-          test "$(uname -m)" = x86_64
-          test "$(sysctl -n kern.hv_support)" = 1
-          test "$(sysctl -in sysctl.proc_translated 2>/dev/null || printf 0)" != 1
-          test "$(sysctl -in kern.hv_vmm_present 2>/dev/null || printf 0)" != 1
-          test "$(sysctl -in hw.optional.arm64 2>/dev/null || printf 0)" != 1
-          echo 'READINESS_PHYSICAL_INTEL_CONFIRMED=1' >> "$GITHUB_ENV"
-          echo "INTEL_BUILD_DIR=$RUNNER_TEMP/release-build-intel-$GITHUB_RUN_ID" >> "$GITHUB_ENV"
-          echo "READINESS_WORKDIR=$RUNNER_TEMP/dory-readiness" >> "$GITHUB_ENV"
-      - name: Ensure Metal toolchain (SwiftTerm ships Metal shaders)
-        run: xcodebuild -downloadComponent MetalToolchain || true
-      - name: Resolve current release version
-        run: |
-          if [ -n "${{ github.event.inputs.version }}" ]; then
-            version="${{ github.event.inputs.version }}"
-          else
-            version="${GITHUB_REF_NAME#v}"
-          fi
-          echo "DORY_INTEL_VERSION=$version" >> "$GITHUB_ENV"
-      - name: Build same-commit x86_64 bundled candidate
-        timeout-minutes: 90
-        env:
-          DORY_RELEASE_VARIANTS: x86_64
-          DORY_RELEASE_BUILD_DIR: ${{ env.INTEL_BUILD_DIR }}
-          DORY_BUNDLE_ENGINE: '1'
-          DORY_REQUIRE_BUNDLE_ASSETS: '1'
-          DORY_BUNDLE_VENUS: '0'
-          DORY_BUNDLE_VENUS_REQUIRED: '0'
-          DORY_SIGN_ID: '-'
-          DORY_ALLOW_ADHOC_SIGN: '1'
-          DORY_REQUIRE_DEVELOPER_ID_SIGNATURES: '0'
-          DORY_SKIP_SIGNING_PREFLIGHT: '1'
-          DORY_SKIP_NOTARIZE: '1'
-          DORY_MAKE_DMG: '0'
-          DORY_BUILD_LITE: '0'
-          DORY_BUILD_APP_UPDATE: '0'
-          DORY_BUILD_RUNTIME: '0'
-          DORY_BUILD_APPCAST: '0'
-        run: scripts/release.sh "$DORY_INTEL_VERSION" "${{ github.run_number }}"
-      - name: Strict live readiness on the exact x86_64 candidate
-        timeout-minutes: 75
-        env:
-          DORY_RELEASE_LIVE_REQUIRED_ARCH: x86_64
-          DORY_RELEASE_LIVE_REQUIRE_NOTARIZED: '0'
-          DORY_RELEASE_LIVE_REQUIRE_PHYSICAL_INTEL: '1'
-        run: scripts/release-candidate-live-smoke.sh "$INTEL_BUILD_DIR/export-x86_64/Dory.app"
-      - name: Upload Intel host and readiness evidence
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: physical-intel-evidence-${{ github.sha }}
-          retention-days: 30
-          if-no-files-found: warn
-          path: |
-            ${{ runner.temp }}/dory-intel-host-facts.txt
-            ${{ runner.temp }}/dory-release-live-*
-            ${{ runner.temp }}/dory-readiness
-
   release_candidate:
     name: Build, sign, notarize, and stage immutable candidate
     needs: [rust-workspace, prepublication-quality, guest-assets-arm64]
@@ -471,8 +323,6 @@ jobs:
       dmg: ${{ steps.build.outputs.dmg }}
       zip: ${{ steps.build.outputs.zip }}
       zip_arm64: ${{ steps.build.outputs.zip_arm64 }}
-      zip_x86_64: ${{ steps.build.outputs.zip_x86_64 }}
-      zip_universal: ${{ steps.build.outputs.zip_universal }}
       manifest: ${{ steps.build.outputs.manifest }}
       appcast: ${{ steps.build.outputs.appcast }}
       app_update: ${{ steps.build.outputs.app_update }}

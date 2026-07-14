@@ -179,6 +179,9 @@ See [COMPATIBILITY.md](COMPATIBILITY.md) for the honest, per-feature status matr
 brew install --cask Augani/dory/dory
 ```
 
+Homebrew links the `dory` CLI and installs Dory's bundled Docker, Compose, Buildx, and `kubectl`
+integration. Open Dory once to start the engine; no separate Docker installation is required.
+
 …or download the notarized `.dmg` from [Releases](https://github.com/Augani/dory/releases/latest),
 drag Dory to Applications, and open it. First launch guides you through the rest; supported Macs do
 not need a separate Docker install.

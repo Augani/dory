@@ -11,7 +11,7 @@
 #   * A notarytool keychain profile:  xcrun notarytool store-credentials dory-notary \
 #         --apple-id you@example.com --team-id <TEAMID> --password <app-specific-password>
 #
-# Then:  scripts/release.sh 1.0.0
+# Then:  scripts/release.sh 1.0.0 42
 set -euo pipefail
 
 # Prefer an explicit DEVELOPER_DIR; otherwise pick up a local Xcode install, else fall back to
@@ -24,10 +24,12 @@ if [ -z "${DEVELOPER_DIR:-}" ]; then
 fi
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
-VERSION="${1:-0.1.0}"
-# Monotonic build number (CFBundleVersion). Sparkle compares this to detect updates. CI passes
-# the run number; locally it defaults to 1.
-BUILD="${2:-${DORY_BUILD:-1}}"
+VERSION="${1:-}"
+BUILD="${2:-${DORY_BUILD:-}}"
+if [ -z "$VERSION" ] || [ -z "$BUILD" ]; then
+  echo "usage: scripts/release.sh <version> <monotonic-build-number>" >&2
+  exit 64
+fi
 BUILD_DIR="${DORY_RELEASE_BUILD_DIR:-release-build}"
 NOTARY_PROFILE="${DORY_NOTARY_PROFILE:-dory-notary}"
 TEAM="${NOTARY_TEAM_ID:-864H636QW4}"

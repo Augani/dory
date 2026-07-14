@@ -19,6 +19,13 @@ grep -Fq 'if [ "${#test_args[@]}" -gt 0 ]' scripts/test.sh \
   || { echo "test-release-outputs: unfiltered app tests still expand an empty Bash 3 array" >&2; exit 1; }
 grep -Fq 'dory-transfer-helper-image-arm64.tar' scripts/bundle-engine.sh \
   || { echo "test-release-outputs: release bundler omits the transfer-helper image" >&2; exit 1; }
+if scripts/release.sh >"$TMP/release-missing-metadata.out" 2>&1; then
+  echo "test-release-outputs: release accepted missing version/build metadata" >&2
+  exit 1
+fi
+grep -Fq 'usage: scripts/release.sh <version> <monotonic-build-number>' \
+  "$TMP/release-missing-metadata.out" \
+  || { echo "test-release-outputs: release rejected missing metadata for the wrong reason" >&2; exit 1; }
 grep -Fq 'bundle_debug_transfer_helper' scripts/build.sh \
   || { echo "test-release-outputs: debug bundler omits the transfer-helper image" >&2; exit 1; }
 grep -Fq '_ = DoryUpdater.shared' Dory/Models/AppStore.swift \
@@ -1944,7 +1951,7 @@ for required in (
     assert required in guest_agent_job, f"ordinary Rust CI gate lacks: {required}"
 
 # Ignored guest/out products cannot survive checkout. The public arm64 payload is rebuilt from this
-# SHA; Intel remains a separately gated roadmap job and is not downloaded into the release.
+# SHA; Intel remains isolated in its separate roadmap workflow.
 assert "guest-assets-arm64:" in release, "same-run arm64 guest build job missing"
 assert "runs-on: ubuntu-24.04-arm" in release, "arm64 guest kernel is not built on native arm64 CI"
 assert "name: dory-guest-arm64-${{ github.sha }}" in release, "arm64 guest artifact is not SHA-bound"
@@ -1953,14 +1960,13 @@ assert "Download same-commit arm64 guest payload" in release, "release never dow
 assert "Independently verify every downloaded guest payload" in release, "downloaded guest payloads are trusted without verification"
 assert "DORY_EXPERIMENTAL_GPU=1 guest/kernel/verify-build.sh arm64" in release, "downloaded GPU guest provenance is not verified"
 
-# Intel work remains available only as an explicitly enabled roadmap track; it cannot block or add
-# artifacts to the Apple-Silicon-first public release.
-assert "physical-intel-quality:" in release, "release lost the later Intel roadmap gate"
-intel = release.split("  physical-intel-quality:", 1)[1].split("\n  release_candidate:", 1)[0]
-assert "vars.DORY_ENABLE_INTEL_ROADMAP == '1'" in intel, "Intel roadmap gate runs by default"
-assert "runs-on: [self-hosted, macOS, intel, dory]" in intel, "Intel gate can run on emulation/hosted virtualization"
-assert "READINESS_PHYSICAL_INTEL_CONFIRMED=1" in intel, "Intel gate never records confirmed host facts"
-assert "DORY_RELEASE_LIVE_REQUIRE_PHYSICAL_INTEL: '1'" in intel, "Intel candidate skips strict physical readiness"
+for forbidden in ("guest-assets-amd64:", "physical-intel-quality:", "Cross-compile Intel app slice",
+                  "zip_x86_64:", "zip_universal:"):
+    assert forbidden not in release, f"Apple Silicon release still contains Intel scope: {forbidden}"
+intel = open(".github/workflows/intel-engine.yml", encoding="utf-8").read()
+assert "runs-on: [self-hosted, macOS, intel, dory]" in intel, "Intel roadmap lost its physical workflow"
+for required in ('test "$(uname -m)" = "x86_64"', "sysctl.proc_translated", "hw.optional.arm64", "VirtualMac"):
+    assert required in intel, f"Intel roadmap does not reject translated/virtual hardware: {required}"
 release_job = release.split("\n  release_candidate:", 1)[1].split("\n  homebrew_install_certification:", 1)[0]
 assert "needs: [rust-workspace, prepublication-quality, guest-assets-arm64]" in release_job, \
     "Apple Silicon candidate depends on out-of-scope release jobs"
