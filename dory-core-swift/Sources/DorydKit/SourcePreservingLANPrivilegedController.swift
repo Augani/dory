@@ -64,7 +64,6 @@ public final class SourcePreservingLANPrivilegedController: @unchecked Sendable 
     private var activeBridge: (any SourcePreservingLANBridgeSession)?
     private var activeInterfaceName: String?
     private var activePFToken: String?
-    private var activeIPv4ForwardingOwned = false
 
     public init(
         enforceRoot: Bool = true,
@@ -106,15 +105,11 @@ public final class SourcePreservingLANPrivilegedController: @unchecked Sendable 
 
     /// Called once when launchd starts or restarts the daemon. A previous crash must leave closed
     /// ports, never a stale redirect to a dead tunnel.
-    public func clearStaleAnchor() {
+    public func clearStaleAnchor() throws {
         operationLock.lock()
         defer { operationLock.unlock() }
-        try? writeAnchor("# Managed by Dory. Do not edit.\n")
-        _ = try? runCommand(["/sbin/pfctl", "-a", Self.anchorName, "-F", "all"])
-        if let token = try? readPersistedPFToken() {
-            try? releasePFToken(token)
-        }
-        try? restoreIPv4ForwardingIfOwned()
+        try ensureRuntimeDirectory()
+        try cleanPersistentNetworkState()
     }
 
     private func activate(
@@ -127,23 +122,24 @@ public final class SourcePreservingLANPrivilegedController: @unchecked Sendable 
         try Self.validateGVProxySocket(gvproxySocketPath, clientUID: clientUID)
 
         lock.lock()
-        guard activeSessionID == nil || activeSessionID == request.sessionID else {
-            lock.unlock()
+        let existingSessionID = activeSessionID
+        let existingBridge = activeBridge
+        let existingInterfaceName = activeInterfaceName
+        lock.unlock()
+        if let existingSessionID, let existingBridge {
+            if existingBridge.isHealthy {
+                guard existingSessionID == request.sessionID else {
+                    throw SourcePreservingLANPrivilegedError.sessionConflict
+                }
+                _ = try applyPF(bindings: request.bindings, enable: false)
+                return response(request, interfaceName: existingInterfaceName)
+            }
+            _ = try cleanupActiveSession(expectedSessionID: existingSessionID)
+        } else if existingSessionID != nil || existingBridge != nil {
             throw SourcePreservingLANPrivilegedError.sessionConflict
         }
-        if activeBridge != nil, activeSessionID == request.sessionID {
-            let interfaceName = activeInterfaceName
-            lock.unlock()
-            _ = try applyPF(bindings: request.bindings, enable: false)
-            return response(request, interfaceName: interfaceName)
-        }
-        lock.unlock()
 
-        try FileManager.default.createDirectory(
-            atPath: runtimeDirectory,
-            withIntermediateDirectories: true,
-            attributes: [.posixPermissions: 0o755]
-        )
+        try ensureRuntimeDirectory()
         let localSocket = "\(runtimeDirectory)/\(request.sessionID).sock"
         let interfaceFile = "\(runtimeDirectory)/\(request.sessionID).interface"
         let configuration = DirectIPBridgeConfiguration(
@@ -154,11 +150,25 @@ public final class SourcePreservingLANPrivilegedController: @unchecked Sendable 
             interfaceNamePath: interfaceFile
         )
         let bridge = try bridgeFactory(configuration)
+        let bridgeID = ObjectIdentifier(bridge)
         bridge.setFailureHandler { [weak self] detail in
-            self?.bridgeFailed(sessionID: request.sessionID, detail: detail)
+            self?.bridgeFailed(
+                sessionID: request.sessionID,
+                bridgeID: bridgeID,
+                detail: detail
+            )
         }
-        var acquiredPFToken: String?
-        var enabledIPv4Forwarding = false
+        lock.lock()
+        guard activeSessionID == nil, activeBridge == nil else {
+            lock.unlock()
+            throw SourcePreservingLANPrivilegedError.sessionConflict
+        }
+        activeSessionID = request.sessionID
+        activeBridge = bridge
+        activeInterfaceName = nil
+        activePFToken = nil
+        lock.unlock()
+
         do {
             try bridge.start()
             guard let interfaceName = bridge.activeInterfaceName,
@@ -177,14 +187,13 @@ public final class SourcePreservingLANPrivilegedController: @unchecked Sendable 
                 "/sbin/route", "-n", "add", "-host", SourcePreservingLANPlan.guestIngressIPv4,
                 "-interface", interfaceName,
             ])
-            enabledIPv4Forwarding = try enableIPv4ForwardingIfNeeded()
-            acquiredPFToken = try applyPF(bindings: request.bindings, enable: true)
             lock.lock()
-            activeSessionID = request.sessionID
-            activeBridge = bridge
             activeInterfaceName = interfaceName
+            lock.unlock()
+            _ = try enableIPv4ForwardingIfNeeded()
+            let acquiredPFToken = try applyPF(bindings: request.bindings, enable: true)
+            lock.lock()
             activePFToken = acquiredPFToken
-            activeIPv4ForwardingOwned = enabledIPv4Forwarding
             lock.unlock()
             guard bridge.isHealthy else {
                 throw SourcePreservingLANPrivilegedError.commandFailed(
@@ -193,47 +202,42 @@ public final class SourcePreservingLANPrivilegedController: @unchecked Sendable 
             }
             return response(request, interfaceName: interfaceName)
         } catch {
-            lock.lock()
-            if activeSessionID == request.sessionID {
-                activeSessionID = nil
-                activeBridge = nil
-                activeInterfaceName = nil
-                activePFToken = nil
-                activeIPv4ForwardingOwned = false
+            do {
+                _ = try cleanupActiveSession(
+                    expectedSessionID: request.sessionID,
+                    expectedBridgeID: bridgeID
+                )
+            } catch let cleanupError {
+                throw SourcePreservingLANPrivilegedError.commandFailed(
+                    "activation failed (\(error)); cleanup remains retryable (\(cleanupError))"
+                )
             }
-            lock.unlock()
-            try? writeAnchor("# Managed by Dory. Do not edit.\n")
-            _ = try? runCommand(["/sbin/pfctl", "-a", Self.anchorName, "-F", "all"])
-            if let acquiredPFToken { try? releasePFToken(acquiredPFToken) }
-            if enabledIPv4Forwarding { try? restoreIPv4ForwardingIfOwned() }
-            bridge.stop()
             throw error
         }
     }
 
-    private func bridgeFailed(sessionID: String, detail: String) {
+    private func bridgeFailed(
+        sessionID: String,
+        bridgeID: ObjectIdentifier,
+        detail: String
+    ) {
         operationLock.lock()
         defer { operationLock.unlock() }
-        lock.lock()
-        guard activeSessionID == sessionID, let bridge = activeBridge else {
-            lock.unlock()
-            return
+        do {
+            _ = try cleanupActiveSession(
+                expectedSessionID: sessionID,
+                expectedBridgeID: bridgeID
+            )
+            FileHandle.standardError.write(
+                Data("dory-network-helper: LAN bridge failed and was cleaned up: \(detail)\n".utf8)
+            )
+        } catch SourcePreservingLANPrivilegedError.noActiveSession {
+            // A delayed callback from an already replaced bridge owns no current host state.
+        } catch {
+            FileHandle.standardError.write(
+                Data("dory-network-helper: LAN bridge failed; cleanup remains retryable: \(detail); \(error)\n".utf8)
+            )
         }
-        activeSessionID = nil
-        activeBridge = nil
-        activeInterfaceName = nil
-        let pfToken = activePFToken
-        activePFToken = nil
-        let forwardingOwned = activeIPv4ForwardingOwned
-        activeIPv4ForwardingOwned = false
-        lock.unlock()
-
-        try? writeAnchor("# Managed by Dory. Do not edit.\n")
-        _ = try? runCommand(["/sbin/pfctl", "-a", Self.anchorName, "-F", "all"])
-        if let pfToken { try? releasePFToken(pfToken) }
-        if forwardingOwned { try? restoreIPv4ForwardingIfOwned() }
-        bridge.stop()
-        _ = detail
     }
 
     private func refresh(_ request: SourcePreservingLANRequest) throws -> SourcePreservingLANResponse {
@@ -247,40 +251,117 @@ public final class SourcePreservingLANPrivilegedController: @unchecked Sendable 
     }
 
     private func deactivate(_ request: SourcePreservingLANRequest) throws -> SourcePreservingLANResponse {
-        lock.lock()
-        guard activeSessionID == request.sessionID, let bridge = activeBridge else {
-            lock.unlock()
-            throw SourcePreservingLANPrivilegedError.noActiveSession
-        }
-        let interfaceName = activeInterfaceName
-        activeSessionID = nil
-        activeBridge = nil
-        activeInterfaceName = nil
-        let pfToken = activePFToken
-        activePFToken = nil
-        let forwardingOwned = activeIPv4ForwardingOwned
-        activeIPv4ForwardingOwned = false
-        lock.unlock()
-
-        try writeAnchor("# Managed by Dory. Do not edit.\n")
-        _ = try runCommand(["/sbin/pfctl", "-a", Self.anchorName, "-F", "all"])
-        bridge.stop()
-        var cleanupError: Error?
-        if let pfToken {
-            do { try releasePFToken(pfToken) } catch { cleanupError = error }
-        }
-        if forwardingOwned {
-            do { try restoreIPv4ForwardingIfOwned() } catch {
-                if cleanupError == nil { cleanupError = error }
-            }
-        }
-        if let cleanupError { throw cleanupError }
+        let interfaceName = try cleanupActiveSession(expectedSessionID: request.sessionID)
         return SourcePreservingLANResponse(
             status: "stopped",
             sessionID: request.sessionID,
             interfaceName: interfaceName,
             lanBindingCount: 0
         )
+    }
+
+    /// Cleanup retains the session until every owned host mutation has been reversed. A caller can
+    /// therefore retry deactivation after a transient pfctl or sysctl failure without leaking the
+    /// PF reference or losing the knowledge required to restore host forwarding.
+    private func cleanupActiveSession(
+        expectedSessionID: String,
+        expectedBridgeID: ObjectIdentifier? = nil
+    ) throws -> String? {
+        lock.lock()
+        guard activeSessionID == expectedSessionID, let bridge = activeBridge else {
+            lock.unlock()
+            throw SourcePreservingLANPrivilegedError.noActiveSession
+        }
+        if let expectedBridgeID, ObjectIdentifier(bridge) != expectedBridgeID {
+            lock.unlock()
+            throw SourcePreservingLANPrivilegedError.noActiveSession
+        }
+        let interfaceName = activeInterfaceName
+        let pfToken = activePFToken
+        lock.unlock()
+
+        bridge.stop()
+        var firstError: Error?
+        func retainFirst(_ error: Error) {
+            if firstError == nil { firstError = error }
+        }
+        var runtimeSafe = true
+        do { try ensureRuntimeDirectory() } catch {
+            runtimeSafe = false
+            retainFirst(error)
+        }
+        do { try writeAnchor("# Managed by Dory. Do not edit.\n") } catch {
+            retainFirst(error)
+        }
+        do {
+            _ = try runCommand(["/sbin/pfctl", "-a", Self.anchorName, "-F", "all"])
+        } catch {
+            retainFirst(error)
+        }
+        if runtimeSafe {
+            var tokenToRelease = pfToken
+            if tokenToRelease == nil {
+                do { tokenToRelease = try readPersistedPFToken() } catch {
+                    retainFirst(error)
+                }
+            }
+            if let tokenToRelease {
+                do {
+                    try releasePFToken(tokenToRelease)
+                    lock.lock()
+                    if activeSessionID == expectedSessionID { activePFToken = nil }
+                    lock.unlock()
+                } catch {
+                    retainFirst(error)
+                }
+            }
+        }
+        if runtimeSafe {
+            do {
+                try restoreIPv4ForwardingIfOwned()
+            } catch {
+                retainFirst(error)
+            }
+        }
+        if let firstError { throw firstError }
+
+        lock.lock()
+        guard activeSessionID == expectedSessionID,
+              let currentBridge = activeBridge,
+              ObjectIdentifier(currentBridge) == ObjectIdentifier(bridge) else {
+            lock.unlock()
+            throw SourcePreservingLANPrivilegedError.noActiveSession
+        }
+        activeSessionID = nil
+        activeBridge = nil
+        activeInterfaceName = nil
+        activePFToken = nil
+        lock.unlock()
+        return interfaceName
+    }
+
+    private func cleanPersistentNetworkState() throws {
+        var firstError: Error?
+        func retainFirst(_ error: Error) {
+            if firstError == nil { firstError = error }
+        }
+        do { try writeAnchor("# Managed by Dory. Do not edit.\n") } catch {
+            retainFirst(error)
+        }
+        do {
+            _ = try runCommand(["/sbin/pfctl", "-a", Self.anchorName, "-F", "all"])
+        } catch {
+            retainFirst(error)
+        }
+        do {
+            if let token = try readPersistedPFToken() { try releasePFToken(token) }
+        } catch {
+            retainFirst(error)
+        }
+        do { try restoreIPv4ForwardingIfOwned() } catch {
+            retainFirst(error)
+        }
+        if let firstError { throw firstError }
     }
 
     private func applyPF(bindings: Set<PublishedPortBinding>, enable: Bool) throws -> String? {
@@ -319,6 +400,24 @@ public final class SourcePreservingLANPrivilegedController: @unchecked Sendable 
     private var pfTokenPath: String { runtimeDirectory + "/pf-enable-token" }
     private var forwardingMarkerPath: String { runtimeDirectory + "/ipv4-forwarding-owner" }
 
+    private func ensureRuntimeDirectory() throws {
+        if mkdir(runtimeDirectory, 0o755) != 0, errno != EEXIST {
+            throw SourcePreservingLANPrivilegedError.commandFailed(
+                "mkdir \(runtimeDirectory): \(String(cString: strerror(errno)))"
+            )
+        }
+        var info = stat()
+        let expectedOwner: uid_t = enforceRoot ? 0 : geteuid()
+        guard lstat(runtimeDirectory, &info) == 0,
+              info.st_mode & S_IFMT == S_IFDIR,
+              info.st_uid == expectedOwner,
+              info.st_mode & 0o022 == 0 else {
+            throw SourcePreservingLANPrivilegedError.commandFailed(
+                "unsafe source-preserving LAN runtime directory: \(runtimeDirectory)"
+            )
+        }
+    }
+
     /// UTUN packets written by the bridge enter macOS as received packets. IPv4 forwarding must be
     /// enabled while PF-rdr replies travel from that UTUN back to the physical/VPN interface. Dory
     /// records ownership only when it changed the host from 0 to 1, and restores that exact prior
@@ -332,61 +431,69 @@ public final class SourcePreservingLANPrivilegedController: @unchecked Sendable 
             )
         }
         guard current == "0" else { return false }
+        // Persist the prior state before changing the host. If the process exits between these
+        // steps, launchd cleanup can safely restore forwarding instead of losing ownership.
+        try writeNewOwnedFile(path: forwardingMarkerPath, contents: "restore=0\n")
         _ = try runCommand(["/usr/sbin/sysctl", "-w", "net.inet.ip.forwarding=1"])
-        do {
-            try writeOwnedFile(path: forwardingMarkerPath, contents: "restore=0\n")
-        } catch {
-            _ = try? runCommand(["/usr/sbin/sysctl", "-w", "net.inet.ip.forwarding=0"])
-            throw error
-        }
         return true
     }
 
     private func restoreIPv4ForwardingIfOwned() throws {
-        let descriptor = open(forwardingMarkerPath, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
-        if descriptor < 0, errno == ENOENT { return }
-        guard descriptor >= 0 else {
-            throw SourcePreservingLANPrivilegedError.commandFailed(
-                "open \(forwardingMarkerPath): \(String(cString: strerror(errno)))"
-            )
+        guard let data = try readOwnedFile(path: forwardingMarkerPath, maximumBytes: 64) else {
+            return
         }
-        defer { close(descriptor) }
-        var info = stat()
-        guard fstat(descriptor, &info) == 0, info.st_mode & S_IFMT == S_IFREG,
-              info.st_size == 10 else {
-            throw SourcePreservingLANPrivilegedError.commandFailed("invalid IPv4 forwarding ownership marker")
-        }
-        var bytes = [UInt8](repeating: 0, count: Int(info.st_size))
-        guard Darwin.read(descriptor, &bytes, bytes.count) == bytes.count,
-              String(bytes: bytes, encoding: .utf8) == "restore=0\n" else {
+        guard data == Data("restore=0\n".utf8) else {
             throw SourcePreservingLANPrivilegedError.commandFailed("invalid IPv4 forwarding ownership marker")
         }
         _ = try runCommand(["/usr/sbin/sysctl", "-w", "net.inet.ip.forwarding=0"])
-        if unlink(forwardingMarkerPath) != 0, errno != ENOENT {
-            throw SourcePreservingLANPrivilegedError.commandFailed(
-                "unlink \(forwardingMarkerPath): \(String(cString: strerror(errno)))"
-            )
-        }
+        try removeOwnedFile(path: forwardingMarkerPath)
     }
 
-    private func writeOwnedFile(path: String, contents: String) throws {
-        let bytes = Array(contents.utf8)
-        let descriptor = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_CLOEXEC, 0o600)
-        guard descriptor >= 0 else {
+    private func writeNewOwnedFile(path: String, contents: String) throws {
+        var existing = stat()
+        if lstat(path, &existing) == 0 || errno != ENOENT {
             throw SourcePreservingLANPrivilegedError.commandFailed(
-                "open \(path): \(String(cString: strerror(errno)))"
+                "owned state already exists or is inaccessible: \(path)"
             )
         }
-        defer { close(descriptor) }
-        _ = fchmod(descriptor, 0o600)
+        let temporary = "\(path).tmp.\(UUID().uuidString)"
+        let bytes = Array(contents.utf8)
+        let descriptor = open(
+            temporary,
+            O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC,
+            0o600
+        )
+        guard descriptor >= 0 else {
+            throw SourcePreservingLANPrivilegedError.commandFailed(
+                "open \(temporary): \(String(cString: strerror(errno)))"
+            )
+        }
+        var descriptorOpen = true
+        defer {
+            if descriptorOpen { close(descriptor) }
+            _ = unlink(temporary)
+        }
+        guard fchmod(descriptor, 0o600) == 0 else {
+            throw SourcePreservingLANPrivilegedError.commandFailed(
+                "chmod \(temporary): \(String(cString: strerror(errno)))"
+            )
+        }
         var offset = 0
         while offset < bytes.count {
             let written = bytes.withUnsafeBytes { raw in
-                Darwin.write(descriptor, raw.baseAddress?.advanced(by: offset), bytes.count - offset)
+                while true {
+                    let result = Darwin.write(
+                        descriptor,
+                        raw.baseAddress?.advanced(by: offset),
+                        bytes.count - offset
+                    )
+                    if result < 0, errno == EINTR { continue }
+                    return result
+                }
             }
             guard written > 0 else {
                 throw SourcePreservingLANPrivilegedError.commandFailed(
-                    "write \(path): \(String(cString: strerror(errno)))"
+                    "write \(temporary): \(String(cString: strerror(errno)))"
                 )
             }
             offset += written
@@ -396,55 +503,26 @@ public final class SourcePreservingLANPrivilegedController: @unchecked Sendable 
                 "fsync \(path): \(String(cString: strerror(errno)))"
             )
         }
+        close(descriptor)
+        descriptorOpen = false
+        guard rename(temporary, path) == 0 else {
+            throw SourcePreservingLANPrivilegedError.commandFailed(
+                "rename \(temporary): \(String(cString: strerror(errno)))"
+            )
+        }
+        try syncParentDirectory(of: path)
     }
 
     private func persistPFToken(_ token: String) throws {
-        let bytes = Array((token + "\n").utf8)
-        let descriptor = open(pfTokenPath, O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_CLOEXEC, 0o600)
-        guard descriptor >= 0 else {
-            throw SourcePreservingLANPrivilegedError.commandFailed(
-                "open \(pfTokenPath): \(String(cString: strerror(errno)))"
-            )
-        }
-        defer { close(descriptor) }
-        _ = fchmod(descriptor, 0o600)
-        var offset = 0
-        while offset < bytes.count {
-            let written = bytes.withUnsafeBytes { raw in
-                Darwin.write(descriptor, raw.baseAddress?.advanced(by: offset), bytes.count - offset)
-            }
-            guard written > 0 else {
-                throw SourcePreservingLANPrivilegedError.commandFailed(
-                    "write \(pfTokenPath): \(String(cString: strerror(errno)))"
-                )
-            }
-            offset += written
-        }
-        guard fsync(descriptor) == 0 else {
-            throw SourcePreservingLANPrivilegedError.commandFailed(
-                "fsync \(pfTokenPath): \(String(cString: strerror(errno)))"
-            )
-        }
+        try writeNewOwnedFile(path: pfTokenPath, contents: token + "\n")
     }
 
     private func readPersistedPFToken() throws -> String? {
-        let descriptor = open(pfTokenPath, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
-        if descriptor < 0, errno == ENOENT { return nil }
-        guard descriptor >= 0 else {
-            throw SourcePreservingLANPrivilegedError.commandFailed(
-                "open \(pfTokenPath): \(String(cString: strerror(errno)))"
-            )
+        guard let data = try readOwnedFile(path: pfTokenPath, maximumBytes: 64) else {
+            return nil
         }
-        defer { close(descriptor) }
-        var info = stat()
-        guard fstat(descriptor, &info) == 0, info.st_mode & S_IFMT == S_IFREG,
-              info.st_size > 0, info.st_size <= 64 else {
-            throw SourcePreservingLANPrivilegedError.commandFailed("invalid persisted PF enable token")
-        }
-        var bytes = [UInt8](repeating: 0, count: Int(info.st_size))
-        let count = Darwin.read(descriptor, &bytes, bytes.count)
-        guard count == bytes.count,
-              let value = String(bytes: bytes, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+        guard let value = String(data: data, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
               value.wholeMatch(of: /[0-9]+/) != nil else {
             throw SourcePreservingLANPrivilegedError.commandFailed("invalid persisted PF enable token")
         }
@@ -452,10 +530,90 @@ public final class SourcePreservingLANPrivilegedController: @unchecked Sendable 
     }
 
     private func releasePFToken(_ token: String) throws {
-        _ = try runCommand(["/sbin/pfctl", "-X", token])
-        if unlink(pfTokenPath) != 0, errno != ENOENT {
+        guard try readPersistedPFToken() == token else {
             throw SourcePreservingLANPrivilegedError.commandFailed(
-                "unlink \(pfTokenPath): \(String(cString: strerror(errno)))"
+                "persisted PF enable token does not match the active session"
+            )
+        }
+        _ = try runCommand(["/sbin/pfctl", "-X", token])
+        try removeOwnedFile(path: pfTokenPath)
+    }
+
+    private func readOwnedFile(path: String, maximumBytes: Int) throws -> Data? {
+        let descriptor = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        if descriptor < 0, errno == ENOENT { return nil }
+        guard descriptor >= 0 else {
+            throw SourcePreservingLANPrivilegedError.commandFailed(
+                "open \(path): \(String(cString: strerror(errno)))"
+            )
+        }
+        defer { close(descriptor) }
+        var info = stat()
+        let expectedOwner: uid_t = enforceRoot ? 0 : geteuid()
+        guard fstat(descriptor, &info) == 0,
+              info.st_mode & S_IFMT == S_IFREG,
+              info.st_nlink == 1,
+              info.st_uid == expectedOwner,
+              info.st_mode & 0o077 == 0,
+              info.st_size > 0,
+              info.st_size <= maximumBytes else {
+            throw SourcePreservingLANPrivilegedError.commandFailed(
+                "invalid owned state file: \(path)"
+            )
+        }
+        var data = Data()
+        data.reserveCapacity(Int(info.st_size))
+        var buffer = [UInt8](repeating: 0, count: min(64 * 1024, maximumBytes))
+        while true {
+            let count = buffer.withUnsafeMutableBytes { raw in
+                while true {
+                    let result = Darwin.read(descriptor, raw.baseAddress, raw.count)
+                    if result < 0, errno == EINTR { continue }
+                    return result
+                }
+            }
+            guard count >= 0 else {
+                throw SourcePreservingLANPrivilegedError.commandFailed(
+                    "read \(path): \(String(cString: strerror(errno)))"
+                )
+            }
+            if count == 0 { break }
+            guard data.count <= maximumBytes - count else {
+                throw SourcePreservingLANPrivilegedError.commandFailed(
+                    "owned state file is too large: \(path)"
+                )
+            }
+            data.append(contentsOf: buffer.prefix(count))
+        }
+        guard data.count == Int(info.st_size) else {
+            throw SourcePreservingLANPrivilegedError.commandFailed(
+                "owned state file changed while reading: \(path)"
+            )
+        }
+        return data
+    }
+
+    private func removeOwnedFile(path: String) throws {
+        if unlink(path) != 0, errno != ENOENT {
+            throw SourcePreservingLANPrivilegedError.commandFailed(
+                "unlink \(path): \(String(cString: strerror(errno)))"
+            )
+        }
+        try syncParentDirectory(of: path)
+    }
+
+    private func syncParentDirectory(of path: String) throws {
+        let directory = (path as NSString).deletingLastPathComponent
+        let descriptor = open(directory, O_RDONLY | O_CLOEXEC)
+        guard descriptor >= 0 else {
+            throw SourcePreservingLANPrivilegedError.commandFailed(
+                "open \(directory): \(String(cString: strerror(errno)))"
+            )
+        }
+        defer { close(descriptor) }
+        guard fsync(descriptor) == 0 else {
+            throw SourcePreservingLANPrivilegedError.commandFailed(
+                "fsync \(directory): \(String(cString: strerror(errno)))"
             )
         }
     }
@@ -501,22 +659,102 @@ public final class SourcePreservingLANPrivilegedController: @unchecked Sendable 
     }
 
     private static func writeAnchor(_ contents: String) throws {
-        let bytes = Array(contents.utf8)
-        let descriptor = open(Self.anchorPath, O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_CLOEXEC, 0o600)
-        guard descriptor >= 0 else {
+        let marker = Data("# Managed by Dory. Do not edit.\n".utf8)
+        let directory = (anchorPath as NSString).deletingLastPathComponent
+        var directoryInfo = stat()
+        guard lstat(directory, &directoryInfo) == 0,
+              directoryInfo.st_mode & S_IFMT == S_IFDIR,
+              directoryInfo.st_uid == 0,
+              directoryInfo.st_mode & 0o022 == 0 else {
             throw SourcePreservingLANPrivilegedError.commandFailed(
-                "open \(Self.anchorPath): \(String(cString: strerror(errno)))"
+                "unsafe PF anchor directory: \(directory)"
             )
         }
-        defer { close(descriptor) }
+        let existing = open(anchorPath, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        if existing >= 0 {
+            defer { close(existing) }
+            var info = stat()
+            guard fstat(existing, &info) == 0,
+                  info.st_mode & S_IFMT == S_IFREG,
+                  info.st_nlink == 1,
+                  info.st_uid == 0,
+                  info.st_size >= marker.count,
+                  info.st_size <= 1 << 20 else {
+                throw SourcePreservingLANPrivilegedError.commandFailed(
+                    "unsafe existing PF anchor: \(anchorPath)"
+                )
+            }
+            var prefix = [UInt8](repeating: 0, count: marker.count)
+            var offset = 0
+            while offset < prefix.count {
+                let remaining = prefix.count - offset
+                let count = prefix.withUnsafeMutableBytes { raw in
+                    while true {
+                        let result = Darwin.read(
+                            existing,
+                            raw.baseAddress?.advanced(by: offset),
+                            remaining
+                        )
+                        if result < 0, errno == EINTR { continue }
+                        return result
+                    }
+                }
+                guard count > 0 else {
+                    throw SourcePreservingLANPrivilegedError.commandFailed(
+                        "read \(anchorPath): \(String(cString: strerror(errno)))"
+                    )
+                }
+                offset += count
+            }
+            guard Data(prefix) == marker else {
+                throw SourcePreservingLANPrivilegedError.commandFailed(
+                    "refusing to replace a PF anchor not owned by Dory"
+                )
+            }
+        } else if errno != ENOENT {
+            throw SourcePreservingLANPrivilegedError.commandFailed(
+                "open \(anchorPath): \(String(cString: strerror(errno)))"
+            )
+        }
+
+        let temporary = "\(anchorPath).tmp.\(UUID().uuidString)"
+        let bytes = Array(contents.utf8)
+        let descriptor = open(
+            temporary,
+            O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC,
+            0o600
+        )
+        guard descriptor >= 0 else {
+            throw SourcePreservingLANPrivilegedError.commandFailed(
+                "open \(temporary): \(String(cString: strerror(errno)))"
+            )
+        }
+        var descriptorOpen = true
+        defer {
+            if descriptorOpen { close(descriptor) }
+            _ = unlink(temporary)
+        }
+        guard fchmod(descriptor, 0o600) == 0 else {
+            throw SourcePreservingLANPrivilegedError.commandFailed(
+                "chmod \(temporary): \(String(cString: strerror(errno)))"
+            )
+        }
         var offset = 0
         while offset < bytes.count {
             let written = bytes.withUnsafeBytes { raw in
-                Darwin.write(descriptor, raw.baseAddress?.advanced(by: offset), bytes.count - offset)
+                while true {
+                    let result = Darwin.write(
+                        descriptor,
+                        raw.baseAddress?.advanced(by: offset),
+                        bytes.count - offset
+                    )
+                    if result < 0, errno == EINTR { continue }
+                    return result
+                }
             }
             guard written > 0 else {
                 throw SourcePreservingLANPrivilegedError.commandFailed(
-                    "write \(Self.anchorPath): \(String(cString: strerror(errno)))"
+                    "write \(temporary): \(String(cString: strerror(errno)))"
                 )
             }
             offset += written
@@ -524,6 +762,25 @@ public final class SourcePreservingLANPrivilegedController: @unchecked Sendable 
         guard fsync(descriptor) == 0 else {
             throw SourcePreservingLANPrivilegedError.commandFailed(
                 "fsync \(Self.anchorPath): \(String(cString: strerror(errno)))"
+            )
+        }
+        close(descriptor)
+        descriptorOpen = false
+        guard rename(temporary, anchorPath) == 0 else {
+            throw SourcePreservingLANPrivilegedError.commandFailed(
+                "rename \(temporary): \(String(cString: strerror(errno)))"
+            )
+        }
+        let directoryDescriptor = open(directory, O_RDONLY | O_CLOEXEC)
+        guard directoryDescriptor >= 0 else {
+            throw SourcePreservingLANPrivilegedError.commandFailed(
+                "open \(directory): \(String(cString: strerror(errno)))"
+            )
+        }
+        defer { close(directoryDescriptor) }
+        guard fsync(directoryDescriptor) == 0 else {
+            throw SourcePreservingLANPrivilegedError.commandFailed(
+                "fsync \(directory): \(String(cString: strerror(errno)))"
             )
         }
     }

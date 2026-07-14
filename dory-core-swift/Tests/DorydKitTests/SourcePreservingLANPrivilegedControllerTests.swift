@@ -38,7 +38,7 @@ final class SourcePreservingLANPrivilegedControllerTests: XCTestCase {
                 recorder.configuration = configuration
                 return bridge
             },
-            runCommand: { command in recorder.run(command) },
+            runCommand: { command in try recorder.run(command) },
             writeAnchor: { recorder.anchors.append($0) }
         )
         let request = SourcePreservingLANRequest(
@@ -87,7 +87,7 @@ final class SourcePreservingLANPrivilegedControllerTests: XCTestCase {
             enforceRoot: false,
             runtimeDirectory: "/tmp/dory-source-lan-runtime-\(getpid())-b",
             bridgeFactory: { _ in bridge },
-            runCommand: { command in recorder.run(command) },
+            runCommand: { command in try recorder.run(command) },
             writeAnchor: { recorder.anchors.append($0) }
         )
         _ = try controller.apply(SourcePreservingLANRequest(
@@ -139,7 +139,7 @@ final class SourcePreservingLANPrivilegedControllerTests: XCTestCase {
                 recorder.bridgeCreations += 1
                 return bridge
             },
-            runCommand: { command in recorder.run(command) },
+            runCommand: { command in try recorder.run(command) },
             writeAnchor: { recorder.anchors.append($0) }
         )
         _ = try controller.apply(SourcePreservingLANRequest(
@@ -197,7 +197,7 @@ final class SourcePreservingLANPrivilegedControllerTests: XCTestCase {
                 recorder.bridgeCreations += 1
                 return bridge
             },
-            runCommand: { command in recorder.run(command) },
+            runCommand: { command in try recorder.run(command) },
             writeAnchor: { recorder.anchors.append($0) }
         )
         let activation = SourcePreservingLANRequest(
@@ -243,16 +243,18 @@ final class SourcePreservingLANPrivilegedControllerTests: XCTestCase {
             atomically: true,
             encoding: .utf8
         )
+        XCTAssertEqual(chmod(runtime + "/pf-enable-token", 0o600), 0)
+        XCTAssertEqual(chmod(runtime + "/ipv4-forwarding-owner", 0o600), 0)
         let recorder = Recorder()
         let controller = SourcePreservingLANPrivilegedController(
             enforceRoot: false,
             runtimeDirectory: runtime,
             bridgeFactory: { _ in FakeBridge(interfaceName: "utun1") },
-            runCommand: { command in recorder.run(command) },
+            runCommand: { command in try recorder.run(command) },
             writeAnchor: { recorder.anchors.append($0) }
         )
 
-        controller.clearStaleAnchor()
+        try controller.clearStaleAnchor()
 
         XCTAssertEqual(recorder.anchors.last, "# Managed by Dory. Do not edit.\n")
         XCTAssertTrue(recorder.commands.contains([
@@ -278,7 +280,7 @@ final class SourcePreservingLANPrivilegedControllerTests: XCTestCase {
             enforceRoot: false,
             runtimeDirectory: runtime,
             bridgeFactory: { _ in bridge },
-            runCommand: { command in recorder.run(command) },
+            runCommand: { command in try recorder.run(command) },
             writeAnchor: { recorder.anchors.append($0) }
         )
         _ = try controller.apply(SourcePreservingLANRequest(
@@ -300,6 +302,181 @@ final class SourcePreservingLANPrivilegedControllerTests: XCTestCase {
         XCTAssertEqual(recorder.forwardingValue, "1")
     }
 
+    func testDeactivationFailureRetainsOwnershipForACompleteRetry() throws {
+        let socketPath = try makeDatagramSocket()
+        defer { unlink(socketPath) }
+        let runtime = temporaryRuntime("retry-cleanup")
+        defer { try? FileManager.default.removeItem(atPath: runtime) }
+        let recorder = Recorder()
+        let bridge = FakeBridge(interfaceName: "utun31")
+        let controller = SourcePreservingLANPrivilegedController(
+            enforceRoot: false,
+            runtimeDirectory: runtime,
+            bridgeFactory: { _ in bridge },
+            runCommand: { command in try recorder.run(command) },
+            writeAnchor: { recorder.anchors.append($0) }
+        )
+        let activation = SourcePreservingLANRequest(
+            operation: .activate,
+            sessionID: "retry-cleanup",
+            gvproxySocketPath: socketPath
+        )
+        let deactivation = SourcePreservingLANRequest(
+            operation: .deactivate,
+            sessionID: "retry-cleanup"
+        )
+        _ = try controller.apply(activation, clientUID: getuid())
+        recorder.failNext([
+            "/sbin/pfctl", "-a", "com.apple/dev.dory.lan", "-F", "all",
+        ])
+
+        XCTAssertThrowsError(try controller.apply(deactivation, clientUID: getuid()))
+        XCTAssertTrue(bridge.stopped)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: runtime + "/pf-enable-token"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: runtime + "/ipv4-forwarding-owner"))
+
+        let stopped = try controller.apply(deactivation, clientUID: getuid())
+        XCTAssertEqual(stopped.status, "stopped")
+        XCTAssertEqual(recorder.commands.filter { $0 == ["/sbin/pfctl", "-E"] }.count, 1)
+        XCTAssertEqual(
+            recorder.commands.filter { $0 == ["/sbin/pfctl", "-X", "424242"] }.count,
+            1
+        )
+        XCTAssertEqual(
+            recorder.commands.filter {
+                $0 == ["/usr/sbin/sysctl", "-w", "net.inet.ip.forwarding=0"]
+            }.count,
+            1
+        )
+    }
+
+    func testDelayedFailureFromOldBridgeCannotTearDownReplacement() throws {
+        let socketPath = try makeDatagramSocket()
+        defer { unlink(socketPath) }
+        let runtime = temporaryRuntime("bridge-identity")
+        defer { try? FileManager.default.removeItem(atPath: runtime) }
+        let recorder = Recorder()
+        let first = FakeBridge(interfaceName: "utun41")
+        let second = FakeBridge(interfaceName: "utun42")
+        let bridges = [first, second]
+        let controller = SourcePreservingLANPrivilegedController(
+            enforceRoot: false,
+            runtimeDirectory: runtime,
+            bridgeFactory: { _ in
+                defer { recorder.bridgeCreations += 1 }
+                return bridges[recorder.bridgeCreations]
+            },
+            runCommand: { command in try recorder.run(command) },
+            writeAnchor: { recorder.anchors.append($0) }
+        )
+        let activation = SourcePreservingLANRequest(
+            operation: .activate,
+            sessionID: "stable-session",
+            gvproxySocketPath: socketPath
+        )
+        _ = try controller.apply(activation, clientUID: getuid())
+        _ = try controller.apply(SourcePreservingLANRequest(
+            operation: .deactivate,
+            sessionID: "stable-session"
+        ), clientUID: getuid())
+        _ = try controller.apply(activation, clientUID: getuid())
+
+        first.fail("delayed callback")
+
+        let refreshed = try controller.apply(SourcePreservingLANRequest(
+            operation: .refresh,
+            sessionID: "stable-session",
+            bindings: [PublishedPortBinding(protocol: .tcp, port: 8080)]
+        ), clientUID: getuid())
+        XCTAssertEqual(refreshed.interfaceName, "utun42")
+        XCTAssertFalse(second.stopped)
+    }
+
+    func testForwardingEnableFailureUsesPersistedOwnershipToRestoreHost() throws {
+        let socketPath = try makeDatagramSocket()
+        defer { unlink(socketPath) }
+        let runtime = temporaryRuntime("forwarding-failure")
+        defer { try? FileManager.default.removeItem(atPath: runtime) }
+        let recorder = Recorder()
+        recorder.failNext([
+            "/usr/sbin/sysctl", "-w", "net.inet.ip.forwarding=1",
+        ])
+        let bridge = FakeBridge(interfaceName: "utun51")
+        let controller = SourcePreservingLANPrivilegedController(
+            enforceRoot: false,
+            runtimeDirectory: runtime,
+            bridgeFactory: { _ in bridge },
+            runCommand: { command in try recorder.run(command) },
+            writeAnchor: { recorder.anchors.append($0) }
+        )
+
+        XCTAssertThrowsError(try controller.apply(SourcePreservingLANRequest(
+            operation: .activate,
+            sessionID: "forwarding-failure",
+            gvproxySocketPath: socketPath
+        ), clientUID: getuid()))
+
+        XCTAssertTrue(bridge.stopped)
+        XCTAssertEqual(recorder.forwardingValue, "0")
+        XCTAssertTrue(recorder.commands.contains([
+            "/usr/sbin/sysctl", "-w", "net.inet.ip.forwarding=0",
+        ]))
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: runtime + "/ipv4-forwarding-owner"
+        ))
+    }
+
+    func testRejectsSymlinkRuntimeBeforeCreatingPrivilegedBridge() throws {
+        let socketPath = try makeDatagramSocket()
+        defer { unlink(socketPath) }
+        let target = temporaryRuntime("runtime-target")
+        let runtime = temporaryRuntime("runtime-link")
+        try? FileManager.default.removeItem(atPath: runtime)
+        try FileManager.default.createDirectory(atPath: target, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(atPath: runtime, withDestinationPath: target)
+        defer {
+            try? FileManager.default.removeItem(atPath: runtime)
+            try? FileManager.default.removeItem(atPath: target)
+        }
+        let recorder = Recorder()
+        let controller = SourcePreservingLANPrivilegedController(
+            enforceRoot: false,
+            runtimeDirectory: runtime,
+            bridgeFactory: { _ in
+                recorder.bridgeCreations += 1
+                return FakeBridge(interfaceName: "utun61")
+            },
+            runCommand: { command in try recorder.run(command) },
+            writeAnchor: { recorder.anchors.append($0) }
+        )
+
+        XCTAssertThrowsError(try controller.apply(SourcePreservingLANRequest(
+            operation: .activate,
+            sessionID: "unsafe-runtime",
+            gvproxySocketPath: socketPath
+        ), clientUID: getuid()))
+        XCTAssertEqual(recorder.bridgeCreations, 0)
+    }
+
+    func testStartupCleanupFailureIsReportedInsteadOfStartingDirty() throws {
+        let runtime = temporaryRuntime("startup-failure")
+        try FileManager.default.createDirectory(atPath: runtime, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: runtime) }
+        let recorder = Recorder()
+        recorder.failNext([
+            "/sbin/pfctl", "-a", "com.apple/dev.dory.lan", "-F", "all",
+        ])
+        let controller = SourcePreservingLANPrivilegedController(
+            enforceRoot: false,
+            runtimeDirectory: runtime,
+            bridgeFactory: { _ in FakeBridge(interfaceName: "utun71") },
+            runCommand: { command in try recorder.run(command) },
+            writeAnchor: { recorder.anchors.append($0) }
+        )
+
+        XCTAssertThrowsError(try controller.clearStaleAnchor())
+    }
+
     private func makeDatagramSocket() throws -> String {
         let path = "/tmp/dory-source-lan-\(getpid())-\(UUID().uuidString).sock"
         let descriptor = socket(AF_UNIX, SOCK_DGRAM, 0)
@@ -317,6 +494,10 @@ final class SourcePreservingLANPrivilegedControllerTests: XCTestCase {
         guard result == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EINVAL) }
         return path
     }
+
+    private func temporaryRuntime(_ label: String) -> String {
+        "/tmp/dory-source-lan-runtime-\(getpid())-\(label)-\(UUID().uuidString)"
+    }
 }
 
 private final class Recorder: @unchecked Sendable {
@@ -325,9 +506,18 @@ private final class Recorder: @unchecked Sendable {
     var anchors = [String]()
     var bridgeCreations = 0
     var forwardingValue = "0"
+    private var failingCommand: [String]?
 
-    func run(_ command: [String]) -> String {
+    func failNext(_ command: [String]) {
+        failingCommand = command
+    }
+
+    func run(_ command: [String]) throws -> String {
         commands.append(command)
+        if failingCommand == command {
+            failingCommand = nil
+            throw RecorderError.injectedFailure
+        }
         if command == ["/sbin/pfctl", "-E"] { return "pf enabled\nToken : 424242\n" }
         if command == ["/usr/sbin/sysctl", "-n", "net.inet.ip.forwarding"] {
             return forwardingValue + "\n"
@@ -339,6 +529,10 @@ private final class Recorder: @unchecked Sendable {
         }
         return ""
     }
+}
+
+private enum RecorderError: Error {
+    case injectedFailure
 }
 
 private final class FakeBridge: SourcePreservingLANBridgeSession, @unchecked Sendable {
