@@ -1594,7 +1594,7 @@ assert "Preserve the currently deployed Sparkle feed" in pages, "ordinary Pages 
 assert "cancel-in-progress: false" in pages, "ordinary Pages deploy can cancel a release feed deployment"
 assert 'minimumSystemVersion\") == "14.0"' in pages, "ordinary Pages deploy preserves an invalid live macOS floor"
 assert "retaining the checked-in macOS 14 bootstrap feed" in pages, "invalid live feed cannot fall back to the repair bootstrap"
-live_step = "scripts/release-candidate-live-smoke.sh release-build/export-arm64/Dory.app"
+live_step = "scripts/direct-dmg-install-gate.sh"
 assert live_step in release, "public release never exercises the built/notarized Dory.app"
 assert release.index(live_step) < release.index("name: Publish GitHub Release"), "live app test runs after publication"
 assert "DORY_RELEASE_RUN_PHYSICAL_SLEEP: '1'" in release, \
@@ -1606,6 +1606,19 @@ assert "dory-live-release-evidence-${{ github.sha }}-${{ github.run_attempt }}" 
     "sleep/wake evidence is not commit/rerun-bound"
 assert "name: Verify physical sleep/wake evidence binding" in release, \
     "publication does not semantically verify physical sleep/wake evidence"
+assert "name: Verify direct DMG install evidence binding" in release, \
+    "publication does not semantically verify the direct DMG installation"
+direct_dmg = open("scripts/direct-dmg-install-gate.sh", encoding="utf-8").read()
+for required in (
+    'hdiutil attach -readonly -nobrowse -plist "$DMG"',
+    '/usr/bin/ditto "$MOUNT/Dory.app" "$APP"',
+    'xattr -w com.apple.quarantine "$quarantine" "$APP"',
+    'spctl --assess --type execute',
+    'verify-release-sbom.py" --sbom "$SBOM" --app "$APP"',
+    'release-candidate-live-smoke.sh" "$APP"',
+    'initial_clean_user_state_restored=PASS',
+):
+    assert required in direct_dmg, f"direct DMG install gate omits: {required}"
 sleep_gate = open("scripts/host-network-integrity-gate.sh", encoding="utf-8").read()
 for required in ("sudo -n pmset relative wake", "sudo -n pmset sleepnow",
                  "sleep/wake Docker CLI differs from the exact candidate app",
@@ -1704,6 +1717,9 @@ for required in (
     '--signing-identity "Developer ID Application"',
     '--workroot "$RUNNER_TEMP/dory-release-live-sparkle"',
     "--confirm CLEAN-RELEASE-USER-SPARKLE-INSTALL",
+    '--dmg "${{ steps.build.outputs.dmg }}"',
+    '--workroot "$RUNNER_TEMP/dory-release-direct-dmg"',
+    "--confirm CLEAN-RELEASE-USER-DMG-INSTALL",
 ):
     assert required in candidate, f"real Sparkle workflow gate omits: {required}"
 sparkle_install = open("scripts/sparkle-install-relaunch-gate.sh", encoding="utf-8").read()

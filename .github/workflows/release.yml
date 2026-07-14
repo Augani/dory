@@ -694,6 +694,7 @@ jobs:
       - name: Exercise the notarized direct-download candidate on a clean physical Mac
         timeout-minutes: 30
         env:
+          DORY_RELEASE_CLEAN_USER: '1'
           DORY_RELEASE_EXTERNAL_VOLUME_ROOT: ${{ vars.DORY_EXTERNAL_VOLUME_TEST_ROOT }}
           DORY_RELEASE_LOCK_IMAGE: ${{ vars.DORY_SOURCE_GATE_IMAGE }}
           DORY_RELEASE_FIXTURE_IMAGE: ${{ vars.DORY_RELEASE_ALPINE_IMAGE }}
@@ -704,7 +705,16 @@ jobs:
           DORY_RELEASE_CORPORATE_VPN_PROBE_HOST: ${{ vars.DORY_CORPORATE_VPN_PROBE_HOST }}
           DORY_RELEASE_CORPORATE_VPN_PROBE_URL: ${{ vars.DORY_CORPORATE_VPN_PROBE_URL }}
           DORY_RELEASE_TAILSCALE_EXIT_NODE: ${{ vars.DORY_TAILSCALE_EXIT_NODE }}
-        run: scripts/release-candidate-live-smoke.sh release-build/export-arm64/Dory.app
+        run: |
+          scripts/direct-dmg-install-gate.sh \
+            --dmg "${{ steps.build.outputs.dmg }}" \
+            --sbom "release-build/Dory-${{ steps.ver.outputs.version }}.cdx.json" \
+            --release-manifest release-build/release-manifest.json \
+            --version "${{ steps.ver.outputs.version }}" \
+            --build "${{ github.run_number }}" \
+            --source-commit "$GITHUB_SHA" \
+            --workroot "$RUNNER_TEMP/dory-release-direct-dmg" \
+            --confirm CLEAN-RELEASE-USER-DMG-INSTALL
 
       - name: Exercise the exact Sparkle update candidate on a clean physical Mac
         timeout-minutes: 20
@@ -734,6 +744,7 @@ jobs:
           if-no-files-found: warn
           path: |
             ${{ runner.temp }}/dory-arm64-host-facts.txt
+            ${{ runner.temp }}/dory-release-direct-dmg/evidence
             ${{ runner.temp }}/dory-release-live-*
 
       - name: Stage immutable public candidate for long qualification
@@ -1169,6 +1180,44 @@ jobs:
           }
           if values != expected:
               raise SystemExit(f"Homebrew install evidence mismatch: {values!r} != {expected!r}")
+          PY
+      - name: Verify direct DMG install evidence binding
+        env:
+          VERSION: ${{ needs.release_candidate.outputs.version }}
+        run: |
+          set -euo pipefail
+          manifests="$(find live-release-evidence -path '*/dory-release-direct-dmg/evidence/manifest.txt' -type f -print)"
+          test "$(printf '%s\n' "$manifests" | awk 'NF { count++ } END { print count + 0 }')" = 1
+          manifest="$(printf '%s\n' "$manifests" | awk 'NF { print; exit }')"
+          dmg_sha="$(shasum -a 256 "release-build/Dory-$VERSION.dmg" | awk '{print $1}')"
+          python3 - "$manifest" "$GITHUB_SHA" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" \
+            "$VERSION" "${{ github.run_number }}" "$dmg_sha" <<'PY'
+          import sys
+
+          path, commit, run_id, attempt, version, build, digest = sys.argv[1:8]
+          values = {}
+          with open(path, encoding="utf-8") as handle:
+              for line in handle:
+                  key, separator, value = line.rstrip("\n").partition("=")
+                  if not separator or key in values:
+                      raise SystemExit(f"malformed direct DMG evidence: {line!r}")
+                  values[key] = value
+          expected = {
+              "source_commit": commit,
+              "run_id": run_id,
+              "run_attempt": attempt,
+              "version": version,
+              "build": build,
+              "dmg_sha256": digest,
+              "normal_quarantine": "PASS",
+              "gatekeeper": "PASS",
+              "sbom": "PASS",
+              "live_smoke": "PASS",
+              "initial_clean_user_state_restored": "PASS",
+              "status": "PASS",
+          }
+          if values != expected:
+              raise SystemExit(f"direct DMG evidence mismatch: {values!r} != {expected!r}")
           PY
       - name: Verify physical sleep/wake evidence binding
         env:
