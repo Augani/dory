@@ -1070,6 +1070,13 @@ ssh_agent_manifest="$(find "$ENGINE_HOME/gate-evidence/ssh-agent" \
 [ -s "$ssh_agent_manifest" ] || die "SSH-agent forwarding evidence manifest is missing"
 grep -qx 'status=PASS' "$ssh_agent_manifest" \
   || die "SSH-agent forwarding evidence manifest is not PASS"
+grep -qx "docker_sha256=$competitor_docker_sha" "$ssh_agent_manifest" \
+  || die "SSH-agent forwarding evidence used the wrong Docker CLI"
+candidate_buildx_sha="$(shasum -a 256 "$APP/Contents/Helpers/docker-buildx" | awk '{print $1}')"
+grep -qx "buildx_sha256=$candidate_buildx_sha" "$ssh_agent_manifest" \
+  || die "SSH-agent forwarding evidence used the wrong Buildx plugin"
+grep -qx 'bundled_buildx=PASS' "$ssh_agent_manifest" \
+  || die "SSH-agent forwarding evidence did not prove the bundled Buildx plugin"
 [ -z "$(DOCKER_HOST="unix://$SOCKET" "$DOCKER" ps -aq)" ] \
   || die "SSH-agent gate left containers on the isolated engine"
 

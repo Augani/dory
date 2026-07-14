@@ -731,7 +731,8 @@ fresh_sha256=cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
 restart_sha256=cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
 status=PASS
 EOF
-cat > "$QUALIFICATION_FIXTURE/evidence/ssh-agent/run/manifest.txt" <<'EOF'
+ssh_buildx_sha="$(shasum -a 256 "$HELPERS/docker-buildx" | awk '{print $1}')"
+cat > "$QUALIFICATION_FIXTURE/evidence/ssh-agent/run/manifest.txt" <<EOF
 status=PASS
 guest_socket=/run/host-services/ssh-auth.sock
 concurrency=8
@@ -739,7 +740,9 @@ public_key_listing_sha256=cccccccccccccccccccccccccccccccccccccccccccccccccccccc
 buildkit_required_ssh_mount=PASS
 buildkit_public_key_listing_sha256=cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
 image=alpine/git:v2.49.1@sha256:c0280cf9572316299b08544065d3bf35db65043d5e3963982ec50647d2746e26
-docker_sha256=dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+docker_sha256=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+buildx_sha256=$ssh_buildx_sha
+bundled_buildx=PASS
 EOF
 cat > "$QUALIFICATION_FIXTURE/evidence/testcontainers/run/manifest.txt" <<'EOF'
 testcontainers=12.0.4

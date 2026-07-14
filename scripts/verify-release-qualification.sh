@@ -68,6 +68,8 @@ DORY_HV_MEMBER="$(tar -tzf "$RUNTIME_TAR" | awk '/\/bin\/dory-hv$/ {count += 1; 
 DORY_HV_SHA256="$(tar -xOzf "$RUNTIME_TAR" "$DORY_HV_MEMBER" | shasum -a 256 | awk '{print $1}')"
 CANDIDATE_GVPROXY_SHA="$(unzip -p "$UPDATE_ZIP" \
   Dory.app/Contents/Helpers/gvproxy | shasum -a 256 | awk '{print $1}')"
+CANDIDATE_BUILDX_SHA="$(unzip -p "$UPDATE_ZIP" \
+  Dory.app/Contents/Helpers/docker-buildx | shasum -a 256 | awk '{print $1}')"
 CANDIDATE_GVPROXY_BUILD_SHA="$(unzip -p "$UPDATE_ZIP" \
   Dory.app/Contents/Resources/gvproxy-provenance.txt | awk -F= '
     $1 == "verified_sha256" { count += 1; value = $2 }
@@ -653,6 +655,12 @@ buildkit_ssh_agent_hash="$(sed -n 's/^buildkit_public_key_listing_sha256=//p' "$
 grep -Eq '^image=.+@sha256:[0-9a-f]{64}$' "$ssh_agent_manifest" \
   || die "retained SSH-agent evidence has no digest-pinned image"
 ssh_agent_image="$(sed -n 's/^image=//p' "$ssh_agent_manifest")"
+grep -qx "docker_sha256=$competitor_docker_sha256" "$ssh_agent_manifest" \
+  || die "retained SSH-agent evidence used the wrong Docker CLI"
+grep -qx "buildx_sha256=$CANDIDATE_BUILDX_SHA" "$ssh_agent_manifest" \
+  || die "retained SSH-agent evidence used the wrong Buildx plugin"
+grep -qx 'bundled_buildx=PASS' "$ssh_agent_manifest" \
+  || die "retained SSH-agent evidence did not prove the bundled Buildx plugin"
 
 testcontainers_manifest="$(single_evidence_file testcontainers manifest.txt)"
 grep -qx 'status=PASS' "$testcontainers_manifest" \

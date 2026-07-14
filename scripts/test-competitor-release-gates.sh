@@ -422,6 +422,12 @@ grep -F -- '--mount=type=ssh,required=true' scripts/ssh-agent-forwarding-gate.sh
 grep -F 'buildkit_public_key_listing_sha256' scripts/ssh-agent-forwarding-gate.sh \
   scripts/verify-release-qualification.sh >/dev/null \
   || fail "BuildKit and ordinary SSH-agent identity proofs are not publication-bound"
+for ssh_buildx_contract in 'BUILDX="$(dirname "$DOCKER")/docker-buildx"' \
+  'DOCKER_CONFIG="$WORKDIR/docker-config"' bundled_buildx buildx_sha256; do
+  grep -F "$ssh_buildx_contract" scripts/ssh-agent-forwarding-gate.sh \
+    scripts/qualify-release-candidate.sh scripts/verify-release-qualification.sh >/dev/null \
+    || fail "SSH-agent qualification omits exact bundled Buildx contract: $ssh_buildx_contract"
+done
 grep -F 'sshAgentForwardingGate' scripts/qualify-release-candidate.sh \
   scripts/verify-release-qualification.sh >/dev/null \
   || fail "release qualification does not record and verify SSH-agent forwarding"

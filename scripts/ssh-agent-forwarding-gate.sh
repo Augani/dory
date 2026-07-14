@@ -47,21 +47,34 @@ printf '%s\n' "$IMAGE" | grep -Eq '^.+@sha256:[0-9a-f]{64}$' \
   || die "--image must be a digest-pinned image containing sh and ssh-add"
 [ -n "${SSH_AUTH_SOCK:-}" ] && [ -S "$SSH_AUTH_SOCK" ] \
   || die "SSH_AUTH_SOCK must name a live same-user SSH agent socket"
-if [[ "$DOCKER" == */* ]]; then [ -x "$DOCKER" ] || die "Docker CLI is not executable"; fi
+if [[ "$DOCKER" == */* ]]; then
+  [ -x "$DOCKER" ] || die "Docker CLI is not executable"
+  DOCKER="$(cd "$(dirname "$DOCKER")" && pwd)/$(basename "$DOCKER")"
+else
+  DOCKER="$(command -v "$DOCKER")"
+fi
+BUILDX="$(dirname "$DOCKER")/docker-buildx"
+[ -x "$BUILDX" ] \
+  || die "the exact candidate Docker CLI has no sibling docker-buildx plugin: $BUILDX"
 for command in ssh-add shasum sort; do command -v "$command" >/dev/null || die "missing $command"; done
-
-docker_e() { DOCKER_HOST="unix://$SOCKET" "$DOCKER" "$@"; }
-docker_e version >/dev/null || die "Dory Docker API is not ready"
-docker_e image inspect "$IMAGE" >/dev/null 2>&1 || die "required image is not local: $IMAGE"
-host_keys="$(ssh-add -L 2>/dev/null | LC_ALL=C sort)"
-[ -n "$host_keys" ] || die "the release SSH agent has no public keys loaded"
-host_hash="$(printf '%s\n' "$host_keys" | shasum -a 256 | awk '{print $1}')"
 
 RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$"
 OWNER="dory-ssh-agent-$RUN_ID"
 BUILD_IMAGE="dory-ssh-agent-buildkit:gate-$(date +%s)-$$"
 WORKDIR="$WORKROOT/$RUN_ID"
-mkdir -p "$WORKDIR"
+DOCKER_CONFIG="$WORKDIR/docker-config"
+mkdir -p "$DOCKER_CONFIG/cli-plugins"
+ln -s "$BUILDX" "$DOCKER_CONFIG/cli-plugins/docker-buildx"
+
+docker_e() { DOCKER_HOST="unix://$SOCKET" DOCKER_CONFIG="$DOCKER_CONFIG" "$DOCKER" "$@"; }
+docker_e version >/dev/null || die "Dory Docker API is not ready"
+docker_e buildx version >/dev/null \
+  || die "the bundled Buildx plugin is unavailable inside the isolated gate config"
+docker_e image inspect "$IMAGE" >/dev/null 2>&1 || die "required image is not local: $IMAGE"
+host_keys="$(ssh-add -L 2>/dev/null | LC_ALL=C sort)"
+[ -n "$host_keys" ] || die "the release SSH agent has no public keys loaded"
+host_hash="$(printf '%s\n' "$host_keys" | shasum -a 256 | awk '{print $1}')"
+
 cleanup() {
   local id
   docker_e ps -aq --filter "label=dev.dory.ssh-agent=$OWNER" 2>/dev/null \
@@ -69,6 +82,7 @@ cleanup() {
         [ -n "$id" ] && docker_e rm -f "$id" >/dev/null 2>&1 || true
       done
   docker_e image rm -f "$BUILD_IMAGE" >/dev/null 2>&1 || true
+  rm -rf "$DOCKER_CONFIG"
 }
 trap cleanup EXIT INT TERM
 
@@ -141,6 +155,8 @@ rm -rf "$BUILD_CONTEXT"
   echo "buildkit_public_key_listing_sha256=$buildkit_hash"
   echo "image=$IMAGE"
   echo "docker_sha256=$(shasum -a 256 "$DOCKER" | awk '{print $1}')"
+  echo "buildx_sha256=$(shasum -a 256 "$BUILDX" | awk '{print $1}')"
+  echo "bundled_buildx=PASS"
   echo "completed_epoch=$(date +%s)"
 } > "$WORKDIR/manifest.txt"
 cleanup
