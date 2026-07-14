@@ -1,6 +1,7 @@
 import Testing
 import Foundation
 import Darwin
+import DoryOperations
 @testable import Dory
 
 @MainActor
@@ -1087,15 +1088,29 @@ final class FilteredLiveMigrationSource: ContainerRuntime {
     let kind: RuntimeKind = .docker
     let base: DockerEngineRuntime
     let inventory: RuntimeSnapshot
+    let fixtureOwner: String
 
-    init(base: DockerEngineRuntime, inventory: RuntimeSnapshot) {
+    init(base: DockerEngineRuntime, inventory: RuntimeSnapshot, fixtureOwner: String) {
         self.base = base
         self.inventory = inventory
+        self.fixtureOwner = fixtureOwner
     }
 
     nonisolated var supportsImageArchiveTransfer: Bool { true }
+    nonisolated var supportsImageLoadReceipt: Bool { true }
     nonisolated var supportsRawProxy: Bool { true }
-    func snapshot() async throws -> RuntimeSnapshot { inventory }
+    func snapshot() async throws -> RuntimeSnapshot {
+        var filtered = inventory
+        let included = Set(inventory.images.map(\.imageID))
+        let current = try await base.snapshot()
+        filtered.images.append(contentsOf: current.images.filter {
+            !included.contains($0.imageID)
+                && $0.labels["dev.dory.object.kind"] == "writableLayer"
+                && $0.labels["dev.dory.operation.id"] != nil
+                && $0.labels["dory.test.owner"] == fixtureOwner
+        })
+        return filtered
+    }
     func migrationContainerWritableSizes() async throws -> [String: Int64] {
         let sizes = try await base.migrationContainerWritableSizes()
         let included = Set(inventory.containers.map(\.id))
@@ -1128,6 +1143,21 @@ final class FilteredLiveMigrationSource: ContainerRuntime {
     }
     var migrationSourceIdentifier: String { base.migrationSourceIdentifier }
     func removeImage(id: String) async throws { try await base.removeImage(id: id) }
+    func tagImage(source: String, repo: String, tag: String) async throws {
+        try await base.tagImage(source: source, repo: repo, tag: tag)
+    }
+    func loadImage(tar: Data) async throws { try await base.loadImage(tar: tar) }
+    func loadImage(stream: AsyncStream<Data>) async throws {
+        try await base.loadImage(stream: stream)
+    }
+    func loadImageThrowing(stream: AsyncThrowingStream<Data, Error>) async throws {
+        try await base.loadImageThrowing(stream: stream)
+    }
+    func loadImageThrowingWithResponse(
+        stream: AsyncThrowingStream<Data, Error>
+    ) async throws -> Data {
+        try await base.loadImageThrowingWithResponse(stream: stream)
+    }
     func exec(containerID: String, command: [String]) async throws -> ExecResult {
         try await base.exec(containerID: containerID, command: command)
     }
@@ -1146,7 +1176,59 @@ final class FilteredLiveMigrationSource: ContainerRuntime {
         base.copyOutStream(containerID: containerID, path: path)
     }
     func proxyRequest(method: String, path: String, headers: [(name: String, value: String)], body: Data) async -> HTTPResponse? {
-        await base.proxyRequest(method: method, path: path, headers: headers, body: body)
+        guard path.hasPrefix("/system/df") else {
+            return await base.proxyRequest(
+                method: method,
+                path: path,
+                headers: headers,
+                body: body
+            )
+        }
+        guard let response = await base.proxyRequest(
+            method: method,
+            path: path,
+            headers: headers,
+            body: body
+        ), response.isSuccess,
+              var root = try? JSONSerialization.jsonObject(with: response.body) as? [String: Any] else {
+            return nil
+        }
+        let names = Set(inventory.volumes.map(\.name))
+        func owned(_ volume: [String: Any]) -> Bool {
+            (volume["Name"] as? String).map(names.contains) == true
+        }
+        var filteredShape = false
+        if let volumes = root["Volumes"] as? [[String: Any]] {
+            root["Volumes"] = volumes.filter(owned)
+            filteredShape = true
+        }
+        for key in ["VolumeUsage", "VolumesUsage"] {
+            guard var usage = root[key] as? [String: Any],
+                  let items = usage["Items"] as? [[String: Any]] else { continue }
+            let filtered = items.filter(owned)
+            let sizes = filtered.compactMap {
+                (($0["UsageData"] as? [String: Any])?["Size"] as? NSNumber)?.int64Value
+            }
+            usage["Items"] = filtered
+            usage["TotalCount"] = filtered.count
+            usage["ActiveCount"] = filtered.filter {
+                ((($0["UsageData"] as? [String: Any])?["RefCount"] as? NSNumber)?.intValue ?? 0) > 0
+            }.count
+            usage["TotalSize"] = sizes.reduce(Int64(0), +)
+            root[key] = usage
+            filteredShape = true
+        }
+        guard filteredShape else { return nil }
+        guard let filtered = try? JSONSerialization.data(
+            withJSONObject: root,
+            options: [.sortedKeys]
+        ) else { return nil }
+        return HTTPResponse(
+            statusCode: response.statusCode,
+            reason: response.reason,
+            headers: response.headers,
+            body: filtered
+        )
     }
 }
 
@@ -2667,6 +2749,16 @@ struct MigrationTests {
         let fixedHostPort = try #require(allocatedHostPort > 0 ? allocatedHostPort : nil)
         var sourceContainerID: String?
         var stoppedSourceContainerID: String?
+        var targetFixtureImageIDs = Set<String>()
+        let targetBaselineImageIDs = Set(targetBefore.images.map(\.imageID))
+        let operationHome = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dory-live-migration-operation-\(suffix)")
+        try FileManager.default.createDirectory(
+            at: operationHome,
+            withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700]
+        )
+        defer { try? FileManager.default.removeItem(at: operationHome) }
 
         func networkContract(_ runtime: DockerEngineRuntime, name: String) async throws -> Data {
             let response = try #require(await runtime.proxyRequest(
@@ -2699,15 +2791,25 @@ struct MigrationTests {
                 try? await runtime.removeNetwork(name: networkName)
                 try? await runtime.removeImage(id: imageReference)
             }
-            // Writable-layer snapshots are final, intentionally retained migration images while
-            // recreated containers exist. This uniquely owned fixture must remove those references
-            // after deleting its containers so the disposable target returns to its exact baseline.
-            for containerID in [sourceContainerID, stoppedSourceContainerID].compactMap({ $0 }) {
-                let reference = MigrationAssistant.containerSnapshotReference(
-                    sourceIdentifier: source.migrationSourceIdentifier,
-                    containerID: containerID
-                )
-                try? await target.removeImage(id: reference)
+            // Containerd can reject deleting a base manifest until its writable-layer children
+            // are gone. Retry this exact, operation-captured ID set; never prune unrelated images.
+            for _ in 0..<3 {
+                for imageID in targetFixtureImageIDs.sorted() {
+                    try? await target.removeImage(id: imageID)
+                }
+            }
+            // A failed import can load the source archive's original RepoTag before the
+            // coordinator has returned its receipt. Remove it after writable-layer children,
+            // and only when the image was not present in the target baseline.
+            if let snapshot = try? await target.snapshot() {
+                let fixtureReferences = Set([baseImage, imageReference].map {
+                    MigrationOperationPlanBuilder.canonicalImageReference($0)
+                })
+                for image in snapshot.images where !targetBaselineImageIDs.contains(image.imageID) {
+                    let references = Set(MigrationOperationPlanBuilder.imageReferences(image))
+                    guard !references.isDisjoint(with: fixtureReferences) else { continue }
+                    try? await target.removeImage(id: image.imageID)
+                }
             }
         }
 
@@ -2840,31 +2942,86 @@ struct MigrationTests {
             let secondarySourceVolume = try #require(raw.volumes.first { $0.name == secondaryVolumeName })
             let sourceNetwork = try #require(raw.networks.first { $0.name == networkName })
             let sourceNetworkContract = try await networkContract(source, name: networkName)
+            let sourceImageID = try #require(sourceContainer.sourceImageID)
+            let sourceImage = try #require(raw.images.first {
+                MigrationImageTransferExecution.canonicalImageID($0.imageID)
+                    == MigrationImageTransferExecution.canonicalImageID(sourceImageID)
+            })
             let filtered = FilteredLiveMigrationSource(base: source, inventory: RuntimeSnapshot(
                 containers: [sourceContainer, stoppedSourceContainer],
-                images: [DockerImage(
-                    repository: imageRepository,
-                    tag: imageTag,
-                    imageID: "",
-                    size: "—",
-                    created: "now",
-                    usedByCount: 1
-                )],
+                images: [sourceImage],
                 volumes: [sourceVolume, secondarySourceVolume],
-                networks: [sourceNetwork]
-            ))
-
-            let summary = await MigrationAssistant.migrate(from: filtered, to: target)
+                networks: [sourceNetwork],
+                engineRunning: raw.engineRunning,
+                engineVersion: raw.engineVersion
+            ), fixtureOwner: name)
+            let helperArchive = try #require(
+                environment["DORY_LIVE_MIGRATION_HELPER_ARCHIVE"]
+                    ?? (markerFields.count > 3 && !markerFields[3].isEmpty
+                        ? markerFields[3]
+                        : nil)
+            )
+            let helperMetadata = try #require(
+                environment["DORY_LIVE_MIGRATION_HELPER_METADATA"]
+                    ?? (markerFields.count > 4 && !markerFields[4].isEmpty
+                        ? markerFields[4]
+                        : nil)
+            )
+            let helper = try MigrationTransferHelperAsset(
+                archive: Data(contentsOf: URL(fileURLWithPath: helperArchive)),
+                metadataData: Data(contentsOf: URL(fileURLWithPath: helperMetadata))
+            )
+            let availableBytes = try #require(
+                (try FileManager.default.attributesOfFileSystem(
+                    forPath: operationHome.path
+                )[.systemFreeSize] as? NSNumber)?.int64Value
+            )
+            let prepared = try await MigrationStrictInventoryCollector.collect(
+                from: filtered,
+                to: target,
+                availableHostBytes: availableBytes,
+                sharedHome: operationHome.path,
+                transferHelper: MigrationTransferHelperContract(metadata: helper.metadata)
+            )
+            let summary = try await MigrationImportCoordinator.execute(
+                prepared: prepared,
+                environment: MigrationImportExecutionEnvironment(
+                    source: filtered,
+                    target: target,
+                    journalStore: try DoryOperationJournalStore(home: operationHome.path),
+                    currentAvailableHostBytes: availableBytes,
+                    transferHelper: MigrationTransferHelperContract(metadata: helper.metadata),
+                    transfers: MigrationImportLiveAssetTransfers(helperAsset: helper),
+                    sharedHome: operationHome.path,
+                    hostArchitecture: "arm64"
+                )
+            )
             #expect(summary.failures.isEmpty)
-            #expect(summary.imagesImported == [imageReference])
+            #expect(summary.imagesImported.count == 1)
             #expect(summary.volumesCopied == [volumeName, secondaryVolumeName])
             #expect(summary.networksCreated == [networkName])
             #expect(summary.containersMigrated == [name, stoppedName])
             #expect(summary.containersAwaitingSourcePorts == [name])
-            #expect(summary.warnings.count == 1)
+            #expect(summary.warnings.isEmpty)
 
             var targetSnapshot = try await target.snapshot()
+            targetFixtureImageIDs.formUnion(
+                targetSnapshot.images.map(\.imageID)
+                    .filter { !targetBaselineImageIDs.contains($0) }
+            )
             var migrated = try #require(targetSnapshot.containers.first { $0.name == name })
+            let stoppedInitially = try #require(
+                targetSnapshot.containers.first { $0.name == stoppedName }
+            )
+            targetFixtureImageIDs.formUnion(
+                [migrated.sourceImageID, stoppedInitially.sourceImageID]
+                    .compactMap { $0 }
+                    .filter { !targetBaselineImageIDs.contains($0) }
+            )
+            targetFixtureImageIDs.formUnion(
+                prepared.source.snapshot.images.map { $0.imageID }
+                    .filter { !targetBaselineImageIDs.contains($0) }
+            )
             #expect(migrated.status == .stopped)
             #expect(migrated.mounts.allSatisfy { $0.type != "volume" })
             #expect(migrated.networks.contains(networkName))

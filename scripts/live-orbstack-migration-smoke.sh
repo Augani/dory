@@ -13,6 +13,9 @@ BASE_IMAGE="${DORY_LIVE_MIGRATION_BASE_IMAGE:-alpine:3.20}"
 EVIDENCE_DIR="${DORY_LIVE_MIGRATION_EVIDENCE_DIR:-}"
 MARKER="/private/tmp/dev.dory.live-orbstack-migration-test-$(id -u)"
 ACK="$MARKER.passed"
+HELPER_ARCHIVE="${DORY_LIVE_MIGRATION_HELPER_ARCHIVE:-}"
+HELPER_METADATA="${DORY_LIVE_MIGRATION_HELPER_METADATA:-}"
+HELPER_DIR=""
 
 [ -S "$SOURCE_SOCKET" ] || { echo "OrbStack socket is not ready: $SOURCE_SOCKET" >&2; exit 1; }
 [ -S "$TARGET_SOCKET" ] || { echo "Dory socket is not ready: $TARGET_SOCKET" >&2; exit 1; }
@@ -35,9 +38,23 @@ fi
 rm -f "$ACK"
 cleanup() {
   rm -f "$MARKER" "$ACK"
+  [ -z "$HELPER_DIR" ] || rm -rf "$HELPER_DIR"
 }
 trap cleanup EXIT INT TERM
-printf '%s\n%s\n%s\n' "$BASE_IMAGE" "$SOURCE_SOCKET" "$TARGET_SOCKET" > "$MARKER"
+if [ -z "$HELPER_ARCHIVE" ] || [ -z "$HELPER_METADATA" ]; then
+  HELPER_DIR="$(mktemp -d "${TMPDIR:-/tmp}/dory-live-transfer-helper.XXXXXX")"
+  HELPER_ARCHIVE="$HELPER_DIR/dory-transfer-helper-image-arm64.tar"
+  HELPER_METADATA="$HELPER_DIR/dory-transfer-helper-image-arm64.json"
+  scripts/build-transfer-helper.sh \
+    --image-output "$HELPER_ARCHIVE" \
+    --image-metadata-output "$HELPER_METADATA" >/dev/null
+fi
+[ -s "$HELPER_ARCHIVE" ] || { echo "live migration helper archive is missing" >&2; exit 1; }
+[ -s "$HELPER_METADATA" ] || { echo "live migration helper metadata is missing" >&2; exit 1; }
+export DORY_LIVE_MIGRATION_HELPER_ARCHIVE="$HELPER_ARCHIVE"
+export DORY_LIVE_MIGRATION_HELPER_METADATA="$HELPER_METADATA"
+printf '%s\n%s\n%s\n%s\n%s\n' \
+  "$BASE_IMAGE" "$SOURCE_SOCKET" "$TARGET_SOCKET" "$HELPER_ARCHIVE" "$HELPER_METADATA" > "$MARKER"
 
 scripts/test.sh -only-testing:DoryTests/MigrationTests
 [ "$(cat "$ACK" 2>/dev/null || true)" = "passed" ] \
