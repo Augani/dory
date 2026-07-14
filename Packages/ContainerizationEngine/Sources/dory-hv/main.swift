@@ -213,7 +213,7 @@ guard let command = arguments.first else {
 switch command {
 case "data-drive":
     guard arguments.count >= 2 else {
-        fail("usage: dory-hv data-drive <resolve|prepare|id|selected-path|select|bind-existing|backup|verify-backup|restore> [paths]")
+        fail("usage: dory-hv data-drive <resolve|prepare|id|selected-path|select|bind-existing|recover-existing|backup|verify-backup|restore> [paths]")
     }
     let operation = arguments[1]
     do {
@@ -235,6 +235,13 @@ case "data-drive":
             let drive = operation == "select"
                 ? try store.prepareSelection(requestedRoot: arguments[2])
                 : try store.bindExistingSelection(requestedRoot: arguments[2])
+            print(try drive.readManifest().id.uuidString.lowercased())
+        case "recover-existing":
+            guard arguments.count == 3 else {
+                fail("usage: dory-hv data-drive recover-existing <absolute .dorydrive path>")
+            }
+            let store = try DoryDataDriveSelectionStore(home: home)
+            let drive = try store.recoverExistingSelection(requestedRoot: arguments[2])
             print(try drive.readManifest().id.uuidString.lowercased())
         case "resolve":
             guard arguments.count == 3 else {
@@ -283,7 +290,7 @@ case "data-drive":
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             print(String(decoding: try encoder.encode(result), as: UTF8.self))
         default:
-            fail("usage: dory-hv data-drive <resolve|prepare|id|selected-path|select|bind-existing|backup|verify-backup|restore> [paths]")
+            fail("usage: dory-hv data-drive <resolve|prepare|id|selected-path|select|bind-existing|recover-existing|backup|verify-backup|restore> [paths]")
         }
     } catch {
         fail("data-drive \(operation) failed: \(error)")

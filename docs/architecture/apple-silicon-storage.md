@@ -83,6 +83,12 @@ forget an external drive and initialize an empty default. A resolved bookmark is
 after the drive and volume UUIDs match; a missing drive or same-name replacement volume fails
 closed without creating a mount-point shadow.
 
+`doryd` holds an exclusive lease on that authority record for its complete process lifetime. A
+drive-selection command therefore cannot rewrite the path beneath an already-configured sleeping
+daemon: it gracefully unloads the LaunchAgent (which stops Docker and machine VMs), locks both the
+old and new drive identities, publishes the selection, restarts the same validated LaunchAgent,
+and confirms XPC readiness. A standalone engine holding either drive makes the switch fail closed.
+
 The Docker filesystem is a bounded sparse file, not an 8 TiB promise. The launch default is a
 128 GiB logical ceiling with explicit user-controlled growth/cap changes. Guest discard maps to
 APFS hole punching, and graceful shutdown runs sync, unmount, and trim before the VM exits. UI and

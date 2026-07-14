@@ -1,4 +1,5 @@
 import AppKit
+import DoryOperations
 import SwiftUI
 
 struct SettingsView: View {
@@ -629,26 +630,67 @@ struct SettingsView: View {
         .task { await store.refreshProcessMemory() }
     }
 
-    private var dataDriveURL: URL {
+    private struct DataDrivePresentation {
+        let url: URL
+        let title: String
+        let isReady: Bool
+        let problem: String?
+    }
+
+    private var dataDrivePresentation: DataDrivePresentation {
         let environment = ProcessInfo.processInfo.environment
         let configured = environment["DORYD_DATA_DRIVE"] ?? environment["DORY_DATA_DRIVE"]
-        if let configured, !configured.isEmpty {
-            return URL(fileURLWithPath: configured).standardizedFileURL
+        do {
+            let selectionStore = try DoryDataDriveSelectionStore()
+            if let selected = try selectionStore.inspectSelection(requestedRoot: configured) {
+                return DataDrivePresentation(
+                    url: URL(fileURLWithPath: selected.root),
+                    title: "Managed drive ready",
+                    isReady: true,
+                    problem: nil
+                )
+            }
+            let drive = try DoryDataDrive(overrideRoot: configured)
+            switch try drive.inspect() {
+            case .absent:
+                return DataDrivePresentation(
+                    url: URL(fileURLWithPath: drive.root),
+                    title: "Managed drive initializes on first start",
+                    isReady: false,
+                    problem: nil
+                )
+            case .ready:
+                let error = DoryDataDriveSelectionError.unselectedExistingDrive(drive.root)
+                return DataDrivePresentation(
+                    url: URL(fileURLWithPath: drive.root),
+                    title: "Managed drive needs explicit selection",
+                    isReady: false,
+                    problem: error.description
+                )
+            }
+        } catch {
+            let selectionStore = try? DoryDataDriveSelectionStore()
+            let remembered = try? selectionStore?.selectedPath()
+            let fallback = configured ?? remembered ?? DoryDataDrive.defaultRoot()
+            return DataDrivePresentation(
+                url: URL(fileURLWithPath: fallback).standardizedFileURL,
+                title: "Managed drive unavailable",
+                isReady: false,
+                problem: String(describing: error)
+            )
         }
-        return FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support/Dory/Dory.dorydrive", isDirectory: true)
     }
 
     private var dataDrivePanel: some View {
-        let url = dataDriveURL
-        let exists = FileManager.default.fileExists(atPath: url.path)
+        let presentation = dataDrivePresentation
+        let url = presentation.url
         return VStack(alignment: .leading, spacing: 11) {
             HStack(spacing: 10) {
                 Image(systemName: "externaldrive.fill")
                     .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(exists ? p.green : p.amber)
+                    .foregroundStyle(presentation.isReady ? p.green : p.amber)
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(exists ? "Managed drive ready" : "Managed drive initializes on first start")
+                    Text(presentation.title)
                         .font(.system(size: 12.5, weight: .semibold))
                         .foregroundStyle(p.text)
                     Text(url.path)
@@ -659,15 +701,21 @@ struct SettingsView: View {
                 }
                 Spacer(minLength: 0)
                 Button("Reveal in Finder") {
-                    if exists {
+                    if presentation.isReady {
                         NSWorkspace.shared.activateFileViewerSelecting([url])
                     } else {
                         NSWorkspace.shared.open(url.deletingLastPathComponent())
                     }
                 }
                 .buttonStyle(.bordered)
-                .disabled(!exists)
+                .disabled(!presentation.isReady)
                 .accessibilityIdentifier("reveal-data-drive")
+            }
+            if let problem = presentation.problem {
+                Text(problem)
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(p.red)
+                    .textSelection(.enabled)
             }
             Text("Images, containers, named volumes, machine disks, snapshots, and backups live together here. Runtime sockets and replaceable logs remain in ~/.dory.")
                 .font(.system(size: 11.5))

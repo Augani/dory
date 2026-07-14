@@ -329,7 +329,7 @@ cmd_start() {
       running_dory_hv_uses_drive "$pid" "$recorded_drive" \
         || die "running engine data drive does not match recorded drive $recorded_drive; stop it before recovery"
     fi
-    drive_id="$("$BIN/dory-hv" data-drive bind-existing "$recorded_drive")" \
+    drive_id="$("$BIN/dory-hv" data-drive recover-existing "$recorded_drive")" \
       || die "running engine data-drive identity is unreadable"
     [ -z "$recorded_drive_id" ] || [ "$recorded_drive_id" = "$drive_id" ] \
       || die "running engine data-drive UUID does not match recorded identity"

@@ -5,6 +5,8 @@ public enum DoryDataDriveSelectionError: Error, Sendable, Equatable, CustomStrin
     case invalidRecord(String)
     case uninitializedDrive(String)
     case unselectedExistingDrive(String)
+    case selectionInUse(String)
+    case selectedDriveInUse(path: String, detail: String)
     case selectedDriveUnavailable(path: String, id: UUID)
     case selectedDriveMismatch(expected: UUID, actual: UUID?, path: String)
     case filesystem(String)
@@ -18,6 +20,12 @@ public enum DoryDataDriveSelectionError: Error, Sendable, Equatable, CustomStrin
         case let .unselectedExistingDrive(path):
             return "Dory data drive at \(path) has no selection record; refusing to adopt it "
                 + "automatically (confirm it with `dory data use \"\(path)\"`)"
+        case let .selectionInUse(detail):
+            return "Dory's selected-drive authority is in use; stop Dory's daemon before changing "
+                + "the selected drive (\(detail))"
+        case let .selectedDriveInUse(path, detail):
+            return "Dory data drive is in use at \(path); stop every engine using it before "
+                + "changing the selected drive (\(detail))"
         case let .selectedDriveUnavailable(path, id):
             return "selected Dory data drive \(id.uuidString.lowercased()) is unavailable at \(path); "
                 + "refusing to create a replacement"
@@ -28,6 +36,21 @@ public enum DoryDataDriveSelectionError: Error, Sendable, Equatable, CustomStrin
         case let .filesystem(message):
             return message
         }
+    }
+}
+
+/// Exclusive authority over selected-drive initialization and mutation.
+///
+/// `doryd` retains one for its complete process lifetime. Short-lived CLI operations acquire the
+/// same lock, so a selected path cannot change underneath a daemon that already constructed its
+/// Docker and machine configurations.
+public final class DoryDataDriveSelectionAuthority: @unchecked Sendable {
+    fileprivate let storePath: String
+    fileprivate let lock: EngineStateDirectoryLock
+
+    fileprivate init(storePath: String, lock: EngineStateDirectoryLock) {
+        self.storePath = storePath
+        self.lock = lock
     }
 }
 
@@ -85,6 +108,41 @@ public struct DoryDataDriveSelectionStore: Sendable, Equatable {
         path = canonicalHome + "/Library/Application Support/Dory/data-drive-selection.json"
     }
 
+    public func acquireAuthority() throws -> DoryDataDriveSelectionAuthority {
+        let parent = URL(fileURLWithPath: path).deletingLastPathComponent().path
+        do {
+            guard try DoryDataDrive.canonicalPath(parent) == parent else {
+                throw DoryDataDriveSelectionError.filesystem(
+                    "Dory selected-drive state directory must not traverse a symlink: \(parent)"
+                )
+            }
+            try FileManager.default.createDirectory(atPath: parent, withIntermediateDirectories: true)
+            var parentStatus = stat()
+            guard parent.withCString({ lstat($0, &parentStatus) }) == 0,
+                  parentStatus.st_mode & S_IFMT == S_IFDIR,
+                  parentStatus.st_uid == getuid() else {
+                throw DoryDataDriveSelectionError.filesystem(
+                    "Dory selected-drive state directory is not an owner-controlled directory: \(parent)"
+                )
+            }
+            try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: parent)
+            return DoryDataDriveSelectionAuthority(
+                storePath: path,
+                lock: try EngineStateDirectoryLock(
+                    stateDirectory: parent,
+                    lockFileName: "data-drive-selection.lock"
+                )
+            )
+        } catch let error as EngineStateDirectoryLockError {
+            switch error {
+            case .alreadyInUse:
+                throw DoryDataDriveSelectionError.selectionInUse(error.description)
+            case .cannotOpen:
+                throw DoryDataDriveSelectionError.filesystem(error.description)
+            }
+        }
+    }
+
     public func read(fileManager: FileManager = .default) throws -> DoryDataDriveSelection? {
         guard fileManager.fileExists(atPath: path) else { return nil }
         var status = stat()
@@ -124,27 +182,41 @@ public struct DoryDataDriveSelectionStore: Sendable, Equatable {
         requestedRoot: String? = nil,
         fileManager: FileManager = .default
     ) throws -> DoryDataDrive {
-        let existing = try read(fileManager: fileManager)
-        let selectedRoot = try requestedRoot ?? selectedPath(fileManager: fileManager)
-        let drive = try DoryDataDrive(home: home, overrideRoot: selectedRoot)
-
-        guard let existing else {
-            switch try drive.inspect(fileManager: fileManager) {
-            case .absent:
-                try drive.prepare(fileManager: fileManager)
-                try writeSelection(for: drive, fileManager: fileManager)
-                return drive
-            case .ready:
-                throw DoryDataDriveSelectionError.unselectedExistingDrive(drive.root)
-            }
-        }
-        return try verify(
-            drive,
-            against: existing,
-            recordResolvedPath: true,
-            repairLayout: true,
-            fileManager: fileManager
+        try prepareSelection(
+            requestedRoot: requestedRoot,
+            fileManager: fileManager,
+            authority: nil
         )
+    }
+
+    public func prepareSelection(
+        requestedRoot: String? = nil,
+        fileManager: FileManager = .default,
+        authority providedAuthority: DoryDataDriveSelectionAuthority?
+    ) throws -> DoryDataDrive {
+        try withAuthority(providedAuthority) {
+            let existing = try read(fileManager: fileManager)
+            let selectedRoot = try requestedRoot ?? selectedPath(fileManager: fileManager)
+            let drive = try DoryDataDrive(home: home, overrideRoot: selectedRoot)
+
+            guard let existing else {
+                switch try drive.inspect(fileManager: fileManager) {
+                case .absent:
+                    try drive.prepare(fileManager: fileManager)
+                    try writeSelection(for: drive, fileManager: fileManager)
+                    return drive
+                case .ready:
+                    throw DoryDataDriveSelectionError.unselectedExistingDrive(drive.root)
+                }
+            }
+            return try verify(
+                drive,
+                against: existing,
+                recordResolvedPath: true,
+                repairLayout: true,
+                fileManager: fileManager
+            )
+        }
     }
 
     /// Resolves and verifies the selected drive without creating directories, repairing its
@@ -172,8 +244,59 @@ public struct DoryDataDriveSelectionStore: Sendable, Equatable {
         requestedRoot: String,
         fileManager: FileManager = .default
     ) throws -> DoryDataDrive {
+        try bindExistingSelection(
+            requestedRoot: requestedRoot,
+            fileManager: fileManager,
+            authority: nil
+        )
+    }
+
+    public func bindExistingSelection(
+        requestedRoot: String,
+        fileManager: FileManager = .default,
+        authority providedAuthority: DoryDataDriveSelectionAuthority?
+    ) throws -> DoryDataDrive {
+        try withAuthority(providedAuthority) {
+            try bindExistingSelection(
+                requestedRoot: requestedRoot,
+                requireIdleDrives: true,
+                fileManager: fileManager
+            )
+        }
+    }
+
+    /// Repairs selection metadata for a drive already proven to belong to the caller's live
+    /// engine. This is reserved for interrupted standalone-runtime recovery; ordinary selection
+    /// changes must use `bindExistingSelection` and prove that both paths are idle.
+    public func recoverExistingSelection(
+        requestedRoot: String,
+        fileManager: FileManager = .default,
+        authority providedAuthority: DoryDataDriveSelectionAuthority? = nil
+    ) throws -> DoryDataDrive {
+        try withAuthority(providedAuthority) {
+            try bindExistingSelection(
+                requestedRoot: requestedRoot,
+                requireIdleDrives: false,
+                fileManager: fileManager
+            )
+        }
+    }
+
+    private func bindExistingSelection(
+        requestedRoot: String,
+        requireIdleDrives: Bool,
+        fileManager: FileManager
+    ) throws -> DoryDataDrive {
         let drive = try DoryDataDrive(home: home, overrideRoot: requestedRoot)
-        if let existing = try read(fileManager: fileManager) {
+        let existing = try read(fileManager: fileManager)
+        guard try drive.inspect(fileManager: fileManager) == .ready else {
+            throw DoryDataDriveSelectionError.uninitializedDrive(drive.root)
+        }
+        let driveLocks = requireIdleDrives
+            ? try acquireIdleDriveLocks(target: drive, existing: existing, fileManager: fileManager)
+            : []
+        defer { withExtendedLifetime(driveLocks) {} }
+        if let existing {
             return try verify(
                 drive,
                 against: existing,
@@ -182,11 +305,50 @@ public struct DoryDataDriveSelectionStore: Sendable, Equatable {
                 fileManager: fileManager
             )
         }
-        guard try drive.inspect(fileManager: fileManager) == .ready else {
-            throw DoryDataDriveSelectionError.uninitializedDrive(drive.root)
-        }
         try writeSelection(for: drive, fileManager: fileManager)
         return drive
+    }
+
+    private func withAuthority<T>(
+        _ provided: DoryDataDriveSelectionAuthority?,
+        operation: () throws -> T
+    ) throws -> T {
+        let authority = try provided ?? acquireAuthority()
+        guard authority.storePath == path else {
+            throw DoryDataDriveSelectionError.filesystem(
+                "selected-drive authority belongs to another selection store"
+            )
+        }
+        return try withExtendedLifetime(authority) { try operation() }
+    }
+
+    private func acquireIdleDriveLocks(
+        target: DoryDataDrive,
+        existing: DoryDataDriveSelection?,
+        fileManager: FileManager
+    ) throws -> [EngineStateDirectoryLock] {
+        var roots: Set<String> = [target.root]
+        if let existing,
+           let currentPath = try selectedPath(fileManager: fileManager),
+           let current = try? DoryDataDrive(home: home, overrideRoot: currentPath),
+           current.root != target.root,
+           (try? current.inspect(fileManager: fileManager)) == .ready,
+           (try? current.readManifest(fileManager: fileManager).id) == existing.driveID {
+            roots.insert(current.root)
+        }
+        return try roots.sorted().map { root in
+            do {
+                return try EngineStateDirectoryLock(
+                    stateDirectory: root,
+                    lockFileName: "drive.lock"
+                )
+            } catch let error as EngineStateDirectoryLockError {
+                throw DoryDataDriveSelectionError.selectedDriveInUse(
+                    path: root,
+                    detail: error.description
+                )
+            }
+        }
     }
 
     private func verify(

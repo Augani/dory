@@ -2478,8 +2478,7 @@ data_cmd() {
     use)
       [ "$#" -eq 1 ] || { echo "usage: dory data use <target.dorydrive>" >&2; exit 2; }
       target="$(absolute_cli_path "$1")"
-      output="$("$helper" data-drive bind-existing "$target")"
-      printf 'Selected Dory data drive %s at %s\n' "$output" "$target"
+      select_data_drive "$helper" "$target"
       ;;
     -h|--help|help)
       echo "usage: dory data path|backup|verify|restore|use ..."
@@ -2489,6 +2488,81 @@ data_cmd() {
       exit 2
       ;;
   esac
+}
+
+select_data_drive() {
+  local helper="$1" target="$2"
+  local launchctl_bin="${DORY_LAUNCHCTL_BIN:-/bin/launchctl}"
+  local plist="$HOME/Library/LaunchAgents/dev.dory.doryd.plist"
+  local domain service
+  domain="gui/$(id -u)"
+  service="$domain/dev.dory.doryd"
+  local daemon_was_loaded=0 output rc restart_error="" label program ctl attempt
+
+  if [ -e "$plist" ] || [ -L "$plist" ]; then
+    [ ! -L "$plist" ] && [ -f "$plist" ] || {
+      echo "Dory cannot change drives while its LaunchAgent path is not a regular file: $plist" >&2
+      return 1
+    }
+    label="$(/usr/bin/plutil -extract Label raw -o - "$plist" 2>/dev/null || true)"
+    program="$(/usr/bin/plutil -extract ProgramArguments.0 raw -o - "$plist" 2>/dev/null || true)"
+    [ "$label" = dev.dory.doryd ] || {
+      echo "Dory cannot restart a LaunchAgent with an unexpected label: $plist" >&2
+      return 1
+    }
+    case "$program" in
+      /*/Dory.app/Contents/Helpers/doryd) ;;
+      *) echo "Dory cannot restart a LaunchAgent with an unexpected daemon: $program" >&2; return 1 ;;
+    esac
+    if "$launchctl_bin" print "$service" >/dev/null 2>&1; then
+      daemon_was_loaded=1
+      echo "Stopping Dory's engine and machines before changing the data drive…"
+      if ! output="$("$launchctl_bin" bootout "$service" 2>&1)"; then
+        echo "Dory could not stop its LaunchAgent: $output" >&2
+        return 1
+      fi
+    fi
+  fi
+
+  set +e
+  output="$("$helper" data-drive bind-existing "$target" 2>&1)"
+  rc=$?
+  set -e
+  if [ "$rc" -ne 0 ]; then
+    if [ "$daemon_was_loaded" -eq 1 ]; then
+      if ! restart_error="$("$launchctl_bin" bootstrap "$domain" "$plist" 2>&1)"; then
+        echo "Dory also could not restore its LaunchAgent after the failed drive change: $restart_error" >&2
+      else
+        "$launchctl_bin" kickstart "$service" >/dev/null 2>&1 || true
+      fi
+    fi
+    printf '%s\n' "$output" >&2
+    return "$rc"
+  fi
+
+  if [ "$daemon_was_loaded" -eq 1 ]; then
+    if ! restart_error="$("$launchctl_bin" bootstrap "$domain" "$plist" 2>&1)"; then
+      if ! "$launchctl_bin" print "$service" >/dev/null 2>&1; then
+        echo "Selected the drive, but Dory's LaunchAgent did not restart: $restart_error" >&2
+        return 1
+      fi
+    fi
+    "$launchctl_bin" kickstart "$service" >/dev/null 2>&1 || true
+    if ! ctl="$(dorydctl_bin 2>/dev/null)"; then
+      echo "Selected the drive, but Dory could not find dorydctl to verify the restarted daemon." >&2
+      return 1
+    fi
+    for ((attempt = 0; attempt < 120; attempt++)); do
+      "$ctl" --timeout 2 protocol-version >/dev/null 2>&1 && break
+      sleep 0.25
+    done
+    if [ "$attempt" -ge 120 ]; then
+      echo "Selected the drive, but doryd did not become ready within 30 seconds." >&2
+      return 1
+    fi
+  fi
+
+  printf 'Selected Dory data drive %s at %s\n' "$output" "$target"
 }
 
 wait_emit_json() {

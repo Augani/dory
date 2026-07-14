@@ -66,7 +66,10 @@
   tampered, or path-escaping archives. `dory data restore BACKUP TARGET.dorydrive` rebuilds sparse
   extents and filesystem metadata into a new partial drive, independently inventories it, and
   refuses to replace any existing drive. Full-drive backups intentionally live outside the drive
-  they protect; `dory data use TARGET.dorydrive` is a separate explicit selection step.
+  they protect; `dory data use TARGET.dorydrive` is a separate explicit selection step. If the
+  daemon is loaded, that command deliberately stops the engine and machine VMs, switches the
+  verified idle drive, then restarts and probes `doryd`; a drive attached to another engine is
+  rejected.
 - **Native, not Electron.** One Swift/SwiftUI app: menu-bar agent + full dashboard, launch
   animation to launch-at-login, light and dark. No Chromium, no Node, no telemetry.
 

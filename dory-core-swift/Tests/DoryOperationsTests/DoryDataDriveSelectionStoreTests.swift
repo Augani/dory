@@ -3,6 +3,20 @@ import Foundation
 import XCTest
 
 final class DoryDataDriveSelectionStoreTests: XCTestCase {
+    func testSelectionAuthorityExcludesConcurrentMutation() throws {
+        let base = try temporaryHome(named: "authority")
+        defer { try? FileManager.default.removeItem(at: base) }
+        let store = try DoryDataDriveSelectionStore(home: base.path)
+        let authority = try store.acquireAuthority()
+        _ = try store.prepareSelection(authority: authority)
+
+        XCTAssertThrowsError(try store.prepareSelection()) { error in
+            guard case .selectionInUse = error as? DoryDataDriveSelectionError else {
+                return XCTFail("unexpected error: \(error)")
+            }
+        }
+    }
+
     func testFirstSelectionRefusesToAdoptAnExistingUnselectedDrive() throws {
         let base = try temporaryHome(named: "unselected-existing")
         defer { try? FileManager.default.removeItem(at: base) }
@@ -180,6 +194,29 @@ final class DoryDataDriveSelectionStoreTests: XCTestCase {
         }
         XCTAssertFalse(FileManager.default.fileExists(atPath: root))
         XCTAssertFalse(FileManager.default.fileExists(atPath: store.path))
+    }
+
+    func testOrdinaryBindRequiresIdleDriveButLiveRecoveryCanVerifyIt() throws {
+        let base = try temporaryHome(named: "bind-in-use")
+        defer { try? FileManager.default.removeItem(at: base) }
+        let store = try DoryDataDriveSelectionStore(home: base.path)
+        let drive = try store.prepareSelection()
+        let driveLock = try EngineStateDirectoryLock(
+            stateDirectory: drive.root,
+            lockFileName: "drive.lock"
+        )
+        defer { withExtendedLifetime(driveLock) {} }
+
+        XCTAssertThrowsError(try store.bindExistingSelection(requestedRoot: drive.root)) { error in
+            guard case let .selectedDriveInUse(path, _) = error as? DoryDataDriveSelectionError else {
+                return XCTFail("unexpected error: \(error)")
+            }
+            XCTAssertEqual(path, drive.root)
+        }
+
+        let recovered = try store.recoverExistingSelection(requestedRoot: drive.root)
+        XCTAssertEqual(recovered.root, drive.root)
+        XCTAssertEqual(try recovered.readManifest().id, try drive.readManifest().id)
     }
 
     private func temporaryHome(named name: String) throws -> URL {

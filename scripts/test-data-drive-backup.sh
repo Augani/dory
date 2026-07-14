@@ -48,10 +48,61 @@ allocated="$(( $(stat -f %b "$RESTORED/engine/sparse.img") * 512 ))"
 [ "$logical" -eq 33554432 ]
 [ "$allocated" -lt "$logical" ]
 
-HOME="$TMP_HOME" DORY_HV_BIN="$HELPER" "$REPO_ROOT/scripts/dory" data use "$RESTORED" \
+mkdir -p "$TMP_HOME/Library/LaunchAgents" "$TMP_HOME/fake-bin"
+cat > "$TMP_HOME/Library/LaunchAgents/dev.dory.doryd.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key><string>dev.dory.doryd</string>
+<key>ProgramArguments</key><array><string>/Applications/Dory.app/Contents/Helpers/doryd</string></array>
+</dict></plist>
+PLIST
+printf 'loaded\n' > "$TMP_HOME/.fake-launchctl-state"
+cat > "$TMP_HOME/fake-bin/launchctl" <<'SH'
+#!/bin/sh
+printf '%s\n' "$*" >> "$HOME/.fake-launchctl-commands"
+case "$1" in
+  print) [ "$(cat "$HOME/.fake-launchctl-state")" = loaded ] ;;
+  bootout) printf 'stopped\n' > "$HOME/.fake-launchctl-state" ;;
+  bootstrap) printf 'loaded\n' > "$HOME/.fake-launchctl-state" ;;
+  kickstart) exit 0 ;;
+  *) exit 64 ;;
+esac
+SH
+cat > "$TMP_HOME/fake-bin/dorydctl" <<'SH'
+#!/bin/sh
+printf '1\n'
+SH
+chmod +x "$TMP_HOME/fake-bin/launchctl" "$TMP_HOME/fake-bin/dorydctl"
+
+if HOME="$TMP_HOME" DORY_HV_BIN="$HELPER" \
+  DORY_LAUNCHCTL_BIN="$TMP_HOME/fake-bin/launchctl" DORYDCTL_BIN="$TMP_HOME/fake-bin/dorydctl" \
+  "$REPO_ROOT/scripts/dory" data use "$TMP_HOME/Library/Application Support/Dory/Absent.dorydrive" \
+  >/dev/null 2>&1; then
+  echo "backup gate: absent drive was unexpectedly selected" >&2
+  exit 1
+fi
+[ "$(cat "$TMP_HOME/.fake-launchctl-state")" = loaded ]
+
+HOME="$TMP_HOME" DORY_HV_BIN="$HELPER" \
+  DORY_LAUNCHCTL_BIN="$TMP_HOME/fake-bin/launchctl" DORYDCTL_BIN="$TMP_HOME/fake-bin/dorydctl" \
+  "$REPO_ROOT/scripts/dory" data use "$RESTORED" \
   > /dev/null
 selected="$(HOME="$TMP_HOME" DORY_HV_BIN="$HELPER" "$REPO_ROOT/scripts/dory" data path)"
 [ "$selected" = "$RESTORED" ]
+grep -Fxq "bootout gui/$(id -u)/dev.dory.doryd" "$TMP_HOME/.fake-launchctl-commands"
+grep -Fxq "bootstrap gui/$(id -u) $TMP_HOME/Library/LaunchAgents/dev.dory.doryd.plist" \
+  "$TMP_HOME/.fake-launchctl-commands"
+[ "$(cat "$TMP_HOME/.fake-launchctl-state")" = loaded ]
+
+if HOME="$TMP_HOME" PATH="/usr/bin:/bin" DORY_HV_BIN="$HELPER" \
+  DORY_LAUNCHCTL_BIN="$TMP_HOME/fake-bin/launchctl" \
+  DORYDCTL_BIN="$TMP_HOME/missing-dorydctl" \
+  "$REPO_ROOT/scripts/dory" data use "$RESTORED" >/dev/null 2>&1; then
+  echo "backup gate: loaded daemon selection passed without a readiness client" >&2
+  exit 1
+fi
+[ "$(cat "$TMP_HOME/.fake-launchctl-state")" = loaded ]
 
 python3 - "$TMP_HOME/backup.json" "$TMP_HOME/verify.json" "$TMP_HOME/restore.json" <<'PY'
 import json

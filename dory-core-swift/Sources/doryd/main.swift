@@ -13,10 +13,15 @@ _ = signal(SIGPIPE, SIG_IGN)
 
 let env = ProcessInfo.processInfo.environment
 let dorydEnvironment = DorydEnvironment(values: env)
+let dataDriveSelectionAuthority: DoryDataDriveSelectionAuthority
 do {
     let requestedDrive = try dorydEnvironment.dataDriveConfiguration()
     let selectionStore = try DoryDataDriveSelectionStore(home: dorydEnvironment.home)
-    let drive = try selectionStore.prepareSelection(requestedRoot: requestedDrive.root)
+    dataDriveSelectionAuthority = try selectionStore.acquireAuthority()
+    let drive = try selectionStore.prepareSelection(
+        requestedRoot: requestedDrive.root,
+        authority: dataDriveSelectionAuthority
+    )
     let driveID = try drive.readManifest().id.uuidString.lowercased()
     FileHandle.standardError.write(
         Data("doryd: data drive \(driveID) ready at \(drive.root)\n".utf8)
@@ -156,7 +161,8 @@ private let shutdownCoordinator = DorydShutdownCoordinator(
     networkingController: networkingController,
     dockerTier: dockerTier,
     machineManager: machineManager,
-    remoteManager: remoteManager
+    remoteManager: remoteManager,
+    dataDriveSelectionAuthority: dataDriveSelectionAuthority
 )
 private let signalQueue = DispatchQueue(label: "dev.dory.doryd.signal-shutdown", qos: .userInitiated)
 private let signalSources = installSignalHandlers(
@@ -244,6 +250,7 @@ private final class DorydShutdownCoordinator {
     private let dockerTier: DockerTier?
     private let machineManager: MachineManager?
     private let remoteManager: RemoteMachineManager
+    private let dataDriveSelectionAuthority: DoryDataDriveSelectionAuthority
     private let condition = NSCondition()
     private enum State {
         case active
@@ -263,7 +270,8 @@ private final class DorydShutdownCoordinator {
         networkingController: NetworkingController?,
         dockerTier: DockerTier?,
         machineManager: MachineManager?,
-        remoteManager: RemoteMachineManager
+        remoteManager: RemoteMachineManager,
+        dataDriveSelectionAuthority: DoryDataDriveSelectionAuthority
     ) {
         self.listener = listener
         self.hostCLIReconciler = hostCLIReconciler
@@ -275,6 +283,7 @@ private final class DorydShutdownCoordinator {
         self.dockerTier = dockerTier
         self.machineManager = machineManager
         self.remoteManager = remoteManager
+        self.dataDriveSelectionAuthority = dataDriveSelectionAuthority
     }
 
     func run(reason: String, exitCode: Int32 = 0) -> Never {
