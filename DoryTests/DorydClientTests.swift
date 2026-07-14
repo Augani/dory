@@ -467,11 +467,20 @@ struct DorydClientTests {
         #expect(updateEnv.first?["value"] as? String == "test-token")
 
         machine = try #require(store.machines.first { $0.name == "dev" })
+        service.setMachineDeleteResult(ok: false, message: "fixture disk is busy")
         store.deleteMachine(machine)
         try await waitUntil {
-            service.machineDeleteCount == 1 && !store.machines.contains { $0.name == "dev" }
+            service.machineDeleteCount == 1 && !store.isMachineBusy("dev")
         }
-        #expect(service.machineDeleteCount == 1)
+        #expect(store.machines.contains { $0.name == "dev" })
+        #expect(store.actionError?.contains("fixture disk is busy") == true)
+
+        service.setMachineDeleteResult(ok: true)
+        store.deleteMachine(machine)
+        try await waitUntil {
+            service.machineDeleteCount == 2 && !store.machines.contains { $0.name == "dev" }
+        }
+        #expect(service.machineDeleteCount == 2)
     }
 
     @MainActor
@@ -530,6 +539,15 @@ struct DorydClientTests {
         try await waitUntil {
             service.machineDeleteSnapshotCount == 1 && !store.machineSnapshots.contains { $0.id == snapshot.id }
         }
+
+        store.cloneMachine(machine)
+        try await waitUntil {
+            service.machineCloneSnapshotCount == 2
+                && service.machineSnapshotCount == 2
+                && service.machineDeleteSnapshotCount == 2
+                && !store.isMachineBusy("dev")
+        }
+        #expect(store.machineCreationLog.contains("Clone dev-copy-"))
     }
 
     @MainActor
@@ -1367,6 +1385,8 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
     private var _machineStartCount = 0
     private var _machineStopCount = 0
     private var _machineDeleteCount = 0
+    private var _machineDeleteOK = true
+    private var _machineDeleteMessage = ""
     private var _machineCreateCount = 0
     private var _machineUpdateCount = 0
     private var _machineProvisionCount = 0
@@ -1483,6 +1503,13 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
         lock.lock()
         _machineProvisionOK = ok
         _machineProvisionMessage = message
+        lock.unlock()
+    }
+
+    func setMachineDeleteResult(ok: Bool, message: String = "") {
+        lock.lock()
+        _machineDeleteOK = ok
+        _machineDeleteMessage = message
         lock.unlock()
     }
 
@@ -1666,9 +1693,13 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
     func machineDelete(_ machineID: String, reply: @escaping (Bool, String) -> Void) {
         lock.lock()
         _machineDeleteCount += 1
-        machines.removeValue(forKey: machineID)
+        let ok = _machineDeleteOK
+        let message = _machineDeleteMessage
+        if ok {
+            machines.removeValue(forKey: machineID)
+        }
         lock.unlock()
-        reply(true, "")
+        reply(ok, message)
     }
 
     func machineList(reply: @escaping (NSArray, String) -> Void) {

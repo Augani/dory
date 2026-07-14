@@ -4286,18 +4286,20 @@ final class AppStore {
         Task {
             defer { busyMachines.remove(name) }
             do {
-                let createdISO = ISO8601DateFormatter().string(from: Date())
-                let snapshot = try await dorydClient.machineSnapshot(
-                    name,
-                    note: "clone base",
-                    createdISO: createdISO,
-                    snapshotID: "s" + UUID().uuidString.prefix(8).lowercased()
-                )
-                _ = try await dorydClient.machineCloneSnapshot(
+                let cleanupFailure = try await withTemporaryMachineSnapshot(
                     machineID: name,
-                    snapshotID: snapshot.id,
-                    newID: newName
-                )
+                    note: "clone base"
+                ) { snapshot in
+                    _ = try await dorydClient.machineCloneSnapshot(
+                        machineID: name,
+                        snapshotID: snapshot.id,
+                        newID: newName
+                    )
+                }
+                if let cleanupFailure {
+                    appendMachineCreationLog("Clone created, but temporary snapshot cleanup failed: \(cleanupFailure)")
+                    actionError = "Clone \(newName) was created, but Dory could not remove its temporary snapshot: \(cleanupFailure)"
+                }
                 appendMachineCreationLog("Clone \(newName) created and started.")
                 activeSheet = nil
                 await refreshMachines()
@@ -4322,20 +4324,21 @@ final class AppStore {
         Task {
             defer { busyMachines.remove(name) }
             do {
-                let createdISO = ISO8601DateFormatter().string(from: Date())
-                let snapshot = try await dorydClient.machineSnapshot(
-                    name,
-                    note: "export",
-                    createdISO: createdISO,
-                    snapshotID: "s" + UUID().uuidString.prefix(8).lowercased()
-                )
-                let result = try await dorydClient.machineExportSnapshot(
+                let cleanupFailure = try await withTemporaryMachineSnapshot(
                     machineID: name,
-                    snapshotID: snapshot.id,
-                    to: url.path
-                )
-                if !result.ok {
-                    throw DorydClientError.daemon(result.message)
+                    note: "export"
+                ) { snapshot in
+                    let result = try await dorydClient.machineExportSnapshot(
+                        machineID: name,
+                        snapshotID: snapshot.id,
+                        to: url.path
+                    )
+                    if !result.ok {
+                        throw DorydClientError.daemon(result.message)
+                    }
+                }
+                if let cleanupFailure {
+                    actionError = "Export completed, but Dory could not remove its temporary snapshot: \(cleanupFailure)"
                 }
             } catch {
                 actionError = "Could not export \(machine.name): \(error)"
@@ -4484,18 +4487,64 @@ final class AppStore {
         }
     }
 
+    private func withTemporaryMachineSnapshot(
+        machineID: String,
+        note: String,
+        operation: (DorydMachineSnapshot) async throws -> Void
+    ) async throws -> String? {
+        let snapshot = try await dorydClient.machineSnapshot(
+            machineID,
+            note: note,
+            createdISO: ISO8601DateFormatter().string(from: Date()),
+            snapshotID: "s" + UUID().uuidString.prefix(8).lowercased()
+        )
+        do {
+            try await operation(snapshot)
+        } catch {
+            let cleanupFailure = await removeTemporaryMachineSnapshot(
+                machineID: machineID,
+                snapshotID: snapshot.id
+            )
+            if let cleanupFailure {
+                throw DorydClientError.daemon("\(error). Temporary snapshot cleanup also failed: \(cleanupFailure)")
+            }
+            throw error
+        }
+        return await removeTemporaryMachineSnapshot(machineID: machineID, snapshotID: snapshot.id)
+    }
+
+    private func removeTemporaryMachineSnapshot(machineID: String, snapshotID: String) async -> String? {
+        do {
+            let result = try await dorydClient.machineDeleteSnapshot(
+                machineID: machineID,
+                snapshotID: snapshotID
+            )
+            guard result.ok else {
+                return result.message.isEmpty ? "daemon rejected cleanup" : result.message
+            }
+            return nil
+        } catch {
+            return "\(error)"
+        }
+    }
+
     func deleteMachine(_ machine: Machine) {
         guard requireDorydMachines() else { return }
         let name = machine.name
-        machines.removeAll { $0.name == name }
-        unregisterMachineBridge(name)
-        try? FileManager.default.removeItem(atPath: MachineService.bridgeHostDir(for: name))
+        guard !busyMachines.contains(name) else { return }
+        busyMachines.insert(name)
         Task {
+            defer { busyMachines.remove(name) }
             do {
                 let result = try await dorydClient.machineDelete(name)
                 if !result.ok {
-                    actionError = result.message.isEmpty ? "Could not delete machine '\(name)'" : result.message
+                    throw DorydClientError.daemon(
+                        result.message.isEmpty ? "daemon rejected deletion" : result.message
+                    )
                 }
+                machines.removeAll { $0.name == name }
+                unregisterMachineBridge(name)
+                try? FileManager.default.removeItem(atPath: MachineService.bridgeHostDir(for: name))
             } catch {
                 actionError = "Could not delete machine '\(name)': \(error)"
             }

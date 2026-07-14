@@ -660,6 +660,12 @@ grep -F '[signed machine-image contract](MACHINE_IMAGE_CONTRACT.md)' README.md >
   || fail "the public README does not surface the signed machine-image contract"
 grep -F 'dory machine create baseline' MACHINE_IMAGE_CONTRACT.md >/dev/null \
   || fail "the machine-image contract lost its supported bundled baseline recipe"
+grep -F 'removeTemporaryMachineSnapshot(' Dory/Models/AppStore.swift >/dev/null \
+  || fail "machine clone/export can retain hidden temporary snapshots on the user data drive"
+grep -F 'service.machineDeleteSnapshotCount == 2' DoryTests/DorydClientTests.swift >/dev/null \
+  || fail "machine clone no longer proves its temporary snapshot is removed"
+grep -F 'fixture disk is busy' DoryTests/DorydClientTests.swift >/dev/null \
+  || fail "machine deletion no longer proves failed daemon deletion preserves the UI definition"
 for required_recipe in \
   'guest/kernel/build.sh arm64' \
   'guest/initfs/build.sh arm64' \
