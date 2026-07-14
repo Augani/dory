@@ -453,6 +453,25 @@ done
 grep -F 'network-api-lifecycle' scripts/qualify-release-candidate.sh \
   scripts/verify-release-qualification.sh >/dev/null \
   || fail "exact release qualification no longer requires the complete network lifecycle proof"
+grep -F 'pass compose-v2-lifecycle' scripts/competitor-runtime-regression-gate.sh >/dev/null \
+  || fail "competitor runtime gate lost the complete Compose v2 lifecycle proof"
+for compose_contract in \
+  'service_completed_successfully' \
+  'service_healthy' \
+  '!reset []' \
+  'com.docker.compose.project.config_files' \
+  "--profile '*' down --remove-orphans" \
+  'Compose down deleted named user data' \
+  'Compose down deleted an external network' \
+  'COMPOSE_FILE="$WORKDIR/definitely-missing-ambient-compose.yaml"'; do
+  grep -F -- "$compose_contract" scripts/competitor-runtime-regression-gate.sh >/dev/null \
+    || fail "competitor runtime gate lost Compose contract: $compose_contract"
+done
+grep -F -- '--compose "$COMPOSE"' scripts/qualify-release-candidate.sh >/dev/null \
+  || fail "exact release qualification does not execute the candidate Compose v2 helper"
+grep -F 'compose_bin_sha256' scripts/qualify-release-candidate.sh \
+  scripts/verify-release-qualification.sh >/dev/null \
+  || fail "Compose qualification evidence is not bound to the candidate helper digest"
 grep -F 'os.O_CREAT | os.O_EXCL | os.O_RDONLY' scripts/bind-advisory-lock-probe.py >/dev/null \
   || fail "bind gate lost the exact mode-0000 exclusive-create reproduction"
 grep -F 'create_excl_readonly_mode0000_unlink=PASS' scripts/bind-advisory-lock-gate.sh \

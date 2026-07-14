@@ -1748,12 +1748,6 @@ struct ReviewFixTests {
         #expect(invalid.statusCode == 400)
     }
 
-    // #12: interpolation operator precedence with a hyphen in the error message.
-    @Test func interpolationHandlesHyphenInRequiredMessage() {
-        #expect(ComposeInterpolation.interpolate("${VAR:?must-be-set}", variables: ["VAR": "x"]) == "x")
-        #expect(ComposeInterpolation.interpolate("${VAR-a-b-c}", variables: [:]) == "a-b-c")
-    }
-
     // #21: yes/no must remain strings (YAML 1.2 / compose), not become true/false.
     @Test func yamlYesNoStayStrings() throws {
         let root = try YAMLParser.parse("env:\n  FEATURE: yes\n  OTHER: no\n  REAL: true")
@@ -1775,24 +1769,6 @@ struct ReviewFixTests {
         #expect(item["target"]?.stringValue == "80")
         #expect(item["published"]?.stringValue == "8080")
         #expect(item["meta"]?["key"]?.stringValue == "val") // previously dropped to null
-    }
-
-    // #13: service_completed_successfully must fail when the dependency exits non-zero.
-    @Test func composeFailsOnNonZeroCompletedDependency() async throws {
-        let yaml = """
-        services:
-          migrate:
-            image: busybox
-          app:
-            image: nginx
-            depends_on:
-              migrate:
-                condition: service_completed_successfully
-        """
-        let project = try ComposeParser.parse(yaml, projectName: "demo")
-        let runtime = FailingCompletionRuntime()
-        let engine = ComposeEngine(runtime: runtime, healthPollCap: 0.01, maxHealthAttempts: 3)
-        await #expect(throws: ComposeError.self) { try await engine.up(project) }
     }
 
     private func shortSocketPath(_ prefix: String) -> String {
@@ -1891,29 +1867,4 @@ private final class WaitRuntime: ContainerRuntime {
     func create(_ spec: ContainerSpec) async throws -> String { "created" }
     func exec(containerID: String, command: [String]) async throws -> ExecResult { ExecResult(exitCode: 0, output: "") }
     func containerExitCode(_ id: String) async -> Int? { exitCode }
-}
-
-@MainActor
-final class FailingCompletionRuntime: ContainerRuntime {
-    let kind: RuntimeKind = .mock
-    private var live: [Container] = []
-    private var n = 0
-    func snapshot() async throws -> RuntimeSnapshot { RuntimeSnapshot(containers: live) }
-    func create(_ spec: ContainerSpec) async throws -> String {
-        n += 1; let id = "id\(n)"
-        // migrate is created already-stopped (completed); app would start after.
-        let stopped = spec.name.contains("migrate")
-        live.append(Container(id: id, name: spec.name, image: spec.image, status: stopped ? .stopped : .running,
-            cpuPercent: 0, memoryDisplay: "0", memoryLimitDisplay: "—", memoryFraction: 0, ports: "—",
-            uptime: "—", created: "now", ipAddress: "—", domain: "", command: "", restartPolicy: "no"))
-        return id
-    }
-    func start(containerID: String) async throws {}
-    func stop(containerID: String) async throws {}
-    func restart(containerID: String) async throws {}
-    func remove(containerID: String) async throws {}
-    func logs(containerID: String) async throws -> [LogLine] { [] }
-    func env(containerID: String) async throws -> [EnvVar] { [] }
-    func exec(containerID: String, command: [String]) async throws -> ExecResult { ExecResult(exitCode: 0, output: "") }
-    func containerExitCode(_ id: String) async -> Int? { 1 } // dependency failed
 }

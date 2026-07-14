@@ -33,7 +33,7 @@ and the final ext4 contents before publishing `guest/out/initfs-arm64.ext4`.
 | `Dory/Models` | `AppStore` (the single observable app state) and domain models |
 | `Dory/Runtime` | The `ContainerRuntime` protocol and its backends (Docker, Apple, Shared VM, Mock) |
 | `Dory/Shim` | The `doryd` Docker-API socket server |
-| `Dory/Compose` | YAML parser, interpolation, dependency graph, and the Compose engine |
+| `Dory/Compose` | The bounded official Compose v2 runner plus YAML utilities used by machine recipes |
 | `Dory/Net` | Local CA / TLS, `*.dory.local` routing, DNS, port forwarding |
 | `Dory/Engine` | Healthcheck state machine, event synthesis, anonymous-volume tracking |
 | `Dory/Features` | SwiftUI views, organized by screen |

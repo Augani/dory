@@ -72,6 +72,8 @@ CANDIDATE_BUILDX_SHA="$(unzip -p "$UPDATE_ZIP" \
   Dory.app/Contents/Helpers/docker-buildx | shasum -a 256 | awk '{print $1}')"
 CANDIDATE_DOCKER_SHA="$(unzip -p "$UPDATE_ZIP" \
   Dory.app/Contents/Helpers/docker | shasum -a 256 | awk '{print $1}')"
+CANDIDATE_COMPOSE_SHA="$(unzip -p "$UPDATE_ZIP" \
+  Dory.app/Contents/Helpers/docker-compose | shasum -a 256 | awk '{print $1}')"
 CANDIDATE_GVPROXY_BUILD_SHA="$(unzip -p "$UPDATE_ZIP" \
   Dory.app/Contents/Resources/gvproxy-provenance.txt | awk -F= '
     $1 == "verified_sha256" { count += 1; value = $2 }
@@ -650,7 +652,7 @@ competitor_manifest="$(single_evidence_file competitor-runtime manifest.txt)"
   || die "retained competitor runtime evidence has no result rows"
 grep -qx "source_commit=$SOURCE_COMMIT" "$competitor_manifest" \
   || die "retained competitor runtime evidence used the wrong source commit"
-for digest_key in docker_bin_sha256 dory_engine_sha256 bin_dory_hv_sha256 \
+for digest_key in docker_bin_sha256 compose_bin_sha256 dory_engine_sha256 bin_dory_hv_sha256 \
   bin_gvproxy_sha256 bin_dory_dataplane_proxy_sha256 \
   share_dory_dory_hv_kernel_arm64_lzfse_sha256 \
   share_dory_dory_engine_rootfs_ext4_lzfse_sha256 \
@@ -667,11 +669,15 @@ grep -qx 'amd64_enabled=1' "$competitor_settings" \
   "$(sed -n 's/^engine_settings_sha256=//p' "$competitor_manifest")" ] \
   || die "retained competitor engine settings do not match their digest"
 competitor_docker_sha256="$(sed -n 's/^docker_bin_sha256=//p' "$competitor_manifest")"
+competitor_compose_sha256="$(sed -n 's/^compose_bin_sha256=//p' "$competitor_manifest")"
+[ "$competitor_compose_sha256" = "$CANDIDATE_COMPOSE_SHA" ] \
+  || die "retained competitor evidence used the wrong Compose v2 helper"
 grep -q $'\tFAIL\t' "$competitor_results" \
   && die "retained competitor runtime evidence contains a failed row"
 for proof in \
   published-port-handoff host-port-collision named-signal-delivery forwarded-connection-fds concurrent-proxy-backpressure \
-  missing-source-cp restart-churn compose-port-restart network-route-conflict network-api-lifecycle \
+  missing-source-cp restart-churn compose-port-restart compose-v2-lifecycle \
+  network-route-conflict network-api-lifecycle \
   network-alias-restart-ip standalone-engine-restart named-volume-empty named-volume named-volume-cp volume-api-lifecycle \
   security-opt-label seccomp-profile bind-open-create-0200 bind-mount-option-contract \
   nested-bind-subvolume bind-special-file-fail-fast bind-open-fd-stability \
@@ -956,7 +962,8 @@ required_competitor_tests = {
     "published-port-handoff", "host-port-collision", "named-signal-delivery", "container-api-lifecycle",
     "forwarded-connection-fds",
     "concurrent-proxy-backpressure",
-    "missing-source-cp", "restart-churn", "compose-port-restart", "network-route-conflict",
+    "missing-source-cp", "restart-churn", "compose-port-restart", "compose-v2-lifecycle",
+    "network-route-conflict",
     "network-api-lifecycle",
     "standalone-engine-restart", "named-volume-empty", "named-volume", "named-volume-cp",
     "volume-api-lifecycle", "security-opt-label", "seccomp-profile",

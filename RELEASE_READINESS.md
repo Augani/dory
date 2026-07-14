@@ -112,8 +112,16 @@ to the final release tag rather than representing this candidate as built from c
 
 ## Verified locally
 
-- The full non-UI app gate passes **838 tests in 113 suites** after the final migration, Compose,
+- The full non-UI app gate passes **814 tests in 110 suites** after the final migration, Compose,
   ephemeral-port preservation, and daemon-owned recovery changes.
+- Compose GUI lifecycle is now delegated to the bundled official Compose v2 helper instead of a
+  partial in-app parser/reconciler. Fourteen focused tests pass exact socket/environment isolation,
+  native-label recovery, multi-file arguments, all-profile lifecycle, secret-safe failures,
+  bounded concurrent output, timeout/cancellation, and shell-injection resistance. The strengthened
+  disposable-engine campaign passes all 38 rows, including `.env`/`!reset` merge, completed and
+  healthy dependencies, profile isolation, real orphan cleanup, bind/named-volume/custom/external
+  networking, restart/start/stop/logs, data-safe `down`, and cleanup persistence. Qualification and
+  publication now bind this proof to the exact Compose-helper digest as well as the Docker CLI.
 - Recovery is now daemon-owned instead of a UI shell-out for live subsystems. Focused XPC and app
   tests pass DNS/domain listener restart, route re-derivation, guest-agent RPC recovery, Docker API
   fail-closed reporting, incident attribution, and invalid-target rejection. dory-hv now serializes

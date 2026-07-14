@@ -333,11 +333,12 @@ RUNTIME="$RUNTIME_DIR/dory-engine"
 [ -x "$RUNTIME_DIR/bin/dory-hv" ] || die "standalone runtime dory-hv is missing"
 CANDIDATE_DORY_HV_SHA="$(shasum -a 256 "$RUNTIME_DIR/bin/dory-hv" | awk '{print $1}')"
 DOCKER="$APP/Contents/Helpers/docker"
+COMPOSE="$APP/Contents/Helpers/docker-compose"
 KUBECTL="$APP/Contents/Helpers/kubectl"
 [ -x "$RUNTIME" ] || die "standalone runtime launcher is missing"
 [ -x "$DOCKER" ] || die "candidate Docker CLI is missing"
 [ -x "$KUBECTL" ] || die "candidate kubectl CLI is missing"
-[ -x "$APP/Contents/Helpers/docker-compose" ] || die "candidate Compose plugin is missing"
+[ -x "$COMPOSE" ] || die "candidate Compose plugin is missing"
 
 codesign --verify --strict --deep "$APP"
 codesign -dv --verbose=4 "$APP" 2> "$WORKDIR/evidence/codesign-details.txt"
@@ -404,7 +405,7 @@ done
 grep -qx 'release_qualifying=true' "$offline_boot_manifest" \
   || die "offline bundled boot evidence is not bound to the exact candidate"
 ln -s "$DOCKER" "$WORKDIR/docker"
-ln -s "$APP/Contents/Helpers/docker-compose" "$WORKDIR/docker-config/cli-plugins/docker-compose"
+ln -s "$COMPOSE" "$WORKDIR/docker-config/cli-plugins/docker-compose"
 ln -s "$APP/Contents/Helpers/docker-buildx" "$WORKDIR/docker-config/cli-plugins/docker-buildx"
 export PATH="$WORKDIR:$PATH"
 export DOCKER_CONFIG="$WORKDIR/docker-config"
@@ -1074,6 +1075,7 @@ bounded 1800 scripts/competitor-runtime-regression-gate.sh \
   --restarts 20 \
   --fd-growth 8 \
   --docker "$DOCKER" \
+  --compose "$COMPOSE" \
   --runtime "$RUNTIME" \
   --runtime-home "$ENGINE_HOME" \
   --source-commit "$SOURCE_COMMIT" \
@@ -1085,8 +1087,11 @@ competitor_results="$(find "$ENGINE_HOME/gate-evidence/competitor-runtime" \
 competitor_manifest="$(dirname "$competitor_results")/manifest.txt"
 [ -s "$competitor_manifest" ] || die "competitor runtime manifest is missing"
 competitor_docker_sha="$(shasum -a 256 "$DOCKER" | awk '{print $1}')"
+competitor_compose_sha="$(shasum -a 256 "$COMPOSE" | awk '{print $1}')"
 grep -qx "docker_bin_sha256=$competitor_docker_sha" "$competitor_manifest" \
   || die "competitor runtime manifest is not bound to the qualified Docker CLI"
+grep -qx "compose_bin_sha256=$competitor_compose_sha" "$competitor_manifest" \
+  || die "competitor runtime manifest is not bound to the qualified Compose v2 helper"
 grep -qx "source_commit=$SOURCE_COMMIT" "$competitor_manifest" \
   || die "competitor runtime manifest is not bound to the qualified source commit"
 grep -Eq '^dory_engine_sha256=[0-9a-f]{64}$' "$competitor_manifest" \
@@ -1104,6 +1109,7 @@ for proof in \
   published-port-handoff host-port-collision named-signal-delivery container-api-lifecycle \
   forwarded-connection-fds \
   concurrent-proxy-backpressure missing-source-cp restart-churn compose-port-restart \
+  compose-v2-lifecycle \
   network-route-conflict network-api-lifecycle network-alias-restart-ip standalone-engine-restart \
   named-volume-empty named-volume named-volume-cp volume-api-lifecycle security-opt-label seccomp-profile \
   bind-open-create-0200 bind-mount-option-contract nested-bind-subvolume \

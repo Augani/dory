@@ -23,10 +23,10 @@ enum HostDockerCLI {
 
     @discardableResult
     static func install() -> Bool {
-        guard helper("docker") != nil else { return false }
+        guard bundledTool("docker") != nil else { return false }
         try? FileManager.default.createDirectory(atPath: binDir, withIntermediateDirectories: true)
         for tool in linkedTools {
-            if let source = helper(tool) {
+            if let source = bundledTool(tool) {
                 symlink(source, to: binDir + "/\(tool)")
             }
         }
@@ -38,14 +38,14 @@ enum HostDockerCLI {
 
     @discardableResult
     static func installComposePlugin() -> Bool {
-        guard let compose = helper("docker-compose") else { return false }
+        guard let compose = bundledTool("docker-compose") else { return false }
         try? FileManager.default.createDirectory(atPath: composePluginDir, withIntermediateDirectories: true)
         return installOwnedComposeSymlink(compose, to: composePluginDir + "/docker-compose")
     }
 
     @discardableResult
     static func installBuildxPlugin() -> Bool {
-        guard let buildx = helper("docker-buildx") else { return false }
+        guard let buildx = bundledTool("docker-buildx") else { return false }
         try? FileManager.default.createDirectory(atPath: composePluginDir, withIntermediateDirectories: true)
         return installOwnedComposeSymlink(buildx, to: composePluginDir + "/docker-buildx")
     }
@@ -78,7 +78,10 @@ enum HostDockerCLI {
         )
     }
 
-    private static func helper(_ name: String) -> String? {
+    /// Resolves an executable shipped inside Dory. Internal features use the same signed helper
+    /// that is exposed to the user's terminal instead of depending on whatever happens to be on
+    /// the host PATH.
+    static func bundledTool(_ name: String) -> String? {
         let bundleURL = Bundle.main.bundleURL
         let candidates = [
             bundleURL.appendingPathComponent("Contents/Helpers/\(name)").path,
@@ -140,7 +143,7 @@ enum HostDockerCLI {
     ) {
         guard let rawTarget = try? fileManager.destinationOfSymbolicLink(atPath: destination) else { return }
         let target = resolvedSymlinkTarget(rawTarget, at: destination)
-        guard isDoryOwnedComposeTarget(target, desiredSource: helper("docker-compose"), home: home, bundleRoot: bundleRoot) else {
+        guard isDoryOwnedComposeTarget(target, desiredSource: bundledTool("docker-compose"), home: home, bundleRoot: bundleRoot) else {
             return
         }
         try? fileManager.removeItem(atPath: destination)

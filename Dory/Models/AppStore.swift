@@ -156,6 +156,7 @@ final class AppStore {
     @ObservationIgnored private let dorydLaunchAgentEnsurer: @Sendable (DorydLaunchAgent.Configuration) async -> Bool
     @ObservationIgnored private let environment: [String: String]
     @ObservationIgnored private let machineEnvResolver: @Sendable ([String]) async -> [String: String]
+    @ObservationIgnored private let composeCommandRunner: any ComposeCommandRunning
     @ObservationIgnored private var runtimeOwnedByDoryd = false
     @ObservationIgnored private var daemonSocketPath: String?
     @ObservationIgnored private var engineSettingChangeInFlight = false
@@ -168,6 +169,7 @@ final class AppStore {
         useDorydEngine: Bool? = nil,
         dorydLaunchAgentEnsurer: (@Sendable (DorydLaunchAgent.Configuration) async -> Bool)? = nil,
         environment: [String: String] = ProcessInfo.processInfo.environment,
+        composeCommandRunner: any ComposeCommandRunning = ComposeProcessRunner(),
         machineEnvResolver: @escaping @Sendable ([String]) async -> [String: String] = { names in
             await MachineEnvImport.resolve(names: names)
         }
@@ -175,6 +177,7 @@ final class AppStore {
         let env = environment
         let dorydFlags = Self.dorydEngineFlags(environment: env)
         self.environment = env
+        self.composeCommandRunner = composeCommandRunner
         self.machineEnvResolver = machineEnvResolver
         self.dorydClient = dorydClient
         self.dorydEngineEnabled = useDorydEngine ?? dorydFlags.enabled
@@ -2692,21 +2695,15 @@ final class AppStore {
     }
 
     func startComposeProject(_ name: String) {
-        for container in containers(inComposeProject: name) where !container.isRunning {
-            toggle(container)
-        }
+        Task { await composeProjectOperation(.start, name: name) }
     }
 
     func stopComposeProject(_ name: String) {
-        for container in containers(inComposeProject: name) where container.isRunning {
-            toggle(container)
-        }
+        Task { await composeProjectOperation(.stop, name: name) }
     }
 
     func restartComposeProject(_ name: String) {
-        for container in containers(inComposeProject: name) where container.isRunning {
-            restart(container)
-        }
+        Task { await composeProjectOperation(.restart, name: name) }
     }
 
     var groupedContainers: [ContainerGroup] {
@@ -2960,7 +2957,6 @@ final class AppStore {
 
     var composeBusy = false
     var composeStatus = ""
-    private(set) var composeProjects: [String: ComposeProject] = [:]
 
     func openComposeFile() {
         let panel = NSOpenPanel()
@@ -2974,119 +2970,114 @@ final class AppStore {
 
     func composeUp(fileURL: URL) async {
         guard runtimeKind.isDockerCompatible else { actionError = "Compose needs Dory's shared VM or a Docker engine"; return }
+        guard !composeBusy else { actionError = "Another Compose operation is already running"; return }
         composeBusy = true
-        composeStatus = "Reading \(fileURL.lastPathComponent)…"
+        actionError = nil
+        composeStatus = "Validating \(fileURL.lastPathComponent) with Docker Compose v2…"
         defer { composeBusy = false }
-        let variables = Self.composeVariables(for: fileURL)
-        let fileURLs = Self.composeFileURLs(for: fileURL, variables: variables)
-        composeStatus = fileURLs.count == 1
-            ? "Reading \(fileURLs[0].lastPathComponent)…"
-            : "Reading \(fileURLs.count) Compose files…"
-        var texts: [String] = []
-        for url in fileURLs {
-            guard let text = try? String(contentsOf: url, encoding: .utf8) else {
-                actionError = "Could not read \(url.lastPathComponent)"; composeStatus = ""; return
-            }
-            texts.append(text)
-        }
-        let project: ComposeProject
-        let activeProfiles = ComposeParser.activeProfiles(from: variables["COMPOSE_PROFILES"])
         do {
-            project = try ComposeParser.parse(
-                texts,
-                projectName: Self.composeName(for: fileURL),
-                variables: variables,
-                activeProfiles: activeProfiles,
-                baseDirectory: fileURL.deletingLastPathComponent().standardizedFileURL
-            )
-        } catch {
-            actionError = "Invalid Compose file: \(error)"; composeStatus = ""; return
-        }
-        guard !project.services.isEmpty else { actionError = "No services found in the Compose file"; composeStatus = ""; return }
-        do {
-            let engine = ComposeEngine(runtime: runtime)
-            _ = try await engine.up(project, pullImages: true) { progress in
-                self.composeStatus = "\(progress.service): \(progress.message)"
-            }
-            composeProjects[project.name] = project
-            composeStatus = "\(project.name): \(project.services.count) services up"
+            let cli = try composeCLI()
+            let context = try await cli.resolve(files: Self.composeFileURLs(for: fileURL))
+            composeStatus = "Starting \(context.name) with Docker Compose v2…"
+            try await cli.up(context)
             await reload()
+            let services = containers(inComposeProject: context.name)
+            composeStatus = "\(context.name): \(services.count) container\(services.count == 1 ? "" : "s") started"
             containerScope = .compose
             section = .containers
-            selectedContainerID = containers(inComposeProject: project.name).first?.id ?? selectedContainerID
+            selectedContainerID = services.first?.id ?? selectedContainerID
+        } catch is CancellationError {
+            composeStatus = ""
         } catch {
-            actionError = "Compose up failed: \(error)"; composeStatus = ""
+            actionError = "Compose up failed: \(error.localizedDescription)"
+            composeStatus = ""
         }
     }
 
     func composeDown(_ name: String) async {
+        guard runtimeKind.isDockerCompatible else { actionError = "Compose needs Dory's shared VM or a Docker engine"; return }
+        guard !composeBusy else { actionError = "Another Compose operation is already running"; return }
         composeBusy = true
+        actionError = nil
         composeStatus = "Stopping \(name)…"
         defer { composeBusy = false }
-        let engine = ComposeEngine(runtime: runtime)
-        let project = await composeProject(named: name)
         do {
-            try await engine.down(project)
+            let cli = try composeCLI()
+            let snapshot = try await runtime.snapshot()
+            let context = try ComposeCLI.context(projectName: name, containers: snapshot.containers)
+            try await cli.down(context)
+            await reload()
+            composeStatus = ""
+        } catch is CancellationError {
+            composeStatus = ""
         } catch {
-            actionError = "Compose down failed: \(error)"
+            actionError = "Compose down failed: \(error.localizedDescription)"
+            composeStatus = ""
         }
-        await reload()
-        composeStatus = ""
     }
 
-    private func composeProject(named name: String) async -> ComposeProject {
-        if let project = composeProjects[name] { return project }
-        let snapshot = (try? await runtime.snapshot()) ?? RuntimeSnapshot(containers: containers)
-        let prefix = "\(name)-"
-        let services = Dictionary(grouping: snapshot.containers.filter {
-            $0.composeProject == name || $0.name.hasPrefix(prefix)
-        }, by: { $0.composeService ?? serviceName(fromContainerName: $0.name, projectName: name) })
-            .keys
-            .filter { !$0.isEmpty }
-            .sorted()
-            .map { serviceName in
-                ComposeService(name: serviceName, image: nil, build: nil, command: [], environment: [:],
-                               ports: [], volumes: [], networks: [], dependsOn: [], restart: nil,
-                               healthcheck: nil, profiles: [])
+    private func composeProjectOperation(_ operation: ComposeProjectOperation, name: String) async {
+        guard runtimeKind.isDockerCompatible else {
+            actionError = "Compose needs Dory's shared VM or a Docker engine"
+            return
+        }
+        guard !composeBusy else {
+            actionError = "Another Compose operation is already running"
+            return
+        }
+        composeBusy = true
+        actionError = nil
+        let progressVerb = switch operation {
+        case .start: "Starting"
+        case .stop: "Stopping"
+        case .restart: "Restarting"
+        }
+        composeStatus = "\(progressVerb) \(name)…"
+        defer { composeBusy = false }
+        do {
+            let cli = try composeCLI()
+            let snapshot = try await runtime.snapshot()
+            let context = try ComposeCLI.context(projectName: name, containers: snapshot.containers)
+            var services: [String] = []
+            if operation == .restart {
+                let running = snapshot.containers.filter {
+                    $0.composeProject == name && $0.isRunning
+                }
+                guard running.allSatisfy({ $0.composeService != nil }) else {
+                    throw ComposeCLIError.invalidMetadata(
+                        "Compose project \(name) has a running container without a service label; no resources were changed"
+                    )
+                }
+                services = Array(Set(running.compactMap(\.composeService))).sorted()
+                guard !services.isEmpty else { composeStatus = ""; return }
             }
-        return ComposeProject(name: name, services: services, networks: [], volumes: [])
-    }
-
-    private func serviceName(fromContainerName name: String, projectName: String) -> String {
-        let prefix = "\(projectName)-"
-        guard name.hasPrefix(prefix), name.hasSuffix("-1") else { return "" }
-        return String(name.dropFirst(prefix.count).dropLast(2))
-    }
-
-    private static func composeName(for url: URL) -> String {
-        let dir = url.deletingLastPathComponent().lastPathComponent
-        let raw = dir.isEmpty ? "compose" : dir
-        let filtered = String(raw.lowercased().replacingOccurrences(of: " ", with: "-")
-            .filter { $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" })
-        return filtered.isEmpty ? "compose" : filtered
-    }
-
-    private static func composeVariables(for fileURL: URL) -> [String: String] {
-        var variables = ProcessInfo.processInfo.environment
-        let dotEnvURL = fileURL.deletingLastPathComponent().appendingPathComponent(".env")
-        guard let dotEnv = try? String(contentsOf: dotEnvURL, encoding: .utf8) else { return variables }
-        for (key, value) in ComposeInterpolation.parseDotEnv(dotEnv) where variables[key] == nil {
-            variables[key] = value
+            try await cli.perform(operation, context: context, services: services)
+            await reload()
+            composeStatus = ""
+        } catch is CancellationError {
+            composeStatus = ""
+        } catch {
+            actionError = "Compose \(operation.rawValue) failed: \(error.localizedDescription)"
+            composeStatus = ""
         }
-        return variables
     }
 
-    nonisolated static func composeFileURLs(for fileURL: URL, variables: [String: String]) -> [URL] {
-        let baseDirectory = fileURL.deletingLastPathComponent()
-        if let raw = variables["COMPOSE_FILE"]?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty {
-            let separator = variables["COMPOSE_PATH_SEPARATOR"] ?? ":"
-            let paths = raw.components(separatedBy: separator).map {
-                $0.trimmingCharacters(in: .whitespacesAndNewlines)
-            }.filter { !$0.isEmpty }
-            let urls = paths.map { resolveComposeFilePath($0, relativeTo: baseDirectory) }
-            if !urls.isEmpty { return urls }
+    private func composeCLI() throws -> ComposeCLI {
+        guard let executable = HostDockerCLI.bundledTool("docker-compose") else {
+            throw ComposeCLIError.helperUnavailable
         }
+        guard let docker = runtime as? DockerEngineRuntime else {
+            throw ComposeCLIError.socketUnavailable
+        }
+        return ComposeCLI(
+            executableURL: URL(fileURLWithPath: executable),
+            socketPath: docker.socketPath,
+            baseEnvironment: environment,
+            runner: composeCommandRunner
+        )
+    }
 
+    nonisolated static func composeFileURLs(for fileURL: URL) -> [URL] {
         var urls = [fileURL]
         for candidate in defaultComposeOverrideURLs(for: fileURL) where FileManager.default.fileExists(atPath: candidate.path) {
             urls.append(candidate)
@@ -3109,14 +3100,6 @@ final class AppStore {
         default:
             return []
         }
-    }
-
-    nonisolated private static func resolveComposeFilePath(_ path: String, relativeTo directory: URL) -> URL {
-        if path.hasPrefix("/") { return URL(fileURLWithPath: path) }
-        if path.hasPrefix("~") {
-            return URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
-        }
-        return directory.appendingPathComponent(path)
     }
 
     func buildImage(contextDir: URL, tag: String) -> AsyncStream<String> {

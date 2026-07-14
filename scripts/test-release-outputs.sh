@@ -61,7 +61,7 @@ MACOS="$APP/Contents/MacOS"
 mkdir -p "$RESOURCES" "$HELPERS" "$LAUNCH_DAEMONS" "$MACOS"
 printf '#!/bin/sh\nexit 0\n' > "$MACOS/Dory"
 chmod 0755 "$MACOS/Dory"
-for helper in docker dory-dataplane-proxy docker-buildx dory-network-helper dory-hv; do
+for helper in docker docker-compose dory-dataplane-proxy docker-buildx dory-network-helper dory-hv; do
   printf '#!/bin/sh\nexit 0\n' > "$HELPERS/$helper"
   chmod 0755 "$HELPERS/$helper"
 done
@@ -560,6 +560,8 @@ digest = "sha256:" + "b" * 64
 PY
 fixture_docker_sha="$(unzip -p "$TMP/Dory-$VERSION-app-update.zip" \
   Dory.app/Contents/Helpers/docker | shasum -a 256 | awk '{print $1}')"
+fixture_compose_sha="$(unzip -p "$TMP/Dory-$VERSION-app-update.zip" \
+  Dory.app/Contents/Helpers/docker-compose | shasum -a 256 | awk '{print $1}')"
 fixture_buildx_sha="$(unzip -p "$TMP/Dory-$VERSION-app-update.zip" \
   Dory.app/Contents/Helpers/docker-buildx | shasum -a 256 | awk '{print $1}')"
 cat > "$QUALIFICATION_FIXTURE/evidence/prune-safety/run/system-df-after.json" <<'EOF'
@@ -876,7 +878,8 @@ EOF
   printf 'test\tstatus\tdetail\n'
   for test in \
     published-port-handoff host-port-collision named-signal-delivery forwarded-connection-fds concurrent-proxy-backpressure \
-    missing-source-cp restart-churn compose-port-restart network-route-conflict network-api-lifecycle \
+    missing-source-cp restart-churn compose-port-restart compose-v2-lifecycle \
+    network-route-conflict network-api-lifecycle \
     network-alias-restart-ip standalone-engine-restart named-volume-empty named-volume named-volume-cp volume-api-lifecycle \
     security-opt-label seccomp-profile bind-open-create-0200 bind-mount-option-contract \
     nested-bind-subvolume bind-special-file-fail-fast bind-open-fd-stability \
@@ -897,6 +900,7 @@ competitor_engine_settings_sha="$(
 cat > "$QUALIFICATION_FIXTURE/evidence/competitor-runtime/run/manifest.txt" <<EOF
 source_commit=0123456789abcdef0123456789abcdef01234567
 docker_bin_sha256=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+compose_bin_sha256=$fixture_compose_sha
 dory_engine_sha256=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 bin_dory_hv_sha256=$DORY_HV_SHA
 bin_gvproxy_sha256=dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd

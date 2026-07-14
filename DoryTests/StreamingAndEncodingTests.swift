@@ -455,22 +455,6 @@ struct StreamingAndEncodingTests {
         #expect(String(data: response.body, encoding: .utf8) == "body")
     }
 
-    @Test func durationParsingEdgeCases() {
-        #expect(ComposeParser.duration(nil) == nil)
-        #expect(ComposeParser.duration("0s") == 0)
-        #expect(ComposeParser.duration("1h30m") == 5400)
-    }
-
-    @Test func interpolatesNestedYAMLValues() {
-        let value = YAMLValue.mapping([
-            "url": .string("http://${HOST}:${PORT}"),
-            "list": .sequence([.string("$ENV-a"), .string("plain")]),
-        ])
-        let out = ComposeInterpolation.interpolate(value, variables: ["HOST": "db", "PORT": "5432", "ENV": "prod"])
-        #expect(out["url"]?.stringValue == "http://db:5432")
-        #expect(out["list"]?.sequenceValue?.first?.stringValue == "prod-a")
-    }
-
     @MainActor
     @Test func eventBusBroadcastsToConsumers() async {
         let bus = EventBus()

@@ -85,8 +85,9 @@
 - Volumes (with a file browser) and networks (subnet / gateway / attached-container inspect).
 - Bind mounts keep native macOS paths for both your home and attached drives under `/Volumes`, so
   `-v /Volumes/MySSD/project:/app` targets the real external disk instead of guest-only storage.
-- **Compose**: `up` / `down` with `.env` + variable interpolation, `depends_on` ordering, and
-  `service_healthy` waiting.
+- **Compose**: the bundled official Compose v2 implementation handles the full Compose model,
+  including multi-file overrides, `.env`, profiles, health/completion dependencies, builds,
+  secrets/configs, bind and named volumes, custom/external networks, and safe stack lifecycle.
 - Bundled host tools: Docker CLI, Buildx, Docker Compose v2, and `kubectl` ship inside Dory.app;
   while doryd is running it keeps `~/.dory/bin` and the `dory` Docker context reconciled so clean
   Macs do not need Docker Desktop, Homebrew, or a manual install step.
@@ -347,7 +348,7 @@ Dory.app (SwiftUI)
 ContainerRuntime protocol ──► { Dory engine (dory-hv) · any Docker-compatible socket }
       │
       ├─ doryd shim          Docker REST API over ~/.dory/dory.sock
-      ├─ Compose engine      YAML → dependency DAG → reconcile
+      ├─ Compose v2 runner   signed helper → exact socket → bounded lifecycle
       ├─ engine services     health state machine · event synthesis · anon-volumes
       └─ Net                 LocalCA (TLS) · DomainRouter (*.dory.local) · port forwarding
 

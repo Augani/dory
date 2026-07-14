@@ -1,7 +1,8 @@
 #!/bin/bash
 # Live, run-scoped regressions for competitor failures involving published ports, forwarded-
 # connection descriptor leaks, concurrent-proxy head-of-line blocking, wedged container operations,
-# missing-source docker cp, restrictive bind creates, healthchecks, named BuildKit contexts,
+# missing-source docker cp, complete Compose v2 lifecycle semantics, restrictive bind creates,
+# healthchecks, named BuildKit contexts,
 # resolver search leakage, network-scoped aliases/restart IP continuity, named-volume copy, clean
 # image archive streams, missing-parent hard links, default BuildKit ARG expansion, exact Docker
 # ignore precedence, and named volumes.
@@ -15,6 +16,7 @@ CONNECTIONS="${DORY_COMPAT_CONNECTIONS:-2000}"
 RESTARTS="${DORY_COMPAT_RESTARTS:-20}"
 FD_GROWTH_BUDGET="${DORY_COMPAT_FD_GROWTH_BUDGET:-8}"
 DOCKER_BIN="${DORY_COMPAT_DOCKER_BIN:-docker}"
+COMPOSE_BIN="${DORY_COMPAT_COMPOSE_BIN:-}"
 RUNTIME="${DORY_COMPAT_RUNTIME:-}"
 RUNTIME_HOME="${DORY_COMPAT_RUNTIME_HOME:-$(dirname "$STATE_DIR")}"
 SOURCE_COMMIT="${DORY_COMPAT_SOURCE_COMMIT:-}"
@@ -32,6 +34,7 @@ Options:
   --restarts N          Container restart-churn cycles (default: $RESTARTS)
   --fd-growth N         Aggregate post-connection FD budget (default: $FD_GROWTH_BUDGET)
   --docker PATH         Docker CLI to qualify (default: docker from PATH)
+  --compose PATH        Compose v2 executable to qualify (default: Docker CLI plugin)
   --runtime PATH        Optional standalone dory-engine launcher for an engine-restart test
   --runtime-home PATH   Isolated HOME owned by that launcher (default: parent of state dir)
   --source-commit SHA   Exact 40-character source commit for release-artifact evidence
@@ -55,6 +58,7 @@ while [ "$#" -gt 0 ]; do
     --restarts) need_value "$1" "$#"; RESTARTS="$2"; shift 2 ;;
     --fd-growth) need_value "$1" "$#"; FD_GROWTH_BUDGET="$2"; shift 2 ;;
     --docker) need_value "$1" "$#"; DOCKER_BIN="$2"; shift 2 ;;
+    --compose) need_value "$1" "$#"; COMPOSE_BIN="$2"; shift 2 ;;
     --runtime) need_value "$1" "$#"; RUNTIME="$2"; shift 2 ;;
     --runtime-home) need_value "$1" "$#"; RUNTIME_HOME="$2"; shift 2 ;;
     --source-commit) need_value "$1" "$#"; SOURCE_COMMIT="$2"; shift 2 ;;
@@ -88,15 +92,31 @@ if [[ "$DOCKER_BIN" == */* ]]; then
 else
   command -v "$DOCKER_BIN" >/dev/null || die "Docker CLI is unavailable: $DOCKER_BIN"
 fi
+if [ -n "$COMPOSE_BIN" ]; then
+  if [[ "$COMPOSE_BIN" == */* ]]; then
+    [ -x "$COMPOSE_BIN" ] || die "Compose v2 helper is not executable: $COMPOSE_BIN"
+  else
+    command -v "$COMPOSE_BIN" >/dev/null || die "Compose v2 helper is unavailable: $COMPOSE_BIN"
+  fi
+fi
 [ -S "$SOCKET" ] || die "Dory socket is unavailable: $SOCKET"
 [ -d "$STATE_DIR" ] || die "Dory state directory is unavailable: $STATE_DIR"
 mkdir -p "$WORKROOT"
 
 docker_e() { DOCKER_HOST="unix://$SOCKET" "$DOCKER_BIN" "$@"; }
+compose_e() {
+  if [ -n "$COMPOSE_BIN" ]; then
+    env -u DOCKER_CONTEXT -u COMPOSE_FILE -u COMPOSE_PATH_SEPARATOR \
+      DOCKER_HOST="unix://$SOCKET" COMPOSE_MENU=0 "$COMPOSE_BIN" "$@"
+  else
+    env -u DOCKER_CONTEXT -u COMPOSE_FILE -u COMPOSE_PATH_SEPARATOR \
+      DOCKER_HOST="unix://$SOCKET" COMPOSE_MENU=0 "$DOCKER_BIN" compose "$@"
+  fi
+}
 docker_e version >/dev/null || die "Docker API is not ready at $SOCKET"
 docker_e image inspect "$ALPINE_IMAGE" >/dev/null 2>&1 \
   || die "required offline image is missing: $ALPINE_IMAGE"
-docker_e compose version >/dev/null 2>&1 || die "Docker Compose plugin is unavailable"
+compose_e version >/dev/null 2>&1 || die "Docker Compose v2 is unavailable"
 docker_e buildx version >/dev/null 2>&1 || die "Docker Buildx plugin is unavailable"
 if [ -n "$RUNTIME" ]; then
   [ -x "$RUNTIME" ] || die "standalone runtime is not executable: $RUNTIME"
@@ -158,6 +178,7 @@ MOUNT_OPTION_CONTAINER="$OWNER-mount-option"
 READ_ONLY_MOUNT_CONTAINER="$OWNER-mount-read-only"
 HOST_COLLISION_PID=""
 COMPOSE_PROJECT="$(printf 'dorycompat%s' "$RUN_ID" | tr '[:upper:]' '[:lower:]' | tr -cd '[:alnum:]' | cut -c 1-48)"
+COMPOSE_EXTERNAL_NETWORK="$OWNER-compose-external"
 mkdir -p "$WORKDIR"
 GATE_COMPLETED=0
 printf 'test\tstatus\tdetail\n' > "$RESULTS"
@@ -171,6 +192,7 @@ printf 'test\tstatus\tdetail\n' > "$RESULTS"
   echo "restarts=$RESTARTS"
   echo "fd_growth_budget=$FD_GROWTH_BUDGET"
   echo "docker_bin=$DOCKER_BIN"
+  echo "compose_bin=${COMPOSE_BIN:-docker-cli-plugin}"
   echo "runtime=${RUNTIME:-none}"
   echo "runtime_home=$RUNTIME_HOME"
   [ -z "$SOURCE_COMMIT" ] || echo "source_commit=$SOURCE_COMMIT"
@@ -181,9 +203,22 @@ case "$docker_bin_resolved" in
   */*) ;;
   *) docker_bin_resolved="$(command -v "$docker_bin_resolved")" ;;
 esac
+compose_bin_resolved="$COMPOSE_BIN"
+if [ -n "$compose_bin_resolved" ]; then
+  case "$compose_bin_resolved" in
+    */*) ;;
+    *) compose_bin_resolved="$(command -v "$compose_bin_resolved")" ;;
+  esac
+fi
 {
   echo "docker_bin_resolved=$docker_bin_resolved"
   echo "docker_bin_sha256=$(shasum -a 256 "$docker_bin_resolved" | awk '{print $1}')"
+  if [ -n "$compose_bin_resolved" ]; then
+    echo "compose_bin_resolved=$compose_bin_resolved"
+    echo "compose_bin_sha256=$(shasum -a 256 "$compose_bin_resolved" | awk '{print $1}')"
+  else
+    echo "compose_bin_resolved=docker-cli-plugin"
+  fi
   if [ -n "$RUNTIME" ]; then
     runtime_dir="$(cd "$(dirname "$RUNTIME")" && pwd -P)"
     for runtime_file in \
@@ -225,17 +260,27 @@ cleanup() {
   [ -S "$SOCKET" ] \
     && curl -fsS --max-time 2 --unix-socket "$SOCKET" http://d/_ping >/dev/null 2>&1 \
     || return 0
-  docker_e compose -p "$COMPOSE_PROJECT" -f "$WORKDIR/compose.yaml" down -v --remove-orphans \
+  compose_e --project-directory "$WORKDIR" --env-file "$WORKDIR/.env" \
+    -p "$COMPOSE_PROJECT" -f "$WORKDIR/compose.yaml" -f "$WORKDIR/compose.override.yaml" \
+    --profile '*' down -v --remove-orphans \
     >/dev/null 2>&1 || true
   local id
   docker_e ps -aq --filter "label=dev.dory.compatibility=$OWNER" 2>/dev/null | while IFS= read -r id; do
     [ -n "$id" ] && docker_e rm -f -v "$id" >/dev/null 2>&1 || true
   done
   docker_e volume rm -f "$VOLUME" "$VOLUME_METADATA" >/dev/null 2>&1 || true
+  docker_e volume ls -q --filter "label=dev.dory.compatibility=$OWNER" 2>/dev/null \
+    | while IFS= read -r id; do
+        [ -n "$id" ] && docker_e volume rm -f "$id" >/dev/null 2>&1 || true
+      done
   docker_e network rm "$CONFLICT_NETWORK" >/dev/null 2>&1 || true
   docker_e network rm "$ROUTE_NETWORK" >/dev/null 2>&1 || true
   docker_e network rm "$ALIAS_NETWORK" >/dev/null 2>&1 || true
   docker_e network rm "$NETWORK_METADATA" >/dev/null 2>&1 || true
+  docker_e network ls -q --filter "label=dev.dory.compatibility=$OWNER" 2>/dev/null \
+    | while IFS= read -r id; do
+        [ -n "$id" ] && docker_e network rm "$id" >/dev/null 2>&1 || true
+      done
   docker_e image rm -f "$BUILD_TAG" >/dev/null 2>&1 || true
   docker_e image rm -f "$RELATIVE_BUILD_TAG" >/dev/null 2>&1 || true
   docker_e image rm -f "$DOCKERIGNORE_BUILD_TAG" >/dev/null 2>&1 || true
@@ -670,24 +715,255 @@ wait_http "$port" server-a || die "container name/port could not be reused after
 pass restart-churn "restarts=$RESTARTS; restart/inspect/logs/stats bounded; name and port reusable"
 
 compose_port="$(free_port)"
+mkdir -p "$WORKDIR/compose-bind"
+printf 'from-bind-%s\n' "$RUN_ID" > "$WORKDIR/compose-bind/message"
+docker_e network create --label "dev.dory.compatibility=$OWNER" \
+  "$COMPOSE_EXTERNAL_NETWORK" >/dev/null
+cat > "$WORKDIR/.env" <<EOF
+DORY_COMPOSE_TOKEN=compose-token-$RUN_ID
+COMPOSE_PORT=$compose_port
+COMPOSE_PROJECT_NAME=environment-must-not-override-explicit-project
+EOF
 cat > "$WORKDIR/compose.yaml" <<EOF
+name: file-must-not-override-explicit-project
 services:
-  web:
+  initializer:
     image: $ALPINE_IMAGE
     labels:
       dev.dory.compatibility: "$OWNER"
-    command: ["sh", "-c", "printf '%s\\n' '#!/bin/sh' \"awk 'length() <= 1 { exit }' >/dev/null\" 'printf \"HTTP/1.1 200 OK\\r\\nContent-Length: 8\\r\\nConnection: close\\r\\n\\r\\ncompose\\n\"' > /tmp/dory-http; chmod 755 /tmp/dory-http; exec nc -lk -p 8080 -e /tmp/dory-http"]
+    environment:
+      DORY_COMPOSE_TOKEN: \${DORY_COMPOSE_TOKEN:?DORY_COMPOSE_TOKEN is required}
+    command: ["sh", "-ec", "printf '%s' \"\$\${DORY_COMPOSE_TOKEN}\" > /state/token"]
+    volumes:
+      - state:/state
+    networks: [app]
+
+  database:
+    image: $ALPINE_IMAGE
+    labels:
+      dev.dory.compatibility: "$OWNER"
+    command: ["sh", "-ec", "trap 'exit 0' TERM INT; while :; do sleep 1; done"]
+    healthcheck:
+      test: ["CMD-SHELL", "test -s /state/token"]
+      interval: 250ms
+      timeout: 1s
+      retries: 40
+    volumes:
+      - state:/state
+    networks:
+      app:
+        aliases: [database-alias]
+
+  api:
+    image: $ALPINE_IMAGE
+    labels:
+      dev.dory.compatibility: "$OWNER"
+      dev.dory.compose-contract: base
+    depends_on:
+      initializer:
+        condition: service_completed_successfully
+      database:
+        condition: service_healthy
+    environment:
+      DORY_COMPOSE_TOKEN: \${DORY_COMPOSE_TOKEN:?DORY_COMPOSE_TOKEN is required}
+      MERGED_VALUE: base
+    command:
+      - sh
+      - -ec
+      - |
+        test "\$\${MERGED_VALUE}" = override
+        test "\$\$(cat /state/token)" = "\$\${DORY_COMPOSE_TOKEN}"
+        test "\$\$(cat /input/message)" = "from-bind-$RUN_ID"
+        ping -c 1 -W 2 database-alias >/dev/null
+        printf '%s\\n' '#!/bin/sh' "awk 'length() <= 1 { exit }' >/dev/null" 'printf "HTTP/1.1 200 OK\\r\\nContent-Length: 8\\r\\nConnection: close\\r\\n\\r\\ncompose\\n"' > /tmp/dory-http
+        chmod 755 /tmp/dory-http
+        echo compose-ready
+        exec nc -lk -p 8080 -e /tmp/dory-http
     ports:
-      - "127.0.0.1:$compose_port:8080"
+      - "127.0.0.1:\${COMPOSE_PORT:?COMPOSE_PORT is required}:8080"
+    volumes:
+      - type: bind
+        source: ./compose-bind
+        target: /input
+        read_only: true
+      - state:/state
+    networks: [app, external]
+    cap_add: [CHOWN]
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: 1m
+        max-file: "2"
+
+  debug:
+    image: $ALPINE_IMAGE
+    profiles: [debug]
+    labels:
+      dev.dory.compatibility: "$OWNER"
+    command: ["sh", "-ec", "trap 'exit 0' TERM INT; while :; do sleep 1; done"]
+    networks: [app]
+
+volumes:
+  state:
+    labels:
+      dev.dory.compatibility: "$OWNER"
+
+networks:
+  app:
+    labels:
+      dev.dory.compatibility: "$OWNER"
+  external:
+    name: $COMPOSE_EXTERNAL_NETWORK
+    external: true
 EOF
-docker_e compose -p "$COMPOSE_PROJECT" -f "$WORKDIR/compose.yaml" up -d >/dev/null
+cat > "$WORKDIR/compose.override.yaml" <<EOF
+services:
+  api:
+    cap_add: !reset []
+    environment:
+      MERGED_VALUE: override
+    labels:
+      dev.dory.compose-contract: merged
+  debug:
+    environment:
+      DORY_COMPOSE_TOKEN: \${DORY_COMPOSE_TOKEN:?DORY_COMPOSE_TOKEN is required}
+EOF
+
+compose_args=(
+  --ansi never --progress plain
+  --project-directory "$WORKDIR"
+  --env-file "$WORKDIR/.env"
+  --file "$WORKDIR/compose.yaml"
+  --file "$WORKDIR/compose.override.yaml"
+  --project-name "$COMPOSE_PROJECT"
+)
+# A caller's ambient Compose selectors must not replace the files, socket, or project selected by
+# Dory. compose_e scrubs them exactly as the GUI runner does.
+export DOCKER_CONTEXT=ambient-context-must-be-ignored
+export COMPOSE_FILE="$WORKDIR/definitely-missing-ambient-compose.yaml"
+export COMPOSE_PATH_SEPARATOR=';'
+compose_e "${compose_args[@]}" --profile '*' config --format json \
+  > "$WORKDIR/compose-config.json" 2> "$WORKDIR/compose-config.err"
+unset DOCKER_CONTEXT COMPOSE_FILE COMPOSE_PATH_SEPARATOR
+python3 - "$WORKDIR/compose-config.json" "$COMPOSE_PROJECT" "$RUN_ID" <<'PY'
+import json
+import sys
+
+path, project, run_id = sys.argv[1:]
+with open(path, encoding="utf-8") as handle:
+    model = json.load(handle)
+assert model["name"] == project, (model["name"], project)
+assert set(model["services"]) == {"initializer", "database", "api", "debug"}
+api = model["services"]["api"]
+assert api["environment"]["MERGED_VALUE"] == "override"
+assert api["environment"]["DORY_COMPOSE_TOKEN"] == f"compose-token-{run_id}"
+assert api["labels"]["dev.dory.compose-contract"] == "merged"
+assert api.get("cap_add", []) == []
+assert set(model["volumes"]) == {"state"}
+assert set(model["networks"]) == {"app", "external"}
+PY
+
+compose_e "${compose_args[@]}" up --detach --remove-orphans --yes \
+  > "$WORKDIR/compose-up.out" 2> "$WORKDIR/compose-up.err"
 wait_http "$compose_port" compose || die "Compose published port did not become reachable"
-docker_e compose -p "$COMPOSE_PROJECT" -f "$WORKDIR/compose.yaml" restart >/dev/null
-wait_http "$compose_port" compose || die "Compose published port disappeared after restart"
-docker_e compose -p "$COMPOSE_PROJECT" -f "$WORKDIR/compose.yaml" stop >/dev/null
-docker_e compose -p "$COMPOSE_PROJECT" -f "$WORKDIR/compose.yaml" start >/dev/null
+debug_id="$(docker_e ps -aq --filter "label=com.docker.compose.project=$COMPOSE_PROJECT" \
+  --filter 'label=com.docker.compose.service=debug')"
+[ -z "$debug_id" ] || die "default Compose up activated a profile-only service"
+initializer_id="$(docker_e ps -aq --filter "label=com.docker.compose.project=$COMPOSE_PROJECT" \
+  --filter 'label=com.docker.compose.service=initializer')"
+database_id="$(docker_e ps -aq --filter "label=com.docker.compose.project=$COMPOSE_PROJECT" \
+  --filter 'label=com.docker.compose.service=database')"
+api_id="$(docker_e ps -aq --filter "label=com.docker.compose.project=$COMPOSE_PROJECT" \
+  --filter 'label=com.docker.compose.service=api')"
+[ -n "$initializer_id" ] && [ -n "$database_id" ] && [ -n "$api_id" ] \
+  || die "Compose did not create every default-profile service"
+[ "$(docker_e inspect -f '{{.State.Status}}:{{.State.ExitCode}}' "$initializer_id")" = 'exited:0' ] \
+  || die "Compose completion dependency did not exit successfully"
+[ "$(docker_e inspect -f '{{.State.Health.Status}}' "$database_id")" = healthy ] \
+  || die "Compose health dependency was not healthy when the API became reachable"
+[ "$(docker_e inspect -f '{{ index .Config.Labels "dev.dory.compose-contract" }}' "$api_id")" = merged ] \
+  || die "Compose override labels were not merged into the service"
+
+expected_config_files="$WORKDIR/compose.yaml,$WORKDIR/compose.override.yaml"
+[ "$(docker_e inspect -f '{{ index .Config.Labels "com.docker.compose.project.working_dir" }}' "$api_id")" = "$WORKDIR" ] \
+  || die "Compose working-directory metadata is missing or not absolute"
+[ "$(docker_e inspect -f '{{ index .Config.Labels "com.docker.compose.project.config_files" }}' "$api_id")" = "$expected_config_files" ] \
+  || die "Compose config-file metadata is missing, unordered, or not absolute"
+[ "$(docker_e inspect -f '{{ index .Config.Labels "com.docker.compose.project.environment_file" }}' "$api_id")" = "$WORKDIR/.env" ] \
+  || die "Compose environment-file metadata is missing or not absolute"
+
+compose_e "${compose_args[@]}" --profile debug up --detach --remove-orphans --yes \
+  > "$WORKDIR/compose-profile-up.out" 2> "$WORKDIR/compose-profile-up.err"
+debug_id="$(docker_e ps -q --filter "label=com.docker.compose.project=$COMPOSE_PROJECT" \
+  --filter 'label=com.docker.compose.service=debug')"
+[ -n "$debug_id" ] || die "explicit Compose profile did not start its service"
+
+cat > "$WORKDIR/compose.retired.yaml" <<EOF
+services:
+  retired:
+    image: $ALPINE_IMAGE
+    labels:
+      dev.dory.compatibility: "$OWNER"
+    command: ["sh", "-ec", "trap 'exit 0' TERM INT; while :; do sleep 1; done"]
+    networks: [app]
+EOF
+compose_e "${compose_args[@]}" --file "$WORKDIR/compose.retired.yaml" --profile debug \
+  up --detach --remove-orphans --yes \
+  > "$WORKDIR/compose-retired-up.out" 2> "$WORKDIR/compose-retired-up.err"
+retired_id="$(docker_e ps -q --filter "label=com.docker.compose.project=$COMPOSE_PROJECT" \
+  --filter 'label=com.docker.compose.service=retired')"
+[ -n "$retired_id" ] || die "Compose did not create the retired-service orphan fixture"
+compose_e "${compose_args[@]}" --profile debug up --detach --remove-orphans --yes \
+  > "$WORKDIR/compose-orphan-up.out" 2> "$WORKDIR/compose-orphan-up.err"
+! docker_e inspect "$retired_id" >/dev/null 2>&1 \
+  || die "Compose --remove-orphans retained an exact-project retired service"
+api_id="$(docker_e ps -aq --filter "label=com.docker.compose.project=$COMPOSE_PROJECT" \
+  --filter 'label=com.docker.compose.service=api')"
+[ -n "$api_id" ] || die "Compose orphan reconciliation lost the API service"
+
+compose_e "${compose_args[@]}" --profile '*' stop -- api \
+  > "$WORKDIR/compose-stop.out" 2> "$WORKDIR/compose-stop.err"
+[ "$(docker_e inspect -f '{{.State.Running}}' "$api_id")" = false ] \
+  || die "Compose stop did not stop the selected service"
+compose_e "${compose_args[@]}" --profile '*' start -- api \
+  > "$WORKDIR/compose-start.out" 2> "$WORKDIR/compose-start.err"
 wait_http "$compose_port" compose || die "Compose published port disappeared after stop/start"
+compose_e "${compose_args[@]}" --profile '*' restart -- api \
+  > "$WORKDIR/compose-restart.out" 2> "$WORKDIR/compose-restart.err"
+wait_http "$compose_port" compose || die "Compose published port disappeared after restart"
+compose_e "${compose_args[@]}" --profile '*' logs --no-color api \
+  > "$WORKDIR/compose-logs.out" 2> "$WORKDIR/compose-logs.err"
+grep -q 'compose-ready' "$WORKDIR/compose-logs.out" \
+  || die "Compose logs did not return the selected service output"
+
+compose_volume="$(docker_e volume ls -q \
+  --filter "label=com.docker.compose.project=$COMPOSE_PROJECT" \
+  --filter 'label=com.docker.compose.volume=state')"
+compose_network="$(docker_e network ls -q \
+  --filter "label=com.docker.compose.project=$COMPOSE_PROJECT" \
+  --filter 'label=com.docker.compose.network=app')"
+[ -n "$compose_volume" ] && [ -n "$compose_network" ] \
+  || die "Compose did not create its named volume and custom network"
+compose_e "${compose_args[@]}" --profile '*' down --remove-orphans \
+  > "$WORKDIR/compose-down.out" 2> "$WORKDIR/compose-down.err"
+[ -z "$(docker_e ps -aq --filter "label=com.docker.compose.project=$COMPOSE_PROJECT")" ] \
+  || die "Compose down left project containers"
+! docker_e network inspect "$compose_network" >/dev/null 2>&1 \
+  || die "Compose down left its non-external project network"
+docker_e network inspect "$COMPOSE_EXTERNAL_NETWORK" >/dev/null \
+  || die "Compose down deleted an external network"
+docker_e volume inspect "$compose_volume" >/dev/null \
+  || die "Compose down deleted named user data without an explicit volume request"
+[ "$(docker_e run --rm --label "dev.dory.compatibility=$OWNER" \
+    -v "$compose_volume:/state:ro" "$ALPINE_IMAGE" cat /state/token)" = \
+    "compose-token-$RUN_ID" ] \
+  || die "Compose named data did not survive down"
+docker_e volume rm "$compose_volume" >/dev/null
+docker_e network rm "$COMPOSE_EXTERNAL_NETWORK" >/dev/null
 pass compose-port-restart "port=$compose_port reachable after restart and stop/start"
+pass compose-v2-lifecycle \
+  "multi-file/.env/!reset merge, dependencies, profile, bind/volume/network, external preservation, labels, orphan cleanup, logs, lifecycle, and data-safe down passed"
 
 docker_e network create --label "dev.dory.compatibility=$OWNER" "$ROUTE_NETWORK" >/dev/null
 docker_e network connect "$ROUTE_NETWORK" "$SERVER_A"
