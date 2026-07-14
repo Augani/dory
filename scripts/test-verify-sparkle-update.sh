@@ -32,6 +32,10 @@ sparkle:edSignature="AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
 length="15" /></item></channel></rss>
 XML
 
+sed -i '' \
+  's#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==#tH/4Ma4fh3Sbj27irBE0mHHJ6HbQzFfEZAjFP3GvxgEY7cv6mP1I5AI9d01WdVE9Pfmt9pPbGUaAxFfbOPo/Cg==#' \
+  "$APPCAST"
+
 cat > "$TMP/sign_update" <<'SH'
 #!/bin/bash
 set -euo pipefail
@@ -45,6 +49,8 @@ SH
 chmod +x "$TMP/sign_update"
 
 write_plist "$PUBLIC_KEY"
+scripts/verify-sparkle-update.sh "$APP" "$ZIP" "$APPCAST" >/dev/null
+
 EXPECTED_ZIP="$ZIP" EXPECTED_PRIVATE_KEY="$PRIVATE_KEY" \
 DORY_SPARKLE_SIGN_UPDATE="$TMP/sign_update" DORY_SPARKLE_PRIVATE_KEY="$PRIVATE_KEY" \
   scripts/verify-sparkle-update.sh "$APP" "$ZIP" "$APPCAST" >/dev/null
@@ -56,6 +62,13 @@ if EXPECTED_ZIP="$ZIP" EXPECTED_PRIVATE_KEY="$PRIVATE_KEY" \
   echo "test-verify-sparkle-update: accepted a private/public key mismatch" >&2
   exit 1
 fi
+
+printf 'tampered update\n' >> "$ZIP"
+if scripts/verify-sparkle-update.sh "$APP" "$ZIP" "$APPCAST" >/dev/null 2>&1; then
+  echo "test-verify-sparkle-update: accepted a tampered update ZIP" >&2
+  exit 1
+fi
+printf 'fixture update\n' > "$ZIP"
 
 sed 's/Dory-0.3.0-app-update.zip/wrong.zip/' "$APPCAST" > "$TMP/wrong-appcast.xml"
 write_plist "$PUBLIC_KEY"

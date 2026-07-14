@@ -1531,7 +1531,8 @@ assert "UPDATE_ZIP: ${{ steps.build.outputs.app_update }}" in release, "Sparkle 
 assert "Sparkle candidate ZIP differs from release manifest" in release, "extracted Sparkle candidate is not manifest-bound"
 assert "scripts/verify-sparkle-update.sh" in release, "release never verifies the Sparkle signature/key compatibility"
 sparkle_verify = open("scripts/verify-sparkle-update.sh", encoding="utf-8").read()
-for required in ("--verify --ed-key-file -", "SUPublicEDKey", "Curve25519.Signing.PrivateKey", "secret.count == 96"):
+for required in ("--verify --ed-key-file -", "SUPublicEDKey", "Curve25519.Signing.PrivateKey",
+                 "Curve25519.Signing.PublicKey", "isValidSignature", "secret.count == 96"):
     assert required in sparkle_verify, f"Sparkle verification gate lacks: {required}"
 
 release_script = open("scripts/release.sh", encoding="utf-8").read()

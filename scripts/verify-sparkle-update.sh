@@ -41,7 +41,6 @@ find_sign_update() {
 [ -d "$APP" ] || fail "candidate app is missing: $APP"
 [ -s "$UPDATE_ZIP" ] || fail "update ZIP is missing or empty: $UPDATE_ZIP"
 [ -s "$APPCAST" ] || fail "appcast is missing or empty: $APPCAST"
-[ -n "${DORY_SPARKLE_PRIVATE_KEY:-}" ] || fail "DORY_SPARKLE_PRIVATE_KEY is required"
 
 SIGNATURE="$(python3 - "$APPCAST" "$(basename "$UPDATE_ZIP")" <<'PY'
 import os
@@ -67,10 +66,39 @@ print(signature)
 PY
 )"
 
+EMBEDDED_PUBLIC_KEY="$(/usr/libexec/PlistBuddy -c 'Print :SUPublicEDKey' "$APP/Contents/Info.plist" 2>/dev/null || true)"
+[ -n "$EMBEDDED_PUBLIC_KEY" ] || fail "candidate app has no SUPublicEDKey"
+
+# The embedded public key is the runtime trust anchor. Verify the exact final ZIP directly so local
+# keychain-backed releases do not have to export their private key merely to prove the appcast.
+if ! xcrun swift - "$UPDATE_ZIP" "$SIGNATURE" "$EMBEDDED_PUBLIC_KEY" <<'SWIFT'
+import CryptoKit
+import Foundation
+
+guard CommandLine.arguments.count == 4,
+      let signature = Data(base64Encoded: CommandLine.arguments[2]),
+      let publicKeyData = Data(base64Encoded: CommandLine.arguments[3]) else {
+    fatalError("Sparkle signature or public key is not valid base64")
+}
+let payload = try Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[1]), options: .mappedIfSafe)
+let publicKey = try Curve25519.Signing.PublicKey(rawRepresentation: publicKeyData)
+guard publicKey.isValidSignature(signature, for: payload) else {
+    fatalError("Sparkle signature does not match the exact update ZIP and embedded public key")
+}
+SWIFT
+then
+  fail "embedded Sparkle public key rejected the final update ZIP signature"
+fi
+
+if [ -z "${DORY_SPARKLE_PRIVATE_KEY:-}" ]; then
+  echo "Sparkle update verification: PASS (signature valid against embedded public key)"
+  exit 0
+fi
+
 SIGN_UPDATE="$(find_sign_update)"
 printf '%s' "$DORY_SPARKLE_PRIVATE_KEY" \
   | "$SIGN_UPDATE" --verify --ed-key-file - "$UPDATE_ZIP" "$SIGNATURE" >/dev/null \
-  || fail "Sparkle rejected the final update ZIP signature"
+  || fail "Sparkle private key rejected the final update ZIP signature"
 
 DERIVED_OUTPUT="$(mktemp "${TMPDIR:-/tmp}/dory-sparkle-public.XXXXXX")"
 trap 'rm -f "$DERIVED_OUTPUT"' EXIT
@@ -107,8 +135,6 @@ DERIVED_PUBLIC_KEY="$(cat "$DERIVED_OUTPUT")"
 rm -f "$DERIVED_OUTPUT"
 trap - EXIT
 
-EMBEDDED_PUBLIC_KEY="$(/usr/libexec/PlistBuddy -c 'Print :SUPublicEDKey' "$APP/Contents/Info.plist" 2>/dev/null || true)"
-[ -n "$EMBEDDED_PUBLIC_KEY" ] || fail "candidate app has no SUPublicEDKey"
 [ "$DERIVED_PUBLIC_KEY" = "$EMBEDDED_PUBLIC_KEY" ] \
   || fail "configured Sparkle private key does not match the candidate app's SUPublicEDKey"
 
