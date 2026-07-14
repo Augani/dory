@@ -3,8 +3,16 @@
   <channel>
     <title>Dory</title>
     <link>https://augani.github.io/dory/appcast.xml</link>
-    <description>Updates for Dory - native Docker &amp; Linux containers for macOS.</description>
+    <description>Updates for Dory - native Docker and Linux containers for macOS.</description>
     <language>en</language>
+    <item>
+      <title>0.3.0</title>
+      <pubDate>Tue, 14 Jul 2026 10:47:07 +0000</pubDate>
+      <sparkle:version>22</sparkle:version>
+      <sparkle:shortVersionString>0.3.0</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <enclosure url="https://github.com/Augani/dory/releases/download/v0.3.0/Dory-0.3.0-app-update.zip" sparkle:edSignature="02IGcGa0MYCad1fjaJwffm9iSaNOSFCo96dBJr94gkhdsohGXg41ziCepc60PhOf2PWe4fBZCx0oNsCpD4+hAQ==" length="468114945" type="application/octet-stream" />
+    </item>
     <item>
       <title>0.1.0</title>
       <pubDate>Sat, 20 Jun 2026 12:00:00 +0000</pubDate>
