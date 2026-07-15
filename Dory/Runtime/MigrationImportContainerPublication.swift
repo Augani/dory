@@ -200,7 +200,8 @@ extension MigrationImportAssetStagingExecution {
                 "published container identity changed for \(object.source)"
             )
         }
-        guard matches[0].labels == definition.specification.labels else {
+        guard MigrationContainerInspector.userVisibleLabels(matches[0].labels)
+                == definition.specification.labels else {
             throw MigrationImportAssetStagingError.invalidSession(
                 "published container labels changed for \(object.source)"
             )

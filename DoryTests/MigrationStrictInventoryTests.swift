@@ -190,4 +190,39 @@ struct MigrationStrictInventoryTests: StrictInventoryTestCase {
             #expect(container.resources.oomKillDisable == true)
         }
     }
+
+    @Test func doryInternalLoopbackIntentRestoresThePortableCreateContract() async throws {
+        let fixture = makeFixture()
+        var inspection = containerInspection(mount: volumeMount)
+        var config = try #require(inspection["Config"] as? [String: Any])
+        config["ExposedPorts"] = ["5432/tcp": [:]]
+        config["Labels"] = [
+            "com.example.role": "app",
+            MigrationContainerInspector.internalLoopbackPortIntentLabel:
+                #"{"5432/tcp":{"15432":"ipv4"}}"#,
+        ]
+        inspection["Config"] = config
+        var hostConfig = try #require(inspection["HostConfig"] as? [String: Any])
+        hostConfig["PortBindings"] = [
+            "5432/tcp": [["HostIp": "", "HostPort": "15432"]],
+        ]
+        hostConfig["ExtraHosts"] = [
+            "host.docker.internal:host-gateway",
+            "host.dory.internal:host-gateway",
+            "database.internal:192.0.2.10",
+        ]
+        inspection["HostConfig"] = hostConfig
+        fixture.source.containerInspections["container-id"] = inspection
+
+        let container = try #require(fixture.source.snapshotValue.containers.first)
+        let specification = try await MigrationContainerInspector.inspect(
+            container,
+            on: fixture.source,
+            sharedHome: "/Users/test"
+        )
+
+        #expect(specification.labels == ["com.example.role": "app"])
+        #expect(specification.ports == ["127.0.0.1:15432:5432"])
+        #expect(specification.extraHosts == ["database.internal:192.0.2.10"])
+    }
 }

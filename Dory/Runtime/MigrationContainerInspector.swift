@@ -16,6 +16,13 @@ enum MigrationContainerInspectionError: Error, Sendable, Equatable, CustomString
 
 enum MigrationContainerInspector {
     private static let bundledRuntimeNames: Set<String> = ["runc", "crun", "dory-runc"]
+    static let internalLoopbackPortIntentLabel = "dev.dory.internal.loopback-port-intent"
+
+    static func userVisibleLabels(_ labels: [String: String]) -> [String: String] {
+        var labels = labels
+        labels.removeValue(forKey: internalLoopbackPortIntentLabel)
+        return labels
+    }
 
     static func unsupportedRuntimeName(_ name: String?) -> String? {
         guard let normalized = name?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
@@ -37,6 +44,7 @@ enum MigrationContainerInspector {
               let networks = networkSettings["Networks"] as? [String: Any] else {
             throw MigrationContainerInspectionError.invalid(container.name)
         }
+        normalizeDoryCompatibilityContract(config: &config, hostConfig: &hostConfig)
         try resolveMounts(root: root, hostConfig: &hostConfig, containerName: container.name)
         config["HostConfig"] = hostConfig
         config["NetworkingConfig"] = ["EndpointsConfig": networks]
@@ -85,6 +93,59 @@ private extension MigrationContainerInspector {
             throw MigrationContainerInspectionError.invalid(container.name)
         }
         return root
+    }
+
+    static func normalizeDoryCompatibilityContract(
+        config: inout [String: Any],
+        hostConfig: inout [String: Any]
+    ) {
+        if let extraHosts = hostConfig["ExtraHosts"] as? [String] {
+            let implicitDoryHosts: Set<String> = [
+                "host.docker.internal:host-gateway",
+                "host.dory.internal:host-gateway",
+            ]
+            let portableHosts = extraHosts.filter { !implicitDoryHosts.contains($0) }
+            if portableHosts.isEmpty {
+                hostConfig.removeValue(forKey: "ExtraHosts")
+            } else {
+                hostConfig["ExtraHosts"] = portableHosts
+            }
+        }
+        guard var labels = config["Labels"] as? [String: String] else { return }
+        let encodedIntents = labels.removeValue(forKey: internalLoopbackPortIntentLabel)
+        config["Labels"] = labels
+        guard let encodedIntents,
+              let data = encodedIntents.data(using: .utf8),
+              let intents = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              var bindings = hostConfig["PortBindings"] as? [String: Any] else { return }
+
+        for (containerPort, rawEntries) in bindings {
+            guard let rawIntent = intents[containerPort],
+                  let entries = rawEntries as? [[String: Any]] else { continue }
+            let perHostPort: [String: String]
+            if let legacy = rawIntent as? String {
+                perHostPort = ["": legacy]
+            } else if let current = rawIntent as? [String: String] {
+                perHostPort = current
+            } else {
+                continue
+            }
+            bindings[containerPort] = entries.map { entry in
+                var entry = entry
+                let currentHost = (entry["HostIp"] as? String) ?? ""
+                guard currentHost.isEmpty else { return entry }
+                let hostPort = (entry["HostPort"] as? String) ?? ""
+                let intent = perHostPort[hostPort] ?? perHostPort[""]
+                switch intent {
+                case "ipv4": entry["HostIp"] = "127.0.0.1"
+                case "ipv6": entry["HostIp"] = "::1"
+                case "localhost": entry["HostIp"] = "localhost"
+                default: break
+                }
+                return entry
+            }
+        }
+        hostConfig["PortBindings"] = bindings
     }
 
     static func resolveMounts(
