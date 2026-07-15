@@ -14,6 +14,7 @@ TILT_SHA256=""
 SKAFFOLD_VERSION="${DORY_RELEASE_SKAFFOLD_VERSION:-2.23.0}"
 SKAFFOLD_SHA256=""
 TOOL_CACHE=""
+KUBERNETES_STABILITY_SAMPLES=60
 
 usage() {
   cat <<'EOF'
@@ -244,6 +245,20 @@ for mapping in "api:$api_port" "nodeport:$node_port"; do
     || die "$name port widened to all host interfaces"
 done
 
+stability_started=$SECONDS
+: > "$EVIDENCE/kubernetes-api-stability.tsv"
+printf 'sample\tepoch\treadyz\n' >> "$EVIDENCE/kubernetes-api-stability.tsv"
+for sample in $(seq 1 "$KUBERNETES_STABILITY_SAMPLES"); do
+  readyz="$(KUBECONFIG="$KUBECONFIG" "$KUBECTL" get --raw /readyz 2>/dev/null)" \
+    || die "host Kubernetes API connection failed at stability sample $sample"
+  [ "$readyz" = ok ] \
+    || die "host Kubernetes API was not ready at stability sample $sample: $readyz"
+  printf '%s\t%s\t%s\n' "$sample" "$(date +%s)" "$readyz" \
+    >> "$EVIDENCE/kubernetes-api-stability.tsv"
+  [ "$sample" -eq "$KUBERNETES_STABILITY_SAMPLES" ] || sleep 1
+done
+stability_duration=$((SECONDS - stability_started))
+
 cat > "$WORKSPACE/skaffold.yaml" <<'YAML'
 apiVersion: skaffold/v4beta13
 kind: Config
@@ -419,6 +434,9 @@ k3s_image=$K3S_IMAGE
 workload_image=$WORKLOAD_IMAGE
 k3s_node_ready=PASS
 host_kubectl_api=PASS
+host_kubectl_stability=PASS
+host_kubectl_stability_samples=$KUBERNETES_STABILITY_SAMPLES
+host_kubectl_stability_duration_seconds=$stability_duration
 loopback_only_api_listener=PASS
 loopback_only_nodeport_listener=PASS
 skaffold_version=$SKAFFOLD_VERSION

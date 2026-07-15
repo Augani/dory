@@ -147,6 +147,24 @@ grep -F 'lima-vm/lima/issues/5188' COMPETITOR_ISSUE_COVERAGE.md >/dev/null \
   || fail "competitor coverage omits Lima's cached-image HEAD failure"
 grep -F 'docker/for-mac/issues/7825' COMPETITOR_ISSUE_COVERAGE.md >/dev/null \
   || fail "competitor coverage omits Docker Desktop's file-share backend-switch kernel crash"
+grep -F 'orbstack/orbstack/issues/2576' COMPETITOR_ISSUE_COVERAGE.md >/dev/null \
+  || fail "competitor coverage omits OrbStack's Compose one-off domain takeover"
+grep -F 'testComposeOneOffCannotStealLongRunningServiceRoute' \
+  dory-core-swift/Tests/DorydKitTests/NetworkRouteReconcilerTests.swift >/dev/null \
+  || fail "network-route regression coverage omits Compose one-off isolation"
+grep -F 'apple/container/issues/1908' COMPETITOR_ISSUE_COVERAGE.md >/dev/null \
+  || fail "competitor coverage omits Apple's Docker cp tar-stream request"
+grep -F 'docker cp "$fixture:/data/." - | docker cp - "$target_carrier:/data"' \
+  scripts/volume-transfer-gate.sh >/dev/null \
+  || fail "volume transfer gate no longer proves bidirectional Docker cp tar streams"
+grep -F 'apple/container/issues/1501' COMPETITOR_ISSUE_COVERAGE.md >/dev/null \
+  || fail "competitor coverage omits Apple's missing container exit-code visibility"
+grep -F "'exited:37'" scripts/competitor-runtime-regression-gate.sh >/dev/null \
+  || fail "runtime gate no longer distinguishes failed one-shot container exits"
+for kubernetes_reachability_issue in abiosoft/colima/issues/1339 abiosoft/colima/issues/1595; do
+  grep -F "$kubernetes_reachability_issue" COMPETITOR_ISSUE_COVERAGE.md >/dev/null \
+    || fail "competitor coverage omits $kubernetes_reachability_issue"
+done
 for buildkit_issue in moby/buildkit/issues/6008 moby/buildkit/issues/6209 docker/buildx/issues/556; do
   grep -F "$buildkit_issue" COMPETITOR_ISSUE_COVERAGE.md >/dev/null \
     || fail "competitor coverage omits $buildkit_issue"
@@ -1198,6 +1216,12 @@ grep -F -- '--delete-namespaces' scripts/kubernetes-tooling-compatibility-gate.s
 grep -F 'loopback_only_nodeport_listener=PASS' \
   scripts/kubernetes-tooling-compatibility-gate.sh >/dev/null \
   || fail "Kubernetes tooling gate does not prove NodePort remains loopback-only"
+grep -F 'KUBERNETES_STABILITY_SAMPLES=60' \
+  scripts/kubernetes-tooling-compatibility-gate.sh >/dev/null \
+  || fail "Kubernetes tooling gate no longer samples the host API for a full minute"
+grep -F 'host_kubectl_stability_samples' scripts/kubernetes-tooling-compatibility-gate.sh \
+  scripts/verify-release-qualification.sh >/dev/null \
+  || fail "Kubernetes API stability evidence is not bound to publication"
 grep -F 'engine-health-after-k3s-pull.txt' \
   scripts/kubernetes-tooling-compatibility-gate.sh >/dev/null \
   || fail "Kubernetes tooling gate does not retain post-pull Dory health evidence"

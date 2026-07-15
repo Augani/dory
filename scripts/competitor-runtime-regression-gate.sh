@@ -210,6 +210,7 @@ PORT_COLLISION_CONTAINER="$OWNER-port-collision"
 SIGNAL_CONTAINER="$OWNER-signal"
 LIFECYCLE_CONTAINER="$OWNER-lifecycle"
 ATTACH_CONTAINER="$OWNER-attach-wait"
+EXIT_CODE_CONTAINER="$OWNER-exit-code"
 MOUNT_OPTION_CONTAINER="$OWNER-mount-option"
 READ_ONLY_MOUNT_CONTAINER="$OWNER-mount-read-only"
 HOST_COLLISION_PID=""
@@ -618,15 +619,33 @@ grep -qx 'attach-output' "$WORKDIR/lifecycle-attach.out" \
   || die "container attach lost exact stdout"
 grep -qx '0' "$WORKDIR/lifecycle-wait.out" \
   || die "container wait returned the wrong exit status"
+docker_e create --name "$EXIT_CODE_CONTAINER" --label "dev.dory.compatibility=$OWNER" \
+  "$ALPINE_IMAGE" sh -c 'exit 37' >/dev/null
+docker_e start "$EXIT_CODE_CONTAINER" >/dev/null
+bounded_capture 10 "$WORKDIR/lifecycle-exit-code-wait.out" \
+  "$WORKDIR/lifecycle-exit-code-wait.err" \
+  env DOCKER_HOST="unix://$SOCKET" "$DOCKER_BIN" wait "$EXIT_CODE_CONTAINER" \
+  || die "nonzero container wait failed or exceeded 10 seconds"
+grep -qx '37' "$WORKDIR/lifecycle-exit-code-wait.out" \
+  || die "container wait did not surface the nonzero exit code"
+[ "$(docker_e inspect -f '{{.State.Status}}:{{.State.ExitCode}}' "$EXIT_CODE_CONTAINER")" = \
+    'exited:37' ] \
+  || die "container inspect did not preserve the nonzero exit code"
+docker_e ps -aq --no-trunc --filter 'exited=37' --filter "label=dev.dory.compatibility=$OWNER" \
+  | grep -Fxq "$(docker_e inspect -f '{{.Id}}' "$EXIT_CODE_CONTAINER")" \
+  || die "container list could not select the recorded nonzero exit code"
 bounded_capture 10 "$WORKDIR/lifecycle-remove.out" "$WORKDIR/lifecycle-remove.err" \
-  env DOCKER_HOST="unix://$SOCKET" "$DOCKER_BIN" rm "$LIFECYCLE_CONTAINER" "$ATTACH_CONTAINER" \
+  env DOCKER_HOST="unix://$SOCKET" "$DOCKER_BIN" rm \
+  "$LIFECYCLE_CONTAINER" "$ATTACH_CONTAINER" "$EXIT_CODE_CONTAINER" \
   || die "container remove failed or exceeded 10 seconds"
 docker_e inspect "$LIFECYCLE_CONTAINER" >/dev/null 2>&1 \
   && die "removed lifecycle container is still inspectable"
 docker_e inspect "$ATTACH_CONTAINER" >/dev/null 2>&1 \
   && die "removed attach/wait container is still inspectable"
+docker_e inspect "$EXIT_CODE_CONTAINER" >/dev/null 2>&1 \
+  && die "removed exit-code container is still inspectable"
 pass container-api-lifecycle \
-  "create/start/pause/unpause/exec/logs/stats/restart/stop/kill/attach/wait/remove were exact and deadline bounded"
+  "create/start/pause/unpause/exec/logs/stats/restart/stop/kill/attach/wait/nonzero-exit/remove were exact and deadline bounded"
 
 before_fd="$(sample_fds "$WORKDIR/fds-before.tsv")"
 python3 - "$port" "$CONNECTIONS" <<'PY'

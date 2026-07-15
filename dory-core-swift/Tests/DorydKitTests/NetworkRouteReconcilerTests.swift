@@ -32,6 +32,43 @@ final class NetworkRouteReconcilerTests: XCTestCase {
         ])
     }
 
+    func testComposeOneOffCannotStealLongRunningServiceRoute() throws {
+        let routes = NetworkRouteReconciler.routes(
+            containers: .ok(try containers("""
+            [
+              {
+                "Id": "service",
+                "Names": ["/example-app-1"],
+                "State": "running",
+                "Ports": [{"PublicPort": 8080, "Type": "tcp"}],
+                "Labels": {
+                  "com.docker.compose.oneoff": "False",
+                  "dev.orbstack.domains": "app.example.local"
+                }
+              },
+              {
+                "Id": "one-off",
+                "Names": ["/example-app-run-a1b2c3"],
+                "State": "running",
+                "Ports": [{"PublicPort": 9090, "Type": "tcp"}],
+                "Labels": {
+                  "com.docker.compose.oneoff": "True",
+                  "dev.orbstack.domains": "app.example.local"
+                }
+              }
+            ]
+            """)),
+            machines: [],
+            suffix: "dory.local"
+        )
+
+        XCTAssertEqual(routes, [
+            DomainRoute(hostname: "example-app-1.dory.local", address: "127.0.0.1", port: 8080),
+            DomainRoute(hostname: "example-app-run-a1b2c3.dory.local", address: "127.0.0.1", port: 9090),
+        ])
+        XCTAssertFalse(routes.contains { $0.hostname == "app.example.local" })
+    }
+
     func testLowContainerPortsUsePrivilegedBackendAndLoopbackHosts() throws {
         let routes = NetworkRouteReconciler.routes(
             containers: .ok(try containers("""

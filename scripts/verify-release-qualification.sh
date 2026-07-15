@@ -849,7 +849,7 @@ case "$supabase_healthchecks" in ''|*[!0-9]*) die "retained Supabase healthcheck
 
 kubernetes_tooling_manifest="$(single_evidence_file kubernetes-tooling manifest.txt)"
 for proof in \
-  status k3s_node_ready host_kubectl_api loopback_only_api_listener \
+  status k3s_node_ready host_kubectl_api host_kubectl_stability loopback_only_api_listener \
   loopback_only_nodeport_listener skaffold_run skaffold_rollout \
   skaffold_nodeport_http ingress_only_network_policy_egress skaffold_delete \
   tilt_kubernetes_ci tilt_rollout \
@@ -857,6 +857,20 @@ for proof in \
   grep -qx "$proof=PASS" "$kubernetes_tooling_manifest" \
     || die "retained Kubernetes tooling evidence does not prove $proof"
 done
+kubernetes_stability_samples="$(sed -n 's/^host_kubectl_stability_samples=//p' \
+  "$kubernetes_tooling_manifest")"
+case "$kubernetes_stability_samples" in
+  ''|*[!0-9]*) die "retained Kubernetes API stability sample count is invalid" ;;
+esac
+[ "$kubernetes_stability_samples" -ge 60 ] \
+  || die "retained Kubernetes API stability evidence has fewer than 60 consecutive samples"
+kubernetes_stability_duration="$(sed -n \
+  's/^host_kubectl_stability_duration_seconds=//p' "$kubernetes_tooling_manifest")"
+case "$kubernetes_stability_duration" in
+  ''|*[!0-9]*) die "retained Kubernetes API stability duration is invalid" ;;
+esac
+[ "$kubernetes_stability_duration" -ge 55 ] \
+  || die "retained Kubernetes API stability evidence did not span at least 55 seconds"
 k3s_image="$(sed -n 's/^k3s_image=//p' "$kubernetes_tooling_manifest")"
 kubernetes_workload_image="$(sed -n 's/^workload_image=//p' "$kubernetes_tooling_manifest")"
 skaffold_version="$(sed -n 's/^skaffold_version=//p' "$kubernetes_tooling_manifest")"
