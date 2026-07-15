@@ -4058,6 +4058,10 @@ final class AppStore {
     func createMachine(image: String, name: String, arch: MachineArch = .host, recipe: DevRecipe? = nil, settings: MachineSettings = .default, identity: MacIdentity? = nil) async -> String? {
         let trimmedName = name.trimmingCharacters(in: .whitespaces)
         guard !trimmedName.isEmpty else { actionError = "Name is required"; return "Name is required" }
+        guard trimmedName.utf8.count <= 63 else {
+            actionError = "Invalid machine name: use 63 characters or fewer"
+            return "Invalid machine name"
+        }
         guard trimmedName.wholeMatch(of: /[a-zA-Z0-9][a-zA-Z0-9_.-]*/) != nil else {
             actionError = "Invalid machine name: use letters, digits, and _ . - (must start alphanumeric)"
             return "Invalid machine name"
@@ -4216,6 +4220,48 @@ final class AppStore {
         return String(base.prefix(maximumBaseLength)) + suffix
     }
 
+    nonisolated static func generatedMachineToken() -> String {
+        String(UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(12)).lowercased()
+    }
+
+    nonisolated private static func isDuplicateMachineError(_ error: Error, id: String) -> Bool {
+        guard let clientError = error as? DorydClientError,
+              case let .daemon(message) = clientError else {
+            return false
+        }
+        return message == "machine already exists: \(id)"
+    }
+
+    private func cloneSnapshotWithAvailableName(
+        machineID: String,
+        snapshotID: String,
+        base: String,
+        operation: String
+    ) async throws -> String {
+        for attempt in 1...8 {
+            let candidate = Self.derivedMachineID(
+                base: base,
+                operation: operation,
+                token: Self.generatedMachineToken()
+            )
+            appendMachineCreationLog("Creating \(candidate)…")
+            do {
+                _ = try await dorydClient.machineCloneSnapshot(
+                    machineID: machineID,
+                    snapshotID: snapshotID,
+                    newID: candidate
+                )
+                return candidate
+            } catch {
+                guard Self.isDuplicateMachineError(error, id: candidate), attempt < 8 else {
+                    throw error
+                }
+                appendMachineCreationLog("\(candidate) already exists. Choosing another name…")
+            }
+        }
+        throw DorydClientError.daemon("could not allocate an available machine name")
+    }
+
     var snapshotMachine: Machine?
     var machineSnapshots: [MachineSnapshot] = []
     var editMachineTarget: Machine?
@@ -4289,29 +4335,29 @@ final class AppStore {
     func cloneMachine(_ machine: Machine) {
         guard requireDorydMachines("Cloning") else { return }
         let name = machine.name
-        let newName = Self.derivedMachineID(
-            base: name,
-            operation: "copy",
-            token: String(UUID().uuidString.prefix(4))
-        )
         busyMachines.insert(name)
         machineCreationTitle = "Cloning \(name)"
-        machineCreationLog = "Snapshotting \(name), then creating \(newName)…\n"
+        machineCreationLog = "Snapshotting \(name)…\n"
         machineCreationError = nil
         machineCreated = nil
         activeSheet = .creatingMachine
         Task {
             defer { busyMachines.remove(name) }
             do {
+                var newName: String?
                 let cleanupFailure = try await withTemporaryMachineSnapshot(
                     machineID: name,
                     note: "clone base"
                 ) { snapshot in
-                    _ = try await dorydClient.machineCloneSnapshot(
+                    newName = try await cloneSnapshotWithAvailableName(
                         machineID: name,
                         snapshotID: snapshot.id,
-                        newID: newName
+                        base: name,
+                        operation: "copy"
                     )
+                }
+                guard let newName else {
+                    throw DorydClientError.daemon("clone completed without a machine name")
                 }
                 if let cleanupFailure {
                     appendMachineCreationLog("Clone created, but temporary snapshot cleanup failed: \(cleanupFailure)")
@@ -4365,25 +4411,21 @@ final class AppStore {
 
     func cloneSnapshot(_ snapshot: MachineSnapshot) {
         guard requireDorydMachines("Cloning") else { return }
-        let newName = Self.derivedMachineID(
-            base: snapshot.machineName,
-            operation: "copy",
-            token: String(UUID().uuidString.prefix(4))
-        )
         let busyKey = snapshot.machineName
         busyMachines.insert(busyKey)
         machineCreationTitle = "Cloning \(snapshot.machineName)"
-        machineCreationLog = "Creating \(newName) from snapshot…\n"
+        machineCreationLog = "Creating a machine from snapshot \(snapshot.id)…\n"
         machineCreationError = nil
         machineCreated = nil
         activeSheet = .creatingMachine
         Task {
             defer { busyMachines.remove(busyKey) }
             do {
-                _ = try await dorydClient.machineCloneSnapshot(
+                let newName = try await cloneSnapshotWithAvailableName(
                     machineID: snapshot.machineName,
                     snapshotID: snapshot.id,
-                    newID: newName
+                    base: snapshot.machineName,
+                    operation: "copy"
                 )
                 appendMachineCreationLog("Clone \(newName) created and started.")
                 activeSheet = nil
@@ -4475,17 +4517,14 @@ final class AppStore {
             defer { busyMachines.remove(Self.importBusyKey) }
             do {
                 let snapshot = try await dorydClient.machineImportSnapshot(from: url.path)
-                let newName = Self.derivedMachineID(
-                    base: snapshot.machineID,
-                    operation: "import",
-                    token: String(UUID().uuidString.prefix(4))
-                )
-                appendMachineCreationLog("Verified snapshot \(snapshot.id). Creating \(newName)…")
+                appendMachineCreationLog("Verified snapshot \(snapshot.id).")
+                let newName: String
                 do {
-                    _ = try await dorydClient.machineCloneSnapshot(
+                    newName = try await cloneSnapshotWithAvailableName(
                         machineID: snapshot.machineID,
                         snapshotID: snapshot.id,
-                        newID: newName
+                        base: snapshot.machineID,
+                        operation: "import"
                     )
                 } catch {
                     let cleanupFailure = await removeTemporaryMachineSnapshot(

@@ -18,7 +18,7 @@ struct MachineComposerView: View {
 
     init(onBack: @escaping () -> Void) {
         self.onBack = onBack
-        _name = State(initialValue: "dev-" + String(UUID().uuidString.prefix(4).lowercased()))
+        _name = State(initialValue: "dev-" + AppStore.generatedMachineToken())
     }
 
     private var engineReady: Bool { store.dorydRuntimeActive }
@@ -181,7 +181,7 @@ struct MachineComposerView: View {
                     .font(.system(size: 11)).foregroundStyle(p.text3)
             }
             if nameInvalid {
-                Text("Use letters, numbers, dots, dashes or underscores.")
+                Text("Use up to 63 letters, numbers, dots, dashes or underscores.")
                     .font(.system(size: 11)).foregroundStyle(p.red)
             }
             Text("Shares your Mac home (git config + SSH keys), Ubuntu 24.04, native architecture.")
@@ -251,7 +251,7 @@ struct MachineComposerView: View {
 
     private var nameValid: Bool {
         let trimmed = name.trimmingCharacters(in: .whitespaces)
-        guard !trimmed.isEmpty else { return false }
+        guard !trimmed.isEmpty, trimmed.utf8.count <= 63 else { return false }
         return trimmed.range(of: "^[a-zA-Z0-9][a-zA-Z0-9_.-]*$", options: .regularExpression) != nil
     }
 

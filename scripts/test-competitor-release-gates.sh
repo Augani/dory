@@ -779,6 +779,18 @@ grep -F 'process.standardInput = FileHandle.nullDevice' \
 grep -F 'testCloneStartFailureDeletesTheNewMachineDefinition' \
   dory-core-swift/Tests/DorydKitTests/MachineManagerTests.swift >/dev/null \
   || fail "failed machine clones can leave hidden definitions and disks on the data drive"
+grep -F 'token: Self.generatedMachineToken()' Dory/Models/AppStore.swift >/dev/null \
+  || fail "automatic machine clone names do not use the full generated token"
+grep -F 'Self.isDuplicateMachineError(error, id: candidate), attempt < 8' \
+  Dory/Models/AppStore.swift >/dev/null \
+  || fail "automatic machine clone names do not retry exact collisions safely"
+grep -F 'generatedToken.count == 12' DoryTests/DorydClientTests.swift >/dev/null \
+  || fail "automatic machine name entropy and collision retry no longer have app coverage"
+if rg -n 'UUID\(\)\.uuidString\.prefix\(4\)' \
+  Dory/Models/AppStore.swift Dory/Features/Sheets/MachineComposerView.swift \
+  Dory/Features/Sheets/NewMachineSheet.swift >/dev/null; then
+  fail "a four-hex automatic machine name remains in the app"
+fi
 grep -F 'testManagerRemovesInterruptedMachineMetadataOnStartup' \
   dory-core-swift/Tests/DorydKitTests/MachineManagerTests.swift >/dev/null \
   || fail "interrupted machine definition publication can accumulate hidden metadata"

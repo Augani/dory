@@ -361,7 +361,7 @@ struct NewMachineSheet: View {
                     .onChange(of: name) { _, newValue in nameEdited = (newValue != lastAutoName) }
                     .frame(maxWidth: .infinity)
                 if nameInvalid {
-                    Text("Use letters, numbers, dots, dashes or underscores.")
+                    Text("Use up to 63 letters, numbers, dots, dashes or underscores.")
                         .font(.system(size: 11)).foregroundStyle(p.red)
                 }
             }
@@ -653,7 +653,7 @@ struct NewMachineSheet: View {
 
     private var nameValid: Bool {
         let trimmed = name.trimmingCharacters(in: .whitespaces)
-        guard !trimmed.isEmpty else { return false }
+        guard !trimmed.isEmpty, trimmed.utf8.count <= 63 else { return false }
         return trimmed.range(of: "^[a-zA-Z0-9][a-zA-Z0-9_.-]*$", options: .regularExpression) != nil
     }
 
@@ -707,7 +707,7 @@ struct NewMachineSheet: View {
     }
 
     static func defaultName(_ family: MachineFamily) -> String {
-        "\(family.id)-\(String(UUID().uuidString.prefix(4).lowercased()))"
+        "\(family.id)-\(AppStore.generatedMachineToken())"
     }
 
     private var dnsName: String {

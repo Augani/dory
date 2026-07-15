@@ -533,6 +533,10 @@ to the final release tag rather than representing this candidate as built from c
   kernel artifacts, and publish both payloads with exclusive links. An ID collision cannot replace
   or clean up an existing snapshot; the regression keeps the original bytes intact while importing
   the colliding bundle under a new valid ID.
+- App-generated machine names now use 12 hexadecimal characters instead of four. Clone and import
+  operations retry only the daemon's exact duplicate-name response, while unrelated failures still
+  return immediately; both creation screens and the store also enforce the daemon's 63-character
+  limit before any machine work begins.
 - Required Linux-machine provisioning no longer has a silent-success path. Nonzero and timed-out
   install/verify stages fail, unsupported recipes are rejected before creation, the app removes a
   newly created VM when setup fails, and the legacy container-machine path removes an incomplete

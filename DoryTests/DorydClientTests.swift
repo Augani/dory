@@ -542,10 +542,16 @@ struct DorydClientTests {
         #expect(snapshot.note == "before upgrade")
         #expect(snapshot.imageRef.hasPrefix("doryd://dev/"))
 
+        service.setMachineCloneSnapshotDuplicateFailures(1)
         store.cloneSnapshot(snapshot)
         try await waitUntil {
-            service.machineCloneSnapshotCount == 1 && store.machines.contains { $0.name.hasPrefix("dev-copy-") }
+            service.machineCloneSnapshotCount == 2 && store.machines.contains { $0.name.hasPrefix("dev-copy-") }
         }
+        let clonedName = try #require(store.machines.first { $0.name.hasPrefix("dev-copy-") }?.name)
+        let generatedToken = try #require(clonedName.split(separator: "-").last)
+        #expect(generatedToken.count == 12)
+        #expect(generatedToken.allSatisfy { $0.isHexDigit })
+        #expect(store.machineCreationLog.contains("already exists. Choosing another name"))
 
         store.restoreSnapshot(snapshot)
         try await waitUntil {
@@ -559,7 +565,7 @@ struct DorydClientTests {
 
         store.cloneMachine(machine)
         try await waitUntil {
-            service.machineCloneSnapshotCount == 2
+            service.machineCloneSnapshotCount == 3
                 && service.machineSnapshotCount == 2
                 && service.machineDeleteSnapshotCount == 2
                 && !store.isMachineBusy("dev")
@@ -572,10 +578,10 @@ struct DorydClientTests {
         let bounded = AppStore.derivedMachineID(
             base: String(repeating: "a", count: 63),
             operation: "import",
-            token: "ABCD"
+            token: "ABCDEF123456"
         )
         #expect(bounded.count == 63)
-        #expect(bounded.hasSuffix("-import-abcd"))
+        #expect(bounded.hasSuffix("-import-abcdef123456"))
 
         let base = "/tmp/dami-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         let socketPath = base + "/doryd.sock"
@@ -1492,6 +1498,7 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
     private var _machineCloneSnapshotCount = 0
     private var _machineCloneSnapshotOK = true
     private var _machineCloneSnapshotMessage = ""
+    private var _machineCloneSnapshotDuplicateFailures = 0
     private var _machineRestoreSnapshotCount = 0
     private var _machineDeleteSnapshotCount = 0
     private var _latestMachineCreateConfig: NSDictionary?
@@ -1615,6 +1622,12 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
         lock.lock()
         _machineCloneSnapshotOK = ok
         _machineCloneSnapshotMessage = message
+        lock.unlock()
+    }
+
+    func setMachineCloneSnapshotDuplicateFailures(_ count: Int) {
+        lock.lock()
+        _machineCloneSnapshotDuplicateFailures = max(0, count)
         lock.unlock()
     }
 
@@ -1892,6 +1905,12 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
         let row = Self.machineRow(id: newID, state: "running", pid: 1234, agentBuild: "agent-test", handoffFDCount: 2)
         lock.lock()
         _machineCloneSnapshotCount += 1
+        if _machineCloneSnapshotDuplicateFailures > 0 {
+            _machineCloneSnapshotDuplicateFailures -= 1
+            lock.unlock()
+            reply(false, [:], "machine already exists: \(newID)")
+            return
+        }
         let ok = _machineCloneSnapshotOK
         let message = _machineCloneSnapshotMessage
         if ok {

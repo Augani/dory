@@ -50,6 +50,13 @@ struct AppStoreEnvAllowListTests {
         #expect(result == "Invalid machine name")
     }
 
+    @Test func createMachineRejectsNameLongerThanDaemonLimit() async {
+        let store = AppStore(runtime: MockRuntime())
+        let result = await store.createMachine(image: "ubuntu", name: String(repeating: "a", count: 64))
+        #expect(result == "Invalid machine name")
+        #expect(store.actionError?.contains("63 characters or fewer") == true)
+    }
+
     @Test func createMachineRequiresDorydMachineRuntime() async {
         let store = AppStore(runtime: MockRuntime())
         let result = await store.createMachine(image: "ubuntu", name: "dev")
