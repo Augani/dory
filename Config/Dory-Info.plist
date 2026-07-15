@@ -10,5 +10,42 @@
 	<true/>
 	<key>LSMultipleInstancesProhibited</key>
 	<true/>
+	<key>UTExportedTypeDeclarations</key>
+	<array>
+		<dict>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>com.apple.package</string>
+			</array>
+			<key>UTTypeDescription</key>
+			<string>Dory Data Drive</string>
+			<key>UTTypeIdentifier</key>
+			<string>dev.dory.data-drive</string>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>dorydrive</string>
+				</array>
+			</dict>
+		</dict>
+		<dict>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>com.apple.package</string>
+			</array>
+			<key>UTTypeDescription</key>
+			<string>Dory Data Backup</string>
+			<key>UTTypeIdentifier</key>
+			<string>dev.dory.data-backup</string>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>dorybackup</string>
+				</array>
+			</dict>
+		</dict>
+	</array>
 </dict>
 </plist>

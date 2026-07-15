@@ -16,6 +16,8 @@ struct ManagedEngineSettings: Codable, Equatable, Sendable {
     var keepDorydRunningAfterQuit: Bool
     var rosettaX86: Bool
     var gpuVenus: Bool
+    var cpuCount: Int
+    var memoryMB: Int
 }
 
 struct ManagedNetworkSettings: Codable, Equatable, Sendable {

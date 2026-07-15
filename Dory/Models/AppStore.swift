@@ -105,6 +105,9 @@ final class AppStore {
     @ObservationIgnored private var healthLoadToken = 0
     var processMemorySnapshot: DoryProcessMemorySnapshot = .empty
     @ObservationIgnored private var processMemoryTask: Task<Void, Never>?
+    var dataDriveOperationInFlight = false
+    var dataDriveOperationStatus = ""
+    var dataDriveRevision = 0
 
     var dorydRuntimeActive: Bool { runtimeOwnedByDoryd }
     var dorydRuntimeRequired: Bool { dorydEngineRequired }
@@ -155,6 +158,7 @@ final class AppStore {
     @ObservationIgnored private let dorydEngineExplicitlyRequested: Bool
     @ObservationIgnored private let managesDorydLaunchAgent: Bool
     @ObservationIgnored private let dorydLaunchAgentEnsurer: @Sendable (DorydLaunchAgent.Configuration) async -> Bool
+    @ObservationIgnored private let dorydLaunchAgentBootout: @Sendable () async -> Bool
     @ObservationIgnored private let authorizedNetworkingRemover: @Sendable () async throws -> Void
     @ObservationIgnored private let environment: [String: String]
     @ObservationIgnored private let machineEnvResolver: @Sendable ([String]) async -> [String: String]
@@ -171,6 +175,7 @@ final class AppStore {
         dorydClient: DorydClient = DorydClient(),
         useDorydEngine: Bool? = nil,
         dorydLaunchAgentEnsurer: (@Sendable (DorydLaunchAgent.Configuration) async -> Bool)? = nil,
+        dorydLaunchAgentBootout: (@Sendable () async -> Bool)? = nil,
         authorizedNetworkingRemover: (@Sendable () async throws -> Void)? = nil,
         environment: [String: String] = ProcessInfo.processInfo.environment,
         composeCommandRunner: any ToolCommandRunning = BoundedToolProcessRunner(),
@@ -192,6 +197,9 @@ final class AppStore {
         self.managesDorydLaunchAgent = dorydClient.usesMachService || dorydLaunchAgentEnsurer != nil
         self.dorydLaunchAgentEnsurer = dorydLaunchAgentEnsurer ?? { configuration in
             await DorydLaunchAgent.ensureCurrent(configuration: configuration)
+        }
+        self.dorydLaunchAgentBootout = dorydLaunchAgentBootout ?? {
+            await DorydLaunchAgent.bootoutCurrent()
         }
         self.authorizedNetworkingRemover = authorizedNetworkingRemover ?? {
             try await Self.removeAuthorizedNetworkingIfPresent()
@@ -241,6 +249,13 @@ final class AppStore {
             if let raw = UserDefaults.standard.string(forKey: Self.enginePreferenceKey),
                let saved = EnginePreference(rawValue: raw) { enginePreference = saved }
             if let socket = UserDefaults.standard.string(forKey: Self.customEngineSocketKey) { customEngineSocket = socket }
+            let resourceLimits = Self.engineResourceLimits()
+            if let saved = UserDefaults.standard.object(forKey: Self.engineCPUCountKey) as? Int {
+                engineCPUCount = min(max(saved, 1), resourceLimits.maximumCPUCount)
+            }
+            if let saved = UserDefaults.standard.object(forKey: Self.engineMemoryMBKey) as? Int {
+                engineMemoryMB = min(max(saved, 2048), resourceLimits.maximumMemoryMB)
+            }
             if let v = UserDefaults.standard.object(forKey: SharedVMProvisioner.Config.gpuVenusKey) as? Bool { gpuVenusEnabled = v }
             if gpuVenusEnabled, !gpuRuntimeAvailable {
                 gpuVenusEnabled = false
@@ -369,7 +384,9 @@ final class AppStore {
                 routeDockerCLI: routeDockerCLI,
                 keepDorydRunningAfterQuit: keepDorydRunningAfterQuit,
                 rosettaX86: rosettaX86Enabled,
-                gpuVenus: gpuVenusEnabled
+                gpuVenus: gpuVenusEnabled,
+                cpuCount: engineCPUCount,
+                memoryMB: engineMemoryMB
             ),
             network: ManagedNetworkSettings(
                 domainsEnabled: domainsEnabled,
@@ -620,6 +637,11 @@ final class AppStore {
     /// Vulkan and AI compute inside containers. Applied transactionally at engine restart; missing
     /// GPU runtime/kernel assets fail closed and restore this persisted choice.
     var gpuVenusEnabled = false
+    /// Resource ceilings for Dory's daemon-owned Docker VM. They default to the same host-scaled
+    /// values used by doryd, remain user-adjustable, and are written into the LaunchAgent so the UI
+    /// is the authoritative configuration surface.
+    var engineCPUCount = Int(DorydLaunchAgent.Configuration.hostScaledCPUCount())
+    var engineMemoryMB = Int(DorydLaunchAgent.Configuration.hostScaledMemoryMB())
     let gpuArchitectureSupported = SharedVMProvisioner.venusArchitectureSupported()
     let gpuRuntimeAvailable = SharedVMProvisioner.venusRuntimeAvailable()
 
@@ -629,6 +651,24 @@ final class AppStore {
     var customEngineSocket = ""
     static let enginePreferenceKey = "dory.enginePreference"
     static let customEngineSocketKey = "dory.customEngineSocket"
+    static let engineCPUCountKey = "dory.engineCPUCount"
+    static let engineMemoryMBKey = "dory.engineMemoryMB"
+
+    var maximumEngineCPUCount: Int {
+        Self.engineResourceLimits().maximumCPUCount
+    }
+
+    var maximumEngineMemoryGiB: Int {
+        Self.engineResourceLimits().maximumMemoryMB / 1024
+    }
+
+    var recommendedEngineCPUCount: Int {
+        Int(DorydLaunchAgent.Configuration.hostScaledCPUCount())
+    }
+
+    var recommendedEngineMemoryMB: Int {
+        Int(DorydLaunchAgent.Configuration.hostScaledMemoryMB())
+    }
 
     @ObservationIgnored private(set) var backendStartRequested = false
     @ObservationIgnored var windowOpenRequested = false
@@ -1064,6 +1104,321 @@ final class AppStore {
         }
     }
 
+    func chooseExistingDataDrive() {
+        guard !dataDriveOperationInFlight, !engineSettingChangeInFlight else {
+            showSettingsFailure("Another data or engine operation is still running.")
+            return
+        }
+        let panel = NSOpenPanel()
+        panel.title = "Use an Existing Dory Data Drive"
+        panel.message = "Choose an initialized .dorydrive bundle. Dory verifies its identity before changing anything."
+        panel.prompt = "Use Drive"
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [UTType(filenameExtension: "dorydrive") ?? .data]
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        let home = environment["HOME"] ?? NSHomeDirectory()
+        if let selected = try? DoryDataDriveSelectionStore(home: home).inspectSelection(),
+           let candidate = try? DoryDataDrive(home: home, overrideRoot: url.path),
+           selected.root == candidate.root {
+            showSettingsSuccess("Dory is already using that data drive.")
+            return
+        }
+        guard confirmDataDriveInterruption(
+            title: "Change Dory's data drive?",
+            message: "Dory will stop the engine and Linux machines, verify the selected drive, then restart the daemon and restore exactly the containers and machines that were running. The current drive is never deleted."
+        ) else { return }
+        Task { await selectExistingDataDrive(at: url) }
+    }
+
+    func chooseDataDriveBackupDestination() {
+        guard !dataDriveOperationInFlight, !engineSettingChangeInFlight else {
+            showSettingsFailure("Another data or engine operation is still running.")
+            return
+        }
+        let panel = NSSavePanel()
+        panel.title = "Back Up Dory Data"
+        panel.message = "Creates a verified, resumable backup of images, containers, volumes, machines, snapshots, and settings."
+        panel.prompt = "Back Up"
+        panel.nameFieldStringValue = "Dory-\(Self.dataDriveBackupDate()).dorybackup"
+        panel.allowedContentTypes = [UTType(filenameExtension: "dorybackup") ?? .data]
+        panel.canCreateDirectories = true
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        guard !FileManager.default.fileExists(atPath: url.path) else {
+            showSettingsFailure("Existing backups are never overwritten. Choose a new backup name.")
+            return
+        }
+        guard confirmDataDriveInterruption(
+            title: "Back up the Dory data drive?",
+            message: "Dory will briefly stop the engine and Linux machines to make a consistent backup, then restart the daemon and restore exactly the containers and machines that were running."
+        ) else { return }
+        Task { await backupSelectedDataDrive(to: url) }
+    }
+
+    func chooseDataDriveBackupToVerify() {
+        guard !dataDriveOperationInFlight, !engineSettingChangeInFlight else {
+            showSettingsFailure("Another data or engine operation is still running.")
+            return
+        }
+        guard let url = chooseDataDriveBackup(title: "Verify Dory Backup", prompt: "Verify") else { return }
+        Task { await verifyDataDriveBackup(at: url) }
+    }
+
+    func chooseDataDriveBackupToRestore() {
+        guard !dataDriveOperationInFlight, !engineSettingChangeInFlight else {
+            showSettingsFailure("Another data or engine operation is still running.")
+            return
+        }
+        guard let archive = chooseDataDriveBackup(title: "Restore Dory Backup", prompt: "Choose Backup") else { return }
+        let panel = NSSavePanel()
+        panel.title = "Restore Dory Data Drive"
+        panel.message = "Choose a new .dorydrive destination. Existing files are never overwritten."
+        panel.prompt = "Restore"
+        panel.nameFieldStringValue = "Restored Dory.dorydrive"
+        panel.allowedContentTypes = [UTType(filenameExtension: "dorydrive") ?? .data]
+        panel.canCreateDirectories = true
+        guard panel.runModal() == .OK, let destination = panel.url else { return }
+        guard !FileManager.default.fileExists(atPath: destination.path) else {
+            showSettingsFailure("Restore destinations must be new. Choose a path that does not exist.")
+            return
+        }
+        Task { await restoreDataDriveBackup(at: archive, to: destination) }
+    }
+
+    private func chooseDataDriveBackup(title: String, prompt: String) -> URL? {
+        let panel = NSOpenPanel()
+        panel.title = title
+        panel.prompt = prompt
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [UTType(filenameExtension: "dorybackup") ?? .data]
+        return panel.runModal() == .OK ? panel.url : nil
+    }
+
+    private func confirmDataDriveInterruption(title: String, message: String) -> Bool {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Continue")
+        alert.addButton(withTitle: "Cancel")
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
+    private nonisolated static func dataDriveBackupDate(_ date: Date = Date()) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = .current
+        formatter.dateFormat = "yyyy-MM-dd-HHmm"
+        return formatter.string(from: date)
+    }
+
+    private func backupSelectedDataDrive(to destination: URL) async {
+        guard enginePreference == .dory else {
+            showSettingsFailure("Switch to Dory's daemon engine before backing up its data drive.")
+            return
+        }
+        dataDriveOperationInFlight = true
+        engineSettingChangeInFlight = true
+        dataDriveOperationStatus = "Stopping Dory safely for backup…"
+        defer {
+            dataDriveOperationInFlight = false
+            engineSettingChangeInFlight = false
+        }
+
+        let workloads: DataDriveRuntimeState
+        do {
+            workloads = try await quiesceDorydForDataDriveOperation()
+        } catch {
+            prepareForDorydReconnect()
+            await connectBackend()
+            dataDriveOperationStatus = "Backup was not started."
+            showSettingsFailure("Dory could not prepare a consistent backup: \(error)")
+            return
+        }
+
+        dataDriveOperationStatus = "Backing up and verifying every file…"
+        let home = environment["HOME"] ?? NSHomeDirectory()
+        let result: Result<DoryDataDriveArchiveVerification, Error>
+        do {
+            let verification = try await Task.detached(priority: .utility) {
+                let selection = try DoryDataDriveSelectionStore(home: home)
+                guard let drive = try selection.inspectSelection() else {
+                    throw DoryDataDriveSelectionError.noSelection(selection.path)
+                }
+                return try DoryDataDriveTransaction.backup(from: drive, to: destination.path)
+            }.value
+            result = .success(verification)
+        } catch {
+            result = .failure(error)
+        }
+
+        let recovery = await reconnectAfterDataDriveOperation(workloads: workloads)
+        switch result {
+        case .success(let verification):
+            dataDriveOperationStatus = "Backup verified at \(destination.path)."
+            let size = ByteCountFormatter.string(fromByteCount: Int64(clamping: verification.storedBytes), countStyle: .binary)
+            if let recovery {
+                showSettingsFailure("Backup verified (\(size)), but \(recovery)")
+            } else {
+                showSettingsSuccess("Dory data backup verified (\(size)).")
+            }
+        case .failure(let error):
+            dataDriveOperationStatus = "Backup failed: \(error)"
+            showSettingsFailure("Dory data was not backed up: \(error)\(recovery.map { " \($0)" } ?? "")")
+        }
+    }
+
+    private func verifyDataDriveBackup(at archive: URL) async {
+        dataDriveOperationInFlight = true
+        dataDriveOperationStatus = "Verifying backup contents…"
+        defer { dataDriveOperationInFlight = false }
+        do {
+            let verification = try await Task.detached(priority: .utility) {
+                try DoryDataDriveArchive.verifyBackup(at: archive.path)
+            }.value
+            let size = ByteCountFormatter.string(fromByteCount: Int64(clamping: verification.storedBytes), countStyle: .binary)
+            dataDriveOperationStatus = "Backup verified: \(archive.path)"
+            showSettingsSuccess("Backup is complete and valid: \(verification.entryCount) entries, \(size).")
+        } catch {
+            dataDriveOperationStatus = "Backup verification failed: \(error)"
+            showSettingsFailure("Backup verification failed: \(error)")
+        }
+    }
+
+    private func restoreDataDriveBackup(at archive: URL, to destination: URL) async {
+        dataDriveOperationInFlight = true
+        dataDriveOperationStatus = "Restoring and verifying the data drive…"
+        defer { dataDriveOperationInFlight = false }
+        let home = environment["HOME"] ?? NSHomeDirectory()
+        do {
+            let verification = try await Task.detached(priority: .utility) {
+                let drive = try DoryDataDrive(home: home, overrideRoot: destination.path)
+                return try DoryDataDriveTransaction.restore(at: archive.path, to: drive)
+            }.value
+            dataDriveOperationStatus = "Restored and verified: \(destination.path)"
+            let size = ByteCountFormatter.string(fromByteCount: Int64(clamping: verification.storedBytes), countStyle: .binary)
+            showSettingsSuccess("Restored and verified \(size). Choose Use Existing… to switch to the restored drive.")
+        } catch {
+            dataDriveOperationStatus = "Restore failed: \(error)"
+            showSettingsFailure("Dory data was not restored: \(error)")
+        }
+    }
+
+    private func selectExistingDataDrive(at url: URL) async {
+        guard enginePreference == .dory else {
+            showSettingsFailure("Switch to Dory's daemon engine before changing its data drive.")
+            return
+        }
+        dataDriveOperationInFlight = true
+        engineSettingChangeInFlight = true
+        dataDriveOperationStatus = "Stopping Dory safely before changing drives…"
+        defer {
+            dataDriveOperationInFlight = false
+            engineSettingChangeInFlight = false
+        }
+
+        let workloads: DataDriveRuntimeState
+        do {
+            workloads = try await quiesceDorydForDataDriveOperation()
+        } catch {
+            prepareForDorydReconnect()
+            await connectBackend()
+            dataDriveOperationStatus = "The selected drive was not changed."
+            showSettingsFailure("Dory could not stop safely before changing drives: \(error)")
+            return
+        }
+
+        dataDriveOperationStatus = "Verifying the selected drive and its identity…"
+        let home = environment["HOME"] ?? NSHomeDirectory()
+        let result: Result<DoryDataDrive, Error>
+        do {
+            let drive = try await Task.detached(priority: .utility) {
+                try DoryDataDriveSelectionStore(home: home)
+                    .bindExistingSelection(requestedRoot: url.path)
+            }.value
+            result = .success(drive)
+        } catch {
+            result = .failure(error)
+        }
+
+        let recovery = await reconnectAfterDataDriveOperation(workloads: workloads)
+        switch result {
+        case .success(let drive):
+            dataDriveRevision += 1
+            dataDriveOperationStatus = "Using \(drive.root)."
+            if let recovery {
+                showSettingsFailure("The data drive changed successfully, but \(recovery)")
+            } else {
+                showSettingsSuccess("Dory is now using the verified data drive at \(drive.root).")
+            }
+        case .failure(let error):
+            dataDriveOperationStatus = "The selected drive was rejected: \(error)"
+            showSettingsFailure("Dory kept the current data drive: \(error)\(recovery.map { " \($0)" } ?? "")")
+        }
+    }
+
+    struct DataDriveRuntimeState: Sendable, Equatable {
+        var containers: [EngineSettingWorkload]
+        var machineIDs: [String]
+    }
+
+    func quiesceDorydForDataDriveOperation() async throws -> DataDriveRuntimeState {
+        let engineStatus = try await dorydClient.engineStatus()
+        let containers: [EngineSettingWorkload]
+        if engineStatus.isRunning {
+            guard runtimeOwnedByDoryd, loadState == .ready else {
+                throw DoryDataDriveSelectionError.filesystem(
+                    "Dory's running-container set is not ready to be verified"
+                )
+            }
+            containers = try await captureRunningWorkloads()
+        } else if engineStatus.state == "stopped" || engineStatus.state == "sleeping" {
+            containers = []
+        } else {
+            throw DoryDataDriveSelectionError.filesystem(
+                "Dory's engine is \(engineStatus.state); wait until it is fully running or stopped"
+            )
+        }
+        let machineIDs = try await dorydClient.machineList()
+            .filter { $0.state == "running" || $0.state == "starting" }
+            .map(\.id)
+            .sorted()
+        guard managesDorydLaunchAgent else {
+            throw DoryDataDriveSelectionError.filesystem("Dory cannot manage the installed daemon LaunchAgent")
+        }
+        guard await dorydLaunchAgentBootout() else {
+            throw DoryDataDriveSelectionError.filesystem("Dory's daemon did not stop cleanly")
+        }
+        prepareForDorydReconnect()
+        return DataDriveRuntimeState(containers: containers, machineIDs: machineIDs)
+    }
+
+    /// Restarts doryd after a quiesced data operation and restores exactly the container and Linux
+    /// machine sets that were running beforehand. A non-nil return describes remaining recovery.
+    func reconnectAfterDataDriveOperation(workloads: DataDriveRuntimeState) async -> String? {
+        prepareForDorydReconnect()
+        await connectBackend()
+        guard runtimeOwnedByDoryd, loadState == .ready else {
+            return "the daemon engine did not reconnect; no containers or Linux machines were restarted."
+        }
+        let containerFailures = await restartCapturedWorkloads(workloads.containers)
+        let machineFailures = await restartCapturedMachines(workloads.machineIDs)
+        guard containerFailures.isEmpty, machineFailures.isEmpty else {
+            var details: [String] = []
+            if !containerFailures.isEmpty {
+                details.append("containers: \(Self.workloadFailureSummary(containerFailures))")
+            }
+            if !machineFailures.isEmpty {
+                details.append("Linux machines: \(Self.workloadFailureSummary(machineFailures))")
+            }
+            return "some previously running workloads did not restart (\(details.joined(separator: "; ")))."
+        }
+        return nil
+    }
+
     /// Toggles the FEX x86/amd64 path and restarts the shared engine so the new mode takes effect.
     func setRosettaX86(_ on: Bool) async {
         guard on != rosettaX86Enabled else { return }
@@ -1134,14 +1489,87 @@ final class AppStore {
         showSettingsSuccess(on ? "GPU acceleration enabled." : "GPU acceleration disabled.")
     }
 
+    struct EngineResourceLimits: Sendable, Equatable {
+        var maximumCPUCount: Int
+        var maximumMemoryMB: Int
+    }
+
+    nonisolated static func engineResourceLimits(
+        activeProcessorCount: Int = ProcessInfo.processInfo.activeProcessorCount,
+        physicalMemory: UInt64 = ProcessInfo.processInfo.physicalMemory
+    ) -> EngineResourceLimits {
+        let maximumCPUCount = max(1, min(activeProcessorCount, Int(UInt16.max)))
+        let hostMemoryMB = Int(clamping: physicalMemory / (1024 * 1024))
+        let maximumMemoryMB = max(2048, min(hostMemoryMB - 4096, Int(UInt32.max)))
+        return EngineResourceLimits(
+            maximumCPUCount: maximumCPUCount,
+            maximumMemoryMB: maximumMemoryMB
+        )
+    }
+
+    /// Applies Docker VM resource ceilings through the same workload-preserving transaction used
+    /// for the other daemon-owned engine settings. Values outside the host-safe UI range are
+    /// rejected instead of silently creating a LaunchAgent configuration the Mac cannot sustain.
+    func setEngineResources(cpuCount: Int, memoryMB: Int) async {
+        guard !engineSettingChangeInFlight else {
+            showSettingsFailure("Another engine setting is still being applied.")
+            return
+        }
+        let limits = Self.engineResourceLimits()
+        guard (1...limits.maximumCPUCount).contains(cpuCount) else {
+            showSettingsFailure("Engine CPU must be between 1 and \(limits.maximumCPUCount) cores on this Mac.")
+            return
+        }
+        guard memoryMB.isMultiple(of: 1024),
+              (2048...limits.maximumMemoryMB).contains(memoryMB) else {
+            showSettingsFailure("Engine memory must be between 2 and \(limits.maximumMemoryMB / 1024) GB on this Mac.")
+            return
+        }
+        guard cpuCount != engineCPUCount || memoryMB != engineMemoryMB else {
+            showSettingsSuccess("Engine resources are already set to \(cpuCount) cores and \(memoryMB / 1024) GB.")
+            return
+        }
+
+        engineSettingChangeInFlight = true
+        defer { engineSettingChangeInFlight = false }
+        let previous = EngineResources(cpuCount: engineCPUCount, memoryMB: engineMemoryMB)
+        engineCPUCount = cpuCount
+        engineMemoryMB = memoryMB
+        UserDefaults.standard.set(cpuCount, forKey: Self.engineCPUCountKey)
+        UserDefaults.standard.set(memoryMB, forKey: Self.engineMemoryMBKey)
+        let applied = await applyDorydOwnedEngineSetting(
+            previousValue: previous,
+            restore: { [weak self] value in
+                self?.engineCPUCount = value.cpuCount
+                self?.engineMemoryMB = value.memoryMB
+                UserDefaults.standard.set(value.cpuCount, forKey: Self.engineCPUCountKey)
+                UserDefaults.standard.set(value.memoryMB, forKey: Self.engineMemoryMBKey)
+            },
+            applyingMessage: "Applying engine resources…",
+            successMessage: "Engine resources set to \(cpuCount) cores and \(memoryMB / 1024) GB."
+        )
+        if !applied {
+            engineCPUCount = previous.cpuCount
+            engineMemoryMB = previous.memoryMB
+            UserDefaults.standard.set(previous.cpuCount, forKey: Self.engineCPUCountKey)
+            UserDefaults.standard.set(previous.memoryMB, forKey: Self.engineMemoryMBKey)
+            showSettingsFailure("Switch to Dory's daemon engine before changing its CPU and memory.")
+        }
+    }
+
+    private struct EngineResources: Sendable, Equatable {
+        var cpuCount: Int
+        var memoryMB: Int
+    }
+
     /// Applies a daemon-owned engine setting as a small transaction: quiesce the engine using the
     /// long shutdown timeout, let launchd replace doryd with the new explicit environment, then
     /// reconnect and explicitly restart the exact containers that were running before the stop.
     /// Any failure restores the persisted value and makes one recovery attempt with the prior
     /// configuration so a rejected GPU/amd64 choice cannot strand the engine or user workloads.
-    private func applyDorydOwnedEngineSetting(
-        previousValue: Bool,
-        restore: @MainActor (Bool) -> Void,
+    private func applyDorydOwnedEngineSetting<Value>(
+        previousValue: Value,
+        restore: @MainActor (Value) -> Void,
         applyingMessage: String,
         successMessage: String
     ) async -> Bool {
@@ -1214,7 +1642,7 @@ final class AppStore {
         return true
     }
 
-    private struct EngineSettingWorkload: Sendable, Equatable {
+    struct EngineSettingWorkload: Sendable, Equatable {
         var id: String
         var name: String
     }
@@ -1307,6 +1735,28 @@ final class AppStore {
             }
         }
         await reload()
+        return failures
+    }
+
+    /// doryd intentionally reloads persisted machine definitions in a stopped state. Restore only
+    /// the IDs captured before shutdown so a user's deliberately stopped machines remain stopped.
+    private func restartCapturedMachines(_ machineIDs: [String]) async -> [String] {
+        guard !machineIDs.isEmpty else {
+            loadMachines()
+            return []
+        }
+        guard runtimeOwnedByDoryd, loadState == .ready else {
+            return machineIDs.map { "\($0) (daemon unavailable)" }
+        }
+        var failures: [String] = []
+        for machineID in machineIDs {
+            do {
+                _ = try await dorydClient.machineStart(machineID)
+            } catch {
+                failures.append("\(machineID) (\(error.localizedDescription))")
+            }
+        }
+        loadMachines()
         return failures
     }
 
@@ -1559,6 +2009,8 @@ final class AppStore {
             hostCLIEnabled: routeDockerCLI,
             amd64EmulationEnabled: rosettaX86Enabled && MacHostPlatform.current().isAppleSilicon,
             gpuVenusEnabled: gpuVenusEnabled,
+            cpuCount: UInt16(clamping: engineCPUCount),
+            memoryMB: UInt32(clamping: engineMemoryMB),
             sshAuthSock: ProcessInfo.processInfo.environment["SSH_AUTH_SOCK"]
         )
     }

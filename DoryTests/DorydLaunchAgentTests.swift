@@ -245,6 +245,15 @@ struct DorydLaunchAgentTests {
         #expect(DorydLaunchAgent.Configuration.hostScaledMemoryMB(physicalMemory: 8 * 1024 * 1024 * 1024) == 4096)
     }
 
+    @Test func userEngineResourceLimitsReserveCapacityForMacOS() {
+        #expect(AppStore.engineResourceLimits(activeProcessorCount: 12, physicalMemory: 16 * 1024 * 1024 * 1024)
+            == AppStore.EngineResourceLimits(maximumCPUCount: 12, maximumMemoryMB: 12 * 1024))
+        #expect(AppStore.engineResourceLimits(activeProcessorCount: 8, physicalMemory: 8 * 1024 * 1024 * 1024)
+            == AppStore.EngineResourceLimits(maximumCPUCount: 8, maximumMemoryMB: 4 * 1024))
+        #expect(AppStore.engineResourceLimits(activeProcessorCount: 2, physicalMemory: 4 * 1024 * 1024 * 1024)
+            == AppStore.EngineResourceLimits(maximumCPUCount: 2, maximumMemoryMB: 2 * 1024))
+    }
+
     @Test func ensureCurrentRestartsWhenLaunchAgentEnvironmentChanges() async throws {
         let temporaryDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("DorydLaunchAgentTests-\(UUID().uuidString)", isDirectory: true)

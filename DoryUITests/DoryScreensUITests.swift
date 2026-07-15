@@ -47,7 +47,13 @@ final class DoryScreensUITests: XCTestCase {
 
     func testSettingsSubTabs() {
         nav("settings")
-        app.buttons["settings-resources"].click(); assertText("THIS MAC")
+        app.buttons["settings-resources"].click()
+        assertText("THIS MAC")
+        XCTAssertTrue(app.buttons["use-existing-data-drive"].exists)
+        XCTAssertTrue(app.buttons["restore-verify-data-drive"].exists)
+        app.buttons["settings-engine"].click()
+        assertText("ENGINE RESOURCES")
+        XCTAssertTrue(app.buttons["engine-resources-apply"].exists)
         app.buttons["settings-about"].click()
         app.buttons["settings-network"].click()
         app.buttons["settings-general"].click(); assertText("APPEARANCE")

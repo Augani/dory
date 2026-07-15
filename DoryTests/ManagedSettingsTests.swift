@@ -24,6 +24,8 @@ struct ManagedSettingsTests {
             showWakeNotifications: false
         )
         store.machineEnvAllowList = ["PATH", "GITHUB_TOKEN"]
+        store.engineCPUCount = 4
+        store.engineMemoryMB = 6144
 
         let profile = store.managedSettingsProfile()
 
@@ -31,6 +33,8 @@ struct ManagedSettingsTests {
         #expect(profile.version == 1)
         #expect(profile.engine.preference == "dory")
         #expect(profile.engine.routeDockerCLI == false)
+        #expect(profile.engine.cpuCount == 4)
+        #expect(profile.engine.memoryMB == 6144)
         #expect(profile.network.domainSuffix == "corp.dory.local")
         #expect(profile.network.dnsPort == 15453)
         #expect(profile.autoIdle.mode == "auto-idle")
@@ -46,5 +50,7 @@ struct ManagedSettingsTests {
         #expect(json.contains(#""schema" : "dev.dory.managed-settings""#))
         #expect(json.contains(#""telemetry" : {"#))
         #expect(json.contains(#""mode" : "none""#))
+        #expect(json.contains(#""cpuCount" : 4"#))
+        #expect(json.contains(#""memoryMB" : 6144"#))
     }
 }

@@ -11,6 +11,8 @@ struct SettingsView: View {
     @State private var httpsPortDraft = ""
     @State private var customSocketDraft = ""
     @State private var machineEnvAllowListDraft = ""
+    @State private var engineCPUCountDraft = 1
+    @State private var engineMemoryGiBDraft = 2
     @State private var detectedEngineSources: [DockerSourceEngine] = []
 
     var body: some View {
@@ -639,6 +641,7 @@ struct SettingsView: View {
     }
 
     private var dataDrivePresentation: DataDrivePresentation {
+        _ = store.dataDriveRevision
         let environment = ProcessInfo.processInfo.environment
         let configured = environment["DORYD_DATA_DRIVE"] ?? environment["DORY_DATA_DRIVE"]
         do {
@@ -716,6 +719,33 @@ struct SettingsView: View {
                 .disabled(!presentation.isReady)
                 .accessibilityIdentifier("reveal-data-drive")
             }
+            HStack(spacing: 8) {
+                Button("Use Existing…") { store.chooseExistingDataDrive() }
+                    .buttonStyle(.bordered)
+                    .disabled(store.dataDriveOperationInFlight || store.engineSettingChangeBusy)
+                    .accessibilityIdentifier("use-existing-data-drive")
+                Button("Back Up…") { store.chooseDataDriveBackupDestination() }
+                    .buttonStyle(.bordered)
+                    .disabled(!presentation.isReady || store.dataDriveOperationInFlight || store.engineSettingChangeBusy)
+                    .accessibilityIdentifier("backup-data-drive")
+                Menu("Restore & Verify") {
+                    Button("Verify Backup…") { store.chooseDataDriveBackupToVerify() }
+                    Button("Restore Backup to New Drive…") { store.chooseDataDriveBackupToRestore() }
+                }
+                .disabled(store.dataDriveOperationInFlight || store.engineSettingChangeBusy)
+                .accessibilityIdentifier("restore-verify-data-drive")
+                Spacer(minLength: 0)
+                if store.dataDriveOperationInFlight {
+                    ProgressView().controlSize(.small)
+                }
+            }
+            if !store.dataDriveOperationStatus.isEmpty {
+                Text(store.dataDriveOperationStatus)
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(p.text3)
+                    .lineLimit(3)
+                    .textSelection(.enabled)
+            }
             if let problem = presentation.problem {
                 Text(problem)
                     .font(.system(size: 11.5))
@@ -756,7 +786,7 @@ struct SettingsView: View {
                     .foregroundStyle(p.text3)
                     .lineSpacing(3)
             }
-            Text("Images, containers, named volumes, machine disks, snapshots, and backups live together here. Runtime sockets and replaceable logs remain in ~/.dory.")
+            Text("Images, containers, named volumes, machine disks, snapshots, and backups live together here. To move Dory, create a backup, restore it to a new local APFS drive, then choose Use Existing. The old drive is never deleted automatically. Runtime sockets and replaceable logs remain in ~/.dory.")
                 .font(.system(size: 11.5))
                 .foregroundStyle(p.text2)
                 .lineSpacing(3)
@@ -1075,6 +1105,10 @@ struct SettingsView: View {
             .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(p.border))
             .padding(.bottom, 22)
 
+            groupLabel("ENGINE RESOURCES")
+            engineResourcesCard
+                .padding(.bottom, 22)
+
             groupLabel("LOCAL DORYD SURFACE")
             dorydCapabilitiesCard
                 .padding(.bottom, 22)
@@ -1127,6 +1161,103 @@ struct SettingsView: View {
                     .font(.system(size: 11.5)).foregroundStyle(p.text3).lineSpacing(3).padding(.top, 8)
             }
         }
+    }
+
+    private var engineResourcesCard: some View {
+        let usingDory = store.enginePreference == .dory
+        let unchanged = engineCPUCountDraft == store.engineCPUCount
+            && engineMemoryGiBDraft * 1024 == store.engineMemoryMB
+        return VStack(alignment: .leading, spacing: 0) {
+            engineResourceStepper(
+                title: "CPU",
+                subtitle: "Logical cores available to containers",
+                value: $engineCPUCountDraft,
+                range: 1...store.maximumEngineCPUCount,
+                valueLabel: "\(engineCPUCountDraft) core\(engineCPUCountDraft == 1 ? "" : "s")",
+                identifier: "engine-cpu"
+            )
+            Rectangle().fill(p.border).frame(height: 1)
+            engineResourceStepper(
+                title: "Memory",
+                subtitle: "Elastic VM ceiling; unused guest pages return to macOS",
+                value: $engineMemoryGiBDraft,
+                range: 2...store.maximumEngineMemoryGiB,
+                valueLabel: "\(engineMemoryGiBDraft) GB",
+                identifier: "engine-memory"
+            )
+            Rectangle().fill(p.border).frame(height: 1)
+            HStack(spacing: 10) {
+                Button("Recommended") {
+                    engineCPUCountDraft = store.recommendedEngineCPUCount
+                    engineMemoryGiBDraft = store.recommendedEngineMemoryMB / 1024
+                }
+                .buttonStyle(.bordered)
+                .accessibilityIdentifier("engine-resources-recommended")
+                Spacer(minLength: 0)
+                Button {
+                    Task {
+                        await store.setEngineResources(
+                            cpuCount: engineCPUCountDraft,
+                            memoryMB: engineMemoryGiBDraft * 1024
+                        )
+                    }
+                } label: {
+                    Text(store.engineSettingChangeBusy ? "Applying…" : "Apply & Restart")
+                        .font(.system(size: 12.5, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 15).padding(.vertical, 8)
+                        .background(p.accent, in: RoundedRectangle(cornerRadius: 8))
+                }
+                .buttonStyle(.plain)
+                .disabled(!usingDory || unchanged || store.engineSettingChangeBusy)
+                .accessibilityIdentifier("engine-resources-apply")
+            }
+            .padding(.horizontal, 15).padding(.vertical, 12)
+            Text(usingDory
+                ? "Applying a change restarts the daemon engine and restores the containers that were running."
+                : "Switch the Engine Backend to Dory to manage its CPU and memory.")
+                .font(.system(size: 11))
+                .foregroundStyle(p.text3)
+                .lineSpacing(3)
+                .padding(.horizontal, 15).padding(.bottom, 13)
+        }
+        .background(p.bgElevated, in: RoundedRectangle(cornerRadius: 11))
+        .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(p.border))
+        .onAppear(perform: syncEngineResourceDrafts)
+        .onChange(of: store.engineCPUCount) { _, _ in syncEngineResourceDrafts() }
+        .onChange(of: store.engineMemoryMB) { _, _ in syncEngineResourceDrafts() }
+    }
+
+    private func engineResourceStepper(
+        title: String,
+        subtitle: String,
+        value: Binding<Int>,
+        range: ClosedRange<Int>,
+        valueLabel: String,
+        identifier: String
+    ) -> some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(.system(size: 13, weight: .semibold)).foregroundStyle(p.text)
+                Text(subtitle).font(.system(size: 11.5)).foregroundStyle(p.text3)
+            }
+            Spacer(minLength: 0)
+            Text(valueLabel)
+                .font(.system(size: 12, weight: .bold))
+                .monospacedDigit()
+                .foregroundStyle(p.accentText)
+                .frame(minWidth: 62, alignment: .trailing)
+            Stepper(title, value: value, in: range)
+                .labelsHidden()
+                .fixedSize()
+                .accessibilityIdentifier(identifier)
+        }
+        .padding(.horizontal, 15).padding(.vertical, 12)
+    }
+
+    private func syncEngineResourceDrafts() {
+        engineCPUCountDraft = store.engineCPUCount
+        engineMemoryGiBDraft = store.engineMemoryMB / 1024
     }
 
     /// Colima-style backend picker: Dory's bundled engine, an auto-detected existing engine, or a

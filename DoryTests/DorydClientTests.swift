@@ -1115,6 +1115,110 @@ struct DorydClientTests {
     }
 
     @MainActor
+    @Test func dataDriveMaintenanceRestoresRunningContainersAndLinuxMachines() async throws {
+        let base = "/tmp/doryd-data-drive-maintenance-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let socketPath = base + "/doryd.sock"
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let workloadRecorder = WorkloadStartRecorder()
+        let shim = DockerShim(runtime: RecordingWorkloadRuntime(recorder: workloadRecorder))
+        let dockerServer = ShimHTTPServer(socketPath: socketPath) { request in await shim.handle(request) }
+        try dockerServer.start()
+        defer { dockerServer.stop() }
+
+        let listener = NSXPCListener.anonymous()
+        let service = FakeDorydService(socketPath: socketPath)
+        let delegate = FakeDorydListenerDelegate(service: service)
+        listener.delegate = delegate
+        listener.resume()
+        defer { listener.invalidate() }
+        let launchAgent = LaunchAgentConfigurationRecorder()
+
+        let store = AppStore(
+            dorydClient: DorydClient(endpoint: listener.endpoint),
+            useDorydEngine: true,
+            dorydLaunchAgentEnsurer: { configuration in launchAgent.ensure(configuration) },
+            dorydLaunchAgentBootout: { true }
+        )
+        store.routeDockerCLI = false
+        await store.connectBackend()
+
+        let captured = try await store.quiesceDorydForDataDriveOperation()
+        #expect(captured.machineIDs == ["dev"])
+        #expect(Set(captured.containers.map(\.id)) == Set(MockData.containers.filter(\.isRunning).map(\.id)))
+
+        let recovery = await store.reconnectAfterDataDriveOperation(workloads: captured)
+
+        #expect(recovery == nil)
+        #expect(service.machineStartCount == 1)
+        let restarted = await workloadRecorder.startedIDs
+        #expect(Set(restarted) == Set(MockData.containers.filter(\.isRunning).map(\.id)))
+        #expect(!restarted.contains("c5"))
+    }
+
+    @MainActor
+    @Test func daemonEngineResourcesPersistRestartAndRestoreRunningWorkloads() async throws {
+        let keys = [AppStore.engineCPUCountKey, AppStore.engineMemoryMBKey]
+        let previousDefaults = Dictionary(uniqueKeysWithValues: keys.map {
+            ($0, UserDefaults.standard.object(forKey: $0))
+        })
+        defer {
+            for key in keys {
+                if let value = previousDefaults[key] as? Int {
+                    UserDefaults.standard.set(value, forKey: key)
+                } else {
+                    UserDefaults.standard.removeObject(forKey: key)
+                }
+            }
+        }
+
+        let base = "/tmp/doryd-resource-setting-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let socketPath = base + "/doryd.sock"
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let workloadRecorder = WorkloadStartRecorder()
+        let shim = DockerShim(runtime: RecordingWorkloadRuntime(recorder: workloadRecorder))
+        let dockerServer = ShimHTTPServer(socketPath: socketPath) { request in await shim.handle(request) }
+        try dockerServer.start()
+        defer { dockerServer.stop() }
+
+        let listener = NSXPCListener.anonymous()
+        let service = FakeDorydService(socketPath: socketPath)
+        let delegate = FakeDorydListenerDelegate(service: service)
+        listener.delegate = delegate
+        listener.resume()
+        defer { listener.invalidate() }
+        let launchAgent = LaunchAgentConfigurationRecorder()
+
+        let store = AppStore(
+            dorydClient: DorydClient(endpoint: listener.endpoint),
+            useDorydEngine: true,
+            dorydLaunchAgentEnsurer: { configuration in launchAgent.ensure(configuration) },
+            environment: ["XCTestConfigurationFilePath": "DoryTests.xctest"]
+        )
+        store.routeDockerCLI = false
+        await store.connectBackend()
+        let limits = AppStore.engineResourceLimits()
+        guard limits.maximumCPUCount > 1 else { return }
+        let targetCPU = store.engineCPUCount == 1 ? 2 : 1
+        let targetMemoryMB = store.engineMemoryMB
+
+        await store.setEngineResources(cpuCount: targetCPU, memoryMB: targetMemoryMB)
+
+        #expect(service.engineStopCount == 1)
+        #expect(service.engineStartCount == 1)
+        #expect(launchAgent.configurations.last?.cpuCount == UInt16(targetCPU))
+        #expect(launchAgent.configurations.last?.memoryMB == UInt32(targetMemoryMB))
+        #expect(store.engineCPUCount == targetCPU)
+        #expect(store.engineMemoryMB == targetMemoryMB)
+        #expect(UserDefaults.standard.integer(forKey: AppStore.engineCPUCountKey) == targetCPU)
+        #expect(UserDefaults.standard.integer(forKey: AppStore.engineMemoryMBKey) == targetMemoryMB)
+        #expect(store.settingsNotice?.kind == .success)
+        #expect(store.settingsNotice?.message == "Engine resources set to \(targetCPU) cores and \(targetMemoryMB / 1024) GB.")
+        let restarted = await workloadRecorder.startedIDs
+        #expect(Set(restarted) == Set(MockData.containers.filter(\.isRunning).map(\.id)))
+        #expect(!restarted.contains("c5"))
+    }
+
+    @MainActor
     @Test func daemonOwnedSettingRollsBackWhenLaunchAgentRejectsNewConfiguration() async throws {
         guard MacHostPlatform.current().isAppleSilicon else { return }
         let key = SharedVMProvisioner.Config.rosettaX86Key
