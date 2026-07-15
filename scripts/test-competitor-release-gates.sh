@@ -746,12 +746,15 @@ grep -F 'testShareArgumentsRoundTripDelimiterHeavyPathsAndJSON' \
 grep -F 'Share JSON supports delimiter-heavy paths:' \
   dory-core-swift/Sources/dorydctl/main.swift >/dev/null \
   || fail "the machine CLI does not document its unambiguous delimiter-heavy share syntax"
-grep -F 'private static let magic = Data("DORYMACHINE2\n".utf8)' \
+grep -F 'private static let magic = Data("DORYMACHINE3\n".utf8)' \
   dory-core-swift/Sources/DorydKit/MachineManager.swift >/dev/null \
   || fail "machine snapshot exports are not bound to the checksummed bundle format"
-grep -F 'payloadDigest == header.payloadDigest' \
+grep -F 'rootfsDigest == header.rootfsDigest' \
   dory-core-swift/Sources/DorydKit/MachineManager.swift >/dev/null \
   || fail "machine snapshot imports do not verify rootfs content integrity"
+grep -F 'kernelDigest == header.kernelDigest' \
+  dory-core-swift/Sources/DorydKit/MachineManager.swift >/dev/null \
+  || fail "portable machine imports do not verify their boot kernel integrity"
 grep -F 'header.contentID == expectedContentID' \
   dory-core-swift/Sources/DorydKit/MachineManager.swift >/dev/null \
   || fail "machine snapshot imports can mix metadata and rootfs from different bundle versions"
@@ -770,15 +773,21 @@ grep -F 'fclonefileat(sourceDescriptor, parentDescriptor, temporaryName, 0)' \
 grep -F 'machine.rootfsPath == rootfsPath' \
   dory-core-swift/Sources/DorydKit/MachineManager.swift >/dev/null \
   || fail "persisted machine metadata can redirect the live rootfs outside managed storage"
+grep -F 'machine.kernelPath == kernelPath' \
+  dory-core-swift/Sources/DorydKit/MachineManager.swift >/dev/null \
+  || fail "persisted machine metadata can redirect the boot kernel outside managed storage"
 grep -F 'testCreateRejectsInvalidKernelAndRootfsWithoutPublishingState' \
   dory-core-swift/Tests/DorydKitTests/MachineManagerTests.swift >/dev/null \
   || fail "machine creation no longer proves invalid boot artifacts leave no state"
-grep -F 'testCreatePublishesOnlyPrivateManagedRootfs' \
+grep -F 'testCreatePublishesOnlyPrivateManagedArtifacts' \
   dory-core-swift/Tests/DorydKitTests/MachineManagerTests.swift >/dev/null \
-  || fail "machine creation no longer proves disks are private and data-drive managed"
+  || fail "machine creation no longer proves disks and kernels are private and data-drive managed"
 grep -F 'testLiveRootfsSubstitutionCannotReachStartOrSnapshot' \
   dory-core-swift/Tests/DorydKitTests/MachineManagerTests.swift >/dev/null \
   || fail "live machine rootfs substitution can reach launch or snapshot operations"
+grep -F 'testLiveKernelSubstitutionCannotReachStartOrSnapshot' \
+  dory-core-swift/Tests/DorydKitTests/MachineManagerTests.swift >/dev/null \
+  || fail "live machine kernel substitution can reach launch or snapshot operations"
 grep -F 'testPersistedRootfsRedirectIsNotLoaded' \
   dory-core-swift/Tests/DorydKitTests/MachineManagerTests.swift >/dev/null \
   || fail "persisted machine rootfs redirection no longer fails closed"
@@ -794,6 +803,15 @@ grep -F 'machineDiskTemporaryPrefix = ".rootfs.ext4.tmp-"' \
 grep -F 'snapshotDiskTemporaryMarker = ".ext4.tmp-"' \
   dory-core-swift/Sources/DorydKit/MachineManager.swift >/dev/null \
   || fail "interrupted snapshot disk copies can accumulate hidden data-drive storage"
+grep -F 'snapshotKernelTemporaryMarker = ".kernel.tmp-"' \
+  dory-core-swift/Sources/DorydKit/MachineManager.swift >/dev/null \
+  || fail "interrupted snapshot kernel copies can accumulate hidden data-drive storage"
+grep -F 'testSnapshotsCopyRestoreCloneExportImportAndDeleteArtifacts' \
+  dory-core-swift/Tests/DorydKitTests/MachineManagerTests.swift >/dev/null \
+  || fail "portable machine bundles no longer prove bootable self-contained import"
+grep -F 'testRestoreRollsBackRootfsWhenKernelCopyFails' \
+  dory-core-swift/Tests/DorydKitTests/MachineManagerTests.swift >/dev/null \
+  || fail "machine restore can publish a mixed rootfs and kernel pair"
 grep -F 'testDeletingLastImportedSnapshotRemovesOrphanedNamespace' \
   dory-core-swift/Tests/DorydKitTests/MachineManagerTests.swift >/dev/null \
   || fail "deleted portable machine imports can leave an orphaned data-drive namespace"

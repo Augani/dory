@@ -86,9 +86,15 @@ final class MachineManagerTests: XCTestCase {
         let emptyRootfs = "\(sources)/empty.ext4"
         let directoryRootfs = "\(sources)/directory.ext4"
         let symlinkRootfs = "\(sources)/symlink.ext4"
+        let emptyKernel = "\(sources)/empty-kernel"
+        let directoryKernel = "\(sources)/directory-kernel"
+        let symlinkKernel = "\(sources)/symlink-kernel"
         try Data().write(to: URL(fileURLWithPath: emptyRootfs))
+        try Data().write(to: URL(fileURLWithPath: emptyKernel))
         try FileManager.default.createDirectory(atPath: directoryRootfs, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(atPath: directoryKernel, withIntermediateDirectories: true)
         XCTAssertEqual(symlink(doryTestRootfsPath, symlinkRootfs), 0)
+        XCTAssertEqual(symlink(doryTestKernelPath, symlinkKernel), 0)
         let manager = MachineManager(configuration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
             stateDirectory: "\(base)/machines",
@@ -98,6 +104,9 @@ final class MachineManagerTests: XCTestCase {
         ))
         let invalidArtifacts = [
             ("missing-kernel", "\(sources)/missing-kernel", doryTestRootfsPath),
+            ("empty-kernel", emptyKernel, doryTestRootfsPath),
+            ("directory-kernel", directoryKernel, doryTestRootfsPath),
+            ("symlink-kernel", symlinkKernel, doryTestRootfsPath),
             ("missing-rootfs", doryTestKernelPath, "\(sources)/missing.ext4"),
             ("empty-rootfs", doryTestKernelPath, emptyRootfs),
             ("directory-rootfs", doryTestKernelPath, directoryRootfs),
@@ -115,7 +124,7 @@ final class MachineManagerTests: XCTestCase {
         XCTAssertTrue(manager.list().isEmpty)
     }
 
-    func testCreatePublishesOnlyPrivateManagedRootfs() throws {
+    func testCreatePublishesOnlyPrivateManagedArtifacts() throws {
         let base = "/tmp/dory-machine-managed-rootfs-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         let sourceRootfs = "\(base)/source.ext4"
         try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
@@ -136,14 +145,19 @@ final class MachineManagerTests: XCTestCase {
             rootfsPath: sourceRootfs
         ))
         let managedRootfs = "\(base)/machines/dev/rootfs.ext4"
+        let managedKernel = "\(base)/machines/dev/kernel"
         let definition = try JSONDecoder().decode(
             DoryMachineConfiguration.self,
             from: Data(contentsOf: URL(fileURLWithPath: "\(base)/machines/dev/machine.json"))
         )
         XCTAssertEqual(definition.rootfsPath, managedRootfs)
+        XCTAssertEqual(definition.kernelPath, managedKernel)
         XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: managedRootfs)), Data("source-disk".utf8))
-        let attributes = try FileManager.default.attributesOfItem(atPath: managedRootfs)
-        XCTAssertEqual((attributes[.posixPermissions] as? NSNumber)?.intValue ?? 0, 0o600)
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: managedKernel)), try Data(contentsOf: URL(fileURLWithPath: doryTestKernelPath)))
+        for path in [managedRootfs, managedKernel] {
+            let attributes = try FileManager.default.attributesOfItem(atPath: path)
+            XCTAssertEqual((attributes[.posixPermissions] as? NSNumber)?.intValue ?? 0, 0o600)
+        }
     }
 
     func testLiveRootfsSubstitutionCannotReachStartOrSnapshot() throws {
@@ -180,6 +194,42 @@ final class MachineManagerTests: XCTestCase {
         XCTAssertEqual(try String(contentsOfFile: sentinel, encoding: .utf8), "host-private-data")
         XCTAssertFalse(FileManager.default.fileExists(atPath: "\(base)/machines/dev/snapshots/symlink.ext4"))
         XCTAssertFalse(FileManager.default.fileExists(atPath: "\(base)/machines/dev/snapshots/hardlink.ext4"))
+    }
+
+    func testLiveKernelSubstitutionCannotReachStartOrSnapshot() throws {
+        let base = "/tmp/dory-machine-live-kernel-tamper-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let sentinel = "\(base)/sentinel"
+        try Data("host-private-kernel".utf8).write(to: URL(fileURLWithPath: sentinel))
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: sentinel)
+        let manager = MachineManager(configuration: MachineManagerConfiguration(
+            vmmExecutablePath: "/bin/sleep",
+            stateDirectory: "\(base)/machines",
+            baseArguments: ["30"],
+            passMachineArguments: false,
+            requiresReadyHandoff: false
+        ))
+        defer { try? manager.delete(id: "dev") }
+        _ = try manager.create(DoryMachineConfiguration(
+            id: "dev",
+            kernelPath: doryTestKernelPath,
+            rootfsPath: doryTestRootfsPath
+        ))
+        let managedKernel = "\(base)/machines/dev/kernel"
+
+        try FileManager.default.removeItem(atPath: managedKernel)
+        XCTAssertEqual(symlink(sentinel, managedKernel), 0)
+        XCTAssertThrowsError(try manager.start(id: "dev"))
+        XCTAssertThrowsError(try manager.snapshot(id: "dev", snapshotID: "symlink"))
+
+        try FileManager.default.removeItem(atPath: managedKernel)
+        XCTAssertEqual(link(sentinel, managedKernel), 0)
+        XCTAssertThrowsError(try manager.start(id: "dev"))
+        XCTAssertThrowsError(try manager.snapshot(id: "dev", snapshotID: "hardlink"))
+        XCTAssertEqual(try String(contentsOfFile: sentinel, encoding: .utf8), "host-private-kernel")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: "\(base)/machines/dev/snapshots/symlink.kernel"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: "\(base)/machines/dev/snapshots/hardlink.kernel"))
     }
 
     func testSnapshotDirectorySubstitutionCannotRedirectWrites() throws {
@@ -330,9 +380,17 @@ final class MachineManagerTests: XCTestCase {
         let base = "/tmp/dory-machine-metadata-cleanup-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         let temporaryMetadata = "\(base)/dev/.dory-machine-metadata-fixture"
         let temporaryRootfs = "\(base)/dev/.rootfs.ext4.tmp-fixture"
+        let temporaryKernel = "\(base)/dev/.kernel.tmp-fixture"
+        let restoreRootfs = "\(base)/dev/.restore-rootfs-fixture"
+        let restoreKernel = "\(base)/dev/.restore-kernel-fixture"
+        let temporaryRestore = "\(base)/dev/..restore-rootfs-fixture.tmp-fixture"
         try FileManager.default.createDirectory(atPath: "\(base)/dev", withIntermediateDirectories: true)
         try Data("partial".utf8).write(to: URL(fileURLWithPath: temporaryMetadata))
         try Data("partial-disk".utf8).write(to: URL(fileURLWithPath: temporaryRootfs))
+        try Data("partial-kernel".utf8).write(to: URL(fileURLWithPath: temporaryKernel))
+        try Data("restore-disk".utf8).write(to: URL(fileURLWithPath: restoreRootfs))
+        try Data("restore-kernel".utf8).write(to: URL(fileURLWithPath: restoreKernel))
+        try Data("partial-restore".utf8).write(to: URL(fileURLWithPath: temporaryRestore))
         defer { try? FileManager.default.removeItem(atPath: base) }
 
         _ = MachineManager(configuration: MachineManagerConfiguration(
@@ -345,6 +403,10 @@ final class MachineManagerTests: XCTestCase {
 
         XCTAssertFalse(FileManager.default.fileExists(atPath: temporaryMetadata))
         XCTAssertFalse(FileManager.default.fileExists(atPath: temporaryRootfs))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: temporaryKernel))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: restoreRootfs))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: restoreKernel))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: temporaryRestore))
     }
 
     func testRejectsDuplicateAndInvalidMachineIDs() throws {
@@ -539,13 +601,16 @@ final class MachineManagerTests: XCTestCase {
         corruptMetadata[payloadOffset - 1] ^= 0xff
         var corruptPayload = valid
         corruptPayload[payloadOffset] ^= 0xff
+        var corruptKernel = valid
+        corruptKernel[corruptKernel.count - 1] ^= 0xff
         var trailing = valid
         trailing.append(0xff)
         var legacy = valid
-        legacy[Data("DORYMACHINE".utf8).count] = Character("1").asciiValue!
+        legacy[Data("DORYMACHINE".utf8).count] = Character("2").asciiValue!
         let variants = [
             ("corrupt-metadata", corruptMetadata),
             ("corrupt-payload", corruptPayload),
+            ("corrupt-kernel", corruptKernel),
             ("truncated", valid.dropLast()),
             ("trailing", trailing),
             ("legacy", legacy),
@@ -560,6 +625,9 @@ final class MachineManagerTests: XCTestCase {
             ), name)
             XCTAssertFalse(FileManager.default.fileExists(
                 atPath: "\(base)/machines/dev/snapshots/s1.json"
+            ), name)
+            XCTAssertFalse(FileManager.default.fileExists(
+                atPath: "\(base)/machines/dev/snapshots/s1.kernel"
             ), name)
             let artifacts = (try? FileManager.default.contentsOfDirectory(
                 atPath: "\(base)/machines/dev/snapshots"
@@ -651,6 +719,45 @@ final class MachineManagerTests: XCTestCase {
             String(data: try Data(contentsOf: URL(fileURLWithPath: devRootfs)), encoding: .utf8),
             "live-disk-v2"
         )
+    }
+
+    func testRestoreRollsBackRootfsWhenKernelCopyFails() throws {
+        let base = "/tmp/dory-machine-restore-kernel-failure-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let rootfs = "\(base)/source-rootfs.ext4"
+        let kernel = "\(base)/source-kernel"
+        try Data("snapshot-rootfs".utf8).write(to: URL(fileURLWithPath: rootfs))
+        try Data("snapshot-kernel".utf8).write(to: URL(fileURLWithPath: kernel))
+        let manager = MachineManager(configuration: MachineManagerConfiguration(
+            vmmExecutablePath: "/bin/sleep",
+            stateDirectory: "\(base)/machines",
+            baseArguments: ["30"],
+            passMachineArguments: false,
+            requiresReadyHandoff: false
+        ))
+        defer { try? manager.delete(id: "dev") }
+        _ = try manager.create(DoryMachineConfiguration(
+            id: "dev",
+            kernelPath: kernel,
+            rootfsPath: rootfs
+        ))
+        let snapshot = try manager.snapshot(id: "dev", snapshotID: "s1")
+        let liveRootfs = "\(base)/machines/dev/rootfs.ext4"
+        let liveKernel = "\(base)/machines/dev/kernel"
+        try Data("live-rootfs".utf8).write(to: URL(fileURLWithPath: liveRootfs))
+        try Data("live-kernel".utf8).write(to: URL(fileURLWithPath: liveKernel))
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: snapshot.kernelPath)
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: snapshot.kernelPath)
+        }
+
+        XCTAssertThrowsError(try manager.restoreSnapshot(machineID: "dev", snapshotID: "s1"))
+        XCTAssertEqual(try String(contentsOfFile: liveRootfs, encoding: .utf8), "live-rootfs")
+        XCTAssertEqual(try String(contentsOfFile: liveKernel, encoding: .utf8), "live-kernel")
+        let leftovers = try FileManager.default.contentsOfDirectory(atPath: "\(base)/machines/dev")
+            .filter { $0.hasPrefix(".restore-") }
+        XCTAssertTrue(leftovers.isEmpty)
     }
 
     func testSnapshotMetadataCannotRedirectOperationsOutsideManagedStorage() throws {
@@ -779,10 +886,19 @@ final class MachineManagerTests: XCTestCase {
         try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory)
         let quarantinedRootfs = "\(directory)/.dory-snapshot-delete-s1-fixture.ext4"
+        let quarantinedKernel = "\(directory)/.dory-snapshot-delete-s1-fixture.kernel"
         let quarantinedMetadata = "\(directory)/.dory-snapshot-delete-s1-fixture.json"
         let temporaryMetadata = "\(directory)/.dory-snapshot-metadata-s1-fixture"
         let temporaryRootfs = "\(directory)/.s1.ext4.tmp-fixture"
-        for path in [quarantinedRootfs, quarantinedMetadata, temporaryMetadata, temporaryRootfs] {
+        let temporaryKernel = "\(directory)/.s1.kernel.tmp-fixture"
+        for path in [
+            quarantinedRootfs,
+            quarantinedKernel,
+            quarantinedMetadata,
+            temporaryMetadata,
+            temporaryRootfs,
+            temporaryKernel,
+        ] {
             try Data("stale".utf8).write(to: URL(fileURLWithPath: path))
         }
         defer { try? FileManager.default.removeItem(atPath: base) }
@@ -796,9 +912,11 @@ final class MachineManagerTests: XCTestCase {
         ))
 
         XCTAssertFalse(FileManager.default.fileExists(atPath: quarantinedRootfs))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: quarantinedKernel))
         XCTAssertFalse(FileManager.default.fileExists(atPath: quarantinedMetadata))
         XCTAssertFalse(FileManager.default.fileExists(atPath: temporaryMetadata))
         XCTAssertFalse(FileManager.default.fileExists(atPath: temporaryRootfs))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: temporaryKernel))
     }
 
     func testMachineDefinitionsPersistAcrossManagerRestart() throws {
@@ -909,12 +1027,15 @@ final class MachineManagerTests: XCTestCase {
         try FileManager.default.createDirectory(atPath: "\(base)/dev", withIntermediateDirectories: true)
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: "\(base)/dev")
         let rootfsPath = "\(base)/dev/rootfs.ext4"
+        let kernelPath = "\(base)/dev/kernel"
         try Data("managed-rootfs".utf8).write(to: URL(fileURLWithPath: rootfsPath))
+        try Data("managed-kernel".utf8).write(to: URL(fileURLWithPath: kernelPath))
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: rootfsPath)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: kernelPath)
         let definition = Data("""
         {
           "id": "dev",
-          "kernelPath": "\(doryTestKernelPath)",
+          "kernelPath": "\(kernelPath)",
           "rootfsPath": "\(rootfsPath)",
           "memoryMB": 2048,
           "cpuCount": 2
@@ -942,12 +1063,15 @@ final class MachineManagerTests: XCTestCase {
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: "\(base)/dev")
         defer { try? FileManager.default.removeItem(atPath: base) }
         let rootfsPath = "\(base)/dev/rootfs.ext4"
+        let kernelPath = "\(base)/dev/kernel"
         try Data("managed-rootfs".utf8).write(to: URL(fileURLWithPath: rootfsPath))
+        try Data("managed-kernel".utf8).write(to: URL(fileURLWithPath: kernelPath))
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: rootfsPath)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: kernelPath)
         try Data("""
         {
           "id": "dev",
-          "kernelPath": "\(doryTestKernelPath)",
+          "kernelPath": "\(kernelPath)",
           "rootfsPath": "\(rootfsPath)",
           "memoryMB": 2048,
           "cpuCount": 0
@@ -1157,12 +1281,14 @@ final class MachineManagerTests: XCTestCase {
         XCTAssertEqual(String(data: try Data(contentsOf: URL(fileURLWithPath: sourceRootfs)), encoding: .utf8), "base-rootfs")
     }
 
-    func testSnapshotsCopyRestoreCloneExportImportAndDeleteRootfs() throws {
+    func testSnapshotsCopyRestoreCloneExportImportAndDeleteArtifacts() throws {
         let base = "/tmp/dory-machine-snapshots-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(atPath: base) }
         let sourceRootfs = "\(base)/base-rootfs.ext4"
+        let sourceKernel = "\(base)/base-kernel"
         try Data("base-rootfs".utf8).write(to: URL(fileURLWithPath: sourceRootfs))
+        try Data("kernel-v1".utf8).write(to: URL(fileURLWithPath: sourceKernel))
         let manager = MachineManager(configuration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
             stateDirectory: "\(base)/machines",
@@ -1173,17 +1299,19 @@ final class MachineManagerTests: XCTestCase {
         defer {
             try? manager.delete(id: "dev")
             try? manager.delete(id: "dev-copy")
+            try? manager.delete(id: "dev-portable")
         }
 
         _ = try manager.create(DoryMachineConfiguration(
             id: "dev",
-            kernelPath: doryTestKernelPath,
+            kernelPath: sourceKernel,
             rootfsPath: sourceRootfs,
             memoryMB: 4096,
             cpuCount: 4
         ))
         _ = try manager.start(id: "dev")
         let devRootfs = "\(base)/machines/dev/rootfs.ext4"
+        let devKernel = "\(base)/machines/dev/kernel"
         try Data("snapshot-v1".utf8).write(to: URL(fileURLWithPath: devRootfs))
 
         let snapshot = try manager.snapshot(
@@ -1201,22 +1329,28 @@ final class MachineManagerTests: XCTestCase {
         XCTAssertEqual(manager.status(id: "dev")?.state, .running)
         XCTAssertEqual(try manager.listSnapshots(machineID: "dev").map(\.id), ["s1"])
         XCTAssertEqual(String(data: try Data(contentsOf: URL(fileURLWithPath: snapshot.rootfsPath)), encoding: .utf8), "snapshot-v1")
+        XCTAssertEqual(snapshot.kernelPath, "\(base)/machines/dev/snapshots/s1.kernel")
+        XCTAssertEqual(try String(contentsOfFile: snapshot.kernelPath, encoding: .utf8), "kernel-v1")
 
         try Data("snapshot-v2".utf8).write(to: URL(fileURLWithPath: devRootfs))
+        try Data("kernel-v2".utf8).write(to: URL(fileURLWithPath: devKernel))
         let clone = try manager.cloneSnapshot(machineID: "dev", snapshotID: "s1", newID: "dev-copy")
         XCTAssertEqual(clone.state, .running)
         XCTAssertEqual(
             String(data: try Data(contentsOf: URL(fileURLWithPath: "\(base)/machines/dev-copy/rootfs.ext4")), encoding: .utf8),
             "snapshot-v1"
         )
+        XCTAssertEqual(try String(contentsOfFile: "\(base)/machines/dev-copy/kernel", encoding: .utf8), "kernel-v1")
 
         let restored = try manager.restoreSnapshot(machineID: "dev", snapshotID: "s1")
         XCTAssertEqual(restored.state, .running)
         XCTAssertEqual(String(data: try Data(contentsOf: URL(fileURLWithPath: devRootfs)), encoding: .utf8), "snapshot-v1")
+        XCTAssertEqual(try String(contentsOfFile: devKernel, encoding: .utf8), "kernel-v1")
 
         let bundle = "\(base)/dev.dorymachine"
         try manager.exportSnapshot(machineID: "dev", snapshotID: "s1", toPath: bundle)
         XCTAssertTrue(FileManager.default.fileExists(atPath: bundle))
+        XCTAssertNil(try Data(contentsOf: URL(fileURLWithPath: bundle)).range(of: Data(base.utf8)))
 
         try manager.deleteSnapshot(machineID: "dev", snapshotID: "s1")
         XCTAssertTrue(try manager.listSnapshots(machineID: "dev").isEmpty)
@@ -1226,6 +1360,14 @@ final class MachineManagerTests: XCTestCase {
         XCTAssertEqual(imported.machineID, "dev")
         XCTAssertEqual(try manager.listSnapshots(machineID: "dev").map(\.id), ["s1"])
         XCTAssertEqual(String(data: try Data(contentsOf: URL(fileURLWithPath: imported.rootfsPath)), encoding: .utf8), "snapshot-v1")
+        XCTAssertEqual(try String(contentsOfFile: imported.kernelPath, encoding: .utf8), "kernel-v1")
+
+        let portable = try manager.cloneSnapshot(machineID: "dev", snapshotID: "s1", newID: "dev-portable")
+        XCTAssertEqual(portable.state, .running)
+        try manager.deleteSnapshot(machineID: "dev", snapshotID: "s1")
+        _ = try manager.stop(id: "dev-portable")
+        XCTAssertEqual(try manager.start(id: "dev-portable").state, .running)
+        XCTAssertEqual(try String(contentsOfFile: "\(base)/machines/dev-portable/kernel", encoding: .utf8), "kernel-v1")
     }
 
     func testSnapshotExportFailurePreservesExistingBundle() throws {
@@ -1887,26 +2029,32 @@ private final class RecordingMachineBalloonController: MachineBalloonControlling
 private func writeMachineBundle(
     toPath path: String,
     snapshot: DoryMachineSnapshot,
-    rootfs: Data
+    rootfs: Data,
+    kernel: Data = Data("portable-test-kernel".utf8)
 ) throws {
-    let magic = Data("DORYMACHINE2\n".utf8)
+    let magic = Data("DORYMACHINE3\n".utf8)
     var snapshot = snapshot
+    snapshot.rootfsPath = ""
+    snapshot.kernelPath = ""
     snapshot.sizeBytes = Int64(rootfs.count)
     let metadata = try JSONEncoder().encode(snapshot)
     var bundle = Data()
     bundle.append(magic)
     bundle.append(machineBundleUInt64(UInt64(metadata.count)))
     bundle.append(machineBundleUInt64(UInt64(rootfs.count)))
+    bundle.append(machineBundleUInt64(UInt64(kernel.count)))
     bundle.append(contentsOf: SHA256.hash(data: metadata))
     bundle.append(contentsOf: SHA256.hash(data: rootfs))
+    bundle.append(contentsOf: SHA256.hash(data: kernel))
     bundle.append(metadata)
     bundle.append(rootfs)
+    bundle.append(kernel)
     try bundle.write(to: URL(fileURLWithPath: path))
 }
 
 private func machineBundlePayloadOffset(_ bundle: Data) throws -> Int {
-    let magic = Data("DORYMACHINE2\n".utf8)
-    let fixedHeaderLength = magic.count + 8 + 8 + 32 + 32
+    let magic = Data("DORYMACHINE3\n".utf8)
+    let fixedHeaderLength = magic.count + (8 * 3) + (32 * 3)
     guard bundle.count >= fixedHeaderLength,
           bundle.prefix(magic.count) == magic else {
         throw MachineManagerError.persistence("invalid test machine bundle")

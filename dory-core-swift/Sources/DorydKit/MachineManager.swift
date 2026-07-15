@@ -350,9 +350,12 @@ public final class MachineManager: @unchecked Sendable {
     private static let handoffReadyTimeoutSeconds: TimeInterval = 60
     private static let deletionQuarantinePrefix = ".dory-machine-delete-"
     private static let machineDiskTemporaryPrefix = ".rootfs.ext4.tmp-"
+    private static let machineKernelTemporaryPrefix = ".kernel.tmp-"
     private static let machineMetadataTemporaryPrefix = ".dory-machine-metadata-"
+    private static let machineRestoreBackupMarker = ".restore-"
     private static let snapshotDeletionQuarantinePrefix = ".dory-snapshot-delete-"
     private static let snapshotDiskTemporaryMarker = ".ext4.tmp-"
+    private static let snapshotKernelTemporaryMarker = ".kernel.tmp-"
     private static let snapshotMetadataTemporaryPrefix = ".dory-snapshot-metadata-"
     /// Public Apple-Silicon machine resource contract. These match the app's steppers; enforcing
     /// them again in doryd prevents CLI/XPC callers from persisting values that the VMM would later
@@ -434,7 +437,7 @@ public final class MachineManager: @unchecked Sendable {
             }
         }
 
-        let preparedMachine = try prepareMachineDisk(machine)
+        let preparedMachine = try prepareMachineArtifacts(machine)
         try validateManagedMachineArtifacts(preparedMachine)
         try persist(preparedMachine)
         lock.lock()
@@ -730,8 +733,10 @@ public final class MachineManager: @unchecked Sendable {
         let (machine, wasRunning) = try configurationAndRunningState(id: id)
         try ensurePrivateSnapshotDirectory(machineID: id)
         let rootfsPath = snapshotRootfsPath(machineID: id, snapshotID: snapshotID)
+        let kernelPath = snapshotKernelPath(machineID: id, snapshotID: snapshotID)
         guard !FileManager.default.fileExists(atPath: snapshotMetadataPath(machineID: id, snapshotID: snapshotID)),
-              !FileManager.default.fileExists(atPath: rootfsPath) else {
+              !FileManager.default.fileExists(atPath: rootfsPath),
+              !FileManager.default.fileExists(atPath: kernelPath) else {
             throw MachineManagerError.duplicateSnapshot(snapshotID)
         }
 
@@ -741,6 +746,7 @@ public final class MachineManager: @unchecked Sendable {
         let snapshot: DoryMachineSnapshot
         do {
             try Self.cloneOrCopyFile(source: machine.rootfsPath, destination: rootfsPath)
+            try Self.cloneOrCopyFile(source: machine.kernelPath, destination: kernelPath)
             snapshot = DoryMachineSnapshot(
                 id: snapshotID,
                 machineID: id,
@@ -748,13 +754,14 @@ public final class MachineManager: @unchecked Sendable {
                 createdISO: createdISO,
                 rootfsPath: rootfsPath,
                 sizeBytes: Self.fileSize(path: rootfsPath),
-                kernelPath: machine.kernelPath,
+                kernelPath: kernelPath,
                 memoryMB: machine.memoryMB,
                 cpuCount: machine.cpuCount
             )
             try persistSnapshot(snapshot)
         } catch {
             try? FileManager.default.removeItem(atPath: rootfsPath)
+            try? FileManager.default.removeItem(atPath: kernelPath)
             if wasRunning {
                 _ = try? start(id: id)
             }
@@ -851,7 +858,7 @@ public final class MachineManager: @unchecked Sendable {
             _ = try stop(id: machineID)
         }
         do {
-            try Self.cloneOrCopyFile(source: snapshot.rootfsPath, destination: machine.rootfsPath)
+            try restoreManagedArtifacts(machine: machine, snapshot: snapshot)
             let status = wasRunning
                 ? try start(id: machineID)
                 : (status(id: machineID) ?? DoryMachineStatus(id: machineID, state: .stopped))
@@ -875,17 +882,19 @@ public final class MachineManager: @unchecked Sendable {
         _ = try loadSnapshot(machineID: machineID, snapshotID: snapshotID)
         let metadataPath = snapshotMetadataPath(machineID: machineID, snapshotID: snapshotID)
         let rootfsPath = snapshotRootfsPath(machineID: machineID, snapshotID: snapshotID)
+        let kernelPath = snapshotKernelPath(machineID: machineID, snapshotID: snapshotID)
         let token = "\(Self.snapshotDeletionQuarantinePrefix)\(snapshotID)-\(UUID().uuidString)"
         let directory = snapshotDirectory(machineID: machineID)
         let quarantinedMetadataPath = "\(directory)/\(token).json"
         let quarantinedRootfsPath = "\(directory)/\(token).ext4"
+        let quarantinedKernelPath = "\(directory)/\(token).kernel"
         do {
             try FileManager.default.moveItem(atPath: rootfsPath, toPath: quarantinedRootfsPath)
         } catch {
             throw MachineManagerError.persistence("could not delete snapshot \(snapshotID): \(error)")
         }
         do {
-            try FileManager.default.moveItem(atPath: metadataPath, toPath: quarantinedMetadataPath)
+            try FileManager.default.moveItem(atPath: kernelPath, toPath: quarantinedKernelPath)
         } catch {
             do {
                 try FileManager.default.moveItem(atPath: quarantinedRootfsPath, toPath: rootfsPath)
@@ -896,8 +905,30 @@ public final class MachineManager: @unchecked Sendable {
             }
             throw MachineManagerError.persistence("could not delete snapshot \(snapshotID): \(error)")
         }
+        do {
+            try FileManager.default.moveItem(atPath: metadataPath, toPath: quarantinedMetadataPath)
+        } catch {
+            var rollbackFailures: [String] = []
+            do {
+                try FileManager.default.moveItem(atPath: quarantinedKernelPath, toPath: kernelPath)
+            } catch {
+                rollbackFailures.append("kernel rollback failed: \(error)")
+            }
+            do {
+                try FileManager.default.moveItem(atPath: quarantinedRootfsPath, toPath: rootfsPath)
+            } catch {
+                rollbackFailures.append("rootfs rollback failed: \(error)")
+            }
+            if !rollbackFailures.isEmpty {
+                throw MachineManagerError.persistence(
+                    "could not delete snapshot \(snapshotID): \(error); \(rollbackFailures.joined(separator: "; "))"
+                )
+            }
+            throw MachineManagerError.persistence("could not delete snapshot \(snapshotID): \(error)")
+        }
         try? FileManager.default.removeItem(atPath: quarantinedMetadataPath)
         try? FileManager.default.removeItem(atPath: quarantinedRootfsPath)
+        try? FileManager.default.removeItem(atPath: quarantinedKernelPath)
         removeEmptyImportedSnapshotNamespace(machineID: machineID)
     }
 
@@ -918,6 +949,7 @@ public final class MachineManager: @unchecked Sendable {
         operationLock.lock()
         defer { operationLock.unlock() }
         var extractedRootfsPath: String?
+        var extractedKernelPath: String?
         var importedMachineID: String?
         do {
             let bundle = try MachineSnapshotBundle.readDescriptor(fromPath: path)
@@ -929,15 +961,19 @@ public final class MachineManager: @unchecked Sendable {
             importedMachineID = snapshot.machineID
             try ensurePrivateSnapshotDirectory(machineID: snapshot.machineID)
             if FileManager.default.fileExists(atPath: snapshotMetadataPath(machineID: snapshot.machineID, snapshotID: snapshot.id)) ||
-                FileManager.default.fileExists(atPath: snapshotRootfsPath(machineID: snapshot.machineID, snapshotID: snapshot.id)) {
+                FileManager.default.fileExists(atPath: snapshotRootfsPath(machineID: snapshot.machineID, snapshotID: snapshot.id)) ||
+                FileManager.default.fileExists(atPath: snapshotKernelPath(machineID: snapshot.machineID, snapshotID: snapshot.id)) {
                 snapshot.id = Self.generatedSnapshotID(prefix: "import")
             }
             snapshot.rootfsPath = snapshotRootfsPath(machineID: snapshot.machineID, snapshotID: snapshot.id)
+            snapshot.kernelPath = snapshotKernelPath(machineID: snapshot.machineID, snapshotID: snapshot.id)
             extractedRootfsPath = snapshot.rootfsPath
-            try MachineSnapshotBundle.extractRootfs(
+            extractedKernelPath = snapshot.kernelPath
+            try MachineSnapshotBundle.extractArtifacts(
                 fromPath: path,
                 expectedContentID: bundle.contentID,
-                toPath: snapshot.rootfsPath
+                rootfsPath: snapshot.rootfsPath,
+                kernelPath: snapshot.kernelPath
             )
             snapshot.sizeBytes = Self.fileSize(path: snapshot.rootfsPath)
             try persistSnapshot(snapshot)
@@ -946,6 +982,9 @@ public final class MachineManager: @unchecked Sendable {
             if let extractedRootfsPath {
                 try? FileManager.default.removeItem(atPath: extractedRootfsPath)
             }
+            if let extractedKernelPath {
+                try? FileManager.default.removeItem(atPath: extractedKernelPath)
+            }
             if let importedMachineID {
                 removeEmptyImportedSnapshotNamespace(machineID: importedMachineID)
             }
@@ -953,6 +992,9 @@ public final class MachineManager: @unchecked Sendable {
         } catch {
             if let extractedRootfsPath {
                 try? FileManager.default.removeItem(atPath: extractedRootfsPath)
+            }
+            if let extractedKernelPath {
+                try? FileManager.default.removeItem(atPath: extractedKernelPath)
             }
             if let importedMachineID {
                 removeEmptyImportedSnapshotNamespace(machineID: importedMachineID)
@@ -1182,6 +1224,10 @@ public final class MachineManager: @unchecked Sendable {
         "\(machineStateDirectory(id: id))/rootfs.ext4"
     }
 
+    private func machineKernelPath(id: String) -> String {
+        "\(machineStateDirectory(id: id))/kernel"
+    }
+
     private func snapshotDirectory(machineID: String) -> String {
         "\(machineStateDirectory(id: machineID))/snapshots"
     }
@@ -1194,6 +1240,10 @@ public final class MachineManager: @unchecked Sendable {
         "\(snapshotDirectory(machineID: machineID))/\(snapshotID).ext4"
     }
 
+    private func snapshotKernelPath(machineID: String, snapshotID: String) -> String {
+        "\(snapshotDirectory(machineID: machineID))/\(snapshotID).kernel"
+    }
+
     private func configurationAndRunningState(id: String) throws -> (DoryMachineConfiguration, Bool) {
         lock.lock()
         defer { lock.unlock() }
@@ -1204,33 +1254,79 @@ public final class MachineManager: @unchecked Sendable {
         return (entry.configuration, entry.process?.isRunning == true)
     }
 
-    private func prepareMachineDisk(_ machine: DoryMachineConfiguration) throws -> DoryMachineConfiguration {
-        let source = machine.rootfsPath
-        let destination = machineRootfsPath(id: machine.id)
-        guard source != destination else {
-            throw MachineManagerError.persistence("machine rootfs must be imported into managed storage")
+    private func prepareMachineArtifacts(_ machine: DoryMachineConfiguration) throws -> DoryMachineConfiguration {
+        let rootfsDestination = machineRootfsPath(id: machine.id)
+        let kernelDestination = machineKernelPath(id: machine.id)
+        guard machine.rootfsPath != rootfsDestination, machine.kernelPath != kernelDestination else {
+            throw MachineManagerError.persistence("machine artifacts must be imported into managed storage")
         }
         do {
-            try Self.cloneOrCopyFile(source: source, destination: destination)
+            try Self.cloneOrCopyFile(source: machine.rootfsPath, destination: rootfsDestination)
+            try Self.cloneOrCopyFile(source: machine.kernelPath, destination: kernelDestination)
             var copy = machine
-            copy.rootfsPath = destination
+            copy.rootfsPath = rootfsDestination
+            copy.kernelPath = kernelDestination
             return copy
         } catch {
-            throw MachineManagerError.persistence("could not prepare rootfs for \(machine.id): \(error)")
+            throw MachineManagerError.persistence("could not prepare artifacts for \(machine.id): \(error)")
         }
     }
 
     private func validateManagedMachineArtifacts(_ machine: DoryMachineConfiguration) throws {
-        guard Self.isRegularNonemptyFile(path: machine.kernelPath) else {
-            throw MachineManagerError.persistence("machine kernel is missing or invalid: \(machine.kernelPath)")
-        }
         guard Self.isPrivateDirectory(path: machineStateDirectory(id: machine.id)) else {
             throw MachineManagerError.persistence("machine state directory failed managed-storage validation")
         }
         let expectedRootfsPath = machineRootfsPath(id: machine.id)
+        let expectedKernelPath = machineKernelPath(id: machine.id)
         guard machine.rootfsPath == expectedRootfsPath,
               Self.isPrivateRegularFile(path: expectedRootfsPath) else {
             throw MachineManagerError.persistence("machine rootfs failed managed-storage validation")
+        }
+        guard machine.kernelPath == expectedKernelPath,
+              Self.isPrivateRegularFile(path: expectedKernelPath) else {
+            throw MachineManagerError.persistence("machine kernel failed managed-storage validation")
+        }
+    }
+
+    private func restoreManagedArtifacts(
+        machine: DoryMachineConfiguration,
+        snapshot: DoryMachineSnapshot
+    ) throws {
+        let directory = machineStateDirectory(id: machine.id)
+        let token = UUID().uuidString
+        let rootfsBackup = "\(directory)/.restore-rootfs-\(token)"
+        let kernelBackup = "\(directory)/.restore-kernel-\(token)"
+        defer {
+            try? FileManager.default.removeItem(atPath: rootfsBackup)
+            try? FileManager.default.removeItem(atPath: kernelBackup)
+        }
+        try Self.cloneOrCopyFile(source: machine.rootfsPath, destination: rootfsBackup)
+        do {
+            try Self.cloneOrCopyFile(source: machine.kernelPath, destination: kernelBackup)
+        } catch {
+            throw MachineManagerError.persistence("could not preserve live kernel before restore: \(error)")
+        }
+        do {
+            try Self.cloneOrCopyFile(source: snapshot.rootfsPath, destination: machine.rootfsPath)
+            try Self.cloneOrCopyFile(source: snapshot.kernelPath, destination: machine.kernelPath)
+        } catch {
+            var rollbackFailures: [String] = []
+            do {
+                try Self.cloneOrCopyFile(source: rootfsBackup, destination: machine.rootfsPath)
+            } catch {
+                rollbackFailures.append("rootfs rollback failed: \(error)")
+            }
+            do {
+                try Self.cloneOrCopyFile(source: kernelBackup, destination: machine.kernelPath)
+            } catch {
+                rollbackFailures.append("kernel rollback failed: \(error)")
+            }
+            guard rollbackFailures.isEmpty else {
+                throw MachineManagerError.persistence(
+                    "could not restore machine artifacts: \(error); \(rollbackFailures.joined(separator: "; "))"
+                )
+            }
+            throw error
         }
     }
 
@@ -1352,14 +1448,17 @@ public final class MachineManager: @unchecked Sendable {
         }
         let path = snapshotMetadataPath(machineID: machineID, snapshotID: snapshotID)
         let expectedRootfsPath = snapshotRootfsPath(machineID: machineID, snapshotID: snapshotID)
+        let expectedKernelPath = snapshotKernelPath(machineID: machineID, snapshotID: snapshotID)
         guard Self.isPrivateDirectory(path: snapshotDirectory(machineID: machineID)),
               let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
               let snapshot = try? JSONDecoder().decode(DoryMachineSnapshot.self, from: data),
               snapshot.machineID == machineID,
               snapshot.id == snapshotID,
               snapshot.rootfsPath == expectedRootfsPath,
+              snapshot.kernelPath == expectedKernelPath,
               (try? Self.validateResources(memoryMB: snapshot.memoryMB, cpuCount: snapshot.cpuCount)) != nil,
-              Self.isPrivateRegularFile(path: expectedRootfsPath) else {
+              Self.isPrivateRegularFile(path: expectedRootfsPath),
+              Self.isPrivateRegularFile(path: expectedKernelPath) else {
             throw MachineManagerError.unknownSnapshot(snapshotID)
         }
         var validated = snapshot
@@ -1464,14 +1563,14 @@ public final class MachineManager: @unchecked Sendable {
         let parentDescriptor = open(parent.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW)
         guard parentDescriptor >= 0 else {
             throw MachineManagerError.persistence(
-                "could not open managed rootfs directory: \(String(cString: strerror(errno)))"
+                "could not open managed artifact directory: \(String(cString: strerror(errno)))"
             )
         }
         defer { close(parentDescriptor) }
         var parentInfo = stat()
         guard fstat(parentDescriptor, &parentInfo) == 0,
               isPrivateDirectory(info: parentInfo) else {
-            throw MachineManagerError.persistence("managed rootfs directory is not private")
+            throw MachineManagerError.persistence("managed artifact directory is not private")
         }
         let destinationName = destinationURL.lastPathComponent
         let temporaryName = ".\(destinationName).tmp-\(UUID().uuidString)"
@@ -1479,7 +1578,7 @@ public final class MachineManager: @unchecked Sendable {
         let sourceDescriptor = open(source, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK)
         guard sourceDescriptor >= 0 else {
             throw MachineManagerError.persistence(
-                "could not open rootfs source: \(String(cString: strerror(errno)))"
+                "could not open artifact source: \(String(cString: strerror(errno)))"
             )
         }
         defer { close(sourceDescriptor) }
@@ -1487,7 +1586,7 @@ public final class MachineManager: @unchecked Sendable {
         guard fstat(sourceDescriptor, &sourceInfo) == 0,
               (sourceInfo.st_mode & S_IFMT) == S_IFREG,
               sourceInfo.st_size > 0 else {
-            throw MachineManagerError.persistence("rootfs source is not a nonempty regular file")
+            throw MachineManagerError.persistence("artifact source is not a nonempty regular file")
         }
         do {
             if fclonefileat(sourceDescriptor, parentDescriptor, temporaryName, 0) != 0 {
@@ -1500,7 +1599,7 @@ public final class MachineManager: @unchecked Sendable {
                 )
                 guard destinationDescriptor >= 0 else {
                     throw MachineManagerError.persistence(
-                        "could not create rootfs copy: \(String(cString: strerror(errno)))"
+                        "could not create artifact copy: \(String(cString: strerror(errno)))"
                     )
                 }
                 defer { close(destinationDescriptor) }
@@ -1510,20 +1609,20 @@ public final class MachineManager: @unchecked Sendable {
                       isPrivateRegularFile(descriptor: destinationDescriptor),
                       fsync(destinationDescriptor) == 0 else {
                     throw MachineManagerError.persistence(
-                        "could not copy rootfs: \(String(cString: strerror(errno)))"
+                        "could not copy artifact: \(String(cString: strerror(errno)))"
                     )
                 }
             } else {
                 let clonedDescriptor = openat(parentDescriptor, temporaryName, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
                 guard clonedDescriptor >= 0 else {
-                    throw MachineManagerError.persistence("could not reopen cloned rootfs")
+                    throw MachineManagerError.persistence("could not reopen cloned artifact")
                 }
                 defer { close(clonedDescriptor) }
                 guard fchmod(clonedDescriptor, mode_t(0o600)) == 0,
                       isPrivateRegularFile(descriptor: clonedDescriptor),
                       fsync(clonedDescriptor) == 0 else {
                     throw MachineManagerError.persistence(
-                        "could not synchronize cloned rootfs: \(String(cString: strerror(errno)))"
+                        "could not synchronize cloned artifact: \(String(cString: strerror(errno)))"
                     )
                 }
             }
@@ -1592,14 +1691,16 @@ public final class MachineManager: @unchecked Sendable {
         for id in ids where isValidID(id) {
             let path = "\(root)/\(id)/machine.json"
             let rootfsPath = "\(root)/\(id)/rootfs.ext4"
+            let kernelPath = "\(root)/\(id)/kernel"
             guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
                   let machine = try? decoder.decode(DoryMachineConfiguration.self, from: data),
                   machine.id == id,
                   isValidID(machine.id),
                   isPrivateDirectory(path: "\(root)/\(id)"),
                   machine.rootfsPath == rootfsPath,
+                  machine.kernelPath == kernelPath,
                   isPrivateRegularFile(path: rootfsPath),
-                  isRegularNonemptyFile(path: machine.kernelPath) else {
+                  isPrivateRegularFile(path: kernelPath) else {
                 continue
             }
             loaded[id] = MachineEntry(configuration: machine, state: .stopped)
@@ -1628,7 +1729,9 @@ public final class MachineManager: @unchecked Sendable {
                 continue
             }
             for entry in entries where entry.hasPrefix(machineMetadataTemporaryPrefix)
-                || entry.hasPrefix(machineDiskTemporaryPrefix) {
+                || entry.hasPrefix(machineDiskTemporaryPrefix)
+                || entry.hasPrefix(machineKernelTemporaryPrefix)
+                || (entry.hasPrefix(".") && entry.contains(machineRestoreBackupMarker)) {
                 try? fileManager.removeItem(atPath: "\(directory)/\(entry)")
             }
         }
@@ -1649,7 +1752,10 @@ public final class MachineManager: @unchecked Sendable {
             }
             for entry in entries where entry.hasPrefix(snapshotDeletionQuarantinePrefix)
                 || entry.hasPrefix(snapshotMetadataTemporaryPrefix)
-                || (entry.hasPrefix(".") && entry.contains(snapshotDiskTemporaryMarker)) {
+                || (entry.hasPrefix(".") && (
+                    entry.contains(snapshotDiskTemporaryMarker)
+                        || entry.contains(snapshotKernelTemporaryMarker)
+                )) {
                 try? fileManager.removeItem(atPath: "\(directory)/\(entry)")
             }
         }
@@ -1663,29 +1769,41 @@ public final class MachineManager: @unchecked Sendable {
 private enum MachineSnapshotBundle {
     private struct Header {
         var snapshot: DoryMachineSnapshot
-        var payloadOffset: UInt64
-        var payloadLength: UInt64
-        var payloadDigest: Data
+        var rootfsOffset: UInt64
+        var rootfsLength: UInt64
+        var rootfsDigest: Data
+        var kernelOffset: UInt64
+        var kernelLength: UInt64
+        var kernelDigest: Data
         var contentID: Data
     }
 
-    private static let magic = Data("DORYMACHINE2\n".utf8)
+    private static let magic = Data("DORYMACHINE3\n".utf8)
     private static let lengthByteCount = 8
     private static let digestByteCount = 32
     private static let maximumMetadataLength: UInt64 = 16 * 1024 * 1024
     private static let copyChunkSize = 4 * 1024 * 1024
 
     static func write(snapshot: DoryMachineSnapshot, toPath path: String) throws {
-        let input = try openRegularFileForReading(path: snapshot.rootfsPath, requirePrivateOwnership: true)
-        defer { try? input.close() }
-        let payloadLength = try input.seekToEnd()
-        guard payloadLength > 0, payloadLength <= UInt64(Int64.max) else {
-            throw MachineManagerError.persistence("invalid machine snapshot payload size")
+        let rootfs = try openRegularFileForReading(path: snapshot.rootfsPath, requirePrivateOwnership: true)
+        defer { try? rootfs.close() }
+        let kernel = try openRegularFileForReading(path: snapshot.kernelPath, requirePrivateOwnership: true)
+        defer { try? kernel.close() }
+        let rootfsLength = try rootfs.seekToEnd()
+        let kernelLength = try kernel.seekToEnd()
+        guard rootfsLength > 0, rootfsLength <= UInt64(Int64.max) else {
+            throw MachineManagerError.persistence("invalid machine snapshot rootfs size")
         }
-        try input.seek(toOffset: 0)
+        guard kernelLength > 0, kernelLength <= UInt64(Int64.max) else {
+            throw MachineManagerError.persistence("invalid machine snapshot kernel size")
+        }
+        try rootfs.seek(toOffset: 0)
+        try kernel.seek(toOffset: 0)
 
         var exportedSnapshot = snapshot
-        exportedSnapshot.sizeBytes = Int64(payloadLength)
+        exportedSnapshot.rootfsPath = ""
+        exportedSnapshot.kernelPath = ""
+        exportedSnapshot.sizeBytes = Int64(rootfsLength)
         let metadata = try JSONEncoder().encode(exportedSnapshot)
         guard !metadata.isEmpty, UInt64(metadata.count) <= maximumMetadataLength else {
             throw MachineManagerError.persistence("invalid dory machine bundle metadata")
@@ -1713,19 +1831,30 @@ private enum MachineSnapshotBundle {
         do {
             try output.write(contentsOf: magic)
             try output.write(contentsOf: bigEndianBytes(UInt64(metadata.count)))
-            try output.write(contentsOf: bigEndianBytes(payloadLength))
+            try output.write(contentsOf: bigEndianBytes(rootfsLength))
+            try output.write(contentsOf: bigEndianBytes(kernelLength))
             try output.write(contentsOf: metadataDigest)
-            let payloadDigestOffset = try output.offset()
+            let rootfsDigestOffset = try output.offset()
+            try output.write(contentsOf: Data(repeating: 0, count: digestByteCount))
+            let kernelDigestOffset = try output.offset()
             try output.write(contentsOf: Data(repeating: 0, count: digestByteCount))
             try output.write(contentsOf: metadata)
-            let payloadDigest = try copyExactly(
-                from: input,
+            let rootfsDigest = try copyExactly(
+                from: rootfs,
                 to: output,
-                byteCount: payloadLength,
+                byteCount: rootfsLength,
                 rejectTrailingInput: true
             )
-            try output.seek(toOffset: payloadDigestOffset)
-            try output.write(contentsOf: payloadDigest)
+            let kernelDigest = try copyExactly(
+                from: kernel,
+                to: output,
+                byteCount: kernelLength,
+                rejectTrailingInput: true
+            )
+            try output.seek(toOffset: rootfsDigestOffset)
+            try output.write(contentsOf: rootfsDigest)
+            try output.seek(toOffset: kernelDigestOffset)
+            try output.write(contentsOf: kernelDigest)
             try output.synchronize()
             try output.close()
             outputIsOpen = false
@@ -1751,7 +1880,12 @@ private enum MachineSnapshotBundle {
         return (header.snapshot, header.contentID)
     }
 
-    static func extractRootfs(fromPath path: String, expectedContentID: Data, toPath destination: String) throws {
+    static func extractArtifacts(
+        fromPath path: String,
+        expectedContentID: Data,
+        rootfsPath: String,
+        kernelPath: String
+    ) throws {
         let input = try openRegularFileForReading(path: path)
         var inputIsOpen = true
         defer {
@@ -1763,53 +1897,96 @@ private enum MachineSnapshotBundle {
         guard header.contentID == expectedContentID else {
             throw MachineManagerError.persistence("machine bundle changed during import")
         }
-        let outputURL = URL(fileURLWithPath: destination)
-        let parent = outputURL.deletingLastPathComponent()
-        guard isPrivateDirectory(path: parent.path) else {
+        let rootfsURL = URL(fileURLWithPath: rootfsPath)
+        let kernelURL = URL(fileURLWithPath: kernelPath)
+        let parent = rootfsURL.deletingLastPathComponent()
+        guard kernelURL.deletingLastPathComponent() == parent,
+              isPrivateDirectory(path: parent.path) else {
             throw MachineManagerError.persistence("machine snapshot destination is not private")
         }
-        let temporaryURL = parent.appendingPathComponent(".\(outputURL.lastPathComponent).tmp-\(UUID().uuidString)")
+        let token = UUID().uuidString
+        let temporaryRootfsURL = parent.appendingPathComponent(".\(rootfsURL.lastPathComponent).tmp-\(token)")
+        let temporaryKernelURL = parent.appendingPathComponent(".\(kernelURL.lastPathComponent).tmp-\(token)")
         guard FileManager.default.createFile(
-            atPath: temporaryURL.path,
+            atPath: temporaryRootfsURL.path,
             contents: nil,
             attributes: [.posixPermissions: 0o600]
         ) else {
             try? input.close()
             throw MachineManagerError.persistence("could not create temporary machine snapshot rootfs")
         }
-        let output = try FileHandle(forWritingTo: temporaryURL)
-        var outputIsOpen = true
+        guard FileManager.default.createFile(
+            atPath: temporaryKernelURL.path,
+            contents: nil,
+            attributes: [.posixPermissions: 0o600]
+        ) else {
+            try? FileManager.default.removeItem(at: temporaryRootfsURL)
+            throw MachineManagerError.persistence("could not create temporary machine snapshot kernel")
+        }
+        let rootfsOutput: FileHandle
+        let kernelOutput: FileHandle
+        do {
+            rootfsOutput = try FileHandle(forWritingTo: temporaryRootfsURL)
+            kernelOutput = try FileHandle(forWritingTo: temporaryKernelURL)
+        } catch {
+            try? FileManager.default.removeItem(at: temporaryRootfsURL)
+            try? FileManager.default.removeItem(at: temporaryKernelURL)
+            throw error
+        }
+        var outputsAreOpen = true
         defer {
-            if outputIsOpen {
-                try? output.close()
+            if outputsAreOpen {
+                try? rootfsOutput.close()
+                try? kernelOutput.close()
             }
         }
         do {
-            try input.seek(toOffset: header.payloadOffset)
-            let payloadDigest = try copyExactly(
+            try input.seek(toOffset: header.rootfsOffset)
+            let rootfsDigest = try copyExactly(
                 from: input,
-                to: output,
-                byteCount: header.payloadLength
+                to: rootfsOutput,
+                byteCount: header.rootfsLength
             )
-            guard payloadDigest == header.payloadDigest else {
-                throw MachineManagerError.persistence("corrupt dory machine bundle payload")
+            guard rootfsDigest == header.rootfsDigest else {
+                throw MachineManagerError.persistence("corrupt dory machine bundle rootfs")
             }
-            try output.synchronize()
+            try input.seek(toOffset: header.kernelOffset)
+            let kernelDigest = try copyExactly(
+                from: input,
+                to: kernelOutput,
+                byteCount: header.kernelLength
+            )
+            guard kernelDigest == header.kernelDigest else {
+                throw MachineManagerError.persistence("corrupt dory machine bundle kernel")
+            }
+            try rootfsOutput.synchronize()
+            try kernelOutput.synchronize()
             try input.close()
             inputIsOpen = false
-            try output.close()
-            outputIsOpen = false
+            try rootfsOutput.close()
+            try kernelOutput.close()
+            outputsAreOpen = false
             try FileManager.default.setAttributes(
                 [.posixPermissions: 0o600],
-                ofItemAtPath: temporaryURL.path
+                ofItemAtPath: temporaryRootfsURL.path
             )
-            guard rename(temporaryURL.path, outputURL.path) == 0 else {
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o600],
+                ofItemAtPath: temporaryKernelURL.path
+            )
+            guard rename(temporaryRootfsURL.path, rootfsURL.path) == 0 else {
                 throw MachineManagerError.persistence(
                     "could not publish machine snapshot rootfs: \(String(cString: strerror(errno)))"
                 )
             }
+            guard rename(temporaryKernelURL.path, kernelURL.path) == 0 else {
+                throw MachineManagerError.persistence(
+                    "could not publish machine snapshot kernel: \(String(cString: strerror(errno)))"
+                )
+            }
         } catch {
-            try? FileManager.default.removeItem(at: temporaryURL)
+            try? FileManager.default.removeItem(at: temporaryRootfsURL)
+            try? FileManager.default.removeItem(at: temporaryKernelURL)
             throw error
         }
     }
@@ -1821,39 +1998,51 @@ private enum MachineSnapshotBundle {
             throw MachineManagerError.persistence("not a dory machine bundle")
         }
         let metadataLength = decodeUInt64(try readExactly(from: input, count: lengthByteCount))
-        let payloadLength = decodeUInt64(try readExactly(from: input, count: lengthByteCount))
+        let rootfsLength = decodeUInt64(try readExactly(from: input, count: lengthByteCount))
+        let kernelLength = decodeUInt64(try readExactly(from: input, count: lengthByteCount))
         guard metadataLength > 0, metadataLength <= maximumMetadataLength else {
             throw MachineManagerError.persistence("invalid dory machine bundle metadata")
         }
-        guard payloadLength > 0, payloadLength <= UInt64(Int64.max) else {
-            throw MachineManagerError.persistence("invalid dory machine bundle payload size")
+        guard rootfsLength > 0, rootfsLength <= UInt64(Int64.max) else {
+            throw MachineManagerError.persistence("invalid dory machine bundle rootfs size")
+        }
+        guard kernelLength > 0, kernelLength <= UInt64(Int64.max) else {
+            throw MachineManagerError.persistence("invalid dory machine bundle kernel size")
         }
         let metadataDigest = try readExactly(from: input, count: digestByteCount)
-        let payloadDigest = try readExactly(from: input, count: digestByteCount)
+        let rootfsDigest = try readExactly(from: input, count: digestByteCount)
+        let kernelDigest = try readExactly(from: input, count: digestByteCount)
         let metadata = try readExactly(from: input, count: Int(metadataLength))
         guard Data(SHA256.hash(data: metadata)) == metadataDigest else {
             throw MachineManagerError.persistence("corrupt dory machine bundle metadata")
         }
         let snapshot = try JSONDecoder().decode(DoryMachineSnapshot.self, from: metadata)
-        guard snapshot.sizeBytes == Int64(payloadLength) else {
-            throw MachineManagerError.persistence("machine bundle payload size does not match metadata")
+        guard snapshot.sizeBytes == Int64(rootfsLength) else {
+            throw MachineManagerError.persistence("machine bundle rootfs size does not match metadata")
         }
-        let fixedHeaderLength = UInt64(magic.count + (lengthByteCount * 2) + (digestByteCount * 2))
-        let (payloadOffset, offsetOverflow) = fixedHeaderLength.addingReportingOverflow(metadataLength)
-        let (expectedFileLength, lengthOverflow) = payloadOffset.addingReportingOverflow(payloadLength)
-        guard !offsetOverflow, !lengthOverflow, try input.seekToEnd() == expectedFileLength else {
-            throw MachineManagerError.persistence("truncated or trailing dory machine bundle payload")
+        let fixedHeaderLength = UInt64(magic.count + (lengthByteCount * 3) + (digestByteCount * 3))
+        let (rootfsOffset, metadataOverflow) = fixedHeaderLength.addingReportingOverflow(metadataLength)
+        let (kernelOffset, rootfsOverflow) = rootfsOffset.addingReportingOverflow(rootfsLength)
+        let (expectedFileLength, kernelOverflow) = kernelOffset.addingReportingOverflow(kernelLength)
+        guard !metadataOverflow, !rootfsOverflow, !kernelOverflow,
+              try input.seekToEnd() == expectedFileLength else {
+            throw MachineManagerError.persistence("truncated or trailing dory machine bundle artifacts")
         }
         var identity = Data()
         identity.append(bigEndianBytes(metadataLength))
-        identity.append(bigEndianBytes(payloadLength))
+        identity.append(bigEndianBytes(rootfsLength))
+        identity.append(bigEndianBytes(kernelLength))
         identity.append(metadataDigest)
-        identity.append(payloadDigest)
+        identity.append(rootfsDigest)
+        identity.append(kernelDigest)
         return Header(
             snapshot: snapshot,
-            payloadOffset: payloadOffset,
-            payloadLength: payloadLength,
-            payloadDigest: payloadDigest,
+            rootfsOffset: rootfsOffset,
+            rootfsLength: rootfsLength,
+            rootfsDigest: rootfsDigest,
+            kernelOffset: kernelOffset,
+            kernelLength: kernelLength,
+            kernelDigest: kernelDigest,
             contentID: Data(SHA256.hash(data: identity))
         )
     }
