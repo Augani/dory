@@ -728,6 +728,15 @@ grep -F 'testCreateNeverOverwritesAnAbandonedMachineStateDirectory' \
 grep -F 'testUpdatePersistenceFailurePreservesThePublishedDefinition' \
   dory-core-swift/Tests/DorydKitTests/MachineManagerTests.swift >/dev/null \
   || fail "failed machine updates can partially publish a definition that differs after restart"
+grep -F 'testAddressOnlyUpdateRestartsRunningMachineAndNoOpDoesNot' \
+  dory-core-swift/Tests/DorydKitTests/MachineManagerTests.swift >/dev/null \
+  || fail "running machine address changes can remain unapplied until an unrelated restart"
+grep -F 'testFailedUpdatedLaunchRestoresDefinitionAndRunningMachine' \
+  dory-core-swift/Tests/DorydKitTests/MachineManagerTests.swift >/dev/null \
+  || fail "failed machine reconfiguration can replace the last working definition"
+grep -F 'testPersistedInvalidAddressShareAndEnvironmentCannotReachTheVMM' \
+  dory-core-swift/Tests/DorydKitTests/MachineManagerTests.swift >/dev/null \
+  || fail "invalid persisted host configuration can reach the VMM"
 grep -F 'testShellTimesOutAndTerminatesHungProcess' \
   dory-core-swift/Tests/DorydKitTests/LocalCATests.swift >/dev/null \
   || fail "release qualification commands can hang indefinitely without a regression test"

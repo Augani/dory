@@ -1091,6 +1091,73 @@ final class MachineManagerTests: XCTestCase {
         XCTAssertNil(manager.status(id: "dev")?.pid)
     }
 
+    func testPersistedInvalidAddressShareAndEnvironmentCannotReachTheVMM() throws {
+        let base = "/tmp/dory-machine-invalid-persisted-host-config-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let invalidConfigurations: [(DoryMachineConfiguration, MachineManagerError)] = [
+            (
+                DoryMachineConfiguration(
+                    id: "bad-address",
+                    kernelPath: "\(base)/bad-address/kernel",
+                    rootfsPath: "\(base)/bad-address/rootfs.ext4",
+                    address: "machine.dory.local"
+                ),
+                .invalidAddress("machine.dory.local")
+            ),
+            (
+                DoryMachineConfiguration(
+                    id: "bad-share",
+                    kernelPath: "\(base)/bad-share/kernel",
+                    rootfsPath: "\(base)/bad-share/rootfs.ext4",
+                    shares: [DoryMachineShareConfiguration(
+                        tag: "src",
+                        hostPath: "\(base)/missing-share",
+                        guestPath: "/workspace/src"
+                    )]
+                ),
+                .invalidShare("\(base)/missing-share")
+            ),
+            (
+                DoryMachineConfiguration(
+                    id: "bad-environment",
+                    kernelPath: "\(base)/bad-environment/kernel",
+                    rootfsPath: "\(base)/bad-environment/rootfs.ext4",
+                    environment: ["1INVALID": "value"]
+                ),
+                .invalidEnvironment("1INVALID")
+            ),
+        ]
+        for (machine, _) in invalidConfigurations {
+            let directory = "\(base)/\(machine.id)"
+            try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
+            try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory)
+            try Data("managed-rootfs".utf8).write(to: URL(fileURLWithPath: machine.rootfsPath))
+            try Data("managed-kernel".utf8).write(to: URL(fileURLWithPath: machine.kernelPath))
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: machine.rootfsPath)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: machine.kernelPath)
+            let definitionPath = "\(directory)/machine.json"
+            try JSONEncoder().encode(machine).write(to: URL(fileURLWithPath: definitionPath))
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: definitionPath)
+        }
+
+        let manager = MachineManager(configuration: MachineManagerConfiguration(
+            vmmExecutablePath: "/bin/sleep",
+            stateDirectory: base,
+            baseArguments: ["30"],
+            passMachineArguments: false,
+            requiresReadyHandoff: false
+        ))
+
+        XCTAssertEqual(Set(manager.list().map(\.id)), Set(invalidConfigurations.map { $0.0.id }))
+        for (machine, expectedError) in invalidConfigurations {
+            XCTAssertThrowsError(try manager.start(id: machine.id)) { error in
+                XCTAssertEqual(error as? MachineManagerError, expectedError)
+            }
+            XCTAssertEqual(manager.status(id: machine.id)?.state, .stopped)
+            XCTAssertNil(manager.status(id: machine.id)?.pid)
+        }
+    }
+
     func testUpdatePersistsMachineResourcesAndRestartsRunningMachine() throws {
         let base = "/tmp/dory-machine-update-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         let share = "\(base)-share"
@@ -1151,6 +1218,97 @@ final class MachineManagerTests: XCTestCase {
         XCTAssertEqual(stored.environment, ["NODE_ENV": "production"])
     }
 
+    func testAddressOnlyUpdateRestartsRunningMachineAndNoOpDoesNot() throws {
+        let base = "/tmp/dory-machine-address-restart-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let starter = RecordingProcessStarter()
+        let manager = MachineManager(
+            configuration: MachineManagerConfiguration(
+                vmmExecutablePath: "/bin/sleep",
+                stateDirectory: base,
+                baseArguments: ["30"],
+                passMachineArguments: false,
+                requiresReadyHandoff: false
+            ),
+            processStarter: { process in try starter.start(process) }
+        )
+        defer { try? manager.delete(id: "dev") }
+
+        _ = try manager.create(DoryMachineConfiguration(
+            id: "dev",
+            kernelPath: doryTestKernelPath,
+            rootfsPath: doryTestRootfsPath,
+            address: "192.168.215.40"
+        ))
+        _ = try manager.start(id: "dev")
+        XCTAssertEqual(starter.attemptCount, 1)
+
+        let changed = try manager.update(
+            id: "dev",
+            address: "192.168.215.41",
+            updatesAddress: true
+        )
+        XCTAssertEqual(changed.state, .running)
+        XCTAssertEqual(changed.address, "192.168.215.41")
+        XCTAssertEqual(starter.attemptCount, 2)
+
+        let unchanged = try manager.update(
+            id: "dev",
+            address: "192.168.215.41",
+            updatesAddress: true
+        )
+        XCTAssertEqual(unchanged.state, .running)
+        XCTAssertEqual(starter.attemptCount, 2)
+    }
+
+    func testFailedUpdatedLaunchRestoresDefinitionAndRunningMachine() throws {
+        let base = "/tmp/dory-machine-update-rollback-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let starter = RecordingProcessStarter(failingAttempts: [2])
+        let manager = MachineManager(
+            configuration: MachineManagerConfiguration(
+                vmmExecutablePath: "/bin/sleep",
+                stateDirectory: base,
+                baseArguments: ["30"],
+                passMachineArguments: false,
+                requiresReadyHandoff: false
+            ),
+            processStarter: { process in try starter.start(process) }
+        )
+        defer { try? manager.delete(id: "dev") }
+        _ = try manager.create(DoryMachineConfiguration(
+            id: "dev",
+            kernelPath: doryTestKernelPath,
+            rootfsPath: doryTestRootfsPath,
+            memoryMB: 2048,
+            cpuCount: 2,
+            address: "192.168.215.40"
+        ))
+        _ = try manager.start(id: "dev")
+
+        XCTAssertThrowsError(try manager.update(id: "dev", memoryMB: 4096)) { error in
+            guard case let MachineManagerError.persistence(message) = error else {
+                return XCTFail("unexpected error: \(error)")
+            }
+            XCTAssertTrue(message.contains("original configuration was restored"))
+        }
+
+        XCTAssertEqual(starter.attemptCount, 3)
+        let restored = try XCTUnwrap(manager.status(id: "dev"))
+        XCTAssertEqual(restored.state, .running)
+        XCTAssertEqual(restored.memoryMB, 2048)
+        XCTAssertEqual(restored.cpuCount, 2)
+        XCTAssertEqual(restored.address, "192.168.215.40")
+        XCTAssertNotNil(restored.pid)
+        let stored = try JSONDecoder().decode(
+            DoryMachineConfiguration.self,
+            from: Data(contentsOf: URL(fileURLWithPath: "\(base)/dev/machine.json"))
+        )
+        XCTAssertEqual(stored.memoryMB, 2048)
+        XCTAssertEqual(stored.cpuCount, 2)
+        XCTAssertEqual(stored.address, "192.168.215.40")
+    }
+
     func testUpdatePersistenceFailurePreservesThePublishedDefinition() throws {
         let base = "/tmp/dory-machine-update-persistence-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         defer { try? FileManager.default.removeItem(atPath: base) }
@@ -1169,6 +1327,7 @@ final class MachineManagerTests: XCTestCase {
             memoryMB: 2048,
             cpuCount: 2
         ))
+        _ = try manager.start(id: "dev")
         let definitionPath = "\(base)/dev/machine.json"
         let before = try Data(contentsOf: URL(fileURLWithPath: definitionPath))
         try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: "\(base)/dev")
@@ -1180,6 +1339,8 @@ final class MachineManagerTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: definitionPath)), before)
         XCTAssertEqual(manager.status(id: "dev")?.memoryMB, 2048)
         XCTAssertEqual(manager.status(id: "dev")?.cpuCount, 2)
+        XCTAssertEqual(manager.status(id: "dev")?.state, .running)
+        XCTAssertNotNil(manager.status(id: "dev")?.pid)
     }
 
     func testRejectsNonIPv4MachineAddress() throws {
@@ -2075,6 +2236,38 @@ private final class RecordingMachineBalloonController: MachineBalloonControlling
         applies.append(Apply(socketPath: socketPath, targetMB: targetMB))
         lock.unlock()
     }
+}
+
+private final class RecordingProcessStarter: @unchecked Sendable {
+    private let lock = NSLock()
+    private let failingAttempts: Set<Int>
+    private var attempts = 0
+
+    init(failingAttempts: Set<Int> = []) {
+        self.failingAttempts = failingAttempts
+    }
+
+    var attemptCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return attempts
+    }
+
+    func start(_ process: HvProcess) throws {
+        lock.lock()
+        attempts += 1
+        let attempt = attempts
+        let shouldFail = failingAttempts.contains(attempt)
+        lock.unlock()
+        if shouldFail {
+            throw RecordingProcessStarterError.rejected(attempt)
+        }
+        try process.start()
+    }
+}
+
+private enum RecordingProcessStarterError: Error {
+    case rejected(Int)
 }
 
 private func writeMachineBundle(

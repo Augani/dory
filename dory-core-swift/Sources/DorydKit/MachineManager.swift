@@ -355,6 +355,7 @@ public enum MachineManagerError: Error, Sendable, Equatable, CustomStringConvert
 
 public final class MachineManager: @unchecked Sendable {
     public typealias AgentConnector = @Sendable (String) throws -> any AgentControlClient
+    public typealias ProcessStarter = @Sendable (HvProcess) throws -> Void
 
     private static let handoffReadyTimeoutSeconds: TimeInterval = 60
     private static let deletionQuarantinePrefix = ".dory-machine-delete-"
@@ -377,6 +378,7 @@ public final class MachineManager: @unchecked Sendable {
     private let configuration: MachineManagerConfiguration
     private let agentConnector: AgentConnector
     private let balloonController: any MachineBalloonControlling
+    private let processStarter: ProcessStarter
     private let operationLock = NSRecursiveLock()
     private let lock = NSLock()
     private var machines: [String: MachineEntry] = [:]
@@ -387,11 +389,13 @@ public final class MachineManager: @unchecked Sendable {
         balloonController: any MachineBalloonControlling = UnixMachineBalloonController(),
         agentConnector: @escaping AgentConnector = { socketPath in
             try LocalAgentControl.connect(socketPath: socketPath)
-        }
+        },
+        processStarter: @escaping ProcessStarter = { process in try process.start() }
     ) {
         self.configuration = configuration
         self.balloonController = balloonController
         self.agentConnector = agentConnector
+        self.processStarter = processStarter
         _ = HelperProcessJanitor.terminateStaleHelpers(
             executablePath: configuration.vmmExecutablePath,
             stateDirectory: configuration.stateDirectory,
@@ -411,10 +415,8 @@ public final class MachineManager: @unchecked Sendable {
             throw MachineManagerError.invalidID(machine.id)
         }
         var machine = machine
-        try Self.validateResources(memoryMB: machine.memoryMB, cpuCount: machine.cpuCount)
         machine.address = try Self.normalizedAddress(machine.address)
-        try Self.validateShares(machine.shares)
-        try Self.validateEnvironment(machine.environment)
+        try Self.validateLaunchConfiguration(machine)
         lock.lock()
         let exists = machines[machine.id] != nil || deletingMachineIDs.contains(machine.id)
         lock.unlock()
@@ -474,10 +476,7 @@ public final class MachineManager: @unchecked Sendable {
             throw MachineManagerError.unknownMachine(id)
         }
         do {
-            try Self.validateResources(
-                memoryMB: entry.configuration.memoryMB,
-                cpuCount: entry.configuration.cpuCount
-            )
+            try Self.validateLaunchConfiguration(entry.configuration)
             try validateManagedMachineArtifacts(entry.configuration)
         } catch {
             lock.unlock()
@@ -512,7 +511,7 @@ public final class MachineManager: @unchecked Sendable {
         lock.unlock()
 
         do {
-            try process.start()
+            try processStarter(process)
         } catch {
             lock.lock()
             machines[id]?.handoffServer?.stop()
@@ -666,25 +665,7 @@ public final class MachineManager: @unchecked Sendable {
     ) throws -> DoryMachineStatus {
         operationLock.lock()
         defer { operationLock.unlock() }
-        if memoryMB != nil || cpuCount != nil {
-            let current = try configurationAndRunningState(id: id).0
-            try Self.validateResources(
-                memoryMB: memoryMB ?? current.memoryMB,
-                cpuCount: cpuCount ?? current.cpuCount
-            )
-        }
-        if let shares {
-            try Self.validateShares(shares)
-        }
-        if let environment {
-            try Self.validateEnvironment(environment)
-        }
-        let normalizedAddress = try Self.normalizedAddress(address)
-        let needsRestart = memoryMB != nil || cpuCount != nil || updatesShares || updatesEnvironment
         let (current, wasRunning) = try configurationAndRunningState(id: id)
-        if wasRunning && needsRestart {
-            _ = try stop(id: id)
-        }
         var updated = current
         if let memoryMB {
             updated.memoryMB = memoryMB
@@ -693,7 +674,7 @@ public final class MachineManager: @unchecked Sendable {
             updated.cpuCount = cpuCount
         }
         if updatesAddress {
-            updated.address = normalizedAddress
+            updated.address = try Self.normalizedAddress(address)
         }
         if updatesShares {
             updated.shares = shares ?? []
@@ -701,29 +682,55 @@ public final class MachineManager: @unchecked Sendable {
         if updatesEnvironment {
             updated.environment = environment ?? [:]
         }
+        try Self.validateLaunchConfiguration(updated)
+        guard updated != current else {
+            return status(id: id) ?? DoryMachineStatus(id: id, state: .stopped)
+        }
+        if wasRunning {
+            _ = try stop(id: id)
+        }
         do {
             try persist(updated)
-            lock.lock()
-            guard var entry = machines[id] else {
-                lock.unlock()
-                throw MachineManagerError.unknownMachine(id)
-            }
-            entry.configuration = updated
-            machines[id] = entry
-            lock.unlock()
-            return wasRunning && needsRestart
-                ? try start(id: id)
-                : (status(id: id) ?? DoryMachineStatus(id: id, state: .stopped))
-        } catch let error as MachineManagerError {
-            if wasRunning && needsRestart {
-                _ = try? start(id: id)
-            }
-            throw error
+            try publishConfiguration(updated)
         } catch {
-            if wasRunning && needsRestart {
-                _ = try? start(id: id)
+            if wasRunning {
+                do {
+                    _ = try start(id: id)
+                } catch let restartError {
+                    throw MachineManagerError.persistence(
+                        "could not update \(id): \(error); original configuration restart failed: \(restartError)"
+                    )
+                }
             }
+            if let error = error as? MachineManagerError { throw error }
             throw MachineManagerError.persistence("could not update \(id): \(error)")
+        }
+        guard wasRunning else {
+            return status(id: id) ?? DoryMachineStatus(id: id, state: .stopped)
+        }
+        do {
+            return try start(id: id)
+        } catch {
+            let updateError = error
+            _ = try? stop(id: id)
+            do {
+                try persist(current)
+                try publishConfiguration(current)
+            } catch {
+                throw MachineManagerError.persistence(
+                    "could not start updated \(id): \(updateError); configuration rollback failed: \(error)"
+                )
+            }
+            do {
+                _ = try start(id: id)
+            } catch {
+                throw MachineManagerError.persistence(
+                    "could not start updated \(id): \(updateError); original configuration was restored but restart failed: \(error)"
+                )
+            }
+            throw MachineManagerError.persistence(
+                "could not start updated \(id): \(updateError); original configuration was restored"
+            )
         }
     }
 
@@ -740,6 +747,7 @@ public final class MachineManager: @unchecked Sendable {
             throw MachineManagerError.invalidID(snapshotID)
         }
         let (machine, wasRunning) = try configurationAndRunningState(id: id)
+        try Self.validateLaunchConfiguration(machine)
         try ensurePrivateSnapshotDirectory(machineID: id)
         let rootfsPath = snapshotRootfsPath(machineID: id, snapshotID: snapshotID)
         let kernelPath = snapshotKernelPath(machineID: id, snapshotID: snapshotID)
@@ -1290,6 +1298,17 @@ public final class MachineManager: @unchecked Sendable {
         return (entry.configuration, entry.process?.isRunning == true)
     }
 
+    private func publishConfiguration(_ configuration: DoryMachineConfiguration) throws {
+        lock.lock()
+        defer { lock.unlock() }
+        guard var entry = machines[configuration.id] else {
+            throw MachineManagerError.unknownMachine(configuration.id)
+        }
+        entry.configuration = configuration
+        entry.currentBalloonTargetMB = nil
+        machines[configuration.id] = entry
+    }
+
     private func prepareMachineArtifacts(_ machine: DoryMachineConfiguration) throws -> DoryMachineConfiguration {
         let rootfsDestination = machineRootfsPath(id: machine.id)
         let kernelDestination = machineKernelPath(id: machine.id)
@@ -1567,6 +1586,16 @@ public final class MachineManager: @unchecked Sendable {
                 throw MachineManagerError.invalidEnvironment(key)
             }
         }
+    }
+
+    private static func validateLaunchConfiguration(_ machine: DoryMachineConfiguration) throws {
+        try validateResources(memoryMB: machine.memoryMB, cpuCount: machine.cpuCount)
+        let normalizedAddress = try normalizedAddress(machine.address)
+        guard normalizedAddress == machine.address else {
+            throw MachineManagerError.invalidAddress(machine.address ?? "")
+        }
+        try validateShares(machine.shares)
+        try validateEnvironment(machine.environment)
     }
 
     private static func validateResources(memoryMB: UInt64, cpuCount: Int) throws {
