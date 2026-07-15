@@ -94,13 +94,32 @@ run_bounded() {
 RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$"
 WORKDIR="$WORKROOT/$RUN_ID"
 RUNTIME_COPY="$WORKDIR/runtime-under-test"
-OFFLINE_HOME="$WORKDIR/offline-home"
+# Keep the disposable HOME short. The engine owns several AF_UNIX sockets below HOME and macOS
+# rejects paths longer than 103 UTF-8 bytes. Evidence roots are intentionally descriptive and can
+# be much deeper than a real user home, so nesting the runtime HOME below WORKDIR makes the gate
+# fail before it tests offline boot.
+OFFLINE_HOME_BASE="${DORY_OFFLINE_BOOT_HOME_BASE:-$HOME}"
+OFFLINE_HOME_BASE="$(cd "$OFFLINE_HOME_BASE" 2>/dev/null && pwd -P)" \
+  || die "offline HOME base is unavailable: $OFFLINE_HOME_BASE"
+OFFLINE_HOME="$OFFLINE_HOME_BASE/.dob-$$"
 HIDDEN_ASSETS="$WORKDIR/hidden-assets"
 MANIFEST="$WORKDIR/manifest.txt"
+[ ! -e "$OFFLINE_HOME" ] || die "disposable offline HOME already exists: $OFFLINE_HOME"
+python3 - "$OFFLINE_HOME/.dory/standalone/hv/docker-backend.sock" <<'PY'
+import os
+import sys
+
+path = sys.argv[1]
+length = len(os.fsencode(path))
+assert length <= 103, f"offline Docker backend socket path is {length} bytes (limit 103): {path}"
+PY
 mkdir -p "$WORKDIR" "$RUNTIME_COPY" "$OFFLINE_HOME" "$HIDDEN_ASSETS"
 
 cleanup() {
   HOME="$OFFLINE_HOME" "$RUNTIME_COPY/dory-engine" stop >/dev/null 2>&1 || true
+  if [ -s "$OFFLINE_HOME/.dory/standalone/engine.log" ]; then
+    cp "$OFFLINE_HOME/.dory/standalone/engine.log" "$WORKDIR/last-engine.log" || true
+  fi
   rm -rf "$RUNTIME_COPY" "$OFFLINE_HOME" "$HIDDEN_ASSETS"
 }
 trap cleanup EXIT INT TERM

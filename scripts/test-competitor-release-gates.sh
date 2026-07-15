@@ -143,6 +143,15 @@ for offline_boot_contract in cached_boot_without_bundle_sources dead_proxy_envir
     scripts/qualify-release-candidate.sh scripts/verify-release-qualification.sh >/dev/null \
     || fail "offline cached-boot qualification omits $offline_boot_contract"
 done
+grep -F 'OFFLINE_HOME="$OFFLINE_HOME_BASE/.dob-$$"' \
+  scripts/offline-bundled-boot-gate.sh >/dev/null \
+  || fail "offline boot gate nests its disposable HOME beneath a long evidence path"
+grep -F 'offline Docker backend socket path is' \
+  scripts/offline-bundled-boot-gate.sh >/dev/null \
+  || fail "offline boot gate does not reject an overlong AF_UNIX path before launch"
+grep -F '"$WORKDIR/last-engine.log"' \
+  scripts/offline-bundled-boot-gate.sh >/dev/null \
+  || fail "offline boot gate discards the engine failure log during cleanup"
 grep -F 'lima-vm/lima/issues/5188' COMPETITOR_ISSUE_COVERAGE.md >/dev/null \
   || fail "competitor coverage omits Lima's cached-image HEAD failure"
 grep -F 'docker/for-mac/issues/7825' COMPETITOR_ISSUE_COVERAGE.md >/dev/null \
