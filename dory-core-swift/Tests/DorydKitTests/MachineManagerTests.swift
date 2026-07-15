@@ -1287,8 +1287,10 @@ final class MachineManagerTests: XCTestCase {
         defer { try? FileManager.default.removeItem(atPath: base) }
         let sourceRootfs = "\(base)/base-rootfs.ext4"
         let sourceKernel = "\(base)/base-kernel"
+        let sharePath = "\(base)/shared-source"
         try Data("base-rootfs".utf8).write(to: URL(fileURLWithPath: sourceRootfs))
         try Data("kernel-v1".utf8).write(to: URL(fileURLWithPath: sourceKernel))
+        try FileManager.default.createDirectory(atPath: sharePath, withIntermediateDirectories: true)
         let manager = MachineManager(configuration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
             stateDirectory: "\(base)/machines",
@@ -1307,7 +1309,14 @@ final class MachineManagerTests: XCTestCase {
             kernelPath: sourceKernel,
             rootfsPath: sourceRootfs,
             memoryMB: 4096,
-            cpuCount: 4
+            cpuCount: 4,
+            address: "192.168.215.55",
+            shares: [DoryMachineShareConfiguration(
+                tag: "src",
+                hostPath: sharePath,
+                guestPath: "/workspace/src"
+            )],
+            environment: ["DORY_TEST_TOKEN": "snapshot-secret"]
         ))
         _ = try manager.start(id: "dev")
         let devRootfs = "\(base)/machines/dev/rootfs.ext4"
@@ -1326,16 +1335,35 @@ final class MachineManagerTests: XCTestCase {
         XCTAssertEqual(snapshot.note, "before upgrade")
         XCTAssertEqual(snapshot.memoryMB, 4096)
         XCTAssertEqual(snapshot.cpuCount, 4)
+        XCTAssertEqual(snapshot.address, "192.168.215.55")
+        XCTAssertEqual(snapshot.shares.map(\.hostPath), [sharePath])
+        XCTAssertEqual(snapshot.environment, ["DORY_TEST_TOKEN": "snapshot-secret"])
         XCTAssertEqual(manager.status(id: "dev")?.state, .running)
         XCTAssertEqual(try manager.listSnapshots(machineID: "dev").map(\.id), ["s1"])
         XCTAssertEqual(String(data: try Data(contentsOf: URL(fileURLWithPath: snapshot.rootfsPath)), encoding: .utf8), "snapshot-v1")
         XCTAssertEqual(snapshot.kernelPath, "\(base)/machines/dev/snapshots/s1.kernel")
         XCTAssertEqual(try String(contentsOfFile: snapshot.kernelPath, encoding: .utf8), "kernel-v1")
 
+        _ = try manager.update(
+            id: "dev",
+            memoryMB: 2048,
+            cpuCount: 2,
+            address: "192.168.215.56",
+            updatesAddress: true,
+            shares: [],
+            updatesShares: true,
+            environment: ["DORY_TEST_TOKEN": "changed-secret"],
+            updatesEnvironment: true
+        )
         try Data("snapshot-v2".utf8).write(to: URL(fileURLWithPath: devRootfs))
         try Data("kernel-v2".utf8).write(to: URL(fileURLWithPath: devKernel))
         let clone = try manager.cloneSnapshot(machineID: "dev", snapshotID: "s1", newID: "dev-copy")
         XCTAssertEqual(clone.state, .running)
+        XCTAssertEqual(clone.memoryMB, 4096)
+        XCTAssertEqual(clone.cpuCount, 4)
+        XCTAssertNil(clone.address)
+        XCTAssertEqual(clone.shares.map(\.hostPath), [sharePath])
+        XCTAssertEqual(clone.environment, ["DORY_TEST_TOKEN": "snapshot-secret"])
         XCTAssertEqual(
             String(data: try Data(contentsOf: URL(fileURLWithPath: "\(base)/machines/dev-copy/rootfs.ext4")), encoding: .utf8),
             "snapshot-v1"
@@ -1344,13 +1372,30 @@ final class MachineManagerTests: XCTestCase {
 
         let restored = try manager.restoreSnapshot(machineID: "dev", snapshotID: "s1")
         XCTAssertEqual(restored.state, .running)
+        XCTAssertEqual(restored.memoryMB, 4096)
+        XCTAssertEqual(restored.cpuCount, 4)
+        XCTAssertEqual(restored.address, "192.168.215.55")
+        XCTAssertEqual(restored.shares.map(\.hostPath), [sharePath])
+        XCTAssertEqual(restored.environment, ["DORY_TEST_TOKEN": "snapshot-secret"])
         XCTAssertEqual(String(data: try Data(contentsOf: URL(fileURLWithPath: devRootfs)), encoding: .utf8), "snapshot-v1")
         XCTAssertEqual(try String(contentsOfFile: devKernel, encoding: .utf8), "kernel-v1")
+        let restoredDefinition = try JSONDecoder().decode(
+            DoryMachineConfiguration.self,
+            from: Data(contentsOf: URL(fileURLWithPath: "\(base)/machines/dev/machine.json"))
+        )
+        XCTAssertEqual(restoredDefinition.memoryMB, 4096)
+        XCTAssertEqual(restoredDefinition.cpuCount, 4)
+        XCTAssertEqual(restoredDefinition.address, "192.168.215.55")
+        XCTAssertEqual(restoredDefinition.shares.map(\.hostPath), [sharePath])
+        XCTAssertEqual(restoredDefinition.environment, ["DORY_TEST_TOKEN": "snapshot-secret"])
 
         let bundle = "\(base)/dev.dorymachine"
         try manager.exportSnapshot(machineID: "dev", snapshotID: "s1", toPath: bundle)
         XCTAssertTrue(FileManager.default.fileExists(atPath: bundle))
-        XCTAssertNil(try Data(contentsOf: URL(fileURLWithPath: bundle)).range(of: Data(base.utf8)))
+        let bundleData = try Data(contentsOf: URL(fileURLWithPath: bundle))
+        XCTAssertNil(bundleData.range(of: Data(base.utf8)))
+        XCTAssertNil(bundleData.range(of: Data("snapshot-secret".utf8)))
+        XCTAssertNil(bundleData.range(of: Data("192.168.215.55".utf8)))
 
         try manager.deleteSnapshot(machineID: "dev", snapshotID: "s1")
         XCTAssertTrue(try manager.listSnapshots(machineID: "dev").isEmpty)
@@ -1361,9 +1406,15 @@ final class MachineManagerTests: XCTestCase {
         XCTAssertEqual(try manager.listSnapshots(machineID: "dev").map(\.id), ["s1"])
         XCTAssertEqual(String(data: try Data(contentsOf: URL(fileURLWithPath: imported.rootfsPath)), encoding: .utf8), "snapshot-v1")
         XCTAssertEqual(try String(contentsOfFile: imported.kernelPath, encoding: .utf8), "kernel-v1")
+        XCTAssertNil(imported.address)
+        XCTAssertTrue(imported.shares.isEmpty)
+        XCTAssertTrue(imported.environment.isEmpty)
 
         let portable = try manager.cloneSnapshot(machineID: "dev", snapshotID: "s1", newID: "dev-portable")
         XCTAssertEqual(portable.state, .running)
+        XCTAssertNil(portable.address)
+        XCTAssertTrue(portable.shares.isEmpty)
+        XCTAssertTrue(portable.environment.isEmpty)
         try manager.deleteSnapshot(machineID: "dev", snapshotID: "s1")
         _ = try manager.stop(id: "dev-portable")
         XCTAssertEqual(try manager.start(id: "dev-portable").state, .running)

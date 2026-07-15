@@ -273,6 +273,9 @@ public struct DoryMachineSnapshot: Sendable, Equatable, Hashable, Codable {
     public var kernelPath: String
     public var memoryMB: UInt64
     public var cpuCount: Int
+    public var address: String?
+    public var shares: [DoryMachineShareConfiguration]
+    public var environment: [String: String]
 
     public init(
         id: String,
@@ -283,7 +286,10 @@ public struct DoryMachineSnapshot: Sendable, Equatable, Hashable, Codable {
         sizeBytes: Int64,
         kernelPath: String,
         memoryMB: UInt64,
-        cpuCount: Int
+        cpuCount: Int,
+        address: String? = nil,
+        shares: [DoryMachineShareConfiguration] = [],
+        environment: [String: String] = [:]
     ) {
         self.id = id
         self.machineID = machineID
@@ -294,6 +300,9 @@ public struct DoryMachineSnapshot: Sendable, Equatable, Hashable, Codable {
         self.kernelPath = kernelPath
         self.memoryMB = memoryMB
         self.cpuCount = cpuCount
+        self.address = address
+        self.shares = shares
+        self.environment = environment
     }
 }
 
@@ -756,7 +765,10 @@ public final class MachineManager: @unchecked Sendable {
                 sizeBytes: Self.fileSize(path: rootfsPath),
                 kernelPath: kernelPath,
                 memoryMB: machine.memoryMB,
-                cpuCount: machine.cpuCount
+                cpuCount: machine.cpuCount,
+                address: machine.address,
+                shares: machine.shares,
+                environment: machine.environment
             )
             try persistSnapshot(snapshot)
         } catch {
@@ -832,7 +844,10 @@ public final class MachineManager: @unchecked Sendable {
             kernelPath: snapshot.kernelPath,
             rootfsPath: snapshot.rootfsPath,
             memoryMB: snapshot.memoryMB,
-            cpuCount: snapshot.cpuCount
+            cpuCount: snapshot.cpuCount,
+            address: nil,
+            shares: snapshot.shares,
+            environment: snapshot.environment
         )
         _ = try create(machine)
         do {
@@ -854,11 +869,29 @@ public final class MachineManager: @unchecked Sendable {
         defer { operationLock.unlock() }
         let snapshot = try loadSnapshot(machineID: machineID, snapshotID: snapshotID)
         let (machine, wasRunning) = try configurationAndRunningState(id: machineID)
+        let address = try Self.normalizedAddress(snapshot.address)
+        try Self.validateShares(snapshot.shares)
+        try Self.validateEnvironment(snapshot.environment)
+        var restoredMachine = machine
+        restoredMachine.memoryMB = snapshot.memoryMB
+        restoredMachine.cpuCount = snapshot.cpuCount
+        restoredMachine.address = address
+        restoredMachine.shares = snapshot.shares
+        restoredMachine.environment = snapshot.environment
         if wasRunning {
             _ = try stop(id: machineID)
         }
         do {
-            try restoreManagedArtifacts(machine: machine, snapshot: snapshot)
+            try restoreManagedArtifacts(machine: machine, snapshot: snapshot) {
+                try persist(restoredMachine)
+                lock.lock()
+                if var entry = machines[machineID] {
+                    entry.configuration = restoredMachine
+                    entry.currentBalloonTargetMB = nil
+                    machines[machineID] = entry
+                }
+                lock.unlock()
+            }
             let status = wasRunning
                 ? try start(id: machineID)
                 : (status(id: machineID) ?? DoryMachineStatus(id: machineID, state: .stopped))
@@ -958,6 +991,9 @@ public final class MachineManager: @unchecked Sendable {
                 throw MachineManagerError.persistence("invalid snapshot metadata")
             }
             try Self.validateResources(memoryMB: snapshot.memoryMB, cpuCount: snapshot.cpuCount)
+            snapshot.address = nil
+            snapshot.shares = []
+            snapshot.environment = [:]
             importedMachineID = snapshot.machineID
             try ensurePrivateSnapshotDirectory(machineID: snapshot.machineID)
             if FileManager.default.fileExists(atPath: snapshotMetadataPath(machineID: snapshot.machineID, snapshotID: snapshot.id)) ||
@@ -1290,7 +1326,8 @@ public final class MachineManager: @unchecked Sendable {
 
     private func restoreManagedArtifacts(
         machine: DoryMachineConfiguration,
-        snapshot: DoryMachineSnapshot
+        snapshot: DoryMachineSnapshot,
+        commit: () throws -> Void
     ) throws {
         let directory = machineStateDirectory(id: machine.id)
         let token = UUID().uuidString
@@ -1309,6 +1346,7 @@ public final class MachineManager: @unchecked Sendable {
         do {
             try Self.cloneOrCopyFile(source: snapshot.rootfsPath, destination: machine.rootfsPath)
             try Self.cloneOrCopyFile(source: snapshot.kernelPath, destination: machine.kernelPath)
+            try commit()
         } catch {
             var rollbackFailures: [String] = []
             do {
@@ -1803,6 +1841,9 @@ private enum MachineSnapshotBundle {
         var exportedSnapshot = snapshot
         exportedSnapshot.rootfsPath = ""
         exportedSnapshot.kernelPath = ""
+        exportedSnapshot.address = nil
+        exportedSnapshot.shares = []
+        exportedSnapshot.environment = [:]
         exportedSnapshot.sizeBytes = Int64(rootfsLength)
         let metadata = try JSONEncoder().encode(exportedSnapshot)
         guard !metadata.isEmpty, UInt64(metadata.count) <= maximumMetadataLength else {

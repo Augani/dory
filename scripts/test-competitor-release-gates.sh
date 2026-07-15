@@ -809,6 +809,15 @@ grep -F 'snapshotKernelTemporaryMarker = ".kernel.tmp-"' \
 grep -F 'testSnapshotsCopyRestoreCloneExportImportAndDeleteArtifacts' \
   dory-core-swift/Tests/DorydKitTests/MachineManagerTests.swift >/dev/null \
   || fail "portable machine bundles no longer prove bootable self-contained import"
+grep -F 'restoredDefinition.environment, ["DORY_TEST_TOKEN": "snapshot-secret"]' \
+  dory-core-swift/Tests/DorydKitTests/MachineManagerTests.swift >/dev/null \
+  || fail "machine snapshot restore no longer proves its complete configuration is persisted"
+grep -F 'exportedSnapshot.environment = [:]' \
+  dory-core-swift/Sources/DorydKit/MachineManager.swift >/dev/null \
+  || fail "portable machine bundles can leak host environment secrets"
+grep -F 'XCTAssertNil(bundleData.range(of: Data("snapshot-secret".utf8)))' \
+  dory-core-swift/Tests/DorydKitTests/MachineManagerTests.swift >/dev/null \
+  || fail "portable machine secret redaction no longer has a regression test"
 grep -F 'testRestoreRollsBackRootfsWhenKernelCopyFails' \
   dory-core-swift/Tests/DorydKitTests/MachineManagerTests.swift >/dev/null \
   || fail "machine restore can publish a mixed rootfs and kernel pair"
