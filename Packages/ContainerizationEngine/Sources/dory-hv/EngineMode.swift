@@ -483,14 +483,21 @@ enum EngineMode {
             note("sharing \(share.path) as virtiofs tag \(share.tag)\(share.readOnly ? " (ro)" : "")\(share.dax ? " (dax)" : "")")
         }
 
-        let datapathSocket = state + "/net.sock"
-        let lanDatapathSocket = state + "/lan-net.sock"
-        let apiSocket = state + "/gvproxy-api.sock"
-        let shutdownSocket = state + "/shutdown.sock"
-        let gvproxyHealthSocket = state + "/gvproxy-health.sock"
-        try? FileManager.default.removeItem(atPath: datapathSocket)
-        try? FileManager.default.removeItem(atPath: lanDatapathSocket)
-        try? FileManager.default.removeItem(atPath: apiSocket)
+        let networkPaths = try GVProxyRuntimePaths(
+            stateDirectory: state,
+            processIdentifier: getpid()
+        )
+        try? FileManager.default.removeItem(atPath: networkPaths.directory)
+        try FileManager.default.createDirectory(
+            atPath: networkPaths.directory,
+            withIntermediateDirectories: false
+        )
+        defer { try? FileManager.default.removeItem(atPath: networkPaths.directory) }
+        let datapathSocket = networkPaths.datapathSocket
+        let lanDatapathSocket = networkPaths.lanDatapathSocket
+        let apiSocket = networkPaths.apiSocket
+        let shutdownSocket = networkPaths.shutdownSocket
+        let gvproxyHealthSocket = networkPaths.healthSocket
         // Install before spawning gvproxy. A signal arriving during the remaining VM setup must use
         // the watchdog cleanup path rather than taking the default signal action and orphaning it.
         installGracefulShutdown(shutdownSocket: shutdownSocket)
@@ -542,7 +549,7 @@ enum EngineMode {
             if primaryReady && lanReady { break }
             usleep(50_000)
         }
-        let virtioNet = try VirtioNet(socketPath: state + "/vm-net.sock", remotePath: datapathSocket)
+        let virtioNet = try VirtioNet(socketPath: networkPaths.vmSocket, remotePath: datapathSocket)
         backends.append(virtioNet)
         var sourcePreservingLANClient: SourcePreservingLANPrivilegedClient?
         var sourcePreservingLANSessionID: String?
@@ -606,7 +613,7 @@ enum EngineMode {
         )
         installClockSyncSignal(vsock: vsock)
         if reclaimModeIsSenpai {
-            let reclaimSocket = state + "/reclaim.sock"
+            let reclaimSocket = networkPaths.reclaimSocket
             publishForward(local: reclaimSocket, guestPort: 2378, apiSocket: apiSocket, label: "host-pressure reclaim channel")
             installHostPressureReclaim(reclaimSocket: reclaimSocket)
         }
