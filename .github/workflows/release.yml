@@ -1027,6 +1027,7 @@ jobs:
               "data_drive_preserved": "PASS",
               "zap_preserved_data": "PASS",
               "zap_removed_transient_state": "PASS",
+              "docker_plugin_restoration": "PASS",
               "profile_restoration": "PASS",
               "status": "PASS",
           }

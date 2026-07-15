@@ -1816,6 +1816,8 @@ for required in (
     assert required in homebrew_install, f"exact-candidate Homebrew install gate omits: {required}"
 assert "Verify Homebrew install evidence binding" in release, \
     "publication does not revalidate Homebrew install evidence"
+assert '"docker_plugin_restoration": "PASS"' in release, \
+    "publication does not require Homebrew to restore existing Docker plugins"
 assert release.index("name: Clean exact-candidate Homebrew install and uninstall") \
     < release.index("name: Exact candidate 8-hour + 25-hour qualification"), \
     "duration qualification can occupy the physical runner before Homebrew certification"
