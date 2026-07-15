@@ -60,8 +60,8 @@ final class MachineManagerTests: XCTestCase {
 
         let created = try manager.create(DoryMachineConfiguration(
             id: "dev",
-            kernelPath: "/tmp/kernel",
-            rootfsPath: "/tmp/rootfs"
+            kernelPath: doryTestKernelPath,
+            rootfsPath: doryTestRootfsPath
         ))
         XCTAssertEqual(created.state, .created)
 
@@ -76,6 +76,201 @@ final class MachineManagerTests: XCTestCase {
 
         try manager.delete(id: "dev")
         XCTAssertTrue(manager.list().isEmpty)
+    }
+
+    func testCreateRejectsInvalidKernelAndRootfsWithoutPublishingState() throws {
+        let base = "/tmp/dory-machine-artifact-validation-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let sources = "\(base)/sources"
+        try FileManager.default.createDirectory(atPath: sources, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let emptyRootfs = "\(sources)/empty.ext4"
+        let directoryRootfs = "\(sources)/directory.ext4"
+        let symlinkRootfs = "\(sources)/symlink.ext4"
+        try Data().write(to: URL(fileURLWithPath: emptyRootfs))
+        try FileManager.default.createDirectory(atPath: directoryRootfs, withIntermediateDirectories: true)
+        XCTAssertEqual(symlink(doryTestRootfsPath, symlinkRootfs), 0)
+        let manager = MachineManager(configuration: MachineManagerConfiguration(
+            vmmExecutablePath: "/bin/sleep",
+            stateDirectory: "\(base)/machines",
+            baseArguments: ["30"],
+            passMachineArguments: false,
+            requiresReadyHandoff: false
+        ))
+        let invalidArtifacts = [
+            ("missing-kernel", "\(sources)/missing-kernel", doryTestRootfsPath),
+            ("missing-rootfs", doryTestKernelPath, "\(sources)/missing.ext4"),
+            ("empty-rootfs", doryTestKernelPath, emptyRootfs),
+            ("directory-rootfs", doryTestKernelPath, directoryRootfs),
+            ("symlink-rootfs", doryTestKernelPath, symlinkRootfs),
+        ]
+
+        for (id, kernel, rootfs) in invalidArtifacts {
+            XCTAssertThrowsError(try manager.create(DoryMachineConfiguration(
+                id: id,
+                kernelPath: kernel,
+                rootfsPath: rootfs
+            )), id)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: "\(base)/machines/\(id)"), id)
+        }
+        XCTAssertTrue(manager.list().isEmpty)
+    }
+
+    func testCreatePublishesOnlyPrivateManagedRootfs() throws {
+        let base = "/tmp/dory-machine-managed-rootfs-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let sourceRootfs = "\(base)/source.ext4"
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        try Data("source-disk".utf8).write(to: URL(fileURLWithPath: sourceRootfs))
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let manager = MachineManager(configuration: MachineManagerConfiguration(
+            vmmExecutablePath: "/bin/sleep",
+            stateDirectory: "\(base)/machines",
+            baseArguments: ["30"],
+            passMachineArguments: false,
+            requiresReadyHandoff: false
+        ))
+        defer { try? manager.delete(id: "dev") }
+
+        _ = try manager.create(DoryMachineConfiguration(
+            id: "dev",
+            kernelPath: doryTestKernelPath,
+            rootfsPath: sourceRootfs
+        ))
+        let managedRootfs = "\(base)/machines/dev/rootfs.ext4"
+        let definition = try JSONDecoder().decode(
+            DoryMachineConfiguration.self,
+            from: Data(contentsOf: URL(fileURLWithPath: "\(base)/machines/dev/machine.json"))
+        )
+        XCTAssertEqual(definition.rootfsPath, managedRootfs)
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: managedRootfs)), Data("source-disk".utf8))
+        let attributes = try FileManager.default.attributesOfItem(atPath: managedRootfs)
+        XCTAssertEqual((attributes[.posixPermissions] as? NSNumber)?.intValue ?? 0, 0o600)
+    }
+
+    func testLiveRootfsSubstitutionCannotReachStartOrSnapshot() throws {
+        let base = "/tmp/dory-machine-live-rootfs-tamper-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let sentinel = "\(base)/sentinel"
+        try Data("host-private-data".utf8).write(to: URL(fileURLWithPath: sentinel))
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: sentinel)
+        let manager = MachineManager(configuration: MachineManagerConfiguration(
+            vmmExecutablePath: "/bin/sleep",
+            stateDirectory: "\(base)/machines",
+            baseArguments: ["30"],
+            passMachineArguments: false,
+            requiresReadyHandoff: false
+        ))
+        defer { try? manager.delete(id: "dev") }
+        _ = try manager.create(DoryMachineConfiguration(
+            id: "dev",
+            kernelPath: doryTestKernelPath,
+            rootfsPath: doryTestRootfsPath
+        ))
+        let managedRootfs = "\(base)/machines/dev/rootfs.ext4"
+
+        try FileManager.default.removeItem(atPath: managedRootfs)
+        XCTAssertEqual(symlink(sentinel, managedRootfs), 0)
+        XCTAssertThrowsError(try manager.start(id: "dev"))
+        XCTAssertThrowsError(try manager.snapshot(id: "dev", snapshotID: "symlink"))
+
+        try FileManager.default.removeItem(atPath: managedRootfs)
+        XCTAssertEqual(link(sentinel, managedRootfs), 0)
+        XCTAssertThrowsError(try manager.start(id: "dev"))
+        XCTAssertThrowsError(try manager.snapshot(id: "dev", snapshotID: "hardlink"))
+        XCTAssertEqual(try String(contentsOfFile: sentinel, encoding: .utf8), "host-private-data")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: "\(base)/machines/dev/snapshots/symlink.ext4"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: "\(base)/machines/dev/snapshots/hardlink.ext4"))
+    }
+
+    func testSnapshotDirectorySubstitutionCannotRedirectWrites() throws {
+        let base = "/tmp/dory-machine-snapshot-directory-tamper-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let redirected = "\(base)/redirected"
+        try FileManager.default.createDirectory(atPath: redirected, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let manager = MachineManager(configuration: MachineManagerConfiguration(
+            vmmExecutablePath: "/bin/sleep",
+            stateDirectory: "\(base)/machines",
+            baseArguments: ["30"],
+            passMachineArguments: false,
+            requiresReadyHandoff: false
+        ))
+        defer { try? manager.delete(id: "dev") }
+        _ = try manager.create(DoryMachineConfiguration(
+            id: "dev",
+            kernelPath: doryTestKernelPath,
+            rootfsPath: doryTestRootfsPath
+        ))
+        let snapshotsPath = "\(base)/machines/dev/snapshots"
+        XCTAssertEqual(symlink(redirected, snapshotsPath), 0)
+
+        XCTAssertThrowsError(try manager.snapshot(id: "dev", snapshotID: "redirected"))
+        XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: redirected).isEmpty)
+        XCTAssertTrue(try manager.listSnapshots(machineID: "dev").isEmpty)
+    }
+
+    func testPersistedRootfsRedirectIsNotLoaded() throws {
+        let base = "/tmp/dory-machine-persisted-rootfs-tamper-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let sentinel = "\(base)/sentinel"
+        try Data("host-private-data".utf8).write(to: URL(fileURLWithPath: sentinel))
+        let configuration = MachineManagerConfiguration(
+            vmmExecutablePath: "/bin/sleep",
+            stateDirectory: "\(base)/machines",
+            baseArguments: ["30"],
+            passMachineArguments: false,
+            requiresReadyHandoff: false
+        )
+        let manager = MachineManager(configuration: configuration)
+        _ = try manager.create(DoryMachineConfiguration(
+            id: "dev",
+            kernelPath: doryTestKernelPath,
+            rootfsPath: doryTestRootfsPath
+        ))
+        let definitionPath = "\(base)/machines/dev/machine.json"
+        var definition = try JSONDecoder().decode(
+            DoryMachineConfiguration.self,
+            from: Data(contentsOf: URL(fileURLWithPath: definitionPath))
+        )
+        definition.rootfsPath = sentinel
+        try JSONEncoder().encode(definition).write(to: URL(fileURLWithPath: definitionPath), options: .atomic)
+
+        let reloaded = MachineManager(configuration: configuration)
+        XCTAssertTrue(reloaded.list().isEmpty)
+        XCTAssertEqual(try String(contentsOfFile: sentinel, encoding: .utf8), "host-private-data")
+    }
+
+    func testPersistedMachineDirectorySymlinkIsNotLoaded() throws {
+        let base = "/tmp/dory-machine-directory-tamper-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let external = "\(base)/external-dev"
+        let machines = "\(base)/machines"
+        try FileManager.default.createDirectory(atPath: external, withIntermediateDirectories: true)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: external)
+        try FileManager.default.createDirectory(atPath: machines, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let visibleRootfs = "\(machines)/dev/rootfs.ext4"
+        let externalRootfs = "\(external)/rootfs.ext4"
+        try Data("redirected-rootfs".utf8).write(to: URL(fileURLWithPath: externalRootfs))
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: externalRootfs)
+        let definition = DoryMachineConfiguration(
+            id: "dev",
+            kernelPath: doryTestKernelPath,
+            rootfsPath: visibleRootfs
+        )
+        try JSONEncoder().encode(definition).write(
+            to: URL(fileURLWithPath: "\(external)/machine.json")
+        )
+        XCTAssertEqual(symlink(external, "\(machines)/dev"), 0)
+
+        let manager = MachineManager(configuration: MachineManagerConfiguration(
+            vmmExecutablePath: "/bin/sleep",
+            stateDirectory: machines,
+            baseArguments: ["30"],
+            passMachineArguments: false,
+            requiresReadyHandoff: false
+        ))
+        XCTAssertTrue(manager.list().isEmpty)
+        XCTAssertEqual(try String(contentsOfFile: externalRootfs, encoding: .utf8), "redirected-rootfs")
     }
 
     func testDeleteFailurePreservesPersistedStoppedMachine() throws {
@@ -95,8 +290,8 @@ final class MachineManagerTests: XCTestCase {
 
         _ = try manager.create(DoryMachineConfiguration(
             id: "dev",
-            kernelPath: "/tmp/kernel",
-            rootfsPath: "/tmp/rootfs"
+            kernelPath: doryTestKernelPath,
+            rootfsPath: doryTestRootfsPath
         ))
         try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: base)
 
@@ -134,8 +329,10 @@ final class MachineManagerTests: XCTestCase {
     func testManagerRemovesInterruptedMachineMetadataOnStartup() throws {
         let base = "/tmp/dory-machine-metadata-cleanup-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         let temporaryMetadata = "\(base)/dev/.dory-machine-metadata-fixture"
+        let temporaryRootfs = "\(base)/dev/.rootfs.ext4.tmp-fixture"
         try FileManager.default.createDirectory(atPath: "\(base)/dev", withIntermediateDirectories: true)
         try Data("partial".utf8).write(to: URL(fileURLWithPath: temporaryMetadata))
+        try Data("partial-disk".utf8).write(to: URL(fileURLWithPath: temporaryRootfs))
         defer { try? FileManager.default.removeItem(atPath: base) }
 
         _ = MachineManager(configuration: MachineManagerConfiguration(
@@ -147,6 +344,7 @@ final class MachineManagerTests: XCTestCase {
         ))
 
         XCTAssertFalse(FileManager.default.fileExists(atPath: temporaryMetadata))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: temporaryRootfs))
     }
 
     func testRejectsDuplicateAndInvalidMachineIDs() throws {
@@ -162,14 +360,22 @@ final class MachineManagerTests: XCTestCase {
 
         XCTAssertThrowsError(try manager.create(DoryMachineConfiguration(
             id: "bad/id",
-            kernelPath: "/tmp/kernel",
-            rootfsPath: "/tmp/rootfs"
+            kernelPath: doryTestKernelPath,
+            rootfsPath: doryTestRootfsPath
         ))) { error in
             XCTAssertEqual(error as? MachineManagerError, .invalidID("bad/id"))
         }
 
-        _ = try manager.create(DoryMachineConfiguration(id: "dev", kernelPath: "/tmp/kernel", rootfsPath: "/tmp/rootfs"))
-        XCTAssertThrowsError(try manager.create(DoryMachineConfiguration(id: "dev", kernelPath: "/tmp/kernel", rootfsPath: "/tmp/rootfs"))) { error in
+        _ = try manager.create(DoryMachineConfiguration(
+            id: "dev",
+            kernelPath: doryTestKernelPath,
+            rootfsPath: doryTestRootfsPath
+        ))
+        XCTAssertThrowsError(try manager.create(DoryMachineConfiguration(
+            id: "dev",
+            kernelPath: doryTestKernelPath,
+            rootfsPath: doryTestRootfsPath
+        ))) { error in
             XCTAssertEqual(error as? MachineManagerError, .duplicateMachine("dev"))
         }
     }
@@ -191,8 +397,8 @@ final class MachineManagerTests: XCTestCase {
 
         XCTAssertThrowsError(try manager.create(DoryMachineConfiguration(
             id: "dev",
-            kernelPath: "/tmp/kernel",
-            rootfsPath: "/tmp/rootfs"
+            kernelPath: doryTestKernelPath,
+            rootfsPath: doryTestRootfsPath
         ))) { error in
             XCTAssertEqual(error as? MachineManagerError, .duplicateMachine("dev"))
         }
@@ -217,8 +423,8 @@ final class MachineManagerTests: XCTestCase {
         for id in [".", "..", "..."] {
             XCTAssertThrowsError(try manager.create(DoryMachineConfiguration(
                 id: id,
-                kernelPath: "/tmp/kernel",
-                rootfsPath: "/tmp/rootfs"
+                kernelPath: doryTestKernelPath,
+                rootfsPath: doryTestRootfsPath
             ))) { error in
                 XCTAssertEqual(error as? MachineManagerError, .invalidID(id))
             }
@@ -253,7 +459,7 @@ final class MachineManagerTests: XCTestCase {
                 createdISO: "2026-07-07T00:00:00Z",
                 rootfsPath: "/ignored",
                 sizeBytes: 0,
-                kernelPath: "/tmp/kernel",
+            kernelPath: doryTestKernelPath,
                 memoryMB: 2048,
                 cpuCount: 2
             ),
@@ -287,7 +493,7 @@ final class MachineManagerTests: XCTestCase {
                 createdISO: "2026-07-07T00:00:00Z",
                 rootfsPath: "/ignored",
                 sizeBytes: 0,
-                kernelPath: "/tmp/kernel",
+            kernelPath: doryTestKernelPath,
                 memoryMB: 2048,
                 cpuCount: 0
             ),
@@ -320,7 +526,7 @@ final class MachineManagerTests: XCTestCase {
                 createdISO: "2026-07-07T00:00:00Z",
                 rootfsPath: "/ignored",
                 sizeBytes: 0,
-                kernelPath: "/tmp/kernel",
+            kernelPath: doryTestKernelPath,
                 memoryMB: 2048,
                 cpuCount: 2
             ),
@@ -384,7 +590,11 @@ final class MachineManagerTests: XCTestCase {
         ))
         defer { try? manager.delete(id: "dev") }
 
-        _ = try manager.create(DoryMachineConfiguration(id: "dev", kernelPath: "/tmp/kernel", rootfsPath: sourceRootfs))
+        _ = try manager.create(DoryMachineConfiguration(
+            id: "dev",
+            kernelPath: doryTestKernelPath,
+            rootfsPath: sourceRootfs
+        ))
         let devRootfs = "\(base)/machines/dev/rootfs.ext4"
         try Data("live-disk-v1".utf8).write(to: URL(fileURLWithPath: devRootfs))
         let snapshot = try manager.snapshot(id: "dev", createdISO: "2026-07-07T00:00:00Z", snapshotID: "s1")
@@ -424,7 +634,7 @@ final class MachineManagerTests: XCTestCase {
 
         _ = try manager.create(DoryMachineConfiguration(
             id: "dev",
-            kernelPath: "/tmp/kernel",
+            kernelPath: doryTestKernelPath,
             rootfsPath: sourceRootfs
         ))
         var snapshot = try manager.snapshot(id: "dev", snapshotID: "s1")
@@ -465,7 +675,7 @@ final class MachineManagerTests: XCTestCase {
 
         _ = try manager.create(DoryMachineConfiguration(
             id: "dev",
-            kernelPath: "/tmp/kernel",
+            kernelPath: doryTestKernelPath,
             rootfsPath: sourceRootfs
         ))
         let snapshot = try manager.snapshot(id: "dev", snapshotID: "s1")
@@ -509,7 +719,7 @@ final class MachineManagerTests: XCTestCase {
 
         _ = try manager.create(DoryMachineConfiguration(
             id: "dev",
-            kernelPath: "/tmp/kernel",
+            kernelPath: doryTestKernelPath,
             rootfsPath: sourceRootfs
         ))
         let snapshot = try manager.snapshot(id: "dev", snapshotID: "s1")
@@ -529,10 +739,12 @@ final class MachineManagerTests: XCTestCase {
         let base = "/tmp/dory-machine-snapshot-cleanup-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         let directory = "\(base)/dev/snapshots"
         try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory)
         let quarantinedRootfs = "\(directory)/.dory-snapshot-delete-s1-fixture.ext4"
         let quarantinedMetadata = "\(directory)/.dory-snapshot-delete-s1-fixture.json"
         let temporaryMetadata = "\(directory)/.dory-snapshot-metadata-s1-fixture"
-        for path in [quarantinedRootfs, quarantinedMetadata, temporaryMetadata] {
+        let temporaryRootfs = "\(directory)/.s1.ext4.tmp-fixture"
+        for path in [quarantinedRootfs, quarantinedMetadata, temporaryMetadata, temporaryRootfs] {
             try Data("stale".utf8).write(to: URL(fileURLWithPath: path))
         }
         defer { try? FileManager.default.removeItem(atPath: base) }
@@ -548,6 +760,7 @@ final class MachineManagerTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: quarantinedRootfs))
         XCTAssertFalse(FileManager.default.fileExists(atPath: quarantinedMetadata))
         XCTAssertFalse(FileManager.default.fileExists(atPath: temporaryMetadata))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: temporaryRootfs))
     }
 
     func testMachineDefinitionsPersistAcrossManagerRestart() throws {
@@ -567,8 +780,8 @@ final class MachineManagerTests: XCTestCase {
         let manager = MachineManager(configuration: config)
         _ = try manager.create(DoryMachineConfiguration(
             id: "dev",
-            kernelPath: "/tmp/kernel",
-            rootfsPath: "/tmp/rootfs",
+            kernelPath: doryTestKernelPath,
+            rootfsPath: doryTestRootfsPath,
             memoryMB: 4096,
             cpuCount: 4,
             shares: [
@@ -624,8 +837,8 @@ final class MachineManagerTests: XCTestCase {
 
         _ = try manager.create(DoryMachineConfiguration(
             id: "dev",
-            kernelPath: "/tmp/kernel",
-            rootfsPath: "/tmp/rootfs",
+            kernelPath: doryTestKernelPath,
+            rootfsPath: doryTestRootfsPath,
             shares: [
                 DoryMachineShareConfiguration(
                     tag: "src",
@@ -652,20 +865,24 @@ final class MachineManagerTests: XCTestCase {
         )
     }
 
-    func testLegacyMachineDefinitionsLoadWithoutShareField() throws {
-        let base = "/tmp/dory-machine-legacy-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+    func testMachineDefinitionsLoadWithoutOptionalShareField() throws {
+        let base = "/tmp/dory-machine-optional-fields-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         defer { try? FileManager.default.removeItem(atPath: base) }
         try FileManager.default.createDirectory(atPath: "\(base)/dev", withIntermediateDirectories: true)
-        let legacyJSON = Data("""
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: "\(base)/dev")
+        let rootfsPath = "\(base)/dev/rootfs.ext4"
+        try Data("managed-rootfs".utf8).write(to: URL(fileURLWithPath: rootfsPath))
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: rootfsPath)
+        let definition = Data("""
         {
           "id": "dev",
-          "kernelPath": "/tmp/kernel",
-          "rootfsPath": "/tmp/rootfs",
+          "kernelPath": "\(doryTestKernelPath)",
+          "rootfsPath": "\(rootfsPath)",
           "memoryMB": 2048,
           "cpuCount": 2
         }
         """.utf8)
-        try legacyJSON.write(to: URL(fileURLWithPath: "\(base)/dev/machine.json"))
+        try definition.write(to: URL(fileURLWithPath: "\(base)/dev/machine.json"))
 
         let manager = MachineManager(configuration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
@@ -684,12 +901,16 @@ final class MachineManagerTests: XCTestCase {
     func testPersistedInvalidResourcesCannotReachTheVMM() throws {
         let base = "/tmp/dory-machine-invalid-persisted-resources-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         try FileManager.default.createDirectory(atPath: "\(base)/dev", withIntermediateDirectories: true)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: "\(base)/dev")
         defer { try? FileManager.default.removeItem(atPath: base) }
+        let rootfsPath = "\(base)/dev/rootfs.ext4"
+        try Data("managed-rootfs".utf8).write(to: URL(fileURLWithPath: rootfsPath))
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: rootfsPath)
         try Data("""
         {
           "id": "dev",
-          "kernelPath": "/tmp/kernel",
-          "rootfsPath": "/tmp/rootfs",
+          "kernelPath": "\(doryTestKernelPath)",
+          "rootfsPath": "\(rootfsPath)",
           "memoryMB": 2048,
           "cpuCount": 0
         }
@@ -725,8 +946,8 @@ final class MachineManagerTests: XCTestCase {
 
         _ = try manager.create(DoryMachineConfiguration(
             id: "dev",
-            kernelPath: "/tmp/kernel",
-            rootfsPath: "/tmp/rootfs",
+            kernelPath: doryTestKernelPath,
+            rootfsPath: doryTestRootfsPath,
             memoryMB: 2048,
             cpuCount: 2,
             address: "192.168.215.40"
@@ -781,8 +1002,8 @@ final class MachineManagerTests: XCTestCase {
         defer { try? manager.delete(id: "dev") }
         _ = try manager.create(DoryMachineConfiguration(
             id: "dev",
-            kernelPath: "/tmp/kernel",
-            rootfsPath: "/tmp/rootfs",
+            kernelPath: doryTestKernelPath,
+            rootfsPath: doryTestRootfsPath,
             memoryMB: 2048,
             cpuCount: 2
         ))
@@ -812,8 +1033,8 @@ final class MachineManagerTests: XCTestCase {
 
         XCTAssertThrowsError(try manager.create(DoryMachineConfiguration(
             id: "dev",
-            kernelPath: "/tmp/kernel",
-            rootfsPath: "/tmp/rootfs",
+            kernelPath: doryTestKernelPath,
+            rootfsPath: doryTestRootfsPath,
             address: "dev.dory.local"
         ))) { error in
             XCTAssertEqual(error as? MachineManagerError, .invalidAddress("dev.dory.local"))
@@ -839,8 +1060,8 @@ final class MachineManagerTests: XCTestCase {
         ] {
             let configuration = DoryMachineConfiguration(
                 id: "invalid-\(memory)-\(cpus)",
-                kernelPath: "/tmp/kernel",
-                rootfsPath: "/tmp/rootfs",
+            kernelPath: doryTestKernelPath,
+                rootfsPath: doryTestRootfsPath,
                 memoryMB: memory,
                 cpuCount: cpus
             )
@@ -850,8 +1071,8 @@ final class MachineManagerTests: XCTestCase {
 
         _ = try manager.create(DoryMachineConfiguration(
             id: "dev",
-            kernelPath: "/tmp/kernel",
-            rootfsPath: "/tmp/rootfs",
+            kernelPath: doryTestKernelPath,
+            rootfsPath: doryTestRootfsPath,
             memoryMB: 2048,
             cpuCount: 2
         ))
@@ -882,7 +1103,7 @@ final class MachineManagerTests: XCTestCase {
 
         _ = try manager.create(DoryMachineConfiguration(
             id: "dev",
-            kernelPath: "/tmp/kernel",
+            kernelPath: doryTestKernelPath,
             rootfsPath: sourceRootfs
         ))
 
@@ -918,7 +1139,7 @@ final class MachineManagerTests: XCTestCase {
 
         _ = try manager.create(DoryMachineConfiguration(
             id: "dev",
-            kernelPath: "/tmp/kernel",
+            kernelPath: doryTestKernelPath,
             rootfsPath: sourceRootfs,
             memoryMB: 4096,
             cpuCount: 4
@@ -985,7 +1206,7 @@ final class MachineManagerTests: XCTestCase {
         defer { try? manager.delete(id: "dev") }
         _ = try manager.create(DoryMachineConfiguration(
             id: "dev",
-            kernelPath: "/tmp/kernel",
+            kernelPath: doryTestKernelPath,
             rootfsPath: sourceRootfs
         ))
         _ = try manager.snapshot(id: "dev", snapshotID: "s1")
@@ -1024,7 +1245,7 @@ final class MachineManagerTests: XCTestCase {
         defer { try? manager.delete(id: "dev") }
         _ = try manager.create(DoryMachineConfiguration(
             id: "dev",
-            kernelPath: "/tmp/kernel",
+            kernelPath: doryTestKernelPath,
             rootfsPath: sourceRootfs
         ))
         _ = try manager.snapshot(id: "dev", snapshotID: "s1")
@@ -1058,8 +1279,8 @@ final class MachineManagerTests: XCTestCase {
 
         _ = try manager.create(DoryMachineConfiguration(
             id: "dev",
-            kernelPath: "/tmp/kernel",
-            rootfsPath: "/tmp/rootfs"
+            kernelPath: doryTestKernelPath,
+            rootfsPath: doryTestRootfsPath
         ))
 
         let starting = try manager.start(id: "dev")
@@ -1106,8 +1327,8 @@ final class MachineManagerTests: XCTestCase {
 
         _ = try manager.create(DoryMachineConfiguration(
             id: id,
-            kernelPath: "/tmp/kernel",
-            rootfsPath: "/tmp/rootfs"
+            kernelPath: doryTestKernelPath,
+            rootfsPath: doryTestRootfsPath
         ))
         let starting = try manager.start(id: id)
         let handoffPath = try XCTUnwrap(starting.handoffSocketPath)
@@ -1135,8 +1356,8 @@ final class MachineManagerTests: XCTestCase {
 
         XCTAssertThrowsError(try manager.create(DoryMachineConfiguration(
             id: id,
-            kernelPath: "/tmp/kernel",
-            rootfsPath: "/tmp/rootfs"
+            kernelPath: doryTestKernelPath,
+            rootfsPath: doryTestRootfsPath
         ))) { error in
             XCTAssertEqual(error as? MachineManagerError, .invalidID(id))
         }
@@ -1168,8 +1389,8 @@ final class MachineManagerTests: XCTestCase {
 
         _ = try manager.create(DoryMachineConfiguration(
             id: "dev",
-            kernelPath: "/tmp/kernel",
-            rootfsPath: "/tmp/rootfs"
+            kernelPath: doryTestKernelPath,
+            rootfsPath: doryTestRootfsPath
         ))
         _ = try manager.start(id: "dev")
         for _ in 0..<100 where !FileManager.default.fileExists(atPath: capture) {
@@ -1211,8 +1432,8 @@ final class MachineManagerTests: XCTestCase {
 
         _ = try manager.create(DoryMachineConfiguration(
             id: "dev",
-            kernelPath: "/tmp/kernel",
-            rootfsPath: "/tmp/rootfs"
+            kernelPath: doryTestKernelPath,
+            rootfsPath: doryTestRootfsPath
         ))
         let starting = try manager.start(id: "dev")
         let handoffPath = try XCTUnwrap(starting.handoffSocketPath)
@@ -1254,7 +1475,11 @@ final class MachineManagerTests: XCTestCase {
             try? FileManager.default.removeItem(atPath: base)
         }
 
-        _ = try manager.create(DoryMachineConfiguration(id: "dev", kernelPath: "/tmp/kernel", rootfsPath: "/tmp/rootfs"))
+        _ = try manager.create(DoryMachineConfiguration(
+            id: "dev",
+            kernelPath: doryTestKernelPath,
+            rootfsPath: doryTestRootfsPath
+        ))
         let starting = try manager.start(id: "dev")
         let handoffPath = try XCTUnwrap(starting.handoffSocketPath)
         try sendVmmHandoff(
@@ -1317,8 +1542,8 @@ final class MachineManagerTests: XCTestCase {
 
         _ = try manager.create(DoryMachineConfiguration(
             id: "dev",
-            kernelPath: "/tmp/kernel",
-            rootfsPath: "/tmp/rootfs",
+            kernelPath: doryTestKernelPath,
+            rootfsPath: doryTestRootfsPath,
             memoryMB: 3072,
             cpuCount: 2
         ))
@@ -1369,7 +1594,11 @@ final class MachineManagerTests: XCTestCase {
             try? FileManager.default.removeItem(atPath: base)
         }
 
-        _ = try manager.create(DoryMachineConfiguration(id: "dev", kernelPath: "/tmp/kernel", rootfsPath: "/tmp/rootfs"))
+        _ = try manager.create(DoryMachineConfiguration(
+            id: "dev",
+            kernelPath: doryTestKernelPath,
+            rootfsPath: doryTestRootfsPath
+        ))
         let starting = try manager.start(id: "dev")
         try sendVmmHandoff(
             path: try XCTUnwrap(starting.handoffSocketPath),
@@ -1413,8 +1642,8 @@ final class MachineManagerTests: XCTestCase {
 
         _ = try manager.create(DoryMachineConfiguration(
             id: "dev",
-            kernelPath: "/tmp/kernel",
-            rootfsPath: "/tmp/rootfs",
+            kernelPath: doryTestKernelPath,
+            rootfsPath: doryTestRootfsPath,
             memoryMB: 4096,
             cpuCount: 2
         ))
@@ -1467,8 +1696,8 @@ final class MachineManagerTests: XCTestCase {
 
         _ = try manager.create(DoryMachineConfiguration(
             id: "dev",
-            kernelPath: "/tmp/kernel",
-            rootfsPath: "/tmp/rootfs"
+            kernelPath: doryTestKernelPath,
+            rootfsPath: doryTestRootfsPath
         ))
 
         XCTAssertThrowsError(try manager.start(id: "dev")) { error in

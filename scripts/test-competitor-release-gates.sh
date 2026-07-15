@@ -764,6 +764,36 @@ grep -F 'testImportSnapshotRejectsCorruptTruncatedTrailingAndLegacyBundles' \
 grep -F 'testSnapshotExportFailurePreservesExistingBundle' \
   dory-core-swift/Tests/DorydKitTests/MachineManagerTests.swift >/dev/null \
   || fail "failed machine snapshot exports can destroy an existing user bundle"
+grep -F 'fclonefileat(sourceDescriptor, parentDescriptor, temporaryName, 0)' \
+  dory-core-swift/Sources/DorydKit/MachineManager.swift >/dev/null \
+  || fail "machine disks are not cloned through stable source and destination handles"
+grep -F 'machine.rootfsPath == rootfsPath' \
+  dory-core-swift/Sources/DorydKit/MachineManager.swift >/dev/null \
+  || fail "persisted machine metadata can redirect the live rootfs outside managed storage"
+grep -F 'testCreateRejectsInvalidKernelAndRootfsWithoutPublishingState' \
+  dory-core-swift/Tests/DorydKitTests/MachineManagerTests.swift >/dev/null \
+  || fail "machine creation no longer proves invalid boot artifacts leave no state"
+grep -F 'testCreatePublishesOnlyPrivateManagedRootfs' \
+  dory-core-swift/Tests/DorydKitTests/MachineManagerTests.swift >/dev/null \
+  || fail "machine creation no longer proves disks are private and data-drive managed"
+grep -F 'testLiveRootfsSubstitutionCannotReachStartOrSnapshot' \
+  dory-core-swift/Tests/DorydKitTests/MachineManagerTests.swift >/dev/null \
+  || fail "live machine rootfs substitution can reach launch or snapshot operations"
+grep -F 'testPersistedRootfsRedirectIsNotLoaded' \
+  dory-core-swift/Tests/DorydKitTests/MachineManagerTests.swift >/dev/null \
+  || fail "persisted machine rootfs redirection no longer fails closed"
+grep -F 'testSnapshotDirectorySubstitutionCannotRedirectWrites' \
+  dory-core-swift/Tests/DorydKitTests/MachineManagerTests.swift >/dev/null \
+  || fail "machine snapshot directory substitution can redirect writes off the data drive"
+grep -F 'testPersistedMachineDirectorySymlinkIsNotLoaded' \
+  dory-core-swift/Tests/DorydKitTests/MachineManagerTests.swift >/dev/null \
+  || fail "persisted machine directory substitution no longer fails closed"
+grep -F 'machineDiskTemporaryPrefix = ".rootfs.ext4.tmp-"' \
+  dory-core-swift/Sources/DorydKit/MachineManager.swift >/dev/null \
+  || fail "interrupted machine disk imports can accumulate hidden data-drive storage"
+grep -F 'snapshotDiskTemporaryMarker = ".ext4.tmp-"' \
+  dory-core-swift/Sources/DorydKit/MachineManager.swift >/dev/null \
+  || fail "interrupted snapshot disk copies can accumulate hidden data-drive storage"
 for required_recipe in \
   'guest/kernel/build.sh arm64' \
   'guest/initfs/build.sh arm64' \

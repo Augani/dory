@@ -349,8 +349,10 @@ public final class MachineManager: @unchecked Sendable {
 
     private static let handoffReadyTimeoutSeconds: TimeInterval = 60
     private static let deletionQuarantinePrefix = ".dory-machine-delete-"
+    private static let machineDiskTemporaryPrefix = ".rootfs.ext4.tmp-"
     private static let machineMetadataTemporaryPrefix = ".dory-machine-metadata-"
     private static let snapshotDeletionQuarantinePrefix = ".dory-snapshot-delete-"
+    private static let snapshotDiskTemporaryMarker = ".ext4.tmp-"
     private static let snapshotMetadataTemporaryPrefix = ".dory-snapshot-metadata-"
     /// Public Apple-Silicon machine resource contract. These match the app's steppers; enforcing
     /// them again in doryd prevents CLI/XPC callers from persisting values that the VMM would later
@@ -407,6 +409,9 @@ public final class MachineManager: @unchecked Sendable {
         guard !exists else {
             throw MachineManagerError.duplicateMachine(machine.id)
         }
+        guard Self.isRegularNonemptyFile(path: machine.kernelPath) else {
+            throw MachineManagerError.persistence("machine kernel is missing or invalid: \(machine.kernelPath)")
+        }
         let fileManager = FileManager.default
         do {
             try fileManager.createDirectory(atPath: configuration.stateDirectory, withIntermediateDirectories: true)
@@ -430,6 +435,7 @@ public final class MachineManager: @unchecked Sendable {
         }
 
         let preparedMachine = try prepareMachineDisk(machine)
+        try validateManagedMachineArtifacts(preparedMachine)
         try persist(preparedMachine)
         lock.lock()
         machines[machine.id] = MachineEntry(configuration: preparedMachine, state: .created)
@@ -460,6 +466,7 @@ public final class MachineManager: @unchecked Sendable {
                 memoryMB: entry.configuration.memoryMB,
                 cpuCount: entry.configuration.cpuCount
             )
+            try validateManagedMachineArtifacts(entry.configuration)
         } catch {
             lock.unlock()
             throw error
@@ -721,6 +728,7 @@ public final class MachineManager: @unchecked Sendable {
             throw MachineManagerError.invalidID(snapshotID)
         }
         let (machine, wasRunning) = try configurationAndRunningState(id: id)
+        try ensurePrivateSnapshotDirectory(machineID: id)
         let rootfsPath = snapshotRootfsPath(machineID: id, snapshotID: snapshotID)
         guard !FileManager.default.fileExists(atPath: snapshotMetadataPath(machineID: id, snapshotID: snapshotID)),
               !FileManager.default.fileExists(atPath: rootfsPath) else {
@@ -787,6 +795,9 @@ public final class MachineManager: @unchecked Sendable {
         }
         let snapshots = ids.flatMap { id -> [DoryMachineSnapshot] in
             let directory = snapshotDirectory(machineID: id)
+            guard Self.isPrivateDirectory(path: directory) else {
+                return []
+            }
             guard let files = try? FileManager.default.contentsOfDirectory(atPath: directory) else {
                 return []
             }
@@ -913,6 +924,7 @@ public final class MachineManager: @unchecked Sendable {
                 throw MachineManagerError.persistence("invalid snapshot metadata")
             }
             try Self.validateResources(memoryMB: snapshot.memoryMB, cpuCount: snapshot.cpuCount)
+            try ensurePrivateSnapshotDirectory(machineID: snapshot.machineID)
             if FileManager.default.fileExists(atPath: snapshotMetadataPath(machineID: snapshot.machineID, snapshotID: snapshot.id)) ||
                 FileManager.default.fileExists(atPath: snapshotRootfsPath(machineID: snapshot.machineID, snapshotID: snapshot.id)) {
                 snapshot.id = Self.generatedSnapshotID(prefix: "import")
@@ -1179,21 +1191,17 @@ public final class MachineManager: @unchecked Sendable {
         guard let entry = machines[id] else {
             throw MachineManagerError.unknownMachine(id)
         }
+        try validateManagedMachineArtifacts(entry.configuration)
         return (entry.configuration, entry.process?.isRunning == true)
     }
 
     private func prepareMachineDisk(_ machine: DoryMachineConfiguration) throws -> DoryMachineConfiguration {
         let source = machine.rootfsPath
         let destination = machineRootfsPath(id: machine.id)
-        guard FileManager.default.fileExists(atPath: source),
-              source != destination else {
-            return machine
+        guard source != destination else {
+            throw MachineManagerError.persistence("machine rootfs must be imported into managed storage")
         }
         do {
-            try FileManager.default.createDirectory(
-                atPath: machineStateDirectory(id: machine.id),
-                withIntermediateDirectories: true
-            )
             try Self.cloneOrCopyFile(source: source, destination: destination)
             var copy = machine
             copy.rootfsPath = destination
@@ -1201,6 +1209,52 @@ public final class MachineManager: @unchecked Sendable {
         } catch {
             throw MachineManagerError.persistence("could not prepare rootfs for \(machine.id): \(error)")
         }
+    }
+
+    private func validateManagedMachineArtifacts(_ machine: DoryMachineConfiguration) throws {
+        guard Self.isRegularNonemptyFile(path: machine.kernelPath) else {
+            throw MachineManagerError.persistence("machine kernel is missing or invalid: \(machine.kernelPath)")
+        }
+        guard Self.isPrivateDirectory(path: machineStateDirectory(id: machine.id)) else {
+            throw MachineManagerError.persistence("machine state directory failed managed-storage validation")
+        }
+        let expectedRootfsPath = machineRootfsPath(id: machine.id)
+        guard machine.rootfsPath == expectedRootfsPath,
+              Self.isPrivateRegularFile(path: expectedRootfsPath) else {
+            throw MachineManagerError.persistence("machine rootfs failed managed-storage validation")
+        }
+    }
+
+    @discardableResult
+    private func ensurePrivateSnapshotDirectory(machineID: String) throws -> String {
+        let fileManager = FileManager.default
+        do {
+            try fileManager.createDirectory(
+                atPath: configuration.stateDirectory,
+                withIntermediateDirectories: true
+            )
+        } catch {
+            throw MachineManagerError.persistence("could not create machine state root: \(error)")
+        }
+        let machineDirectory = machineStateDirectory(id: machineID)
+        if mkdir(machineDirectory, 0o700) != 0, errno != EEXIST {
+            throw MachineManagerError.persistence(
+                "could not create machine snapshot owner: \(String(cString: strerror(errno)))"
+            )
+        }
+        guard Self.isPrivateDirectory(path: machineDirectory) else {
+            throw MachineManagerError.persistence("machine snapshot owner is not a private directory")
+        }
+        let directory = snapshotDirectory(machineID: machineID)
+        if mkdir(directory, 0o700) != 0, errno != EEXIST {
+            throw MachineManagerError.persistence(
+                "could not create machine snapshot directory: \(String(cString: strerror(errno)))"
+            )
+        }
+        guard Self.isPrivateDirectory(path: directory) else {
+            throw MachineManagerError.persistence("machine snapshot path is not a private directory")
+        }
+        return directory
     }
 
     private func persist(_ machine: DoryMachineConfiguration) throws {
@@ -1237,10 +1291,9 @@ public final class MachineManager: @unchecked Sendable {
         let directory = snapshotDirectory(machineID: snapshot.machineID)
         let temporaryPath = "\(directory)/\(Self.snapshotMetadataTemporaryPrefix)\(snapshot.id)-\(UUID().uuidString)"
         do {
-            try fileManager.createDirectory(
-                atPath: directory,
-                withIntermediateDirectories: true
-            )
+            guard Self.isPrivateDirectory(path: directory) else {
+                throw MachineManagerError.persistence("machine snapshot path is not a private directory")
+            }
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             let data = try encoder.encode(snapshot)
@@ -1271,7 +1324,8 @@ public final class MachineManager: @unchecked Sendable {
         }
         let path = snapshotMetadataPath(machineID: machineID, snapshotID: snapshotID)
         let expectedRootfsPath = snapshotRootfsPath(machineID: machineID, snapshotID: snapshotID)
-        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
+        guard Self.isPrivateDirectory(path: snapshotDirectory(machineID: machineID)),
+              let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
               let snapshot = try? JSONDecoder().decode(DoryMachineSnapshot.self, from: data),
               snapshot.machineID == machineID,
               snapshot.id == snapshotID,
@@ -1377,28 +1431,81 @@ public final class MachineManager: @unchecked Sendable {
     }
 
     private static func cloneOrCopyFile(source: String, destination: String) throws {
-        // Clone/copy into a sibling temp path first, then atomically rename over the
-        // destination. If the clone and the copy fallback both fail we throw before the
-        // rename, so an existing destination (e.g. a machine's live rootfs) is never lost.
         let destinationURL = URL(fileURLWithPath: destination)
         let parent = destinationURL.deletingLastPathComponent()
-        try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
-        let temporary = parent
-            .appendingPathComponent(".\(destinationURL.lastPathComponent).tmp-\(UUID().uuidString)")
-            .path
-        try? FileManager.default.removeItem(atPath: temporary)
+        let parentDescriptor = open(parent.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW)
+        guard parentDescriptor >= 0 else {
+            throw MachineManagerError.persistence(
+                "could not open managed rootfs directory: \(String(cString: strerror(errno)))"
+            )
+        }
+        defer { close(parentDescriptor) }
+        var parentInfo = stat()
+        guard fstat(parentDescriptor, &parentInfo) == 0,
+              isPrivateDirectory(info: parentInfo) else {
+            throw MachineManagerError.persistence("managed rootfs directory is not private")
+        }
+        let destinationName = destinationURL.lastPathComponent
+        let temporaryName = ".\(destinationName).tmp-\(UUID().uuidString)"
+        _ = unlinkat(parentDescriptor, temporaryName, 0)
+        let sourceDescriptor = open(source, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK)
+        guard sourceDescriptor >= 0 else {
+            throw MachineManagerError.persistence(
+                "could not open rootfs source: \(String(cString: strerror(errno)))"
+            )
+        }
+        defer { close(sourceDescriptor) }
+        var sourceInfo = stat()
+        guard fstat(sourceDescriptor, &sourceInfo) == 0,
+              (sourceInfo.st_mode & S_IFMT) == S_IFREG,
+              sourceInfo.st_size > 0 else {
+            throw MachineManagerError.persistence("rootfs source is not a nonempty regular file")
+        }
         do {
-            if clonefile(source, temporary, 0) != 0 {
-                try FileManager.default.copyItem(atPath: source, toPath: temporary)
+            if fclonefileat(sourceDescriptor, parentDescriptor, temporaryName, 0) != 0 {
+                _ = unlinkat(parentDescriptor, temporaryName, 0)
+                let destinationDescriptor = openat(
+                    parentDescriptor,
+                    temporaryName,
+                    O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC,
+                    mode_t(0o600)
+                )
+                guard destinationDescriptor >= 0 else {
+                    throw MachineManagerError.persistence(
+                        "could not create rootfs copy: \(String(cString: strerror(errno)))"
+                    )
+                }
+                defer { close(destinationDescriptor) }
+                guard lseek(sourceDescriptor, 0, SEEK_SET) == 0,
+                      fcopyfile(sourceDescriptor, destinationDescriptor, nil, copyfile_flags_t(COPYFILE_DATA)) == 0,
+                      fchmod(destinationDescriptor, mode_t(0o600)) == 0,
+                      isPrivateRegularFile(descriptor: destinationDescriptor),
+                      fsync(destinationDescriptor) == 0 else {
+                    throw MachineManagerError.persistence(
+                        "could not copy rootfs: \(String(cString: strerror(errno)))"
+                    )
+                }
+            } else {
+                let clonedDescriptor = openat(parentDescriptor, temporaryName, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
+                guard clonedDescriptor >= 0 else {
+                    throw MachineManagerError.persistence("could not reopen cloned rootfs")
+                }
+                defer { close(clonedDescriptor) }
+                guard fchmod(clonedDescriptor, mode_t(0o600)) == 0,
+                      isPrivateRegularFile(descriptor: clonedDescriptor),
+                      fsync(clonedDescriptor) == 0 else {
+                    throw MachineManagerError.persistence(
+                        "could not synchronize cloned rootfs: \(String(cString: strerror(errno)))"
+                    )
+                }
             }
-            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: temporary)
-            guard rename(temporary, destination) == 0 else {
+            guard renameat(parentDescriptor, temporaryName, parentDescriptor, destinationName) == 0 else {
                 throw MachineManagerError.persistence(
                     "could not replace \(destination): \(String(cString: strerror(errno)))"
                 )
             }
         } catch {
-            try? FileManager.default.removeItem(atPath: temporary)
+            _ = unlinkat(parentDescriptor, temporaryName, 0)
             throw error
         }
     }
@@ -1413,13 +1520,38 @@ public final class MachineManager: @unchecked Sendable {
 
     private static func isPrivateRegularFile(path: String) -> Bool {
         var info = stat()
-        guard lstat(path, &info) == 0,
-              (info.st_mode & S_IFMT) == S_IFREG,
-              info.st_uid == getuid(),
-              info.st_nlink == 1 else {
-            return false
-        }
-        return (info.st_mode & 0o077) == 0
+        return lstat(path, &info) == 0 && isPrivateRegularFile(info: info)
+    }
+
+    private static func isPrivateRegularFile(descriptor: Int32) -> Bool {
+        var info = stat()
+        return fstat(descriptor, &info) == 0 && isPrivateRegularFile(info: info)
+    }
+
+    private static func isPrivateRegularFile(info: stat) -> Bool {
+        (info.st_mode & S_IFMT) == S_IFREG
+            && info.st_uid == getuid()
+            && info.st_nlink == 1
+            && info.st_size > 0
+            && (info.st_mode & 0o077) == 0
+    }
+
+    private static func isPrivateDirectory(path: String) -> Bool {
+        var info = stat()
+        return lstat(path, &info) == 0 && isPrivateDirectory(info: info)
+    }
+
+    private static func isPrivateDirectory(info: stat) -> Bool {
+        (info.st_mode & S_IFMT) == S_IFDIR
+            && info.st_uid == getuid()
+            && (info.st_mode & 0o077) == 0
+    }
+
+    private static func isRegularNonemptyFile(path: String) -> Bool {
+        var info = stat()
+        return lstat(path, &info) == 0
+            && (info.st_mode & S_IFMT) == S_IFREG
+            && info.st_size > 0
     }
 
     private static func loadPersistedMachines(configuration: MachineManagerConfiguration) -> [String: MachineEntry] {
@@ -1431,10 +1563,15 @@ public final class MachineManager: @unchecked Sendable {
         var loaded: [String: MachineEntry] = [:]
         for id in ids where isValidID(id) {
             let path = "\(root)/\(id)/machine.json"
+            let rootfsPath = "\(root)/\(id)/rootfs.ext4"
             guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
                   let machine = try? decoder.decode(DoryMachineConfiguration.self, from: data),
                   machine.id == id,
-                  isValidID(machine.id) else {
+                  isValidID(machine.id),
+                  isPrivateDirectory(path: "\(root)/\(id)"),
+                  machine.rootfsPath == rootfsPath,
+                  isPrivateRegularFile(path: rootfsPath),
+                  isRegularNonemptyFile(path: machine.kernelPath) else {
                 continue
             }
             loaded[id] = MachineEntry(configuration: machine, state: .stopped)
@@ -1462,7 +1599,8 @@ public final class MachineManager: @unchecked Sendable {
             guard let entries = try? fileManager.contentsOfDirectory(atPath: directory) else {
                 continue
             }
-            for entry in entries where entry.hasPrefix(machineMetadataTemporaryPrefix) {
+            for entry in entries where entry.hasPrefix(machineMetadataTemporaryPrefix)
+                || entry.hasPrefix(machineDiskTemporaryPrefix) {
                 try? fileManager.removeItem(atPath: "\(directory)/\(entry)")
             }
         }
@@ -1475,11 +1613,15 @@ public final class MachineManager: @unchecked Sendable {
         }
         for machineID in machineIDs where isValidID(machineID) {
             let directory = "\(stateDirectory)/\(machineID)/snapshots"
+            guard isPrivateDirectory(path: directory) else {
+                continue
+            }
             guard let entries = try? fileManager.contentsOfDirectory(atPath: directory) else {
                 continue
             }
             for entry in entries where entry.hasPrefix(snapshotDeletionQuarantinePrefix)
-                || entry.hasPrefix(snapshotMetadataTemporaryPrefix) {
+                || entry.hasPrefix(snapshotMetadataTemporaryPrefix)
+                || (entry.hasPrefix(".") && entry.contains(snapshotDiskTemporaryMarker)) {
                 try? fileManager.removeItem(atPath: "\(directory)/\(entry)")
             }
         }
@@ -1595,7 +1737,9 @@ private enum MachineSnapshotBundle {
         }
         let outputURL = URL(fileURLWithPath: destination)
         let parent = outputURL.deletingLastPathComponent()
-        try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
+        guard isPrivateDirectory(path: parent.path) else {
+            throw MachineManagerError.persistence("machine snapshot destination is not private")
+        }
         let temporaryURL = parent.appendingPathComponent(".\(outputURL.lastPathComponent).tmp-\(UUID().uuidString)")
         guard FileManager.default.createFile(
             atPath: temporaryURL.path,
@@ -1715,6 +1859,14 @@ private enum MachineSnapshotBundle {
             }
         }
         return FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+    }
+
+    private static func isPrivateDirectory(path: String) -> Bool {
+        var info = stat()
+        return lstat(path, &info) == 0
+            && (info.st_mode & S_IFMT) == S_IFDIR
+            && info.st_uid == getuid()
+            && (info.st_mode & 0o077) == 0
     }
 
     private static func copyExactly(

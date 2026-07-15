@@ -331,8 +331,8 @@ final class HealthReporterTests: XCTestCase {
         defer { try? manager.delete(id: "dev") }
         _ = try manager.create(DoryMachineConfiguration(
             id: "dev",
-            kernelPath: "/tmp/kernel",
-            rootfsPath: "/tmp/rootfs"
+            kernelPath: doryTestKernelPath,
+            rootfsPath: doryTestRootfsPath
         ))
         _ = try manager.start(id: "dev")
 

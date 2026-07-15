@@ -685,8 +685,8 @@ final class DorydServiceTests: XCTestCase {
         }
         _ = try manager.create(DoryMachineConfiguration(
             id: "dev",
-            kernelPath: "/tmp/kernel",
-            rootfsPath: "/tmp/rootfs",
+            kernelPath: doryTestKernelPath,
+            rootfsPath: doryTestRootfsPath,
             memoryMB: 2048,
             cpuCount: 2
         ))
@@ -759,8 +759,8 @@ final class DorydServiceTests: XCTestCase {
         }
         _ = try manager.create(DoryMachineConfiguration(
             id: "dev",
-            kernelPath: "/tmp/kernel",
-            rootfsPath: "/tmp/rootfs",
+            kernelPath: doryTestKernelPath,
+            rootfsPath: doryTestRootfsPath,
             memoryMB: 2048,
             cpuCount: 2
         ))
@@ -982,8 +982,8 @@ final class DorydServiceTests: XCTestCase {
         let create = expectation(description: "machineCreate reply")
         proxy.machineCreate([
             "id": "dev",
-            "kernelPath": "/tmp/kernel",
-            "rootfsPath": "/tmp/rootfs",
+            "kernelPath": doryTestKernelPath,
+            "rootfsPath": doryTestRootfsPath,
             "memoryMB": 1024,
             "cpuCount": 2,
             "address": "192.168.215.40",
@@ -1118,8 +1118,8 @@ final class DorydServiceTests: XCTestCase {
         let create = expectation(description: "machineCreate reply")
         proxy.machineCreate([
             "id": "dev",
-            "kernelPath": "/tmp/kernel",
-            "rootfsPath": "/tmp/rootfs",
+            "kernelPath": doryTestKernelPath,
+            "rootfsPath": doryTestRootfsPath,
         ]) { ok, _, message in
             XCTAssertTrue(ok, message)
             create.fulfill()
@@ -1194,8 +1194,8 @@ final class DorydServiceTests: XCTestCase {
         let create = expectation(description: "machineCreate reply")
         proxy.machineCreate([
             "id": "dev",
-            "kernelPath": "/tmp/kernel",
-            "rootfsPath": "/tmp/rootfs",
+            "kernelPath": doryTestKernelPath,
+            "rootfsPath": doryTestRootfsPath,
         ]) { ok, _, message in
             XCTAssertTrue(ok, message)
             create.fulfill()
@@ -1267,7 +1267,7 @@ final class DorydServiceTests: XCTestCase {
         let create = expectation(description: "machineCreate reply")
         proxy.machineCreate([
             "id": "dev",
-            "kernelPath": "/tmp/kernel",
+            "kernelPath": doryTestKernelPath,
             "rootfsPath": rootfs,
         ]) { ok, _, message in
             XCTAssertTrue(ok, message)
