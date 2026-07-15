@@ -375,6 +375,7 @@ public final class MachineManager: @unchecked Sendable {
     private static let snapshotDiskTemporaryMarker = ".ext4.tmp-"
     private static let snapshotKernelTemporaryMarker = ".kernel.tmp-"
     private static let snapshotMetadataTemporaryPrefix = ".dory-snapshot-metadata-"
+    private static let maximumPersistedMetadataBytes: Int64 = 16 * 1024 * 1024
     /// Public Apple-Silicon machine resource contract. These match the app's steppers; enforcing
     /// them again in doryd prevents CLI/XPC callers from persisting values that the VMM would later
     /// clamp silently, which would make status disagree with the running guest.
@@ -1544,7 +1545,7 @@ public final class MachineManager: @unchecked Sendable {
         let expectedRootfsPath = snapshotRootfsPath(machineID: machineID, snapshotID: snapshotID)
         let expectedKernelPath = snapshotKernelPath(machineID: machineID, snapshotID: snapshotID)
         guard Self.isPrivateDirectory(path: snapshotDirectory(machineID: machineID)),
-              let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
+              let data = Self.readPrivateMetadata(path: path),
               let snapshot = try? JSONDecoder().decode(DoryMachineSnapshot.self, from: data),
               snapshot.machineID == machineID,
               snapshot.id == snapshotID,
@@ -1853,6 +1854,72 @@ public final class MachineManager: @unchecked Sendable {
             && (info.st_mode & 0o077) == 0
     }
 
+    private static func readPrivateMetadata(path: String) -> Data? {
+        let url = URL(fileURLWithPath: path)
+        let parentDescriptor = open(
+            url.deletingLastPathComponent().path,
+            O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW
+        )
+        guard parentDescriptor >= 0 else {
+            return nil
+        }
+        defer { close(parentDescriptor) }
+        var parentInfo = stat()
+        guard fstat(parentDescriptor, &parentInfo) == 0,
+              isPrivateDirectory(info: parentInfo) else {
+            return nil
+        }
+
+        let descriptor = openat(
+            parentDescriptor,
+            url.lastPathComponent,
+            O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK
+        )
+        guard descriptor >= 0 else {
+            return nil
+        }
+        defer { close(descriptor) }
+
+        var info = stat()
+        guard fstat(descriptor, &info) == 0,
+              isPrivateRegularFile(info: info),
+              info.st_size <= maximumPersistedMetadataBytes else {
+            return nil
+        }
+
+        var data = Data(count: Int(info.st_size))
+        let readComplete = data.withUnsafeMutableBytes { buffer -> Bool in
+            guard let baseAddress = buffer.baseAddress else {
+                return false
+            }
+            var offset = 0
+            while offset < buffer.count {
+                let result = read(descriptor, baseAddress.advanced(by: offset), buffer.count - offset)
+                if result > 0 {
+                    offset += result
+                } else if result < 0, errno == EINTR {
+                    continue
+                } else {
+                    return false
+                }
+            }
+            return true
+        }
+        guard readComplete else {
+            return nil
+        }
+
+        var extraByte: UInt8 = 0
+        var extraResult: Int
+        repeat {
+            extraResult = read(descriptor, &extraByte, 1)
+        } while extraResult < 0 && errno == EINTR
+        guard extraResult == 0 else {
+            return nil
+        }
+        return data
+    }
+
     private static func isPrivateDirectory(path: String) -> Bool {
         var info = stat()
         return lstat(path, &info) == 0 && isPrivateDirectory(info: info)
@@ -1882,7 +1949,7 @@ public final class MachineManager: @unchecked Sendable {
             let path = "\(root)/\(id)/machine.json"
             let rootfsPath = "\(root)/\(id)/rootfs.ext4"
             let kernelPath = "\(root)/\(id)/kernel"
-            guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
+            guard let data = readPrivateMetadata(path: path),
                   let machine = try? decoder.decode(DoryMachineConfiguration.self, from: data),
                   machine.id == id,
                   isValidID(machine.id),

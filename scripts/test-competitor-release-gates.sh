@@ -687,6 +687,15 @@ grep -F 'testSnapshotMetadataCannotRedirectOperationsOutsideManagedStorage' \
 grep -F 'testSnapshotOperationsRejectSymlinkAndHardLinkRootfsSubstitution' \
   dory-core-swift/Tests/DorydKitTests/MachineManagerTests.swift >/dev/null \
   || fail "machine snapshot operations no longer prove link substitution fails closed"
+grep -F 'let data = Self.readPrivateMetadata(path: path)' \
+  dory-core-swift/Sources/DorydKit/MachineManager.swift >/dev/null \
+  || fail "machine snapshot metadata can bypass descriptor-based private-file validation"
+grep -F 'testPersistedMachineMetadataRejectsSymlinksHardLinksAndPublicFiles' \
+  dory-core-swift/Tests/DorydKitTests/MachineManagerTests.swift >/dev/null \
+  || fail "persisted machine definitions no longer reject unsafe metadata files"
+grep -F 'testSnapshotMetadataRejectsSymlinksHardLinksAndPublicFiles' \
+  dory-core-swift/Tests/DorydKitTests/MachineManagerTests.swift >/dev/null \
+  || fail "machine snapshots no longer reject unsafe metadata files"
 grep -F 'private let operationLock = NSRecursiveLock()' \
   dory-core-swift/Sources/DorydKit/MachineManager.swift >/dev/null \
   || fail "machine lifecycle and snapshot mutations can race each other"

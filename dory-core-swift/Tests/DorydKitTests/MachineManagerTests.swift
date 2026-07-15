@@ -323,6 +323,56 @@ final class MachineManagerTests: XCTestCase {
         XCTAssertEqual(try String(contentsOfFile: externalRootfs, encoding: .utf8), "redirected-rootfs")
     }
 
+    func testPersistedMachineMetadataRejectsSymlinksHardLinksAndPublicFiles() throws {
+        let base = "/tmp/dory-machine-metadata-tamper-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let machines = "\(base)/machines"
+        let definitionPath = "\(machines)/dev/machine.json"
+        let externalPath = "\(base)/external-machine.json"
+        let configuration = MachineManagerConfiguration(
+            vmmExecutablePath: "/bin/sleep",
+            stateDirectory: machines,
+            baseArguments: ["30"],
+            passMachineArguments: false,
+            requiresReadyHandoff: false
+        )
+        defer { try? FileManager.default.removeItem(atPath: base) }
+
+        let manager = MachineManager(configuration: configuration)
+        _ = try manager.create(DoryMachineConfiguration(
+            id: "dev",
+            kernelPath: doryTestKernelPath,
+            rootfsPath: doryTestRootfsPath
+        ))
+        let validDefinition = try Data(contentsOf: URL(fileURLWithPath: definitionPath))
+
+        for variant in ["symlink", "hardlink", "public", "empty", "oversized"] {
+            try? FileManager.default.removeItem(atPath: definitionPath)
+            try? FileManager.default.removeItem(atPath: externalPath)
+            try validDefinition.write(to: URL(fileURLWithPath: externalPath))
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: externalPath)
+
+            switch variant {
+            case "symlink":
+                XCTAssertEqual(symlink(externalPath, definitionPath), 0)
+            case "hardlink":
+                XCTAssertEqual(link(externalPath, definitionPath), 0)
+            case "public":
+                try validDefinition.write(to: URL(fileURLWithPath: definitionPath))
+                try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: definitionPath)
+            case "empty":
+                try Data().write(to: URL(fileURLWithPath: definitionPath))
+                try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: definitionPath)
+            default:
+                try Data(repeating: 0, count: 16 * 1024 * 1024 + 1)
+                    .write(to: URL(fileURLWithPath: definitionPath))
+                try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: definitionPath)
+            }
+
+            let reloaded = MachineManager(configuration: configuration)
+            XCTAssertTrue(reloaded.list().isEmpty, variant)
+        }
+    }
+
     func testDeleteFailurePreservesPersistedStoppedMachine() throws {
         let base = "/tmp/dory-machine-delete-failure-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         let configuration = MachineManagerConfiguration(
@@ -801,6 +851,50 @@ final class MachineManagerTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: "\(base)/redirected.dorymachine"))
     }
 
+    func testSnapshotMetadataRejectsSymlinksHardLinksAndPublicFiles() throws {
+        let base = "/tmp/dory-machine-snapshot-metadata-tamper-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let metadataPath = "\(base)/machines/dev/snapshots/s1.json"
+        let externalPath = "\(base)/external-snapshot.json"
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let manager = MachineManager(configuration: MachineManagerConfiguration(
+            vmmExecutablePath: "/bin/sleep",
+            stateDirectory: "\(base)/machines",
+            baseArguments: ["30"],
+            passMachineArguments: false,
+            requiresReadyHandoff: false
+        ))
+        _ = try manager.create(DoryMachineConfiguration(
+            id: "dev",
+            kernelPath: doryTestKernelPath,
+            rootfsPath: doryTestRootfsPath
+        ))
+        _ = try manager.snapshot(id: "dev", snapshotID: "s1")
+        let validMetadata = try Data(contentsOf: URL(fileURLWithPath: metadataPath))
+
+        for variant in ["symlink", "hardlink", "public"] {
+            try? FileManager.default.removeItem(atPath: metadataPath)
+            try? FileManager.default.removeItem(atPath: externalPath)
+            try validMetadata.write(to: URL(fileURLWithPath: externalPath))
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: externalPath)
+
+            switch variant {
+            case "symlink":
+                XCTAssertEqual(symlink(externalPath, metadataPath), 0)
+            case "hardlink":
+                XCTAssertEqual(link(externalPath, metadataPath), 0)
+            default:
+                try validMetadata.write(to: URL(fileURLWithPath: metadataPath))
+                try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: metadataPath)
+            }
+
+            XCTAssertTrue(try manager.listSnapshots(machineID: "dev").isEmpty, variant)
+            XCTAssertThrowsError(try manager.restoreSnapshot(machineID: "dev", snapshotID: "s1"), variant) { error in
+                XCTAssertEqual(error as? MachineManagerError, .unknownSnapshot("s1"))
+            }
+        }
+    }
+
     func testSnapshotOperationsRejectSymlinkAndHardLinkRootfsSubstitution() throws {
         let base = "/tmp/dory-machine-snapshot-links-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
@@ -1041,7 +1135,9 @@ final class MachineManagerTests: XCTestCase {
           "cpuCount": 2
         }
         """.utf8)
-        try definition.write(to: URL(fileURLWithPath: "\(base)/dev/machine.json"))
+        let definitionPath = "\(base)/dev/machine.json"
+        try definition.write(to: URL(fileURLWithPath: definitionPath))
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: definitionPath)
 
         let manager = MachineManager(configuration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
@@ -1068,6 +1164,7 @@ final class MachineManagerTests: XCTestCase {
         try Data("managed-kernel".utf8).write(to: URL(fileURLWithPath: kernelPath))
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: rootfsPath)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: kernelPath)
+        let definitionPath = "\(base)/dev/machine.json"
         try Data("""
         {
           "id": "dev",
@@ -1076,7 +1173,8 @@ final class MachineManagerTests: XCTestCase {
           "memoryMB": 2048,
           "cpuCount": 0
         }
-        """.utf8).write(to: URL(fileURLWithPath: "\(base)/dev/machine.json"))
+        """.utf8).write(to: URL(fileURLWithPath: definitionPath))
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: definitionPath)
         let manager = MachineManager(configuration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
             stateDirectory: base,

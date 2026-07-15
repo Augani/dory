@@ -525,6 +525,10 @@ to the final release tag rather than representing this candidate as built from c
   unusable output, and is tied to one launch generation so a late response cannot publish after a
   stop or restart. The optional advanced DNS target is reported separately, edits do not reboot the
   guest, and the app can clear it without losing the observed runtime address.
+- Persisted machine and snapshot JSON now loads through bounded, no-follow file descriptors and is
+  accepted only when it is a private, owner-controlled, nonempty regular file with one link. This
+  closes symlink-swap, hard-link, public-permission, and unbounded-read paths before decoding; the
+  regression matrix proves both machine reload and every snapshot operation fail closed.
 - Required Linux-machine provisioning no longer has a silent-success path. Nonzero and timed-out
   install/verify stages fail, unsupported recipes are rejected before creation, the app removes a
   newly created VM when setup fails, and the legacy container-machine path removes an incomplete
