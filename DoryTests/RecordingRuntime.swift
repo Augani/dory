@@ -69,6 +69,8 @@ final class RecordingRuntime: ContainerRuntime {
     var imagePushChunks: [Data] = [Data(#"{"status":"pushed"}"#.utf8) + Data("\n".utf8)]
     var pulledImages: [String] = []
     var pullError: Error?
+    var startError: Error?
+    var removeError: Error?
     var copiedOutPaths: [(containerID: String, path: String)] = []
     var copiedInArchives: [(containerID: String, path: String, archive: Data)] = []
     var copyOutArchive: Data?
@@ -202,7 +204,10 @@ final class RecordingRuntime: ContainerRuntime {
         return display.isEmpty ? "—" : display.joined(separator: ",")
     }
 
-    func start(containerID: String) async throws { startedIDs.append(containerID) }
+    func start(containerID: String) async throws {
+        startedIDs.append(containerID)
+        if let startError { throw startError }
+    }
     func stop(containerID: String) async throws { stoppedIDs.append(containerID) }
     func restart(containerID: String) async throws {}
     func kill(containerID: String, signal: String?) async throws {
@@ -238,6 +243,7 @@ final class RecordingRuntime: ContainerRuntime {
     }
     func remove(containerID: String) async throws {
         removedIDs.append(containerID)
+        if let removeError { throw removeError }
         liveContainers.removeAll { $0.id == containerID }
     }
     func logs(containerID: String) async throws -> [LogLine] {

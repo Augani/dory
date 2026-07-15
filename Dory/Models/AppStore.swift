@@ -3639,16 +3639,37 @@ final class AppStore {
     func createContainer(name: String, image: String, ports: [String], env: [String: String], volumes: [String] = []) async -> String? {
         let trimmedImage = image.trimmingCharacters(in: .whitespaces)
         guard !trimmedImage.isEmpty else { return "Image is required" }
+        var createdID: String?
         do {
             try await runtime.pull(image: trimmedImage)
             let finalName = name.isEmpty ? Self.defaultName(for: trimmedImage) : name
             let spec = ContainerSpec(name: finalName, image: trimmedImage, environment: env, ports: ports, volumes: volumes)
             let id = try await runtime.create(spec)
+            createdID = id
             try await runtime.start(containerID: id)
             await reload()
             selectedContainerID = id
             return nil
-        } catch { return "\(error)" }
+        } catch {
+            let failure = Self.userFacingError(error)
+            guard let createdID else { return failure }
+            do {
+                try await runtime.remove(containerID: createdID)
+                await reload()
+                return failure
+            } catch {
+                await reload()
+                return "\(failure) Dory could not remove the incomplete container: \(Self.userFacingError(error))"
+            }
+        }
+    }
+
+    nonisolated static func userFacingError(_ error: Error) -> String {
+        if let description = (error as? LocalizedError)?.errorDescription?
+            .trimmingCharacters(in: .whitespacesAndNewlines), !description.isEmpty {
+            return description
+        }
+        return String(describing: error)
     }
 
     func pullImage(_ reference: String) async -> String? {

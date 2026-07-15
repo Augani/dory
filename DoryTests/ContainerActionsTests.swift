@@ -64,4 +64,47 @@ struct ContainerActionsTests {
         let hasSamples = runningIDs.contains { !(store.cpuHistory[$0]?.isEmpty ?? true) }
         #expect(hasSamples)
     }
+
+    @Test func createContainerRollsBackWhenStartFailsAndShowsDockerMessage() async {
+        let runtime = RecordingRuntime()
+        runtime.startError = HTTPError.status(
+            code: 409,
+            message: #"{"message":"host port 127.0.0.1:8080/tcp is unavailable"}"#
+        )
+        let store = AppStore(runtime: runtime)
+
+        let error = await store.createContainer(
+            name: "web",
+            image: "nginx",
+            ports: ["127.0.0.1:8080:80"],
+            env: [:]
+        )
+
+        #expect(error == "host port 127.0.0.1:8080/tcp is unavailable")
+        #expect(runtime.startedIDs == ["id1"])
+        #expect(runtime.removedIDs == ["id1"])
+        #expect(store.containers.isEmpty)
+        #expect(store.selectedContainerID == nil)
+    }
+
+    @Test func createContainerReportsRollbackFailure() async {
+        let runtime = RecordingRuntime()
+        runtime.startError = HTTPError.status(code: 500, message: #"{"message":"start failed"}"#)
+        runtime.removeError = HTTPError.status(code: 500, message: #"{"message":"remove failed"}"#)
+        let store = AppStore(runtime: runtime)
+
+        let error = await store.createContainer(name: "web", image: "nginx", ports: [], env: [:])
+
+        #expect(error == "start failed Dory could not remove the incomplete container: remove failed")
+        #expect(runtime.removedIDs == ["id1"])
+    }
+
+    @Test func onboardingDemoUsesAUniqueLoopbackPortInsteadOfTheDoryProxy() {
+        let port = 49_123
+        #expect(OnboardingDemo.command(port: port) == "docker run -d -p 127.0.0.1:49123:80 nginx")
+        #expect(OnboardingDemo.portMapping(port: port) == "127.0.0.1:49123:80")
+        #expect(OnboardingDemo.containerName(port: port) == "dory-welcome-49123")
+        #expect(OnboardingDemo.url(port: port) == "http://127.0.0.1:49123")
+        #expect(!OnboardingDemo.command(port: port).contains("8080:80"))
+    }
 }

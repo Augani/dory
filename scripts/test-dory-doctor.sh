@@ -1352,6 +1352,7 @@ class Completed:
     stdout = """101 10 /Applications/Dory.app/Contents/Helpers/doryd doryd
 202 20 /Applications/Dory.app/Contents/Helpers/dory-hv dory-hv engine
 303 30 /Applications/Dory.app/Contents/Helpers/gvproxy gvproxy
+404 40 /usr/bin/node node /Users/example/Projects/Dory/tool.js
 """
 
 dd.subprocess.run = lambda *args, **kwargs: Completed()
@@ -1370,6 +1371,7 @@ assert report["helper_phys_footprint_bytes"] == 63_000, report
 assert report["phys_footprint_complete"] is True, report
 assert report["phys_footprint_aggregation"] == "sum_of_per_process_charges_may_double_count_shared_pages", report
 assert all("phys_footprint_bytes" in process for process in report["processes"]), report
+assert {process["pid"] for process in report["processes"]} == {101, 202, 303}, report
 
 dd.darwin_process_memory = lambda pid: samples.get(pid) if pid != 303 else None
 partial = dd.memory_report()
@@ -1377,6 +1379,11 @@ assert partial["physical_footprint_available"] is True, partial
 assert partial["phys_footprint_complete"] is False, partial
 assert partial["phys_footprint_sampled_processes"] == 2, partial
 assert partial["rss_bytes"] == 11_000 + 22_000 + (30 * 1024), partial
+
+gib = 1024 * 1024 * 1024
+assert dd.host_disk_health(10 * gib, 1000 * gib)[:2] == ("fail", "disk.host_critical")
+assert dd.host_disk_health(30 * gib, 1000 * gib)[:2] == ("warn", "disk.host_low")
+assert dd.host_disk_health(200 * gib, 1000 * gib)[:2] == ("pass", "disk.host_ok")
 PY
 
 memdisk_json="$(scripts/dory-doctor doctor --json --only memory,disk 2>/dev/null || true)"

@@ -5,6 +5,23 @@ import Foundation
 import XCTest
 
 final class HealthReporterTests: XCTestCase {
+    func testHostDiskRequiresLowPercentageAndLowAbsoluteFreeSpaceToFail() {
+        let gib: UInt64 = 1024 * 1024 * 1024
+        let total = 1_000 * gib
+
+        let critical = HealthReporter.classifyHostDisk(free: 10 * gib, total: total)
+        XCTAssertEqual(critical.status, .fail)
+        XCTAssertEqual(critical.code, "disk.host_critical")
+
+        let spaciousLargeDisk = HealthReporter.classifyHostDisk(free: 30 * gib, total: total)
+        XCTAssertEqual(spaciousLargeDisk.status, .warn)
+        XCTAssertEqual(spaciousLargeDisk.code, "disk.host_low")
+
+        let healthy = HealthReporter.classifyHostDisk(free: 200 * gib, total: total)
+        XCTAssertEqual(healthy.status, .pass)
+        XCTAssertEqual(healthy.code, "disk.host_ok")
+    }
+
     func testReportUsesDoctorResultShapeForMissingSocketAndUnconfiguredEngine() throws {
         let base = "/tmp/dory-health-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         defer { try? FileManager.default.removeItem(atPath: base) }

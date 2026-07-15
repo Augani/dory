@@ -17,13 +17,42 @@ nonisolated struct HTTPResponse: Sendable {
     var isSuccess: Bool { (200..<300).contains(statusCode) }
 }
 
-nonisolated enum HTTPError: Error, Sendable, Equatable {
+nonisolated enum HTTPError: Error, Sendable, Equatable, LocalizedError {
     case malformedStatusLine
     case incomplete
     case malformedChunk
     case connectionClosed
     case socket(String)
     case status(code: Int, message: String)
+
+    var errorDescription: String? {
+        switch self {
+        case .malformedStatusLine:
+            "The container engine returned an invalid HTTP response."
+        case .incomplete:
+            "The container engine closed the connection before its response was complete."
+        case .malformedChunk:
+            "The container engine returned a malformed streaming response."
+        case .connectionClosed:
+            "The container engine closed the connection unexpectedly."
+        case .socket(let message):
+            "Could not connect to the container engine: \(message)"
+        case .status(let code, let message):
+            Self.statusDescription(code: code, message: message)
+        }
+    }
+
+    private static func statusDescription(code: Int, message: String) -> String {
+        let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let data = trimmed.data(using: .utf8),
+           let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let apiMessage = object["message"] as? String {
+            let detail = apiMessage.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !detail.isEmpty { return detail }
+        }
+        if !trimmed.isEmpty, !trimmed.hasPrefix("{") { return trimmed }
+        return "The container engine returned HTTP \(code)."
+    }
 }
 
 /// Incrementally strips HTTP chunked-transfer framing from a byte stream, emitting payload bytes.

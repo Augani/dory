@@ -1238,35 +1238,34 @@ public final class HealthReporter: @unchecked Sendable {
         let blockSize = UInt64(stats.f_bsize)
         let free = UInt64(stats.f_bavail) * blockSize
         let total = UInt64(stats.f_blocks) * blockSize
-        let pctFree = total == 0 ? 0 : Double(free) / Double(total) * 100
-        let status: HealthCheckStatus
-        let code: String
-        let action: String?
-        if total > 0, pctFree < 5 {
-            status = .fail
-            code = "disk.host_critical"
-            action = "Free host disk space before pulling or building images."
-        } else if total > 0, pctFree < 15 {
-            status = .warn
-            code = "disk.host_low"
-            action = "Consider pruning images/build cache or freeing host disk space."
-        } else {
-            status = .pass
-            code = "disk.host_ok"
-            action = nil
-        }
+        let classification = Self.classifyHostDisk(free: free, total: total)
         return HealthCheck(
             id: "disk.host",
-            status: status,
-            code: code,
+            status: classification.status,
+            code: classification.code,
             title: "Host disk space",
             detail: "\(formatBytes(Int64(free))) free of \(formatBytes(Int64(total)))",
-            action: action,
+            action: classification.action,
             data: [
                 "free_bytes": String(free),
                 "total_bytes": String(total),
             ]
         )
+    }
+
+    static func classifyHostDisk(
+        free: UInt64,
+        total: UInt64
+    ) -> (status: HealthCheckStatus, code: String, action: String?) {
+        let pctFree = total == 0 ? 0 : Double(free) / Double(total) * 100
+        let criticalFreeBytes: UInt64 = 20 * 1024 * 1024 * 1024
+        if total > 0, pctFree < 5, free < criticalFreeBytes {
+            return (.fail, "disk.host_critical", "Free host disk space before pulling or building images.")
+        }
+        if total > 0, pctFree < 15 {
+            return (.warn, "disk.host_low", "Consider pruning images/build cache or freeing host disk space.")
+        }
+        return (.pass, "disk.host_ok", nil)
     }
 
     private func doryStateDiskCheck() -> HealthCheck {

@@ -1219,16 +1219,7 @@ class Doctor:
         host = report["host"]
         free = host.get("free_bytes", 0)
         total = host.get("total_bytes", 0)
-        pct_free = (free / total * 100) if total else 0
-        if total and pct_free < 5:
-            status, code = "fail", "disk.host_critical"
-            action = "Free host disk space before pulling or building images."
-        elif total and pct_free < 15:
-            status, code = "warn", "disk.host_low"
-            action = "Consider pruning images/build cache or freeing host disk space."
-        else:
-            status, code = "pass", "disk.host_ok"
-            action = ""
+        status, code, action = host_disk_health(free, total)
         self.add("disk.host", status, code, "Host disk space", f"{format_bytes(free)} free of {format_bytes(total)}", action, **host)
         drive = report.get("data_drive", {})
         if drive.get("available"):
@@ -1773,6 +1764,16 @@ def docker_storage_inconsistency(message: str) -> dict[str, Any] | None:
     }
 
 
+def host_disk_health(free: int, total: int) -> tuple[str, str, str]:
+    pct_free = (free / total * 100) if total else 0
+    critical_free_bytes = 20 * 1024 * 1024 * 1024
+    if total and pct_free < 5 and free < critical_free_bytes:
+        return "fail", "disk.host_critical", "Free host disk space before pulling or building images."
+    if total and pct_free < 15:
+        return "warn", "disk.host_low", "Consider pruning images/build cache or freeing host disk space."
+    return "pass", "disk.host_ok", ""
+
+
 def disk_report(sock: Path | None = None) -> dict[str, Any]:
     sock = sock or socket_path()
     target = HOME
@@ -2267,7 +2268,9 @@ def darwin_process_memory(pid: int) -> dict[str, int] | None:
 
 
 def memory_report() -> dict[str, Any]:
-    patterns = [re.compile(p, re.I) for p in os.environ.get("DORY_PROCESS_PATTERN", "Dory|doryd|dory-hv|dory-vmm|gvproxy").split("|")]
+    configured_pattern = os.environ.get("DORY_PROCESS_PATTERN")
+    patterns = [re.compile(p, re.I) for p in configured_pattern.split("|")] if configured_pattern else []
+    dory_executables = {"dory", "doryd", "dory-hv", "dory-vmm", "gvproxy"}
     processes: list[dict[str, Any]] = []
     rss = 0
     try:
@@ -2276,19 +2279,26 @@ def memory_report() -> dict[str, Any]:
     except Exception:
         lines = []
     for line in lines:
-        parts = line.strip().split(None, 2)
+        parts = line.strip().split(None, 3)
         if len(parts) < 3:
             continue
-        pid_text, rss_text, rest = parts
-        if "dory-doctor" in rest:
+        pid_text, rss_text, executable = parts[:3]
+        arguments = parts[3] if len(parts) > 3 else ""
+        executable_name = Path(executable).name
+        if executable_name == "dory-doctor":
             continue
-        if not any(pattern.search(rest) for pattern in patterns):
+        matches = (
+            any(pattern.fullmatch(executable_name) or pattern.search(executable) for pattern in patterns)
+            if patterns
+            else executable_name.lower() in dory_executables
+        )
+        if not matches:
             continue
         try:
             rss_bytes = int(rss_text) * 1024
         except ValueError:
             continue
-        lowered = rest.lower()
+        lowered = executable_name.lower()
         if "dory-hv" in lowered or "dory-vmm" in lowered:
             role = "engine"
         elif "gvproxy" in lowered:
@@ -2296,7 +2306,8 @@ def memory_report() -> dict[str, Any]:
         else:
             role = "app"
         pid = int(pid_text)
-        process = {"pid": pid, "rss_bytes": rss_bytes, "role": role, "command": rest[:240]}
+        command = f"{executable} {arguments}".strip()
+        process = {"pid": pid, "rss_bytes": rss_bytes, "role": role, "command": command[:240]}
         live_memory = darwin_process_memory(pid)
         if live_memory is not None:
             # Prefer the kernel's live resident size to ps's rounded KiB value while retaining the

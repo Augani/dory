@@ -1,5 +1,15 @@
 import SwiftUI
 
+nonisolated enum OnboardingDemo {
+    static func command(port: Int) -> String {
+        "docker run -d -p 127.0.0.1:\(port):80 nginx"
+    }
+
+    static func portMapping(port: Int) -> String { "127.0.0.1:\(port):80" }
+    static func containerName(port: Int) -> String { "dory-welcome-\(port)" }
+    static func url(port: Int) -> String { "http://127.0.0.1:\(port)" }
+}
+
 struct OnboardingView: View {
     @Environment(AppStore.self) private var store
     @Environment(\.palette) private var p
@@ -10,6 +20,7 @@ struct OnboardingView: View {
     @State private var demoBusy = false
     @State private var demoError: String?
     @State private var demoURL: String?
+    @State private var demoPort: Int?
     @State private var waited = false
 
     var body: some View {
@@ -104,7 +115,12 @@ struct OnboardingView: View {
                 .font(.system(size: 13)).foregroundStyle(p.text2).multilineTextAlignment(.center).lineSpacing(3)
                 .padding(.bottom, 18)
 
-            commandRow("docker run -d -p 8080:80 nginx").padding(.bottom, 18)
+            if let demoPort {
+                commandRow(OnboardingDemo.command(port: demoPort)).padding(.bottom, 18)
+            } else {
+                Text("Finding an available localhost port…")
+                    .font(.system(size: 12.5)).foregroundStyle(p.text3).padding(.bottom, 18)
+            }
 
             if let url = demoURL, let dest = URL(string: url) {
                 Link(destination: dest) {
@@ -128,6 +144,7 @@ struct OnboardingView: View {
                 .buttonStyle(.plain).padding(.top, 10)
             }
         }
+        .onAppear { prepareDemoPort() }
     }
 
     // MARK: Step 4 — Ready
@@ -154,17 +171,34 @@ struct OnboardingView: View {
     // MARK: Actions
 
     private func runDemo() {
+        let port = AppStore.allocateFreePort()
+        guard port > 0 else {
+            demoError = "Dory could not find an available localhost port. Try again."
+            return
+        }
+        demoPort = port
         demoBusy = true
         demoError = nil
         Task {
-            let error = await store.createContainer(name: "dory-welcome", image: "nginx", ports: ["8080:80"], env: [:])
+            let error = await store.createContainer(
+                name: OnboardingDemo.containerName(port: port),
+                image: "nginx",
+                ports: [OnboardingDemo.portMapping(port: port)],
+                env: [:]
+            )
             demoBusy = false
             if let error {
                 demoError = error
             } else {
-                demoURL = "http://localhost:8080"
+                demoURL = OnboardingDemo.url(port: port)
             }
         }
+    }
+
+    private func prepareDemoPort() {
+        guard demoPort == nil else { return }
+        let port = AppStore.allocateFreePort()
+        if port > 0 { demoPort = port }
     }
 
     // MARK: Pieces
