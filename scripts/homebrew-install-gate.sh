@@ -99,7 +99,7 @@ PROFILE_NAMES=(.zprofile .zshrc .bash_profile .bashrc .profile)
 [ ! -e "$PLIST" ] || die "$PLIST already exists"
 [ ! -e "$BREW_BIN" ] && [ ! -L "$BREW_BIN" ] || die "$BREW_BIN already exists"
 launchctl print "$SERVICE" >/dev/null 2>&1 && die "dev.dory.doryd is already loaded"
-defaults export "$PREF_DOMAIN" - >/dev/null 2>&1 && die "Dory preferences already exist"
+defaults read "$PREF_DOMAIN" >/dev/null 2>&1 && die "Dory preferences already exist"
 brew list --cask 2>/dev/null | grep -qx dory && die "a Dory cask is already installed"
 python3 - "$HOME/.docker/contexts/meta" <<'PY' || die "Docker context 'dory' already exists"
 import json, pathlib, sys

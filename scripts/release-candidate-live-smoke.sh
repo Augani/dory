@@ -149,7 +149,7 @@ fi
 [ ! -e "$PLIST" ] || fail "existing Dory LaunchAgent would be overwritten: $PLIST"
 [ ! -e "$STATE" ] || fail "existing Dory state would be touched: $STATE"
 [ ! -e "$APP_SUPPORT" ] || fail "existing Dory application state would be touched: $APP_SUPPORT"
-if defaults export "$PREF_DOMAIN" - >/dev/null 2>&1; then
+if defaults read "$PREF_DOMAIN" >/dev/null 2>&1; then
   fail "existing Dory preferences would be touched; use a clean dedicated release user"
 fi
 for process in Dory doryd dory-hv dory-vmm; do

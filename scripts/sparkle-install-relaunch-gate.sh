@@ -324,7 +324,7 @@ done
 [ ! -e "$STATE" ] || die "existing Dory state would be touched: $STATE"
 [ ! -e "$APP_SUPPORT" ] || die "existing Dory application state would be touched: $APP_SUPPORT"
 [ ! -e "$PLIST" ] || die "existing Dory LaunchAgent would be touched: $PLIST"
-if defaults export "$PREF_DOMAIN" - >/dev/null 2>&1; then
+if defaults read "$PREF_DOMAIN" >/dev/null 2>&1; then
   die "existing Dory preferences would be touched; use a clean dedicated release user"
 fi
 CANDIDATE_DOCKER="$CANDIDATE_APP/Contents/Helpers/docker"
@@ -577,7 +577,7 @@ codesign --verify --strict --deep "$INSTALL_APP" \
 rm -rf "$INSTALL_ROOT" "$RUN_ROOT/previous" "$RUN_ROOT/updated"
 [ ! -e "$STATE" ] && [ ! -e "$APP_SUPPORT" ] && [ ! -e "$PLIST" ] \
   || die "clean release-user Dory state survived cleanup"
-if defaults export "$PREF_DOMAIN" - >/dev/null 2>&1; then
+if defaults read "$PREF_DOMAIN" >/dev/null 2>&1; then
   die "clean release-user preferences survived cleanup"
 fi
 for profile in "$HOME/.zprofile" "$HOME/.zshrc" "$HOME/.bash_profile" "$HOME/.profile"; do

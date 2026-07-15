@@ -1716,6 +1716,13 @@ update_finish = release_script.split("finish_zip_update_artifact() {", 1)[1].spl
 assert "validate_stapled_app" in update_finish, "app-update does not validate the inherited ticket"
 assert "notarize " not in update_finish and "stapler staple" not in update_finish, \
     "app-update replaces the direct app's SBOM-bound stapling ticket"
+for gate in ("scripts/release-candidate-live-smoke.sh", "scripts/homebrew-install-gate.sh",
+             "scripts/sparkle-install-relaunch-gate.sh"):
+    clean_user_gate = open(gate, encoding="utf-8").read()
+    assert 'defaults read "$PREF_DOMAIN"' in clean_user_gate, \
+        f"{gate} does not detect an existing preference domain"
+    assert 'defaults export "$PREF_DOMAIN" -' not in clean_user_gate, \
+        f"{gate} mistakes macOS 27's empty export for an existing preference domain"
 assert "publish-pages:" in release, "release has no live Pages publication job"
 publish = release.split("  publish-pages:", 1)[1].split("\n  # Keeps the Homebrew", 1)[0]
 assert "needs: publish_release" in publish, "live feed can deploy before GitHub Release assets exist"
