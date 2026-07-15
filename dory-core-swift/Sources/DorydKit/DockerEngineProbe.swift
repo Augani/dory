@@ -243,7 +243,6 @@ public enum DockerEngineProbe {
         defer { close(fd) }
         let request = "GET \(path) HTTP/1.1\r\nHost: docker\r\nConnection: close\r\n\r\n"
         try writeAll(Array(request.utf8), to: fd)
-        shutdown(fd, SHUT_WR)
         let data = try readHTTPResponseData(from: fd, maxBytes: maxBytes)
         return try HTTPResponse(data: data)
     }
@@ -261,7 +260,6 @@ public enum DockerEngineProbe {
         try writeAll(forwardPreamble(cid: cid, port: port), to: fd)
         let request = "GET \(path) HTTP/1.1\r\nHost: docker\r\nConnection: close\r\n\r\n"
         try writeAll(Array(request.utf8), to: fd)
-        shutdown(fd, SHUT_WR)
         let data = try readHTTPResponseData(from: fd, maxBytes: maxBytes)
         return try HTTPResponse(data: data)
     }

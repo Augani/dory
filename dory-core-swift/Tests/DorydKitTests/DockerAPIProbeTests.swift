@@ -19,6 +19,22 @@ final class DockerAPIProbeTests: XCTestCase {
         XCTAssertTrue(server.request.contains("GET /version HTTP/1.1"))
     }
 
+    func testDockerEngineReadinessKeepsRequestOpenUntilVersionResponse() throws {
+        let body = #"{"Version":"29.6.1","Os":"linux"}"#
+        let server = try FakeDockerAPIServer(
+            response: "HTTP/1.1 200 OK\r\nContent-Length: \(body.utf8.count)\r\nConnection: close\r\n\r\n\(body)",
+            rejectClientHalfCloseBeforeResponse: true
+        )
+        defer { server.stop() }
+
+        XCTAssertTrue(DockerEngineProbe.waitUntilReady(
+            socketPath: server.path,
+            timeout: 1,
+            pollInterval: 0.01
+        ))
+        XCTAssertTrue(server.wait())
+    }
+
     func testDockerEngineReadinessRejectsIncompleteVersionResponse() throws {
         let body = #"{"Version":"","Os":""}"#
         let server = try FakeDockerAPIServer(
@@ -96,6 +112,7 @@ private final class FakeDockerAPIServer: @unchecked Sendable {
     let path: String
     private let fd: Int32
     private let response: String
+    private let rejectClientHalfCloseBeforeResponse: Bool
     private let done = DispatchSemaphore(value: 0)
     private let lock = NSLock()
     private var storedRequest = ""
@@ -106,12 +123,13 @@ private final class FakeDockerAPIServer: @unchecked Sendable {
         return storedRequest
     }
 
-    init(response: String) throws {
+    init(response: String, rejectClientHalfCloseBeforeResponse: Bool = false) throws {
         let base = "/tmp/dory-api-probe-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
         self.path = base + "/docker.sock"
         self.fd = try bindUnixListener(path: path)
         self.response = response
+        self.rejectClientHalfCloseBeforeResponse = rejectClientHalfCloseBeforeResponse
         DispatchQueue.global().async { [self] in serveOne() }
     }
 
@@ -138,7 +156,13 @@ private final class FakeDockerAPIServer: @unchecked Sendable {
         lock.lock()
         storedRequest = request
         lock.unlock()
-        _ = writeAll(Array(response.utf8), to: accepted)
+        let selectedResponse: String
+        if rejectClientHalfCloseBeforeResponse && clientClosedWriteSide(accepted) {
+            selectedResponse = "HTTP/1.1 499 Client Closed Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        } else {
+            selectedResponse = response
+        }
+        _ = writeAll(Array(selectedResponse.utf8), to: accepted)
         shutdown(accepted, SHUT_WR)
     }
 }
@@ -203,6 +227,21 @@ private func readUntilHeaderEnd(from fd: Int32) -> String? {
         return nil
     }
     return nil
+}
+
+private func clientClosedWriteSide(_ fd: Int32) -> Bool {
+    var timeout = timeval(tv_sec: 0, tv_usec: 100_000)
+    _ = withUnsafePointer(to: &timeout) { pointer in
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, pointer, socklen_t(MemoryLayout<timeval>.size))
+    }
+    var byte = UInt8(0)
+    while true {
+        let got = Darwin.read(fd, &byte, 1)
+        if got == 0 { return true }
+        if got > 0 { return false }
+        if errno == EINTR { continue }
+        return false
+    }
 }
 
 @discardableResult
