@@ -35,7 +35,7 @@ struct MachinesView: View {
                     .background(p.accentSoft, in: RoundedRectangle(cornerRadius: 20))
                 VStack(spacing: 8) {
                     Text("No Linux machines yet").font(.system(size: 22, weight: .bold)).foregroundStyle(p.text)
-                    Text("Spin up a full isolated Linux VM — Ubuntu, Debian, Fedora, Rocky, openSUSE and more — each with systemd, a persistent disk, an address, and an instant root shell.")
+                    Text("Spin up a persistent, Alpine-based Dory Linux VM for terminal apps and local services, with its own resources, address, snapshots, and instant root shell.")
                         .font(.system(size: 13.5)).foregroundStyle(p.text2)
                         .multilineTextAlignment(.center).lineSpacing(4)
                         .frame(maxWidth: 460)
@@ -62,7 +62,7 @@ struct MachinesView: View {
     private var featurePills: some View {
         HStack(spacing: 8) {
             featurePill("Isolated VM", "rectangle.stack.badge.person.crop")
-            featurePill("systemd", "gearshape.2")
+            featurePill("Dory Linux", "gearshape.2")
             featurePill("Root shell", "terminal")
             featurePill("Persistent disk", "internaldrive")
         }

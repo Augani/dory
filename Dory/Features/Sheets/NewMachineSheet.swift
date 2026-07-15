@@ -4,16 +4,11 @@ struct NewMachineSheet: View {
     @Environment(AppStore.self) private var store
     @Environment(\.palette) private var p
 
-    @State private var selectedFamily: MachineFamily
-    @State private var selectedVersion: MachineDistro
-    @State private var selectedArch: MachineArch
     @State private var name: String
-    @State private var lastAutoName: String
     @State private var address = ""
-    @State private var nameEdited = false
     @State private var selectedRecipe: DevRecipe?
 
-    enum Stage: Hashable { case useCase, composer, form }
+    enum Stage: Hashable { case useCase, form }
     @State private var stage: Stage = .useCase
     @State private var activeUseCaseID: String?
 
@@ -22,8 +17,6 @@ struct NewMachineSheet: View {
     @State private var memoryGB = 2
     @State private var mountRows: [MountRow] = []
     @State private var shareHome = false
-    @State private var shell = "/bin/bash"
-    @State private var username = NSUserName()
 
     private struct MountRow: Identifiable, Hashable {
         let id = UUID()
@@ -31,28 +24,16 @@ struct NewMachineSheet: View {
         var guest = ""
     }
 
-    private let columns = [GridItem(.adaptive(minimum: 160, maximum: 260), spacing: 8)]
-
     init() {
-        let family = MachineDistro.families[0]
-        let auto = NewMachineSheet.defaultName(family)
-        _selectedFamily = State(initialValue: family)
-        _selectedVersion = State(initialValue: family.defaultVersion)
-        _selectedArch = State(initialValue: family.defaultVersion.defaultArch())
-        _name = State(initialValue: auto)
-        _lastAutoName = State(initialValue: auto)
+        _name = State(initialValue: NewMachineSheet.defaultName())
     }
 
     private var engineReady: Bool { store.dorydRuntimeActive }
-
-    private var recipesAvailable: Bool { selectedVersion.pkg == .apt }
 
     var body: some View {
         Group {
             if stage == .useCase {
                 useCaseScreen
-            } else if stage == .composer {
-                MachineComposerView(onBack: { stage = .useCase })
             } else {
                 formScreen
             }
@@ -100,7 +81,6 @@ struct NewMachineSheet: View {
                         ForEach(MachineUseCase.all) { useCase in
                             useCaseCard(useCase)
                         }
-                        buildYourOwnCard
                     }
                 }
                 .padding(20)
@@ -117,7 +97,7 @@ struct NewMachineSheet: View {
                 .background(p.accentSoft, in: RoundedRectangle(cornerRadius: 10))
             VStack(alignment: .leading, spacing: 1) {
                 Text("What will you use it for?").font(.system(size: 15, weight: .bold)).foregroundStyle(p.text)
-                Text("Pick a starting point — you can customize everything next.")
+                Text("Pick a starting toolset — you can customize resources and sharing next.")
                     .font(.system(size: 11.5)).foregroundStyle(p.text3)
             }
             Spacer()
@@ -127,29 +107,6 @@ struct NewMachineSheet: View {
 
     private var useCaseColumns: [GridItem] {
         [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)]
-    }
-
-    private var buildYourOwnCard: some View {
-        Button { stage = .composer } label: {
-            HStack(alignment: .top, spacing: 11) {
-                Image(systemName: "wrench.and.screwdriver")
-                    .font(.system(size: 17, weight: .semibold)).foregroundStyle(p.accent)
-                    .frame(width: 38, height: 38)
-                    .background(p.accentSoft, in: RoundedRectangle(cornerRadius: 9))
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Build your own").font(.system(size: 13, weight: .semibold)).foregroundStyle(p.text).lineLimit(1)
-                    Text("Pick runtimes, tools & packages").font(.system(size: 11)).foregroundStyle(p.text3)
-                        .lineLimit(2).fixedSize(horizontal: false, vertical: true)
-                }
-                Spacer(minLength: 0)
-            }
-            .padding(.horizontal, 13).padding(.vertical, 12)
-            .frame(maxWidth: .infinity, minHeight: 62, alignment: .topLeading)
-            .background(p.bgElevated, in: RoundedRectangle(cornerRadius: 10))
-            .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(p.accentWeak, lineWidth: 1.5))
-        }
-        .buttonStyle(.plain)
-        .accessibilityIdentifier("use-case-build")
     }
 
     private func useCaseCard(_ useCase: MachineUseCase) -> some View {
@@ -200,13 +157,9 @@ struct NewMachineSheet: View {
     }
 
     private func applyUseCase(_ useCase: MachineUseCase) {
-        guard let pre = useCase.prefill else { return }
-        select(pre.family)
-        selectedVersion = pre.version
-        selectedArch = pre.arch
-        selectedRecipe = pre.recipe
-        cpus = pre.cpus
-        memoryGB = pre.memoryGB
+        selectedRecipe = useCase.recipe
+        cpus = useCase.cpus
+        memoryGB = useCase.memoryGB
         activeUseCaseID = useCase.id
         stage = .form
     }
@@ -237,7 +190,7 @@ struct NewMachineSheet: View {
         if let id = activeUseCaseID, let useCase = MachineUseCase.forID(id) {
             return "\(useCase.title) — tweak anything below"
         }
-        return "Pick a distribution and version"
+        return "Dory Linux · native Apple Silicon"
     }
 
     private var engineNotice: some View {
@@ -253,12 +206,22 @@ struct NewMachineSheet: View {
 
     private var distroSection: some View {
         VStack(alignment: .leading, spacing: 9) {
-            sectionLabel("DISTRIBUTION")
-            LazyVGrid(columns: columns, alignment: .leading, spacing: 8) {
-                ForEach(MachineDistro.families) { family in
-                    familyCard(family)
+            sectionLabel("OPERATING SYSTEM")
+            HStack(spacing: 11) {
+                Image(systemName: "terminal.fill")
+                    .font(.system(size: 15, weight: .semibold)).foregroundStyle(p.accent)
+                    .frame(width: 36, height: 36)
+                    .background(p.accentSoft, in: RoundedRectangle(cornerRadius: 9))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Dory Linux").font(.system(size: 13, weight: .semibold)).foregroundStyle(p.text)
+                    Text("Persistent Alpine-based arm64 VM for terminal apps and local services")
+                        .font(.system(size: 11)).foregroundStyle(p.text3)
                 }
+                Spacer(minLength: 0)
             }
+            .padding(12)
+            .background(p.bgElevated, in: RoundedRectangle(cornerRadius: 10))
+            .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(p.border))
         }
     }
 
@@ -269,87 +232,35 @@ struct NewMachineSheet: View {
                 get: { selectedRecipe?.id ?? "" },
                 set: { selectedRecipe = $0.isEmpty ? nil : DevRecipe.forID($0) }
             )) {
-                Text("Plain OS").tag("")
+                Text("Plain Dory Linux").tag("")
                 ForEach(DevRecipe.all) { recipe in Text(recipe.display).tag(recipe.id) }
             }
             .labelsHidden().pickerStyle(.menu).frame(width: 220, alignment: .leading)
-            .disabled(!recipesAvailable)
-            if !recipesAvailable {
-                Text("Dev recipes currently require an apt-based distro (Ubuntu, Debian, Kali).")
-                    .font(.system(size: 11)).foregroundStyle(p.text3)
-            }
+            Text("Recipes install verified Alpine packages after the VM starts.")
+                .font(.system(size: 11)).foregroundStyle(p.text3)
         }
     }
 
     private var identitySection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            sectionLabel("IDENTITY & SHARING")
-            HStack(alignment: .top, spacing: 16) {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("USER").font(.system(size: 9.5, weight: .semibold)).foregroundStyle(p.text3).tracking(0.5)
-                    TextField("username", text: $username)
-                        .textFieldStyle(.plain)
-                        .font(.mono(12.5)).foregroundStyle(p.text)
-                        .padding(.horizontal, 10).padding(.vertical, 7)
-                        .frame(width: 180, alignment: .leading)
-                        .background(p.bgInput, in: RoundedRectangle(cornerRadius: 8))
-                        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(usernameInvalid ? p.red : p.border))
-                        .disabled(!shareHome)
-                        .opacity(shareHome ? 1 : 0.5)
-                }
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("LOGIN SHELL").font(.system(size: 9.5, weight: .semibold)).foregroundStyle(p.text3).tracking(0.5)
-                    Picker("", selection: $shell) {
-                        Text("bash").tag("/bin/bash")
-                        Text("zsh").tag("/bin/zsh")
-                        Text("fish").tag("/usr/bin/fish")
-                    }
-                    .labelsHidden().pickerStyle(.menu).frame(width: 160, alignment: .leading)
-                }
+            sectionLabel("ACCESS & SHARING")
+            HStack(spacing: 9) {
+                Image(systemName: "person.crop.circle.badge.checkmark")
+                    .font(.system(size: 14)).foregroundStyle(p.accent)
+                Text("Administrator shell").font(.system(size: 12.5, weight: .semibold)).foregroundStyle(p.text)
                 Spacer(minLength: 0)
-            }
-            if shareHome && usernameInvalid {
-                Text("Lowercase letters, digits, _ or -, starting with a letter or _ (max 32).")
-                    .font(.system(size: 11)).foregroundStyle(p.red)
+                Text("root · /bin/sh").font(.mono(11.5)).foregroundStyle(p.text3)
             }
             Toggle("Share my Mac home (read-write)", isOn: $shareHome)
                 .toggleStyle(.switch).tint(p.accent)
                 .font(.system(size: 12.5)).foregroundStyle(p.text)
-            Text(shareHome ? "Your home, git config, and SSH keys are shared into this machine." : "No Mac home folder is shared unless you turn this on or add scoped mounts.")
+            Text(shareHome ? "Your Mac home is mounted at its native path inside the machine." : "No Mac home folder is shared unless you turn this on or add scoped mounts.")
                 .font(.system(size: 11)).foregroundStyle(p.text3)
         }
     }
 
     private var optionsRow: some View {
         VStack(alignment: .leading, spacing: 16) {
-            HStack(alignment: .top, spacing: 16) {
-                VStack(alignment: .leading, spacing: 9) {
-                    sectionLabel("VERSION")
-                    Picker("", selection: $selectedVersion) {
-                        ForEach(selectedFamily.versions) { version in
-                            Text(version.version).tag(version)
-                        }
-                    }
-                    .labelsHidden().pickerStyle(.menu)
-                    .frame(width: 180, alignment: .leading)
-                }
-                VStack(alignment: .leading, spacing: 9) {
-                    sectionLabel("ARCHITECTURE")
-                    Picker("", selection: $selectedArch) {
-                        ForEach(selectedFamily.arches) { arch in
-                            Text(arch.label()).tag(arch)
-                        }
-                    }
-                    .labelsHidden().pickerStyle(.menu)
-                    .frame(width: 240, alignment: .leading)
-                    .disabled(selectedFamily.arches.count < 2)
-                    if !selectedArch.isNative {
-                        Text("Emulated via binfmt, slower than \(MachineArch.host.display). Fine for builds and testing. For near-native x86, run one-off commands with `dory vm --arch amd64 --rosetta`.")
-                            .font(.system(size: 11)).foregroundStyle(p.text3)
-                            .frame(width: 240, alignment: .leading)
-                    }
-                }
-            }
             VStack(alignment: .leading, spacing: 9) {
                 sectionLabel("NAME")
                 TextField("machine-name", text: $name)
@@ -358,7 +269,6 @@ struct NewMachineSheet: View {
                     .padding(.horizontal, 10).padding(.vertical, 8)
                     .background(p.bgInput, in: RoundedRectangle(cornerRadius: 8))
                     .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(nameInvalid ? p.red : p.border))
-                    .onChange(of: name) { _, newValue in nameEdited = (newValue != lastAutoName) }
                     .frame(maxWidth: .infinity)
                 if nameInvalid {
                     Text("Use up to 63 letters, numbers, dots, dashes or underscores.")
@@ -570,9 +480,9 @@ struct NewMachineSheet: View {
     private var footer: some View {
         HStack(spacing: 12) {
             HStack(spacing: 6) {
-                Image(systemName: selectedVersion.boot == .systemd ? "gearshape.2" : "terminal")
+                Image(systemName: "terminal")
                     .font(.system(size: 11)).foregroundStyle(p.text3)
-                Text("\(selectedVersion.baseImage) · \(selectedArch.shortLabel) · \(selectedVersion.boot == .systemd ? "systemd" : "shell")")
+                Text("Dory Linux · arm64 · root shell")
                     .font(.mono(11.5)).foregroundStyle(p.text3).lineLimit(1)
             }
             Spacer(minLength: 8)
@@ -603,43 +513,12 @@ struct NewMachineSheet: View {
         Text(text).font(.system(size: 10.5, weight: .semibold)).foregroundStyle(p.text3).tracking(0.5)
     }
 
-    private func familyCard(_ family: MachineFamily) -> some View {
-        let selected = family.id == selectedFamily.id
-        return Button { select(family) } label: {
-            HStack(spacing: 10) {
-                badge(for: family)
-                Text(family.display).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(p.text).lineLimit(1)
-                Spacer(minLength: 0)
-                if selected {
-                    Image(systemName: "checkmark.circle.fill").font(.system(size: 13)).foregroundStyle(p.accent)
-                }
-            }
-            .padding(.horizontal, 11).padding(.vertical, 9)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(selected ? p.accentSoft : p.bgElevated, in: RoundedRectangle(cornerRadius: 10))
-            .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(selected ? p.accent : p.border, lineWidth: selected ? 1.5 : 1))
-        }
-        .buttonStyle(.plain)
-    }
-
-    @ViewBuilder
-    private func badge(for family: MachineFamily) -> some View {
-        if let logo = MachineDistro.logoAsset(family: family.id) {
-            Image(logo).resizable().aspectRatio(contentMode: .fit).frame(width: 24, height: 24)
-        } else {
-            Text(family.letter)
-                .font(.system(size: 13, weight: .heavy)).foregroundStyle(.white)
-                .frame(width: 24, height: 24)
-                .background(Color(hex: family.badgeHex), in: RoundedRectangle(cornerRadius: 7))
-        }
-    }
-
     private var nameInvalid: Bool {
         !name.trimmingCharacters(in: .whitespaces).isEmpty && !nameValid
     }
 
     private var createDisabled: Bool {
-        name.trimmingCharacters(in: .whitespaces).isEmpty || !nameValid || store.machineBusy || !engineReady || mountsOutsideHome || (shareHome && !usernameValid)
+        name.trimmingCharacters(in: .whitespaces).isEmpty || !nameValid || store.machineBusy || !engineReady || mountsOutsideHome
     }
 
     private var mountsOutsideHome: Bool {
@@ -657,39 +536,14 @@ struct NewMachineSheet: View {
         return trimmed.range(of: "^[a-zA-Z0-9][a-zA-Z0-9_.-]*$", options: .regularExpression) != nil
     }
 
-    private var usernameValid: Bool {
-        let trimmed = username.trimmingCharacters(in: .whitespaces)
-        guard !trimmed.isEmpty, trimmed.count <= 32 else { return false }
-        return trimmed.range(of: "^[a-z_][a-z0-9_-]*$", options: .regularExpression) != nil
-    }
-
-    private var usernameInvalid: Bool {
-        !username.trimmingCharacters(in: .whitespaces).isEmpty && !usernameValid
-    }
-
-    private func select(_ family: MachineFamily) {
-        selectedFamily = family
-        selectedVersion = family.defaultVersion
-        if family.defaultVersion.pkg != .apt { selectedRecipe = nil }
-        if !family.arches.contains(selectedArch) { selectedArch = family.defaultVersion.defaultArch() }
-        guard !nameEdited else { return }
-        let auto = NewMachineSheet.defaultName(family)
-        lastAutoName = auto
-        name = auto
-    }
-
     private func create() {
-        let trimmedUser = username.trimmingCharacters(in: .whitespaces)
-        let identity = shareHome
-            ? MacIdentity.make(username: trimmedUser, uid: Int(getuid()), homePath: NSHomeDirectory(),
-                               shell: shell, sshDir: NSHomeDirectory() + "/.ssh")
-            : nil
-        let settings = collectedSettings()
+        var settings = collectedSettings()
+        if shareHome, !settings.mounts.contains(where: { $0.guest == NSHomeDirectory() }) {
+            settings.mounts.append(MountPair(host: NSHomeDirectory(), guest: NSHomeDirectory()))
+        }
         let machineName = name
-        let image = selectedVersion.baseImage
-        let arch = selectedArch
         let recipe = selectedRecipe
-        Task { _ = await store.createMachine(image: image, name: machineName, arch: arch, recipe: recipe, settings: settings, identity: identity) }
+        Task { _ = await store.createMachine(name: machineName, recipe: recipe, settings: settings) }
     }
 
     static func buildSettings(cpus: Int, memoryGB: Int, mounts: [MountPair], address: String? = nil) -> MachineSettings {
@@ -706,8 +560,8 @@ struct NewMachineSheet: View {
         return Self.buildSettings(cpus: cpus, memoryGB: memoryGB, mounts: mounts, address: trimmedAddress)
     }
 
-    static func defaultName(_ family: MachineFamily) -> String {
-        "\(family.id)-\(AppStore.generatedMachineToken())"
+    static func defaultName() -> String {
+        "dory-\(AppStore.generatedMachineToken())"
     }
 
     private var dnsName: String {

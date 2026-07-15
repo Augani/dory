@@ -32,8 +32,8 @@
   live in one managed `.dorydrive` on your Mac. Runtime caches and sockets remain replaceable.
 - **Native Mac interface.** Manage containers, images, volumes, networks, Compose projects,
   Kubernetes resources, and Linux machines from a SwiftUI app with no Electron runtime.
-- **Linux machines.** Create Ubuntu, Debian, Fedora, Alpine, and Arch machines with terminals,
-  snapshots, resource controls, and development recipes.
+- **Linux machines.** Create persistent Alpine-based Dory Linux VMs with root terminals, snapshots,
+  resource controls, scoped mounts, networking, and curated development recipes.
 - **Migration.** Import images, volumes, networks, and container definitions from an existing local
   Docker-compatible engine after reviewing Dory's preflight report.
 - **Local networking.** Published ports use localhost, while optional `*.dory.local` domains and

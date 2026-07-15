@@ -40,26 +40,26 @@ struct AppStoreEnvAllowListTests {
 
     @Test func createMachineRejectsPathTraversalName() async {
         let store = AppStore(runtime: MockRuntime())
-        let result = await store.createMachine(image: "ubuntu", name: "../evil")
+        let result = await store.createMachine(name: "../evil")
         #expect(result == "Invalid machine name")
     }
 
     @Test func createMachineRejectsSlashInName() async {
         let store = AppStore(runtime: MockRuntime())
-        let result = await store.createMachine(image: "ubuntu", name: "a/b")
+        let result = await store.createMachine(name: "a/b")
         #expect(result == "Invalid machine name")
     }
 
     @Test func createMachineRejectsNameLongerThanDaemonLimit() async {
         let store = AppStore(runtime: MockRuntime())
-        let result = await store.createMachine(image: "ubuntu", name: String(repeating: "a", count: 64))
+        let result = await store.createMachine(name: String(repeating: "a", count: 64))
         #expect(result == "Invalid machine name")
         #expect(store.actionError?.contains("63 characters or fewer") == true)
     }
 
     @Test func createMachineRequiresDorydMachineRuntime() async {
         let store = AppStore(runtime: MockRuntime())
-        let result = await store.createMachine(image: "ubuntu", name: "dev")
+        let result = await store.createMachine(name: "dev")
         #expect(result == AppStore.dorydMachineManagerRequired())
         #expect(store.actionError == AppStore.dorydMachineManagerRequired())
     }

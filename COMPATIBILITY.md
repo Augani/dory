@@ -61,14 +61,18 @@ engine resources.
 
 | Capability | Status |
 |---|---|
-| Distributions | Ubuntu, Debian, Fedora, Alpine, and Arch presets |
-| Access | Embedded terminal, `dory ssh`, and command execution |
+| Guest OS | Persistent, Alpine-based Dory Linux on native arm64 |
+| Access | Embedded root terminal, `dory machine shell`, and command execution |
 | Resources | CPU and memory configuration with guest-reported statistics |
 | Snapshots and export/import | Supported |
-| Development recipes | Node, Python, Go, Rust, and customizable package selections |
+| Development recipes | Curated Node, Python, Go, Rust, Java, Ruby, and DevOps toolsets |
 | Graphical Linux sessions | Not part of the current product; possible future work |
 
-Machines are intended for terminal applications, local services, and development environments.
+Machines are intended for terminal applications, local services, and development environments. They
+are not currently drop-in Ubuntu/Fedora VPS replacements: the guest uses musl and Alpine userspace
+rather than glibc and systemd, and the interactive administrator is `root`. Applications that
+require another distribution, systemd, kernel modules, or a graphical session are outside the 0.3
+machine contract.
 
 ## Networking
 

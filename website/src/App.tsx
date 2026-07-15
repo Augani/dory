@@ -40,7 +40,7 @@ const features = [
     icon: ServerStackIcon,
     eyebrow: 'More than containers',
     title: 'Kubernetes and Linux machines.',
-    copy: 'Start k3s with one click or create full Ubuntu, Debian, Fedora, Alpine, and Arch machines with snapshots and ready-to-code recipes.',
+    copy: 'Start k3s with one click or create persistent Dory Linux machines with snapshots, resource controls, and ready-to-code recipes.',
   },
   {
     icon: ShieldCheckIcon,
@@ -95,7 +95,7 @@ function App() {
             <div className="badge"><span /> Free and open source for macOS</div>
             <h1>Containers feel<br /><em>at home</em> on Mac.</h1>
             <p className="hero-lede">
-              Docker, Kubernetes, and full Linux machines in one beautifully native app.
+              Docker, Kubernetes, and persistent Dory Linux machines in one beautifully native app.
               One shared VM. Zero accounts. Your existing tools just work.
             </p>
             <div className="hero-actions">

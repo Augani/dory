@@ -658,7 +658,6 @@ struct DorydClientTests {
 
         await store.connectBackend()
         let result = await store.createMachine(
-            image: "not-a-docker-image",
             name: "vmdev",
             recipe: DevRecipe.forID("rust"),
             settings: MachineSettings(
@@ -729,7 +728,6 @@ struct DorydClientTests {
 
         await store.connectBackend()
         let result = await store.createMachine(
-            image: "not-a-docker-image",
             name: "vmfailed",
             recipe: DevRecipe.forID("rust")
         )
@@ -786,7 +784,6 @@ struct DorydClientTests {
 
         await store.connectBackend()
         let result = await store.createMachine(
-            image: "not-a-docker-image",
             name: "envdev",
             settings: MachineSettings(cpus: nil, memoryMB: nil, env: ["GH_TOKEN": "gh-explicit"])
         )

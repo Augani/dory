@@ -7,17 +7,9 @@ struct MachineUseCaseTests {
         #expect(Set(MachineUseCase.all.map(\.id)).count == MachineUseCase.all.count)
     }
 
-    @Test func everyUseCaseResolvesADistroAndPrefill() {
-        for useCase in MachineUseCase.all {
-            #expect(useCase.distro != nil, "\(useCase.id) distro")
-            #expect(useCase.prefill != nil, "\(useCase.id) prefill")
-        }
-    }
-
-    @Test func recipeUseCasesResolveAndAreAptGated() {
+    @Test func recipeUseCasesResolve() {
         for useCase in MachineUseCase.all where useCase.recipeID != nil {
             #expect(useCase.recipe != nil, "\(useCase.id) recipe resolves")
-            #expect(useCase.distro?.pkg == .apt, "\(useCase.id) recipe needs apt distro")
         }
     }
 
@@ -35,12 +27,6 @@ struct MachineUseCaseTests {
         for useCase in MachineUseCase.all {
             #expect((1...8).contains(useCase.cpus), "\(useCase.id) cpus")
             #expect((1...16).contains(useCase.memoryGB), "\(useCase.id) memoryGB")
-        }
-    }
-
-    @Test func prefillArchIsDistroDefault() {
-        for useCase in MachineUseCase.all {
-            #expect(useCase.prefill?.arch == useCase.distro?.defaultArch())
         }
     }
 }

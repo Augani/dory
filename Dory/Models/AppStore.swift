@@ -4446,15 +4446,6 @@ final class AppStore {
         return copy
     }
 
-    nonisolated static func withIdentity(_ settings: MachineSettings, _ identity: MacIdentity) -> MachineSettings {
-        var s = settings
-        s.identity = identity
-        if !s.mounts.contains(where: { $0.guest == identity.homePath }) {
-            s.mounts.append(MountPair(host: identity.homePath, guest: identity.homePath, readOnly: false))
-        }
-        return s
-    }
-
     nonisolated static func preservingHiddenMachineSettings(_ settings: MachineSettings, existing: MachineSettings) -> MachineSettings {
         var copy = settings
         if copy.env.isEmpty { copy.env = existing.env }
@@ -4528,7 +4519,7 @@ final class AppStore {
         )
     }
 
-    func createMachine(image: String, name: String, arch: MachineArch = .host, recipe: DevRecipe? = nil, settings: MachineSettings = .default, identity: MacIdentity? = nil) async -> String? {
+    func createMachine(name: String, recipe: DevRecipe? = nil, settings: MachineSettings = .default) async -> String? {
         let trimmedName = name.trimmingCharacters(in: .whitespaces)
         guard !trimmedName.isEmpty else { actionError = "Name is required"; return "Name is required" }
         guard trimmedName.utf8.count <= 63 else {
@@ -4540,9 +4531,8 @@ final class AppStore {
             return "Invalid machine name"
         }
         guard requireDorydMachines() else { return actionError }
-        let identitySettings = identity.map { Self.withIdentity(settings, $0) } ?? settings
         let resolvedEnv = await machineEnvResolver(machineEnvAllowList)
-        let effectiveSettings = Self.mergingEnv(identitySettings, resolved: resolvedEnv)
+        let effectiveSettings = Self.mergingEnv(settings, resolved: resolvedEnv)
         return await createDorydMachine(name: trimmedName, settings: effectiveSettings, recipe: recipe)
     }
 
