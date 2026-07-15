@@ -43,6 +43,34 @@ final class VmmHandoffTests: XCTestCase {
         XCTAssertEqual(handoff.fileDescriptors.count, 1)
         XCTAssertNotEqual(fcntl(handoff.fileDescriptors[0], F_GETFD), -1)
     }
+
+    func testStoppingOldServerDoesNotUnlinkReplacementSocket() throws {
+        let base = "/tmp/dory-vmm-handoff-replace-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let path = base + "/handoff.sock"
+        let old = VmmHandoffServer(path: path) { _ in }
+        let received = DispatchSemaphore(value: 0)
+        let resultBox = LockedHandoffResult()
+        let replacement = VmmHandoffServer(path: path) { result in
+            resultBox.result = result
+            received.signal()
+        }
+
+        try old.start()
+        try replacement.start()
+        defer { replacement.stop() }
+        old.stop()
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: path))
+        try VmmHandoffClient.send(
+            path: path,
+            ready: VmmReadyMessage(machineID: "replacement"),
+            fileDescriptors: []
+        )
+        XCTAssertEqual(received.wait(timeout: .now() + 2), .success)
+        XCTAssertEqual(try resultBox.get().ready.machineID, "replacement")
+    }
 }
 
 private final class LockedHandoffResult: @unchecked Sendable {

@@ -1504,6 +1504,82 @@ final class MachineManagerTests: XCTestCase {
         XCTAssertEqual(stored.address, "192.168.215.40")
     }
 
+    func testFailedUpdatedHandoffRestoresDefinitionAndWaitsForOriginalMachineReadiness() throws {
+        let base = "/tmp/dory-machine-update-handoff-rollback-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let manager = MachineManager(configuration: MachineManagerConfiguration(
+            vmmExecutablePath: "/bin/sleep",
+            stateDirectory: base,
+            baseArguments: ["30"],
+            passMachineArguments: false,
+            requiresReadyHandoff: true
+        ))
+        defer { try? manager.delete(id: "dev") }
+        _ = try manager.create(DoryMachineConfiguration(
+            id: "dev",
+            kernelPath: doryTestKernelPath,
+            rootfsPath: doryTestRootfsPath,
+            memoryMB: 2048,
+            cpuCount: 2
+        ))
+
+        let originalStarting = try manager.start(id: "dev")
+        try sendVmmHandoff(
+            path: try XCTUnwrap(originalStarting.handoffSocketPath),
+            ready: VmmReadyMessage(machineID: "dev"),
+            fileDescriptors: []
+        )
+        _ = try waitForMachineState(manager, id: "dev", state: .running)
+
+        let updateFinished = expectation(description: "machine update finished")
+        let updateResult = LockedResult<DoryMachineStatus>()
+        DispatchQueue.global(qos: .userInitiated).async {
+            updateResult.store(Result { try manager.update(id: "dev", memoryMB: 4096) })
+            updateFinished.fulfill()
+        }
+
+        let updatedStarting = try waitForMachineStatus(manager, id: "dev") {
+            $0.state == .starting && $0.memoryMB == 4096
+        }
+        try sendVmmHandoff(
+            path: try XCTUnwrap(updatedStarting.handoffSocketPath),
+            ready: VmmReadyMessage(machineID: "wrong-machine"),
+            fileDescriptors: []
+        )
+
+        let restoredStarting = try waitForMachineStatus(manager, id: "dev") {
+            $0.state == .starting && $0.memoryMB == 2048
+        }
+        try sendVmmHandoff(
+            path: try XCTUnwrap(restoredStarting.handoffSocketPath),
+            ready: VmmReadyMessage(machineID: "dev"),
+            fileDescriptors: []
+        )
+
+        wait(for: [updateFinished], timeout: 5)
+        switch try XCTUnwrap(updateResult.value) {
+        case let .failure(error):
+            guard case let MachineManagerError.persistence(message) = error else {
+                return XCTFail("unexpected error: \(error)")
+            }
+            XCTAssertTrue(message.contains("original configuration was restored"))
+        case .success:
+            XCTFail("update unexpectedly succeeded after a rejected handoff")
+        }
+
+        let restored = try XCTUnwrap(manager.status(id: "dev"))
+        XCTAssertEqual(restored.state, .running)
+        XCTAssertEqual(restored.memoryMB, 2048)
+        XCTAssertEqual(restored.cpuCount, 2)
+        XCTAssertNotNil(restored.pid)
+        let stored = try JSONDecoder().decode(
+            DoryMachineConfiguration.self,
+            from: Data(contentsOf: URL(fileURLWithPath: "\(base)/dev/machine.json"))
+        )
+        XCTAssertEqual(stored.memoryMB, 2048)
+        XCTAssertEqual(stored.cpuCount, 2)
+    }
+
     func testUpdatePersistenceFailurePreservesThePublishedDefinition() throws {
         let base = "/tmp/dory-machine-update-persistence-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         defer { try? FileManager.default.removeItem(atPath: base) }
@@ -2669,6 +2745,23 @@ private enum RecordingProcessStarterError: Error {
     case rejected(Int)
 }
 
+private final class LockedResult<Value>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: Result<Value, Error>?
+
+    var value: Result<Value, Error>? {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage
+    }
+
+    func store(_ result: Result<Value, Error>) {
+        lock.lock()
+        storage = result
+        lock.unlock()
+    }
+}
+
 private func writeMachineBundle(
     toPath path: String,
     snapshot: DoryMachineSnapshot,
@@ -2734,6 +2827,25 @@ private func waitForMachineState(
         Thread.sleep(forTimeInterval: 0.02)
     }
     return try XCTUnwrap(manager.status(id: id))
+}
+
+private func waitForMachineStatus(
+    _ manager: MachineManager,
+    id: String,
+    timeout: TimeInterval = 2,
+    matching predicate: (DoryMachineStatus) -> Bool
+) throws -> DoryMachineStatus {
+    let deadline = Date().addingTimeInterval(timeout)
+    while Date() < deadline {
+        if let status = manager.status(id: id), predicate(status) {
+            return status
+        }
+        Thread.sleep(forTimeInterval: 0.02)
+    }
+    return try XCTUnwrap(
+        manager.status(id: id).flatMap { predicate($0) ? $0 : nil },
+        "timed out waiting for matching machine status for \(id)"
+    )
 }
 
 private func waitForMachineAddress(

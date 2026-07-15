@@ -541,6 +541,11 @@ to the final release tag rather than representing this candidate as built from c
   rootfs and kernel digests. The Apple-Silicon manager rejects an `amd64` bundle before creating a
   machine namespace or extracting either artifact, and the architecture is carried through XPC to
   the app instead of being displayed as unknown.
+- Running-machine configuration updates now commit only after the replacement guest completes its
+  ready handoff. A rejected asynchronous handoff restores the previous persisted definition, boots
+  it, waits for its own ready handoff, and returns the update failure only after the original guest
+  is running again. Handoff socket cleanup is bound to the socket instance so an old launch cannot
+  unlink its replacement's listener.
 - Required Linux-machine provisioning no longer has a silent-success path. Nonzero and timed-out
   install/verify stages fail, unsupported recipes are rejected before creation, the app removes a
   newly created VM when setup fails, and the legacy container-machine path removes an incomplete

@@ -776,6 +776,15 @@ grep -F -- '--dns-target IPv4 | --clear-dns-target' \
 grep -F 'testFailedUpdatedLaunchRestoresDefinitionAndRunningMachine' \
   dory-core-swift/Tests/DorydKitTests/MachineManagerTests.swift >/dev/null \
   || fail "failed machine reconfiguration can replace the last working definition"
+grep -F 'return try startAndWaitUntilReady(id: id)' \
+  dory-core-swift/Sources/DorydKit/MachineManager.swift >/dev/null \
+  || fail "running machine updates can report success before the replacement guest is ready"
+grep -F 'testFailedUpdatedHandoffRestoresDefinitionAndWaitsForOriginalMachineReadiness' \
+  dory-core-swift/Tests/DorydKitTests/MachineManagerTests.swift >/dev/null \
+  || fail "failed asynchronous machine handoffs no longer prove the original guest is restored and ready"
+grep -F 'testStoppingOldServerDoesNotUnlinkReplacementSocket' \
+  dory-core-swift/Tests/DorydKitTests/VmmHandoffTests.swift >/dev/null \
+  || fail "stale VMM handoff cleanup can unlink a replacement launch socket"
 grep -F 'testPersistedInvalidAddressShareAndEnvironmentCannotReachTheVMM' \
   dory-core-swift/Tests/DorydKitTests/MachineManagerTests.swift >/dev/null \
   || fail "invalid persisted host configuration can reach the VMM"

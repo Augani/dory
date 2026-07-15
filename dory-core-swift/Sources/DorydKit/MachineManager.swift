@@ -558,6 +558,33 @@ public final class MachineManager: @unchecked Sendable {
         return status(id: id) ?? DoryMachineStatus(id: id, state: .running)
     }
 
+    private func startAndWaitUntilReady(id: String) throws -> DoryMachineStatus {
+        let started = try start(id: id)
+        guard started.state == .starting else { return started }
+
+        let deadline = Date().addingTimeInterval(Self.handoffReadyTimeoutSeconds + 1)
+        while Date() < deadline {
+            guard let current = status(id: id) else {
+                throw MachineManagerError.unknownMachine(id)
+            }
+            switch current.state {
+            case .running:
+                return current
+            case .failed:
+                throw MachineManagerError.persistence(
+                    "vmm ready handoff failed for \(id): \(current.lastError ?? "unknown error")"
+                )
+            case .starting:
+                Thread.sleep(forTimeInterval: 0.01)
+            default:
+                throw MachineManagerError.persistence(
+                    "vmm ready handoff for \(id) ended in unexpected state \(current.state.rawValue)"
+                )
+            }
+        }
+        throw MachineManagerError.persistence("vmm ready handoff timed out for \(id)")
+    }
+
     private func scheduleHandoffTimeout(id: String, process: HvProcess) {
         // A VMM that boots but never completes the ready handoff would otherwise leave the
         // machine `.starting` forever. Bound the wait: if this exact launch is still starting
@@ -746,7 +773,7 @@ public final class MachineManager: @unchecked Sendable {
         } catch {
             if wasRunning {
                 do {
-                    _ = try start(id: id)
+                    _ = try startAndWaitUntilReady(id: id)
                 } catch let restartError {
                     throw MachineManagerError.persistence(
                         "could not update \(id): \(error); original configuration restart failed: \(restartError)"
@@ -760,7 +787,7 @@ public final class MachineManager: @unchecked Sendable {
             return status(id: id) ?? DoryMachineStatus(id: id, state: .stopped)
         }
         do {
-            return try start(id: id)
+            return try startAndWaitUntilReady(id: id)
         } catch {
             let updateError = error
             _ = try? stop(id: id)
@@ -773,7 +800,7 @@ public final class MachineManager: @unchecked Sendable {
                 )
             }
             do {
-                _ = try start(id: id)
+                _ = try startAndWaitUntilReady(id: id)
             } catch {
                 throw MachineManagerError.persistence(
                     "could not start updated \(id): \(updateError); original configuration was restored but restart failed: \(error)"

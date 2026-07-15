@@ -75,6 +75,7 @@ public final class VmmHandoffServer: @unchecked Sendable {
     private let lock = NSLock()
     private var listenerFD: Int32 = -1
     private var queue: DispatchQueue?
+    private var boundIdentity: (device: dev_t, inode: ino_t)?
 
     public init(path: String, handler: @escaping Handler) {
         self.path = path
@@ -114,10 +115,16 @@ public final class VmmHandoffServer: @unchecked Sendable {
             chmod(path, 0o600)
             guard listen(fd, 1) == 0 else { throw VmmHandoffError.syscall("listen", errno) }
 
+            var info = stat()
+            guard lstat(path, &info) == 0 else {
+                throw VmmHandoffError.syscall("lstat", errno)
+            }
+
             let queue = DispatchQueue(label: "dev.dory.doryd.vmm-handoff.\(fd)")
             lock.lock()
             listenerFD = fd
             self.queue = queue
+            boundIdentity = (info.st_dev, info.st_ino)
             lock.unlock()
             queue.async { [weak self] in
                 self?.acceptOne(listenerFD: fd)
@@ -132,13 +139,22 @@ public final class VmmHandoffServer: @unchecked Sendable {
     public func stop() {
         lock.lock()
         let fd = listenerFD
+        let identity = boundIdentity
         listenerFD = -1
         queue = nil
+        boundIdentity = nil
         lock.unlock()
         if fd >= 0 {
             close(fd)
         }
-        unlink(path)
+        if let identity {
+            var info = stat()
+            if lstat(path, &info) == 0,
+               info.st_dev == identity.device,
+               info.st_ino == identity.inode {
+                unlink(path)
+            }
+        }
     }
 
     private func acceptOne(listenerFD: Int32) {
