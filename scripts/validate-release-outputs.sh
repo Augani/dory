@@ -359,7 +359,7 @@ if [ "${DORY_RELEASE_OUTPUTS_SKIP_PLATFORM_VALIDATION:-0}" != "1" ]; then
     && diskutil image attach --help >/dev/null 2>&1; then
     diskutil image attach --readOnly --nobrowse --plist "$DMG" > "$ATTACH_PLIST"
   else
-    hdiutil attach -readonly -nobrowse -plist "$DMG" > "$ATTACH_PLIST"
+    diskutil image attach --readOnly --nobrowse --plist "$DMG" > "$ATTACH_PLIST"
   fi
   DMG_MOUNT="$(python3 - "$ATTACH_PLIST" <<'PY'
 import plistlib

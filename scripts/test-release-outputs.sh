@@ -1760,15 +1760,20 @@ assert "name: Verify Sparkle install evidence binding" in release, \
     "publication does not semantically verify the real Sparkle installation"
 direct_dmg = open("scripts/direct-dmg-install-gate.sh", encoding="utf-8").read()
 for required in (
-    'hdiutil attach -readonly -nobrowse -plist "$DMG"',
+    'diskutil image attach --readOnly --nobrowse --plist "$DMG"',
     '/usr/bin/ditto "$MOUNT/Dory.app" "$APP"',
     'xattr -w com.apple.quarantine "$quarantine" "$APP"',
     'spctl --assess --type execute',
     'verify-release-sbom.py" --sbom "$SBOM" --app "$APP"',
     'release-candidate-live-smoke.sh" "$APP"',
+    '--install-only',
+    'release_qualifying=false',
+    'uninstall_preserved_data=PASS',
     'initial_clean_user_state_restored=PASS',
 ):
     assert required in direct_dmg, f"direct DMG install gate omits: {required}"
+assert "--install-only" not in release, \
+    "public release can substitute install-only DMG smoke for physical qualification"
 sleep_gate = open("scripts/host-network-integrity-gate.sh", encoding="utf-8").read()
 for required in ("sudo -n pmset relative wake", "sudo -n pmset sleepnow",
                  "sleep/wake Docker CLI differs from the exact candidate app",
