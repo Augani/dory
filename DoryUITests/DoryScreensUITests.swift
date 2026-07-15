@@ -50,7 +50,7 @@ final class DoryScreensUITests: XCTestCase {
         app.buttons["settings-resources"].click()
         assertText("THIS MAC")
         XCTAssertTrue(app.buttons["use-existing-data-drive"].exists)
-        XCTAssertTrue(app.buttons["restore-verify-data-drive"].exists)
+        XCTAssertTrue(app.descendants(matching: .any)["restore-verify-data-drive"].exists)
         app.buttons["settings-engine"].click()
         assertText("ENGINE RESOURCES")
         XCTAssertTrue(app.buttons["engine-resources-apply"].exists)
