@@ -221,6 +221,8 @@ GVPROXY_PROVENANCE="$RESOURCES/gvproxy-provenance.txt"
 [ -x "$GVPROXY" ] || fail "arm64 app has no executable gvproxy helper"
 [ -s "$GVPROXY_PROVENANCE" ] || fail "arm64 app has no gvproxy provenance"
 [ -s "$RESOURCES/host-cli-provenance.txt" ] || fail "arm64 app has no host CLI provenance"
+[ "$(stat -f '%Lp' "$RESOURCES/host-cli-provenance.txt")" = 644 ] \
+  || fail "arm64 app host CLI provenance does not use portable mode 0644"
 [ -s "$RESOURCES/dory-payload-sha256.txt" ] || fail "arm64 app has no payload digest inventory"
 [ -s "$RESOURCES/dory-kernel-build-arm64.stamp" ] || fail "arm64 app has no kernel provenance"
 [ -s "$RESOURCES/dory-initfs-build-arm64.stamp" ] || fail "arm64 app has no initfs provenance"

@@ -35,6 +35,8 @@ grep -q 'source scripts/host-cli-payload.sh' "$ROOT/scripts/bundle-engine.sh" \
   || fail "bundle-engine does not load the host CLI verifier"
 grep -q 'dory_verify_host_cli_payload' "$ROOT/scripts/bundle-engine.sh" \
   || fail "bundle-engine does not verify downloaded host CLIs"
+grep -Fq 'chmod 0644 "$HOST_CLI_PROVENANCE"' "$ROOT/scripts/bundle-engine.sh" \
+  || fail "bundle-engine does not publish portable host CLI provenance permissions"
 [ "$(grep -c 'dory_verify_host_cli_payload .*|| return 1' "$ROOT/scripts/bundle-engine.sh")" -eq 4 ] \
   || fail "host CLI checksum failures are not propagated out of conditional download functions"
 grep -A2 'docker-buildx)' "$ROOT/scripts/bundle-engine.sh" | grep -q 'darwin_download_arch' \

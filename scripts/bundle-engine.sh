@@ -886,12 +886,17 @@ DOCKER_CLI_VERSION="$(dory_host_cli_version docker)"
 BUILDX_VER="$(dory_host_cli_version docker-buildx)"
 COMPOSE_VER="$(dory_host_cli_version docker-compose)"
 HOST_CLI_PROVENANCE="$RESOURCES/host-cli-provenance.txt"
-: > "$HOST_CLI_PROVENANCE"
+# Homebrew's ZIP unpacker normalizes ordinary readable resource files to 0644. Keep this public
+# provenance inventory at that canonical mode so a cask install remains byte-for-byte and
+# metadata-for-metadata identical to the SBOM-bound application tree.
+rm -f "$HOST_CLI_PROVENANCE"
+install -m 0644 /dev/null "$HOST_CLI_PROVENANCE"
 bundle_universal_host_cli kubectl
 bundle_universal_host_cli docker
 bundle_universal_host_cli docker-buildx
 bundle_universal_host_cli docker-compose
 LC_ALL=C sort -o "$HOST_CLI_PROVENANCE" "$HOST_CLI_PROVENANCE"
+chmod 0644 "$HOST_CLI_PROVENANCE"
 
 # Keep the CLI and doctor together so a clean install needs no external Dory tooling.
 echo "==> Bundling the dory CLI helpers (Health panel + doctor/compat)…"

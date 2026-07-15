@@ -536,6 +536,8 @@ verify_full_bundle() {
   assert_file_exists "$resources/dory-engine-rootfs.ext4.lzfse" "engine rootfs"
   assert_file_exists "$resources/gvproxy-provenance.txt" "gvproxy provenance"
   assert_file_exists "$resources/host-cli-provenance.txt" "host CLI provenance"
+  [ "$(stat -f '%Lp' "$resources/host-cli-provenance.txt")" = 644 ] \
+    || release_error "host CLI provenance must use portable mode 0644"
   assert_file_exists "$resources/dory-payload-sha256.txt" "payload digest inventory"
   assert_file_exists "$launch_agent" "bundled launchd plist"
   plutil -lint "$launch_agent" >/dev/null
