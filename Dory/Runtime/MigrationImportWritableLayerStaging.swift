@@ -13,6 +13,16 @@ private struct MigrationWritableLayerSourceSnapshot {
     let committedID: String
 }
 
+enum MigrationImportTemporaryAssets {
+    static func writableLayerReference(operationID: UUID, sourceID: String) -> String {
+        let operation = operationID.uuidString
+            .lowercased()
+            .replacingOccurrences(of: "-", with: "")
+        let objectDigest = MigrationImportAssetCanonical.digest(Data(sourceID.utf8))
+        return "dory-migration/staging:\(operation)-\(objectDigest.prefix(12))"
+    }
+}
+
 extension MigrationImportAssetStagingExecution {
     mutating func stageWritableLayer(_ object: DoryOperationPlannedObject) async throws {
         let specification = try writableLayerSpecification(object)
@@ -197,13 +207,10 @@ extension MigrationImportAssetStagingExecution {
     }
 
     func writableLayerTemporaryReference(_ object: DoryOperationPlannedObject) -> String {
-        let operation = session.prepared.identity.id.uuidString
-            .lowercased()
-            .replacingOccurrences(of: "-", with: "")
-        let objectDigest = MigrationImportAssetCanonical.digest(
-            Data(object.source.sourceID.utf8)
+        MigrationImportTemporaryAssets.writableLayerReference(
+            operationID: session.prepared.identity.id,
+            sourceID: object.source.sourceID
         )
-        return "dory-migration/staging:\(operation)-\(objectDigest.prefix(12))"
     }
 
     func rollbackSourceImage(

@@ -155,8 +155,16 @@ enum MigrationImportCoordinator {
     ) async throws -> MigrationImportPreparation {
         try Task.checkCancellation()
         let journalStore = try DoryOperationJournalStore(home: sharedHome)
-        try MigrationImportTransaction.requireNoUnfinishedOperation(in: journalStore)
         let helper = try MigrationTransferHelperAsset.bundled()
+        _ = try await MigrationImportRecovery.recoverUnfinishedOperation(
+            environment: MigrationImportRecoveryEnvironment(
+                source: source,
+                target: target,
+                journalStore: journalStore,
+                helperAsset: helper
+            )
+        )
+        try MigrationImportTransaction.requireNoUnfinishedOperation(in: journalStore)
         let prepared = try await MigrationStrictInventoryCollector.collect(
             from: source,
             to: target,

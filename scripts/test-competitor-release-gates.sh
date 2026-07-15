@@ -1080,6 +1080,7 @@ for rollback_source in \
   Dory/Runtime/MigrationImageTransferExecution.swift \
   Dory/Runtime/MigrationTransferHelperInstaller.swift \
   Dory/Runtime/MigrationImportAssetStager.swift \
+  Dory/Runtime/MigrationImportRecovery.swift \
   Dory/Runtime/MigrationImportWritableLayerStaging.swift; do
   grep -F 'removeImageForRollback' "$rollback_source" >/dev/null \
     || fail "migration image cleanup can force-delete another client's references in $rollback_source"
@@ -1096,10 +1097,18 @@ for ownership_regression in \
   'rollbackRemovesOnlyItsImageWhenAnotherClientAddsAnImage' \
   'rollbackFailsClosedWhenAnotherClientTagsTheStagedImage' \
   'sourceSnapshotCleanupPreservesAReferenceAddedByAnotherClient' \
-  'failedInstallPreservesAnImageAddedConcurrentlyByAnotherClient'; do
+  'failedInstallPreservesAnImageAddedConcurrentlyByAnotherClient' \
+  'retriesAnIncompleteRollbackAndUnblocksTheNextImport' \
+  'crashRecoveryRemovesOnlyExactlyOwnedObjectsAndPreservesUnknownImages' \
+  'recoversJournalPublishedBeforeBaselinesWithoutTouchingDocker' \
+  'refusesToRaceAnImportThatStillHoldsTheJournalLease' \
+  'restoresPreexistingDanglingHelpersAfterRemovingOperationTags'; do
   grep -R -F "$ownership_regression" DoryTests >/dev/null \
     || fail "migration cleanup lost adversarial ownership regression $ownership_regression"
 done
+grep -F 'MigrationImportRecovery.recoverUnfinishedOperation' \
+  Dory/Runtime/MigrationImportCoordinator.swift >/dev/null \
+  || fail "production competitor imports do not recover an interrupted journal before replanning"
 grep -F 'dory-migration/container-snapshot:' Dory/Runtime/MigrationAssistant.swift >/dev/null \
   || fail "containers are recreated from base images without preserving writable-layer changes"
 grep -F 'kind: "rollback"' Dory/Runtime/MigrationAssistant.swift >/dev/null \

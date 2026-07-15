@@ -27,6 +27,9 @@ extension StrictMigrationRuntime {
             let id = String(path.dropFirst("/containers/".count).dropLast("/json".count))
             return response(containerInspections[id])
         }
+        if path.hasPrefix("/images/"), path.hasSuffix("/json") {
+            return transferHelperImageResponse()
+        }
         if path.hasPrefix("/networks/") {
             let name = String(path.dropFirst("/networks/".count))
             return response(networkInspections[name])
@@ -66,5 +69,28 @@ extension StrictMigrationRuntime {
         guard let object,
               let data = try? JSONSerialization.data(withJSONObject: object) else { return nil }
         return HTTPResponse(statusCode: 200, reason: "OK", headers: [:], body: data)
+    }
+
+    private func transferHelperImageResponse() -> HTTPResponse? {
+        guard let metadata = transferHelperMetadata,
+              snapshotValue.images.contains(where: { $0.imageID == metadata.imageConfigDigest })
+        else { return nil }
+        let object: [String: Any] = [
+            "Id": metadata.imageConfigDigest,
+            "Architecture": "arm64",
+            "Os": "linux",
+            "Config": [
+                "Entrypoint": ["/dory-transfer-helper"],
+                "User": "0",
+                "WorkingDir": "/",
+                "Labels": [
+                    "dev.dory.component": "transfer-helper",
+                    "dev.dory.helper.sha256": metadata.helperSha256,
+                    "dev.dory.manifest.schema": "1"
+                ]
+            ],
+            "RootFS": ["Layers": [metadata.layerDiffId]]
+        ]
+        return response(object)
     }
 }

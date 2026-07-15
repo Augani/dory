@@ -288,6 +288,8 @@ final class StrictMigrationRuntime: ContainerRuntime {
     var removedVolumes: [String] = []
     var removedNetworks: [String] = []
     var removedImages: [String] = []
+    var transferHelperMetadata: MigrationTransferHelperMetadata?
+    var loadedTransferHelperArchives: [Data] = []
     var failVolumeRemoval = false
     var failNetworkRemoval = false
     var failImageRemoval = false
