@@ -3,6 +3,38 @@ import Darwin
 import XCTest
 
 final class DockerAPIProbeTests: XCTestCase {
+    func testDockerEngineReadinessRequiresLinuxVersionResponse() throws {
+        let body = #"{"Version":"28.5.1","ApiVersion":"1.51","Os":"linux","Arch":"arm64"}"#
+        let server = try FakeDockerAPIServer(
+            response: "HTTP/1.1 200 OK\r\nContent-Length: \(body.utf8.count)\r\nConnection: close\r\n\r\n\(body)"
+        )
+        defer { server.stop() }
+
+        XCTAssertTrue(DockerEngineProbe.waitUntilReady(
+            socketPath: server.path,
+            timeout: 1,
+            pollInterval: 0.01
+        ))
+        XCTAssertTrue(server.wait())
+        XCTAssertTrue(server.request.contains("GET /version HTTP/1.1"))
+    }
+
+    func testDockerEngineReadinessRejectsIncompleteVersionResponse() throws {
+        let body = #"{"Version":"","Os":""}"#
+        let server = try FakeDockerAPIServer(
+            response: "HTTP/1.1 200 OK\r\nContent-Length: \(body.utf8.count)\r\nConnection: close\r\n\r\n\(body)"
+        )
+        defer { server.stop() }
+
+        XCTAssertFalse(DockerEngineProbe.waitUntilReady(
+            socketPath: server.path,
+            timeout: 0.1,
+            pollInterval: 0.01
+        ))
+        XCTAssertTrue(server.wait())
+        XCTAssertTrue(server.request.contains("GET /version HTTP/1.1"))
+    }
+
     func testUnixDockerAPIProbePassesWhenPingReturnsOK() throws {
         let server = try FakeDockerAPIServer(response: "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK")
         defer { server.stop() }

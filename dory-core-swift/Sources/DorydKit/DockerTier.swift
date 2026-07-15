@@ -917,8 +917,24 @@ public final class DockerTier: @unchecked Sendable {
     }
 
     public func ensureAwake() async {
-        guard let task = wakeTaskForEnsureAwake() else { return }
-        await task.value
+        if let task = wakeTaskForEnsureAwake() {
+            await task.value
+            return
+        }
+
+        // An explicit start can promote an armed dataplane synchronously, without installing a
+        // wakeTask. Hold a request that arrives in that window until the same promotion finishes;
+        // otherwise the activity acknowledgement lets it dial a guest whose dockerd is still booting.
+        while !Task.isCancelled {
+            guard promotionIsStarting() else { return }
+            try? await Task.sleep(nanoseconds: 25_000_000)
+        }
+    }
+
+    private func promotionIsStarting() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return !terminalShutdown && state == .starting
     }
 
     private func wakeTaskForEnsureAwake() -> Task<Void, Never>? {

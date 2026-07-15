@@ -160,7 +160,10 @@ public enum DockerEngineProbe {
     ) -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline, shouldContinue() {
-            if (try? ping(socketPath: socketPath, timeout: min(2, max(0.25, pollInterval * 2)))) == true {
+            if (try? versionIsReady(
+                socketPath: socketPath,
+                timeout: min(2, max(0.25, pollInterval * 2))
+            )) == true {
                 return true
             }
             guard shouldContinue() else { return false }
@@ -179,7 +182,7 @@ public enum DockerEngineProbe {
     ) -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline, shouldContinue() {
-            if (try? ping(
+            if (try? versionIsReady(
                 forwardSocketPath: forwardSocketPath,
                 cid: cid,
                 dockerPort: dockerPort,
@@ -193,34 +196,41 @@ public enum DockerEngineProbe {
         return false
     }
 
-    private static func ping(
+    private static func versionIsReady(
         socketPath: String,
         timeout: TimeInterval
     ) throws -> Bool {
         let response = try request(
-            path: "/_ping",
+            path: "/version",
             socketPath: socketPath,
             timeout: timeout,
             maxBytes: 64 * 1024
         )
-        return (200..<300).contains(response.status)
+        return try dockerVersionIsReady(response)
     }
 
-    private static func ping(
+    private static func versionIsReady(
         forwardSocketPath: String,
         cid: UInt32,
         dockerPort: UInt32,
         timeout: TimeInterval
     ) throws -> Bool {
         let response = try request(
-            path: "/_ping",
+            path: "/version",
             forwardSocketPath: forwardSocketPath,
             cid: cid,
             port: dockerPort,
             timeout: timeout,
             maxBytes: 64 * 1024
         )
-        return (200..<300).contains(response.status)
+        return try dockerVersionIsReady(response)
+    }
+
+    private static func dockerVersionIsReady(_ response: HTTPResponse) throws -> Bool {
+        guard (200..<300).contains(response.status) else { return false }
+        let version = try JSONDecoder().decode(DockerVersionProbe.self, from: response.body)
+        return version.operatingSystem.lowercased() == "linux"
+            && !version.version.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private static func request(
@@ -254,6 +264,16 @@ public enum DockerEngineProbe {
         shutdown(fd, SHUT_WR)
         let data = try readHTTPResponseData(from: fd, maxBytes: maxBytes)
         return try HTTPResponse(data: data)
+    }
+}
+
+private struct DockerVersionProbe: Decodable {
+    var version: String
+    var operatingSystem: String
+
+    enum CodingKeys: String, CodingKey {
+        case version = "Version"
+        case operatingSystem = "Os"
     }
 }
 

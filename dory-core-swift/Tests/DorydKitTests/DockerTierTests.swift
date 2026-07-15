@@ -745,6 +745,60 @@ final class DockerTierTests: XCTestCase {
         XCTAssertEqual(tier.status().state, .running)
     }
 
+    func testClientArrivingDuringExplicitStartWaitsForSamePromotion() async throws {
+        let base = "/tmp/dory-tier-late-start-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+
+        let readyWaitEntered = DispatchSemaphore(value: 0)
+        let releaseReadyWait = DispatchSemaphore(value: 0)
+        let startFinished = DispatchSemaphore(value: 0)
+        let requestFinished = DispatchSemaphore(value: 0)
+        let startError = Capture()
+        let tier = DockerTier(
+            configuration: DockerTierConfiguration(
+                home: base + "/home",
+                forwardSocketPath: base + "/forward.sock",
+                activitySocketPath: base + "/activity.sock",
+                hvProcess: HvProcessConfiguration(
+                    executablePath: "/bin/sleep",
+                    arguments: ["30"]
+                )
+            ),
+            idleController: IdleController(),
+            dockerReadyWaiter: { _, _, shouldContinue in
+                readyWaitEntered.signal()
+                _ = releaseReadyWait.wait(timeout: .now() + 2)
+                return shouldContinue()
+            }
+        )
+        try tier.armSleeping()
+        defer { tier.stop() }
+
+        DispatchQueue.global().async {
+            do {
+                try tier.start()
+            } catch {
+                startError.setError("\(error)")
+            }
+            startFinished.signal()
+        }
+        XCTAssertEqual(readyWaitEntered.wait(timeout: .now() + 2), .success)
+        XCTAssertEqual(tier.status().state, .starting)
+
+        let request = Task {
+            await tier.ensureAwake()
+            requestFinished.signal()
+        }
+        XCTAssertEqual(requestFinished.wait(timeout: .now() + 0.1), .timedOut)
+
+        releaseReadyWait.signal()
+        XCTAssertEqual(startFinished.wait(timeout: .now() + 2), .success)
+        await request.value
+        XCTAssertNil(startError.error)
+        XCTAssertEqual(tier.status().state, .running)
+    }
+
     func testPromotionRestartsExplicitlyStoppedTier() throws {
         let base = "/tmp/dory-tier-promote-stopped-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
