@@ -110,10 +110,33 @@ struct MigrationTransferHelperAssetTests {
             try await fixture.asset.install(on: runtime, operationID: operationID)
         }
 
-        #expect(runtime.removedImages == [
-            "dory.internal/operation-55555555-5555-5555-5555-555555555555:transfer-helper"
-        ])
+        #expect(runtime.removedImages == [fixture.asset.metadata.imageConfigDigest])
         #expect(!runtime.imagePresent)
+    }
+
+    @Test func failedInstallPreservesAnImageAddedConcurrentlyByAnotherClient() async throws {
+        let fixture = try makeFixture()
+        let unrelatedID = "sha256:" + String(repeating: "f", count: 64)
+        let runtime = TransferHelperRuntime(
+            metadata: fixture.asset.metadata,
+            concurrentImagesAfterLoad: [DockerImage(
+                repository: "unrelated",
+                tag: "latest",
+                imageID: unrelatedID,
+                size: "2 KB",
+                created: "now",
+                usedByCount: 0,
+                sizeBytes: 2_048
+            )]
+        )
+        runtime.failTag = true
+
+        await #expect(throws: Error.self) {
+            try await fixture.asset.install(on: runtime, operationID: UUID())
+        }
+
+        #expect(runtime.removedImages == [fixture.asset.metadata.imageConfigDigest])
+        #expect(try await runtime.snapshot().images.map(\.imageID) == [unrelatedID])
     }
 }
 
@@ -186,15 +209,24 @@ private final class TransferHelperRuntime: ContainerRuntime {
     var overrideArchitecture: String?
     var imagePresent = false
     var failTag = false
+    var loadCompleted = false
+    var activeReferences: [String: String] = [:]
+    let concurrentImagesAfterLoad: [DockerImage]
 
-    init(metadata: MigrationTransferHelperMetadata, engineImageID: String? = nil) {
+    init(
+        metadata: MigrationTransferHelperMetadata,
+        engineImageID: String? = nil,
+        concurrentImagesAfterLoad: [DockerImage] = []
+    ) {
         self.metadata = metadata
         self.engineImageID = engineImageID ?? metadata.imageConfigDigest
+        self.concurrentImagesAfterLoad = concurrentImagesAfterLoad
     }
 
     func loadImage(tar: Data) async throws {
         loadedArchives.append(tar)
         imagePresent = true
+        loadCompleted = true
     }
 
     func loadImageThrowingWithResponse(
@@ -218,7 +250,9 @@ private final class TransferHelperRuntime: ContainerRuntime {
             "Id": engineImageID,
             "Architecture": overrideArchitecture ?? "arm64",
             "Os": "linux",
-            "RepoTags": [],
+            "RepoTags": activeReferences.compactMap {
+                $0.value == engineImageID ? $0.key : nil
+            }.sorted(),
             "Config": [
                 "Entrypoint": ["/dory-transfer-helper"],
                 "User": "0",
@@ -238,24 +272,38 @@ private final class TransferHelperRuntime: ContainerRuntime {
     func tagImage(source: String, repo: String, tag: String) async throws {
         if failTag { throw RuntimeFeatureError.unsupported("injected tag failure") }
         tags.append(ImageTag(source: source, repository: repo, tag: tag))
+        activeReferences["\(repo):\(tag)"] = source
     }
 
     func removeImage(id: String) async throws {
         removedImages.append(id)
-        imagePresent = false
+        if activeReferences.removeValue(forKey: id) != nil {
+            if activeReferences.values.allSatisfy({ $0 != engineImageID }) {
+                imagePresent = false
+            }
+        } else if id == engineImageID {
+            imagePresent = false
+        }
     }
 
     func snapshot() async throws -> RuntimeSnapshot {
-        guard imagePresent else { return RuntimeSnapshot() }
-        return RuntimeSnapshot(images: [DockerImage(
-            repository: "<none>",
-            tag: "<none>",
+        var images = loadCompleted ? concurrentImagesAfterLoad : []
+        guard imagePresent else { return RuntimeSnapshot(images: images) }
+        let references = activeReferences.compactMap {
+            $0.value == engineImageID ? $0.key : nil
+        }.sorted()
+        let primary = references.first?.split(separator: ":", maxSplits: 1).map(String.init)
+        images.insert(DockerImage(
+            repository: primary?.first ?? "<none>",
+            tag: primary?.count == 2 ? primary?[1] ?? "<none>" : "<none>",
             imageID: engineImageID,
             size: "1 KB",
             created: "now",
             usedByCount: 0,
-            sizeBytes: 1_024
-        )])
+            sizeBytes: 1_024,
+            additionalReferences: Array(references.dropFirst())
+        ), at: 0)
+        return RuntimeSnapshot(images: images)
     }
     func start(containerID: String) async throws {}
     func stop(containerID: String) async throws {}

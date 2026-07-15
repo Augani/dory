@@ -23,12 +23,21 @@ extension MigrationTransferHelperAsset {
         let ownershipReference = "\(repository):\(tag)"
         let baseline = try await imageInventory(on: runtime)
         var loadedImageID: String?
+        var loadedEntryAfterLoad: MigrationImageTargetInventory.Entry?
         var priorInspection: TransferHelperImageInspection?
         var tagAttempted = false
         do {
             let imageID = try await loadSignedArchive(on: runtime)
             loadedImageID = imageID
-            if baseline.contains(imageID) {
+            loadedEntryAfterLoad = try await imageInventory(on: runtime).entries.first {
+                $0.id == imageID
+            }
+            guard loadedEntryAfterLoad != nil else {
+                throw MigrationTransferHelperError.engineOperation(
+                    "loaded helper image is absent from the target inventory"
+                )
+            }
+            if baseline.entries.contains(where: { $0.id == imageID }) {
                 priorInspection = await inspectImage(imageID: imageID, on: runtime)
             }
             try await verifyLoadedImage(imageID, on: runtime)
@@ -45,6 +54,7 @@ extension MigrationTransferHelperAsset {
             let rollbackFailures = await rollbackFailedInstallation(
                 baseline: baseline,
                 loadedImageID: loadedImageID,
+                loadedEntryAfterLoad: loadedEntryAfterLoad,
                 ownershipReference: ownershipReference,
                 priorInspection: priorInspection,
                 tagAttempted: tagAttempted,
@@ -59,8 +69,9 @@ extension MigrationTransferHelperAsset {
     }
 
     private func rollbackFailedInstallation(
-        baseline: Set<String>,
+        baseline: MigrationImageTargetInventory,
         loadedImageID: String?,
+        loadedEntryAfterLoad: MigrationImageTargetInventory.Entry?,
         ownershipReference: String,
         priorInspection: TransferHelperImageInspection?,
         tagAttempted: Bool,
@@ -69,34 +80,75 @@ extension MigrationTransferHelperAsset {
         var failures: [String] = []
         if tagAttempted {
             do {
-                try await runtime.removeImage(id: ownershipReference)
+                try await removeOperationReference(
+                    ownershipReference,
+                    expectedImageID: loadedImageID,
+                    from: runtime
+                )
             } catch {
                 failures.append("remove attempted operation tag: \(error)")
             }
         }
         do {
             let current = try await imageInventory(on: runtime)
-            for imageID in current.subtracting(baseline).sorted() {
-                do {
-                    try await runtime.removeImage(id: imageID)
-                } catch {
-                    failures.append("remove newly loaded image \(imageID): \(error)")
+            let candidate: MigrationImageTargetInventory.Entry?
+            if let loadedImageID,
+               !baseline.entries.contains(where: { $0.id == loadedImageID }) {
+                guard let expected = loadedEntryAfterLoad else {
+                    throw MigrationTransferHelperError.engineOperation(
+                        "loaded helper ownership evidence is missing"
+                    )
+                }
+                if let observed = current.entries.first(where: { $0.id == loadedImageID }) {
+                    guard observed == expected else {
+                        throw MigrationTransferHelperError.engineOperation(
+                            "loaded helper ownership changed before rollback"
+                        )
+                    }
+                    candidate = observed
+                } else {
+                    candidate = nil
+                }
+            } else if loadedImageID == nil {
+                candidate = try await inferUnreceiptedHelperEntry(
+                    baseline: baseline,
+                    current: current,
+                    on: runtime
+                )
+            } else {
+                candidate = nil
+            }
+            if let candidate {
+                guard candidate.references.isEmpty else {
+                    throw MigrationTransferHelperError.engineOperation(
+                        "loaded helper image is externally referenced"
+                    )
+                }
+                try await runtime.removeImageForRollback(id: candidate.id)
+                let after = try await imageInventory(on: runtime)
+                guard !after.entries.contains(where: { $0.id == candidate.id }) else {
+                    throw MigrationTransferHelperError.engineOperation(
+                        "loaded helper image survived rollback"
+                    )
                 }
             }
         } catch {
-            failures.append("inspect helper rollback inventory: \(error)")
+            failures.append("remove operation-owned helper image: \(error)")
         }
         if let loadedImageID,
            priorInspection != nil,
            (priorInspection?.repoTags ?? []).allSatisfy({ $0 == "<none>:<none>" }) {
             do {
-                let restoredID = try await loadSignedArchive(on: runtime)
-                guard restoredID == loadedImageID else {
-                    throw MigrationTransferHelperError.incompatibleEngine(
-                        "restored helper image ID changed"
-                    )
+                let current = try await imageInventory(on: runtime)
+                if !current.entries.contains(where: { $0.id == loadedImageID }) {
+                    let restoredID = try await loadSignedArchive(on: runtime)
+                    guard restoredID == loadedImageID else {
+                        throw MigrationTransferHelperError.incompatibleEngine(
+                            "restored helper image ID changed"
+                        )
+                    }
+                    try await verifyLoadedImage(restoredID, on: runtime)
                 }
-                try await verifyLoadedImage(restoredID, on: runtime)
             } catch {
                 failures.append("restore pre-existing dangling image: \(error)")
             }
@@ -104,23 +156,57 @@ extension MigrationTransferHelperAsset {
         return failures
     }
 
+    private func inferUnreceiptedHelperEntry(
+        baseline: MigrationImageTargetInventory,
+        current: MigrationImageTargetInventory,
+        on runtime: any ContainerRuntime
+    ) async throws -> MigrationImageTargetInventory.Entry? {
+        let baselineIDs = Set(baseline.entries.map(\.id))
+        let added = current.entries.filter { !baselineIDs.contains($0.id) }
+        var verified: [MigrationImageTargetInventory.Entry] = []
+        for entry in added {
+            if (try? await verifyLoadedImage(entry.id, on: runtime)) != nil {
+                verified.append(entry)
+            }
+        }
+        guard verified.count <= 1 else {
+            throw MigrationTransferHelperError.engineOperation(
+                "multiple unreceipted images match the signed helper"
+            )
+        }
+        guard let candidate = verified.first else { return nil }
+        guard candidate.references.isEmpty else {
+            throw MigrationTransferHelperError.engineOperation(
+                "unreceipted helper image gained an external reference"
+            )
+        }
+        return candidate
+    }
+
     func removeInstallation(
         _ installation: MigrationTransferHelperInstallation,
         from runtime: any ContainerRuntime
     ) async throws {
         do {
-            try await runtime.removeImage(id: installation.ownershipReference)
+            try await removeOperationReference(
+                installation.ownershipReference,
+                expectedImageID: installation.imageID,
+                from: runtime
+            )
             if installation.restoreDanglingImageAfterCleanup {
                 // Removing the temporary last tag may garbage-collect an image that was dangling
                 // before Dory arrived. Reloading the same content-addressed archive restores that
                 // pre-operation engine state without inventing a mutable tag.
-                let restoredID = try await loadSignedArchive(on: runtime)
-                guard restoredID == installation.imageID else {
-                    throw MigrationTransferHelperError.incompatibleEngine(
-                        "restored helper image ID changed"
-                    )
+                let current = try await imageInventory(on: runtime)
+                if !current.entries.contains(where: { $0.id == installation.imageID }) {
+                    let restoredID = try await loadSignedArchive(on: runtime)
+                    guard restoredID == installation.imageID else {
+                        throw MigrationTransferHelperError.incompatibleEngine(
+                            "restored helper image ID changed"
+                        )
+                    }
+                    try await verifyLoadedImage(restoredID, on: runtime)
                 }
-                try await verifyLoadedImage(restoredID, on: runtime)
             }
         } catch {
             throw MigrationTransferHelperError.engineOperation(
@@ -149,18 +235,43 @@ extension MigrationTransferHelperAsset {
 
     private func imageInventory(
         on runtime: any ContainerRuntime
-    ) async throws -> Set<String> {
+    ) async throws -> MigrationImageTargetInventory {
         let images = try await runtime.migrationSnapshot().images
-        let identifiers = images.compactMap {
-            MigrationImageTransferExecution.canonicalImageID($0.imageID)
+        do {
+            return try MigrationImageTransferExecution.targetInventory(images: images)
+        } catch {
+            throw MigrationTransferHelperError.engineOperation("helper image inventory: \(error)")
         }
-        guard identifiers.count == images.count,
-              Set(identifiers).count == identifiers.count else {
+    }
+
+    private func removeOperationReference(
+        _ reference: String,
+        expectedImageID: String?,
+        from runtime: any ContainerRuntime
+    ) async throws {
+        let canonicalReference = MigrationOperationPlanBuilder.canonicalImageReference(reference)
+        let before = try await imageInventory(on: runtime)
+        let matches = before.entries.filter { $0.references.contains(canonicalReference) }
+        guard matches.count <= 1 else {
             throw MigrationTransferHelperError.engineOperation(
-                "helper image inventory has invalid identities"
+                "operation helper tag resolves to multiple images"
             )
         }
-        return Set(identifiers)
+        guard let match = matches.first else { return }
+        guard let expectedImageID, match.id == expectedImageID else {
+            throw MigrationTransferHelperError.engineOperation(
+                "operation helper tag ownership changed"
+            )
+        }
+        try await runtime.removeImageForRollback(id: canonicalReference)
+        let after = try await imageInventory(on: runtime)
+        guard !after.entries.contains(where: {
+            $0.references.contains(canonicalReference)
+        }) else {
+            throw MigrationTransferHelperError.engineOperation(
+                "operation helper tag survived rollback"
+            )
+        }
     }
 
     private func verifyLoadedImage(

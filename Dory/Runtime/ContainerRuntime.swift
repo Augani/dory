@@ -279,8 +279,12 @@ protocol ContainerRuntime: Sendable {
     func disconnectNetwork(name: String, containerID: String, force: Bool) async throws
     func createVolume(name: String, driver: String?, labels: [String: String], driverOptions: [String: String]) async throws
     func removeVolume(name: String) async throws
+    func removeVolumeForRollback(name: String) async throws
     func pruneVolumes() async throws
     func removeImage(id: String) async throws
+    /// Remove an operation-owned image only when Docker can do so without forcing away
+    /// references that may have been added by another client after the operation started.
+    func removeImageForRollback(id: String) async throws
     func pruneImages() async throws
     func tagImage(source: String, repo: String, tag: String) async throws
     func pushImage(reference: String, registryAuth: String?) async throws -> AsyncStream<Data>
@@ -372,8 +376,14 @@ extension ContainerRuntime {
     }
     func createVolume(name: String, driver: String?, labels: [String: String], driverOptions: [String: String]) async throws {}
     func removeVolume(name: String) async throws {}
+    func removeVolumeForRollback(name: String) async throws {
+        try await removeVolume(name: name)
+    }
     func pruneVolumes() async throws {}
     func removeImage(id: String) async throws {}
+    func removeImageForRollback(id: String) async throws {
+        try await removeImage(id: id)
+    }
     func pruneImages() async throws {}
     func tagImage(source: String, repo: String, tag: String) async throws {
         throw RuntimeFeatureError.unsupported("image tag is not supported by \(kind.displayName)")

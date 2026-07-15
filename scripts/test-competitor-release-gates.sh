@@ -1076,6 +1076,30 @@ grep -F 'func migrationSnapshot() async throws -> RuntimeSnapshot' \
 grep -F 'func migrationContainerWritableSizes() async throws -> [String: Int64]' \
   Dory/Runtime/ContainerRuntime.swift Dory/Runtime/Docker/DockerEngineRuntime.swift >/dev/null \
   || fail "container writable-layer data is absent from strict migration inventory"
+for rollback_source in \
+  Dory/Runtime/MigrationImageTransferExecution.swift \
+  Dory/Runtime/MigrationTransferHelperInstaller.swift \
+  Dory/Runtime/MigrationImportAssetStager.swift \
+  Dory/Runtime/MigrationImportWritableLayerStaging.swift; do
+  grep -F 'removeImageForRollback' "$rollback_source" >/dev/null \
+    || fail "migration image cleanup can force-delete another client's references in $rollback_source"
+done
+grep -F '/images/\(DockerImageOps.pathComponent(id))?force=false' \
+  Dory/Runtime/Docker/DockerEngineRuntime.swift >/dev/null \
+  || fail "operation rollback can force-delete an externally referenced image"
+grep -F '/volumes/\(DockerImageOps.pathComponent(name))?force=false' \
+  Dory/Runtime/Docker/DockerEngineRuntime.swift >/dev/null \
+  || fail "operation rollback can force-delete a volume adopted by another client"
+grep -F 'removeVolumeForRollback' Dory/Runtime/MigrationImportAssetStager.swift >/dev/null \
+  || fail "migration volume rollback bypasses non-forced deletion"
+for ownership_regression in \
+  'rollbackRemovesOnlyItsImageWhenAnotherClientAddsAnImage' \
+  'rollbackFailsClosedWhenAnotherClientTagsTheStagedImage' \
+  'sourceSnapshotCleanupPreservesAReferenceAddedByAnotherClient' \
+  'failedInstallPreservesAnImageAddedConcurrentlyByAnotherClient'; do
+  grep -R -F "$ownership_regression" DoryTests >/dev/null \
+    || fail "migration cleanup lost adversarial ownership regression $ownership_regression"
+done
 grep -F 'dory-migration/container-snapshot:' Dory/Runtime/MigrationAssistant.swift >/dev/null \
   || fail "containers are recreated from base images without preserving writable-layer changes"
 grep -F 'kind: "rollback"' Dory/Runtime/MigrationAssistant.swift >/dev/null \

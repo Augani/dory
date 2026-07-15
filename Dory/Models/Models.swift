@@ -170,7 +170,7 @@ struct DockerImage: Identifiable, Hashable, Sendable {
     /// Additional RepoTags for the same image ID. The table keeps one row per image while
     /// migrations still copy every user-visible tag.
     var additionalReferences: [String] = []
-    var id: String { imageID.isEmpty ? "\(repository):\(tag)" : imageID }
+    nonisolated var id: String { imageID.isEmpty ? "\(repository):\(tag)" : imageID }
 
     var usedLabel: String { usedByCount > 0 ? "\(usedByCount) container\(usedByCount > 1 ? "s" : "")" : "Unused" }
     var isUsed: Bool { usedByCount > 0 }

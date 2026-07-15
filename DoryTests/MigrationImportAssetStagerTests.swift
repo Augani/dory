@@ -87,6 +87,47 @@ struct MigrationImportAssetStagerTests: StrictInventoryTestCase {
         #expect(record.state.lastEvent.recoveryAction == "rollback.retry")
     }
 
+    @Test func rollbackPreservesAStagedImageThatAnotherClientTagged() async throws {
+        let context = try await makeContext(name: "image-reference-race")
+        defer { context.cleanup() }
+        context.transfers.volumeOutcome = .failure
+        context.transfers.addExternalTargetImageReferenceBeforeVolumeFailure = true
+
+        await #expect(throws: MigrationImportAssetStagingError.self) {
+            _ = try await MigrationImportAssetStager.stage(
+                session: context.session,
+                environment: context.environment
+            )
+        }
+
+        #expect(context.fixture.target.snapshotValue.images.count == 1)
+        #expect(context.fixture.target.snapshotValue.images[0].repository == "external")
+        #expect(context.fixture.target.removedImages.isEmpty)
+        let record = try context.session.lease.read()
+        #expect(record.state.status == .needsRecovery)
+        #expect(record.state.lastEvent.recoveryAction == "rollback.retry")
+    }
+
+    @Test func rollbackIsIdempotentWhenItsStagedImageIsAlreadyAbsent() async throws {
+        let context = try await makeContext(name: "image-already-absent")
+        defer { context.cleanup() }
+        context.transfers.volumeOutcome = .failure
+        context.transfers.removeTargetImageBeforeVolumeFailure = true
+
+        await #expect(throws: AssetStagingTransfers.Failure.volume) {
+            _ = try await MigrationImportAssetStager.stage(
+                session: context.session,
+                environment: context.environment
+            )
+        }
+
+        #expect(context.fixture.target.snapshotValue.images.isEmpty)
+        #expect(context.fixture.target.removedImages.isEmpty)
+        let record = try context.session.lease.read()
+        #expect(record.state.status == .failed)
+        #expect(record.state.result == .failed)
+    }
+
     @Test func independentlyIntroducedImageIsTargetDriftAndIsNeverDeleted() async throws {
         let context = try await makeContext(name: "image-race")
         defer { context.cleanup() }
@@ -238,6 +279,28 @@ struct MigrationImportAssetStagerTests: StrictInventoryTestCase {
         #expect(context.fixture.target.snapshotValue.images.isEmpty)
         #expect(context.fixture.target.snapshotValue.volumes.isEmpty)
         #expect(context.fixture.target.snapshotValue.networks.isEmpty)
+        let record = try context.session.lease.read()
+        #expect(record.state.status == .needsRecovery)
+        #expect(record.state.lastEvent.recoveryAction == "rollback.retry")
+    }
+
+    @Test func sourceSnapshotCleanupPreservesAReferenceAddedByAnotherClient() async throws {
+        let context = try await makeContext(name: "source-snapshot-reference-race")
+        defer { context.cleanup() }
+        context.transfers.addExternalSourceSnapshotReferenceAfterTransfer = true
+
+        await #expect(throws: MigrationImportAssetStagingError.self) {
+            _ = try await MigrationImportAssetStager.stage(
+                session: context.session,
+                environment: context.environment
+            )
+        }
+
+        let externallyReferenced = context.fixture.source.snapshotValue.images.filter {
+            MigrationOperationPlanBuilder.imageReferences($0).contains("external:latest")
+        }
+        #expect(externallyReferenced.count == 1)
+        #expect(externallyReferenced[0].labels["dev.dory.object.kind"] == "writableLayer")
         let record = try context.session.lease.read()
         #expect(record.state.status == .needsRecovery)
         #expect(record.state.lastEvent.recoveryAction == "rollback.retry")

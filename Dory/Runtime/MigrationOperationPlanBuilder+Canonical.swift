@@ -140,12 +140,12 @@ extension MigrationOperationPlanBuilder {
         return decision
     }
 
-    static func stableImageSourceID(_ image: DockerImage) -> String {
+    nonisolated static func stableImageSourceID(_ image: DockerImage) -> String {
         let normalized = normalizedImageID(image.imageID)
         return normalized.isEmpty ? (imageReferences(image).first ?? image.id) : normalized
     }
 
-    static func normalizedImageID(_ value: String) -> String {
+    nonisolated static func normalizedImageID(_ value: String) -> String {
         value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
             .replacingOccurrences(of: "sha256:", with: "")
     }
@@ -154,7 +154,7 @@ extension MigrationOperationPlanBuilder {
         value.trimmingCharacters(in: CharacterSet(charactersIn: "/ "))
     }
 
-    static func canonicalImageReference(_ value: String) -> String {
+    nonisolated static func canonicalImageReference(_ value: String) -> String {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !trimmed.isEmpty, !trimmed.contains("@"), !trimmed.hasPrefix("sha256:") else {
             return trimmed
@@ -171,7 +171,7 @@ extension MigrationOperationPlanBuilder {
         return trimmed + ":latest"
     }
 
-    static func imageReferences(_ image: DockerImage) -> [String] {
+    nonisolated static func imageReferences(_ image: DockerImage) -> [String] {
         var values = image.additionalReferences
         if image.repository != "<none>", !image.repository.isEmpty {
             values.append(

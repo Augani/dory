@@ -73,6 +73,7 @@ final class VolumeTransferRuntime: ContainerRuntime {
     var removedContainers: [String] = []
     var removedImages: [String] = []
     var imagePresent = false
+    var imageReferences: Set<String> = []
     var receivedDataArchive = Data()
     var receivedManifestArchive = Data()
     var failingRole: String?
@@ -84,7 +85,21 @@ final class VolumeTransferRuntime: ContainerRuntime {
         self.side = side
     }
 
-    func snapshot() async throws -> RuntimeSnapshot { RuntimeSnapshot() }
+    func snapshot() async throws -> RuntimeSnapshot {
+        guard imagePresent else { return RuntimeSnapshot() }
+        let references = imageReferences.sorted()
+        let primary = references.first?.split(separator: ":", maxSplits: 1).map(String.init)
+        return RuntimeSnapshot(images: [DockerImage(
+            repository: primary?.first ?? "<none>",
+            tag: primary?.count == 2 ? primary?[1] ?? "<none>" : "<none>",
+            imageID: metadata.imageConfigDigest,
+            size: "1 KB",
+            created: "now",
+            usedByCount: 0,
+            sizeBytes: 1_024,
+            additionalReferences: Array(references.dropFirst())
+        )])
+    }
     func stop(containerID: String) async throws {}
     func restart(containerID: String) async throws {}
     func logs(containerID: String) async throws -> [LogLine] { [] }
@@ -105,12 +120,20 @@ final class VolumeTransferRuntime: ContainerRuntime {
         ).utf8)
     }
 
-    func tagImage(source: String, repo: String, tag: String) async throws {}
+    func tagImage(source: String, repo: String, tag: String) async throws {
+        guard imagePresent, source == metadata.imageConfigDigest else { throw Failure.injected }
+        imageReferences.insert("\(repo):\(tag)")
+    }
 
     func removeImage(id: String) async throws {
         if failImageCleanup { throw Failure.injected }
         removedImages.append(id)
-        imagePresent = false
+        if imageReferences.remove(id) != nil {
+            if imageReferences.isEmpty { imagePresent = false }
+        } else if id == metadata.imageConfigDigest {
+            imagePresent = false
+            imageReferences.removeAll()
+        }
     }
 
     func create(_ spec: ContainerSpec) async throws -> String {
@@ -140,7 +163,7 @@ final class VolumeTransferRuntime: ContainerRuntime {
                 "Id": metadata.imageConfigDigest,
                 "Architecture": "arm64",
                 "Os": "linux",
-                "RepoTags": [],
+                "RepoTags": imageReferences.sorted(),
                 "Config": [
                     "Entrypoint": ["/dory-transfer-helper"],
                     "User": "0",

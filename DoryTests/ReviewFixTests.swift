@@ -801,6 +801,27 @@ struct ReviewFixTests {
         ])
     }
 
+    @Test func dockerEngineRuntimeRollbackNeverForcesImageOrVolumeDeletion() async throws {
+        let path = shortSocketPath("dory-docker-safe-rollback")
+        let recorder = RequestRecorder()
+        let server = ShimHTTPServer(socketPath: path) { request in
+            recorder.record(method: request.method, target: request.target, body: request.body)
+            return ShimResponse.empty(status: 204)
+        }
+        try server.start()
+        defer { server.stop() }
+
+        let runtime = DockerEngineRuntime(socketPath: path)
+        try await runtime.removeImageForRollback(id: "dory.internal/helper:operation")
+        try await runtime.removeVolumeForRollback(name: "migration-data")
+
+        #expect(recorder.requests.map(\.method) == ["DELETE", "DELETE"])
+        #expect(recorder.requests.map(\.target) == [
+            "/images/dory.internal%2Fhelper:operation?force=false",
+            "/volumes/migration-data?force=false",
+        ])
+    }
+
     @Test func dockerEngineRuntimeUsesNativeImagePushEndpoint() async throws {
         let path = shortSocketPath("dory-docker-push")
         let recorder = RequestRecorder()

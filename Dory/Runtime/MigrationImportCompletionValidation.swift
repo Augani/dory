@@ -125,6 +125,7 @@ extension MigrationImportAssetStagingExecution {
               MigrationImageTransferExecution.canonicalImageID(manifest.sourceImageID)
                 == MigrationImageTransferExecution.canonicalImageID(object.source.sourceID),
               manifest.loadedTargetImageID == staged.verifiedTarget.id,
+              manifest.targetInventoryEntryAfterLoad.id == manifest.loadedTargetImageID,
               manifest.targetImageWasPreexisting == (staged.disposition == .reusedPreexisting),
               staged.verifiedTarget.fingerprint == manifest.verifiedTarget.archiveContractSha256,
               sameImageContent(manifest.sourceBeforeTransfer, manifest.sourceDuringTransfer),
@@ -134,7 +135,11 @@ extension MigrationImportAssetStagingExecution {
             )
         }
         try await requireExactSourceImageContract(object)
-        try await requireExactTargetImage(staged.verifiedTarget.id, object: object)
+        try await requireExactTargetImage(
+            staged.verifiedTarget.id,
+            expectedInventoryEntry: manifest.targetInventoryEntryAfterLoad,
+            object: object
+        )
         let readback = try await environment.transfers.verifyImage(
             MigrationImageReadbackRequest(
                 sourceImageID: object.source.sourceID,
@@ -197,6 +202,7 @@ extension MigrationImportAssetStagingExecution {
            imageManifest.operationID == session.prepared.identity.id,
            imageManifest.sourceImageID == manifest.committedSourceImageID,
            imageManifest.loadedTargetImageID == manifest.loadedTargetImageID,
+           imageManifest.targetInventoryEntryAfterLoad.id == manifest.loadedTargetImageID,
            imageManifest.verifiedTarget.archiveContractSha256 == manifest.targetFingerprint else {
             throw MigrationImportAssetStagingError.targetDrift(object.source)
         }
@@ -207,7 +213,11 @@ extension MigrationImportAssetStagingExecution {
             ),
             object: object
         )
-        try await requireExactTargetImage(staged.verifiedTarget.id, object: object)
+        try await requireExactTargetImage(
+            staged.verifiedTarget.id,
+            expectedInventoryEntry: imageManifest.targetInventoryEntryAfterLoad,
+            object: object
+        )
         let readback = try await environment.transfers.verifyImage(
             MigrationImageReadbackRequest(
                 sourceImageID: nil,
@@ -272,13 +282,14 @@ extension MigrationImportAssetStagingExecution {
 
     func requireExactTargetImage(
         _ imageID: String,
+        expectedInventoryEntry: MigrationImageTargetInventory.Entry,
         object: DoryOperationPlannedObject
     ) async throws {
-        let canonical = MigrationOperationPlanBuilder.normalizedImageID(imageID)
-        let matches = try await environment.target.migrationSnapshot().images.filter {
-            MigrationOperationPlanBuilder.normalizedImageID($0.imageID) == canonical
-        }
-        guard matches.count == 1 else {
+        let inventory = try MigrationImageTransferExecution.targetInventory(
+            images: try await environment.target.migrationSnapshot().images
+        )
+        guard expectedInventoryEntry.id == imageID,
+              inventory.entries.first(where: { $0.id == imageID }) == expectedInventoryEntry else {
             throw MigrationImportAssetStagingError.targetDrift(object.source)
         }
     }

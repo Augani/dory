@@ -11,6 +11,7 @@ nonisolated struct MigrationImageTransferReceipt: Sendable, Equatable {
     let sourceAfterTransfer: MigrationImageArchiveFingerprint
     let verifiedTarget: MigrationImageArchiveFingerprint
     let loadedTargetImageID: String
+    let targetInventoryEntryAfterLoad: MigrationImageTargetInventory.Entry
     let targetImageWasPreexisting: Bool
     let loadResponseSha256: String
     let verificationManifest: Data

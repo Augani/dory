@@ -80,7 +80,7 @@ enum MigrationImportAssetStager {
 }
 
 enum MigrationCreatedAsset {
-    case image(id: String)
+    case image(entry: MigrationImageTargetInventory.Entry)
     case sourceImage(reference: String, expectedLabels: [String: String])
     case volume(name: String, expectedLabels: [String: String])
     case network(name: String, expectedLabels: [String: String])
@@ -122,7 +122,7 @@ struct MigrationImportAssetStagingExecution {
             to: environment.target
         )
         if !receipt.targetImageWasPreexisting {
-            created.append(.image(id: receipt.loadedTargetImageID))
+            created.append(.image(entry: receipt.targetInventoryEntryAfterLoad))
         }
         // Docker's classic and containerd image stores expose different immutable IDs for the
         // same archive (config digest versus OCI manifest digest). The independently re-saved
@@ -270,8 +270,8 @@ struct MigrationImportAssetStagingExecution {
         var failures: [String] = []
         for asset in created.reversed() {
             switch asset {
-            case let .image(id):
-                await rollbackImage(id, failures: &failures)
+            case let .image(entry):
+                await rollbackImage(entry, failures: &failures)
             case let .sourceImage(reference, expectedLabels):
                 await rollbackSourceImage(reference, expectedLabels: expectedLabels, failures: &failures)
             case let .volume(name, expectedLabels):
@@ -285,16 +285,33 @@ struct MigrationImportAssetStagingExecution {
         return failures
     }
 
-    func rollbackImage(_ id: String, failures: inout [String]) async {
+    func rollbackImage(
+        _ expected: MigrationImageTargetInventory.Entry,
+        failures: inout [String]
+    ) async {
         do {
-            try await environment.target.removeImage(id: id)
-            let canonical = MigrationOperationPlanBuilder.normalizedImageID(id)
-            let snapshot = try await environment.target.migrationSnapshot()
-            guard !snapshot.images.contains(where: {
-                MigrationOperationPlanBuilder.normalizedImageID($0.imageID) == canonical
-            }) else { throw MigrationImportAssetStagingError.targetDrift(.init(kind: .image, sourceID: id)) }
+            let before = try MigrationImageTransferExecution.targetInventory(
+                images: try await environment.target.migrationSnapshot().images
+            )
+            guard let current = before.entries.first(where: { $0.id == expected.id }) else {
+                return
+            }
+            guard current == expected, current.references.isEmpty else {
+                throw MigrationImportAssetStagingError.targetDrift(
+                    .init(kind: .image, sourceID: expected.id)
+                )
+            }
+            try await environment.target.removeImageForRollback(id: expected.id)
+            let after = try MigrationImageTransferExecution.targetInventory(
+                images: try await environment.target.migrationSnapshot().images
+            )
+            guard !after.entries.contains(where: { $0.id == expected.id }) else {
+                throw MigrationImportAssetStagingError.targetDrift(
+                    .init(kind: .image, sourceID: expected.id)
+                )
+            }
         } catch {
-            failures.append("remove staged image \(id): \(error)")
+            failures.append("remove staged image \(expected.id): \(error)")
         }
     }
 
@@ -314,7 +331,7 @@ struct MigrationImportAssetStagingExecution {
                 guard owns(volume.labels, expected: expectedLabels) else {
                     throw MigrationImportAssetStagingError.targetDrift(.init(kind: .volume, sourceID: name))
                 }
-                try await environment.target.removeVolume(name: name)
+                try await environment.target.removeVolumeForRollback(name: name)
             }
             let after = try await environment.target.migrationSnapshot()
             guard !after.volumes.contains(where: { $0.name == name }) else {

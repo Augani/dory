@@ -13,6 +13,9 @@ final class AssetStagingTransfers: MigrationImportAssetTransfers {
     var mutateFinalImageReadback = false
     var mutateFinalVolumeReadback = false
     var failFinalVolumeCleanup = false
+    var addExternalTargetImageReferenceBeforeVolumeFailure = false
+    var removeTargetImageBeforeVolumeFailure = false
+    var addExternalSourceSnapshotReferenceAfterTransfer = false
     var imageReadbackRequests: [MigrationImageReadbackRequest] = []
     var volumeReadbackRequests: [MigrationVolumeTransferRequest] = []
     let sourceVolumeManifest = Data("source-volume-manifest".utf8)
@@ -30,11 +33,27 @@ final class AssetStagingTransfers: MigrationImportAssetTransfers {
         let fingerprint = try fingerprint(digest: digest)
         let runtime = try #require(target as? StrictMigrationRuntime)
         let preexisting = installImage(imageID, digest: digest, on: runtime)
+        let targetEntry = try #require(
+            MigrationImageTransferExecution.targetInventory(
+                images: runtime.snapshotValue.images
+            ).entries.first(where: { $0.id == imageID })
+        )
         let responseDigest = String(repeating: "c", count: 64)
+        if addExternalSourceSnapshotReferenceAfterTransfer,
+           let sourceRuntime = source as? StrictMigrationRuntime,
+           let index = sourceRuntime.snapshotValue.images.firstIndex(where: {
+               MigrationOperationPlanBuilder.normalizedImageID($0.imageID) == digest
+                   && $0.labels["dev.dory.object.kind"] == "writableLayer"
+           }) {
+            sourceRuntime.snapshotValue.images[index].additionalReferences.append(
+                "external:latest"
+            )
+        }
         let manifest = try MigrationImportAssetCanonical.data(MigrationImageVerificationManifest(
             operationID: request.operationID,
             sourceImageID: imageID,
             loadedTargetImageID: imageID,
+            targetInventoryEntryAfterLoad: targetEntry,
             targetImageWasPreexisting: preexisting,
             loadResponseSha256: responseDigest,
             sourceBeforeTransfer: fingerprint,
@@ -48,6 +67,7 @@ final class AssetStagingTransfers: MigrationImportAssetTransfers {
             sourceAfterTransfer: fingerprint,
             verifiedTarget: fingerprint,
             loadedTargetImageID: imageID,
+            targetInventoryEntryAfterLoad: targetEntry,
             targetImageWasPreexisting: preexisting,
             loadResponseSha256: responseDigest,
             verificationManifest: manifest,
@@ -93,6 +113,16 @@ final class AssetStagingTransfers: MigrationImportAssetTransfers {
         from source: any ContainerRuntime,
         to target: any ContainerRuntime
     ) async throws -> MigrationVolumeTransferReceipt {
+        if addExternalTargetImageReferenceBeforeVolumeFailure,
+           let runtime = target as? StrictMigrationRuntime,
+           !runtime.snapshotValue.images.isEmpty {
+            runtime.snapshotValue.images[0].repository = "external"
+            runtime.snapshotValue.images[0].tag = "latest"
+        }
+        if removeTargetImageBeforeVolumeFailure,
+           let runtime = target as? StrictMigrationRuntime {
+            runtime.snapshotValue.images.removeAll()
+        }
         switch volumeOutcome {
         case .failure: throw Failure.volume
         case .cancelled: throw CancellationError()

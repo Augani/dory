@@ -860,6 +860,19 @@ struct DockerEngineRuntime: ContainerRuntime {
         }
     }
 
+    func removeVolumeForRollback(name: String) async throws {
+        let response = try await http.send(HTTPRequest(
+            method: "DELETE",
+            path: "/volumes/\(DockerImageOps.pathComponent(name))?force=false"
+        ))
+        guard response.isSuccess || response.statusCode == 404 else {
+            throw HTTPError.status(
+                code: response.statusCode,
+                message: String(data: response.body, encoding: .utf8) ?? ""
+            )
+        }
+    }
+
     func createVolume(
         name: String,
         driver: String?,
@@ -888,6 +901,19 @@ struct DockerEngineRuntime: ContainerRuntime {
         let response = try await http.send(HTTPRequest(method: "DELETE", path: "/images/\(DockerImageOps.pathComponent(id))?force=true"))
         guard response.isSuccess || response.statusCode == 404 else {
             throw HTTPError.status(code: response.statusCode, message: String(data: response.body, encoding: .utf8) ?? "")
+        }
+    }
+
+    func removeImageForRollback(id: String) async throws {
+        let response = try await http.send(HTTPRequest(
+            method: "DELETE",
+            path: "/images/\(DockerImageOps.pathComponent(id))?force=false"
+        ))
+        guard response.isSuccess || response.statusCode == 404 else {
+            throw HTTPError.status(
+                code: response.statusCode,
+                message: String(data: response.body, encoding: .utf8) ?? ""
+            )
         }
     }
 

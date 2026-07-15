@@ -379,5 +379,34 @@ final class StrictMigrationRuntime: ContainerRuntime {
         }
     }
 
-    enum TestMutationFailure: Error { case injected }
+    func removeImageForRollback(id: String) async throws {
+        removedImages.append(id)
+        if failImageRemoval { throw TestMutationFailure.injected }
+        let normalizedID = MigrationOperationPlanBuilder.normalizedImageID(id)
+        if let index = snapshotValue.images.firstIndex(where: {
+            MigrationOperationPlanBuilder.normalizedImageID($0.imageID) == normalizedID
+        }) {
+            guard MigrationOperationPlanBuilder.imageReferences(snapshotValue.images[index]).isEmpty else {
+                throw TestMutationFailure.imageReferenced
+            }
+            snapshotValue.images.remove(at: index)
+            return
+        }
+        let reference = MigrationOperationPlanBuilder.canonicalImageReference(id)
+        guard let index = snapshotValue.images.firstIndex(where: {
+            MigrationOperationPlanBuilder.imageReferences($0).contains(reference)
+        }) else { return }
+        var references = MigrationOperationPlanBuilder.imageReferences(snapshotValue.images[index])
+        references.removeAll { $0 == reference }
+        guard let primary = references.first else {
+            snapshotValue.images.remove(at: index)
+            return
+        }
+        let split = DockerRegistry.splitImageRef(primary)
+        snapshotValue.images[index].repository = split.repo
+        snapshotValue.images[index].tag = split.tag
+        snapshotValue.images[index].additionalReferences = Array(references.dropFirst())
+    }
+
+    enum TestMutationFailure: Error { case injected, imageReferenced }
 }

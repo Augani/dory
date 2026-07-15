@@ -59,7 +59,7 @@ extension MigrationImportAssetStagingExecution {
             to: environment.target
         )
         if !receipt.targetImageWasPreexisting {
-            created.append(.image(id: receipt.loadedTargetImageID))
+            created.append(.image(entry: receipt.targetInventoryEntryAfterLoad))
         }
         guard MigrationImageTransferExecution.canonicalImageID(receipt.loadedTargetImageID) != nil,
               MigrationImageTransferExecution.canonicalImageID(
@@ -228,7 +228,7 @@ extension MigrationImportAssetStagingExecution {
                     )
                 }
                 if MigrationOperationPlanBuilder.imageReferences(image).contains(reference) {
-                    try await environment.source.removeImage(id: reference)
+                    try await environment.source.removeImageForRollback(id: reference)
                 }
                 try await removeUntaggedSourceImageIfNeeded(
                     image.imageID,
@@ -268,7 +268,12 @@ extension MigrationImportAssetStagingExecution {
                     .init(kind: .writableLayer, sourceID: imageID)
                 )
             }
-            try await environment.source.removeImage(id: imageID)
+            guard MigrationOperationPlanBuilder.imageReferences(image).isEmpty else {
+                throw MigrationImportAssetStagingError.targetDrift(
+                    .init(kind: .writableLayer, sourceID: imageID)
+                )
+            }
+            try await environment.source.removeImageForRollback(id: imageID)
         }
         let after = try await environment.source.migrationSnapshot().images
         guard !after.contains(where: {

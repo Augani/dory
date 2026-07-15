@@ -14,12 +14,13 @@ nonisolated struct MigrationImageTargetInventory: Codable, Sendable, Equatable {
 }
 
 nonisolated struct MigrationImageVerificationManifest: Codable, Sendable, Equatable {
-    static let schemaVersion = 1
+    static let schemaVersion = 2
 
     let schemaVersion: Int
     let operationID: UUID
     let sourceImageID: String
     let loadedTargetImageID: String
+    let targetInventoryEntryAfterLoad: MigrationImageTargetInventory.Entry
     let targetImageWasPreexisting: Bool
     let loadResponseSha256: String
     let sourceBeforeTransfer: MigrationImageArchiveFingerprint
@@ -31,6 +32,7 @@ nonisolated struct MigrationImageVerificationManifest: Codable, Sendable, Equata
         operationID: UUID,
         sourceImageID: String,
         loadedTargetImageID: String,
+        targetInventoryEntryAfterLoad: MigrationImageTargetInventory.Entry,
         targetImageWasPreexisting: Bool,
         loadResponseSha256: String,
         sourceBeforeTransfer: MigrationImageArchiveFingerprint,
@@ -42,6 +44,7 @@ nonisolated struct MigrationImageVerificationManifest: Codable, Sendable, Equata
         self.operationID = operationID
         self.sourceImageID = sourceImageID
         self.loadedTargetImageID = loadedTargetImageID
+        self.targetInventoryEntryAfterLoad = targetInventoryEntryAfterLoad
         self.targetImageWasPreexisting = targetImageWasPreexisting
         self.loadResponseSha256 = loadResponseSha256
         self.sourceBeforeTransfer = sourceBeforeTransfer
@@ -64,6 +67,7 @@ private nonisolated struct MigrationVerifiedImageTransfer {
     let sourceAfter: MigrationImageArchiveFingerprint
     let verifiedTarget: MigrationImageArchiveFingerprint
     let loaded: MigrationLoadedImageArchive
+    let targetInventoryEntryAfterLoad: MigrationImageTargetInventory.Entry
 }
 
 nonisolated struct MigrationImageTransferExecution {
@@ -71,6 +75,7 @@ nonisolated struct MigrationImageTransferExecution {
     let source: any ContainerRuntime
     let target: any ContainerRuntime
     var targetBefore: MigrationImageTargetInventory?
+    var loadedTargetEntry: MigrationImageTargetInventory.Entry?
     var loadAttempted = false
     var cleanupRequired = false
 
@@ -100,13 +105,19 @@ nonisolated struct MigrationImageTransferExecution {
         guard sameSourceContent(sourceBefore, verifiedTarget) else {
             throw MigrationImageTransferError.targetMismatch
         }
+        guard let loadedTargetEntry else {
+            throw MigrationImageTransferError.targetInventory(
+                "loaded image inventory entry disappeared"
+            )
+        }
         return try makeReceipt(MigrationVerifiedImageTransfer(
             sourceReference: sourceReference,
             sourceBefore: sourceBefore,
             sourceDuring: sourceDuring,
             sourceAfter: sourceAfter,
             verifiedTarget: verifiedTarget,
-            loaded: loaded
+            loaded: loaded,
+            targetInventoryEntryAfterLoad: loadedTargetEntry
         ))
     }
 
@@ -118,6 +129,7 @@ nonisolated struct MigrationImageTransferExecution {
             operationID: request.operationID,
             sourceImageID: evidence.sourceReference,
             loadedTargetImageID: evidence.loaded.receipt.loadedImageID,
+            targetInventoryEntryAfterLoad: evidence.targetInventoryEntryAfterLoad,
             targetImageWasPreexisting: !cleanupRequired,
             loadResponseSha256: responseDigest,
             sourceBeforeTransfer: evidence.sourceBefore,
@@ -132,6 +144,7 @@ nonisolated struct MigrationImageTransferExecution {
             sourceAfterTransfer: evidence.sourceAfter,
             verifiedTarget: evidence.verifiedTarget,
             loadedTargetImageID: evidence.loaded.receipt.loadedImageID,
+            targetInventoryEntryAfterLoad: evidence.targetInventoryEntryAfterLoad,
             targetImageWasPreexisting: !cleanupRequired,
             loadResponseSha256: responseDigest,
             verificationManifest: manifestData,
@@ -153,6 +166,27 @@ extension MigrationImageTransferExecution {
         return "sha256:\(digest)"
     }
 
+    nonisolated static func targetInventory(
+        images: [DockerImage]
+    ) throws -> MigrationImageTargetInventory {
+        var seen = Set<String>()
+        let entries = try images.map { image -> MigrationImageTargetInventory.Entry in
+            guard let id = canonicalImageID(image.imageID), seen.insert(id).inserted else {
+                throw MigrationImageTransferError.targetInventory(
+                    "image IDs must be unique complete lowercase sha256 digests"
+                )
+            }
+            return MigrationImageTargetInventory.Entry(
+                id: id,
+                references: MigrationOperationPlanBuilder.imageReferences(image).sorted(),
+                labels: image.labels,
+                sizeBytes: image.sizeBytes,
+                createdEpoch: image.createdEpoch
+            )
+        }.sorted { $0.id < $1.id }
+        return MigrationImageTargetInventory(entries: entries)
+    }
+
     mutating func cleanup() async -> [String] {
         guard loadAttempted else { return [] }
         var failures: [String] = []
@@ -160,27 +194,50 @@ extension MigrationImageTransferExecution {
             failures.append("target inventory baseline disappeared")
             return failures
         }
+        let candidate: MigrationImageTargetInventory.Entry
         do {
             let current = try await targetInventory()
-            let baselineIDs = Set(targetBefore.entries.map(\.id))
-            let addedIDs = current.entries.map(\.id).filter { !baselineIDs.contains($0) }
-            for imageID in addedIDs.sorted() {
-                do {
-                    try await target.removeImage(id: imageID)
-                } catch {
-                    failures.append("remove staged target image \(imageID): \(error)")
+            if let loadedTargetEntry {
+                guard !targetBefore.contains(loadedTargetEntry.id) else { return [] }
+                guard current.entries.first(where: { $0.id == loadedTargetEntry.id })
+                        == loadedTargetEntry else {
+                    failures.append(
+                        "staged target image ownership changed after load: \(loadedTargetEntry.id)"
+                    )
+                    return failures
                 }
+                candidate = loadedTargetEntry
+            } else {
+                // A malformed/truncated load response can hide the receipt. Only the expected,
+                // newly-created, untagged content ID is attributable to this transfer. Every other
+                // concurrent addition belongs to another client and must remain untouched.
+                guard let expectedID = Self.canonicalImageID(request.sourceImageID),
+                      !targetBefore.contains(expectedID),
+                      let inferred = current.entries.first(where: { $0.id == expectedID }) else {
+                    return []
+                }
+                guard inferred.references.isEmpty else {
+                    failures.append(
+                        "staged target image gained an external reference: \(expectedID)"
+                    )
+                    return failures
+                }
+                candidate = inferred
             }
-        } catch {
-            failures.append("read staged target image inventory: \(error)")
-        }
-        do {
+            guard candidate.references.isEmpty else {
+                failures.append(
+                    "staged target image is no longer unreferenced: \(candidate.id)"
+                )
+                return failures
+            }
+            try await target.removeImageForRollback(id: candidate.id)
             let after = try await targetInventory()
-            if after != targetBefore {
-                failures.append("target image inventory was not restored")
+            if after.contains(candidate.id) {
+                failures.append("staged target image survived rollback: \(candidate.id)")
             }
         } catch {
-            failures.append("verify restored target image inventory: \(error)")
+            let imageID = loadedTargetEntry?.id ?? request.sourceImageID
+            failures.append("remove staged target image \(imageID): \(error)")
         }
         return failures
     }
@@ -207,12 +264,13 @@ private extension MigrationImageTransferExecution {
             throw MigrationImageTransferError.targetInventory("image baseline disappeared")
         }
         let current = try await targetInventory()
-        guard current.contains(actualID) else {
+        guard let entry = current.entries.first(where: { $0.id == actualID }) else {
             throw MigrationImageTransferError.loadIdentityMismatch(
                 expected: expectedSemanticIdentity,
                 actual: actualID
             )
         }
+        loadedTargetEntry = entry
         cleanupRequired = !targetBefore.contains(actualID)
     }
 
@@ -254,22 +312,7 @@ private extension MigrationImageTransferExecution {
 
     func targetInventory() async throws -> MigrationImageTargetInventory {
         let snapshot = try await target.migrationSnapshot()
-        var seen = Set<String>()
-        let entries = try snapshot.images.map { image -> MigrationImageTargetInventory.Entry in
-            guard let id = Self.canonicalImageID(image.imageID), seen.insert(id).inserted else {
-                throw MigrationImageTransferError.targetInventory(
-                    "image IDs must be unique complete lowercase sha256 digests"
-                )
-            }
-            return MigrationImageTargetInventory.Entry(
-                id: id,
-                references: MigrationOperationPlanBuilder.imageReferences(image).sorted(),
-                labels: image.labels,
-                sizeBytes: image.sizeBytes,
-                createdEpoch: image.createdEpoch
-            )
-        }.sorted { $0.id < $1.id }
-        return MigrationImageTargetInventory(entries: entries)
+        return try Self.targetInventory(images: snapshot.images)
     }
 
     nonisolated static func encode(_ manifest: MigrationImageVerificationManifest) throws -> Data {

@@ -118,6 +118,56 @@ struct MigrationImageTransferTests {
         #expect(!target.imagePresent)
     }
 
+    @Test func rollbackRemovesOnlyItsImageWhenAnotherClientAddsAnImage() async throws {
+        let fixture = ImageTransferFixture()
+        let changed = fixture.changedContentFixture()
+        let unrelatedID = "sha256:" + String(repeating: "f", count: 64)
+        let unrelated = DockerImage(
+            repository: "unrelated",
+            tag: "latest",
+            imageID: unrelatedID,
+            size: "2 KB",
+            created: "now",
+            usedByCount: 0,
+            sizeBytes: 2_048,
+            createdEpoch: 2
+        )
+        let source = fixture.sourceRuntime(archives: [
+            fixture.sourceFixture.archive,
+            fixture.sourceFixture.archive,
+            changed.archive
+        ])
+        let target = fixture.targetRuntime(concurrentImagesAfterLoad: [unrelated])
+
+        await #expect(throws: MigrationImageTransferError.sourceDrift) {
+            try await MigrationImageTransfer().transfer(fixture.request, from: source, to: target)
+        }
+
+        #expect(target.removedImages == [fixture.imageID])
+        #expect(!target.imagePresent)
+        #expect(try await target.snapshot().images.map(\.imageID) == [unrelatedID])
+    }
+
+    @Test func rollbackFailsClosedWhenAnotherClientTagsTheStagedImage() async throws {
+        let fixture = ImageTransferFixture()
+        let changed = fixture.changedContentFixture()
+        let source = fixture.sourceRuntime(archives: [
+            fixture.sourceFixture.archive,
+            fixture.sourceFixture.archive,
+            changed.archive
+        ])
+        let target = fixture.targetRuntime(externalReferenceAfterSnapshot: 3)
+
+        await #expect(throws: MigrationImageTransferError.self) {
+            try await MigrationImageTransfer().transfer(fixture.request, from: source, to: target)
+        }
+
+        #expect(target.removedImages.isEmpty)
+        #expect(target.imagePresent)
+        #expect(try await target.snapshot().images[0].repository == "external")
+        #expect(try await target.snapshot().images[0].tag == "latest")
+    }
+
     @Test func independentTargetReadbackMismatchRollsBack() async throws {
         let fixture = ImageTransferFixture()
         let target = fixture.targetRuntime(targetArchive: fixture.changedContentFixture().archive)
@@ -303,7 +353,9 @@ private struct ImageTransferFixture {
         loadResponse: Data? = nil,
         preexisting: Bool = false,
         supportsReceipts: Bool = true,
-        loadedImageID: String? = nil
+        loadedImageID: String? = nil,
+        concurrentImagesAfterLoad: [DockerImage] = [],
+        externalReferenceAfterSnapshot: Int? = nil
     ) -> ImageTransferRuntime {
         let targetImageID = loadedImageID ?? imageID
         return ImageTransferRuntime(
@@ -313,7 +365,9 @@ private struct ImageTransferFixture {
             targetArchive: targetArchive ?? sourceFixture.archive,
             loadResponse: loadResponse ?? ImageTransferRuntime.response(for: targetImageID),
             preexisting: preexisting,
-            supportsReceipts: supportsReceipts
+            supportsReceipts: supportsReceipts,
+            concurrentImagesAfterLoad: concurrentImagesAfterLoad,
+            externalReferenceAfterSnapshot: externalReferenceAfterSnapshot
         )
     }
 
@@ -364,6 +418,10 @@ private final class ImageTransferRuntime: ContainerRuntime {
     var receivedChunks: [Data] = []
     var removedImages: [String] = []
     var taggedReferences: [String] = []
+    let concurrentImagesAfterLoad: [DockerImage]
+    let externalReferenceAfterSnapshot: Int?
+    var snapshotCount = 0
+    var loadCompleted = false
 
     init(
         side: Side,
@@ -372,7 +430,9 @@ private final class ImageTransferRuntime: ContainerRuntime {
         targetArchive: Data,
         loadResponse: Data? = nil,
         preexisting: Bool = false,
-        supportsReceipts: Bool = true
+        supportsReceipts: Bool = true,
+        concurrentImagesAfterLoad: [DockerImage] = [],
+        externalReferenceAfterSnapshot: Int? = nil
     ) {
         self.side = side
         self.imageID = imageID
@@ -381,21 +441,31 @@ private final class ImageTransferRuntime: ContainerRuntime {
         self.preexisting = preexisting
         supportsImageLoadReceipt = supportsReceipts
         self.loadResponse = loadResponse ?? Self.response(for: imageID)
+        self.concurrentImagesAfterLoad = concurrentImagesAfterLoad
+        self.externalReferenceAfterSnapshot = externalReferenceAfterSnapshot
         imagePresent = preexisting
     }
 
     func snapshot() async throws -> RuntimeSnapshot {
-        guard side == .target, imagePresent else { return RuntimeSnapshot() }
-        return RuntimeSnapshot(images: [DockerImage(
-            repository: "<none>",
-            tag: "<none>",
+        guard side == .target else { return RuntimeSnapshot() }
+        snapshotCount += 1
+        var images = loadCompleted ? concurrentImagesAfterLoad : []
+        guard imagePresent else { return RuntimeSnapshot(images: images) }
+        let externallyReferenced = externalReferenceAfterSnapshot.map {
+            snapshotCount >= $0
+        } ?? false
+        let owned = DockerImage(
+            repository: externallyReferenced ? "external" : "<none>",
+            tag: externallyReferenced ? "latest" : "<none>",
             imageID: imageID,
             size: "1 KB",
             created: "now",
             usedByCount: 0,
             sizeBytes: 1_024,
             createdEpoch: 1
-        )])
+        )
+        images.insert(owned, at: 0)
+        return RuntimeSnapshot(images: images)
     }
 
     func start(containerID: String) async throws {}
@@ -431,10 +501,12 @@ private final class ImageTransferRuntime: ContainerRuntime {
             if let maximumConsumedChunks,
                receivedChunks.count >= maximumConsumedChunks {
                 imagePresent = true
+                loadCompleted = true
                 return loadResponse
             }
         }
         imagePresent = true
+        loadCompleted = true
         return loadResponse
     }
 
