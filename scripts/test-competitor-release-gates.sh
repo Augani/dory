@@ -794,6 +794,22 @@ grep -F 'machineDiskTemporaryPrefix = ".rootfs.ext4.tmp-"' \
 grep -F 'snapshotDiskTemporaryMarker = ".ext4.tmp-"' \
   dory-core-swift/Sources/DorydKit/MachineManager.swift >/dev/null \
   || fail "interrupted snapshot disk copies can accumulate hidden data-drive storage"
+grep -F 'testDeletingLastImportedSnapshotRemovesOrphanedNamespace' \
+  dory-core-swift/Tests/DorydKitTests/MachineManagerTests.swift >/dev/null \
+  || fail "deleted portable machine imports can leave an orphaned data-drive namespace"
+grep -F 'nonisolated static func derivedMachineID' Dory/Models/AppStore.swift >/dev/null \
+  || fail "derived clone and import names can exceed the daemon machine-id contract"
+grep -F 'Imported machine \(newName) and started it.' Dory/Models/AppStore.swift >/dev/null \
+  || fail "portable machine import can finish without producing a visible usable machine"
+grep -F 'appStoreImportsPortableMachineAsVisibleRunningCloneAndCleansSnapshot' \
+  DoryTests/DorydClientTests.swift >/dev/null \
+  || fail "portable machine import no longer proves clone publication and snapshot cleanup"
+if sed -n '/func importMachineFile()/,/func importMachine(from/p' Dory/Models/AppStore.swift \
+    | grep -F 'filenameExtension: "tar"' >/dev/null; then
+  fail "portable machine picker still advertises unsupported legacy tar imports"
+fi
+grep -F 'setMachineCloneSnapshotResult(ok: false' DoryTests/DorydClientTests.swift >/dev/null \
+  || fail "portable machine clone failure no longer proves temporary snapshot cleanup"
 for required_recipe in \
   'guest/kernel/build.sh arm64' \
   'guest/initfs/build.sh arm64' \

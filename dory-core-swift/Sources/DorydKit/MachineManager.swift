@@ -898,6 +898,7 @@ public final class MachineManager: @unchecked Sendable {
         }
         try? FileManager.default.removeItem(atPath: quarantinedMetadataPath)
         try? FileManager.default.removeItem(atPath: quarantinedRootfsPath)
+        removeEmptyImportedSnapshotNamespace(machineID: machineID)
     }
 
     public func exportSnapshot(machineID: String, snapshotID: String, toPath path: String) throws {
@@ -917,6 +918,7 @@ public final class MachineManager: @unchecked Sendable {
         operationLock.lock()
         defer { operationLock.unlock() }
         var extractedRootfsPath: String?
+        var importedMachineID: String?
         do {
             let bundle = try MachineSnapshotBundle.readDescriptor(fromPath: path)
             var snapshot = bundle.snapshot
@@ -924,6 +926,7 @@ public final class MachineManager: @unchecked Sendable {
                 throw MachineManagerError.persistence("invalid snapshot metadata")
             }
             try Self.validateResources(memoryMB: snapshot.memoryMB, cpuCount: snapshot.cpuCount)
+            importedMachineID = snapshot.machineID
             try ensurePrivateSnapshotDirectory(machineID: snapshot.machineID)
             if FileManager.default.fileExists(atPath: snapshotMetadataPath(machineID: snapshot.machineID, snapshotID: snapshot.id)) ||
                 FileManager.default.fileExists(atPath: snapshotRootfsPath(machineID: snapshot.machineID, snapshotID: snapshot.id)) {
@@ -943,10 +946,16 @@ public final class MachineManager: @unchecked Sendable {
             if let extractedRootfsPath {
                 try? FileManager.default.removeItem(atPath: extractedRootfsPath)
             }
+            if let importedMachineID {
+                removeEmptyImportedSnapshotNamespace(machineID: importedMachineID)
+            }
             throw error
         } catch {
             if let extractedRootfsPath {
                 try? FileManager.default.removeItem(atPath: extractedRootfsPath)
+            }
+            if let importedMachineID {
+                removeEmptyImportedSnapshotNamespace(machineID: importedMachineID)
             }
             throw MachineManagerError.persistence("could not import machine snapshot: \(error)")
         }
@@ -1255,6 +1264,25 @@ public final class MachineManager: @unchecked Sendable {
             throw MachineManagerError.persistence("machine snapshot path is not a private directory")
         }
         return directory
+    }
+
+    private func removeEmptyImportedSnapshotNamespace(machineID: String) {
+        lock.lock()
+        let hasMachine = machines[machineID] != nil
+        lock.unlock()
+        guard !hasMachine else { return }
+        let directory = snapshotDirectory(machineID: machineID)
+        guard Self.isPrivateDirectory(path: directory),
+              ((try? FileManager.default.contentsOfDirectory(atPath: directory)) ?? []).isEmpty,
+              rmdir(directory) == 0 else {
+            return
+        }
+        let owner = machineStateDirectory(id: machineID)
+        guard Self.isPrivateDirectory(path: owner),
+              ((try? FileManager.default.contentsOfDirectory(atPath: owner)) ?? []).isEmpty else {
+            return
+        }
+        _ = rmdir(owner)
     }
 
     private func persist(_ machine: DoryMachineConfiguration) throws {

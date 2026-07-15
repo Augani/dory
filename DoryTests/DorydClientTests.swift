@@ -551,6 +551,59 @@ struct DorydClientTests {
     }
 
     @MainActor
+    @Test func appStoreImportsPortableMachineAsVisibleRunningCloneAndCleansSnapshot() async throws {
+        let bounded = AppStore.derivedMachineID(
+            base: String(repeating: "a", count: 63),
+            operation: "import",
+            token: "ABCD"
+        )
+        #expect(bounded.count == 63)
+        #expect(bounded.hasSuffix("-import-abcd"))
+
+        let base = "/tmp/dami-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let socketPath = base + "/doryd.sock"
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let shim = DockerShim(runtime: MockRuntime())
+        let dockerServer = ShimHTTPServer(socketPath: socketPath) { request in
+            await shim.handle(request)
+        }
+        try dockerServer.start()
+        defer { dockerServer.stop() }
+        let listener = NSXPCListener.anonymous()
+        let service = FakeDorydService(socketPath: socketPath)
+        let delegate = FakeDorydListenerDelegate(service: service)
+        listener.delegate = delegate
+        listener.resume()
+        defer { listener.invalidate() }
+        let store = AppStore(
+            dorydClient: DorydClient(endpoint: listener.endpoint),
+            useDorydEngine: true
+        )
+        store.routeDockerCLI = false
+        await store.connectBackend()
+
+        store.importMachine(from: URL(fileURLWithPath: "/tmp/dev.dorymachine"))
+        try await waitUntil {
+            service.machineCloneSnapshotCount == 1
+                && service.machineDeleteSnapshotCount == 1
+                && store.machines.contains { $0.name.hasPrefix("dev-import-") }
+                && !store.isMachineBusy(AppStore.importBusyKey)
+        }
+        #expect(store.machineCreationLog.contains("Imported machine dev-import-"))
+        #expect(!store.machineCreationLog.contains("Use Clone or Restore"))
+
+        service.setMachineCloneSnapshotResult(ok: false, message: "fixture clone failed")
+        store.importMachine(from: URL(fileURLWithPath: "/tmp/broken.dorymachine"))
+        try await waitUntil {
+            service.machineCloneSnapshotCount == 2
+                && service.machineDeleteSnapshotCount == 2
+                && !store.isMachineBusy(AppStore.importBusyKey)
+        }
+        #expect(store.machineCreationError?.contains("fixture clone failed") == true)
+        #expect(store.machineCreationLog.contains("Error:"))
+    }
+
+    @MainActor
     @Test func appStoreCreatesDorydMachineFromKernelRootfsEnvironment() async throws {
         let base = "/tmp/damc-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         let socketPath = base + "/doryd.sock"
@@ -1420,6 +1473,8 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
     private var _machineProvisionMessage = ""
     private var _machineSnapshotCount = 0
     private var _machineCloneSnapshotCount = 0
+    private var _machineCloneSnapshotOK = true
+    private var _machineCloneSnapshotMessage = ""
     private var _machineRestoreSnapshotCount = 0
     private var _machineDeleteSnapshotCount = 0
     private var _latestMachineCreateConfig: NSDictionary?
@@ -1536,6 +1591,13 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
         lock.lock()
         _machineDeleteOK = ok
         _machineDeleteMessage = message
+        lock.unlock()
+    }
+
+    func setMachineCloneSnapshotResult(ok: Bool, message: String = "") {
+        lock.lock()
+        _machineCloneSnapshotOK = ok
+        _machineCloneSnapshotMessage = message
         lock.unlock()
     }
 
@@ -1813,9 +1875,13 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
         let row = Self.machineRow(id: newID, state: "running", pid: 1234, agentBuild: "agent-test", handoffFDCount: 2)
         lock.lock()
         _machineCloneSnapshotCount += 1
-        machines[newID] = row
+        let ok = _machineCloneSnapshotOK
+        let message = _machineCloneSnapshotMessage
+        if ok {
+            machines[newID] = row
+        }
         lock.unlock()
-        reply(true, row, "")
+        reply(ok, ok ? row : [:], message)
     }
 
     func machineRestoreSnapshot(_ machineID: String, snapshotID: String, reply: @escaping (Bool, NSDictionary, String) -> Void) {

@@ -4211,6 +4211,12 @@ final class AppStore {
         machineCreationLog.append(line + "\n")
     }
 
+    nonisolated static func derivedMachineID(base: String, operation: String, token: String) -> String {
+        let suffix = "-\(operation)-\(token.lowercased())"
+        let maximumBaseLength = max(1, 63 - suffix.count)
+        return String(base.prefix(maximumBaseLength)) + suffix
+    }
+
     var snapshotMachine: Machine?
     var machineSnapshots: [MachineSnapshot] = []
     var editMachineTarget: Machine?
@@ -4284,7 +4290,11 @@ final class AppStore {
     func cloneMachine(_ machine: Machine) {
         guard requireDorydMachines("Cloning") else { return }
         let name = machine.name
-        let newName = name + "-copy-" + String(UUID().uuidString.prefix(4).lowercased())
+        let newName = Self.derivedMachineID(
+            base: name,
+            operation: "copy",
+            token: String(UUID().uuidString.prefix(4))
+        )
         busyMachines.insert(name)
         machineCreationTitle = "Cloning \(name)"
         machineCreationLog = "Snapshotting \(name), then creating \(newName)…\n"
@@ -4356,7 +4366,11 @@ final class AppStore {
 
     func cloneSnapshot(_ snapshot: MachineSnapshot) {
         guard requireDorydMachines("Cloning") else { return }
-        let newName = snapshot.machineName + "-copy-" + String(UUID().uuidString.prefix(4).lowercased())
+        let newName = Self.derivedMachineID(
+            base: snapshot.machineName,
+            operation: "copy",
+            token: String(UUID().uuidString.prefix(4))
+        )
         let busyKey = snapshot.machineName
         busyMachines.insert(busyKey)
         machineCreationTitle = "Cloning \(snapshot.machineName)"
@@ -4445,11 +4459,13 @@ final class AppStore {
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
-        panel.allowedContentTypes = [
-            UTType(filenameExtension: "dorymachine") ?? .data,
-            UTType(filenameExtension: "tar") ?? .data,
-        ]
+        panel.allowedContentTypes = [UTType(filenameExtension: "dorymachine") ?? .data]
         guard panel.runModal() == .OK, let url = panel.url else { return }
+        importMachine(from: url)
+    }
+
+    func importMachine(from url: URL) {
+        guard requireDorydMachines("Importing") else { return }
         busyMachines.insert(Self.importBusyKey)
         machineCreationTitle = "Importing machine"
         machineCreationLog = "Importing \(url.lastPathComponent)…\n"
@@ -4460,10 +4476,42 @@ final class AppStore {
             defer { busyMachines.remove(Self.importBusyKey) }
             do {
                 let snapshot = try await dorydClient.machineImportSnapshot(from: url.path)
-                appendMachineCreationLog("Imported snapshot \(snapshot.id). Use Clone or Restore from the Snapshots sheet.")
+                let newName = Self.derivedMachineID(
+                    base: snapshot.machineID,
+                    operation: "import",
+                    token: String(UUID().uuidString.prefix(4))
+                )
+                appendMachineCreationLog("Verified snapshot \(snapshot.id). Creating \(newName)…")
+                do {
+                    _ = try await dorydClient.machineCloneSnapshot(
+                        machineID: snapshot.machineID,
+                        snapshotID: snapshot.id,
+                        newID: newName
+                    )
+                } catch {
+                    let cleanupFailure = await removeTemporaryMachineSnapshot(
+                        machineID: snapshot.machineID,
+                        snapshotID: snapshot.id
+                    )
+                    if let cleanupFailure {
+                        throw DorydClientError.daemon(
+                            "\(error). Imported snapshot cleanup also failed: \(cleanupFailure)"
+                        )
+                    }
+                    throw error
+                }
+                if let cleanupFailure = await removeTemporaryMachineSnapshot(
+                    machineID: snapshot.machineID,
+                    snapshotID: snapshot.id
+                ) {
+                    appendMachineCreationLog(
+                        "Machine created, but imported snapshot cleanup failed: \(cleanupFailure)"
+                    )
+                    actionError = "Imported \(newName), but Dory could not remove its temporary snapshot: \(cleanupFailure)"
+                }
+                appendMachineCreationLog("Imported machine \(newName) and started it.")
                 activeSheet = nil
                 await refreshMachines()
-                if snapshotMachine != nil { await reloadSnapshots() }
             } catch {
                 let message = "\(error)"
                 appendMachineCreationLog("Error: \(message)")

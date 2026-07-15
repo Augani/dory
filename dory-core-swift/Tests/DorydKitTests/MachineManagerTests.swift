@@ -565,6 +565,10 @@ final class MachineManagerTests: XCTestCase {
                 atPath: "\(base)/machines/dev/snapshots"
             )) ?? []
             XCTAssertTrue(artifacts.isEmpty, "\(name) left import artifacts: \(artifacts)")
+            XCTAssertFalse(
+                FileManager.default.fileExists(atPath: "\(base)/machines/dev"),
+                "\(name) left an orphaned machine namespace"
+            )
         }
 
         let symlinkPath = "\(base)/symlink.dorymachine"
@@ -573,6 +577,40 @@ final class MachineManagerTests: XCTestCase {
         let fifoPath = "\(base)/fifo.dorymachine"
         XCTAssertEqual(mkfifo(fifoPath, 0o600), 0)
         XCTAssertThrowsError(try manager.importSnapshot(fromPath: fifoPath))
+    }
+
+    func testDeletingLastImportedSnapshotRemovesOrphanedNamespace() throws {
+        let base = "/tmp/dory-machine-import-cleanup-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let bundlePath = "\(base)/archive.dorymachine"
+        try writeMachineBundle(
+            toPath: bundlePath,
+            snapshot: DoryMachineSnapshot(
+                id: "backup",
+                machineID: "archive",
+                note: "portable backup",
+                createdISO: "2026-07-07T00:00:00Z",
+                rootfsPath: "/ignored",
+                sizeBytes: 0,
+                kernelPath: doryTestKernelPath,
+                memoryMB: 2048,
+                cpuCount: 2
+            ),
+            rootfs: Data("portable-rootfs".utf8)
+        )
+        let manager = MachineManager(configuration: MachineManagerConfiguration(
+            vmmExecutablePath: "/bin/sleep",
+            stateDirectory: "\(base)/machines",
+            baseArguments: ["30"],
+            passMachineArguments: false,
+            requiresReadyHandoff: false
+        ))
+
+        let imported = try manager.importSnapshot(fromPath: bundlePath)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: "\(base)/machines/archive"))
+        try manager.deleteSnapshot(machineID: imported.machineID, snapshotID: imported.id)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: "\(base)/machines/archive"))
     }
 
     func testRestoreSnapshotLeavesLiveRootfsIntactWhenCopyFails() throws {
