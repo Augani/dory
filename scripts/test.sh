@@ -1,101 +1,178 @@
 #!/bin/bash
-# Test Dory with a full Xcode toolchain. Building/testing from the CLI never re-bumps the
-# project's objectVersion 77 (only the Xcode GUI does). Override explicitly with
-# DEVELOPER_DIR=/path/to/Xcode.app/Contents/Developer.
+# Single public test entrypoint for Dory's Rust, Swift package, app, and UI suites.
 set -euo pipefail
-cd "$(dirname "$0")/.."
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
 
 usage() {
   cat <<'EOF'
-Usage: scripts/test.sh [--ui] [xcodebuild test arguments]
+Usage: scripts/test.sh [all|rust|swift|app|ui|build] [-- xcodebuild arguments]
 
-Runs the Dory unit-test scheme by default. Use --ui (or -only-testing:DoryUITests) to select the
-dedicated shared Dory UI Tests scheme. Extra arguments are forwarded to test-without-building.
+  all    Run every test suite (default)
+  rust   Run formatting, lint, and tests for the Rust workspace
+  swift  Run both Swift package test suites
+  app    Run the Dory app unit-test scheme
+  ui     Run the dedicated Dory UI-test scheme
+  build  Compile the Apple Silicon app without running tests
+
+Arguments after -- are forwarded to xcodebuild for app, ui, and build modes.
 EOF
 }
 
-scheme="Dory"
-test_args=()
-for argument in "$@"; do
-  case "$argument" in
+mode="all"
+if [ "$#" -gt 0 ]; then
+  case "$1" in
+    all|rust|swift|app|ui|build) mode="$1"; shift ;;
     -h|--help) usage; exit 0 ;;
-    --ui) scheme="Dory UI Tests" ;;
-    -only-testing:DoryUITests|-only-testing:DoryUITests/*)
-      scheme="Dory UI Tests"
-      test_args+=("$argument")
-      ;;
-    *) test_args+=("$argument") ;;
   esac
-done
+fi
+[ "${1:-}" != -- ] || shift
+xcode_extra=("$@")
 
-find_xcode() {
-  local dev app found
-  for app in /Applications/Xcode.app /Applications/Xcode-*.app \
-             "$HOME"/Applications/Xcode*.app "$HOME"/Downloads/Xcode*.app; do
-    dev="$app/Contents/Developer"
-    [ -x "$dev/usr/bin/xcodebuild" ] && { printf '%s' "$dev"; return 0; }
-  done
-  found="$(mdfind "kMDItemCFBundleIdentifier == 'com.apple.dt.Xcode'" 2>/dev/null | head -1)"
-  [ -n "$found" ] && [ -x "$found/Contents/Developer/usr/bin/xcodebuild" ] \
-    && { printf '%s' "$found/Contents/Developer"; return 0; }
-  return 1
+require() {
+  command -v "$1" >/dev/null 2>&1 || {
+    echo "test: required command is missing: $1" >&2
+    exit 1
+  }
 }
 
-if [ -z "${DEVELOPER_DIR:-}" ]; then
-  active="$(xcode-select -p 2>/dev/null || true)"
-  need_fallback=0
-  case "$active" in ""|*CommandLineTools*) need_fallback=1 ;; esac
-  [ -x "$active/usr/bin/xcodebuild" ] || need_fallback=1
-  if [ "$need_fallback" -eq 1 ]; then
-    if DEVELOPER_DIR="$(find_xcode)"; then
-      export DEVELOPER_DIR
-      echo "note: active xcode-select ('${active:-unset}') has no xcodebuild; using DEVELOPER_DIR=$DEVELOPER_DIR" >&2
-    else
-      echo "error: no full Xcode found. Install Xcode.app or set DEVELOPER_DIR=/path/to/Xcode.app/Contents/Developer" >&2
-      exit 1
-    fi
+select_xcode() {
+  [ "$(uname -s)" = Darwin ] || {
+    echo "test: $mode requires macOS" >&2
+    exit 1
+  }
+  if [ -z "${DEVELOPER_DIR:-}" ]; then
+    local app developer
+    for app in /Applications/Xcode-26.6.0-Release.Candidate.app \
+               /Applications/Xcode.app /Applications/Xcode-*.app \
+               "$HOME"/Applications/Xcode*.app; do
+      developer="$app/Contents/Developer"
+      if [ -x "$developer/usr/bin/xcodebuild" ]; then
+        export DEVELOPER_DIR="$developer"
+        break
+      fi
+    done
   fi
-fi
-
-# Hosted macOS tests launch a second Dory.app with the production bundle identifier. LaunchServices
-# can route that request to an already-running installed copy and then report the test host as
-# damaged (IDELaunchErrorDomain Code 20). Fail with the real remedy before spending time building.
-if pgrep -f '/Dory\.app/Contents/MacOS/Dory([[:space:]]|$)' >/dev/null 2>&1; then
-  echo "error: quit every running Dory GUI before hosted tests; duplicate com.pythonxi.Dory apps cause LaunchServices Code 20" >&2
-  exit 1
-fi
-
-cleanup_test_products() {
-  scripts/clean-xcode-products.sh
+  require xcodebuild
 }
-trap cleanup_test_products EXIT
-trap 'exit 130' INT
-trap 'exit 143' TERM
 
-xcode_args=(-project Dory.xcodeproj -scheme "$scheme" -destination 'platform=macOS')
-if [ "$scheme" = "Dory UI Tests" ]; then
-  xcode_args+=(-parallel-testing-enabled NO)
-fi
-if [ -n "${CI:-}" ]; then
-  xcode_args+=(CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO)
-fi
+clean_test_products() {
+  [ "$(uname -s)" = Darwin ] || return 0
+  scripts/clean-xcode-products.sh >/dev/null
+}
 
-xcodebuild "${xcode_args[@]}" build-for-testing
+cleanup_after_xcode() {
+  local status=$?
+  trap - EXIT INT TERM
+  clean_test_products || true
+  exit "$status"
+}
 
-# Xcode 27 intermittently re-serializes the project to objectVersion 110 (breaks stable Xcode + CI);
-# pin it back to 77 before the test phase. Only rewrites that one line.
-sed -i '' 's/objectVersion = 110;/objectVersion = 77;/' Dory.xcodeproj/project.pbxproj 2>/dev/null || true
+run_xcodebuild() {
+  # macOS still ships Bash 3.2, where expanding an empty array under `set -u` aborts the script.
+  # Disable nounset only while forwarding the optional argument list.
+  set +u
+  xcodebuild "$@" "${xcode_extra[@]}"
+  local status=$?
+  set -u
+  return "$status"
+}
 
-# Clear quarantine from transient products and unregister stale test bundles before XCTest launch.
-# The system-managed provenance attribute is only removed best-effort because SIP may protect it;
-# it is not itself a failed Gatekeeper assessment.
-scripts/clean-xcode-products.sh
+run_rust() {
+  require cargo
+  (
+    cd dory-core
+    cargo fmt --all -- --check
+    cargo clippy --workspace --all-targets --locked -- -D warnings
+    cargo test --workspace --locked
+  )
+}
 
-if [ "${#test_args[@]}" -gt 0 ]; then
-  xcodebuild "${xcode_args[@]}" test-without-building "${test_args[@]}"
-else
-  # Bash 3.2 (the system /bin/bash on supported macOS releases) raises "unbound variable"
-  # for an empty-array expansion under `set -u`. The unfiltered full suite is the common path.
-  xcodebuild "${xcode_args[@]}" test-without-building
-fi
-scripts/clean-xcode-products.sh
+prepare_swift() {
+  select_xcode
+  scripts/build-dory-ffi-xcframework.sh --if-needed
+}
+
+run_swift() {
+  prepare_swift
+  swift test --package-path dory-core-swift
+  swift test --package-path Packages/ContainerizationEngine
+}
+
+run_app() {
+  prepare_swift
+  if pgrep -f '/Dory\.app/Contents/MacOS/Dory([[:space:]]|$)' >/dev/null 2>&1; then
+    echo "test: quit every running Dory app before hosted tests" >&2
+    exit 1
+  fi
+  clean_test_products
+  trap cleanup_after_xcode EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  if [ -n "${CI:-}" ]; then
+    run_xcodebuild test \
+      -project Dory.xcodeproj \
+      -scheme Dory \
+      -destination 'platform=macOS' \
+      CODE_SIGNING_ALLOWED=NO \
+      CODE_SIGNING_REQUIRED=NO
+  else
+    run_xcodebuild test \
+      -project Dory.xcodeproj \
+      -scheme Dory \
+      -destination 'platform=macOS'
+  fi
+  clean_test_products
+  trap - EXIT INT TERM
+}
+
+run_ui() {
+  prepare_swift
+  if pgrep -f '/Dory\.app/Contents/MacOS/Dory([[:space:]]|$)' >/dev/null 2>&1; then
+    echo "test: quit every running Dory app before UI tests" >&2
+    exit 1
+  fi
+  clean_test_products
+  trap cleanup_after_xcode EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  run_xcodebuild test \
+    -project Dory.xcodeproj \
+    -scheme 'Dory UI Tests' \
+    -destination 'platform=macOS' \
+    -parallel-testing-enabled NO \
+    CODE_SIGNING_ALLOWED=YES \
+    CODE_SIGNING_REQUIRED=YES \
+    CODE_SIGN_IDENTITY=-
+  clean_test_products
+  trap - EXIT INT TERM
+}
+
+run_build() {
+  prepare_swift
+  run_xcodebuild build \
+    -project Dory.xcodeproj \
+    -scheme Dory \
+    -destination 'generic/platform=macOS' \
+    ARCHS=arm64 \
+    ONLY_ACTIVE_ARCH=NO \
+    CODE_SIGNING_ALLOWED=NO \
+    CODE_SIGNING_REQUIRED=NO
+}
+
+case "$mode" in
+  rust) run_rust ;;
+  swift) run_swift ;;
+  app) run_app ;;
+  ui) run_ui ;;
+  build) run_build ;;
+  all)
+    run_rust
+    if [ "$(uname -s)" = Darwin ]; then
+      run_swift
+      run_app
+      run_ui
+    fi
+    ;;
+esac

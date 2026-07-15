@@ -1,8 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" role="img" aria-label="Dory Next.js readiness mark">
-  <rect width="96" height="96" rx="24" fill="#142239"/>
-  <rect x="0.5" y="0.5" width="95" height="95" rx="23.5" fill="none" stroke="rgba(255,255,255,0.16)"/>
-  <path d="M24 51c9-15 31-20 49-3-18 18-41 13-49-3z" fill="#37c6ff"/>
-  <circle cx="61" cy="45" r="4" fill="#08111f"/>
-  <path d="M22 51l-9-9v18l9-9z" fill="#5ee08f"/>
-  <path d="M32 63c8 7 20 9 32 3" fill="none" stroke="#5ee08f" stroke-width="5" stroke-linecap="round"/>
-</svg>

@@ -81,7 +81,6 @@ function App() {
         </a>
         <div className="nav-links">
           <a href="#features">Features</a>
-          <a href="./comparison.md">Compare</a>
           <a href="https://github.com/Augani/dory">GitHub</a>
         </div>
         <a className="nav-cta" href="https://github.com/Augani/dory/releases/latest">

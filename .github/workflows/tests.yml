@@ -1,4 +1,5 @@
 name: Tests
+
 on:
   push:
     branches: [main, 'feat/**', 'fix/**']
@@ -7,113 +8,30 @@ on:
   workflow_dispatch:
 
 jobs:
-  guest-agent-linux:
+  rust:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@c915c33a16f01166c17c4e35fe1d4085a2d71adb # v4
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
           components: rustfmt, clippy
-      - name: Full Rust workspace format
-        working-directory: dory-core
-        run: cargo fmt --all -- --check
-      - name: Full Rust workspace lint
-        working-directory: dory-core
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings
-      - name: Full Rust workspace tests
-        working-directory: dory-core
-        run: cargo test --workspace --locked
+      - run: scripts/test.sh rust
 
-  unit:
+  macos:
     runs-on: macos-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@c915c33a16f01166c17c4e35fe1d4085a2d71adb # v4
-      - name: Select newest installed Xcode
+      - name: Select Xcode
         run: |
           newest="$(ls -d /Applications/Xcode*.app | sort -V | tail -1)"
-          echo "selected: $newest"
           echo "DEVELOPER_DIR=$newest/Contents/Developer" >> "$GITHUB_ENV"
-      - name: Download Metal toolchain (Xcode 26 ships without it)
-        run: xcodebuild -downloadComponent MetalToolchain || true
-      - name: Build shared Rust guest-control client
-        run: scripts/build-dory-ffi-xcframework.sh --if-needed
-      - name: P0 smoke harness regression tests
-        run: bash scripts/test-p0-smoke.sh
-      - name: Unit tests (full suite; known timing flakes allowlisted)
-        run: bash scripts/ci-test.sh
-      - name: Dory UI tests
-        run: |
-          ui_derived_data="$RUNNER_TEMP/dory-ui-derived-data"
-          xcodebuild clean \
-            -project Dory.xcodeproj \
-            -scheme 'Dory UI Tests' \
-            -destination 'platform=macOS' \
-            -derivedDataPath "$ui_derived_data"
-          xcodebuild build-for-testing \
-            -project Dory.xcodeproj \
-            -scheme 'Dory UI Tests' \
-            -destination 'platform=macOS' \
-            -derivedDataPath "$ui_derived_data" \
-            -parallel-testing-enabled NO \
-            CODE_SIGNING_ALLOWED=YES \
-            CODE_SIGNING_REQUIRED=YES \
-            CODE_SIGN_IDENTITY=-
-          scripts/clean-xcode-products.sh --root "$ui_derived_data"
-          codesign --verify --deep --strict "$ui_derived_data/Build/Products/Debug/Dory.app"
-          codesign --verify --deep --strict "$ui_derived_data/Build/Products/Debug/DoryUITests-Runner.app"
-          xcodebuild test-without-building \
-            -project Dory.xcodeproj \
-            -scheme 'Dory UI Tests' \
-            -destination 'platform=macOS' \
-            -derivedDataPath "$ui_derived_data" \
-            -parallel-testing-enabled NO \
-            CODE_SIGNING_ALLOWED=YES \
-            CODE_SIGNING_REQUIRED=YES \
-            CODE_SIGN_IDENTITY=-
-
-  build-x86_64:
-    runs-on: macos-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@c915c33a16f01166c17c4e35fe1d4085a2d71adb # v4
-      - name: Select newest installed Xcode
-        run: |
-          newest="$(ls -d /Applications/Xcode*.app | sort -V | tail -1)"
-          echo "selected: $newest"
-          echo "DEVELOPER_DIR=$newest/Contents/Developer" >> "$GITHUB_ENV"
-      - name: Download Metal toolchain (Xcode 26 ships without it)
-        run: xcodebuild -downloadComponent MetalToolchain || true
-      - name: Cross-compile Intel slice
-        run: |
-          xcodebuild build \
-            -project Dory.xcodeproj \
-            -scheme Dory \
-            -destination 'generic/platform=macOS' \
-            ARCHS=x86_64 \
-            ONLY_ACTIVE_ARCH=NO \
-            CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO
-
-  containerization-engine:
-    runs-on: macos-latest
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@c915c33a16f01166c17c4e35fe1d4085a2d71adb # v4
-      - name: Select newest installed Xcode
-        run: |
-          newest="$(ls -d /Applications/Xcode*.app | sort -V | tail -1)"
-          echo "selected: $newest"
-          echo "DEVELOPER_DIR=$newest/Contents/Developer" >> "$GITHUB_ENV"
-      - name: Build shared Rust guest-control client
-        run: scripts/build-dory-ffi-xcframework.sh --if-needed
-      - name: Dory core Swift tests
-        working-directory: dory-core-swift
-        run: swift test
-      - name: DoryHV unit tests
-        working-directory: Packages/ContainerizationEngine
-        run: swift test
-      - name: Universal helper build
-        working-directory: Packages/ContainerizationEngine
-        run: swift build --arch arm64 --arch x86_64
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+      - name: Swift packages
+        run: scripts/test.sh swift
+      - name: App tests
+        run: scripts/test.sh app
+      - name: UI tests
+        run: scripts/test.sh ui

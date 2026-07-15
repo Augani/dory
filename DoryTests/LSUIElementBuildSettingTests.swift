@@ -52,13 +52,14 @@ struct LSUIElementBuildSettingTests {
         #expect(!text.contains("$(TARGET_BUILD_DIR)/$(WRAPPER_NAME)/Contents/Helpers/dory-vm"))
     }
 
-    @Test func buildAndTestScriptsScrubTransientXcodeProducts() throws {
+    @Test func buildAndPublicTestRunnerScrubTransientXcodeProducts() throws {
         let build = try repositoryFile("scripts/build.sh")
         let test = try repositoryFile("scripts/test.sh")
         let clean = try repositoryFile("scripts/clean-xcode-products.sh")
         let uiScheme = try repositoryFile("Dory.xcodeproj/xcshareddata/xcschemes/Dory UI Tests.xcscheme")
         #expect(build.contains("scripts/clean-xcode-products.sh --strip-test-products"))
-        #expect(test.components(separatedBy: "scripts/clean-xcode-products.sh").count - 1 >= 2)
+        #expect(test.contains("clean_test_products()"))
+        #expect(test.components(separatedBy: "clean_test_products").count - 1 >= 5)
         #expect(uiScheme.components(separatedBy: "scripts/clean-xcode-products.sh").count - 1 >= 2)
         #expect(clean.contains("DoryUITests-Runner.app"))
         #expect(clean.contains("lsregister"))
