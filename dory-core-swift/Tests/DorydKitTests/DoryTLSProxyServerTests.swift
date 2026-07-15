@@ -54,7 +54,7 @@ final class DoryTLSProxyServerTests: XCTestCase {
             "--noproxy", "*",
             "--resolve", "web.dory.local:\(proxy.port):127.0.0.1",
             "https://web.dory.local:\(proxy.port)/",
-        ])
+        ], timeout: 10)
 
         XCTAssertEqual(response, "hello over tls")
         XCTAssertTrue(backend.lastRequest.contains("Host: web.dory.local"))

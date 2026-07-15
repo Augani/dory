@@ -4,6 +4,7 @@ import Foundation
 public enum DoryShellError: Error, Sendable, Equatable, CustomStringConvertible {
     case launchFailed(String)
     case nonZeroExit(Int32, String)
+    case timedOut(TimeInterval, String)
     case toolNotFound(String)
     case invalidArgument(String)
 
@@ -13,6 +14,8 @@ public enum DoryShellError: Error, Sendable, Equatable, CustomStringConvertible 
             return "launch failed: \(message)"
         case let .nonZeroExit(code, output):
             return "process exited \(code): \(output)"
+        case let .timedOut(timeout, output):
+            return "process timed out after \(timeout) seconds: \(output)"
         case let .toolNotFound(tool):
             return "tool not found: \(tool)"
         case let .invalidArgument(message):
@@ -233,8 +236,12 @@ public enum DoryShell {
         _ launchPath: String,
         _ arguments: [String],
         cwd: URL? = nil,
-        environment: [String: String]? = nil
+        environment: [String: String]? = nil,
+        timeout: TimeInterval = 30
     ) throws -> String {
+        guard timeout.isFinite, timeout > 0 else {
+            throw DoryShellError.invalidArgument("process timeout")
+        }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: launchPath)
         process.arguments = arguments
@@ -247,17 +254,75 @@ public enum DoryShell {
         let output = Pipe()
         process.standardOutput = output
         process.standardError = output
+        process.standardInput = FileHandle.nullDevice
+        let exited = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in exited.signal() }
         do {
             try process.run()
         } catch {
             throw DoryShellError.launchFailed("\(error)")
         }
-        let data = output.fileHandleForReading.readDataToEndOfFile()
+
+        let capturedOutput = DoryShellOutputBuffer(maximumBytes: 1_048_576)
+        let reader = DispatchGroup()
+        reader.enter()
+        DispatchQueue.global(qos: .utility).async {
+            capturedOutput.drain(output.fileHandleForReading)
+            reader.leave()
+        }
+
+        let didTimeOut = exited.wait(timeout: .now() + timeout) == .timedOut
+        if didTimeOut, process.isRunning {
+            process.terminate()
+            if exited.wait(timeout: .now() + 1) == .timedOut, process.isRunning {
+                kill(process.processIdentifier, SIGKILL)
+                _ = exited.wait(timeout: .now() + 1)
+            }
+        }
         process.waitUntilExit()
-        let text = String(data: data, encoding: .utf8) ?? ""
+        reader.wait()
+        process.terminationHandler = nil
+        let text = capturedOutput.text
+        if didTimeOut {
+            throw DoryShellError.timedOut(timeout, text)
+        }
         guard process.terminationStatus == 0 else {
             throw DoryShellError.nonZeroExit(process.terminationStatus, text)
         }
         return text
+    }
+}
+
+private final class DoryShellOutputBuffer: @unchecked Sendable {
+    private let maximumBytes: Int
+    private let lock = NSLock()
+    private var data = Data()
+
+    init(maximumBytes: Int) {
+        self.maximumBytes = maximumBytes
+    }
+
+    var text: String {
+        lock.lock()
+        defer { lock.unlock() }
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    func drain(_ handle: FileHandle) {
+        while true {
+            let chunk = handle.readData(ofLength: 65_536)
+            guard !chunk.isEmpty else { return }
+            lock.lock()
+            if chunk.count >= maximumBytes {
+                data = Data(chunk.suffix(maximumBytes))
+            } else {
+                let overflow = data.count + chunk.count - maximumBytes
+                if overflow > 0 {
+                    data.removeFirst(overflow)
+                }
+                data.append(chunk)
+            }
+            lock.unlock()
+        }
     }
 }

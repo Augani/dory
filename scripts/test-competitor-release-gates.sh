@@ -728,6 +728,12 @@ grep -F 'testCreateNeverOverwritesAnAbandonedMachineStateDirectory' \
 grep -F 'testUpdatePersistenceFailurePreservesThePublishedDefinition' \
   dory-core-swift/Tests/DorydKitTests/MachineManagerTests.swift >/dev/null \
   || fail "failed machine updates can partially publish a definition that differs after restart"
+grep -F 'testShellTimesOutAndTerminatesHungProcess' \
+  dory-core-swift/Tests/DorydKitTests/LocalCATests.swift >/dev/null \
+  || fail "release qualification commands can hang indefinitely without a regression test"
+grep -F 'process.standardInput = FileHandle.nullDevice' \
+  dory-core-swift/Sources/DorydKit/LocalCA.swift >/dev/null \
+  || fail "release qualification commands can block waiting for inherited stdin"
 grep -F 'testCloneStartFailureDeletesTheNewMachineDefinition' \
   dory-core-swift/Tests/DorydKitTests/MachineManagerTests.swift >/dev/null \
   || fail "failed machine clones can leave hidden definitions and disks on the data drive"

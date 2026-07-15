@@ -2,6 +2,18 @@
 import XCTest
 
 final class LocalCATests: XCTestCase {
+    func testShellTimesOutAndTerminatesHungProcess() throws {
+        let started = Date()
+        XCTAssertThrowsError(try DoryShell.run("/bin/sleep", ["30"], timeout: 0.05)) { error in
+            guard case let DoryShellError.timedOut(timeout, output) = error else {
+                return XCTFail("unexpected error: \(error)")
+            }
+            XCTAssertEqual(timeout, 0.05)
+            XCTAssertTrue(output.isEmpty)
+        }
+        XCTAssertLessThan(Date().timeIntervalSince(started), 2)
+    }
+
     func testGeneratesCAAndIssuesVerifiableDomainCertificate() throws {
         let directory = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("doryd-ca-\(UUID().uuidString)")
