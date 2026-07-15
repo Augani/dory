@@ -195,6 +195,12 @@ grep -F 'registry:2.8.3@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528
   || fail "private-registry qualification lost its digest-pinned registry fixture"
 grep -F 'scripts/private-registry-auth-gate.sh' scripts/qualify-release-candidate.sh >/dev/null \
   || fail "exact candidate qualification does not run private-registry auth"
+grep -F 'private_registry_workroot="$ENGINE_HOME/gate-evidence/private-registry-auth"' \
+  scripts/qualify-release-candidate.sh >/dev/null \
+  || fail "private-registry qualification stores bind fixtures outside the engine-shared home"
+grep -F 'cp -R "$private_registry_workroot/." "$WORKDIR/evidence/private-registry-auth/"' \
+  scripts/qualify-release-candidate.sh >/dev/null \
+  || fail "private-registry qualification does not preserve sanitized publication evidence"
 grep -F 'privateRegistryAuthGate' scripts/qualify-release-candidate.sh \
   scripts/verify-release-qualification.sh >/dev/null \
   || fail "private-registry qualification is not bound to publication evidence"

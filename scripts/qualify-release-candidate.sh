@@ -797,6 +797,8 @@ bounded 600 env DOCKER_HOST="unix://$SOCKET" "$DOCKER" pull --platform linux/arm
   > "$WORKDIR/evidence/post-prune-base-pull.log" 2>&1 \
   || die "could not restore the digest-pinned base image after prune qualification"
 
+private_registry_workroot="$ENGINE_HOME/gate-evidence/private-registry-auth"
+rm -rf "$private_registry_workroot"
 bounded 1200 scripts/private-registry-auth-gate.sh \
   --socket "$SOCKET" \
   --docker "$DOCKER" \
@@ -804,10 +806,10 @@ bounded 1200 scripts/private-registry-auth-gate.sh \
   --base-image "$IMAGE" \
   --registry-image "$REGISTRY_IMAGE" \
   --source-commit "$SOURCE_COMMIT" \
-  --workroot "$WORKDIR/evidence/private-registry-auth" \
+  --workroot "$private_registry_workroot" \
   > "$WORKDIR/evidence/private-registry-auth.log" 2>&1 \
   || die "private-registry authentication and image-lifecycle gate failed"
-private_registry_manifest="$(find "$WORKDIR/evidence/private-registry-auth" \
+private_registry_manifest="$(find "$private_registry_workroot" \
   -name manifest.txt -type f -print -quit)"
 [ -s "$private_registry_manifest" ] || die "private-registry evidence manifest is missing"
 for proof in status registry_fixture_arm64 unauthenticated_pull_rejected authenticated_login \
@@ -831,6 +833,9 @@ grep -qx "docker_cli_sha256=$private_registry_docker_sha" "$private_registry_man
   || die "private-registry evidence used the wrong candidate Docker or Buildx client"
 [ -z "$(DOCKER_HOST="unix://$SOCKET" "$DOCKER" ps -aq)" ] \
   || die "private-registry gate left containers on the isolated engine"
+rm -rf "$WORKDIR/evidence/private-registry-auth"
+mkdir -p "$WORKDIR/evidence/private-registry-auth"
+cp -R "$private_registry_workroot/." "$WORKDIR/evidence/private-registry-auth/"
 
 bounded 900 scripts/nonnative-nix-gc-gate.sh \
   --socket "$SOCKET" \
