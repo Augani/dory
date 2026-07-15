@@ -1082,6 +1082,14 @@ private final class DoryVMMRuntime: DoryVMMGuestShutdownHandling, @unchecked Sen
     }
 
     func requestGuestShutdown() throws {
+        do {
+            try requestGuestShutdownThroughAgent()
+            return
+        } catch {
+            FileHandle.standardError.write(Data(
+                "dory-vmm: agent shutdown request failed, trying transport fallback: \(error)\n".utf8
+            ))
+        }
         if let gvproxyNetwork {
             try gvproxyNetwork.requestGuestShutdown()
             return
@@ -1100,6 +1108,30 @@ private final class DoryVMMRuntime: DoryVMMGuestShutdownHandling, @unchecked Sen
             }
         } while Date() < deadline
         throw lastError ?? DoryVZMachineError.guestPortUnavailable(DoryGuestPorts.shutdown)
+    }
+
+    private func requestGuestShutdownThroughAgent() throws {
+        let connection = try machine.connect(toPort: DoryGuestPorts.control)
+        defer { connection.close() }
+        let fd = dup(connection.fileDescriptor)
+        guard fd >= 0 else {
+            throw DoryVZMachineError.syscall("dup", errno)
+        }
+        let control = try DoryCore.connectAgentControlOverFD(fd)
+        defer { control.close() }
+        let result = try control.exec(
+            argv: ["/bin/sh", "-c", GuestShutdownCommand.detachedAgentRequest()],
+            cwd: "",
+            env: [],
+            timeoutMs: 5_000,
+            outputLimitBytes: 64 * 1024
+        )
+        guard result.exitCode == 0, !result.timedOut else {
+            let stderr = String(decoding: result.stderr.prefix(4_096), as: UTF8.self)
+            throw DoryVZMachineError.validation(
+                "agent rejected guest shutdown (exit=\(result.exitCode), timedOut=\(result.timedOut)): \(stderr)"
+            )
+        }
     }
 
     func waitUntilStopped() throws {

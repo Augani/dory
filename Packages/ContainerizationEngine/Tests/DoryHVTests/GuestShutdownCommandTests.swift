@@ -44,4 +44,22 @@ struct GuestShutdownCommandTests {
 
         #expect(process.terminationStatus == 0)
     }
+
+    @Test func detachedAgentRequestReturnsBeforePoweroffAndIsValidShell() throws {
+        let command = GuestShutdownCommand.detachedAgentRequest()
+        #expect(command.contains("sleep 0.1"))
+        #expect(command.contains("kill -TERM $DORY_DOCKERD_PID"))
+        #expect(command.contains("poweroff -f"))
+        #expect(command.hasSuffix("2>&1 </dev/null &"))
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-n", "-c", command]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        process.waitUntilExit()
+
+        #expect(process.terminationStatus == 0)
+    }
 }

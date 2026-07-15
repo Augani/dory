@@ -78,6 +78,42 @@ final class MachineManagerTests: XCTestCase {
         XCTAssertTrue(manager.list().isEmpty)
     }
 
+    func testStopAllowsTheSharedGracefulShutdownBudget() throws {
+        let base = "/tmp/dory-machine-graceful-stop-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let marker = "\(base)/graceful"
+        let ready = "\(base)/ready"
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let manager = MachineManager(configuration: MachineManagerConfiguration(
+            vmmExecutablePath: "/bin/sh",
+            stateDirectory: "\(base)/machines",
+            baseArguments: [
+                "-c",
+                "trap 'sleep 6; printf graceful > \"$1\"; exit 0' TERM; printf ready > \"$2\"; while :; do sleep 1; done",
+                "sh",
+                marker,
+                ready,
+            ],
+            passMachineArguments: false,
+            requiresReadyHandoff: false
+        ))
+        defer { try? manager.delete(id: "dev") }
+
+        _ = try manager.create(DoryMachineConfiguration(
+            id: "dev",
+            kernelPath: doryTestKernelPath,
+            rootfsPath: doryTestRootfsPath
+        ))
+        _ = try manager.start(id: "dev")
+        for _ in 0..<100 where !FileManager.default.fileExists(atPath: ready) {
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: ready))
+        _ = try manager.stop(id: "dev")
+
+        XCTAssertEqual(try String(contentsOfFile: marker, encoding: .utf8), "graceful")
+    }
+
     func testCreateRejectsInvalidKernelAndRootfsWithoutPublishingState() throws {
         let base = "/tmp/dory-machine-artifact-validation-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         let sources = "\(base)/sources"

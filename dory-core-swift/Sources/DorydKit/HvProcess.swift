@@ -88,6 +88,7 @@ public final class HvProcess: @unchecked Sendable {
     private let unexpectedTerminationHandler: HvProcessUnexpectedTerminationHandler?
     private let lock = NSLock()
     private var process: Process?
+    private var terminationWaiter: DispatchSemaphore?
     private var logHandle: FileHandle?
     private var stopping = false
     private var hasStarted = false
@@ -155,6 +156,7 @@ public final class HvProcess: @unchecked Sendable {
             throw ProcessError.executableMissing(configuration.executablePath)
         }
         let task = Process()
+        let terminationWaiter = DispatchSemaphore(value: 0)
         task.executableURL = URL(fileURLWithPath: configuration.executablePath)
         task.arguments = configuration.arguments
         if !configuration.environment.isEmpty {
@@ -165,10 +167,20 @@ public final class HvProcess: @unchecked Sendable {
         task.standardError = log ?? FileHandle.standardError
         task.terminationHandler = { [weak self] task in
             self?.handleTermination(task)
+            terminationWaiter.signal()
         }
-        try task.run()
         process = task
+        self.terminationWaiter = terminationWaiter
         logHandle = log
+        do {
+            try task.run()
+        } catch {
+            process = nil
+            self.terminationWaiter = nil
+            logHandle = nil
+            try? log?.close()
+            throw error
+        }
     }
 
     private static func openAppendLog(_ path: String?) -> FileHandle? {
@@ -196,6 +208,7 @@ public final class HvProcess: @unchecked Sendable {
         }
         lastTerminationStatus = task.terminationStatus
         process = nil
+        terminationWaiter = nil
         suspended = false
         oldLog = logHandle
         logHandle = nil
@@ -259,11 +272,13 @@ public final class HvProcess: @unchecked Sendable {
 
     public func stop(signal: Int32 = SIGTERM, timeout: TimeInterval = 5) {
         let task: Process?
+        let terminationWaiter: DispatchSemaphore?
         let oldLog: FileHandle?
         let wasSuspended: Bool
         lock.lock()
         stopping = true
         task = process
+        terminationWaiter = self.terminationWaiter
         // Take-and-null the handle so exactly one of stop()/handleTermination closes it; a
         // double close could otherwise land on a recycled fd.
         oldLog = logHandle
@@ -281,11 +296,10 @@ public final class HvProcess: @unchecked Sendable {
         }
         kill(task.processIdentifier, signal)
 
-        let deadline = Date().addingTimeInterval(timeout)
-        while task.isRunning && Date() < deadline {
-            Thread.sleep(forTimeInterval: 0.02)
-        }
-        if task.isRunning {
+        // Process.isRunning can flip to false when SIGTERM is delivered while the child is still
+        // draining. Wait for its termination callback so a replacement cannot reuse VM disks early.
+        let deadline = DispatchTime.now() + max(0, timeout)
+        if terminationWaiter?.wait(timeout: deadline) == .timedOut {
             kill(task.processIdentifier, SIGKILL)
             task.waitUntilExit()
         }
@@ -293,6 +307,7 @@ public final class HvProcess: @unchecked Sendable {
         lock.lock()
         if process === task {
             process = nil
+            self.terminationWaiter = nil
             logHandle = nil
             suspended = false
         }

@@ -608,7 +608,7 @@ public final class MachineManager: @unchecked Sendable {
             entry.lastError = "vmm ready handoff timed out after \(Int(Self.handoffReadyTimeoutSeconds))s"
             self.machines[id] = entry
             self.lock.unlock()
-            process.stop()
+            process.stop(timeout: DoryEngineShutdownTiming.hostTerminationSeconds)
         }
     }
 
@@ -633,7 +633,7 @@ public final class MachineManager: @unchecked Sendable {
         lock.unlock()
 
         handoffServer?.stop()
-        process?.stop()
+        process?.stop(timeout: DoryEngineShutdownTiming.hostTerminationSeconds)
         return status(id: id) ?? DoryMachineStatus(id: id, state: .stopped)
     }
 
@@ -657,7 +657,7 @@ public final class MachineManager: @unchecked Sendable {
 
         for entry in runningEntries {
             entry.handoffServer?.stop()
-            entry.process?.stop()
+            entry.process?.stop(timeout: DoryEngineShutdownTiming.hostTerminationSeconds)
         }
     }
 
@@ -678,7 +678,7 @@ public final class MachineManager: @unchecked Sendable {
         lock.unlock()
 
         entry.handoffServer?.stop()
-        entry.process?.stop()
+        entry.process?.stop(timeout: DoryEngineShutdownTiming.hostTerminationSeconds)
 
         let fileManager = FileManager.default
         let statePath = machineStateDirectory(id: id)
