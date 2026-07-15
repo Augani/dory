@@ -98,6 +98,8 @@ struct DockerShim: Sendable {
                 (name: "Api-Version", value: apiVersion),
                 (name: "Builder-Version", value: runtime.supportsRawProxy ? "2" : "1"),
                 (name: "Docker-Experimental", value: "false"),
+                (name: "Ostype", value: "linux"),
+                (name: "Swarm", value: "inactive"),
                 (name: "Cache-Control", value: "no-cache"),
             ], body: Data("OK".utf8))
         case ("GET", "/version"):

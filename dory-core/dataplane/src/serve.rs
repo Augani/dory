@@ -890,9 +890,9 @@ fn http_error(status: u16, reason: &str, message: &str) -> Vec<u8> {
 
 fn ping_response(method: &str) -> &'static str {
     if method.eq_ignore_ascii_case("HEAD") {
-        "HTTP/1.1 200 OK\r\nApi-Version: 1.47\r\nDocker-Experimental: false\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        "HTTP/1.1 200 OK\r\nApi-Version: 1.47\r\nBuilder-Version: 2\r\nDocker-Experimental: false\r\nOstype: linux\r\nSwarm: inactive\r\nCache-Control: no-cache, no-store, must-revalidate\r\nPragma: no-cache\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
     } else {
-        "HTTP/1.1 200 OK\r\nApi-Version: 1.47\r\nDocker-Experimental: false\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK"
+        "HTTP/1.1 200 OK\r\nApi-Version: 1.47\r\nBuilder-Version: 2\r\nDocker-Experimental: false\r\nOstype: linux\r\nSwarm: inactive\r\nCache-Control: no-cache, no-store, must-revalidate\r\nPragma: no-cache\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK"
     }
 }
 
@@ -908,6 +908,20 @@ mod tests {
     use tokio::io::AsyncReadExt;
 
     static NEXT_SOCKET_ID: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn synthetic_ping_matches_linux_docker_discovery_contract() {
+        for method in ["GET", "HEAD"] {
+            let response = ping_response(method);
+            assert!(response.contains("\r\nApi-Version: 1.47\r\n"));
+            assert!(response.contains("\r\nBuilder-Version: 2\r\n"));
+            assert!(response.contains("\r\nDocker-Experimental: false\r\n"));
+            assert!(response.contains("\r\nOstype: linux\r\n"));
+            assert!(response.contains("\r\nSwarm: inactive\r\n"));
+        }
+        assert!(ping_response("GET").ends_with("\r\n\r\nOK"));
+        assert!(ping_response("HEAD").ends_with("\r\n\r\n"));
+    }
 
     /// A keep-alive-faithful fake dockerd: serves any number of requests per connection, parsing
     /// each head + content-length body, recording the raw request bytes, and answering per path.

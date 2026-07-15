@@ -19,6 +19,9 @@ struct ShimServerTests {
         let ping = try await client.send(HTTPRequest(method: "GET", path: "/_ping"))
         #expect(ping.statusCode == 200)
         #expect(String(data: ping.body, encoding: .utf8) == "OK")
+        #expect(ping.header("ostype") == "linux")
+        #expect(ping.header("builder-version") == "1")
+        #expect(ping.header("swarm") == "inactive")
 
         let version = try await client.send(HTTPRequest(method: "GET", path: "/v1.47/version"))
         #expect(version.statusCode == 200)
