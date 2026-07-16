@@ -3,15 +3,13 @@ set -euo pipefail
 cd "$(dirname "$0")"
 source PINS
 source ./docker-endpoint.sh
+source ./profile.sh
 
 ARCH="${1:-arm64}"
 OUT="$(pwd)/../out"
 mkdir -p "$OUT"
-GPU="${DORY_EXPERIMENTAL_GPU:-0}"
-case "$GPU" in
-  0|1) ;;
-  *) echo "DORY_EXPERIMENTAL_GPU must be 0 or 1" >&2; exit 64 ;;
-esac
+PROFILE="$(dory_kernel_resolve_profile)"
+PROFILE_SUFFIX="$(dory_kernel_profile_suffix "$PROFILE")"
 
 case "$KERNEL_SOURCE_DATE_EPOCH" in
   ''|*[!0-9]*) echo "KERNEL_SOURCE_DATE_EPOCH must be a non-negative integer" >&2; exit 64 ;;
@@ -61,8 +59,14 @@ case "$ARCH" in
     ;;
 esac
 
-if [ "$GPU" = "1" ]; then
-  CONFIGS="$CONFIGS dory-gpu.fragment"
+case "$PROFILE" in
+  headless) ;;
+  venus) CONFIGS="$CONFIGS dory-virtual-display.fragment dory-gpu.fragment" ;;
+  desktop) CONFIGS="$CONFIGS dory-virtual-display.fragment dory-desktop.fragment" ;;
+esac
+if [ "$PROFILE" = "desktop" ] && [ "$ARCH" != "arm64" ]; then
+  echo "the desktop kernel profile currently supports arm64 only" >&2
+  exit 64
 fi
 
 PATCH_DIR="patches/$KERNEL_VERSION"
@@ -75,11 +79,11 @@ fi
 
 # Ship configs and version-specific patches into the isolated build container together. Keeping the
 # patch list explicit makes application order deterministic and makes a stale patch fail the build.
-INPUT_FINGERPRINT="$(DORY_EXPERIMENTAL_GPU="$GPU" ./input-fingerprint.sh "$ARCH")"
+INPUT_FINGERPRINT="$(DORY_KERNEL_PROFILE="$PROFILE" ./input-fingerprint.sh "$ARCH")"
 # shellcheck disable=SC2086
 CONFIG_TARB64="$(COPYFILE_DISABLE=1 tar --no-xattrs -czf - $CONFIGS "${PATCHES[@]}" | base64 | tr -d '\n')"
 PATCH_LIST="${PATCHES[*]}"
-FINAL_INPUT_FINGERPRINT="$(DORY_EXPERIMENTAL_GPU="$GPU" ./input-fingerprint.sh "$ARCH")"
+FINAL_INPUT_FINGERPRINT="$(DORY_KERNEL_PROFILE="$PROFILE" ./input-fingerprint.sh "$ARCH")"
 [ "$FINAL_INPUT_FINGERPRINT" = "$INPUT_FINGERPRINT" ] || {
   echo "kernel inputs changed while capturing configs/patches; refusing to build a mixed-source kernel" >&2
   exit 1
@@ -113,7 +117,8 @@ CID="$(docker_cmd create --platform "$PLATFORM" \
   -e DORY_KERNEL_CONFIG_TARB64="$CONFIG_TARB64" \
   -e DORY_KERNEL_PATCHES="$PATCH_LIST" \
   -e DORY_KERNEL_TARGETS="$TARGETS" \
-  -e DORY_KERNEL_GPU="$GPU" \
+  -e DORY_KERNEL_PROFILE="$PROFILE" \
+  -e DORY_KERNEL_SUFFIX="$PROFILE_SUFFIX" \
   -e DORY_KERNEL_INPUT_SHA256="$INPUT_FINGERPRINT" \
   -w /build \
   "$KERNEL_BUILDER_IMAGE" bash -euxc '
@@ -138,7 +143,7 @@ CID="$(docker_cmd create --platform "$PLATFORM" \
   done
   scripts/kconfig/merge_config.sh -m .config $CONFIG_PATHS
   make olddefconfig
-  KSUFFIX=""; [ "$DORY_KERNEL_GPU" = 1 ] && KSUFFIX="-gpu"
+  KSUFFIX="$DORY_KERNEL_SUFFIX"
   cp .config "/out/config-$DORY_KERNEL_ARCH$KSUFFIX"
   make -j$(nproc) $DORY_KERNEL_TARGETS
   if [ "$DORY_KERNEL_ARCH" = arm64 ]; then
@@ -159,7 +164,7 @@ CID="$(docker_cmd create --platform "$PLATFORM" \
   fi
   STAMP_TMP="$STAMP.tmp"
   {
-    printf "schema=2\narch=%s\ngpu=%s\ninput_sha256=%s\n" "$DORY_KERNEL_ARCH" "$DORY_KERNEL_GPU" "$DORY_KERNEL_INPUT_SHA256"
+    printf "schema=3\narch=%s\nprofile=%s\ninput_sha256=%s\n" "$DORY_KERNEL_ARCH" "$DORY_KERNEL_PROFILE" "$DORY_KERNEL_INPUT_SHA256"
     printf "config_sha256=%s\n" "$(sha256sum "/out/config-$DORY_KERNEL_ARCH$KSUFFIX" | awk "{print \$1}")"
     printf "primary_sha256=%s\n" "$(sha256sum "$PRIMARY" | awk "{print \$1}")"
     printf "compressed_sha256=%s\n" "$(sha256sum "$COMPRESSED" | awk "{print \$1}")"
@@ -176,16 +181,14 @@ docker_cmd cp "$CID:/out/." "$STAGING/"
 docker_cmd rm "$CID" >/dev/null
 CID=""
 
-DORY_EXPERIMENTAL_GPU="$GPU" DORY_KERNEL_OUT_DIR="$STAGING" ./verify-build.sh "$ARCH"
+DORY_KERNEL_PROFILE="$PROFILE" DORY_KERNEL_OUT_DIR="$STAGING" ./verify-build.sh "$ARCH"
 
-GPU_SUFFIX=""
-[ "$GPU" = 1 ] && GPU_SUFFIX="-gpu"
 if [ "$ARCH" = arm64 ]; then
-  PUBLISH=("config-arm64$GPU_SUFFIX" "Image$GPU_SUFFIX" "Image$GPU_SUFFIX.zst")
-  STAMP_NAME="kernel-build-arm64$GPU_SUFFIX.stamp"
+  PUBLISH=("config-arm64$PROFILE_SUFFIX" "Image$PROFILE_SUFFIX" "Image$PROFILE_SUFFIX.zst")
+  STAMP_NAME="kernel-build-arm64$PROFILE_SUFFIX.stamp"
 else
-  PUBLISH=("config-amd64$GPU_SUFFIX" "vmlinux-x86$GPU_SUFFIX" "vmlinux-x86$GPU_SUFFIX.zst" "bzImage-x86$GPU_SUFFIX")
-  STAMP_NAME="kernel-build-amd64$GPU_SUFFIX.stamp"
+  PUBLISH=("config-amd64$PROFILE_SUFFIX" "vmlinux-x86$PROFILE_SUFFIX" "vmlinux-x86$PROFILE_SUFFIX.zst" "bzImage-x86$PROFILE_SUFFIX")
+  STAMP_NAME="kernel-build-amd64$PROFILE_SUFFIX.stamp"
 fi
 for artifact in "${PUBLISH[@]}"; do
   mv -f "$STAGING/$artifact" "$OUT/$artifact"
@@ -196,4 +199,4 @@ rmdir "$STAGING"
 STAGING=""
 trap - EXIT
 
-DORY_EXPERIMENTAL_GPU="$GPU" ./verify-build.sh "$ARCH"
+DORY_KERNEL_PROFILE="$PROFILE" ./verify-build.sh "$ARCH"

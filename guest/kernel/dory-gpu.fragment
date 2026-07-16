@@ -2,61 +2,10 @@
 # virtio-gpu host-visible blob offsets are hv_vm_map-aligned (Venus maps fail otherwise).
 CONFIG_ARM64_16K_PAGES=y
 
-# Experimental virtio-gpu/Venus kernel fragment.
-#
-# Keep this out of the default kernel until the renderer path is product-ready. The default Dory
-# kernel stays headless to avoid pulling fragile physical GPU drivers into every reproducible build.
-CONFIG_DRM=y
-CONFIG_DRM_KMS_HELPER=y
-CONFIG_DRM_VIRTIO_GPU=y
-CONFIG_VIRTIO_DMA_SHARED_BUFFER=y
-CONFIG_SYNC_FILE=y
-CONFIG_DMA_SHARED_BUFFER=y
+# Experimental Venus renderer support layered on dory-virtual-display.fragment.
 CONFIG_DMABUF_HEAPS=y
 CONFIG_UDMABUF=y
 
-# Keep the experimental GPU kernel virtual-only. ARM64 defconfig enables many physical
-# display/GPU stacks once DRM is on; they are unrelated to Dory's virtio-gpu/Venus path.
-CONFIG_DRM_AMDGPU=n
-CONFIG_DRM_ARMADA=n
-CONFIG_DRM_AST=n
-CONFIG_DRM_BOCHS=n
-CONFIG_DRM_CIRRUS_QEMU=n
-CONFIG_DRM_EXYNOS=n
-CONFIG_DRM_ETNAVIV=n
-CONFIG_DRM_GUD=n
-CONFIG_DRM_HDLCD=n
-CONFIG_DRM_HISI_HIBMC=n
-CONFIG_DRM_HISI_KIRIN=n
-CONFIG_DRM_IMX_DCSS=n
-CONFIG_DRM_KOMEDA=n
-CONFIG_DRM_LIMA=n
-CONFIG_DRM_MALI_DISPLAY=n
-CONFIG_DRM_MEDIATEK=n
-CONFIG_DRM_MESON=n
-CONFIG_DRM_MSM=n
-CONFIG_DRM_MXSFB=n
-CONFIG_DRM_NOUVEAU=n
-CONFIG_DRM_OMAP=n
-CONFIG_DRM_PANFROST=n
-CONFIG_DRM_PANTHOR=n
-CONFIG_DRM_PL111=n
-CONFIG_DRM_POWERVR=n
-CONFIG_DRM_QXL=n
-CONFIG_DRM_RADEON=n
-CONFIG_DRM_RCAR_DU=n
-CONFIG_DRM_RCAR_DW_HDMI=n
-CONFIG_DRM_ROCKCHIP=n
-CONFIG_DRM_RZG2L_DU=n
-CONFIG_DRM_SIMPLEDRM=n
-CONFIG_DRM_SUN4I=n
-CONFIG_DRM_TEGRA=n
-CONFIG_DRM_TIDSS=n
-CONFIG_DRM_TILCDC=n
-CONFIG_DRM_V3D=n
-CONFIG_DRM_VC4=n
-CONFIG_DRM_VMWGFX=n
 CONFIG_DRM_FBDEV_EMULATION=n
-CONFIG_TEGRA_HOST1X=n
 CONFIG_FB=n
 CONFIG_FB_VIRTUAL=n

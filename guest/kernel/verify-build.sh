@@ -2,37 +2,37 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 source ./config-policy.sh
+source ./profile.sh
 
 ARCH="${1:-arm64}"
 OUT="${DORY_KERNEL_OUT_DIR:-../out}"
-GPU="${DORY_EXPERIMENTAL_GPU:-0}"
-case "$GPU" in
-  0|1) ;;
-  *) echo "DORY_EXPERIMENTAL_GPU must be 0 or 1" >&2; exit 64 ;;
-esac
-GPU_SUFFIX=""
-[ "$GPU" = "1" ] && GPU_SUFFIX="-gpu"
+PROFILE="$(dory_kernel_resolve_profile)"
+PROFILE_SUFFIX="$(dory_kernel_profile_suffix "$PROFILE")"
 case "$ARCH" in
   arm64)
-    CONFIG="$OUT/config-arm64$GPU_SUFFIX"
-    PRIMARY="$OUT/Image$GPU_SUFFIX"
-    COMPRESSED="$OUT/Image$GPU_SUFFIX.zst"
+    CONFIG="$OUT/config-arm64$PROFILE_SUFFIX"
+    PRIMARY="$OUT/Image$PROFILE_SUFFIX"
+    COMPRESSED="$OUT/Image$PROFILE_SUFFIX.zst"
     SECONDARY=""
-    STAMP="$OUT/kernel-build-arm64$GPU_SUFFIX.stamp"
+    STAMP="$OUT/kernel-build-arm64$PROFILE_SUFFIX.stamp"
     ;;
   amd64|x86_64)
     ARCH="amd64"
-    CONFIG="$OUT/config-amd64$GPU_SUFFIX"
-    PRIMARY="$OUT/vmlinux-x86$GPU_SUFFIX"
-    COMPRESSED="$OUT/vmlinux-x86$GPU_SUFFIX.zst"
-    SECONDARY="$OUT/bzImage-x86$GPU_SUFFIX"
-    STAMP="$OUT/kernel-build-amd64$GPU_SUFFIX.stamp"
+    CONFIG="$OUT/config-amd64$PROFILE_SUFFIX"
+    PRIMARY="$OUT/vmlinux-x86$PROFILE_SUFFIX"
+    COMPRESSED="$OUT/vmlinux-x86$PROFILE_SUFFIX.zst"
+    SECONDARY="$OUT/bzImage-x86$PROFILE_SUFFIX"
+    STAMP="$OUT/kernel-build-amd64$PROFILE_SUFFIX.stamp"
     ;;
   *)
     echo "usage: $0 [arm64|amd64]" >&2
     exit 64
     ;;
 esac
+if [ "$PROFILE" = "desktop" ] && [ "$ARCH" != "arm64" ]; then
+  echo "the desktop kernel profile currently supports arm64 only" >&2
+  exit 64
+fi
 
 fail() {
   echo "kernel verification failed: $*" >&2
@@ -52,9 +52,9 @@ if [ -n "$SECONDARY" ]; then
 fi
 
 EXPECTED_INPUT="$(./input-fingerprint.sh "$ARCH")"
-[ "$(stamp_value schema)" = "2" ] || fail "$STAMP has an unsupported schema"
+[ "$(stamp_value schema)" = "3" ] || fail "$STAMP has an unsupported schema"
 [ "$(stamp_value arch)" = "$ARCH" ] || fail "$STAMP was built for another architecture"
-[ "$(stamp_value gpu)" = "$GPU" ] || fail "$STAMP was built for another GPU mode"
+[ "$(stamp_value profile)" = "$PROFILE" ] || fail "$STAMP was built for another kernel profile"
 [ "$(stamp_value input_sha256)" = "$EXPECTED_INPUT" ] \
   || fail "$PRIMARY is stale relative to the current kernel configs/patches"
 [ "$(stamp_value config_sha256)" = "$(shasum -a 256 "$CONFIG" | awk '{print $1}')" ] \
@@ -84,9 +84,11 @@ case "$ARCH" in
   arm64) CONFIG_FRAGMENTS+=(dory-arm.config) ;;
   amd64) CONFIG_FRAGMENTS+=(dory-x86.config) ;;
 esac
-if [ "$GPU" = "1" ]; then
-  CONFIG_FRAGMENTS+=(dory-gpu.fragment)
-fi
+case "$PROFILE" in
+  headless) ;;
+  venus) CONFIG_FRAGMENTS+=(dory-virtual-display.fragment dory-gpu.fragment) ;;
+  desktop) CONFIG_FRAGMENTS+=(dory-virtual-display.fragment dory-desktop.fragment) ;;
+esac
 
 REQUIRED_POLICIES="$({
   awk '

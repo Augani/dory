@@ -1,0 +1,22 @@
+# Display console and userspace modesetting for the Apple Virtualization virtio scanout.
+CONFIG_FB=y
+CONFIG_DRM_FBDEV_EMULATION=y
+CONFIG_VT=y
+CONFIG_VT_CONSOLE=y
+CONFIG_FRAMEBUFFER_CONSOLE=y
+
+# VZUSBKeyboardConfiguration and VZUSBScreenCoordinatePointingDeviceConfiguration.
+CONFIG_INPUT=y
+CONFIG_INPUT_EVDEV=y
+CONFIG_HID_SUPPORT=y
+CONFIG_HID=y
+CONFIG_HID_GENERIC=y
+CONFIG_USB=y
+CONFIG_USB_XHCI_HCD=y
+CONFIG_USB_XHCI_PLATFORM=y
+CONFIG_USB_HID=y
+
+# VZVirtioSoundDeviceConfiguration output stream.
+CONFIG_SOUND=y
+CONFIG_SND=y
+CONFIG_SND_VIRTIO=y

@@ -2,13 +2,10 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 source PINS
+source ./profile.sh
 
 ARCH="${1:-arm64}"
-GPU="${DORY_EXPERIMENTAL_GPU:-0}"
-case "$GPU" in
-  0|1) ;;
-  *) echo "DORY_EXPERIMENTAL_GPU must be 0 or 1" >&2; exit 64 ;;
-esac
+PROFILE="$(dory_kernel_resolve_profile)"
 case "$ARCH" in
   arm64)
     CONFIGS=(dory.config dory-arm.config)
@@ -23,8 +20,14 @@ case "$ARCH" in
     ;;
 esac
 
-if [ "$GPU" = "1" ]; then
-  CONFIGS+=(dory-gpu.fragment)
+case "$PROFILE" in
+  headless) ;;
+  venus) CONFIGS+=(dory-virtual-display.fragment dory-gpu.fragment) ;;
+  desktop) CONFIGS+=(dory-virtual-display.fragment dory-desktop.fragment) ;;
+esac
+if [ "$PROFILE" = "desktop" ] && [ "$ARCH" != "arm64" ]; then
+  echo "the desktop kernel profile currently supports arm64 only" >&2
+  exit 64
 fi
 
 PATCH_DIR="patches/$KERNEL_VERSION"
@@ -38,9 +41,9 @@ fi
 # Hash names as well as contents so adding, removing, reordering, or replacing an input invalidates
 # every previously built kernel. The schema marker makes future fingerprint changes explicit.
 {
-  printf 'schema=2\narch=%s\ngpu=%s\nkernel_version=%s\nkernel_url=%s\nkernel_sha256=%s\nbuilder_image=%s\n' \
-    "$ARCH" "$GPU" "$KERNEL_VERSION" "$KERNEL_URL" "$KERNEL_SHA256" "$KERNEL_BUILDER_IMAGE"
-  for input in build.sh docker-endpoint.sh PINS "${CONFIGS[@]}" "${PATCHES[@]}"; do
+  printf 'schema=3\narch=%s\nprofile=%s\nkernel_version=%s\nkernel_url=%s\nkernel_sha256=%s\nbuilder_image=%s\n' \
+    "$ARCH" "$PROFILE" "$KERNEL_VERSION" "$KERNEL_URL" "$KERNEL_SHA256" "$KERNEL_BUILDER_IMAGE"
+  for input in build.sh docker-endpoint.sh profile.sh PINS "${CONFIGS[@]}" "${PATCHES[@]}"; do
     printf 'input=%s\n' "$input"
     shasum -a 256 "$input"
   done
