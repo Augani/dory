@@ -3,20 +3,72 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Dory: Docker &amp; Linux containers, native to your Mac</title>
-    <meta name="description" content="Docker, Kubernetes, and full Linux machines in one beautifully native Mac app. Free, open source, and built around one shared VM." />
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
-    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
-    <meta property="og:title" content="Dory: Docker &amp; Linux containers, native to your Mac" />
-    <meta property="og:description" content="Free, open source, one shared VM for all your containers, host-aware memory reclaim, and a complete Docker-compatible workflow." />
-    <meta property="og:image" content="https://augani.github.io/dory/screenshot.png" />
+    <title>Dory: Docker, Kubernetes, Linux machines, and agents for Mac</title>
+    <meta name="description" content="Your complete local Linux workspace, built for Mac. Docker, Compose, Kubernetes, persistent Linux machines, migration, recovery, and agent automation in one native open-source app." />
+    <meta name="keywords" content="Docker for Mac, Docker Desktop alternative, OrbStack alternative, Kubernetes Mac, Linux virtual machine Mac, local containers, MCP server, coding agent sandbox" />
+    <meta name="author" content="Dory contributors" />
+    <meta name="theme-color" content="#07111f" />
+    <meta name="application-name" content="Dory" />
+    <meta name="apple-mobile-web-app-title" content="Dory" />
+    <link rel="canonical" href="https://augani.github.io/dory/" />
+    <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
+    <link rel="icon" type="image/png" sizes="32x32" href="./favicon-32.png" />
+    <link rel="apple-touch-icon" href="./apple-touch-icon.png" />
+    <link rel="manifest" href="./site.webmanifest" />
+    <link rel="alternate" type="text/plain" href="./llms.txt" title="Dory agent index" />
+    <link rel="alternate" type="application/json" href="./agent-guide.json" title="Dory agent capability map" />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Dory" />
+    <meta property="og:title" content="Dory: Your complete local Linux workspace, built for Mac" />
+    <meta property="og:description" content="Docker, Compose, Kubernetes, persistent Linux machines, migration, recovery, and agent automation in one native open-source Mac app." />
+    <meta property="og:image" content="https://augani.github.io/dory/apple-touch-icon.png" />
+    <meta property="og:image:alt" content="Dory logo" />
     <meta property="og:url" content="https://augani.github.io/dory/" />
-    <meta name="twitter:card" content="summary_large_image" />
-    <meta name="twitter:image" content="https://augani.github.io/dory/screenshot.png" />
+    <meta name="twitter:card" content="summary" />
+    <meta name="twitter:title" content="Dory: Your complete local Linux workspace, built for Mac" />
+    <meta name="twitter:description" content="Docker, Kubernetes, Linux machines, migration, recovery, and agent automation in one native app." />
+    <meta name="twitter:image" content="https://augani.github.io/dory/apple-touch-icon.png" />
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "SoftwareApplication",
+        "name": "Dory",
+        "applicationCategory": "DeveloperApplication",
+        "operatingSystem": "macOS 14 or later on Apple Silicon",
+        "softwareVersion": "0.3.0",
+        "description": "A native, open-source local runtime for Docker, Compose, Kubernetes, persistent Linux machines, migration, recovery, and coding-agent automation on Mac.",
+        "url": "https://augani.github.io/dory/",
+        "downloadUrl": "https://github.com/Augani/dory/releases/latest",
+        "codeRepository": "https://github.com/Augani/dory",
+        "license": "https://www.gnu.org/licenses/gpl-3.0.html",
+        "isAccessibleForFree": true,
+        "offers": {
+          "@type": "Offer",
+          "price": "0",
+          "priceCurrency": "USD"
+        },
+        "featureList": [
+          "Docker 29 engine and command line tools",
+          "Docker Compose v2 and Buildx",
+          "Local k3s Kubernetes",
+          "Persistent Dory Linux machines",
+          "Docker runtime migration",
+          "Managed local data drive",
+          "Versioned JSON and MCP agent automation"
+        ]
+      }
+    </script>
   </head>
   <body>
     <div id="root"></div>
+    <noscript>
+      <main>
+        <h1>Dory</h1>
+        <p>Your complete local Linux workspace, built for Mac.</p>
+        <p>Dory provides Docker, Compose, Kubernetes, persistent Linux machines, migration, recovery, and agent automation in one native open-source app for Apple Silicon Macs.</p>
+        <p><a href="https://github.com/Augani/dory/releases/latest">Download Dory</a> or read the <a href="./llms-full.txt">complete text reference</a>.</p>
+      </main>
+    </noscript>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

@@ -1,0 +1,13 @@
+{
+  "name": "Dory",
+  "short_name": "Dory",
+  "description": "Docker, Kubernetes, persistent Linux machines, and agent automation in one native Mac app.",
+  "start_url": "./",
+  "display": "browser",
+  "background_color": "#07111f",
+  "theme_color": "#07111f",
+  "icons": [
+    { "src": "apple-touch-icon.png", "sizes": "180x180", "type": "image/png" },
+    { "src": "favicon-32.png", "sizes": "32x32", "type": "image/png" }
+  ]
+}

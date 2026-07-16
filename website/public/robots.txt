@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://augani.github.io/dory/sitemap.xml
