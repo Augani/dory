@@ -1,5 +1,9 @@
 // swift-tools-version:6.0
+import Foundation
 import PackageDescription
+
+let packageRoot = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+let doryVMMInfoPlist = packageRoot.appendingPathComponent("Sources/dory-vmm/Info.plist").path
 
 let package = Package(
     name: "dory-core-swift",
@@ -49,7 +53,16 @@ let package = Package(
         ),
         .executableTarget(
             name: "dory-vmm",
-            dependencies: ["DoryVMMKit"]
+            dependencies: ["DoryVMMKit"],
+            exclude: ["Info.plist", "dory-vmm.entitlements"],
+            linkerSettings: [
+                .unsafeFlags([
+                    "-Xlinker", "-sectcreate",
+                    "-Xlinker", "__TEXT",
+                    "-Xlinker", "__info_plist",
+                    "-Xlinker", doryVMMInfoPlist,
+                ]),
+            ]
         ),
         .executableTarget(
             name: "dory-network-helper",

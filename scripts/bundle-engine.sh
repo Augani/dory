@@ -6,8 +6,8 @@
 #   * Contents/Helpers/doryd     — launchd/XPC daemon that owns the engine, idle policy, networking,
 #                                   health, and Linux machine lifecycle.
 #   * Contents/Helpers/dorydctl  — diagnostic/control CLI used by readiness and support flows.
-#   * Contents/Helpers/dory-vmm  — per-machine Virtualization.framework helper and macOS 14 Docker
-#                                   engine fallback, signed with com.apple.security.virtualization.
+#   * Contents/Helpers/DoryVMM.app — Retina-capable per-machine Virtualization.framework helper.
+#   * Contents/Helpers/dory-vmm  — CLI-compatible copy used by macOS 14 engine fallback and tooling.
 #   * Contents/Helpers/dory-network-helper — local networking helper for doryd-owned domains/routes.
 #   * Contents/Helpers/dory-hv    — Dory's own Hypervisor.framework VMM (elastic memory via free-page
 #                                   reporting, SMP, journaled data disk), signed with
@@ -577,6 +577,9 @@ write_doryd_launch_agent() {
   plist="$RESOURCES/dev.dory.doryd.plist"
   doryd="$HELPERS/doryd"
   vmm="$HELPERS/dory-vmm"
+  if [ -x "$HELPERS/DoryVMM.app/Contents/MacOS/dory-vmm" ]; then
+    vmm="$HELPERS/DoryVMM.app/Contents/MacOS/dory-vmm"
+  fi
   hv="$HELPERS/dory-hv"
   gvproxy="$HELPERS/gvproxy"
   log_dir="$HOME/.dory"
@@ -645,17 +648,12 @@ PLIST
 }
 
 bundle_doryd_helpers() {
-  local configuration entitlements product helper
+  local configuration entitlements product helper vmm_app vmm_executable
   [ "${DORY_BUNDLE_DORYD:-1}" = "1" ] || { echo "==> DORY_BUNDLE_DORYD=0: skipping doryd helper bundling"; return 0; }
   [ -f "dory-core-swift/Package.swift" ] || { echo "    ERROR: dory-core-swift/Package.swift missing; cannot build doryd helpers" >&2; exit 1; }
   configuration="${DORY_DORYD_HELPER_CONFIGURATION:-release}"
 
-  entitlements="$(mktemp "${TMPDIR:-/tmp}/dory-vmm-entitlements.XXXXXX")"
-  cat > "$entitlements" <<'PLIST'
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict><key>com.apple.security.virtualization</key><true/></dict></plist>
-PLIST
+  entitlements="$REPO_ROOT/dory-core-swift/Sources/dory-vmm/dory-vmm.entitlements"
 
   echo "==> Building + signing doryd launchd helpers ($configuration, arches: $(swiftpm_helper_arches))…"
   for product in doryd dorydctl dory-vmm dory-network-helper dory-dataplane-proxy; do
@@ -666,11 +664,17 @@ PLIST
       bundle_swiftpm_executable "dory-core-swift" "$configuration" "$product" "$helper"
     fi
   done
+  vmm_app="$HELPERS/DoryVMM.app"
+  vmm_executable="$vmm_app/Contents/MacOS/dory-vmm"
+  mkdir -p "$vmm_app/Contents/MacOS"
+  install -m 0755 "$HELPERS/dory-vmm" "$vmm_executable"
+  install -m 0644 "$REPO_ROOT/dory-core-swift/Sources/dory-vmm/Info.plist" \
+    "$vmm_app/Contents/Info.plist"
+  sign_runtime_payload_with_entitlements "$vmm_app" "$entitlements"
   mkdir -p "$APP/Contents/Library/LaunchDaemons"
   cp "$REPO_ROOT/Config/dev.dory.network-helper.plist" \
     "$APP/Contents/Library/LaunchDaemons/dev.dory.network-helper.plist"
   plutil -lint "$APP/Contents/Library/LaunchDaemons/dev.dory.network-helper.plist" >/dev/null
-  rm -f "$entitlements"
 }
 
 inject_debug_toolbox_into_initfs() {

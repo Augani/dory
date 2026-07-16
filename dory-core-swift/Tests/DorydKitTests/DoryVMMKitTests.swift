@@ -6,6 +6,23 @@ import Virtualization
 import XCTest
 
 final class DoryVMMKitTests: XCTestCase {
+    func testDesktopWindowUsesRetinaBackingPixels() {
+        XCTAssertEqual(
+            DoryVMMDesktopApplication.targetPixelSize(
+                viewSize: CGSize(width: 1_280, height: 800),
+                backingScaleFactor: 2
+            ),
+            CGSize(width: 2_560, height: 1_600)
+        )
+        XCTAssertEqual(
+            DoryVMMDesktopApplication.targetPixelSize(
+                viewSize: CGSize(width: 1_024, height: 768),
+                backingScaleFactor: 1
+            ),
+            CGSize(width: 2_048, height: 1_536)
+        )
+    }
+
     func testVZSSHAgentBridgeRejectsNonSocketSymlinkAndWrongOwner() throws {
         let root = "/tmp/dory-vz-ssh-\(getpid())-\(UInt32.random(in: 0...UInt32.max))"
         try FileManager.default.createDirectory(atPath: root, withIntermediateDirectories: false)

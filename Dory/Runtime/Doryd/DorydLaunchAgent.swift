@@ -370,7 +370,7 @@ enum DorydLaunchAgent {
         helpersDirectory: URL,
         configuration: Configuration = Configuration()
     ) -> String {
-        let vmm = helpersDirectory.appendingPathComponent("dory-vmm").path
+        let vmm = vmmExecutablePath(helpersDirectory: helpersDirectory)
         let hv = helpersDirectory.appendingPathComponent("dory-hv").path
         let gvproxy = helpersDirectory.appendingPathComponent("gvproxy").path
         let resourcesDirectory = helpersDirectory
@@ -456,6 +456,19 @@ enum DorydLaunchAgent {
         </dict>
         </plist>
         """
+    }
+
+    static func vmmExecutablePath(
+        helpersDirectory: URL,
+        fileManager: FileManager = .default
+    ) -> String {
+        let bundled = helpersDirectory
+            .appendingPathComponent("DoryVMM.app", isDirectory: true)
+            .appendingPathComponent("Contents/MacOS/dory-vmm")
+        if fileManager.isExecutableFile(atPath: bundled.path) {
+            return bundled.path
+        }
+        return helpersDirectory.appendingPathComponent("dory-vmm").path
     }
 
     private static func xmlEscaped(_ value: String) -> String {

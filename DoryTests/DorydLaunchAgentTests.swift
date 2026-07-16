@@ -5,6 +5,28 @@ import Testing
 
 @MainActor
 struct DorydLaunchAgentTests {
+    @Test func launchAgentPrefersRetinaCapableVMMApplication() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("DoryVMMBundle-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let executable = root
+            .appendingPathComponent("DoryVMM.app/Contents/MacOS", isDirectory: true)
+            .appendingPathComponent("dory-vmm")
+        try FileManager.default.createDirectory(
+            at: executable.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try "#!/bin/sh\n".write(to: executable, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: executable.path
+        )
+
+        #expect(
+            DorydLaunchAgent.vmmExecutablePath(helpersDirectory: root) == executable.path
+        )
+    }
+
     @Test func parseStatusExtractsProgramAndPlistPaths() {
         let status = DorydLaunchAgent.parseStatus(
             """

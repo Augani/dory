@@ -328,7 +328,7 @@ PLIST
 }
 
 bundle_doryd_swiftpm_helpers() {
-  local configuration bin_path entitlements app product helper
+  local configuration bin_path entitlements app product helper vmm_app vmm_executable
   [ "${DORY_BUILD_DORYD_HELPERS:-1}" = "1" ] || return 0
   [ -f "dory-core-swift/Package.swift" ] || return 0
   configuration="${DORY_DORYD_HELPER_CONFIGURATION:-debug}"
@@ -339,18 +339,13 @@ bundle_doryd_swiftpm_helpers() {
   done
   bin_path="$(swift build --package-path dory-core-swift -c "$configuration" --show-bin-path 2>/dev/null)"
 
-  entitlements="$(mktemp "${TMPDIR:-/tmp}/dory-vmm-entitlements.XXXXXX")"
-  cat > "$entitlements" <<'PLIST'
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict><key>com.apple.security.virtualization</key><true/></dict></plist>
-PLIST
+  entitlements="dory-core-swift/Sources/dory-vmm/dory-vmm.entitlements"
 
   for app in "$HOME"/Library/Developer/Xcode/DerivedData/Dory-*/Build/Products/Debug/Dory.app; do
     [ -d "$app" ] || continue
     mkdir -p "$app/Contents/Helpers"
     for product in doryd dorydctl dory-vmm dory-network-helper; do
-      [ -x "$bin_path/$product" ] || { echo "error: $product helper was not produced" >&2; rm -f "$entitlements"; return 1; }
+      [ -x "$bin_path/$product" ] || { echo "error: $product helper was not produced" >&2; return 1; }
       helper="$app/Contents/Helpers/$product"
       cp "$bin_path/$product" "$helper"
       if [ "$product" = "dory-vmm" ]; then
@@ -361,14 +356,19 @@ PLIST
       fi
       xattr -cr "$helper" 2>/dev/null || true
     done
+    vmm_app="$app/Contents/Helpers/DoryVMM.app"
+    vmm_executable="$vmm_app/Contents/MacOS/dory-vmm"
+    mkdir -p "$vmm_app/Contents/MacOS"
+    install -m 0755 "$bin_path/dory-vmm" "$vmm_executable"
+    install -m 0644 dory-core-swift/Sources/dory-vmm/Info.plist "$vmm_app/Contents/Info.plist"
+    codesign --force --options runtime --entitlements "$entitlements" -s - "$vmm_app" >/dev/null 2>&1 \
+      || codesign --force --entitlements "$entitlements" -s - "$vmm_app" >/dev/null
     write_doryd_launch_agent "$app"
     mkdir -p "$app/Contents/Library/LaunchDaemons"
     cp "Config/dev.dory.network-helper.plist" \
       "$app/Contents/Library/LaunchDaemons/dev.dory.network-helper.plist"
     plutil -lint "$app/Contents/Library/LaunchDaemons/dev.dory.network-helper.plist" >/dev/null
   done
-
-  rm -f "$entitlements"
 }
 
 bundle_debug_transfer_helper() {
@@ -585,6 +585,9 @@ write_doryd_launch_agent() {
   plist="$resources/dev.dory.doryd.plist"
   doryd="$helpers/doryd"
   vmm="$helpers/dory-vmm"
+  if [ -x "$helpers/DoryVMM.app/Contents/MacOS/dory-vmm" ]; then
+    vmm="$helpers/DoryVMM.app/Contents/MacOS/dory-vmm"
+  fi
   hv="$helpers/dory-hv"
   gvproxy="$helpers/gvproxy"
   kernel="$resources/dory-hv-kernel"

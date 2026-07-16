@@ -1373,6 +1373,15 @@ public final class DoryVZMachine: @unchecked Sendable {
         virtualMachine
     }
 
+    func reconfigurePrimaryDisplay(sizeInPixels: CGSize) throws {
+        try queue.sync {
+            guard let display = virtualMachine.graphicsDevices.first?.displays.first else {
+                throw DoryVZMachineError.validation("desktop VM did not expose a graphics display")
+            }
+            try display.reconfigure(sizeInPixels: sizeInPixels)
+        }
+    }
+
     public func waitForConnection(toPort port: UInt32, timeout: TimeInterval) throws -> VZVirtioSocketConnection {
         let deadline = Date().addingTimeInterval(timeout)
         var lastError: Error?
