@@ -96,10 +96,28 @@ still vary by tool version and by assumptions about Docker Desktop-specific file
 SSH-agent forwarding is available at `/run/host-services/ssh-auth.sock`. Mount it only into trusted
 containers because any process with agent access may request signatures.
 
+## Automation and operations
+
+| Capability | Status |
+|---|---|
+| Diagnostics | Passive and active checks for sockets, API, Docker, networking, mounts, registries, disk, memory, and helpers |
+| Repair | Targeted dry runs with explicit apply and engine-restart controls |
+| Cleanup | Dry run by default; named volumes require a second explicit flag |
+| Support bundles | Redacted local evidence collection |
+| Agent guide | Versioned JSON command and safety contract |
+| MCP | Local stdio server with read-only mode, machine execution, waits, and events |
+| Agent sandbox | Preview dedicated VM with explicit mounts, rollback, TTL cleanup, and reported network enforcement |
+
+Run `dory agent guide --json` for the exact contract provided by the installed release. In the 0.3
+preview sandbox, `none` and `full` network policies are enforced. `outbound` currently grants full
+egress and reports that the narrower policy was not enforced.
+
 ## Experimental or deferred
 
 - In-guest Venus/Vulkan acceleration is experimental.
-- USB and audio passthrough do not have a finished public workflow.
+- USB/IP scan, attach, detach, and remembered replay are available in the app and CLI. They may
+  require macOS approval and compatible guest support.
+- Audio passthrough does not have a finished public workflow.
 - Intel-host builds are deferred to a later release.
 - Graphical Linux-machine sessions are not included in 0.3.
 

@@ -2,12 +2,15 @@
 
 ## Next
 
-- Incorporate feedback from the first Apple Silicon release.
-- Improve external-drive, backup, migration, VPN, IPv6, sleep/wake, and recovery workflows.
-- Expand ecosystem compatibility and reduce idle resource use.
-- Keep Intel Mac support as a separate hardware-qualified release track.
+- Rewrote the public README around the full shipped Docker, Kubernetes, Linux machine, migration,
+  storage, networking, diagnostics, settings, and automation surface.
+- Rebuilt the GitHub Pages site for people and agents, including `llms.txt`, a complete agent
+  reference, a versioned JSON capability map, and focused operations and compatibility guides.
+- Replaced static product screenshots on the site with an interactive code-built Dory interface.
+- Clarified the Apple Silicon host contract, current Dory Linux boundary, preview sandbox policy,
+  USB/IP workflow, and deferred Intel and graphical Linux work.
 
-## 0.3.0 — 2026-07-15
+## 0.3.0 - 2026-07-15
 
 The first self-contained Apple Silicon release.
 
@@ -36,11 +39,11 @@ The first self-contained Apple Silicon release.
   registry authentication, BuildKit cancellation, and non-native execution behavior.
 - Removed test-runner payloads from public app archives to avoid misleading macOS damage warnings.
 
-## 0.2.0 — 2026-07-02
+## 0.2.0 - 2026-07-02
 
 - Introduced the Docker-compatible local runtime, container UI, networking, and initial Linux
   machine support.
 
-## 0.1.0 — 2026-06-19
+## 0.1.0 - 2026-06-19
 
 - Initial open-source preview.

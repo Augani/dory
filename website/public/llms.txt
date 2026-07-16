@@ -1,0 +1,27 @@
+# Dory
+
+> Dory is a native, open-source macOS runtime for Docker, Compose, Kubernetes, persistent Linux machines, local networking, migration, diagnostics, and coding-agent automation.
+
+Dory 0.3 supports Apple Silicon on macOS 14 or later. It bundles its own engine and command-line tools. Intel hosts, configurable Linux distributions, configurable machine login users, systemd machines, and graphical Linux desktops are not part of the current release.
+
+## Canonical documentation
+
+- [Complete agent reference](https://augani.github.io/dory/llms-full.txt): Stable commands, safety rules, schemas, recovery, examples, and product boundaries
+- [Versioned agent capability map](https://augani.github.io/dory/agent-guide.json): Machine-readable JSON contract for Dory 0.3
+- [Agent and MCP guide](https://augani.github.io/dory/docs/agents.md): MCP configuration, tools, machine execution, sandbox policy, and recovery loop
+- [Operations guide](https://augani.github.io/dory/docs/operations.md): Installation, storage, networking, migration, diagnostics, and repair
+- [Compatibility contract](https://augani.github.io/dory/docs/compatibility.md): Supported, preview, experimental, and deferred behavior
+- [Human website](https://augani.github.io/dory/): Product overview and installation
+- [Source repository](https://github.com/Augani/dory): Source, README, releases, changelog, and issues
+- [Latest release](https://github.com/Augani/dory/releases/latest): Signed and notarized Apple Silicon build
+
+## Agent entry points
+
+- Inspect the live local contract: `dory agent guide --json`
+- Start the stdio MCP server: `dory mcp serve --read-only`
+- Inspect health before changing state: `dory doctor --json`
+- Collect a redacted evidence bundle: `dory support bundle --json --active`
+- Wait for state without custom polling: `dory wait engine --until running --timeout 60 --json`
+- Stream runtime events: `dory events --follow --json`
+
+Prefer JSON and read-only commands. Run dry runs before writes. Never add `--apply`, `--include-volumes`, a delete verb, or an engine restart unless the user or task has authorized that change.

@@ -1,16 +1,14 @@
-# Dory landing page
+# Dory website
 
-Source for [augani.github.io/dory](https://augani.github.io/dory) — React + TypeScript + Vite,
-published by GitHub Pages Actions from the generated `../docs-build` artifact.
-
-From the repository root (which is not itself an npm package):
+This Vite and React project builds the public Dory site for GitHub Pages. It serves both the human product page and static agent documentation.
 
 ```sh
-npm --prefix website ci
-npm --prefix website run dev     # local dev server with HMR
-npm --prefix website run build   # typecheck and build into docs-build/
+npm ci
+npm run lint
+npm run build
+npm run preview
 ```
 
-`npm run build` writes to `../docs-build` (gitignored). GitHub Pages uploads that
-directory directly in `.github/workflows/pages.yml`; `docs/` is also ignored and kept
-for local-only notes or stale build artifacts.
+The build is written to `../docs-build` and deployed by `.github/workflows/pages.yml`.
+
+Machine-readable entry points live in `public/llms.txt`, `public/llms-full.txt`, `public/agent-guide.json`, and `public/docs/`. Keep their stable, preview, experimental, and deferred labels aligned with `dory agent guide --json` and the root README.

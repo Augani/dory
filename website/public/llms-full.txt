@@ -1,0 +1,234 @@
+# Dory complete agent reference
+
+Version: Dory 0.3.0
+Host contract: Apple Silicon Mac, macOS 14 or later
+License: GPL-3.0
+Local socket: ~/.dory/dory.sock
+Docker context: dory
+Telemetry: none
+
+## Product model
+
+Dory has three distinct execution surfaces:
+
+1. The shared container engine is one persistent Linux VM that serves the Docker API. Docker containers, images, volumes, networks, Compose, BuildKit, and k3s use this engine.
+2. Dory Linux machines are separate persistent arm64 VMs. Each has its own disk, address, resources, scoped mounts, root /bin/sh shell, and snapshots.
+3. Agent sandboxes are preview, dedicated Dory Linux VMs created for one command. They have no host file sharing by default and are deleted by default.
+
+Do not describe a Dory Linux machine as a container. Do not assume it is Ubuntu, systemd-based, graphical, or logged in as the Mac user. The Dory 0.3 machine is Alpine-based, arm64, root, and /bin/sh.
+
+## Installation and host tools
+
+Recommended install:
+
+    brew install --cask Augani/dory/dory
+
+Open Dory once. While doryd is running it reconciles bundled `docker`, `docker compose`, `kubectl`, and `dory` tools in ~/.dory/bin and creates the dory Docker context. A separate Docker Desktop or Docker CLI install is not required.
+
+`dory install` exists as manual recovery. Do not make it the normal first step.
+
+## Safe operating policy
+
+1. Inspect before writing.
+2. Prefer `--json` when a command supports it.
+3. Run a dry run before `--apply`.
+4. Use the narrowest doctor group or repair target.
+5. Treat engine restarts, deletes, volume pruning, network authorization, LAN exposure, and data-drive selection as state changes.
+6. `dory repair all --apply` does not restart the engine. A disruptive restart requires an engine or dockerd target and `--restart-engine`.
+7. `dory cleanup` is a dry run by default. Volume pruning also requires `--include-volumes`.
+8. Collect `dory support bundle --json --active` for a shareable, redacted evidence pack.
+
+Exit codes: 0 success or healthy; 1 unhealthy or incomplete; 2 usage or validation error; 64 unsupported operation.
+
+## Recommended recovery loop
+
+1. Run `dory doctor --json` before modifying runtime state.
+2. If the result suggests an action, run the matching `dory repair TARGET --json` dry run.
+3. Add `--apply` only when a write is authorized.
+4. Re-run the smallest relevant doctor group.
+5. Run `dory support bundle --json --active` when evidence must be shared.
+
+## Docker
+
+`dory <docker args...>` passes arguments to Docker against Dory's socket. The standard Docker CLI works too.
+
+    dory ps
+    dory build -t app .
+    docker context use dory
+    docker compose up -d
+
+Stable capabilities include containers, images, Buildx, BuildKit, Compose v2, registries, bind mounts, named volumes, bridge networks, custom IPAM, aliases, and common linux/amd64 images on Apple Silicon through FEX.
+
+## Health and evidence
+
+    dory doctor --json
+    dory doctor --json --active
+    dory doctor --json --only socket,api,docker,context
+    dory doctor --json --only network,ports,domains
+    dory doctor --json --only mounts,watch,filelock
+    dory doctor --json --only disk,memory,helpers
+    dory doctor --json --diff
+    dory support bundle --json --active
+
+Doctor groups: socket, api, docker, context, registry, proxy, exposure, network, ports, domains, mounts, filelock, watch, clock, disk, memory, helpers.
+
+Active probes create a small temporary workload. Support bundles are redacted and use `dev.dory.support.bundle v1`.
+
+## Repair
+
+    dory repair all --json
+    dory repair socket --json
+    dory repair context --json
+    dory repair dns --json
+    dory repair routes --json
+    dory repair domains --json
+    dory repair ports --json
+    dory repair dockerd --json
+    dory repair engine --json
+    dory repair guest-agent --json
+
+Add `--apply` only after reviewing the dry run. Engine and dockerd actions that stop running containers require explicit restart intent.
+
+## Network and routes
+
+Published ports are localhost-only by default. Dory never widens explicit loopback bindings.
+
+    dory routes --json
+    dory network --json --active
+    dory network --json --probe example.com:443
+    dory network authorization-plan --json
+    dory network authorize --json --dry-run
+    dory network authorize --json --apply
+    dory network deauthorize --json --dry-run
+    dory network --lan-visible on
+
+Optional authorization manages the selected local-domain resolver, local TLS, ports 80 and 443, and published low TCP ports. LAN and Tailscale access are explicit opt-ins. Containers reach Mac services at `host.dory.internal`.
+
+## Mounts, disk, and cleanup
+
+    dory mount --json
+    dory disk --json
+    dory cleanup --json
+    dory cleanup --json --apply
+    dory cleanup --json --apply --include-volumes
+
+Home-directory and /Volumes paths are shared at native Mac paths. Mount diagnostics cover read, write, truncate, path spaces, file locks, host edits, and watcher behavior.
+
+## Data drive
+
+Default: `~/Library/Application Support/Dory/Dory.dorydrive`
+
+    dory data path
+    dory data capacity --json
+    dory data grow 256 --json
+    dory data backup /path/archive.dorybackup
+    dory data verify /path/archive.dorybackup
+    dory data restore /path/archive.dorybackup /path/new.dorydrive
+    dory data use /path/new.dorydrive
+
+The drive contains images, containers, named volumes, networks, machine disks, and snapshots. Growth is supported from 128 GiB to 2 TiB. Shrinking and replacement of an existing destination are refused. Normal uninstall preserves the selected drive.
+
+## Runtime availability
+
+    dory mode show
+    dory mode always-on
+    dory mode auto-idle
+    dory mode battery-saver
+    dory mode manual
+    dory idle status --json
+    dory idle history --json --limit 50
+    dory engine status
+    dory engine wake
+    dory engine sleep
+
+Auto-Idle can be blocked by published ports, pinned projects, or Kubernetes according to user settings.
+
+## Machines
+
+    dory machine ls
+    dory machine create NAME
+    dory machine start NAME
+    dory machine stop NAME
+    dory machine delete NAME
+    dory machine shell NAME
+    dory machine exec NAME --json -- COMMAND ARG...
+    dory machine snapshot NAME --note NOTE
+    dory machine restore NAME SNAPSHOT
+
+The machine command also supports clone, import, export, and snapshot deletion. Structured execution uses `dev.dory.machine.exec v1`. New machines do not inherit arbitrary host secrets or files. The app controls a named environment allow-list and scoped mounts.
+
+## Kubernetes
+
+    dory k8s get pods -A
+    kubectl get pods -A
+
+Supported k3s presets are v1.34, v1.35, and v1.36. Switching versions recreates the cluster. k3s has a separate image store from the Docker engine.
+
+## Compatibility
+
+    dory compat --json
+    dory compat --only vscode,testcontainers
+    dory compat --recipe TOOL
+
+Dory targets standard Docker API clients. Product-specific private paths and extensions may not be portable.
+
+## Wait and events
+
+    dory wait engine --until running --timeout 60 --json
+    dory wait container NAME --until running --timeout 60 --json
+    dory wait machine NAME --until running --timeout 120 --json
+    dory events --json --limit 50
+    dory events --follow --json
+
+Wait uses `dev.dory.wait v1`. Events use `dev.dory.event v1` and `dev.dory.events v1`.
+
+## MCP
+
+    dory mcp serve
+    dory mcp serve --read-only
+
+Transport: stdio. Protocol version: 2025-11-25.
+
+Tools: dory.agent_guide, dory.doctor, dory.compat, dory.engine_status, dory.machine_list, dory.machine_exec, dory.sandbox_run, dory.wait, dory.events.
+
+Use `--read-only` when inspection is sufficient. It blocks machine execution and sandbox writes.
+
+## Preview sandbox
+
+    dory sandbox run --json --network none --rollback -- COMMAND
+    dory sandbox run --json --mount HOST:GUEST:ro -- COMMAND
+    dory sandbox run --json --keep --ttl-seconds 3600 -- COMMAND
+
+A sandbox is a dedicated Dory Linux VM and is deleted by default. No host files are visible unless a mount is provided. Network `none` blocks egress. Network `full` grants full egress. In 0.3, `outbound` also grants full egress and reports `networkPolicyEnforced=false`. Sandbox results use `dev.dory.sandbox.run v1`.
+
+## Other commands
+
+    dory shell CONTAINER
+    dory usb ls
+    dory usb attach BUSID
+    dory usb detach BUSID
+    dory expose PORT --print-command
+    dory version
+
+`dory debug` is reserved and unavailable. `dory vm` is an in-process framework engine surface and is not the normal daemon workflow.
+
+## Status boundaries
+
+Stable: Docker, Compose, BuildKit, data drive, backup and restore, migration, Kubernetes presets, Dory Linux machines, health, repair, network planning, Auto-Idle, agent guide, wait, events, and MCP.
+
+Preview: isolated agent sandbox VMs.
+
+Experimental: in-guest Venus and Vulkan GPU acceleration.
+
+Deferred: Intel host release, configurable machine distributions and login users, systemd machine contract, graphical Linux desktops, audio passthrough, and scoped outbound-only sandbox egress.
+
+## Canonical links
+
+- Website: https://augani.github.io/dory/
+- Source: https://github.com/Augani/dory
+- Release: https://github.com/Augani/dory/releases/latest
+- Issues: https://github.com/Augani/dory/issues
+- Agent JSON: https://augani.github.io/dory/agent-guide.json
+- Agent guide: https://augani.github.io/dory/docs/agents.md
+- Operations: https://augani.github.io/dory/docs/operations.md
+- Compatibility: https://augani.github.io/dory/docs/compatibility.md
