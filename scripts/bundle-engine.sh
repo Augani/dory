@@ -20,8 +20,10 @@
 #   * Contents/Resources/dory-hv-kernel-<arch>             — legacy raw kernel payload.
 #   * Contents/Resources/dory-machine-rootfs-<arch>.ext4   — legacy raw machine payload.
 #   * Contents/Resources/dory-hv-kernel-<arch>.lzfse       — LZFSE PVH/Image kernel for dory-hv.
-#   * Contents/Resources/dory-vm-kernel-<arch>.lzfse       — LZFSE Linux kernel.
-#   * Contents/Resources/dory-vm-initfs-<arch>.ext4.lzfse  — LZFSE VM initfs.
+#   * Contents/Resources/dory-vm-kernel-<arch>.lzfse       — compatibility alias to the Docker
+#                                                           engine kernel in focused Core builds.
+#   * Contents/Resources/dory-vm-initfs-<arch>.ext4.lzfse  — compatibility alias to the Docker
+#                                                           engine rootfs in focused Core builds.
 #   * Contents/Resources/dory-desktop-kernel-arm64.lzfse   — optional verified desktop kernel.
 #   * Contents/Resources/dory-desktop-<distro>-rootfs-arm64.ext4.lzfse — optional desktop images.
 #   * Contents/Resources/dory-agent-linux-<arch>           — guest relay/agent for host AI bridge
@@ -1282,6 +1284,27 @@ bundle_engine_rootfs_for_arch() {
   fi
 }
 
+link_core_vmm_assets_for_arch() {
+  local arch="$1" kernel_target rootfs_target kernel_alias rootfs_alias
+  [ "$COMPONENT_BUNDLE_MODE" = core ] || return 0
+  kernel_target="dory-hv-kernel-$arch.lzfse"
+  rootfs_target="dory-engine-rootfs-$arch.ext4.lzfse"
+  kernel_alias="$RESOURCES/dory-vm-kernel-$arch.lzfse"
+  rootfs_alias="$RESOURCES/dory-vm-initfs-$arch.ext4.lzfse"
+  [ -s "$RESOURCES/$kernel_target" ] || {
+    echo "    ERROR: focused Core build cannot alias missing $kernel_target" >&2
+    return 1
+  }
+  [ -s "$RESOURCES/$rootfs_target" ] || {
+    echo "    ERROR: focused Core build cannot alias missing $rootfs_target" >&2
+    return 1
+  }
+  ln -sfn "$kernel_target" "$kernel_alias"
+  ln -sfn "$rootfs_target" "$rootfs_alias"
+  echo "    linked Resources/$(basename "$kernel_alias") -> $kernel_target"
+  echo "    linked Resources/$(basename "$rootfs_alias") -> $rootfs_target"
+}
+
 bundle_desktop_assets_for_arch() {
   local arch="$1" kernel_src kernel_out distro rootfs_src rootfs_out metadata
   [ "$DESKTOP_BUNDLE_MODE" = all ] || return 0
@@ -1325,8 +1348,19 @@ for asset_arch in ${DORY_BUNDLE_ARCHES:-arm64 amd64}; do
   bundle_guest_agent_for_arch "$asset_arch"
   bundle_hv_kernel_for_arch "$asset_arch"
   bundle_hv_gpu_kernel_for_arch "$asset_arch"
-  bundle_guest_assets_for_arch "$asset_arch"
+  if [ "$COMPONENT_BUNDLE_MODE" = legacy ]; then
+    bundle_guest_assets_for_arch "$asset_arch"
+  else
+    # Docker Core already carries the exact kernel and rootfs needed by the macOS 14 VZ fallback.
+    # Keep its historical resource names as in-bundle aliases instead of shipping a second copy of
+    # each payload. Linux Machines remains an independently downloaded component with its own raw
+    # machine rootfs and kernel.
+    rm -f \
+      "$RESOURCES/dory-vm-kernel-$asset_arch.lzfse" \
+      "$RESOURCES/dory-vm-initfs-$asset_arch.ext4.lzfse"
+  fi
   bundle_engine_rootfs_for_arch "$asset_arch"
+  link_core_vmm_assets_for_arch "$asset_arch"
   bundle_desktop_assets_for_arch "$asset_arch"
   for stamp_kind in kernel initfs; do
     stamp="$REPO_ROOT/guest/out/${stamp_kind}-build-$asset_arch.stamp"

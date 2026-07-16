@@ -12,6 +12,8 @@
 
 ### Changed
 
+- Reused Docker Core's signed engine kernel and rootfs for the macOS 14 fallback instead of storing
+  duplicate compatibility copies, removing about 112 MB from the installed Core app.
 - Quitting Dory now stops its background engine by default. People who want an always-running
   engine can explicitly enable **Keep engine running after quit**.
 

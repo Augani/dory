@@ -130,6 +130,8 @@ first cluster creation and then remains in Docker storage on the selected data d
 The native Components screen and `dory component` commands install, update, verify, and remove the
 same catalog entries. Components are transactional, digest-verified, architecture-checked, and
 activated atomically. A cached catalog is used offline only after its signature is verified again.
+The Core app reuses its signed engine kernel and rootfs for its macOS 14 fallback through internal
+aliases, so compatibility does not make users download duplicate VM payloads.
 
 | Release asset | Purpose |
 |---|---|
