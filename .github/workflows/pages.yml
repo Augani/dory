@@ -35,21 +35,29 @@ jobs:
           if curl -fsSL --retry 3 --retry-delay 2 --connect-timeout 15 --max-time 60 \
               "https://augani.github.io/dory/appcast.xml?preserve=${{ github.run_id }}" \
               -o "$live" \
-             && python3 - "$live" <<'PY'
+             && python3 - "$live" website/public/appcast.xml <<'PY'
           import sys
           import xml.etree.ElementTree as ET
 
           sparkle = "http://www.andymatuschak.org/xml-namespaces/sparkle"
-          root = ET.parse(sys.argv[1]).getroot()
-          item = root.find("./channel/item")
-          assert item is not None, "live appcast has no release item"
-          assert item.findtext(f"{{{sparkle}}}minimumSystemVersion") == "14.0", \
-              "live appcast has an invalid macOS floor"
+          def release_item(path):
+              item = ET.parse(path).getroot().find("./channel/item")
+              assert item is not None, f"{path} has no release item"
+              assert item.findtext(f"{{{sparkle}}}minimumSystemVersion") == "14.0", \
+                  f"{path} has an invalid macOS floor"
+              return item
+
+          live_item = release_item(sys.argv[1])
+          checked_item = release_item(sys.argv[2])
+          live_build = int(live_item.findtext(f"{{{sparkle}}}version"))
+          checked_build = int(checked_item.findtext(f"{{{sparkle}}}version"))
+          assert live_build >= checked_build, \
+              f"checked-in appcast build {checked_build} is newer than live build {live_build}"
           PY
           then
             cp "$live" website/public/appcast.xml
           else
-            echo "Live appcast is missing or invalid; retaining the checked-in macOS 14 bootstrap feed."
+            echo "Live appcast is missing, invalid, or older; retaining the checked-in release feed."
           fi
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
