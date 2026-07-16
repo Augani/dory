@@ -84,7 +84,8 @@ struct RootView: View {
                 case .inspectImage: ImageDetailSheet()
                 case .inspectNetwork: NetworkDetailSheet()
                 case .kubeResourceDetail: KubeResourceDetailSheet()
-                case .newMachine: NewMachineSheet()
+                case .newDesktop: NewMachineSheet(displayMode: .desktop)
+                case .newMachine: NewMachineSheet(displayMode: .headless)
                 case .creatingMachine: MachineCreationSheet()
                 case .machineSnapshots: SnapshotsSheet()
                 }

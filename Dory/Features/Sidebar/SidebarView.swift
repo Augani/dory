@@ -58,13 +58,22 @@ struct SidebarView: View {
                 sectionLabel("ORCHESTRATION").padding(.top, 6)
                 row(.kubernetes, .kubernetes, "Kubernetes")
                 sectionLabel("LINUX").padding(.top, 6)
-                row(.machines, .machines, "Machines", trailing: "\(store.machines.count)")
+                row(.desktops, .machines, "Desktops", trailing: "\(desktopCount)")
+                row(.machines, .machines, "Servers", trailing: "\(serverCount)")
                 sectionLabel("SYSTEM").padding(.top, 6)
                 row(.health, .health, "Health")
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
         }
+    }
+
+    private var desktopCount: Int {
+        store.machines.lazy.filter { $0.displayMode == .desktop }.count
+    }
+
+    private var serverCount: Int {
+        store.machines.lazy.filter { $0.displayMode == .headless }.count
     }
 
     private func sectionLabel(_ text: String) -> some View {

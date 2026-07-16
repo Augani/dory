@@ -1,7 +1,7 @@
 import SwiftUI
 
 enum AppSection: String, CaseIterable, Identifiable, Sendable {
-    case containers, images, volumes, networks, compose, kubernetes, machines, health, settings
+    case containers, images, volumes, networks, compose, kubernetes, desktops, machines, health, settings
     var id: String { rawValue }
 
     var title: String {
@@ -12,7 +12,8 @@ enum AppSection: String, CaseIterable, Identifiable, Sendable {
         case .networks: "Networks"
         case .compose: "Compose"
         case .kubernetes: "Kubernetes"
-        case .machines: "Linux Machines"
+        case .desktops: "Linux Desktops"
+        case .machines: "Linux Servers"
         case .health: "Health"
         case .settings: "Settings"
         }
@@ -26,7 +27,8 @@ enum AppSection: String, CaseIterable, Identifiable, Sendable {
         case .networks: "New Network"
         case .compose: "Open Compose File"
         case .kubernetes: nil
-        case .machines: "New Machine"
+        case .desktops: "New Desktop"
+        case .machines: "New Server"
         case .health: nil
         case .settings: nil
         }
@@ -381,7 +383,7 @@ struct NetworkDetail: Sendable, Equatable {
 }
 
 enum AppSheet: String, Identifiable, Sendable {
-    case newContainer, pullImage, volumeBrowser, newVolume, newNetwork, buildImage, registryLogin, applyYAML, inspectImage, inspectNetwork, kubeResourceDetail, newMachine, creatingMachine, machineSnapshots
+    case newContainer, pullImage, volumeBrowser, newVolume, newNetwork, buildImage, registryLogin, applyYAML, inspectImage, inspectNetwork, kubeResourceDetail, newDesktop, newMachine, creatingMachine, machineSnapshots
     var id: String { rawValue }
 }
 

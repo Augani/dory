@@ -17,7 +17,12 @@ struct DoryCommands: Commands {
                 store.activeSheet = .newContainer
             }
             .keyboardShortcut("n", modifiers: .command)
-            Button("New Machine") {
+            Button("New Desktop") {
+                store.section = .desktops
+                store.activeSheet = .newDesktop
+            }
+            .keyboardShortcut("d", modifiers: [.command, .option])
+            Button("New Server") {
                 store.section = .machines
                 store.activeSheet = .newMachine
             }
@@ -30,8 +35,9 @@ struct DoryCommands: Commands {
             Button("Networks") { store.section = .networks }.keyboardShortcut("4", modifiers: .command)
             Button("Compose") { store.section = .compose }.keyboardShortcut("5", modifiers: .command)
             Button("Kubernetes") { store.section = .kubernetes }.keyboardShortcut("6", modifiers: .command)
-            Button("Machines") { store.section = .machines }.keyboardShortcut("7", modifiers: .command)
-            Button("Health") { store.section = .health }.keyboardShortcut("8", modifiers: .command)
+            Button("Desktops") { store.section = .desktops }.keyboardShortcut("7", modifiers: .command)
+            Button("Servers") { store.section = .machines }.keyboardShortcut("8", modifiers: .command)
+            Button("Health") { store.section = .health }.keyboardShortcut("9", modifiers: .command)
             Button("Settings") { store.section = .settings }.keyboardShortcut(",", modifiers: .command)
             Button("Filter") { if store.section != .settings { store.filterFocusToken += 1 } }
                 .keyboardShortcut("f", modifiers: .command)
@@ -115,7 +121,11 @@ struct DoryCommands: Commands {
             }
 
             Menu("Linux Machines") {
-                Button("New Machine") {
+                Button("New Desktop") {
+                    openMain(.desktops)
+                    store.activeSheet = .newDesktop
+                }
+                Button("New Server") {
                     openMain(.machines)
                     store.activeSheet = .newMachine
                 }
@@ -126,7 +136,13 @@ struct DoryCommands: Commands {
                 } else {
                     ForEach(store.machines, id: \.id) { machine in
                         Menu("\(machine.name) (\(machine.status.rawValue))") {
-                            Button("Open Machines") { openMain(.machines) }
+                            Button(machine.displayMode == .desktop ? "Show in Desktops" : "Show in Servers") {
+                                openMain(machine.displayMode == .desktop ? .desktops : .machines)
+                            }
+                            if machine.displayMode == .desktop {
+                                Button("Open Desktop") { store.openMachineDesktop(machine) }
+                                    .disabled(!store.canOpenMachineDesktop(machine))
+                            }
                             Button("Open Terminal") {
                                 openWindow(value: store.terminalSession(for: machine))
                             }
@@ -140,7 +156,7 @@ struct DoryCommands: Commands {
                                 copy(machine.ip)
                             }
                             Button("Edit Address & Resources") {
-                                openMain(.machines)
+                                openMain(machine.displayMode == .desktop ? .desktops : .machines)
                                 store.openMachineEdit(machine)
                             }
                             Divider()

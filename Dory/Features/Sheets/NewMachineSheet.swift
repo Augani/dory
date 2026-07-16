@@ -8,11 +8,12 @@ struct NewMachineSheet: View {
     @State private var name: String
     @State private var address = ""
     @State private var selectedRecipe: DevRecipe?
-    @State private var displayMode: MachineDisplayMode = .desktop
+    @State private var displayMode: MachineDisplayMode
+    @State private var desktopDistro: DesktopMachineDistro = .debian
     @State private var guestUsername = NewMachineSheet.defaultGuestUsername()
 
     enum Stage: Hashable { case useCase, form }
-    @State private var stage: Stage = .useCase
+    @State private var stage: Stage
     @State private var activeUseCaseID: String?
 
     @State private var advancedExpanded = false
@@ -27,7 +28,9 @@ struct NewMachineSheet: View {
         var guest = ""
     }
 
-    init() {
+    init(displayMode: MachineDisplayMode) {
+        _displayMode = State(initialValue: displayMode)
+        _stage = State(initialValue: displayMode == .desktop ? .form : .useCase)
         _name = State(initialValue: NewMachineSheet.defaultName())
     }
 
@@ -53,7 +56,7 @@ struct NewMachineSheet: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 18) {
                         if !engineReady { engineNotice }
-                        distroSection
+                        machineKindSection
                         devEnvironmentSection
                         identitySection
                         optionsRow
@@ -169,19 +172,22 @@ struct NewMachineSheet: View {
 
     private var header: some View {
         HStack(spacing: 12) {
-            Button { stage = .useCase } label: {
-                Image(systemName: "chevron.left").font(.system(size: 12, weight: .bold)).foregroundStyle(p.text2)
-                    .frame(width: 28, height: 28)
-                    .background(p.bgInput, in: RoundedRectangle(cornerRadius: 8))
-                    .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(p.border))
+            if displayMode == .headless {
+                Button { stage = .useCase } label: {
+                    Image(systemName: "chevron.left").font(.system(size: 12, weight: .bold)).foregroundStyle(p.text2)
+                        .frame(width: 28, height: 28)
+                        .background(p.bgInput, in: RoundedRectangle(cornerRadius: 8))
+                        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(p.border))
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("back-to-use-cases")
             }
-            .buttonStyle(.plain)
-            .accessibilityIdentifier("back-to-use-cases")
             Glyph(glyph: .machines, size: 18, color: p.accent)
                 .frame(width: 36, height: 36)
                 .background(p.accentSoft, in: RoundedRectangle(cornerRadius: 10))
             VStack(alignment: .leading, spacing: 1) {
-                Text("New Linux machine").font(.system(size: 15, weight: .bold)).foregroundStyle(p.text)
+                Text(displayMode == .desktop ? "New Linux desktop" : "New Linux server")
+                    .font(.system(size: 15, weight: .bold)).foregroundStyle(p.text)
                 Text(headerSubtitle).font(.system(size: 11.5)).foregroundStyle(p.text3)
             }
             Spacer()
@@ -193,7 +199,10 @@ struct NewMachineSheet: View {
         if let id = activeUseCaseID, let useCase = MachineUseCase.forID(id) {
             return "\(useCase.title) — tweak anything below"
         }
-        return "Desktop or headless Linux · native Apple Silicon"
+        if displayMode == .desktop {
+            return "\(desktopDistro.displayName) \(desktopDistro.version) · \(desktopDistro.desktopName) · Apple Silicon"
+        }
+        return "Headless Linux · native Apple Silicon"
     }
 
     private var engineNotice: some View {
@@ -207,54 +216,73 @@ struct NewMachineSheet: View {
         .background(p.amberWeak, in: RoundedRectangle(cornerRadius: 9))
     }
 
-    private var distroSection: some View {
-        VStack(alignment: .leading, spacing: 9) {
-            sectionLabel("MACHINE TYPE")
-            HStack(spacing: 10) {
-                machineTypeButton(
-                    .desktop,
-                    title: "Desktop Linux",
-                    subtitle: "Debian 13 + Xfce for graphical and command-line apps",
-                    icon: "display"
-                )
-                machineTypeButton(
-                    .headless,
-                    title: "Headless Linux",
-                    subtitle: "Lightweight Dory Linux for terminals and local services",
-                    icon: "terminal.fill"
-                )
-            }
+    @ViewBuilder private var machineKindSection: some View {
+        if displayMode == .desktop {
+            desktopDistroSection
+        } else {
+            serverTypeSection
         }
     }
 
-    private func machineTypeButton(
-        _ mode: MachineDisplayMode,
-        title: String,
-        subtitle: String,
-        icon: String
-    ) -> some View {
-        let selected = displayMode == mode
-        return Button { displayMode = mode } label: {
-            HStack(alignment: .top, spacing: 10) {
-                Image(systemName: icon)
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(selected ? p.accent : p.text2)
-                    .frame(width: 34, height: 34)
-                    .background(selected ? p.accentSoft : p.bgInput, in: RoundedRectangle(cornerRadius: 9))
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(title).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(p.text)
-                    Text(subtitle).font(.system(size: 10.5)).foregroundStyle(p.text3)
-                        .fixedSize(horizontal: false, vertical: true)
+    private var desktopDistroSection: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            sectionLabel("DESKTOP DISTRIBUTION")
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 9), count: 3), spacing: 9) {
+                ForEach(DesktopMachineDistro.allCases) { distro in
+                    desktopDistroButton(distro)
                 }
-                Spacer(minLength: 0)
+            }
+            Text("Each choice is a real arm64 guest image with its own packages and official repositories. All use Dory's optimized kernel and Xfce display stack.")
+                .font(.system(size: 11)).foregroundStyle(p.text3)
+        }
+    }
+
+    private func desktopDistroButton(_ distro: DesktopMachineDistro) -> some View {
+        let selected = desktopDistro == distro
+        return Button { desktopDistro = distro } label: {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 8) {
+                    Image(distro.logoName).resizable().aspectRatio(contentMode: .fit).frame(width: 26, height: 26)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(distro.displayName).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(p.text)
+                        Text(distro.version).font(.system(size: 10.5, weight: .medium)).foregroundStyle(p.text3)
+                    }
+                    Spacer(minLength: 0)
+                    if selected {
+                        Image(systemName: "checkmark.circle.fill").font(.system(size: 13)).foregroundStyle(p.accent)
+                    }
+                }
+                Text(distro.summary).font(.system(size: 10.5)).foregroundStyle(p.text3)
+                    .lineLimit(3).fixedSize(horizontal: false, vertical: true)
             }
             .padding(11)
-            .frame(maxWidth: .infinity, minHeight: 70, alignment: .topLeading)
+            .frame(maxWidth: .infinity, minHeight: 100, alignment: .topLeading)
             .background(p.bgElevated, in: RoundedRectangle(cornerRadius: 10))
             .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(selected ? p.accent : p.border, lineWidth: selected ? 1.5 : 1))
         }
         .buttonStyle(.plain)
-        .accessibilityIdentifier("new-machine-type-\(mode.rawValue)")
+        .accessibilityIdentifier("desktop-distro-\(distro.rawValue)")
+    }
+
+    private var serverTypeSection: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            sectionLabel("SERVER IMAGE")
+            HStack(spacing: 10) {
+                Image(systemName: "terminal.fill")
+                    .font(.system(size: 14, weight: .semibold)).foregroundStyle(p.accent)
+                    .frame(width: 34, height: 34)
+                    .background(p.accentSoft, in: RoundedRectangle(cornerRadius: 9))
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Dory Linux Server").font(.system(size: 12.5, weight: .semibold)).foregroundStyle(p.text)
+                    Text("Lightweight headless Linux for terminals, tools, and local services")
+                        .font(.system(size: 10.5)).foregroundStyle(p.text3)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(11)
+            .background(p.bgElevated, in: RoundedRectangle(cornerRadius: 10))
+            .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(p.border))
+        }
     }
 
     private var devEnvironmentSection: some View {
@@ -264,12 +292,12 @@ struct NewMachineSheet: View {
                 get: { selectedRecipe?.id ?? "" },
                 set: { selectedRecipe = $0.isEmpty ? nil : DevRecipe.forID($0) }
             )) {
-                Text(displayMode == .desktop ? "Plain Debian Desktop" : "Plain Dory Linux").tag("")
+                Text(displayMode == .desktop ? "Plain \(desktopDistro.displayName) Desktop" : "Plain Dory Linux").tag("")
                 ForEach(DevRecipe.all) { recipe in Text(recipe.display).tag(recipe.id) }
             }
             .labelsHidden().pickerStyle(.menu).frame(width: 220, alignment: .leading)
             Text(displayMode == .desktop
-                 ? "Recipes install verified Debian packages after the desktop starts."
+                 ? "Recipes install verified apt packages after the desktop starts."
                  : "Recipes install verified Alpine packages after the VM starts.")
                 .font(.system(size: 11)).foregroundStyle(p.text3)
         }
@@ -534,7 +562,7 @@ struct NewMachineSheet: View {
                 Image(systemName: "terminal")
                     .font(.system(size: 11)).foregroundStyle(p.text3)
                 Text(displayMode == .desktop
-                     ? "Debian 13 · arm64 · \(normalizedGuestUsername)"
+                     ? "\(desktopDistro.displayName) \(desktopDistro.version) · arm64 · \(normalizedGuestUsername)"
                      : "Dory Linux · arm64 · root shell")
                     .font(.mono(11.5)).foregroundStyle(p.text3).lineLimit(1)
             }
@@ -613,6 +641,7 @@ struct NewMachineSheet: View {
         mounts: [MountPair],
         address: String? = nil,
         displayMode: MachineDisplayMode = .desktop,
+        desktopDistro: DesktopMachineDistro = .debian,
         guestUsername: String = "dory",
         guestUID: uid_t = getuid()
     ) -> MachineSettings {
@@ -620,6 +649,10 @@ struct NewMachineSheet: View {
         if displayMode == .desktop {
             environment["DORY_GUEST_USER"] = guestUsername
             environment["DORY_GUEST_UID"] = String(guestUID)
+            environment["DORY_DESKTOP_DISTRO"] = desktopDistro.rawValue
+            environment["DORY_DESKTOP_NAME"] = desktopDistro.displayName
+            environment["DORY_DESKTOP_VERSION"] = desktopDistro.version
+            environment["DORY_DESKTOP_ENVIRONMENT"] = desktopDistro.desktopName
         }
         return MachineSettings(
             cpus: cpus,
@@ -644,6 +677,7 @@ struct NewMachineSheet: View {
             mounts: mounts,
             address: trimmedAddress,
             displayMode: displayMode,
+            desktopDistro: desktopDistro,
             guestUsername: normalizedGuestUsername
         )
     }

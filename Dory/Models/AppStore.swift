@@ -3104,11 +3104,18 @@ final class AppStore {
             { let n = Set(containers.compactMap(\.composeProject)).count; return "\(n) project\(n == 1 ? "" : "s")" }()
         case .kubernetes:
             pods.isEmpty ? "Cluster not enabled" : "\(pods.count) pods across \(Set(pods.map(\.namespace)).count) namespaces"
+        case .desktops:
+            machineSubtitle(for: .desktop, noun: "desktop")
         case .machines:
-            "\(machines.count) machine\(machines.count == 1 ? "" : "s") · \(machines.filter { $0.status == .running }.count) running"
+            machineSubtitle(for: .headless, noun: "server")
         case .health: healthSubtitle
         case .settings: "Dory v\(AppInfo.version)"
         }
+    }
+
+    private func machineSubtitle(for displayMode: MachineDisplayMode, noun: String) -> String {
+        let matching = machines.filter { $0.displayMode == displayMode }
+        return "\(matching.count) \(noun)\(matching.count == 1 ? "" : "s") · \(matching.filter { $0.status == .running }.count) running"
     }
 
     private var healthSubtitle: String {
@@ -4188,6 +4195,7 @@ final class AppStore {
         case .volumes: activeSheet = .newVolume
         case .networks: activeSheet = .newNetwork
         case .compose: openComposeFile()
+        case .desktops: activeSheet = .newDesktop
         case .machines: activeSheet = .newMachine
         default: break
         }
@@ -4343,17 +4351,18 @@ final class AppStore {
             .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
             .first { !$0.isEmpty } ?? status.state
         let isDesktop = status.displayMode == .desktop
+        let desktopDistro = DesktopMachineDistro.resolve(status.environment["DORY_DESKTOP_DISTRO"])
         let guestUsername = status.environment["DORY_GUEST_USER"] ?? (isDesktop ? "dory" : "root")
         return Machine(
             name: status.id,
-            distro: isDesktop ? "Debian" : "Dory Linux",
-            version: isDesktop ? "13 · Xfce" : detail,
+            distro: isDesktop ? desktopDistro.displayName : "Dory Linux",
+            version: isDesktop ? "\(desktopDistro.version) · \(desktopDistro.desktopName)" : detail,
             status: runState,
             cpuPercent: 0,
             memoryDisplay: "—",
             ip: status.address ?? Self.machineDNSName(name: status.id, suffix: domainSuffix),
-            letter: "D",
-            badgeHex: 0x3B82F6,
+            letter: isDesktop ? String(desktopDistro.displayName.prefix(1)) : "D",
+            badgeHex: isDesktop ? desktopDistro.badgeHex : 0x3B82F6,
             containerID: "",
             arch: "",
             recipe: "doryd",
@@ -4706,7 +4715,8 @@ final class AppStore {
         do {
             let desktopAssets: DesktopMachineAssets?
             if settings.displayMode == .desktop {
-                appendMachineCreationLog("Preparing Debian 13 Desktop in the selected Dory data drive…")
+                let distro = DesktopMachineDistro.resolve(settings.env["DORY_DESKTOP_DISTRO"])
+                appendMachineCreationLog("Preparing \(distro.displayName) \(distro.version) Desktop in the selected Dory data drive…")
                 let home = environment["HOME"] ?? NSHomeDirectory()
                 let resourceDirectory = Bundle.main.resourcePath
                 desktopAssets = try await desktopMachineAssetPreparer(

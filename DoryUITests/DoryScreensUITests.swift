@@ -41,7 +41,8 @@ final class DoryScreensUITests: XCTestCase {
         nav("volumes"); assertText("Volumes")
         nav("networks"); assertText("Networks")
         nav("kubernetes"); assertText("Kubernetes")
-        nav("machines"); assertText("Linux Machines")
+        nav("desktops"); assertText("Linux Desktops")
+        nav("machines"); assertText("Linux Servers")
         nav("settings"); assertText("STARTUP")
     }
 
@@ -94,12 +95,14 @@ final class DoryScreensUITests: XCTestCase {
     }
 
     func testNewMachineResourceControlsReachTheirBoundsWithoutCrashing() {
-        nav("machines")
-        let create = app.buttons["create-first-machine"]
+        nav("desktops")
+        let create = app.buttons["create-first-desktop"]
         XCTAssertTrue(create.waitForExistence(timeout: 4))
         create.click()
-        XCTAssertTrue(app.buttons["customize-machine"].waitForExistence(timeout: 4))
-        app.buttons["customize-machine"].click()
+        XCTAssertTrue(app.buttons["desktop-distro-debian"].waitForExistence(timeout: 4))
+        XCTAssertTrue(app.buttons["desktop-distro-ubuntu"].exists)
+        XCTAssertTrue(app.buttons["desktop-distro-kali"].exists)
+        app.buttons["desktop-distro-ubuntu"].click()
         let advanced = app.buttons["new-machine-advanced-toggle"]
         XCTAssertTrue(advanced.waitForExistence(timeout: 4))
         advanced.click()
@@ -126,6 +129,18 @@ final class DoryScreensUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["1 core"].exists)
         XCTAssertTrue(app.staticTexts["1 GB"].exists)
         app.buttons["Cancel"].firstMatch.click()
-        assertText("Linux Machines")
+        assertText("Linux Desktops")
+    }
+
+    func testNewServerKeepsTheUseCaseEntryPoint() {
+        nav("machines")
+        let create = app.buttons["create-first-server"]
+        XCTAssertTrue(create.waitForExistence(timeout: 4))
+        create.click()
+        XCTAssertTrue(app.buttons["customize-machine"].waitForExistence(timeout: 4))
+        app.buttons["customize-machine"].click()
+        XCTAssertTrue(app.buttons["new-machine-advanced-toggle"].waitForExistence(timeout: 4))
+        app.buttons["Cancel"].firstMatch.click()
+        assertText("Linux Servers")
     }
 }

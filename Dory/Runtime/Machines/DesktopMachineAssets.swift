@@ -2,6 +2,56 @@ import Darwin
 import DoryOperations
 import Foundation
 
+nonisolated enum DesktopMachineDistro: String, CaseIterable, Identifiable, Sendable {
+    case debian
+    case ubuntu
+    case kali
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .debian: "Debian"
+        case .ubuntu: "Ubuntu"
+        case .kali: "Kali Linux"
+        }
+    }
+
+    var version: String {
+        switch self {
+        case .debian: "13"
+        case .ubuntu: "24.04 LTS"
+        case .kali: "Rolling"
+        }
+    }
+
+    var desktopName: String { "Xfce" }
+
+    var summary: String {
+        switch self {
+        case .debian: "Stable, clean desktop for everyday Linux and development"
+        case .ubuntu: "Familiar Ubuntu base with long-term support packages"
+        case .kali: "Security lab desktop with Kali's official rolling repository"
+        }
+    }
+
+    var logoName: String { "logo-\(rawValue)" }
+
+    var badgeHex: UInt32 {
+        switch self {
+        case .debian: 0xA80030
+        case .ubuntu: 0xE95420
+        case .kali: 0x367BF0
+        }
+    }
+
+    var resourceStem: String { "dory-desktop-\(rawValue)-rootfs" }
+
+    static func resolve(_ rawValue: String?) -> DesktopMachineDistro {
+        rawValue.flatMap(Self.init(rawValue:)) ?? .debian
+    }
+}
+
 nonisolated struct DesktopMachineAssets: Sendable, Equatable {
     var kernelPath: String
     var rootfsPath: String
@@ -51,6 +101,7 @@ nonisolated enum DesktopMachineAssetProvisioner {
         #else
         throw DesktopMachineAssetError.unsupportedHost
         #endif
+        let distro = DesktopMachineDistro.resolve(environment["DORY_DESKTOP_DISTRO"])
 
         let drive: DoryDataDrive
         do {
@@ -79,12 +130,13 @@ nonisolated enum DesktopMachineAssetProvisioner {
         )
         let rootfs = try source(
             overrideKeys: [
+                "DORYD_DESKTOP_\(distro.rawValue.uppercased())_ROOTFS",
                 "DORYD_DESKTOP_MACHINE_ROOTFS",
                 "DORYD_DESKTOP_ROOTFS",
                 "DORYD_MACHINE_ROOTFS",
                 "DORYD_GUEST_ROOTFS",
             ],
-            resourceNames: ["dory-desktop-rootfs-\(arch).ext4"],
+            resourceNames: rootfsResourceNames(for: distro, arch: arch),
             kind: "root filesystem",
             environment: environment,
             resourceDirectory: resourceDirectory
@@ -93,7 +145,8 @@ nonisolated enum DesktopMachineAssetProvisioner {
             kernel: kernel,
             rootfs: rootfs,
             destinationDirectory: drive.machinesDirectory + "/.assets",
-            arch: arch
+            arch: arch,
+            distro: distro
         )
     }
 
@@ -101,6 +154,7 @@ nonisolated enum DesktopMachineAssetProvisioner {
         kernelSource: String,
         rootfsSource: String,
         destinationDirectory: String,
+        distro: DesktopMachineDistro = .debian,
         rootfsCapacity: Int64 = rootfsCapacityBytes
     ) throws -> DesktopMachineAssets {
         try prepare(
@@ -108,6 +162,7 @@ nonisolated enum DesktopMachineAssetProvisioner {
             rootfs: Source(path: rootfsSource, compressed: rootfsSource.hasSuffix(".lzfse")),
             destinationDirectory: destinationDirectory,
             arch: "arm64",
+            distro: distro,
             rootfsCapacity: rootfsCapacity
         )
     }
@@ -148,6 +203,7 @@ nonisolated enum DesktopMachineAssetProvisioner {
         rootfs: Source,
         destinationDirectory: String,
         arch: String,
+        distro: DesktopMachineDistro,
         rootfsCapacity: Int64 = rootfsCapacityBytes
     ) throws -> DesktopMachineAssets {
         guard rootfsCapacity >= 2 * 1024 * 1024 else {
@@ -174,7 +230,7 @@ nonisolated enum DesktopMachineAssetProvisioner {
         defer { flock(lockDescriptor, LOCK_UN) }
 
         let kernelPath = destinationDirectory + "/dory-desktop-kernel-\(arch)"
-        let rootfsPath = destinationDirectory + "/dory-desktop-rootfs-\(arch).ext4"
+        let rootfsPath = destinationDirectory + "/" + preparedRootfsName(for: distro, arch: arch)
         try materialize(
             source: kernel,
             destination: kernelPath,
@@ -195,6 +251,17 @@ nonisolated enum DesktopMachineAssetProvisioner {
             }
         )
         return DesktopMachineAssets(kernelPath: kernelPath, rootfsPath: rootfsPath)
+    }
+
+    private static func rootfsResourceNames(for distro: DesktopMachineDistro, arch: String) -> [String] {
+        let named = "\(distro.resourceStem)-\(arch).ext4"
+        return distro == .debian ? [named, "dory-desktop-rootfs-\(arch).ext4"] : [named]
+    }
+
+    private static func preparedRootfsName(for distro: DesktopMachineDistro, arch: String) -> String {
+        distro == .debian
+            ? "dory-desktop-rootfs-\(arch).ext4"
+            : "dory-desktop-\(distro.rawValue)-rootfs-\(arch).ext4"
     }
 
     private static func materialize(

@@ -91,6 +91,37 @@ struct DesktopMachineAssetTests {
         #expect(rootfsSize.int64Value == 8 * 1024 * 1024)
     }
 
+    @Test func keepsDistributionRootFilesystemsIsolated() throws {
+        let base = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dory-desktop-distro-assets-\(UUID().uuidString)")
+        let assets = base.appendingPathComponent("machines/.assets")
+        let kernel = base.appendingPathComponent("Image-desktop")
+        let rootfs = base.appendingPathComponent("ubuntu.ext4")
+        defer { try? FileManager.default.removeItem(at: base) }
+        try FileManager.default.createDirectory(
+            at: assets.deletingLastPathComponent(),
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+
+        var kernelBytes = Data(repeating: 0, count: 1024 * 1024)
+        kernelBytes.replaceSubrange(0x38..<0x3c, with: [0x41, 0x52, 0x4d, 0x64])
+        try kernelBytes.write(to: kernel)
+        var rootfsBytes = Data(repeating: 0, count: 2 * 1024 * 1024)
+        rootfsBytes.replaceSubrange(1_080..<1_082, with: [0x53, 0xef])
+        try rootfsBytes.write(to: rootfs)
+
+        let prepared = try DesktopMachineAssetProvisioner.prepare(
+            kernelSource: kernel.path,
+            rootfsSource: rootfs.path,
+            destinationDirectory: assets.path,
+            distro: .ubuntu,
+            rootfsCapacity: 8 * 1024 * 1024
+        )
+
+        #expect(prepared.rootfsPath == assets.appendingPathComponent("dory-desktop-ubuntu-rootfs-arm64.ext4").path)
+    }
+
     @Test func rejectsSymlinkedAssetDirectory() throws {
         let base = FileManager.default.temporaryDirectory
             .appendingPathComponent("dory-desktop-assets-symlink-\(UUID().uuidString)")

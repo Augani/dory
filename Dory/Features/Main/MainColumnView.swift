@@ -30,7 +30,7 @@ struct MainColumnView: View {
                     secondaryButton("Sign In") { store.activeSheet = .registryLogin }
                     secondaryButton("Build") { store.activeSheet = .buildImage }
                 }
-                if store.section == .machines {
+                if store.section == .machines || store.section == .desktops {
                     secondaryButton("Import") { store.importMachineFile() }
                 }
                 if let label = store.section.primaryActionLabel {
@@ -92,7 +92,8 @@ struct MainColumnView: View {
         case .networks: NetworksView()
         case .compose: ComposeProjectsView()
         case .kubernetes: KubernetesView()
-        case .machines: MachinesView()
+        case .desktops: MachinesView(displayMode: .desktop)
+        case .machines: MachinesView(displayMode: .headless)
         case .health: HealthView()
         case .settings: SettingsView()
         }

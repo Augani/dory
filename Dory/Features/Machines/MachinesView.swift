@@ -5,6 +5,8 @@ struct MachinesView: View {
     @Environment(AppStore.self) private var store
     @Environment(\.palette) private var p
 
+    let displayMode: MachineDisplayMode
+
     private let columns = [GridItem(.adaptive(minimum: 340, maximum: 500), spacing: 14)]
 
     var body: some View {
@@ -15,13 +17,13 @@ struct MachinesView: View {
     }
 
     @ViewBuilder private var content: some View {
-        if store.machines.isEmpty && store.filter.isEmpty {
+        if matchingMachines.isEmpty && store.filter.isEmpty {
             emptyState
-        } else if store.filteredMachines.isEmpty {
+        } else if matchingFilteredMachines.isEmpty {
             TableEmptyState(
                 glyph: .machines,
                 title: "No matches",
-                message: "No machines match \u{201C}\(store.filter)\u{201D}."
+                message: "No \(displayMode == .desktop ? "desktops" : "servers") match \u{201C}\(store.filter)\u{201D}."
             )
         } else {
             machineGrid
@@ -35,17 +37,18 @@ struct MachinesView: View {
                     .frame(width: 78, height: 78)
                     .background(p.accentSoft, in: RoundedRectangle(cornerRadius: 20))
                 VStack(spacing: 8) {
-                    Text("No Linux machines yet").font(.system(size: 22, weight: .bold)).foregroundStyle(p.text)
-                    Text("Create a full Debian desktop for graphical and command-line apps, or choose lightweight headless Linux for services and terminal workflows.")
+                    Text(displayMode == .desktop ? "No Linux desktops yet" : "No Linux servers yet")
+                        .font(.system(size: 22, weight: .bold)).foregroundStyle(p.text)
+                    Text(emptyMessage)
                         .font(.system(size: 13.5)).foregroundStyle(p.text2)
                         .multilineTextAlignment(.center).lineSpacing(4)
                         .frame(maxWidth: 460)
                 }
                 featurePills.padding(.top, 2)
-                Button { store.activeSheet = .newMachine } label: {
+                Button { store.activeSheet = displayMode == .desktop ? .newDesktop : .newMachine } label: {
                     HStack(spacing: 7) {
                         Image(systemName: "plus").font(.system(size: 12, weight: .bold))
-                        Text("Create a machine").font(.system(size: 13.5, weight: .semibold))
+                        Text(displayMode == .desktop ? "Create a desktop" : "Create a server")
                     }
                     .foregroundStyle(.white)
                     .padding(.horizontal, 20).padding(.vertical, 10)
@@ -53,7 +56,7 @@ struct MachinesView: View {
                 }
                 .buttonStyle(.plain)
                 .padding(.top, 6)
-                .accessibilityIdentifier("create-first-machine")
+                .accessibilityIdentifier(displayMode == .desktop ? "create-first-desktop" : "create-first-server")
             }
             .frame(maxWidth: .infinity)
             .padding(.top, 64).padding(.bottom, 32).padding(.horizontal, 24)
@@ -63,10 +66,30 @@ struct MachinesView: View {
     private var featurePills: some View {
         HStack(spacing: 8) {
             featurePill("Isolated VM", "rectangle.stack.badge.person.crop")
-            featurePill("Debian Desktop", "display")
-            featurePill("Headless option", "terminal")
+            if displayMode == .desktop {
+                featurePill("Graphical Linux", "display")
+                featurePill("Desktop console", "macwindow")
+            } else {
+                featurePill("Headless Linux", "terminal")
+                featurePill("Service ready", "bolt.horizontal")
+            }
             featurePill("Persistent disk", "internaldrive")
         }
+    }
+
+    private var emptyMessage: String {
+        displayMode == .desktop
+            ? "Create a graphical Linux desktop with its own display, terminal, user, resources, folders, snapshots, and persistent disk."
+            : "Create a lightweight Linux server for terminals, development tools, services, and VPS-style workflows."
+    }
+
+    private var matchingMachines: [Machine] {
+        store.machines.filter { $0.displayMode == displayMode }
+    }
+
+    private var matchingFilteredMachines: [Machine] {
+        let filteredIDs = Set(store.filteredMachines.map(\.id))
+        return matchingMachines.filter { filteredIDs.contains($0.id) }
     }
 
     private func featurePill(_ title: String, _ icon: String) -> some View {
@@ -82,7 +105,7 @@ struct MachinesView: View {
     private var machineGrid: some View {
         ScrollView {
             LazyVGrid(columns: columns, alignment: .leading, spacing: 14) {
-                ForEach(store.filteredMachines) { machine in
+                ForEach(matchingFilteredMachines) { machine in
                     MachineCard(machine: machine)
                 }
             }
