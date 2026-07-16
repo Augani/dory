@@ -31,9 +31,250 @@ import './App.css'
 type Icon = ComponentType<SVGProps<SVGSVGElement>>
 
 const installCommand = 'brew install --cask Augani/dory/dory'
-const releaseUrl = 'https://github.com/Augani/dory/releases/tag/v0.3.1'
+const releaseUrl = 'https://github.com/Augani/dory/releases/latest'
 const leanDmgUrl = 'https://github.com/Augani/dory/releases/download/v0.3.1/Dory-0.3.1-arm64.dmg'
 const desktopDmgUrl = 'https://github.com/Augani/dory/releases/download/v0.3.1/Dory-0.3.1-desktop-arm64.dmg'
+const componentPublicKey = 'AFetajNbqZty68rRY7OMWYNt6suUsrokQmYMhDJtnP4='
+
+type ComponentId = 'docker-core' | 'kubernetes' | 'linux-machines' | 'linux-desktop' | 'desktop-debian' | 'desktop-ubuntu' | 'desktop-kali'
+
+type ComponentRelease = {
+  id: ComponentId
+  version: string
+  displayName: string
+  summary: string
+  dependencies: ComponentId[]
+  downloadBytes: number
+  installedBytes: number
+}
+
+type ComponentCatalog = {
+  kind: 'dev.dory.component-catalog'
+  schemaVersion: 1
+  releaseVersion: string
+  architecture: 'arm64'
+  components: ComponentRelease[]
+}
+
+const componentOrder: ComponentId[] = [
+  'docker-core',
+  'kubernetes',
+  'linux-machines',
+  'linux-desktop',
+  'desktop-debian',
+  'desktop-ubuntu',
+  'desktop-kali',
+]
+
+const componentLabels: Record<ComponentId, string> = {
+  'docker-core': 'Docker Core',
+  kubernetes: 'Kubernetes',
+  'linux-machines': 'Linux Machines',
+  'linux-desktop': 'Linux Desktop Runtime',
+  'desktop-debian': 'Debian 13',
+  'desktop-ubuntu': 'Ubuntu 24.04 LTS',
+  'desktop-kali': 'Kali Linux',
+}
+
+function formatBytes(bytes: number) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B'
+  const units = ['B', 'KiB', 'MiB', 'GiB']
+  const unit = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1)
+  const value = bytes / 1024 ** unit
+  return `${value >= 10 || unit < 2 ? value.toFixed(0) : value.toFixed(1)} ${units[unit]}`
+}
+
+function validComponentCatalog(value: unknown): value is ComponentCatalog {
+  if (!value || typeof value !== 'object') return false
+  const catalog = value as Partial<ComponentCatalog>
+  if (catalog.kind !== 'dev.dory.component-catalog' || catalog.schemaVersion !== 1 || catalog.architecture !== 'arm64') return false
+  if (typeof catalog.releaseVersion !== 'string' || !/^[0-9A-Za-z.+_-]{1,64}$/.test(catalog.releaseVersion) || !Array.isArray(catalog.components)) return false
+  const ids = catalog.components.map((component) => component?.id)
+  return ids.length === componentOrder.length
+    && new Set(ids).size === componentOrder.length
+    && componentOrder.every((id) => ids.includes(id))
+    && catalog.components.every((component) =>
+    component
+      && componentOrder.includes(component.id)
+      && Number.isSafeInteger(component.downloadBytes)
+      && component.downloadBytes > 0
+      && Number.isSafeInteger(component.installedBytes)
+      && component.installedBytes > 0
+      && Array.isArray(component.dependencies)
+      && component.dependencies.every((dependency) => componentOrder.includes(dependency)),
+  )
+}
+
+function decodeBase64(value: string) {
+  const decoded = atob(value.trim())
+  return Uint8Array.from(decoded, (character) => character.charCodeAt(0))
+}
+
+async function verifyComponentCatalog(data: ArrayBuffer, signature: string) {
+  const key = await crypto.subtle.importKey(
+    'raw',
+    decodeBase64(componentPublicKey),
+    { name: 'Ed25519' },
+    false,
+    ['verify'],
+  )
+  return crypto.subtle.verify(
+    { name: 'Ed25519' },
+    key,
+    decodeBase64(signature),
+    data,
+  )
+}
+
+function FocusedDownloadSelector() {
+  const [catalog, setCatalog] = useState<ComponentCatalog | null>(null)
+  const [catalogUnavailable, setCatalogUnavailable] = useState(false)
+  const [selected, setSelected] = useState<Set<ComponentId>>(new Set(['docker-core']))
+
+  useEffect(() => {
+    const controller = new AbortController()
+    Promise.all([
+      fetch('./components/arm64/catalog.json', { cache: 'no-store', signal: controller.signal }),
+      fetch('./components/arm64/catalog.json.sig', { cache: 'no-store', signal: controller.signal }),
+    ])
+      .then(async ([catalogResponse, signatureResponse]) => {
+        if (!catalogResponse.ok || !signatureResponse.ok) throw new Error('component catalog is unavailable')
+        const [data, signature] = await Promise.all([catalogResponse.arrayBuffer(), signatureResponse.text()])
+        if (!await verifyComponentCatalog(data, signature)) throw new Error('component catalog signature is invalid')
+        return JSON.parse(new TextDecoder().decode(data)) as unknown
+      })
+      .then((value) => {
+        if (!validComponentCatalog(value)) throw new Error('component catalog is invalid')
+        setCatalog(value)
+      })
+      .catch((error: unknown) => {
+        if (error instanceof DOMException && error.name === 'AbortError') return
+        setCatalogUnavailable(true)
+      })
+    return () => controller.abort()
+  }, [])
+
+  if (!catalog) {
+    return (
+      <>
+        <div className="download-grid">
+          <article className="download-card download-card-lean">
+            <div className="download-card-head"><span>Lean</span><b>Current 0.3.1 release</b></div>
+            <h3>Docker, Kubernetes, and command-line Linux machines.</h3>
+            <p>The current recommended build excludes graphical Linux images.</p>
+            <div className="download-sizes">
+              <div><strong>452 MiB</strong><span>download</span></div>
+              <div><strong>1.6 GiB</strong><span>installed app</span></div>
+            </div>
+            <a className="button button-primary" href={leanDmgUrl}><CloudArrowDownIcon /> Download Lean DMG</a>
+            <small>Apple silicon · macOS 14 or later</small>
+          </article>
+          <article className="download-card download-card-desktop">
+            <div className="download-card-head"><span>Desktop</span><b>Current 0.3.1 release</b></div>
+            <h3>All three graphical Linux desktops included offline.</h3>
+            <p>Choose this larger build only when you need Debian, Ubuntu, or Kali graphical machines today.</p>
+            <div className="download-sizes">
+              <div><strong>1.85 GiB</strong><span>download</span></div>
+              <div><strong>3.0 GiB</strong><span>installed app</span></div>
+            </div>
+            <a className="button button-ghost-dark" href={desktopDmgUrl}><CloudArrowDownIcon /> Download Desktop DMG</a>
+            <small>Apple silicon · macOS 14 or later</small>
+          </article>
+        </div>
+        <div className="download-roadmap">
+          <Squares2X2Icon aria-hidden="true" />
+          <div>
+            <strong>{catalogUnavailable ? 'Focused component catalog is not live yet.' : 'Checking the focused component catalog…'}</strong>
+            <p>The next signed release starts with Docker Core, then lets you add and remove Kubernetes, Linux Machines, and individual desktop distributions without replacing Dory.app.</p>
+          </div>
+        </div>
+      </>
+    )
+  }
+
+  const releases = new Map(catalog.components.map((component) => [component.id, component]))
+  const selectedReleases = componentOrder.flatMap((id) => selected.has(id) && releases.has(id) ? [releases.get(id)!] : [])
+  const downloadBytes = selectedReleases.reduce((total, component) => total + component.downloadBytes, 0)
+  const installedBytes = selectedReleases.reduce((total, component) => total + component.installedBytes, 0)
+  const coreDmgUrl = `https://github.com/Augani/dory/releases/download/v${catalog.releaseVersion}/Dory-${catalog.releaseVersion}-arm64.dmg`
+
+  const toggle = (id: ComponentId) => {
+    if (id === 'docker-core' || id === 'linux-desktop') return
+    setSelected((current) => {
+      const next = new Set(current)
+      if (next.has(id)) {
+        next.delete(id)
+        if (id.startsWith('desktop-') && !['desktop-debian', 'desktop-ubuntu', 'desktop-kali'].some((distro) => next.has(distro as ComponentId))) {
+          next.delete('linux-desktop')
+        }
+      } else {
+        next.add(id)
+        for (const dependency of releases.get(id)?.dependencies ?? []) next.add(dependency)
+      }
+      next.add('docker-core')
+      return next
+    })
+  }
+
+  return (
+    <div className="component-builder">
+      <div className="component-builder-summary">
+        <div>
+          <span>Focused release {catalog.releaseVersion}</span>
+          <h3>Your app stays small. Your workspace stays complete.</h3>
+          <p>Docker Core is the only required download. Dory installs your optional signed components into the selected .dorydrive after the app opens, and can remove their payloads later without deleting workload data.</p>
+        </div>
+        <div className="component-totals" aria-live="polite">
+          <div><strong>{formatBytes(downloadBytes)}</strong><span>total download</span></div>
+          <div><strong>{formatBytes(installedBytes)}</strong><span>installed payload</span></div>
+        </div>
+      </div>
+
+      <div className="component-choice-grid">
+        {componentOrder.filter((id) => id !== 'linux-desktop').map((id) => {
+          const component = releases.get(id)!
+          const required = id === 'docker-core'
+          const active = selected.has(id)
+          return (
+            <button
+              className={`component-choice${active ? ' is-selected' : ''}${required ? ' is-required' : ''}`}
+              key={id}
+              type="button"
+              aria-pressed={active}
+              onClick={() => toggle(id)}
+            >
+              <span className="component-check">{active ? '✓' : '+'}</span>
+              <span className="component-choice-copy">
+                <strong>{componentLabels[id]}</strong>
+                <small>{required ? 'Required' : active ? 'Selected' : 'Optional'} · {formatBytes(component.downloadBytes)}</small>
+                <p>{component.summary}</p>
+              </span>
+            </button>
+          )
+        })}
+      </div>
+
+      {selected.has('linux-desktop') && (
+        <p className="component-runtime-note">
+          <CheckCircleIcon /> Linux Desktop Runtime added automatically · {formatBytes(releases.get('linux-desktop')!.downloadBytes)}
+        </p>
+      )}
+      {selected.has('kubernetes') && (
+        <p className="component-runtime-note">
+          <CheckCircleIcon /> The selected k3s container image downloads on first cluster creation and is not included in the component total.
+        </p>
+      )}
+
+      <div className="component-builder-footer">
+        <div>
+          <strong>{selectedReleases.map((component) => componentLabels[component.id]).join(' + ')}</strong>
+          <span>Exact signed component sizes are loaded from the release catalog before download.</span>
+        </div>
+        <a className="button button-primary" href={coreDmgUrl}><CloudArrowDownIcon /> Download Docker Core</a>
+      </div>
+    </div>
+  )
+}
 
 const surfaces: Array<{
   icon: Icon
@@ -53,10 +294,10 @@ const surfaces: Array<{
   },
   {
     icon: Squares2X2Icon,
-    label: 'Kubernetes, included',
+    label: 'Kubernetes, when needed',
     title: 'A local cluster without a second product.',
-    copy: 'Create k3s in one click, choose a supported version, and work with pods, deployments, services, configuration, secrets, and ingress from the app.',
-    facts: ['k3s v1.34 to v1.36', 'Bundled kubectl', 'Native resource browser'],
+    copy: 'Add the signed kubectl component, then create k3s in one click and work with pods, deployments, services, configuration, secrets, and ingress from the app. The selected k3s image downloads on first enable.',
+    facts: ['k3s v1.34 to v1.36', 'Signed kubectl component', 'Native resource browser'],
     command: 'dory k8s get pods -A',
   },
   {
@@ -83,6 +324,7 @@ const desktopCapabilities = [
 ]
 
 const cockpitFeatures = [
+  ['Components', 'Install, update, verify, and remove focused payloads with exact sizes'],
   ['Containers', 'Live CPU and memory, logs, shell, ports, Compose groups'],
   ['Images', 'Pull, run, inspect, copy IDs, delete, and reclaim'],
   ['Volumes', 'Create, browse files, delete, and prune unused data'],
@@ -117,6 +359,7 @@ const agentTools = [
 ]
 
 const settings = [
+  ['Components', 'Signed catalog, exact sizes, updates, verification, dependency-aware removal'],
   ['General', 'Startup, menu bar, terminal tools, preferred terminal app, browser logins, appearance'],
   ['Engine & Daemon', 'Backend, CPU, memory, amd64, experimental guest GPU'],
   ['Resources', 'Data drive, backup, verify, restore, growth, process memory'],
@@ -132,7 +375,7 @@ const settings = [
 const faqs = [
   {
     question: 'Do I need Docker Desktop or a separate Docker CLI?',
-    answer: 'No. The full Dory app bundles its engine, Docker CLI, Buildx, Compose, and kubectl. While doryd runs, it keeps the tools and the dory context ready in your user account.',
+    answer: 'No. Docker Core includes the engine, Docker CLI, Buildx, and Compose. Install the optional Kubernetes component when you also want kubectl and Dory\'s local k3s workflow.',
   },
   {
     question: 'Can I move from OrbStack, Docker Desktop, or Colima?',
@@ -155,8 +398,8 @@ const faqs = [
     answer: 'Yes on Apple Silicon. Choose managed Debian 13, Ubuntu 24.04 LTS, or Kali rolling with systemd, Xfce, Bash, a configurable user, a Retina-sharp resizable display, and a 64 GiB thin-provisioned disk. Lightweight Alpine headless machines remain available for terminal and service workloads.',
   },
   {
-    question: 'Which Dory edition should I install?',
-    answer: 'Choose the lean edition for containers, Kubernetes, and headless Linux servers. Choose the all-inclusive Desktop edition when you also want to create Debian, Ubuntu, or Kali graphical machines. Both editions use the same Dory data drive.',
+    question: 'Which Dory components should I install?',
+    answer: 'Start with Docker Core. Add Kubernetes for k3s and kubectl, Linux Machines for headless VPS-style guests, or only the Debian, Ubuntu, and Kali desktop packs you use. Optional payloads live in the selected Dory data drive and can be removed independently.',
   },
   {
     question: 'How do I upgrade from Dory 0.3.0?',
@@ -557,7 +800,7 @@ function App() {
         <section className="proof-strip" aria-label="Dory product facts">
           <div><strong>1</strong><span>shared container VM</span></div>
           <div><strong>3</strong><span>managed desktop distributions</span></div>
-          <div><strong>10</strong><span>settings areas in the UI</span></div>
+          <div><strong>11</strong><span>settings areas in the UI</span></div>
           <div><strong>0</strong><span>accounts, telemetry, paid tiers</span></div>
         </section>
 
@@ -565,50 +808,9 @@ function App() {
           <div className="section-heading centered">
             <p className="eyebrow">Choose before downloading</p>
             <h2>Get the Dory you need.<br /><span>Skip the weight you do not.</span></h2>
-            <p>Dory 0.3.1 has two fixed editions. Desktop is larger because all three graphical Linux images are included for offline use.</p>
+            <p>The focused release replaces fixed editions with one Docker Core app and signed, removable components. See the exact total before downloading.</p>
           </div>
-          <div className="download-grid">
-            <article className="download-card download-card-lean">
-              <div className="download-card-head"><span>Lean</span><b>Recommended for most users</b></div>
-              <h3>Docker and development tools, without graphical Linux images.</h3>
-              <p>Choose Lean for Docker, Compose, Kubernetes, migration, and command-line Linux machines.</p>
-              <div className="download-sizes">
-                <div><strong>452 MiB</strong><span>download</span></div>
-                <div><strong>1.6 GiB</strong><span>installed app</span></div>
-              </div>
-              <ul>
-                <li><CheckCircleIcon /> Docker, Compose, Buildx, and BuildKit</li>
-                <li><CheckCircleIcon /> Kubernetes and bundled kubectl</li>
-                <li><CheckCircleIcon /> Headless Linux machines</li>
-              </ul>
-              <a className="button button-primary" href={leanDmgUrl}>
-                <CloudArrowDownIcon /> Download Lean DMG
-              </a>
-              <small>Apple silicon · macOS 14 or later</small>
-            </article>
-            <article className="download-card download-card-desktop">
-              <div className="download-card-head"><span>Desktop</span><b>Graphical Linux included</b></div>
-              <h3>Everything in Lean, plus three complete offline desktops.</h3>
-              <p>Choose Desktop only when you want managed Debian, Ubuntu, or Kali graphical Linux machines.</p>
-              <div className="download-sizes">
-                <div><strong>1.85 GiB</strong><span>download</span></div>
-                <div><strong>3.0 GiB</strong><span>installed app</span></div>
-              </div>
-              <ul>
-                <li><CheckCircleIcon /> Debian 13 Xfce</li>
-                <li><CheckCircleIcon /> Ubuntu 24.04 LTS Xfce</li>
-                <li><CheckCircleIcon /> Kali Linux rolling Xfce</li>
-              </ul>
-              <a className="button button-ghost-dark" href={desktopDmgUrl}>
-                <CloudArrowDownIcon /> Download Desktop DMG
-              </a>
-              <small>Apple silicon · macOS 14 or later</small>
-            </article>
-          </div>
-          <div className="download-roadmap">
-            <Squares2X2Icon aria-hidden="true" />
-            <div><strong>Focused bundles are next.</strong><p>We are separating the Docker core, Kubernetes, Linux Machines, and Linux Desktop packs so future users can choose every payload before downloading.</p></div>
-          </div>
+          <FocusedDownloadSelector />
           <p className="download-release-link">Need ZIP archives, checksums, or SBOMs? <a href={releaseUrl}>View all release assets.</a></p>
         </section>
 
@@ -673,10 +875,10 @@ function App() {
               ))}
             </div>
             <div className="desktop-editions">
-              <div className="is-featured"><strong>Lean · 452 MiB</strong><span>Containers, Kubernetes, and headless Linux servers</span></div>
-              <div><strong>Desktop · 1.85 GiB</strong><span>Everything in Lean plus all three graphical Linux images</span></div>
+              <div className="is-featured"><strong>Docker Core</strong><span>The app, engine, Compose, Buildx, migration, and recovery</span></div>
+              <div><strong>Desktop packs</strong><span>Add only Debian, Ubuntu, or Kali, then remove each payload independently</span></div>
             </div>
-            <a className="text-link light-link" href="#download">Compare download sizes <ArrowRightIcon /></a>
+            <a className="text-link light-link" href="#download">Build your focused setup <ArrowRightIcon /></a>
           </div>
           <div className="desktop-product">
             <DoryDemo initialView="machines" autoCycle={false} />
@@ -886,10 +1088,10 @@ function App() {
           <img src="./logo.svg" alt="" />
           <p className="eyebrow eyebrow-light">Start local. Stay in control.</p>
           <h2>Bring your whole Linux workspace home to Mac.</h2>
-          <p>Free, open source, signed, and notarized. Homebrew installs Lean. Compare both editions above before choosing the larger Desktop download.</p>
+          <p>Free, open source, signed, and notarized. Homebrew installs Docker Core. Add only the signed components you need from Dory.</p>
           <CopyCommand command={installCommand} dark />
           <div className="install-actions">
-            <a className="button button-white" href="#download">Compare download sizes <ArrowRightIcon /></a>
+            <a className="button button-white" href="#download">Choose your components <ArrowRightIcon /></a>
             <a href="https://github.com/Augani/dory">View source on GitHub <ArrowTopRightOnSquareIcon /></a>
           </div>
         </section>

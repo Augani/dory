@@ -31,6 +31,11 @@
 > separate lean and Desktop editions, selectable terminal apps, a configurable Docker bridge, and a
 > first-run networking authorization fix.
 
+> The next feature release replaces fixed editions with one smaller Docker Core app and optional,
+> signed Kubernetes, Linux Machines, Linux Desktop, Debian, Ubuntu, and Kali components. The website
+> shows the exact total before download, and Dory can remove optional payloads later without deleting
+> containers, volumes, cluster state, machine disks, snapshots, or exports.
+
 <p align="center">
   <a href="https://augani.github.io/dory/#product"><strong>Explore the interactive Dory interface</strong></a>
 </p>
@@ -59,8 +64,9 @@ or commercial-use tier. Dory is GPL-3.0 software and stores workload data on you
 
 ## Why it is different
 
-- **A complete runtime, not a dashboard.** Dory bundles its engine, guest, Docker tools, Compose,
-  Buildx, `kubectl`, networking, file sharing, and recovery tools.
+- **A complete runtime, not a dashboard.** Docker Core includes its engine, guest, Docker tools,
+  Compose, Buildx, networking, file sharing, and recovery tools. Kubernetes and Linux machine
+  payloads are signed components rather than permanent app weight in the next release.
 - **One shared container VM.** Containers use one persistent Linux engine. Its memory ceiling is
   configurable, and free guest pages can be returned to macOS.
 - **Linux machines beside containers.** Machines are separate VMs with their own disk, address,
@@ -99,12 +105,35 @@ Ubuntu, and Kali graphical images are included for offline use.
 | **Desktop** | about 1.85 GiB | about 3.0 GiB | Everything in Lean plus offline Debian, Ubuntu, and Kali graphical desktops | [Desktop DMG](https://github.com/Augani/dory/releases/download/v0.3.1/Dory-0.3.1-desktop-arm64.dmg) |
 
 Drag Dory to Applications and open it. Choose Desktop only when you need graphical Linux machines.
-The next feature release will move toward a Docker-only core with focused Kubernetes, Linux
-Machines, and Linux Desktop downloads selected before installation.
+
+### Focused components in the next release
+
+The next release has one Apple Silicon `Dory-x.y.z-arm64.dmg`. It contains Docker Core: Dory.app,
+the Docker engine and CLI, Compose, Buildx, networking, storage, migration, diagnostics, and
+recovery. The signed component catalog then offers:
+
+| Component | Adds | Depends on |
+|---|---|---|
+| Kubernetes | `kubectl` and Dory's local k3s workflow | Docker Core |
+| Linux Machines | Headless VPS-style Linux guests | Docker Core |
+| Linux Desktop Runtime | Shared graphical VM kernel | Docker Core |
+| Debian 13 Desktop | Debian 13 Xfce image | Linux Desktop Runtime |
+| Ubuntu 24.04 LTS Desktop | Ubuntu Xfce image | Linux Desktop Runtime |
+| Kali Linux Desktop | Kali rolling Xfce image | Linux Desktop Runtime |
+
+Component download and installed sizes come from the signed release catalog, not estimates. Dory
+stores installed payloads inside the selected `.dorydrive/components` directory. Removing a
+component reclaims only its installed payload. Workload data on the selected drive is preserved.
+The Kubernetes component size covers `kubectl`; the selected k3s container image is downloaded on
+first cluster creation and then remains in Docker storage on the selected data drive.
+
+The native Components screen and `dory component` commands install, update, verify, and remove the
+same catalog entries. Components are transactional, digest-verified, architecture-checked, and
+activated atomically. A cached catalog is used offline only after its signature is verified again.
 
 | Release asset | Purpose |
 |---|---|
-| `Dory-x.y.z-arm64.dmg` | Recommended lean installer: containers, Kubernetes, and headless Linux servers |
+| `Dory-x.y.z-arm64.dmg` | Current 0.3.1 Lean installer; becomes Docker Core in the focused release |
 | `Dory-x.y.z-desktop-arm64.dmg` | All-inclusive installer with Debian, Ubuntu, and Kali graphical desktops |
 | `Dory-x.y.z-arm64.zip` | Lean app archive |
 | `Dory-x.y.z-desktop-arm64.zip` | All-inclusive app archive |
@@ -114,8 +143,9 @@ Machines, and Linux Desktop downloads selected before installation.
 | `Dory-x.y.z.cdx.json` | CycloneDX software bill of materials for the lean app |
 | `Dory-x.y.z-desktop.cdx.json` | CycloneDX software bill of materials for the Desktop app |
 
-Lean and Desktop installations use separate signed update feeds, so future updates keep the edition
-you selected instead of adding or removing the graphical Linux payload unexpectedly.
+The current 0.3.1 Lean and Desktop installations use separate signed update feeds. In the focused
+release, Dory.app uses one feed while optional components update independently on the selected data
+drive, so an app update cannot silently add a large Linux payload.
 
 ### Upgrading from 0.3.0
 
@@ -220,9 +250,13 @@ native Compose screen can open a YAML file, start or stop a project, restart run
 
 ## Kubernetes
 
+Install the Kubernetes component from the app or with `dory component install kubernetes` before
+enabling a cluster in the focused release. Docker-only users do not download `kubectl`.
+
 The Kubernetes screen creates a local k3s cluster inside the shared engine and lets you choose a
-supported v1.34, v1.35, or v1.36 preset. Switching versions recreates the cluster and is presented
-as a destructive action.
+supported v1.34, v1.35, or v1.36 preset. The selected k3s image is downloaded on first enable and
+stored with Docker data on the selected Dory drive. Switching versions recreates the cluster and
+is presented as a destructive action.
 
 The native browser covers:
 
@@ -231,10 +265,13 @@ The native browser covers:
 - services, ConfigMaps, Secrets, and Ingresses;
 - namespace filtering, YAML apply, rollout status, and kubeconfig copy.
 
-The bundled `kubectl` and `dory k8s <kubectl args...>` target the same cluster. k3s has its own image
+The component-managed `kubectl` and `dory k8s <kubectl args...>` target the same cluster. k3s has its own image
 store, so push a built image to a registry or import it into the cluster before using it in a Pod.
 
 ## Dory Linux machines
+
+Install Linux Machines for headless guests. Graphical guests additionally need the Linux Desktop
+Runtime and the selected Debian, Ubuntu, or Kali distribution component.
 
 Dory Linux machines are persistent, separate VMs rather than containers. The app offers full Xfce
 desktops based on Debian 13, Ubuntu 24.04 LTS, or Kali Linux rolling for graphical and command-line
