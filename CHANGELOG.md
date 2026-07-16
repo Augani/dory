@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.3.2 - 2026-07-16
+
+### Added
+
+- Replaced fixed app editions with a smaller Docker Core app and signed, removable Kubernetes,
+  Linux Machines, Linux Desktop runtime, Debian, Ubuntu, and Kali components stored on the selected
+  Dory data drive.
+- Added exact and leftmost-wildcard custom domain mappings in Settings > Network and the CLI. Dory
+  now routes nginx-style `/etc/hosts` domains through its built-in HTTP and trusted HTTPS proxies.
+
+### Changed
+
+- Quitting Dory now stops its background engine by default. People who want an always-running
+  engine can explicitly enable **Keep engine running after quit**.
+
+### Fixed
+
+- Fixed built-in safe home sharing so names such as `library` are hidden only at the shared home
+  root, while nested project directories such as Composer package paths remain visible.
+- Fixed the Network authorization button so the guided admin operation succeeds before optional
+  background-service registration and Login Items approval.
+- Fixed custom local domains returning 502 after ports 80 and 443 were authorized.
+- Fixed local HTTPS identity refreshes accumulating certificates and private keys in the user's
+  login keychain.
+
 ## 0.3.1 - 2026-07-16
 
 ### Added
