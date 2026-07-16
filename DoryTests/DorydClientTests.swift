@@ -117,6 +117,7 @@ struct DorydClientTests {
             memoryMB: 2048,
             cpuCount: 2,
             address: "192.168.215.40",
+            displayMode: .desktop,
             shares: [
                 DorydMachineShareConfiguration(tag: "src", hostPath: "/Users/me/src", guestPath: "/workspace/src", readOnly: true),
             ],
@@ -203,6 +204,7 @@ struct DorydClientTests {
         #expect(dockerAgentTelemetry.memTotalKB == 2048)
         #expect(stopped == DorydCommandResult(ok: true, message: ""))
         #expect(createdMachine.state == "created")
+        #expect(createdMachine.displayMode == .desktop)
         #expect(startedMachine.pid == 1234)
         #expect(startedMachine.agentBuild == "agent-test")
         #expect(startedMachine.agentSocketPath == "/tmp/agent.sock")
@@ -212,6 +214,7 @@ struct DorydClientTests {
             DorydMachineShareConfiguration(tag: "src", hostPath: "/Users/me/src", guestPath: "/workspace/src", readOnly: true),
         ])
         #expect(startedMachine.environment == ["FOO": "bar"])
+        #expect(startedMachine.displayMode == .desktop)
         #expect(execResult.stdout == "cargo 1.0\n")
         #expect(execResult.exitCode == 0)
         #expect(machineStats.cpuPercent == 12.5)
@@ -416,6 +419,7 @@ struct DorydClientTests {
         #expect(machine.cpuPercent == 12.5)
         #expect(machine.memoryDisplay == "1 GB / 2 GB")
         #expect(machine.ip == "192.168.215.40")
+        #expect(machine.displayMode == .desktop)
         #expect(machine.mounts == [MountPair(host: "/Users/me/src", guest: "/workspace/src", readOnly: true)])
         #expect(machine.containerID.isEmpty)
         #expect(store.machineTerminalCommand(machine) == "dory machine shell dev")
@@ -425,6 +429,7 @@ struct DorydClientTests {
         #expect(currentSettings.cpus == 2)
         #expect(currentSettings.memoryMB == 2048)
         #expect(currentSettings.address == "192.168.215.40")
+        #expect(currentSettings.displayMode == .desktop)
         #expect(currentSettings.mounts == [MountPair(host: "/Users/me/src", guest: "/workspace/src", readOnly: true)])
         #expect(currentSettings.env == ["ANTHROPIC_API_KEY": "test-token"])
 
@@ -664,7 +669,8 @@ struct DorydClientTests {
                 cpus: 3,
                 memoryMB: 3072,
                 mounts: [MountPair(host: "/Users/me/project", guest: "/workspace/project")],
-                env: ["APP_ENV": "dev"]
+                env: ["APP_ENV": "dev"],
+                displayMode: .desktop
             )
         )
 
@@ -679,6 +685,7 @@ struct DorydClientTests {
         #expect(config["rootfsPath"] as? String == "/vm/rootfs.raw")
         #expect((config["memoryMB"] as? NSNumber)?.uint64Value == 3072)
         #expect((config["cpuCount"] as? NSNumber)?.intValue == 3)
+        #expect(config["displayMode"] as? String == "desktop")
         #expect(config["address"] == nil)
         let createShares = try #require(config["shares"] as? [NSDictionary])
         #expect(createShares.first?["hostPath"] as? String == "/Users/me/project")
@@ -1621,6 +1628,7 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
             agentBuild: "agent-test",
             handoffFDCount: 2,
             address: "192.168.215.40",
+            displayMode: "desktop",
             shares: [
                 [
                     "tag": "src",
@@ -1875,6 +1883,7 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
             memoryMB: Self.uint64(config["memoryMB"]) ?? 2048,
             cpuCount: Self.int(config["cpuCount"]) ?? 2,
             address: config["address"] as? String,
+            displayMode: config["displayMode"] as? String ?? "headless",
             shares: Self.shareRows(config["shares"]),
             environment: Self.environmentRows(config["env"])
         )
@@ -1898,6 +1907,7 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
             memoryMB: Self.uint64(current?["memoryMB"]) ?? 2048,
             cpuCount: Self.int(current?["cpuCount"]) ?? 2,
             address: current?["address"] as? String,
+            displayMode: current?["displayMode"] as? String ?? "headless",
             shares: Self.shareRows(current?["shares"]),
             environment: Self.environmentRows(current?["env"])
         )
@@ -1916,6 +1926,7 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
             memoryMB: Self.uint64(current?["memoryMB"]) ?? 2048,
             cpuCount: Self.int(current?["cpuCount"]) ?? 2,
             address: current?["address"] as? String,
+            displayMode: current?["displayMode"] as? String ?? "headless",
             shares: Self.shareRows(current?["shares"]),
             environment: Self.environmentRows(current?["env"])
         )
@@ -1953,6 +1964,7 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
             memoryMB: memoryMB,
             cpuCount: cpuCount,
             address: address,
+            displayMode: current["displayMode"] as? String ?? "headless",
             shares: shares,
             environment: environment
         )
@@ -2375,6 +2387,7 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
         memoryMB: UInt64 = 2048,
         cpuCount: Int = 2,
         address: String? = nil,
+        displayMode: String = "headless",
         shares: [NSDictionary] = [],
         environment: [NSDictionary] = []
     ) -> NSDictionary {
@@ -2385,6 +2398,7 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
             "handoffFDCount": handoffFDCount,
             "memoryMB": memoryMB,
             "cpuCount": cpuCount,
+            "displayMode": displayMode,
         ]
         if let pid { row["pid"] = pid }
         if let agentBuild {

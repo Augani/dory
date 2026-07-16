@@ -35,6 +35,7 @@ let package = Package(
             name: "DoryVMMKit",
             dependencies: ["DoryCore", "DorydKit"],
             linkerSettings: [
+                .linkedFramework("AppKit"),
                 .linkedFramework("Virtualization"),
             ]
         ),

@@ -64,6 +64,7 @@ final class DoryVMMKitTests: XCTestCase {
             "--container-subnet", "10.44.16.0/20",
             "--memory-mb", "3072",
             "--cpus", "4",
+            "--display-mode", "desktop",
             "--handoff-sock", "/tmp/handoff.sock",
             "--dockerd-sock", "/tmp/dockerd.sock",
             "--agent-sock", "/tmp/agent.sock",
@@ -87,6 +88,7 @@ final class DoryVMMKitTests: XCTestCase {
         XCTAssertEqual(arguments.bridgeSubnetCIDR, "10.44.16.0/20")
         XCTAssertEqual(arguments.memoryMB, 3072)
         XCTAssertEqual(arguments.cpuCount, 4)
+        XCTAssertEqual(arguments.displayMode, .desktop)
         XCTAssertEqual(arguments.handoffSocketPath, "/tmp/handoff.sock")
         XCTAssertEqual(arguments.dockerdSocketPath, "/tmp/dockerd.sock")
         XCTAssertEqual(arguments.agentSocketPath, "/tmp/agent.sock")
@@ -106,6 +108,14 @@ final class DoryVMMKitTests: XCTestCase {
             "--env", "1BAD=value",
         ])) { error in
             XCTAssertEqual(error as? DoryVMMArgumentError, .invalidEnvironment("1BAD"))
+        }
+    }
+
+    func testRejectsInvalidDisplayModeArgument() throws {
+        XCTAssertThrowsError(try parseDoryVMMArguments([
+            "--display-mode", "gui",
+        ])) { error in
+            XCTAssertEqual(error as? DoryVMMArgumentError, .invalidDisplayMode("gui"))
         }
     }
 
@@ -247,6 +257,11 @@ final class DoryVMMKitTests: XCTestCase {
         XCTAssertTrue(configuration.entropyDevices.first is VZVirtioEntropyDeviceConfiguration)
         XCTAssertEqual(configuration.serialPorts.count, 1)
         XCTAssertTrue(configuration.serialPorts.first is VZVirtioConsoleDeviceSerialPortConfiguration)
+        XCTAssertTrue(configuration.graphicsDevices.isEmpty)
+        XCTAssertTrue(configuration.keyboards.isEmpty)
+        XCTAssertTrue(configuration.pointingDevices.isEmpty)
+        XCTAssertTrue(configuration.audioDevices.isEmpty)
+        XCTAssertTrue(configuration.consoleDevices.isEmpty)
         XCTAssertEqual(configuration.directorySharingDevices.count, 2)
         let tags = configuration.directorySharingDevices.compactMap { ($0 as? VZVirtioFileSystemDeviceConfiguration)?.tag }
         XCTAssertTrue(tags.contains("dorycfg"))
@@ -272,6 +287,45 @@ final class DoryVMMKitTests: XCTestCase {
         XCTAssertTrue(bootScript.contains("fstrim -v /var/lib/docker"))
         XCTAssertTrue(bootScript.contains("exec /usr/bin/dory-agent"))
         try assertShellSyntax("\(base)/dorycfg/boot.sh")
+    }
+
+    func testDesktopProfileAddsDisplayInputAudioAndClipboardDevices() throws {
+        let base = "/tmp/dory-vmm-desktop-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let kernel = "\(base)/vmlinux"
+        let rootfs = "\(base)/rootfs.raw"
+        FileManager.default.createFile(atPath: kernel, contents: Data([0x7f, 0x45, 0x4c, 0x46]))
+        FileManager.default.createFile(atPath: rootfs, contents: nil)
+        XCTAssertEqual(truncate(rootfs, 1024 * 1024), 0)
+
+        let configuration = try DoryVZConfigurationBuilder.makeConfiguration(
+            spec: DoryVZMachineSpec(
+                machineID: "desktop",
+                stateDirectory: base,
+                kernelPath: kernel,
+                rootfsPath: rootfs,
+                memoryMB: 4096,
+                cpuCount: 4,
+                displayMode: .desktop
+            ),
+            serialOutput: nil
+        )
+
+        let graphics = try XCTUnwrap(configuration.graphicsDevices.first as? VZVirtioGraphicsDeviceConfiguration)
+        let scanout = try XCTUnwrap(graphics.scanouts.first)
+        XCTAssertEqual(scanout.widthInPixels, 1_440)
+        XCTAssertEqual(scanout.heightInPixels, 900)
+        XCTAssertEqual(configuration.keyboards.count, 1)
+        XCTAssertTrue(configuration.keyboards.first is VZUSBKeyboardConfiguration)
+        XCTAssertEqual(configuration.pointingDevices.count, 1)
+        XCTAssertTrue(configuration.pointingDevices.first is VZUSBScreenCoordinatePointingDeviceConfiguration)
+        XCTAssertEqual(configuration.audioDevices.count, 1)
+        let sound = try XCTUnwrap(configuration.audioDevices.first as? VZVirtioSoundDeviceConfiguration)
+        XCTAssertEqual(sound.streams.count, 1)
+        XCTAssertTrue(sound.streams.first is VZVirtioSoundDeviceOutputStreamConfiguration)
+        XCTAssertEqual(configuration.consoleDevices.count, 1)
+        XCTAssertTrue(configuration.consoleDevices.first is VZVirtioConsoleDeviceConfiguration)
     }
 
     func testDockerVZConfigurationAttachesPersistentDataDisk() throws {

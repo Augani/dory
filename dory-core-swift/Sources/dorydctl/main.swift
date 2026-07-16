@@ -154,7 +154,7 @@ func usage(exitCode: Int32 = 2) -> Never {
           dorydctl [global] machine list
           dorydctl [global] machine status NAME
           dorydctl [global] machine stats NAME
-          dorydctl [global] machine create NAME --kernel PATH --rootfs PATH [--memory-mb N] [--cpus N] [--dns-target IPv4] [--share TAG=HOST:GUEST[:ro|rw] | JSON] [--env KEY=VALUE]
+          dorydctl [global] machine create NAME --kernel PATH --rootfs PATH [--memory-mb N] [--cpus N] [--display-mode headless|desktop] [--dns-target IPv4] [--share TAG=HOST:GUEST[:ro|rw] | JSON] [--env KEY=VALUE]
           dorydctl [global] machine update NAME [--memory-mb N] [--cpus N] [--dns-target IPv4 | --clear-dns-target] [--share TAG=HOST:GUEST[:ro|rw] | JSON ... | --clear-shares] [--env KEY=VALUE ... | --clear-env]
           dorydctl [global] machine start|stop|delete NAME
           dorydctl [global] machine exec NAME [--json] [--cwd PATH] [--env KEY=VALUE] [--timeout-ms N] [--output-limit-bytes N] -- COMMAND [ARG...]
@@ -668,6 +668,10 @@ func runMachine(cursor: inout ArgumentCursor, client: DorydCtlClient) throws {
         }
         let memoryMB = try cursor.optionValue("--memory-mb").map { try positiveUInt64($0, option: "--memory-mb") } ?? 2048
         let cpuCount = try cursor.optionValue("--cpus").map { try positiveInt($0, option: "--cpus") } ?? 2
+        let displayMode = try cursor.optionValue("--display-mode") ?? DoryMachineDisplayMode.headless.rawValue
+        guard DoryMachineDisplayMode(rawValue: displayMode) != nil else {
+            throw DorydCtlError.usage("--display-mode must be headless or desktop")
+        }
         let shares = try cursor.optionValues("--share").map { try DoryMachineShareConfiguration(argument: $0) }
         let env = try cursor.optionValues("--env").map(parseEnvironmentRow)
         var config: [String: Any] = [
@@ -676,6 +680,7 @@ func runMachine(cursor: inout ArgumentCursor, client: DorydCtlClient) throws {
             "rootfsPath": rootfs,
             "memoryMB": memoryMB,
             "cpuCount": cpuCount,
+            "displayMode": displayMode,
         ]
         if let address = try cursor.optionValue("--dns-target") {
             config["address"] = address

@@ -81,6 +81,7 @@ nonisolated struct DorydMachineConfiguration: Sendable, Equatable {
     var memoryMB: UInt64
     var cpuCount: Int
     var address: String? = nil
+    var displayMode: MachineDisplayMode = .headless
     var shares: [DorydMachineShareConfiguration] = []
     var environment: [String: String] = [:]
 
@@ -91,6 +92,7 @@ nonisolated struct DorydMachineConfiguration: Sendable, Equatable {
             "rootfsPath": rootfsPath,
             "memoryMB": memoryMB,
             "cpuCount": cpuCount,
+            "displayMode": displayMode.rawValue,
         ]
         if let address {
             dictionary["address"] = address
@@ -128,6 +130,7 @@ nonisolated struct DorydMachineStatus: Sendable, Equatable {
     var memoryMB: UInt64?
     var currentBalloonTargetMB: UInt64? = nil
     var cpuCount: Int?
+    var displayMode: MachineDisplayMode = .headless
     var shares: [DorydMachineShareConfiguration] = []
     var environment: [String: String] = [:]
 }
@@ -1034,6 +1037,7 @@ nonisolated final class DorydClient: @unchecked Sendable {
             memoryMB: uint64(dictionary["memoryMB"]),
             currentBalloonTargetMB: uint64(dictionary["currentBalloonTargetMB"]),
             cpuCount: int(dictionary["cpuCount"]),
+            displayMode: (dictionary["displayMode"] as? String).flatMap(MachineDisplayMode.init(rawValue:)) ?? .headless,
             shares: machineShares(from: dictionary["shares"]),
             environment: machineEnvironment(from: dictionary["env"])
         )

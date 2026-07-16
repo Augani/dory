@@ -2,6 +2,10 @@ import Foundation
 
 nonisolated struct MountPair: Sendable, Hashable { var host: String; var guest: String; var readOnly: Bool = false }
 nonisolated struct PortPair: Sendable, Hashable { var host: Int; var guest: Int }
+nonisolated enum MachineDisplayMode: String, Sendable, Hashable, CaseIterable {
+    case headless
+    case desktop
+}
 nonisolated struct MachineSettings: Sendable, Hashable {
     var cpus: Int?
     var memoryMB: Int?
@@ -10,6 +14,7 @@ nonisolated struct MachineSettings: Sendable, Hashable {
     var identity: MacIdentity? = nil
     var env: [String: String] = [:]
     var address: String? = nil
+    var displayMode: MachineDisplayMode = .headless
     nonisolated static let `default` = MachineSettings(cpus: nil, memoryMB: nil)
 }
 

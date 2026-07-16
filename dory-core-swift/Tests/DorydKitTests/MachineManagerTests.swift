@@ -1281,6 +1281,7 @@ final class MachineManagerTests: XCTestCase {
 
         let loaded = manager.list()
         XCTAssertEqual(loaded.map(\.id), ["dev"])
+        XCTAssertEqual(loaded.first?.displayMode, .headless)
         XCTAssertEqual(loaded.first?.shares, [])
         XCTAssertEqual(loaded.first?.environment, [:])
     }
@@ -1779,6 +1780,7 @@ final class MachineManagerTests: XCTestCase {
             memoryMB: 4096,
             cpuCount: 4,
             address: "192.168.215.55",
+            displayMode: .desktop,
             shares: [DoryMachineShareConfiguration(
                 tag: "src",
                 hostPath: sharePath,
@@ -1805,6 +1807,7 @@ final class MachineManagerTests: XCTestCase {
         XCTAssertEqual(snapshot.memoryMB, 4096)
         XCTAssertEqual(snapshot.cpuCount, 4)
         XCTAssertEqual(snapshot.address, "192.168.215.55")
+        XCTAssertEqual(snapshot.displayMode, .desktop)
         XCTAssertEqual(snapshot.shares.map(\.hostPath), [sharePath])
         XCTAssertEqual(snapshot.environment, ["DORY_TEST_TOKEN": "snapshot-secret"])
         XCTAssertEqual(manager.status(id: "dev")?.state, .running)
@@ -1831,6 +1834,7 @@ final class MachineManagerTests: XCTestCase {
         XCTAssertEqual(clone.memoryMB, 4096)
         XCTAssertEqual(clone.cpuCount, 4)
         XCTAssertNil(clone.address)
+        XCTAssertEqual(clone.displayMode, .desktop)
         XCTAssertEqual(clone.shares.map(\.hostPath), [sharePath])
         XCTAssertEqual(clone.environment, ["DORY_TEST_TOKEN": "snapshot-secret"])
         XCTAssertEqual(
@@ -1844,6 +1848,7 @@ final class MachineManagerTests: XCTestCase {
         XCTAssertEqual(restored.memoryMB, 4096)
         XCTAssertEqual(restored.cpuCount, 4)
         XCTAssertEqual(restored.address, "192.168.215.55")
+        XCTAssertEqual(restored.displayMode, .desktop)
         XCTAssertEqual(restored.shares.map(\.hostPath), [sharePath])
         XCTAssertEqual(restored.environment, ["DORY_TEST_TOKEN": "snapshot-secret"])
         XCTAssertEqual(String(data: try Data(contentsOf: URL(fileURLWithPath: devRootfs)), encoding: .utf8), "snapshot-v1")
@@ -1855,6 +1860,7 @@ final class MachineManagerTests: XCTestCase {
         XCTAssertEqual(restoredDefinition.memoryMB, 4096)
         XCTAssertEqual(restoredDefinition.cpuCount, 4)
         XCTAssertEqual(restoredDefinition.address, "192.168.215.55")
+        XCTAssertEqual(restoredDefinition.displayMode, .desktop)
         XCTAssertEqual(restoredDefinition.shares.map(\.hostPath), [sharePath])
         XCTAssertEqual(restoredDefinition.environment, ["DORY_TEST_TOKEN": "snapshot-secret"])
 
@@ -2251,7 +2257,8 @@ final class MachineManagerTests: XCTestCase {
         _ = try manager.create(DoryMachineConfiguration(
             id: "dev",
             kernelPath: doryTestKernelPath,
-            rootfsPath: doryTestRootfsPath
+            rootfsPath: doryTestRootfsPath,
+            displayMode: .desktop
         ))
         _ = try manager.start(id: "dev")
         for _ in 0..<100 where !FileManager.default.fileExists(atPath: capture) {
@@ -2265,6 +2272,7 @@ final class MachineManagerTests: XCTestCase {
         }
 
         XCTAssertEqual(try value(after: "--state-dir"), durable + "/dev")
+        XCTAssertEqual(try value(after: "--display-mode"), "desktop")
         for flag in ["--dockerd-sock", "--agent-sock", "--shell-sock", "--control-sock"] {
             let path = try value(after: flag)
             XCTAssertTrue(path.hasPrefix(runtime + "/"), "\(flag) should use transient runtime storage")

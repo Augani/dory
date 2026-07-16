@@ -28,6 +28,7 @@ public struct DoryVMMArguments: Sendable, Equatable {
     public var detail = "helper handoff ready"
     public var memoryMB: UInt64 = 2048
     public var cpuCount: Int = 2
+    public var displayMode: DoryMachineDisplayMode = .headless
     public var kernelCommandLine: String?
     public var readyTimeoutSeconds: TimeInterval = 60
     public var exitAfterHandoff = false
@@ -56,6 +57,7 @@ public enum DoryVMMArgumentError: Error, Sendable, Equatable, CustomStringConver
     case missingRootfs
     case missingGVProxy
     case invalidPublishHost(String)
+    case invalidDisplayMode(String)
     case invalidEnvironment(String)
 
     public var description: String {
@@ -78,6 +80,8 @@ public enum DoryVMMArgumentError: Error, Sendable, Equatable, CustomStringConver
             return "Docker VZ fallback requires explicit --gvproxy"
         case let .invalidPublishHost(host):
             return "invalid --publish-host (expected 127.0.0.1 or 0.0.0.0): \(host)"
+        case let .invalidDisplayMode(mode):
+            return "invalid --display-mode (expected headless or desktop): \(mode)"
         case let .invalidEnvironment(value):
             return "invalid --env value: \(value)"
         }
@@ -113,6 +117,12 @@ public func parseDoryVMMArguments(_ raw: [String]) throws -> DoryVMMArguments {
             parsed.memoryMB = try uint64Value(after: argument, from: raw, index: &index)
         case "--cpus":
             parsed.cpuCount = try intValue(after: argument, from: raw, index: &index)
+        case "--display-mode":
+            let value = try value(after: argument, from: raw, index: &index)
+            guard let mode = DoryMachineDisplayMode(rawValue: value) else {
+                throw DoryVMMArgumentError.invalidDisplayMode(value)
+            }
+            parsed.displayMode = mode
         case "--cmdline":
             parsed.kernelCommandLine = try value(after: argument, from: raw, index: &index)
         case "--handoff-sock":
@@ -188,6 +198,7 @@ public struct DoryVZMachineSpec: Sendable, Equatable {
     public var rootfsPath: String
     public var memoryMB: UInt64
     public var cpuCount: Int
+    public var displayMode: DoryMachineDisplayMode
     public var kernelCommandLine: String?
     public var shares: [DoryMachineShareConfiguration]
     public var environment: [String: String]
@@ -203,6 +214,7 @@ public struct DoryVZMachineSpec: Sendable, Equatable {
         rootfsPath: String,
         memoryMB: UInt64,
         cpuCount: Int,
+        displayMode: DoryMachineDisplayMode = .headless,
         kernelCommandLine: String? = nil,
         shares: [DoryMachineShareConfiguration] = [],
         environment: [String: String] = [:],
@@ -217,6 +229,7 @@ public struct DoryVZMachineSpec: Sendable, Equatable {
         self.rootfsPath = rootfsPath
         self.memoryMB = memoryMB
         self.cpuCount = cpuCount
+        self.displayMode = displayMode
         self.kernelCommandLine = kernelCommandLine
         self.shares = shares
         self.environment = environment
@@ -312,6 +325,30 @@ public enum DoryVZConfigurationBuilder {
             network.macAddress = macAddress
         }
         configuration.networkDevices = [network]
+
+        if spec.displayMode == .desktop {
+            let graphics = VZVirtioGraphicsDeviceConfiguration()
+            graphics.scanouts = [VZVirtioGraphicsScanoutConfiguration(
+                widthInPixels: 1440,
+                heightInPixels: 900
+            )]
+            configuration.graphicsDevices = [graphics]
+            configuration.keyboards = [VZUSBKeyboardConfiguration()]
+            configuration.pointingDevices = [VZUSBScreenCoordinatePointingDeviceConfiguration()]
+
+            let output = VZVirtioSoundDeviceOutputStreamConfiguration()
+            output.sink = VZHostAudioOutputStreamSink()
+            let sound = VZVirtioSoundDeviceConfiguration()
+            sound.streams = [output]
+            configuration.audioDevices = [sound]
+
+            let console = VZVirtioConsoleDeviceConfiguration()
+            let spiceAgent = VZVirtioConsolePortConfiguration()
+            spiceAgent.name = VZSpiceAgentPortAttachment.spiceAgentPortName
+            spiceAgent.attachment = VZSpiceAgentPortAttachment()
+            console.ports[0] = spiceAgent
+            configuration.consoleDevices = [console]
+        }
 
         var dockerDataDiskPath: String?
         var allowDockerDataFormat = false
@@ -646,6 +683,7 @@ public enum DoryVMMMain {
                 controlSocketPath: arguments.controlSocketPath ?? "\(stateDirectory)/control.sock",
                 memoryMB: arguments.memoryMB,
                 cpuCount: arguments.cpuCount,
+                displayMode: arguments.displayMode,
                 kernelCommandLine: arguments.kernelCommandLine,
                 readyTimeoutSeconds: arguments.readyTimeoutSeconds,
                 shares: arguments.shares,
@@ -670,7 +708,21 @@ public enum DoryVMMMain {
         }
         if let runtime {
             try withExtendedLifetime(shutdownCoordinator) {
-                try runtime.waitUntilStopped()
+                if arguments.displayMode == .desktop {
+                    guard Thread.isMainThread else {
+                        throw DoryVZMachineError.validation(
+                            "desktop display must run on the dory-vmm main thread"
+                        )
+                    }
+                    try MainActor.assumeIsolated {
+                        try DoryVMMDesktopApplication.run(
+                            runtime: runtime,
+                            machineID: machineID
+                        )
+                    }
+                } else {
+                    try runtime.waitUntilStopped()
+                }
             }
         } else {
             while true {
@@ -715,6 +767,7 @@ public enum DoryVMMMain {
         controlSocketPath: String,
         memoryMB: UInt64,
         cpuCount: Int,
+        displayMode: DoryMachineDisplayMode,
         kernelCommandLine: String?,
         readyTimeoutSeconds: TimeInterval,
         shares: [DoryMachineShareConfiguration],
@@ -789,6 +842,7 @@ public enum DoryVMMMain {
             rootfsPath: rootfsPath,
             memoryMB: memoryMB,
             cpuCount: cpuCount,
+            displayMode: displayMode,
             kernelCommandLine: kernelCommandLine,
             shares: shares,
             environment: environment,
@@ -1058,18 +1112,18 @@ final class DoryVMMShutdownCoordinator: @unchecked Sendable {
     }
 }
 
-private final class DoryVMMRuntime: DoryVMMGuestShutdownHandling, @unchecked Sendable {
+final class DoryVMMRuntime: DoryVMMGuestShutdownHandling, @unchecked Sendable {
     let machine: DoryVZMachine
-    let controlServer: DoryVMMControlServer
-    let proxies: [DoryVZPortUnixProxy]
-    let serialLog: FileHandle
-    let gvproxyNetwork: DoryVMMGVProxyNetwork?
-    let sourcePreservingLANClient: SourcePreservingLANPrivilegedClient?
-    let sourcePreservingLANSessionID: String?
-    let sshAgentBridge: DoryVZHostSSHAgentBridge?
-    let portForwarder: DoryVMMPortForwarder?
+    private let controlServer: DoryVMMControlServer
+    private let proxies: [DoryVZPortUnixProxy]
+    private let serialLog: FileHandle
+    private let gvproxyNetwork: DoryVMMGVProxyNetwork?
+    private let sourcePreservingLANClient: SourcePreservingLANPrivilegedClient?
+    private let sourcePreservingLANSessionID: String?
+    private let sshAgentBridge: DoryVZHostSSHAgentBridge?
+    private(set) var portForwarder: DoryVMMPortForwarder?
 
-    init(
+    fileprivate init(
         machine: DoryVZMachine,
         controlServer: DoryVMMControlServer,
         proxies: [DoryVZPortUnixProxy],
@@ -1231,6 +1285,10 @@ public final class DoryVZMachine: @unchecked Sendable {
             }
         }
         try box.wait()
+    }
+
+    var virtualMachineForDisplay: VZVirtualMachine {
+        virtualMachine
     }
 
     public func waitForConnection(toPort port: UInt32, timeout: TimeInterval) throws -> VZVirtioSocketConnection {

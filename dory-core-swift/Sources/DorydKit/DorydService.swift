@@ -1028,6 +1028,10 @@ private extension RemoteMachineConfiguration {
 
 private extension DoryMachineConfiguration {
     init(xpcDictionary dictionary: NSDictionary) throws {
+        let rawDisplayMode = dictionary.optionalString("displayMode") ?? DoryMachineDisplayMode.headless.rawValue
+        guard let displayMode = DoryMachineDisplayMode(rawValue: rawDisplayMode) else {
+            throw MachineManagerError.persistence("unsupported machine display mode: \(rawDisplayMode)")
+        }
         self.init(
             id: try dictionary.requiredString("id"),
             kernelPath: try dictionary.requiredString("kernelPath"),
@@ -1035,6 +1039,7 @@ private extension DoryMachineConfiguration {
             memoryMB: try dictionary.optionalUInt64("memoryMB") ?? 2048,
             cpuCount: try dictionary.optionalInt("cpuCount") ?? 2,
             address: dictionary.optionalString("address"),
+            displayMode: displayMode,
             shares: try dictionary.optionalMachineShares("shares"),
             environment: try dictionary.optionalEnvironmentDictionary("env")
         )
@@ -1342,6 +1347,7 @@ private extension DoryMachineStatus {
         dictionary["memoryMB"] = memoryMB
         dictionary["currentBalloonTargetMB"] = currentBalloonTargetMB
         dictionary["cpuCount"] = cpuCount
+        dictionary["displayMode"] = displayMode.rawValue
         return dictionary as NSDictionary
     }
 }
@@ -1435,6 +1441,7 @@ private extension DoryMachineSnapshot {
             "architecture": architecture,
             "memoryMB": memoryMB,
             "cpuCount": cpuCount,
+            "displayMode": displayMode.rawValue,
         ]
     }
 }

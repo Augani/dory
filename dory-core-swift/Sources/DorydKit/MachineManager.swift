@@ -154,6 +154,11 @@ public struct DoryMachineShareConfiguration: Sendable, Equatable, Hashable, Coda
     }
 }
 
+public enum DoryMachineDisplayMode: String, Sendable, Equatable, Hashable, Codable, CaseIterable {
+    case headless
+    case desktop
+}
+
 public struct DoryMachineConfiguration: Sendable, Equatable, Hashable, Codable {
     public var id: String
     public var kernelPath: String
@@ -161,6 +166,7 @@ public struct DoryMachineConfiguration: Sendable, Equatable, Hashable, Codable {
     public var memoryMB: UInt64
     public var cpuCount: Int
     public var address: String?
+    public var displayMode: DoryMachineDisplayMode
     public var shares: [DoryMachineShareConfiguration]
     public var environment: [String: String]
 
@@ -171,6 +177,7 @@ public struct DoryMachineConfiguration: Sendable, Equatable, Hashable, Codable {
         memoryMB: UInt64 = 2048,
         cpuCount: Int = 2,
         address: String? = nil,
+        displayMode: DoryMachineDisplayMode = .headless,
         shares: [DoryMachineShareConfiguration] = [],
         environment: [String: String] = [:]
     ) {
@@ -180,6 +187,7 @@ public struct DoryMachineConfiguration: Sendable, Equatable, Hashable, Codable {
         self.memoryMB = memoryMB
         self.cpuCount = cpuCount
         self.address = address
+        self.displayMode = displayMode
         self.shares = shares
         self.environment = environment
     }
@@ -191,6 +199,7 @@ public struct DoryMachineConfiguration: Sendable, Equatable, Hashable, Codable {
         case memoryMB
         case cpuCount
         case address
+        case displayMode
         case shares
         case environment
     }
@@ -204,6 +213,7 @@ public struct DoryMachineConfiguration: Sendable, Equatable, Hashable, Codable {
             memoryMB: try container.decodeIfPresent(UInt64.self, forKey: .memoryMB) ?? 2048,
             cpuCount: try container.decodeIfPresent(Int.self, forKey: .cpuCount) ?? 2,
             address: try container.decodeIfPresent(String.self, forKey: .address),
+            displayMode: try container.decodeIfPresent(DoryMachineDisplayMode.self, forKey: .displayMode) ?? .headless,
             shares: try container.decodeIfPresent([DoryMachineShareConfiguration].self, forKey: .shares) ?? [],
             environment: try container.decodeIfPresent([String: String].self, forKey: .environment) ?? [:]
         )
@@ -238,6 +248,7 @@ public struct DoryMachineStatus: Sendable, Equatable {
     public var memoryMB: UInt64
     public var currentBalloonTargetMB: UInt64
     public var cpuCount: Int
+    public var displayMode: DoryMachineDisplayMode
     public var shares: [DoryMachineShareConfiguration]
     public var environment: [String: String]
 
@@ -259,6 +270,7 @@ public struct DoryMachineStatus: Sendable, Equatable {
         memoryMB: UInt64 = 0,
         currentBalloonTargetMB: UInt64? = nil,
         cpuCount: Int = 0,
+        displayMode: DoryMachineDisplayMode = .headless,
         shares: [DoryMachineShareConfiguration] = [],
         environment: [String: String] = [:]
     ) {
@@ -279,6 +291,7 @@ public struct DoryMachineStatus: Sendable, Equatable {
         self.memoryMB = memoryMB
         self.currentBalloonTargetMB = currentBalloonTargetMB ?? memoryMB
         self.cpuCount = cpuCount
+        self.displayMode = displayMode
         self.shares = shares
         self.environment = environment
     }
@@ -295,6 +308,7 @@ public struct DoryMachineSnapshot: Sendable, Equatable, Hashable, Codable {
     public var architecture: String
     public var memoryMB: UInt64
     public var cpuCount: Int
+    public var displayMode: DoryMachineDisplayMode
     public var address: String?
     public var shares: [DoryMachineShareConfiguration]
     public var environment: [String: String]
@@ -310,6 +324,7 @@ public struct DoryMachineSnapshot: Sendable, Equatable, Hashable, Codable {
         architecture: String,
         memoryMB: UInt64,
         cpuCount: Int,
+        displayMode: DoryMachineDisplayMode = .headless,
         address: String? = nil,
         shares: [DoryMachineShareConfiguration] = [],
         environment: [String: String] = [:]
@@ -324,9 +339,47 @@ public struct DoryMachineSnapshot: Sendable, Equatable, Hashable, Codable {
         self.architecture = architecture
         self.memoryMB = memoryMB
         self.cpuCount = cpuCount
+        self.displayMode = displayMode
         self.address = address
         self.shares = shares
         self.environment = environment
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case machineID
+        case note
+        case createdISO
+        case rootfsPath
+        case sizeBytes
+        case kernelPath
+        case architecture
+        case memoryMB
+        case cpuCount
+        case displayMode
+        case address
+        case shares
+        case environment
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            id: try container.decode(String.self, forKey: .id),
+            machineID: try container.decode(String.self, forKey: .machineID),
+            note: try container.decode(String.self, forKey: .note),
+            createdISO: try container.decode(String.self, forKey: .createdISO),
+            rootfsPath: try container.decode(String.self, forKey: .rootfsPath),
+            sizeBytes: try container.decode(Int64.self, forKey: .sizeBytes),
+            kernelPath: try container.decode(String.self, forKey: .kernelPath),
+            architecture: try container.decode(String.self, forKey: .architecture),
+            memoryMB: try container.decode(UInt64.self, forKey: .memoryMB),
+            cpuCount: try container.decode(Int.self, forKey: .cpuCount),
+            displayMode: try container.decodeIfPresent(DoryMachineDisplayMode.self, forKey: .displayMode) ?? .headless,
+            address: try container.decodeIfPresent(String.self, forKey: .address),
+            shares: try container.decodeIfPresent([DoryMachineShareConfiguration].self, forKey: .shares) ?? [],
+            environment: try container.decodeIfPresent([String: String].self, forKey: .environment) ?? [:]
+        )
     }
 }
 
@@ -857,6 +910,7 @@ public final class MachineManager: @unchecked Sendable {
                 architecture: configuration.guestArchitecture,
                 memoryMB: machine.memoryMB,
                 cpuCount: machine.cpuCount,
+                displayMode: machine.displayMode,
                 address: machine.address,
                 shares: machine.shares,
                 environment: machine.environment
@@ -941,6 +995,7 @@ public final class MachineManager: @unchecked Sendable {
             memoryMB: snapshot.memoryMB,
             cpuCount: snapshot.cpuCount,
             address: nil,
+            displayMode: snapshot.displayMode,
             shares: snapshot.shares,
             environment: snapshot.environment
         )
@@ -970,6 +1025,7 @@ public final class MachineManager: @unchecked Sendable {
         var restoredMachine = machine
         restoredMachine.memoryMB = snapshot.memoryMB
         restoredMachine.cpuCount = snapshot.cpuCount
+        restoredMachine.displayMode = snapshot.displayMode
         restoredMachine.address = address
         restoredMachine.shares = snapshot.shares
         restoredMachine.environment = snapshot.environment
@@ -1164,6 +1220,7 @@ public final class MachineManager: @unchecked Sendable {
                 configuredAddress: entry.configuration.address,
                 memoryMB: entry.configuration.memoryMB,
                 cpuCount: entry.configuration.cpuCount,
+                displayMode: entry.configuration.displayMode,
                 shares: entry.configuration.shares,
                 environment: entry.configuration.environment
             )
@@ -1186,6 +1243,7 @@ public final class MachineManager: @unchecked Sendable {
             memoryMB: entry.configuration.memoryMB,
             currentBalloonTargetMB: entry.currentBalloonTargetMB ?? entry.configuration.memoryMB,
             cpuCount: entry.configuration.cpuCount,
+            displayMode: entry.configuration.displayMode,
             shares: entry.configuration.shares,
             environment: entry.configuration.environment
         )
@@ -1217,6 +1275,7 @@ public final class MachineManager: @unchecked Sendable {
             "--rootfs", machine.rootfsPath,
             "--memory-mb", String(machine.memoryMB),
             "--cpus", String(machine.cpuCount),
+            "--display-mode", machine.displayMode.rawValue,
         ]
         if let handoffPath {
             arguments.append(contentsOf: ["--handoff-sock", handoffPath])

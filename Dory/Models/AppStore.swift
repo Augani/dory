@@ -4248,7 +4248,8 @@ final class AppStore {
                 memoryMB: status.memoryMB.flatMap { Int(exactly: $0) },
                 mounts: status.shares.map(Self.mountPair(fromDoryd:)),
                 env: status.environment,
-                address: status.configuredAddress
+                address: status.configuredAddress,
+                displayMode: status.displayMode
             )
         } catch {
             actionError = "Could not load doryd machine settings: \(error)"
@@ -4338,6 +4339,7 @@ final class AppStore {
             username: "root",
             loginShell: "/bin/sh",
             shellSocketPath: status.shellSocketPath ?? "",
+            displayMode: status.displayMode,
             mounts: status.shares.map(Self.mountPair(fromDoryd:))
         )
     }
@@ -4600,6 +4602,7 @@ final class AppStore {
             memoryMB: memoryMB,
             cpuCount: cpuCount,
             address: address,
+            displayMode: settings.displayMode,
             shares: dorydShares(from: settings.mounts),
             environment: settings.env
         )
@@ -4731,7 +4734,8 @@ final class AppStore {
                 memoryMB: current?.memoryMB.flatMap { Int(exactly: $0) },
                 mounts: current?.shares.map(Self.mountPair(fromDoryd:)) ?? [],
                 env: current?.environment ?? [:],
-                address: current?.configuredAddress
+                address: current?.configuredAddress,
+                displayMode: current?.displayMode ?? machine.displayMode
             )
             let effectiveSettings = Self.preservingHiddenMachineSettings(settings, existing: currentSettings)
             let memory = effectiveSettings.memoryMB.flatMap { UInt64(exactly: $0) } ?? current?.memoryMB
