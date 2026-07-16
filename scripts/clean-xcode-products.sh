@@ -4,6 +4,7 @@
 set -euo pipefail
 
 strip_test_products=0
+remove_app_products=0
 root="$HOME/Library/Developer/Xcode/DerivedData"
 lsregister="${DORY_LSREGISTER_BIN:-/System/Library/Frameworks/CoreServices.framework/Versions/Current/Frameworks/LaunchServices.framework/Versions/Current/Support/lsregister}"
 
@@ -13,12 +14,16 @@ while [ "$#" -gt 0 ]; do
       strip_test_products=1
       shift
       ;;
+    --remove-app-products)
+      remove_app_products=1
+      shift
+      ;;
     --root)
       root="${2:?--root requires a path}"
       shift 2
       ;;
     *)
-      echo "usage: scripts/clean-xcode-products.sh [--strip-test-products] [--root PATH]" >&2
+      echo "usage: scripts/clean-xcode-products.sh [--strip-test-products] [--remove-app-products] [--root PATH]" >&2
       exit 2
       ;;
   esac
@@ -74,6 +79,19 @@ clear_xattrs() {
     fi
   done < <(find "$app" -print0)
   return 1
+}
+
+remove_product_bundle() {
+  local app="$1"
+  case "$app" in
+    "$root"/*/Build/Products/*/Dory.app|"$root"/*/Build/Products/*/DoryUITests-Runner.app)
+      find "$app" -depth -delete
+      ;;
+    *)
+      echo "clean-xcode-products: refusing to remove unexpected bundle path: $app" >&2
+      return 1
+      ;;
+  esac
 }
 
 registered_test_runners() {
@@ -132,7 +150,10 @@ strip_test_payloads() {
 while IFS= read -r -d '' app; do
   clear_xattrs "$app"
   case "$(basename "$app")" in
-    DoryUITests-Runner.app) unregister_launchservices "$app" ;;
+    DoryUITests-Runner.app)
+      unregister_launchservices "$app"
+      [ "$remove_app_products" -eq 0 ] || remove_product_bundle "$app"
+      ;;
     Dory.app)
       # Xcode registers the test host before this scrub. macOS can retain the original provenance
       # assessment in LaunchServices even after the xattrs are gone, yielding the misleading
@@ -140,6 +161,7 @@ while IFS= read -r -d '' app; do
       # sufficient; xcodebuild launches the cleaned test host directly and may register it afresh.
       unregister_launchservices "$app"
       strip_test_payloads "$app"
+      [ "$remove_app_products" -eq 0 ] || remove_product_bundle "$app"
       ;;
   esac
 done < <(find "$root" -path '*/Build/Products/*' \( -name 'Dory.app' -o -name 'DoryUITests-Runner.app' \) -type d -prune -print0)

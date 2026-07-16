@@ -59,14 +59,21 @@ select_xcode() {
 
 clean_test_products() {
   [ "$(uname -s)" = Darwin ] || return 0
-  scripts/clean-xcode-products.sh >/dev/null
+  scripts/clean-xcode-products.sh --remove-app-products >/dev/null
 }
 
-cleanup_after_xcode() {
+cleanup_test_products() {
   local status=$?
   trap - EXIT INT TERM
   clean_test_products || true
   exit "$status"
+}
+
+require_dory_quit() {
+  if pgrep -f '/Dory\.app/Contents/MacOS/Dory([[:space:]]|$)' >/dev/null 2>&1; then
+    echo "test: quit every running Dory app; duplicate com.pythonxi.Dory apps cause LaunchServices Code 20" >&2
+    exit 1
+  fi
 }
 
 run_xcodebuild() {
@@ -102,12 +109,9 @@ run_swift() {
 
 run_app() {
   prepare_swift
-  if pgrep -f '/Dory\.app/Contents/MacOS/Dory([[:space:]]|$)' >/dev/null 2>&1; then
-    echo "test: quit every running Dory app before hosted tests" >&2
-    exit 1
-  fi
+  require_dory_quit
   clean_test_products
-  trap cleanup_after_xcode EXIT
+  trap cleanup_test_products EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM
   if [ -n "${CI:-}" ]; then
@@ -129,12 +133,9 @@ run_app() {
 
 run_ui() {
   prepare_swift
-  if pgrep -f '/Dory\.app/Contents/MacOS/Dory([[:space:]]|$)' >/dev/null 2>&1; then
-    echo "test: quit every running Dory app before UI tests" >&2
-    exit 1
-  fi
+  require_dory_quit
   clean_test_products
-  trap cleanup_after_xcode EXIT
+  trap cleanup_test_products EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM
   run_xcodebuild test \
