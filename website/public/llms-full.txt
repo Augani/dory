@@ -1,6 +1,6 @@
 # Dory complete agent reference
 
-Version: Dory 0.3.0
+Version: Dory 0.3.1
 Host contract: Apple Silicon Mac, macOS 14 or later
 License: GPL-3.0
 Local socket: ~/.dory/dory.sock
@@ -12,16 +12,20 @@ Telemetry: none
 Dory has three distinct execution surfaces:
 
 1. The shared container engine is one persistent Linux VM that serves the Docker API. Docker containers, images, volumes, networks, Compose, BuildKit, and k3s use this engine.
-2. Dory Linux machines are separate persistent arm64 VMs. Managed Debian 13 + Xfce desktops have configurable users; lightweight Alpine headless machines retain root /bin/sh. Each has its own disk, address, resources, scoped mounts, and snapshots.
+2. Dory Linux machines are separate persistent arm64 VMs. Managed Debian 13, Ubuntu 24.04 LTS, and Kali rolling Xfce desktops have configurable users and Retina-sharp resizable displays; lightweight Alpine headless machines retain root /bin/sh. Each has its own disk, address, resources, scoped mounts, and snapshots.
 3. Agent sandboxes are preview, dedicated Dory Linux VMs created for one command. They have no host file sharing by default and are deleted by default.
 
-Do not describe a Dory Linux machine as a container. Inspect its display mode and identity: desktop machines are managed Debian 13 with systemd, Xfce, Bash, and a configurable user; headless machines are Alpine-based, root, and /bin/sh.
+Do not describe a Dory Linux machine as a container. Inspect its display mode and identity: desktop machines use the selected managed Debian, Ubuntu, or Kali profile with systemd, Xfce, Bash, and a configurable user; headless machines are Alpine-based, root, and /bin/sh.
 
 ## Installation and host tools
 
 Recommended install:
 
     brew install --cask Augani/dory/dory
+
+The Homebrew cask and standard download are the Lean edition: containers, Kubernetes, and headless Linux servers. The all-inclusive Desktop download adds the Debian, Ubuntu, and Kali graphical images. Both editions use the same selected `.dorydrive`.
+
+Dory 0.3.0 users should quit Dory, uninstall the old app, and install the 0.3.1 edition they want. Normal uninstall preserves workload data. Keep only one Dory.app in Applications so macOS registers the correct bundled services.
 
 Open Dory once. While doryd is running it reconciles bundled `docker`, `docker compose`, `kubectl`, and `dory` tools in ~/.dory/bin and creates the dory Docker context. A separate Docker Desktop or Docker CLI install is not required.
 
@@ -155,6 +159,8 @@ Auto-Idle can be blocked by published ports, pinned projects, or Kubernetes acco
     dory machine snapshot NAME --note NOTE
     dory machine restore NAME SNAPSHOT
 
+The app has separate Linux Desktops and Linux Servers areas. Desktop creation selects Debian 13, Ubuntu 24.04 LTS, or Kali rolling, a login user, CPU, memory, optional development recipe, Mac home sharing, and scoped mounts. Desktop windows render at a true 2x guest framebuffer, follow window resizing, and configure matching Xfce scaling. The Desktop edition is required to create a new graphical machine.
+
 The machine command also supports clone, import, export, and snapshot deletion. Structured execution uses `dev.dory.machine.exec v1`. New machines do not inherit arbitrary host secrets or files. The app controls a named environment allow-list and scoped mounts.
 
 ## Kubernetes
@@ -214,13 +220,13 @@ A sandbox is a dedicated Dory Linux VM and is deleted by default. No host files 
 
 ## Status boundaries
 
-Stable: Docker, Compose, BuildKit, data drive, backup and restore, migration, Kubernetes presets, Dory Linux machines, health, repair, network planning, Auto-Idle, agent guide, wait, events, and MCP.
+Stable: Docker, Compose, BuildKit, data drive, backup and restore, migration, Kubernetes presets, managed Debian, Ubuntu, and Kali desktops, Alpine headless servers, health, repair, network planning, Auto-Idle, agent guide, wait, events, and MCP.
 
 Preview: isolated agent sandbox VMs.
 
 Experimental: in-guest Venus and Vulkan GPU acceleration.
 
-Deferred: Intel host release, desktop distribution selection beyond managed Debian 13 + Xfce, audio passthrough, and scoped outbound-only sandbox egress.
+Deferred: Intel host release, desktop distributions beyond managed Debian, Ubuntu, and Kali Xfce, audio passthrough, and scoped outbound-only sandbox egress.
 
 ## Canonical links
 

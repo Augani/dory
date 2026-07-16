@@ -2,7 +2,7 @@
   "schema": "dev.dory.agent.guide",
   "version": 1,
   "summary": "Machine-readable Dory CLI capability map for non-interactive coding agents.",
-  "release": "0.3.0",
+  "release": "0.3.1",
   "defaults": {
     "nonInteractive": true,
     "preferJSON": true,
@@ -159,7 +159,7 @@
       "status": "available",
       "safeForAutomation": true,
       "json": true,
-      "notes": "Requires dorydctl and Dory's daemon-managed VM machine runtime; use `dory machine exec NAME --json -- CMD` for schema dev.dory.machine.exec v1. Set DORY_LEGACY_DOCKER_MACHINES=1 only for old container-backed machine inspection."
+      "notes": "Requires dorydctl and Dory's daemon-managed VM machine runtime; use `dory machine exec NAME --json -- CMD` for schema dev.dory.machine.exec v1. The app creates managed Debian 13, Ubuntu 24.04 LTS, or Kali rolling Xfce desktops from the all-inclusive Desktop edition and Alpine headless servers from either edition. Set DORY_LEGACY_DOCKER_MACHINES=1 only for old container-backed machine inspection."
     },
     {
       "id": "ssh",

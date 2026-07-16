@@ -6,7 +6,7 @@
 
 <p align="center">
   <strong>Your complete local Linux workspace, built for Mac.</strong><br>
-  Docker, Compose, Kubernetes, persistent Linux machines, migration, recovery, and agent automation<br>
+  Docker, Compose, Kubernetes, full Linux desktops, persistent servers, migration, recovery, and agent automation<br>
   in one native, open-source app.
 </p>
 
@@ -27,6 +27,10 @@
 > Dory is built and qualified for Apple Silicon. Intel Mac support will follow after dedicated
 > hardware validation. Current downloads and the Homebrew cask do not include an Intel build.
 
+> Dory 0.3.1 adds managed Debian, Ubuntu, and Kali Linux desktops, Retina-sharp display windows,
+> separate lean and Desktop editions, selectable terminal apps, a configurable Docker bridge, and a
+> first-run networking authorization fix.
+
 <p align="center">
   <a href="https://augani.github.io/dory/#product"><strong>Explore the interactive Dory interface</strong></a>
 </p>
@@ -34,8 +38,9 @@
 ## What Dory is
 
 Dory is a self-contained local runtime for software development on macOS. It gives standard Docker
-tools a native Apple Silicon engine, adds one-click Kubernetes and persistent Linux machines, and
-keeps the whole workspace operable from both a SwiftUI app and a versioned command-line interface.
+tools a native Apple Silicon engine, adds one-click Kubernetes, full graphical Linux desktops, and
+persistent headless servers, and keeps the whole workspace operable from both a SwiftUI app and a
+versioned command-line interface.
 
 There is no required Docker Desktop, external VM manager, account, cloud control plane, telemetry,
 or commercial-use tier. Dory is GPL-3.0 software and stores workload data on your Mac.
@@ -76,6 +81,10 @@ or commercial-use tier. Dory is GPL-3.0 software and stores workload data on you
 brew install --cask Augani/dory/dory
 ```
 
+The Homebrew cask installs the recommended lean edition with containers, Kubernetes, and headless
+Linux servers. Download the all-inclusive Desktop edition directly when you also want graphical
+Debian, Ubuntu, and Kali machines.
+
 Open Dory once. The daemon keeps `docker`, `docker compose`, `kubectl`, and `dory` available in
 `~/.dory/bin`, creates the `dory` Docker context, and points it at `~/.dory/dory.sock`. Docker
 Desktop and a separate Docker CLI install are not required.
@@ -96,6 +105,22 @@ open it.
 | `dory-engine-x.y.z-arm64.tar.gz` | Headless Dory engine bundle |
 | `release-manifest.json` | Artifact names, hashes, and release provenance |
 | `Dory-x.y.z.cdx.json` | CycloneDX software bill of materials |
+
+### Upgrading from 0.3.0
+
+Dory 0.3.0 does not contain the new graphical Linux images. Quit Dory, uninstall the old app, then
+install the 0.3.1 lean or Desktop edition. Normal uninstall preserves the selected `.dorydrive`,
+including images, containers, volumes, networks, machine disks, and snapshots.
+
+```sh
+brew uninstall --cask Augani/dory/dory
+brew install --cask Augani/dory/dory
+```
+
+For a direct installation, run `dory uninstall`, remove the old `Dory.app`, and drag the new
+edition into Applications. Keep only one copy of Dory.app so macOS registers the correct bundled
+services. Choose the Desktop edition to create new graphical machines; the lean edition can still
+manage an existing desktop machine whose disk is already in the selected data drive.
 
 ### Requirements
 
@@ -232,9 +257,10 @@ dory machine shell dev
 
 Desktop machines use native arm64 Debian 13, Ubuntu 24.04 LTS, or Kali rolling with systemd, Xfce,
 Bash, a configurable login user, and a 64 GiB thin-provisioned disk stored in the selected
-`.dorydrive`. They run normal graphical and command-line Linux applications and can mount the Mac
-home at `~/Mac` only when the user enables that share. Headless machines retain the smaller Alpine,
-`root`, and `/bin/sh` contract.
+`.dorydrive`. Their window follows the Mac display at a true 2x framebuffer, resizes dynamically,
+and configures Xfce for Retina-sharp text and controls. They run normal graphical and command-line
+Linux applications and can mount the Mac home at `~/Mac` only when the user enables that share.
+Headless machines retain the smaller Alpine, `root`, and `/bin/sh` contract.
 
 ### Machine secrets and host access
 
@@ -318,8 +344,9 @@ Optional system integration adds:
 - source-preserving LAN and Tailscale access as an explicit opt-in.
 
 Settings > Network shows the exact plan before macOS authorization and can remove Dory-owned rules.
-The DNS resolver, HTTP proxy, and HTTPS proxy ports are configurable. This also allows separate
-macOS accounts to choose unique suffixes and avoid shared-port conflicts.
+The Docker bridge subnet, DNS resolver, HTTP proxy, and HTTPS proxy ports are configurable. This
+allows Dory to avoid VPN or local-network conflicts and lets separate macOS accounts choose unique
+suffixes and local service ports.
 
 Containers reach Mac services through `host.dory.internal`. Common host AI endpoints are available
 without enabling experimental guest GPU support:
@@ -447,7 +474,7 @@ Everything below is available without using the command line:
 | Resources | Data drive, reveal, backup, verify, restore, select, grow, per-process memory, Mac capacity |
 | Machines | Host environment allow-list and the file-sharing boundary for persistent and sandbox machines |
 | Auto-Idle | Availability mode, delay, blockers, and wake notifications |
-| Network | Domains, suffix, macOS authorization, low ports, resolver and proxy ports, LAN and Tailscale access |
+| Network | Domains, suffix, macOS authorization, low ports, Docker bridge subnet, resolver and proxy ports, LAN and Tailscale access |
 | USB Devices | Scan, attach, detach, and remember USB/IP attachments per machine |
 | Local Tools | Stable and preview CLI capabilities with copyable commands |
 | Migrate & Compare | Source selection, read-only inventory, preflight, import, and product comparison |

@@ -1,6 +1,6 @@
 # Operate Dory
 
-This guide covers the stable Dory 0.3 operating surface on Apple Silicon Macs running macOS 14 or later.
+This guide covers the stable Dory 0.3.1 operating surface on Apple Silicon Macs running macOS 14 or later.
 
 ## Install and verify
 
@@ -12,6 +12,16 @@ dory doctor --active
 ```
 
 Dory provides `docker`, `docker compose`, `kubectl`, and `dory` through `~/.dory/bin` while doryd runs. A separate Docker Desktop or Docker CLI install is not required.
+
+The Homebrew cask and standard direct download install the Lean edition with containers, Kubernetes, and headless Linux servers. Install the all-inclusive Desktop edition to create Debian, Ubuntu, or Kali graphical machines.
+
+When upgrading from 0.3.0, quit Dory, uninstall the old app, and install one 0.3.1 edition. Normal uninstall preserves the selected `.dorydrive`. Keep only one Dory.app in Applications so macOS registers the correct bundled services.
+
+## Linux desktops and servers
+
+The app separates graphical Linux Desktops from lightweight Linux Servers. A new desktop can use Debian 13, Ubuntu 24.04 LTS, or Kali rolling with Xfce, systemd, Bash, and a configurable login user. Its display uses a true 2x guest framebuffer with matching Xfce scaling and follows the Mac window as it resizes.
+
+Desktop creation also controls CPU, memory, development recipe, Mac home sharing, and scoped folders. Each desktop has a thin-provisioned 64 GiB disk in the selected Dory data drive. Headless servers use Alpine with an initial root `/bin/sh` login.
 
 ## Engine resources
 
@@ -55,7 +65,7 @@ dory network authorize --json --dry-run
 dory network authorize --json --apply
 ```
 
-Settings > Network can also change the domain suffix and internal resolver or proxy ports. LAN and Tailscale access are disabled by default and require explicit opt-in.
+Settings > Network can also change the Docker bridge subnet, domain suffix, and internal resolver or proxy ports. Use a private /16 through /24 bridge that does not overlap a VPN or local network. Applying a bridge change restarts the engine but preserves data. LAN and Tailscale access are disabled by default and require explicit opt-in.
 
 ## Bind mounts and file watchers
 

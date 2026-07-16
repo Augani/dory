@@ -1,16 +1,35 @@
 # Changelog
 
-## Next
+## 0.3.1 - Unreleased
 
-- Rewrote the public README around the full shipped Docker, Kubernetes, Linux machine, migration,
-  storage, networking, diagnostics, settings, and automation surface.
+### Added
+
+- Added a dedicated Linux Desktops experience with managed Debian 13, Ubuntu 24.04 LTS, and Kali
+  rolling Xfce guests, configurable users and resources, scoped Mac folders, snapshots, and
+  persistent disks on the selected Dory data drive.
+- Added Retina-sharp, dynamically resizing desktop windows with a true 2x guest framebuffer and
+  matching Xfce scaling.
+- Added separate lean and all-inclusive Desktop builds so people who only need containers,
+  Kubernetes, and headless Linux do not download the graphical guest images.
+- Added a preferred external terminal setting for Terminal, iTerm2, Ghostty, Warp, WezTerm,
+  Alacritty, Kitty, the system default, or another selected application.
+- Added a configurable Docker bridge subnet for avoiding VPN or local-network conflicts.
+
+### Changed
+
+- Rewrote the public README around the full Docker, Kubernetes, Linux Desktop, migration, storage,
+  networking, diagnostics, settings, and automation surface.
 - Rebuilt the GitHub Pages site for people and agents, including `llms.txt`, a complete agent
-  reference, a versioned JSON capability map, and focused operations and compatibility guides.
-- Replaced static product screenshots on the site with an interactive code-built Dory interface.
-- Clarified the Apple Silicon host contract, current Dory Linux boundary, preview sandbox policy,
-  USB/IP workflow, and deferred Intel and graphical Linux work.
+  reference, a versioned JSON capability map, focused operations and compatibility guides, and an
+  interactive code-built Dory interface.
+- Clarified the Apple Silicon host contract, Desktop and lean editions, preview sandbox policy,
+  USB/IP workflow, and deferred Intel work.
+
+### Fixed
+
 - Fixed first-run privileged networking registration when macOS reports an absent service record as
   not found even though the signed helper is present in the app bundle.
+- Hardened graphical guest creation, first boot, image provenance, and packaged-helper cleanup.
 
 ## 0.3.0 - 2026-07-15
 

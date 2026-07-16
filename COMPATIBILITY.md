@@ -1,6 +1,6 @@
 # Dory compatibility
 
-This document describes the current public Dory product surface. Dory is under active development, so
+This document describes the Dory 0.3.1 public product surface. Dory is under active development, so
 please report workflows that behave differently from a standard Docker engine.
 
 ## Platform
@@ -72,6 +72,7 @@ engine resources.
 | Snapshots and export/import | Supported |
 | Development recipes | Curated Node, Python, Go, Rust, Java, Ruby, and DevOps toolsets for Debian and Alpine |
 | Graphical Linux sessions | Supported with managed Debian, Ubuntu, and Kali Xfce profiles on Apple Silicon |
+| Desktop display | Retina-sharp 2x framebuffer, dynamic window resizing, and matching Xfce scaling |
 
 Desktop machines run normal graphical and command-line applications with glibc and systemd. Their
 disk is thin-provisioned to 64 GiB in the selected Dory data drive. Headless machines use Alpine,
@@ -87,6 +88,7 @@ current contract.
 | Trusted local HTTPS | Optional local certificate authority |
 | Container-to-host services | `host.dory.internal` |
 | Custom DNS and proxies | Configurable |
+| Docker bridge subnet | Configurable private /16 through /24; applying restarts the engine while preserving data |
 | VPN environments | Supported in common configurations; report provider-specific issues |
 | IPv6 | Local dual-stack behavior is supported; external availability follows the host network |
 | LAN-visible publishing | Explicit opt-in; do not expose untrusted services |

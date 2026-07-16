@@ -22,6 +22,8 @@
 - Localhost ports, optional local domains and HTTPS, built-in low-port forwarding, custom resolver and proxy ports, and opt-in LAN access
 - Auto-Idle, diagnostics, targeted repair, safe cleanup, support bundles, JSON guide, wait, events, and MCP
 
+The Lean edition includes containers, Kubernetes, and headless Linux servers. The all-inclusive Desktop edition adds all three graphical guest images. Both editions use the same managed data drive, and the Lean edition can manage an existing graphical machine whose disk is already present.
+
 ## Developer tools
 
 Dory targets standard Docker API clients and has dedicated compatibility checks or release gates for common workflows such as VS Code Dev Containers, Testcontainers, act, local cloud emulators, Tilt, registries, and Kubernetes tools.
@@ -35,7 +37,7 @@ Compatibility can vary when a client depends on another product's private paths,
 
 ## Current machine boundary
 
-Desktop machines run normal graphical and command-line applications with Debian 13, Ubuntu 24.04 LTS, or Kali rolling, plus glibc, systemd, Xfce, Bash, and a configurable login user. Headless machines use Alpine, musl, `root`, and `/bin/sh`. Arbitrary desktop images and guest kernel modules are outside the current contract.
+Desktop machines run normal graphical and command-line applications with Debian 13, Ubuntu 24.04 LTS, or Kali rolling, plus glibc, systemd, Xfce, Bash, and a configurable login user. Their window uses a true 2x guest framebuffer, dynamically follows its Mac window, and applies matching Xfce scaling. Headless machines use Alpine, musl, `root`, and `/bin/sh`. Arbitrary desktop images and guest kernel modules are outside the current contract.
 
 ## Preview and experimental
 

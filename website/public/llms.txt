@@ -1,13 +1,15 @@
 # Dory
 
-> Dory is a native, open-source macOS runtime for Docker, Compose, Kubernetes, persistent Linux machines, local networking, migration, diagnostics, and coding-agent automation.
+> Dory is a native, open-source macOS runtime for Docker, Compose, Kubernetes, full Linux desktops, persistent servers, local networking, migration, diagnostics, and coding-agent automation.
 
-Dory supports Apple Silicon on macOS 14 or later and bundles its own engine and command-line tools. Its Linux-machine profiles are managed Debian 13 + Xfce desktops with configurable users and lightweight Alpine headless VMs. Intel hosts and additional desktop distributions are not part of the current release.
+Dory 0.3.1 supports Apple Silicon on macOS 14 or later and bundles its own engine and command-line tools. Its Linux-machine profiles are managed Debian 13, Ubuntu 24.04 LTS, and Kali rolling Xfce desktops with configurable users plus lightweight Alpine headless VMs. Intel hosts and desktop distributions beyond those three are not part of the current release.
+
+The Lean edition includes containers, Kubernetes, and headless Linux servers. The all-inclusive Desktop edition adds all three verified graphical guest images and their Retina-sharp display stack. Both editions use the same managed Dory data drive.
 
 ## Canonical documentation
 
 - [Complete agent reference](https://augani.github.io/dory/llms-full.txt): Stable commands, safety rules, schemas, recovery, examples, and product boundaries
-- [Versioned agent capability map](https://augani.github.io/dory/agent-guide.json): Machine-readable JSON contract for Dory 0.3
+- [Versioned agent capability map](https://augani.github.io/dory/agent-guide.json): Machine-readable JSON contract for Dory 0.3.1
 - [Agent and MCP guide](https://augani.github.io/dory/docs/agents.md): MCP configuration, tools, machine execution, sandbox policy, and recovery loop
 - [Operations guide](https://augani.github.io/dory/docs/operations.md): Installation, storage, networking, migration, diagnostics, and repair
 - [Compatibility contract](https://augani.github.io/dory/docs/compatibility.md): Supported, preview, experimental, and deferred behavior

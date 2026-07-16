@@ -66,6 +66,19 @@ const surfaces: Array<{
   },
 ]
 
+const desktopDistros = [
+  ['Debian', '13', 'Stable, clean desktop for everyday Linux and development', '#a80030'],
+  ['Ubuntu', '24.04 LTS', 'A familiar long-term-support base for development and daily work', '#e95420'],
+  ['Kali Linux', 'Rolling', 'A focused security lab backed by Kali\'s official rolling repository', '#367bf0'],
+]
+
+const desktopCapabilities = [
+  ['Real Linux guest', 'Native arm64, systemd, Xfce, Bash, apt, and normal graphical or command-line applications'],
+  ['Retina display', 'A true 2x guest framebuffer follows the window and keeps the Xfce desktop sharp as it resizes'],
+  ['Your identity', 'Choose the Linux username, CPU, memory, development recipe, and only the Mac folders to share'],
+  ['Persistent and recoverable', 'A thin 64 GiB disk lives in the selected .dorydrive with snapshots, clone, import, and export'],
+]
+
 const cockpitFeatures = [
   ['Containers', 'Live CPU and memory, logs, shell, ports, Compose groups'],
   ['Images', 'Pull, run, inspect, copy IDs, delete, and reclaim'],
@@ -73,7 +86,8 @@ const cockpitFeatures = [
   ['Networks', 'Inspect custom networks, IPAM, attached containers, and cleanup'],
   ['Compose', 'Open YAML, start, stop, restart, and bring projects down'],
   ['Kubernetes', 'Apply YAML, exec, logs, scale, restart, and switch versions'],
-  ['Linux Machines', 'Create a desktop or headless VM, open its display or terminal, snapshot, clone, import, and export'],
+  ['Linux Desktops', 'Create Debian, Ubuntu, or Kali, open its Retina display or terminal, snapshot, clone, import, and export'],
+  ['Linux Servers', 'Run lightweight persistent Alpine VMs for terminals, services, tests, and agents'],
   ['Health', 'Passive checks, active probes, repair, history, and support bundles'],
 ]
 
@@ -105,7 +119,7 @@ const settings = [
   ['Resources', 'Data drive, backup, verify, restore, growth, process memory'],
   ['Machines', 'Host environment allow-list and file-sharing boundaries'],
   ['Auto-Idle', 'Availability mode, idle delay, blockers, wake notices'],
-  ['Network', 'Domains, low ports, resolver, proxies, LAN and Tailscale'],
+  ['Network', 'Domains, low ports, Docker bridge subnet, resolver, proxies, LAN and Tailscale'],
   ['USB Devices', 'Scan, attach, detach, and remember USB/IP devices'],
   ['Local Tools', 'Stable and preview daemon commands with copy actions'],
   ['Migrate & Compare', 'Source discovery, preflight, import, and comparison'],
@@ -135,15 +149,27 @@ const faqs = [
   },
   {
     question: 'Are Linux machines full desktop VMs?',
-    answer: 'Yes on Apple Silicon. Choose managed Debian 13, Ubuntu 24.04 LTS, or Kali rolling with systemd, Xfce, Bash, a configurable user, and a 64 GiB thin-provisioned disk. Lightweight Alpine headless machines remain available for terminal and service workloads.',
+    answer: 'Yes on Apple Silicon. Choose managed Debian 13, Ubuntu 24.04 LTS, or Kali rolling with systemd, Xfce, Bash, a configurable user, a Retina-sharp resizable display, and a 64 GiB thin-provisioned disk. Lightweight Alpine headless machines remain available for terminal and service workloads.',
+  },
+  {
+    question: 'Which Dory edition should I install?',
+    answer: 'Choose the lean edition for containers, Kubernetes, and headless Linux servers. Choose the all-inclusive Desktop edition when you also want to create Debian, Ubuntu, or Kali graphical machines. Both editions use the same Dory data drive.',
+  },
+  {
+    question: 'How do I upgrade from Dory 0.3.0?',
+    answer: 'Quit Dory, uninstall the old app, and install Dory 0.3.1 in either the lean or Desktop edition. Normal uninstall preserves the selected .dorydrive and all workload data. Keep only one Dory.app in Applications so macOS registers the correct services.',
+  },
+  {
+    question: 'Can I choose which terminal Dory opens?',
+    answer: 'Yes. Settings > General can use the system default, Terminal, iTerm2, Ghostty, Warp, WezTerm, Alacritty, Kitty, or another application you select. The preference applies to container and Linux-machine terminal actions.',
   },
 ]
 
 const releaseStates = [
-  ['Stable', 'Docker, Compose, Kubernetes, machines, migration, storage, networking, health, MCP'],
+  ['Stable', 'Docker, Compose, Kubernetes, Linux desktops and servers, migration, storage, networking, health, MCP'],
   ['Preview', 'Dedicated agent sandbox VMs with explicit mounts and network policy reporting'],
   ['Experimental', 'In-guest Venus and Vulkan GPU acceleration on Apple Silicon'],
-  ['Later', 'Intel host build, additional managed desktop images, audio passthrough'],
+  ['Later', 'Intel host build, desktop images beyond Debian, Ubuntu, and Kali, audio passthrough'],
 ]
 
 type DemoView = 'containers' | 'kubernetes' | 'machines'
@@ -170,7 +196,10 @@ const demoNav: Array<{
   },
   {
     group: 'LINUX',
-    items: [{ id: 'machines', label: 'Machines', icon: ServerStackIcon, count: '2' }],
+    items: [
+      { id: 'machines', label: 'Linux Desktops', icon: ServerStackIcon, count: '2' },
+      { id: 'servers', label: 'Linux Servers', icon: CommandLineIcon, count: '1' },
+    ],
   },
   {
     group: 'SYSTEM',
@@ -267,8 +296,8 @@ function KubernetesDemo() {
 
 function MachinesDemo({ tick }: { tick: number }) {
   const machines = [
-    { name: 'dev', status: 'Running', cpu: 8.6 + (tick % 4), memory: '1.8 GB', address: '192.168.127.11', shell: 'augustus · /bin/bash', distro: 'Debian 13 · Xfce · arm64', desktop: true },
-    { name: 'ci-runner', status: 'Stopped', cpu: 0, memory: 'Not running', address: 'ci-runner.dory.local', shell: 'root · /bin/sh · isolated', distro: 'Dory Linux · Alpine · arm64', desktop: false },
+    { name: 'workbench', status: 'Running', cpu: 8.6 + (tick % 4), memory: '2.4 GB', address: '192.168.127.11', shell: 'augustus · /bin/bash', distro: 'Ubuntu 24.04 LTS · Xfce · arm64' },
+    { name: 'security-lab', status: 'Stopped', cpu: 0, memory: 'Not running', address: 'security-lab.dory.local', shell: 'analyst · /bin/bash', distro: 'Kali Linux Rolling · Xfce · arm64' },
   ]
   return (
     <div className="demo-content demo-machines" key="machines">
@@ -288,11 +317,11 @@ function MachinesDemo({ tick }: { tick: number }) {
             </div>
             <p>{machine.shell}</p>
             <code>$ dory machine shell {machine.name}</code>
-            <div className="demo-machine-actions"><button type="button">{machine.status === 'Running' ? '■ Stop' : '▶ Start'}</button>{machine.desktop && <button type="button">Desktop</button>}<button type="button">⌘ Terminal</button><button type="button">Snapshot</button></div>
+            <div className="demo-machine-actions"><button type="button">{machine.status === 'Running' ? '■ Stop' : '▶ Start'}</button><button type="button">Desktop</button><button type="button">⌘ Terminal</button><button type="button">Snapshot</button></div>
           </article>
         ))}
       </div>
-      <div className="demo-machine-note"><CircleStackIcon /><span><strong>Persistent by default</strong>Each machine has its own disk, address, resources, shares, and snapshots.</span></div>
+      <div className="demo-machine-note"><CircleStackIcon /><span><strong>Retina sharp and persistent</strong>Each desktop has its own display, user, disk, address, resources, shares, and snapshots.</span></div>
     </div>
   )
 }
@@ -319,7 +348,7 @@ function DoryDemo({ initialView = 'containers', autoCycle = true }: { initialVie
   const titles: Record<DemoView, [string, string, string]> = {
     containers: ['Containers', '4 of 5 running', 'New Container'],
     kubernetes: ['Kubernetes', 'Local k3s cluster', 'Apply YAML'],
-    machines: ['Linux Machines', '2 persistent machines', 'New Machine'],
+    machines: ['Linux Desktops', '2 persistent desktops', 'New Desktop'],
   }
 
   const switchView = (id: string) => {
@@ -340,7 +369,7 @@ function DoryDemo({ initialView = 'containers', autoCycle = true }: { initialVie
       </div>
       <div className="demo-app">
         <aside className="demo-sidebar">
-          <div className="demo-brand"><img src="./logo.svg" alt="" /><span><strong>Dory</strong><small>v0.3.0 · Engine running</small></span></div>
+          <div className="demo-brand"><img src="./logo.svg" alt="" /><span><strong>Dory</strong><small>v0.3.1 · Engine running</small></span></div>
           <nav aria-label="Dory preview sections">
             {demoNav.map((group) => (
               <div className="demo-nav-group" key={group.group}>
@@ -441,10 +470,11 @@ function App() {
           <a className="wordmark" href="#top" aria-label="Dory home" onClick={closeMenu}>
             <img src="./logo.svg" alt="" />
             <span>Dory</span>
-            <small>0.3</small>
+            <small>0.3.1</small>
           </a>
           <div className={`nav-links${menuOpen ? ' nav-links-open' : ''}`}>
             <a href="#product" onClick={closeMenu}>Product</a>
+            <a href="#linux-desktop" onClick={closeMenu}>Linux Desktop</a>
             <a href="#migration" onClick={closeMenu}>Migration</a>
             <a href="#agents" onClick={closeMenu}>Agents</a>
             <a href="#operations" onClick={closeMenu}>Operations</a>
@@ -475,17 +505,17 @@ function App() {
           <div className="hero-glow hero-glow-two" aria-hidden="true" />
           <div className="hero-content">
             <div className="release-pill">
-              <span /> Dory 0.3 is live
-              <a href="https://github.com/Augani/dory/releases/tag/v0.3.0">Release notes <ArrowRightIcon /></a>
+              <span /> Dory 0.3.1 · Linux Desktop
+              <a href="https://github.com/Augani/dory/releases/latest">Release notes <ArrowRightIcon /></a>
             </div>
             <p className="hero-kicker">The local Linux workspace for Mac</p>
             <h1>More than containers.<br /><em>Your whole dev machine.</em></h1>
             <p className="hero-lede">
-              Docker, Compose, Kubernetes, persistent Linux machines, migration, recovery, and agent automation in one native Mac app.
+              Docker, Compose, Kubernetes, full Linux desktops, persistent servers, migration, recovery, and agent automation in one native Mac app.
             </p>
             <div className="hero-actions">
               <a className="button button-primary" href="https://github.com/Augani/dory/releases/latest">
-                <CloudArrowDownIcon /> Download for Apple Silicon
+                <CloudArrowDownIcon /> Choose Lean or Desktop
               </a>
               <a className="button button-ghost" href="#product">
                 Explore the product <ArrowRightIcon />
@@ -523,7 +553,7 @@ function App() {
 
         <section className="proof-strip" aria-label="Dory product facts">
           <div><strong>1</strong><span>shared container VM</span></div>
-          <div><strong>3</strong><span>local execution surfaces</span></div>
+          <div><strong>3</strong><span>managed desktop distributions</span></div>
           <div><strong>10</strong><span>settings areas in the UI</span></div>
           <div><strong>0</strong><span>accounts, telemetry, paid tiers</span></div>
         </section>
@@ -570,6 +600,37 @@ function App() {
           <div className="cockpit-visual">
             <DoryDemo initialView="kubernetes" />
             <div className="visual-note"><SparklesIcon /> Native SwiftUI. No Electron.</div>
+          </div>
+        </section>
+
+        <section className="linux-desktop section" id="linux-desktop">
+          <div className="desktop-copy">
+            <p className="eyebrow eyebrow-light">New in Dory 0.3.1</p>
+            <h2>A real Linux desktop.<br /><span>Native to your Mac.</span></h2>
+            <p>Create a managed graphical machine from its own place in the Dory sidebar. Pick the
+              distribution, login user, resources, development tools, and only the Mac folders it
+              should see. Then open its desktop or terminal without leaving Dory.</p>
+            <div className="desktop-distros">
+              {desktopDistros.map(([name, version, copy, color]) => (
+                <article key={name} style={{ '--distro-color': color } as CSSProperties}>
+                  <i>{name.slice(0, 1)}</i>
+                  <div><h3>{name}</h3><small>{version} · Xfce · arm64</small><p>{copy}</p></div>
+                </article>
+              ))}
+            </div>
+            <div className="desktop-editions">
+              <div><strong>Lean</strong><span>Containers, Kubernetes, and headless Linux servers</span></div>
+              <div className="is-featured"><strong>Desktop</strong><span>Everything in Lean plus all three graphical Linux images</span></div>
+            </div>
+            <a className="text-link light-link" href="https://github.com/Augani/dory/releases/latest">Choose your edition <ArrowRightIcon /></a>
+          </div>
+          <div className="desktop-product">
+            <DoryDemo initialView="machines" autoCycle={false} />
+            <div className="desktop-capabilities">
+              {desktopCapabilities.map(([title, copy]) => (
+                <div key={title}><CheckCircleIcon /><span><strong>{title}</strong>{copy}</span></div>
+              ))}
+            </div>
           </div>
         </section>
 
@@ -771,10 +832,10 @@ function App() {
           <img src="./logo.svg" alt="" />
           <p className="eyebrow eyebrow-light">Start local. Stay in control.</p>
           <h2>Bring your whole Linux workspace home to Mac.</h2>
-          <p>Free, open source, signed, and notarized. Built for Apple Silicon on macOS 14 or later.</p>
+          <p>Free, open source, signed, and notarized. Choose Lean or the all-inclusive Desktop edition for Apple Silicon on macOS 14 or later.</p>
           <CopyCommand command={installCommand} dark />
           <div className="install-actions">
-            <a className="button button-white" href="https://github.com/Augani/dory/releases/latest">Download the DMG <ArrowRightIcon /></a>
+            <a className="button button-white" href="https://github.com/Augani/dory/releases/latest">Choose an edition <ArrowRightIcon /></a>
             <a href="https://github.com/Augani/dory">View source on GitHub <ArrowTopRightOnSquareIcon /></a>
           </div>
         </section>
