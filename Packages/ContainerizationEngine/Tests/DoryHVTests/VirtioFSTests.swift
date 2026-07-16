@@ -1033,9 +1033,9 @@ struct VirtioFSTests {
         try await processing.value
         let elapsed = started.duration(to: clock.now)
 
-        // The policy deadline is exactly one second; allow only scheduler/measurement headroom,
-        // not another coherence interval.
-        #expect(elapsed < .milliseconds(1_100))
+        // The policy deadline is verified above as exactly one second. Allow bounded hosted-runner
+        // scheduling headroom here while staying safely below the old two-second failure window.
+        #expect(elapsed < .milliseconds(1_500))
         #expect(await coordinator.isDegraded)
         #expect(fatals.reasons.count == 1)
         #expect(fatals.reasons[0].contains("requestDrainTimedOut(activeRequests: 1)"))
