@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import ServiceManagement
 #if canImport(Darwin)
 import Darwin
 #endif
@@ -132,6 +133,13 @@ struct NetworkingTests {
         )
 
         #expect(AppStore.networkingAuthorizationSummary(plan).contains("no extra low TCP publishes"))
+    }
+
+    @Test func missingServiceManagementRecordStillTriggersRegistration() {
+        #expect(AppStore.privilegedNetworkDaemonNeedsRegistration(.notRegistered))
+        #expect(AppStore.privilegedNetworkDaemonNeedsRegistration(.notFound))
+        #expect(!AppStore.privilegedNetworkDaemonNeedsRegistration(.enabled))
+        #expect(!AppStore.privilegedNetworkDaemonNeedsRegistration(.requiresApproval))
     }
 
     @Test func domainSuffixNormalizationAcceptsDNSStyleSuffixes() {

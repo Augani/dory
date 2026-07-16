@@ -2350,29 +2350,39 @@ final class AppStore {
     }
 
     nonisolated static func ensurePrivilegedNetworkDaemon() throws {
+        guard privilegedNetworkDaemonAssetsAvailable() else {
+            throw NetworkingAuthorizationUIError.daemonMissing
+        }
         let service = SMAppService.daemon(plistName: "dev.dory.network-helper.plist")
-        switch service.status {
+        let status = service.status
+        if privilegedNetworkDaemonNeedsRegistration(status) {
+            try registerPrivilegedNetworkDaemon(service)
+            return
+        }
+        switch status {
         case .enabled:
             return
-        case .notRegistered:
-            try service.register()
-            guard service.status == .enabled else {
-                SMAppService.openSystemSettingsLoginItems()
-                throw NetworkingAuthorizationUIError.daemonApprovalRequired
-            }
         case .requiresApproval:
             SMAppService.openSystemSettingsLoginItems()
             throw NetworkingAuthorizationUIError.daemonApprovalRequired
-        case .notFound:
-            throw NetworkingAuthorizationUIError.daemonMissing
+        case .notRegistered, .notFound:
+            throw NetworkingAuthorizationUIError.daemonUnavailable
         @unknown default:
             throw NetworkingAuthorizationUIError.daemonUnavailable
         }
     }
 
     nonisolated static func refreshPrivilegedNetworkDaemonFromCurrentBundle() async throws {
+        guard privilegedNetworkDaemonAssetsAvailable() else {
+            throw NetworkingAuthorizationUIError.daemonMissing
+        }
         let service = SMAppService.daemon(plistName: "dev.dory.network-helper.plist")
-        switch service.status {
+        let status = service.status
+        if privilegedNetworkDaemonNeedsRegistration(status) {
+            try registerPrivilegedNetworkDaemon(service)
+            return
+        }
+        switch status {
         case .enabled, .requiresApproval:
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
                 service.unregister { error in
@@ -2383,18 +2393,58 @@ final class AppStore {
                     }
                 }
             }
-        case .notRegistered:
-            break
-        case .notFound:
-            throw NetworkingAuthorizationUIError.daemonMissing
+        case .notRegistered, .notFound:
+            throw NetworkingAuthorizationUIError.daemonUnavailable
         @unknown default:
             throw NetworkingAuthorizationUIError.daemonUnavailable
         }
 
-        try service.register()
-        guard service.status == .enabled else {
+        try registerPrivilegedNetworkDaemon(service)
+    }
+
+    nonisolated static func privilegedNetworkDaemonNeedsRegistration(
+        _ status: SMAppService.Status
+    ) -> Bool {
+        switch status {
+        case .notRegistered, .notFound:
+            return true
+        case .enabled, .requiresApproval:
+            return false
+        @unknown default:
+            return false
+        }
+    }
+
+    nonisolated private static func privilegedNetworkDaemonAssetsAvailable() -> Bool {
+        let plist = Bundle.main.bundleURL
+            .appendingPathComponent("Contents/Library/LaunchDaemons/dev.dory.network-helper.plist")
+        return FileManager.default.isReadableFile(atPath: plist.path)
+            && bundledHelper("dory-network-helper") != nil
+    }
+
+    nonisolated private static func registerPrivilegedNetworkDaemon(_ service: SMAppService) throws {
+        do {
+            try service.register()
+        } catch {
+            if service.status == .requiresApproval {
+                SMAppService.openSystemSettingsLoginItems()
+                throw NetworkingAuthorizationUIError.daemonApprovalRequired
+            }
+            throw NetworkingAuthorizationUIError.daemonRegistrationFailed(error.localizedDescription)
+        }
+
+        switch service.status {
+        case .enabled:
+            return
+        case .requiresApproval:
             SMAppService.openSystemSettingsLoginItems()
             throw NetworkingAuthorizationUIError.daemonApprovalRequired
+        case .notRegistered, .notFound:
+            throw NetworkingAuthorizationUIError.daemonRegistrationFailed(
+                "macOS did not retain the networking service registration."
+            )
+        @unknown default:
+            throw NetworkingAuthorizationUIError.daemonUnavailable
         }
     }
 
@@ -2533,6 +2583,7 @@ final class AppStore {
         case daemonMissing
         case daemonApprovalRequired
         case daemonUnavailable
+        case daemonRegistrationFailed(String)
         case cleanupFailed(String)
 
         var errorDescription: String? {
@@ -2545,6 +2596,8 @@ final class AppStore {
                 return "Approve Dory's networking service in System Settings > General > Login Items, then try again."
             case .daemonUnavailable:
                 return "Dory's privileged networking service is unavailable."
+            case .daemonRegistrationFailed(let detail):
+                return "Dory could not register its privileged networking service: \(detail)"
             case .cleanupFailed(let detail):
                 return "Dory could not remove its owned networking state: \(detail)"
             }

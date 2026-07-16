@@ -9,6 +9,8 @@
 - Replaced static product screenshots on the site with an interactive code-built Dory interface.
 - Clarified the Apple Silicon host contract, current Dory Linux boundary, preview sandbox policy,
   USB/IP workflow, and deferred Intel and graphical Linux work.
+- Fixed first-run privileged networking registration when macOS reports an absent service record as
+  not found even though the signed helper is present in the app bundle.
 
 ## 0.3.0 - 2026-07-15
 
