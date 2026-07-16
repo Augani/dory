@@ -59,9 +59,9 @@ const surfaces: Array<{
   {
     icon: ServerStackIcon,
     label: 'Real Linux machines',
-    title: 'Persistent VMs beside your containers.',
-    copy: 'Create separate arm64 Dory Linux machines for toolchains, services, CI work, and agents. Each gets its own disk, address, resources, shares, and snapshots.',
-    facts: ['Root shell', 'Scoped Mac folders', 'Snapshot and clone'],
+    title: 'A full Linux desktop beside your containers.',
+    copy: 'Create a managed Debian 13 + Xfce desktop for graphical and command-line apps, or choose lightweight headless Linux for services and agents.',
+    facts: ['Configurable user', 'Scoped Mac folders', 'Snapshot and clone'],
     command: 'dory machine shell dev',
   },
 ]
@@ -73,7 +73,7 @@ const cockpitFeatures = [
   ['Networks', 'Inspect custom networks, IPAM, attached containers, and cleanup'],
   ['Compose', 'Open YAML, start, stop, restart, and bring projects down'],
   ['Kubernetes', 'Apply YAML, exec, logs, scale, restart, and switch versions'],
-  ['Linux Machines', 'Create, edit, terminal, snapshot, clone, import, and export'],
+  ['Linux Machines', 'Create a desktop or headless VM, open its display or terminal, snapshot, clone, import, and export'],
   ['Health', 'Passive checks, active probes, repair, history, and support bundles'],
 ]
 
@@ -100,7 +100,7 @@ const agentTools = [
 ]
 
 const settings = [
-  ['General', 'Startup, menu bar, terminal tools, browser logins, appearance'],
+  ['General', 'Startup, menu bar, terminal tools, preferred terminal app, browser logins, appearance'],
   ['Engine & Daemon', 'Backend, CPU, memory, amd64, experimental guest GPU'],
   ['Resources', 'Data drive, backup, verify, restore, growth, process memory'],
   ['Machines', 'Host environment allow-list and file-sharing boundaries'],
@@ -135,7 +135,7 @@ const faqs = [
   },
   {
     question: 'Are Linux machines full desktop VMs?',
-    answer: 'Not in 0.3. They are persistent Alpine-based arm64 VMs for command-line applications and services, with an initial root /bin/sh login. Configurable distributions, users, systemd, and graphical desktops are future work.',
+    answer: 'Yes on Apple Silicon. Desktop Linux uses managed Debian 13, systemd, Xfce, Bash, a configurable user, and a 64 GiB thin-provisioned disk. Lightweight Alpine headless machines remain available for terminal and service workloads.',
   },
 ]
 
@@ -143,7 +143,7 @@ const releaseStates = [
   ['Stable', 'Docker, Compose, Kubernetes, machines, migration, storage, networking, health, MCP'],
   ['Preview', 'Dedicated agent sandbox VMs with explicit mounts and network policy reporting'],
   ['Experimental', 'In-guest Venus and Vulkan GPU acceleration on Apple Silicon'],
-  ['Later', 'Intel host build, configurable machine OS and users, systemd, graphical Linux desktops, audio passthrough'],
+  ['Later', 'Intel host build, additional desktop distributions, audio passthrough'],
 ]
 
 type DemoView = 'containers' | 'kubernetes' | 'machines'
@@ -267,8 +267,8 @@ function KubernetesDemo() {
 
 function MachinesDemo({ tick }: { tick: number }) {
   const machines = [
-    { name: 'dev', status: 'Running', cpu: 8.6 + (tick % 4), memory: '1.8 GB', address: '192.168.127.11', shell: 'root · /bin/sh · ~ shared' },
-    { name: 'ci-runner', status: 'Stopped', cpu: 0, memory: 'Not running', address: 'ci-runner.dory.local', shell: 'root · /bin/sh · isolated' },
+    { name: 'dev', status: 'Running', cpu: 8.6 + (tick % 4), memory: '1.8 GB', address: '192.168.127.11', shell: 'augustus · /bin/bash', distro: 'Debian 13 · Xfce · arm64', desktop: true },
+    { name: 'ci-runner', status: 'Stopped', cpu: 0, memory: 'Not running', address: 'ci-runner.dory.local', shell: 'root · /bin/sh · isolated', distro: 'Dory Linux · Alpine · arm64', desktop: false },
   ]
   return (
     <div className="demo-content demo-machines" key="machines">
@@ -277,7 +277,7 @@ function MachinesDemo({ tick }: { tick: number }) {
           <article className="demo-machine-card" key={machine.name}>
             <div className="demo-machine-title">
               <span className="demo-distro-badge">D</span>
-              <div><strong>{machine.name}</strong><small>Dory Linux · Alpine · arm64</small></div>
+              <div><strong>{machine.name}</strong><small>{machine.distro}</small></div>
               <StatusPill muted={machine.status !== 'Running'}>{machine.status}</StatusPill>
               <button type="button" aria-label={`More actions for ${machine.name}`}>•••</button>
             </div>
@@ -288,7 +288,7 @@ function MachinesDemo({ tick }: { tick: number }) {
             </div>
             <p>{machine.shell}</p>
             <code>$ dory machine shell {machine.name}</code>
-            <div className="demo-machine-actions"><button type="button">{machine.status === 'Running' ? '■ Stop' : '▶ Start'}</button><button type="button">⌘ Terminal</button><button type="button">Snapshot</button></div>
+            <div className="demo-machine-actions"><button type="button">{machine.status === 'Running' ? '■ Stop' : '▶ Start'}</button>{machine.desktop && <button type="button">Desktop</button>}<button type="button">⌘ Terminal</button><button type="button">Snapshot</button></div>
           </article>
         ))}
       </div>

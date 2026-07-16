@@ -12,10 +12,10 @@ Telemetry: none
 Dory has three distinct execution surfaces:
 
 1. The shared container engine is one persistent Linux VM that serves the Docker API. Docker containers, images, volumes, networks, Compose, BuildKit, and k3s use this engine.
-2. Dory Linux machines are separate persistent arm64 VMs. Each has its own disk, address, resources, scoped mounts, root /bin/sh shell, and snapshots.
+2. Dory Linux machines are separate persistent arm64 VMs. Managed Debian 13 + Xfce desktops have configurable users; lightweight Alpine headless machines retain root /bin/sh. Each has its own disk, address, resources, scoped mounts, and snapshots.
 3. Agent sandboxes are preview, dedicated Dory Linux VMs created for one command. They have no host file sharing by default and are deleted by default.
 
-Do not describe a Dory Linux machine as a container. Do not assume it is Ubuntu, systemd-based, graphical, or logged in as the Mac user. The Dory 0.3 machine is Alpine-based, arm64, root, and /bin/sh.
+Do not describe a Dory Linux machine as a container. Inspect its display mode and identity: desktop machines are managed Debian 13 with systemd, Xfce, Bash, and a configurable user; headless machines are Alpine-based, root, and /bin/sh.
 
 ## Installation and host tools
 
@@ -220,7 +220,7 @@ Preview: isolated agent sandbox VMs.
 
 Experimental: in-guest Venus and Vulkan GPU acceleration.
 
-Deferred: Intel host release, configurable machine distributions and login users, systemd machine contract, graphical Linux desktops, audio passthrough, and scoped outbound-only sandbox egress.
+Deferred: Intel host release, desktop distribution selection beyond managed Debian 13 + Xfce, audio passthrough, and scoped outbound-only sandbox egress.
 
 ## Canonical links
 

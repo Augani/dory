@@ -24,7 +24,7 @@
   <a href="https://augani.github.io/dory/llms-full.txt"><strong>Agent reference</strong></a>
 </p>
 
-> Dory 0.3 is built and qualified for Apple Silicon. Intel Mac support will follow after dedicated
+> Dory is built and qualified for Apple Silicon. Intel Mac support will follow after dedicated
 > hardware validation. Current downloads and the Homebrew cask do not include an Intel build.
 
 <p align="center">
@@ -40,11 +40,11 @@ keeps the whole workspace operable from both a SwiftUI app and a versioned comma
 There is no required Docker Desktop, external VM manager, account, cloud control plane, telemetry,
 or commercial-use tier. Dory is GPL-3.0 software and stores workload data on your Mac.
 
-| Surface | What ships in Dory 0.3 |
+| Surface | What ships in Dory |
 |---|---|
 | Docker | Docker 29 API and CLI, Buildx, BuildKit, Compose v2, registries, bind mounts, volumes, and custom networks |
 | Native app | Containers, images, volumes, networks, Compose projects, Kubernetes, Linux machines, health, migration, and settings |
-| Linux machines | Persistent, Alpine-based arm64 VMs with root shells, recipes, resources, scoped mounts, networking, snapshots, clone, import, and export |
+| Linux machines | Full Debian 13 + Xfce desktops and lightweight Alpine headless VMs, with configurable resources, scoped mounts, networking, recipes, snapshots, clone, import, and export |
 | Kubernetes | One-click k3s with selectable v1.34, v1.35, and v1.36 presets plus a native resource browser |
 | Migration | Transactional import from Docker Desktop, OrbStack, Colima, Rancher Desktop, Podman, or another Docker-compatible socket |
 | Storage | One managed `.dorydrive`, external APFS drive support, sparse growth, verified backup, restore, and safe selection |
@@ -198,22 +198,26 @@ store, so push a built image to a registry or import it into the cluster before 
 
 ## Dory Linux machines
 
-Dory Linux machines are persistent VM machines for command-line applications, local services,
-toolchains, test environments, and agent work. Each machine has its own disk and address and is
-separate from the shared container engine.
+Dory Linux machines are persistent, separate VMs rather than containers. The app defaults to a full
+Debian 13 + Xfce desktop for graphical and command-line applications. A lightweight Alpine-based
+headless profile remains available for services, terminals, test environments, and agent work.
+Each machine has its own disk, address, resources, shares, and snapshots.
 
 From the app or CLI you can:
 
 - create, start, stop, delete, and inspect machines;
-- choose 1 to 8 CPUs and 1 to 16 GiB of memory per machine in the app;
-- use a built-in root terminal or `dory machine shell NAME`;
+- choose Desktop Linux or Headless Linux when creating a machine in the app;
+- choose 1 to 8 CPUs and 1 to 16 GiB of memory per machine;
+- configure the desktop Linux username, then use its Xfce session, embedded terminal, or an external
+  terminal selected in Settings;
+- use a root shell for lightweight headless machines or `dory machine shell NAME`;
 - execute structured commands with `dory machine exec NAME --json -- COMMAND`;
 - share the Mac home directory or add only selected folders;
 - set a DNS target override and reach machines through local domains;
 - install verified Node.js, Python, Go, Rust, Java, Ruby, or DevOps recipes;
 - take, restore, clone, export, import, and delete snapshots.
 
-Example:
+Headless CLI example:
 
 ```sh
 dory machine create dev
@@ -223,10 +227,11 @@ dory machine snapshot dev --note before-upgrade
 dory machine shell dev
 ```
 
-The 0.3 machine contract is deliberately specific: native arm64 Dory Linux, Alpine userspace,
-initial login `root`, and shell `/bin/sh`. It is suitable for normal Linux CLI and server workloads,
-including package installation and long-running services. It is not yet a configurable Ubuntu or
-Fedora VPS, a systemd environment, or a graphical desktop VM.
+Desktop machines use native arm64 Debian 13, systemd, Xfce, Bash, a configurable login user, and a
+64 GiB thin-provisioned disk stored in the selected `.dorydrive`. They run normal graphical and
+command-line Linux applications and can mount the Mac home at `~/Mac` only when the user enables
+that share. Headless machines retain the smaller Alpine, `root`, and `/bin/sh` contract. Selecting
+other desktop distributions is not yet supported.
 
 ### Machine secrets and host access
 
@@ -434,7 +439,7 @@ Everything below is available without using the command line:
 
 | Settings page | Controls |
 |---|---|
-| General | Launch at login, menu bar, background daemon, terminal tools, browser login bridge, Docker host conflict repair, light or dark appearance |
+| General | Launch at login, menu bar, background daemon, terminal tools, preferred external terminal (system default, Terminal, iTerm2, Ghostty, Warp, WezTerm, Alacritty, Kitty, or a custom app), browser login bridge, Docker host conflict repair, light or dark appearance |
 | Engine & Daemon | Dory, detected external, or custom socket backend; restart; CPU; memory; amd64 support; experimental GPU; local daemon status |
 | Resources | Data drive, reveal, backup, verify, restore, select, grow, per-process memory, Mac capacity |
 | Machines | Host environment allow-list and the file-sharing boundary for persistent and sandbox machines |
@@ -486,9 +491,11 @@ docker run --rm \
 
 ## Current boundaries
 
-- Apple Silicon is the only qualified host architecture in 0.3.
-- Dory Linux machines are Alpine-based arm64 VMs with an initial root `/bin/sh` login.
-- Configurable guest users, distribution selection, systemd, and graphical desktops are future work.
+- Apple Silicon is the only qualified host architecture. Intel support is planned for a later
+  release after dedicated hardware validation.
+- Desktop Linux is currently the managed Debian 13 + Xfce arm64 profile. Other desktop
+  distributions are future work.
+- Headless Dory Linux remains Alpine-based arm64 with an initial root `/bin/sh` login.
 - In-guest Venus/Vulkan acceleration is experimental. Host AI services work without it.
 - USB/IP attach and replay are available but may require macOS user authorization and compatible
   guest support.

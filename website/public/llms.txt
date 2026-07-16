@@ -2,7 +2,7 @@
 
 > Dory is a native, open-source macOS runtime for Docker, Compose, Kubernetes, persistent Linux machines, local networking, migration, diagnostics, and coding-agent automation.
 
-Dory 0.3 supports Apple Silicon on macOS 14 or later. It bundles its own engine and command-line tools. Intel hosts, configurable Linux distributions, configurable machine login users, systemd machines, and graphical Linux desktops are not part of the current release.
+Dory supports Apple Silicon on macOS 14 or later and bundles its own engine and command-line tools. Its Linux-machine profiles are managed Debian 13 + Xfce desktops with configurable users and lightweight Alpine headless VMs. Intel hosts and additional desktop distributions are not part of the current release.
 
 ## Canonical documentation
 

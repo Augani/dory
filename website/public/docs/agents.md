@@ -56,7 +56,7 @@ Protocol version: `2025-11-25`
 dory machine exec dev --json -- /bin/sh -lc 'uname -a'
 ```
 
-The result uses `dev.dory.machine.exec v1` and includes command status and bounded output. A Dory Linux machine is an Alpine-based arm64 VM with an initial root `/bin/sh` login. Do not assume Ubuntu, systemd, a desktop, or the Mac user's identity.
+The result uses `dev.dory.machine.exec v1` and includes command status and bounded output. Inspect each machine before choosing commands: desktop machines are Debian 13 with systemd, Xfce, Bash, and a configured user, while headless machines use Alpine with an initial root `/bin/sh` login.
 
 ## Preview sandbox runs
 

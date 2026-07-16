@@ -1,4 +1,4 @@
-# Dory 0.3 compatibility contract
+# Dory compatibility contract
 
 ## Supported hosts
 
@@ -16,7 +16,7 @@
 - Containers, images, named volumes, bind mounts, bridge networks, custom IPAM, registries, and port publishing
 - Common linux/amd64 images on Apple Silicon through FEX
 - k3s v1.34, v1.35, and v1.36 presets
-- Persistent arm64 Dory Linux machines with Alpine userspace, root `/bin/sh`, resources, scoped mounts, network addresses, recipes, snapshots, clone, import, and export
+- Persistent arm64 Linux machines: managed Debian 13 + Xfce desktops and lightweight Alpine headless VMs, with resources, scoped mounts, network addresses, recipes, snapshots, clone, import, and export
 - Managed `.dorydrive` storage, sparse growth, verified backup, restore, and external local APFS drives
 - Transactional migration from detected Docker-compatible engines
 - Localhost ports, optional local domains and HTTPS, built-in low-port forwarding, custom resolver and proxy ports, and opt-in LAN access
@@ -35,7 +35,7 @@ Compatibility can vary when a client depends on another product's private paths,
 
 ## Current machine boundary
 
-Dory Linux machines run normal command-line programs, package managers, local servers, build tools, and long-running services. The current contract does not promise another Linux distribution, glibc, systemd, kernel-module installation, a configurable initial login user, or a graphical desktop.
+Desktop machines run normal graphical and command-line applications with Debian 13, glibc, systemd, Xfce, Bash, and a configurable login user. Headless machines use Alpine, musl, `root`, and `/bin/sh`. Other desktop distributions and arbitrary guest kernel modules are outside the current contract.
 
 ## Preview and experimental
 
@@ -47,9 +47,7 @@ Dory Linux machines run normal command-line programs, package managers, local se
 ## Deferred
 
 - Intel host builds
-- Configurable Linux machine distributions and initial login users
-- systemd and full cloud VPS compatibility as a product contract
-- Graphical Linux desktop sessions
+- Desktop distribution selection beyond managed Debian 13 + Xfce
 - Audio passthrough
 - Scoped outbound-only sandbox filtering
 
