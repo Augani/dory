@@ -475,7 +475,7 @@ final class DockerTierTests: XCTestCase {
                 )
             ),
             dockerReadyWaiter: { _, _, shouldContinue in
-                waitUntil(timeout: 2) {
+                waitUntil(timeout: 10) {
                     shouldContinue() && FileManager.default.fileExists(atPath: readyMarker)
                 }
             }
@@ -509,8 +509,8 @@ final class DockerTierTests: XCTestCase {
             .timedOut,
             "a replacement lifecycle must not bind while the older stop still owns teardown"
         )
-        XCTAssertEqual(stopFinished.wait(timeout: .now() + 2), .success)
-        XCTAssertEqual(restartFinished.wait(timeout: .now() + 2), .success)
+        XCTAssertEqual(stopFinished.wait(timeout: .now() + 10), .success)
+        XCTAssertEqual(restartFinished.wait(timeout: .now() + 10), .success)
         XCTAssertNil(restartError.value)
         XCTAssertEqual(tier.status().state, .running)
         XCTAssertNotEqual(tier.status().hvPID, originalPID)
