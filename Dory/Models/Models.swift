@@ -291,6 +291,7 @@ struct Machine: Identifiable, Hashable, Sendable {
     var homePath: String? = nil
     var sshPort: Int? = nil
     var shellSocketPath: String = ""
+    var processID: Int32? = nil
     var displayMode: MachineDisplayMode = .headless
     var mounts: [MountPair] = []
     var id: String { name }

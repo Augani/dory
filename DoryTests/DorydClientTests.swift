@@ -414,7 +414,10 @@ struct DorydClientTests {
         }
 
         var machine = try #require(store.machines.first { $0.name == "dev" })
-        #expect(machine.distro == "Dory VM")
+        #expect(machine.distro == "Debian")
+        #expect(machine.version == "13 · Xfce")
+        #expect(machine.username == "dory")
+        #expect(machine.loginShell == "/bin/bash")
         #expect(machine.status == .running)
         #expect(machine.cpuPercent == 12.5)
         #expect(machine.memoryDisplay == "1 GB / 2 GB")
@@ -657,7 +660,10 @@ struct DorydClientTests {
             environment: [
                 "DORYD_MACHINE_KERNEL": "/vm/Image",
                 "DORYD_MACHINE_ROOTFS": "/vm/rootfs.raw",
-            ]
+            ],
+            desktopMachineAssetPreparer: { _, _, _ in
+                DesktopMachineAssets(kernelPath: "/vm/Image", rootfsPath: "/vm/rootfs.raw")
+            }
         )
         store.routeDockerCLI = false
 

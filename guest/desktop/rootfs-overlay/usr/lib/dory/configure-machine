@@ -5,6 +5,7 @@ requested="${DORY_GUEST_USER:-}"
 [ -n "$requested" ] || {
   exit 0
 }
+requested_uid="${DORY_GUEST_UID:-}"
 case "$requested" in
   [a-z_]* ) ;;
   *) echo "DORY_GUEST_USER must start with a lowercase letter or underscore" >&2; exit 64 ;;
@@ -13,24 +14,55 @@ case "$requested" in
   *[!a-z0-9_-]* ) echo "DORY_GUEST_USER contains unsupported characters" >&2; exit 64 ;;
 esac
 [ "${#requested}" -le 32 ] || { echo "DORY_GUEST_USER is longer than 32 characters" >&2; exit 64; }
+case "$requested_uid" in
+  "") ;;
+  *[!0-9]* ) echo "DORY_GUEST_UID must be a number" >&2; exit 64 ;;
+  * ) [ "$requested_uid" -ge 100 ] && [ "$requested_uid" -le 60000 ] \
+        || { echo "DORY_GUEST_UID must be between 100 and 60000" >&2; exit 64; } ;;
+esac
 
 current="$(cat /var/lib/dory/username 2>/dev/null || printf 'dory\n')"
-if [ "$requested" = "$current" ]; then
-  sed -i "s/^autologin-user=.*/autologin-user=$requested/" \
-    /etc/lightdm/lightdm.conf.d/50-dory.conf
-  exit 0
-fi
-if id "$requested" >/dev/null 2>&1; then
+id "$current" >/dev/null 2>&1 || { echo "the managed Dory account is missing" >&2; exit 1; }
+if [ "$requested" != "$current" ] && id "$requested" >/dev/null 2>&1; then
   echo "DORY_GUEST_USER already belongs to another account" >&2
   exit 64
 fi
-id "$current" >/dev/null 2>&1 || { echo "the managed Dory account is missing" >&2; exit 1; }
-
-usermod --login "$requested" --home "/home/$requested" --move-home "$current"
-if getent group "$current" >/dev/null 2>&1; then
-  groupmod --new-name "$requested" "$current"
+if [ -n "$requested_uid" ]; then
+  uid_owner="$(getent passwd "$requested_uid" 2>/dev/null | cut -d: -f1 || true)"
+  if [ -n "$uid_owner" ] && [ "$uid_owner" != "$current" ]; then
+    echo "DORY_GUEST_UID already belongs to another account" >&2
+    exit 64
+  fi
+  gid_owner="$(getent group "$requested_uid" 2>/dev/null | cut -d: -f1 || true)"
+  if [ -n "$gid_owner" ] && [ "$gid_owner" != "$current" ]; then
+    echo "DORY_GUEST_UID already belongs to another group" >&2
+    exit 64
+  fi
 fi
-sed -i "s/^$current /$requested /" /etc/sudoers.d/dory
+
+usermod_args=()
+if [ "$requested" != "$current" ]; then
+  usermod_args+=(--login "$requested" --home "/home/$requested" --move-home)
+fi
+if [ -n "$requested_uid" ] && [ "$(id -u "$current")" != "$requested_uid" ]; then
+  usermod_args+=(--uid "$requested_uid")
+fi
+if [ "${#usermod_args[@]}" -gt 0 ]; then
+  usermod "${usermod_args[@]}" "$current"
+fi
+if getent group "$current" >/dev/null 2>&1; then
+  groupmod_args=()
+  [ "$requested" = "$current" ] || groupmod_args+=(--new-name "$requested")
+  if [ -n "$requested_uid" ] && [ "$(getent group "$current" | cut -d: -f3)" != "$requested_uid" ]; then
+    groupmod_args+=(--gid "$requested_uid")
+  fi
+  if [ "${#groupmod_args[@]}" -gt 0 ]; then
+    groupmod "${groupmod_args[@]}" "$current"
+  fi
+fi
+if [ "$requested" != "$current" ]; then
+  sed -i "s/^$current /$requested /" /etc/sudoers.d/dory
+fi
 sed -i "s/^autologin-user=.*/autologin-user=$requested/" \
   /etc/lightdm/lightdm.conf.d/50-dory.conf
 printf '%s\n' "$requested" > /var/lib/dory/username

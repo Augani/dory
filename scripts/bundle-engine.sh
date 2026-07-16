@@ -21,6 +21,8 @@
 #   * Contents/Resources/dory-hv-kernel-<arch>.lzfse       — LZFSE PVH/Image kernel for dory-hv.
 #   * Contents/Resources/dory-vm-kernel-<arch>.lzfse       — LZFSE Linux kernel.
 #   * Contents/Resources/dory-vm-initfs-<arch>.ext4.lzfse  — LZFSE VM initfs.
+#   * Contents/Resources/dory-desktop-kernel-arm64.lzfse   — verified Apple Silicon desktop kernel.
+#   * Contents/Resources/dory-desktop-rootfs-arm64.ext4.lzfse — verified Debian 13/Xfce desktop.
 #   * Contents/Resources/dory-agent-linux-<arch>           — guest relay/agent for host AI bridge
 #                                                           and future vsock control features.
 #   * Contents/Resources/dory-transfer-helper-image-arm64.tar — deterministic scratch image used
@@ -1046,6 +1048,37 @@ engine_rootfs_source_for_arch() {
   return 1
 }
 
+desktop_kernel_source_for_arch() {
+  local arch="$1" env_name
+  [ "$arch" = "arm64" ] || return 1
+  env_name="$(env_for_arch DORY_DESKTOP_KERNEL "$arch")"
+  if [ -n "${!env_name:-}" ] && [ -f "${!env_name}" ]; then
+    printf '%s\n' "${!env_name}"
+    return 0
+  fi
+  if [ -n "${DORY_DESKTOP_KERNEL:-}" ] && [ -f "$DORY_DESKTOP_KERNEL" ]; then
+    printf '%s\n' "$DORY_DESKTOP_KERNEL"
+    return 0
+  fi
+  [ -f "$REPO_ROOT/guest/out/Image-desktop" ] && printf '%s\n' "$REPO_ROOT/guest/out/Image-desktop"
+}
+
+desktop_rootfs_source_for_arch() {
+  local arch="$1" env_name
+  [ "$arch" = "arm64" ] || return 1
+  env_name="$(env_for_arch DORY_DESKTOP_ROOTFS "$arch")"
+  if [ -n "${!env_name:-}" ] && [ -f "${!env_name}" ]; then
+    printf '%s\n' "${!env_name}"
+    return 0
+  fi
+  if [ -n "${DORY_DESKTOP_ROOTFS:-}" ] && [ -f "$DORY_DESKTOP_ROOTFS" ]; then
+    printf '%s\n' "$DORY_DESKTOP_ROOTFS"
+    return 0
+  fi
+  [ -f "$REPO_ROOT/guest/out/dory-desktop-rootfs-arm64.ext4" ] \
+    && printf '%s\n' "$REPO_ROOT/guest/out/dory-desktop-rootfs-arm64.ext4"
+}
+
 host_darwin_arch() {
   normalize_darwin_arch "$(uname -m)"
 }
@@ -1192,6 +1225,36 @@ bundle_engine_rootfs_for_arch() {
   fi
 }
 
+bundle_desktop_assets_for_arch() {
+  local arch="$1" kernel_src rootfs_src kernel_out rootfs_out
+  [ "$arch" = "arm64" ] || return 0
+  kernel_src="$(desktop_kernel_source_for_arch "$arch" || true)"
+  rootfs_src="$(desktop_rootfs_source_for_arch "$arch" || true)"
+  if [ -z "$kernel_src" ] || [ -z "$rootfs_src" ]; then
+    warn_or_fail_missing_bundle_asset \
+      "verified Apple Silicon Desktop Linux assets are missing; run guest/kernel/build.sh arm64 desktop and guest/desktop/build.sh arm64"
+    return 0
+  fi
+  if [ "$kernel_src" = "$REPO_ROOT/guest/out/Image-desktop" ]; then
+    "$REPO_ROOT/guest/kernel/verify-build.sh" arm64 desktop >/dev/null
+  fi
+  if [ "$rootfs_src" = "$REPO_ROOT/guest/out/dory-desktop-rootfs-arm64.ext4" ]; then
+    "$REPO_ROOT/guest/desktop/verify-build.sh" arm64 >/dev/null
+  fi
+  kernel_out="$RESOURCES/dory-desktop-kernel-arm64.lzfse"
+  rootfs_out="$RESOURCES/dory-desktop-rootfs-arm64.ext4.lzfse"
+  compress_asset "$kernel_src" "$kernel_out"
+  compress_asset "$rootfs_src" "$rootfs_out"
+  echo "    bundled Resources/$(basename "$kernel_out") ($(du -h "$kernel_out" | awk '{print $1}'))"
+  echo "    bundled Resources/$(basename "$rootfs_out") ($(du -h "$rootfs_out" | awk '{print $1}'))"
+  for metadata in \
+    "$REPO_ROOT/guest/out/kernel-build-arm64-desktop.stamp" \
+    "$REPO_ROOT/guest/out/dory-desktop-build-arm64.stamp" \
+    "$REPO_ROOT/guest/out/dory-desktop-packages-arm64.txt"; do
+    [ -s "$metadata" ] && install -m0644 "$metadata" "$RESOURCES/$(basename "$metadata")"
+  done
+}
+
 echo "==> Bundling VM kernel + initfs assets, compressed (so the engine needs no container install)…"
 for asset_arch in ${DORY_BUNDLE_ARCHES:-arm64 amd64}; do
   bundle_guest_agent_for_arch "$asset_arch"
@@ -1199,6 +1262,7 @@ for asset_arch in ${DORY_BUNDLE_ARCHES:-arm64 amd64}; do
   bundle_hv_gpu_kernel_for_arch "$asset_arch"
   bundle_guest_assets_for_arch "$asset_arch"
   bundle_engine_rootfs_for_arch "$asset_arch"
+  bundle_desktop_assets_for_arch "$asset_arch"
   for stamp_kind in kernel initfs; do
     stamp="$REPO_ROOT/guest/out/${stamp_kind}-build-$asset_arch.stamp"
     if [ -s "$stamp" ]; then
@@ -1271,5 +1335,5 @@ PAYLOAD_DIGESTS="$RESOURCES/dory-payload-sha256.txt"
 echo "    bundled Resources/dory-payload-sha256.txt"
 
 echo "==> Payload injected into $APP"
-echo "    Engine payload ≈ $(du -ch "$RESOURCES"/dory-hv-*.lzfse "$RESOURCES"/dory-vm-*.lzfse "$RESOURCES"/dory-engine-rootfs-*.ext4.lzfse "$HELPERS"/dory-hv "$HELPERS"/docker "$HELPERS"/docker-buildx "$HELPERS"/docker-compose "$HELPERS"/kubectl "$FRAMEWORKS"/*.dylib 2>/dev/null | tail -1 | awk '{print $1}') on disk"
+echo "    Engine payload ≈ $(du -ch "$RESOURCES"/dory-hv-*.lzfse "$RESOURCES"/dory-vm-*.lzfse "$RESOURCES"/dory-engine-rootfs-*.ext4.lzfse "$RESOURCES"/dory-desktop-*.lzfse "$HELPERS"/dory-hv "$HELPERS"/docker "$HELPERS"/docker-buildx "$HELPERS"/docker-compose "$HELPERS"/kubectl "$FRAMEWORKS"/*.dylib 2>/dev/null | tail -1 | awk '{print $1}') on disk"
 echo "    Re-sign the app bundle before notarization so the payload is sealed."

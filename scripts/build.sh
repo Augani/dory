@@ -73,6 +73,14 @@ if [ "${DORY_BUILD_DEBUG_HELPERS:-1}" = "1" ] || [ "${DORY_BUILD_DORYD_HELPERS:-
 fi
 
 LOG=/tmp/dory_build.log
+
+# The post-build bundling below injects helpers and guest assets that are not Xcode target outputs.
+# Remove that modified product before rebuilding so Xcode's script sandbox never has to delete it.
+for app in "$HOME"/Library/Developer/Xcode/DerivedData/Dory-*/Build/Products/Debug/Dory.app; do
+  [ -d "$app" ] || continue
+  rm -rf "$app"
+done
+
 xcodebuild -project Dory.xcodeproj -scheme Dory -destination 'platform=macOS' \
   -configuration Debug build CODE_SIGNING_ALLOWED=NO "$@" > "$LOG" 2>&1
 status=$?
@@ -151,6 +159,30 @@ bundle_debug_engine_rootfs() {
   if [ "$arch" = "$host_guest_arch" ]; then
     ln -sf "dory-engine-rootfs-$arch.ext4.lzfse" "$app/Contents/Resources/dory-engine-rootfs.ext4.lzfse"
   fi
+}
+
+bundle_debug_desktop_assets() {
+  local app="$1" compressor="$2" kernel rootfs kernel_out rootfs_out metadata
+  [ "$(uname -m)" = "arm64" ] || return 0
+  kernel="guest/out/Image-desktop"
+  rootfs="guest/out/dory-desktop-rootfs-arm64.ext4"
+  [ -f "$kernel" ] && [ -f "$rootfs" ] || return 0
+  guest/kernel/verify-build.sh arm64 desktop >/dev/null || return 1
+  guest/desktop/verify-build.sh arm64 >/dev/null || return 1
+  kernel_out="$app/Contents/Resources/dory-desktop-kernel-arm64.lzfse"
+  rootfs_out="$app/Contents/Resources/dory-desktop-rootfs-arm64.ext4.lzfse"
+  if [ ! -f "$kernel_out" ] || [ "$kernel" -nt "$kernel_out" ]; then
+    "$compressor" lzfse compress "$kernel" "$kernel_out" || return 1
+  fi
+  if [ ! -f "$rootfs_out" ] || [ "$rootfs" -nt "$rootfs_out" ]; then
+    "$compressor" lzfse compress "$rootfs" "$rootfs_out" || return 1
+  fi
+  for metadata in \
+    guest/out/kernel-build-arm64-desktop.stamp \
+    guest/out/dory-desktop-build-arm64.stamp \
+    guest/out/dory-desktop-packages-arm64.txt; do
+    [ -s "$metadata" ] && install -m0644 "$metadata" "$app/Contents/Resources/"
+  done
 }
 
 bundle_debug_hv_helper() {
@@ -260,6 +292,7 @@ PLIST
     if [ -f "guest/out/Image-gpu" ]; then
       "$hv_bin" lzfse compress "guest/out/Image-gpu" "$app/Contents/Resources/dory-hv-kernel-gpu-arm64.lzfse"
     fi
+    bundle_debug_desktop_assets "$app" "$hv_bin" || return 1
   done
 
   rm -f "$entitlements"
@@ -497,7 +530,7 @@ bundle_host_cli_helpers() {
 }
 
 sign_debug_apps() {
-  local app helper
+  local app helper framework
   for app in "$HOME"/Library/Developer/Xcode/DerivedData/Dory-*/Build/Products/Debug/Dory.app; do
     [ -d "$app" ] || continue
     xattr -cr "$app" 2>/dev/null || true
@@ -505,7 +538,14 @@ sign_debug_apps() {
       [ -f "$app/Contents/Helpers/$helper" ] || continue
       codesign --force -s - "$app/Contents/Helpers/$helper" >/dev/null 2>&1 || true
     done
+    # Xcode strips development-only framework headers after SwiftPM has signed the artifact.
+    # Refresh each top-level framework seal before sealing the modified app bundle.
+    for framework in "$app"/Contents/Frameworks/*.framework; do
+      [ -d "$framework" ] || continue
+      codesign --force -s - "$framework" >/dev/null || return 1
+    done
     codesign --force -s - "$app" >/dev/null || return 1
+    codesign --verify --deep --strict "$app" || return 1
   done
 }
 

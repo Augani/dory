@@ -31,13 +31,32 @@ public enum MachineRecipeProvisioner {
         public var outputLimitBytes: UInt64
     }
 
+    private static func packageInstallScript(alpine: String, debian: String) -> String {
+        """
+        if command -v apk >/dev/null 2>&1; then
+          apk add --no-cache \(alpine)
+        elif command -v apt-get >/dev/null 2>&1; then
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update
+          apt-get install -y --no-install-recommends \(debian)
+          rm -rf /var/lib/apt/lists/*
+        else
+          echo "Dory recipes support Alpine apk and Debian apt guests" >&2
+          exit 69
+        fi
+        """
+    }
+
     public static func recipe(id rawID: String) throws -> Recipe {
         let id = rawID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         switch id {
         case "rust", "rust-dev":
             return Recipe(
                 id: "rust",
-                installScript: "apk add --no-cache cargo rust",
+                installScript: packageInstallScript(
+                    alpine: "cargo rust",
+                    debian: "cargo rustc build-essential pkg-config"
+                ),
                 verifyCommand: "cargo --version",
                 timeoutMs: 600_000,
                 outputLimitBytes: 4 * 1024 * 1024
@@ -45,7 +64,10 @@ public enum MachineRecipeProvisioner {
         case "node", "nodejs":
             return Recipe(
                 id: "node",
-                installScript: "apk add --no-cache nodejs npm",
+                installScript: packageInstallScript(
+                    alpine: "nodejs npm",
+                    debian: "nodejs npm build-essential"
+                ),
                 verifyCommand: "node --version && npm --version",
                 timeoutMs: 600_000,
                 outputLimitBytes: 4 * 1024 * 1024
@@ -53,7 +75,7 @@ public enum MachineRecipeProvisioner {
         case "go", "golang":
             return Recipe(
                 id: "go",
-                installScript: "apk add --no-cache go",
+                installScript: packageInstallScript(alpine: "go", debian: "golang-go"),
                 verifyCommand: "go version",
                 timeoutMs: 600_000,
                 outputLimitBytes: 4 * 1024 * 1024
@@ -61,7 +83,10 @@ public enum MachineRecipeProvisioner {
         case "java", "jvm":
             return Recipe(
                 id: "java",
-                installScript: "apk add --no-cache openjdk21 maven",
+                installScript: packageInstallScript(
+                    alpine: "openjdk21 maven",
+                    debian: "openjdk-21-jdk-headless maven"
+                ),
                 verifyCommand: "java -version && mvn --version",
                 timeoutMs: 600_000,
                 outputLimitBytes: 4 * 1024 * 1024
@@ -69,7 +94,10 @@ public enum MachineRecipeProvisioner {
         case "ruby":
             return Recipe(
                 id: "ruby",
-                installScript: "apk add --no-cache ruby ruby-bundler build-base",
+                installScript: packageInstallScript(
+                    alpine: "ruby ruby-bundler build-base",
+                    debian: "ruby-full ruby-bundler build-essential"
+                ),
                 verifyCommand: "ruby --version && bundle --version",
                 timeoutMs: 600_000,
                 outputLimitBytes: 4 * 1024 * 1024
@@ -77,7 +105,10 @@ public enum MachineRecipeProvisioner {
         case "python", "python-ml":
             return Recipe(
                 id: "python-ml",
-                installScript: "apk add --no-cache python3 py3-pip py3-numpy",
+                installScript: packageInstallScript(
+                    alpine: "python3 py3-pip py3-numpy",
+                    debian: "python3 python3-pip python3-numpy python3-venv"
+                ),
                 verifyCommand: "python3 --version && python3 -m pip --version && python3 -c 'import numpy'",
                 timeoutMs: 600_000,
                 outputLimitBytes: 4 * 1024 * 1024
@@ -85,7 +116,7 @@ public enum MachineRecipeProvisioner {
         case "docker-host", "docker-cli":
             return Recipe(
                 id: "docker-host",
-                installScript: "apk add --no-cache docker-cli",
+                installScript: packageInstallScript(alpine: "docker-cli", debian: "docker-cli"),
                 verifyCommand: "docker --version",
                 timeoutMs: 120_000,
                 outputLimitBytes: 1024 * 1024
@@ -93,7 +124,10 @@ public enum MachineRecipeProvisioner {
         case "devops":
             return Recipe(
                 id: "devops",
-                installScript: "apk add --no-cache docker-cli kubectl",
+                installScript: packageInstallScript(
+                    alpine: "docker-cli kubectl",
+                    debian: "docker-cli kubectl"
+                ),
                 verifyCommand: "docker --version && kubectl version --client=true",
                 timeoutMs: 600_000,
                 outputLimitBytes: 4 * 1024 * 1024
@@ -101,7 +135,7 @@ public enum MachineRecipeProvisioner {
         case "k8s", "k8s-lab", "kubectl":
             return Recipe(
                 id: "k8s-lab",
-                installScript: "apk add --no-cache kubectl",
+                installScript: packageInstallScript(alpine: "kubectl", debian: "kubectl"),
                 verifyCommand: "kubectl version --client=true",
                 timeoutMs: 600_000,
                 outputLimitBytes: 4 * 1024 * 1024

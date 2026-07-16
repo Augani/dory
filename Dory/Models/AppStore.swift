@@ -163,6 +163,11 @@ final class AppStore {
     @ObservationIgnored private let authorizedNetworkingRemover: @Sendable () async throws -> Void
     @ObservationIgnored private let environment: [String: String]
     @ObservationIgnored private let machineEnvResolver: @Sendable ([String]) async -> [String: String]
+    @ObservationIgnored private let desktopMachineAssetPreparer: @Sendable (
+        _ home: String,
+        _ environment: [String: String],
+        _ resourceDirectory: String?
+    ) async throws -> DesktopMachineAssets
     @ObservationIgnored private let composeCommandRunner: any ToolCommandRunning
     @ObservationIgnored private let buildCommandRunner: any ToolCommandRunning
     @ObservationIgnored private var runtimeOwnedByDoryd = false
@@ -183,6 +188,19 @@ final class AppStore {
         buildCommandRunner: any ToolCommandRunning = BoundedToolProcessRunner(),
         machineEnvResolver: @escaping @Sendable ([String]) async -> [String: String] = { names in
             await MachineEnvImport.resolve(names: names)
+        },
+        desktopMachineAssetPreparer: @escaping @Sendable (
+            _ home: String,
+            _ environment: [String: String],
+            _ resourceDirectory: String?
+        ) async throws -> DesktopMachineAssets = { home, environment, resourceDirectory in
+            try await Task.detached(priority: .userInitiated) {
+                try DesktopMachineAssetProvisioner.prepare(
+                    home: home,
+                    environment: environment,
+                    resourceDirectory: resourceDirectory
+                )
+            }.value
         }
     ) {
         let env = environment
@@ -191,6 +209,7 @@ final class AppStore {
         self.composeCommandRunner = composeCommandRunner
         self.buildCommandRunner = buildCommandRunner
         self.machineEnvResolver = machineEnvResolver
+        self.desktopMachineAssetPreparer = desktopMachineAssetPreparer
         self.dorydClient = dorydClient
         self.dorydEngineEnabled = useDorydEngine ?? dorydFlags.enabled
         self.dorydEngineRequired = useDorydEngine == true || dorydFlags.required
@@ -4323,10 +4342,12 @@ final class AppStore {
         let detail = [status.agentBuild, status.lastError]
             .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
             .first { !$0.isEmpty } ?? status.state
+        let isDesktop = status.displayMode == .desktop
+        let guestUsername = status.environment["DORY_GUEST_USER"] ?? (isDesktop ? "dory" : "root")
         return Machine(
             name: status.id,
-            distro: "Dory VM",
-            version: detail,
+            distro: isDesktop ? "Debian" : "Dory Linux",
+            version: isDesktop ? "13 · Xfce" : detail,
             status: runState,
             cpuPercent: 0,
             memoryDisplay: "—",
@@ -4336,9 +4357,10 @@ final class AppStore {
             containerID: "",
             arch: "",
             recipe: "doryd",
-            username: "root",
-            loginShell: "/bin/sh",
+            username: guestUsername,
+            loginShell: isDesktop ? "/bin/bash" : "/bin/sh",
             shellSocketPath: status.shellSocketPath ?? "",
+            processID: status.pid,
             displayMode: status.displayMode,
             mounts: status.shares.map(Self.mountPair(fromDoryd:))
         )
@@ -4377,6 +4399,25 @@ final class AppStore {
 
     func canOpenMachineTerminal(_ machine: Machine) -> Bool {
         runtimeOwnedByDoryd && !machine.shellSocketPath.isEmpty && HostTools.userFacingDoryCommand() != nil
+    }
+
+    func canOpenMachineDesktop(_ machine: Machine) -> Bool {
+        runtimeOwnedByDoryd
+            && machine.displayMode == .desktop
+            && machine.status == .running
+            && machine.processID != nil
+    }
+
+    func openMachineDesktop(_ machine: Machine) {
+        guard canOpenMachineDesktop(machine), let processID = machine.processID,
+              let application = NSRunningApplication(processIdentifier: processID) else {
+            actionError = "The Desktop Linux display is not available yet. Start the machine and try again."
+            return
+        }
+        guard application.activate(options: [.activateAllWindows]) else {
+            actionError = "Dory could not bring \(machine.name)'s desktop window forward."
+            return
+        }
     }
 
     func canUseMachineArtifacts(_ machine: Machine) -> Bool {
@@ -4566,13 +4607,16 @@ final class AppStore {
         name: String,
         settings: MachineSettings,
         environment: [String: String],
-        address: String? = nil
+        address: String? = nil,
+        assets: DesktopMachineAssets? = nil
     ) -> DorydMachineConfiguration? {
         let useBundledAssets = environment["DORYD_DISABLE_BUNDLED_MACHINE_ASSETS"] != "1"
         let arch = hostMachineAssetArch
-        let kernel = firstMachinePath(["DORYD_MACHINE_KERNEL", "DORYD_GUEST_KERNEL"], environment: environment)
+        let kernel = assets?.kernelPath
+            ?? firstMachinePath(["DORYD_MACHINE_KERNEL", "DORYD_GUEST_KERNEL"], environment: environment)
             ?? (useBundledAssets ? bundledMachinePath(["dory-hv-kernel-\(arch)", "dory-hv-kernel"]) : nil)
-        let rootfs = firstMachinePath(["DORYD_MACHINE_ROOTFS", "DORYD_GUEST_ROOTFS"], environment: environment)
+        let rootfs = assets?.rootfsPath
+            ?? firstMachinePath(["DORYD_MACHINE_ROOTFS", "DORYD_GUEST_ROOTFS"], environment: environment)
             ?? (useBundledAssets ? bundledMachinePath([
                 "dory-machine-rootfs-\(arch).ext4",
                 "dory-machine-rootfs.ext4",
@@ -4638,11 +4682,6 @@ final class AppStore {
 
     private func createDorydMachine(name: String, settings: MachineSettings, recipe: DevRecipe?) async -> String? {
         let address = Self.trimmedNonEmpty(settings.address)
-        guard let config = Self.dorydMachineConfiguration(name: name, settings: settings, environment: environment, address: address) else {
-            let message = "Set DORYD_MACHINE_KERNEL and DORYD_MACHINE_ROOTFS to create doryd VM machines from the app."
-            actionError = message
-            return message
-        }
         let provisioningRecipe: String?
         if let recipe {
             guard let recipeID = Self.dorydRecipeID(for: recipe) else {
@@ -4665,6 +4704,29 @@ final class AppStore {
 
         var createdDefinition = false
         do {
+            let desktopAssets: DesktopMachineAssets?
+            if settings.displayMode == .desktop {
+                appendMachineCreationLog("Preparing Debian 13 Desktop in the selected Dory data drive…")
+                let home = environment["HOME"] ?? NSHomeDirectory()
+                let resourceDirectory = Bundle.main.resourcePath
+                desktopAssets = try await desktopMachineAssetPreparer(
+                    home,
+                    environment,
+                    resourceDirectory
+                )
+                appendMachineCreationLog("Desktop assets verified. Creating a 64 GB thin-provisioned disk…")
+            } else {
+                desktopAssets = nil
+            }
+            guard let config = Self.dorydMachineConfiguration(
+                name: name,
+                settings: settings,
+                environment: environment,
+                address: address,
+                assets: desktopAssets
+            ) else {
+                throw DesktopMachineAssetError.missingAsset("kernel or root filesystem")
+            }
             _ = try await dorydClient.machineCreate(config)
             createdDefinition = true
             appendMachineCreationLog("Definition written. Booting VM…")

@@ -1,3 +1,4 @@
+import Darwin
 import Testing
 @testable import Dory
 
@@ -10,7 +11,9 @@ struct NewMachineSettingsTests {
         #expect(s.memoryMB == 8 * 1024)
         #expect(s.mounts.count == 1)
         #expect(s.address == "192.168.215.40")
+        #expect(s.displayMode == .desktop)
+        #expect(s.env["DORY_GUEST_USER"] == "dory")
+        #expect(s.env["DORY_GUEST_UID"] == String(getuid()))
         #expect(s.ports.isEmpty)
-        #expect(s.env.isEmpty)
     }
 }

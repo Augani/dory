@@ -1,10 +1,11 @@
+import Darwin
 import SwiftUI
 
 struct MachinesView: View {
     @Environment(AppStore.self) private var store
     @Environment(\.palette) private var p
 
-    private let columns = [GridItem(.adaptive(minimum: 300, maximum: 460), spacing: 14)]
+    private let columns = [GridItem(.adaptive(minimum: 340, maximum: 500), spacing: 14)]
 
     var body: some View {
         content
@@ -35,7 +36,7 @@ struct MachinesView: View {
                     .background(p.accentSoft, in: RoundedRectangle(cornerRadius: 20))
                 VStack(spacing: 8) {
                     Text("No Linux machines yet").font(.system(size: 22, weight: .bold)).foregroundStyle(p.text)
-                    Text("Spin up a persistent, Alpine-based Dory Linux VM for terminal apps and local services, with its own resources, address, snapshots, and instant root shell.")
+                    Text("Create a full Debian desktop for graphical and command-line apps, or choose lightweight headless Linux for services and terminal workflows.")
                         .font(.system(size: 13.5)).foregroundStyle(p.text2)
                         .multilineTextAlignment(.center).lineSpacing(4)
                         .frame(maxWidth: 460)
@@ -62,8 +63,8 @@ struct MachinesView: View {
     private var featurePills: some View {
         HStack(spacing: 8) {
             featurePill("Isolated VM", "rectangle.stack.badge.person.crop")
-            featurePill("Dory Linux", "gearshape.2")
-            featurePill("Root shell", "terminal")
+            featurePill("Debian Desktop", "display")
+            featurePill("Headless option", "terminal")
             featurePill("Persistent disk", "internaldrive")
         }
     }
@@ -133,7 +134,7 @@ private struct MachineCard: View {
             .padding(.top, 16).padding(.bottom, 14)
 
             if machine.username != "root" {
-                Text("\(machine.username) · \(machine.loginShell) · ~ shared")
+                Text("\(machine.username) · \(machine.loginShell)")
                     .font(.system(size: 11)).foregroundStyle(p.text3).lineLimit(1)
                     .padding(.bottom, 12)
             }
@@ -163,6 +164,11 @@ private struct MachineCard: View {
             HStack(spacing: 8) {
                 actionButton(isRunning ? "stop.fill" : "play.fill", isRunning ? "Stop" : "Start", prominent: !isRunning) {
                     store.toggleMachine(machine)
+                }
+                if machine.displayMode == .desktop {
+                    actionButton("display", "Desktop", prominent: false, enabled: store.canOpenMachineDesktop(machine)) {
+                        store.openMachineDesktop(machine)
+                    }
                 }
                 actionButton("terminal", "Terminal", prominent: false, enabled: isRunning && store.canOpenMachineTerminal(machine)) {
                     openWindow(value: store.terminalSession(for: machine))
@@ -317,6 +323,9 @@ private struct MachineEditSheet: View {
     @State private var cpus = 4
     @State private var memoryGB = 4
     @State private var address = ""
+    @State private var displayMode: MachineDisplayMode = .headless
+    @State private var guestUsername = "dory"
+    @State private var environment: [String: String] = [:]
 
     private struct MountRow: Identifiable, Hashable {
         let id = UUID()
@@ -334,6 +343,7 @@ private struct MachineEditSheet: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                     warning
+                    machineTypeBlock
                     resourceRow
                     addressBlock
                     mountsBlock
@@ -343,7 +353,7 @@ private struct MachineEditSheet: View {
             Divider().overlay(p.border)
             footer
         }
-        .frame(width: 540, height: 500)
+        .frame(width: 560, height: 560)
         .background(p.bgWindow)
         .task { await load() }
     }
@@ -353,6 +363,9 @@ private struct MachineEditSheet: View {
         cpus = max(1, min(8, settings.cpus ?? 4))
         memoryGB = max(1, min(16, settings.memoryMB.map { $0 / 1024 } ?? 4))
         address = settings.address ?? ""
+        displayMode = settings.displayMode
+        environment = settings.env
+        guestUsername = settings.env["DORY_GUEST_USER"] ?? "dory"
         mountRows = settings.mounts.map { MountRow(host: $0.host, guest: $0.guest, readOnly: $0.readOnly) }
     }
 
@@ -363,7 +376,7 @@ private struct MachineEditSheet: View {
                 .background(p.accentSoft, in: RoundedRectangle(cornerRadius: 10))
             VStack(alignment: .leading, spacing: 1) {
                 Text("Edit \(machine.name)").font(.system(size: 15, weight: .bold)).foregroundStyle(p.text)
-                Text("Apply resources, address and mounted folders").font(.system(size: 11.5)).foregroundStyle(p.text3)
+                Text("Apply user, resources, address and mounted folders").font(.system(size: 11.5)).foregroundStyle(p.text3)
             }
             Spacer()
         }
@@ -373,12 +386,48 @@ private struct MachineEditSheet: View {
     private var warning: some View {
         HStack(spacing: 9) {
             Image(systemName: "info.circle.fill").font(.system(size: 13)).foregroundStyle(p.accent)
-            Text("Changes update the doryd VM definition. Restart the machine for resource and mount changes to take effect.")
+            Text("Resource, user and mount changes restart a running machine automatically. The machine type is fixed to protect its existing disk.")
                 .font(.system(size: 12)).foregroundStyle(p.text2)
             Spacer(minLength: 0)
         }
         .padding(12)
         .background(p.accentSoft, in: RoundedRectangle(cornerRadius: 9))
+    }
+
+    private var machineTypeBlock: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            sectionLabel("MACHINE TYPE")
+            HStack(spacing: 10) {
+                Image(systemName: displayMode == .desktop ? "display" : "terminal.fill")
+                    .font(.system(size: 14, weight: .semibold)).foregroundStyle(p.accent)
+                    .frame(width: 34, height: 34)
+                    .background(p.accentSoft, in: RoundedRectangle(cornerRadius: 9))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(displayMode == .desktop ? "Desktop Linux" : "Headless Linux")
+                        .font(.system(size: 12.5, weight: .semibold)).foregroundStyle(p.text)
+                    Text(displayMode == .desktop ? "Debian 13 + Xfce" : "Lightweight Dory Linux")
+                        .font(.system(size: 11)).foregroundStyle(p.text3)
+                }
+                Spacer(minLength: 0)
+                if displayMode == .desktop {
+                    TextField("dory", text: $guestUsername)
+                        .textFieldStyle(.plain)
+                        .font(.mono(11.5)).foregroundStyle(p.text)
+                        .padding(.horizontal, 9).padding(.vertical, 6)
+                        .frame(width: 160)
+                        .background(p.bgInput, in: RoundedRectangle(cornerRadius: 8))
+                        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(guestUsernameInvalid ? p.red : p.border))
+                        .accessibilityIdentifier("edit-machine-guest-user")
+                }
+            }
+            .padding(11)
+            .background(p.bgElevated, in: RoundedRectangle(cornerRadius: 10))
+            .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(p.border))
+            if guestUsernameInvalid {
+                Text("Use 1–32 lowercase letters, numbers, underscores or dashes; start with a letter or underscore.")
+                    .font(.system(size: 11)).foregroundStyle(p.red)
+            }
+        }
     }
 
     private var resourceRow: some View {
@@ -468,7 +517,7 @@ private struct MachineEditSheet: View {
                 .background(p.accent.opacity(store.isMachineBusy(machine.name) ? 0.5 : 1), in: RoundedRectangle(cornerRadius: 8))
             }
             .buttonStyle(.plain)
-            .disabled(store.isMachineBusy(machine.name))
+            .disabled(store.isMachineBusy(machine.name) || guestUsernameInvalid)
         }
         .padding(.horizontal, 18).padding(.vertical, 13)
     }
@@ -533,20 +582,53 @@ private struct MachineEditSheet: View {
     }
 
     private func apply() {
-        let mounts = mountRows.compactMap { row -> MountPair? in
+        var mounts = mountRows.compactMap { row -> MountPair? in
             let host = row.host.trimmingCharacters(in: .whitespaces)
             let guest = row.guest.trimmingCharacters(in: .whitespaces)
             guard !host.isEmpty, !guest.isEmpty else { return nil }
             return MountPair(host: host, guest: guest, readOnly: row.readOnly)
         }
+        if displayMode == .desktop {
+            let previousUsername = environment["DORY_GUEST_USER"] ?? "dory"
+            if previousUsername != normalizedGuestUsername {
+                let previousHome = "/home/\(previousUsername)"
+                let updatedHome = "/home/\(normalizedGuestUsername)"
+                mounts = mounts.map { mount in
+                    guard mount.guest == previousHome || mount.guest.hasPrefix(previousHome + "/") else {
+                        return mount
+                    }
+                    return MountPair(
+                        host: mount.host,
+                        guest: updatedHome + String(mount.guest.dropFirst(previousHome.count)),
+                        readOnly: mount.readOnly
+                    )
+                }
+            }
+            environment["DORY_GUEST_USER"] = normalizedGuestUsername
+            environment["DORY_GUEST_UID"] = environment["DORY_GUEST_UID"] ?? String(getuid())
+        }
         let settings = MachineSettings(
             cpus: cpus,
             memoryMB: memoryGB * 1024,
             mounts: mounts,
-            address: address.trimmingCharacters(in: .whitespacesAndNewlines)
+            env: environment,
+            address: address.trimmingCharacters(in: .whitespacesAndNewlines),
+            displayMode: displayMode
         )
         let target = machine
         store.editMachineTarget = nil
         Task { _ = await store.editMachine(target, settings: settings) }
+    }
+
+    private var normalizedGuestUsername: String {
+        guestUsername.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var guestUsernameInvalid: Bool {
+        guard displayMode == .desktop else { return false }
+        return normalizedGuestUsername.range(
+            of: "^[a-z_][a-z0-9_-]{0,31}$",
+            options: .regularExpression
+        ) == nil
     }
 }

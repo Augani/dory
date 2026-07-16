@@ -1,3 +1,4 @@
+import Darwin
 import SwiftUI
 
 struct NewMachineSheet: View {
@@ -7,14 +8,16 @@ struct NewMachineSheet: View {
     @State private var name: String
     @State private var address = ""
     @State private var selectedRecipe: DevRecipe?
+    @State private var displayMode: MachineDisplayMode = .desktop
+    @State private var guestUsername = NewMachineSheet.defaultGuestUsername()
 
     enum Stage: Hashable { case useCase, form }
     @State private var stage: Stage = .useCase
     @State private var activeUseCaseID: String?
 
     @State private var advancedExpanded = false
-    @State private var cpus = 2
-    @State private var memoryGB = 2
+    @State private var cpus = 4
+    @State private var memoryGB = 4
     @State private var mountRows: [MountRow] = []
     @State private var shareHome = false
 
@@ -38,7 +41,7 @@ struct NewMachineSheet: View {
                 formScreen
             }
         }
-        .frame(width: 580, height: 560)
+        .frame(width: 600, height: 600)
         .background(p.bgWindow)
     }
 
@@ -190,7 +193,7 @@ struct NewMachineSheet: View {
         if let id = activeUseCaseID, let useCase = MachineUseCase.forID(id) {
             return "\(useCase.title) — tweak anything below"
         }
-        return "Dory Linux · native Apple Silicon"
+        return "Desktop or headless Linux · native Apple Silicon"
     }
 
     private var engineNotice: some View {
@@ -206,23 +209,52 @@ struct NewMachineSheet: View {
 
     private var distroSection: some View {
         VStack(alignment: .leading, spacing: 9) {
-            sectionLabel("OPERATING SYSTEM")
-            HStack(spacing: 11) {
-                Image(systemName: "terminal.fill")
-                    .font(.system(size: 15, weight: .semibold)).foregroundStyle(p.accent)
-                    .frame(width: 36, height: 36)
-                    .background(p.accentSoft, in: RoundedRectangle(cornerRadius: 9))
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Dory Linux").font(.system(size: 13, weight: .semibold)).foregroundStyle(p.text)
-                    Text("Persistent Alpine-based arm64 VM for terminal apps and local services")
-                        .font(.system(size: 11)).foregroundStyle(p.text3)
+            sectionLabel("MACHINE TYPE")
+            HStack(spacing: 10) {
+                machineTypeButton(
+                    .desktop,
+                    title: "Desktop Linux",
+                    subtitle: "Debian 13 + Xfce for graphical and command-line apps",
+                    icon: "display"
+                )
+                machineTypeButton(
+                    .headless,
+                    title: "Headless Linux",
+                    subtitle: "Lightweight Dory Linux for terminals and local services",
+                    icon: "terminal.fill"
+                )
+            }
+        }
+    }
+
+    private func machineTypeButton(
+        _ mode: MachineDisplayMode,
+        title: String,
+        subtitle: String,
+        icon: String
+    ) -> some View {
+        let selected = displayMode == mode
+        return Button { displayMode = mode } label: {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: icon)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(selected ? p.accent : p.text2)
+                    .frame(width: 34, height: 34)
+                    .background(selected ? p.accentSoft : p.bgInput, in: RoundedRectangle(cornerRadius: 9))
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(title).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(p.text)
+                    Text(subtitle).font(.system(size: 10.5)).foregroundStyle(p.text3)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer(minLength: 0)
             }
-            .padding(12)
+            .padding(11)
+            .frame(maxWidth: .infinity, minHeight: 70, alignment: .topLeading)
             .background(p.bgElevated, in: RoundedRectangle(cornerRadius: 10))
-            .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(p.border))
+            .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(selected ? p.accent : p.border, lineWidth: selected ? 1.5 : 1))
         }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("new-machine-type-\(mode.rawValue)")
     }
 
     private var devEnvironmentSection: some View {
@@ -232,11 +264,13 @@ struct NewMachineSheet: View {
                 get: { selectedRecipe?.id ?? "" },
                 set: { selectedRecipe = $0.isEmpty ? nil : DevRecipe.forID($0) }
             )) {
-                Text("Plain Dory Linux").tag("")
+                Text(displayMode == .desktop ? "Plain Debian Desktop" : "Plain Dory Linux").tag("")
                 ForEach(DevRecipe.all) { recipe in Text(recipe.display).tag(recipe.id) }
             }
             .labelsHidden().pickerStyle(.menu).frame(width: 220, alignment: .leading)
-            Text("Recipes install verified Alpine packages after the VM starts.")
+            Text(displayMode == .desktop
+                 ? "Recipes install verified Debian packages after the desktop starts."
+                 : "Recipes install verified Alpine packages after the VM starts.")
                 .font(.system(size: 11)).foregroundStyle(p.text3)
         }
     }
@@ -247,14 +281,31 @@ struct NewMachineSheet: View {
             HStack(spacing: 9) {
                 Image(systemName: "person.crop.circle.badge.checkmark")
                     .font(.system(size: 14)).foregroundStyle(p.accent)
-                Text("Administrator shell").font(.system(size: 12.5, weight: .semibold)).foregroundStyle(p.text)
-                Spacer(minLength: 0)
-                Text("root · /bin/sh").font(.mono(11.5)).foregroundStyle(p.text3)
+                if displayMode == .desktop {
+                    Text("Linux user").font(.system(size: 12.5, weight: .semibold)).foregroundStyle(p.text)
+                    Spacer(minLength: 0)
+                    TextField("dory", text: $guestUsername)
+                        .textFieldStyle(.plain)
+                        .font(.mono(11.5)).foregroundStyle(p.text)
+                        .padding(.horizontal, 9).padding(.vertical, 6)
+                        .frame(width: 170)
+                        .background(p.bgInput, in: RoundedRectangle(cornerRadius: 8))
+                        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(guestUsernameInvalid ? p.red : p.border))
+                        .accessibilityIdentifier("new-machine-guest-user")
+                } else {
+                    Text("Administrator shell").font(.system(size: 12.5, weight: .semibold)).foregroundStyle(p.text)
+                    Spacer(minLength: 0)
+                    Text("root · /bin/sh").font(.mono(11.5)).foregroundStyle(p.text3)
+                }
+            }
+            if guestUsernameInvalid {
+                Text("Use 1–32 lowercase letters, numbers, underscores or dashes; start with a letter or underscore.")
+                    .font(.system(size: 11)).foregroundStyle(p.red)
             }
             Toggle("Share my Mac home (read-write)", isOn: $shareHome)
                 .toggleStyle(.switch).tint(p.accent)
                 .font(.system(size: 12.5)).foregroundStyle(p.text)
-            Text(shareHome ? "Your Mac home is mounted at its native path inside the machine." : "No Mac home folder is shared unless you turn this on or add scoped mounts.")
+            Text(shareHome ? sharedHomeDescription : "No Mac home folder is shared unless you turn this on or add scoped mounts.")
                 .font(.system(size: 11)).foregroundStyle(p.text3)
         }
     }
@@ -482,7 +533,9 @@ struct NewMachineSheet: View {
             HStack(spacing: 6) {
                 Image(systemName: "terminal")
                     .font(.system(size: 11)).foregroundStyle(p.text3)
-                Text("Dory Linux · arm64 · root shell")
+                Text(displayMode == .desktop
+                     ? "Debian 13 · arm64 · \(normalizedGuestUsername)"
+                     : "Dory Linux · arm64 · root shell")
                     .font(.mono(11.5)).foregroundStyle(p.text3).lineLimit(1)
             }
             Spacer(minLength: 8)
@@ -518,7 +571,12 @@ struct NewMachineSheet: View {
     }
 
     private var createDisabled: Bool {
-        name.trimmingCharacters(in: .whitespaces).isEmpty || !nameValid || store.machineBusy || !engineReady || mountsOutsideHome
+        name.trimmingCharacters(in: .whitespaces).isEmpty
+            || !nameValid
+            || guestUsernameInvalid
+            || store.machineBusy
+            || !engineReady
+            || mountsOutsideHome
     }
 
     private var mountsOutsideHome: Bool {
@@ -538,16 +596,39 @@ struct NewMachineSheet: View {
 
     private func create() {
         var settings = collectedSettings()
-        if shareHome, !settings.mounts.contains(where: { $0.guest == NSHomeDirectory() }) {
-            settings.mounts.append(MountPair(host: NSHomeDirectory(), guest: NSHomeDirectory()))
+        let sharedHomeGuestPath = displayMode == .desktop
+            ? "/home/\(normalizedGuestUsername)/Mac"
+            : NSHomeDirectory()
+        if shareHome, !settings.mounts.contains(where: { $0.guest == sharedHomeGuestPath }) {
+            settings.mounts.append(MountPair(host: NSHomeDirectory(), guest: sharedHomeGuestPath))
         }
         let machineName = name
         let recipe = selectedRecipe
         Task { _ = await store.createMachine(name: machineName, recipe: recipe, settings: settings) }
     }
 
-    static func buildSettings(cpus: Int, memoryGB: Int, mounts: [MountPair], address: String? = nil) -> MachineSettings {
-        MachineSettings(cpus: cpus, memoryMB: memoryGB * 1024, mounts: mounts, address: address)
+    static func buildSettings(
+        cpus: Int,
+        memoryGB: Int,
+        mounts: [MountPair],
+        address: String? = nil,
+        displayMode: MachineDisplayMode = .desktop,
+        guestUsername: String = "dory",
+        guestUID: uid_t = getuid()
+    ) -> MachineSettings {
+        var environment: [String: String] = [:]
+        if displayMode == .desktop {
+            environment["DORY_GUEST_USER"] = guestUsername
+            environment["DORY_GUEST_UID"] = String(guestUID)
+        }
+        return MachineSettings(
+            cpus: cpus,
+            memoryMB: memoryGB * 1024,
+            mounts: mounts,
+            env: environment,
+            address: address,
+            displayMode: displayMode
+        )
     }
 
     private func collectedSettings() -> MachineSettings {
@@ -557,11 +638,48 @@ struct NewMachineSheet: View {
             guard !host.isEmpty, !guest.isEmpty else { return nil }
             return MountPair(host: host, guest: guest)
         }
-        return Self.buildSettings(cpus: cpus, memoryGB: memoryGB, mounts: mounts, address: trimmedAddress)
+        return Self.buildSettings(
+            cpus: cpus,
+            memoryGB: memoryGB,
+            mounts: mounts,
+            address: trimmedAddress,
+            displayMode: displayMode,
+            guestUsername: normalizedGuestUsername
+        )
     }
 
     static func defaultName() -> String {
         "dory-\(AppStore.generatedMachineToken())"
+    }
+
+    static func defaultGuestUsername() -> String {
+        let normalized = NSUserName().lowercased().map { character -> Character in
+            character.isLetter || character.isNumber || character == "_" || character == "-" ? character : "-"
+        }
+        let candidate = String(normalized.prefix(32))
+        guard candidate.range(
+            of: "^[a-z_][a-z0-9_-]{0,31}$",
+            options: .regularExpression
+        ) != nil else { return "dory" }
+        return candidate
+    }
+
+    private var normalizedGuestUsername: String {
+        guestUsername.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var guestUsernameInvalid: Bool {
+        guard displayMode == .desktop else { return false }
+        return normalizedGuestUsername.range(
+            of: "^[a-z_][a-z0-9_-]{0,31}$",
+            options: .regularExpression
+        ) == nil
+    }
+
+    private var sharedHomeDescription: String {
+        displayMode == .desktop
+            ? "Your Mac home is available in the desktop at ~/Mac with your Mac user ID."
+            : "Your Mac home is mounted at its native path inside the machine."
     }
 
     private var dnsName: String {

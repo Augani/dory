@@ -1,7 +1,7 @@
 import Compression
 import Foundation
 
-enum LZFSEError: Error {
+nonisolated enum LZFSEError: Error {
     case openInput
     case openOutput
     case streamInit
@@ -13,7 +13,7 @@ enum LZFSEError: Error {
 /// In-process LZFSE decompression over Apple's Compression framework (present in every macOS), so
 /// the app extracts its bundled engine kernel/initfs at first launch with no external `zstd` binary
 /// or dylib to bundle, link, or go missing.
-enum LZFSE {
+nonisolated enum LZFSE {
     private static let chunk = 1 << 20
 
     static func decompress(source: String, destination: String) throws {
