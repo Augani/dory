@@ -310,7 +310,7 @@ final class NetworkingAuthorizationApplierTests: XCTestCase {
         ))
     }
 
-    func testPersistsExactCAForRemovalAfterUserCopyDisappears() throws {
+    func testPersistsExactCAForReconciliationAfterUserCopyDisappears() throws {
         let root = temporaryRoot()
         defer { try? FileManager.default.removeItem(atPath: root) }
         let caPath = root + "/Users/test/.dory/ca/ca.crt"
@@ -335,17 +335,12 @@ final class NetworkingAuthorizationApplierTests: XCTestCase {
         let snapshot = root + "/private/var/db/dev.dory/local-ca.crt"
         XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: snapshot)), Data("fixture-ca".utf8))
         XCTAssertEqual(try permissions(atPath: snapshot), 0o600)
-        XCTAssertTrue(recorder.commands.contains([
-            "/usr/bin/security", "add-trusted-cert", "-d", "-r", "trustRoot",
-            "-k", "/Library/Keychains/System.keychain", snapshot,
-        ]))
+        XCTAssertFalse(recorder.commands.contains { $0.first == "/usr/bin/security" })
         try FileManager.default.removeItem(atPath: caPath)
 
         _ = try applier.remove(plan)
 
-        XCTAssertTrue(recorder.commands.contains([
-            "/usr/bin/security", "remove-trusted-cert", "-d", snapshot,
-        ]))
+        XCTAssertFalse(recorder.commands.contains { $0.first == "/usr/bin/security" })
         XCTAssertFalse(FileManager.default.fileExists(atPath: snapshot))
     }
 
@@ -389,7 +384,7 @@ final class NetworkingAuthorizationApplierTests: XCTestCase {
         }
     }
 
-    func testFailedOldCARemovalDoesNotRemoveItAgainDuringRollback() throws {
+    func testSignedReconcileRejectsChangedCAUntilUserReauthorizes() throws {
         let root = temporaryRoot()
         defer { try? FileManager.default.removeItem(atPath: root) }
         let caPath = root + "/Users/test/.dory/ca/ca.crt"
@@ -412,13 +407,12 @@ final class NetworkingAuthorizationApplierTests: XCTestCase {
         try Data("new-ca".utf8).write(to: URL(fileURLWithPath: caPath))
 
         let snapshot = root + "/private/var/db/dev.dory/local-ca.crt"
-        let removeTrust = [
-            "/usr/bin/security", "remove-trusted-cert", "-d", snapshot,
-        ]
-        recorder.failNext(removeTrust)
-
-        XCTAssertThrowsError(try applier.apply(plan))
-        XCTAssertEqual(recorder.commands.filter { $0 == removeTrust }.count, 1)
+        XCTAssertThrowsError(try applier.reconcileIfAuthorized(plan, clientUID: getuid())) { error in
+            XCTAssertEqual(
+                error as? NetworkingAuthorizationApplyError,
+                .certificateTrustRequiresInteraction
+            )
+        }
         XCTAssertEqual(
             try Data(contentsOf: URL(fileURLWithPath: snapshot)),
             Data("old-ca".utf8)
@@ -431,7 +425,7 @@ final class NetworkingAuthorizationApplierTests: XCTestCase {
         )
     }
 
-    func testRemovalFailureRestoresTrustAndLeavesOwnedFilesRetryable() throws {
+    func testRemovalFailureRestoresSnapshotAndLeavesOwnedFilesRetryable() throws {
         let root = temporaryRoot()
         defer { try? FileManager.default.removeItem(atPath: root) }
         let caPath = root + "/Users/test/.dory/ca/ca.crt"
@@ -463,10 +457,11 @@ final class NetworkingAuthorizationApplierTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(
             atPath: root + "/private/var/db/dev.dory/network-authorization.json"
         ))
-        XCTAssertTrue(recorder.commands.suffix(2).contains([
-            "/usr/bin/security", "add-trusted-cert", "-d", "-r", "trustRoot",
-            "-k", "/Library/Keychains/System.keychain", snapshot,
-        ]))
+        XCTAssertEqual(
+            try Data(contentsOf: URL(fileURLWithPath: snapshot)),
+            Data("fixture-ca".utf8)
+        )
+        XCTAssertFalse(recorder.commands.contains { $0.first == "/usr/bin/security" })
     }
 }
 

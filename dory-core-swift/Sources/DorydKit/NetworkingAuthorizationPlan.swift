@@ -179,11 +179,11 @@ public struct NetworkingAuthorizationPlan: Sendable, Equatable, Codable {
             requests.append(NetworkingAuthorizationRequest(
                 id: "trust.local-ca",
                 kind: .localCATrust,
-                title: "Trust Dory Local CA",
-                reason: "Allow HTTPS certificates issued for *.\(suffix) to validate in browsers and developer tools.",
+                title: "Trust Dory Local CA for this account",
+                reason: "Allow HTTPS certificates issued for *.\(suffix) to validate in this user's browsers and developer tools.",
+                requiresAdmin: false,
                 filePath: caPath,
-                command: DoryLocalCA(directory: URL(fileURLWithPath: caPath).deletingLastPathComponent())
-                    .systemTrustInstallCommand()
+                command: []
             ))
         }
 
@@ -303,7 +303,7 @@ public struct NetworkingAuthorizationPlan: Sendable, Equatable, Codable {
         }
     }
 
-    // The CA path is added to the System keychain as a trusted root, so it must be
+    // The CA path is added to the owning user's login keychain as a trusted root, so it must be
     // the canonical `~/.dory/ca/ca.crt` (see DoryLocalCA). Constrain the trailing
     // components structurally so a tampered plan cannot promote an arbitrary
     // certificate to a trusted root. Home-relative rather than absolute because the

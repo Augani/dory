@@ -57,8 +57,9 @@ public final class AuthorizedNetworkingClient: AuthorizedNetworkingApplying, @un
         }
     }
 
-    /// Removes only the caller's persisted resolver, trusted CA, and system PF authorization.
-    /// Source-preserving LAN remains available while Dory is installed.
+    /// Removes only the caller's persisted resolver, CA snapshot, and system PF authorization.
+    /// Dory.app separately removes user trust after this succeeds. Source-preserving LAN remains
+    /// available while Dory is installed.
     public func removeAuthorizedNetworking() throws -> Bool {
         try performRemoval { proxy, reply in
             proxy.removeAuthorizedNetworking(withReply: reply)

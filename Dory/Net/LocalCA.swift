@@ -76,9 +76,8 @@ nonisolated struct CertificatePair: Sendable {
 }
 
 /// Generates a local certificate authority and issues per-domain TLS certificates for
-/// `*.dory.local` development domains. Installing the CA into the system trust store is a
-/// privileged, security-sensitive action and is performed ONLY via `installInSystemTrust`,
-/// which must be invoked from an explicit, consented user action — never automatically.
+/// `*.dory.local` development domains. LocalCATrustManager handles the separate,
+/// explicitly consented login-keychain trust step.
 nonisolated struct LocalCA: Sendable {
     let directory: URL
 
@@ -161,11 +160,4 @@ nonisolated struct LocalCA: Sendable {
         return try Shell.run(openssl, ["x509", "-in", certificate.path, "-noout", "-text"])
     }
 
-    // MARK: Gated system-trust install (requires explicit user consent + admin privileges)
-
-    /// The command a consented install would run. Surfaced to the user; NOT executed automatically.
-    func systemTrustInstallCommand() -> [String] {
-        ["security", "add-trusted-cert", "-d", "-r", "trustRoot",
-         "-k", "/Library/Keychains/System.keychain", caCertificate.path]
-    }
 }

@@ -157,6 +157,37 @@ struct NetworkingTests {
         #expect(message.contains("System Settings"))
     }
 
+    @Test func localCARequestMustUseTheCurrentUsersCanonicalDoryPath() {
+        let request = DorydNetworkingAuthorizationRequest(
+            id: "trust.local-ca",
+            kind: "localCATrust",
+            title: "Trust Dory Local CA for this account",
+            reason: "Local HTTPS",
+            requiresAdmin: false,
+            filePath: "/Users/test/.dory/ca/ca.crt",
+            command: []
+        )
+        let valid = DorydNetworkingAuthorizationPlan(
+            degradedMode: "high-port-dns-only",
+            authorizedMode: "system-resolver-proxy-tls",
+            suffix: "dory.local",
+            dnsBindAddress: "127.0.0.1",
+            dnsPort: 15353,
+            httpProxyPort: 18080,
+            httpsProxyPort: 18443,
+            requests: [request]
+        )
+        #expect(AppStore.localCACertificatePath(in: valid, home: "/Users/test") == "/Users/test/.dory/ca/ca.crt")
+
+        var wrongPath = valid
+        wrongPath.requests[0].filePath = "/tmp/ca.crt"
+        #expect(AppStore.localCACertificatePath(in: wrongPath, home: "/Users/test") == nil)
+
+        var duplicate = valid
+        duplicate.requests.append(request)
+        #expect(AppStore.localCACertificatePath(in: duplicate, home: "/Users/test") == nil)
+    }
+
     @Test func networkingDeauthorizationDoesNotDependOnBackgroundService() {
         let plan = DorydNetworkingAuthorizationPlan(
             degradedMode: "high-port-dns-only",

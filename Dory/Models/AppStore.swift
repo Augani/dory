@@ -175,6 +175,7 @@ final class AppStore {
     @ObservationIgnored private let dorydLaunchAgentEnsurer: @Sendable (DorydLaunchAgent.Configuration) async -> Bool
     @ObservationIgnored private let dorydLaunchAgentBootout: @Sendable () async -> Bool
     @ObservationIgnored private let authorizedNetworkingRemover: @Sendable () async throws -> Void
+    @ObservationIgnored private let localCATrustManager: any LocalCATrustManaging
     @ObservationIgnored private let environment: [String: String]
     @ObservationIgnored private let machineEnvResolver: @Sendable ([String]) async -> [String: String]
     @ObservationIgnored private let desktopMachineAssetPreparer: @Sendable (
@@ -197,6 +198,7 @@ final class AppStore {
         dorydLaunchAgentEnsurer: (@Sendable (DorydLaunchAgent.Configuration) async -> Bool)? = nil,
         dorydLaunchAgentBootout: (@Sendable () async -> Bool)? = nil,
         authorizedNetworkingRemover: (@Sendable () async throws -> Void)? = nil,
+        localCATrustManager: any LocalCATrustManaging = LocalCATrustManager(),
         environment: [String: String] = ProcessInfo.processInfo.environment,
         composeCommandRunner: any ToolCommandRunning = BoundedToolProcessRunner(),
         buildCommandRunner: any ToolCommandRunning = BoundedToolProcessRunner(),
@@ -238,6 +240,7 @@ final class AppStore {
         self.authorizedNetworkingRemover = authorizedNetworkingRemover ?? {
             try await Self.removeAuthorizedNetworkingIfPresent()
         }
+        self.localCATrustManager = localCATrustManager
         let networkHelperMaintenance = DoryAppDelegate.isNetworkHelperMaintenance()
         let realLaunch = !networkHelperMaintenance
             && env["DORY_SECTION"] == nil && env["DORY_APPEARANCE"] == nil
@@ -2058,13 +2061,27 @@ final class AppStore {
             do {
                 try await authorizedNetworkingRemover()
                 authorizationRemoved = true
+                var trustRemovalNotice: String?
+                do {
+                    _ = try localCATrustManager.remove(
+                        certificateAt: URL(fileURLWithPath: NSHomeDirectory())
+                            .appendingPathComponent(".dory/ca/ca.crt").path
+                    )
+                } catch {
+                    trustRemovalNotice = error.localizedDescription
+                }
                 guard await refreshDorydLaunchAgentForNetworkingSettings() else {
                     throw NetworkingAuthorizationUIError.cleanupFailed(
                         "doryd could not restart with local domains disabled."
                     )
                 }
-                networkingAuthorizationMessage = "Local domains and their system routing are disabled."
-                showSettingsSuccess("Local domains disabled.")
+                if let trustRemovalNotice {
+                    networkingAuthorizationMessage = "Local domains and their system routing are disabled, but Dory could not remove its CA from your login keychain: \(trustRemovalNotice)"
+                    showSettingsFailure("Local domains are disabled, but local CA cleanup needs attention.")
+                } else {
+                    networkingAuthorizationMessage = "Local domains and their system routing are disabled."
+                    showSettingsSuccess("Local domains disabled.")
+                }
             } catch {
                 domainsEnabled = true
                 UserDefaults.standard.set(true, forKey: Self.domainsEnabledKey)
@@ -2399,6 +2416,15 @@ final class AppStore {
                 throw NetworkingAuthorizationUIError.helperMissing
             }
             let plan = try await dorydClient.networkAuthorizationPlan()
+            guard let certificatePath = Self.localCACertificatePath(in: plan) else {
+                throw NetworkingAuthorizationUIError.invalidLocalCARequest
+            }
+            var installedTrustForAttempt = false
+            if !removing {
+                installedTrustForAttempt = try localCATrustManager.install(
+                    certificateAt: certificatePath
+                )
+            }
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             let encodedPlan = try encoder.encode(plan).base64EncodedString()
@@ -2410,6 +2436,14 @@ final class AppStore {
             let script = "do shell script \(Self.appleScriptString(command)) with administrator privileges"
             let result = await Shell.runAsyncResult("/usr/bin/osascript", ["-e", script])
             if result.exit == 0 {
+                if removing {
+                    do {
+                        _ = try localCATrustManager.remove(certificateAt: certificatePath)
+                    } catch {
+                        networkingAuthorizationMessage = "Dory removed its resolver and PF rules, but could not remove the local CA from your login keychain: \(error.localizedDescription) Try Remove authorization again."
+                        return
+                    }
+                }
                 var backgroundServiceNotice: String?
                 if !removing {
                     do {
@@ -2425,7 +2459,15 @@ final class AppStore {
                 )
             } else {
                 let output = result.output.trimmingCharacters(in: .whitespacesAndNewlines)
-                networkingAuthorizationMessage = output.isEmpty ? "Local domain authorization was cancelled or failed." : output
+                var message = output.isEmpty ? "Local domain authorization was cancelled or failed." : output
+                if installedTrustForAttempt {
+                    do {
+                        _ = try localCATrustManager.remove(certificateAt: certificatePath)
+                    } catch {
+                        message += " Dory could not remove the local CA it added to your login keychain: \(error.localizedDescription)"
+                    }
+                }
+                networkingAuthorizationMessage = message
             }
         } catch {
             networkingAuthorizationMessage = "Local domain authorization failed: \(error.localizedDescription)"
@@ -2445,6 +2487,19 @@ final class AppStore {
             return authorized
         }
         return "\(authorized) Background updates need attention: \(backgroundServiceNotice)"
+    }
+
+    nonisolated static func localCACertificatePath(
+        in plan: DorydNetworkingAuthorizationPlan,
+        home: String = NSHomeDirectory()
+    ) -> String? {
+        let requests = plan.requests.filter { $0.id == "trust.local-ca" && $0.kind == "localCATrust" }
+        guard requests.count == 1, let path = requests[0].filePath else { return nil }
+        let expected = URL(fileURLWithPath: home)
+            .appendingPathComponent(".dory/ca/ca.crt")
+            .standardizedFileURL.path
+        guard URL(fileURLWithPath: path).standardizedFileURL.path == expected else { return nil }
+        return expected
     }
 
     nonisolated static func networkingAuthorizationSummary(_ plan: DorydNetworkingAuthorizationPlan) -> String {
@@ -2710,6 +2765,7 @@ final class AppStore {
 
     private enum NetworkingAuthorizationUIError: LocalizedError {
         case helperMissing
+        case invalidLocalCARequest
         case daemonMissing
         case daemonApprovalRequired
         case daemonUnavailable
@@ -2720,6 +2776,8 @@ final class AppStore {
             switch self {
             case .helperMissing:
                 return "dory-network-helper is missing from Dory.app."
+            case .invalidLocalCARequest:
+                return "Dory's networking service returned an invalid local CA request."
             case .daemonMissing:
                 return "Dory's privileged networking service is missing from the app bundle. Reinstall Dory."
             case .daemonApprovalRequired:

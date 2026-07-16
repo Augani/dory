@@ -1381,16 +1381,19 @@ struct DorydClientTests {
             else { UserDefaults.standard.removeObject(forKey: key) }
         }
         let removal = AuthorizedNetworkingRemovalRecorder()
+        let trust = LocalCATrustRemovalRecorder()
         let launchAgent = LaunchAgentConfigurationRecorder()
         let store = AppStore(
             dorydLaunchAgentEnsurer: { configuration in launchAgent.ensure(configuration) },
-            authorizedNetworkingRemover: { try removal.remove() }
+            authorizedNetworkingRemover: { try removal.remove() },
+            localCATrustManager: trust
         )
 
         store.applyNetworkingSettings(domainsEnabled: false)
         try await waitUntil { !store.networkingAuthorizationInFlight }
 
         #expect(removal.callCount == 1)
+        #expect(trust.removeCallCount == 1)
         #expect(launchAgent.configurations.map(\.domainsEnabled) == [false])
         #expect(!store.domainsEnabled)
         #expect(UserDefaults.standard.object(forKey: key) as? Bool == false)
@@ -1406,20 +1409,50 @@ struct DorydClientTests {
             else { UserDefaults.standard.removeObject(forKey: key) }
         }
         let removal = AuthorizedNetworkingRemovalRecorder(fails: true)
+        let trust = LocalCATrustRemovalRecorder()
         let launchAgent = LaunchAgentConfigurationRecorder()
         let store = AppStore(
             dorydLaunchAgentEnsurer: { configuration in launchAgent.ensure(configuration) },
-            authorizedNetworkingRemover: { try removal.remove() }
+            authorizedNetworkingRemover: { try removal.remove() },
+            localCATrustManager: trust
         )
 
         store.applyNetworkingSettings(domainsEnabled: false)
         try await waitUntil { !store.networkingAuthorizationInFlight }
 
         #expect(removal.callCount == 1)
+        #expect(trust.removeCallCount == 0)
         #expect(launchAgent.configurations.map(\.domainsEnabled) == [true])
         #expect(store.domainsEnabled)
         #expect(UserDefaults.standard.object(forKey: key) as? Bool == true)
         #expect(store.networkingAuthorizationMessage?.contains("stayed enabled") == true)
+    }
+
+    @MainActor
+    @Test func failedLocalCATrustCleanupStillLeavesDomainsSafelyDisabled() async throws {
+        let key = AppStore.domainsEnabledKey
+        let previous = UserDefaults.standard.object(forKey: key)
+        defer {
+            if let previous { UserDefaults.standard.set(previous, forKey: key) }
+            else { UserDefaults.standard.removeObject(forKey: key) }
+        }
+        let removal = AuthorizedNetworkingRemovalRecorder()
+        let trust = LocalCATrustRemovalRecorder(fails: true)
+        let launchAgent = LaunchAgentConfigurationRecorder()
+        let store = AppStore(
+            dorydLaunchAgentEnsurer: { configuration in launchAgent.ensure(configuration) },
+            authorizedNetworkingRemover: { try removal.remove() },
+            localCATrustManager: trust
+        )
+
+        store.applyNetworkingSettings(domainsEnabled: false)
+        try await waitUntil { !store.networkingAuthorizationInFlight }
+
+        #expect(removal.callCount == 1)
+        #expect(trust.removeCallCount == 1)
+        #expect(!store.domainsEnabled)
+        #expect(store.networkingAuthorizationMessage?.contains("login keychain") == true)
+        #expect(store.settingsNotice?.kind == .failure)
     }
 
     @MainActor
@@ -1431,16 +1464,19 @@ struct DorydClientTests {
             else { UserDefaults.standard.removeObject(forKey: key) }
         }
         let removal = AuthorizedNetworkingRemovalRecorder()
+        let trust = LocalCATrustRemovalRecorder()
         let launchAgent = LaunchAgentConfigurationRecorder(rejectDisabledDomains: true)
         let store = AppStore(
             dorydLaunchAgentEnsurer: { configuration in launchAgent.ensure(configuration) },
-            authorizedNetworkingRemover: { try removal.remove() }
+            authorizedNetworkingRemover: { try removal.remove() },
+            localCATrustManager: trust
         )
 
         store.applyNetworkingSettings(domainsEnabled: false)
         try await waitUntil { !store.networkingAuthorizationInFlight }
 
         #expect(removal.callCount == 1)
+        #expect(trust.removeCallCount == 1)
         #expect(launchAgent.configurations.map(\.domainsEnabled) == [false, true])
         #expect(store.domainsEnabled)
         #expect(store.networkingAuthorizationMessage?.contains("Reauthorize") == true)
@@ -1606,6 +1642,36 @@ private final class AuthorizedNetworkingRemovalRecorder: @unchecked Sendable {
         lock.unlock()
         if fails { throw AuthorizedNetworkingRemovalError.injectedFailure }
     }
+}
+
+private final class LocalCATrustRemovalRecorder: LocalCATrustManaging, @unchecked Sendable {
+    private let lock = NSLock()
+    private let fails: Bool
+    private var removeCalls = 0
+
+    init(fails: Bool = false) {
+        self.fails = fails
+    }
+
+    var removeCallCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return removeCalls
+    }
+
+    func install(certificateAt path: String) throws -> Bool { false }
+
+    func remove(certificateAt path: String) throws -> Bool {
+        lock.lock()
+        removeCalls += 1
+        lock.unlock()
+        if fails { throw LocalCATrustRemovalError.injectedFailure }
+        return true
+    }
+}
+
+private enum LocalCATrustRemovalError: Error {
+    case injectedFailure
 }
 
 private enum AuthorizedNetworkingRemovalError: Error {

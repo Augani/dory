@@ -47,10 +47,9 @@ final class NetworkingAuthorizationPlanTests: XCTestCase {
         XCTAssertEqual(enable.command, ["/sbin/pfctl", "-a", "com.apple/dev.dory", "-f", "/etc/pf.anchors/dev.dory"])
 
         let trust = try XCTUnwrap(plan.requests.first { $0.kind == .localCATrust })
-        XCTAssertEqual(trust.command, [
-            "/usr/bin/security", "add-trusted-cert", "-d", "-r", "trustRoot",
-            "-k", "/Library/Keychains/System.keychain", "/Users/test/.dory/ca/ca.crt",
-        ])
+        XCTAssertFalse(trust.requiresAdmin)
+        XCTAssertEqual(trust.filePath, "/Users/test/.dory/ca/ca.crt")
+        XCTAssertTrue(trust.command.isEmpty)
     }
 
     func testRejectsUnsafeSuffixesAndPaths() {

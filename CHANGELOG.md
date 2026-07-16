@@ -21,6 +21,9 @@
   root, while nested project directories such as Composer package paths remain visible.
 - Fixed the Network authorization button so the guided admin operation succeeds before optional
   background-service registration and Login Items approval.
+- Fixed local HTTPS authorization failing after the admin prompt. Dory now adds its CA to the
+  current user's login keychain through an interactive macOS trust prompt, while the privileged
+  helper is limited to resolver and PF changes.
 - Fixed custom local domains returning 502 after ports 80 and 443 were authorized.
 - Fixed local HTTPS identity refreshes accumulating certificates and private keys in the user's
   login keychain.

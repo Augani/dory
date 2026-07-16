@@ -39,16 +39,6 @@ final class LocalCATests: XCTestCase {
         XCTAssertTrue(text.contains("Dory Local CA"))
     }
 
-    func testTrustInstallCommandIsGatedAndWellFormed() {
-        let ca = DoryLocalCA(directory: URL(fileURLWithPath: "/tmp/dory-ca-test"))
-        let command = ca.systemTrustInstallCommand()
-
-        XCTAssertEqual(command.first, "/usr/bin/security")
-        XCTAssertTrue(command.contains("add-trusted-cert"))
-        XCTAssertTrue(command.contains("/Library/Keychains/System.keychain"))
-        XCTAssertEqual(command.last, "/tmp/dory-ca-test/ca.crt")
-    }
-
     func testPKCS12IsCreatedWithPrivatePermissions() throws {
         let directory = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("doryd-ca-p12-\(UUID().uuidString)")

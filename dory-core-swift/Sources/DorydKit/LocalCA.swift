@@ -204,12 +204,6 @@ public struct DoryLocalCA {
         return try DoryShell.run(openssl, ["x509", "-in", certificate.path, "-noout", "-text"])
     }
 
-    public func systemTrustInstallCommand() -> [String] {
-        [
-            "/usr/bin/security", "add-trusted-cert", "-d", "-r", "trustRoot",
-            "-k", "/Library/Keychains/System.keychain", caCertificate.path,
-        ]
-    }
 }
 
 public enum DoryShell {
