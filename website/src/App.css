@@ -37,6 +37,9 @@
 .nav-links { display: flex; align-items: center; justify-content: center; gap: 25px; }
 .nav-links a { color: #b9c8d8; font-size: 12px; font-weight: 680; text-decoration: none; transition: color .2s ease; }
 .nav-links a:hover { color: #fff; }
+.nav-links .nav-github { display: inline-flex; align-items: center; gap: 6px; }
+.nav-star-count { display: inline-flex; align-items: center; gap: 3px; padding: 3px 5px; border: 1px solid rgba(255,255,255,.12); border-radius: 6px; background: rgba(255,255,255,.06); color: #d3dfec; font-size: 9px; font-weight: 780; font-variant-numeric: tabular-nums; }
+.nav-star-count svg { width: 10px; color: #ffd166; }
 .nav-cta { display: inline-flex; align-items: center; gap: 7px; padding: 10px 14px; border-radius: 10px; background: #fff; color: #0b5fae; font-size: 12px; font-weight: 800; text-decoration: none; }
 .nav-cta svg { width: 14px; }
 .menu-button { display: none; width: 38px; height: 38px; padding: 8px; border: 1px solid rgba(255,255,255,.15); border-radius: 9px; background: rgba(255,255,255,.08); color: #fff; }
@@ -65,6 +68,8 @@
 .hero-requirements { display: flex; align-items: center; justify-content: center; gap: 10px; margin: 20px 0 0; color: #7189a3; font-size: 11px; }
 .hero-requirements svg { width: 14px; color: #34c988; }
 .hero-requirements span { width: 3px; height: 3px; border-radius: 50%; background: #4d6076; }
+.hero-stars { display: inline-flex; align-items: center; gap: 4px; color: #8da1b8; font-weight: 650; font-variant-numeric: tabular-nums; }
+.hero-stars svg { width: 13px; color: #ffd166; }
 
 .hero-product { position: relative; z-index: 3; width: min(1080px, 92vw); margin: 85px auto -270px; perspective: 1400px; }
 .window-bar, .terminal-bar { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; height: 42px; padding: 0 13px; font-size: 10px; font-weight: 720; }

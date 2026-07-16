@@ -22,6 +22,7 @@ import {
   ShieldCheckIcon,
   SparklesIcon,
   Squares2X2Icon,
+  StarIcon,
   WrenchScrewdriverIcon,
   XMarkIcon,
 } from '@heroicons/react/24/outline'
@@ -400,8 +401,38 @@ function CopyCommand({ command, dark = false }: { command: string; dark?: boolea
 
 function App() {
   const [menuOpen, setMenuOpen] = useState(false)
+  const [starCount, setStarCount] = useState<number | null>(null)
+
+  useEffect(() => {
+    const cacheKey = 'dory.github-stars.v1'
+    try {
+      const cached = JSON.parse(window.localStorage.getItem(cacheKey) ?? 'null') as { count?: unknown } | null
+      if (cached && typeof cached.count === 'number') setStarCount(cached.count)
+    } catch {
+      window.localStorage.removeItem(cacheKey)
+    }
+
+    const controller = new AbortController()
+    fetch('https://api.github.com/repos/Augani/dory', {
+      headers: { Accept: 'application/vnd.github+json' },
+      signal: controller.signal,
+    })
+      .then((response) => {
+        if (!response.ok) throw new Error(`GitHub returned ${response.status}`)
+        return response.json() as Promise<{ stargazers_count?: unknown }>
+      })
+      .then((repository) => {
+        if (typeof repository.stargazers_count !== 'number') return
+        setStarCount(repository.stargazers_count)
+        window.localStorage.setItem(cacheKey, JSON.stringify({ count: repository.stargazers_count }))
+      })
+      .catch(() => undefined)
+
+    return () => controller.abort()
+  }, [])
 
   const closeMenu = () => setMenuOpen(false)
+  const stars = starCount === null ? 'Stars' : starCount.toLocaleString('en-US')
 
   return (
     <div className="site-shell">
@@ -418,7 +449,9 @@ function App() {
             <a href="#agents" onClick={closeMenu}>Agents</a>
             <a href="#operations" onClick={closeMenu}>Operations</a>
             <a href="#compatibility" onClick={closeMenu}>Compatibility</a>
-            <a href="https://github.com/Augani/dory" onClick={closeMenu}>GitHub</a>
+            <a className="nav-github" href="https://github.com/Augani/dory" onClick={closeMenu} aria-label={`Dory on GitHub, ${stars}`}>
+              GitHub <span className="nav-star-count"><StarIcon /> {stars}</span>
+            </a>
           </div>
           <a className="nav-cta" href="https://github.com/Augani/dory/releases/latest">
             Get Dory <ArrowRightIcon aria-hidden="true" />
@@ -462,6 +495,7 @@ function App() {
               <CheckCircleIcon /> Free and open source
               <span /> macOS 14+
               <span /> No account or telemetry
+              <span /> <b className="hero-stars"><StarIcon /> {starCount === null ? 'GitHub stars' : `${stars} GitHub ${starCount === 1 ? 'star' : 'stars'}`}</b>
             </p>
           </div>
 
