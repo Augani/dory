@@ -15,14 +15,16 @@ public struct VirtioFSShareConfiguration: Equatable, Sendable {
     /// that absolute guest path so a host directory can appear at its identical macOS path (e.g.
     /// `$HOME` at `$HOME`), which is what makes `-v /Users/…:/…` bind mounts resolve transparently.
     public var guestMountPoint: String?
-    /// Entry names hidden from the guest at any depth (see `HostFS.hiddenNames`). The `:safe` share
-    /// option applies `sensitiveNames` so a whole-home share never exposes credential stores or
-    /// shell rc files to containers.
+    /// Entry names explicitly hidden from the guest at any depth (see `HostFS.hiddenNames`).
     public var hiddenNames: Set<String>
+    /// Entry names hidden only when they are direct children of the share root. The `:safe` share
+    /// option applies `sensitiveNames` here so a whole-home share protects the user's credential
+    /// stores and shell files without hiding ordinary names inside projects.
+    public var rootHiddenNames: Set<String>
 
     /// Credential stores, cloud/CLI secrets, and shell rc files that must never be exposed by a
-    /// broad host share. Hidden by name at any depth. This is a defense-in-depth default for the
-    /// convenience home share; the stronger guarantee is per-bind-mount on-demand sharing.
+    /// broad host share. These names are anchored to the share root, which is the user's home for
+    /// the convenience home share. The stronger guarantee is per-bind-mount on-demand sharing.
     public static let sensitiveNames: Set<String> = [
         ".ssh", ".aws", ".gcloud", ".azure", ".kube", ".docker", ".dory", ".gnupg", ".config",
         ".codex", ".claude", ".colima", ".lima", ".orbstack", ".podman", ".rd",
@@ -32,7 +34,15 @@ public struct VirtioFSShareConfiguration: Equatable, Sendable {
         "Library",
     ]
 
-    public init(tag: String, path: String, readOnly: Bool = false, dax: Bool = false, guestMountPoint: String? = nil, hiddenNames: Set<String> = []) throws {
+    public init(
+        tag: String,
+        path: String,
+        readOnly: Bool = false,
+        dax: Bool = false,
+        guestMountPoint: String? = nil,
+        hiddenNames: Set<String> = [],
+        rootHiddenNames: Set<String> = []
+    ) throws {
         guard !tag.isEmpty, Array(tag.utf8).count < VirtioFS.tagByteCount else {
             throw VMError.invalidConfiguration("invalid virtio-fs share tag: \(tag)")
         }
@@ -50,7 +60,8 @@ public struct VirtioFSShareConfiguration: Equatable, Sendable {
                 "virtio-fs share \(tag) guest mount point must be a canonical absolute path below '/': \(guestMountPoint)"
             )
         }
-        guard hiddenNames.allSatisfy(Self.isValidHiddenName) else {
+        guard hiddenNames.allSatisfy(Self.isValidHiddenName),
+              rootHiddenNames.allSatisfy(Self.isValidHiddenName) else {
             throw VMError.invalidConfiguration(
                 "virtio-fs share \(tag) hidden names must be individual path components"
             )
@@ -64,6 +75,7 @@ public struct VirtioFSShareConfiguration: Equatable, Sendable {
         self.dax = dax
         self.guestMountPoint = guestMountPoint
         self.hiddenNames = hiddenNames
+        self.rootHiddenNames = rootHiddenNames
     }
 
     public init(argument: String) throws {
@@ -78,12 +90,13 @@ public struct VirtioFSShareConfiguration: Equatable, Sendable {
         var dax = false
         var guestMountPoint: String?
         var hiddenNames: Set<String> = []
+        var rootHiddenNames: Set<String> = []
         for option in components {
             switch option {
             case "ro": readOnly = true
             case "rw": readOnly = false
             case "dax": dax = true
-            case "safe": hiddenNames.formUnion(Self.sensitiveNames)
+            case "safe": rootHiddenNames.formUnion(Self.sensitiveNames)
             case "": path += ":"
             case let option where option.hasPrefix("at="):
                 guestMountPoint = String(option.dropFirst(3))
@@ -97,7 +110,15 @@ public struct VirtioFSShareConfiguration: Equatable, Sendable {
                 throw VMError.invalidConfiguration("unknown virtio-fs share option ':\(option)' (expected ro, rw, safe, hide=a,b, or at=/guest/path)")
             }
         }
-        try self.init(tag: tag, path: path, readOnly: readOnly, dax: dax, guestMountPoint: guestMountPoint, hiddenNames: hiddenNames)
+        try self.init(
+            tag: tag,
+            path: path,
+            readOnly: readOnly,
+            dax: dax,
+            guestMountPoint: guestMountPoint,
+            hiddenNames: hiddenNames,
+            rootHiddenNames: rootHiddenNames
+        )
     }
 
     /// Distinct virtio-fs devices over an overlapping host subtree cannot preserve guest-originated
@@ -152,7 +173,12 @@ public struct VirtioFSShareConfiguration: Equatable, Sendable {
         guard !dax else {
             throw VMError.invalidConfiguration(Self.daxUnsupportedReason)
         }
-        let hostFS = try HostFS(rootPath: path, readOnly: readOnly, hiddenNames: hiddenNames)
+        let hostFS = try HostFS(
+            rootPath: path,
+            readOnly: readOnly,
+            hiddenNames: hiddenNames,
+            rootHiddenNames: rootHiddenNames
+        )
         return try VirtioFS(tag: tag, hostFS: hostFS, requestQueueCount: requestQueueCount)
     }
 }
