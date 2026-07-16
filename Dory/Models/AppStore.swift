@@ -2287,7 +2287,6 @@ final class AppStore {
         defer { networkingAuthorizationInFlight = false }
 
         do {
-            try Self.ensurePrivilegedNetworkDaemon()
             guard let helper = Self.bundledHelper("dory-network-helper") else {
                 throw NetworkingAuthorizationUIError.helperMissing
             }
@@ -2303,11 +2302,19 @@ final class AppStore {
             let script = "do shell script \(Self.appleScriptString(command)) with administrator privileges"
             let result = await Shell.runAsyncResult("/usr/bin/osascript", ["-e", script])
             if result.exit == 0 {
-                if removing {
-                    networkingAuthorizationMessage = "Dory-owned resolver, PF reference, and local CA trust were removed for \(plan.suffix)."
-                } else {
-                    networkingAuthorizationMessage = "Dory networking is authorized for \(plan.suffix). \(Self.networkingAuthorizationSummary(plan))"
+                var backgroundServiceNotice: String?
+                if !removing {
+                    do {
+                        try Self.ensurePrivilegedNetworkDaemon()
+                    } catch {
+                        backgroundServiceNotice = error.localizedDescription
+                    }
                 }
+                networkingAuthorizationMessage = Self.networkingAuthorizationSuccessMessage(
+                    plan,
+                    removing: removing,
+                    backgroundServiceNotice: backgroundServiceNotice
+                )
             } else {
                 let output = result.output.trimmingCharacters(in: .whitespacesAndNewlines)
                 networkingAuthorizationMessage = output.isEmpty ? "Local domain authorization was cancelled or failed." : output
@@ -2315,6 +2322,21 @@ final class AppStore {
         } catch {
             networkingAuthorizationMessage = "Local domain authorization failed: \(error.localizedDescription)"
         }
+    }
+
+    nonisolated static func networkingAuthorizationSuccessMessage(
+        _ plan: DorydNetworkingAuthorizationPlan,
+        removing: Bool,
+        backgroundServiceNotice: String? = nil
+    ) -> String {
+        if removing {
+            return "Dory-owned resolver, PF reference, and local CA trust were removed for \(plan.suffix)."
+        }
+        let authorized = "Dory networking is authorized for \(plan.suffix). \(networkingAuthorizationSummary(plan))"
+        guard let backgroundServiceNotice, !backgroundServiceNotice.isEmpty else {
+            return authorized
+        }
+        return "\(authorized) Background updates need attention: \(backgroundServiceNotice)"
     }
 
     nonisolated static func networkingAuthorizationSummary(_ plan: DorydNetworkingAuthorizationPlan) -> String {

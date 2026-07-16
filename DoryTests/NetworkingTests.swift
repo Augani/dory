@@ -135,6 +135,49 @@ struct NetworkingTests {
         #expect(AppStore.networkingAuthorizationSummary(plan).contains("no extra low TCP publishes"))
     }
 
+    @Test func networkingAuthorizationSuccessDoesNotFailOnPendingBackgroundApproval() {
+        let plan = DorydNetworkingAuthorizationPlan(
+            degradedMode: "high-port-dns-only",
+            authorizedMode: "system-resolver-proxy-tls",
+            suffix: "dory.local",
+            dnsBindAddress: "127.0.0.1",
+            dnsPort: 15353,
+            httpProxyPort: 8080,
+            httpsProxyPort: 8443,
+            requests: []
+        )
+
+        let message = AppStore.networkingAuthorizationSuccessMessage(
+            plan,
+            removing: false,
+            backgroundServiceNotice: "Approve Dory's networking service in System Settings."
+        )
+        #expect(message.hasPrefix("Dory networking is authorized for dory.local."))
+        #expect(message.contains("Background updates need attention"))
+        #expect(message.contains("System Settings"))
+    }
+
+    @Test func networkingDeauthorizationDoesNotDependOnBackgroundService() {
+        let plan = DorydNetworkingAuthorizationPlan(
+            degradedMode: "high-port-dns-only",
+            authorizedMode: "system-resolver-proxy-tls",
+            suffix: "dory.local",
+            dnsBindAddress: "127.0.0.1",
+            dnsPort: 15353,
+            httpProxyPort: 8080,
+            httpsProxyPort: 8443,
+            requests: []
+        )
+
+        #expect(
+            AppStore.networkingAuthorizationSuccessMessage(
+                plan,
+                removing: true,
+                backgroundServiceNotice: "ignored"
+            ) == "Dory-owned resolver, PF reference, and local CA trust were removed for dory.local."
+        )
+    }
+
     @Test func missingServiceManagementRecordStillTriggersRegistration() {
         #expect(AppStore.privilegedNetworkDaemonNeedsRegistration(.notRegistered))
         #expect(AppStore.privilegedNetworkDaemonNeedsRegistration(.notFound))
