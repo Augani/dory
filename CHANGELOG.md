@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.3.1 - Unreleased
+## 0.3.1 - 2026-07-16
 
 ### Added
 
@@ -11,6 +11,8 @@
   matching Xfce scaling.
 - Added separate lean and all-inclusive Desktop builds so people who only need containers,
   Kubernetes, and headless Linux do not download the graphical guest images.
+- Added edition-specific signed update feeds so Lean and Desktop installations stay on their chosen
+  footprint during future upgrades.
 - Added a preferred external terminal setting for Terminal, iTerm2, Ghostty, Warp, WezTerm,
   Alacritty, Kitty, the system default, or another selected application.
 - Added a configurable Docker bridge subnet for avoiding VPN or local-network conflicts.

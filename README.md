@@ -104,7 +104,11 @@ open it.
 | `Dory-x.y.z-lite.zip` | Native UI for an existing Docker-compatible engine |
 | `dory-engine-x.y.z-arm64.tar.gz` | Headless Dory engine bundle |
 | `release-manifest.json` | Artifact names, hashes, and release provenance |
-| `Dory-x.y.z.cdx.json` | CycloneDX software bill of materials |
+| `Dory-x.y.z.cdx.json` | CycloneDX software bill of materials for the lean app |
+| `Dory-x.y.z-desktop.cdx.json` | CycloneDX software bill of materials for the Desktop app |
+
+Lean and Desktop installations use separate signed update feeds, so future updates keep the edition
+you selected instead of adding or removing the graphical Linux payload unexpectedly.
 
 ### Upgrading from 0.3.0
 

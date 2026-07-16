@@ -64,6 +64,7 @@ case "$DESKTOP_BUNDLE_MODE" in
   none|all) ;;
   *) echo "DORY_DESKTOP_BUNDLE_MODE must be 'none' or 'all'" >&2; exit 64 ;;
 esac
+DESKTOP_APPCAST_URL="${DORY_DESKTOP_APPCAST_URL:-https://augani.github.io/dory/appcast-desktop.xml}"
 
 find_xcode() {
   local dev app found
@@ -1327,6 +1328,7 @@ write_doryd_launch_agent
 /usr/libexec/PlistBuddy -c 'Delete :DoryIncludesDesktopLinux' "$APP/Contents/Info.plist" >/dev/null 2>&1 || true
 if [ "$DESKTOP_BUNDLE_MODE" = all ]; then
   /usr/libexec/PlistBuddy -c 'Add :DoryIncludesDesktopLinux bool true' "$APP/Contents/Info.plist"
+  /usr/libexec/PlistBuddy -c 'Set :SUFeedURL' "$DESKTOP_APPCAST_URL" "$APP/Contents/Info.plist"
 else
   /usr/libexec/PlistBuddy -c 'Add :DoryIncludesDesktopLinux bool false' "$APP/Contents/Info.plist"
 fi
