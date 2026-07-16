@@ -10,6 +10,23 @@ set_xfce_value() {
   fi
 }
 
+follow_preferred_display_mode() {
+  local current_mode output_name preferred_mode snapshot
+
+  while :; do
+    if snapshot="$(xrandr --query 2>/dev/null)"; then
+      output_name="$(awk '$2 == "connected" { print $1; exit }' <<<"$snapshot")"
+      preferred_mode="$(awk '$1 ~ /^[0-9]+x[0-9]+$/ && index($0, "+") { print $1; exit }' <<<"$snapshot")"
+      current_mode="$(awk '$1 ~ /^[0-9]+x[0-9]+$/ && index($0, "*") { print $1; exit }' <<<"$snapshot")"
+
+      if [[ -n "$output_name" && -n "$preferred_mode" && "$preferred_mode" != "$current_mode" ]]; then
+        xrandr --output "$output_name" --mode "$preferred_mode" >/dev/null 2>&1 || true
+      fi
+    fi
+    sleep 1
+  done
+}
+
 for _ in $(seq 1 100); do
   if xfconf-query --channel xsettings --list >/dev/null 2>&1; then
     set_xfce_value /Gdk/WindowScalingFactor int 2
@@ -17,7 +34,7 @@ for _ in $(seq 1 100); do
     set_xfce_value /Xft/Hinting int 1
     set_xfce_value /Xft/HintStyle string hintslight
     set_xfce_value /Xft/RGBA string rgb
-    exit 0
+    follow_preferred_display_mode
   fi
   sleep 0.1
 done

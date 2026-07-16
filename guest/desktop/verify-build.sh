@@ -112,13 +112,16 @@ case "$DISTRO" in
   ubuntu)
     grep -Fqx 'ID=ubuntu' <<<"$OS_RELEASE" || fail "$IMAGE is not Ubuntu"
     grep -Fqx 'VERSION_ID="24.04"' <<<"$OS_RELEASE" || fail "$IMAGE is not Ubuntu 24.04 LTS"
+    "$DEBUGFS" -R 'cat /etc/apt/sources.list.d/ubuntu.sources' "$IMAGE" 2>/dev/null \
+      | grep -Fqx 'URIs: https://ports.ubuntu.com/ubuntu-ports' \
+      || fail "$IMAGE does not use the official Ubuntu HTTPS repository"
     ;;
   kali)
     grep -Fqx 'ID=kali' <<<"$OS_RELEASE" || fail "$IMAGE is not Kali Linux"
     "$DEBUGFS" -R 'stat /home/dory/.config/xfce4/panel' "$IMAGE" 2>&1 \
       | grep -Fq 'Inode:' || fail "$IMAGE is missing the Kali Xfce user defaults"
     "$DEBUGFS" -R 'cat /etc/apt/sources.list' "$IMAGE" 2>/dev/null \
-      | grep -Fqx 'deb http://http.kali.org/kali kali-rolling main contrib non-free non-free-firmware' \
+      | grep -Fqx 'deb https://http.kali.org/kali kali-rolling main contrib non-free non-free-firmware' \
       || fail "$IMAGE does not use the official Kali rolling repository"
     ;;
 esac
@@ -126,6 +129,11 @@ esac
   | grep -Fqx 'PasswordAuthentication no' || fail "SSH password login is not disabled"
 "$DEBUGFS" -R 'cat /etc/lightdm/lightdm.conf.d/50-dory.conf' "$IMAGE" 2>/dev/null \
   | grep -Fqx 'autologin-user=dory' || fail "desktop autologin is not configured"
+DISPLAY_CONFIGURATION="$($DEBUGFS -R 'cat /usr/lib/dory/configure-display' "$IMAGE" 2>/dev/null)"
+grep -Fq 'set_xfce_value /Gdk/WindowScalingFactor int 2' <<<"$DISPLAY_CONFIGURATION" \
+  || fail "Retina desktop scaling is not configured"
+grep -Fq 'xrandr --output "$output_name" --mode "$preferred_mode"' <<<"$DISPLAY_CONFIGURATION" \
+  || fail "dynamic desktop resizing is not configured"
 grep -q $'^xfce4\t' "$PACKAGES" || fail "Xfce package provenance is missing"
 grep -q $'^lightdm\t' "$PACKAGES" || fail "LightDM package provenance is missing"
 grep -q $'^spice-vdagent\t' "$PACKAGES" || fail "SPICE package provenance is missing"

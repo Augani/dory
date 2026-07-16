@@ -103,8 +103,18 @@ CID="$(docker_cmd create --privileged --platform linux/arm64 \
   -e DORY_DESKTOP_IMAGE_SIZE_MB="$IMAGE_SIZE_MB" \
   -w /build \
   "$BUILDER_IMAGE" bash -euc '
-    apt-get update
-    apt-get install -y --no-install-recommends ca-certificates e2fsprogs mmdebstrap zstd
+    find /etc/apt -type f \( -name "*.list" -o -name "*.sources" \) \
+      -exec sed -i "s|http://|https://|g" {} +
+    if [ ! -s /etc/ssl/certs/ca-certificates.crt ]; then
+      # The pinned minimal builder may not contain a CA bundle yet. APT still verifies signed
+      # repository metadata while ca-certificates is bootstrapped over the encrypted connection.
+      apt-get -o Acquire::Retries=5 -o Acquire::https::Verify-Peer=false update
+      apt-get -o Acquire::Retries=5 -o Acquire::https::Verify-Peer=false install -y \
+        --no-install-recommends ca-certificates
+    fi
+    apt-get -o Acquire::Retries=5 update
+    apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
+      ca-certificates e2fsprogs mmdebstrap zstd
 
     mmdebstrap \
       --mode=root \
@@ -112,6 +122,7 @@ CID="$(docker_cmd create --privileged --platform linux/arm64 \
       --architectures=arm64 \
       --components="$DORY_DESKTOP_COMPONENTS" \
       --include="$DORY_DESKTOP_PACKAGES" \
+      --aptopt="Acquire::Retries 5" \
       --aptopt="Acquire::Check-Valid-Until false" \
       --aptopt="APT::Install-Recommends false" \
       "$DORY_DESKTOP_SUITE" /rootfs "$DORY_DESKTOP_MIRROR"
@@ -164,7 +175,7 @@ EOF
       ubuntu)
         cat > /rootfs/etc/apt/sources.list.d/ubuntu.sources <<EOF
 Types: deb
-URIs: http://ports.ubuntu.com/ubuntu-ports
+URIs: https://ports.ubuntu.com/ubuntu-ports
 Suites: noble noble-updates noble-backports noble-security
 Components: main universe restricted multiverse
 Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
@@ -172,7 +183,7 @@ EOF
         ;;
       kali)
         cat > /rootfs/etc/apt/sources.list <<EOF
-deb http://http.kali.org/kali kali-rolling main contrib non-free non-free-firmware
+deb https://http.kali.org/kali kali-rolling main contrib non-free non-free-firmware
 EOF
         ;;
     esac
