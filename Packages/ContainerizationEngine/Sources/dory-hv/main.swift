@@ -627,9 +627,15 @@ case "engine":
         dataDriveRoot: dataDriveRoot,
         bundledRootfs: rootfs,
         shares: shares,
-        directIP: directIPSubnet.map {
-            DirectIPBridgeConfiguration(
-                subnetCIDR: $0,
+        directIP: directIPSubnet.map { subnet in
+            let bridgeNetwork: DoryIPv4BridgeNetwork
+            do {
+                bridgeNetwork = try DoryIPv4BridgeNetwork(subnet)
+            } catch {
+                fail("invalid --container-subnet: \(error)")
+            }
+            return DirectIPBridgeConfiguration(
+                subnetCIDR: bridgeNetwork.cidr,
                 gateway: directIPGateway,
                 tunnelEnabled: directIPRequested,
                 ipv6SubnetCIDR: directIPv6Subnet,

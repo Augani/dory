@@ -72,6 +72,7 @@ final class DorydConfigurationTests: XCTestCase {
             "DORYD_GPU": "venus",
             "DORYD_AMD64": "1",
             "DORYD_PUBLISH_HOST": "0.0.0.0",
+            "DORYD_BRIDGE_SUBNET": "10.44.16.0/20",
             "DORYD_SHARES": "src=/tmp/src:rw;cache=/tmp/cache:ro",
             "DORYD_HV_RESTART_LIMIT": "5",
             "DORYD_HV_RESTART_DELAY": "0.1",
@@ -111,6 +112,7 @@ final class DorydConfigurationTests: XCTestCase {
         XCTAssertArgumentPair(hv.arguments, "--rootfs", rootfs)
         XCTAssertArgumentPair(hv.arguments, "--gpu", "venus")
         XCTAssertArgumentPair(hv.arguments, "--publish-host", "0.0.0.0")
+        XCTAssertArgumentPair(hv.arguments, "--container-subnet", "10.44.16.0/20")
         XCTAssertTrue(hv.arguments.contains("--direct-ip"))
         XCTAssertTrue(hv.arguments.contains("--direct-ipv6"))
         XCTAssertTrue(hv.arguments.contains("--amd64"))
@@ -665,6 +667,7 @@ final class DorydConfigurationTests: XCTestCase {
             "DORYD_STATE_DIR": state,
             "DORYD_RAW_HV_SUPPORTED": "0",
             "DORYD_PUBLISH_HOST": "0.0.0.0",
+            "DORYD_BRIDGE_SUBNET": "10.44.16.0/20",
             "DORYD_SSH_AUTH_SOCK": "/private/tmp/com.apple.launchd.fixture/Listeners",
         ], cwd: directory, executablePath: doryd)
 
@@ -681,6 +684,7 @@ final class DorydConfigurationTests: XCTestCase {
         XCTAssertArgumentPair(vmm.arguments, "--rootfs", preparedRootfs)
         XCTAssertArgumentPair(vmm.arguments, "--gvproxy", gvproxy)
         XCTAssertArgumentPair(vmm.arguments, "--publish-host", "0.0.0.0")
+        XCTAssertArgumentPair(vmm.arguments, "--container-subnet", "10.44.16.0/20")
         XCTAssertArgumentPair(
             vmm.arguments,
             "--ssh-agent-socket",

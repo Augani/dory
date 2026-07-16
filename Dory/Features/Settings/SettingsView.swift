@@ -9,6 +9,7 @@ struct SettingsView: View {
     @State private var dnsPortDraft = ""
     @State private var httpPortDraft = ""
     @State private var httpsPortDraft = ""
+    @State private var bridgeSubnetDraft = ""
     @State private var customSocketDraft = ""
     @State private var machineEnvAllowListDraft = ""
     @State private var engineCPUCountDraft = 1
@@ -1547,6 +1548,44 @@ struct SettingsView: View {
             .opacity(store.domainsEnabled ? 1 : 0.55)
             .allowsHitTesting(store.domainsEnabled)
 
+            groupLabel("DOCKER BRIDGE").padding(.top, 22)
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 12) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Default bridge subnet")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(p.text)
+                        Text("Used by Docker's built-in bridge and direct container routing.")
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(p.text3)
+                    }
+                    Spacer(minLength: 0)
+                    TextField(DoryIPv4BridgeNetwork.defaultCIDR, text: $bridgeSubnetDraft, onCommit: commitBridgeSubnetDraft)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 12, design: .monospaced))
+                        .frame(width: 180)
+                        .accessibilityIdentifier("docker-bridge-subnet")
+                    Button(action: commitBridgeSubnetDraft) {
+                        Image(systemName: "checkmark")
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundStyle(.white)
+                            .frame(width: 28, height: 26)
+                            .background(p.accent, in: RoundedRectangle(cornerRadius: 7))
+                    }
+                    .buttonStyle(.plain)
+                    .help("Apply bridge subnet")
+                    .accessibilityIdentifier("docker-bridge-subnet-save")
+                }
+                Text("Use a private /16 through /24 that does not overlap your VPN or local network. Applying this restarts the engine; images, containers, and volumes remain on Dory's data drive.")
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(p.text3)
+                    .lineSpacing(3)
+            }
+            .padding(15)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(p.bgElevated, in: RoundedRectangle(cornerRadius: 11))
+            .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(p.border))
+
             groupLabel("LAN ACCESS").padding(.top, 22)
             VStack(spacing: 0) {
                 toggleRow(
@@ -1570,6 +1609,7 @@ struct SettingsView: View {
             dnsPortDraft = String(store.dnsPort)
             httpPortDraft = String(store.httpProxyPort)
             httpsPortDraft = String(store.httpsProxyPort)
+            bridgeSubnetDraft = store.defaultBridgeSubnet
             store.loadLanVisible()
         }
     }
@@ -1613,6 +1653,14 @@ struct SettingsView: View {
         store.applyNetworkingSettings(domainSuffix: raw)
         if let normalized = AppStore.normalizedDomainSuffix(raw) {
             domainSuffixDraft = normalized
+        }
+    }
+
+    private func commitBridgeSubnetDraft() {
+        let rawValue = bridgeSubnetDraft
+        Task {
+            await store.setDefaultBridgeSubnet(rawValue)
+            bridgeSubnetDraft = store.defaultBridgeSubnet
         }
     }
 

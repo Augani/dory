@@ -1,4 +1,5 @@
 import Darwin
+import DoryOperations
 import Foundation
 
 enum DorydLaunchAgent {
@@ -32,6 +33,7 @@ enum DorydLaunchAgent {
         var gpuVenusEnabled: Bool
         var cpuCount: UInt16
         var memoryMB: UInt32
+        var bridgeSubnetCIDR: String
         /// Current per-login macOS SSH agent. dory-hv validates ownership and socket type on every
         /// guest connection; nil keeps the guest well-known socket fail-closed.
         var sshAuthSock: String?
@@ -48,6 +50,7 @@ enum DorydLaunchAgent {
             gpuVenusEnabled: Bool = false,
             cpuCount: UInt16? = nil,
             memoryMB: UInt32? = nil,
+            bridgeSubnetCIDR: String = DoryIPv4BridgeNetwork.defaultCIDR,
             sshAuthSock: String? = nil
         ) {
             self.domainsEnabled = domainsEnabled
@@ -61,6 +64,8 @@ enum DorydLaunchAgent {
             self.gpuVenusEnabled = gpuVenusEnabled
             self.cpuCount = max(1, cpuCount ?? Self.hostScaledCPUCount())
             self.memoryMB = max(256, memoryMB ?? Self.hostScaledMemoryMB())
+            self.bridgeSubnetCIDR = (try? DoryIPv4BridgeNetwork(bridgeSubnetCIDR).cidr)
+                ?? DoryIPv4BridgeNetwork.defaultCIDR
             self.sshAuthSock = sshAuthSock.flatMap {
                 $0.hasPrefix("/") && !$0.contains("\0") ? $0 : nil
             }
@@ -416,6 +421,8 @@ enum DorydLaunchAgent {
                 <string>\(configuration.cpuCount)</string>
                 <key>DORYD_MEMORY_MB</key>
                 <string>\(configuration.memoryMB)</string>
+                <key>DORYD_BRIDGE_SUBNET</key>
+                <string>\(xmlEscaped(configuration.bridgeSubnetCIDR))</string>
             \(sshAgentEnvironment)
                 <key>DORYD_HV_RESTART_LIMIT</key>
                 <string>3</string>

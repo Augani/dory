@@ -16,6 +16,7 @@ final class PortForwarder: MachinePortForwarding, @unchecked Sendable {
     private let sourcePreservingLANClient: (any SourcePreservingLANApplying)?
     private let sourcePreservingLANSessionID: String?
     private let sourcePreservingLANGVProxySocketPath: String?
+    private let bridgeSubnetCIDR: String
     private let log: (String) -> Void
     private let queue = DispatchQueue(label: "dev.dory.hv.port-forwarder")
     private let timer: any DispatchSourceTimer
@@ -32,6 +33,7 @@ final class PortForwarder: MachinePortForwarding, @unchecked Sendable {
         sourcePreservingLANClient: (any SourcePreservingLANApplying)? = nil,
         sourcePreservingLANSessionID: String? = nil,
         sourcePreservingLANGVProxySocketPath: String? = nil,
+        bridgeSubnetCIDR: String = DoryIPv4BridgeNetwork.defaultCIDR,
         log: @escaping (String) -> Void
     ) {
         self.engineSocket = engineSocket
@@ -41,6 +43,7 @@ final class PortForwarder: MachinePortForwarding, @unchecked Sendable {
         self.sourcePreservingLANClient = sourcePreservingLANClient
         self.sourcePreservingLANSessionID = sourcePreservingLANSessionID
         self.sourcePreservingLANGVProxySocketPath = sourcePreservingLANGVProxySocketPath
+        self.bridgeSubnetCIDR = bridgeSubnetCIDR
         self.log = log
         self.timer = DispatchSource.makeTimerSource(queue: queue)
         timer.schedule(deadline: .now() + 3, repeating: 2)
@@ -62,7 +65,8 @@ final class PortForwarder: MachinePortForwarding, @unchecked Sendable {
                 _ = try client.apply(SourcePreservingLANRequest(
                     operation: .refresh,
                     sessionID: sessionID,
-                    bindings: ports
+                    bindings: ports,
+                    bridgeSubnetCIDR: bridgeSubnetCIDR
                 ))
                 if recoveringLANSession {
                     recoveringLANSession = false
@@ -117,7 +121,8 @@ final class PortForwarder: MachinePortForwarding, @unchecked Sendable {
                 operation: .activate,
                 sessionID: sessionID,
                 gvproxySocketPath: socketPath,
-                bindings: bindings
+                bindings: bindings,
+                bridgeSubnetCIDR: bridgeSubnetCIDR
             ))
             guard response.status == "active" else {
                 logLANFailure("source-preserving LAN recovery failed closed: unexpected status \(response.status)")

@@ -352,6 +352,9 @@ enum EngineMode {
         }
         try VirtioFSShareConfiguration.validateWritableTopology(configuration.shares)
         let nativeIPv6 = try NativeIPv6NetworkPlan(directIP: configuration.directIP)
+        let bridgeNetwork = try DoryIPv4BridgeNetwork(
+            configuration.directIP?.subnetCIDR ?? DoryIPv4BridgeNetwork.defaultCIDR
+        )
         let sourcePreservingLAN = configuration.publishHost == "0.0.0.0"
         let state = URL(fileURLWithPath: configuration.stateDirectory).standardizedFileURL.path
         try FileManager.default.createDirectory(atPath: state, withIntermediateDirectories: true)
@@ -415,6 +418,7 @@ enum EngineMode {
             gpuMode: configuration.gpuMode,
             amd64Emulation: configuration.amd64Emulation,
             nativeIPv6: nativeIPv6,
+            bridgeNetwork: bridgeNetwork,
             sourcePreservingLAN: sourcePreservingLAN,
             allowDockerDataFormat: allowDockerDataFormat
         ), guestAgentPath: configuration.guestAgentPath)
@@ -559,7 +563,8 @@ enum EngineMode {
             let response = try client.apply(SourcePreservingLANRequest(
                 operation: .activate,
                 sessionID: sessionID,
-                gvproxySocketPath: lanDatapathSocket
+                gvproxySocketPath: lanDatapathSocket,
+                bridgeSubnetCIDR: bridgeNetwork.cidr
             ))
             guard response.status == "active" else {
                 throw VMError.invalidConfiguration("source-preserving LAN helper did not activate")
@@ -628,6 +633,7 @@ enum EngineMode {
             sourcePreservingLANClient: sourcePreservingLANClient,
             sourcePreservingLANSessionID: sourcePreservingLANSessionID,
             sourcePreservingLANGVProxySocketPath: sourcePreservingLANClient == nil ? nil : lanDatapathSocket,
+            bridgeSubnetCIDR: bridgeNetwork.cidr,
             log: { note($0) }
         )
         installPortReconcileSignal(portForwarder: portForwarder)
@@ -818,6 +824,7 @@ enum EngineMode {
         gpuMode: GPUAccelerationMode = .off,
         amd64Emulation: Bool = false,
         nativeIPv6: NativeIPv6NetworkPlan? = nil,
+        bridgeNetwork: DoryIPv4BridgeNetwork = try! DoryIPv4BridgeNetwork(),
         sourcePreservingLAN: Bool = false,
         allowDockerDataFormat: Bool = false
     ) -> String {
@@ -894,7 +901,7 @@ enum EngineMode {
             script.append("DORY_IPV6_DOCKER_ARGS=''")
         }
         if sourcePreservingLAN {
-            script += SourcePreservingLANPlan.guestSetupCommands
+            script += SourcePreservingLANPlan.guestSetupCommands(bridgeNetwork: bridgeNetwork)
         }
         script += [
             "{ ip -details address show dev eth0; ip route show; ip -6 route show; echo RESOLV-CONF; cat /etc/resolv.conf; } >/mnt/dory-logs/network.log 2>&1 || true",
@@ -932,7 +939,7 @@ enum EngineMode {
             // dory-runc becomes the default and delegates to that same runc after injecting the
             // private FEX bundle. crun remains an explicit opt-in only when io.max is available.
             "if [ -x /usr/local/bin/crun ]; then echo +io > /sys/fs/cgroup/cgroup.subtree_control 2>/dev/null; mkdir -p /sys/fs/cgroup/.dory-crun-probe 2>/dev/null; [ -e /sys/fs/cgroup/.dory-crun-probe/io.max ] && DORY_RUNTIME_ARGS='--add-runtime crun=/usr/local/bin/crun' || DORY_RUNTIME_ARGS=''; rmdir /sys/fs/cgroup/.dory-crun-probe 2>/dev/null; else DORY_RUNTIME_ARGS=''; fi",
-            "dockerd -H unix:///var/run/docker.sock -H tcp://0.0.0.0:2375 --tls=false --log-level=warn --feature containerd-snapshotter=true $DORY_RUNTIME_ARGS $DORY_AMD64_RUNTIME_ARGS $DORY_IPV6_DOCKER_ARGS >/var/log/dockerd.log 2>&1 & true",
+            "dockerd -H unix:///var/run/docker.sock -H tcp://0.0.0.0:2375 --tls=false --log-level=warn --feature containerd-snapshotter=true \(bridgeNetwork.dockerDaemonArguments) $DORY_RUNTIME_ARGS $DORY_AMD64_RUNTIME_ARGS $DORY_IPV6_DOCKER_ARGS >/var/log/dockerd.log 2>&1 & true",
             GuestShutdownCommand.listener(),
             GuestMemoryReclaimBootCommand.hostPressureListener(
                 experimentalSenpai: reclaimModeIsSenpai

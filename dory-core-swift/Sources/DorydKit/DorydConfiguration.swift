@@ -315,6 +315,9 @@ public struct DorydEnvironment: Sendable {
         if bool("DORYD_NATIVE_IPV6", default: true) {
             arguments.append("--direct-ipv6")
         }
+        if let subnet = string("DORYD_BRIDGE_SUBNET") {
+            arguments.append(contentsOf: ["--container-subnet", subnet])
+        }
         let engineRootfsNames = ["dory-engine-rootfs-\(hostGuestArch).ext4", "dory-engine-rootfs.ext4"]
         let engineRootfs = existingPath(firstOf: ["DORYD_ENGINE_ROOTFS", "DORY_ENGINE_ROOTFS"])
             ?? preparedBundledCompressedResource(
@@ -415,6 +418,9 @@ public struct DorydEnvironment: Sendable {
         }
         if string("DORYD_PUBLISH_HOST") == "0.0.0.0" {
             arguments.append(contentsOf: ["--publish-host", "0.0.0.0"])
+        }
+        if let subnet = string("DORYD_BRIDGE_SUBNET") {
+            arguments.append(contentsOf: ["--container-subnet", subnet])
         }
 
         return VmmDockerProcessConfiguration(

@@ -65,7 +65,8 @@ final class SourcePreservingLANPlanTests: XCTestCase {
             sessionID: "session-1",
             gvproxySocketPath: "/tmp/gvproxy.sock",
             bindings: [PublishedPortBinding(protocol: .tcp, port: 8080, hostIP: "0.0.0.0")],
-            mtu: 1_400
+            mtu: 1_400,
+            bridgeSubnetCIDR: "10.44.16.0/20"
         )
         let decoded = try JSONDecoder().decode(
             SourcePreservingLANRequest.self,
@@ -74,5 +75,22 @@ final class SourcePreservingLANPlanTests: XCTestCase {
         XCTAssertEqual(decoded, request)
         XCTAssertEqual(decoded.version, SourcePreservingLANRequest.schemaVersion)
         XCTAssertEqual(decoded.mtu, 1_400)
+        XCTAssertEqual(decoded.bridgeSubnetCIDR, "10.44.16.0/20")
+    }
+
+    func testCustomBridgeSubnetOwnsReservedLANIngressAddresses() throws {
+        let commands = try SourcePreservingLANPlan.guestSetupCommands(
+            bridgeSubnetCIDR: "10.44.16.0/20"
+        )
+        XCTAssertTrue(commands.contains("ip address replace 10.44.31.254/32 dev eth0"))
+        XCTAssertTrue(commands.contains {
+            $0.contains("-i eth0 -d 10.44.31.254 -j CONNMARK")
+        })
+
+        let rules = SourcePreservingLANPlan.pfAnchorContents(
+            bindings: [PublishedPortBinding(protocol: .tcp, port: 8080)],
+            guestIngressIPv4: "10.44.31.254"
+        )
+        XCTAssertTrue(rules.contains("to self port 8080 -> 10.44.31.254 port 8080"))
     }
 }

@@ -1216,6 +1216,58 @@ struct DorydClientTests {
     }
 
     @MainActor
+    @Test func dockerBridgeSubnetPersistsRestartsAndRestoresRunningWorkloads() async throws {
+        let key = AppStore.defaultBridgeSubnetKey
+        let previousDefault = UserDefaults.standard.object(forKey: key)
+        defer {
+            if let previousDefault { UserDefaults.standard.set(previousDefault, forKey: key) }
+            else { UserDefaults.standard.removeObject(forKey: key) }
+        }
+        UserDefaults.standard.removeObject(forKey: key)
+
+        let base = "/tmp/doryd-bridge-setting-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let socketPath = base + "/doryd.sock"
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let workloadRecorder = WorkloadStartRecorder()
+        let shim = DockerShim(runtime: RecordingWorkloadRuntime(recorder: workloadRecorder))
+        let dockerServer = ShimHTTPServer(socketPath: socketPath) { request in await shim.handle(request) }
+        try dockerServer.start()
+        defer { dockerServer.stop() }
+
+        let listener = NSXPCListener.anonymous()
+        let service = FakeDorydService(socketPath: socketPath)
+        let delegate = FakeDorydListenerDelegate(service: service)
+        listener.delegate = delegate
+        listener.resume()
+        defer { listener.invalidate() }
+        let launchAgent = LaunchAgentConfigurationRecorder()
+
+        let store = AppStore(
+            dorydClient: DorydClient(endpoint: listener.endpoint),
+            useDorydEngine: true,
+            dorydLaunchAgentEnsurer: { configuration in launchAgent.ensure(configuration) },
+            environment: ["XCTestConfigurationFilePath": "DoryTests.xctest"]
+        )
+        store.routeDockerCLI = false
+        await store.connectBackend()
+        await store.setDefaultBridgeSubnet("10.44.19.8/20")
+
+        #expect(service.engineStopCount == 1)
+        #expect(service.engineStartCount == 1)
+        #expect(launchAgent.configurations.last?.bridgeSubnetCIDR == "10.44.16.0/20")
+        #expect(store.defaultBridgeSubnet == "10.44.16.0/20")
+        #expect(UserDefaults.standard.string(forKey: key) == "10.44.16.0/20")
+        #expect(store.settingsNotice?.kind == .success)
+        #expect(
+            store.settingsNotice?.message
+                == "Docker bridge subnet changed to 10.44.16.0/20. Existing data was preserved."
+        )
+        let restarted = await workloadRecorder.startedIDs
+        #expect(Set(restarted) == Set(MockData.containers.filter(\.isRunning).map(\.id)))
+        #expect(!restarted.contains("c5"))
+    }
+
+    @MainActor
     @Test func daemonOwnedSettingRollsBackWhenLaunchAgentRejectsNewConfiguration() async throws {
         guard MacHostPlatform.current().isAppleSilicon else { return }
         let key = SharedVMProvisioner.Config.rosettaX86Key

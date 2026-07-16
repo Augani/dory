@@ -79,6 +79,46 @@ final class SourcePreservingLANPrivilegedControllerTests: XCTestCase {
         XCTAssertFalse(recorder.anchors.last?.contains("9000") == true)
     }
 
+    func testActivationDerivesTunnelAndPFStateFromCustomBridgeSubnet() throws {
+        let socketPath = try makeDatagramSocket()
+        defer { unlink(socketPath) }
+        let recorder = Recorder()
+        let bridge = FakeBridge(interfaceName: "utun44")
+        let controller = SourcePreservingLANPrivilegedController(
+            enforceRoot: false,
+            runtimeDirectory: "/tmp/dory-source-lan-runtime-\(getpid())-custom",
+            bridgeFactory: { configuration in
+                recorder.configuration = configuration
+                return bridge
+            },
+            runCommand: { command in try recorder.run(command) },
+            writeAnchor: { recorder.anchors.append($0) }
+        )
+
+        let response = try controller.apply(SourcePreservingLANRequest(
+            operation: .activate,
+            sessionID: "engine-custom",
+            gvproxySocketPath: socketPath,
+            bindings: [PublishedPortBinding(protocol: .tcp, port: 8080)],
+            mtu: 1_400,
+            bridgeSubnetCIDR: "10.44.16.0/20"
+        ), clientUID: getuid())
+
+        XCTAssertEqual(response.status, "active")
+        XCTAssertEqual(recorder.configuration?.subnetCIDR, "10.44.31.254/32")
+        XCTAssertEqual(recorder.configuration?.gateway, "10.44.31.253")
+        XCTAssertTrue(recorder.commands.contains([
+            "/sbin/ifconfig", "utun44", "inet", "10.44.31.253", "10.44.31.254",
+            "netmask", "255.255.255.255", "mtu", "1400", "up",
+        ]))
+        XCTAssertTrue(recorder.commands.contains([
+            "/sbin/route", "-n", "add", "-host", "10.44.31.254", "-interface", "utun44",
+        ]))
+        XCTAssertTrue(recorder.anchors.last?.contains(
+            "to self port 8080 -> 10.44.31.254 port 8080"
+        ) == true)
+    }
+
     func testRejectsMTUOutsideTheGuestAndGVProxyContract() throws {
         let controller = SourcePreservingLANPrivilegedController(enforceRoot: false)
 

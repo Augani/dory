@@ -61,6 +61,7 @@ final class DoryVMMKitTests: XCTestCase {
             "--gvproxy", "/tmp/gvproxy",
             "--ssh-agent-socket", "/private/tmp/com.apple.launchd.fixture/Listeners",
             "--publish-host", "0.0.0.0",
+            "--container-subnet", "10.44.16.0/20",
             "--memory-mb", "3072",
             "--cpus", "4",
             "--handoff-sock", "/tmp/handoff.sock",
@@ -83,6 +84,7 @@ final class DoryVMMKitTests: XCTestCase {
             "/private/tmp/com.apple.launchd.fixture/Listeners"
         )
         XCTAssertEqual(arguments.publishHost, "0.0.0.0")
+        XCTAssertEqual(arguments.bridgeSubnetCIDR, "10.44.16.0/20")
         XCTAssertEqual(arguments.memoryMB, 3072)
         XCTAssertEqual(arguments.cpuCount, 4)
         XCTAssertEqual(arguments.handoffSocketPath, "/tmp/handoff.sock")
@@ -335,7 +337,8 @@ final class DoryVMMKitTests: XCTestCase {
                 memoryMB: 2048,
                 cpuCount: 2,
                 nativeIPv6: true,
-                sourcePreservingLAN: true
+                sourcePreservingLAN: true,
+                bridgeSubnetCIDR: "10.44.16.0/20"
             ),
             serialOutput: nil,
             networkAttachment: attachment
@@ -348,7 +351,11 @@ final class DoryVMMKitTests: XCTestCase {
         XCTAssertTrue(bootScript.contains("ip -6 addr replace fd7d:6f72:7900::2/64 dev eth0"))
         XCTAssertTrue(bootScript.contains("ip -6 route replace default via fd7d:6f72:7900::1 dev eth0"))
         XCTAssertTrue(bootScript.contains("--fixed-cidr-v6=fd7d:6f72:7901::/64"))
-        for command in SourcePreservingLANPlan.guestSetupCommands {
+        XCTAssertTrue(bootScript.contains("--bip=10.44.16.1/20"))
+        XCTAssertTrue(bootScript.contains("--fixed-cidr=10.44.16.0/21"))
+        for command in try SourcePreservingLANPlan.guestSetupCommands(
+            bridgeSubnetCIDR: "10.44.16.0/20"
+        ) {
             XCTAssertTrue(bootScript.contains(command), "missing source-preserving LAN command: \(command)")
         }
         try assertShellSyntax("\(base)/dorycfg/boot.sh")

@@ -1,4 +1,5 @@
 import Foundation
+import DoryOperations
 import Testing
 @testable import Dory
 
@@ -462,6 +463,7 @@ struct DorydLaunchAgentTests {
             configuration: DorydLaunchAgent.Configuration(
                 amd64EmulationEnabled: true,
                 gpuVenusEnabled: true,
+                bridgeSubnetCIDR: "10.44.16.0/20",
                 sshAuthSock: "/private/tmp/com.apple.launchd.fixture/Listeners"
             )
         )
@@ -473,6 +475,7 @@ struct DorydLaunchAgentTests {
 
         #expect(environment["DORYD_AMD64"] == "1")
         #expect(environment["DORYD_GPU"] == "venus")
+        #expect(environment["DORYD_BRIDGE_SUBNET"] == "10.44.16.0/20")
         #expect(
             environment["DORYD_SSH_AUTH_SOCK"]
                 == "/private/tmp/com.apple.launchd.fixture/Listeners"
@@ -493,6 +496,9 @@ struct DorydLaunchAgentTests {
 
         #expect(environment["DORYD_AMD64"] == "0")
         #expect(environment["DORYD_GPU"] == "off")
+        #expect(
+            environment["DORYD_BRIDGE_SUBNET"] == DoryIPv4BridgeNetwork.defaultCIDR
+        )
     }
 
     @Test func launchAgentDoesNotOwnRuntimeModePolicy() {

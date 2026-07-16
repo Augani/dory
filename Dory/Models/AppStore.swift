@@ -240,6 +240,10 @@ final class AppStore {
             if let saved = Self.normalizedDomainSuffix(UserDefaults.standard.string(forKey: Self.domainSuffixKey)) {
                 domainSuffix = saved
             }
+            if let saved = UserDefaults.standard.string(forKey: Self.defaultBridgeSubnetKey),
+               let network = try? DoryIPv4BridgeNetwork(saved) {
+                defaultBridgeSubnet = network.cidr
+            }
             if let savedMode = Self.persistedRuntimeMode(environment: env) {
                 runtimeMode = savedMode
             }
@@ -1907,6 +1911,7 @@ final class AppStore {
     static let httpProxyPortKey = "dory.httpProxyPort"
     static let httpsProxyPortKey = "dory.httpsProxyPort"
     static let domainsEnabledKey = "dory.domainsEnabled"
+    static let defaultBridgeSubnetKey = "dory.defaultBridgeSubnet"
     nonisolated static let defaultDomainSuffix = "dory.local"
     nonisolated static let domainSuffixKey = "dory.domainSuffix"
     // User-configurable: 8080 collides with common dev servers, and MDM-managed DNS can't be pointed
@@ -1915,6 +1920,7 @@ final class AppStore {
     var httpProxyPort: UInt16 = AppStore.defaultHTTPProxyPort
     var httpsProxyPort: UInt16 = AppStore.defaultHTTPSProxyPort
     var domainsEnabled = true
+    var defaultBridgeSubnet = DoryIPv4BridgeNetwork.defaultCIDR
     var networkingAuthorizationInFlight = false
     var networkingAuthorizationMessage: String?
     @ObservationIgnored private var tlsProxy: DoryTLSProxy?
@@ -2040,6 +2046,44 @@ final class AppStore {
         return await dorydLaunchAgentEnsurer(dorydLaunchAgentConfiguration())
     }
 
+    func setDefaultBridgeSubnet(_ rawValue: String) async {
+        guard !engineSettingChangeInFlight else {
+            showSettingsFailure("Another engine setting is still being applied.")
+            return
+        }
+        let network: DoryIPv4BridgeNetwork
+        do {
+            network = try DoryIPv4BridgeNetwork(rawValue)
+        } catch {
+            showSettingsFailure(String(describing: error))
+            return
+        }
+        guard network.cidr != defaultBridgeSubnet else {
+            showSettingsSuccess("Docker bridge subnet is already \(network.cidr).")
+            return
+        }
+
+        engineSettingChangeInFlight = true
+        defer { engineSettingChangeInFlight = false }
+        let previous = defaultBridgeSubnet
+        defaultBridgeSubnet = network.cidr
+        UserDefaults.standard.set(network.cidr, forKey: Self.defaultBridgeSubnetKey)
+        let applied = await applyDorydOwnedEngineSetting(
+            previousValue: previous,
+            restore: { [weak self] value in
+                self?.defaultBridgeSubnet = value
+                UserDefaults.standard.set(value, forKey: Self.defaultBridgeSubnetKey)
+            },
+            applyingMessage: "Applying Docker bridge subnet…",
+            successMessage: "Docker bridge subnet changed to \(network.cidr). Existing data was preserved."
+        )
+        if !applied {
+            defaultBridgeSubnet = previous
+            UserDefaults.standard.set(previous, forKey: Self.defaultBridgeSubnetKey)
+            showSettingsFailure("Switch to Dory's engine before changing its Docker bridge subnet.")
+        }
+    }
+
     private func dorydLaunchAgentConfiguration() -> DorydLaunchAgent.Configuration {
         DorydLaunchAgent.Configuration(
             domainsEnabled: domainsEnabled,
@@ -2052,6 +2096,7 @@ final class AppStore {
             gpuVenusEnabled: gpuVenusEnabled,
             cpuCount: UInt16(clamping: engineCPUCount),
             memoryMB: UInt32(clamping: engineMemoryMB),
+            bridgeSubnetCIDR: defaultBridgeSubnet,
             sshAuthSock: ProcessInfo.processInfo.environment["SSH_AUTH_SOCK"]
         )
     }

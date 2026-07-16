@@ -6,6 +6,7 @@ public enum SourcePreservingLANPrivilegedError: Error, Sendable, Equatable, Cust
     case rootRequired
     case unsupportedVersion(Int)
     case invalidMTU(Int)
+    case invalidBridgeSubnet(String)
     case invalidSessionID
     case invalidSocketPath
     case socketUnavailable(String)
@@ -22,6 +23,7 @@ public enum SourcePreservingLANPrivilegedError: Error, Sendable, Equatable, Cust
         case .rootRequired: "source-preserving LAN helper must run as root"
         case .unsupportedVersion(let value): "unsupported source-preserving LAN request version: \(value)"
         case .invalidMTU(let value): "invalid source-preserving LAN MTU: \(value)"
+        case .invalidBridgeSubnet(let value): "invalid source-preserving LAN bridge subnet: \(value)"
         case .invalidSessionID: "invalid source-preserving LAN session identifier"
         case .invalidSocketPath: "invalid gvproxy socket path"
         case .socketUnavailable(let path): "gvproxy socket is unavailable: \(path)"
@@ -75,6 +77,7 @@ public final class SourcePreservingLANPrivilegedController: @unchecked Sendable 
     private var activeBridge: (any SourcePreservingLANBridgeSession)?
     private var activeInterfaceName: String?
     private var activePFToken: String?
+    private var activeBridgeNetwork: DoryIPv4BridgeNetwork?
 
     public init(
         enforceRoot: Bool = true,
@@ -138,6 +141,7 @@ public final class SourcePreservingLANPrivilegedController: @unchecked Sendable 
         let sessionID = activeSessionID
         let sessionOwner = activeClientUID
         let hasBridge = activeBridge != nil
+        let hasBridgeNetwork = activeBridgeNetwork != nil
         lock.unlock()
         if let sessionID, hasBridge {
             guard sessionOwner == clientUID else {
@@ -151,7 +155,7 @@ public final class SourcePreservingLANPrivilegedController: @unchecked Sendable 
                 expectedSessionID: sessionID,
                 expectedClientUID: clientUID
             )
-        } else if sessionID != nil || sessionOwner != nil || hasBridge {
+        } else if sessionID != nil || sessionOwner != nil || hasBridge || hasBridgeNetwork {
             throw SourcePreservingLANPrivilegedError.sessionConflict
         } else {
             acceptingSessions = false
@@ -175,7 +179,14 @@ public final class SourcePreservingLANPrivilegedController: @unchecked Sendable 
         let existingClientUID = activeClientUID
         let existingBridge = activeBridge
         let existingInterfaceName = activeInterfaceName
+        let existingBridgeNetwork = activeBridgeNetwork
         lock.unlock()
+        let bridgeNetwork: DoryIPv4BridgeNetwork
+        do {
+            bridgeNetwork = try DoryIPv4BridgeNetwork(request.bridgeSubnetCIDR)
+        } catch {
+            throw SourcePreservingLANPrivilegedError.invalidBridgeSubnet(request.bridgeSubnetCIDR)
+        }
         if let existingSessionID, let existingBridge {
             guard existingClientUID == clientUID else {
                 throw SourcePreservingLANPrivilegedError.sessionOwnerMismatch(
@@ -187,11 +198,19 @@ public final class SourcePreservingLANPrivilegedController: @unchecked Sendable 
                 guard existingSessionID == request.sessionID else {
                     throw SourcePreservingLANPrivilegedError.sessionConflict
                 }
-                _ = try applyPF(bindings: request.bindings, enable: false)
+                guard existingBridgeNetwork == bridgeNetwork else {
+                    throw SourcePreservingLANPrivilegedError.sessionConflict
+                }
+                _ = try applyPF(
+                    bindings: request.bindings,
+                    guestIngressIPv4: bridgeNetwork.lanGuestIngressAddress,
+                    enable: false
+                )
                 return response(request, interfaceName: existingInterfaceName)
             }
             _ = try cleanupActiveSession(expectedSessionID: existingSessionID)
-        } else if existingSessionID != nil || existingClientUID != nil || existingBridge != nil {
+        } else if existingSessionID != nil || existingClientUID != nil || existingBridge != nil
+                    || existingBridgeNetwork != nil {
             throw SourcePreservingLANPrivilegedError.sessionConflict
         }
 
@@ -199,8 +218,8 @@ public final class SourcePreservingLANPrivilegedController: @unchecked Sendable 
         let localSocket = "\(runtimeDirectory)/\(request.sessionID).sock"
         let interfaceFile = "\(runtimeDirectory)/\(request.sessionID).interface"
         let configuration = DirectIPBridgeConfiguration(
-            subnetCIDR: SourcePreservingLANPlan.guestIngressCIDR,
-            gateway: "192.168.215.253",
+            subnetCIDR: bridgeNetwork.lanGuestIngressCIDR,
+            gateway: bridgeNetwork.lanHostAddress,
             gvproxySocketPath: gvproxySocketPath,
             localSocketPath: localSocket,
             interfaceNamePath: interfaceFile
@@ -215,7 +234,7 @@ public final class SourcePreservingLANPrivilegedController: @unchecked Sendable 
             )
         }
         lock.lock()
-        guard activeSessionID == nil, activeBridge == nil else {
+        guard activeSessionID == nil, activeBridge == nil, activeBridgeNetwork == nil else {
             lock.unlock()
             throw SourcePreservingLANPrivilegedError.sessionConflict
         }
@@ -224,6 +243,7 @@ public final class SourcePreservingLANPrivilegedController: @unchecked Sendable 
         activeBridge = bridge
         activeInterfaceName = nil
         activePFToken = nil
+        activeBridgeNetwork = bridgeNetwork
         lock.unlock()
 
         do {
@@ -234,21 +254,25 @@ public final class SourcePreservingLANPrivilegedController: @unchecked Sendable 
             }
             _ = try runCommand([
                 "/sbin/ifconfig", interfaceName, "inet",
-                "192.168.215.253", SourcePreservingLANPlan.guestIngressIPv4,
+                bridgeNetwork.lanHostAddress, bridgeNetwork.lanGuestIngressAddress,
                 "netmask", "255.255.255.255", "mtu", String(request.mtu), "up",
             ])
             _ = try? runCommand([
-                "/sbin/route", "-n", "delete", "-host", SourcePreservingLANPlan.guestIngressIPv4,
+                "/sbin/route", "-n", "delete", "-host", bridgeNetwork.lanGuestIngressAddress,
             ])
             _ = try runCommand([
-                "/sbin/route", "-n", "add", "-host", SourcePreservingLANPlan.guestIngressIPv4,
+                "/sbin/route", "-n", "add", "-host", bridgeNetwork.lanGuestIngressAddress,
                 "-interface", interfaceName,
             ])
             lock.lock()
             activeInterfaceName = interfaceName
             lock.unlock()
             _ = try enableIPv4ForwardingIfNeeded()
-            let acquiredPFToken = try applyPF(bindings: request.bindings, enable: true)
+            let acquiredPFToken = try applyPF(
+                bindings: request.bindings,
+                guestIngressIPv4: bridgeNetwork.lanGuestIngressAddress,
+                enable: true
+            )
             lock.lock()
             activePFToken = acquiredPFToken
             lock.unlock()
@@ -305,6 +329,7 @@ public final class SourcePreservingLANPrivilegedController: @unchecked Sendable 
         let matches = activeSessionID == request.sessionID && activeBridge != nil
         let sessionOwner = activeClientUID
         let interfaceName = activeInterfaceName
+        let bridgeNetwork = activeBridgeNetwork
         lock.unlock()
         guard matches else { throw SourcePreservingLANPrivilegedError.noActiveSession }
         guard sessionOwner == clientUID else {
@@ -313,7 +338,15 @@ public final class SourcePreservingLANPrivilegedController: @unchecked Sendable 
                 actual: clientUID
             )
         }
-        _ = try applyPF(bindings: request.bindings, enable: false)
+        guard let bridgeNetwork else { throw SourcePreservingLANPrivilegedError.sessionConflict }
+        guard try DoryIPv4BridgeNetwork(request.bridgeSubnetCIDR).cidr == bridgeNetwork.cidr else {
+            throw SourcePreservingLANPrivilegedError.sessionConflict
+        }
+        _ = try applyPF(
+            bindings: request.bindings,
+            guestIngressIPv4: bridgeNetwork.lanGuestIngressAddress,
+            enable: false
+        )
         return response(request, interfaceName: interfaceName)
     }
 
@@ -419,6 +452,7 @@ public final class SourcePreservingLANPrivilegedController: @unchecked Sendable 
         activeBridge = nil
         activeInterfaceName = nil
         activePFToken = nil
+        activeBridgeNetwork = nil
         lock.unlock()
         return interfaceName
     }
@@ -447,8 +481,15 @@ public final class SourcePreservingLANPrivilegedController: @unchecked Sendable 
         if let firstError { throw firstError }
     }
 
-    private func applyPF(bindings: Set<PublishedPortBinding>, enable: Bool) throws -> String? {
-        let contents = SourcePreservingLANPlan.pfAnchorContents(bindings: bindings)
+    private func applyPF(
+        bindings: Set<PublishedPortBinding>,
+        guestIngressIPv4: String,
+        enable: Bool
+    ) throws -> String? {
+        let contents = SourcePreservingLANPlan.pfAnchorContents(
+            bindings: bindings,
+            guestIngressIPv4: guestIngressIPv4
+        )
         try writeAnchor(contents)
         _ = try runCommand(["/sbin/pfctl", "-a", Self.anchorName, "-f", Self.anchorPath])
         guard enable else { return nil }
@@ -719,6 +760,11 @@ public final class SourcePreservingLANPrivilegedController: @unchecked Sendable 
         }
         guard (DoryNetworkMTU.safeDefault...DoryNetworkMTU.maximum).contains(request.mtu) else {
             throw SourcePreservingLANPrivilegedError.invalidMTU(request.mtu)
+        }
+        do {
+            _ = try DoryIPv4BridgeNetwork(request.bridgeSubnetCIDR)
+        } catch {
+            throw SourcePreservingLANPrivilegedError.invalidBridgeSubnet(request.bridgeSubnetCIDR)
         }
         guard request.sessionID.wholeMatch(of: /[A-Za-z0-9][A-Za-z0-9.-]{0,63}/) != nil,
               !request.sessionID.contains(".."),

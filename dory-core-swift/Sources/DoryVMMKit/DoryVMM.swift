@@ -18,6 +18,7 @@ public struct DoryVMMArguments: Sendable, Equatable {
     public var gvproxyPath: String?
     public var sshAgentSocketPath: String?
     public var publishHost = "127.0.0.1"
+    public var bridgeSubnetCIDR = DoryIPv4BridgeNetwork.defaultCIDR
     public var handoffSocketPath: String?
     public var dockerdSocketPath: String?
     public var agentSocketPath: String?
@@ -106,6 +107,8 @@ public func parseDoryVMMArguments(_ raw: [String]) throws -> DoryVMMArguments {
             parsed.sshAgentSocketPath = try value(after: argument, from: raw, index: &index)
         case "--publish-host":
             parsed.publishHost = try value(after: argument, from: raw, index: &index)
+        case "--container-subnet":
+            parsed.bridgeSubnetCIDR = try value(after: argument, from: raw, index: &index)
         case "--memory-mb":
             parsed.memoryMB = try uint64Value(after: argument, from: raw, index: &index)
         case "--cpus":
@@ -191,6 +194,7 @@ public struct DoryVZMachineSpec: Sendable, Equatable {
     public var dockerDataDiskPath: String?
     public var nativeIPv6: Bool
     public var sourcePreservingLAN: Bool
+    public var bridgeSubnetCIDR: String
 
     public init(
         machineID: String,
@@ -204,7 +208,8 @@ public struct DoryVZMachineSpec: Sendable, Equatable {
         environment: [String: String] = [:],
         dockerDataDiskPath: String? = nil,
         nativeIPv6: Bool = false,
-        sourcePreservingLAN: Bool = false
+        sourcePreservingLAN: Bool = false,
+        bridgeSubnetCIDR: String = DoryIPv4BridgeNetwork.defaultCIDR
     ) {
         self.machineID = machineID
         self.stateDirectory = stateDirectory
@@ -218,6 +223,7 @@ public struct DoryVZMachineSpec: Sendable, Equatable {
         self.dockerDataDiskPath = dockerDataDiskPath
         self.nativeIPv6 = nativeIPv6
         self.sourcePreservingLAN = sourcePreservingLAN
+        self.bridgeSubnetCIDR = bridgeSubnetCIDR
     }
 }
 
@@ -409,7 +415,8 @@ public enum DoryVZConfigurationBuilder {
             environment: spec.environment,
             allowDockerDataFormat: allowDockerDataFormat,
             nativeIPv6: spec.nativeIPv6,
-            sourcePreservingLAN: spec.sourcePreservingLAN
+            sourcePreservingLAN: spec.sourcePreservingLAN,
+            bridgeNetwork: try DoryIPv4BridgeNetwork(spec.bridgeSubnetCIDR)
         )
         try script.write(
             to: URL(fileURLWithPath: "\(directory)/boot.sh"),
@@ -429,7 +436,8 @@ public enum DoryVZConfigurationBuilder {
         environment: [String: String],
         allowDockerDataFormat: Bool,
         nativeIPv6: Bool,
-        sourcePreservingLAN: Bool
+        sourcePreservingLAN: Bool,
+        bridgeNetwork: DoryIPv4BridgeNetwork
     ) -> String {
         var lines = [
             "#!/bin/sh",
@@ -480,7 +488,7 @@ public enum DoryVZConfigurationBuilder {
             lines.append(contentsOf: DoryVMMNativeIPv6Plan().guestSetupCommands.map { "  \($0)" })
         }
         if sourcePreservingLAN {
-            lines.append(contentsOf: SourcePreservingLANPlan.guestSetupCommands.map { "  \($0)" })
+            lines.append(contentsOf: SourcePreservingLANPlan.guestSetupCommands(bridgeNetwork: bridgeNetwork).map { "  \($0)" })
         }
         lines += [
             "fi",
@@ -540,7 +548,7 @@ public enum DoryVZConfigurationBuilder {
             "  /usr/local/bin/dockerd \\",
             "    -H unix:///var/run/docker.sock \\",
             "    -H tcp://0.0.0.0:2375 \\",
-            "    --tls=false \(nativeIPv6 ? DoryVMMNativeIPv6Plan().dockerDaemonArguments : "") >/var/log/dockerd.log 2>&1 &",
+            "    --tls=false \(bridgeNetwork.dockerDaemonArguments) \(nativeIPv6 ? DoryVMMNativeIPv6Plan().dockerDaemonArguments : "") >/var/log/dockerd.log 2>&1 &",
             "fi",
             "",
             GuestShutdownCommand.listener(),
@@ -645,6 +653,7 @@ public enum DoryVMMMain {
                 gvproxyPath: arguments.gvproxyPath,
                 sshAgentSocketPath: arguments.sshAgentSocketPath,
                 publishHost: arguments.publishHost,
+                bridgeSubnetCIDR: arguments.bridgeSubnetCIDR,
                 dataDriveRoot: arguments.dataDriveRoot,
                 onRuntimeCreated: { coordinator.attach($0) }
             )
@@ -713,6 +722,7 @@ public enum DoryVMMMain {
         gvproxyPath: String?,
         sshAgentSocketPath: String?,
         publishHost: String,
+        bridgeSubnetCIDR: String,
         dataDriveRoot: String?,
         onRuntimeCreated: (DoryVMMRuntime) -> Void
     ) throws -> DoryVMMRuntime {
@@ -745,6 +755,7 @@ public enum DoryVMMMain {
         } else {
             gvproxyNetwork = nil
         }
+        let bridgeNetwork = try DoryIPv4BridgeNetwork(bridgeSubnetCIDR)
         let sourcePreservingLANClient: SourcePreservingLANPrivilegedClient?
         let sourcePreservingLANSessionID: String?
         if publishHost == "0.0.0.0", let gvproxyNetwork,
@@ -755,7 +766,8 @@ public enum DoryVMMMain {
                 let response = try client.apply(SourcePreservingLANRequest(
                     operation: .activate,
                     sessionID: sessionID,
-                    gvproxySocketPath: lanDatapathSocketPath
+                    gvproxySocketPath: lanDatapathSocketPath,
+                    bridgeSubnetCIDR: bridgeNetwork.cidr
                 ))
                 guard response.status == "active" else {
                     throw DoryVZMachineError.validation("source-preserving LAN helper did not activate")
@@ -782,7 +794,8 @@ public enum DoryVMMMain {
             environment: environment,
             dockerDataDiskPath: dataDrive?.engineDataDiskPath,
             nativeIPv6: gvproxyNetwork != nil,
-            sourcePreservingLAN: sourcePreservingLANClient != nil
+            sourcePreservingLAN: sourcePreservingLANClient != nil,
+            bridgeSubnetCIDR: bridgeNetwork.cidr
         )
         let configuration = try DoryVZConfigurationBuilder.makeConfiguration(
             spec: spec,
@@ -851,7 +864,8 @@ public enum DoryVMMMain {
                     sourcePreservingLANClient: sourcePreservingLANClient,
                     sourcePreservingLANSessionID: sourcePreservingLANSessionID,
                     sourcePreservingLANGVProxySocketPath: sourcePreservingLANClient == nil
-                        ? nil : $0.lanDatapathSocketPath
+                        ? nil : $0.lanDatapathSocketPath,
+                    bridgeSubnetCIDR: bridgeNetwork.cidr
                 )
             }
         )

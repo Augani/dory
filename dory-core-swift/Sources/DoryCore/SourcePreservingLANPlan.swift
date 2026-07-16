@@ -4,8 +4,10 @@ import Foundation
 /// Packet-level LAN ingress contract. PF changes only the destination; the remote source address is
 /// carried through the UTUN/gvproxy Ethernet bridge and therefore reaches dockerd unchanged.
 public enum SourcePreservingLANPlan {
-    public static let guestIngressIPv4 = "192.168.215.254"
-    public static let guestIngressCIDR = "192.168.215.254/32"
+    private static let defaultBridgeNetwork = try! DoryIPv4BridgeNetwork()
+    public static let guestIngressIPv4 = defaultBridgeNetwork.lanGuestIngressAddress
+    public static let guestIngressCIDR = defaultBridgeNetwork.lanGuestIngressCIDR
+    public static let hostBridgeIPv4 = defaultBridgeNetwork.lanHostAddress
     public static let guestReturnGatewayIPv4 = "192.168.127.253"
     public static let bridgeMAC = "5a:94:ef:d0:12:01"
     public static let connectionMark = "0xd072"
@@ -18,8 +20,17 @@ public enum SourcePreservingLANPlan {
     /// traffic keeps the ordinary gvproxy route. The mark also exempts the reply from masquerade;
     /// PF then reverses its destination-only translation on the Mac.
     public static var guestSetupCommands: [String] {
-        [
-            "ip address replace \(guestIngressCIDR) dev eth0",
+        try! guestSetupCommands(bridgeSubnetCIDR: DoryIPv4BridgeNetwork.defaultCIDR)
+    }
+
+    public static func guestSetupCommands(bridgeSubnetCIDR: String) throws -> [String] {
+        guestSetupCommands(bridgeNetwork: try DoryIPv4BridgeNetwork(bridgeSubnetCIDR))
+    }
+
+    public static func guestSetupCommands(bridgeNetwork network: DoryIPv4BridgeNetwork) -> [String] {
+        let guestIngressIPv4 = network.lanGuestIngressAddress
+        return [
+            "ip address replace \(network.lanGuestIngressCIDR) dev eth0",
             "ip neigh replace \(guestReturnGatewayIPv4) lladdr \(bridgeMAC) nud permanent dev eth0",
             "sysctl -w net.ipv4.ip_forward=1 >/dev/null",
             "ip route replace default via \(guestReturnGatewayIPv4) dev eth0 table \(policyRoutingTable)",
@@ -39,8 +50,11 @@ public enum SourcePreservingLANPlan {
     /// Build the complete, deterministic Dory anchor for Docker-published LAN ports. Explicit
     /// loopback requests are never included. Interface-specific IPv4 requests stay constrained to
     /// that address; wildcard requests match only addresses owned by this Mac (`self`) off loopback.
-    public static func pfAnchorContents(bindings: Set<PublishedPortBinding>) -> String {
-        let rules = bindings.compactMap(rule).sorted()
+    public static func pfAnchorContents(
+        bindings: Set<PublishedPortBinding>,
+        guestIngressIPv4: String = SourcePreservingLANPlan.guestIngressIPv4
+    ) -> String {
+        let rules = bindings.compactMap { rule($0, guestIngressIPv4: guestIngressIPv4) }.sorted()
         return (["# Managed by Dory. Do not edit."] + rules).joined(separator: "\n") + "\n"
     }
 
@@ -48,7 +62,10 @@ public enum SourcePreservingLANPlan {
         Set(bindings.filter { rule($0) != nil })
     }
 
-    private static func rule(_ binding: PublishedPortBinding) -> String? {
+    private static func rule(
+        _ binding: PublishedPortBinding,
+        guestIngressIPv4: String = SourcePreservingLANPlan.guestIngressIPv4
+    ) -> String? {
         guard (1...65_535).contains(binding.port) else { return nil }
         let destination: String
         switch normalizedHost(binding.hostIP) {
@@ -82,7 +99,7 @@ public enum SourcePreservingLANOperation: String, Sendable, Codable {
 }
 
 public struct SourcePreservingLANRequest: Sendable, Equatable, Codable {
-    public static let schemaVersion = 2
+    public static let schemaVersion = 3
 
     public var version: Int
     public var operation: SourcePreservingLANOperation
@@ -90,13 +107,15 @@ public struct SourcePreservingLANRequest: Sendable, Equatable, Codable {
     public var gvproxySocketPath: String?
     public var bindings: Set<PublishedPortBinding>
     public var mtu: Int
+    public var bridgeSubnetCIDR: String
 
     public init(
         operation: SourcePreservingLANOperation,
         sessionID: String,
         gvproxySocketPath: String? = nil,
         bindings: Set<PublishedPortBinding> = [],
-        mtu: Int = DoryNetworkMTU.resolved()
+        mtu: Int = DoryNetworkMTU.resolved(),
+        bridgeSubnetCIDR: String = DoryIPv4BridgeNetwork.defaultCIDR
     ) {
         self.version = Self.schemaVersion
         self.operation = operation
@@ -104,6 +123,7 @@ public struct SourcePreservingLANRequest: Sendable, Equatable, Codable {
         self.gvproxySocketPath = gvproxySocketPath
         self.bindings = bindings
         self.mtu = mtu
+        self.bridgeSubnetCIDR = bridgeSubnetCIDR
     }
 }
 
