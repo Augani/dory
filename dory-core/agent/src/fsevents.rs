@@ -495,12 +495,18 @@ fn nudge_exact(path: &Path) -> io::Result<()> {
     result
 }
 
+#[allow(clippy::unnecessary_cast)]
+fn mode_bits(mode: libc::mode_t) -> u32 {
+    // Darwin uses a narrower mode_t than Linux, while the sync protocol carries mode bits as u32.
+    mode as u32
+}
+
 fn nudge_access_modes(mode: u32) -> [libc::c_int; 2] {
-    let kind = mode & u32::from(libc::S_IFMT);
+    let kind = mode & mode_bits(libc::S_IFMT);
     // A write-only host file cannot be reopened O_RDONLY by the unprivileged macOS VMM even when
     // Linux's caller is root. O_WRONLY without O_TRUNC is sufficient for same-mode fchmod. Keep
     // directories and ordinarily readable files on the read path first.
-    if kind == u32::from(libc::S_IFREG) && mode & 0o444 == 0 && mode & 0o222 != 0 {
+    if kind == mode_bits(libc::S_IFREG) && mode & 0o444 == 0 && mode & 0o222 != 0 {
         [libc::O_WRONLY, libc::O_RDONLY]
     } else {
         [libc::O_RDONLY, libc::O_WRONLY]
@@ -633,7 +639,7 @@ mod tests {
         std::fs::set_permissions(&inaccessible, std::fs::Permissions::from_mode(0o000)).unwrap();
 
         assert_eq!(
-            nudge_access_modes(u32::from(libc::S_IFREG) | 0o200),
+            nudge_access_modes(mode_bits(libc::S_IFREG) | 0o200),
             [libc::O_WRONLY, libc::O_RDONLY]
         );
         let outcome = nudge_paths(&[write_only.clone(), inaccessible.clone()]);
