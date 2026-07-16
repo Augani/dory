@@ -24,12 +24,6 @@ enum DorydCtlError: Error, CustomStringConvertible {
             message
         }
     }
-
-    mutating func takeFlag(_ name: String) -> Bool {
-        guard let index = values.firstIndex(of: name) else { return false }
-        values.remove(at: index)
-        return true
-    }
 }
 
 final class ReplyBox<T>: @unchecked Sendable {
@@ -146,6 +140,12 @@ struct ArgumentCursor {
             result.append(value)
         }
         return result
+    }
+
+    mutating func takeFlag(_ name: String) -> Bool {
+        guard let index = values.firstIndex(of: name) else { return false }
+        values.remove(at: index)
+        return true
     }
 }
 
