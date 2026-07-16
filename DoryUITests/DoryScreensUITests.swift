@@ -73,6 +73,18 @@ final class DoryScreensUITests: XCTestCase {
         assertText("STARTUP")
     }
 
+    func testSidebarCanBeHiddenAndRestoredFromTheToolbar() {
+        let toggle = app.buttons["toggle-sidebar"]
+        XCTAssertTrue(toggle.waitForExistence(timeout: 4))
+        XCTAssertTrue(app.buttons["nav-containers"].exists)
+
+        toggle.click()
+        XCTAssertFalse(app.buttons["nav-containers"].exists)
+
+        toggle.click()
+        XCTAssertTrue(app.buttons["nav-containers"].waitForExistence(timeout: 4))
+    }
+
     func testOnboardingOverlay() {
         app.buttons["brand"].click()
         XCTAssertTrue(app.buttons["onboarding-start"].waitForExistence(timeout: 4), "onboarding overlay should appear")

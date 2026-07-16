@@ -41,12 +41,18 @@ final class AppStore {
         didSet { if oldValue != section { filter = "" } }
     }
     var selectedContainerID: String? = nil
+    var isSidebarVisible = true
+    var isContainerInspectorVisible = true
     var detailTab: DetailTab = .overview
     var settingsTab: SettingsTab = .general
     var menuOpen = false
     var onboarding = false
     var isConnecting = false
-    var filter = ""
+    var filter = "" {
+        didSet {
+            if section == .containers { reconcileContainerSelection() }
+        }
+    }
     var filterFocusToken = 0
     var imagesSort: TableSort?
     var volumesSort: TableSort?
@@ -71,10 +77,15 @@ final class AppStore {
     var containerScope: ContainerScope =
         ContainerScope(rawValue: UserDefaults.standard.string(forKey: "dory.containerScope") ?? "") ?? .all
     {
-        didSet { UserDefaults.standard.set(containerScope.rawValue, forKey: Self.containerScopeKey) }
+        didSet {
+            UserDefaults.standard.set(containerScope.rawValue, forKey: Self.containerScopeKey)
+            reconcileContainerSelection()
+        }
     }
 
-    var containers: [Container] = []
+    var containers: [Container] = [] {
+        didSet { reconcileContainerSelection() }
+    }
     var images: [DockerImage] = []
     var volumes: [Volume] = []
     var networks: [DoryNetwork] = []
@@ -92,7 +103,10 @@ final class AppStore {
     var containerFilter: ContainerFilter =
         ContainerFilter(rawValue: UserDefaults.standard.string(forKey: "containerFilter") ?? "") ?? .running
     {
-        didSet { UserDefaults.standard.set(containerFilter.rawValue, forKey: "containerFilter") }
+        didSet {
+            UserDefaults.standard.set(containerFilter.rawValue, forKey: "containerFilter")
+            reconcileContainerSelection()
+        }
     }
 
     var healthSnapshot: HealthSnapshot?
@@ -3020,10 +3034,7 @@ final class AppStore {
         if runtimeKind == .mock, pods != snap.pods { pods = snap.pods }
         if engineRunning != snap.engineRunning { engineRunning = snap.engineRunning }
         if engineVersion != snap.engineVersion { engineVersion = snap.engineVersion }
-        if selectedContainerID == nil || !containers.contains(where: { $0.id == selectedContainerID }) {
-            let first = containers.first?.id
-            if selectedContainerID != first { selectedContainerID = first }
-        }
+        reconcileContainerSelection()
         let liveIDs = Set(containers.map(\.id))
         for container in containers where container.isRunning {
             recordCPU(container.id, container.cpuPercent)
@@ -3224,7 +3235,27 @@ final class AppStore {
     }
 
     var selectedContainer: Container? {
-        containers.first { $0.id == selectedContainerID } ?? containers.first
+        filteredContainers.first { $0.id == selectedContainerID }
+    }
+
+    func reconcileContainerSelection() {
+        let visible = filteredContainers
+        guard !visible.isEmpty else {
+            selectedContainerID = nil
+            return
+        }
+        if let selectedContainerID, visible.contains(where: { $0.id == selectedContainerID }) { return }
+        selectedContainerID = visible[0].id
+    }
+
+    func revealContainer(_ container: Container, scope: ContainerScope) {
+        section = .containers
+        setContainerScope(scope)
+        if !filteredContainers.contains(where: { $0.id == container.id }) {
+            containerFilter = .all
+        }
+        selectedContainerID = container.id
+        isContainerInspectorVisible = true
     }
 
     var runningCount: Int { containers.filter(\.isRunning).count }

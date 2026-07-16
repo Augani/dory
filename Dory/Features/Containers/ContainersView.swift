@@ -11,12 +11,12 @@ struct ContainersView: View {
         GeometryReader { geo in
             let maxDetail = max(320, geo.size.width - 360 - resizeHandleWidth)
             let detailWidth = min(max(store.containerDetailWidth, 320), maxDetail)
-            let hasDetail = store.selectedContainer != nil
+            let hasDetail = store.isContainerInspectorVisible && store.selectedContainer != nil
             let listWidth = hasDetail ? geo.size.width - detailWidth - resizeHandleWidth : geo.size.width
             let compact = listWidth < 480
             HStack(alignment: .top, spacing: 0) {
                 listColumn(compact: compact)
-                if let selected = store.selectedContainer {
+                if store.isContainerInspectorVisible, let selected = store.selectedContainer {
                     resizeHandle(currentWidth: detailWidth, maxDetail: maxDetail)
                     ContainerDetailView(container: selected)
                         .frame(width: detailWidth)
@@ -63,7 +63,9 @@ struct ContainersView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .overlay(alignment: .trailing) {
-            if store.selectedContainer == nil { Rectangle().fill(p.border).frame(width: 1) }
+            if !store.isContainerInspectorVisible || store.selectedContainer == nil {
+                Rectangle().fill(p.border).frame(width: 1)
+            }
         }
     }
 
@@ -272,7 +274,10 @@ private struct ContainerRow: View {
         }
         .overlay(alignment: .bottom) { Rectangle().fill(p.border).frame(height: 1) }
         .contentShape(Rectangle())
-        .onTapGesture { store.selectedContainerID = container.id }
+        .onTapGesture {
+            store.selectedContainerID = container.id
+            store.isContainerInspectorVisible = true
+        }
         .onHover { hover = $0 }
         .accessibilityIdentifier("container-\(container.id)")
         .confirmationDialog("Delete \(container.name)?", isPresented: $confirmingDelete, titleVisibility: .visible) {

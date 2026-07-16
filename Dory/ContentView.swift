@@ -6,7 +6,10 @@ struct RootView: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            SidebarView()
+            if store.isSidebarVisible {
+                SidebarView()
+                    .transition(.move(edge: .leading).combined(with: .opacity))
+            }
             MainColumnView()
         }
         .frame(minWidth: 1000, minHeight: 660)
@@ -66,6 +69,7 @@ struct RootView: View {
         .animation(.spring(duration: 0.3), value: store.settingsNotice)
         .animation(.spring(duration: 0.3), value: store.dockerHostConflict)
         .animation(.spring(duration: 0.3), value: store.dockerHostCleaned)
+        .animation(.easeInOut(duration: 0.18), value: store.isSidebarVisible)
         .task { store.startBackendIfNeeded() }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             Task { await store.refreshIfIdle() }

@@ -46,9 +46,8 @@ struct MenuBarContentView: View {
     }
 
     private func openContainer(_ container: Container, scope: ContainerScope = .all) {
-        store.selectedContainerID = container.id
-        store.setContainerScope(scope)
-        openSection(.containers)
+        store.revealContainer(container, scope: scope)
+        showMainWindow()
     }
 
     private func openTerminal(_ container: Container) {

@@ -30,6 +30,17 @@ struct DoryCommands: Commands {
             .keyboardShortcut("n", modifiers: [.command, .option])
         }
         CommandGroup(after: .toolbar) {
+            Button(store.isSidebarVisible ? "Hide Sidebar" : "Show Sidebar") {
+                store.isSidebarVisible.toggle()
+            }
+            .keyboardShortcut("s", modifiers: [.command, .control])
+            if store.section == .containers, store.selectedContainer != nil {
+                Button(store.isContainerInspectorVisible ? "Hide Container Details" : "Show Container Details") {
+                    store.isContainerInspectorVisible.toggle()
+                }
+                .keyboardShortcut("i", modifiers: [.command, .option])
+            }
+            Divider()
             Button("Containers") { store.section = .containers }.keyboardShortcut("1", modifiers: .command)
             Button("Images") { store.section = .images }.keyboardShortcut("2", modifiers: .command)
             Button("Volumes") { store.section = .volumes }.keyboardShortcut("3", modifiers: .command)
@@ -235,9 +246,7 @@ struct DoryCommands: Commands {
     }
 
     private func openContainer(_ container: Container, scope: ContainerScope) {
-        store.setContainerScope(scope)
-        store.section = .containers
-        store.selectedContainerID = container.id
+        store.revealContainer(container, scope: scope)
         store.windowOpenRequested = true
         openWindow(id: Self.openDoryWindowID)
     }

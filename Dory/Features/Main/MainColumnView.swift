@@ -20,6 +20,28 @@ struct MainColumnView: View {
     private var toolbar: some View {
         @Bindable var store = store
         return HStack(spacing: 12) {
+            IconButton(
+                systemImage: "sidebar.leading",
+                label: store.isSidebarVisible ? "Hide sidebar" : "Show sidebar",
+                size: 30
+            ) {
+                store.isSidebarVisible.toggle()
+            }
+            .accessibilityIdentifier("toggle-sidebar")
+            .help(store.isSidebarVisible ? "Hide sidebar" : "Show sidebar")
+
+            if store.section == .containers, store.selectedContainer != nil {
+                IconButton(
+                    systemImage: "sidebar.trailing",
+                    label: store.isContainerInspectorVisible ? "Hide container details" : "Show container details",
+                    size: 30
+                ) {
+                    store.isContainerInspectorVisible.toggle()
+                }
+                .accessibilityIdentifier("toggle-container-details")
+                .help(store.isContainerInspectorVisible ? "Hide container details" : "Show container details")
+            }
+
             VStack(alignment: .leading, spacing: 1) {
                 Text(store.section.title).font(.system(size: 15, weight: .bold)).foregroundStyle(p.text)
                 Text(store.subtitle(for: store.section)).font(.system(size: 11.5)).foregroundStyle(p.text3)

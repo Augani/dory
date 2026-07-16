@@ -24,6 +24,8 @@
 - Fixed custom local domains returning 502 after ports 80 and 443 were authorized.
 - Fixed local HTTPS identity refreshes accumulating certificates and private keys in the user's
   login keychain.
+- Fixed stale container details remaining open after the selected container disappeared or no
+  longer matched the current view, and added toolbar controls for hiding navigation and details.
 
 ## 0.3.1 - 2026-07-16
 

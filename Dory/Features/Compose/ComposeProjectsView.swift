@@ -119,9 +119,7 @@ private struct ProjectCard: View {
                     .overlay(alignment: .top) { Rectangle().fill(p.border).frame(height: 1) }
                     .contentShape(Rectangle())
                     .onTapGesture {
-                        store.selectedContainerID = service.id
-                        store.setContainerScope(.compose)
-                        store.section = .containers
+                        store.revealContainer(service, scope: .compose)
                     }
                 }
             }
