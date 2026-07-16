@@ -496,11 +496,11 @@ fn nudge_exact(path: &Path) -> io::Result<()> {
 }
 
 fn nudge_access_modes(mode: u32) -> [libc::c_int; 2] {
-    let kind = mode & libc::S_IFMT as u32;
+    let kind = mode & u32::from(libc::S_IFMT);
     // A write-only host file cannot be reopened O_RDONLY by the unprivileged macOS VMM even when
     // Linux's caller is root. O_WRONLY without O_TRUNC is sufficient for same-mode fchmod. Keep
     // directories and ordinarily readable files on the read path first.
-    if kind == libc::S_IFREG as u32 && mode & 0o444 == 0 && mode & 0o222 != 0 {
+    if kind == u32::from(libc::S_IFREG) && mode & 0o444 == 0 && mode & 0o222 != 0 {
         [libc::O_WRONLY, libc::O_RDONLY]
     } else {
         [libc::O_RDONLY, libc::O_WRONLY]
@@ -633,7 +633,7 @@ mod tests {
         std::fs::set_permissions(&inaccessible, std::fs::Permissions::from_mode(0o000)).unwrap();
 
         assert_eq!(
-            nudge_access_modes(libc::S_IFREG as u32 | 0o200),
+            nudge_access_modes(u32::from(libc::S_IFREG) | 0o200),
             [libc::O_WRONLY, libc::O_RDONLY]
         );
         let outcome = nudge_paths(&[write_only.clone(), inaccessible.clone()]);
