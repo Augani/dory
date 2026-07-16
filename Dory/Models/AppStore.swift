@@ -2817,7 +2817,7 @@ final class AppStore {
 
     static func kubeErrorText(_ error: KubeError) -> String {
         switch error {
-        case .kubectlMissing: "kubectl not found in Dory's bundled tools. Restart Dory so doryd can repair terminal integration, or reinstall the app bundle."
+        case .kubectlMissing: "kubectl is unavailable. Install or repair the Kubernetes component, then try again."
         case .nonZero(_, let stderr): stderr.trimmingCharacters(in: .whitespacesAndNewlines)
         case .decode: "Could not read the cluster response."
         }
@@ -3948,7 +3948,7 @@ final class AppStore {
     func applyKubernetesYAML(_ yaml: String) async -> String? {
         guard runtimeKind == .sharedVM else { return "Enable Kubernetes on Dory's shared VM first" }
         guard !yaml.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return "Paste or open a YAML manifest" }
-        guard let kubectl = KubeServiceProxy.kubectl() else { return "kubectl not found in Dory's bundled tools. Restart Dory so doryd can repair terminal integration, or reinstall the app bundle." }
+        guard let kubectl = KubeServiceProxy.kubectl() else { return "kubectl is unavailable. Install or repair the Kubernetes component, then try again." }
         let kubeconfig = NSHomeDirectory() + "/.kube/dory-config"
         let result: String? = await Task.detached {
             Self.runKubectlApply(kubectl: kubectl, kubeconfig: kubeconfig, yaml: yaml)

@@ -360,6 +360,7 @@ struct ComponentsView: View {
                 busy.remove(release.id)
             }
             statuses = store.list(catalog: catalog, catalogDigest: digest)
+            HostDockerCLI.reconcileOptionalTools(enabled: appStore.routeDockerCLI)
             appStore.showSettingsSuccess("\(displayName(id)) is installed and verified.")
         } catch {
             errorMessage = String(describing: error)
@@ -395,6 +396,7 @@ struct ComponentsView: View {
                 catalog: catalog,
                 catalogDigest: DoryComponentCatalogVerifier.digest(catalogData)
             )
+            HostDockerCLI.reconcileOptionalTools(enabled: appStore.routeDockerCLI)
             appStore.showSettingsSuccess("Removed \(displayName(id)). Your workload data was preserved.")
         } catch {
             errorMessage = String(describing: error)

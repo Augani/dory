@@ -345,7 +345,7 @@ public enum DoryComponentCatalogVerifier {
 
 public struct DoryInstalledComponent: Codable, Sendable, Equatable {
     public static let kind = "dev.dory.installed-component"
-    public static let schemaVersion = 1
+    public static let schemaVersion = 2
 
     public let kind: String
     public let schemaVersion: Int
@@ -355,12 +355,14 @@ public struct DoryInstalledComponent: Codable, Sendable, Equatable {
     public let catalogDigest: String
     public let installedAt: String
     public let assets: [DoryComponentAsset]
+    public let assetFingerprints: [DoryComponentAssetFingerprint]
 
     init(
         release: DoryComponentRelease,
         installationName: String,
         catalogDigest: String,
-        installedAt: Date
+        installedAt: Date,
+        assetFingerprints: [DoryComponentAssetFingerprint]
     ) {
         kind = Self.kind
         schemaVersion = Self.schemaVersion
@@ -370,6 +372,7 @@ public struct DoryInstalledComponent: Codable, Sendable, Equatable {
         self.catalogDigest = catalogDigest
         self.installedAt = DoryComponentStore.timestamp(installedAt)
         assets = release.assets
+        self.assetFingerprints = assetFingerprints
     }
 
     var isStructurallyValid: Bool {
@@ -378,7 +381,20 @@ public struct DoryInstalledComponent: Codable, Sendable, Equatable {
             && catalogDigest.count == 64 && catalogDigest.allSatisfy(\.isHexDigit)
             && DoryComponentCatalogVerifier.validTimestamp(installedAt)
             && !assets.isEmpty
+            && assetFingerprints.map(\.path) == assets.map(\.path)
     }
+}
+
+public struct DoryComponentAssetFingerprint: Codable, Sendable, Equatable {
+    public let path: String
+    public let device: UInt64
+    public let inode: UInt64
+    public let size: UInt64
+    public let permissions: UInt32
+    public let modifiedSeconds: Int64
+    public let modifiedNanoseconds: Int64
+    public let changedSeconds: Int64
+    public let changedNanoseconds: Int64
 }
 
 public enum DoryComponentState: String, Codable, Sendable {
@@ -442,10 +458,20 @@ public struct DoryComponentStore: Sendable {
                     dependencies: release.dependencies
                 )
             }
-            let installed = try? installedComponent(release.id)
+            let installed: DoryInstalledComponent?
+            let installedRecordInvalid: Bool
+            do {
+                installed = try installedComponent(release.id)
+                installedRecordInvalid = false
+            } catch {
+                installed = nil
+                installedRecordInvalid = FileManager.default.fileExists(atPath: activePath(release.id))
+            }
             let state: DoryComponentState
-            if let installed {
-                if (try? verify(installed)) == nil {
+            if installedRecordInvalid {
+                state = .invalid
+            } else if let installed {
+                if (try? validateInstalledAssets(installed)) == nil {
                     state = .invalid
                 } else if installed.version == release.version,
                           expectedCatalogDigest == nil || installed.catalogDigest == expectedCatalogDigest {
@@ -511,7 +537,7 @@ public struct DoryComponentStore: Sendable {
                 throw DoryComponentError.missingDependency(dependency)
             }
         }
-        if let current = try installedComponent(release.id),
+        if let current = try? installedComponent(release.id),
            current.version == release.version,
            current.catalogDigest == catalogDigest,
            (try? verify(current)) != nil {
@@ -558,7 +584,10 @@ public struct DoryComponentStore: Sendable {
                 release: release,
                 installationName: installationName,
                 catalogDigest: catalogDigest,
-                installedAt: installedAt
+                installedAt: installedAt,
+                assetFingerprints: try release.assets.map {
+                    try Self.assetFingerprint(payload + "/" + $0.path, asset: $0)
+                }
             )
             try writeRecord(record, at: staging + "/installed.json", fileManager: fileManager)
             try Self.ensurePrivateDirectory(installedRoot + "/\(release.id.rawValue)", fileManager: fileManager)
@@ -590,6 +619,7 @@ public struct DoryComponentStore: Sendable {
     }
 
     public func verify(_ installed: DoryInstalledComponent) throws {
+        try validateInstalledAssets(installed)
         let payload = installationRoot(id: installed.id, name: installed.installationName) + "/payload"
         for asset in installed.assets {
             try verifyFile(
@@ -598,6 +628,11 @@ public struct DoryComponentStore: Sendable {
                 digest: asset.installedSHA256
             )
         }
+    }
+
+    public func isInstalledAndValid(_ id: DoryComponentID) -> Bool {
+        guard let installed = try? installedComponent(id) else { return false }
+        return (try? validateInstalledAssets(installed)) != nil
     }
 
     public func remove(
@@ -615,12 +650,19 @@ public struct DoryComponentStore: Sendable {
                 throw DoryComponentError.componentInUse(release.id)
             }
         }
-        guard let current = try installedComponent(id) else { return }
-        try fileManager.removeItem(atPath: activePath(id))
-        try Self.syncDirectory(activeRoot)
-        try fileManager.removeItem(atPath: installationRoot(id: id, name: current.installationName))
-        try Self.syncDirectory(installedRoot + "/\(id.rawValue)")
-        try pruneInactiveInstallations(for: id, keeping: nil, fileManager: fileManager)
+        let activation = activePath(id)
+        let componentRoot = installedRoot + "/\(id.rawValue)"
+        guard fileManager.fileExists(atPath: activation) || fileManager.fileExists(atPath: componentRoot) else {
+            return
+        }
+        if fileManager.fileExists(atPath: activation) {
+            try fileManager.removeItem(atPath: activation)
+            try Self.syncDirectory(activeRoot)
+        }
+        if fileManager.fileExists(atPath: componentRoot) {
+            try fileManager.removeItem(atPath: componentRoot)
+            try Self.syncDirectory(installedRoot)
+        }
     }
 
     public func assetPath(component id: DoryComponentID, path: String) -> String? {
@@ -630,12 +672,17 @@ public struct DoryComponentStore: Sendable {
             return nil
         }
         let candidate = installationRoot(id: id, name: installed.installationName) + "/payload/" + path
-        return (try? Self.regularFileSize(candidate)) == asset.installedBytes ? candidate : nil
+        guard let expected = installed.assetFingerprints.first(where: { $0.path == path }),
+              (try? Self.assetFingerprint(candidate, asset: asset)) == expected else {
+            return nil
+        }
+        return candidate
     }
 
     public func activePayloadDirectories() -> [String] {
         DoryComponentID.allCases.compactMap { id in
-            guard let installed = try? installedComponent(id) else { return nil }
+            guard let installed = try? installedComponent(id),
+                  (try? validateInstalledAssets(installed)) != nil else { return nil }
             return installationRoot(id: id, name: installed.installationName) + "/payload"
         }
     }
@@ -753,6 +800,47 @@ public struct DoryComponentStore: Sendable {
         guard try DoryComponentCatalogVerifier.fileDigest(path) == digest else {
             throw DoryComponentError.digestMismatch(path)
         }
+    }
+
+    private func validateInstalledAssets(_ installed: DoryInstalledComponent) throws {
+        let payload = installationRoot(id: installed.id, name: installed.installationName) + "/payload"
+        guard installed.assets.count == installed.assetFingerprints.count else {
+            throw DoryComponentError.invalidAsset(payload)
+        }
+        for (asset, expected) in zip(installed.assets, installed.assetFingerprints) {
+            guard expected.path == asset.path,
+                  try Self.assetFingerprint(payload + "/" + asset.path, asset: asset) == expected else {
+                throw DoryComponentError.digestMismatch(payload + "/" + asset.path)
+            }
+        }
+    }
+
+    private static func assetFingerprint(
+        _ path: String,
+        asset: DoryComponentAsset
+    ) throws -> DoryComponentAssetFingerprint {
+        var info = stat()
+        guard lstat(path, &info) == 0,
+              info.st_mode & S_IFMT == S_IFREG,
+              info.st_uid == getuid(),
+              info.st_nlink == 1,
+              info.st_size >= 0,
+              UInt64(info.st_size) == asset.installedBytes,
+              info.st_mode & 0o077 == 0,
+              asset.executable ? info.st_mode & 0o100 != 0 : info.st_mode & 0o111 == 0 else {
+            throw DoryComponentError.invalidAsset(path)
+        }
+        return DoryComponentAssetFingerprint(
+            path: asset.path,
+            device: UInt64(info.st_dev),
+            inode: UInt64(info.st_ino),
+            size: UInt64(info.st_size),
+            permissions: UInt32(info.st_mode & 0o7777),
+            modifiedSeconds: Int64(info.st_mtimespec.tv_sec),
+            modifiedNanoseconds: Int64(info.st_mtimespec.tv_nsec),
+            changedSeconds: Int64(info.st_ctimespec.tv_sec),
+            changedNanoseconds: Int64(info.st_ctimespec.tv_nsec)
+        )
     }
 
     private func readRecord<T: Decodable>(_ type: T.Type, at path: String) throws -> T {

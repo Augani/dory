@@ -78,6 +78,7 @@ public struct HostCLIInstaller: Sendable {
 
         for tool in Self.tools {
             guard let source = sourcePath(for: tool) else {
+                removeStaleOwnedToolSymlink(at: "\(binDir)/\(tool)")
                 missing.append(tool)
                 continue
             }
@@ -254,6 +255,23 @@ public struct HostCLIInstaller: Sendable {
         } catch {
             return false
         }
+    }
+
+    private func removeStaleOwnedToolSymlink(at destination: String) {
+        let fileManager = FileManager.default
+        guard let rawTarget = try? fileManager.destinationOfSymbolicLink(atPath: destination) else {
+            return
+        }
+        let target = resolvedSymlinkTarget(rawTarget, at: destination)
+        let ownedRoots = [
+            standardized("\(home)/.dory"),
+            helpersDirectory.map(standardized),
+            (try? DoryComponentStore.selected(home: home)).map { standardized($0.root) },
+        ].compactMap { $0 }
+        guard ownedRoots.contains(where: { isInside(standardized(target), root: $0) }) else {
+            return
+        }
+        try? fileManager.removeItem(atPath: destination)
     }
 
     @discardableResult

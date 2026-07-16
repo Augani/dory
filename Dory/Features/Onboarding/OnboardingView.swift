@@ -60,13 +60,13 @@ struct OnboardingView: View {
                 .font(.system(size: 21, weight: .heavy)).foregroundStyle(p.text)
                 .multilineTextAlignment(.center).lineSpacing(2).fixedSize(horizontal: false, vertical: true)
                 .padding(.bottom, 8)
-            Text("A self-contained Mac-native engine for Docker, Compose, and Kubernetes. One shared Linux VM — and your tools just work.")
+            Text("A self-contained Mac-native engine for Docker and Compose, with Kubernetes available when you need it. One shared Linux VM, and your tools just work.")
                 .font(.system(size: 13)).foregroundStyle(p.text2).multilineTextAlignment(.center).lineSpacing(3)
                 .padding(.bottom, 22)
 
             VStack(spacing: 12) {
                 feature(.shield, p.green, p.greenWeak, "One shared Linux engine", "All containers share one managed VM.")
-                feature(.eye, p.accentText, p.accentWeak, "Bundled docker, Compose & kubectl", "Dory ships the tools and points them at its engine.")
+                feature(.eye, p.accentText, p.accentWeak, "Docker & Compose included", "Add the signed Kubernetes component only when you need kubectl and k3s.")
                 feature(.networks, p.amber, p.amberWeak, "Automatic *.dory.local domains", "Every container on a real HTTPS URL.")
             }
             .padding(.bottom, 24)
@@ -88,7 +88,7 @@ struct OnboardingView: View {
 
             ProgressView().controlSize(.large).padding(.bottom, 22)
 
-            Text("Dory.app already includes the engine, kernel, networking, Docker, Compose, and kubectl. First launch extracts and starts them.")
+            Text("Docker Core includes the engine, kernel, networking, Docker, Compose, and Buildx. First launch extracts and starts them.")
                 .font(.system(size: 11.5)).foregroundStyle(p.text3).multilineTextAlignment(.center)
                 .padding(.bottom, 18)
 
@@ -153,7 +153,7 @@ struct OnboardingView: View {
         VStack(spacing: 0) {
             Text("You're all set").font(.system(size: 20, weight: .heavy)).foregroundStyle(p.text)
                 .padding(.bottom, 6)
-            Text("Dory's bundled tools and Docker context point at the engine — nothing else to install.")
+            Text("Dory's Core tools and Docker context point at the engine. Optional features remain one click away in Components.")
                 .font(.system(size: 13)).foregroundStyle(p.text2).multilineTextAlignment(.center)
                 .padding(.bottom, 20)
 

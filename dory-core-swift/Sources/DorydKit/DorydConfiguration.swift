@@ -479,8 +479,20 @@ public struct DorydEnvironment: Sendable {
     /// release asset into doryd's state directory. It intentionally has no headless fallback.
     private func hvKernelPath(stateDirectory: String) -> String? {
         guard venusRequested else {
-            return existingPath(firstOf: ["DORYD_HV_KERNEL", "DORY_HV_KERNEL"])
-                ?? bundledResource(named: ["dory-hv-kernel-\(hostGuestArch)", "dory-hv-kernel"])
+            let resourceNames = ["dory-hv-kernel-\(hostGuestArch)", "dory-hv-kernel"]
+            if let kernel = existingPath(firstOf: ["DORYD_HV_KERNEL", "DORY_HV_KERNEL"])
+                ?? bundledResource(named: resourceNames)
+                ?? preparedBundledCompressedResource(
+                    named: resourceNames,
+                    outputName: "dory-hv-kernel-\(hostGuestArch)",
+                    stateDirectory: stateDirectory
+                ) {
+                return kernel
+            }
+            if compressedResourceSourceExists(named: resourceNames) {
+                reportEngineConfigurationError("headless kernel is present but could not be prepared")
+            }
+            return nil
         }
 
         guard hostGuestArch == "arm64" else {

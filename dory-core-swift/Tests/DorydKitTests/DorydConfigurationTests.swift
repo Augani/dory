@@ -274,6 +274,44 @@ final class DorydConfigurationTests: XCTestCase {
         XCTAssertFalse(hv.arguments.contains("--amd64"), "amd64 emulation must remain an explicit Settings opt-in")
     }
 
+    func testDockerTierPreparesCompressedHeadlessKernelWhenRawKernelIsNotBundled() throws {
+        let directory = "/tmp/doryd-config-compressed-kernel-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let helpers = directory + "/Dory.app/Contents/Helpers"
+        let resources = directory + "/Dory.app/Contents/Resources"
+        let state = directory + "/state"
+        try FileManager.default.createDirectory(atPath: helpers, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(atPath: resources, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+
+        let doryd = try executableFixture(at: helpers + "/doryd")
+        _ = try executableFixture(at: helpers + "/dory-hv")
+        _ = try executableFixture(at: helpers + "/gvproxy")
+
+        #if arch(x86_64)
+        let guestArch = "amd64"
+        #else
+        let guestArch = "arm64"
+        #endif
+
+        let source = directory + "/headless-kernel"
+        let expected = Data("compressed-headless-kernel".utf8)
+        try expected.write(to: URL(fileURLWithPath: source))
+        try DorydLZFSE.compress(
+            source: source,
+            destination: resources + "/dory-hv-kernel-\(guestArch).lzfse"
+        )
+
+        let environment = DorydEnvironment(values: [
+            "DORYD_HOME": directory + "/home",
+            "DORYD_STATE_DIR": state,
+        ], cwd: directory, executablePath: doryd, hostPlatform: supportedRawHVPlatform())
+
+        let hv = try XCTUnwrap(environment.dockerTierConfiguration()?.hvProcess)
+        let prepared = state + "/assets/dory-hv-kernel-\(guestArch)"
+        XCTAssertArgumentPair(hv.arguments, "--kernel", prepared)
+        XCTAssertEqual(FileManager.default.contents(atPath: prepared), expected)
+    }
+
     func testVenusPreparesAndSelectsArchitectureMatchedCompressedGPUKernel() throws {
         let directory = "/tmp/doryd-config-gpu-kernel-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         let helpers = directory + "/Helpers"

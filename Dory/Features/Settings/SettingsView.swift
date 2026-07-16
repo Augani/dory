@@ -275,7 +275,7 @@ struct SettingsView: View {
             comparisonRow("One shared VM engine", .yes, .yes, .no(nil), divider: true)
             comparisonRow("Hypervisor-backed virtualization", .yes, .yes, .no(nil), divider: true)
             comparisonRow("*.local domains + HTTPS", .yes, .yes, .no(nil), divider: true)
-            comparisonRow("Drop-in docker & kubectl", .yes, .yes, .yes, divider: true)
+            comparisonRow("Drop-in Docker + optional kubectl", .yes, .yes, .yes, divider: true)
             comparisonRow("Kubernetes built-in", .yes, .yes, .yes, divider: true)
             comparisonRow("Common x86 / amd64 images", .yes, .yes, .yes, divider: false)
         }
@@ -496,7 +496,7 @@ struct SettingsView: View {
                 toggleRow("Launch Dory at login", "Start the engine automatically when you log in.", isOn: Binding(get: { store.launchAtLogin }, set: { store.setLaunchAtLogin($0) }), divider: true)
                 toggleRow("Show menu bar icon", store.isAgentMode ? "Always on — Dory runs in the menu bar in background mode." : "Quick access to containers from the menu bar.", isOn: Binding(get: { store.showMenuBarIcon }, set: { store.setShowMenuBarIcon($0) }), divider: true, disabled: store.isAgentMode)
                 toggleRow("Keep doryd running after quit", "Leave the daemon, Docker socket, local domains, and machines available after the Dory app exits. Turn off to stop doryd when you quit Dory.", isOn: Binding(get: { store.keepDorydRunningAfterQuit }, set: { store.setKeepDorydRunningAfterQuit($0) }), divider: true)
-                toggleRow("Terminal docker command", "doryd keeps `docker`, `docker compose`, `kubectl`, and Dory support commands ready in `~/.dory/bin` and points them at Dory's engine. No Docker Desktop or admin setup required; turn off to remove.", isOn: Binding(get: { store.routeDockerCLI }, set: { store.setRouteDockerCLI($0) }), divider: false)
+                toggleRow("Terminal docker command", "doryd keeps `docker`, `docker compose`, and Dory support commands ready in `~/.dory/bin`, plus `kubectl` when the Kubernetes component is installed. No Docker Desktop or admin setup required; turn off to remove.", isOn: Binding(get: { store.routeDockerCLI }, set: { store.setRouteDockerCLI($0) }), divider: false)
             }
             .background(p.bgElevated, in: RoundedRectangle(cornerRadius: 11))
             .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(p.border))

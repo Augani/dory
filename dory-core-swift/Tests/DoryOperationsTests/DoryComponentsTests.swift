@@ -229,6 +229,8 @@ final class DoryComponentsTests: XCTestCase {
         try Data("tampered data".utf8).write(to: URL(fileURLWithPath: path))
 
         XCTAssertThrowsError(try fixture.store.verify(.linuxMachines))
+        XCTAssertFalse(fixture.store.isInstalledAndValid(.linuxMachines))
+        XCTAssertTrue(fixture.store.activePayloadDirectories().isEmpty)
         XCTAssertEqual(
             fixture.store.list(
                 catalog: catalog,
@@ -236,6 +238,45 @@ final class DoryComponentsTests: XCTestCase {
             ).first(where: { $0.id == .linuxMachines })?.state,
             .invalid
         )
+    }
+
+    func testCorruptComponentRecordsCanBeRepairedAndRemoved() throws {
+        let fixture = try Fixture(name: "corrupt-record-recovery")
+        defer { fixture.cleanup() }
+        let payload = Data("kubectl payload".utf8)
+        let component = release(id: .kubernetes, data: payload, assetPath: "kubectl")
+        let catalog = catalog(components: [core(), component])
+        let catalogData = try encoded(catalog)
+        let digest = DoryComponentCatalogVerifier.digest(catalogData)
+        let source = try fixture.write(payload, name: "kubectl")
+        let installed = try fixture.store.install(
+            component,
+            catalogDigest: digest,
+            downloadedAssets: ["kubectl": source.path]
+        )
+        let active = fixture.store.root + "/active/kubernetes.json"
+        try Data("invalid activation".utf8).write(to: URL(fileURLWithPath: active))
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: active)
+
+        XCTAssertEqual(
+            fixture.store.list(catalog: catalog, catalogDigest: digest)
+                .first(where: { $0.id == .kubernetes })?.state,
+            .invalid
+        )
+        let repaired = try fixture.store.install(
+            component,
+            catalogDigest: digest,
+            downloadedAssets: ["kubectl": source.path]
+        )
+        XCTAssertNotEqual(repaired.installationName, installed.installationName)
+        XCTAssertTrue(fixture.store.isInstalledAndValid(.kubernetes))
+
+        let record = fixture.store.root + "/installed/kubernetes/\(repaired.installationName)/installed.json"
+        try Data("invalid installed record".utf8).write(to: URL(fileURLWithPath: record))
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: record)
+        try fixture.store.remove(.kubernetes, catalog: catalog)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: active))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.store.root + "/installed/kubernetes"))
     }
 
     func testLZFSEAssetIsBoundedVerifiedAndMadeExecutable() throws {

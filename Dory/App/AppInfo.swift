@@ -29,7 +29,7 @@ nonisolated enum AppInfo {
     static func componentAvailable(_ id: DoryComponentID) -> Bool {
         if bundledComponents.contains(id) { return true }
         guard id.isRemovable, let store = try? DoryComponentStore.selected() else { return false }
-        return (try? store.installedComponent(id)) != nil
+        return store.isInstalledAndValid(id)
     }
 
     static var bundledComponents: Set<DoryComponentID> {
