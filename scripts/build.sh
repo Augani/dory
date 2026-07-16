@@ -19,6 +19,7 @@ Useful environment controls:
   DEVELOPER_DIR=PATH              Select a full Xcode toolchain
   DORY_BUILD_DEBUG_HELPERS=0      Skip dory-hv/gvproxy bundling
   DORY_BUILD_DORYD_HELPERS=0      Skip doryd/dory-vmm helper bundling
+  DORY_DESKTOP_BUNDLE_MODE=MODE   none (default) or all (Debian, Ubuntu, and Kali)
   DORY_ALLOW_MISSING_GVPROXY=1    Permit an intentionally incomplete development bundle
 EOF
 }
@@ -28,6 +29,16 @@ for argument in "$@"; do
     -h|--help) usage; exit 0 ;;
   esac
 done
+
+DESKTOP_BUNDLE_MODE="${DORY_DESKTOP_BUNDLE_MODE:-none}"
+case "$DESKTOP_BUNDLE_MODE" in
+  none|all) ;;
+  *) echo "error: DORY_DESKTOP_BUNDLE_MODE must be 'none' or 'all'" >&2; exit 64 ;;
+esac
+if [ "$DESKTOP_BUNDLE_MODE" = all ] && [ "${DORY_BUILD_DEBUG_HELPERS:-1}" != 1 ]; then
+  echo "error: the all-inclusive build needs DORY_BUILD_DEBUG_HELPERS=1 to compress desktop assets" >&2
+  exit 64
+fi
 
 # shellcheck source=gvproxy-payload.sh
 source scripts/gvproxy-payload.sh
@@ -163,9 +174,10 @@ bundle_debug_engine_rootfs() {
 
 bundle_debug_desktop_assets() {
   local app="$1" compressor="$2" kernel kernel_out distro rootfs rootfs_out metadata
+  [ "$DESKTOP_BUNDLE_MODE" = all ] || return 0
   [ "$(uname -m)" = "arm64" ] || return 0
   kernel="guest/out/Image-desktop"
-  [ -f "$kernel" ] || return 0
+  [ -f "$kernel" ] || { echo "error: all-inclusive build is missing $kernel" >&2; return 1; }
   guest/kernel/verify-build.sh arm64 desktop >/dev/null || return 1
   kernel_out="$app/Contents/Resources/dory-desktop-kernel-arm64.lzfse"
   if [ ! -f "$kernel_out" ] || [ "$kernel" -nt "$kernel_out" ]; then
@@ -173,7 +185,7 @@ bundle_debug_desktop_assets() {
   fi
   for distro in debian ubuntu kali; do
     rootfs="guest/out/dory-desktop-$distro-rootfs-arm64.ext4"
-    [ -f "$rootfs" ] || continue
+    [ -f "$rootfs" ] || { echo "error: all-inclusive build is missing $rootfs" >&2; return 1; }
     guest/desktop/verify-build.sh arm64 "$distro" >/dev/null || return 1
     rootfs_out="$app/Contents/Resources/dory-desktop-$distro-rootfs-arm64.ext4.lzfse"
     if [ ! -f "$rootfs_out" ] || [ "$rootfs" -nt "$rootfs_out" ]; then
@@ -187,6 +199,17 @@ bundle_debug_desktop_assets() {
   done
   for metadata in guest/out/kernel-build-arm64-desktop.stamp; do
     [ -s "$metadata" ] && install -m0644 "$metadata" "$app/Contents/Resources/"
+  done
+}
+
+write_debug_bundle_capabilities() {
+  local app included
+  included=false
+  [ "$DESKTOP_BUNDLE_MODE" = all ] && included=true
+  for app in "$HOME"/Library/Developer/Xcode/DerivedData/Dory-*/Build/Products/Debug/Dory.app; do
+    [ -f "$app/Contents/Info.plist" ] || continue
+    /usr/libexec/PlistBuddy -c 'Delete :DoryIncludesDesktopLinux' "$app/Contents/Info.plist" >/dev/null 2>&1 || true
+    /usr/libexec/PlistBuddy -c "Add :DoryIncludesDesktopLinux bool $included" "$app/Contents/Info.plist" || return 1
   done
 }
 
@@ -655,6 +678,9 @@ if [ "$status" -eq 0 ]; then
 fi
 if [ "$status" -eq 0 ]; then
   bundle_host_cli_helpers || status=$?
+fi
+if [ "$status" -eq 0 ]; then
+  write_debug_bundle_capabilities || status=$?
 fi
 if [ "$status" -eq 0 ]; then
   sign_debug_apps || status=$?

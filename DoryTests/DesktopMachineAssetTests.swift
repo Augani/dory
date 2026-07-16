@@ -3,6 +3,13 @@ import Testing
 @testable import Dory
 
 struct DesktopMachineAssetTests {
+    @Test func desktopBuildCapabilityDefaultsOnButHonorsExplicitBundleMarker() {
+        #expect(AppInfo.desktopLinuxIncluded(from: nil))
+        #expect(AppInfo.desktopLinuxIncluded(from: true))
+        #expect(!AppInfo.desktopLinuxIncluded(from: false))
+        #expect(!AppInfo.desktopLinuxIncluded(from: NSNumber(value: false)))
+    }
+
     @Test func preparesVerifiedSparseAssetsInTheDriveAndReusesMatchingOutputs() throws {
         let base = FileManager.default.temporaryDirectory
             .appendingPathComponent("dory-desktop-assets-\(UUID().uuidString)")

@@ -12,6 +12,11 @@ please report workflows that behave differently from a standard Docker engine.
 | Intel Mac | Not included in current releases; planned after dedicated hardware validation |
 | Windows or Linux host | Not supported by the macOS app |
 
+The standard Apple Silicon build omits the large graphical guest images. The all-inclusive Desktop
+build adds the managed Debian, Ubuntu, and Kali images. Both builds include containers, Kubernetes,
+and headless Linux servers; an existing graphical machine remains manageable if the lean build is
+installed later.
+
 ## Docker workflow
 
 | Capability | Status |

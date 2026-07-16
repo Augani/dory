@@ -4195,7 +4195,12 @@ final class AppStore {
         case .volumes: activeSheet = .newVolume
         case .networks: activeSheet = .newNetwork
         case .compose: openComposeFile()
-        case .desktops: activeSheet = .newDesktop
+        case .desktops:
+            guard AppInfo.includesDesktopLinux else {
+                actionError = "Creating graphical Linux desktops requires the all-inclusive Dory Desktop build."
+                return
+            }
+            activeSheet = .newDesktop
         case .machines: activeSheet = .newMachine
         default: break
         }

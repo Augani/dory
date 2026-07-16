@@ -33,7 +33,8 @@ struct MainColumnView: View {
                 if store.section == .machines || store.section == .desktops {
                     secondaryButton("Import") { store.importMachineFile() }
                 }
-                if let label = store.section.primaryActionLabel {
+                if let label = store.section.primaryActionLabel,
+                   store.section != .desktops || AppInfo.includesDesktopLinux {
                     primaryButton(label)
                 }
             }

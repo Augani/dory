@@ -45,18 +45,20 @@ struct MachinesView: View {
                         .frame(maxWidth: 460)
                 }
                 featurePills.padding(.top, 2)
-                Button { store.activeSheet = displayMode == .desktop ? .newDesktop : .newMachine } label: {
-                    HStack(spacing: 7) {
-                        Image(systemName: "plus").font(.system(size: 12, weight: .bold))
-                        Text(displayMode == .desktop ? "Create a desktop" : "Create a server")
+                if displayMode != .desktop || AppInfo.includesDesktopLinux {
+                    Button { store.activeSheet = displayMode == .desktop ? .newDesktop : .newMachine } label: {
+                        HStack(spacing: 7) {
+                            Image(systemName: "plus").font(.system(size: 12, weight: .bold))
+                            Text(displayMode == .desktop ? "Create a desktop" : "Create a server")
+                        }
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 20).padding(.vertical, 10)
+                        .background(p.accent, in: RoundedRectangle(cornerRadius: 9))
                     }
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 20).padding(.vertical, 10)
-                    .background(p.accent, in: RoundedRectangle(cornerRadius: 9))
+                    .buttonStyle(.plain)
+                    .padding(.top, 6)
+                    .accessibilityIdentifier(displayMode == .desktop ? "create-first-desktop" : "create-first-server")
                 }
-                .buttonStyle(.plain)
-                .padding(.top, 6)
-                .accessibilityIdentifier(displayMode == .desktop ? "create-first-desktop" : "create-first-server")
             }
             .frame(maxWidth: .infinity)
             .padding(.top, 64).padding(.bottom, 32).padding(.horizontal, 24)
@@ -428,7 +430,7 @@ private struct MachineEditSheet: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(displayMode == .desktop ? "Desktop Linux" : "Headless Linux")
                         .font(.system(size: 12.5, weight: .semibold)).foregroundStyle(p.text)
-                    Text(displayMode == .desktop ? "Debian 13 + Xfce" : "Lightweight Dory Linux")
+                    Text(displayMode == .desktop ? "\(machine.distro) \(machine.version)" : "Lightweight Dory Linux")
                         .font(.system(size: 11)).foregroundStyle(p.text3)
                 }
                 Spacer(minLength: 0)

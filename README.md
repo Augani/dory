@@ -88,8 +88,10 @@ open it.
 
 | Release asset | Purpose |
 |---|---|
-| `Dory-x.y.z-arm64.dmg` | Recommended signed and notarized installer |
-| `Dory-x.y.z-arm64.zip` | Full app archive |
+| `Dory-x.y.z-arm64.dmg` | Recommended lean installer: containers, Kubernetes, and headless Linux servers |
+| `Dory-x.y.z-desktop-arm64.dmg` | All-inclusive installer with Debian, Ubuntu, and Kali graphical desktops |
+| `Dory-x.y.z-arm64.zip` | Lean app archive |
+| `Dory-x.y.z-desktop-arm64.zip` | All-inclusive app archive |
 | `Dory-x.y.z-lite.zip` | Native UI for an existing Docker-compatible engine |
 | `dory-engine-x.y.z-arm64.tar.gz` | Headless Dory engine bundle |
 | `release-manifest.json` | Artifact names, hashes, and release provenance |
@@ -526,6 +528,11 @@ cd dory
 scripts/build.sh
 scripts/test.sh
 ```
+
+The source build is lean by default. Use
+`DORY_DESKTOP_BUNDLE_MODE=all scripts/build.sh` to include all three verified graphical desktop
+images. The two modes are intentionally all-or-none so an app labeled all-inclusive cannot silently
+ship a missing distribution.
 
 `scripts/test.sh` is the single public test entrypoint. It covers the Rust workspace, Swift packages,
 app tests, UI tests, CLI contracts, and public repository checks. Release qualification adds signed

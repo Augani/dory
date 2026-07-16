@@ -58,7 +58,9 @@ struct SidebarView: View {
                 sectionLabel("ORCHESTRATION").padding(.top, 6)
                 row(.kubernetes, .kubernetes, "Kubernetes")
                 sectionLabel("LINUX").padding(.top, 6)
-                row(.desktops, .machines, "Desktops", trailing: "\(desktopCount)")
+                if AppInfo.includesDesktopLinux || desktopCount > 0 {
+                    row(.desktops, .machines, "Desktops", trailing: "\(desktopCount)")
+                }
                 row(.machines, .machines, "Servers", trailing: "\(serverCount)")
                 sectionLabel("SYSTEM").padding(.top, 6)
                 row(.health, .health, "Health")

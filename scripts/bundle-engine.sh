@@ -21,8 +21,8 @@
 #   * Contents/Resources/dory-hv-kernel-<arch>.lzfse       — LZFSE PVH/Image kernel for dory-hv.
 #   * Contents/Resources/dory-vm-kernel-<arch>.lzfse       — LZFSE Linux kernel.
 #   * Contents/Resources/dory-vm-initfs-<arch>.ext4.lzfse  — LZFSE VM initfs.
-#   * Contents/Resources/dory-desktop-kernel-arm64.lzfse   — verified Apple Silicon desktop kernel.
-#   * Contents/Resources/dory-desktop-<distro>-rootfs-arm64.ext4.lzfse — verified desktop images.
+#   * Contents/Resources/dory-desktop-kernel-arm64.lzfse   — optional verified desktop kernel.
+#   * Contents/Resources/dory-desktop-<distro>-rootfs-arm64.ext4.lzfse — optional desktop images.
 #   * Contents/Resources/dory-agent-linux-<arch>           — guest relay/agent for host AI bridge
 #                                                           and future vsock control features.
 #   * Contents/Resources/dory-transfer-helper-image-arm64.tar — deterministic scratch image used
@@ -58,6 +58,12 @@ SUPPORT="$HOME/Library/Application Support/com.apple.container"
 
 [ -d "$APP" ] || { echo "no such app bundle: $APP"; exit 1; }
 mkdir -p "$RESOURCES" "$HELPERS" "$FRAMEWORKS"
+
+DESKTOP_BUNDLE_MODE="${DORY_DESKTOP_BUNDLE_MODE:-none}"
+case "$DESKTOP_BUNDLE_MODE" in
+  none|all) ;;
+  *) echo "DORY_DESKTOP_BUNDLE_MODE must be 'none' or 'all'" >&2; exit 64 ;;
+esac
 
 find_xcode() {
   local dev app found
@@ -1228,12 +1234,12 @@ bundle_engine_rootfs_for_arch() {
 
 bundle_desktop_assets_for_arch() {
   local arch="$1" kernel_src kernel_out distro rootfs_src rootfs_out metadata
+  [ "$DESKTOP_BUNDLE_MODE" = all ] || return 0
   [ "$arch" = "arm64" ] || return 0
   kernel_src="$(desktop_kernel_source_for_arch "$arch" || true)"
   if [ -z "$kernel_src" ]; then
-    warn_or_fail_missing_bundle_asset \
-      "verified Apple Silicon desktop kernel is missing; run DORY_KERNEL_PROFILE=desktop guest/kernel/build.sh arm64"
-    return 0
+    echo "    ERROR: all-inclusive build is missing the verified Apple Silicon desktop kernel" >&2
+    return 1
   fi
   if [ "$kernel_src" = "$REPO_ROOT/guest/out/Image-desktop" ]; then
     "$REPO_ROOT/guest/kernel/verify-build.sh" arm64 desktop >/dev/null
@@ -1244,9 +1250,8 @@ bundle_desktop_assets_for_arch() {
   for distro in debian ubuntu kali; do
     rootfs_src="$(desktop_rootfs_source_for_arch "$arch" "$distro" || true)"
     if [ -z "$rootfs_src" ]; then
-      warn_or_fail_missing_bundle_asset \
-        "verified Apple Silicon $distro desktop image is missing; run guest/desktop/build.sh arm64 $distro"
-      continue
+      echo "    ERROR: all-inclusive build is missing the verified $distro desktop image" >&2
+      return 1
     fi
     if [ "$rootfs_src" = "$REPO_ROOT/guest/out/dory-desktop-$distro-rootfs-arm64.ext4" ]; then
       "$REPO_ROOT/guest/desktop/verify-build.sh" arm64 "$distro" >/dev/null
@@ -1314,6 +1319,13 @@ if [ -f "$RESOURCES/dory-engine-rootfs-$HOST_GUEST_ARCH.ext4.lzfse" ]; then
 fi
 
 write_doryd_launch_agent
+
+/usr/libexec/PlistBuddy -c 'Delete :DoryIncludesDesktopLinux' "$APP/Contents/Info.plist" >/dev/null 2>&1 || true
+if [ "$DESKTOP_BUNDLE_MODE" = all ]; then
+  /usr/libexec/PlistBuddy -c 'Add :DoryIncludesDesktopLinux bool true' "$APP/Contents/Info.plist"
+else
+  /usr/libexec/PlistBuddy -c 'Add :DoryIncludesDesktopLinux bool false' "$APP/Contents/Info.plist"
+fi
 
 echo "==> Bundling deterministic named-volume transfer helper image…"
 scripts/build-transfer-helper.sh \
