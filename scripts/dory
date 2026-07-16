@@ -17,6 +17,7 @@ DORY_SCRIPT_DIR="$(cd -P "$(dirname "$DORY_SCRIPT_SOURCE")" >/dev/null 2>&1 && p
 
 DORY_CLI_VERSION="0.0.0-dev"
 DORY_SOCK="${DORY_SOCK:-$HOME/.dory/dory.sock}"
+ENGINE_SOCK="${DORY_ENGINE_SOCK:-$HOME/.dory/engine.sock}"
 KUBECONFIG_DORY="$HOME/.kube/dory-config"
 RECIPE_DIR="${DORY_RECIPE_DIR:-$HOME/.dory/recipes}"
 BUILTIN_RECIPE_DIR="${DORY_BUILTIN_RECIPE_DIR:-$(cd "$DORY_SCRIPT_DIR/.." && pwd)/Dory/Resources/Recipes}"
@@ -44,6 +45,12 @@ DOCKER_BUILDX_BIN="${DORY_DOCKER_BUILDX_BIN:-$(resolve_cli docker-buildx || prin
 DOCKER_COMPOSE_BIN="${DORY_DOCKER_COMPOSE_BIN:-$(resolve_cli docker-compose || printf '%s\n' docker-compose)}"
 KUBECTL_BIN="${DORY_KUBECTL_BIN:-$(resolve_cli kubectl || printf '%s\n' kubectl)}"
 
+K8S_NAME="dory-k8s"
+K8S_IMAGE="${DORY_K8S_IMAGE:-rancher/k3s:v1.36.2-k3s1}"   # keep in sync with KubeVersionCatalog.latest
+K8S_DIR="$HOME/.dory/k8s"
+K8S_CONTEXT="dory"
+DK_FALLBACK_WARNED=0
+
 host_guest_arch() {
   [ "$(uname -m)" = "x86_64" ] && printf '%s\n' "amd64" || printf '%s\n' "arm64"
 }
@@ -66,6 +73,255 @@ hv_helper() {
            "$DORY_SCRIPT_DIR/../Packages/ContainerizationEngine/.build/out/Products/Debug/dory-hv"; do
     [ -n "$p" ] && [ -x "$p" ] && { echo "$p"; return; }
   done
+}
+
+# docker against Dory's engine (prefer the raw engine socket, like the app does).
+dk() {
+  if [ -S "$ENGINE_SOCK" ]; then
+    docker -H "unix://$ENGINE_SOCK" "$@"
+  else
+    if [ "$DK_FALLBACK_WARNED" -eq 0 ]; then
+      echo "warning: $ENGINE_SOCK not found; falling back to $DORY_SOCK. Kubernetes will be created on the proxied daemon; hops requires engine.sock." >&2
+      DK_FALLBACK_WARNED=1
+    fi
+    docker -H "unix://$DORY_SOCK" "$@"
+  fi
+}
+
+k8s_normalize_port() {
+  local raw="$1" p ports proto hport cport
+  p="$(printf '%s' "${raw%%#*}" | tr -d '[:space:]')"
+  [ -n "$p" ] || return 1
+  case "$p" in
+    */*) ports="${p%/*}"; proto="${p##*/}" ;;
+    *)   ports="$p"; proto="tcp" ;;
+  esac
+  case "$proto" in tcp|udp) ;; *) return 1 ;; esac
+  case "$ports" in *:*) hport="${ports%%:*}"; cport="${ports#*:}" ;; *) return 1 ;; esac
+  [[ "$hport" =~ ^[0-9]+$ ]] || return 1
+  [[ "$cport" =~ ^[0-9]+$ ]] || return 1
+  (( 10#$hport >= 1 && 10#$hport <= 65535 )) || return 1
+  (( 10#$cport >= 1 && 10#$cport <= 65535 )) || return 1
+  printf '%s:%s/%s\n' "$hport" "$cport" "$proto"
+}
+
+# Extra port publishings for the k8s node: `--publish H:C[/proto]` flags plus one entry per line in
+# ~/.dory/k8s/ports (comments allowed). Kept in sync with KubernetesProvisioner's file format.
+k8s_desired_ports() {
+  local p normalized
+  for p in ${K8S_PUBLISHES:-}; do
+    normalized="$(k8s_normalize_port "$p")" || {
+      echo "error: invalid port publishing '$p' (expected H:C[/tcp|udp], ports 1-65535)" >&2
+      return 2
+    }
+    echo "$normalized"
+  done
+  if [ -f "$K8S_DIR/ports" ]; then
+    while IFS= read -r p || [ -n "$p" ]; do
+      normalized="$(k8s_normalize_port "$p")" || {
+        [ -z "$(printf '%s' "${p%%#*}" | tr -d '[:space:]')" ] && continue
+        echo "error: invalid port publishing in $K8S_DIR/ports: '$p' (expected H:C[/tcp|udp], ports 1-65535)" >&2
+        return 2
+      }
+      echo "$normalized"
+    done < "$K8S_DIR/ports"
+  fi
+}
+
+k8s_canonical_ports() {
+  local p
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    [ "$p" = "6443:6443/tcp" ] && continue
+    printf '%s\n' "$p"
+  done | LC_ALL=C sort -u
+}
+
+k8s_actual_ports() {
+  dk inspect -f '{{range $key, $bindings := .HostConfig.PortBindings}}{{range $bindings}}{{if .HostPort}}{{.HostPort}}:{{$key}}{{"\n"}}{{end}}{{end}}{{end}}' "$K8S_NAME" 2>/dev/null
+}
+
+k8s_desired_registries_bind() {
+  [ -f "$K8S_DIR/registries.yaml" ] && printf '%s\n' "$K8S_DIR/registries.yaml:/etc/rancher/k3s/registries.yaml:ro"
+  return 0
+}
+
+k8s_actual_registries_bind() {
+  dk inspect -f '{{range .HostConfig.Binds}}{{println .}}{{end}}' "$K8S_NAME" 2>/dev/null \
+    | grep -E ':/etc/rancher/k3s/registries\.yaml(:|$)' \
+    | LC_ALL=C sort -u || true
+}
+
+# Emits create-time config drift details and returns non-zero when drift exists.
+k8s_config_drift() {
+  local state="$1" desired_ports="$2" drift=0 actual_ports desired_registry actual_registry
+  desired_ports="$(printf '%s\n' "$desired_ports" | k8s_canonical_ports)"
+  actual_ports="$(k8s_actual_ports | k8s_canonical_ports)" || {
+    echo "  - published ports could not be inspected"
+    drift=1
+  }
+  if [ "${actual_ports:-}" != "$desired_ports" ]; then
+    echo "  - published ports differ"
+    echo "    desired: ${desired_ports:-none}"
+    echo "    actual: ${actual_ports:-none}"
+    drift=1
+  fi
+  desired_registry="$(k8s_desired_registries_bind)"
+  actual_registry="$(k8s_actual_registries_bind)"
+  if [ "$actual_registry" != "$desired_registry" ]; then
+    echo "  - registries.yaml bind differs"
+    echo "    desired: ${desired_registry:-none}"
+    echo "    actual: ${actual_registry:-none}"
+    drift=1
+  fi
+  return "$drift"
+}
+
+k8s_write_kubeconfig() {
+  mkdir -p "$HOME/.kube"
+  # k3s.yaml targets 127.0.0.1:6443 (host-reachable via Dory's port forwarder); rename the generic
+  # `default` cluster/user/context to `dory` so tools can address the cluster by context name.
+  # The optional `- ` covers YAML sequence items (k3s' users list: `- name: default`).
+  dk exec "$K8S_NAME" cat /etc/rancher/k3s/k3s.yaml \
+    | sed -e "s/^\([[:space:]]*\(- \)\{0,1\}\)name: default$/\1name: $K8S_CONTEXT/" \
+          -e "s/^\([[:space:]]*\(- \)\{0,1\}\)cluster: default$/\1cluster: $K8S_CONTEXT/" \
+          -e "s/^\([[:space:]]*\(- \)\{0,1\}\)user: default$/\1user: $K8S_CONTEXT/" \
+          -e "s/^current-context: default$/current-context: $K8S_CONTEXT/" \
+    > "$KUBECONFIG_DORY"
+  chmod 600 "$KUBECONFIG_DORY"
+  if [ "${K8S_MERGE:-1}" -eq 1 ]; then
+    k8s_merge_kubeconfig
+  else
+    echo "note: kubeconfig merge skipped; to use the cluster: export KUBECONFIG=$KUBECONFIG_DORY"
+  fi
+}
+
+# Fold the dory context into ~/.kube/config via kubectl itself — never hand-edit the file
+# holding the user's other cluster credentials. Stale dory entries are deleted before the
+# merge because KUBECONFIG precedence favors the FIRST file: after a cluster recreate
+# (fresh certs) the old entries would otherwise win. The main config leads the chain so the
+# user's current-context is preserved when set. No kubectl, or a failed merge, leaves the
+# main config untouched and the side file remains the documented fallback.
+k8s_merge_kubeconfig() {
+  local main tmp
+  main="$HOME/.kube/config"
+  if ! command -v kubectl >/dev/null 2>&1; then
+    echo "note: kubectl not found; to use the cluster: export KUBECONFIG=$KUBECONFIG_DORY"
+    return 0
+  fi
+  kubectl --kubeconfig "$main" config delete-context "$K8S_CONTEXT" >/dev/null 2>&1 || true
+  kubectl --kubeconfig "$main" config delete-cluster "$K8S_CONTEXT" >/dev/null 2>&1 || true
+  kubectl --kubeconfig "$main" config delete-user "$K8S_CONTEXT" >/dev/null 2>&1 || true
+  tmp="$(mktemp "$HOME/.kube/.config.dory.XXXXXX")" || return 0
+  if KUBECONFIG="$main:$KUBECONFIG_DORY" kubectl config view --flatten --raw >"$tmp" 2>/dev/null \
+     && grep -q 'server:' "$tmp"; then
+    chmod 600 "$tmp"
+    mv "$tmp" "$main"
+  else
+    rm -f "$tmp"
+    echo "warning: merging into $main failed; to use the cluster: export KUBECONFIG=$KUBECONFIG_DORY" >&2
+  fi
+}
+
+k8s_wait_ready() {
+  local i
+  for i in $(seq 1 90); do
+    if dk exec "$K8S_NAME" kubectl get nodes --no-headers 2>/dev/null | grep -q ' Ready'; then
+      k8s_write_kubeconfig
+      echo "Kubernetes is running (context: $K8S_CONTEXT)"
+      return 0
+    fi
+    sleep 2
+  done
+  echo "error: k3s node did not become Ready; try 'dory k8s disable && dory k8s enable'" >&2
+  return 1
+}
+
+k8s_enable() {
+  K8S_PUBLISHES=""
+  local recreate=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --publish|-p) [ $# -ge 2 ] || { echo "usage: dory k8s enable [--recreate] [--no-kubeconfig-merge] [--publish H:C[/proto]]... [--image IMG]" >&2; exit 2; }
+                    K8S_PUBLISHES="$K8S_PUBLISHES $2"; shift 2 ;;
+      --image)      [ $# -ge 2 ] || { echo "usage: dory k8s enable [--recreate] [--no-kubeconfig-merge] [--publish H:C[/proto]]... [--image IMG]" >&2; exit 2; }
+                    K8S_IMAGE="$2"; shift 2 ;;
+      --recreate)   recreate=1; shift ;;
+      --no-kubeconfig-merge) K8S_MERGE=0; shift ;;
+      *) echo "usage: dory k8s enable [--recreate] [--no-kubeconfig-merge] [--publish H:C[/proto]]... [--image IMG]" >&2; exit 2 ;;
+    esac
+  done
+  mkdir -p "$K8S_DIR"
+
+  local desired_ports state drift
+  desired_ports="$(k8s_desired_ports | k8s_canonical_ports)" || exit $?
+  state="$(dk inspect -f '{{.State.Running}}' "$K8S_NAME" 2>/dev/null || echo absent)"
+  if [ "$state" != "absent" ]; then
+    if drift="$(k8s_config_drift "$state" "$desired_ports")"; then
+      # Reuse the container: bindings are fixed at create and they already match.
+      [ "$state" = "true" ] || dk start "$K8S_NAME" >/dev/null
+      k8s_wait_ready
+      return
+    fi
+    if [ "$recreate" -ne 1 ]; then
+      echo "error: Kubernetes create-time config drift detected:" >&2
+      printf '%s\n' "$drift" >&2
+      echo "re-run with --recreate to apply (destroys cluster state)" >&2
+      exit 3
+    fi
+  fi
+
+  echo "Creating Kubernetes (k3s) container '$K8S_NAME'..."
+  dk rm -f "$K8S_NAME" >/dev/null 2>&1 || true
+  set -- run -d --name "$K8S_NAME" --privileged -p "6443:6443"
+  local p
+  while IFS= read -r p; do
+    [ -n "$p" ] && set -- "$@" -p "$p"
+  done <<EOF
+$desired_ports
+EOF
+  # k3s' native registry mirror/trust config; host-side so it survives recreation (read at boot).
+  [ -f "$K8S_DIR/registries.yaml" ] && set -- "$@" -v "$K8S_DIR/registries.yaml:/etc/rancher/k3s/registries.yaml:ro"
+  set -- "$@" "$K8S_IMAGE" server --disable=traefik --tls-san=127.0.0.1 --tls-san=host.docker.internal
+  dk "$@" >/dev/null
+  k8s_wait_ready
+}
+
+k8s_disable() {
+  dk rm -f "$K8S_NAME" >/dev/null 2>&1 || true
+  k8s_unmerge_kubeconfig
+  rm -f "$KUBECONFIG_DORY"
+  echo "Kubernetes disabled"
+}
+
+# Undo the merge: drop the dory entries and, when the user had switched to it, the
+# now-dangling current-context.
+k8s_unmerge_kubeconfig() {
+  local main current
+  main="$HOME/.kube/config"
+  command -v kubectl >/dev/null 2>&1 || return 0
+  [ -f "$main" ] || return 0
+  current="$(kubectl --kubeconfig "$main" config current-context 2>/dev/null || true)"
+  if [ "$current" = "$K8S_CONTEXT" ]; then
+    kubectl --kubeconfig "$main" config unset current-context >/dev/null 2>&1 || true
+  fi
+  kubectl --kubeconfig "$main" config delete-context "$K8S_CONTEXT" >/dev/null 2>&1 || true
+  kubectl --kubeconfig "$main" config delete-cluster "$K8S_CONTEXT" >/dev/null 2>&1 || true
+  kubectl --kubeconfig "$main" config delete-user "$K8S_CONTEXT" >/dev/null 2>&1 || true
+}
+
+k8s_status() {
+  local state
+  state="$(dk inspect -f '{{.State.Running}}' "$K8S_NAME" 2>/dev/null || true)"
+  case "$state" in
+    true)
+      if dk exec "$K8S_NAME" kubectl get nodes --no-headers 2>/dev/null | grep -q ' Ready'; then
+        echo "running (node Ready, context: $K8S_CONTEXT)"; exit 0
+      fi
+      echo "starting (node not Ready yet)"; exit 1 ;;
+    false) echo "stopped"; exit 1 ;;
+    *)     echo "not created"; exit 1 ;;
+  esac
 }
 
 usage() {
@@ -149,6 +405,17 @@ dory — Dory CLI
   dory usb ls|attach|detach     Inspect USB candidates and request USB/IP attach/detach
   dory expose <port|machine> [--port P] [--hostname H] [--print-command]
                                Share a local port or machine endpoint through a public HTTPS tunnel
+  dory k8s enable [--recreate] [--no-kubeconfig-merge] [--publish H:C[/proto]]... [--image IMG]
+                               Start the built-in k3s cluster (headless). Also reads
+                               ~/.dory/k8s/ports (one H:C[/proto] per line) and bind-mounts
+                               ~/.dory/k8s/registries.yaml when present. --recreate applies
+                               create-time config drift and destroys cluster state.
+                               --no-kubeconfig-merge leaves ~/.kube/config untouched
+                               (side file + export KUBECONFIG only).
+  dory k8s disable             Delete the cluster container and its kubeconfig (reserved only
+                               with no trailing args; otherwise passed to kubectl)
+  dory k8s status              Cluster state (reserved only with no trailing args; otherwise
+                               passed to kubectl; exit 0 when the node is Ready)
   dory k8s <kubectl args...>   Run kubectl against Dory's Kubernetes cluster
   dory ssh <machine>           SSH into a Linux machine as you (real ssh when available)
   dory vm [--image R] [--arch amd64|arm64] [--rosetta] [--mount h:g] -- <cmd>
@@ -3744,6 +4011,12 @@ case "${1:-help}" in
                     exec "$DOCKER_BIN" -H "unix://$DORY_SOCK" exec -it -u "$user" -w "$home" "$cid" "$shell" -l
                   fi ;;
   vm)             shift; H="$(vmm_helper || true)"; [ -z "$H" ] && { echo "dory-vmm helper not found; build+sign it (see scripts/bundle-engine.sh)" >&2; exit 1; }; exec "$H" "$@" ;;
-  k8s)            shift; exec "$KUBECTL_BIN" --kubeconfig "$KUBECONFIG_DORY" "$@" ;;
+  k8s)            shift
+                  case "${1:-}" in
+                    enable)  shift; k8s_enable "$@" ;;
+                    disable) shift; if [ $# -eq 0 ]; then k8s_disable; else exec "$KUBECTL_BIN" --kubeconfig "$KUBECONFIG_DORY" disable "$@"; fi ;;
+                    status)  shift; if [ $# -eq 0 ]; then k8s_status; else exec "$KUBECTL_BIN" --kubeconfig "$KUBECONFIG_DORY" status "$@"; fi ;;
+                    *)       exec "$KUBECTL_BIN" --kubeconfig "$KUBECONFIG_DORY" "$@" ;;
+                  esac ;;
   *)              exec "$DOCKER_BIN" -H "unix://$DORY_SOCK" "$@" ;;
 esac

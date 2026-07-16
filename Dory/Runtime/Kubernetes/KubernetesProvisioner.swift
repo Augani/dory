@@ -7,11 +7,29 @@ import Foundation
 /// locally-built Docker image is therefore NOT automatically visible to Pods — push it to a registry
 /// the cluster can reach, or import it into k3s's containerd (`k8s.io` namespace). Auto image-sync is
 /// a tracked follow-up.
+///
+/// Two optional host-side config files extend the cluster without GUI plumbing (and are shared
+/// with the `dory k8s` CLI):
+///   • `~/.dory/k8s/ports` — extra port publishings, one `HOST:CONTAINER[/proto]` per line.
+///     Published ports are auto-forwarded to `localhost` like any container's, so k3s NodePorts
+///     become host-reachable (e.g. `30500:30500` for a local registry).
+///   • `~/.dory/k8s/registries.yaml` — bind-mounted read-only to `/etc/rancher/k3s/registries.yaml`,
+///     k3s' native registry mirror/trust config. Living on the host, it survives the cluster
+///     container being recreated (k3s reads it at boot).
 enum KubernetesProvisioner {
     static let containerName = "dory-k8s"
     nonisolated static let defaultImage = KubeVersionCatalog.latest.image
     static let apiPort = 6443
+    /// Name used for the cluster/user/context in the exported kubeconfig, replacing k3s' generic
+    /// `default` so tools can target the cluster with `--context dory`.
+    static let contextName = "dory"
     static var kubeconfigPath: String { "\(NSHomeDirectory())/.kube/dory-config" }
+    /// The standard kubeconfig the `dory` context is merged into (via kubectl) so
+    /// `kubectl --context dory` works with no KUBECONFIG setup, like docker-desktop/orbstack/colima.
+    static var defaultKubeconfigPath: String { "\(NSHomeDirectory())/.kube/config" }
+    static var configDirectory: String { "\(NSHomeDirectory())/.dory/k8s" }
+    static var extraPortsConfigPath: String { "\(configDirectory)/ports" }
+    static var registriesConfigPath: String { "\(configDirectory)/registries.yaml" }
 
     enum K8sError: Error, Sendable, CustomStringConvertible {
         case createFailed(String)
@@ -20,6 +38,10 @@ enum KubernetesProvisioner {
         case kubectlMissing
         case apiUnreachable(String)
         case containerExited(String)
+        case invalidPortConfig(path: String, line: Int, value: String)
+        /// The container exists but its create-time config (ports/binds) no longer matches the
+        /// requested config; only disable + enable can apply the change.
+        case configDrift
 
         var description: String {
             switch self {
@@ -35,17 +57,80 @@ enum KubernetesProvisioner {
                 return detail.isEmpty ? "the Kubernetes API is not reachable from macOS" : "the Kubernetes API is not reachable from macOS: \(detail)"
             case .containerExited(let detail):
                 return detail.isEmpty ? "the k3s container exited during startup" : "the k3s container exited during startup: \(detail)"
+            case .invalidPortConfig(let path, let line, let value):
+                return "invalid Kubernetes port config at \(path):\(line): \(value)"
+            case .configDrift:
+                return "Kubernetes create-time config changed; disable and re-enable Kubernetes to apply"
             }
         }
     }
 
+    /// An extra `HOST:CONTAINER[/tcp|udp]` publishing on the cluster container.
+    struct PortPublish: Equatable, Hashable, Sendable {
+        var host: Int
+        var container: Int
+        var proto: String
+
+        static func parse(_ line: String) -> PortPublish? {
+            let normalized = normalizedConfigText(line)
+            guard !normalized.isEmpty else { return nil }
+            let portsAndProto = normalized.split(separator: "/", maxSplits: 1, omittingEmptySubsequences: false)
+            let proto = portsAndProto.count == 2 ? String(portsAndProto[1]) : "tcp"
+            guard proto == "tcp" || proto == "udp" else { return nil }
+            let parts = portsAndProto[0].split(separator: ":", omittingEmptySubsequences: false)
+            guard parts.count == 2, let host = Int(parts[0]), let container = Int(parts[1]),
+                  (1...65535).contains(host), (1...65535).contains(container) else { return nil }
+            return PortPublish(host: host, container: container, proto: proto)
+        }
+
+        static func normalizedConfigText(_ line: String) -> String {
+            let withoutComment = line.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false).first.map(String.init) ?? ""
+            return withoutComment.components(separatedBy: .whitespacesAndNewlines).joined()
+        }
+    }
+
+    private enum ExistingContainerState {
+        case absent
+        case running
+        case stopped
+    }
+
+    private struct KubernetesCreateRequest: Encodable {
+        let Image: String
+        let Cmd: [String]
+        let ExposedPorts: [String: DockerEmptyObject]
+        let HostConfig: HostConfigBody
+
+        struct HostConfigBody: Encodable {
+            let Privileged: Bool
+            let PortBindings: [String: [DockerPortBinding]]
+            let Binds: [String]?
+        }
+    }
+
+    private static let registriesBindTarget = "/etc/rancher/k3s/registries.yaml"
+
     static func enable(runtime: any ContainerRuntime, image: String = defaultImage, progress: @Sendable (String) -> Void = { _ in }) async throws {
-        if await isRunning(runtime) {
-            try await writeKubeconfig(runtime)
-            progress("Waiting for Kubernetes API access…")
-            try await waitForHostAPI(runtime, progress: progress)
-            progress("Kubernetes is running")
-            return
+        let extraPorts = try loadExtraPorts()
+        switch await existingContainerState(runtime) {
+        case .running:
+            if await publishedPortsCurrent(runtime, extraPorts: extraPorts) {
+                try await writeKubeconfig(runtime)
+                progress("Waiting for Kubernetes API access…")
+                try await waitForHostAPI(runtime, progress: progress)
+                progress("Kubernetes is running")
+                return
+            }
+            throw K8sError.configDrift
+        case .stopped:
+            if await publishedPortsCurrent(runtime, extraPorts: extraPorts) {
+                try await runtime.start(containerID: containerName)
+                try await waitUntilReady(runtime: runtime, progress: progress)
+                return
+            }
+            throw K8sError.configDrift
+        case .absent:
+            break
         }
 
         progress("Pulling Kubernetes (k3s)…")
@@ -55,7 +140,8 @@ enum KubernetesProvisioner {
         await deleteExisting(runtime)
         let encodedName = DockerImageOps.queryValue(containerName)
         guard let create = await runtime.proxyRequest(method: "POST", path: "/containers/create?name=\(encodedName)",
-            headers: [(name: "Content-Type", value: "application/json")], body: createBody(image: image)) else {
+            headers: [(name: "Content-Type", value: "application/json")],
+            body: createBody(image: image, extraPorts: extraPorts, registriesBind: registriesBindSource())) else {
             throw K8sError.createFailed("")
         }
         guard create.statusCode == 201, let id = decodeId(create.body) else {
@@ -69,6 +155,10 @@ enum KubernetesProvisioner {
             throw K8sError.createFailed(createFailureDetail(start.body))
         }
 
+        try await waitUntilReady(runtime: runtime, progress: progress)
+    }
+
+    private static func waitUntilReady(runtime: any ContainerRuntime, progress: @Sendable (String) -> Void) async throws {
         progress("Waiting for the node to become Ready…")
         var lastProbe = ""
         for attempt in 0..<90 {
@@ -95,20 +185,98 @@ enum KubernetesProvisioner {
 
     static func disable(runtime: any ContainerRuntime) async {
         await deleteExisting(runtime)
+        removeFromDefaultKubeconfig()
         try? FileManager.default.removeItem(atPath: kubeconfigPath)
     }
 
-    static func createJSON(image: String) -> String {
-        """
-        {"Image":"\(image)",\
-        "Cmd":["server","--disable=traefik","--tls-san=127.0.0.1","--tls-san=host.docker.internal"],\
-        "ExposedPorts":{"\(apiPort)/tcp":{}},\
-        "HostConfig":{"Privileged":true,"PortBindings":{"\(apiPort)/tcp":[{"HostPort":"\(apiPort)"}]}}}
-        """
+    static func createJSON(image: String, extraPorts: [PortPublish] = [], registriesBind: String? = nil) -> String {
+        String(decoding: createBody(image: image, extraPorts: extraPorts, registriesBind: registriesBind), as: UTF8.self)
     }
 
-    private static func createBody(image: String) -> Data {
-        Data(createJSON(image: image).utf8)
+    static func loadExtraPorts(path: String? = nil) throws -> [PortPublish] {
+        let file = path ?? extraPortsConfigPath
+        guard let content = try? String(contentsOfFile: file, encoding: .utf8) else { return [] }
+        var ports: [PortPublish] = []
+        for (index, line) in content.components(separatedBy: .newlines).enumerated() {
+            guard !PortPublish.normalizedConfigText(line).isEmpty else { continue }
+            guard let port = PortPublish.parse(line) else {
+                throw K8sError.invalidPortConfig(path: file, line: index + 1, value: line)
+            }
+            ports.append(port)
+        }
+        return ports
+    }
+
+    /// The host registries.yaml to bind into the node, when the user has created one. The home
+    /// directory is shared into the VM at the same path (SharedVMProvisioner), so the host path is
+    /// directly bind-mountable by the VM's dockerd.
+    static func registriesBindSource() -> String? {
+        FileManager.default.fileExists(atPath: registriesConfigPath) ? registriesConfigPath : nil
+    }
+
+    /// Rename k3s' generic `default` cluster/user/context to `dory`. k3s.yaml is single-entry with
+    /// a stable shape, so targeted textual rewrites are sufficient and dependency-free.
+    static func renameContext(_ kubeconfig: String) -> String {
+        kubeconfig.components(separatedBy: "\n").map(renameContextLine).joined(separator: "\n")
+    }
+
+    private static func createBody(image: String, extraPorts: [PortPublish], registriesBind: String?) -> Data {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        return (try? encoder.encode(createRequest(image: image, extraPorts: extraPorts, registriesBind: registriesBind))) ?? Data()
+    }
+
+    private static func createRequest(image: String, extraPorts: [PortPublish], registriesBind: String?) -> KubernetesCreateRequest {
+        var exposed: [String: DockerEmptyObject] = [:]
+        var bindings: [String: [DockerPortBinding]] = [:]
+        addPortBinding(PortPublish(host: apiPort, container: apiPort, proto: "tcp"), exposed: &exposed, bindings: &bindings)
+        for port in extraPorts {
+            addPortBinding(port, exposed: &exposed, bindings: &bindings)
+        }
+        return KubernetesCreateRequest(
+            Image: image,
+            Cmd: ["server", "--disable=traefik", "--tls-san=127.0.0.1", "--tls-san=host.docker.internal"],
+            ExposedPorts: exposed,
+            HostConfig: .init(
+                Privileged: true,
+                PortBindings: bindings,
+                Binds: registriesBind.map { [registriesBindValue(source: $0)] }
+            )
+        )
+    }
+
+    private static func addPortBinding(_ port: PortPublish, exposed: inout [String: DockerEmptyObject], bindings: inout [String: [DockerPortBinding]]) {
+        let key = "\(port.container)/\(port.proto)"
+        let hostPort = "\(port.host)"
+        exposed[key] = DockerEmptyObject()
+        var existing = bindings[key] ?? []
+        if !existing.contains(where: { $0.HostPort == hostPort }) {
+            existing.append(DockerPortBinding(HostPort: hostPort))
+        }
+        bindings[key] = existing
+    }
+
+    private static func registriesBindValue(source: String) -> String {
+        "\(source):\(registriesBindTarget):ro"
+    }
+
+    private static func renameContextLine(_ line: String) -> String {
+        let hasCarriageReturn = line.hasSuffix("\r")
+        let body = hasCarriageReturn ? String(line.dropLast()) : line
+        let replacements = ["name", "cluster", "user", "current-context"]
+        for key in replacements {
+            let suffix = "\(key): default"
+            guard body.hasSuffix(suffix) else { continue }
+            let prefix = body.dropLast(suffix.count)
+            // k3s' users list nests the key in a sequence item ("- name: default"),
+            // so allow one trailing sequence marker on top of the indent.
+            var indent = prefix
+            if indent.hasSuffix("- ") { indent = indent.dropLast(2) }
+            guard indent.allSatisfy({ $0 == " " || $0 == "\t" }) else { continue }
+            let renamed = "\(prefix)\(key): \(contextName)"
+            return hasCarriageReturn ? "\(renamed)\r" : renamed
+        }
+        return line
     }
 
     private static func writeKubeconfig(_ runtime: any ContainerRuntime) async throws {
@@ -117,14 +285,142 @@ enum KubernetesProvisioner {
         // k3s.yaml already targets 127.0.0.1:6443, which the port forwarder makes host-reachable.
         let directory = (kubeconfigPath as NSString).deletingLastPathComponent
         try? FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
-        try result.output.write(toFile: kubeconfigPath, atomically: true, encoding: .utf8)
+        try renameContext(result.output).write(toFile: kubeconfigPath, atomically: true, encoding: .utf8)
+        mergeIntoDefaultKubeconfig()
     }
 
-    private static func isRunning(_ runtime: any ContainerRuntime) async -> Bool {
+    /// kubectl used for the kubeconfig merge/unmerge — resolved through HostTools so the copy
+    /// bundled in the app wins and packaged installs merge without any system kubectl.
+    static func hostKubectl() -> String? { HostTools.kubectl() }
+
+    /// Fold the side-file context into `~/.kube/config` via kubectl itself — dory hand-rolls its
+    /// YAML and must never rewrite the file holding the user's other cluster credentials. Stale
+    /// `dory` entries are deleted before the merge because KUBECONFIG precedence favors the first
+    /// file: after a cluster recreate (fresh certs) the old entries would otherwise win. The main
+    /// config leads the chain so the user's `current-context` is preserved when set. No kubectl on
+    /// the host, or a merge failure, leaves the main config untouched — the side file remains the
+    /// documented fallback.
+    private static func mergeIntoDefaultKubeconfig() {
+        guard let kubectl = hostKubectl() else { return }
+        let main = defaultKubeconfigPath
+        deleteDoryEntries(kubectl: kubectl, from: main)
+        let merged = runKubectl(kubectl, ["config", "view", "--flatten", "--raw"],
+                                kubeconfigChain: "\(main):\(kubeconfigPath)")
+        guard merged.ok, merged.stdout.contains("server:") else { return }
+        let tmp = "\(main).dory.tmp"
+        do {
+            try merged.stdout.write(toFile: tmp, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: tmp)
+            if FileManager.default.fileExists(atPath: main) {
+                _ = try FileManager.default.replaceItemAt(URL(fileURLWithPath: main), withItemAt: URL(fileURLWithPath: tmp))
+            } else {
+                try FileManager.default.moveItem(atPath: tmp, toPath: main)
+            }
+        } catch {
+            try? FileManager.default.removeItem(atPath: tmp)
+        }
+    }
+
+    /// Undo the merge on disable: drop the `dory` entries and, when the user had switched to it,
+    /// the now-dangling `current-context`.
+    private static func removeFromDefaultKubeconfig() {
+        let main = defaultKubeconfigPath
+        guard let kubectl = hostKubectl(), FileManager.default.fileExists(atPath: main) else { return }
+        let current = runKubectl(kubectl, ["--kubeconfig", main, "config", "current-context"])
+        if current.ok, current.stdout.trimmingCharacters(in: .whitespacesAndNewlines) == contextName {
+            _ = runKubectl(kubectl, ["--kubeconfig", main, "config", "unset", "current-context"])
+        }
+        deleteDoryEntries(kubectl: kubectl, from: main)
+    }
+
+    private static func deleteDoryEntries(kubectl: String, from main: String) {
+        for subcommand in ["delete-context", "delete-cluster", "delete-user"] {
+            _ = runKubectl(kubectl, ["--kubeconfig", main, "config", subcommand, contextName])
+        }
+    }
+
+    /// kubectl runner with stdout kept clean (Shell's helpers fold stderr in, which would corrupt
+    /// the flattened YAML) and optional KUBECONFIG override (the only way to hand kubectl a
+    /// multi-file chain).
+    private static func runKubectl(_ kubectl: String, _ arguments: [String], kubeconfigChain: String? = nil) -> (stdout: String, ok: Bool) {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: kubectl)
+        process.arguments = arguments
+        if let kubeconfigChain {
+            var environment = ProcessInfo.processInfo.environment
+            environment["KUBECONFIG"] = kubeconfigChain
+            process.environment = environment
+        }
+        let stdout = Pipe()
+        let stderr = Pipe()
+        process.standardOutput = stdout
+        process.standardError = stderr
+        do { try process.run() } catch { return ("", false) }
+        let data = stdout.fileHandleForReading.readDataToEndOfFile()
+        _ = stderr.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        return (String(data: data, encoding: .utf8) ?? "", process.terminationStatus == 0)
+    }
+
+    private static func existingContainerState(_ runtime: any ContainerRuntime) async -> ExistingContainerState {
         let encodedName = DockerImageOps.pathComponent(containerName)
         guard let response = await runtime.proxyRequest(method: "GET", path: "/containers/\(encodedName)/json", headers: [], body: Data()),
-              response.isSuccess else { return false }
-        return String(data: response.body, encoding: .utf8)?.contains("\"Running\":true") ?? false
+              response.isSuccess else { return .absent }
+        guard let inspect = try? JSONDecoder().decode(ContainerInspect.self, from: response.body) else { return .absent }
+        return inspect.State?.running == true ? .running : .stopped
+    }
+
+    /// Whether the existing container already publishes every requested extra port and carries the
+    /// registries.yaml bind when one is configured, so an enable with unchanged config can reuse it
+    /// instead of recreating (both are fixed at create).
+    private static func publishedPortsCurrent(_ runtime: any ContainerRuntime, extraPorts: [PortPublish]) async -> Bool {
+        let registriesBind = registriesBindSource()
+        let encodedName = DockerImageOps.pathComponent(containerName)
+        guard let response = await runtime.proxyRequest(method: "GET", path: "/containers/\(encodedName)/json", headers: [], body: Data()),
+              response.isSuccess, let json = String(data: response.body, encoding: .utf8) else { return false }
+        return inspectJSONCoversConfig(json, extraPorts: extraPorts, registriesBind: registriesBind)
+    }
+
+    static func inspectJSONCoversConfig(_ json: String, extraPorts: [PortPublish], registriesBind: String?) -> Bool {
+        guard let data = json.data(using: .utf8),
+              let inspect = try? JSONDecoder().decode(ContainerInspect.self, from: data) else { return false }
+        guard let hostConfig = inspect.HostConfig,
+              let actualPorts = actualExtraPorts(from: hostConfig.PortBindings ?? [:]) else { return false }
+        let desiredRegistryBinds = Set(registriesBind.map { [registriesBindValue(source: $0)] } ?? [])
+        let actualRegistryBinds = Set((hostConfig.Binds ?? []).filter(isRegistriesBind))
+        return actualPorts == desiredExtraPorts(extraPorts) && actualRegistryBinds == desiredRegistryBinds
+    }
+
+    private static func desiredExtraPorts(_ ports: [PortPublish]) -> Set<PortPublish> {
+        Set(ports.filter { !isBuiltInAPIBinding($0) })
+    }
+
+    private static func actualExtraPorts(from bindings: [String: [ContainerInspect.PortBinding]]) -> Set<PortPublish>? {
+        var ports = Set<PortPublish>()
+        for (key, hostBindings) in bindings {
+            let parts = key.split(separator: "/", maxSplits: 1, omittingEmptySubsequences: false)
+            guard parts.count == 2,
+                  let container = Int(parts[0]),
+                  !parts[1].isEmpty else { return nil }
+            let proto = String(parts[1])
+            for binding in hostBindings {
+                guard let hostPort = binding.HostPort,
+                      let host = Int(hostPort) else { return nil }
+                let port = PortPublish(host: host, container: container, proto: proto)
+                if !isBuiltInAPIBinding(port) {
+                    ports.insert(port)
+                }
+            }
+        }
+        return ports
+    }
+
+    private static func isBuiltInAPIBinding(_ port: PortPublish) -> Bool {
+        port.host == apiPort && port.container == apiPort && port.proto == "tcp"
+    }
+
+    private static func isRegistriesBind(_ bind: String) -> Bool {
+        bind.contains(":\(registriesBindTarget):") || bind.hasSuffix(":\(registriesBindTarget)")
     }
 
     private static func deleteExisting(_ runtime: any ContainerRuntime) async {
@@ -166,7 +462,19 @@ enum KubernetesProvisioner {
         }
     }
 
-    private struct ContainerInspect: Decodable, Sendable { let State: ContainerState? }
+    private struct ContainerInspect: Decodable, Sendable {
+        let State: ContainerState?
+        let HostConfig: HostConfig?
+
+        struct HostConfig: Decodable, Sendable {
+            let Binds: [String]?
+            let PortBindings: [String: [PortBinding]]?
+        }
+
+        struct PortBinding: Decodable, Sendable {
+            let HostPort: String?
+        }
+    }
 
     private static func containerState(_ runtime: any ContainerRuntime) async -> ContainerState? {
         let encodedName = DockerImageOps.pathComponent(containerName)
@@ -189,4 +497,5 @@ enum KubernetesProvisioner {
         struct Out: Decodable { let Id: String }
         return (try? JSONDecoder().decode(Out.self, from: data))?.Id
     }
+
 }

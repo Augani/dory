@@ -147,7 +147,12 @@ final class AppStore {
     var selectedIngress: KubeIngressRow?
 
     private var namespaceFilter: String? { kubeNamespace == "All Namespaces" ? nil : kubeNamespace }
-    var kubeconfigHint: String { KubeContextHint.snippet(kubeconfigPath: KubernetesProvisioner.kubeconfigPath) }
+    var kubeconfigHint: String {
+        KubeContextHint.snippet(
+            kubeconfigPath: KubernetesProvisioner.kubeconfigPath,
+            merged: KubernetesProvisioner.hostKubectl() != nil
+        )
+    }
     func selectedPod() -> Pod? { pods.first { $0.id == selectedPodID } }
     func selectedDeployment() -> KubeDeploymentRow? { deployments.first { $0.id == selectedDeploymentID } }
 
@@ -2680,6 +2685,8 @@ final class AppStore {
             ) { message in
                 Task { @MainActor in self.kubernetesInfo = message }
             }
+        } catch KubernetesProvisioner.K8sError.configDrift {
+            kubernetesInfo = "Kubernetes create-time config changed; disable and re-enable Kubernetes to apply"
         } catch {
             let message = "Kubernetes failed: \(error)"
             kubernetesInfo = message
