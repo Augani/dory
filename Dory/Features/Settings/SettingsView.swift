@@ -500,6 +500,58 @@ struct SettingsView: View {
             .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(p.border))
             .padding(.bottom, 22)
 
+            groupLabel("EXTERNAL TERMINAL")
+            VStack(alignment: .leading, spacing: 11) {
+                HStack(spacing: 12) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Open shells in")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(p.text)
+                        Text("Used by external shell buttons. Dory's embedded terminal remains available.")
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(p.text3)
+                    }
+                    Spacer(minLength: 0)
+                    Picker("External terminal", selection: Binding(
+                        get: { store.externalTerminalPreference.terminal },
+                        set: { store.setExternalTerminal($0) }
+                    )) {
+                        ForEach(ExternalTerminal.allCases) { terminal in
+                            let installed = terminal.isInstalled(
+                                customPath: store.externalTerminalPreference.customApplicationPath
+                            )
+                            Text("\(terminal.displayName)\(installed ? "" : " (Not installed)")")
+                                .tag(terminal)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(width: 205)
+                    .accessibilityIdentifier("external-terminal-picker")
+                }
+                HStack(spacing: 8) {
+                    Button("Choose Application…") { store.chooseExternalTerminalApplication() }
+                        .buttonStyle(.bordered)
+                        .accessibilityIdentifier("external-terminal-choose")
+                    if store.externalTerminalPreference.terminal == .custom,
+                       let path = store.externalTerminalPreference.customApplicationPath {
+                        Text(path)
+                            .font(.system(size: 10.5, design: .monospaced))
+                            .foregroundStyle(p.text3)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                }
+                Text("Terminal, iTerm2, Ghostty, WezTerm, Alacritty, and Kitty launch the shell directly. Warp, the system default, and other apps receive a private temporary command file that removes itself when it starts.")
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(p.text3)
+                    .lineSpacing(3)
+            }
+            .padding(15)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(p.bgElevated, in: RoundedRectangle(cornerRadius: 11))
+            .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(p.border))
+            .padding(.bottom, 22)
+
             groupLabel("BROWSER LOGINS")
             VStack(spacing: 0) {
                 toggleRow("Open logins on my Mac", "Let CLIs inside a machine open the login page in your Mac browser and complete the localhost callback.", isOn: Binding(get: { store.openLoginsOnMac }, set: { store.setOpenLoginsOnMac($0) }), divider: false)

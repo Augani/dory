@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct TerminalWindowView: View {
+    @Environment(AppStore.self) private var store
     @Environment(\.palette) private var p
     let session: TerminalSession
 
@@ -34,11 +35,11 @@ struct TerminalWindowView: View {
                         socketPath: session.socketPath,
                         execArgs: TerminalLauncher.execArgs(user: session.user, shell: session.shell, home: session.home, container: session.containerID)
                     )
-                TerminalLauncher.open(command: command)
+                store.openExternalTerminal(command: command)
             } label: {
                 HStack(spacing: 5) {
                     Image(systemName: "arrow.up.forward.app").font(.system(size: 11, weight: .semibold))
-                    Text("Terminal.app").font(.system(size: 12, weight: .semibold))
+                    Text(store.externalTerminalDisplayName).font(.system(size: 12, weight: .semibold))
                 }
                 .foregroundStyle(p.accentText)
             }

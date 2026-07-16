@@ -1,19 +1,151 @@
+import AppKit
 import Foundation
 
-/// Opens an interactive shell in Terminal.app — the GUI "open terminal / SSH" affordance OrbStack
-/// provides for containers and Linux machines. Runs the right CLI against Dory's own socket/engine.
 enum TerminalLauncher {
-    static func open(command: String) {
-        let escaped = command.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
-        let script = "tell application \"Terminal\"\ndo script \"\(escaped)\"\nactivate\nend tell"
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-        process.arguments = ["-e", script]
-        try? process.run()
+    enum LaunchResult: Equatable {
+        case launched
+        case unavailable(String)
+        case failed(String)
     }
 
-    static func openContainerShell(socketPath: String, containerID: String) {
-        open(command: dockerCommand(socketPath: socketPath, execArgs: execArgs(user: "root", shell: "/bin/sh", home: "/root", container: containerID)))
+    struct LaunchPlan: Equatable {
+        var executable: String
+        var arguments: [String]
+        var temporaryCommandFile: URL?
+    }
+
+    @discardableResult
+    static func open(
+        command: String,
+        preference: ExternalTerminalPreference = ExternalTerminalPreferenceStore.load()
+    ) -> LaunchResult {
+        let applicationURL = preference.terminal.applicationURL(
+            customPath: preference.customApplicationPath
+        )
+        guard preference.terminal == .systemDefault || applicationURL != nil else {
+            return .unavailable("\(preference.displayName) is not installed.")
+        }
+        let plan: LaunchPlan
+        do {
+            plan = try launchPlan(
+                command: command,
+                terminal: preference.terminal,
+                applicationURL: applicationURL
+            )
+        } catch {
+            return .failed("Could not prepare \(preference.displayName): \(error.localizedDescription)")
+        }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: plan.executable)
+        process.arguments = plan.arguments
+        do {
+            try process.run()
+            return .launched
+        } catch {
+            if let temporaryCommandFile = plan.temporaryCommandFile {
+                try? FileManager.default.removeItem(at: temporaryCommandFile)
+            }
+            return .failed("Could not open \(preference.displayName): \(error.localizedDescription)")
+        }
+    }
+
+    static func launchPlan(
+        command: String,
+        terminal: ExternalTerminal,
+        applicationURL: URL?,
+        commandFileDirectory: URL? = nil
+    ) throws -> LaunchPlan {
+        switch terminal {
+        case .terminal:
+            let script = "tell application id \"com.apple.Terminal\"\ndo script \(appleScriptLiteral(command))\nactivate\nend tell"
+            return LaunchPlan(executable: "/usr/bin/osascript", arguments: ["-e", script])
+        case .iTerm2:
+            let script = "tell application id \"com.googlecode.iterm2\"\ncreate window with default profile command \(appleScriptLiteral(command))\nactivate\nend tell"
+            return LaunchPlan(executable: "/usr/bin/osascript", arguments: ["-e", script])
+        case .ghostty:
+            return try openApplicationPlan(
+                applicationURL: applicationURL,
+                applicationArguments: ["-e", "/bin/zsh", "-lc", command]
+            )
+        case .wezTerm:
+            return try openApplicationPlan(
+                applicationURL: applicationURL,
+                applicationArguments: ["start", "--always-new-process", "--", "/bin/zsh", "-lc", command]
+            )
+        case .alacritty:
+            return try openApplicationPlan(
+                applicationURL: applicationURL,
+                applicationArguments: ["-e", "/bin/zsh", "-lc", command]
+            )
+        case .kitty:
+            return try openApplicationPlan(
+                applicationURL: applicationURL,
+                applicationArguments: ["/bin/zsh", "-lc", command]
+            )
+        case .systemDefault, .warp, .custom:
+            let file = try makeCommandFile(command: command, directory: commandFileDirectory)
+            var arguments = ["-n"]
+            if let applicationURL {
+                arguments.append(contentsOf: ["-a", applicationURL.path])
+            }
+            arguments.append(file.path)
+            return LaunchPlan(executable: "/usr/bin/open", arguments: arguments, temporaryCommandFile: file)
+        }
+    }
+
+    private static func openApplicationPlan(
+        applicationURL: URL?,
+        applicationArguments: [String]
+    ) throws -> LaunchPlan {
+        guard let applicationURL else { throw CocoaError(.fileNoSuchFile) }
+        return LaunchPlan(
+            executable: "/usr/bin/open",
+            arguments: ["-na", applicationURL.path, "--args"] + applicationArguments
+        )
+    }
+
+    private static func makeCommandFile(command: String, directory: URL?) throws -> URL {
+        let root = directory ?? URL(fileURLWithPath: NSHomeDirectory())
+            .appendingPathComponent(".dory/run", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let file = root.appendingPathComponent("terminal-\(UUID().uuidString).command")
+        let script = """
+        #!/bin/zsh
+        self=\(shellQuote(file.path))
+        /bin/rm -f -- "$self"
+        /bin/zsh -lc \(shellQuote(command))
+        status=$?
+        if [ "$status" -ne 0 ]; then
+          printf '\\nDory command exited with status %s.\\n' "$status"
+        fi
+        exec "${SHELL:-/bin/zsh}" -l
+        """
+        try Data(script.utf8).write(to: file, options: [.atomic])
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: file.path)
+        return file
+    }
+
+    private static func appleScriptLiteral(_ value: String) -> String {
+        "\"" + value
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+            .replacingOccurrences(of: "\r", with: "\\r")
+            .replacingOccurrences(of: "\n", with: "\\n") + "\""
+    }
+
+    @discardableResult
+    static func openContainerShell(
+        socketPath: String,
+        containerID: String,
+        preference: ExternalTerminalPreference = ExternalTerminalPreferenceStore.load()
+    ) -> LaunchResult {
+        open(
+            command: dockerCommand(
+                socketPath: socketPath,
+                execArgs: execArgs(user: "root", shell: "/bin/sh", home: "/root", container: containerID)
+            ),
+            preference: preference
+        )
     }
 
     nonisolated static func execArgs(user: String, shell: String, home: String, container: String) -> String {
@@ -37,8 +169,22 @@ enum TerminalLauncher {
         "dory machine shell \(shellQuote(target.machineID))"
     }
 
-    static func openMachineShell(socketPath: String, containerID: String, user: String, shell: String, home: String) {
-        open(command: dockerCommand(socketPath: socketPath, execArgs: execArgs(user: user, shell: shell, home: home, container: containerID)))
+    @discardableResult
+    static func openMachineShell(
+        socketPath: String,
+        containerID: String,
+        user: String,
+        shell: String,
+        home: String,
+        preference: ExternalTerminalPreference = ExternalTerminalPreferenceStore.load()
+    ) -> LaunchResult {
+        open(
+            command: dockerCommand(
+                socketPath: socketPath,
+                execArgs: execArgs(user: user, shell: shell, home: home, container: containerID)
+            ),
+            preference: preference
+        )
     }
 
     nonisolated private static func shellQuote(_ value: String) -> String {

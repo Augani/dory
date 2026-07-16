@@ -63,6 +63,7 @@ final class AppStore {
     var keepDorydRunningAfterQuit = true
     var machineEnvAllowList: [String] = MachineEnvImport.defaultNames
     var openLoginsOnMac = true
+    var externalTerminalPreference = ExternalTerminalPreference(terminal: .terminal, customApplicationPath: nil)
     var dockerHostConflict: DockerHostConflict.Conflict?
     var dockerHostCleaned = false
     var dockerHostConflictDismissed = false
@@ -228,6 +229,7 @@ final class AppStore {
                 machineEnvAllowList = MachineEnvImport.parse(raw)
             }
             if let v = UserDefaults.standard.object(forKey: Self.openLoginsOnMacKey) as? Bool { openLoginsOnMac = v }
+            externalTerminalPreference = ExternalTerminalPreferenceStore.load()
             if let saved = UserDefaults.standard.string(forKey: Self.kubernetesVersionKey) {
                 kubernetesVersionTag = KubeVersionCatalog.version(forTag: saved).tag
             }
@@ -315,6 +317,45 @@ final class AppStore {
 
     static func resolvedKeepDorydRunningAfterQuit(defaults: UserDefaults) -> Bool {
         (defaults.object(forKey: keepDorydRunningAfterQuitKey) as? Bool) ?? true
+    }
+
+    var externalTerminalDisplayName: String {
+        externalTerminalPreference.displayName
+    }
+
+    func setExternalTerminal(_ terminal: ExternalTerminal) {
+        if terminal == .custom, externalTerminalPreference.customApplicationPath == nil {
+            chooseExternalTerminalApplication()
+            return
+        }
+        externalTerminalPreference.terminal = terminal
+        ExternalTerminalPreferenceStore.save(externalTerminalPreference)
+        showSettingsSuccess("External terminal set to \(externalTerminalDisplayName).")
+    }
+
+    func chooseExternalTerminalApplication() {
+        let panel = NSOpenPanel()
+        panel.title = "Choose External Terminal"
+        panel.prompt = "Choose"
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [.applicationBundle]
+        panel.directoryURL = URL(fileURLWithPath: "/Applications", isDirectory: true)
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        if let recognized = ExternalTerminal.recognized(applicationURL: url) {
+            externalTerminalPreference = ExternalTerminalPreference(
+                terminal: recognized,
+                customApplicationPath: nil
+            )
+        } else {
+            externalTerminalPreference = ExternalTerminalPreference(
+                terminal: .custom,
+                customApplicationPath: url.standardizedFileURL.path
+            )
+        }
+        ExternalTerminalPreferenceStore.save(externalTerminalPreference)
+        showSettingsSuccess("External terminal set to \(externalTerminalDisplayName).")
     }
     nonisolated static let localDorydCapabilityCatalog: [LocalDorydCapability] = [
         LocalDorydCapability(
@@ -5110,7 +5151,27 @@ final class AppStore {
     }
 
     func openContainerTerminal(_ container: Container) {
-        TerminalLauncher.openContainerShell(socketPath: shimSocketPath, containerID: container.id)
+        handleTerminalLaunch(TerminalLauncher.openContainerShell(
+            socketPath: shimSocketPath,
+            containerID: container.id,
+            preference: externalTerminalPreference
+        ))
+    }
+
+    func openExternalTerminal(command: String) {
+        handleTerminalLaunch(TerminalLauncher.open(
+            command: command,
+            preference: externalTerminalPreference
+        ))
+    }
+
+    private func handleTerminalLaunch(_ result: TerminalLauncher.LaunchResult) {
+        switch result {
+        case .launched:
+            break
+        case .unavailable(let message), .failed(let message):
+            showSettingsFailure(message)
+        }
     }
 
     func terminalSession(for container: Container) -> TerminalSession {

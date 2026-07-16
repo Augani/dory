@@ -306,7 +306,7 @@ struct ContainerDetailView: View {
                 }
                 .buttonStyle(.plain)
                 Button { store.openContainerTerminal(container) } label: {
-                    Text("Open in Terminal.app ↗").font(.system(size: 12, weight: .semibold)).foregroundStyle(p.accentText)
+                    Text("Open in \(store.externalTerminalDisplayName) ↗").font(.system(size: 12, weight: .semibold)).foregroundStyle(p.accentText)
                 }
                 .buttonStyle(.plain)
                 .disabled(!container.isRunning)
