@@ -1,0 +1,8 @@
+#!/bin/bash
+set -euo pipefail
+
+mkdir -p /mnt/dory-config
+if ! mountpoint -q /mnt/dory-config; then
+  mount -t virtiofs -o ro dorycfg /mnt/dory-config
+fi
+exec /mnt/dory-config/boot.sh

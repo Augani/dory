@@ -1,0 +1,14 @@
+[Unit]
+Description=Dory guest integration agent
+After=dory-first-boot.service network-online.target
+Wants=network-online.target
+Requires=dory-first-boot.service
+
+[Service]
+Type=simple
+ExecStart=/usr/lib/dory/start-agent
+Restart=always
+RestartSec=1
+
+[Install]
+WantedBy=graphical.target

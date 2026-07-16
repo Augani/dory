@@ -1,0 +1,34 @@
+#!/bin/bash
+set -euo pipefail
+
+requested="${DORY_GUEST_USER:-}"
+[ -n "$requested" ] || exit 0
+case "$requested" in
+  [a-z_]* ) ;;
+  *) echo "DORY_GUEST_USER must start with a lowercase letter or underscore" >&2; exit 64 ;;
+esac
+case "$requested" in
+  *[!a-z0-9_-]* ) echo "DORY_GUEST_USER contains unsupported characters" >&2; exit 64 ;;
+esac
+[ "${#requested}" -le 32 ] || { echo "DORY_GUEST_USER is longer than 32 characters" >&2; exit 64; }
+
+current="$(cat /var/lib/dory/username 2>/dev/null || printf 'dory\n')"
+if [ "$requested" = "$current" ]; then
+  sed -i "s/^autologin-user=.*/autologin-user=$requested/" \
+    /etc/lightdm/lightdm.conf.d/50-dory.conf
+  exit 0
+fi
+if id "$requested" >/dev/null 2>&1; then
+  echo "DORY_GUEST_USER already belongs to another account" >&2
+  exit 64
+fi
+id "$current" >/dev/null 2>&1 || { echo "the managed Dory account is missing" >&2; exit 1; }
+
+usermod --login "$requested" --home "/home/$requested" --move-home "$current"
+if getent group "$current" >/dev/null 2>&1; then
+  groupmod --new-name "$requested" "$current"
+fi
+sed -i "s/^$current /$requested /" /etc/sudoers.d/dory
+sed -i "s/^autologin-user=.*/autologin-user=$requested/" \
+  /etc/lightdm/lightdm.conf.d/50-dory.conf
+printf '%s\n' "$requested" > /var/lib/dory/username

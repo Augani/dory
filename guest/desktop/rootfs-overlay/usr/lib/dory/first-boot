@@ -1,0 +1,14 @@
+#!/bin/bash
+set -euo pipefail
+
+mkdir -p /var/lib/dory
+if [ ! -s /var/lib/dory/username ]; then
+  printf 'dory\n' > /var/lib/dory/username
+fi
+if [ ! -s /etc/machine-id ]; then
+  systemd-machine-id-setup
+fi
+rm -f /etc/ssh/ssh_host_*
+ssh-keygen -A
+resize2fs /dev/vda
+touch /var/lib/dory/first-boot-complete

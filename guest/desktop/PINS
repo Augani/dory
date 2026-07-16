@@ -1,0 +1,6 @@
+# Reproducible Apple-silicon desktop image inputs.
+DEBIAN_BUILDER_IMAGE=debian:13.6-slim@sha256:8b5033c95ca60cdffb0e0f4c446e5f714e82d8960a9ef4153c0eaf13e988b0ea
+DEBIAN_SUITE=trixie
+DEBIAN_SNAPSHOT=20260713T000000Z
+DEBIAN_SNAPSHOT_URL=https://snapshot.debian.org/archive/debian/20260713T000000Z
+DESKTOP_IMAGE_SIZE_MB=6144
