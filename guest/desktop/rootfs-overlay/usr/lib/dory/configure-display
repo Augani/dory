@@ -1,0 +1,25 @@
+#!/bin/bash
+set -euo pipefail
+
+set_xfce_value() {
+  local path="$1" type="$2" value="$3"
+  if xfconf-query --channel xsettings --property "$path" >/dev/null 2>&1; then
+    xfconf-query --channel xsettings --property "$path" --set "$value"
+  else
+    xfconf-query --channel xsettings --property "$path" --create --type "$type" --set "$value"
+  fi
+}
+
+for _ in $(seq 1 100); do
+  if xfconf-query --channel xsettings --list >/dev/null 2>&1; then
+    set_xfce_value /Gdk/WindowScalingFactor int 2
+    set_xfce_value /Xft/Antialias int 1
+    set_xfce_value /Xft/Hinting int 1
+    set_xfce_value /Xft/HintStyle string hintslight
+    set_xfce_value /Xft/RGBA string rgb
+    exit 0
+  fi
+  sleep 0.1
+done
+
+exit 1

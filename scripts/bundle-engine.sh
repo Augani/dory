@@ -22,7 +22,7 @@
 #   * Contents/Resources/dory-vm-kernel-<arch>.lzfse       — LZFSE Linux kernel.
 #   * Contents/Resources/dory-vm-initfs-<arch>.ext4.lzfse  — LZFSE VM initfs.
 #   * Contents/Resources/dory-desktop-kernel-arm64.lzfse   — verified Apple Silicon desktop kernel.
-#   * Contents/Resources/dory-desktop-rootfs-arm64.ext4.lzfse — verified Debian 13/Xfce desktop.
+#   * Contents/Resources/dory-desktop-<distro>-rootfs-arm64.ext4.lzfse — verified desktop images.
 #   * Contents/Resources/dory-agent-linux-<arch>           — guest relay/agent for host AI bridge
 #                                                           and future vsock control features.
 #   * Contents/Resources/dory-transfer-helper-image-arm64.tar — deterministic scratch image used
@@ -1064,19 +1064,20 @@ desktop_kernel_source_for_arch() {
 }
 
 desktop_rootfs_source_for_arch() {
-  local arch="$1" env_name
+  local arch="$1" distro="$2" env_name distro_env
   [ "$arch" = "arm64" ] || return 1
-  env_name="$(env_for_arch DORY_DESKTOP_ROOTFS "$arch")"
+  distro_env="DORY_DESKTOP_$(printf '%s' "$distro" | tr '[:lower:]' '[:upper:]')_ROOTFS"
+  env_name="$(env_for_arch "$distro_env" "$arch")"
   if [ -n "${!env_name:-}" ] && [ -f "${!env_name}" ]; then
     printf '%s\n' "${!env_name}"
     return 0
   fi
-  if [ -n "${DORY_DESKTOP_ROOTFS:-}" ] && [ -f "$DORY_DESKTOP_ROOTFS" ]; then
+  if [ "$distro" = "debian" ] && [ -n "${DORY_DESKTOP_ROOTFS:-}" ] && [ -f "$DORY_DESKTOP_ROOTFS" ]; then
     printf '%s\n' "$DORY_DESKTOP_ROOTFS"
     return 0
   fi
-  [ -f "$REPO_ROOT/guest/out/dory-desktop-rootfs-arm64.ext4" ] \
-    && printf '%s\n' "$REPO_ROOT/guest/out/dory-desktop-rootfs-arm64.ext4"
+  [ -f "$REPO_ROOT/guest/out/dory-desktop-$distro-rootfs-arm64.ext4" ] \
+    && printf '%s\n' "$REPO_ROOT/guest/out/dory-desktop-$distro-rootfs-arm64.ext4"
 }
 
 host_darwin_arch() {
@@ -1226,31 +1227,40 @@ bundle_engine_rootfs_for_arch() {
 }
 
 bundle_desktop_assets_for_arch() {
-  local arch="$1" kernel_src rootfs_src kernel_out rootfs_out
+  local arch="$1" kernel_src kernel_out distro rootfs_src rootfs_out metadata
   [ "$arch" = "arm64" ] || return 0
   kernel_src="$(desktop_kernel_source_for_arch "$arch" || true)"
-  rootfs_src="$(desktop_rootfs_source_for_arch "$arch" || true)"
-  if [ -z "$kernel_src" ] || [ -z "$rootfs_src" ]; then
+  if [ -z "$kernel_src" ]; then
     warn_or_fail_missing_bundle_asset \
-      "verified Apple Silicon Desktop Linux assets are missing; run guest/kernel/build.sh arm64 desktop and guest/desktop/build.sh arm64"
+      "verified Apple Silicon desktop kernel is missing; run DORY_KERNEL_PROFILE=desktop guest/kernel/build.sh arm64"
     return 0
   fi
   if [ "$kernel_src" = "$REPO_ROOT/guest/out/Image-desktop" ]; then
     "$REPO_ROOT/guest/kernel/verify-build.sh" arm64 desktop >/dev/null
   fi
-  if [ "$rootfs_src" = "$REPO_ROOT/guest/out/dory-desktop-rootfs-arm64.ext4" ]; then
-    "$REPO_ROOT/guest/desktop/verify-build.sh" arm64 >/dev/null
-  fi
   kernel_out="$RESOURCES/dory-desktop-kernel-arm64.lzfse"
-  rootfs_out="$RESOURCES/dory-desktop-rootfs-arm64.ext4.lzfse"
   compress_asset "$kernel_src" "$kernel_out"
-  compress_asset "$rootfs_src" "$rootfs_out"
   echo "    bundled Resources/$(basename "$kernel_out") ($(du -h "$kernel_out" | awk '{print $1}'))"
-  echo "    bundled Resources/$(basename "$rootfs_out") ($(du -h "$rootfs_out" | awk '{print $1}'))"
-  for metadata in \
-    "$REPO_ROOT/guest/out/kernel-build-arm64-desktop.stamp" \
-    "$REPO_ROOT/guest/out/dory-desktop-build-arm64.stamp" \
-    "$REPO_ROOT/guest/out/dory-desktop-packages-arm64.txt"; do
+  for distro in debian ubuntu kali; do
+    rootfs_src="$(desktop_rootfs_source_for_arch "$arch" "$distro" || true)"
+    if [ -z "$rootfs_src" ]; then
+      warn_or_fail_missing_bundle_asset \
+        "verified Apple Silicon $distro desktop image is missing; run guest/desktop/build.sh arm64 $distro"
+      continue
+    fi
+    if [ "$rootfs_src" = "$REPO_ROOT/guest/out/dory-desktop-$distro-rootfs-arm64.ext4" ]; then
+      "$REPO_ROOT/guest/desktop/verify-build.sh" arm64 "$distro" >/dev/null
+    fi
+    rootfs_out="$RESOURCES/dory-desktop-$distro-rootfs-arm64.ext4.lzfse"
+    compress_asset "$rootfs_src" "$rootfs_out"
+    echo "    bundled Resources/$(basename "$rootfs_out") ($(du -h "$rootfs_out" | awk '{print $1}'))"
+    for metadata in \
+      "$REPO_ROOT/guest/out/dory-desktop-$distro-build-arm64.stamp" \
+      "$REPO_ROOT/guest/out/dory-desktop-$distro-packages-arm64.txt"; do
+      [ -s "$metadata" ] && install -m0644 "$metadata" "$RESOURCES/$(basename "$metadata")"
+    done
+  done
+  for metadata in "$REPO_ROOT/guest/out/kernel-build-arm64-desktop.stamp"; do
     [ -s "$metadata" ] && install -m0644 "$metadata" "$RESOURCES/$(basename "$metadata")"
   done
 }

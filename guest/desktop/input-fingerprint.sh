@@ -9,6 +9,11 @@ case "${1:-arm64}" in
   arm64|aarch64) ;;
   *) echo "the desktop image currently supports arm64 only" >&2; exit 64 ;;
 esac
+DISTRO="${2:-debian}"
+case "$DISTRO" in
+  debian|ubuntu|kali) ;;
+  *) echo "unsupported desktop distribution: $DISTRO" >&2; exit 64 ;;
+esac
 
 TARGET=aarch64-unknown-linux-musl
 if command -v rust-lld >/dev/null 2>&1; then
@@ -53,8 +58,8 @@ for package in agent pb proto sync; do
 done
 
 {
-  printf 'schema=1\narch=arm64\ntarget=%s\nimage_size_mb=%s\nrustflags=%s\n' \
-    "$TARGET" "${DORY_DESKTOP_IMAGE_SIZE_MB:-$DESKTOP_IMAGE_SIZE_MB}" "$RUSTFLAGS_EFFECTIVE"
+  printf 'schema=2\narch=arm64\ndistro=%s\ntarget=%s\nimage_size_mb=%s\nrustflags=%s\n' \
+    "$DISTRO" "$TARGET" "${DORY_DESKTOP_IMAGE_SIZE_MB:-$DESKTOP_IMAGE_SIZE_MB}" "$RUSTFLAGS_EFFECTIVE"
   rustc -Vv
   cargo -V
   printf 'linker_sha256=%s\n' "$(shasum -a 256 "$LINKER" | awk '{print $1}')"

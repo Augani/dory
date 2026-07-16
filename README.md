@@ -44,7 +44,7 @@ or commercial-use tier. Dory is GPL-3.0 software and stores workload data on you
 |---|---|
 | Docker | Docker 29 API and CLI, Buildx, BuildKit, Compose v2, registries, bind mounts, volumes, and custom networks |
 | Native app | Containers, images, volumes, networks, Compose projects, Kubernetes, Linux machines, health, migration, and settings |
-| Linux machines | Full Debian 13 + Xfce desktops and lightweight Alpine headless VMs, with configurable resources, scoped mounts, networking, recipes, snapshots, clone, import, and export |
+| Linux machines | Full Debian 13, Ubuntu 24.04 LTS, and Kali rolling Xfce desktops plus lightweight Alpine headless VMs, with configurable resources, scoped mounts, networking, recipes, snapshots, clone, import, and export |
 | Kubernetes | One-click k3s with selectable v1.34, v1.35, and v1.36 presets plus a native resource browser |
 | Migration | Transactional import from Docker Desktop, OrbStack, Colima, Rancher Desktop, Podman, or another Docker-compatible socket |
 | Storage | One managed `.dorydrive`, external APFS drive support, sparse growth, verified backup, restore, and safe selection |
@@ -198,10 +198,11 @@ store, so push a built image to a registry or import it into the cluster before 
 
 ## Dory Linux machines
 
-Dory Linux machines are persistent, separate VMs rather than containers. The app defaults to a full
-Debian 13 + Xfce desktop for graphical and command-line applications. A lightweight Alpine-based
-headless profile remains available for services, terminals, test environments, and agent work.
-Each machine has its own disk, address, resources, shares, and snapshots.
+Dory Linux machines are persistent, separate VMs rather than containers. The app offers full Xfce
+desktops based on Debian 13, Ubuntu 24.04 LTS, or Kali Linux rolling for graphical and command-line
+applications. A lightweight Alpine-based headless profile remains available for services,
+terminals, test environments, and agent work. Each machine has its own disk, address, resources,
+shares, and snapshots.
 
 From the app or CLI you can:
 
@@ -227,11 +228,11 @@ dory machine snapshot dev --note before-upgrade
 dory machine shell dev
 ```
 
-Desktop machines use native arm64 Debian 13, systemd, Xfce, Bash, a configurable login user, and a
-64 GiB thin-provisioned disk stored in the selected `.dorydrive`. They run normal graphical and
-command-line Linux applications and can mount the Mac home at `~/Mac` only when the user enables
-that share. Headless machines retain the smaller Alpine, `root`, and `/bin/sh` contract. Selecting
-other desktop distributions is not yet supported.
+Desktop machines use native arm64 Debian 13, Ubuntu 24.04 LTS, or Kali rolling with systemd, Xfce,
+Bash, a configurable login user, and a 64 GiB thin-provisioned disk stored in the selected
+`.dorydrive`. They run normal graphical and command-line Linux applications and can mount the Mac
+home at `~/Mac` only when the user enables that share. Headless machines retain the smaller Alpine,
+`root`, and `/bin/sh` contract.
 
 ### Machine secrets and host access
 
@@ -493,8 +494,7 @@ docker run --rm \
 
 - Apple Silicon is the only qualified host architecture. Intel support is planned for a later
   release after dedicated hardware validation.
-- Desktop Linux is currently the managed Debian 13 + Xfce arm64 profile. Other desktop
-  distributions are future work.
+- Desktop Linux provides managed Debian 13, Ubuntu 24.04 LTS, and Kali rolling Xfce arm64 profiles.
 - Headless Dory Linux remains Alpine-based arm64 with an initial root `/bin/sh` login.
 - In-guest Venus/Vulkan acceleration is experimental. Host AI services work without it.
 - USB/IP attach and replay are available but may require macOS user authorization and compatible

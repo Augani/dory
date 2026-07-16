@@ -13,13 +13,14 @@ final class DoryVMMDesktopApplication: NSObject, NSApplicationDelegate, NSWindow
         self.application = NSApplication.shared
         self.runtime = runtime
 
-        let machineView = VZVirtualMachineView(frame: NSRect(x: 0, y: 0, width: 1_440, height: 900))
+        let windowSize = NSSize(width: 1_280, height: 800)
+        let machineView = VZVirtualMachineView(frame: NSRect(origin: .zero, size: windowSize))
         machineView.virtualMachine = runtime.machine.virtualMachineForDisplay
         machineView.automaticallyReconfiguresDisplay = true
         machineView.capturesSystemKeys = false
 
         self.window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 1_200, height: 750),
+            contentRect: NSRect(origin: .zero, size: windowSize),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false

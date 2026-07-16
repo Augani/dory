@@ -61,17 +61,17 @@ engine resources.
 
 | Capability | Status |
 |---|---|
-| Guest OS | Managed Debian 13 + Xfce desktop or lightweight Alpine headless Linux on native arm64 |
+| Guest OS | Managed Debian 13, Ubuntu 24.04 LTS, or Kali rolling Xfce desktop; lightweight Alpine headless Linux on native arm64 |
 | Access | Configurable desktop user, graphical session, embedded or selected external terminal, `dory machine shell`, and command execution |
 | Resources | CPU and memory configuration with guest-reported statistics |
 | Snapshots and export/import | Supported |
 | Development recipes | Curated Node, Python, Go, Rust, Java, Ruby, and DevOps toolsets for Debian and Alpine |
-| Graphical Linux sessions | Supported with the managed Debian 13 + Xfce profile on Apple Silicon |
+| Graphical Linux sessions | Supported with managed Debian, Ubuntu, and Kali Xfce profiles on Apple Silicon |
 
 Desktop machines run normal graphical and command-line applications with glibc and systemd. Their
 disk is thin-provisioned to 64 GiB in the selected Dory data drive. Headless machines use Alpine,
-musl, `root`, and `/bin/sh`. Other desktop distributions and arbitrary guest kernel modules are not
-part of the current contract.
+musl, `root`, and `/bin/sh`. Arbitrary desktop images and guest kernel modules are not part of the
+current contract.
 
 ## Networking
 
@@ -118,7 +118,7 @@ egress and reports that the narrower policy was not enforced.
   require macOS approval and compatible guest support.
 - Audio passthrough does not have a finished public workflow.
 - Intel-host builds are deferred to a later release.
-- Desktop distribution selection beyond managed Debian 13 + Xfce is deferred.
+- Desktop images beyond the managed Debian, Ubuntu, and Kali Xfce profiles are deferred.
 
 ## Getting help
 

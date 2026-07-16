@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Dory Retina Display
+Exec=/usr/lib/dory/configure-display
+OnlyShowIn=XFCE;
+NoDisplay=true
+X-GNOME-Autostart-enabled=true

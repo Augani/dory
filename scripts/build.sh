@@ -162,25 +162,30 @@ bundle_debug_engine_rootfs() {
 }
 
 bundle_debug_desktop_assets() {
-  local app="$1" compressor="$2" kernel rootfs kernel_out rootfs_out metadata
+  local app="$1" compressor="$2" kernel kernel_out distro rootfs rootfs_out metadata
   [ "$(uname -m)" = "arm64" ] || return 0
   kernel="guest/out/Image-desktop"
-  rootfs="guest/out/dory-desktop-rootfs-arm64.ext4"
-  [ -f "$kernel" ] && [ -f "$rootfs" ] || return 0
+  [ -f "$kernel" ] || return 0
   guest/kernel/verify-build.sh arm64 desktop >/dev/null || return 1
-  guest/desktop/verify-build.sh arm64 >/dev/null || return 1
   kernel_out="$app/Contents/Resources/dory-desktop-kernel-arm64.lzfse"
-  rootfs_out="$app/Contents/Resources/dory-desktop-rootfs-arm64.ext4.lzfse"
   if [ ! -f "$kernel_out" ] || [ "$kernel" -nt "$kernel_out" ]; then
     "$compressor" lzfse compress "$kernel" "$kernel_out" || return 1
   fi
-  if [ ! -f "$rootfs_out" ] || [ "$rootfs" -nt "$rootfs_out" ]; then
-    "$compressor" lzfse compress "$rootfs" "$rootfs_out" || return 1
-  fi
-  for metadata in \
-    guest/out/kernel-build-arm64-desktop.stamp \
-    guest/out/dory-desktop-build-arm64.stamp \
-    guest/out/dory-desktop-packages-arm64.txt; do
+  for distro in debian ubuntu kali; do
+    rootfs="guest/out/dory-desktop-$distro-rootfs-arm64.ext4"
+    [ -f "$rootfs" ] || continue
+    guest/desktop/verify-build.sh arm64 "$distro" >/dev/null || return 1
+    rootfs_out="$app/Contents/Resources/dory-desktop-$distro-rootfs-arm64.ext4.lzfse"
+    if [ ! -f "$rootfs_out" ] || [ "$rootfs" -nt "$rootfs_out" ]; then
+      "$compressor" lzfse compress "$rootfs" "$rootfs_out" || return 1
+    fi
+    for metadata in \
+      "guest/out/dory-desktop-$distro-build-arm64.stamp" \
+      "guest/out/dory-desktop-$distro-packages-arm64.txt"; do
+      [ -s "$metadata" ] && install -m0644 "$metadata" "$app/Contents/Resources/"
+    done
+  done
+  for metadata in guest/out/kernel-build-arm64-desktop.stamp; do
     [ -s "$metadata" ] && install -m0644 "$metadata" "$app/Contents/Resources/"
   done
 }

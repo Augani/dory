@@ -9,6 +9,12 @@ public enum DoryVMMBootMode: Sendable, Equatable {
     case virtualMachine
 }
 
+public enum DoryVMMDisplayDefaults {
+    /// A 2x backing surface for the default 1280x800-point desktop window.
+    public static let widthInPixels = 2_560
+    public static let heightInPixels = 1_600
+}
+
 public struct DoryVMMArguments: Sendable, Equatable {
     public var machineID: String?
     public var stateDirectory: String?
@@ -329,8 +335,8 @@ public enum DoryVZConfigurationBuilder {
         if spec.displayMode == .desktop {
             let graphics = VZVirtioGraphicsDeviceConfiguration()
             graphics.scanouts = [VZVirtioGraphicsScanoutConfiguration(
-                widthInPixels: 1440,
-                heightInPixels: 900
+                widthInPixels: DoryVMMDisplayDefaults.widthInPixels,
+                heightInPixels: DoryVMMDisplayDefaults.heightInPixels
             )]
             configuration.graphicsDevices = [graphics]
             configuration.keyboards = [VZUSBKeyboardConfiguration()]

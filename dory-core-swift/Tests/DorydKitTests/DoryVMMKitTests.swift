@@ -323,8 +323,8 @@ final class DoryVMMKitTests: XCTestCase {
 
         let graphics = try XCTUnwrap(configuration.graphicsDevices.first as? VZVirtioGraphicsDeviceConfiguration)
         let scanout = try XCTUnwrap(graphics.scanouts.first)
-        XCTAssertEqual(scanout.widthInPixels, 1_440)
-        XCTAssertEqual(scanout.heightInPixels, 900)
+        XCTAssertEqual(scanout.widthInPixels, 2_560)
+        XCTAssertEqual(scanout.heightInPixels, 1_600)
         XCTAssertEqual(configuration.keyboards.count, 1)
         XCTAssertTrue(configuration.keyboards.first is VZUSBKeyboardConfiguration)
         XCTAssertEqual(configuration.pointingDevices.count, 1)

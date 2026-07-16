@@ -60,8 +60,8 @@ const surfaces: Array<{
     icon: ServerStackIcon,
     label: 'Real Linux machines',
     title: 'A full Linux desktop beside your containers.',
-    copy: 'Create a managed Debian 13 + Xfce desktop for graphical and command-line apps, or choose lightweight headless Linux for services and agents.',
-    facts: ['Configurable user', 'Scoped Mac folders', 'Snapshot and clone'],
+    copy: 'Create a managed Debian, Ubuntu, or Kali Xfce desktop for graphical and command-line apps, or choose lightweight headless Linux for services and agents.',
+    facts: ['Three desktop distributions', 'Scoped Mac folders', 'Snapshot and clone'],
     command: 'dory machine shell dev',
   },
 ]
@@ -135,7 +135,7 @@ const faqs = [
   },
   {
     question: 'Are Linux machines full desktop VMs?',
-    answer: 'Yes on Apple Silicon. Desktop Linux uses managed Debian 13, systemd, Xfce, Bash, a configurable user, and a 64 GiB thin-provisioned disk. Lightweight Alpine headless machines remain available for terminal and service workloads.',
+    answer: 'Yes on Apple Silicon. Choose managed Debian 13, Ubuntu 24.04 LTS, or Kali rolling with systemd, Xfce, Bash, a configurable user, and a 64 GiB thin-provisioned disk. Lightweight Alpine headless machines remain available for terminal and service workloads.',
   },
 ]
 
@@ -143,7 +143,7 @@ const releaseStates = [
   ['Stable', 'Docker, Compose, Kubernetes, machines, migration, storage, networking, health, MCP'],
   ['Preview', 'Dedicated agent sandbox VMs with explicit mounts and network policy reporting'],
   ['Experimental', 'In-guest Venus and Vulkan GPU acceleration on Apple Silicon'],
-  ['Later', 'Intel host build, additional desktop distributions, audio passthrough'],
+  ['Later', 'Intel host build, additional managed desktop images, audio passthrough'],
 ]
 
 type DemoView = 'containers' | 'kubernetes' | 'machines'
