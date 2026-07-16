@@ -83,10 +83,10 @@ CID="$(docker_cmd create --platform linux/arm64 \
       --aptopt="APT::Install-Recommends false" \
       "$DORY_DEBIAN_SUITE" /rootfs "$DORY_DEBIAN_SNAPSHOT_URL"
 
-    cp -a /tmp/rootfs-overlay/. /rootfs/
+    cp -a --no-preserve=ownership /tmp/rootfs-overlay/. /rootfs/
     install -m0755 /tmp/dory-agent /rootfs/usr/bin/dory-agent
     chmod 0755 /rootfs/usr/lib/dory/configure-machine /rootfs/usr/lib/dory/first-boot \
-      /rootfs/usr/lib/dory/start-agent
+      /rootfs/usr/lib/dory/start-agent /rootfs/usr/lib/dory/wait-host-configuration
 
     printf "dory\n" > /rootfs/etc/hostname
     cat > /rootfs/etc/hosts <<EOF
@@ -122,7 +122,8 @@ EOF
     rm -f /rootfs/etc/apt/sources.list
 
     chroot /rootfs systemctl enable NetworkManager.service NetworkManager-wait-online.service
-    chroot /rootfs systemctl enable lightdm.service ssh.service dory-first-boot.service dory-boot.service
+    chroot /rootfs systemctl enable lightdm.service ssh.service dory-first-boot.service \
+      dory-boot.service dory-desktop-ready.service
     chroot /rootfs systemctl set-default graphical.target
 
     rm -f /rootfs/etc/machine-id /rootfs/var/lib/dbus/machine-id /rootfs/etc/ssh/ssh_host_*

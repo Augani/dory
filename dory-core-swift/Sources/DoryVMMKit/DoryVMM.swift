@@ -369,11 +369,19 @@ public enum DoryVZConfigurationBuilder {
             dockerDataDiskPath = dataDisk
         }
 
-        let bootConfigShare = try prepareBootConfigShare(
-            spec: spec,
-            allowDockerDataFormat: allowDockerDataFormat
-        )
-        let directoryShares = [bootConfigShare] + spec.shares
+        let directoryShares: [DoryMachineShareConfiguration]
+        if spec.displayMode == .desktop {
+            guard !spec.shares.contains(where: { $0.tag == bootConfigTag }) else {
+                throw DoryVZMachineError.validation("machine share tag '\(bootConfigTag)' is reserved")
+            }
+            directoryShares = spec.shares
+        } else {
+            let bootConfigShare = try prepareBootConfigShare(
+                spec: spec,
+                allowDockerDataFormat: allowDockerDataFormat
+            )
+            directoryShares = [bootConfigShare] + spec.shares
+        }
         configuration.directorySharingDevices = try directoryShares.map { share in
             try share.validate()
             var isDirectory: ObjCBool = false
@@ -934,7 +942,12 @@ public enum DoryVMMMain {
 
         let agentConnection = try machine.waitForConnection(toPort: DoryGuestPorts.control, timeout: readyTimeoutSeconds)
         defer { agentConnection.close() }
-        let agentInfo = try agentInfo(from: agentConnection)
+        let agentInfo = try prepareAgent(
+            from: agentConnection,
+            displayMode: displayMode,
+            environment: environment,
+            shares: shares
+        )
         if machineID == "docker" {
             let dockerReadyDeadline = Date().addingTimeInterval(readyTimeoutSeconds)
             let dockerProbe = UnixDockerAPIProbe(timeout: 1)
@@ -964,14 +977,67 @@ public enum DoryVMMMain {
         return runtime
     }
 
-    private static func agentInfo(from connection: VZVirtioSocketConnection) throws -> DoryAgentInfo {
+    private static func prepareAgent(
+        from connection: VZVirtioSocketConnection,
+        displayMode: DoryMachineDisplayMode,
+        environment: [String: String],
+        shares: [DoryMachineShareConfiguration]
+    ) throws -> DoryAgentInfo {
         let fd = dup(connection.fileDescriptor)
         guard fd >= 0 else {
             throw DoryVZMachineError.syscall("dup", errno)
         }
         let control = try DoryCore.connectAgentControlOverFD(fd)
         defer { control.close() }
-        return try control.info()
+        let info = try control.info()
+        guard displayMode == .desktop else { return info }
+
+        try requireSuccessfulDesktopExec(control.exec(
+            argv: ["/usr/lib/dory/configure-machine"],
+            env: environment.sorted(by: { $0.key < $1.key }).map {
+                DoryExecEnvironment(key: $0.key, value: $0.value)
+            },
+            timeoutMs: 30_000,
+            outputLimitBytes: 64 * 1024
+        ), operation: "guest account configuration")
+
+        for share in shares {
+            try requireSuccessfulDesktopExec(control.exec(
+                argv: ["/bin/mkdir", "-p", share.guestPath],
+                timeoutMs: 10_000,
+                outputLimitBytes: 64 * 1024
+            ), operation: "create share mount point \(share.guestPath)")
+            let options = share.readOnly ? "ro,dax=never" : "rw,dax=never"
+            try requireSuccessfulDesktopExec(control.exec(
+                argv: [
+                    "/bin/mount", "-t", "virtiofs", "-o", options,
+                    share.tag, share.guestPath,
+                ],
+                timeoutMs: 30_000,
+                outputLimitBytes: 64 * 1024
+            ), operation: "mount share \(share.tag) at \(share.guestPath)")
+        }
+
+        try requireSuccessfulDesktopExec(control.exec(
+            argv: ["/usr/bin/touch", "/var/lib/dory/host-configured"],
+            timeoutMs: 10_000,
+            outputLimitBytes: 64 * 1024
+        ), operation: "complete desktop configuration")
+        return info
+    }
+
+    private static func requireSuccessfulDesktopExec(
+        _ result: DoryExecResult,
+        operation: String
+    ) throws {
+        guard !result.timedOut, result.exitCode == 0 else {
+            let stderr = String(decoding: result.stderr, as: UTF8.self)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let detail = result.timedOut
+                ? "timed out"
+                : (stderr.isEmpty ? "exit code \(result.exitCode)" : stderr)
+            throw DoryVZMachineError.validation("desktop \(operation) failed: \(detail)")
+        }
     }
 
     private static func openAppendLog(_ path: String) throws -> FileHandle {

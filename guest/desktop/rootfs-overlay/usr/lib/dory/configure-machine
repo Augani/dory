@@ -2,7 +2,9 @@
 set -euo pipefail
 
 requested="${DORY_GUEST_USER:-}"
-[ -n "$requested" ] || exit 0
+[ -n "$requested" ] || {
+  exit 0
+}
 case "$requested" in
   [a-z_]* ) ;;
   *) echo "DORY_GUEST_USER must start with a lowercase letter or underscore" >&2; exit 64 ;;

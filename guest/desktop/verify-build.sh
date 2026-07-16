@@ -59,14 +59,28 @@ for guest_path in \
   /usr/lib/dory/configure-machine \
   /usr/lib/dory/first-boot \
   /usr/lib/dory/start-agent \
+  /usr/lib/dory/wait-host-configuration \
   /etc/systemd/system/dory-first-boot.service \
   /etc/systemd/system/dory-boot.service \
+  /etc/systemd/system/dory-desktop-ready.service \
   /etc/lightdm/lightdm.conf.d/50-dory.conf \
   /usr/bin/startxfce4 \
   /usr/bin/spice-vdagent \
   /usr/bin/pipewire; do
   "$DEBUGFS" -R "stat $guest_path" "$IMAGE" 2>&1 | grep -Fq 'Inode:' \
     || fail "$IMAGE is missing $guest_path"
+done
+
+for root_owned_path in \
+  /usr/lib/dory/configure-machine \
+  /usr/lib/dory/first-boot \
+  /usr/lib/dory/start-agent \
+  /usr/lib/dory/wait-host-configuration \
+  /etc/systemd/system/dory-boot.service \
+  /etc/systemd/system/dory-desktop-ready.service; do
+  "$DEBUGFS" -R "stat $root_owned_path" "$IMAGE" 2>/dev/null \
+    | grep -Eq 'User:[[:space:]]+0[[:space:]]+Group:[[:space:]]+0' \
+    || fail "$root_owned_path is not owned by root in $IMAGE"
 done
 
 DEBIAN_VERSION="$($DEBUGFS -R 'cat /etc/debian_version' "$IMAGE" 2>/dev/null | tr -d '\r\n')"

@@ -296,6 +296,8 @@ final class DoryVMMKitTests: XCTestCase {
         defer { try? FileManager.default.removeItem(atPath: base) }
         let kernel = "\(base)/vmlinux"
         let rootfs = "\(base)/rootfs.raw"
+        let share = "\(base)/shared"
+        try FileManager.default.createDirectory(atPath: share, withIntermediateDirectories: true)
         FileManager.default.createFile(atPath: kernel, contents: Data([0x7f, 0x45, 0x4c, 0x46]))
         FileManager.default.createFile(atPath: rootfs, contents: nil)
         XCTAssertEqual(truncate(rootfs, 1024 * 1024), 0)
@@ -308,7 +310,13 @@ final class DoryVMMKitTests: XCTestCase {
                 rootfsPath: rootfs,
                 memoryMB: 4096,
                 cpuCount: 4,
-                displayMode: .desktop
+                displayMode: .desktop,
+                shares: [DoryMachineShareConfiguration(
+                    tag: "desktop-share",
+                    hostPath: share,
+                    guestPath: "/mnt/shared",
+                    readOnly: true
+                )]
             ),
             serialOutput: nil
         )
@@ -327,6 +335,12 @@ final class DoryVMMKitTests: XCTestCase {
         XCTAssertTrue(sound.streams.first is VZVirtioSoundDeviceOutputStreamConfiguration)
         XCTAssertEqual(configuration.consoleDevices.count, 1)
         XCTAssertTrue(configuration.consoleDevices.first is VZVirtioConsoleDeviceConfiguration)
+        XCTAssertEqual(configuration.directorySharingDevices.count, 1)
+        let desktopShare = try XCTUnwrap(
+            configuration.directorySharingDevices.first as? VZVirtioFileSystemDeviceConfiguration
+        )
+        XCTAssertEqual(desktopShare.tag, "desktop-share")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: "\(base)/dorycfg"))
     }
 
     func testDockerVZConfigurationAttachesPersistentDataDisk() throws {

@@ -2054,7 +2054,7 @@ final class MachineManagerTests: XCTestCase {
         XCTAssertEqual(running.state, .running)
         XCTAssertEqual(running.runtimeAddress, "192.168.64.19")
         XCTAssertNil(running.configuredAddress)
-        XCTAssertEqual(connector.execs.first?.argv, ["/sbin/ip", "-4", "addr", "show", "dev", "eth0"])
+        XCTAssertEqual(connector.execs.first?.argv, ["/sbin/ip", "-o", "-4", "addr", "show", "scope", "global"])
     }
 
     func testConfiguredDNSOverrideWinsWithoutHidingRuntimeAddress() throws {
@@ -2379,7 +2379,7 @@ final class MachineManagerTests: XCTestCase {
         XCTAssertEqual(String(data: result.stdout, encoding: .utf8), "machine-exec-ok\n")
         XCTAssertEqual(connector.execs, [
             RecordingMachineAgentConnector.Exec(
-                argv: ["/sbin/ip", "-4", "addr", "show", "dev", "eth0"],
+                argv: ["/sbin/ip", "-o", "-4", "addr", "show", "scope", "global"],
                 cwd: "",
                 env: [],
                 timeoutMs: 5_000,

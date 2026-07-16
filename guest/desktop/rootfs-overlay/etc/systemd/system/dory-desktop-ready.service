@@ -1,0 +1,13 @@
+[Unit]
+Description=Wait for Dory host desktop configuration
+After=dory-boot.service
+Before=lightdm.service
+Requires=dory-boot.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/dory/wait-host-configuration
+RemainAfterExit=yes
+
+[Install]
+WantedBy=graphical.target

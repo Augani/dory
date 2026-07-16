@@ -1,11 +1,12 @@
 [Unit]
 Description=Dory guest integration agent
-After=dory-first-boot.service network-online.target
-Wants=network-online.target
+After=dory-first-boot.service
+Before=lightdm.service
 Requires=dory-first-boot.service
 
 [Service]
 Type=simple
+ExecStartPre=/usr/bin/rm -f /var/lib/dory/host-configured
 ExecStart=/usr/lib/dory/start-agent
 Restart=always
 RestartSec=1

@@ -1774,7 +1774,7 @@ public final class MachineManager: @unchecked Sendable {
             let client = try agentConnector(agentSocketPath)
             defer { client.close() }
             let result = try client.exec(
-                argv: ["/sbin/ip", "-4", "addr", "show", "dev", "eth0"],
+                argv: ["/sbin/ip", "-o", "-4", "addr", "show", "scope", "global"],
                 cwd: "",
                 env: [],
                 timeoutMs: 5_000,
