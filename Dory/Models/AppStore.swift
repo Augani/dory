@@ -60,7 +60,7 @@ final class AppStore {
     var launchAtLogin = false
     var showMenuBarIcon = true
     var routeDockerCLI = true
-    var keepDorydRunningAfterQuit = true
+    var keepDorydRunningAfterQuit = false
     var machineEnvAllowList: [String] = MachineEnvImport.defaultNames
     var openLoginsOnMac = true
     var externalTerminalPreference = ExternalTerminalPreference(terminal: .terminal, customApplicationPath: nil)
@@ -339,7 +339,7 @@ final class AppStore {
     static let kubernetesVersionKey = "dory.kubernetesVersion"
 
     static func resolvedKeepDorydRunningAfterQuit(defaults: UserDefaults) -> Bool {
-        (defaults.object(forKey: keepDorydRunningAfterQuitKey) as? Bool) ?? true
+        (defaults.object(forKey: keepDorydRunningAfterQuitKey) as? Bool) ?? false
     }
 
     var externalTerminalDisplayName: String {
