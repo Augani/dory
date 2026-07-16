@@ -1328,7 +1328,7 @@ write_doryd_launch_agent
 /usr/libexec/PlistBuddy -c 'Delete :DoryIncludesDesktopLinux' "$APP/Contents/Info.plist" >/dev/null 2>&1 || true
 if [ "$DESKTOP_BUNDLE_MODE" = all ]; then
   /usr/libexec/PlistBuddy -c 'Add :DoryIncludesDesktopLinux bool true' "$APP/Contents/Info.plist"
-  /usr/libexec/PlistBuddy -c 'Set :SUFeedURL' "$DESKTOP_APPCAST_URL" "$APP/Contents/Info.plist"
+  /usr/libexec/PlistBuddy -c "Set :SUFeedURL $DESKTOP_APPCAST_URL" "$APP/Contents/Info.plist"
 else
   /usr/libexec/PlistBuddy -c 'Add :DoryIncludesDesktopLinux bool false' "$APP/Contents/Info.plist"
 fi
