@@ -31,6 +31,9 @@ import './App.css'
 type Icon = ComponentType<SVGProps<SVGSVGElement>>
 
 const installCommand = 'brew install --cask Augani/dory/dory'
+const releaseUrl = 'https://github.com/Augani/dory/releases/tag/v0.3.1'
+const leanDmgUrl = 'https://github.com/Augani/dory/releases/download/v0.3.1/Dory-0.3.1-arm64.dmg'
+const desktopDmgUrl = 'https://github.com/Augani/dory/releases/download/v0.3.1/Dory-0.3.1-desktop-arm64.dmg'
 
 const surfaces: Array<{
   icon: Icon
@@ -483,7 +486,7 @@ function App() {
               GitHub <span className="nav-star-count"><StarIcon /> {stars}</span>
             </a>
           </div>
-          <a className="nav-cta" href="https://github.com/Augani/dory/releases/latest">
+          <a className="nav-cta" href="#download">
             Get Dory <ArrowRightIcon aria-hidden="true" />
           </a>
           <button
@@ -506,7 +509,7 @@ function App() {
           <div className="hero-content">
             <div className="release-pill">
               <span /> Dory 0.3.1 · Linux Desktop
-              <a href="https://github.com/Augani/dory/releases/latest">Release notes <ArrowRightIcon /></a>
+              <a href={releaseUrl}>Release notes <ArrowRightIcon /></a>
             </div>
             <p className="hero-kicker">The local Linux workspace for Mac</p>
             <h1>More than containers.<br /><em>Your whole dev machine.</em></h1>
@@ -514,8 +517,8 @@ function App() {
               Docker, Compose, Kubernetes, full Linux desktops, persistent servers, migration, recovery, and agent automation in one native Mac app.
             </p>
             <div className="hero-actions">
-              <a className="button button-primary" href="https://github.com/Augani/dory/releases/latest">
-                <CloudArrowDownIcon /> Choose Lean or Desktop
+              <a className="button button-primary" href="#download">
+                <CloudArrowDownIcon /> Compare downloads first
               </a>
               <a className="button button-ghost" href="#product">
                 Explore the product <ArrowRightIcon />
@@ -556,6 +559,57 @@ function App() {
           <div><strong>3</strong><span>managed desktop distributions</span></div>
           <div><strong>10</strong><span>settings areas in the UI</span></div>
           <div><strong>0</strong><span>accounts, telemetry, paid tiers</span></div>
+        </section>
+
+        <section className="download-section section" id="download">
+          <div className="section-heading centered">
+            <p className="eyebrow">Choose before downloading</p>
+            <h2>Get the Dory you need.<br /><span>Skip the weight you do not.</span></h2>
+            <p>Dory 0.3.1 has two fixed editions. Desktop is larger because all three graphical Linux images are included for offline use.</p>
+          </div>
+          <div className="download-grid">
+            <article className="download-card download-card-lean">
+              <div className="download-card-head"><span>Lean</span><b>Recommended for most users</b></div>
+              <h3>Docker and development tools, without graphical Linux images.</h3>
+              <p>Choose Lean for Docker, Compose, Kubernetes, migration, and command-line Linux machines.</p>
+              <div className="download-sizes">
+                <div><strong>452 MiB</strong><span>download</span></div>
+                <div><strong>1.6 GiB</strong><span>installed app</span></div>
+              </div>
+              <ul>
+                <li><CheckCircleIcon /> Docker, Compose, Buildx, and BuildKit</li>
+                <li><CheckCircleIcon /> Kubernetes and bundled kubectl</li>
+                <li><CheckCircleIcon /> Headless Linux machines</li>
+              </ul>
+              <a className="button button-primary" href={leanDmgUrl}>
+                <CloudArrowDownIcon /> Download Lean DMG
+              </a>
+              <small>Apple silicon · macOS 14 or later</small>
+            </article>
+            <article className="download-card download-card-desktop">
+              <div className="download-card-head"><span>Desktop</span><b>Graphical Linux included</b></div>
+              <h3>Everything in Lean, plus three complete offline desktops.</h3>
+              <p>Choose Desktop only when you want managed Debian, Ubuntu, or Kali graphical Linux machines.</p>
+              <div className="download-sizes">
+                <div><strong>1.85 GiB</strong><span>download</span></div>
+                <div><strong>3.0 GiB</strong><span>installed app</span></div>
+              </div>
+              <ul>
+                <li><CheckCircleIcon /> Debian 13 Xfce</li>
+                <li><CheckCircleIcon /> Ubuntu 24.04 LTS Xfce</li>
+                <li><CheckCircleIcon /> Kali Linux rolling Xfce</li>
+              </ul>
+              <a className="button button-ghost-dark" href={desktopDmgUrl}>
+                <CloudArrowDownIcon /> Download Desktop DMG
+              </a>
+              <small>Apple silicon · macOS 14 or later</small>
+            </article>
+          </div>
+          <div className="download-roadmap">
+            <Squares2X2Icon aria-hidden="true" />
+            <div><strong>Focused bundles are next.</strong><p>We are separating the Docker core, Kubernetes, Linux Machines, and Linux Desktop packs so future users can choose every payload before downloading.</p></div>
+          </div>
+          <p className="download-release-link">Need ZIP archives, checksums, or SBOMs? <a href={releaseUrl}>View all release assets.</a></p>
         </section>
 
         <section className="intro section" id="product">
@@ -619,10 +673,10 @@ function App() {
               ))}
             </div>
             <div className="desktop-editions">
-              <div><strong>Lean</strong><span>Containers, Kubernetes, and headless Linux servers</span></div>
-              <div className="is-featured"><strong>Desktop</strong><span>Everything in Lean plus all three graphical Linux images</span></div>
+              <div className="is-featured"><strong>Lean · 452 MiB</strong><span>Containers, Kubernetes, and headless Linux servers</span></div>
+              <div><strong>Desktop · 1.85 GiB</strong><span>Everything in Lean plus all three graphical Linux images</span></div>
             </div>
-            <a className="text-link light-link" href="https://github.com/Augani/dory/releases/latest">Choose your edition <ArrowRightIcon /></a>
+            <a className="text-link light-link" href="#download">Compare download sizes <ArrowRightIcon /></a>
           </div>
           <div className="desktop-product">
             <DoryDemo initialView="machines" autoCycle={false} />
@@ -832,10 +886,10 @@ function App() {
           <img src="./logo.svg" alt="" />
           <p className="eyebrow eyebrow-light">Start local. Stay in control.</p>
           <h2>Bring your whole Linux workspace home to Mac.</h2>
-          <p>Free, open source, signed, and notarized. Choose Lean or the all-inclusive Desktop edition for Apple Silicon on macOS 14 or later.</p>
+          <p>Free, open source, signed, and notarized. Homebrew installs Lean. Compare both editions above before choosing the larger Desktop download.</p>
           <CopyCommand command={installCommand} dark />
           <div className="install-actions">
-            <a className="button button-white" href="https://github.com/Augani/dory/releases/latest">Choose an edition <ArrowRightIcon /></a>
+            <a className="button button-white" href="#download">Compare download sizes <ArrowRightIcon /></a>
             <a href="https://github.com/Augani/dory">View source on GitHub <ArrowTopRightOnSquareIcon /></a>
           </div>
         </section>

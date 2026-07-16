@@ -81,9 +81,8 @@ or commercial-use tier. Dory is GPL-3.0 software and stores workload data on you
 brew install --cask Augani/dory/dory
 ```
 
-The Homebrew cask installs the recommended lean edition with containers, Kubernetes, and headless
-Linux servers. Download the all-inclusive Desktop edition directly when you also want graphical
-Debian, Ubuntu, and Kali machines.
+The Homebrew cask installs the recommended Lean edition with containers, Kubernetes, and headless
+Linux servers. It does not include the large graphical Linux images.
 
 Open Dory once. The daemon keeps `docker`, `docker compose`, `kubectl`, and `dory` available in
 `~/.dory/bin`, creates the `dory` Docker context, and points it at `~/.dory/dory.sock`. Docker
@@ -91,9 +90,17 @@ Desktop and a separate Docker CLI install are not required.
 
 ### Direct download
 
-Download the notarized Apple Silicon DMG from
-[GitHub Releases](https://github.com/Augani/dory/releases/latest), drag Dory to Applications, and
-open it.
+Choose the edition before downloading. The Desktop edition is intentionally larger because Debian,
+Ubuntu, and Kali graphical images are included for offline use.
+
+| Edition | Download | Installed app | Includes | Direct download |
+|---|---:|---:|---|---|
+| **Lean, recommended** | about 452 MiB | about 1.6 GiB | Docker, Compose, Kubernetes, migration, and headless Linux machines | [Lean DMG](https://github.com/Augani/dory/releases/download/v0.3.1/Dory-0.3.1-arm64.dmg) |
+| **Desktop** | about 1.85 GiB | about 3.0 GiB | Everything in Lean plus offline Debian, Ubuntu, and Kali graphical desktops | [Desktop DMG](https://github.com/Augani/dory/releases/download/v0.3.1/Dory-0.3.1-desktop-arm64.dmg) |
+
+Drag Dory to Applications and open it. Choose Desktop only when you need graphical Linux machines.
+The next feature release will move toward a Docker-only core with focused Kubernetes, Linux
+Machines, and Linux Desktop downloads selected before installation.
 
 | Release asset | Purpose |
 |---|---|
