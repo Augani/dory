@@ -365,7 +365,7 @@ const settings = [
   ['Resources', 'Data drive, backup, verify, restore, growth, process memory'],
   ['Machines', 'Host environment allow-list and file-sharing boundaries'],
   ['Auto-Idle', 'Availability mode, idle delay, blockers, wake notices'],
-  ['Network', 'Domains, low ports, Docker bridge subnet, resolver, proxies, LAN and Tailscale'],
+  ['Network', 'Automatic and custom domains, low ports, Docker bridge subnet, resolver, proxies, LAN and Tailscale'],
   ['USB Devices', 'Scan, attach, detach, and remember USB/IP devices'],
   ['Local Tools', 'Stable and preview daemon commands with copy actions'],
   ['Migrate & Compare', 'Source discovery, preflight, import, and comparison'],
@@ -391,7 +391,7 @@ const faqs = [
   },
   {
     question: 'Can Dory publish ports below 1024?',
-    answer: 'Yes. Dory has a built-in macOS authorization plan for local domains, trusted HTTPS, ports 80 and 443, and published low TCP ports. The plan is visible and removable in Settings > Network.',
+    answer: 'Yes. Dory has a built-in macOS authorization plan for trusted HTTPS, ports 80 and 443, and published low TCP ports. Settings > Network also maps exact or wildcard custom domains to a published HTTP port, so nginx-style local domains do not need a second forwarding app.',
   },
   {
     question: 'Are Linux machines full desktop VMs?',
@@ -943,9 +943,10 @@ function App() {
               <GlobeAltIcon />
               <p className="card-label">Mac-aware networking</p>
               <h3>Local by default. Powerful by choice.</h3>
-              <p>Ports begin on localhost. Add local names, trusted HTTPS, low ports, or source-preserving LAN access through one visible authorization plan.</p>
+              <p>Ports begin on localhost. Add automatic or custom local names, trusted HTTPS, low ports, or source-preserving LAN access through one visible authorization plan.</p>
               <div className="route-list">
                 <code>api.dory.local <span>→</span> :3000</code>
+                <code>admin.myproject.local <span>→</span> :80</code>
                 <code>host.dory.internal <span>→</span> macOS</code>
                 <code>localhost:8080 <span>→</span> container:80</code>
               </div>

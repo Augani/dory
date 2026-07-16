@@ -58,7 +58,7 @@ or commercial-use tier. Dory is GPL-3.0 software and stores workload data on you
 | Kubernetes | One-click k3s with selectable v1.34, v1.35, and v1.36 presets plus a native resource browser |
 | Migration | Transactional import from Docker Desktop, OrbStack, Colima, Rancher Desktop, Podman, or another Docker-compatible socket |
 | Storage | One managed `.dorydrive`, external APFS drive support, sparse growth, verified backup, restore, and safe selection |
-| Networking | Localhost ports, optional local domains and HTTPS, low ports, host services, custom DNS/proxy ports, and opt-in LAN access |
+| Networking | Localhost ports, automatic and user-defined local domains, trusted HTTPS, low ports, host services, custom DNS/proxy ports, and opt-in LAN access |
 | Operations | Auto-Idle, active diagnostics, targeted repair, safe cleanup, support bundles, wait primitives, and event streams |
 | Agents | Versioned JSON guide, non-interactive schemas, read-only MCP mode, machine execution, and preview isolated sandbox VMs |
 
@@ -71,7 +71,7 @@ or commercial-use tier. Dory is GPL-3.0 software and stores workload data on you
   configurable, and free guest pages can be returned to macOS.
 - **Linux machines beside containers.** Machines are separate VMs with their own disk, address,
   resources, shell, shares, and snapshots. They are not disguised containers.
-- **Every important setting is in the app.** Engine resources, storage, migration, local domains,
+- **Every important setting is in the app.** Engine resources, storage, migration, automatic and custom domains,
   low ports, LAN access, Auto-Idle, machine environment policy, USB, and managed defaults all have a
   graphical path.
 - **Automation is a product surface.** JSON schemas, safe dry runs, event streams, wait commands,
@@ -386,6 +386,7 @@ binding.
 Optional system integration adds:
 
 - automatic names under `*.dory.local` or a per-user custom suffix;
+- exact or leftmost-wildcard custom hostnames routed to a selected published HTTP port;
 - a local certificate authority for trusted HTTPS;
 - Dory-owned resolver and packet-filter rules;
 - built-in forwarding for ports 80, 443, and published TCP ports below 1024;
@@ -395,6 +396,19 @@ Settings > Network shows the exact plan before macOS authorization and can remov
 The Docker bridge subnet, DNS resolver, HTTP proxy, and HTTPS proxy ports are configurable. This
 allows Dory to avoid VPN or local-network conflicts and lets separate macOS accounts choose unique
 suffixes and local service ports.
+
+Custom hostnames must already resolve to `127.0.0.1` through `/etc/hosts` or local DNS. Add them in
+Settings > Network, for example `admin.myproject.local` or `*.myproject.local` to published port 80.
+Because `/etc/hosts` does not expand wildcards, use local DNS or list each hostname that should
+match a wildcard route. Dory's HTTP and HTTPS proxies then preserve the requested `Host` header and
+route both standard ports without a second forwarding app. The same configuration is available
+from the terminal:
+
+```sh
+dory network custom-domains
+dory network set-custom-domain admin.myproject.local --published-port 80
+dory network remove-custom-domain admin.myproject.local
+```
 
 Containers reach Mac services through `host.dory.internal`. Common host AI endpoints are available
 without enabling experimental guest GPU support:
@@ -522,7 +536,7 @@ Everything below is available without using the command line:
 | Resources | Data drive, reveal, backup, verify, restore, select, grow, per-process memory, Mac capacity |
 | Machines | Host environment allow-list and the file-sharing boundary for persistent and sandbox machines |
 | Auto-Idle | Availability mode, delay, blockers, and wake notifications |
-| Network | Domains, suffix, macOS authorization, low ports, Docker bridge subnet, resolver and proxy ports, LAN and Tailscale access |
+| Network | Automatic and custom domains, suffix, macOS authorization, low ports, Docker bridge subnet, resolver and proxy ports, LAN and Tailscale access |
 | USB Devices | Scan, attach, detach, and remember USB/IP attachments per machine |
 | Local Tools | Stable and preview CLI capabilities with copyable commands |
 | Migrate & Compare | Source selection, read-only inventory, preflight, import, and product comparison |

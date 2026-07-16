@@ -108,6 +108,10 @@ dory — Dory CLI
                                Dry-run or remove Dory-owned system networking integration
   dory network --lan-visible on|off
                                Publish ports to the local network, or restrict to localhost
+  dory network custom-domains
+  dory network set-custom-domain HOST --published-port N
+  dory network remove-custom-domain HOST
+                               Manage custom HTTP/HTTPS hostnames routed to published ports
   dory mount [--json]           Validate bind mount read/write and host-edit visibility
   dory disk [--json]            Show host, Docker, Dory state, log, and VM disk usage
   dory cleanup [--json] [--apply] [--include-volumes]
@@ -1374,6 +1378,12 @@ network_cmd() {
     authorization-plan|auth-plan) shift || true; network_authorization_plan_cmd "$@" ;;
     authorize) shift || true; network_authorize_cmd authorize "$@" ;;
     deauthorize) shift || true; network_authorize_cmd deauthorize "$@" ;;
+    custom-domains|set-custom-domain|remove-custom-domain)
+      local subcommand="$1" ctl
+      shift || true
+      ctl="$(dorydctl_bin 2>/dev/null)" || { echo "dorydctl not found; start Dory before managing custom domains." >&2; exit 1; }
+      "$ctl" --timeout 10 network "$subcommand" "$@"
+      ;;
     -h|--help) doctor_cmd network --help ;;
     *) doctor_cmd network "$@" ;;
   esac

@@ -19,7 +19,7 @@ public enum DoryTLSProxyServerError: Error, Sendable, CustomStringConvertible {
 
 public final class DoryTLSProxyServer: @unchecked Sendable {
     private let requestedPort: UInt16
-    private let identity: SecIdentity
+    private let identityStorage: DoryTLSIdentityStorage
     private let router: DomainRouter
     private let connectionBudget: DoryConnectionBudget
     private let lock = NSLock()
@@ -38,11 +38,11 @@ public final class DoryTLSProxyServer: @unchecked Sendable {
         routes: [DomainRoute] = [],
         maximumConnections: Int = 256
     ) throws {
-        guard let identity = Self.loadIdentity(p12Path: p12Path, password: password) else {
+        guard let identityStorage = Self.loadIdentity(p12Path: p12Path, password: password) else {
             throw DoryTLSProxyServerError.identity(p12Path)
         }
         self.requestedPort = port
-        self.identity = identity
+        self.identityStorage = identityStorage
         self.router = router
         self.routes = routes
         self.connectionBudget = DoryConnectionBudget(limit: maximumConnections)
@@ -85,7 +85,7 @@ public final class DoryTLSProxyServer: @unchecked Sendable {
         lock.unlock()
 
         let tlsOptions = NWProtocolTLS.Options()
-        guard let secIdentity = sec_identity_create(identity) else {
+        guard let secIdentity = sec_identity_create(identityStorage.identity) else {
             throw DoryTLSProxyServerError.identity("SecIdentity")
         }
         sec_protocol_options_set_local_identity(tlsOptions.securityProtocolOptions, secIdentity)
@@ -267,12 +267,17 @@ public final class DoryTLSProxyServer: @unchecked Sendable {
         lock.lock()
         let currentRoutes = routes
         lock.unlock()
-        return currentRoutes.first { route in
+        return currentRoutes.compactMap { route -> (specificity: Int, route: DomainRoute)? in
             let hostname = DomainRouter.normalize(route.hostname)
-            return hostname == normalized
-                && (router.owns(hostname) || DoryHTTPProxyServer.isLoopbackHost(hostname))
-                && IPv4Address(route.address) != nil
-        }
+            guard let specificity = DomainRouter.matchSpecificity(pattern: hostname, hostname: normalized),
+                  router.owns(hostname)
+                    || DoryHTTPProxyServer.isLoopbackHost(hostname)
+                    || DomainRouter.isValidHostnamePattern(hostname),
+                  IPv4Address(route.address) != nil else {
+                return nil
+            }
+            return (specificity, route)
+        }.max { $0.specificity < $1.specificity }?.route
     }
 
     private func writeBadGateway(_ client: NWConnection, body: String) {
@@ -320,18 +325,63 @@ public final class DoryTLSProxyServer: @unchecked Sendable {
         }
     }
 
-    private static func loadIdentity(p12Path: String, password: String) -> SecIdentity? {
+    static func loadIdentity(
+        p12Path: String,
+        password: String,
+        forceTemporaryKeychain: Bool = false
+    ) -> DoryTLSIdentityStorage? {
         guard let data = FileManager.default.contents(atPath: p12Path) else { return nil }
-        let options = [kSecImportExportPassphrase as String: password] as CFDictionary
+        var options: [String: Any] = [
+            kSecImportExportPassphrase as String: password,
+        ]
+        var temporaryKeychain: SecKeychain?
+        var temporaryKeychainPath: String?
+        if #available(macOS 15.0, *), !forceTemporaryKeychain {
+            options[kSecImportToMemoryOnly as String] = true
+        } else {
+            let path = NSTemporaryDirectory() + "dory-tls-\(getpid())-\(UUID().uuidString).keychain-db"
+            let keychainPassword = UUID().uuidString
+            var keychain: SecKeychain?
+            let status = keychainPassword.utf8CString.withUnsafeBytes { bytes in
+                SecKeychainCreate(
+                    path,
+                    UInt32(max(0, bytes.count - 1)),
+                    bytes.baseAddress,
+                    false,
+                    nil,
+                    &keychain
+                )
+            }
+            guard status == errSecSuccess, let keychain else {
+                if let keychain {
+                    SecKeychainDelete(keychain)
+                }
+                try? FileManager.default.removeItem(atPath: path)
+                return nil
+            }
+            temporaryKeychain = keychain
+            temporaryKeychainPath = path
+            options[kSecImportExportKeychain as String] = keychain
+        }
         var items: CFArray?
-        guard SecPKCS12Import(data as CFData, options, &items) == errSecSuccess,
+        guard SecPKCS12Import(data as CFData, options as CFDictionary, &items) == errSecSuccess,
               let array = items as? [[String: Any]],
               let identity = array.first?[kSecImportItemIdentity as String],
               CFGetTypeID(identity as CFTypeRef) == SecIdentityGetTypeID() else {
+            if let temporaryKeychain {
+                SecKeychainDelete(temporaryKeychain)
+            }
+            if let temporaryKeychainPath {
+                try? FileManager.default.removeItem(atPath: temporaryKeychainPath)
+            }
             return nil
         }
         // Safe: the CFTypeID guard above proves this is a SecIdentity.
-        return (identity as! SecIdentity)
+        return DoryTLSIdentityStorage(
+            identity: identity as! SecIdentity,
+            temporaryKeychain: temporaryKeychain,
+            temporaryKeychainPath: temporaryKeychainPath
+        )
     }
 
     private final class FDOwner: @unchecked Sendable {
@@ -373,6 +423,31 @@ public final class DoryTLSProxyServer: @unchecked Sendable {
 
     deinit {
         stop()
+    }
+}
+
+final class DoryTLSIdentityStorage: @unchecked Sendable {
+    let identity: SecIdentity
+    let temporaryKeychainPath: String?
+    private let temporaryKeychain: SecKeychain?
+
+    init(
+        identity: SecIdentity,
+        temporaryKeychain: SecKeychain?,
+        temporaryKeychainPath: String?
+    ) {
+        self.identity = identity
+        self.temporaryKeychain = temporaryKeychain
+        self.temporaryKeychainPath = temporaryKeychainPath
+    }
+
+    deinit {
+        if let temporaryKeychain {
+            SecKeychainDelete(temporaryKeychain)
+        }
+        if let temporaryKeychainPath {
+            try? FileManager.default.removeItem(atPath: temporaryKeychainPath)
+        }
     }
 }
 

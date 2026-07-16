@@ -12,6 +12,14 @@ struct DorydClientTests {
         #expect(!AppStore.dorydEngineEnabled(environment: ["DORY_APP_DISABLE_DORYD": "1"]))
     }
 
+    @Test func customDomainPatternsAcceptExactAndLeftmostWildcardOnly() {
+        #expect(AppStore.normalizedCustomDomainPattern(" Admin.MyProject.Local. ") == "admin.myproject.local")
+        #expect(AppStore.normalizedCustomDomainPattern("*.Tenant.Test") == "*.tenant.test")
+        #expect(AppStore.normalizedCustomDomainPattern("localhost") == nil)
+        #expect(AppStore.normalizedCustomDomainPattern("admin.*.local") == nil)
+        #expect(AppStore.normalizedCustomDomainPattern("-admin.myproject.local") == nil)
+    }
+
     @Test func doryCLIResolverPrefersBundledHelperOverAuxiliaryExecutable() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("DoryCLI-\(UUID().uuidString).app", isDirectory: true)
@@ -255,6 +263,7 @@ struct DorydClientTests {
                 pathPrefix: "/api/v1/namespaces/default/services/web:80/proxy"
             ),
         ])
+        #expect(networkStatus.customRoutes == networkStatus.routes)
         #expect(networkPlan.suffix == "dory.local")
         #expect(networkPlan.dnsBindAddress == "127.0.0.1")
         #expect(networkPlan.dnsPort == 15353)
@@ -2158,9 +2167,10 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
     }
 
     func networkStatus(reply: @escaping (NSDictionary, String) -> Void) {
-        let routes = latestNetworkRoutes.isEmpty
+        let customRoutes = latestNetworkRoutes
+        let routes = customRoutes.isEmpty
             ? [DorydDomainRoute(hostname: "web.dory.local", address: "127.0.0.42", port: 8080)]
-            : latestNetworkRoutes
+            : customRoutes
         reply([
             "mode": "high-port-dns-http-https-proxy",
             "suffix": "dory.local",
@@ -2172,6 +2182,7 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
             "httpsProxyPort": 18443,
             "httpsProxyRunning": true,
             "routes": routes.map(Self.dictionary),
+            "customRoutes": customRoutes.map(Self.dictionary),
         ] as NSDictionary, "")
     }
 

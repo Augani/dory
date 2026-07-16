@@ -180,9 +180,10 @@ func usage(exitCode: Int32 = 2) -> Never {
           dorydctl [global] remote connect NAME --host HOST --user USER --private-key-id ID --remote-root PATH (--host-key KEY | --known-hosts PATH) [--port N] [--endpoint-unix PATH | --endpoint-tcp HOST:PORT]
           dorydctl [global] remote push NAME --local-root PATH [--remote-root PATH]
           dorydctl [global] remote status NAME
-          dorydctl [global] network status|authorization-plan|repair
+          dorydctl [global] network status|custom-domains|authorization-plan|repair
+          dorydctl [global] network set-custom-domain HOST --published-port N
+          dorydctl [global] network remove-custom-domain HOST
           dorydctl [global] network replace-routes --json PATH|-
-          dorydctl [global] network set-route HOST ADDRESS [--port N]
           dorydctl [global] balloon status|reconcile
           dorydctl [global] idle status|history|set|mode
           dorydctl [global] health
@@ -827,7 +828,7 @@ func runRemote(cursor: inout ArgumentCursor, client: DorydCtlClient) throws {
 }
 
 func runNetwork(cursor: inout ArgumentCursor, client: DorydCtlClient) throws {
-    let subcommand = try cursor.take("usage: dorydctl network status|authorization-plan|repair|replace-routes|set-route")
+    let subcommand = try cursor.take("usage: dorydctl network status|custom-domains|set-custom-domain|remove-custom-domain|authorization-plan|repair|replace-routes")
     switch subcommand {
     case "status":
         let status: NSDictionary = try client.call { proxy, finish in
@@ -843,6 +844,60 @@ func runNetwork(cursor: inout ArgumentCursor, client: DorydCtlClient) throws {
             }
         }
         try emitJSON(plan)
+    case "custom-domains":
+        let status: NSDictionary = try client.call { proxy, finish in
+            proxy.networkStatus { body, message in
+                message.isEmpty ? finish(.success(body)) : finish(.failure(DorydCtlError.daemon(message)))
+            }
+        }
+        try emitJSON((status["customRoutes"] as? NSArray) ?? [])
+    case "set-custom-domain":
+        let hostname = try cursor.take("usage: dorydctl network set-custom-domain HOST --published-port N")
+        let rawPort = try requiredOption(
+            "--published-port",
+            cursor: &cursor,
+            usage: "usage: dorydctl network set-custom-domain HOST --published-port N"
+        )
+        let port = try positiveUInt16(rawPort, option: "--published-port")
+        guard cursor.values.isEmpty else {
+            throw DorydCtlError.usage("usage: dorydctl network set-custom-domain HOST --published-port N")
+        }
+        let status: NSDictionary = try client.call { proxy, finish in
+            proxy.networkStatus { body, message in
+                message.isEmpty ? finish(.success(body)) : finish(.failure(DorydCtlError.daemon(message)))
+            }
+        }
+        let normalized = DomainRouter.normalize(hostname)
+        let existing = (status["customRoutes"] as? [NSDictionary] ?? []).filter {
+            guard let value = $0["hostname"] as? String else { return false }
+            return DomainRouter.normalize(value) != normalized
+        }
+        let routes = existing + [[
+            "hostname": normalized,
+            "address": "127.0.0.1",
+            "port": port,
+        ] as NSDictionary]
+        try emitCommandResult(try client.command { proxy, reply in
+            proxy.networkReplaceRoutes(routes as NSArray, reply: reply)
+        })
+    case "remove-custom-domain":
+        let hostname = try cursor.take("usage: dorydctl network remove-custom-domain HOST")
+        guard cursor.values.isEmpty else {
+            throw DorydCtlError.usage("usage: dorydctl network remove-custom-domain HOST")
+        }
+        let status: NSDictionary = try client.call { proxy, finish in
+            proxy.networkStatus { body, message in
+                message.isEmpty ? finish(.success(body)) : finish(.failure(DorydCtlError.daemon(message)))
+            }
+        }
+        let normalized = DomainRouter.normalize(hostname)
+        let routes = (status["customRoutes"] as? [NSDictionary] ?? []).filter {
+            guard let value = $0["hostname"] as? String else { return false }
+            return DomainRouter.normalize(value) != normalized
+        }
+        try emitCommandResult(try client.command { proxy, reply in
+            proxy.networkReplaceRoutes(routes as NSArray, reply: reply)
+        })
     case "repair":
         let target = try cursor.take("usage: dorydctl network repair dns|domains|routes|ports|guest-agent|docker-api")
         guard ["dns", "domains", "routes", "ports", "guest-agent", "docker-api"].contains(target),
@@ -861,18 +916,6 @@ func runNetwork(cursor: inout ArgumentCursor, client: DorydCtlClient) throws {
         guard let routes = try readJSON(path: jsonPath) as? NSArray else {
             throw DorydCtlError.usage("--json must contain an array of route objects")
         }
-        try emitCommandResult(try client.command { proxy, reply in
-            proxy.networkReplaceRoutes(routes, reply: reply)
-        })
-    case "set-route":
-        let hostname = try cursor.take("usage: dorydctl network set-route HOST ADDRESS [--port N]")
-        let address = try cursor.take("usage: dorydctl network set-route HOST ADDRESS [--port N]")
-        let port = try cursor.optionValue("--port").map { try positiveUInt16($0, option: "--port") } ?? 80
-        let routes: NSArray = [[
-            "hostname": hostname,
-            "address": address,
-            "port": port,
-        ] as NSDictionary]
         try emitCommandResult(try client.command { proxy, reply in
             proxy.networkReplaceRoutes(routes, reply: reply)
         })

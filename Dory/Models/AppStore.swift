@@ -457,7 +457,10 @@ final class AppStore {
                 domainSuffix: domainSuffix,
                 dnsPort: dnsPort,
                 httpProxyPort: httpProxyPort,
-                httpsProxyPort: httpsProxyPort
+                httpsProxyPort: httpsProxyPort,
+                customDomains: customDomainRoutes.map {
+                    ManagedCustomDomainRoute(hostname: $0.hostname, publishedPort: $0.port)
+                }
             ),
             autoIdle: ManagedAutoIdleSettings(
                 mode: runtimeMode,
@@ -678,7 +681,7 @@ final class AppStore {
         settingsNotice = SettingsNotice(kind: .success, message: message)
     }
 
-    private func showSettingsFailure(_ message: String) {
+    func showSettingsFailure(_ message: String) {
         settingsNotice = SettingsNotice(kind: .failure, message: message)
     }
 
@@ -880,6 +883,7 @@ final class AppStore {
                 runtime = DisconnectedRuntime()
                 return false
             }
+            await loadCustomDomainRoutes()
             return true
         } catch {
             runtimeOwnedByDoryd = false
@@ -1942,6 +1946,9 @@ final class AppStore {
     var defaultBridgeSubnet = DoryIPv4BridgeNetwork.defaultCIDR
     var networkingAuthorizationInFlight = false
     var networkingAuthorizationMessage: String?
+    var customDomainRoutes: [DorydDomainRoute] = []
+    var customDomainActiveHostnames: Set<String> = []
+    var customDomainRoutesBusy = false
     @ObservationIgnored private var tlsProxy: DoryTLSProxy?
 
     private func startLocalNetworking() {
@@ -2139,6 +2146,93 @@ final class AppStore {
             }
         }
         return suffix
+    }
+
+    nonisolated static func normalizedCustomDomainPattern(_ raw: String?) -> String? {
+        guard let raw else { return nil }
+        var value = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        while value.hasSuffix(".") { value.removeLast() }
+        let hostname: String
+        if value.hasPrefix("*.") {
+            hostname = String(value.dropFirst(2))
+        } else {
+            guard !value.contains("*") else { return nil }
+            hostname = value
+        }
+        guard hostname.count <= 253 else { return nil }
+        let labels = hostname.split(separator: ".", omittingEmptySubsequences: false)
+        guard labels.count >= 2 else { return nil }
+        for label in labels {
+            guard !label.isEmpty, label.count <= 63,
+                  label.first != "-", label.last != "-" else {
+                return nil
+            }
+            for scalar in label.unicodeScalars {
+                let value = scalar.value
+                guard (48...57).contains(value) || (97...122).contains(value) || value == 45 else {
+                    return nil
+                }
+            }
+        }
+        return value
+    }
+
+    func loadCustomDomainRoutes() async {
+        guard dorydRuntimeActive else {
+            customDomainRoutes = []
+            customDomainActiveHostnames = []
+            return
+        }
+        do {
+            let status = try await dorydClient.networkStatus()
+            customDomainRoutes = status.customRoutes.sorted { $0.hostname < $1.hostname }
+            let configured = Set(customDomainRoutes.map(\.hostname))
+            customDomainActiveHostnames = Set(status.routes.map(\.hostname)).intersection(configured)
+        } catch {
+            showSettingsFailure("Custom domains could not be loaded: \(error.localizedDescription)")
+        }
+    }
+
+    func addCustomDomainRoute(hostname rawHostname: String, publishedPort: UInt16) async {
+        guard let hostname = Self.normalizedCustomDomainPattern(rawHostname) else {
+            showSettingsFailure("Use a DNS hostname such as admin.myproject.local or *.myproject.local.")
+            return
+        }
+        let comparable = hostname.hasPrefix("*.") ? String(hostname.dropFirst(2)) : hostname
+        guard comparable != domainSuffix, !comparable.hasSuffix(".\(domainSuffix)") else {
+            showSettingsFailure("That hostname is already covered by *.\(domainSuffix).")
+            return
+        }
+        var routes = customDomainRoutes.filter { $0.hostname != hostname }
+        routes.append(DorydDomainRoute(hostname: hostname, address: "127.0.0.1", port: publishedPort))
+        await replaceCustomDomainRoutes(routes, success: "Custom domain \(hostname) is configured for published port \(publishedPort).")
+    }
+
+    func removeCustomDomainRoute(_ route: DorydDomainRoute) async {
+        await replaceCustomDomainRoutes(
+            customDomainRoutes.filter { $0.hostname != route.hostname },
+            success: "Custom domain \(route.hostname) removed."
+        )
+    }
+
+    private func replaceCustomDomainRoutes(_ routes: [DorydDomainRoute], success: String) async {
+        guard dorydRuntimeActive else {
+            showSettingsFailure("Switch to Dory's engine before changing custom domains.")
+            return
+        }
+        guard !customDomainRoutesBusy else { return }
+        customDomainRoutesBusy = true
+        defer { customDomainRoutesBusy = false }
+        do {
+            _ = try await dorydClient.networkReplaceRoutes(routes)
+            let status = try await dorydClient.networkStatus()
+            customDomainRoutes = status.customRoutes.sorted { $0.hostname < $1.hostname }
+            let configured = Set(customDomainRoutes.map(\.hostname))
+            customDomainActiveHostnames = Set(status.routes.map(\.hostname)).intersection(configured)
+            showSettingsSuccess(success)
+        } catch {
+            showSettingsFailure("Custom domains were not changed: \(error.localizedDescription)")
+        }
     }
 
     private static func persistedRuntimeMode(environment: [String: String]) -> String? {

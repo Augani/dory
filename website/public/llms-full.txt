@@ -105,8 +105,11 @@ Published ports are localhost-only by default. Dory never widens explicit loopba
     dory network authorize --json --apply
     dory network deauthorize --json --dry-run
     dory network --lan-visible on
+    dory network custom-domains
+    dory network set-custom-domain admin.myproject.local --published-port 80
+    dory network remove-custom-domain admin.myproject.local
 
-Optional authorization manages the selected local-domain resolver, local TLS, ports 80 and 443, and published low TCP ports. LAN and Tailscale access are explicit opt-ins. Containers reach Mac services at `host.dory.internal`.
+Optional authorization manages the selected local-domain resolver, local TLS, ports 80 and 443, and published low TCP ports. Exact and leftmost-wildcard custom domains can route to a published HTTP port after the hostname resolves to 127.0.0.1. `/etc/hosts` needs each exact name; wildcard resolution requires local DNS. LAN and Tailscale access are explicit opt-ins. Containers reach Mac services at `host.dory.internal`.
 
 ## Mounts, disk, and cleanup
 

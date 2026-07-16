@@ -26,6 +26,12 @@ struct ManagedNetworkSettings: Codable, Equatable, Sendable {
     var dnsPort: UInt16
     var httpProxyPort: UInt16
     var httpsProxyPort: UInt16
+    var customDomains: [ManagedCustomDomainRoute] = []
+}
+
+struct ManagedCustomDomainRoute: Codable, Equatable, Sendable {
+    var hostname: String
+    var publishedPort: UInt16
 }
 
 struct ManagedAutoIdleSettings: Codable, Equatable, Sendable {

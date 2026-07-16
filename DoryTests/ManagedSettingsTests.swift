@@ -15,6 +15,9 @@ struct ManagedSettingsTests {
         store.dnsPort = 15453
         store.httpProxyPort = 18080
         store.httpsProxyPort = 18443
+        store.customDomainRoutes = [
+            DorydDomainRoute(hostname: "admin.myproject.local", address: "127.0.0.1", port: 80),
+        ]
         store.runtimeMode = "auto-idle"
         store.idlePolicy = IdlePolicy(
             sleepAfterMinutes: 30,
@@ -37,6 +40,9 @@ struct ManagedSettingsTests {
         #expect(profile.engine.memoryMB == 6144)
         #expect(profile.network.domainSuffix == "corp.dory.local")
         #expect(profile.network.dnsPort == 15453)
+        #expect(profile.network.customDomains == [
+            ManagedCustomDomainRoute(hostname: "admin.myproject.local", publishedPort: 80),
+        ])
         #expect(profile.autoIdle.mode == "auto-idle")
         #expect(profile.autoIdle.sleepAfterMinutes == 30)
         #expect(profile.autoIdle.keepPublishedPortsAwake == false)
@@ -52,5 +58,6 @@ struct ManagedSettingsTests {
         #expect(json.contains(#""mode" : "none""#))
         #expect(json.contains(#""cpuCount" : 4"#))
         #expect(json.contains(#""memoryMB" : 6144"#))
+        #expect(json.contains(#""hostname" : "admin.myproject.local""#))
     }
 }

@@ -10,6 +10,7 @@ public final class DorydService: NSObject, DorydControl {
     private let remoteManager: RemoteMachineManager?
     private let networkingController: NetworkingController?
     private let networkRouteRepair: (@Sendable () -> Int)?
+    private let customDomainRouteStore: CustomDomainRouteStore?
     private let balloonController: BalloonController
     private let idlePolicyStore: IdlePolicyStore
     private let idleSleepScheduler: IdleSleepScheduler?
@@ -24,6 +25,7 @@ public final class DorydService: NSObject, DorydControl {
         remoteManager: RemoteMachineManager? = nil,
         networkingController: NetworkingController? = nil,
         networkRouteRepair: (@Sendable () -> Int)? = nil,
+        customDomainRouteStore: CustomDomainRouteStore? = nil,
         balloonController: BalloonController? = nil,
         idlePolicyStore: IdlePolicyStore? = nil,
         idleSleepScheduler: IdleSleepScheduler? = nil,
@@ -36,6 +38,7 @@ public final class DorydService: NSObject, DorydControl {
         self.remoteManager = remoteManager
         self.networkingController = networkingController
         self.networkRouteRepair = networkRouteRepair
+        self.customDomainRouteStore = customDomainRouteStore
         self.balloonController = balloonController ?? BalloonController(
             actuator: DorydBalloonActuator(machineManager: machineManager)
         )
@@ -558,13 +561,23 @@ public final class DorydService: NSObject, DorydControl {
             return
         }
         do {
-            networkingController.replaceRoutes(try routes.compactMap { item in
+            let decoded = try routes.compactMap { item in
                 guard let dictionary = item as? NSDictionary else {
                     throw XPCNetworkRouteError.invalid("route")
                 }
                 return try DomainRoute(xpcDictionary: dictionary)
-            })
-            incidentWriter?.record(type: "network.routes", detail: "\(routes.count) routes")
+            }
+            if let customDomainRouteStore {
+                _ = try customDomainRouteStore.replace(
+                    decoded,
+                    automaticSuffix: networkingController.status().suffix
+                )
+                _ = networkRouteRepair?()
+                incidentWriter?.record(type: "network.custom_domains", detail: "\(routes.count) routes")
+            } else {
+                networkingController.replaceRoutes(decoded)
+                incidentWriter?.record(type: "network.routes", detail: "\(routes.count) routes")
+            }
             reply(true, "")
         } catch {
             reply(false, "\(error)")
@@ -576,7 +589,13 @@ public final class DorydService: NSObject, DorydControl {
             reply([:], "networking is not configured")
             return
         }
-        reply(networkingController.status().xpcDictionary, "")
+        let status = NSMutableDictionary(dictionary: networkingController.status().xpcDictionary)
+        do {
+            status["customRoutes"] = try customDomainRouteStore?.configuredRoutes().map(\.xpcDictionary) ?? []
+            reply(status, "")
+        } catch {
+            reply([:], "\(error)")
+        }
     }
 
     public func networkAuthorizationPlan(reply: @escaping (NSDictionary, String) -> Void) {

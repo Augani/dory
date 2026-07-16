@@ -949,6 +949,70 @@ final class DorydServiceTests: XCTestCase {
         wait(for: [invalidRepairReply], timeout: 5)
     }
 
+    func testCustomDomainRoutesPersistAndReconcileAsPublishedPorts() throws {
+        let home = NSTemporaryDirectory() + "doryd-custom-route-service-\(UUID().uuidString)"
+        defer { try? FileManager.default.removeItem(atPath: home) }
+        let routeStore = CustomDomainRouteStore(environment: [
+            "DORY_CUSTOM_DOMAIN_ROUTES": home + "/custom-domains.json",
+        ])
+        let networking = NetworkingController(configuration: NetworkingConfiguration(
+            suffix: "dory.local",
+            dnsPort: 0,
+            httpProxyPort: 0,
+            httpsProxyPort: 0
+        ))
+        try networking.start()
+        defer { networking.stop() }
+        let service = DorydService(
+            socketPath: "/tmp/doryd-custom-route-test.sock",
+            networkingController: networking,
+            networkRouteRepair: {
+                let routes = (try? routeStore.configuredRoutes())?.map {
+                    DomainRoute(
+                        hostname: $0.hostname,
+                        address: "127.0.0.1",
+                        port: PrivilegedPortMapping.effectiveBackendPort(forPublishedPort: $0.publishedPort)
+                    )
+                } ?? []
+                networking.replaceRoutes(routes)
+                return routes.count
+            },
+            customDomainRouteStore: routeStore
+        )
+        let listener = makeAnonymousListener(service: service)
+        listener.resume()
+        defer { listener.invalidate() }
+
+        let connection = NSXPCConnection(listenerEndpoint: listener.endpoint)
+        connection.remoteObjectInterface = NSXPCInterface(with: DorydControl.self)
+        connection.resume()
+        defer { connection.invalidate() }
+        let proxy = try XCTUnwrap(connection.remoteObjectProxy as? DorydControl)
+
+        let replace = expectation(description: "custom route saved")
+        proxy.networkReplaceRoutes([
+            ["hostname": "Admin.MyProject.Local.", "address": "127.0.0.1", "port": 80],
+        ]) { ok, message in
+            XCTAssertTrue(ok)
+            XCTAssertEqual(message, "")
+            replace.fulfill()
+        }
+        wait(for: [replace], timeout: 5)
+
+        let statusReply = expectation(description: "custom route status")
+        proxy.networkStatus { body, message in
+            XCTAssertEqual(message, "")
+            let configured = body["customRoutes"] as? [NSDictionary]
+            XCTAssertEqual(configured?.first?["hostname"] as? String, "admin.myproject.local")
+            XCTAssertEqual(configured?.first?["port"] as? UInt16, 80)
+            let active = body["routes"] as? [NSDictionary]
+            XCTAssertEqual(active?.first?["hostname"] as? String, "admin.myproject.local")
+            XCTAssertEqual(active?.first?["port"] as? UInt16, 60_080)
+            statusReply.fulfill()
+        }
+        wait(for: [statusReply], timeout: 5)
+    }
+
     func testMachineLifecycleOverXPC() throws {
         let base = "/tmp/doryd-service-machine-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         let share = "\(base)-share"
