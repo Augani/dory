@@ -674,7 +674,7 @@ final class AppStore {
         settingsNotice = nil
     }
 
-    private func showSettingsSuccess(_ message: String) {
+    func showSettingsSuccess(_ message: String) {
         settingsNotice = SettingsNotice(kind: .success, message: message)
     }
 
@@ -2827,6 +2827,12 @@ final class AppStore {
 
     /// One-click Kubernetes: bootstraps k3s inside Dory's shared VM and wires the host kubeconfig.
     func enableKubernetes() async {
+        guard AppInfo.componentAvailable(.kubernetes) else {
+            kubernetesInfo = "Install Kubernetes in Components before enabling the cluster."
+            actionError = kubernetesInfo
+            section = .components
+            return
+        }
         guard runtimeKind == .sharedVM else { kubernetesInfo = "Kubernetes needs Dory's shared VM engine"; return }
         guard !kubernetesBusy else { return }
         kubernetesBusy = true
@@ -3161,6 +3167,7 @@ final class AppStore {
             machineSubtitle(for: .desktop, noun: "desktop")
         case .machines:
             machineSubtitle(for: .headless, noun: "server")
+        case .components: "Docker Core with optional, removable feature packs"
         case .health: healthSubtitle
         case .settings: "Dory v\(AppInfo.version)"
         }
@@ -4250,11 +4257,18 @@ final class AppStore {
         case .compose: openComposeFile()
         case .desktops:
             guard AppInfo.includesDesktopLinux else {
-                actionError = "Creating graphical Linux desktops requires the all-inclusive Dory Desktop build."
+                actionError = "Install the Linux Desktop runtime and at least one distribution in Components."
+                self.section = .components
                 return
             }
             activeSheet = .newDesktop
-        case .machines: activeSheet = .newMachine
+        case .machines:
+            guard AppInfo.componentAvailable(.linuxMachines) else {
+                actionError = "Install Linux Machines in Components before creating a server."
+                self.section = .components
+                return
+            }
+            activeSheet = .newMachine
         default: break
         }
     }
@@ -4662,6 +4676,12 @@ final class AppStore {
             .first { FileManager.default.fileExists(atPath: $0) }
     }
 
+    nonisolated private static func installedMachinePath(_ names: [String]) -> String? {
+        names.lazy.compactMap {
+            DoryComponentStore.activeAssetPath(component: .linuxMachines, path: $0)
+        }.first
+    }
+
     nonisolated private static var hostMachineAssetArch: String {
         #if arch(arm64)
         return "arm64"
@@ -4681,9 +4701,14 @@ final class AppStore {
         let arch = hostMachineAssetArch
         let kernel = assets?.kernelPath
             ?? firstMachinePath(["DORYD_MACHINE_KERNEL", "DORYD_GUEST_KERNEL"], environment: environment)
+            ?? installedMachinePath(["dory-hv-kernel-\(arch)", "dory-hv-kernel"])
             ?? (useBundledAssets ? bundledMachinePath(["dory-hv-kernel-\(arch)", "dory-hv-kernel"]) : nil)
         let rootfs = assets?.rootfsPath
             ?? firstMachinePath(["DORYD_MACHINE_ROOTFS", "DORYD_GUEST_ROOTFS"], environment: environment)
+            ?? installedMachinePath([
+                "dory-machine-rootfs-\(arch).ext4",
+                "dory-machine-rootfs.ext4",
+            ])
             ?? (useBundledAssets ? bundledMachinePath([
                 "dory-machine-rootfs-\(arch).ext4",
                 "dory-machine-rootfs.ext4",
@@ -4729,6 +4754,21 @@ final class AppStore {
         guard trimmedName.wholeMatch(of: /[a-zA-Z0-9][a-zA-Z0-9_.-]*/) != nil else {
             actionError = "Invalid machine name: use letters, digits, and _ . - (must start alphanumeric)"
             return "Invalid machine name"
+        }
+        if settings.displayMode == .desktop {
+            let distro = DesktopMachineDistro.resolve(settings.env["DORY_DESKTOP_DISTRO"])
+            guard AppInfo.componentAvailable(.linuxDesktop),
+                  AppInfo.componentAvailable(distro.componentID) else {
+                let message = "Install the Linux Desktop runtime and \(distro.displayName) in Components first."
+                actionError = message
+                section = .components
+                return message
+            }
+        } else if !AppInfo.componentAvailable(.linuxMachines) {
+            let message = "Install Linux Machines in Components before creating a server."
+            actionError = message
+            section = .components
+            return message
         }
         guard requireDorydMachines() else { return actionError }
         let resolvedEnv = await machineEnvResolver(machineEnvAllowList)

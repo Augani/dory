@@ -6,6 +6,8 @@
 	<string>https://augani.github.io/dory/appcast.xml</string>
 	<key>SUPublicEDKey</key>
 	<string>AFetajNbqZty68rRY7OMWYNt6suUsrokQmYMhDJtnP4=</string>
+	<key>DoryComponentCatalogURL</key>
+	<string>https://augani.github.io/dory/components/arm64/catalog.json</string>
 	<key>SUEnableInstallerLauncherService</key>
 	<true/>
 	<key>LSMultipleInstancesProhibited</key>

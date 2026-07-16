@@ -66,6 +66,7 @@ struct SettingsView: View {
     @ViewBuilder private var content: some View {
         switch store.settingsTab {
         case .general: general
+        case .components: ComponentsView(embedded: true)
         case .resources: resources
         case .machines: machines
         case .engine: engine

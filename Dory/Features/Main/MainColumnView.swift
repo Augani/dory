@@ -1,3 +1,4 @@
+import DoryOperations
 import SwiftUI
 
 struct MainColumnView: View {
@@ -24,7 +25,7 @@ struct MainColumnView: View {
                 Text(store.subtitle(for: store.section)).font(.system(size: 11.5)).foregroundStyle(p.text3)
             }
             Spacer(minLength: 0)
-            if store.section != .settings {
+            if store.section != .settings && store.section != .components {
                 filterBox(text: $store.filter)
                 if store.section == .images {
                     secondaryButton("Sign In") { store.activeSheet = .registryLogin }
@@ -34,7 +35,7 @@ struct MainColumnView: View {
                     secondaryButton("Import") { store.importMachineFile() }
                 }
                 if let label = store.section.primaryActionLabel,
-                   store.section != .desktops || AppInfo.includesDesktopLinux {
+                   primaryActionAvailable(for: store.section) {
                     primaryButton(label)
                 }
             }
@@ -92,11 +93,48 @@ struct MainColumnView: View {
         case .volumes: VolumesView()
         case .networks: NetworksView()
         case .compose: ComposeProjectsView()
-        case .kubernetes: KubernetesView()
-        case .desktops: MachinesView(displayMode: .desktop)
-        case .machines: MachinesView(displayMode: .headless)
+        case .kubernetes:
+            if AppInfo.componentAvailable(.kubernetes) {
+                KubernetesView()
+            } else {
+                MissingComponentView(
+                    component: .kubernetes,
+                    title: "Add Kubernetes when you need it",
+                    message: "Docker Core stays small. Install the signed Kubernetes component to add kubectl and Dory's local cluster workflow."
+                )
+            }
+        case .desktops:
+            if AppInfo.includesDesktopLinux || store.machines.contains(where: { $0.displayMode == .desktop }) {
+                MachinesView(displayMode: .desktop)
+            } else {
+                MissingComponentView(
+                    component: .linuxDesktop,
+                    title: "Choose a Linux desktop",
+                    message: "Install the Desktop runtime, then choose Debian, Ubuntu, or Kali independently. You only download the distributions you want."
+                )
+            }
+        case .machines:
+            if AppInfo.componentAvailable(.linuxMachines)
+                || store.machines.contains(where: { $0.displayMode == .headless }) {
+                MachinesView(displayMode: .headless)
+            } else {
+                MissingComponentView(
+                    component: .linuxMachines,
+                    title: "Add headless Linux machines",
+                    message: "Install Linux Machines for VPS-style servers, terminals, snapshots, and persistent disks without adding graphical desktop images."
+                )
+            }
+        case .components: ComponentsView()
         case .health: HealthView()
         case .settings: SettingsView()
+        }
+    }
+
+    private func primaryActionAvailable(for section: AppSection) -> Bool {
+        switch section {
+        case .desktops: AppInfo.includesDesktopLinux
+        case .machines: AppInfo.componentAvailable(.linuxMachines)
+        default: true
         }
     }
 }

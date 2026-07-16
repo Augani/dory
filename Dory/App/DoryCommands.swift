@@ -1,4 +1,5 @@
 import AppKit
+import DoryOperations
 import SwiftUI
 
 struct DoryCommands: Commands {
@@ -17,16 +18,14 @@ struct DoryCommands: Commands {
                 store.activeSheet = .newContainer
             }
             .keyboardShortcut("n", modifiers: .command)
-            if AppInfo.includesDesktopLinux {
-                Button("New Desktop") {
-                    store.section = .desktops
-                    store.activeSheet = .newDesktop
-                }
-                .keyboardShortcut("d", modifiers: [.command, .option])
+            Button("New Desktop") {
+                openMain(.desktops)
+                store.presentPrimary(for: .desktops)
             }
+            .keyboardShortcut("d", modifiers: [.command, .option])
             Button("New Server") {
-                store.section = .machines
-                store.activeSheet = .newMachine
+                openMain(.machines)
+                store.presentPrimary(for: .machines)
             }
             .keyboardShortcut("n", modifiers: [.command, .option])
         }
@@ -37,11 +36,10 @@ struct DoryCommands: Commands {
             Button("Networks") { store.section = .networks }.keyboardShortcut("4", modifiers: .command)
             Button("Compose") { store.section = .compose }.keyboardShortcut("5", modifiers: .command)
             Button("Kubernetes") { store.section = .kubernetes }.keyboardShortcut("6", modifiers: .command)
-            if AppInfo.includesDesktopLinux || store.machines.contains(where: { $0.displayMode == .desktop }) {
-                Button("Desktops") { store.section = .desktops }.keyboardShortcut("7", modifiers: .command)
-            }
+            Button("Desktops") { store.section = .desktops }.keyboardShortcut("7", modifiers: .command)
             Button("Servers") { store.section = .machines }.keyboardShortcut("8", modifiers: .command)
-            Button("Health") { store.section = .health }.keyboardShortcut("9", modifiers: .command)
+            Button("Components") { store.section = .components }.keyboardShortcut("9", modifiers: .command)
+            Button("Health") { store.section = .health }
             Button("Settings") { store.section = .settings }.keyboardShortcut(",", modifiers: .command)
             Button("Filter") { if store.section != .settings { store.filterFocusToken += 1 } }
                 .keyboardShortcut("f", modifiers: .command)
@@ -125,15 +123,13 @@ struct DoryCommands: Commands {
             }
 
             Menu("Linux Machines") {
-                if AppInfo.includesDesktopLinux {
-                    Button("New Desktop") {
-                        openMain(.desktops)
-                        store.activeSheet = .newDesktop
-                    }
+                Button("New Desktop") {
+                    openMain(.desktops)
+                    store.presentPrimary(for: .desktops)
                 }
                 Button("New Server") {
                     openMain(.machines)
-                    store.activeSheet = .newMachine
+                    store.presentPrimary(for: .machines)
                 }
                 Divider()
                 if store.machines.isEmpty {
@@ -184,11 +180,20 @@ struct DoryCommands: Commands {
                     }
                 } else {
                     Button("Enable Kubernetes") {
-                        Task { await store.enableKubernetes() }
+                        if AppInfo.componentAvailable(.kubernetes) {
+                            Task { await store.enableKubernetes() }
+                        } else {
+                            openMain(.components)
+                            store.actionError = "Install Kubernetes in Components before enabling the cluster."
+                        }
                     }
                     .disabled(store.runtimeKind != .sharedVM || store.kubernetesBusy)
                 }
             }
+        }
+        CommandMenu("Components") {
+            Button("Open Components") { openMain(.components) }
+            Button("Manage Components in Settings") { openSettings(.components) }
         }
     }
 

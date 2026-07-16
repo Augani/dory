@@ -1,3 +1,4 @@
+import DoryOperations
 import SwiftUI
 
 struct SidebarView: View {
@@ -56,13 +57,27 @@ struct SidebarView: View {
                 row(.networks, .networks, "Networks")
                 row(.compose, .gridView, "Compose")
                 sectionLabel("ORCHESTRATION").padding(.top, 6)
-                row(.kubernetes, .kubernetes, "Kubernetes")
+                row(
+                    .kubernetes,
+                    .kubernetes,
+                    "Kubernetes",
+                    trailing: AppInfo.componentAvailable(.kubernetes) ? nil : "Get"
+                )
                 sectionLabel("LINUX").padding(.top, 6)
-                if AppInfo.includesDesktopLinux || desktopCount > 0 {
-                    row(.desktops, .machines, "Desktops", trailing: "\(desktopCount)")
-                }
-                row(.machines, .machines, "Servers", trailing: "\(serverCount)")
+                row(
+                    .desktops,
+                    .machines,
+                    "Desktops",
+                    trailing: !AppInfo.includesDesktopLinux && desktopCount == 0 ? "Get" : "\(desktopCount)"
+                )
+                row(
+                    .machines,
+                    .machines,
+                    "Servers",
+                    trailing: !AppInfo.componentAvailable(.linuxMachines) && serverCount == 0 ? "Get" : "\(serverCount)"
+                )
                 sectionLabel("SYSTEM").padding(.top, 6)
+                row(.components, .gridView, "Components")
                 row(.health, .health, "Health")
             }
             .padding(.horizontal, 10)
