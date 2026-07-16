@@ -503,6 +503,12 @@ public enum DoryVZConfigurationBuilder {
         if !environment.isEmpty {
             lines.append("")
         }
+        lines += [
+            "if [ -x /usr/lib/dory/configure-machine ]; then",
+            "  /usr/lib/dory/configure-machine",
+            "fi",
+            "",
+        ]
         for share in shares {
             let options = share.readOnly ? "ro" : "rw"
             lines.append("mkdir -p \(shellQuote(share.guestPath))")
@@ -929,27 +935,31 @@ public enum DoryVMMMain {
         let agentConnection = try machine.waitForConnection(toPort: DoryGuestPorts.control, timeout: readyTimeoutSeconds)
         defer { agentConnection.close() }
         let agentInfo = try agentInfo(from: agentConnection)
-        let dockerReadyDeadline = Date().addingTimeInterval(readyTimeoutSeconds)
-        let dockerProbe = UnixDockerAPIProbe(timeout: 1)
-        var dockerPing = dockerProbe.ping(socketPath: dockerdSocketPath)
-        while dockerPing != .ok, Date() < dockerReadyDeadline, !machine.isStopped {
-            Thread.sleep(forTimeInterval: 0.25)
-            dockerPing = dockerProbe.ping(socketPath: dockerdSocketPath)
-        }
-        guard dockerPing == .ok else {
-            throw DoryVZMachineError.validation(
-                "Docker API did not become ready through the VZ socket: \(dockerPing)"
-            )
+        if machineID == "docker" {
+            let dockerReadyDeadline = Date().addingTimeInterval(readyTimeoutSeconds)
+            let dockerProbe = UnixDockerAPIProbe(timeout: 1)
+            var dockerPing = dockerProbe.ping(socketPath: dockerdSocketPath)
+            while dockerPing != .ok, Date() < dockerReadyDeadline, !machine.isStopped {
+                Thread.sleep(forTimeInterval: 0.25)
+                dockerPing = dockerProbe.ping(socketPath: dockerdSocketPath)
+            }
+            guard dockerPing == .ok else {
+                throw DoryVZMachineError.validation(
+                    "Docker API did not become ready through the VZ socket: \(dockerPing)"
+                )
+            }
         }
         try sendHandoff(
             machineID: machineID,
             handoffSocketPath: handoffSocketPath,
             agentBuild: agentInfo.agentBuild,
             agentSocketPath: agentSocketPath,
-            dockerdSocketPath: dockerdSocketPath,
+            dockerdSocketPath: machineID == "docker" ? dockerdSocketPath : nil,
             shellSocketPath: shellSocketPath,
             controlSocketPath: controlSocketPath,
-            detail: "VZ VM running; dory-agent answered protocol \(agentInfo.protocolVersion)"
+            detail: machineID == "docker"
+                ? "VZ Docker VM running; dory-agent answered protocol \(agentInfo.protocolVersion)"
+                : "VZ machine running; dory-agent answered protocol \(agentInfo.protocolVersion)"
         )
         return runtime
     }

@@ -271,6 +271,7 @@ final class DoryVMMKitTests: XCTestCase {
         XCTAssertTrue(shareDevice.share is VZSingleDirectoryShare)
         let bootScript = try String(contentsOfFile: "\(base)/dorycfg/boot.sh", encoding: .utf8)
         XCTAssertTrue(bootScript.contains("export APP_ENV='dev build'"))
+        XCTAssertTrue(bootScript.contains("/usr/lib/dory/configure-machine"))
         XCTAssertTrue(bootScript.contains("mount -t virtiofs -o 'ro' 'src' '/workspace/src'"))
         XCTAssertTrue(bootScript.contains("kill -TERM $DORY_DOCKERD_PID"))
         XCTAssertTrue(bootScript.contains("umount /var/lib/docker"))
