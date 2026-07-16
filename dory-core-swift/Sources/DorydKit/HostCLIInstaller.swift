@@ -1,3 +1,4 @@
+import DoryCore
 import Foundation
 
 public struct HostCLIInstallResult: Sendable, Equatable {
@@ -223,6 +224,15 @@ public struct HostCLIInstaller: Sendable {
     }
 
     private func sourcePath(for tool: String) -> String? {
+        if tool == "kubectl",
+           let installed = DoryComponentStore.activeAssetPath(
+            component: .kubernetes,
+            path: "kubectl",
+            home: home
+           ),
+           FileManager.default.isExecutableFile(atPath: installed) {
+            return installed
+        }
         guard let helpersDirectory else { return nil }
         let path = "\(helpersDirectory)/\(tool)"
         return FileManager.default.isExecutableFile(atPath: path) ? path : nil

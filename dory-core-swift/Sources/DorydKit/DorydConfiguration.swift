@@ -244,6 +244,15 @@ public struct DorydEnvironment: Sendable {
         if let explicit = executablePath(firstOf: explicitKeys, fallbackCandidates: []) {
             return explicit
         }
+        if name == "kubectl",
+           let installed = DoryComponentStore.activeAssetPath(
+            component: .kubernetes,
+            path: "kubectl",
+            home: home
+           ),
+           FileManager.default.isExecutableFile(atPath: installed) {
+            return installed
+        }
         let candidates = ["\(home)/.dory/bin/\(name)"] + helperCandidates(named: name)
         return candidates.first { FileManager.default.isExecutableFile(atPath: $0) }
     }
@@ -709,7 +718,7 @@ public struct DorydEnvironment: Sendable {
         if let explicit = string("DORYD_RESOURCES_DIR"), !explicit.isEmpty {
             return [explicit]
         }
-        return [
+        return DoryComponentStore.activePayloadDirectories(home: home) + [
             bundleResourcesDirectory,
             "\(cwd)/Resources",
             "\(cwd)/../Resources",

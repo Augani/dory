@@ -239,6 +239,9 @@ public struct DoryDataDrive: Sendable, Equatable {
     public var engineDirectory: String { root + "/engine" }
     public var engineDataDiskPath: String { engineDirectory + "/docker-data.ext4" }
     public var kubernetesDirectory: String { root + "/kubernetes" }
+    /// Verified, replaceable product payloads. Workload state never lives below this directory, so
+    /// removing a component cannot remove containers, images, volumes, machine disks, or snapshots.
+    public var componentsDirectory: String { root + "/components" }
     public var machinesDirectory: String { root + "/machines" }
     public var snapshotsDirectory: String { root + "/snapshots" }
     public var exportsDirectory: String { root + "/exports" }
@@ -405,6 +408,7 @@ public struct DoryDataDrive: Sendable, Equatable {
             root,
             root + "/engine",
             root + "/kubernetes",
+            root + "/components",
             root + "/machines",
             root + "/snapshots",
             root + "/exports",

@@ -24,6 +24,12 @@ enum DorydCtlError: Error, CustomStringConvertible {
             message
         }
     }
+
+    mutating func takeFlag(_ name: String) -> Bool {
+        guard let index = values.firstIndex(of: name) else { return false }
+        values.remove(at: index)
+        return true
+    }
 }
 
 final class ReplyBox<T>: @unchecked Sendable {
@@ -167,6 +173,10 @@ func usage(exitCode: Int32 = 2) -> Never {
           dorydctl [global] machine delete-snapshot NAME SNAPSHOT_ID
           dorydctl [global] machine export-snapshot NAME SNAPSHOT_ID PATH
           dorydctl [global] machine import-snapshot PATH
+          dorydctl [global] component list [--json] [--offline]
+          dorydctl [global] component install|update ID [--json]
+          dorydctl [global] component verify [ID|all] [--json] [--offline]
+          dorydctl [global] component remove ID [--json] [--offline]
           dorydctl [global] remote connect NAME --host HOST --user USER --private-key-id ID --remote-root PATH (--host-key KEY | --known-hosts PATH) [--port N] [--endpoint-unix PATH | --endpoint-tcp HOST:PORT]
           dorydctl [global] remote push NAME --local-root PATH [--remote-root PATH]
           dorydctl [global] remote status NAME
@@ -196,6 +206,259 @@ func emitCommandResult(_ value: NSDictionary) throws {
     if value["ok"] as? Bool == false {
         let message = value["message"] as? String ?? ""
         throw DorydCtlError.daemon(message)
+    }
+}
+
+private struct ComponentCatalogBundle: Sendable {
+    let catalog: DoryComponentCatalog
+    let data: Data
+    let signature: String
+}
+
+private func componentAppVersion() -> String {
+    if let override = ProcessInfo.processInfo.environment["DORY_COMPONENT_APP_VERSION"],
+       !override.isEmpty {
+        return override
+    }
+    let executable = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath()
+    let infoPath = executable.deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .appendingPathComponent("Info.plist").path
+    if let info = NSDictionary(contentsOfFile: infoPath),
+       let version = info["CFBundleShortVersionString"] as? String,
+       !version.isEmpty {
+        return version
+    }
+    return Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0-dev"
+}
+
+private func componentCatalogURL() -> URL {
+    if let override = ProcessInfo.processInfo.environment["DORY_COMPONENT_CATALOG_URL"],
+       let url = URL(string: override),
+       url.scheme == "https" || url.isFileURL {
+        return url
+    }
+    return DoryComponentDefaults.catalogURL
+}
+
+private func awaitComponentOperation<T: Sendable>(
+    _ operation: @escaping @Sendable () async throws -> T
+) throws -> T {
+    let box = ReplyBox<T>()
+    Task.detached {
+        do { box.resume(.success(try await operation())) }
+        catch { box.resume(.failure(error)) }
+    }
+    return try box.wait(timeout: 7_200).get()
+}
+
+private func loadComponentCatalog(
+    store: DoryComponentStore,
+    offline: Bool
+) throws -> ComponentCatalogBundle {
+    let appVersion = componentAppVersion()
+    if !offline {
+        do {
+            let client = DoryComponentCatalogClient(
+                catalogURL: componentCatalogURL(),
+                publicKey: DoryComponentDefaults.publicKey,
+                expectedArchitecture: DoryComponentDefaults.architecture,
+                appVersion: appVersion
+            )
+            let fetched = try awaitComponentOperation { try await client.fetch() }
+            _ = try store.cacheCatalog(
+                data: fetched.data,
+                signature: fetched.signature,
+                publicKey: DoryComponentDefaults.publicKey,
+                expectedArchitecture: DoryComponentDefaults.architecture,
+                appVersion: appVersion
+            )
+            return ComponentCatalogBundle(
+                catalog: fetched.catalog,
+                data: fetched.data,
+                signature: fetched.signature
+            )
+        } catch {
+            if let cached = try store.cachedCatalog(
+                publicKey: DoryComponentDefaults.publicKey,
+                expectedArchitecture: DoryComponentDefaults.architecture,
+                appVersion: appVersion
+            ) {
+                return ComponentCatalogBundle(
+                    catalog: cached.catalog,
+                    data: cached.data,
+                    signature: cached.signature
+                )
+            }
+            throw error
+        }
+    }
+    guard let cached = try store.cachedCatalog(
+        publicKey: DoryComponentDefaults.publicKey,
+        expectedArchitecture: DoryComponentDefaults.architecture,
+        appVersion: appVersion
+    ) else {
+        throw DoryComponentError.invalidCatalog("no verified catalog is cached for offline use")
+    }
+    return ComponentCatalogBundle(
+        catalog: cached.catalog,
+        data: cached.data,
+        signature: cached.signature
+    )
+}
+
+private func componentStatusJSON(_ status: DoryComponentStatus) -> NSDictionary {
+    [
+        "id": status.id.rawValue,
+        "name": status.displayName,
+        "summary": status.summary,
+        "state": status.state.rawValue,
+        "availableVersion": status.availableVersion,
+        "installedVersion": status.installedVersion ?? NSNull(),
+        "downloadBytes": NSNumber(value: status.downloadBytes),
+        "installedBytes": NSNumber(value: status.installedBytes),
+        "dependencies": status.dependencies.map(\.rawValue),
+    ] as NSDictionary
+}
+
+private func componentResultJSON(
+    action: String,
+    catalog: ComponentCatalogBundle,
+    statuses: [DoryComponentStatus]
+) -> NSDictionary {
+    [
+        "schema": "dev.dory.components",
+        "schemaVersion": 1,
+        "action": action,
+        "catalogVersion": catalog.catalog.releaseVersion,
+        "catalogDigest": DoryComponentCatalogVerifier.digest(catalog.data),
+        "architecture": catalog.catalog.architecture,
+        "components": statuses.map(componentStatusJSON),
+    ] as NSDictionary
+}
+
+private func componentBytes(_ bytes: UInt64) -> String {
+    ByteCountFormatter.string(fromByteCount: Int64(clamping: bytes), countStyle: .file)
+}
+
+private func componentInstallationOrder(
+    _ id: DoryComponentID,
+    catalog: DoryComponentCatalog
+) throws -> [DoryComponentRelease] {
+    var visited: Set<DoryComponentID> = []
+    var ordered: [DoryComponentRelease] = []
+    func append(_ current: DoryComponentID) throws {
+        guard current != .dockerCore, !visited.contains(current) else { return }
+        guard let release = catalog.component(current) else {
+            throw DoryComponentError.unknownComponent(current.rawValue)
+        }
+        for dependency in release.dependencies { try append(dependency) }
+        visited.insert(current)
+        ordered.append(release)
+    }
+    try append(id)
+    return ordered
+}
+
+private func runComponent(cursor: inout ArgumentCursor) throws {
+    let subcommand = try cursor.take("usage: dorydctl component list|install|update|verify|remove")
+    let json = cursor.takeFlag("--json")
+    let offline = cursor.takeFlag("--offline")
+    let store = try DoryComponentStore.selected()
+    try store.prepare()
+    if subcommand == "path" {
+        let rawID = try cursor.take("usage: dorydctl component path ID ASSET")
+        let asset = try cursor.take("usage: dorydctl component path ID ASSET")
+        guard cursor.values.isEmpty,
+              let id = DoryComponentID(rawValue: rawID),
+              let path = store.assetPath(component: id, path: asset) else {
+            throw DoryComponentError.unknownComponent(rawID)
+        }
+        print(path)
+        return
+    }
+    let catalog = try loadComponentCatalog(store: store, offline: offline)
+    let digest = DoryComponentCatalogVerifier.digest(catalog.data)
+
+    switch subcommand {
+    case "list":
+        guard cursor.values.isEmpty else {
+            throw DorydCtlError.usage("usage: dorydctl component list [--json] [--offline]")
+        }
+        let statuses = store.list(catalog: catalog.catalog, catalogDigest: digest)
+        if json {
+            try emitJSON(componentResultJSON(action: "list", catalog: catalog, statuses: statuses))
+        } else {
+            for status in statuses {
+                let version = status.installedVersion.map { "installed \($0)" } ?? "available \(status.availableVersion)"
+                print("\(status.id.rawValue)\t\(status.state.rawValue)\t\(version)\t\(componentBytes(status.downloadBytes)) download")
+            }
+        }
+    case "install", "update":
+        guard !offline else { throw DorydCtlError.usage("component downloads cannot use --offline") }
+        let rawID = try cursor.take("usage: dorydctl component \(subcommand) ID [--json]")
+        guard cursor.values.isEmpty, let id = DoryComponentID(rawValue: rawID) else {
+            throw DoryComponentError.unknownComponent(rawID)
+        }
+        guard id.isRemovable else { throw DoryComponentError.coreCannotBeChanged }
+        let installer = DoryComponentInstaller(store: store)
+        for release in try componentInstallationOrder(id, catalog: catalog.catalog) {
+            let current = try store.installedComponent(release.id)
+            if current?.version == release.version, current?.catalogDigest == digest,
+               (try? store.verify(release.id)) != nil {
+                continue
+            }
+            let showProgress = !json
+            _ = try awaitComponentOperation {
+                try await installer.install(release, catalogData: catalog.data) { update in
+                    guard showProgress else { return }
+                    let message = "\r\(release.displayName): \(update.phase.rawValue) "
+                        + "\(componentBytes(update.completedBytes)) / \(componentBytes(update.totalBytes))"
+                    FileHandle.standardError.write(Data(message.utf8))
+                }
+            }
+            if !json { FileHandle.standardError.write(Data("\n".utf8)) }
+        }
+        let statuses = store.list(catalog: catalog.catalog, catalogDigest: digest)
+        if json {
+            try emitJSON(componentResultJSON(action: subcommand, catalog: catalog, statuses: statuses))
+        } else {
+            print("\(rawID) is installed and verified.")
+        }
+    case "verify":
+        let rawID = cursor.values.isEmpty ? "all" : try cursor.take("usage: dorydctl component verify [ID|all] [--json] [--offline]")
+        guard cursor.values.isEmpty else {
+            throw DorydCtlError.usage("usage: dorydctl component verify [ID|all] [--json] [--offline]")
+        }
+        let ids: [DoryComponentID]
+        if rawID == "all" {
+            ids = DoryComponentID.allCases.filter { $0.isRemovable && (try? store.installedComponent($0)) != nil }
+        } else if let id = DoryComponentID(rawValue: rawID), id.isRemovable {
+            ids = [id]
+        } else {
+            throw DoryComponentError.unknownComponent(rawID)
+        }
+        for id in ids { _ = try store.verify(id) }
+        let statuses = store.list(catalog: catalog.catalog, catalogDigest: digest)
+        if json {
+            try emitJSON(componentResultJSON(action: "verify", catalog: catalog, statuses: statuses))
+        } else {
+            print(ids.isEmpty ? "No optional components are installed." : "Verified: \(ids.map(\.rawValue).joined(separator: ", "))")
+        }
+    case "remove":
+        let rawID = try cursor.take("usage: dorydctl component remove ID [--json] [--offline]")
+        guard cursor.values.isEmpty, let id = DoryComponentID(rawValue: rawID) else {
+            throw DoryComponentError.unknownComponent(rawID)
+        }
+        try store.remove(id, catalog: catalog.catalog)
+        let statuses = store.list(catalog: catalog.catalog, catalogDigest: digest)
+        if json {
+            try emitJSON(componentResultJSON(action: "remove", catalog: catalog, statuses: statuses))
+        } else {
+            print("Removed \(rawID) payload. Workload data was preserved.")
+        }
+    default:
+        throw DorydCtlError.usage("unknown component command: \(subcommand)")
     }
 }
 
@@ -359,6 +622,8 @@ func run(command: String, cursor: inout ArgumentCursor, client: DorydCtlClient) 
         try runDocker(cursor: &cursor, client: client)
     case "machine":
         try runMachine(cursor: &cursor, client: client)
+    case "component":
+        try runComponent(cursor: &cursor)
     case "remote":
         try runRemote(cursor: &cursor, client: client)
     case "network":

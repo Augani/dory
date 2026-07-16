@@ -77,6 +77,8 @@ dory — Dory CLI
                                Manual recovery for doryd's per-user terminal integration for docker, compose, kubectl, and dory
   dory uninstall [--json] [--dry-run]
                                Stop Dory services and remove runtime/shell integration; preserve workload data
+  dory component list|install|update|verify|remove
+                               Manage signed, removable Kubernetes, Linux Machines, and Desktop packs
   dory shell <container>       Open an interactive shell in a container
   dory debug <container> [-- cmd...]
                                Reserved for a future agent namespace-debug RPC (currently unavailable)
@@ -1196,6 +1198,12 @@ dorydctl_bin() {
     "$(command -v dorydctl 2>/dev/null || true)"
 }
 
+installed_component_asset() {
+  local component="$1" asset="$2" ctl
+  ctl="$(dorydctl_bin 2>/dev/null)" || return 1
+  "$ctl" component path "$component" "$asset" 2>/dev/null
+}
+
 network_helper_bin() {
   first_executable \
     "${DORY_NETWORK_HELPER_BIN:-}" \
@@ -1536,13 +1544,13 @@ doryd_machine_cmd() {
       if ! dory_machine_has_option --kernel "$@"; then
         local kernel
         kernel="$(sandbox_default_kernel || true)"
-        [ -n "$kernel" ] || { echo "machine kernel not found; set DORYD_MACHINE_KERNEL or install the full Dory app bundle" >&2; exit 1; }
+        [ -n "$kernel" ] || { echo "Linux Machines is not installed. Run: dory component install linux-machines" >&2; exit 1; }
         args+=(--kernel "$kernel")
       fi
       if ! dory_machine_has_option --rootfs "$@"; then
         local rootfs
         rootfs="$(sandbox_default_rootfs || true)"
-        [ -n "$rootfs" ] || { echo "machine rootfs not found; set DORYD_MACHINE_ROOTFS or install the full Dory app bundle" >&2; exit 1; }
+        [ -n "$rootfs" ] || { echo "Linux Machines is not installed. Run: dory component install linux-machines" >&2; exit 1; }
         args+=(--rootfs "$rootfs")
       fi
       while IFS= read -r env_row; do
@@ -1629,6 +1637,8 @@ sandbox_default_kernel() {
     "${DORY_SANDBOX_KERNEL:-}" \
     "${DORYD_MACHINE_KERNEL:-}" \
     "${DORYD_GUEST_KERNEL:-}" \
+    "$(installed_component_asset linux-machines "dory-hv-kernel-$arch" || true)" \
+    "$(installed_component_asset linux-machines dory-hv-kernel || true)" \
     "$DORY_SCRIPT_DIR/../Resources/dory-hv-kernel-$arch" \
     "$DORY_SCRIPT_DIR/../Resources/dory-hv-kernel" \
     "$repo/guest/out/Image" \
@@ -1643,6 +1653,8 @@ sandbox_default_rootfs() {
     "${DORY_SANDBOX_ROOTFS:-}" \
     "${DORYD_MACHINE_ROOTFS:-}" \
     "${DORYD_GUEST_ROOTFS:-}" \
+    "$(installed_component_asset linux-machines "dory-machine-rootfs-$arch.ext4" || true)" \
+    "$(installed_component_asset linux-machines dory-machine-rootfs.ext4 || true)" \
     "$DORY_SCRIPT_DIR/../Resources/dory-machine-rootfs-$arch.ext4" \
     "$DORY_SCRIPT_DIR/../Resources/dory-machine-rootfs.ext4" \
     "$repo/guest/out/initfs-$arch.ext4"
@@ -3704,6 +3716,7 @@ case "${1:-help}" in
                   esac ;;
   engine)         shift; engine_cmd "$@" ;;
   data)           shift; data_cmd "$@" ;;
+  component)      shift; component_ctl="$(dorydctl_bin 2>/dev/null)" || { echo "dorydctl not found; reinstall Dory Docker Core" >&2; exit 1; }; exec "$component_ctl" component "$@" ;;
   agent)          shift; agent_cmd "$@" ;;
   mcp)            shift; mcp_cmd "$@" ;;
   sandbox)        shift; sandbox_cmd "$@" ;;
@@ -3744,6 +3757,11 @@ case "${1:-help}" in
                     exec "$DOCKER_BIN" -H "unix://$DORY_SOCK" exec -it -u "$user" -w "$home" "$cid" "$shell" -l
                   fi ;;
   vm)             shift; H="$(vmm_helper || true)"; [ -z "$H" ] && { echo "dory-vmm helper not found; build+sign it (see scripts/bundle-engine.sh)" >&2; exit 1; }; exec "$H" "$@" ;;
-  k8s)            shift; exec "$KUBECTL_BIN" --kubeconfig "$KUBECONFIG_DORY" "$@" ;;
+  k8s)            shift
+                  if ! [ -x "$KUBECTL_BIN" ] && ! command -v "$KUBECTL_BIN" >/dev/null 2>&1; then
+                    echo "Kubernetes is not installed. Run: dory component install kubernetes" >&2
+                    exit 1
+                  fi
+                  exec "$KUBECTL_BIN" --kubeconfig "$KUBECONFIG_DORY" "$@" ;;
   *)              exec "$DOCKER_BIN" -H "unix://$DORY_SOCK" "$@" ;;
 esac
