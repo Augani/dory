@@ -94,7 +94,7 @@ component adds `kubectl`. Docker Desktop and a separate Docker CLI install are n
 
 Start with the one Apple Silicon [Dory 0.3.2 Docker Core
 DMG](https://github.com/Augani/dory/releases/download/v0.3.2/Dory-0.3.2-arm64.dmg). Its exact signed
-catalog reports a 224.0 MiB download and 409.2 MiB installed app. Drag Dory to Applications, open
+catalog reports a 224.1 MiB download and 409.3 MiB installed app. Drag Dory to Applications, open
 it, then add only the components you want. The website's component selector can open the same
 selection in Dory after installation. Dory shows the signed sizes again and waits for explicit
 confirmation before downloading any optional payload.
