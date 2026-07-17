@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.3.2 - 2026-07-16
+## 0.3.2 - 2026-07-17
 
 ### Added
 
@@ -31,6 +31,7 @@
   login keychain.
 - Fixed stale container details remaining open after the selected container disappeared or no
   longer matched the current view, and added toolbar controls for hiding navigation and details.
+- Fixed reopening Dory from the Dock or menu bar when the app was running without a visible window.
 
 ## 0.3.1 - 2026-07-16
 

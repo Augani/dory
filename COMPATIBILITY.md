@@ -1,6 +1,6 @@
 # Dory compatibility
 
-This document describes the Dory 0.3.1 public product surface. Dory is under active development, so
+This document describes the Dory 0.3.2 public product surface. Dory is under active development, so
 please report workflows that behave differently from a standard Docker engine.
 
 ## Platform
@@ -12,10 +12,10 @@ please report workflows that behave differently from a standard Docker engine.
 | Intel Mac | Not included in current releases; planned after dedicated hardware validation |
 | Windows or Linux host | Not supported by the macOS app |
 
-The standard Apple Silicon build omits the large graphical guest images. The all-inclusive Desktop
-build adds the managed Debian, Ubuntu, and Kali images. Both builds include containers, Kubernetes,
-and headless Linux servers; an existing graphical machine remains manageable if the lean build is
-installed later.
+Dory ships one Apple Silicon Docker Core app. Kubernetes, Linux Machines, the shared Linux Desktop
+runtime, and the managed Debian, Ubuntu, and Kali images are signed optional components. Their
+payloads live on the selected Dory data drive and can be removed independently without deleting
+workload data.
 
 ## Docker workflow
 
@@ -54,7 +54,7 @@ operations, but it is not a substitute for a normal backup strategy.
 | Capability | Status |
 |---|---|
 | k3s provisioning | Supported in the shared engine |
-| `kubectl` | Bundled |
+| `kubectl` | Installed by the optional Kubernetes component |
 | Resource browser | Pods, deployments, services, config maps, secrets, and ingresses |
 | Workload actions | Logs, exec, scale, restart, rollout, and apply |
 | Multiple Kubernetes versions | Selectable from supported Dory presets |

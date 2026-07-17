@@ -1,6 +1,6 @@
 # Operate Dory
 
-This guide covers the stable Dory 0.3.1 operating surface on Apple Silicon Macs running macOS 14 or later.
+This guide covers the stable Dory 0.3.2 operating surface on Apple Silicon Macs running macOS 14 or later.
 
 ## Install and verify
 
@@ -11,17 +11,30 @@ dory version
 dory doctor --active
 ```
 
-Dory provides `docker`, `docker compose`, `kubectl`, and `dory` through `~/.dory/bin` while doryd runs. A separate Docker Desktop or Docker CLI install is not required.
+Dory provides `docker`, `docker compose`, and `dory` through `~/.dory/bin` while doryd runs. The optional Kubernetes component adds `kubectl`. A separate Docker Desktop or Docker CLI install is not required.
 
-The Homebrew cask and standard direct download install the Lean edition with containers, Kubernetes, and headless Linux servers. Install the all-inclusive Desktop edition to create Debian, Ubuntu, or Kali graphical machines.
+The Homebrew cask and direct download install Docker Core. Use Settings > Components or `dory component install ID` to add Kubernetes, Linux Machines, or individual desktop distributions. The app shows exact signed download and installed sizes before each installation.
 
-When upgrading from 0.3.0, quit Dory, uninstall the old app, and install one 0.3.1 edition. Normal uninstall preserves the selected `.dorydrive`. Keep only one Dory.app in Applications so macOS registers the correct bundled services.
+When upgrading from an older release, quit Dory, uninstall the old app, and install Dory 0.3.2 Docker Core. Normal uninstall preserves the selected `.dorydrive`. Keep only one Dory.app in Applications, then add the optional components you use.
+
+## Components
+
+```sh
+dory component list
+dory component install kubernetes
+dory component install linux-machines
+dory component install desktop-ubuntu
+dory component verify desktop-ubuntu
+dory component remove desktop-ubuntu
+```
+
+Desktop distributions add the shared Linux Desktop Runtime automatically. Removing an optional component deletes only its installed payload. Containers, volumes, cluster state, machine disks, snapshots, and exports stay on the selected data drive.
 
 ## Linux desktops and servers
 
 The app separates graphical Linux Desktops from lightweight Linux Servers. A new desktop can use Debian 13, Ubuntu 24.04 LTS, or Kali rolling with Xfce, systemd, Bash, and a configurable login user. Its display uses a true 2x guest framebuffer with matching Xfce scaling and follows the Mac window as it resizes.
 
-Desktop creation also controls CPU, memory, development recipe, Mac home sharing, and scoped folders. Each desktop has a thin-provisioned 64 GiB disk in the selected Dory data drive. Headless servers use Alpine with an initial root `/bin/sh` login.
+Desktop creation also controls CPU, memory, development recipe, Mac home sharing, and scoped folders. Each desktop has a thin-provisioned 64 GiB disk in the selected Dory data drive. Headless servers use Alpine with an initial root `/bin/sh` login. Install `linux-machines` for headless servers or a matching `desktop-*` component for graphical machines.
 
 ## Engine resources
 

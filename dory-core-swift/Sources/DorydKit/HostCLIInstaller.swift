@@ -25,7 +25,8 @@ public struct HostCLIRemoveResult: Sendable, Equatable {
 }
 
 /// Per-user terminal integration owned by doryd. When the daemon is running from the app bundle,
-/// fresh terminals should already have Dory's docker, Compose, kubectl, dory, and support tools.
+/// fresh terminals should already have Dory's docker, Compose, dory, and support tools, plus
+/// kubectl when the Kubernetes component is installed.
 public struct HostCLIInstaller: Sendable {
     private static let beginSentinel = "# >>> dory cli >>>"
     private static let endSentinel = "# <<< dory cli <<<"

@@ -73,7 +73,7 @@ dory sandbox run --json \
   -- /bin/sh -lc 'find /workspace -maxdepth 2 -type f'
 ```
 
-Policy facts for Dory 0.3.1:
+Policy facts for Dory 0.3.2:
 
 - `none` blocks all egress and is enforced.
 - `full` grants all egress and is enforced.

@@ -74,7 +74,7 @@ dory — Dory CLI
 
   dory <docker args...>        Run any docker command against Dory's engine
   dory install [--json] [--dry-run]
-                               Manual recovery for doryd's per-user terminal integration for docker, compose, kubectl, and dory
+                               Manual recovery for docker, Compose, dory, and optional kubectl terminal integration
   dory uninstall [--json] [--dry-run]
                                Stop Dory services and remove runtime/shell integration; preserve workload data
   dory component list|install|update|verify|remove
@@ -3431,7 +3431,7 @@ data = {
         "nonInteractive": True,
         "promptPolicy": "commands should not prompt unless an operation explicitly needs --apply or user credentials",
         "destructivePolicy": "run dry-run or read-only commands first; require explicit --apply/--include-volumes/delete verbs for writes",
-        "hostToolPolicy": "doryd reconciles bundled docker, docker compose, kubectl, dory, and docker context integration automatically while it is running; do not require dory install for first use",
+        "hostToolPolicy": "doryd reconciles bundled docker, docker compose, dory, and docker context integration automatically while it is running; the Kubernetes component adds kubectl; do not require dory install for first use",
     },
     "schemas": {
         "agentGuide": "dev.dory.agent.guide v1",
@@ -3485,7 +3485,16 @@ data = {
             "dryRun": True,
             "manualRecoveryOnly": True,
             "safeForAutomation": True,
-            "notes": "Manual recovery only. doryd keeps per-user terminal integration current automatically while it is running, so docker, docker compose, kubectl, and dory resolve from ~/.dory/bin without Docker Desktop or admin access.",
+            "notes": "Manual recovery only. doryd keeps docker, docker compose, and dory current in ~/.dory/bin without Docker Desktop or admin access. The Kubernetes component adds kubectl.",
+        },
+        {
+            "id": "component",
+            "status": "available",
+            "invoke": "dory component list|install|update|verify|remove [COMPONENT] [--json]",
+            "json": True,
+            "safeForAutomation": True,
+            "components": ["kubernetes", "linux-machines", "linux-desktop", "desktop-debian", "desktop-ubuntu", "desktop-kali"],
+            "notes": "Manages signed optional payloads on the selected Dory data drive. Desktop distributions add linux-desktop automatically. Removal preserves workload data.",
         },
         {
             "id": "repair",
@@ -3571,7 +3580,7 @@ data = {
             "invoke": "dory machine ls|create|start|stop|delete|snapshot|restore|exec ...",
             "json": True,
             "safeForAutomation": True,
-            "notes": "Requires dorydctl and Dory's daemon-managed VM machine runtime; use `dory machine exec NAME --json -- CMD` for schema dev.dory.machine.exec v1. Set DORY_LEGACY_DOCKER_MACHINES=1 only for old container-backed machine inspection.",
+            "notes": "Requires dorydctl and Dory's daemon-managed VM machine runtime; use `dory machine exec NAME --json -- CMD` for schema dev.dory.machine.exec v1. Managed Debian, Ubuntu, and Kali Xfce machines require their matching desktop component; Alpine headless machines require linux-machines. Set DORY_LEGACY_DOCKER_MACHINES=1 only for old container-backed machine inspection.",
         },
         {
             "id": "ssh",

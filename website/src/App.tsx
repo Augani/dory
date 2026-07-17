@@ -32,8 +32,6 @@ type Icon = ComponentType<SVGProps<SVGSVGElement>>
 
 const installCommand = 'brew install --cask Augani/dory/dory'
 const releaseUrl = 'https://github.com/Augani/dory/releases/latest'
-const leanDmgUrl = 'https://github.com/Augani/dory/releases/download/v0.3.1/Dory-0.3.1-arm64.dmg'
-const desktopDmgUrl = 'https://github.com/Augani/dory/releases/download/v0.3.1/Dory-0.3.1-desktop-arm64.dmg'
 const componentPublicKey = 'AFetajNbqZty68rRY7OMWYNt6suUsrokQmYMhDJtnP4='
 
 type ComponentId = 'docker-core' | 'kubernetes' | 'linux-machines' | 'linux-desktop' | 'desktop-debian' | 'desktop-ubuntu' | 'desktop-kali'
@@ -81,7 +79,7 @@ function formatBytes(bytes: number) {
   const units = ['B', 'KiB', 'MiB', 'GiB']
   const unit = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1)
   const value = bytes / 1024 ** unit
-  return `${value >= 10 || unit < 2 ? value.toFixed(0) : value.toFixed(1)} ${units[unit]}`
+  return `${unit < 2 ? value.toFixed(0) : value.toFixed(1)} ${units[unit]}`
 }
 
 function validComponentCatalog(value: unknown): value is ComponentCatalog {
@@ -156,39 +154,14 @@ function FocusedDownloadSelector() {
 
   if (!catalog) {
     return (
-      <>
-        <div className="download-grid">
-          <article className="download-card download-card-lean">
-            <div className="download-card-head"><span>Lean</span><b>Current 0.3.1 release</b></div>
-            <h3>Docker, Kubernetes, and command-line Linux machines.</h3>
-            <p>The current recommended build excludes graphical Linux images.</p>
-            <div className="download-sizes">
-              <div><strong>452 MiB</strong><span>download</span></div>
-              <div><strong>1.6 GiB</strong><span>installed app</span></div>
-            </div>
-            <a className="button button-primary" href={leanDmgUrl}><CloudArrowDownIcon /> Download Lean DMG</a>
-            <small>Apple silicon · macOS 14 or later</small>
-          </article>
-          <article className="download-card download-card-desktop">
-            <div className="download-card-head"><span>Desktop</span><b>Current 0.3.1 release</b></div>
-            <h3>All three graphical Linux desktops included offline.</h3>
-            <p>Choose this larger build only when you need Debian, Ubuntu, or Kali graphical machines today.</p>
-            <div className="download-sizes">
-              <div><strong>1.85 GiB</strong><span>download</span></div>
-              <div><strong>3.0 GiB</strong><span>installed app</span></div>
-            </div>
-            <a className="button button-ghost-dark" href={desktopDmgUrl}><CloudArrowDownIcon /> Download Desktop DMG</a>
-            <small>Apple silicon · macOS 14 or later</small>
-          </article>
+      <div className="download-roadmap" role="status">
+        <Squares2X2Icon aria-hidden="true" />
+        <div>
+          <strong>{catalogUnavailable ? 'The signed component catalog is temporarily unavailable.' : 'Verifying the signed component catalog…'}</strong>
+          <p>Dory does not show a download until it can verify the exact Docker Core and optional component sizes. You can also use the GitHub release page while this check recovers.</p>
+          {catalogUnavailable && <a className="text-link" href={releaseUrl}>View signed release assets <ArrowRightIcon /></a>}
         </div>
-        <div className="download-roadmap">
-          <Squares2X2Icon aria-hidden="true" />
-          <div>
-            <strong>{catalogUnavailable ? 'Focused component catalog is not live yet.' : 'Checking the focused component catalog…'}</strong>
-            <p>The next signed release starts with Docker Core, then lets you add and remove Kubernetes, Linux Machines, and individual desktop distributions without replacing Dory.app.</p>
-          </div>
-        </div>
-      </>
+      </div>
     )
   }
 
@@ -402,8 +375,8 @@ const faqs = [
     answer: 'Start with Docker Core. Add Kubernetes for k3s and kubectl, Linux Machines for headless VPS-style guests, or only the Debian, Ubuntu, and Kali desktop packs you use. Optional payloads live in the selected Dory data drive and can be removed independently.',
   },
   {
-    question: 'How do I upgrade from Dory 0.3.0?',
-    answer: 'Quit Dory, uninstall the old app, and install Dory 0.3.1 in either the lean or Desktop edition. Normal uninstall preserves the selected .dorydrive and all workload data. Keep only one Dory.app in Applications so macOS registers the correct services.',
+    question: 'How do I upgrade from an older Dory release?',
+    answer: 'Quit Dory, uninstall the old app, and install Dory 0.3.2 Docker Core. Normal uninstall preserves the selected .dorydrive and all workload data. Keep only one Dory.app in Applications, then add the optional components you use.',
   },
   {
     question: 'Can I choose which terminal Dory opens?',
@@ -615,7 +588,7 @@ function DoryDemo({ initialView = 'containers', autoCycle = true }: { initialVie
       </div>
       <div className="demo-app">
         <aside className="demo-sidebar">
-          <div className="demo-brand"><img src="./logo.svg" alt="" /><span><strong>Dory</strong><small>v0.3.1 · Engine running</small></span></div>
+          <div className="demo-brand"><img src="./logo.svg" alt="" /><span><strong>Dory</strong><small>v0.3.2 · Engine running</small></span></div>
           <nav aria-label="Dory preview sections">
             {demoNav.map((group) => (
               <div className="demo-nav-group" key={group.group}>
@@ -716,7 +689,7 @@ function App() {
           <a className="wordmark" href="#top" aria-label="Dory home" onClick={closeMenu}>
             <img src="./logo.svg" alt="" />
             <span>Dory</span>
-            <small>0.3.1</small>
+            <small>0.3.2</small>
           </a>
           <div className={`nav-links${menuOpen ? ' nav-links-open' : ''}`}>
             <a href="#product" onClick={closeMenu}>Product</a>
@@ -751,7 +724,7 @@ function App() {
           <div className="hero-glow hero-glow-two" aria-hidden="true" />
           <div className="hero-content">
             <div className="release-pill">
-              <span /> Dory 0.3.1 · Linux Desktop
+              <span /> Dory 0.3.2 · Focused components
               <a href={releaseUrl}>Release notes <ArrowRightIcon /></a>
             </div>
             <p className="hero-kicker">The local Linux workspace for Mac</p>
@@ -761,7 +734,7 @@ function App() {
             </p>
             <div className="hero-actions">
               <a className="button button-primary" href="#download">
-                <CloudArrowDownIcon /> Compare downloads first
+                <CloudArrowDownIcon /> Choose components first
               </a>
               <a className="button button-ghost" href="#product">
                 Explore the product <ArrowRightIcon />
@@ -808,7 +781,7 @@ function App() {
           <div className="section-heading centered">
             <p className="eyebrow">Choose before downloading</p>
             <h2>Get the Dory you need.<br /><span>Skip the weight you do not.</span></h2>
-            <p>The focused release replaces fixed editions with one Docker Core app and signed, removable components. See the exact total before downloading.</p>
+            <p>Dory 0.3.2 uses one Docker Core app with signed, removable components. See the exact total before downloading.</p>
           </div>
           <FocusedDownloadSelector />
           <p className="download-release-link">Need ZIP archives, checksums, or SBOMs? <a href={releaseUrl}>View all release assets.</a></p>
@@ -861,7 +834,7 @@ function App() {
 
         <section className="linux-desktop section" id="linux-desktop">
           <div className="desktop-copy">
-            <p className="eyebrow eyebrow-light">New in Dory 0.3.1</p>
+            <p className="eyebrow eyebrow-light">Focused Linux desktops</p>
             <h2>A real Linux desktop.<br /><span>Native to your Mac.</span></h2>
             <p>Create a managed graphical machine from its own place in the Dory sidebar. Pick the
               distribution, login user, resources, development tools, and only the Mac folders it

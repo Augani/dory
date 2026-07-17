@@ -12,7 +12,7 @@
 ## Stable product surface
 
 - Docker 29 API and bundled CLI
-- Buildx, BuildKit, Compose v2, and kubectl
+- Buildx, BuildKit, and Compose v2 in Docker Core; kubectl in the optional Kubernetes component
 - Containers, images, named volumes, bind mounts, bridge networks, custom IPAM, registries, and port publishing
 - Common linux/amd64 images on Apple Silicon through FEX
 - k3s v1.34, v1.35, and v1.36 presets
@@ -22,7 +22,7 @@
 - Localhost ports, optional local domains and HTTPS, built-in low-port forwarding, custom resolver and proxy ports, and opt-in LAN access
 - Auto-Idle, diagnostics, targeted repair, safe cleanup, support bundles, JSON guide, wait, events, and MCP
 
-The Lean edition includes containers, Kubernetes, and headless Linux servers. The all-inclusive Desktop edition adds all three graphical guest images. Both editions use the same managed data drive, and the Lean edition can manage an existing graphical machine whose disk is already present.
+Dory ships one Docker Core app. Kubernetes, Linux Machines, the shared Linux Desktop Runtime, and the managed Debian, Ubuntu, and Kali images are signed optional components stored on the selected data drive. Removing a component reclaims only its installed payload and preserves workload data.
 
 ## Developer tools
 
