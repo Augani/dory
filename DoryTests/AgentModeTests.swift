@@ -28,6 +28,16 @@ struct AgentModeTests {
         #expect(delegate.applicationShouldTerminateAfterLastWindowClosed(NSApplication.shared) == false)
     }
 
+    @Test func reopeningTheMenuBarAppRequestsTheMainWindow() {
+        let delegate = DoryAppDelegate()
+        #expect(
+            delegate.applicationShouldHandleReopen(
+                NSApplication.shared,
+                hasVisibleWindows: false
+            ) == false
+        )
+    }
+
     @Test func mainWindowIDIsStable() {
         #expect(DoryApp.mainWindowID == "dory-main")
     }

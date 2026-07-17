@@ -138,6 +138,14 @@ final class DoryAppDelegate: NSObject, NSApplicationDelegate {
         false
     }
 
+    func applicationShouldHandleReopen(
+        _ sender: NSApplication,
+        hasVisibleWindows flag: Bool
+    ) -> Bool {
+        Task { @MainActor in Self.openMainWindow() }
+        return false
+    }
+
     func applicationDidBecomeActive(_ notification: Notification) {
         Task { @MainActor in Self.closeDuplicateMainWindows() }
     }
