@@ -12,6 +12,19 @@
 	<true/>
 	<key>LSMultipleInstancesProhibited</key>
 	<true/>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>CFBundleURLName</key>
+			<string>dev.dory.component-selection</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>dory</string>
+			</array>
+		</dict>
+	</array>
 	<key>UTExportedTypeDeclarations</key>
 	<array>
 		<dict>

@@ -40,6 +40,7 @@ final class AppStore {
     var section: AppSection = .containers {
         didSet { if oldValue != section { filter = "" } }
     }
+    var requestedComponentIDs: [DoryComponentID] = []
     var selectedContainerID: String? = nil
     var isSidebarVisible = true
     var isContainerInspectorVisible = true
@@ -756,6 +757,15 @@ final class AppStore {
 
     @ObservationIgnored private(set) var backendStartRequested = false
     @ObservationIgnored var windowOpenRequested = false
+
+    @discardableResult
+    func handleComponentSelectionURL(_ url: URL) -> Bool {
+        guard let ids = DoryComponentSelectionURL.parse(url) else { return false }
+        requestedComponentIDs = ids
+        section = .components
+        windowOpenRequested = true
+        return true
+    }
 
     func startBackendIfNeeded() {
         guard !backendStartRequested else { return }

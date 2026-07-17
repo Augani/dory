@@ -7,6 +7,8 @@
 - Replaced fixed app editions with a smaller Docker Core app and signed, removable Kubernetes,
   Linux Machines, Linux Desktop runtime, Debian, Ubuntu, and Kali components stored on the selected
   Dory data drive.
+- Added a pre-download component selector that safely carries the chosen optional payloads into
+  Dory for signed-size review and explicit installation confirmation.
 - Added exact and leftmost-wildcard custom domain mappings in Settings > Network and the CLI. Dory
   now routes nginx-style `/etc/hosts` domains through its built-in HTTP and trusted HTTPS proxies.
 

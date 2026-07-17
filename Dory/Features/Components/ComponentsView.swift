@@ -14,6 +14,7 @@ struct ComponentsView: View {
     @State private var pendingRemoval: DoryComponentID?
     @State private var errorMessage: String?
     @State private var usingCachedCatalog = false
+    @State private var installingSelection = false
 
     init(embedded: Bool = false) {
         self.embedded = embedded
@@ -51,6 +52,9 @@ struct ComponentsView: View {
     private var content: some View {
         VStack(alignment: .leading, spacing: 18) {
             header
+            if !appStore.requestedComponentIDs.isEmpty {
+                requestedSelectionPanel
+            }
             if let errorMessage {
                 errorPanel(errorMessage)
             }
@@ -103,6 +107,80 @@ struct ComponentsView: View {
                 componentCard(status)
             }
         }
+    }
+
+    private var requestedSelectionPanel: some View {
+        let releases = requestedSelectionReleases
+        let names = releases.isEmpty
+            ? appStore.requestedComponentIDs.map(displayName)
+            : releases.map(\.displayName)
+        let downloadBytes = releases.reduce(UInt64(0)) { $0 + $1.downloadBytes }
+        let installedBytes = releases.reduce(UInt64(0)) { $0 + $1.installedBytes }
+
+        return VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 11) {
+                Image(systemName: "checklist.checked")
+                    .font(.system(size: 17, weight: .semibold)).foregroundStyle(p.accent)
+                    .frame(width: 36, height: 36)
+                    .background(p.accentSoft, in: RoundedRectangle(cornerRadius: 9))
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Your website selection")
+                        .font(.system(size: 14, weight: .bold)).foregroundStyle(p.text)
+                    Text(names.joined(separator: " + "))
+                        .font(.system(size: 11.5, weight: .medium)).foregroundStyle(p.text2)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text("Review the signed sizes, then install. Dory will not download anything until you confirm.")
+                        .font(.system(size: 11)).foregroundStyle(p.text3)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 8)
+            }
+
+            HStack(spacing: 16) {
+                if !releases.isEmpty {
+                    sizeFact("Download", downloadBytes)
+                    sizeFact("Installed", installedBytes)
+                }
+                Spacer(minLength: 8)
+                Button("Clear") { appStore.requestedComponentIDs = [] }
+                    .buttonStyle(.borderless)
+                    .font(.system(size: 11.5, weight: .semibold))
+                    .disabled(installingSelection)
+                    .accessibilityIdentifier("clear-selected-components")
+                Button {
+                    Task { await installRequestedSelection() }
+                } label: {
+                    HStack(spacing: 7) {
+                        if installingSelection { ProgressView().controlSize(.small) }
+                        Text(installingSelection ? "Installing…" : "Install selected components")
+                    }
+                    .font(.system(size: 11.5, weight: .semibold)).foregroundStyle(.white)
+                    .padding(.horizontal, 13).padding(.vertical, 8)
+                    .background(p.accent, in: RoundedRectangle(cornerRadius: 7))
+                }
+                .buttonStyle(.plain)
+                .disabled(catalog == nil || installingSelection || !busy.isEmpty)
+                .opacity(catalog == nil || installingSelection || !busy.isEmpty ? 0.55 : 1)
+                .accessibilityIdentifier("install-selected-components")
+            }
+        }
+        .padding(15)
+        .background(p.accent.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(p.accent.opacity(0.35)))
+        .accessibilityIdentifier("requested-component-selection")
+    }
+
+    private var requestedSelectionReleases: [DoryComponentRelease] {
+        guard let catalog else { return [] }
+        var seen: Set<DoryComponentID> = []
+        var releases: [DoryComponentRelease] = []
+        for id in appStore.requestedComponentIDs {
+            guard let ordered = try? installationOrder(id, catalog: catalog) else { continue }
+            for release in ordered where seen.insert(release.id).inserted {
+                releases.append(release)
+            }
+        }
+        return releases
     }
 
     private func componentCard(_ status: DoryComponentStatus) -> some View {
@@ -330,8 +408,9 @@ struct ComponentsView: View {
         }
     }
 
-    @MainActor private func install(_ id: DoryComponentID) async {
-        guard let catalog, !catalogData.isEmpty else { return }
+    @MainActor @discardableResult
+    private func install(_ id: DoryComponentID, showSuccess: Bool = true) async -> Bool {
+        guard let catalog, !catalogData.isEmpty else { return false }
         var operationIDs: Set<DoryComponentID> = [id]
         busy.insert(id)
         errorMessage = nil
@@ -361,10 +440,26 @@ struct ComponentsView: View {
             }
             statuses = store.list(catalog: catalog, catalogDigest: digest)
             HostDockerCLI.reconcileOptionalTools(enabled: appStore.routeDockerCLI)
-            appStore.showSettingsSuccess("\(displayName(id)) is installed and verified.")
+            if showSuccess {
+                appStore.showSettingsSuccess("\(displayName(id)) is installed and verified.")
+            }
+            return true
         } catch {
             errorMessage = String(describing: error)
+            return false
         }
+    }
+
+    @MainActor private func installRequestedSelection() async {
+        let requested = appStore.requestedComponentIDs
+        guard !requested.isEmpty else { return }
+        installingSelection = true
+        defer { installingSelection = false }
+        for id in requested {
+            guard await install(id, showSuccess: false) else { return }
+        }
+        appStore.requestedComponentIDs = []
+        appStore.showSettingsSuccess("Your selected components are installed and verified.")
     }
 
     @MainActor private func verify(_ id: DoryComponentID) async {
@@ -422,7 +517,7 @@ struct ComponentsView: View {
         return ordered
     }
 
-    private func isBusy(_ id: DoryComponentID) -> Bool { busy.contains(id) }
+    private func isBusy(_ id: DoryComponentID) -> Bool { installingSelection || busy.contains(id) }
 
     private func formatted(_ bytes: UInt64) -> String {
         ByteCountFormatter.string(fromByteCount: Int64(clamping: bytes), countStyle: .file)

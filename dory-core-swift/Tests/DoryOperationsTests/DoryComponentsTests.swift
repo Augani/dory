@@ -4,6 +4,48 @@ import Foundation
 import XCTest
 
 final class DoryComponentsTests: XCTestCase {
+    func testComponentSelectionURLRoundTripsInCanonicalOrder() throws {
+        let url = try XCTUnwrap(DoryComponentSelectionURL.make([
+            .desktopUbuntu,
+            .kubernetes,
+            .linuxDesktop,
+        ]))
+
+        XCTAssertEqual(
+            DoryComponentSelectionURL.parse(url),
+            [.kubernetes, .linuxDesktop, .desktopUbuntu]
+        )
+        XCTAssertEqual(
+            url.absoluteString,
+            "dory://components/install?ids=kubernetes,linux-desktop,desktop-ubuntu"
+        )
+    }
+
+    func testComponentSelectionURLRejectsMalformedAndUnsafeSelections() throws {
+        let rejected = [
+            "https://components/install?ids=kubernetes",
+            "dory://other/install?ids=kubernetes",
+            "dory://components/remove?ids=kubernetes",
+            "dory://components/install",
+            "dory://components/install?ids=",
+            "dory://components/install?ids=docker-core",
+            "dory://components/install?ids=unknown",
+            "dory://components/install?ids=kubernetes,kubernetes",
+            "dory://components/install?ids=kubernetes,",
+            "dory://components/install?ids=kubernetes&other=value",
+            "dory://user@components/install?ids=kubernetes",
+            "dory://components:443/install?ids=kubernetes",
+            "dory://components/install?ids=kubernetes#fragment",
+        ]
+
+        for rawURL in rejected {
+            let url = try XCTUnwrap(URL(string: rawURL))
+            XCTAssertNil(DoryComponentSelectionURL.parse(url), rawURL)
+        }
+        XCTAssertNil(DoryComponentSelectionURL.make([]))
+        XCTAssertNil(DoryComponentSelectionURL.make([.dockerCore]))
+    }
+
     func testSignedCatalogRejectsTamperingWrongArchitectureAndOldApp() throws {
         let key = Curve25519.Signing.PrivateKey()
         let catalog = catalog(components: [core()])

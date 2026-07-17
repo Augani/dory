@@ -15,6 +15,57 @@ public enum DoryComponentID: String, Codable, CaseIterable, Hashable, Sendable {
     public var isRemovable: Bool { self != .dockerCore }
 }
 
+public enum DoryComponentSelectionURL {
+    public static let scheme = "dory"
+    public static let host = "components"
+    public static let path = "/install"
+
+    public static func parse(_ url: URL) -> [DoryComponentID]? {
+        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              components.scheme?.lowercased() == scheme,
+              components.host?.lowercased() == host,
+              components.path == path,
+              components.user == nil,
+              components.password == nil,
+              components.port == nil,
+              components.fragment == nil,
+              let queryItems = components.queryItems,
+              queryItems.count == 1,
+              queryItems[0].name == "ids",
+              let value = queryItems[0].value,
+              !value.isEmpty else {
+            return nil
+        }
+
+        let rawIDs = value.split(separator: ",", omittingEmptySubsequences: false).map(String.init)
+        guard !rawIDs.isEmpty else { return nil }
+
+        var selected: Set<DoryComponentID> = []
+        for rawID in rawIDs {
+            guard let id = DoryComponentID(rawValue: rawID),
+                  id.isRemovable,
+                  selected.insert(id).inserted else {
+                return nil
+            }
+        }
+        return DoryComponentID.allCases.filter(selected.contains)
+    }
+
+    public static func make(_ ids: some Sequence<DoryComponentID>) -> URL? {
+        let selected = Set(ids)
+        guard !selected.isEmpty, selected.allSatisfy(\.isRemovable) else { return nil }
+        let ordered = DoryComponentID.allCases.filter(selected.contains)
+        var components = URLComponents()
+        components.scheme = scheme
+        components.host = host
+        components.path = path
+        components.queryItems = [
+            URLQueryItem(name: "ids", value: ordered.map(\.rawValue).joined(separator: ",")),
+        ]
+        return components.url
+    }
+}
+
 public enum DoryComponentDefaults {
     public static let catalogURL = URL(
         string: "https://augani.github.io/dory/components/arm64/catalog.json"

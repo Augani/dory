@@ -268,10 +268,13 @@
 .component-runtime-note { display: flex; align-items: center; gap: 8px; margin: 0 20px 20px; padding: 11px 14px; border: 1px solid #c7e1d6; border-radius: 10px; background: #f0faf6; color: #3c6957; font-size: 10.5px; font-weight: 720; }
 .component-runtime-note svg { width: 16px; color: var(--green); }
 .component-builder-footer { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 24px; align-items: center; padding: 22px 24px; border-top: 1px solid var(--line); background: var(--navy); }
-.component-builder-footer > div { min-width: 0; }
+.component-builder-footer-copy { min-width: 0; }
 .component-builder-footer strong { display: block; overflow: hidden; color: #fff; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .component-builder-footer span { display: block; margin-top: 5px; color: #9fb2c7; font-size: 9.5px; }
+.component-builder-actions { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 9px; }
 .component-builder-footer .button { min-width: 220px; }
+.button-component-open { border: 1px solid rgba(255,255,255,.2); background: rgba(255,255,255,.08); color: #fff; }
+.button-component-open:hover { background: rgba(255,255,255,.13); }
 
 .intro { background: #fff; }
 .surface-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
@@ -465,7 +468,8 @@ footer { padding: 65px max(24px, calc((100vw - 1180px) / 2)) 28px; background: v
   .component-choice-grid { grid-template-columns: 1fr; padding: 14px; }
   .component-choice { min-height: 0; }
   .component-runtime-note { margin: 0 14px 14px; }
-  .component-builder-footer { grid-template-columns: 1fr; padding: 19px; }
+  .component-builder-footer, .component-builder-actions { grid-template-columns: 1fr; padding: 19px; }
+  .component-builder-actions { padding: 0; }
   .component-builder-footer strong { white-space: normal; }
   .component-builder-footer .button { width: 100%; min-width: 0; }
   .surface-card { padding: 26px; border-radius: 17px; }.surface-icon { margin-bottom: 28px; }.surface-card h3 { font-size: 26px; }

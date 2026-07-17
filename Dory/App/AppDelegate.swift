@@ -162,6 +162,13 @@ final class DoryAppDelegate: NSObject, NSApplicationDelegate {
         Task { @MainActor in Self.closeDuplicateMainWindows() }
     }
 
+    func application(_ application: NSApplication, open urls: [URL]) {
+        Task { @MainActor in
+            guard urls.contains(where: Self.statusItemController.handleComponentSelectionURL) else { return }
+            Self.openMainWindow()
+        }
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         DistributedNotificationCenter.default().removeObserver(
             self,
@@ -287,6 +294,10 @@ private final class DoryStatusItemController: NSObject, NSPopoverDelegate, NSWin
         window.deminiaturize(nil)
         window.makeKeyAndOrderFront(nil)
         window.orderFrontRegardless()
+    }
+
+    func handleComponentSelectionURL(_ url: URL) -> Bool {
+        store?.handleComponentSelectionURL(url) == true
     }
 
     private func installStatusItemIfNeeded() {

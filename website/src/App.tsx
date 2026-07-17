@@ -170,6 +170,8 @@ function FocusedDownloadSelector() {
   const downloadBytes = selectedReleases.reduce((total, component) => total + component.downloadBytes, 0)
   const installedBytes = selectedReleases.reduce((total, component) => total + component.installedBytes, 0)
   const coreDmgUrl = `https://github.com/Augani/dory/releases/download/v${catalog.releaseVersion}/Dory-${catalog.releaseVersion}-arm64.dmg`
+  const optionalSelectedIDs = componentOrder.filter((id) => id !== 'docker-core' && selected.has(id))
+  const selectionUrl = `dory://components/install?ids=${encodeURIComponent(optionalSelectedIDs.join(','))}`
 
   const toggle = (id: ComponentId) => {
     if (id === 'docker-core' || id === 'linux-desktop') return
@@ -198,7 +200,7 @@ function FocusedDownloadSelector() {
           <p>Docker Core is the only required download. Dory installs your optional signed components into the selected .dorydrive after the app opens, and can remove their payloads later without deleting workload data.</p>
         </div>
         <div className="component-totals" aria-live="polite">
-          <div><strong>{formatBytes(downloadBytes)}</strong><span>total download</span></div>
+          <div><strong>{formatBytes(downloadBytes)}</strong><span>core + selected downloads</span></div>
           <div><strong>{formatBytes(installedBytes)}</strong><span>installed payload</span></div>
         </div>
       </div>
@@ -239,11 +241,19 @@ function FocusedDownloadSelector() {
       )}
 
       <div className="component-builder-footer">
-        <div>
+        <div className="component-builder-footer-copy">
           <strong>{selectedReleases.map((component) => componentLabels[component.id]).join(' + ')}</strong>
-          <span>Exact signed component sizes are loaded from the release catalog before download.</span>
+          <span>1. Download and open the Docker Core app.</span>
+          {optionalSelectedIDs.length > 0
+            ? <span>2. Open this selection in Dory, review the signed sizes, then confirm installation.</span>
+            : <span>No optional component downloads are needed for this selection.</span>}
         </div>
-        <a className="button button-primary" href={coreDmgUrl}><CloudArrowDownIcon /> Download Docker Core</a>
+        <div className="component-builder-actions">
+          <a className="button button-primary" href={coreDmgUrl}><CloudArrowDownIcon /> Download Docker Core</a>
+          {optionalSelectedIDs.length > 0 && (
+            <a className="button button-component-open" href={selectionUrl}><Squares2X2Icon /> Open selection in Dory</a>
+          )}
+        </div>
       </div>
     </div>
   )
