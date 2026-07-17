@@ -7,10 +7,11 @@ cd "$ROOT"
 
 usage() {
   cat <<'EOF'
-Usage: scripts/test.sh [all|rust|swift|app|ui|build] [-- xcodebuild arguments]
+Usage: scripts/test.sh [all|rust|gvproxy|swift|app|ui|build] [-- xcodebuild arguments]
 
   all    Run every test suite (default)
   rust   Run formatting, lint, and tests for the Rust workspace
+  gvproxy  Rebuild and test Dory's pinned dual-stack network helper
   swift  Run both Swift package test suites
   app    Run the Dory app unit-test scheme
   ui     Run the dedicated Dory UI-test scheme
@@ -23,7 +24,7 @@ EOF
 mode="all"
 if [ "$#" -gt 0 ]; then
   case "$1" in
-    all|rust|swift|app|ui|build) mode="$1"; shift ;;
+    all|rust|gvproxy|swift|app|ui|build) mode="$1"; shift ;;
     -h|--help) usage; exit 0 ;;
   esac
 fi
@@ -96,6 +97,31 @@ run_rust() {
   )
 }
 
+run_gvproxy() {
+  [ "$(uname -s)" = Darwin ] || {
+    echo "test: gvproxy requires macOS to produce and inspect its universal binary" >&2
+    exit 1
+  }
+  require go
+  require lipo
+  (
+    tmp="$(mktemp -d "${TMPDIR:-/tmp}/dory-gvproxy-test.XXXXXX")"
+    trap 'rm -rf "$tmp"' EXIT
+    scripts/build-gvproxy.sh \
+      --output "$tmp/gvproxy" \
+      --provenance "$tmp/gvproxy-provenance.txt"
+    # shellcheck source=gvproxy-payload.sh
+    source scripts/gvproxy-payload.sh
+    dory_verify_gvproxy_payload \
+      "$tmp/gvproxy" \
+      "$(dory_gvproxy_version)" \
+      "$(dory_gvproxy_expected_sha256)"
+    grep -qx \
+      'features=native-ipv6-v2,host-route-aware-aaaa-v1,source-preserving-lan-qemu-v1' \
+      "$tmp/gvproxy-provenance.txt"
+  )
+}
+
 prepare_swift() {
   select_xcode
   scripts/build-dory-ffi-xcframework.sh --if-needed
@@ -164,6 +190,7 @@ run_build() {
 
 case "$mode" in
   rust) run_rust ;;
+  gvproxy) run_gvproxy ;;
   swift) run_swift ;;
   app) run_app ;;
   ui) run_ui ;;
@@ -171,6 +198,7 @@ case "$mode" in
   all)
     run_rust
     if [ "$(uname -s)" = Darwin ]; then
+      run_gvproxy
       run_swift
       run_app
       run_ui

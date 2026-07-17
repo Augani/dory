@@ -221,6 +221,38 @@ struct HostFSTests {
         #expect(file.attributes.isRegularFile)
     }
 
+    @Test func rootHiddenNamesProtectHomeWithoutShadowingProjectLibraries() throws {
+        let root = try TestHostFSRoot()
+        try FileManager.default.createDirectory(
+            at: root.url.appendingPathComponent("Library"),
+            withIntermediateDirectories: false
+        )
+        try FileManager.default.createDirectory(
+            at: root.url.appendingPathComponent("project/vendor/ezyang/htmlpurifier/library"),
+            withIntermediateDirectories: true
+        )
+        try root.write("autoload", to: "project/vendor/ezyang/htmlpurifier/library/HTMLPurifier.composer.php")
+        let fs = try HostFS(rootPath: root.url.path, rootHiddenNames: ["Library"])
+
+        #expect(try fs.readdirplus(nodeID: HostFS.rootNodeID).map(\.name) == ["project"])
+        #expect(throws: HostFSError.notFound("Library")) {
+            _ = try fs.lookup(parent: HostFS.rootNodeID, name: "Library")
+        }
+        #expect(throws: HostFSError.notFound("library")) {
+            _ = try fs.mkdir(parent: HostFS.rootNodeID, name: "library")
+        }
+
+        let project = try fs.lookup(parent: HostFS.rootNodeID, name: "project")
+        let created = try fs.mkdir(parent: project.nodeID, name: "library")
+        #expect(created.attributes.isDirectory)
+        let vendor = try fs.lookup(parent: project.nodeID, name: "vendor")
+        let ezyang = try fs.lookup(parent: vendor.nodeID, name: "ezyang")
+        let purifier = try fs.lookup(parent: ezyang.nodeID, name: "htmlpurifier")
+        let library = try fs.lookup(parent: purifier.nodeID, name: "library")
+        let composer = try fs.lookup(parent: library.nodeID, name: "HTMLPurifier.composer.php")
+        #expect(composer.attributes.isRegularFile)
+    }
+
     @Test func hiddenNamesCannotBeBypassedWithCaseVariants() throws {
         let root = try TestHostFSRoot()
         try FileManager.default.createDirectory(

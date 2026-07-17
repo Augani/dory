@@ -6,6 +6,8 @@ import Foundation
 struct ContainerListStateTests {
     private func make(_ containers: [Container]) -> AppStore {
         let store = AppStore()
+        store.setContainerScope(.all)
+        store.filter = ""
         store.containers = containers
         return store
     }
@@ -24,6 +26,56 @@ struct ContainerListStateTests {
         #expect(store.containers.isEmpty)
         #expect(store.loadState == .connecting)
         #expect(store.selectedContainerID == nil)
+    }
+
+    @Test func stoppedContainersDoNotLeaveDetailsInTheRunningView() {
+        let store = AppStore()
+        store.containerFilter = .running
+        store.containers = [container("old", running: false)]
+        store.selectedContainerID = "old"
+
+        #expect(store.filteredContainers.isEmpty)
+        #expect(store.selectedContainer == nil)
+    }
+
+    @Test func selectionReconcilesWhenTheVisibleContainerDisappears() {
+        let store = AppStore()
+        store.containerFilter = .all
+        store.containers = [container("old", running: true), container("next", running: true)]
+        store.selectedContainerID = "old"
+
+        store.containers = [container("next", running: true)]
+
+        #expect(store.selectedContainerID == "next")
+        #expect(store.selectedContainer?.id == "next")
+    }
+
+    @Test func changingFiltersSelectsOnlyAVisibleContainer() {
+        let store = AppStore()
+        store.containerFilter = .all
+        store.containers = [container("running", running: true), container("stopped", running: false)]
+        store.selectedContainerID = "running"
+
+        store.containerFilter = .stopped
+
+        #expect(store.selectedContainerID == "stopped")
+        #expect(store.selectedContainer?.id == "stopped")
+    }
+
+    @Test func revealingAStoppedContainerMakesItVisible() {
+        let store = AppStore()
+        defer { store.setContainerScope(.all) }
+        let stopped = container("stopped", running: false, project: "site")
+        store.containerFilter = .running
+        store.containers = [stopped]
+
+        store.revealContainer(stopped, scope: .compose)
+
+        #expect(store.section == .containers)
+        #expect(store.containerScope == .compose)
+        #expect(store.containerFilter == .all)
+        #expect(store.selectedContainer?.id == "stopped")
+        #expect(store.isContainerInspectorVisible)
     }
 
     @Test func runningFilterShowsOnlyRunning() {

@@ -9,6 +9,7 @@ final class DoryDataDriveTests: XCTestCase {
         XCTAssertEqual(drive.root, "/Users/test/Library/Application Support/Dory/Dory.dorydrive")
         XCTAssertEqual(drive.engineDataDiskPath, drive.root + "/engine/docker-data.ext4")
         XCTAssertEqual(drive.kubernetesDirectory, drive.root + "/kubernetes")
+        XCTAssertEqual(drive.componentsDirectory, drive.root + "/components")
         XCTAssertEqual(drive.machinesDirectory, drive.root + "/machines")
         XCTAssertEqual(drive.snapshotsDirectory, drive.root + "/snapshots")
         XCTAssertEqual(drive.exportsDirectory, drive.root + "/exports")
@@ -121,6 +122,7 @@ final class DoryDataDriveTests: XCTestCase {
 
         XCTAssertTrue(FileManager.default.fileExists(atPath: drive.engineDirectory))
         XCTAssertTrue(FileManager.default.fileExists(atPath: drive.kubernetesDirectory))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: drive.componentsDirectory))
         XCTAssertTrue(FileManager.default.fileExists(atPath: drive.machinesDirectory))
         XCTAssertTrue(FileManager.default.fileExists(atPath: drive.snapshotsDirectory))
         XCTAssertTrue(FileManager.default.fileExists(atPath: drive.exportsDirectory))

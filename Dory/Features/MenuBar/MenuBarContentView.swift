@@ -1,3 +1,4 @@
+import DoryOperations
 import SwiftUI
 
 struct MenuBarActions {
@@ -45,9 +46,8 @@ struct MenuBarContentView: View {
     }
 
     private func openContainer(_ container: Container, scope: ContainerScope = .all) {
-        store.selectedContainerID = container.id
-        store.setContainerScope(scope)
-        openSection(.containers)
+        store.revealContainer(container, scope: scope)
+        showMainWindow()
     }
 
     private func openTerminal(_ container: Container) {
@@ -400,7 +400,13 @@ struct MenuBarContentView: View {
                     }
                     .buttonStyle(.plain).menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
                 } else {
-                    rowIcon("play.fill", "Enable Kubernetes") { Task { await store.enableKubernetes() } }
+                    rowIcon("play.fill", AppInfo.componentAvailable(.kubernetes) ? "Enable Kubernetes" : "Get Kubernetes") {
+                        if AppInfo.componentAvailable(.kubernetes) {
+                            Task { await store.enableKubernetes() }
+                        } else {
+                            openSection(.components)
+                        }
+                    }
                     Menu {
                         Button("Open Kubernetes") { openSection(.kubernetes) }
                     } label: {

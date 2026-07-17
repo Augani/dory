@@ -2,14 +2,14 @@
   "schema": "dev.dory.agent.guide",
   "version": 1,
   "summary": "Machine-readable Dory CLI capability map for non-interactive coding agents.",
-  "release": "0.3.1",
+  "release": "0.3.2",
   "defaults": {
     "nonInteractive": true,
     "preferJSON": true,
     "socket": "~/.dory/dory.sock",
     "promptPolicy": "commands should not prompt unless an operation explicitly needs --apply or user credentials",
     "destructivePolicy": "run dry-run or read-only commands first; require explicit --apply, --include-volumes, or delete verbs for writes",
-    "hostToolPolicy": "doryd reconciles bundled docker, docker compose, kubectl, dory, and Docker context integration automatically while it is running; do not require dory install for first use"
+    "hostToolPolicy": "doryd reconciles bundled docker, docker compose, dory, and Docker context integration automatically while it is running; the Kubernetes component adds kubectl; do not require dory install for first use"
   },
   "exitCodes": {
     "0": "success or healthy",
@@ -73,7 +73,17 @@
       "json": true,
       "dryRun": true,
       "manualRecoveryOnly": true,
-      "notes": "Manual recovery only. doryd keeps per-user terminal integration current automatically while it is running, so docker, docker compose, kubectl, and dory resolve from ~/.dory/bin without Docker Desktop or admin access."
+      "notes": "Manual recovery only. doryd keeps docker, docker compose, and dory current in ~/.dory/bin without Docker Desktop or admin access. The Kubernetes component adds kubectl."
+    },
+    {
+      "id": "component",
+      "invoke": "dory component list|install|update|verify|remove [COMPONENT]",
+      "status": "available",
+      "safeForAutomation": true,
+      "json": true,
+      "dryRun": false,
+      "components": ["kubernetes", "linux-machines", "linux-desktop", "desktop-debian", "desktop-ubuntu", "desktop-kali"],
+      "notes": "Manages signed optional payloads on the selected Dory data drive. Desktop distributions add linux-desktop automatically. Removal preserves workload data."
     },
     {
       "id": "repair",
@@ -159,7 +169,7 @@
       "status": "available",
       "safeForAutomation": true,
       "json": true,
-      "notes": "Requires dorydctl and Dory's daemon-managed VM machine runtime; use `dory machine exec NAME --json -- CMD` for schema dev.dory.machine.exec v1. The app creates managed Debian 13, Ubuntu 24.04 LTS, or Kali rolling Xfce desktops from the all-inclusive Desktop edition and Alpine headless servers from either edition. Set DORY_LEGACY_DOCKER_MACHINES=1 only for old container-backed machine inspection."
+      "notes": "Requires dorydctl and Dory's daemon-managed VM machine runtime; use `dory machine exec NAME --json -- CMD` for schema dev.dory.machine.exec v1. Managed Debian, Ubuntu, and Kali Xfce machines require their matching desktop component; Alpine headless machines require linux-machines. Set DORY_LEGACY_DOCKER_MACHINES=1 only for old container-backed machine inspection."
     },
     {
       "id": "ssh",

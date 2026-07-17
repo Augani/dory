@@ -67,6 +67,7 @@ let machineManager = dorydEnvironment.machineManagerConfiguration().map { Machin
 let remoteManager = RemoteMachineManager()
 let networkingConfiguration = dorydEnvironment.networkingConfiguration()
 let networkingController = networkingConfiguration.map(NetworkingController.init(configuration:))
+let customDomainRouteStore = CustomDomainRouteStore(home: dorydEnvironment.home, environment: env)
 let kubernetesRouteProvider = networkingController.map { _ in
     KubernetesServiceRouteProvider(configuration: dorydEnvironment.kubernetesServiceRouteProviderConfiguration())
 }
@@ -82,8 +83,9 @@ let networkRouteReconciler = networkingController.map { controller in
         machineProvider: {
             machineManager?.list() ?? []
         },
-        additionalRouteProvider: { suffix in
-            kubernetesRouteProvider?.routes(suffix: suffix) ?? []
+        additionalRouteProvider: { suffix, containers in
+            (kubernetesRouteProvider?.routes(suffix: suffix) ?? [])
+                + customDomainRouteStore.activeRoutes(containers: containers, automaticSuffix: suffix)
         },
         interval: dorydEnvironment.networkRouteReconcileIntervalSeconds
     )
@@ -160,6 +162,7 @@ let service = DorydService(
     remoteManager: remoteManager,
     networkingController: networkingController,
     networkRouteRepair: repairRoutes,
+    customDomainRouteStore: customDomainRouteStore,
     idlePolicyStore: idlePolicyStore,
     idleSleepScheduler: idleSleepScheduler,
     incidentWriter: incidentWriter

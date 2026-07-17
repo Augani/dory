@@ -13,14 +13,17 @@
 #                                   reporting, SMP, journaled data disk), signed with
 #                                   com.apple.security.hypervisor. Preferred where available.
 #   * Contents/Helpers/gvproxy    — userspace networking (Apache-2.0) for the dory-hv engine.
-#   * Contents/Helpers/docker, docker-buildx, docker-compose, kubectl — clean-Mac host CLIs.
+#   * Contents/Helpers/docker, docker-buildx, docker-compose — Docker Core host CLIs.
+#   * kubectl is exported as the independently installable Kubernetes component in Core builds.
 #   * Contents/Frameworks/libvirglrenderer.dylib, libMoltenVK.dylib — optional experimental
 #                                   Venus/Vulkan renderer payload for in-guest GPU acceleration.
-#   * Contents/Resources/dory-hv-kernel-<arch>             — raw kernel path used by doryd/dory-hv.
-#   * Contents/Resources/dory-machine-rootfs-<arch>.ext4   — raw per-machine rootfs used by dory-vmm.
+#   * Contents/Resources/dory-hv-kernel-<arch>             — legacy raw kernel payload.
+#   * Contents/Resources/dory-machine-rootfs-<arch>.ext4   — legacy raw machine payload.
 #   * Contents/Resources/dory-hv-kernel-<arch>.lzfse       — LZFSE PVH/Image kernel for dory-hv.
-#   * Contents/Resources/dory-vm-kernel-<arch>.lzfse       — LZFSE Linux kernel.
-#   * Contents/Resources/dory-vm-initfs-<arch>.ext4.lzfse  — LZFSE VM initfs.
+#   * Contents/Resources/dory-vm-kernel-<arch>.lzfse       — compatibility alias to the Docker
+#                                                           engine kernel in focused Core builds.
+#   * Contents/Resources/dory-vm-initfs-<arch>.ext4.lzfse  — compatibility alias to the Docker
+#                                                           engine rootfs in focused Core builds.
 #   * Contents/Resources/dory-desktop-kernel-arm64.lzfse   — optional verified desktop kernel.
 #   * Contents/Resources/dory-desktop-<distro>-rootfs-arm64.ext4.lzfse — optional desktop images.
 #   * Contents/Resources/dory-agent-linux-<arch>           — guest relay/agent for host AI bridge
@@ -64,6 +67,15 @@ case "$DESKTOP_BUNDLE_MODE" in
   none|all) ;;
   *) echo "DORY_DESKTOP_BUNDLE_MODE must be 'none' or 'all'" >&2; exit 64 ;;
 esac
+COMPONENT_BUNDLE_MODE="${DORY_COMPONENT_BUNDLE_MODE:-legacy}"
+case "$COMPONENT_BUNDLE_MODE" in
+  core|legacy) ;;
+  *) echo "DORY_COMPONENT_BUNDLE_MODE must be 'core' or 'legacy'" >&2; exit 64 ;;
+esac
+if [ "$COMPONENT_BUNDLE_MODE" = core ] && [ "$DESKTOP_BUNDLE_MODE" != none ]; then
+  echo "DORY_COMPONENT_BUNDLE_MODE=core cannot embed desktop payloads" >&2
+  exit 64
+fi
 DESKTOP_APPCAST_URL="${DORY_DESKTOP_APPCAST_URL:-https://augani.github.io/dory/appcast-desktop.xml}"
 
 find_xcode() {
@@ -817,7 +829,8 @@ echo "==> Bundling the host kubectl + docker CLIs (so k8s and the docker CLI nee
 # Darwin architecture and lipo them into one helper.
 
 download_host_cli_for_arch() {
-  local name="$1" arch="$2" out="$3" karch darch tgz work url expected_sha
+  local name="$1" arch="$2" out="$3" provenance="${4:-$HOST_CLI_PROVENANCE}"
+  local karch darch tgz work url expected_sha
   expected_sha="$(dory_host_cli_expected_sha256 "$name" "$arch")"
   case "$name" in
     kubectl)
@@ -859,17 +872,19 @@ download_host_cli_for_arch() {
   esac
   printf 'name=%s version=%s arch=%s sha256=%s source_url=%s\n' \
     "$name" "$(dory_host_cli_version "$name")" "$arch" "$expected_sha" "$url" \
-    >> "$HOST_CLI_PROVENANCE"
+    >> "$provenance"
 }
 
 bundle_universal_host_cli() {
-  local name="$1" destination="$HELPERS/$1" tmp arch bin arches arch_info
+  local name="$1" destination="${2:-$HELPERS/$1}" provenance="${3:-$HOST_CLI_PROVENANCE}"
+  local tmp arch bin arches arch_info
   local built=()
+  mkdir -p "$(dirname "$destination")"
   arches="$(host_cli_arches)"
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/dory-$name.XXXXXX")"
   for arch in $arches; do
     bin="$tmp/$name-$arch"
-    if ! download_host_cli_for_arch "$name" "$arch" "$bin"; then
+    if ! download_host_cli_for_arch "$name" "$arch" "$bin" "$provenance"; then
       rm -rf "$tmp"
       if [ "${DORY_ALLOW_MISSING_HOST_CLI:-0}" = "1" ]; then
         echo "    WARNING: could not bundle $name for $arch — feature will need a system install on that architecture."
@@ -904,7 +919,31 @@ HOST_CLI_PROVENANCE="$RESOURCES/host-cli-provenance.txt"
 # metadata-for-metadata identical to the SBOM-bound application tree.
 rm -f "$HOST_CLI_PROVENANCE"
 install -m 0644 /dev/null "$HOST_CLI_PROVENANCE"
-bundle_universal_host_cli kubectl
+if [ "$COMPONENT_BUNDLE_MODE" = core ]; then
+  KUBECTL_COMPONENT_OUTPUT="${DORY_COMPONENT_KUBECTL_OUTPUT:-}"
+  [ -n "$KUBECTL_COMPONENT_OUTPUT" ] || {
+    echo "    ERROR: Core builds require DORY_COMPONENT_KUBECTL_OUTPUT" >&2
+    exit 64
+  }
+  case "$KUBECTL_COMPONENT_OUTPUT" in
+    /*) ;;
+    *) echo "    ERROR: DORY_COMPONENT_KUBECTL_OUTPUT must be an absolute path" >&2; exit 64 ;;
+  esac
+  case "$KUBECTL_COMPONENT_OUTPUT" in
+    "$APP"/*) echo "    ERROR: the Kubernetes component must be exported outside Dory.app" >&2; exit 64 ;;
+  esac
+  KUBECTL_COMPONENT_PROVENANCE="${DORY_COMPONENT_KUBECTL_PROVENANCE_OUTPUT:-$KUBECTL_COMPONENT_OUTPUT.provenance.txt}"
+  mkdir -p "$(dirname "$KUBECTL_COMPONENT_PROVENANCE")"
+  rm -f "$KUBECTL_COMPONENT_PROVENANCE"
+  install -m 0644 /dev/null "$KUBECTL_COMPONENT_PROVENANCE"
+  bundle_universal_host_cli kubectl "$KUBECTL_COMPONENT_OUTPUT" "$KUBECTL_COMPONENT_PROVENANCE"
+  LC_ALL=C sort -o "$KUBECTL_COMPONENT_PROVENANCE" "$KUBECTL_COMPONENT_PROVENANCE"
+  chmod 0644 "$KUBECTL_COMPONENT_PROVENANCE"
+  rm -f "$HELPERS/kubectl"
+  echo "    exported the signed Kubernetes component to $KUBECTL_COMPONENT_OUTPUT"
+else
+  bundle_universal_host_cli kubectl
+fi
 bundle_universal_host_cli docker
 bundle_universal_host_cli docker-buildx
 bundle_universal_host_cli docker-compose
@@ -1131,8 +1170,12 @@ bundle_hv_kernel_for_arch() {
   kernel_raw="$RESOURCES/dory-hv-kernel-$arch"
   kernel_out="$RESOURCES/dory-hv-kernel-$arch.lzfse"
   if [ -n "$kernel_src" ] && [ -f "$kernel_src" ]; then
-    install -m0644 "$kernel_src" "$kernel_raw"
-    echo "    bundled Resources/$(basename "$kernel_raw") ($(du -h "$kernel_raw" | awk '{print $1}'))"
+    if [ "$COMPONENT_BUNDLE_MODE" = legacy ]; then
+      install -m0644 "$kernel_src" "$kernel_raw"
+      echo "    bundled Resources/$(basename "$kernel_raw") ($(du -h "$kernel_raw" | awk '{print $1}'))"
+    else
+      rm -f "$kernel_raw"
+    fi
     compress_asset "$kernel_src" "$kernel_out"
     echo "    bundled Resources/$(basename "$kernel_out") ($(du -h "$kernel_out" | awk '{print $1}'), from $(du -h "$kernel_src" | awk '{print $1}'))"
   else
@@ -1203,8 +1246,12 @@ bundle_guest_assets_for_arch() {
     agent="$(guest_agent_source_for_arch "$arch" || true)"
     inject_dory_agent_into_initfs "$initfs_src" "$agent" "/tmp/dory-initfs-$arch-agent-$$.ext4"
     inject_debug_toolbox_into_initfs "$INITFS_TO_BUNDLE" "$arch"
-    install -m0644 "$INITFS_TO_BUNDLE" "$initfs_raw"
-    echo "    bundled Resources/$(basename "$initfs_raw") ($(du -h "$initfs_raw" | awk '{print $1}'))"
+    if [ "$COMPONENT_BUNDLE_MODE" = legacy ]; then
+      install -m0644 "$INITFS_TO_BUNDLE" "$initfs_raw"
+      echo "    bundled Resources/$(basename "$initfs_raw") ($(du -h "$initfs_raw" | awk '{print $1}'))"
+    else
+      rm -f "$initfs_raw"
+    fi
     compress_asset "$INITFS_TO_BUNDLE" "$initfs_out"
     echo "    bundled Resources/$(basename "$initfs_out") ($(du -h "$initfs_out" | awk '{print $1}'), from $(du -h "$INITFS_TO_BUNDLE" | awk '{print $1}'))"
     [ "$INITFS_TO_BUNDLE" = "$initfs_src" ] || rm -f "$INITFS_TO_BUNDLE"
@@ -1235,6 +1282,27 @@ bundle_engine_rootfs_for_arch() {
   else
     warn_or_fail_missing_bundle_asset "no $arch engine rootfs found; run guest/initfs/build.sh $arch or set $(env_for_arch DORY_ENGINE_ROOTFS "$arch")"
   fi
+}
+
+link_core_vmm_assets_for_arch() {
+  local arch="$1" kernel_target rootfs_target kernel_alias rootfs_alias
+  [ "$COMPONENT_BUNDLE_MODE" = core ] || return 0
+  kernel_target="dory-hv-kernel-$arch.lzfse"
+  rootfs_target="dory-engine-rootfs-$arch.ext4.lzfse"
+  kernel_alias="$RESOURCES/dory-vm-kernel-$arch.lzfse"
+  rootfs_alias="$RESOURCES/dory-vm-initfs-$arch.ext4.lzfse"
+  [ -s "$RESOURCES/$kernel_target" ] || {
+    echo "    ERROR: focused Core build cannot alias missing $kernel_target" >&2
+    return 1
+  }
+  [ -s "$RESOURCES/$rootfs_target" ] || {
+    echo "    ERROR: focused Core build cannot alias missing $rootfs_target" >&2
+    return 1
+  }
+  ln -sfn "$kernel_target" "$kernel_alias"
+  ln -sfn "$rootfs_target" "$rootfs_alias"
+  echo "    linked Resources/$(basename "$kernel_alias") -> $kernel_target"
+  echo "    linked Resources/$(basename "$rootfs_alias") -> $rootfs_target"
 }
 
 bundle_desktop_assets_for_arch() {
@@ -1280,8 +1348,19 @@ for asset_arch in ${DORY_BUNDLE_ARCHES:-arm64 amd64}; do
   bundle_guest_agent_for_arch "$asset_arch"
   bundle_hv_kernel_for_arch "$asset_arch"
   bundle_hv_gpu_kernel_for_arch "$asset_arch"
-  bundle_guest_assets_for_arch "$asset_arch"
+  if [ "$COMPONENT_BUNDLE_MODE" = legacy ]; then
+    bundle_guest_assets_for_arch "$asset_arch"
+  else
+    # Docker Core already carries the exact kernel and rootfs needed by the macOS 14 VZ fallback.
+    # Keep its historical resource names as in-bundle aliases instead of shipping a second copy of
+    # each payload. Linux Machines remains an independently downloaded component with its own raw
+    # machine rootfs and kernel.
+    rm -f \
+      "$RESOURCES/dory-vm-kernel-$asset_arch.lzfse" \
+      "$RESOURCES/dory-vm-initfs-$asset_arch.ext4.lzfse"
+  fi
   bundle_engine_rootfs_for_arch "$asset_arch"
+  link_core_vmm_assets_for_arch "$asset_arch"
   bundle_desktop_assets_for_arch "$asset_arch"
   for stamp_kind in kernel initfs; do
     stamp="$REPO_ROOT/guest/out/${stamp_kind}-build-$asset_arch.stamp"
@@ -1326,11 +1405,22 @@ fi
 write_doryd_launch_agent
 
 /usr/libexec/PlistBuddy -c 'Delete :DoryIncludesDesktopLinux' "$APP/Contents/Info.plist" >/dev/null 2>&1 || true
+/usr/libexec/PlistBuddy -c 'Delete :DoryBundledComponents' "$APP/Contents/Info.plist" >/dev/null 2>&1 || true
+/usr/libexec/PlistBuddy -c 'Add :DoryBundledComponents array' "$APP/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c 'Add :DoryBundledComponents:0 string docker-core' "$APP/Contents/Info.plist"
 if [ "$DESKTOP_BUNDLE_MODE" = all ]; then
   /usr/libexec/PlistBuddy -c 'Add :DoryIncludesDesktopLinux bool true' "$APP/Contents/Info.plist"
   /usr/libexec/PlistBuddy -c "Set :SUFeedURL $DESKTOP_APPCAST_URL" "$APP/Contents/Info.plist"
+  for component in kubernetes linux-machines linux-desktop desktop-debian desktop-ubuntu desktop-kali; do
+    /usr/libexec/PlistBuddy -c "Add :DoryBundledComponents: string $component" "$APP/Contents/Info.plist"
+  done
 else
   /usr/libexec/PlistBuddy -c 'Add :DoryIncludesDesktopLinux bool false' "$APP/Contents/Info.plist"
+  if [ "$COMPONENT_BUNDLE_MODE" = legacy ]; then
+    for component in kubernetes linux-machines; do
+      /usr/libexec/PlistBuddy -c "Add :DoryBundledComponents: string $component" "$APP/Contents/Info.plist"
+    done
+  fi
 fi
 
 echo "==> Bundling deterministic named-volume transfer helper image…"
@@ -1363,5 +1453,6 @@ PAYLOAD_DIGESTS="$RESOURCES/dory-payload-sha256.txt"
 echo "    bundled Resources/dory-payload-sha256.txt"
 
 echo "==> Payload injected into $APP"
+echo "    Component profile: $COMPONENT_BUNDLE_MODE"
 echo "    Engine payload ≈ $(du -ch "$RESOURCES"/dory-hv-*.lzfse "$RESOURCES"/dory-vm-*.lzfse "$RESOURCES"/dory-engine-rootfs-*.ext4.lzfse "$RESOURCES"/dory-desktop-*.lzfse "$HELPERS"/dory-hv "$HELPERS"/docker "$HELPERS"/docker-buildx "$HELPERS"/docker-compose "$HELPERS"/kubectl "$FRAMEWORKS"/*.dylib 2>/dev/null | tail -1 | awk '{print $1}') on disk"
 echo "    Re-sign the app bundle before notarization so the payload is sealed."

@@ -40,13 +40,20 @@ final class AppStore {
     var section: AppSection = .containers {
         didSet { if oldValue != section { filter = "" } }
     }
+    var requestedComponentIDs: [DoryComponentID] = []
     var selectedContainerID: String? = nil
+    var isSidebarVisible = true
+    var isContainerInspectorVisible = true
     var detailTab: DetailTab = .overview
     var settingsTab: SettingsTab = .general
     var menuOpen = false
     var onboarding = false
     var isConnecting = false
-    var filter = ""
+    var filter = "" {
+        didSet {
+            if section == .containers { reconcileContainerSelection() }
+        }
+    }
     var filterFocusToken = 0
     var imagesSort: TableSort?
     var volumesSort: TableSort?
@@ -60,7 +67,7 @@ final class AppStore {
     var launchAtLogin = false
     var showMenuBarIcon = true
     var routeDockerCLI = true
-    var keepDorydRunningAfterQuit = true
+    var keepDorydRunningAfterQuit = false
     var machineEnvAllowList: [String] = MachineEnvImport.defaultNames
     var openLoginsOnMac = true
     var externalTerminalPreference = ExternalTerminalPreference(terminal: .terminal, customApplicationPath: nil)
@@ -71,10 +78,15 @@ final class AppStore {
     var containerScope: ContainerScope =
         ContainerScope(rawValue: UserDefaults.standard.string(forKey: "dory.containerScope") ?? "") ?? .all
     {
-        didSet { UserDefaults.standard.set(containerScope.rawValue, forKey: Self.containerScopeKey) }
+        didSet {
+            UserDefaults.standard.set(containerScope.rawValue, forKey: Self.containerScopeKey)
+            reconcileContainerSelection()
+        }
     }
 
-    var containers: [Container] = []
+    var containers: [Container] = [] {
+        didSet { reconcileContainerSelection() }
+    }
     var images: [DockerImage] = []
     var volumes: [Volume] = []
     var networks: [DoryNetwork] = []
@@ -92,7 +104,10 @@ final class AppStore {
     var containerFilter: ContainerFilter =
         ContainerFilter(rawValue: UserDefaults.standard.string(forKey: "containerFilter") ?? "") ?? .running
     {
-        didSet { UserDefaults.standard.set(containerFilter.rawValue, forKey: "containerFilter") }
+        didSet {
+            UserDefaults.standard.set(containerFilter.rawValue, forKey: "containerFilter")
+            reconcileContainerSelection()
+        }
     }
 
     var healthSnapshot: HealthSnapshot?
@@ -161,6 +176,7 @@ final class AppStore {
     @ObservationIgnored private let dorydLaunchAgentEnsurer: @Sendable (DorydLaunchAgent.Configuration) async -> Bool
     @ObservationIgnored private let dorydLaunchAgentBootout: @Sendable () async -> Bool
     @ObservationIgnored private let authorizedNetworkingRemover: @Sendable () async throws -> Void
+    @ObservationIgnored private let localCATrustManager: any LocalCATrustManaging
     @ObservationIgnored private let environment: [String: String]
     @ObservationIgnored private let machineEnvResolver: @Sendable ([String]) async -> [String: String]
     @ObservationIgnored private let desktopMachineAssetPreparer: @Sendable (
@@ -183,6 +199,7 @@ final class AppStore {
         dorydLaunchAgentEnsurer: (@Sendable (DorydLaunchAgent.Configuration) async -> Bool)? = nil,
         dorydLaunchAgentBootout: (@Sendable () async -> Bool)? = nil,
         authorizedNetworkingRemover: (@Sendable () async throws -> Void)? = nil,
+        localCATrustManager: any LocalCATrustManaging = LocalCATrustManager(),
         environment: [String: String] = ProcessInfo.processInfo.environment,
         composeCommandRunner: any ToolCommandRunning = BoundedToolProcessRunner(),
         buildCommandRunner: any ToolCommandRunning = BoundedToolProcessRunner(),
@@ -224,6 +241,7 @@ final class AppStore {
         self.authorizedNetworkingRemover = authorizedNetworkingRemover ?? {
             try await Self.removeAuthorizedNetworkingIfPresent()
         }
+        self.localCATrustManager = localCATrustManager
         let networkHelperMaintenance = DoryAppDelegate.isNetworkHelperMaintenance()
         let realLaunch = !networkHelperMaintenance
             && env["DORY_SECTION"] == nil && env["DORY_APPEARANCE"] == nil
@@ -339,7 +357,7 @@ final class AppStore {
     static let kubernetesVersionKey = "dory.kubernetesVersion"
 
     static func resolvedKeepDorydRunningAfterQuit(defaults: UserDefaults) -> Bool {
-        (defaults.object(forKey: keepDorydRunningAfterQuitKey) as? Bool) ?? true
+        (defaults.object(forKey: keepDorydRunningAfterQuitKey) as? Bool) ?? false
     }
 
     var externalTerminalDisplayName: String {
@@ -457,7 +475,10 @@ final class AppStore {
                 domainSuffix: domainSuffix,
                 dnsPort: dnsPort,
                 httpProxyPort: httpProxyPort,
-                httpsProxyPort: httpsProxyPort
+                httpsProxyPort: httpsProxyPort,
+                customDomains: customDomainRoutes.map {
+                    ManagedCustomDomainRoute(hostname: $0.hostname, publishedPort: $0.port)
+                }
             ),
             autoIdle: ManagedAutoIdleSettings(
                 mode: runtimeMode,
@@ -674,11 +695,11 @@ final class AppStore {
         settingsNotice = nil
     }
 
-    private func showSettingsSuccess(_ message: String) {
+    func showSettingsSuccess(_ message: String) {
         settingsNotice = SettingsNotice(kind: .success, message: message)
     }
 
-    private func showSettingsFailure(_ message: String) {
+    func showSettingsFailure(_ message: String) {
         settingsNotice = SettingsNotice(kind: .failure, message: message)
     }
 
@@ -736,6 +757,15 @@ final class AppStore {
 
     @ObservationIgnored private(set) var backendStartRequested = false
     @ObservationIgnored var windowOpenRequested = false
+
+    @discardableResult
+    func handleComponentSelectionURL(_ url: URL) -> Bool {
+        guard let ids = DoryComponentSelectionURL.parse(url) else { return false }
+        requestedComponentIDs = ids
+        section = .components
+        windowOpenRequested = true
+        return true
+    }
 
     func startBackendIfNeeded() {
         guard !backendStartRequested else { return }
@@ -880,6 +910,7 @@ final class AppStore {
                 runtime = DisconnectedRuntime()
                 return false
             }
+            await loadCustomDomainRoutes()
             return true
         } catch {
             runtimeOwnedByDoryd = false
@@ -1942,6 +1973,9 @@ final class AppStore {
     var defaultBridgeSubnet = DoryIPv4BridgeNetwork.defaultCIDR
     var networkingAuthorizationInFlight = false
     var networkingAuthorizationMessage: String?
+    var customDomainRoutes: [DorydDomainRoute] = []
+    var customDomainActiveHostnames: Set<String> = []
+    var customDomainRoutesBusy = false
     @ObservationIgnored private var tlsProxy: DoryTLSProxy?
 
     private func startLocalNetworking() {
@@ -2037,13 +2071,27 @@ final class AppStore {
             do {
                 try await authorizedNetworkingRemover()
                 authorizationRemoved = true
+                var trustRemovalNotice: String?
+                do {
+                    _ = try localCATrustManager.remove(
+                        certificateAt: URL(fileURLWithPath: NSHomeDirectory())
+                            .appendingPathComponent(".dory/ca/ca.crt").path
+                    )
+                } catch {
+                    trustRemovalNotice = error.localizedDescription
+                }
                 guard await refreshDorydLaunchAgentForNetworkingSettings() else {
                     throw NetworkingAuthorizationUIError.cleanupFailed(
                         "doryd could not restart with local domains disabled."
                     )
                 }
-                networkingAuthorizationMessage = "Local domains and their system routing are disabled."
-                showSettingsSuccess("Local domains disabled.")
+                if let trustRemovalNotice {
+                    networkingAuthorizationMessage = "Local domains and their system routing are disabled, but Dory could not remove its CA from your login keychain: \(trustRemovalNotice)"
+                    showSettingsFailure("Local domains are disabled, but local CA cleanup needs attention.")
+                } else {
+                    networkingAuthorizationMessage = "Local domains and their system routing are disabled."
+                    showSettingsSuccess("Local domains disabled.")
+                }
             } catch {
                 domainsEnabled = true
                 UserDefaults.standard.set(true, forKey: Self.domainsEnabledKey)
@@ -2139,6 +2187,93 @@ final class AppStore {
             }
         }
         return suffix
+    }
+
+    nonisolated static func normalizedCustomDomainPattern(_ raw: String?) -> String? {
+        guard let raw else { return nil }
+        var value = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        while value.hasSuffix(".") { value.removeLast() }
+        let hostname: String
+        if value.hasPrefix("*.") {
+            hostname = String(value.dropFirst(2))
+        } else {
+            guard !value.contains("*") else { return nil }
+            hostname = value
+        }
+        guard hostname.count <= 253 else { return nil }
+        let labels = hostname.split(separator: ".", omittingEmptySubsequences: false)
+        guard labels.count >= 2 else { return nil }
+        for label in labels {
+            guard !label.isEmpty, label.count <= 63,
+                  label.first != "-", label.last != "-" else {
+                return nil
+            }
+            for scalar in label.unicodeScalars {
+                let value = scalar.value
+                guard (48...57).contains(value) || (97...122).contains(value) || value == 45 else {
+                    return nil
+                }
+            }
+        }
+        return value
+    }
+
+    func loadCustomDomainRoutes() async {
+        guard dorydRuntimeActive else {
+            customDomainRoutes = []
+            customDomainActiveHostnames = []
+            return
+        }
+        do {
+            let status = try await dorydClient.networkStatus()
+            customDomainRoutes = status.customRoutes.sorted { $0.hostname < $1.hostname }
+            let configured = Set(customDomainRoutes.map(\.hostname))
+            customDomainActiveHostnames = Set(status.routes.map(\.hostname)).intersection(configured)
+        } catch {
+            showSettingsFailure("Custom domains could not be loaded: \(error.localizedDescription)")
+        }
+    }
+
+    func addCustomDomainRoute(hostname rawHostname: String, publishedPort: UInt16) async {
+        guard let hostname = Self.normalizedCustomDomainPattern(rawHostname) else {
+            showSettingsFailure("Use a DNS hostname such as admin.myproject.local or *.myproject.local.")
+            return
+        }
+        let comparable = hostname.hasPrefix("*.") ? String(hostname.dropFirst(2)) : hostname
+        guard comparable != domainSuffix, !comparable.hasSuffix(".\(domainSuffix)") else {
+            showSettingsFailure("That hostname is already covered by *.\(domainSuffix).")
+            return
+        }
+        var routes = customDomainRoutes.filter { $0.hostname != hostname }
+        routes.append(DorydDomainRoute(hostname: hostname, address: "127.0.0.1", port: publishedPort))
+        await replaceCustomDomainRoutes(routes, success: "Custom domain \(hostname) is configured for published port \(publishedPort).")
+    }
+
+    func removeCustomDomainRoute(_ route: DorydDomainRoute) async {
+        await replaceCustomDomainRoutes(
+            customDomainRoutes.filter { $0.hostname != route.hostname },
+            success: "Custom domain \(route.hostname) removed."
+        )
+    }
+
+    private func replaceCustomDomainRoutes(_ routes: [DorydDomainRoute], success: String) async {
+        guard dorydRuntimeActive else {
+            showSettingsFailure("Switch to Dory's engine before changing custom domains.")
+            return
+        }
+        guard !customDomainRoutesBusy else { return }
+        customDomainRoutesBusy = true
+        defer { customDomainRoutesBusy = false }
+        do {
+            _ = try await dorydClient.networkReplaceRoutes(routes)
+            let status = try await dorydClient.networkStatus()
+            customDomainRoutes = status.customRoutes.sorted { $0.hostname < $1.hostname }
+            let configured = Set(customDomainRoutes.map(\.hostname))
+            customDomainActiveHostnames = Set(status.routes.map(\.hostname)).intersection(configured)
+            showSettingsSuccess(success)
+        } catch {
+            showSettingsFailure("Custom domains were not changed: \(error.localizedDescription)")
+        }
     }
 
     private static func persistedRuntimeMode(environment: [String: String]) -> String? {
@@ -2287,11 +2422,19 @@ final class AppStore {
         defer { networkingAuthorizationInFlight = false }
 
         do {
-            try Self.ensurePrivilegedNetworkDaemon()
             guard let helper = Self.bundledHelper("dory-network-helper") else {
                 throw NetworkingAuthorizationUIError.helperMissing
             }
             let plan = try await dorydClient.networkAuthorizationPlan()
+            guard let certificatePath = Self.localCACertificatePath(in: plan) else {
+                throw NetworkingAuthorizationUIError.invalidLocalCARequest
+            }
+            var installedTrustForAttempt = false
+            if !removing {
+                installedTrustForAttempt = try localCATrustManager.install(
+                    certificateAt: certificatePath
+                )
+            }
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             let encodedPlan = try encoder.encode(plan).base64EncodedString()
@@ -2304,17 +2447,69 @@ final class AppStore {
             let result = await Shell.runAsyncResult("/usr/bin/osascript", ["-e", script])
             if result.exit == 0 {
                 if removing {
-                    networkingAuthorizationMessage = "Dory-owned resolver, PF reference, and local CA trust were removed for \(plan.suffix)."
-                } else {
-                    networkingAuthorizationMessage = "Dory networking is authorized for \(plan.suffix). \(Self.networkingAuthorizationSummary(plan))"
+                    do {
+                        _ = try localCATrustManager.remove(certificateAt: certificatePath)
+                    } catch {
+                        networkingAuthorizationMessage = "Dory removed its resolver and PF rules, but could not remove the local CA from your login keychain: \(error.localizedDescription) Try Remove authorization again."
+                        return
+                    }
                 }
+                var backgroundServiceNotice: String?
+                if !removing {
+                    do {
+                        try Self.ensurePrivilegedNetworkDaemon()
+                    } catch {
+                        backgroundServiceNotice = error.localizedDescription
+                    }
+                }
+                networkingAuthorizationMessage = Self.networkingAuthorizationSuccessMessage(
+                    plan,
+                    removing: removing,
+                    backgroundServiceNotice: backgroundServiceNotice
+                )
             } else {
                 let output = result.output.trimmingCharacters(in: .whitespacesAndNewlines)
-                networkingAuthorizationMessage = output.isEmpty ? "Local domain authorization was cancelled or failed." : output
+                var message = output.isEmpty ? "Local domain authorization was cancelled or failed." : output
+                if installedTrustForAttempt {
+                    do {
+                        _ = try localCATrustManager.remove(certificateAt: certificatePath)
+                    } catch {
+                        message += " Dory could not remove the local CA it added to your login keychain: \(error.localizedDescription)"
+                    }
+                }
+                networkingAuthorizationMessage = message
             }
         } catch {
             networkingAuthorizationMessage = "Local domain authorization failed: \(error.localizedDescription)"
         }
+    }
+
+    nonisolated static func networkingAuthorizationSuccessMessage(
+        _ plan: DorydNetworkingAuthorizationPlan,
+        removing: Bool,
+        backgroundServiceNotice: String? = nil
+    ) -> String {
+        if removing {
+            return "Dory-owned resolver, PF reference, and local CA trust were removed for \(plan.suffix)."
+        }
+        let authorized = "Dory networking is authorized for \(plan.suffix). \(networkingAuthorizationSummary(plan))"
+        guard let backgroundServiceNotice, !backgroundServiceNotice.isEmpty else {
+            return authorized
+        }
+        return "\(authorized) Background updates need attention: \(backgroundServiceNotice)"
+    }
+
+    nonisolated static func localCACertificatePath(
+        in plan: DorydNetworkingAuthorizationPlan,
+        home: String = NSHomeDirectory()
+    ) -> String? {
+        let requests = plan.requests.filter { $0.id == "trust.local-ca" && $0.kind == "localCATrust" }
+        guard requests.count == 1, let path = requests[0].filePath else { return nil }
+        let expected = URL(fileURLWithPath: home)
+            .appendingPathComponent(".dory/ca/ca.crt")
+            .standardizedFileURL.path
+        guard URL(fileURLWithPath: path).standardizedFileURL.path == expected else { return nil }
+        return expected
     }
 
     nonisolated static func networkingAuthorizationSummary(_ plan: DorydNetworkingAuthorizationPlan) -> String {
@@ -2580,6 +2775,7 @@ final class AppStore {
 
     private enum NetworkingAuthorizationUIError: LocalizedError {
         case helperMissing
+        case invalidLocalCARequest
         case daemonMissing
         case daemonApprovalRequired
         case daemonUnavailable
@@ -2590,6 +2786,8 @@ final class AppStore {
             switch self {
             case .helperMissing:
                 return "dory-network-helper is missing from Dory.app."
+            case .invalidLocalCARequest:
+                return "Dory's networking service returned an invalid local CA request."
             case .daemonMissing:
                 return "Dory's privileged networking service is missing from the app bundle. Reinstall Dory."
             case .daemonApprovalRequired:
@@ -2817,7 +3015,7 @@ final class AppStore {
 
     static func kubeErrorText(_ error: KubeError) -> String {
         switch error {
-        case .kubectlMissing: "kubectl not found in Dory's bundled tools. Restart Dory so doryd can repair terminal integration, or reinstall the app bundle."
+        case .kubectlMissing: "kubectl is unavailable. Install or repair the Kubernetes component, then try again."
         case .nonZero(_, let stderr): stderr.trimmingCharacters(in: .whitespacesAndNewlines)
         case .decode: "Could not read the cluster response."
         }
@@ -2827,6 +3025,12 @@ final class AppStore {
 
     /// One-click Kubernetes: bootstraps k3s inside Dory's shared VM and wires the host kubeconfig.
     func enableKubernetes() async {
+        guard AppInfo.componentAvailable(.kubernetes) else {
+            kubernetesInfo = "Install Kubernetes in Components before enabling the cluster."
+            actionError = kubernetesInfo
+            section = .components
+            return
+        }
         guard runtimeKind == .sharedVM else { kubernetesInfo = "Kubernetes needs Dory's shared VM engine"; return }
         guard !kubernetesBusy else { return }
         kubernetesBusy = true
@@ -2898,10 +3102,7 @@ final class AppStore {
         if runtimeKind == .mock, pods != snap.pods { pods = snap.pods }
         if engineRunning != snap.engineRunning { engineRunning = snap.engineRunning }
         if engineVersion != snap.engineVersion { engineVersion = snap.engineVersion }
-        if selectedContainerID == nil || !containers.contains(where: { $0.id == selectedContainerID }) {
-            let first = containers.first?.id
-            if selectedContainerID != first { selectedContainerID = first }
-        }
+        reconcileContainerSelection()
         let liveIDs = Set(containers.map(\.id))
         for container in containers where container.isRunning {
             recordCPU(container.id, container.cpuPercent)
@@ -3102,7 +3303,27 @@ final class AppStore {
     }
 
     var selectedContainer: Container? {
-        containers.first { $0.id == selectedContainerID } ?? containers.first
+        filteredContainers.first { $0.id == selectedContainerID }
+    }
+
+    func reconcileContainerSelection() {
+        let visible = filteredContainers
+        guard !visible.isEmpty else {
+            selectedContainerID = nil
+            return
+        }
+        if let selectedContainerID, visible.contains(where: { $0.id == selectedContainerID }) { return }
+        selectedContainerID = visible[0].id
+    }
+
+    func revealContainer(_ container: Container, scope: ContainerScope) {
+        section = .containers
+        setContainerScope(scope)
+        if !filteredContainers.contains(where: { $0.id == container.id }) {
+            containerFilter = .all
+        }
+        selectedContainerID = container.id
+        isContainerInspectorVisible = true
     }
 
     var runningCount: Int { containers.filter(\.isRunning).count }
@@ -3161,6 +3382,7 @@ final class AppStore {
             machineSubtitle(for: .desktop, noun: "desktop")
         case .machines:
             machineSubtitle(for: .headless, noun: "server")
+        case .components: "Docker Core with optional, removable feature packs"
         case .health: healthSubtitle
         case .settings: "Dory v\(AppInfo.version)"
         }
@@ -3941,7 +4163,7 @@ final class AppStore {
     func applyKubernetesYAML(_ yaml: String) async -> String? {
         guard runtimeKind == .sharedVM else { return "Enable Kubernetes on Dory's shared VM first" }
         guard !yaml.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return "Paste or open a YAML manifest" }
-        guard let kubectl = KubeServiceProxy.kubectl() else { return "kubectl not found in Dory's bundled tools. Restart Dory so doryd can repair terminal integration, or reinstall the app bundle." }
+        guard let kubectl = KubeServiceProxy.kubectl() else { return "kubectl is unavailable. Install or repair the Kubernetes component, then try again." }
         let kubeconfig = NSHomeDirectory() + "/.kube/dory-config"
         let result: String? = await Task.detached {
             Self.runKubectlApply(kubectl: kubectl, kubeconfig: kubeconfig, yaml: yaml)
@@ -4250,11 +4472,18 @@ final class AppStore {
         case .compose: openComposeFile()
         case .desktops:
             guard AppInfo.includesDesktopLinux else {
-                actionError = "Creating graphical Linux desktops requires the all-inclusive Dory Desktop build."
+                actionError = "Install the Linux Desktop runtime and at least one distribution in Components."
+                self.section = .components
                 return
             }
             activeSheet = .newDesktop
-        case .machines: activeSheet = .newMachine
+        case .machines:
+            guard AppInfo.componentAvailable(.linuxMachines) else {
+                actionError = "Install Linux Machines in Components before creating a server."
+                self.section = .components
+                return
+            }
+            activeSheet = .newMachine
         default: break
         }
     }
@@ -4662,6 +4891,12 @@ final class AppStore {
             .first { FileManager.default.fileExists(atPath: $0) }
     }
 
+    nonisolated private static func installedMachinePath(_ names: [String]) -> String? {
+        names.lazy.compactMap {
+            DoryComponentStore.activeAssetPath(component: .linuxMachines, path: $0)
+        }.first
+    }
+
     nonisolated private static var hostMachineAssetArch: String {
         #if arch(arm64)
         return "arm64"
@@ -4681,9 +4916,14 @@ final class AppStore {
         let arch = hostMachineAssetArch
         let kernel = assets?.kernelPath
             ?? firstMachinePath(["DORYD_MACHINE_KERNEL", "DORYD_GUEST_KERNEL"], environment: environment)
+            ?? installedMachinePath(["dory-hv-kernel-\(arch)", "dory-hv-kernel"])
             ?? (useBundledAssets ? bundledMachinePath(["dory-hv-kernel-\(arch)", "dory-hv-kernel"]) : nil)
         let rootfs = assets?.rootfsPath
             ?? firstMachinePath(["DORYD_MACHINE_ROOTFS", "DORYD_GUEST_ROOTFS"], environment: environment)
+            ?? installedMachinePath([
+                "dory-machine-rootfs-\(arch).ext4",
+                "dory-machine-rootfs.ext4",
+            ])
             ?? (useBundledAssets ? bundledMachinePath([
                 "dory-machine-rootfs-\(arch).ext4",
                 "dory-machine-rootfs.ext4",
@@ -4729,6 +4969,21 @@ final class AppStore {
         guard trimmedName.wholeMatch(of: /[a-zA-Z0-9][a-zA-Z0-9_.-]*/) != nil else {
             actionError = "Invalid machine name: use letters, digits, and _ . - (must start alphanumeric)"
             return "Invalid machine name"
+        }
+        if settings.displayMode == .desktop {
+            let distro = DesktopMachineDistro.resolve(settings.env["DORY_DESKTOP_DISTRO"])
+            guard AppInfo.componentAvailable(.linuxDesktop),
+                  AppInfo.componentAvailable(distro.componentID) else {
+                let message = "Install the Linux Desktop runtime and \(distro.displayName) in Components first."
+                actionError = message
+                section = .components
+                return message
+            }
+        } else if !AppInfo.componentAvailable(.linuxMachines) {
+            let message = "Install Linux Machines in Components before creating a server."
+            actionError = message
+            section = .components
+            return message
         }
         guard requireDorydMachines() else { return actionError }
         let resolvedEnv = await machineEnvResolver(machineEnvAllowList)

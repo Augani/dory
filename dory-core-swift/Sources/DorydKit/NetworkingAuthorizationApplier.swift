@@ -7,6 +7,7 @@ public enum NetworkingAuthorizationApplyError: Error, Sendable, Equatable, Custo
     case commandFailed(String, String)
     case ownerMismatch(expected: uid_t, actual: uid_t)
     case notAuthorized
+    case certificateTrustRequiresInteraction
 
     public var description: String {
         switch self {
@@ -20,6 +21,8 @@ public enum NetworkingAuthorizationApplyError: Error, Sendable, Equatable, Custo
             return "networking authorization belongs to uid \(expected), not uid \(actual)"
         case .notAuthorized:
             return "system networking has not been authorized"
+        case .certificateTrustRequiresInteraction:
+            return "the local CA changed and must be trusted again from the Dory app"
         }
     }
 }
@@ -101,6 +104,9 @@ public struct NetworkingAuthorizationApplier: Sendable {
         if installedState == nil, oldCertificate != nil {
             throw NetworkingAuthorizationApplyError.unsafeRequest(Self.trustedCASnapshotPath)
         }
+        if requiresExistingAuthorization, oldCertificate != newCertificate {
+            throw NetworkingAuthorizationApplyError.certificateTrustRequiresInteraction
+        }
 
         let oldPlan = installedState?.plan
         let managedPaths = Set<String>((plan.requests + (oldPlan?.requests ?? [])).compactMap { request in
@@ -119,17 +125,11 @@ public struct NetworkingAuthorizationApplier: Sendable {
         let newResolverPath = plan.requests.first { $0.kind == .resolverFile }?.filePath
         let hadPFToken = try readPFToken() != nil
         var acquiredPFToken = false
-        var newTrustAddAttempted = false
-        var oldTrustRemoved = false
         let trustChanged = oldCertificate != newCertificate
 
         do {
             if let oldResolverPath, oldResolverPath != newResolverPath {
                 try removeManagedFile(path: oldResolverPath)
-            }
-            if trustChanged, oldCertificate != nil {
-                try removeSystemTrust(certificatePath: Self.trustedCASnapshotPath)
-                oldTrustRemoved = true
             }
             if trustChanged, let newCertificate {
                 try writeManagedFile(
@@ -155,13 +155,9 @@ public struct NetworkingAuthorizationApplier: Sendable {
                     guard request.filePath != nil else {
                         throw NetworkingAuthorizationApplyError.missingPayload(request.id)
                     }
-                    if trustChanged {
-                        newTrustAddAttempted = true
-                        try addSystemTrust(
-                            certificatePath: Self.trustedCASnapshotPath,
-                            requestID: request.id
-                        )
-                    }
+                    // Trust settings require an interactive user session on current macOS.
+                    // Dory.app installs this exact certificate into the owner's login
+                    // keychain before invoking the root transaction.
                 }
                 results.append(try result(for: request, removing: false))
             }
@@ -170,9 +166,6 @@ public struct NetworkingAuthorizationApplier: Sendable {
             )
             return results
         } catch {
-            if newTrustAddAttempted {
-                try? removeSystemTrust(certificatePath: Self.trustedCASnapshotPath)
-            }
             if let certificateSnapshot {
                 try? writeManagedFile(
                     path: Self.trustedCASnapshotPath,
@@ -181,12 +174,6 @@ public struct NetworkingAuthorizationApplier: Sendable {
                 )
             } else {
                 try? removeManagedFile(path: Self.trustedCASnapshotPath)
-            }
-            if oldTrustRemoved, certificateSnapshot != nil {
-                try? addSystemTrust(
-                    certificatePath: Self.trustedCASnapshotPath,
-                    requestID: "trust.local-ca.rollback"
-                )
             }
             if acquiredPFToken {
                 _ = try? releaseOwnedPFToken()
@@ -304,24 +291,8 @@ public struct NetworkingAuthorizationApplier: Sendable {
         }
         let stateSnapshot = try readManagedFile(path: Self.authorizationStatePath)
         let hadPFToken = try readPFToken() != nil
-        var trustPath: String?
-        if let trust = installedPlan.requests.first(where: { $0.kind == .localCATrust }),
-           let path = trust.filePath {
-            if persistedCertificate != nil {
-                trustPath = Self.trustedCASnapshotPath
-            } else if try isSafeRegularFile(path) {
-                trustPath = path
-            } else {
-                throw NetworkingAuthorizationApplyError.missingPayload(trust.id)
-            }
-        }
-        var trustRemoved = false
         var tokenReleased = false
         do {
-            if let trustPath {
-                try removeSystemTrust(certificatePath: trustPath)
-                trustRemoved = true
-            }
             _ = try runOutput(
                 ["/sbin/pfctl", "-a", Self.pfAnchorName, "-F", "all"],
                 requestID: "pf.dev.dory.disable"
@@ -363,18 +334,12 @@ public struct NetworkingAuthorizationApplier: Sendable {
                     "/sbin/pfctl", "-a", Self.pfAnchorName, "-f", Self.pfAnchorPath,
                 ])
             }
-            if trustRemoved, let trustPath {
-                try? addSystemTrust(
-                    certificatePath: trustPath,
-                    requestID: "trust.local-ca.remove.rollback"
-                )
-            }
             throw error
         }
         return try installedPlan.requests.reversed().map { try result(for: $0, removing: true) }
     }
 
-    /// The resolver and CA trust are persistent files, while PF's enable reference and loaded
+    /// The resolver and CA snapshot are persistent files, while PF's enable reference and loaded
     /// anchor are boot-scoped. The root launch daemon calls this on every launch so an explicitly
     /// authorized installation survives reboot without accumulating PF references.
     public func restorePFIfAuthorized() throws {
@@ -483,19 +448,6 @@ public struct NetworkingAuthorizationApplier: Sendable {
         )
     }
 
-    private func addSystemTrust(certificatePath: String, requestID: String) throws {
-        _ = try runOutput([
-            "/usr/bin/security", "add-trusted-cert", "-d", "-r", "trustRoot",
-            "-k", "/Library/Keychains/System.keychain", rootedPath(certificatePath),
-        ], requestID: requestID)
-    }
-
-    private func removeSystemTrust(certificatePath: String) throws {
-        _ = try runOutput([
-            "/usr/bin/security", "remove-trusted-cert", "-d", rootedPath(certificatePath),
-        ], requestID: "trust.local-ca.remove")
-    }
-
     private func result(
         for request: NetworkingAuthorizationRequest,
         removing: Bool
@@ -527,8 +479,8 @@ public struct NetworkingAuthorizationApplier: Sendable {
             return NetworkingAuthorizationApplyResult(
                 id: request.id,
                 kind: request.kind,
-                action: removing ? "remove-trust" : "run-command",
-                target: removing ? filePath : request.command.joined(separator: " "),
+                action: removing ? "remove-user-trust" : "require-user-trust",
+                target: filePath,
                 dryRun: dryRun
             )
         }

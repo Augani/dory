@@ -74,9 +74,11 @@ dory — Dory CLI
 
   dory <docker args...>        Run any docker command against Dory's engine
   dory install [--json] [--dry-run]
-                               Manual recovery for doryd's per-user terminal integration for docker, compose, kubectl, and dory
+                               Manual recovery for docker, Compose, dory, and optional kubectl terminal integration
   dory uninstall [--json] [--dry-run]
                                Stop Dory services and remove runtime/shell integration; preserve workload data
+  dory component list|install|update|verify|remove
+                               Manage signed, removable Kubernetes, Linux Machines, and Desktop packs
   dory shell <container>       Open an interactive shell in a container
   dory debug <container> [-- cmd...]
                                Reserved for a future agent namespace-debug RPC (currently unavailable)
@@ -106,6 +108,10 @@ dory — Dory CLI
                                Dry-run or remove Dory-owned system networking integration
   dory network --lan-visible on|off
                                Publish ports to the local network, or restrict to localhost
+  dory network custom-domains
+  dory network set-custom-domain HOST --published-port N
+  dory network remove-custom-domain HOST
+                               Manage custom HTTP/HTTPS hostnames routed to published ports
   dory mount [--json]           Validate bind mount read/write and host-edit visibility
   dory disk [--json]            Show host, Docker, Dory state, log, and VM disk usage
   dory cleanup [--json] [--apply] [--include-volumes]
@@ -1196,6 +1202,12 @@ dorydctl_bin() {
     "$(command -v dorydctl 2>/dev/null || true)"
 }
 
+installed_component_asset() {
+  local component="$1" asset="$2" ctl
+  ctl="$(dorydctl_bin 2>/dev/null)" || return 1
+  "$ctl" component path "$component" "$asset" 2>/dev/null
+}
+
 network_helper_bin() {
   first_executable \
     "${DORY_NETWORK_HELPER_BIN:-}" \
@@ -1366,6 +1378,12 @@ network_cmd() {
     authorization-plan|auth-plan) shift || true; network_authorization_plan_cmd "$@" ;;
     authorize) shift || true; network_authorize_cmd authorize "$@" ;;
     deauthorize) shift || true; network_authorize_cmd deauthorize "$@" ;;
+    custom-domains|set-custom-domain|remove-custom-domain)
+      local subcommand="$1" ctl
+      shift || true
+      ctl="$(dorydctl_bin 2>/dev/null)" || { echo "dorydctl not found; start Dory before managing custom domains." >&2; exit 1; }
+      "$ctl" --timeout 10 network "$subcommand" "$@"
+      ;;
     -h|--help) doctor_cmd network --help ;;
     *) doctor_cmd network "$@" ;;
   esac
@@ -1536,13 +1554,13 @@ doryd_machine_cmd() {
       if ! dory_machine_has_option --kernel "$@"; then
         local kernel
         kernel="$(sandbox_default_kernel || true)"
-        [ -n "$kernel" ] || { echo "machine kernel not found; set DORYD_MACHINE_KERNEL or install the full Dory app bundle" >&2; exit 1; }
+        [ -n "$kernel" ] || { echo "Linux Machines is not installed. Run: dory component install linux-machines" >&2; exit 1; }
         args+=(--kernel "$kernel")
       fi
       if ! dory_machine_has_option --rootfs "$@"; then
         local rootfs
         rootfs="$(sandbox_default_rootfs || true)"
-        [ -n "$rootfs" ] || { echo "machine rootfs not found; set DORYD_MACHINE_ROOTFS or install the full Dory app bundle" >&2; exit 1; }
+        [ -n "$rootfs" ] || { echo "Linux Machines is not installed. Run: dory component install linux-machines" >&2; exit 1; }
         args+=(--rootfs "$rootfs")
       fi
       while IFS= read -r env_row; do
@@ -1629,6 +1647,8 @@ sandbox_default_kernel() {
     "${DORY_SANDBOX_KERNEL:-}" \
     "${DORYD_MACHINE_KERNEL:-}" \
     "${DORYD_GUEST_KERNEL:-}" \
+    "$(installed_component_asset linux-machines "dory-hv-kernel-$arch" || true)" \
+    "$(installed_component_asset linux-machines dory-hv-kernel || true)" \
     "$DORY_SCRIPT_DIR/../Resources/dory-hv-kernel-$arch" \
     "$DORY_SCRIPT_DIR/../Resources/dory-hv-kernel" \
     "$repo/guest/out/Image" \
@@ -1643,6 +1663,8 @@ sandbox_default_rootfs() {
     "${DORY_SANDBOX_ROOTFS:-}" \
     "${DORYD_MACHINE_ROOTFS:-}" \
     "${DORYD_GUEST_ROOTFS:-}" \
+    "$(installed_component_asset linux-machines "dory-machine-rootfs-$arch.ext4" || true)" \
+    "$(installed_component_asset linux-machines dory-machine-rootfs.ext4 || true)" \
     "$DORY_SCRIPT_DIR/../Resources/dory-machine-rootfs-$arch.ext4" \
     "$DORY_SCRIPT_DIR/../Resources/dory-machine-rootfs.ext4" \
     "$repo/guest/out/initfs-$arch.ext4"
@@ -3409,7 +3431,7 @@ data = {
         "nonInteractive": True,
         "promptPolicy": "commands should not prompt unless an operation explicitly needs --apply or user credentials",
         "destructivePolicy": "run dry-run or read-only commands first; require explicit --apply/--include-volumes/delete verbs for writes",
-        "hostToolPolicy": "doryd reconciles bundled docker, docker compose, kubectl, dory, and docker context integration automatically while it is running; do not require dory install for first use",
+        "hostToolPolicy": "doryd reconciles bundled docker, docker compose, dory, and docker context integration automatically while it is running; the Kubernetes component adds kubectl; do not require dory install for first use",
     },
     "schemas": {
         "agentGuide": "dev.dory.agent.guide v1",
@@ -3463,7 +3485,16 @@ data = {
             "dryRun": True,
             "manualRecoveryOnly": True,
             "safeForAutomation": True,
-            "notes": "Manual recovery only. doryd keeps per-user terminal integration current automatically while it is running, so docker, docker compose, kubectl, and dory resolve from ~/.dory/bin without Docker Desktop or admin access.",
+            "notes": "Manual recovery only. doryd keeps docker, docker compose, and dory current in ~/.dory/bin without Docker Desktop or admin access. The Kubernetes component adds kubectl.",
+        },
+        {
+            "id": "component",
+            "status": "available",
+            "invoke": "dory component list|install|update|verify|remove [COMPONENT] [--json]",
+            "json": True,
+            "safeForAutomation": True,
+            "components": ["kubernetes", "linux-machines", "linux-desktop", "desktop-debian", "desktop-ubuntu", "desktop-kali"],
+            "notes": "Manages signed optional payloads on the selected Dory data drive. Desktop distributions add linux-desktop automatically. Removal preserves workload data.",
         },
         {
             "id": "repair",
@@ -3549,7 +3580,7 @@ data = {
             "invoke": "dory machine ls|create|start|stop|delete|snapshot|restore|exec ...",
             "json": True,
             "safeForAutomation": True,
-            "notes": "Requires dorydctl and Dory's daemon-managed VM machine runtime; use `dory machine exec NAME --json -- CMD` for schema dev.dory.machine.exec v1. Set DORY_LEGACY_DOCKER_MACHINES=1 only for old container-backed machine inspection.",
+            "notes": "Requires dorydctl and Dory's daemon-managed VM machine runtime; use `dory machine exec NAME --json -- CMD` for schema dev.dory.machine.exec v1. Managed Debian, Ubuntu, and Kali Xfce machines require their matching desktop component; Alpine headless machines require linux-machines. Set DORY_LEGACY_DOCKER_MACHINES=1 only for old container-backed machine inspection.",
         },
         {
             "id": "ssh",
@@ -3704,6 +3735,7 @@ case "${1:-help}" in
                   esac ;;
   engine)         shift; engine_cmd "$@" ;;
   data)           shift; data_cmd "$@" ;;
+  component)      shift; component_ctl="$(dorydctl_bin 2>/dev/null)" || { echo "dorydctl not found; reinstall Dory Docker Core" >&2; exit 1; }; exec "$component_ctl" component "$@" ;;
   agent)          shift; agent_cmd "$@" ;;
   mcp)            shift; mcp_cmd "$@" ;;
   sandbox)        shift; sandbox_cmd "$@" ;;
@@ -3744,6 +3776,11 @@ case "${1:-help}" in
                     exec "$DOCKER_BIN" -H "unix://$DORY_SOCK" exec -it -u "$user" -w "$home" "$cid" "$shell" -l
                   fi ;;
   vm)             shift; H="$(vmm_helper || true)"; [ -z "$H" ] && { echo "dory-vmm helper not found; build+sign it (see scripts/bundle-engine.sh)" >&2; exit 1; }; exec "$H" "$@" ;;
-  k8s)            shift; exec "$KUBECTL_BIN" --kubeconfig "$KUBECONFIG_DORY" "$@" ;;
+  k8s)            shift
+                  if ! [ -x "$KUBECTL_BIN" ] && ! command -v "$KUBECTL_BIN" >/dev/null 2>&1; then
+                    echo "Kubernetes is not installed. Run: dory component install kubernetes" >&2
+                    exit 1
+                  fi
+                  exec "$KUBECTL_BIN" --kubeconfig "$KUBECONFIG_DORY" "$@" ;;
   *)              exec "$DOCKER_BIN" -H "unix://$DORY_SOCK" "$@" ;;
 esac

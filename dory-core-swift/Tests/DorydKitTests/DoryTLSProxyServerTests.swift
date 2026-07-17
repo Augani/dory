@@ -3,6 +3,25 @@ import Darwin
 import XCTest
 
 final class DoryTLSProxyServerTests: XCTestCase {
+    func testTemporaryKeychainFallbackUsesPrivateFileAndDeletesIt() throws {
+        let base = NSTemporaryDirectory() + "doryd-tls-keychain-\(getpid())-\(UUID().uuidString)"
+        let ca = DoryLocalCA(directory: URL(fileURLWithPath: base).appendingPathComponent("ca"))
+        defer { try? FileManager.default.removeItem(atPath: base) }
+
+        let p12 = try ca.issuePKCS12(domain: "dory.local", password: "test-password")
+        var storage: DoryTLSIdentityStorage? = try XCTUnwrap(DoryTLSProxyServer.loadIdentity(
+            p12Path: p12.path,
+            password: "test-password",
+            forceTemporaryKeychain: true
+        ))
+        let keychainPath = try XCTUnwrap(storage?.temporaryKeychainPath)
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: keychainPath))
+
+        storage = nil
+        XCTAssertFalse(FileManager.default.fileExists(atPath: keychainPath))
+    }
+
     func testCanRestartFixedPortWithoutAddressInUse() throws {
         let base = NSTemporaryDirectory() + "doryd-tls-restart-\(getpid())-\(UUID().uuidString)"
         let ca = DoryLocalCA(directory: URL(fileURLWithPath: base).appendingPathComponent("ca"))
@@ -58,6 +77,46 @@ final class DoryTLSProxyServerTests: XCTestCase {
 
         XCTAssertEqual(response, "hello over tls")
         XCTAssertTrue(backend.lastRequest.contains("Host: web.dory.local"))
+    }
+
+    func testTerminatesTLSForExplicitCustomDomainSANAndRoute() throws {
+        let base = NSTemporaryDirectory() + "doryd-custom-tls-\(getpid())-\(UUID().uuidString)"
+        let ca = DoryLocalCA(directory: URL(fileURLWithPath: base).appendingPathComponent("ca"))
+        guard FileManager.default.isExecutableFile(atPath: "/usr/bin/curl") else {
+            throw XCTSkip("/usr/bin/curl unavailable")
+        }
+        defer { try? FileManager.default.removeItem(atPath: base) }
+
+        let backend = TinyTLSHTTPBackend(responseBody: "hello custom tls")
+        try backend.start()
+        defer { backend.stop() }
+
+        let p12 = try ca.issuePKCS12(
+            domain: "dory.local",
+            password: "test-password",
+            extraSANs: ["admin.myproject.local"]
+        )
+        let proxy = try DoryTLSProxyServer(
+            port: 0,
+            p12Path: p12.path,
+            password: "test-password",
+            routes: [
+                DomainRoute(hostname: "admin.myproject.local", address: "127.0.0.1", port: backend.port),
+            ]
+        )
+        try proxy.start()
+        defer { proxy.stop() }
+
+        let response = try DoryShell.run("/usr/bin/curl", [
+            "-kfsS",
+            "--max-time", "5",
+            "--noproxy", "*",
+            "--resolve", "admin.myproject.local:\(proxy.port):127.0.0.1",
+            "https://admin.myproject.local:\(proxy.port)/",
+        ], timeout: 10)
+
+        XCTAssertEqual(response, "hello custom tls")
+        XCTAssertTrue(backend.lastRequest.contains("Host: admin.myproject.local"))
     }
 }
 

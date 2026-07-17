@@ -20,4 +20,29 @@ final class DomainRouterTests: XCTestCase {
         XCTAssertEqual(router.resolve("API.DORY.LOCAL.", in: routes), "10.0.0.5")
         XCTAssertNil(router.resolve("api.example.com", in: routes))
     }
+
+    func testMatchesExactAndSingleLabelWildcardHosts() {
+        XCTAssertTrue(DomainRouter.matches(pattern: "Admin.MyProject.Local.", hostname: "admin.myproject.local"))
+        XCTAssertTrue(DomainRouter.matches(pattern: "*.myproject.local", hostname: "tenant.myproject.local"))
+        XCTAssertFalse(DomainRouter.matches(pattern: "*.myproject.local", hostname: "deep.tenant.myproject.local"))
+        XCTAssertFalse(DomainRouter.matches(pattern: "*.myproject.local", hostname: "myproject.local"))
+        XCTAssertEqual(DomainRouter.matchSpecificity(
+            pattern: "admin.myproject.local",
+            hostname: "admin.myproject.local"
+        ), 2)
+        XCTAssertEqual(DomainRouter.matchSpecificity(
+            pattern: "*.myproject.local",
+            hostname: "admin.myproject.local"
+        ), 1)
+    }
+
+    func testValidatesOnlyDNSHostnamesAndLeftmostWildcards() {
+        XCTAssertTrue(DomainRouter.isValidHostnamePattern("admin.myproject.local"))
+        XCTAssertTrue(DomainRouter.isValidHostnamePattern("*.myproject.local"))
+        XCTAssertFalse(DomainRouter.isValidHostnamePattern("localhost"))
+        XCTAssertFalse(DomainRouter.isValidHostnamePattern("127.0.0.1"))
+        XCTAssertFalse(DomainRouter.isValidHostnamePattern("*.127.0.0.1"))
+        XCTAssertFalse(DomainRouter.isValidHostnamePattern("admin.*.local"))
+        XCTAssertFalse(DomainRouter.isValidHostnamePattern("-admin.myproject.local"))
+    }
 }

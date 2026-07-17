@@ -223,12 +223,17 @@ public final class DoryHTTPProxyServer: @unchecked Sendable {
         lock.lock()
         let currentRoutes = routes
         lock.unlock()
-        return currentRoutes.first { route in
+        return currentRoutes.compactMap { route -> (specificity: Int, route: DomainRoute)? in
             let hostname = DomainRouter.normalize(route.hostname)
-            return hostname == normalized
-                && (router.owns(hostname) || Self.isLoopbackHost(hostname))
-                && IPv4Address(route.address) != nil
-        }
+            guard let specificity = DomainRouter.matchSpecificity(pattern: hostname, hostname: normalized),
+                  router.owns(hostname)
+                    || Self.isLoopbackHost(hostname)
+                    || DomainRouter.isValidHostnamePattern(hostname),
+                  IPv4Address(route.address) != nil else {
+                return nil
+            }
+            return (specificity, route)
+        }.max { $0.specificity < $1.specificity }?.route
     }
 
     private func writeBadGateway(_ client: Int32, body: String) {

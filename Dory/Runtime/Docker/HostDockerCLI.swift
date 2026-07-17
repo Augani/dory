@@ -1,3 +1,4 @@
+import DoryOperations
 import Foundation
 
 /// Makes `docker` and `docker compose` work in the user's own terminal with zero prerequisites.
@@ -34,6 +35,16 @@ enum HostDockerCLI {
         _ = installBuildxPlugin()
         addToPath()
         return true
+    }
+
+    static func reconcileOptionalTools(enabled: Bool) {
+        let destination = binDir + "/kubectl"
+        if enabled, let source = bundledTool("kubectl") {
+            try? FileManager.default.createDirectory(atPath: binDir, withIntermediateDirectories: true)
+            symlink(source, to: destination)
+            return
+        }
+        removeOwnedOptionalToolSymlink(at: destination)
     }
 
     @discardableResult
@@ -94,7 +105,29 @@ enum HostDockerCLI {
            FileManager.default.isExecutableFile(atPath: auxiliary) {
             return auxiliary
         }
+        if name == "kubectl",
+           let installed = DoryComponentStore.activeAssetPath(component: .kubernetes, path: "kubectl"),
+           FileManager.default.isExecutableFile(atPath: installed) {
+            return installed
+        }
         return nil
+    }
+
+    static func removeOwnedOptionalToolSymlink(
+        at destination: String,
+        home: String = NSHomeDirectory(),
+        bundleRoot: String = Bundle.main.bundleURL.path,
+        componentRoot: String? = (try? DoryComponentStore.selected())?.root,
+        fileManager: FileManager = .default
+    ) {
+        guard let rawTarget = try? fileManager.destinationOfSymbolicLink(atPath: destination) else { return }
+        let target = resolvedSymlinkTarget(rawTarget, at: destination)
+        let candidate = standardized(target)
+        let owned = isInside(candidate, root: standardized(home + "/.dory"))
+            || isInside(candidate, root: standardized(bundleRoot))
+            || componentRoot.map { isInside(candidate, root: standardized($0)) } == true
+        guard owned else { return }
+        try? fileManager.removeItem(atPath: destination)
     }
 
     private static func symlink(_ source: String, to destination: String) {

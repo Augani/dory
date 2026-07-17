@@ -116,4 +116,42 @@ struct HostDockerCLITests {
         )
         #expect(!fileManager.fileExists(atPath: destination.path))
     }
+
+    @Test func optionalToolRemovalOnlyTouchesDoryOwnedLinks() throws {
+        let fileManager = FileManager.default
+        let root = fileManager.temporaryDirectory.appendingPathComponent("dory-optional-cli-\(UUID().uuidString)")
+        let home = root.appendingPathComponent("home")
+        let bundle = root.appendingPathComponent("Dory.app")
+        let components = root.appendingPathComponent("Dory.dorydrive/components")
+        let destination = home.appendingPathComponent(".dory/bin/kubectl")
+        try fileManager.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: components, withIntermediateDirectories: true)
+        defer { try? fileManager.removeItem(at: root) }
+
+        let componentTool = components.appendingPathComponent("installed/kubernetes/kubectl")
+        try fileManager.createDirectory(at: componentTool.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("kubectl".utf8).write(to: componentTool)
+        try fileManager.createSymbolicLink(atPath: destination.path, withDestinationPath: componentTool.path)
+        HostDockerCLI.removeOwnedOptionalToolSymlink(
+            at: destination.path,
+            home: home.path,
+            bundleRoot: bundle.path,
+            componentRoot: components.path,
+            fileManager: fileManager
+        )
+        #expect((try? fileManager.destinationOfSymbolicLink(atPath: destination.path)) == nil)
+
+        let thirdParty = root.appendingPathComponent("third-party/kubectl")
+        try fileManager.createDirectory(at: thirdParty.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("kubectl".utf8).write(to: thirdParty)
+        try fileManager.createSymbolicLink(atPath: destination.path, withDestinationPath: thirdParty.path)
+        HostDockerCLI.removeOwnedOptionalToolSymlink(
+            at: destination.path,
+            home: home.path,
+            bundleRoot: bundle.path,
+            componentRoot: components.path,
+            fileManager: fileManager
+        )
+        #expect((try? fileManager.destinationOfSymbolicLink(atPath: destination.path)) == thirdParty.path)
+    }
 }

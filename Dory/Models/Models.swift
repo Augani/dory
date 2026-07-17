@@ -1,7 +1,7 @@
 import SwiftUI
 
 enum AppSection: String, CaseIterable, Identifiable, Sendable {
-    case containers, images, volumes, networks, compose, kubernetes, desktops, machines, health, settings
+    case containers, images, volumes, networks, compose, kubernetes, desktops, machines, components, health, settings
     var id: String { rawValue }
 
     var title: String {
@@ -14,6 +14,7 @@ enum AppSection: String, CaseIterable, Identifiable, Sendable {
         case .kubernetes: "Kubernetes"
         case .desktops: "Linux Desktops"
         case .machines: "Linux Servers"
+        case .components: "Components"
         case .health: "Health"
         case .settings: "Settings"
         }
@@ -29,6 +30,7 @@ enum AppSection: String, CaseIterable, Identifiable, Sendable {
         case .kubernetes: nil
         case .desktops: "New Desktop"
         case .machines: "New Server"
+        case .components: nil
         case .health: nil
         case .settings: nil
         }
@@ -443,11 +445,12 @@ struct LocalDorydCapability: Identifiable, Equatable, Sendable {
 }
 
 enum SettingsTab: String, CaseIterable, Identifiable, Sendable {
-    case general, engine, resources, machines, autoIdle, network, usb, localTools, migrate, managed, about
+    case general, components, engine, resources, machines, autoIdle, network, usb, localTools, migrate, managed, about
     var id: String { rawValue }
     var label: String {
         switch self {
         case .general: "General"
+        case .components: "Components"
         case .engine: "Engine & Daemon"
         case .resources: "Resources"
         case .machines: "Machines"

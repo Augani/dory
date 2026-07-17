@@ -124,6 +124,8 @@ nonisolated enum DesktopMachineAssetProvisioner {
                 "DORYD_GUEST_KERNEL",
             ],
             resourceNames: ["dory-desktop-kernel-\(arch)"],
+            component: .linuxDesktop,
+            componentAssetNames: ["dory-desktop-kernel-\(arch).lzfse", "dory-desktop-kernel-\(arch)"],
             kind: "kernel",
             environment: environment,
             resourceDirectory: resourceDirectory
@@ -137,6 +139,8 @@ nonisolated enum DesktopMachineAssetProvisioner {
                 "DORYD_GUEST_ROOTFS",
             ],
             resourceNames: rootfsResourceNames(for: distro, arch: arch),
+            component: distro.componentID,
+            componentAssetNames: rootfsResourceNames(for: distro, arch: arch).flatMap { ["\($0).lzfse", $0] },
             kind: "root filesystem",
             environment: environment,
             resourceDirectory: resourceDirectory
@@ -170,6 +174,8 @@ nonisolated enum DesktopMachineAssetProvisioner {
     private static func source(
         overrideKeys: [String],
         resourceNames: [String],
+        component: DoryComponentID,
+        componentAssetNames: [String],
         kind: String,
         environment: [String: String],
         resourceDirectory: String?
@@ -181,6 +187,12 @@ nonisolated enum DesktopMachineAssetProvisioner {
                 throw DesktopMachineAssetError.invalidAsset(path)
             }
             return Source(path: path, compressed: path.hasSuffix(".lzfse"))
+        }
+        for name in componentAssetNames {
+            if let path = DoryComponentStore.activeAssetPath(component: component, path: name),
+               isRegularFile(path) {
+                return Source(path: path, compressed: path.hasSuffix(".lzfse"))
+            }
         }
         if environment["DORYD_DISABLE_BUNDLED_MACHINE_ASSETS"] == "1" {
             throw DesktopMachineAssetError.missingAsset(kind)
@@ -399,5 +411,15 @@ nonisolated enum DesktopMachineAssetProvisioner {
 
     private static func errnoDescription(_ operation: String) -> String {
         "\(operation): \(String(cString: strerror(errno)))"
+    }
+}
+
+extension DesktopMachineDistro {
+    nonisolated var componentID: DoryComponentID {
+        switch self {
+        case .debian: .desktopDebian
+        case .ubuntu: .desktopUbuntu
+        case .kali: .desktopKali
+        }
     }
 }

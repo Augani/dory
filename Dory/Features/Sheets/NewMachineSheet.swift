@@ -1,4 +1,5 @@
 import Darwin
+import DoryOperations
 import SwiftUI
 
 struct NewMachineSheet: View {
@@ -32,6 +33,11 @@ struct NewMachineSheet: View {
         _displayMode = State(initialValue: displayMode)
         _stage = State(initialValue: displayMode == .desktop ? .form : .useCase)
         _name = State(initialValue: NewMachineSheet.defaultName())
+        if let installedDistro = DesktopMachineDistro.allCases.first(where: {
+            AppInfo.componentAvailable($0.componentID)
+        }) {
+            _desktopDistro = State(initialValue: installedDistro)
+        }
     }
 
     private var engineReady: Bool { store.dorydRuntimeActive }
@@ -228,13 +234,17 @@ struct NewMachineSheet: View {
         VStack(alignment: .leading, spacing: 9) {
             sectionLabel("DESKTOP DISTRIBUTION")
             LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 9), count: 3), spacing: 9) {
-                ForEach(DesktopMachineDistro.allCases) { distro in
+                ForEach(installedDesktopDistros) { distro in
                     desktopDistroButton(distro)
                 }
             }
-            Text("Each choice is a real arm64 guest image with its own packages and official repositories. All use Dory's optimized kernel and Xfce display stack.")
+            Text("Only installed distributions are shown. Add or remove Debian, Ubuntu, and Kali independently in Components.")
                 .font(.system(size: 11)).foregroundStyle(p.text3)
         }
+    }
+
+    private var installedDesktopDistros: [DesktopMachineDistro] {
+        DesktopMachineDistro.allCases.filter { AppInfo.componentAvailable($0.componentID) }
     }
 
     private func desktopDistroButton(_ distro: DesktopMachineDistro) -> some View {

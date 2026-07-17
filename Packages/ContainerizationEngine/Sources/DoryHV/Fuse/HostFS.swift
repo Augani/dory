@@ -231,6 +231,9 @@ public final class HostFS: @unchecked Sendable {
     /// Compare case-insensitively so the denylist cannot be bypassed through a case-insensitive
     /// APFS lookup such as `.SSH` resolving the host's `.ssh` directory.
     private let hiddenNameKeys: Set<String>
+    /// Entry names hidden only as direct children of the export root. Safe whole-home shares use
+    /// this set so home credentials remain private without shadowing normal project directories.
+    private let rootHiddenNameKeys: Set<String>
     private var nextNodeID: UInt64 = 2
     private var nodes: [UInt64: Node] = [:]
     private var idsByFileKey: [FileKey: Set<UInt64>] = [:]
@@ -270,7 +273,14 @@ public final class HostFS: @unchecked Sendable {
         }
     }
 
-    public init(rootPath: String, guestUID: UInt32 = 1000, guestGID: UInt32 = 1000, readOnly: Bool = false, hiddenNames: Set<String> = []) throws {
+    public init(
+        rootPath: String,
+        guestUID: UInt32 = 1000,
+        guestGID: UInt32 = 1000,
+        readOnly: Bool = false,
+        hiddenNames: Set<String> = [],
+        rootHiddenNames: Set<String> = []
+    ) throws {
         var resolved = [CChar](repeating: 0, count: Int(PATH_MAX))
         guard realpath(rootPath, &resolved) != nil else {
             throw HostFSError.invalidRoot(rootPath)
@@ -290,6 +300,7 @@ public final class HostFS: @unchecked Sendable {
         self.guestGID = guestGID
         self.readOnly = readOnly
         self.hiddenNameKeys = Set(hiddenNames.map(Self.hiddenNameKey))
+        self.rootHiddenNameKeys = Set(rootHiddenNames.map(Self.hiddenNameKey))
 
         var st = stat()
         guard fstat(fd, &st) == 0 else {
@@ -686,10 +697,10 @@ public final class HostFS: @unchecked Sendable {
                 break
             }
         }
-        guard let relativePath,
-              !relativePath.split(separator: "/").contains(where: {
-                  isHiddenName(String($0))
-              }) else {
+        guard let relativePath else { return nil }
+        let components = relativePath.split(separator: "/").map(String.init)
+        guard !components.contains(where: isHiddenAtAnyDepth),
+              components.first.map({ !rootHiddenNameKeys.contains(Self.hiddenNameKey($0)) }) ?? true else {
             return nil
         }
         return relativePath
@@ -728,7 +739,7 @@ public final class HostFS: @unchecked Sendable {
 
     public func lookupIfExists(parent: UInt64, name: String) throws -> HostFSEntry? {
         try validateComponent(name)
-        try requireVisible(name)
+        try requireVisible(name, parent: parent)
         let parentNode = try attachedNode(for: parent)
         guard parentNode.attributes.isDirectory else {
             throw HostFSError.notDirectory(parent)
@@ -1447,7 +1458,7 @@ public final class HostFS: @unchecked Sendable {
     ) throws -> (entry: HostFSEntry, fd: Int32) {
         guard !readOnly else { throw HostFSError.readOnly }
         try validateComponent(name)
-        try requireVisible(name)
+        try requireVisible(name, parent: parent)
         let parentNode = try attachedNode(for: parent)
         guard parentNode.attributes.isDirectory else { throw HostFSError.notDirectory(parent) }
         let relative = join(parentNode.relativePath, name)
@@ -1535,7 +1546,7 @@ public final class HostFS: @unchecked Sendable {
     ) throws -> HostFSEntry {
         guard !readOnly else { throw HostFSError.readOnly }
         try validateComponent(name)
-        try requireVisible(name)
+        try requireVisible(name, parent: parent)
         let parentNode = try attachedNode(for: parent)
         guard parentNode.attributes.isDirectory else { throw HostFSError.notDirectory(parent) }
         let relative = join(parentNode.relativePath, name)
@@ -1568,7 +1579,7 @@ public final class HostFS: @unchecked Sendable {
     public func symlink(parent: UInt64, name: String, target: String) throws -> HostFSEntry {
         guard !readOnly else { throw HostFSError.readOnly }
         try validateComponent(name)
-        try requireVisible(name)
+        try requireVisible(name, parent: parent)
         guard !target.isEmpty, !target.utf8.contains(0) else {
             throw HostFSError.invalidName(target)
         }
@@ -1606,7 +1617,7 @@ public final class HostFS: @unchecked Sendable {
     public func link(nodeID: UInt64, newParent: UInt64, name: String) throws -> HostFSEntry {
         guard !readOnly else { throw HostFSError.readOnly }
         try validateComponent(name)
-        try requireVisible(name)
+        try requireVisible(name, parent: newParent)
         let source = try attachedNode(for: nodeID)
         guard !source.attributes.isDirectory else {
             throw HostFSError.systemCall("link directory", EPERM)
@@ -1729,7 +1740,7 @@ public final class HostFS: @unchecked Sendable {
     public func unlink(parent: UInt64, name: String) throws {
         guard !readOnly else { throw HostFSError.readOnly }
         try validateComponent(name)
-        try requireVisible(name)
+        try requireVisible(name, parent: parent)
         let parentNode = try attachedNode(for: parent)
         guard parentNode.attributes.isDirectory else { throw HostFSError.notDirectory(parent) }
         let relative = join(parentNode.relativePath, name)
@@ -1761,7 +1772,7 @@ public final class HostFS: @unchecked Sendable {
     public func rmdir(parent: UInt64, name: String) throws {
         guard !readOnly else { throw HostFSError.readOnly }
         try validateComponent(name)
-        try requireVisible(name)
+        try requireVisible(name, parent: parent)
         let parentNode = try attachedNode(for: parent)
         guard parentNode.attributes.isDirectory else { throw HostFSError.notDirectory(parent) }
         let relative = join(parentNode.relativePath, name)
@@ -1781,8 +1792,8 @@ public final class HostFS: @unchecked Sendable {
         guard !readOnly else { throw HostFSError.readOnly }
         try validateComponent(name)
         try validateComponent(newName)
-        try requireVisible(name)
-        try requireVisible(newName)
+        try requireVisible(name, parent: parent)
+        try requireVisible(newName, parent: newParent)
         let parentNode = try attachedNode(for: parent)
         let newParentNode = try attachedNode(for: newParent)
         guard parentNode.attributes.isDirectory else { throw HostFSError.notDirectory(parent) }
@@ -1844,7 +1855,7 @@ public final class HostFS: @unchecked Sendable {
             let name = withUnsafeBytes(of: entry.pointee.d_name) { bytes in
                 String(decoding: bytes.prefix(length), as: UTF8.self)
             }
-            if name != ".", name != "..", !isHiddenName(name) {
+            if name != ".", name != "..", !isHiddenName(name, parent: nodeID) {
                 names.append(name)
             }
             errno = 0
@@ -2043,13 +2054,18 @@ public final class HostFS: @unchecked Sendable {
         }
     }
 
-    private func requireVisible(_ name: String) throws {
-        guard !isHiddenName(name) else {
+    private func requireVisible(_ name: String, parent: UInt64) throws {
+        guard !isHiddenName(name, parent: parent) else {
             throw HostFSError.notFound(name)
         }
     }
 
-    private func isHiddenName(_ name: String) -> Bool {
+    private func isHiddenName(_ name: String, parent: UInt64) -> Bool {
+        isHiddenAtAnyDepth(name)
+            || (parent == Self.rootNodeID && rootHiddenNameKeys.contains(Self.hiddenNameKey(name)))
+    }
+
+    private func isHiddenAtAnyDepth(_ name: String) -> Bool {
         hiddenNameKeys.contains(Self.hiddenNameKey(name))
     }
 

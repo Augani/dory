@@ -1,6 +1,6 @@
 # Dory complete agent reference
 
-Version: Dory 0.3.1
+Version: Dory 0.3.2
 Host contract: Apple Silicon Mac, macOS 14 or later
 License: GPL-3.0
 Local socket: ~/.dory/dory.sock
@@ -23,13 +23,27 @@ Recommended install:
 
     brew install --cask Augani/dory/dory
 
-The Homebrew cask and standard download are the Lean edition: containers, Kubernetes, and headless Linux servers. The all-inclusive Desktop download adds the Debian, Ubuntu, and Kali graphical images. Both editions use the same selected `.dorydrive`.
+The Homebrew cask and standard download install Docker Core: Dory.app, the Docker engine and CLI, Compose, Buildx, networking, storage, migration, diagnostics, and recovery. A signed catalog provides removable Kubernetes, Linux Machines, Linux Desktop Runtime, Debian, Ubuntu, and Kali components on the selected `.dorydrive`.
 
-Dory 0.3.0 users should quit Dory, uninstall the old app, and install the 0.3.1 edition they want. Normal uninstall preserves workload data. Keep only one Dory.app in Applications so macOS registers the correct bundled services.
+Users of an older Dory release should quit Dory, uninstall the old app, and install Dory 0.3.2 Docker Core. Normal uninstall preserves workload data. Keep only one Dory.app in Applications, then install the optional components they use.
 
-Open Dory once. While doryd is running it reconciles bundled `docker`, `docker compose`, `kubectl`, and `dory` tools in ~/.dory/bin and creates the dory Docker context. A separate Docker Desktop or Docker CLI install is not required.
+Open Dory once. While doryd is running it reconciles bundled `docker`, `docker compose`, and `dory` tools in ~/.dory/bin and creates the dory Docker context. Installing the Kubernetes component also reconciles `kubectl`. A separate Docker Desktop or Docker CLI install is not required.
 
 `dory install` exists as manual recovery. Do not make it the normal first step.
+
+## Focused components
+
+    dory component list
+    dory component install kubernetes
+    dory component install linux-machines
+    dory component install desktop-debian
+    dory component install desktop-ubuntu
+    dory component install desktop-kali
+    dory component update COMPONENT
+    dory component verify COMPONENT
+    dory component remove COMPONENT
+
+Docker Core is required. Desktop distributions add the shared Linux Desktop Runtime automatically. Component catalogs and assets are signature, digest, version, and architecture checked before atomic activation. Removing an optional component deletes only its installed payload. Containers, volumes, cluster state, machine disks, snapshots, and exports remain on the selected data drive.
 
 ## Safe operating policy
 
@@ -105,8 +119,11 @@ Published ports are localhost-only by default. Dory never widens explicit loopba
     dory network authorize --json --apply
     dory network deauthorize --json --dry-run
     dory network --lan-visible on
+    dory network custom-domains
+    dory network set-custom-domain admin.myproject.local --published-port 80
+    dory network remove-custom-domain admin.myproject.local
 
-Optional authorization manages the selected local-domain resolver, local TLS, ports 80 and 443, and published low TCP ports. LAN and Tailscale access are explicit opt-ins. Containers reach Mac services at `host.dory.internal`.
+Optional authorization manages the selected local-domain resolver, local TLS, ports 80 and 443, and published low TCP ports. Exact and leftmost-wildcard custom domains can route to a published HTTP port after the hostname resolves to 127.0.0.1. `/etc/hosts` needs each exact name; wildcard resolution requires local DNS. LAN and Tailscale access are explicit opt-ins. Containers reach Mac services at `host.dory.internal`.
 
 ## Mounts, disk, and cleanup
 
@@ -159,7 +176,7 @@ Auto-Idle can be blocked by published ports, pinned projects, or Kubernetes acco
     dory machine snapshot NAME --note NOTE
     dory machine restore NAME SNAPSHOT
 
-The app has separate Linux Desktops and Linux Servers areas. Desktop creation selects Debian 13, Ubuntu 24.04 LTS, or Kali rolling, a login user, CPU, memory, optional development recipe, Mac home sharing, and scoped mounts. Desktop windows render at a true 2x guest framebuffer, follow window resizing, and configure matching Xfce scaling. The Desktop edition is required to create a new graphical machine.
+The app has separate Linux Desktops and Linux Servers areas. Desktop creation selects Debian 13, Ubuntu 24.04 LTS, or Kali rolling, a login user, CPU, memory, optional development recipe, Mac home sharing, and scoped mounts. Desktop windows render at a true 2x guest framebuffer, follow window resizing, and configure matching Xfce scaling. A new graphical machine requires its matching `desktop-*` component; a headless machine requires `linux-machines`.
 
 The machine command also supports clone, import, export, and snapshot deletion. Structured execution uses `dev.dory.machine.exec v1`. New machines do not inherit arbitrary host secrets or files. The app controls a named environment allow-list and scoped mounts.
 
@@ -168,7 +185,7 @@ The machine command also supports clone, import, export, and snapshot deletion. 
     dory k8s get pods -A
     kubectl get pods -A
 
-Supported k3s presets are v1.34, v1.35, and v1.36. Switching versions recreates the cluster. k3s has a separate image store from the Docker engine.
+Install the Kubernetes component before enabling a cluster. Supported k3s presets are v1.34, v1.35, and v1.36. Switching versions recreates the cluster. The selected k3s image downloads on first cluster creation and remains in Docker storage on the selected data drive.
 
 ## Compatibility
 

@@ -88,6 +88,7 @@ public final class NetworkingController: @unchecked Sendable {
     private let httpProxy: DoryHTTPProxyServer
     private let controlLock = NSLock()
     private var tlsProxy: DoryTLSProxyServer?
+    var tlsRouteNames: Set<String> = []
 
     public init(configuration: NetworkingConfiguration = NetworkingConfiguration()) {
         self.configuration = configuration
@@ -115,29 +116,11 @@ public final class NetworkingController: @unchecked Sendable {
         do {
             try dnsServer.start()
             try httpProxy.start()
-            if let localCACertificatePath = configuration.localCACertificatePath {
-                let ca = DoryLocalCA(directory: URL(fileURLWithPath: localCACertificatePath).deletingLastPathComponent())
-                // Ephemeral per-issuance password: the p12 only exists to hand the identity
-                // to the local TLS proxy, so a fixed password on disk buys nothing.
-                let p12Password = Self.ephemeralPassword()
-                let p12 = try ca.issuePKCS12(
-                    domain: configuration.suffix,
-                    password: p12Password,
-                    extraSANs: [
-                        "*.k8s.\(configuration.suffix)",
-                        "*.default.k8s.\(configuration.suffix)",
-                        "*.kube-system.k8s.\(configuration.suffix)",
-                    ]
-                )
-                let proxy = try DoryTLSProxyServer(
-                    port: configuration.httpsProxyPort,
-                    p12Path: p12.path,
-                    password: p12Password,
-                    router: router,
-                    routes: dnsServer.currentRoutes()
-                )
+            if configuration.localCACertificatePath != nil {
+                let (proxy, routeNames) = try makeTLSProxy(routes: dnsServer.currentRoutes())
                 try proxy.start()
                 tlsProxy = proxy
+                tlsRouteNames = routeNames
             }
         } catch {
             dnsServer.stop()
@@ -159,6 +142,7 @@ public final class NetworkingController: @unchecked Sendable {
         httpProxy.stop()
         tlsProxy?.stop()
         tlsProxy = nil
+        tlsRouteNames = []
     }
 
     public func replaceRoutes(_ routes: [DomainRoute]) {
@@ -170,7 +154,7 @@ public final class NetworkingController: @unchecked Sendable {
     private func replaceRoutesLocked(_ routes: [DomainRoute]) {
         dnsServer.updateRoutes(routes)
         httpProxy.updateRoutes(routes)
-        tlsProxy?.updateRoutes(routes)
+        refreshTLSProxyLocked(routes: routes)
     }
 
     public func status() -> NetworkingStatus {
@@ -228,6 +212,70 @@ public final class NetworkingController: @unchecked Sendable {
             .joined()
     }
 
+    private func makeTLSProxy(routes: [DomainRoute]) throws -> (DoryTLSProxyServer, Set<String>) {
+        guard let localCACertificatePath = configuration.localCACertificatePath else {
+            throw NetworkingControllerError.tlsUnavailable
+        }
+        let routeNames = tlsNames(for: routes)
+        let ca = DoryLocalCA(directory: URL(fileURLWithPath: localCACertificatePath).deletingLastPathComponent())
+        let password = Self.ephemeralPassword()
+        let p12 = try ca.issuePKCS12(
+            domain: configuration.suffix,
+            password: password,
+            extraSANs: Array(routeNames).sorted()
+        )
+        return (try DoryTLSProxyServer(
+            port: configuration.httpsProxyPort,
+            p12Path: p12.path,
+            password: password,
+            router: router,
+            routes: routes
+        ), routeNames)
+    }
+
+    private func tlsNames(for routes: [DomainRoute]) -> Set<String> {
+        var names: Set<String> = [
+            "*.k8s.\(configuration.suffix)",
+            "*.default.k8s.\(configuration.suffix)",
+            "*.kube-system.k8s.\(configuration.suffix)",
+        ]
+        for route in routes {
+            let hostname = DomainRouter.normalize(route.hostname)
+            guard !router.owns(hostname),
+                  !DoryHTTPProxyServer.isLoopbackHost(hostname),
+                  DomainRouter.isValidHostnamePattern(hostname) else {
+                continue
+            }
+            names.insert(hostname)
+        }
+        return names
+    }
+
+    private func refreshTLSProxyLocked(routes: [DomainRoute]) {
+        guard configuration.localCACertificatePath != nil else { return }
+        let desiredNames = tlsNames(for: routes)
+        guard !desiredNames.isSubset(of: tlsRouteNames) else {
+            tlsProxy?.updateRoutes(routes)
+            return
+        }
+        do {
+            let (candidate, routeNames) = try makeTLSProxy(routes: routes)
+            let previous = tlsProxy
+            previous?.stop()
+            do {
+                try candidate.start()
+                tlsProxy = candidate
+                tlsRouteNames = routeNames
+            } catch {
+                try? previous?.start()
+                previous?.updateRoutes(routes)
+                tlsProxy = previous
+            }
+        } catch {
+            tlsProxy?.updateRoutes(routes)
+        }
+    }
+
     public func authorizationPlan(additionalPrivilegedTCPForwards: [PrivilegedTCPForward] = []) throws -> NetworkingAuthorizationPlan {
         controlLock.lock()
         defer { controlLock.unlock() }
@@ -252,4 +300,8 @@ public final class NetworkingController: @unchecked Sendable {
     deinit {
         stop()
     }
+}
+
+private enum NetworkingControllerError: Error {
+    case tlsUnavailable
 }

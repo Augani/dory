@@ -285,6 +285,7 @@ nonisolated struct DorydNetworkingStatus: Sendable, Equatable {
     var httpsProxyPort: UInt16?
     var httpsProxyRunning: Bool
     var routes: [DorydDomainRoute]
+    var customRoutes: [DorydDomainRoute]
 }
 
 nonisolated struct DorydNetworkingAuthorizationRequest: Sendable, Equatable, Codable {
@@ -1291,6 +1292,9 @@ nonisolated final class DorydClient: @unchecked Sendable {
         }
         let routes = rawRoutes.compactMap(domainRoute(from:))
         guard routes.count == rawRoutes.count else { return nil }
+        let rawCustomRoutes = (dictionary["customRoutes"] as? [NSDictionary]) ?? []
+        let customRoutes = rawCustomRoutes.compactMap(domainRoute(from:))
+        guard customRoutes.count == rawCustomRoutes.count else { return nil }
         return DorydNetworkingStatus(
             mode: mode,
             suffix: suffix,
@@ -1301,7 +1305,8 @@ nonisolated final class DorydClient: @unchecked Sendable {
             httpProxyRunning: (dictionary["httpProxyRunning"] as? Bool) ?? false,
             httpsProxyPort: uint16(dictionary["httpsProxyPort"]),
             httpsProxyRunning: (dictionary["httpsProxyRunning"] as? Bool) ?? false,
-            routes: routes
+            routes: routes,
+            customRoutes: customRoutes
         )
     }
 

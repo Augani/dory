@@ -283,6 +283,54 @@ final class HostCLIInstallerTests: XCTestCase {
         XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: home + "/.dory/bin/docker"), helpers + "/docker")
     }
 
+    func testReconcilerRemovesStaleOwnedOptionalToolLinkWhenPayloadDisappears() throws {
+        let directory = "/tmp/doryd-cli-stale-optional-\(getpid())-\(UUID().uuidString)"
+        let home = directory + "/home"
+        let helpers = directory + "/Dory.app/Contents/Helpers"
+        try FileManager.default.createDirectory(atPath: helpers, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(atPath: home, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+
+        for tool in ["docker", "docker-buildx", "docker-compose", "kubectl", "dory", "dory-doctor", "dorydctl"] {
+            _ = try executableFixture(at: helpers + "/\(tool)")
+        }
+        let installer = HostCLIInstaller(home: home, helpersDirectory: helpers)
+        XCTAssertTrue(installer.install().linked.contains("kubectl"))
+        try FileManager.default.removeItem(atPath: helpers + "/kubectl")
+
+        let result = installer.install()
+
+        XCTAssertTrue(result.missing.contains("kubectl"))
+        XCTAssertNil(try? FileManager.default.destinationOfSymbolicLink(atPath: home + "/.dory/bin/kubectl"))
+    }
+
+    func testReconcilerPreservesUnownedOptionalToolLinkWhenBundledToolIsMissing() throws {
+        let directory = "/tmp/doryd-cli-unowned-optional-\(getpid())-\(UUID().uuidString)"
+        let home = directory + "/home"
+        let helpers = directory + "/Dory.app/Contents/Helpers"
+        let bin = home + "/.dory/bin"
+        try FileManager.default.createDirectory(atPath: helpers, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(atPath: bin, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+        let thirdPartyKubectl = directory + "/third-party/kubectl"
+        try FileManager.default.createDirectory(
+            atPath: URL(fileURLWithPath: thirdPartyKubectl).deletingLastPathComponent().path,
+            withIntermediateDirectories: true
+        )
+        _ = try executableFixture(at: thirdPartyKubectl)
+        try FileManager.default.createSymbolicLink(
+            atPath: bin + "/kubectl",
+            withDestinationPath: thirdPartyKubectl
+        )
+
+        _ = HostCLIInstaller(home: home, helpersDirectory: helpers).install()
+
+        XCTAssertEqual(
+            try FileManager.default.destinationOfSymbolicLink(atPath: bin + "/kubectl"),
+            thirdPartyKubectl
+        )
+    }
+
     func testInstallerNeverReplacesUnownedDockerPlugins() throws {
         let directory = "/tmp/doryd-cli-plugin-ownership-\(getpid())-\(UUID().uuidString)"
         let home = directory + "/home"

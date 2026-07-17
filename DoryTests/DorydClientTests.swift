@@ -12,6 +12,14 @@ struct DorydClientTests {
         #expect(!AppStore.dorydEngineEnabled(environment: ["DORY_APP_DISABLE_DORYD": "1"]))
     }
 
+    @Test func customDomainPatternsAcceptExactAndLeftmostWildcardOnly() {
+        #expect(AppStore.normalizedCustomDomainPattern(" Admin.MyProject.Local. ") == "admin.myproject.local")
+        #expect(AppStore.normalizedCustomDomainPattern("*.Tenant.Test") == "*.tenant.test")
+        #expect(AppStore.normalizedCustomDomainPattern("localhost") == nil)
+        #expect(AppStore.normalizedCustomDomainPattern("admin.*.local") == nil)
+        #expect(AppStore.normalizedCustomDomainPattern("-admin.myproject.local") == nil)
+    }
+
     @Test func doryCLIResolverPrefersBundledHelperOverAuxiliaryExecutable() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("DoryCLI-\(UUID().uuidString).app", isDirectory: true)
@@ -255,6 +263,7 @@ struct DorydClientTests {
                 pathPrefix: "/api/v1/namespaces/default/services/web:80/proxy"
             ),
         ])
+        #expect(networkStatus.customRoutes == networkStatus.routes)
         #expect(networkPlan.suffix == "dory.local")
         #expect(networkPlan.dnsBindAddress == "127.0.0.1")
         #expect(networkPlan.dnsPort == 15353)
@@ -1372,16 +1381,19 @@ struct DorydClientTests {
             else { UserDefaults.standard.removeObject(forKey: key) }
         }
         let removal = AuthorizedNetworkingRemovalRecorder()
+        let trust = LocalCATrustRemovalRecorder()
         let launchAgent = LaunchAgentConfigurationRecorder()
         let store = AppStore(
             dorydLaunchAgentEnsurer: { configuration in launchAgent.ensure(configuration) },
-            authorizedNetworkingRemover: { try removal.remove() }
+            authorizedNetworkingRemover: { try removal.remove() },
+            localCATrustManager: trust
         )
 
         store.applyNetworkingSettings(domainsEnabled: false)
         try await waitUntil { !store.networkingAuthorizationInFlight }
 
         #expect(removal.callCount == 1)
+        #expect(trust.removeCallCount == 1)
         #expect(launchAgent.configurations.map(\.domainsEnabled) == [false])
         #expect(!store.domainsEnabled)
         #expect(UserDefaults.standard.object(forKey: key) as? Bool == false)
@@ -1397,20 +1409,50 @@ struct DorydClientTests {
             else { UserDefaults.standard.removeObject(forKey: key) }
         }
         let removal = AuthorizedNetworkingRemovalRecorder(fails: true)
+        let trust = LocalCATrustRemovalRecorder()
         let launchAgent = LaunchAgentConfigurationRecorder()
         let store = AppStore(
             dorydLaunchAgentEnsurer: { configuration in launchAgent.ensure(configuration) },
-            authorizedNetworkingRemover: { try removal.remove() }
+            authorizedNetworkingRemover: { try removal.remove() },
+            localCATrustManager: trust
         )
 
         store.applyNetworkingSettings(domainsEnabled: false)
         try await waitUntil { !store.networkingAuthorizationInFlight }
 
         #expect(removal.callCount == 1)
+        #expect(trust.removeCallCount == 0)
         #expect(launchAgent.configurations.map(\.domainsEnabled) == [true])
         #expect(store.domainsEnabled)
         #expect(UserDefaults.standard.object(forKey: key) as? Bool == true)
         #expect(store.networkingAuthorizationMessage?.contains("stayed enabled") == true)
+    }
+
+    @MainActor
+    @Test func failedLocalCATrustCleanupStillLeavesDomainsSafelyDisabled() async throws {
+        let key = AppStore.domainsEnabledKey
+        let previous = UserDefaults.standard.object(forKey: key)
+        defer {
+            if let previous { UserDefaults.standard.set(previous, forKey: key) }
+            else { UserDefaults.standard.removeObject(forKey: key) }
+        }
+        let removal = AuthorizedNetworkingRemovalRecorder()
+        let trust = LocalCATrustRemovalRecorder(fails: true)
+        let launchAgent = LaunchAgentConfigurationRecorder()
+        let store = AppStore(
+            dorydLaunchAgentEnsurer: { configuration in launchAgent.ensure(configuration) },
+            authorizedNetworkingRemover: { try removal.remove() },
+            localCATrustManager: trust
+        )
+
+        store.applyNetworkingSettings(domainsEnabled: false)
+        try await waitUntil { !store.networkingAuthorizationInFlight }
+
+        #expect(removal.callCount == 1)
+        #expect(trust.removeCallCount == 1)
+        #expect(!store.domainsEnabled)
+        #expect(store.networkingAuthorizationMessage?.contains("login keychain") == true)
+        #expect(store.settingsNotice?.kind == .failure)
     }
 
     @MainActor
@@ -1422,16 +1464,19 @@ struct DorydClientTests {
             else { UserDefaults.standard.removeObject(forKey: key) }
         }
         let removal = AuthorizedNetworkingRemovalRecorder()
+        let trust = LocalCATrustRemovalRecorder()
         let launchAgent = LaunchAgentConfigurationRecorder(rejectDisabledDomains: true)
         let store = AppStore(
             dorydLaunchAgentEnsurer: { configuration in launchAgent.ensure(configuration) },
-            authorizedNetworkingRemover: { try removal.remove() }
+            authorizedNetworkingRemover: { try removal.remove() },
+            localCATrustManager: trust
         )
 
         store.applyNetworkingSettings(domainsEnabled: false)
         try await waitUntil { !store.networkingAuthorizationInFlight }
 
         #expect(removal.callCount == 1)
+        #expect(trust.removeCallCount == 1)
         #expect(launchAgent.configurations.map(\.domainsEnabled) == [false, true])
         #expect(store.domainsEnabled)
         #expect(store.networkingAuthorizationMessage?.contains("Reauthorize") == true)
@@ -1597,6 +1642,36 @@ private final class AuthorizedNetworkingRemovalRecorder: @unchecked Sendable {
         lock.unlock()
         if fails { throw AuthorizedNetworkingRemovalError.injectedFailure }
     }
+}
+
+private final class LocalCATrustRemovalRecorder: LocalCATrustManaging, @unchecked Sendable {
+    private let lock = NSLock()
+    private let fails: Bool
+    private var removeCalls = 0
+
+    init(fails: Bool = false) {
+        self.fails = fails
+    }
+
+    var removeCallCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return removeCalls
+    }
+
+    func install(certificateAt path: String) throws -> Bool { false }
+
+    func remove(certificateAt path: String) throws -> Bool {
+        lock.lock()
+        removeCalls += 1
+        lock.unlock()
+        if fails { throw LocalCATrustRemovalError.injectedFailure }
+        return true
+    }
+}
+
+private enum LocalCATrustRemovalError: Error {
+    case injectedFailure
 }
 
 private enum AuthorizedNetworkingRemovalError: Error {
@@ -2158,9 +2233,10 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
     }
 
     func networkStatus(reply: @escaping (NSDictionary, String) -> Void) {
-        let routes = latestNetworkRoutes.isEmpty
+        let customRoutes = latestNetworkRoutes
+        let routes = customRoutes.isEmpty
             ? [DorydDomainRoute(hostname: "web.dory.local", address: "127.0.0.42", port: 8080)]
-            : latestNetworkRoutes
+            : customRoutes
         reply([
             "mode": "high-port-dns-http-https-proxy",
             "suffix": "dory.local",
@@ -2172,6 +2248,7 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
             "httpsProxyPort": 18443,
             "httpsProxyRunning": true,
             "routes": routes.map(Self.dictionary),
+            "customRoutes": customRoutes.map(Self.dictionary),
         ] as NSDictionary, "")
     }
 

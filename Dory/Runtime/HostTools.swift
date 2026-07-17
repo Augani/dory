@@ -1,9 +1,9 @@
+import DoryOperations
 import Foundation
 
-/// Resolves host-side CLI tools (kubectl, docker) that Dory shells out to. Prefers a copy bundled
-/// inside the app so a fresh download needs nothing installed; falls back to a system install for
-/// development builds. Everything Dory's engine and GUI do runs through the in-process Docker
-/// client — these tools are only for the Kubernetes shell-out and the optional docker-CLI context.
+/// Resolves host-side CLI tools that Dory shells out to. Core tools come from the app, optional
+/// tools can come from a verified component, and development builds may fall back to a system
+/// install. Dory's engine and GUI otherwise use the in-process Docker client.
 enum HostTools {
     static func kubectl() -> String? { resolve("kubectl", systemCandidates: [
         "/usr/local/bin/kubectl", "/opt/homebrew/bin/kubectl",
@@ -32,6 +32,11 @@ enum HostTools {
 
     private static func resolve(_ name: String, systemCandidates: [String]) -> String? {
         if let bundled = bundledPath(named: name) { return bundled }
+        if name == "kubectl",
+           let installed = DoryComponentStore.activeAssetPath(component: .kubernetes, path: "kubectl"),
+           FileManager.default.isExecutableFile(atPath: installed) {
+            return installed
+        }
         return Shell.find(name, candidates: systemCandidates)
     }
 

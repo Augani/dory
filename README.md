@@ -27,9 +27,10 @@
 > Dory is built and qualified for Apple Silicon. Intel Mac support will follow after dedicated
 > hardware validation. Current downloads and the Homebrew cask do not include an Intel build.
 
-> Dory 0.3.1 adds managed Debian, Ubuntu, and Kali Linux desktops, Retina-sharp display windows,
-> separate lean and Desktop editions, selectable terminal apps, a configurable Docker bridge, and a
-> first-run networking authorization fix.
+> Dory 0.3.2 is one smaller Docker Core app with optional, signed Kubernetes, Linux Machines,
+> Linux Desktop, Debian, Ubuntu, and Kali components. The website shows the exact total before
+> download, carries that choice into Dory for confirmation, and can remove optional payloads later
+> without deleting containers, volumes, cluster state, machine disks, snapshots, or exports.
 
 <p align="center">
   <a href="https://augani.github.io/dory/#product"><strong>Explore the interactive Dory interface</strong></a>
@@ -53,19 +54,20 @@ or commercial-use tier. Dory is GPL-3.0 software and stores workload data on you
 | Kubernetes | One-click k3s with selectable v1.34, v1.35, and v1.36 presets plus a native resource browser |
 | Migration | Transactional import from Docker Desktop, OrbStack, Colima, Rancher Desktop, Podman, or another Docker-compatible socket |
 | Storage | One managed `.dorydrive`, external APFS drive support, sparse growth, verified backup, restore, and safe selection |
-| Networking | Localhost ports, optional local domains and HTTPS, low ports, host services, custom DNS/proxy ports, and opt-in LAN access |
+| Networking | Localhost ports, automatic and user-defined local domains, trusted HTTPS, low ports, host services, custom DNS/proxy ports, and opt-in LAN access |
 | Operations | Auto-Idle, active diagnostics, targeted repair, safe cleanup, support bundles, wait primitives, and event streams |
 | Agents | Versioned JSON guide, non-interactive schemas, read-only MCP mode, machine execution, and preview isolated sandbox VMs |
 
 ## Why it is different
 
-- **A complete runtime, not a dashboard.** Dory bundles its engine, guest, Docker tools, Compose,
-  Buildx, `kubectl`, networking, file sharing, and recovery tools.
+- **A complete runtime, not a dashboard.** Docker Core includes its engine, guest, Docker tools,
+  Compose, Buildx, networking, file sharing, and recovery tools. Kubernetes and Linux machine
+  payloads are signed components rather than permanent app weight.
 - **One shared container VM.** Containers use one persistent Linux engine. Its memory ceiling is
   configurable, and free guest pages can be returned to macOS.
 - **Linux machines beside containers.** Machines are separate VMs with their own disk, address,
   resources, shell, shares, and snapshots. They are not disguised containers.
-- **Every important setting is in the app.** Engine resources, storage, migration, local domains,
+- **Every important setting is in the app.** Engine resources, storage, migration, automatic and custom domains,
   low ports, LAN access, Auto-Idle, machine environment policy, USB, and managed defaults all have a
   graphical path.
 - **Automation is a product surface.** JSON schemas, safe dry runs, event streams, wait commands,
@@ -81,47 +83,65 @@ or commercial-use tier. Dory is GPL-3.0 software and stores workload data on you
 brew install --cask Augani/dory/dory
 ```
 
-The Homebrew cask installs the recommended Lean edition with containers, Kubernetes, and headless
-Linux servers. It does not include the large graphical Linux images.
+The Homebrew cask installs Docker Core. Add Kubernetes, Linux Machines, or individual graphical
+desktop packs from Dory after it opens.
 
-Open Dory once. The daemon keeps `docker`, `docker compose`, `kubectl`, and `dory` available in
-`~/.dory/bin`, creates the `dory` Docker context, and points it at `~/.dory/dory.sock`. Docker
-Desktop and a separate Docker CLI install are not required.
+Open Dory once. The daemon keeps `docker`, `docker compose`, and `dory` available in `~/.dory/bin`,
+creates the `dory` Docker context, and points it at `~/.dory/dory.sock`. Installing the Kubernetes
+component adds `kubectl`. Docker Desktop and a separate Docker CLI install are not required.
 
 ### Direct download
 
-Choose the edition before downloading. The Desktop edition is intentionally larger because Debian,
-Ubuntu, and Kali graphical images are included for offline use.
+Start with the one Apple Silicon [Dory 0.3.2 Docker Core
+DMG](https://github.com/Augani/dory/releases/download/v0.3.2/Dory-0.3.2-arm64.dmg). Its exact signed
+catalog reports a 224.1 MiB download and 409.3 MiB installed app. Drag Dory to Applications, open
+it, then add only the components you want. The website's component selector can open the same
+selection in Dory after installation. Dory shows the signed sizes again and waits for explicit
+confirmation before downloading any optional payload.
 
-| Edition | Download | Installed app | Includes | Direct download |
-|---|---:|---:|---|---|
-| **Lean, recommended** | about 452 MiB | about 1.6 GiB | Docker, Compose, Kubernetes, migration, and headless Linux machines | [Lean DMG](https://github.com/Augani/dory/releases/download/v0.3.1/Dory-0.3.1-arm64.dmg) |
-| **Desktop** | about 1.85 GiB | about 3.0 GiB | Everything in Lean plus offline Debian, Ubuntu, and Kali graphical desktops | [Desktop DMG](https://github.com/Augani/dory/releases/download/v0.3.1/Dory-0.3.1-desktop-arm64.dmg) |
+### Focused components
 
-Drag Dory to Applications and open it. Choose Desktop only when you need graphical Linux machines.
-The next feature release will move toward a Docker-only core with focused Kubernetes, Linux
-Machines, and Linux Desktop downloads selected before installation.
+Docker Core contains Dory.app, the Docker engine and CLI, Compose, Buildx, networking, storage,
+migration, diagnostics, and recovery. The signed component catalog offers:
+
+| Component | Adds | Depends on |
+|---|---|---|
+| Kubernetes | `kubectl` and Dory's local k3s workflow | Docker Core |
+| Linux Machines | Headless VPS-style Linux guests | Docker Core |
+| Linux Desktop Runtime | Shared graphical VM kernel | Docker Core |
+| Debian 13 Desktop | Debian 13 Xfce image | Linux Desktop Runtime |
+| Ubuntu 24.04 LTS Desktop | Ubuntu Xfce image | Linux Desktop Runtime |
+| Kali Linux Desktop | Kali rolling Xfce image | Linux Desktop Runtime |
+
+Component download and installed sizes come from the signed release catalog, not estimates. Dory
+stores installed payloads inside the selected `.dorydrive/components` directory. Removing a
+component reclaims only its installed payload. Workload data on the selected drive is preserved.
+The Kubernetes component size covers `kubectl`; the selected k3s container image is downloaded on
+first cluster creation and then remains in Docker storage on the selected data drive.
+
+The native Components screen and `dory component` commands install, update, verify, and remove the
+same catalog entries. Components are transactional, digest-verified, architecture-checked, and
+activated atomically. A cached catalog is used offline only after its signature is verified again.
+The Core app reuses its signed engine kernel and rootfs for its macOS 14 fallback through internal
+aliases, so compatibility does not make users download duplicate VM payloads.
 
 | Release asset | Purpose |
 |---|---|
-| `Dory-x.y.z-arm64.dmg` | Recommended lean installer: containers, Kubernetes, and headless Linux servers |
-| `Dory-x.y.z-desktop-arm64.dmg` | All-inclusive installer with Debian, Ubuntu, and Kali graphical desktops |
-| `Dory-x.y.z-arm64.zip` | Lean app archive |
-| `Dory-x.y.z-desktop-arm64.zip` | All-inclusive app archive |
-| `Dory-x.y.z-lite.zip` | Native UI for an existing Docker-compatible engine |
+| `Dory-x.y.z-arm64.dmg` | Docker Core installer |
+| `Dory-x.y.z-arm64.zip` | Docker Core app archive |
 | `dory-engine-x.y.z-arm64.tar.gz` | Headless Dory engine bundle |
 | `release-manifest.json` | Artifact names, hashes, and release provenance |
-| `Dory-x.y.z.cdx.json` | CycloneDX software bill of materials for the lean app |
-| `Dory-x.y.z-desktop.cdx.json` | CycloneDX software bill of materials for the Desktop app |
+| `Dory-x.y.z.cdx.json` | CycloneDX software bill of materials for Docker Core |
+| `components/arm64/catalog.json` | Signed component assets, dependencies, hashes, and exact sizes |
 
-Lean and Desktop installations use separate signed update feeds, so future updates keep the edition
-you selected instead of adding or removing the graphical Linux payload unexpectedly.
+Dory.app uses one signed update feed while optional components update independently on the selected
+data drive, so an app update cannot silently add a large Linux payload.
 
-### Upgrading from 0.3.0
+### Upgrading from an older release
 
-Dory 0.3.0 does not contain the new graphical Linux images. Quit Dory, uninstall the old app, then
-install the 0.3.1 lean or Desktop edition. Normal uninstall preserves the selected `.dorydrive`,
-including images, containers, volumes, networks, machine disks, and snapshots.
+Quit Dory, uninstall the old app, then install Dory 0.3.2 Docker Core. Normal uninstall preserves
+the selected `.dorydrive`, including images, containers, volumes, networks, machine disks, and
+snapshots. Install the optional components you use after the new app opens.
 
 ```sh
 brew uninstall --cask Augani/dory/dory
@@ -129,9 +149,9 @@ brew install --cask Augani/dory/dory
 ```
 
 For a direct installation, run `dory uninstall`, remove the old `Dory.app`, and drag the new
-edition into Applications. Keep only one copy of Dory.app so macOS registers the correct bundled
-services. Choose the Desktop edition to create new graphical machines; the lean edition can still
-manage an existing desktop machine whose disk is already in the selected data drive.
+Docker Core app into Applications. Keep only one copy of Dory.app so macOS registers the correct
+bundled services. Existing workload data remains on the selected drive, but creating or starting a
+graphical machine requires its matching desktop component.
 
 ### Requirements
 
@@ -220,9 +240,13 @@ native Compose screen can open a YAML file, start or stop a project, restart run
 
 ## Kubernetes
 
+Install the Kubernetes component from the app or with `dory component install kubernetes` before
+enabling a cluster in the focused release. Docker-only users do not download `kubectl`.
+
 The Kubernetes screen creates a local k3s cluster inside the shared engine and lets you choose a
-supported v1.34, v1.35, or v1.36 preset. Switching versions recreates the cluster and is presented
-as a destructive action.
+supported v1.34, v1.35, or v1.36 preset. The selected k3s image is downloaded on first enable and
+stored with Docker data on the selected Dory drive. Switching versions recreates the cluster and
+is presented as a destructive action.
 
 The native browser covers:
 
@@ -231,10 +255,13 @@ The native browser covers:
 - services, ConfigMaps, Secrets, and Ingresses;
 - namespace filtering, YAML apply, rollout status, and kubeconfig copy.
 
-The bundled `kubectl` and `dory k8s <kubectl args...>` target the same cluster. k3s has its own image
+The component-managed `kubectl` and `dory k8s <kubectl args...>` target the same cluster. k3s has its own image
 store, so push a built image to a registry or import it into the cluster before using it in a Pod.
 
 ## Dory Linux machines
+
+Install Linux Machines for headless guests. Graphical guests additionally need the Linux Desktop
+Runtime and the selected Debian, Ubuntu, or Kali distribution component.
 
 Dory Linux machines are persistent, separate VMs rather than containers. The app offers full Xfce
 desktops based on Debian 13, Ubuntu 24.04 LTS, or Kali Linux rolling for graphical and command-line
@@ -349,6 +376,7 @@ binding.
 Optional system integration adds:
 
 - automatic names under `*.dory.local` or a per-user custom suffix;
+- exact or leftmost-wildcard custom hostnames routed to a selected published HTTP port;
 - a local certificate authority for trusted HTTPS;
 - Dory-owned resolver and packet-filter rules;
 - built-in forwarding for ports 80, 443, and published TCP ports below 1024;
@@ -358,6 +386,19 @@ Settings > Network shows the exact plan before macOS authorization and can remov
 The Docker bridge subnet, DNS resolver, HTTP proxy, and HTTPS proxy ports are configurable. This
 allows Dory to avoid VPN or local-network conflicts and lets separate macOS accounts choose unique
 suffixes and local service ports.
+
+Custom hostnames must already resolve to `127.0.0.1` through `/etc/hosts` or local DNS. Add them in
+Settings > Network, for example `admin.myproject.local` or `*.myproject.local` to published port 80.
+Because `/etc/hosts` does not expand wildcards, use local DNS or list each hostname that should
+match a wildcard route. Dory's HTTP and HTTPS proxies then preserve the requested `Host` header and
+route both standard ports without a second forwarding app. The same configuration is available
+from the terminal:
+
+```sh
+dory network custom-domains
+dory network set-custom-domain admin.myproject.local --published-port 80
+dory network remove-custom-domain admin.myproject.local
+```
 
 Containers reach Mac services through `host.dory.internal`. Common host AI endpoints are available
 without enabling experimental guest GPU support:
@@ -485,7 +526,7 @@ Everything below is available without using the command line:
 | Resources | Data drive, reveal, backup, verify, restore, select, grow, per-process memory, Mac capacity |
 | Machines | Host environment allow-list and the file-sharing boundary for persistent and sandbox machines |
 | Auto-Idle | Availability mode, delay, blockers, and wake notifications |
-| Network | Domains, suffix, macOS authorization, low ports, Docker bridge subnet, resolver and proxy ports, LAN and Tailscale access |
+| Network | Automatic and custom domains, suffix, macOS authorization, low ports, Docker bridge subnet, resolver and proxy ports, LAN and Tailscale access |
 | USB Devices | Scan, attach, detach, and remember USB/IP attachments per machine |
 | Local Tools | Stable and preview CLI capabilities with copyable commands |
 | Migrate & Compare | Source selection, read-only inventory, preflight, import, and product comparison |
@@ -567,10 +608,9 @@ scripts/build.sh
 scripts/test.sh
 ```
 
-The source build is lean by default. Use
-`DORY_DESKTOP_BUNDLE_MODE=all scripts/build.sh` to include all three verified graphical desktop
-images. The two modes are intentionally all-or-none so an app labeled all-inclusive cannot silently
-ship a missing distribution.
+The source build defaults to Docker Core. `DORY_DESKTOP_BUNDLE_MODE=all scripts/build.sh` remains a
+developer-only offline fixture for exercising every graphical image in one local build. Public
+releases use Docker Core plus the signed component catalog.
 
 `scripts/test.sh` is the single public test entrypoint. It covers the Rust workspace, Swift packages,
 app tests, UI tests, CLI contracts, and public repository checks. Release qualification adds signed

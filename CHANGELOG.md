@@ -1,5 +1,44 @@
 # Changelog
 
+## 0.3.2 - 2026-07-17
+
+### Added
+
+- Replaced fixed app editions with a smaller Docker Core app and signed, removable Kubernetes,
+  Linux Machines, Linux Desktop runtime, Debian, Ubuntu, and Kali components stored on the selected
+  Dory data drive.
+- Added a pre-download component selector that safely carries the chosen optional payloads into
+  Dory for signed-size review and explicit installation confirmation.
+- Retired the separate public lite app so direct downloads present one Docker Core app and optional
+  signed components instead of overlapping app editions.
+- Added exact and leftmost-wildcard custom domain mappings in Settings > Network and the CLI. Dory
+  now routes nginx-style `/etc/hosts` domains through its built-in HTTP and trusted HTTPS proxies.
+
+### Changed
+
+- Reused Docker Core's signed engine kernel and rootfs for the macOS 14 fallback instead of storing
+  duplicate compatibility copies, removing about 112 MB from the installed Core app.
+- Quitting Dory now stops its background engine by default. People who want an always-running
+  engine can explicitly enable **Keep engine running after quit**.
+
+### Fixed
+
+- Fixed built-in safe home sharing so names such as `library` are hidden only at the shared home
+  root, while nested project directories such as Composer package paths remain visible.
+- Fixed the Network authorization button so the guided admin operation succeeds before optional
+  background-service registration and Login Items approval.
+- Fixed local HTTPS authorization failing after the admin prompt. Dory now adds its CA to the
+  current user's login keychain through an interactive macOS trust prompt, while the privileged
+  helper is limited to resolver and PF changes.
+- Fixed custom local domains returning 502 after ports 80 and 443 were authorized.
+- Fixed local HTTPS identity refreshes accumulating certificates and private keys in the user's
+  login keychain.
+- Fixed stale container details remaining open after the selected container disappeared or no
+  longer matched the current view, and added toolbar controls for hiding navigation and details.
+- Fixed reopening Dory from the Dock or menu bar when the app was running without a visible window.
+- Fixed `linux/amd64` builds on IPv4-only host networks by withholding unreachable IPv6 DNS
+  answers while preserving native IPv6 when the Mac has a routable IPv6 path.
+
 ## 0.3.1 - 2026-07-16
 
 ### Added

@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import Security
 @testable import Dory
 
 struct LocalCATests {
@@ -27,11 +28,38 @@ struct LocalCATests {
         #expect(text.contains("Dory Local CA"))
     }
 
-    @Test func installCommandIsGatedAndWellFormed() {
-        let ca = LocalCA(directory: URL(fileURLWithPath: "/tmp/dory-ca-test"))
-        let command = ca.systemTrustInstallCommand()
-        #expect(command.first == "security")
-        #expect(command.contains("add-trusted-cert"))
-        #expect(command.contains("/Library/Keychains/System.keychain"))
+    @Test func localTrustParserAcceptsOnlyAValidDoryCA() throws {
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("dory-trust-parser-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let ca = LocalCA(directory: directory)
+        guard ca.opensslPath != nil else { return }
+        try ca.ensureCA()
+
+        let raw = try Data(contentsOf: ca.caCertificate)
+        let parsed = try LocalCATrustManager.validatedCertificate(from: raw)
+        #expect(!parsed.der.isEmpty)
+        #expect(SecCertificateCopySubjectSummary(parsed.certificate) as String? == "Dory Local CA")
+
+        #expect(throws: LocalCATrustError.invalidCertificate) {
+            try LocalCATrustManager.validatedCertificate(from: Data("not a certificate".utf8))
+        }
     }
+
+    @Test func localTrustManagerRefusesCertificateSymlinksBeforeKeychainAccess() throws {
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("dory-trust-symlink-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let target = directory.appendingPathComponent("target.crt")
+        let link = directory.appendingPathComponent("ca.crt")
+        try Data("not a certificate".utf8).write(to: target)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: target)
+
+        #expect(throws: LocalCATrustError.unreadableCertificate(link.path)) {
+            try LocalCATrustManager().install(certificateAt: link.path)
+        }
+    }
+
 }

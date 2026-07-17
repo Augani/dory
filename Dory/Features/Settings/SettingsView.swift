@@ -10,6 +10,8 @@ struct SettingsView: View {
     @State private var httpPortDraft = ""
     @State private var httpsPortDraft = ""
     @State private var bridgeSubnetDraft = ""
+    @State private var customDomainDraft = ""
+    @State private var customDomainPortDraft = "80"
     @State private var customSocketDraft = ""
     @State private var machineEnvAllowListDraft = ""
     @State private var engineCPUCountDraft = 1
@@ -66,6 +68,7 @@ struct SettingsView: View {
     @ViewBuilder private var content: some View {
         switch store.settingsTab {
         case .general: general
+        case .components: ComponentsView(embedded: true)
         case .resources: resources
         case .machines: machines
         case .engine: engine
@@ -274,7 +277,7 @@ struct SettingsView: View {
             comparisonRow("One shared VM engine", .yes, .yes, .no(nil), divider: true)
             comparisonRow("Hypervisor-backed virtualization", .yes, .yes, .no(nil), divider: true)
             comparisonRow("*.local domains + HTTPS", .yes, .yes, .no(nil), divider: true)
-            comparisonRow("Drop-in docker & kubectl", .yes, .yes, .yes, divider: true)
+            comparisonRow("Drop-in Docker + optional kubectl", .yes, .yes, .yes, divider: true)
             comparisonRow("Kubernetes built-in", .yes, .yes, .yes, divider: true)
             comparisonRow("Common x86 / amd64 images", .yes, .yes, .yes, divider: false)
         }
@@ -494,8 +497,8 @@ struct SettingsView: View {
             VStack(spacing: 0) {
                 toggleRow("Launch Dory at login", "Start the engine automatically when you log in.", isOn: Binding(get: { store.launchAtLogin }, set: { store.setLaunchAtLogin($0) }), divider: true)
                 toggleRow("Show menu bar icon", store.isAgentMode ? "Always on — Dory runs in the menu bar in background mode." : "Quick access to containers from the menu bar.", isOn: Binding(get: { store.showMenuBarIcon }, set: { store.setShowMenuBarIcon($0) }), divider: true, disabled: store.isAgentMode)
-                toggleRow("Keep doryd running after quit", "Leave the daemon, Docker socket, local domains, and machines available after the Dory app exits. Turn off to stop doryd when you quit Dory.", isOn: Binding(get: { store.keepDorydRunningAfterQuit }, set: { store.setKeepDorydRunningAfterQuit($0) }), divider: true)
-                toggleRow("Terminal docker command", "doryd keeps `docker`, `docker compose`, `kubectl`, and Dory support commands ready in `~/.dory/bin` and points them at Dory's engine. No Docker Desktop or admin setup required; turn off to remove.", isOn: Binding(get: { store.routeDockerCLI }, set: { store.setRouteDockerCLI($0) }), divider: false)
+                toggleRow("Keep engine running after quit", "Optional: leave the Docker socket, local domains, and machines available after the Dory app exits. By default, Quit Dory stops the engine and returns its memory to macOS.", isOn: Binding(get: { store.keepDorydRunningAfterQuit }, set: { store.setKeepDorydRunningAfterQuit($0) }), divider: true)
+                toggleRow("Terminal docker command", "doryd keeps `docker`, `docker compose`, and Dory support commands ready in `~/.dory/bin`, plus `kubectl` when the Kubernetes component is installed. No Docker Desktop or admin setup required; turn off to remove.", isOn: Binding(get: { store.routeDockerCLI }, set: { store.setRouteDockerCLI($0) }), divider: false)
             }
             .background(p.bgElevated, in: RoundedRectangle(cornerRadius: 11))
             .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(p.border))
@@ -1481,6 +1484,10 @@ struct SettingsView: View {
             .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(p.border))
             .padding(.bottom, 22)
 
+            groupLabel("CUSTOM DOMAINS")
+            customDomainsEditor
+                .padding(.bottom, 22)
+
             groupLabel("SYSTEM ACCESS")
             VStack(alignment: .leading, spacing: 10) {
                 HStack(spacing: 12) {
@@ -1611,6 +1618,103 @@ struct SettingsView: View {
             httpsPortDraft = String(store.httpsProxyPort)
             bridgeSubnetDraft = store.defaultBridgeSubnet
             store.loadLanVisible()
+        }
+    }
+
+    private var customDomainsEditor: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Route an exact hostname or leftmost wildcard to a container's published HTTP port. The hostname must already resolve to 127.0.0.1 through /etc/hosts or local DNS. Wildcards require local DNS or an /etc/hosts entry for each name. Dory serves both HTTP and trusted HTTPS after networking is authorized.")
+                .font(.system(size: 11.5))
+                .foregroundStyle(p.text3)
+                .lineSpacing(3)
+
+            HStack(spacing: 8) {
+                TextField("admin.myproject.local", text: $customDomainDraft)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 12, design: .monospaced))
+                    .accessibilityIdentifier("custom-domain-hostname")
+                TextField("80", text: $customDomainPortDraft)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 12, design: .monospaced))
+                    .frame(width: 84)
+                    .accessibilityIdentifier("custom-domain-port")
+                Button(action: addCustomDomain) {
+                    Text("Add")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 13)
+                        .padding(.vertical, 7)
+                        .background(p.accent, in: RoundedRectangle(cornerRadius: 7))
+                }
+                .buttonStyle(.plain)
+                .disabled(store.customDomainRoutesBusy || !store.dorydRuntimeActive)
+                .accessibilityIdentifier("custom-domain-add")
+            }
+
+            if store.customDomainRoutes.isEmpty {
+                Text("No custom domains configured.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(p.text3)
+                    .padding(.vertical, 3)
+            } else {
+                VStack(spacing: 0) {
+                    ForEach(Array(store.customDomainRoutes.enumerated()), id: \.element.hostname) { index, route in
+                        HStack(spacing: 10) {
+                            Image(systemName: route.hostname.hasPrefix("*.") ? "asterisk" : "globe")
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundStyle(p.accent)
+                                .frame(width: 18)
+                            Text(route.hostname)
+                                .font(.system(size: 12, design: .monospaced))
+                                .foregroundStyle(p.text)
+                            Spacer(minLength: 0)
+                            Text("\(store.customDomainActiveHostnames.contains(route.hostname) ? "Active" : "Waiting") · published :\(route.port)")
+                                .font(.system(size: 11.5, design: .monospaced))
+                                .foregroundStyle(store.customDomainActiveHostnames.contains(route.hostname) ? p.green : p.text3)
+                            Button {
+                                Task { await store.removeCustomDomainRoute(route) }
+                            } label: {
+                                Image(systemName: "trash")
+                                    .font(.system(size: 11, weight: .semibold))
+                                    .foregroundStyle(p.red)
+                                    .frame(width: 26, height: 24)
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(store.customDomainRoutesBusy)
+                            .accessibilityLabel("Remove \(route.hostname)")
+                        }
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 8)
+                        if index < store.customDomainRoutes.count - 1 {
+                            Rectangle().fill(p.border).frame(height: 1).padding(.leading, 38)
+                        }
+                    }
+                }
+                .background(p.bgInput, in: RoundedRectangle(cornerRadius: 8))
+            }
+        }
+        .padding(15)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(p.bgElevated, in: RoundedRectangle(cornerRadius: 11))
+        .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(p.border))
+        .task(id: store.dorydRuntimeActive) {
+            if store.dorydRuntimeActive { await store.loadCustomDomainRoutes() }
+        }
+    }
+
+    private func addCustomDomain() {
+        let rawPort = customDomainPortDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let port = UInt16(rawPort), port > 0 else {
+            store.showSettingsFailure("Published port must be between 1 and 65535.")
+            return
+        }
+        let hostname = customDomainDraft
+        Task {
+            await store.addCustomDomainRoute(hostname: hostname, publishedPort: port)
+            if let normalized = AppStore.normalizedCustomDomainPattern(hostname),
+               store.customDomainRoutes.contains(where: { $0.hostname == normalized && $0.port == port }) {
+                customDomainDraft = ""
+            }
         }
     }
 

@@ -80,15 +80,17 @@ struct VirtioFSShareConfigurationTests {
 
     @Test func safeOptionAppliesSensitiveNameDenylist() throws {
         let share = try VirtioFSShareConfiguration(argument: "home=/Users/example:rw:at=/Users/example:safe")
-        #expect(share.hiddenNames == VirtioFSShareConfiguration.sensitiveNames)
-        #expect(share.hiddenNames.contains(".ssh"))
-        #expect(share.hiddenNames.contains(".aws"))
-        #expect(share.hiddenNames.contains(".dory"))
-        #expect(share.hiddenNames.contains(".zsh_history"))
-        #expect(share.hiddenNames.contains(".bash_history"))
-        #expect(share.hiddenNames.contains(".codex"))
-        #expect(share.hiddenNames.contains(".orbstack"))
-        #expect(share.hiddenNames.contains(".colima"))
+        #expect(share.hiddenNames.isEmpty)
+        #expect(share.rootHiddenNames == VirtioFSShareConfiguration.sensitiveNames)
+        #expect(share.rootHiddenNames.contains(".ssh"))
+        #expect(share.rootHiddenNames.contains(".aws"))
+        #expect(share.rootHiddenNames.contains(".dory"))
+        #expect(share.rootHiddenNames.contains(".zsh_history"))
+        #expect(share.rootHiddenNames.contains(".bash_history"))
+        #expect(share.rootHiddenNames.contains(".codex"))
+        #expect(share.rootHiddenNames.contains(".orbstack"))
+        #expect(share.rootHiddenNames.contains(".colima"))
+        #expect(share.rootHiddenNames.contains("Library"))
     }
 
     @Test func hideOptionAddsExplicitNames() throws {
@@ -99,6 +101,7 @@ struct VirtioFSShareConfigurationTests {
     @Test func defaultsToNoHiddenNames() throws {
         let share = try VirtioFSShareConfiguration(argument: "src=/tmp/x")
         #expect(share.hiddenNames.isEmpty)
+        #expect(share.rootHiddenNames.isEmpty)
     }
 
     @Test func rejectsRelativeGuestMountPoint() {

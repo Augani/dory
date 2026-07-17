@@ -1,12 +1,99 @@
 diff --git a/pkg/services/dns/dns.go b/pkg/services/dns/dns.go
-index 9f86fe8..476d991 100644
+index 9f86fe8..20cd7b8 100644
 --- a/pkg/services/dns/dns.go
 +++ b/pkg/services/dns/dns.go
-@@ -144,6 +144,26 @@ func (h *dnsHandler) addAnswers(m *dns.Msg) {
+@@ -8,6 +8,7 @@ import (
+ 	"net/http"
+ 	"strings"
+ 	"sync"
++	"time"
+ 
+ 	"github.com/containers/gvisor-tap-vsock/pkg/types"
+ 	"github.com/miekg/dns"
+@@ -24,9 +25,68 @@ type upstreamResolver interface {
+ }
+ 
+ type dnsHandler struct {
+-	zones     []types.Zone
+-	zonesLock sync.RWMutex
+-	upstream  upstreamResolver
++	zones         []types.Zone
++	zonesLock     sync.RWMutex
++	upstream      upstreamResolver
++	ipv6Available func() bool
++}
++
++func routableIPv6Available() bool {
++	interfaces, err := net.Interfaces()
++	if err != nil {
++		return false
++	}
++	for _, networkInterface := range interfaces {
++		if networkInterface.Flags&net.FlagUp == 0 || networkInterface.Flags&net.FlagLoopback != 0 {
++			continue
++		}
++		addresses, err := networkInterface.Addrs()
++		if err != nil {
++			continue
++		}
++		if !containsRoutableIPv6(addresses) {
++			continue
++		}
++		connection, err := net.DialUDP("udp6", nil, &net.UDPAddr{
++			IP:   net.ParseIP("2606:4700:4700::1111"),
++			Port: 53,
++		})
++		if err != nil {
++			return false
++		}
++		defer connection.Close()
++		return containsRoutableIPv6([]net.Addr{connection.LocalAddr()})
++	}
++	return false
++}
++
++func cacheIPv6Availability(probe func() bool) func() bool {
++	var lock sync.Mutex
++	var lastCheck time.Time
++	var available bool
++	return func() bool {
++		lock.Lock()
++		defer lock.Unlock()
++		if !lastCheck.IsZero() && time.Since(lastCheck) < time.Second {
++			return available
++		}
++		available = probe()
++		lastCheck = time.Now()
++		return available
++	}
++}
++
++func containsRoutableIPv6(addresses []net.Addr) bool {
++	for _, address := range addresses {
++		ip, _, err := net.ParseCIDR(address.String())
++		if err != nil {
++			ip = net.ParseIP(strings.SplitN(address.String(), "%", 2)[0])
++		}
++		if ip != nil && ip.To4() == nil && ip.IsGlobalUnicast() && !ip.IsPrivate() {
++			return true
++		}
++	}
++	return false
+ }
+ 
+ func (h *dnsHandler) handle(w dns.ResponseWriter, r *dns.Msg, responseMessageSize int) {
+@@ -144,6 +204,33 @@ func (h *dnsHandler) addAnswers(m *dns.Msg) {
  					A: ip.IP.To4(),
  				})
  			}
 +		case dns.TypeAAAA:
++			// Do not advertise an Internet address family the host cannot route. Some clients pick
++			// the first DNS answer without Happy Eyeballs fallback, turning an IPv4-capable request
++			// into an immediate connection failure on IPv4-only Macs. The route probe is cached only
++			// briefly, so network changes take effect without restarting the VM.
++			if h.ipv6Available != nil && !h.ipv6Available() {
++				continue
++			}
 +			ips, err := resolver.LookupIPAddr(context.TODO(), q.Name)
 +			if err != nil {
 +				m.Rcode = dns.RcodeNameError
@@ -29,11 +116,29 @@ index 9f86fe8..476d991 100644
  		case dns.TypeCNAME:
  			cname, err := resolver.LookupCNAME(context.TODO(), q.Name)
  			if err != nil {
+@@ -247,11 +334,15 @@ func New(udpConn net.PacketConn, tcpLn net.Listener, zones []types.Zone) (*Serve
+ 	upstream := &net.Resolver{
+ 		PreferGo: false,
+ 	}
+-	return NewWithUpstreamResolver(udpConn, tcpLn, zones, upstream)
++	return newWithUpstreamResolver(udpConn, tcpLn, zones, upstream, cacheIPv6Availability(routableIPv6Available))
+ }
+ 
+ func NewWithUpstreamResolver(udpConn net.PacketConn, tcpLn net.Listener, zones []types.Zone, upstream upstreamResolver) (*Server, error) {
+-	handler := &dnsHandler{zones: zones, upstream: upstream}
++	return newWithUpstreamResolver(udpConn, tcpLn, zones, upstream, func() bool { return true })
++}
++
++func newWithUpstreamResolver(udpConn net.PacketConn, tcpLn net.Listener, zones []types.Zone, upstream upstreamResolver, ipv6Available func() bool) (*Server, error) {
++	handler := &dnsHandler{zones: zones, upstream: upstream, ipv6Available: ipv6Available}
+ 	return &Server{udpConn: udpConn, tcpLn: tcpLn, handler: handler}, nil
+ }
+ 
 diff --git a/pkg/services/dns/dns_test.go b/pkg/services/dns/dns_test.go
-index 211d90f..8065261 100644
+index 211d90f..745be98 100644
 --- a/pkg/services/dns/dns_test.go
 +++ b/pkg/services/dns/dns_test.go
-@@ -364,6 +364,24 @@ func TestDNS(t *testing.T) {
+@@ -364,6 +364,68 @@ func TestDNS(t *testing.T) {
  	}
  }
  
@@ -53,6 +158,50 @@ index 211d90f..8065261 100644
 +	server.handler.addAnswers(message)
 +	require.Len(t, message.Answer, 1)
 +	require.Equal(t, "2001:db8::10", message.Answer[0].(*dns.AAAA).AAAA.String())
++}
++
++func TestAAAAAnswersAreInhibitedWithoutRoutableHostIPv6(t *testing.T) {
++	upstream := &mockdns.Resolver{
++		Zones: map[string]mockdns.Zone{
++			"dual.test.": {
++				A:    []string{"192.0.2.10"},
++				AAAA: []string{"2001:db8::10"},
++			},
++		},
++	}
++	server, err := NewWithUpstreamResolver(nil, nil, nil, upstream)
++	require.NoError(t, err)
++	server.handler.ipv6Available = func() bool { return false }
++	message := new(dns.Msg)
++	message.SetQuestion("dual.test.", dns.TypeAAAA)
++	server.handler.addAnswers(message)
++	require.Empty(t, message.Answer)
++}
++
++func TestContainsRoutableIPv6(t *testing.T) {
++	address := func(value string, prefix int) net.Addr {
++		return &net.IPNet{IP: net.ParseIP(value), Mask: net.CIDRMask(prefix, 128)}
++	}
++	require.False(t, containsRoutableIPv6([]net.Addr{
++		address("::1", 128),
++		address("fe80::10", 64),
++		address("fd00::10", 64),
++	}))
++	require.True(t, containsRoutableIPv6([]net.Addr{
++		address("192.0.2.10", 24),
++		address("2001:4860:4860::8888", 64),
++	}))
++}
++
++func TestIPv6AvailabilityIsCached(t *testing.T) {
++	probes := 0
++	available := cacheIPv6Availability(func() bool {
++		probes++
++		return true
++	})
++	require.True(t, available())
++	require.True(t, available())
++	require.Equal(t, 1, probes)
 +}
 +
  func startDNSServer(upstream upstreamResolver) (string, func(), error) {

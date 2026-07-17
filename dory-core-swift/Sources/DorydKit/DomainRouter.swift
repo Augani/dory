@@ -47,6 +47,46 @@ public struct DomainRouter: Sendable, Equatable {
         }
         return normalized
     }
+
+    public static func matches(pattern rawPattern: String, hostname rawHostname: String) -> Bool {
+        matchSpecificity(pattern: rawPattern, hostname: rawHostname) != nil
+    }
+
+    public static func matchSpecificity(pattern rawPattern: String, hostname rawHostname: String) -> Int? {
+        let pattern = normalize(rawPattern)
+        let hostname = normalize(rawHostname)
+        guard pattern.hasPrefix("*.") else { return pattern == hostname ? 2 : nil }
+        let suffix = String(pattern.dropFirst(2))
+        guard hostname.hasSuffix(".\(suffix)") else { return nil }
+        let prefix = hostname.dropLast(suffix.count + 1)
+        return !prefix.isEmpty && !prefix.contains(".") ? 1 : nil
+    }
+
+    public static func isValidHostnamePattern(_ rawValue: String, allowWildcard: Bool = true) -> Bool {
+        let value = normalize(rawValue)
+        guard !value.isEmpty, value.count <= 253 else { return false }
+        let hostname: String
+        if value.hasPrefix("*.") {
+            guard allowWildcard else { return false }
+            hostname = String(value.dropFirst(2))
+        } else {
+            guard !value.contains("*") else { return false }
+            hostname = value
+        }
+        guard IPv4Address(hostname) == nil else { return false }
+        let labels = hostname.split(separator: ".", omittingEmptySubsequences: false)
+        guard labels.count >= 2 else { return false }
+        return labels.allSatisfy { label in
+            guard !label.isEmpty, label.count <= 63,
+                  label.first != "-", label.last != "-" else {
+                return false
+            }
+            return label.unicodeScalars.allSatisfy { scalar in
+                let value = scalar.value
+                return (48...57).contains(value) || (97...122).contains(value) || value == 45
+            }
+        }
+    }
 }
 
 public struct IPv4Address: Sendable, Equatable, Hashable {

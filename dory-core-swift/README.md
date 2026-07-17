@@ -153,19 +153,20 @@ active suffix, ports, listener state, and route list. `repairSubsystem` gives th
 `dorydctl network repair` one bounded path for DNS/domain listener restart, route re-derivation,
 immediate gvproxy port reconciliation, guest-agent RPC recovery, and Docker API verification.
 
-This intentionally does not mutate `/etc/resolver`, pf, or the system trust store. Those remain
-separately-authorized privileged helper work.
+This intentionally does not mutate `/etc/resolver`, pf, or a user's keychain. Those remain
+separately authorized by Dory's explicit networking action.
 
 `DoryLocalCA` can generate the local CA, issue per-domain certificates, and export PKCS#12 identities
-with private key material at `0600`. Installing the CA into the system trust store is represented only
-as `systemTrustInstallCommand()`; doryd does not execute it automatically.
+with private key material at `0600`. Dory.app installs the exact CA into the current user's login
+keychain only after an interactive trust prompt; doryd does not change trust settings.
 
 `dory-network-helper` is the privileged execution path for that plan. It reads a
 `NetworkingAuthorizationPlan` JSON document, re-derives the expected plan from the scalar
 configuration, refuses tampered paths/commands, and then writes `/etc/resolver/<suffix>`,
 `/etc/pf.anchors/dev.dory`, loads it as `com.apple/dev.dory` under macOS's built-in `com.apple/*`
-anchor point, enables pf, and installs LocalCA trust when present. Use `--dry-run --plan-json -` to
-validate a plan without touching the system.
+anchor point, enables pf, and snapshots the approved CA so background reconciliation cannot rotate it
+without another interactive Dory authorization. Use `--dry-run --plan-json -` to validate a plan
+without touching the system.
 
 ## Machine lifecycle
 

@@ -28,6 +28,16 @@ struct AgentModeTests {
         #expect(delegate.applicationShouldTerminateAfterLastWindowClosed(NSApplication.shared) == false)
     }
 
+    @Test func reopeningTheMenuBarAppRequestsTheMainWindow() {
+        let delegate = DoryAppDelegate()
+        #expect(
+            delegate.applicationShouldHandleReopen(
+                NSApplication.shared,
+                hasVisibleWindows: false
+            ) == false
+        )
+    }
+
     @Test func mainWindowIDIsStable() {
         #expect(DoryApp.mainWindowID == "dory-main")
     }
@@ -82,16 +92,16 @@ struct AgentModeTests {
         #expect(delegate.responds(to: #selector(NSApplicationDelegate.applicationWillTerminate(_:))))
     }
 
-    @Test func daemonStaysAvailableAfterQuitByDefaultAndHonorsExplicitOptOut() throws {
+    @Test func daemonStopsAfterQuitByDefaultAndHonorsExplicitOptIn() throws {
         let suite = "DoryTests.keepDoryd.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
 
-        #expect(AppStore.resolvedKeepDorydRunningAfterQuit(defaults: defaults))
-        defaults.set(false, forKey: AppStore.keepDorydRunningAfterQuitKey)
         #expect(!AppStore.resolvedKeepDorydRunningAfterQuit(defaults: defaults))
         defaults.set(true, forKey: AppStore.keepDorydRunningAfterQuitKey)
         #expect(AppStore.resolvedKeepDorydRunningAfterQuit(defaults: defaults))
+        defaults.set(false, forKey: AppStore.keepDorydRunningAfterQuitKey)
+        #expect(!AppStore.resolvedKeepDorydRunningAfterQuit(defaults: defaults))
     }
 
     @Test func userRequestedWindowSkipsLaunchGate() {

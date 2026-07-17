@@ -3,7 +3,10 @@ import Foundation
 public final class NetworkRouteReconciler: @unchecked Sendable {
     public typealias ContainerProvider = @Sendable () -> DockerContainerList
     public typealias MachineProvider = @Sendable () -> [DoryMachineStatus]
-    public typealias AdditionalRouteProvider = @Sendable (_ suffix: String) -> [DomainRoute]
+    public typealias AdditionalRouteProvider = @Sendable (
+        _ suffix: String,
+        _ containers: DockerContainerList
+    ) -> [DomainRoute]
 
     private let networkingController: NetworkingController
     private let suffix: String
@@ -19,7 +22,7 @@ public final class NetworkRouteReconciler: @unchecked Sendable {
         suffix: String,
         containerProvider: @escaping ContainerProvider,
         machineProvider: @escaping MachineProvider,
-        additionalRouteProvider: @escaping AdditionalRouteProvider = { _ in [] },
+        additionalRouteProvider: @escaping AdditionalRouteProvider = { _, _ in [] },
         interval: TimeInterval = 5
     ) {
         self.networkingController = networkingController
@@ -32,11 +35,12 @@ public final class NetworkRouteReconciler: @unchecked Sendable {
 
     @discardableResult
     public func reconcileNow() -> [DomainRoute] {
+        let containers = containerProvider()
         let routes = Self.routes(
-            containers: containerProvider(),
+            containers: containers,
             machines: machineProvider(),
             suffix: suffix,
-            additionalRoutes: additionalRouteProvider(suffix)
+            additionalRoutes: additionalRouteProvider(suffix, containers)
         )
         networkingController.replaceRoutes(routes)
         return routes

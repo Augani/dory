@@ -6,10 +6,25 @@
 	<string>https://augani.github.io/dory/appcast.xml</string>
 	<key>SUPublicEDKey</key>
 	<string>AFetajNbqZty68rRY7OMWYNt6suUsrokQmYMhDJtnP4=</string>
+	<key>DoryComponentCatalogURL</key>
+	<string>https://augani.github.io/dory/components/arm64/catalog.json</string>
 	<key>SUEnableInstallerLauncherService</key>
 	<true/>
 	<key>LSMultipleInstancesProhibited</key>
 	<true/>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>CFBundleURLName</key>
+			<string>dev.dory.component-selection</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>dory</string>
+			</array>
+		</dict>
+	</array>
 	<key>UTExportedTypeDeclarations</key>
 	<array>
 		<dict>

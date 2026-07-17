@@ -4,10 +4,10 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 UPSTREAM_VERSION="v0.8.9"
-DORY_VERSION="v0.8.9-dory1"
+DORY_VERSION="v0.8.9-dory2"
 SOURCE_SHA256="6cbcb7959a5d90b59253ea6d8bdf0285e2cfbc3b301398704b41e3069293f4fb"
 PATCH="$ROOT/patches/gvproxy-native-ipv6.patch"
-PATCH_SHA256="ca76b2a8a304aa4b3aba835543f325832de83a14163f6b86b37491cc165e2ce3"
+PATCH_SHA256="3d6db9d9c2e6ff79b8abd334afe3664c84b84ca11a6308e8cc3d30f8fc05ab96"
 GO_TOOLCHAIN="go1.26.5"
 GO_MOD_SHA256="75848c190dca5cc7af27ebe017d5a4d59d4a117c97eaa6b8ac0359e58d868eec"
 GO_SUM_SHA256="25b1a52ad3181030b6ccf92af5d69a1a4282f8f2342dad5348b5c954c304c4b3"
@@ -149,7 +149,7 @@ if [ -n "$PROVENANCE" ]; then
     echo "arm64_sha256=$arm64_sha"
     echo "amd64_sha256=$amd64_sha"
     echo "verified_sha256=$output_sha"
-    echo "features=native-ipv6-v1,source-preserving-lan-qemu-v1"
+    echo "features=native-ipv6-v2,host-route-aware-aaaa-v1,source-preserving-lan-qemu-v1"
     echo "architectures=$actual_arches"
   } > "$PROVENANCE"
 fi

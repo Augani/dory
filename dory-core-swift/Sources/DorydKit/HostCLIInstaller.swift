@@ -1,3 +1,4 @@
+import DoryCore
 import Foundation
 
 public struct HostCLIInstallResult: Sendable, Equatable {
@@ -24,7 +25,8 @@ public struct HostCLIRemoveResult: Sendable, Equatable {
 }
 
 /// Per-user terminal integration owned by doryd. When the daemon is running from the app bundle,
-/// fresh terminals should already have Dory's docker, Compose, kubectl, dory, and support tools.
+/// fresh terminals should already have Dory's docker, Compose, dory, and support tools, plus
+/// kubectl when the Kubernetes component is installed.
 public struct HostCLIInstaller: Sendable {
     private static let beginSentinel = "# >>> dory cli >>>"
     private static let endSentinel = "# <<< dory cli <<<"
@@ -77,6 +79,7 @@ public struct HostCLIInstaller: Sendable {
 
         for tool in Self.tools {
             guard let source = sourcePath(for: tool) else {
+                removeStaleOwnedToolSymlink(at: "\(binDir)/\(tool)")
                 missing.append(tool)
                 continue
             }
@@ -223,6 +226,15 @@ public struct HostCLIInstaller: Sendable {
     }
 
     private func sourcePath(for tool: String) -> String? {
+        if tool == "kubectl",
+           let installed = DoryComponentStore.activeAssetPath(
+            component: .kubernetes,
+            path: "kubectl",
+            home: home
+           ),
+           FileManager.default.isExecutableFile(atPath: installed) {
+            return installed
+        }
         guard let helpersDirectory else { return nil }
         let path = "\(helpersDirectory)/\(tool)"
         return FileManager.default.isExecutableFile(atPath: path) ? path : nil
@@ -244,6 +256,23 @@ public struct HostCLIInstaller: Sendable {
         } catch {
             return false
         }
+    }
+
+    private func removeStaleOwnedToolSymlink(at destination: String) {
+        let fileManager = FileManager.default
+        guard let rawTarget = try? fileManager.destinationOfSymbolicLink(atPath: destination) else {
+            return
+        }
+        let target = resolvedSymlinkTarget(rawTarget, at: destination)
+        let ownedRoots = [
+            standardized("\(home)/.dory"),
+            helpersDirectory.map(standardized),
+            (try? DoryComponentStore.selected(home: home)).map { standardized($0.root) },
+        ].compactMap { $0 }
+        guard ownedRoots.contains(where: { isInside(standardized(target), root: $0) }) else {
+            return
+        }
+        try? fileManager.removeItem(atPath: destination)
     }
 
     @discardableResult
