@@ -129,7 +129,6 @@ aliases, so compatibility does not make users download duplicate VM payloads.
 |---|---|
 | `Dory-x.y.z-arm64.dmg` | Docker Core installer |
 | `Dory-x.y.z-arm64.zip` | Docker Core app archive |
-| `Dory-x.y.z-lite.zip` | Native UI for an existing Docker-compatible engine |
 | `dory-engine-x.y.z-arm64.tar.gz` | Headless Dory engine bundle |
 | `release-manifest.json` | Artifact names, hashes, and release provenance |
 | `Dory-x.y.z.cdx.json` | CycloneDX software bill of materials for Docker Core |

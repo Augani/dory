@@ -9,6 +9,8 @@
   Dory data drive.
 - Added a pre-download component selector that safely carries the chosen optional payloads into
   Dory for signed-size review and explicit installation confirmation.
+- Retired the separate public lite app so direct downloads present one Docker Core app and optional
+  signed components instead of overlapping app editions.
 - Added exact and leftmost-wildcard custom domain mappings in Settings > Network and the CLI. Dory
   now routes nginx-style `/etc/hosts` domains through its built-in HTTP and trusted HTTPS proxies.
 
@@ -34,6 +36,8 @@
 - Fixed stale container details remaining open after the selected container disappeared or no
   longer matched the current view, and added toolbar controls for hiding navigation and details.
 - Fixed reopening Dory from the Dock or menu bar when the app was running without a visible window.
+- Fixed `linux/amd64` builds on IPv4-only host networks by withholding unreachable IPv6 DNS
+  answers while preserving native IPv6 when the Mac has a routable IPv6 path.
 
 ## 0.3.1 - 2026-07-16
 
