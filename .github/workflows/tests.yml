@@ -33,6 +33,8 @@ jobs:
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
       - name: Install Protocol Buffers compiler
         run: brew install protobuf
+      - name: Network helper
+        run: scripts/test.sh gvproxy
       - name: Swift packages
         run: scripts/test.sh swift
       - name: App tests

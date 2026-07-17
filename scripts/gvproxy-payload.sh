@@ -5,8 +5,8 @@
 # the pinned Dory dual-stack derivative metadata by default. To test another audited build, set both
 # DORY_GVPROXY_VERSION and DORY_GVPROXY_SHA256; setting only one is rejected.
 
-DORY_GVPROXY_DEFAULT_VERSION="v0.8.9-dory1"
-DORY_GVPROXY_DEFAULT_SHA256="bd9183f5dbe2bd27d7ea57f2f2dd4d5ce26487eeb1fa8c82cd81bad4df50e0c0"
+DORY_GVPROXY_DEFAULT_VERSION="v0.8.9-dory2"
+DORY_GVPROXY_DEFAULT_SHA256="47c278f1636736ba552de3d2f0e68409cdc968d63bc02149637e449f40274459"
 
 dory_gvproxy_validate_overrides() {
   local version_override="${DORY_GVPROXY_VERSION:-}"
