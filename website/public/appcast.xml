@@ -7,11 +7,11 @@
     <language>en</language>
     <item>
       <title>0.3.2</title>
-      <pubDate>Fri, 17 Jul 2026 00:56:31 +0000</pubDate>
+      <pubDate>Fri, 17 Jul 2026 01:54:17 +0000</pubDate>
       <sparkle:version>43</sparkle:version>
       <sparkle:shortVersionString>0.3.2</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
-      <enclosure url="https://github.com/Augani/dory/releases/download/v0.3.2/Dory-0.3.2-app-update.zip" sparkle:edSignature="RN2ZeoS27nrXeeFij3+Hv3Wh7fdgIkdBo2a8fToFs2dJSDnWhgtfv+vdiuVSSkOKncCTJ/ImWU1Z0scttb5BDg==" length="233933842" type="application/octet-stream" />
+      <enclosure url="https://github.com/Augani/dory/releases/download/v0.3.2/Dory-0.3.2-app-update.zip" sparkle:edSignature="AwZpm9ZdMMYN3aHaXqdYAWari3V18kDHeJPlvGBkvqYDfubfUXDl2FwTo632ElPjxmG3z553ntHPkTvxfpNRAQ==" length="233934590" type="application/octet-stream" />
     </item>
     <item>
       <title>0.3.1</title>

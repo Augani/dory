@@ -5,9 +5,9 @@
       "assets": [],
       "dependencies": [],
       "displayName": "Docker Core",
-      "downloadBytes": 234906181,
+      "downloadBytes": 234888773,
       "id": "docker-core",
-      "installedBytes": 429111805,
+      "installedBytes": 429112579,
       "summary": "The signed Dory app, Docker engine, CLI, Buildx, Compose, networking, storage, migration, and health tools.",
       "version": "0.3.2"
     },
@@ -18,9 +18,9 @@
           "downloadBytes": 56944496,
           "executable": true,
           "installedBytes": 56944496,
-          "installedSHA256": "f454236fd50e1fd0cd08ea929b85cf90c0cdc6d8005a72675bdd9036ed930811",
+          "installedSHA256": "73afc3c08b567743a0441389c7ca77ed5c0386b0e5036a58f1bdd8984228f55f",
           "path": "kubectl",
-          "sha256": "f454236fd50e1fd0cd08ea929b85cf90c0cdc6d8005a72675bdd9036ed930811",
+          "sha256": "73afc3c08b567743a0441389c7ca77ed5c0386b0e5036a58f1bdd8984228f55f",
           "url": "https://github.com/Augani/dory/releases/download/v0.3.2/Dory-0.3.2-component-kubernetes-arm64-kubectl"
         }
       ],
@@ -233,7 +233,7 @@
       "version": "0.3.2"
     }
   ],
-  "generatedAt": "2026-07-17T00:55:28Z",
+  "generatedAt": "2026-07-17T01:53:13Z",
   "kind": "dev.dory.component-catalog",
   "minimumAppVersion": "0.3.2",
   "releaseVersion": "0.3.2",
