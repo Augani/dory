@@ -4,6 +4,7 @@ import SwiftUI
 
 final class DoryAppDelegate: NSObject, NSApplicationDelegate {
     fileprivate static let mainWindowIdentifier = NSUserInterfaceItemIdentifier("dory.main-window")
+    private static let openMainWindowNotification = Notification.Name("dev.dory.open-main-window")
     private static let instanceLock = NSLock()
     private static var instanceLockFD: Int32 = -1
     private static let statusItemController = DoryStatusItemController()
@@ -31,6 +32,11 @@ final class DoryAppDelegate: NSObject, NSApplicationDelegate {
         guard !isNetworkHelperMaintenance() else { return }
         guard !isTestHost, let bundleIdentifier = Bundle.main.bundleIdentifier else { return }
         guard acquireInstanceLock() else {
+            DistributedNotificationCenter.default().postNotificationName(
+                openMainWindowNotification,
+                object: nil,
+                deliverImmediately: true
+            )
             runningInstance(bundleIdentifier: bundleIdentifier)?.activate(options: [.activateAllWindows])
             exit(EXIT_SUCCESS)
         }
@@ -126,6 +132,12 @@ final class DoryAppDelegate: NSObject, NSApplicationDelegate {
             }
             return
         }
+        DistributedNotificationCenter.default().addObserver(
+            self,
+            selector: #selector(openMainWindowFromNotification(_:)),
+            name: Self.openMainWindowNotification,
+            object: nil
+        )
         NSApp.setActivationPolicy(.accessory)
         Self.refreshMenuBarVisibility()
         Task { @MainActor in
@@ -138,11 +150,11 @@ final class DoryAppDelegate: NSObject, NSApplicationDelegate {
         false
     }
 
-    func applicationShouldHandleReopen(
+    @MainActor func applicationShouldHandleReopen(
         _ sender: NSApplication,
         hasVisibleWindows flag: Bool
     ) -> Bool {
-        Task { @MainActor in Self.openMainWindow() }
+        Self.openMainWindow()
         return false
     }
 
@@ -151,6 +163,11 @@ final class DoryAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        DistributedNotificationCenter.default().removeObserver(
+            self,
+            name: Self.openMainWindowNotification,
+            object: nil
+        )
         if !Self.isTestHost,
            !AppStore.resolvedKeepDorydRunningAfterQuit(defaults: .standard) {
             DorydLaunchAgent.stopAndRemoveCurrentSynchronously()
@@ -163,6 +180,10 @@ final class DoryAppDelegate: NSObject, NSApplicationDelegate {
             flock(fd, LOCK_UN)
             close(fd)
         }
+    }
+
+    @objc private func openMainWindowFromNotification(_ notification: Notification) {
+        Task { @MainActor in Self.openMainWindow() }
     }
 
     @MainActor static func markMainWindow(_ window: NSWindow) {
@@ -228,8 +249,10 @@ private final class DoryStatusItemController: NSObject, NSPopoverDelegate, NSWin
     func openMainWindow() {
         guard let store else { return }
         if let existing = NSApp.windows.first(where: { $0.identifier == DoryAppDelegate.mainWindowIdentifier }) {
-            existing.makeKeyAndOrderFront(nil)
             DoryActivation.setForeground(true)
+            existing.deminiaturize(nil)
+            existing.makeKeyAndOrderFront(nil)
+            existing.orderFrontRegardless()
             return
         }
 
@@ -260,8 +283,10 @@ private final class DoryStatusItemController: NSObject, NSPopoverDelegate, NSWin
         }
 
         DoryAppDelegate.markMainWindow(window)
-        window.makeKeyAndOrderFront(nil)
         DoryActivation.setForeground(true)
+        window.deminiaturize(nil)
+        window.makeKeyAndOrderFront(nil)
+        window.orderFrontRegardless()
     }
 
     private func installStatusItemIfNeeded() {
