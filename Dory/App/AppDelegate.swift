@@ -139,6 +139,9 @@ final class DoryAppDelegate: NSObject, NSApplicationDelegate {
             object: nil
         )
         NSApp.setActivationPolicy(.accessory)
+        // NSStatusItem creation must wait until AppKit has finished initializing the application.
+        // Creating it from SwiftUI.App.init can enter newer linked-SDK status-item paths before
+        // older WindowServer implementations have established their CoreGraphics connection.
         Self.refreshMenuBarVisibility()
         Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(500))
@@ -237,7 +240,6 @@ private final class DoryStatusItemController: NSObject, NSPopoverDelegate, NSWin
         self.store = store
         popover.behavior = .transient
         popover.delegate = self
-        applyVisibility()
     }
 
     func applyVisibility() {

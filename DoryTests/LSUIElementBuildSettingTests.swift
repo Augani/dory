@@ -44,6 +44,21 @@ struct LSUIElementBuildSettingTests {
         #expect(delegate.contains("NSStatusBar.system.removeStatusItem"))
     }
 
+    @Test func statusItemInstallationWaitsForApplicationDidFinishLaunching() throws {
+        let delegate = try repositoryFile("Dory/App/AppDelegate.swift")
+        let configureBody = try #require(
+            delegate.components(separatedBy: "func configure(store: AppStore) {").last?
+                .components(separatedBy: "\n    }").first
+        )
+        let didFinishBody = try #require(
+            delegate.components(separatedBy: "func applicationDidFinishLaunching(_ notification: Notification) {").last?
+                .components(separatedBy: "\n    }").first
+        )
+
+        #expect(!configureBody.contains("applyVisibility()"))
+        #expect(didFinishBody.contains("Self.refreshMenuBarVisibility()"))
+    }
+
     @Test func appBuildPrunesStaleBundledHelpersBeforeSigning() throws {
         let text = try pbxproj()
         #expect(text.contains("Prune Stale Bundled Helpers"))
