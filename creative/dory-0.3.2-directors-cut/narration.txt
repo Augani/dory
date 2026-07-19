@@ -1,0 +1,27 @@
+Meet Dory zero point three point two.
+
+Your complete local Linux workspace, built for Apple Silicon Macs.
+
+Start with one smaller Docker Core. About a hundred and twelve megabytes of duplicate compatibility payload—gone.
+
+Then add only what you need: Kubernetes, Linux machines, Debian, Ubuntu, or Kali desktops.
+
+Run and test graphical Linux applications beside your containers: Retina-sharp windows, persistent disks, scoped Mac folders, and snapshots.
+
+For A-I agents, launch a dedicated preview sandbox V-M.
+
+No host files are visible by default.
+
+Mount only what you choose.
+
+Set network to none.
+
+Roll back.
+
+Or let the temporary V-M delete itself.
+
+Optional components are signed and removable. Your workload data stays.
+
+Add custom domains. Add trusted H-T-T-P-S.
+
+Dory. Smaller core. Bigger possibilities. Built for Mac. Open source.

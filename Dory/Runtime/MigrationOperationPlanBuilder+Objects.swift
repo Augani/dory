@@ -30,12 +30,14 @@ extension MigrationOperationPlanBuilder {
                 specificationDigest: specification.digest
             ))
             let references = imageReferences(image)
-            let decision = try imageCollisionDecision(
+            // Defer a conflicting reference to final selection validation. This lets a user omit
+            // an unrelated colliding image while keeping exact collision checks for the closure.
+            let decision = (try? imageCollisionDecision(
                 image,
                 references: references,
                 targetIDs: targetIDs,
                 targetByReference: targetByReference
-            )
+            )) ?? .create
             for reference in references {
                 byReference[canonicalImageReference(reference)] = key
             }
@@ -56,11 +58,7 @@ extension MigrationOperationPlanBuilder {
         ownership: MigrationOperationOwnership,
         to assembly: inout MigrationPlanAssembly
     ) throws -> Set<String> {
-        let targetNames = Set(target.map(\.name))
         for volume in source.sorted(by: { $0.name < $1.name }) {
-            guard !targetNames.contains(volume.name) else {
-                throw MigrationOperationPlanError.targetCollision(kind: .volume, name: volume.name)
-            }
             let key = DoryOperationObjectKey(kind: .volume, sourceID: volume.name)
             let sourceContract = MigrationVolumeContract(volume: volume)
             let specification = try makeSpecification(MigrationVolumeContract(
@@ -94,11 +92,7 @@ extension MigrationOperationPlanBuilder {
         to assembly: inout MigrationPlanAssembly
     ) throws -> Set<String> {
         let networks = source.snapshot.networks.filter { !defaultNetworks.contains($0.name) }
-        let targetNames = Set(target.map(\.name))
         for network in networks.sorted(by: { $0.name < $1.name }) {
-            guard !targetNames.contains(network.name) else {
-                throw MigrationOperationPlanError.targetCollision(kind: .network, name: network.name)
-            }
             guard let inspected = source.networkInspections[network.name] else {
                 throw MigrationOperationPlanError.missingNetworkSpecification(network.name)
             }
@@ -138,9 +132,6 @@ extension MigrationOperationPlanBuilder {
         to assembly: inout MigrationPlanAssembly
     ) throws {
         for container in source.snapshot.containers.sorted(by: { $0.id < $1.id }) {
-            guard !context.targetNames.contains(container.name) else {
-                throw MigrationOperationPlanError.targetCollision(kind: .container, name: container.name)
-            }
             guard let specification = source.containerSpecifications[container.id] else {
                 throw MigrationOperationPlanError.missingContainerSpecification(container.name)
             }

@@ -1690,6 +1690,27 @@ struct MigrationTests {
         #expect(inventory.isEngineDiskInsufficient)
     }
 
+    @Test func grownEngineCapacityUpdatesAdmissionAndGrowthRecommendation() {
+        var inventory = MigrationInventory(
+            sourceName: "OrbStack",
+            images: 1,
+            containers: 0,
+            volumes: 0,
+            volumeNames: [],
+            estimatedImageBytes: 110 * 1024 * 1024 * 1024,
+            availableHostBytes: 500 * 1024 * 1024 * 1024
+        )
+
+        #expect(inventory.isEngineDiskInsufficient)
+        #expect(inventory.recommendedEngineCapacityGiB == 256)
+
+        inventory.engineDiskLogicalBytes = 256 * 1024 * 1024 * 1024
+        inventory.engineDiskUsableBytes = 240 * 1024 * 1024 * 1024
+
+        #expect(!inventory.isEngineDiskInsufficient)
+        #expect(inventory.recommendedEngineCapacityGiB == nil)
+    }
+
     @Test func unknownExistingTargetUsageBlocksTheCapacityDecision() {
         let inventory = MigrationInventory(
             sourceName: "OrbStack",

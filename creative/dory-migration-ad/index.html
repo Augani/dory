@@ -1,0 +1,1944 @@
+<!doctype html>
+<html lang="en" data-resolution="landscape-4k">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=3840, height=2160" />
+    <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+    <style>
+      @font-face {
+        font-family: "Manrope";
+        src: url("assets/fonts/manrope-400.woff2") format("woff2");
+        font-style: normal;
+        font-weight: 400;
+      }
+      @font-face {
+        font-family: "Manrope";
+        src: url("assets/fonts/manrope-600.woff2") format("woff2");
+        font-style: normal;
+        font-weight: 600;
+      }
+      @font-face {
+        font-family: "Manrope";
+        src: url("assets/fonts/manrope-700.woff2") format("woff2");
+        font-style: normal;
+        font-weight: 700;
+      }
+      @font-face {
+        font-family: "Manrope";
+        src: url("assets/fonts/manrope-800.woff2") format("woff2");
+        font-style: normal;
+        font-weight: 800;
+      }
+
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+
+      html,
+      body {
+        width: 3840px;
+        height: 2160px;
+        overflow: hidden;
+        background-color: #f6f9fe;
+      }
+
+      body {
+        color: #071525;
+        font-family: "Manrope", "Avenir Next", sans-serif;
+        -webkit-font-smoothing: antialiased;
+        text-rendering: geometricPrecision;
+      }
+
+      .mono {
+        font-family: "SF Mono", "JetBrains Mono", Menlo, monospace;
+        font-variant-ligatures: none;
+        font-variant-numeric: tabular-nums;
+      }
+
+      #root {
+        position: relative;
+        width: 3840px;
+        height: 2160px;
+        overflow: hidden;
+        background-color: #f6f9fe;
+      }
+
+      .scene {
+        position: absolute;
+        inset: 0;
+        width: 3840px;
+        height: 2160px;
+        overflow: hidden;
+        background-color: #f6f9fe;
+        transform-origin: 50% 50%;
+        will-change: transform, opacity, filter;
+      }
+
+      #scene-2,
+      #scene-3,
+      #scene-4,
+      #scene-5,
+      #scene-6 {
+        opacity: 0;
+      }
+
+      .scene-content {
+        position: relative;
+        z-index: 5;
+        display: flex;
+        width: 100%;
+        height: 100%;
+        padding: 176px 232px 292px;
+        gap: 72px;
+      }
+
+      .grid {
+        position: absolute;
+        inset: 0;
+        z-index: 0;
+        opacity: 0.52;
+        background-image:
+          linear-gradient(rgba(13, 42, 77, 0.055) 2px, rgba(13, 42, 77, 0) 2px),
+          linear-gradient(90deg, rgba(13, 42, 77, 0.055) 2px, rgba(13, 42, 77, 0) 2px);
+        background-size: 112px 112px;
+        mask-image: radial-gradient(circle at 54% 44%, #000 0%, rgba(0, 0, 0, 0.72) 54%, rgba(0, 0, 0, 0) 92%);
+      }
+
+      .grain {
+        position: absolute;
+        inset: 0;
+        z-index: 2;
+        opacity: 0.024;
+        pointer-events: none;
+        background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 180 180' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.74' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.75'/%3E%3C/svg%3E");
+      }
+
+      .glow {
+        position: absolute;
+        z-index: 1;
+        width: 1600px;
+        height: 1600px;
+        border-radius: 50%;
+        background: radial-gradient(circle, rgba(20, 127, 232, 0.15) 0%, rgba(20, 127, 232, 0.06) 36%, rgba(20, 127, 232, 0) 72%);
+        filter: blur(22px);
+        will-change: transform, opacity;
+      }
+
+      .glow.amber {
+        background: radial-gradient(circle, rgba(255, 173, 31, 0.18) 0%, rgba(255, 173, 31, 0.055) 34%, rgba(255, 173, 31, 0) 72%);
+      }
+
+      .top-meta {
+        position: absolute;
+        top: 82px;
+        left: 232px;
+        right: 232px;
+        z-index: 8;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        color: #52677d;
+        font-family: "SF Mono", Menlo, monospace;
+        font-size: 28px;
+        font-weight: 700;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+      }
+
+      .top-meta::after {
+        position: absolute;
+        right: 0;
+        bottom: -31px;
+        left: 0;
+        height: 2px;
+        background-color: #d7e3f1;
+        content: "";
+      }
+
+      .chapter {
+        display: inline-flex;
+        align-items: center;
+        gap: 22px;
+        color: #147fe8;
+        font-family: "SF Mono", Menlo, monospace;
+        font-size: 31px;
+        font-weight: 700;
+        letter-spacing: 0.13em;
+        text-transform: uppercase;
+      }
+
+      .chapter::before {
+        width: 70px;
+        height: 6px;
+        border-radius: 99px;
+        background-color: #ffad1f;
+        content: "";
+      }
+
+      .headline {
+        color: #071525;
+        font-size: 204px;
+        font-weight: 800;
+        letter-spacing: -0.055em;
+        line-height: 0.93;
+      }
+
+      .headline .blue {
+        color: #147fe8;
+      }
+
+      .headline .amber {
+        color: #df8900;
+      }
+
+      .subhead {
+        max-width: 1420px;
+        color: #52677d;
+        font-size: 52px;
+        font-weight: 400;
+        letter-spacing: -0.025em;
+        line-height: 1.32;
+      }
+
+      .surface {
+        border: 3px solid #dbe7f4;
+        border-radius: 48px;
+        background-color: #ffffff;
+        box-shadow:
+          0 34px 100px rgba(13, 42, 77, 0.12),
+          0 4px 18px rgba(13, 42, 77, 0.06);
+      }
+
+      .technical-pill {
+        display: inline-flex;
+        min-height: 70px;
+        align-items: center;
+        gap: 16px;
+        padding: 0 28px;
+        border: 2px solid #cfe0f2;
+        border-radius: 999px;
+        background-color: #ffffff;
+        color: #0d2a4d;
+        font-family: "SF Mono", Menlo, monospace;
+        font-size: 25px;
+        font-weight: 700;
+        letter-spacing: 0.055em;
+        white-space: nowrap;
+      }
+
+      .status-dot {
+        width: 18px;
+        height: 18px;
+        flex: 0 0 auto;
+        border-radius: 50%;
+        background-color: #20b783;
+        box-shadow: 0 0 0 9px rgba(32, 183, 131, 0.12);
+      }
+
+      .work-capsule {
+        position: relative;
+        display: flex;
+        width: 760px;
+        height: 520px;
+        align-items: center;
+        justify-content: center;
+        border: 4px solid #0d2a4d;
+        border-radius: 120px;
+        background-color: #ffffff;
+        box-shadow:
+          0 48px 120px rgba(13, 42, 77, 0.16),
+          inset 0 0 0 18px #e7f1fc;
+        will-change: transform, opacity;
+      }
+
+      .work-capsule::before,
+      .work-capsule::after {
+        position: absolute;
+        top: 50%;
+        width: 72px;
+        height: 176px;
+        border: 4px solid #0d2a4d;
+        background-color: #ffffff;
+        content: "";
+        transform: translateY(-50%);
+      }
+
+      .work-capsule::before {
+        left: -58px;
+        border-radius: 30px 0 0 30px;
+      }
+
+      .work-capsule::after {
+        right: -58px;
+        border-radius: 0 30px 30px 0;
+      }
+
+      .capsule-core {
+        display: grid;
+        width: 600px;
+        height: 366px;
+        padding: 28px;
+        gap: 16px;
+        border-radius: 78px;
+        background-color: #0d2a4d;
+      }
+
+      .capsule-layer {
+        display: flex;
+        min-width: 0;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0 28px;
+        border-radius: 22px;
+        background-color: #f6f9fe;
+        color: #0d2a4d;
+        font-family: "SF Mono", Menlo, monospace;
+        font-size: 24px;
+        font-weight: 700;
+        letter-spacing: 0.055em;
+      }
+
+      .capsule-layer i {
+        width: 14px;
+        height: 14px;
+        border-radius: 50%;
+        background-color: #147fe8;
+        box-shadow: 0 0 0 7px rgba(20, 127, 232, 0.12);
+      }
+
+      .capsule-layer:nth-child(2) i,
+      .capsule-layer:nth-child(5) i {
+        background-color: #ffad1f;
+        box-shadow: 0 0 0 7px rgba(255, 173, 31, 0.15);
+      }
+
+      .capsule-layer:nth-child(3) i {
+        background-color: #20b783;
+        box-shadow: 0 0 0 7px rgba(32, 183, 131, 0.14);
+      }
+
+      .current-svg {
+        position: absolute;
+        z-index: 3;
+        overflow: visible;
+        pointer-events: none;
+      }
+
+      .current-path {
+        fill: none;
+        stroke: #147fe8;
+        stroke-linecap: round;
+        stroke-width: 12;
+      }
+
+      .current-ghost {
+        fill: none;
+        opacity: 0.22;
+        stroke: #147fe8;
+        stroke-linecap: round;
+        stroke-width: 40;
+      }
+
+      .current-pulse {
+        fill: #ffad1f;
+        filter: drop-shadow(0 0 22px rgba(255, 173, 31, 0.72));
+      }
+
+      /* Scene 1 */
+      #scene-1 .glow {
+        top: -680px;
+        right: -380px;
+      }
+
+      #scene-1 .glow.amber {
+        bottom: -880px;
+        left: -520px;
+      }
+
+      .s1-layout {
+        align-items: center;
+        justify-content: space-between;
+      }
+
+      .s1-copy {
+        display: flex;
+        width: 1880px;
+        flex-direction: column;
+        gap: 54px;
+      }
+
+      .s1-copy .headline {
+        font-size: 218px;
+      }
+
+      .s1-copy .subhead {
+        max-width: 1520px;
+      }
+
+      .source-stage {
+        position: relative;
+        display: flex;
+        width: 1280px;
+        height: 1170px;
+        align-items: center;
+        justify-content: center;
+      }
+
+      .runtime-stack {
+        position: absolute;
+        inset: 40px 0 auto;
+        display: flex;
+        justify-content: center;
+        gap: 26px;
+      }
+
+      .runtime-plate {
+        display: flex;
+        width: 350px;
+        height: 124px;
+        align-items: center;
+        justify-content: center;
+        border: 3px solid #d2e1f1;
+        border-radius: 30px;
+        background-color: #ffffff;
+        color: #0d2a4d;
+        font-family: "SF Mono", Menlo, monospace;
+        font-size: 25px;
+        font-weight: 700;
+        box-shadow: 0 20px 54px rgba(13, 42, 77, 0.09);
+      }
+
+      .source-frame {
+        position: absolute;
+        top: 220px;
+        right: 90px;
+        bottom: 58px;
+        left: 90px;
+        border: 4px dashed #9cb8d3;
+        border-radius: 96px;
+      }
+
+      .source-frame-label {
+        position: absolute;
+        top: -36px;
+        left: 70px;
+        padding: 16px 28px;
+        border: 3px solid #9cb8d3;
+        border-radius: 999px;
+        background-color: #f6f9fe;
+        color: #52677d;
+        font-family: "SF Mono", Menlo, monospace;
+        font-size: 24px;
+        font-weight: 700;
+        letter-spacing: 0.09em;
+      }
+
+      .source-stage .work-capsule {
+        margin-top: 210px;
+        transform: scale(0.92) rotate(-1.5deg);
+      }
+
+      #s1-current {
+        right: 0;
+        bottom: 136px;
+        width: 1590px;
+        height: 630px;
+      }
+
+      /* Scene 2 */
+      #scene-2 .glow {
+        top: -760px;
+        left: -430px;
+      }
+
+      #scene-2 .glow.amber {
+        right: -560px;
+        bottom: -840px;
+      }
+
+      .s2-layout {
+        flex-direction: column;
+        gap: 66px;
+      }
+
+      .s2-heading {
+        display: flex;
+        width: 100%;
+        align-items: flex-end;
+        justify-content: space-between;
+      }
+
+      .s2-heading .headline {
+        max-width: 1880px;
+        font-size: 178px;
+      }
+
+      .s2-heading .subhead {
+        max-width: 1120px;
+        padding-bottom: 14px;
+        text-align: right;
+      }
+
+      .artifact-rail {
+        position: relative;
+        display: grid;
+        width: 100%;
+        flex: 1;
+        grid-template-columns: repeat(5, 1fr);
+        align-items: center;
+        gap: 30px;
+      }
+
+      .artifact-rail::before {
+        position: absolute;
+        top: 50%;
+        right: 72px;
+        left: 72px;
+        height: 12px;
+        border-radius: 99px;
+        background-color: #cfe2f6;
+        content: "";
+      }
+
+      .artifact-card {
+        position: relative;
+        z-index: 2;
+        display: flex;
+        height: 620px;
+        flex-direction: column;
+        justify-content: space-between;
+        padding: 48px 42px;
+        border: 3px solid #dbe7f4;
+        border-radius: 46px;
+        background-color: #ffffff;
+        box-shadow: 0 32px 90px rgba(13, 42, 77, 0.11);
+        will-change: transform, opacity;
+      }
+
+      .artifact-code {
+        display: grid;
+        width: 104px;
+        height: 104px;
+        place-items: center;
+        border-radius: 30px;
+        background-color: #e7f1fc;
+        color: #147fe8;
+        font-family: "SF Mono", Menlo, monospace;
+        font-size: 34px;
+        font-weight: 800;
+      }
+
+      .artifact-card:nth-child(2) .artifact-code,
+      .artifact-card:nth-child(5) .artifact-code {
+        background-color: #fff2d7;
+        color: #b86d00;
+      }
+
+      .artifact-card:nth-child(3) .artifact-code {
+        background-color: #ddf6ec;
+        color: #117e59;
+      }
+
+      .artifact-card h3 {
+        max-width: 480px;
+        color: #071525;
+        font-size: 62px;
+        font-weight: 800;
+        letter-spacing: -0.04em;
+        line-height: 1.02;
+      }
+
+      .artifact-card p {
+        color: #52677d;
+        font-family: "SF Mono", Menlo, monospace;
+        font-size: 24px;
+        font-weight: 700;
+        letter-spacing: 0.06em;
+        line-height: 1.45;
+      }
+
+      .artifact-port {
+        position: absolute;
+        right: 50%;
+        bottom: -25px;
+        width: 52px;
+        height: 52px;
+        border: 5px solid #ffffff;
+        border-radius: 50%;
+        background-color: #147fe8;
+        box-shadow: 0 0 0 3px #bcd5ee;
+        transform: translateX(50%);
+      }
+
+      #s2-current {
+        right: 0;
+        bottom: 214px;
+        left: 0;
+        width: 3840px;
+        height: 430px;
+      }
+
+      /* Scene 3 */
+      #scene-3 .glow {
+        top: -740px;
+        right: -420px;
+      }
+
+      .s3-layout {
+        align-items: center;
+        justify-content: space-between;
+      }
+
+      .s3-copy {
+        display: flex;
+        width: 1420px;
+        flex-direction: column;
+        gap: 48px;
+      }
+
+      .s3-copy .headline {
+        font-size: 188px;
+      }
+
+      .source-list {
+        display: grid;
+        grid-template-columns: repeat(2, 1fr);
+        gap: 20px;
+      }
+
+      .source-pill {
+        position: relative;
+        display: flex;
+        min-height: 104px;
+        align-items: center;
+        gap: 22px;
+        padding: 0 28px;
+        overflow: hidden;
+        border: 3px solid #d7e5f3;
+        border-radius: 28px;
+        background-color: #ffffff;
+        color: #0d2a4d;
+        font-family: "SF Mono", Menlo, monospace;
+        font-size: 26px;
+        font-weight: 700;
+      }
+
+      .source-pill::before {
+        width: 16px;
+        height: 16px;
+        flex: 0 0 auto;
+        border-radius: 50%;
+        background-color: #20b783;
+        box-shadow: 0 0 0 8px rgba(32, 183, 131, 0.12);
+        content: "";
+      }
+
+      .migration-window {
+        position: relative;
+        display: flex;
+        width: 1770px;
+        height: 1260px;
+        flex-direction: column;
+        overflow: hidden;
+      }
+
+      .window-bar {
+        display: flex;
+        height: 126px;
+        flex: 0 0 auto;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0 48px;
+        border-bottom: 3px solid #dbe7f4;
+      }
+
+      .window-title {
+        display: flex;
+        align-items: center;
+        gap: 22px;
+        color: #071525;
+        font-size: 35px;
+        font-weight: 800;
+        letter-spacing: -0.025em;
+      }
+
+      .window-title-badge {
+        display: grid;
+        width: 58px;
+        height: 58px;
+        place-items: center;
+        border-radius: 18px;
+        background-color: #147fe8;
+        color: #ffffff;
+        font-family: "SF Mono", Menlo, monospace;
+        font-size: 22px;
+        font-weight: 800;
+      }
+
+      .window-body {
+        display: grid;
+        flex: 1;
+        grid-template-columns: 350px 1fr;
+      }
+
+      .sidebar {
+        padding: 44px 30px;
+        border-right: 3px solid #dbe7f4;
+        background-color: #f2f7fc;
+      }
+
+      .side-item {
+        display: flex;
+        min-height: 82px;
+        align-items: center;
+        gap: 18px;
+        padding: 0 24px;
+        border-radius: 22px;
+        color: #52677d;
+        font-size: 24px;
+        font-weight: 600;
+      }
+
+      .side-item.active {
+        background-color: #dceeff;
+        color: #0d65bc;
+        font-weight: 800;
+      }
+
+      .side-glyph {
+        width: 18px;
+        height: 18px;
+        border: 3px solid currentColor;
+        border-radius: 6px;
+      }
+
+      .migration-panel {
+        display: flex;
+        flex-direction: column;
+        padding: 54px;
+        gap: 32px;
+      }
+
+      .panel-label {
+        color: #52677d;
+        font-family: "SF Mono", Menlo, monospace;
+        font-size: 23px;
+        font-weight: 800;
+        letter-spacing: 0.13em;
+      }
+
+      .source-picker {
+        display: flex;
+        min-height: 112px;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0 34px;
+        border: 3px solid #cfe0f2;
+        border-radius: 28px;
+        background-color: #ffffff;
+      }
+
+      .picker-name {
+        display: flex;
+        align-items: center;
+        gap: 20px;
+        color: #071525;
+        font-size: 30px;
+        font-weight: 700;
+      }
+
+      .picker-socket {
+        color: #52677d;
+        font-family: "SF Mono", Menlo, monospace;
+        font-size: 21px;
+      }
+
+      .discover-card {
+        position: relative;
+        display: flex;
+        flex: 1;
+        flex-direction: column;
+        justify-content: space-between;
+        padding: 42px;
+        overflow: hidden;
+        border: 3px solid #dbe7f4;
+        border-radius: 34px;
+        background-color: #f6f9fe;
+      }
+
+      .discover-card h3 {
+        color: #071525;
+        font-size: 48px;
+        font-weight: 800;
+        letter-spacing: -0.035em;
+      }
+
+      .discover-object-grid {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 16px;
+      }
+
+      .discover-object {
+        display: flex;
+        min-height: 110px;
+        flex-direction: column;
+        justify-content: center;
+        padding: 0 24px;
+        border: 2px solid #d7e5f3;
+        border-radius: 22px;
+        background-color: #ffffff;
+        color: #0d2a4d;
+        font-family: "SF Mono", Menlo, monospace;
+        font-size: 20px;
+        font-weight: 700;
+        line-height: 1.4;
+      }
+
+      .discover-object strong {
+        color: #147fe8;
+        font-size: 29px;
+      }
+
+      .scan-line {
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        left: 0;
+        width: 16px;
+        background-color: #147fe8;
+        box-shadow: 0 0 50px 20px rgba(20, 127, 232, 0.24);
+        opacity: 0.88;
+      }
+
+      /* Scene 4 */
+      #scene-4 .glow {
+        right: -580px;
+        bottom: -820px;
+      }
+
+      .s4-layout {
+        flex-direction: column;
+        gap: 52px;
+      }
+
+      .s4-top {
+        display: flex;
+        width: 100%;
+        align-items: flex-end;
+        justify-content: space-between;
+      }
+
+      .s4-top .headline {
+        font-size: 178px;
+      }
+
+      .s4-top .subhead {
+        max-width: 1240px;
+        padding-bottom: 14px;
+        text-align: right;
+      }
+
+      .preflight-shell {
+        display: grid;
+        width: 100%;
+        flex: 1;
+        padding: 44px;
+        grid-template-columns: 0.86fr 1.14fr;
+        gap: 38px;
+      }
+
+      .steps {
+        display: flex;
+        flex-direction: column;
+        gap: 18px;
+      }
+
+      .step {
+        position: relative;
+        display: flex;
+        min-height: 190px;
+        align-items: center;
+        gap: 32px;
+        padding: 26px 34px;
+        border: 3px solid #dbe7f4;
+        border-radius: 30px;
+        background-color: #f6f9fe;
+      }
+
+      .step.active {
+        border-color: #147fe8;
+        background-color: #e7f3ff;
+        box-shadow: 0 18px 46px rgba(20, 127, 232, 0.12);
+      }
+
+      .step-index {
+        display: grid;
+        width: 82px;
+        height: 82px;
+        flex: 0 0 auto;
+        place-items: center;
+        border-radius: 24px;
+        background-color: #0d2a4d;
+        color: #ffffff;
+        font-family: "SF Mono", Menlo, monospace;
+        font-size: 28px;
+        font-weight: 800;
+      }
+
+      .step.active .step-index {
+        background-color: #147fe8;
+      }
+
+      .step-copy h3 {
+        color: #071525;
+        font-size: 38px;
+        font-weight: 800;
+        letter-spacing: -0.03em;
+      }
+
+      .step-copy p {
+        margin-top: 10px;
+        color: #52677d;
+        font-size: 24px;
+        line-height: 1.35;
+      }
+
+      .preflight-proof {
+        display: flex;
+        flex-direction: column;
+        padding: 42px;
+        gap: 26px;
+        border: 3px solid #dbe7f4;
+        border-radius: 34px;
+        background-color: #f9fbfe;
+      }
+
+      .proof-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+      }
+
+      .proof-header h3 {
+        color: #071525;
+        font-size: 45px;
+        font-weight: 800;
+        letter-spacing: -0.035em;
+      }
+
+      .confidence {
+        display: inline-flex;
+        min-height: 68px;
+        align-items: center;
+        gap: 16px;
+        padding: 0 24px;
+        border-radius: 999px;
+        background-color: #ddf6ec;
+        color: #117e59;
+        font-family: "SF Mono", Menlo, monospace;
+        font-size: 22px;
+        font-weight: 800;
+      }
+
+      .proof-row {
+        display: grid;
+        min-height: 126px;
+        grid-template-columns: 1fr auto;
+        align-items: center;
+        padding: 0 30px;
+        border: 2px solid #dbe7f4;
+        border-radius: 26px;
+        background-color: #ffffff;
+      }
+
+      .proof-row-copy strong {
+        display: block;
+        color: #071525;
+        font-size: 29px;
+        font-weight: 800;
+      }
+
+      .proof-row-copy span {
+        display: block;
+        margin-top: 7px;
+        color: #52677d;
+        font-size: 21px;
+      }
+
+      .proof-check {
+        display: grid;
+        width: 58px;
+        height: 58px;
+        place-items: center;
+        border-radius: 50%;
+        background-color: #20b783;
+        color: #ffffff;
+        font-size: 31px;
+        font-weight: 800;
+      }
+
+      .preflight-footer {
+        display: flex;
+        min-height: 92px;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0 30px;
+        border-radius: 24px;
+        background-color: #0d2a4d;
+        color: #ffffff;
+      }
+
+      .preflight-footer strong {
+        font-size: 25px;
+        font-weight: 800;
+      }
+
+      .preflight-footer span {
+        color: #c8daec;
+        font-family: "SF Mono", Menlo, monospace;
+        font-size: 21px;
+      }
+
+      /* Scene 5 */
+      #scene-5 .glow {
+        top: -700px;
+        left: -480px;
+      }
+
+      #scene-5 .glow.amber {
+        right: -540px;
+        bottom: -860px;
+      }
+
+      .s5-layout {
+        flex-direction: column;
+        gap: 44px;
+      }
+
+      .s5-top {
+        display: flex;
+        width: 100%;
+        align-items: flex-end;
+        justify-content: space-between;
+      }
+
+      .s5-top .headline {
+        font-size: 164px;
+      }
+
+      .s5-top .subhead {
+        max-width: 1150px;
+        padding-bottom: 12px;
+        text-align: right;
+      }
+
+      .transfer-world {
+        position: relative;
+        display: grid;
+        width: 100%;
+        flex: 1;
+        grid-template-columns: 920px 1fr 920px;
+        align-items: center;
+        gap: 80px;
+      }
+
+      .runtime-anchor,
+      .dory-drive {
+        position: relative;
+        display: flex;
+        height: 790px;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        padding: 40px;
+      }
+
+      .anchor-label {
+        position: absolute;
+        top: 40px;
+        right: 40px;
+        left: 40px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        color: #52677d;
+        font-family: "SF Mono", Menlo, monospace;
+        font-size: 22px;
+        font-weight: 800;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .runtime-anchor .work-capsule,
+      .dory-drive .work-capsule {
+        transform: scale(0.67);
+      }
+
+      .runtime-anchor::after {
+        position: absolute;
+        right: 46px;
+        bottom: 42px;
+        left: 46px;
+        height: 86px;
+        border-radius: 24px;
+        background-color: #f0f5fa;
+        color: #52677d;
+        content: "SOURCE REMAINS";
+        font-family: "SF Mono", Menlo, monospace;
+        font-size: 23px;
+        font-weight: 800;
+        letter-spacing: 0.1em;
+        line-height: 86px;
+        text-align: center;
+      }
+
+      .dory-drive {
+        border-color: #8cc8ff;
+        background-color: #f8fcff;
+        box-shadow:
+          0 36px 100px rgba(20, 127, 232, 0.15),
+          inset 0 0 0 18px rgba(20, 127, 232, 0.04);
+      }
+
+      .dory-drive::after {
+        position: absolute;
+        right: 46px;
+        bottom: 42px;
+        left: 46px;
+        height: 86px;
+        border-radius: 24px;
+        background-color: #ddf6ec;
+        color: #117e59;
+        content: "IMPORT VERIFIED";
+        font-family: "SF Mono", Menlo, monospace;
+        font-size: 23px;
+        font-weight: 800;
+        letter-spacing: 0.1em;
+        line-height: 86px;
+        text-align: center;
+      }
+
+      .transfer-bridge {
+        position: relative;
+        height: 520px;
+      }
+
+      .bridge-line {
+        position: absolute;
+        top: 50%;
+        right: 0;
+        left: 0;
+        height: 16px;
+        border-radius: 99px;
+        background-color: #c5ddf3;
+        transform: translateY(-50%);
+      }
+
+      .bridge-progress {
+        position: absolute;
+        top: 50%;
+        left: 0;
+        width: 100%;
+        height: 16px;
+        border-radius: 99px;
+        background-color: #147fe8;
+        transform: translateY(-50%);
+        transform-origin: left center;
+      }
+
+      .gate-row {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+      }
+
+      .gate {
+        position: relative;
+        display: grid;
+        width: 186px;
+        height: 186px;
+        place-items: center;
+        border: 5px solid #b9d3eb;
+        border-radius: 50%;
+        background-color: #ffffff;
+        color: #52677d;
+        font-family: "SF Mono", Menlo, monospace;
+        font-size: 23px;
+        font-weight: 800;
+        box-shadow: 0 18px 42px rgba(13, 42, 77, 0.10);
+      }
+
+      .gate::after {
+        position: absolute;
+        bottom: -68px;
+        color: #52677d;
+        content: attr(data-label);
+        font-size: 20px;
+        letter-spacing: 0.12em;
+      }
+
+      .gate.verified {
+        border-color: #20b783;
+        background-color: #ddf6ec;
+        color: #117e59;
+      }
+
+      .traveler {
+        position: absolute;
+        top: 50%;
+        left: 0;
+        z-index: 8;
+        width: 118px;
+        height: 118px;
+        border: 8px solid #ffffff;
+        border-radius: 38px;
+        background-color: #147fe8;
+        box-shadow:
+          0 24px 54px rgba(20, 127, 232, 0.28),
+          0 0 0 5px #147fe8;
+        transform: translate(-50%, -50%);
+      }
+
+      .traveler::before {
+        position: absolute;
+        inset: 24px;
+        border: 5px solid #ffffff;
+        border-radius: 16px;
+        content: "";
+      }
+
+      .source-proof {
+        position: absolute;
+        right: 232px;
+        bottom: 226px;
+        left: 232px;
+        z-index: 9;
+        color: #0d2a4d;
+        font-size: 48px;
+        font-weight: 800;
+        letter-spacing: -0.025em;
+        text-align: center;
+      }
+
+      .source-proof strong {
+        color: #147fe8;
+      }
+
+      /* Scene 6 */
+      #scene-6 .glow {
+        top: -650px;
+        right: -430px;
+      }
+
+      #scene-6 .glow.amber {
+        bottom: -870px;
+        left: -500px;
+      }
+
+      .s6-layout {
+        align-items: center;
+        justify-content: center;
+        gap: 170px;
+      }
+
+      .brand-stage {
+        position: relative;
+        display: grid;
+        width: 1050px;
+        height: 1050px;
+        place-items: center;
+      }
+
+      .brand-stage img {
+        position: relative;
+        z-index: 5;
+        width: 700px;
+        height: 700px;
+        object-fit: contain;
+        filter: drop-shadow(0 34px 60px rgba(13, 42, 77, 0.16));
+      }
+
+      .brand-orbit {
+        position: absolute;
+        border: 4px solid #bcd6ee;
+        border-radius: 50%;
+      }
+
+      .brand-orbit.o1 {
+        width: 970px;
+        height: 970px;
+      }
+
+      .brand-orbit.o2 {
+        width: 820px;
+        height: 820px;
+        border-style: dashed;
+        border-color: #f0be64;
+      }
+
+      .orbit-node {
+        position: absolute;
+        top: 18px;
+        left: 50%;
+        width: 34px;
+        height: 34px;
+        border: 7px solid #ffffff;
+        border-radius: 50%;
+        background-color: #147fe8;
+        box-shadow: 0 0 0 4px #147fe8;
+        transform: translateX(-50%);
+      }
+
+      .s6-copy {
+        display: flex;
+        width: 1900px;
+        flex-direction: column;
+        gap: 34px;
+      }
+
+      .s6-copy .headline {
+        font-size: 190px;
+      }
+
+      .brand-url {
+        display: inline-flex;
+        width: max-content;
+        min-height: 112px;
+        align-items: center;
+        gap: 24px;
+        padding: 0 38px;
+        border-radius: 999px;
+        background-color: #0d2a4d;
+        color: #ffffff;
+        font-family: "SF Mono", Menlo, monospace;
+        font-size: 30px;
+        font-weight: 800;
+        letter-spacing: 0.045em;
+      }
+
+      .brand-url i {
+        width: 18px;
+        height: 18px;
+        border-radius: 50%;
+        background-color: #ffad1f;
+        box-shadow: 0 0 0 9px rgba(255, 173, 31, 0.16);
+      }
+
+      .brand-meta {
+        color: #52677d;
+        font-family: "SF Mono", Menlo, monospace;
+        font-size: 27px;
+        font-weight: 700;
+        letter-spacing: 0.11em;
+        text-transform: uppercase;
+      }
+
+      .capability-line {
+        width: max-content;
+        max-width: 100%;
+        color: #147fe8;
+        font-family: "SF Mono", Menlo, monospace;
+        font-size: 29px;
+        font-weight: 800;
+        letter-spacing: 0.055em;
+        line-height: 1.35;
+        text-transform: uppercase;
+        white-space: nowrap;
+      }
+
+      .closing-rule {
+        width: 100%;
+        height: 4px;
+        border-radius: 99px;
+        background-color: #d5e4f2;
+        transform-origin: left center;
+      }
+
+      /* Burned captions */
+      .caption-layer {
+        position: absolute;
+        right: 0;
+        bottom: 86px;
+        left: 0;
+        z-index: 50;
+        height: 118px;
+        pointer-events: none;
+      }
+
+      .caption-group {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        opacity: 0;
+        visibility: hidden;
+      }
+
+      .caption-copy {
+        display: inline-flex;
+        min-width: 520px;
+        min-height: 96px;
+        align-items: center;
+        justify-content: center;
+        padding: 0 38px;
+        border: 3px solid #cbdced;
+        border-radius: 30px;
+        background-color: rgba(255, 255, 255, 0.97);
+        color: #071525;
+        box-shadow: 0 24px 60px rgba(13, 42, 77, 0.15);
+        font-size: 46px;
+        font-weight: 700;
+        letter-spacing: -0.022em;
+        white-space: nowrap;
+      }
+
+      .caption-copy strong {
+        color: #147fe8;
+        font-weight: 800;
+      }
+    </style>
+  </head>
+  <body>
+    <div
+      id="root"
+      data-composition-id="dory-migration-ad"
+      data-start="0"
+      data-duration="30.2"
+      data-width="3840"
+      data-height="2160"
+    >
+      <section id="scene-1" class="scene" data-layout-allow-overflow>
+        <div class="grid" data-layout-ignore></div>
+        <div class="grain" data-layout-ignore></div>
+        <div class="glow" data-layout-ignore></div>
+        <div class="glow amber" data-layout-ignore></div>
+        <div class="top-meta">
+          <span>Dory / Migrate &amp; Compare</span>
+          <span>Local runtime migration · 01</span>
+        </div>
+        <div class="scene-content s1-layout">
+          <div class="s1-copy">
+            <div class="chapter">The switching cost</div>
+            <h1 class="headline">Switching runtimes?<br /><span class="blue">Don't rebuild</span> your local world.</h1>
+            <p class="subhead">Your runtime can change. The work already on your Mac should have a path forward.</p>
+          </div>
+          <div class="source-stage">
+            <div class="runtime-stack">
+              <div class="runtime-plate">Docker Desktop</div>
+              <div class="runtime-plate">OrbStack</div>
+              <div class="runtime-plate">Colima</div>
+            </div>
+            <div class="source-frame">
+              <div class="source-frame-label">SOURCE RUNTIME</div>
+            </div>
+            <div class="work-capsule">
+              <div class="capsule-core">
+                <div class="capsule-layer"><span>IMAGES + TAGS</span><i></i></div>
+                <div class="capsule-layer"><span>VOLUME DATA</span><i></i></div>
+                <div class="capsule-layer"><span>NETWORKS + IPAM</span><i></i></div>
+                <div class="capsule-layer"><span>PORTS + COMPOSE</span><i></i></div>
+                <div class="capsule-layer"><span>CONTAINER STATE</span><i></i></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <svg id="s1-current" class="current-svg" viewBox="0 0 1590 630" data-layout-ignore>
+          <path class="current-ghost" d="M38 476 C330 476 316 112 710 112 C1108 112 1016 492 1548 492"></path>
+          <path class="current-path" d="M38 476 C330 476 316 112 710 112 C1108 112 1016 492 1548 492"></path>
+          <circle class="current-pulse" cx="38" cy="476" r="24"></circle>
+        </svg>
+      </section>
+
+      <section id="scene-2" class="scene" data-layout-allow-overflow>
+        <div class="grid" data-layout-ignore></div>
+        <div class="grain" data-layout-ignore></div>
+        <div class="glow" data-layout-ignore></div>
+        <div class="glow amber" data-layout-ignore></div>
+        <div class="top-meta">
+          <span>Dory / Your local world</span>
+          <span>Preserved object categories · 02</span>
+        </div>
+        <div class="scene-content s2-layout">
+          <div class="s2-heading">
+            <div>
+              <div class="chapter">What comes with you</div>
+              <h2 class="headline">This is <span class="blue">the work.</span></h2>
+            </div>
+            <p class="subhead">The object categories Dory can inventory and preserve when the source exposes them.</p>
+          </div>
+          <div class="artifact-rail">
+            <article class="artifact-card">
+              <div class="artifact-code">IMG</div>
+              <h3>Images + every visible tag</h3>
+              <p>CONTENT · REFERENCES</p>
+              <i class="artifact-port"></i>
+            </article>
+            <article class="artifact-card">
+              <div class="artifact-code">VOL</div>
+              <h3>Named volume data</h3>
+              <p>READ-ONLY SOURCE MOUNTS</p>
+              <i class="artifact-port"></i>
+            </article>
+            <article class="artifact-card">
+              <div class="artifact-code">NET</div>
+              <h3>Custom networks + IPAM</h3>
+              <p>TOPOLOGY · ALIASES</p>
+              <i class="artifact-port"></i>
+            </article>
+            <article class="artifact-card">
+              <div class="artifact-code">CFG</div>
+              <h3>Ports + Compose labels</h3>
+              <p>CONFIGURATION · METADATA</p>
+              <i class="artifact-port"></i>
+            </article>
+            <article class="artifact-card">
+              <div class="artifact-code">RUN</div>
+              <h3>Container state</h3>
+              <p>RUNNING · STOPPED · PAUSED</p>
+              <i class="artifact-port"></i>
+            </article>
+          </div>
+        </div>
+        <svg id="s2-current" class="current-svg" viewBox="0 0 3840 430" data-layout-ignore>
+          <path class="current-ghost" d="M80 216 C740 216 878 216 1270 216 C1830 216 2100 216 2700 216 C3080 216 3390 216 3760 216"></path>
+          <path class="current-path" d="M80 216 C740 216 878 216 1270 216 C1830 216 2100 216 2700 216 C3080 216 3390 216 3760 216"></path>
+          <circle class="current-pulse" cx="80" cy="216" r="24"></circle>
+        </svg>
+      </section>
+
+      <section id="scene-3" class="scene" data-layout-allow-overflow>
+        <div class="grid" data-layout-ignore></div>
+        <div class="grain" data-layout-ignore></div>
+        <div class="glow" data-layout-ignore></div>
+        <div class="top-meta">
+          <span>Dory / Discover</span>
+          <span>Migrate &amp; Compare · 03</span>
+        </div>
+        <div class="scene-content s3-layout">
+          <div class="s3-copy">
+            <div class="chapter">01 · Discover</div>
+            <h2 class="headline">Dory finds <span class="blue">the source.</span></h2>
+            <p class="subhead">Choose a running Docker-compatible local engine. Dory reads its inventory before the target changes.</p>
+            <div class="source-list">
+              <div class="source-pill">Docker Desktop</div>
+              <div class="source-pill">OrbStack</div>
+              <div class="source-pill">Colima</div>
+              <div class="source-pill">Compatible sockets</div>
+            </div>
+          </div>
+          <div class="migration-window surface">
+            <div class="window-bar">
+              <div class="window-title"><span class="window-title-badge">D</span> Migrate &amp; Compare</div>
+              <span class="technical-pill"><i class="status-dot"></i> Engine connected</span>
+            </div>
+            <div class="window-body">
+              <aside class="sidebar">
+                <div class="side-item"><i class="side-glyph"></i> General</div>
+                <div class="side-item"><i class="side-glyph"></i> Engine</div>
+                <div class="side-item"><i class="side-glyph"></i> Storage</div>
+                <div class="side-item active"><i class="side-glyph"></i> Migrate &amp; Compare</div>
+                <div class="side-item"><i class="side-glyph"></i> Network</div>
+              </aside>
+              <div class="migration-panel">
+                <div class="panel-label">SWITCH TO DORY</div>
+                <div class="source-picker">
+                  <div class="picker-name"><i class="status-dot"></i> OrbStack</div>
+                  <div class="picker-socket">~/.orbstack/run/docker.sock⌄</div>
+                </div>
+                <div class="discover-card">
+                  <div>
+                    <div class="panel-label">READ-ONLY INVENTORY</div>
+                    <h3>Source discovered</h3>
+                  </div>
+                  <div class="discover-object-grid">
+                    <div class="discover-object"><strong>Images</strong> visible tags</div>
+                    <div class="discover-object"><strong>Containers</strong> configuration</div>
+                    <div class="discover-object"><strong>Volumes</strong> named data</div>
+                    <div class="discover-object"><strong>Networks</strong> IPAM</div>
+                    <div class="discover-object"><strong>Ports</strong> bindings</div>
+                    <div class="discover-object"><strong>Compose</strong> labels</div>
+                  </div>
+                  <span class="technical-pill"><i class="status-dot"></i> Ready for preflight</span>
+                  <div class="scan-line"></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="scene-4" class="scene" data-layout-allow-overflow>
+        <div class="grid" data-layout-ignore></div>
+        <div class="grain" data-layout-ignore></div>
+        <div class="glow" data-layout-ignore></div>
+        <div class="top-meta">
+          <span>Dory / Preflight</span>
+          <span>Read before write · 04</span>
+        </div>
+        <div class="scene-content s4-layout">
+          <div class="s4-top">
+            <div>
+              <div class="chapter">02 · Preflight</div>
+              <h2 class="headline"><span class="blue">Read first.</span><br />Then decide.</h2>
+            </div>
+            <p class="subhead">Dory checks capacity, target collisions, warnings, and the exact copy plan before import writes.</p>
+          </div>
+          <div class="preflight-shell surface">
+            <div class="steps">
+              <div class="step">
+                <div class="step-index">01</div>
+                <div class="step-copy"><h3>Discover</h3><p>Find the source and inventory its objects without changing them.</p></div>
+              </div>
+              <div class="step active">
+                <div class="step-index">02</div>
+                <div class="step-copy"><h3>Preflight</h3><p>Show capacity, collisions, warnings, blockers, and the copy plan.</p></div>
+              </div>
+              <div class="step">
+                <div class="step-index">03</div>
+                <div class="step-copy"><h3>Import + verify</h3><p>Copy transactionally, validate, and preserve recovery state.</p></div>
+              </div>
+            </div>
+            <div class="preflight-proof">
+              <div class="proof-header">
+                <h3>Preflight plan</h3>
+                <div class="confidence"><i class="status-dot"></i> Ready to review</div>
+              </div>
+              <div class="proof-row">
+                <div class="proof-row-copy"><strong>Capacity check</strong><span>Host and target requirements are evaluated before writes.</span></div>
+                <div class="proof-check">✓</div>
+              </div>
+              <div class="proof-row">
+                <div class="proof-row-copy"><strong>Name collisions</strong><span>Conflicting target objects are surfaced before import begins.</span></div>
+                <div class="proof-check">✓</div>
+              </div>
+              <div class="proof-row">
+                <div class="proof-row-copy"><strong>Exact copy plan</strong><span>Transfers and needs-attention items stay visible.</span></div>
+                <div class="proof-check">✓</div>
+              </div>
+              <div class="preflight-footer">
+                <strong>Preflight can warn or block before writes.</strong>
+                <span>SOURCE INVENTORY · READ ONLY</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="scene-5" class="scene" data-layout-allow-overflow>
+        <div class="grid" data-layout-ignore></div>
+        <div class="grain" data-layout-ignore></div>
+        <div class="glow" data-layout-ignore></div>
+        <div class="glow amber" data-layout-ignore></div>
+        <div class="top-meta">
+          <span>Dory / Import and verify</span>
+          <span>Transactional copy · 05</span>
+        </div>
+        <div class="scene-content s5-layout">
+          <div class="s5-top">
+            <div>
+              <div class="chapter">03 · Import + verify</div>
+              <h2 class="headline">Copy. Verify.<br /><span class="blue">Commit.</span></h2>
+            </div>
+            <p class="subhead">A recoverable import lands in Dory. The original source stays anchored until you validate the result.</p>
+          </div>
+          <div class="transfer-world">
+            <div class="runtime-anchor surface">
+              <div class="anchor-label"><span>OrbStack</span><span>Source</span></div>
+              <div class="work-capsule">
+                <div class="capsule-core">
+                  <div class="capsule-layer"><span>IMAGES + TAGS</span><i></i></div>
+                  <div class="capsule-layer"><span>VOLUME DATA</span><i></i></div>
+                  <div class="capsule-layer"><span>NETWORKS + IPAM</span><i></i></div>
+                  <div class="capsule-layer"><span>PORTS + COMPOSE</span><i></i></div>
+                  <div class="capsule-layer"><span>CONTAINER STATE</span><i></i></div>
+                </div>
+              </div>
+            </div>
+            <div class="transfer-bridge">
+              <div class="bridge-line"></div>
+              <div class="bridge-progress"></div>
+              <div class="gate-row">
+                <div class="gate" data-label="COPY">01</div>
+                <div class="gate" data-label="VERIFY">02</div>
+                <div class="gate" data-label="COMMIT">03</div>
+              </div>
+              <div class="traveler"></div>
+            </div>
+            <div class="dory-drive surface">
+              <div class="anchor-label"><span>.dorydrive</span><span>Dory</span></div>
+              <div class="work-capsule">
+                <div class="capsule-core">
+                  <div class="capsule-layer"><span>IMAGES + TAGS</span><i></i></div>
+                  <div class="capsule-layer"><span>VOLUME DATA</span><i></i></div>
+                  <div class="capsule-layer"><span>NETWORKS + IPAM</span><i></i></div>
+                  <div class="capsule-layer"><span>PORTS + COMPOSE</span><i></i></div>
+                  <div class="capsule-layer"><span>CONTAINER STATE</span><i></i></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="source-proof">Dory <strong>never deletes</strong> the source.</div>
+      </section>
+
+      <section id="scene-6" class="scene" data-layout-allow-overflow>
+        <div class="grid" data-layout-ignore></div>
+        <div class="grain" data-layout-ignore></div>
+        <div class="glow" data-layout-ignore></div>
+        <div class="glow amber" data-layout-ignore></div>
+        <div class="top-meta">
+          <span>Dory / Local Linux Workspace</span>
+          <span>Open source · 06</span>
+        </div>
+        <div class="scene-content s6-layout">
+          <div class="brand-stage">
+            <div class="brand-orbit o1"><i class="orbit-node"></i></div>
+            <div class="brand-orbit o2"></div>
+            <img src="assets/dory-logo.svg" alt="Dory" />
+          </div>
+          <div class="s6-copy">
+            <div class="chapter">Your complete local Linux workspace</div>
+            <h2 class="headline">Bring the work.<br /><span class="blue">Leave the lock behind.</span></h2>
+            <div class="closing-rule"></div>
+            <div class="capability-line">Docker · Compose · Kubernetes · Linux desktops · Persistent servers · Recovery · Agent automation</div>
+            <div class="brand-url"><i></i> augani.github.io/dory</div>
+            <div class="brand-meta">Apple Silicon Mac · macOS 14+ · Open source</div>
+          </div>
+        </div>
+      </section>
+
+      <div class="caption-layer" aria-label="English burned-in captions">
+        <div id="cap-01a" class="caption-group"><div class="caption-copy">Switching Docker runtimes shouldn't</div></div>
+        <div id="cap-01b" class="caption-group"><div class="caption-copy">mean rebuilding your <strong>local world.</strong></div></div>
+        <div id="cap-02a" class="caption-group"><div class="caption-copy">Images. Volumes. Networks.</div></div>
+        <div id="cap-02b" class="caption-group"><div class="caption-copy">Ports. Container state.</div></div>
+        <div id="cap-03a" class="caption-group"><div class="caption-copy"><strong>Dory</strong> discovers Docker Desktop,</div></div>
+        <div id="cap-03b" class="caption-group"><div class="caption-copy">OrbStack, Colima, and other compatible sources.</div></div>
+        <div id="cap-04a" class="caption-group"><div class="caption-copy">It <strong>reads first</strong>—checking capacity</div></div>
+        <div id="cap-04b" class="caption-group"><div class="caption-copy">and collisions before writing to Dory.</div></div>
+        <div id="cap-05a" class="caption-group"><div class="caption-copy">Dory imports <strong>transactionally,</strong></div></div>
+        <div id="cap-05b" class="caption-group"><div class="caption-copy">verifies,</div></div>
+        <div id="cap-05c" class="caption-group"><div class="caption-copy">and <strong>never deletes</strong> the source.</div></div>
+        <div id="cap-06a" class="caption-group"><div class="caption-copy">Dory. Your complete local Linux workspace.</div></div>
+        <div id="cap-06b" class="caption-group"><div class="caption-copy"><strong>Bring the work.</strong></div></div>
+        <div id="cap-06c" class="caption-group"><div class="caption-copy"><strong>Leave the lock behind.</strong></div></div>
+      </div>
+
+      <audio
+        id="soundtrack"
+        class="clip"
+        data-start="0"
+        data-duration="30.2"
+        data-track-index="20"
+        data-volume="1"
+        src="assets/soundtrack-master.wav"
+      ></audio>
+    </div>
+
+    <script>
+      window.__timelines = window.__timelines || {};
+      var tl = gsap.timeline({ paused: true });
+
+      function pushTransition(oldScene, newScene, at, direction) {
+        var sign = direction || 1;
+        tl.to(oldScene, { x: -3840 * sign, duration: 0.48, ease: "power3.inOut" }, at);
+        tl.fromTo(
+          newScene,
+          { x: 3840 * sign, opacity: 1 },
+          { x: 0, opacity: 1, duration: 0.48, ease: "power3.inOut", immediateRender: false },
+          at
+        );
+        tl.set(oldScene, { opacity: 0 }, at + 0.49);
+      }
+
+      function zoomTransition(oldScene, newScene, at) {
+        tl.to(
+          oldScene,
+          { scale: 2.25, opacity: 0, filter: "blur(7px)", duration: 0.52, ease: "power3.in" },
+          at
+        );
+        tl.fromTo(
+          newScene,
+          { scale: 0.58, opacity: 0, filter: "blur(7px)" },
+          { scale: 1, opacity: 1, filter: "blur(0px)", duration: 0.52, ease: "power3.out", immediateRender: false },
+          at + 0.12
+        );
+        tl.set(oldScene, { opacity: 0 }, at + 0.54);
+      }
+
+      function focusTransition(oldScene, newScene, at) {
+        tl.to(oldScene, { filter: "blur(14px)", duration: 0.58, ease: "power1.in" }, at);
+        tl.to(oldScene, { opacity: 0, duration: 0.34, ease: "power2.in" }, at + 0.28);
+        tl.fromTo(
+          newScene,
+          { opacity: 0, filter: "blur(9px)", scale: 0.985 },
+          { opacity: 1, filter: "blur(0px)", scale: 1, duration: 0.52, ease: "power2.out", immediateRender: false },
+          at + 0.28
+        );
+      }
+
+      // Scene 1 — the emotional blocker.
+      tl.from("#scene-1 .top-meta", { y: -32, opacity: 0, duration: 0.46, ease: "expo.out" }, 0.14);
+      tl.from("#scene-1 .chapter", { x: -72, opacity: 0, duration: 0.48, ease: "power4.out" }, 0.24);
+      tl.from("#scene-1 .headline", { clipPath: "inset(0 100% 0 0)", x: -54, opacity: 0, duration: 0.72, ease: "expo.out" }, 0.36);
+      tl.from("#scene-1 .subhead", { x: 44, opacity: 0, duration: 0.50, ease: "sine.out" }, 0.82);
+      tl.from("#scene-1 .runtime-plate", { y: -120, rotation: -3, opacity: 0, duration: 0.55, stagger: 0.08, ease: "back.out(1.25)" }, 0.32);
+      tl.from("#scene-1 .source-frame", { scale: 0.94, opacity: 0, duration: 0.62, ease: "power3.out" }, 0.78);
+      tl.from("#scene-1 .source-frame-label", { x: -40, opacity: 0, duration: 0.34, ease: "expo.out" }, 1.02);
+      tl.from("#scene-1 .work-capsule", { x: 220, y: 90, rotation: 8, scale: 0.84, opacity: 0, duration: 0.72, ease: "back.out(1.22)" }, 1.08);
+      tl.from("#scene-1 .capsule-layer", { x: -80, scale: 0.97, duration: 0.38, stagger: 0.07, ease: "power3.out" }, 1.46);
+      tl.from("#s1-current .current-path, #s1-current .current-ghost", { strokeDasharray: 1900, strokeDashoffset: 1900, duration: 1.2, ease: "power2.inOut" }, 1.08);
+      tl.fromTo("#s1-current .current-pulse", { x: 0, opacity: 0 }, { x: 1470, opacity: 1, duration: 2.8, ease: "sine.inOut", immediateRender: false }, 1.44);
+      tl.to("#scene-1 .work-capsule", { rotation: 0.8, y: -16, duration: 2.0, ease: "sine.inOut" }, 2.2);
+
+      // Scene 2 — object categories assemble around one current.
+      pushTransition("#scene-1", "#scene-2", 4.75, 1);
+      tl.from("#scene-2 .top-meta", { y: -30, opacity: 0, duration: 0.42, ease: "expo.out" }, 4.96);
+      tl.from("#scene-2 .chapter", { x: -68, opacity: 0, duration: 0.42, ease: "power4.out" }, 5.02);
+      tl.from("#scene-2 .headline", { y: 74, rotation: -1.5, opacity: 0, duration: 0.62, ease: "back.out(1.18)" }, 5.10);
+      tl.from("#scene-2 .subhead", { x: 58, opacity: 0, duration: 0.46, ease: "sine.out" }, 5.30);
+      tl.from("#scene-2 .artifact-card", {
+        y: function (index) { return index % 2 ? 170 : -150; },
+        rotation: function (index) { return [-5, 4, -3, 5, -4][index]; },
+        scale: 0.92,
+        opacity: 0,
+        duration: 0.58,
+        stagger: 0.075,
+        ease: "expo.out"
+      }, 5.34);
+      tl.from("#scene-2 .artifact-code", { scale: 0.7, rotation: -10, opacity: 0, duration: 0.34, stagger: 0.075, ease: "back.out(1.4)" }, 5.72);
+      tl.from("#scene-2 .artifact-card h3", { x: -28, opacity: 0, duration: 0.30, stagger: 0.075, ease: "power3.out" }, 5.90);
+      tl.from("#scene-2 .artifact-card p", { y: 22, opacity: 0, duration: 0.28, stagger: 0.075, ease: "sine.out" }, 6.08);
+      tl.from("#s2-current .current-path, #s2-current .current-ghost", { strokeDasharray: 3900, strokeDashoffset: 3900, duration: 1.2, ease: "power2.inOut" }, 5.16);
+      tl.fromTo("#s2-current .current-pulse", { x: 0 }, { x: 3680, duration: 3.1, ease: "none", immediateRender: false }, 5.42);
+      tl.to("#scene-2 .artifact-card:nth-child(3)", { y: -18, scale: 1.015, duration: 0.55, repeat: 1, yoyo: true, ease: "sine.inOut" }, 7.52);
+
+      // Scene 3 — discovery and product surface.
+      pushTransition("#scene-2", "#scene-3", 8.80, -1);
+      tl.from("#scene-3 .top-meta", { y: -30, opacity: 0, duration: 0.40, ease: "expo.out" }, 9.02);
+      tl.from("#scene-3 .chapter", { x: -62, opacity: 0, duration: 0.38, ease: "power4.out" }, 9.08);
+      tl.from("#scene-3 .headline", { x: -90, rotation: -1.2, opacity: 0, duration: 0.60, ease: "expo.out" }, 9.18);
+      tl.from("#scene-3 .subhead", { y: 42, opacity: 0, duration: 0.44, ease: "sine.out" }, 9.48);
+      tl.from("#scene-3 .source-pill", { x: function (index) { return index % 2 ? 90 : -90; }, scale: 0.96, opacity: 0, duration: 0.40, stagger: 0.07, ease: "back.out(1.15)" }, 9.66);
+      tl.from("#scene-3 .migration-window", { rotationY: -10, x: 170, scale: 0.94, opacity: 0, duration: 0.68, ease: "expo.out", transformOrigin: "left center" }, 9.16);
+      tl.from("#scene-3 .window-bar > *", { y: -26, opacity: 0, duration: 0.36, stagger: 0.08, ease: "power3.out" }, 9.68);
+      tl.from("#scene-3 .side-item", { x: -38, opacity: 0, duration: 0.28, stagger: 0.055, ease: "power2.out" }, 9.88);
+      tl.from("#scene-3 .panel-label", { clipPath: "inset(0 100% 0 0)", opacity: 0, duration: 0.38, ease: "power3.out" }, 10.08);
+      tl.from("#scene-3 .source-picker", { y: 34, scale: 0.98, opacity: 0, duration: 0.40, ease: "back.out(1.16)" }, 10.20);
+      tl.from("#scene-3 .discover-card", { x: 70, opacity: 0, duration: 0.48, ease: "power4.out" }, 10.38);
+      tl.from("#scene-3 .discover-object", { y: 32, opacity: 0, duration: 0.30, stagger: 0.06, ease: "expo.out" }, 10.68);
+      tl.fromTo("#scene-3 .scan-line", { x: -30, opacity: 0.2 }, { x: 1240, opacity: 0.85, duration: 2.2, ease: "none", immediateRender: false }, 10.64);
+      tl.from("#scene-3 .discover-card .technical-pill", { scale: 0.9, opacity: 0, duration: 0.36, ease: "back.out(1.28)" }, 12.82);
+
+      // Scene 4 — honest preflight.
+      zoomTransition("#scene-3", "#scene-4", 14.20);
+      tl.from("#scene-4 .top-meta", { y: -30, opacity: 0, duration: 0.38, ease: "expo.out" }, 14.82);
+      tl.from("#scene-4 .chapter", { x: -62, opacity: 0, duration: 0.36, ease: "power4.out" }, 14.90);
+      tl.from("#scene-4 .headline", { clipPath: "inset(0 0 100% 0)", y: 54, opacity: 0, duration: 0.58, ease: "expo.out" }, 15.00);
+      tl.from("#scene-4 .subhead", { x: 52, opacity: 0, duration: 0.42, ease: "sine.out" }, 15.22);
+      tl.from("#scene-4 .preflight-shell", { y: 90, scale: 0.97, opacity: 0, duration: 0.60, ease: "power4.out" }, 15.06);
+      tl.from("#scene-4 .step", { x: -80, opacity: 0, duration: 0.42, stagger: 0.10, ease: "expo.out" }, 15.28);
+      tl.from("#scene-4 .proof-header", { y: -28, opacity: 0, duration: 0.36, ease: "power3.out" }, 15.44);
+      tl.from("#scene-4 .proof-row", { x: 96, opacity: 0, duration: 0.40, stagger: 0.12, ease: "power4.out" }, 15.56);
+      tl.from("#scene-4 .proof-check", { scale: 0.72, rotation: -18, opacity: 0, duration: 0.30, stagger: 0.12, ease: "back.out(1.5)" }, 15.92);
+      tl.from("#scene-4 .preflight-footer", { y: 38, opacity: 0, duration: 0.38, ease: "sine.out" }, 16.34);
+      tl.to("#scene-4 .step.active", { scale: 1.012, duration: 0.48, repeat: 1, yoyo: true, ease: "sine.inOut" }, 17.52);
+
+      // Scene 5 — copy passes the gates while source remains visible.
+      pushTransition("#scene-4", "#scene-5", 19.55, 1);
+      tl.from("#scene-5 .top-meta", { y: -30, opacity: 0, duration: 0.38, ease: "expo.out" }, 19.76);
+      tl.from("#scene-5 .chapter", { x: -62, opacity: 0, duration: 0.36, ease: "power4.out" }, 19.84);
+      tl.from("#scene-5 .headline", { x: -84, opacity: 0, duration: 0.56, ease: "expo.out" }, 19.94);
+      tl.from("#scene-5 .subhead", { x: 54, opacity: 0, duration: 0.42, ease: "sine.out" }, 20.16);
+      tl.from("#scene-5 .runtime-anchor", { x: -170, rotation: -2.5, opacity: 0, duration: 0.56, ease: "power4.out" }, 20.04);
+      tl.from("#scene-5 .dory-drive", { x: 170, rotation: 2.5, opacity: 0, duration: 0.56, ease: "expo.out" }, 20.10);
+      tl.from("#scene-5 .anchor-label", { y: -26, opacity: 0, duration: 0.32, stagger: 0.08, ease: "power3.out" }, 20.42);
+      tl.from("#scene-5 .runtime-anchor .work-capsule", { scale: 0.54, rotation: -7, opacity: 0, duration: 0.48, ease: "back.out(1.25)" }, 20.38);
+      tl.from("#scene-5 .dory-drive .work-capsule", { scale: 0.54, rotation: 7, opacity: 0, duration: 0.48, ease: "back.out(1.25)" }, 20.52);
+      tl.from("#scene-5 .bridge-line", { scaleX: 0, transformOrigin: "left center", opacity: 0, duration: 0.56, ease: "power3.out" }, 20.34);
+      tl.from("#scene-5 .gate", { y: -80, scale: 0.82, opacity: 0, duration: 0.40, stagger: 0.09, ease: "back.out(1.3)" }, 20.52);
+      tl.fromTo("#scene-5 .bridge-progress", { scaleX: 0 }, { scaleX: 1, duration: 3.65, ease: "power1.inOut", immediateRender: false }, 20.72);
+      tl.fromTo("#scene-5 .traveler", { x: 0, rotation: -8, opacity: 0 }, { x: 1080, rotation: 8, opacity: 1, duration: 3.55, ease: "power2.inOut", immediateRender: false }, 20.76);
+      tl.to("#scene-5 .gate:nth-child(1)", { backgroundColor: "#ddf6ec", borderColor: "#20b783", color: "#117e59", scale: 1.08, duration: 0.30, ease: "back.out(1.4)" }, 21.74);
+      tl.to("#scene-5 .gate:nth-child(2)", { backgroundColor: "#ddf6ec", borderColor: "#20b783", color: "#117e59", scale: 1.08, duration: 0.30, ease: "back.out(1.4)" }, 22.92);
+      tl.to("#scene-5 .gate:nth-child(3)", { backgroundColor: "#ddf6ec", borderColor: "#20b783", color: "#117e59", scale: 1.08, duration: 0.30, ease: "back.out(1.4)" }, 24.10);
+      tl.from("#scene-5 .source-proof", { y: 34, opacity: 0, duration: 0.44, ease: "power3.out" }, 24.18);
+      tl.to("#scene-5 .dory-drive", { boxShadow: "0 36px 120px rgba(20,127,232,0.24), inset 0 0 0 18px rgba(20,127,232,0.08)", duration: 0.52, repeat: 1, yoyo: true, ease: "sine.inOut" }, 24.30);
+
+      // Scene 6 — exact mark and final campaign line.
+      focusTransition("#scene-5", "#scene-6", 24.30);
+      tl.from("#scene-6 .top-meta", { y: -28, opacity: 0, duration: 0.36, ease: "expo.out" }, 24.56);
+      tl.from("#scene-6 .brand-orbit", { scale: 0.70, rotation: -14, opacity: 0, duration: 0.58, stagger: 0.10, ease: "expo.out" }, 24.58);
+      tl.from("#scene-6 .brand-stage img", { y: 90, rotation: -4, scale: 0.82, opacity: 0, duration: 0.66, ease: "back.out(1.22)" }, 24.70);
+      tl.from("#scene-6 .chapter", { x: -62, opacity: 0, duration: 0.36, ease: "power4.out" }, 24.84);
+      tl.from("#scene-6 .headline", { clipPath: "inset(0 100% 0 0)", x: -50, opacity: 0, duration: 0.60, ease: "expo.out" }, 24.98);
+      tl.from("#scene-6 .closing-rule", { scaleX: 0, duration: 0.48, ease: "power3.out" }, 25.43);
+      tl.from("#scene-6 .capability-line", { x: 44, opacity: 0, duration: 0.42, ease: "expo.out" }, 25.66);
+      tl.from("#scene-6 .brand-url", { y: 34, scale: 0.96, opacity: 0, duration: 0.40, ease: "back.out(1.2)" }, 25.93);
+      tl.from("#scene-6 .brand-meta", { x: 42, opacity: 0, duration: 0.36, ease: "sine.out" }, 26.20);
+      tl.to("#scene-6 .brand-orbit.o2", { rotation: 16, duration: 5.1, ease: "none" }, 24.68);
+      tl.to("#scene-6 .brand-url", { scale: 1.025, duration: 0.42, repeat: 1, yoyo: true, ease: "sine.inOut" }, 29.03);
+
+      var captionGroups = [
+        ["#cap-01a", 0.450, 2.530],
+        ["#cap-01b", 2.530, 4.781],
+        ["#cap-02a", 4.950, 6.760],
+        ["#cap-02b", 6.760, 8.833],
+        ["#cap-03a", 9.000, 11.560],
+        ["#cap-03b", 11.560, 14.611],
+        ["#cap-04a", 14.780, 17.220],
+        ["#cap-04b", 17.220, 19.623],
+        ["#cap-05a", 19.690, 21.670],
+        ["#cap-05b", 21.670, 22.520],
+        ["#cap-05c", 22.520, 24.490],
+        ["#cap-06a", 24.560, 27.510],
+        ["#cap-06b", 27.510, 28.430],
+        ["#cap-06c", 28.430, 29.893]
+      ];
+
+      captionGroups.forEach(function (group, index) {
+        var selector = group[0];
+        var start = group[1];
+        var end = group[2];
+        tl.set(selector, { visibility: "visible", opacity: 0 }, start);
+        tl.fromTo(
+          selector,
+          { y: 24, scale: 0.98, opacity: 0 },
+          {
+            y: 0,
+            scale: 1,
+            opacity: 1,
+            duration: index % 3 === 0 ? 0.24 : 0.20,
+            ease: index % 2 === 0 ? "power3.out" : "back.out(1.12)",
+            immediateRender: false
+          },
+          start
+        );
+        tl.to(selector, { opacity: 0, scale: 0.985, duration: 0.12, ease: "power2.in" }, end - 0.12);
+        tl.set(selector, { opacity: 0, visibility: "hidden" }, end);
+      });
+
+      captionGroups.forEach(function (group) {
+        var selector = group[0];
+        var end = group[2];
+        tl.seek(end + 0.01);
+        var element = document.querySelector(selector);
+        if (element) {
+          var computed = window.getComputedStyle(element);
+          if (computed.opacity !== "0" && computed.visibility !== "hidden") {
+            console.warn("[caption-lint] " + selector + " still visible after " + end.toFixed(3));
+          }
+        }
+      });
+      tl.seek(0);
+
+      window.__timelines["dory-migration-ad"] = tl;
+    </script>
+  </body>
+</html>

@@ -14,8 +14,36 @@ struct MigrationSummary: Sendable, Equatable {
     var containersAwaitingSourcePorts: [String] = []
     var warnings: [String] = []
     var failures: [String] = []
+    var completeness: MigrationCompletenessReport?
 
     var total: Int { imagesImported.count + volumesCopied.count + networksCreated.count + containersMigrated.count }
+}
+
+nonisolated struct MigrationSelectableObject: Sendable, Equatable, Identifiable {
+    let key: DoryOperationObjectKey
+    let name: String
+    let detail: String
+
+    var id: DoryOperationObjectKey { key }
+
+    var kindLabel: String {
+        switch key.kind {
+        case .image: "Image"
+        case .volume: "Volume"
+        case .network: "Network"
+        case .container: "Container"
+        case .writableLayer: "Writable layer"
+        }
+    }
+}
+
+nonisolated struct MigrationCompletenessReport: Sendable, Equatable {
+    let requested: [String]
+    let automaticallyIncluded: [String]
+    let verified: [String]
+    let omitted: [String]
+    let planDigest: String
+    let omittedInventoryDigest: String
 }
 
 /// A read-only inventory of what a migration WOULD move. Computed without modifying the source — the
@@ -58,6 +86,10 @@ struct MigrationInventory: Sendable, Equatable {
     var runningContainersWithPublishedPorts: Int = 0
     var strictValidationPerformed = false
     var strictValidationBlocker: String?
+    var selectableObjects: [MigrationSelectableObject] = []
+    var strictRequestedObjectKeys: Set<DoryOperationObjectKey> = []
+    var strictDependencyObjectKeys: Set<DoryOperationObjectKey> = []
+    var strictOmittedObjectKeys: Set<DoryOperationObjectKey> = []
 
     var confidenceLabel: String {
         if isImportBlocked { return "Blocked" }
@@ -95,19 +127,31 @@ struct MigrationInventory: Sendable, Equatable {
         hostDiskPreflightAvailable && availableHostBytes < requiredHostBytes
     }
     var isHostDiskUnknown: Bool { !hostDiskPreflightAvailable }
-    private static let engineDiskLogicalBytes: Int64 = 128 * 1024 * 1024 * 1024
-    /// The growth gate requires at least this much guest-visible ext4 capacity. Admission uses the
-    /// proven usable floor, not the sparse file's larger logical length, so ext4 metadata/reserved
-    /// blocks cannot turn a nominally fitting migration into ENOSPC.
-    private static let engineDiskUsableBytes: Int64 = 120 * 1024 * 1024 * 1024
+    var engineDiskLogicalBytes: Int64 = MigrationEngineCapacity.defaultV1.logicalBytes
+    /// Admission uses the ext4 superblock-derived, conservative guest-visible floor rather than
+    /// the sparse file's larger length, so a host-only grow cannot turn a nominal fit into ENOSPC.
+    var engineDiskUsableBytes: Int64 = MigrationEngineCapacity.defaultV1.usableBytes
     var requiredEngineBytes: Int64 {
         let usedAndIncoming = estimatedTargetDockerBytes + estimatedTransferBytes
         guard usedAndIncoming > 0 else { return 0 }
         return usedAndIncoming + max(4_000_000_000, usedAndIncoming / 5)
     }
     var requiredEngineDiskDisplay: String { Self.byteCountFormatter.string(fromByteCount: requiredEngineBytes) }
-    var engineDiskCapacityDisplay: String { Self.byteCountFormatter.string(fromByteCount: Self.engineDiskLogicalBytes) }
-    var isEngineDiskInsufficient: Bool { requiredEngineBytes > Self.engineDiskUsableBytes }
+    var engineDiskCapacityDisplay: String { Self.byteCountFormatter.string(fromByteCount: engineDiskLogicalBytes) }
+    var engineDiskUsableDisplay: String { Self.byteCountFormatter.string(fromByteCount: engineDiskUsableBytes) }
+    var isEngineDiskInsufficient: Bool { requiredEngineBytes > engineDiskUsableBytes }
+    var recommendedEngineCapacityGiB: Int? {
+        guard isEngineDiskInsufficient, requiredEngineBytes > 0 else { return nil }
+        let scaled = requiredEngineBytes.multipliedReportingOverflow(by: 16)
+        guard !scaled.overflow else { return nil }
+        let minimumLogicalBytes = (scaled.partialValue + 14) / 15
+        let bytesPerGiB = DockerDataDisk.bytesPerGiB
+        let minimumGiB = Int(
+            minimumLogicalBytes / bytesPerGiB
+                + (minimumLogicalBytes % bytesPerGiB == 0 ? 0 : 1)
+        )
+        return [128, 256, 512, 1_024, 2_048].first { $0 >= minimumGiB }
+    }
     var isVolumeSizeUnknown: Bool {
         volumes > 0 && (!volumeSizePreflightAvailable || unknownVolumeSizes > 0)
     }
@@ -243,7 +287,7 @@ struct MigrationInventory: Sendable, Equatable {
         }
         if isEngineDiskInsufficient {
             items.append(
-                "Import is blocked before writes because Dory's sparse \(engineDiskCapacityDisplay) engine disk would need about \(requiredEngineDiskDisplay), including existing target data and safety headroom."
+                "Import is blocked before writes because Dory's sparse \(engineDiskCapacityDisplay) engine disk exposes \(engineDiskUsableDisplay) of verified usable ext4 capacity but would need about \(requiredEngineDiskDisplay), including existing target data and safety headroom."
             )
         }
         if items.isEmpty {
@@ -264,14 +308,21 @@ struct MigrationInventory: Sendable, Equatable {
             .map(\.normalizedTargetName)
             .sorted()
         networks = objects.count { $0.source.kind == .network }
-        estimatedImageBytes = prepared.source.snapshot.images.reduce(0) { $0 + $1.sizeBytes }
+        let selectedImageIDs = Set(objects.compactMap {
+            $0.source.kind == .image ? $0.source.sourceID : nil
+        })
+        estimatedImageBytes = prepared.source.snapshot.images.filter {
+            selectedImageIDs.contains(MigrationOperationPlanBuilder.stableImageSourceID($0))
+        }.reduce(0) { $0 + $1.sizeBytes }
         imagesAlreadyOnDory = objects.count {
             $0.source.kind == .image && $0.collisionDecision == .reuseVerified
         }
         estimatedVolumeBytes = prepared.sourceVolumeBytes.values.reduce(0, +)
-        estimatedContainerWritableBytes = prepared.source.writableLayerSizes.values.reduce(0, +)
+        estimatedContainerWritableBytes = prepared.capacity.sourceWritableLayerBytes.values.reduce(0, +)
         availableHostBytes = prepared.capacity.availableHostBytes
         estimatedTargetDockerBytes = prepared.capacity.targetDockerBytes
+        engineDiskLogicalBytes = prepared.capacity.engineLogicalBytes
+        engineDiskUsableBytes = prepared.capacity.engineUsableBytes
         hostDiskPreflightAvailable = true
         volumeSizePreflightAvailable = true
         unknownVolumeSizes = 0
@@ -284,6 +335,17 @@ struct MigrationInventory: Sendable, Equatable {
         portabilityBlockers = []
         targetCollisionBlockers = []
         replaceableEmptyTargetVolumes = []
+        let plan = prepared.operation.completenessPlan
+        strictRequestedObjectKeys = Set(plan.userSelection)
+        strictDependencyObjectKeys = Set(plan.selectedObjectKeys).subtracting(plan.userSelection)
+        if let omitted = try? JSONDecoder().decode(
+            [DoryOperationInventoryObject].self,
+            from: prepared.operation.baselineManifests.unselectedSourceInventory
+        ) {
+            strictOmittedObjectKeys = Set(omitted.map(\.key))
+        } else {
+            strictOmittedObjectKeys = []
+        }
     }
 
     mutating func rejectStrictValidation(_ error: Error) {
@@ -589,6 +651,43 @@ enum MigrationAssistant {
         let publishedPortContainers = containers.filter {
             !$0.ports.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && $0.ports != "—"
         }
+        let selectableObjects = (
+            snapshot.images.map { image in
+                let references = imageReferences(for: image)
+                let sourceID = MigrationOperationPlanBuilder.stableImageSourceID(image)
+                return MigrationSelectableObject(
+                    key: DoryOperationObjectKey(kind: .image, sourceID: sourceID),
+                    name: references.first ?? "sha256:\(sourceID.prefix(12))",
+                    detail: image.size.isEmpty ? sourceID : image.size
+                )
+            }
+            + snapshot.volumes.map { volume in
+                MigrationSelectableObject(
+                    key: DoryOperationObjectKey(kind: .volume, sourceID: volume.name),
+                    name: volume.name,
+                    detail: volume.driver
+                )
+            }
+            + customNetworks.map { network in
+                MigrationSelectableObject(
+                    key: DoryOperationObjectKey(kind: .network, sourceID: network.name),
+                    name: network.name,
+                    detail: network.driver
+                )
+            }
+            + containers.map { container in
+                MigrationSelectableObject(
+                    key: DoryOperationObjectKey(kind: .container, sourceID: container.id),
+                    name: container.name,
+                    detail: container.image
+                )
+            }
+        ).sorted {
+            if $0.key.kind.rawValue != $1.key.kind.rawValue {
+                return $0.key.kind.rawValue < $1.key.kind.rawValue
+            }
+            return $0.name.localizedStandardCompare($1.name) == .orderedAscending
+        }
         return MigrationInventory(
             sourceName: sourceDisplayName(source),
             images: migrationImages.count,
@@ -622,7 +721,8 @@ enum MigrationAssistant {
             containersWithPublishedPorts: publishedPortContainers.count,
             runningContainersWithPublishedPorts: publishedPortContainers.filter {
                 $0.status == .running || $0.status == .paused
-            }.count
+            }.count,
+            selectableObjects: selectableObjects
         )
     }
 

@@ -344,13 +344,13 @@ const agentTools = [
 const settings = [
   ['Components', 'Signed catalog, exact sizes, updates, verification, dependency-aware removal'],
   ['General', 'Startup, menu bar, terminal tools, preferred terminal app, browser logins, appearance'],
-  ['Engine & Daemon', 'Backend, CPU, memory, amd64, experimental guest GPU'],
+  ['Engine & Daemon', 'Backend, CPU, memory, amd64, preview guest GPU'],
   ['Resources', 'Data drive, backup, verify, restore, growth, process memory'],
   ['Machines', 'Host environment allow-list and file-sharing boundaries'],
   ['Auto-Idle', 'Availability mode, idle delay, blockers, wake notices'],
-  ['Network', 'Automatic and custom domains, low ports, Docker bridge subnet, resolver, proxies, LAN and Tailscale'],
-  ['USB Devices', 'Scan, attach, detach, and remember USB/IP devices'],
-  ['Local Tools', 'Stable and preview daemon commands with copy actions'],
+  ['Network', 'Automatic/custom domains, low ports, LAN/Tailscale, plus a reversible corporate proxy, registry, CA, split-DNS and VPN profile'],
+  ['USB Devices', 'Scan host candidates; attach and detach stay disabled until USB/IP qualification'],
+  ['Local Tools', 'Supported and preview daemon commands with copy actions'],
   ['Migrate & Compare', 'Source discovery, preflight, import, and comparison'],
   ['Managed', 'JSON defaults for fleets and MDM-friendly configuration'],
 ]
@@ -386,7 +386,7 @@ const faqs = [
   },
   {
     question: 'How do I upgrade from an older Dory release?',
-    answer: 'Quit Dory, uninstall the old app, and install Dory 0.3.2 Docker Core. Normal uninstall preserves the selected .dorydrive and all workload data. Keep only one Dory.app in Applications, then add the optional components you use.',
+    answer: 'Use Settings > Updates for the normal signed in-place upgrade. Dory preflights the candidate and selected drive, records the exact last-known-good app, configuration and component generation, then runs next-launch workload smoke tests. Safe state rolls back automatically; an unsafe data-schema rollback stops with a recovery export instead of guessing.',
   },
   {
     question: 'Can I choose which terminal Dory opens?',
@@ -395,10 +395,9 @@ const faqs = [
 ]
 
 const releaseStates = [
-  ['Stable', 'Docker, Compose, Kubernetes, Linux desktops and servers, migration, storage, networking, health, MCP'],
-  ['Preview', 'Dedicated agent sandbox VMs with explicit mounts and network policy reporting'],
-  ['Experimental', 'In-guest Venus and Vulkan GPU acceleration on Apple Silicon'],
-  ['Later', 'Intel host build, desktop images beyond Debian, Ubuntu, and Kali, audio passthrough'],
+  ['Supported', 'Docker, Compose, Kubernetes, Linux desktops and servers, migration, storage, networking, health, MCP, policy-enforced sandbox VMs, and USB discovery'],
+  ['Preview', 'In-guest Venus/Vulkan, remote SSH workspace foundations, and bounded custom machine images'],
+  ['Unavailable', 'USB passthrough, Intel host releases, desktop images beyond Debian/Ubuntu/Kali, and audio passthrough'],
 ]
 
 type DemoView = 'containers' | 'kubernetes' | 'machines'
@@ -986,7 +985,7 @@ function App() {
           </div>
           <div className="sandbox-callout">
             <BeakerIcon />
-            <div><p>Preview agent sandbox</p><span>A dedicated Linux VM per run. No host files by default. Explicit mounts, rollback, TTL cleanup, and visible network enforcement.</span></div>
+            <div><p>Policy-enforced agent sandbox</p><span>A dedicated non-root Linux VM per run. Read-only mount defaults, allowlisted egress, credential grants, resource caps, rollback, manifests, kill, and daemon TTL.</span></div>
             <code>dory sandbox run --network none --rollback -- CMD</code>
           </div>
         </section>
@@ -996,8 +995,8 @@ function App() {
             <div className="operations-copy">
               <p className="eyebrow">Recovery without rituals</p>
               <h2>Inspect. Explain. Repair the right thing.</h2>
-              <p>Dory turns socket, Docker, network, mount, registry, disk, memory, and helper state into named checks. Active probes test the real path, and repairs preview their work before they change anything.</p>
-              <CopyCommand command="dory doctor --json --active" />
+              <p>Dory exposes nine ordered readiness stages plus attributed memory, FD/thread, guest, disk, watcher-pressure, and owned-network facts. Active probes test the real path, and repairs name their mutation before changing anything.</p>
+              <CopyCommand command="dory readiness --json" />
               <a className="text-link" href="./docs/operations.md">Open the operations guide <ArrowRightIcon /></a>
             </div>
             <div className="health-card">
@@ -1017,7 +1016,7 @@ function App() {
             </div>
           </div>
           <div className="operation-facts">
-            <div><WrenchScrewdriverIcon /><h3>Targeted repair</h3><p>Socket, context, DNS, routes, domains, ports, dockerd, engine, or guest agent.</p></div>
+            <div><WrenchScrewdriverIcon /><h3>Targeted repair</h3><p>Reconnect the agent, replace only the socket forwarder, restart dockerd in place, reconcile routes, or revalidate the drive.</p></div>
             <div><ShieldCheckIcon /><h3>Data-plane safe</h3><p>Broad repair does not restart running workloads without explicit restart intent.</p></div>
             <div><CircleStackIcon /><h3>Safe cleanup</h3><p>Dry run by default. Volumes require an additional explicit flag.</p></div>
             <div><ArrowsRightLeftIcon /><h3>Wait and events</h3><p>Use stable schemas instead of custom polling and terminal text parsing.</p></div>
@@ -1042,7 +1041,7 @@ function App() {
           <div className="truth-copy">
             <p className="eyebrow">Clear release boundaries</p>
             <h2>Know what is ready before you depend on it.</h2>
-            <p>Dory separates stable product behavior from preview, experimental, and future work. The app, README, agent guide, and compatibility contract use the same language.</p>
+            <p>Dory labels every public capability supported, preview with its exact limit, or unavailable. The app, README, agent guide, architecture, and compatibility contract use the same language.</p>
             <a className="text-link" href="./docs/compatibility.md">Read the compatibility contract <ArrowRightIcon /></a>
           </div>
           <div className="state-table">
@@ -1088,7 +1087,7 @@ function App() {
         </div>
         <div className="footer-links">
           <div><strong>Product</strong><a href="#product">Overview</a><a href="#migration">Migration</a><a href="#agents">Agents</a><a href="#operations">Operations</a></div>
-          <div><strong>Docs</strong><a href="./llms-full.txt">Agent reference</a><a href="./docs/agents.md">MCP guide</a><a href="./docs/operations.md">Operations</a><a href="./docs/compatibility.md">Compatibility</a></div>
+          <div><strong>Docs</strong><a href="./llms-full.txt">Agent reference</a><a href="./docs/agents.md">MCP guide</a><a href="./docs/architecture.md">Architecture</a><a href="./docs/performance.md">Performance evidence</a><a href="./docs/compatibility.md">Compatibility</a></div>
           <div><strong>Project</strong><a href="https://github.com/Augani/dory">GitHub</a><a href="https://github.com/Augani/dory/releases/latest">Releases</a><a href="https://github.com/Augani/dory/issues">Issues</a><a href="https://github.com/Augani/dory/blob/main/LICENSE">GPL-3.0</a></div>
         </div>
         <div className="footer-bottom"><span>© 2026 Dory contributors</span><span>Apple Silicon first. Intel support later.</span></div>

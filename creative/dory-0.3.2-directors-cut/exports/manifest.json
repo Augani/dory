@@ -1,0 +1,75 @@
+{
+  "project": "Dory 0.3.2 Director's Cut",
+  "created": "2026-07-17",
+  "aspect_ratio": "16:9",
+  "video_duration_seconds": 65.0,
+  "container_duration_seconds": 65.1,
+  "frame_count": 3900,
+  "audio_mastering": {
+    "codec": "AAC-LC",
+    "sample_rate_hz": 48000,
+    "channels": 2,
+    "integrated_lufs": -14.1,
+    "true_peak_dbtp": -1.0,
+    "loudness_range_lu": 4.0
+  },
+  "deliverables": [
+    {
+      "role": "archive_master",
+      "file": "Dory-0.3.2-Directors-Cut-4K-60fps.mp4",
+      "width": 3840,
+      "height": 2160,
+      "fps": 60,
+      "video_codec": "H.264 High",
+      "pixel_format": "yuv420p",
+      "bytes": 32908895,
+      "sha256": "7cc535ade908ab0146546068b97e7348b96a9a558315e890663d4e8afc1fac5e"
+    },
+    {
+      "role": "social_master",
+      "file": "Dory-0.3.2-Directors-Cut-1080p-60fps.mp4",
+      "width": 1920,
+      "height": 1080,
+      "fps": 60,
+      "video_codec": "H.264 High",
+      "pixel_format": "yuv420p",
+      "downsample": "Lanczos",
+      "encode": "CRF 16, slow preset",
+      "bytes": 9670849,
+      "sha256": "13bd95cb949cc70d57b57eb44ada3e9ad2d0d5505932f8284ca263653248ede6"
+    },
+    {
+      "role": "poster",
+      "file": "Dory-0.3.2-Directors-Cut-poster.png",
+      "width": 3840,
+      "height": 2160,
+      "bytes": 789716,
+      "sha256": "44f815934b0684ad1598a2b3d38da4cb8032c203704d9e37258056544d376401"
+    },
+    {
+      "role": "contact_sheet",
+      "file": "Dory-0.3.2-Directors-Cut-contact-sheet.png",
+      "width": 3840,
+      "height": 1620,
+      "bytes": 1660170,
+      "sha256": "dc851282a0407bab3331ff2618b9e280d16ef032dbdb1973b96e0e0ae5801abc"
+    },
+    {
+      "role": "english_captions",
+      "file": "Dory-0.3.2-Directors-Cut-en.srt",
+      "codec": "SubRip",
+      "cue_count": 14,
+      "bytes": 1246,
+      "sha256": "3090fca75e3ebc8e2cb191ea9caefc51781335851e6a1e0b6c73175c868f10fc"
+    }
+  ],
+  "validation": {
+    "hyperframes_check": "passed",
+    "runtime_errors": 0,
+    "layout_issues": 0,
+    "motion_errors": 0,
+    "contrast_checks_passed": 72,
+    "contrast_checks_total": 72,
+    "transition_audit": "passed"
+  }
+}

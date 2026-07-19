@@ -21,6 +21,9 @@
   <a href="https://augani.github.io/dory/"><strong>Website</strong></a> ·
   <a href="https://github.com/Augani/dory/releases/latest"><strong>Download</strong></a> ·
   <a href="COMPATIBILITY.md"><strong>Compatibility</strong></a> ·
+  <a href="ARCHITECTURE.md"><strong>Architecture</strong></a> ·
+  <a href="PERFORMANCE_QUALIFICATION.md"><strong>Performance evidence</strong></a> ·
+  <a href="DESTRUCTIVE_ACTIONS.md"><strong>Safety contract</strong></a> ·
   <a href="https://augani.github.io/dory/llms-full.txt"><strong>Agent reference</strong></a>
 </p>
 
@@ -52,11 +55,11 @@ or commercial-use tier. Dory is GPL-3.0 software and stores workload data on you
 | Native app | Containers, images, volumes, networks, Compose projects, Kubernetes, Linux machines, health, migration, and settings |
 | Linux machines | Full Debian 13, Ubuntu 24.04 LTS, and Kali rolling Xfce desktops plus lightweight Alpine headless VMs, with configurable resources, scoped mounts, networking, recipes, snapshots, clone, import, and export |
 | Kubernetes | One-click k3s with selectable v1.34, v1.35, and v1.36 presets plus a native resource browser |
-| Migration | Transactional import from Docker Desktop, OrbStack, Colima, Rancher Desktop, Podman, or another Docker-compatible socket |
+| Migration | Transactional full or exact-selection import from Docker Desktop, OrbStack, Colima, Rancher Desktop, Podman, or another Docker-compatible socket, with a selected/verified/omitted completeness report |
 | Storage | One managed `.dorydrive`, external APFS drive support, sparse growth, verified backup, restore, and safe selection |
 | Networking | Localhost ports, automatic and user-defined local domains, trusted HTTPS, low ports, host services, custom DNS/proxy ports, and opt-in LAN access |
 | Operations | Auto-Idle, active diagnostics, targeted repair, safe cleanup, support bundles, wait primitives, and event streams |
-| Agents | Versioned JSON guide, non-interactive schemas, read-only MCP mode, machine execution, and preview isolated sandbox VMs |
+| Agents | Versioned JSON guide, non-interactive schemas, read-only MCP mode, machine execution, and policy-enforced isolated sandbox VMs |
 
 ## Why it is different
 
@@ -132,6 +135,8 @@ aliases, so compatibility does not make users download duplicate VM payloads.
 | `dory-engine-x.y.z-arm64.tar.gz` | Headless Dory engine bundle |
 | `release-manifest.json` | Artifact names, hashes, and release provenance |
 | `Dory-x.y.z.cdx.json` | CycloneDX software bill of materials for Docker Core |
+| `Dory-x.y.z-performance-evidence.zip` | Exact-candidate raw benchmark, correctness, provenance, and cleanup evidence |
+| `Dory-x.y.z-reliability-evidence.zip` | Exact-candidate eight-hour resource/file/API and 25-hour unchanged-connection evidence |
 | `components/arm64/catalog.json` | Signed component assets, dependencies, hashes, and exact sizes |
 
 Dory.app uses one signed update feed while optional components update independently on the selected
@@ -139,19 +144,32 @@ data drive, so an app update cannot silently add a large Linux payload.
 
 ### Upgrading from an older release
 
-Quit Dory, uninstall the old app, then install Dory 0.3.2 Docker Core. Normal uninstall preserves
-the selected `.dorydrive`, including images, containers, volumes, networks, machine disks, and
-snapshots. Install the optional components you use after the new app opens.
+Use Settings > Updates for the normal in-place upgrade. Dory verifies the Sparkle feed and signed
+archive, free space, selected data drive, component compatibility, and readable data-schema path;
+records the exact app, configuration, component generation, and verified snapshot reference; then
+runs Docker API, volume-marker, pre-existing container/port, and optional Kubernetes smoke tests on
+the next launch.
+
+If that smoke test fails, Dory restores the exact last-known-good app, configuration, and verified
+component generation without blindly downgrading durable data. An unsafe schema rollback stops in a
+guided recovery state and produces an owner-only export instead of guessing. Inspect either path:
 
 ```sh
-brew uninstall --cask Augani/dory/dory
-brew install --cask Augani/dory/dory
+dory upgrade status --json
+dory upgrade recovery --json
 ```
 
-For a direct installation, run `dory uninstall`, remove the old `Dory.app`, and drag the new
-Docker Core app into Applications. Keep only one copy of Dory.app so macOS registers the correct
-bundled services. Existing workload data remains on the selected drive, but creating or starting a
-graphical machine requires its matching desktop component.
+Homebrew installations can use the normal cask upgrade; workload data remains on the selected
+`.dorydrive`:
+
+```sh
+brew update
+brew upgrade --cask Augani/dory/dory
+```
+
+Uninstall/reinstall is a recovery option, not the normal update workflow. Ordinary uninstall still
+preserves the selected drive. Keep only one copy of Dory.app so macOS registers the correct bundled
+services.
 
 ### Requirements
 
@@ -218,6 +236,10 @@ Buildx and BuildKit are bundled. Dory supports build contexts, secrets, SSH moun
 export, registry authentication, cancellation, and common multi-stage builds. Native arm64 images
 are fastest. Common `linux/amd64` images and build workloads run on Apple Silicon through Dory's
 built-in FEX path, which is enabled by default on new installs and can be changed in Settings.
+
+The Build Activity screen keeps durable status, logs, cache use, and cancellation controls for
+builds launched by Dory. Builds started by another Docker client remain that client's responsibility;
+Dory does not pretend it can safely cancel work it did not launch.
 
 ### Bind mounts and file watching
 
@@ -293,6 +315,26 @@ dory machine snapshot dev --note before-upgrade
 dory machine shell dev
 ```
 
+### Verified scheduled machine backups
+
+Dory can keep local recovery bundles for a machine on an hourly, daily, or weekly schedule. Every
+run creates a scheduler-owned snapshot, exports a `.dorymachine` bundle, re-imports it to verify the
+archive, and publishes it atomically only after verification. The first run—and then every
+configured interval—also starts a disposable imported machine and requires it to reach the running
+state before deleting that verifier.
+
+```sh
+dory machine backup schedule dev --frequency daily --keep 7 --verify-every 7
+dory machine backup status dev
+dory machine backup run dev
+dory machine backup remove dev
+```
+
+Snapshot creation briefly stops a running source machine and restores its prior state. Retention
+deletes only scheduler-owned archives and snapshots; manual snapshots are never touched. This is a
+local backup contract, not an S3 or managed offsite service, so copy important verified archives to
+independent storage as part of your normal backup policy.
+
 Desktop machines use native arm64 Debian 13, Ubuntu 24.04 LTS, or Kali rolling with systemd, Xfce,
 Bash, a configurable login user, and a 64 GiB thin-provisioned disk stored in the selected
 `.dorydrive`. Their window follows the Mac display at a true 2x framebuffer, resizes dynamically,
@@ -328,10 +370,14 @@ The import can preserve:
 - port bindings;
 - running, stopped, and paused state.
 
-The source is treated as read-only, volume content is copied through temporary helpers, capacity and
-name collisions are checked first, and an interrupted import keeps recovery state. Dory never
-deletes the source. Bind-mounted files already live on the Mac and are referenced at their existing
-paths rather than copied into the data drive.
+The source is treated as read-only. You can import everything or choose an exact set of images,
+volumes, networks, and containers; Dory automatically includes required dependencies. Capacity,
+portability, and name collisions are checked before writes, an interrupted import keeps recovery
+state, and success includes a completeness report for requested, automatically selected, verified,
+and deliberately omitted objects. Dory re-inventories both selected and omitted source objects
+before declaring success, never deletes the source, and rolls back target writes on failure.
+Bind-mounted files already live on the Mac and are referenced at their existing paths rather than
+copied into the data drive.
 
 Keep the old runtime installed until the preflight and post-import checks pass.
 
@@ -400,8 +446,26 @@ dory network set-custom-domain admin.myproject.local --published-port 80
 dory network remove-custom-domain admin.myproject.local
 ```
 
+Corporate networks use a separate guided profile in Settings > Network. It covers the observed
+macOS system/PAC proxy, dockerd pulls, the shared Docker client proxy used by BuildKit and default
+container injection, registry mirrors/insecure registries, digest-pinned CA scopes, split DNS, and
+bridge/VPN collisions. Dory preserves unrelated `~/.docker/config.json` keys and disables only
+state whose ownership digest still matches. Preview every mutation before applying:
+
+```sh
+dory network corporate sample > corporate-profile.json
+dory network corporate plan --file corporate-profile.json
+dory network corporate apply --file corporate-profile.json
+dory network corporate status --json
+dory network corporate disable
+```
+
+Status probes retain the exact DNS server, route/interface/gateway, selected proxy, and CA IDs used.
+Proxy URLs containing credentials are rejected; keep credentials in the corporate proxy's own
+SSO/keychain flow rather than a profile or support bundle.
+
 Containers reach Mac services through `host.dory.internal`. Common host AI endpoints are available
-without enabling experimental guest GPU support:
+without enabling preview guest GPU support:
 
 | Host service | Address from a container |
 |---|---|
@@ -425,7 +489,7 @@ dory network --lan-visible on
 ## Runtime modes and resource control
 
 Settings > Engine & Daemon controls the engine backend, CPU count, memory ceiling, common amd64
-support, and experimental Venus GPU acceleration. Applying CPU or memory changes restarts the engine
+support, and preview Venus GPU acceleration. Applying CPU or memory changes restarts the engine
 and restores the containers that were running.
 
 Dory has four availability modes:
@@ -456,6 +520,7 @@ repair actions are previewed, and support bundles are redacted.
 
 ```sh
 dory doctor --json
+dory readiness --json
 dory doctor --json --active
 dory doctor --json --diff
 dory support bundle --json --active
@@ -465,9 +530,21 @@ dory cleanup --json
 dory cleanup --json --apply
 ```
 
-`repair all --apply` does not restart a healthy data plane. A disruptive engine restart requires the
-specific engine target and `--restart-engine`. Cleanup is a dry run unless `--apply` is present, and
-volume pruning also requires `--include-volumes`.
+`dory readiness` is the compact runtime truth contract. It shows the ordered app, doryd, VM,
+guest-agent, data-mount, network, dockerd, host socket/context, and optional Kubernetes stages with
+reason codes, deadlines, elapsed time, and the exact non-destructive repair owner/mutation.
+
+Passive Health diagnostics also attribute physical memory, FDs, and threads to each Dory process;
+separate guest used/cache/reclaimable memory; show sparse-disk logical, physical, guest-used,
+reclaimable, and maximum bytes; expose narrow file-watcher roots and queue pressure; and identify
+Dory-owned resolver, route, low-port, PF, and UTUN state. Three rising samples produce an early
+warning. `dory cleanup --json` names reclaimable objects and never mutates without `--apply`.
+
+`repair all --apply` does not restart a healthy data plane. Socket, guest-agent, dockerd, route, and
+data-drive repairs touch only their named layer; they do not delete images, volumes, machines, or
+the VM. A disruptive engine restart requires the specific engine target and `--restart-engine`.
+Cleanup is a dry run unless `--apply` is present, and volume pruning also requires
+`--include-volumes`.
 
 ## Built for agents and automation
 
@@ -496,14 +573,16 @@ The stdio MCP server implements protocol version `2025-11-25` and exposes:
 Launch with `--read-only` to block machine execution and sandbox writes. Agents should inspect first,
 prefer JSON, run dry-run commands before writes, and use the narrowest repair target.
 
-The preview sandbox command creates a dedicated Dory Linux VM, shares no host files by default,
-supports scoped read-only or read-write mounts, optional rollback, TTL cleanup, and `none`,
-`outbound`, or `full` network policy requests. `none` and `full` are enforced. In 0.3, `outbound`
-currently provides full egress and reports `networkPolicyEnforced=false` until scoped egress ships.
+The supported sandbox command creates a dedicated Dory Linux VM, shares no host files by default,
+runs non-root, defaults mounts to read-only, and enforces `none`, allowlisted `outbound`, or explicit
+`full` network policy. It also provides bounded scratch disk/process/wall limits, ephemeral secret
+and SSH-agent grants, rollback, inspectable manifests, a kill switch, named reuse, and daemon-owned
+TTL cleanup.
 
 ```sh
 dory sandbox run --json --network none --rollback -- /bin/sh -lc 'uname -a'
-dory sandbox run --json --mount "$PWD:/workspace:ro" -- /bin/sh -lc 'ls /workspace'
+dory sandbox run --json --mount "$PWD:/workspace" -- /bin/sh -lc 'ls /workspace'
+dory sandbox run --json --network outbound --allow-network registry.example.com:443 -- COMMAND
 ```
 
 Machine-readable references:
@@ -522,13 +601,15 @@ Everything below is available without using the command line:
 | Settings page | Controls |
 |---|---|
 | General | Launch at login, menu bar, background daemon, terminal tools, preferred external terminal (system default, Terminal, iTerm2, Ghostty, Warp, WezTerm, Alacritty, Kitty, or a custom app), browser login bridge, Docker host conflict repair, light or dark appearance |
-| Engine & Daemon | Dory, detected external, or custom socket backend; restart; CPU; memory; amd64 support; experimental GPU; local daemon status |
+| Updates | Signed candidate/preflight state, active transaction, next-launch smoke result, rollback, and recovery export |
+| Components | Signed optional payload selection, install/update/verify/remove, current generation, and rollback-safe prior generation |
+| Engine & Daemon | Dory, detected external, or custom socket backend; restart; CPU; memory; amd64 support; preview GPU; local daemon status |
 | Resources | Data drive, reveal, backup, verify, restore, select, grow, per-process memory, Mac capacity |
 | Machines | Host environment allow-list and the file-sharing boundary for persistent and sandbox machines |
 | Auto-Idle | Availability mode, delay, blockers, and wake notifications |
 | Network | Automatic and custom domains, suffix, macOS authorization, low ports, Docker bridge subnet, resolver and proxy ports, LAN and Tailscale access |
-| USB Devices | Scan, attach, detach, and remember USB/IP attachments per machine |
-| Local Tools | Stable and preview CLI capabilities with copyable commands |
+| USB Devices | Scan host USB candidates; passthrough controls are visibly disabled until guest USB/IP support ships |
+| Local Tools | Supported and preview CLI capabilities with copyable commands |
 | Migrate & Compare | Source selection, read-only inventory, preflight, import, and product comparison |
 | Managed | JSON defaults for engine, DNS, Auto-Idle, sandbox file sharing, and telemetry policy |
 | About | App version and build |
@@ -557,6 +638,8 @@ macOS 14.
 - Explicit macOS authorization before system networking changes
 - A removable plan for Dory-owned resolver, certificate, and packet-filter rules
 - No host file sharing in agent sandboxes by default
+- Non-root sandbox commands, read-only mount defaults, uid-scoped egress filtering, bounded
+  resources, ephemeral credential grants, and daemon-owned expiry
 - Named environment-variable allow-list for new machines
 - Redacted support bundles
 - Signed and notarized release app, signed Sparkle updates, release manifest, and CycloneDX SBOM
@@ -573,19 +656,20 @@ docker run --rm \
 
 ## Current boundaries
 
-- Apple Silicon is the only qualified host architecture. Intel support is planned for a later
+- **Unavailable — Intel hosts:** Apple Silicon is the only qualified host architecture. Intel support is planned for a later
   release after dedicated hardware validation.
-- Desktop Linux provides managed Debian 13, Ubuntu 24.04 LTS, and Kali rolling Xfce arm64 profiles.
-- Headless Dory Linux remains Alpine-based arm64 with an initial root `/bin/sh` login.
-- In-guest Venus/Vulkan acceleration is experimental. Host AI services work without it.
-- USB/IP attach and replay are available but may require macOS user authorization and compatible
-  guest support.
-- Audio passthrough is not part of the current release.
-- Agent sandbox is preview, and its `outbound` policy is not yet narrower than full egress.
+- **Supported — Desktop Linux:** managed Debian 13, Ubuntu 24.04 LTS, and Kali rolling Xfce arm64 profiles.
+- **Supported — Headless Linux:** Alpine-based arm64 guests with an initial root `/bin/sh` login.
+- **Preview — Venus/Vulkan:** opt-in on the Apple-silicon raw-HV path. Host AI services work without it.
+- **Supported discovery / unavailable passthrough — USB:** host discovery is available. Attach, detach, and remembered replay are disabled
+  until the engine has a complete guest USB/IP RPC and verified guest-kernel support.
+- **Unavailable — audio passthrough:** not part of the current release.
+- **Supported — agent sandboxes:** grants and residual risks are documented in [SANDBOX_THREAT_MODEL.md](SANDBOX_THREAT_MODEL.md).
 - Specialized Docker extensions may depend on another product's private paths. Use `dory compat`
   and report the exact tool and version when that happens.
 
-See [COMPATIBILITY.md](COMPATIBILITY.md) for the tested product contract.
+See [COMPATIBILITY.md](COMPATIBILITY.md) for the tested product contract and
+[ARCHITECTURE.md](ARCHITECTURE.md) for the complete supported/preview/unavailable matrix.
 
 ## Uninstall and reinstall
 
@@ -612,10 +696,12 @@ The source build defaults to Docker Core. `DORY_DESKTOP_BUNDLE_MODE=all scripts/
 developer-only offline fixture for exercising every graphical image in one local build. Public
 releases use Docker Core plus the signed component catalog.
 
-`scripts/test.sh` is the single public test entrypoint. It covers the Rust workspace, Swift packages,
-app tests, UI tests, CLI contracts, and public repository checks. Release qualification adds signed
-distribution, clean-install, live engine, network, filesystem, migration, compatibility, endurance,
-and notarization gates.
+`scripts/test.sh` is the public selector for the Rust workspace, the two Swift packages, app tests,
+UI tests, gvproxy, and a compile-only app build. Public CLI/repository contracts are composed by
+`scripts/ci-test.sh` and GitHub Actions; hardware and duration claims are not part of
+`scripts/test.sh`. Release qualification separately adds signed distribution, clean-install,
+live-engine, network, filesystem, migration, compatibility, performance, endurance, and notarization
+gates against the exact candidate.
 
 | Path | Contents |
 |---|---|
@@ -627,6 +713,13 @@ and notarization gates.
 | `website/` | Human and machine-readable GitHub Pages source |
 | `scripts/dory` | Public CLI and agent contract |
 | `scripts/test.sh` | Public test entrypoint |
+
+Architecture and evidence contracts: [ARCHITECTURE.md](ARCHITECTURE.md),
+[PERFORMANCE_QUALIFICATION.md](PERFORMANCE_QUALIFICATION.md), and
+[RELEASE_READINESS.md](RELEASE_READINESS.md). Destructive GUI, menu, keyboard, and CLI behavior is
+tracked in [DESTRUCTIVE_ACTIONS.md](DESTRUCTIVE_ACTIONS.md). Proposed capabilities beyond 0.4 are
+kept separate in [POST_V0.4_PRODUCT_DESIGNS.md](POST_V0.4_PRODUCT_DESIGNS.md) so designs are not
+mistaken for shipped features.
 
 ## Support and contribution
 

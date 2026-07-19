@@ -1,7 +1,12 @@
 # dory-core-swift
 
-The Swift side of the Rust-sidecar re-platform. `doryd` is the launchd control-plane daemon; it
-links the `dory-ffi` Rust staticlib as `DoryFFI.xcframework` and serves an XPC control protocol.
+The Swift control plane and macOS 14 VM tier of Dory's production architecture. `doryd` is the
+per-user launchd daemon; it links the Rust `dory-ffi` static library as `DoryFFI.xcframework`, owns
+the local engine lifecycle, and serves an authenticated XPC control protocol. `dory-vmm` is the
+Virtualization.framework fallback selected on macOS 14.
+
+See [`../ARCHITECTURE.md`](../ARCHITECTURE.md) for the authoritative process, storage, networking,
+update, and trust-boundary contract.
 
 ## Build
 
@@ -52,6 +57,8 @@ swift run dorydctl engine status
 swift run dorydctl docker telemetry
 swift run dorydctl machine list
 swift run dorydctl machine create dev --kernel /path/to/Image --rootfs /path/to/rootfs.raw
+swift run dorydctl machine backup schedule dev --frequency daily --keep 7 --verify-every 7
+swift run dorydctl machine backup status dev
 swift run dorydctl network status
 swift run dorydctl balloon status
 swift run dorydctl balloon reconcile
@@ -90,17 +97,18 @@ override for one-off smoke tests.
 
 When `DORYD_ACTIVITY_SOCK` is set, or by default under `DORYD_STATE_DIR`, doryd starts a private
 activity socket. The dataplane reports meaningful docker connections there (`/_ping` is ignored),
-allowing `IdleController` to idle-sleep the helper while keeping `dory.sock` bound. The current
-actuation stops/restarts the helper process; true dory-hv VM pause/resume still needs the helper API.
+allowing `IdleController` to suspend and resume the managed helper while keeping `dory.sock` bound.
+If a helper cannot resume safely, the bounded recovery path restarts it against the same verified
+data drive rather than substituting or pruning durable state.
 
 The same forward socket is also used for guest agent control. `AgentControl` connects with a
 `HostToGuest{cid:3, port:1024}` preamble and exposes `info`, `clockSync`, `portsWatch`, and
 `telemetry`; docker wake attempts a clock sync when agent control is enabled.
 
-For app-side dogfooding before the final legacy deletion gate, the normal Dory engine preference now
-uses doryd by default. The app calls doryd's `engineStart` over XPC, reads `dorySocketPath`, treats
-that daemon-owned socket as its Docker runtime, and does not bind the legacy in-app `DockerShim`
-server. Use `DORY_APP_DISABLE_DORYD=1` only for explicit legacy-engine development.
+The normal Dory engine preference always uses doryd. The app calls `engineStart` over XPC, reads
+`dorySocketPath`, and treats that daemon-owned socket as its Docker runtime. External and custom
+Docker sockets remain explicit alternate preferences; there is no supported app-owned local Dory
+engine mode.
 
 ## Memory ballooning
 
@@ -147,11 +155,22 @@ Useful knobs:
 `NetworkingController` owns the non-privileged `*.dory.local` path. When `DORYD_NETWORKING=1` or
 `DORYD_DNS_PORT` is set, `doryd` starts a UDP DNS server bound to `127.0.0.1` on a high port
 (`1053` by default), starts the high-port HTTP proxy, and starts a high-port TLS proxy backed by a
-`DoryLocalCA` identity. The XPC surface exposes
+`DoryLocalCA` identity. It also owns wildcard IPv4 and IPv6 listeners for standard HTTP, HTTPS, and
+published low TCP ports. Those listeners reject non-loopback peers before relaying to the high-port
+proxy or published backend, avoiding a correctness dependency on PF rules that macOS Internet
+Sharing can replace. The XPC surface exposes
 `networkReplaceRoutes` for app-fed `{hostname,address,port}` route tables and `networkStatus` for the
 active suffix, ports, listener state, and route list. `repairSubsystem` gives the app and
 `dorydctl network repair` one bounded path for DNS/domain listener restart, route re-derivation,
 immediate gvproxy port reconciliation, guest-agent RPC recovery, and Docker API verification.
+
+Corporate connectivity is owned by `CorporateConnectivityReconciler` and the schema-v1 profile at
+`~/.dory/corporate-connectivity.json`. `dorydctl network corporate plan|apply|status|disable`
+provides the authenticated control surface. The reconciler observes macOS/PAC state without
+rewriting system network settings, updates only Docker's `proxies.default` with an ownership
+record, applies dockerd proxy/registry/CA files on guest tmpfs, and restarts dockerd with
+live-restore only when the effective digest changes. It fingerprints DHCP, scoped DNS, interfaces,
+routes, VPN/UTUNs, and exit-node transitions and also runs directly after host wake.
 
 This intentionally does not mutate `/etc/resolver`, pf, or a user's keychain. Those remain
 separately authorized by Dory's explicit networking action.
@@ -164,9 +183,10 @@ keychain only after an interactive trust prompt; doryd does not change trust set
 `NetworkingAuthorizationPlan` JSON document, re-derives the expected plan from the scalar
 configuration, refuses tampered paths/commands, and then writes `/etc/resolver/<suffix>`,
 `/etc/pf.anchors/dev.dory`, loads it as `com.apple/dev.dory` under macOS's built-in `com.apple/*`
-anchor point, enables pf, and snapshots the approved CA so background reconciliation cannot rotate it
-without another interactive Dory authorization. Use `--dry-run --plan-json -` to validate a plan
-without touching the system.
+anchor point, enables pf, and snapshots the approved CA so background reconciliation cannot rotate
+it without another interactive Dory authorization. The PF rules remain compatible with existing
+authorized installations, but low-port loopback ingress no longer depends on them matching. Use
+`--dry-run --plan-json -` to validate a plan without touching the system.
 
 ## Machine lifecycle
 
@@ -199,9 +219,17 @@ arrives, then become `running` with the reported agent build, dockerd socket pat
 balloon control socket path, and fd count in status. `DORYD_VMM_READY_HANDOFF=0` disables the wait for
 tests or legacy helpers.
 
-This is the doryd-side lifecycle and the helper-side VZ scaffold. A real on-hardware ready result
-still depends on a signed helper plus a bootable kernel/rootfs where `dory-agent` runs as PID 1 and
-listens on the expected vsock ports.
+This is the production Sonoma lifecycle. Every release still requires a separate physical macOS 14
+gate using the exact signed helper, kernel, rootfs, guest agent, gvproxy, and app candidate; source
+tests alone do not promote a candidate.
+
+`MachineBackupScheduler` is doryd's durable local recovery owner. Schedules and status live in an
+owner-only JSON database under `~/.dory/machine-backups`. A run creates a scheduler-namespaced
+snapshot, exports a private partial `.dorymachine` bundle, fsyncs and re-import-verifies it through
+the production reader, and on the first and configured periodic run starts a disposable imported
+machine before publishing the archive atomically. Restart recovery marks interrupted work failed.
+Retention deletes only scheduler-owned snapshots and archives; manual snapshots are outside its
+namespace. The contract is local-only and does not advertise S3 or managed offsite storage.
 
 ## Remote machines
 
@@ -221,6 +249,20 @@ inject an in-memory key store. The XPC surface uses plist-safe dictionaries:
 `id`, `status`, `code`, `title`, `detail`, plus optional `action` and `data`. The XPC protocol exposes
 both `health` (dictionary) and `doctorJSON` (pretty JSON string) so the app and CLI can consume the
 same contract while more doctor checks move in-process.
+
+Every health response now embeds `dev.dory.readiness` version 1. Its stable order is app, doryd,
+VM process, guest agent, mounts/data disk, network, dockerd, host socket/context, and Kubernetes.
+Each stage carries a reason code, required flag, start/finish/deadline, elapsed milliseconds, and a
+repair record whose mutation and ownership are explicit. DockerTier transition waiters replace the
+old promotion polling, and bounded repairs can reconnect the agent, replace only the host socket
+forwarder, restart dockerd in place, reconcile routes, or revalidate the selected drive.
+
+The same response is Dory's compact resource surface: kernel physical footprint and process
+attribution, FD/thread counts and trends, guest memory composition and data-filesystem usage,
+logical/allocated/maximum sparse-disk bytes, conservative object-level reclaim estimates, narrow
+FSEvents roots/queue/backpressure counters, and owned resolver/route/forward/PF/UTUN state. The raw
+HV helper writes `host-share-resources.json` privately in its state directory every five seconds;
+doryd rejects stale or wrong-version records.
 
 The basic socket/API group now mirrors the pinned doctor ids for `socket.exists` and `socket.ping`;
 the latter performs an in-process Docker `GET /_ping` over the configured unix socket.

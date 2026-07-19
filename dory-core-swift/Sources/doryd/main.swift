@@ -64,15 +64,61 @@ let dockerTier = dorydEnvironment.dockerTierConfiguration().map {
     DockerTier(configuration: $0, idleController: idleController)
 }
 let machineManager = dorydEnvironment.machineManagerConfiguration().map { MachineManager(configuration: $0) }
+let sandboxTTLReconciler = machineManager.map { manager in
+    SandboxTTLReconciler(
+        machines: manager,
+        manifestDirectory: "\(dorydEnvironment.home)/.dory/sandboxes",
+        eventHandler: { detail in
+        FileHandle.standardError.write(Data("doryd: sandbox TTL: \(detail)\n".utf8))
+    })
+}
 let remoteManager = RemoteMachineManager()
 let networkingConfiguration = dorydEnvironment.networkingConfiguration()
-let networkingController = networkingConfiguration.map(NetworkingController.init(configuration:))
+let networkingController = networkingConfiguration.map { configuration in
+    NetworkingController(configuration: configuration)
+}
 let customDomainRouteStore = CustomDomainRouteStore(home: dorydEnvironment.home, environment: env)
 let kubernetesRouteProvider = networkingController.map { _ in
     KubernetesServiceRouteProvider(configuration: dorydEnvironment.kubernetesServiceRouteProviderConfiguration())
 }
 let incidentPath = env["DORY_INCIDENTS"] ?? "\(dorydEnvironment.home)/.dory/incidents.jsonl"
 let incidentWriter = IncidentWriter(path: incidentPath)
+let machineBackupScheduler: MachineBackupScheduler?
+if let machineManager {
+    do {
+        machineBackupScheduler = try MachineBackupScheduler(
+            machines: machineManager,
+            home: dorydEnvironment.home,
+            incidentWriter: incidentWriter
+        )
+    } catch {
+        incidentWriter.record(type: "machine.backup_scheduler_failed", detail: "\(error)")
+        FileHandle.standardError.write(
+            Data("doryd: machine backup scheduler unavailable: \(error)\n".utf8)
+        )
+        machineBackupScheduler = nil
+    }
+} else {
+    machineBackupScheduler = nil
+}
+let corporateGuestApply: CorporateGuestApply?
+if let dockerTier {
+    corporateGuestApply = { profile, validation, digest in
+        try dockerTier.applyCorporateConnectivity(
+            profile: profile,
+            validation: validation,
+            profileDigest: digest
+        )
+    }
+} else {
+    corporateGuestApply = nil
+}
+let corporateConnectivity = CorporateConnectivityReconciler(
+    home: dorydEnvironment.home,
+    guestApply: corporateGuestApply,
+    incidentWriter: incidentWriter,
+    interval: max(5, dorydEnvironment.networkRouteReconcileIntervalSeconds)
+)
 let networkRouteReconciler = networkingController.map { controller in
     NetworkRouteReconciler(
         networkingController: controller,
@@ -129,6 +175,7 @@ let wakeCoordinator = HostWakeCoordinator(
     sleepHandlers: sleepHandlers,
     clockSyncers: clockSyncers,
     dnsProbe: SystemDNSProbe(targets: dnsTargets),
+    networkReconcilers: [corporateConnectivity],
     incidentWriter: incidentWriter
 )
 let socketPath = dockerTier?.socketPath ?? socket.path
@@ -157,12 +204,15 @@ if let networkRouteReconciler {
 }
 let service = DorydService(
     socketPath: socketPath,
+    home: dorydEnvironment.home,
     dockerTier: dockerTier,
     machineManager: machineManager,
+    machineBackupScheduler: machineBackupScheduler,
     remoteManager: remoteManager,
     networkingController: networkingController,
     networkRouteRepair: repairRoutes,
     customDomainRouteStore: customDomainRouteStore,
+    corporateConnectivity: corporateConnectivity,
     idlePolicyStore: idlePolicyStore,
     idleSleepScheduler: idleSleepScheduler,
     incidentWriter: incidentWriter
@@ -176,12 +226,15 @@ private let shutdownCoordinator = DorydShutdownCoordinator(
     hostCLIReconciler: hostCLIReconciler,
     idleSleepScheduler: idleSleepScheduler,
     wakeCoordinator: wakeCoordinator,
+    corporateConnectivity: corporateConnectivity,
     networkRouteReconciler: networkRouteReconciler,
     authorizedNetworkingReconciler: authorizedNetworkingReconciler,
     kubernetesRouteProvider: kubernetesRouteProvider,
     networkingController: networkingController,
     dockerTier: dockerTier,
     machineManager: machineManager,
+    machineBackupScheduler: machineBackupScheduler,
+    sandboxTTLReconciler: sandboxTTLReconciler,
     remoteManager: remoteManager,
     dataDriveSelectionAuthority: dataDriveSelectionAuthority
 )
@@ -207,6 +260,10 @@ if dockerTier == nil {
 } else if shouldAutostartDockerTier {
     do {
         try dockerTier?.start()
+        let corporate = corporateConnectivity.reconcileCurrent(runProbes: false)
+        if !corporate.valid {
+            FileHandle.standardError.write(Data("doryd: corporate connectivity blocked: \(corporate.validationErrors.joined(separator: "; "))\n".utf8))
+        }
         FileHandle.standardError.write(Data("doryd: docker tier serving \(socketPath)\n".utf8))
     } catch {
         shutdownCoordinator.run(reason: "could not start docker tier: \(error)", exitCode: 1)
@@ -226,6 +283,9 @@ shutdownCoordinator.exitIfRequested()
 
 listener.resume()
 FileHandle.standardError.write(Data("doryd: serving XPC \(machServiceName)\n".utf8))
+sandboxTTLReconciler?.start()
+machineBackupScheduler?.start()
+corporateConnectivity.start()
 
 if let idleSleepScheduler {
     idleSleepScheduler.start()
@@ -266,12 +326,15 @@ private final class DorydShutdownCoordinator {
     private let hostCLIReconciler: HostCLIReconciler?
     private let idleSleepScheduler: IdleSleepScheduler?
     private let wakeCoordinator: HostWakeCoordinator
+    private let corporateConnectivity: CorporateConnectivityReconciler
     private let networkRouteReconciler: NetworkRouteReconciler?
     private let authorizedNetworkingReconciler: AuthorizedNetworkingReconciler?
     private let kubernetesRouteProvider: KubernetesServiceRouteProvider?
     private let networkingController: NetworkingController?
     private let dockerTier: DockerTier?
     private let machineManager: MachineManager?
+    private let machineBackupScheduler: MachineBackupScheduler?
+    private let sandboxTTLReconciler: SandboxTTLReconciler?
     private let remoteManager: RemoteMachineManager
     private let dataDriveSelectionAuthority: DoryDataDriveSelectionAuthority
     private let condition = NSCondition()
@@ -288,12 +351,15 @@ private final class DorydShutdownCoordinator {
         hostCLIReconciler: HostCLIReconciler?,
         idleSleepScheduler: IdleSleepScheduler?,
         wakeCoordinator: HostWakeCoordinator,
+        corporateConnectivity: CorporateConnectivityReconciler,
         networkRouteReconciler: NetworkRouteReconciler?,
         authorizedNetworkingReconciler: AuthorizedNetworkingReconciler?,
         kubernetesRouteProvider: KubernetesServiceRouteProvider?,
         networkingController: NetworkingController?,
         dockerTier: DockerTier?,
         machineManager: MachineManager?,
+        machineBackupScheduler: MachineBackupScheduler?,
+        sandboxTTLReconciler: SandboxTTLReconciler?,
         remoteManager: RemoteMachineManager,
         dataDriveSelectionAuthority: DoryDataDriveSelectionAuthority
     ) {
@@ -301,12 +367,15 @@ private final class DorydShutdownCoordinator {
         self.hostCLIReconciler = hostCLIReconciler
         self.idleSleepScheduler = idleSleepScheduler
         self.wakeCoordinator = wakeCoordinator
+        self.corporateConnectivity = corporateConnectivity
         self.networkRouteReconciler = networkRouteReconciler
         self.authorizedNetworkingReconciler = authorizedNetworkingReconciler
         self.kubernetesRouteProvider = kubernetesRouteProvider
         self.networkingController = networkingController
         self.dockerTier = dockerTier
         self.machineManager = machineManager
+        self.machineBackupScheduler = machineBackupScheduler
+        self.sandboxTTLReconciler = sandboxTTLReconciler
         self.remoteManager = remoteManager
         self.dataDriveSelectionAuthority = dataDriveSelectionAuthority
     }
@@ -334,11 +403,14 @@ private final class DorydShutdownCoordinator {
         hostCLIReconciler?.stop()
         idleSleepScheduler?.stop()
         wakeCoordinator.stop()
+        corporateConnectivity.stop()
         networkRouteReconciler?.stop()
         authorizedNetworkingReconciler?.stop()
         kubernetesRouteProvider?.stop()
         networkingController?.stop()
         remoteManager.disconnectAll()
+        sandboxTTLReconciler?.stop()
+        machineBackupScheduler?.stop()
         machineManager?.stopAll()
         FileHandle.standardError.write(Data("doryd: shutdown complete\n".utf8))
 

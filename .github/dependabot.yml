@@ -1,0 +1,39 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      github-actions:
+        patterns: ["*"]
+
+  - package-ecosystem: cargo
+    directory: /dory-core
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      rust-runtime:
+        patterns: ["*"]
+
+  - package-ecosystem: npm
+    directory: /website
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      website-runtime:
+        dependency-type: production
+      website-development:
+        dependency-type: development
+
+  - package-ecosystem: swift
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      swift-app:
+        patterns: ["*"]

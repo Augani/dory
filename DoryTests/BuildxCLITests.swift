@@ -143,6 +143,77 @@ struct BuildxCLITests {
         }
     }
 
+    @Test func historyUsesBoundedExactBuilderQueryAndParsesStepTiming() async throws {
+        let runner = RecordingBuildRunner { _ in
+            ToolCommandResult(
+                terminationStatus: 0,
+                stdout: #"{"cached_steps":4,"completed_at":"2026-07-19T02:21:50.664580607Z","completed_steps":16,"created_at":"2026-07-19T02:20:24.958156525Z","name":"deploy/Dockerfile.api","ref":"default/default/build1","status":"Completed","total_steps":16}"# + "\n",
+                stderr: "",
+                outputTruncated: false
+            )
+        }
+        let rows = try await testCLI(runner: runner).history()
+
+        let row = try #require(rows.first)
+        #expect(row.ref == "default/default/build1")
+        #expect(row.succeeded)
+        #expect(row.cachedSteps == 4)
+        #expect(row.progress == 1)
+        #expect(row.elapsed() > 85 && row.elapsed() < 87)
+        let request = try #require(runner.requests.first)
+        #expect(request.arguments == ["--builder", "default", "history", "ls", "--format", "json", "--no-trunc"])
+        #expect(request.timeout == 20)
+        #expect(request.outputPolicy == .complete(maxBytes: 4 * 1024 * 1024))
+        #expect(request.environment["DOCKER_HOST"] == "unix:///tmp/dory.sock")
+    }
+
+    @Test func historyLogsKeepTheReferenceLiteralAndRejectOptionInjection() async throws {
+        let runner = RecordingBuildRunner { _ in
+            ToolCommandResult(terminationStatus: 0, stdout: "#1 DONE 1.2s\n", stderr: "", outputTruncated: false)
+        }
+        let cli = testCLI(runner: runner)
+        #expect(try await cli.logs(ref: "default/default/build1") == "#1 DONE 1.2s\n")
+        let request = try #require(runner.requests.first)
+        #expect(request.arguments == ["--builder", "default", "history", "logs", "default/default/build1"])
+        await #expect(throws: BuildxCLIError.self) { try await cli.logs(ref: "--all") }
+        #expect(runner.requests.count == 1)
+    }
+
+    @Test func cacheUsageTotalsDecimalAndBinaryBuildxSizes() async throws {
+        let runner = RecordingBuildRunner { _ in
+            ToolCommandResult(
+                terminationStatus: 0,
+                stdout: #"{"ID":"one","Reclaimable":true,"Size":"4.096kB"}"# + "\n"
+                    + #"{"ID":"two","Reclaimable":false,"Size":"2MiB"}"# + "\n",
+                stderr: "",
+                outputTruncated: false
+            )
+        }
+        let usage = try await testCLI(runner: runner).cacheUsage()
+        #expect(usage.records == 2)
+        #expect(usage.totalBytes == 4_096 + 2_097_152)
+        #expect(usage.reclaimableBytes == 4_096)
+        #expect(BuildActivityParser.bytes("1.5GB") == 1_500_000_000)
+        #expect(BuildActivityParser.bytes("bad") == nil)
+    }
+
+    @Test func activityQueriesFailClosedOnTruncationMalformedRowsAndNonzeroExit() async throws {
+        let truncated = RecordingBuildRunner { _ in
+            ToolCommandResult(terminationStatus: 0, stdout: "{}", stderr: "", outputTruncated: true)
+        }
+        await #expect(throws: BuildxCLIError.activityOutputTooLarge) { try await testCLI(runner: truncated).history() }
+
+        let malformed = RecordingBuildRunner { _ in
+            ToolCommandResult(terminationStatus: 0, stdout: "not-json\n", stderr: "secret", outputTruncated: false)
+        }
+        await #expect(throws: BuildxCLIError.malformedActivity) { try await testCLI(runner: malformed).history() }
+
+        let failed = RecordingBuildRunner { _ in
+            ToolCommandResult(terminationStatus: 17, stdout: "", stderr: "secret", outputTruncated: false)
+        }
+        await #expect(throws: BuildxCLIError.activityQueryFailed(17)) { try await testCLI(runner: failed).cacheUsage() }
+    }
+
     private func testCLI(runner: any ToolCommandRunning) -> BuildxCLI {
         BuildxCLI(
             executableURL: URL(fileURLWithPath: "/usr/bin/true"),

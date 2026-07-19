@@ -1,6 +1,6 @@
 # Dory compatibility
 
-This document describes the Dory 0.3.2 public product surface. Dory is under active development, so
+This document describes Dory's current public product surface. Dory is under active development, so
 please report workflows that behave differently from a standard Docker engine.
 
 ## Platform
@@ -9,8 +9,8 @@ please report workflows that behave differently from a standard Docker engine.
 |---|---|
 | Apple Silicon, macOS 15 or later | Supported; uses Dory's Hypervisor.framework engine |
 | Apple Silicon, macOS 14 | Supported by the full bundle through the Virtualization.framework fallback |
-| Intel Mac | Not included in current releases; planned after dedicated hardware validation |
-| Windows or Linux host | Not supported by the macOS app |
+| Intel Mac | **Unavailable**; no public build before dedicated physical qualification |
+| Windows or Linux host | **Unavailable**; Dory is a macOS app |
 
 Dory ships one Apple Silicon Docker Core app. Kubernetes, Linux Machines, the shared Linux Desktop
 runtime, and the managed Debian, Ubuntu, and Kali images are signed optional components. Their
@@ -44,7 +44,8 @@ paths. Open an issue with the exact tool and version when that happens.
 | Data-drive growth | Supported; shrinking is intentionally rejected |
 | Backup / verify / restore | Supported while the selected drive is idle |
 | Uninstall preservation | Supported; ordinary uninstall keeps workload data |
-| Migration | Imports images, volumes, networks, writable layers, and container definitions after preflight |
+| Migration | Transactional full or exact-selection import with dependency closure, selected-scope preflight, rollback, source-drift rejection, and a selected/verified/omitted completeness report |
+| In-place upgrade | Signed preflight, exact last-known-good app/config/components, next-launch workload smoke, safe automatic rollback, and recovery export when durable schema rollback is unsafe |
 
 Keep independent backups of important data. Dory refuses unsafe replacement and shrinking
 operations, but it is not a substitute for a normal backup strategy.
@@ -70,6 +71,8 @@ engine resources.
 | Access | Configurable desktop user, graphical session, embedded or selected external terminal, `dory machine shell`, and command execution |
 | Resources | CPU and memory configuration with guest-reported statistics |
 | Snapshots and export/import | Supported |
+| Scheduled local recovery bundles | Supported; owner-only durable schedules, archive re-import verification on every run, periodic disposable boot verification, and scheduler-owned retention |
+| Managed remote/offsite machine backup | **Unavailable**; Dory does not claim an S3 or hosted backup service |
 | Development recipes | Curated Node, Python, Go, Rust, Java, Ruby, and DevOps toolsets for Debian and Alpine |
 | Graphical Linux sessions | Supported with managed Debian, Ubuntu, and Kali Xfce profiles on Apple Silicon |
 | Desktop display | Retina-sharp 2x framebuffer, dynamic window resizing, and matching Xfce scaling |
@@ -88,6 +91,7 @@ current contract.
 | Trusted local HTTPS | Optional local certificate authority |
 | Container-to-host services | `host.dory.internal` |
 | Custom DNS and proxies | Configurable |
+| Corporate proxy, scoped CA, split DNS, and VPN profile | Supported with preview/apply/disable ownership checks and automatic reconciliation |
 | Docker bridge subnet | Configurable private /16 through /24; applying restarts the engine while preserving data |
 | VPN environments | Supported in common configurations; report provider-specific issues |
 | IPv6 | Local dual-stack behavior is supported; external availability follows the host network |
@@ -111,21 +115,30 @@ containers because any process with agent access may request signatures.
 | Cleanup | Dry run by default; named volumes require a second explicit flag |
 | Support bundles | Redacted local evidence collection |
 | Agent guide | Versioned JSON command and safety contract |
-| MCP | Local stdio server with read-only mode, machine execution, waits, and events |
-| Agent sandbox | Preview dedicated VM with explicit mounts, rollback, TTL cleanup, and reported network enforcement |
+| Dory control MCP | Local stdio server with read-only mode, machine execution, waits, and events |
+| Third-party MCP catalog/gateway | **Unavailable**; Dory's control MCP is not a tool marketplace or proxy |
+| Agent sandbox | Supported dedicated non-root VM with read-only mount defaults, enforced egress, credential/resource grants, rollback, manifests, kill, named reuse, and daemon TTL |
 
-Run `dory agent guide --json` for the exact contract provided by the installed release. In the 0.3
-preview sandbox, `none` and `full` network policies are enforced. `outbound` currently grants full
-egress and reports that the narrower policy was not enforced.
+Run `dory agent guide --json` for the exact contract provided by the installed release. Sandbox
+network defaults to `none`; `outbound` permits only Dory DNS and explicit resolved destination/port
+grants; `full` is an explicit unrestricted choice. See `SANDBOX_THREAT_MODEL.md` for trust boundaries.
 
-## Experimental or deferred
+## Preview
 
-- In-guest Venus/Vulkan acceleration is experimental.
-- USB/IP scan, attach, detach, and remembered replay are available in the app and CLI. They may
-  require macOS approval and compatible guest support.
-- Audio passthrough does not have a finished public workflow.
-- Intel-host builds are deferred to a later release.
-- Desktop images beyond the managed Debian, Ubuntu, and Kali Xfce profiles are deferred.
+- In-guest Venus/Vulkan acceleration is preview on the Apple-silicon raw-HV tier.
+- Remote SSH workspace foundations and custom machine kernel/rootfs inputs remain preview with the
+  exact limits in `ARCHITECTURE.md` and `MACHINE_IMAGE_CONTRACT.md`.
+
+## Unavailable
+
+- USB attach, detach, and remembered replay are unavailable. Host discovery is supported, but the
+  engine fails closed until a complete guest USB/IP RPC and physical qualification exist.
+- Audio passthrough is unavailable.
+- Intel-host public builds are unavailable before dedicated physical qualification.
+- Desktop images beyond the managed Debian, Ubuntu, and Kali Xfce profiles are unavailable.
+- Managed image update discovery/replacement, mDNS/multicast relay, and general L2 bridging are
+  unavailable in 0.4. Their proposed boundaries are documented in
+  `POST_V0.4_PRODUCT_DESIGNS.md`.
 
 ## Getting help
 

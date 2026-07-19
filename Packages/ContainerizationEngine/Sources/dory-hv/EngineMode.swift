@@ -612,7 +612,7 @@ enum EngineMode {
         publishForward(local: shutdownSocket, guestPort: 2377, apiSocket: apiSocket, label: "shutdown channel")
         publishForward(
             local: gvproxyHealthSocket,
-            guestPort: 2375,
+            guestPort: Int(GuestDatapathCanary.port),
             apiSocket: apiSocket,
             label: "gvproxy datapath canary"
         )
@@ -679,6 +679,7 @@ enum EngineMode {
 
         var hostFSEventRelay: HostFSEventRelay?
         var cacheReadinessTask: Task<Void, Never>?
+        var hostFSEventDiagnosticsTimer: (any DispatchSourceTimer)?
         if !coherenceEndpoints.isEmpty {
             let activeEndpoints = coherenceEndpoints
             let coordinator = HostShareCoherenceCoordinator(
@@ -723,6 +724,14 @@ enum EngineMode {
                 }
             }
             hostFSEventRelay = relay
+            writeHostShareResourceDiagnostics(relay.diagnostics, stateDirectory: state)
+            let diagnosticsTimer = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
+            diagnosticsTimer.schedule(deadline: .now() + 5, repeating: 5)
+            diagnosticsTimer.setEventHandler {
+                writeHostShareResourceDiagnostics(relay.diagnostics, stateDirectory: state)
+            }
+            diagnosticsTimer.resume()
+            hostFSEventDiagnosticsTimer = diagnosticsTimer
             let watcherCount = activeEndpoints.filter(\.watcherNudgesEnabled).count
             note("host-share invalidation relay active for \(activeEndpoints.count) share(s), watcher nudges on \(watcherCount)")
             // The VM has not entered its run loop yet, so FUSE INIT, the 16 stable notify
@@ -755,10 +764,12 @@ enum EngineMode {
         }
         defer {
             cacheReadinessTask?.cancel()
+            hostFSEventDiagnosticsTimer?.cancel()
             for endpoint in coherenceEndpoints {
                 endpoint.backend.hostFS.setEventObservationHandler(nil)
             }
             hostFSEventRelay?.stop()
+            try? FileManager.default.removeItem(atPath: state + "/host-share-resources.json")
         }
 
         let stop = try machine.run()
@@ -815,8 +826,8 @@ enum EngineMode {
     }
 
     /// Guest boot: mounts (docker state on the journaled /dev/vdb), DHCP through gvproxy,
-    /// dockerd on unix + tcp 2375 (virtual network only), a shutdown listener on tcp 2377 (any
-    /// connection triggers sync + poweroff, giving the host a clean-unmount path), and a light
+    /// dockerd on its private Unix socket, an inert HTTP datapath canary, a shutdown listener on tcp
+    /// 2377 (any connection triggers sync + poweroff, giving the host a clean-unmount path), and a light
     /// workload-aware page-cache cap so free page reporting (which handles free pages automatically
     /// at 16 KiB granularity) has cold pages to hand back when the engine is idle.
     private static func guestBootScript(
@@ -939,7 +950,21 @@ enum EngineMode {
             // dory-runc becomes the default and delegates to that same runc after injecting the
             // private FEX bundle. crun remains an explicit opt-in only when io.max is available.
             "if [ -x /usr/local/bin/crun ]; then echo +io > /sys/fs/cgroup/cgroup.subtree_control 2>/dev/null; mkdir -p /sys/fs/cgroup/.dory-crun-probe 2>/dev/null; [ -e /sys/fs/cgroup/.dory-crun-probe/io.max ] && DORY_RUNTIME_ARGS='--add-runtime crun=/usr/local/bin/crun' || DORY_RUNTIME_ARGS=''; rmdir /sys/fs/cgroup/.dory-crun-probe 2>/dev/null; else DORY_RUNTIME_ARGS=''; fi",
-            "dockerd -H unix:///var/run/docker.sock -H tcp://0.0.0.0:2375 --tls=false --log-level=warn --feature containerd-snapshotter=true \(bridgeNetwork.dockerDaemonArguments) $DORY_RUNTIME_ARGS $DORY_AMD64_RUNTIME_ARGS $DORY_IPV6_DOCKER_ARGS >/var/log/dockerd.log 2>&1 & true",
+            // Corporate connectivity is reconciled by doryd through the authenticated guest agent
+            // after every boot and network transition. Keep its material on tmpfs: a privileged
+            // container must not be able to turn durable Docker data into a root-sourced boot file.
+            "mkdir -p /run/dory-corporate",
+            "chmod 0700 /run/dory-corporate",
+            "cat >/run/dory-restart-dockerd <<DORY_DOCKERD_SCRIPT",
+            "#!/bin/sh",
+            "[ -r /run/dory-corporate/dockerd.env ] && . /run/dory-corporate/dockerd.env",
+            "set -- dockerd -H unix:///var/run/docker.sock --log-level=warn --live-restore --feature containerd-snapshotter=true \(bridgeNetwork.dockerDaemonArguments) $DORY_RUNTIME_ARGS $DORY_AMD64_RUNTIME_ARGS $DORY_IPV6_DOCKER_ARGS",
+            "if [ -r /run/dory-corporate/dockerd.args ]; then while IFS= read -r DORY_DOCKERD_ARG; do [ -z \"$DORY_DOCKERD_ARG\" ] || set -- \"$@\" \"$DORY_DOCKERD_ARG\"; done </run/dory-corporate/dockerd.args; fi",
+            "exec \"$@\"",
+            "DORY_DOCKERD_SCRIPT",
+            "chmod 0700 /run/dory-restart-dockerd",
+            "/run/dory-restart-dockerd >/var/log/dockerd.log 2>&1 & true",
+            GuestDatapathCanary.listener(),
             GuestShutdownCommand.listener(),
             GuestMemoryReclaimBootCommand.hostPressureListener(
                 experimentalSenpai: reclaimModeIsSenpai
@@ -1013,6 +1038,27 @@ enum EngineMode {
 
     private static func shellQuote(_ value: String) -> String {
         "'\(value.replacingOccurrences(of: "'", with: "'\"'\"'"))'"
+    }
+
+    private static func writeHostShareResourceDiagnostics(
+        _ diagnostics: HostFSEventRelayDiagnostics,
+        stateDirectory: String
+    ) {
+        let destination = URL(fileURLWithPath: stateDirectory)
+            .appendingPathComponent("host-share-resources.json")
+        let temporary = destination.appendingPathExtension("tmp-(getpid())")
+        do {
+            let encoder = JSONEncoder()
+            encoder.dateEncodingStrategy = .iso8601
+            encoder.outputFormatting = [.sortedKeys]
+            let data = try encoder.encode(diagnostics)
+            try data.write(to: temporary, options: [.atomic])
+            _ = chmod(temporary.path, S_IRUSR | S_IWUSR)
+            _ = rename(temporary.path, destination.path)
+        } catch {
+            try? FileManager.default.removeItem(at: temporary)
+            note("host-share resource diagnostics unavailable: (error)")
+        }
     }
 
     /// Asks gvproxy to serve a guest TCP port as a host unix socket, retrying until the listener

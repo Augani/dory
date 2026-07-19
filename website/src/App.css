@@ -415,7 +415,7 @@
 .truth-copy h2 { font-size: clamp(40px, 4.5vw, 62px); }.truth-copy > p:not(.eyebrow) { margin: 24px 0 0; color: var(--ink-soft); font-size: 16px; line-height: 1.7; }
 .state-table { border: 1px solid var(--line); border-radius: 17px; background: #fff; }
 .state-row { display: grid; grid-template-columns: 100px 1fr; gap: 20px; align-items: start; padding: 21px; border-bottom: 1px solid var(--line); }.state-row:last-child { border-bottom: 0; }.state-row > span { width: fit-content; padding: 5px 8px; border-radius: 6px; font-size: 9.5px; font-weight: 820; text-transform: uppercase; }.state-row p { margin: 2px 0 0; color: #647589; font-size: 11.5px; line-height: 1.55; }
-.state-stable > span { background: #e8f8f1; color: #15875b; }.state-preview > span { background: #fff5dc; color: #9a6800; }.state-experimental > span { background: #f2eefe; color: #7252b8; }.state-later > span { background: #edf1f5; color: #6b7786; }
+.state-supported > span { background: #e8f8f1; color: #15875b; }.state-preview > span { background: #fff5dc; color: #9a6800; }.state-unavailable > span { background: #edf1f5; color: #6b7786; }
 
 .faq { background: #fff; }
 .faq-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }

@@ -20,11 +20,11 @@ pub fn public_key_from_openssh(line: &str) -> Result<PublicKey, RemoteError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use russh::keys::ssh_key::{rand_core::OsRng, Algorithm, PrivateKey as Sk};
+    use russh::keys::ssh_key::{Algorithm, PrivateKey as Sk};
 
     #[test]
     fn round_trips_a_generated_keypair_through_openssh_strings() {
-        let key = Sk::random(&mut OsRng, Algorithm::Ed25519).unwrap();
+        let key = Sk::random(&mut rand::rng(), Algorithm::Ed25519).unwrap();
         let pem = key
             .to_openssh(russh::keys::ssh_key::LineEnding::LF)
             .unwrap();

@@ -1,0 +1,29 @@
+1
+00:00:00,450 --> 00:00:04,781
+Switching Docker runtimes shouldn't mean
+rebuilding your local world.
+
+2
+00:00:04,950 --> 00:00:08,833
+Images. Volumes. Networks.
+Ports. Container state.
+
+3
+00:00:09,000 --> 00:00:14,611
+Dory discovers Docker Desktop, OrbStack,
+Colima, and other compatible sources.
+
+4
+00:00:14,780 --> 00:00:19,623
+It reads first—checking capacity
+and collisions before writing to Dory.
+
+5
+00:00:19,690 --> 00:00:24,490
+Dory imports transactionally, verifies,
+and never deletes the source.
+
+6
+00:00:24,560 --> 00:00:29,893
+Dory. Your complete local Linux workspace.
+Bring the work. Leave the lock behind.

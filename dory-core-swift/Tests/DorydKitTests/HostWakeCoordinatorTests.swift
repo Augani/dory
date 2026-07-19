@@ -42,10 +42,12 @@ final class HostWakeCoordinatorTests: XCTestCase {
             ),
         ])
         let writer = IncidentWriter(path: base + "/incidents.jsonl")
+        let network = TestNetworkReconciler()
         let coordinator = HostWakeCoordinator(
             powerSource: source,
             clockSyncers: [clock],
             dnsProbe: dns,
+            networkReconcilers: [network],
             incidentWriter: writer
         )
 
@@ -54,8 +56,10 @@ final class HostWakeCoordinatorTests: XCTestCase {
 
         XCTAssertEqual(clock.syncDates.count, 1)
         XCTAssertEqual(dns.probeCount, 1)
+        XCTAssertEqual(network.wakeDates.count, 1)
         XCTAssertEqual(coordinator.lastWake?.clockSyncs.first?.attempted, true)
         XCTAssertEqual(coordinator.lastWake?.dnsProbes.first?.resolved, true)
+        XCTAssertEqual(coordinator.lastWake?.networkReconciliations, ["network reconciled"])
         let incident = try XCTUnwrap(writer.read(limit: 1).first)
         XCTAssertEqual(incident.type, "host.wake")
         XCTAssertTrue(incident.detail?.contains("dns_ok=1/1") ?? false)
@@ -179,5 +183,23 @@ private final class TestDNSProbe: DNSProbing, @unchecked Sendable {
         count += 1
         lock.unlock()
         return results
+    }
+}
+
+private final class TestNetworkReconciler: WakeNetworkReconciling, @unchecked Sendable {
+    private let lock = NSLock()
+    private var dates: [Date] = []
+
+    var wakeDates: [Date] {
+        lock.lock()
+        defer { lock.unlock() }
+        return dates
+    }
+
+    func reconcileAfterWake(now: Date) -> String {
+        lock.lock()
+        dates.append(now)
+        lock.unlock()
+        return "network reconciled"
     }
 }

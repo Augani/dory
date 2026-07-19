@@ -13,6 +13,9 @@ struct HealthView: View {
                         cliMissingCard
                     } else {
                         summaryCard(snapshot)
+                        if let readiness = snapshot.readiness {
+                            readinessCard(readiness)
+                        }
                         processMemoryCard
                         recoverySection
                         if let idle = snapshot.idle {
@@ -46,6 +49,68 @@ struct HealthView: View {
             if isStale {
                 await store.loadHealth()
             }
+        }
+    }
+
+    private func readinessCard(_ readiness: RuntimeReadiness) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 10) {
+                Circle().fill(readinessColor(readiness.overall)).frame(width: 9, height: 9)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Runtime readiness")
+                        .font(.system(size: 13, weight: .semibold)).foregroundStyle(p.text)
+                    Text("\(readiness.trigger.replacingOccurrences(of: "-", with: " ")) · \(readiness.overall)")
+                        .font(.system(size: 11.5)).foregroundStyle(p.text3)
+                }
+                Spacer(minLength: 0)
+                Text(String(readiness.cycleID.prefix(8)))
+                    .font(.system(size: 10.5, design: .monospaced)).foregroundStyle(p.text3)
+            }
+            VStack(spacing: 0) {
+                ForEach(Array(readiness.stages.enumerated()), id: \.element.id) { index, stage in
+                    if index > 0 { Divider().overlay(p.border) }
+                    HStack(alignment: .top, spacing: 10) {
+                        Circle().fill(readinessColor(stage.state)).frame(width: 7, height: 7).padding(.top, 5)
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack(spacing: 7) {
+                                Text(stage.title)
+                                    .font(.system(size: 12.5, weight: .semibold)).foregroundStyle(p.text)
+                                Text(stage.reasonCode)
+                                    .font(.system(size: 9.5, design: .monospaced)).foregroundStyle(p.text3)
+                            }
+                            Text(stage.detail)
+                                .font(.system(size: 11)).foregroundStyle(p.text3).lineLimit(2)
+                            if stage.state == "blocked" || stage.state == "degraded" {
+                                Text("Repair: \(stage.repair.owner) — \(stage.repair.mutation)")
+                                    .font(.system(size: 10.5, weight: .medium)).foregroundStyle(p.accentText).lineLimit(2)
+                            }
+                        }
+                        Spacer(minLength: 8)
+                        if let elapsed = stage.elapsedMilliseconds {
+                            Text(elapsed < 1_000 ? "\(elapsed) ms" : String(format: "%.1f s", Double(elapsed) / 1_000))
+                                .font(.system(size: 10.5).monospacedDigit()).foregroundStyle(p.text3)
+                        }
+                        Text(stage.state.uppercased())
+                            .font(.system(size: 9.5, weight: .bold)).foregroundStyle(readinessColor(stage.state))
+                    }
+                    .padding(.horizontal, 11).padding(.vertical, 8)
+                }
+            }
+            .background(p.bgInput, in: RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(p.border))
+            Text("Repairs list the exact owner and mutation before anything changes; none of these stages uses reset or data deletion as an automatic recovery step.")
+                .font(.system(size: 10.5)).foregroundStyle(p.text3)
+        }
+        .cardStyle(p)
+    }
+
+    private func readinessColor(_ state: String) -> Color {
+        switch state {
+        case "ready": p.green
+        case "waiting": p.amber
+        case "blocked": p.red
+        case "degraded": p.amber
+        default: p.text3
         }
     }
 
@@ -210,6 +275,7 @@ struct HealthView: View {
             ("ports", "Reforward ports"),
             ("dockerd", "Check Docker API"),
             ("guest-agent", "Reconnect guest agent"),
+            ("data-drive", "Revalidate data drive"),
         ]
     }
 

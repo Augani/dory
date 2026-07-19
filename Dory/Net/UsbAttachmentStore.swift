@@ -1,5 +1,12 @@
 import Foundation
 
+enum UsbPassthroughAvailability: Sendable {
+    static let attachSupported = false
+    static let unavailableReason =
+        "USB passthrough is not available in the current Dory engine. Host discovery works, but " +
+        "attach, detach, and automatic replay remain disabled until the guest USB/IP RPC ships."
+}
+
 struct UsbAttachment: Codable, Equatable, Identifiable, Sendable {
     var machine: String
     var busID: String

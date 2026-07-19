@@ -602,10 +602,12 @@ public enum DoryVZConfigurationBuilder {
             "fi",
             "",
             "if [ -x /usr/local/bin/dockerd ]; then",
-            "  /usr/local/bin/dockerd \\",
-            "    -H unix:///var/run/docker.sock \\",
-            "    -H tcp://0.0.0.0:2375 \\",
-            "    --tls=false \(bridgeNetwork.dockerDaemonArguments) \(nativeIPv6 ? DoryVMMNativeIPv6Plan().dockerDaemonArguments : "") >/var/log/dockerd.log 2>&1 &",
+            "  cat >/run/dory-restart-dockerd <<'DORY_DOCKERD_SCRIPT'",
+            "#!/bin/sh",
+            "exec /usr/local/bin/dockerd -H unix:///var/run/docker.sock \(bridgeNetwork.dockerDaemonArguments) \(nativeIPv6 ? DoryVMMNativeIPv6Plan().dockerDaemonArguments : "")",
+            "DORY_DOCKERD_SCRIPT",
+            "  chmod 0700 /run/dory-restart-dockerd",
+            "  /run/dory-restart-dockerd >/var/log/dockerd.log 2>&1 &",
             "fi",
             "",
             GuestShutdownCommand.listener(),
@@ -880,7 +882,9 @@ public enum DoryVMMMain {
         let machine = DoryVZMachine(configuration: configuration, label: machineID)
         try machine.start()
         let sshAgentBridge: DoryVZHostSSHAgentBridge?
-        if let sshAgentSocketPath, !sshAgentSocketPath.isEmpty {
+        let sandboxSSHAgentDenied = environment["DORY_SANDBOX"] == "1"
+            && environment["DORY_SANDBOX_SSH_AGENT"] != "1"
+        if let sshAgentSocketPath, !sshAgentSocketPath.isEmpty, !sandboxSSHAgentDenied {
             let bridge = try DoryVZHostSSHAgentBridge(
                 machine: machine,
                 hostSocketPath: sshAgentSocketPath,
@@ -954,20 +958,9 @@ public enum DoryVMMMain {
             environment: environment,
             shares: shares
         )
-        if machineID == "docker" {
-            let dockerReadyDeadline = Date().addingTimeInterval(readyTimeoutSeconds)
-            let dockerProbe = UnixDockerAPIProbe(timeout: 1)
-            var dockerPing = dockerProbe.ping(socketPath: dockerdSocketPath)
-            while dockerPing != .ok, Date() < dockerReadyDeadline, !machine.isStopped {
-                Thread.sleep(forTimeInterval: 0.25)
-                dockerPing = dockerProbe.ping(socketPath: dockerdSocketPath)
-            }
-            guard dockerPing == .ok else {
-                throw DoryVZMachineError.validation(
-                    "Docker API did not become ready through the VZ socket: \(dockerPing)"
-                )
-            }
-        }
+        // For the Docker VM, this handoff means VM + guest-agent readiness. doryd owns the next
+        // ordered stages (data mount, route/resolver, dockerd /version, and host socket), so a VMM
+        // process can never collapse all of them into one misleading "running" bit.
         try sendHandoff(
             machineID: machineID,
             handoffSocketPath: handoffSocketPath,

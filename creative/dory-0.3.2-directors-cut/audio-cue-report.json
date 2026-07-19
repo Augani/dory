@@ -1,0 +1,100 @@
+[
+  {
+    "id": "01",
+    "start": 0.75,
+    "text": "Meet Dory zero point three point two.",
+    "file": "voice-01.wav",
+    "duration": 2.624
+  },
+  {
+    "id": "02",
+    "start": 4.85,
+    "text": "Your complete local Linux workspace, built for Apple Silicon Macs.",
+    "file": "voice-02.wav",
+    "duration": 4.139
+  },
+  {
+    "id": "03",
+    "start": 9.85,
+    "text": "Start with one smaller Docker Core. About a hundred and twelve megabytes of duplicate compatibility payload\u2014gone.",
+    "file": "voice-03.wav",
+    "duration": 6.848
+  },
+  {
+    "id": "04",
+    "start": 17.3,
+    "text": "Then add only what you need: Kubernetes, Linux machines, Debian, Ubuntu, or Kali desktops.",
+    "file": "voice-04.wav",
+    "duration": 6.229
+  },
+  {
+    "id": "05",
+    "start": 24.4,
+    "text": "Run and test graphical Linux applications beside your containers: Retina-sharp windows, persistent disks, scoped Mac folders, and snapshots.",
+    "file": "voice-05.wav",
+    "duration": 8.811
+  },
+  {
+    "id": "06",
+    "start": 34.0,
+    "text": "For A-I agents, launch a dedicated preview sandbox V-M.",
+    "file": "voice-06.wav",
+    "duration": 3.947
+  },
+  {
+    "id": "07",
+    "start": 38.3,
+    "text": "No host files are visible by default.",
+    "file": "voice-07.wav",
+    "duration": 2.496
+  },
+  {
+    "id": "08",
+    "start": 41.75,
+    "text": "Mount only what you choose.",
+    "file": "voice-08.wav",
+    "duration": 1.877
+  },
+  {
+    "id": "09",
+    "start": 44.25,
+    "text": "Set network to none.",
+    "file": "voice-09.wav",
+    "duration": 1.536
+  },
+  {
+    "id": "10",
+    "start": 46.35,
+    "text": "Roll back.",
+    "file": "voice-10.wav",
+    "duration": 1.109
+  },
+  {
+    "id": "11",
+    "start": 47.75,
+    "text": "Or let the temporary V-M delete itself.",
+    "file": "voice-11.wav",
+    "duration": 2.624
+  },
+  {
+    "id": "12",
+    "start": 51.4,
+    "text": "Optional components are signed and removable. Your workload data stays.",
+    "file": "voice-12.wav",
+    "duration": 4.501
+  },
+  {
+    "id": "13",
+    "start": 56.2,
+    "text": "Add custom domains. Add trusted H-T-T-P-S.",
+    "file": "voice-13.wav",
+    "duration": 3.712
+  },
+  {
+    "id": "14",
+    "start": 60.05,
+    "text": "Dory. Smaller core. Bigger possibilities. Built for Mac. Open source.",
+    "file": "voice-14.wav",
+    "duration": 4.608
+  }
+]

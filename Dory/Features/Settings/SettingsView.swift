@@ -10,6 +10,24 @@ struct SettingsView: View {
     @State private var httpPortDraft = ""
     @State private var httpsPortDraft = ""
     @State private var bridgeSubnetDraft = ""
+    @State private var corporateEnabled = false
+    @State private var corporateHostSource = "system"
+    @State private var corporateHTTPProxy = ""
+    @State private var corporateHTTPSProxy = ""
+    @State private var corporatePACURL = ""
+    @State private var corporateNoProxy = ""
+    @State private var corporateDockerdOverride = false
+    @State private var corporateDockerdHTTPProxy = ""
+    @State private var corporateDockerdHTTPSProxy = ""
+    @State private var corporateWorkloadOverride = false
+    @State private var corporateWorkloadHTTPProxy = ""
+    @State private var corporateWorkloadHTTPSProxy = ""
+    @State private var corporateRegistryMirrors = ""
+    @State private var corporateInsecureRegistries = ""
+    @State private var corporateProbeRegistries = "https://registry-1.docker.io/v2/"
+    @State private var corporateSplitDNS = ""
+    @State private var corporateCAs = ""
+    @State private var corporateEditorHydrated = false
     @State private var customDomainDraft = ""
     @State private var customDomainPortDraft = "80"
     @State private var customSocketDraft = ""
@@ -68,6 +86,7 @@ struct SettingsView: View {
     @ViewBuilder private var content: some View {
         switch store.settingsTab {
         case .general: general
+        case .updates: updates
         case .components: ComponentsView(embedded: true)
         case .resources: resources
         case .machines: machines
@@ -79,6 +98,161 @@ struct SettingsView: View {
         case .migrate: migrate
         case .managed: managed
         case .about: infoPanel(aboutText)
+        }
+    }
+
+    private var updates: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            groupLabel("SOFTWARE UPDATE")
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(spacing: 12) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Dory \(AppInfo.version) (\(AppInfo.build))")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(p.text)
+                        Text("Updates are signature-checked and staged with a verified last-good app, configuration, component generation, data snapshot, and runtime marker before installation.")
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(p.text3)
+                            .lineSpacing(3)
+                    }
+                    Spacer(minLength: 0)
+                    Button("Check for Updates…") { DoryUpdater.shared.checkForUpdates() }
+                        .buttonStyle(.borderedProminent)
+                        .accessibilityIdentifier("updates-check")
+                }
+            }
+            .padding(15)
+            .background(p.bgElevated, in: RoundedRectangle(cornerRadius: 11))
+            .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(p.border))
+            .padding(.bottom, 22)
+
+            groupLabel("LAST UPGRADE TRANSACTION")
+            upgradeTransactionCard
+                .task { await store.refreshUpgradeStatus() }
+        }
+    }
+
+    @ViewBuilder private var upgradeTransactionCard: some View {
+        if let error = store.upgradeStatusError {
+            calloutCard(p.red) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Upgrade evidence is unavailable")
+                        .font(.system(size: 13, weight: .semibold)).foregroundStyle(p.text)
+                    Text(error).font(.system(size: 11.5)).foregroundStyle(p.text2).lineSpacing(3)
+                    Button("Try Again") { Task { await store.refreshUpgradeStatus() } }
+                        .buttonStyle(.bordered)
+                }
+            }
+        } else if let record = store.upgradeTransaction {
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(spacing: 10) {
+                    Circle().fill(upgradeStateColor(record.state)).frame(width: 8, height: 8)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(upgradeStateTitle(record.state))
+                            .font(.system(size: 13, weight: .semibold)).foregroundStyle(p.text)
+                        Text("\(record.priorVersion) (\(record.priorBuild)) → \(record.candidate.version) (\(record.candidate.build))")
+                            .font(.system(size: 11.5, design: .monospaced)).foregroundStyle(p.text3)
+                    }
+                    Spacer(minLength: 0)
+                    Button {
+                        Task { await store.refreshUpgradeStatus() }
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
+                    }
+                    .buttonStyle(.bordered)
+                    .help("Refresh transaction status")
+                    .accessibilityIdentifier("updates-refresh")
+                }
+                .padding(15)
+
+                Rectangle().fill(p.border).frame(height: 1)
+                upgradeEvidenceRow("Signed archive", record.candidate.archiveSignatureValidated,
+                                   record.candidate.archiveSignatureValidated ? "Sparkle validation recorded" : "awaiting final archive validation")
+                upgradeEvidenceRow("Last-good app", record.appSnapshot != nil,
+                                   record.appSnapshot.map { "\($0.version) (\($0.build))" } ?? "not captured")
+                upgradeEvidenceRow("Verified data snapshot", record.dataSnapshot != nil,
+                                   record.dataSnapshot?.archivePath ?? "not captured")
+                upgradeEvidenceRow("Runtime smoke", !record.smokeChecks.isEmpty && record.smokeChecks.allSatisfy { !$0.required || $0.passed },
+                                   record.smokeChecks.isEmpty ? "not run" : "\(record.smokeChecks.filter(\.passed).count)/\(record.smokeChecks.count) checks passed")
+
+                if let error = record.error, !error.isEmpty {
+                    Text(error)
+                        .font(.system(size: 11.5)).foregroundStyle(p.red).lineSpacing(3)
+                        .padding(.horizontal, 15).padding(.top, 11)
+                }
+
+                HStack(spacing: 8) {
+                    if let path = record.recoveryDirectory ?? record.dataSnapshot?.archivePath ?? record.appSnapshot?.backupPath {
+                        Button("Show Evidence in Finder") {
+                            NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
+                        }
+                        .buttonStyle(.bordered)
+                        .accessibilityIdentifier("updates-show-evidence")
+                    }
+                    if let recovery = record.recoveryDirectory {
+                        Button("Copy Recovery Path") { copy(recovery + "/recovery.json") }
+                            .buttonStyle(.bordered)
+                            .accessibilityIdentifier("updates-copy-recovery")
+                    }
+                }
+                .padding(15)
+
+                Text("If required smoke checks fail, Dory automatically restores the verified app, components, and configuration. Durable data is never blindly downgraded; an incompatible schema produces an explicit recovery export instead.")
+                    .font(.system(size: 11.2)).foregroundStyle(p.text3).lineSpacing(3)
+                    .padding(.horizontal, 15).padding(.bottom, 14)
+            }
+            .background(p.bgElevated, in: RoundedRectangle(cornerRadius: 11))
+            .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(p.border))
+        } else {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("No upgrade transaction recorded")
+                    .font(.system(size: 13, weight: .semibold)).foregroundStyle(p.text)
+                Text("The next in-place update will show its preflight, snapshot, smoke-test, rollback, and recovery evidence here.")
+                    .font(.system(size: 11.5)).foregroundStyle(p.text3).lineSpacing(3)
+            }
+            .padding(15)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(p.bgElevated, in: RoundedRectangle(cornerRadius: 11))
+            .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(p.border))
+        }
+    }
+
+    private func upgradeEvidenceRow(_ title: String, _ passed: Bool, _ detail: String) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: passed ? "checkmark.circle.fill" : "clock.fill")
+                .foregroundStyle(passed ? p.green : p.amber)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(p.text)
+                Text(detail).font(.system(size: 10.8, design: .monospaced)).foregroundStyle(p.text3)
+                    .lineLimit(1).truncationMode(.middle)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 15).padding(.vertical, 10)
+        .overlay(alignment: .top) { Rectangle().fill(p.border).frame(height: 1) }
+    }
+
+    private func upgradeStateTitle(_ state: DoryUpgradeState) -> String {
+        switch state {
+        case .preflight: "Preflight ready"
+        case .snapshotting: "Creating last-good snapshot"
+        case .readyToInstall: "Ready to install"
+        case .installing: "Installation armed"
+        case .smokeTesting: "Verifying updated runtime"
+        case .succeeded: "Update verified"
+        case .rollingBack: "Automatic rollback in progress"
+        case .rolledBack: "Automatically rolled back"
+        case .recoveryRequired: "Recovery export required"
+        case .failed: "Update stopped safely"
+        }
+    }
+
+    private func upgradeStateColor(_ state: DoryUpgradeState) -> Color {
+        switch state {
+        case .succeeded: p.green
+        case .rolledBack, .failed: p.amber
+        case .recoveryRequired: p.red
+        default: p.accent
         }
     }
 
@@ -131,6 +305,26 @@ struct SettingsView: View {
                 }
                 if let inv = store.migrationInventory {
                     preflightPanel(inv)
+                    migrationSelectionPanel(inv)
+                    if inv.isEngineDiskInsufficient,
+                       let capacityGiB = inv.recommendedEngineCapacityGiB,
+                       Int64(capacityGiB) * DockerDataDisk.bytesPerGiB > inv.engineDiskLogicalBytes {
+                        Button {
+                            Task {
+                                await store.growDockerDataDisk(toGiB: capacityGiB)
+                                await store.loadMigrationPreflight()
+                            }
+                        } label: {
+                            Label(
+                                "Grow Docker storage to \(capacityGiB) GiB and recheck",
+                                systemImage: "externaldrive.badge.plus"
+                            )
+                            .font(.system(size: 12, weight: .semibold))
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(store.migrationBusy)
+                        .accessibilityIdentifier("migrate-grow-engine-disk")
+                    }
                 } else {
                     Text(store.migrationSources.isEmpty
                         ? "No Docker-compatible local engine detected."
@@ -157,7 +351,11 @@ struct SettingsView: View {
                     .background(p.accent.opacity(store.migrationBusy ? 0.6 : 1), in: RoundedRectangle(cornerRadius: 8))
                 }
                 .buttonStyle(.plain)
-                .disabled(store.migrationSources.isEmpty || store.runtimeKind != .sharedVM)
+                .disabled(
+                    store.migrationSources.isEmpty
+                        || store.runtimeKind != .sharedVM
+                        || store.migrationSelectedObjectKeys.isEmpty
+                )
                 .accessibilityIdentifier("migrate-import")
                 if store.migrationInventory != nil && store.runtimeKind != .sharedVM {
                     Text("Switch to Dory's daemon engine (Engine & Daemon tab) to import.")
@@ -187,6 +385,9 @@ struct SettingsView: View {
                             Text("+ \(warnings.count - 8) more").font(.system(size: 11)).foregroundStyle(p.text3)
                         }
                     }
+                }
+                if let report = store.migrationSummary?.completeness {
+                    migrationCompletenessPanel(report)
                 }
             }
             .padding(18)
@@ -240,6 +441,102 @@ struct SettingsView: View {
         .padding(13)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(p.bgInput, in: RoundedRectangle(cornerRadius: 9))
+    }
+
+    private func migrationSelectionPanel(_ inv: MigrationInventory) -> some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(spacing: 8) {
+                Text("OBJECT SELECTION")
+                    .font(.system(size: 9.5, weight: .bold)).foregroundStyle(p.text3).tracking(0.4)
+                Text("\(store.migrationSelectedObjectKeys.count) of \(inv.selectableObjects.count) requested")
+                    .font(.system(size: 10.5)).foregroundStyle(p.text3)
+                Spacer()
+                Button("All") { store.selectAllMigrationObjects() }
+                    .buttonStyle(.plain).foregroundStyle(p.accentText)
+                Button("None") { store.clearMigrationObjectSelection() }
+                    .buttonStyle(.plain).foregroundStyle(p.text3)
+                Button("Recheck") {
+                    Task { await store.recheckMigrationSelection() }
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(store.migrationSelectedObjectKeys.isEmpty || store.migrationBusy)
+            }
+            Text("Choose top-level objects. Dory automatically adds every required image, volume, network, linked container, and writable layer, then records omitted objects in the completion ledger.")
+                .font(.system(size: 10.5)).foregroundStyle(p.text3).lineSpacing(2)
+            ScrollView {
+                LazyVStack(spacing: 0) {
+                    ForEach(inv.selectableObjects) { object in
+                        Toggle(isOn: Binding(
+                            get: { store.migrationSelectedObjectKeys.contains(object.key) },
+                            set: { store.setMigrationObject(object.key, selected: $0) }
+                        )) {
+                            HStack(spacing: 8) {
+                                Text(object.kindLabel.uppercased())
+                                    .font(.system(size: 8.5, weight: .bold))
+                                    .foregroundStyle(p.text3)
+                                    .frame(width: 72, alignment: .leading)
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(object.name)
+                                        .font(.system(size: 11.5, weight: .medium))
+                                        .foregroundStyle(p.text)
+                                        .lineLimit(1)
+                                    if !object.detail.isEmpty {
+                                        Text(object.detail)
+                                            .font(.system(size: 9.5)).foregroundStyle(p.text3)
+                                            .lineLimit(1)
+                                    }
+                                }
+                                Spacer(minLength: 6)
+                                if inv.strictDependencyObjectKeys.contains(object.key) {
+                                    Text("DEPENDENCY")
+                                        .font(.system(size: 8, weight: .bold))
+                                        .foregroundStyle(p.accentText)
+                                } else if inv.strictOmittedObjectKeys.contains(object.key) {
+                                    Text("OMITTED")
+                                        .font(.system(size: 8, weight: .bold))
+                                        .foregroundStyle(p.text3)
+                                }
+                            }
+                        }
+                        .toggleStyle(.checkbox)
+                        .padding(.vertical, 6)
+                        if object.id != inv.selectableObjects.last?.id {
+                            Divider().overlay(p.border.opacity(0.7))
+                        }
+                    }
+                }
+            }
+            .frame(maxHeight: 260)
+        }
+        .padding(13)
+        .background(p.bgInput, in: RoundedRectangle(cornerRadius: 9))
+        .overlay(RoundedRectangle(cornerRadius: 9).strokeBorder(p.border))
+    }
+
+    private func migrationCompletenessPanel(_ report: MigrationCompletenessReport) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 7) {
+                Glyph(glyph: .shield, size: 12, color: p.green)
+                Text("Exact completion report")
+                    .font(.system(size: 11.5, weight: .semibold)).foregroundStyle(p.text)
+            }
+            Text("\(report.verified.count) verified · \(report.automaticallyIncluded.count) automatic dependencies · \(report.omitted.count) deliberately omitted")
+                .font(.system(size: 10.5)).foregroundStyle(p.text2)
+            if !report.automaticallyIncluded.isEmpty {
+                Text("Included dependencies: \(report.automaticallyIncluded.prefix(8).joined(separator: ", "))")
+                    .font(.system(size: 10)).foregroundStyle(p.text3).lineLimit(3)
+            }
+            if !report.omitted.isEmpty {
+                Text("Omitted unchanged: \(report.omitted.prefix(8).joined(separator: ", "))")
+                    .font(.system(size: 10)).foregroundStyle(p.text3).lineLimit(3)
+            }
+            Text("Plan \(report.planDigest.prefix(12)) · omitted inventory \(report.omittedInventoryDigest.prefix(12))")
+                .font(.system(size: 9.5, design: .monospaced)).foregroundStyle(p.text3)
+        }
+        .padding(11)
+        .background(p.green.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(p.green.opacity(0.25)))
     }
 
     private func preflightList(
@@ -361,7 +658,7 @@ struct SettingsView: View {
             VStack(spacing: 0) {
                 localToolFact("Daemon-owned state", "The app can close while doryd keeps Docker, machines, Auto-Idle, networking, and durable state on disk.")
                 localToolFact("Agent-ready JSON", "Doctor, guide, wait, events, and MCP all expose stable structured output for automation.")
-                localToolFact("Isolated sandbox runs", "Preview sandbox commands run in dedicated Linux machines with no host file sharing by default when dorydctl and machine assets are bundled.")
+                localToolFact("Isolated sandbox runs", "Supported sandbox commands run non-root in dedicated Linux VMs with no ambient host files, network, or credentials and with bounded resources and lifetime.")
                 localToolFact("Visible recovery", "Diagnostics and event history make sleep, wake, memory reclaim, and incidents inspectable before asking users to restart.")
             }
             .background(p.bgElevated, in: RoundedRectangle(cornerRadius: 11))
@@ -1387,7 +1684,7 @@ struct SettingsView: View {
                 VStack(alignment: .leading, spacing: 1) {
                     Text("Local daemon tools")
                         .font(.system(size: 13, weight: .semibold)).foregroundStyle(p.text)
-                    Text("Stable local tools are ready from the bundled `dory` CLI; sandbox is preview with explicit prerequisites.")
+                    Text("Stable local tools and policy-enforced sandbox VMs are ready from the bundled `dory` CLI.")
                         .font(.system(size: 11.5)).foregroundStyle(p.text3).lineLimit(1)
                 }
                 Spacer(minLength: 0)
@@ -1400,7 +1697,7 @@ struct SettingsView: View {
                 }
                 .buttonStyle(.plain)
             }
-            Text("These are local-only doryd features: no cloud control plane, no remote dependency, and no external runtime required. They let users diagnose, automate, and observe Dory from any terminal, with sandbox runs gated as a preview machine workflow.")
+            Text("These are local-only doryd features: no cloud control plane, no remote dependency, and no external runtime required. They let users diagnose, automate, observe, and run bounded non-root sandbox commands from any terminal.")
                 .font(.system(size: 12.5)).foregroundStyle(p.text2).lineSpacing(4)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
@@ -1540,6 +1837,10 @@ struct SettingsView: View {
             .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(p.border))
             .padding(.bottom, 22)
 
+            groupLabel("CORPORATE CONNECTIVITY")
+            corporateConnectivityEditor
+                .padding(.bottom, 22)
+
             groupLabel("PORTS")
             VStack(alignment: .leading, spacing: 12) {
                 portField("DNS resolver", store: $dnsPortDraft, fallback: AppStore.defaultDNSPort) { store.applyNetworkingSettings(dnsPort: $0) }
@@ -1618,6 +1919,310 @@ struct SettingsView: View {
             httpsPortDraft = String(store.httpsProxyPort)
             bridgeSubnetDraft = store.defaultBridgeSubnet
             store.loadLanVisible()
+            Task {
+                await store.loadCorporateConnectivity(runProbes: false)
+                hydrateCorporateEditorIfNeeded()
+            }
+        }
+    }
+
+    private var corporateConnectivityEditor: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            toggleRow(
+                "Enable corporate profile",
+                "Reconcile macOS system/PAC observations, dockerd pulls, BuildKit and container defaults, registries, scoped DNS and digest-pinned CAs as one contract.",
+                isOn: $corporateEnabled,
+                divider: false
+            )
+
+            Divider().overlay(p.border)
+
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("macOS proxy source")
+                        .font(.system(size: 12.5, weight: .semibold)).foregroundStyle(p.text)
+                    Text("System observes the active Dynamic Store and PAC without rewriting macOS settings.")
+                        .font(.system(size: 11)).foregroundStyle(p.text3)
+                }
+                Spacer(minLength: 0)
+                Picker("Proxy source", selection: $corporateHostSource) {
+                    Text("System / PAC").tag("system")
+                    Text("Manual").tag("manual")
+                    Text("Disabled").tag("disabled")
+                }
+                .labelsHidden()
+                .frame(width: 150)
+            }
+
+            corporateTextField("HTTP proxy", placeholder: "http://proxy.corp.example:8080", value: $corporateHTTPProxy)
+            corporateTextField("HTTPS proxy", placeholder: "http://proxy.corp.example:8080", value: $corporateHTTPSProxy)
+            corporateTextField("PAC URL", placeholder: "https://proxy.corp.example/proxy.pac", value: $corporatePACURL)
+            corporateTextField("NO_PROXY", placeholder: "localhost,.corp.example,10.0.0.0/8", value: $corporateNoProxy)
+
+            DisclosureGroup("Daemon and workload overrides") {
+                VStack(alignment: .leading, spacing: 10) {
+                    Toggle("Use a separate dockerd pull proxy", isOn: $corporateDockerdOverride)
+                        .toggleStyle(.switch).font(.system(size: 12))
+                    if corporateDockerdOverride {
+                        corporateTextField("Dockerd HTTP", placeholder: "http://pull-proxy.corp:8080", value: $corporateDockerdHTTPProxy)
+                        corporateTextField("Dockerd HTTPS", placeholder: "http://pull-proxy.corp:8080", value: $corporateDockerdHTTPSProxy)
+                    }
+                    Toggle("Use a separate BuildKit/container proxy", isOn: $corporateWorkloadOverride)
+                        .toggleStyle(.switch).font(.system(size: 12))
+                    if corporateWorkloadOverride {
+                        corporateTextField("Build/container HTTP", placeholder: "http://workload-proxy.corp:8080", value: $corporateWorkloadHTTPProxy)
+                        corporateTextField("Build/container HTTPS", placeholder: "http://workload-proxy.corp:8080", value: $corporateWorkloadHTTPSProxy)
+                    }
+                    Text("Docker uses one proxies.default value for BuildKit and default container injection. Dory keeps those two consumers explicit but rejects contradictory values.")
+                        .font(.system(size: 11)).foregroundStyle(p.text3).lineSpacing(3)
+                }
+                .padding(.top, 8)
+            }
+            .font(.system(size: 12.5, weight: .semibold))
+
+            DisclosureGroup("Registries, split DNS, and corporate CAs") {
+                VStack(alignment: .leading, spacing: 11) {
+                    corporateMultiline(
+                        "Registry mirrors — one credential-free HTTPS URL per line",
+                        value: $corporateRegistryMirrors
+                    )
+                    corporateMultiline(
+                        "Insecure registries — explicit host[:port], one per line",
+                        value: $corporateInsecureRegistries
+                    )
+                    corporateMultiline(
+                        "Registry probes — one HTTPS /v2/ URL per line",
+                        value: $corporateProbeRegistries
+                    )
+                    corporateMultiline(
+                        "Split DNS — domain | server1,server2 | optional-probe1,probe2",
+                        value: $corporateSplitDNS,
+                        height: 62
+                    )
+                    corporateMultiline(
+                        "CAs — id | ~/.dory/corporate-ca/file.crt | sha256 | host-probe,dockerd-registry,buildkit,containers",
+                        value: $corporateCAs,
+                        height: 68
+                    )
+                    Text("Container CA scope is intentionally declarative: Dory cannot rewrite arbitrary base-image trust stores. Builds or images must opt into the declared bundle.")
+                        .font(.system(size: 11)).foregroundStyle(p.text3).lineSpacing(3)
+                }
+                .padding(.top, 8)
+            }
+            .font(.system(size: 12.5, weight: .semibold))
+
+            if let message = store.corporateConnectivityMessage, !message.isEmpty {
+                Text(message)
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(p.text2)
+                    .lineSpacing(3)
+                    .textSelection(.enabled)
+            }
+
+            HStack(spacing: 8) {
+                Button("Validate") { submitCorporateProfile(dryRun: true) }
+                    .buttonStyle(.bordered)
+                Button("Apply") { submitCorporateProfile(dryRun: false) }
+                    .buttonStyle(.borderedProminent)
+                    .tint(p.accent)
+                Button("Probe now") {
+                    Task {
+                        await store.loadCorporateConnectivity(runProbes: true)
+                        hydrateCorporateEditorIfNeeded(force: false)
+                    }
+                }
+                .buttonStyle(.bordered)
+                Button("Disable") { Task { await store.disableCorporateConnectivity() } }
+                    .buttonStyle(.bordered)
+                Spacer(minLength: 0)
+                Button("Reveal profile") { revealCorporateProfile() }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(p.text2)
+            }
+            .disabled(!store.dorydRuntimeActive || store.corporateConnectivityBusy)
+        }
+        .padding(15)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(p.bgElevated, in: RoundedRectangle(cornerRadius: 11))
+        .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(p.border))
+    }
+
+    private func corporateTextField(
+        _ label: String,
+        placeholder: String,
+        value: Binding<String>
+    ) -> some View {
+        HStack(spacing: 10) {
+            Text(label).font(.system(size: 11.5)).foregroundStyle(p.text3).frame(width: 128, alignment: .leading)
+            TextField(placeholder, text: value)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(size: 11.5, design: .monospaced))
+        }
+    }
+
+    private func corporateMultiline(
+        _ label: String,
+        value: Binding<String>,
+        height: CGFloat = 52
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(label).font(.system(size: 11)).foregroundStyle(p.text3)
+            TextEditor(text: value)
+                .font(.system(size: 11, design: .monospaced))
+                .scrollContentBackground(.hidden)
+                .padding(5)
+                .frame(height: height)
+                .background(p.bgInput, in: RoundedRectangle(cornerRadius: 6))
+                .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(p.border))
+        }
+    }
+
+    private func submitCorporateProfile(dryRun: Bool) {
+        do {
+            let json = try corporateProfileJSON()
+            Task { await store.applyCorporateConnectivity(profileJSON: json, dryRun: dryRun) }
+        } catch {
+            store.corporateConnectivityMessage = error.localizedDescription
+            store.showSettingsFailure(error.localizedDescription)
+        }
+    }
+
+    private func corporateProfileJSON() throws -> String {
+        let host = corporateProxyObject(
+            source: corporateHostSource,
+            http: corporateHTTPProxy,
+            https: corporateHTTPSProxy,
+            noProxy: corporateNoProxy,
+            pac: corporatePACURL
+        )
+        let dockerd = corporateDockerdOverride
+            ? corporateProxyObject(source: "manual", http: corporateDockerdHTTPProxy, https: corporateDockerdHTTPSProxy, noProxy: corporateNoProxy, pac: "")
+            : corporateProxyObject(source: "inherit-host", http: "", https: "", noProxy: corporateNoProxy, pac: "")
+        let workload = corporateWorkloadOverride
+            ? corporateProxyObject(source: "manual", http: corporateWorkloadHTTPProxy, https: corporateWorkloadHTTPSProxy, noProxy: corporateNoProxy, pac: "")
+            : corporateProxyObject(source: "inherit-host", http: "", https: "", noProxy: corporateNoProxy, pac: "")
+
+        let splitDNS = try nonemptyLines(corporateSplitDNS).map { line -> [String: Any] in
+            let parts = line.split(separator: "|", omittingEmptySubsequences: false)
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            guard (2...3).contains(parts.count), !parts[0].isEmpty else {
+                throw CorporateEditorError.invalidSplitDNS(line)
+            }
+            let servers = commaValues(parts[1])
+            guard !servers.isEmpty else { throw CorporateEditorError.invalidSplitDNS(line) }
+            return [
+                "domain": parts[0],
+                "servers": servers,
+                "probeNames": parts.count == 3 ? commaValues(parts[2]) : [],
+                "requireSOA": true,
+                "followCNAME": true,
+            ]
+        }
+        let allowedScopes = Set(["host-probe", "dockerd-registry", "buildkit", "containers"])
+        let cas = try nonemptyLines(corporateCAs).map { line -> [String: Any] in
+            let parts = line.split(separator: "|", omittingEmptySubsequences: false)
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            guard parts.count == 4, !parts[0].isEmpty, !parts[1].isEmpty,
+                  parts[2].count == 64 else { throw CorporateEditorError.invalidCA(line) }
+            let scopes = commaValues(parts[3])
+            guard !scopes.isEmpty, Set(scopes).isSubset(of: allowedScopes) else {
+                throw CorporateEditorError.invalidCA(line)
+            }
+            return ["id": parts[0], "path": NSString(string: parts[1]).expandingTildeInPath, "sha256": parts[2].lowercased(), "scopes": scopes]
+        }
+        let formatter = ISO8601DateFormatter()
+        let object: [String: Any] = [
+            "schema": "dev.dory.corporate-connectivity",
+            "version": 1,
+            "enabled": corporateEnabled,
+            "host": host,
+            "dockerd": dockerd,
+            "buildKit": workload,
+            "containers": workload,
+            "registries": [
+                "mirrors": nonemptyLines(corporateRegistryMirrors),
+                "insecureRegistries": nonemptyLines(corporateInsecureRegistries),
+                "probeRegistries": nonemptyLines(corporateProbeRegistries),
+            ],
+            "certificateAuthorities": cas,
+            "splitDNS": splitDNS,
+            "bridgeSubnet": bridgeSubnetDraft.isEmpty ? store.defaultBridgeSubnet : bridgeSubnetDraft,
+            "updatedAt": formatter.string(from: Date()),
+        ]
+        let data = try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    private func corporateProxyObject(
+        source: String,
+        http: String,
+        https: String,
+        noProxy: String,
+        pac: String
+    ) -> [String: Any] {
+        var object: [String: Any] = ["source": source, "noProxy": commaValues(noProxy)]
+        if !http.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { object["httpProxy"] = http.trimmingCharacters(in: .whitespacesAndNewlines) }
+        if !https.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { object["httpsProxy"] = https.trimmingCharacters(in: .whitespacesAndNewlines) }
+        if !pac.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { object["pacURL"] = pac.trimmingCharacters(in: .whitespacesAndNewlines) }
+        return object
+    }
+
+    private func nonemptyLines(_ value: String) -> [String] {
+        value.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+    }
+
+    private func commaValues(_ value: String) -> [String] {
+        value.split(whereSeparator: { $0 == "," || $0 == "\n" })
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+    }
+
+    private func hydrateCorporateEditorIfNeeded(force: Bool = false) {
+        guard force || !corporateEditorHydrated,
+              let json = store.corporateConnectivityStatusJSON,
+              let root = try? JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any],
+              let profile = root["profile"] as? [String: Any] else { return }
+        corporateEnabled = profile["enabled"] as? Bool ?? false
+        let host = profile["host"] as? [String: Any] ?? [:]
+        corporateHostSource = host["source"] as? String ?? "system"
+        corporateHTTPProxy = host["httpProxy"] as? String ?? ""
+        corporateHTTPSProxy = host["httpsProxy"] as? String ?? ""
+        corporatePACURL = host["pacURL"] as? String ?? ""
+        corporateNoProxy = (host["noProxy"] as? [String] ?? []).joined(separator: ",")
+        let dockerd = profile["dockerd"] as? [String: Any] ?? [:]
+        corporateDockerdOverride = dockerd["source"] as? String == "manual"
+        corporateDockerdHTTPProxy = dockerd["httpProxy"] as? String ?? ""
+        corporateDockerdHTTPSProxy = dockerd["httpsProxy"] as? String ?? ""
+        let build = profile["buildKit"] as? [String: Any] ?? [:]
+        corporateWorkloadOverride = build["source"] as? String == "manual"
+        corporateWorkloadHTTPProxy = build["httpProxy"] as? String ?? ""
+        corporateWorkloadHTTPSProxy = build["httpsProxy"] as? String ?? ""
+        let registries = profile["registries"] as? [String: Any] ?? [:]
+        corporateRegistryMirrors = (registries["mirrors"] as? [String] ?? []).joined(separator: "\n")
+        corporateInsecureRegistries = (registries["insecureRegistries"] as? [String] ?? []).joined(separator: "\n")
+        corporateProbeRegistries = (registries["probeRegistries"] as? [String] ?? []).joined(separator: "\n")
+        corporateSplitDNS = (profile["splitDNS"] as? [[String: Any]] ?? []).map { rule in
+            let domain = rule["domain"] as? String ?? ""
+            let servers = (rule["servers"] as? [String] ?? []).joined(separator: ",")
+            let probes = (rule["probeNames"] as? [String] ?? []).joined(separator: ",")
+            return "\(domain) | \(servers)" + (probes.isEmpty ? "" : " | \(probes)")
+        }.joined(separator: "\n")
+        corporateCAs = (profile["certificateAuthorities"] as? [[String: Any]] ?? []).map { ca in
+            let scopes = (ca["scopes"] as? [String] ?? []).joined(separator: ",")
+            return "\(ca["id"] as? String ?? "") | \(ca["path"] as? String ?? "") | \(ca["sha256"] as? String ?? "") | \(scopes)"
+        }.joined(separator: "\n")
+        corporateEditorHydrated = true
+    }
+
+    private func revealCorporateProfile() {
+        guard let json = store.corporateConnectivityStatusJSON,
+              let root = try? JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any],
+              let path = root["profilePath"] as? String else { return }
+        let url = URL(fileURLWithPath: path)
+        if FileManager.default.fileExists(atPath: path) {
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+        } else {
+            NSWorkspace.shared.open(url.deletingLastPathComponent())
         }
     }
 
@@ -1785,5 +2390,19 @@ struct SettingsView: View {
     }
     private var aboutText: String {
         "Dory \(AppInfo.version) (build \(AppInfo.build)). A self-contained, memory-efficient alternative to Docker Desktop and OrbStack, built for macOS — free and open source. © 2026 Dory contributors."
+    }
+}
+
+private enum CorporateEditorError: LocalizedError {
+    case invalidSplitDNS(String)
+    case invalidCA(String)
+
+    var errorDescription: String? {
+        switch self {
+        case let .invalidSplitDNS(line):
+            "Invalid split-DNS line: \(line). Use domain | server1,server2 | optional probes."
+        case let .invalidCA(line):
+            "Invalid CA line: \(line). Use id | path | 64-character SHA-256 | scopes."
+        }
     }
 }

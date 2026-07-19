@@ -1,0 +1,16 @@
+[
+  {"id":"01","start":0.75,"text":"Meet Dory zero point three point two."},
+  {"id":"02","start":4.85,"text":"Your complete local Linux workspace, built for Apple Silicon Macs."},
+  {"id":"03","start":9.85,"text":"Start with one smaller Docker Core. About a hundred and twelve megabytes of duplicate compatibility payload—gone."},
+  {"id":"04","start":17.30,"text":"Then add only what you need: Kubernetes, Linux machines, Debian, Ubuntu, or Kali desktops."},
+  {"id":"05","start":24.40,"text":"Run and test graphical Linux applications beside your containers: Retina-sharp windows, persistent disks, scoped Mac folders, and snapshots."},
+  {"id":"06","start":34.00,"text":"For A-I agents, launch a dedicated preview sandbox V-M."},
+  {"id":"07","start":38.30,"text":"No host files are visible by default."},
+  {"id":"08","start":41.75,"text":"Mount only what you choose."},
+  {"id":"09","start":44.25,"text":"Set network to none."},
+  {"id":"10","start":46.35,"text":"Roll back."},
+  {"id":"11","start":47.75,"text":"Or let the temporary V-M delete itself."},
+  {"id":"12","start":51.40,"text":"Optional components are signed and removable. Your workload data stays."},
+  {"id":"13","start":56.20,"text":"Add custom domains. Add trusted H-T-T-P-S."},
+  {"id":"14","start":60.05,"text":"Dory. Smaller core. Bigger possibilities. Built for Mac. Open source."}
+]

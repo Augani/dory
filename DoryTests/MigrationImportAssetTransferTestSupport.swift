@@ -16,6 +16,7 @@ final class AssetStagingTransfers: MigrationImportAssetTransfers {
     var addExternalTargetImageReferenceBeforeVolumeFailure = false
     var removeTargetImageBeforeVolumeFailure = false
     var addExternalSourceSnapshotReferenceAfterTransfer = false
+    var mutateOmittedSourceVolumeAfterImageTransfer = false
     var imageReadbackRequests: [MigrationImageReadbackRequest] = []
     var volumeReadbackRequests: [MigrationVolumeTransferRequest] = []
     let sourceVolumeManifest = Data("source-volume-manifest".utf8)
@@ -48,6 +49,11 @@ final class AssetStagingTransfers: MigrationImportAssetTransfers {
             sourceRuntime.snapshotValue.images[index].additionalReferences.append(
                 "external:latest"
             )
+        }
+        if mutateOmittedSourceVolumeAfterImageTransfer,
+           let sourceRuntime = source as? StrictMigrationRuntime,
+           !sourceRuntime.snapshotValue.volumes.isEmpty {
+            sourceRuntime.snapshotValue.volumes[0].labels["external.drift"] = "true"
         }
         let manifest = try MigrationImportAssetCanonical.data(MigrationImageVerificationManifest(
             operationID: request.operationID,

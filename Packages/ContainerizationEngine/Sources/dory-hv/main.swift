@@ -31,7 +31,6 @@ struct Options {
     var commandLine = defaultBootCommandLine
     var disks: [String] = []
     var gvproxy: String?
-    var exposePort: UInt16 = 0
     var timeoutSeconds: UInt64 = 30
     var shares: [VirtioFSShareConfiguration] = []
 }
@@ -48,7 +47,6 @@ func parseOptions(_ arguments: ArraySlice<String>) -> Options {
         case "--cmdline": options.commandLine = iterator.next() ?? options.commandLine
         case "--disk": if let disk = iterator.next() { options.disks.append(disk) }
         case "--gvproxy": options.gvproxy = iterator.next()
-        case "--expose-docker": options.exposePort = iterator.next().flatMap(UInt16.init) ?? 0
         case "--timeout-sec": options.timeoutSeconds = iterator.next().flatMap(UInt64.init) ?? options.timeoutSeconds
         case "--share":
             guard let value = iterator.next() else { fail("--share requires tag=/host/path[:ro|:rw][:safe][:at=/guest/path]; DAX host shares are disabled") }
@@ -61,23 +59,6 @@ func parseOptions(_ arguments: ArraySlice<String>) -> Options {
         }
     }
     return options
-}
-
-func exposeDockerPort(apiSocket: String, hostPort: UInt16) {
-    // gvproxy's forwarder API: expose host 127.0.0.1:hostPort -> guest dockerd tcp 2375.
-    let body = "{\"local\":\"127.0.0.1:\(hostPort)\",\"remote\":\"192.168.127.2:2375\"}"
-    let task = Process()
-    task.executableURL = URL(fileURLWithPath: "/usr/bin/curl")
-    task.arguments = [
-        "-s", "--unix-socket", apiSocket,
-        "-X", "POST", "-d", body,
-        "http://gvproxy/services/forwarder/expose",
-    ]
-    task.standardOutput = FileHandle.standardError
-    task.standardError = FileHandle.standardError
-    try? task.run()
-    task.waitUntilExit()
-    FileHandle.standardError.write(Data("dory-hv: docker api exposed on 127.0.0.1:\(hostPort)\n".utf8))
 }
 
 private final class AgentPingResultBox: @unchecked Sendable {
@@ -418,12 +399,6 @@ case "boot":
             backends.append(try VirtioNet(socketPath: vmSocket, remotePath: datapathSocket))
             FileHandle.standardError.write(Data("dory-hv: networking via gvproxy (\(datapathSocket))\n".utf8))
 
-            if options.exposePort > 0 {
-                let port = options.exposePort
-                DispatchQueue.global().asyncAfter(deadline: .now() + 5) {
-                    exposeDockerPort(apiSocket: apiSocket, hostPort: port)
-                }
-            }
         }
         defer { gvproxyProcess?.terminate() }
         for (slot, backend) in backends.enumerated() {

@@ -88,63 +88,6 @@ struct DoryMachineFileTests {
     }
 }
 
-struct SnapshotScheduleTests {
-    @Test func scheduleCalculatesDueAndNextRun() throws {
-        let schedule = MachineSnapshotSchedule(machineName: "dev", frequency: .daily, keepLocal: 5)
-        try schedule.validate()
-        let last = Date(timeIntervalSince1970: 1_700_000_000)
-
-        #expect(schedule.isDue(lastSnapshotAt: nil, now: last))
-        #expect(!schedule.isDue(lastSnapshotAt: last, now: last.addingTimeInterval(23 * 60 * 60)))
-        #expect(schedule.isDue(lastSnapshotAt: last, now: last.addingTimeInterval(24 * 60 * 60)))
-        #expect(schedule.nextRun(after: last) == last.addingTimeInterval(24 * 60 * 60))
-    }
-
-    @Test func scheduleRejectsUnsafeValues() {
-        #expect(throws: SnapshotScheduleError.invalidMachineName) {
-            try MachineSnapshotSchedule(machineName: "../dev", frequency: .daily).validate()
-        }
-        #expect(throws: SnapshotScheduleError.invalidRetention) {
-            try MachineSnapshotSchedule(machineName: "dev", frequency: .daily, keepLocal: 0).validate()
-        }
-        #expect(throws: SnapshotScheduleError.invalidBucket) {
-            try MachineSnapshotSchedule(
-                machineName: "dev",
-                frequency: .daily,
-                s3: S3BackupDestination(bucket: "Bad_Bucket")
-            ).validate()
-        }
-        #expect(throws: SnapshotScheduleError.invalidPrefix) {
-            try MachineSnapshotSchedule(
-                machineName: "dev",
-                frequency: .daily,
-                s3: S3BackupDestination(bucket: "dory-backups", prefix: "../escape")
-            ).validate()
-        }
-    }
-
-    @Test func s3BackupDestinationBuildsStableObjectURL() throws {
-        let snapshot = MachineSnapshot(
-            id: "sha256:abc/123",
-            imageRef: "dory-snapshot/dev:s17",
-            machineName: "dev",
-            note: "nightly",
-            createdISO: "2026-07-04T17:00:00Z",
-            sizeBytes: 42,
-            distro: "Ubuntu",
-            version: "24.04 LTS",
-            arch: "arm64",
-            boot: "systemd",
-            recipe: "node"
-        )
-        let destination = S3BackupDestination(bucket: "dory-backups", prefix: "machines/dev", region: "us-east-1")
-        try destination.validate()
-
-        #expect(destination.objectKey(for: snapshot) == "machines/dev/dev-20260704T170000Z-sha256-abc-123.tar")
-        #expect(destination.url(for: snapshot) == "s3://dory-backups/machines/dev/dev-20260704T170000Z-sha256-abc-123.tar")
-    }
-}
-
 struct DevRecipeTests {
     @Test func catalogHasSevenRecipes() {
         #expect(DevRecipe.all.map(\.id) == ["node", "python", "go", "java", "ruby", "rust", "devops"])

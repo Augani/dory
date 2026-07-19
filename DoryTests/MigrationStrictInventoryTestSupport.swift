@@ -70,7 +70,9 @@ extension StrictInventoryTestCase {
         _ fixture: StrictInventoryFixture,
         availableHostBytes: Int64 = 100_000_000_000,
         transferHelper: MigrationTransferHelperContract?,
-        hostArchitecture: String = "arm64"
+        hostArchitecture: String = "arm64",
+        engineCapacity: MigrationEngineCapacity = .defaultV1,
+        userSelection: [DoryOperationObjectKey]? = nil
     ) async throws -> PreparedMigrationExecution {
         try await MigrationStrictInventoryCollector.collect(
             from: fixture.source,
@@ -79,7 +81,9 @@ extension StrictInventoryTestCase {
             sharedHome: "/Users/test",
             transferHelper: transferHelper,
             identity: fixture.identity,
-            hostArchitecture: hostArchitecture
+            hostArchitecture: hostArchitecture,
+            engineCapacity: engineCapacity,
+            userSelection: userSelection
         )
     }
 

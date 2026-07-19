@@ -9,7 +9,7 @@ runcmd:
   - install -m0755 /tmp/docker/docker /usr/local/bin/docker
 mounts:
   - ~/Projects:~/Projects
-ports: [2375, 8080]
+ports: [8080]
 env: {DOCKER_HOST: unix:///var/run/dory/docker.sock}
 ssh: {agent_forward: true}
 docker: true

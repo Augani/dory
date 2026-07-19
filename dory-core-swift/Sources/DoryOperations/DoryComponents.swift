@@ -468,6 +468,34 @@ public struct DoryComponentStatus: Codable, Sendable, Equatable, Identifiable {
     public let dependencies: [DoryComponentID]
 }
 
+/// Exact active-component selection captured before an app or component transaction. Component
+/// payloads are immutable and digest-verified; retaining one prior installation per component lets
+/// this small record switch activation back without redownloading or trusting the network.
+public struct DoryComponentSelectionSnapshot: Codable, Sendable, Equatable {
+    public static let kind = "dev.dory.component-selection-snapshot"
+    public static let schemaVersion = 1
+
+    public let kind: String
+    public let schemaVersion: Int
+    public let capturedAt: String
+    public let components: [DoryInstalledComponent]
+
+    public init(capturedAt: Date = Date(), components: [DoryInstalledComponent]) {
+        kind = Self.kind
+        schemaVersion = Self.schemaVersion
+        self.capturedAt = DoryComponentStore.timestamp(capturedAt)
+        self.components = components.sorted { $0.id.rawValue < $1.id.rawValue }
+    }
+
+    var isStructurallyValid: Bool {
+        kind == Self.kind
+            && schemaVersion == Self.schemaVersion
+            && DoryComponentCatalogVerifier.validTimestamp(capturedAt)
+            && Set(components.map(\.id)).count == components.count
+            && components.allSatisfy(\.isStructurallyValid)
+    }
+}
+
 public struct DoryComponentStore: Sendable {
     public let drive: DoryDataDrive
     public var root: String { drive.componentsDirectory }
@@ -567,6 +595,41 @@ public struct DoryComponentStore: Sendable {
         return record
     }
 
+    public func captureSelection() throws -> DoryComponentSelectionSnapshot {
+        try prepare()
+        let components = try DoryComponentID.allCases.compactMap { id -> DoryInstalledComponent? in
+            guard id.isRemovable, let installed = try installedComponent(id) else { return nil }
+            try verify(installed)
+            return installed
+        }
+        return DoryComponentSelectionSnapshot(components: components)
+    }
+
+    /// Restores only activation records. Durable payload directories are never synthesized or
+    /// downgraded: every referenced prior payload must still exist and pass its exact fingerprint.
+    public func restoreSelection(
+        _ snapshot: DoryComponentSelectionSnapshot,
+        fileManager: FileManager = .default
+    ) throws {
+        guard snapshot.isStructurallyValid else {
+            throw DoryComponentError.invalidAsset("component selection snapshot")
+        }
+        try prepare(fileManager: fileManager)
+        let lock = try EngineStateDirectoryLock(stateDirectory: root, lockFileName: "store.lock")
+        defer { withExtendedLifetime(lock) {} }
+        for component in snapshot.components { try verify(component) }
+        let desired = Dictionary(uniqueKeysWithValues: snapshot.components.map { ($0.id, $0) })
+        for id in DoryComponentID.allCases where id.isRemovable {
+            let path = activePath(id)
+            if let component = desired[id] {
+                try writeRecord(DoryComponentActivation(component), at: path, fileManager: fileManager)
+            } else if fileManager.fileExists(atPath: path) {
+                try fileManager.removeItem(atPath: path)
+            }
+        }
+        try Self.syncDirectory(activeRoot)
+    }
+
     @discardableResult
     public func install(
         _ release: DoryComponentRelease,
@@ -588,6 +651,7 @@ public struct DoryComponentStore: Sendable {
                 throw DoryComponentError.missingDependency(dependency)
             }
         }
+        let priorInstallation = (try? installedComponent(release.id))?.installationName
         if let current = try? installedComponent(release.id),
            current.version == release.version,
            current.catalogDigest == catalogDigest,
@@ -652,7 +716,11 @@ public struct DoryComponentStore: Sendable {
                 at: activePath(release.id),
                 fileManager: fileManager
             )
-            try? pruneInactiveInstallations(for: release.id, keeping: installationName, fileManager: fileManager)
+            try? pruneInactiveInstallations(
+                for: release.id,
+                keeping: Set([installationName, priorInstallation].compactMap { $0 }),
+                fileManager: fileManager
+            )
             return record
         } catch {
             if !published { try? fileManager.removeItem(atPath: staging) }
@@ -920,12 +988,12 @@ public struct DoryComponentStore: Sendable {
 
     private func pruneInactiveInstallations(
         for id: DoryComponentID,
-        keeping: String?,
+        keeping: Set<String>,
         fileManager: FileManager
     ) throws {
         let directory = installedRoot + "/\(id.rawValue)"
         guard FileManager.default.fileExists(atPath: directory) else { return }
-        for entry in try fileManager.contentsOfDirectory(atPath: directory) where entry != keeping {
+        for entry in try fileManager.contentsOfDirectory(atPath: directory) where !keeping.contains(entry) {
             try fileManager.removeItem(atPath: directory + "/" + entry)
         }
     }

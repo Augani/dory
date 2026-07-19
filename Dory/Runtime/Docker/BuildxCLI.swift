@@ -6,6 +6,9 @@ nonisolated enum BuildxCLIError: Error, LocalizedError, Sendable, Equatable {
     case missingContext(String)
     case missingDockerfile(String)
     case commandFailed(Int32)
+    case activityQueryFailed(Int32)
+    case malformedActivity
+    case activityOutputTooLarge
 
     var errorDescription: String? {
         switch self {
@@ -19,6 +22,12 @@ nonisolated enum BuildxCLIError: Error, LocalizedError, Sendable, Equatable {
             "No Dockerfile was found at \(path)"
         case .commandFailed(let status):
             "Image build failed (exit \(status)); review the build output above"
+        case .activityQueryFailed(let status):
+            "Build activity is unavailable (Buildx exit \(status))"
+        case .malformedActivity:
+            "Buildx returned an invalid activity record"
+        case .activityOutputTooLarge:
+            "Build activity exceeded Dory's bounded local display limit"
         }
     }
 }
@@ -63,6 +72,53 @@ nonisolated struct BuildxCLI {
         guard result.terminationStatus == 0 else {
             throw BuildxCLIError.commandFailed(result.terminationStatus)
         }
+    }
+
+    func history() async throws -> [BuildActivityRecord] {
+        let result = try await query(
+            arguments: ["--builder", "default", "history", "ls", "--format", "json", "--no-trunc"],
+            timeout: 20,
+            maximumBytes: 4 * 1024 * 1024
+        )
+        do { return try BuildActivityParser.history(result.stdout) }
+        catch { throw BuildxCLIError.malformedActivity }
+    }
+
+    func logs(ref: String) async throws -> String {
+        guard !ref.isEmpty, !ref.hasPrefix("-") else { throw BuildxCLIError.malformedActivity }
+        let result = try await query(
+            arguments: ["--builder", "default", "history", "logs", ref],
+            timeout: 30,
+            maximumBytes: 2 * 1024 * 1024
+        )
+        let combined = [result.stdout, result.stderr].filter { !$0.isEmpty }.joined(separator: "\n")
+        return combined.isEmpty ? "No retained log is available for this build." : combined
+    }
+
+    func cacheUsage() async throws -> BuildCacheUsage {
+        let result = try await query(
+            arguments: ["--builder", "default", "du", "--format", "json", "--timeout", "20s"],
+            timeout: 30,
+            maximumBytes: 16 * 1024 * 1024
+        )
+        do { return try BuildActivityParser.cache(result.stdout) }
+        catch { throw BuildxCLIError.malformedActivity }
+    }
+
+    private func query(arguments: [String], timeout: TimeInterval, maximumBytes: Int) async throws -> ToolCommandResult {
+        guard socketPath.hasPrefix("/"), !socketPath.isEmpty else { throw BuildxCLIError.socketUnavailable }
+        guard FileManager.default.isExecutableFile(atPath: executableURL.path) else { throw BuildxCLIError.helperUnavailable }
+        let result = try await runner.run(ToolCommandRequest(
+            executableURL: executableURL,
+            arguments: arguments,
+            workingDirectoryURL: FileManager.default.homeDirectoryForCurrentUser,
+            environment: childEnvironment,
+            timeout: timeout,
+            outputPolicy: .complete(maxBytes: maximumBytes)
+        ))
+        guard !result.outputTruncated else { throw BuildxCLIError.activityOutputTooLarge }
+        guard result.terminationStatus == 0 else { throw BuildxCLIError.activityQueryFailed(result.terminationStatus) }
+        return result
     }
 
     private func validate(context: URL) throws {

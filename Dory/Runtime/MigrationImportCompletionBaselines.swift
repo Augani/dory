@@ -27,23 +27,37 @@ extension MigrationImportAssetStagingExecution {
         }
     }
 
-    func verifiedUnselectedSourceInventoryDigest() throws -> String {
+    func verifiedUnselectedSourceInventoryDigest() async throws -> String {
         let plan = session.prepared.operation.completenessPlan
-        let baseline = try session.lease.readManifest(
+        let sourceBaseline = try session.lease.readManifest(
+            digest: plan.sourceInventoryDigest
+        )
+        let unselectedBaseline = try session.lease.readManifest(
             digest: plan.unselectedSourceInventoryDigest
         )
         guard let unselected = try? JSONDecoder().decode(
             [DoryOperationInventoryObject].self,
-            from: baseline
-        ), unselected.isEmpty,
-           plan.userSelection == plan.selectedObjectKeys,
-           MigrationImportAssetCanonical.digest(baseline)
+            from: unselectedBaseline
+        ), Set(unselected.map(\.key)).isDisjoint(with: plan.selectedObjectKeys),
+           MigrationImportAssetCanonical.digest(sourceBaseline) == plan.sourceInventoryDigest,
+           MigrationImportAssetCanonical.digest(unselectedBaseline)
             == plan.unselectedSourceInventoryDigest else {
             throw MigrationImportAssetStagingError.invalidSession(
-                "public v1 requires the complete source selection"
+                "the durable selected and omitted source baselines are invalid"
             )
         }
-        return MigrationImportAssetCanonical.digest(baseline)
+        let currentSource = try await currentSourceOperationInventory()
+        let current = try DoryOperationPlanner.inventoryBaselines(
+            inventory: currentSource,
+            plan: plan
+        )
+        guard current.sourceInventory == sourceBaseline,
+              current.unselectedSourceInventory == unselectedBaseline else {
+            throw MigrationImportAssetStagingError.invalidSession(
+                "selected or deliberately omitted source objects changed during migration"
+            )
+        }
+        return MigrationImportAssetCanonical.digest(current.unselectedSourceInventory)
     }
 
     func verifiedUnownedTargetInventoryDigest(
@@ -90,6 +104,51 @@ extension MigrationImportAssetStagingExecution {
 }
 
 private extension MigrationImportAssetStagingExecution {
+    func currentSourceOperationInventory() async throws -> [DoryOperationInventoryObject] {
+        let snapshot = try await environment.source.migrationSnapshot()
+        let writableSizes = try await environment.source.migrationContainerWritableSizes()
+        var containerSpecifications: [String: ContainerSpec] = [:]
+        for container in snapshot.containers.sorted(by: { $0.id < $1.id }) {
+            containerSpecifications[container.id] = try await MigrationContainerInspector.inspect(
+                container,
+                on: environment.source,
+                sharedHome: environment.sharedHome,
+                validatePortability: false
+            )
+        }
+        var networkInspections: [String: Data] = [:]
+        for network in snapshot.networks.filter({
+            !MigrationOperationPlanBuilder.defaultNetworks.contains($0.name)
+        }).sorted(by: { $0.name < $1.name }) {
+            guard let response = await environment.source.proxyRequest(
+                method: "GET",
+                path: "/networks/\(DockerImageOps.pathComponent(network.name))",
+                headers: [(name: "Accept", value: "application/json")],
+                body: Data()
+            ), response.isSuccess,
+                  (try? MigrationNetworkContract(
+                    network: network,
+                    inspectedData: response.body
+                  )) != nil else {
+                throw MigrationImportAssetStagingError.invalidSession(
+                    "source network \(network.name) cannot be re-inspected"
+                )
+            }
+            networkInspections[network.name] = response.body
+        }
+        let source = MigrationOperationSource(
+            snapshot: snapshot,
+            authorityID: session.prepared.source.authorityID,
+            containerSpecifications: containerSpecifications,
+            networkInspections: networkInspections,
+            writableLayerSizes: writableSizes
+        )
+        return try MigrationOperationPlanBuilder.sourceInventory(
+            source,
+            ownership: session.prepared.ownership
+        )
+    }
+
     func sourceImageIDs(_ snapshot: RuntimeSnapshot) -> [String] {
         snapshot.images.map(MigrationOperationPlanBuilder.stableImageSourceID).sorted()
     }

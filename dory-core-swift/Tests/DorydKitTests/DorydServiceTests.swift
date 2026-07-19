@@ -926,7 +926,7 @@ final class DorydServiceTests: XCTestCase {
         let unavailableDockerReply = expectation(description: "unavailable Docker API repair reply")
         proxy.repairSubsystem("dockerd") { ok, message in
             XCTAssertFalse(ok)
-            XCTAssertTrue(message.contains("Docker API remains unreachable"))
+            XCTAssertTrue(message.contains("VM helper is not running"), message)
             unavailableDockerReply.fulfill()
         }
         wait(for: [unavailableDockerReply], timeout: 5)

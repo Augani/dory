@@ -1,0 +1,61 @@
+1
+00:00:00,750 --> 00:00:03,374
+Meet Dory 0.3.2.
+
+2
+00:00:04,850 --> 00:00:08,989
+Your complete local Linux workspace,
+built for Apple Silicon Macs.
+
+3
+00:00:09,850 --> 00:00:16,698
+Start with one smaller Docker Core.
+About 112 MB of duplicate compatibility payload—gone.
+
+4
+00:00:17,300 --> 00:00:23,529
+Then add only what you need: Kubernetes, Linux Machines,
+Debian, Ubuntu, or Kali desktops.
+
+5
+00:00:24,400 --> 00:00:33,211
+Run and test graphical Linux applications beside your containers:
+Retina-sharp windows, persistent disks, scoped Mac folders, and snapshots.
+
+6
+00:00:34,000 --> 00:00:37,947
+For AI agents, launch a dedicated Preview sandbox VM.
+
+7
+00:00:38,300 --> 00:00:40,796
+No host files are visible by default.
+
+8
+00:00:41,750 --> 00:00:43,627
+Mount only what you choose.
+
+9
+00:00:44,250 --> 00:00:45,786
+Set network to none.
+
+10
+00:00:46,350 --> 00:00:47,459
+Roll back.
+
+11
+00:00:47,750 --> 00:00:50,374
+Or let the temporary VM delete itself.
+
+12
+00:00:51,400 --> 00:00:55,901
+Optional components are signed and removable.
+Your workload data stays.
+
+13
+00:00:56,200 --> 00:00:59,912
+Add custom domains. Add trusted HTTPS.
+
+14
+00:01:00,050 --> 00:01:04,658
+Dory. Smaller core. Bigger possibilities.
+Built for Mac. Open source.

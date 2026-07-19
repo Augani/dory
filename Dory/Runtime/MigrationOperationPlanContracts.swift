@@ -32,6 +32,25 @@ struct MigrationOperationPlanningInput: Sendable {
     let capabilities: MigrationOperationCapabilityContract
     let capacity: MigrationCapacityContract
     let identity: MigrationOperationIdentity
+    /// Nil means every source object. A non-nil value is the user's exact request; the shared
+    /// planner expands it to the immutable dependency closure recorded in the operation journal.
+    let userSelection: [DoryOperationObjectKey]?
+
+    init(
+        source: MigrationOperationSource,
+        target: MigrationOperationTarget,
+        capabilities: MigrationOperationCapabilityContract,
+        capacity: MigrationCapacityContract,
+        identity: MigrationOperationIdentity,
+        userSelection: [DoryOperationObjectKey]? = nil
+    ) {
+        self.source = source
+        self.target = target
+        self.capabilities = capabilities
+        self.capacity = capacity
+        self.identity = identity
+        self.userSelection = userSelection
+    }
 
     var ownership: MigrationOperationOwnership {
         MigrationOperationOwnership(identity: identity, sourceAuthorityID: source.authorityID)
@@ -89,6 +108,60 @@ nonisolated struct MigrationCapacityContract: Codable, Sendable, Equatable {
     let availableHostBytes: Int64
     let requiredHostBytes: Int64
     let requiredEngineBytes: Int64
+    let engineLogicalBytes: Int64
+    let engineUsableBytes: Int64
+
+    init(
+        sourceVolumeBytes: [String: Int64],
+        sourceWritableLayerBytes: [String: Int64],
+        targetDockerBytes: Int64,
+        availableHostBytes: Int64,
+        requiredHostBytes: Int64,
+        requiredEngineBytes: Int64,
+        engineLogicalBytes: Int64 = DockerDataDisk.blankDiskBytes,
+        engineUsableBytes: Int64 = 120 * DockerDataDisk.bytesPerGiB
+    ) {
+        self.sourceVolumeBytes = sourceVolumeBytes
+        self.sourceWritableLayerBytes = sourceWritableLayerBytes
+        self.targetDockerBytes = targetDockerBytes
+        self.availableHostBytes = availableHostBytes
+        self.requiredHostBytes = requiredHostBytes
+        self.requiredEngineBytes = requiredEngineBytes
+        self.engineLogicalBytes = engineLogicalBytes
+        self.engineUsableBytes = engineUsableBytes
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case sourceVolumeBytes
+        case sourceWritableLayerBytes
+        case targetDockerBytes
+        case availableHostBytes
+        case requiredHostBytes
+        case requiredEngineBytes
+        case engineLogicalBytes
+        case engineUsableBytes
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        sourceVolumeBytes = try values.decode([String: Int64].self, forKey: .sourceVolumeBytes)
+        sourceWritableLayerBytes = try values.decode(
+            [String: Int64].self,
+            forKey: .sourceWritableLayerBytes
+        )
+        targetDockerBytes = try values.decode(Int64.self, forKey: .targetDockerBytes)
+        availableHostBytes = try values.decode(Int64.self, forKey: .availableHostBytes)
+        requiredHostBytes = try values.decode(Int64.self, forKey: .requiredHostBytes)
+        requiredEngineBytes = try values.decode(Int64.self, forKey: .requiredEngineBytes)
+        engineLogicalBytes = try values.decodeIfPresent(
+            Int64.self,
+            forKey: .engineLogicalBytes
+        ) ?? DockerDataDisk.blankDiskBytes
+        engineUsableBytes = try values.decodeIfPresent(
+            Int64.self,
+            forKey: .engineUsableBytes
+        ) ?? 120 * DockerDataDisk.bytesPerGiB
+    }
 }
 
 struct MigrationPlanAssembly {

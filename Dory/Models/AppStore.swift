@@ -61,8 +61,20 @@ final class AppStore {
     var activeSheet: AppSheet?
     var actionError: String?
     var settingsNotice: SettingsNotice?
+    var upgradeTransaction: DoryUpgradeTransactionRecord?
+    var upgradeStatusError: String?
     var inspectedImage: DockerImage?
     var inspectedNetwork: DoryNetwork?
+    var buildActivity: [BuildActivityRecord] = []
+    var buildCacheUsage: BuildCacheUsage = .empty
+    var buildActivityLoading = false
+    var buildActivityError: String?
+    var selectedBuildReference: String?
+    var selectedBuildLogs = ""
+    var selectedBuildLogsLoading = false
+    var doryBuildActive = false
+    @ObservationIgnored private var activeBuildTask: Task<Void, Never>?
+    @ObservationIgnored private var activeBuildToken: UUID?
 
     var launchAtLogin = false
     var showMenuBarIcon = true
@@ -228,8 +240,8 @@ final class AppStore {
         self.machineEnvResolver = machineEnvResolver
         self.desktopMachineAssetPreparer = desktopMachineAssetPreparer
         self.dorydClient = dorydClient
-        self.dorydEngineEnabled = useDorydEngine ?? dorydFlags.enabled
-        self.dorydEngineRequired = useDorydEngine == true || dorydFlags.required
+        self.dorydEngineEnabled = dorydFlags.enabled
+        self.dorydEngineRequired = dorydFlags.required
         self.dorydEngineExplicitlyRequested = useDorydEngine == true || dorydFlags.explicit
         self.managesDorydLaunchAgent = dorydClient.usesMachService || dorydLaunchAgentEnsurer != nil
         self.dorydLaunchAgentEnsurer = dorydLaunchAgentEnsurer ?? { configuration in
@@ -423,9 +435,9 @@ final class AppStore {
         LocalDorydCapability(
             id: "sandbox",
             title: "Sandbox VM",
-            summary: "Preview: run an isolated command in a dedicated Linux machine when bundled dorydctl and machine assets are present.",
+            summary: "Run non-root in a dedicated VM with read-only mount defaults, enforced network policy, resource caps, and daemon TTL cleanup.",
             command: "dory sandbox run --json --network none --rollback -- /bin/sh -lc 'uname -a'",
-            status: "Preview"
+            status: "Stable"
         ),
         LocalDorydCapability(
             id: "wait",
@@ -507,15 +519,17 @@ final class AppStore {
     }
 
     private nonisolated static func dorydEngineFlags(environment: [String: String]) -> (enabled: Bool, required: Bool, explicit: Bool) {
-        let required = truthy(environment["DORY_APP_REQUIRE_DORYD"] ?? environment["DORY_REQUIRE_DORYD"] ?? "")
-        if let raw = environment["DORY_APP_USE_DORYD"] ?? environment["DORY_USE_DORYD"], !raw.isEmpty {
-            let enabled = truthy(raw)
-            return (enabled, required || enabled, true)
-        }
-        if truthy(environment["DORY_APP_DISABLE_DORYD"] ?? environment["DORY_DISABLE_DORYD"] ?? "") {
-            return (false, false, true)
-        }
-        return (true, true, false)
+        // Dory 0.4 has one production local-engine owner. Keep the positive flags only as an
+        // automation signal that a test explicitly wants to attach to doryd; historical disable
+        // flags must not resurrect the retired app-owned engine.
+        let explicitlyRequested = truthy(
+            environment["DORY_APP_REQUIRE_DORYD"]
+                ?? environment["DORY_REQUIRE_DORYD"]
+                ?? environment["DORY_APP_USE_DORYD"]
+                ?? environment["DORY_USE_DORYD"]
+                ?? ""
+        )
+        return (true, true, explicitlyRequested)
     }
 
     private nonisolated static func truthy(_ raw: String) -> Bool {
@@ -794,12 +808,6 @@ final class AppStore {
         }
     }
 
-    private func adoptSharedRuntime(_ shared: any ContainerRuntime) async {
-        runtime = shared
-        sharedVMStatus = "Running on Dory's engine"
-        await reload()
-    }
-
     /// Connects according to the persisted engine preference — Colima-style: Dory's bundled engine,
     /// an auto-detected existing engine, or a custom socket.
     private func connectPreferredBackend() async {
@@ -833,32 +841,10 @@ final class AppStore {
                 loadState = .engineOff
             }
         case .dory:
-            if dorydEngineEnabled {
-                if await connectDorydBackend() {
-                    return
-                }
+            if await connectDorydBackend() {
                 return
             }
-            runtimeOwnedByDoryd = false
-            daemonSocketPath = nil
-            // Dory's own engine is the default: a standalone, OrbStack-style daemon that ships
-            // everything it needs. The legacy in-app shared VM is only reachable through an explicit
-            // development override now; the normal Dory preference is doryd-owned.
-            let support = refreshSharedVMSupport()
-            if support.isSupported {
-                sharedVMStatus = "Starting Dory's engine…"
-                if let shared = await SharedVMProvisioner.runtime() {
-                    await adoptSharedRuntime(shared)
-                    return
-                }
-                sharedVMStatus = Self.engineFailureStatus()
-            } else {
-                sharedVMStatus = Self.sharedVMUnavailableStatus(support)
-            }
-            // A Dory preference is an ownership decision. External engines are selected only
-            // through the explicit Existing Engine option, never as a silent recovery backend.
-            runtime = DisconnectedRuntime()
-            loadState = .engineOff
+            return
         }
     }
 
@@ -966,8 +952,6 @@ final class AppStore {
         if preference != .dory {
             if runtimeOwnedByDoryd {
                 _ = try? await dorydClient.engineStop()
-            } else {
-                await SharedVMProvisioner.stopEngine()
             }
             runtimeOwnedByDoryd = false
             daemonSocketPath = nil
@@ -993,20 +977,6 @@ final class AppStore {
         case "docker", "docker-proxy":
             if let docker = await DockerEngineRuntime.detect() { runtime = docker; await reload() }
             else { loadState = .engineOff }
-        case "shared":
-            let support = refreshSharedVMSupport()
-            guard support.isSupported else {
-                sharedVMStatus = Self.sharedVMUnavailableStatus(support)
-                loadState = .engineOff
-                break
-            }
-            if let shared = await SharedVMProvisioner.runtime() {
-                await adoptSharedRuntime(shared)
-            }
-            else {
-                sharedVMStatus = Self.engineFailureStatus()
-                loadState = .engineOff
-            }
         default:
             await connectPreferredBackend()
         }
@@ -1514,6 +1484,310 @@ final class AppStore {
         return nil
     }
 
+    func refreshUpgradeStatus() async {
+        let home = environment["HOME"] ?? NSHomeDirectory()
+        do {
+            let record = try await Task.detached(priority: .utility) {
+                try DoryUpgradeTransactionStore(home: home).latest()
+            }.value
+            upgradeTransaction = record
+            upgradeStatusError = nil
+        } catch {
+            upgradeTransaction = nil
+            upgradeStatusError = "Upgrade evidence could not be read safely: \(error)"
+        }
+    }
+
+    func upgradePreflightInput(candidate: DoryUpgradeCandidate) async throws -> DoryUpgradePreflightInput {
+        let home = environment["HOME"] ?? NSHomeDirectory()
+        let selection = try DoryDataDriveSelectionStore(home: home)
+        guard let drive = try selection.inspectSelection() else {
+            throw DoryDataDriveSelectionError.noSelection(selection.path)
+        }
+        try drive.validateManifest()
+        let estimatedBytes = try await Task.detached(priority: .utility) {
+            try Self.allocatedBytes(at: drive.root)
+        }.value
+        let available = try Self.availableCapacity(at: home)
+        let ports = await Self.allPublishedPorts(runtime)
+            .compactMap(UInt16.init(exactly:))
+            .sorted()
+        let kube = await kubernetes.status()
+        return DoryUpgradePreflightInput(
+            candidate: candidate,
+            priorVersion: AppInfo.version,
+            priorBuild: AppInfo.build,
+            drive: drive,
+            hostAvailableBytes: available,
+            dataDestinationAvailableBytes: available,
+            estimatedDataSnapshotBytes: estimatedBytes,
+            baselinePorts: ports,
+            kubernetesExpected: kube.reachable
+        )
+    }
+
+    func prepareUpgradeDataAndMarker(
+        record: DoryUpgradeTransactionRecord,
+        transactionStore: DoryUpgradeTransactionStore
+    ) async throws {
+        guard enginePreference == .dory else {
+            throw DoryDataDriveSelectionError.filesystem(
+                "switch to Dory's daemon engine before installing an app update so its durable runtime can be smoke-tested"
+            )
+        }
+        if !runtimeOwnedByDoryd || loadState != .ready {
+            await connectBackend()
+        }
+        guard runtimeOwnedByDoryd, loadState == .ready else {
+            throw DoryDataDriveSelectionError.filesystem("Dory's managed engine is not ready for the update marker")
+        }
+        let marker = "dory-upgrade-\(record.id.uuidString.lowercased())"
+        try await runtime.createVolume(
+            name: marker,
+            driver: nil,
+            labels: [
+                "dev.dory.upgrade.id": record.id.uuidString.lowercased(),
+                "dev.dory.upgrade.prior-build": record.priorBuild,
+                "dev.dory.upgrade.candidate-build": record.candidate.build,
+            ],
+            driverOptions: [:]
+        )
+        let ports = await Self.allPublishedPorts(runtime).compactMap(UInt16.init(exactly:)).sorted()
+        let kube = await kubernetes.status()
+        _ = try transactionStore.setRuntimeMarker(
+            record.id,
+            volume: marker,
+            ports: ports,
+            kubernetesExpected: kube.reachable
+        )
+
+        dataDriveOperationInFlight = true
+        engineSettingChangeInFlight = true
+        dataDriveOperationStatus = "Creating the verified last-good update snapshot…"
+        defer {
+            dataDriveOperationInFlight = false
+            engineSettingChangeInFlight = false
+        }
+        let workloads: DataDriveRuntimeState
+        do {
+            workloads = try await quiesceDorydForDataDriveOperation()
+        } catch {
+            try? await runtime.removeVolumeForRollback(name: marker)
+            throw error
+        }
+        let archive = transactionStore.dataBackupPath(record.id)
+        let backupResult: Result<DoryDataDriveArchiveVerification, Error>
+        do {
+            let verification = try await Task.detached(priority: .utility) {
+                let drive = try DoryDataDrive(home: transactionStore.home, overrideRoot: record.drivePath)
+                return try DoryDataDriveTransaction.backup(from: drive, to: archive)
+            }.value
+            backupResult = .success(verification)
+        } catch {
+            backupResult = .failure(error)
+        }
+        let reconnectFailure = await reconnectAfterDataDriveOperation(workloads: workloads)
+        if let reconnectFailure {
+            throw DoryDataDriveSelectionError.filesystem(
+                "the data snapshot completed, but runtime restoration failed: \(reconnectFailure)"
+            )
+        }
+        switch backupResult {
+        case .success:
+            _ = try transactionStore.attachDataSnapshot(record.id, archivePath: archive)
+            dataDriveOperationStatus = "Verified last-good snapshot ready."
+        case .failure(let error):
+            try? await runtime.removeVolumeForRollback(name: marker)
+            throw error
+        }
+    }
+
+    func runUpgradeSmokeTests(_ record: DoryUpgradeTransactionRecord) async -> [DoryUpgradeSmokeCheck] {
+        if !runtimeOwnedByDoryd || loadState != .ready { await connectBackend() }
+        var checks: [DoryUpgradeSmokeCheck] = []
+        if Bundle.main.object(forInfoDictionaryKey: "DoryUpgradeGateForceSmokeFailure") as? Bool == true {
+            do {
+                let component = try await applyReleaseGateComponentUpdate()
+                checks.append(.init(
+                    id: "release-gate.component-update",
+                    passed: true,
+                    detail: "activated signature-verified \(component.id.rawValue) \(component.version) before injected rollback"
+                ))
+            } catch {
+                checks.append(.init(id: "release-gate.component-update", passed: false, detail: "\(error)"))
+            }
+        }
+        do {
+            let status = try await dorydClient.engineStatus()
+            checks.append(.init(
+                id: "engine.socket",
+                passed: status.isRunning && Self.isUnixSocket(daemonSocketPath ?? ((environment["HOME"] ?? NSHomeDirectory()) + "/.dory/docker.sock")),
+                detail: "doryd=\(status.state); \(status.detail)"
+            ))
+        } catch {
+            checks.append(.init(id: "engine.socket", passed: false, detail: "\(error)"))
+        }
+
+        do {
+            guard let response = await runtime.proxyRequest(
+                method: "GET",
+                path: "/version",
+                headers: [],
+                body: Data()
+            ), response.isSuccess else {
+                throw DoryDataDriveSelectionError.filesystem("Docker /version did not return success")
+            }
+            checks.append(.init(id: "docker.api", passed: true, detail: "Docker /version returned HTTP \(response.statusCode)"))
+        } catch {
+            checks.append(.init(id: "docker.api", passed: false, detail: "\(error)"))
+        }
+
+        do {
+            let snapshot = try await runtime.migrationSnapshot()
+            let marker = snapshot.volumes.first { volume in
+                volume.name == record.markerVolume
+                    && volume.labels["dev.dory.upgrade.id"] == record.id.uuidString.lowercased()
+            }
+            checks.append(.init(
+                id: "volume.marker",
+                passed: marker != nil,
+                detail: marker == nil ? "pre-update marker volume or ownership label is missing" : "exact pre-update marker and ownership label survived"
+            ))
+        } catch {
+            checks.append(.init(id: "volume.marker", passed: false, detail: "\(error)"))
+        }
+
+        if record.baselinePorts.isEmpty {
+            checks.append(.init(id: "published.ports", required: false, passed: true, detail: "no published TCP port existed before the update"))
+        } else {
+            let results = await Task.detached(priority: .utility) {
+                record.baselinePorts.map { ($0, Self.canConnectLoopback(port: $0, timeoutMilliseconds: 1_500)) }
+            }.value
+            let failed = results.filter { !$0.1 }.map { String($0.0) }
+            checks.append(.init(
+                id: "published.ports",
+                passed: failed.isEmpty,
+                detail: failed.isEmpty
+                    ? "all pre-update loopback ports are connectable: \(record.baselinePorts.map(String.init).joined(separator: ","))"
+                    : "pre-update loopback ports failed: \(failed.joined(separator: ","))"
+            ))
+        }
+
+        let kube = await kubernetes.status()
+        checks.append(.init(
+            id: "kubernetes.api",
+            required: record.kubernetesExpected,
+            passed: !record.kubernetesExpected || kube.reachable,
+            detail: record.kubernetesExpected ? kube.info : "Kubernetes was not reachable before the update"
+        ))
+        if Bundle.main.object(forInfoDictionaryKey: "DoryUpgradeGateForceSmokeFailure") as? Bool == true {
+            checks.append(.init(
+                id: "release-gate.injected",
+                passed: false,
+                detail: "signature-bound release fixture requested a post-install smoke failure"
+            ))
+        }
+        return checks
+    }
+
+    private func applyReleaseGateComponentUpdate() async throws -> DoryInstalledComponent {
+        guard let rawURL = Bundle.main.object(forInfoDictionaryKey: "DoryUpgradeGateComponentCatalogURL") as? String,
+              let url = URL(string: rawURL), url.scheme?.lowercased() == "https",
+              ["127.0.0.1", "::1"].contains(url.host ?? ""),
+              let rawID = Bundle.main.object(forInfoDictionaryKey: "DoryUpgradeGateComponentID") as? String,
+              let id = DoryComponentID(rawValue: rawID), id.isRemovable else {
+            throw DoryComponentError.invalidCatalog("signed release-gate component metadata is missing")
+        }
+        let store = try DoryComponentStore.selected(home: environment["HOME"] ?? NSHomeDirectory())
+        try store.prepare()
+        let client = DoryComponentCatalogClient(
+            catalogURL: url,
+            publicKey: DoryComponentDefaults.publicKey,
+            expectedArchitecture: DoryComponentDefaults.architecture,
+            appVersion: AppInfo.version
+        )
+        let fetched = try await client.fetch()
+        _ = try store.cacheCatalog(
+            data: fetched.data,
+            signature: fetched.signature,
+            publicKey: DoryComponentDefaults.publicKey,
+            expectedArchitecture: DoryComponentDefaults.architecture,
+            appVersion: AppInfo.version
+        )
+        guard let release = fetched.catalog.component(id) else {
+            throw DoryComponentError.unknownComponent(rawID)
+        }
+        return try await DoryComponentInstaller(store: store).install(
+            release,
+            catalogData: fetched.data
+        ) { _ in }
+    }
+
+    func removeUpgradeMarker(_ record: DoryUpgradeTransactionRecord) async {
+        guard let marker = record.markerVolume else { return }
+        try? await runtime.removeVolumeForRollback(name: marker)
+    }
+
+    nonisolated private static func allocatedBytes(at root: String) throws -> UInt64 {
+        let keys: [URLResourceKey] = [.isRegularFileKey, .isSymbolicLinkKey, .fileAllocatedSizeKey, .totalFileAllocatedSizeKey]
+        guard let enumerator = FileManager.default.enumerator(
+            at: URL(fileURLWithPath: root),
+            includingPropertiesForKeys: keys,
+            options: [.skipsPackageDescendants]
+        ) else {
+            throw DoryDataDriveSelectionError.filesystem("could not inventory Dory data allocation")
+        }
+        var total: UInt64 = 0
+        for case let url as URL in enumerator {
+            let values = try url.resourceValues(forKeys: Set(keys))
+            guard values.isSymbolicLink != true, values.isRegularFile == true else { continue }
+            let bytes = UInt64(max(0, values.totalFileAllocatedSize ?? values.fileAllocatedSize ?? 0))
+            let (next, overflow) = total.addingReportingOverflow(bytes)
+            guard !overflow else {
+                throw DoryDataDriveSelectionError.filesystem("Dory data allocation exceeds supported accounting")
+            }
+            total = next
+        }
+        return total
+    }
+
+    nonisolated private static func availableCapacity(at path: String) throws -> UInt64 {
+        let values = try URL(fileURLWithPath: path).resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
+        guard let value = values.volumeAvailableCapacityForImportantUsage, value > 0 else {
+            throw DoryDataDriveSelectionError.filesystem("could not determine free space for the update transaction")
+        }
+        return UInt64(value)
+    }
+
+    nonisolated private static func isUnixSocket(_ path: String) -> Bool {
+        var status = stat()
+        return lstat(path, &status) == 0 && (status.st_mode & S_IFMT) == S_IFSOCK
+    }
+
+    nonisolated private static func canConnectLoopback(port: UInt16, timeoutMilliseconds: Int32) -> Bool {
+        let descriptor = socket(AF_INET, SOCK_STREAM, 0)
+        guard descriptor >= 0 else { return false }
+        defer { close(descriptor) }
+        let flags = fcntl(descriptor, F_GETFL, 0)
+        guard flags >= 0, fcntl(descriptor, F_SETFL, flags | O_NONBLOCK) == 0 else { return false }
+        var address = sockaddr_in()
+        address.sin_family = sa_family_t(AF_INET)
+        address.sin_port = port.bigEndian
+        address.sin_addr.s_addr = inet_addr("127.0.0.1")
+        let result = withUnsafePointer(to: &address) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.connect(descriptor, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        if result == 0 { return true }
+        guard errno == EINPROGRESS else { return false }
+        var pollDescriptor = pollfd(fd: descriptor, events: Int16(POLLOUT), revents: 0)
+        guard poll(&pollDescriptor, 1, timeoutMilliseconds) > 0 else { return false }
+        var socketError: Int32 = 0
+        var length = socklen_t(MemoryLayout<Int32>.size)
+        return getsockopt(descriptor, SOL_SOCKET, SO_ERROR, &socketError, &length) == 0 && socketError == 0
+    }
+
     /// Toggles the FEX x86/amd64 path and restarts the shared engine so the new mode takes effect.
     func setRosettaX86(_ on: Bool) async {
         guard on != rosettaX86Enabled else { return }
@@ -1861,10 +2135,9 @@ final class AppStore {
         return remaining > 0 ? "\(visible), and \(remaining) more" : visible
     }
 
-    /// Provisions (or reuses) Dory's own single shared Linux VM and switches the live engine to it,
-    /// making Dory a standalone, OrbStack-style daemon that no longer depends on Docker/OrbStack.
+    /// Selects Dory's daemon-owned local engine. doryd is the only production owner of this VM.
     func useSharedVM() async {
-        guard runtimeKind != .sharedVM else { return }
+        guard runtimeKind != .sharedVM || !runtimeOwnedByDoryd else { return }
         let support = refreshSharedVMSupport()
         guard support.isSupported else {
             sharedVMStatus = Self.sharedVMUnavailableStatus(support)
@@ -1872,26 +2145,7 @@ final class AppStore {
         }
         enginePreference = .dory
         UserDefaults.standard.set(EnginePreference.dory.rawValue, forKey: Self.enginePreferenceKey)
-        if dorydEngineEnabled {
-            await connectBackend()
-            return
-        }
-        sharedVMStatus = "Starting Dory's engine…"
-        guard let shared = await SharedVMProvisioner.runtime() else {
-            sharedVMStatus = "Dory's engine could not start — see ~/.dory/engine.log"
-            return
-        }
-        runtime = shared
-        await reload()
-        restartShim()
-        startPortForwarding()
-        startAutoRefresh()
-        sharedVMStatus = "Running on Dory's shared VM"
-    }
-
-    private func restartShim() {
-        stopShim()
-        startShim()
+        await connectBackend()
     }
 
     private func stopShim() {
@@ -1973,6 +2227,9 @@ final class AppStore {
     var defaultBridgeSubnet = DoryIPv4BridgeNetwork.defaultCIDR
     var networkingAuthorizationInFlight = false
     var networkingAuthorizationMessage: String?
+    var corporateConnectivityBusy = false
+    var corporateConnectivityStatusJSON: String?
+    var corporateConnectivityMessage: String?
     var customDomainRoutes: [DorydDomainRoute] = []
     var customDomainActiveHostnames: Set<String> = []
     var customDomainRoutesBusy = false
@@ -2347,6 +2604,7 @@ final class AppStore {
     }
 
     private func replayRememberedUSB(machine: String) {
+        guard UsbPassthroughAvailability.attachSupported else { return }
         guard !usbReplayedMachines.contains(machine) else { return }
         let commands = usbAttachments.reattachCommands(for: machine)
         usbReplayedMachines.insert(machine)
@@ -2409,6 +2667,84 @@ final class AppStore {
 
     func deauthorizeLocalNetworking() async {
         await setLocalNetworkingAuthorization(removing: true)
+    }
+
+    func loadCorporateConnectivity(runProbes: Bool = false) async {
+        guard runtimeOwnedByDoryd else {
+            corporateConnectivityMessage = "Start Dory's daemon-managed engine to inspect corporate connectivity."
+            return
+        }
+        guard !corporateConnectivityBusy else { return }
+        corporateConnectivityBusy = true
+        defer { corporateConnectivityBusy = false }
+        do {
+            let json = try await dorydClient.corporateConnectivityStatus(runProbes: runProbes)
+            corporateConnectivityStatusJSON = json
+            corporateConnectivityMessage = Self.corporateConnectivitySummary(json)
+        } catch {
+            corporateConnectivityMessage = error.localizedDescription
+        }
+    }
+
+    func applyCorporateConnectivity(profileJSON: String, dryRun: Bool) async {
+        guard runtimeOwnedByDoryd else {
+            corporateConnectivityMessage = "Start Dory's daemon-managed engine before changing corporate connectivity."
+            return
+        }
+        guard !corporateConnectivityBusy else { return }
+        corporateConnectivityBusy = true
+        defer { corporateConnectivityBusy = false }
+        do {
+            let json = try await dorydClient.corporateConnectivityApply(
+                profileJSON: profileJSON,
+                dryRun: dryRun
+            )
+            corporateConnectivityStatusJSON = json
+            corporateConnectivityMessage = Self.corporateConnectivitySummary(json)
+            let valid = (try? JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any])?["valid"] as? Bool ?? false
+            if valid, !dryRun {
+                showSettingsSuccess("Corporate connectivity profile applied and reconciled.")
+            } else if !valid {
+                showSettingsFailure("Corporate connectivity validation failed. Review the detailed message before applying.")
+            }
+        } catch {
+            corporateConnectivityMessage = error.localizedDescription
+            showSettingsFailure(error.localizedDescription)
+        }
+    }
+
+    func disableCorporateConnectivity() async {
+        guard runtimeOwnedByDoryd else { return }
+        guard !corporateConnectivityBusy else { return }
+        corporateConnectivityBusy = true
+        defer { corporateConnectivityBusy = false }
+        do {
+            let json = try await dorydClient.corporateConnectivityDisable()
+            corporateConnectivityStatusJSON = json
+            corporateConnectivityMessage = Self.corporateConnectivitySummary(json)
+            showSettingsSuccess("Dory-owned corporate proxy, registry, and guest CA settings were disabled.")
+        } catch {
+            corporateConnectivityMessage = error.localizedDescription
+            showSettingsFailure(error.localizedDescription)
+        }
+    }
+
+    nonisolated private static func corporateConnectivitySummary(_ json: String) -> String {
+        guard let object = try? JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any] else {
+            return "doryd returned an unreadable corporate connectivity status."
+        }
+        if object["valid"] as? Bool == false {
+            return (object["validationErrors"] as? [String] ?? ["profile is invalid"]).joined(separator: " • ")
+        }
+        let enabled = object["enabled"] as? Bool ?? false
+        let probes = object["probes"] as? [[String: Any]] ?? []
+        let passed = probes.filter { $0["succeeded"] as? Bool == true }.count
+        let system = object["system"] as? [String: Any]
+        let interface = system?["defaultInterface"] as? String ?? "unknown route"
+        let tunnels = system?["tunnelInterfaces"] as? [String] ?? []
+        return enabled
+            ? "Valid profile • \(passed)/\(probes.count) probes passed • route \(interface)" + (tunnels.isEmpty ? "" : " • tunnels \(tunnels.joined(separator: ", "))")
+            : "Corporate connectivity profile is disabled."
     }
 
     private func setLocalNetworkingAuthorization(removing: Bool) async {
@@ -3243,7 +3579,7 @@ final class AppStore {
     /// `compose up`, a container action, a migration, a k8s or volume-browse op. While any is in
     /// flight the engine must stay awake, or the idle monitor could stop it mid-operation.
     private var isEngineBusyInApp: Bool {
-        composeBusy || !pendingContainerIDs.isEmpty || kubernetesBusy || migrationBusy || volumeBrowseBusy || machineBusy
+        composeBusy || doryBuildActive || !pendingContainerIDs.isEmpty || kubernetesBusy || migrationBusy || volumeBrowseBusy || machineBusy
     }
 
     private func evaluateIdleSleep() async {
@@ -3376,6 +3712,8 @@ final class AppStore {
         case .networks: "\(networks.count) network\(networks.count == 1 ? "" : "s")"
         case .compose:
             { let n = Set(containers.compactMap(\.composeProject)).count; return "\(n) project\(n == 1 ? "" : "s")" }()
+        case .builds:
+            "\(buildActivity.filter(\.isActive).count) active · \(buildActivity.count) retained · \(DockerFormat.bytes(buildCacheUsage.totalBytes)) cache"
         case .kubernetes:
             pods.isEmpty ? "Cluster not enabled" : "\(pods.count) pods across \(Set(pods.map(\.namespace)).count) namespaces"
         case .desktops:
@@ -3468,7 +3806,7 @@ final class AppStore {
         guard !healthActionInFlight else { return }
         healthActionInFlight = true
         healthActionError = nil
-        if ["dns", "routes", "domains", "ports", "dockerd", "guest-agent"].contains(target),
+        if ["socket", "dns", "routes", "domains", "ports", "dockerd", "guest-agent", "data-drive"].contains(target),
            let result = try? await dorydClient.repairSubsystem(target) {
             if !result.ok {
                 healthActionError = result.message.isEmpty ? "Repair \(target) failed" : result.message
@@ -4117,9 +4455,18 @@ final class AppStore {
     }
 
     func buildImage(contextDir: URL, tag: String) -> AsyncStream<String> {
-        AsyncStream(bufferingPolicy: .bufferingNewest(512)) { continuation in
+        let token = UUID()
+        return AsyncStream(bufferingPolicy: .bufferingNewest(512)) { continuation in
             let task = Task { [weak self] in
                 guard let self else { continuation.finish(); return }
+                defer {
+                    if self.activeBuildToken == token {
+                        self.activeBuildTask = nil
+                        self.activeBuildToken = nil
+                        self.doryBuildActive = false
+                    }
+                    Task { await self.refreshBuildActivity() }
+                }
                 guard self.runtimeKind.isDockerCompatible else {
                     continuation.yield("ERROR: Image build needs Dory's shared VM or a Docker engine")
                     continuation.finish()
@@ -4141,7 +4488,55 @@ final class AppStore {
                 }
                 continuation.finish()
             }
+            activeBuildToken = token
+            activeBuildTask = task
+            doryBuildActive = true
             continuation.onTermination = { @Sendable _ in task.cancel() }
+        }
+    }
+
+    func cancelDoryBuild() {
+        guard doryBuildActive else { return }
+        activeBuildTask?.cancel()
+    }
+
+    func refreshBuildActivity() async {
+        guard runtimeKind.isDockerCompatible else {
+            buildActivity = []
+            buildCacheUsage = .empty
+            buildActivityError = "Build activity needs Dory's engine or another Docker-compatible backend."
+            return
+        }
+        guard !buildActivityLoading else { return }
+        buildActivityLoading = true
+        defer { buildActivityLoading = false }
+        do {
+            let cli = try buildxCLI()
+            async let records = cli.history()
+            async let cache = cli.cacheUsage()
+            let (loadedRecords, loadedCache) = try await (records, cache)
+            buildActivity = loadedRecords.sorted { $0.createdAt > $1.createdAt }
+            buildCacheUsage = loadedCache
+            buildActivityError = nil
+            if let selectedBuildReference,
+               !buildActivity.contains(where: { $0.ref == selectedBuildReference }) {
+                self.selectedBuildReference = nil
+                selectedBuildLogs = ""
+            }
+        } catch {
+            buildActivityError = error.localizedDescription
+        }
+    }
+
+    func loadBuildLogs(_ record: BuildActivityRecord) async {
+        selectedBuildReference = record.ref
+        selectedBuildLogs = ""
+        selectedBuildLogsLoading = true
+        defer { selectedBuildLogsLoading = false }
+        do {
+            selectedBuildLogs = try await buildxCLI().logs(ref: record.ref)
+        } catch {
+            selectedBuildLogs = "Build logs are unavailable: \(error.localizedDescription)"
         }
     }
 
@@ -4245,9 +4640,11 @@ final class AppStore {
     /// picks which to import from instead of the app silently auto-selecting the top-priority socket.
     var migrationSources: [DockerSourceEngine] = []
     var selectedMigrationSourcePath: String?
+    var migrationSelectedObjectKeys: Set<DoryOperationObjectKey> = []
     /// The last import result, so the UI can surface per-item failures instead of a bare count.
     var migrationSummary: MigrationSummary?
     @ObservationIgnored private var migrationTask: Task<Void, Never>?
+    @ObservationIgnored private var migrationSelectionSourcePath: String?
 
     private static let migrationPreflightIdleTimeout: TimeInterval = 30
     private static let migrationTransferIdleTimeout: TimeInterval = 300
@@ -4272,7 +4669,45 @@ final class AppStore {
 
     func selectMigrationSource(_ path: String) async {
         selectedMigrationSourcePath = path
+        migrationSelectionSourcePath = nil
+        migrationSelectedObjectKeys = []
         await loadMigrationPreflight()
+    }
+
+    func setMigrationObject(_ key: DoryOperationObjectKey, selected: Bool) {
+        var next = migrationSelectedObjectKeys
+        if selected {
+            next.insert(key)
+        } else {
+            next.remove(key)
+        }
+        migrationSelectedObjectKeys = next
+        invalidateMigrationSelectionValidation()
+    }
+
+    func selectAllMigrationObjects() {
+        migrationSelectedObjectKeys = Set(migrationInventory?.selectableObjects.map(\.key) ?? [])
+        invalidateMigrationSelectionValidation()
+    }
+
+    func clearMigrationObjectSelection() {
+        migrationSelectedObjectKeys = []
+        invalidateMigrationSelectionValidation()
+    }
+
+    func recheckMigrationSelection() async {
+        await loadMigrationPreflight()
+    }
+
+    private func invalidateMigrationSelectionValidation() {
+        migrationInventory?.strictValidationPerformed = false
+        migrationInventory?.strictValidationBlocker = nil
+        migrationInventory?.strictRequestedObjectKeys = []
+        migrationInventory?.strictDependencyObjectKeys = []
+        migrationInventory?.strictOmittedObjectKeys = []
+        migrationStatus = migrationSelectedObjectKeys.isEmpty
+            ? "Select at least one image, volume, network, or container."
+            : "Selection changed. Recheck to calculate dependencies, safety, and capacity."
     }
 
     /// Reads the selected host engine (if any) without modifying it, to power the pre-flight
@@ -4310,17 +4745,30 @@ final class AppStore {
             }
             return
         }
+        let availableSelection = Set(inventory.selectableObjects.map(\.key))
+        if migrationSelectionSourcePath != selectedSource.socketPath {
+            migrationSelectedObjectKeys = availableSelection
+            migrationSelectionSourcePath = selectedSource.socketPath
+        } else {
+            migrationSelectedObjectKeys.formIntersection(availableSelection)
+        }
         if let availableHostBytes = Self.availableHostDiskBytes() {
             inventory.availableHostBytes = availableHostBytes
             inventory.hostDiskPreflightAvailable = true
         } else {
             inventory.hostDiskPreflightAvailable = false
         }
-        if let preflightTarget {
+        let home = environment["HOME"] ?? NSHomeDirectory()
+        if let engineCapacity = try? MigrationEngineCapacity.selected(home: home) {
+            inventory.engineDiskLogicalBytes = engineCapacity.logicalBytes
+            inventory.engineDiskUsableBytes = engineCapacity.usableBytes
+        }
+        if let preflightTarget, !migrationSelectedObjectKeys.isEmpty {
             do {
                 let prepared = try await MigrationImportCoordinator.preflight(
                     from: source,
-                    to: preflightTarget
+                    to: preflightTarget,
+                    userSelection: migrationSelectedObjectKeys.sorted()
                 )
                 inventory.acceptStrictValidation(prepared)
             } catch {
@@ -4328,14 +4776,19 @@ final class AppStore {
             }
         }
         migrationInventory = inventory
-        if let blocker = inventory.strictValidationBlocker {
+        if migrationSelectedObjectKeys.isEmpty {
+            migrationStatus = "Select at least one object to import."
+        } else if let blocker = inventory.strictValidationBlocker {
             migrationStatus = "Import blocked before writing: \(blocker)"
         } else if inventory.isHostDiskUnknown {
             migrationStatus = "Import blocked before writing because macOS did not report available disk space."
         } else if inventory.isHostDiskInsufficient {
             migrationStatus = "Free at least \(inventory.additionalHostDiskDisplay) more before importing from \(inventory.sourceName): about \(inventory.requiredHostDiskDisplay) required, \(inventory.availableHostDiskDisplay) available. Restart Dory's engine first if data was recently pruned."
         } else if inventory.isEngineDiskInsufficient {
-            migrationStatus = "Import blocked before writing: Dory's \(inventory.engineDiskCapacityDisplay) sparse engine disk would need about \(inventory.requiredEngineDiskDisplay)."
+            let growth = inventory.recommendedEngineCapacityGiB.map {
+                " Grow Docker storage safely to at least \($0) GiB in Resources, then recheck."
+            } ?? " The required capacity exceeds Dory's supported 2 TiB maximum."
+            migrationStatus = "Import blocked before writing: Dory's \(inventory.engineDiskCapacityDisplay) sparse engine disk exposes \(inventory.engineDiskUsableDisplay) usable but would need about \(inventory.requiredEngineDiskDisplay).\(growth)"
         } else if inventory.isVolumeSizeUnknown {
             migrationStatus = "Import blocked before writing because \(inventory.sourceName) did not report every named-volume size."
         } else if inventory.isContainerWritableSizeUnknown {
@@ -4392,6 +4845,11 @@ final class AppStore {
             showSettingsFailure("No import source selected.")
             return
         }
+        guard !migrationSelectedObjectKeys.isEmpty else {
+            migrationStatus = "Select at least one object to import."
+            showSettingsFailure(migrationStatus)
+            return
+        }
         // Never reject from the cached panel. The user may just have freed disk space or stopped a
         // live volume-backed source container; the strict source/target preflight below is the only
         // decision that may block this attempt.
@@ -4425,7 +4883,8 @@ final class AppStore {
         do {
             summary = try await MigrationImportCoordinator.migrate(
                 from: source,
-                to: target
+                to: target,
+                userSelection: migrationSelectedObjectKeys.sorted()
             ) { message in
                 Task { @MainActor in self.migrationStatus = message }
             }
@@ -4470,6 +4929,7 @@ final class AppStore {
         case .volumes: activeSheet = .newVolume
         case .networks: activeSheet = .newNetwork
         case .compose: openComposeFile()
+        case .builds: break
         case .desktops:
             guard AppInfo.includesDesktopLinux else {
                 actionError = "Install the Linux Desktop runtime and at least one distribution in Components."
@@ -5202,6 +5662,9 @@ final class AppStore {
 
     var snapshotMachine: Machine?
     var machineSnapshots: [MachineSnapshot] = []
+    var machineBackupStatus: DorydMachineBackupStatus?
+    var machineBackupLoading = false
+    var machineBackupActionBusy = false
     var editMachineTarget: Machine?
 
     func openMachineEdit(_ machine: Machine) {
@@ -5211,6 +5674,7 @@ final class AppStore {
     func openSnapshots(_ machine: Machine) {
         snapshotMachine = machine
         machineSnapshots = []
+        machineBackupStatus = nil
         activeSheet = .machineSnapshots
         Task { await reloadSnapshots() }
     }
@@ -5219,14 +5683,85 @@ final class AppStore {
         guard let machine = snapshotMachine else { return }
         guard requireDorydMachines("Snapshots") else {
             machineSnapshots = []
+            machineBackupStatus = nil
             return
         }
+        machineBackupLoading = true
+        defer { machineBackupLoading = false }
         do {
-            machineSnapshots = try await dorydClient.machineSnapshots(machineID: machine.name)
-                .map(Self.machineSnapshot(fromDoryd:))
+            async let snapshots = dorydClient.machineSnapshots(machineID: machine.name)
+            async let backupStatuses = dorydClient.machineBackupSchedules()
+            machineSnapshots = try await snapshots.map(Self.machineSnapshot(fromDoryd:))
+            machineBackupStatus = try await backupStatuses.first {
+                $0.schedule.machineID == machine.name
+            }
         } catch {
-            actionError = "Could not load doryd snapshots: \(error)"
+            actionError = "Could not load machine recovery status: \(error)"
             machineSnapshots = []
+            machineBackupStatus = nil
+        }
+    }
+
+    func saveMachineBackupSchedule(
+        frequency: DorydMachineBackupFrequency,
+        keepLocal: Int,
+        verifyEveryRuns: Int
+    ) {
+        guard let machine = snapshotMachine,
+              requireDorydMachines("Scheduled backups") else { return }
+        machineBackupActionBusy = true
+        Task {
+            defer { machineBackupActionBusy = false }
+            do {
+                machineBackupStatus = try await dorydClient.machineBackupSet(
+                    DorydMachineBackupSchedule(
+                        machineID: machine.name,
+                        enabled: true,
+                        frequency: frequency,
+                        keepLocal: keepLocal,
+                        verifyEveryRuns: verifyEveryRuns
+                    )
+                )
+            } catch {
+                actionError = "Could not save the backup schedule: \(error)"
+            }
+        }
+    }
+
+    func removeMachineBackupSchedule() {
+        guard let machine = snapshotMachine,
+              requireDorydMachines("Scheduled backups") else { return }
+        machineBackupActionBusy = true
+        Task {
+            defer { machineBackupActionBusy = false }
+            do {
+                let result = try await dorydClient.machineBackupRemove(machineID: machine.name)
+                guard result.ok else { throw DorydClientError.daemon(result.message) }
+                machineBackupStatus = nil
+            } catch {
+                actionError = "Could not disable the backup schedule: \(error)"
+            }
+        }
+    }
+
+    func runMachineBackupNow() {
+        guard let machine = snapshotMachine,
+              requireDorydMachines("Scheduled backups") else { return }
+        let name = machine.name
+        machineBackupActionBusy = true
+        busyMachines.insert(name)
+        Task {
+            defer {
+                machineBackupActionBusy = false
+                busyMachines.remove(name)
+            }
+            do {
+                machineBackupStatus = try await dorydClient.machineBackupRun(machineID: name)
+                await reloadSnapshots()
+            } catch {
+                actionError = "Could not create and verify the backup: \(error)"
+                await reloadSnapshots()
+            }
         }
     }
 
@@ -5389,11 +5924,19 @@ final class AppStore {
         Task {
             defer { busyMachines.remove(busyKey) }
             do {
+                let safetyID = "s" + UUID().uuidString.prefix(8).lowercased()
+                let safety = try await dorydClient.machineSnapshot(
+                    snapshot.machineName,
+                    note: "Automatic pre-restore safety snapshot",
+                    createdISO: ISO8601DateFormatter().string(from: Date()),
+                    snapshotID: String(safetyID)
+                )
+                appendMachineCreationLog("Safety snapshot \(safety.id) created.\n")
                 _ = try await dorydClient.machineRestoreSnapshot(
                     machineID: snapshot.machineName,
                     snapshotID: snapshot.id
                 )
-                appendMachineCreationLog("\(snapshot.machineName) restored from snapshot.")
+                appendMachineCreationLog("\(snapshot.machineName) restored from snapshot. Use \(safety.id) to undo.")
                 activeSheet = nil
                 await refreshMachines()
             } catch {

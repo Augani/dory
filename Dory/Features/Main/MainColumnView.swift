@@ -115,6 +115,7 @@ struct MainColumnView: View {
         case .volumes: VolumesView()
         case .networks: NetworksView()
         case .compose: ComposeProjectsView()
+        case .builds: BuildsView()
         case .kubernetes:
             if AppInfo.componentAvailable(.kubernetes) {
                 KubernetesView()

@@ -1,4 +1,5 @@
 @preconcurrency import Foundation
+@preconcurrency import Security
 
 @objc(DorydHealthControl)
 nonisolated protocol DorydControlXPC {
@@ -28,12 +29,19 @@ nonisolated protocol DorydControlXPC {
     func machineDeleteSnapshot(_ machineID: String, snapshotID: String, reply: @escaping (Bool, String) -> Void)
     func machineExportSnapshot(_ machineID: String, snapshotID: String, path: String, reply: @escaping (Bool, String) -> Void)
     func machineImportSnapshot(_ path: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
+    func machineBackupSchedules(reply: @escaping (NSArray, String) -> Void)
+    func machineBackupSet(_ schedule: NSDictionary, reply: @escaping (Bool, NSDictionary, String) -> Void)
+    func machineBackupRemove(_ machineID: String, reply: @escaping (Bool, String) -> Void)
+    func machineBackupRun(_ machineID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func remoteConnect(_ config: NSDictionary, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func remotePush(_ machineID: String, localRoot: String, remoteRoot: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func remoteStatus(_ machineID: String, reply: @escaping (NSDictionary, String) -> Void)
     func networkReplaceRoutes(_ routes: NSArray, reply: @escaping (Bool, String) -> Void)
     func networkStatus(reply: @escaping (NSDictionary, String) -> Void)
     func networkAuthorizationPlan(reply: @escaping (NSDictionary, String) -> Void)
+    func corporateConnectivityStatus(_ runProbes: Bool, reply: @escaping (String, String) -> Void)
+    func corporateConnectivityApply(_ profileJSON: String, dryRun: Bool, reply: @escaping (String, String) -> Void)
+    func corporateConnectivityDisable(reply: @escaping (String, String) -> Void)
     func repairSubsystem(_ target: String, reply: @escaping (Bool, String) -> Void)
     func balloonStatus(reply: @escaping (NSDictionary, String) -> Void)
     func balloonReconcile(reply: @escaping (NSDictionary, String) -> Void)
@@ -173,6 +181,47 @@ nonisolated struct DorydMachineSnapshot: Sendable, Equatable {
     var architecture: String
     var memoryMB: UInt64
     var cpuCount: Int
+}
+
+nonisolated enum DorydMachineBackupFrequency: String, Sendable, Equatable, CaseIterable {
+    case hourly
+    case daily
+    case weekly
+}
+
+nonisolated struct DorydMachineBackupSchedule: Sendable, Equatable {
+    var machineID: String
+    var enabled: Bool
+    var frequency: DorydMachineBackupFrequency
+    var keepLocal: Int
+    var verifyEveryRuns: Int
+
+    var xpcDictionary: NSDictionary {
+        [
+            "machineID": machineID,
+            "enabled": enabled,
+            "frequency": frequency.rawValue,
+            "keepLocal": keepLocal,
+            "verifyEveryRuns": verifyEveryRuns,
+        ]
+    }
+}
+
+nonisolated struct DorydMachineBackupStatus: Sendable, Equatable {
+    var schedule: DorydMachineBackupSchedule
+    var inProgress: Bool
+    var successfulRuns: Int
+    var consecutiveFailures: Int
+    var lastAttemptISO: String?
+    var lastSuccessISO: String?
+    var lastVerificationISO: String?
+    var lastBootVerificationISO: String?
+    var lastSnapshotID: String?
+    var lastArchivePath: String?
+    var nextRunISO: String?
+    var lastError: String?
+    var retainedSnapshots: Int
+    var retainedArchives: Int
 }
 
 nonisolated struct DorydRemoteMachineConfiguration: Sendable, Equatable {
@@ -733,6 +782,44 @@ nonisolated final class DorydClient: @unchecked Sendable {
         }
     }
 
+    func machineBackupSchedules() async throws -> [DorydMachineBackupStatus] {
+        try await call { proxy, finish in
+            proxy.machineBackupSchedules { rows, error in
+                if !error.isEmpty {
+                    finish(.failure(DorydClientError.daemon(error)))
+                    return
+                }
+                guard let statuses = Self.machineBackupStatuses(from: rows) else {
+                    finish(.failure(DorydClientError.daemon("invalid machine backup schedule list")))
+                    return
+                }
+                finish(.success(statuses))
+            }
+        }
+    }
+
+    func machineBackupSet(_ schedule: DorydMachineBackupSchedule) async throws -> DorydMachineBackupStatus {
+        try await statusCommand { proxy, reply in
+            proxy.machineBackupSet(schedule.xpcDictionary, reply: reply)
+        } decode: {
+            Self.machineBackupStatus(from: $0)
+        }
+    }
+
+    func machineBackupRemove(machineID: String) async throws -> DorydCommandResult {
+        try await command { proxy, reply in
+            proxy.machineBackupRemove(machineID, reply: reply)
+        }
+    }
+
+    func machineBackupRun(machineID: String) async throws -> DorydMachineBackupStatus {
+        try await withTimeout(atLeast: 900).statusCommand { proxy, reply in
+            proxy.machineBackupRun(machineID, reply: reply)
+        } decode: {
+            Self.machineBackupStatus(from: $0)
+        }
+    }
+
     func machineList() async throws -> [DorydMachineStatus] {
         try await call { proxy, finish in
             proxy.machineList { rows, error in
@@ -811,6 +898,36 @@ nonisolated final class DorydClient: @unchecked Sendable {
                 } else {
                     finish(.failure(DorydClientError.daemon(error.isEmpty ? "invalid networking authorization plan" : error)))
                 }
+            }
+        }
+    }
+
+    func corporateConnectivityStatus(runProbes: Bool = true) async throws -> String {
+        try await call { proxy, finish in
+            proxy.corporateConnectivityStatus(runProbes) { body, error in
+                error.isEmpty
+                    ? finish(.success(body))
+                    : finish(.failure(DorydClientError.daemon(error)))
+            }
+        }
+    }
+
+    func corporateConnectivityApply(profileJSON: String, dryRun: Bool = false) async throws -> String {
+        try await call { proxy, finish in
+            proxy.corporateConnectivityApply(profileJSON, dryRun: dryRun) { body, error in
+                error.isEmpty
+                    ? finish(.success(body))
+                    : finish(.failure(DorydClientError.daemon(error)))
+            }
+        }
+    }
+
+    func corporateConnectivityDisable() async throws -> String {
+        try await call { proxy, finish in
+            proxy.corporateConnectivityDisable { body, error in
+                error.isEmpty
+                    ? finish(.success(body))
+                    : finish(.failure(DorydClientError.daemon(error)))
             }
         }
     }
@@ -992,7 +1109,11 @@ nonisolated final class DorydClient: @unchecked Sendable {
     private func makeConnection() -> NSXPCConnection {
         switch target {
         case let .machService(name):
-            return NSXPCConnection(machServiceName: name, options: [])
+            let connection = NSXPCConnection(machServiceName: name, options: [])
+            if DorydDaemonSigningPolicy.isProductionClient {
+                connection.setCodeSigningRequirement(DorydDaemonSigningPolicy.daemonRequirement)
+            }
+            return connection
         case let .endpoint(endpoint):
             return NSXPCConnection(listenerEndpoint: endpoint)
         }
@@ -1188,6 +1309,52 @@ nonisolated final class DorydClient: @unchecked Sendable {
         let snapshots = dictionaries.compactMap(machineSnapshot(from:))
         guard snapshots.count == dictionaries.count else { return nil }
         return snapshots
+    }
+
+    nonisolated private static func machineBackupStatus(from dictionary: NSDictionary) -> DorydMachineBackupStatus? {
+        guard let machineID = dictionary["machineID"] as? String,
+              let frequencyRaw = dictionary["frequency"] as? String,
+              let frequency = DorydMachineBackupFrequency(rawValue: frequencyRaw),
+              let enabled = dictionary["enabled"] as? Bool,
+              let keepLocal = int(dictionary["keepLocal"]),
+              let verifyEveryRuns = int(dictionary["verifyEveryRuns"]),
+              let inProgress = dictionary["inProgress"] as? Bool,
+              let successfulRuns = int(dictionary["successfulRuns"]),
+              let consecutiveFailures = int(dictionary["consecutiveFailures"]),
+              let retainedSnapshots = int(dictionary["retainedSnapshots"]),
+              let retainedArchives = int(dictionary["retainedArchives"]) else {
+            return nil
+        }
+        return DorydMachineBackupStatus(
+            schedule: DorydMachineBackupSchedule(
+                machineID: machineID,
+                enabled: enabled,
+                frequency: frequency,
+                keepLocal: keepLocal,
+                verifyEveryRuns: verifyEveryRuns
+            ),
+            inProgress: inProgress,
+            successfulRuns: successfulRuns,
+            consecutiveFailures: consecutiveFailures,
+            lastAttemptISO: dictionary["lastAttemptISO"] as? String,
+            lastSuccessISO: dictionary["lastSuccessISO"] as? String,
+            lastVerificationISO: dictionary["lastVerificationISO"] as? String,
+            lastBootVerificationISO: dictionary["lastBootVerificationISO"] as? String,
+            lastSnapshotID: dictionary["lastSnapshotID"] as? String,
+            lastArchivePath: dictionary["lastArchivePath"] as? String,
+            nextRunISO: dictionary["nextRunISO"] as? String,
+            lastError: dictionary["lastError"] as? String,
+            retainedSnapshots: retainedSnapshots,
+            retainedArchives: retainedArchives
+        )
+    }
+
+    nonisolated private static func machineBackupStatuses(from rows: NSArray) -> [DorydMachineBackupStatus]? {
+        let dictionaries = rows.compactMap { $0 as? NSDictionary }
+        guard dictionaries.count == rows.count else { return nil }
+        let statuses = dictionaries.compactMap(machineBackupStatus(from:))
+        guard statuses.count == dictionaries.count else { return nil }
+        return statuses
     }
 
     nonisolated private static func agentInfo(from dictionary: NSDictionary) -> DorydAgentInfo? {
@@ -1510,6 +1677,33 @@ nonisolated final class DorydClient: @unchecked Sendable {
             return Double(string)
         }
         return value as? Double
+    }
+}
+
+nonisolated private enum DorydDaemonSigningPolicy {
+    static let teamID = "864H636QW4"
+    static let daemonRequirement =
+        "anchor apple generic and certificate leaf[subject.OU] = \"\(teamID)\" "
+        + "and identifier \"doryd\""
+
+    static var isProductionClient: Bool {
+        var code: SecCode?
+        guard SecCodeCopySelf(SecCSFlags(), &code) == errSecSuccess,
+              let code else {
+            return false
+        }
+        var staticCode: SecStaticCode?
+        guard SecCodeCopyStaticCode(code, SecCSFlags(), &staticCode) == errSecSuccess,
+              let staticCode else {
+            return false
+        }
+        var signingInformation: CFDictionary?
+        let flags = SecCSFlags(rawValue: kSecCSSigningInformation)
+        guard SecCodeCopySigningInformation(staticCode, flags, &signingInformation) == errSecSuccess,
+              let values = signingInformation as? [CFString: Any] else {
+            return false
+        }
+        return values[kSecCodeInfoTeamIdentifier] as? String == teamID
     }
 }
 

@@ -5,6 +5,7 @@ struct ContainersView: View {
     @Environment(AppStore.self) private var store
     @Environment(\.palette) private var p
     @State private var dragStartWidth: Double?
+    @State private var pendingComposeDown: String?
     private let resizeHandleWidth: Double = 9
 
     var body: some View {
@@ -25,6 +26,19 @@ struct ContainersView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        }
+        .confirmationDialog(
+            "Bring down \(pendingComposeDown ?? "Compose stack")?",
+            isPresented: Binding(get: { pendingComposeDown != nil }, set: { if !$0 { pendingComposeDown = nil } }),
+            titleVisibility: .visible
+        ) {
+            Button("Stop & Remove Stack", role: .destructive) {
+                if let project = pendingComposeDown { Task { await store.composeDown(project) } }
+                pendingComposeDown = nil
+            }
+            Button("Cancel", role: .cancel) { pendingComposeDown = nil }
+        } message: {
+            Text("This stops and removes the stack's containers and project network. Images and named volumes stay, but data held only in container writable layers is lost.")
         }
     }
 
@@ -149,7 +163,7 @@ struct ContainersView: View {
                 Button("Stop Stack") { store.stopComposeProject(project) }
                 Button("Restart Running Services") { store.restartComposeProject(project) }
                 Divider()
-                Button("Down - stop and remove", role: .destructive) { Task { await store.composeDown(project) } }
+                Button("Down - stop and remove", role: .destructive) { pendingComposeDown = project }
             } label: {
                 Image(systemName: "ellipsis")
                     .font(.system(size: 11, weight: .bold)).foregroundStyle(p.text3)

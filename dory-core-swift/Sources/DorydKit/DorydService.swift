@@ -5,12 +5,15 @@ import ObjectiveC
 /// The exported XPC object. Stateless beyond the socket path; every reply is total.
 public final class DorydService: NSObject, DorydControl {
     private let socketPath: String
+    private let home: String
     private let dockerTier: DockerTier?
     private let machineManager: MachineManager?
+    private let machineBackupScheduler: MachineBackupScheduler?
     private let remoteManager: RemoteMachineManager?
     private let networkingController: NetworkingController?
     private let networkRouteRepair: (@Sendable () -> Int)?
     private let customDomainRouteStore: CustomDomainRouteStore?
+    private let corporateConnectivity: CorporateConnectivityReconciler?
     private let balloonController: BalloonController
     private let idlePolicyStore: IdlePolicyStore
     private let idleSleepScheduler: IdleSleepScheduler?
@@ -20,12 +23,15 @@ public final class DorydService: NSObject, DorydControl {
 
     public init(
         socketPath: String,
+        home: String = NSHomeDirectory(),
         dockerTier: DockerTier? = nil,
         machineManager: MachineManager? = nil,
+        machineBackupScheduler: MachineBackupScheduler? = nil,
         remoteManager: RemoteMachineManager? = nil,
         networkingController: NetworkingController? = nil,
         networkRouteRepair: (@Sendable () -> Int)? = nil,
         customDomainRouteStore: CustomDomainRouteStore? = nil,
+        corporateConnectivity: CorporateConnectivityReconciler? = nil,
         balloonController: BalloonController? = nil,
         idlePolicyStore: IdlePolicyStore? = nil,
         idleSleepScheduler: IdleSleepScheduler? = nil,
@@ -33,12 +39,15 @@ public final class DorydService: NSObject, DorydControl {
         incidentWriter: IncidentWriter? = nil
     ) {
         self.socketPath = socketPath
+        self.home = home
         self.dockerTier = dockerTier
         self.machineManager = machineManager
+        self.machineBackupScheduler = machineBackupScheduler
         self.remoteManager = remoteManager
         self.networkingController = networkingController
         self.networkRouteRepair = networkRouteRepair
         self.customDomainRouteStore = customDomainRouteStore
+        self.corporateConnectivity = corporateConnectivity
         self.balloonController = balloonController ?? BalloonController(
             actuator: DorydBalloonActuator(machineManager: machineManager)
         )
@@ -51,7 +60,10 @@ public final class DorydService: NSObject, DorydControl {
             socketPath: socketPath,
             dockerTier: dockerTier,
             machineManager: machineManager,
-            remoteManager: remoteManager
+            remoteManager: remoteManager,
+            networkingController: networkingController,
+            corporateConnectivity: corporateConnectivity,
+            home: home
         )
         self.incidentWriter = incidentWriter
         if let idlePolicyStore {
@@ -480,6 +492,72 @@ public final class DorydService: NSObject, DorydControl {
         }
     }
 
+    public func machineBackupSchedules(reply: @escaping (NSArray, String) -> Void) {
+        guard let machineBackupScheduler else {
+            reply([], "machine backup scheduler is not configured")
+            return
+        }
+        reply(machineBackupScheduler.list().map(\.xpcDictionary) as NSArray, "")
+    }
+
+    public func machineBackupSet(
+        _ schedule: NSDictionary,
+        reply: @escaping (Bool, NSDictionary, String) -> Void
+    ) {
+        guard let machineBackupScheduler else {
+            reply(false, [:], "machine backup scheduler is not configured")
+            return
+        }
+        do {
+            let status = try machineBackupScheduler.upsert(
+                DoryMachineBackupSchedule(xpcDictionary: schedule)
+            )
+            incidentWriter?.record(
+                type: "machine.backup_schedule_set",
+                detail: status.schedule.machineID
+            )
+            reply(true, status.xpcDictionary, "")
+        } catch {
+            reply(false, [:], "\(error)")
+        }
+    }
+
+    public func machineBackupRemove(
+        _ machineID: String,
+        reply: @escaping (Bool, String) -> Void
+    ) {
+        guard let machineBackupScheduler else {
+            reply(false, "machine backup scheduler is not configured")
+            return
+        }
+        do {
+            try machineBackupScheduler.remove(machineID: machineID)
+            incidentWriter?.record(type: "machine.backup_schedule_removed", detail: machineID)
+            reply(true, "")
+        } catch {
+            reply(false, "\(error)")
+        }
+    }
+
+    public func machineBackupRun(
+        _ machineID: String,
+        reply: @escaping (Bool, NSDictionary, String) -> Void
+    ) {
+        guard let machineBackupScheduler else {
+            reply(false, [:], "machine backup scheduler is not configured")
+            return
+        }
+        let reply = StatusReply(reply)
+        DispatchQueue.global(qos: .utility).async {
+            do {
+                let status = try machineBackupScheduler.runNow(machineID: machineID)
+                reply.reply(true, status.xpcDictionary, "")
+            } catch {
+                reply.reply(false, [:], "\(error)")
+            }
+        }
+    }
+
     public func remoteConnect(
         _ config: NSDictionary,
         reply: @escaping (Bool, NSDictionary, String) -> Void
@@ -614,10 +692,72 @@ public final class DorydService: NSObject, DorydControl {
         }
     }
 
+    public func corporateConnectivityStatus(
+        _ runProbes: Bool,
+        reply: @escaping (String, String) -> Void
+    ) {
+        guard let corporateConnectivity else {
+            reply("", "corporate connectivity is not configured")
+            return
+        }
+        do {
+            reply(try Self.encodeCorporateStatus(corporateConnectivity.currentStatus(runProbes: runProbes)), "")
+        } catch {
+            reply("", "\(error)")
+        }
+    }
+
+    public func corporateConnectivityApply(
+        _ profileJSON: String,
+        dryRun: Bool,
+        reply: @escaping (String, String) -> Void
+    ) {
+        guard let corporateConnectivity else {
+            reply("", "corporate connectivity is not configured")
+            return
+        }
+        do {
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .iso8601
+            let profile = try decoder.decode(
+                CorporateConnectivityProfile.self,
+                from: Data(profileJSON.utf8)
+            )
+            let status = dryRun
+                ? corporateConnectivity.plan(profile, runProbes: false)
+                : corporateConnectivity.apply(profile, runProbes: true)
+            if !dryRun, !status.valid {
+                incidentWriter?.record(
+                    type: "network.corporate_apply_failed",
+                    detail: status.validationErrors.joined(separator: "; ")
+                )
+            }
+            reply(try Self.encodeCorporateStatus(status), "")
+        } catch {
+            reply("", "\(error)")
+        }
+    }
+
+    public func corporateConnectivityDisable(reply: @escaping (String, String) -> Void) {
+        guard let corporateConnectivity else {
+            reply("", "corporate connectivity is not configured")
+            return
+        }
+        do {
+            let status = corporateConnectivity.disable()
+            reply(try Self.encodeCorporateStatus(status), "")
+        } catch {
+            reply("", "\(error)")
+        }
+    }
+
     public func repairSubsystem(_ target: String, reply: @escaping (Bool, String) -> Void) {
         do {
             let detail: String
             switch target {
+            case "socket":
+                guard let dockerTier else { throw SubsystemRepairError.unavailable("docker tier is not configured") }
+                detail = try dockerTier.repairSocketForwarder()
             case "dns":
                 _ = networkRouteRepair?()
                 guard let networkingController else { throw SubsystemRepairError.unavailable("networking is not configured") }
@@ -641,19 +781,30 @@ public final class DorydService: NSObject, DorydControl {
                 detail = "requested immediate gvproxy reconciliation; validated \(count) published port(s), added \(diff?.added.count ?? 0), removed \(diff?.removed.count ?? 0)"
             case "guest-agent":
                 guard let dockerTier else { throw SubsystemRepairError.unavailable("docker tier is not configured") }
-                let result = dockerTier.syncAgentClock(now: Date())
-                guard result.attempted, result.synced else {
-                    throw SubsystemRepairError.unavailable(result.error ?? "guest agent did not acknowledge a fresh RPC")
-                }
-                detail = "guest agent reconnected and acknowledged clock synchronization"
+                let info = try dockerTier.reconnectAgent()
+                detail = "dropped the stale RPC transport and reconnected to guest agent \(info.agentBuild)"
             case "dockerd", "docker-api":
                 guard let dockerTier else { throw SubsystemRepairError.unavailable("docker tier is not configured") }
-                switch dockerTier.containerSummariesForIdle() {
-                case .ok(let containers):
-                    detail = "Docker API is reachable; \(containers.count) container(s) visible"
-                case .unavailable(let reason):
-                    throw SubsystemRepairError.unavailable("Docker API remains unreachable: \(reason). Use the explicit workload-aware engine restart.")
+                detail = try dockerTier.repairDockerDaemon()
+            case "data-drive":
+                let store = try DoryDataDriveSelectionStore(home: home)
+                guard let drive = try store.inspectSelection() else {
+                    throw SubsystemRepairError.unavailable("no Dory data drive is selected")
                 }
+                guard try drive.inspect() == .ready else {
+                    throw SubsystemRepairError.unavailable("selected data drive is not mounted at \(drive.root)")
+                }
+                let manifest = try drive.readManifest()
+                detail = "revalidated selected drive \(manifest.id.uuidString.lowercased()) at \(drive.root); no data or selection was replaced"
+            case "corporate-connectivity":
+                guard let corporateConnectivity else {
+                    throw SubsystemRepairError.unavailable("corporate connectivity is not configured")
+                }
+                let status = corporateConnectivity.reconcileCurrent(runProbes: true)
+                guard status.valid else {
+                    throw SubsystemRepairError.unavailable(status.validationErrors.joined(separator: "; "))
+                }
+                detail = "reconciled corporate connectivity; \(status.probes.filter(\.succeeded).count)/\(status.probes.count) probes passed"
             default:
                 throw SubsystemRepairError.invalidTarget(target)
             }
@@ -854,9 +1005,11 @@ public final class DorydService: NSObject, DorydControl {
         }
         let replyBox = EngineReply(reply)
         let incidentWriter = incidentWriter
+        let corporateConnectivity = corporateConnectivity
         Task.detached {
             do {
                 try dockerTier.promoteToRunning()
+                _ = corporateConnectivity?.reconcileCurrent(runProbes: false)
                 incidentWriter?.record(type: "engine.\(event)", detail: "docker tier running")
                 replyBox.reply(true, "")
             } catch {
@@ -864,6 +1017,13 @@ public final class DorydService: NSObject, DorydControl {
                 replyBox.reply(false, "\(error)")
             }
         }
+    }
+
+    private static func encodeCorporateStatus(_ status: CorporateConnectivityStatus) throws -> String {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        return String(decoding: try encoder.encode(status), as: UTF8.self)
     }
 
     private static func runtimeModeKeepsEngineAwake(_ mode: String) -> Bool {
@@ -887,6 +1047,14 @@ private final class EngineReply: @unchecked Sendable {
     let reply: (Bool, String) -> Void
 
     init(_ reply: @escaping (Bool, String) -> Void) {
+        self.reply = reply
+    }
+}
+
+private final class StatusReply: @unchecked Sendable {
+    let reply: (Bool, NSDictionary, String) -> Void
+
+    init(_ reply: @escaping (Bool, NSDictionary, String) -> Void) {
         self.reply = reply
     }
 }
@@ -1107,6 +1275,10 @@ private extension NetworkingStatus {
             "httpsProxyPort": httpsProxyPort,
             "httpsProxyRunning": httpsProxyRunning,
             "routes": routes.map(\.xpcDictionary),
+            "privilegedTCPForwards": privilegedTCPForwards.map(\.xpcDictionary),
+            "privilegedTCPForwardFailures": privilegedTCPForwardFailures.map { port, detail in
+                ["listenPort": port, "detail": detail] as NSDictionary
+            },
         ]
     }
 }
@@ -1571,6 +1743,9 @@ public final class DorydListenerDelegate: NSObject, NSXPCListenerDelegate {
         _ listener: NSXPCListener,
         shouldAcceptNewConnection connection: NSXPCConnection
     ) -> Bool {
+        guard DorydXPCSecurity.configureIncomingConnection(connection) else {
+            return false
+        }
         connection.exportedInterface = NSXPCInterface(with: DorydControl.self)
         connection.exportedObject = service
         connection.resume()

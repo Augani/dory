@@ -313,7 +313,7 @@ struct MenuBarContentView: View {
                             }
                             Button("Restart Running") { store.restartComposeProject(project.name) }
                                 .disabled(running == 0)
-                            Button("Down - stop and remove", role: .destructive) { Task { await store.composeDown(project.name) } }
+                            Button("Review stack removal in Dory…") { openSection(.compose) }
                         } label: {
                             chevronLabel
                         }
@@ -394,7 +394,7 @@ struct MenuBarContentView: View {
                     rowIcon("arrow.clockwise", "Refresh Kubernetes") { Task { await store.loadKubernetes() } }
                     Menu {
                         Button("Open Kubernetes") { openSection(.kubernetes) }
-                        Button("Disable Kubernetes", role: .destructive) { Task { await store.disableKubernetes() } }
+                        Button("Review cluster removal in Dory…") { openSection(.kubernetes) }
                     } label: {
                         chevronLabel
                     }

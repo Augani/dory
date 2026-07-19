@@ -66,6 +66,7 @@ private struct ProjectCard: View {
     @Environment(\.palette) private var p
     let name: String
     let services: [Container]
+    @State private var confirmingDown = false
 
     private var running: Int { services.filter(\.isRunning).count }
 
@@ -88,7 +89,7 @@ private struct ProjectCard: View {
                 Menu {
                     Button("Restart Running Services") { store.restartComposeProject(name) }
                         .disabled(running == 0)
-                    Button("Down — stop & remove", role: .destructive) { Task { await store.composeDown(name) } }
+                    Button("Down — stop & remove", role: .destructive) { confirmingDown = true }
                 } label: {
                     Text("⋯").font(.system(size: 15, weight: .bold)).foregroundStyle(p.text2)
                         .frame(width: 30, height: 28)
@@ -127,6 +128,12 @@ private struct ProjectCard: View {
         .padding(16)
         .background(p.bgElevated, in: RoundedRectangle(cornerRadius: 13))
         .overlay(RoundedRectangle(cornerRadius: 13).strokeBorder(p.border))
+        .confirmationDialog("Bring down \(name)?", isPresented: $confirmingDown, titleVisibility: .visible) {
+            Button("Stop & Remove Stack", role: .destructive) { Task { await store.composeDown(name) } }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This stops and removes \(services.count) stack container\(services.count == 1 ? "" : "s") and the project network. Images and named volumes stay, but writable-layer data is lost.")
+        }
     }
 
     private func actionButton(_ label: String, action: @escaping () -> Void) -> some View {

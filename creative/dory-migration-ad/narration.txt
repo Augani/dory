@@ -1,0 +1,11 @@
+Switching Docker runtimes shouldn't mean rebuilding your local world.
+
+Images. Volumes. Networks. Ports. Container state.
+
+Dory discovers Docker Desktop, OrbStack, Colima, and other compatible sources.
+
+It reads first—checking capacity and collisions before writing to Dory.
+
+Dory imports transactionally, verifies, and never deletes the source.
+
+Dory. Your complete local Linux workspace. Bring the work. Leave the lock behind.

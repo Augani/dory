@@ -1,38 +1,34 @@
-# ContainerizationEngine: Dory's in-process VM engine (framework integration)
+# ContainerizationEngine
 
-This package is the foundation of Dory's **next engine architecture**: instead of running `dockerd`
-inside a VM launched by Apple's `container` CLI (the shipping "shared VM" backend), Dory drives the
-Linux VM **directly** via Apple's [`containerization`](https://github.com/apple/containerization)
-Swift framework + Virtualization.framework. It is a **separate package** so the shipping
-`Dory.xcodeproj` app stays stable while this large integration is built and proven.
+This package contains Dory's production macOS 15+ Hypervisor.framework VM helper, `dory-hv`. It is
+not an alternate app backend or a future Apple `containerization` integration. `doryd` owns the
+local engine and launches this helper on supported hosts; macOS 14 selects the `dory-vmm`
+Virtualization.framework fallback from `dory-core-swift`.
 
-## Why this exists: it unblocks the last OrbStack features
+The full process, storage, networking, and trust-boundary contract is documented in
+[`../../ARCHITECTURE.md`](../../ARCHITECTURE.md).
 
-The `container` CLI hides the low-level VM controls these features need. The framework exposes them
-as first-class API (see `ContainerizationVMEngine.swift`):
+## What ships here
 
-| Blocked OrbStack feature | Framework capability used |
-|---|---|
-| **Rosetta-fast x86** | `ContainerManager(rosetta: true)`, native Rosetta, far faster than the qemu binfmt fallback |
-| **Reverse / bidirectional file mounts** | `Mount.share(source:destination:)`, host↔guest virtiofs in either direction |
-| **USB / audio passthrough** | `VZVirtualMachineManager` + `LinuxContainer.Configuration` device config (Virtualization.framework) |
-| **Dynamic memory balloon** | direct `memoryInBytes` + Virtualization.framework memory-balloon control |
-| Self-contained packaging | no external `container` toolchain (kernel + initfs bundled, VM spawned in-process) |
+- Arm64 and x86_64 raw-HV boot/device implementations. Public 0.4 releases remain Apple-silicon
+  only until an Intel candidate passes dedicated physical qualification.
+- Virtio block, network, vsock, rng, balloon, GPU-preview, and VirtioFS devices.
+- A copyless guest networking path through the provenance-pinned `gvproxy` helper.
+- Host-share coherence, bounded FSEvents batching, queue/backpressure telemetry, and recovery.
+- Published-port, SSH-agent, host-AI, and guest-control bridges.
+- USB host discovery and a host usbip bridge. Attach/detach remain unavailable because the guest
+  vhci RPC is intentionally absent and every public surface fails closed before claiming a device.
+- The same Rust `DoryCore` guest handshake, multiplexing, protobuf, Docker dataplane, and half-close
+  behavior used by doryd and the VZ fallback.
 
-## Status
+`Package.swift` intentionally exposes only the `dory-hv` executable and its supporting/test targets.
+Historical `ContainerizationVMEngine` and `dory-vmboot` prototype sources were removed because they
+were not build targets or production dependencies.
 
-- Engine scaffold (`ContainerizationVMEngine`) implemented against the real framework API
-  (`Kernel` + `ContainerManager` + `LinuxContainer`, mirroring the framework's own `cctl run`).
-- Package **resolves**. Build verifies the API usage compiles here.
-- Raw `dory-hv` uses the same Rust guest-control client as doryd/dory-vmm: versioned handshake,
-  multiplexing, deadlines, and protobuf are linked through `DoryCore`, not reimplemented in Swift.
-- USB discovery and the host usbip bridge exist, but attach/detach intentionally fail before a host
-  device is opened or claimed until `dory-agent` has a real vhci attach/detach protobuf RPC.
+## Build and test
 
-## Build
-
-`DoryCore`'s universal Rust XCFramework and generated Swift bindings are ignored build products.
-Materialize them once per clean checkout before invoking this package directly:
+The generated DoryCore XCFramework and Swift bindings are ignored build products. Materialize them
+before building this package directly:
 
 ```sh
 ../../scripts/build-dory-ffi-xcframework.sh
@@ -40,18 +36,6 @@ swift test
 swift build -c release --product dory-hv
 ```
 
-The repository's CI, `scripts/build.sh`, and `scripts/bundle-engine.sh` run that prerequisite
-automatically.
-
-## Wiring into Dory (the remaining multi-week work)
-
-1. Build this package green (in progress).
-2. Add a `ContainerizationRuntime: ContainerRuntime` adapter mapping Dory's protocol
-   (`snapshot/create/start/stop/exec/logs/...`) onto `ContainerManager`/`LinuxContainer`.
-3. Bundle a Linux kernel + `vminit` initfs in the app (the framework needs them to boot).
-4. Add it as a `RuntimeKind.containerization` backend selectable in `AppStore.connectBackend`,
-   alongside the shared-VM default, so it can be hardened without disrupting the shipping engine.
-5. Move Rosetta, reverse mounts, USB/audio, and ballooning onto this backend.
-
-This is the deliberate, additive path to 100% feature-for-feature parity. The working product keeps
-shipping on the shared-VM engine while the framework engine matures behind a backend switch.
+Repository CI and the release bundler run that prerequisite automatically. A source build is not
+release evidence: the exact signed helper, kernel, rootfs, guest agent, gvproxy, data-drive path, and
+host OS tier are rebound and exercised by the release qualification gates.

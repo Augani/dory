@@ -209,6 +209,12 @@ struct HostFSEventRelayTests {
             eventIDs: [1, 2, 3, 4]
         )
         #expect(batcher.pendingCount == 1)
+        let before = batcher.diagnostics
+        #expect(before.pendingCount == 1)
+        #expect(before.pendingLimit == 2)
+        #expect(before.pendingRequiresRescan)
+        #expect(before.receivedEventCount == 4)
+        #expect(before.rescanCollapseCount == 1)
         try await batcher.flushNow()
 
         let batch = try #require(await sink.batches.first)
@@ -216,6 +222,9 @@ struct HostFSEventRelayTests {
         #expect(batch[0].hostPath == "/host")
         #expect(batch[0].requiresRescan)
         #expect(batch[0].eventID == 4)
+        let after = batcher.diagnostics
+        #expect(after.pendingCount == 0)
+        #expect(after.deliveredBatchCount == 1)
     }
 
     @Test func defaultBatcherAcceptsANpmScaleDistinctPathBurstWithoutInventingLoss() async throws {

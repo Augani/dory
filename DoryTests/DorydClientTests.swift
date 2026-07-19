@@ -5,11 +5,11 @@ import Testing
 @Suite(.serialized)
 struct DorydClientTests {
     @MainActor
-    @Test func dorydEngineIsPreferredByDefaultOutsideAutomationAndCanBeDisabled() {
+    @Test func dorydIsTheOnlyProductionOwnerForDorysLocalEngine() {
         #expect(AppStore.dorydEngineEnabled(environment: [:]))
         #expect(AppStore.dorydEngineEnabled(environment: ["DORY_APP_USE_DORYD": "1"]))
-        #expect(!AppStore.dorydEngineEnabled(environment: ["DORY_APP_USE_DORYD": "0"]))
-        #expect(!AppStore.dorydEngineEnabled(environment: ["DORY_APP_DISABLE_DORYD": "1"]))
+        #expect(AppStore.dorydEngineEnabled(environment: ["DORY_APP_USE_DORYD": "0"]))
+        #expect(AppStore.dorydEngineEnabled(environment: ["DORY_APP_DISABLE_DORYD": "1"]))
     }
 
     @Test func customDomainPatternsAcceptExactAndLeftmostWildcardOnly() {
@@ -146,6 +146,16 @@ struct DorydClientTests {
         let restoredSnapshot = try await client.machineRestoreSnapshot(machineID: "dev", snapshotID: "s1")
         let exportedSnapshot = try await client.machineExportSnapshot(machineID: "dev", snapshotID: "s1", to: "/tmp/dev.dorymachine")
         let importedSnapshot = try await client.machineImportSnapshot(from: "/tmp/dev.dorymachine")
+        let savedBackup = try await client.machineBackupSet(DorydMachineBackupSchedule(
+            machineID: "dev",
+            enabled: true,
+            frequency: .daily,
+            keepLocal: 5,
+            verifyEveryRuns: 3
+        ))
+        let backupSchedules = try await client.machineBackupSchedules()
+        let completedBackup = try await client.machineBackupRun(machineID: "dev")
+        let removedBackup = try await client.machineBackupRemove(machineID: "dev")
         let deletedSnapshot = try await client.machineDeleteSnapshot(machineID: "dev", snapshotID: "s1")
         let stoppedMachine = try await client.machineStop("dev")
         let updatedMachine = try await client.machineUpdate(
@@ -238,6 +248,12 @@ struct DorydClientTests {
         #expect(restoredSnapshot.id == "dev")
         #expect(exportedSnapshot == DorydCommandResult(ok: true, message: ""))
         #expect(importedSnapshot.machineID == "dev")
+        #expect(savedBackup.schedule.keepLocal == 5)
+        #expect(savedBackup.schedule.verifyEveryRuns == 3)
+        #expect(backupSchedules.map(\.schedule.machineID) == ["dev"])
+        #expect(completedBackup.successfulRuns == 1)
+        #expect(completedBackup.lastBootVerificationISO == "2026-07-07T00:00:00Z")
+        #expect(removedBackup == DorydCommandResult(ok: true, message: ""))
         #expect(deletedSnapshot == DorydCommandResult(ok: true, message: ""))
         #expect(stoppedMachine.state == "stopped")
         #expect(updatedMachine.memoryMB == 4096)
@@ -1747,6 +1763,7 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
     private var _latestMachineUpdateConfig: NSDictionary?
     private var _latestMachineProvisionRecipe: String?
     private var snapshots: [String: [NSDictionary]] = [:]
+    private var backupStatuses: [String: NSDictionary] = [:]
     var engineStartCount: Int {
         lock.lock(); defer { lock.unlock() }
         return _engineStartCount
@@ -2200,6 +2217,54 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
         reply(true, row, "")
     }
 
+    func machineBackupSchedules(reply: @escaping (NSArray, String) -> Void) {
+        lock.lock()
+        let rows = backupStatuses.keys.sorted().compactMap { backupStatuses[$0] }
+        lock.unlock()
+        reply(rows as NSArray, "")
+    }
+
+    func machineBackupSet(_ schedule: NSDictionary, reply: @escaping (Bool, NSDictionary, String) -> Void) {
+        guard let machineID = schedule["machineID"] as? String,
+              let frequency = schedule["frequency"] as? String else {
+            reply(false, [:], "invalid backup schedule")
+            return
+        }
+        let row = Self.backupStatusRow(
+            machineID: machineID,
+            frequency: frequency,
+            keepLocal: Self.int(schedule["keepLocal"]) ?? 7,
+            verifyEveryRuns: Self.int(schedule["verifyEveryRuns"]) ?? 7
+        )
+        lock.lock()
+        backupStatuses[machineID] = row
+        lock.unlock()
+        reply(true, row, "")
+    }
+
+    func machineBackupRemove(_ machineID: String, reply: @escaping (Bool, String) -> Void) {
+        lock.lock()
+        backupStatuses.removeValue(forKey: machineID)
+        lock.unlock()
+        reply(true, "")
+    }
+
+    func machineBackupRun(_ machineID: String, reply: @escaping (Bool, NSDictionary, String) -> Void) {
+        lock.lock()
+        let current = backupStatuses[machineID]
+        let row = Self.backupStatusRow(
+            machineID: machineID,
+            frequency: current?["frequency"] as? String ?? "daily",
+            keepLocal: Self.int(current?["keepLocal"]) ?? 7,
+            verifyEveryRuns: Self.int(current?["verifyEveryRuns"]) ?? 7,
+            successfulRuns: (Self.int(current?["successfulRuns"]) ?? 0) + 1,
+            verified: true
+        )
+        backupStatuses[machineID] = row
+        lock.unlock()
+        reply(true, row, "")
+    }
+
     func remoteConnect(_ config: NSDictionary, reply: @escaping (Bool, NSDictionary, String) -> Void) {
         reply(true, agentInfo(), "")
     }
@@ -2280,6 +2345,30 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
                 ],
             ],
         ] as NSDictionary, "")
+    }
+
+    func corporateConnectivityStatus(
+        _ runProbes: Bool,
+        reply: @escaping (String, String) -> Void
+    ) {
+        reply(
+            """
+            {"schemaVersion":1,"enabled":false,"profile":null,"proxyReachable":null,"registryReachable":null,"certificateInstalled":false,"lastCheckedAt":null,"diagnostics":[]}
+            """,
+            ""
+        )
+    }
+
+    func corporateConnectivityApply(
+        _ profileJSON: String,
+        dryRun: Bool,
+        reply: @escaping (String, String) -> Void
+    ) {
+        reply(profileJSON, "")
+    }
+
+    func corporateConnectivityDisable(reply: @escaping (String, String) -> Void) {
+        corporateConnectivityStatus(false, reply: reply)
     }
 
     func repairSubsystem(_ target: String, reply: @escaping (Bool, String) -> Void) {
@@ -2554,6 +2643,38 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
             "memoryMB": 2048,
             "cpuCount": 2,
         ] as NSDictionary
+    }
+
+    private static func backupStatusRow(
+        machineID: String,
+        frequency: String,
+        keepLocal: Int,
+        verifyEveryRuns: Int,
+        successfulRuns: Int = 0,
+        verified: Bool = false
+    ) -> NSDictionary {
+        var row: [String: Any] = [
+            "machineID": machineID,
+            "enabled": true,
+            "frequency": frequency,
+            "keepLocal": keepLocal,
+            "verifyEveryRuns": verifyEveryRuns,
+            "inProgress": false,
+            "successfulRuns": successfulRuns,
+            "consecutiveFailures": 0,
+            "retainedSnapshots": successfulRuns,
+            "retainedArchives": successfulRuns,
+            "nextRunISO": "2026-07-08T00:00:00Z",
+        ]
+        if verified {
+            row["lastAttemptISO"] = "2026-07-07T00:00:00Z"
+            row["lastSuccessISO"] = "2026-07-07T00:00:00Z"
+            row["lastVerificationISO"] = "2026-07-07T00:00:00Z"
+            row["lastBootVerificationISO"] = "2026-07-07T00:00:00Z"
+            row["lastSnapshotID"] = "scheduled-1"
+            row["lastArchivePath"] = "/tmp/dev.dorymachine"
+        }
+        return row as NSDictionary
     }
 
     private static func domainRoute(_ value: Any) -> DorydDomainRoute? {

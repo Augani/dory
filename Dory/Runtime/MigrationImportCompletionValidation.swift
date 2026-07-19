@@ -21,7 +21,7 @@ extension MigrationImportAssetStagingExecution {
             )
         }
         let evidence = try await finalEvidence(staged: staged, plan: plan)
-        let unselectedSourceDigest = try verifiedUnselectedSourceInventoryDigest()
+        let unselectedSourceDigest = try await verifiedUnselectedSourceInventoryDigest()
         let unownedTargetDigest = try await verifiedUnownedTargetInventoryDigest(
             staged: Array(staged.values)
         )

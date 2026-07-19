@@ -1,0 +1,1106 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=3840, height=2160" />
+    <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+    <style>
+      @font-face { font-family: "Manrope"; src: url("assets/fonts/manrope-400.woff2") format("woff2"); font-weight: 400; }
+      @font-face { font-family: "Manrope"; src: url("assets/fonts/manrope-600.woff2") format("woff2"); font-weight: 600; }
+      @font-face { font-family: "Manrope"; src: url("assets/fonts/manrope-700.woff2") format("woff2"); font-weight: 700; }
+      @font-face { font-family: "Manrope"; src: url("assets/fonts/manrope-800.woff2") format("woff2"); font-weight: 800; }
+
+      :root {
+        --canvas: #f6f9fe;
+        --ink: #071525;
+        --deep: #0d2a4d;
+        --blue: #147fe8;
+        --logo-blue: #3d7bf4;
+        --amber: #c66b00;
+        --amber-bright: #ffad1f;
+        --surface: #ffffff;
+        --cool: #e7f1fc;
+        --muted: #52677d;
+        --green: #16865f;
+        --green-bright: #20b783;
+        --danger: #ef5a4c;
+        --line: rgba(7, 21, 37, 0.14);
+      }
+
+      * { box-sizing: border-box; margin: 0; padding: 0; }
+      html, body {
+        width: 3840px;
+        height: 2160px;
+        overflow: hidden;
+        background-color: var(--canvas);
+        color: var(--ink);
+        font-family: "Manrope", sans-serif;
+        -webkit-font-smoothing: antialiased;
+      }
+      img { display: block; }
+      .mono { font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; font-variant-numeric: tabular-nums; }
+
+      #root { position: relative; width: 3840px; height: 2160px; overflow: hidden; background-color: var(--canvas); }
+      #stage {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 1920px;
+        height: 1080px;
+        transform: scale(2);
+        transform-origin: left top;
+        overflow: hidden;
+        background-color: var(--canvas);
+        perspective: 1800px;
+      }
+      .scene {
+        position: absolute;
+        inset: 0;
+        width: 1920px;
+        height: 1080px;
+        overflow: hidden;
+        background-color: var(--canvas);
+        transform-origin: center center;
+      }
+      .scene::before {
+        content: "";
+        position: absolute;
+        inset: 0;
+        background-image:
+          linear-gradient(rgba(7, 21, 37, 0.045) 1px, rgba(7, 21, 37, 0) 1px),
+          linear-gradient(90deg, rgba(7, 21, 37, 0.045) 1px, rgba(7, 21, 37, 0) 1px);
+        background-size: 72px 72px;
+        opacity: 0.52;
+        pointer-events: none;
+      }
+      .scene::after {
+        content: "";
+        position: absolute;
+        width: 920px;
+        height: 920px;
+        border-radius: 50%;
+        right: -360px;
+        top: -480px;
+        background: radial-gradient(circle, rgba(20, 127, 232, 0.12), rgba(20, 127, 232, 0) 68%);
+        pointer-events: none;
+      }
+      #s1 { z-index: 1; }
+      #s2 { z-index: 2; opacity: 0; }
+      #s3 { z-index: 3; opacity: 0; }
+      #s4 { z-index: 4; opacity: 0; }
+      #s5 { z-index: 5; opacity: 0; }
+      #s6 { z-index: 6; opacity: 0; }
+      #s7 { z-index: 7; opacity: 0; }
+      #s8 { z-index: 8; opacity: 0; }
+      #s9 { z-index: 9; opacity: 0; }
+
+      .scene-content {
+        position: relative;
+        z-index: 2;
+        display: flex;
+        flex-direction: column;
+        width: 100%;
+        height: 100%;
+        padding: 58px 86px;
+        gap: 22px;
+      }
+      .chapter {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        color: var(--muted);
+        font-family: "JetBrains Mono", "SF Mono", Menlo, monospace;
+        font-size: 17px;
+        font-weight: 700;
+        letter-spacing: 0.11em;
+        text-transform: uppercase;
+      }
+      .chapter::before {
+        content: "";
+        width: 58px;
+        height: 4px;
+        border-radius: 99px;
+        background-color: var(--amber);
+      }
+      .eyebrow {
+        color: #0c64bb;
+        font-family: "JetBrains Mono", "SF Mono", Menlo, monospace;
+        font-size: 19px;
+        font-weight: 700;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+      }
+      .headline {
+        max-width: 1320px;
+        font-size: 88px;
+        line-height: 0.95;
+        font-weight: 800;
+        letter-spacing: -0.058em;
+      }
+      .headline em { color: var(--amber); font-style: normal; }
+      .subcopy {
+        max-width: 1060px;
+        color: var(--muted);
+        font-size: 26px;
+        line-height: 1.38;
+        letter-spacing: -0.018em;
+      }
+      .proof-pill {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 48px;
+        padding: 10px 16px;
+        border: 1px solid rgba(20, 127, 232, 0.22);
+        border-radius: 999px;
+        background-color: rgba(20, 127, 232, 0.07);
+        color: #0c64bb;
+        font-family: "JetBrains Mono", "SF Mono", Menlo, monospace;
+        font-size: 14px;
+        font-weight: 700;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+      }
+      .proof-pill.green { border-color: rgba(32, 183, 131, 0.28); background-color: rgba(32, 183, 131, 0.09); color: #08714f; }
+      .corner-note {
+        position: absolute;
+        z-index: 3;
+        left: 86px;
+        bottom: 34px;
+        color: var(--muted);
+        font-family: "JetBrains Mono", "SF Mono", Menlo, monospace;
+        font-size: 14px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .wake-band {
+        position: absolute;
+        z-index: 30;
+        left: -2350px;
+        top: 420px;
+        width: 2300px;
+        height: 190px;
+        border-radius: 999px;
+        background-color: var(--blue);
+        box-shadow: 0 0 0 34px rgba(255, 173, 31, 0.34);
+        transform: rotate(-8deg);
+        opacity: 0;
+        pointer-events: none;
+      }
+      .wake-band::after {
+        content: "";
+        position: absolute;
+        left: 68px;
+        right: 68px;
+        top: 50%;
+        height: 4px;
+        border-radius: 99px;
+        background-color: rgba(255, 255, 255, 0.66);
+      }
+
+      /* 01 — Logo hook */
+      #s1 .scene-content { align-items: center; justify-content: center; padding-bottom: 92px; text-align: center; }
+      .sonar-ring {
+        position: absolute;
+        z-index: 1;
+        width: 560px;
+        height: 560px;
+        border: 2px solid rgba(20, 127, 232, 0.16);
+        border-radius: 50%;
+      }
+      .sonar-ring.r2 { width: 410px; height: 410px; border-color: rgba(255, 173, 31, 0.32); }
+      .sonar-ring.r3 { width: 710px; height: 710px; border-color: rgba(7, 21, 37, 0.08); }
+      .logo-stage { position: relative; width: 360px; height: 360px; filter: drop-shadow(0 28px 52px rgba(20, 127, 232, 0.22)); }
+      .logo-stage img { position: absolute; inset: 0; width: 360px; height: 360px; }
+      .logo-stage .whole-logo { opacity: 0; }
+      .logo-stage .slice-a { clip-path: inset(0 66% 0 0); }
+      .logo-stage .slice-b { clip-path: inset(0 33% 0 33%); }
+      .logo-stage .slice-c { clip-path: inset(0 0 0 66%); }
+      .release-tag {
+        display: inline-flex;
+        align-items: center;
+        gap: 11px;
+        padding: 10px 18px;
+        border: 1px solid rgba(20, 127, 232, 0.28);
+        border-radius: 999px;
+        background-color: #edf6ff;
+        color: #0c64bb;
+        font-family: "JetBrains Mono", "SF Mono", Menlo, monospace;
+        font-size: 16px;
+        font-weight: 700;
+        letter-spacing: 0.1em;
+      }
+      .release-tag i { width: 10px; height: 10px; border-radius: 50%; background-color: var(--green-bright); }
+      .intro-title { font-size: 104px; line-height: 0.94; font-weight: 800; letter-spacing: -0.065em; }
+      .intro-subtitle { color: var(--muted); font-size: 25px; }
+
+      /* 02 — Magnetic buildline */
+      #s2 .scene-content { justify-content: space-between; }
+      .build-copy { display: flex; flex-direction: column; gap: 18px; margin-top: 14px; }
+      #s2 .headline { max-width: 1200px; font-size: 94px; }
+      .build-stage { position: relative; height: 500px; margin-top: auto; }
+      .buildline {
+        position: absolute;
+        left: 40px;
+        right: 40px;
+        top: 245px;
+        height: 8px;
+        border-radius: 99px;
+        background-color: rgba(20, 127, 232, 0.16);
+        transform: rotate(-3deg);
+      }
+      .buildline .energy {
+        position: absolute;
+        width: 290px;
+        height: 8px;
+        border-radius: 99px;
+        background-color: var(--amber-bright);
+        box-shadow: 0 0 24px rgba(255, 173, 31, 0.44);
+      }
+      .core-seed {
+        position: absolute;
+        left: 720px;
+        top: 142px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        width: 360px;
+        height: 170px;
+        padding: 28px 32px;
+        border-radius: 46px;
+        background-color: var(--blue);
+        color: #ffffff;
+        box-shadow: 0 30px 70px rgba(20, 127, 232, 0.26);
+      }
+      .core-seed strong { font-size: 38px; line-height: 1; letter-spacing: -0.04em; }
+      .core-seed span { padding: 8px 12px; border-radius: 999px; background-color: rgba(7, 21, 37, 0.24); font-size: 13px; letter-spacing: 0.08em; }
+      .cap-token {
+        position: absolute;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        min-height: 62px;
+        padding: 13px 18px;
+        border: 1px solid var(--line);
+        border-radius: 20px;
+        background-color: #ffffff;
+        box-shadow: 0 15px 38px rgba(40, 75, 110, 0.12);
+        font-size: 18px;
+        font-weight: 700;
+        white-space: nowrap;
+      }
+      .cap-token i { width: 11px; height: 11px; border-radius: 50%; background-color: var(--blue); }
+      .cap-token:nth-of-type(1) { left: 40px; top: 80px; transform: rotate(-7deg); }
+      .cap-token:nth-of-type(2) { left: 260px; top: 330px; transform: rotate(4deg); }
+      .cap-token:nth-of-type(3) { left: 535px; top: 60px; transform: rotate(-3deg); }
+      .cap-token:nth-of-type(4) { right: 500px; top: 330px; transform: rotate(5deg); }
+      .cap-token:nth-of-type(5) { right: 230px; top: 76px; transform: rotate(7deg); }
+      .cap-token:nth-of-type(6) { right: 30px; top: 305px; transform: rotate(-4deg); }
+      .build-meta { position: absolute; right: 20px; bottom: 4px; color: var(--muted); font-size: 14px; letter-spacing: 0.08em; }
+
+      /* 03 — Smaller Core */
+      #s3 .scene-content { display: grid; grid-template-columns: 0.88fr 1.12fr; grid-template-rows: auto auto 1fr; column-gap: 48px; }
+      #s3 .chapter { grid-column: 1 / -1; }
+      .core-copy { grid-column: 1; display: flex; flex-direction: column; gap: 18px; padding-top: 32px; }
+      #s3 .headline { font-size: 84px; max-width: 690px; }
+      .core-machine {
+        grid-column: 2;
+        grid-row: 2 / 4;
+        position: relative;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 850px;
+      }
+      .core-body {
+        position: relative;
+        z-index: 3;
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
+        width: 640px;
+        height: 500px;
+        padding: 42px;
+        border-radius: 64px;
+        background-color: var(--blue);
+        color: #ffffff;
+        box-shadow: 0 42px 100px rgba(20, 127, 232, 0.26);
+        overflow: hidden;
+      }
+      .core-body::after { content: "CORE"; position: absolute; right: -26px; bottom: -54px; color: rgba(255,255,255,0.09); font-size: 170px; font-weight: 800; letter-spacing: -0.09em; }
+      .core-body .core-top { display: flex; justify-content: space-between; align-items: center; }
+      .core-body .core-icon { display: flex; align-items: center; justify-content: center; width: 86px; height: 86px; border: 2px solid rgba(255,255,255,0.35); border-radius: 26px; font-size: 25px; }
+      .core-body h3 { max-width: 440px; font-size: 68px; line-height: 0.94; letter-spacing: -0.055em; }
+      .tool-row { display: flex; gap: 10px; position: relative; z-index: 2; }
+      .tool-row span { padding: 9px 12px; border-radius: 999px; background-color: rgba(7,21,37,0.25); font-size: 13px; }
+      .duplicate-slab {
+        position: absolute;
+        z-index: 2;
+        right: 40px;
+        top: 104px;
+        width: 430px;
+        height: 250px;
+        padding: 28px;
+        border: 2px dashed rgba(198, 107, 0, 0.45);
+        border-radius: 42px;
+        background-color: #fff4dc;
+        color: #8a4800;
+        transform: rotate(8deg);
+      }
+      .duplicate-slab span { display: block; font-size: 15px; letter-spacing: 0.08em; }
+      .duplicate-slab strong { display: block; margin-top: 18px; font-size: 46px; line-height: 0.94; letter-spacing: -0.05em; }
+      .payload-bit { position: absolute; width: 54px; height: 36px; border-radius: 11px; background-color: var(--amber-bright); opacity: 0.88; }
+      .payload-bit.b1 { right: 110px; top: 235px; }
+      .payload-bit.b2 { right: 42px; top: 320px; width: 72px; }
+      .payload-bit.b3 { right: 148px; top: 402px; }
+      .payload-bit.b4 { right: 330px; top: 110px; width: 40px; }
+      .payload-bit.b5 { right: 360px; top: 380px; width: 66px; }
+      .payload-bit.b6 { right: 22px; top: 470px; width: 44px; }
+      .reduction {
+        grid-column: 1;
+        align-self: end;
+        display: flex;
+        align-items: flex-end;
+        gap: 12px;
+        padding-bottom: 44px;
+      }
+      .reduction .tilde, .reduction .unit { color: var(--amber); font-family: "JetBrains Mono", "SF Mono", monospace; font-size: 44px; font-weight: 800; line-height: 1; }
+      .digit-window { width: 74px; height: 126px; overflow: hidden; }
+      .digit-strip { display: flex; flex-direction: column; }
+      .digit-strip span { display: flex; align-items: center; justify-content: center; height: 126px; font-size: 116px; line-height: 1; font-weight: 800; letter-spacing: -0.07em; }
+      .reduction-caption { max-width: 350px; margin-left: 12px; padding-bottom: 10px; color: var(--muted); font-size: 18px; line-height: 1.35; }
+
+      /* 04 — Optional components */
+      #s4 .scene-content { gap: 14px; }
+      #s4 .headline { font-size: 76px; }
+      .component-space { position: relative; flex: 1; min-height: 790px; }
+      .hub {
+        position: absolute;
+        z-index: 5;
+        left: 694px;
+        top: 280px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        width: 430px;
+        height: 210px;
+        padding: 32px;
+        border-radius: 54px;
+        background-color: #0c64bb;
+        color: #ffffff;
+        box-shadow: 0 36px 86px rgba(20, 127, 232, 0.28);
+      }
+      .hub strong { font-size: 42px; line-height: 0.96; letter-spacing: -0.05em; }
+      .hub small { display: block; margin-top: 8px; font-size: 13px; letter-spacing: 0.08em; }
+      .hub .hub-port { width: 74px; height: 74px; border: 2px solid rgba(255,255,255,0.38); border-radius: 24px; }
+      .connector-map { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+      .connector-map path { fill: none; stroke: rgba(20, 127, 232, 0.35); stroke-width: 4; stroke-linecap: round; }
+      .connector-map path.desktop-link { stroke: rgba(255, 173, 31, 0.6); stroke-width: 5; }
+      .module-slot { position: absolute; z-index: 6; }
+      .module {
+        position: relative;
+        display: flex;
+        align-items: center;
+        gap: 15px;
+        min-width: 270px;
+        min-height: 92px;
+        padding: 18px 22px;
+        border: 1px solid var(--line);
+        border-radius: 28px;
+        background-color: #ffffff;
+        box-shadow: 0 20px 52px rgba(40,75,110,0.13);
+      }
+      .module::after { content: ""; position: absolute; width: 16px; height: 16px; border: 4px solid var(--amber-bright); border-radius: 50%; background-color: var(--canvas); }
+      .module-icon { display: flex; align-items: center; justify-content: center; width: 56px; height: 56px; border-radius: 18px; background-color: #eaf5ff; color: #0c64bb; font-family: "JetBrains Mono", "SF Mono", monospace; font-size: 15px; font-weight: 800; }
+      .module-icon img { width: 36px; height: 36px; object-fit: contain; }
+      .module strong { display: block; font-size: 21px; line-height: 1.06; }
+      .module small { display: block; margin-top: 5px; color: #41566b; font-size: 13px; }
+      .module .verified { position: absolute; right: 13px; top: -14px; display: flex; align-items: center; justify-content: center; width: 34px; height: 34px; border-radius: 50%; background-color: var(--green-bright); color: #ffffff; font-size: 17px; font-weight: 800; }
+      .slot-k8s { left: 82px; top: 110px; }
+      .slot-k8s .module::after { right: -11px; bottom: 12px; }
+      .slot-machines { right: 80px; top: 96px; }
+      .slot-machines .module::after { left: -11px; bottom: 12px; }
+      .slot-desktop { left: 260px; bottom: 86px; }
+      .slot-desktop .module { min-width: 350px; border-color: rgba(198,107,0,0.3); background-color: #fff9ee; }
+      .slot-desktop .module::after { right: -11px; top: 20px; }
+      .slot-debian { right: 450px; bottom: 52px; }
+      .slot-ubuntu { right: 78px; bottom: 182px; }
+      .slot-kali { right: 68px; top: 330px; }
+      .slot-debian .module, .slot-ubuntu .module, .slot-kali .module { min-width: 250px; }
+      .slot-debian .module::after, .slot-ubuntu .module::after, .slot-kali .module::after { left: -11px; top: 20px; }
+      .catalog-note { position: absolute; left: 650px; bottom: 16px; color: var(--muted); font-size: 14px; letter-spacing: 0.08em; }
+
+      /* 05 — Graphical Linux */
+      #s5 .scene-content { display: grid; grid-template-columns: 0.64fr 1.36fr; grid-template-rows: auto 1fr; column-gap: 42px; }
+      #s5 .chapter { grid-column: 1 / -1; }
+      .desktop-copy { grid-column: 1; display: flex; flex-direction: column; gap: 18px; padding-top: 42px; }
+      #s5 .headline { font-size: 72px; max-width: 610px; }
+      .desktop-proofs { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: auto; padding-bottom: 60px; }
+      .desktop-shell {
+        grid-column: 2;
+        position: relative;
+        align-self: center;
+        height: 820px;
+        border: 2px solid rgba(20,127,232,0.36);
+        border-radius: 38px;
+        background-color: var(--deep);
+        box-shadow: 0 44px 110px rgba(7,21,37,0.25);
+        overflow: hidden;
+      }
+      .desktop-bar { display: flex; align-items: center; justify-content: space-between; height: 68px; padding: 0 24px; border-bottom: 1px solid rgba(255,255,255,0.12); color: #bcd0e4; font-size: 13px; }
+      .window-dots { display: flex; gap: 9px; }
+      .window-dots i { width: 12px; height: 12px; border-radius: 50%; background-color: #ff6b61; }
+      .window-dots i:nth-child(2) { background-color: var(--amber-bright); }
+      .window-dots i:nth-child(3) { background-color: var(--green-bright); }
+      .desktop-workspace { position: relative; height: 748px; background-color: #0b2340; }
+      .linux-app {
+        position: absolute;
+        overflow: hidden;
+        border: 1px solid rgba(255,255,255,0.18);
+        border-radius: 22px;
+        box-shadow: 0 28px 70px rgba(0,0,0,0.28);
+      }
+      .plot-app { left: 34px; top: 38px; width: 650px; height: 490px; background-color: #f3f8fe; }
+      .app-toolbar { display: flex; align-items: center; gap: 8px; height: 46px; padding: 0 16px; background-color: #dfebf7; }
+      .app-toolbar i { width: 9px; height: 9px; border-radius: 50%; background-color: #90a7bf; }
+      .app-toolbar span { flex: 1; height: 18px; margin-left: 8px; border-radius: 7px; background-color: #ffffff; }
+      .plot-body { position: relative; height: 444px; padding: 34px; }
+      .plot-body h4 { font-size: 25px; }
+      .plot-body p { margin-top: 6px; color: var(--muted); font-size: 16px; }
+      .plot-svg { position: absolute; left: 34px; right: 34px; bottom: 32px; width: 582px; height: 270px; }
+      .plot-svg path { fill: none; stroke: var(--blue); stroke-width: 9; stroke-linecap: round; stroke-linejoin: round; }
+      .plot-svg circle { fill: var(--amber-bright); stroke: #ffffff; stroke-width: 5; }
+      .scan-beam { position: absolute; z-index: 4; left: 0; top: 46px; width: 18px; height: 444px; background-color: rgba(32,183,131,0.20); box-shadow: 0 0 22px rgba(32,183,131,0.44); }
+      .test-console { right: 34px; bottom: 38px; width: 490px; height: 300px; padding: 25px; background-color: #06111f; color: #d8e9fa; font-size: 15px; line-height: 1.75; }
+      .test-console .prompt { color: #79c3ff; }
+      .test-console .pass { color: #5de0ad; }
+      .test-count { position: absolute; right: 24px; bottom: 22px; display: flex; align-items: baseline; gap: 8px; }
+      .test-count strong { color: var(--green-bright); font-size: 64px; line-height: 1; }
+      .test-count span { color: #9fb4ca; font-size: 13px; }
+      .desktop-dock { position: absolute; left: 34px; bottom: 34px; display: flex; gap: 12px; }
+      .dock-icon { display: flex; align-items: center; justify-content: center; width: 58px; height: 58px; border-radius: 18px; background-color: rgba(255,255,255,0.10); }
+      .dock-icon img { width: 36px; height: 36px; }
+      .retina-badge { position: absolute; right: 22px; top: 84px; padding: 10px 14px; border-radius: 999px; background-color: var(--amber-bright); color: #4e2a00; font-size: 13px; font-weight: 800; }
+
+      /* 06 — Agent sandbox */
+      #s6 .scene-content { display: grid; grid-template-columns: 0.66fr 1.34fr; grid-template-rows: auto 1fr; column-gap: 42px; }
+      #s6 .chapter { grid-column: 1 / -1; }
+      .agent-copy { grid-column: 1; display: flex; flex-direction: column; gap: 18px; padding-top: 34px; }
+      #s6 .headline { max-width: 650px; font-size: 68px; }
+      .agent-proof-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; margin-top: auto; padding-bottom: 48px; }
+      .mac-boundary {
+        grid-column: 2;
+        position: relative;
+        align-self: center;
+        height: 820px;
+        padding: 24px;
+        border: 3px solid rgba(7,21,37,0.18);
+        border-radius: 48px;
+        background-color: rgba(255,255,255,0.78);
+        box-shadow: 0 36px 90px rgba(40,75,110,0.14);
+      }
+      .boundary-label { display: flex; justify-content: space-between; align-items: center; height: 48px; padding: 0 10px; color: #334b62; font-size: 14px; letter-spacing: 0.08em; text-transform: uppercase; }
+      .boundary-label span:last-child { color: #08714f; }
+      .mac-file-zone { position: absolute; left: 32px; top: 132px; width: 230px; height: 590px; }
+      .mac-file-zone h4 { color: var(--muted); font-size: 13px; letter-spacing: 0.08em; text-transform: uppercase; }
+      .mac-file {
+        position: absolute;
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
+        width: 170px;
+        height: 128px;
+        padding: 17px;
+        border: 1px solid var(--line);
+        border-radius: 24px;
+        background-color: #ffffff;
+        box-shadow: 0 12px 30px rgba(40,75,110,0.10);
+      }
+      .mac-file i { width: 34px; height: 28px; border-radius: 7px; background-color: #dbe9f7; }
+      .mac-file strong { font-size: 15px; }
+      .mac-file.f1 { left: 8px; top: 64px; transform: rotate(-5deg); }
+      .mac-file.f2 { left: 34px; top: 242px; transform: rotate(4deg); }
+      .mac-file.f3 { left: 2px; top: 422px; transform: rotate(-3deg); }
+      .host-shield { position: absolute; left: 196px; top: 138px; width: 6px; height: 560px; border-radius: 99px; background-color: rgba(32,183,131,0.20); }
+      .host-shield::after { content: ""; position: absolute; left: -9px; top: -12px; width: 24px; height: 24px; border: 3px solid var(--green-bright); border-radius: 50%; background-color: var(--canvas); }
+      .vm-pod {
+        position: absolute;
+        left: 282px;
+        right: 24px;
+        top: 78px;
+        bottom: 24px;
+        display: flex;
+        flex-direction: column;
+        padding: 24px;
+        border: 3px solid rgba(20,127,232,0.58);
+        border-radius: 38px;
+        background-color: var(--deep);
+        color: #e9f4ff;
+        box-shadow: inset 0 0 0 12px rgba(20,127,232,0.06), 0 28px 70px rgba(7,21,37,0.24);
+        overflow: hidden;
+        transform-origin: center center;
+      }
+      .vm-top { display: flex; align-items: center; justify-content: space-between; }
+      .vm-name { display: flex; align-items: center; gap: 12px; }
+      .vm-name i { width: 14px; height: 14px; border-radius: 50%; background-color: var(--green-bright); }
+      .vm-name strong { font-size: 23px; }
+      .preview-badge { padding: 7px 12px; border: 1px solid rgba(255,173,31,0.48); border-radius: 999px; color: #ffd081; font-size: 12px; letter-spacing: 0.08em; }
+      .agent-chip { display: flex; align-items: center; gap: 10px; width: max-content; margin-top: 24px; padding: 12px 16px; border-radius: 16px; background-color: #eaf5ff; color: #0c64bb; font-size: 15px; font-weight: 800; }
+      .agent-chip i { width: 12px; height: 12px; border-radius: 50%; background-color: var(--blue); }
+      .command-panel { position: relative; margin-top: 16px; padding: 19px; border: 1px solid rgba(255,255,255,0.14); border-radius: 18px; background-color: #06111f; font-size: 14px; line-height: 1.7; }
+      .command-panel .cmd { color: #80c8ff; }
+      .command-panel .danger { color: #ff9b90; }
+      .command-panel .ok { color: #62dfae; }
+      .workspace-files { position: relative; flex: 1; margin-top: 16px; border: 1px dashed rgba(255,255,255,0.16); border-radius: 22px; overflow: hidden; }
+      .workspace-files::before { content: "TEMP WORKSPACE"; position: absolute; left: 18px; top: 14px; color: #728ba5; font-size: 12px; letter-spacing: 0.08em; }
+      .temp-file { position: absolute; display: flex; align-items: center; justify-content: center; width: 94px; height: 68px; border-radius: 16px; background-color: #15416e; color: #cce6ff; font-size: 12px; }
+      .temp-file:nth-child(1) { left: 34px; top: 72px; }
+      .temp-file:nth-child(2) { left: 160px; top: 80px; background-color: #623935; color: #ffd0ca; }
+      .temp-file:nth-child(3) { left: 288px; top: 64px; }
+      .temp-file:nth-child(4) { left: 74px; top: 176px; background-color: #4d3d17; color: #ffe1a3; }
+      .temp-file:nth-child(5) { left: 220px; top: 190px; }
+      .temp-file:nth-child(6) { left: 364px; top: 162px; background-color: #623935; color: #ffd0ca; }
+      .network-cable { position: absolute; right: -2px; top: 330px; width: 160px; height: 6px; border-radius: 99px; background-color: var(--amber-bright); transform-origin: right center; }
+      .network-cable::before { content: "EGRESS"; position: absolute; right: 0; top: -26px; color: #ffd081; font-size: 11px; letter-spacing: 0.08em; }
+      .network-cable::after { content: ""; position: absolute; right: -8px; top: -8px; width: 20px; height: 20px; border-radius: 50%; background-color: var(--amber-bright); }
+      .vm-status { display: flex; gap: 9px; margin-top: 15px; }
+      .vm-status span { flex: 1; padding: 10px 8px; border-radius: 12px; background-color: rgba(255,255,255,0.07); color: #b9d1e8; font-size: 11px; text-align: center; text-transform: uppercase; }
+      .delete-spark { position: absolute; left: 72%; top: 50%; width: 26px; height: 26px; border: 4px solid var(--amber-bright); border-radius: 50%; opacity: 0; }
+
+      /* 07 — Durable work */
+      #s7 .scene-content { gap: 16px; }
+      #s7 .headline { font-size: 82px; }
+      .durability-stage { position: relative; flex: 1; min-height: 690px; }
+      .anchor-ring {
+        position: absolute;
+        left: 640px;
+        top: 98px;
+        width: 540px;
+        height: 540px;
+        border: 3px solid rgba(255,173,31,0.30);
+        border-radius: 50%;
+      }
+      .anchor-ring::before { content: ""; position: absolute; inset: 58px; border: 2px solid rgba(20,127,232,0.18); border-radius: 50%; }
+      .data-core {
+        position: absolute;
+        z-index: 5;
+        left: 742px;
+        top: 184px;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        width: 336px;
+        height: 356px;
+        gap: 15px;
+        border: 2px solid rgba(198,107,0,0.36);
+        border-radius: 74px;
+        background-color: #fff7e7;
+        box-shadow: 0 30px 74px rgba(113,75,19,0.14);
+        text-align: center;
+      }
+      .data-disk { position: relative; width: 190px; height: 170px; border: 3px solid rgba(198,107,0,0.42); border-radius: 40px 40px 90px 90px; background-color: rgba(255,173,31,0.09); }
+      .data-disk::before, .data-disk::after { content: ""; position: absolute; left: -3px; width: 190px; height: 48px; border: 3px solid rgba(198,107,0,0.38); border-radius: 50%; }
+      .data-disk::before { top: -4px; }
+      .data-disk::after { top: 54px; }
+      .data-core strong { font-size: 34px; letter-spacing: -0.04em; }
+      .data-core span { max-width: 250px; color: var(--muted); font-size: 15px; line-height: 1.35; }
+      .eject-payload { position: absolute; z-index: 4; display: flex; align-items: center; gap: 12px; min-width: 260px; padding: 18px 20px; border: 1px solid var(--line); border-radius: 24px; background-color: #ffffff; box-shadow: 0 16px 40px rgba(40,75,110,0.11); }
+      .eject-payload i { width: 38px; height: 38px; border-radius: 13px; background-color: #eaf5ff; }
+      .eject-payload strong { font-size: 18px; }
+      .eject-payload small { display: block; margin-top: 3px; color: var(--muted); font-size: 12px; }
+      .eject-payload::after { content: "PULL"; position: absolute; padding: 7px 10px; border-radius: 999px; background-color: var(--amber-bright); color: #4e2a00; font-size: 10px; font-weight: 800; }
+      .payload-a { left: 86px; top: 116px; }
+      .payload-a::after { right: -32px; }
+      .payload-b { left: 164px; top: 420px; }
+      .payload-b::after { right: -32px; }
+      .payload-c { right: 100px; top: 124px; }
+      .payload-c::after { left: -32px; }
+      .payload-d { right: 168px; top: 420px; }
+      .payload-d::after { left: -32px; }
+      .guarantee-stamps { position: absolute; left: 562px; right: 562px; bottom: 12px; display: flex; justify-content: center; gap: 10px; }
+      .stamp { padding: 11px 15px; border: 2px solid rgba(32,183,131,0.32); border-radius: 14px; background-color: #effaf6; color: #08714f; font-size: 13px; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase; }
+
+      /* 08 — Domains */
+      #s8 .scene-content { justify-content: center; gap: 18px; }
+      #s8 .headline { max-width: 1500px; font-size: 80px; }
+      .domain-stage { position: relative; display: grid; grid-template-columns: 0.92fr 1.16fr 0.92fr; align-items: center; gap: 18px; height: 420px; margin-top: 18px; }
+      .domain-source { display: flex; flex-direction: column; gap: 14px; }
+      .domain-chip { display: flex; align-items: center; gap: 13px; min-height: 80px; padding: 18px 22px; border: 1px solid var(--line); border-radius: 23px; background-color: #ffffff; box-shadow: 0 14px 34px rgba(40,75,110,0.09); font-size: 18px; }
+      .domain-chip i { width: 12px; height: 12px; border-radius: 50%; background-color: var(--blue); }
+      .route-panel { position: relative; height: 260px; }
+      .route-svg { width: 100%; height: 100%; overflow: visible; }
+      .route-svg path { fill: none; stroke: var(--amber-bright); stroke-width: 8; stroke-linecap: round; }
+      .route-dot { position: absolute; left: 0; top: 116px; width: 18px; height: 18px; border-radius: 50%; background-color: var(--blue); box-shadow: 0 0 18px rgba(20,127,232,0.36); }
+      .https-lock { display: flex; flex-direction: column; justify-content: center; min-height: 228px; padding: 28px; border: 2px solid rgba(32,183,131,0.34); border-radius: 34px; background-color: #effaf6; color: #0d4c39; }
+      .lock-icon { display: flex; align-items: center; justify-content: center; width: 74px; height: 74px; margin-bottom: 18px; border-radius: 24px; background-color: var(--green-bright); color: #ffffff; font-size: 32px; font-weight: 800; }
+      .https-lock strong { font-size: 32px; }
+      .https-lock span { margin-top: 8px; color: #3f6f5f; font-size: 16px; line-height: 1.4; }
+
+      /* 09 — Exact logo return */
+      #s9 .scene-content { align-items: center; justify-content: center; padding-bottom: 62px; text-align: center; }
+      .outro-orbit { position: absolute; width: 620px; height: 620px; border: 2px solid rgba(20,127,232,0.14); border-radius: 50%; }
+      .outro-orbit.r2 { width: 460px; height: 460px; border-color: rgba(255,173,31,0.28); }
+      .outro-logo-stage { position: relative; width: 300px; height: 300px; }
+      .outro-logo-stage img { position: absolute; inset: 0; width: 300px; height: 300px; }
+      .outro-logo-stage .whole-logo { opacity: 0; }
+      .outro-logo-stage .slice-a { clip-path: inset(0 66% 0 0); }
+      .outro-logo-stage .slice-b { clip-path: inset(0 33% 0 33%); }
+      .outro-logo-stage .slice-c { clip-path: inset(0 0 0 66%); }
+      .outro-version { color: #0c64bb; font-size: 17px; font-weight: 800; letter-spacing: 0.12em; }
+      .outro-title { max-width: 1250px; font-size: 90px; line-height: 0.95; font-weight: 800; letter-spacing: -0.06em; }
+      .outro-title em { color: var(--amber); font-style: normal; }
+      .outro-meta { display: flex; align-items: center; gap: 16px; color: var(--muted); font-size: 15px; letter-spacing: 0.06em; }
+      .outro-meta i { width: 7px; height: 7px; border-radius: 50%; background-color: var(--blue); }
+
+      @media (prefers-reduced-motion: reduce) {
+        .scene::before { opacity: 0.30; }
+        .wake-band, .payload-bit { display: none; }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root" data-composition-id="dory-directors-cut" data-start="0" data-duration="65" data-width="3840" data-height="2160">
+      <div id="stage">
+        <section id="s1" class="scene">
+          <div class="sonar-ring r3" data-layout-ignore></div>
+          <div class="sonar-ring" data-layout-ignore></div>
+          <div class="sonar-ring r2" data-layout-ignore></div>
+          <div class="scene-content">
+            <div class="logo-stage">
+              <img class="logo-slice slice-a" src="assets/dory-logo.svg" alt="" />
+              <img class="logo-slice slice-b" src="assets/dory-logo.svg" alt="" />
+              <img class="logo-slice slice-c" src="assets/dory-logo.svg" alt="" />
+              <img class="whole-logo" src="assets/dory-logo.svg" alt="Dory logo" />
+            </div>
+            <div class="release-tag"><i></i><span>NEW RELEASE</span></div>
+            <h1 class="intro-title">Dory 0.3.2</h1>
+            <p class="intro-subtitle">Your complete local Linux workspace, built for Mac.</p>
+          </div>
+        </section>
+
+        <section id="s2" class="scene">
+          <div class="scene-content">
+            <div class="chapter">The buildline</div>
+            <div class="build-copy">
+              <p class="eyebrow">One workspace · chosen by you</p>
+              <h2 class="headline">An entire Linux world, built around <em>one Core.</em></h2>
+            </div>
+            <div class="build-stage">
+              <div class="buildline"><div class="energy"></div></div>
+              <div class="cap-token"><i></i>Containers</div>
+              <div class="cap-token"><i></i>Kubernetes</div>
+              <div class="cap-token"><i></i>Linux Machines</div>
+              <div class="cap-token"><i></i>Graphical Desktops</div>
+              <div class="cap-token"><i></i>Agent Sandboxes</div>
+              <div class="cap-token"><i></i>Trusted Networking</div>
+              <div class="core-seed"><div><strong>Docker Core</strong><span class="mono">LOCAL RUNTIME</span></div><span class="mono">0.3.2</span></div>
+              <span class="build-meta mono">APPLE SILICON · macOS 14+</span>
+            </div>
+          </div>
+        </section>
+
+        <section id="s3" class="scene">
+          <div class="scene-content">
+            <div class="chapter">Smaller foundation</div>
+            <div class="core-copy">
+              <p class="eyebrow">One focused Docker Core</p>
+              <h2 class="headline">Less duplicate weight. <em>Same complete engine.</em></h2>
+              <p class="subcopy">Engine, Docker CLI, Compose, Buildx, networking, storage, migration, diagnostics, and recovery.</p>
+            </div>
+            <div class="reduction">
+              <span class="tilde">~</span>
+              <span class="digit-window" data-layout-allow-overflow><span class="digit-strip d1"><span>0</span><span>1</span></span></span>
+              <span class="digit-window" data-layout-allow-overflow><span class="digit-strip d2"><span>0</span><span>1</span></span></span>
+              <span class="digit-window" data-layout-allow-overflow><span class="digit-strip d3"><span>0</span><span>2</span></span></span>
+              <span class="unit">MB</span>
+              <span class="reduction-caption">duplicate compatibility payload removed from Docker Core</span>
+            </div>
+            <div class="core-machine">
+              <div class="core-body">
+                <div class="core-top"><span class="core-icon mono">DC</span><span class="proof-pill mono">SIGNED ENGINE</span></div>
+                <h3>Docker Core</h3>
+                <div class="tool-row mono"><span>DOCKER</span><span>COMPOSE</span><span>BUILDX</span><span>BUILDKIT</span></div>
+              </div>
+              <div class="duplicate-slab" data-layout-allow-occlusion><span class="mono">DUPLICATE PAYLOAD</span><strong>Compatibility copy</strong></div>
+              <i class="payload-bit b1"></i><i class="payload-bit b2"></i><i class="payload-bit b3"></i>
+              <i class="payload-bit b4"></i><i class="payload-bit b5"></i><i class="payload-bit b6"></i>
+            </div>
+          </div>
+        </section>
+
+        <section id="s4" class="scene">
+          <div class="scene-content">
+            <div class="chapter">Signed components</div>
+            <p class="eyebrow">Review exact sizes · install deliberately</p>
+            <h2 class="headline">Snap in only what <em>you need.</em></h2>
+            <div class="component-space" data-layout-allow-overflow>
+              <svg class="connector-map" viewBox="0 0 1748 790" aria-hidden="true">
+                <path d="M910 355 C720 230 520 180 340 165"></path>
+                <path d="M910 355 C1110 220 1320 160 1470 150"></path>
+                <path class="desktop-link" d="M910 420 C780 570 620 660 490 682"></path>
+                <path class="desktop-link" d="M490 682 C770 700 960 690 1110 675"></path>
+                <path class="desktop-link" d="M1110 675 C1320 600 1450 540 1510 450"></path>
+                <path class="desktop-link" d="M1110 675 C1325 700 1460 690 1530 650"></path>
+              </svg>
+              <div class="hub"><div><strong>Docker Core</strong><small class="mono">THE FOUNDATION</small></div><i class="hub-port"></i></div>
+              <div class="module-slot slot-k8s"><div class="module"><span class="module-icon">K8S</span><div><strong>Kubernetes</strong><small>k3s workflow</small></div><span class="verified">✓</span></div></div>
+              <div class="module-slot slot-machines"><div class="module"><span class="module-icon">VM</span><div><strong>Linux Machines</strong><small>headless servers</small></div><span class="verified">✓</span></div></div>
+              <div class="module-slot slot-desktop"><div class="module"><span class="module-icon">GUI</span><div><strong>Linux Desktop Runtime</strong><small>shared graphical kernel</small></div><span class="verified">✓</span></div></div>
+              <div class="module-slot slot-debian"><div class="module"><span class="module-icon"><img src="assets/debian.svg" alt="" /></span><div><strong>Debian 13</strong><small>Xfce desktop</small></div><span class="verified">✓</span></div></div>
+              <div class="module-slot slot-ubuntu"><div class="module"><span class="module-icon"><img src="assets/ubuntu.svg" alt="" /></span><div><strong>Ubuntu 24.04 LTS</strong><small>Xfce desktop</small></div><span class="verified">✓</span></div></div>
+              <div class="module-slot slot-kali"><div class="module"><span class="module-icon"><img src="assets/kali.svg" alt="" /></span><div><strong>Kali rolling</strong><small>Xfce desktop</small></div><span class="verified">✓</span></div></div>
+              <span class="catalog-note mono">INSTALL · VERIFY · UPDATE · REMOVE</span>
+            </div>
+          </div>
+        </section>
+
+        <section id="s5" class="scene">
+          <div class="scene-content">
+            <div class="chapter">A real graphical surface</div>
+            <div class="desktop-copy">
+              <p class="eyebrow">Linux beside your containers</p>
+              <h2 class="headline">Run and test <em>graphical Linux apps.</em></h2>
+              <p class="subcopy">Watch the interface, not just the process.</p>
+              <div class="desktop-proofs">
+                <span class="proof-pill">Retina-sharp 2×</span>
+                <span class="proof-pill">Dynamic resize</span>
+                <span class="proof-pill">Persistent disks</span>
+                <span class="proof-pill">Scoped Mac folders</span>
+                <span class="proof-pill">Snapshots</span>
+                <span class="proof-pill">Debian · Ubuntu · Kali</span>
+              </div>
+            </div>
+            <div class="desktop-shell">
+              <div class="desktop-bar"><div class="window-dots"><i></i><i></i><i></i></div><span class="mono">dory-linux-desktop · Retina 2×</span><span class="mono">14:32</span></div>
+              <div class="desktop-workspace">
+                <div class="linux-app plot-app">
+                  <div class="app-toolbar"><i></i><i></i><i></i><span></span></div>
+                  <div class="plot-body">
+                    <h4>Graphical regression suite</h4><p>Live UI render · frame comparison</p>
+                    <svg class="plot-svg" viewBox="0 0 580 270"><path d="M20 228 C95 214 118 96 190 142 S298 230 360 118 S468 38 552 72"></path><circle cx="20" cy="228" r="11"></circle><circle cx="190" cy="142" r="11"></circle><circle cx="360" cy="118" r="11"></circle><circle cx="552" cy="72" r="11"></circle></svg>
+                  </div>
+                  <div class="scan-beam"></div>
+                </div>
+                <div class="linux-app test-console mono">
+                  <span class="prompt">$ npm run test:visual</span>
+                  <div>launching Linux display…</div><div>resizing 1440 → 1720…</div><div>comparing rendered frames…</div>
+                  <div class="pass">✓ graphical suite complete</div>
+                  <div class="test-count"><strong>128</strong><span>CHECKS<br/>PASSED</span></div>
+                </div>
+                <div class="desktop-dock"><span class="dock-icon"><img src="assets/debian.svg" alt="" /></span><span class="dock-icon"><img src="assets/ubuntu.svg" alt="" /></span><span class="dock-icon"><img src="assets/kali.svg" alt="" /></span></div>
+                <span class="retina-badge mono">RETINA 2×</span>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section id="s6" class="scene">
+          <div class="scene-content">
+            <div class="chapter">Agent safety · Preview</div>
+            <div class="agent-copy">
+              <p class="eyebrow">Dedicated Linux VM per run</p>
+              <h2 class="headline">Let agents break the <em>sandbox.</em> Not your workflow.</h2>
+              <p class="subcopy">No host files are visible by default. Explicit mounts are the boundary you choose.</p>
+              <div class="agent-proof-grid">
+                <span class="proof-pill green">No host files by default</span>
+                <span class="proof-pill">Explicit mounts only</span>
+                <span class="proof-pill">Network none</span>
+                <span class="proof-pill">Rollback</span>
+                <span class="proof-pill">TTL cleanup</span>
+                <span class="proof-pill">Deletes by default</span>
+              </div>
+            </div>
+            <div class="mac-boundary">
+              <div class="boundary-label mono"><span>Your Mac / host boundary</span><span>protected by default</span></div>
+              <div class="mac-file-zone">
+                <h4 class="mono">Host files</h4>
+                <div class="mac-file f1"><i></i><strong>Source</strong></div><div class="mac-file f2"><i></i><strong>Documents</strong></div><div class="mac-file f3"><i></i><strong>Credentials</strong></div>
+                <div class="host-shield"></div>
+              </div>
+              <div class="vm-pod">
+                <div class="vm-top"><div class="vm-name"><i></i><strong>agent-sandbox-7f2a</strong></div><span class="preview-badge mono">PREVIEW</span></div>
+                <div class="agent-chip"><i></i><span>AI agent command</span></div>
+                <div class="command-panel mono"><div class="cmd">$ dory sandbox run --network none --rollback -- ./destructive-test.sh</div><div class="danger">removing generated sandbox build tree…</div><div class="ok">scope: dedicated VM · host mounts: none</div></div>
+                <div class="workspace-files">
+                  <div class="temp-file mono">build/</div><div class="temp-file mono">cache/</div><div class="temp-file mono">dist/</div><div class="temp-file mono">tmp/</div><div class="temp-file mono">logs/</div><div class="temp-file mono">artifacts/</div>
+                </div>
+                <div class="network-cable"></div>
+                <div class="vm-status mono"><span>mounts none</span><span>network blocked</span><span>rollback ready</span></div>
+              </div>
+              <div class="delete-spark"></div>
+            </div>
+          </div>
+        </section>
+
+        <section id="s7" class="scene">
+          <div class="scene-content">
+            <div class="chapter">Durable by design</div>
+            <p class="eyebrow">Components can leave. Your work does not.</p>
+            <h2 class="headline">Payloads leave. <em>Work stays.</em></h2>
+            <div class="durability-stage">
+              <div class="anchor-ring"></div>
+              <div class="data-core"><div class="data-disk"></div><strong>.dorydrive stays</strong><span>Containers, volumes, clusters, machine disks, snapshots, and exports.</span></div>
+              <div class="eject-payload payload-a"><i></i><div><strong>Kubernetes</strong><small>optional payload</small></div></div>
+              <div class="eject-payload payload-b"><i></i><div><strong>Linux Machines</strong><small>optional payload</small></div></div>
+              <div class="eject-payload payload-c"><i></i><div><strong>Desktop Runtime</strong><small>optional payload</small></div></div>
+              <div class="eject-payload payload-d"><i></i><div><strong>Desktop image</strong><small>optional payload</small></div></div>
+              <div class="guarantee-stamps"><span class="stamp">✓ Signed</span><span class="stamp">= Exact sizes</span><span class="stamp">↗ Removable</span></div>
+            </div>
+          </div>
+        </section>
+
+        <section id="s8" class="scene">
+          <div class="scene-content">
+            <div class="chapter">Local networking</div>
+            <p class="eyebrow">Exact + leftmost-wildcard mappings</p>
+            <h2 class="headline">Your domains. Routed locally. <em>Trusted.</em></h2>
+            <div class="domain-stage">
+              <div class="domain-source"><div class="domain-chip mono"><i></i>api.myapp.test</div><div class="domain-chip mono"><i></i>*.lab.local</div></div>
+              <div class="route-panel"><svg class="route-svg" viewBox="0 0 650 260"><path d="M20 130 C140 130 155 42 285 42 S410 218 535 218 S570 130 630 130"></path></svg><i class="route-dot d1"></i><i class="route-dot d2"></i><i class="route-dot d3"></i></div>
+              <div class="https-lock"><div class="lock-icon">✓</div><strong>Trusted HTTPS</strong><span>Built-in local HTTP and trusted HTTPS proxies.</span></div>
+            </div>
+          </div>
+          <span class="corner-note mono">Settings → Network / dory domains</span>
+        </section>
+
+        <section id="s9" class="scene">
+          <div class="outro-orbit" data-layout-ignore></div><div class="outro-orbit r2" data-layout-ignore></div>
+          <div class="scene-content">
+            <div class="outro-logo-stage">
+              <img class="logo-slice slice-a" src="assets/dory-logo.svg" alt="" />
+              <img class="logo-slice slice-b" src="assets/dory-logo.svg" alt="" />
+              <img class="logo-slice slice-c" src="assets/dory-logo.svg" alt="" />
+              <img class="whole-logo" src="assets/dory-logo.svg" alt="Dory logo" />
+            </div>
+            <span class="outro-version mono">DORY 0.3.2</span>
+            <h2 class="outro-title">Smaller core. Bigger <em>possibilities.</em></h2>
+            <div class="outro-meta mono"><span>BUILT FOR MAC</span><i></i><span>OPEN SOURCE</span><i></i><span>github.com/Augani/dory</span></div>
+          </div>
+        </section>
+
+        <div class="wake-band" data-layout-ignore></div>
+      </div>
+
+      <audio id="music-bed" class="clip" data-start="0" data-duration="65" data-track-index="40" data-volume="0.72" src="assets/music-bed.wav"></audio>
+      <audio id="sfx-logo-contact-1" class="clip" data-start="0.58" data-duration="0.42" data-track-index="41" data-volume="0.62" src="assets/magnet-1.wav"></audio>
+      <audio id="sfx-logo-contact-2" class="clip" data-start="1.02" data-duration="0.42" data-track-index="42" data-volume="0.62" src="assets/magnet-2.wav"></audio>
+      <audio id="sfx-logo-contact-3" class="clip" data-start="1.46" data-duration="0.42" data-track-index="43" data-volume="0.62" src="assets/magnet-3.wav"></audio>
+      <audio id="sfx-core-thunk" class="clip" data-start="10.46" data-duration="0.72" data-track-index="44" data-volume="0.42" src="assets/core-thunk.wav"></audio>
+      <audio id="sfx-portal-whoosh" class="clip" data-start="23.68" data-duration="0.58" data-track-index="45" data-volume="0.48" src="assets/portal-whoosh.wav"></audio>
+      <audio id="sfx-sandbox-seal" class="clip" data-start="33.42" data-duration="0.52" data-track-index="46" data-volume="0.48" src="assets/sandbox-seal.wav"></audio>
+      <audio id="sfx-rollback" class="clip" data-start="46.86" data-duration="0.86" data-track-index="47" data-volume="0.42" src="assets/rollback.wav"></audio>
+      <audio id="sfx-delete-pop" class="clip" data-start="50.30" data-duration="0.62" data-track-index="48" data-volume="0.48" src="assets/delete-pop.wav"></audio>
+      <audio id="sfx-https-lock" class="clip" data-start="58.72" data-duration="0.82" data-track-index="49" data-volume="0.46" src="assets/https-lock.wav"></audio>
+
+      <audio id="voice-01" class="clip" data-start="0.75" data-duration="2.624" data-track-index="50" data-volume="1" src="assets/voice-01.wav"></audio>
+      <audio id="voice-02" class="clip" data-start="4.85" data-duration="4.139" data-track-index="51" data-volume="1" src="assets/voice-02.wav"></audio>
+      <audio id="voice-03" class="clip" data-start="9.85" data-duration="6.848" data-track-index="52" data-volume="1" src="assets/voice-03.wav"></audio>
+      <audio id="voice-04" class="clip" data-start="17.30" data-duration="6.229" data-track-index="53" data-volume="1" src="assets/voice-04.wav"></audio>
+      <audio id="voice-05" class="clip" data-start="24.40" data-duration="8.811" data-track-index="54" data-volume="1" src="assets/voice-05.wav"></audio>
+      <audio id="voice-06" class="clip" data-start="34.00" data-duration="3.947" data-track-index="55" data-volume="1" src="assets/voice-06.wav"></audio>
+      <audio id="voice-07" class="clip" data-start="38.30" data-duration="2.496" data-track-index="56" data-volume="1" src="assets/voice-07.wav"></audio>
+      <audio id="voice-08" class="clip" data-start="41.75" data-duration="1.877" data-track-index="57" data-volume="1" src="assets/voice-08.wav"></audio>
+      <audio id="voice-09" class="clip" data-start="44.25" data-duration="1.536" data-track-index="58" data-volume="1" src="assets/voice-09.wav"></audio>
+      <audio id="voice-10" class="clip" data-start="46.35" data-duration="1.109" data-track-index="59" data-volume="1" src="assets/voice-10.wav"></audio>
+      <audio id="voice-11" class="clip" data-start="47.75" data-duration="2.624" data-track-index="60" data-volume="1" src="assets/voice-11.wav"></audio>
+      <audio id="voice-12" class="clip" data-start="51.40" data-duration="4.501" data-track-index="61" data-volume="1" src="assets/voice-12.wav"></audio>
+      <audio id="voice-13" class="clip" data-start="56.20" data-duration="3.712" data-track-index="62" data-volume="1" src="assets/voice-13.wav"></audio>
+      <audio id="voice-14" class="clip" data-start="60.05" data-duration="4.608" data-track-index="63" data-volume="1" src="assets/voice-14.wav"></audio>
+    </div>
+
+    <script>
+      window.__timelines = window.__timelines || {};
+      var reduced = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      var travel = function (value) { return reduced ? value * 0.12 : value; };
+      var rotate = function (value) { return reduced ? value * 0.12 : value; };
+      var tl = gsap.timeline({ paused: true, defaults: { ease: "power3.out" } });
+
+      function wakeTransition(oldScene, newScene, at, direction) {
+        var sign = direction || 1;
+        tl.fromTo(".wake-band",
+          { x: sign > 0 ? 0 : 4700, opacity: 1, rotation: sign > 0 ? -8 : 172 },
+          { x: sign > 0 ? 4700 : 0, opacity: 1, rotation: sign > 0 ? -8 : 172, duration: 0.64, ease: "power4.inOut", immediateRender: false },
+          at
+        );
+        tl.to(oldScene, { x: travel(-130 * sign), scale: 0.985, duration: 0.64, ease: "power4.inOut" }, at);
+        tl.fromTo(newScene,
+          { x: travel(150 * sign), scale: 1.015, opacity: 1 },
+          { x: 0, scale: 1, opacity: 1, duration: 0.64, ease: "power4.inOut", immediateRender: false },
+          at
+        );
+        tl.set(oldScene, { opacity: 0 }, at + 0.65);
+        tl.set(".wake-band", { opacity: 0 }, at + 0.66);
+      }
+
+      function zoomTransition(oldScene, newScene, at) {
+        tl.to(oldScene, { scale: reduced ? 1.03 : 2.05, opacity: 0.25, duration: 0.62, ease: "power4.inOut" }, at);
+        tl.fromTo(newScene,
+          { scale: reduced ? 0.98 : 0.72, opacity: 1 },
+          { scale: 1, opacity: 1, duration: 0.62, ease: "power4.inOut", immediateRender: false },
+          at
+        );
+        tl.set(oldScene, { opacity: 0 }, at + 0.63);
+      }
+
+      function irisTransition(oldScene, newScene, at, origin) {
+        var start = reduced ? "circle(92% at " + origin + ")" : "circle(0% at " + origin + ")";
+        tl.fromTo(newScene,
+          { clipPath: start, opacity: 1 },
+          { clipPath: "circle(150% at " + origin + ")", opacity: 1, duration: 0.66, ease: "expo.inOut", immediateRender: false },
+          at
+        );
+        tl.to(oldScene, { scale: reduced ? 1.01 : 1.08, duration: 0.66, ease: "expo.inOut" }, at);
+        tl.set(oldScene, { opacity: 0 }, at + 0.67);
+      }
+
+      function flipTransition(oldScene, newScene, at) {
+        tl.to(oldScene, { rotationY: rotate(-78), x: travel(-260), scale: 0.92, duration: 0.64, ease: "power4.inOut", transformOrigin: "right center" }, at);
+        tl.fromTo(newScene,
+          { rotationY: rotate(78), x: travel(260), scale: 0.92, opacity: 1, transformOrigin: "left center" },
+          { rotationY: 0, x: 0, scale: 1, opacity: 1, duration: 0.64, ease: "power4.inOut", immediateRender: false },
+          at
+        );
+        tl.set(oldScene, { opacity: 0 }, at + 0.65);
+      }
+
+      // 01 — exact mark, three distinct magnetic contacts.
+      tl.from("#s1 .sonar-ring", { scale: 0.86, opacity: 0, duration: 0.72, stagger: 0.08, ease: "expo.out" }, 0.18);
+      tl.from("#s1 .slice-a", { x: travel(-420), y: travel(96), rotation: rotate(-28), opacity: 0, duration: 0.74, ease: "power4.out" }, 0.28);
+      tl.from("#s1 .slice-b", { y: travel(-350), scale: 0.94, rotation: rotate(8), opacity: 0, duration: 0.68, ease: "back.out(1.3)" }, 0.66);
+      tl.from("#s1 .slice-c", { x: travel(430), y: travel(110), rotation: rotate(24), opacity: 0, duration: 0.72, ease: "expo.out" }, 1.04);
+      tl.to("#s1 .logo-slice", { opacity: 0, duration: 0.14, ease: "power2.out" }, 1.72);
+      tl.to("#s1 .whole-logo", { opacity: 1, duration: 0.18, ease: "power2.out" }, 1.72);
+      tl.from("#s1 .release-tag", { x: travel(-28), scale: 0.95, opacity: 0, duration: 0.36, ease: "expo.out" }, 1.82);
+      tl.from("#s1 .intro-title", { clipPath: "inset(0 100% 0 0)", x: travel(-36), opacity: 0, duration: 0.52, ease: "power4.out" }, 2.0);
+      tl.from("#s1 .intro-subtitle", { x: travel(34), opacity: 0, duration: 0.44, ease: "sine.out" }, 2.24);
+      tl.to("#s1 .sonar-ring.r2", { rotation: rotate(18), duration: 4.0, ease: "none" }, 0.3);
+
+      // 02 — logo becomes a buildline and capabilities orbit a shared Core.
+      irisTransition("#s1", "#s2", 4.42, "50% 46%");
+      tl.from("#s2 .chapter", { x: travel(-60), opacity: 0, duration: 0.38, ease: "expo.out" }, 4.64);
+      tl.from("#s2 .eyebrow", { clipPath: "inset(0 100% 0 0)", opacity: 0, duration: 0.44, ease: "power3.out" }, 4.78);
+      tl.from("#s2 .headline", { x: travel(-80), rotation: rotate(-1.5), opacity: 0, duration: 0.62, ease: "power4.out" }, 4.9);
+      tl.from("#s2 .buildline", { scaleX: 0, transformOrigin: "left center", opacity: 0, duration: 0.74, ease: "expo.out" }, 5.2);
+      tl.from("#s2 .core-seed", { x: travel(-620), y: travel(120), rotation: rotate(-12), scale: 0.94, opacity: 0, duration: 0.74, ease: "back.out(1.3)" }, 5.46);
+      tl.from("#s2 .cap-token", { x: function (i) { return travel([-300,-180,-80,120,250,360][i]); }, y: function (i) { return travel([210,-160,190,-180,170,-120][i]); }, rotation: function (i) { return rotate([-18,12,-8,16,-12,20][i]); }, scale: 0.94, opacity: 0, duration: 0.58, stagger: 0.065, ease: "expo.out" }, 5.86);
+      tl.from("#s2 .build-meta", { x: travel(44), opacity: 0, duration: 0.4, ease: "sine.out" }, 6.5);
+      tl.fromTo("#s2 .energy", { x: -280 }, { x: 1640, duration: 3.2, ease: "none", immediateRender: false }, 5.42);
+
+      // 03 — Core lands, duplicate payload peels away, number reels resolve.
+      zoomTransition("#s2", "#s3", 9.36);
+      tl.from("#s3 .chapter", { x: travel(-52), opacity: 0, duration: 0.36, ease: "expo.out" }, 9.58);
+      tl.from("#s3 .core-copy .eyebrow", { clipPath: "inset(0 100% 0 0)", opacity: 0, duration: 0.42, ease: "power3.out" }, 9.68);
+      tl.from("#s3 .headline", { x: travel(-74), opacity: 0, duration: 0.58, ease: "power4.out" }, 9.82);
+      tl.from("#s3 .subcopy", { x: travel(48), opacity: 0, duration: 0.44, ease: "sine.out" }, 10.12);
+      tl.from("#s3 .core-body", { y: travel(-260), rotation: rotate(-5), scale: 0.94, opacity: 0, duration: 0.62, ease: "back.out(1.25)" }, 9.94);
+      tl.from("#s3 .duplicate-slab", { x: travel(220), y: travel(-60), rotation: rotate(18), scale: 0.95, opacity: 0, duration: 0.52, ease: "expo.out" }, 10.34);
+      tl.to("#s3 .duplicate-slab", { x: travel(210), y: travel(-86), rotation: rotate(17), scale: 0.78, opacity: 0.42, duration: 0.72, ease: "power4.inOut" }, 12.18);
+      tl.from("#s3 .payload-bit", { x: 0, y: 0, scale: 0.94, opacity: 0, duration: 0.28, stagger: 0.05, ease: "power2.out" }, 11.2);
+      tl.to("#s3 .payload-bit", { x: function (i) { return travel([160,230,110,-130,-210,260][i]); }, y: function (i) { return travel([-100,30,150,-120,100,180][i]); }, rotation: function (i) { return rotate([24,-18,36,-30,22,42][i]); }, duration: 0.72, stagger: 0.045, ease: "power4.inOut" }, 12.0);
+      tl.from("#s3 .reduction .tilde, #s3 .reduction .unit, #s3 .reduction-caption", { y: travel(38), opacity: 0, duration: 0.42, stagger: 0.06, ease: "expo.out" }, 12.62);
+      tl.to("#s3 .digit-strip", { y: -126, duration: 0.82, stagger: 0.08, ease: "power4.inOut" }, 12.48);
+
+      // 04 — optional modules slingshot into a real dependency map.
+      wakeTransition("#s3", "#s4", 16.78, 1);
+      tl.from("#s4 .chapter", { x: travel(-58), opacity: 0, duration: 0.34, ease: "expo.out" }, 17.0);
+      tl.from("#s4 .eyebrow", { clipPath: "inset(0 100% 0 0)", opacity: 0, duration: 0.4, ease: "power3.out" }, 17.12);
+      tl.from("#s4 .headline", { x: travel(-64), rotation: rotate(-1), opacity: 0, duration: 0.56, ease: "power4.out" }, 17.24);
+      tl.from("#s4 .hub", { y: travel(-160), scale: 0.94, rotation: rotate(-4), opacity: 0, duration: 0.58, ease: "back.out(1.3)" }, 17.5);
+      tl.from("#s4 .connector-map path", { strokeDasharray: 900, strokeDashoffset: 900, opacity: 0, duration: 0.68, stagger: 0.06, ease: "power3.out" }, 17.74);
+      tl.from("#s4 .module", { x: function (i) { return travel([-520,460,-390,380,520,560][i]); }, y: function (i) { return travel([-140,-120,220,260,80,-220][i]); }, rotation: function (i) { return rotate([-16,14,-12,11,18,-15][i]); }, scale: 0.94, opacity: 0, duration: 0.62, stagger: 0.07, ease: "expo.out" }, 18.0);
+      tl.from("#s4 .verified", { scale: 0.94, rotation: rotate(-18), opacity: 0, duration: 0.3, stagger: 0.07, ease: "back.out(1.25)" }, 18.54);
+      tl.from("#s4 .catalog-note", { y: travel(28), opacity: 0, duration: 0.38, ease: "sine.out" }, 19.1);
+      tl.to("#s4 .slot-desktop .module", { scale: 1.035, duration: 0.34, repeat: 1, yoyo: true, ease: "power2.inOut" }, 22.48);
+
+      // 05 — Desktop Runtime opens into an actual graphical test.
+      zoomTransition("#s4", "#s5", 23.78);
+      tl.from("#s5 .chapter", { x: travel(-52), opacity: 0, duration: 0.34, ease: "expo.out" }, 24.0);
+      tl.from("#s5 .desktop-copy .eyebrow", { clipPath: "inset(0 100% 0 0)", opacity: 0, duration: 0.4, ease: "power3.out" }, 24.12);
+      tl.from("#s5 .headline", { x: travel(-72), opacity: 0, duration: 0.56, ease: "power4.out" }, 24.24);
+      tl.from("#s5 .subcopy", { x: travel(38), opacity: 0, duration: 0.4, ease: "sine.out" }, 24.58);
+      tl.from("#s5 .desktop-shell", { rotationY: rotate(-12), x: travel(160), scale: 0.94, opacity: 0, duration: 0.68, ease: "expo.out", transformOrigin: "left center" }, 24.42);
+      tl.from("#s5 .plot-app", { x: travel(-150), y: travel(70), scale: 0.95, opacity: 0, duration: 0.52, ease: "power4.out" }, 25.02);
+      tl.from("#s5 .test-console", { x: travel(160), y: travel(74), scale: 0.95, opacity: 0, duration: 0.5, ease: "expo.out" }, 25.3);
+      tl.from("#s5 .plot-svg path", { strokeDasharray: 900, strokeDashoffset: 900, duration: 1.18, ease: "power2.inOut" }, 25.64);
+      tl.from("#s5 .plot-svg circle", { scale: 0.94, opacity: 0, transformOrigin: "center center", duration: 0.28, stagger: 0.11, ease: "back.out(1.2)" }, 26.0);
+      tl.fromTo("#s5 .scan-beam", { x: 0, opacity: 0.2 }, { x: 632, opacity: 0.5, duration: 2.1, ease: "none", immediateRender: false }, 26.18);
+      tl.from("#s5 .test-console > div:not(.test-count)", { x: travel(-20), opacity: 0, duration: 0.25, stagger: 0.26, ease: "power2.out" }, 26.34);
+      tl.from("#s5 .test-count", { y: travel(36), scale: 0.95, opacity: 0, duration: 0.42, ease: "back.out(1.25)" }, 28.16);
+      tl.from("#s5 .dock-icon", { y: travel(34), scale: 0.94, opacity: 0, duration: 0.34, stagger: 0.06, ease: "expo.out" }, 27.02);
+      tl.from("#s5 .retina-badge", { x: travel(50), scale: 0.95, opacity: 0, duration: 0.38, ease: "power3.out" }, 27.58);
+      tl.from("#s5 .proof-pill", { x: function (i) { return travel(i % 2 ? 34 : -34); }, opacity: 0, duration: 0.32, stagger: 0.055, ease: "expo.out" }, 28.54);
+
+      // 06 — the desktop folds into a containment chamber.
+      flipTransition("#s5", "#s6", 33.34);
+      tl.from("#s6 .chapter", { x: travel(-54), opacity: 0, duration: 0.34, ease: "expo.out" }, 33.58);
+      tl.from("#s6 .agent-copy .eyebrow", { clipPath: "inset(0 100% 0 0)", opacity: 0, duration: 0.4, ease: "power3.out" }, 33.72);
+      tl.from("#s6 .headline", { x: travel(-68), rotation: rotate(-1), opacity: 0, duration: 0.58, ease: "power4.out" }, 33.86);
+      tl.from("#s6 .subcopy", { x: travel(42), opacity: 0, duration: 0.42, ease: "sine.out" }, 34.2);
+      tl.from("#s6 .mac-boundary", { scale: 0.95, x: travel(120), opacity: 0, duration: 0.62, ease: "expo.out" }, 33.8);
+      tl.from("#s6 .boundary-label", { y: travel(-24), opacity: 0, duration: 0.36, ease: "power2.out" }, 34.28);
+      tl.from("#s6 .mac-file", { x: travel(-80), rotation: rotate(-10), scale: 0.95, opacity: 0, duration: 0.4, stagger: 0.08, ease: "expo.out" }, 34.46);
+      tl.from("#s6 .host-shield", { scaleY: 0, transformOrigin: "top center", opacity: 0, duration: 0.62, ease: "power3.out" }, 34.7);
+      tl.from("#s6 .vm-pod", { x: travel(150), scale: 0.95, opacity: 0, duration: 0.58, ease: "back.out(1.25)" }, 34.54);
+      tl.from("#s6 .vm-top", { x: travel(-28), opacity: 0, duration: 0.34, ease: "expo.out" }, 35.02);
+      tl.from("#s6 .agent-chip", { x: travel(-260), rotation: rotate(-8), scale: 0.95, opacity: 0, duration: 0.56, ease: "power4.out" }, 35.22);
+      tl.from("#s6 .command-panel", { y: travel(42), opacity: 0, duration: 0.44, ease: "power3.out" }, 35.62);
+      tl.from("#s6 .command-panel > div", { x: travel(-18), opacity: 0, duration: 0.26, stagger: 0.28, ease: "power2.out" }, 35.92);
+      tl.from("#s6 .temp-file", { scale: 0.95, y: travel(24), opacity: 0, duration: 0.34, stagger: 0.055, ease: "expo.out" }, 36.56);
+      tl.from("#s6 .network-cable", { scaleX: 0, transformOrigin: "right center", opacity: 0, duration: 0.42, ease: "power3.out" }, 37.02);
+      tl.from("#s6 .vm-status span", { y: travel(22), opacity: 0, duration: 0.3, stagger: 0.06, ease: "expo.out" }, 37.32);
+      tl.from("#s6 .proof-pill", { x: function (i) { return travel(i % 2 ? 34 : -34); }, opacity: 0, duration: 0.3, stagger: 0.055, ease: "power3.out" }, 38.24);
+      tl.to("#s6 .host-shield", { scaleX: 1.7, opacity: 0.92, duration: 0.26, repeat: 1, yoyo: true, ease: "power2.inOut" }, 39.06);
+      tl.to("#s6 .mac-file", { x: travel(-12), duration: 0.24, stagger: 0.05, repeat: 1, yoyo: true, ease: "power2.inOut" }, 39.16);
+      tl.to("#s6 .command-panel .ok", { color: "#a2f2d1", duration: 0.24, repeat: 1, yoyo: true, ease: "power2.inOut" }, 41.72);
+      tl.to("#s6 .vm-status span:first-child", { backgroundColor: "rgba(32,183,131,0.22)", color: "#6be2b3", scale: 1.03, duration: 0.28, repeat: 1, yoyo: true, ease: "power2.inOut" }, 41.82);
+      tl.to("#s6 .network-cable", { scaleX: 0.02, opacity: 0.22, duration: 0.5, ease: "power4.inOut" }, 44.24);
+      tl.to("#s6 .temp-file", { x: function (i) { return travel([-26,42,-18,34,-36,24][i]); }, y: function (i) { return travel([-48,-34,44,38,-22,52][i]); }, rotation: function (i) { return rotate([-18,22,-14,17,-24,19][i]); }, scale: 0.92, duration: 0.48, stagger: 0.045, ease: "power4.out" }, 45.12);
+      tl.to("#s6 .temp-file", { x: 0, y: 0, rotation: 0, scale: 1, duration: 0.62, stagger: 0.035, ease: "power4.inOut" }, 46.48);
+      tl.to("#s6 .vm-status span:nth-child(3)", { backgroundColor: "rgba(32,183,131,0.22)", color: "#6be2b3", scale: 1.03, duration: 0.28, repeat: 1, yoyo: true, ease: "power2.inOut" }, 47.08);
+
+      // 07 — VM deletion becomes the transition; persistent data grows from its center.
+      tl.to("#s6 .vm-pod", { scale: 0.10, rotation: rotate(18), opacity: 0, duration: 0.62, ease: "power4.in" }, 50.22);
+      tl.fromTo("#s6 .delete-spark", { scale: 0.4, opacity: 0.9 }, { scale: 4.8, opacity: 0, duration: 0.48, ease: "expo.out", immediateRender: false }, 50.5);
+      tl.fromTo("#s7", { scale: reduced ? 0.98 : 0.76, opacity: 1 }, { scale: 1, opacity: 1, duration: 0.66, ease: "power4.out", immediateRender: false }, 50.34);
+      tl.set("#s6", { opacity: 0 }, 50.86);
+      tl.from("#s7 .chapter", { x: travel(-54), opacity: 0, duration: 0.32, ease: "expo.out" }, 50.42);
+      tl.from("#s7 .eyebrow", { clipPath: "inset(0 100% 0 0)", opacity: 0, duration: 0.36, ease: "power3.out" }, 50.48);
+      tl.from("#s7 .headline", { x: travel(-64), opacity: 0, duration: 0.5, ease: "power4.out" }, 50.54);
+      tl.from("#s7 .anchor-ring", { scale: 0.72, opacity: 0, duration: 0.58, ease: "expo.out" }, 50.62);
+      tl.from("#s7 .data-core", { scale: 0.94, y: travel(70), opacity: 0, duration: 0.56, ease: "back.out(1.25)" }, 50.76);
+      tl.from("#s7 .eject-payload", { x: function (i) { return travel(i < 2 ? -190 : 190); }, y: function (i) { return travel(i % 2 ? 80 : -70); }, rotation: function (i) { return rotate(i < 2 ? -7 : 7); }, scale: 0.95, opacity: 0, duration: 0.44, stagger: 0.065, ease: "expo.out" }, 51.22);
+      tl.from("#s7 .stamp", { scale: 0.94, y: travel(28), opacity: 0, duration: 0.32, stagger: 0.075, ease: "back.out(1.2)" }, 51.9);
+      tl.to("#s7 .payload-a, #s7 .payload-b", { x: travel(-210), rotation: rotate(-8), duration: 0.54, ease: "power4.inOut" }, 54.12);
+      tl.to("#s7 .payload-c, #s7 .payload-d", { x: travel(210), rotation: rotate(8), duration: 0.54, ease: "power4.inOut" }, 54.12);
+
+      // 08 — data becomes a local route and packets converge on trusted HTTPS.
+      wakeTransition("#s7", "#s8", 55.56, -1);
+      tl.from("#s8 .chapter", { x: travel(-52), opacity: 0, duration: 0.3, ease: "expo.out" }, 55.72);
+      tl.from("#s8 .eyebrow", { clipPath: "inset(0 100% 0 0)", opacity: 0, duration: 0.32, ease: "power3.out" }, 55.8);
+      tl.from("#s8 .headline", { x: travel(-58), opacity: 0, duration: 0.46, ease: "power4.out" }, 55.9);
+      tl.from("#s8 .domain-chip", { x: travel(-120), scale: 0.95, opacity: 0, duration: 0.38, stagger: 0.08, ease: "expo.out" }, 56.16);
+      tl.from("#s8 .route-svg path", { strokeDasharray: 1000, strokeDashoffset: 1000, opacity: 0, duration: 0.82, ease: "power3.out" }, 56.32);
+      tl.from("#s8 .https-lock", { x: travel(120), scale: 0.95, opacity: 0, duration: 0.44, ease: "back.out(1.2)" }, 56.62);
+      tl.fromTo("#s8 .route-dot", { x: 0, y: function (i) { return [-36,0,36][i]; }, opacity: 0 }, { x: 620, y: 0, opacity: 1, duration: 1.12, stagger: 0.10, ease: "power2.inOut", immediateRender: false }, 56.84);
+      tl.from("#s8 .lock-icon", { scale: 0.94, rotation: rotate(-12), opacity: 0, duration: 0.32, ease: "back.out(1.25)" }, 58.14);
+      tl.from("#s8 .corner-note", { x: travel(-30), opacity: 0, duration: 0.28, ease: "sine.out" }, 58.34);
+
+      // 09 — route converges into the exact mark; final frame remains resolved.
+      irisTransition("#s8", "#s9", 59.26, "50% 50%");
+      tl.from("#s9 .outro-orbit", { scale: 0.74, opacity: 0, duration: 0.62, stagger: 0.08, ease: "expo.out" }, 59.34);
+      tl.from("#s9 .slice-a", { x: travel(-380), y: travel(-90), rotation: rotate(-26), opacity: 0, duration: 0.68, ease: "power4.out" }, 59.42);
+      tl.from("#s9 .slice-b", { y: travel(330), rotation: rotate(10), scale: 0.94, opacity: 0, duration: 0.62, ease: "back.out(1.3)" }, 59.7);
+      tl.from("#s9 .slice-c", { x: travel(390), y: travel(-80), rotation: rotate(22), opacity: 0, duration: 0.66, ease: "expo.out" }, 59.94);
+      tl.to("#s9 .logo-slice", { opacity: 0, duration: 0.14, ease: "power2.out" }, 60.62);
+      tl.to("#s9 .whole-logo", { opacity: 1, duration: 0.18, ease: "power2.out" }, 60.62);
+      tl.from("#s9 .outro-version", { x: travel(-30), opacity: 0, duration: 0.36, ease: "expo.out" }, 60.74);
+      tl.from("#s9 .outro-title", { clipPath: "inset(0 100% 0 0)", x: travel(-46), opacity: 0, duration: 0.58, ease: "power4.out" }, 60.88);
+      tl.from("#s9 .outro-meta", { x: travel(38), opacity: 0, duration: 0.42, ease: "sine.out" }, 61.3);
+      tl.to("#s9 .outro-orbit.r2", { rotation: rotate(16), duration: 4.0, ease: "none" }, 59.5);
+
+      window.__timelines["dory-directors-cut"] = tl;
+    </script>
+  </body>
+</html>

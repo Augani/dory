@@ -29,6 +29,9 @@ Replace `YOU` with the macOS account name or resolve the command with `command -
 
 Protocol version: `2025-11-25`
 
+This is Dory's local control MCP. It does not discover, install, configure, or proxy third-party MCP
+servers and should not be described as an MCP catalog or gateway.
+
 | Tool | Purpose | Read-only mode |
 |---|---|---|
 | `dory.agent_guide` | Return the installed capability contract | Available |
@@ -37,7 +40,7 @@ Protocol version: `2025-11-25`
 | `dory.engine_status` | Inspect engine state | Available |
 | `dory.machine_list` | List persistent Linux machines | Available |
 | `dory.machine_exec` | Execute a structured command in a machine | Blocked |
-| `dory.sandbox_run` | Run a command in a dedicated preview VM | Blocked |
+| `dory.sandbox_run` | Run a bounded command in a dedicated policy-enforced VM | Blocked |
 | `dory.wait` | Wait for an engine, container, or machine state | Available |
 | `dory.events` | Read local idle and incident events | Available |
 
@@ -58,13 +61,22 @@ dory machine exec dev --json -- /bin/sh -lc 'uname -a'
 
 The result uses `dev.dory.machine.exec v1` and includes command status and bounded output. Inspect each machine before choosing commands: desktop machines use the selected Debian, Ubuntu, or Kali profile with systemd, Xfce, Bash, and a configured user, while headless machines use Alpine with an initial root `/bin/sh` login.
 
-## Preview sandbox runs
+Agents may inspect verified local backup schedules without changing them:
+
+```sh
+dory machine backup status [NAME]
+```
+
+Scheduling, run-now, and removal mutate daemon-owned backup state and require explicit authority.
+These are local verified recovery bundles, not managed offsite/S3 backups.
+
+## Supported sandbox runs
 
 ```sh
 dory sandbox run --json --network none --rollback -- /bin/sh -lc 'uname -a'
 ```
 
-The sandbox is a dedicated VM and is deleted by default. It sees no host files unless a mount is supplied:
+The sandbox is a dedicated VM, runs non-root, and is deleted by default. It sees no host files unless a mount is supplied; omitted mount modes are read-only:
 
 ```sh
 dory sandbox run --json \
@@ -73,15 +85,18 @@ dory sandbox run --json \
   -- /bin/sh -lc 'find /workspace -maxdepth 2 -type f'
 ```
 
-Policy facts for Dory 0.3.2:
+Policy facts:
 
-- `none` blocks all egress and is enforced.
-- `full` grants all egress and is enforced.
-- `outbound` currently grants full egress and reports that the requested narrower policy is not enforced.
+- `none` is the default and blocks all workload egress.
+- `outbound` permits Dory DNS plus only explicit `--allow-network HOST[:PORT]` destinations.
+- `full` explicitly grants all egress; `--elevated` is accepted only with this mode.
+- Loopback, host services, private LANs, and link-local metadata are denied unless individually granted.
 - `--rollback` restores a pre-run snapshot.
-- `--keep` preserves the machine.
-- `--ttl-seconds N` schedules cleanup.
-- Mounts can be `ro` or `rw` and must be explicit.
+- `--keep --name NAME` preserves the machine; `--reuse NAME` retains its original mounts, disk, SSH grant, and TTL.
+- `--ttl-seconds N` is persisted and reconciled by `doryd`, surviving CLI/daemon restarts.
+- `--secret-env NAME` and `--ssh-agent` are ephemeral grants omitted from manifests and snapshots.
+- CPU, memory, disk, process, open-file, and wall-time limits are recorded in `dev.dory.sandbox.manifest v1`.
+- `dory sandbox inspect|list|kill` exposes and controls retained runs.
 
 ## State waits and events
 
@@ -98,12 +113,33 @@ These remove the need for custom polling and terminal-text parsing. Wait results
 
 ```sh
 dory doctor --json
+dory readiness --json
 dory repair socket --json
 dory repair socket --json --apply
 dory doctor --json --only socket,api,docker
 ```
 
-Only the third command changes state. If evidence must be shared, collect a redacted bundle:
+Use `dory readiness --json` when deciding whether the runtime is usable. Its versioned ordered
+stages distinguish the VM, agent, mount, network, daemon, host socket/context, and Kubernetes; a
+running VM alone is not readiness. Blocked/degraded stages state the repair owner and exact
+non-destructive mutation. Health resource checks separately expose process FD/thread attribution,
+guest memory composition, disk/reclaim estimates, file-watcher pressure, owned network state, and
+early growth warnings.
+
+For corporate environments, agents may inspect or validate but should not apply a profile without
+explicit authority:
+
+```sh
+dory network corporate status --json
+dory network corporate plan --file corporate-profile.json
+```
+
+Both return `dev.dory.corporate-connectivity.status v1`. Probe rows identify the exact DNS server,
+route/interface/gateway, proxy, and CA IDs. `apply` and `disable` change ownership-tracked Docker
+client/guest state and may restart dockerd with live-restore when its effective digest changes.
+
+In the recovery loop above, only the third command changes state. If evidence must be shared,
+collect a redacted bundle:
 
 ```sh
 dory support bundle --json --active

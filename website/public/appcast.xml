@@ -1,5 +1,5 @@
 <?xml version="1.0" standalone="yes"?>
-<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" xmlns:dc="http://purl.org/dc/elements/1.1/">
+<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dory="https://augani.github.io/dory/appcast">
   <channel>
     <title>Dory</title>
     <link>https://augani.github.io/dory/appcast.xml</link>
@@ -11,6 +11,10 @@
       <sparkle:version>43</sparkle:version>
       <sparkle:shortVersionString>0.3.2</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <dory:dataSchemaVersion>1</dory:dataSchemaVersion>
+      <dory:minimumReadableDataSchema>1</dory:minimumReadableDataSchema>
+      <dory:maximumReadableDataSchema>1</dory:maximumReadableDataSchema>
+      <dory:componentCatalogSchema>1</dory:componentCatalogSchema>
       <enclosure url="https://github.com/Augani/dory/releases/download/v0.3.2/Dory-0.3.2-app-update.zip" sparkle:edSignature="wc4wqr+0PWSYKnuP9AlXIS7w7xvEs4Wrl0DJegnlUxuoHHt1XgQ7aCgwcyHACaKiEFb0NymtLrcQJdflEL1dDg==" length="233993723" type="application/octet-stream" />
     </item>
     <item>
@@ -19,6 +23,10 @@
       <sparkle:version>42</sparkle:version>
       <sparkle:shortVersionString>0.3.1</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <dory:dataSchemaVersion>1</dory:dataSchemaVersion>
+      <dory:minimumReadableDataSchema>1</dory:minimumReadableDataSchema>
+      <dory:maximumReadableDataSchema>1</dory:maximumReadableDataSchema>
+      <dory:componentCatalogSchema>1</dory:componentCatalogSchema>
       <enclosure url="https://github.com/Augani/dory/releases/download/v0.3.1/Dory-0.3.1-app-update.zip" sparkle:edSignature="evgxkVntUJLnzWQ16IPl7KuK6kR5VZbm19x50d6h/Q3DQzBSsnWSckeudqdB45LP0fPGxmJuj5zZ1qPPzby9AA==" length="472332871" type="application/octet-stream" />
     </item>
     <item>
@@ -27,6 +35,10 @@
       <sparkle:version>41</sparkle:version>
       <sparkle:shortVersionString>0.3.0</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <dory:dataSchemaVersion>1</dory:dataSchemaVersion>
+      <dory:minimumReadableDataSchema>1</dory:minimumReadableDataSchema>
+      <dory:maximumReadableDataSchema>1</dory:maximumReadableDataSchema>
+      <dory:componentCatalogSchema>1</dory:componentCatalogSchema>
       <enclosure url="https://github.com/Augani/dory/releases/download/v0.3.0/Dory-0.3.0-app-update.zip" sparkle:edSignature="gJNf7V4Gt5CwzxyD9Bsgudq50frJRgBLgBHqXH85MlgAvVOB3mDlk7LKZN4ePWIoa86ow4ynG1rPqi3EWvD2Cw==" length="468819619" type="application/octet-stream" />
     </item>
     <item>
@@ -35,6 +47,10 @@
       <sparkle:version>1</sparkle:version>
       <sparkle:shortVersionString>0.1.0</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <dory:dataSchemaVersion>1</dory:dataSchemaVersion>
+      <dory:minimumReadableDataSchema>1</dory:minimumReadableDataSchema>
+      <dory:maximumReadableDataSchema>1</dory:maximumReadableDataSchema>
+      <dory:componentCatalogSchema>1</dory:componentCatalogSchema>
       <enclosure url="https://github.com/Augani/dory/releases/download/v0.1.0/Dory-0.1.0.zip" sparkle:edSignature="UvZf841aLg2XbKohwrG2sP/O6W2+Yws33CggO+xwGJ4sqnXrGe4j+Jp94FsYffbRZ00wACdKfWm9RgQaxJwJAg==" length="2032717" type="application/octet-stream" />
     </item>
   </channel>

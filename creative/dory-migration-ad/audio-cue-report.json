@@ -1,0 +1,68 @@
+[
+  {
+    "id": "01",
+    "start": 0.45,
+    "text": "Switching Docker runtimes shouldn't mean rebuilding your local world.",
+    "file": "voice-01.wav",
+    "duration": 4.331,
+    "end": 4.781,
+    "voice": "bm_george",
+    "speed": 1.02,
+    "next_cue_overlap": 0.0
+  },
+  {
+    "id": "02",
+    "start": 4.95,
+    "text": "Images. Volumes. Networks. Ports. Container state.",
+    "file": "voice-02.wav",
+    "duration": 3.883,
+    "end": 8.833,
+    "voice": "bm_george",
+    "speed": 1.02,
+    "next_cue_overlap": 0.0
+  },
+  {
+    "id": "03",
+    "start": 9.0,
+    "text": "Dory discovers Docker Desktop, OrbStack, Colima, and other compatible sources.",
+    "file": "voice-03.wav",
+    "duration": 5.611,
+    "end": 14.611,
+    "voice": "bm_george",
+    "speed": 1.02,
+    "next_cue_overlap": 0.0
+  },
+  {
+    "id": "04",
+    "start": 14.78,
+    "text": "It reads first\u2014checking capacity and collisions before writing to Dory.",
+    "file": "voice-04.wav",
+    "duration": 4.843,
+    "end": 19.623,
+    "voice": "bm_george",
+    "speed": 1.02,
+    "next_cue_overlap": 0.0
+  },
+  {
+    "id": "05",
+    "start": 19.69,
+    "text": "Dory imports transactionally, verifies, and never deletes the source.",
+    "file": "voice-05.wav",
+    "duration": 4.8,
+    "end": 24.49,
+    "voice": "bm_george",
+    "speed": 1.02,
+    "next_cue_overlap": 0.0
+  },
+  {
+    "id": "06",
+    "start": 24.56,
+    "text": "Dory. Your complete local Linux workspace. Bring the work. Leave the lock behind.",
+    "file": "voice-06.wav",
+    "duration": 5.333,
+    "end": 29.893,
+    "voice": "bm_george",
+    "speed": 1.02,
+    "next_cue_overlap": 0.0
+  }
+]

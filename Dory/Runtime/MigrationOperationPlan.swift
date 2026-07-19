@@ -102,39 +102,84 @@ enum MigrationOperationPlanBuilder {
         return try finalize(input, assembly: assembly)
     }
 
+    /// Rebuilds the canonical source side without consulting or mutating the target. Completion
+    /// uses this to prove that both selected and deliberately omitted objects still match the
+    /// immutable baselines captured before target staging began.
+    static func sourceInventory(
+        _ source: MigrationOperationSource,
+        ownership: MigrationOperationOwnership
+    ) throws -> [DoryOperationInventoryObject] {
+        try validateSourceInventory(source)
+        var assembly = MigrationPlanAssembly()
+        let imageIndex = try addImages(source.snapshot.images, target: [], to: &assembly)
+        let volumeNames = try addVolumes(
+            source.snapshot.volumes,
+            target: [],
+            ownership: ownership,
+            to: &assembly
+        )
+        let networkNames = try addNetworks(
+            source,
+            target: [],
+            ownership: ownership,
+            to: &assembly
+        )
+        try addContainers(
+            source,
+            context: MigrationContainerPlanningContext(
+                targetNames: [],
+                dependencies: MigrationContainerDependencyContext(
+                    imageIndex: imageIndex,
+                    volumeNames: volumeNames,
+                    networkNames: networkNames,
+                    containerIdentityIndex: containerIdentityIndex(source.snapshot.containers)
+                ),
+                ownership: ownership
+            ),
+            to: &assembly
+        )
+        return assembly.inventory
+    }
+
     private static func validateStrictInventory(
         _ input: MigrationOperationPlanningInput
     ) throws {
         try validateCapabilities(input)
-        try validateImageIdentities(input.source.snapshot.images)
-        let selectedContainerIDs = Set(input.source.snapshot.containers.map(\.id))
-        guard Set(input.source.containerSpecifications.keys) == selectedContainerIDs else {
-            throw MigrationOperationPlanError.incompleteInventory(
-                "source container specifications do not exactly match the selected container inventory"
-            )
-        }
-        guard Set(input.source.writableLayerSizes.keys) == selectedContainerIDs else {
-            throw MigrationOperationPlanError.incompleteInventory(
-                "source writable-layer sizes do not exactly match the selected container inventory"
-            )
-        }
+        try validateSourceInventory(input.source)
         let target = input.target
         guard Set(target.containerSpecifications.keys) == Set(target.snapshot.containers.map(\.id)) else {
             throw MigrationOperationPlanError.incompleteInventory(
                 "target container specifications do not exactly match the target inventory"
             )
         }
-        let customNetworks = input.source.snapshot.networks.filter {
-            !defaultNetworks.contains($0.name)
-        }
-        guard Set(input.source.networkInspections.keys) == Set(customNetworks.map(\.name)) else {
-            throw MigrationOperationPlanError.incompleteInventory(
-                "source network inspections do not exactly match the custom-network inventory"
-            )
-        }
         guard Set(target.networkInspections.keys) == Set(target.snapshot.networks.map(\.name)) else {
             throw MigrationOperationPlanError.incompleteInventory(
                 "target network inspections do not exactly match the target network inventory"
+            )
+        }
+    }
+
+    private static func validateSourceInventory(
+        _ source: MigrationOperationSource
+    ) throws {
+        try validateImageIdentities(source.snapshot.images)
+        let selectedContainerIDs = Set(source.snapshot.containers.map(\.id))
+        guard Set(source.containerSpecifications.keys) == selectedContainerIDs else {
+            throw MigrationOperationPlanError.incompleteInventory(
+                "source container specifications do not exactly match the selected container inventory"
+            )
+        }
+        guard Set(source.writableLayerSizes.keys) == selectedContainerIDs else {
+            throw MigrationOperationPlanError.incompleteInventory(
+                "source writable-layer sizes do not exactly match the selected container inventory"
+            )
+        }
+        let customNetworks = source.snapshot.networks.filter {
+            !defaultNetworks.contains($0.name)
+        }
+        guard Set(source.networkInspections.keys) == Set(customNetworks.map(\.name)) else {
+            throw MigrationOperationPlanError.incompleteInventory(
+                "source network inspections do not exactly match the custom-network inventory"
             )
         }
     }
@@ -172,12 +217,6 @@ enum MigrationOperationPlanBuilder {
                 "both engines must expose the local raw Docker API"
             )
         }
-        if !input.source.snapshot.volumes.isEmpty,
-           capabilities.transferHelper == nil {
-            throw MigrationOperationPlanError.unsupportedCapability(
-                "named volumes require the signed arm64 transfer helper"
-            )
-        }
     }
 
     private static func finalize(
@@ -191,10 +230,25 @@ enum MigrationOperationPlanBuilder {
         ))
         let targetInventoryDigest = sha256(targetInventoryData)
         let context = try planningContext(input, targetInventoryDigest: targetInventoryDigest)
+        let requested = input.userSelection ?? assembly.inventory.map(\.key)
+        let closure = try dependencyClosure(
+            selection: requested,
+            inventory: assembly.inventory
+        )
+        if closure.contains(where: { $0.kind == .volume }),
+           input.capabilities.transferHelper == nil {
+            throw MigrationOperationPlanError.unsupportedCapability(
+                "named volumes require the signed arm64 transfer helper"
+            )
+        }
+        try validateSelectedTargetCollisions(
+            input,
+            selected: closure
+        )
         let completenessPlan = try DoryOperationPlanner.plan(
             inventory: assembly.inventory,
-            intents: assembly.intents,
-            userSelection: assembly.inventory.map(\.key),
+            intents: assembly.intents.filter { closure.contains($0.source) },
+            userSelection: requested,
             context: context
         )
         let baselines = try baselineManifests(
@@ -221,9 +275,78 @@ enum MigrationOperationPlanBuilder {
         return PreparedMigrationOperation(
             completenessPlan: completenessPlan,
             journalPlan: journalPlan,
-            specifications: assembly.specifications.values.sorted { $0.digest < $1.digest },
+            specifications: assembly.specifications.values.filter {
+                Set(completenessPlan.objects.map(\.specificationDigest)).contains($0.digest)
+            }.sorted { $0.digest < $1.digest },
             baselineManifests: baselines
         )
+    }
+
+    private static func dependencyClosure(
+        selection: [DoryOperationObjectKey],
+        inventory: [DoryOperationInventoryObject]
+    ) throws -> Set<DoryOperationObjectKey> {
+        let byKey = Dictionary(uniqueKeysWithValues: inventory.map { ($0.key, $0) })
+        var result = Set<DoryOperationObjectKey>()
+        var pending = selection
+        while let key = pending.popLast() {
+            guard let object = byKey[key] else {
+                throw MigrationOperationPlanError.incompleteInventory(
+                    "selection references missing source object \(key)"
+                )
+            }
+            guard result.insert(key).inserted else { continue }
+            pending.append(contentsOf: object.dependencies)
+        }
+        return result
+    }
+
+    private static func validateSelectedTargetCollisions(
+        _ input: MigrationOperationPlanningInput,
+        selected: Set<DoryOperationObjectKey>
+    ) throws {
+        let targetVolumes = Set(input.target.snapshot.volumes.map(\.name))
+        let targetNetworks = Set(input.target.snapshot.networks.map(\.name))
+        let targetContainers = Set(input.target.snapshot.containers.map(\.name))
+        for key in selected {
+            switch key.kind {
+            case .image:
+                guard let image = input.source.snapshot.images.first(where: {
+                    stableImageSourceID($0) == key.sourceID
+                }) else { continue }
+                _ = try imageCollisionDecision(
+                    image,
+                    references: imageReferences(image),
+                    targetIDs: Set(input.target.snapshot.images.map {
+                        normalizedImageID($0.imageID)
+                    }),
+                    targetByReference: Dictionary(
+                        input.target.snapshot.images.flatMap { candidate in
+                            imageReferences(candidate).map {
+                                (canonicalImageReference($0), candidate)
+                            }
+                        },
+                        uniquingKeysWith: { first, _ in first }
+                    )
+                )
+            case .volume where targetVolumes.contains(key.sourceID):
+                throw MigrationOperationPlanError.targetCollision(kind: .volume, name: key.sourceID)
+            case .network where targetNetworks.contains(key.sourceID):
+                throw MigrationOperationPlanError.targetCollision(kind: .network, name: key.sourceID)
+            case .container:
+                guard let container = input.source.snapshot.containers.first(where: {
+                    $0.id == key.sourceID
+                }) else { continue }
+                if targetContainers.contains(container.name) {
+                    throw MigrationOperationPlanError.targetCollision(
+                        kind: .container,
+                        name: container.name
+                    )
+                }
+            case .writableLayer, .volume, .network:
+                break
+            }
+        }
     }
 
     private static func planningContext(

@@ -40,11 +40,16 @@ jobs:
           import xml.etree.ElementTree as ET
 
           sparkle = "http://www.andymatuschak.org/xml-namespaces/sparkle"
+          dory = "https://augani.github.io/dory/appcast"
           def release_item(path):
               item = ET.parse(path).getroot().find("./channel/item")
               assert item is not None, f"{path} has no release item"
               assert item.findtext(f"{{{sparkle}}}minimumSystemVersion") == "14.0", \
                   f"{path} has an invalid macOS floor"
+              for name in ("dataSchemaVersion", "minimumReadableDataSchema", \
+                           "maximumReadableDataSchema", "componentCatalogSchema"):
+                  assert item.findtext(f"{{{dory}}}{name}") == "1", \
+                      f"{path} has an invalid Dory upgrade schema contract"
               return item
 
           live_item = release_item(sys.argv[1])
@@ -57,7 +62,7 @@ jobs:
           then
             cp "$live" website/public/appcast.xml
           else
-            echo "Live appcast is missing, invalid, or older; retaining the checked-in release feed."
+            echo "Live appcast is missing, invalid, or older; retaining the checked-in macOS 14 bootstrap feed."
           fi
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:

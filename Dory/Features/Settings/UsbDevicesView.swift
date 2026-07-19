@@ -44,6 +44,16 @@ struct UsbDevicesView: View {
 
             groupLabel("ATTACHMENT")
             VStack(alignment: .leading, spacing: 12) {
+                Label {
+                    Text(UsbPassthroughAvailability.unavailableReason)
+                        .font(.system(size: 12))
+                        .foregroundStyle(p.text2)
+                } icon: {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                }
+                .accessibilityIdentifier("usb-passthrough-unavailable")
+
                 HStack(spacing: 10) {
                     TextField("machine", text: $machine)
                         .textFieldStyle(.roundedBorder)
@@ -59,12 +69,15 @@ struct UsbDevicesView: View {
                         .frame(width: 76)
                         .accessibilityIdentifier("usb-port")
                 }
+                .disabled(!UsbPassthroughAvailability.attachSupported)
 
                 Toggle("Remember for this machine", isOn: $rememberAttachment)
                     .font(.system(size: 12.5))
                     .toggleStyle(.checkbox)
+                    .disabled(!UsbPassthroughAvailability.attachSupported)
 
-                if rememberAttachment && validRememberPort() == nil {
+                if UsbPassthroughAvailability.attachSupported,
+                   rememberAttachment && validRememberPort() == nil {
                     Text("Enter a valid port (1-65535) to remember this attachment for automatic replay.")
                         .font(.system(size: 11))
                         .foregroundStyle(p.text3)
@@ -76,14 +89,20 @@ struct UsbDevicesView: View {
                             .font(.system(size: 12.5, weight: .semibold))
                     }
                     .buttonStyle(.borderedProminent)
-                    .disabled(busy || busid.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .disabled(
+                        !UsbPassthroughAvailability.attachSupported ||
+                        busy || busid.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    )
 
                     Button { Task { await detach() } } label: {
                         Label("Detach", systemImage: "xmark.circle")
                             .font(.system(size: 12.5, weight: .semibold))
                     }
                     .buttonStyle(.bordered)
-                    .disabled(busy || busid.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .disabled(
+                        !UsbPassthroughAvailability.attachSupported ||
+                        busy || busid.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    )
                 }
 
                 if !status.isEmpty {
@@ -96,6 +115,9 @@ struct UsbDevicesView: View {
                 if !remembered.isEmpty {
                     Divider()
                     VStack(alignment: .leading, spacing: 8) {
+                        Text("Saved preview entries (automatic replay is disabled)")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(p.text3)
                         ForEach(remembered) { attachment in
                             HStack(spacing: 8) {
                                 Text("\(attachment.machine)  \(attachment.busID)  port \(attachment.port)")
@@ -138,6 +160,10 @@ struct UsbDevicesView: View {
     }
 
     @MainActor private func attach() async {
+        guard UsbPassthroughAvailability.attachSupported else {
+            status = UsbPassthroughAvailability.unavailableReason
+            return
+        }
         busy = true
         defer { busy = false }
         let args = usbCommand("attach")
@@ -151,6 +177,10 @@ struct UsbDevicesView: View {
     }
 
     @MainActor private func detach() async {
+        guard UsbPassthroughAvailability.attachSupported else {
+            status = UsbPassthroughAvailability.unavailableReason
+            return
+        }
         busy = true
         defer { busy = false }
         let args = usbCommand("detach")

@@ -15,19 +15,19 @@ struct LocalDorydCapabilityTests {
             #expect(!capability.title.localizedCaseInsensitiveContains("Apple"))
             #expect(!capability.summary.localizedCaseInsensitiveContains("Apple"))
             #expect(!capability.command.localizedCaseInsensitiveContains("apple"))
-            #expect(["Stable", "Preview"].contains(capability.status))
+            #expect(capability.status == "Stable")
         }
 
         let stableIDs = Set(capabilities.filter { $0.status == "Stable" }.map(\.id))
-        #expect(stableIDs == ["support-bundle", "agent-guide", "mcp", "wait", "events"])
+        #expect(stableIDs == ["support-bundle", "agent-guide", "mcp", "sandbox", "wait", "events"])
 
         let support = try #require(capabilities.first { $0.id == "support-bundle" })
         #expect(support.command == "dory support bundle")
 
         let sandbox = try #require(capabilities.first { $0.id == "sandbox" })
-        #expect(sandbox.status == "Preview")
-        #expect(sandbox.summary.contains("dorydctl"))
-        #expect(sandbox.summary.contains("machine assets"))
+        #expect(sandbox.status == "Stable")
+        #expect(sandbox.summary.contains("non-root"))
+        #expect(sandbox.summary.contains("resource caps"))
     }
 
     @Test func settingsAndRuntimeLabelsDoNotAdvertiseUnsupportedAppleRuntime() {

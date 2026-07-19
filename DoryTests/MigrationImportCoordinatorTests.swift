@@ -48,6 +48,86 @@ struct MigrationImportCoordinatorTests: StrictInventoryTestCase {
         #expect(summary.containersMigrated.count == 1)
     }
 
+    @Test func partialImageImportCompletesWithExactOmittedInventoryEvidence() async throws {
+        let fixture = makeFixture()
+        fixture.source.containerInspections["container-id"] = containerInspection(mount: [
+            "Type": "bind",
+            "Source": "/Users/test/private-source",
+            "Target": "/workspace/private-source",
+            "ReadOnly": true,
+        ])
+        fixture.source.networkInspections["backend"] = networkInspection(driver: "overlay")
+        let imageID = MigrationOperationPlanBuilder.stableImageSourceID(
+            fixture.source.snapshotValue.images[0]
+        )
+        let prepared = try await collect(
+            fixture,
+            transferHelper: nil,
+            userSelection: [DoryOperationObjectKey(kind: .image, sourceID: imageID)]
+        )
+        let home = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dory-partial-import-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: home) }
+
+        let summary = try await MigrationImportCoordinator.execute(
+            prepared: prepared,
+            environment: MigrationImportExecutionEnvironment(
+                source: fixture.source,
+                target: fixture.target,
+                journalStore: try DoryOperationJournalStore(home: home.path),
+                currentAvailableHostBytes: prepared.capacity.availableHostBytes,
+                transferHelper: nil,
+                transfers: AssetStagingTransfers(),
+                sharedHome: "/Users/test",
+                hostArchitecture: "arm64"
+            )
+        )
+
+        #expect(summary.imagesImported == ["ghcr.io/example/app:v1"])
+        #expect(summary.volumesCopied.isEmpty)
+        #expect(summary.networksCreated.isEmpty)
+        #expect(summary.containersMigrated.isEmpty)
+        #expect(summary.completeness?.verified.count == 1)
+        #expect(summary.completeness?.omitted.count == 4)
+        #expect(summary.completeness?.omittedInventoryDigest.isEmpty == false)
+    }
+
+    @Test func partialImportRejectsOmittedSourceDriftBeforeCompletion() async throws {
+        let fixture = makeFixture()
+        let imageID = MigrationOperationPlanBuilder.stableImageSourceID(
+            fixture.source.snapshotValue.images[0]
+        )
+        let prepared = try await collect(
+            fixture,
+            transferHelper: nil,
+            userSelection: [DoryOperationObjectKey(kind: .image, sourceID: imageID)]
+        )
+        let home = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dory-partial-drift-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: home) }
+        let transfers = AssetStagingTransfers()
+        transfers.mutateOmittedSourceVolumeAfterImageTransfer = true
+
+        await #expect(throws: MigrationImportAssetStagingError.invalidSession(
+            "selected or deliberately omitted source objects changed during migration"
+        )) {
+            _ = try await MigrationImportCoordinator.execute(
+                prepared: prepared,
+                environment: MigrationImportExecutionEnvironment(
+                    source: fixture.source,
+                    target: fixture.target,
+                    journalStore: try DoryOperationJournalStore(home: home.path),
+                    currentAvailableHostBytes: prepared.capacity.availableHostBytes,
+                    transferHelper: nil,
+                    transfers: transfers,
+                    sharedHome: "/Users/test",
+                    hostArchitecture: "arm64"
+                )
+            )
+        }
+        #expect(fixture.target.snapshotValue.images.isEmpty)
+    }
+
     @Test func exactPreflightOverridesLegacyHeuristicsAndSurfacesExactFailures() async throws {
         let prepared = try await collect(makeFixture())
         var inventory = MigrationInventory(

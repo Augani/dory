@@ -10,6 +10,7 @@ struct ContainerDetailView: View {
     @State private var liveCPU: Double?
     @State private var cpuHistory: [Double] = []
     @State private var confirmingDelete = false
+    @State private var confirmingComposeDown = false
 
     private var sparkData: [Double] { ContainerStatsFormat.cpuSparkBars(cpuHistory) }
 
@@ -106,7 +107,7 @@ struct ContainerDetailView: View {
                     store.section = .containers
                 }
                 Divider()
-                Button("Down - stop and remove", role: .destructive) { Task { await store.composeDown(project) } }
+                Button("Down - stop and remove", role: .destructive) { confirmingComposeDown = true }
             } label: {
                 Image(systemName: "ellipsis")
                     .font(.system(size: 13, weight: .bold)).foregroundStyle(p.text2)
@@ -119,6 +120,12 @@ struct ContainerDetailView: View {
         .padding(10)
         .background(p.bgElevated, in: RoundedRectangle(cornerRadius: 10))
         .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(p.border))
+        .confirmationDialog("Bring down \(project)?", isPresented: $confirmingComposeDown, titleVisibility: .visible) {
+            Button("Stop & Remove Stack", role: .destructive) { Task { await store.composeDown(project) } }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This stops and removes the stack's containers and project network. Images and named volumes stay, but data held only in container writable layers is lost.")
+        }
     }
 
     private var actions: some View {

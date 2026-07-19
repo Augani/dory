@@ -1247,6 +1247,56 @@ final class MachineManagerTests: XCTestCase {
         )
     }
 
+    func testSandboxSSHAgentRequiresExplicitPersistedGrant() throws {
+        let base = "/tmp/dory-machine-sandbox-ssh-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let argsPath = "\(base)/argv.txt"
+        let helperPath = "\(base)/record-vmm.sh"
+        try """
+        #!/bin/sh
+        printf '%s\n' "$@" > "\(argsPath)"
+        sleep 30
+        """.write(to: URL(fileURLWithPath: helperPath), atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: helperPath)
+
+        let manager = MachineManager(configuration: MachineManagerConfiguration(
+            vmmExecutablePath: helperPath,
+            stateDirectory: "\(base)/state",
+            requiresReadyHandoff: false,
+            sshAgentSocketPath: "/private/tmp/host-agent.sock"
+        ))
+        let verify: (String, [String: String], Bool) throws -> Void = { id, environment, expected in
+            try? FileManager.default.removeItem(atPath: argsPath)
+            _ = try manager.create(DoryMachineConfiguration(
+                id: id,
+                kernelPath: doryTestKernelPath,
+                rootfsPath: doryTestRootfsPath,
+                environment: environment
+            ))
+            _ = try manager.start(id: id)
+            let arguments = try waitForFileContent(argsPath)
+                .split(separator: "\n", omittingEmptySubsequences: false)
+                .map(String.init)
+            let hasGrant = arguments.enumerated().contains { index, value in
+                value == "--ssh-agent-socket"
+                    && arguments.indices.contains(index + 1)
+                    && arguments[index + 1] == "/private/tmp/host-agent.sock"
+            }
+            XCTAssertEqual(hasGrant, expected, "unexpected SSH-agent VMM grant for \(id)")
+            _ = try manager.stop(id: id)
+            try manager.delete(id: id)
+        }
+
+        try verify("ordinary", [:], true)
+        try verify("sandbox-denied", ["DORY_SANDBOX": "1"], false)
+        try verify(
+            "sandbox-granted",
+            ["DORY_SANDBOX": "1", "DORY_SANDBOX_SSH_AGENT": "1"],
+            true
+        )
+    }
+
     func testMachineDefinitionsLoadWithoutOptionalShareField() throws {
         let base = "/tmp/dory-machine-optional-fields-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         defer { try? FileManager.default.removeItem(atPath: base) }

@@ -8,11 +8,13 @@ struct DoryApp: App {
     @State private var store: AppStore
 
     init() {
+        DoryUpgradeRollbackHelper.runIfRequested()
         // Writing to a socket whose peer has closed otherwise raises SIGPIPE and kills the process;
         // ignore it so the POSIX write paths return EPIPE and are handled gracefully.
         signal(SIGPIPE, SIG_IGN)
         DoryAppDelegate.exitDuplicateInstanceIfNeeded()
         let store = AppStore()
+        DoryUpdater.shared.configure(store: store)
         if !DoryAppDelegate.isNetworkHelperMaintenance() {
             store.startBackendIfNeeded()
             DoryAppDelegate.configureMenuBar(store: store)

@@ -33,6 +33,10 @@ Runtime contents added by Dory:
   every translated process in one container shares its private FEXServer socket there, including
   package-manager sandbox users with no writable home directory.
 - `/etc/resolv.conf` and `/etc/hostname`.
+- `iptables`/`ip6tables`, loop-device and ext4 tools, and cgroup-v2 support used by Dory's
+  dedicated sandbox VMs for uid-scoped egress policy and bounded scratch storage. Sandbox workload
+  uid/gid and process, file-size, open-file, and wall-time constraints are applied by `dory-agent`
+  before it execs untrusted code.
 - Standard runtime directories: `/var/lib/docker`, `/var/run`, `/var/log`, `/run`, `/tmp`.
 
 Boot behavior:
@@ -42,7 +46,8 @@ Boot behavior:
   `fstrim` so virtio discard can return free blocks to the host. The host-generated boot contract
   permits formatting only for a validated, unallocated sparse blank. Existing ext4 resize or mount
   failures power off; the generic init also refuses to start dockerd without the persistent mount.
-- Start `dockerd` on `unix:///var/run/docker.sock` and `tcp://0.0.0.0:2375`.
+- Start `dockerd` only on `unix:///var/run/docker.sock`; host access is relayed through the guest
+  agent's vsock service, so no unauthenticated Docker TCP API exists inside the guest network.
 - Listen on TCP 2377 for a shutdown request, trim, sync, unmount Docker state, and power off.
 - Exec `/usr/bin/dory-agent` as PID 1 when present.
 - Hand PID 1 to `docker-init` only when `dory-agent` is absent, falling back to a long sleep loop.

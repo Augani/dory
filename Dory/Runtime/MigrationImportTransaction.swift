@@ -134,7 +134,12 @@ private extension MigrationImportTransaction {
             sharedHome: environment.sharedHome,
             transferHelper: environment.transferHelper,
             identity: prepared.identity,
-            hostArchitecture: environment.hostArchitecture
+            hostArchitecture: environment.hostArchitecture,
+            engineCapacity: MigrationEngineCapacity(
+                logicalBytes: prepared.capacity.engineLogicalBytes,
+                usableBytes: prepared.capacity.engineUsableBytes
+            ),
+            userSelection: prepared.operation.completenessPlan.userSelection
         )
         guard prepared.matches(refreshed) else {
             throw MigrationImportTransactionError.planDrift

@@ -46,6 +46,7 @@ struct DoryCommands: Commands {
             Button("Volumes") { store.section = .volumes }.keyboardShortcut("3", modifiers: .command)
             Button("Networks") { store.section = .networks }.keyboardShortcut("4", modifiers: .command)
             Button("Compose") { store.section = .compose }.keyboardShortcut("5", modifiers: .command)
+            Button("Build Activity") { store.section = .builds }
             Button("Kubernetes") { store.section = .kubernetes }.keyboardShortcut("6", modifiers: .command)
             Button("Desktops") { store.section = .desktops }.keyboardShortcut("7", modifiers: .command)
             Button("Servers") { store.section = .machines }.keyboardShortcut("8", modifiers: .command)
@@ -125,9 +126,7 @@ struct DoryCommands: Commands {
                             Button("Start") { store.startComposeProject(project.name) }
                             Button("Stop") { store.stopComposeProject(project.name) }
                             Button("Restart") { store.restartComposeProject(project.name) }
-                            Button("Down - stop and remove", role: .destructive) {
-                                Task { await store.composeDown(project.name) }
-                            }
+                            Button("Review stack removal in Dory…") { openMain(.compose) }
                         }
                     }
                 }
@@ -186,9 +185,7 @@ struct DoryCommands: Commands {
                 Button("Refresh") { Task { await store.loadKubernetes() } }
                 Divider()
                 if store.kubernetesReachable {
-                    Button("Disable Kubernetes", role: .destructive) {
-                        Task { await store.disableKubernetes() }
-                    }
+                    Button("Review cluster removal in Dory…") { openMain(.kubernetes) }
                 } else {
                     Button("Enable Kubernetes") {
                         if AppInfo.componentAvailable(.kubernetes) {

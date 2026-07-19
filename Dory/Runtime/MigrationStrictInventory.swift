@@ -54,7 +54,6 @@ private struct MigrationStrictStorageInventory {
 }
 
 enum MigrationStrictInventoryCollector {
-    static let engineUsableBytes: Int64 = 120 * 1_024 * 1_024 * 1_024
     static let safetyFloorBytes: Int64 = 4_000_000_000
 
     static func collect(
@@ -64,7 +63,9 @@ enum MigrationStrictInventoryCollector {
         sharedHome: String = NSHomeDirectory(),
         transferHelper: MigrationTransferHelperContract?,
         identity: MigrationOperationIdentity = .fresh(),
-        hostArchitecture: String = currentHostArchitecture
+        hostArchitecture: String = currentHostArchitecture,
+        engineCapacity: MigrationEngineCapacity = .defaultV1,
+        userSelection: [DoryOperationObjectKey]? = nil
     ) async throws -> PreparedMigrationExecution {
         try validateHost(hostArchitecture, availableBytes: availableHostBytes)
         let base = try await readBase(from: sourceRuntime, to: targetRuntime)
@@ -75,12 +76,6 @@ enum MigrationStrictInventoryCollector {
             targetRuntime: targetRuntime,
             sharedHome: sharedHome
         )
-        let storage = try await inspectStorage(
-            base,
-            sourceRuntime: sourceRuntime,
-            targetRuntime: targetRuntime,
-            availableHostBytes: availableHostBytes
-        )
         let capabilities = MigrationOperationCapabilityContract(
             sourceSupportsArchiveTransfer: sourceRuntime.supportsImageArchiveTransfer,
             targetSupportsArchiveTransfer: targetRuntime.supportsImageArchiveTransfer,
@@ -89,12 +84,66 @@ enum MigrationStrictInventoryCollector {
             targetSupportsRawAPI: targetRuntime.supportsRawProxy,
             transferHelper: base.sourceSnapshot.volumes.isEmpty ? nil : transferHelper
         )
+        // Build once with a neutral capacity contract to obtain the exact dependency closure.
+        // Admission and quiescence are then calculated only for that closure, so omitted objects
+        // cannot make an otherwise safe partial import fail.
+        let provisional = try assemble(
+            base: base,
+            objects: objects,
+            storage: MigrationStrictStorageInventory(
+                volumeBytes: [:],
+                capacity: MigrationCapacityContract(
+                    sourceVolumeBytes: [:],
+                    sourceWritableLayerBytes: [:],
+                    targetDockerBytes: 0,
+                    availableHostBytes: availableHostBytes,
+                    requiredHostBytes: 0,
+                    requiredEngineBytes: 0,
+                    engineLogicalBytes: engineCapacity.logicalBytes,
+                    engineUsableBytes: engineCapacity.usableBytes
+                )
+            ),
+            capabilities: capabilities,
+            identity: identity,
+            userSelection: userSelection
+        )
+        let selectedKeys = Set(provisional.operation.completenessPlan.selectedObjectKeys)
+        let selectedContainerIDs = Set(selectedKeys.compactMap {
+            $0.kind == .container ? $0.sourceID : nil
+        })
+        try await validateSelectedPortability(
+            base,
+            selectedKeys: selectedKeys,
+            sourceRuntime: sourceRuntime,
+            sharedHome: sharedHome
+        )
+        try validateQuiescence(
+            snapshot: RuntimeSnapshot(containers: base.sourceSnapshot.containers.filter {
+                selectedContainerIDs.contains($0.id)
+            }),
+            specifications: objects.sourceSpecifications,
+            writableSizes: base.writableSizes.filter {
+                selectedContainerIDs.contains($0.key)
+            }
+        )
+        try validateVolumes(base.sourceSnapshot.volumes.filter {
+            selectedKeys.contains(DoryOperationObjectKey(kind: .volume, sourceID: $0.name))
+        })
+        let storage = try await inspectStorage(
+            base,
+            selectedKeys: selectedKeys,
+            sourceRuntime: sourceRuntime,
+            targetRuntime: targetRuntime,
+            availableHostBytes: availableHostBytes,
+            engineCapacity: engineCapacity
+        )
         return try assemble(
             base: base,
             objects: objects,
             storage: storage,
             capabilities: capabilities,
-            identity: identity
+            identity: identity,
+            userSelection: userSelection
         )
     }
 
@@ -135,7 +184,6 @@ private extension MigrationStrictInventoryCollector {
         )
         try validateNoUnpublishedArtifacts(base.sourceSnapshot, role: "source")
         try validateNoUnpublishedArtifacts(base.targetSnapshot, role: "target")
-        try validateVolumes(base.sourceSnapshot.volumes)
     }
 
     static func inspectObjects(
@@ -148,18 +196,13 @@ private extension MigrationStrictInventoryCollector {
             snapshot: base.sourceSnapshot,
             runtime: sourceRuntime,
             sharedHome: sharedHome,
-            validatePortability: true
+            validatePortability: false
         )
         let targetSpecifications = try await containerSpecifications(
             snapshot: base.targetSnapshot,
             runtime: targetRuntime,
             sharedHome: sharedHome,
             validatePortability: false
-        )
-        try validateQuiescence(
-            snapshot: base.sourceSnapshot,
-            specifications: sourceSpecifications,
-            writableSizes: base.writableSizes
         )
         let customNetworks = base.sourceSnapshot.networks.filter {
             !MigrationOperationPlanBuilder.defaultNetworks.contains($0.name)
@@ -170,7 +213,7 @@ private extension MigrationStrictInventoryCollector {
             sourceNetworks: networkInspections(
                 customNetworks,
                 runtime: sourceRuntime,
-                requirePortable: true
+                requirePortable: false
             ),
             targetNetworks: networkInspections(
                 base.targetSnapshot.networks,
@@ -180,24 +223,80 @@ private extension MigrationStrictInventoryCollector {
         )
     }
 
+    static func validateSelectedPortability(
+        _ base: MigrationStrictBaseInventory,
+        selectedKeys: Set<DoryOperationObjectKey>,
+        sourceRuntime: any ContainerRuntime,
+        sharedHome: String
+    ) async throws {
+        let selectedContainerIDs = Set(selectedKeys.compactMap {
+            $0.kind == .container ? $0.sourceID : nil
+        })
+        for container in base.sourceSnapshot.containers
+            .filter({ selectedContainerIDs.contains($0.id) })
+            .sorted(by: { $0.id < $1.id }) {
+            _ = try await MigrationContainerInspector.inspect(
+                container,
+                on: sourceRuntime,
+                sharedHome: sharedHome,
+                validatePortability: true
+            )
+        }
+        let selectedNetworkNames = Set(selectedKeys.compactMap {
+            $0.kind == .network ? $0.sourceID : nil
+        })
+        _ = try await networkInspections(
+            base.sourceSnapshot.networks.filter {
+                selectedNetworkNames.contains($0.name)
+            },
+            runtime: sourceRuntime,
+            requirePortable: true
+        )
+    }
+
     static func inspectStorage(
         _ base: MigrationStrictBaseInventory,
+        selectedKeys: Set<DoryOperationObjectKey>,
         sourceRuntime: any ContainerRuntime,
         targetRuntime: any ContainerRuntime,
-        availableHostBytes: Int64
+        availableHostBytes: Int64,
+        engineCapacity: MigrationEngineCapacity
     ) async throws -> MigrationStrictStorageInventory {
+        let selectedVolumeNames = base.sourceSnapshot.volumes.map(\.name).filter {
+            selectedKeys.contains(DoryOperationObjectKey(kind: .volume, sourceID: $0))
+        }
         let volumeBytes = try await namedVolumeSizes(
-            expected: base.sourceSnapshot.volumes.map(\.name),
+            expected: selectedVolumeNames,
             runtime: sourceRuntime
         )
         let targetDockerBytes = try await dockerUsage(runtime: targetRuntime)
+        let selectedImageIDs = Set(selectedKeys.compactMap {
+            $0.kind == .image ? $0.sourceID : nil
+        })
+        let selectedWritableIDs = Set(selectedKeys.compactMap {
+            $0.kind == .writableLayer ? $0.sourceID : nil
+        })
+        var selectedSource = base.sourceSnapshot
+        selectedSource.images = selectedSource.images.filter {
+            selectedImageIDs.contains(MigrationOperationPlanBuilder.stableImageSourceID($0))
+        }
+        selectedSource.volumes = selectedSource.volumes.filter {
+            selectedVolumeNames.contains($0.name)
+        }
+        selectedSource.containers = selectedSource.containers.filter {
+            selectedWritableIDs.contains($0.id)
+        }
+        let selectedWritableSizes = base.writableSizes.filter {
+            selectedWritableIDs.contains($0.key)
+        }
         let capacity = try capacityContract(MigrationCapacityInput(
-            source: base.sourceSnapshot,
+            source: selectedSource,
             target: base.targetSnapshot,
             volumeBytes: volumeBytes,
-            writableSizes: base.writableSizes,
+            writableSizes: selectedWritableSizes,
             targetDockerBytes: targetDockerBytes,
-            availableHostBytes: availableHostBytes
+            availableHostBytes: availableHostBytes,
+            engineCapacity: engineCapacity
         ))
         return MigrationStrictStorageInventory(volumeBytes: volumeBytes, capacity: capacity)
     }
@@ -207,7 +306,8 @@ private extension MigrationStrictInventoryCollector {
         objects: MigrationStrictObjectInventory,
         storage: MigrationStrictStorageInventory,
         capabilities: MigrationOperationCapabilityContract,
-        identity: MigrationOperationIdentity
+        identity: MigrationOperationIdentity,
+        userSelection: [DoryOperationObjectKey]?
     ) throws -> PreparedMigrationExecution {
         let source = MigrationOperationSource(
             snapshot: base.sourceSnapshot,
@@ -227,7 +327,8 @@ private extension MigrationStrictInventoryCollector {
             target: target,
             capabilities: capabilities,
             capacity: storage.capacity,
-            identity: identity
+            identity: identity,
+            userSelection: userSelection
         ))
         return PreparedMigrationExecution(
             operation: operation,

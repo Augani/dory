@@ -1,0 +1,14 @@
+{
+  "name": "dory-0.3.2-launch",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "npm_config_ignore_scripts=true npx --yes hyperframes@0.7.60 preview",
+    "check": "npm_config_ignore_scripts=true npx --yes hyperframes@0.7.60 check",
+    "render": "npm_config_ignore_scripts=true npx --yes hyperframes@0.7.60 render",
+    "publish": "npm_config_ignore_scripts=true npx --yes hyperframes@0.7.60 publish"
+  },
+  "devDependencies": {
+    "@hyperframes/producer": "^0.7.60"
+  }
+}

@@ -11,6 +11,9 @@ public struct MachineManagerConfiguration: Sendable, Equatable {
     public var logDirectory: String
     public var requiresReadyHandoff: Bool
     public var guestArchitecture: String
+    /// Host SSH agent made available to ordinary machines. Sandboxes only receive it when their
+    /// persisted policy contains the explicit DORY_SANDBOX_SSH_AGENT=1 grant.
+    public var sshAgentSocketPath: String?
 
     public init(
         vmmExecutablePath: String,
@@ -20,7 +23,8 @@ public struct MachineManagerConfiguration: Sendable, Equatable {
         passMachineArguments: Bool = true,
         logDirectory: String? = nil,
         requiresReadyHandoff: Bool = true,
-        guestArchitecture: String? = nil
+        guestArchitecture: String? = nil,
+        sshAgentSocketPath: String? = nil
     ) {
         self.vmmExecutablePath = vmmExecutablePath
         self.stateDirectory = stateDirectory
@@ -30,6 +34,7 @@ public struct MachineManagerConfiguration: Sendable, Equatable {
         self.logDirectory = logDirectory ?? "\(stateDirectory)/logs"
         self.requiresReadyHandoff = requiresReadyHandoff
         self.guestArchitecture = guestArchitecture ?? Self.currentGuestArchitecture
+        self.sshAgentSocketPath = sshAgentSocketPath
     }
 
     private static var currentGuestArchitecture: String {
@@ -1285,6 +1290,13 @@ public final class MachineManager: @unchecked Sendable {
         }
         for (key, value) in machine.environment.sorted(by: { $0.key < $1.key }) {
             arguments.append(contentsOf: ["--env", "\(key)=\(value)"])
+        }
+        let isSandbox = machine.environment["DORY_SANDBOX"] == "1"
+        let sandboxSSHAgentGranted = machine.environment["DORY_SANDBOX_SSH_AGENT"] == "1"
+        if let sshAgentSocketPath = configuration.sshAgentSocketPath,
+           !sshAgentSocketPath.isEmpty,
+           !isSandbox || sandboxSSHAgentGranted {
+            arguments.append(contentsOf: ["--ssh-agent-socket", sshAgentSocketPath])
         }
         return arguments
     }

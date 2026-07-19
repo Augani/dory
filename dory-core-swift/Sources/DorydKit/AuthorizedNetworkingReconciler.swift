@@ -97,9 +97,10 @@ public final class AuthorizedNetworkingClient: AuthorizedNetworkingApplying, @un
     }
 }
 
-/// Keeps the root-owned PF anchor aligned with live Docker publications after the user grants the
-/// initial authorization. It never prompts and cannot create authorization; the root helper binds
-/// every update to the persisted owner UID and re-derives the submitted plan.
+/// Keeps low-port loopback listeners and the legacy root-owned PF anchor aligned with live Docker
+/// publications. The user-space listeners do not require authorization; root reconciliation never
+/// prompts and cannot create authorization, and remains temporarily for installed authorization
+/// state created by earlier releases.
 public final class AuthorizedNetworkingReconciler: @unchecked Sendable {
     public typealias PublishedPortsProvider = @Sendable () -> [DoryListenPort]
     public typealias FailureHandler = @Sendable (String) -> Void
@@ -113,6 +114,7 @@ public final class AuthorizedNetworkingReconciler: @unchecked Sendable {
     private let lock = NSLock()
     private var timer: DispatchSourceTimer?
     private var lastReconciledPlan: NetworkingAuthorizationPlan?
+    private var lastLoopbackFailures: [UInt16: String] = [:]
 
     public init(
         networkingController: NetworkingController,
@@ -131,6 +133,19 @@ public final class AuthorizedNetworkingReconciler: @unchecked Sendable {
     @discardableResult
     public func reconcileNow() throws -> Bool {
         let forwards = PrivilegedPortMapping.forwards(from: publishedPorts())
+        let loopbackResult = networkingController.reconcileLoopbackTCPForwarders(
+            additionalPrivilegedTCPForwards: forwards
+        )
+        lock.lock()
+        let loopbackFailuresChanged = lastLoopbackFailures != loopbackResult.failures
+        lastLoopbackFailures = loopbackResult.failures
+        lock.unlock()
+        if loopbackFailuresChanged, !loopbackResult.failures.isEmpty {
+            let detail = loopbackResult.failures.keys.sorted().compactMap { port in
+                loopbackResult.failures[port].map { "\(port): \($0)" }
+            }.joined(separator: "; ")
+            failureHandler("loopback low-port forwarding unavailable: \(detail)")
+        }
         let plan = try networkingController.authorizationPlan(
             additionalPrivilegedTCPForwards: forwards
         )

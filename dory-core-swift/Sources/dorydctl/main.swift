@@ -72,6 +72,9 @@ final class DorydCtlClient {
         let connection = NSXPCConnection(machServiceName: machServiceName, options: [])
         let box = ReplyBox<T>()
         connection.remoteObjectInterface = NSXPCInterface(with: DorydControl.self)
+        if DorydXPCSecurity.currentTeamIdentifier() == DorydXPCSecurity.productionTeamID {
+            connection.setCodeSigningRequirement(DorydXPCSecurity.productionDaemonRequirement)
+        }
         connection.invalidationHandler = {
             box.resume(.failure(DorydCtlError.daemon("doryd connection invalidated")))
         }
@@ -163,7 +166,7 @@ func usage(exitCode: Int32 = 2) -> Never {
           dorydctl [global] machine create NAME --kernel PATH --rootfs PATH [--memory-mb N] [--cpus N] [--display-mode headless|desktop] [--dns-target IPv4] [--share TAG=HOST:GUEST[:ro|rw] | JSON] [--env KEY=VALUE]
           dorydctl [global] machine update NAME [--memory-mb N] [--cpus N] [--dns-target IPv4 | --clear-dns-target] [--share TAG=HOST:GUEST[:ro|rw] | JSON ... | --clear-shares] [--env KEY=VALUE ... | --clear-env]
           dorydctl [global] machine start|stop|delete NAME
-          dorydctl [global] machine exec NAME [--json] [--cwd PATH] [--env KEY=VALUE] [--timeout-ms N] [--output-limit-bytes N] -- COMMAND [ARG...]
+          dorydctl [global] machine exec NAME [--json] [--cwd PATH] [--env KEY=VALUE] [--env-json-stdin] [--timeout-ms N] [--output-limit-bytes N] -- COMMAND [ARG...]
           dorydctl [global] machine shell NAME
           dorydctl [global] machine provision NAME --recipe RECIPE
           dorydctl [global] machine snapshots [NAME]
@@ -173,6 +176,10 @@ func usage(exitCode: Int32 = 2) -> Never {
           dorydctl [global] machine delete-snapshot NAME SNAPSHOT_ID
           dorydctl [global] machine export-snapshot NAME SNAPSHOT_ID PATH
           dorydctl [global] machine import-snapshot PATH
+          dorydctl [global] machine backup status [NAME]
+          dorydctl [global] machine backup schedule NAME [--frequency hourly|daily|weekly] [--keep N] [--verify-every N]
+          dorydctl [global] machine backup run NAME
+          dorydctl [global] machine backup remove NAME
           dorydctl [global] component list [--json] [--offline]
           dorydctl [global] component install|update ID [--json]
           dorydctl [global] component verify [ID|all] [--json] [--offline]
@@ -181,6 +188,10 @@ func usage(exitCode: Int32 = 2) -> Never {
           dorydctl [global] remote push NAME --local-root PATH [--remote-root PATH]
           dorydctl [global] remote status NAME
           dorydctl [global] network status|custom-domains|authorization-plan|repair
+          dorydctl [global] network corporate status [--no-probes]
+          dorydctl [global] network corporate sample
+          dorydctl [global] network corporate plan|apply --file PATH|-
+          dorydctl [global] network corporate disable
           dorydctl [global] network set-custom-domain HOST --published-port N
           dorydctl [global] network remove-custom-domain HOST
           dorydctl [global] network replace-routes --json PATH|-
@@ -503,6 +514,21 @@ func parseEnvironmentRow(_ raw: String) throws -> NSDictionary {
         "key": key,
         "value": String(raw[raw.index(after: equals)...]),
     ] as NSDictionary
+}
+
+func readEnvironmentJSONFromStandardInput() throws -> [NSDictionary] {
+    let data = FileHandle.standardInput.readDataToEndOfFile()
+    guard !data.isEmpty,
+          let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+        throw DorydCtlError.usage("--env-json-stdin requires one JSON object on standard input")
+    }
+    return try object.keys.sorted().map { key in
+        guard key.wholeMatch(of: /[A-Za-z_][A-Za-z0-9_]*/) != nil,
+              let value = object[key] as? String else {
+            throw DorydCtlError.usage("--env-json-stdin keys must be environment names and values must be strings")
+        }
+        return ["key": key, "value": value] as NSDictionary
+    }
 }
 
 func machineExecControlTimeout(timeoutMs: UInt64) -> TimeInterval {
@@ -828,7 +854,7 @@ func runRemote(cursor: inout ArgumentCursor, client: DorydCtlClient) throws {
 }
 
 func runNetwork(cursor: inout ArgumentCursor, client: DorydCtlClient) throws {
-    let subcommand = try cursor.take("usage: dorydctl network status|custom-domains|set-custom-domain|remove-custom-domain|authorization-plan|repair|replace-routes")
+    let subcommand = try cursor.take("usage: dorydctl network status|custom-domains|set-custom-domain|remove-custom-domain|authorization-plan|corporate|repair|replace-routes")
     switch subcommand {
     case "status":
         let status: NSDictionary = try client.call { proxy, finish in
@@ -851,6 +877,8 @@ func runNetwork(cursor: inout ArgumentCursor, client: DorydCtlClient) throws {
             }
         }
         try emitJSON((status["customRoutes"] as? NSArray) ?? [])
+    case "corporate":
+        try runCorporateConnectivity(cursor: &cursor, client: client)
     case "set-custom-domain":
         let hostname = try cursor.take("usage: dorydctl network set-custom-domain HOST --published-port N")
         let rawPort = try requiredOption(
@@ -899,10 +927,10 @@ func runNetwork(cursor: inout ArgumentCursor, client: DorydCtlClient) throws {
             proxy.networkReplaceRoutes(routes as NSArray, reply: reply)
         })
     case "repair":
-        let target = try cursor.take("usage: dorydctl network repair dns|domains|routes|ports|guest-agent|docker-api")
-        guard ["dns", "domains", "routes", "ports", "guest-agent", "docker-api"].contains(target),
+        let target = try cursor.take("usage: dorydctl network repair socket|dns|domains|routes|ports|guest-agent|docker-api|data-drive")
+        guard ["socket", "dns", "domains", "routes", "ports", "guest-agent", "docker-api", "data-drive"].contains(target),
               cursor.values.isEmpty else {
-            throw DorydCtlError.usage("usage: dorydctl network repair dns|domains|routes|ports|guest-agent|docker-api")
+            throw DorydCtlError.usage("usage: dorydctl network repair socket|dns|domains|routes|ports|guest-agent|docker-api|data-drive")
         }
         try emitCommandResult(try client.command { proxy, reply in
             proxy.repairSubsystem(target, reply: reply)
@@ -921,6 +949,68 @@ func runNetwork(cursor: inout ArgumentCursor, client: DorydCtlClient) throws {
         })
     default:
         throw DorydCtlError.usage("unknown network command: \(subcommand)")
+    }
+}
+
+func runCorporateConnectivity(cursor: inout ArgumentCursor, client: DorydCtlClient) throws {
+    let usage = "usage: dorydctl network corporate status|sample|plan|apply|disable"
+    let subcommand = try cursor.take(usage)
+    switch subcommand {
+    case "status":
+        let runProbes = !cursor.takeFlag("--no-probes")
+        _ = cursor.takeFlag("--json")
+        guard cursor.values.isEmpty else { throw DorydCtlError.usage(usage) }
+        let json: String = try client.call { proxy, finish in
+            proxy.corporateConnectivityStatus(runProbes) { body, message in
+                message.isEmpty ? finish(.success(body)) : finish(.failure(DorydCtlError.daemon(message)))
+            }
+        }
+        print(json)
+    case "sample":
+        guard cursor.values.isEmpty else { throw DorydCtlError.usage(usage) }
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        print(String(decoding: try encoder.encode(CorporateConnectivityProfile.sample), as: UTF8.self))
+    case "plan", "apply":
+        let path = try requiredOption(
+            "--file",
+            cursor: &cursor,
+            usage: "usage: dorydctl network corporate \(subcommand) --file PATH|-"
+        )
+        _ = cursor.takeFlag("--json")
+        guard cursor.values.isEmpty else { throw DorydCtlError.usage(usage) }
+        let data: Data
+        if path == "-" {
+            data = FileHandle.standardInput.readDataToEndOfFile()
+        } else {
+            data = try Data(contentsOf: URL(fileURLWithPath: path), options: [.mappedIfSafe])
+        }
+        guard data.count <= 1024 * 1024, let profileJSON = String(data: data, encoding: .utf8) else {
+            throw DorydCtlError.usage("corporate profile must be UTF-8 JSON no larger than 1 MiB")
+        }
+        let json: String = try client.call { proxy, finish in
+            proxy.corporateConnectivityApply(profileJSON, dryRun: subcommand == "plan") { body, message in
+                message.isEmpty ? finish(.success(body)) : finish(.failure(DorydCtlError.daemon(message)))
+            }
+        }
+        print(json)
+        if subcommand == "apply",
+           let object = try JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any],
+           object["valid"] as? Bool == false {
+            throw DorydCtlError.daemon((object["validationErrors"] as? [String] ?? ["profile was not applied"]).joined(separator: "; "))
+        }
+    case "disable":
+        _ = cursor.takeFlag("--json")
+        guard cursor.values.isEmpty else { throw DorydCtlError.usage(usage) }
+        let json: String = try client.call { proxy, finish in
+            proxy.corporateConnectivityDisable { body, message in
+                message.isEmpty ? finish(.success(body)) : finish(.failure(DorydCtlError.daemon(message)))
+            }
+        }
+        print(json)
+    default:
+        throw DorydCtlError.usage("unknown corporate connectivity command: \(subcommand)")
     }
 }
 
@@ -947,7 +1037,7 @@ func runBalloon(cursor: inout ArgumentCursor, client: DorydCtlClient) throws {
 }
 
 func runMachine(cursor: inout ArgumentCursor, client: DorydCtlClient) throws {
-    let subcommand = try cursor.take("usage: dorydctl machine list|status|create|update|start|stop|delete|exec|shell|provision|snapshots|snapshot")
+    let subcommand = try cursor.take("usage: dorydctl machine list|status|create|update|start|stop|delete|exec|shell|provision|snapshots|snapshot|backup")
     switch subcommand {
     case "list":
         let rows: NSArray = try client.call { proxy, finish in
@@ -1087,8 +1177,80 @@ func runMachine(cursor: inout ArgumentCursor, client: DorydCtlClient) throws {
             proxy.machineImportSnapshot(path, reply: reply)
         }
         try emitJSON(imported)
+    case "backup":
+        try runMachineBackup(cursor: &cursor, client: client)
     default:
         throw DorydCtlError.usage("unknown machine command: \(subcommand)")
+    }
+}
+
+func runMachineBackup(cursor: inout ArgumentCursor, client: DorydCtlClient) throws {
+    let usage = "usage: dorydctl machine backup status [NAME] | schedule NAME [--frequency hourly|daily|weekly] [--keep N] [--verify-every N] | run NAME | remove NAME"
+    let subcommand = try cursor.take(usage)
+    switch subcommand {
+    case "status", "list":
+        let requestedMachine = cursor.values.isEmpty ? nil : try cursor.take(usage)
+        guard cursor.values.isEmpty else { throw DorydCtlError.usage(usage) }
+        let rows: NSArray = try client.call { proxy, finish in
+            proxy.machineBackupSchedules { body, message in
+                message.isEmpty ? finish(.success(body)) : finish(.failure(DorydCtlError.daemon(message)))
+            }
+        }
+        if let requestedMachine {
+            let matches = rows.compactMap { $0 as? NSDictionary }.filter {
+                $0["machineID"] as? String == requestedMachine
+            }
+            guard let status = matches.first else {
+                throw DorydCtlError.daemon("no machine backup schedule exists for \(requestedMachine)")
+            }
+            try emitJSON(status)
+        } else {
+            try emitJSON(rows)
+        }
+    case "schedule", "set":
+        let name = try cursor.take(usage)
+        let frequency = try cursor.optionValue("--frequency") ?? "daily"
+        guard DoryMachineBackupFrequency(rawValue: frequency) != nil else {
+            throw DorydCtlError.usage("--frequency must be hourly, daily, or weekly")
+        }
+        let keep = try cursor.optionValue("--keep").map { try positiveInt($0, option: "--keep") } ?? 7
+        let verifyEvery = try cursor.optionValue("--verify-every").map {
+            try positiveInt($0, option: "--verify-every")
+        } ?? 7
+        guard keep <= DoryMachineBackupSchedule.maximumRetention else {
+            throw DorydCtlError.usage("--keep must be between 1 and \(DoryMachineBackupSchedule.maximumRetention)")
+        }
+        guard verifyEvery <= DoryMachineBackupSchedule.maximumVerificationInterval else {
+            throw DorydCtlError.usage(
+                "--verify-every must be between 1 and \(DoryMachineBackupSchedule.maximumVerificationInterval)"
+            )
+        }
+        guard cursor.values.isEmpty else { throw DorydCtlError.usage(usage) }
+        let status = try client.statusCommand { proxy, reply in
+            proxy.machineBackupSet([
+                "machineID": name,
+                "enabled": true,
+                "frequency": frequency,
+                "keepLocal": keep,
+                "verifyEveryRuns": verifyEvery,
+            ] as NSDictionary, reply: reply)
+        }
+        try emitJSON(status)
+    case "run":
+        let name = try cursor.take(usage)
+        guard cursor.values.isEmpty else { throw DorydCtlError.usage(usage) }
+        let status = try client.withTimeout(atLeast: 900).statusCommand { proxy, reply in
+            proxy.machineBackupRun(name, reply: reply)
+        }
+        try emitJSON(status)
+    case "remove", "disable":
+        let name = try cursor.take(usage)
+        guard cursor.values.isEmpty else { throw DorydCtlError.usage(usage) }
+        try emitCommandResult(try client.command { proxy, reply in
+            proxy.machineBackupRemove(name, reply: reply)
+        })
+    default:
+        throw DorydCtlError.usage(usage)
     }
 }
 
@@ -1207,7 +1369,7 @@ func runMachineShell(cursor: inout ArgumentCursor, client: DorydCtlClient) throw
 }
 
 func runMachineExec(cursor: inout ArgumentCursor, client: DorydCtlClient) throws {
-    let usage = "usage: dorydctl machine exec NAME [--json] [--cwd PATH] [--env KEY=VALUE] [--timeout-ms N] [--output-limit-bytes N] -- COMMAND [ARG...]"
+    let usage = "usage: dorydctl machine exec NAME [--json] [--cwd PATH] [--env KEY=VALUE] [--env-json-stdin] [--timeout-ms N] [--output-limit-bytes N] -- COMMAND [ARG...]"
     let name = try cursor.take(usage)
     var jsonOutput = false
     var request: [String: Any] = [
@@ -1238,6 +1400,8 @@ func runMachineExec(cursor: inout ArgumentCursor, client: DorydCtlClient) throws
                 "key": String(value[..<equals]),
                 "value": String(value[value.index(after: equals)...]),
             ] as NSDictionary)
+        case "--env-json-stdin":
+            envRows.append(contentsOf: try readEnvironmentJSONFromStandardInput())
         case "--timeout-ms":
             guard let value = cursor.values.first else { throw DorydCtlError.usage("missing value for --timeout-ms") }
             request["timeoutMs"] = try nonNegativeUInt64(value, option: "--timeout-ms")

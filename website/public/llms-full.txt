@@ -13,7 +13,7 @@ Dory has three distinct execution surfaces:
 
 1. The shared container engine is one persistent Linux VM that serves the Docker API. Docker containers, images, volumes, networks, Compose, BuildKit, and k3s use this engine.
 2. Dory Linux machines are separate persistent arm64 VMs. Managed Debian 13, Ubuntu 24.04 LTS, and Kali rolling Xfce desktops have configurable users and Retina-sharp resizable displays; lightweight Alpine headless machines retain root /bin/sh. Each has its own disk, address, resources, scoped mounts, and snapshots.
-3. Agent sandboxes are preview, dedicated Dory Linux VMs created for one command. They have no host file sharing by default and are deleted by default.
+3. Agent sandboxes are supported, dedicated Dory Linux VMs created for bounded non-root commands. They have no ambient host files, network, or credentials and are deleted by default.
 
 Do not describe a Dory Linux machine as a container. Inspect its display mode and identity: desktop machines use the selected managed Debian, Ubuntu, or Kali profile with systemd, Xfce, Bash, and a configurable user; headless machines are Alpine-based, root, and /bin/sh.
 
@@ -25,7 +25,18 @@ Recommended install:
 
 The Homebrew cask and standard download install Docker Core: Dory.app, the Docker engine and CLI, Compose, Buildx, networking, storage, migration, diagnostics, and recovery. A signed catalog provides removable Kubernetes, Linux Machines, Linux Desktop Runtime, Debian, Ubuntu, and Kali components on the selected `.dorydrive`.
 
-Users of an older Dory release should quit Dory, uninstall the old app, and install Dory 0.3.2 Docker Core. Normal uninstall preserves workload data. Keep only one Dory.app in Applications, then install the optional components they use.
+Use Settings > Updates for the normal in-place upgrade. Dory verifies candidate signing, free space,
+the selected drive, component compatibility and readable schema path; records the exact prior
+app/config/component generation plus a verified snapshot reference; and runs Docker API,
+volume-marker, pre-existing container/port, and optional Kubernetes smoke tests on next launch.
+Safe replaceable state rolls back automatically on failure. Dory never guesses at a durable-data
+downgrade; an unsafe schema rollback produces a guided owner-only recovery export.
+
+    dory upgrade status --json
+    dory upgrade recovery --json
+
+Homebrew installations can use `brew upgrade --cask Augani/dory/dory`. Uninstall/reinstall remains
+a recovery option and preserves workload data, but it is not the normal upgrade story.
 
 Open Dory once. While doryd is running it reconciles bundled `docker`, `docker compose`, and `dory` tools in ~/.dory/bin and creates the dory Docker context. Installing the Kubernetes component also reconciles `kubectl`. A separate Docker Desktop or Docker CLI install is not required.
 
@@ -41,7 +52,7 @@ Open Dory once. While doryd is running it reconciles bundled `docker`, `docker c
     dory component install desktop-kali
     dory component update COMPONENT
     dory component verify COMPONENT
-    dory component remove COMPONENT
+    dory component remove COMPONENT --confirm COMPONENT
 
 Docker Core is required. Desktop distributions add the shared Linux Desktop Runtime automatically. Component catalogs and assets are signature, digest, version, and architecture checked before atomic activation. Removing an optional component deletes only its installed payload. Containers, volumes, cluster state, machine disks, snapshots, and exports remain on the selected data drive.
 
@@ -77,8 +88,12 @@ Exit codes: 0 success or healthy; 1 unhealthy or incomplete; 2 usage or validati
 
 Stable capabilities include containers, images, Buildx, BuildKit, Compose v2, registries, bind mounts, named volumes, bridge networks, custom IPAM, aliases, and common linux/amd64 images on Apple Silicon through FEX.
 
+The app's Build Activity surface keeps durable history, status, logs, cache use, and cancellation
+for builds launched by Dory. It does not claim control of builds launched by unrelated clients.
+
 ## Health and evidence
 
+    dory readiness --json
     dory doctor --json
     dory doctor --json --active
     dory doctor --json --only socket,api,docker,context
@@ -86,9 +101,24 @@ Stable capabilities include containers, images, Buildx, BuildKit, Compose v2, re
     dory doctor --json --only mounts,watch,filelock
     dory doctor --json --only disk,memory,helpers
     dory doctor --json --diff
+
+`dory readiness` returns the versioned nine-stage app → doryd → VM → guest agent → data mount →
+network → dockerd → host socket/context → Kubernetes contract. Every stage includes reason, timing,
+deadline, and the exact non-destructive repair owner and mutation.
+
+Passive health includes per-process physical footprint/FD/thread attribution, guest
+used/cache/reclaimable memory, sparse/guest disk and conservative reclaim estimates, dynamically
+narrow file-watcher roots and queue pressure, Dory-owned resolver/routes/forwards/PF/UTUN state,
+and three-sample early trend warnings.
     dory support bundle --json --active
 
 Doctor groups: socket, api, docker, context, registry, proxy, exposure, network, ports, domains, mounts, filelock, watch, clock, disk, memory, helpers.
+
+Corporate connectivity: `dory network corporate sample|plan|apply|status|disable`. Schema
+`dev.dory.corporate-connectivity` v1 separates macOS system/PAC observation, dockerd pull proxy,
+the Docker client BuildKit/container proxy, registries, scoped CAs, split DNS and bridge collision
+checks. Status includes exact DNS, route, proxy and CA probe provenance; apply is ownership-safe and
+reconciles on DHCP/interface/VPN/exit-node changes and wake.
 
 Active probes create a small temporary workload. Support bundles are redacted and use `dev.dory.support.bundle v1`.
 
@@ -164,21 +194,44 @@ The drive contains images, containers, named volumes, networks, machine disks, a
 
 Auto-Idle can be blocked by published ports, pinned projects, or Kubernetes according to user settings.
 
+## Migration
+
+Settings > Migrate & Compare imports from detected Docker-compatible sockets. Users may select all
+objects or an exact set of images, volumes, networks, and containers; Dory includes required
+dependencies automatically. Selected-scope capacity, collision, and portability checks run before
+writes. The transaction rolls back target mutations on failure, re-inventories selected and omitted
+source objects before success, and reports requested, automatically selected, imported, verified,
+and deliberately omitted objects. Dory never deletes source data.
+
 ## Machines
 
     dory machine ls
     dory machine create NAME
     dory machine start NAME
     dory machine stop NAME
-    dory machine delete NAME
+    dory machine delete NAME --confirm NAME
     dory machine shell NAME
     dory machine exec NAME --json -- COMMAND ARG...
     dory machine snapshot NAME --note NOTE
-    dory machine restore NAME SNAPSHOT
+    dory machine restore NAME SNAPSHOT --confirm NAME
+    dory machine backup schedule NAME --frequency daily --keep 7 --verify-every 7
+    dory machine backup status [NAME]
+    dory machine backup run NAME
+    dory machine backup remove NAME
 
 The app has separate Linux Desktops and Linux Servers areas. Desktop creation selects Debian 13, Ubuntu 24.04 LTS, or Kali rolling, a login user, CPU, memory, optional development recipe, Mac home sharing, and scoped mounts. Desktop windows render at a true 2x guest framebuffer, follow window resizing, and configure matching Xfce scaling. A new graphical machine requires its matching `desktop-*` component; a headless machine requires `linux-machines`.
 
-The machine command also supports clone, import, export, and snapshot deletion. Structured execution uses `dev.dory.machine.exec v1`. New machines do not inherit arbitrary host secrets or files. The app controls a named environment allow-list and scoped mounts.
+The machine command also supports clone, import, export, and snapshot deletion. Destructive Dory
+commands repeat the exact target with `--confirm`; restore first creates and reports a retained
+pre-restore safety snapshot. Structured execution uses `dev.dory.machine.exec v1`. New machines do
+not inherit arbitrary host secrets or files. The app controls a named environment allow-list and
+scoped mounts.
+
+Scheduled machine backups are local verified `.dorymachine` recovery bundles. Every run verifies
+the archive through the production import path; the first and configured periodic runs boot a
+disposable verifier. Consistent snapshot creation briefly stops a running source machine and
+restores its prior state. Retention affects only scheduler-owned snapshots and archives, never
+manual snapshots. Dory does not provide a managed offsite or S3 backup service.
 
 ## Kubernetes
 
@@ -215,21 +268,25 @@ Transport: stdio. Protocol version: 2025-11-25.
 Tools: dory.agent_guide, dory.doctor, dory.compat, dory.engine_status, dory.machine_list, dory.machine_exec, dory.sandbox_run, dory.wait, dory.events.
 
 Use `--read-only` when inspection is sufficient. It blocks machine execution and sandbox writes.
+Dory's MCP is a Dory control surface, not a catalog, marketplace, or gateway for third-party MCP
+servers.
 
-## Preview sandbox
+## Supported sandbox
 
     dory sandbox run --json --network none --rollback -- COMMAND
     dory sandbox run --json --mount HOST:GUEST:ro -- COMMAND
     dory sandbox run --json --keep --ttl-seconds 3600 -- COMMAND
+    dory sandbox run --json --network outbound --allow-network HOST:443 -- COMMAND
 
-A sandbox is a dedicated Dory Linux VM and is deleted by default. No host files are visible unless a mount is provided. Network `none` blocks egress. Network `full` grants full egress. In 0.3, `outbound` also grants full egress and reports `networkPolicyEnforced=false`. Sandbox results use `dev.dory.sandbox.run v1`.
+A sandbox is a dedicated Dory Linux VM and is deleted by default. Commands run non-root. No host files are visible unless a mount is provided, and mounts default read-only. Network defaults to `none`; `outbound` permits Dory DNS plus explicit destinations; `full` is an explicit unrestricted grant. Secrets and SSH agent access are opt-in and omitted from manifests. CPU, memory, disk, process, FD, wall, rollback, kill, named reuse, and daemon TTL controls are inspectable. Results use `dev.dory.sandbox.run v2`; manifests use `dev.dory.sandbox.manifest v1`.
 
 ## Other commands
 
     dory shell CONTAINER
     dory usb ls
-    dory usb attach BUSID
-    dory usb detach BUSID
+
+USB host discovery is supported. Attach, detach, and replay are unavailable and fail closed until
+the guest USB/IP RPC and dedicated physical qualification exist.
     dory expose PORT --print-command
     dory version
 
@@ -237,13 +294,18 @@ A sandbox is a dedicated Dory Linux VM and is deleted by default. No host files 
 
 ## Status boundaries
 
-Stable: Docker, Compose, BuildKit, data drive, backup and restore, migration, Kubernetes presets, managed Debian, Ubuntu, and Kali desktops, Alpine headless servers, health, repair, network planning, Auto-Idle, agent guide, wait, events, and MCP.
+Supported: Docker, Compose, BuildKit, Build Activity for Dory-launched builds, data-drive backup and
+restore, exact-selection transactional migration, verified scheduled local machine backups,
+transactional upgrades, Kubernetes presets, managed Debian, Ubuntu, and Kali desktops, Alpine
+headless servers, health, repair, corporate network planning, Auto-Idle, agent guide, sandbox VMs,
+wait, events, and the local Dory control MCP server.
 
-Preview: isolated agent sandbox VMs.
+Preview: in-guest Venus and Vulkan GPU acceleration; use host AI services through
+`host.dory.internal` for the supported path.
 
-Experimental: in-guest Venus and Vulkan GPU acceleration.
-
-Deferred: Intel host release, desktop distributions beyond managed Debian, Ubuntu, and Kali Xfce, audio passthrough, and scoped outbound-only sandbox egress.
+Unavailable: Intel host release, arbitrary desktop distributions, USB attach/detach/replay, audio
+passthrough, managed remote/offsite machine backup, remote workspace UI, image-update automation,
+mDNS/multicast relay or general L2 bridging, and a general third-party MCP gateway.
 
 ## Canonical links
 
@@ -255,3 +317,4 @@ Deferred: Intel host release, desktop distributions beyond managed Debian, Ubunt
 - Agent guide: https://augani.github.io/dory/docs/agents.md
 - Operations: https://augani.github.io/dory/docs/operations.md
 - Compatibility: https://augani.github.io/dory/docs/compatibility.md
+- Post-0.4 designs: https://github.com/Augani/dory/blob/main/POST_V0.4_PRODUCT_DESIGNS.md

@@ -1,0 +1,32 @@
+[
+  {
+    "id": "01",
+    "start": 0.45,
+    "text": "Switching Docker runtimes shouldn't mean rebuilding your local world."
+  },
+  {
+    "id": "02",
+    "start": 4.95,
+    "text": "Images. Volumes. Networks. Ports. Container state."
+  },
+  {
+    "id": "03",
+    "start": 9.0,
+    "text": "Dory discovers Docker Desktop, OrbStack, Colima, and other compatible sources."
+  },
+  {
+    "id": "04",
+    "start": 14.78,
+    "text": "It reads first—checking capacity and collisions before writing to Dory."
+  },
+  {
+    "id": "05",
+    "start": 19.69,
+    "text": "Dory imports transactionally, verifies, and never deletes the source."
+  },
+  {
+    "id": "06",
+    "start": 24.56,
+    "text": "Dory. Your complete local Linux workspace. Bring the work. Leave the lock behind."
+  }
+]

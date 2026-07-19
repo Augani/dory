@@ -134,11 +134,15 @@ if [ -x /usr/local/bin/dockerd ]; then
     fi
     rmdir /sys/fs/cgroup/.dory-crun-probe 2>/dev/null
   fi
+  # Expand the selected runtime arguments once into a root-only restart helper. doryd invokes this
+  # only after the Docker API is confirmed failed, preserving the VM and its mounted data disk.
   # shellcheck disable=SC2086
-  /usr/local/bin/dockerd \
-    -H unix:///var/run/docker.sock \
-    -H tcp://0.0.0.0:2375 \
-    --tls=false $DORY_RUNTIME_ARGS $DORY_AMD64_RUNTIME_ARGS >/var/log/dockerd.log 2>&1 &
+  cat >/run/dory-restart-dockerd <<DORY_DOCKERD_SCRIPT
+#!/bin/sh
+exec /usr/local/bin/dockerd -H unix:///var/run/docker.sock $DORY_RUNTIME_ARGS $DORY_AMD64_RUNTIME_ARGS
+DORY_DOCKERD_SCRIPT
+  chmod 0700 /run/dory-restart-dockerd
+  /run/dory-restart-dockerd >/var/log/dockerd.log 2>&1 &
 fi
 
 ( while true; do

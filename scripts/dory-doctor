@@ -989,6 +989,60 @@ class Doctor:
                 "Check whether the Dory app route table has reconciled this container.",
                 host=host,
             )
+            return
+
+        # Exercise the real standard-port ingress path as a separate check. Prior versions only
+        # contacted the high HTTP proxy directly, so Doctor could pass even when the PF redirect
+        # from :80/:443 never matched. Dory now owns loopback-only user-space listeners on these
+        # ports; probing both catches listener conflicts and regressions in that forwarding layer.
+        for scheme, port in (("http", 80), ("https", 443)):
+            standard_status = 0
+            standard_body = ""
+            standard_error = ""
+            try:
+                if scheme == "https":
+                    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+                    context.check_hostname = False
+                    context.verify_mode = ssl.CERT_NONE
+                    connection = http.client.HTTPSConnection(
+                        "127.0.0.1",
+                        port,
+                        timeout=self.timeout,
+                        context=context,
+                    )
+                else:
+                    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=self.timeout)
+                connection.request("GET", "/", headers={"Host": host, "User-Agent": "dory-doctor"})
+                response = connection.getresponse()
+                standard_status = response.status
+                standard_body = response.read(2048).decode("utf-8", "replace")
+                connection.close()
+            except (OSError, ssl.SSLError) as exc:
+                standard_error = str(exc)
+
+            check_id = f"network.domain_standard_{scheme}"
+            if standard_status == 200 and "dory-doctor-ok" in standard_body:
+                self.add(
+                    check_id,
+                    "pass",
+                    f"network.domain_standard_{scheme}_ok",
+                    f"Standard {scheme.upper()} domain ingress works",
+                    f"127.0.0.1:{port} → {host}",
+                    host=host,
+                    port=port,
+                )
+            else:
+                detail = standard_error or f"HTTP {standard_status}: {standard_body[:120]}"
+                self.add(
+                    check_id,
+                    "fail",
+                    f"network.domain_standard_{scheme}_unreachable",
+                    f"Standard {scheme.upper()} domain ingress is not working",
+                    f"127.0.0.1:{port}: {detail}",
+                    f"Restart Dory and check whether another process owns port {port}.",
+                    host=host,
+                    port=port,
+                )
 
     def check_mount(self) -> None:
         if not self.active:

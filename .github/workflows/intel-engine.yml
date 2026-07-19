@@ -1,0 +1,96 @@
+name: Intel Engine
+
+# Roadmap-only hardware gate. Public Dory releases remain Apple-silicon-only; this workflow keeps
+# the Intel engine honest without allowing unqualified Intel artifacts into the release graph.
+# Configure a physical runner with labels: self-hosted, macOS, intel, dory.
+
+on:
+  workflow_dispatch:
+    inputs:
+      readiness_engines:
+        description: 'Comma-separated readiness engines'
+        default: 'dory'
+      readiness_extra_args:
+        description: 'Extra scripts/readiness.sh args'
+        default: ''
+  schedule:
+    - cron: '30 9 * * 1'
+  push:
+    branches: ['feat/**', 'fix/**']
+    paths:
+      - '.github/workflows/intel-engine.yml'
+      - 'Packages/ContainerizationEngine/**'
+      - 'dory-core/**'
+      - 'dory-core-swift/**'
+      - 'Dory/Runtime/Shared/**'
+      - 'Dory/Runtime/Apple/**'
+      - 'scripts/readiness.sh'
+      - 'scripts/bundle-engine.sh'
+      - 'scripts/build-dory-ffi-xcframework.sh'
+      - 'guest/**'
+
+permissions:
+  contents: read
+
+jobs:
+  intel-engine:
+    runs-on: [self-hosted, macOS, intel, dory]
+    timeout-minutes: 120
+    env:
+      READINESS_SETTLE: '8'
+      ENGINES: ${{ github.event.inputs.readiness_engines || 'dory' }}
+      READINESS_EXTRA_ARGS: ${{ github.event.inputs.readiness_extra_args || '' }}
+    steps:
+      - uses: actions/checkout@c915c33a16f01166c17c4e35fe1d4085a2d71adb # v4
+        with:
+          persist-credentials: false
+
+      - name: Select newest installed Xcode
+        run: |
+          newest="$(find /Applications -maxdepth 1 -name 'Xcode*.app' -type d | sort | tail -1)"
+          [ -n "$newest" ] || { echo "No Xcode installation found"; exit 1; }
+          echo "selected: $newest"
+          echo "DEVELOPER_DIR=$newest/Contents/Developer" >> "$GITHUB_ENV"
+          echo "READINESS_WORKDIR=$RUNNER_TEMP/dory-readiness" >> "$GITHUB_ENV"
+
+      - name: Record physical Intel host facts
+        run: |
+          sw_vers
+          uname -a
+          sysctl -n hw.model
+          sysctl -n machdep.cpu.brand_string
+          sysctl kern.hv_support
+          test "$(uname -m)" = "x86_64"
+          test "$(sysctl -n kern.hv_support)" = 1
+          test "$(sysctl -in sysctl.proc_translated 2>/dev/null || printf 0)" != 1
+          test "$(sysctl -in kern.hv_vmm_present 2>/dev/null || printf 0)" != 1
+          test "$(sysctl -in hw.optional.arm64 2>/dev/null || printf 0)" != 1
+          case "$(sysctl -n hw.model)" in VirtualMac*) exit 1 ;; esac
+
+      - name: Build shared Rust guest-control client
+        run: scripts/build-dory-ffi-xcframework.sh
+
+      - name: DoryHV logic tests
+        working-directory: Packages/ContainerizationEngine
+        run: swift test
+
+      - name: Build Intel helper slice
+        working-directory: Packages/ContainerizationEngine
+        run: swift build --arch x86_64
+
+      - name: Intel readiness core
+        run: |
+          args=(--engines "$ENGINES")
+          if [ -n "$READINESS_EXTRA_ARGS" ]; then
+            extra=( $READINESS_EXTRA_ARGS )
+            args+=("${extra[@]}")
+          fi
+          scripts/readiness.sh "${args[@]}"
+
+      - name: Upload readiness artifacts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: intel-readiness
+          path: ${{ env.READINESS_WORKDIR }}
+          if-no-files-found: ignore

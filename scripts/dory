@@ -83,6 +83,7 @@ dory — Dory CLI
   dory debug <container> [-- cmd...]
                                Reserved for a future agent namespace-debug RPC (currently unavailable)
   dory machine <args...>       Manage doryd Linux VM machines (ls, create, start, stop, delete, run)
+                               Delete/restore require --confirm with the exact machine or snapshot ID
   dory machine exec <name> [--json] -- <command...>
                                Run a command in a machine; --json emits schema v1 result metadata
   dory machine snapshot <name> Take a Dory machine snapshot
@@ -93,6 +94,7 @@ dory — Dory CLI
   dory doctor [--json] [--active] [--bundle [PATH]] [--diff]
                                Diagnose socket, CLI, network, mounts, disk, memory, and helpers
                                (--diff shows what changed since the last healthy run)
+  dory readiness [--json]      Show ordered app→doryd→VM→agent→disk→network→Docker→socket→Kubernetes state
   dory support bundle [--json] [--active] [PATH]
                                Write one redacted support zip and print the path for GitHub issues
   dory logs collect [--json] [--active] [PATH]
@@ -140,19 +142,22 @@ dory — Dory CLI
                                Select a restored drive with the same durable drive identity
   dory data capacity [--json]  Show Docker disk logical capacity and physical allocation
   dory data grow GIB [--json]  Grow Docker storage safely (128–2048 GiB; shrinking is refused)
+  dory upgrade status [--json]
+                               Show the latest preflight/snapshot/smoke/rollback transaction
+  dory upgrade recovery [--json]
+                               Show the fail-closed data recovery export and exact verify/restore commands
   dory agent guide [--json|--text]
                                Emit a versioned CLI capability map for coding agents
   dory mcp serve [--read-only]
                                Serve Dory tools over stdio MCP for Claude/Cursor-style clients
-  dory sandbox run [--json] [--keep] [--network none|outbound|full] [--rollback] -- <command...>
-                               Run a command in a dedicated Linux VM with no host sharing by default
-                               (--network none blocks all egress; outbound currently grants full
-                               egress — a scoped egress filter is reserved for a future release)
+  dory sandbox run [--json] [--keep] [--network MODE] [--allow-network HOST:PORT] -- <command...>
+                               Run non-root in a dedicated VM; mounts default read-only and network
+                               defaults denied. Use sandbox inspect/list/kill for retained runs.
   dory wait engine|container|machine [NAME] --until STATE --timeout N [--json]
                                Wait for a runtime state without hand-written polling loops
   dory events [--json] [--follow] [--limit N]
                                Show or stream idle transitions and runtime incidents
-  dory usb ls|attach|detach     Inspect USB candidates and request USB/IP attach/detach
+  dory usb ls                   Inspect host USB candidates (passthrough is not yet available)
   dory expose <port|machine> [--port P] [--hostname H] [--print-command]
                                Share a local port or machine endpoint through a public HTTPS tunnel
   dory k8s <kubectl args...>   Run kubectl against Dory's Kubernetes cluster
@@ -1378,7 +1383,7 @@ network_cmd() {
     authorization-plan|auth-plan) shift || true; network_authorization_plan_cmd "$@" ;;
     authorize) shift || true; network_authorize_cmd authorize "$@" ;;
     deauthorize) shift || true; network_authorize_cmd deauthorize "$@" ;;
-    custom-domains|set-custom-domain|remove-custom-domain)
+    custom-domains|set-custom-domain|remove-custom-domain|corporate)
       local subcommand="$1" ctl
       shift || true
       ctl="$(dorydctl_bin 2>/dev/null)" || { echo "dorydctl not found; start Dory before managing custom domains." >&2; exit 1; }
@@ -1484,6 +1489,46 @@ dory_machine_env_rows() {
   done
 }
 
+DORY_CONFIRM_REMAINDER=()
+
+require_exact_confirmation() {
+  local action="$1" expected="$2" confirmed=""
+  shift 2
+  DORY_CONFIRM_REMAINDER=()
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --confirm)
+        [ -z "$confirmed" ] || { echo "$action accepts exactly one --confirm value" >&2; return 2; }
+        confirmed="${2:?$action requires --confirm $expected}"
+        shift 2
+        ;;
+      --confirm=*)
+        echo "$action requires a separate exact confirmation: --confirm $expected" >&2
+        return 2
+        ;;
+      *) DORY_CONFIRM_REMAINDER+=("$1"); shift ;;
+    esac
+  done
+  if [ "$confirmed" != "$expected" ]; then
+    echo "$action changes or permanently removes '$expected'. Re-run with --confirm '$expected'." >&2
+    return 2
+  fi
+}
+
+component_cmd() {
+  local ctl sub id
+  ctl="$(dorydctl_bin 2>/dev/null)" || { echo "dorydctl not found; reinstall Dory Docker Core" >&2; return 1; }
+  sub="${1:-list}"
+  if [ "$sub" != "remove" ]; then
+    exec "$ctl" component "$@"
+  fi
+  shift
+  id="${1:?usage: dory component remove ID --confirm ID [--json] [--offline]}"
+  shift
+  require_exact_confirmation "component removal" "$id" "$@" || return $?
+  exec "$ctl" component remove "$id" "${DORY_CONFIRM_REMAINDER[@]}"
+}
+
 doryd_machine_cmd() {
   local ctl="$1" sub name args=()
   shift
@@ -1517,7 +1562,21 @@ doryd_machine_cmd() {
       ;;
     restore)
       shift
-      exec "$ctl" machine restore-snapshot "$@"
+      name="${1:?usage: dory machine restore NAME SNAPSHOT_ID --confirm NAME}"
+      local snapshot_id="${2:?usage: dory machine restore NAME SNAPSHOT_ID --confirm NAME}" safety_json safety_id
+      shift 2
+      require_exact_confirmation "machine restore" "$name" "$@" || return $?
+      [ "${#DORY_CONFIRM_REMAINDER[@]}" -eq 0 ] || {
+        echo "unexpected machine restore argument: ${DORY_CONFIRM_REMAINDER[0]}" >&2
+        return 2
+      }
+      safety_json="$("$ctl" machine snapshot "$name" --note "Automatic pre-restore safety snapshot")" || return $?
+      safety_id="$(python3 -c 'import json,sys; value=json.load(sys.stdin).get("id", ""); print(value); raise SystemExit(0 if value else 1)' <<<"$safety_json")" || {
+        echo "Dory created a safety snapshot but could not verify its ID; restore was not attempted." >&2
+        return 1
+      }
+      echo "Created retained pre-restore safety snapshot: $safety_id" >&2
+      exec "$ctl" machine restore-snapshot "$name" "$snapshot_id"
       ;;
     export)
       shift
@@ -1529,7 +1588,15 @@ doryd_machine_cmd() {
       ;;
     delete-snapshot|rm-snapshot)
       shift
-      exec "$ctl" machine delete-snapshot "$@"
+      name="${1:?usage: dory machine delete-snapshot NAME SNAPSHOT_ID --confirm SNAPSHOT_ID}"
+      local delete_snapshot_id="${2:?usage: dory machine delete-snapshot NAME SNAPSHOT_ID --confirm SNAPSHOT_ID}"
+      shift 2
+      require_exact_confirmation "snapshot deletion" "$delete_snapshot_id" "$@" || return $?
+      [ "${#DORY_CONFIRM_REMAINDER[@]}" -eq 0 ] || {
+        echo "unexpected snapshot deletion argument: ${DORY_CONFIRM_REMAINDER[0]}" >&2
+        return 2
+      }
+      exec "$ctl" machine delete-snapshot "$name" "$delete_snapshot_id"
       ;;
     create)
       shift
@@ -1579,7 +1646,18 @@ doryd_machine_cmd() {
       fi
       exec "$ctl" machine create "${args[@]}" "$@"
       ;;
-    create|update|start|stop|delete|rm|status|provision|snapshots|snapshot)
+    delete|rm)
+      shift
+      name="${1:?usage: dory machine delete NAME --confirm NAME}"
+      shift
+      require_exact_confirmation "machine deletion" "$name" "$@" || return $?
+      [ "${#DORY_CONFIRM_REMAINDER[@]}" -eq 0 ] || {
+        echo "unexpected machine deletion argument: ${DORY_CONFIRM_REMAINDER[0]}" >&2
+        return 2
+      }
+      exec "$ctl" machine delete "$name"
+      ;;
+    create|update|start|stop|status|provision|snapshots|snapshot)
       exec "$ctl" machine "$@"
       ;;
     *)
@@ -1599,12 +1677,36 @@ legacy_machine_cmd() {
       fi ;;
     snapshot) shift; machine_snapshot_create "$@" ;;
     snapshots|list-snapshots) shift; machine_snapshot_list "$@" ;;
-    restore) shift; machine_snapshot_restore "$@" ;;
+    restore)
+      shift
+      local restore_name="${1:?usage: dory machine restore NAME SNAPSHOT --confirm NAME}"
+      local restore_selector="${2:?usage: dory machine restore NAME SNAPSHOT --confirm NAME}"
+      shift 2
+      require_exact_confirmation "machine restore" "$restore_name" "$@" || return $?
+      [ "${#DORY_CONFIRM_REMAINDER[@]}" -eq 0 ] || { echo "unexpected machine restore argument" >&2; return 2; }
+      machine_snapshot_restore "$restore_name" "$restore_selector"
+      ;;
     clone) shift; machine_snapshot_clone "$@" ;;
     export) shift; machine_snapshot_export "$@" ;;
     backup) shift; machine_snapshot_backup "$@" ;;
     import) shift; machine_snapshot_import "$@" ;;
-    delete-snapshot|rm-snapshot) shift; machine_snapshot_delete "$@" ;;
+    delete-snapshot|rm-snapshot)
+      shift
+      local legacy_machine="${1:?usage: dory machine delete-snapshot NAME SNAPSHOT --confirm SNAPSHOT}"
+      local legacy_snapshot="${2:?usage: dory machine delete-snapshot NAME SNAPSHOT --confirm SNAPSHOT}"
+      shift 2
+      require_exact_confirmation "snapshot deletion" "$legacy_snapshot" "$@" || return $?
+      [ "${#DORY_CONFIRM_REMAINDER[@]}" -eq 0 ] || { echo "unexpected snapshot deletion argument" >&2; return 2; }
+      machine_snapshot_delete "$legacy_machine" "$legacy_snapshot"
+      ;;
+    delete|rm)
+      shift
+      local legacy_delete_name="${1:?usage: dory machine delete NAME --confirm NAME}"
+      shift
+      require_exact_confirmation "machine deletion" "$legacy_delete_name" "$@" || return $?
+      [ "${#DORY_CONFIRM_REMAINDER[@]}" -eq 0 ] || { echo "unexpected machine deletion argument" >&2; return 2; }
+      exec "$CONTAINER_BIN" machine delete "$legacy_delete_name"
+      ;;
     *) exec "$CONTAINER_BIN" machine "$@" ;;
   esac
 }
@@ -1626,9 +1728,13 @@ machine_cmd() {
 }
 
 sandbox_usage() {
-  echo "usage: dory sandbox run [--json] [--keep] [--name NAME] [--mount HOST[:GUEST[:ro|rw]]] [--network none|outbound|full] [--rollback] [--ttl-seconds N] [--memory-mb N] [--cpus N] [--kernel PATH] [--rootfs PATH] -- <command...>" >&2
-  echo "  --network none disables the guest network interfaces (all egress blocked); full grants full egress." >&2
-  echo "  --network outbound currently grants full egress too; a scoped egress filter is reserved for a future release, so it is reported with networkPolicyEnforced=false." >&2
+  echo "usage: dory sandbox run [--json] [--keep] [--name NAME | --reuse NAME] [--mount HOST[:GUEST[:ro|rw]]] [--network none|outbound|full] [--allow-network HOST[:PORT]] [--secret-env NAME] [--ssh-agent] [--elevated] [--rollback] [--ttl-seconds N] [--wall-time-seconds N] [--processes N] [--open-files N] [--disk-mb N] [--memory-mb N] [--cpus N] [--kernel PATH] [--rootfs PATH] -- <command...>" >&2
+  echo "       dory sandbox inspect NAME [--json]" >&2
+  echo "       dory sandbox list [--json]" >&2
+  echo "       dory sandbox kill NAME" >&2
+  echo "  none is the safe default; outbound permits DNS only to Dory's resolver plus explicit --allow-network destinations." >&2
+  echo "  mounts default to read-only; use a trailing :rw for an explicit write grant." >&2
+  echo "  workloads run as a non-root uid. --elevated is explicit and is accepted only with --network full." >&2
 }
 
 first_file() {
@@ -1689,7 +1795,7 @@ import os
 import sys
 
 raw, index = sys.argv[1], int(sys.argv[2])
-mode = "rw"
+mode = "ro"
 parts = raw.split(":")
 if parts and parts[-1] in ("ro", "rw"):
     mode = parts.pop()
@@ -1713,19 +1819,340 @@ if not guest:
 if not guest.startswith("/") or guest == "/":
     print(f"sandbox mount guest path must be absolute and not /: {guest}", file=sys.stderr)
     sys.exit(2)
+if guest == "/dory-sandbox" or guest.startswith("/dory-sandbox/") or guest.startswith("/run/host-services"):
+    print(f"sandbox mount guest path is reserved by Dory: {guest}", file=sys.stderr)
+    sys.exit(2)
 tag = f"dorysb{index}"
 print("\t".join([tag, host, guest, mode]))
 PY
 }
 
-sandbox_emit_run_result() {
-  local name="$1" kept="$2" exit_code="$3" json="$4" tmp="$5" network="$6" rollback="$7" ttl_seconds="$8" snapshot_id="$9"
-  python3 - "$name" "$kept" "$exit_code" "$json" "$tmp" "$network" "$rollback" "$ttl_seconds" "$snapshot_id" <<'PY'
+sandbox_state_directory() {
+  printf '%s\n' "${DORY_SANDBOX_STATE_DIR:-$HOME/.dory/sandboxes}"
+}
+
+sandbox_manifest_path() {
+  printf '%s/%s.json\n' "$(sandbox_state_directory)" "$1"
+}
+
+sandbox_resolve_egress() {
+  local output="$1"
+  shift
+  python3 - "$output" "$@" <<'PY'
+import ipaddress
+import json
+import os
+import socket
+import sys
+
+output, specs = sys.argv[1], sys.argv[2:]
+grants = []
+for spec in specs:
+    if "/" in spec or "://" in spec:
+        raise SystemExit(f"invalid --allow-network destination: {spec}")
+    host = spec
+    port = 443
+    if spec.startswith("["):
+        end = spec.find("]")
+        if end < 0:
+            raise SystemExit(f"invalid bracketed IPv6 destination: {spec}")
+        host = spec[1:end]
+        suffix = spec[end + 1:]
+        if suffix:
+            if not suffix.startswith(":"):
+                raise SystemExit(f"invalid --allow-network destination: {spec}")
+            port = int(suffix[1:])
+    elif spec.count(":") == 1 and spec.rsplit(":", 1)[1].isdigit():
+        host, raw_port = spec.rsplit(":", 1)
+        port = int(raw_port)
+    if not host or not 1 <= port <= 65535:
+        raise SystemExit(f"invalid --allow-network destination: {spec}")
+    try:
+        ipaddress.ip_address(host)
+        addresses = [host]
+    except ValueError:
+        try:
+            addresses = sorted({
+                row[4][0]
+                for row in socket.getaddrinfo(host, port, socket.AF_UNSPEC, socket.SOCK_STREAM)
+            })
+        except OSError as error:
+            raise SystemExit(f"could not resolve --allow-network destination {host}: {error}")
+    if not addresses:
+        raise SystemExit(f"--allow-network destination resolved to no addresses: {host}")
+    grants.append({"host": host, "port": port, "addresses": addresses})
+
+directory = os.path.dirname(output)
+os.makedirs(directory, mode=0o700, exist_ok=True)
+with open(output, "w", encoding="utf-8") as handle:
+    json.dump(grants, handle, separators=(",", ":"), sort_keys=True)
+PY
+}
+
+sandbox_policy_rows() {
+  python3 - "$1" <<'PY'
+import ipaddress
+import json
+import sys
+
+for grant in json.load(open(sys.argv[1], encoding="utf-8")):
+    for raw in grant["addresses"]:
+        address = ipaddress.ip_address(raw)
+        print("\t".join(("6" if address.version == 6 else "4", str(address), str(grant["port"]))))
+PY
+}
+
+sandbox_apply_guest_policy() {
+  local ctl="$1" name="$2" network="$3" uid="$4" gid="$5" disk_mb="$6" egress_json="$7"
+  local policy_args=() family address port
+  while IFS=$'\t' read -r family address port; do
+    [ -n "$family" ] && policy_args+=("$family" "$address" "$port")
+  done < <(sandbox_policy_rows "$egress_json")
+
+  "$ctl" --timeout 120 machine exec "$name" --json -- /bin/sh -eu -c '
+uid="$1"; gid="$2"; network="$3"; disk_mb="$4"; shift 4
+command -v iptables >/dev/null
+command -v mkfs.ext4 >/dev/null
+command -v losetup >/dev/null
+
+mkdir -p /var/lib/dory-sandbox /dory-sandbox
+disk=/var/lib/dory-sandbox/workspace.ext4
+if [ ! -f "$disk" ]; then
+  free_mb="$(df -Pm /var/lib/dory-sandbox | awk 'NR == 2 { print $4 }')"
+  [ -n "$free_mb" ] && [ "$free_mb" -ge "$((disk_mb + 64))" ] || {
+    echo "sandbox scratch disk needs ${disk_mb} MiB plus 64 MiB guest reserve; ${free_mb:-0} MiB is available" >&2
+    exit 1
+  }
+  truncate -s "${disk_mb}M" "$disk"
+  mkfs.ext4 -q -F -L dory-sandbox "$disk"
+fi
+if ! mountpoint /dory-sandbox; then
+  mount -t ext4 -o loop,noatime,nodev,nosuid "$disk" /dory-sandbox
+fi
+mkdir -p /dory-sandbox/.home /dory-sandbox/.tmp
+chown -R "$uid:$gid" /dory-sandbox
+chmod 0700 /dory-sandbox /dory-sandbox/.home /dory-sandbox/.tmp
+chmod 0755 /tmp 2>/dev/null || true
+chmod 0755 /var/tmp 2>/dev/null || true
+
+chain=DORY_SANDBOX
+while iptables -w 5 -D OUTPUT -m owner --uid-owner "$uid" -j "$chain" 2>/dev/null; do :; done
+
+ipv6=0
+if [ -s /proc/net/if_inet6 ] && command -v ip6tables >/dev/null; then
+  ipv6=1
+  while ip6tables -w 5 -D OUTPUT -m owner --uid-owner "$uid" -j "$chain" 2>/dev/null; do :; done
+fi
+if [ "$network" = full ]; then
+  exit 0
+fi
+iptables -w 5 -N "$chain" 2>/dev/null || true
+iptables -w 5 -F "$chain"
+iptables -w 5 -A OUTPUT -m owner --uid-owner "$uid" -j "$chain"
+if [ "$ipv6" -eq 1 ]; then
+  ip6tables -w 5 -N "$chain" 2>/dev/null || true
+  ip6tables -w 5 -F "$chain"
+  ip6tables -w 5 -A OUTPUT -m owner --uid-owner "$uid" -j "$chain"
+fi
+
+if [ "$network" = outbound ]; then
+  iptables -w 5 -A "$chain" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+  iptables -w 5 -A "$chain" -d 192.168.127.1 -p udp --dport 53 -j ACCEPT
+  iptables -w 5 -A "$chain" -d 192.168.127.1 -p tcp --dport 53 -j ACCEPT
+  [ "$ipv6" -eq 0 ] || ip6tables -w 5 -A "$chain" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+  while [ "$#" -gt 0 ]; do
+    family="$1"; address="$2"; port="$3"; shift 3
+    if [ "$family" = 4 ]; then
+      iptables -w 5 -A "$chain" -d "$address" -p tcp --dport "$port" -j ACCEPT
+      iptables -w 5 -A "$chain" -d "$address" -p udp --dport "$port" -j ACCEPT
+    elif [ "$ipv6" -eq 1 ]; then
+      ip6tables -w 5 -A "$chain" -d "$address" -p tcp --dport "$port" -j ACCEPT
+      ip6tables -w 5 -A "$chain" -d "$address" -p udp --dport "$port" -j ACCEPT
+    fi
+  done
+fi
+
+# Default DROP also covers loopback, link-local metadata, the host gateway, RFC1918/ULA LANs, and
+# every ungranted DNS endpoint. The only gateway exception is Dory DNS above.
+iptables -w 5 -A "$chain" -j DROP
+[ "$ipv6" -eq 0 ] || ip6tables -w 5 -A "$chain" -j DROP
+  ' sh "$uid" "$gid" "$network" "$disk_mb" ${policy_args[@]+"${policy_args[@]}"}
+}
+
+sandbox_exec_environment_json() {
+  local uid="$1" gid="$2" processes="$3" disk_bytes="$4" open_files="$5" ssh_agent="$6"
+  shift 6
+  python3 - "$uid" "$gid" "$processes" "$disk_bytes" "$open_files" "$ssh_agent" "$@" <<'PY'
+import json
+import os
+import re
+import sys
+
+uid, gid, processes, disk_bytes, open_files, ssh_agent, *names = sys.argv[1:]
+environment = {
+    "DORY_AGENT_RUN_UID": uid,
+    "DORY_AGENT_RUN_GID": gid,
+    "DORY_AGENT_MAX_PROCESSES": processes,
+    "DORY_AGENT_MAX_FILE_BYTES": disk_bytes,
+    "DORY_AGENT_MAX_OPEN_FILES": open_files,
+    "HOME": "/dory-sandbox/.home",
+    "TMPDIR": "/dory-sandbox/.tmp",
+    "DORY_SCRATCH": "/dory-sandbox",
+}
+if ssh_agent == "1":
+    environment["SSH_AUTH_SOCK"] = "/run/host-services/ssh-auth.sock"
+for name in names:
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+        raise SystemExit(f"invalid --secret-env name: {name}")
+    if name not in os.environ:
+        raise SystemExit(f"--secret-env is not set in the host environment: {name}")
+    environment[name] = os.environ[name]
+print(json.dumps(environment, separators=(",", ":"), sort_keys=True))
+PY
+}
+
+sandbox_write_manifest() {
+  local name="$1" status="$2" network="$3" uid="$4" gid="$5" elevated="$6" memory="$7" cpus="$8"
+  local disk_mb="$9" processes="${10}" open_files="${11}" wall_seconds="${12}" ttl_expires="${13}" kept="${14}"
+  local ssh_agent="${15}" mounts_json="${16}" egress_json="${17}" executable="${18}" argument_count="${19}"
+  shift 19
+  local state_dir path
+  state_dir="$(sandbox_state_directory)"
+  path="$(sandbox_manifest_path "$name")"
+  mkdir -p "$state_dir"
+  chmod 0700 "$state_dir"
+  umask 077
+  python3 - "$path" "$name" "$status" "$network" "$uid" "$gid" "$elevated" "$memory" "$cpus" "$disk_mb" "$processes" "$open_files" "$wall_seconds" "$ttl_expires" "$kept" "$ssh_agent" "$mounts_json" "$egress_json" "$executable" "$argument_count" "$@" <<'PY'
+import json
+import os
+import pathlib
+import sys
+import tempfile
+import time
+
+(path, name, status, network, uid, gid, elevated, memory, cpus, disk_mb, processes,
+ open_files, wall_seconds, ttl_expires, kept, ssh_agent, mounts_path, egress_path, executable,
+ argument_count, *secret_names) = sys.argv[1:]
+target = pathlib.Path(path)
+existing = {}
+try:
+    existing = json.loads(target.read_text(encoding="utf-8"))
+except Exception:
+    pass
+manifest = {
+    "schema": "dev.dory.sandbox.manifest",
+    "version": 1,
+    "sandbox": name,
+    "machine": name,
+    "isolation": "dedicated-vm",
+    "status": status,
+    "createdEpoch": existing.get("createdEpoch", int(time.time())),
+    "updatedEpoch": int(time.time()),
+    "expiresEpoch": int(ttl_expires),
+    "persistence": "named" if kept == "1" else "disposable",
+    "identity": {"uid": int(uid), "gid": int(gid), "elevated": elevated == "1"},
+    "network": {
+        "mode": network,
+        "modeEnforced": True,
+        "egressFilterEnforced": network != "full",
+        "dns": "dory-resolver-only" if network == "outbound" else ("blocked" if network == "none" else "unrestricted"),
+        "defaultDenyPrivateLANMetadataHostLoopback": network != "full",
+        "grants": json.load(open(egress_path, encoding="utf-8")),
+    },
+    "mounts": json.load(open(mounts_path, encoding="utf-8")),
+    "credentials": {"secretEnvironmentNames": sorted(secret_names), "sshAgent": ssh_agent == "1"},
+    "limits": {
+        "cpus": int(cpus), "memoryMB": int(memory), "diskMB": int(disk_mb),
+        "processes": int(processes), "openFiles": int(open_files),
+        "wallTimeSeconds": int(wall_seconds),
+    },
+    "command": {"executable": executable, "argumentCount": int(argument_count), "argumentsPersisted": False},
+}
+fd, temporary = tempfile.mkstemp(prefix=".sandbox-manifest-", dir=str(target.parent))
+try:
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        json.dump(manifest, handle, separators=(",", ":"), sort_keys=True)
+        handle.write("\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.chmod(temporary, 0o600)
+    os.replace(temporary, target)
+finally:
+    if os.path.exists(temporary):
+        os.unlink(temporary)
+PY
+}
+
+sandbox_inspect_cmd() {
+  local name="${1:?usage: dory sandbox inspect NAME [--json]}" json=0 path
+  shift
+  [ "${1:-}" != "--json" ] || { json=1; shift; }
+  [ "$#" -eq 0 ] || { sandbox_usage; return 2; }
+  [[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || { echo "invalid sandbox name: $name" >&2; return 2; }
+  path="$(sandbox_manifest_path "$name")"
+  [ -f "$path" ] || { echo "sandbox manifest not found: $name" >&2; return 1; }
+  if [ "$json" -eq 1 ]; then cat "$path"; else python3 -m json.tool "$path"; fi
+}
+
+sandbox_list_cmd() {
+  local json=0 state_dir
+  [ "${1:-}" != "--json" ] || { json=1; shift; }
+  [ "$#" -eq 0 ] || { sandbox_usage; return 2; }
+  state_dir="$(sandbox_state_directory)"
+  python3 - "$state_dir" "$json" <<'PY'
 import json
 import pathlib
 import sys
 
-name, kept, exit_code, as_json, tmp, network, rollback, ttl_seconds, snapshot_id = sys.argv[1:10]
+root, as_json = pathlib.Path(sys.argv[1]), sys.argv[2] == "1"
+rows = []
+if root.is_dir():
+    for path in sorted(root.glob("*.json")):
+        try:
+            rows.append(json.loads(path.read_text(encoding="utf-8")))
+        except Exception:
+            continue
+if as_json:
+    print(json.dumps({"schema":"dev.dory.sandbox.list","version":1,"sandboxes":rows}, separators=(",",":"), sort_keys=True))
+else:
+    for row in rows:
+        print(f"{row.get('sandbox','?')}\t{row.get('status','?')}\t{row.get('persistence','?')}\t{row.get('network',{}).get('mode','?')}")
+PY
+}
+
+sandbox_kill_cmd() {
+  local name="${1:?usage: dory sandbox kill NAME}" ctl path
+  shift
+  [ "$#" -eq 0 ] || { sandbox_usage; return 2; }
+  [[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || { echo "invalid sandbox name: $name" >&2; return 2; }
+  ctl="$(dorydctl_bin 2>/dev/null)" || { echo "dorydctl not found" >&2; return 1; }
+  "$ctl" --timeout 60 machine stop "$name" >/dev/null 2>&1 || true
+  "$ctl" --timeout 60 machine delete "$name" >/dev/null
+  path="$(sandbox_manifest_path "$name")"
+  if [ -f "$path" ]; then
+    python3 - "$path" <<'PY'
+import json, os, sys, tempfile, time
+path = sys.argv[1]
+data = json.load(open(path, encoding="utf-8"))
+data["status"] = "killed"
+data["updatedEpoch"] = int(time.time())
+fd, temporary = tempfile.mkstemp(prefix=".sandbox-manifest-", dir=os.path.dirname(path))
+with os.fdopen(fd, "w", encoding="utf-8") as handle:
+    json.dump(data, handle, separators=(",",":"), sort_keys=True); handle.write("\n")
+os.chmod(temporary, 0o600); os.replace(temporary, path)
+PY
+  fi
+  echo "sandbox killed: $name"
+}
+
+sandbox_emit_run_result() {
+  local name="$1" kept="$2" exit_code="$3" json="$4" tmp="$5" network="$6" rollback="$7" ttl_seconds="$8" snapshot_id="$9" manifest_path="${10}"
+  python3 - "$name" "$kept" "$exit_code" "$json" "$tmp" "$network" "$rollback" "$ttl_seconds" "$snapshot_id" "$manifest_path" <<'PY'
+import json
+import pathlib
+import sys
+
+name, kept, exit_code, as_json, tmp, network, rollback, ttl_seconds, snapshot_id, manifest_path = sys.argv[1:11]
 root = pathlib.Path(tmp)
 
 def read_json(name: str, default):
@@ -1750,16 +2177,21 @@ rollback_result = {
 }
 ttl = {
     "seconds": int(ttl_seconds),
-    "scheduled": (root / "ttl.json").exists(),
+    "scheduled": int(ttl_seconds) > 0 and kept == "1",
 }
+manifest = None
+try:
+    manifest = json.loads(pathlib.Path(manifest_path).read_text(encoding="utf-8"))
+except Exception:
+    manifest = None
 result = {
     "schema": "dev.dory.sandbox.run",
-    "version": 1,
+    "version": 2,
     "sandbox": name,
     "machine": name,
     "isolation": "dedicated-vm",
     "networkPolicy": network,
-    "networkPolicyEnforced": network != "outbound",
+    "networkPolicyEnforced": True,
     "hostFileSharing": "scoped" if mounts else "none",
     "mounts": mounts,
     "rollback": rollback_result,
@@ -1768,6 +2200,7 @@ result = {
     "exitCode": int(exit_code),
     "exec": exec_result,
     "cleanup": cleanup,
+    "manifest": manifest,
 }
 if as_json == "1":
     print(json.dumps(result, separators=(",", ":"), sort_keys=True))
@@ -1782,20 +2215,32 @@ PY
 }
 
 sandbox_run_cmd() {
-  local ctl name="" keep=0 json=0 memory=2048 cpus=2 kernel="" rootfs="" tmp exec_rc=0 created=0 cwd=""
-  local network="outbound" rollback=0 ttl_seconds=0 snapshot_id="" rollback_failed=0
+  local ctl name="" keep=0 reuse=0 json=0 memory=2048 cpus=2 disk_mb=256 processes=128 open_files=1024
+  local wall_seconds=600 kernel="" rootfs="" tmp exec_rc=0 created=0 cwd="/dory-sandbox"
+  local network="none" rollback=0 ttl_seconds=0 expires_epoch=0 snapshot_id="" rollback_failed=0
+  local ssh_agent=0 elevated=0 uid gid now_epoch manifest_path producer_rc=0 command_argc
   local mounts=() mount_tags=() mount_guests=() mount_modes=() mount_rows=() create_args=()
+  local allow_network=() secret_env=()
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --json) json=1; shift ;;
       --keep) keep=1; shift ;;
       --name) name="${2:?--name requires a value}"; shift 2 ;;
+      --reuse) name="${2:?--reuse requires a name}"; reuse=1; keep=1; shift 2 ;;
       --memory-mb) memory="${2:?--memory-mb requires a value}"; shift 2 ;;
       --cpus) cpus="${2:?--cpus requires a value}"; shift 2 ;;
+      --disk-mb) disk_mb="${2:?--disk-mb requires a value}"; shift 2 ;;
+      --processes) processes="${2:?--processes requires a value}"; shift 2 ;;
+      --open-files) open_files="${2:?--open-files requires a value}"; shift 2 ;;
+      --wall-time-seconds) wall_seconds="${2:?--wall-time-seconds requires a value}"; shift 2 ;;
       --kernel) kernel="${2:?--kernel requires a value}"; shift 2 ;;
       --rootfs) rootfs="${2:?--rootfs requires a value}"; shift 2 ;;
       --mount) mounts+=("${2:?--mount requires a path}"); shift 2 ;;
       --network) network="${2:?--network requires none, outbound, or full}"; shift 2 ;;
+      --allow-network) allow_network+=("${2:?--allow-network requires HOST[:PORT]}"); shift 2 ;;
+      --secret-env) secret_env+=("${2:?--secret-env requires a host environment variable name}"); shift 2 ;;
+      --ssh-agent) ssh_agent=1; shift ;;
+      --elevated) elevated=1; shift ;;
       --rollback) rollback=1; shift ;;
       --ttl-seconds) ttl_seconds="${2:?--ttl-seconds requires a value}"; shift 2 ;;
       --) shift; break ;;
@@ -1805,13 +2250,49 @@ sandbox_run_cmd() {
     esac
   done
   [ "$#" -gt 0 ] || { sandbox_usage; exit 2; }
-  [[ "$memory" =~ ^[0-9]+$ ]] && [ "$memory" -gt 0 ] || { echo "invalid --memory-mb: $memory" >&2; exit 2; }
-  [[ "$cpus" =~ ^[0-9]+$ ]] && [ "$cpus" -gt 0 ] || { echo "invalid --cpus: $cpus" >&2; exit 2; }
+  command_argc="$#"
+  [[ "$memory" =~ ^[0-9]+$ ]] && [ "$memory" -ge 1024 ] && [ "$memory" -le 16384 ] || { echo "invalid --memory-mb: $memory (expected 1024..16384)" >&2; exit 2; }
+  [[ "$cpus" =~ ^[0-9]+$ ]] && [ "$cpus" -ge 1 ] && [ "$cpus" -le 8 ] || { echo "invalid --cpus: $cpus (expected 1..8)" >&2; exit 2; }
+  [[ "$disk_mb" =~ ^[0-9]+$ ]] && [ "$disk_mb" -ge 32 ] && [ "$disk_mb" -le 640 ] || { echo "invalid --disk-mb: $disk_mb (expected 32..640)" >&2; exit 2; }
+  [[ "$processes" =~ ^[0-9]+$ ]] && [ "$processes" -ge 1 ] && [ "$processes" -le 4096 ] || { echo "invalid --processes: $processes (expected 1..4096)" >&2; exit 2; }
+  [[ "$open_files" =~ ^[0-9]+$ ]] && [ "$open_files" -ge 16 ] && [ "$open_files" -le 65536 ] || { echo "invalid --open-files: $open_files (expected 16..65536)" >&2; exit 2; }
+  [[ "$wall_seconds" =~ ^[0-9]+$ ]] && [ "$wall_seconds" -ge 1 ] && [ "$wall_seconds" -le 600 ] || { echo "invalid --wall-time-seconds: $wall_seconds (expected 1..600)" >&2; exit 2; }
   case "$network" in
     none|outbound|full) ;;
     *) echo "invalid --network: $network (expected none, outbound, or full)" >&2; exit 2 ;;
   esac
   [[ "$ttl_seconds" =~ ^[0-9]+$ ]] || { echo "invalid --ttl-seconds: $ttl_seconds" >&2; exit 2; }
+  if [ "$network" = outbound ] && [ "${#allow_network[@]}" -eq 0 ]; then
+    echo "--network outbound requires at least one --allow-network HOST[:PORT] grant" >&2
+    exit 2
+  fi
+  if [ "$network" != outbound ] && [ "${#allow_network[@]}" -gt 0 ]; then
+    echo "--allow-network is valid only with --network outbound" >&2
+    exit 2
+  fi
+  if [ "$elevated" -eq 1 ] && [ "$network" != full ]; then
+    echo "--elevated requires --network full because root can alter guest firewall policy" >&2
+    exit 2
+  fi
+  if [ "$ttl_seconds" -gt 0 ] && [ "$keep" -ne 1 ]; then
+    echo "--ttl-seconds requires --keep (or --reuse)" >&2
+    exit 2
+  fi
+  if [ "$reuse" -eq 1 ] && [ "$ttl_seconds" -gt 0 ]; then
+    echo "a reused sandbox retains its original crash-safe expiry; create a new named sandbox to choose another TTL" >&2
+    exit 2
+  fi
+  if [ "$reuse" -eq 1 ] && [ "${#mounts[@]}" -gt 0 ]; then
+    echo "a reused sandbox retains its original mount grants; omit --mount and inspect the persisted manifest first" >&2
+    exit 2
+  fi
+
+  if [ "$elevated" -eq 1 ]; then
+    uid=0; gid=0
+  else
+    uid="$(id -u)"; gid="$(id -g)"
+    if [ "$uid" -eq 0 ]; then uid=65534; gid=65534; fi
+  fi
 
   local parsed tag host guest mode mount_index=0
   if [ "${#mounts[@]}" -gt 0 ]; then
@@ -1826,7 +2307,7 @@ sandbox_run_cmd() {
       mount_modes+=("$mode")
       mount_rows+=("$tag" "$host" "$guest" "$mode")
       create_args+=(--share "$tag=$host:$guest:$mode")
-      [ -n "$cwd" ] || cwd="$guest"
+      [ "$cwd" != "/dory-sandbox" ] || cwd="$guest"
       mount_index=$((mount_index + 1))
     done
   fi
@@ -1834,14 +2315,9 @@ sandbox_run_cmd() {
   ctl="$(dorydctl_bin 2>/dev/null)" || { echo "dorydctl not found; build/install doryd before using sandboxes" >&2; exit 1; }
   [ -n "$name" ] || name="dory-sandbox-$(date +%Y%m%d%H%M%S)-$RANDOM"
   [[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || { echo "invalid sandbox name: $name" >&2; exit 2; }
-  kernel="${kernel:-$(sandbox_default_kernel || true)}"
-  rootfs="${rootfs:-$(sandbox_default_rootfs || true)}"
-  [ -n "$kernel" ] && [ -f "$kernel" ] || { echo "sandbox kernel not found; set DORY_SANDBOX_KERNEL or build guest assets" >&2; exit 1; }
-  [ -n "$rootfs" ] && [ -f "$rootfs" ] || { echo "sandbox rootfs not found; set DORY_SANDBOX_ROOTFS or build guest assets" >&2; exit 1; }
 
   tmp="$(mktemp -d -t dory-sandbox.XXXXXX)"
-  if [ "${#mount_rows[@]}" -gt 0 ]; then
-    python3 - "$tmp/mounts.json" "${mount_rows[@]}" <<'PY'
+  python3 - "$tmp/mounts.json" ${mount_rows[@]+"${mount_rows[@]}"} <<'PY'
 import json
 import sys
 
@@ -1860,39 +2336,97 @@ for index in range(0, len(rows), 4):
 with open(path, "w", encoding="utf-8") as handle:
     json.dump(mounts, handle, separators=(",", ":"), sort_keys=True)
 PY
-  fi
-  if [ "${#create_args[@]}" -gt 0 ]; then
+  sandbox_resolve_egress "$tmp/egress.json" ${allow_network[@]+"${allow_network[@]}"} || { rm -rf "$tmp"; exit 2; }
+  now_epoch="$(date +%s)"
+  if [ "$reuse" -eq 0 ]; then
+    kernel="${kernel:-$(sandbox_default_kernel || true)}"
+    rootfs="${rootfs:-$(sandbox_default_rootfs || true)}"
+    [ -n "$kernel" ] && [ -f "$kernel" ] || { echo "sandbox kernel not found; set DORY_SANDBOX_KERNEL or build guest assets" >&2; rm -rf "$tmp"; exit 1; }
+    [ -n "$rootfs" ] && [ -f "$rootfs" ] || { echo "sandbox rootfs not found; set DORY_SANDBOX_ROOTFS or build guest assets" >&2; rm -rf "$tmp"; exit 1; }
+    if [ "$keep" -eq 1 ] && [ "$ttl_seconds" -gt 0 ]; then
+      expires_epoch=$((now_epoch + ttl_seconds))
+    elif [ "$keep" -eq 0 ]; then
+      expires_epoch=$((now_epoch + wall_seconds + 300))
+    fi
+    create_args+=(--env "DORY_SANDBOX=1" --env "DORY_SANDBOX_EXPIRES_AT=$expires_epoch" --env "DORY_SANDBOX_SSH_AGENT=$ssh_agent")
     if ! "$ctl" --timeout 120 machine create "$name" --kernel "$kernel" --rootfs "$rootfs" --memory-mb "$memory" --cpus "$cpus" "${create_args[@]}" > "$tmp/create.json"; then
-      rm -rf "$tmp"
-      exit 1
+      rm -rf "$tmp"; exit 1
+    fi
+    created=1
+    if ! "$ctl" --timeout 120 machine start "$name" > "$tmp/start.json"; then
+      [ "$keep" -eq 1 ] || "$ctl" --timeout 30 machine delete "$name" > "$tmp/delete.json" 2>/dev/null || true
+      rm -rf "$tmp"; exit 1
     fi
   else
-    if ! "$ctl" --timeout 120 machine create "$name" --kernel "$kernel" --rootfs "$rootfs" --memory-mb "$memory" --cpus "$cpus" > "$tmp/create.json"; then
-      rm -rf "$tmp"
-      exit 1
+    if ! "$ctl" --timeout 30 machine status "$name" > "$tmp/status.json"; then rm -rf "$tmp"; exit 1; fi
+    manifest_path="$(sandbox_manifest_path "$name")"
+    [ -f "$manifest_path" ] || { echo "sandbox manifest not found; refusing uninspectable reuse: $name" >&2; rm -rf "$tmp"; exit 2; }
+    local reuse_meta
+    if ! reuse_meta="$(python3 - "$tmp/status.json" "$manifest_path" "$ssh_agent" "$now_epoch" <<'PY'
+import json, sys
+status = json.load(open(sys.argv[1], encoding="utf-8"))
+manifest = json.load(open(sys.argv[2], encoding="utf-8"))
+requested_ssh = sys.argv[3] == "1"
+now = int(sys.argv[4])
+environment = {row["key"]: row["value"] for row in status.get("env", [])}
+if environment.get("DORY_SANDBOX") != "1":
+    raise SystemExit("refusing to reuse a machine that was not created as a sandbox")
+expires = int(environment.get("DORY_SANDBOX_EXPIRES_AT", "0"))
+if expires and expires <= now:
+    raise SystemExit("sandbox TTL has expired; wait for daemon cleanup or kill it explicitly")
+granted_ssh = environment.get("DORY_SANDBOX_SSH_AGENT") == "1"
+if granted_ssh != requested_ssh:
+    raise SystemExit("--ssh-agent must exactly match the retained sandbox credential grant")
+expected_mounts = manifest.get("mounts", [])
+actual_mounts = status.get("shares", [])
+expected = sorted((m["tag"], m["hostPath"], m["guestPath"], bool(m["readOnly"])) for m in expected_mounts)
+actual = sorted((m["tag"], m["hostPath"], m["guestPath"], bool(m["readOnly"])) for m in actual_mounts)
+if expected != actual:
+    raise SystemExit("retained sandbox mounts differ from its manifest; refusing reuse")
+limits = manifest.get("limits", {})
+print("\t".join((
+    str(status.get("memoryMB", limits.get("memoryMB", 2048))),
+    str(status.get("cpuCount", limits.get("cpus", 2))),
+    str(limits.get("diskMB", 256)), str(expires), status.get("state", "stopped"),
+)))
+PY
+)"; then rm -rf "$tmp"; exit 2; fi
+    local reuse_state
+    IFS=$'\t' read -r memory cpus disk_mb expires_epoch reuse_state <<<"$reuse_meta"
+    python3 - "$manifest_path" "$tmp/mounts.json" <<'PY'
+import json, sys
+manifest = json.load(open(sys.argv[1], encoding="utf-8"))
+with open(sys.argv[2], "w", encoding="utf-8") as handle:
+    json.dump(manifest.get("mounts", []), handle, separators=(",",":"), sort_keys=True)
+PY
+    mount_guests=()
+    mount_modes=()
+    while IFS=$'\t' read -r guest mode; do
+      [ -n "$guest" ] || continue
+      mount_guests+=("$guest"); mount_modes+=("$mode")
+      [ "$cwd" != "/dory-sandbox" ] || cwd="$guest"
+    done < <(python3 - "$tmp/mounts.json" <<'PY'
+import json, sys
+for mount in json.load(open(sys.argv[1], encoding="utf-8")):
+    print(f"{mount['guestPath']}\t{mount['mode']}")
+PY
+)
+    if [ "$reuse_state" != running ]; then
+      "$ctl" --timeout 120 machine start "$name" > "$tmp/start.json" || { rm -rf "$tmp"; exit 1; }
     fi
-  fi
-  created=1
-  if ! "$ctl" --timeout 120 machine start "$name" > "$tmp/start.json"; then
-    [ "$keep" -eq 1 ] || "$ctl" --timeout 30 machine delete "$name" > "$tmp/delete.json" 2>/dev/null || true
-    rm -rf "$tmp"
-    exit 1
   fi
 
-  if [ "$network" = "none" ]; then
-    if ! "$ctl" --timeout 120 machine exec "$name" --json -- /bin/sh -lc 'for iface in $(ls /sys/class/net 2>/dev/null || true); do [ "$iface" = lo ] && continue; ip link set "$iface" down 2>/dev/null || true; done; true' > "$tmp/network.json"; then
-      [ "$keep" -eq 1 ] || "$ctl" --timeout 60 machine delete "$name" > "$tmp/delete.json" 2>/dev/null || true
-      rm -rf "$tmp"
-      exit 1
-    fi
+  if ! sandbox_apply_guest_policy "$ctl" "$name" "$network" "$uid" "$gid" "$disk_mb" "$tmp/egress.json" > "$tmp/network.json"; then
+    [ "$keep" -eq 1 ] || "$ctl" --timeout 60 machine delete "$name" > "$tmp/delete.json" 2>/dev/null || true
+    rm -rf "$tmp"; exit 1
   fi
 
   local idx=0
-  while [ "$idx" -lt "${#mount_tags[@]}" ]; do
-    if ! "$ctl" --timeout 120 machine exec "$name" --json -- /bin/sh -lc 'mkdir -p "$1" && if [ "$3" = ro ]; then mount -t virtiofs -o ro "$2" "$1"; else mount -t virtiofs "$2" "$1"; fi' sh "${mount_guests[$idx]}" "${mount_tags[$idx]}" "${mount_modes[$idx]}" > "$tmp/mount-$idx.json"; then
+  while [ "$idx" -lt "${#mount_guests[@]}" ]; do
+    if ! "$ctl" --timeout 30 machine exec "$name" --json -- /bin/sh -eu -c 'mountpoint "$1" >/dev/null' sh "${mount_guests[$idx]}" > "$tmp/mount-$idx.json"; then
+      echo "sandbox share was not mounted in the guest: ${mount_guests[$idx]}" >&2
       [ "$keep" -eq 1 ] || "$ctl" --timeout 60 machine delete "$name" > "$tmp/delete.json" 2>/dev/null || true
-      rm -rf "$tmp"
-      exit 1
+      rm -rf "$tmp"; exit 1
     fi
     idx=$((idx + 1))
   done
@@ -1906,14 +2440,23 @@ PY
     fi
   fi
 
+  manifest_path="$(sandbox_manifest_path "$name")"
+  sandbox_write_manifest "$name" running "$network" "$uid" "$gid" "$elevated" "$memory" "$cpus" "$disk_mb" "$processes" "$open_files" "$wall_seconds" "$expires_epoch" "$keep" "$ssh_agent" "$tmp/mounts.json" "$tmp/egress.json" "$1" "$command_argc" ${secret_env[@]+"${secret_env[@]}"}
+
   set +e
+  local pipeline_status=()
   if [ -n "$cwd" ]; then
-    "$ctl" --timeout 900 machine exec "$name" --json --cwd "$cwd" -- "$@" > "$tmp/exec.json"
+    sandbox_exec_environment_json "$uid" "$gid" "$processes" "$((disk_mb * 1024 * 1024))" "$open_files" "$ssh_agent" ${secret_env[@]+"${secret_env[@]}"} \
+      | "$ctl" --timeout "$((wall_seconds + 15))" machine exec "$name" --json --cwd "$cwd" --env-json-stdin --timeout-ms "$((wall_seconds * 1000))" -- "$@" > "$tmp/exec.json"
   else
-    "$ctl" --timeout 900 machine exec "$name" --json -- "$@" > "$tmp/exec.json"
+    sandbox_exec_environment_json "$uid" "$gid" "$processes" "$((disk_mb * 1024 * 1024))" "$open_files" "$ssh_agent" ${secret_env[@]+"${secret_env[@]}"} \
+      | "$ctl" --timeout "$((wall_seconds + 15))" machine exec "$name" --json --env-json-stdin --timeout-ms "$((wall_seconds * 1000))" -- "$@" > "$tmp/exec.json"
   fi
-  exec_rc=$?
+  pipeline_status=("${PIPESTATUS[@]}")
+  producer_rc="${pipeline_status[0]:-1}"
+  exec_rc="${pipeline_status[1]:-1}"
   set -e
+  if [ "$producer_rc" -ne 0 ]; then exec_rc="$producer_rc"; fi
 
   if [ "$rollback" -eq 1 ]; then
     if ! "$ctl" --timeout 180 machine restore-snapshot "$name" "$snapshot_id" > "$tmp/rollback.json"; then
@@ -1925,22 +2468,14 @@ PY
     fi
   fi
 
-  if [ "$keep" -eq 1 ] && [ "$ttl_seconds" -gt 0 ]; then
-    printf '{"seconds":%s,"sandbox":"%s"}\n' "$ttl_seconds" "$name" > "$tmp/ttl.json"
-    if [ "${DORY_SANDBOX_DISABLE_TTL_SCHEDULER:-0}" != "1" ]; then
-      (
-        sleep "$ttl_seconds"
-        "$ctl" --timeout 60 machine stop "$name" >/dev/null 2>&1 || true
-        "$ctl" --timeout 60 machine delete "$name" >/dev/null 2>&1 || true
-      ) >/dev/null 2>&1 &
-    fi
-  fi
-
   if [ "$keep" -eq 0 ] && [ "$created" -eq 1 ]; then
     "$ctl" --timeout 60 machine stop "$name" > "$tmp/stop.json" 2>/dev/null || true
     "$ctl" --timeout 60 machine delete "$name" > "$tmp/delete.json" 2>/dev/null || true
   fi
-  sandbox_emit_run_result "$name" "$keep" "$exec_rc" "$json" "$tmp" "$network" "$rollback" "$ttl_seconds" "$snapshot_id"
+  local final_status=retained
+  [ "$keep" -eq 1 ] || final_status=deleted
+  sandbox_write_manifest "$name" "$final_status" "$network" "$uid" "$gid" "$elevated" "$memory" "$cpus" "$disk_mb" "$processes" "$open_files" "$wall_seconds" "$expires_epoch" "$keep" "$ssh_agent" "$tmp/mounts.json" "$tmp/egress.json" "$1" "$command_argc" ${secret_env[@]+"${secret_env[@]}"}
+  sandbox_emit_run_result "$name" "$keep" "$exec_rc" "$json" "$tmp" "$network" "$rollback" "$ttl_seconds" "$snapshot_id" "$manifest_path"
   rm -rf "$tmp"
   exit "$exec_rc"
 }
@@ -1948,8 +2483,11 @@ PY
 sandbox_cmd() {
   case "${1:-run}" in
     run) shift || true; sandbox_run_cmd "$@" ;;
+    inspect) shift || true; sandbox_inspect_cmd "$@" ;;
+    list|ls) shift || true; sandbox_list_cmd "$@" ;;
+    kill|delete|rm) shift || true; sandbox_kill_cmd "$@" ;;
     -h|--help|help) sandbox_usage; return 0 ;;
-    *) echo "usage: dory sandbox run [options] -- <command...>" >&2; exit 2 ;;
+    *) sandbox_usage; exit 2 ;;
   esac
 }
 
@@ -1982,12 +2520,8 @@ usb_cmd() {
         esac
       done
       [ -n "$busid" ] || { echo "usage: dory usb attach <busid> [--mode userAuthorized|seize|capture]" >&2; exit 2; }
-      local hv; hv="$(hv_helper || true)"
-      [ -n "$hv" ] || { echo "dory usb attach needs the dory-hv engine running" >&2; exit 2; }
-      # The engine (which owns the device claim + guest agent) does the claim, registers the usbip
-      # export, and tells the guest to dial. Mode defaults to userAuthorized (driverless devices);
-      # capture (driver-owned devices, e.g. mass storage) needs the notarized com.apple.vm.device-access.
-      if [ -n "$mode" ]; then "$hv" usb attach "$busid" "$mode"; else "$hv" usb attach "$busid"; fi
+      echo "dory usb attach is unavailable: host discovery works, but guest USB/IP attach/detach RPC is not implemented" >&2
+      return 3
       ;;
     detach)
       shift
@@ -1999,9 +2533,8 @@ usb_cmd() {
         esac
       done
       [ -n "$busid" ] || { echo "usage: dory usb detach <busid>" >&2; exit 2; }
-      local hv; hv="$(hv_helper || true)"
-      [ -n "$hv" ] || { echo "dory usb detach needs the dory-hv engine running" >&2; exit 2; }
-      "$hv" usb detach "$busid"
+      echo "dory usb detach is unavailable: guest USB/IP attach/detach RPC is not implemented" >&2
+      return 3
       ;;
     *) echo "usage: dory usb ls|attach|detach" >&2; exit 2 ;;
   esac
@@ -2446,6 +2979,116 @@ absolute_cli_path() {
     /*) printf '%s\n' "$1" ;;
     *) printf '%s/%s\n' "$PWD" "$1" ;;
   esac
+}
+
+upgrade_cmd() {
+  local action="${1:-status}" json=0 root="${DORY_UPGRADE_ROOT:-$HOME/.dory/upgrades}"
+  [ "$#" -eq 0 ] || shift
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --json) json=1; shift ;;
+      -h|--help) echo "usage: dory upgrade status|recovery [--json]"; return 0 ;;
+      *) echo "unknown upgrade option: $1" >&2; return 2 ;;
+    esac
+  done
+  case "$action" in status|recovery) ;; help|-h|--help) echo "usage: dory upgrade status|recovery [--json]"; return 0 ;; *) echo "usage: dory upgrade status|recovery [--json]" >&2; return 2 ;; esac
+  python3 - "$root" "$action" "$json" <<'PY'
+import json
+import os
+import pathlib
+import stat
+import sys
+import uuid
+
+root = pathlib.Path(sys.argv[1])
+action = sys.argv[2]
+as_json = sys.argv[3] == "1"
+
+def secure_stat(path: pathlib.Path, kind: str):
+    value = path.lstat()
+    expected = stat.S_IFDIR if kind == "directory" else stat.S_IFREG
+    if stat.S_IFMT(value.st_mode) != expected or value.st_uid != os.getuid() or value.st_mode & 0o077:
+        raise SystemExit(f"unsafe Dory upgrade {kind}: {path}")
+    if kind == "file" and (value.st_nlink != 1 or value.st_size < 0 or value.st_size > 4 * 1024 * 1024):
+        raise SystemExit(f"unsafe Dory upgrade file: {path}")
+    return value
+
+def read_json(path: pathlib.Path):
+    secure_stat(path, "file")
+    with path.open("rb") as handle:
+        data = handle.read(4 * 1024 * 1024 + 1)
+    if len(data) > 4 * 1024 * 1024:
+        raise SystemExit(f"Dory upgrade evidence is too large: {path}")
+    return json.loads(data)
+
+records = []
+if root.exists() or root.is_symlink():
+    secure_stat(root, "directory")
+    for entry in root.iterdir():
+        try:
+            transaction_id = uuid.UUID(entry.name)
+        except ValueError:
+            continue
+        secure_stat(entry, "directory")
+        record = read_json(entry / "transaction.json")
+        if (record.get("kind") != "dev.dory.upgrade.transaction" or
+                record.get("schemaVersion") != 1 or
+                str(record.get("id", "")).lower() != str(transaction_id)):
+            raise SystemExit(f"invalid Dory upgrade transaction: {entry}")
+        records.append((record.get("updatedAt", ""), entry, record))
+
+records.sort(key=lambda value: value[0], reverse=True)
+if not records:
+    if action == "recovery":
+        raise SystemExit("no Dory upgrade recovery export is available")
+    payload = {"schema": "dev.dory.upgrade.status", "version": 1, "active": False, "transaction": None}
+    if as_json:
+        print(json.dumps(payload, separators=(",", ":"), sort_keys=True))
+    else:
+        print("No Dory upgrade transaction recorded.")
+    raise SystemExit(0)
+
+_, directory, record = records[0]
+terminal = record.get("state") in {"succeeded", "rolledBack", "recoveryRequired", "failed"}
+if action == "status":
+    payload = {"schema": "dev.dory.upgrade.status", "version": 1, "active": not terminal, "transaction": record}
+    if as_json:
+        print(json.dumps(payload, separators=(",", ":"), sort_keys=True))
+    else:
+        candidate = record.get("candidate") or {}
+        print(f"Upgrade: {record.get('state', 'unknown')}")
+        print(f"  transaction: {record.get('id', 'unknown')}")
+        print(f"  release: {record.get('priorVersion', '?')} ({record.get('priorBuild', '?')}) -> {candidate.get('version', '?')} ({candidate.get('build', '?')})")
+        print(f"  app snapshot: {'ready' if record.get('appSnapshot') else 'missing'}")
+        print(f"  data snapshot: {'verified' if record.get('dataSnapshot') else 'missing'}")
+        checks = record.get("smokeChecks") or []
+        if checks:
+            passed = sum(1 for check in checks if check.get("passed"))
+            print(f"  smoke checks: {passed}/{len(checks)} passed")
+        if record.get("error"):
+            print(f"  detail: {record['error']}")
+        if record.get("recoveryDirectory"):
+            print(f"  recovery: {record['recoveryDirectory']}/recovery.json")
+    raise SystemExit(0)
+
+expected = directory / "recovery"
+recovery_directory = record.get("recoveryDirectory")
+if recovery_directory != str(expected):
+    raise SystemExit("latest Dory upgrade has no validated recovery export")
+secure_stat(expected, "directory")
+recovery = read_json(expected / "recovery.json")
+if (recovery.get("schema") != "dev.dory.upgrade.recovery" or recovery.get("version") != 1 or
+        recovery.get("transactionID") != record.get("id") or recovery.get("durableDataWasRolledBack") is not False):
+    raise SystemExit("Dory upgrade recovery export is invalid")
+if as_json:
+    print(json.dumps({"schema": "dev.dory.upgrade.recovery-status", "version": 1, "recovery": recovery}, separators=(",", ":"), sort_keys=True))
+else:
+    print(f"Recovery export: {expected / 'recovery.json'}")
+    print(f"Reason: {recovery.get('reason', 'unknown')}")
+    print(f"Durable data rolled back: no")
+    print(f"Verify: {recovery.get('exportCommand', 'unavailable')}")
+    print(f"Restore to a new drive: {recovery.get('restoreCommand', 'unavailable')}")
+PY
 }
 
 data_cmd() {
@@ -3117,7 +3760,7 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "dory.sandbox_run",
         "title": "Dory Sandbox Run",
-        "description": "Run a command in a dedicated Dory sandbox VM. Deletes the sandbox by default.",
+        "description": "Run a bounded, non-root command in a dedicated Dory sandbox VM. Deletes the sandbox by default.",
         "inputSchema": schema_object({
             "name": {"type": "string", "description": "Optional sandbox name."},
             "command": {
@@ -3126,21 +3769,29 @@ TOOLS: list[dict[str, Any]] = [
                 "minItems": 1,
                 "description": "Command argv to execute.",
             },
-            "keep": {"type": "boolean", "description": "Keep the sandbox machine after the command exits."},
+            "keep": {"type": "boolean", "description": "Keep a named sandbox machine after the command exits."},
+            "reuse": {"type": "string", "description": "Reuse a retained sandbox by name; its original mounts, disk size, SSH grant, and TTL remain authoritative."},
             "networkPolicy": {
                 "type": "string",
                 "enum": ["none", "outbound", "full"],
-                "description": "Sandbox network policy. none disables guest network interfaces (all egress blocked); full grants full egress. outbound currently grants full egress too (unenforced label reported with networkPolicyEnforced=false); a scoped egress filter is reserved for a future release.",
+                "description": "Sandbox network policy. none (the default) denies all workload egress; outbound allows Dory DNS plus only allowNetwork destinations; full explicitly grants all egress.",
             },
+            "allowNetwork": {"type": "array", "items": {"type": "string"}, "description": "HOST[:PORT] grants required by outbound mode; omitted ports default to 443."},
             "rollback": {"type": "boolean", "description": "Snapshot before running and restore the sandbox afterward."},
             "ttlSeconds": {"type": "integer", "minimum": 0, "description": "When keep=true, schedule automatic cleanup after this many seconds. 0 disables TTL cleanup."},
             "mounts": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "Explicit scoped mounts as HOST[:GUEST[:ro|rw]]. Host file sharing is disabled when omitted.",
+                "description": "Explicit scoped mounts as HOST[:GUEST[:ro|rw]]. Mounts default read-only; host sharing is disabled when omitted.",
             },
-            "memoryMB": {"type": "integer", "minimum": 1},
-            "cpus": {"type": "integer", "minimum": 1},
+            "secretEnvironmentNames": {"type": "array", "items": {"type": "string"}, "description": "Names inherited by the MCP server and granted ephemerally; values never enter argv or manifests."},
+            "sshAgent": {"type": "boolean", "description": "Grant the host SSH agent for this sandbox only."},
+            "elevated": {"type": "boolean", "description": "Run as root; requires networkPolicy=full."},
+            "wallTimeSeconds": {"type": "integer", "minimum": 1, "maximum": 600},
+            "processes": {"type": "integer", "minimum": 1, "maximum": 4096},
+            "diskMB": {"type": "integer", "minimum": 32, "maximum": 640},
+            "memoryMB": {"type": "integer", "minimum": 1024, "maximum": 16384},
+            "cpus": {"type": "integer", "minimum": 1, "maximum": 8},
         }, ["command"]),
         "annotations": {"readOnlyHint": False, "destructiveHint": True},
     },
@@ -3300,7 +3951,12 @@ def call_tool(name: str, arguments: Any) -> dict[str, Any]:
         if not isinstance(command_value, list) or not command_value or not all(isinstance(item, str) for item in command_value):
             raise ToolExecutionError("command must be a non-empty array of strings")
         command = ["sandbox", "run", "--json"]
+        reuse_name = string_arg(args, "reuse")
         sandbox_name = string_arg(args, "name")
+        if reuse_name and sandbox_name:
+            raise ToolExecutionError("use either name or reuse, not both")
+        if reuse_name:
+            command.extend(["--reuse", reuse_name])
         if sandbox_name:
             command.extend(["--name", sandbox_name])
         keep = args.get("keep", False)
@@ -3313,6 +3969,12 @@ def call_tool(name: str, arguments: Any) -> dict[str, Any]:
             if network_policy not in ("none", "outbound", "full"):
                 raise ToolExecutionError("networkPolicy must be none, outbound, or full")
             command.extend(["--network", network_policy])
+        allow_network = args.get("allowNetwork", [])
+        if allow_network:
+            if not isinstance(allow_network, list) or not all(isinstance(item, str) and item for item in allow_network):
+                raise ToolExecutionError("allowNetwork must be an array of non-empty HOST[:PORT] strings")
+            for destination in allow_network:
+                command.extend(["--allow-network", destination])
         rollback = args.get("rollback", False)
         if not isinstance(rollback, bool):
             raise ToolExecutionError("rollback must be a boolean")
@@ -3326,12 +3988,31 @@ def call_tool(name: str, arguments: Any) -> dict[str, Any]:
                 raise ToolExecutionError("mounts must be an array of non-empty strings")
             for mount in mounts:
                 command.extend(["--mount", mount])
+        secret_names = args.get("secretEnvironmentNames", [])
+        if secret_names:
+            if not isinstance(secret_names, list) or not all(isinstance(item, str) and item for item in secret_names):
+                raise ToolExecutionError("secretEnvironmentNames must be an array of environment names")
+            for secret_name in secret_names:
+                command.extend(["--secret-env", secret_name])
+        for key, option in (("sshAgent", "--ssh-agent"), ("elevated", "--elevated")):
+            value = args.get(key, False)
+            if not isinstance(value, bool):
+                raise ToolExecutionError(f"{key} must be a boolean")
+            if value:
+                command.append(option)
+        wall_seconds = int_arg(args, "wallTimeSeconds", 600, 1, 600)
+        if "wallTimeSeconds" in args:
+            command.extend(["--wall-time-seconds", str(wall_seconds)])
+        if "processes" in args:
+            command.extend(["--processes", str(int_arg(args, "processes", 128, 1, 4096))])
+        if "diskMB" in args:
+            command.extend(["--disk-mb", str(int_arg(args, "diskMB", 256, 32, 640))])
         if "memoryMB" in args:
-            command.extend(["--memory-mb", str(int_arg(args, "memoryMB", 2048, 1, 1_048_576))])
+            command.extend(["--memory-mb", str(int_arg(args, "memoryMB", 2048, 1024, 16384))])
         if "cpus" in args:
-            command.extend(["--cpus", str(int_arg(args, "cpus", 2, 1, 1024))])
+            command.extend(["--cpus", str(int_arg(args, "cpus", 2, 1, 8))])
         command.extend(["--", *command_value])
-        return tool_result(run_cli(command, timeout=1800))
+        return tool_result(run_cli(command, timeout=wall_seconds + 180))
     if name == "dory.wait":
         target_kind = string_arg(args, "targetKind", required=True)
         if target_kind not in ("engine", "container", "machine"):
@@ -3430,7 +4111,7 @@ data = {
         "preferJSON": True,
         "nonInteractive": True,
         "promptPolicy": "commands should not prompt unless an operation explicitly needs --apply or user credentials",
-        "destructivePolicy": "run dry-run or read-only commands first; require explicit --apply/--include-volumes/delete verbs for writes",
+        "destructivePolicy": "run dry-run or read-only commands first; require explicit --apply/--include-volumes and exact --confirm TARGET acknowledgement for Dory-owned delete, restore, and component-removal operations",
         "hostToolPolicy": "doryd reconciles bundled docker, docker compose, dory, and docker context integration automatically while it is running; the Kubernetes component adds kubectl; do not require dory install for first use",
     },
     "schemas": {
@@ -3440,7 +4121,10 @@ data = {
         "event": "dev.dory.event v1",
         "supportBundle": "dev.dory.support.bundle v1",
         "machineExec": "dev.dory.machine.exec v1",
-        "sandboxRun": "dev.dory.sandbox.run v1",
+        "sandboxRun": "dev.dory.sandbox.run v2",
+        "readiness": "dev.dory.readiness v1",
+        "corporateConnectivity": "dev.dory.corporate-connectivity.status v1",
+        "upgradeTransaction": "dev.dory.upgrade.transaction v1",
     },
     "exitCodes": {
         "0": "success or healthy",
@@ -3468,6 +4152,16 @@ data = {
             "groups": ["socket", "api", "docker", "context", "registry", "proxy", "exposure", "network", "ports", "domains", "mounts", "filelock", "watch", "clock", "disk", "memory", "helpers"],
         },
         {
+            "id": "readiness",
+            "status": "available",
+            "invoke": "dory readiness --json",
+            "json": True,
+            "dryRun": True,
+            "safeForAutomation": True,
+            "schema": "dev.dory.readiness v1",
+            "notes": "Ordered app, doryd, VM, guest-agent, data-mount, network, dockerd, host socket/context, and optional Kubernetes truth with timings and bounded repair ownership.",
+        },
+        {
             "id": "support",
             "status": "available",
             "invoke": "dory support bundle --json [--active] [PATH]",
@@ -3490,10 +4184,11 @@ data = {
         {
             "id": "component",
             "status": "available",
-            "invoke": "dory component list|install|update|verify|remove [COMPONENT] [--json]",
+            "invoke": "dory component list|install|update|verify [COMPONENT] [--json] | dory component remove COMPONENT --confirm COMPONENT [--json]",
             "json": True,
             "safeForAutomation": True,
             "components": ["kubernetes", "linux-machines", "linux-desktop", "desktop-debian", "desktop-ubuntu", "desktop-kali"],
+            "destructiveRequires": ["remove requires --confirm with the exact component ID"],
             "notes": "Manages signed optional payloads on the selected Dory data drive. Desktop distributions add linux-desktop automatically. Removal preserves workload data.",
         },
         {
@@ -3515,6 +4210,16 @@ data = {
             "dryRun": True,
             "safeForAutomation": True,
             "notes": "Classifies DNS, registry, proxy, port, and local-domain failures. authorization-plan and authorize use doryd's live resolver/pf/TLS/low-port plan; authorize defaults to --dry-run and requires explicit --apply plus admin privileges for writes.",
+        },
+        {
+            "id": "corporate-connectivity",
+            "status": "available",
+            "invoke": "dory network corporate status --json | dory network corporate plan --file PROFILE.json | dory network corporate apply --file PROFILE.json",
+            "json": True,
+            "dryRun": True,
+            "safeForAutomation": False,
+            "schema": "dev.dory.corporate-connectivity.status v1",
+            "notes": "status and plan are read-only. apply and disable change ownership-tracked Docker client and managed-guest settings; apply may restart dockerd with live-restore when the effective digest changes. Probe evidence names DNS, route, proxy, and CA provenance.",
         },
         {
             "id": "mount",
@@ -3577,10 +4282,20 @@ data = {
         {
             "id": "machine",
             "status": "available",
-            "invoke": "dory machine ls|create|start|stop|delete|snapshot|restore|exec ...",
+            "invoke": "dory machine ls|create|start|stop|snapshot|exec ... | dory machine delete NAME --confirm NAME | dory machine restore NAME SNAPSHOT --confirm NAME",
             "json": True,
             "safeForAutomation": True,
+            "destructiveRequires": ["delete requires --confirm NAME", "restore requires --confirm NAME and creates a retained pre-restore snapshot", "delete-snapshot requires --confirm SNAPSHOT_ID"],
             "notes": "Requires dorydctl and Dory's daemon-managed VM machine runtime; use `dory machine exec NAME --json -- CMD` for schema dev.dory.machine.exec v1. Managed Debian, Ubuntu, and Kali Xfce machines require their matching desktop component; Alpine headless machines require linux-machines. Set DORY_LEGACY_DOCKER_MACHINES=1 only for old container-backed machine inspection.",
+        },
+        {
+            "id": "machine-backup",
+            "status": "available",
+            "invoke": "dory machine backup status [NAME] | schedule NAME [--frequency hourly|daily|weekly] [--keep N] [--verify-every N] | run NAME | remove NAME",
+            "json": True,
+            "safeForAutomation": False,
+            "readOnly": ["status"],
+            "notes": "Daemon-owned local recovery bundles. Every run re-import-verifies the archive; the first and configured periodic runs boot a disposable verifier. Snapshot capture may briefly stop a running source machine. Retention affects only scheduler-owned snapshots and archives; no managed offsite/S3 backup is claimed.",
         },
         {
             "id": "ssh",
@@ -3600,11 +4315,20 @@ data = {
         },
         {
             "id": "usb",
-            "status": "available",
-            "invoke": "dory usb ls|attach|detach",
+            "status": "discovery-only",
+            "invoke": "dory usb ls",
             "json": False,
-            "safeForAutomation": False,
-            "notes": "USB attach can require user authorization.",
+            "safeForAutomation": True,
+            "notes": "Host discovery is supported. Attach, detach, and replay are unavailable and fail closed until the guest USB/IP RPC and physical qualification exist.",
+        },
+        {
+            "id": "upgrade",
+            "status": "available",
+            "invoke": "dory upgrade status|recovery --json",
+            "json": True,
+            "safeForAutomation": True,
+            "schema": "dev.dory.upgrade.transaction v1",
+            "notes": "Read-only inspection of candidate/preflight/smoke/rollback/recovery state. Recovery returns an owner-only export path only when durable schema rollback is unsafe.",
         },
         {
             "id": "wait",
@@ -3628,19 +4352,26 @@ data = {
         },
         {
             "id": "sandbox",
-            "status": "preview",
-            "invoke": "dory sandbox run [--json] [--keep] [--network none|outbound|full] [--rollback] [--ttl-seconds N] [--mount HOST[:GUEST[:ro|rw]]] -- <command>",
+            "status": "supported",
+            "invoke": "dory sandbox run [--json] [--keep] [--network none|outbound|full] [--allow-network HOST[:PORT]] [--rollback] [--ttl-seconds N] [--mount HOST[:GUEST[:ro|rw]]] -- <command>",
             "json": True,
             "safeForAutomation": True,
             "isolation": "dedicated doryd Linux VM per run",
             "hostFileSharingDefault": "none",
             "scopedMounts": True,
+            "mountModeDefault": "ro",
+            "executionIdentityDefault": "non-root host uid/gid",
             "networkPolicies": ["none", "outbound", "full"],
-            "unenforcedNetworkPolicies": ["outbound"],
-            "networkPolicyNote": "none blocks all egress and full grants full egress (both enforced); outbound currently grants full egress too and is reported with networkPolicyEnforced=false until a scoped egress filter ships.",
+            "unenforcedNetworkPolicies": [],
+            "networkPolicyDefault": "none",
+            "networkPolicyNote": "outbound permits Dory DNS plus resolved --allow-network destinations; other IPv4/IPv6 destinations, including loopback, LAN, host gateway, and metadata ranges, are denied for the workload uid.",
             "rollback": True,
             "ttlCleanup": True,
-            "notes": "Preview: runs commands in a dedicated VM and deletes it by default. No host files are visible unless an explicit --mount is provided.",
+            "ttlOwner": "doryd persisted machine reconciliation",
+            "credentialGrants": ["secret-env", "ssh-agent"],
+            "resourceCaps": ["cpu", "memory", "disk", "processes", "open-files", "wall-time"],
+            "manifestSchema": "dev.dory.sandbox.manifest v1",
+            "notes": "Runs commands in a dedicated VM and deletes it by default. Retained runs are inspectable and killable; no host files or credentials are visible unless explicitly granted.",
         },
         {
             "id": "mcp",
@@ -3651,7 +4382,7 @@ data = {
             "transport": "stdio",
             "protocolVersion": "2025-11-25",
             "tools": ["dory.agent_guide", "dory.doctor", "dory.compat", "dory.engine_status", "dory.machine_list", "dory.machine_exec", "dory.sandbox_run", "dory.wait", "dory.events"],
-            "notes": "Thin stdio MCP server over the CLI command core. Launch with --read-only to block machine exec.",
+            "notes": "Thin stdio Dory control server over the CLI command core, not a third-party MCP catalog or gateway. Launch with --read-only to block machine exec and sandbox writes.",
         },
     ],
     "recommendedRecoveryLoop": [
@@ -3671,14 +4402,15 @@ agent_guide_text() {
 Dory agent guide v1
 
 Use `dory agent guide --json` for the stable machine-readable contract.
-Prefer `--json` on doctor, network, mount, disk, cleanup, routes, compat, repair, and idle commands.
+Prefer `--json` on readiness, doctor, network, mount, disk, cleanup, routes, compat, repair, and idle commands.
 doryd reconciles host tools automatically while it is running; do not run `dory install` for first use.
 Use `dory machine exec NAME --json -- CMD` for structured machine command results.
 Run read-only checks first; use `--apply` only for explicit repair/cleanup writes.
 Available agent-native primitive: `dory wait`.
 Available agent-native primitive: `dory events --follow --json`.
 Available agent-native primitive: `dory mcp serve [--read-only]`.
-Preview agent-native primitive: `dory sandbox run [--json] --mount . -- CMD` (dedicated VM, no host sharing by default).
+Supported agent-native primitive: `dory sandbox run [--json] --mount . -- CMD` (dedicated VM, no host sharing by default).
+Read-only machine backup inspection: `dory machine backup status [NAME]`.
 EOF
 }
 
@@ -3705,12 +4437,52 @@ agent_cmd() {
   esac
 }
 
+readiness_cmd() {
+  local json=0 ctl tmp rc=0
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --json) json=1; shift ;;
+      -h|--help) echo "usage: dory readiness [--json]"; return 0 ;;
+      *) echo "unknown readiness option: $1" >&2; return 2 ;;
+    esac
+  done
+  ctl="$(dorydctl_bin 2>/dev/null)" || { echo "dorydctl not found; reinstall Dory Docker Core" >&2; return 1; }
+  tmp="$(mktemp -t dory-readiness.XXXXXX)"
+  if ! "$ctl" health > "$tmp"; then rm -f "$tmp"; return 1; fi
+  python3 - "$tmp" "$json" <<'PY' || rc=$?
+import json
+import sys
+
+report = json.load(open(sys.argv[1], encoding="utf-8"))
+readiness = report.get("readiness")
+if not isinstance(readiness, dict) or readiness.get("schema") != "dev.dory.readiness":
+    raise SystemExit("doryd did not return the v0.4 readiness contract")
+if sys.argv[2] == "1":
+    print(json.dumps(readiness, separators=(",", ":"), sort_keys=True))
+else:
+    print(f"Runtime readiness: {readiness.get('overall', 'unknown')} ({readiness.get('trigger', 'unknown')})")
+    for stage in readiness.get("stages", []):
+        elapsed = stage.get("elapsedMilliseconds")
+        timing = "" if elapsed is None else f" {elapsed}ms"
+        print(f"  {stage.get('state', 'unknown'):8} {stage.get('title', stage.get('id', 'stage'))}{timing}")
+        print(f"           {stage.get('reasonCode', 'unknown')}: {stage.get('detail', '')}")
+        if stage.get("state") in {"blocked", "degraded"}:
+            repair = stage.get("repair", {})
+            print(f"           repair owner={repair.get('owner', 'unknown')}; mutation={repair.get('mutation', 'unspecified')}")
+if readiness.get("overall") == "blocked":
+    raise SystemExit(1)
+PY
+  rm -f "$tmp"
+  return "$rc"
+}
+
 case "${1:-help}" in
   help|-h|--help) usage ;;
   version|--version) printf '%s\n' "$DORY_CLI_VERSION" ;;
   install)        shift; install_cmd install "$@" ;;
   uninstall)      shift; install_cmd uninstall "$@" ;;
   doctor)         shift; doctor_cmd doctor "$@" ;;
+  readiness)      shift; readiness_cmd "$@" ;;
   support)        shift; support_cmd "$@" ;;
   logs)           shift; logs_cmd "$@" ;;
   network)        shift; network_cmd "$@" ;;
@@ -3735,7 +4507,8 @@ case "${1:-help}" in
                   esac ;;
   engine)         shift; engine_cmd "$@" ;;
   data)           shift; data_cmd "$@" ;;
-  component)      shift; component_ctl="$(dorydctl_bin 2>/dev/null)" || { echo "dorydctl not found; reinstall Dory Docker Core" >&2; exit 1; }; exec "$component_ctl" component "$@" ;;
+  upgrade)        shift; upgrade_cmd "$@" ;;
+  component)      shift; component_cmd "$@" ;;
   agent)          shift; agent_cmd "$@" ;;
   mcp)            shift; mcp_cmd "$@" ;;
   sandbox)        shift; sandbox_cmd "$@" ;;

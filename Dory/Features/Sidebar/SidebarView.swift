@@ -56,6 +56,7 @@ struct SidebarView: View {
                 row(.volumes, .volumes, "Volumes")
                 row(.networks, .networks, "Networks")
                 row(.compose, .gridView, "Compose")
+                row(.builds, .health, "Build Activity", trailing: store.buildActivity.filter(\.isActive).isEmpty ? nil : "\(store.buildActivity.filter(\.isActive).count)")
                 sectionLabel("ORCHESTRATION").padding(.top, 6)
                 row(
                     .kubernetes,

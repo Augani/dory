@@ -11,8 +11,9 @@ dory-sync = { path = "../sync" }
 tokio = { workspace = true, features = ["fs"] }
 thiserror = { workspace = true }
 prost = { workspace = true }
-russh = "0.54"
+russh = { version = "0.60.3", default-features = false, features = ["aws-lc-rs", "flate2"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
 dory-agent = { path = "../agent" }
+rand = "0.10"

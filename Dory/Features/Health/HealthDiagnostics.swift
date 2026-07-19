@@ -30,7 +30,7 @@ enum HealthCategory: String, CaseIterable, Identifiable, Sendable {
         case "socket", "docker", "context", "vm": .engine
         case "network", "registry", "ports", "domains": .networking
         case "mount", "mounts", "watch": .fileSharing
-        case "disk", "memory": .resources
+        case "disk", "memory", "resources": .resources
         case "helpers": .helpers
         case "compat": .compatibility
         default: .engine
@@ -52,6 +52,39 @@ struct DoctorCheck: Decodable, Sendable, Hashable {
 
 struct DoctorReport: Decodable, Sendable {
     let results: [DoctorCheck]
+    let readiness: RuntimeReadiness?
+}
+
+struct ReadinessRepair: Decodable, Sendable, Hashable {
+    let owner: String
+    let target: String
+    let mutation: String
+    let automatic: Bool
+    let destructive: Bool
+}
+
+struct ReadinessStage: Decodable, Sendable, Hashable, Identifiable {
+    let id: String
+    let title: String
+    let state: String
+    let reasonCode: String
+    let detail: String
+    let required: Bool
+    let startedAt: String?
+    let finishedAt: String?
+    let deadlineAt: String?
+    let elapsedMilliseconds: Int?
+    let repair: ReadinessRepair
+}
+
+struct RuntimeReadiness: Decodable, Sendable, Hashable {
+    let schema: String
+    let version: Int
+    let cycleID: String
+    let trigger: String
+    let generatedAt: String
+    let overall: String
+    let stages: [ReadinessStage]
 }
 
 nonisolated struct IdleEngineState: Decodable, Sendable, Hashable {
@@ -219,6 +252,7 @@ nonisolated struct FailableDecodable<Wrapped: Decodable>: Decodable {
 
 struct HealthSnapshot: Sendable {
     var checks: [DoctorCheck] = []
+    var readiness: RuntimeReadiness?
     var idle: IdleStatus?
     var history: [IdleHistoryEntry] = []
     var incidents: [Incident] = []
@@ -322,6 +356,7 @@ enum HealthDiagnostics {
             var snapshot = HealthSnapshot(activeProbed: active)
             if let report: DoctorReport = decode(daemonDoctor) {
                 snapshot.checks = report.results
+                snapshot.readiness = report.readiness
             } else {
                 snapshot.doctorError = "doryd returned malformed doctor JSON"
             }
@@ -371,6 +406,7 @@ enum HealthDiagnostics {
         var checks: [DoctorCheck] = []
         if let report: DoctorReport = decode(doctor.stdout) {
             checks += report.results
+            snapshot.readiness = report.readiness
         } else if !doctor.ok {
             snapshot.doctorError = firstLine(doctor.stderr.isEmpty ? doctor.stdout : doctor.stderr)
         }

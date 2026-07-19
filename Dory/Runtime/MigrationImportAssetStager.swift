@@ -364,7 +364,7 @@ extension MigrationImportAssetStagingExecution {
         // The staging session can sit open while another actor mutates either daemon. Recheck the
         // complete source closure and unowned target baseline immediately before the first write.
         try await requireExactAuthoritiesAndSourceClosure()
-        _ = try verifiedUnselectedSourceInventoryDigest()
+        _ = try await verifiedUnselectedSourceInventoryDigest()
         _ = try await verifiedUnownedTargetInventoryDigest(staged: [])
         for object in session.prepared.operation.completenessPlan.objects {
             try Task.checkCancellation()

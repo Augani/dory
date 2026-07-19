@@ -1,0 +1,15 @@
+Meet Dory zero point three point two.
+
+We took a complete local Linux workspace and made it assemble around you.
+
+Start with a smaller Docker Core. Add only what you need: Kubernetes, Linux machines, or full Debian, Ubuntu, and Kali desktops.
+
+Run and test graphical Linux applications beside your containers, with Retina-sharp windows, persistent disks, scoped Mac folders, and snapshots.
+
+Give AI agents dedicated Linux sandbox VMs. No host files are shared by default. Choose explicit mounts, block network access, roll changes back, and let the temporary VM delete itself when the job is done.
+
+Every optional component is signed, size-verified, and removable. Your workload data stays put.
+
+Now add custom local domains and trusted HTTPS.
+
+Dory zero point three point two. Smaller core. Bigger possibilities. Built for Mac. Open source.

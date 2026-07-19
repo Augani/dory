@@ -18,6 +18,8 @@ struct MigrationStrictInventoryTests: StrictInventoryTestCase {
         #expect(Set(prepared.source.networkInspections.keys) == ["backend"])
         #expect(prepared.capacity.requiredHostBytes == 4_012_010_240)
         #expect(prepared.capacity.requiredEngineBytes == 4_012_010_240)
+        #expect(prepared.capacity.engineLogicalBytes == 128 * 1024 * 1024 * 1024)
+        #expect(prepared.capacity.engineUsableBytes == 120 * 1024 * 1024 * 1024)
         #expect(prepared.operation.completenessPlan.objects.count == 5)
         #expect(prepared.ownership.operationID == fixture.identity.id.uuidString.lowercased())
 
@@ -50,6 +52,112 @@ struct MigrationStrictInventoryTests: StrictInventoryTestCase {
             container.networkEndpointSettings["backend"]?.IPAMConfig?.IPv4Address
                 == "172.30.0.5"
         )
+    }
+
+    @Test func imageOnlySelectionExcludesUnrelatedLiveStorageFromAdmission() async throws {
+        let fixture = makeFixture()
+        fixture.source.snapshotValue.containers[0].status = .running
+        let imageID = MigrationOperationPlanBuilder.stableImageSourceID(
+            fixture.source.snapshotValue.images[0]
+        )
+
+        let prepared = try await collect(
+            fixture,
+            transferHelper: nil,
+            userSelection: [DoryOperationObjectKey(kind: .image, sourceID: imageID)]
+        )
+
+        #expect(prepared.operation.completenessPlan.objects.map(\.source.kind) == [.image])
+        #expect(prepared.sourceVolumeBytes.isEmpty)
+        #expect(prepared.capacity.sourceVolumeBytes.isEmpty)
+        #expect(prepared.capacity.sourceWritableLayerBytes.isEmpty)
+    }
+
+    @Test func imageOnlySelectionIsNotBlockedByOmittedHostBoundObjects() async throws {
+        let fixture = makeFixture()
+        fixture.source.containerInspections["container-id"] = containerInspection(mount: [
+            "Type": "bind",
+            "Source": "/Users/test/private-source",
+            "Target": "/workspace/private-source",
+            "ReadOnly": true,
+        ])
+        fixture.source.networkInspections["backend"] = networkInspection(driver: "overlay")
+        let imageID = MigrationOperationPlanBuilder.stableImageSourceID(
+            fixture.source.snapshotValue.images[0]
+        )
+
+        let prepared = try await collect(
+            fixture,
+            transferHelper: nil,
+            userSelection: [DoryOperationObjectKey(kind: .image, sourceID: imageID)]
+        )
+
+        #expect(prepared.operation.completenessPlan.objects.map(\.source.kind) == [.image])
+        let omitted = try JSONDecoder().decode(
+            [DoryOperationInventoryObject].self,
+            from: prepared.operation.baselineManifests.unselectedSourceInventory
+        )
+        #expect(Set(omitted.map(\.key.kind)) == [
+            .container, .network, .volume, .writableLayer,
+        ])
+    }
+
+    @Test func selectedHostBoundContainerStillFailsPortabilityAdmission() async {
+        let fixture = makeFixture()
+        fixture.source.containerInspections["container-id"] = containerInspection(mount: [
+            "Type": "bind",
+            "Source": "/Users/test/private-source",
+            "Target": "/workspace/private-source",
+            "ReadOnly": true,
+        ])
+
+        await #expect(throws: Error.self) {
+            _ = try await collect(fixture)
+        }
+    }
+
+    @Test func grownGuestFilesystemAdmitsAnImportAboveTheOriginal120GiBFloor() async throws {
+        let fixture = makeFixture()
+        let incomingBytes: Int64 = 110 * 1024 * 1024 * 1024
+        fixture.source.snapshotValue.images[0].sizeBytes = incomingBytes
+        fixture.source.systemDiskUsage = dockerUsage(
+            images: incomingBytes,
+            volumes: ["db-data": 4_096],
+            containers: 1_024
+        )
+
+        let prepared = try await collect(
+            fixture,
+            availableHostBytes: 500 * 1024 * 1024 * 1024,
+            transferHelper: .appleSiliconV1,
+            engineCapacity: MigrationEngineCapacity(
+                logicalBytes: 256 * 1024 * 1024 * 1024,
+                usableBytes: 240 * 1024 * 1024 * 1024
+            )
+        )
+
+        #expect(prepared.capacity.requiredEngineBytes > 120 * 1024 * 1024 * 1024)
+        #expect(prepared.capacity.requiredEngineBytes < prepared.capacity.engineUsableBytes)
+        #expect(prepared.capacity.engineLogicalBytes == 256 * 1024 * 1024 * 1024)
+        #expect(prepared.capacity.engineUsableBytes == 240 * 1024 * 1024 * 1024)
+    }
+
+    @Test func legacyCapacityJournalDecodesWithTheQualifiedDefaultFloor() throws {
+        let legacy = Data(#"""
+        {
+          "sourceVolumeBytes":{},
+          "sourceWritableLayerBytes":{},
+          "targetDockerBytes":0,
+          "availableHostBytes":10000000000,
+          "requiredHostBytes":4000000000,
+          "requiredEngineBytes":4000000000
+        }
+        """#.utf8)
+
+        let decoded = try JSONDecoder().decode(MigrationCapacityContract.self, from: legacy)
+
+        #expect(decoded.engineLogicalBytes == 128 * 1024 * 1024 * 1024)
+        #expect(decoded.engineUsableBytes == 120 * 1024 * 1024 * 1024)
     }
 
     @Test func sameDaemonThroughDifferentSocketsIsRejected() async {

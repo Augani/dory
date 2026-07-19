@@ -57,17 +57,27 @@ public struct HealthCheck: Sendable, Equatable, Codable {
 public struct DoctorReport: Sendable, Equatable {
     public var generatedAt: Date
     public var results: [HealthCheck]
+    public var readiness: DoryReadinessSnapshot?
 
-    public init(generatedAt: Date = Date(), results: [HealthCheck]) {
+    public init(
+        generatedAt: Date = Date(),
+        results: [HealthCheck],
+        readiness: DoryReadinessSnapshot? = nil
+    ) {
         self.generatedAt = generatedAt
         self.results = results
+        self.readiness = readiness
     }
 
     public var xpcDictionary: NSDictionary {
-        [
+        let dictionary = NSMutableDictionary(dictionary: [
             "generated_at": iso8601String(generatedAt),
             "results": results.map(\.xpcDictionary),
-        ]
+        ])
+        if let readiness {
+            dictionary["readiness"] = readiness.xpcDictionary
+        }
+        return dictionary
     }
 
     public func jsonData() throws -> Data {
@@ -89,6 +99,25 @@ struct DoryProcessMemoryUsage: Sendable, Equatable {
     var pid: Int32
     var residentSizeBytes: Int64
     var physicalFootprintBytes: Int64
+    var name: String?
+    var openFileDescriptorCount: Int?
+    var threadCount: Int?
+
+    init(
+        pid: Int32,
+        residentSizeBytes: Int64,
+        physicalFootprintBytes: Int64,
+        name: String? = nil,
+        openFileDescriptorCount: Int? = nil,
+        threadCount: Int? = nil
+    ) {
+        self.pid = pid
+        self.residentSizeBytes = residentSizeBytes
+        self.physicalFootprintBytes = physicalFootprintBytes
+        self.name = name
+        self.openFileDescriptorCount = openFileDescriptorCount
+        self.threadCount = threadCount
+    }
 }
 
 struct DoryProcessMemorySnapshot: Sendable, Equatable {
@@ -198,8 +227,37 @@ struct DarwinDoryProcessMemorySampler: DoryProcessMemorySampling {
         return .success(DoryProcessMemoryUsage(
             pid: pid,
             residentSizeBytes: Int64(clamping: info.ri_resident_size),
-            physicalFootprintBytes: Int64(clamping: info.ri_phys_footprint)
+            physicalFootprintBytes: Int64(clamping: info.ri_phys_footprint),
+            name: processName(pid),
+            openFileDescriptorCount: openFileDescriptorCount(pid),
+            threadCount: threadCount(pid)
         ))
+    }
+
+    private func processName(_ pid: Int32) -> String? {
+        var buffer = [CChar](repeating: 0, count: Int(MAXPATHLEN))
+        let count = proc_name(pid, &buffer, UInt32(buffer.count))
+        guard count > 0 else { return nil }
+        return String(
+            decoding: buffer.prefix(Int(count)).map { UInt8(bitPattern: $0) },
+            as: UTF8.self
+        )
+    }
+
+    private func openFileDescriptorCount(_ pid: Int32) -> Int? {
+        let bytes = proc_pidinfo(pid, PROC_PIDLISTFDS, 0, nil, 0)
+        guard bytes >= 0 else { return nil }
+        return Int(bytes) / MemoryLayout<proc_fdinfo>.stride
+    }
+
+    private func threadCount(_ pid: Int32) -> Int? {
+        var info = proc_taskinfo()
+        let expected = Int32(MemoryLayout<proc_taskinfo>.size)
+        let bytes = withUnsafeMutablePointer(to: &info) {
+            proc_pidinfo(pid, PROC_PIDTASKINFO, 0, $0, expected)
+        }
+        guard bytes == expected else { return nil }
+        return Int(info.pti_threadnum)
     }
 }
 
@@ -209,6 +267,66 @@ private struct ProcessMemorySampleError: Error {
 
 extension ProcessMemorySampleError: CustomStringConvertible {
     var description: String { message }
+}
+
+struct DoryResourceTrendSample: Sendable, Equatable {
+    var at: Date
+    var openFileDescriptors: Int
+    var threads: Int
+    var physicalFootprintBytes: Int64
+    var watcherPending: Int
+}
+
+struct DoryResourceTrendAssessment: Sendable, Equatable {
+    var sampleCount: Int
+    var windowSeconds: Int
+    var warnings: [String]
+}
+
+final class DoryResourceTrendTracker: @unchecked Sendable {
+    private let lock = NSLock()
+    private var samples: [DoryResourceTrendSample] = []
+
+    func record(_ sample: DoryResourceTrendSample) -> DoryResourceTrendAssessment {
+        lock.withLock {
+            samples.append(sample)
+            samples.removeAll { sample.at.timeIntervalSince($0.at) > 3_600 }
+            if samples.count > 12 { samples.removeFirst(samples.count - 12) }
+            let recent = Array(samples.suffix(3))
+            guard recent.count == 3 else {
+                return DoryResourceTrendAssessment(sampleCount: samples.count, windowSeconds: 0, warnings: [])
+            }
+            let window = Int(recent[2].at.timeIntervalSince(recent[0].at))
+            guard window >= 10 else {
+                return DoryResourceTrendAssessment(sampleCount: samples.count, windowSeconds: window, warnings: [])
+            }
+            var warnings: [String] = []
+            if Self.rises(recent.map(\.openFileDescriptors), minimumDelta: 32) {
+                warnings.append("open file descriptors rose \(recent[0].openFileDescriptors)→\(recent[2].openFileDescriptors)")
+            }
+            if Self.rises(recent.map(\.threads), minimumDelta: 16) {
+                warnings.append("threads rose \(recent[0].threads)→\(recent[2].threads)")
+            }
+            if Self.rises(recent.map(\.watcherPending), minimumDelta: 1_024) {
+                warnings.append("watcher backlog rose \(recent[0].watcherPending)→\(recent[2].watcherPending)")
+            }
+            if Self.rises(recent.map(\.physicalFootprintBytes), minimumDelta: 256 * 1_024 * 1_024) {
+                warnings.append("physical footprint rose \(recent[0].physicalFootprintBytes)→\(recent[2].physicalFootprintBytes) bytes")
+            }
+            return DoryResourceTrendAssessment(
+                sampleCount: samples.count,
+                windowSeconds: window,
+                warnings: warnings
+            )
+        }
+    }
+
+    private static func rises<T: FixedWidthInteger>(_ values: [T], minimumDelta: T) -> Bool {
+        guard values.count == 3,
+              values[1] > values[0],
+              values[2] > values[1] else { return false }
+        return values[2] - values[0] >= minimumDelta
+    }
 }
 
 public final class HealthReporter: @unchecked Sendable {
@@ -223,6 +341,9 @@ public final class HealthReporter: @unchecked Sendable {
     private let commandRunner: any HealthCommandRunning
     private let registryProbe: any HealthRegistryProbing
     private let memorySampler: any DoryProcessMemorySampling
+    private let networkingController: NetworkingController?
+    private let corporateConnectivity: CorporateConnectivityReconciler?
+    private let resourceTrendTracker = DoryResourceTrendTracker()
 
     public convenience init(
         socketPath: String,
@@ -232,6 +353,8 @@ public final class HealthReporter: @unchecked Sendable {
         dockerAPIProbe: any DockerAPIProbing = UnixDockerAPIProbe(),
         commandRunner: any HealthCommandRunning = ProcessHealthCommandRunner(),
         registryProbe: any HealthRegistryProbing = URLSessionHealthRegistryProbe(),
+        networkingController: NetworkingController? = nil,
+        corporateConnectivity: CorporateConnectivityReconciler? = nil,
         environment: [String: String] = ProcessInfo.processInfo.environment,
         home: String = NSHomeDirectory(),
         fileManager: FileManager = .default
@@ -244,6 +367,8 @@ public final class HealthReporter: @unchecked Sendable {
             dockerAPIProbe: dockerAPIProbe,
             commandRunner: commandRunner,
             registryProbe: registryProbe,
+            networkingController: networkingController,
+            corporateConnectivity: corporateConnectivity,
             environment: environment,
             home: home,
             fileManager: fileManager,
@@ -259,6 +384,8 @@ public final class HealthReporter: @unchecked Sendable {
         dockerAPIProbe: any DockerAPIProbing = UnixDockerAPIProbe(),
         commandRunner: any HealthCommandRunning = ProcessHealthCommandRunner(),
         registryProbe: any HealthRegistryProbing = URLSessionHealthRegistryProbe(),
+        networkingController: NetworkingController? = nil,
+        corporateConnectivity: CorporateConnectivityReconciler? = nil,
         environment: [String: String] = ProcessInfo.processInfo.environment,
         home: String = NSHomeDirectory(),
         fileManager: FileManager = .default,
@@ -273,23 +400,204 @@ public final class HealthReporter: @unchecked Sendable {
         self.dockerAPIProbe = dockerAPIProbe
         self.commandRunner = commandRunner
         self.registryProbe = registryProbe
+        self.networkingController = networkingController
+        self.corporateConnectivity = corporateConnectivity
         self.fileManager = fileManager
         self.memorySampler = memorySampler
     }
 
     public func report(now: Date = Date()) -> DoctorReport {
-        var checks = compatibilityChecks()
+        var checks = compatibilityChecks(now: now)
         checks.append(engineCheck())
         checks.append(contentsOf: machineChecks())
         checks.append(contentsOf: remoteChecks())
-        return DoctorReport(generatedAt: now, results: checks)
+        return DoctorReport(
+            generatedAt: now,
+            results: checks,
+            readiness: readinessSnapshot(checks: checks, now: now)
+        )
     }
 
     public func doctorReport(now: Date = Date()) -> DoctorReport {
-        DoctorReport(generatedAt: now, results: compatibilityChecks())
+        let checks = compatibilityChecks(now: now)
+        return DoctorReport(
+            generatedAt: now,
+            results: checks,
+            readiness: readinessSnapshot(checks: checks, now: now)
+        )
     }
 
-    private func compatibilityChecks() -> [HealthCheck] {
+    private func readinessSnapshot(
+        checks: [HealthCheck],
+        now: Date
+    ) -> DoryReadinessSnapshot {
+        let core = dockerTier?.readinessSnapshot(now: now)
+        var byID = Dictionary(uniqueKeysWithValues: (core?.stages ?? []).map { ($0.id, $0) })
+
+        byID[.app] = immediateReadinessStage(
+            .app,
+            state: .ready,
+            code: "app.control_client_connected",
+            detail: "an authenticated local control client reached doryd",
+            required: true,
+            now: now
+        )
+        byID[.doryd] = immediateReadinessStage(
+            .doryd,
+            state: .ready,
+            code: "doryd.health_rpc_ready",
+            detail: "doryd generated this readiness report",
+            required: true,
+            now: now
+        )
+
+        let drive = checks.first { $0.id == "disk.dory_drive" }
+        if let drive, drive.status == .fail {
+            byID[.mountsDataDisk] = immediateReadinessStage(
+                .mountsDataDisk,
+                state: .blocked,
+                code: drive.code,
+                detail: drive.detail,
+                required: true,
+                now: now
+            )
+        }
+
+        let socket = checks.first { $0.id == "socket.exists" }
+        let ping = checks.first { $0.id == "socket.ping" }
+        let context = checks.first { $0.id == "docker.context.dory" }
+        let activeContext = checks.first { $0.id == "docker.context.current" }
+        let hostState: DoryReadinessState
+        let hostCode: String
+        let hostDetail: String
+        if socket?.status == .fail || ping?.status == .fail {
+            hostState = .blocked
+            hostCode = ping?.status == .fail ? (ping?.code ?? "socket.api_unreachable") : (socket?.code ?? "socket.unavailable")
+            hostDetail = ping?.status == .fail ? (ping?.detail ?? "Docker API is unreachable") : (socket?.detail ?? "Docker socket is unavailable")
+        } else if context?.status == .warn || activeContext?.status == .warn {
+            hostState = .degraded
+            hostCode = context?.status == .warn ? (context?.code ?? "context.mismatch") : (activeContext?.code ?? "context.not_active")
+            hostDetail = "Docker API is ready, but the host Docker context needs reconciliation"
+        } else {
+            hostState = .ready
+            hostCode = "socket.context_ready"
+            hostDetail = "Docker socket answers API requests and the dory context targets it"
+        }
+        byID[.hostSocketContext] = immediateReadinessStage(
+            .hostSocketContext,
+            state: hostState,
+            code: hostCode,
+            detail: hostDetail,
+            required: true,
+            now: now
+        )
+
+        byID[.kubernetes] = kubernetesReadiness(now: now)
+
+        for id in DoryReadinessStageID.allCases where byID[id] == nil {
+            byID[id] = immediateReadinessStage(
+                id,
+                state: .inactive,
+                code: "\(id.rawValue).not_configured",
+                detail: "readiness stage is not configured",
+                required: false,
+                now: now
+            )
+        }
+        return DoryReadinessSnapshot(
+            cycleID: core?.cycleID ?? UUID().uuidString.lowercased(),
+            trigger: core?.trigger ?? "health-probe",
+            generatedAt: now,
+            stages: DoryReadinessStageID.allCases.compactMap { byID[$0] }
+        )
+    }
+
+    private func immediateReadinessStage(
+        _ id: DoryReadinessStageID,
+        state: DoryReadinessState,
+        code: String,
+        detail: String,
+        required: Bool,
+        now: Date
+    ) -> DoryReadinessStage {
+        DoryReadinessStage(
+            id: id,
+            state: state,
+            reasonCode: code,
+            detail: detail,
+            required: required,
+            startedAt: now,
+            finishedAt: now,
+            deadlineAt: now.addingTimeInterval(5),
+            repair: EngineReadinessTracker.repair(for: id)
+        )
+    }
+
+    private func kubernetesReadiness(now: Date) -> DoryReadinessStage {
+        let kubeconfig = environment["DORY_KUBECONFIG"]
+            ?? environment["KUBECONFIG"]
+            ?? "\(home)/.kube/dory-config"
+        guard fileManager.fileExists(atPath: kubeconfig) else {
+            return immediateReadinessStage(
+                .kubernetes,
+                state: .inactive,
+                code: "kubernetes.disabled",
+                detail: "Dory kubeconfig is absent; Kubernetes is optional",
+                required: false,
+                now: now
+            )
+        }
+        guard let kubectl = kubectlBinary() else {
+            return immediateReadinessStage(
+                .kubernetes,
+                state: .blocked,
+                code: "kubernetes.kubectl_missing",
+                detail: "Dory kubeconfig exists, but kubectl is unavailable",
+                required: true,
+                now: now
+            )
+        }
+        var probeEnvironment = environment
+        probeEnvironment["KUBECONFIG"] = kubeconfig
+        let probe = commandRunner.run(
+            executablePath: kubectl,
+            arguments: ["--context", "dory", "get", "--raw=/readyz", "--request-timeout=3s"],
+            environment: probeEnvironment,
+            timeout: 5
+        )
+        if probe.exitCode == 0,
+           probe.stdout.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().contains("ok") {
+            return immediateReadinessStage(
+                .kubernetes,
+                state: .ready,
+                code: "kubernetes.readyz_ok",
+                detail: "the dory Kubernetes API returned readyz=ok",
+                required: true,
+                now: now
+            )
+        }
+        return immediateReadinessStage(
+            .kubernetes,
+            state: .blocked,
+            code: "kubernetes.readyz_failed",
+            detail: compact(probe.stderr.isEmpty ? probe.stdout : probe.stderr),
+            required: true,
+            now: now
+        )
+    }
+
+    private func kubectlBinary() -> String? {
+        var candidates: [String] = []
+        if let configured = environment["DORY_KUBECTL_BIN"], !configured.isEmpty {
+            candidates.append(configured)
+        }
+        candidates.append("\(home)/.dory/bin/kubectl")
+        let searchPath = environment["PATH"] ?? "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin"
+        candidates.append(contentsOf: searchPath.split(separator: ":").map { "\($0)/kubectl" })
+        return candidates.first { fileManager.isExecutableFile(atPath: $0) }
+    }
+
+    private func compatibilityChecks(now: Date) -> [HealthCheck] {
         var checks: [HealthCheck] = []
         let dockerTierSleeping = dockerTier?.status().state == .sleeping
         checks.append(socketCheck())
@@ -300,16 +608,33 @@ public final class HealthReporter: @unchecked Sendable {
         checks.append(contentsOf: dockerContextChecks())
         checks.append(contentsOf: registryChecks())
         checks.append(proxyCheck())
+        checks.append(corporateConnectivityCheck())
         checks.append(lanExposureCheck())
         checks.append(containerDNSSkipCheck())
         checks.append(publishedPortsCheck(dockerReachable: dockerReachable))
         checks.append(domainTableCheck(dockerReachable: dockerReachable))
+        checks.append(networkResourceCheck())
         checks.append(mountBasicSkipCheck())
         checks.append(mountLockSkipCheck())
         checks.append(mountWatchSkipCheck())
         checks.append(vmClockSkipCheck())
         checks.append(contentsOf: diskChecks(dockerReachable: dockerReachable))
-        checks.append(memoryCheck())
+        let daemonPID = getpid()
+        let processSnapshot = memorySampler.snapshot(
+            daemonPID: daemonPID,
+            managedHelperPID: dockerTier?.status().hvPID
+        )
+        let guestResources = try? dockerTier?.guestResourceSnapshot()
+        let hostShareResources = dockerTier?.hostShareResourceSnapshot(now: now)
+        checks.append(memoryCheck(snapshot: processSnapshot))
+        checks.append(processResourceCheck(snapshot: processSnapshot))
+        checks.append(guestResourceCheck(snapshot: guestResources ?? nil))
+        checks.append(hostShareResourceCheck(snapshot: hostShareResources))
+        checks.append(resourceTrendCheck(
+            processSnapshot: processSnapshot,
+            hostShareSnapshot: hostShareResources,
+            now: now
+        ))
         checks.append(helperResolverCheck())
         return checks
     }
@@ -631,6 +956,73 @@ public final class HealthReporter: @unchecked Sendable {
         )
     }
 
+    private func corporateConnectivityCheck() -> HealthCheck {
+        guard let corporateConnectivity else {
+            return HealthCheck(
+                id: "network.corporate",
+                status: .pass,
+                code: "network.corporate_unmanaged",
+                title: "Corporate connectivity profile",
+                detail: "no Dory corporate profile is configured"
+            )
+        }
+        let snapshot = corporateConnectivity.cachedStatus()
+            ?? corporateConnectivity.currentStatus(runProbes: false)
+        let failedProbes = snapshot.probes.filter { !$0.succeeded }.count
+        if !snapshot.valid {
+            return HealthCheck(
+                id: "network.corporate",
+                status: .fail,
+                code: "network.corporate_invalid",
+                title: "Corporate connectivity is blocked",
+                detail: snapshot.validationErrors.joined(separator: "; "),
+                action: "Run `dory network corporate plan --file PROFILE.json` and resolve every validation error before applying.",
+                data: corporateHealthData(snapshot, failedProbes: failedProbes)
+            )
+        }
+        if snapshot.enabled, failedProbes > 0 {
+            return HealthCheck(
+                id: "network.corporate",
+                status: .warn,
+                code: "network.corporate_probe_failed",
+                title: "Corporate connectivity needs attention",
+                detail: "\(failedProbes)/\(snapshot.probes.count) last explicit probes failed; status retains the exact DNS server, route, proxy and CA scope used.",
+                action: "Run `dory network corporate status --json` after connecting the expected VPN or exit node.",
+                data: corporateHealthData(snapshot, failedProbes: failedProbes)
+            )
+        }
+        return HealthCheck(
+            id: "network.corporate",
+            status: .pass,
+            code: snapshot.enabled ? "network.corporate_ready" : "network.corporate_disabled",
+            title: "Corporate connectivity profile",
+            detail: snapshot.enabled
+                ? "profile valid; Docker client and managed guest reconciliation are tracked by digest"
+                : "profile is absent or disabled",
+            data: corporateHealthData(snapshot, failedProbes: failedProbes)
+        )
+    }
+
+    private func corporateHealthData(
+        _ snapshot: CorporateConnectivityStatus,
+        failedProbes: Int
+    ) -> [String: String] {
+        [
+            "schema": snapshot.schema,
+            "profile_path": snapshot.profilePath,
+            "profile_digest": snapshot.profileDigest ?? "",
+            "system_fingerprint": snapshot.system.fingerprint,
+            "default_interface": snapshot.system.defaultInterface ?? "",
+            "default_gateway": snapshot.system.defaultGateway ?? "",
+            "tunnel_interfaces": snapshot.system.tunnelInterfaces.joined(separator: ","),
+            "resolver_count": String(snapshot.system.dnsResolvers.count),
+            "probe_count": String(snapshot.probes.count),
+            "failed_probe_count": String(failedProbes),
+            "docker_client_state": snapshot.dockerClientState,
+            "guest_state": snapshot.guestState,
+        ]
+    }
+
     private func lanExposureCheck() -> HealthCheck {
         let lanVisible = configBool(path: ["network", "lanVisible"]) == true
         let count = publishedPorts()?.count ?? 0
@@ -741,6 +1133,101 @@ public final class HealthReporter: @unchecked Sendable {
         dockerTier?.currentDockerPublishedPorts() ?? dockerTier?.currentPublishedPorts()
     }
 
+    private func networkResourceCheck() -> HealthCheck {
+        guard let networkingController else {
+            return HealthCheck(
+                id: "network.resources",
+                status: .skip,
+                code: "network.resources_unconfigured",
+                title: "Owned network resources",
+                detail: "The local networking controller is not configured; no ownership was inferred."
+            )
+        }
+        let status = networkingController.status()
+        let resolverPath = "/etc/resolver/\(status.suffix)"
+        let resolverContents = fileManager.contents(atPath: resolverPath)
+            .flatMap { String(data: $0, encoding: .utf8) } ?? ""
+        let resolverProvenance = resolverContents.contains("Managed by Dory")
+            ? "dory-managed"
+            : (resolverContents.isEmpty ? "absent" : "external-or-modified")
+        let pfAnchor = "/etc/pf.anchors/dev.dory"
+        let lanPFAnchor = "/etc/pf.anchors/dev.dory.lan"
+        let pfToken = "/var/run/dev.dory/system-pf-enable-token"
+        let ownedUTUNs = ownedUTUNInterfaces()
+        let allInterfaces = commandRunner.run(
+            executablePath: "/sbin/ifconfig",
+            arguments: ["-l"],
+            environment: environment,
+            timeout: 3
+        ).stdout.split(whereSeparator: { $0.isWhitespace }).map(String.init)
+        let observedUTUNs = allInterfaces.filter { $0.hasPrefix("utun") }.sorted()
+        let routeOutput = commandRunner.run(
+            executablePath: "/usr/sbin/netstat",
+            arguments: ["-rn", "-f", "inet"],
+            environment: environment,
+            timeout: 3
+        )
+        let subnet = environment["DORYD_BRIDGE_SUBNET"] ?? "192.168.127.0/24"
+        let subnetPrefix = subnet.split(separator: ".").prefix(3).joined(separator: ".")
+        let ownedRoutes = routeOutput.stdout.split(whereSeparator: { $0.isNewline })
+            .map(String.init)
+            .filter { $0.contains(subnetPrefix) }
+        let failures = status.privilegedTCPForwardFailures
+            .sorted { $0.key < $1.key }
+            .map { "\($0.key):\($0.value)" }
+        let healthy = status.dnsRunning
+            && status.httpProxyRunning
+            && failures.isEmpty
+            && resolverProvenance != "external-or-modified"
+        let ownedUTUNDetail = ownedUTUNs.isEmpty ? "none" : ownedUTUNs.joined(separator: ",")
+        return HealthCheck(
+            id: "network.resources",
+            status: healthy ? .pass : .warn,
+            code: failures.isEmpty ? (healthy ? "network.resources_ok" : "network.resources_degraded") : "network.port_conflict",
+            title: "Owned network resources",
+            detail: "DNS \(status.dnsBindAddress):\(status.dnsPort) \(status.dnsRunning ? "running" : "stopped"), \(status.routes.count) domain route(s), \(status.privilegedTCPForwards.count) low-port forward(s), resolver \(resolverProvenance), Dory UTUN \(ownedUTUNDetail)",
+            action: failures.isEmpty
+                ? (healthy ? nil : "Run `dory network status --json` and repair only the degraded DNS/route/forward layer.")
+                : "Stop the process that owns the reported port, then run `dory repair ports --apply`; Dory will not kill the conflicting process.",
+            data: [
+                "mode": status.mode,
+                "dns_bind": "\(status.dnsBindAddress):\(status.dnsPort)",
+                "dns_running": status.dnsRunning ? "true" : "false",
+                "http_proxy_port": String(status.httpProxyPort),
+                "http_proxy_running": status.httpProxyRunning ? "true" : "false",
+                "https_proxy_port": String(status.httpsProxyPort),
+                "https_proxy_running": status.httpsProxyRunning ? "true" : "false",
+                "domain_route_count": String(status.routes.count),
+                "privileged_forwards": status.privilegedTCPForwards.map { "\($0.listenPort)->\($0.targetPort)" }.joined(separator: ","),
+                "port_conflicts": failures.joined(separator: ";"),
+                "resolver_path": resolverPath,
+                "resolver_provenance": resolverProvenance,
+                "pf_anchor_installed": fileManager.fileExists(atPath: pfAnchor) ? "true" : "false",
+                "pf_enable_token_present": fileManager.fileExists(atPath: pfToken) ? "true" : "false",
+                "lan_pf_anchor_installed": fileManager.fileExists(atPath: lanPFAnchor) ? "true" : "false",
+                "owned_utun_interfaces": ownedUTUNs.joined(separator: ","),
+                "observed_utun_interfaces": observedUTUNs.joined(separator: ","),
+                "owned_routes": ownedRoutes.joined(separator: " | "),
+                "bridge_subnet": subnet,
+            ]
+        )
+    }
+
+    private func ownedUTUNInterfaces() -> [String] {
+        let directory = "/var/run/dev.dory"
+        guard let names = try? fileManager.contentsOfDirectory(atPath: directory) else { return [] }
+        return names.filter { $0.hasSuffix(".interface") }.compactMap { name in
+            let path = URL(fileURLWithPath: directory).appendingPathComponent(name).path
+            guard let data = fileManager.contents(atPath: path),
+                  let value = String(data: data, encoding: .utf8)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines),
+                  value.range(of: #"^utun[0-9]+$"#, options: .regularExpression) != nil else {
+                return nil
+            }
+            return value
+        }.sorted()
+    }
+
     private func mountBasicSkipCheck() -> HealthCheck {
         HealthCheck(
             id: "mount.basic",
@@ -831,6 +1318,7 @@ public final class HealthReporter: @unchecked Sendable {
             }
         }
         let state = doryStateDiskCheck()
+        let reclaimable = dockerReclaimableCheck(dockerReachable: dockerReachable)
         let guest = HealthCheck(
             id: "disk.guest",
             status: .skip,
@@ -839,7 +1327,129 @@ public final class HealthReporter: @unchecked Sendable {
             detail: "Run `dory doctor --active` to measure free space inside the engine VM."
         )
         let logs = doryLogCapCheck()
-        return [host, dataDrive, docker, state, guest, logs]
+        return [host, dataDrive, docker, reclaimable, state, guest, logs]
+    }
+
+    private func dockerReclaimableCheck(dockerReachable: Bool) -> HealthCheck {
+        guard dockerReachable else {
+            return HealthCheck(
+                id: "disk.reclaimable",
+                status: .skip,
+                code: "disk.reclaimable_unavailable",
+                title: "Docker reclaim preview unavailable",
+                detail: "Docker is not reachable; no reclaimable-byte estimate was fabricated."
+            )
+        }
+        switch dockerAPIProbe.resourceInventory(socketPath: socketPath) {
+        case let .ok(body):
+            guard let estimate = Self.dockerReclaimableEstimate(body) else {
+                return HealthCheck(
+                    id: "disk.reclaimable",
+                    status: .warn,
+                    code: "disk.reclaimable_parse_failed",
+                    title: "Docker reclaim preview unreadable",
+                    detail: "Docker returned a resource inventory that Dory could not classify safely.",
+                    action: "Run `dory cleanup --json` for the authoritative object-level preview."
+                )
+            }
+            return HealthCheck(
+                id: "disk.reclaimable",
+                status: estimate.reclaimableBytes > 0 ? .warn : .pass,
+                code: estimate.reclaimableBytes > 0 ? "disk.reclaimable_available" : "disk.reclaimable_none",
+                title: "Docker reclaim preview",
+                detail: "\(formatBytes(estimate.reclaimableBytes)) conservatively reclaimable across \(estimate.objects.count) unused object(s); no prune was performed",
+                action: estimate.reclaimableBytes > 0
+                    ? "Run `dory cleanup --json` to inspect exact objects, then opt in with `--apply`."
+                    : nil,
+                data: [
+                    "reclaimable_bytes": String(estimate.reclaimableBytes),
+                    "object_count": String(estimate.objects.count),
+                    "objects": estimate.objects.joined(separator: ","),
+                    "estimate": "conservative",
+                    "mutation_performed": "false",
+                ]
+            )
+        case let .badResponse(statusCode, body):
+            return HealthCheck(
+                id: "disk.reclaimable",
+                status: .warn,
+                code: "disk.reclaimable_api_failed",
+                title: "Docker reclaim preview unavailable",
+                detail: "HTTP \(statusCode): \(compact(body))",
+                action: "Run `dory cleanup --json` after Docker resource inventory recovers."
+            )
+        case let .unreachable(detail):
+            return HealthCheck(
+                id: "disk.reclaimable",
+                status: .warn,
+                code: "disk.reclaimable_probe_unavailable",
+                title: "Docker reclaim preview unavailable",
+                detail: detail,
+                action: "Run `dory cleanup --json` for an object-level preview."
+            )
+        }
+    }
+
+    struct DockerReclaimableEstimate {
+        var reclaimableBytes: Int64
+        var objects: [String]
+    }
+
+    static func dockerReclaimableEstimate(_ body: String) -> DockerReclaimableEstimate? {
+        guard let data = body.data(using: .utf8),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+        var total: Int64 = 0
+        var objects: [String] = []
+        func add(kind: String, id: String, size: Int64) {
+            guard size > 0 else { return }
+            let result = total.addingReportingOverflow(size)
+            total = result.overflow ? .max : result.partialValue
+            objects.append("\(kind):\(id):\(size)")
+        }
+        for object in root["Containers"] as? [[String: Any]] ?? [] {
+            let state = (object["State"] as? String ?? "").lowercased()
+            guard state != "running" else { continue }
+            add(
+                kind: "container",
+                id: String((object["Id"] as? String ?? "unknown").prefix(12)),
+                size: nonnegativeInt64(object["SizeRw"])
+            )
+        }
+        for object in root["Volumes"] as? [[String: Any]] ?? [] {
+            guard let usage = object["UsageData"] as? [String: Any],
+                  nonnegativeInt64(usage["RefCount"]) == 0 else { continue }
+            add(
+                kind: "volume",
+                id: object["Name"] as? String ?? "unknown",
+                size: nonnegativeInt64(usage["Size"])
+            )
+        }
+        for object in root["BuildCache"] as? [[String: Any]] ?? [] {
+            guard (object["InUse"] as? Bool) != true else { continue }
+            add(
+                kind: "build-cache",
+                id: String((object["ID"] as? String ?? "unknown").prefix(12)),
+                size: nonnegativeInt64(object["Size"])
+            )
+        }
+        for object in root["Images"] as? [[String: Any]] ?? [] {
+            guard nonnegativeInt64(object["Containers"]) == 0 else { continue }
+            let exclusive = max(0, nonnegativeInt64(object["Size"]) - nonnegativeInt64(object["SharedSize"]))
+            add(
+                kind: "image-exclusive",
+                id: String((object["Id"] as? String ?? "unknown").prefix(19)),
+                size: exclusive
+            )
+        }
+        return DockerReclaimableEstimate(reclaimableBytes: total, objects: objects.sorted())
+    }
+
+    private static func nonnegativeInt64(_ value: Any?) -> Int64 {
+        if let number = value as? NSNumber { return max(0, number.int64Value) }
+        if let string = value as? String, let number = Int64(string) { return max(0, number) }
+        return 0
     }
 
     private func dockerStorageSnapshotMissing(_ body: String) -> Bool {
@@ -848,7 +1458,7 @@ public final class HealthReporter: @unchecked Sendable {
             && (lowercased.contains("not found") || lowercased.contains("missing"))
     }
 
-    private func memoryCheck() -> HealthCheck {
+    private func memoryCheck(snapshot: DoryProcessMemorySnapshot) -> HealthCheck {
         let daemonPID = getpid()
         let managedHelperPID = dockerTier?.status().hvPID
         var data: [String: String] = [
@@ -859,10 +1469,6 @@ public final class HealthReporter: @unchecked Sendable {
             data["engine_pid"] = String(pid)
         }
 
-        let snapshot = memorySampler.snapshot(
-            daemonPID: daemonPID,
-            managedHelperPID: managedHelperPID
-        )
         data["phys_footprint_source"] = "proc_pid_rusage.RUSAGE_INFO_V4"
         data["phys_footprint_aggregation"] = "sum_of_per_process_charges_may_double_count_shared_pages"
         data["process_set_complete"] = snapshot.complete ? "true" : "false"
@@ -940,6 +1546,217 @@ public final class HealthReporter: @unchecked Sendable {
             detail: "physical footprint unavailable; daemon-only peak RSS fallback \(rss)",
             action: "Run the health check again; this fallback does not include the VM or its helper processes.",
             data: data
+        )
+    }
+
+    private func processResourceCheck(snapshot: DoryProcessMemorySnapshot) -> HealthCheck {
+        let fdCounts = snapshot.usages.compactMap(\.openFileDescriptorCount)
+        let threadCounts = snapshot.usages.compactMap(\.threadCount)
+        let totalFDs = fdCounts.reduce(0, +)
+        let totalThreads = threadCounts.reduce(0, +)
+        let maxFDs = fdCounts.max() ?? 0
+        var limit = rlimit()
+        let hasLimit = getrlimit(RLIMIT_NOFILE, &limit) == 0
+        let softFDLimit = hasLimit ? Int(clamping: limit.rlim_cur) : 0
+        let processRecords = snapshot.usages.map { usage -> [String: Any] in
+            var record: [String: Any] = [
+                "pid": usage.pid,
+                "name": usage.name ?? "unknown",
+                "physical_footprint_bytes": usage.physicalFootprintBytes,
+            ]
+            if let count = usage.openFileDescriptorCount { record["open_fds"] = count }
+            if let count = usage.threadCount { record["threads"] = count }
+            return record
+        }
+        let processJSON = (try? JSONSerialization.data(withJSONObject: processRecords, options: [.sortedKeys]))
+            .flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
+        let highFDs = softFDLimit > 0 && maxFDs >= max(256, softFDLimit * 8 / 10)
+        let highThreads = threadCounts.contains { $0 >= 512 }
+        let complete = fdCounts.count == snapshot.usages.count
+            && threadCounts.count == snapshot.usages.count
+        let status: HealthCheckStatus = highFDs || highThreads || !complete ? .warn : .pass
+        let code: String
+        let action: String?
+        if highFDs {
+            code = "resources.process_fd_pressure"
+            action = "Inspect the per-process record before restarting anything; repair only the file-sharing helper if its count continues to rise."
+        } else if highThreads {
+            code = "resources.process_thread_pressure"
+            action = "Inspect the per-process record and connection churn before restarting a component."
+        } else if !complete {
+            code = "resources.process_accounting_partial"
+            action = "Refresh diagnostics; a process may have exited while FD/thread counts were sampled."
+        } else {
+            code = "resources.process_accounting_ok"
+            action = nil
+        }
+        return HealthCheck(
+            id: "resources.processes",
+            status: status,
+            code: code,
+            title: "Dory process resources",
+            detail: "\(snapshot.usages.count) process(es), \(totalFDs) open FDs, \(totalThreads) threads; each process is attributed in the diagnostic record",
+            action: action,
+            data: [
+                "process_count": String(snapshot.usages.count),
+                "open_fd_count": String(totalFDs),
+                "thread_count": String(totalThreads),
+                "maximum_process_open_fds": String(maxFDs),
+                "open_fd_soft_limit": String(softFDLimit),
+                "accounting_complete": complete ? "true" : "false",
+                "processes_json": processJSON,
+            ]
+        )
+    }
+
+    private func guestResourceCheck(snapshot: DoryGuestResourceSnapshot?) -> HealthCheck {
+        guard dockerTier?.status().state == .running else {
+            return HealthCheck(
+                id: "resources.guest",
+                status: .skip,
+                code: "resources.guest_inactive",
+                title: "Guest memory and disk",
+                detail: "The Docker engine is not running; no guest values are fabricated."
+            )
+        }
+        guard let snapshot else {
+            return HealthCheck(
+                id: "resources.guest",
+                status: .warn,
+                code: "resources.guest_probe_unavailable",
+                title: "Guest memory and disk unavailable",
+                detail: "The guest agent did not return a complete /proc/meminfo and /var/lib/docker filesystem record.",
+                action: "Run `dory repair guest-agent --apply`; this reconnects only the control RPC."
+            )
+        }
+        let memoryRatio = snapshot.memoryCeilingBytes == 0 ? 0
+            : Double(snapshot.memoryUsedBytes) / Double(snapshot.memoryCeilingBytes)
+        let diskRatio = snapshot.dataDiskTotalBytes == 0 ? 0
+            : Double(snapshot.dataDiskAvailableBytes) / Double(snapshot.dataDiskTotalBytes)
+        let pressured = memoryRatio >= 0.9
+            && snapshot.memoryReclaimableBytes < snapshot.memoryCeilingBytes / 20
+        let diskLow = snapshot.dataDiskTotalBytes > 0 && diskRatio < 0.1
+        let status: HealthCheckStatus = pressured || diskLow ? .warn : .pass
+        return HealthCheck(
+            id: "resources.guest",
+            status: status,
+            code: pressured ? "resources.guest_memory_pressure" : (diskLow ? "resources.guest_disk_low" : "resources.guest_ok"),
+            title: "Guest memory and disk",
+            detail: "memory used \(formatBytes(Int64(clamping: snapshot.memoryUsedBytes))), cache \(formatBytes(Int64(clamping: snapshot.memoryCacheBytes))), reclaimable \(formatBytes(Int64(clamping: snapshot.memoryReclaimableBytes))) of \(formatBytes(Int64(clamping: snapshot.memoryCeilingBytes))); data disk used \(formatBytes(Int64(clamping: snapshot.dataDiskUsedBytes))) of \(formatBytes(Int64(clamping: snapshot.dataDiskTotalBytes)))",
+            action: pressured
+                ? "Inspect workload memory before changing the configured ceiling."
+                : (diskLow ? "Run `dory cleanup --json` to preview exact reclaimable objects before applying any prune." : nil),
+            data: [
+                "memory_ceiling_bytes": String(snapshot.memoryCeilingBytes),
+                "memory_used_bytes": String(snapshot.memoryUsedBytes),
+                "memory_cache_bytes": String(snapshot.memoryCacheBytes),
+                "memory_reclaimable_bytes": String(snapshot.memoryReclaimableBytes),
+                "memory_free_bytes": String(snapshot.memoryFreeBytes),
+                "data_disk_total_bytes": String(snapshot.dataDiskTotalBytes),
+                "data_disk_used_bytes": String(snapshot.dataDiskUsedBytes),
+                "data_disk_available_bytes": String(snapshot.dataDiskAvailableBytes),
+            ]
+        )
+    }
+
+    private func hostShareResourceCheck(snapshot: DoryHostShareResourceSnapshot?) -> HealthCheck {
+        guard dockerTier?.status().state == .running else {
+            return HealthCheck(
+                id: "resources.file_service",
+                status: .skip,
+                code: "resources.file_service_inactive",
+                title: "File-service resources",
+                detail: "The Docker engine is not running; watcher state is inactive."
+            )
+        }
+        guard let snapshot else {
+            return HealthCheck(
+                id: "resources.file_service",
+                status: .warn,
+                code: "resources.file_service_snapshot_unavailable",
+                title: "File-service resource snapshot unavailable",
+                detail: "The managed helper did not publish a fresh watcher/backpressure record.",
+                action: "Refresh diagnostics; if mounts are also stale, collect a support bundle before repairing the failed layer."
+            )
+        }
+        let backlogHigh = snapshot.batcher.pendingCount >= max(1, snapshot.batcher.pendingLimit * 3 / 4)
+        let degraded = !snapshot.running
+            || snapshot.consecutiveFailures > 0
+            || snapshot.batcher.pendingRequiresRescan
+            || backlogHigh
+        let roots = snapshot.observationRoots.isEmpty
+            ? "none discovered yet"
+            : snapshot.observationRoots.joined(separator: ", ")
+        return HealthCheck(
+            id: "resources.file_service",
+            status: degraded ? .warn : .pass,
+            code: degraded ? "resources.file_service_backpressure" : "resources.file_service_ok",
+            title: "File-service resources",
+            detail: "\(snapshot.observationRoots.count) narrow watcher root(s); queue \(snapshot.batcher.pendingCount)/\(snapshot.batcher.pendingLimit), failed batches \(snapshot.batcher.failedBatchCount), rescan collapses \(snapshot.batcher.rescanCollapseCount)",
+            action: degraded
+                ? "Let the bounded queue drain; if the trend continues, collect a support bundle. Dory keeps zero-cache safety or requests a bounded VM recovery rather than serving stale files."
+                : nil,
+            data: [
+                "configured_roots": snapshot.configuredRoots.joined(separator: ","),
+                "observation_roots": roots,
+                "pending_count": String(snapshot.batcher.pendingCount),
+                "pending_limit": String(snapshot.batcher.pendingLimit),
+                "pending_requires_rescan": snapshot.batcher.pendingRequiresRescan ? "true" : "false",
+                "received_events": String(snapshot.batcher.receivedEventCount),
+                "delivered_batches": String(snapshot.batcher.deliveredBatchCount),
+                "failed_batches": String(snapshot.batcher.failedBatchCount),
+                "rescan_collapses": String(snapshot.batcher.rescanCollapseCount),
+                "consecutive_failures": String(snapshot.consecutiveFailures),
+            ]
+        )
+    }
+
+    private func resourceTrendCheck(
+        processSnapshot: DoryProcessMemorySnapshot,
+        hostShareSnapshot: DoryHostShareResourceSnapshot?,
+        now: Date
+    ) -> HealthCheck {
+        let assessment = resourceTrendTracker.record(DoryResourceTrendSample(
+            at: now,
+            openFileDescriptors: processSnapshot.usages.compactMap(\.openFileDescriptorCount).reduce(0, +),
+            threads: processSnapshot.usages.compactMap(\.threadCount).reduce(0, +),
+            physicalFootprintBytes: saturatingSum(processSnapshot.usages.map(\.physicalFootprintBytes)),
+            watcherPending: hostShareSnapshot?.batcher.pendingCount ?? 0
+        ))
+        guard assessment.sampleCount >= 3 else {
+            return HealthCheck(
+                id: "resources.trend",
+                status: .skip,
+                code: "resources.trend_learning",
+                title: "Resource trend",
+                detail: "Learning baseline (\(assessment.sampleCount)/3 samples); warnings require three rising samples over at least 10 seconds.",
+                data: ["sample_count": String(assessment.sampleCount)]
+            )
+        }
+        if !assessment.warnings.isEmpty {
+            return HealthCheck(
+                id: "resources.trend",
+                status: .warn,
+                code: "resources.trend_rising",
+                title: "Sustained resource growth detected",
+                detail: assessment.warnings.joined(separator: "; "),
+                action: "Inspect the attributed process and watcher records now, before the runtime reaches its FD, thread, or memory ceiling.",
+                data: [
+                    "sample_count": String(assessment.sampleCount),
+                    "window_seconds": String(assessment.windowSeconds),
+                ]
+            )
+        }
+        return HealthCheck(
+            id: "resources.trend",
+            status: .pass,
+            code: "resources.trend_stable",
+            title: "Resource trend stable",
+            detail: "No monotonic FD, thread, watcher-backlog, or physical-footprint rise across the last three samples (\(assessment.windowSeconds)s window).",
+            data: [
+                "sample_count": String(assessment.sampleCount),
+                "window_seconds": String(assessment.windowSeconds),
+            ]
         )
     }
 
@@ -1342,6 +2159,7 @@ public final class HealthReporter: @unchecked Sendable {
                     "allocated_bytes": String(allocated),
                     "engine_disk_logical_bytes": String(diskLogical),
                     "engine_disk_allocated_bytes": String(diskAllocated),
+                    "engine_disk_maximum_bytes": String(Int64(2_048) * 1_024 * 1_024 * 1_024),
                     "free_bytes": String(free),
                     "total_bytes": String(total),
                     "filesystem": filesystem,

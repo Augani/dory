@@ -183,6 +183,36 @@ final class DoryComponentsTests: XCTestCase {
         }
     }
 
+    func testSelectionSnapshotRestoresPriorVerifiedGeneration() throws {
+        let fixture = try Fixture(name: "selection-rollback")
+        defer { fixture.cleanup() }
+        let firstData = Data("kubectl-v1".utf8)
+        let secondData = Data("kubectl-v2".utf8)
+        let first = release(id: .kubernetes, version: "1.0.0", data: firstData, assetPath: "kubectl")
+        let second = release(id: .kubernetes, version: "2.0.0", data: secondData, assetPath: "kubectl")
+        let firstSource = try fixture.write(firstData, name: "kubectl-v1")
+        let secondSource = try fixture.write(secondData, name: "kubectl-v2")
+
+        _ = try fixture.store.install(
+            first,
+            catalogDigest: String(repeating: "1", count: 64),
+            downloadedAssets: ["kubectl": firstSource.path]
+        )
+        let snapshot = try fixture.store.captureSelection()
+        _ = try fixture.store.install(
+            second,
+            catalogDigest: String(repeating: "2", count: 64),
+            downloadedAssets: ["kubectl": secondSource.path]
+        )
+        XCTAssertEqual(try fixture.store.installedComponent(.kubernetes)?.version, "2.0.0")
+
+        try fixture.store.restoreSelection(snapshot)
+
+        XCTAssertEqual(try fixture.store.installedComponent(.kubernetes)?.version, "1.0.0")
+        let restored = try XCTUnwrap(fixture.store.assetPath(component: .kubernetes, path: "kubectl"))
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: restored)), firstData)
+    }
+
     func testDependenciesBlockInstallAndRemovalInTheWrongOrder() throws {
         let fixture = try Fixture(name: "dependencies")
         defer { fixture.cleanup() }

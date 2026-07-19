@@ -105,7 +105,7 @@ xcodebuild -create-xcframework \
 echo "installing generated Swift into DoryCore..."
 mkdir -p "$GEN"
 cp "$WORK/gen/dory_ffi.swift" "$GEN/dory_ffi.swift"
-# UniFFI 0.28 emits this as `var`, which Swift 6 treats as unsafe global
+# UniFFI emits this as `var`, which Swift 6 treats as unsafe global
 # mutable state. The value is initialized once and never mutated.
 perl -0pi -e 's/private var initializationResult: InitializationResult = \{/private let initializationResult: InitializationResult = \{/' \
   "$GEN/dory_ffi.swift"

@@ -276,7 +276,8 @@ public struct DorydEnvironment: Sendable {
             passMachineArguments: bool("DORYD_VMM_PASS_MACHINE_ARGS", default: true),
             logDirectory: string("DORYD_MACHINE_LOG_DIR") ?? "\(stateDirectory)/logs",
             requiresReadyHandoff: bool("DORYD_VMM_READY_HANDOFF", default: true),
-            guestArchitecture: hostGuestArch
+            guestArchitecture: hostGuestArch,
+            sshAgentSocketPath: string("DORYD_SSH_AUTH_SOCK")
         )
     }
 

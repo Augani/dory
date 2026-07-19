@@ -35,7 +35,9 @@ import Testing
         let snapshot = try await watcher.pollOnce()
 
         #expect(snapshot.ports == [AgentListenPort(protocol: "tcp", port: 3_000)])
-        #expect(await forwarder.exposed == [3_000])
+        // Port 2375 is no longer Dory infrastructure: dockerd is Unix-socket-only. If a normal
+        // machine workload deliberately listens there, it follows the same TCP policy as 3000.
+        #expect(await forwarder.exposed == [3_000, 2_375])
         #expect(await forwarder.unexposed == [8_080])
     }
 

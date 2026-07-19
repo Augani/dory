@@ -6,6 +6,7 @@ struct KubernetesView: View {
     @State private var pendingDeletePod: Pod?
     @State private var pendingDeleteResource: KubeDeleteTarget?
     @State private var pendingVersionSwitch: KubeVersion?
+    @State private var confirmingDisable = false
 
     var body: some View {
         if !store.kubernetesReachable && store.pods.isEmpty {
@@ -100,6 +101,12 @@ struct KubernetesView: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("Switching recreates the cluster. All running workloads will be lost. This cannot be undone.")
+        }
+        .confirmationDialog("Disable and remove Kubernetes?", isPresented: $confirmingDisable, titleVisibility: .visible) {
+            Button("Disable & Remove Cluster", role: .destructive) { Task { await store.disableKubernetes() } }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This removes the k3s container and cluster state, including workloads held only inside it. Export anything you need first. Docker images and other Dory workloads stay.")
         }
         .overlay {
             if store.kubeResource == .pods, let pod = store.selectedPod() {
@@ -323,7 +330,7 @@ struct KubernetesView: View {
                     }
                 }
                 Divider()
-                Button("Disable Kubernetes", role: .destructive) { Task { await store.disableKubernetes() } }
+                Button("Disable Kubernetes", role: .destructive) { confirmingDisable = true }
             } label: {
                 Text("⋯").font(.system(size: 15, weight: .bold)).foregroundStyle(p.text2)
                     .frame(width: 28, height: 26)

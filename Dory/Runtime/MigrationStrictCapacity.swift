@@ -1,4 +1,56 @@
+import DoryOperations
 import Foundation
+
+/// Capacity that the migration admission decision may actually rely on.
+///
+/// `logicalBytes` is the selected sparse host file's configured ceiling. `usableBytes` is derived
+/// from the ext4 superblock, so growing only the APFS sparse file cannot make migration over-admit
+/// before the guest has expanded its filesystem. The conservative 15/16 ratio preserves Dory's
+/// qualified 120 GiB floor at the default 128 GiB size and scales it with later disk growth.
+nonisolated struct MigrationEngineCapacity: Codable, Sendable, Equatable {
+    static let defaultV1 = MigrationEngineCapacity(
+        logicalBytes: DockerDataDisk.blankDiskBytes,
+        usableBytes: 120 * DockerDataDisk.bytesPerGiB
+    )
+
+    let logicalBytes: Int64
+    let usableBytes: Int64
+
+    init(logicalBytes: Int64, usableBytes: Int64) {
+        self.logicalBytes = logicalBytes
+        self.usableBytes = usableBytes
+    }
+
+    static func selected(home: String) throws -> MigrationEngineCapacity {
+        let store = try DoryDataDriveSelectionStore(home: home)
+        guard let drive = try store.inspectSelection() else {
+            throw MigrationStrictInventoryError.unsafe(
+                "Dory has no verified selected data drive"
+            )
+        }
+        let usage = try DockerDataDisk.usage(at: drive.engineDataDiskPath)
+        guard usage.initialized,
+              let ext4Bytes = try DockerDataDisk.expectedExt4ImageBytes(
+                  at: drive.engineDataDiskPath
+              ),
+              ext4Bytes > 0 else {
+            throw MigrationStrictInventoryError.unsafe(
+                "Dory's selected Docker data disk has no verified ext4 capacity"
+            )
+        }
+        let guestVisibleBytes = min(usage.logicalBytes, ext4Bytes)
+        let usable = guestVisibleBytes.multipliedReportingOverflow(by: 15)
+        guard !usable.overflow else {
+            throw MigrationStrictInventoryError.incomplete(
+                "Dory engine capacity overflow"
+            )
+        }
+        return MigrationEngineCapacity(
+            logicalBytes: usage.logicalBytes,
+            usableBytes: usable.partialValue / 16
+        )
+    }
+}
 
 struct MigrationCapacityInput {
     let source: RuntimeSnapshot
@@ -7,6 +59,7 @@ struct MigrationCapacityInput {
     let writableSizes: [String: Int64]
     let targetDockerBytes: Int64
     let availableHostBytes: Int64
+    let engineCapacity: MigrationEngineCapacity
 }
 
 extension MigrationStrictInventoryCollector {
@@ -99,10 +152,11 @@ extension MigrationStrictInventoryCollector {
                 "host storage has \(input.availableHostBytes) bytes but \(requiredHostBytes) are required"
             )
         }
-        guard requiredEngineBytes <= engineUsableBytes else {
+        guard requiredEngineBytes <= input.engineCapacity.usableBytes else {
             throw MigrationStrictInventoryError.unsafe(
-                "Dory's engine needs \(requiredEngineBytes) bytes but its usable floor is "
-                    + "\(engineUsableBytes)"
+                "Dory's engine needs \(requiredEngineBytes) bytes but the selected "
+                    + "\(input.engineCapacity.logicalBytes)-byte sparse disk currently exposes "
+                    + "only \(input.engineCapacity.usableBytes) verified usable bytes"
             )
         }
         return MigrationCapacityContract(
@@ -111,7 +165,9 @@ extension MigrationStrictInventoryCollector {
             targetDockerBytes: input.targetDockerBytes,
             availableHostBytes: input.availableHostBytes,
             requiredHostBytes: requiredHostBytes,
-            requiredEngineBytes: requiredEngineBytes
+            requiredEngineBytes: requiredEngineBytes,
+            engineLogicalBytes: input.engineCapacity.logicalBytes,
+            engineUsableBytes: input.engineCapacity.usableBytes
         )
     }
 }

@@ -39,13 +39,15 @@ enum MigrationImportCoordinator {
         from source: any ContainerRuntime,
         to target: any ContainerRuntime,
         sharedHome: String = NSHomeDirectory(),
+        userSelection: [DoryOperationObjectKey]? = nil,
         progress: (@Sendable (String) -> Void)? = nil
     ) async throws -> MigrationSummary {
         progress?("Validating the exact source and Dory inventories…")
         let preparation = try await prepare(
             from: source,
             to: target,
-            sharedHome: sharedHome
+            sharedHome: sharedHome,
+            userSelection: userSelection
         )
         return try await execute(
             prepared: preparation.prepared,
@@ -68,9 +70,15 @@ enum MigrationImportCoordinator {
     static func preflight(
         from source: any ContainerRuntime,
         to target: any ContainerRuntime,
-        sharedHome: String = NSHomeDirectory()
+        sharedHome: String = NSHomeDirectory(),
+        userSelection: [DoryOperationObjectKey]? = nil
     ) async throws -> PreparedMigrationExecution {
-        try await prepare(from: source, to: target, sharedHome: sharedHome).prepared
+        try await prepare(
+            from: source,
+            to: target,
+            sharedHome: sharedHome,
+            userSelection: userSelection
+        ).prepared
     }
 
     static func execute(
@@ -136,6 +144,28 @@ enum MigrationImportCoordinator {
         summary.networksCreated.sort()
         summary.containersMigrated.sort()
         summary.containersAwaitingSourcePorts.sort()
+        let plan = prepared.operation.completenessPlan
+        let requested = Set(plan.userSelection)
+        let omitted = (try? JSONDecoder().decode(
+            [DoryOperationInventoryObject].self,
+            from: prepared.operation.baselineManifests.unselectedSourceInventory
+        )) ?? []
+        func label(_ key: DoryOperationObjectKey) -> String {
+            guard let object = plan.objects.first(where: { $0.source == key }) else {
+                return key.description
+            }
+            return "\(key.kind.rawValue):\(object.normalizedTargetName)"
+        }
+        summary.completeness = MigrationCompletenessReport(
+            requested: plan.userSelection.map(label),
+            automaticallyIncluded: plan.selectedObjectKeys.filter {
+                !requested.contains($0)
+            }.map(label),
+            verified: plan.selectedObjectKeys.map(label),
+            omitted: omitted.map { $0.key.description }.sorted(),
+            planDigest: (try? plan.canonicalDigest()) ?? "",
+            omittedInventoryDigest: plan.unselectedSourceInventoryDigest
+        )
         return summary
     }
 
@@ -151,7 +181,8 @@ enum MigrationImportCoordinator {
     private static func prepare(
         from source: any ContainerRuntime,
         to target: any ContainerRuntime,
-        sharedHome: String
+        sharedHome: String,
+        userSelection: [DoryOperationObjectKey]?
     ) async throws -> MigrationImportPreparation {
         try Task.checkCancellation()
         let journalStore = try DoryOperationJournalStore(home: sharedHome)
@@ -171,7 +202,9 @@ enum MigrationImportCoordinator {
             availableHostBytes: try hostAvailableBytes(at: sharedHome),
             sharedHome: sharedHome,
             transferHelper: MigrationTransferHelperContract(metadata: helper.metadata),
-            hostArchitecture: productionHostArchitecture
+            hostArchitecture: productionHostArchitecture,
+            engineCapacity: try MigrationEngineCapacity.selected(home: sharedHome),
+            userSelection: userSelection
         )
         return MigrationImportPreparation(
             prepared: prepared,

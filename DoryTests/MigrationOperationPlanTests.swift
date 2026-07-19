@@ -60,6 +60,46 @@ struct MigrationOperationPlanTests {
         #expect(first.journalPlan == second.journalPlan)
     }
 
+    @Test func partialSelectionKeepsExactOmissionsAndOnlyBoundSpecifications() throws {
+        let scenario = try makeScenario()
+        let image = DoryOperationObjectKey(
+            kind: .image,
+            sourceID: String(repeating: "a", count: 64)
+        )
+
+        let prepared = try build(scenario, userSelection: [image])
+        let omitted = try JSONDecoder().decode(
+            [DoryOperationInventoryObject].self,
+            from: prepared.baselineManifests.unselectedSourceInventory
+        )
+
+        #expect(prepared.completenessPlan.userSelection == [image])
+        #expect(prepared.completenessPlan.selectedObjectKeys == [image])
+        #expect(prepared.specifications.count == 1)
+        #expect(Set(omitted.map(\.key)).isSuperset(of: [
+            DoryOperationObjectKey(kind: .volume, sourceID: "db-data"),
+            DoryOperationObjectKey(kind: .network, sourceID: "backend"),
+            DoryOperationObjectKey(kind: .container, sourceID: "db-id"),
+            DoryOperationObjectKey(kind: .container, sourceID: "api-id"),
+        ]))
+        #expect(!prepared.completenessPlan.unselectedSourceInventoryDigest.isEmpty)
+    }
+
+    @Test func omittedTargetCollisionDoesNotBlockSelectedImage() throws {
+        var scenario = try makeScenario()
+        scenario.target = RuntimeSnapshot(volumes: [
+            Volume(name: "db-data", size: "0 B", driver: "local", usedBy: "—", created: "now")
+        ])
+        let image = DoryOperationObjectKey(
+            kind: .image,
+            sourceID: String(repeating: "a", count: 64)
+        )
+
+        let prepared = try build(scenario, userSelection: [image])
+
+        #expect(prepared.completenessPlan.selectedObjectKeys == [image])
+    }
+
     @Test func missingContainerModeDependencyFailsBeforeJournalOrDockerWrites() throws {
         var scenario = try makeScenario()
         scenario.containerSpecifications["api-id"]?.networkMode = "container:missing-db"
@@ -244,7 +284,10 @@ private extension MigrationOperationPlanTests {
         )
     }
 
-    func build(_ scenario: Scenario) throws -> PreparedMigrationOperation {
+    func build(
+        _ scenario: Scenario,
+        userSelection: [DoryOperationObjectKey]? = nil
+    ) throws -> PreparedMigrationOperation {
         let operationID = try #require(
             UUID(uuidString: "11111111-1111-1111-1111-111111111111")
         )
@@ -267,7 +310,8 @@ private extension MigrationOperationPlanTests {
             identity: MigrationOperationIdentity(
                 id: operationID,
                 createdAt: Date(timeIntervalSince1970: 1_700_000_000)
-            )
+            ),
+            userSelection: userSelection
         ))
     }
 

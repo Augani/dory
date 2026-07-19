@@ -3,6 +3,11 @@ import Testing
 @testable import Dory
 
 struct UsbAttachmentStoreTests {
+    @Test func passthroughIsTruthfullyDisabledUntilGuestRPCShips() {
+        #expect(!UsbPassthroughAvailability.attachSupported)
+        #expect(UsbPassthroughAvailability.unavailableReason.contains("guest USB/IP RPC"))
+    }
+
     @Test func remembersAttachmentsSortedByMachineAndBusID() throws {
         let defaults = try makeDefaults()
         let store = UsbAttachmentStore(defaults: defaults, key: "usb")

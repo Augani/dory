@@ -70,10 +70,12 @@ final class HealthReporterTests: XCTestCase {
             "network.registry_dns",
             "network.registry_https",
             "network.proxy",
+            "network.corporate",
             "network.lan_exposure",
             "network.container_dns",
             "network.published_ports",
             "network.domain_table",
+            "network.resources",
             "mount.basic",
             "mount.lock",
             "mount.watch",
@@ -81,10 +83,15 @@ final class HealthReporterTests: XCTestCase {
             "disk.host",
             "disk.dory_drive",
             "disk.docker",
+            "disk.reclaimable",
             "disk.dory_state",
             "disk.guest",
             "disk.dory_logs",
             "memory.footprint",
+            "resources.processes",
+            "resources.guest",
+            "resources.file_service",
+            "resources.trend",
             "helpers.resolver",
         ]
         XCTAssertEqual(doctor.results.map(\.id), expectedDoctorIDs)
@@ -564,6 +571,65 @@ final class HealthReporterTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(helperTreeUsages.count, 2)
         XCTAssertTrue(helperTreeUsages.allSatisfy { $0.residentSizeBytes > 0 })
         XCTAssertTrue(helperTreeUsages.allSatisfy { $0.physicalFootprintBytes > 0 })
+        XCTAssertTrue(helperTreeUsages.allSatisfy { ($0.openFileDescriptorCount ?? 0) > 0 })
+        XCTAssertTrue(helperTreeUsages.allSatisfy { ($0.threadCount ?? 0) > 0 })
+    }
+
+    func testDockerReclaimPreviewIsConservativeAndNamesExactObjects() throws {
+        let body = #"""
+        {
+          "Containers": [
+            {"Id":"stopped-123456789", "State":"exited", "SizeRw":10},
+            {"Id":"running-123456789", "State":"running", "SizeRw":999}
+          ],
+          "Volumes": [
+            {"Name":"unused", "UsageData":{"RefCount":0,"Size":20}},
+            {"Name":"live", "UsageData":{"RefCount":1,"Size":999}}
+          ],
+          "BuildCache": [
+            {"ID":"cache-123456789", "InUse":false, "Size":30},
+            {"ID":"live-cache", "InUse":true, "Size":999}
+          ],
+          "Images": [
+            {"Id":"sha256:unused-image", "Containers":0, "Size":100, "SharedSize":40},
+            {"Id":"sha256:live-image", "Containers":1, "Size":999, "SharedSize":0}
+          ]
+        }
+        """#
+        let estimate = try XCTUnwrap(HealthReporter.dockerReclaimableEstimate(body))
+        XCTAssertEqual(estimate.reclaimableBytes, 120)
+        XCTAssertEqual(estimate.objects.count, 4)
+        XCTAssertTrue(estimate.objects.contains { $0.hasPrefix("container:stopped-123") })
+        XCTAssertTrue(estimate.objects.contains("volume:unused:20"))
+        XCTAssertFalse(estimate.objects.contains { $0.contains("running-123") || $0.contains("live-cache") })
+    }
+
+    func testResourceTrendWarnsBeforeAThreeSampleFdSlopeReachesTheLimit() {
+        let tracker = DoryResourceTrendTracker()
+        let base = Date(timeIntervalSince1970: 10_000)
+        _ = tracker.record(DoryResourceTrendSample(
+            at: base,
+            openFileDescriptors: 100,
+            threads: 20,
+            physicalFootprintBytes: 1,
+            watcherPending: 0
+        ))
+        _ = tracker.record(DoryResourceTrendSample(
+            at: base.addingTimeInterval(10),
+            openFileDescriptors: 120,
+            threads: 20,
+            physicalFootprintBytes: 1,
+            watcherPending: 0
+        ))
+        let assessment = tracker.record(DoryResourceTrendSample(
+            at: base.addingTimeInterval(20),
+            openFileDescriptors: 140,
+            threads: 20,
+            physicalFootprintBytes: 1,
+            watcherPending: 0
+        ))
+        XCTAssertEqual(assessment.windowSeconds, 20)
+        XCTAssertEqual(assessment.warnings, ["open file descriptors rose 100→140"])
     }
 }
 

@@ -1,0 +1,15 @@
+{
+  "name": "dory-migration-ad",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "npm_config_ignore_scripts=true npx --yes hyperframes@0.7.60 preview",
+    "check": "npm_config_ignore_scripts=true npx --yes hyperframes@0.7.60 check",
+    "lint": "npm_config_ignore_scripts=true npx --yes hyperframes@0.7.60 lint",
+    "inspect": "npm_config_ignore_scripts=true npx --yes hyperframes@0.7.60 inspect",
+    "validate": "npm_config_ignore_scripts=true npx --yes hyperframes@0.7.60 validate",
+    "render": "npm_config_ignore_scripts=true npx --yes hyperframes@0.7.60 render --fps 30 --quality high",
+    "render:30": "npm_config_ignore_scripts=true npx --yes hyperframes@0.7.60 render --fps 30 --quality high",
+    "render:60": "npm_config_ignore_scripts=true npx --yes hyperframes@0.7.60 render --fps 60 --quality high"
+  }
+}

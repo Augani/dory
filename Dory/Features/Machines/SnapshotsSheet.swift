@@ -6,6 +6,10 @@ struct SnapshotsSheet: View {
 
     @State private var note = ""
     @State private var pendingDelete: MachineSnapshot?
+    @State private var pendingRestore: MachineSnapshot?
+    @State private var backupFrequency: DorydMachineBackupFrequency = .daily
+    @State private var backupRetention = 7
+    @State private var backupVerificationInterval = 7
 
     private var machine: Machine? { store.snapshotMachine }
 
@@ -15,10 +19,14 @@ struct SnapshotsSheet: View {
             Divider().overlay(p.border)
             takeSnapshotBar
             Divider().overlay(p.border)
+            backupSection
+            Divider().overlay(p.border)
             list
         }
-        .frame(width: 560, height: 540)
+        .frame(width: 600, height: 700)
         .background(p.bgWindow)
+        .onAppear(perform: syncBackupForm)
+        .onChange(of: store.machineBackupStatus) { _, _ in syncBackupForm() }
         .confirmationDialog(
             "Delete this snapshot?",
             isPresented: Binding(get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } }),
@@ -31,6 +39,19 @@ struct SnapshotsSheet: View {
             Button("Cancel", role: .cancel) { pendingDelete = nil }
         } message: {
             Text("This permanently removes the saved snapshot image. This cannot be undone.")
+        }
+        .confirmationDialog(
+            "Restore \(pendingRestore?.machineName ?? "machine") from this snapshot?",
+            isPresented: Binding(get: { pendingRestore != nil }, set: { if !$0 { pendingRestore = nil } }),
+            titleVisibility: .visible
+        ) {
+            Button("Create Safety Snapshot & Restore", role: .destructive) {
+                if let snapshot = pendingRestore { store.restoreSnapshot(snapshot) }
+                pendingRestore = nil
+            }
+            Button("Cancel", role: .cancel) { pendingRestore = nil }
+        } message: {
+            Text("Dory first creates a retained snapshot of the current machine, then replaces its disk and configuration with the selected snapshot. Use the retained pre-restore snapshot to undo the change.")
         }
     }
 
@@ -78,6 +99,110 @@ struct SnapshotsSheet: View {
         .padding(.horizontal, 18).padding(.vertical, 12)
     }
 
+    private var backupSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Verified scheduled backups")
+                        .font(.system(size: 12.5, weight: .semibold)).foregroundStyle(p.text)
+                    Text("Keeps local .dorymachine recovery bundles and periodically boots a disposable restore.")
+                        .font(.system(size: 10.5)).foregroundStyle(p.text3)
+                }
+                Spacer()
+                backupStateBadge
+            }
+
+            HStack(spacing: 10) {
+                Picker("Frequency", selection: $backupFrequency) {
+                    ForEach(DorydMachineBackupFrequency.allCases, id: \.rawValue) { frequency in
+                        Text(frequency.rawValue.capitalized).tag(frequency)
+                    }
+                }
+                .labelsHidden()
+                .frame(width: 105)
+
+                Stepper("Keep \(backupRetention)", value: $backupRetention, in: 1...100)
+                    .font(.system(size: 11.5)).fixedSize()
+
+                Stepper("Boot-check every \(backupVerificationInterval)", value: $backupVerificationInterval, in: 1...100)
+                    .font(.system(size: 11.5)).fixedSize()
+
+                Spacer(minLength: 0)
+            }
+
+            if let status = store.machineBackupStatus {
+                VStack(alignment: .leading, spacing: 3) {
+                    backupStatusLine("Last verified", status.lastVerificationISO)
+                    backupStatusLine("Last boot-check", status.lastBootVerificationISO)
+                    backupStatusLine("Next run", status.nextRunISO)
+                    Text("Retained: \(status.retainedSnapshots) snapshots · \(status.retainedArchives) recovery bundles")
+                        .font(.system(size: 10.5)).foregroundStyle(p.text3)
+                    if let error = status.lastError, !error.isEmpty {
+                        Text(error).font(.system(size: 10.5, weight: .medium)).foregroundStyle(p.red)
+                            .lineLimit(2)
+                    }
+                }
+            } else {
+                Text("No schedule yet. The first run includes a full disposable boot restore check.")
+                    .font(.system(size: 10.5)).foregroundStyle(p.text3)
+            }
+
+            HStack(spacing: 8) {
+                Button(store.machineBackupStatus == nil ? "Enable schedule" : "Save schedule") {
+                    store.saveMachineBackupSchedule(
+                        frequency: backupFrequency,
+                        keepLocal: backupRetention,
+                        verifyEveryRuns: backupVerificationInterval
+                    )
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+
+                if store.machineBackupStatus != nil {
+                    Button("Run & verify now") { store.runMachineBackupNow() }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                    Button("Disable") { store.removeMachineBackupSchedule() }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                }
+
+                if store.machineBackupActionBusy || store.machineBackupLoading {
+                    ProgressView().controlSize(.small)
+                }
+                Spacer()
+            }
+            .disabled(store.machineBackupActionBusy || store.machineBackupLoading || !store.dorydRuntimeActive)
+
+            Text("Snapshots briefly stop a running machine while its disk is captured. Manual snapshots are never removed by scheduled retention.")
+                .font(.system(size: 10)).foregroundStyle(p.text3)
+        }
+        .padding(.horizontal, 18).padding(.vertical, 12)
+    }
+
+    @ViewBuilder private var backupStateBadge: some View {
+        if store.machineBackupActionBusy || store.machineBackupStatus?.inProgress == true {
+            Text("RUNNING").foregroundStyle(p.accent).background(p.accentSoft, in: Capsule())
+                .font(.system(size: 9.5, weight: .bold)).padding(.horizontal, 7).padding(.vertical, 3)
+        } else if let status = store.machineBackupStatus {
+            Text(status.consecutiveFailures > 0 ? "NEEDS ATTENTION" : "ENABLED")
+                .foregroundStyle(status.consecutiveFailures > 0 ? p.red : p.green)
+                .background(status.consecutiveFailures > 0 ? p.redWeak : p.greenWeak, in: Capsule())
+                .font(.system(size: 9.5, weight: .bold)).padding(.horizontal, 7).padding(.vertical, 3)
+        } else {
+            Text("OFF").foregroundStyle(p.text3).background(p.bgInput, in: Capsule())
+                .font(.system(size: 9.5, weight: .bold)).padding(.horizontal, 7).padding(.vertical, 3)
+        }
+    }
+
+    private func backupStatusLine(_ label: String, _ iso: String?) -> some View {
+        HStack(spacing: 4) {
+            Text("\(label):").foregroundStyle(p.text3)
+            Text(iso.map(relativeTime) ?? "not yet").foregroundStyle(p.text2)
+        }
+        .font(.system(size: 10.5))
+    }
+
     @ViewBuilder private var list: some View {
         if store.machineSnapshots.isEmpty {
             VStack(spacing: 10) {
@@ -118,7 +243,7 @@ struct SnapshotsSheet: View {
                 Spacer(minLength: 8)
             }
             HStack(spacing: 8) {
-                rowAction("arrow.uturn.backward", "Restore") { store.restoreSnapshot(snapshot) }
+                rowAction("arrow.uturn.backward", "Restore") { pendingRestore = snapshot }
                 rowAction("doc.on.doc", "Clone") { store.cloneSnapshot(snapshot) }
                 rowAction("square.and.arrow.up", "Export") { store.exportSnapshot(snapshot) }
                 Spacer(minLength: 0)
@@ -162,6 +287,13 @@ struct SnapshotsSheet: View {
         guard let machine else { return }
         store.takeSnapshot(machine, note: note)
         note = ""
+    }
+
+    private func syncBackupForm() {
+        guard let schedule = store.machineBackupStatus?.schedule else { return }
+        backupFrequency = schedule.frequency
+        backupRetention = schedule.keepLocal
+        backupVerificationInterval = schedule.verifyEveryRuns
     }
 
     private func relativeTime(_ iso: String) -> String {

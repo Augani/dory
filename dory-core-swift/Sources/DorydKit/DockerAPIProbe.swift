@@ -13,9 +13,22 @@ public enum DockerAPISystemDFResult: Sendable, Equatable {
     case unreachable(String)
 }
 
+public enum DockerAPIResourceInventoryResult: Sendable, Equatable {
+    case ok(body: String)
+    case badResponse(statusCode: Int, body: String)
+    case unreachable(String)
+}
+
 public protocol DockerAPIProbing: Sendable {
     func ping(socketPath: String) -> DockerAPIPingResult
     func systemDF(socketPath: String) -> DockerAPISystemDFResult
+    func resourceInventory(socketPath: String) -> DockerAPIResourceInventoryResult
+}
+
+public extension DockerAPIProbing {
+    func resourceInventory(socketPath: String) -> DockerAPIResourceInventoryResult {
+        .unreachable("full Docker resource inventory probe is unavailable")
+    }
 }
 
 public final class UnixDockerAPIProbe: DockerAPIProbing, @unchecked Sendable {
@@ -64,6 +77,22 @@ public final class UnixDockerAPIProbe: DockerAPIProbing, @unchecked Sendable {
                 return .ok
             }
             return .badResponse(statusCode: statusCode, body: body)
+        case let .unreachable(detail):
+            return .unreachable(detail)
+        }
+    }
+
+    public func resourceInventory(socketPath: String) -> DockerAPIResourceInventoryResult {
+        switch request(
+            path: "/system/df",
+            socketPath: socketPath,
+            timeout: max(timeout, Self.systemDFMinimumTimeout),
+            maxBytes: Self.systemDFResponseLimit
+        ) {
+        case let .response(statusCode, body):
+            return statusCode == 200
+                ? .ok(body: body)
+                : .badResponse(statusCode: statusCode, body: body)
         case let .unreachable(detail):
             return .unreachable(detail)
         }

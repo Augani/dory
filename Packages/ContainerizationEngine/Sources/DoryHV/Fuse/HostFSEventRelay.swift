@@ -226,6 +226,10 @@ public final class FSEventBatcher: @unchecked Sendable {
     private let lock = NSLock()
     private var pending: [String: HostFSEventChange] = [:]
     private var pendingRequiresRescan = false
+    private var receivedEventCount: UInt64 = 0
+    private var deliveredBatchCount: UInt64 = 0
+    private var failedBatchCount: UInt64 = 0
+    private var rescanCollapseCount: UInt64 = 0
 
     public init(
         shares: [HostFSEventShare],
@@ -248,6 +252,7 @@ public final class FSEventBatcher: @unchecked Sendable {
         guard !changes.isEmpty else { return }
         let batchLatestEventID = changes.map(\.eventID).max() ?? 0
         lock.withLock {
+            receivedEventCount &+= UInt64(changes.count)
             for change in changes {
                 if change.requiresRescan {
                     FileHandle.standardError.write(Data(
@@ -291,8 +296,10 @@ public final class FSEventBatcher: @unchecked Sendable {
         guard !changes.isEmpty else { return }
         do {
             try await send(changes)
+            lock.withLock { deliveredBatchCount &+= 1 }
         } catch {
             lock.withLock {
+                failedBatchCount &+= 1
                 let latest = max(
                     changes.map(\.eventID).max() ?? 0,
                     pending.values.map(\.eventID).max() ?? 0
@@ -332,6 +339,20 @@ public final class FSEventBatcher: @unchecked Sendable {
         lock.withLock { pending.count }
     }
 
+    public var diagnostics: FSEventBatcherDiagnostics {
+        lock.withLock {
+            FSEventBatcherDiagnostics(
+                pendingCount: pending.count,
+                pendingLimit: pendingLimit,
+                pendingRequiresRescan: pendingRequiresRescan,
+                receivedEventCount: receivedEventCount,
+                deliveredBatchCount: deliveredBatchCount,
+                failedBatchCount: failedBatchCount,
+                rescanCollapseCount: rescanCollapseCount
+            )
+        }
+    }
+
     public func mapHostPathToGuest(_ path: String) -> String? {
         shares.lazy.compactMap { $0.mapHostPathToGuest(path) }.first
     }
@@ -354,6 +375,7 @@ public final class FSEventBatcher: @unchecked Sendable {
         ))
         pending.removeAll(keepingCapacity: true)
         pendingRequiresRescan = true
+        rescanCollapseCount &+= 1
         let flags = UInt32(
             kFSEventStreamEventFlagMustScanSubDirs |
             kFSEventStreamEventFlagUserDropped
@@ -366,6 +388,48 @@ public final class FSEventBatcher: @unchecked Sendable {
                 eventID: latestEventID
             )
         }
+    }
+}
+
+public struct FSEventBatcherDiagnostics: Codable, Equatable, Sendable {
+    public var pendingCount: Int
+    public var pendingLimit: Int
+    public var pendingRequiresRescan: Bool
+    public var receivedEventCount: UInt64
+    public var deliveredBatchCount: UInt64
+    public var failedBatchCount: UInt64
+    public var rescanCollapseCount: UInt64
+}
+
+public struct HostFSEventRelayDiagnostics: Codable, Equatable, Sendable {
+    public var schema: String
+    public var version: Int
+    public var generatedAt: Date
+    public var configuredRoots: [String]
+    public var observationRoots: [String]
+    public var running: Bool
+    public var flushScheduled: Bool
+    public var consecutiveFailures: Int
+    public var batcher: FSEventBatcherDiagnostics
+
+    public init(
+        generatedAt: Date = Date(),
+        configuredRoots: [String],
+        observationRoots: [String],
+        running: Bool,
+        flushScheduled: Bool,
+        consecutiveFailures: Int,
+        batcher: FSEventBatcherDiagnostics
+    ) {
+        self.schema = "dev.dory.host-share.resources"
+        self.version = 1
+        self.generatedAt = generatedAt
+        self.configuredRoots = configuredRoots
+        self.observationRoots = observationRoots
+        self.running = running
+        self.flushScheduled = flushScheduled
+        self.consecutiveFailures = consecutiveFailures
+        self.batcher = batcher
     }
 }
 
@@ -478,6 +542,25 @@ public final class HostFSEventRelay: @unchecked Sendable {
 
     public var observationRoots: [String] {
         lock.withLock { streams.keys.sorted() }
+    }
+
+    public var diagnostics: HostFSEventRelayDiagnostics {
+        let state = lock.withLock {
+            (
+                roots: streams.keys.sorted(),
+                running: running,
+                flushScheduled: flushScheduled,
+                failures: consecutiveFailures
+            )
+        }
+        return HostFSEventRelayDiagnostics(
+            configuredRoots: shares.map(\.hostRoot).sorted(),
+            observationRoots: state.roots,
+            running: state.running,
+            flushScheduled: state.flushScheduled,
+            consecutiveFailures: state.failures,
+            batcher: batcher.diagnostics
+        )
     }
 
     private func startStream(root: String) -> Bool {

@@ -253,7 +253,7 @@ impl Drop for RemoteAgent {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use russh::keys::ssh_key::{rand_core::OsRng, Algorithm, LineEnding, PrivateKey};
+    use russh::keys::ssh_key::{Algorithm, LineEnding, PrivateKey};
     use russh::server::{self, Auth, Msg, Server as _, Session};
     use russh::{Channel, ChannelId};
     use std::sync::mpsc;
@@ -261,7 +261,7 @@ mod tests {
     // A minimal in-process SSH server on its own runtime+thread: accepts publickey auth and bridges a
     // direct-streamlocal channel to the REAL agent daemon handler. Returns (addr, host_pub_openssh).
     fn spawn_ssh_agent_server() -> (std::net::SocketAddr, String) {
-        let host_key = PrivateKey::random(&mut OsRng, Algorithm::Ed25519).unwrap();
+        let host_key = PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).unwrap();
         let host_pub = host_key.public_key().to_openssh().unwrap();
         let (tx, rx) = mpsc::channel();
 
@@ -338,7 +338,7 @@ mod tests {
     fn ffi_connect_info_and_push_over_real_ssh() {
         let (addr, host_pub) = spawn_ssh_agent_server();
 
-        let client_key = PrivateKey::random(&mut OsRng, Algorithm::Ed25519)
+        let client_key = PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519)
             .unwrap()
             .to_openssh(LineEnding::LF)
             .unwrap()
@@ -393,12 +393,12 @@ mod tests {
     #[test]
     fn a_wrong_pinned_host_key_fails_to_connect() {
         let (addr, _host_pub) = spawn_ssh_agent_server();
-        let wrong_pub = PrivateKey::random(&mut OsRng, Algorithm::Ed25519)
+        let wrong_pub = PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519)
             .unwrap()
             .public_key()
             .to_openssh()
             .unwrap();
-        let client_key = PrivateKey::random(&mut OsRng, Algorithm::Ed25519)
+        let client_key = PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519)
             .unwrap()
             .to_openssh(LineEnding::LF)
             .unwrap()

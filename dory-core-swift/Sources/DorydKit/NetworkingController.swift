@@ -49,6 +49,8 @@ public struct NetworkingStatus: Sendable, Equatable {
     public var httpsProxyPort: UInt16
     public var httpsProxyRunning: Bool
     public var routes: [DomainRoute]
+    public var privilegedTCPForwards: [PrivilegedTCPForward]
+    public var privilegedTCPForwardFailures: [UInt16: String]
 
     public init(
         mode: String,
@@ -60,7 +62,9 @@ public struct NetworkingStatus: Sendable, Equatable {
         httpProxyRunning: Bool,
         httpsProxyPort: UInt16,
         httpsProxyRunning: Bool,
-        routes: [DomainRoute]
+        routes: [DomainRoute],
+        privilegedTCPForwards: [PrivilegedTCPForward] = [],
+        privilegedTCPForwardFailures: [UInt16: String] = [:]
     ) {
         self.mode = mode
         self.suffix = suffix
@@ -72,6 +76,8 @@ public struct NetworkingStatus: Sendable, Equatable {
         self.httpsProxyPort = httpsProxyPort
         self.httpsProxyRunning = httpsProxyRunning
         self.routes = routes
+        self.privilegedTCPForwards = privilegedTCPForwards
+        self.privilegedTCPForwardFailures = privilegedTCPForwardFailures
     }
 }
 
@@ -86,12 +92,19 @@ public final class NetworkingController: @unchecked Sendable {
     private let router: DomainRouter
     private let dnsServer: DoryDNSServer
     private let httpProxy: DoryHTTPProxyServer
+    private let loopbackTCPForwarders: LoopbackTCPForwarderSet
     private let controlLock = NSLock()
     private var tlsProxy: DoryTLSProxyServer?
+    private var additionalPrivilegedTCPForwards: [PrivilegedTCPForward] = []
+    private var lastPrivilegedTCPForwardResult = LoopbackTCPForwardReconcileResult(active: [], failures: [:])
     var tlsRouteNames: Set<String> = []
 
-    public init(configuration: NetworkingConfiguration = NetworkingConfiguration()) {
+    public init(
+        configuration: NetworkingConfiguration = NetworkingConfiguration(),
+        loopbackTCPForwarders: LoopbackTCPForwarderSet = LoopbackTCPForwarderSet()
+    ) {
         self.configuration = configuration
+        self.loopbackTCPForwarders = loopbackTCPForwarders
         let router = DomainRouter(suffix: configuration.suffix)
         self.router = router
         self.dnsServer = DoryDNSServer(
@@ -122,11 +135,13 @@ public final class NetworkingController: @unchecked Sendable {
                 tlsProxy = proxy
                 tlsRouteNames = routeNames
             }
+            lastPrivilegedTCPForwardResult = reconcileLoopbackTCPForwardersLocked()
         } catch {
             dnsServer.stop()
             httpProxy.stop()
             tlsProxy?.stop()
             tlsProxy = nil
+            loopbackTCPForwarders.stop()
             throw error
         }
     }
@@ -143,6 +158,8 @@ public final class NetworkingController: @unchecked Sendable {
         tlsProxy?.stop()
         tlsProxy = nil
         tlsRouteNames = []
+        loopbackTCPForwarders.stop()
+        lastPrivilegedTCPForwardResult = LoopbackTCPForwardReconcileResult(active: [], failures: [:])
     }
 
     public func replaceRoutes(_ routes: [DomainRoute]) {
@@ -174,7 +191,9 @@ public final class NetworkingController: @unchecked Sendable {
             httpProxyRunning: httpProxy.isRunning,
             httpsProxyPort: (tlsProxy?.port ?? 0) == 0 ? configuration.httpsProxyPort : tlsProxy?.port ?? configuration.httpsProxyPort,
             httpsProxyRunning: tlsProxy?.isRunning == true,
-            routes: dnsServer.currentRoutes()
+            routes: dnsServer.currentRoutes(),
+            privilegedTCPForwards: lastPrivilegedTCPForwardResult.active,
+            privilegedTCPForwardFailures: lastPrivilegedTCPForwardResult.failures
         )
     }
 
@@ -194,9 +213,12 @@ public final class NetworkingController: @unchecked Sendable {
             do {
                 try httpProxy.start()
                 try tlsProxy?.start()
+                lastPrivilegedTCPForwardResult = reconcileLoopbackTCPForwardersLocked()
             } catch {
                 httpProxy.stop()
                 tlsProxy?.stop()
+                loopbackTCPForwarders.stop()
+                lastPrivilegedTCPForwardResult = LoopbackTCPForwardReconcileResult(active: [], failures: [:])
                 throw error
             }
         case .routes:
@@ -295,6 +317,41 @@ public final class NetworkingController: @unchecked Sendable {
             live.privilegedTCPForwards += additionalPrivilegedTCPForwards
         }
         return try NetworkingAuthorizationPlan.make(configuration: live)
+    }
+
+    /// Keeps low TCP publications reachable without relying on PF translation. The listeners bind
+    /// wildcard IPv4/IPv6 because macOS permits that for unprivileged low ports, then reject every
+    /// non-loopback peer before opening a backend connection.
+    @discardableResult
+    public func reconcileLoopbackTCPForwarders(
+        additionalPrivilegedTCPForwards: [PrivilegedTCPForward] = []
+    ) -> LoopbackTCPForwardReconcileResult {
+        controlLock.lock()
+        defer { controlLock.unlock() }
+        self.additionalPrivilegedTCPForwards = additionalPrivilegedTCPForwards
+        let result = reconcileLoopbackTCPForwardersLocked()
+        lastPrivilegedTCPForwardResult = result
+        return result
+    }
+
+    private func reconcileLoopbackTCPForwardersLocked() -> LoopbackTCPForwardReconcileResult {
+        guard httpProxy.isRunning else {
+            return loopbackTCPForwarders.reconcile([])
+        }
+        var desired: [UInt16: UInt16] = [
+            80: httpProxy.port == 0 ? configuration.httpProxyPort : httpProxy.port,
+        ]
+        if let tlsProxy, tlsProxy.isRunning {
+            desired[443] = tlsProxy.port == 0 ? configuration.httpsProxyPort : tlsProxy.port
+        }
+        for forward in configuration.privilegedTCPForwards + additionalPrivilegedTCPForwards
+            where !PrivilegedPortMapping.proxyReservedListenPorts.contains(forward.listenPort) {
+            desired[forward.listenPort] = forward.targetPort
+        }
+        let forwards = desired.map {
+            PrivilegedTCPForward(listenPort: $0.key, targetPort: $0.value)
+        }
+        return loopbackTCPForwarders.reconcile(forwards)
     }
 
     deinit {

@@ -41,7 +41,9 @@ jobs:
         run: scripts/test.sh gvproxy
       - name: Swift packages
         run: scripts/test.sh swift
-      - name: App tests
-        run: scripts/test.sh app
+      - name: P0 smoke harness contracts
+        run: bash scripts/test-p0-smoke.sh
+      - name: Offline release contracts and app tests
+        run: bash scripts/ci-test.sh
       - name: UI tests
         run: scripts/test.sh ui

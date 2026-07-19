@@ -172,6 +172,7 @@ public struct HostWakeResult: Sendable, Equatable {
     public var at: Date
     public var clockSyncs: [AgentClockSyncResult]
     public var dnsProbes: [DNSProbeResult]
+    public var networkReconciliations: [String]
 }
 
 public struct HostSleepResult: Sendable, Equatable {
@@ -184,6 +185,7 @@ public final class HostWakeCoordinator: @unchecked Sendable {
     private let sleepHandlers: [HostSleepHandling]
     private let clockSyncers: [WakeClockSyncing]
     private let dnsProbe: DNSProbing
+    private let networkReconcilers: [WakeNetworkReconciling]
     private let incidentWriter: IncidentWriter?
     private let lock = NSLock()
     private var lastSleepResult: HostSleepResult?
@@ -194,12 +196,14 @@ public final class HostWakeCoordinator: @unchecked Sendable {
         sleepHandlers: [HostSleepHandling] = [],
         clockSyncers: [WakeClockSyncing] = [],
         dnsProbe: DNSProbing = SystemDNSProbe(),
+        networkReconcilers: [WakeNetworkReconciling] = [],
         incidentWriter: IncidentWriter? = nil
     ) {
         self.powerSource = powerSource
         self.sleepHandlers = sleepHandlers
         self.clockSyncers = clockSyncers
         self.dnsProbe = dnsProbe
+        self.networkReconcilers = networkReconcilers
         self.incidentWriter = incidentWriter
     }
 
@@ -235,7 +239,15 @@ public final class HostWakeCoordinator: @unchecked Sendable {
     public func handleWake(now: Date = Date()) -> HostWakeResult {
         let clockResults = clockSyncers.map { $0.syncAgentClock(now: now) }
         let dnsResults = dnsProbe.probe()
-        let result = HostWakeResult(at: now, clockSyncs: clockResults, dnsProbes: dnsResults)
+        // Reconcile after clock and baseline DNS recovery so PAC expiry, DHCP resolver changes,
+        // VPN split DNS and exit-node routes are all sampled from the post-wake dynamic store.
+        let networkResults = networkReconcilers.map { $0.reconcileAfterWake(now: now) }
+        let result = HostWakeResult(
+            at: now,
+            clockSyncs: clockResults,
+            dnsProbes: dnsResults,
+            networkReconciliations: networkResults
+        )
 
         lock.lock()
         lastWakeResult = result
@@ -269,6 +281,6 @@ public final class HostWakeCoordinator: @unchecked Sendable {
         let attempted = result.clockSyncs.filter(\.attempted).count
         let failed = result.clockSyncs.filter { $0.error != nil }.count
         let dnsOK = result.dnsProbes.filter(\.resolved).count
-        return "clock_syncs=\(attempted) clock_errors=\(failed) dns_ok=\(dnsOK)/\(result.dnsProbes.count)"
+        return "clock_syncs=\(attempted) clock_errors=\(failed) dns_ok=\(dnsOK)/\(result.dnsProbes.count) network_reconciles=\(result.networkReconciliations.count)"
     }
 }

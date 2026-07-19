@@ -1,0 +1,107 @@
+{
+  "campaign": "Dory — Bring the Work",
+  "composition": {
+    "id": "dory-migration-ad",
+    "hash": "3001f2dbfd44419c",
+    "durationSeconds": 30.2,
+    "renderFrameRates": [30, 60],
+    "primaryDeliveryFps": 60,
+    "xDeliveryFps": 30,
+    "voice": "bm_george",
+    "voiceLocale": "en-gb",
+    "voiceSpeed": 1.02
+  },
+  "files": [
+    {
+      "path": "Dory-Bring-the-Work-4K-60fps.mp4",
+      "role": "high_refresh_archive_master_60fps",
+      "bytes": 33608657,
+      "sha256": "2c61da9090c783693db7d7a4843963df0c8a20bd96cab5b5fc08f75e1bb8f4ea",
+      "video": "H.264 High level 5.2, 3840x2160, yuv420p, 60 fps, 8701254 bps, 1812 frames",
+      "audio": "AAC-LC, stereo, 48000 Hz, 192326 bps",
+      "encodedDurationSeconds": 30.208
+    },
+    {
+      "path": "Dory-Bring-the-Work-1080p-60fps.mp4",
+      "role": "linkedin_high_refresh_social_master_60fps",
+      "bytes": 8952592,
+      "sha256": "78dd04ffcb2d2604918bcae1310f9519b8c859e6845137b93100b87a945bf11a",
+      "video": "H.264 High level 4.2, 1920x1080, yuv420p, 60 fps, 2111979 bps, 1812 frames",
+      "audio": "AAC-LC, stereo, 48000 Hz, 246307 bps",
+      "encodedDurationSeconds": 30.208
+    },
+    {
+      "path": "Dory-Bring-the-Work-4K-30fps.mp4",
+      "role": "archive_master_30fps",
+      "bytes": 29302788,
+      "sha256": "e45e497f8f84ebed8d78fbf407f20d7c68bbef772f305f0f75e5651c9565842a",
+      "video": "H.264 High, 3840x2160, yuv420p, 30 fps, 7562671 bps",
+      "audio": "AAC-LC, stereo, 48000 Hz, 192326 bps",
+      "encodedDurationSeconds": 30.208
+    },
+    {
+      "path": "Dory-Bring-the-Work-1080p-30fps.mp4",
+      "role": "x_safe_social_master_30fps",
+      "bytes": 7993630,
+      "sha256": "4a237721dcde10d749e103a28afa54f8a81efb7f3b3a33fce63e164222c75d73",
+      "video": "H.264 High, 1920x1080, yuv420p, 30 fps, 1861908 bps",
+      "audio": "AAC-LC, stereo, 48000 Hz, 246307 bps",
+      "encodedDurationSeconds": 30.208
+    },
+    {
+      "path": "Dory-Bring-the-Work-poster.png",
+      "role": "poster",
+      "bytes": 2957378,
+      "sha256": "a3344112534f2821b90f92401af824b5067519dff6e281e7b901265cb4494e11",
+      "dimensions": "3840x2160"
+    },
+    {
+      "path": "Dory-Bring-the-Work-contact-sheet.png",
+      "role": "visual_review",
+      "bytes": 2757360,
+      "sha256": "8c2096c6bfae7decc1204bfce99ae3e5b288e94349d4fa151ab1d62c587556c3",
+      "dimensions": "3680x1410"
+    },
+    {
+      "path": "Dory-Bring-the-Work-en.srt",
+      "role": "english_subtitles",
+      "bytes": 623,
+      "sha256": "9ed1bb1a7c5294814dc8e20b0df24b1d146f8207657f38d858cde0a02669b1af"
+    },
+    {
+      "path": "Dory-Bring-the-Work-voice-proof.m4a",
+      "role": "voice_only_proof",
+      "bytes": 707244,
+      "sha256": "4f930a36bbffd277bbf035f7fba66dcdcdd0981c4d16bb3d912cd415e36896e6"
+    }
+  ],
+  "validation": {
+    "hyperframesRuntimeErrors": 0,
+    "hyperframesLayoutIssues": 0,
+    "hyperframesLayoutSamples": 9,
+    "hyperframesMotionErrors": 0,
+    "hyperframesMotionWarnings": 0,
+    "contrastChecksPassed": 76,
+    "contrastChecksTotal": 76,
+    "lintErrors": 0,
+    "lintWarnings": [
+      "composition_file_too_large"
+    ],
+    "allFourVideoDeliveriesFullDecode": "pass",
+    "socialMaster30fps": {
+      "frames": 906,
+      "blackIntervalsDetected": 0,
+      "integratedLufs": -13.97,
+      "truePeakDbtp": -0.98,
+      "loudnessRangeLu": 1.7
+    },
+    "socialMaster60fps": {
+      "frames": 1812,
+      "blackIntervalsDetected": 0,
+      "integratedLufs": -13.97,
+      "truePeakDbtp": -0.98,
+      "loudnessRangeLu": 1.7
+    },
+    "native60fpsAdjacentActiveMotionFrameHashesUnique": true
+  }
+}

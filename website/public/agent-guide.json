@@ -8,7 +8,7 @@
     "preferJSON": true,
     "socket": "~/.dory/dory.sock",
     "promptPolicy": "commands should not prompt unless an operation explicitly needs --apply or user credentials",
-    "destructivePolicy": "run dry-run or read-only commands first; require explicit --apply, --include-volumes, or delete verbs for writes",
+    "destructivePolicy": "run dry-run or read-only commands first; require explicit --apply/--include-volumes and exact --confirm TARGET acknowledgement for Dory-owned delete, restore, and component-removal operations",
     "hostToolPolicy": "doryd reconciles bundled docker, docker compose, dory, and Docker context integration automatically while it is running; the Kubernetes component adds kubectl; do not require dory install for first use"
   },
   "exitCodes": {
@@ -22,7 +22,10 @@
     "event": "dev.dory.event v1",
     "events": "dev.dory.events v1",
     "machineExec": "dev.dory.machine.exec v1",
-    "sandboxRun": "dev.dory.sandbox.run v1",
+    "sandboxRun": "dev.dory.sandbox.run v2",
+    "readiness": "dev.dory.readiness v1",
+    "corporateConnectivity": "dev.dory.corporate-connectivity.status v1",
+    "upgradeTransaction": "dev.dory.upgrade.transaction v1",
     "supportBundle": "dev.dory.support.bundle v1",
     "wait": "dev.dory.wait v1"
   },
@@ -56,6 +59,16 @@
       "groups": ["socket", "api", "docker", "context", "registry", "proxy", "exposure", "network", "ports", "domains", "mounts", "filelock", "watch", "clock", "disk", "memory", "helpers"]
     },
     {
+      "id": "readiness",
+      "invoke": "dory readiness --json",
+      "status": "available",
+      "safeForAutomation": true,
+      "json": true,
+      "dryRun": true,
+      "schema": "dev.dory.readiness v1",
+      "notes": "Ordered app, doryd, VM, guest-agent, data-mount, network, dockerd, host socket/context, and optional Kubernetes truth with timings and bounded repair ownership."
+    },
+    {
       "id": "support",
       "invoke": "dory support bundle --json [--active] [PATH]",
       "status": "available",
@@ -77,12 +90,13 @@
     },
     {
       "id": "component",
-      "invoke": "dory component list|install|update|verify|remove [COMPONENT]",
+      "invoke": "dory component list|install|update|verify [COMPONENT] | dory component remove COMPONENT --confirm COMPONENT",
       "status": "available",
       "safeForAutomation": true,
       "json": true,
       "dryRun": false,
       "components": ["kubernetes", "linux-machines", "linux-desktop", "desktop-debian", "desktop-ubuntu", "desktop-kali"],
+      "destructiveRequires": ["remove requires --confirm with the exact component ID"],
       "notes": "Manages signed optional payloads on the selected Dory data drive. Desktop distributions add linux-desktop automatically. Removal preserves workload data."
     },
     {
@@ -104,6 +118,16 @@
       "json": true,
       "dryRun": true,
       "notes": "Classifies DNS, registry, proxy, port, and local-domain failures. authorization-plan and authorize use doryd's live resolver/pf/TLS/low-port plan; authorize defaults to --dry-run and requires explicit --apply plus admin privileges for writes."
+    },
+    {
+      "id": "corporate-connectivity",
+      "invoke": "dory network corporate status --json | dory network corporate plan --file PROFILE.json | dory network corporate apply --file PROFILE.json",
+      "status": "available",
+      "safeForAutomation": false,
+      "json": true,
+      "dryRun": true,
+      "schema": "dev.dory.corporate-connectivity.status v1",
+      "notes": "status and plan are read-only. apply and disable change ownership-tracked Docker client and managed-guest settings; apply may restart dockerd with live-restore when the effective digest changes. Probe evidence names DNS, route, proxy, and CA provenance."
     },
     {
       "id": "mount",
@@ -165,11 +189,21 @@
     },
     {
       "id": "machine",
-      "invoke": "dory machine ls|create|start|stop|delete|snapshot|restore|exec ...",
+      "invoke": "dory machine ls|create|start|stop|snapshot|exec ... | dory machine delete NAME --confirm NAME | dory machine restore NAME SNAPSHOT --confirm NAME",
       "status": "available",
       "safeForAutomation": true,
       "json": true,
+      "destructiveRequires": ["delete requires --confirm NAME", "restore requires --confirm NAME and creates a retained pre-restore snapshot", "delete-snapshot requires --confirm SNAPSHOT_ID"],
       "notes": "Requires dorydctl and Dory's daemon-managed VM machine runtime; use `dory machine exec NAME --json -- CMD` for schema dev.dory.machine.exec v1. Managed Debian, Ubuntu, and Kali Xfce machines require their matching desktop component; Alpine headless machines require linux-machines. Set DORY_LEGACY_DOCKER_MACHINES=1 only for old container-backed machine inspection."
+    },
+    {
+      "id": "machine-backup",
+      "invoke": "dory machine backup status [NAME] | schedule NAME [--frequency hourly|daily|weekly] [--keep N] [--verify-every N] | run NAME | remove NAME",
+      "status": "available",
+      "safeForAutomation": false,
+      "json": true,
+      "readOnly": ["status"],
+      "notes": "Daemon-owned local recovery bundles. Every run re-import-verifies the archive; the first and configured periodic runs boot a disposable verifier. Snapshot capture may briefly stop a running source machine. Retention affects only scheduler-owned snapshots and archives; no managed offsite/S3 backup is claimed."
     },
     {
       "id": "ssh",
@@ -189,11 +223,20 @@
     },
     {
       "id": "usb",
-      "invoke": "dory usb ls|attach|detach",
-      "status": "available",
-      "safeForAutomation": false,
+      "invoke": "dory usb ls",
+      "status": "discovery-only",
+      "safeForAutomation": true,
       "json": false,
-      "notes": "USB attach can require user authorization."
+      "notes": "Host discovery is supported. Attach, detach, and replay are unavailable and fail closed until the guest USB/IP RPC and physical qualification exist."
+    },
+    {
+      "id": "upgrade",
+      "invoke": "dory upgrade status|recovery --json",
+      "status": "available",
+      "safeForAutomation": true,
+      "json": true,
+      "schema": "dev.dory.upgrade.transaction v1",
+      "notes": "Read-only inspection of candidate/preflight/smoke/rollback/recovery state. Recovery returns an owner-only export path only when durable schema rollback is unsafe."
     },
     {
       "id": "wait",
@@ -217,19 +260,25 @@
     },
     {
       "id": "sandbox",
-      "invoke": "dory sandbox run [--json] [--keep] [--network none|outbound|full] [--rollback] [--ttl-seconds N] [--mount HOST[:GUEST[:ro|rw]]] -- <command>",
-      "status": "preview",
+      "invoke": "dory sandbox run [--json] [--keep] [--network none|outbound|full] [--allow-network HOST[:PORT]] [--rollback] [--ttl-seconds N] [--mount HOST[:GUEST[:ro|rw]]] -- <command>",
+      "status": "supported",
       "safeForAutomation": true,
       "json": true,
       "isolation": "dedicated doryd Linux VM per run",
       "hostFileSharingDefault": "none",
       "scopedMounts": true,
+      "mountModeDefault": "ro",
+      "executionIdentityDefault": "non-root host uid/gid",
       "rollback": true,
       "ttlCleanup": true,
       "networkPolicies": ["none", "outbound", "full"],
-      "unenforcedNetworkPolicies": ["outbound"],
-      "networkPolicyNote": "none blocks all egress and full grants full egress (both enforced); outbound currently grants full egress too and is reported with networkPolicyEnforced=false until a scoped egress filter ships.",
-      "notes": "Preview: runs commands in a dedicated VM and deletes it by default. No host files are visible unless an explicit --mount is provided."
+      "unenforcedNetworkPolicies": [],
+      "networkPolicyDefault": "none",
+      "networkPolicyNote": "outbound permits Dory DNS plus resolved --allow-network destinations; all other IPv4/IPv6 destinations are denied for the workload uid.",
+      "credentialGrants": ["secret-env", "ssh-agent"],
+      "resourceCaps": ["cpu", "memory", "disk", "processes", "open-files", "wall-time"],
+      "manifestSchema": "dev.dory.sandbox.manifest v1",
+      "notes": "Runs non-root in a dedicated VM and deletes it by default. Retained runs are inspectable and killable; no host files or credentials are visible unless explicitly granted."
     },
     {
       "id": "mcp",
@@ -240,7 +289,7 @@
       "transport": "stdio",
       "protocolVersion": "2025-11-25",
       "tools": ["dory.agent_guide", "dory.doctor", "dory.compat", "dory.engine_status", "dory.machine_list", "dory.machine_exec", "dory.sandbox_run", "dory.wait", "dory.events"],
-      "notes": "Thin stdio MCP server over the CLI command core. Launch with --read-only to block machine exec."
+      "notes": "Thin stdio Dory control server over the CLI command core, not a third-party MCP catalog or gateway. Launch with --read-only to block machine exec and sandbox writes."
     }
   ]
 }

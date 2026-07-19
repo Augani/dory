@@ -136,14 +136,14 @@ mod tests {
     use dory_proto::handshake::{handshake, Hello};
     use dory_proto::mux::{Handler as MuxHandler, HandlerFuture, Mux};
     use prost::Message;
-    use russh::keys::ssh_key::{rand_core::OsRng, Algorithm, PrivateKey};
+    use russh::keys::ssh_key::{Algorithm, PrivateKey};
     use russh::server::{self, Auth, Msg, Server as _, Session};
     use russh::{Channel, ChannelId};
     use tokio::net::TcpListener;
 
     /// A fresh throwaway ed25519 identity — generated per test so no key material lives in the repo.
     fn gen_key() -> PrivateKey {
-        PrivateKey::random(&mut OsRng, Algorithm::Ed25519).expect("generate ed25519 key")
+        PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).expect("generate ed25519 key")
     }
 
     /// The agent daemon side over an arbitrary byte stream: the real handshake + a mux whose handler

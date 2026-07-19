@@ -1,0 +1,47 @@
+{
+  "title": "Dory 0.3.2 launch film",
+  "created": "2026-07-17",
+  "deliverable": {
+    "file": "Dory-0.3.2-launch-1920x1080-60fps.mp4",
+    "sha256": "292136f3d2176017e5414e425c8ded4401210572021035ff82da7fda1762f17b",
+    "bytes": 10449188,
+    "duration_seconds": 46.208,
+    "width": 1920,
+    "height": 1080,
+    "aspect_ratio": "16:9",
+    "frame_rate": 60,
+    "video": {
+      "codec": "H.264",
+      "profile": "High",
+      "pixel_format": "yuv420p",
+      "color": "BT.709"
+    },
+    "audio": {
+      "codec": "AAC-LC",
+      "sample_rate_hz": 48000,
+      "channels": 2,
+      "maximum_level_dbfs": -7.9
+    },
+    "intended_channels": ["X", "LinkedIn"]
+  },
+  "companion_files": [
+    "Dory-0.3.2-poster.png",
+    "Dory-0.3.2-contact-sheet.png"
+  ],
+  "source": {
+    "composition": "../index.html",
+    "design_brief": "../DESIGN.md",
+    "script": "../SCRIPT.md",
+    "social_copy": "../SOCIAL_COPY.md",
+    "narration_text": "../narration.txt",
+    "narration_audio": "../assets/narration.wav"
+  },
+  "validation": {
+    "hyperframes_check": "passed",
+    "runtime_errors": 0,
+    "layout_issues": 0,
+    "motion_errors": 0,
+    "wcag_aa_text_checks": "57/57 passed",
+    "visual_contact_sheet_review": "passed"
+  }
+}

@@ -1,8 +1,12 @@
 # dory-core
 
-The Rust workspace for the Dory re-platform (see [../docs/architecture/rust-sidecar.md](../docs/architecture/rust-sidecar.md)).
-It holds the shared wire protocol, the guest agent, the host-side docker dataplane, and the UniFFI
-staticlib the Swift `doryd`/`dory-vmm` link. The two seams of the design are both proven here.
+The Rust portion of Dory's production architecture. It owns the shared host/guest wire protocol,
+guest agent, host-side Docker dataplane, remote SSH/sync implementation, exact volume-transfer
+helper, and the UniFFI static library linked by Swift `doryd`, `dory-vmm`, and `dory-hv`.
+
+See [`../ARCHITECTURE.md`](../ARCHITECTURE.md) for the complete process, storage, and trust-boundary
+contract. This workspace is not a sidecar or a future re-platform: its dataplane and guest protocol
+are part of the shipping local engine.
 
 ## Crates
 
@@ -71,20 +75,15 @@ The *legacy* Go-agent RPC (port 1024) wedged with `malformedFrame` in 2 of 3 run
 polling, minutes into uptime; even the guest shutdown listener died) — field evidence for the
 cutover; the Rust path stayed healthy throughout.
 
-## Not yet built (integration, next sessions)
+## Extension boundaries
 
-- **Sync extensions** — the host-authoritative push + reconciler are built and proven end-to-end
-  (D5 decided: host is source of truth). Future D5 extensions: bidirectional / two-way conflict
+- **Sync extensions** — host-authoritative push and reconciliation are built and proven end-to-end;
+  the host is the source of truth. Future extensions include bidirectional/two-way conflict
   surfacing, and chunk-level content-addressed dedup across files (an optimization).
-- **Swift side** — `doryd` (launchd control plane) and `dory-vmm`/`dory-hv` callers of
-  `startDataplaneForward`, `AgentClient`-over-vsock, and `sync_push`; VZ boot + a guest rootfs
-  running `dory-agent` as PID 1; the §13 big-bang cutover. The Rust `dory-core` side is now
-  feature-complete for the planned scope.
-- The Swift side: `doryd` (control plane, launchd) and `dory-vmm` (VZ per-VM, embeds the dataplane
-  via FFI, owns the captive vsock fds). The `startDataplane(listenFd, …)` /
-  `startDataplaneForward(listenFd, …)` FFI entries are **done** (see `ffi`), and `dory-hv` now
-  serves the matching `--agent-vsock-forward` listener (preamble → fresh guest vsock stream, tested
-  in `DoryHVTests/AgentVsockForwardTests`); what remains is the production Swift caller in
-  doryd/dory-vmm and the on-hardware integration run (docker run/exec/pull/build through
-  dory.sock → dataplane → forward → guest dockerd).
-- VZ VM boot + a guest rootfs running `dory-agent` as PID 1; the big-bang cutover checklist.
+- **Remote workspace product UX** — the protocol, SSH transport, pinned host-key policy, Keychain key
+  lookup, and host-authoritative push exist. Persistent reconnect, offline/conflict UX, and a full
+  remote-workspace threat model remain preview work, not gaps in the local Docker dataplane.
+- **USB passthrough** — host discovery and bridge scaffolding exist. The guest vhci attach/detach RPC
+  is intentionally unavailable, so public app and CLI surfaces expose discovery only.
+- **GPU** — Venus/Vulkan remains an opt-in preview on the arm64 raw-HV tier. It is not a stable 0.4
+  cross-host GPU API.
