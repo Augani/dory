@@ -66,6 +66,5 @@ grep -F 'sandboxSSHAgentDenied' dory-core-swift/Sources/DoryVMMKit/DoryVMM.swift
   || fail "sandbox VMM does not fail closed for ambient SSH-agent forwarding"
 grep -F -- '--env-json-stdin' dory-core-swift/Sources/dorydctl/main.swift scripts/dory >/dev/null \
   || fail "ephemeral sandbox secrets can no longer avoid process argv"
-[ -s SANDBOX_THREAT_MODEL.md ] || fail "sandbox threat model is missing"
 
 echo "security contracts: PASS"

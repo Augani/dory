@@ -121,13 +121,14 @@ containers because any process with agent access may request signatures.
 
 Run `dory agent guide --json` for the exact contract provided by the installed release. Sandbox
 network defaults to `none`; `outbound` permits only Dory DNS and explicit resolved destination/port
-grants; `full` is an explicit unrestricted choice. See `SANDBOX_THREAT_MODEL.md` for trust boundaries.
+grants; `full` is an explicit unrestricted choice. See the
+[agent guide](https://augani.github.io/dory/docs/agents.md) for trust boundaries.
 
 ## Preview
 
 - In-guest Venus/Vulkan acceleration is preview on the Apple-silicon raw-HV tier.
 - Remote SSH workspace foundations and custom machine kernel/rootfs inputs remain preview with the
-  exact limits in `ARCHITECTURE.md` and `MACHINE_IMAGE_CONTRACT.md`.
+  exact limits reported by `dory agent guide --json`.
 
 ## Unavailable
 
@@ -137,8 +138,7 @@ grants; `full` is an explicit unrestricted choice. See `SANDBOX_THREAT_MODEL.md`
 - Intel-host public builds are unavailable before dedicated physical qualification.
 - Desktop images beyond the managed Debian, Ubuntu, and Kali Xfce profiles are unavailable.
 - Managed image update discovery/replacement, mDNS/multicast relay, and general L2 bridging are
-  unavailable in 0.4. Their proposed boundaries are documented in
-  `POST_V0.4_PRODUCT_DESIGNS.md`.
+  unavailable in 0.4.
 
 ## Getting help
 

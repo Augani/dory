@@ -5,8 +5,8 @@ not an alternate app backend or a future Apple `containerization` integration. `
 local engine and launches this helper on supported hosts; macOS 14 selects the `dory-vmm`
 Virtualization.framework fallback from `dory-core-swift`.
 
-The full process, storage, networking, and trust-boundary contract is documented in
-[`../../ARCHITECTURE.md`](../../ARCHITECTURE.md).
+The full process, storage, networking, and trust-boundary contract is documented in the
+[architecture guide](https://augani.github.io/dory/docs/architecture.md).
 
 ## What ships here
 

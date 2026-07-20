@@ -5,8 +5,8 @@ per-user launchd daemon; it links the Rust `dory-ffi` static library as `DoryFFI
 the local engine lifecycle, and serves an authenticated XPC control protocol. `dory-vmm` is the
 Virtualization.framework fallback selected on macOS 14.
 
-See [`../ARCHITECTURE.md`](../ARCHITECTURE.md) for the authoritative process, storage, networking,
-update, and trust-boundary contract.
+See the [architecture guide](https://augani.github.io/dory/docs/architecture.md) for the
+authoritative process, storage, networking, update, and trust-boundary contract.
 
 ## Build
 

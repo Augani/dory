@@ -68,9 +68,6 @@ Desktop machines run normal graphical and command-line applications with Debian 
 - Third-party MCP catalog/gateway; Dory's local MCP controls Dory only
 - Managed image-update orchestration, mDNS/multicast relay, and general L2 bridging
 
-See the post-0.4 design record for the proposed boundaries of unavailable future work:
-[`POST_V0.4_PRODUCT_DESIGNS.md`](https://github.com/Augani/dory/blob/main/POST_V0.4_PRODUCT_DESIGNS.md).
-
 ## Report a difference
 
 ```sh

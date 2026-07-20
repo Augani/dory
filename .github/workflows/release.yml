@@ -1602,8 +1602,8 @@ jobs:
             arm64 zip sha256: ${{ needs.release_candidate.outputs.sha256 }}
             ```
 
-            Read next: `CHANGELOG.md`, `COMPATIBILITY.md`, `ARCHITECTURE.md`,
-            `PERFORMANCE_QUALIFICATION.md`, and `POST_V0.4_PRODUCT_DESIGNS.md`.
+            Read next: `README.md`, `CHANGELOG.md`, `COMPATIBILITY.md`, and the documentation at
+            https://augani.github.io/dory/docs/.
 
       - name: Remove runner-local qualification state after successful publication
         run: rm -rf "$QUALIFICATION"

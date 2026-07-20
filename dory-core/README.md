@@ -4,9 +4,9 @@ The Rust portion of Dory's production architecture. It owns the shared host/gues
 guest agent, host-side Docker dataplane, remote SSH/sync implementation, exact volume-transfer
 helper, and the UniFFI static library linked by Swift `doryd`, `dory-vmm`, and `dory-hv`.
 
-See [`../ARCHITECTURE.md`](../ARCHITECTURE.md) for the complete process, storage, and trust-boundary
-contract. This workspace is not a sidecar or a future re-platform: its dataplane and guest protocol
-are part of the shipping local engine.
+See the [architecture guide](https://augani.github.io/dory/docs/architecture.md) for the complete
+process, storage, and trust-boundary contract. This workspace is not a sidecar or a future
+re-platform: its dataplane and guest protocol are part of the shipping local engine.
 
 ## Crates
 

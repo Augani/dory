@@ -30,7 +30,6 @@ than 10% median improvement, and non-overlapping bootstrap 95% confidence interv
 one `vm_stat` delta, container-to-container throughput, and synthetic file storms cannot stand in
 for full product footprint, external networking, or real framework/package workflows.
 
-The full reproducibility, statistics, optimization, and release-asset rules are in
-[`PERFORMANCE_QUALIFICATION.md`](https://github.com/Augani/dory/blob/main/PERFORMANCE_QUALIFICATION.md).
 Use the matching [GitHub Release](https://github.com/Augani/dory/releases/latest) for the stable raw
-performance and reliability assets; temporary Actions artifacts are not the publication record.
+performance and reliability assets, reproducibility metadata, and generated summaries. Temporary
+Actions artifacts are not the publication record.

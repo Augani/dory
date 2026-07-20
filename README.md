@@ -22,9 +22,8 @@
   <a href="https://augani.github.io/dory/"><strong>Website</strong></a> ·
   <a href="https://github.com/Augani/dory/releases/latest"><strong>Download</strong></a> ·
   <a href="COMPATIBILITY.md"><strong>Compatibility</strong></a> ·
-  <a href="ARCHITECTURE.md"><strong>Architecture</strong></a> ·
-  <a href="PERFORMANCE_QUALIFICATION.md"><strong>Performance evidence</strong></a> ·
-  <a href="DESTRUCTIVE_ACTIONS.md"><strong>Safety contract</strong></a> ·
+  <a href="https://augani.github.io/dory/docs/architecture.md"><strong>Architecture</strong></a> ·
+  <a href="https://augani.github.io/dory/docs/performance.md"><strong>Performance evidence</strong></a> ·
   <a href="https://github.com/sponsors/Augani"><strong>Sponsor</strong></a> ·
   <a href="https://augani.github.io/dory/llms-full.txt"><strong>Agent reference</strong></a>
 </p>
@@ -666,12 +665,13 @@ docker run --rm \
 - **Supported discovery / unavailable passthrough — USB:** host discovery is available. Attach, detach, and remembered replay are disabled
   until the engine has a complete guest USB/IP RPC and verified guest-kernel support.
 - **Unavailable — audio passthrough:** not part of the current release.
-- **Supported — agent sandboxes:** grants and residual risks are documented in [SANDBOX_THREAT_MODEL.md](SANDBOX_THREAT_MODEL.md).
+- **Supported — agent sandboxes:** grants and residual risks are documented in the [agent guide](https://augani.github.io/dory/docs/agents.md).
 - Specialized Docker extensions may depend on another product's private paths. Use `dory compat`
   and report the exact tool and version when that happens.
 
-See [COMPATIBILITY.md](COMPATIBILITY.md) for the tested product contract and
-[ARCHITECTURE.md](ARCHITECTURE.md) for the complete supported/preview/unavailable matrix.
+See [COMPATIBILITY.md](COMPATIBILITY.md) for the tested product contract and the
+[architecture guide](https://augani.github.io/dory/docs/architecture.md) for the complete
+supported, preview, and unavailable matrix.
 
 ## Uninstall and reinstall
 
@@ -716,12 +716,10 @@ gates against the exact candidate.
 | `scripts/dory` | Public CLI and agent contract |
 | `scripts/test.sh` | Public test entrypoint |
 
-Architecture and evidence contracts: [ARCHITECTURE.md](ARCHITECTURE.md),
-[PERFORMANCE_QUALIFICATION.md](PERFORMANCE_QUALIFICATION.md), and
-[RELEASE_READINESS.md](RELEASE_READINESS.md). Destructive GUI, menu, keyboard, and CLI behavior is
-tracked in [DESTRUCTIVE_ACTIONS.md](DESTRUCTIVE_ACTIONS.md). Proposed capabilities beyond 0.4 are
-kept separate in [POST_V0.4_PRODUCT_DESIGNS.md](POST_V0.4_PRODUCT_DESIGNS.md) so designs are not
-mistaken for shipped features.
+The public documentation covers [architecture](https://augani.github.io/dory/docs/architecture.md),
+[performance evidence](https://augani.github.io/dory/docs/performance.md),
+[operations](https://augani.github.io/dory/docs/operations.md), and
+[compatibility](https://augani.github.io/dory/docs/compatibility.md).
 
 ## Support and contribution
 

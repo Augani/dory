@@ -166,3 +166,14 @@ scripts/__pycache__/
 #codex
 .codex-bench/
 .dory-build/
+
+# Internal planning and qualification documents
+/ARCHITECTURE.md
+/COMPETITOR_ISSUE_COVERAGE.md
+/DESTRUCTIVE_ACTIONS.md
+/DORY_V0.4_RESEARCH_REPORT.md
+/MACHINE_IMAGE_CONTRACT.md
+/PERFORMANCE_QUALIFICATION.md
+/POST_V0.4_PRODUCT_DESIGNS.md
+/RELEASE_READINESS.md
+/SANDBOX_THREAT_MODEL.md

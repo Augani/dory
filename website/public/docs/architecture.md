@@ -37,11 +37,5 @@ Docker dataplane, selected `.dorydrive`, and userspace gvproxy network contract.
   general L2 bridging, Intel public releases, and Windows/Linux host apps.
 
 Agent sandboxes are separate VMs. They run non-root, share no host files/network/credentials by
-default, enforce egress and resource policy, and are removed by default. See the source repository's
-[`SANDBOX_THREAT_MODEL.md`](https://github.com/Augani/dory/blob/main/SANDBOX_THREAT_MODEL.md).
-
-The complete source-of-truth document, including boot/repair, update, storage, and trust-boundary
-details, is [`ARCHITECTURE.md`](https://github.com/Augani/dory/blob/main/ARCHITECTURE.md).
-Post-0.4 proposals are kept separately in
-[`POST_V0.4_PRODUCT_DESIGNS.md`](https://github.com/Augani/dory/blob/main/POST_V0.4_PRODUCT_DESIGNS.md)
-so design intent is never presented as a shipped capability.
+default, enforce egress and resource policy, and are removed by default. Use
+`dory agent guide --json` for the exact safety contract shipped by the installed release.
