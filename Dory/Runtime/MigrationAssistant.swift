@@ -287,7 +287,7 @@ struct MigrationInventory: Sendable, Equatable {
         }
         if isEngineDiskInsufficient {
             items.append(
-                "Import is blocked before writes because Dory's sparse \(engineDiskCapacityDisplay) engine disk exposes \(engineDiskUsableDisplay) of verified usable ext4 capacity but would need about \(requiredEngineDiskDisplay), including existing target data and safety headroom."
+                "Import is blocked before writes because Dory's sparse \(engineDiskCapacityDisplay) engine disk would need about \(requiredEngineDiskDisplay), including existing target data and safety headroom, but exposes only \(engineDiskUsableDisplay) of verified usable ext4 capacity."
             )
         }
         if items.isEmpty {

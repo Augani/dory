@@ -46,11 +46,18 @@ extension MigrationImportAssetStagingExecution {
                 "the durable selected and omitted source baselines are invalid"
             )
         }
-        let currentSource = try await currentSourceOperationInventory()
-        let current = try DoryOperationPlanner.inventoryBaselines(
-            inventory: currentSource,
-            plan: plan
-        )
+        let current: DoryOperationInventoryBaselines
+        do {
+            let currentSource = try await currentSourceOperationInventory()
+            current = try DoryOperationPlanner.inventoryBaselines(
+                inventory: currentSource,
+                plan: plan
+            )
+        } catch {
+            throw MigrationImportAssetStagingError.invalidSession(
+                "selected or deliberately omitted source objects changed during migration"
+            )
+        }
         guard current.sourceInventory == sourceBaseline,
               current.unselectedSourceInventory == unselectedBaseline else {
             throw MigrationImportAssetStagingError.invalidSession(

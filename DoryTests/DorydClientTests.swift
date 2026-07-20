@@ -599,7 +599,7 @@ struct DorydClientTests {
         store.cloneMachine(machine)
         try await waitUntil {
             service.machineCloneSnapshotCount == 3
-                && service.machineSnapshotCount == 2
+                && service.machineSnapshotCount == 3
                 && service.machineDeleteSnapshotCount == 2
                 && !store.isMachineBusy("dev")
         }

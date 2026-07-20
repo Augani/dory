@@ -257,7 +257,6 @@ struct MigrationNetworkContract: Codable, Sendable, Equatable {
               root["Name"] as? String == network.name,
               let inspectedDriver = root["Driver"] as? String,
               !inspectedDriver.isEmpty,
-              inspectedDriver == network.driver,
               root["IPAM"] is [String: Any] else {
             throw MigrationOperationPlanError.invalidNetworkSpecification(network.name)
         }
@@ -274,7 +273,9 @@ struct MigrationNetworkContract: Codable, Sendable, Equatable {
             throw MigrationOperationPlanError.invalidNetworkSpecification(network.name)
         }
         name = network.name
-        driver = network.driver
+        // The detailed inspection is authoritative. The summary row may lag it, and omitted
+        // networks still need an exact baseline without being admitted for recreation.
+        driver = inspectedDriver
         self.labels = labels ?? network.labels
         portableCreateContract = canonical
     }
