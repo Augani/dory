@@ -65,10 +65,6 @@ jobs:
             build-mode: none
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
-      - uses: github/codeql-action/init@7211b7c8077ea37d8641b6271f6a365a22a5fbfa # v4.36.0
-        with:
-          languages: ${{ matrix.language }}
-          build-mode: ${{ matrix.build-mode }}
       - name: Select Xcode
         if: matrix.language == 'swift'
         run: |
@@ -77,6 +73,10 @@ jobs:
       - name: Install Protocol Buffers compiler
         if: matrix.language == 'swift'
         run: brew install protobuf
+      - uses: github/codeql-action/init@7211b7c8077ea37d8641b6271f6a365a22a5fbfa # v4.36.0
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
       - name: Build Swift surfaces
         if: matrix.language == 'swift'
         run: |
