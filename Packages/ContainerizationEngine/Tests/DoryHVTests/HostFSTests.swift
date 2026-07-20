@@ -122,11 +122,11 @@ struct HostFSTests {
 
         #expect(attrs.nodeID == HostFS.rootNodeID)
         #expect(attrs.isDirectory)
-        #expect(attrs.uid == 1000)
-        #expect(attrs.gid == 1000)
+        #expect(attrs.uid == getuid())
+        #expect(attrs.gid == getgid())
     }
 
-    @Test func lookupGetattrAndReadSquashIdentity() throws {
+    @Test func lookupGetattrAndReadUseHostIdentity() throws {
         let root = try TestHostFSRoot()
         try root.write("hello dory", to: "hello.txt")
         let fs = try HostFS(rootPath: root.url.path)
@@ -139,8 +139,8 @@ struct HostFSTests {
         #expect(entry.name == "hello.txt")
         #expect(attrs.isRegularFile)
         #expect(attrs.size == 10)
-        #expect(attrs.uid == 1000)
-        #expect(attrs.gid == 1000)
+        #expect(attrs.uid == getuid())
+        #expect(attrs.gid == getgid())
         #expect(String(decoding: try fs.read(handle: handle, offset: 6, count: 4), as: UTF8.self) == "dory")
     }
 

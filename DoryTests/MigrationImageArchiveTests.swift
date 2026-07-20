@@ -109,9 +109,46 @@ struct MigrationImageArchiveTests {
         #expect(original.archiveSha256 != changed.archiveSha256)
     }
 
-    @Test func rejectsTagsMissingFilesAndMismatchedConfigIdentity() throws {
+    @Test func acceptsTaggedArchivesWithoutIncludingTagsInContentIdentity() throws {
+        let untagged = MigrationImageArchiveTestSupport.fixture()
+        let tagged = MigrationImageArchiveTestSupport.fixture(
+            repoTags: ["user/app:v1", "registry.example.com/team/app:latest"]
+        )
+
+        let untaggedFingerprint = try MigrationImageArchiveTestSupport.fingerprint(untagged.archive)
+        let taggedFingerprint = try MigrationImageArchiveTestSupport.fingerprint(tagged.archive)
+
+        #expect(taggedFingerprint.semanticIdentity == untaggedFingerprint.semanticIdentity)
+        #expect(taggedFingerprint.archiveContractSha256 == untaggedFingerprint.archiveContractSha256)
+        #expect(taggedFingerprint.archiveSha256 != untaggedFingerprint.archiveSha256)
+    }
+
+    @Test func stripsRepoTagsWithoutChangingManifestEntrySize() throws {
+        let fixture = MigrationImageArchiveTestSupport.fixture(repoTags: ["user/app:v1"])
+        let manifest = try #require(fixture.entries.first { $0.path == "manifest.json" }).payload
+
+        let sanitized = try MigrationImageArchiveManifest.strippingRepoTags(manifest)
+        let root = try #require(
+            JSONSerialization.jsonObject(with: sanitized) as? [[String: Any]]
+        )
+
+        #expect(sanitized.count == manifest.count)
+        #expect(root.count == 1)
+        #expect(root[0]["RepoTags"] is NSNull)
+    }
+
+    @Test func rejectsInvalidRepoTagsMissingFilesAndMismatchedConfigIdentity() throws {
+        let fixture = MigrationImageArchiveTestSupport.fixture()
+        let invalidRepoTags = MigrationImageArchiveTestSupport.replacingManifest(
+            in: fixture,
+            payload: MigrationImageArchiveTestSupport.json([[
+                "Config": fixture.entries[0].path,
+                "RepoTags": "user/app:v1",
+                "Layers": [fixture.entries[1].path, fixture.entries[2].path]
+            ]])
+        )
         let invalid = [
-            MigrationImageArchiveTestSupport.fixture(repoTags: ["user/app:v1"]).archive,
+            invalidRepoTags,
             MigrationImageArchiveTestSupport.fixture(missingReferencedLayer: true).archive,
             MigrationImageArchiveTestSupport.fixture(mismatchedConfigPath: true).archive
         ]

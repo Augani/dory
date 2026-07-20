@@ -34,9 +34,9 @@ nonisolated enum MigrationImageArchiveManifest {
               isSafeFilePath(config),
               Set(layers).count == layers.count,
               layers.allSatisfy(isSafeFilePath),
-              repoTagsAreEmpty(record["RepoTags"]) else {
+              repoTagsAreValid(record["RepoTags"]) else {
             throw MigrationImageArchiveError.invalid(
-                "manifest.json must describe exactly one untagged image"
+                "manifest.json must describe exactly one image with valid RepoTags"
             )
         }
         let configEntry = try regularEntry(config, archive: archive)
@@ -81,6 +81,37 @@ nonisolated enum MigrationImageArchiveManifest {
             archiveSha256: archiveSha256
         )
     }
+
+    /// Docker-compatible engines disagree about whether saving an image by immutable content ID
+    /// includes its mutable repository tags. Source fingerprints accept both forms, but the strict
+    /// staging stream must stay untagged so loading cannot publish or overwrite a reference before
+    /// the operation reaches its publication boundary. Keep the tar entry size unchanged so the
+    /// archive can be rewritten while it streams without changing its header or padding.
+    static func strippingRepoTags(_ manifest: Data) throws -> Data {
+        guard var root = try? JSONSerialization.jsonObject(with: manifest) as? [[String: Any]],
+              root.count == 1,
+              var record = root.first,
+              repoTagsAreValid(record["RepoTags"]) else {
+            throw MigrationImageArchiveError.invalid(
+                "manifest.json must describe exactly one image with valid RepoTags"
+            )
+        }
+        guard let tags = record["RepoTags"] as? [String], !tags.isEmpty else {
+            return manifest
+        }
+        record["RepoTags"] = NSNull()
+        root[0] = record
+        guard var sanitized = try? JSONSerialization.data(
+            withJSONObject: root,
+            options: [.sortedKeys]
+        ), sanitized.count <= manifest.count else {
+            throw MigrationImageArchiveError.invalid(
+                "manifest.json RepoTags could not be removed without changing its tar entry size"
+            )
+        }
+        sanitized.append(Data(repeating: UInt8(ascii: " "), count: manifest.count - sanitized.count))
+        return sanitized
+    }
 }
 
 private extension MigrationImageArchiveManifest {
@@ -94,8 +125,8 @@ private extension MigrationImageArchiveManifest {
         return entry
     }
 
-    nonisolated static func repoTagsAreEmpty(_ value: Any?) -> Bool {
-        value == nil || value is NSNull || (value as? [String])?.isEmpty == true
+    nonisolated static func repoTagsAreValid(_ value: Any?) -> Bool {
+        value == nil || value is NSNull || value is [String]
     }
 
     nonisolated static func expectedConfigDigest(path: String) -> String? {
