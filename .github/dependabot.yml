@@ -8,6 +8,10 @@ updates:
     groups:
       github-actions:
         patterns: ["*"]
+    ignore:
+      # This action follows a moving branch without GitHub releases, which
+      # Dependabot currently reports as an unknown update error.
+      - dependency-name: dtolnay/rust-toolchain
 
   - package-ecosystem: cargo
     directory: /dory-core

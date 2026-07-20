@@ -41,7 +41,7 @@ jobs:
       ENGINES: ${{ github.event.inputs.readiness_engines || 'dory' }}
       READINESS_EXTRA_ARGS: ${{ github.event.inputs.readiness_extra_args || '' }}
     steps:
-      - uses: actions/checkout@c915c33a16f01166c17c4e35fe1d4085a2d71adb # v4
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
 

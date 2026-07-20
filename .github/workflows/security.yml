@@ -22,7 +22,7 @@ jobs:
       - name: Audit Rust lockfile
         run: |
           cargo install cargo-audit --locked --version 0.22.2
-          bash scripts/test-rust-security.sh
+          bash .github/scripts/test-rust-security.sh
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: '24'
@@ -33,7 +33,7 @@ jobs:
           npm ci --prefix website
           npm audit --prefix website --audit-level=high
       - name: Security boundary contracts
-        run: bash scripts/test-security-contracts.sh
+        run: bash .github/scripts/test-security-contracts.sh
 
   dependency-review:
     if: github.event_name == 'pull_request'
@@ -74,6 +74,9 @@ jobs:
         run: |
           newest="$(ls -d /Applications/Xcode*.app | sort -V | tail -1)"
           echo "DEVELOPER_DIR=$newest/Contents/Developer" >> "$GITHUB_ENV"
+      - name: Install Protocol Buffers compiler
+        if: matrix.language == 'swift'
+        run: brew install protobuf
       - name: Build Swift surfaces
         if: matrix.language == 'swift'
         run: |
