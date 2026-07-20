@@ -13,6 +13,7 @@
 <p align="center">
   <a href="https://github.com/Augani/dory/releases/latest"><img src="https://img.shields.io/github/v/release/Augani/dory?color=147FE8" alt="Latest release"></a>
   <a href="https://github.com/Augani/dory/stargazers"><img src="https://img.shields.io/github/stars/Augani/dory?style=flat&logo=github&color=147FE8" alt="GitHub stars"></a>
+  <a href="https://github.com/sponsors/Augani"><img src="https://img.shields.io/github/sponsors/Augani?style=flat&logo=githubsponsors&label=Sponsor&color=EA4AAA" alt="Sponsor Augani on GitHub"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0-147FE8" alt="GPL-3.0 license"></a>
   <img src="https://img.shields.io/badge/Apple%20Silicon-macOS%2014%2B-0B1828" alt="Apple Silicon, macOS 14 or later">
 </p>
@@ -24,6 +25,7 @@
   <a href="ARCHITECTURE.md"><strong>Architecture</strong></a> ·
   <a href="PERFORMANCE_QUALIFICATION.md"><strong>Performance evidence</strong></a> ·
   <a href="DESTRUCTIVE_ACTIONS.md"><strong>Safety contract</strong></a> ·
+  <a href="https://github.com/sponsors/Augani"><strong>Sponsor</strong></a> ·
   <a href="https://augani.github.io/dory/llms-full.txt"><strong>Agent reference</strong></a>
 </p>
 
