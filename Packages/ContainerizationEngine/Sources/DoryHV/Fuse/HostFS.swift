@@ -275,8 +275,11 @@ public final class HostFS: @unchecked Sendable {
 
     public init(
         rootPath: String,
-        guestUID: UInt32 = 1000,
-        guestGID: UInt32 = 1000,
+        // The host filesystem server runs as the signed-in macOS user. Export that identity by
+        // default so the standard PUID/PGID convention (`id -u` / `id -g`) sees the same owner on
+        // both sides of a bind mount. Guest chown remains virtual and never changes host ownership.
+        guestUID: UInt32 = getuid(),
+        guestGID: UInt32 = getgid(),
         readOnly: Bool = false,
         hiddenNames: Set<String> = [],
         rootHiddenNames: Set<String> = []

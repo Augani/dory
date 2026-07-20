@@ -43,6 +43,31 @@ struct MigrationImageTransferTests {
         #expect(target.taggedReferences.isEmpty)
     }
 
+    @Test func stripsOrbStackRepoTagsBeforeLoadingTheStagedImage() async throws {
+        let fixture = ImageTransferFixture(repoTags: [
+            "registry.example.com/team/app:latest",
+            "registry.example.com/team/app:stable"
+        ])
+        let target = fixture.targetRuntime()
+
+        let receipt = try await MigrationImageTransfer().transfer(
+            fixture.request,
+            from: fixture.sourceRuntime(),
+            to: target
+        )
+
+        var parser = MigrationImageTarStreamParser()
+        try parser.feed(target.receivedChunks.reduce(into: Data()) { $0.append($1) })
+        let transferred = try parser.finish()
+        let manifest = try #require(
+            JSONSerialization.jsonObject(with: transferred.manifest) as? [[String: Any]]
+        )
+        #expect(manifest.count == 1)
+        #expect(manifest[0]["RepoTags"] is NSNull)
+        #expect(receipt.verifiedTarget.semanticIdentity == fixture.imageID)
+        #expect(target.taggedReferences.isEmpty)
+    }
+
     @Test func acceptsDifferentOuterTarSerializationForIdenticalSourceContent() async throws {
         let fixture = ImageTransferFixture(contentAddressed: true)
         let changedOuterArchive = fixture.archiveWithChangedOCILayoutVersion()
@@ -342,10 +367,15 @@ private struct ImageTransferFixture {
     let sourceFixture: MigrationImageArchiveTestFixture
     let request: MigrationImageTransferRequest
 
-    init(contentAddressed: Bool = false, useOCIIndexIdentity: Bool = false) {
+    init(
+        contentAddressed: Bool = false,
+        useOCIIndexIdentity: Bool = false,
+        repoTags: [String]? = nil
+    ) {
+        precondition(!contentAddressed || repoTags == nil)
         let fixture = contentAddressed
             ? MigrationImageArchiveTestSupport.contentAddressedFixture()
-            : MigrationImageArchiveTestSupport.fixture()
+            : MigrationImageArchiveTestSupport.fixture(repoTags: repoTags)
         sourceFixture = fixture
         let requestedDigest = useOCIIndexIdentity
             ? (fixture.ociIndexDigest ?? fixture.configDigest)
