@@ -24,7 +24,7 @@ thiserror = { workspace = true }
 [dev-dependencies]
 serde_json = { workspace = true }
 dory-agent = { path = "../agent" }
-russh = { version = "0.60.3", default-features = false, features = ["aws-lc-rs", "flate2"] }
+russh = { version = "0.62.2", default-features = false, features = ["aws-lc-rs", "flate2"] }
 rand = "0.10"
 
 [features]
