@@ -63,6 +63,11 @@ clean_test_products() {
   scripts/clean-xcode-products.sh --remove-app-products >/dev/null
 }
 
+scrub_test_products() {
+  [ "$(uname -s)" = Darwin ] || return 0
+  scripts/clean-xcode-products.sh >/dev/null
+}
+
 cleanup_test_products() {
   local status=$?
   trap - EXIT INT TERM
@@ -133,6 +138,23 @@ run_swift() {
   swift test --no-parallel --package-path Packages/ContainerizationEngine
 }
 
+run_app_xcodebuild() {
+  local action="$1"
+  if [ -n "${CI:-}" ]; then
+    run_xcodebuild "$action" \
+      -project Dory.xcodeproj \
+      -scheme Dory \
+      -destination 'platform=macOS' \
+      CODE_SIGNING_ALLOWED=NO \
+      CODE_SIGNING_REQUIRED=NO
+  else
+    run_xcodebuild "$action" \
+      -project Dory.xcodeproj \
+      -scheme Dory \
+      -destination 'platform=macOS'
+  fi
+}
+
 run_app() {
   prepare_swift
   require_dory_quit
@@ -140,21 +162,23 @@ run_app() {
   trap cleanup_test_products EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM
-  if [ -n "${CI:-}" ]; then
-    run_xcodebuild test \
-      -project Dory.xcodeproj \
-      -scheme Dory \
-      -destination 'platform=macOS' \
-      CODE_SIGNING_ALLOWED=NO \
-      CODE_SIGNING_REQUIRED=NO
-  else
-    run_xcodebuild test \
-      -project Dory.xcodeproj \
-      -scheme Dory \
-      -destination 'platform=macOS'
-  fi
+  run_app_xcodebuild build-for-testing
+  scrub_test_products
+  run_app_xcodebuild test-without-building
   clean_test_products
   trap - EXIT INT TERM
+}
+
+run_ui_xcodebuild() {
+  local action="$1"
+  run_xcodebuild "$action" \
+    -project Dory.xcodeproj \
+    -scheme 'Dory UI Tests' \
+    -destination 'platform=macOS' \
+    -parallel-testing-enabled NO \
+    CODE_SIGNING_ALLOWED=YES \
+    CODE_SIGNING_REQUIRED=YES \
+    CODE_SIGN_IDENTITY=-
 }
 
 run_ui() {
@@ -164,14 +188,9 @@ run_ui() {
   trap cleanup_test_products EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM
-  run_xcodebuild test \
-    -project Dory.xcodeproj \
-    -scheme 'Dory UI Tests' \
-    -destination 'platform=macOS' \
-    -parallel-testing-enabled NO \
-    CODE_SIGNING_ALLOWED=YES \
-    CODE_SIGNING_REQUIRED=YES \
-    CODE_SIGN_IDENTITY=-
+  run_ui_xcodebuild build-for-testing
+  scrub_test_products
+  run_ui_xcodebuild test-without-building
   clean_test_products
   trap - EXIT INT TERM
 }
