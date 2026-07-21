@@ -33,6 +33,53 @@ struct GuestShutdownCommandTests {
         #expect(GuestShutdownCommand.listener(port: 4242).contains("nc -l -p 4242"))
     }
 
+    @Test func periodicStorageReclaimTrimsOnlyTheMountedDockerFilesystem() throws {
+        let command = GuestStorageReclaimCommand.periodicLoop(intervalSeconds: 90)
+
+        #expect(command.contains("sleep 90"))
+        #expect(command.contains("mountpoint -q /var/lib/docker"))
+        #expect(command.contains("fstrim -v /var/lib/docker"))
+        #expect(command.contains("/mnt/dory-logs/data-trim.log"))
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-n", "-c", command]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        process.waitUntilExit()
+        #expect(process.terminationStatus == 0)
+    }
+
+    @Test func dockerRestartHelperPreservesItsRuntimeArguments() {
+        let command = GuestDockerRestartCommand.installerLines(
+            dockerdArguments: "dockerd $DORY_RUNTIME_ARGS"
+        ).joined(separator: "\n")
+
+        #expect(command.contains("set -- dockerd $DORY_RUNTIME_ARGS"))
+        #expect(command.contains("[ -z \"\\$DORY_DOCKERD_ARG\" ]"))
+        #expect(command.contains("set -- \"\\$@\" \"\\$DORY_DOCKERD_ARG\""))
+        #expect(command.contains("exec \"\\$@\""))
+        #expect(!command.contains("exec \"$@\""))
+    }
+
+    @Test func buildCacheGCKeepsAUsefulBoundedCache() throws {
+        let command = GuestBuildCacheGCCommand.configureDaemon()
+
+        #expect(command.contains("/etc/docker/daemon.json"))
+        #expect(command.contains("\"enabled\":true"))
+        #expect(command.contains("\"defaultKeepStorage\":\"2GB\""))
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-n", "-c", command]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        process.waitUntilExit()
+        #expect(process.terminationStatus == 0)
+    }
+
     @Test func generatedListenerIsValidPOSIXShellSyntax() throws {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/sh")

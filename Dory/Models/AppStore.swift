@@ -109,6 +109,7 @@ final class AppStore {
     /// True while the in-app Auto-Idle monitor has stopped the engine to reclaim memory. The docker
     /// socket stays listening; the next docker request (or returning to the app) wakes it on demand.
     var engineSleeping = false
+    var finderStorageLocationActive = false
 
     var loadState: LoadState = .connecting
     var launchSplashComplete = false
@@ -198,6 +199,9 @@ final class AppStore {
     ) async throws -> DesktopMachineAssets
     @ObservationIgnored private let composeCommandRunner: any ToolCommandRunning
     @ObservationIgnored private let buildCommandRunner: any ToolCommandRunning
+    @ObservationIgnored private let finderStorageLocation = DoryFinderStorageLocation()
+    @ObservationIgnored private var lastFinderStorageRefresh = Date.distantPast
+    @ObservationIgnored private var lastFinderStorageGroups: [DoryStorageInventoryGroup]?
     @ObservationIgnored private var runtimeOwnedByDoryd = false
     @ObservationIgnored private var daemonSocketPath: String?
     @ObservationIgnored private var engineSettingChangeInFlight = false
@@ -313,6 +317,10 @@ final class AppStore {
             }
             if let v = UserDefaults.standard.object(forKey: SharedVMProvisioner.Config.gpuVenusKey) as? Bool { gpuVenusEnabled = v }
             if gpuVenusEnabled, !gpuRuntimeAvailable {
+                gpuVenusEnabled = false
+                UserDefaults.standard.set(false, forKey: SharedVMProvisioner.Config.gpuVenusKey)
+            }
+            if gpuVenusEnabled, rosettaX86Enabled {
                 gpuVenusEnabled = false
                 UserDefaults.standard.set(false, forKey: SharedVMProvisioner.Config.gpuVenusKey)
             }
@@ -985,7 +993,10 @@ final class AppStore {
         await configureTerminalDockerCLI()
         // With no live engine there is nothing to proxy. Injected fixture runtimes still wire the
         // shim so shim tests can drive it.
-        guard runtimeKind == .mock || loadState != .engineOff else { return }
+        guard runtimeKind == .mock || loadState != .engineOff else {
+            try? await syncFinderStorageLocation(force: true)
+            return
+        }
         // Bring up the Docker-compatible socket before ancillary inventory work. Kubernetes and
         // machine discovery can involve external CLIs; they should never delay `docker` readiness.
         if runtimeOwnedByDoryd {
@@ -1050,7 +1061,7 @@ final class AppStore {
                 showSettingsFailure(sharedVMStatus)
                 return
             }
-            prepareForDorydReconnect()
+            await prepareForDorydReconnect()
             await connectBackend()
             guard runtimeOwnedByDoryd, loadState == .ready else {
                 showSettingsFailure("The engine did not reconnect after restart. No additional containers were started.")
@@ -1150,7 +1161,7 @@ final class AppStore {
             return
         }
 
-        prepareForDorydReconnect()
+        await prepareForDorydReconnect()
         await connectBackend()
         guard runtimeOwnedByDoryd, loadState == .ready else {
             showSettingsFailure(
@@ -1297,7 +1308,7 @@ final class AppStore {
         do {
             workloads = try await quiesceDorydForDataDriveOperation()
         } catch {
-            prepareForDorydReconnect()
+            await prepareForDorydReconnect()
             await connectBackend()
             dataDriveOperationStatus = "Backup was not started."
             showSettingsFailure("Dory could not prepare a consistent backup: \(error)")
@@ -1389,7 +1400,7 @@ final class AppStore {
         do {
             workloads = try await quiesceDorydForDataDriveOperation()
         } catch {
-            prepareForDorydReconnect()
+            await prepareForDorydReconnect()
             await connectBackend()
             dataDriveOperationStatus = "The selected drive was not changed."
             showSettingsFailure("Dory could not stop safely before changing drives: \(error)")
@@ -1457,14 +1468,14 @@ final class AppStore {
         guard await dorydLaunchAgentBootout() else {
             throw DoryDataDriveSelectionError.filesystem("Dory's daemon did not stop cleanly")
         }
-        prepareForDorydReconnect()
+        await prepareForDorydReconnect()
         return DataDriveRuntimeState(containers: containers, machineIDs: machineIDs)
     }
 
     /// Restarts doryd after a quiesced data operation and restores exactly the container and Linux
     /// machine sets that were running beforehand. A non-nil return describes remaining recovery.
     func reconnectAfterDataDriveOperation(workloads: DataDriveRuntimeState) async -> String? {
-        prepareForDorydReconnect()
+        await prepareForDorydReconnect()
         await connectBackend()
         guard runtimeOwnedByDoryd, loadState == .ready else {
             return "the daemon engine did not reconnect; no containers or Linux machines were restarted."
@@ -1802,16 +1813,25 @@ final class AppStore {
         engineSettingChangeInFlight = true
         defer { engineSettingChangeInFlight = false }
         let previous = rosettaX86Enabled
+        let previousGPU = gpuVenusEnabled
         rosettaX86Enabled = on
+        if on, gpuVenusEnabled {
+            gpuVenusEnabled = false
+            UserDefaults.standard.set(false, forKey: SharedVMProvisioner.Config.gpuVenusKey)
+        }
         UserDefaults.standard.set(on, forKey: SharedVMProvisioner.Config.rosettaX86Key)
         if await applyDorydOwnedEngineSetting(
             previousValue: previous,
             restore: { [weak self] value in
                 self?.rosettaX86Enabled = value
+                self?.gpuVenusEnabled = previousGPU
                 UserDefaults.standard.set(value, forKey: SharedVMProvisioner.Config.rosettaX86Key)
+                UserDefaults.standard.set(previousGPU, forKey: SharedVMProvisioner.Config.gpuVenusKey)
             },
             applyingMessage: on ? "Enabling x86/amd64 emulation…" : "Disabling x86/amd64 emulation…",
-            successMessage: on ? "x86/amd64 emulation enabled." : "x86/amd64 emulation disabled."
+            successMessage: on && previousGPU
+                ? "x86/amd64 emulation enabled. GPU acceleration was disabled to keep the required 4 KiB page size."
+                : (on ? "x86/amd64 emulation enabled." : "x86/amd64 emulation disabled.")
         ) {
             return
         }
@@ -1833,6 +1853,10 @@ final class AppStore {
         }
         guard !on || gpuRuntimeAvailable else {
             showSettingsFailure("GPU acceleration is unavailable: the verified GPU kernel and Venus host runtime are required.")
+            return
+        }
+        guard !on || !rosettaX86Enabled else {
+            showSettingsFailure("GPU acceleration cannot be enabled while x86/amd64 emulation is on. FEX requires Dory's 4 KiB guest kernel.")
             return
         }
         engineSettingChangeInFlight = true
@@ -1976,7 +2000,7 @@ final class AppStore {
             }
         }
 
-        prepareForDorydReconnect()
+        await prepareForDorydReconnect()
         await connectBackend()
         if runtimeOwnedByDoryd, loadState == .ready {
             let workloadFailures = await restartCapturedWorkloads(runningWorkloads)
@@ -1992,7 +2016,7 @@ final class AppStore {
 
         let applyFailure = sharedVMStatus
         restore(previousValue)
-        prepareForDorydReconnect()
+        await prepareForDorydReconnect()
         await connectBackend()
         let recovered = runtimeOwnedByDoryd && loadState == .ready
         let workloadFailures = recovered ? await restartCapturedWorkloads(runningWorkloads) : []
@@ -2023,17 +2047,18 @@ final class AppStore {
             .map { EngineSettingWorkload(id: $0.id, name: $0.name) }
     }
 
-    private func prepareForDorydReconnect() {
+    private func prepareForDorydReconnect() async {
         runtimeOwnedByDoryd = false
         daemonSocketPath = nil
         runtime = DisconnectedRuntime()
         engineRunning = false
+        try? await syncFinderStorageLocation(force: true)
     }
 
     private func recoverPreviousDorydConfigurationAndWorkloads(
         _ workloads: [EngineSettingWorkload]
     ) async -> String {
-        prepareForDorydReconnect()
+        await prepareForDorydReconnect()
         await connectBackend()
         guard runtimeOwnedByDoryd, loadState == .ready else {
             return "The previous setting was restored, but the engine still needs recovery."
@@ -2047,7 +2072,7 @@ final class AppStore {
     }
 
     private func recoverDorydRuntimeAndWorkloads(_ workloads: [EngineSettingWorkload]) async -> String {
-        prepareForDorydReconnect()
+        await prepareForDorydReconnect()
         await connectBackend()
         guard runtimeOwnedByDoryd, loadState == .ready else {
             return "The engine still needs recovery."
@@ -3429,6 +3454,7 @@ final class AppStore {
     func reload() async {
         guard let snap = try? await runtime.snapshot() else {
             if loadState != .engineOff { loadState = .engineOff }
+            try? await syncFinderStorageLocation(force: true)
             return
         }
         if containers != snap.containers { containers = snap.containers; syncMachineStats(); noteEngineActivity() }
@@ -3446,6 +3472,46 @@ final class AppStore {
         cpuHistory = cpuHistory.filter { liveIDs.contains($0.key) }
         let newState: LoadState = snap.engineRunning ? .ready : .engineOff
         if loadState != newState { loadState = newState }
+        try? await syncFinderStorageLocation()
+    }
+
+    var canBrowseDoryStorage: Bool {
+        runtimeOwnedByDoryd && engineRunning && !engineSleeping && loadState == .ready
+    }
+
+    func openDoryStorageInFinder() async {
+        guard canBrowseDoryStorage else {
+            actionError = "Start Dory's engine before opening its storage in Finder."
+            return
+        }
+        do {
+            try await syncFinderStorageLocation(force: true)
+            try await finderStorageLocation.openInFinder()
+            finderStorageLocationActive = true
+        } catch {
+            finderStorageLocationActive = false
+            actionError = "Dory storage could not be opened in Finder: \(error.localizedDescription)"
+        }
+    }
+
+    private func syncFinderStorageLocation(force: Bool = false) async throws {
+        guard canBrowseDoryStorage, let docker = runtime as? DockerEngineRuntime else {
+            await finderStorageLocation.hide()
+            finderStorageLocationActive = false
+            lastFinderStorageGroups = nil
+            lastFinderStorageRefresh = .distantPast
+            return
+        }
+        let now = Date()
+        guard force || now.timeIntervalSince(lastFinderStorageRefresh) >= 15 else { return }
+        lastFinderStorageRefresh = now
+        let snapshot = try await docker.storageInventory()
+        if force || snapshot.groups != lastFinderStorageGroups {
+            try finderStorageLocation.publish(snapshot)
+            lastFinderStorageGroups = snapshot.groups
+        }
+        try await finderStorageLocation.show()
+        finderStorageLocationActive = true
     }
 
     private var refreshTask: Task<Void, Never>?
@@ -3507,6 +3573,7 @@ final class AppStore {
             engineActivity.setSleeping(true)
             engineRunning = false
             sharedVMStatus = "Sleeping — Docker use wakes it."
+            try? await syncFinderStorageLocation(force: true)
             return true
         case "running":
             engineSleeping = false
@@ -3522,6 +3589,7 @@ final class AppStore {
             engineRunning = false
             loadState = .engineOff
             sharedVMStatus = status.detail.isEmpty ? "doryd engine is \(status.state)." : status.detail
+            try? await syncFinderStorageLocation(force: true)
             return true
         default:
             return engineSleeping
@@ -3628,6 +3696,7 @@ final class AppStore {
             SharedVMProvisioner.recordIncident("idle-sleep", "engine slept after \(minutes) min idle (app open, nothing running)")
         }
         engineRunning = false
+        try? await syncFinderStorageLocation(force: true)
     }
 
     @ObservationIgnored private var lastLogCap = Date.distantPast

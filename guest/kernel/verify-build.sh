@@ -85,7 +85,7 @@ case "$ARCH" in
   amd64) CONFIG_FRAGMENTS+=(dory-x86.config) ;;
 esac
 case "$PROFILE" in
-  headless) ;;
+  headless) CONFIG_FRAGMENTS+=(dory-headless.fragment) ;;
   venus) CONFIG_FRAGMENTS+=(dory-virtual-display.fragment dory-gpu.fragment) ;;
   desktop) CONFIG_FRAGMENTS+=(dory-virtual-display.fragment dory-desktop.fragment) ;;
 esac

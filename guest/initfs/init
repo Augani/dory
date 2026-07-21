@@ -122,6 +122,10 @@ if [ -b /dev/vdb ]; then
 fi
 
 if [ -x /usr/local/bin/dockerd ]; then
+  # Keep Docker's normal age and value-aware BuildKit GC policies, but cap cache at 2 GB so stale
+  # build data cannot consume the sparse drive space intended for images and volumes.
+  mkdir -p /etc/docker
+  printf '%s\n' '{"builder":{"gc":{"enabled":true,"defaultKeepStorage":"2GB"}}}' >/etc/docker/daemon.json
   # Keep runc as Docker's compatibility default. Register crun for explicit opt-in only when the
   # kernel exposes io.max; crun 1.28 otherwise also breaks `docker update --restart` while reopening
   # /dev/stdin.
@@ -144,6 +148,15 @@ DORY_DOCKERD_SCRIPT
   chmod 0700 /run/dory-restart-dockerd
   /run/dory-restart-dockerd >/var/log/dockerd.log 2>&1 &
 fi
+
+# Keep a long-running engine sparse after images, build cache, and volumes are deleted. Boot and
+# shutdown also trim, but without this loop the host could retain those freed blocks until restart.
+( while true; do
+    sleep 3600
+    if mountpoint -q /var/lib/docker; then
+      fstrim -v /var/lib/docker >/var/log/dory-data-trim.log 2>&1 || true
+    fi
+  done ) &
 
 ( while true; do
     nc -l -p 2377 >/dev/null 2>&1

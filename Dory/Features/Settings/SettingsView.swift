@@ -1061,6 +1061,12 @@ struct SettingsView: View {
                         .textSelection(.enabled)
                 }
                 Spacer(minLength: 0)
+                Button("Browse Storage") {
+                    Task { await store.openDoryStorageInFinder() }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(!store.canBrowseDoryStorage)
+                .accessibilityIdentifier("browse-dory-storage")
                 Button("Reveal in Finder") {
                     if presentation.isReady {
                         NSWorkspace.shared.activateFileViewerSelecting([url])
@@ -1072,6 +1078,12 @@ struct SettingsView: View {
                 .disabled(!presentation.isReady)
                 .accessibilityIdentifier("reveal-data-drive")
             }
+            Text(store.canBrowseDoryStorage
+                ? "Dory appears under Finder Locations while the engine is running. Browse Images, Containers, Volumes, and Build Cache there to see what uses space."
+                : "Start Dory's engine to show its read-only storage view under Finder Locations.")
+                .font(.system(size: 11.5))
+                .foregroundStyle(p.text2)
+                .lineSpacing(3)
             HStack(spacing: 8) {
                 Button("Use Existing…") { store.chooseExistingDataDrive() }
                     .buttonStyle(.bordered)
@@ -1112,7 +1124,7 @@ struct SettingsView: View {
                         Text("Docker storage")
                             .font(.system(size: 12.5, weight: .semibold))
                             .foregroundStyle(p.text)
-                        Text("\(usage.capacityGiB) GiB capacity • \(physicalSize(usage.allocatedBytes)) on this Mac")
+                        Text("\(physicalSize(usage.allocatedBytes)) used on this Mac • \(usage.capacityGiB) GiB sparse capacity")
                             .font(.system(size: 11.5))
                             .foregroundStyle(p.text3)
                             .monospacedDigit()
@@ -1134,7 +1146,7 @@ struct SettingsView: View {
                         .accessibilityIdentifier("grow-docker-storage")
                     }
                 }
-                Text("Capacity is a sparse logical ceiling, not reserved Mac storage. Dory allocates physical space only as data is written. Growth is safe and automatic; shrinking is intentionally refused.")
+                Text("Finder may show about 137 GB for the default disk because it reports the sparse file's logical capacity. Dory does not reserve that space. The file grows only as Docker writes data, and Dory returns deleted blocks to macOS automatically.")
                     .font(.system(size: 11))
                     .foregroundStyle(p.text3)
                     .lineSpacing(3)
@@ -1491,15 +1503,18 @@ struct SettingsView: View {
             VStack(spacing: 0) {
                 toggleRow(
                     "Enable GPU acceleration for AI & compute",
-                    "Attaches a virtio-gpu device (Mesa Venus in the guest, virglrenderer and MoltenVK on your Mac) so Vulkan and GPU compute inside containers reach Apple Metal. Toggling this restarts the engine to apply, then run a container with `--gpus all` on an image that ships Mesa's Venus Vulkan driver.",
+                    "Attaches a virtio-gpu device (Mesa Venus in the guest, virglrenderer and MoltenVK on your Mac) so Vulkan and GPU compute inside containers reach Apple Metal. This mode cannot run at the same time as x86/amd64 emulation because the two kernels require different page sizes.",
                     isOn: Binding(get: { store.gpuVenusEnabled }, set: { on in Task { await store.setGPUVenus(on) } }),
                     divider: false,
-                    disabled: !onShared || !store.gpuRuntimeAvailable
+                    disabled: !onShared || !store.gpuRuntimeAvailable || store.rosettaX86Enabled
                 )
             }
             .background(p.bgElevated, in: RoundedRectangle(cornerRadius: 11))
             .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(p.border))
-            if onShared, store.gpuRuntimeAvailable {
+            if onShared, store.gpuRuntimeAvailable, store.rosettaX86Enabled {
+                Text("Turn off x86/amd64 emulation before enabling GPU acceleration. AMD64 compatibility keeps Dory on the 4 KiB guest kernel required by Alpine and other x86-64 images.")
+                    .font(.system(size: 11.5)).foregroundStyle(p.text3).lineSpacing(3).padding(.top, 8)
+            } else if onShared, store.gpuRuntimeAvailable {
                 Text("Changes apply when the engine restarts (done automatically). Existing containers keep their old settings until recreated.")
                     .font(.system(size: 11.5)).foregroundStyle(p.text3).lineSpacing(3).padding(.top, 8)
             }

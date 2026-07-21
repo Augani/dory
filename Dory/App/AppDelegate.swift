@@ -178,6 +178,9 @@ final class DoryAppDelegate: NSObject, NSApplicationDelegate {
             name: Self.openMainWindowNotification,
             object: nil
         )
+        if !Self.isTestHost {
+            DoryFinderStorageLocation.removeBeforeExit()
+        }
         if !Self.isTestHost,
            !AppStore.resolvedKeepDorydRunningAfterQuit(defaults: .standard) {
             DorydLaunchAgent.stopAndRemoveCurrentSynchronously()

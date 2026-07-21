@@ -7,12 +7,44 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		AA1000000000000000000001 /* DoryStorageProvider.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = AA1000000000000000000003 /* DoryStorageProvider.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		AA00000000000000000000B3 /* SwiftTerm in Frameworks */ = {isa = PBXBuildFile; productRef = AA00000000000000000000B2 /* SwiftTerm */; };
 		AA00000000000000000000C3 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = AA00000000000000000000C2 /* Sparkle */; };
 		AA00000000000000000000D3 /* DoryOperations in Frameworks */ = {isa = PBXBuildFile; productRef = AA00000000000000000000D2 /* DoryOperations */; };
 /* End PBXBuildFile section */
 
+/* Begin PBXCopyFilesBuildPhase section */
+		AA1000000000000000000009 /* Embed App Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				AA1000000000000000000001 /* DoryStorageProvider.appex in Embed App Extensions */,
+			);
+			name = "Embed App Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		AA100000000000000000000F /* Exceptions for "DoryStorageProvider" folder in "DoryStorageProvider" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = AA100000000000000000000A /* DoryStorageProvider */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXContainerItemProxy section */
+		AA1000000000000000000002 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 3E705CE72FE37C790094B33C /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = AA100000000000000000000A;
+			remoteInfo = DoryStorageProvider;
+		};
 		3E705CFD2FE37C7B0094B33C /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = 3E705CE72FE37C790094B33C /* Project object */;
@@ -30,12 +62,26 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		AA1000000000000000000003 /* DoryStorageProvider.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = DoryStorageProvider.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		3E705CEF2FE37C790094B33C /* Dory.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Dory.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		3E705CFC2FE37C7B0094B33C /* DoryTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = DoryTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		3E705D062FE37C7B0094B33C /* DoryUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = DoryUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
+		AA1000000000000000000004 /* DoryStorageShared */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = DoryStorageShared;
+			sourceTree = "<group>";
+		};
+		AA1000000000000000000005 /* DoryStorageProvider */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				AA100000000000000000000F /* Exceptions for "DoryStorageProvider" folder in "DoryStorageProvider" target */,
+			);
+			path = DoryStorageProvider;
+			sourceTree = "<group>";
+		};
 		3E705CF12FE37C790094B33C /* Dory */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = Dory;
@@ -54,6 +100,13 @@
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
+		AA1000000000000000000007 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		3E705CEC2FE37C790094B33C /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			files = (
@@ -79,6 +132,8 @@
 			isa = PBXGroup;
 			children = (
 				3E705CF12FE37C790094B33C /* Dory */,
+				AA1000000000000000000004 /* DoryStorageShared */,
+				AA1000000000000000000005 /* DoryStorageProvider */,
 				3E705CFF2FE37C7B0094B33C /* DoryTests */,
 				3E705D092FE37C7B0094B33C /* DoryUITests */,
 				3E705CF02FE37C790094B33C /* Products */,
@@ -89,6 +144,7 @@
 			isa = PBXGroup;
 			children = (
 				3E705CEF2FE37C790094B33C /* Dory.app */,
+				AA1000000000000000000003 /* DoryStorageProvider.appex */,
 				3E705CFC2FE37C7B0094B33C /* DoryTests.xctest */,
 				3E705D062FE37C7B0094B33C /* DoryUITests.xctest */,
 			);
@@ -105,12 +161,17 @@
 				3E705CEB2FE37C790094B33C /* Sources */,
 				3E705CEC2FE37C790094B33C /* Frameworks */,
 				3E705CED2FE37C790094B33C /* Resources */,
+				AA1000000000000000000009 /* Embed App Extensions */,
 				AA00000000000000000000D0 /* Prune Stale Bundled Helpers */,
 			);
 			buildRules = (
 			);
+			dependencies = (
+				AA100000000000000000000B /* PBXTargetDependency */,
+			);
 			fileSystemSynchronizedGroups = (
 				3E705CF12FE37C790094B33C /* Dory */,
+				AA1000000000000000000004 /* DoryStorageShared */,
 			);
 			name = Dory;
 			packageProductDependencies = (
@@ -121,6 +182,29 @@
 			productName = Dory;
 			productReference = 3E705CEF2FE37C790094B33C /* Dory.app */;
 			productType = "com.apple.product-type.application";
+		};
+		AA100000000000000000000A /* DoryStorageProvider */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = AA100000000000000000000E /* Build configuration list for PBXNativeTarget "DoryStorageProvider" */;
+			buildPhases = (
+				AA1000000000000000000006 /* Sources */,
+				AA1000000000000000000007 /* Frameworks */,
+				AA1000000000000000000008 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				AA1000000000000000000005 /* DoryStorageProvider */,
+				AA1000000000000000000004 /* DoryStorageShared */,
+			);
+			name = DoryStorageProvider;
+			packageProductDependencies = (
+			);
+			productName = DoryStorageProvider;
+			productReference = AA1000000000000000000003 /* DoryStorageProvider.appex */;
+			productType = "com.apple.product-type.app-extension";
 		};
 		3E705CFB2FE37C7B0094B33C /* DoryTests */ = {
 			isa = PBXNativeTarget;
@@ -174,6 +258,9 @@
 				LastSwiftUpdateCheck = 2700;
 				LastUpgradeCheck = 2700;
 				TargetAttributes = {
+					AA100000000000000000000A = {
+						CreatedOnToolsVersion = 27.0;
+					};
 					3E705CEE2FE37C790094B33C = {
 						CreatedOnToolsVersion = 27.0;
 					};
@@ -207,6 +294,7 @@
 			projectRoot = "";
 			targets = (
 				3E705CEE2FE37C790094B33C /* Dory */,
+				AA100000000000000000000A /* DoryStorageProvider */,
 				3E705CFB2FE37C7B0094B33C /* DoryTests */,
 				3E705D052FE37C7B0094B33C /* DoryUITests */,
 			);
@@ -214,6 +302,13 @@
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
+		AA1000000000000000000008 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		3E705CED2FE37C790094B33C /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			files = (
@@ -255,6 +350,13 @@
 /* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		AA1000000000000000000006 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		3E705CEB2FE37C790094B33C /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			files = (
@@ -273,6 +375,11 @@
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
+		AA100000000000000000000B /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = AA100000000000000000000A /* DoryStorageProvider */;
+			targetProxy = AA1000000000000000000002 /* PBXContainerItemProxy */;
+		};
 		3E705CFE2FE37C7B0094B33C /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			target = 3E705CEE2FE37C790094B33C /* Dory */;
@@ -286,6 +393,60 @@
 /* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
+		AA100000000000000000000C /* Debug configuration for PBXNativeTarget "DoryStorageProvider" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_ENTITLEMENTS = DoryStorageProvider/DoryStorageProvider.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 44;
+				DEVELOPMENT_TEAM = 864H636QW4;
+				ENABLE_APP_SANDBOX = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = DoryStorageProvider/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@executable_path/../../../../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 0.4.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.pythonxi.Dory.StorageProvider;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				REGISTER_APP_GROUPS = YES;
+				SKIP_INSTALL = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		AA100000000000000000000D /* Release configuration for PBXNativeTarget "DoryStorageProvider" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_ENTITLEMENTS = DoryStorageProvider/DoryStorageProvider.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 44;
+				DEVELOPMENT_TEAM = 864H636QW4;
+				ENABLE_APP_SANDBOX = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = DoryStorageProvider/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@executable_path/../../../../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 0.4.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.pythonxi.Dory.StorageProvider;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				REGISTER_APP_GROUPS = YES;
+				SKIP_INSTALL = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
 		3E705D0C2FE37C7B0094B33C /* Debug configuration for PBXProject "Dory" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -414,7 +575,7 @@
 				CODE_SIGN_ENTITLEMENTS = Dory/Dory.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 43;
+				CURRENT_PROJECT_VERSION = 44;
 				DEVELOPMENT_TEAM = 864H636QW4;
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_DEBUG_DYLIB = NO;
@@ -431,7 +592,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 0.3.2;
+				MARKETING_VERSION = 0.4.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.pythonxi.Dory;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
@@ -452,7 +613,7 @@
 				CODE_SIGN_ENTITLEMENTS = Dory/Dory.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 43;
+				CURRENT_PROJECT_VERSION = 44;
 				DEVELOPMENT_TEAM = 864H636QW4;
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -468,7 +629,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 0.3.2;
+				MARKETING_VERSION = 0.4.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.pythonxi.Dory;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
@@ -486,11 +647,11 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 43;
+				CURRENT_PROJECT_VERSION = 44;
 				DEVELOPMENT_TEAM = 864H636QW4;
 				GENERATE_INFOPLIST_FILE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 0.3.2;
+				MARKETING_VERSION = 0.4.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.pythonxi.DoryTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
@@ -507,11 +668,11 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 43;
+				CURRENT_PROJECT_VERSION = 44;
 				DEVELOPMENT_TEAM = 864H636QW4;
 				GENERATE_INFOPLIST_FILE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 0.3.2;
+				MARKETING_VERSION = 0.4.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.pythonxi.DoryTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
@@ -527,10 +688,10 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 43;
+				CURRENT_PROJECT_VERSION = 44;
 				DEVELOPMENT_TEAM = 864H636QW4;
 				GENERATE_INFOPLIST_FILE = YES;
-				MARKETING_VERSION = 0.3.2;
+				MARKETING_VERSION = 0.4.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.pythonxi.DoryUITests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
@@ -546,10 +707,10 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 43;
+				CURRENT_PROJECT_VERSION = 44;
 				DEVELOPMENT_TEAM = 864H636QW4;
 				GENERATE_INFOPLIST_FILE = YES;
-				MARKETING_VERSION = 0.3.2;
+				MARKETING_VERSION = 0.4.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.pythonxi.DoryUITests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
@@ -564,6 +725,15 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		AA100000000000000000000E /* Build configuration list for PBXNativeTarget "DoryStorageProvider" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AA100000000000000000000C /* Debug configuration for PBXNativeTarget "DoryStorageProvider" */,
+				AA100000000000000000000D /* Release configuration for PBXNativeTarget "DoryStorageProvider" */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 		3E705CEA2FE37C790094B33C /* Build configuration list for PBXProject "Dory" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (

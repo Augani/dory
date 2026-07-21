@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.4.0 - 2026-07-21
+
 ### Added
 
 - Graduated agent sandboxes to a supported dedicated-VM contract: non-root execution, read-only
@@ -45,6 +47,15 @@
   catalog/gateway, remote workspaces, image update checks, bounded mDNS relay, and GPU stabilization.
 
 ### Fixed
+
+- Added a Finder Location for Dory storage that appears while Dory is running, disappears when the
+  app and engine stop, and shows local files without cloud download badges.
+- Made the Docker data disk sparse and grow on demand, added regular filesystem trimming, and
+  capped automatic BuildKit cache retention at 2 GB so unused space is returned to macOS.
+- Fixed `linux/amd64` containers and builds on Apple Silicon that require a 4 KiB page size,
+  including Alpine 3.23 images using jemalloc.
+- Added host-ID compatibility and safer OrbStack migration handling so imported Docker data keeps
+  the correct ownership and metadata.
 
 - Replaced Docker promotion polling with lifecycle transition waiters and implemented bounded
   guest-agent reconnect, socket-forwarder replacement, dockerd-only restart, route reconcile, and

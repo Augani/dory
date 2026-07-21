@@ -21,7 +21,7 @@ case "$ARCH" in
 esac
 
 case "$PROFILE" in
-  headless) ;;
+  headless) CONFIGS+=(dory-headless.fragment) ;;
   venus) CONFIGS+=(dory-virtual-display.fragment dory-gpu.fragment) ;;
   desktop) CONFIGS+=(dory-virtual-display.fragment dory-desktop.fragment) ;;
 esac
