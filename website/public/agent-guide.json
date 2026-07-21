@@ -2,7 +2,7 @@
   "schema": "dev.dory.agent.guide",
   "version": 1,
   "summary": "Machine-readable Dory CLI capability map for non-interactive coding agents.",
-  "release": "0.3.2",
+  "release": "0.4.0",
   "defaults": {
     "nonInteractive": true,
     "preferJSON": true,

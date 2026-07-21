@@ -2,14 +2,14 @@
 
 > Dory is a native, open-source macOS runtime for Docker, Compose, Kubernetes, full Linux desktops, persistent servers, local networking, migration, diagnostics, and coding-agent automation.
 
-Dory 0.3.2 supports Apple Silicon on macOS 14 or later and bundles its own Docker engine and command-line tools. Its optional Linux-machine profiles are managed Debian 13, Ubuntu 24.04 LTS, and Kali rolling Xfce desktops with configurable users plus lightweight Alpine headless VMs. Intel hosts and desktop distributions beyond those three are not part of the current release.
+Dory 0.4.0 supports Apple Silicon on macOS 14 or later and bundles its own Docker engine and command-line tools. Its optional Linux-machine profiles are managed Debian 13, Ubuntu 24.04 LTS, and Kali rolling Xfce desktops with configurable users plus lightweight Alpine headless VMs. Intel hosts and desktop distributions beyond those three are not part of the current release.
 
 Dory ships one Docker Core app. A signed catalog adds removable Kubernetes, Linux Machines, Linux Desktop Runtime, Debian, Ubuntu, and Kali components to the selected Dory data drive. The website verifies the catalog and shows the exact total before download. Removing a component reclaims its payload without deleting workload data.
 
 ## Canonical documentation
 
 - [Complete agent reference](https://augani.github.io/dory/llms-full.txt): Stable commands, safety rules, schemas, recovery, examples, and product boundaries
-- [Versioned agent capability map](https://augani.github.io/dory/agent-guide.json): Machine-readable JSON contract for Dory 0.3.2
+- [Versioned agent capability map](https://augani.github.io/dory/agent-guide.json): Machine-readable JSON contract for Dory 0.4.0
 - [Agent and MCP guide](https://augani.github.io/dory/docs/agents.md): MCP configuration, tools, machine execution, sandbox policy, and recovery loop
 - [Operations guide](https://augani.github.io/dory/docs/operations.md): Installation, storage, networking, migration, diagnostics, and repair
 - [Compatibility contract](https://augani.github.io/dory/docs/compatibility.md): Supported, preview, and unavailable behavior
