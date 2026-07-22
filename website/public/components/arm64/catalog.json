@@ -5,11 +5,11 @@
       "assets": [],
       "dependencies": [],
       "displayName": "Docker Core",
-      "downloadBytes": 238193242,
+      "downloadBytes": 238116955,
       "id": "docker-core",
-      "installedBytes": 439632576,
+      "installedBytes": 439681113,
       "summary": "The signed Dory app, Docker engine, CLI, Buildx, Compose, networking, storage, migration, and health tools.",
-      "version": "0.4.1"
+      "version": "0.4.2"
     },
     {
       "assets": [
@@ -18,10 +18,10 @@
           "downloadBytes": 56944496,
           "executable": true,
           "installedBytes": 56944496,
-          "installedSHA256": "87d8b0317b64eada9e1f4a5075e943eb524e174b8a33d23f196b77b5e6f74629",
+          "installedSHA256": "0053cea96b2c3b5ef6db599feaf4293864a628ff9ca1909611ead874c0f6462a",
           "path": "kubectl",
-          "sha256": "87d8b0317b64eada9e1f4a5075e943eb524e174b8a33d23f196b77b5e6f74629",
-          "url": "https://github.com/Augani/dory/releases/download/v0.4.1/Dory-0.4.1-component-kubernetes-arm64-kubectl"
+          "sha256": "0053cea96b2c3b5ef6db599feaf4293864a628ff9ca1909611ead874c0f6462a",
+          "url": "https://github.com/Augani/dory/releases/download/v0.4.2/Dory-0.4.2-component-kubernetes-arm64-kubectl"
         }
       ],
       "dependencies": [
@@ -32,40 +32,40 @@
       "id": "kubernetes",
       "installedBytes": 56944496,
       "summary": "kubectl and Dory's local k3s workflow. The selected k3s image downloads when you create the cluster.",
-      "version": "0.4.1"
+      "version": "0.4.2"
     },
     {
       "assets": [
         {
           "compression": "lzfse",
-          "downloadBytes": 21425303,
+          "downloadBytes": 21425293,
           "executable": false,
           "installedBytes": 62071296,
-          "installedSHA256": "a7ecb06df60304e74bba1dc8b9cb10321a8015bc37ba09267a86c91fdf205818",
+          "installedSHA256": "d4b08080e6158af259d3c793d499b9b43694b8799fe73c23f38bd2930623c2d7",
           "path": "dory-hv-kernel-arm64",
-          "sha256": "a83a49d48c9d0988b94fba63a25023a58bc2da3744facef74319473cd333b9ae",
-          "url": "https://github.com/Augani/dory/releases/download/v0.4.1/Dory-0.4.1-component-linux-machines-arm64-dory-hv-kernel-arm64.lzfse"
+          "sha256": "d3e013f21aed6af6940ff951a47dcc2e5b018662d473aafb2c17c1736220ed62",
+          "url": "https://github.com/Augani/dory/releases/download/v0.4.2/Dory-0.4.2-component-linux-machines-arm64-dory-hv-kernel-arm64.lzfse"
         },
         {
           "compression": "lzfse",
-          "downloadBytes": 90963329,
+          "downloadBytes": 90962997,
           "executable": false,
           "installedBytes": 1073741824,
-          "installedSHA256": "0d93a6070879ecd5233da13eaf7711dc19725b4ca65c1f307a75b9f1c6a5c62a",
+          "installedSHA256": "2e8567bd10cd0a5fe188ade1df01e795a4b52a908ca54022b0b5dadbb0c404b3",
           "path": "dory-machine-rootfs-arm64.ext4",
-          "sha256": "fa1dea33a6e63e8efb10910b0ba9a232ff75491d38f819a9863fbf570f8a5916",
-          "url": "https://github.com/Augani/dory/releases/download/v0.4.1/Dory-0.4.1-component-linux-machines-arm64-dory-machine-rootfs-arm64.ext4.lzfse"
+          "sha256": "76a7acc4d445723e47498ccd9cc915478dfaa0b1a17609805ba7daf7f8fac6ed",
+          "url": "https://github.com/Augani/dory/releases/download/v0.4.2/Dory-0.4.2-component-linux-machines-arm64-dory-machine-rootfs-arm64.ext4.lzfse"
         }
       ],
       "dependencies": [
         "docker-core"
       ],
       "displayName": "Linux Machines",
-      "downloadBytes": 112388632,
+      "downloadBytes": 112388290,
       "id": "linux-machines",
       "installedBytes": 1135813120,
       "summary": "Headless VPS-style Linux machines with terminals, services, and persistent disks.",
-      "version": "0.4.1"
+      "version": "0.4.2"
     },
     {
       "assets": [
@@ -233,9 +233,9 @@
       "version": "0.4.1"
     }
   ],
-  "generatedAt": "2026-07-22T03:26:07Z",
+  "generatedAt": "2026-07-22T22:20:38Z",
   "kind": "dev.dory.component-catalog",
-  "minimumAppVersion": "0.4.1",
-  "releaseVersion": "0.4.1",
+  "minimumAppVersion": "0.4.2",
+  "releaseVersion": "0.4.2",
   "schemaVersion": 1
 }
