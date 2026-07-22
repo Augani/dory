@@ -1441,8 +1441,20 @@ public final class HostFS: @unchecked Sendable {
         Darwin.close(fd)
     }
 
-    public func createFile(parent: UInt64, name: String, mode: UInt16 = 0o644) throws -> HostFSEntry {
-        let created = try createFileAndOpen(parent: parent, name: name, mode: mode)
+    public func createFile(
+        parent: UInt64,
+        name: String,
+        mode: UInt16 = 0o644,
+        ownerUID: UInt32? = nil,
+        ownerGID: UInt32? = nil
+    ) throws -> HostFSEntry {
+        let created = try createFileAndOpen(
+            parent: parent,
+            name: name,
+            mode: mode,
+            ownerUID: ownerUID,
+            ownerGID: ownerGID
+        )
         Darwin.close(created.fd)
         return created.entry
     }
@@ -1457,7 +1469,9 @@ public final class HostFS: @unchecked Sendable {
         truncate: Bool = false,
         append: Bool = false,
         syntheticAttributes: Bool = false,
-        retainOpenHandle: Bool = false
+        retainOpenHandle: Bool = false,
+        ownerUID: UInt32? = nil,
+        ownerGID: UInt32? = nil
     ) throws -> (entry: HostFSEntry, fd: Int32) {
         guard !readOnly else { throw HostFSError.readOnly }
         try validateComponent(name)
@@ -1521,7 +1535,9 @@ public final class HostFS: @unchecked Sendable {
                         relativePath: relative,
                         mode: mode,
                         identity: identity,
-                        retainOpenHandle: retainOpenHandle
+                        retainOpenHandle: retainOpenHandle,
+                        ownerUID: ownerUID,
+                        ownerGID: ownerGID
                     ),
                     fd
                 )
@@ -1531,7 +1547,9 @@ public final class HostFS: @unchecked Sendable {
                     name: name,
                     relativePath: relative,
                     identity: identity,
-                    retainOpenHandle: retainOpenHandle
+                    retainOpenHandle: retainOpenHandle,
+                    ownerUID: ownerUID,
+                    ownerGID: ownerGID
                 ),
                 fd
             )
@@ -1545,7 +1563,9 @@ public final class HostFS: @unchecked Sendable {
         parent: UInt64,
         name: String,
         mode: UInt16 = 0o755,
-        syntheticAttributes: Bool = false
+        syntheticAttributes: Bool = false,
+        ownerUID: UInt32? = nil,
+        ownerGID: UInt32? = nil
     ) throws -> HostFSEntry {
         guard !readOnly else { throw HostFSError.readOnly }
         try validateComponent(name)
@@ -1574,12 +1594,30 @@ public final class HostFS: @unchecked Sendable {
             throw HostFSError.systemCall("mkdir \(relative)", savedErrno)
         }
         if syntheticAttributes {
-            return try registerCreatedDirectory(name: name, relativePath: relative, mode: mode)
+            return try registerCreatedDirectory(
+                name: name,
+                relativePath: relative,
+                mode: mode,
+                ownerUID: ownerUID,
+                ownerGID: ownerGID
+            )
         }
-        return try lookup(parent: parent, name: name)
+        let entry = try lookup(parent: parent, name: name)
+        updateVirtualOwnership(nodeID: entry.nodeID, uid: ownerUID, gid: ownerGID)
+        return HostFSEntry(
+            name: entry.name,
+            nodeID: entry.nodeID,
+            attributes: try getattr(nodeID: entry.nodeID)
+        )
     }
 
-    public func symlink(parent: UInt64, name: String, target: String) throws -> HostFSEntry {
+    public func symlink(
+        parent: UInt64,
+        name: String,
+        target: String,
+        ownerUID: UInt32? = nil,
+        ownerGID: UInt32? = nil
+    ) throws -> HostFSEntry {
         guard !readOnly else { throw HostFSError.readOnly }
         try validateComponent(name)
         try requireVisible(name, parent: parent)
@@ -1611,7 +1649,13 @@ public final class HostFS: @unchecked Sendable {
             _ = unlinkat(rootFD, cPath(stagingName), Self.containedUnlinkFlags)
             throw HostFSError.systemCall("symlink \(relative)", savedErrno)
         }
-        return try lookup(parent: parent, name: name)
+        let entry = try lookup(parent: parent, name: name)
+        updateVirtualOwnership(nodeID: entry.nodeID, uid: ownerUID, gid: ownerGID)
+        return HostFSEntry(
+            name: entry.name,
+            nodeID: entry.nodeID,
+            attributes: try getattr(nodeID: entry.nodeID)
+        )
     }
 
     /// Creates a POSIX hard link and binds the new dentry to the source inode's existing canonical
@@ -2477,7 +2521,9 @@ public final class HostFS: @unchecked Sendable {
         name: String,
         relativePath: String,
         identity: PinnedIdentity,
-        retainOpenHandle: Bool = false
+        retainOpenHandle: Bool = false,
+        ownerUID: UInt32? = nil,
+        ownerGID: UInt32? = nil
     ) -> HostFSEntry {
         let st = identity.status
         let key = FileKey(st)
@@ -2567,7 +2613,12 @@ public final class HostFS: @unchecked Sendable {
 
             let id = nextNodeID
             nextNodeID += 1
-            let attrs = Self.attributes(from: st, nodeID: id, uid: guestUID, gid: guestGID)
+            let attrs = Self.attributes(
+                from: st,
+                nodeID: id,
+                uid: ownerUID ?? guestUID,
+                gid: ownerGID ?? guestGID
+            )
             nodes[id] = Node(
                 id: id,
                 relativePath: relativePath,
@@ -2596,7 +2647,9 @@ public final class HostFS: @unchecked Sendable {
         relativePath: String,
         mode: UInt16,
         identity: PinnedIdentity,
-        retainOpenHandle: Bool = false
+        retainOpenHandle: Bool = false,
+        ownerUID: UInt32? = nil,
+        ownerGID: UInt32? = nil
     ) -> HostFSEntry {
         return registerCreatedNode(
             name: name,
@@ -2604,14 +2657,18 @@ public final class HostFS: @unchecked Sendable {
             mode: mode,
             type: UInt32(S_IFREG),
             identity: identity,
-            retainOpenHandle: retainOpenHandle
+            retainOpenHandle: retainOpenHandle,
+            ownerUID: ownerUID,
+            ownerGID: ownerGID
         )
     }
 
     private func registerCreatedDirectory(
         name: String,
         relativePath: String,
-        mode: UInt16
+        mode: UInt16,
+        ownerUID: UInt32? = nil,
+        ownerGID: UInt32? = nil
     ) throws -> HostFSEntry {
         let identity = try pinIdentity(relativePath: relativePath, expectedMode: mode_t(S_IFDIR))
         return registerCreatedNode(
@@ -2619,7 +2676,9 @@ public final class HostFS: @unchecked Sendable {
             relativePath: relativePath,
             mode: mode,
             type: UInt32(S_IFDIR),
-            identity: identity
+            identity: identity,
+            ownerUID: ownerUID,
+            ownerGID: ownerGID
         )
     }
 
@@ -2629,7 +2688,9 @@ public final class HostFS: @unchecked Sendable {
         mode: UInt16,
         type: UInt32,
         identity: PinnedIdentity,
-        retainOpenHandle: Bool = false
+        retainOpenHandle: Bool = false,
+        ownerUID: UInt32? = nil,
+        ownerGID: UInt32? = nil
     ) -> HostFSEntry {
         var ts = timespec()
         clock_gettime(CLOCK_REALTIME, &ts)
@@ -2649,8 +2710,8 @@ public final class HostFS: @unchecked Sendable {
                 mode: type | UInt32(mode),
                 size: 0,
                 linkCount: type == UInt32(S_IFDIR) ? 2 : 1,
-                uid: guestUID,
-                gid: guestGID,
+                uid: ownerUID ?? guestUID,
+                gid: ownerGID ?? guestGID,
                 atimeSeconds: Int64(ts.tv_sec),
                 mtimeSeconds: Int64(ts.tv_sec),
                 ctimeSeconds: Int64(ts.tv_sec),

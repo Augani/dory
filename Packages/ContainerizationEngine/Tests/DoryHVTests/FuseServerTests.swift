@@ -1268,6 +1268,8 @@ struct FuseServerTests {
         let handle = createdPayload.leUInt64(at: 128)
         #expect(nodeID != HostFS.rootNodeID)
         #expect(handle > 0)
+        #expect(createdPayload.leUInt32(at: 108) == 1_000)
+        #expect(createdPayload.leUInt32(at: 112) == 1_000)
         #expect(FileManager.default.fileExists(atPath: root.url.appendingPathComponent("created-direct.txt").path))
 
         let getattrRequest = request(
@@ -1312,6 +1314,9 @@ struct FuseServerTests {
 
         #expect(mkdirCount == FuseOutHeader.byteCount + 128)
         #expect(try FuseProtocol.decodeOutHeader(Array(mkdirDest)).error == 0)
+        let mkdirResponse = payload(from: Array(mkdirDest))
+        #expect(mkdirResponse.leUInt32(at: 108) == 1_000)
+        #expect(mkdirResponse.leUInt32(at: 112) == 1_000)
         #expect(FileManager.default.fileExists(atPath: root.url.appendingPathComponent("nested-direct").path))
 
         let unlinkRequest = request(unique: 221, opcode: .unlink, nodeID: HostFS.rootNodeID, payload: Array("gone.txt\0".utf8))
@@ -2095,6 +2100,8 @@ struct FuseServerTests {
         let mkdir = server.handle(request: request(unique: 50, opcode: .mkdir, nodeID: HostFS.rootNodeID, payload: mkdirIn))
 
         #expect(try FuseProtocol.decodeOutHeader(mkdir).error == 0)
+        #expect(payload(from: mkdir).leUInt32(at: 108) == 1_000)
+        #expect(payload(from: mkdir).leUInt32(at: 112) == 1_000)
         #expect(FileManager.default.fileExists(atPath: root.url.appendingPathComponent("nested").path))
 
         let rmdir = server.handle(request: request(unique: 51, opcode: .rmdir, nodeID: HostFS.rootNodeID, payload: Array("nested\0".utf8)))

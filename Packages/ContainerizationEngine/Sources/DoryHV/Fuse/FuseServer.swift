@@ -425,7 +425,13 @@ public final class FuseServer: @unchecked Sendable {
 
     private func handleSymlink(header: FuseInHeader, payload: ArraySlice<UInt8>) throws -> [UInt8] {
         let values = try readCStrings(payload, count: 2)
-        let entry = try hostFS.symlink(parent: header.nodeID, name: values[0], target: values[1])
+        let entry = try hostFS.symlink(
+            parent: header.nodeID,
+            name: values[0],
+            target: values[1],
+            ownerUID: header.uid,
+            ownerGID: header.gid
+        )
         hostFS.retainLookup(nodeID: entry.nodeID)
         return successResponse(unique: header.unique, payload: encodeEntryOut(entry.attributes))
     }
@@ -713,7 +719,9 @@ public final class FuseServer: @unchecked Sendable {
                 truncate: intent.truncate,
                 append: intent.append && !writebackCache,
                 syntheticAttributes: fastCreateAttributes,
-                retainOpenHandle: true
+                retainOpenHandle: true,
+                ownerUID: header.uid,
+                ownerGID: header.gid
             )
             let handle = storeRetainedFile(
                 fd: created.fd,
@@ -748,7 +756,9 @@ public final class FuseServer: @unchecked Sendable {
                 parent: header.nodeID,
                 name: name,
                 mode: mode,
-                syntheticAttributes: fastCreateAttributes
+                syntheticAttributes: fastCreateAttributes,
+                ownerUID: header.uid,
+                ownerGID: header.gid
             )
             hostFS.retainLookup(nodeID: entry.nodeID)
             var writer = FuseDirectResponseWriter(writable: writable)
@@ -1186,7 +1196,9 @@ public final class FuseServer: @unchecked Sendable {
             truncate: intent.truncate,
             append: intent.append && !writebackCache,
             syntheticAttributes: fastCreateAttributes,
-            retainOpenHandle: true
+            retainOpenHandle: true,
+            ownerUID: header.uid,
+            ownerGID: header.gid
         )
         let handle = storeRetainedFile(
             fd: created.fd,
@@ -1210,7 +1222,9 @@ public final class FuseServer: @unchecked Sendable {
             parent: header.nodeID,
             name: name,
             mode: mode,
-            syntheticAttributes: fastCreateAttributes
+            syntheticAttributes: fastCreateAttributes,
+            ownerUID: header.uid,
+            ownerGID: header.gid
         )
         hostFS.retainLookup(nodeID: entry.nodeID)
         return successResponse(unique: header.unique, payload: encodeEntryOut(entry.attributes))

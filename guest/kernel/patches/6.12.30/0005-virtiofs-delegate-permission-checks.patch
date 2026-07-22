@@ -1,0 +1,22 @@
+From: Dory maintainers <maintainers@dory.dev>
+Subject: [PATCH] virtiofs: delegate permission checks to the file server
+
+Dory's virtiofs server accesses bind-mounted files as the signed-in macOS
+user. Container UIDs do not necessarily match that user's numeric UID, so
+Linux mode checks can reject an operation that the backing macOS user is
+allowed to perform before the request reaches the server.
+
+Use the normal FUSE server-controlled permission model. Dory still reports
+host UIDs and modes as metadata, while the backing filesystem remains the
+authority for access.
+---
+ fs/fuse/virtio_fs.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/fs/fuse/virtio_fs.c b/fs/fuse/virtio_fs.c
+index 8f5b3a4d3c8a..190e7c3aa822 100644
+--- a/fs/fuse/virtio_fs.c
++++ b/fs/fuse/virtio_fs.c
+@@ -1528 +1528 @@ static inline void virtio_fs_ctx_set_defaults(struct fuse_fs_context *ctx)
+-	ctx->default_permissions = 1;
++	ctx->default_permissions = 0;
