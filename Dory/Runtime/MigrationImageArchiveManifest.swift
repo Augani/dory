@@ -26,19 +26,9 @@ nonisolated enum MigrationImageArchiveManifest {
         _ archive: MigrationImageTarArchive,
         archiveSha256: String
     ) throws -> MigrationImageArchiveFingerprint {
-        guard let root = try? JSONSerialization.jsonObject(with: archive.manifest) as? [[String: Any]],
-              root.count == 1,
-              let record = root.first,
-              let config = record["Config"] as? String,
-              let layers = record["Layers"] as? [String],
-              isSafeFilePath(config),
-              Set(layers).count == layers.count,
-              layers.allSatisfy(isSafeFilePath),
-              repoTagsAreValid(record["RepoTags"]) else {
-            throw MigrationImageArchiveError.invalid(
-                "manifest.json must describe exactly one image with valid RepoTags"
-            )
-        }
+        let parsed = try parsedManifest(archive.manifest)
+        let config = parsed.config
+        let layers = parsed.layers
         let configEntry = try regularEntry(config, archive: archive)
         guard let configSha256 = configEntry.sha256,
               expectedConfigDigest(path: config) == configSha256 else {
@@ -88,19 +78,14 @@ nonisolated enum MigrationImageArchiveManifest {
     /// the operation reaches its publication boundary. Keep the tar entry size unchanged so the
     /// archive can be rewritten while it streams without changing its header or padding.
     static func strippingRepoTags(_ manifest: Data) throws -> Data {
-        guard var root = try? JSONSerialization.jsonObject(with: manifest) as? [[String: Any]],
-              root.count == 1,
-              var record = root.first,
-              repoTagsAreValid(record["RepoTags"]) else {
-            throw MigrationImageArchiveError.invalid(
-                "manifest.json must describe exactly one image with valid RepoTags"
-            )
-        }
-        guard let tags = record["RepoTags"] as? [String], !tags.isEmpty else {
+        let parsed = try parsedManifest(manifest)
+        let tags = parsed.record["RepoTags"] as? [String] ?? []
+        guard parsed.recordCount > 1 || !tags.isEmpty else {
             return manifest
         }
+        var record = parsed.record
         record["RepoTags"] = NSNull()
-        root[0] = record
+        let root = [record]
         guard var sanitized = try? JSONSerialization.data(
             withJSONObject: root,
             options: [.sortedKeys]
@@ -115,6 +100,55 @@ nonisolated enum MigrationImageArchiveManifest {
 }
 
 private extension MigrationImageArchiveManifest {
+    nonisolated struct ParsedManifest {
+        let record: [String: Any]
+        let config: String
+        let layers: [String]
+        let recordCount: Int
+    }
+
+    nonisolated static func parsedManifest(_ manifest: Data) throws -> ParsedManifest {
+        guard let root = try? JSONSerialization.jsonObject(with: manifest) as? [[String: Any]],
+              !root.isEmpty else {
+            throw MigrationImageArchiveError.invalid(
+                "manifest.json must contain at least one image record"
+            )
+        }
+        var selected: ParsedManifest?
+        for record in root {
+            guard let config = record["Config"] as? String,
+                  let layers = record["Layers"] as? [String],
+                  isSafeFilePath(config),
+                  Set(layers).count == layers.count,
+                  layers.allSatisfy(isSafeFilePath),
+                  repoTagsAreValid(record["RepoTags"]) else {
+                throw MigrationImageArchiveError.invalid(
+                    "manifest.json contains an invalid image record or RepoTags"
+                )
+            }
+            if let selected {
+                guard selected.config == config, selected.layers == layers else {
+                    throw MigrationImageArchiveError.invalid(
+                        "manifest.json describes more than one image"
+                    )
+                }
+            } else {
+                selected = ParsedManifest(
+                    record: record,
+                    config: config,
+                    layers: layers,
+                    recordCount: root.count
+                )
+            }
+        }
+        guard let selected else {
+            throw MigrationImageArchiveError.invalid(
+                "manifest.json must contain at least one image record"
+            )
+        }
+        return selected
+    }
+
     nonisolated static func regularEntry(
         _ path: String,
         archive: MigrationImageTarArchive

@@ -402,10 +402,10 @@ private actor MigrationObservedImageStream {
     }
 }
 
-/// Rewrites only `manifest.json` while preserving every tar header, byte count, and padding byte.
-/// Non-manifest payloads are forwarded as soon as they arrive; at most the qualified 8 MiB image
-/// manifest is buffered. The independent archive reader still fingerprints and validates the exact
-/// source bytes, while the target receives an equivalent archive with no mutable RepoTags.
+/// Rewrites mutable image aliases while preserving every tar header, byte count, and padding byte.
+/// Other payloads are forwarded as soon as they arrive; at most one qualified 8 MiB metadata entry
+/// is buffered. The independent archive reader fingerprints and validates the exact source bytes,
+/// while the target receives equivalent content with no mutable RepoTags or OCI tag annotations.
 private nonisolated struct MigrationImageArchiveTagStripper {
     private enum EntryRole {
         case regular
@@ -414,13 +414,18 @@ private nonisolated struct MigrationImageArchiveTagStripper {
         case longName
     }
 
+    private enum MetadataRewrite {
+        case manifest
+        case ociIndex
+    }
+
     private struct ActiveEntry {
         let role: EntryRole
         let path: String
         let logicalBytes: UInt64
         var remainingBytes: UInt64
         var capture: Data?
-        let stripsTags: Bool
+        let rewrite: MetadataRewrite?
     }
 
     private var buffer = Data()
@@ -497,7 +502,14 @@ private nonisolated struct MigrationImageArchiveTagStripper {
             logicalBytes = pending.size ?? header.size
             pending.reset()
         }
-        let stripsTags = role == .regular && path == "manifest.json"
+        let rewrite: MetadataRewrite?
+        if role == .regular, path == "manifest.json" {
+            rewrite = .manifest
+        } else if role == .regular, path == "index.json" {
+            rewrite = .ociIndex
+        } else {
+            rewrite = nil
+        }
         output.append(contentsOf: bytes)
         cursor = end
         active = ActiveEntry(
@@ -505,8 +517,8 @@ private nonisolated struct MigrationImageArchiveTagStripper {
             path: path,
             logicalBytes: logicalBytes,
             remainingBytes: logicalBytes,
-            capture: stripsTags || role == .pax || role == .longName ? Data() : nil,
-            stripsTags: stripsTags
+            capture: rewrite != nil || role == .pax || role == .longName ? Data() : nil,
+            rewrite: rewrite
         )
         if logicalBytes == 0 { try finalizeActive(into: &output) }
         return true
@@ -539,7 +551,7 @@ private nonisolated struct MigrationImageArchiveTagStripper {
         let end = cursor + count
         let bytes = buffer[cursor..<end]
         entry.capture?.append(contentsOf: bytes)
-        if !entry.stripsTags { output.append(contentsOf: bytes) }
+        if entry.rewrite == nil { output.append(contentsOf: bytes) }
         entry.remainingBytes -= UInt64(count)
         cursor = end
         active = entry
@@ -549,12 +561,19 @@ private nonisolated struct MigrationImageArchiveTagStripper {
 
     private mutating func finalizeActive(into output: inout Data) throws {
         guard let entry = active else { return }
-        if entry.stripsTags {
-            guard let manifest = entry.capture,
-                  UInt64(manifest.count) == entry.logicalBytes else {
-                throw MigrationImageArchiveError.invalid("manifest.json disappeared while removing RepoTags")
+        if let rewrite = entry.rewrite {
+            guard let metadata = entry.capture,
+                  UInt64(metadata.count) == entry.logicalBytes else {
+                throw MigrationImageArchiveError.invalid(
+                    "image archive metadata disappeared while removing aliases"
+                )
             }
-            output.append(try MigrationImageArchiveManifest.strippingRepoTags(manifest))
+            switch rewrite {
+            case .manifest:
+                output.append(try MigrationImageArchiveManifest.strippingRepoTags(metadata))
+            case .ociIndex:
+                output.append(try MigrationImageOCIArchiveIdentity.strippingAliases(metadata))
+            }
         } else if entry.role == .pax {
             guard let payload = entry.capture else {
                 throw MigrationImageArchiveError.invalid("PAX metadata disappeared")

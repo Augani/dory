@@ -68,6 +68,55 @@ struct MigrationImageTransferTests {
         #expect(target.taggedReferences.isEmpty)
     }
 
+    @Test func coalescesOrbStackAliasRecordsBeforeLoadingTheStagedImage() async throws {
+        let fixture = ImageTransferFixture(repoTags: ["registry.example.com/team/app:latest"])
+        let archive = try fixture.archiveWithDuplicateManifestRecords()
+        let source = fixture.sourceRuntime(archives: Array(repeating: archive, count: 3))
+        let target = fixture.targetRuntime()
+
+        let receipt = try await MigrationImageTransfer().transfer(
+            fixture.request,
+            from: source,
+            to: target
+        )
+
+        var parser = MigrationImageTarStreamParser()
+        try parser.feed(target.receivedChunks.reduce(into: Data()) { $0.append($1) })
+        let transferred = try parser.finish()
+        let manifest = try #require(
+            JSONSerialization.jsonObject(with: transferred.manifest) as? [[String: Any]]
+        )
+        #expect(manifest.count == 1)
+        #expect(manifest[0]["RepoTags"] is NSNull)
+        #expect(receipt.verifiedTarget.semanticIdentity == fixture.imageID)
+        #expect(target.taggedReferences.isEmpty)
+    }
+
+    @Test func coalescesOrbStackOCIIndexAliasesBeforeLoadingTheStagedImage() async throws {
+        let fixture = ImageTransferFixture(contentAddressed: true)
+        let archive = try fixture.archiveWithDuplicateOCIIndexDescriptors()
+        let source = fixture.sourceRuntime(archives: Array(repeating: archive, count: 3))
+        let target = fixture.targetRuntime()
+
+        _ = try await MigrationImageTransfer().transfer(
+            fixture.request,
+            from: source,
+            to: target
+        )
+
+        var parser = MigrationImageTarStreamParser()
+        try parser.feed(target.receivedChunks.reduce(into: Data()) { $0.append($1) })
+        let transferred = try parser.finish()
+        let index = try #require(transferred.capturedEntries["index.json"])
+        let root = try #require(
+            JSONSerialization.jsonObject(with: index) as? [String: Any]
+        )
+        let descriptors = try #require(root["manifests"] as? [[String: Any]])
+        #expect(descriptors.count == 1)
+        #expect(descriptors[0]["annotations"] == nil)
+        #expect(target.taggedReferences.isEmpty)
+    }
+
     @Test func acceptsDifferentOuterTarSerializationForIdenticalSourceContent() async throws {
         let fixture = ImageTransferFixture(contentAddressed: true)
         let changedOuterArchive = fixture.archiveWithChangedOCILayoutVersion()
@@ -442,6 +491,39 @@ private struct ImageTransferFixture {
                 )
                 : entry
         })
+    }
+
+    func archiveWithDuplicateManifestRecords() throws -> Data {
+        let manifest = try #require(
+            sourceFixture.entries.first { $0.path == "manifest.json" }
+        )
+        let records = try #require(
+            JSONSerialization.jsonObject(with: manifest.payload) as? [[String: Any]]
+        )
+        var alias = try #require(records.first)
+        alias["RepoTags"] = ["registry.example.com/team/app:stable"]
+        return MigrationImageArchiveTestSupport.replacingManifest(
+            in: sourceFixture,
+            payload: MigrationImageArchiveTestSupport.json([records[0], alias])
+        )
+    }
+
+    func archiveWithDuplicateOCIIndexDescriptors() throws -> Data {
+        let index = try #require(
+            sourceFixture.entries.first { $0.path == "index.json" }
+        )
+        var root = try #require(
+            JSONSerialization.jsonObject(with: index.payload) as? [String: Any]
+        )
+        let descriptors = try #require(root["manifests"] as? [[String: Any]])
+        var alias = try #require(descriptors.first)
+        alias["annotations"] = ["org.opencontainers.image.ref.name": "stable"]
+        root["manifests"] = [descriptors[0], alias]
+        return MigrationImageArchiveTestSupport.replacingEntry(
+            in: sourceFixture,
+            path: "index.json",
+            payload: MigrationImageArchiveTestSupport.json(root)
+        )
     }
 }
 

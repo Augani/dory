@@ -137,6 +137,65 @@ struct MigrationImageArchiveTests {
         #expect(root[0]["RepoTags"] is NSNull)
     }
 
+    @Test func acceptsAndCoalescesDuplicateRecordsForTheSameImage() throws {
+        let fixture = MigrationImageArchiveTestSupport.fixture(repoTags: ["user/app:v1"])
+        let manifest = try #require(fixture.entries.first { $0.path == "manifest.json" })
+        let root = try #require(
+            JSONSerialization.jsonObject(with: manifest.payload) as? [[String: Any]]
+        )
+        var alias = try #require(root.first)
+        alias["RepoTags"] = ["user/app:stable"]
+        let duplicateManifest = MigrationImageArchiveTestSupport.json([root[0], alias])
+        let duplicateArchive = MigrationImageArchiveTestSupport.replacingManifest(
+            in: fixture,
+            payload: duplicateManifest
+        )
+
+        let fingerprint = try MigrationImageArchiveTestSupport.fingerprint(duplicateArchive)
+        let sanitized = try MigrationImageArchiveManifest.strippingRepoTags(duplicateManifest)
+        let sanitizedRoot = try #require(
+            JSONSerialization.jsonObject(with: sanitized) as? [[String: Any]]
+        )
+
+        #expect(fingerprint.semanticIdentity == "sha256:\(fixture.configDigest)")
+        #expect(sanitized.count == duplicateManifest.count)
+        #expect(sanitizedRoot.count == 1)
+        #expect(sanitizedRoot[0]["RepoTags"] is NSNull)
+    }
+
+    @Test func acceptsDuplicateOCIIndexDescriptorsForTheSameImage() throws {
+        let fixture = MigrationImageArchiveTestSupport.contentAddressedFixture()
+        let indexEntry = try #require(fixture.entries.first { $0.path == "index.json" })
+        var root = try #require(
+            JSONSerialization.jsonObject(with: indexEntry.payload) as? [String: Any]
+        )
+        let descriptors = try #require(root["manifests"] as? [[String: Any]])
+        var alias = try #require(descriptors.first)
+        alias["annotations"] = ["org.opencontainers.image.ref.name": "stable"]
+        root["manifests"] = [descriptors[0], alias]
+        let duplicateIndex = MigrationImageArchiveTestSupport.json(root)
+        let archive = MigrationImageArchiveTestSupport.replacingEntry(
+            in: fixture,
+            path: "index.json",
+            payload: duplicateIndex
+        )
+
+        let fingerprint = try MigrationImageArchiveTestSupport.fingerprint(archive)
+        let sanitized = try MigrationImageOCIArchiveIdentity.strippingAliases(duplicateIndex)
+        let sanitizedRoot = try #require(
+            JSONSerialization.jsonObject(with: sanitized) as? [String: Any]
+        )
+        let sanitizedDescriptors = try #require(
+            sanitizedRoot["manifests"] as? [[String: Any]]
+        )
+
+        #expect(fingerprint.semanticIdentity == "sha256:\(fixture.configDigest)")
+        #expect(fingerprint.validatedImageIDs.count == 3)
+        #expect(sanitized.count == duplicateIndex.count)
+        #expect(sanitizedDescriptors.count == 1)
+        #expect(sanitizedDescriptors[0]["annotations"] == nil)
+    }
+
     @Test func rejectsInvalidRepoTagsMissingFilesAndMismatchedConfigIdentity() throws {
         let fixture = MigrationImageArchiveTestSupport.fixture()
         let invalidRepoTags = MigrationImageArchiveTestSupport.replacingManifest(
@@ -256,7 +315,7 @@ struct MigrationImageArchiveTests {
         }
     }
 
-    @Test func rejectsMultipleRecordsDuplicateLayersAndInvalidConfigs() throws {
+    @Test func rejectsMultipleImagesDuplicateLayersAndInvalidConfigs() throws {
         let fixture = MigrationImageArchiveTestSupport.fixture()
         let config = fixture.entries[0].path
         let layers = [fixture.entries[1].path, fixture.entries[2].path]
@@ -273,7 +332,14 @@ struct MigrationImageArchiveTests {
         let invalid = [
             MigrationImageArchiveTestSupport.replacingManifest(
                 in: fixture,
-                payload: MigrationImageArchiveTestSupport.json([validRecord, validRecord])
+                payload: MigrationImageArchiveTestSupport.json([
+                    validRecord,
+                    [
+                        "Config": config,
+                        "RepoTags": NSNull(),
+                        "Layers": Array(layers.reversed())
+                    ] as [String: Any]
+                ])
             ),
             MigrationImageArchiveTestSupport.replacingManifest(
                 in: fixture,

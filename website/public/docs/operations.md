@@ -131,6 +131,27 @@ dory doctor --json --only mounts,watch,filelock
 
 These checks cover host edits, write and truncate behavior, locks, spaces in paths, and file-change delivery. Use them when Vite, Tailwind, Webpack, Rails, or another watcher does not rebuild.
 
+## Agent-ready named sandboxes
+
+Create one prepared environment for repeated local development or agent work:
+
+```sh
+dory sandbox create my-project --workspace .
+dory sandbox exec my-project -- COMMAND
+dory sandbox reset my-project --json
+dory sandbox kill my-project
+```
+
+Dory installs its core agent toolkit once and detects common project toolchains from the workspace.
+Use repeated `--tool` options to select Node, Python, Go, Rust, Java, Ruby, DevOps, Docker CLI, or
+Kubernetes tools explicitly. The workspace is mounted read-write at `/workspace`; other host files,
+network access, secrets, and the SSH agent remain unavailable unless granted.
+
+Tools and caches persist until the sandbox is reset or killed. Reset returns the guest to its clean
+prepared baseline without changing the host workspace. The 8 GB root filesystem is sparse and grows
+physically only when data is written. Inspect the current grants and limits with
+`dory sandbox inspect NAME --json`.
+
 ## Migrate an existing runtime
 
 Open Settings > Migrate & Compare. Keep the source runtime running and installed while Dory performs its read-only inventory and preflight.

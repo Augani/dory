@@ -436,15 +436,15 @@ final class AppStore {
         LocalDorydCapability(
             id: "mcp",
             title: "Read-only MCP",
-            summary: "Serve the local Dory tool surface over stdio while blocking machine exec writes.",
+            summary: "Serve the local Dory tool surface over stdio while blocking machine execution and sandbox mutations.",
             command: "dory mcp serve --read-only",
             status: "Stable"
         ),
         LocalDorydCapability(
             id: "sandbox",
-            title: "Sandbox VM",
-            summary: "Run non-root in a dedicated VM with read-only mount defaults, enforced network policy, resource caps, and daemon TTL cleanup.",
-            command: "dory sandbox run --json --network none --rollback -- /bin/sh -lc 'uname -a'",
+            title: "Agent-ready sandbox",
+            summary: "Run non-root in a dedicated VM with resource caps, or keep a named environment with prepared tools, warm caches, and a clean reset.",
+            command: "dory sandbox create my-project --workspace .",
             status: "Stable"
         ),
         LocalDorydCapability(

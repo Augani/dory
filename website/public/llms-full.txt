@@ -265,7 +265,7 @@ Wait uses `dev.dory.wait v1`. Events use `dev.dory.event v1` and `dev.dory.event
 
 Transport: stdio. Protocol version: 2025-11-25.
 
-Tools: dory.agent_guide, dory.doctor, dory.compat, dory.engine_status, dory.machine_list, dory.machine_exec, dory.sandbox_run, dory.wait, dory.events.
+Tools: dory.agent_guide, dory.doctor, dory.compat, dory.engine_status, dory.machine_list, dory.machine_exec, dory.sandbox_run, dory.sandbox_create, dory.sandbox_exec, dory.sandbox_reset, dory.sandbox_inspect, dory.sandbox_list, dory.sandbox_kill, dory.wait, dory.events.
 
 Use `--read-only` when inspection is sufficient. It blocks machine execution and sandbox writes.
 Dory's MCP is a Dory control surface, not a catalog, marketplace, or gateway for third-party MCP
@@ -277,8 +277,16 @@ servers.
     dory sandbox run --json --mount HOST:GUEST:ro -- COMMAND
     dory sandbox run --json --keep --ttl-seconds 3600 -- COMMAND
     dory sandbox run --json --network outbound --allow-network HOST:443 -- COMMAND
+    dory sandbox create NAME --workspace . [--tool TOOL]
+    dory sandbox exec NAME -- COMMAND
+    dory sandbox reset NAME --json
+    dory sandbox inspect NAME --json
+    dory sandbox list --json
+    dory sandbox kill NAME
 
 A sandbox is a dedicated Dory Linux VM and is deleted by default. Commands run non-root. No host files are visible unless a mount is provided, and mounts default read-only. Network defaults to `none`; `outbound` permits Dory DNS plus explicit destinations; `full` is an explicit unrestricted grant. Secrets and SSH agent access are opt-in and omitted from manifests. CPU, memory, disk, process, FD, wall, rollback, kill, named reuse, and daemon TTL controls are inspectable. Results use `dev.dory.sandbox.run v2`; manifests use `dev.dory.sandbox.manifest v1`.
+
+Agent-ready named sandboxes install a core coding toolkit once, detect common toolchains from an explicit workspace, and keep guest tools and caches warm. The workspace is mounted read-write at `/workspace`. Reset restores the clean prepared guest baseline without changing the host workspace. The 8 GB root filesystem is sparse and uses physical Mac storage only for written blocks. Run `dory sandbox --help` or inspect `dory agent guide --json` for the complete local option contract.
 
 ## Other commands
 

@@ -260,7 +260,7 @@
     },
     {
       "id": "sandbox",
-      "invoke": "dory sandbox run [--json] [--keep] [--network none|outbound|full] [--allow-network HOST[:PORT]] [--rollback] [--ttl-seconds N] [--mount HOST[:GUEST[:ro|rw]]] -- <command>",
+      "invoke": "dory sandbox run [options] -- COMMAND | dory sandbox create NAME [--workspace PATH] [--tool TOOL] [options] | dory sandbox exec NAME [options] -- COMMAND | dory sandbox reset|inspect|kill NAME | dory sandbox list",
       "status": "supported",
       "safeForAutomation": true,
       "json": true,
@@ -278,7 +278,20 @@
       "credentialGrants": ["secret-env", "ssh-agent"],
       "resourceCaps": ["cpu", "memory", "disk", "processes", "open-files", "wall-time"],
       "manifestSchema": "dev.dory.sandbox.manifest v1",
-      "notes": "Runs non-root in a dedicated VM and deletes it by default. Retained runs are inspectable and killable; no host files or credentials are visible unless explicitly granted."
+      "agentReady": {
+        "create": "dory sandbox create NAME [--workspace PATH] [--tool TOOL] [options]",
+        "exec": "dory sandbox exec NAME [options] -- COMMAND",
+        "reset": "dory sandbox reset NAME [--json]",
+        "coreTools": ["bash", "build tools", "curl", "fd", "git", "jq", "openssh-client", "python3", "ripgrep", "tar", "unzip", "zip"],
+        "toolchains": ["node", "python", "go", "rust", "java", "ruby", "devops", "docker-host", "k8s-lab"],
+        "workspaceGuestPath": "/workspace",
+        "workspaceMode": "rw",
+        "autoDetectFromWorkspace": true,
+        "persistentToolsAndCaches": true,
+        "cleanBaselineReset": true,
+        "sparseRootfsLogicalGiB": 8
+      },
+      "notes": "Runs commands in a dedicated VM and deletes it by default. Agent-ready named sandboxes keep prepared tools and caches between commands and can reset to a clean prepared baseline. No host files or credentials are visible unless explicitly granted."
     },
     {
       "id": "mcp",
@@ -288,7 +301,7 @@
       "json": true,
       "transport": "stdio",
       "protocolVersion": "2025-11-25",
-      "tools": ["dory.agent_guide", "dory.doctor", "dory.compat", "dory.engine_status", "dory.machine_list", "dory.machine_exec", "dory.sandbox_run", "dory.wait", "dory.events"],
+      "tools": ["dory.agent_guide", "dory.doctor", "dory.compat", "dory.engine_status", "dory.machine_list", "dory.machine_exec", "dory.sandbox_run", "dory.sandbox_create", "dory.sandbox_exec", "dory.sandbox_reset", "dory.sandbox_inspect", "dory.sandbox_list", "dory.sandbox_kill", "dory.wait", "dory.events"],
       "notes": "Thin stdio Dory control server over the CLI command core, not a third-party MCP catalog or gateway. Launch with --read-only to block machine exec and sandbox writes."
     }
   ]

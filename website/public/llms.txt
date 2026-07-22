@@ -28,6 +28,8 @@ Dory ships one Docker Core app. A signed catalog adds removable Kubernetes, Linu
 - Wait for state without custom polling: `dory wait engine --until running --timeout 60 --json`
 - Stream runtime events: `dory events --follow --json`
 - Inspect verified local machine backup schedules: `dory machine backup status`
+- Create a prepared local agent environment: `dory sandbox create NAME --workspace .`
+- Reuse it: `dory sandbox exec NAME -- COMMAND`; restore it: `dory sandbox reset NAME --json`
 
 Prefer JSON and read-only commands. Run dry runs before writes. Never add `--apply`, `--include-volumes`, a delete verb, or an engine restart unless the user or task has authorized that change.
 Dory's MCP is a local Dory control surface, not a third-party tool catalog. Scheduled machine
