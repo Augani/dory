@@ -31,7 +31,7 @@
 > Dory is built and qualified for Apple Silicon. Intel Mac support will follow after dedicated
 > hardware validation. Current downloads and the Homebrew cask do not include an Intel build.
 
-> Dory 0.4.1 is one smaller Docker Core app with optional, signed Kubernetes, Linux Machines,
+> Dory 0.4.2 is one smaller Docker Core app with optional, signed Kubernetes, Linux Machines,
 > Linux Desktop, Debian, Ubuntu, and Kali components. The website shows the exact total before
 > download, carries that choice into Dory for confirmation, and can remove optional payloads later
 > without deleting containers, volumes, cluster state, machine disks, snapshots, or exports.
@@ -96,8 +96,8 @@ component adds `kubectl`. Docker Desktop and a separate Docker CLI install are n
 
 ### Direct download
 
-Start with the one Apple Silicon [Dory 0.4.1 Docker Core
-DMG](https://github.com/Augani/dory/releases/download/v0.4.1/Dory-0.4.1-arm64.dmg). The signed
+Start with the one Apple Silicon [Dory 0.4.2 Docker Core
+DMG](https://github.com/Augani/dory/releases/download/v0.4.2/Dory-0.4.2-arm64.dmg). The signed
 catalog shows its exact download and installed sizes. Drag Dory to Applications, open it, then add
 only the components you want. The website's component selector can open the same selection in Dory
 after installation. Dory shows the signed sizes again and waits for explicit confirmation before
@@ -568,6 +568,12 @@ The stdio MCP server implements protocol version `2025-11-25` and exposes:
 - `dory.machine_list`
 - `dory.machine_exec`
 - `dory.sandbox_run`
+- `dory.sandbox_create`
+- `dory.sandbox_exec`
+- `dory.sandbox_reset`
+- `dory.sandbox_inspect`
+- `dory.sandbox_list`
+- `dory.sandbox_kill`
 - `dory.wait`
 - `dory.events`
 
@@ -585,6 +591,27 @@ dory sandbox run --json --network none --rollback -- /bin/sh -lc 'uname -a'
 dory sandbox run --json --mount "$PWD:/workspace" -- /bin/sh -lc 'ls /workspace'
 dory sandbox run --json --network outbound --allow-network registry.example.com:443 -- COMMAND
 ```
+
+For repeated local development or testing, create an Agent-ready named sandbox once and reuse it:
+
+```sh
+dory sandbox create my-project --workspace .
+dory sandbox exec my-project -- go test ./...
+dory sandbox inspect my-project --json
+dory sandbox reset my-project --json
+dory sandbox kill my-project
+```
+
+The core profile includes Bash, build tools, Git, curl, jq, ripgrep, Python, SSH tools, and common
+archive utilities. Dory detects Node, Python, Go, Rust, Java, and Ruby projects from the workspace,
+or you can repeat `--tool` to choose explicitly. Tools and caches stay warm between commands.
+`reset` restores the prepared baseline without changing the mounted host workspace. The sandbox
+root filesystem is sparse, so its 8 GB logical capacity consumes Mac storage only as data is
+written.
+
+Run `dory sandbox --help` for every local option. The same create, exec, reset, inspect, list, kill,
+permission, credential, resource, timeout, and rollback controls are available to local agents
+through `dory mcp serve` and are described by `dory agent guide --json`.
 
 Machine-readable references:
 

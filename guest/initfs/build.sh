@@ -206,7 +206,7 @@ install_fex() {
   mkdir -p "$bundle/share" "$bundle/licenses" "$bundle/provenance"
   require_file_hash "$fex_root/usr/bin/FEX" 1acee202ec3a90bcba6b458504218fca201fbc8bc3cfaee372cc2c4be38a6fc1
   require_file_hash "$fex_root/usr/bin/FEXServer" b50bcd67b893f68f6963aba16fd89ba0df3d5b9126be09786fcd61d621708698
-  require_file_hash "$vendor/FEX" b862d2a4358b102b125ae50da357b189a5d4710a3be830ef3280cba400c7099b
+  require_file_hash "$vendor/FEX" 01921fa471efc53c955b1d6263f7df4ad0f08f082669a3a7adb6f1e1d5ac0c28
   require_file_hash "$vendor/FEXServer" bbe8a34fc2ba4e606acd7e5b11d9b51da283835f40d2851e2ed39d35d28f2597
   require_file_hash "$vendor/BUILD_PACKAGES.txt" ad3b0e4ab4e53ac328b0209f592a6f86100f5ca2c17715f2b40ee9b130b0f0b1
   require_file_hash "$vendor/LICENSE.FEX" f34a779f56b36d22b20e1b990d23e583a6a7ca071331925fa46156441c77a1ee
@@ -222,7 +222,7 @@ install_fex() {
   install -m0644 "$gcc_base_root/usr/share/doc/gcc-14-base/copyright" \
     "$bundle/licenses/gcc-14-base.copyright"
 
-  require_file_hash "$bundle/FEX" b862d2a4358b102b125ae50da357b189a5d4710a3be830ef3280cba400c7099b
+  require_file_hash "$bundle/FEX" 01921fa471efc53c955b1d6263f7df4ad0f08f082669a3a7adb6f1e1d5ac0c28
   require_file_hash "$bundle/FEXServer" bbe8a34fc2ba4e606acd7e5b11d9b51da283835f40d2851e2ed39d35d28f2597
   require_file_hash "$bundle/provenance/BUILD_PACKAGES.txt" ad3b0e4ab4e53ac328b0209f592a6f86100f5ca2c17715f2b40ee9b130b0f0b1
 
@@ -232,6 +232,8 @@ install_fex() {
   {
     echo "FEX-Emu FEX-2607 (commit 1cc4b93e7a71c883ec021b71359f136394dc1f3c)"
     echo "Dory container-FD, chroot-proc, and nested-exec patch SHA-256 374eb59a207c0356f548295552f235c0eeadcdbac360a64b01535933a1af8f8a"
+    echo "Upstream ProcessorID stack fix b5660c8a922c1e5ddfe9bea91abaaf5c52cd48a6 SHA-256 e1da91d76caf48ed30183486abcc9a0eb768d28fd5d041a8b4cbe1c7b75df35c"
+    echo "Dory complete signal-context restore patch SHA-256 e405db087203d5f22d50b54820b6a2120d013c0cdd33d1db343f4fac4c1d1e22"
     echo "Build base ubuntu:24.04@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90"
     echo "Build packages Ubuntu snapshot 20260713T120000Z"
     echo "Build SOURCE_DATE_EPOCH=1783039651 (upstream source commit timestamp)"

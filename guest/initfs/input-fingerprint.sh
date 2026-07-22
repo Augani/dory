@@ -67,6 +67,8 @@ if [ "$ARCH" = arm64 ]; then
     guest/initfs/vendor/fex-2607-dory1/README.md
     guest/initfs/vendor/fex-2607-dory1/rebuild.sh
     patches/fex-container-fd-isolation.patch
+    patches/fex-processor-id-stack-fix.patch
+    patches/fex-restore-complete-signal-context.patch
   )
 fi
 

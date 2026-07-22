@@ -50,6 +50,22 @@ public enum MachineRecipeProvisioner {
     public static func recipe(id rawID: String) throws -> Recipe {
         let id = rawID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         switch id {
+        case "agent", "agent-core", "agent-ready":
+            let installScript = packageInstallScript(
+                alpine: "bash build-base ca-certificates coreutils curl fd file findutils git jq less openssh-client patch python3 py3-pip ripgrep tar unzip zip",
+                debian: "bash build-essential ca-certificates coreutils curl fd-find file findutils git jq less openssh-client patch python3 python3-pip ripgrep tar unzip zip"
+            ) + """
+            if ! command -v fd >/dev/null 2>&1 && command -v fdfind >/dev/null 2>&1; then
+              ln -sf "$(command -v fdfind)" /usr/local/bin/fd
+            fi
+            """
+            return Recipe(
+                id: "agent-core",
+                installScript: installScript,
+                verifyCommand: "bash --version && git --version && curl --version && jq --version && rg --version && fd --version && python3 --version && make --version",
+                timeoutMs: 600_000,
+                outputLimitBytes: 4 * 1024 * 1024
+            )
         case "rust", "rust-dev":
             return Recipe(
                 id: "rust",

@@ -577,6 +577,38 @@ struct HostFSTests {
         #expect(try fs.getattr(nodeID: original.nodeID).uid == 999)
     }
 
+    @Test func createdEntriesUseTheRequestingContainerOwner() throws {
+        let root = try TestHostFSRoot()
+        let fs = try HostFS(rootPath: root.url.path)
+
+        let directory = try fs.mkdir(
+            parent: HostFS.rootNodeID,
+            name: "cache",
+            ownerUID: 1_000,
+            ownerGID: 1_001
+        )
+        let file = try fs.createFile(
+            parent: directory.nodeID,
+            name: "entry.bin",
+            ownerUID: 1_000,
+            ownerGID: 1_001
+        )
+        let link = try fs.symlink(
+            parent: directory.nodeID,
+            name: "entry-link",
+            target: "entry.bin",
+            ownerUID: 1_000,
+            ownerGID: 1_001
+        )
+
+        for entry in [directory, file, link] {
+            #expect(entry.attributes.uid == 1_000)
+            #expect(entry.attributes.gid == 1_001)
+            #expect(try fs.getattr(nodeID: entry.nodeID).uid == 1_000)
+            #expect(try fs.getattr(nodeID: entry.nodeID).gid == 1_001)
+        }
+    }
+
     @Test func unlinkingOneHardLinkKeepsCanonicalNodeAliveThroughItsOtherBinding() throws {
         let root = try TestHostFSRoot()
         try root.write("shared inode", to: "a.txt")

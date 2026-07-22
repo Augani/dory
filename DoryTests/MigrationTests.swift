@@ -2769,6 +2769,8 @@ struct MigrationTests {
         let imageRepository = "dory-migration-fixture"
         let imageTag = String(suffix)
         let imageReference = "\(imageRepository):\(imageTag)"
+        let imageAliasOne = "\(imageRepository)-alias-one:\(imageTag)"
+        let imageAliasTwo = "\(imageRepository)-alias-two:\(imageTag)"
         let marker = "migration-payload-\(suffix)"
         let allocatedHostPort = AppStore.allocateFreePort()
         let fixedHostPort = try #require(allocatedHostPort > 0 ? allocatedHostPort : nil)
@@ -2815,6 +2817,8 @@ struct MigrationTests {
                 try? await runtime.removeVolume(name: secondaryVolumeName)
                 try? await runtime.removeNetwork(name: networkName)
                 try? await runtime.removeImage(id: imageReference)
+                try? await runtime.removeImage(id: imageAliasOne)
+                try? await runtime.removeImage(id: imageAliasTwo)
             }
             // Containerd can reject deleting a base manifest until its writable-layer children
             // are gone. Retry this exact, operation-captured ID set; never prune unrelated images.
@@ -2827,7 +2831,9 @@ struct MigrationTests {
             // coordinator has returned its receipt. Remove it after writable-layer children,
             // and only when the image was not present in the target baseline.
             if let snapshot = try? await target.snapshot() {
-                let fixtureReferences = Set([baseImage, imageReference].map {
+                let fixtureReferences = Set([
+                    baseImage, imageReference, imageAliasOne, imageAliasTwo,
+                ].map {
                     MigrationOperationPlanBuilder.canonicalImageReference($0)
                 })
                 for image in snapshot.images where !targetBaselineImageIDs.contains(image.imageID) {
@@ -2840,6 +2846,16 @@ struct MigrationTests {
 
         do {
             try await source.tagImage(source: baseImage, repo: imageRepository, tag: imageTag)
+            try await source.tagImage(
+                source: baseImage,
+                repo: "\(imageRepository)-alias-one",
+                tag: imageTag
+            )
+            try await source.tagImage(
+                source: baseImage,
+                repo: "\(imageRepository)-alias-two",
+                tag: imageTag
+            )
             try await source.createVolume(
                 name: volumeName,
                 driver: "local",
@@ -2972,6 +2988,9 @@ struct MigrationTests {
                 MigrationImageTransferExecution.canonicalImageID($0.imageID)
                     == MigrationImageTransferExecution.canonicalImageID(sourceImageID)
             })
+            #expect(Set(MigrationOperationPlanBuilder.imageReferences(sourceImage)).isSuperset(of: [
+                imageAliasOne, imageAliasTwo,
+            ]))
             let filtered = FilteredLiveMigrationSource(base: source, inventory: RuntimeSnapshot(
                 containers: [sourceContainer, stoppedSourceContainer],
                 images: [sourceImage],

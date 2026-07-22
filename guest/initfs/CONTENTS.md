@@ -11,8 +11,8 @@ The builder is intentionally reproducible from pinned public inputs in `guest/in
 - Docker static 29.6.1 for `arm64` and `amd64`
 - crun 1.28 static OCI runtime for explicit `--runtime crun` use on `arm64` and `amd64`
 - FEX-Emu 2607 commit `1cc4b93e7a71c883ec021b71359f136394dc1f3c`, Dory's
-  hash-locked container-FD, proc-less chroot, and nested-exec patch, and static-PIE ARM64
-  executables on `arm64`
+  hash-locked container-FD, proc-less chroot, and nested-exec patch, the upstream ProcessorID
+  stack fix, complete x86-64 signal-context restoration, and static-PIE ARM64 executables on `arm64`
 - Dory's guest agent from `guest/out/dory-agent-<arch>`
 
 Runtime contents added by Dory:

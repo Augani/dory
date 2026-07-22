@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+## 0.4.2 - 2026-07-22
+
+### Added
+
+- Added Agent-ready named sandboxes with a core coding toolkit, optional or automatically detected
+  project toolchains, persistent caches, an explicit read-write workspace, and a clean prepared
+  baseline that can be restored with `dory sandbox reset`.
+- Exposed named sandbox create, exec, reset, inspect, list, and kill operations to local agents
+  through Dory's CLI, versioned agent guide, and stdio MCP server.
+
+### Fixed
+
+- Fixed sandbox runs racing the Linux machine agent during start, snapshot, and rollback. Dory now
+  waits for full machine readiness, restores firewall policy after restarts, and cleans up failed
+  setup without leaving an incomplete machine behind.
+- Fixed allowlisted outbound sandbox DNS using a hardcoded resolver address. Dory now applies the
+  active guest resolver and preserves a named sandbox's network policy when it is reused.
+- Fixed `linux/amd64` Go builds on Apple Silicon that could crash randomly during asynchronous
+  preemption, including Go 1.26 builds based on Alpine 3.23.
+- Fixed bind-mounted host folders rejecting writes from containers whose user ID differs from the
+  signed-in macOS user, while preserving the requesting container user's ownership inside the VM.
+- Fixed OrbStack image migration when an archive repeats tag or OCI index records for the same
+  immutable image. Dory now safely coalesces those aliases and still rejects true multi-image
+  archives.
+
 ## 0.4.1 - 2026-07-22
 
 ### Fixed
