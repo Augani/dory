@@ -119,6 +119,38 @@ final class HvProcessTests: XCTestCase {
         XCTAssertNil(process.pid)
     }
 
+    func testConcurrentStopsShareProcessTerminationCompletion() throws {
+        let process = HvProcess(configuration: HvProcessConfiguration(
+            executablePath: "/bin/sh",
+            arguments: ["-c", "trap 'sleep 0.5; exit 0' TERM; while true; do sleep 0.05; done"]
+        ))
+        try process.start()
+        Thread.sleep(forTimeInterval: 0.1)
+
+        let callersReady = DispatchGroup()
+        let callersFinished = DispatchGroup()
+        let startGate = DispatchSemaphore(value: 0)
+        for _ in 0..<2 {
+            callersReady.enter()
+            callersFinished.enter()
+            DispatchQueue.global(qos: .userInitiated).async {
+                callersReady.leave()
+                startGate.wait()
+                process.stop(timeout: 1.5)
+                callersFinished.leave()
+            }
+        }
+        XCTAssertEqual(callersReady.wait(timeout: .now() + 1), .success)
+
+        let startedAt = Date()
+        startGate.signal()
+        startGate.signal()
+        XCTAssertEqual(callersFinished.wait(timeout: .now() + 1), .success)
+        XCTAssertLessThan(Date().timeIntervalSince(startedAt), 1)
+        XCTAssertFalse(process.isRunning)
+        XCTAssertNil(process.pid)
+    }
+
     func testStopBeforeFirstStartPreventsLateSpawn() throws {
         let process = HvProcess(configuration: HvProcessConfiguration(
             executablePath: "/bin/sleep",
