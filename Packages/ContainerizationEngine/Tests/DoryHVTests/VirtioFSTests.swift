@@ -1431,6 +1431,8 @@ private final class TestVirtioFSRoot {
 
 private final class VirtioFSNotificationHarness {
     private static let base: UInt64 = 0x8000_0000
+    // Queue and buffer fixtures use fixed offsets through 0x73xxx on both host architectures.
+    private static let memorySize: UInt64 = 0x10_0000
     private let root: TestVirtioFSRoot
     let hostFS: HostFS
     let fs: VirtioFS
@@ -1459,7 +1461,7 @@ private final class VirtioFSNotificationHarness {
             notificationBacklogLimit: notificationBacklogLimit,
             inlineRequests: inlineRequests
         )
-        memory = try GuestMemory(guestBase: Self.base, size: 64 * HostPage.size)
+        memory = try GuestMemory(guestBase: Self.base, size: Self.memorySize)
         transport = VirtioMMIOTransport(
             baseAddress: 0x0A00_0000,
             backend: fs,
