@@ -31,7 +31,7 @@
 > Dory is built and qualified for Apple Silicon. Intel Mac support will follow after dedicated
 > hardware validation. Current downloads and the Homebrew cask do not include an Intel build.
 
-> Dory 0.4.1 is one smaller Docker Core app with optional, signed Kubernetes, Linux Machines,
+> Dory 0.4.2 is one smaller Docker Core app with optional, signed Kubernetes, Linux Machines,
 > Linux Desktop, Debian, Ubuntu, and Kali components. The website shows the exact total before
 > download, carries that choice into Dory for confirmation, and can remove optional payloads later
 > without deleting containers, volumes, cluster state, machine disks, snapshots, or exports.
@@ -96,8 +96,8 @@ component adds `kubectl`. Docker Desktop and a separate Docker CLI install are n
 
 ### Direct download
 
-Start with the one Apple Silicon [Dory 0.4.1 Docker Core
-DMG](https://github.com/Augani/dory/releases/download/v0.4.1/Dory-0.4.1-arm64.dmg). The signed
+Start with the one Apple Silicon [Dory 0.4.2 Docker Core
+DMG](https://github.com/Augani/dory/releases/download/v0.4.2/Dory-0.4.2-arm64.dmg). The signed
 catalog shows its exact download and installed sizes. Drag Dory to Applications, open it, then add
 only the components you want. The website's component selector can open the same selection in Dory
 after installation. Dory shows the signed sizes again and waits for explicit confirmation before

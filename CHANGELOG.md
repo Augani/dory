@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 0.4.2 - 2026-07-22
+
+### Fixed
+
+- Fixed `linux/amd64` Go builds on Apple Silicon that could crash randomly during asynchronous
+  preemption, including Go 1.26 builds based on Alpine 3.23.
+- Fixed bind-mounted host folders rejecting writes from containers whose user ID differs from the
+  signed-in macOS user, while preserving the requesting container user's ownership inside the VM.
+
 ## 0.4.1 - 2026-07-22
 
 ### Fixed
