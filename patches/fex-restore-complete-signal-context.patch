@@ -1,0 +1,11 @@
+diff --git a/Source/Tools/LinuxEmulation/LinuxSyscalls/SignalDelegator/GuestFramesManagement.cpp b/Source/Tools/LinuxEmulation/LinuxSyscalls/SignalDelegator/GuestFramesManagement.cpp
+index 2401fe496..229f9f644 100644
+--- a/Source/Tools/LinuxEmulation/LinuxSyscalls/SignalDelegator/GuestFramesManagement.cpp
++++ b/Source/Tools/LinuxEmulation/LinuxSyscalls/SignalDelegator/GuestFramesManagement.cpp
+@@ -130,2 +130,4 @@ void SignalDelegator::RestoreFrame_x64(FEXCore::Core::InternalThreadState* Threa
+-  // If the guest modified the RIP then we need to take special precautions here
+-  if (Context->OriginalRIP != guest_uctx->uc_mcontext.gregs[FEXCore::x86_64::FEX_REG_RIP] || Context->FaultToTopAndGeneratedException) {
++  // A guest signal handler may update any part of the saved context, including the stack pointer
++  // without changing RIP. Always rebuild the complete guest state and resume through the dispatcher
++  // so those edits are honored and stale JIT register state cannot leak across sigreturn.
++  {
