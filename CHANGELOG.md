@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.4.1 - 2026-07-22
+
+### Fixed
+
+- Fixed Linux desktop creation using the Debian root filesystem lookup even when Ubuntu or Kali
+  was selected, which could report `missingAsset("root filesystem")` after the correct component
+  was installed.
+
 ## 0.4.0 - 2026-07-21
 
 ### Added

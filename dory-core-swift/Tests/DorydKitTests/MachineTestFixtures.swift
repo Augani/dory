@@ -2,6 +2,13 @@ import Foundation
 
 let doryTestKernelPath: String = makeMachineTestArtifact(name: "kernel")
 let doryTestRootfsPath: String = makeMachineTestArtifact(name: "rootfs.ext4")
+#if arch(arm64)
+let doryTestGuestArchitecture = "arm64"
+#elseif arch(x86_64)
+let doryTestGuestArchitecture = "amd64"
+#else
+let doryTestGuestArchitecture = "unsupported"
+#endif
 
 private let machineTestCleanupRegistration = atexit {
     unlink(machineTestArtifactPath(name: "kernel"))

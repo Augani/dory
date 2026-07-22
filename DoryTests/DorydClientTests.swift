@@ -4,6 +4,21 @@ import Testing
 
 @Suite(.serialized)
 struct DorydClientTests {
+    @Test func desktopAssetEnvironmentUsesSelectedDistribution() {
+        for distro in DesktopMachineDistro.allCases {
+            let environment = AppStore.desktopAssetEnvironment(
+                processEnvironment: [
+                    "DORY_DESKTOP_DISTRO": distro == .kali ? "ubuntu" : "kali",
+                    "DORYD_DESKTOP_ROOTFS": "/tmp/rootfs.raw",
+                ],
+                distro: distro
+            )
+
+            #expect(environment["DORY_DESKTOP_DISTRO"] == distro.rawValue)
+            #expect(environment["DORYD_DESKTOP_ROOTFS"] == "/tmp/rootfs.raw")
+        }
+    }
+
     @MainActor
     @Test func dorydIsTheOnlyProductionOwnerForDorysLocalEngine() {
         #expect(AppStore.dorydEngineEnabled(environment: [:]))
@@ -686,8 +701,11 @@ struct DorydClientTests {
                 "DORYD_MACHINE_KERNEL": "/vm/Image",
                 "DORYD_MACHINE_ROOTFS": "/vm/rootfs.raw",
             ],
-            desktopMachineAssetPreparer: { _, _, _ in
-                DesktopMachineAssets(kernelPath: "/vm/Image", rootfsPath: "/vm/rootfs.raw")
+            desktopMachineAssetPreparer: { _, environment, _ in
+                guard environment["DORY_DESKTOP_DISTRO"] == "ubuntu" else {
+                    throw DesktopMachineAssetError.missingAsset("root filesystem")
+                }
+                return DesktopMachineAssets(kernelPath: "/vm/Image", rootfsPath: "/vm/rootfs.raw")
             }
         )
         store.routeDockerCLI = false
@@ -700,7 +718,10 @@ struct DorydClientTests {
                 cpus: 3,
                 memoryMB: 3072,
                 mounts: [MountPair(host: "/Users/me/project", guest: "/workspace/project")],
-                env: ["APP_ENV": "dev"],
+                env: [
+                    "APP_ENV": "dev",
+                    "DORY_DESKTOP_DISTRO": "ubuntu",
+                ],
                 displayMode: .desktop
             )
         )
@@ -722,8 +743,15 @@ struct DorydClientTests {
         #expect(createShares.first?["hostPath"] as? String == "/Users/me/project")
         #expect(createShares.first?["guestPath"] as? String == "/workspace/project")
         let createEnv = try #require(config["env"] as? [NSDictionary])
-        #expect(createEnv.first?["key"] as? String == "APP_ENV")
-        #expect(createEnv.first?["value"] as? String == "dev")
+        let createEnvValues: [String: String] = Dictionary(
+            uniqueKeysWithValues: createEnv.compactMap { entry -> (String, String)? in
+                guard let key = entry["key"] as? String,
+                      let value = entry["value"] as? String else { return nil }
+                return (key, value)
+            }
+        )
+        #expect(createEnvValues["APP_ENV"] == "dev")
+        #expect(createEnvValues["DORY_DESKTOP_DISTRO"] == "ubuntu")
 
         try await waitUntil {
             store.machines.first { $0.name == "vmdev" }?.status == .running

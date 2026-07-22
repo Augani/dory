@@ -5400,6 +5400,15 @@ final class AppStore {
         return copy
     }
 
+    nonisolated static func desktopAssetEnvironment(
+        processEnvironment: [String: String],
+        distro: DesktopMachineDistro
+    ) -> [String: String] {
+        var result = processEnvironment
+        result["DORY_DESKTOP_DISTRO"] = distro.rawValue
+        return result
+    }
+
     nonisolated static func preservingHiddenMachineSettings(_ settings: MachineSettings, existing: MachineSettings) -> MachineSettings {
         var copy = settings
         if copy.env.isEmpty { copy.env = existing.env }
@@ -5563,7 +5572,7 @@ final class AppStore {
                 let resourceDirectory = Bundle.main.resourcePath
                 desktopAssets = try await desktopMachineAssetPreparer(
                     home,
-                    environment,
+                    Self.desktopAssetEnvironment(processEnvironment: environment, distro: distro),
                     resourceDirectory
                 )
                 appendMachineCreationLog("Desktop assets verified. Creating a 64 GB thin-provisioned disk…")

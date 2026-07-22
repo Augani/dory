@@ -1,6 +1,6 @@
 # Dory complete agent reference
 
-Version: Dory 0.4.0
+Version: Dory 0.4.1
 Host contract: Apple Silicon Mac, macOS 14 or later
 License: GPL-3.0
 Local socket: ~/.dory/dory.sock
