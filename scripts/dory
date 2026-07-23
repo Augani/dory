@@ -4093,7 +4093,16 @@ mcp_cmd() {
     esac
   done
 
-  python3 /dev/fd/3 "$DORY_SCRIPT_SOURCE" "$read_only" "$DORY_CLI_VERSION" 3<<'PY'
+  # macOS: `python3 /dev/fd/3 … 3<<'PY'` often executes an empty script (Apple Python +
+  # bash heredoc on a pipe fd). Write a real temp file so stdin stays free for MCP stdio.
+  local mcp_py status=0
+  mcp_py="$(mktemp "${TMPDIR:-/tmp}/dory-mcp.XXXXXX.py")" || {
+    echo "dory mcp serve: could not create a temporary Python file" >&2
+    exit 1
+  }
+  # shellcheck disable=SC2064
+  trap 'rm -f -- "$mcp_py"' EXIT
+  cat >"$mcp_py" <<'PY'
 import json
 import os
 import subprocess
@@ -4125,14 +4134,14 @@ def schema_object(properties: Optional[dict[str, Any]] = None, required: Optiona
 
 TOOLS: list[dict[str, Any]] = [
     {
-        "name": "dory.agent_guide",
+        "name": "dory_agent_guide",
         "title": "Dory Agent Guide",
         "description": "Return Dory's machine-readable CLI capability map.",
         "inputSchema": schema_object(),
         "annotations": {"readOnlyHint": True},
     },
     {
-        "name": "dory.doctor",
+        "name": "dory_doctor",
         "title": "Dory Doctor",
         "description": "Run Dory diagnostics as JSON. Use this before repair or runtime changes.",
         "inputSchema": schema_object({
@@ -4142,7 +4151,7 @@ TOOLS: list[dict[str, Any]] = [
         "annotations": {"readOnlyHint": True},
     },
     {
-        "name": "dory.compat",
+        "name": "dory_compat",
         "title": "Dory Compatibility",
         "description": "Check tool compatibility recipes and live status as JSON.",
         "inputSchema": schema_object({
@@ -4151,21 +4160,21 @@ TOOLS: list[dict[str, Any]] = [
         "annotations": {"readOnlyHint": True},
     },
     {
-        "name": "dory.engine_status",
+        "name": "dory_engine_status",
         "title": "Dory Engine Status",
         "description": "Return local engine status without waking or changing it.",
         "inputSchema": schema_object(),
         "annotations": {"readOnlyHint": True},
     },
     {
-        "name": "dory.machine_list",
+        "name": "dory_machine_list",
         "title": "Dory Machine List",
         "description": "List doryd-managed Linux machines.",
         "inputSchema": schema_object(),
         "annotations": {"readOnlyHint": True},
     },
     {
-        "name": "dory.machine_exec",
+        "name": "dory_machine_exec",
         "title": "Dory Machine Exec",
         "description": "Execute a command in a doryd-managed Linux machine and return schema dev.dory.machine.exec v1.",
         "inputSchema": schema_object({
@@ -4188,7 +4197,7 @@ TOOLS: list[dict[str, Any]] = [
         "annotations": {"readOnlyHint": False, "destructiveHint": True},
     },
     {
-        "name": "dory.sandbox_run",
+        "name": "dory_sandbox_run",
         "title": "Dory Sandbox Run",
         "description": "Run a bounded, non-root command in a dedicated Dory sandbox VM. Deletes the sandbox by default; use sandbox_create for a prepared named environment.",
         "inputSchema": schema_object({
@@ -4235,7 +4244,7 @@ TOOLS: list[dict[str, Any]] = [
         "annotations": {"readOnlyHint": False, "destructiveHint": True},
     },
     {
-        "name": "dory.sandbox_create",
+        "name": "dory_sandbox_create",
         "title": "Create Agent-ready Sandbox",
         "description": "Create a warm named sandbox with core agent tools, persistent caches, an optional project workspace, and a clean reset baseline.",
         "inputSchema": schema_object({
@@ -4263,7 +4272,7 @@ TOOLS: list[dict[str, Any]] = [
         "annotations": {"readOnlyHint": False, "destructiveHint": True},
     },
     {
-        "name": "dory.sandbox_exec",
+        "name": "dory_sandbox_exec",
         "title": "Execute in Named Sandbox",
         "description": "Run a command in an existing named sandbox while keeping its prepared tools, caches, workspace, and machine resources.",
         "inputSchema": schema_object({
@@ -4282,35 +4291,35 @@ TOOLS: list[dict[str, Any]] = [
         "annotations": {"readOnlyHint": False, "destructiveHint": True},
     },
     {
-        "name": "dory.sandbox_reset",
+        "name": "dory_sandbox_reset",
         "title": "Reset Agent-ready Sandbox",
         "description": "Restore an Agent-ready named sandbox to its prepared baseline without changing its host workspace.",
         "inputSchema": schema_object({"name": {"type": "string"}}, ["name"]),
         "annotations": {"readOnlyHint": False, "destructiveHint": True},
     },
     {
-        "name": "dory.sandbox_inspect",
+        "name": "dory_sandbox_inspect",
         "title": "Inspect Sandbox",
         "description": "Return the persisted manifest for a named or retained sandbox.",
         "inputSchema": schema_object({"name": {"type": "string"}}, ["name"]),
         "annotations": {"readOnlyHint": True},
     },
     {
-        "name": "dory.sandbox_list",
+        "name": "dory_sandbox_list",
         "title": "List Sandboxes",
         "description": "List persisted sandbox manifests, including lifecycle state and prepared profiles.",
         "inputSchema": schema_object(),
         "annotations": {"readOnlyHint": True},
     },
     {
-        "name": "dory.sandbox_kill",
+        "name": "dory_sandbox_kill",
         "title": "Kill Sandbox",
         "description": "Stop and delete one sandbox machine by its exact name.",
         "inputSchema": schema_object({"name": {"type": "string"}}, ["name"]),
         "annotations": {"readOnlyHint": False, "destructiveHint": True},
     },
     {
-        "name": "dory.wait",
+        "name": "dory_wait",
         "title": "Dory Wait",
         "description": "Wait for an engine, container, or machine state using Dory's wait primitive.",
         "inputSchema": schema_object({
@@ -4323,7 +4332,7 @@ TOOLS: list[dict[str, Any]] = [
         "annotations": {"readOnlyHint": True},
     },
     {
-        "name": "dory.events",
+        "name": "dory_events",
         "title": "Dory Events",
         "description": "Return recent Dory idle and incident events. This tool does not follow forever.",
         "inputSchema": schema_object({
@@ -4464,9 +4473,9 @@ def append_sandbox_limits(command: list[str], args: dict[str, Any], include_mach
 
 def call_tool(name: str, arguments: Any) -> dict[str, Any]:
     args = require_object(arguments)
-    if name == "dory.agent_guide":
+    if name == "dory_agent_guide":
         return tool_result(run_cli(["agent", "guide", "--json"]))
-    if name == "dory.doctor":
+    if name == "dory_doctor":
         command = ["doctor", "--json"]
         if args.get("active") is True:
             command.append("--active")
@@ -4474,19 +4483,19 @@ def call_tool(name: str, arguments: Any) -> dict[str, Any]:
         if only:
             command.extend(["--only", only])
         return tool_result(run_cli(command))
-    if name == "dory.compat":
+    if name == "dory_compat":
         command = ["compat", "--json"]
         only = string_arg(args, "only")
         if only:
             command.extend(["--only", only])
         return tool_result(run_cli(command))
-    if name == "dory.engine_status":
+    if name == "dory_engine_status":
         return tool_result(run_cli(["engine", "status", "--json"]))
-    if name == "dory.machine_list":
+    if name == "dory_machine_list":
         return tool_result({"machines": run_cli(["machine", "list"])})
-    if name == "dory.machine_exec":
+    if name == "dory_machine_exec":
         if READ_ONLY:
-            return tool_error("dory.machine_exec is disabled because this MCP server is running in read-only mode")
+            return tool_error("dory_machine_exec is disabled because this MCP server is running in read-only mode")
         machine = string_arg(args, "name", required=True)
         command_value = args.get("command")
         if not isinstance(command_value, list) or not command_value or not all(isinstance(item, str) for item in command_value):
@@ -4507,9 +4516,9 @@ def call_tool(name: str, arguments: Any) -> dict[str, Any]:
         command.extend(["--output-limit-bytes", str(output_limit)])
         command.extend(["--", *command_value])
         return tool_result(run_cli(command, timeout=max(10, timeout_seconds + 15)))
-    if name == "dory.sandbox_run":
+    if name == "dory_sandbox_run":
         if READ_ONLY:
-            return tool_error("dory.sandbox_run is disabled because this MCP server is running in read-only mode")
+            return tool_error("dory_sandbox_run is disabled because this MCP server is running in read-only mode")
         command_value = args.get("command")
         if not isinstance(command_value, list) or not command_value or not all(isinstance(item, str) for item in command_value):
             raise ToolExecutionError("command must be a non-empty array of strings")
@@ -4552,9 +4561,9 @@ def call_tool(name: str, arguments: Any) -> dict[str, Any]:
         tool_count = len(string_list_arg(args, "tools"))
         provision_count = tool_count + (1 if bool_arg(args, "agentReady") or tool_count else 0)
         return tool_result(run_cli(command, timeout=wall_seconds + 300 + 2_600 * provision_count))
-    if name == "dory.sandbox_create":
+    if name == "dory_sandbox_create":
         if READ_ONLY:
-            return tool_error("dory.sandbox_create is disabled because this MCP server is running in read-only mode")
+            return tool_error("dory_sandbox_create is disabled because this MCP server is running in read-only mode")
         sandbox_name = string_arg(args, "name", required=True)
         command = ["sandbox", "create", sandbox_name, "--json"]
         workspace = string_arg(args, "workspace")
@@ -4575,9 +4584,9 @@ def call_tool(name: str, arguments: Any) -> dict[str, Any]:
         # add all six project language toolchains. Each recipe can retry once after an interruption.
         provision_count = 1 + (len(tools) if tools else (6 if workspace else 0))
         return tool_result(run_cli(command, timeout=wall_seconds + 300 + 2_600 * provision_count))
-    if name == "dory.sandbox_exec":
+    if name == "dory_sandbox_exec":
         if READ_ONLY:
-            return tool_error("dory.sandbox_exec is disabled because this MCP server is running in read-only mode")
+            return tool_error("dory_sandbox_exec is disabled because this MCP server is running in read-only mode")
         sandbox_name = string_arg(args, "name", required=True)
         command_value = args.get("command")
         if not isinstance(command_value, list) or not command_value or not all(isinstance(item, str) for item in command_value):
@@ -4592,23 +4601,23 @@ def call_tool(name: str, arguments: Any) -> dict[str, Any]:
         wall_seconds = append_sandbox_limits(command, args, include_machine=False)
         command.extend(["--", *command_value])
         return tool_result(run_cli(command, timeout=wall_seconds + 180))
-    if name == "dory.sandbox_reset":
+    if name == "dory_sandbox_reset":
         if READ_ONLY:
-            return tool_error("dory.sandbox_reset is disabled because this MCP server is running in read-only mode")
+            return tool_error("dory_sandbox_reset is disabled because this MCP server is running in read-only mode")
         sandbox_name = string_arg(args, "name", required=True)
         return tool_result(run_cli(["sandbox", "reset", sandbox_name, "--json"], timeout=360))
-    if name == "dory.sandbox_inspect":
+    if name == "dory_sandbox_inspect":
         sandbox_name = string_arg(args, "name", required=True)
         return tool_result(run_cli(["sandbox", "inspect", sandbox_name, "--json"]))
-    if name == "dory.sandbox_list":
+    if name == "dory_sandbox_list":
         return tool_result(run_cli(["sandbox", "list", "--json"]))
-    if name == "dory.sandbox_kill":
+    if name == "dory_sandbox_kill":
         if READ_ONLY:
-            return tool_error("dory.sandbox_kill is disabled because this MCP server is running in read-only mode")
+            return tool_error("dory_sandbox_kill is disabled because this MCP server is running in read-only mode")
         sandbox_name = string_arg(args, "name", required=True)
         output = run_cli(["sandbox", "kill", sandbox_name], expect_json=False)
         return tool_result({"sandbox": sandbox_name, "status": "killed", "output": output.strip()})
-    if name == "dory.wait":
+    if name == "dory_wait":
         target_kind = string_arg(args, "targetKind", required=True)
         if target_kind not in ("engine", "container", "machine"):
             raise ToolExecutionError("targetKind must be engine, container, or machine")
@@ -4620,7 +4629,7 @@ def call_tool(name: str, arguments: Any) -> dict[str, Any]:
         interval_seconds = int_arg(args, "intervalSeconds", 1, 1, 60)
         command.extend(["--timeout", str(timeout_seconds), "--interval", str(interval_seconds), "--json"])
         return tool_result(run_cli(command, timeout=max(10, timeout_seconds + 5)))
-    if name == "dory.events":
+    if name == "dory_events":
         limit = int_arg(args, "limit", 50, 1, 500)
         return tool_result(run_cli(["events", "--json", "--limit", str(limit)]))
     raise ToolExecutionError(f"unknown tool: {name}")
@@ -4688,7 +4697,13 @@ for line in sys.stdin:
         continue
     handle(message)
 PY
+  python3 "$mcp_py" "$DORY_SCRIPT_SOURCE" "$read_only" "$DORY_CLI_VERSION"
+  status=$?
+  rm -f -- "$mcp_py"
+  trap - EXIT
+  return "$status"
 }
+
 
 agent_guide_json() {
   python3 - "$DORY_SOCK" <<'PY'
@@ -4989,8 +5004,8 @@ data = {
             "safeForAutomation": True,
             "transport": "stdio",
             "protocolVersion": "2025-11-25",
-            "tools": ["dory.agent_guide", "dory.doctor", "dory.compat", "dory.engine_status", "dory.machine_list", "dory.machine_exec", "dory.sandbox_run", "dory.sandbox_create", "dory.sandbox_exec", "dory.sandbox_reset", "dory.sandbox_inspect", "dory.sandbox_list", "dory.sandbox_kill", "dory.wait", "dory.events"],
-            "notes": "Thin stdio Dory control server over the CLI command core, not a third-party MCP catalog or gateway. Launch with --read-only to block machine exec and sandbox writes.",
+            "tools": ["dory_agent_guide", "dory_doctor", "dory_compat", "dory_engine_status", "dory_machine_list", "dory_machine_exec", "dory_sandbox_run", "dory_sandbox_create", "dory_sandbox_exec", "dory_sandbox_reset", "dory_sandbox_inspect", "dory_sandbox_list", "dory_sandbox_kill", "dory_wait", "dory_events"],
+            "notes": "Thin stdio Dory control server over the CLI command core, not a third-party MCP catalog or gateway. Tool names use underscores (dory_engine_status) for MCP client compatibility. Launch with --read-only to block machine exec and sandbox writes.",
         },
     ],
     "recommendedRecoveryLoop": [
