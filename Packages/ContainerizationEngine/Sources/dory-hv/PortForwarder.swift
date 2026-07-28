@@ -18,9 +18,18 @@ final class PortForwarder: MachinePortForwarding, @unchecked Sendable {
     private let sourcePreservingLANGVProxySocketPath: String?
     private let bridgeSubnetCIDR: String
     private let log: (String) -> Void
+    private let publishedPortsProvider: (() -> Set<PublishedPortBinding>?)?
+    private let registeredForwardsProvider: (() -> Set<PublishedPortForward>?)?
+    private let exposeProvider: ((PublishedPortForward) -> Bool)?
+    private let unexposeProvider: ((PublishedPortForward) -> Bool)?
     private let queue = DispatchQueue(label: "dev.dory.hv.port-forwarder")
+    private let queueKey = DispatchSpecificKey<Void>()
     private let timer: any DispatchSourceTimer
+    private let timerLock = NSLock()
+    private var timerActivated = false
+    private var timerCancelled = false
     private var exposed = Set<PublishedPortForward>()
+    private var machineExposed = Set<PublishedPortForward>()
     private var lastForwardFailureLog: [PublishedPortForward: Date] = [:]
     private var lastLANFailureLog = Date.distantPast
     private var recoveringLANSession = false
@@ -34,7 +43,11 @@ final class PortForwarder: MachinePortForwarding, @unchecked Sendable {
         sourcePreservingLANSessionID: String? = nil,
         sourcePreservingLANGVProxySocketPath: String? = nil,
         bridgeSubnetCIDR: String = DoryIPv4BridgeNetwork.defaultCIDR,
-        log: @escaping (String) -> Void
+        log: @escaping (String) -> Void,
+        publishedPortsProvider: (() -> Set<PublishedPortBinding>?)? = nil,
+        registeredForwardsProvider: (() -> Set<PublishedPortForward>?)? = nil,
+        exposeProvider: ((PublishedPortForward) -> Bool)? = nil,
+        unexposeProvider: ((PublishedPortForward) -> Bool)? = nil
     ) {
         self.engineSocket = engineSocket
         self.apiSocket = apiSocket
@@ -45,17 +58,51 @@ final class PortForwarder: MachinePortForwarding, @unchecked Sendable {
         self.sourcePreservingLANGVProxySocketPath = sourcePreservingLANGVProxySocketPath
         self.bridgeSubnetCIDR = bridgeSubnetCIDR
         self.log = log
+        self.publishedPortsProvider = publishedPortsProvider
+        self.registeredForwardsProvider = registeredForwardsProvider
+        self.exposeProvider = exposeProvider
+        self.unexposeProvider = unexposeProvider
         self.timer = DispatchSource.makeTimerSource(queue: queue)
+        queue.setSpecific(key: queueKey, value: ())
         timer.schedule(deadline: .now() + 3, repeating: 2)
         timer.setEventHandler { [weak self] in self?.sync() }
     }
 
-    func start() { timer.resume() }
+    func start() {
+        timerLock.lock()
+        defer { timerLock.unlock() }
+        guard !timerActivated, !timerCancelled else { return }
+        timerActivated = true
+        timer.resume()
+    }
 
-    /// Coalesces manual repair with the normal two-second reconciliation loop on the same serial
-    /// queue, keeping the tracked forward set race-free.
+    package func stop() {
+        timerLock.lock()
+        guard !timerCancelled else {
+            timerLock.unlock()
+            return
+        }
+        timer.setEventHandler {}
+        if !timerActivated {
+            timerActivated = true
+            timer.resume()
+        }
+        timerCancelled = true
+        timer.cancel()
+        timerLock.unlock()
+        if DispatchQueue.getSpecific(key: queueKey) == nil {
+            queue.sync {}
+        }
+    }
+
+    deinit {
+        stop()
+    }
+
+    /// Runs manual repair on the normal reconciliation queue and returns after gvproxy operations
+    /// finish, keeping the tracked forward set race-free and tests deterministic.
     func reconcileNow() {
-        queue.async { [weak self] in self?.sync() }
+        queue.sync { sync() }
     }
 
     private func sync() {
@@ -82,7 +129,14 @@ final class PortForwarder: MachinePortForwarding, @unchecked Sendable {
             publishHost: loopbackPolicy,
             guestIP: guestIP
         )
-        for forward in wanted.subtracting(exposed) {
+        let reconciliation = GVProxyForwardReconciliation(
+            wanted: wanted,
+            actual: registeredPublishedForwards(),
+            cached: exposed,
+            protected: machineExposed
+        )
+        exposed = reconciliation.observed
+        for forward in reconciliation.toExpose {
             if expose(forward) {
                 exposed.insert(forward)
                 lastForwardFailureLog.removeValue(forKey: forward)
@@ -97,7 +151,7 @@ final class PortForwarder: MachinePortForwarding, @unchecked Sendable {
         }
         // Only forget the port once gvproxy confirms the forward is gone; a failed unexpose stays
         // tracked and is retried on the next tick, so a stale host forward can't leak.
-        for forward in exposed.subtracting(wanted) where unexpose(forward) {
+        for forward in reconciliation.toUnexpose where unexpose(forward) {
             exposed.remove(forward)
             lastForwardFailureLog.removeValue(forKey: forward)
             log("port forward: released \(forward.localEndpoint)/\(forward.protocol.rawValue)")
@@ -144,6 +198,7 @@ final class PortForwarder: MachinePortForwarding, @unchecked Sendable {
 
     /// The set of host ports currently published by any running container.
     private func publishedPorts() -> Set<PublishedPortBinding>? {
+        if let publishedPortsProvider { return publishedPortsProvider() }
         guard let data = curlData(unixSocket: engineSocket, url: "http://d/v1.41/containers/json"),
               let containers = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
             return nil
@@ -179,6 +234,7 @@ final class PortForwarder: MachinePortForwarding, @unchecked Sendable {
     }
 
     private func expose(_ forward: PublishedPortForward) -> Bool {
+        if let exposeProvider { return exposeProvider(forward) }
         // gvproxy's TCP forward wants a bare host:port remote (no scheme), unlike the unix-socket
         // forward used for the docker socket.
         return curlPost(unixSocket: apiSocket, url: "http://gvproxy/services/forwarder/expose",
@@ -190,6 +246,7 @@ final class PortForwarder: MachinePortForwarding, @unchecked Sendable {
     }
 
     private func unexpose(_ forward: PublishedPortForward) -> Bool {
+        if let unexposeProvider { return unexposeProvider(forward) }
         return curlPost(unixSocket: apiSocket, url: "http://gvproxy/services/forwarder/unexpose",
                         body: gvproxyBody(
                             local: forward.localEndpoint,
@@ -198,13 +255,54 @@ final class PortForwarder: MachinePortForwarding, @unchecked Sendable {
     }
 
     func exposeMachinePort(_ port: UInt16) async -> Bool {
-        let binding = PublishedPortBinding(protocol: .tcp, port: Int(port))
-        return expose(PublishedPortForwardPlan.forward(for: binding, localHost: localHost, guestIP: guestIP))
+        await withCheckedContinuation { continuation in
+            queue.async { [weak self] in
+                guard let self else {
+                    continuation.resume(returning: false)
+                    return
+                }
+                let binding = PublishedPortBinding(protocol: .tcp, port: Int(port))
+                let forward = PublishedPortForwardPlan.forward(
+                    for: binding,
+                    localHost: self.localHost,
+                    guestIP: self.guestIP
+                )
+                let exposed = self.expose(forward)
+                if exposed { self.machineExposed.insert(forward) }
+                continuation.resume(returning: exposed)
+            }
+        }
     }
 
     func unexposeMachinePort(_ port: UInt16) async -> Bool {
-        let binding = PublishedPortBinding(protocol: .tcp, port: Int(port))
-        return unexpose(PublishedPortForwardPlan.forward(for: binding, localHost: localHost, guestIP: guestIP))
+        await withCheckedContinuation { continuation in
+            queue.async { [weak self] in
+                guard let self else {
+                    continuation.resume(returning: false)
+                    return
+                }
+                let binding = PublishedPortBinding(protocol: .tcp, port: Int(port))
+                let forward = PublishedPortForwardPlan.forward(
+                    for: binding,
+                    localHost: self.localHost,
+                    guestIP: self.guestIP
+                )
+                let unexposed = self.unexpose(forward)
+                if unexposed { self.machineExposed.remove(forward) }
+                continuation.resume(returning: unexposed)
+            }
+        }
+    }
+
+    private func registeredPublishedForwards() -> Set<PublishedPortForward>? {
+        if let registeredForwardsProvider { return registeredForwardsProvider() }
+        guard let data = curlData(
+            unixSocket: apiSocket,
+            url: "http://gvproxy/services/forwarder/all"
+        ) else {
+            return nil
+        }
+        return GVProxyForwardRegistry.publishedForwards(from: data, guestIP: guestIP)
     }
 
     private func curlData(unixSocket: String, url: String) -> Data? {

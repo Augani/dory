@@ -166,6 +166,7 @@ scripts/__pycache__/
 #codex
 .codex-bench/
 .dory-build/
+.gstack/
 
 # Internal planning and qualification documents
 /ARCHITECTURE.md

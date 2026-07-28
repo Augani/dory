@@ -3,6 +3,66 @@ import DoryHV
 import Foundation
 import Synchronization
 
+package final class PortReconcileSignalRegistration: @unchecked Sendable {
+    private let lock = NSLock()
+    private let worker = DispatchQueue(label: "dev.dory.hv.port-reconcile-signal")
+    private let workerKey = DispatchSpecificKey<Void>()
+    private let reconcile: @Sendable () -> Void
+    private var source: (any DispatchSourceSignal)?
+
+    package init(reconcile: @escaping @Sendable () -> Void) {
+        self.reconcile = reconcile
+        worker.setSpecific(key: workerKey, value: ())
+    }
+
+    package func install() {
+        lock.lock()
+        guard source == nil else {
+            lock.unlock()
+            return
+        }
+        _ = signal(SIGUSR2, SIG_IGN)
+        let source = DispatchSource.makeSignalSource(signal: SIGUSR2, queue: worker)
+        source.setEventHandler { [weak self] in
+            guard let self else { return }
+            reconcile()
+        }
+        self.source = source
+        source.resume()
+        lock.unlock()
+    }
+
+    /// Waits for an already-delivered signal handler to finish before inspecting reconciliation
+    /// effects or beginning shutdown cleanup.
+    package func waitUntilIdle() {
+        drainWorker()
+    }
+
+    package func cancel() {
+        lock.lock()
+        let source = source
+        self.source = nil
+        lock.unlock()
+        guard let source else { return }
+
+        source.setEventHandler {}
+        source.cancel()
+        drainWorker()
+        // This defer runs before gvproxy cleanup. Keep late repair requests harmless until exit.
+        _ = signal(SIGUSR2, SIG_IGN)
+    }
+
+    private func drainWorker() {
+        if DispatchQueue.getSpecific(key: workerKey) == nil {
+            worker.sync {}
+        }
+    }
+
+    deinit {
+        cancel()
+    }
+}
+
 /// `dory-hv engine`: the production mode SharedVMProvisioner spawns. Owns the full lifecycle:
 /// pulls docker:dind once, boots the VMM with networking, and publishes the Docker API at the
 /// unix socket the app already consumes.
@@ -137,15 +197,15 @@ enum EngineMode {
         signalSources.append(source)
     }
 
-    private static func installPortReconcileSignal(portForwarder: PortForwarder) {
-        signal(SIGUSR2, SIG_IGN)
-        let source = DispatchSource.makeSignalSource(signal: SIGUSR2, queue: .global())
-        source.setEventHandler {
+    package static func installPortReconcileSignal(
+        portForwarder: PortForwarder
+    ) -> PortReconcileSignalRegistration {
+        let registration = PortReconcileSignalRegistration {
             note("manual port reconcile requested")
             portForwarder.reconcileNow()
         }
-        source.resume()
-        signalSources.append(source)
+        registration.install()
+        return registration
     }
 
     private static func syncGuestClock(
@@ -636,7 +696,8 @@ enum EngineMode {
             bridgeSubnetCIDR: bridgeNetwork.cidr,
             log: { note($0) }
         )
-        installPortReconcileSignal(portForwarder: portForwarder)
+        let portReconcileSignal = installPortReconcileSignal(portForwarder: portForwarder)
+        defer { portReconcileSignal.cancel() }
         portForwarder.start()
         let gvproxyDatapathTask = monitorGVProxyDatapath(
             healthSocket: gvproxyHealthSocket,

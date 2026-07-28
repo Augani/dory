@@ -48,6 +48,7 @@ let package = Package(
             name: "DoryHVTests",
             dependencies: [
                 "DoryHV",
+                "dory-hv",
                 .product(name: "DoryCore", package: "dory-core-swift"),
             ]
         ),
