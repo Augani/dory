@@ -88,7 +88,7 @@ public final class HvProcess: @unchecked Sendable {
     private let unexpectedTerminationHandler: HvProcessUnexpectedTerminationHandler?
     private let lock = NSLock()
     private var process: Process?
-    private var terminationWaiter: DispatchSemaphore?
+    private var terminationWaiter: DispatchGroup?
     private var logHandle: FileHandle?
     private var stopping = false
     private var hasStarted = false
@@ -156,7 +156,8 @@ public final class HvProcess: @unchecked Sendable {
             throw ProcessError.executableMissing(configuration.executablePath)
         }
         let task = Process()
-        let terminationWaiter = DispatchSemaphore(value: 0)
+        let terminationWaiter = DispatchGroup()
+        terminationWaiter.enter()
         task.executableURL = URL(fileURLWithPath: configuration.executablePath)
         task.arguments = configuration.arguments
         if !configuration.environment.isEmpty {
@@ -167,7 +168,7 @@ public final class HvProcess: @unchecked Sendable {
         task.standardError = log ?? FileHandle.standardError
         task.terminationHandler = { [weak self] task in
             self?.handleTermination(task)
-            terminationWaiter.signal()
+            terminationWaiter.leave()
         }
         process = task
         self.terminationWaiter = terminationWaiter
@@ -272,7 +273,7 @@ public final class HvProcess: @unchecked Sendable {
 
     public func stop(signal: Int32 = SIGTERM, timeout: TimeInterval = 5) {
         let task: Process?
-        let terminationWaiter: DispatchSemaphore?
+        let terminationWaiter: DispatchGroup?
         let oldLog: FileHandle?
         let wasSuspended: Bool
         lock.lock()

@@ -40,7 +40,13 @@ servers and should not be described as an MCP catalog or gateway.
 | `dory.engine_status` | Inspect engine state | Available |
 | `dory.machine_list` | List persistent Linux machines | Available |
 | `dory.machine_exec` | Execute a structured command in a machine | Blocked |
-| `dory.sandbox_run` | Run a bounded command in a dedicated policy-enforced VM | Blocked |
+| `dory.sandbox_run` | Run a bounded command in a disposable or retained VM | Blocked |
+| `dory.sandbox_create` | Create an Agent-ready named sandbox | Blocked |
+| `dory.sandbox_exec` | Run a command in a named sandbox | Blocked |
+| `dory.sandbox_reset` | Restore a named sandbox to its prepared baseline | Blocked |
+| `dory.sandbox_inspect` | Inspect one sandbox manifest | Available |
+| `dory.sandbox_list` | List sandbox manifests | Available |
+| `dory.sandbox_kill` | Stop and delete one sandbox | Blocked |
 | `dory.wait` | Wait for an engine, container, or machine state | Available |
 | `dory.events` | Read local idle and incident events | Available |
 
@@ -97,6 +103,35 @@ Policy facts:
 - `--secret-env NAME` and `--ssh-agent` are ephemeral grants omitted from manifests and snapshots.
 - CPU, memory, disk, process, open-file, and wall-time limits are recorded in `dev.dory.sandbox.manifest v1`.
 - `dory sandbox inspect|list|kill` exposes and controls retained runs.
+
+## Agent-ready named sandboxes
+
+Use a named sandbox when an agent will work on the same project more than once:
+
+```sh
+dory sandbox create my-project --workspace .
+dory sandbox exec my-project -- go test ./...
+dory sandbox inspect my-project --json
+dory sandbox reset my-project --json
+dory sandbox kill my-project
+```
+
+Creation installs a core toolkit with Bash, build tools, Git, curl, jq, ripgrep, Python, SSH tools,
+and common archive utilities. When `--workspace` is present and no `--tool` is supplied, Dory
+detects Node, Python, Go, Rust, Java, and Ruby project files. Repeat `--tool` to choose toolchains
+explicitly. Other supported profiles are `devops`, `docker-host`, and `k8s-lab`.
+
+The workspace is the only automatic host share and is mounted read-write at `/workspace`. Tools,
+package caches, and other guest changes persist between `sandbox exec` calls. Network, secrets,
+SSH-agent access, elevation, limits, timeouts, and rollback remain explicit. A named execution
+inherits the sandbox's last network policy unless the call supplies another policy.
+
+`sandbox reset` restores the prepared tools and clean guest state. It does not roll back or modify
+the mounted host workspace. Agent-ready root filesystems have 8 GB of sparse logical capacity and
+consume Mac storage only as blocks are written.
+
+Run `dory sandbox --help` to see every CLI option. Local agents can discover the same contract with
+`dory agent guide --json` and use every lifecycle operation through `dory mcp serve`.
 
 ## State waits and events
 

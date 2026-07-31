@@ -111,6 +111,12 @@ public struct DorydEnvironment: Sendable {
         let explicitForward = string("DORYD_AGENT_VSOCK_FORWARD") != nil
             || string("DORY_AGENT_VSOCK_FORWARD") != nil
         let gpuRequested = venusRequested
+        if gpuRequested, amd64Requested {
+            reportEngineConfigurationError(
+                "DORYD_GPU=venus uses Dory's 16 KiB GPU kernel and cannot be combined with FEX amd64 emulation, which requires the x86-64 4 KiB page contract"
+            )
+            return nil
+        }
         if gpuRequested, explicitForward {
             reportEngineConfigurationError(
                 "DORYD_GPU=venus requires doryd's local dory-hv engine; external forwards must prove capability with DORYD_GPU_SUPPORTED"
@@ -354,7 +360,7 @@ public struct DorydEnvironment: Sendable {
         if venusRequested {
             arguments.append(contentsOf: ["--gpu", "venus"])
         }
-        if hostGuestArch == "arm64", bool("DORYD_AMD64", default: false) {
+        if hostGuestArch == "arm64", amd64Requested {
             arguments.append("--amd64")
         }
         if string("DORYD_PUBLISH_HOST") == "0.0.0.0" {
@@ -473,6 +479,10 @@ public struct DorydEnvironment: Sendable {
             return configured.lowercased() == "venus"
         }
         return string("DORY_EXPERIMENTAL_GPU")?.lowercased() == "venus"
+    }
+
+    private var amd64Requested: Bool {
+        hostGuestArch == "arm64" && bool("DORYD_AMD64", default: false)
     }
 
     /// Selects the kernel that matches the requested device contract. GPU mode accepts only a

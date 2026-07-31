@@ -1,0 +1,3 @@
+# FEX must expose the x86-64 ABI's 4 KiB page contract. Keep the release headless kernel explicit
+# so a future defconfig change cannot silently make common amd64 jemalloc builds unusable.
+CONFIG_ARM64_4K_PAGES=y

@@ -69,7 +69,6 @@ final class DorydConfigurationTests: XCTestCase {
             "DORYD_STATE_DIR": directory + "/state",
             "DORYD_MEMORY_MB": "4096",
             "DORYD_CPUS": "6",
-            "DORYD_GPU": "venus",
             "DORYD_AMD64": "1",
             "DORYD_PUBLISH_HOST": "0.0.0.0",
             "DORYD_BRIDGE_SUBNET": "10.44.16.0/20",
@@ -86,7 +85,7 @@ final class DorydConfigurationTests: XCTestCase {
             forwardSocketPath: directory + "/state/agent-vsock-forward.sock",
             cid: 3
         ))
-        XCTAssertTrue(config.gpuSupported)
+        XCTAssertFalse(config.gpuSupported)
 
         let hv = try XCTUnwrap(config.hvProcess)
         XCTAssertEqual(hv.executablePath, helper)
@@ -110,7 +109,7 @@ final class DorydConfigurationTests: XCTestCase {
             "/private/tmp/com.apple.launchd.fixture/Listeners"
         )
         XCTAssertArgumentPair(hv.arguments, "--rootfs", rootfs)
-        XCTAssertArgumentPair(hv.arguments, "--gpu", "venus")
+        XCTAssertFalse(hv.arguments.contains("--gpu"))
         XCTAssertArgumentPair(hv.arguments, "--publish-host", "0.0.0.0")
         XCTAssertArgumentPair(hv.arguments, "--container-subnet", "10.44.16.0/20")
         XCTAssertTrue(hv.arguments.contains("--direct-ip"))
@@ -140,6 +139,20 @@ final class DorydConfigurationTests: XCTestCase {
         ], cwd: "/tmp", hostPlatform: DorydHostPlatform(architecture: .arm64, macOSMajorVersion: 15))
 
         XCTAssertNil(env.dockerTierConfiguration())
+    }
+
+    func testVenusAndAMD64AreRejectedBecauseTheirKernelPageContractsConflict() throws {
+        let directory = "/tmp/doryd-config-gpu-amd64-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+
+        let environment = DorydEnvironment(values: [
+            "DORYD_HOME": directory + "/home",
+            "DORYD_GPU": "venus",
+            "DORYD_AMD64": "1",
+        ], cwd: directory, hostPlatform: DorydHostPlatform(architecture: .arm64, macOSMajorVersion: 15))
+
+        XCTAssertNil(environment.dockerTierConfiguration())
     }
 
     func testDockerTierIsUnconfiguredWhenConfiguredKernelIsMissing() throws {

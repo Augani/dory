@@ -7,7 +7,8 @@
 # Docker static provides dockerd, containerd, runc, docker-init, docker-proxy, ctr, and docker.
 # crun is a faster optional OCI runtime; Dory keeps its runc-compatible path as the default.
 # Apple Silicon additionally embeds Dory's hash-locked FEX-Emu 2607 binaries, built from the
-# pinned tag plus patches/fex-container-fd-isolation.patch. The FEX executables are static PIE so
+# pinned tag plus Dory's container integration and signal-context patches, and the upstream
+# ProcessorID stack fix. The FEX executables are static PIE so
 # they survive nested chroots and remain relocatable around guest VMA reservations. The patch also
 # preserves Linux shebang, descriptor-exec, argument-vector, and guest-seccomp semantics through
 # nested process chains. Its compiler inputs are independently pinned by the vendor Dockerfile's

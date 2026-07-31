@@ -219,9 +219,12 @@ fn apply_constraints(
     Ok(())
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", not(target_env = "musl")))]
 type RlimitResource = libc::__rlimit_resource_t;
-#[cfg(all(unix, not(target_os = "linux")))]
+#[cfg(any(
+    all(target_os = "linux", target_env = "musl"),
+    all(unix, not(target_os = "linux"))
+))]
 type RlimitResource = libc::c_int;
 
 #[cfg(unix)]

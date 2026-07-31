@@ -608,7 +608,7 @@ final class MachineManagerTests: XCTestCase {
                 rootfsPath: "/ignored",
                 sizeBytes: 0,
                 kernelPath: doryTestKernelPath,
-                architecture: "arm64",
+                architecture: doryTestGuestArchitecture,
                 memoryMB: 2048,
                 cpuCount: 2
             ),
@@ -643,7 +643,7 @@ final class MachineManagerTests: XCTestCase {
                 rootfsPath: "/ignored",
                 sizeBytes: 0,
                 kernelPath: doryTestKernelPath,
-                architecture: "arm64",
+                architecture: doryTestGuestArchitecture,
                 memoryMB: 2048,
                 cpuCount: 0
             ),
@@ -717,7 +717,7 @@ final class MachineManagerTests: XCTestCase {
                 rootfsPath: "/ignored",
                 sizeBytes: 0,
                 kernelPath: doryTestKernelPath,
-                architecture: "arm64",
+                architecture: doryTestGuestArchitecture,
                 memoryMB: 2048,
                 cpuCount: 2
             ),
@@ -808,7 +808,7 @@ final class MachineManagerTests: XCTestCase {
                 rootfsPath: "/ignored",
                 sizeBytes: 0,
                 kernelPath: "/ignored",
-                architecture: "arm64",
+                architecture: doryTestGuestArchitecture,
                 memoryMB: 2048,
                 cpuCount: 2
             ),
@@ -843,7 +843,7 @@ final class MachineManagerTests: XCTestCase {
                 rootfsPath: "/ignored",
                 sizeBytes: 0,
                 kernelPath: doryTestKernelPath,
-                architecture: "arm64",
+                architecture: doryTestGuestArchitecture,
                 memoryMB: 2048,
                 cpuCount: 2
             ),
@@ -1853,7 +1853,7 @@ final class MachineManagerTests: XCTestCase {
         XCTAssertEqual(snapshot.id, "s1")
         XCTAssertEqual(snapshot.machineID, "dev")
         XCTAssertEqual(snapshot.note, "before upgrade")
-        XCTAssertEqual(snapshot.architecture, "arm64")
+        XCTAssertEqual(snapshot.architecture, doryTestGuestArchitecture)
         XCTAssertEqual(snapshot.memoryMB, 4096)
         XCTAssertEqual(snapshot.cpuCount, 4)
         XCTAssertEqual(snapshot.address, "192.168.215.55")

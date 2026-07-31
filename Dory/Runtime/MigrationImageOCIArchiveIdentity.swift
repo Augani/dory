@@ -20,10 +20,11 @@ nonisolated enum MigrationImageOCIArchiveIdentity {
             return []
         }
         let root = try decodeIndex(indexPayload, expectedMediaType: nil)
-        guard root.manifests.count == 1 else {
+        let rootDescriptors = uniqueDescriptors(root.manifests)
+        guard rootDescriptors.count == 1 else {
             throw invalid("index.json must contain exactly one image descriptor")
         }
-        let rootDescriptor = root.manifests[0]
+        let rootDescriptor = rootDescriptors[0]
         let rootPayload = try referencedPayload(rootDescriptor, archive: archive)
 
         let selectedDescriptor: Descriptor
@@ -33,7 +34,9 @@ nonisolated enum MigrationImageOCIArchiveIdentity {
                 rootPayload,
                 expectedMediaType: rootDescriptor.mediaType
             )
-            let candidates = nested.manifests.filter(isLinuxARM64ImageManifest)
+            let candidates = uniqueDescriptors(
+                nested.manifests.filter(isLinuxARM64ImageManifest)
+            )
             guard candidates.count == 1 else {
                 throw invalid("OCI index must select exactly one linux/arm64 image manifest")
             }
@@ -55,6 +58,39 @@ nonisolated enum MigrationImageOCIArchiveIdentity {
             layers: layers
         )
         return [rootDescriptor.digest, selectedDescriptor.digest]
+    }
+
+    /// Remove mutable tag annotations and repeated aliases from the root OCI index while keeping
+    /// its tar entry byte count unchanged. The archive validator still rejects distinct images.
+    static func strippingAliases(_ index: Data) throws -> Data {
+        guard var root = try? JSONSerialization.jsonObject(with: index) as? [String: Any],
+              var descriptors = root["manifests"] as? [[String: Any]],
+              !descriptors.isEmpty else {
+            throw invalid("index.json metadata is malformed")
+        }
+        let decoded = try decodeIndex(index, expectedMediaType: nil)
+        guard decoded.manifests.count == descriptors.count,
+              uniqueDescriptors(decoded.manifests).count == 1 else {
+            throw invalid("index.json must contain exactly one image descriptor")
+        }
+        let hasAliases = descriptors.count > 1
+        let hasAnnotations = descriptors.contains { $0["annotations"] != nil }
+        guard hasAliases || hasAnnotations else { return index }
+
+        var selected = descriptors[0]
+        selected.removeValue(forKey: "annotations")
+        descriptors = [selected]
+        root["manifests"] = descriptors
+        guard var sanitized = try? JSONSerialization.data(
+            withJSONObject: root,
+            options: [.sortedKeys]
+        ), sanitized.count <= index.count else {
+            throw invalid(
+                "index.json aliases could not be removed without changing its tar entry size"
+            )
+        }
+        sanitized.append(Data(repeating: UInt8(ascii: " "), count: index.count - sanitized.count))
+        return sanitized
     }
 }
 
@@ -110,6 +146,20 @@ private extension MigrationImageOCIArchiveIdentity {
             throw invalid("OCI index descriptor and payload media types disagree")
         }
         return index
+    }
+
+    /// Some engines emit one descriptor per tag even when every descriptor points to the same
+    /// immutable image manifest. Treat those aliases as one image, but keep rejecting archives
+    /// that contain different manifest digests or contracts.
+    nonisolated static func uniqueDescriptors(_ descriptors: [Descriptor]) -> [Descriptor] {
+        descriptors.reduce(into: []) { result, descriptor in
+            let alreadyIncluded = result.contains {
+                $0.mediaType == descriptor.mediaType
+                    && $0.digest == descriptor.digest
+                    && $0.size == descriptor.size
+            }
+            if !alreadyIncluded { result.append(descriptor) }
+        }
     }
 
     nonisolated static func referencedPayload(

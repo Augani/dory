@@ -11,8 +11,8 @@ The builder is intentionally reproducible from pinned public inputs in `guest/in
 - Docker static 29.6.1 for `arm64` and `amd64`
 - crun 1.28 static OCI runtime for explicit `--runtime crun` use on `arm64` and `amd64`
 - FEX-Emu 2607 commit `1cc4b93e7a71c883ec021b71359f136394dc1f3c`, Dory's
-  hash-locked container-FD, proc-less chroot, and nested-exec patch, and static-PIE ARM64
-  executables on `arm64`
+  hash-locked container-FD, proc-less chroot, and nested-exec patch, the upstream ProcessorID
+  stack fix, complete x86-64 signal-context restoration, and static-PIE ARM64 executables on `arm64`
 - Dory's guest agent from `guest/out/dory-agent-<arch>`
 
 Runtime contents added by Dory:
@@ -43,11 +43,14 @@ Boot behavior:
 
 - Bring up `lo` and, when present, `eth0` via BusyBox `udhcpc`.
 - Validate and expand an existing ext4 filesystem, mount `/dev/vdb` at `/var/lib/docker`, and run
-  `fstrim` so virtio discard can return free blocks to the host. The host-generated boot contract
+  `fstrim` at boot, hourly, and during shutdown so virtio discard can return free blocks to the host.
+  The host-generated boot contract
   permits formatting only for a validated, unallocated sparse blank. Existing ext4 resize or mount
   failures power off; the generic init also refuses to start dockerd without the persistent mount.
 - Start `dockerd` only on `unix:///var/run/docker.sock`; host access is relayed through the guest
   agent's vsock service, so no unauthenticated Docker TCP API exists inside the guest network.
+- Enable Docker's age and value-aware BuildKit garbage collection with a 2 GB cache ceiling. Active
+  build data is preserved while unused cache is reclaimed before it can dominate the sparse drive.
 - Listen on TCP 2377 for a shutdown request, trim, sync, unmount Docker state, and power off.
 - Exec `/usr/bin/dory-agent` as PID 1 when present.
 - Hand PID 1 to `docker-init` only when `dory-agent` is absent, falling back to a long sleep loop.

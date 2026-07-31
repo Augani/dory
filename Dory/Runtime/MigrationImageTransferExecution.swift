@@ -365,6 +365,7 @@ private extension MigrationImageTargetInventory {
 private actor MigrationObservedImageStream {
     private let iterator: MigrationImageStreamIterator
     private var reader = MigrationImageArchiveReader()
+    private var tagStripper = MigrationImageArchiveTagStripper()
     private var reachedEnd = false
     private var readInProgress = false
     private var completedFingerprint: MigrationImageArchiveFingerprint?
@@ -382,12 +383,14 @@ private actor MigrationObservedImageStream {
         }
         readInProgress = true
         defer { readInProgress = false }
-        guard let chunk = try await iterator.next() else {
-            reachedEnd = true
-            return nil
+        while let chunk = try await iterator.next() {
+            try reader.feed(chunk)
+            let sanitized = try tagStripper.feed(chunk)
+            if !sanitized.isEmpty { return sanitized }
         }
-        try reader.feed(chunk)
-        return chunk
+        try tagStripper.finish()
+        reachedEnd = true
+        return nil
     }
 
     func finish() throws -> MigrationImageArchiveFingerprint {
@@ -396,6 +399,218 @@ private actor MigrationObservedImageStream {
         let fingerprint = try reader.finish()
         completedFingerprint = fingerprint
         return fingerprint
+    }
+}
+
+/// Rewrites mutable image aliases while preserving every tar header, byte count, and padding byte.
+/// Other payloads are forwarded as soon as they arrive; at most one qualified 8 MiB metadata entry
+/// is buffered. The independent archive reader fingerprints and validates the exact source bytes,
+/// while the target receives equivalent content with no mutable RepoTags or OCI tag annotations.
+private nonisolated struct MigrationImageArchiveTagStripper {
+    private enum EntryRole {
+        case regular
+        case directory
+        case pax
+        case longName
+    }
+
+    private enum MetadataRewrite {
+        case manifest
+        case ociIndex
+    }
+
+    private struct ActiveEntry {
+        let role: EntryRole
+        let path: String
+        let logicalBytes: UInt64
+        var remainingBytes: UInt64
+        var capture: Data?
+        let rewrite: MetadataRewrite?
+    }
+
+    private var buffer = Data()
+    private var cursor = 0
+    private var active: ActiveEntry?
+    private var paddingBytes: UInt64 = 0
+    private var pending = MigrationImageTarPendingMetadata()
+    private var zeroBlocks = 0
+    private var terminated = false
+
+    mutating func feed(_ data: Data) throws -> Data {
+        if !data.isEmpty { buffer.append(data) }
+        var output = Data()
+        while true {
+            if terminated {
+                let trailing = buffer[cursor...]
+                guard trailing.allSatisfy({ $0 == 0 }) else {
+                    throw MigrationImageArchiveError.invalid("archive has data after its terminator")
+                }
+                output.append(contentsOf: trailing)
+                cursor = buffer.count
+                break
+            }
+            if active != nil {
+                guard try consumeActive(into: &output) else { break }
+                continue
+            }
+            if paddingBytes > 0 {
+                guard try consumePadding(into: &output) else { break }
+                continue
+            }
+            guard try consumeHeader(into: &output) else { break }
+        }
+        compactBuffer()
+        return output
+    }
+
+    mutating func finish() throws {
+        let output = try feed(Data())
+        guard output.isEmpty,
+              terminated,
+              active == nil,
+              paddingBytes == 0,
+              pending.isEmpty,
+              cursor == buffer.count else {
+            throw MigrationImageArchiveError.invalid("archive is truncated while removing RepoTags")
+        }
+    }
+
+    private mutating func consumeHeader(into output: inout Data) throws -> Bool {
+        let blockBytes = MigrationImageTarHeaderDecoder.blockBytes
+        guard buffer.count - cursor >= blockBytes else { return false }
+        let end = cursor + blockBytes
+        let bytes = buffer[cursor..<end]
+        if bytes.allSatisfy({ $0 == 0 }) {
+            output.append(contentsOf: bytes)
+            cursor = end
+            zeroBlocks += 1
+            if zeroBlocks == 2 { terminated = true }
+            return true
+        }
+        guard zeroBlocks == 0 else {
+            throw MigrationImageArchiveError.invalid("tar terminator is incomplete")
+        }
+        let header = try MigrationImageTarHeaderDecoder.decode(bytes)
+        let role = try role(for: header.type)
+        let path: String
+        let logicalBytes: UInt64
+        if role == .pax || role == .longName {
+            path = header.path
+            logicalBytes = header.size
+        } else {
+            path = pending.path ?? header.path
+            logicalBytes = pending.size ?? header.size
+            pending.reset()
+        }
+        let rewrite: MetadataRewrite?
+        if role == .regular, path == "manifest.json" {
+            rewrite = .manifest
+        } else if role == .regular, path == "index.json" {
+            rewrite = .ociIndex
+        } else {
+            rewrite = nil
+        }
+        output.append(contentsOf: bytes)
+        cursor = end
+        active = ActiveEntry(
+            role: role,
+            path: path,
+            logicalBytes: logicalBytes,
+            remainingBytes: logicalBytes,
+            capture: rewrite != nil || role == .pax || role == .longName ? Data() : nil,
+            rewrite: rewrite
+        )
+        if logicalBytes == 0 { try finalizeActive(into: &output) }
+        return true
+    }
+
+    private func role(for type: UInt8) throws -> EntryRole {
+        switch type {
+        case 0, UInt8(ascii: "0"): return .regular
+        case UInt8(ascii: "5"): return .directory
+        case UInt8(ascii: "x"): return .pax
+        case UInt8(ascii: "L"): return .longName
+        case UInt8(ascii: "g"):
+            throw MigrationImageArchiveError.invalid("global PAX metadata is not accepted")
+        default:
+            throw MigrationImageArchiveError.invalid("unsupported outer tar entry type \(type)")
+        }
+    }
+
+    private mutating func consumeActive(into output: inout Data) throws -> Bool {
+        guard var entry = active else { return true }
+        if entry.remainingBytes == 0 {
+            try finalizeActive(into: &output)
+            return true
+        }
+        let available = buffer.count - cursor
+        guard available > 0 else { return false }
+        let count = entry.remainingBytes > UInt64(available)
+            ? available
+            : Int(entry.remainingBytes)
+        let end = cursor + count
+        let bytes = buffer[cursor..<end]
+        entry.capture?.append(contentsOf: bytes)
+        if entry.rewrite == nil { output.append(contentsOf: bytes) }
+        entry.remainingBytes -= UInt64(count)
+        cursor = end
+        active = entry
+        if entry.remainingBytes == 0 { try finalizeActive(into: &output) }
+        return true
+    }
+
+    private mutating func finalizeActive(into output: inout Data) throws {
+        guard let entry = active else { return }
+        if let rewrite = entry.rewrite {
+            guard let metadata = entry.capture,
+                  UInt64(metadata.count) == entry.logicalBytes else {
+                throw MigrationImageArchiveError.invalid(
+                    "image archive metadata disappeared while removing aliases"
+                )
+            }
+            switch rewrite {
+            case .manifest:
+                output.append(try MigrationImageArchiveManifest.strippingRepoTags(metadata))
+            case .ociIndex:
+                output.append(try MigrationImageOCIArchiveIdentity.strippingAliases(metadata))
+            }
+        } else if entry.role == .pax {
+            guard let payload = entry.capture else {
+                throw MigrationImageArchiveError.invalid("PAX metadata disappeared")
+            }
+            pending = try MigrationImageTarHeaderDecoder.parsePAX(payload)
+        } else if entry.role == .longName {
+            guard let payload = entry.capture else {
+                throw MigrationImageArchiveError.invalid("GNU long name disappeared")
+            }
+            pending.path = try MigrationImageTarHeaderDecoder.parseLongName(payload)
+        }
+        let remainder = entry.logicalBytes % UInt64(MigrationImageTarHeaderDecoder.blockBytes)
+        paddingBytes = remainder == 0
+            ? 0
+            : UInt64(MigrationImageTarHeaderDecoder.blockBytes) - remainder
+        active = nil
+    }
+
+    private mutating func consumePadding(into output: inout Data) throws -> Bool {
+        let available = buffer.count - cursor
+        guard available > 0 else { return false }
+        let count = paddingBytes > UInt64(available) ? available : Int(paddingBytes)
+        let end = cursor + count
+        let bytes = buffer[cursor..<end]
+        guard bytes.allSatisfy({ $0 == 0 }) else {
+            throw MigrationImageArchiveError.invalid("tar entry padding is not zero-filled")
+        }
+        output.append(contentsOf: bytes)
+        cursor = end
+        paddingBytes -= UInt64(count)
+        return true
+    }
+
+    private mutating func compactBuffer() {
+        guard cursor > 0 else { return }
+        buffer.removeSubrange(buffer.startIndex..<cursor)
+        cursor = 0
     }
 }
 

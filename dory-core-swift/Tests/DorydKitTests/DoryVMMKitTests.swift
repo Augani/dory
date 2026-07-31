@@ -303,6 +303,10 @@ final class DoryVMMKitTests: XCTestCase {
         XCTAssertTrue(bootScript.contains("MOUNT-FAILED-EXISTING-EXT4"))
         XCTAssertTrue(bootScript.contains("UNKNOWN-FILESYSTEM-REFUSING-FORMAT"))
         XCTAssertTrue(bootScript.contains("fstrim -v /var/lib/docker"))
+        XCTAssertTrue(bootScript.contains("sleep \(GuestStorageReclaimCommand.defaultIntervalSeconds)"))
+        XCTAssertTrue(bootScript.contains("mountpoint -q /var/lib/docker"))
+        XCTAssertTrue(bootScript.contains("defaultKeepStorage"))
+        XCTAssertTrue(bootScript.contains(GuestBuildCacheGCCommand.defaultKeepStorage))
         XCTAssertTrue(bootScript.contains("exec /usr/bin/dory-agent"))
         try assertShellSyntax("\(base)/dorycfg/boot.sh")
     }

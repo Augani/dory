@@ -92,7 +92,8 @@ import Testing
     }
 
     private func makeMemory() throws -> GuestMemory {
-        try GuestMemory(guestBase: 0, size: 128 * HostPage.size)
+        // Physical page fixtures reach 0xB0000, independent of the host's 4 KB or 16 KB page size.
+        try GuestMemory(guestBase: 0, size: 0x10_0000)
     }
 
     private func writePageTables(_ memory: GuestMemory) throws {

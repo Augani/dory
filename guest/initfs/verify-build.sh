@@ -127,7 +127,7 @@ if [ "$ARCH" = arm64 ]; then
     || fail "could not extract runc.real"
   FEX_PAIR="$(shasum -a 256 "$FEX_DUMP" | awk '{print $1}'):$(shasum -a 256 "$FEX_SERVER_DUMP" | awk '{print $1}')"
   case "$FEX_PAIR" in
-    b862d2a4358b102b125ae50da357b189a5d4710a3be830ef3280cba400c7099b:bbe8a34fc2ba4e606acd7e5b11d9b51da283835f40d2851e2ed39d35d28f2597) ;;
+    01921fa471efc53c955b1d6263f7df4ad0f08f082669a3a7adb6f1e1d5ac0c28:bbe8a34fc2ba4e606acd7e5b11d9b51da283835f40d2851e2ed39d35d28f2597) ;;
     *) fail "$IMAGE contains an unverified static-PIE FEX binary pair" ;;
   esac
   [ "$(shasum -a 256 "$FEX_BUILD_PACKAGES_DUMP" | awk '{print $1}')" = \

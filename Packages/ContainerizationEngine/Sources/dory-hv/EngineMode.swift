@@ -946,6 +946,7 @@ enum EngineMode {
         }
         script += [
             guestAgentStartCommand(shares: shares),
+            GuestBuildCacheGCCommand.configureDaemon(),
             // Keep Docker's reference runc as the normal default. When amd64 translation is enabled,
             // dory-runc becomes the default and delegates to that same runc after injecting the
             // private FEX bundle. crun remains an explicit opt-in only when io.max is available.
@@ -953,17 +954,12 @@ enum EngineMode {
             // Corporate connectivity is reconciled by doryd through the authenticated guest agent
             // after every boot and network transition. Keep its material on tmpfs: a privileged
             // container must not be able to turn durable Docker data into a root-sourced boot file.
-            "mkdir -p /run/dory-corporate",
-            "chmod 0700 /run/dory-corporate",
-            "cat >/run/dory-restart-dockerd <<DORY_DOCKERD_SCRIPT",
-            "#!/bin/sh",
-            "[ -r /run/dory-corporate/dockerd.env ] && . /run/dory-corporate/dockerd.env",
-            "set -- dockerd -H unix:///var/run/docker.sock --log-level=warn --live-restore --feature containerd-snapshotter=true \(bridgeNetwork.dockerDaemonArguments) $DORY_RUNTIME_ARGS $DORY_AMD64_RUNTIME_ARGS $DORY_IPV6_DOCKER_ARGS",
-            "if [ -r /run/dory-corporate/dockerd.args ]; then while IFS= read -r DORY_DOCKERD_ARG; do [ -z \"$DORY_DOCKERD_ARG\" ] || set -- \"$@\" \"$DORY_DOCKERD_ARG\"; done </run/dory-corporate/dockerd.args; fi",
-            "exec \"$@\"",
-            "DORY_DOCKERD_SCRIPT",
-            "chmod 0700 /run/dory-restart-dockerd",
-            "/run/dory-restart-dockerd >/var/log/dockerd.log 2>&1 & true",
+        ]
+        script += GuestDockerRestartCommand.installerLines(
+            dockerdArguments: "dockerd -H unix:///var/run/docker.sock --log-level=warn --live-restore --feature containerd-snapshotter=true \(bridgeNetwork.dockerDaemonArguments) $DORY_RUNTIME_ARGS $DORY_AMD64_RUNTIME_ARGS $DORY_IPV6_DOCKER_ARGS"
+        )
+        script += [
+            GuestStorageReclaimCommand.periodicLoop(),
             GuestDatapathCanary.listener(),
             GuestShutdownCommand.listener(),
             GuestMemoryReclaimBootCommand.hostPressureListener(

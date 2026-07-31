@@ -169,7 +169,9 @@ nonisolated enum SharedVMProvisioner {
             self.memory = memory
             self.headroomMB = headroomMB
             self.rosettaX86 = rosettaX86
-            self.gpuVenus = gpuVenus
+            // AMD64 compatibility is the safer default for existing installs. Venus uses a
+            // separate 16 KiB kernel, so never let a stale pair of preferences select both.
+            self.gpuVenus = gpuVenus && !rosettaX86
             self.daxDataShares = daxDataShares
         }
 
@@ -505,6 +507,13 @@ nonisolated enum SharedVMProvisioner {
         guestAgent: String? = nil
     ) throws -> [String] {
         try validateProductionHostShareSafety(config)
+        let gpuRequested = config.gpuVenus
+            || ProcessInfo.processInfo.environment["DORY_EXPERIMENTAL_GPU"] == "venus"
+        guard !gpuRequested || !config.rosettaX86 else {
+            throw ProvisionError.unsafeConfiguration(
+                "Venus GPU mode uses Dory's 16 KiB guest kernel and cannot run with FEX amd64 emulation, which requires a 4 KiB page size."
+            )
+        }
         var arguments = [
             "engine",
             "--engine-sock", socketPath,
@@ -521,7 +530,7 @@ nonisolated enum SharedVMProvisioner {
         if let guestAgent {
             arguments.append(contentsOf: ["--guest-agent", guestAgent])
         }
-        if config.gpuVenus || ProcessInfo.processInfo.environment["DORY_EXPERIMENTAL_GPU"] == "venus" {
+        if gpuRequested {
             arguments.append(contentsOf: ["--gpu", "venus"])
         }
         // Apple Silicon x86/amd64 translation: the guest registers FEX and its OCI wrapper so

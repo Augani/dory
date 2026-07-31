@@ -1350,7 +1350,7 @@ final class DorydServiceTests: XCTestCase {
             XCTAssertEqual(body["id"] as? String, "s1")
             XCTAssertEqual(body["machineID"] as? String, "dev")
             XCTAssertEqual(body["note"] as? String, "before")
-            XCTAssertEqual(body["architecture"] as? String, "arm64")
+            XCTAssertEqual(body["architecture"] as? String, doryTestGuestArchitecture)
             snapshotReply.fulfill()
         }
         wait(for: [snapshotReply], timeout: 5)

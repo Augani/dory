@@ -11,12 +11,13 @@ usage() {
   cat <<'EOF'
 Usage: scripts/build.sh [xcodebuild arguments]
 
-Builds the Debug Dory app with a full Xcode toolchain, then bundles and ad-hoc signs the local
+Builds the Dory app with a full Xcode toolchain, then bundles and ad-hoc signs the local
 engine, daemon, Docker CLI, Compose, Buildx, and kubectl helpers. Extra arguments are forwarded to
 xcodebuild. This command creates a development app only; it does not create or publish a release.
 
 Useful environment controls:
   DEVELOPER_DIR=PATH              Select a full Xcode toolchain
+  DORY_XCODE_CONFIGURATION=NAME  Xcode configuration to build (Debug by default)
   DORY_BUILD_DEBUG_HELPERS=0      Skip dory-hv/gvproxy bundling
   DORY_BUILD_DORYD_HELPERS=0      Skip doryd/dory-vmm helper bundling
   DORY_DESKTOP_BUNDLE_MODE=MODE   none (default) or all (Debian, Ubuntu, and Kali)
@@ -29,6 +30,12 @@ for argument in "$@"; do
     -h|--help) usage; exit 0 ;;
   esac
 done
+
+XCODE_CONFIGURATION="${DORY_XCODE_CONFIGURATION:-Debug}"
+case "$XCODE_CONFIGURATION" in
+  Debug|Release) ;;
+  *) echo "error: DORY_XCODE_CONFIGURATION must be 'Debug' or 'Release'" >&2; exit 64 ;;
+esac
 
 DESKTOP_BUNDLE_MODE="${DORY_DESKTOP_BUNDLE_MODE:-none}"
 case "$DESKTOP_BUNDLE_MODE" in
@@ -87,13 +94,13 @@ LOG=/tmp/dory_build.log
 
 # The post-build bundling below injects helpers and guest assets that are not Xcode target outputs.
 # Remove that modified product before rebuilding so Xcode's script sandbox never has to delete it.
-for app in "$HOME"/Library/Developer/Xcode/DerivedData/Dory-*/Build/Products/Debug/Dory.app; do
+for app in "$HOME"/Library/Developer/Xcode/DerivedData/Dory-*/Build/Products/"$XCODE_CONFIGURATION"/Dory.app; do
   [ -d "$app" ] || continue
   rm -rf "$app"
 done
 
 xcodebuild -project Dory.xcodeproj -scheme Dory -destination 'platform=macOS' \
-  -configuration Debug build CODE_SIGNING_ALLOWED=NO "$@" > "$LOG" 2>&1
+  -configuration "$XCODE_CONFIGURATION" build CODE_SIGNING_ALLOWED=NO "$@" > "$LOG" 2>&1
 status=$?
 
 # Xcode 27 intermittently re-serializes the project to objectVersion 110 (breaks stable Xcode + CI);
@@ -206,7 +213,7 @@ write_debug_bundle_capabilities() {
   local app included
   included=false
   [ "$DESKTOP_BUNDLE_MODE" = all ] && included=true
-  for app in "$HOME"/Library/Developer/Xcode/DerivedData/Dory-*/Build/Products/Debug/Dory.app; do
+  for app in "$HOME"/Library/Developer/Xcode/DerivedData/Dory-*/Build/Products/"$XCODE_CONFIGURATION"/Dory.app; do
     [ -f "$app/Contents/Info.plist" ] || continue
     /usr/libexec/PlistBuddy -c 'Delete :DoryIncludesDesktopLinux' "$app/Contents/Info.plist" >/dev/null 2>&1 || true
     /usr/libexec/PlistBuddy -c "Add :DoryIncludesDesktopLinux bool $included" "$app/Contents/Info.plist" || return 1
@@ -272,7 +279,7 @@ bundle_debug_hv_helper() {
 <plist version="1.0"><dict><key>com.apple.security.hypervisor</key><true/></dict></plist>
 PLIST
 
-  for app in "$HOME"/Library/Developer/Xcode/DerivedData/Dory-*/Build/Products/Debug/Dory.app; do
+  for app in "$HOME"/Library/Developer/Xcode/DerivedData/Dory-*/Build/Products/"$XCODE_CONFIGURATION"/Dory.app; do
     [ -d "$app" ] || continue
     mkdir -p "$app/Contents/Helpers"
     mkdir -p "$app/Contents/Resources"
@@ -331,7 +338,13 @@ bundle_doryd_swiftpm_helpers() {
   local configuration bin_path entitlements app product helper vmm_app vmm_executable
   [ "${DORY_BUILD_DORYD_HELPERS:-1}" = "1" ] || return 0
   [ -f "dory-core-swift/Package.swift" ] || return 0
-  configuration="${DORY_DORYD_HELPER_CONFIGURATION:-debug}"
+  if [ -n "${DORY_DORYD_HELPER_CONFIGURATION:-}" ]; then
+    configuration="$DORY_DORYD_HELPER_CONFIGURATION"
+  elif [ "$XCODE_CONFIGURATION" = Release ]; then
+    configuration=release
+  else
+    configuration=debug
+  fi
 
   echo "note: building and bundling doryd SwiftPM helpers ($configuration)" >&2
   for product in doryd dorydctl dory-vmm dory-network-helper; do
@@ -341,7 +354,7 @@ bundle_doryd_swiftpm_helpers() {
 
   entitlements="dory-core-swift/Sources/dory-vmm/dory-vmm.entitlements"
 
-  for app in "$HOME"/Library/Developer/Xcode/DerivedData/Dory-*/Build/Products/Debug/Dory.app; do
+  for app in "$HOME"/Library/Developer/Xcode/DerivedData/Dory-*/Build/Products/"$XCODE_CONFIGURATION"/Dory.app; do
     [ -d "$app" ] || continue
     mkdir -p "$app/Contents/Helpers"
     for product in doryd dorydctl dory-vmm dory-network-helper; do
@@ -380,7 +393,7 @@ bundle_debug_transfer_helper() {
     rm -rf "$work"
     return 1
   fi
-  for app in "$HOME"/Library/Developer/Xcode/DerivedData/Dory-*/Build/Products/Debug/Dory.app; do
+  for app in "$HOME"/Library/Developer/Xcode/DerivedData/Dory-*/Build/Products/"$XCODE_CONFIGURATION"/Dory.app; do
     [ -d "$app" ] || continue
     mkdir -p "$app/Contents/Resources"
     install -m0644 "$work/dory-transfer-helper-image-arm64.tar" "$app/Contents/Resources/"
@@ -538,7 +551,7 @@ bundle_host_cli_helpers() {
   docker_buildx="$(first_existing_cli "${DORY_DOCKER_BUILDX:-}" /Applications/Dory.app/Contents/Helpers/docker-buildx "$HOME/.docker/cli-plugins/docker-buildx" "$HOME/.dory/bin/docker-buildx" /opt/homebrew/lib/docker/cli-plugins/docker-buildx /usr/local/lib/docker/cli-plugins/docker-buildx || download_docker_buildx || true)"
   docker_compose="$(first_existing_cli "${DORY_DOCKER_COMPOSE:-}" /Applications/Dory.app/Contents/Helpers/docker-compose "$HOME/.docker/cli-plugins/docker-compose" "$HOME/.dory/bin/docker-compose" /opt/homebrew/bin/docker-compose /usr/local/bin/docker-compose "$(command -v docker-compose 2>/dev/null || true)" || download_docker_compose || true)"
   kubectl="$(first_existing_cli "${DORY_KUBECTL:-}" /Applications/Dory.app/Contents/Helpers/kubectl "$HOME/.dory/bin/kubectl" /opt/homebrew/bin/kubectl /usr/local/bin/kubectl "$(command -v kubectl 2>/dev/null || true)" || download_kubectl || true)"
-  for app in "$HOME"/Library/Developer/Xcode/DerivedData/Dory-*/Build/Products/Debug/Dory.app; do
+  for app in "$HOME"/Library/Developer/Xcode/DerivedData/Dory-*/Build/Products/"$XCODE_CONFIGURATION"/Dory.app; do
     [ -d "$app" ] || continue
     copy_host_cli_helper "$app" docker "$docker"
     copy_host_cli_helper "$app" docker-buildx "$docker_buildx"
@@ -558,8 +571,8 @@ bundle_host_cli_helpers() {
 }
 
 sign_debug_apps() {
-  local app helper framework
-  for app in "$HOME"/Library/Developer/Xcode/DerivedData/Dory-*/Build/Products/Debug/Dory.app; do
+  local app helper framework extension
+  for app in "$HOME"/Library/Developer/Xcode/DerivedData/Dory-*/Build/Products/"$XCODE_CONFIGURATION"/Dory.app; do
     [ -d "$app" ] || continue
     xattr -cr "$app" 2>/dev/null || true
     for helper in docker docker-buildx docker-compose kubectl dory dory-doctor; do
@@ -572,7 +585,18 @@ sign_debug_apps() {
       [ -d "$framework" ] || continue
       codesign --force -s - "$framework" >/dev/null || return 1
     done
-    codesign --force -s - "$app" >/dev/null || return 1
+    for extension in "$app"/Contents/PlugIns/*.appex; do
+      [ -d "$extension" ] || continue
+      codesign --force --options runtime \
+        --entitlements DoryStorageProvider/DoryStorageProvider.entitlements \
+        -s - "$extension" >/dev/null || return 1
+    done
+    # Ad hoc debug signatures do not carry a Team ID. Enabling the hardened
+    # runtime here would make library validation reject bundled frameworks such
+    # as Sparkle even though the app passes static signature verification.
+    # Release archives are signed separately with the Developer ID identity.
+    codesign --force --entitlements Dory/Dory.entitlements \
+      -s - "$app" >/dev/null || return 1
     codesign --verify --deep --strict "$app" || return 1
   done
 }

@@ -417,12 +417,14 @@ import Testing
         #expect(!info.isWrite)
     }
 
+    #if arch(arm64)
     @Test func exceptionClassFromSyndrome() {
         #expect(ExceptionClass(syndrome: UInt64(0x24) << 26) == .dataAbortLowerEL)
         #expect(ExceptionClass(syndrome: UInt64(0x20) << 26) == .instructionAbortLowerEL)
         #expect(ExceptionClass(syndrome: UInt64(0x16) << 26) == .hvc64)
         #expect(ExceptionClass(syndrome: UInt64(0x17) << 26) == .smc64)
     }
+    #endif
 }
 
 @Suite struct MMIOBusTests {

@@ -5,6 +5,7 @@ import XCTest
 final class MachineRecipeProvisionerTests: XCTestCase {
     func testBuiltInRecipeAliasesResolveToAlpineAndDebianRecipes() throws {
         let cases: [(String, String, String, String)] = [
+            ("agent-ready", "agent-core", "rg --version", "bash build-essential ca-certificates coreutils curl fd-find file findutils git jq less openssh-client patch python3 python3-pip ripgrep tar unzip zip"),
             ("node", "node", "node --version", "nodejs npm build-essential"),
             ("python", "python-ml", "python3 --version", "python3 python3-pip python3-numpy python3-venv"),
             ("go", "go", "go version", "golang-go"),
@@ -24,6 +25,10 @@ final class MachineRecipeProvisionerTests: XCTestCase {
             XCTAssertTrue(recipe.installScript.contains("command -v apt-get"), input)
             XCTAssertTrue(recipe.installScript.contains("apt-get install -y --no-install-recommends \(debianPackages)"), input)
             XCTAssertGreaterThan(recipe.timeoutMs, 0, input)
+            if expectedID == "agent-core" {
+                XCTAssertTrue(recipe.installScript.contains("/usr/local/bin/fd"), input)
+                XCTAssertTrue(recipe.verifyCommand.contains("fd --version"), input)
+            }
         }
     }
 
