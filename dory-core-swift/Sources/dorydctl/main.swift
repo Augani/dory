@@ -932,7 +932,8 @@ func runNetwork(cursor: inout ArgumentCursor, client: DorydCtlClient) throws {
               cursor.values.isEmpty else {
             throw DorydCtlError.usage("usage: dorydctl network repair socket|dns|domains|routes|ports|guest-agent|docker-api|data-drive")
         }
-        try emitCommandResult(try client.command { proxy, reply in
+        let repairClient = target == "ports" ? client.withTimeout(atLeast: 10) : client
+        try emitCommandResult(try repairClient.command { proxy, reply in
             proxy.repairSubsystem(target, reply: reply)
         })
     case "replace-routes":

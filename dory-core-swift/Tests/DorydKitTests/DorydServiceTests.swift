@@ -3,6 +3,31 @@ import DoryCore
 import XCTest
 
 final class DorydServiceTests: XCTestCase {
+    func testPublishedPortRepairDetailUsesValidatedGvproxyReceiptCounts() {
+        let startedAt = Date()
+        let receipt = PublishedPortReconcileReceipt(
+            requestID: "repair-1",
+            enginePID: 42,
+            startedAt: startedAt,
+            finishedAt: startedAt.addingTimeInterval(0.1),
+            publishedPortCount: 3,
+            desiredForwardCount: 5,
+            observedForwardCount: 5,
+            addedForwardCount: 1,
+            removedForwardCount: 2,
+            missingForwardCount: 0,
+            unexpectedForwardCount: 0
+        )
+
+        let detail = DorydService.publishedPortRepairDetail(receipt)
+
+        XCTAssertEqual(
+            detail,
+            "completed and validated gvproxy reconciliation for 3 published port(s) across 5 forward(s), added 1, removed 2"
+        )
+        XCTAssertFalse(detail.contains("requested"))
+    }
+
     func testProtocolVersionOverXPCReturnsRustVersion() throws {
         let service = DorydService(socketPath: "/tmp/doryd-test.sock")
         let listener = makeAnonymousListener(service: service)

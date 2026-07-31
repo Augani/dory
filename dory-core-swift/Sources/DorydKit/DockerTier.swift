@@ -181,6 +181,7 @@ public final class DockerTier: @unchecked Sendable {
     private let idleController: IdleController?
     private let agentControl: AgentControl?
     private let portPublisher: PortPublisher?
+    private let publishedPortRepairClient: PublishedPortRepairClient
     private let readinessTracker = EngineReadinessTracker()
     private let supervisorQueue = DispatchQueue(label: "dev.dory.doryd.docker-tier-supervisor")
     private let lock = NSLock()
@@ -230,12 +231,14 @@ public final class DockerTier: @unchecked Sendable {
                 shouldContinue: shouldContinue
             )
         },
-        beforeDataplaneStart: @escaping @Sendable () -> Void = {}
+        beforeDataplaneStart: @escaping @Sendable () -> Void = {},
+        publishedPortRepairClient: PublishedPortRepairClient = PublishedPortRepairClient()
     ) {
         self.configuration = configuration
         self.containerActivityProbe = containerActivityProbe
         self.dockerReadyWaiter = dockerReadyWaiter
         self.beforeDataplaneStart = beforeDataplaneStart
+        self.publishedPortRepairClient = publishedPortRepairClient
         self.idleController = idleController
         self.socket = DorySocket(home: configuration.home)
         if let injectedAgentControl {
@@ -987,25 +990,43 @@ public final class DockerTier: @unchecked Sendable {
         return try portPublisher.refresh(from: agentControl)
     }
 
-    /// Forces dory-hv's gvproxy publisher to reconcile immediately, then validates the guest-agent
-    /// port snapshot used by privileged and diagnostic surfaces. The VMM helper path has no gvproxy
-    /// publisher and therefore fails closed instead of delivering SIGUSR2 to an unrelated process.
-    public func repairPublishedPorts() throws -> PortPublishDiff? {
+    /// Forces dory-hv's gvproxy publisher to reconcile immediately and waits for a correlated
+    /// receipt written only after dory-hv re-reads the live gvproxy registry. The VMM helper path
+    /// has no signal-backed publisher and fails closed instead of signaling an unrelated process.
+    public func repairPublishedPorts() throws -> PublishedPortReconcileReceipt {
         lock.lock()
         let currentState = state
         let helperPID = helperProcess?.pid
-        let supportsSignal = configuration.hvProcess != nil
+        let helperGeneration = activeHelperGeneration
+        let supportsSignal = configuration.hvProcess != nil && configuration.vmmProcess == nil
         lock.unlock()
         guard currentState == .running else {
             throw TierError.repairUnavailable("docker tier is \(currentState.rawValue)")
         }
-        guard supportsSignal, let helperPID else {
+        guard supportsSignal, let helperPID, let helperGeneration,
+              let stateDirectory = managedHelperStateDirectory() else {
             throw TierError.repairUnavailable("dory-hv port reconciliation is unavailable")
         }
-        guard kill(helperPID, SIGUSR2) == 0 else {
-            throw TierError.repairUnavailable("could not signal dory-hv pid \(helperPID): \(String(cString: strerror(errno)))")
+        do {
+            let receipt = try publishedPortRepairClient.reconcile(
+                stateDirectory: stateDirectory,
+                enginePID: helperPID
+            ) { [weak self] in
+                guard let self else { return false }
+                self.lock.lock()
+                let current = self.state == .running
+                    && self.activeHelperGeneration == helperGeneration
+                    && self.helperProcess?.pid == helperPID
+                self.lock.unlock()
+                return current
+            }
+            // Keep guest-agent-backed diagnostic surfaces fresh, but never describe that unrelated
+            // cache diff as proof of gvproxy repair.
+            _ = try? refreshPublishedPorts()
+            return receipt
+        } catch {
+            throw TierError.repairUnavailable("\(error)")
         }
-        return try refreshPublishedPorts()
     }
 
     public func currentPublishedPorts() -> [DoryListenPort]? {

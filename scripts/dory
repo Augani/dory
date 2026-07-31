@@ -1622,7 +1622,15 @@ doryd_machine_cmd() {
           *) forwarded+=("$1"); shift ;;
         esac
       done
-      set -- "${forwarded[@]}"
+      # macOS ships Bash 3.2, where expanding an empty array under `set -u`
+      # raises "unbound variable" even when the array was initialized. The
+      # common no-option create path leaves `forwarded` empty, so reset the
+      # positional parameters without expanding it in that case.
+      if [ "${#forwarded[@]}" -gt 0 ]; then
+        set -- "${forwarded[@]}"
+      else
+        set --
+      fi
       args=("$name")
       if ! dory_machine_has_option --kernel "$@"; then
         local kernel

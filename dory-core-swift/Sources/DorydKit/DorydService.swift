@@ -776,9 +776,8 @@ public final class DorydService: NSObject, DorydControl {
                 detail = "reconciled \(routeCount) domain route(s)"
             case "ports":
                 guard let dockerTier else { throw SubsystemRepairError.unavailable("docker tier is not configured") }
-                let diff = try dockerTier.repairPublishedPorts()
-                let count = dockerTier.currentPublishedPorts()?.count ?? 0
-                detail = "requested immediate gvproxy reconciliation; validated \(count) published port(s), added \(diff?.added.count ?? 0), removed \(diff?.removed.count ?? 0)"
+                let receipt = try dockerTier.repairPublishedPorts()
+                detail = Self.publishedPortRepairDetail(receipt)
             case "guest-agent":
                 guard let dockerTier else { throw SubsystemRepairError.unavailable("docker tier is not configured") }
                 let info = try dockerTier.reconnectAgent()
@@ -815,6 +814,10 @@ public final class DorydService: NSObject, DorydControl {
             incidentWriter?.record(type: "repair.\(target)_failed", detail: detail)
             reply(false, detail)
         }
+    }
+
+    static func publishedPortRepairDetail(_ receipt: PublishedPortReconcileReceipt) -> String {
+        "completed and validated gvproxy reconciliation for \(receipt.publishedPortCount) published port(s) across \(receipt.desiredForwardCount) forward(s), added \(receipt.addedForwardCount), removed \(receipt.removedForwardCount)"
     }
 
     public func balloonStatus(reply: @escaping (NSDictionary, String) -> Void) {

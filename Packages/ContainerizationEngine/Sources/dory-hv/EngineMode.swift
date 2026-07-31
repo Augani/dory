@@ -3,6 +3,60 @@ import DoryHV
 import Foundation
 import Synchronization
 
+package final class PortReconcileSignalRegistration: @unchecked Sendable {
+    private let lock = NSLock()
+    private let worker = DispatchQueue(label: "dev.dory.hv.port-reconcile-signal")
+    private let workerKey = DispatchSpecificKey<Void>()
+    private let reconcile: @Sendable () -> Void
+    private var source: (any DispatchSourceSignal)?
+
+    package init(reconcile: @escaping @Sendable () -> Void) {
+        self.reconcile = reconcile
+        worker.setSpecific(key: workerKey, value: ())
+    }
+
+    package func install() {
+        lock.lock()
+        guard source == nil else {
+            lock.unlock()
+            return
+        }
+        _ = signal(SIGUSR2, SIG_IGN)
+        let source = DispatchSource.makeSignalSource(signal: SIGUSR2, queue: worker)
+        source.setEventHandler { [weak self] in self?.reconcile() }
+        self.source = source
+        source.resume()
+        lock.unlock()
+    }
+
+    package func waitUntilIdle() {
+        drainWorker()
+    }
+
+    package func cancel() {
+        lock.lock()
+        let source = source
+        self.source = nil
+        lock.unlock()
+        guard let source else { return }
+        source.setEventHandler {}
+        source.cancel()
+        drainWorker()
+        // Cancellation runs before gvproxy cleanup. Keep any late repair signal harmless until exit.
+        _ = signal(SIGUSR2, SIG_IGN)
+    }
+
+    private func drainWorker() {
+        if DispatchQueue.getSpecific(key: workerKey) == nil {
+            worker.sync {}
+        }
+    }
+
+    deinit {
+        cancel()
+    }
+}
+
 /// `dory-hv engine`: the production mode SharedVMProvisioner spawns. Owns the full lifecycle:
 /// pulls docker:dind once, boots the VMM with networking, and publishes the Docker API at the
 /// unix socket the app already consumes.
@@ -137,15 +191,71 @@ enum EngineMode {
         signalSources.append(source)
     }
 
-    private static func installPortReconcileSignal(portForwarder: PortForwarder) {
-        signal(SIGUSR2, SIG_IGN)
-        let source = DispatchSource.makeSignalSource(signal: SIGUSR2, queue: .global())
-        source.setEventHandler {
+    package static func installPortReconcileSignal(
+        portForwarder: PortForwarder,
+        stateDirectory: String
+    ) -> PortReconcileSignalRegistration {
+        let registration = PortReconcileSignalRegistration {
             note("manual port reconcile requested")
-            portForwarder.reconcileNow()
+            let startedAt = Date()
+            let request = readPortReconcileRequest(stateDirectory: stateDirectory)
+            let result = portForwarder.reconcileNow()
+            guard let request, request.enginePID == getpid() else {
+                note("manual port reconcile completed without a matching doryd request")
+                return
+            }
+            let receipt = PublishedPortReconcileReceipt(
+                requestID: request.requestID,
+                enginePID: getpid(),
+                startedAt: startedAt,
+                publishedPortCount: result.publishedPortCount,
+                desiredForwardCount: result.desired.count,
+                observedForwardCount: result.observed.count,
+                addedForwardCount: result.addedForwardCount,
+                removedForwardCount: result.removedForwardCount,
+                missingForwardCount: result.missing.count,
+                unexpectedForwardCount: result.unexpected.count,
+                error: result.error
+            )
+            do {
+                try writePortReconcileReceipt(receipt, stateDirectory: stateDirectory)
+                note(result.succeeded
+                    ? "manual port reconcile completed and validated"
+                    : "manual port reconcile failed validation: \(result.error ?? "registry mismatch")")
+            } catch {
+                note("manual port reconcile could not publish completion receipt: \(error)")
+            }
         }
-        source.resume()
-        signalSources.append(source)
+        registration.install()
+        return registration
+    }
+
+    private static func readPortReconcileRequest(
+        stateDirectory: String
+    ) -> PublishedPortReconcileRequest? {
+        let url = URL(fileURLWithPath: stateDirectory)
+            .appendingPathComponent(PublishedPortReconcileProtocol.requestFilename)
+        guard let data = try? Data(contentsOf: url),
+              let request = try? JSONDecoder().decode(PublishedPortReconcileRequest.self, from: data),
+              request.isSupported else {
+            return nil
+        }
+        return request
+    }
+
+    private static func writePortReconcileReceipt(
+        _ receipt: PublishedPortReconcileReceipt,
+        stateDirectory: String
+    ) throws {
+        let url = URL(fileURLWithPath: stateDirectory)
+            .appendingPathComponent(PublishedPortReconcileProtocol.receiptFilename)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        try encoder.encode(receipt).write(to: url, options: .atomic)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600],
+            ofItemAtPath: url.path
+        )
     }
 
     private static func syncGuestClock(
@@ -636,8 +746,15 @@ enum EngineMode {
             bridgeSubnetCIDR: bridgeNetwork.cidr,
             log: { note($0) }
         )
-        installPortReconcileSignal(portForwarder: portForwarder)
+        let portReconcileSignal = installPortReconcileSignal(
+            portForwarder: portForwarder,
+            stateDirectory: state
+        )
         portForwarder.start()
+        defer {
+            portReconcileSignal.cancel()
+            portForwarder.stop()
+        }
         let gvproxyDatapathTask = monitorGVProxyDatapath(
             healthSocket: gvproxyHealthSocket,
             dockerSocket: configuration.engineSocket,
