@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Fixed
+
+- Fixed `dory mcp serve` on macOS, where launching the embedded Python server via
+  `python3 /dev/fd/3 … 3<<'PY'` could exit immediately with no MCP output under Apple Python
+  and bash. The server is now written to a temporary file before execution so stdin remains free
+  for stdio MCP.
+- Renamed stdio MCP tool identifiers from dotted names (`dory.engine_status`) to underscore names
+  (`dory_engine_status`) so MCP hosts that only accept `[a-zA-Z0-9_-]` no longer drop every tool.
+
 ## 0.4.2 - 2026-07-22
 
 ### Added
