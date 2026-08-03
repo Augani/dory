@@ -20,8 +20,8 @@ license = "MIT"
 [workspace.dependencies]
 tokio = { version = "1", features = ["io-util", "net", "rt", "rt-multi-thread", "macros", "sync", "time"] }
 thiserror = "2"
-prost = "0.13"
-prost-build = "0.13"
+prost = "0.14"
+prost-build = "0.14"
 serde_json = "1"
 uniffi = "0.32"
 
