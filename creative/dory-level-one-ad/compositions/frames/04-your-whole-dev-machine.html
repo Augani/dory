@@ -1,0 +1,534 @@
+<template>
+  <style>
+    @font-face {
+      font-family: "Manrope";
+      src: url("assets/fonts/manrope-400.woff2") format("woff2");
+      font-style: normal;
+      font-weight: 400;
+      font-display: swap;
+    }
+
+    @font-face {
+      font-family: "Manrope";
+      src: url("assets/fonts/manrope-600.woff2") format("woff2");
+      font-style: normal;
+      font-weight: 600;
+      font-display: swap;
+    }
+
+    @font-face {
+      font-family: "Manrope";
+      src: url("assets/fonts/manrope-700.woff2") format("woff2");
+      font-style: normal;
+      font-weight: 700;
+      font-display: swap;
+    }
+
+    @font-face {
+      font-family: "Manrope";
+      src: url("assets/fonts/manrope-800.woff2") format("woff2");
+      font-style: normal;
+      font-weight: 800;
+      font-display: swap;
+    }
+
+    #root {
+      position: relative;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      container-type: size;
+      font-family: "Manrope", sans-serif;
+      color: #07111f;
+    }
+
+    #root [class~="04-your-whole-dev-machine-ground"] {
+      position: absolute;
+      inset: 0;
+      overflow: hidden;
+      container-type: size;
+      background:
+        radial-gradient(circle at 15% 18%, rgba(255, 214, 139, 0.52) 0, rgba(255, 214, 139, 0) 27%),
+        radial-gradient(circle at 87% 34%, rgba(152, 199, 246, 0.48) 0, rgba(152, 199, 246, 0) 29%),
+        radial-gradient(circle at 50% 78%, rgba(205, 229, 250, 0.54) 0, rgba(205, 229, 250, 0) 27%),
+        #f6f9fe;
+    }
+
+    #root [class~="04-your-whole-dev-machine-ground"]::after {
+      position: absolute;
+      z-index: 8;
+      inset: 0;
+      pointer-events: none;
+      content: "";
+      opacity: 0.04;
+      background-image: radial-gradient(rgba(7, 17, 31, 0.92) 0.55px, transparent 0.7px);
+      background-size: 4px 4px;
+    }
+
+    #root [class~="04-your-whole-dev-machine-wallpaper"] {
+      position: absolute;
+      z-index: 1;
+      height: 6.8cqw;
+      will-change: transform, opacity;
+    }
+
+    #root [class~="04-your-whole-dev-machine-wallpaper-a"] {
+      top: 10cqw;
+      left: -9cqw;
+      width: 28cqw;
+    }
+
+    #root [class~="04-your-whole-dev-machine-wallpaper-b"] {
+      top: 29cqw;
+      right: -10cqw;
+      width: 26cqw;
+    }
+
+    #root [class~="04-your-whole-dev-machine-wallpaper-c"] {
+      top: 70cqw;
+      left: -8cqw;
+      width: 24cqw;
+    }
+
+    #root [class~="04-your-whole-dev-machine-wallpaper-shape"] {
+      width: 100%;
+      height: 100%;
+      border: 2px solid #07111f;
+      border-radius: 9999px;
+      box-sizing: border-box;
+    }
+
+    #root [class~="04-your-whole-dev-machine-wallpaper-a"] [class~="04-your-whole-dev-machine-wallpaper-shape"] {
+      background: #ffb020;
+      transform: rotate(-17deg);
+    }
+
+    #root [class~="04-your-whole-dev-machine-wallpaper-b"] [class~="04-your-whole-dev-machine-wallpaper-shape"] {
+      background: #98c7f6;
+      transform: rotate(16deg);
+    }
+
+    #root [class~="04-your-whole-dev-machine-wallpaper-c"] [class~="04-your-whole-dev-machine-wallpaper-shape"] {
+      background: #20b783;
+      transform: rotate(12deg);
+    }
+
+    #root [class~="04-your-whole-dev-machine-card"] {
+      position: absolute;
+      z-index: 3;
+      top: 4cqw;
+      left: 5cqw;
+      width: 90cqw;
+      height: 77cqw;
+      overflow: hidden;
+      border: 2px solid #07111f;
+      border-radius: 2rem;
+      box-sizing: border-box;
+      background: rgba(255, 255, 255, 0.96);
+      box-shadow: 0.6cqw 0.6cqw 0 rgba(7, 17, 31, 0.1);
+    }
+
+    #root [class~="04-your-whole-dev-machine-card"]::before {
+      position: absolute;
+      inset: 0;
+      content: "";
+      pointer-events: none;
+      background:
+        radial-gradient(circle at 12% 15%, rgba(255, 214, 139, 0.2), transparent 24%),
+        radial-gradient(circle at 91% 76%, rgba(220, 235, 250, 0.44), transparent 28%);
+    }
+
+    #root [class~="04-your-whole-dev-machine-lockup"] {
+      position: absolute;
+      z-index: 2;
+      top: 5.2cqw;
+      left: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 2.1cqw;
+      width: 72cqw;
+      transform: translateX(-50%);
+    }
+
+    #root [class~="04-your-whole-dev-machine-icon-tile"] {
+      display: grid;
+      flex: 0 0 auto;
+      width: 15.2cqw;
+      height: 15.2cqw;
+      place-items: center;
+      overflow: hidden;
+      border: 2px solid #07111f;
+      border-radius: 2rem;
+      box-sizing: border-box;
+      background: #dcebfa;
+      box-shadow: 0.45cqw 0.45cqw 0 rgba(7, 17, 31, 0.1);
+      transform-origin: 50% 50%;
+      will-change: transform, opacity;
+    }
+
+    #root [class~="04-your-whole-dev-machine-app-icon"] {
+      display: block;
+      width: 12.4cqw;
+      height: 12.4cqw;
+      object-fit: contain;
+    }
+
+    #root [class~="04-your-whole-dev-machine-name"] {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.04em;
+      min-width: 28cqw;
+      font-size: 7.2cqw;
+      font-weight: 800;
+      line-height: 0.88;
+      letter-spacing: -0.055em;
+      white-space: nowrap;
+    }
+
+    #root [class~="04-your-whole-dev-machine-letter"] {
+      display: inline-block;
+      will-change: transform, opacity;
+    }
+
+    #root [class~="04-your-whole-dev-machine-fish-tile"] {
+      display: grid;
+      flex: 0 0 auto;
+      width: 10.4cqw;
+      height: 8.2cqw;
+      place-items: center;
+      border: 2px solid #07111f;
+      border-radius: 9999px;
+      box-sizing: border-box;
+      background: #ffffff;
+      box-shadow: 0.28cqw 0.28cqw 0 rgba(7, 17, 31, 0.1);
+      will-change: transform, opacity;
+    }
+
+    #root [class~="04-your-whole-dev-machine-fish"] {
+      display: block;
+      width: 7.2cqw;
+      height: 5.6cqw;
+      object-fit: contain;
+    }
+
+    #root [class~="04-your-whole-dev-machine-copy"] {
+      position: absolute;
+      z-index: 2;
+      top: 28.4cqw;
+      left: 50%;
+      width: 76cqw;
+      text-align: center;
+      transform: translateX(-50%);
+    }
+
+    #root [class~="04-your-whole-dev-machine-line"] {
+      display: flex;
+      align-items: baseline;
+      justify-content: center;
+      white-space: nowrap;
+    }
+
+    #root [class~="04-your-whole-dev-machine-line-one"] {
+      gap: 0.32em;
+      font-size: 3.65cqw;
+      font-weight: 700;
+      line-height: 1.05;
+      letter-spacing: -0.025em;
+    }
+
+    #root [class~="04-your-whole-dev-machine-line-two"] {
+      gap: 0.24em;
+      margin-top: 1.55cqw;
+      font-size: 5.35cqw;
+      font-weight: 800;
+      line-height: 0.98;
+      letter-spacing: -0.045em;
+    }
+
+    #root [class~="04-your-whole-dev-machine-word-mask"] {
+      display: inline-block;
+      overflow: hidden;
+      padding: 0.08em 0.02em 0.12em;
+    }
+
+    #root [class~="04-your-whole-dev-machine-word"] {
+      display: inline-block;
+      will-change: transform, opacity;
+    }
+
+    #root [class~="04-your-whole-dev-machine-underline-track"] {
+      width: 25cqw;
+      height: 1.05cqw;
+      margin: 2.25cqw auto 0;
+      overflow: hidden;
+      border: 2px solid #07111f;
+      border-radius: 9999px;
+      box-sizing: border-box;
+      background: #f6f9fe;
+    }
+
+    #root [class~="04-your-whole-dev-machine-underline"] {
+      width: 100%;
+      height: 100%;
+      border-radius: 9999px;
+      background: #147fe8;
+      transform-origin: left center;
+      will-change: transform;
+    }
+
+    #root [class~="04-your-whole-dev-machine-meta"] {
+      position: absolute;
+      z-index: 2;
+      top: 56.2cqw;
+      left: 50%;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      width: 82cqw;
+      transform: translateX(-50%);
+    }
+
+    #root [class~="04-your-whole-dev-machine-proof"] {
+      padding: 0.9cqw 1.9cqw;
+      border: 2px solid #07111f;
+      border-radius: 9999px;
+      box-sizing: border-box;
+      background: #dcebfa;
+      box-shadow: 0.2cqw 0.2cqw 0 rgba(7, 17, 31, 0.1);
+      font-size: 1.7cqw;
+      font-weight: 700;
+      line-height: 1;
+      letter-spacing: 0.14em;
+      white-space: nowrap;
+      transform-origin: 50% 50%;
+      will-change: transform, opacity;
+    }
+
+    #root [class~="04-your-whole-dev-machine-meta-row"] {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 1.45cqw;
+      margin-top: 1.55cqw;
+      transform-origin: 50% 50%;
+      will-change: transform, opacity;
+    }
+
+    #root [class~="04-your-whole-dev-machine-cta"],
+    #root [class~="04-your-whole-dev-machine-url"] {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 6.6cqw;
+      padding: 0 2.45cqw;
+      border: 2px solid #07111f;
+      border-radius: 9999px;
+      box-sizing: border-box;
+      box-shadow: 0.3cqw 0.3cqw 0 rgba(7, 17, 31, 0.1);
+      font-size: 2.05cqw;
+      line-height: 1;
+      white-space: nowrap;
+    }
+
+    #root [class~="04-your-whole-dev-machine-cta"] {
+      background: #ffb020;
+      font-weight: 800;
+      letter-spacing: 0.1em;
+    }
+
+    #root [class~="04-your-whole-dev-machine-url"] {
+      background: #ffffff;
+      color: #07111f;
+      font-size: 1.95cqw;
+      font-weight: 700;
+      letter-spacing: 0.01em;
+    }
+  </style>
+
+  <div id="root" data-composition-id="04-your-whole-dev-machine" data-duration="3.90" data-width="1080" data-height="1080">
+    <div id="f04-your-whole-dev-machine-ground" class="clip 04-your-whole-dev-machine-ground" data-start="0" data-duration="3.90" data-track-index="0">
+      <div id="04-your-whole-dev-machine-wallpaper-a" class="04-your-whole-dev-machine-wallpaper 04-your-whole-dev-machine-wallpaper-a" aria-hidden="true">
+        <div class="04-your-whole-dev-machine-wallpaper-shape"></div>
+      </div>
+      <div id="04-your-whole-dev-machine-wallpaper-b" class="04-your-whole-dev-machine-wallpaper 04-your-whole-dev-machine-wallpaper-b" aria-hidden="true">
+        <div class="04-your-whole-dev-machine-wallpaper-shape"></div>
+      </div>
+      <div id="04-your-whole-dev-machine-wallpaper-c" class="04-your-whole-dev-machine-wallpaper 04-your-whole-dev-machine-wallpaper-c" aria-hidden="true">
+        <div class="04-your-whole-dev-machine-wallpaper-shape"></div>
+      </div>
+
+      <section class="04-your-whole-dev-machine-card" aria-label="Dory end card">
+        <div class="04-your-whole-dev-machine-lockup">
+          <div id="04-your-whole-dev-machine-icon-tile" class="04-your-whole-dev-machine-icon-tile">
+            <img class="04-your-whole-dev-machine-app-icon" src="assets/dory-app-icon.png" alt="Dory app icon">
+          </div>
+
+          <div class="04-your-whole-dev-machine-name" aria-label="Dory">
+            <span id="04-your-whole-dev-machine-letter-d" class="04-your-whole-dev-machine-letter">D</span>
+            <span id="04-your-whole-dev-machine-letter-o" class="04-your-whole-dev-machine-letter">O</span>
+            <span id="04-your-whole-dev-machine-letter-r" class="04-your-whole-dev-machine-letter">R</span>
+            <span id="04-your-whole-dev-machine-letter-y" class="04-your-whole-dev-machine-letter">Y</span>
+          </div>
+
+          <div id="04-your-whole-dev-machine-fish-tile" class="04-your-whole-dev-machine-fish-tile">
+            <img class="04-your-whole-dev-machine-fish" src="assets/dory-logo.svg" alt="Dory fish">
+          </div>
+        </div>
+
+        <div class="04-your-whole-dev-machine-copy">
+          <div class="04-your-whole-dev-machine-line 04-your-whole-dev-machine-line-one" aria-label="More than containers.">
+            <span class="04-your-whole-dev-machine-word-mask"><span class="04-your-whole-dev-machine-word" data-04-your-whole-dev-machine-copy="one">MORE</span></span>
+            <span class="04-your-whole-dev-machine-word-mask"><span class="04-your-whole-dev-machine-word" data-04-your-whole-dev-machine-copy="one">THAN</span></span>
+            <span class="04-your-whole-dev-machine-word-mask"><span class="04-your-whole-dev-machine-word" data-04-your-whole-dev-machine-copy="one">CONTAINERS.</span></span>
+          </div>
+
+          <div class="04-your-whole-dev-machine-line 04-your-whole-dev-machine-line-two" aria-label="Your whole dev machine.">
+            <span class="04-your-whole-dev-machine-word-mask"><span class="04-your-whole-dev-machine-word" data-04-your-whole-dev-machine-copy="two">YOUR</span></span>
+            <span class="04-your-whole-dev-machine-word-mask"><span class="04-your-whole-dev-machine-word" data-04-your-whole-dev-machine-copy="two">WHOLE</span></span>
+            <span class="04-your-whole-dev-machine-word-mask"><span class="04-your-whole-dev-machine-word" data-04-your-whole-dev-machine-copy="two">DEV</span></span>
+            <span class="04-your-whole-dev-machine-word-mask"><span class="04-your-whole-dev-machine-word" data-04-your-whole-dev-machine-copy="two">MACHINE.</span></span>
+          </div>
+
+          <div class="04-your-whole-dev-machine-underline-track" aria-hidden="true">
+            <div id="04-your-whole-dev-machine-underline" class="04-your-whole-dev-machine-underline"></div>
+          </div>
+        </div>
+
+        <div class="04-your-whole-dev-machine-meta">
+          <div id="04-your-whole-dev-machine-proof" class="04-your-whole-dev-machine-proof">APPLE SILICON · MACOS 14+</div>
+          <div id="04-your-whole-dev-machine-meta-row" class="04-your-whole-dev-machine-meta-row">
+            <div class="04-your-whole-dev-machine-cta">GET DORY ↗</div>
+            <div class="04-your-whole-dev-machine-url">augani.github.io/dory</div>
+          </div>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js"></script>
+  <script>
+    (() => {
+      const frameId = "04-your-whole-dev-machine";
+      const frameRoot = document.querySelector('[data-composition-id="04-your-whole-dev-machine"]');
+      const byId = (suffix) => document.getElementById(`${frameId}-${suffix}`);
+      const timeline = gsap.timeline({ paused: true });
+
+      window.__timelines = window.__timelines || {};
+      window.__timelines[frameId] = timeline;
+
+      const iconTile = byId("icon-tile");
+      const fishTile = byId("fish-tile");
+      const letters = ["letter-d", "letter-o", "letter-r", "letter-y"].map(byId);
+      const wallpaper = ["wallpaper-a", "wallpaper-b", "wallpaper-c"].map(byId);
+      const underline = byId("underline");
+      const proof = byId("proof");
+      const metaRow = byId("meta-row");
+
+      timeline.fromTo(
+        iconTile,
+        { scale: 0, y: -92, opacity: 0 },
+        { scale: 1, y: 0, opacity: 1, duration: 0.58, ease: "power3.out" },
+        0.02,
+      );
+
+      timeline.fromTo(
+        fishTile,
+        { x: -72, opacity: 0 },
+        { x: 0, opacity: 1, duration: 0.52, ease: "power3.out" },
+        0.12,
+      );
+
+      const wallpaperFrom = [
+        { x: -86, opacity: 0 },
+        { x: 88, opacity: 0 },
+        { x: -74, opacity: 0 },
+      ];
+
+      wallpaper.forEach((pill, index) => {
+        timeline.fromTo(
+          pill,
+          wallpaperFrom[index],
+          { x: 0, opacity: 1, duration: 0.5, ease: "power3.out" },
+          0.05 + index * 0.05,
+        );
+      });
+
+      timeline.set(letters, { opacity: 0 }, 0);
+      const waterfall = [
+        { start: 0.16, y: 78, duration: 0.18 },
+        { start: 0.31, y: 50, duration: 0.16 },
+        { start: 0.44, y: 44, duration: 0.14 },
+        { start: 0.55, y: 38, duration: 0.13 },
+      ];
+
+      letters.forEach((letter, index) => {
+        const beat = waterfall[index];
+        timeline.set(letter, { opacity: 1, y: beat.y }, beat.start);
+        timeline.to(letter, { y: 0, duration: beat.duration, ease: "power4.out" }, beat.start);
+      });
+
+      const COPY = [
+        {
+          nodes: Array.from(frameRoot.querySelectorAll('[data-04-your-whole-dev-machine-copy="one"]')),
+          baseDuration: 0.055,
+          secondsPerCharacter: 0.006,
+          hold: 0.055,
+        },
+        {
+          nodes: Array.from(frameRoot.querySelectorAll('[data-04-your-whole-dev-machine-copy="two"]')),
+          baseDuration: 0.06,
+          secondsPerCharacter: 0.006,
+          hold: 0,
+        },
+      ];
+
+      let copyCursor = 0.72;
+      const COPY_TIMELINE = COPY.map((entry) => {
+        const wordDurations = entry.nodes.map(
+          (node) => entry.baseDuration + node.textContent.length * entry.secondsPerCharacter,
+        );
+        const start = copyCursor;
+        const duration = wordDurations.reduce((sum, value) => sum + value, 0) + entry.hold;
+        copyCursor += duration;
+        return { ...entry, wordDurations, start, end: copyCursor };
+      });
+
+      COPY_TIMELINE.forEach((entry) => {
+        let wordCursor = entry.start;
+        entry.nodes.forEach((word, index) => {
+          timeline.fromTo(
+            word,
+            { yPercent: 112, opacity: 0 },
+            { yPercent: 0, opacity: 1, duration: 0.3, ease: "power4.out" },
+            wordCursor,
+          );
+          wordCursor += entry.wordDurations[index];
+        });
+      });
+
+      timeline.fromTo(
+        underline,
+        { scaleX: 0 },
+        { scaleX: 0.96, duration: 1.16, ease: "power2.out" },
+        1.49,
+      );
+      timeline.to(underline, { scaleX: 1, duration: 0.15, ease: "power2.out" }, 2.65);
+
+      timeline.fromTo(
+        proof,
+        { scale: 0, y: 12, opacity: 0 },
+        { scale: 1, y: 0, opacity: 1, duration: 0.45, ease: "power3.out" },
+        1.88,
+      );
+
+      timeline.fromTo(
+        metaRow,
+        { scale: 0, y: 24, opacity: 0 },
+        { scale: 1, y: 0, opacity: 1, duration: 0.62, ease: "power3.out" },
+        2.03,
+      );
+    })();
+  </script>
+</template>

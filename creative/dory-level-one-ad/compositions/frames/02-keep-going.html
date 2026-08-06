@@ -1,0 +1,1101 @@
+<template>
+  <style>
+    @font-face {
+      font-family: "Manrope";
+      src: url("assets/fonts/manrope-400.woff2") format("woff2");
+      font-weight: 400;
+      font-style: normal;
+      font-display: swap;
+    }
+
+    @font-face {
+      font-family: "Manrope";
+      src: url("assets/fonts/manrope-600.woff2") format("woff2");
+      font-weight: 600;
+      font-style: normal;
+      font-display: swap;
+    }
+
+    @font-face {
+      font-family: "Manrope";
+      src: url("assets/fonts/manrope-700.woff2") format("woff2");
+      font-weight: 700;
+      font-style: normal;
+      font-display: swap;
+    }
+
+    @font-face {
+      font-family: "Manrope";
+      src: url("assets/fonts/manrope-800.woff2") format("woff2");
+      font-weight: 800;
+      font-style: normal;
+      font-display: swap;
+    }
+
+    #root {
+      position: relative;
+      width: 1080px;
+      height: 1080px;
+      overflow: hidden;
+      container-type: size;
+      color: #07111f;
+      font-family: "Manrope", sans-serif;
+    }
+
+    #root *,
+    #root *::before,
+    #root *::after {
+      box-sizing: border-box;
+    }
+
+    #root [data-scene-layer="02-keep-going-background"] {
+      position: absolute;
+      inset: 0;
+      overflow: hidden;
+      background:
+        radial-gradient(circle at 12% 18%, rgba(152, 199, 246, 0.34) 0, rgba(152, 199, 246, 0) 28%),
+        radial-gradient(circle at 87% 24%, rgba(255, 214, 139, 0.28) 0, rgba(255, 214, 139, 0) 24%),
+        radial-gradient(circle at 56% 76%, rgba(205, 229, 250, 0.38) 0, rgba(205, 229, 250, 0) 30%),
+        #f6f9fe;
+    }
+
+    #root [data-scene-layer="02-keep-going-background"]::after {
+      position: absolute;
+      inset: 0;
+      content: "";
+      opacity: 0.04;
+      background-image:
+        repeating-linear-gradient(0deg, rgba(7, 17, 31, 0.6) 0 1px, transparent 1px 4px),
+        repeating-linear-gradient(90deg, rgba(7, 17, 31, 0.35) 0 1px, transparent 1px 5px);
+      background-size: 5px 5px, 7px 7px;
+      pointer-events: none;
+    }
+
+    #root [data-scene-layer="02-keep-going-scene"] {
+      position: absolute;
+      inset: 0;
+      overflow: hidden;
+    }
+
+    #root [data-header-strip="02-keep-going"] {
+      position: absolute;
+      z-index: 9;
+      top: 3.7cqh;
+      left: 5cqw;
+      width: 90cqw;
+      height: 6.5cqh;
+      display: flex;
+      align-items: center;
+      padding: 0 2.2cqw;
+      overflow: hidden;
+      border: 0.2cqw solid #07111f;
+      border-radius: 9999px;
+      background: #ffffff;
+      box-shadow: 0.4cqw 0.4cqw 0 rgba(7, 17, 31, 0.1);
+    }
+
+    #root [data-header-text="02-keep-going"] {
+      position: relative;
+      z-index: 2;
+      min-width: 0;
+      flex: 1 1 auto;
+      color: #07111f;
+      font-size: 2.8cqw;
+      font-weight: 800;
+      line-height: 1;
+      letter-spacing: 0.08em;
+      white-space: nowrap;
+    }
+
+    #root [data-header-accent="02-keep-going"] {
+      position: absolute;
+      right: 2.4cqw;
+      bottom: 1.5cqh;
+      width: 26cqw;
+      height: 0.8cqh;
+      border: 0.2cqw solid #07111f;
+      border-radius: 9999px;
+      background: #ffb020;
+      transform-origin: left center;
+    }
+
+    #root [data-level-meter="02-keep-going"] {
+      position: absolute;
+      z-index: 3;
+      right: 2.4cqw;
+      top: 1.5cqh;
+      display: flex;
+      gap: 0.65cqw;
+    }
+
+    #root [data-meter-dot] {
+      width: 1.7cqw;
+      height: 1.7cqw;
+      border: 0.2cqw solid #07111f;
+      border-radius: 50%;
+      background: #ffffff;
+    }
+
+    #root [data-stage="02-keep-going"] {
+      position: absolute;
+      z-index: 3;
+      top: 12cqh;
+      left: 3.7cqw;
+      width: 92.6cqw;
+      height: 60.2cqh;
+    }
+
+    #root [data-socket] {
+      --02-keep-going-socket-x: 0px;
+      --02-keep-going-socket-y: 0px;
+      position: absolute;
+      z-index: 2;
+      top: 50%;
+      left: 50%;
+      width: 41.7cqw;
+      height: 16.7cqh;
+      border: 0.2cqw dashed rgba(7, 17, 31, 0.3);
+      border-radius: 2rem;
+      background: rgba(255, 255, 255, 0.28);
+      opacity: 0.42;
+      transform: translate(-50%, -50%) translate(var(--02-keep-going-socket-x), var(--02-keep-going-socket-y));
+    }
+
+    #root [data-socket="1"] {
+      --02-keep-going-socket-x: -240px;
+      --02-keep-going-socket-y: -205px;
+    }
+
+    #root [data-socket="2"] {
+      --02-keep-going-socket-x: 240px;
+      --02-keep-going-socket-y: -205px;
+    }
+
+    #root [data-socket="3"] {
+      --02-keep-going-socket-x: -240px;
+      --02-keep-going-socket-y: 0px;
+    }
+
+    #root [data-socket="4"] {
+      --02-keep-going-socket-x: 240px;
+      --02-keep-going-socket-y: 0px;
+    }
+
+    #root [data-socket="5"] {
+      --02-keep-going-socket-x: -240px;
+      --02-keep-going-socket-y: 205px;
+    }
+
+    #root [data-socket="6"] {
+      --02-keep-going-socket-x: 240px;
+      --02-keep-going-socket-y: 205px;
+      width: 43.2cqw;
+      height: 17.6cqh;
+    }
+
+    #root [data-route="02-keep-going"] {
+      position: absolute;
+      z-index: 1;
+      inset: 0;
+      width: 100cqw;
+      height: 83.3cqh;
+      overflow: visible;
+      pointer-events: none;
+    }
+
+    #root [data-route-base] {
+      fill: none;
+      stroke: rgba(7, 17, 31, 0.16);
+      stroke-width: 11;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    #root [data-route-segment] {
+      fill: none;
+      stroke: #147fe8;
+      stroke-width: 6;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    #root [data-sweep="02-keep-going"] {
+      position: absolute;
+      z-index: 4;
+      top: 11.5cqh;
+      left: -22cqw;
+      width: 19cqw;
+      height: 61cqh;
+      opacity: 0;
+      background: linear-gradient(105deg, rgba(20, 127, 232, 0) 0%, rgba(20, 127, 232, 0.72) 50%, rgba(20, 127, 232, 0) 100%);
+      pointer-events: none;
+    }
+
+    #root [data-bloom="02-keep-going"] {
+      position: absolute;
+      z-index: 4;
+      top: 50.7cqh;
+      left: 46cqw;
+      width: 52cqw;
+      height: 23cqh;
+      opacity: 0;
+      border-radius: 50%;
+      background: radial-gradient(ellipse at center, rgba(20, 127, 232, 0.68) 0%, rgba(61, 123, 244, 0.3) 36%, rgba(61, 123, 244, 0) 74%);
+      transform-origin: center center;
+      pointer-events: none;
+    }
+
+    #root [data-world] {
+      position: absolute;
+      z-index: 5;
+      top: 50%;
+      left: 50%;
+      width: 41.7cqw;
+      height: 16.7cqh;
+      will-change: transform, opacity;
+    }
+
+    #root [data-world="6"] {
+      width: 43.2cqw;
+      height: 17.6cqh;
+      z-index: 6;
+    }
+
+    #root [data-surface] {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      gap: 1cqw;
+      padding: 1.1cqh 1.3cqw;
+      overflow: hidden;
+      border: 0.2cqw solid #07111f;
+      border-radius: 2rem;
+      background: #ffffff;
+      box-shadow: 0.4cqw 0.4cqw 0 rgba(7, 17, 31, 0.1);
+    }
+
+    #root [data-world="1"] [data-surface] {
+      background: #98c7f6;
+    }
+
+    #root [data-world="2"] [data-surface] {
+      background: #ffffff;
+    }
+
+    #root [data-world="3"] [data-surface] {
+      background: #dcebfa;
+    }
+
+    #root [data-world="4"] [data-surface] {
+      background: #ffd68b;
+    }
+
+    #root [data-world="5"] [data-surface] {
+      background: #cde5fa;
+    }
+
+    #root [data-world="6"] [data-surface] {
+      background: #ffffff;
+      box-shadow: 0.6cqw 0.6cqw 0 rgba(7, 17, 31, 0.1);
+    }
+
+    #root [data-world="1"] [data-surface],
+    #root [data-world="3"] [data-surface],
+    #root [data-world="5"] [data-surface] {
+      flex-direction: row-reverse;
+    }
+
+    #root [data-world="1"] [data-copy],
+    #root [data-world="3"] [data-copy],
+    #root [data-world="5"] [data-copy] {
+      text-align: right;
+    }
+
+    #root [data-node] {
+      position: relative;
+      flex: 0 0 4.8cqw;
+      width: 4.8cqw;
+      height: 4.8cqw;
+      display: grid;
+      place-items: center;
+      border: 0.2cqw solid #07111f;
+      border-radius: 50%;
+      background: #ffffff;
+      color: #07111f;
+      font-size: 1.7cqw;
+      font-weight: 800;
+      letter-spacing: -0.03em;
+      box-shadow: 0.3cqw 0.3cqw 0 rgba(7, 17, 31, 0.1);
+    }
+
+    #root [data-node]::after {
+      position: absolute;
+      right: -0.25cqw;
+      bottom: -0.25cqw;
+      width: 1.3cqw;
+      height: 1.3cqw;
+      content: "";
+      border: 0.18cqw solid #07111f;
+      border-radius: 50%;
+      background: #20b783;
+    }
+
+    #root [data-copy] {
+      min-width: 0;
+      flex: 1 1 auto;
+    }
+
+    #root [data-kicker] {
+      margin-bottom: 0.55cqh;
+      color: #07111f;
+      font-size: 0.82cqw;
+      font-weight: 700;
+      line-height: 1;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+    }
+
+    #root [data-title] {
+      max-width: 23cqw;
+      color: #07111f;
+      font-size: 1.72cqw;
+      font-weight: 800;
+      line-height: 1.02;
+      letter-spacing: 0.035em;
+      text-transform: uppercase;
+    }
+
+    #root [data-world="1"] [data-title] {
+      max-width: none;
+      font-size: 2.12cqw;
+      letter-spacing: 0.025em;
+      white-space: nowrap;
+    }
+
+    #root [data-world="6"] [data-title] {
+      font-size: 1.65cqw;
+      line-height: 1.03;
+    }
+
+    #root [data-proof] {
+      position: relative;
+      flex: 0 0 10.5cqw;
+      height: 10.8cqh;
+      display: grid;
+      place-items: center;
+      overflow: hidden;
+      border: 0.2cqw solid #07111f;
+      border-radius: 9999px;
+      background: rgba(255, 255, 255, 0.72);
+    }
+
+    #root [data-world="6"] [data-proof] {
+      flex-basis: 11.4cqw;
+      border-radius: 2rem;
+    }
+
+    #root [data-icon-svg] {
+      width: 9.8cqw;
+      height: 7cqh;
+      overflow: visible;
+    }
+
+    #root [data-icon-svg] path,
+    #root [data-icon-svg] line,
+    #root [data-icon-svg] polyline,
+    #root [data-icon-svg] rect,
+    #root [data-icon-svg] circle {
+      stroke: #07111f;
+      stroke-width: 6;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    #root [data-icon-svg] [data-draw] {
+      fill: none;
+    }
+
+    #root [data-kube-dot] {
+      fill: #147fe8;
+      stroke-width: 4;
+    }
+
+    #root [data-desktops="02-keep-going"] {
+      width: 9.7cqw;
+      display: grid;
+      gap: 0.42cqh;
+    }
+
+    #root [data-desktop-tab] {
+      height: 2.5cqh;
+      display: flex;
+      align-items: center;
+      gap: 0.5cqw;
+      padding: 0 0.65cqw;
+      border: 0.18cqw solid #07111f;
+      border-radius: 9999px;
+      background: #ffffff;
+      color: #07111f;
+      font-size: 1.4cqw;
+      font-weight: 800;
+      letter-spacing: 0.04em;
+    }
+
+    #root [data-desktop-tab]::before {
+      width: 0.7cqw;
+      height: 0.7cqw;
+      content: "";
+      border: 0.14cqw solid #07111f;
+      border-radius: 50%;
+      background: #3d7bf4;
+    }
+
+    #root [data-desktop-tab="ubuntu"]::before {
+      background: #ffb020;
+    }
+
+    #root [data-desktop-tab="kali"]::before {
+      background: #20b783;
+    }
+
+    #root [data-server-proof="02-keep-going"] {
+      width: 9.8cqw;
+      display: grid;
+      gap: 0.42cqh;
+    }
+
+    #root [data-server-row] {
+      position: relative;
+      height: 2cqh;
+      border: 0.18cqw solid #07111f;
+      border-radius: 9999px;
+      background: #ffffff;
+    }
+
+    #root [data-server-row]::after {
+      position: absolute;
+      top: 0.38cqh;
+      right: 0.48cqw;
+      width: 0.62cqw;
+      height: 0.62cqw;
+      content: "";
+      border: 0.14cqw solid #07111f;
+      border-radius: 50%;
+      background: #20b783;
+    }
+
+    #root [data-persistent-track] {
+      position: relative;
+      width: 9.8cqw;
+      height: 2.3cqh;
+      overflow: hidden;
+      border: 0.18cqw solid #07111f;
+      border-radius: 9999px;
+      background: #f6f9fe;
+    }
+
+    #root [data-persistent-fill] {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      border-radius: inherit;
+      background: #20b783;
+      transform-origin: left center;
+    }
+
+    #root [data-persistent-label] {
+      position: absolute;
+      z-index: 2;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      color: #07111f;
+      font-size: 1.4cqw;
+      font-weight: 800;
+      letter-spacing: 0.04em;
+    }
+
+    #root [data-migration-proof="02-keep-going"] {
+      width: 10.2cqw;
+      display: grid;
+      justify-items: center;
+      gap: 0.35cqh;
+    }
+
+    #root [data-state-pill="02-keep-going"] {
+      min-width: 8.4cqw;
+      height: 2.5cqh;
+      display: grid;
+      place-items: center;
+      border: 0.18cqw solid #07111f;
+      border-radius: 9999px;
+      background: #ffffff;
+      color: #07111f;
+      font-size: 1.4cqw;
+      font-weight: 800;
+      letter-spacing: 0.06em;
+    }
+
+    #root [data-bridge-svg] {
+      width: 9.7cqw;
+      height: 5.2cqh;
+      overflow: visible;
+    }
+
+    #root [data-bridge-svg] [data-volume] {
+      fill: #dcebfa;
+      stroke: #07111f;
+      stroke-width: 5;
+    }
+
+    #root [data-bridge-svg] [data-draw] {
+      fill: none;
+      stroke: #07111f;
+      stroke-width: 6;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    #root [data-sandbox-proof="02-keep-going"] {
+      width: 10.8cqw;
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 0.45cqw;
+      align-items: center;
+    }
+
+    #root [data-cell] {
+      height: 7.1cqh;
+      display: grid;
+      place-items: center;
+      border: 0.18cqw solid #07111f;
+      border-radius: 9999px;
+      background: #dcebfa;
+    }
+
+    #root [data-cell="2"] {
+      background: #ffd68b;
+    }
+
+    #root [data-cell="3"] {
+      background: #cde5fa;
+    }
+
+    #root [data-cell]::before {
+      width: 1cqw;
+      height: 1cqw;
+      content: "";
+      border: 0.18cqw solid #07111f;
+      border-radius: 50%;
+      background: #20b783;
+    }
+
+    #root [data-shield-svg] {
+      position: absolute;
+      right: 0.7cqw;
+      bottom: 0.6cqh;
+      width: 3.2cqw;
+      height: 3.2cqw;
+      padding: 0.3cqw;
+      border: 0.18cqw solid #07111f;
+      border-radius: 50%;
+      background: #ffffff;
+    }
+
+    #root [data-shield-svg] path {
+      fill: none;
+      stroke: #07111f;
+      stroke-width: 6;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    #root [data-payoff="02-keep-going"] {
+      position: absolute;
+      z-index: 10;
+      top: 74.1cqh;
+      left: 14.8cqw;
+      width: 70.4cqw;
+      height: 5.4cqh;
+      display: grid;
+      place-items: center;
+      border: 0.2cqw solid #07111f;
+      border-radius: 9999px;
+      background: #147fe8;
+      color: #07111f;
+      font-size: 2.05cqw;
+      font-weight: 800;
+      line-height: 1;
+      letter-spacing: 0.16em;
+      box-shadow: 0.35cqw 0.35cqw 0 rgba(7, 17, 31, 0.1);
+    }
+  </style>
+
+  <div id="root" data-composition-id="02-keep-going" data-duration="10.17" data-width="1080" data-height="1080">
+    <div
+      id="f02-keep-going-background"
+      class="clip"
+      data-scene-layer="02-keep-going-background"
+      data-start="0"
+      data-duration="10.17"
+      data-track-index="0"
+    ></div>
+
+    <div
+      id="f02-keep-going-scene"
+      class="clip"
+      data-scene-layer="02-keep-going-scene"
+      data-start="0"
+      data-duration="10.17"
+      data-track-index="1"
+    >
+      <div data-header-strip="02-keep-going">
+        <div data-header-text="02-keep-going">DORY STARTS WITH</div>
+        <div data-header-accent="02-keep-going"></div>
+        <div data-level-meter="02-keep-going" aria-hidden="true">
+          <span data-meter-dot="1"></span>
+          <span data-meter-dot="2"></span>
+          <span data-meter-dot="3"></span>
+          <span data-meter-dot="4"></span>
+          <span data-meter-dot="5"></span>
+          <span data-meter-dot="6"></span>
+        </div>
+      </div>
+
+      <svg data-route="02-keep-going" viewBox="0 0 1080 900" aria-hidden="true">
+        <path data-route-base d="M -40 250 H 488 H 592 H 540 V 455 H 488 H 592 H 540 V 660 H 488 H 592" />
+        <path data-route-segment="0" data-draw="route-0" d="M -40 250 H 488" />
+        <path data-route-segment="1" data-draw="route-1" d="M 488 250 H 592" />
+        <path data-route-segment="2" data-draw="route-2" d="M 592 250 H 540 V 455 H 488" />
+        <path data-route-segment="3" data-draw="route-3" d="M 488 455 H 592" />
+        <path data-route-segment="4" data-draw="route-4" d="M 592 455 H 540 V 660 H 488" />
+        <path data-route-segment="5" data-draw="route-5" d="M 488 660 H 592" />
+      </svg>
+
+      <div data-sweep="02-keep-going" aria-hidden="true"></div>
+      <div data-bloom="02-keep-going" aria-hidden="true"></div>
+
+      <div data-stage="02-keep-going">
+        <div data-socket="1"></div>
+        <div data-socket="2"></div>
+        <div data-socket="3"></div>
+        <div data-socket="4"></div>
+        <div data-socket="5"></div>
+        <div data-socket="6"></div>
+
+        <div data-world="1" data-target-x="-240" data-target-y="-205">
+          <div data-surface>
+            <div data-node="1">01</div>
+            <div data-copy>
+              <div data-kicker>CORE CONTAINER WORLD</div>
+              <div data-title>DOCKER + COMPOSE</div>
+            </div>
+            <div data-proof>
+              <svg data-icon-svg viewBox="0 0 184 96" aria-hidden="true">
+                <rect data-draw="docker-a" x="18" y="46" width="42" height="32" rx="8"></rect>
+                <rect data-draw="docker-b" x="70" y="30" width="42" height="48" rx="8"></rect>
+                <rect data-draw="docker-c" x="122" y="14" width="42" height="64" rx="8"></rect>
+                <path data-draw="docker-base" d="M 14 84 H 170"></path>
+              </svg>
+            </div>
+          </div>
+        </div>
+
+        <div data-world="2" data-target-x="240" data-target-y="-205">
+          <div data-surface>
+            <div data-node="2">02</div>
+            <div data-copy>
+              <div data-kicker>ONE CLICK</div>
+              <div data-title>ONE-CLICK KUBERNETES</div>
+            </div>
+            <div data-proof>
+              <svg data-icon-svg viewBox="0 0 184 96" aria-hidden="true">
+                <path data-draw="kube-crown-a" d="M 35 42 L 55 18 L 82 42 L 107 18 L 132 42 L 150 24 L 143 70 H 42 Z"></path>
+                <path data-draw="kube-crown-b" d="M 48 72 H 138"></path>
+                <circle data-kube-dot="1" cx="67" cy="53" r="8"></circle>
+                <circle data-kube-dot="2" cx="93" cy="48" r="8"></circle>
+                <circle data-kube-dot="3" cx="119" cy="53" r="8"></circle>
+              </svg>
+            </div>
+          </div>
+        </div>
+
+        <div data-world="3" data-target-x="-240" data-target-y="0">
+          <div data-surface>
+            <div data-node="3">03</div>
+            <div data-copy>
+              <div data-kicker>FULL ENVIRONMENT</div>
+              <div data-title>FULL LINUX DESKTOPS</div>
+            </div>
+            <div data-proof>
+              <div data-desktops="02-keep-going">
+                <div data-desktop-tab="debian">DEBIAN</div>
+                <div data-desktop-tab="ubuntu">UBUNTU</div>
+                <div data-desktop-tab="kali">KALI</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div data-world="4" data-target-x="240" data-target-y="0">
+          <div data-surface>
+            <div data-node="4">04</div>
+            <div data-copy>
+              <div data-kicker>ALWAYS THERE</div>
+              <div data-title>PERSISTENT SERVERS</div>
+            </div>
+            <div data-proof>
+              <div data-server-proof="02-keep-going">
+                <div data-server-row="1"></div>
+                <div data-server-row="2"></div>
+                <div data-server-row="3"></div>
+                <div data-persistent-track>
+                  <div data-persistent-fill></div>
+                  <div data-persistent-label>PERSISTENT</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div data-world="5" data-target-x="-240" data-target-y="205">
+          <div data-surface>
+            <div data-node="5">05</div>
+            <div data-copy>
+              <div data-kicker>MOVE + RESTORE</div>
+              <div data-title>MIGRATION + RECOVERY</div>
+            </div>
+            <div data-proof>
+              <div data-migration-proof="02-keep-going">
+                <div data-state-pill="02-keep-going"></div>
+                <svg data-bridge-svg viewBox="0 0 198 66" aria-hidden="true">
+                  <rect data-volume="left" x="8" y="20" width="46" height="36" rx="10"></rect>
+                  <rect data-volume="right" x="144" y="20" width="46" height="36" rx="10"></rect>
+                  <path data-draw="bridge" d="M 58 38 C 83 7 116 7 140 38"></path>
+                  <path data-draw="bridge-arrow" d="M 125 30 L 140 38 L 130 52"></path>
+                  <path data-draw="bridge-check" d="M 157 38 L 165 47 L 181 29"></path>
+                </svg>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div data-world="6" data-target-x="240" data-target-y="205">
+          <div data-surface>
+            <div data-node="6">06</div>
+            <div data-copy>
+              <div data-kicker>SAFELY SEPARATED</div>
+              <div data-title>ISOLATED AGENT<br />SANDBOXES</div>
+            </div>
+            <div data-proof>
+              <div data-sandbox-proof="02-keep-going">
+                <div data-cell="1"></div>
+                <div data-cell="2"></div>
+                <div data-cell="3"></div>
+              </div>
+              <svg data-shield-svg viewBox="0 0 50 50" aria-hidden="true">
+                <path data-draw="shield" d="M 25 5 L 40 11 V 24 C 40 34 34 41 25 45 C 16 41 10 34 10 24 V 11 Z"></path>
+                <path data-draw="shield-check" d="M 17 25 L 23 31 L 34 19"></path>
+              </svg>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div data-payoff="02-keep-going">6 LEVELS. ONE DORY.</div>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js"></script>
+  <script>
+    (() => {
+      const frameRoot = document.querySelector('[data-composition-id="02-keep-going"]');
+      const one = (selector) => frameRoot.querySelector(selector);
+      const all = (selector) => Array.from(frameRoot.querySelectorAll(selector));
+      const tl = gsap.timeline({ paused: true });
+
+      window.__timelines = window.__timelines || {};
+      window.__timelines["02-keep-going"] = tl;
+
+      all("[data-draw]").forEach((path) => {
+        const length = path.getTotalLength();
+        path.style.strokeDasharray = String(length);
+        path.style.strokeDashoffset = String(length);
+      });
+
+      const stateAt = (sequence, time) => {
+        for (let index = sequence.length - 1; index >= 0; index -= 1) {
+          if (time >= sequence[index].t) return sequence[index].text;
+        }
+        return "";
+      };
+
+      const headlineSequence = [
+        { t: 0, text: "DORY STARTS WITH" },
+        { t: 2.35, text: "KEEP GOING" },
+      ];
+      const migrationSequence = [
+        { t: 0, text: "" },
+        { t: 7.06, text: "MIGRATE" },
+        { t: 7.58, text: "RECOVER" },
+      ];
+      const stateDriver = { t: 0 };
+
+      tl.to(
+        stateDriver,
+        {
+          t: 9.73,
+          duration: 9.73,
+          ease: "none",
+          onUpdate: () => {
+            one('[data-header-text="02-keep-going"]').textContent = stateAt(headlineSequence, stateDriver.t);
+            one('[data-state-pill="02-keep-going"]').textContent = stateAt(migrationSequence, stateDriver.t);
+          },
+        },
+        0,
+      );
+
+      const assembleWorld = (number, at, duration, startProgress) => {
+        const world = one('[data-world="' + number + '"]');
+        const targetX = Number(world.dataset.targetX);
+        const targetY = Number(world.dataset.targetY);
+        tl.fromTo(
+          world,
+          {
+            xPercent: -50,
+            yPercent: -50,
+            x: targetX * startProgress,
+            y: targetY * startProgress,
+            scale: 0.88,
+            opacity: 0,
+          },
+          {
+            x: targetX,
+            y: targetY,
+            scale: 1,
+            opacity: 1,
+            duration,
+            ease: "power3.out",
+          },
+          at,
+        );
+      };
+
+      const drawPath = (name, at, duration, ease) => {
+        tl.to(
+          one('[data-draw="' + name + '"]'),
+          {
+            strokeDashoffset: 0,
+            duration,
+            ease: ease || "power2.out",
+          },
+          at,
+        );
+      };
+
+      const verifyNode = (number, at, color) => {
+        const node = one('[data-node="' + number + '"]');
+        const meter = one('[data-meter-dot="' + number + '"]');
+        tl.fromTo(
+          node,
+          { scale: 0.78, backgroundColor: "#ffffff" },
+          {
+            scale: 1,
+            backgroundColor: color,
+            duration: 0.32,
+            ease: "power3.out",
+          },
+          at,
+        );
+        tl.fromTo(
+          meter,
+          { scale: 0.45, backgroundColor: "#ffffff" },
+          {
+            scale: 1,
+            backgroundColor: color,
+            duration: 0.26,
+            ease: "power3.out",
+          },
+          at + 0.04,
+        );
+      };
+
+      tl.fromTo(
+        one('[data-scene-layer="02-keep-going-scene"]'),
+        { opacity: 0 },
+        { opacity: 1, duration: 0.36, ease: "power1.out" },
+        0,
+      );
+      tl.fromTo(
+        one('[data-header-strip="02-keep-going"]'),
+        { y: -18, opacity: 0 },
+        { y: 0, opacity: 1, duration: 0.5, ease: "power2.out" },
+        0.05,
+      );
+      tl.fromTo(
+        one('[data-header-accent="02-keep-going"]'),
+        { scaleX: 0 },
+        { scaleX: 0.32, duration: 0.72, ease: "power3.out" },
+        0.18,
+      );
+
+      assembleWorld(1, 0.1, 0.74, 0.5);
+      drawPath("route-0", 0.12, 0.74, "none");
+      drawPath("docker-a", 0.42, 0.44);
+      drawPath("docker-b", 0.74, 0.44);
+      drawPath("docker-c", 1.06, 0.44);
+      drawPath("docker-base", 1.39, 0.34);
+      verifyNode(1, 1.48, "#98c7f6");
+
+      all("[data-socket]").forEach((socket, index) => {
+        if (index === 0) return;
+        tl.to(
+          socket,
+          {
+            opacity: 0.74,
+            borderColor: "#07111f",
+            backgroundColor: "rgba(220, 235, 250, 0.58)",
+            duration: 0.22,
+            ease: "power2.out",
+          },
+          2.35 + (index - 1) * 0.12,
+        );
+      });
+      tl.fromTo(
+        one('[data-sweep="02-keep-going"]'),
+        { x: -420, opacity: 0 },
+        {
+          x: 1320,
+          opacity: 0.23,
+          duration: 0.66,
+          ease: "none",
+        },
+        2.35,
+      );
+      tl.to(
+        one('[data-sweep="02-keep-going"]'),
+        { opacity: 0, duration: 0.18, ease: "power1.in" },
+        3.01,
+      );
+      tl.to(
+        one('[data-header-strip="02-keep-going"]'),
+        { backgroundColor: "#ffd68b", duration: 0.24, ease: "power1.out" },
+        2.35,
+      );
+      tl.fromTo(
+        one('[data-header-accent="02-keep-going"]'),
+        { scaleX: 0.32 },
+        { scaleX: 1, duration: 0.76, ease: "power3.out" },
+        2.36,
+      );
+
+      assembleWorld(2, 3.2, 0.62, 0.5);
+      drawPath("route-1", 2.45, 0.9, "none");
+      drawPath("kube-crown-a", 3.43, 0.54);
+      drawPath("kube-crown-b", 3.84, 0.34);
+      all("[data-kube-dot]").forEach((dot, index) => {
+        tl.fromTo(
+          dot,
+          { scale: 0.3, opacity: 0, transformOrigin: "center center" },
+          { scale: 1, opacity: 1, transformOrigin: "center center", duration: 0.25, ease: "power3.out" },
+          3.72 + index * 0.09,
+        );
+      });
+      verifyNode(2, 4.02, "#3d7bf4");
+
+      assembleWorld(3, 4.45, 0.6, 0.5);
+      drawPath("route-2", 4.48, 0.78, "none");
+      all("[data-desktop-tab]").forEach((tab, index) => {
+        tl.fromTo(
+          tab,
+          { y: 13, opacity: 0 },
+          { y: 0, opacity: 1, duration: 0.28, ease: "power3.out" },
+          4.74 + index * 0.2,
+        );
+      });
+      verifyNode(3, 5.26, "#dcebfa");
+
+      assembleWorld(4, 5.7, 0.58, 0.5);
+      drawPath("route-3", 5.73, 0.68, "none");
+      all("[data-server-row]").forEach((row, index) => {
+        tl.fromTo(
+          row,
+          { x: -24, opacity: 0 },
+          { x: 0, opacity: 1, duration: 0.28, ease: "power3.out" },
+          5.91 + index * 0.1,
+        );
+      });
+      tl.fromTo(
+        one("[data-persistent-fill]"),
+        { scaleX: 0 },
+        { scaleX: 1, duration: 0.82, ease: "power2.out" },
+        5.95,
+      );
+      tl.fromTo(
+        one("[data-persistent-label]"),
+        { opacity: 0 },
+        { opacity: 1, duration: 0.28, ease: "power1.out" },
+        6.28,
+      );
+      verifyNode(4, 6.38, "#ffd68b");
+
+      assembleWorld(5, 6.82, 0.6, 0.5);
+      drawPath("route-4", 6.86, 0.82, "none");
+      all("[data-volume]").forEach((volume, index) => {
+        tl.fromTo(
+          volume,
+          { scale: 0.65, opacity: 0, transformOrigin: "center center" },
+          { scale: 1, opacity: 1, transformOrigin: "center center", duration: 0.3, ease: "power3.out" },
+          7.0 + index * 0.18,
+        );
+      });
+      drawPath("bridge", 7.08, 0.56);
+      drawPath("bridge-arrow", 7.5, 0.3);
+      drawPath("bridge-check", 7.72, 0.3);
+      verifyNode(5, 7.72, "#cde5fa");
+
+      tl.fromTo(
+        one('[data-bloom="02-keep-going"]'),
+        { opacity: 0, scale: 0.88 },
+        { opacity: 0.28, scale: 1, duration: 0.68, ease: "power2.out" },
+        8.18,
+      );
+      assembleWorld(6, 8.18, 0.72, 0.45);
+      drawPath("route-5", 8.23, 0.86, "none");
+      all("[data-cell]").forEach((cell, index) => {
+        tl.fromTo(
+          cell,
+          { y: 18, scale: 0.76, opacity: 0 },
+          { y: 0, scale: 1, opacity: 1, duration: 0.32, ease: "power3.out" },
+          8.46 + index * 0.13,
+        );
+      });
+      drawPath("shield", 8.52, 0.52);
+      drawPath("shield-check", 8.91, 0.3);
+      verifyNode(6, 8.86, "#147fe8");
+      tl.to(
+        one('[data-bloom="02-keep-going"]'),
+        { opacity: 0.2, scale: 1.04, duration: 0.32, ease: "power1.out" },
+        8.86,
+      );
+      tl.fromTo(
+        one('[data-payoff="02-keep-going"]'),
+        { y: 18, opacity: 0 },
+        { y: 0, opacity: 1, duration: 0.44, ease: "power3.out" },
+        8.88,
+      );
+      tl.to(
+        all("[data-node]"),
+        { scale: 1.06, duration: 0.16, ease: "power2.out", stagger: 0.035 },
+        9.04,
+      );
+      tl.to(
+        all("[data-node]"),
+        { scale: 1, duration: 0.18, ease: "power2.out", stagger: 0.025 },
+        9.25,
+      );
+    })();
+  </script>
+</template>

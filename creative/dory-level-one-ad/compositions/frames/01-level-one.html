@@ -1,0 +1,776 @@
+<template>
+  <style>
+    @font-face {
+      font-family: "Manrope";
+      src: url("assets/fonts/manrope-400.woff2") format("woff2");
+      font-style: normal;
+      font-weight: 400;
+      font-display: swap;
+    }
+
+    @font-face {
+      font-family: "Manrope";
+      src: url("assets/fonts/manrope-600.woff2") format("woff2");
+      font-style: normal;
+      font-weight: 600;
+      font-display: swap;
+    }
+
+    @font-face {
+      font-family: "Manrope";
+      src: url("assets/fonts/manrope-700.woff2") format("woff2");
+      font-style: normal;
+      font-weight: 700;
+      font-display: swap;
+    }
+
+    @font-face {
+      font-family: "Manrope";
+      src: url("assets/fonts/manrope-800.woff2") format("woff2");
+      font-style: normal;
+      font-weight: 800;
+      font-display: swap;
+    }
+
+    #root {
+      position: relative;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      container-type: size;
+      color: #07111f;
+      font-family: "Manrope", sans-serif;
+    }
+
+    #root,
+    #root * {
+      box-sizing: border-box;
+    }
+
+    [id="01-level-one-ground"] {
+      position: absolute;
+      inset: 0;
+      overflow: hidden;
+      background:
+        radial-gradient(circle at 18% 22%, rgba(152, 199, 246, 0.27), transparent 27%),
+        radial-gradient(circle at 76% 18%, rgba(255, 214, 139, 0.26), transparent 24%),
+        radial-gradient(circle at 70% 70%, rgba(61, 123, 244, 0.13), transparent 30%),
+        #f6f9fe;
+    }
+
+    [id="01-level-one-grain"] {
+      position: absolute;
+      inset: 0;
+      opacity: 0.04;
+      background-image:
+        radial-gradient(circle, rgba(7, 17, 31, 0.9) 0 0.045cqw, transparent 0.055cqw),
+        radial-gradient(circle, rgba(7, 17, 31, 0.55) 0 0.035cqw, transparent 0.045cqw);
+      background-position: 0 0, 0.26cqw 0.2cqw;
+      background-size: 0.52cqw 0.52cqw, 0.68cqw 0.68cqw;
+      pointer-events: none;
+    }
+
+    [id^="01-level-one-confetti-"] {
+      position: absolute;
+      border: 0.2cqw solid #07111f;
+      border-radius: 9999px;
+      opacity: 0.72;
+    }
+
+    [id="01-level-one-confetti-1"] {
+      top: 7cqh;
+      right: 5cqw;
+      width: 8.2cqw;
+      height: 3.8cqh;
+      background: #dcebfa;
+      transform: rotate(14deg);
+    }
+
+    [id="01-level-one-confetti-2"] {
+      top: 38cqh;
+      left: -2.1cqw;
+      width: 9.4cqw;
+      height: 4.8cqh;
+      background: #98c7f6;
+      transform: rotate(-16deg);
+    }
+
+    [id="01-level-one-confetti-3"] {
+      top: 72cqh;
+      left: 8.4cqw;
+      width: 6.2cqw;
+      height: 4.1cqh;
+      background: #ffb020;
+      transform: rotate(10deg);
+    }
+
+    [id="01-level-one-confetti-4"] {
+      top: 37cqh;
+      right: 6.5cqw;
+      width: 3.1cqw;
+      height: 5.5cqh;
+      border-radius: 50%;
+      background: #20b783;
+      transform: rotate(8deg);
+    }
+
+    [id="01-level-one-confetti-5"] {
+      top: 73cqh;
+      right: 8.5cqw;
+      width: 8.8cqw;
+      height: 4.4cqh;
+      background: #cde5fa;
+      transform: rotate(-9deg);
+    }
+
+    [id="01-level-one-confetti-6"] {
+      top: 5.5cqh;
+      left: 57cqw;
+      width: 5.2cqw;
+      height: 3.4cqh;
+      background: #ffd68b;
+      transform: rotate(-11deg);
+    }
+
+    [id="01-level-one-content"] {
+      position: absolute;
+      inset: 0 0 auto;
+      width: 100%;
+      height: 83cqh;
+      overflow: hidden;
+      pointer-events: none;
+    }
+
+    [id="01-level-one-route"] {
+      position: absolute;
+      inset: 0;
+      z-index: 1;
+      width: 100cqw;
+      height: 83cqh;
+      overflow: visible;
+    }
+
+    [id="01-level-one-route-base"],
+    [id="01-level-one-route-open"] {
+      fill: none;
+      stroke: #07111f;
+      stroke-width: 28;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    [id="01-level-one-route-open"] {
+      stroke: #3d7bf4;
+      stroke-width: 30;
+    }
+
+    [id="01-level-one-route-highlight"] {
+      fill: none;
+      stroke: rgba(255, 255, 255, 0.62);
+      stroke-width: 5;
+      stroke-linecap: round;
+    }
+
+    [id="01-level-one-stop-cap"] {
+      fill: #ffb020;
+      stroke: #07111f;
+      stroke-width: 6;
+      transform-box: fill-box;
+      transform-origin: 50% 50%;
+    }
+
+    [id="01-level-one-cap-burst"] {
+      fill: none;
+      stroke: #ffb020;
+      stroke-width: 7;
+      transform-box: fill-box;
+      transform-origin: 50% 50%;
+    }
+
+    [id="01-level-one-portal-ring"] {
+      fill: #f6f9fe;
+      stroke: #3d7bf4;
+      stroke-width: 15;
+      transform-box: fill-box;
+      transform-origin: 50% 50%;
+      filter: drop-shadow(0.3cqw 0.3cqw 0 rgba(7, 17, 31, 0.1));
+    }
+
+    [id="01-level-one-scene-a"] {
+      position: absolute;
+      inset: 0;
+      z-index: 3;
+      transform-origin: 50% 42%;
+      will-change: transform, filter, opacity;
+    }
+
+    [id="01-level-one-title-pill"] {
+      position: absolute;
+      top: 6.2cqh;
+      left: 5cqw;
+      display: inline-flex;
+      align-items: center;
+      min-height: 5.2cqh;
+      padding: 0.7cqh 1.45cqw;
+      border: 0.2cqw solid #07111f;
+      border-radius: 9999px;
+      background: #07111f;
+      box-shadow: 0.3cqw 0.3cqw 0 rgba(7, 17, 31, 0.1);
+      color: #ffffff;
+      font-size: 1.05cqw;
+      font-weight: 700;
+      line-height: 1;
+      letter-spacing: 0.13em;
+      text-transform: uppercase;
+      transform-origin: 50% 50%;
+    }
+
+    [id="01-level-one-title-dot"] {
+      width: 0.78cqw;
+      height: 0.78cqw;
+      margin-right: 0.7cqw;
+      border: 0.15cqw solid #07111f;
+      border-radius: 50%;
+      background: #ffb020;
+    }
+
+    [id="01-level-one-question"] {
+      position: absolute;
+      top: 12.5cqh;
+      left: 14.2cqw;
+      width: 71.6cqw;
+      min-height: 33cqh;
+    }
+
+    [id="01-level-one-stops-row"] {
+      display: flex;
+      align-items: center;
+      gap: 0.75cqw;
+      min-height: 5.5cqh;
+      padding-left: 3.1cqw;
+    }
+
+    [id="01-level-one-stops-row"] span {
+      display: inline-flex;
+      align-items: center;
+      min-height: 4.8cqh;
+      padding: 0.6cqh 1.3cqw;
+      border: 0.2cqw solid #07111f;
+      border-radius: 9999px;
+      background: #ffffff;
+      box-shadow: 0.22cqw 0.22cqw 0 rgba(7, 17, 31, 0.1);
+      font-size: 1.35cqw;
+      font-weight: 700;
+      line-height: 1;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      transform-origin: 50% 50%;
+    }
+
+    [id="01-level-one-stops-row"] span:last-child {
+      background: #cde5fa;
+    }
+
+    [id="01-level-one-containers-pill"] {
+      position: absolute;
+      top: 7.2cqh;
+      left: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 71.6cqw;
+      min-height: 17.2cqh;
+      padding: 1.4cqh 3cqw 1.7cqh;
+      border: 0.25cqw solid #07111f;
+      border-radius: 9999px;
+      background: rgba(255, 255, 255, 0.9);
+      box-shadow: 0.45cqw 0.45cqw 0 rgba(7, 17, 31, 0.1);
+      color: #07111f;
+      font-size: 6.8cqw;
+      font-weight: 800;
+      line-height: 0.88;
+      letter-spacing: -0.03em;
+      white-space: nowrap;
+      transform-origin: 50% 50%;
+    }
+
+    [id="01-level-one-container-accent"] {
+      position: absolute;
+      right: 2.1cqw;
+      width: 2.1cqw;
+      height: 2.1cqw;
+      border: 0.18cqw solid #07111f;
+      border-radius: 50%;
+      background: #20b783;
+    }
+
+    [id="01-level-one-cube"] {
+      position: absolute;
+      top: 43cqh;
+      left: 40.5cqw;
+      width: 14.2cqw;
+      height: 24.1cqh;
+      transform-origin: 50% 58%;
+      will-change: transform, opacity;
+    }
+
+    [id="01-level-one-cube"] svg {
+      display: block;
+      width: 100%;
+      height: 100%;
+      overflow: visible;
+    }
+
+    [id="01-level-one-cube-shadow"] {
+      fill: rgba(7, 17, 31, 0.1);
+    }
+
+    [id="01-level-one-cube-front"] {
+      fill: #3d7bf4;
+      stroke: #07111f;
+      stroke-width: 8;
+      stroke-linejoin: round;
+    }
+
+    [id="01-level-one-cube-top"] {
+      fill: #98c7f6;
+      stroke: #07111f;
+      stroke-width: 8;
+      stroke-linejoin: round;
+    }
+
+    [id="01-level-one-cube-side"] {
+      fill: #2f62d9;
+      stroke: #07111f;
+      stroke-width: 8;
+      stroke-linejoin: round;
+    }
+
+    [id="01-level-one-cube-line-1"],
+    [id="01-level-one-cube-line-2"] {
+      stroke: #ffffff;
+      stroke-width: 9;
+      stroke-linecap: round;
+    }
+
+    [id="01-level-one-level-stage"] {
+      position: absolute;
+      z-index: 5;
+      top: 17cqh;
+      left: 20cqw;
+      width: 60cqw;
+      height: 34cqh;
+      transform-origin: 50% 50%;
+      will-change: transform, filter, opacity;
+    }
+
+    [id="01-level-one-thats"] {
+      position: absolute;
+      top: 0;
+      left: 23.7cqw;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 5cqh;
+      padding: 0.6cqh 1.45cqw;
+      border: 0.2cqw solid #07111f;
+      border-radius: 9999px;
+      background: #dcebfa;
+      box-shadow: 0.25cqw 0.25cqw 0 rgba(7, 17, 31, 0.1);
+      font-size: 1.2cqw;
+      font-weight: 700;
+      line-height: 1;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+    }
+
+    [id="01-level-one-badge"] {
+      position: absolute;
+      top: 6.1cqh;
+      left: 4cqw;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 52cqw;
+      height: 21cqh;
+      padding: 2.5cqh 2.8cqw 1.4cqh;
+      border: 0.28cqw solid #07111f;
+      border-radius: 2rem;
+      background: #07111f;
+      box-shadow: 0.55cqw 0.55cqw 0 rgba(7, 17, 31, 0.1);
+      color: #ffffff;
+      transform-origin: 50% 50%;
+    }
+
+    [id="01-level-one-badge-stamp"] {
+      position: absolute;
+      top: 1.25cqh;
+      left: 1.2cqw;
+      display: inline-flex;
+      align-items: center;
+      min-height: 3.7cqh;
+      padding: 0.45cqh 1.05cqw;
+      border: 0.17cqw solid #07111f;
+      border-radius: 9999px;
+      background: #ffb020;
+      color: #07111f;
+      font-size: 0.86cqw;
+      font-weight: 800;
+      line-height: 1;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+
+    [id="01-level-one-badge-copy"] {
+      margin-top: 1.5cqh;
+      font-size: 5.55cqw;
+      font-weight: 800;
+      line-height: 0.9;
+      letter-spacing: -0.035em;
+      white-space: nowrap;
+    }
+
+    [id="01-level-one-press-stage"] {
+      position: absolute;
+      z-index: 7;
+      top: 55.5cqh;
+      left: 31.2cqw;
+      width: 38cqw;
+      height: 18cqh;
+      will-change: transform, opacity;
+    }
+
+    [id="01-level-one-keep-going"] {
+      position: absolute;
+      z-index: 2;
+      top: 2cqh;
+      left: 4.45cqw;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 1.1cqw;
+      width: 29.1cqw;
+      height: 11.2cqh;
+      border: 0.25cqw solid #07111f;
+      border-radius: 9999px;
+      background: #ffb020;
+      box-shadow: 0.45cqw 0.45cqw 0 rgba(7, 17, 31, 0.1);
+      color: #07111f;
+      font-size: 2.15cqw;
+      font-weight: 800;
+      line-height: 1;
+      letter-spacing: 0.11em;
+      text-transform: uppercase;
+      transform-origin: 50% 50%;
+      will-change: transform, box-shadow;
+    }
+
+    [id="01-level-one-button-arrow"] {
+      position: relative;
+      width: 2.5cqw;
+      height: 2.5cqw;
+      border: 0.22cqw solid #07111f;
+      border-radius: 50%;
+      background: #ffffff;
+    }
+
+    [id="01-level-one-button-arrow"]::before {
+      content: "";
+      position: absolute;
+      top: 0.62cqw;
+      left: 0.72cqw;
+      width: 0.75cqw;
+      height: 0.75cqw;
+      border-top: 0.17cqw solid #07111f;
+      border-right: 0.17cqw solid #07111f;
+      transform: rotate(-45deg);
+    }
+
+    [id="01-level-one-click-ripple"] {
+      position: absolute;
+      z-index: 1;
+      top: 7.4cqh;
+      left: 21.1cqw;
+      width: 5.2cqw;
+      height: 5.2cqw;
+      margin-top: -2.6cqw;
+      margin-left: -2.6cqw;
+      border: 0.2cqw solid #3d7bf4;
+      border-radius: 50%;
+      opacity: 0;
+      pointer-events: none;
+      transform-origin: 50% 50%;
+    }
+
+    [id="01-level-one-dory"] {
+      position: absolute;
+      z-index: 9;
+      top: 45.8cqh;
+      left: 53.1cqw;
+      display: block;
+      width: 14.1cqw;
+      height: 25cqh;
+      object-fit: contain;
+      pointer-events: none;
+      transform-origin: 0 67%;
+      will-change: transform, opacity;
+    }
+  </style>
+
+  <div id="root" data-composition-id="01-level-one" data-duration="4.99" data-width="1080" data-height="1080">
+    <div
+      id="01-level-one-ground"
+      class="clip"
+      data-start="0"
+      data-duration="4.99"
+      data-track-index="0"
+    >
+      <div id="01-level-one-confetti-1"></div>
+      <div id="01-level-one-confetti-2"></div>
+      <div id="01-level-one-confetti-3"></div>
+      <div id="01-level-one-confetti-4"></div>
+      <div id="01-level-one-confetti-5"></div>
+      <div id="01-level-one-confetti-6"></div>
+      <div id="01-level-one-grain"></div>
+    </div>
+
+    <div
+      id="01-level-one-content"
+      class="clip"
+      data-start="0"
+      data-duration="4.99"
+      data-track-index="1"
+    >
+      <svg
+        id="01-level-one-route"
+        viewBox="0 0 1920 896"
+        aria-hidden="true"
+        xmlns="http://www.w3.org/2000/svg"
+      >
+        <path id="01-level-one-route-base" d="M 165 690 C 330 690, 470 690, 610 690 H 1085" />
+        <path id="01-level-one-route-highlight" d="M 174 683 C 335 683, 472 683, 610 683 H 1076" />
+        <circle id="01-level-one-cap-burst" cx="1085" cy="690" r="34" />
+        <rect id="01-level-one-stop-cap" x="1059" y="623" width="52" height="134" rx="26" />
+        <path
+          id="01-level-one-route-open"
+          d="M 1085 690 C 1110 580, 1085 548, 1085 455 C 1085 360, 968 327, 960 175"
+        />
+        <circle id="01-level-one-portal-ring" cx="960" cy="153" r="61" />
+      </svg>
+
+      <div id="01-level-one-scene-a">
+        <div id="01-level-one-title-pill">
+          <span id="01-level-one-title-dot"></span>
+          LOCAL RUNTIME
+        </div>
+
+        <div id="01-level-one-question">
+          <div id="01-level-one-stops-row">
+            <span>STOPS</span>
+            <span>AT</span>
+          </div>
+          <div id="01-level-one-containers-pill">
+            CONTAINERS?
+            <span id="01-level-one-container-accent"></span>
+          </div>
+        </div>
+
+        <div id="01-level-one-cube" aria-hidden="true">
+          <svg viewBox="0 0 280 250" xmlns="http://www.w3.org/2000/svg">
+            <path id="01-level-one-cube-shadow" d="M 61 56 L 174 21 L 255 74 L 250 204 L 133 239 L 50 184 Z" />
+            <path id="01-level-one-cube-top" d="M 35 48 L 151 12 L 235 65 L 119 102 Z" />
+            <path id="01-level-one-cube-side" d="M 119 102 L 235 65 L 230 194 L 116 231 Z" />
+            <path id="01-level-one-cube-front" d="M 35 48 L 119 102 L 116 231 L 31 176 Z" />
+            <path id="01-level-one-cube-line-1" d="M 54 96 L 98 124" />
+            <path id="01-level-one-cube-line-2" d="M 54 126 L 98 154" />
+          </svg>
+        </div>
+      </div>
+
+      <div id="01-level-one-level-stage">
+        <div id="01-level-one-thats">THAT'S</div>
+        <div id="01-level-one-badge">
+          <span id="01-level-one-badge-stamp">LEVEL 1</span>
+          <span id="01-level-one-badge-copy">LEVEL ONE.</span>
+        </div>
+      </div>
+
+      <div id="01-level-one-press-stage">
+        <div id="01-level-one-click-ripple"></div>
+        <div id="01-level-one-keep-going">
+          KEEP GOING
+          <span id="01-level-one-button-arrow"></span>
+        </div>
+      </div>
+
+      <img id="01-level-one-dory" src="assets/dory-logo.svg" alt="Dory" />
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js"></script>
+  <script>
+    (() => {
+      const byId = (id) => document.getElementById(id);
+      const routeBase = byId("01-level-one-route-base");
+      const routeOpen = byId("01-level-one-route-open");
+      const routeHighlight = byId("01-level-one-route-highlight");
+      const stopCap = byId("01-level-one-stop-cap");
+      const capBurst = byId("01-level-one-cap-burst");
+      const portalRing = byId("01-level-one-portal-ring");
+      const sceneA = byId("01-level-one-scene-a");
+      const titlePill = byId("01-level-one-title-pill");
+      const cube = byId("01-level-one-cube");
+      const containersPill = byId("01-level-one-containers-pill");
+      const levelStage = byId("01-level-one-level-stage");
+      const pressStage = byId("01-level-one-press-stage");
+      const keepGoing = byId("01-level-one-keep-going");
+      const clickRipple = byId("01-level-one-click-ripple");
+      const dory = byId("01-level-one-dory");
+
+      [routeBase, routeOpen, routeHighlight].forEach((path) => {
+        const length = path.getTotalLength();
+        path.style.strokeDasharray = String(length);
+        path.style.strokeDashoffset = String(length);
+      });
+
+      const copyPieces = Array.from(document.querySelectorAll('[id="01-level-one-stops-row"] span'));
+      let copyCursor = 0.34;
+      const copyTimeline = copyPieces.map((element) => {
+        const contentLength = element.textContent.trim().length;
+        const revealDuration = Math.min(0.28, 0.16 + contentLength * 0.014);
+        const start = copyCursor;
+        copyCursor += revealDuration * 0.58;
+        return { element, start, revealDuration };
+      });
+
+      const tl = gsap.timeline({ paused: true });
+
+      tl.set([levelStage, pressStage, routeOpen, portalRing], { opacity: 0 }, 0);
+      tl.set(capBurst, { opacity: 0, scale: 1 }, 0);
+
+      tl.to(routeBase, { strokeDashoffset: 0, duration: 0.52, ease: "power2.out" }, 0.02);
+      tl.to(routeHighlight, { strokeDashoffset: 0, duration: 0.46, ease: "power2.out" }, 0.08);
+
+      tl.fromTo(
+        cube,
+        { scale: 0, opacity: 0, y: 18 },
+        { scale: 1, opacity: 1, y: 0, duration: 0.46, ease: "power3.out" },
+        0,
+      );
+      tl.fromTo(
+        titlePill,
+        { scale: 0, opacity: 0, y: 10 },
+        { scale: 1, opacity: 1, y: 0, duration: 0.4, ease: "power3.out" },
+        0.04,
+      );
+      tl.fromTo(
+        stopCap,
+        { scale: 0, opacity: 0 },
+        { scale: 1, opacity: 1, duration: 0.34, ease: "power3.out" },
+        0.1,
+      );
+
+      copyTimeline.forEach(({ element, start, revealDuration }) => {
+        tl.fromTo(
+          element,
+          { scale: 0.82, opacity: 0, y: 18 },
+          { scale: 1, opacity: 1, y: 0, duration: revealDuration, ease: "power3.out" },
+          start,
+        );
+      });
+
+      tl.fromTo(
+        containersPill,
+        { scale: 0.86, opacity: 0, y: 24 },
+        { scale: 1, opacity: 1, y: 0, duration: 0.46, ease: "power3.out" },
+        copyCursor + 0.08,
+      );
+
+      tl.to(cube, { x: 50, duration: 0.16, ease: "power1.in" }, 1.16);
+      tl.to(stopCap, { scale: 0.9, duration: 0.16, ease: "power1.in" }, 1.16);
+      tl.to(cube, { x: 0, duration: 0.34, ease: "power2.out" }, 1.32);
+      tl.to(stopCap, { scale: 1, duration: 0.38, ease: "back.out(1.6)" }, 1.32);
+      tl.fromTo(
+        capBurst,
+        { scale: 1, opacity: 0 },
+        { scale: 3.4, opacity: 0.56, duration: 0.34, ease: "power2.out" },
+        1.32,
+      );
+      tl.to(capBurst, { opacity: 0, duration: 0.26, ease: "power2.in" }, 1.55);
+
+      tl.fromTo(
+        dory,
+        { x: 880, opacity: 0 },
+        { x: 690, opacity: 1, duration: 0.6, ease: "power3.out" },
+        1.68,
+      );
+
+      tl.to(sceneA, { scale: 0.8, filter: "blur(10px)", duration: 0.2, ease: "power3.in" }, 2.6);
+      tl.to(sceneA, { opacity: 0.15, duration: 0.2, ease: "none" }, 2.6);
+      tl.set(sceneA, { opacity: 0 }, 2.8);
+      tl.set(levelStage, { opacity: 0.15, scale: 1.25, filter: "blur(10px)" }, 2.8);
+      tl.to(
+        levelStage,
+        { opacity: 1, scale: 1, filter: "blur(0px)", duration: 0.5, ease: "expo.out" },
+        2.8,
+      );
+
+      tl.to(dory, { x: 0, duration: 0.7, ease: "power2.inOut" }, 2.94);
+      tl.fromTo(
+        pressStage,
+        { y: 28, opacity: 0 },
+        { y: 0, opacity: 1, duration: 0.18, ease: "power3.out" },
+        3.53,
+      );
+
+      tl.to(
+        [keepGoing, dory],
+        { scale: 0.9, duration: 0.12, ease: "power1.in" },
+        3.72,
+      );
+      tl.to(
+        keepGoing,
+        {
+          boxShadow: "0.12cqw 0.12cqw 0 rgba(7,17,31,0.10), inset 0 0 0.9cqw rgba(255,255,255,0.55)",
+          duration: 0.12,
+          ease: "power1.in",
+        },
+        3.72,
+      );
+      tl.to(
+        [keepGoing, dory],
+        { scale: 1, duration: 0.38, ease: "back.out(2)" },
+        3.84,
+      );
+      tl.to(
+        keepGoing,
+        {
+          boxShadow: "0.45cqw 0.45cqw 0 rgba(7,17,31,0.10)",
+          duration: 0.38,
+          ease: "power2.out",
+        },
+        3.84,
+      );
+
+      tl.set(clickRipple, { scale: 0, opacity: 1 }, 3.84);
+      tl.to(
+        clickRipple,
+        { scale: 4.2, opacity: 0, duration: 0.5, ease: "power3.out", immediateRender: false },
+        3.84,
+      );
+
+      tl.set(routeOpen, { opacity: 1 }, 3.84);
+      tl.to(routeOpen, { strokeDashoffset: 0, duration: 0.5, ease: "power2.out" }, 3.84);
+      tl.to(stopCap, { fill: "#3d7bf4", duration: 0.28, ease: "power2.out" }, 3.84);
+      tl.fromTo(
+        portalRing,
+        { scale: 0.55, opacity: 0 },
+        { scale: 1, opacity: 1, duration: 0.35, ease: "power3.out" },
+        3.98,
+      );
+
+      window.__timelines = window.__timelines || {};
+      window.__timelines["01-level-one"] = tl;
+    })();
+  </script>
+</template>

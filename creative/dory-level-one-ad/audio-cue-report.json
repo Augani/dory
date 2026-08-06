@@ -1,0 +1,382 @@
+{
+  "status": "pass",
+  "film_duration_s": 21.0,
+  "film_frames": 1008000,
+  "voice": "af_sky",
+  "voice_speed": 1.22,
+  "cue_count": 5,
+  "cues": [
+    {
+      "id": "01",
+      "start": 0.32,
+      "text": "A local runtime that stops at containers?",
+      "end": 2.603,
+      "duration_s": 2.283,
+      "next_gap_s": 0.577,
+      "path": "assets/audio/voice-01.wav",
+      "sample_rate": 48000,
+      "channels": 1,
+      "sha256": "715a2179686b159847cbb10d21dbc42e065e9f20cb6afc69f97e6e849b36c4a0"
+    },
+    {
+      "id": "02",
+      "start": 3.18,
+      "text": "That's level one.",
+      "end": 4.289,
+      "duration_s": 1.109,
+      "next_gap_s": 0.261,
+      "path": "assets/audio/voice-02.wav",
+      "sample_rate": 48000,
+      "channels": 1,
+      "sha256": "1e8da51edf8378b59e3c2295b7f6c9d5f4ede806a6d0ce9a5121d8877c17f969"
+    },
+    {
+      "id": "03",
+      "start": 4.55,
+      "text": "Dory starts with Docker and Compose\u2014then keeps going: one-click Kubernetes, full Linux desktops, persistent servers, migration, recovery, and isolated agent sandboxes.",
+      "end": 14.043,
+      "duration_s": 9.493,
+      "next_gap_s": 0.237,
+      "path": "assets/audio/voice-03.wav",
+      "sample_rate": 48000,
+      "channels": 1,
+      "sha256": "36534f9354bfd8054a5363bd45838262f8a6f750473d79d4e75fa0de0c6ea423"
+    },
+    {
+      "id": "04",
+      "start": 14.28,
+      "text": "All in one native Mac app. Free and open source.",
+      "end": 16.904,
+      "duration_s": 2.624,
+      "next_gap_s": 0.196,
+      "path": "assets/audio/voice-04.wav",
+      "sample_rate": 48000,
+      "channels": 1,
+      "sha256": "de6cef87ffc2119f22b27ce715b8147bc63357a77717d3a81b5cad0b228be7e8"
+    },
+    {
+      "id": "05",
+      "start": 17.1,
+      "text": "Dory. More than containers. Your whole dev machine.",
+      "end": 19.767,
+      "duration_s": 2.667,
+      "next_gap_s": 1.233,
+      "path": "assets/audio/voice-05.wav",
+      "sample_rate": 48000,
+      "channels": 1,
+      "sha256": "72bd06e3957acb55d39290300d30c36356cc99d1d49b63e59e313d82b92601ac"
+    }
+  ],
+  "music": {
+    "bpm": 132.0,
+    "beat_s": 0.454545455,
+    "raw_unducked_stem": true,
+    "path": "assets/audio/music-bed.wav"
+  },
+  "sfx_events": [
+    {
+      "id": "cube-land",
+      "name": "core-thunk",
+      "start": 0.12,
+      "gain": 0.72,
+      "end": 0.84,
+      "duration_s": 0.72,
+      "source": "creative/dory-0.3.2-directors-cut/assets/core-thunk.wav",
+      "source_sha256": "7cbe48defad17e6e9385dbadeb1bebe489cb0b0b2cc3ff0e14f17d1ae9bf63d0"
+    },
+    {
+      "id": "level-stamp",
+      "name": "capsule-lock",
+      "start": 3.18,
+      "gain": 0.46,
+      "end": 3.46,
+      "duration_s": 0.28,
+      "source": "creative/dory-migration-ad/assets/capsule-lock.wav",
+      "source_sha256": "4c992d003371899bffcc5b31a9c2113eac917c45947c2a050523f026a53aa6f0"
+    },
+    {
+      "id": "button-smack",
+      "name": "core-thunk",
+      "start": 4.46,
+      "gain": 0.3,
+      "end": 5.18,
+      "duration_s": 0.72,
+      "source": "creative/dory-0.3.2-directors-cut/assets/core-thunk.wav",
+      "source_sha256": "7cbe48defad17e6e9385dbadeb1bebe489cb0b0b2cc3ff0e14f17d1ae9bf63d0"
+    },
+    {
+      "id": "level-launch",
+      "name": "portal-whoosh",
+      "start": 4.72,
+      "gain": 0.42,
+      "end": 5.3,
+      "duration_s": 0.58,
+      "source": "creative/dory-0.3.2-directors-cut/assets/portal-whoosh.wav",
+      "source_sha256": "18c315ddbf959fb5d8cc4611d6d6f9da4ee429a62ef1fdcf8e7cb28d6d9e22c4"
+    },
+    {
+      "id": "docker-compose",
+      "name": "magnet-1",
+      "start": 5.55,
+      "gain": 0.4,
+      "end": 5.97,
+      "duration_s": 0.42,
+      "source": "creative/dory-0.3.2-directors-cut/assets/magnet-1.wav",
+      "source_sha256": "7a89425300b2935016be68a154165761007a9396aa350a21aeebf2abd180f7b2"
+    },
+    {
+      "id": "kubernetes",
+      "name": "magnet-2",
+      "start": 7.65,
+      "gain": 0.42,
+      "end": 8.07,
+      "duration_s": 0.42,
+      "source": "creative/dory-0.3.2-directors-cut/assets/magnet-2.wav",
+      "source_sha256": "238b42485ab00b65f7efdfa754ae2ba7d8b03aa71082e85d5f96136f0a453a73"
+    },
+    {
+      "id": "linux-desktops",
+      "name": "magnet-3",
+      "start": 9.1,
+      "gain": 0.44,
+      "end": 9.52,
+      "duration_s": 0.42,
+      "source": "creative/dory-0.3.2-directors-cut/assets/magnet-3.wav",
+      "source_sha256": "9b1aae593c2d6141cee4c1b9ed68d19b539304003b85c83662486054a048b8fb"
+    },
+    {
+      "id": "persistent-servers",
+      "name": "capsule-lock",
+      "start": 10.45,
+      "gain": 0.36,
+      "end": 10.73,
+      "duration_s": 0.28,
+      "source": "creative/dory-migration-ad/assets/capsule-lock.wav",
+      "source_sha256": "4c992d003371899bffcc5b31a9c2113eac917c45947c2a050523f026a53aa6f0"
+    },
+    {
+      "id": "migrate-recover",
+      "name": "capsule-lock",
+      "start": 11.75,
+      "gain": 0.38,
+      "end": 12.03,
+      "duration_s": 0.28,
+      "source": "creative/dory-migration-ad/assets/capsule-lock.wav",
+      "source_sha256": "4c992d003371899bffcc5b31a9c2113eac917c45947c2a050523f026a53aa6f0"
+    },
+    {
+      "id": "agent-sandboxes",
+      "name": "sandbox-seal",
+      "start": 13.05,
+      "gain": 0.42,
+      "end": 13.57,
+      "duration_s": 0.52,
+      "source": "creative/dory-0.3.2-directors-cut/assets/sandbox-seal.wav",
+      "source_sha256": "bbf767333b4a197fba58fafb09333bf127f90befc64b89a76ac3ed4a76f4118c"
+    },
+    {
+      "id": "fold-whoosh",
+      "name": "bridge-whoosh",
+      "start": 14.02,
+      "gain": 0.46,
+      "end": 14.7,
+      "duration_s": 0.68,
+      "source": "creative/dory-migration-ad/assets/bridge-whoosh.wav",
+      "source_sha256": "6efacbd8e4b86e7ce8b84c71ea195a69c7ee1b524be7cb2e808d2c054a62a76c"
+    },
+    {
+      "id": "fold-lock-1",
+      "name": "magnet-1",
+      "start": 14.1,
+      "gain": 0.24,
+      "end": 14.52,
+      "duration_s": 0.42,
+      "source": "creative/dory-0.3.2-directors-cut/assets/magnet-1.wav",
+      "source_sha256": "7a89425300b2935016be68a154165761007a9396aa350a21aeebf2abd180f7b2"
+    },
+    {
+      "id": "fold-lock-2",
+      "name": "magnet-2",
+      "start": 14.16,
+      "gain": 0.24,
+      "end": 14.58,
+      "duration_s": 0.42,
+      "source": "creative/dory-0.3.2-directors-cut/assets/magnet-2.wav",
+      "source_sha256": "238b42485ab00b65f7efdfa754ae2ba7d8b03aa71082e85d5f96136f0a453a73"
+    },
+    {
+      "id": "fold-lock-3",
+      "name": "magnet-3",
+      "start": 14.22,
+      "gain": 0.24,
+      "end": 14.64,
+      "duration_s": 0.42,
+      "source": "creative/dory-0.3.2-directors-cut/assets/magnet-3.wav",
+      "source_sha256": "9b1aae593c2d6141cee4c1b9ed68d19b539304003b85c83662486054a048b8fb"
+    },
+    {
+      "id": "open-source",
+      "name": "verify-chime",
+      "start": 16.95,
+      "gain": 0.4,
+      "end": 17.63,
+      "duration_s": 0.68,
+      "source": "creative/dory-migration-ad/assets/verify-chime.wav",
+      "source_sha256": "8bf31cf9a8a03a21b73f25c88c46fb995bc213ba7ef353d0f1fc9f9a517c5c9c"
+    },
+    {
+      "id": "brand-resolve",
+      "name": "logo-resolve",
+      "start": 19.8,
+      "gain": 0.52,
+      "end": 20.85,
+      "duration_s": 1.05,
+      "source": "creative/dory-migration-ad/assets/logo-resolve.wav",
+      "source_sha256": "03589a98fc7efdf5ba14f6f07ebc93ac5e08f59bebf8532b243f5fd7cbe98b16"
+    }
+  ],
+  "loudness_before_mastering": {
+    "input_i": "-16.38",
+    "input_tp": "-1.38",
+    "input_lra": "4.50",
+    "input_thresh": "-26.85",
+    "target_offset": "0.24"
+  },
+  "loudness_after_mastering": {
+    "input_i": "-14.24",
+    "input_tp": "-1.00",
+    "input_lra": "4.70",
+    "input_thresh": "-24.71",
+    "target_offset": "0.04"
+  },
+  "files": {
+    "music-bed.wav": {
+      "path": "assets/audio/music-bed.wav",
+      "duration_s": 21.0,
+      "frames": 1008000,
+      "sample_rate": 48000,
+      "channels": 2,
+      "peak_linear": 0.23999989,
+      "peak_dbfs": -12.396,
+      "rms_dbfs": -31.548,
+      "clipped_samples": 0,
+      "bytes": 6048044,
+      "sha256": "a8f5867b8efa15b08593d68f0e81676d493c300b45c9a8e2c6394cf99104182e"
+    },
+    "narration-master.wav": {
+      "path": "assets/audio/narration-master.wav",
+      "duration_s": 21.0,
+      "frames": 1008000,
+      "sample_rate": 48000,
+      "channels": 2,
+      "peak_linear": 0.77937126,
+      "peak_dbfs": -2.165,
+      "rms_dbfs": -21.457,
+      "clipped_samples": 0,
+      "bytes": 6048044,
+      "sha256": "ee8a3713f4183e5c07a9883716729612dae8e58c1d8a5eafbc5d5583067462c2"
+    },
+    "sfx-master.wav": {
+      "path": "assets/audio/sfx-master.wav",
+      "duration_s": 21.0,
+      "frames": 1008000,
+      "sample_rate": 48000,
+      "channels": 2,
+      "peak_linear": 0.44639993,
+      "peak_dbfs": -7.006,
+      "rms_dbfs": -30.982,
+      "clipped_samples": 0,
+      "bytes": 6048044,
+      "sha256": "24d43b34a35bb4fb2185938f5158774b7667e0d726670b65f31508f0cb25182c"
+    },
+    "soundtrack-master.wav": {
+      "path": "assets/audio/soundtrack-master.wav",
+      "duration_s": 21.0,
+      "frames": 1008000,
+      "sample_rate": 48000,
+      "channels": 2,
+      "peak_linear": 0.8916018,
+      "peak_dbfs": -0.997,
+      "rms_dbfs": -16.854,
+      "clipped_samples": 0,
+      "bytes": 6048102,
+      "sha256": "9d3dc24c76c2f542172425efd9668e5d7d26d66e9670645ac1a3929d9a1e72ac"
+    },
+    "voice-01.wav": {
+      "path": "assets/audio/voice-01.wav",
+      "duration_s": 2.282667,
+      "frames": 109568,
+      "sample_rate": 48000,
+      "channels": 1,
+      "peak_linear": 0.77727354,
+      "peak_dbfs": -2.189,
+      "rms_dbfs": -20.283,
+      "clipped_samples": 0,
+      "bytes": 328748,
+      "sha256": "715a2179686b159847cbb10d21dbc42e065e9f20cb6afc69f97e6e849b36c4a0"
+    },
+    "voice-02.wav": {
+      "path": "assets/audio/voice-02.wav",
+      "duration_s": 1.109333,
+      "frames": 53248,
+      "sample_rate": 48000,
+      "channels": 1,
+      "peak_linear": 0.77201092,
+      "peak_dbfs": -2.248,
+      "rms_dbfs": -19.902,
+      "clipped_samples": 0,
+      "bytes": 159788,
+      "sha256": "1e8da51edf8378b59e3c2295b7f6c9d5f4ede806a6d0ce9a5121d8877c17f969"
+    },
+    "voice-03.wav": {
+      "path": "assets/audio/voice-03.wav",
+      "duration_s": 9.493333,
+      "frames": 455680,
+      "sample_rate": 48000,
+      "channels": 1,
+      "peak_linear": 0.77937126,
+      "peak_dbfs": -2.165,
+      "rms_dbfs": -22.303,
+      "clipped_samples": 0,
+      "bytes": 1367084,
+      "sha256": "36534f9354bfd8054a5363bd45838262f8a6f750473d79d4e75fa0de0c6ea423"
+    },
+    "voice-04.wav": {
+      "path": "assets/audio/voice-04.wav",
+      "duration_s": 2.624,
+      "frames": 125952,
+      "sample_rate": 48000,
+      "channels": 1,
+      "peak_linear": 0.77286649,
+      "peak_dbfs": -2.238,
+      "rms_dbfs": -18.197,
+      "clipped_samples": 0,
+      "bytes": 377900,
+      "sha256": "de6cef87ffc2119f22b27ce715b8147bc63357a77717d3a81b5cad0b228be7e8"
+    },
+    "voice-05.wav": {
+      "path": "assets/audio/voice-05.wav",
+      "duration_s": 2.666667,
+      "frames": 128000,
+      "sample_rate": 48000,
+      "channels": 1,
+      "peak_linear": 0.76866305,
+      "peak_dbfs": -2.285,
+      "rms_dbfs": -20.871,
+      "clipped_samples": 0,
+      "bytes": 384044,
+      "sha256": "72bd06e3957acb55d39290300d30c36356cc99d1d49b63e59e313d82b92601ac"
+    }
+  },
+  "verification": {
+    "master_exactly_21_seconds": true,
+    "master_48khz_stereo": true,
+    "all_files_clip_free": true,
+    "script_copy_exact": true
+  },
+  "generator": {
+    "path": "scripts/generate_audio.py",
+    "sha256": "8ffcfa0a98bd081572350b4aed0b08e6be4dfa7fe9d327ce6d3697c5af6ceaee",
+    "ffmpeg": "ffmpeg version 8.1.1 Copyright (c) 2000-2026 the FFmpeg developers"
+  }
+}

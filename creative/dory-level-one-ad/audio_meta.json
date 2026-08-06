@@ -1,0 +1,223 @@
+{
+  "version": 1,
+  "duration_s": 21.0,
+  "sample_rate": 48000,
+  "voice": {
+    "provider": "kokoro-onnx",
+    "id": "af_sky",
+    "language": "en-us",
+    "speed": 1.22,
+    "model": "kokoro-v1.0.onnx",
+    "model_sha256": "7d5df8ecf7d4b1878015a32686053fd0eebe2bc377234608764cc0ef3636a6c5",
+    "voices_sha256": "bca610b8308e8d99f32e6fe4197e7ec01679264efed0cac9140fe9c29f1fbf7d"
+  },
+  "voices": [
+    {
+      "id": "01",
+      "text": "A local runtime that stops at containers?",
+      "start_s": 0.32,
+      "duration_s": 2.283,
+      "end_s": 2.603,
+      "path": "assets/audio/voice-01.wav",
+      "words": []
+    },
+    {
+      "id": "02",
+      "text": "That's level one.",
+      "start_s": 3.18,
+      "duration_s": 1.109,
+      "end_s": 4.289,
+      "path": "assets/audio/voice-02.wav",
+      "words": []
+    },
+    {
+      "id": "03",
+      "text": "Dory starts with Docker and Compose\u2014then keeps going: one-click Kubernetes, full Linux desktops, persistent servers, migration, recovery, and isolated agent sandboxes.",
+      "start_s": 4.55,
+      "duration_s": 9.493,
+      "end_s": 14.043,
+      "path": "assets/audio/voice-03.wav",
+      "words": []
+    },
+    {
+      "id": "04",
+      "text": "All in one native Mac app. Free and open source.",
+      "start_s": 14.28,
+      "duration_s": 2.624,
+      "end_s": 16.904,
+      "path": "assets/audio/voice-04.wav",
+      "words": []
+    },
+    {
+      "id": "05",
+      "text": "Dory. More than containers. Your whole dev machine.",
+      "start_s": 17.1,
+      "duration_s": 2.667,
+      "end_s": 19.767,
+      "path": "assets/audio/voice-05.wav",
+      "words": []
+    }
+  ],
+  "narration": {
+    "path": "assets/audio/narration-master.wav",
+    "volume": 0.98
+  },
+  "bgm": {
+    "path": "assets/audio/music-bed.wav",
+    "mode": "deterministic-synthesis",
+    "bpm": 132.0,
+    "duration_s": 21.0,
+    "raw_unducked": true,
+    "mix_volume": 0.72,
+    "duck_target": 0.34
+  },
+  "sfx": [
+    {
+      "id": "cube-land",
+      "name": "core-thunk",
+      "start_s": 0.12,
+      "duration_s": 0.72,
+      "gain": 0.72,
+      "source": "creative/dory-0.3.2-directors-cut/assets/core-thunk.wav"
+    },
+    {
+      "id": "level-stamp",
+      "name": "capsule-lock",
+      "start_s": 3.18,
+      "duration_s": 0.28,
+      "gain": 0.46,
+      "source": "creative/dory-migration-ad/assets/capsule-lock.wav"
+    },
+    {
+      "id": "button-smack",
+      "name": "core-thunk",
+      "start_s": 4.46,
+      "duration_s": 0.72,
+      "gain": 0.3,
+      "source": "creative/dory-0.3.2-directors-cut/assets/core-thunk.wav"
+    },
+    {
+      "id": "level-launch",
+      "name": "portal-whoosh",
+      "start_s": 4.72,
+      "duration_s": 0.58,
+      "gain": 0.42,
+      "source": "creative/dory-0.3.2-directors-cut/assets/portal-whoosh.wav"
+    },
+    {
+      "id": "docker-compose",
+      "name": "magnet-1",
+      "start_s": 5.55,
+      "duration_s": 0.42,
+      "gain": 0.4,
+      "source": "creative/dory-0.3.2-directors-cut/assets/magnet-1.wav"
+    },
+    {
+      "id": "kubernetes",
+      "name": "magnet-2",
+      "start_s": 7.65,
+      "duration_s": 0.42,
+      "gain": 0.42,
+      "source": "creative/dory-0.3.2-directors-cut/assets/magnet-2.wav"
+    },
+    {
+      "id": "linux-desktops",
+      "name": "magnet-3",
+      "start_s": 9.1,
+      "duration_s": 0.42,
+      "gain": 0.44,
+      "source": "creative/dory-0.3.2-directors-cut/assets/magnet-3.wav"
+    },
+    {
+      "id": "persistent-servers",
+      "name": "capsule-lock",
+      "start_s": 10.45,
+      "duration_s": 0.28,
+      "gain": 0.36,
+      "source": "creative/dory-migration-ad/assets/capsule-lock.wav"
+    },
+    {
+      "id": "migrate-recover",
+      "name": "capsule-lock",
+      "start_s": 11.75,
+      "duration_s": 0.28,
+      "gain": 0.38,
+      "source": "creative/dory-migration-ad/assets/capsule-lock.wav"
+    },
+    {
+      "id": "agent-sandboxes",
+      "name": "sandbox-seal",
+      "start_s": 13.05,
+      "duration_s": 0.52,
+      "gain": 0.42,
+      "source": "creative/dory-0.3.2-directors-cut/assets/sandbox-seal.wav"
+    },
+    {
+      "id": "fold-whoosh",
+      "name": "bridge-whoosh",
+      "start_s": 14.02,
+      "duration_s": 0.68,
+      "gain": 0.46,
+      "source": "creative/dory-migration-ad/assets/bridge-whoosh.wav"
+    },
+    {
+      "id": "fold-lock-1",
+      "name": "magnet-1",
+      "start_s": 14.1,
+      "duration_s": 0.42,
+      "gain": 0.24,
+      "source": "creative/dory-0.3.2-directors-cut/assets/magnet-1.wav"
+    },
+    {
+      "id": "fold-lock-2",
+      "name": "magnet-2",
+      "start_s": 14.16,
+      "duration_s": 0.42,
+      "gain": 0.24,
+      "source": "creative/dory-0.3.2-directors-cut/assets/magnet-2.wav"
+    },
+    {
+      "id": "fold-lock-3",
+      "name": "magnet-3",
+      "start_s": 14.22,
+      "duration_s": 0.42,
+      "gain": 0.24,
+      "source": "creative/dory-0.3.2-directors-cut/assets/magnet-3.wav"
+    },
+    {
+      "id": "open-source",
+      "name": "verify-chime",
+      "start_s": 16.95,
+      "duration_s": 0.68,
+      "gain": 0.4,
+      "source": "creative/dory-migration-ad/assets/verify-chime.wav"
+    },
+    {
+      "id": "brand-resolve",
+      "name": "logo-resolve",
+      "start_s": 19.8,
+      "duration_s": 1.05,
+      "gain": 0.52,
+      "source": "creative/dory-migration-ad/assets/logo-resolve.wav"
+    }
+  ],
+  "sfx_master": {
+    "path": "assets/audio/sfx-master.wav",
+    "mix_volume": 0.56,
+    "duck_target": 0.66
+  },
+  "master": {
+    "path": "assets/audio/soundtrack-master.wav",
+    "target_lufs_i": -14.0,
+    "target_true_peak_dbfs": -1.0,
+    "measured_loudness": {
+      "input_i": "-14.24",
+      "input_tp": "-1.00",
+      "input_lra": "4.70",
+      "input_thresh": "-24.71",
+      "target_offset": "0.04"
+    },
+    "sha256": "9d3dc24c76c2f542172425efd9668e5d7d26d66e9670645ac1a3929d9a1e72ac"
+  },
+  "total_duration_s": 21.0
+}

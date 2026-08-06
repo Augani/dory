@@ -1,0 +1,5 @@
+A local runtime that stops at containers?
+That's level one.
+Dory starts with Docker and Compose—then keeps going: one-click Kubernetes, full Linux desktops, persistent servers, migration, recovery, and isolated agent sandboxes.
+All in one native Mac app. Free and open source.
+Dory. More than containers. Your whole dev machine.

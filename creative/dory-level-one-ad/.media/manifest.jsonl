@@ -1,0 +1,4 @@
+{"id":"logo_001","type":"logo","path":".media/images/logo_001.svg","source":"ingested","description":"logo.svg","provenance":{"provider":"local","from":"/Users/augustusotu/Projects/Dory/website/public/logo.svg"}}
+{"id":"image_001","type":"image","path":".media/images/image_001.png","source":"ingested","description":"icon_512x512@2x.png","provenance":{"provider":"local","from":"/Users/augustusotu/Projects/Dory/Dory/Assets.xcassets/AppIcon.appiconset/icon_512x512@2x.png"}}
+{"id":"image_002","type":"image","path":"assets/dory-app-icon.png","source":"existing","description":"dory app icon","width":1024,"height":1024,"provenance":{"provider":"local","adopted":true}}
+{"id":"icon_001","type":"icon","path":"assets/dory-logo.svg","source":"existing","description":"dory logo","provenance":{"provider":"local","adopted":true}}

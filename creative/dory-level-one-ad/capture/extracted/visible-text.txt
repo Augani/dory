@@ -1,0 +1,36 @@
+DORY — LEVEL ONE
+
+Approved voiceover:
+
+A local runtime that stops at containers?
+That's level one.
+Dory starts with Docker and Compose—then keeps going: one-click Kubernetes, full Linux desktops, persistent servers, migration, recovery, and isolated agent sandboxes.
+All in one native Mac app. Free and open source.
+Dory. More than containers. Your whole dev machine.
+
+Approved on-screen labels:
+
+LEVEL 1 — CONTAINERS
+KEEP GOING
+THAT'S LEVEL ONE.
+LEVEL 1 — DOCKER + COMPOSE
+LEVEL 2 — KUBERNETES — LOCAL k3s
+LEVEL 3 — FULL LINUX DESKTOPS
+LEVEL 4 — PERSISTENT SERVERS
+LEVEL 5 — MIGRATION + RECOVERY
+LEVEL 6 — ISOLATED AGENT SANDBOXES
+ONE NATIVE MAC APP
+FREE & OPEN SOURCE
+MORE THAN CONTAINERS.
+Your whole dev machine.
+FREE & OPEN SOURCE · NO ACCOUNT · NO TELEMETRY
+GET DORY → augani.github.io/dory
+APPLE SILICON · macOS 14+
+
+Product truth:
+
+Dory includes its own Docker 29 engine and CLI, Buildx, BuildKit, Compose v2,
+one-click local k3s, full Debian 13 / Ubuntu 24.04 LTS / Kali rolling Xfce
+desktops, persistent headless Linux machines, transactional migration and
+recovery, and policy-enforced dedicated agent sandbox VMs. It is a native Mac
+app, GPL-3.0, free and open source, with no Dory account or telemetry.

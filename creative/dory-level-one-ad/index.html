@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1080, height=1080" />
+    <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js" integrity="sha384-sG0Hv1tP1lZCk9KQmrIbY/XNwi+OY84GQqhMscbnsoBFqAz8KNCil1kvfL3Hbbk2" crossorigin="anonymous"></script>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        width: 1080px;
+        height: 1080px;
+        overflow: hidden;
+        background: #000;
+      }
+      #root {
+        position: relative;
+        width: 1080px;
+        height: 1080px;
+        overflow: hidden;
+        background: #F6F9FE;
+      }
+      .scene {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+      }
+    </style>
+  </head>
+  <body>
+    <div
+      id="root"
+      data-composition-id="main"
+      data-start="0"
+      data-duration="21"
+      data-width="1080"
+      data-height="1080"
+    >
+      <div
+        id="el-01-level-one"
+        class="scene"
+        data-composition-id="01-level-one"
+        data-composition-src="compositions/frames/01-level-one.html"
+        data-start="0"
+        data-duration="4.99"
+        data-track-index="0"
+      ></div>
+
+      <div
+        id="el-02-keep-going"
+        class="scene"
+        data-composition-id="02-keep-going"
+        data-composition-src="compositions/frames/02-keep-going.html"
+        data-start="4.55"
+        data-duration="10.17"
+        data-track-index="1"
+      ></div>
+
+      <div
+        id="el-03-one-native-app"
+        class="scene"
+        data-composition-id="03-one-native-app"
+        data-composition-src="compositions/frames/03-one-native-app.html"
+        data-start="14.280000000000001"
+        data-duration="3.17"
+        data-track-index="0"
+      ></div>
+
+      <div
+        id="el-04-your-whole-dev-machine"
+        class="scene"
+        data-composition-id="04-your-whole-dev-machine"
+        data-composition-src="compositions/frames/04-your-whole-dev-machine.html"
+        data-start="17.1"
+        data-duration="3.9"
+        data-track-index="1"
+      ></div>
+
+      <!-- BGM -->
+      <audio
+        id="el-bgm"
+        src="assets/audio/soundtrack-master.wav"
+        data-start="0"
+        data-duration="21"
+        data-track-index="11"
+        data-volume="1"
+      ></audio>
+
+    </div>
+
+    <script>
+      window.__timelines = window.__timelines || {};
+      window.__timelines["main"] = gsap.timeline({ paused: true });
+      // ── frame transitions (injected by transitions.mjs) ──
+      (function () { var tl = window.__timelines["main"];
+        tl.to("#el-01-level-one", { scale: 2.5, opacity: 0, filter: "blur(8px)", duration: 0.44, ease: "power3.in" }, 4.55);
+        tl.fromTo("#el-02-keep-going", { scale: 0.5, opacity: 0, filter: "blur(8px)" }, { scale: 1, opacity: 1, filter: "blur(0px)", duration: 0.44, ease: "power3.out" }, 4.55);
+        tl.to("#el-02-keep-going", { scale: 2.5, opacity: 0, filter: "blur(8px)", duration: 0.44, ease: "power3.in" }, 14.28);
+        tl.fromTo("#el-03-one-native-app", { scale: 0.5, opacity: 0, filter: "blur(8px)" }, { scale: 1, opacity: 1, filter: "blur(0px)", duration: 0.44, ease: "power3.out" }, 14.28);
+        tl.to("#el-03-one-native-app", { filter: "blur(10px)", scale: 1.03, opacity: 0, duration: 0.35, ease: "power2.inOut" }, 17.1);
+        tl.fromTo("#el-04-your-whole-dev-machine", { filter: "blur(10px)", scale: 0.97, opacity: 0 }, { filter: "blur(0px)", scale: 1, opacity: 1, duration: 0.35, ease: "power2.inOut" }, 17.1);
+        tl.to({}, { duration: 21 }, 0); // full-span anchor — main.duration() == composition total (Studio master duration)
+      })();
+    </script>
+  </body>
+</html>

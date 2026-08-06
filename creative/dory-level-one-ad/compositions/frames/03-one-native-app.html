@@ -1,0 +1,808 @@
+<template>
+  <style>
+    @font-face {
+      font-family: "Manrope";
+      src: url("assets/fonts/manrope-400.woff2") format("woff2");
+      font-style: normal;
+      font-weight: 400;
+      font-display: swap;
+    }
+
+    @font-face {
+      font-family: "Manrope";
+      src: url("assets/fonts/manrope-600.woff2") format("woff2");
+      font-style: normal;
+      font-weight: 600;
+      font-display: swap;
+    }
+
+    @font-face {
+      font-family: "Manrope";
+      src: url("assets/fonts/manrope-700.woff2") format("woff2");
+      font-style: normal;
+      font-weight: 700;
+      font-display: swap;
+    }
+
+    @font-face {
+      font-family: "Manrope";
+      src: url("assets/fonts/manrope-800.woff2") format("woff2");
+      font-style: normal;
+      font-weight: 800;
+      font-display: swap;
+    }
+
+    #root {
+      position: relative;
+      width: 1080px;
+      height: 1080px;
+      overflow: hidden;
+      container-type: size;
+      isolation: isolate;
+      color: #07111f;
+      font-family: "Manrope", sans-serif;
+    }
+
+    #root,
+    #root * {
+      box-sizing: border-box;
+    }
+
+    .clip {
+      position: absolute;
+      inset: 0;
+      overflow: hidden;
+    }
+
+    [class~="03-one-native-app-ground"] {
+      z-index: 0;
+      background:
+        radial-gradient(circle at 13% 24%, rgba(152, 199, 246, 0.34) 0, rgba(152, 199, 246, 0) 24%),
+        radial-gradient(circle at 82% 19%, rgba(255, 214, 139, 0.34) 0, rgba(255, 214, 139, 0) 23%),
+        radial-gradient(circle at 72% 72%, rgba(205, 229, 250, 0.38) 0, rgba(205, 229, 250, 0) 28%),
+        #f6f9fe;
+    }
+
+    [class~="03-one-native-app-ground"]::after {
+      position: absolute;
+      inset: 0;
+      content: "";
+      pointer-events: none;
+      opacity: 0.04;
+      background-image:
+        radial-gradient(circle at 15% 20%, #07111f 0 1px, transparent 1.4px),
+        radial-gradient(circle at 72% 64%, #07111f 0 0.8px, transparent 1.2px),
+        radial-gradient(circle at 38% 86%, #07111f 0 0.7px, transparent 1.1px);
+      background-size: 17px 19px, 23px 21px, 29px 31px;
+    }
+
+    [class~="03-one-native-app-floating-pill"] {
+      position: absolute;
+      border: 3px solid #07111f;
+      border-radius: 9999px;
+      pointer-events: none;
+    }
+
+    [class~="03-one-native-app-float-a"] {
+      top: 42px;
+      left: -30px;
+      width: 126px;
+      height: 42px;
+      background: #ffd68b;
+      transform: rotate(-16deg);
+    }
+
+    [class~="03-one-native-app-float-b"] {
+      top: 72px;
+      right: 34px;
+      width: 72px;
+      height: 72px;
+      border-radius: 50%;
+      background: #dcebfa;
+    }
+
+    [class~="03-one-native-app-float-c"] {
+      top: 358px;
+      right: -52px;
+      width: 142px;
+      height: 48px;
+      background: #20b783;
+      transform: rotate(19deg);
+    }
+
+    [class~="03-one-native-app-float-d"] {
+      top: 806px;
+      left: 18px;
+      width: 102px;
+      height: 42px;
+      background: #98c7f6;
+      transform: rotate(14deg);
+    }
+
+    [class~="03-one-native-app-float-e"] {
+      top: 824px;
+      right: 96px;
+      width: 124px;
+      height: 42px;
+      background: #ffb020;
+      transform: rotate(-12deg);
+    }
+
+    [class~="03-one-native-app-float-f"] {
+      top: 294px;
+      left: 18px;
+      width: 46px;
+      height: 46px;
+      border-radius: 50%;
+      background: #cde5fa;
+    }
+
+    [class~="03-one-native-app-scene"] {
+      z-index: 2;
+      background: transparent;
+    }
+
+    [id="03-one-native-app-world"] {
+      position: absolute;
+      inset: 0;
+      transform-origin: 50% 50%;
+      will-change: transform;
+    }
+
+    [id="03-one-native-app-swap-wrap"] {
+      position: absolute;
+      top: 84px;
+      left: 52px;
+      width: 625px;
+      height: 690px;
+      z-index: 4;
+    }
+
+    [id="03-one-native-app-outgoing"],
+    [id="03-one-native-app-incoming"] {
+      position: absolute;
+      inset: 0;
+      transform-origin: 50% 50%;
+      will-change: transform, opacity;
+    }
+
+    [id="03-one-native-app-outgoing"] {
+      overflow: hidden;
+      border: 3px solid #07111f;
+      border-radius: 32px;
+      background: #ffffff;
+      box-shadow: 7px 7px 0 rgba(7, 17, 31, 0.1);
+    }
+
+    [class~="03-one-native-app-titlebar"] {
+      position: absolute;
+      inset: 0 0 auto;
+      height: 56px;
+      border-bottom: 2px solid #07111f;
+      background: #ffffff;
+    }
+
+    [class~="03-one-native-app-traffic"] {
+      position: absolute;
+      top: 19px;
+      right: 18px;
+      display: flex;
+      gap: 7px;
+    }
+
+    [class~="03-one-native-app-traffic"] span {
+      width: 14px;
+      height: 14px;
+      border: 2px solid #07111f;
+      border-radius: 50%;
+    }
+
+    [class~="03-one-native-app-traffic"] span:nth-child(1) {
+      background: #ffb020;
+    }
+
+    [class~="03-one-native-app-traffic"] span:nth-child(2) {
+      background: #20b783;
+    }
+
+    [class~="03-one-native-app-traffic"] span:nth-child(3) {
+      background: #98c7f6;
+    }
+
+    [class~="03-one-native-app-title-track"] {
+      position: absolute;
+      top: 20px;
+      left: 76px;
+      width: 152px;
+      height: 14px;
+      border: 2px solid #07111f;
+      border-radius: 9999px;
+      background: #dcebfa;
+    }
+
+    [class~="03-one-native-app-sidebar"] {
+      position: absolute;
+      top: 56px;
+      bottom: 0;
+      left: 0;
+      width: 126px;
+      padding: 26px 16px;
+      border-bottom-left-radius: 27px;
+      background: #07111f;
+    }
+
+    [class~="03-one-native-app-side-pill"] {
+      height: 36px;
+      margin-bottom: 14px;
+      border: 2px solid #f6f9fe;
+      border-radius: 9999px;
+      background: rgba(255, 255, 255, 0.08);
+    }
+
+    [class~="03-one-native-app-side-pill"]:first-child {
+      background: #98c7f6;
+    }
+
+    [class~="03-one-native-app-side-pill"]:nth-child(2) {
+      width: 80%;
+    }
+
+    [class~="03-one-native-app-side-pill"]:nth-child(3) {
+      width: 64%;
+    }
+
+    [class~="03-one-native-app-side-divider"] {
+      width: 100%;
+      height: 3px;
+      margin: 26px 0;
+      border-radius: 9999px;
+      background: rgba(246, 249, 254, 0.35);
+    }
+
+    [class~="03-one-native-app-workspace"] {
+      position: absolute;
+      top: 56px;
+      right: 0;
+      bottom: 0;
+      left: 126px;
+      overflow: hidden;
+      border-bottom-right-radius: 27px;
+      background:
+        radial-gradient(circle at 22% 17%, rgba(152, 199, 246, 0.28), transparent 28%),
+        radial-gradient(circle at 83% 76%, rgba(255, 214, 139, 0.28), transparent 27%),
+        #f6f9fe;
+    }
+
+    [class~="03-one-native-app-board-stage"] {
+      position: absolute;
+      inset: 24px 20px 30px;
+    }
+
+    [class~="03-one-native-app-capability-column"] {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      width: 118px;
+      height: 374px;
+      padding: 8px;
+      border: 2px solid #07111f;
+      border-radius: 24px;
+      background: #ffffff;
+      box-shadow: 5px 5px 0 rgba(7, 17, 31, 0.1);
+      will-change: transform, opacity;
+    }
+
+    [class~="03-one-native-app-world-tile"] {
+      position: relative;
+      height: 170px;
+      padding: 13px;
+      overflow: hidden;
+      border: 2px solid #07111f;
+      border-radius: 18px;
+      background: #ffffff;
+    }
+
+    [class~="03-one-native-app-world-tile"] + [class~="03-one-native-app-world-tile"] {
+      margin-top: 14px;
+    }
+
+    [class~="03-one-native-app-column-a"] [class~="03-one-native-app-world-tile"]:first-child,
+    [class~="03-one-native-app-column-c"] [class~="03-one-native-app-world-tile"]:last-child {
+      background: #dcebfa;
+    }
+
+    [class~="03-one-native-app-column-a"] [class~="03-one-native-app-world-tile"]:last-child,
+    [class~="03-one-native-app-column-b"] [class~="03-one-native-app-world-tile"]:first-child {
+      background: #ffd68b;
+    }
+
+    [class~="03-one-native-app-column-b"] [class~="03-one-native-app-world-tile"]:last-child,
+    [class~="03-one-native-app-column-c"] [class~="03-one-native-app-world-tile"]:first-child {
+      background: #cde5fa;
+    }
+
+    [class~="03-one-native-app-tile-orb"] {
+      width: 34px;
+      height: 34px;
+      border: 2px solid #07111f;
+      border-radius: 50%;
+      background: #20b783;
+    }
+
+    [class~="03-one-native-app-tile-line"] {
+      height: 10px;
+      margin-top: 16px;
+      border: 2px solid #07111f;
+      border-radius: 9999px;
+      background: #ffffff;
+    }
+
+    [class~="03-one-native-app-tile-line"]:nth-child(3) {
+      width: 68%;
+      margin-top: 10px;
+    }
+
+    [id="03-one-native-app-unified"] {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      width: 320px;
+      height: 310px;
+      margin-top: -155px;
+      margin-left: -160px;
+      padding: 20px;
+      border: 3px solid #07111f;
+      border-radius: 28px;
+      background: #ffffff;
+      box-shadow: 6px 6px 0 rgba(7, 17, 31, 0.1);
+      will-change: transform, opacity;
+    }
+
+    [class~="03-one-native-app-unified-top"] {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 18px;
+    }
+
+    [class~="03-one-native-app-unified-fish"] {
+      display: grid;
+      width: 48px;
+      height: 48px;
+      flex: 0 0 auto;
+      place-items: center;
+      border: 3px solid #07111f;
+      border-radius: 50%;
+      background: #98c7f6;
+    }
+
+    [class~="03-one-native-app-unified-fish"] img {
+      width: 30px;
+      height: 30px;
+      object-fit: contain;
+    }
+
+    [class~="03-one-native-app-unified-title"] {
+      width: 178px;
+      height: 18px;
+      border: 2px solid #07111f;
+      border-radius: 9999px;
+      background: #dcebfa;
+    }
+
+    [class~="03-one-native-app-unified-lane"] {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      height: 54px;
+      margin-top: 13px;
+      padding: 9px 14px;
+      border: 2px solid #07111f;
+      border-radius: 9999px;
+      background: #f6f9fe;
+    }
+
+    [class~="03-one-native-app-unified-lane"]::before {
+      width: 32px;
+      height: 32px;
+      flex: 0 0 auto;
+      border: 2px solid #07111f;
+      border-radius: 50%;
+      background: #20b783;
+      content: "";
+    }
+
+    [class~="03-one-native-app-unified-lane"]:nth-child(3)::before {
+      background: #ffb020;
+    }
+
+    [class~="03-one-native-app-unified-lane"]:nth-child(4)::before {
+      background: #98c7f6;
+    }
+
+    [class~="03-one-native-app-unified-lane"] span {
+      display: block;
+      width: 72%;
+      height: 10px;
+      border-radius: 9999px;
+      background: #07111f;
+      opacity: 0.82;
+    }
+
+    [id="03-one-native-app-incoming"] {
+      z-index: 2;
+      display: grid;
+      place-items: center;
+    }
+
+    [class~="03-one-native-app-icon-stage"] {
+      position: relative;
+      display: grid;
+      width: 256px;
+      height: 256px;
+      place-items: center;
+      border: 3px solid #07111f;
+      border-radius: 32px;
+      background: #ffffff;
+      box-shadow: 7px 7px 0 rgba(7, 17, 31, 0.1);
+    }
+
+    [class~="03-one-native-app-icon-stage"]::before,
+    [class~="03-one-native-app-icon-stage"]::after {
+      position: absolute;
+      z-index: -1;
+      border: 3px solid #07111f;
+      border-radius: 50%;
+      content: "";
+    }
+
+    [class~="03-one-native-app-icon-stage"]::before {
+      top: -38px;
+      right: -32px;
+      width: 82px;
+      height: 82px;
+      background: #ffd68b;
+    }
+
+    [class~="03-one-native-app-icon-stage"]::after {
+      bottom: -28px;
+      left: -30px;
+      width: 64px;
+      height: 64px;
+      background: #98c7f6;
+    }
+
+    [class~="03-one-native-app-icon-stage"] img {
+      display: block;
+      width: 208px;
+      height: 208px;
+      object-fit: contain;
+    }
+
+    [id="03-one-native-app-persistent-fish"] {
+      position: absolute;
+      top: 96px;
+      left: 72px;
+      z-index: 10;
+      display: grid;
+      width: 54px;
+      height: 40px;
+      place-items: center;
+      border: 3px solid #07111f;
+      border-radius: 9999px;
+      background: #ffffff;
+    }
+
+    [id="03-one-native-app-persistent-fish"] img {
+      display: block;
+      width: 36px;
+      height: 28px;
+      object-fit: contain;
+    }
+
+    [id="03-one-native-app-headline"] {
+      position: absolute;
+      top: 218px;
+      left: 710px;
+      z-index: 8;
+      width: 320px;
+      color: #07111f;
+      font-size: 54px;
+      font-weight: 800;
+      line-height: 0.94;
+      letter-spacing: -0.045em;
+    }
+
+    [class~="03-one-native-app-headline-line"] {
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+      min-height: 62px;
+      white-space: nowrap;
+    }
+
+    [class~="03-one-native-app-headline-word"] {
+      display: inline-block;
+      will-change: transform, opacity;
+    }
+
+    [class~="03-one-native-app-headline-word"][data-accent="true"] {
+      padding: 8px 10px 9px;
+      border: 2px solid #07111f;
+      border-radius: 9999px;
+      background: #dcebfa;
+      font-size: 44px;
+      letter-spacing: -0.04em;
+    }
+
+    [id="03-one-native-app-accent-line"] {
+      width: 112px;
+      height: 9px;
+      margin-top: 24px;
+      border: 2px solid #07111f;
+      border-radius: 9999px;
+      background: #ffb020;
+      transform-origin: 0% 50%;
+      will-change: transform, opacity;
+    }
+
+    [id="03-one-native-app-proof"] {
+      position: absolute;
+      top: 612px;
+      left: 704px;
+      z-index: 9;
+      display: grid;
+      width: 322px;
+      height: 74px;
+      place-items: center;
+      border: 3px solid #07111f;
+      border-radius: 9999px;
+      background: #ffffff;
+      box-shadow: 6px 6px 0 rgba(7, 17, 31, 0.1);
+      color: #07111f;
+      font-size: 22px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      line-height: 1;
+      white-space: nowrap;
+      will-change: clip-path, opacity;
+    }
+
+    [id="03-one-native-app-proof"]::before {
+      position: absolute;
+      inset: -7px;
+      z-index: -1;
+      border: 4px solid #20b783;
+      border-radius: 9999px;
+      content: "";
+    }
+  </style>
+
+  <div id="root" data-composition-id="03-one-native-app" data-duration="3.17" data-width="1080" data-height="1080">
+    <div id="f03-one-native-app-ground" class="clip 03-one-native-app-ground" data-start="0" data-duration="3.17" data-track-index="0" aria-hidden="true">
+      <div class="03-one-native-app-floating-pill 03-one-native-app-float-a"></div>
+      <div class="03-one-native-app-floating-pill 03-one-native-app-float-b"></div>
+      <div class="03-one-native-app-floating-pill 03-one-native-app-float-c"></div>
+      <div class="03-one-native-app-floating-pill 03-one-native-app-float-d"></div>
+      <div class="03-one-native-app-floating-pill 03-one-native-app-float-e"></div>
+      <div class="03-one-native-app-floating-pill 03-one-native-app-float-f"></div>
+    </div>
+
+    <div id="f03-one-native-app-scene" class="clip 03-one-native-app-scene" data-start="0" data-duration="3.17" data-track-index="1">
+      <div id="03-one-native-app-world">
+        <div id="03-one-native-app-swap-wrap">
+          <div id="03-one-native-app-outgoing">
+            <div class="03-one-native-app-titlebar">
+              <div class="03-one-native-app-title-track"></div>
+              <div class="03-one-native-app-traffic" aria-hidden="true"><span></span><span></span><span></span></div>
+            </div>
+
+            <div class="03-one-native-app-sidebar" aria-hidden="true">
+              <div class="03-one-native-app-side-pill"></div>
+              <div class="03-one-native-app-side-pill"></div>
+              <div class="03-one-native-app-side-pill"></div>
+              <div class="03-one-native-app-side-divider"></div>
+              <div class="03-one-native-app-side-pill"></div>
+              <div class="03-one-native-app-side-pill"></div>
+            </div>
+
+            <div class="03-one-native-app-workspace">
+              <div class="03-one-native-app-board-stage">
+                <div class="03-one-native-app-capability-column 03-one-native-app-column-a" data-target-x="-126" data-target-y="0">
+                  <div class="03-one-native-app-world-tile">
+                    <div class="03-one-native-app-tile-orb"></div>
+                    <div class="03-one-native-app-tile-line"></div>
+                    <div class="03-one-native-app-tile-line"></div>
+                  </div>
+                  <div class="03-one-native-app-world-tile">
+                    <div class="03-one-native-app-tile-orb"></div>
+                    <div class="03-one-native-app-tile-line"></div>
+                    <div class="03-one-native-app-tile-line"></div>
+                  </div>
+                </div>
+
+                <div class="03-one-native-app-capability-column 03-one-native-app-column-b" data-target-x="0" data-target-y="0">
+                  <div class="03-one-native-app-world-tile">
+                    <div class="03-one-native-app-tile-orb"></div>
+                    <div class="03-one-native-app-tile-line"></div>
+                    <div class="03-one-native-app-tile-line"></div>
+                  </div>
+                  <div class="03-one-native-app-world-tile">
+                    <div class="03-one-native-app-tile-orb"></div>
+                    <div class="03-one-native-app-tile-line"></div>
+                    <div class="03-one-native-app-tile-line"></div>
+                  </div>
+                </div>
+
+                <div class="03-one-native-app-capability-column 03-one-native-app-column-c" data-target-x="126" data-target-y="0">
+                  <div class="03-one-native-app-world-tile">
+                    <div class="03-one-native-app-tile-orb"></div>
+                    <div class="03-one-native-app-tile-line"></div>
+                    <div class="03-one-native-app-tile-line"></div>
+                  </div>
+                  <div class="03-one-native-app-world-tile">
+                    <div class="03-one-native-app-tile-orb"></div>
+                    <div class="03-one-native-app-tile-line"></div>
+                    <div class="03-one-native-app-tile-line"></div>
+                  </div>
+                </div>
+
+                <div id="03-one-native-app-unified">
+                  <div class="03-one-native-app-unified-top">
+                    <div class="03-one-native-app-unified-fish"><img src="assets/dory-logo.svg" alt="" /></div>
+                    <div class="03-one-native-app-unified-title"></div>
+                  </div>
+                  <div class="03-one-native-app-unified-lane"><span></span></div>
+                  <div class="03-one-native-app-unified-lane"><span></span></div>
+                  <div class="03-one-native-app-unified-lane"><span></span></div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div id="03-one-native-app-incoming">
+            <div class="03-one-native-app-icon-stage">
+              <img src="assets/dory-app-icon.png" alt="Dory app icon" />
+            </div>
+          </div>
+        </div>
+
+        <div id="03-one-native-app-persistent-fish">
+          <img src="assets/dory-logo.svg" alt="" />
+        </div>
+
+        <div id="03-one-native-app-headline" aria-label="One native Mac app">
+          <div class="03-one-native-app-headline-line">
+            <span class="03-one-native-app-headline-word" data-word="ONE">ONE</span>
+            <span class="03-one-native-app-headline-word" data-word="NATIVE" data-accent="true">NATIVE</span>
+          </div>
+          <div class="03-one-native-app-headline-line">
+            <span class="03-one-native-app-headline-word" data-word="MAC">MAC</span>
+            <span class="03-one-native-app-headline-word" data-word="APP">APP</span>
+          </div>
+          <div id="03-one-native-app-accent-line"></div>
+        </div>
+
+        <div id="03-one-native-app-proof">FREE + OPEN SOURCE</div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    (() => {
+      const frameId = "03-one-native-app";
+      const world = document.getElementById(`${frameId}-world`);
+      const outgoing = document.getElementById(`${frameId}-outgoing`);
+      const incoming = document.getElementById(`${frameId}-incoming`);
+      const unified = document.getElementById(`${frameId}-unified`);
+      const proof = document.getElementById(`${frameId}-proof`);
+      const accentLine = document.getElementById(`${frameId}-accent-line`);
+      const columns = Array.from(document.querySelectorAll('[class~="03-one-native-app-capability-column"]'));
+      const wordElements = Array.from(document.querySelectorAll('[class~="03-one-native-app-headline-word"]'));
+
+      const cam = { scale: 2.45, x: 276, y: 204 };
+      const applyCamera = () => {
+        world.style.transform = `translate(${cam.x}px, ${cam.y}px) scale(${cam.scale})`;
+      };
+      applyCamera();
+
+      const tl = gsap.timeline({ paused: true });
+
+      tl.to(
+        cam,
+        {
+          scale: 1,
+          x: 0,
+          y: 0,
+          duration: 0.82,
+          ease: "power4.out",
+          onUpdate: applyCamera,
+        },
+        0,
+      );
+
+      columns.forEach((column, index) => {
+        const targetX = Number(column.dataset.targetX);
+        const targetY = Number(column.dataset.targetY);
+        tl.fromTo(
+          column,
+          {
+            xPercent: -50,
+            yPercent: -50,
+            x: targetX,
+            y: targetY,
+            scale: 1,
+            opacity: 1,
+          },
+          {
+            xPercent: -50,
+            yPercent: -50,
+            x: 0,
+            y: 0,
+            scale: 0.7,
+            opacity: 0,
+            duration: 0.58,
+            ease: "power3.out",
+          },
+          0.82 + index * 0.045,
+        );
+      });
+
+      tl.fromTo(
+        unified,
+        { scale: 0.76, opacity: 0, y: 18 },
+        { scale: 1, opacity: 1, y: 0, duration: 0.5, ease: "back.out(1.4)" },
+        1.04,
+      );
+
+      const baseWordDuration = 0.105;
+      const secondsPerCharacter = 0.009;
+      let wordCursor = 0.88;
+      const wordTimeline = wordElements.map((element) => {
+        const duration = baseWordDuration + element.dataset.word.length * secondsPerCharacter;
+        const entry = { element, start: wordCursor, duration };
+        wordCursor += duration;
+        return entry;
+      });
+
+      wordTimeline.forEach(({ element, start }) => {
+        tl.fromTo(
+          element,
+          { opacity: 0, y: 42, scale: 0.94 },
+          { opacity: 1, y: 0, scale: 1, duration: 0.32, ease: "power3.out" },
+          start,
+        );
+      });
+
+      tl.fromTo(
+        accentLine,
+        { scaleX: 0, opacity: 0 },
+        { scaleX: 1, opacity: 1, duration: 0.38, ease: "power3.out" },
+        1.39,
+      );
+
+      tl.to(
+        outgoing,
+        { scale: 0.7, opacity: 0, duration: 0.34, ease: "power2.in" },
+        1.72,
+      );
+
+      tl.fromTo(
+        incoming,
+        { scale: 0.7, opacity: 0 },
+        { scale: 1, opacity: 1, duration: 0.52, ease: "back.out(1.4)" },
+        1.91,
+      );
+
+      tl.fromTo(
+        proof,
+        { clipPath: "inset(0 100% 0 0 round 9999px)", opacity: 1 },
+        { clipPath: "inset(0 0% 0 0 round 9999px)", opacity: 1, duration: 0.52, ease: "power3.out" },
+        1.98,
+      );
+
+      window.__timelines = window.__timelines || {};
+      window.__timelines["03-one-native-app"] = tl;
+    })();
+  </script>
+</template>

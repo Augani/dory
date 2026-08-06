@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "preferences": {
+    "language": {
+      "value": "en",
+      "confirmed_in": [
+        "dory-level-one-ad"
+      ],
+      "updated_at": "2026-08-03T09:49:08.109Z"
+    },
+    "destination": {
+      "value": "x-feed",
+      "confirmed_in": [
+        "dory-level-one-ad"
+      ],
+      "updated_at": "2026-08-03T09:49:08.113Z"
+    },
+    "style_preset.product-launch-video": {
+      "value": "capsule",
+      "confirmed_in": [
+        "dory-level-one-ad"
+      ],
+      "updated_at": "2026-08-03T09:51:09.592Z"
+    }
+  },
+  "sightings": {}
+}

@@ -1,0 +1,8 @@
+{
+  "bgm": {
+    "path": "assets/audio/soundtrack-master.wav",
+    "volume": 1.0
+  },
+  "voices": [],
+  "sfx": []
+}
