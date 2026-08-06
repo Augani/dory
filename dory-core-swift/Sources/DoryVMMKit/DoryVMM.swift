@@ -507,6 +507,7 @@ public enum DoryVZConfigurationBuilder {
             "mountpoint /tmp || mount -t tmpfs tmpfs /tmp 2>/dev/null || true",
             "mkdir -p /sys/fs/cgroup",
             "mountpoint /sys/fs/cgroup || mount -t cgroup2 none /sys/fs/cgroup 2>/dev/null || true",
+            GuestContainerCompatibilityCommand.configureKernel(),
             "",
             ": > /var/log/dory-mounts.log",
         ]

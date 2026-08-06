@@ -49,6 +49,9 @@ Boot behavior:
   failures power off; the generic init also refuses to start dockerd without the persistent mount.
 - Start `dockerd` only on `unix:///var/run/docker.sock`; host access is relayed through the guest
   agent's vsock service, so no unauthenticated Docker TCP API exists inside the guest network.
+- Raise the host-wide `vm.max_map_count` to 262144 and give newly created containers a 65536-file
+  `nofile` default so search engines and other mmap-heavy Linux workloads pass their normal host
+  bootstrap checks without requiring access to Dory's managed VM.
 - Enable Docker's age and value-aware BuildKit garbage collection with a 2 GB cache ceiling. Active
   build data is preserved while unused cache is reclaimed before it can dominate the sparse drive.
 - Listen on TCP 2377 for a shutdown request, trim, sync, unmount Docker state, and power off.

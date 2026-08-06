@@ -965,6 +965,7 @@ enum EngineMode {
             "mount -t tmpfs tmpfs /tmp",
             "mkdir -p /dev/pts",
             "mount -t devpts devpts /dev/pts",
+            GuestContainerCompatibilityCommand.configureKernel(),
             "mkdir -p /mnt/dory-logs",
             "if mount -t virtiofs dorylogs /mnt/dory-logs 2>/dev/null; then",
             "  { echo BOOT; uname -a; cat /proc/cmdline; } >/mnt/dory-logs/boot.log 2>&1 || true",

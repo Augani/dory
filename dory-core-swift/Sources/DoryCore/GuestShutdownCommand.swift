@@ -1,5 +1,20 @@
 import Foundation
 
+/// Applies Linux guest defaults that container workloads normally expect their VM provider to own.
+/// `vm.max_map_count` is host-wide rather than container-namespaced, so macOS users cannot set it
+/// through an ordinary Docker container. Docker 29 also stopped supplying its former high nofile
+/// default, which exposes the minimal guest kernel's 4096-descriptor limit unless the daemon has an
+/// explicit default.
+public enum GuestContainerCompatibilityCommand {
+    public static let maximumMapCount = 262_144
+    public static let defaultOpenFiles = 65_536
+
+    public static func configureKernel() -> String {
+        "if ! printf '%s\\n' '\(maximumMapCount)' >/proc/sys/vm/max_map_count 2>/dev/null; "
+            + "then echo DORY-VM-MAX-MAP-COUNT-FAILED >&2; fi"
+    }
+}
+
 /// Builds the guest-side listener used when a Dory VM is asked to stop.
 ///
 /// `sync; poweroff -f` alone makes the filesystem structurally recoverable, but it can still leave
@@ -63,7 +78,8 @@ public enum GuestBuildCacheGCCommand {
     public static let defaultKeepStorage = "2GB"
 
     public static func configureDaemon() -> String {
-        let configuration = #"{"builder":{"gc":{"enabled":true,"defaultKeepStorage":"\#(defaultKeepStorage)"}}}"#
+        let openFiles = GuestContainerCompatibilityCommand.defaultOpenFiles
+        let configuration = #"{"builder":{"gc":{"enabled":true,"defaultKeepStorage":"\#(defaultKeepStorage)"}},"default-ulimits":{"nofile":{"Name":"nofile","Hard":\#(openFiles),"Soft":\#(openFiles)}}}"#
         return "mkdir -p /etc/docker; printf '%s\\n' '\(configuration)' >/etc/docker/daemon.json"
     }
 }
