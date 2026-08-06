@@ -23,6 +23,7 @@ workload data.
 |---|---|
 | Docker CLI and API | Supported through the `dory` context and `~/.dory/dory.sock` |
 | Containers | Create, run, start, stop, restart, remove, inspect, logs, stats, exec, attach, and port publishing |
+| Search and mmap-heavy workloads | Supported with guest `vm.max_map_count=262144` and a default container `nofile` limit of 65536 |
 | Images | Pull, build, inspect, history, tag, save/load, remove, and prune |
 | Buildx / BuildKit | Bundled; contexts, secrets, SSH mounts, cache import/export, and cancellation supported |
 | Volumes | Create, inspect, browse, copy, remove, and prune |

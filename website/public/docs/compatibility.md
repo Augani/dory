@@ -14,6 +14,8 @@
 - Docker 29 API and bundled CLI
 - Buildx, BuildKit, and Compose v2 in Docker Core; kubectl in the optional Kubernetes component
 - Containers, images, named volumes, bind mounts, bridge networks, custom IPAM, registries, and port publishing
+- OpenSearch, Elasticsearch, and other mmap-heavy workloads with guest `vm.max_map_count=262144`
+  and a default container `nofile` limit of 65536
 - Common linux/amd64 images on Apple Silicon through FEX
 - k3s v1.34, v1.35, and v1.36 presets
 - Persistent arm64 Linux machines: managed Debian 13, Ubuntu 24.04 LTS, and Kali rolling Xfce desktops plus lightweight Alpine headless VMs, with resources, scoped mounts, network addresses, recipes, snapshots, clone, import, export, and verified scheduled local recovery bundles
