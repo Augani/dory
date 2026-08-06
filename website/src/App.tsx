@@ -369,6 +369,10 @@ const faqs = [
     answer: 'Yes. Settings > Engine & Daemon exposes the engine CPU count and elastic memory ceiling. Applying a change restarts the engine and restores the containers that were running.',
   },
   {
+    question: 'Does Dory support OpenSearch and Elasticsearch?',
+    answer: 'Yes. Dory 0.4.3 raises the Linux guest vm.max_map_count to 262144 and gives new containers a default open-file limit of 65536, so mmap-heavy search workloads pass their standard bootstrap checks without a privileged workaround.',
+  },
+  {
     question: 'Do local file watchers work?',
     answer: 'Dory 0.3 qualifies host edit visibility, file locking, and watcher behavior for shared Mac paths. The mount and doctor commands can test the live setup when Vite, Tailwind, Webpack, or Rails does not rebuild.',
   },

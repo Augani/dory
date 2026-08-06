@@ -86,7 +86,7 @@ Exit codes: 0 success or healthy; 1 unhealthy or incomplete; 2 usage or validati
     docker context use dory
     docker compose up -d
 
-Stable capabilities include containers, images, Buildx, BuildKit, Compose v2, registries, bind mounts, named volumes, bridge networks, custom IPAM, aliases, and common linux/amd64 images on Apple Silicon through FEX.
+Stable capabilities include containers, images, Buildx, BuildKit, Compose v2, registries, bind mounts, named volumes, bridge networks, custom IPAM, aliases, and common linux/amd64 images on Apple Silicon through FEX. Dory 0.4.3 sets guest `vm.max_map_count` to 262144 and new containers' default `nofile` limit to 65536 for OpenSearch, Elasticsearch, and similar mmap-heavy workloads.
 
 The app's Build Activity surface keeps durable history, status, logs, cache use, and cancellation
 for builds launched by Dory. It does not claim control of builds launched by unrelated clients.
