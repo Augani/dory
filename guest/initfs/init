@@ -14,6 +14,9 @@ mountpoint /run || mount -t tmpfs tmpfs /run 2>/dev/null || true
 mountpoint /tmp || mount -t tmpfs tmpfs /tmp 2>/dev/null || true
 mkdir -p /sys/fs/cgroup
 mountpoint /sys/fs/cgroup || mount -t cgroup2 none /sys/fs/cgroup 2>/dev/null || true
+if ! printf '%s\n' 262144 >/proc/sys/vm/max_map_count 2>/dev/null; then
+  echo "DORY: failed to raise vm.max_map_count" >&2
+fi
 
 # The production VMM normally supplies its own boot script through dorycfg. Keep this standalone
 # init path equivalent: Apple Silicon initfs images carry FEX and must never fall back to QEMU's
@@ -125,7 +128,7 @@ if [ -x /usr/local/bin/dockerd ]; then
   # Keep Docker's normal age and value-aware BuildKit GC policies, but cap cache at 2 GB so stale
   # build data cannot consume the sparse drive space intended for images and volumes.
   mkdir -p /etc/docker
-  printf '%s\n' '{"builder":{"gc":{"enabled":true,"defaultKeepStorage":"2GB"}}}' >/etc/docker/daemon.json
+  printf '%s\n' '{"builder":{"gc":{"enabled":true,"defaultKeepStorage":"2GB"}},"default-ulimits":{"nofile":{"Name":"nofile","Hard":65536,"Soft":65536}}}' >/etc/docker/daemon.json
   # Keep runc as Docker's compatibility default. Register crun for explicit opt-in only when the
   # kernel exposes io.max; crun 1.28 otherwise also breaks `docker update --restart` while reopening
   # /dev/stdin.

@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## 0.4.3 - 2026-08-06
+
+### Fixed
+
+- Raised Dory's managed Linux guest `vm.max_map_count` to 262144 and set new containers' default
+  open-file limit to 65536. OpenSearch, Elasticsearch, and other mmap-heavy workloads now pass
+  their normal Linux bootstrap checks without a privileged VM-side workaround.
+- Made `dory network repair ports` wait for the active `dory-hv` process to reread and acknowledge
+  its live forwarding registry instead of treating a stale diagnostic snapshot as proof of repair.
+- Fixed `dory machine create NAME` failing with an unbound Bash array when no optional machine
+  arguments were supplied.
+
 ## 0.4.2 - 2026-07-22
 
 ### Added

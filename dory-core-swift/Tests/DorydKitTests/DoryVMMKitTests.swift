@@ -307,6 +307,11 @@ final class DoryVMMKitTests: XCTestCase {
         XCTAssertTrue(bootScript.contains("mountpoint -q /var/lib/docker"))
         XCTAssertTrue(bootScript.contains("defaultKeepStorage"))
         XCTAssertTrue(bootScript.contains(GuestBuildCacheGCCommand.defaultKeepStorage))
+        XCTAssertTrue(bootScript.contains("/proc/sys/vm/max_map_count"))
+        XCTAssertTrue(bootScript.contains(String(GuestContainerCompatibilityCommand.maximumMapCount)))
+        XCTAssertTrue(bootScript.contains("\"default-ulimits\""))
+        XCTAssertTrue(bootScript.contains("\"Hard\":65536"))
+        XCTAssertTrue(bootScript.contains("\"Soft\":65536"))
         XCTAssertTrue(bootScript.contains("exec /usr/bin/dory-agent"))
         try assertShellSyntax("\(base)/dorycfg/boot.sh")
     }
