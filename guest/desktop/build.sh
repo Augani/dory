@@ -83,11 +83,11 @@ rustup target add "$TARGET" >/dev/null
 AGENT="$ROOT/dory-core/target/$TARGET/release/dory-agent"
 [ -x "$AGENT" ] || { echo "dory-agent was not produced for $TARGET" >&2; exit 1; }
 
-COMMON_PACKAGES="systemd-sysv,dbus,dbus-user-session,udev,kmod,network-manager,network-manager-gnome,openssh-server,sudo,ca-certificates,curl,git,vim-tiny,less,man-db,bash-completion,xfce4,xfce4-terminal,xfce4-notifyd,xfce4-power-manager,lightdm,lightdm-gtk-greeter,xserver-xorg-core,xserver-xorg-input-libinput,x11-xserver-utils,xterm,libgl1-mesa-dri,mesa-utils,spice-vdagent,pipewire-audio,wireplumber,polkitd,pkexec,mate-polkit,fonts-dejavu-core,fonts-noto-core,locales,util-linux,e2fsprogs,iproute2,iputils-ping,dnsutils,netcat-openbsd,procps,rsync,tar,gzip,xz-utils,zstd,fuse3,gvfs,gvfs-backends,mousepad,ristretto,file-roller"
+COMMON_PACKAGES="systemd-sysv,dbus,dbus-user-session,udev,kmod,network-manager,openssh-server,sudo,ca-certificates,curl,git,vim-tiny,less,man-db,bash-completion,xfce4,xfce4-terminal,xfce4-notifyd,xfce4-power-manager,lightdm,lightdm-gtk-greeter,xserver-xorg-core,xserver-xorg-input-libinput,x11-xserver-utils,xterm,libgl1-mesa-dri,mesa-utils,spice-vdagent,pipewire-audio,wireplumber,polkitd,pkexec,mate-polkit,fonts-dejavu-core,fonts-noto-core,locales,util-linux,e2fsprogs,iproute2,iputils-ping,dnsutils,netcat-openbsd,procps,rsync,tar,gzip,xz-utils,zstd,fuse3,gvfs,gvfs-backends,mousepad,ristretto,file-roller"
 case "$DISTRO" in
-  debian) PACKAGES="$COMMON_PACKAGES,desktop-base" ;;
-  ubuntu) PACKAGES="$COMMON_PACKAGES,ubuntu-minimal,xubuntu-default-settings" ;;
-  kali) PACKAGES="$COMMON_PACKAGES,kali-desktop-xfce,kali-defaults,kali-menu" ;;
+  debian) PACKAGES="$COMMON_PACKAGES,network-manager-gnome,desktop-base" ;;
+  ubuntu) PACKAGES="$COMMON_PACKAGES,network-manager-gnome,ubuntu-minimal,xubuntu-default-settings" ;;
+  kali) PACKAGES="$COMMON_PACKAGES,network-manager-applet,nm-connection-editor,kali-desktop-xfce,kali-defaults,kali-menu" ;;
 esac
 
 # systemd's package scripts need proc/sys mounts while the rootfs is assembled.
