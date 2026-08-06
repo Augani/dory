@@ -13,6 +13,8 @@
   its live forwarding registry instead of treating a stale diagnostic snapshot as proof of repair.
 - Fixed `dory machine create NAME` failing with an unbound Bash array when no optional machine
   arguments were supplied.
+- Updated Kali desktop image assembly for its current NetworkManager applet and connection-editor
+  packages after `network-manager-gnome` was removed from Kali rolling.
 
 ## 0.4.2 - 2026-07-22
 
