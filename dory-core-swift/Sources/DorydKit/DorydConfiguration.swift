@@ -432,6 +432,13 @@ public struct DorydEnvironment: Sendable {
             )
             arguments.append(contentsOf: ["--share", homeShare.argumentValue])
         }
+        // Keep Docker's native-path contract identical across the raw-HV and VZ launchers.
+        let volumesShare = DoryMachineShareConfiguration(
+            tag: "volumes",
+            hostPath: "/Volumes",
+            guestPath: "/Volumes"
+        )
+        arguments.append(contentsOf: ["--share", volumesShare.argumentValue])
         if string("DORYD_PUBLISH_HOST") == "0.0.0.0" {
             arguments.append(contentsOf: ["--publish-host", "0.0.0.0"])
         }
@@ -468,8 +475,13 @@ public struct DorydEnvironment: Sendable {
         if let explicit = string("DORYD_SHARES") {
             return explicit.split(separator: ";").map(String.init).filter { !$0.isEmpty }
         }
-        guard bool("DORYD_SHARE_HOME", default: true) else { return [] }
-        return ["home=\(home):rw:at=\(home):safe"]
+        // Mounted drives are part of the default Docker bind-mount contract even when sharing the
+        // user's home has been disabled explicitly.
+        var shares = ["volumes=/Volumes:rw:at=/Volumes:safe"]
+        if bool("DORYD_SHARE_HOME", default: true) {
+            shares.insert("home=\(home):rw:at=\(home):safe", at: 0)
+        }
+        return shares
     }
 
     /// DORYD_GPU is authoritative when the app supplies it, including the explicit `off` value.

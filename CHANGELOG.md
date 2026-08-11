@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.4.4 - 2026-08-11
+
+### Fixed
+
+- Restored native-path Docker bind mounts for projects on APFS and other mounted drives under
+  `/Volumes`; the daemon-owned engine now exports the same external-volume root as the legacy
+  launcher instead of silently presenting an empty container directory.
+
 ## 0.4.3 - 2026-08-06
 
 ### Fixed

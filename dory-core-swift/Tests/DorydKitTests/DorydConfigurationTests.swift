@@ -285,6 +285,8 @@ final class DorydConfigurationTests: XCTestCase {
         XCTAssertArgumentPair(hv.arguments, "--gvproxy", helpers + "/gvproxy")
         XCTAssertArgumentPair(hv.arguments, "--guest-agent", guestAgent)
         XCTAssertFalse(hv.arguments.contains("--amd64"), "amd64 emulation must remain an explicit Settings opt-in")
+        XCTAssertArgumentPair(hv.arguments, "--share", "home=\(directory)/home:rw:at=\(directory)/home:safe")
+        XCTAssertArgumentPair(hv.arguments, "--share", "volumes=/Volumes:rw:at=/Volumes:safe")
     }
 
     func testDockerTierPreparesCompressedHeadlessKernelWhenRawKernelIsNotBundled() throws {
@@ -740,6 +742,24 @@ final class DorydConfigurationTests: XCTestCase {
             vmm.arguments,
             "--ssh-agent-socket",
             "/private/tmp/com.apple.launchd.fixture/Listeners"
+        )
+        XCTAssertArgumentPair(
+            vmm.arguments,
+            "--share",
+            DoryMachineShareConfiguration(
+                tag: "home",
+                hostPath: directory + "/home",
+                guestPath: directory + "/home"
+            ).argumentValue
+        )
+        XCTAssertArgumentPair(
+            vmm.arguments,
+            "--share",
+            DoryMachineShareConfiguration(
+                tag: "volumes",
+                hostPath: "/Volumes",
+                guestPath: "/Volumes"
+            ).argumentValue
         )
         XCTAssertArgumentPair(vmm.arguments, "--cmdline", "console=hvc0 root=/dev/vda rw rootwait panic=1 dory.machine_id=docker dory.home=\(directory)/home")
         XCTAssertEqual(FileManager.default.contents(atPath: preparedRootfs), Data("vmm-rootfs-fixture".utf8))
