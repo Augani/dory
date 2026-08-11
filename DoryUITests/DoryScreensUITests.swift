@@ -18,7 +18,7 @@ final class DoryScreensUITests: XCTestCase {
 
         // Sparkle asks for update-check consent on a clean macOS user account. Hosted runners are
         // clean on every job, so dismiss that product-owned prompt before exercising Dory's UI.
-        let declineAutomaticChecks = app.buttons["Don’t Check"]
+        let declineAutomaticChecks = app.windows.buttons["Don’t Check"].firstMatch
         if declineAutomaticChecks.waitForExistence(timeout: 2) {
             declineAutomaticChecks.click()
         }
