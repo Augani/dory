@@ -73,6 +73,9 @@ jobs:
       - name: Install Protocol Buffers compiler
         if: matrix.language == 'swift'
         run: brew install protobuf
+      - name: Prime Xcode dependency resources
+        if: matrix.language == 'swift'
+        run: scripts/test.sh build -- ENABLE_USER_SCRIPT_SANDBOXING=NO
       - uses: github/codeql-action/init@7211b7c8077ea37d8641b6271f6a365a22a5fbfa # v4.36.0
         with:
           languages: ${{ matrix.language }}
@@ -80,8 +83,10 @@ jobs:
       - name: Build Swift surfaces
         if: matrix.language == 'swift'
         run: |
-          scripts/build-dory-ffi-xcframework.sh --if-needed
           swift build --package-path dory-core-swift
           swift build --package-path Packages/ContainerizationEngine
+          # CodeQL's tracer cannot invoke Xcode 26's cryptex-hosted Metal compiler. Preserve the
+          # primed third-party shader while forcing every first-party app source through CodeQL.
+          find Dory DoryStorageProvider -type f -name '*.swift' -exec touch {} +
           scripts/test.sh build -- ENABLE_USER_SCRIPT_SANDBOXING=NO
       - uses: github/codeql-action/analyze@7211b7c8077ea37d8641b6271f6a365a22a5fbfa # v4.36.0
