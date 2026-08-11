@@ -70,6 +70,9 @@ jobs:
         run: |
           newest="$(ls -d /Applications/Xcode*.app | sort -V | tail -1)"
           echo "DEVELOPER_DIR=$newest/Contents/Developer" >> "$GITHUB_ENV"
+      - name: Install Metal toolchain
+        if: matrix.language == 'swift'
+        run: xcodebuild -downloadComponent MetalToolchain
       - name: Install Protocol Buffers compiler
         if: matrix.language == 'swift'
         run: brew install protobuf
