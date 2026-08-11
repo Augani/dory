@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.4.4 - 2026-08-11
+
 ### Fixed
 
 - Restored native-path Docker bind mounts for projects on APFS and other mounted drives under
