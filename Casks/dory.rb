@@ -1,8 +1,8 @@
 # Homebrew Cask for Dory. version + sha256 are bumped automatically by the release workflow, which
 # also syncs this file to the Augani/homebrew-dory tap.  Install:  brew install --cask Augani/dory/dory
 cask "dory" do
-  version "0.4.3"
-  sha256 "156f20960a14fd077bcf83cfb62d39073eec2fa5358ea5a534649d59d78d9cc3"
+  version "0.4.4"
+  sha256 "ba9c476ad7c2e1e626d0b28a18096244b6f8e49b62b02fe3327f298583e6b60c"
 
   url "https://github.com/Augani/dory/releases/download/v#{version}/Dory-#{version}.zip"
   name "Dory"

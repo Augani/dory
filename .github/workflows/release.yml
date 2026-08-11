@@ -1,7 +1,6 @@
 name: Release
 
-# Builds, signs, notarizes, and publishes a Dory release when a version tag (e.g. v0.1.0) is
-# pushed, or on manual dispatch.
+# Builds, signs, notarizes, and publishes a Dory release on manual dispatch.
 #
 # Required repository secrets:
 #   DEVELOPER_ID_CERT_P12_BASE64  base64 of your "Developer ID Application" .p12
@@ -53,8 +52,6 @@ name: Release
 # release jobs as same-run artifacts. A checkout never relies on ignored/stale guest/out files.
 
 on:
-  push:
-    tags: ['v*']
   workflow_dispatch:
     inputs:
       version:
