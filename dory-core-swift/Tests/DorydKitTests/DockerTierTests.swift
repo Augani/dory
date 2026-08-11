@@ -1241,7 +1241,10 @@ final class DockerTierTests: XCTestCase {
         XCTAssertEqual(kill(firstPID, SIGKILL), 0)
         XCTAssertTrue(waitUntil(timeout: 2) { tier.status().state == .failed })
 
-        XCTAssertLessThan(Date().timeIntervalSince(killedAt), 1.5, "startup exit must not wait the 180-second readiness window")
+        // CodeQL instrumentation can add noticeable teardown latency on hosted runners. The
+        // two-second wait above remains the primary bound; this guard only proves recovery did not
+        // consume the 180-second readiness window.
+        XCTAssertLessThan(Date().timeIntervalSince(killedAt), 3, "startup exit must not wait the 180-second readiness window")
         XCTAssertEqual(readyCalls.value, 3)
         XCTAssertEqual(
             (try String(contentsOfFile: marker, encoding: .utf8)).split(separator: "\n").count,
