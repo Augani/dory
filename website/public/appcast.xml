@@ -6,6 +6,18 @@
     <description>Updates for Dory - native Docker and Linux containers for macOS.</description>
     <language>en</language>
     <item>
+      <title>0.4.4</title>
+      <pubDate>Tue, 11 Aug 2026 14:22:20 +0000</pubDate>
+      <sparkle:version>48</sparkle:version>
+      <sparkle:shortVersionString>0.4.4</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <dory:dataSchemaVersion>1</dory:dataSchemaVersion>
+      <dory:minimumReadableDataSchema>1</dory:minimumReadableDataSchema>
+      <dory:maximumReadableDataSchema>1</dory:maximumReadableDataSchema>
+      <dory:componentCatalogSchema>1</dory:componentCatalogSchema>
+      <enclosure url="https://github.com/Augani/dory/releases/download/v0.4.4/Dory-0.4.4-app-update.zip" sparkle:edSignature="txYIugVAGUyxQZY+Qq4YVOGmZaUcuAWyNrzncO2sdkCjZy9JXE8YbnZe5jr71IHePBKGJXZw2V9KUxhAUqs3AQ==" length="237426965" type="application/octet-stream" />
+    </item>
+    <item>
       <title>0.4.3</title>
       <pubDate>Thu, 06 Aug 2026 19:49:46 +0000</pubDate>
       <sparkle:version>47</sparkle:version>
