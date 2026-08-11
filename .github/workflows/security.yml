@@ -83,6 +83,8 @@ jobs:
       - name: Build Swift surfaces
         if: matrix.language == 'swift'
         run: |
-          scripts/test.sh swift
+          scripts/build-dory-ffi-xcframework.sh --if-needed
+          swift build --package-path dory-core-swift
+          swift build --package-path Packages/ContainerizationEngine
           scripts/test.sh build -- ENABLE_USER_SCRIPT_SANDBOXING=NO
       - uses: github/codeql-action/analyze@7211b7c8077ea37d8641b6271f6a365a22a5fbfa # v4.36.0
