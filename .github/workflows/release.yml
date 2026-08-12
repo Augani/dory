@@ -1,6 +1,7 @@
 name: Release
 
 # Builds, signs, notarizes, and publishes a Dory release on manual dispatch.
+# Start public releases only through: scripts/publish-release.sh VERSION
 #
 # Required repository secrets:
 #   DEVELOPER_ID_CERT_P12_BASE64  base64 of your "Developer ID Application" .p12
@@ -682,6 +683,7 @@ jobs:
             release-build/*.cdx.json
             release-build/appcast.xml
             release-build/release-manifest.json
+            release-build/components/arm64/*
 
   homebrew_install_certification:
     name: Clean exact-candidate Homebrew install and uninstall
@@ -1527,6 +1529,15 @@ jobs:
           name: dory-appcast
           path: release-build/appcast.xml
           if-no-files-found: error
+      - name: Upload generated component catalog
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: dory-component-catalog
+          path: |
+            release-build/components/arm64/catalog.json
+            release-build/components/arm64/catalog.json.sha256
+            release-build/components/arm64/catalog.json.sig
+          if-no-files-found: error
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
@@ -1543,6 +1554,7 @@ jobs:
             release-build/Dory-${{ needs.release_candidate.outputs.version }}.cdx.json
             release-build/release-manifest.json
             release-build/appcast.xml
+            release-build/components/arm64/*
             performance-evidence/Dory-${{ needs.release_candidate.outputs.version }}-performance-evidence.zip
             ${{ runner.temp }}/Dory-${{ needs.release_candidate.outputs.version }}-reliability-evidence.zip
             ${{ runner.temp }}/Dory-${{ needs.release_candidate.outputs.version }}-reliability-evidence.zip.sha256
@@ -1621,14 +1633,24 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
-      - name: Download the appcast generated from the signed update ZIP
+      - name: Download metadata generated from the signed release
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: dory-appcast
           path: appcast-artifact
+      - name: Download catalog generated from the signed release
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: dory-component-catalog
+          path: component-catalog-artifact
       - name: Validate generated live feed input
         run: |
           test -s appcast-artifact/appcast.xml
+          test -s component-catalog-artifact/catalog.json
+          test -s component-catalog-artifact/catalog.json.sha256
+          test -s component-catalog-artifact/catalog.json.sig
+          test "$(tr -d '[:space:]' < component-catalog-artifact/catalog.json.sha256)" = \
+            "$(sha256sum component-catalog-artifact/catalog.json | awk '{print $1}')"
           python3 - appcast-artifact/appcast.xml "${{ needs.publish_release.outputs.version }}" <<'PY'
           import os
           import sys
@@ -1660,30 +1682,48 @@ jobs:
         working-directory: website
       - run: npm run build
         working-directory: website
-      - name: Overlay the exact release appcast onto the complete site
+      - name: Overlay the exact release metadata onto the complete site
         run: |
           test -d docs-build
           cp appcast-artifact/appcast.xml docs-build/appcast.xml
           cmp appcast-artifact/appcast.xml docs-build/appcast.xml
+          mkdir -p docs-build/components/arm64
+          for name in catalog.json catalog.json.sha256 catalog.json.sig; do
+            cp "component-catalog-artifact/$name" "docs-build/components/arm64/$name"
+            cmp "component-catalog-artifact/$name" "docs-build/components/arm64/$name"
+          done
       - uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
       - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3
         with:
           path: docs-build
       - id: deployment
         uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4
-      - name: Verify the actual SUFeedURL serves this release
+      - name: Verify the public update metadata exactly matches this release
         run: |
-          expected='<sparkle:shortVersionString>${{ needs.publish_release.outputs.version }}</sparkle:shortVersionString>'
+          live="$RUNNER_TEMP/live-release-metadata"
+          rm -rf "$live"
+          mkdir -p "$live/components/arm64"
           for attempt in $(seq 1 18); do
-            if curl -fsSL --connect-timeout 10 --max-time 30 \
-              "https://augani.github.io/dory/appcast.xml?release=${{ needs.publish_release.outputs.version }}&run=${{ github.run_id }}" \
-              | grep -qF "$expected"; then
-              echo "Live Sparkle feed serves ${{ needs.publish_release.outputs.version }}"
+            complete=1
+            curl -fsSL --connect-timeout 10 --max-time 30 \
+              "https://augani.github.io/dory/appcast.xml?release=${{ needs.publish_release.outputs.version }}&run=${{ github.run_id }}&attempt=$attempt" \
+              -o "$live/appcast.xml" || complete=0
+            for name in catalog.json catalog.json.sha256 catalog.json.sig; do
+              curl -fsSL --connect-timeout 10 --max-time 30 \
+                "https://augani.github.io/dory/components/arm64/$name?release=${{ needs.publish_release.outputs.version }}&run=${{ github.run_id }}&attempt=$attempt" \
+                -o "$live/components/arm64/$name" || complete=0
+            done
+            if [ "$complete" = 1 ] \
+               && cmp appcast-artifact/appcast.xml "$live/appcast.xml" \
+               && cmp component-catalog-artifact/catalog.json "$live/components/arm64/catalog.json" \
+               && cmp component-catalog-artifact/catalog.json.sha256 "$live/components/arm64/catalog.json.sha256" \
+               && cmp component-catalog-artifact/catalog.json.sig "$live/components/arm64/catalog.json.sig"; then
+              echo "Public appcast and component catalog exactly match ${{ needs.publish_release.outputs.version }}"
               exit 0
             fi
             [ "$attempt" -eq 18 ] || sleep 5
           done
-          echo "Live SUFeedURL did not converge to ${{ needs.publish_release.outputs.version }}" >&2
+          echo "Public update metadata did not converge to ${{ needs.publish_release.outputs.version }}" >&2
           exit 1
 
   # Keeps the Homebrew cask in this repo (the tap) current after every release.
@@ -1768,3 +1808,22 @@ jobs:
           done
           echo "homebrew-dory did not converge to $V" >&2
           exit 1
+
+  verify-public-release:
+    name: Verify complete public distribution
+    needs: [publish_release, publish-pages, bump-cask]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - name: Verify GitHub assets, Pages metadata, and both Homebrew casks
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 .github/scripts/verify-public-release.py \
+            --repository "$GITHUB_REPOSITORY" \
+            --version "${{ needs.publish_release.outputs.version }}" \
+            --source-commit "$GITHUB_SHA" \
+            --expected-primary-sha256 "${{ needs.publish_release.outputs.sha256 }}"
