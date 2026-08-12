@@ -19,7 +19,10 @@ async fn main() -> std::io::Result<()> {
 #[cfg(not(target_os = "linux"))]
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
-    use dory_pb::agent::{agent_request::Method, AgentRequest, InfoRequest};
+    use dory_pb::agent::{
+        agent_request::Method, agent_response::Result as Res, AgentRequest, AgentResponse,
+        InfoRequest,
+    };
     use prost::Message;
 
     if let Some(addr) = daemon_addr() {
@@ -28,13 +31,31 @@ async fn main() -> std::io::Result<()> {
         return dory_agent::daemon::serve(listener).await;
     }
 
-    // Exercise the dispatcher so the host build stays honest; the real agent runs in a guest.
+    // Exercise the dispatcher so the host build stays honest; the real agent runs in a guest. The
+    // probe response is inspected: a dispatcher that answers with an RPC error must fail the check
+    // instead of reporting OK.
     let probe = AgentRequest {
         method: Some(Method::Info(InfoRequest {})),
     };
-    let _ = dory_agent::dispatch::dispatch(&probe.encode_to_vec());
-    eprintln!("dory-agent host build: dispatcher OK. The agent runs as PID 1 inside a Dory guest.");
-    Ok(())
+    let encoded = dory_agent::dispatch::dispatch(&probe.encode_to_vec());
+    let response = AgentResponse::decode(encoded.as_slice())
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string()))?;
+    match response.result {
+        Some(Res::Info(_)) => {
+            eprintln!(
+                "dory-agent host build: dispatcher OK. The agent runs as PID 1 inside a Dory guest."
+            );
+            Ok(())
+        }
+        Some(Res::Error(error)) => Err(std::io::Error::other(format!(
+            "dispatcher probe failed: {} ({})",
+            error.message, error.code
+        ))),
+        other => Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("dispatcher probe returned an unexpected result: {other:?}"),
+        )),
+    }
 }
 
 /// `--daemon <addr>` selects remote-VPS daemon mode; absent, the guest PID-1 path runs.

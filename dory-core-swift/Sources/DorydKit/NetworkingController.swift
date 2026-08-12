@@ -51,6 +51,9 @@ public struct NetworkingStatus: Sendable, Equatable {
     public var routes: [DomainRoute]
     public var privilegedTCPForwards: [PrivilegedTCPForward]
     public var privilegedTCPForwardFailures: [UInt16: String]
+    /// Why the HTTPS proxy is not serving the current route set, when it is not. Kept in the
+    /// status so a trusted-HTTPS regression is reported instead of degrading in silence.
+    public var httpsProxyError: String?
 
     public init(
         mode: String,
@@ -64,7 +67,8 @@ public struct NetworkingStatus: Sendable, Equatable {
         httpsProxyRunning: Bool,
         routes: [DomainRoute],
         privilegedTCPForwards: [PrivilegedTCPForward] = [],
-        privilegedTCPForwardFailures: [UInt16: String] = [:]
+        privilegedTCPForwardFailures: [UInt16: String] = [:],
+        httpsProxyError: String? = nil
     ) {
         self.mode = mode
         self.suffix = suffix
@@ -78,6 +82,7 @@ public struct NetworkingStatus: Sendable, Equatable {
         self.routes = routes
         self.privilegedTCPForwards = privilegedTCPForwards
         self.privilegedTCPForwardFailures = privilegedTCPForwardFailures
+        self.httpsProxyError = httpsProxyError
     }
 }
 
@@ -97,6 +102,7 @@ public final class NetworkingController: @unchecked Sendable {
     private var tlsProxy: DoryTLSProxyServer?
     private var additionalPrivilegedTCPForwards: [PrivilegedTCPForward] = []
     private var lastPrivilegedTCPForwardResult = LoopbackTCPForwardReconcileResult(active: [], failures: [:])
+    private var lastTLSProxyError: String?
     var tlsRouteNames: Set<String> = []
 
     public init(
@@ -134,6 +140,7 @@ public final class NetworkingController: @unchecked Sendable {
                 try proxy.start()
                 tlsProxy = proxy
                 tlsRouteNames = routeNames
+                lastTLSProxyError = nil
             }
             lastPrivilegedTCPForwardResult = reconcileLoopbackTCPForwardersLocked()
         } catch {
@@ -158,6 +165,7 @@ public final class NetworkingController: @unchecked Sendable {
         tlsProxy?.stop()
         tlsProxy = nil
         tlsRouteNames = []
+        lastTLSProxyError = nil
         loopbackTCPForwarders.stop()
         lastPrivilegedTCPForwardResult = LoopbackTCPForwardReconcileResult(active: [], failures: [:])
     }
@@ -193,7 +201,8 @@ public final class NetworkingController: @unchecked Sendable {
             httpsProxyRunning: tlsProxy?.isRunning == true,
             routes: dnsServer.currentRoutes(),
             privilegedTCPForwards: lastPrivilegedTCPForwardResult.active,
-            privilegedTCPForwardFailures: lastPrivilegedTCPForwardResult.failures
+            privilegedTCPForwardFailures: lastPrivilegedTCPForwardResult.failures,
+            httpsProxyError: lastTLSProxyError
         )
     }
 
@@ -273,6 +282,9 @@ public final class NetworkingController: @unchecked Sendable {
         return names
     }
 
+    /// Rebuilds the HTTPS proxy for a widened name set. Any failure keeps the previous listener
+    /// serving what it can, and is retained in the status: the new names are then reachable over
+    /// HTTP only, which the user has to be told about rather than discovering as a cert error.
     private func refreshTLSProxyLocked(routes: [DomainRoute]) {
         guard configuration.localCACertificatePath != nil else { return }
         let desiredNames = tlsNames(for: routes)
@@ -288,13 +300,26 @@ public final class NetworkingController: @unchecked Sendable {
                 try candidate.start()
                 tlsProxy = candidate
                 tlsRouteNames = routeNames
+                lastTLSProxyError = nil
             } catch {
-                try? previous?.start()
-                previous?.updateRoutes(routes)
+                let startFailure = "trusted HTTPS could not be restarted for the current domains: \(error)"
+                do {
+                    try previous?.start()
+                    previous?.updateRoutes(routes)
+                    lastTLSProxyError = previous == nil ? startFailure : "\(startFailure); the previous certificate set is still served"
+                } catch {
+                    // The rollback failed too: report the dead listener instead of keeping a
+                    // stopped proxy that `status()` would present as an HTTPS mode.
+                    tlsRouteNames = []
+                    tlsProxy = nil
+                    lastTLSProxyError = "\(startFailure); the previous HTTPS listener could not be restored: \(error)"
+                    return
+                }
                 tlsProxy = previous
             }
         } catch {
             tlsProxy?.updateRoutes(routes)
+            lastTLSProxyError = "trusted HTTPS could not be issued for the current domains: \(error)"
         }
     }
 

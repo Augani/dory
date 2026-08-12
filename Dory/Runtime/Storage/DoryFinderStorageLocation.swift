@@ -6,6 +6,9 @@ enum DoryFinderStorageLocationError: LocalizedError {
     case sharedContainerUnavailable
     case providerUnavailable
     case visibleURLUnavailable
+    /// Materialization gave up with items still dataless. Carries the last underlying reason so a
+    /// provider fault is reported instead of a bare "unavailable".
+    case materializationIncomplete(items: [String], reason: String?)
 
     var errorDescription: String? {
         switch self {
@@ -15,6 +18,9 @@ enum DoryFinderStorageLocationError: LocalizedError {
             "Dory's Finder storage provider is unavailable."
         case .visibleURLUnavailable:
             "Finder did not return a location for Dory storage."
+        case let .materializationIncomplete(items, reason):
+            "Dory storage did not finish downloading \(items.joined(separator: ", "))."
+                + (reason.map { " Last error: \($0)" } ?? "")
         }
     }
 }
@@ -143,6 +149,7 @@ final class DoryFinderStorageLocation {
             .sorted()
         var pending = rawIdentifiers.map(NSFileProviderItemIdentifier.init(rawValue:))
 
+        var lastFailure: Error?
         for _ in 0..<30 where !pending.isEmpty {
             var retry: [NSFileProviderItemIdentifier] = []
             for identifier in pending {
@@ -155,6 +162,7 @@ final class DoryFinderStorageLocation {
                     let url = try await visibleURL(identifier, manager: manager)
                     try await readMaterializedFile(url)
                 } catch {
+                    lastFailure = error
                     retry.append(identifier)
                 }
             }
@@ -162,7 +170,10 @@ final class DoryFinderStorageLocation {
             if !pending.isEmpty { try? await Task.sleep(for: .milliseconds(100)) }
         }
         guard pending.isEmpty else {
-            throw DoryFinderStorageLocationError.providerUnavailable
+            throw DoryFinderStorageLocationError.materializationIncomplete(
+                items: pending.map(\.rawValue),
+                reason: lastFailure?.localizedDescription
+            )
         }
     }
 

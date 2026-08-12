@@ -1124,12 +1124,15 @@ struct DockerShim: Sendable {
         }
         let logWindow = Self.logTimeWindow(request.query)
         let logStreams = Self.logStreams(request.query)
+        let history: [LogLine]
+        do {
+            history = try await runtime.logs(containerID: container.id)
+        } catch {
+            // An engine that cannot answer must not look like a container with no output.
+            return errorResponse(500, "could not read logs for \(container.id): \(error.localizedDescription)")
+        }
         let historical = Self.tail(
-            Self.filterLogs(
-                (try? await runtime.logs(containerID: container.id)) ?? [],
-                window: logWindow,
-                streams: logStreams
-            ),
+            Self.filterLogs(history, window: logWindow, streams: logStreams),
             request.query["tail"]
         )
         if Self.queryBool("follow", in: request.query, default: false) {

@@ -20,6 +20,7 @@ final class NetworkingControllerTests: XCTestCase {
         ])
 
         XCTAssertTrue(controller.status().httpsProxyRunning)
+        XCTAssertNil(controller.status().httpsProxyError)
         XCTAssertTrue(controller.tlsRouteNames.contains("admin.myproject.local"))
         XCTAssertEqual(controller.status().routes.first?.hostname, "admin.myproject.local")
     }
