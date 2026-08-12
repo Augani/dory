@@ -112,10 +112,13 @@ async fn serve_fsevents() -> std::io::Result<()> {
     }
 }
 
-async fn handle_fsevent_batch(
-    mut stream: tokio_vsock::VsockStream,
+async fn handle_fsevent_batch<S>(
+    mut stream: S,
     dedupe: Arc<crate::fsevents::FSEventDedupeStore>,
-) -> std::io::Result<()> {
+) -> std::io::Result<()>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
     // One deadline covers the complete frame so a peer cannot slow-drip a permitted connection.
     let body = timeout(FSEVENT_READ_TIMEOUT, async {
         let body_len = stream.read_u32_le().await? as usize;
@@ -241,10 +244,140 @@ async fn serve_shell() -> std::io::Result<()> {
 mod tests {
     use super::*;
 
+    use std::path::PathBuf;
+
+    use crate::fsevents::{encode_batch_frame, ResponseStatus, MAX_FRAME_BYTES, PROTOCOL_VERSION};
+
+    struct Response {
+        operation_id: u64,
+        path_count: u32,
+        status: u32,
+        failed_indices: Vec<u32>,
+    }
+
+    fn decode_response(frame: &[u8]) -> Response {
+        let body_len = u32::from_le_bytes(frame[0..4].try_into().unwrap()) as usize;
+        assert_eq!(frame.len(), 4 + body_len);
+        assert_eq!(
+            u32::from_le_bytes(frame[4..8].try_into().unwrap()),
+            PROTOCOL_VERSION
+        );
+        let failed_count = u32::from_le_bytes(frame[24..28].try_into().unwrap()) as usize;
+        let failed_indices = (0..failed_count)
+            .map(|index| {
+                let start = 28 + index * 4;
+                u32::from_le_bytes(frame[start..start + 4].try_into().unwrap())
+            })
+            .collect();
+        Response {
+            operation_id: u64::from_le_bytes(frame[8..16].try_into().unwrap()),
+            path_count: u32::from_le_bytes(frame[16..20].try_into().unwrap()),
+            status: u32::from_le_bytes(frame[20..24].try_into().unwrap()),
+            failed_indices,
+        }
+    }
+
+    /// Feeds `request` to the fsevent handler and returns the handler result plus everything the
+    /// handler wrote back to the peer.
+    async fn exchange(
+        request: &[u8],
+        dedupe: Arc<crate::fsevents::FSEventDedupeStore>,
+    ) -> (std::io::Result<()>, Vec<u8>) {
+        let (mut peer, guest) = tokio::io::duplex(256 * 1024);
+        peer.write_all(request).await.expect("write request");
+        let result = handle_fsevent_batch(guest, dedupe).await;
+        let mut response = Vec::new();
+        peer.read_to_end(&mut response)
+            .await
+            .expect("read response");
+        (result, response)
+    }
+
     #[test]
     fn host_only_listener_policy_accepts_host_and_rejects_guest_cids() {
         assert!(is_host_peer(&VsockAddr::new(VMADDR_CID_HOST, PORT_CONTROL)));
         assert!(!is_host_peer(&VsockAddr::new(3, PORT_CONTROL)));
         assert!(!is_host_peer(&VsockAddr::new(VMADDR_CID_ANY, PORT_CONTROL)));
+    }
+
+    #[tokio::test]
+    async fn a_valid_batch_is_nudged_and_answered_with_per_path_results() {
+        let directory = std::env::temp_dir().join(format!("dory-fsevents-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).expect("create batch directory");
+        let existing = directory.join("present");
+        std::fs::write(&existing, b"payload").expect("write batch file");
+        // Nudging walks up to an existing ancestor, so only a path whose every ancestor is missing
+        // (the filesystem root is never nudged) can fail.
+        let unreachable = PathBuf::from("/dory-absent-fsevent-root/child");
+        let paths = vec![existing.clone(), unreachable];
+
+        let request = encode_batch_frame(7, &paths).expect("encode batch");
+        let (result, response) = exchange(&request, Arc::default()).await;
+
+        result.expect("handled batch");
+        let decoded = decode_response(&response);
+        assert_eq!(decoded.operation_id, 7);
+        assert_eq!(decoded.path_count, 2);
+        assert_eq!(decoded.status, ResponseStatus::Success as u32);
+        // Only the path whose parent directory does not exist can fail to be nudged.
+        assert_eq!(decoded.failed_indices, vec![1]);
+
+        std::fs::remove_dir_all(&directory).expect("clean batch directory");
+    }
+
+    #[tokio::test]
+    async fn reusing_an_operation_id_for_different_paths_is_reported_as_a_conflict() {
+        let dedupe = Arc::new(crate::fsevents::FSEventDedupeStore::default());
+        let first = encode_batch_frame(11, &[PathBuf::from("/tmp")]).expect("encode batch");
+        let second = encode_batch_frame(11, &[PathBuf::from("/var")]).expect("encode batch");
+
+        let (first_result, _) = exchange(&first, Arc::clone(&dedupe)).await;
+        first_result.expect("handled first batch");
+        let (second_result, response) = exchange(&second, dedupe).await;
+
+        second_result.expect("handled second batch");
+        let decoded = decode_response(&response);
+        assert_eq!(decoded.operation_id, 11);
+        assert_eq!(decoded.path_count, 1);
+        assert_eq!(
+            decoded.status,
+            ResponseStatus::ConflictingOperationId as u32
+        );
+        assert!(decoded.failed_indices.is_empty());
+    }
+
+    #[tokio::test]
+    async fn oversized_and_undecodable_frames_are_rejected_without_a_response() {
+        let mut oversized = ((MAX_FRAME_BYTES + 1) as u32).to_le_bytes().to_vec();
+        oversized.extend_from_slice(&[0_u8; 16]);
+        let (result, response) = exchange(&oversized, Arc::default()).await;
+        assert_eq!(
+            result.unwrap_err().kind(),
+            std::io::ErrorKind::InvalidData,
+            "declared body length above the frame cap must be refused"
+        );
+        assert!(response.is_empty());
+
+        let mut wrong_version = 16_u32.to_le_bytes().to_vec();
+        wrong_version.extend_from_slice(&(PROTOCOL_VERSION + 1).to_le_bytes());
+        wrong_version.extend_from_slice(&1_u64.to_le_bytes());
+        wrong_version.extend_from_slice(&0_u32.to_le_bytes());
+        let (result, response) = exchange(&wrong_version, Arc::default()).await;
+        assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::InvalidData);
+        assert!(response.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_slow_drip_frame_hits_the_read_deadline() {
+        // The length prefix promises a body that never arrives, which is exactly the stall the
+        // per-connection deadline exists to bound.
+        let (peer, guest) = tokio::io::duplex(1024);
+        let mut peer = peer;
+        peer.write_all(&64_u32.to_le_bytes())
+            .await
+            .expect("write length prefix");
+        let result = handle_fsevent_batch(guest, Arc::default()).await;
+        assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::TimedOut);
+        drop(peer);
     }
 }

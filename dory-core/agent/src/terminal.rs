@@ -227,6 +227,9 @@ fn terminate_child(pid: libc::pid_t) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::net::UnixStream;
+
+    const STREAM_TIMEOUT: Duration = Duration::from_secs(20);
 
     #[test]
     fn selects_existing_shell() {
@@ -235,6 +238,144 @@ mod tests {
             libc::kill(process.pid, libc::SIGKILL);
             let mut status = 0;
             let _ = libc::waitpid(process.pid, &mut status, 0);
+        }
+    }
+
+    #[test]
+    fn the_child_shell_receives_the_injected_term() {
+        let shell = spawn_shell().expect("spawn shell");
+        set_nonblocking(shell.master.as_raw_fd()).expect("nonblocking master");
+        write_blocking(
+            shell.master.as_raw_fd(),
+            b"printf 'term=%s\\n' \"$TERM\"\nexit\n",
+        );
+
+        let transcript = read_until(shell.master.as_raw_fd(), "term=xterm-256color");
+        terminate_child_blocking(shell.pid);
+        assert!(transcript.contains("term=xterm-256color"), "{transcript}");
+    }
+
+    #[tokio::test]
+    async fn the_stream_carries_shell_output_and_ends_when_the_shell_exits() {
+        let (mut host, guest) = UnixStream::pair().expect("socket pair");
+        let served = tokio::spawn(serve_shell_stream(guest));
+
+        host.write_all(b"printf 'dory-%s\\n' ready\nexit\n")
+            .await
+            .expect("write command");
+        host.flush().await.expect("flush command");
+
+        let mut transcript = Vec::new();
+        let mut buffer = [0_u8; 4096];
+        let read = tokio::time::timeout(STREAM_TIMEOUT, async {
+            loop {
+                let count = host.read(&mut buffer).await?;
+                if count == 0 {
+                    return Ok::<(), io::Error>(());
+                }
+                transcript.extend_from_slice(&buffer[..count]);
+                if String::from_utf8_lossy(&transcript).contains("dory-ready") {
+                    return Ok(());
+                }
+            }
+        })
+        .await;
+        assert!(read.is_ok(), "timed out reading the shell transcript");
+        assert!(
+            String::from_utf8_lossy(&transcript).contains("dory-ready"),
+            "{}",
+            String::from_utf8_lossy(&transcript)
+        );
+
+        // The shell exited, so the PTY read side reports EOF and both copy loops unwind.
+        let outcome = tokio::time::timeout(STREAM_TIMEOUT, served).await;
+        assert!(outcome.expect("shell stream ended").is_ok());
+    }
+
+    #[tokio::test]
+    async fn closing_the_client_stream_tears_the_session_down() {
+        let (host, guest) = UnixStream::pair().expect("socket pair");
+        let served = tokio::spawn(serve_shell_stream(guest));
+        drop(host);
+
+        let outcome = tokio::time::timeout(STREAM_TIMEOUT, served).await;
+        assert!(outcome.expect("shell stream ended").is_ok());
+    }
+
+    #[tokio::test]
+    async fn pty_reads_and_writes_go_through_the_readiness_guards() {
+        let shell = spawn_shell().expect("spawn shell");
+        set_nonblocking(shell.master.as_raw_fd()).expect("nonblocking master");
+        let pid = shell.pid;
+        let pty = AsyncFd::new(shell.master).expect("register pty");
+
+        write_all_fd(&pty, b"").await.expect("empty write");
+        write_all_fd(&pty, b"printf 'guarded'\n")
+            .await
+            .expect("write command");
+        let mut buffer = [0_u8; 4096];
+        let count = tokio::time::timeout(STREAM_TIMEOUT, read_fd(&pty, &mut buffer))
+            .await
+            .expect("read did not time out")
+            .expect("read");
+        assert!(count > 0);
+        terminate_child_blocking(pid);
+    }
+
+    #[test]
+    fn raw_descriptor_helpers_surface_their_errors() {
+        assert_eq!(dup_fd(-1).unwrap_err().raw_os_error(), Some(libc::EBADF));
+        assert_eq!(
+            set_nonblocking(-1).unwrap_err().raw_os_error(),
+            Some(libc::EBADF)
+        );
+        assert_eq!(
+            read_raw(-1, &mut [0_u8; 1]).unwrap_err().raw_os_error(),
+            Some(libc::EBADF)
+        );
+        assert_eq!(
+            write_raw(-1, b"x").unwrap_err().raw_os_error(),
+            Some(libc::EBADF)
+        );
+    }
+
+    fn write_blocking(fd: RawFd, mut bytes: &[u8]) {
+        while !bytes.is_empty() {
+            match write_raw(fd, bytes) {
+                Ok(count) => bytes = &bytes[count..],
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(20))
+                }
+                Err(error) => panic!("pty write failed: {error}"),
+            }
+        }
+    }
+
+    fn read_until(fd: RawFd, marker: &str) -> String {
+        let deadline = std::time::Instant::now() + STREAM_TIMEOUT;
+        let mut output = Vec::new();
+        let mut buffer = [0_u8; 4096];
+        while std::time::Instant::now() < deadline {
+            match read_raw(fd, &mut buffer) {
+                Ok(0) => break,
+                Ok(count) => output.extend_from_slice(&buffer[..count]),
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(20))
+                }
+                Err(_) => break,
+            }
+            if String::from_utf8_lossy(&output).contains(marker) {
+                break;
+            }
+        }
+        String::from_utf8_lossy(&output).into_owned()
+    }
+
+    fn terminate_child_blocking(pid: libc::pid_t) {
+        unsafe {
+            libc::kill(pid, libc::SIGKILL);
+            let mut status = 0;
+            let _ = libc::waitpid(pid, &mut status, 0);
         }
     }
 }
