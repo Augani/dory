@@ -45,6 +45,20 @@ scripts/build.sh
 scripts/test.sh
 ```
 
+## Publishing a release
+
+There is one supported public-release entrypoint:
+
+```sh
+scripts/publish-release.sh 0.4.5
+```
+
+Run it from a clean `main` branch after updating the project version. It dispatches and waits for
+the complete release workflow: build, signing, notarization, qualification, GitHub assets, Sparkle
+and component metadata on Pages, both Homebrew casks, and terminal live verification. A run is not
+successful until every public surface serves the same candidate. Do not manually upload or replace
+release assets; rerun the complete workflow instead.
+
 ## Reporting issues
 
 Open a GitHub issue with reproduction steps, expected and actual behavior, macOS version, Mac model,
