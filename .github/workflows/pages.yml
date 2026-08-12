@@ -56,13 +56,13 @@ jobs:
           checked_item = release_item(sys.argv[2])
           live_build = int(live_item.findtext(f"{{{sparkle}}}version"))
           checked_build = int(checked_item.findtext(f"{{{sparkle}}}version"))
-          assert live_build >= checked_build, \
-              f"checked-in appcast build {checked_build} is newer than live build {live_build}"
+          assert live_build > checked_build, \
+              f"live appcast build {live_build} is not newer than checked-in build {checked_build}"
           PY
           then
             cp "$live" website/public/appcast.xml
           else
-            echo "Live appcast is missing, invalid, or older; retaining the checked-in macOS 14 bootstrap feed."
+            echo "Live appcast is missing, invalid, or not newer; retaining the checked-in macOS 14 bootstrap feed."
           fi
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
