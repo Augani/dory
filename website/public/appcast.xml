@@ -15,7 +15,7 @@
       <dory:minimumReadableDataSchema>1</dory:minimumReadableDataSchema>
       <dory:maximumReadableDataSchema>1</dory:maximumReadableDataSchema>
       <dory:componentCatalogSchema>1</dory:componentCatalogSchema>
-      <enclosure url="https://github.com/Augani/dory/releases/download/v0.4.4/Dory-0.4.4-app-update.zip" sparkle:edSignature="txYIugVAGUyxQZY+Qq4YVOGmZaUcuAWyNrzncO2sdkCjZy9JXE8YbnZe5jr71IHePBKGJXZw2V9KUxhAUqs3AQ==" length="237426965" type="application/octet-stream" />
+      <enclosure url="https://github.com/Augani/dory/releases/download/v0.4.4/Dory-0.4.4-app-update.zip" sparkle:edSignature="WvnN+a5r5NlV6i+q4edIabVL7QqbI2ceCNF9xARKdX/dRD9Yvafg4OnXPdWoQMFI1RQb0tNvpT4xT/DtUnbZAQ==" length="237400691" type="application/octet-stream" />
     </item>
     <item>
       <title>0.4.3</title>
