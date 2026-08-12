@@ -1,5 +1,6 @@
 import Darwin
 @testable import DorydKit
+import Network
 import XCTest
 
 final class DoryTLSProxyServerTests: XCTestCase {
@@ -117,6 +118,27 @@ final class DoryTLSProxyServerTests: XCTestCase {
 
         XCTAssertEqual(response, "hello custom tls")
         XCTAssertTrue(backend.lastRequest.contains("Host: admin.myproject.local"))
+    }
+
+    func testAdmitsOnlyLoopbackPeers() throws {
+        let port = NWEndpoint.Port(rawValue: 51234)!
+        XCTAssertTrue(DoryTLSProxyServer.isLoopbackPeer(.hostPort(host: .ipv4(.loopback), port: port)))
+        XCTAssertTrue(DoryTLSProxyServer.isLoopbackPeer(.hostPort(host: .ipv6(.loopback), port: port)))
+        XCTAssertTrue(DoryTLSProxyServer.isLoopbackPeer(
+            .hostPort(host: .ipv6(IPv6Address("::ffff:127.0.0.1")!), port: port)
+        ))
+        XCTAssertTrue(DoryTLSProxyServer.isLoopbackPeer(.hostPort(host: .name("localhost", nil), port: port)))
+
+        XCTAssertFalse(DoryTLSProxyServer.isLoopbackPeer(
+            .hostPort(host: .ipv4(IPv4Address("192.168.1.20")!), port: port)
+        ))
+        XCTAssertFalse(DoryTLSProxyServer.isLoopbackPeer(
+            .hostPort(host: .ipv6(IPv6Address("fe80::1")!), port: port)
+        ))
+        XCTAssertFalse(DoryTLSProxyServer.isLoopbackPeer(
+            .hostPort(host: .name("attacker.example.com", nil), port: port)
+        ))
+        XCTAssertFalse(DoryTLSProxyServer.isLoopbackPeer(.unix(path: "/tmp/dory.sock")))
     }
 }
 

@@ -155,7 +155,33 @@ public final class DoryTLSProxyServer: @unchecked Sendable {
         }
     }
 
+    /// Whether an inbound peer is on loopback.
+    ///
+    /// `NWListener` has no bind-address knob equivalent to the plaintext proxy's explicit
+    /// `127.0.0.1` bind, and pinning it to loopback would break the privileged `:443` bind (macOS
+    /// lets an unprivileged process bind a low port only on the wildcard address). Automatic HTTPS
+    /// therefore listens on the wildcard and admits loopback peers only — the policy
+    /// `LoopbackTCPForwarder` already applies to the standard ports — so container backends are not
+    /// reachable from the LAN. Anything not recognisably loopback fails closed.
+    static func isLoopbackPeer(_ endpoint: NWEndpoint) -> Bool {
+        guard case let .hostPort(host, _) = endpoint else { return false }
+        switch host {
+        case let .ipv4(address):
+            return address.isLoopback
+        case let .ipv6(address):
+            return address.isLoopback || address.asIPv4?.isLoopback == true
+        case let .name(name, _):
+            return DoryHTTPProxyServer.isLoopbackHost(name)
+        @unknown default:
+            return false
+        }
+    }
+
     private func accept(_ client: NWConnection) {
+        guard Self.isLoopbackPeer(client.endpoint) else {
+            client.cancel()
+            return
+        }
         guard let lease = connectionBudget.tryAcquire() else {
             client.cancel()
             return
