@@ -1780,7 +1780,7 @@ public final class HealthReporter: @unchecked Sendable {
             code: "helpers.resolver_missing",
             title: "Local domain resolver file missing",
             detail: resolver,
-            action: "Run `dory network authorize --apply` if you want system-wide *.dory.local resolution.",
+            action: "Open Dory > Settings > Network and click Authorize for system-wide *.dory.local resolution.",
             data: ["resolver": resolver, "resolver_exists": "false"]
         )
     }

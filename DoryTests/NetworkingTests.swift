@@ -135,7 +135,7 @@ struct NetworkingTests {
         #expect(AppStore.networkingAuthorizationSummary(plan).contains("no extra low TCP publishes"))
     }
 
-    @Test func networkingAuthorizationSuccessDoesNotFailOnPendingBackgroundApproval() {
+    @Test func networkingAuthorizationSuccessDescribesActiveNetworking() {
         let plan = DorydNetworkingAuthorizationPlan(
             degradedMode: "high-port-dns-only",
             authorizedMode: "system-resolver-proxy-tls",
@@ -149,12 +149,10 @@ struct NetworkingTests {
 
         let message = AppStore.networkingAuthorizationSuccessMessage(
             plan,
-            removing: false,
-            backgroundServiceNotice: "Approve Dory's networking service in System Settings."
+            removing: false
         )
         #expect(message.hasPrefix("Dory networking is authorized for dory.local."))
-        #expect(message.contains("Background updates need attention"))
-        #expect(message.contains("System Settings"))
+        #expect(message.contains("Standard 80/443 redirects"))
     }
 
     @Test func localCARequestMustUseTheCurrentUsersCanonicalDoryPath() {
@@ -203,8 +201,7 @@ struct NetworkingTests {
         #expect(
             AppStore.networkingAuthorizationSuccessMessage(
                 plan,
-                removing: true,
-                backgroundServiceNotice: "ignored"
+                removing: true
             ) == "Dory-owned resolver, PF reference, and local CA trust were removed for dory.local."
         )
     }

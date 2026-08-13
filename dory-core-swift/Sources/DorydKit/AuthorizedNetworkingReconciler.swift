@@ -32,7 +32,14 @@ public final class AuthorizedNetworkingClient: AuthorizedNetworkingApplying, @un
 
         let completion = AuthorizedNetworkingReplyBox()
         guard let proxy = connection.remoteObjectProxyWithErrorHandler({ error in
-            completion.finish(reconciled: false, error: "\(error)")
+            // The networking service is optional until the user enables it in Login Items.
+            // launchd reports that normal pending-approval state as an invalid XPC connection.
+            // Treat it like "not authorized" so the periodic reconciler can keep retrying
+            // without writing a failure incident every few seconds.
+            completion.finish(
+                reconciled: false,
+                error: Self.privilegedHelperUnavailable(error) ? nil : "\(error)"
+            )
         }) as? DoryPrivilegedNetworkControl else {
             throw SourcePreservingLANClientError.invalidResponse
         }
@@ -47,6 +54,12 @@ public final class AuthorizedNetworkingClient: AuthorizedNetworkingApplying, @un
             throw SourcePreservingLANClientError.remote(error)
         }
         return completion.reconciled
+    }
+
+    static func privilegedHelperUnavailable(_ error: Error) -> Bool {
+        let cocoaError = error as NSError
+        return cocoaError.domain == NSCocoaErrorDomain
+            && cocoaError.code == NSXPCConnectionInvalid
     }
 
     /// Removes the caller's exact root-owned authorization and any live source-preserving LAN

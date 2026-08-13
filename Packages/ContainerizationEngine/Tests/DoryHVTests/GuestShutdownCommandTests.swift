@@ -51,7 +51,7 @@ struct GuestShutdownCommandTests {
         #expect(process.terminationStatus == 0)
     }
 
-    @Test func dockerRestartHelperPreservesItsRuntimeArguments() {
+    @Test func dockerRestartHelperPreservesItsRuntimeArguments() throws {
         let command = GuestDockerRestartCommand.installerLines(
             dockerdArguments: "dockerd $DORY_RUNTIME_ARGS"
         ).joined(separator: "\n")
@@ -59,8 +59,20 @@ struct GuestShutdownCommandTests {
         #expect(command.contains("set -- dockerd $DORY_RUNTIME_ARGS"))
         #expect(command.contains("[ -z \"\\$DORY_DOCKERD_ARG\" ]"))
         #expect(command.contains("set -- \"\\$@\" \"\\$DORY_DOCKERD_ARG\""))
+        #expect(command.contains("echo +memory >/sys/fs/cgroup/cgroup.subtree_control"))
+        #expect(command.contains("mkdir -p /sys/fs/cgroup/dory-dockerd"))
+        #expect(command.contains("echo \\$\\$ >/sys/fs/cgroup/dory-dockerd/cgroup.procs"))
         #expect(command.contains("exec \"\\$@\""))
         #expect(!command.contains("exec \"$@\""))
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-n", "-c", command]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        process.waitUntilExit()
+        #expect(process.terminationStatus == 0)
     }
 
     @Test func buildCacheGCKeepsAUsefulBoundedCache() throws {
