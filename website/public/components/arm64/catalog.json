@@ -5,11 +5,11 @@
       "assets": [],
       "dependencies": [],
       "displayName": "Docker Core",
-      "downloadBytes": 238380616,
+      "downloadBytes": 238399578,
       "id": "docker-core",
-      "installedBytes": 440358772,
+      "installedBytes": 440394843,
       "summary": "The signed Dory app, Docker engine, CLI, Buildx, Compose, networking, storage, migration, and health tools.",
-      "version": "0.4.4"
+      "version": "0.4.5"
     },
     {
       "assets": [
@@ -18,10 +18,10 @@
           "downloadBytes": 56944496,
           "executable": true,
           "installedBytes": 56944496,
-          "installedSHA256": "e4ca78a780d7d8079adf4108486816df344b1ef02fbe997d930cfdac237d40fe",
+          "installedSHA256": "489feb990c0c26b9f4c03c055df01ed0943d74b182a16786e30d6033f89f8f5f",
           "path": "kubectl",
-          "sha256": "e4ca78a780d7d8079adf4108486816df344b1ef02fbe997d930cfdac237d40fe",
-          "url": "https://github.com/Augani/dory/releases/download/v0.4.4/Dory-0.4.4-component-kubernetes-arm64-kubectl"
+          "sha256": "489feb990c0c26b9f4c03c055df01ed0943d74b182a16786e30d6033f89f8f5f",
+          "url": "https://github.com/Augani/dory/releases/download/v0.4.5/Dory-0.4.5-component-kubernetes-arm64-kubectl"
         }
       ],
       "dependencies": [
@@ -32,7 +32,7 @@
       "id": "kubernetes",
       "installedBytes": 56944496,
       "summary": "kubectl and Dory's local k3s workflow. The selected k3s image downloads when you create the cluster.",
-      "version": "0.4.4"
+      "version": "0.4.5"
     },
     {
       "assets": [
@@ -44,28 +44,28 @@
           "installedSHA256": "d4b08080e6158af259d3c793d499b9b43694b8799fe73c23f38bd2930623c2d7",
           "path": "dory-hv-kernel-arm64",
           "sha256": "d3e013f21aed6af6940ff951a47dcc2e5b018662d473aafb2c17c1736220ed62",
-          "url": "https://github.com/Augani/dory/releases/download/v0.4.4/Dory-0.4.4-component-linux-machines-arm64-dory-hv-kernel-arm64.lzfse"
+          "url": "https://github.com/Augani/dory/releases/download/v0.4.5/Dory-0.4.5-component-linux-machines-arm64-dory-hv-kernel-arm64.lzfse"
         },
         {
           "compression": "lzfse",
-          "downloadBytes": 90963294,
+          "downloadBytes": 90963910,
           "executable": false,
           "installedBytes": 1073741824,
-          "installedSHA256": "9bfe342c03d73b6c6c00aa9f4b41922d0cb461d34fd8725e81add627de22be48",
+          "installedSHA256": "0d55e677dfcb40eb62ba0e6cc4f0ab6127b7fbfda0eca84c4f97c82e6f097957",
           "path": "dory-machine-rootfs-arm64.ext4",
-          "sha256": "e65c8ee2628c6dbb4c26b932f107b0c3de54212b89b8bfd974b8fe7c347606eb",
-          "url": "https://github.com/Augani/dory/releases/download/v0.4.4/Dory-0.4.4-component-linux-machines-arm64-dory-machine-rootfs-arm64.ext4.lzfse"
+          "sha256": "29c1318a032de1c29bcf5fbb16cbee05b0f79d4d8eb439328e87012f6e220765",
+          "url": "https://github.com/Augani/dory/releases/download/v0.4.5/Dory-0.4.5-component-linux-machines-arm64-dory-machine-rootfs-arm64.ext4.lzfse"
         }
       ],
       "dependencies": [
         "docker-core"
       ],
       "displayName": "Linux Machines",
-      "downloadBytes": 112388587,
+      "downloadBytes": 112389203,
       "id": "linux-machines",
       "installedBytes": 1135813120,
       "summary": "Headless VPS-style Linux machines with terminals, services, and persistent disks.",
-      "version": "0.4.4"
+      "version": "0.4.5"
     },
     {
       "assets": [
@@ -77,7 +77,7 @@
           "installedSHA256": "8579565085c2eabc9084ffad05eaa8d9dd1702442317bb96d8fc140ed0712720",
           "path": "dory-desktop-kernel-arm64.lzfse",
           "sha256": "8579565085c2eabc9084ffad05eaa8d9dd1702442317bb96d8fc140ed0712720",
-          "url": "https://github.com/Augani/dory/releases/download/v0.4.4/Dory-0.4.4-component-linux-desktop-arm64-dory-desktop-kernel-arm64.lzfse"
+          "url": "https://github.com/Augani/dory/releases/download/v0.4.5/Dory-0.4.5-component-linux-desktop-arm64-dory-desktop-kernel-arm64.lzfse"
         },
         {
           "compression": "none",
@@ -87,7 +87,7 @@
           "installedSHA256": "b7d940a6283237eee7cc9f8857d3f9afdaeb5ddcc3fbc8627da81d70d69716a9",
           "path": "kernel-build-arm64-desktop.stamp",
           "sha256": "b7d940a6283237eee7cc9f8857d3f9afdaeb5ddcc3fbc8627da81d70d69716a9",
-          "url": "https://github.com/Augani/dory/releases/download/v0.4.4/Dory-0.4.4-component-linux-desktop-arm64-kernel-build-arm64-desktop.stamp"
+          "url": "https://github.com/Augani/dory/releases/download/v0.4.5/Dory-0.4.5-component-linux-desktop-arm64-kernel-build-arm64-desktop.stamp"
         }
       ],
       "dependencies": [
@@ -98,29 +98,29 @@
       "id": "linux-desktop",
       "installedBytes": 23452721,
       "summary": "The graphical VM kernel shared by independently installable desktop distributions.",
-      "version": "0.4.4"
+      "version": "0.4.5"
     },
     {
       "assets": [
         {
           "compression": "none",
-          "downloadBytes": 418244170,
+          "downloadBytes": 418248108,
           "executable": false,
-          "installedBytes": 418244170,
-          "installedSHA256": "5eb3b7eac00fa057400b12ea4b68b42c21cca3669d5baf847543dbd806365bcc",
+          "installedBytes": 418248108,
+          "installedSHA256": "3697972695b675d131ab5be2852768a50d082cd17372351759b7cc6fc05a1542",
           "path": "dory-desktop-debian-rootfs-arm64.ext4.lzfse",
-          "sha256": "5eb3b7eac00fa057400b12ea4b68b42c21cca3669d5baf847543dbd806365bcc",
-          "url": "https://github.com/Augani/dory/releases/download/v0.4.4/Dory-0.4.4-component-desktop-debian-arm64-dory-desktop-debian-rootfs-arm64.ext4.lzfse"
+          "sha256": "3697972695b675d131ab5be2852768a50d082cd17372351759b7cc6fc05a1542",
+          "url": "https://github.com/Augani/dory/releases/download/v0.4.5/Dory-0.4.5-component-desktop-debian-arm64-dory-desktop-debian-rootfs-arm64.ext4.lzfse"
         },
         {
           "compression": "none",
           "downloadBytes": 354,
           "executable": false,
           "installedBytes": 354,
-          "installedSHA256": "46468de21a64efa6d5c7fa960240e6720ee8f6dd00fad0fd2e51b66eb1f9f4b0",
+          "installedSHA256": "99848c44975002b3a2d8b1cb6c2a412993e508844a8f8e49e160533b81c59601",
           "path": "dory-desktop-debian-build-arm64.stamp",
-          "sha256": "46468de21a64efa6d5c7fa960240e6720ee8f6dd00fad0fd2e51b66eb1f9f4b0",
-          "url": "https://github.com/Augani/dory/releases/download/v0.4.4/Dory-0.4.4-component-desktop-debian-arm64-dory-desktop-debian-build-arm64.stamp"
+          "sha256": "99848c44975002b3a2d8b1cb6c2a412993e508844a8f8e49e160533b81c59601",
+          "url": "https://github.com/Augani/dory/releases/download/v0.4.5/Dory-0.4.5-component-desktop-debian-arm64-dory-desktop-debian-build-arm64.stamp"
         },
         {
           "compression": "none",
@@ -130,7 +130,7 @@
           "installedSHA256": "e8daf77d4adc2c9ab76d557f67e929c4fcc961b6b5b3ef3b12320e231eda3388",
           "path": "dory-desktop-debian-packages-arm64.txt",
           "sha256": "e8daf77d4adc2c9ab76d557f67e929c4fcc961b6b5b3ef3b12320e231eda3388",
-          "url": "https://github.com/Augani/dory/releases/download/v0.4.4/Dory-0.4.4-component-desktop-debian-arm64-dory-desktop-debian-packages-arm64.txt"
+          "url": "https://github.com/Augani/dory/releases/download/v0.4.5/Dory-0.4.5-component-desktop-debian-arm64-dory-desktop-debian-packages-arm64.txt"
         }
       ],
       "dependencies": [
@@ -138,33 +138,33 @@
         "linux-desktop"
       ],
       "displayName": "Debian 13 Desktop",
-      "downloadBytes": 418262441,
+      "downloadBytes": 418266379,
       "id": "desktop-debian",
-      "installedBytes": 418262441,
+      "installedBytes": 418266379,
       "summary": "A stable Debian 13 Xfce desktop with its own packages and official repositories.",
-      "version": "0.4.4"
+      "version": "0.4.5"
     },
     {
       "assets": [
         {
           "compression": "none",
-          "downloadBytes": 308904757,
+          "downloadBytes": 308900102,
           "executable": false,
-          "installedBytes": 308904757,
-          "installedSHA256": "2ed8f53e38b5a126de35471e8efcd8f022e388fa5fa0677c2f3d8f43eb5b2e95",
+          "installedBytes": 308900102,
+          "installedSHA256": "5a4651cd1178edb01c17674f8a3b5f916fcf2a09ef19a703b16c2066079d04e8",
           "path": "dory-desktop-ubuntu-rootfs-arm64.ext4.lzfse",
-          "sha256": "2ed8f53e38b5a126de35471e8efcd8f022e388fa5fa0677c2f3d8f43eb5b2e95",
-          "url": "https://github.com/Augani/dory/releases/download/v0.4.4/Dory-0.4.4-component-desktop-ubuntu-arm64-dory-desktop-ubuntu-rootfs-arm64.ext4.lzfse"
+          "sha256": "5a4651cd1178edb01c17674f8a3b5f916fcf2a09ef19a703b16c2066079d04e8",
+          "url": "https://github.com/Augani/dory/releases/download/v0.4.5/Dory-0.4.5-component-desktop-ubuntu-arm64-dory-desktop-ubuntu-rootfs-arm64.ext4.lzfse"
         },
         {
           "compression": "none",
           "downloadBytes": 354,
           "executable": false,
           "installedBytes": 354,
-          "installedSHA256": "fa385334454662307b428d6cfd9e268de26ae08465d9a7648a8cb8d661035775",
+          "installedSHA256": "8fe89f577726276b3cd598ca3df7c9fe4107f8c347349ff93e67ebdb704cc598",
           "path": "dory-desktop-ubuntu-build-arm64.stamp",
-          "sha256": "fa385334454662307b428d6cfd9e268de26ae08465d9a7648a8cb8d661035775",
-          "url": "https://github.com/Augani/dory/releases/download/v0.4.4/Dory-0.4.4-component-desktop-ubuntu-arm64-dory-desktop-ubuntu-build-arm64.stamp"
+          "sha256": "8fe89f577726276b3cd598ca3df7c9fe4107f8c347349ff93e67ebdb704cc598",
+          "url": "https://github.com/Augani/dory/releases/download/v0.4.5/Dory-0.4.5-component-desktop-ubuntu-arm64-dory-desktop-ubuntu-build-arm64.stamp"
         },
         {
           "compression": "none",
@@ -174,7 +174,7 @@
           "installedSHA256": "8c558fdb130702c31c741568a2b9adde30160394f8544848927037ae824579ba",
           "path": "dory-desktop-ubuntu-packages-arm64.txt",
           "sha256": "8c558fdb130702c31c741568a2b9adde30160394f8544848927037ae824579ba",
-          "url": "https://github.com/Augani/dory/releases/download/v0.4.4/Dory-0.4.4-component-desktop-ubuntu-arm64-dory-desktop-ubuntu-packages-arm64.txt"
+          "url": "https://github.com/Augani/dory/releases/download/v0.4.5/Dory-0.4.5-component-desktop-ubuntu-arm64-dory-desktop-ubuntu-packages-arm64.txt"
         }
       ],
       "dependencies": [
@@ -182,43 +182,43 @@
         "linux-desktop"
       ],
       "displayName": "Ubuntu 24.04 LTS Desktop",
-      "downloadBytes": 308925083,
+      "downloadBytes": 308920428,
       "id": "desktop-ubuntu",
-      "installedBytes": 308925083,
+      "installedBytes": 308920428,
       "summary": "An Ubuntu 24.04 LTS Xfce desktop with its own packages and official repositories.",
-      "version": "0.4.4"
+      "version": "0.4.5"
     },
     {
       "assets": [
         {
           "compression": "none",
-          "downloadBytes": 777519735,
+          "downloadBytes": 777774861,
           "executable": false,
-          "installedBytes": 777519735,
-          "installedSHA256": "fe5816e08ae364e3c6d3cb2b4c825709948831ed8e19f070d963cd194502629f",
+          "installedBytes": 777774861,
+          "installedSHA256": "81776f4b10c48d17308a4db74220adb7ce1e7f79d59caa6a0d3acdcaab5868ad",
           "path": "dory-desktop-kali-rootfs-arm64.ext4.lzfse",
-          "sha256": "fe5816e08ae364e3c6d3cb2b4c825709948831ed8e19f070d963cd194502629f",
-          "url": "https://github.com/Augani/dory/releases/download/v0.4.4/Dory-0.4.4-component-desktop-kali-arm64-dory-desktop-kali-rootfs-arm64.ext4.lzfse"
+          "sha256": "81776f4b10c48d17308a4db74220adb7ce1e7f79d59caa6a0d3acdcaab5868ad",
+          "url": "https://github.com/Augani/dory/releases/download/v0.4.5/Dory-0.4.5-component-desktop-kali-arm64-dory-desktop-kali-rootfs-arm64.ext4.lzfse"
         },
         {
           "compression": "none",
           "downloadBytes": 352,
           "executable": false,
           "installedBytes": 352,
-          "installedSHA256": "8e5da6337be2ed7c4b5476b5a39198388dbe53c4f44bdd7970832aa832303d34",
+          "installedSHA256": "1fc5bd4cc9f7ab4de98a6af3f7bbdaf8a8a4eb6473a36fa18e9e61884936ac40",
           "path": "dory-desktop-kali-build-arm64.stamp",
-          "sha256": "8e5da6337be2ed7c4b5476b5a39198388dbe53c4f44bdd7970832aa832303d34",
-          "url": "https://github.com/Augani/dory/releases/download/v0.4.4/Dory-0.4.4-component-desktop-kali-arm64-dory-desktop-kali-build-arm64.stamp"
+          "sha256": "1fc5bd4cc9f7ab4de98a6af3f7bbdaf8a8a4eb6473a36fa18e9e61884936ac40",
+          "url": "https://github.com/Augani/dory/releases/download/v0.4.5/Dory-0.4.5-component-desktop-kali-arm64-dory-desktop-kali-build-arm64.stamp"
         },
         {
           "compression": "none",
-          "downloadBytes": 24652,
+          "downloadBytes": 24628,
           "executable": false,
-          "installedBytes": 24652,
-          "installedSHA256": "627e76dc8a96d988a7f5b049ad172219bc9281e3b32116599152d7186d39ceb9",
+          "installedBytes": 24628,
+          "installedSHA256": "14461adaf8446e8502b0a218eeda1e278f8878cdf00780b858e64ac162648e96",
           "path": "dory-desktop-kali-packages-arm64.txt",
-          "sha256": "627e76dc8a96d988a7f5b049ad172219bc9281e3b32116599152d7186d39ceb9",
-          "url": "https://github.com/Augani/dory/releases/download/v0.4.4/Dory-0.4.4-component-desktop-kali-arm64-dory-desktop-kali-packages-arm64.txt"
+          "sha256": "14461adaf8446e8502b0a218eeda1e278f8878cdf00780b858e64ac162648e96",
+          "url": "https://github.com/Augani/dory/releases/download/v0.4.5/Dory-0.4.5-component-desktop-kali-arm64-dory-desktop-kali-packages-arm64.txt"
         }
       ],
       "dependencies": [
@@ -226,16 +226,16 @@
         "linux-desktop"
       ],
       "displayName": "Kali Linux Desktop",
-      "downloadBytes": 777544739,
+      "downloadBytes": 777799841,
       "id": "desktop-kali",
-      "installedBytes": 777544739,
+      "installedBytes": 777799841,
       "summary": "A Kali rolling Xfce security desktop with its own packages and official repositories.",
-      "version": "0.4.4"
+      "version": "0.4.5"
     }
   ],
-  "generatedAt": "2026-08-12T03:29:49Z",
+  "generatedAt": "2026-08-13T12:01:04Z",
   "kind": "dev.dory.component-catalog",
-  "minimumAppVersion": "0.4.4",
-  "releaseVersion": "0.4.4",
+  "minimumAppVersion": "0.4.5",
+  "releaseVersion": "0.4.5",
   "schemaVersion": 1
 }
