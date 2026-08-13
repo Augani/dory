@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## 0.4.5 - 2026-08-13
+
+### Fixed
+
+- Stopped the optional privileged networking service's pending Login Items approval from being
+  recorded as an `NSCocoaErrorDomain` Code 4099 incident every five seconds. Dory now asks for
+  approval before installing persistent resolver, PF, or CA state and points recovery guidance to
+  the app's Network settings.
+- Enabled Docker and Compose swap limits by starting dockerd in a delegated cgroup-v2 child where
+  the guest kernel exposes `memory.swap.max`, removing the misleading `No swap limit support`
+  warning and enforcing configured memory-plus-swap limits.
+
 ## 0.4.4 - 2026-08-11
 
 ### Fixed
