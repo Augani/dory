@@ -6,6 +6,10 @@
 
 ### Fixed
 
+- Enabled amd64 workloads in Dory's built-in Kubernetes cluster. k3s now uses Dory's FEX-aware
+  runtime for pod processes and resolves amd64-only image indexes without changing native arm64
+  workloads. Existing clusters are preserved and must be explicitly recreated once to adopt the
+  new runtime contract.
 - Stopped the optional privileged networking service's pending Login Items approval from being
   recorded as an `NSCocoaErrorDomain` Code 4099 incident every five seconds. Dory now asks for
   approval before installing persistent resolver, PF, or CA state and points recovery guidance to
