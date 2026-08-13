@@ -1237,7 +1237,7 @@ usage:
 
 Both mutations default to --dry-run. Authorize --apply installs Dory's resolver, owned pf
 reference, and local CA trust. Deauthorize --apply removes that exact owned integration.
-Applying requires admin privileges; use Settings for the guided macOS prompt, or run from root.
+Use Dory Settings > Network for the guided macOS authorization and local CA trust prompt.
 EOF
 }
 
@@ -1355,7 +1355,7 @@ network_authorize_cmd() {
 
   if [ "$apply" -eq 1 ] && [ "$(id -u)" -ne 0 ]; then
     [ -z "$tmp" ] || rm -f "$tmp"
-    echo "dory network $operation --apply needs admin privileges. Use Dory Settings > Network, or rerun from root." >&2
+    echo "dory network $operation --apply needs interactive authorization. Open Dory Settings > Network; do not run dory with sudo because doryd belongs to your login session." >&2
     exit 1
   fi
 

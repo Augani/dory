@@ -3,6 +3,18 @@ import DoryCore
 import XCTest
 
 final class AuthorizedNetworkingReconcilerTests: XCTestCase {
+    func testInvalidXPCConnectionMeansOptionalHelperIsUnavailable() {
+        XCTAssertTrue(AuthorizedNetworkingClient.privilegedHelperUnavailable(
+            NSError(domain: NSCocoaErrorDomain, code: NSXPCConnectionInvalid)
+        ))
+        XCTAssertFalse(AuthorizedNetworkingClient.privilegedHelperUnavailable(
+            NSError(domain: NSCocoaErrorDomain, code: NSXPCConnectionInterrupted)
+        ))
+        XCTAssertFalse(AuthorizedNetworkingClient.privilegedHelperUnavailable(
+            NSError(domain: NSPOSIXErrorDomain, code: Int(ECONNREFUSED))
+        ))
+    }
+
     func testReconcilesLiveLowPortsOnlyAfterAuthorizationAndSuppressesUnchangedPlans() throws {
         let controller = NetworkingController(configuration: NetworkingConfiguration(
             dnsPort: 15353,

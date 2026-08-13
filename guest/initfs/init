@@ -146,6 +146,11 @@ if [ -x /usr/local/bin/dockerd ]; then
   # shellcheck disable=SC2086
   cat >/run/dory-restart-dockerd <<DORY_DOCKERD_SCRIPT
 #!/bin/sh
+[ -d /sys/fs/cgroup ] && {
+  echo +memory >/sys/fs/cgroup/cgroup.subtree_control 2>/dev/null || true
+  mkdir -p /sys/fs/cgroup/dory-dockerd 2>/dev/null || true
+  [ ! -w /sys/fs/cgroup/dory-dockerd/cgroup.procs ] || echo "\$\$" >/sys/fs/cgroup/dory-dockerd/cgroup.procs || true
+}
 exec /usr/local/bin/dockerd -H unix:///var/run/docker.sock $DORY_RUNTIME_ARGS $DORY_AMD64_RUNTIME_ARGS
 DORY_DOCKERD_SCRIPT
   chmod 0700 /run/dory-restart-dockerd

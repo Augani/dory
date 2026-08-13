@@ -2783,6 +2783,12 @@ final class AppStore {
         defer { networkingAuthorizationInFlight = false }
 
         do {
+            // Register and obtain macOS approval before installing persistent resolver/PF state.
+            // Otherwise doryd immediately tries to reconcile through a service launchd still
+            // considers unavailable, leaving a partial authorization and noisy XPC incidents.
+            if !removing {
+                try Self.ensurePrivilegedNetworkDaemon()
+            }
             guard let helper = Self.bundledHelper("dory-network-helper") else {
                 throw NetworkingAuthorizationUIError.helperMissing
             }
@@ -2815,18 +2821,9 @@ final class AppStore {
                         return
                     }
                 }
-                var backgroundServiceNotice: String?
-                if !removing {
-                    do {
-                        try Self.ensurePrivilegedNetworkDaemon()
-                    } catch {
-                        backgroundServiceNotice = error.localizedDescription
-                    }
-                }
                 networkingAuthorizationMessage = Self.networkingAuthorizationSuccessMessage(
                     plan,
-                    removing: removing,
-                    backgroundServiceNotice: backgroundServiceNotice
+                    removing: removing
                 )
             } else {
                 let output = result.output.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -2847,17 +2844,12 @@ final class AppStore {
 
     nonisolated static func networkingAuthorizationSuccessMessage(
         _ plan: DorydNetworkingAuthorizationPlan,
-        removing: Bool,
-        backgroundServiceNotice: String? = nil
+        removing: Bool
     ) -> String {
         if removing {
             return "Dory-owned resolver, PF reference, and local CA trust were removed for \(plan.suffix)."
         }
-        let authorized = "Dory networking is authorized for \(plan.suffix). \(networkingAuthorizationSummary(plan))"
-        guard let backgroundServiceNotice, !backgroundServiceNotice.isEmpty else {
-            return authorized
-        }
-        return "\(authorized) Background updates need attention: \(backgroundServiceNotice)"
+        return "Dory networking is authorized for \(plan.suffix). \(networkingAuthorizationSummary(plan))"
     }
 
     nonisolated static func localCACertificatePath(
@@ -3152,7 +3144,7 @@ final class AppStore {
             case .daemonMissing:
                 return "Dory's privileged networking service is missing from the app bundle. Reinstall Dory."
             case .daemonApprovalRequired:
-                return "Approve Dory's networking service in System Settings > General > Login Items, then try again."
+                return "Dory opened Login Items. Enable Dory's networking service there, return to Dory, then click Authorize again."
             case .daemonUnavailable:
                 return "Dory's privileged networking service is unavailable."
             case .daemonRegistrationFailed(let detail):
