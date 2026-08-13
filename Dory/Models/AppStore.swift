@@ -3391,7 +3391,8 @@ final class AppStore {
         do {
             try await KubernetesProvisioner.enable(
                 runtime: runtime,
-                image: KubeVersionCatalog.version(forTag: kubernetesVersionTag).image
+                image: KubeVersionCatalog.version(forTag: kubernetesVersionTag).image,
+                amd64Emulation: rosettaX86Enabled
             ) { message in
                 Task { @MainActor in self.kubernetesInfo = message }
             }
