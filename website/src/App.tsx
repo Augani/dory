@@ -601,7 +601,7 @@ function DoryDemo({ initialView = 'containers', autoCycle = true }: { initialVie
       </div>
       <div className="demo-app">
         <aside className="demo-sidebar">
-          <div className="demo-brand"><img src="./logo.svg" alt="" /><span><strong>Dory</strong><small>v0.4.4 · Engine running</small></span></div>
+          <div className="demo-brand"><img src="./logo.svg" alt="" /><span><strong>Dory</strong><small>v0.4.5 · Engine running</small></span></div>
           <nav aria-label="Dory preview sections">
             {demoNav.map((group) => (
               <div className="demo-nav-group" key={group.group}>
@@ -702,7 +702,7 @@ function App() {
           <a className="wordmark" href="#top" aria-label="Dory home" onClick={closeMenu}>
             <img src="./logo.svg" alt="" />
             <span>Dory</span>
-            <small>0.4.4</small>
+            <small>0.4.5</small>
           </a>
           <div className={`nav-links${menuOpen ? ' nav-links-open' : ''}`}>
             <a href="#product" onClick={closeMenu}>Product</a>
@@ -737,7 +737,7 @@ function App() {
           <div className="hero-glow hero-glow-two" aria-hidden="true" />
           <div className="hero-content">
             <div className="release-pill">
-              <span /> Dory 0.4.4 · Focused components
+              <span /> Dory 0.4.5 · Focused components
               <a href={releaseUrl}>Release notes <ArrowRightIcon /></a>
             </div>
             <p className="hero-kicker">The local Linux workspace for Mac</p>
@@ -794,7 +794,7 @@ function App() {
           <div className="section-heading centered">
             <p className="eyebrow">Choose before downloading</p>
             <h2>Get the Dory you need.<br /><span>Skip the weight you do not.</span></h2>
-            <p>Dory 0.4.4 uses one Docker Core app with signed, removable components. See the exact total before downloading.</p>
+            <p>Dory 0.4.5 uses one Docker Core app with signed, removable components. See the exact total before downloading.</p>
           </div>
           <FocusedDownloadSelector />
           <p className="download-release-link">Need ZIP archives, checksums, or SBOMs? <a href={releaseUrl}>View all release assets.</a></p>
