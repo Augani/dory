@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Added
+
+- Added `ORCAROUTER_API_KEY` to the host environment allow-list presets, so agent sandboxes can
+  copy the key through to an [OrcaRouter](https://www.orcarouter.ai) gateway at creation time.
+
 ## 0.4.5 - 2026-08-13
 
 ### Fixed
