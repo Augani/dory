@@ -74,6 +74,64 @@ final class RemoteMachineManagerTests: XCTestCase {
             XCTAssertEqual(error as? RemoteMachineError, .unknownMachine("missing"))
         }
     }
+
+    func testRemoteOperationsRequireAdvertisedCapabilitiesBeforeCallingAgent() throws {
+        let fake = FakeRemoteAgentClient(capabilities: [
+            DoryAgentCapability(id: "exec", version: 1),
+        ])
+        let manager = RemoteMachineManager(
+            keyStore: FakeSSHKeyStore(keys: ["primary": "OPENSSH-PRIVATE-KEY"]),
+            connector: { _ in fake }
+        )
+        _ = try manager.connect(testConfiguration())
+
+        XCTAssertThrowsError(try manager.push(id: "prod", localRoot: "/tmp/local")) { error in
+            XCTAssertEqual(
+                error as? RemoteMachineError,
+                .capabilityUnavailable("prod", "sync-push")
+            )
+        }
+        XCTAssertThrowsError(try manager.telemetry(id: "prod")) { error in
+            XCTAssertEqual(
+                error as? RemoteMachineError,
+                .capabilityUnavailable("prod", "telemetry")
+            )
+        }
+        XCTAssertTrue(fake.pushes.isEmpty)
+        XCTAssertEqual(fake.telemetryCalls, 0)
+    }
+
+    func testRemoteConnectRejectsInvalidOrIncompatibleHandshakeAndClosesAgent() {
+        for fixture in [
+            FakeRemoteAgentClient(
+                capabilities: [
+                    DoryAgentCapability(id: "exec", version: 1),
+                    DoryAgentCapability(id: "exec", version: 1),
+                ]
+            ),
+            FakeRemoteAgentClient(protocolVersion: DoryCore.protocolVersion() + 1),
+        ] {
+            let manager = RemoteMachineManager(
+                keyStore: FakeSSHKeyStore(keys: ["primary": "OPENSSH-PRIVATE-KEY"]),
+                connector: { _ in fixture }
+            )
+            XCTAssertThrowsError(try manager.connect(testConfiguration()))
+            XCTAssertEqual(fixture.closeCount, 1)
+            XCTAssertEqual(manager.status(id: "prod")?.state, .failed)
+        }
+    }
+
+    private func testConfiguration() -> RemoteMachineConfiguration {
+        RemoteMachineConfiguration(
+            id: "prod",
+            host: "vps.example.com",
+            user: "dory",
+            privateKeyID: "primary",
+            hostKey: .pinned(opensshPublicKey: "ssh-ed25519 AAAA fake"),
+            endpoint: .unixSocket(path: "/run/dory/agent.sock"),
+            remoteRoot: "/srv/app"
+        )
+    }
 }
 
 private enum FakeConnectError: Error {
@@ -104,10 +162,23 @@ private final class FakeRemoteAgentClient: RemoteAgentClient, @unchecked Sendabl
     private let lock = NSLock()
     private var storedPushes: [Push] = []
     private var closes = 0
+    private var storedTelemetryCalls = 0
     private let infoError: Error?
+    private let protocolVersion: UInt32
+    private let capabilities: [DoryAgentCapability]
 
-    init(infoError: Error? = nil) {
+    init(
+        infoError: Error? = nil,
+        protocolVersion: UInt32 = DoryCore.protocolVersion(),
+        capabilities: [DoryAgentCapability] = [
+            DoryAgentCapability(id: "exec", version: 1),
+            DoryAgentCapability(id: "sync-push", version: 1),
+            DoryAgentCapability(id: "telemetry", version: 1),
+        ]
+    ) {
         self.infoError = infoError
+        self.protocolVersion = protocolVersion
+        self.capabilities = capabilities
     }
 
     var pushes: [Push] {
@@ -122,20 +193,30 @@ private final class FakeRemoteAgentClient: RemoteAgentClient, @unchecked Sendabl
         return closes
     }
 
+    var telemetryCalls: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedTelemetryCalls
+    }
+
     func info() throws -> DoryAgentInfo {
         if let infoError {
             throw infoError
         }
         return DoryAgentInfo(
-            protocolVersion: 1,
+            protocolVersion: protocolVersion,
             kernel: "Linux remote",
             agentBuild: "remote-agent",
-            uptimeSeconds: 99
+            uptimeSeconds: 99,
+            capabilities: capabilities
         )
     }
 
     func telemetry() throws -> DoryTelemetry {
-        DoryTelemetry(
+        lock.lock()
+        storedTelemetryCalls += 1
+        lock.unlock()
+        return DoryTelemetry(
             memTotalKB: 2048,
             memAvailableKB: 1024,
             psiSomeAvg10: 0.5,

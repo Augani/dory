@@ -2022,10 +2022,15 @@ private final class ServiceFakeRemoteAgentClient: RemoteAgentClient, @unchecked 
 
     func info() throws -> DoryAgentInfo {
         DoryAgentInfo(
-            protocolVersion: 1,
+            protocolVersion: DoryCore.protocolVersion(),
             kernel: "Linux remote",
             agentBuild: "remote-agent",
-            uptimeSeconds: 7
+            uptimeSeconds: 7,
+            capabilities: [
+                DoryAgentCapability(id: "exec", version: 1),
+                DoryAgentCapability(id: "sync-push", version: 1),
+                DoryAgentCapability(id: "telemetry", version: 1),
+            ]
         )
     }
 
