@@ -419,7 +419,8 @@ public final class HealthReporter: @unchecked Sendable {
     }
 
     public func doctorReport(now: Date = Date()) -> DoctorReport {
-        let checks = compatibilityChecks(now: now)
+        var checks = compatibilityChecks(now: now)
+        checks.append(contentsOf: machineChecks())
         return DoctorReport(
             generatedAt: now,
             results: checks,
@@ -1920,43 +1921,145 @@ public final class HealthReporter: @unchecked Sendable {
             "failed": String(failed.count),
         ]
 
+        let summary: HealthCheck
         if !failed.isEmpty {
-            return [
-                HealthCheck(
-                    id: "machine.local",
-                    status: .fail,
-                    code: "machine.failed",
-                    title: "Local machine failed",
-                    detail: failed.map { "\($0.id): \($0.lastError ?? "unknown failure")" }.joined(separator: "; "),
-                    action: "Inspect the dory-vmm log for the failed machine.",
-                    data: data
-                ),
-            ]
-        }
-
-        if !starting.isEmpty {
-            return [
-                HealthCheck(
-                    id: "machine.local",
-                    status: .warn,
-                    code: "machine.starting",
-                    title: "Local machine starting",
-                    detail: starting.map(\.id).joined(separator: ", "),
-                    data: data
-                ),
-            ]
-        }
-
-        return [
-            HealthCheck(
+            summary = HealthCheck(
+                id: "machine.local",
+                status: .fail,
+                code: "machine.failed",
+                title: "Local machine failed",
+                detail: failed.map(\.id).joined(separator: ", "),
+                action: "Inspect the machine evidence and operation journal for the failed workspace.",
+                data: data
+            )
+        } else if !starting.isEmpty {
+            summary = HealthCheck(
+                id: "machine.local",
+                status: .warn,
+                code: "machine.starting",
+                title: "Local machine starting",
+                detail: starting.map(\.id).joined(separator: ", "),
+                data: data
+            )
+        } else {
+            summary = HealthCheck(
                 id: "machine.local",
                 status: .pass,
                 code: running.isEmpty ? "machine.configured" : "machine.running",
                 title: running.isEmpty ? "Local machines configured" : "Local machine running",
                 detail: statuses.map { "\($0.id)=\($0.state.rawValue)" }.joined(separator: ", "),
                 data: data
-            ),
+            )
+        }
+        return [summary] + statuses.map(Self.machineEvidenceCheck)
+    }
+
+    /// Emits exact, non-secret launch evidence for one workspace. Environment values, host paths,
+    /// guest file contents, sockets, and clipboard data are deliberately excluded.
+    static func machineEvidenceCheck(_ status: DoryMachineStatus) -> HealthCheck {
+        let identity = status.runtimeIdentity
+        let issues = identity.validate()
+        var data: [String: String] = [
+            "state": status.state.rawValue,
+            "runtime_identity_mode": identity.mode.rawValue,
+            "runtime_identity_schema": String(identity.schemaVersion),
+            "virtual_hardware_abi": String(identity.virtualHardwareABIVersion),
+            "runtime_identity_valid": issues.isEmpty ? "true" : "false",
         ]
+        if !issues.isEmpty {
+            data["runtime_identity_issues"] = issues
+                .map { "\($0.code.rawValue):\($0.field)" }
+                .sorted()
+                .joined(separator: ",")
+        }
+        if let reason = identity.invalidationReason {
+            data["replanning_reason"] = reason.rawValue
+        }
+        if issues.isEmpty, let plan = identity.resolvedPlan {
+            data["plan_sha256"] = identity.resolvedPlanSHA256
+            data["plan_revision"] = String(plan.planRevision)
+            data["spec_revision"] = String(plan.definitionRevision)
+            data["spec_sha256"] = plan.definitionSHA256
+            data["backend"] = plan.backend.rawValue
+            data["backend_implementation"] = plan.backendImplementationIdentifier
+            data["backend_runtime_build"] = plan.backendRuntimeBuildIdentifier
+            data["support_tier"] = plan.supportTier.rawValue
+            data["graphics"] = plan.graphics.rawValue
+            data["selection"] = plan.selectionEvidence?.disposition.rawValue
+            data["component_count"] = String(plan.components.count)
+            data["components"] = plan.components
+                .sorted { lhs, rhs in
+                    if lhs.componentIdentifier == rhs.componentIdentifier {
+                        return lhs.buildIdentifier < rhs.buildIdentifier
+                    }
+                    return lhs.componentIdentifier < rhs.componentIdentifier
+                }
+                .map { "\($0.componentIdentifier)@\($0.buildIdentifier):\($0.artifactSHA256)" }
+                .joined(separator: ",")
+            data["media_kind"] = plan.bootMedia.media.kind.rawValue
+            data["media_source"] = plan.bootMedia.media.source.rawValue
+            data["media_artifact_sha256"] = plan.bootMedia.media.artifactSHA256
+            if let resolver = plan.bootMedia.resolverReference {
+                data["media_resolver"] = "\(resolver.namespace):\(resolver.identifier)"
+            }
+            if let provenance = plan.bootMedia.media.mutableProvenance {
+                data["media_repository_identity"] = provenance.repositoryIdentity
+                data["media_identity"] = provenance.mediaIdentity
+                data["media_revision"] = String(provenance.revision)
+            }
+            if let runtime = plan.qualificationEvidence.runtime {
+                data["runtime_qualification"] = runtime.qualificationIdentity
+                data["runtime_qualification_sha256"] = runtime.qualificationReportSHA256
+            }
+            if let graphics = plan.qualificationEvidence.graphics {
+                data["graphics_qualification"] = graphics.manifestIdentity
+                data["graphics_manifest_sha256"] = graphics.manifestSHA256
+            }
+            if let host = plan.hostQualification {
+                data["host_qualification"] = host.qualificationIdentity
+                data["host_qualification_sha256"] = host.qualificationReportSHA256
+                data["host_hardware_model"] = host.hostHardwareModelIdentifier
+                data["host_os_build"] = host.hostOperatingSystemBuild
+            }
+            if let admission = plan.resourceAdmission {
+                data["resource_admission"] = admission.admissionIdentity
+                data["resource_admission_sha256"] = admission.admissionReportSHA256
+            }
+        }
+
+        let healthStatus: HealthCheckStatus
+        let code: String
+        let action: String?
+        if !issues.isEmpty {
+            healthStatus = .fail
+            code = "machine.runtime_identity_invalid"
+            action = "Repair or re-resolve this workspace before its next launch."
+        } else if identity.mode == .requiresReplanning {
+            healthStatus = .warn
+            code = "machine.requires_replanning"
+            action = "Resolve and approve a current launch plan before starting this workspace."
+        } else if status.state == .failed {
+            healthStatus = .fail
+            code = "machine.runtime_failed"
+            action = "Inspect the operation journal and backend evidence for this workspace."
+        } else {
+            healthStatus = .pass
+            code = identity.mode == .resolvedPlan
+                ? "machine.runtime_resolved"
+                : "machine.runtime_legacy_compatibility"
+            action = identity.mode == .legacyCompatibility
+                ? "Re-plan this workspace to move it onto evidence-bound launch policy."
+                : nil
+        }
+        return HealthCheck(
+            id: "machine.local.\(status.id)",
+            status: healthStatus,
+            code: code,
+            title: "Workspace runtime evidence",
+            detail: "\(status.id) is \(status.state.rawValue) using \(identity.mode.rawValue) ABI \(identity.virtualHardwareABIVersion)",
+            action: action,
+            data: data
+        )
     }
 
     private func engineData(_ status: DockerTierStatus) -> [String: String] {

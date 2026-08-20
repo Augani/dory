@@ -1,5 +1,6 @@
 import Darwin
 import DoryCore
+import DoryOperations
 @testable import DorydKit
 import Foundation
 import XCTest
@@ -342,7 +343,7 @@ final class HealthReporterTests: XCTestCase {
         XCTAssertNil(tier.status().hvPID)
     }
 
-    func testReportIncludesLocalMachineHealthOutsideDoctorContract() throws {
+    func testReportAndDoctorIncludeNonSecretLocalMachineRuntimeEvidence() throws {
         let base = "/tmp/dory-health-machine-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         defer { try? FileManager.default.removeItem(atPath: base) }
         let manager = MachineManager(configuration: MachineManagerConfiguration(
@@ -356,7 +357,8 @@ final class HealthReporterTests: XCTestCase {
         _ = try manager.create(DoryMachineConfiguration(
             id: "dev",
             kernelPath: doryTestKernelPath,
-            rootfsPath: doryTestRootfsPath
+            rootfsPath: doryTestRootfsPath,
+            environment: ["OPAQUE_SECRET": "sk-opaque-value"]
         ))
         _ = try manager.start(id: "dev")
 
@@ -377,9 +379,74 @@ final class HealthReporterTests: XCTestCase {
         XCTAssertEqual(machine.status, .pass)
         XCTAssertEqual(machine.code, "machine.running")
         XCTAssertEqual(machine.data["running"], "1")
+        let runtime = try XCTUnwrap(health.results.first { $0.id == "machine.local.dev" })
+        XCTAssertEqual(runtime.code, "machine.runtime_legacy_compatibility")
+        XCTAssertEqual(runtime.data["runtime_identity_mode"], "legacy-compatibility")
+        XCTAssertEqual(runtime.data["virtual_hardware_abi"], "1")
+        XCTAssertNil(runtime.data["environment"])
 
         let doctor = reporter.doctorReport()
-        XCTAssertFalse(doctor.results.contains { $0.id == "machine.local" })
+        XCTAssertTrue(doctor.results.contains { $0.id == "machine.local" })
+        XCTAssertTrue(doctor.results.contains { $0.id == "machine.local.dev" })
+        XCTAssertNil(try doctor.jsonString().range(of: "sk-opaque-value"))
+    }
+
+    func testResolvedMachineEvidencePinsPlanBackendMediaComponentsAndQualifications() throws {
+        let plan = healthResolvedPlan()
+        XCTAssertTrue(plan.validate().isEmpty, "\(plan.validate())")
+        let identity = try DoryMachineRuntimeIdentity(
+            resolvedPlan: plan,
+            planSHA256: DoryMachineRuntimeIdentity.planSHA256(plan)
+        )
+        let check = HealthReporter.machineEvidenceCheck(DoryMachineStatus(
+            id: "qualified",
+            state: .running,
+            runtimeIdentity: identity
+        ))
+
+        XCTAssertEqual(check.status, .pass)
+        XCTAssertEqual(check.code, "machine.runtime_resolved")
+        XCTAssertEqual(check.data["plan_sha256"], identity.resolvedPlanSHA256)
+        XCTAssertEqual(check.data["plan_revision"], "2")
+        XCTAssertEqual(check.data["spec_revision"], "7")
+        XCTAssertEqual(check.data["backend"], "dory-hypervisor")
+        XCTAssertEqual(check.data["backend_implementation"], "dory.raw-hv-linux.v1")
+        XCTAssertEqual(check.data["backend_runtime_build"], "raw-runtime-1")
+        XCTAssertEqual(check.data["virtual_hardware_abi"], "1")
+        XCTAssertEqual(check.data["support_tier"], "supported")
+        XCTAssertEqual(check.data["media_artifact_sha256"], healthDigest("a"))
+        XCTAssertEqual(check.data["runtime_qualification"], "runtime-qualification-1")
+        XCTAssertEqual(check.data["graphics_qualification"], "graphics-qualification-1")
+        XCTAssertEqual(check.data["host_qualification"], "host-qualification-1")
+        XCTAssertEqual(check.data["resource_admission"], "resource-admission-1")
+        XCTAssertTrue(check.data["components"]?.contains(
+            "dory-hv@raw-runtime-1:\(healthDigest("d"))"
+        ) == true)
+    }
+
+    func testInvalidRuntimeIdentityFailsClosedWithoutProjectingUntrustedPlanFields() {
+        let plan = healthResolvedPlan()
+        let identity = DoryMachineRuntimeIdentity(
+            mode: .resolvedPlan,
+            virtualHardwareABIVersion: 1,
+            resolvedPlanSHA256: healthDigest("0"),
+            resolvedPlan: plan
+        )
+        let check = HealthReporter.machineEvidenceCheck(DoryMachineStatus(
+            id: "tampered",
+            state: .failed,
+            lastError: "host path /Users/example and opaque-secret",
+            environment: ["TOKEN": "opaque-secret"],
+            runtimeIdentity: identity
+        ))
+
+        XCTAssertEqual(check.status, .fail)
+        XCTAssertEqual(check.code, "machine.runtime_identity_invalid")
+        XCTAssertEqual(check.data["runtime_identity_valid"], "false")
+        XCTAssertNil(check.data["backend"])
+        XCTAssertNil(check.data["plan_sha256"])
+        XCTAssertFalse(check.detail.contains("opaque-secret"))
+        XCTAssertFalse(check.data.values.contains { $0.contains("/Users/example") })
     }
 
     func testDoctorReportMatchesLegacyDockerCLIContextCodes() throws {
@@ -631,6 +698,114 @@ final class HealthReporterTests: XCTestCase {
         XCTAssertEqual(assessment.windowSeconds, 20)
         XCTAssertEqual(assessment.warnings, ["open file descriptors rose 100→140"])
     }
+}
+
+private func healthResolvedPlan() -> DoryResolvedMachinePlan {
+    let artifact = healthDigest("a")
+    let guest = DoryGuestPlatform(family: .linux, architecture: .arm64)
+    let devices = DoryVirtualMachineDeviceCapabilityRequest.minimumBootable
+    let media = DoryBootMedia(
+        kind: .installedLinuxBootBundle,
+        source: .bundledByDory,
+        artifactSHA256: artifact
+    )
+    return DoryResolvedMachinePlan(
+        machineID: "qualified",
+        definitionRevision: 7,
+        definitionSHA256: healthDigest("1"),
+        planRevision: 2,
+        createdAtUnixMilliseconds: 1_700_000_000_000,
+        updatedAtUnixMilliseconds: 1_700_000_000_000,
+        guest: guest,
+        backend: .doryHypervisor,
+        backendImplementationIdentifier: "dory.raw-hv-linux.v1",
+        backendRuntimeBuildIdentifier: "raw-runtime-1",
+        virtualHardwareABIVersion: 1,
+        bootMedia: DoryResolvedMachineBootMedia(
+            resolverReference: DoryVMResolverReference(
+                namespace: "artifact",
+                identifier: "qualified-linux"
+            ),
+            media: media
+        ),
+        components: [DoryResolvedBackendComponentEvidence(
+            componentIdentifier: "dory-hv",
+            buildIdentifier: "raw-runtime-1",
+            artifactSHA256: healthDigest("d")
+        )],
+        devices: devices,
+        graphics: .hostAcceleratedDisplay,
+        supportTier: .supported,
+        selectionEvidence: DoryResolvedMachineBackendSelectionEvidence(
+            disposition: .primary,
+            plannerRequest: DoryVirtualMachineBackendPlanRequest(
+                guest: guest,
+                bootMedia: media,
+                acceptableGraphics: [.hostAcceleratedDisplay],
+                devices: devices,
+                backendPreferences: [.doryHypervisor],
+                backendPreferencePolicy: .required
+            ),
+            selectedEvaluationIndex: 0,
+            rejectedCandidates: []
+        ),
+        qualificationEvidence: DoryResolvedMachineQualificationEvidence(
+            graphics: DorySignedArtifactQualificationEvidence(
+                manifestIdentity: "graphics-qualification-1",
+                artifactSHA256: artifact,
+                manifestSHA256: healthDigest("b"),
+                signingKeyID: "dory-release-1",
+                manifestFormatVersion: 1
+            ),
+            runtime: DoryVirtualMachineRuntimeQualificationEvidence(
+                qualificationIdentity: "runtime-qualification-1",
+                qualificationReportSHA256: healthDigest("c"),
+                signingKeyID: "dory-runtime-1",
+                qualificationFormatVersion: 1,
+                guest: guest,
+                bootMediaKind: media.kind,
+                immutableArtifactSHA256: artifact,
+                backend: .doryHypervisor,
+                backendRuntimeBuildID: "raw-runtime-1",
+                virtualHardwareABIVersion: 1,
+                graphics: .hostAcceleratedDisplay,
+                devices: devices
+            )
+        ),
+        resourceAdmission: DoryResolvedMachineResourceAdmissionEvidence(
+            admittedVirtualCPUCount: 4,
+            admittedMemoryBytes: 8 * 1_024 * 1_024 * 1_024,
+            admittedStorageBytes: 64 * 1_024 * 1_024 * 1_024,
+            hostLogicalCPUCount: 12,
+            hostPhysicalMemoryBytes: 32 * 1_024 * 1_024 * 1_024,
+            hostFreeStorageBytes: 512 * 1_024 * 1_024 * 1_024,
+            existingVirtualCPUCommitment: 0,
+            existingMemoryCommitmentBytes: 0,
+            existingStorageReservationBytes: 0,
+            hostReservedLogicalCPUCount: 2,
+            hostReservedMemoryBytes: 8 * 1_024 * 1_024 * 1_024,
+            hostReservedStorageBytes: 32 * 1_024 * 1_024 * 1_024,
+            admissionIdentity: "resource-admission-1",
+            admissionReportSHA256: healthDigest("e"),
+            assessorIdentifier: "dory-resource-policy",
+            assessorVersion: 1
+        ),
+        hostQualification: DoryResolvedHostQualificationEvidence(
+            qualificationIdentity: "host-qualification-1",
+            qualificationReportSHA256: healthDigest("f"),
+            hostHardwareModelIdentifier: "Mac16.1",
+            hostOperatingSystemBuild: "26A5406c",
+            backend: .doryHypervisor,
+            backendRuntimeBuildIdentifier: "raw-runtime-1",
+            virtualHardwareABIVersion: 1,
+            qualifierIdentifier: "dory-host-qualifier",
+            qualifierVersion: 1
+        )
+    )
+}
+
+private func healthDigest(_ character: Character) -> String {
+    String(repeating: String(character), count: 64)
 }
 
 private final class HealthFakeSSHKeyStore: SSHKeyStore, @unchecked Sendable {
