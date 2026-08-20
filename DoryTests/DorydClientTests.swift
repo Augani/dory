@@ -552,7 +552,8 @@ struct DorydClientTests {
         #expect(machine.runtimeIdentity.graphics == "hardware-accelerated-3d")
         #expect(machine.agentProtocolVersion == 1)
         #expect(machine.agentCapabilities.map(\.id) == [
-            "clock-sync", "exec", "exec-stdin", "ports-watch", "sync-push", "telemetry",
+            "clock-sync", "exec", "exec-stdin", "ports-watch", "snapshot-quiesce", "sync-push",
+            "telemetry",
         ])
         #expect(machine.runtimeEvidence.map(\.label) == [
             "Supported", "Raw HV", "Qualified 3D", "Tools ready",
@@ -600,7 +601,7 @@ struct DorydClientTests {
 
         let valid = try #require((try await client.machineList()).first)
         #expect(valid.agentProtocolVersion == 1)
-        #expect(valid.agentCapabilities.count == 6)
+        #expect(valid.agentCapabilities.count == 7)
 
         let malformed: [(Any?, Any?)] = [
             (nil, [["id": "exec", "version": 1] as NSDictionary]),
@@ -3521,6 +3522,7 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
             ["id": "exec", "version": 1] as NSDictionary,
             ["id": "exec-stdin", "version": 1] as NSDictionary,
             ["id": "ports-watch", "version": 1] as NSDictionary,
+            ["id": "snapshot-quiesce", "version": 1] as NSDictionary,
             ["id": "sync-push", "version": 1] as NSDictionary,
             ["id": "telemetry", "version": 1] as NSDictionary,
         ],

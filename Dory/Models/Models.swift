@@ -413,7 +413,14 @@ struct Machine: Identifiable, Hashable, Sendable {
             )
         }
         let versions = Dictionary(uniqueKeysWithValues: agentCapabilities.map { ($0.id, $0.version) })
-        let required = ["clock-sync", "exec", "exec-stdin", "ports-watch", "telemetry"]
+        let required = [
+            "clock-sync",
+            "exec",
+            "exec-stdin",
+            "ports-watch",
+            "snapshot-quiesce",
+            "telemetry",
+        ]
         let missing = required.filter { (versions[$0] ?? 0) < 1 }
         guard missing.isEmpty else {
             return MachineRuntimeEvidence(
