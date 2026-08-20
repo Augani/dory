@@ -15,6 +15,7 @@ public enum DoryMachineRuntimeIdentityInvalidationReason: String, Codable, Senda
     case restoredSnapshot = "restored-snapshot"
     case planRecoveryFailed = "plan-recovery-failed"
     case planNotInstalled = "plan-not-installed"
+    case importedSnapshot = "imported-snapshot"
 }
 
 public enum DoryMachineRuntimeIdentityValidationCode: String, Codable, Sendable, Hashable {

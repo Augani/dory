@@ -509,6 +509,548 @@ struct MachineManagerResolvedPlanIntegrationTests {
         }
     }
 
+    @Test("per-workspace policy blocks new machines until planning")
+    func perWorkspaceNewMachineRequiresPlanning() throws {
+        try withHarness("per-workspace-new", launchPolicy: .perWorkspaceAuthority) {
+            manager, starter, _ in
+            let status = try #require(manager.status(id: "dev"))
+            #expect(status.runtimeIdentity.mode == .requiresReplanning)
+            #expect(status.runtimeIdentity.invalidationReason == .planNotInstalled)
+            #expect(throws: MachineManagerError.self) {
+                _ = try manager.start(id: "dev")
+            }
+            #expect(starter.count == 0)
+        }
+    }
+
+    @Test("native creation authority is durable before machine metadata becomes discoverable")
+    func nativeCreationCrashOrderingNeverMintsLegacy() throws {
+        let state = try makeState("native-create-order")
+        defer { try? FileManager.default.removeItem(atPath: state) }
+        let directory = state + "/native"
+        try FileManager.default.createDirectory(
+            atPath: directory,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        let rootfs = directory + "/rootfs.ext4"
+        let kernel = directory + "/kernel"
+        try FileManager.default.copyItem(atPath: doryTestRootfsPath, toPath: rootfs)
+        try FileManager.default.copyItem(atPath: doryTestKernelPath, toPath: kernel)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600],
+            ofItemAtPath: rootfs
+        )
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600],
+            ofItemAtPath: kernel
+        )
+        let machine = DoryMachineConfiguration(
+            id: "native",
+            kernelPath: kernel,
+            rootfsPath: rootfs,
+            memoryMB: 2_048,
+            cpuCount: 2,
+            displayMode: .desktop
+        )
+        let legacyData = try DoryMachineConfigurationMigrationBridge.encodeLegacy(machine)
+        let expected = DoryMachineRuntimeIdentity.requiresReplanning(
+            virtualHardwareABIVersion: 1,
+            reason: .planNotInstalled
+        )
+        let markerPath = directory + "/.dory-native-create-precommit-v1"
+        try Data("DORY-NATIVE-CREATE-PRECOMMIT-V1:native\n".utf8).write(
+            to: URL(fileURLWithPath: markerPath),
+            options: .atomic
+        )
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600],
+            ofItemAtPath: markerPath
+        )
+        try DoryMachineRuntimeIdentityStore(root: state).publish(
+            expected,
+            machineID: "native",
+            authoritativeLegacyData: legacyData
+        )
+        let interruptedStoreTemporary = directory
+            + "/.runtime-identity-v1.tmp-interrupted"
+        try Data("partial".utf8).write(
+            to: URL(fileURLWithPath: interruptedStoreTemporary),
+            options: .atomic
+        )
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600],
+            ofItemAtPath: interruptedStoreTemporary
+        )
+
+        // Crash before machine.json publication: startup does not discover a machine at all.
+        let recovered = makeManager(
+            state: state,
+            policy: .perWorkspaceAuthority
+        )
+        #expect(recovered.status(id: "native") == nil)
+        #expect(!FileManager.default.fileExists(atPath: directory))
+        let retried = try createMachine(id: "native", manager: recovered)
+        #expect(retried.runtimeIdentity == expected)
+
+        let completedRootfs = state + "/native/rootfs.ext4"
+        let completedKernel = state + "/native/kernel"
+        let committedMarker = state
+            + "/native/.dory-native-create-committed-v1"
+        let preparingMarker = state
+            + "/native/.dory-native-create-precommit-v1"
+        #expect(FileManager.default.fileExists(atPath: committedMarker))
+        // Simulate a crash after durable machine.json but before marker transition. Restart
+        // completes the exact authority rather than deleting or widening it.
+        try FileManager.default.moveItem(
+            atPath: committedMarker,
+            toPath: preparingMarker
+        )
+        let markerRecovered = makeManager(
+            state: state,
+            policy: .perWorkspaceAuthority
+        )
+        #expect(markerRecovered.status(id: "native")?.runtimeIdentity == expected)
+        #expect(FileManager.default.fileExists(atPath: committedMarker))
+        #expect(!FileManager.default.fileExists(atPath: preparingMarker))
+
+        try FileManager.default.removeItem(atPath: state + "/native/machine.json")
+        let metadataLost = makeManager(state: state, policy: .perWorkspaceAuthority)
+        #expect(metadataLost.status(id: "native") == nil)
+        #expect(FileManager.default.fileExists(atPath: completedRootfs))
+        #expect(FileManager.default.fileExists(atPath: completedKernel))
+        #expect(FileManager.default.fileExists(atPath: state + "/native"))
+    }
+
+    @Test("native creation recovers crashes before its durable marker is complete")
+    func nativeCreationInitialMarkerCrashCanRetry() throws {
+        for shape in ["empty-directory", "partial-marker"] {
+            let state = try makeState("native-create-initial-\(shape)")
+            defer { try? FileManager.default.removeItem(atPath: state) }
+            let directory = state + "/native"
+            try FileManager.default.createDirectory(
+                atPath: directory,
+                withIntermediateDirectories: false,
+                attributes: [.posixPermissions: 0o700]
+            )
+            if shape == "partial-marker" {
+                let marker = directory + "/.dory-native-create-precommit-v1"
+                try Data("DORY-NATIVE-CREATE".utf8).write(
+                    to: URL(fileURLWithPath: marker)
+                )
+                try FileManager.default.setAttributes(
+                    [.posixPermissions: 0o600],
+                    ofItemAtPath: marker
+                )
+            }
+
+            let recovered = makeManager(
+                state: state,
+                policy: .perWorkspaceAuthority
+            )
+            #expect(recovered.status(id: "native") == nil)
+            #expect(!FileManager.default.fileExists(atPath: directory))
+            let retried = try createMachine(id: "native", manager: recovered)
+            #expect(retried.runtimeIdentity.mode == .requiresReplanning)
+            #expect(retried.runtimeIdentity.invalidationReason == .planNotInstalled)
+        }
+    }
+
+    @Test("legacy compatibility migration is exact-byte bound and cannot be widened")
+    func perWorkspaceLegacyMigrationRejectsRawByteDrift() throws {
+        let state = try makeState("legacy-byte-authority")
+        defer { try? FileManager.default.removeItem(atPath: state) }
+        let legacy = makeManager(state: state, policy: .legacyCompatibility)
+        _ = try createMachine(id: "legacy", manager: legacy)
+
+        let migrated = makeManager(state: state, policy: .perWorkspaceAuthority)
+        #expect(migrated.status(id: "legacy")?.runtimeIdentity.mode == .legacyCompatibility)
+        let path = state + "/legacy/machine.json"
+        var bytes = try Data(contentsOf: URL(fileURLWithPath: path))
+        bytes.append(0x0A)
+        try bytes.write(to: URL(fileURLWithPath: path), options: .atomic)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600],
+            ofItemAtPath: path
+        )
+
+        let changed = makeManager(state: state, policy: .perWorkspaceAuthority)
+        #expect(changed.status(id: "legacy")?.runtimeIdentity.mode == .requiresReplanning)
+        #expect(changed.status(id: "legacy")?.runtimeIdentity.invalidationReason == .planRecoveryFailed)
+    }
+
+    @Test("per-workspace policy dispatches legacy and resolved identities independently")
+    func perWorkspaceMixedAuthorityAndRestart() throws {
+        let state = try makeState("per-workspace-mixed")
+        defer { try? FileManager.default.removeItem(atPath: state) }
+        let legacyManager = makeManager(state: state, policy: .legacyCompatibility)
+        _ = try createMachine(id: "legacy", manager: legacyManager)
+
+        let firstPerWorkspace = makeManager(state: state, policy: .perWorkspaceAuthority)
+        #expect(firstPerWorkspace.status(id: "legacy")?.runtimeIdentity.mode == .legacyCompatibility)
+        _ = try createMachine(id: "planned", manager: firstPerWorkspace)
+        #expect(firstPerWorkspace.status(id: "planned")?.runtimeIdentity.mode == .requiresReplanning)
+
+        let plans = MutablePlanStore()
+        let plannedIdentity = try persistResolvedIdentity(
+            machineID: "planned",
+            state: state,
+            plans: plans
+        )
+        #expect(plannedIdentity.mode == .resolvedPlan)
+
+        let starter = CountingProcessStarter()
+        let restarted = makeManager(
+            state: state,
+            policy: .perWorkspaceAuthority,
+            starter: starter
+        )
+        let operations = restarted.resolvedLaunchCompatibilityOperations(for: .doryHypervisor)
+        let resolver = ClosureLaunchResolver { request in
+            try exactResolution(request: request)
+        }
+        try restarted.installResolvedLaunchInfrastructure(
+            registry: rawRegistry(operations: operations),
+            resolver: resolver,
+            plans: plans,
+            expectedPlanRevision: { $0 == "planned" ? 1 : nil }
+        )
+        #expect(restarted.status(id: "legacy")?.runtimeIdentity.mode == .legacyCompatibility)
+        #expect(restarted.status(id: "planned")?.runtimeIdentity == plannedIdentity)
+
+        #expect(try restarted.start(id: "legacy").state == .running)
+        _ = try restarted.stop(id: "legacy")
+        #expect(try restarted.start(id: "planned").state == .running)
+        #expect(resolver.callCount == 1)
+        #expect(starter.count == 2)
+        _ = try restarted.stop(id: "planned")
+
+        let secondRestart = makeManager(state: state, policy: .perWorkspaceAuthority)
+        #expect(secondRestart.status(id: "legacy")?.runtimeIdentity.mode == .legacyCompatibility)
+        #expect(secondRestart.status(id: "planned")?.runtimeIdentity == plannedIdentity)
+    }
+
+    @Test("missing or changed resolved authority never falls back to legacy")
+    func perWorkspaceResolvedAuthorityFailsClosed() throws {
+        let state = try makeState("per-workspace-no-fallback")
+        defer { try? FileManager.default.removeItem(atPath: state) }
+        let bootstrap = makeManager(state: state, policy: .perWorkspaceAuthority)
+        _ = try createMachine(id: "planned", manager: bootstrap)
+        let plans = MutablePlanStore()
+        _ = try persistResolvedIdentity(machineID: "planned", state: state, plans: plans)
+
+        let withoutInfrastructureStarter = CountingProcessStarter()
+        let withoutInfrastructure = makeManager(
+            state: state,
+            policy: .perWorkspaceAuthority,
+            starter: withoutInfrastructureStarter
+        )
+        #expect(withoutInfrastructure.status(id: "planned")?.runtimeIdentity.mode == .resolvedPlan)
+        #expect(throws: MachineManagerError.self) {
+            _ = try withoutInfrastructure.start(id: "planned")
+        }
+        #expect(withoutInfrastructureStarter.count == 0)
+
+        plans.set(nil)
+        let missingPlanStarter = CountingProcessStarter()
+        let missingPlan = makeManager(
+            state: state,
+            policy: .perWorkspaceAuthority,
+            starter: missingPlanStarter
+        )
+        let resolver = ClosureLaunchResolver { request in
+            try exactResolution(request: request)
+        }
+        try missingPlan.installResolvedLaunchInfrastructure(
+            registry: rawRegistry(
+                operations: missingPlan.resolvedLaunchCompatibilityOperations(
+                    for: .doryHypervisor
+                )
+            ),
+            resolver: resolver,
+            plans: plans,
+            expectedPlanRevision: { _ in 1 }
+        )
+        #expect(missingPlan.status(id: "planned")?.runtimeIdentity.mode == .requiresReplanning)
+        #expect(throws: MachineManagerError.self) {
+            _ = try missingPlan.start(id: "planned")
+        }
+        #expect(resolver.callCount == 0)
+        #expect(missingPlanStarter.count == 0)
+
+        let recordPath = state + "/planned/"
+            + DoryMachineRuntimeIdentityStore.recordFileName
+        try FileManager.default.removeItem(atPath: recordPath)
+        let missingCompanionStarter = CountingProcessStarter()
+        let missingCompanion = makeManager(
+            state: state,
+            policy: .perWorkspaceAuthority,
+            starter: missingCompanionStarter
+        )
+        #expect(missingCompanion.status(id: "planned")?.runtimeIdentity.mode == .requiresReplanning)
+        #expect(throws: MachineManagerError.self) {
+            _ = try missingCompanion.start(id: "planned")
+        }
+        #expect(missingCompanionStarter.count == 0)
+    }
+
+    @Test("live durable identity deletion or substitution rejects launch and snapshot")
+    func perWorkspaceLiveIdentityTamperFailsClosed() throws {
+        let legacyState = try makeState("live-legacy-tamper")
+        defer { try? FileManager.default.removeItem(atPath: legacyState) }
+        let legacyBootstrap = makeManager(
+            state: legacyState,
+            policy: .legacyCompatibility
+        )
+        _ = try createMachine(id: "legacy", manager: legacyBootstrap)
+        let legacyStarter = CountingProcessStarter()
+        let legacy = makeManager(
+            state: legacyState,
+            policy: .perWorkspaceAuthority,
+            starter: legacyStarter
+        )
+        try FileManager.default.removeItem(
+            atPath: legacyState + "/legacy/"
+                + DoryMachineRuntimeIdentityStore.recordFileName
+        )
+        #expect(throws: MachineManagerError.self) {
+            _ = try legacy.start(id: "legacy")
+        }
+        #expect(throws: MachineManagerError.self) {
+            _ = try legacy.snapshot(id: "legacy", snapshotID: "must-not-publish")
+        }
+        #expect(legacyStarter.count == 0)
+        #expect(!FileManager.default.fileExists(
+            atPath: legacyState + "/legacy/snapshots/must-not-publish.json"
+        ))
+
+        let resolvedState = try makeState("live-resolved-tamper")
+        defer { try? FileManager.default.removeItem(atPath: resolvedState) }
+        let bootstrap = makeManager(
+            state: resolvedState,
+            policy: .perWorkspaceAuthority
+        )
+        _ = try createMachine(id: "planned", manager: bootstrap)
+        let plans = MutablePlanStore()
+        _ = try persistResolvedIdentity(
+            machineID: "planned",
+            state: resolvedState,
+            plans: plans
+        )
+        let resolvedStarter = CountingProcessStarter()
+        let resolved = makeManager(
+            state: resolvedState,
+            policy: .perWorkspaceAuthority,
+            starter: resolvedStarter
+        )
+        let resolver = ClosureLaunchResolver { request in
+            try exactResolution(request: request)
+        }
+        try resolved.installResolvedLaunchInfrastructure(
+            registry: rawRegistry(
+                operations: resolved.resolvedLaunchCompatibilityOperations(
+                    for: .doryHypervisor
+                )
+            ),
+            resolver: resolver,
+            plans: plans,
+            expectedPlanRevision: { _ in 1 }
+        )
+        let machineData = try Data(contentsOf: URL(
+            fileURLWithPath: resolvedState + "/planned/machine.json"
+        ))
+        try DoryMachineRuntimeIdentityStore(root: resolvedState).publish(
+            .legacyCompatibility(virtualHardwareABIVersion: 1),
+            machineID: "planned",
+            authoritativeLegacyData: machineData
+        )
+        #expect(throws: MachineManagerError.self) {
+            _ = try resolved.start(id: "planned")
+        }
+        #expect(resolver.callCount == 0)
+        #expect(resolvedStarter.count == 0)
+    }
+
+    @Test("restoring historical legacy snapshot cannot revive compatibility after planning")
+    func resolvedWorkspaceRestoreOfLegacySnapshotRequiresReplanning() throws {
+        let state = try makeState("resolved-restore-legacy")
+        defer { try? FileManager.default.removeItem(atPath: state) }
+        let legacy = makeManager(state: state, policy: .legacyCompatibility)
+        _ = try createMachine(id: "dev", manager: legacy)
+        _ = try legacy.snapshot(id: "dev", snapshotID: "historical")
+
+        let migrated = makeManager(state: state, policy: .perWorkspaceAuthority)
+        #expect(migrated.status(id: "dev")?.runtimeIdentity.mode == .legacyCompatibility)
+        let plans = MutablePlanStore()
+        _ = try persistResolvedIdentity(machineID: "dev", state: state, plans: plans)
+        let starter = CountingProcessStarter()
+        let resolved = makeManager(
+            state: state,
+            policy: .perWorkspaceAuthority,
+            starter: starter
+        )
+        let resolver = ClosureLaunchResolver { request in
+            try exactResolution(request: request)
+        }
+        try resolved.installResolvedLaunchInfrastructure(
+            registry: rawRegistry(
+                operations: resolved.resolvedLaunchCompatibilityOperations(
+                    for: .doryHypervisor
+                )
+            ),
+            resolver: resolver,
+            plans: plans,
+            expectedPlanRevision: { _ in 1 }
+        )
+        #expect(resolved.status(id: "dev")?.runtimeIdentity.mode == .resolvedPlan)
+
+        let restored = try resolved.restoreSnapshot(
+            machineID: "dev",
+            snapshotID: "historical"
+        )
+        #expect(restored.state == .stopped)
+        #expect(restored.runtimeIdentity.mode == .requiresReplanning)
+        #expect(restored.runtimeIdentity.invalidationReason == .restoredSnapshot)
+        #expect(throws: MachineManagerError.self) {
+            _ = try resolved.start(id: "dev")
+        }
+        #expect(starter.count == 0)
+
+        let restartedStarter = CountingProcessStarter()
+        let restarted = makeManager(
+            state: state,
+            policy: .perWorkspaceAuthority,
+            starter: restartedStarter
+        )
+        let restartedResolver = ClosureLaunchResolver { request in
+            try exactResolution(request: request)
+        }
+        try restarted.installResolvedLaunchInfrastructure(
+            registry: rawRegistry(
+                operations: restarted.resolvedLaunchCompatibilityOperations(
+                    for: .doryHypervisor
+                )
+            ),
+            resolver: restartedResolver,
+            plans: plans,
+            expectedPlanRevision: { _ in 1 }
+        )
+        #expect(restarted.status(id: "dev")?.runtimeIdentity.mode == .requiresReplanning)
+        #expect(throws: MachineManagerError.self) {
+            _ = try restarted.start(id: "dev")
+        }
+        #expect(restartedResolver.callCount == 0)
+        #expect(restartedStarter.count == 0)
+    }
+
+    @Test("per-workspace clone and portable import require a fresh plan")
+    func perWorkspaceCloneAndImportInvalidateAuthority() throws {
+        let state = try makeState("per-workspace-copy")
+        defer { try? FileManager.default.removeItem(atPath: state) }
+        let legacy = makeManager(state: state, policy: .legacyCompatibility)
+        _ = try createMachine(id: "source", manager: legacy)
+        let sourceSnapshot = try legacy.snapshot(id: "source", snapshotID: "base")
+        let bundle = state + "/source.dorymachine"
+        try legacy.exportSnapshot(
+            machineID: "source",
+            snapshotID: sourceSnapshot.id,
+            toPath: bundle
+        )
+
+        let manager = makeManager(state: state, policy: .perWorkspaceAuthority)
+        let clone = try manager.cloneSnapshot(
+            machineID: "source",
+            snapshotID: "base",
+            newID: "clone"
+        )
+        #expect(clone.state == .created)
+        #expect(clone.runtimeIdentity.mode == .requiresReplanning)
+        #expect(clone.runtimeIdentity.invalidationReason == .planNotInstalled)
+
+        let imported = try manager.importSnapshot(fromPath: bundle)
+        #expect(imported.runtimeIdentity.mode == .requiresReplanning)
+        #expect(imported.runtimeIdentity.invalidationReason == .importedSnapshot)
+    }
+
+    private func makeState(_ label: String) throws -> String {
+        let state = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dory-authority-\(label)-\(UUID().uuidString)")
+            .path
+        try FileManager.default.createDirectory(
+            atPath: state,
+            withIntermediateDirectories: true
+        )
+        return state
+    }
+
+    private func makeManager(
+        state: String,
+        policy: DoryMachineLaunchPolicy,
+        starter: CountingProcessStarter = CountingProcessStarter()
+    ) -> MachineManager {
+        MachineManager(
+            configuration: MachineManagerConfiguration(
+                vmmExecutablePath: "/bin/sleep",
+                acceleratedDesktopExecutablePath: "/bin/sleep",
+                stateDirectory: state,
+                baseArguments: ["30"],
+                acceleratedDesktopBaseArguments: ["30"],
+                passMachineArguments: false,
+                requiresReadyHandoff: false
+            ),
+            launchPolicy: policy,
+            processStarter: { process in try starter.start(process) }
+        )
+    }
+
+    @discardableResult
+    private func createMachine(id: String, manager: MachineManager) throws -> DoryMachineStatus {
+        try manager.create(DoryMachineConfiguration(
+            id: id,
+            kernelPath: doryTestKernelPath,
+            rootfsPath: doryTestRootfsPath,
+            memoryMB: 2_048,
+            cpuCount: 2,
+            displayMode: .desktop
+        ))
+    }
+
+    private func persistResolvedIdentity(
+        machineID: String,
+        state: String,
+        plans: MutablePlanStore
+    ) throws -> DoryMachineRuntimeIdentity {
+        let definition = try DoryWorkspaceRepository(root: state)
+            .readPersistedRecord(id: machineID).definition
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let definitionData = try encoder.encode(definition)
+        let legacyData = try Data(
+            contentsOf: URL(fileURLWithPath: state + "/\(machineID)/machine.json")
+        )
+        let machine = try JSONDecoder().decode(
+            DoryMachineConfiguration.self,
+            from: legacyData
+        )
+        let resolution = try exactResolution(request: .init(
+            definition: definition,
+            canonicalDefinitionData: definitionData,
+            machine: machine,
+            expectedPlanRevision: 1
+        ))
+        plans.set(resolution.resolvedPlan)
+        let identity = try DoryMachineRuntimeIdentity(
+            resolvedPlan: resolution.resolvedPlan,
+            planSHA256: resolution.resolvedPlanSHA256
+        )
+        try DoryMachineRuntimeIdentityStore(root: state).publish(
+            identity,
+            machineID: machineID,
+            authoritativeLegacyData: legacyData
+        )
+        return identity
+    }
+
     private func withHarness(
         _ label: String,
         launchPolicy: DoryMachineLaunchPolicy = .requireResolvedPlan,
