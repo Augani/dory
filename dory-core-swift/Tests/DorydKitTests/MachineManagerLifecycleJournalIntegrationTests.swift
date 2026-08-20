@@ -6,6 +6,32 @@ import Foundation
 import XCTest
 
 final class MachineManagerLifecycleJournalIntegrationTests: XCTestCase {
+    func testPauseAndResumePublishExactLifecycleTransitions() throws {
+        let fixture = try LifecycleFixture(name: #function)
+        defer { fixture.cleanup() }
+        let manager = fixture.makeManager()
+        _ = try fixture.createMachine(manager)
+        XCTAssertEqual(try manager.start(id: fixture.machineID).state, .running)
+
+        let paused = try manager.pause(id: fixture.machineID)
+        XCTAssertEqual(paused.state, .paused)
+        let pauseRecord = try waitForJournal(fixture, kind: .workspacePause, status: .completed)
+        let pauseOperation = try fixture.store.acquire(pauseRecord.plan.id)
+            .readWorkspaceLifecycleOperation()
+        XCTAssertEqual(pauseOperation.kind, .pausing)
+        XCTAssertEqual(pauseOperation.source.state, .running)
+        XCTAssertEqual(pauseOperation.target.state, .paused)
+
+        let resumed = try manager.resume(id: fixture.machineID)
+        XCTAssertEqual(resumed.state, .running)
+        let resumeRecord = try waitForJournal(fixture, kind: .workspaceResume, status: .completed)
+        let resumeOperation = try fixture.store.acquire(resumeRecord.plan.id)
+            .readWorkspaceLifecycleOperation()
+        XCTAssertEqual(resumeOperation.kind, .resuming)
+        XCTAssertEqual(resumeOperation.source.state, .paused)
+        XCTAssertEqual(resumeOperation.target.state, .running)
+    }
+
     func testStartJournalRemainsActiveUntilReadyAndFencesConcurrentMutation() throws {
         let fixture = try LifecycleFixture(name: #function, requiresReadyHandoff: true)
         defer { fixture.cleanup() }

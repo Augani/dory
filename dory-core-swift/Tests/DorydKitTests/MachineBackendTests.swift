@@ -19,8 +19,8 @@ final class MachineBackendTests: XCTestCase {
             vz.bootMediaKinds,
             [.linuxKernel, .installedLinuxBootBundle, .installerISO, .virtualDisk]
         )
-        XCTAssertFalse(vz.lifecycle.pause)
-        XCTAssertFalse(vz.lifecycle.resume)
+        XCTAssertTrue(vz.lifecycle.pause)
+        XCTAssertTrue(vz.lifecycle.resume)
     }
 
     func testProbeFailsClosedForMissingAndUnavailableComponents() {
@@ -250,7 +250,7 @@ final class MachineBackendTests: XCTestCase {
         XCTAssertEqual(result.failure?.code, .machineConfigurationIncompatible)
     }
 
-    func testPauseAndResumeAreExplicitlyUnsupportedAndDoNotInvokeLauncher() {
+    func testPauseAndResumeDispatchThroughTheSelectedBackend() {
         let recorder = recordingOperations()
         let backend = availableRawBackend(operations: recorder.operations)
         let request = MachineBackendRuntimeRequest(
@@ -258,9 +258,14 @@ final class MachineBackendTests: XCTestCase {
             backend: .doryHypervisor
         )
 
-        XCTAssertEqual(backend.pause(request).failure?.code, .lifecycleOperationUnsupported)
-        XCTAssertEqual(backend.resume(request).failure?.code, .lifecycleOperationUnsupported)
-        XCTAssertEqual(recorder.events, [])
+        let paused = backend.pause(request)
+        XCTAssertTrue(paused.isSuccess)
+        XCTAssertEqual(paused.observation?.state, .paused)
+
+        let resumed = backend.resume(request)
+        XCTAssertTrue(resumed.isSuccess)
+        XCTAssertEqual(resumed.observation?.state, .running)
+        XCTAssertEqual(recorder.events, ["pause:raw-linux", "resume:raw-linux"])
     }
 
     func testBackendPlanRoundTripsWithPlannerCapabilityEvidence() throws {
@@ -382,6 +387,14 @@ private final class OperationRecorder: @unchecked Sendable {
         stop: { [weak self] id in
             self?.append("stop:\(id)")
             return MachineBackendRuntimeObservation(machineID: id, state: .stopped)
+        },
+        pause: { [weak self] id in
+            self?.append("pause:\(id)")
+            return MachineBackendRuntimeObservation(machineID: id, state: .paused)
+        },
+        resume: { [weak self] id in
+            self?.append("resume:\(id)")
+            return MachineBackendRuntimeObservation(machineID: id, state: .running)
         }
     )
 

@@ -108,7 +108,9 @@ struct MachineManagerResolvedPlanIntegrationTests {
                         }
                         return try managerOperations.authorizedStart(changed)
                     },
-                    stop: managerOperations.stop
+                    stop: managerOperations.stop,
+                    pause: managerOperations.pause,
+                    resume: managerOperations.resume
                 )
                 let registry = try rawRegistry(operations: mutatingOperations)
                 let resolver = ClosureLaunchResolver { request in

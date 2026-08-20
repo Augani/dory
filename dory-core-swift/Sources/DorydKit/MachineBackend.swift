@@ -16,12 +16,13 @@ public struct MachineBackendLifecycleCapabilities: Codable, Sendable, Equatable,
         self.resume = resume
     }
 
-    /// `MachineManager` currently exposes start and stop, but not pause and resume.
+    /// Lifecycle operations implemented by the current supervised helper boundary. Pause keeps
+    /// the helper and its admitted resources resident; resume continues that exact process.
     public static let currentMachineManager = MachineBackendLifecycleCapabilities(
         start: true,
         stop: true,
-        pause: false,
-        resume: false
+        pause: true,
+        resume: true
     )
 }
 

@@ -12,19 +12,27 @@ public struct MachineBackendCompatibilityOperations: Sendable {
     public var start: MachineBackendLifecycleHandler
     public var authorizedStart: MachineBackendAuthorizedStartHandler
     public var stop: MachineBackendLifecycleHandler
+    public var pause: MachineBackendLifecycleHandler
+    public var resume: MachineBackendLifecycleHandler
 
     public init(
         start: @escaping MachineBackendLifecycleHandler,
-        stop: @escaping MachineBackendLifecycleHandler
+        stop: @escaping MachineBackendLifecycleHandler,
+        pause: @escaping MachineBackendLifecycleHandler,
+        resume: @escaping MachineBackendLifecycleHandler
     ) {
         self.start = start
         authorizedStart = { binding in try start(binding.machineID) }
         self.stop = stop
+        self.pause = pause
+        self.resume = resume
     }
 
     public init(
         authorizedStart: @escaping MachineBackendAuthorizedStartHandler,
-        stop: @escaping MachineBackendLifecycleHandler
+        stop: @escaping MachineBackendLifecycleHandler,
+        pause: @escaping MachineBackendLifecycleHandler,
+        resume: @escaping MachineBackendLifecycleHandler
     ) {
         start = { _ in
             throw MachineBackendFailure(
@@ -34,6 +42,8 @@ public struct MachineBackendCompatibilityOperations: Sendable {
         }
         self.authorizedStart = authorizedStart
         self.stop = stop
+        self.pause = pause
+        self.resume = resume
     }
 
 }
@@ -55,6 +65,7 @@ private extension MachineBackendRuntimeState {
         case .created: self = .created
         case .starting: self = .starting
         case .running: self = .running
+        case .paused: self = .paused
         case .stopped: self = .stopped
         case .failed: self = .failed
         }
@@ -241,7 +252,10 @@ private final class LinuxMachineBackendAdapterCore: @unchecked Sendable {
                 message: "The runtime request belongs to a different backend adapter."
             )
         }
-        return unsupportedOperation(.pause)
+        guard descriptor.lifecycle.pause else {
+            return unsupportedOperation(.pause)
+        }
+        return perform(.pause, machineID: request.machineID, operation: operations.pause)
     }
 
     func resume(_ request: MachineBackendRuntimeRequest) -> MachineBackendOperationResult {
@@ -252,7 +266,10 @@ private final class LinuxMachineBackendAdapterCore: @unchecked Sendable {
                 message: "The runtime request belongs to a different backend adapter."
             )
         }
-        return unsupportedOperation(.resume)
+        guard descriptor.lifecycle.resume else {
+            return unsupportedOperation(.resume)
+        }
+        return perform(.resume, machineID: request.machineID, operation: operations.resume)
     }
 
     private func unavailableProbe(

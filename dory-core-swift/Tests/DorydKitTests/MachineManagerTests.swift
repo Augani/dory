@@ -82,6 +82,49 @@ final class MachineManagerTests: XCTestCase {
         XCTAssertTrue(manager.list().isEmpty)
     }
 
+    func testPauseResumePreservesTheRunningHelperAndStopAcceptsPausedMachine() throws {
+        let base = "/tmp/dory-machine-pause-resume-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let manager = MachineManager(configuration: MachineManagerConfiguration(
+            vmmExecutablePath: "/bin/sleep",
+            stateDirectory: base,
+            baseArguments: ["30"],
+            passMachineArguments: false,
+            requiresReadyHandoff: false
+        ))
+        defer {
+            try? manager.delete(id: "dev")
+            try? FileManager.default.removeItem(atPath: base)
+        }
+
+        _ = try manager.create(DoryMachineConfiguration(
+            id: "dev",
+            kernelPath: doryTestKernelPath,
+            rootfsPath: doryTestRootfsPath,
+            displayMode: .desktop
+        ))
+
+        let running = try manager.start(id: "dev")
+        let runningPID = try XCTUnwrap(running.pid)
+        XCTAssertEqual(running.state, .running)
+
+        let paused = try manager.pause(id: "dev")
+        XCTAssertEqual(paused.state, .paused)
+        XCTAssertEqual(paused.pid, runningPID)
+        XCTAssertEqual(kill(runningPID, 0), 0)
+        XCTAssertThrowsError(try manager.pause(id: "dev"))
+
+        let resumed = try manager.resume(id: "dev")
+        XCTAssertEqual(resumed.state, .running)
+        XCTAssertEqual(resumed.pid, runningPID)
+        XCTAssertEqual(kill(runningPID, 0), 0)
+        XCTAssertThrowsError(try manager.resume(id: "dev"))
+
+        _ = try manager.pause(id: "dev")
+        let stopped = try manager.stop(id: "dev")
+        XCTAssertEqual(stopped.state, .stopped)
+        XCTAssertNil(stopped.pid)
+    }
+
     func testDesktopUpdatePreservesPersistentDiskAndRetainsLastGoodSnapshot() throws {
         let base = "/tmp/dory-machine-desktop-update-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         let sources = base + "/sources"
