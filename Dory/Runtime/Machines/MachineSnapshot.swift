@@ -16,11 +16,15 @@ struct MachineSnapshot: Identifiable, Hashable, Sendable {
     let uid: Int?
     let homePath: String?
     let loginShell: String
+    let runtimeIdentity: DorydMachineRuntimeIdentity
+    let artifactEvidence: DorydMachineSnapshotArtifactEvidence?
 
     nonisolated init(id: String, imageRef: String, machineName: String, note: String, createdISO: String,
                      sizeBytes: Int64, distro: String, version: String, arch: String, boot: String,
                      recipe: String, username: String = "root", uid: Int? = nil, homePath: String? = nil,
-                     loginShell: String = "/bin/sh") {
+                     loginShell: String = "/bin/sh",
+                     runtimeIdentity: DorydMachineRuntimeIdentity = .legacyCompatibility,
+                     artifactEvidence: DorydMachineSnapshotArtifactEvidence? = nil) {
         self.id = id
         self.imageRef = imageRef
         self.machineName = machineName
@@ -36,6 +40,8 @@ struct MachineSnapshot: Identifiable, Hashable, Sendable {
         self.uid = uid
         self.homePath = homePath
         self.loginShell = loginShell
+        self.runtimeIdentity = runtimeIdentity
+        self.artifactEvidence = artifactEvidence
     }
 }
 

@@ -308,6 +308,7 @@ public struct DoryMachineStatus: Sendable, Equatable {
     public var installerMediaAttached: Bool
     public var shares: [DoryMachineShareConfiguration]
     public var environment: [String: String]
+    public var runtimeIdentity: DoryMachineRuntimeIdentity
 
     public init(
         id: String,
@@ -331,7 +332,11 @@ public struct DoryMachineStatus: Sendable, Equatable {
         bootMode: DoryMachineBootMode = .linuxKernel,
         installerMediaAttached: Bool = false,
         shares: [DoryMachineShareConfiguration] = [],
-        environment: [String: String] = [:]
+        environment: [String: String] = [:],
+        runtimeIdentity: DoryMachineRuntimeIdentity = .legacyCompatibility(
+            virtualHardwareABIVersion:
+                DoryVirtualMachineDefinition.currentVirtualHardwareABIVersion
+        )
     ) {
         self.id = id
         self.state = state
@@ -355,6 +360,7 @@ public struct DoryMachineStatus: Sendable, Equatable {
         self.installerMediaAttached = installerMediaAttached
         self.shares = shares
         self.environment = environment
+        self.runtimeIdentity = runtimeIdentity
     }
 }
 
@@ -376,6 +382,8 @@ public struct DoryMachineSnapshot: Sendable, Equatable, Hashable, Codable {
     public var bootMode: DoryMachineBootMode
     public var machineIdentifierPath: String?
     public var nvramPath: String?
+    public var runtimeIdentity: DoryMachineRuntimeIdentity
+    public var artifactEvidence: DoryMachineSnapshotArtifactEvidence?
 
     public init(
         id: String,
@@ -394,7 +402,12 @@ public struct DoryMachineSnapshot: Sendable, Equatable, Hashable, Codable {
         environment: [String: String] = [:],
         bootMode: DoryMachineBootMode = .linuxKernel,
         machineIdentifierPath: String? = nil,
-        nvramPath: String? = nil
+        nvramPath: String? = nil,
+        runtimeIdentity: DoryMachineRuntimeIdentity = .legacyCompatibility(
+            virtualHardwareABIVersion:
+                DoryVirtualMachineDefinition.currentVirtualHardwareABIVersion
+        ),
+        artifactEvidence: DoryMachineSnapshotArtifactEvidence? = nil
     ) {
         self.id = id
         self.machineID = machineID
@@ -413,6 +426,8 @@ public struct DoryMachineSnapshot: Sendable, Equatable, Hashable, Codable {
         self.bootMode = bootMode
         self.machineIdentifierPath = machineIdentifierPath
         self.nvramPath = nvramPath
+        self.runtimeIdentity = runtimeIdentity
+        self.artifactEvidence = artifactEvidence
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -433,6 +448,8 @@ public struct DoryMachineSnapshot: Sendable, Equatable, Hashable, Codable {
         case bootMode
         case machineIdentifierPath
         case nvramPath
+        case runtimeIdentity
+        case artifactEvidence
     }
 
     public init(from decoder: Decoder) throws {
@@ -454,7 +471,18 @@ public struct DoryMachineSnapshot: Sendable, Equatable, Hashable, Codable {
             environment: try container.decodeIfPresent([String: String].self, forKey: .environment) ?? [:],
             bootMode: try container.decodeIfPresent(DoryMachineBootMode.self, forKey: .bootMode) ?? .linuxKernel,
             machineIdentifierPath: try container.decodeIfPresent(String.self, forKey: .machineIdentifierPath),
-            nvramPath: try container.decodeIfPresent(String.self, forKey: .nvramPath)
+            nvramPath: try container.decodeIfPresent(String.self, forKey: .nvramPath),
+            runtimeIdentity: try container.decodeIfPresent(
+                DoryMachineRuntimeIdentity.self,
+                forKey: .runtimeIdentity
+            ) ?? .legacyCompatibility(
+                virtualHardwareABIVersion:
+                    DoryMachineRuntimeIdentity.oldestLegacyVirtualHardwareABIVersion
+            ),
+            artifactEvidence: try container.decodeIfPresent(
+                DoryMachineSnapshotArtifactEvidence.self,
+                forKey: .artifactEvidence
+            )
         )
     }
 }
@@ -695,7 +723,10 @@ public final class MachineManager: @unchecked Sendable {
         Self.removeStaleMachineMetadataArtifacts(stateDirectory: configuration.stateDirectory)
         Self.removeStaleSnapshotArtifacts(stateDirectory: configuration.stateDirectory)
         Self.restrictWorkspaceProjectionRootIfOwned(configuration.stateDirectory)
-        self.machines = Self.loadPersistedMachines(configuration: configuration)
+        self.machines = Self.loadPersistedMachines(
+            configuration: configuration,
+            launchPolicy: launchPolicy
+        )
         reconcileLoadedWorkspaceProjections()
         recoverInterruptedDesktopUpdates()
     }
@@ -728,6 +759,10 @@ public final class MachineManager: @unchecked Sendable {
         resolvedLaunchPlanResolver = resolver
         resolvedLaunchPlanStore = plans
         resolvedPlanRevisionProvider = expectedPlanRevision
+        recoverResolvedRuntimeIdentities(
+            plans: plans,
+            expectedPlanRevision: expectedPlanRevision
+        )
     }
 
     /// Operations for the current Linux compatibility adapters. Start is protected by a
@@ -834,7 +869,12 @@ public final class MachineManager: @unchecked Sendable {
         try validateManagedMachineArtifacts(preparedMachine)
         try persist(preparedMachine)
         lock.lock()
-        machines[machine.id] = MachineEntry(configuration: preparedMachine, state: .created)
+        let initialRuntimeIdentity = runtimeIdentityForUnplannedMachine()
+        machines[machine.id] = MachineEntry(
+            configuration: preparedMachine,
+            state: .created,
+            runtimeIdentity: initialRuntimeIdentity
+        )
         lock.unlock()
         committed = true
         return DoryMachineStatus(
@@ -848,7 +888,8 @@ public final class MachineManager: @unchecked Sendable {
             bootMode: preparedMachine.bootMode,
             installerMediaAttached: preparedMachine.installerISOPath != nil,
             shares: preparedMachine.shares,
-            environment: preparedMachine.environment
+            environment: preparedMachine.environment,
+            runtimeIdentity: initialRuntimeIdentity
         )
     }
 
@@ -927,6 +968,10 @@ public final class MachineManager: @unchecked Sendable {
             resolved,
             planStore: planStore
         )
+        let runtimeIdentity = try DoryMachineRuntimeIdentity(
+            resolvedPlan: resolved.resolvedPlan,
+            planSHA256: resolved.resolvedPlanSHA256
+        )
 
         pendingResolvedStart = PendingResolvedMachineStart(
             machine: prepared.machine,
@@ -944,6 +989,12 @@ public final class MachineManager: @unchecked Sendable {
             let failure = operation.failure?.message ?? "backend adapter returned no observation"
             throw MachineManagerError.persistence("resolved backend start failed: \(failure)")
         }
+        lock.lock()
+        if var entry = machines[id] {
+            entry.runtimeIdentity = runtimeIdentity
+            machines[id] = entry
+        }
+        lock.unlock()
         guard let status = status(id: id), [.starting, .running].contains(status.state) else {
             throw MachineManagerError.persistence(
                 "resolved backend did not enter MachineManager's prepared spawn path"
@@ -1564,6 +1615,9 @@ public final class MachineManager: @unchecked Sendable {
             throw MachineManagerError.invalidID(snapshotID)
         }
         let (machine, wasRunning) = try configurationAndRunningState(id: id)
+        guard let snapshotRuntimeIdentity = runtimeIdentity(id: id) else {
+            throw MachineManagerError.unknownMachine(id)
+        }
         try Self.validateLaunchConfiguration(machine)
         try ensurePrivateSnapshotDirectory(machineID: id)
         let rootfsPath = snapshotRootfsPath(machineID: id, snapshotID: snapshotID)
@@ -1608,6 +1662,12 @@ public final class MachineManager: @unchecked Sendable {
                 try Self.cloneOrCopyFile(source: liveNVRAMPath, destination: nvramPath)
                 publishedNVRAM = true
             }
+            let artifactEvidence = try Self.snapshotArtifactEvidence(
+                rootfsPath: rootfsPath,
+                kernelPath: kernelPath,
+                machineIdentifierPath: machine.bootMode == .efi ? machineIdentifierPath : nil,
+                nvramPath: machine.bootMode == .efi ? nvramPath : nil
+            )
             snapshot = DoryMachineSnapshot(
                 id: snapshotID,
                 machineID: id,
@@ -1625,7 +1685,9 @@ public final class MachineManager: @unchecked Sendable {
                 environment: machine.environment,
                 bootMode: machine.bootMode,
                 machineIdentifierPath: machine.bootMode == .efi ? machineIdentifierPath : nil,
-                nvramPath: machine.bootMode == .efi ? nvramPath : nil
+                nvramPath: machine.bootMode == .efi ? nvramPath : nil,
+                runtimeIdentity: snapshotRuntimeIdentity,
+                artifactEvidence: artifactEvidence
             )
             try persistSnapshot(snapshot)
         } catch {
@@ -1897,6 +1959,7 @@ public final class MachineManager: @unchecked Sendable {
         operationLock.lock()
         defer { operationLock.unlock() }
         let snapshot = try loadSnapshot(machineID: machineID, snapshotID: snapshotID)
+        try validateSnapshotRuntimeCompatibility(snapshot, machine: nil, cloning: true)
         let machine = DoryMachineConfiguration(
             id: newID,
             kernelPath: snapshot.kernelPath,
@@ -1940,6 +2003,7 @@ public final class MachineManager: @unchecked Sendable {
         defer { operationLock.unlock() }
         let snapshot = try loadSnapshot(machineID: machineID, snapshotID: snapshotID)
         let (machine, wasRunning) = try configurationAndRunningState(id: machineID)
+        try validateSnapshotRuntimeCompatibility(snapshot, machine: machine, cloning: false)
         guard machine.bootMode == snapshot.bootMode else {
             throw MachineManagerError.persistence("snapshot boot mode does not match the machine")
         }
@@ -1964,13 +2028,20 @@ public final class MachineManager: @unchecked Sendable {
                 if var entry = machines[machineID] {
                     entry.configuration = restoredMachine
                     entry.currentBalloonTargetMB = nil
+                    entry.runtimeIdentity = runtimeIdentityAfterSnapshotRestore(
+                        snapshot.runtimeIdentity
+                    )
                     machines[machineID] = entry
                 }
                 lock.unlock()
             }
-            let status = wasRunning
-                ? try start(id: machineID)
-                : (status(id: machineID) ?? DoryMachineStatus(id: machineID, state: .stopped))
+            let status: DoryMachineStatus
+            if wasRunning, launchPolicy == .legacyCompatibility {
+                status = try start(id: machineID)
+            } else {
+                status = self.status(id: machineID)
+                    ?? DoryMachineStatus(id: machineID, state: .stopped)
+            }
             return status
         } catch let error as MachineManagerError {
             if wasRunning {
@@ -2069,6 +2140,7 @@ public final class MachineManager: @unchecked Sendable {
                 )
             }
             try Self.validateResources(memoryMB: snapshot.memoryMB, cpuCount: snapshot.cpuCount)
+            try Self.validateSnapshotRuntimeIdentity(snapshot)
             snapshot.address = nil
             snapshot.shares = []
             snapshot.environment = [:]
@@ -2149,6 +2221,12 @@ public final class MachineManager: @unchecked Sendable {
         return statusLocked(id: id, entry: entry)
     }
 
+    public func runtimeIdentity(id: String) -> DoryMachineRuntimeIdentity? {
+        lock.lock()
+        defer { lock.unlock() }
+        return machines[id]?.runtimeIdentity
+    }
+
     public func list() -> [DoryMachineStatus] {
         lock.lock()
         let statuses = machines.keys.sorted().compactMap { id in
@@ -2190,7 +2268,8 @@ public final class MachineManager: @unchecked Sendable {
                 bootMode: entry.configuration.bootMode,
                 installerMediaAttached: entry.configuration.installerISOPath != nil,
                 shares: entry.configuration.shares,
-                environment: entry.configuration.environment
+                environment: entry.configuration.environment,
+                runtimeIdentity: entry.runtimeIdentity
             )
         }
         return DoryMachineStatus(
@@ -2215,7 +2294,8 @@ public final class MachineManager: @unchecked Sendable {
             bootMode: entry.configuration.bootMode,
             installerMediaAttached: entry.configuration.installerISOPath != nil,
             shares: entry.configuration.shares,
-            environment: entry.configuration.environment
+            environment: entry.configuration.environment,
+            runtimeIdentity: entry.runtimeIdentity
         )
     }
 
@@ -2869,7 +2949,90 @@ public final class MachineManager: @unchecked Sendable {
         }
         entry.configuration = configuration
         entry.currentBalloonTargetMB = nil
+        entry.runtimeIdentity = runtimeIdentityForUnplannedMachine(
+            reason: .definitionChanged
+        )
         machines[configuration.id] = entry
+    }
+
+    private func runtimeIdentityForUnplannedMachine(
+        reason: DoryMachineRuntimeIdentityInvalidationReason = .planNotInstalled
+    ) -> DoryMachineRuntimeIdentity {
+        switch launchPolicy {
+        case .legacyCompatibility:
+            return .legacyCompatibility(
+                virtualHardwareABIVersion:
+                    DoryVirtualMachineDefinition.currentVirtualHardwareABIVersion
+            )
+        case .requireResolvedPlan:
+            return .requiresReplanning(
+                virtualHardwareABIVersion:
+                    DoryVirtualMachineDefinition.currentVirtualHardwareABIVersion,
+                reason: reason
+            )
+        }
+    }
+
+    private func runtimeIdentityAfterSnapshotRestore(
+        _ snapshotIdentity: DoryMachineRuntimeIdentity
+    ) -> DoryMachineRuntimeIdentity {
+        switch launchPolicy {
+        case .legacyCompatibility:
+            return .legacyCompatibility(
+                virtualHardwareABIVersion: snapshotIdentity.virtualHardwareABIVersion
+            )
+        case .requireResolvedPlan:
+            return .requiresReplanning(
+                virtualHardwareABIVersion: snapshotIdentity.virtualHardwareABIVersion,
+                reason: .restoredSnapshot
+            )
+        }
+    }
+
+    /// Reconstructs durable identity only when the persisted plan still binds the exact current
+    /// authoritative definition. Missing, stale, or migration-only plans remain visibly blocked
+    /// instead of being mislabeled as legacy compatibility after a daemon restart.
+    private func recoverResolvedRuntimeIdentities(
+        plans: any DoryResolvedMachinePlanStoring,
+        expectedPlanRevision: ResolvedPlanRevisionProvider
+    ) {
+        let entries: [(String, DoryMachineConfiguration)] = {
+            lock.lock()
+            defer { lock.unlock() }
+            return machines.map { ($0.key, $0.value.configuration) }
+        }()
+        for (id, machine) in entries {
+            var recovered = DoryMachineRuntimeIdentity.requiresReplanning(
+                virtualHardwareABIVersion:
+                    DoryVirtualMachineDefinition.currentVirtualHardwareABIVersion,
+                reason: .planRecoveryFailed
+            )
+            if let legacyData = Self.readPrivateMetadata(path: machineConfigPath(id: id)),
+               let definition = reconcileWorkspaceProjection(
+                    machine: machine,
+                    authoritativeLegacyData: legacyData
+               ),
+               let canonicalData = try? Self.canonicalDefinitionData(definition),
+               let plan = try? plans.read(id: id),
+               expectedPlanRevision(id) == plan.planRevision,
+               plan.machineID == id,
+               plan.definitionRevision == definition.lifecycle.revision,
+               plan.definitionSHA256 == Self.sha256(data: canonicalData),
+               plan.migrationDisposition == .current,
+               plan.validate().isEmpty,
+               let identity = try? DoryMachineRuntimeIdentity(
+                    resolvedPlan: plan,
+                    planSHA256: DoryMachineRuntimeIdentity.planSHA256(plan)
+               ) {
+                recovered = identity
+            }
+            lock.lock()
+            if var entry = machines[id] {
+                entry.runtimeIdentity = recovered
+                machines[id] = entry
+            }
+            lock.unlock()
+        }
     }
 
     private func prepareMachineArtifacts(_ machine: DoryMachineConfiguration) throws -> DoryMachineConfiguration {
@@ -3311,6 +3474,8 @@ public final class MachineManager: @unchecked Sendable {
         let directory = snapshotDirectory(machineID: snapshot.machineID)
         let temporaryPath = "\(directory)/\(Self.snapshotMetadataTemporaryPrefix)\(snapshot.id)-\(UUID().uuidString)"
         do {
+            try Self.validateSnapshotRuntimeIdentity(snapshot)
+            try Self.validateSnapshotArtifactEvidence(snapshot)
             guard Self.isPrivateDirectory(path: directory) else {
                 throw MachineManagerError.persistence("machine snapshot path is not a private directory")
             }
@@ -3355,6 +3520,7 @@ public final class MachineManager: @unchecked Sendable {
               snapshot.rootfsPath == expectedRootfsPath,
               snapshot.kernelPath == expectedKernelPath,
               snapshot.architecture == configuration.guestArchitecture,
+              snapshot.runtimeIdentity.validate().isEmpty,
               (try? Self.validateResources(memoryMB: snapshot.memoryMB, cpuCount: snapshot.cpuCount)) != nil,
               Self.isPrivateRegularFile(path: expectedRootfsPath),
               Self.isPrivateRegularFile(path: expectedKernelPath) else {
@@ -3373,9 +3539,167 @@ public final class MachineManager: @unchecked Sendable {
                 throw MachineManagerError.unknownSnapshot(snapshotID)
             }
         }
+        try Self.validateSnapshotArtifactEvidence(snapshot)
         var validated = snapshot
         validated.sizeBytes = Self.fileSize(path: expectedRootfsPath)
         return validated
+    }
+
+    fileprivate static func validateSnapshotRuntimeIdentity(
+        _ snapshot: DoryMachineSnapshot
+    ) throws {
+        guard snapshot.runtimeIdentity.validate().isEmpty,
+              snapshot.runtimeIdentity.virtualHardwareABIVersion
+                == DoryVirtualMachineDefinition.currentVirtualHardwareABIVersion else {
+            throw MachineManagerError.persistence("invalid machine snapshot runtime identity")
+        }
+        if snapshot.runtimeIdentity.mode == .resolvedPlan,
+           snapshot.artifactEvidence == nil {
+            throw MachineManagerError.persistence(
+                "resolved machine snapshot is missing mutable artifact evidence"
+            )
+        }
+        guard let plan = snapshot.runtimeIdentity.resolvedPlan else {
+            return
+        }
+        let memoryBytes = snapshot.memoryMB.multipliedReportingOverflow(by: 1_048_576)
+        guard let artifactEvidence = snapshot.artifactEvidence,
+              snapshot.sizeBytes > 0,
+              let snapshotSizeBytes = UInt64(exactly: snapshot.sizeBytes),
+              !memoryBytes.overflow,
+              plan.machineID == snapshot.machineID,
+              plan.guest.architecture.rawValue == snapshot.architecture,
+              plan.resourceAdmission?.admittedVirtualCPUCount == UInt64(snapshot.cpuCount),
+              plan.resourceAdmission?.admittedMemoryBytes == memoryBytes.partialValue,
+              plan.resourceAdmission?.admittedStorageBytes == snapshotSizeBytes,
+              artifactEvidence.rootfs.byteCount == snapshotSizeBytes else {
+            throw MachineManagerError.persistence(
+                "machine snapshot resources do not match immutable runtime evidence"
+            )
+        }
+    }
+
+    private static func snapshotArtifactEvidence(
+        rootfsPath: String,
+        kernelPath: String,
+        machineIdentifierPath: String?,
+        nvramPath: String?
+    ) throws -> DoryMachineSnapshotArtifactEvidence {
+        DoryMachineSnapshotArtifactEvidence(
+            rootfs: try snapshotArtifact(path: rootfsPath),
+            kernel: try snapshotArtifact(path: kernelPath),
+            machineIdentifier: try machineIdentifierPath.map(snapshotArtifact(path:)),
+            nvram: try nvramPath.map(snapshotArtifact(path:))
+        )
+    }
+
+    private static func snapshotArtifact(path: String) throws -> DoryMachineSnapshotArtifact {
+        let descriptor = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK)
+        guard descriptor >= 0 else {
+            throw MachineManagerError.persistence("could not open machine snapshot artifact")
+        }
+        let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+        let byteCount = try handle.seekToEnd()
+        guard byteCount > 0 else {
+            throw MachineManagerError.persistence("machine snapshot artifact is empty")
+        }
+        try handle.seek(toOffset: 0)
+        var hasher = SHA256()
+        while true {
+            let chunk = try handle.read(upToCount: 4 * 1_024 * 1_024) ?? Data()
+            if chunk.isEmpty { break }
+            hasher.update(data: chunk)
+        }
+        return DoryMachineSnapshotArtifact(
+            byteCount: byteCount,
+            sha256: hasher.finalize().map { String(format: "%02x", $0) }.joined()
+        )
+    }
+
+    fileprivate static func validateSnapshotArtifactEvidence(
+        _ snapshot: DoryMachineSnapshot
+    ) throws {
+        guard let expected = snapshot.artifactEvidence else {
+            // Old legacy snapshots remain decodable and usable under the explicitly selected
+            // compatibility policy. New snapshots always persist evidence.
+            guard snapshot.runtimeIdentity.mode == .legacyCompatibility else {
+                throw MachineManagerError.persistence(
+                    "machine snapshot artifact evidence requires migration"
+                )
+            }
+            return
+        }
+        guard expected.isValid,
+              (snapshot.bootMode == .efi) == (expected.machineIdentifier != nil) else {
+            throw MachineManagerError.persistence("invalid machine snapshot artifact evidence")
+        }
+        let actual = try snapshotArtifactEvidence(
+            rootfsPath: snapshot.rootfsPath,
+            kernelPath: snapshot.kernelPath,
+            machineIdentifierPath: snapshot.machineIdentifierPath,
+            nvramPath: snapshot.nvramPath
+        )
+        guard actual == expected else {
+            throw MachineManagerError.persistence(
+                "machine snapshot artifacts do not match immutable evidence"
+            )
+        }
+    }
+
+    private func validateSnapshotRuntimeCompatibility(
+        _ snapshot: DoryMachineSnapshot,
+        machine: DoryMachineConfiguration?,
+        cloning: Bool
+    ) throws {
+        try Self.validateSnapshotRuntimeIdentity(snapshot)
+        switch snapshot.runtimeIdentity.mode {
+        case .legacyCompatibility:
+            guard launchPolicy == .legacyCompatibility else {
+                throw MachineManagerError.persistence(
+                    "legacy snapshot requires explicit legacy compatibility launch policy"
+                )
+            }
+        case .resolvedPlan:
+            guard !cloning else {
+                throw MachineManagerError.persistence(
+                    "resolved snapshot identity is machine-bound and must be replanned before cloning"
+                )
+            }
+            guard launchPolicy == .requireResolvedPlan,
+                  let plan = snapshot.runtimeIdentity.resolvedPlan,
+                  let registry = resolvedLaunchRegistry,
+                  let planStore = resolvedLaunchPlanStore,
+                  let descriptor = registry.backend(for: plan.backend)?.descriptor,
+                  descriptor.identity == plan.backend,
+                  descriptor.implementationIdentifier == plan.backendImplementationIdentifier,
+                  let machine,
+                  machine.id == plan.machineID else {
+                throw MachineManagerError.persistence(
+                    "snapshot runtime is incompatible with installed resolved-launch infrastructure"
+                )
+            }
+            let currentPlan: DoryResolvedMachinePlan
+            do {
+                currentPlan = try planStore.read(id: machine.id)
+            } catch {
+                throw MachineManagerError.persistence(
+                    "snapshot resolved plan is unavailable: \(error)"
+                )
+            }
+            guard currentPlan == plan,
+                  snapshot.runtimeIdentity.resolvedPlanSHA256
+                    == DoryMachineRuntimeIdentity.planSHA256(currentPlan) else {
+                throw MachineManagerError.persistence(
+                    "snapshot resolved plan no longer matches durable launch authority"
+                )
+            }
+        case .requiresReplanning:
+            guard launchPolicy == .requireResolvedPlan, !cloning else {
+                throw MachineManagerError.persistence(
+                    "snapshot requires a new resolved plan before it can launch"
+                )
+            }
+        }
     }
 
     private func handleHandoff(
@@ -3869,6 +4193,10 @@ public final class MachineManager: @unchecked Sendable {
         return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
 
+    private static func sha256(data: Data) -> String {
+        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
     private static func isPrivateDirectory(info: stat) -> Bool {
         (info.st_mode & S_IFMT) == S_IFDIR
             && info.st_uid == getuid()
@@ -3882,7 +4210,10 @@ public final class MachineManager: @unchecked Sendable {
             && info.st_size > 0
     }
 
-    private static func loadPersistedMachines(configuration: MachineManagerConfiguration) -> [String: MachineEntry] {
+    private static func loadPersistedMachines(
+        configuration: MachineManagerConfiguration,
+        launchPolicy: DoryMachineLaunchPolicy
+    ) -> [String: MachineEntry] {
         let root = configuration.stateDirectory
         guard let ids = try? FileManager.default.contentsOfDirectory(atPath: root) else {
             return [:]
@@ -3910,7 +4241,24 @@ public final class MachineManager: @unchecked Sendable {
                   ) else {
                 continue
             }
-            loaded[id] = MachineEntry(configuration: machine, state: .stopped)
+            let identity: DoryMachineRuntimeIdentity = switch launchPolicy {
+            case .legacyCompatibility:
+                .legacyCompatibility(
+                    virtualHardwareABIVersion:
+                        DoryVirtualMachineDefinition.currentVirtualHardwareABIVersion
+                )
+            case .requireResolvedPlan:
+                .requiresReplanning(
+                    virtualHardwareABIVersion:
+                        DoryVirtualMachineDefinition.currentVirtualHardwareABIVersion,
+                    reason: .planRecoveryFailed
+                )
+            }
+            loaded[id] = MachineEntry(
+                configuration: machine,
+                state: .stopped,
+                runtimeIdentity: identity
+            )
         }
         return loaded
     }
@@ -4001,6 +4349,8 @@ private enum MachineSnapshotBundle {
     private static let copyChunkSize = 4 * 1024 * 1024
 
     static func write(snapshot: DoryMachineSnapshot, toPath path: String) throws {
+        try MachineManager.validateSnapshotRuntimeIdentity(snapshot)
+        try MachineManager.validateSnapshotArtifactEvidence(snapshot)
         let rootfs = try openRegularFileForReading(path: snapshot.rootfsPath, requirePrivateOwnership: true)
         defer { try? rootfs.close() }
         let kernel = try openRegularFileForReading(path: snapshot.kernelPath, requirePrivateOwnership: true)
@@ -4343,11 +4693,31 @@ private enum MachineSnapshotBundle {
             throw MachineManagerError.persistence("corrupt dory machine bundle metadata")
         }
         let snapshot = try JSONDecoder().decode(DoryMachineSnapshot.self, from: metadata)
+        try MachineManager.validateSnapshotRuntimeIdentity(snapshot)
         guard snapshot.sizeBytes == Int64(rootfsLength) else {
             throw MachineManagerError.persistence("machine bundle rootfs size does not match metadata")
         }
         guard (snapshot.bootMode == .efi) == includesFirmware else {
             throw MachineManagerError.persistence("machine bundle boot mode does not match its artifacts")
+        }
+        if let evidence = snapshot.artifactEvidence {
+            guard evidence.isValid,
+                  evidence.rootfs.byteCount == rootfsLength,
+                  evidence.rootfs.sha256 == digestHex(rootfsDigest),
+                  evidence.kernel.byteCount == kernelLength,
+                  evidence.kernel.sha256 == digestHex(kernelDigest),
+                  evidence.machineIdentifier?.byteCount == machineIdentifierLength,
+                  evidence.machineIdentifier?.sha256 == machineIdentifierDigest.map(digestHex),
+                  evidence.nvram?.byteCount == nvramLength,
+                  evidence.nvram?.sha256 == nvramDigest.map(digestHex) else {
+                throw MachineManagerError.persistence(
+                    "machine bundle artifacts do not match immutable snapshot evidence"
+                )
+            }
+        } else if snapshot.runtimeIdentity.mode != .legacyCompatibility {
+            throw MachineManagerError.persistence(
+                "machine bundle artifact evidence requires migration"
+            )
         }
         let artifactCount = includesFirmware ? 5 : 3
         let fixedHeaderLength = UInt64(
@@ -4405,6 +4775,10 @@ private enum MachineSnapshotBundle {
             nvramDigest: nvramDigest,
             contentID: Data(SHA256.hash(data: identity))
         )
+    }
+
+    private static func digestHex(_ digest: Data) -> String {
+        digest.map { String(format: "%02x", $0) }.joined()
     }
 
     private static func openRegularFileForReading(
@@ -4535,6 +4909,10 @@ private struct MachineEntry {
     var runtimeAddress: String?
     var currentBalloonTargetMB: UInt64?
     var lastError: String?
+    var runtimeIdentity: DoryMachineRuntimeIdentity = .legacyCompatibility(
+        virtualHardwareABIVersion:
+            DoryVirtualMachineDefinition.currentVirtualHardwareABIVersion
+    )
 }
 
 extension MachineManager: WakeClockSyncing {

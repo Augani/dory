@@ -5184,6 +5184,7 @@ final class AppStore {
             displayMode: status.displayMode,
             bootMode: status.bootMode,
             installerMediaAttached: status.installerMediaAttached,
+            runtimeIdentity: status.runtimeIdentity,
             mounts: status.shares.map(Self.mountPair(fromDoryd:))
         )
     }
@@ -6004,7 +6005,9 @@ final class AppStore {
             version: "disk",
             arch: snapshot.architecture,
             boot: "vz",
-            recipe: "doryd"
+            recipe: "doryd",
+            runtimeIdentity: snapshot.runtimeIdentity,
+            artifactEvidence: snapshot.artifactEvidence
         )
     }
 

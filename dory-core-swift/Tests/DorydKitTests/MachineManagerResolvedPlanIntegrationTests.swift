@@ -37,8 +37,155 @@ struct MachineManagerResolvedPlanIntegrationTests {
             #expect(identity.planRevision == 1)
             #expect(identity.backend == .doryHypervisor)
             #expect(identity.planSHA256.count == 64)
+            #expect(status.runtimeIdentity.mode == .resolvedPlan)
+            #expect(status.runtimeIdentity.planRevision == 1)
+            #expect(status.runtimeIdentity.definitionSHA256?.count == 64)
+            #expect(
+                status.runtimeIdentity.backendImplementationIdentifier
+                    == RawHVLinuxMachineBackend.backendDescriptor.implementationIdentifier
+            )
+            #expect(status.runtimeIdentity.virtualHardwareABIVersion == 1)
+            #expect(status.runtimeIdentity.components.count == 1)
+            let service = DorydService(
+                socketPath: state + "/service.sock",
+                machineManager: manager
+            )
+            var xpcRows: NSArray = []
+            service.machineList { rows, message in
+                #expect(message.isEmpty)
+                xpcRows = rows
+            }
+            let xpcStatus = try #require(xpcRows.firstObject as? NSDictionary)
+            let xpcIdentity = try #require(
+                xpcStatus["runtimeIdentity"] as? NSDictionary
+            )
+            #expect(xpcIdentity["mode"] as? String == "resolved-plan")
+            #expect(xpcIdentity["planSHA256"] as? String == identity.planSHA256)
+            #expect(xpcIdentity["backend"] as? String == "dory-hypervisor")
+            #expect(xpcIdentity["resolvedPlan"] == nil)
+            let encodedXPC = try JSONSerialization.data(withJSONObject: xpcIdentity)
+            let xpcText = String(decoding: encodedXPC, as: UTF8.self)
+            #expect(!xpcText.contains("/bin/sleep"))
+            #expect(!xpcText.contains(state))
             #expect(FileManager.default.fileExists(atPath: state + "/dev/machine.json"))
             _ = try manager.stop(id: "dev")
+            let snapshot = try manager.snapshot(id: "dev", snapshotID: "evidence")
+            #expect(snapshot.runtimeIdentity == status.runtimeIdentity)
+            #expect(snapshot.artifactEvidence?.rootfs.sha256.count == 64)
+            #expect(snapshot.artifactEvidence?.kernel.sha256.count == 64)
+            var tamperedIdentity = snapshot.runtimeIdentity
+            tamperedIdentity.resolvedPlanSHA256 = String(repeating: "0", count: 64)
+            #expect(tamperedIdentity.validate().contains { $0.code == .planDigestMismatch })
+
+            let restored = try manager.restoreSnapshot(
+                machineID: "dev",
+                snapshotID: "evidence"
+            )
+            #expect(restored.state == .stopped)
+            #expect(restored.runtimeIdentity.mode == .requiresReplanning)
+            #expect(restored.runtimeIdentity.invalidationReason == .restoredSnapshot)
+        }
+    }
+
+    @Test("resolved snapshot disk capacity is bound to resource admission")
+    func resolvedSnapshotRejectsSelfConsistentDifferentCapacityDisk() throws {
+        try withHarness("snapshot-storage-evidence") { manager, _, state in
+            let plans = MutablePlanStore()
+            let operations = manager.resolvedLaunchCompatibilityOperations(for: .doryHypervisor)
+            let registry = try rawRegistry(operations: operations)
+            let resolver = ClosureLaunchResolver { request in
+                let resolution = try exactResolution(request: request)
+                plans.set(resolution.resolvedPlan)
+                return resolution
+            }
+            try manager.installResolvedLaunchInfrastructure(
+                registry: registry,
+                resolver: resolver,
+                plans: plans,
+                expectedPlanRevision: { _ in 1 }
+            )
+            _ = try manager.start(id: "dev")
+            _ = try manager.stop(id: "dev")
+            var snapshot = try manager.snapshot(id: "dev", snapshotID: "capacity")
+
+            let rootfsURL = URL(fileURLWithPath: snapshot.rootfsPath)
+            let handle = try FileHandle(forWritingTo: rootfsURL)
+            try handle.seekToEnd()
+            try handle.write(contentsOf: Data([0]))
+            try handle.close()
+            let rootfsData = try Data(contentsOf: rootfsURL)
+            let rootfsSHA256 = SHA256.hash(data: rootfsData)
+                .map { String(format: "%02x", $0) }.joined()
+            snapshot.sizeBytes = Int64(rootfsData.count)
+            snapshot.artifactEvidence?.rootfs = DoryMachineSnapshotArtifact(
+                byteCount: UInt64(rootfsData.count),
+                sha256: rootfsSHA256
+            )
+
+            let metadataPath = state + "/dev/snapshots/capacity.json"
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            try encoder.encode(snapshot).write(
+                to: URL(fileURLWithPath: metadataPath),
+                options: .atomic
+            )
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o600],
+                ofItemAtPath: metadataPath
+            )
+
+            #expect(throws: MachineManagerError.self) {
+                _ = try manager.restoreSnapshot(machineID: "dev", snapshotID: "capacity")
+            }
+        }
+    }
+
+    @Test("daemon restart recovers exact plan identity and definition changes invalidate it")
+    func restartRecoveryAndConfigurationInvalidation() throws {
+        try withHarness("restart-recovery") { manager, _, state in
+            let plans = MutablePlanStore()
+            let operations = manager.resolvedLaunchCompatibilityOperations(for: .doryHypervisor)
+            let registry = try rawRegistry(operations: operations)
+            let resolver = ClosureLaunchResolver { request in
+                let resolution = try exactResolution(request: request)
+                plans.set(resolution.resolvedPlan)
+                return resolution
+            }
+            try manager.installResolvedLaunchInfrastructure(
+                registry: registry,
+                resolver: resolver,
+                plans: plans,
+                expectedPlanRevision: { _ in 1 }
+            )
+            _ = try manager.start(id: "dev")
+            _ = try manager.stop(id: "dev")
+
+            let restarted = MachineManager(
+                configuration: MachineManagerConfiguration(
+                    vmmExecutablePath: "/bin/sleep",
+                    acceleratedDesktopExecutablePath: "/bin/sleep",
+                    stateDirectory: state,
+                    baseArguments: ["30"],
+                    acceleratedDesktopBaseArguments: ["30"],
+                    passMachineArguments: false,
+                    requiresReadyHandoff: false
+                ),
+                launchPolicy: .requireResolvedPlan
+            )
+            #expect(restarted.status(id: "dev")?.runtimeIdentity.mode == .requiresReplanning)
+            let restartedOperations = restarted.resolvedLaunchCompatibilityOperations(
+                for: .doryHypervisor
+            )
+            try restarted.installResolvedLaunchInfrastructure(
+                registry: rawRegistry(operations: restartedOperations),
+                resolver: resolver,
+                plans: plans,
+                expectedPlanRevision: { _ in 1 }
+            )
+            #expect(restarted.status(id: "dev")?.runtimeIdentity.mode == .resolvedPlan)
+            let updated = try restarted.update(id: "dev", memoryMB: 4_096)
+            #expect(updated.runtimeIdentity.mode == .requiresReplanning)
+            #expect(updated.runtimeIdentity.invalidationReason == .definitionChanged)
         }
     }
 

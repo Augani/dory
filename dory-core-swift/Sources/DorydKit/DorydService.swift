@@ -1601,6 +1601,109 @@ private extension DoryMachineStatus {
         dictionary["displayMode"] = displayMode.rawValue
         dictionary["bootMode"] = bootMode.rawValue
         dictionary["installerMediaAttached"] = installerMediaAttached
+        dictionary["runtimeIdentity"] = runtimeIdentity.xpcDictionary
+        return dictionary as NSDictionary
+    }
+}
+
+private extension DoryMachineRuntimeIdentity {
+    var xpcDictionary: NSDictionary {
+        var dictionary: [String: Any] = [
+            "schemaVersion": schemaVersion,
+            "mode": mode.rawValue,
+            "virtualHardwareABIVersion": virtualHardwareABIVersion,
+        ]
+        if let invalidationReason {
+            dictionary["invalidationReason"] = invalidationReason.rawValue
+        }
+        guard let plan = resolvedPlan, let resolvedPlanSHA256 else {
+            return dictionary as NSDictionary
+        }
+        dictionary["definitionRevision"] = plan.definitionRevision
+        if let definitionSHA256 = plan.definitionSHA256 {
+            dictionary["definitionSHA256"] = definitionSHA256
+        }
+        dictionary["planRevision"] = plan.planRevision
+        dictionary["planSHA256"] = resolvedPlanSHA256
+        dictionary["backend"] = plan.backend.rawValue
+        dictionary["backendImplementationIdentifier"] = plan.backendImplementationIdentifier
+        dictionary["backendRuntimeBuildIdentifier"] = plan.backendRuntimeBuildIdentifier
+        dictionary["supportTier"] = plan.supportTier.rawValue
+        if let selectionDisposition = plan.selectionEvidence?.disposition {
+            dictionary["selectionDisposition"] = selectionDisposition.rawValue
+        }
+        if let fallback = plan.selectionEvidence?.fallbackAuthorization {
+            dictionary["fallbackAuthorizationIdentity"] = fallback.authorizationIdentity
+        }
+        if let experimental = plan.experimentalAuthorization {
+            dictionary["experimentalAuthorizationIdentity"] = experimental.authorizationIdentity
+        }
+        if let graphics = plan.qualificationEvidence.graphics {
+            dictionary["graphicsQualification"] = [
+                "manifestIdentity": graphics.manifestIdentity,
+                "artifactSHA256": graphics.artifactSHA256,
+                "manifestSHA256": graphics.manifestSHA256,
+                "signingKeyID": graphics.signingKeyID,
+            ] as NSDictionary
+        }
+        if let runtime = plan.qualificationEvidence.runtime {
+            dictionary["runtimeQualification"] = [
+                "qualificationIdentity": runtime.qualificationIdentity,
+                "qualificationReportSHA256": runtime.qualificationReportSHA256,
+                "signingKeyID": runtime.signingKeyID,
+            ] as NSDictionary
+        }
+        if let host = plan.hostQualification {
+            dictionary["hostQualification"] = [
+                "qualificationIdentity": host.qualificationIdentity,
+                "qualificationReportSHA256": host.qualificationReportSHA256,
+                "qualifierIdentifier": host.qualifierIdentifier,
+            ] as NSDictionary
+        }
+        dictionary["components"] = plan.components.map { component in
+            [
+                "componentIdentifier": component.componentIdentifier,
+                "buildIdentifier": component.buildIdentifier,
+                "artifactSHA256": component.artifactSHA256,
+            ] as NSDictionary
+        }
+        var media: [String: Any] = [
+            "kind": plan.bootMedia.media.kind.rawValue,
+            "source": plan.bootMedia.media.source.rawValue,
+        ]
+        if let digest = plan.bootMedia.media.artifactSHA256 {
+            media["artifactSHA256"] = digest
+        }
+        if let reference = plan.bootMedia.resolverReference {
+            media["resolverNamespace"] = reference.namespace
+            media["resolverIdentifier"] = reference.identifier
+        }
+        if let inspection = plan.bootMedia.inspectionEvidence {
+            media["inspectionIdentity"] = inspection.inspectionIdentity
+            media["inspectionReportSHA256"] = inspection.inspectionReportSHA256
+        }
+        if let provenance = plan.bootMedia.mutableProvenanceEvidence {
+            media["provenanceReceiptIdentity"] = provenance.receiptIdentity
+            media["provenanceReceiptSHA256"] = provenance.receiptSHA256
+            media["provenanceRevision"] = provenance.provenance.revision
+        }
+        dictionary["bootMedia"] = media as NSDictionary
+        return dictionary as NSDictionary
+    }
+}
+
+private extension DoryMachineSnapshotArtifactEvidence {
+    var xpcDictionary: NSDictionary {
+        func artifact(_ value: DoryMachineSnapshotArtifact) -> NSDictionary {
+            ["byteCount": value.byteCount, "sha256": value.sha256]
+        }
+        var dictionary: [String: Any] = [
+            "schemaVersion": schemaVersion,
+            "rootfs": artifact(rootfs),
+            "kernel": artifact(kernel),
+        ]
+        if let machineIdentifier { dictionary["machineIdentifier"] = artifact(machineIdentifier) }
+        if let nvram { dictionary["nvram"] = artifact(nvram) }
         return dictionary as NSDictionary
     }
 }
@@ -1683,7 +1786,7 @@ private extension MachineRecipeProvisionResult {
 
 private extension DoryMachineSnapshot {
     var xpcDictionary: NSDictionary {
-        [
+        var dictionary: [String: Any] = [
             "id": id,
             "machineID": machineID,
             "note": note,
@@ -1695,7 +1798,12 @@ private extension DoryMachineSnapshot {
             "memoryMB": memoryMB,
             "cpuCount": cpuCount,
             "displayMode": displayMode.rawValue,
+            "runtimeIdentity": runtimeIdentity.xpcDictionary,
         ]
+        if let artifactEvidence {
+            dictionary["artifactEvidence"] = artifactEvidence.xpcDictionary
+        }
+        return dictionary as NSDictionary
     }
 }
 

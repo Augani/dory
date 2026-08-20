@@ -301,6 +301,7 @@ struct Machine: Identifiable, Hashable, Sendable {
     var displayMode: MachineDisplayMode = .headless
     var bootMode: MachineBootMode = .linuxKernel
     var installerMediaAttached: Bool = false
+    var runtimeIdentity: DorydMachineRuntimeIdentity = .legacyCompatibility
     var mounts: [MountPair] = []
     var id: String { name }
 

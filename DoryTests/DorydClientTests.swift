@@ -243,6 +243,7 @@ struct DorydClientTests {
         #expect(startedMachine.agentSocketPath == "/tmp/agent.sock")
         #expect(startedMachine.address == "192.168.215.40")
         #expect(startedMachine.configuredAddress == "192.168.215.40")
+        #expect(startedMachine.runtimeIdentity == .legacyCompatibility)
         #expect(startedMachine.shares == [
             DorydMachineShareConfiguration(tag: "src", hostPath: "/Users/me/src", guestPath: "/workspace/src", readOnly: true),
         ])
@@ -258,6 +259,7 @@ struct DorydClientTests {
         #expect(provisionedMachine.verify.stdout == "cargo 1.0\n")
         #expect(snapshot.id == "s1")
         #expect(snapshot.machineID == "dev")
+        #expect(snapshot.runtimeIdentity == .legacyCompatibility)
         #expect(snapshots.map(\.id).contains("s1"))
         #expect(clonedSnapshot.id == "dev-copy")
         #expect(restoredSnapshot.id == "dev")
@@ -319,6 +321,162 @@ struct DorydClientTests {
         #expect(incidents == [
             Incident(at: "2026-07-07T00:00:00Z", type: "engine.start", detail: "started")
         ])
+    }
+
+    @Test func presentInvalidRuntimeIdentityFailsStatusAndSnapshotClosed() async throws {
+        let resolvedWithoutComponentsOrMedia = NSMutableDictionary(
+            dictionary: validResolvedRuntimeIdentity()
+        )
+        resolvedWithoutComponentsOrMedia.removeObject(forKey: "components")
+        resolvedWithoutComponentsOrMedia.removeObject(forKey: "bootMedia")
+        let mixedQualification = NSMutableDictionary(
+            dictionary: validResolvedRuntimeIdentity()
+        )
+        mixedQualification["runtimeQualification"] = [
+            "qualificationIdentity": "runtime-qualification-1",
+            "qualificationReportSHA256": String(repeating: "3", count: 64),
+            "signingKeyID": "dory-runtime-1",
+            "manifestIdentity": "wrong-shape-field",
+        ]
+        let orphanProvenance = NSMutableDictionary(
+            dictionary: validResolvedRuntimeIdentity()
+        )
+        orphanProvenance["bootMedia"] = [
+            "kind": "installed-linux-boot-bundle",
+            "source": "user-provided",
+            "artifactSHA256": String(repeating: "6", count: 64),
+            "provenanceReceiptIdentity": "orphan-receipt",
+        ]
+        for identity in [
+            [
+                "schemaVersion": 2,
+                "mode": "legacy-compatibility",
+                "virtualHardwareABIVersion": 1,
+            ] as NSDictionary,
+            [
+                "schemaVersion": 1,
+                "mode": "legacy-compatibility",
+                "virtualHardwareABIVersion": 1,
+                "components": [[
+                    "componentIdentifier": "dory-hv",
+                    "buildIdentifier": "runtime-1",
+                    "artifactSHA256": String(repeating: "a", count: 64),
+                ]],
+            ] as NSDictionary,
+            resolvedWithoutComponentsOrMedia,
+            mixedQualification,
+            orphanProvenance,
+        ] {
+            let listener = NSXPCListener.anonymous()
+            let service = FakeDorydService(runtimeIdentityOverride: identity)
+            let delegate = FakeDorydListenerDelegate(service: service)
+            listener.delegate = delegate
+            listener.resume()
+            defer { listener.invalidate() }
+            let client = DorydClient(endpoint: listener.endpoint)
+
+            do {
+                _ = try await client.machineList()
+                Issue.record("present invalid status identity must fail closed")
+            } catch let error as DorydClientError {
+                #expect(error.description.contains("invalid machine list"))
+            }
+
+            do {
+                _ = try await client.machineSnapshot(
+                    "dev",
+                    note: "invalid identity",
+                    createdISO: "2026-07-07T00:00:00Z",
+                    snapshotID: "invalid-identity"
+                )
+                Issue.record("present invalid snapshot identity must fail closed")
+            } catch let error as DorydClientError {
+                #expect(error.description.contains("invalid doryd response"))
+            }
+        }
+    }
+
+    @Test func snapshotArtifactEvidenceIsAbsentOnlyForLegacyAndOtherwiseExact() async throws {
+        let malformedEvidence = [
+            "schemaVersion": 1,
+            "rootfs": [
+                "byteCount": 0,
+                "sha256": String(repeating: "a", count: 64),
+            ],
+            "kernel": [
+                "byteCount": 1,
+                "sha256": String(repeating: "b", count: 64),
+            ],
+        ] as NSDictionary
+        for fixture in [
+            (runtime: [
+                "schemaVersion": 1,
+                "mode": "legacy-compatibility",
+                "virtualHardwareABIVersion": 1,
+            ] as NSDictionary,
+             artifacts: malformedEvidence),
+            (runtime: validResolvedRuntimeIdentity(), artifacts: nil),
+        ] as [(runtime: NSDictionary, artifacts: NSDictionary?)] {
+            let listener = NSXPCListener.anonymous()
+            let service = FakeDorydService(
+                runtimeIdentityOverride: fixture.runtime,
+                artifactEvidenceOverride: fixture.artifacts
+            )
+            let delegate = FakeDorydListenerDelegate(service: service)
+            listener.delegate = delegate
+            listener.resume()
+            defer { listener.invalidate() }
+            let client = DorydClient(endpoint: listener.endpoint)
+
+            do {
+                _ = try await client.machineSnapshot(
+                    "dev",
+                    note: "invalid artifacts",
+                    createdISO: "2026-07-07T00:00:00Z",
+                    snapshotID: "invalid-artifacts"
+                )
+                Issue.record("invalid or missing non-legacy artifact evidence must fail closed")
+            } catch let error as DorydClientError {
+                #expect(error.description.contains("invalid doryd response"))
+            }
+        }
+    }
+
+    private func validResolvedRuntimeIdentity() -> NSDictionary {
+        [
+            "schemaVersion": 1,
+            "mode": "resolved-plan",
+            "virtualHardwareABIVersion": 1,
+            "definitionRevision": UInt64(1),
+            "definitionSHA256": String(repeating: "1", count: 64),
+            "planRevision": UInt64(1),
+            "planSHA256": String(repeating: "2", count: 64),
+            "backend": "dory-hypervisor",
+            "backendImplementationIdentifier": "dev.dory.raw-hv-linux",
+            "backendRuntimeBuildIdentifier": "runtime-1",
+            "supportTier": "supported",
+            "selectionDisposition": "primary",
+            "runtimeQualification": [
+                "qualificationIdentity": "runtime-qualification-1",
+                "qualificationReportSHA256": String(repeating: "3", count: 64),
+                "signingKeyID": "dory-runtime-1",
+            ],
+            "hostQualification": [
+                "qualificationIdentity": "host-qualification-1",
+                "qualificationReportSHA256": String(repeating: "4", count: 64),
+                "qualifierIdentifier": "dory-host-qualifier",
+            ],
+            "components": [[
+                "componentIdentifier": "dory-hv",
+                "buildIdentifier": "runtime-1",
+                "artifactSHA256": String(repeating: "5", count: 64),
+            ]],
+            "bootMedia": [
+                "kind": "installed-linux-boot-bundle",
+                "source": "user-provided",
+                "artifactSHA256": String(repeating: "6", count: 64),
+            ],
+        ] as NSDictionary
     }
 
     @MainActor
@@ -1790,6 +1948,8 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
     private var _latestMachineCreateConfig: NSDictionary?
     private var _latestMachineUpdateConfig: NSDictionary?
     private var _latestMachineProvisionRecipe: String?
+    private var runtimeIdentityOverride: NSDictionary?
+    private var artifactEvidenceOverride: NSDictionary?
     private var snapshots: [String: [NSDictionary]] = [:]
     private var backupStatuses: [String: NSDictionary] = [:]
     var engineStartCount: Int {
@@ -1871,10 +2031,19 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
 
     init(
         socketPath: String = "/tmp/doryd-test.sock",
-        engineShutdownReplyDelay: TimeInterval = 0
+        engineShutdownReplyDelay: TimeInterval = 0,
+        runtimeIdentityOverride: NSDictionary? = nil,
+        artifactEvidenceOverride: NSDictionary? = nil
     ) {
         self.socketPath = socketPath
         self.engineShutdownReplyDelay = engineShutdownReplyDelay
+        self.runtimeIdentityOverride = runtimeIdentityOverride
+        self.artifactEvidenceOverride = artifactEvidenceOverride
+        if let runtimeIdentityOverride,
+           let existing = machines["dev"]?.mutableCopy() as? NSMutableDictionary {
+            existing["runtimeIdentity"] = runtimeIdentityOverride
+            machines["dev"] = existing.copy() as? NSDictionary
+        }
     }
 
     func setEngineStatus(_ state: String, detail: String = "ok") {
@@ -2182,13 +2351,28 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
 
     func machineSnapshot(_ machineID: String, request: NSDictionary, reply: @escaping (Bool, NSDictionary, String) -> Void) {
         let id = request["snapshotID"] as? String ?? "s\(UUID().uuidString.prefix(8).lowercased())"
-        let row = Self.snapshotRow(
+        let baseRow = Self.snapshotRow(
             id: id,
             machineID: machineID,
             note: request["note"] as? String ?? "",
             createdISO: request["createdISO"] as? String ?? "2026-07-07T00:00:00Z"
         )
         lock.lock()
+        let row: NSDictionary
+        if let runtimeIdentityOverride,
+           let mutable = baseRow.mutableCopy() as? NSMutableDictionary {
+            mutable["runtimeIdentity"] = runtimeIdentityOverride
+            if let artifactEvidenceOverride {
+                mutable["artifactEvidence"] = artifactEvidenceOverride
+            }
+            row = mutable.copy() as? NSDictionary ?? baseRow
+        } else if let artifactEvidenceOverride,
+                  let mutable = baseRow.mutableCopy() as? NSMutableDictionary {
+            mutable["artifactEvidence"] = artifactEvidenceOverride
+            row = mutable.copy() as? NSDictionary ?? baseRow
+        } else {
+            row = baseRow
+        }
         _machineSnapshotCount += 1
         snapshots[machineID, default: []].insert(row, at: 0)
         lock.unlock()

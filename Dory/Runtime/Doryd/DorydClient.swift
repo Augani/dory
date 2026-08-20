@@ -131,6 +131,265 @@ nonisolated struct DorydMachineConfiguration: Sendable, Equatable {
     }
 }
 
+nonisolated struct DorydMachineRuntimeComponentIdentity: Codable, Sendable, Equatable, Hashable {
+    var componentIdentifier: String
+    var buildIdentifier: String
+    var artifactSHA256: String
+}
+
+nonisolated struct DorydMachineRuntimeBootMediaIdentity: Codable, Sendable, Equatable, Hashable {
+    var kind: String
+    var source: String
+    var artifactSHA256: String? = nil
+    var resolverNamespace: String? = nil
+    var resolverIdentifier: String? = nil
+    var inspectionIdentity: String? = nil
+    var inspectionReportSHA256: String? = nil
+    var provenanceReceiptIdentity: String? = nil
+    var provenanceReceiptSHA256: String? = nil
+    var provenanceRevision: UInt64? = nil
+}
+
+nonisolated struct DorydMachineRuntimeQualificationReference: Codable, Sendable, Equatable, Hashable {
+    var manifestIdentity: String? = nil
+    var artifactSHA256: String? = nil
+    var manifestSHA256: String? = nil
+    var qualificationIdentity: String? = nil
+    var qualificationReportSHA256: String? = nil
+    var signingKeyID: String? = nil
+    var qualifierIdentifier: String? = nil
+
+    var isValidGraphicsReference: Bool {
+        manifestIdentity?.isSafeEvidenceIdentifier == true
+            && artifactSHA256?.isLowercaseSHA256 == true
+            && manifestSHA256?.isLowercaseSHA256 == true
+            && signingKeyID?.isSafeEvidenceIdentifier == true
+            && qualificationIdentity == nil
+            && qualificationReportSHA256 == nil
+            && qualifierIdentifier == nil
+    }
+
+    var isValidRuntimeReference: Bool {
+        qualificationIdentity?.isSafeEvidenceIdentifier == true
+            && qualificationReportSHA256?.isLowercaseSHA256 == true
+            && signingKeyID?.isSafeEvidenceIdentifier == true
+            && manifestIdentity == nil
+            && artifactSHA256 == nil
+            && manifestSHA256 == nil
+            && qualifierIdentifier == nil
+    }
+
+    var isValidHostReference: Bool {
+        qualificationIdentity?.isSafeEvidenceIdentifier == true
+            && qualificationReportSHA256?.isLowercaseSHA256 == true
+            && qualifierIdentifier?.isSafeEvidenceIdentifier == true
+            && manifestIdentity == nil
+            && artifactSHA256 == nil
+            && manifestSHA256 == nil
+            && signingKeyID == nil
+    }
+}
+
+nonisolated struct DorydMachineRuntimeIdentity: Codable, Sendable, Equatable, Hashable {
+    static let currentSchemaVersion: UInt16 = 1
+    var schemaVersion: UInt16
+    var mode: String
+    var virtualHardwareABIVersion: UInt16
+    var invalidationReason: String? = nil
+    var definitionRevision: UInt64? = nil
+    var definitionSHA256: String? = nil
+    var planRevision: UInt64? = nil
+    var planSHA256: String? = nil
+    var backend: String? = nil
+    var backendImplementationIdentifier: String? = nil
+    var backendRuntimeBuildIdentifier: String? = nil
+    var supportTier: String? = nil
+    var selectionDisposition: String? = nil
+    var fallbackAuthorizationIdentity: String? = nil
+    var experimentalAuthorizationIdentity: String? = nil
+    var graphicsQualification: DorydMachineRuntimeQualificationReference? = nil
+    var runtimeQualification: DorydMachineRuntimeQualificationReference? = nil
+    var hostQualification: DorydMachineRuntimeQualificationReference? = nil
+    var components: [DorydMachineRuntimeComponentIdentity]? = nil
+    var bootMedia: DorydMachineRuntimeBootMediaIdentity? = nil
+
+    static let legacyCompatibility = Self(
+        schemaVersion: currentSchemaVersion,
+        mode: "legacy-compatibility",
+        virtualHardwareABIVersion: 1
+    )
+
+    var isValid: Bool {
+        guard schemaVersion == Self.currentSchemaVersion,
+              virtualHardwareABIVersion > 0 else {
+            return false
+        }
+        switch mode {
+        case "legacy-compatibility":
+            return invalidationReason == nil && hasNoResolvedEvidence
+        case "requires-replanning":
+            return invalidationReason?.isSafeEvidenceIdentifier == true
+                && hasNoResolvedEvidence
+        case "resolved-plan":
+            return isValidResolvedEvidence
+        default:
+            return false
+        }
+    }
+
+    private var hasNoResolvedEvidence: Bool {
+        definitionRevision == nil
+            && definitionSHA256 == nil
+            && planRevision == nil
+            && planSHA256 == nil
+            && backend == nil
+            && backendImplementationIdentifier == nil
+            && backendRuntimeBuildIdentifier == nil
+            && supportTier == nil
+            && selectionDisposition == nil
+            && fallbackAuthorizationIdentity == nil
+            && experimentalAuthorizationIdentity == nil
+            && graphicsQualification == nil
+            && runtimeQualification == nil
+            && hostQualification == nil
+            && components == nil
+            && bootMedia == nil
+    }
+
+    private var isValidResolvedEvidence: Bool {
+        guard invalidationReason == nil,
+              let definitionRevision, definitionRevision > 0,
+              definitionSHA256?.isLowercaseSHA256 == true,
+              let planRevision, planRevision > 0,
+              planSHA256?.isLowercaseSHA256 == true,
+              backend?.isSafeEvidenceIdentifier == true,
+              backendImplementationIdentifier?.isSafeEvidenceIdentifier == true,
+              backendRuntimeBuildIdentifier?.isSafeEvidenceIdentifier == true,
+              let supportTier,
+              let selectionDisposition,
+              ["primary", "explicit-alternative", "approved-fallback"]
+                .contains(selectionDisposition),
+              let components, !components.isEmpty,
+              Set(components.map(\.componentIdentifier)).count == components.count,
+              components.allSatisfy({ component in
+                  component.componentIdentifier.isSafeEvidenceIdentifier
+                      && component.buildIdentifier.isSafeEvidenceIdentifier
+                      && component.artifactSHA256.isLowercaseSHA256
+              }),
+              let bootMedia, bootMedia.isValid else {
+            return false
+        }
+        if let graphicsQualification, !graphicsQualification.isValidGraphicsReference {
+            return false
+        }
+        guard hostQualification?.isValidHostReference == true else { return false }
+        switch supportTier {
+        case "supported":
+            guard runtimeQualification?.isValidRuntimeReference == true,
+                  experimentalAuthorizationIdentity == nil else {
+                return false
+            }
+        case "experimental":
+            guard experimentalAuthorizationIdentity?.isSafeEvidenceIdentifier == true,
+                  runtimeQualification.map(\.isValidRuntimeReference) ?? true else {
+                return false
+            }
+        default:
+            return false
+        }
+        switch selectionDisposition {
+        case "approved-fallback":
+            return fallbackAuthorizationIdentity?.isSafeEvidenceIdentifier == true
+        case "primary", "explicit-alternative":
+            return fallbackAuthorizationIdentity == nil
+        default:
+            return false
+        }
+    }
+}
+
+nonisolated private extension String {
+    var isLowercaseSHA256: Bool {
+        utf8.count == 64 && utf8.allSatisfy { byte in
+            (byte >= 48 && byte <= 57) || (byte >= 97 && byte <= 102)
+        }
+    }
+
+    var isSafeEvidenceIdentifier: Bool {
+        let bytes = Array(utf8)
+        guard (1...256).contains(bytes.count) else { return false }
+        return bytes.allSatisfy { byte in
+            (byte >= 48 && byte <= 57)
+                || (byte >= 65 && byte <= 90)
+                || (byte >= 97 && byte <= 122)
+                || byte == 45 || byte == 46 || byte == 47
+                || byte == 58 || byte == 64 || byte == 95
+        }
+    }
+}
+
+nonisolated private extension DorydMachineRuntimeBootMediaIdentity {
+    var isValid: Bool {
+        let immutableKinds = [
+            "installer-iso",
+            "installed-linux-boot-bundle",
+            "macos-restore-image",
+        ]
+        guard immutableKinds.contains(kind) || kind == "virtual-disk",
+              ["dory-bundled", "vendor-download", "user-provided"].contains(source) else {
+            return false
+        }
+        let immutable = artifactSHA256?.isLowercaseSHA256 == true
+        let mutable = provenanceReceiptIdentity?.isSafeEvidenceIdentifier == true
+            && provenanceReceiptSHA256?.isLowercaseSHA256 == true
+            && (provenanceRevision ?? 0) > 0
+        let hasAnyMutableField = provenanceReceiptIdentity != nil
+            || provenanceReceiptSHA256 != nil
+            || provenanceRevision != nil
+        guard immutable != mutable,
+              hasAnyMutableField == mutable,
+              (kind == "virtual-disk") == mutable else {
+            return false
+        }
+        guard (resolverNamespace == nil) == (resolverIdentifier == nil),
+              resolverNamespace.map(\.isSafeEvidenceIdentifier) ?? true,
+              resolverIdentifier.map(\.isSafeEvidenceIdentifier) ?? true,
+              (inspectionIdentity == nil) == (inspectionReportSHA256 == nil),
+              inspectionIdentity.map(\.isSafeEvidenceIdentifier) ?? true,
+              inspectionReportSHA256.map(\.isLowercaseSHA256) ?? true else {
+            return false
+        }
+        if kind == "installer-iso" || kind == "macos-restore-image" {
+            guard inspectionIdentity != nil else { return false }
+        }
+        return true
+    }
+}
+
+nonisolated struct DorydMachineSnapshotArtifact: Codable, Sendable, Equatable, Hashable {
+    var byteCount: UInt64
+    var sha256: String
+
+    var isValid: Bool { byteCount > 0 && sha256.isLowercaseSHA256 }
+}
+
+nonisolated struct DorydMachineSnapshotArtifactEvidence: Codable, Sendable, Equatable, Hashable {
+    var schemaVersion: UInt16
+    var rootfs: DorydMachineSnapshotArtifact
+    var kernel: DorydMachineSnapshotArtifact
+    var machineIdentifier: DorydMachineSnapshotArtifact?
+    var nvram: DorydMachineSnapshotArtifact?
+
+    var isValid: Bool {
+        schemaVersion == 1
+            && rootfs.isValid
+            && kernel.isValid
+            && (machineIdentifier?.isValid ?? true)
+            && (nvram?.isValid ?? true)
+            && ((machineIdentifier == nil) == (nvram == nil))
+    }
+}
+
 nonisolated struct DorydMachineStatus: Sendable, Equatable {
     var id: String
     var state: String
@@ -154,6 +413,7 @@ nonisolated struct DorydMachineStatus: Sendable, Equatable {
     var installerMediaAttached: Bool = false
     var shares: [DorydMachineShareConfiguration] = []
     var environment: [String: String] = [:]
+    var runtimeIdentity: DorydMachineRuntimeIdentity = .legacyCompatibility
 }
 
 nonisolated struct DorydMachineExecResult: Sendable, Equatable {
@@ -205,6 +465,8 @@ nonisolated struct DorydMachineSnapshot: Sendable, Equatable {
     var architecture: String
     var memoryMB: UInt64
     var cpuCount: Int
+    var runtimeIdentity: DorydMachineRuntimeIdentity = .legacyCompatibility
+    var artifactEvidence: DorydMachineSnapshotArtifactEvidence? = nil
 }
 
 nonisolated enum DorydMachineBackupFrequency: String, Sendable, Equatable, CaseIterable {
@@ -1186,7 +1448,8 @@ nonisolated final class DorydClient: @unchecked Sendable {
 
     nonisolated private static func machineStatus(from dictionary: NSDictionary) -> DorydMachineStatus? {
         guard let id = dictionary["id"] as? String,
-              let state = dictionary["state"] as? String else {
+              let state = dictionary["state"] as? String,
+              let runtimeIdentity = machineRuntimeIdentity(from: dictionary) else {
             return nil
         }
         return DorydMachineStatus(
@@ -1213,8 +1476,24 @@ nonisolated final class DorydClient: @unchecked Sendable {
                 ?? (dictionary["installerMediaAttached"] as? NSNumber)?.boolValue
                 ?? false,
             shares: machineShares(from: dictionary["shares"]),
-            environment: machineEnvironment(from: dictionary["env"])
+            environment: machineEnvironment(from: dictionary["env"]),
+            runtimeIdentity: runtimeIdentity
         )
+    }
+
+    /// Only an absent key is compatible with an older daemon. A present identity is an evidence
+    /// claim and must decode and validate exactly; malformed or future-schema claims fail closed.
+    nonisolated private static func machineRuntimeIdentity(
+        from dictionary: NSDictionary
+    ) -> DorydMachineRuntimeIdentity? {
+        guard let encoded = dictionary["runtimeIdentity"] else {
+            return .legacyCompatibility
+        }
+        guard let identity = decoded(DorydMachineRuntimeIdentity.self, from: encoded),
+              identity.isValid else {
+            return nil
+        }
+        return identity
     }
 
     nonisolated private static func machineShares(from value: Any?) -> [DorydMachineShareConfiguration] {
@@ -1362,7 +1641,12 @@ nonisolated final class DorydClient: @unchecked Sendable {
               let kernelPath = dictionary["kernelPath"] as? String,
               let architecture = dictionary["architecture"] as? String,
               let memoryMB = uint64(dictionary["memoryMB"]),
-              let cpuCount = int(dictionary["cpuCount"]) else {
+              let cpuCount = int(dictionary["cpuCount"]),
+              let runtimeIdentity = machineRuntimeIdentity(from: dictionary),
+              let artifactEvidence = machineSnapshotArtifactEvidence(
+                  from: dictionary,
+                  runtimeIdentity: runtimeIdentity
+              ) else {
             return nil
         }
         return DorydMachineSnapshot(
@@ -1375,8 +1659,34 @@ nonisolated final class DorydClient: @unchecked Sendable {
             kernelPath: kernelPath,
             architecture: architecture,
             memoryMB: memoryMB,
-            cpuCount: cpuCount
+            cpuCount: cpuCount,
+            runtimeIdentity: runtimeIdentity,
+            artifactEvidence: artifactEvidence.value
         )
+    }
+
+    private struct ParsedMachineSnapshotArtifactEvidence {
+        var value: DorydMachineSnapshotArtifactEvidence?
+    }
+
+    /// Artifact evidence follows the same compatibility rule as runtime identity: absence is
+    /// accepted only for snapshots from a legacy daemon. A present claim must be well formed,
+    /// and every non-legacy identity requires evidence.
+    nonisolated private static func machineSnapshotArtifactEvidence(
+        from dictionary: NSDictionary,
+        runtimeIdentity: DorydMachineRuntimeIdentity
+    ) -> ParsedMachineSnapshotArtifactEvidence? {
+        guard let encoded = dictionary["artifactEvidence"] else {
+            guard runtimeIdentity.mode == "legacy-compatibility" else { return nil }
+            return ParsedMachineSnapshotArtifactEvidence(value: nil)
+        }
+        guard let evidence = decoded(
+            DorydMachineSnapshotArtifactEvidence.self,
+            from: encoded
+        ), evidence.isValid else {
+            return nil
+        }
+        return ParsedMachineSnapshotArtifactEvidence(value: evidence)
     }
 
     nonisolated private static func machineSnapshots(from rows: NSArray) -> [DorydMachineSnapshot]? {

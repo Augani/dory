@@ -1098,6 +1098,10 @@ final class DorydServiceTests: XCTestCase {
             XCTAssertTrue(ok, message)
             XCTAssertEqual(body["state"] as? String, "running")
             XCTAssertNotNil(body["pid"])
+            let runtime = body["runtimeIdentity"] as? NSDictionary
+            XCTAssertEqual(runtime?["mode"] as? String, "legacy-compatibility")
+            XCTAssertEqual((runtime?["virtualHardwareABIVersion"] as? NSNumber)?.uint16Value, 1)
+            XCTAssertNil(runtime?["resolvedPlan"])
             start.fulfill()
         }
         wait(for: [start], timeout: 5)
@@ -1376,6 +1380,14 @@ final class DorydServiceTests: XCTestCase {
             XCTAssertEqual(body["machineID"] as? String, "dev")
             XCTAssertEqual(body["note"] as? String, "before")
             XCTAssertEqual(body["architecture"] as? String, doryTestGuestArchitecture)
+            let runtime = body["runtimeIdentity"] as? NSDictionary
+            XCTAssertEqual(runtime?["mode"] as? String, "legacy-compatibility")
+            XCTAssertEqual((runtime?["virtualHardwareABIVersion"] as? NSNumber)?.uint16Value, 1)
+            let artifacts = body["artifactEvidence"] as? NSDictionary
+            XCTAssertEqual(
+                ((artifacts?["rootfs"] as? NSDictionary)?["sha256"] as? String)?.count,
+                64
+            )
             snapshotReply.fulfill()
         }
         wait(for: [snapshotReply], timeout: 5)
