@@ -621,6 +621,7 @@ public enum MachineManagerError: Error, Sendable, Equatable, CustomStringConvert
     case unknownSnapshot(String)
     case alreadyRunning(String)
     case agentUnavailable(String)
+    case agentCapabilityUnavailable(String, String)
     case balloonUnavailable(String)
     case balloonApplyFailed(String, String)
     case invalidAddress(String)
@@ -644,6 +645,8 @@ public enum MachineManagerError: Error, Sendable, Equatable, CustomStringConvert
             return "machine is already running: \(id)"
         case let .agentUnavailable(id):
             return "machine agent is unavailable: \(id)"
+        case let .agentCapabilityUnavailable(id, capability):
+            return "machine agent capability is unavailable for \(id): \(capability)"
         case let .balloonUnavailable(id):
             return "machine balloon control is unavailable: \(id)"
         case let .balloonApplyFailed(id, message):
@@ -4709,7 +4712,7 @@ public final class MachineManager: @unchecked Sendable {
     }
 
     public func telemetry(id: String) throws -> DoryTelemetry {
-        try withAgentClient(id: id) { client in
+        try withAgentClient(id: id, requiredCapability: "telemetry") { client in
             try client.telemetry()
         }
     }
@@ -4800,7 +4803,7 @@ public final class MachineManager: @unchecked Sendable {
         guard !argv.isEmpty else {
             throw MachineManagerError.agentUnavailable(id)
         }
-        return try withAgentClient(id: id) { client in
+        return try withAgentClient(id: id, requiredCapability: "exec") { client in
             try client.exec(
                 argv: argv,
                 cwd: cwd,
@@ -4813,6 +4816,7 @@ public final class MachineManager: @unchecked Sendable {
 
     private func withAgentClient<T>(
         id: String,
+        requiredCapability: String? = nil,
         _ operation: (any AgentControlClient) throws -> T
     ) throws -> T {
         guard let status = status(id: id) else {
@@ -4820,6 +4824,10 @@ public final class MachineManager: @unchecked Sendable {
         }
         guard status.state == .running, let socketPath = status.agentSocketPath else {
             throw MachineManagerError.agentUnavailable(id)
+        }
+        if let requiredCapability,
+           !status.supportsAgentCapability(requiredCapability) {
+            throw MachineManagerError.agentCapabilityUnavailable(id, requiredCapability)
         }
         let client = try agentConnector(socketPath)
         defer { client.close() }
@@ -6273,6 +6281,16 @@ public final class MachineManager: @unchecked Sendable {
         launchID: UUID,
         agentSocketPath: String
     ) {
+        lock.lock()
+        let mayExecute = machines[machineID].map { entry in
+            entry.launchID == launchID
+                && entry.state == .running
+                && entry.handoff?.ready.agentSocketPath == agentSocketPath
+                && entry.handoff?.ready.supportsAgentCapability("exec") == true
+        } ?? false
+        lock.unlock()
+        guard mayExecute else { return }
+
         let address: String
         do {
             let client = try agentConnector(agentSocketPath)
@@ -9100,11 +9118,11 @@ private struct MachineEntry {
 
 extension MachineManager: WakeClockSyncing {
     public func syncAgentClock(now: Date) -> AgentClockSyncResult {
-        let runningAgents = list().compactMap { status -> (id: String, socketPath: String)? in
+        let runningAgents = list().compactMap { status -> (id: String, socketPath: String, supported: Bool)? in
             guard status.state == .running, let socketPath = status.agentSocketPath else {
                 return nil
             }
-            return (status.id, socketPath)
+            return (status.id, socketPath, status.supportsAgentCapability("clock-sync"))
         }
         guard !runningAgents.isEmpty else {
             return AgentClockSyncResult(name: "machines", attempted: false, synced: false)
@@ -9114,6 +9132,10 @@ extension MachineManager: WakeClockSyncing {
         var failures: [String] = []
         var syncedCount = 0
         for agent in runningAgents {
+            guard agent.supported else {
+                failures.append("\(agent.id): clock-sync capability unavailable")
+                continue
+            }
             do {
                 let client = try agentConnector(agent.socketPath)
                 defer { client.close() }
@@ -9133,5 +9155,31 @@ extension MachineManager: WakeClockSyncing {
             synced: failures.isEmpty && syncedCount == runningAgents.count,
             error: failures.isEmpty ? nil : failures.joined(separator: "; ")
         )
+    }
+}
+
+private extension DoryMachineStatus {
+    func supportsAgentCapability(_ id: String, minimumVersion: UInt32 = 1) -> Bool {
+        guard agentBuild?.isEmpty == false,
+              agentProtocolVersion == DoryCore.protocolVersion(),
+              agentCapabilities.allSatisfy(\.isValid),
+              agentCapabilities == agentCapabilities.sorted(by: { $0.id < $1.id }),
+              Set(agentCapabilities.map(\.id)).count == agentCapabilities.count else {
+            return false
+        }
+        return agentCapabilities.contains { $0.id == id && $0.version >= minimumVersion }
+    }
+}
+
+private extension VmmReadyMessage {
+    func supportsAgentCapability(_ id: String, minimumVersion: UInt32 = 1) -> Bool {
+        guard agentBuild?.isEmpty == false,
+              agentProtocolVersion == DoryCore.protocolVersion(),
+              agentCapabilities.allSatisfy(\.isValid),
+              agentCapabilities == agentCapabilities.sorted(by: { $0.id < $1.id }),
+              Set(agentCapabilities.map(\.id)).count == agentCapabilities.count else {
+            return false
+        }
+        return agentCapabilities.contains { $0.id == id && $0.version >= minimumVersion }
     }
 }

@@ -724,7 +724,10 @@ final class DorydServiceTests: XCTestCase {
                 machineID: "dev",
                 agentBuild: "dory-agent/test",
                 agentProtocolVersion: DoryCore.protocolVersion(),
-                agentCapabilities: [DoryAgentCapability(id: "exec", version: 1)],
+                agentCapabilities: [
+                    DoryAgentCapability(id: "exec", version: 1),
+                    DoryAgentCapability(id: "telemetry", version: 1),
+                ],
                 agentSocketPath: "/run/agent.sock",
                 dockerdSocketPath: "/run/docker.sock",
                 controlSocketPath: "/run/control.sock"
@@ -813,6 +816,11 @@ final class DorydServiceTests: XCTestCase {
             ready: VmmReadyMessage(
                 machineID: "dev",
                 agentBuild: "dory-agent/test",
+                agentProtocolVersion: DoryCore.protocolVersion(),
+                agentCapabilities: [
+                    DoryAgentCapability(id: "exec", version: 1),
+                    DoryAgentCapability(id: "telemetry", version: 1),
+                ],
                 agentSocketPath: "/run/agent.sock",
                 dockerdSocketPath: "/run/docker.sock",
                 controlSocketPath: "/run/control.sock"
@@ -1628,6 +1636,8 @@ final class DorydServiceTests: XCTestCase {
             ready: VmmReadyMessage(
                 machineID: "dev",
                 agentBuild: "dory-agent/test",
+                agentProtocolVersion: DoryCore.protocolVersion(),
+                agentCapabilities: [DoryAgentCapability(id: "exec", version: 1)],
                 agentSocketPath: "/run/agent.sock",
                 dockerdSocketPath: "/run/docker.sock",
                 shellSocketPath: "/run/shell.sock"
@@ -1704,6 +1714,8 @@ final class DorydServiceTests: XCTestCase {
             ready: VmmReadyMessage(
                 machineID: "dev",
                 agentBuild: "dory-agent/test",
+                agentProtocolVersion: DoryCore.protocolVersion(),
+                agentCapabilities: [DoryAgentCapability(id: "exec", version: 1)],
                 agentSocketPath: "/run/agent.sock",
                 dockerdSocketPath: "/run/docker.sock"
             ),

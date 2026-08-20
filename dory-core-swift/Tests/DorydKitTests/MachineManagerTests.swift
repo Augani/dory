@@ -6,6 +6,10 @@ import DoryOperations
 import XCTest
 
 final class MachineManagerTests: XCTestCase {
+    private static func agentCapabilities(_ ids: String...) -> [DoryAgentCapability] {
+        ids.sorted().map { DoryAgentCapability(id: $0, version: 1) }
+    }
+
     func testShareArgumentsRoundTripDelimiterHeavyPathsAndJSON() throws {
         let shares = [
             DoryMachineShareConfiguration(
@@ -3167,6 +3171,10 @@ final class MachineManagerTests: XCTestCase {
             ready: VmmReadyMessage(
                 machineID: "dev",
                 agentBuild: "dory-agent/test",
+                agentProtocolVersion: DoryCore.protocolVersion(),
+                agentCapabilities: Self.agentCapabilities(
+                    "clock-sync", "exec", "exec-stdin", "ports-watch", "sync-push", "telemetry"
+                ),
                 agentSocketPath: "/run/agent.sock",
                 dockerdSocketPath: "/run/docker.sock",
                 shellSocketPath: "/run/shell.sock"
@@ -3251,7 +3259,13 @@ final class MachineManagerTests: XCTestCase {
         let starting = try manager.start(id: "dev")
         try sendVmmHandoff(
             path: try XCTUnwrap(starting.handoffSocketPath),
-            ready: VmmReadyMessage(machineID: "dev", agentSocketPath: "/run/agent.sock"),
+            ready: VmmReadyMessage(
+                machineID: "dev",
+                agentBuild: "dory-agent/test",
+                agentProtocolVersion: DoryCore.protocolVersion(),
+                agentCapabilities: Self.agentCapabilities("exec"),
+                agentSocketPath: "/run/agent.sock"
+            ),
             fileDescriptors: []
         )
 
@@ -3296,7 +3310,13 @@ final class MachineManagerTests: XCTestCase {
         let starting = try manager.start(id: "dev")
         try sendVmmHandoff(
             path: try XCTUnwrap(starting.handoffSocketPath),
-            ready: VmmReadyMessage(machineID: "dev", agentSocketPath: "/run/agent.sock"),
+            ready: VmmReadyMessage(
+                machineID: "dev",
+                agentBuild: "dory-agent/test",
+                agentProtocolVersion: DoryCore.protocolVersion(),
+                agentCapabilities: Self.agentCapabilities("exec"),
+                agentSocketPath: "/run/agent.sock"
+            ),
             fileDescriptors: []
         )
 
@@ -3342,7 +3362,13 @@ final class MachineManagerTests: XCTestCase {
         let starting = try manager.start(id: "dev")
         try sendVmmHandoff(
             path: try XCTUnwrap(starting.handoffSocketPath),
-            ready: VmmReadyMessage(machineID: "dev", agentSocketPath: "/run/agent.sock"),
+            ready: VmmReadyMessage(
+                machineID: "dev",
+                agentBuild: "dory-agent/test",
+                agentProtocolVersion: DoryCore.protocolVersion(),
+                agentCapabilities: Self.agentCapabilities("exec"),
+                agentSocketPath: "/run/agent.sock"
+            ),
             fileDescriptors: []
         )
         _ = try waitForRecordedExecs(connector, count: 1)
@@ -3671,6 +3697,8 @@ final class MachineManagerTests: XCTestCase {
             ready: VmmReadyMessage(
                 machineID: "dev",
                 agentBuild: "dory-agent/test",
+                agentProtocolVersion: DoryCore.protocolVersion(),
+                agentCapabilities: Self.agentCapabilities("clock-sync", "exec"),
                 agentSocketPath: "/run/agent.sock",
                 dockerdSocketPath: "/run/docker.sock",
                 controlSocketPath: "/run/control.sock"
@@ -3717,6 +3745,8 @@ final class MachineManagerTests: XCTestCase {
             ready: VmmReadyMessage(
                 machineID: "dev",
                 agentBuild: "dory-agent/test",
+                agentProtocolVersion: DoryCore.protocolVersion(),
+                agentCapabilities: Self.agentCapabilities("exec"),
                 agentSocketPath: "/run/agent.sock",
                 dockerdSocketPath: "/run/docker.sock",
                 controlSocketPath: "/run/control.sock"
@@ -3755,6 +3785,58 @@ final class MachineManagerTests: XCTestCase {
         ])
     }
 
+    func testAgentOperationsRequireAdvertisedCapabilitiesBeforeConnecting() throws {
+        let base = "/tmp/dory-machine-capability-gate-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let connector = RecordingMachineAgentConnector()
+        let manager = MachineManager(
+            configuration: MachineManagerConfiguration(
+                vmmExecutablePath: "/bin/sleep",
+                stateDirectory: base,
+                baseArguments: ["30"],
+                passMachineArguments: false,
+                requiresReadyHandoff: true
+            ),
+            agentConnector: connector.connect(socketPath:)
+        )
+        defer {
+            try? manager.delete(id: "dev")
+            try? FileManager.default.removeItem(atPath: base)
+        }
+
+        _ = try manager.create(DoryMachineConfiguration(
+            id: "dev",
+            kernelPath: doryTestKernelPath,
+            rootfsPath: doryTestRootfsPath
+        ))
+        let starting = try manager.start(id: "dev")
+        try sendVmmHandoff(
+            path: try XCTUnwrap(starting.handoffSocketPath),
+            ready: VmmReadyMessage(
+                machineID: "dev",
+                agentBuild: "dory-agent/test",
+                agentProtocolVersion: DoryCore.protocolVersion(),
+                agentCapabilities: Self.agentCapabilities("clock-sync"),
+                agentSocketPath: "/run/agent.sock"
+            ),
+            fileDescriptors: []
+        )
+        _ = try waitForMachineState(manager, id: "dev", state: .running)
+
+        XCTAssertThrowsError(try manager.exec(id: "dev", argv: ["/bin/true"])) { error in
+            XCTAssertEqual(
+                error as? MachineManagerError,
+                .agentCapabilityUnavailable("dev", "exec")
+            )
+        }
+        XCTAssertThrowsError(try manager.telemetry(id: "dev")) { error in
+            XCTAssertEqual(
+                error as? MachineManagerError,
+                .agentCapabilityUnavailable("dev", "telemetry")
+            )
+        }
+        XCTAssertTrue(connector.connectedPaths.isEmpty)
+    }
+
     func testMemorySnapshotsIncludeRunningTelemetryAndResidentPausedMemory() throws {
         let base = "/tmp/dory-machine-memory-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         let connector = RecordingMachineAgentConnector(telemetry: DoryTelemetry(
@@ -3791,6 +3873,8 @@ final class MachineManagerTests: XCTestCase {
             ready: VmmReadyMessage(
                 machineID: "dev",
                 agentBuild: "dory-agent/test",
+                agentProtocolVersion: DoryCore.protocolVersion(),
+                agentCapabilities: Self.agentCapabilities("exec", "telemetry"),
                 agentSocketPath: "/run/agent.sock",
                 dockerdSocketPath: "/run/docker.sock",
                 controlSocketPath: "/run/control.sock"
@@ -3854,6 +3938,8 @@ final class MachineManagerTests: XCTestCase {
             ready: VmmReadyMessage(
                 machineID: "dev",
                 agentBuild: "dory-agent/test",
+                agentProtocolVersion: DoryCore.protocolVersion(),
+                agentCapabilities: Self.agentCapabilities("telemetry"),
                 agentSocketPath: "/run/agent.sock",
                 dockerdSocketPath: "/run/docker.sock"
             ),
@@ -3902,6 +3988,8 @@ final class MachineManagerTests: XCTestCase {
             ready: VmmReadyMessage(
                 machineID: "dev",
                 agentBuild: "dory-agent/test",
+                agentProtocolVersion: DoryCore.protocolVersion(),
+                agentCapabilities: Self.agentCapabilities("telemetry"),
                 agentSocketPath: "/run/agent.sock",
                 dockerdSocketPath: "/run/docker.sock",
                 controlSocketPath: "/run/control.sock"
@@ -3986,6 +4074,8 @@ private func runDesktopUpdate(
                 ready: VmmReadyMessage(
                     machineID: id,
                     agentBuild: "dory-agent/update-test",
+                    agentProtocolVersion: DoryCore.protocolVersion(),
+                    agentCapabilities: [DoryAgentCapability(id: "exec", version: 1)],
                     agentSocketPath: "/run/dory-update-test-agent.sock",
                     dockerdSocketPath: "/run/dory-update-test-docker.sock"
                 ),
