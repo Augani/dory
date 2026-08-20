@@ -64,6 +64,8 @@ public struct DoryMachineTypedSettingsSnapshot: Codable, Sendable, Equatable, Ha
             graphicsPreference = .automatic
         case [.hardwareAccelerated3D]:
             graphicsPreference = .virglVenus
+        case [.hostAcceleratedDisplay]:
+            graphicsPreference = .virgl
         case [.software]:
             graphicsPreference = .software
         default:
@@ -501,7 +503,11 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable {
                     .software,
                 ]
             )
-        case .set(.virgl), .set(.virglVenus):
+        case .set(.virgl):
+            definition.graphics = DoryVMGraphicsPolicy(
+                acceptableLevels: [.hostAcceleratedDisplay]
+            )
+        case .set(.virglVenus):
             definition.graphics = DoryVMGraphicsPolicy(
                 acceptableLevels: [.hardwareAccelerated3D]
             )

@@ -732,7 +732,7 @@ struct MachineManagerResolvedPlanIntegrationTests {
                 desktopDisplayName: .set("Ubuntu"),
                 clipboardPolicy: .set(.legacyDesktop(.bidirectional)),
                 runtimePreference: .set(.accelerated),
-                graphicsPreference: .set(.virglVenus)
+                graphicsPreference: .set(.virgl)
             )
         )
         #expect(created.environment.isEmpty)
@@ -753,7 +753,8 @@ struct MachineManagerResolvedPlanIntegrationTests {
         #expect(createdRecord.legacyMigrationFactsSHA256 == nil)
         #expect(createdRecord.definition.guestIdentityIntent.account?.username == "developer")
         #expect(createdRecord.definition.backendPreference.backend == .doryHypervisor)
-        #expect(createdRecord.definition.graphics.acceptableLevels == [.hardwareAccelerated3D])
+        #expect(created.typedSettings?.graphicsPreference == .virgl)
+        #expect(createdRecord.definition.graphics.acceptableLevels == [.hostAcceleratedDisplay])
         let snapshot = try manager.snapshot(id: "typed", snapshotID: "typed-baseline")
         #expect(snapshot.typedSettings == created.typedSettings)
 
@@ -762,20 +763,20 @@ struct MachineManagerResolvedPlanIntegrationTests {
             typedSettingsPatch: DoryMachineTypedSettingsPatch(
                 guestUsername: .set("builder"),
                 desktopDisplayName: .set("Ubuntu Builder"),
-                graphicsPreference: .set(.software)
+                graphicsPreference: .set(.virglVenus)
             )
         )
         #expect(updated.environment.isEmpty)
         #expect(updated.typedSettings?.guestIdentityIntent.account?.username == "builder")
         #expect(updated.typedSettings?.guestIdentityIntent.account?.numericUserID == 1_000)
-        #expect(updated.typedSettings?.graphicsPreference == .software)
+        #expect(updated.typedSettings?.graphicsPreference == .virglVenus)
         let updatedRecord = try repository.readPersistedRecord(id: "typed")
         #expect(updatedRecord.definition.lifecycle.revision == 2)
         #expect(updatedRecord.definition.guestIdentityIntent.desktop?.displayName
             == "Ubuntu Builder")
         #expect(updatedRecord.definition.guestIdentityIntent.desktop?.distributionIdentifier
             == "ubuntu")
-        #expect(updatedRecord.definition.graphics.acceptableLevels == [.software])
+        #expect(updatedRecord.definition.graphics.acceptableLevels == [.hardwareAccelerated3D])
         _ = try manager.update(id: "typed")
         #expect(try repository.readPersistedRecord(id: "typed").definition.lifecycle.revision == 2)
 
@@ -806,7 +807,7 @@ struct MachineManagerResolvedPlanIntegrationTests {
         let restoredRecord = try repository.readPersistedRecord(id: "typed")
         #expect(restoredRecord.definition.lifecycle.revision == 3)
         #expect(restoredRecord.definition.guestIdentityIntent.account?.username == "developer")
-        #expect(restoredRecord.definition.graphics.acceptableLevels == [.hardwareAccelerated3D])
+        #expect(restoredRecord.definition.graphics.acceptableLevels == [.hostAcceleratedDisplay])
 
         let restarted = makeManager(state: state, policy: .perWorkspaceAuthority)
         let restartedStatus = try #require(restarted.status(id: "typed"))

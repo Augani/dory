@@ -314,6 +314,8 @@ public struct DoryMachineConfigurationMigrationResult: Sendable, Equatable {
             preference = .automatic
         case [.hardwareAccelerated3D]:
             preference = .virglVenus
+        case [.hostAcceleratedDisplay]:
+            preference = .virgl
         case [.software]:
             preference = .software
         default:
@@ -769,7 +771,9 @@ public enum DoryMachineConfigurationMigrationBridge {
             DoryVMGraphicsPolicy(
                 acceptableLevels: [.hardwareAccelerated3D, .hostAcceleratedDisplay, .software]
             )
-        case .virgl, .virglVenus:
+        case .virgl:
+            DoryVMGraphicsPolicy(acceptableLevels: [.hostAcceleratedDisplay])
+        case .virglVenus:
             DoryVMGraphicsPolicy(acceptableLevels: [.hardwareAccelerated3D])
         case .software:
             DoryVMGraphicsPolicy(acceptableLevels: [.software])
