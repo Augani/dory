@@ -7,18 +7,19 @@ extension DoryOperationJournalStore {
         completenessPlanData: Data?,
         specifications: [DoryOperationSpecification],
         at date: Date,
-        fileManager: FileManager
+        fileManager: FileManager,
+        mutationScope: String? = nil
     ) throws -> DoryOperationLease {
         guard plan.isValid else {
             throw DoryOperationJournalError.invalidPlan(plan.id.uuidString.lowercased())
         }
         try prepareRoot(fileManager: fileManager)
-        let lock = try acquireMutationLock()
+        let lock = try acquireMutationLock(scope: mutationScope)
         let destination = operationDirectory(for: plan.id)
         guard !Self.pathEntryExists(destination) else {
             throw DoryOperationJournalError.operationExists(plan.id)
         }
-        try requireNoUnfinishedOperation()
+        try requireNoUnfinishedOperation(mutationScope: mutationScope)
 
         let partial = root + "/." + plan.id.uuidString.lowercased() + "."
             + UUID().uuidString.lowercased() + ".partial"
@@ -60,9 +61,13 @@ extension DoryOperationJournalStore {
         }
     }
 
-    private func requireNoUnfinishedOperation() throws {
+    private func requireNoUnfinishedOperation(mutationScope: String?) throws {
         if let unfinished = try list().first(where: {
-            $0.state.status != .completed && $0.state.status != .failed
+            guard $0.state.status != .completed && $0.state.status != .failed else {
+                return false
+            }
+            guard let mutationScope else { return true }
+            return $0.plan.source.id == mutationScope || $0.plan.target.id == mutationScope
         }) {
             throw DoryOperationJournalError.operationInUse(
                 "Dory operation \(unfinished.plan.id.uuidString.lowercased()) requires recovery "

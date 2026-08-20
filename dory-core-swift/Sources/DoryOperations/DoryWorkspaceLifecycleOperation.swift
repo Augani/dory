@@ -188,6 +188,24 @@ public struct DoryWorkspaceConfigurationAuthority: Codable, Sendable, Equatable 
     }
 }
 
+/// Content-only identity for a snapshot selected by a lifecycle operation. The descriptor digest
+/// binds the complete persisted snapshot record while the evidence digest independently binds its
+/// rootfs/kernel/firmware evidence. Daemon-local paths remain outside the journal contract.
+public struct DoryWorkspaceSnapshotAuthority: Codable, Sendable, Equatable {
+    public var descriptorSHA256: String
+    public var artifactEvidenceSHA256: String
+
+    public init(descriptorSHA256: String, artifactEvidenceSHA256: String) {
+        self.descriptorSHA256 = descriptorSHA256
+        self.artifactEvidenceSHA256 = artifactEvidenceSHA256
+    }
+
+    fileprivate var isValid: Bool {
+        DoryOperationJournalStore.isDigest(descriptorSHA256)
+            && DoryOperationJournalStore.isDigest(artifactEvidenceSHA256)
+    }
+}
+
 public struct DoryWorkspaceLifecycleCondition: Codable, Sendable, Equatable {
     private var persistenceSchemaVersion: UInt16
     public var workspaceID: String
@@ -456,6 +474,8 @@ public struct DoryWorkspaceLifecycleOperation: Codable, Sendable, Equatable {
     public var targetWorkspaceID: String?
     /// Stable snapshot or clone identity needed for deterministic recovery; never a host path.
     public var targetResourceID: String?
+    /// Exact content authority for snapshot/restore resources when supplied by the executor.
+    public var targetSnapshotAuthority: DoryWorkspaceSnapshotAuthority?
     public var createdAtUnixMilliseconds: Int64
     public var deadlineUnixMilliseconds: Int64
     public var steps: [DoryWorkspaceOperationStep]
@@ -471,6 +491,7 @@ public struct DoryWorkspaceLifecycleOperation: Codable, Sendable, Equatable {
         target: DoryWorkspaceLifecycleCondition,
         targetWorkspaceID: String? = nil,
         targetResourceID: String? = nil,
+        targetSnapshotAuthority: DoryWorkspaceSnapshotAuthority? = nil,
         createdAtUnixMilliseconds: Int64,
         deadlineUnixMilliseconds: Int64,
         steps: [DoryWorkspaceOperationStep],
@@ -487,6 +508,7 @@ public struct DoryWorkspaceLifecycleOperation: Codable, Sendable, Equatable {
         self.target = target
         self.targetWorkspaceID = targetWorkspaceID
         self.targetResourceID = targetResourceID
+        self.targetSnapshotAuthority = targetSnapshotAuthority
         self.createdAtUnixMilliseconds = createdAtUnixMilliseconds
         self.deadlineUnixMilliseconds = deadlineUnixMilliseconds
         self.steps = steps
@@ -578,6 +600,17 @@ public struct DoryWorkspaceLifecycleOperation: Codable, Sendable, Equatable {
         } else if targetResourceID != nil {
             add(.invalidTargetWorkspace, "targetResourceID")
         }
+        let requiresSnapshotAuthority = kind == .snapshotting || kind == .restoring
+        if sourceSchemaVersion == Self.schemaVersion, requiresSnapshotAuthority {
+            if targetSnapshotAuthority?.isValid != true || targetResourceID == nil {
+                add(.invalidCondition, "targetSnapshotAuthority")
+            }
+        } else if let targetSnapshotAuthority,
+                  (!targetSnapshotAuthority.isValid
+                    || !requiresSnapshotAuthority
+                    || targetResourceID == nil) {
+            add(.invalidCondition, "targetSnapshotAuthority")
+        }
         if createdAtUnixMilliseconds < 0
             || deadlineUnixMilliseconds <= createdAtUnixMilliseconds {
             add(.invalidDeadline, "deadlineUnixMilliseconds")
@@ -624,6 +657,7 @@ public struct DoryWorkspaceLifecycleOperation: Codable, Sendable, Equatable {
         case target
         case targetWorkspaceID
         case targetResourceID
+        case targetSnapshotAuthority
         case createdAtUnixMilliseconds
         case deadlineUnixMilliseconds
         case steps
@@ -667,6 +701,10 @@ public struct DoryWorkspaceLifecycleOperation: Codable, Sendable, Equatable {
         }
         targetWorkspaceID = try container.decodeIfPresent(String.self, forKey: .targetWorkspaceID)
         targetResourceID = try container.decodeIfPresent(String.self, forKey: .targetResourceID)
+        targetSnapshotAuthority = try container.decodeIfPresent(
+            DoryWorkspaceSnapshotAuthority.self,
+            forKey: .targetSnapshotAuthority
+        )
         createdAtUnixMilliseconds = try container.decode(Int64.self, forKey: .createdAtUnixMilliseconds)
         deadlineUnixMilliseconds = try container.decode(Int64.self, forKey: .deadlineUnixMilliseconds)
         steps = try container.decode([DoryWorkspaceOperationStep].self, forKey: .steps)
@@ -697,6 +735,7 @@ public struct DoryWorkspaceLifecycleOperation: Codable, Sendable, Equatable {
         try container.encode(target, forKey: .target)
         try container.encodeIfPresent(targetWorkspaceID, forKey: .targetWorkspaceID)
         try container.encodeIfPresent(targetResourceID, forKey: .targetResourceID)
+        try container.encodeIfPresent(targetSnapshotAuthority, forKey: .targetSnapshotAuthority)
         try container.encode(createdAtUnixMilliseconds, forKey: .createdAtUnixMilliseconds)
         try container.encode(deadlineUnixMilliseconds, forKey: .deadlineUnixMilliseconds)
         try container.encode(steps, forKey: .steps)
@@ -877,6 +916,7 @@ extension DoryOperationJournalStore {
                 "workspace lifecycle journal binding mismatch"
             )
         }
+        let mutationScope = authenticatedMutationScope(for: binding.plan)
         return try begin(
             binding.plan,
             completenessPlanData: nil,
@@ -884,7 +924,8 @@ extension DoryOperationJournalStore {
             at: Date(
                 timeIntervalSince1970: Double(operation.createdAtUnixMilliseconds) / 1_000
             ),
-            fileManager: fileManager
+            fileManager: fileManager,
+            mutationScope: mutationScope
         )
     }
 }

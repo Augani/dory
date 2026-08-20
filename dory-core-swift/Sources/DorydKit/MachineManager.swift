@@ -10,6 +10,9 @@ public struct MachineManagerConfiguration: Sendable, Equatable {
     public var acceleratedDesktopExecutablePath: String?
     public var stateDirectory: String
     public var runtimeDirectory: String
+    /// Durable mutation authority kept outside individual machine directories so interrupted
+    /// deletion can recover without deleting its own journal.
+    public var lifecycleJournalHome: String
     public var baseArguments: [String]
     public var acceleratedDesktopBaseArguments: [String]
     public var passMachineArguments: Bool
@@ -35,6 +38,7 @@ public struct MachineManagerConfiguration: Sendable, Equatable {
         acceleratedDesktopExecutablePath: String? = nil,
         stateDirectory: String,
         runtimeDirectory: String? = nil,
+        lifecycleJournalHome: String? = nil,
         baseArguments: [String] = [],
         acceleratedDesktopBaseArguments: [String] = [],
         passMachineArguments: Bool = true,
@@ -55,6 +59,8 @@ public struct MachineManagerConfiguration: Sendable, Equatable {
         self.acceleratedDesktopExecutablePath = acceleratedDesktopExecutablePath
         self.stateDirectory = stateDirectory
         self.runtimeDirectory = runtimeDirectory ?? stateDirectory
+        self.lifecycleJournalHome = lifecycleJournalHome
+            ?? "\(self.runtimeDirectory)/.lifecycle-journal"
         self.baseArguments = baseArguments
         self.acceleratedDesktopBaseArguments = acceleratedDesktopBaseArguments
         self.passMachineArguments = passMachineArguments
@@ -679,6 +685,8 @@ public final class MachineManager: @unchecked Sendable {
     private let processStarter: ProcessStarter
     private let workspaceRepository: DoryWorkspaceRepository
     private let launchPolicy: DoryMachineLaunchPolicy
+    private let lifecycleJournalStore: DoryOperationJournalStore?
+    private let lifecycleJournalInitializationError: String?
     private let operationLock = NSRecursiveLock()
     private let lock = NSLock()
     private var machines: [String: MachineEntry] = [:]
@@ -690,6 +698,10 @@ public final class MachineManager: @unchecked Sendable {
     private var resolvedPlanRevisionProvider: ResolvedPlanRevisionProvider?
     private var pendingResolvedStart: PendingResolvedMachineStart?
     private var resolvedLaunchIdentities: [String: DoryMachineResolvedLaunchIdentity] = [:]
+    private var activeLifecycleOperations: [String: MachineLifecycleJournalContext] = [:]
+#if DEBUG
+    private var lifecycleFaultInjector: (@Sendable (MachineLifecycleFaultPoint) throws -> Void)?
+#endif
 
     public init(
         configuration: MachineManagerConfiguration,
@@ -706,6 +718,17 @@ public final class MachineManager: @unchecked Sendable {
         self.agentConnector = agentConnector
         self.processStarter = processStarter
         self.workspaceRepository = DoryWorkspaceRepository(root: configuration.stateDirectory)
+        do {
+            let store = try DoryOperationJournalStore(
+                home: configuration.lifecycleJournalHome
+            )
+            try store.prepare()
+            lifecycleJournalStore = store
+            lifecycleJournalInitializationError = nil
+        } catch {
+            lifecycleJournalStore = nil
+            lifecycleJournalInitializationError = String(describing: error)
+        }
         _ = HelperProcessJanitor.terminateStaleHelpers(
             executablePath: configuration.vmmExecutablePath,
             stateDirectory: configuration.stateDirectory,
@@ -719,6 +742,10 @@ public final class MachineManager: @unchecked Sendable {
                 includeDescendants: true
             )
         }
+        let lifecycleRecoveryDiagnostics = Self.recoverInterruptedLifecycleOperations(
+            store: lifecycleJournalStore,
+            configuration: configuration
+        )
         Self.removeStaleDeletionQuarantines(stateDirectory: configuration.stateDirectory)
         Self.removeStaleMachineMetadataArtifacts(stateDirectory: configuration.stateDirectory)
         Self.removeStaleSnapshotArtifacts(stateDirectory: configuration.stateDirectory)
@@ -727,6 +754,9 @@ public final class MachineManager: @unchecked Sendable {
             configuration: configuration,
             launchPolicy: launchPolicy
         )
+        for (machineID, diagnostic) in lifecycleRecoveryDiagnostics {
+            machines[machineID]?.lastError = diagnostic
+        }
         reconcileLoadedWorkspaceProjections()
         recoverInterruptedDesktopUpdates()
     }
@@ -897,13 +927,38 @@ public final class MachineManager: @unchecked Sendable {
     public func start(id: String) throws -> DoryMachineStatus {
         operationLock.lock()
         defer { operationLock.unlock() }
+        return try startImplementation(id: id, journalLifecycle: true)
+    }
+
+    private func startImplementation(
+        id: String,
+        journalLifecycle: Bool
+    ) throws -> DoryMachineStatus {
         switch launchPolicy {
         case .legacyCompatibility:
-            let prepared = try prepareMachineStart(
+            let prepared = try prepareMachineStartWithLifecycle(
                 id: id,
-                requiresAuthoritativeDefinition: false
+                requiresAuthoritativeDefinition: false,
+                journalLifecycle: journalLifecycle
             )
-            return try spawnPreparedMachine(prepared.machine, launchBinding: nil)
+            let identity = try currentRuntimeIdentity(id: id)
+            let lifecycle = try journalLifecycle
+                ? beginLifecycleStart(machine: prepared.machine, targetIdentity: identity)
+                : nil
+            do {
+                if let lifecycle { try advanceLifecycleToPublishing(lifecycle) }
+                let status = try spawnPreparedMachine(prepared.machine, launchBinding: nil)
+                if let lifecycle, status.state != .starting {
+                    _ = completeCommittedLifecycle(
+                        lifecycle,
+                        diagnostic: "running machine has an unfinished start journal"
+                    )
+                }
+                return status
+            } catch {
+                if let lifecycle { failLifecycle(lifecycle, stepID: "start.failed") }
+                throw error
+            }
         case .requireResolvedPlan:
             guard let registry = resolvedLaunchRegistry,
                   let resolver = resolvedLaunchPlanResolver,
@@ -918,7 +973,8 @@ public final class MachineManager: @unchecked Sendable {
                 registry: registry,
                 resolver: resolver,
                 planStore: planStore,
-                revisionProvider: revisionProvider
+                revisionProvider: revisionProvider,
+                journalLifecycle: journalLifecycle
             )
         }
     }
@@ -928,9 +984,14 @@ public final class MachineManager: @unchecked Sendable {
         registry: BackendRegistry,
         resolver: any DoryDaemonVirtualMachineLaunchPlanResolving,
         planStore: any DoryResolvedMachinePlanStoring,
-        revisionProvider: ResolvedPlanRevisionProvider
+        revisionProvider: ResolvedPlanRevisionProvider,
+        journalLifecycle: Bool
     ) throws -> DoryMachineStatus {
-        let prepared = try prepareMachineStart(id: id, requiresAuthoritativeDefinition: true)
+        let prepared = try prepareMachineStartWithLifecycle(
+            id: id,
+            requiresAuthoritativeDefinition: true,
+            journalLifecycle: journalLifecycle
+        )
         guard let definition = prepared.definition,
               let definitionData = prepared.canonicalDefinitionData else {
             throw MachineManagerError.persistence(
@@ -972,39 +1033,54 @@ public final class MachineManager: @unchecked Sendable {
             resolvedPlan: resolved.resolvedPlan,
             planSHA256: resolved.resolvedPlanSHA256
         )
+        let lifecycle = try journalLifecycle
+            ? beginLifecycleStart(machine: prepared.machine, targetIdentity: runtimeIdentity)
+            : nil
 
-        pendingResolvedStart = PendingResolvedMachineStart(
-            machine: prepared.machine,
-            backend: resolved.backendPlan.backend,
-            runtimeBuildIdentifier: resolved.resolvedPlan.backendRuntimeBuildIdentifier,
-            runtimeComponents: resolved.resolvedPlan.components,
-            planRevision: resolved.resolvedPlan.planRevision,
-            planSHA256: resolved.resolvedPlanSHA256
-        )
-        defer { pendingResolvedStart = nil }
-        let operation = registry.start(resolved.backendPlan)
-        guard operation.isSuccess,
-              operation.backend == resolved.resolvedPlan.backend,
-              operation.observation?.machineID == id else {
-            let failure = operation.failure?.message ?? "backend adapter returned no observation"
-            throw MachineManagerError.persistence("resolved backend start failed: \(failure)")
-        }
-        lock.lock()
-        if var entry = machines[id] {
-            entry.runtimeIdentity = runtimeIdentity
-            machines[id] = entry
-        }
-        lock.unlock()
-        guard let status = status(id: id), [.starting, .running].contains(status.state) else {
-            throw MachineManagerError.persistence(
-                "resolved backend did not enter MachineManager's prepared spawn path"
+        do {
+            if let lifecycle { try advanceLifecycleToPublishing(lifecycle) }
+            pendingResolvedStart = PendingResolvedMachineStart(
+                machine: prepared.machine,
+                backend: resolved.backendPlan.backend,
+                runtimeBuildIdentifier: resolved.resolvedPlan.backendRuntimeBuildIdentifier,
+                runtimeComponents: resolved.resolvedPlan.components,
+                planRevision: resolved.resolvedPlan.planRevision,
+                planSHA256: resolved.resolvedPlanSHA256
             )
+            defer { pendingResolvedStart = nil }
+            let operation = registry.start(resolved.backendPlan)
+            guard operation.isSuccess,
+                  operation.backend == resolved.resolvedPlan.backend,
+                  operation.observation?.machineID == id else {
+                let failure = operation.failure?.message ?? "backend adapter returned no observation"
+                throw MachineManagerError.persistence("resolved backend start failed: \(failure)")
+            }
+            lock.lock()
+            if var entry = machines[id] {
+                entry.runtimeIdentity = runtimeIdentity
+                machines[id] = entry
+            }
+            lock.unlock()
+            guard let status = status(id: id), [.starting, .running].contains(status.state) else {
+                throw MachineManagerError.persistence(
+                    "resolved backend did not enter MachineManager's prepared spawn path"
+                )
+            }
+            resolvedLaunchIdentities[id] = DoryMachineResolvedLaunchIdentity(
+                plan: resolved.resolvedPlan,
+                planSHA256: resolved.resolvedPlanSHA256
+            )
+            if let lifecycle, status.state != .starting {
+                _ = completeCommittedLifecycle(
+                    lifecycle,
+                    diagnostic: "running machine has an unfinished resolved-start journal"
+                )
+            }
+            return status
+        } catch {
+            if let lifecycle { failLifecycle(lifecycle, stepID: "start.failed") }
+            throw error
         }
-        resolvedLaunchIdentities[id] = DoryMachineResolvedLaunchIdentity(
-            plan: resolved.resolvedPlan,
-            planSHA256: resolved.resolvedPlanSHA256
-        )
-        return status
     }
 
     private func revalidateResolvedPlanAuthorityImmediatelyBeforeSpawn(
@@ -1228,6 +1304,48 @@ public final class MachineManager: @unchecked Sendable {
         )
     }
 
+    private func prepareMachineStartWithLifecycle(
+        id: String,
+        requiresAuthoritativeDefinition: Bool,
+        journalLifecycle: Bool
+    ) throws -> PreparedMachineStart {
+        guard journalLifecycle else {
+            return try prepareMachineStart(
+                id: id,
+                requiresAuthoritativeDefinition: requiresAuthoritativeDefinition
+            )
+        }
+        let lifecycle = try beginLifecycleStartPreparation(id: id)
+        do {
+            try advanceLifecycleToPublishing(lifecycle)
+            let prepared = try prepareMachineStart(
+                id: id,
+                requiresAuthoritativeDefinition: requiresAuthoritativeDefinition
+            )
+#if DEBUG
+            try injectLifecycleFault(.startAfterPreparation)
+#endif
+            guard completeCommittedLifecycle(
+                lifecycle,
+                diagnostic: "start preparation committed; journal completion requires recovery"
+            ) else {
+                throw MachineLifecycleJournalCompletionPending()
+            }
+            return prepared
+        } catch {
+#if DEBUG
+            if error is MachineLifecycleInjectedCrash { throw error }
+#endif
+            if error is MachineLifecycleJournalCompletionPending {
+                throw MachineManagerError.persistence(
+                    "start preparation committed but journal completion requires recovery"
+                )
+            }
+            failLifecycle(lifecycle, stepID: "start-preparation.failed")
+            throw error
+        }
+    }
+
     private func spawnPreparedMachine(
         _ preparedMachine: DoryMachineConfiguration,
         launchBinding: MachineBackendLaunchBinding?
@@ -1275,7 +1393,16 @@ public final class MachineManager: @unchecked Sendable {
             lock.unlock()
             throw error
         }
-        let process = HvProcess(configuration: processConfiguration)
+        let process = HvProcess(
+            configuration: processConfiguration,
+            unexpectedTerminationHandler: { [weak self] termination in
+                self?.handleUnexpectedMachineProcessTermination(
+                    machineID: id,
+                    launchID: launchID,
+                    termination: termination
+                )
+            }
+        )
         let handoffReadyTimeout = handoffReadyTimeout(for: entry.configuration)
         entry.process = process
         entry.handoffServer = handoffServer
@@ -1308,7 +1435,14 @@ public final class MachineManager: @unchecked Sendable {
     }
 
     private func startAndWaitUntilReady(id: String) throws -> DoryMachineStatus {
-        let started = try start(id: id)
+        try startAndWaitUntilReady(id: id, journalLifecycle: true)
+    }
+
+    private func startAndWaitUntilReady(
+        id: String,
+        journalLifecycle: Bool
+    ) throws -> DoryMachineStatus {
+        let started = try startImplementation(id: id, journalLifecycle: journalLifecycle)
         guard started.state == .starting else { return started }
 
         let handoffReadyTimeout = handoffReadyTimeout(
@@ -1375,33 +1509,106 @@ public final class MachineManager: @unchecked Sendable {
             entry.lastError = "vmm ready handoff timed out after \(Int(timeout))s"
             self.machines[id] = entry
             self.lock.unlock()
+            self.operationLock.lock()
+            self.failActiveStartLifecycle(id: id, stepID: "start.readiness-timeout")
+            self.operationLock.unlock()
             process.stop(timeout: DoryEngineShutdownTiming.hostTerminationSeconds)
         }
     }
 
-    public func stop(id: String) throws -> DoryMachineStatus {
-        operationLock.lock()
-        defer { operationLock.unlock() }
+    private func handleUnexpectedMachineProcessTermination(
+        machineID: String,
+        launchID: UUID,
+        termination: HvProcessTermination
+    ) {
+        var handoffServer: VmmHandoffServer?
         lock.lock()
-        guard var entry = machines[id] else {
+        guard var entry = machines[machineID],
+              entry.launchID == launchID,
+              [.starting, .running].contains(entry.state),
+              entry.process?.isRunningOrRestarting != true else {
             lock.unlock()
-            throw MachineManagerError.unknownMachine(id)
+            return
         }
-        let process = entry.process
-        let handoffServer = entry.handoffServer
-        entry.process = nil
+        handoffServer = entry.handoffServer
         entry.handoffServer = nil
         entry.handoff = nil
         entry.launchID = nil
         entry.runtimeAddress = nil
         entry.currentBalloonTargetMB = nil
-        entry.state = .stopped
-        machines[id] = entry
+        entry.state = .failed
+        entry.lastError = "dory-vmm \(termination.description)"
+        machines[machineID] = entry
         lock.unlock()
 
+        operationLock.lock()
+        failActiveStartLifecycle(id: machineID, stepID: "start.helper-exited")
+        operationLock.unlock()
         handoffServer?.stop()
-        process?.stop(timeout: DoryEngineShutdownTiming.hostTerminationSeconds)
-        return status(id: id) ?? DoryMachineStatus(id: id, state: .stopped)
+    }
+
+    public func stop(id: String) throws -> DoryMachineStatus {
+        operationLock.lock()
+        defer { operationLock.unlock() }
+        try cancelActiveStartLifecycleIfNeeded(id: id, reason: "start.cancelled-by-stop")
+        return try stopImplementation(id: id, journalLifecycle: true)
+    }
+
+    private func stopImplementation(
+        id: String,
+        journalLifecycle: Bool
+    ) throws -> DoryMachineStatus {
+        lock.lock()
+        guard var entry = machines[id] else {
+            lock.unlock()
+            throw MachineManagerError.unknownMachine(id)
+        }
+        let wasActive = [.starting, .running].contains(entry.state) && entry.process != nil
+        let machine = entry.configuration
+        let runtimeIdentity = entry.runtimeIdentity
+        lock.unlock()
+        let lifecycle = try journalLifecycle && wasActive
+            ? beginLifecycleStop(machine: machine, runtimeIdentity: runtimeIdentity)
+            : nil
+        do {
+            if let lifecycle { try advanceLifecycleToPublishing(lifecycle) }
+            lock.lock()
+            guard let current = machines[id] else {
+                lock.unlock()
+                throw MachineManagerError.unknownMachine(id)
+            }
+            entry = current
+            let process = entry.process
+            let handoffServer = entry.handoffServer
+            entry.process = nil
+            entry.handoffServer = nil
+            entry.handoff = nil
+            entry.launchID = nil
+            entry.runtimeAddress = nil
+            entry.currentBalloonTargetMB = nil
+            entry.state = .stopped
+            machines[id] = entry
+            lock.unlock()
+
+            handoffServer?.stop()
+            process?.stop(timeout: DoryEngineShutdownTiming.hostTerminationSeconds)
+#if DEBUG
+            try injectLifecycleFault(.stopAfterProcessStop)
+#endif
+            if let lifecycle {
+                _ = completeCommittedLifecycle(
+                    lifecycle,
+                    diagnostic: "stopped machine has an unfinished stop journal"
+                )
+            }
+            return status(id: id) ?? DoryMachineStatus(id: id, state: .stopped)
+        } catch {
+#if DEBUG
+            if error is MachineLifecycleInjectedCrash { throw error }
+#endif
+            if let lifecycle { failLifecycle(lifecycle, stepID: "stop.failed") }
+            throw error
+        }
     }
 
     public func stopAll() {
@@ -1436,52 +1643,97 @@ public final class MachineManager: @unchecked Sendable {
         guard Self.isValidID(id) else {
             throw MachineManagerError.invalidID(id)
         }
+        try cancelActiveStartLifecycleIfNeeded(id: id, reason: "start.cancelled-by-delete")
         lock.lock()
-        guard let entry = machines.removeValue(forKey: id) else {
+        guard let sourceEntry = machines[id] else {
             lock.unlock()
             throw MachineManagerError.unknownMachine(id)
         }
-        deletingMachineIDs.insert(id)
         lock.unlock()
+        let lifecycle = try beginLifecycleDelete(
+            machine: sourceEntry.configuration,
+            runtimeIdentity: sourceEntry.runtimeIdentity,
+            sourceState: lifecycleState(for: sourceEntry.state)
+        )
+        var deletionCommitted = false
 
-        entry.handoffServer?.stop()
-        entry.process?.stop(timeout: DoryEngineShutdownTiming.hostTerminationSeconds)
+        do {
+            try advanceLifecycleToPublishing(lifecycle)
+            _ = try stopImplementation(id: id, journalLifecycle: false)
+            lock.lock()
+            guard machines.removeValue(forKey: id) != nil else {
+                lock.unlock()
+                throw MachineManagerError.unknownMachine(id)
+            }
+            deletingMachineIDs.insert(id)
+            lock.unlock()
 
-        let fileManager = FileManager.default
-        let statePath = machineStateDirectory(id: id)
-        var quarantinePath: String?
-        if fileManager.fileExists(atPath: statePath) {
-            let quarantine = "\(configuration.stateDirectory)/\(Self.deletionQuarantinePrefix)\(id)-\(UUID().uuidString)"
-            do {
+            let fileManager = FileManager.default
+            let statePath = machineStateDirectory(id: id)
+            var quarantinePath: String?
+            if fileManager.fileExists(atPath: statePath) {
+                let quarantine = lifecycleDeletionQuarantinePath(
+                    machineID: id,
+                    operationID: lifecycle.operation.operationID
+                )
                 try fileManager.moveItem(atPath: statePath, toPath: quarantine)
                 quarantinePath = quarantine
-            } catch {
-                var restored = entry
-                restored.process = nil
-                restored.handoffServer = nil
-                restored.handoff = nil
-                restored.currentBalloonTargetMB = nil
-                restored.state = .stopped
-                restored.lastError = "delete failed: \(error)"
-                lock.lock()
-                deletingMachineIDs.remove(id)
-                if machines[id] == nil {
-                    machines[id] = restored
-                }
-                lock.unlock()
-                throw MachineManagerError.persistence("could not delete \(id): \(error)")
+#if DEBUG
+                try injectLifecycleFault(.deleteAfterQuarantine)
+#endif
             }
-        }
 
-        lock.lock()
-        deletingMachineIDs.remove(id)
-        workspaceProjectionDiagnostics.removeValue(forKey: id)
-        lock.unlock()
-        resolvedLaunchIdentities.removeValue(forKey: id)
+            lock.lock()
+            deletingMachineIDs.remove(id)
+            workspaceProjectionDiagnostics.removeValue(forKey: id)
+            lock.unlock()
+            resolvedLaunchIdentities.removeValue(forKey: id)
 
-        try? FileManager.default.removeItem(atPath: machineRuntimeDirectory(id: id))
-        if let quarantinePath {
-            try? fileManager.removeItem(atPath: quarantinePath)
+            try? FileManager.default.removeItem(atPath: machineRuntimeDirectory(id: id))
+            if let quarantinePath {
+                try fileManager.removeItem(atPath: quarantinePath)
+            }
+            // Once both the authoritative state and its quarantine are gone, deletion is
+            // committed. A later journal fsync/transition failure must not resurrect an
+            // in-memory entry whose storage no longer exists. Recovery can deterministically
+            // finish the still-durable deleting operation on the next daemon start.
+            deletionCommitted = true
+            do {
+                try completeLifecycle(lifecycle)
+            } catch {
+                activeLifecycleOperations.removeValue(forKey: id)
+                lifecycle.releaseLease()
+            }
+        } catch {
+#if DEBUG
+            if error is MachineLifecycleInjectedCrash { throw error }
+#endif
+            if deletionCommitted {
+                activeLifecycleOperations.removeValue(forKey: id)
+                return
+            }
+            let quarantine = lifecycleDeletionQuarantinePath(
+                machineID: id,
+                operationID: lifecycle.operation.operationID
+            )
+            let statePath = machineStateDirectory(id: id)
+            if Self.pathEntryExists(quarantine), !Self.pathEntryExists(statePath) {
+                try? FileManager.default.moveItem(atPath: quarantine, toPath: statePath)
+            }
+            var restored = sourceEntry
+            restored.process = nil
+            restored.handoffServer = nil
+            restored.handoff = nil
+            restored.currentBalloonTargetMB = nil
+            restored.state = .stopped
+            restored.lastError = "delete failed: \(error)"
+            lock.lock()
+            deletingMachineIDs.remove(id)
+            if machines[id] == nil { machines[id] = restored }
+            lock.unlock()
+            failLifecycle(lifecycle, stepID: "delete.failed", rolledBack: true)
+            if let error = error as? MachineManagerError { throw error }
+            throw MachineManagerError.persistence("could not delete \(id): \(error)")
         }
     }
 
@@ -1631,28 +1883,79 @@ public final class MachineManager: @unchecked Sendable {
               !Self.pathEntryExists(nvramPath) else {
             throw MachineManagerError.duplicateSnapshot(snapshotID)
         }
-
+        // Quiesce under its own durable stop journal. Once stopped, the exact bytes selected for
+        // the snapshot can be hashed and bound before any snapshot artifact is published.
         if wasRunning {
-            _ = try stop(id: id)
+            _ = try stopImplementation(id: id, journalLifecycle: true)
         }
-        let snapshot: DoryMachineSnapshot
+        let liveMachineIdentifierPath = machine.bootMode == .efi
+            ? machineFirmwareIdentifierPath(id: id) : nil
+        let liveNVRAMPath = machine.bootMode == .efi
+            ? machineFirmwareNVRAMPath(id: id) : nil
+        if machine.bootMode == .efi {
+            guard let liveMachineIdentifierPath, let liveNVRAMPath,
+                  Self.isPrivateRegularFile(path: liveMachineIdentifierPath),
+                  Self.isPrivateRegularFile(path: liveNVRAMPath) else {
+                throw MachineManagerError.persistence(
+                    "EFI firmware state is unavailable; start the machine once before taking a snapshot"
+                )
+            }
+        }
+        let artifactEvidence = try Self.snapshotArtifactEvidence(
+            rootfsPath: machine.rootfsPath,
+            kernelPath: machine.kernelPath,
+            machineIdentifierPath: liveMachineIdentifierPath,
+            nvramPath: liveNVRAMPath
+        )
+        guard let snapshotSize = Int64(exactly: artifactEvidence.rootfs.byteCount) else {
+            throw MachineManagerError.persistence("machine snapshot disk is too large")
+        }
+        let snapshot = DoryMachineSnapshot(
+            id: snapshotID,
+            machineID: id,
+            note: note,
+            createdISO: createdISO,
+            rootfsPath: rootfsPath,
+            sizeBytes: snapshotSize,
+            kernelPath: kernelPath,
+            architecture: configuration.guestArchitecture,
+            memoryMB: machine.memoryMB,
+            cpuCount: machine.cpuCount,
+            displayMode: machine.displayMode,
+            address: machine.address,
+            shares: machine.shares,
+            environment: machine.environment,
+            bootMode: machine.bootMode,
+            machineIdentifierPath: machine.bootMode == .efi ? machineIdentifierPath : nil,
+            nvramPath: machine.bootMode == .efi ? nvramPath : nil,
+            runtimeIdentity: snapshotRuntimeIdentity,
+            artifactEvidence: artifactEvidence
+        )
+        let snapshotAuthority = try Self.lifecycleSnapshotAuthority(snapshot)
+        let lifecycle = try beginLifecycleSnapshot(
+            machine: machine,
+            runtimeIdentity: snapshotRuntimeIdentity,
+            sourceState: .stopped,
+            snapshotID: snapshotID,
+            snapshotAuthority: snapshotAuthority
+        )
+
         var publishedRootfs = false
         var publishedKernel = false
         var publishedMachineIdentifier = false
         var publishedNVRAM = false
         do {
+            try advanceLifecycleToPublishing(lifecycle)
             try Self.cloneOrCopyFile(source: machine.rootfsPath, destination: rootfsPath)
             publishedRootfs = true
+#if DEBUG
+            try injectLifecycleFault(.snapshotAfterRootfs)
+#endif
             try Self.cloneOrCopyFile(source: machine.kernelPath, destination: kernelPath)
             publishedKernel = true
             if machine.bootMode == .efi {
-                let liveMachineIdentifierPath = machineFirmwareIdentifierPath(id: id)
-                let liveNVRAMPath = machineFirmwareNVRAMPath(id: id)
-                guard Self.isPrivateRegularFile(path: liveMachineIdentifierPath),
-                      Self.isPrivateRegularFile(path: liveNVRAMPath) else {
-                    throw MachineManagerError.persistence(
-                        "EFI firmware state is unavailable; start the machine once before taking a snapshot"
-                    )
+                guard let liveMachineIdentifierPath, let liveNVRAMPath else {
+                    throw MachineManagerError.persistence("EFI firmware state is unavailable")
                 }
                 try Self.cloneOrCopyFile(
                     source: liveMachineIdentifierPath,
@@ -1662,35 +1965,13 @@ public final class MachineManager: @unchecked Sendable {
                 try Self.cloneOrCopyFile(source: liveNVRAMPath, destination: nvramPath)
                 publishedNVRAM = true
             }
-            let artifactEvidence = try Self.snapshotArtifactEvidence(
-                rootfsPath: rootfsPath,
-                kernelPath: kernelPath,
-                machineIdentifierPath: machine.bootMode == .efi ? machineIdentifierPath : nil,
-                nvramPath: machine.bootMode == .efi ? nvramPath : nil
-            )
-            snapshot = DoryMachineSnapshot(
-                id: snapshotID,
-                machineID: id,
-                note: note,
-                createdISO: createdISO,
-                rootfsPath: rootfsPath,
-                sizeBytes: Self.fileSize(path: rootfsPath),
-                kernelPath: kernelPath,
-                architecture: configuration.guestArchitecture,
-                memoryMB: machine.memoryMB,
-                cpuCount: machine.cpuCount,
-                displayMode: machine.displayMode,
-                address: machine.address,
-                shares: machine.shares,
-                environment: machine.environment,
-                bootMode: machine.bootMode,
-                machineIdentifierPath: machine.bootMode == .efi ? machineIdentifierPath : nil,
-                nvramPath: machine.bootMode == .efi ? nvramPath : nil,
-                runtimeIdentity: snapshotRuntimeIdentity,
-                artifactEvidence: artifactEvidence
-            )
+            // Validate the copies against the pre-publish authority before publishing metadata.
+            try Self.validateSnapshotArtifactEvidence(snapshot)
             try persistSnapshot(snapshot)
         } catch {
+#if DEBUG
+            if error is MachineLifecycleInjectedCrash { throw error }
+#endif
             if publishedRootfs {
                 try? FileManager.default.removeItem(atPath: rootfsPath)
             }
@@ -1703,8 +1984,9 @@ public final class MachineManager: @unchecked Sendable {
             if publishedNVRAM {
                 try? FileManager.default.removeItem(atPath: nvramPath)
             }
+            failLifecycle(lifecycle, stepID: "snapshot.failed", rolledBack: true)
             if wasRunning {
-                _ = try? start(id: id)
+                _ = try? startImplementation(id: id, journalLifecycle: true)
             }
             if let error = error as? MachineManagerError {
                 throw error
@@ -1712,12 +1994,16 @@ public final class MachineManager: @unchecked Sendable {
             throw MachineManagerError.persistence("could not snapshot \(id): \(error)")
         }
 
-        if wasRunning {
+        let journalCompleted = completeCommittedLifecycle(
+            lifecycle,
+            diagnostic: "published snapshot has an unfinished snapshot journal"
+        )
+        if wasRunning, journalCompleted {
             do {
-                _ = try start(id: id)
+                _ = try startAndWaitUntilReady(id: id, journalLifecycle: true)
             } catch let firstError {
                 do {
-                    _ = try start(id: id)
+                    _ = try startAndWaitUntilReady(id: id, journalLifecycle: true)
                 } catch {
                     throw MachineManagerError.persistence(
                         "snapshot \(snapshotID) was created, but \(id) could not restart: \(firstError); retry: \(error)"
@@ -2018,40 +2304,65 @@ public final class MachineManager: @unchecked Sendable {
         restoredMachine.address = address
         restoredMachine.shares = snapshot.shares
         restoredMachine.environment = snapshot.environment
-        if wasRunning {
-            _ = try stop(id: machineID)
-        }
+        let sourceIdentity = try currentRuntimeIdentity(id: machineID)
+        let targetIdentity = runtimeIdentityAfterSnapshotRestore(snapshot.runtimeIdentity)
+        let snapshotAuthority = try Self.lifecycleSnapshotAuthority(snapshot)
+        let lifecycle = try beginLifecycleRestore(
+            sourceMachine: machine,
+            targetMachine: restoredMachine,
+            sourceIdentity: sourceIdentity,
+            targetIdentity: targetIdentity,
+            sourceState: wasRunning ? .running : .stopped,
+            targetState: wasRunning && launchPolicy == .legacyCompatibility ? .running : .stopped,
+            snapshotID: snapshotID,
+            snapshotAuthority: snapshotAuthority
+        )
         do {
-            try restoreManagedArtifacts(machine: machine, snapshot: snapshot) {
+            try advanceLifecycleToPublishing(lifecycle)
+            if wasRunning {
+                _ = try stopImplementation(id: machineID, journalLifecycle: false)
+            }
+            try restoreManagedArtifacts(
+                machine: machine,
+                snapshot: snapshot,
+                operationID: lifecycle.operation.operationID
+            ) {
                 try persist(restoredMachine)
                 lock.lock()
                 if var entry = machines[machineID] {
                     entry.configuration = restoredMachine
                     entry.currentBalloonTargetMB = nil
-                    entry.runtimeIdentity = runtimeIdentityAfterSnapshotRestore(
-                        snapshot.runtimeIdentity
-                    )
+                    entry.runtimeIdentity = targetIdentity
                     machines[machineID] = entry
                 }
                 lock.unlock()
             }
             let status: DoryMachineStatus
             if wasRunning, launchPolicy == .legacyCompatibility {
-                status = try start(id: machineID)
+                status = try startAndWaitUntilReady(id: machineID, journalLifecycle: false)
             } else {
                 status = self.status(id: machineID)
                     ?? DoryMachineStatus(id: machineID, state: .stopped)
             }
+            _ = completeCommittedLifecycle(
+                lifecycle,
+                diagnostic: "restored machine has an unfinished restore journal"
+            )
             return status
         } catch let error as MachineManagerError {
             if wasRunning {
-                _ = try? start(id: machineID)
+                _ = try? startImplementation(id: machineID, journalLifecycle: false)
             }
+            failLifecycle(lifecycle, stepID: "restore.failed", rolledBack: true)
             throw error
         } catch {
+#if DEBUG
+            if error is MachineLifecycleInjectedCrash { throw error }
+#endif
             if wasRunning {
-                _ = try? start(id: machineID)
+                _ = try? startImplementation(id: machineID, journalLifecycle: false)
             }
+            failLifecycle(lifecycle, stepID: "restore.failed", rolledBack: true)
             throw MachineManagerError.persistence("could not restore snapshot \(snapshotID): \(error)")
         }
     }
@@ -3105,25 +3416,41 @@ public final class MachineManager: @unchecked Sendable {
     private func restoreManagedArtifacts(
         machine: DoryMachineConfiguration,
         snapshot: DoryMachineSnapshot,
+        operationID: UUID,
         commit: () throws -> Void
     ) throws {
         let directory = machineStateDirectory(id: machine.id)
-        let token = UUID().uuidString
-        let rootfsBackup = "\(directory)/.restore-rootfs-\(token)"
-        let kernelBackup = "\(directory)/.restore-kernel-\(token)"
-        let machineIdentifierBackup = "\(directory)/.restore-machine-identifier-\(token)"
-        let nvramBackup = "\(directory)/.restore-nvram-\(token)"
+        let token = operationID.uuidString.lowercased()
+        let rootfsBackup = "\(directory)/.restore-\(token)-rootfs"
+        let kernelBackup = "\(directory)/.restore-\(token)-kernel"
+        let machineIdentifierBackup = "\(directory)/.restore-\(token)-machine-identifier"
+        let nvramBackup = "\(directory)/.restore-\(token)-nvram"
+        let configurationBackup = "\(directory)/.restore-\(token)-machine-json"
+        var preserveBackupsForRecovery = false
         defer {
-            try? FileManager.default.removeItem(atPath: rootfsBackup)
-            try? FileManager.default.removeItem(atPath: kernelBackup)
-            try? FileManager.default.removeItem(atPath: machineIdentifierBackup)
-            try? FileManager.default.removeItem(atPath: nvramBackup)
+            if !preserveBackupsForRecovery {
+                try? FileManager.default.removeItem(atPath: rootfsBackup)
+                try? FileManager.default.removeItem(atPath: kernelBackup)
+                try? FileManager.default.removeItem(atPath: machineIdentifierBackup)
+                try? FileManager.default.removeItem(atPath: nvramBackup)
+                try? FileManager.default.removeItem(atPath: configurationBackup)
+            }
         }
         try Self.cloneOrCopyFile(source: machine.rootfsPath, destination: rootfsBackup)
         do {
             try Self.cloneOrCopyFile(source: machine.kernelPath, destination: kernelBackup)
         } catch {
             throw MachineManagerError.persistence("could not preserve live kernel before restore: \(error)")
+        }
+        do {
+            try Self.cloneOrCopyFile(
+                source: machineConfigPath(id: machine.id),
+                destination: configurationBackup
+            )
+        } catch {
+            throw MachineManagerError.persistence(
+                "could not preserve machine metadata before restore: \(error)"
+            )
         }
         let firmwareRestore: (identifier: String, nvram: String, snapshotIdentifier: String, snapshotNVRAM: String)?
         if snapshot.bootMode == .efi {
@@ -3145,6 +3472,14 @@ public final class MachineManager: @unchecked Sendable {
         } else {
             firmwareRestore = nil
         }
+#if DEBUG
+        do {
+            try injectLifecycleFault(.restoreAfterBackups)
+        } catch {
+            preserveBackupsForRecovery = true
+            throw error
+        }
+#endif
         do {
             try Self.cloneOrCopyFile(
                 source: snapshot.rootfsPath,
@@ -3168,6 +3503,15 @@ public final class MachineManager: @unchecked Sendable {
                     replaceExisting: true
                 )
             }
+            guard Self.recoveredLiveArtifactsMatch(
+                snapshot: snapshot,
+                machineID: machine.id,
+                configuration: configuration
+            ) else {
+                throw MachineManagerError.persistence(
+                    "restored machine artifacts do not match bound snapshot evidence"
+                )
+            }
             try commit()
         } catch {
             var rollbackFailures: [String] = []
@@ -3188,6 +3532,15 @@ public final class MachineManager: @unchecked Sendable {
                 )
             } catch {
                 rollbackFailures.append("kernel rollback failed: \(error)")
+            }
+            do {
+                try Self.cloneOrCopyFile(
+                    source: configurationBackup,
+                    destination: machineConfigPath(id: machine.id),
+                    replaceExisting: true
+                )
+            } catch {
+                rollbackFailures.append("machine metadata rollback failed: \(error)")
             }
             if let firmwareRestore {
                 do {
@@ -3479,9 +3832,7 @@ public final class MachineManager: @unchecked Sendable {
             guard Self.isPrivateDirectory(path: directory) else {
                 throw MachineManagerError.persistence("machine snapshot path is not a private directory")
             }
-            let encoder = JSONEncoder()
-            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            let data = try encoder.encode(snapshot)
+            let data = try Self.snapshotDescriptorData(snapshot)
             let path = snapshotMetadataPath(machineID: snapshot.machineID, snapshotID: snapshot.id)
             try data.write(to: URL(fileURLWithPath: temporaryPath), options: .atomic)
             try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: temporaryPath)
@@ -3543,6 +3894,34 @@ public final class MachineManager: @unchecked Sendable {
         var validated = snapshot
         validated.sizeBytes = Self.fileSize(path: expectedRootfsPath)
         return validated
+    }
+
+    private static func snapshotDescriptorData(_ snapshot: DoryMachineSnapshot) throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        return try encoder.encode(snapshot)
+    }
+
+    private static func snapshotEvidenceData(
+        _ evidence: DoryMachineSnapshotArtifactEvidence
+    ) throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        return try encoder.encode(evidence)
+    }
+
+    private static func lifecycleSnapshotAuthority(
+        _ snapshot: DoryMachineSnapshot
+    ) throws -> DoryWorkspaceSnapshotAuthority {
+        guard let evidence = snapshot.artifactEvidence, evidence.isValid else {
+            throw MachineManagerError.persistence(
+                "machine snapshot lacks immutable lifecycle artifact evidence"
+            )
+        }
+        return DoryWorkspaceSnapshotAuthority(
+            descriptorSHA256: sha256(data: try snapshotDescriptorData(snapshot)),
+            artifactEvidenceSHA256: sha256(data: try snapshotEvidenceData(evidence))
+        )
     }
 
     fileprivate static func validateSnapshotRuntimeIdentity(
@@ -3710,6 +4089,7 @@ public final class MachineManager: @unchecked Sendable {
         var handoffServer: VmmHandoffServer?
         var processToStop: HvProcess?
         var agentSocketPath: String?
+        var lifecycleReadinessSucceeded = false
         lock.lock()
         guard var entry = machines[machineID], entry.launchID == launchID else {
             lock.unlock()
@@ -3732,6 +4112,7 @@ public final class MachineManager: @unchecked Sendable {
             entry.lastError = nil
             entry.process?.disableRestarts()
             agentSocketPath = handoff.ready.agentSocketPath
+            lifecycleReadinessSucceeded = true
         case let .failure(error):
             entry.state = .failed
             entry.lastError = "\(error)"
@@ -3741,6 +4122,14 @@ public final class MachineManager: @unchecked Sendable {
         }
         machines[machineID] = entry
         lock.unlock()
+
+        operationLock.lock()
+        if lifecycleReadinessSucceeded {
+            completeActiveStartLifecycle(id: machineID)
+        } else {
+            failActiveStartLifecycle(id: machineID, stepID: "start.readiness-failed")
+        }
+        operationLock.unlock()
 
         handoffServer?.stop()
         processToStop?.stop()
@@ -4261,6 +4650,831 @@ public final class MachineManager: @unchecked Sendable {
             )
         }
         return loaded
+    }
+
+    private func currentRuntimeIdentity(id: String) throws -> DoryMachineRuntimeIdentity {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let identity = machines[id]?.runtimeIdentity else {
+            throw MachineManagerError.unknownMachine(id)
+        }
+        guard identity.validate().isEmpty else {
+            throw MachineManagerError.persistence("machine runtime identity is invalid")
+        }
+        return identity
+    }
+
+    private func lifecycleState(for state: DoryMachineState) -> DoryWorkspaceLifecycleState {
+        switch state {
+        case .starting, .running: .running
+        case .created, .stopped: .stopped
+        case .failed: .failed
+        }
+    }
+
+    private func lifecycleCondition(
+        machine: DoryMachineConfiguration,
+        state: DoryWorkspaceLifecycleState,
+        runtimeIdentity: DoryMachineRuntimeIdentity
+    ) throws -> DoryWorkspaceLifecycleCondition {
+        let legacyData: Data
+        if let current = Self.readPrivateMetadata(path: machineConfigPath(id: machine.id)),
+           let decoded = try? JSONDecoder().decode(DoryMachineConfiguration.self, from: current),
+           decoded == machine {
+            legacyData = current
+        } else {
+            legacyData = try DoryMachineConfigurationMigrationBridge.encodeLegacy(machine)
+        }
+        let facts = try workspaceMigrationFacts(for: machine)
+        let definition = try DoryMachineConfigurationMigrationBridge.migrate(
+            machine,
+            facts: facts
+        ).definition
+        let definitionData = try Self.canonicalDefinitionData(definition)
+        return DoryWorkspaceLifecycleCondition(
+            workspaceID: machine.id,
+            state: state,
+            definitionRevision: definition.lifecycle.revision,
+            runtime: try lifecycleRuntimeBinding(runtimeIdentity),
+            configurationAuthority: DoryWorkspaceConfigurationAuthority(
+                legacyConfigurationSHA256: Self.sha256(data: legacyData),
+                canonicalDefinitionSHA256: Self.sha256(data: definitionData)
+            )
+        )
+    }
+
+    private func lifecycleRuntimeBinding(
+        _ identity: DoryMachineRuntimeIdentity
+    ) throws -> DoryWorkspaceRuntimeBinding {
+        guard identity.validate().isEmpty else {
+            throw MachineManagerError.persistence("machine runtime identity is invalid")
+        }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let digest = Self.sha256(data: try encoder.encode(identity))
+        switch identity.mode {
+        case .legacyCompatibility:
+            return .legacyCompatibility(
+                virtualHardwareABIVersion: identity.virtualHardwareABIVersion,
+                runtimeIdentityDigest: digest
+            )
+        case .requiresReplanning:
+            return .requiresReplanning(
+                virtualHardwareABIVersion: identity.virtualHardwareABIVersion,
+                runtimeIdentityDigest: digest
+            )
+        case .resolvedPlan:
+            guard let plan = identity.resolvedPlan,
+                  let planDigest = identity.resolvedPlanSHA256 else {
+                throw MachineManagerError.persistence("resolved runtime identity is incomplete")
+            }
+            return .resolvedPlan(
+                DoryWorkspaceResolvedCondition(
+                    planRevision: plan.planRevision,
+                    planDigest: planDigest,
+                    backendID: plan.backend.rawValue,
+                    backendRuntimeBuildID: plan.backendRuntimeBuildIdentifier,
+                    virtualHardwareABIVersion: plan.virtualHardwareABIVersion
+                ),
+                runtimeIdentityDigest: digest
+            )
+        }
+    }
+
+    private func beginLifecycleStart(
+        machine: DoryMachineConfiguration,
+        targetIdentity: DoryMachineRuntimeIdentity
+    ) throws -> MachineLifecycleJournalContext {
+        let sourceIdentity = try currentRuntimeIdentity(id: machine.id)
+        return try beginLifecycleOperation(
+            kind: .starting,
+            source: lifecycleCondition(
+                machine: machine,
+                state: .stopped,
+                runtimeIdentity: sourceIdentity
+            ),
+            target: lifecycleCondition(
+                machine: machine,
+                state: .running,
+                runtimeIdentity: targetIdentity
+            ),
+            targetResourceID: nil,
+            readiness: true
+        )
+    }
+
+    private func beginLifecycleStartPreparation(
+        id: String
+    ) throws -> MachineLifecycleJournalContext {
+        lock.lock()
+        guard let entry = machines[id] else {
+            lock.unlock()
+            throw MachineManagerError.unknownMachine(id)
+        }
+        let machine = entry.configuration
+        let runtimeIdentity = entry.runtimeIdentity
+        lock.unlock()
+
+        var condition = try lifecycleCondition(
+            machine: machine,
+            state: .stopped,
+            runtimeIdentity: runtimeIdentity
+        )
+        // Boot-bundle and direct-boot materialization are derived from the unchanged authoritative
+        // legacy configuration. Their projection facts may legitimately become more specific, so
+        // this preparation boundary binds the exact raw authority and runtime identity while the
+        // subsequent start journal binds the reconciled canonical definition.
+        condition.configurationAuthority?.canonicalDefinitionSHA256 = nil
+        return try beginLifecycleOperation(
+            kind: .resolving,
+            source: condition,
+            target: condition,
+            targetResourceID: nil,
+            readiness: false
+        )
+    }
+
+    private func beginLifecycleStop(
+        machine: DoryMachineConfiguration,
+        runtimeIdentity: DoryMachineRuntimeIdentity
+    ) throws -> MachineLifecycleJournalContext {
+        try beginLifecycleOperation(
+            kind: .stopping,
+            source: lifecycleCondition(
+                machine: machine,
+                state: .running,
+                runtimeIdentity: runtimeIdentity
+            ),
+            target: lifecycleCondition(
+                machine: machine,
+                state: .stopped,
+                runtimeIdentity: runtimeIdentity
+            ),
+            targetResourceID: nil,
+            readiness: false
+        )
+    }
+
+    private func beginLifecycleSnapshot(
+        machine: DoryMachineConfiguration,
+        runtimeIdentity: DoryMachineRuntimeIdentity,
+        sourceState: DoryWorkspaceLifecycleState,
+        snapshotID: String,
+        snapshotAuthority: DoryWorkspaceSnapshotAuthority
+    ) throws -> MachineLifecycleJournalContext {
+        let condition = try lifecycleCondition(
+            machine: machine,
+            state: sourceState,
+            runtimeIdentity: runtimeIdentity
+        )
+        return try beginLifecycleOperation(
+            kind: .snapshotting,
+            source: condition,
+            target: condition,
+            targetResourceID: snapshotID,
+            targetSnapshotAuthority: snapshotAuthority,
+            readiness: false
+        )
+    }
+
+    private func beginLifecycleRestore(
+        sourceMachine: DoryMachineConfiguration,
+        targetMachine: DoryMachineConfiguration,
+        sourceIdentity: DoryMachineRuntimeIdentity,
+        targetIdentity: DoryMachineRuntimeIdentity,
+        sourceState: DoryWorkspaceLifecycleState,
+        targetState: DoryWorkspaceLifecycleState,
+        snapshotID: String,
+        snapshotAuthority: DoryWorkspaceSnapshotAuthority
+    ) throws -> MachineLifecycleJournalContext {
+        try beginLifecycleOperation(
+            kind: .restoring,
+            source: lifecycleCondition(
+                machine: sourceMachine,
+                state: sourceState,
+                runtimeIdentity: sourceIdentity
+            ),
+            target: lifecycleCondition(
+                machine: targetMachine,
+                state: targetState,
+                runtimeIdentity: targetIdentity
+            ),
+            targetResourceID: snapshotID,
+            targetSnapshotAuthority: snapshotAuthority,
+            readiness: targetState == .running
+        )
+    }
+
+    private func beginLifecycleDelete(
+        machine: DoryMachineConfiguration,
+        runtimeIdentity: DoryMachineRuntimeIdentity,
+        sourceState: DoryWorkspaceLifecycleState
+    ) throws -> MachineLifecycleJournalContext {
+        try beginLifecycleOperation(
+            kind: .deleting,
+            source: lifecycleCondition(
+                machine: machine,
+                state: sourceState,
+                runtimeIdentity: runtimeIdentity
+            ),
+            target: lifecycleCondition(
+                machine: machine,
+                state: .deleting,
+                runtimeIdentity: runtimeIdentity
+            ),
+            targetResourceID: nil,
+            readiness: false
+        )
+    }
+
+    private func beginLifecycleOperation(
+        kind: DoryWorkspaceMutationKind,
+        source: DoryWorkspaceLifecycleCondition,
+        target: DoryWorkspaceLifecycleCondition,
+        targetResourceID: String?,
+        targetSnapshotAuthority: DoryWorkspaceSnapshotAuthority? = nil,
+        readiness: Bool
+    ) throws -> MachineLifecycleJournalContext {
+        let machineID = source.workspaceID
+        if kind == .snapshotting || kind == .restoring {
+            guard targetSnapshotAuthority != nil else {
+                throw MachineManagerError.persistence(
+                    "snapshot lifecycle operation is missing immutable artifact authority"
+                )
+            }
+        }
+        guard activeLifecycleOperations[machineID] == nil else {
+            throw MachineManagerError.persistence(
+                "machine \(machineID) already has an active lifecycle mutation"
+            )
+        }
+        guard let store = lifecycleJournalStore else {
+            throw MachineManagerError.persistence(
+                "lifecycle journal is unavailable: \(lifecycleJournalInitializationError ?? "unknown error")"
+            )
+        }
+        let now = Date()
+        let created = Int64(max(0, (now.timeIntervalSince1970 * 1_000).rounded()))
+        let deadlineDelta: Int64 = 15 * 60 * 1_000
+        let deadline = created > Int64.max - deadlineDelta ? Int64.max : created + deadlineDelta
+        let operation = DoryWorkspaceLifecycleOperation(
+            kind: kind,
+            source: source,
+            target: target,
+            targetResourceID: targetResourceID,
+            targetSnapshotAuthority: targetSnapshotAuthority,
+            createdAtUnixMilliseconds: created,
+            deadlineUnixMilliseconds: deadline,
+            steps: [
+                .init(id: "quiesce", stage: .quiesce, deadlineOffsetMilliseconds: 60_000),
+                .init(id: "stage", stage: .prepare, deadlineOffsetMilliseconds: 120_000),
+                .init(id: "verify", stage: .mutate, deadlineOffsetMilliseconds: 300_000),
+                .init(id: "publish", stage: .publish, deadlineOffsetMilliseconds: 600_000),
+                .init(id: "validate", stage: readiness ? .readiness : .cleanup,
+                      deadlineOffsetMilliseconds: 840_000),
+            ],
+            readinessGates: readiness
+                ? [.init(kind: .backendRunning, deadlineOffsetMilliseconds: 840_000)] : [],
+            retryBudgets: [],
+            cancellationPolicy: kind == .deleting ? .prohibited : .rollbackRequired,
+            recovery: .init(disposition: .rollback, stepIDs: ["stage", "publish"])
+        )
+        let dependency = MachineLifecycleDependencyAuthority(
+            mutationKind: kind.rawValue,
+            workspaceID: machineID,
+            sourceLegacyConfigurationSHA256:
+                source.configurationAuthority?.legacyConfigurationSHA256,
+            sourceDefinitionSHA256: source.configurationAuthority?.canonicalDefinitionSHA256,
+            sourceRuntimeIdentitySHA256: source.runtime?.runtimeIdentityDigest,
+            targetLegacyConfigurationSHA256:
+                target.configurationAuthority?.legacyConfigurationSHA256,
+            targetDefinitionSHA256: target.configurationAuthority?.canonicalDefinitionSHA256,
+            targetRuntimeIdentitySHA256: target.runtime?.runtimeIdentityDigest,
+            targetResourceID: targetResourceID,
+            targetSnapshotDescriptorSHA256:
+                targetSnapshotAuthority?.descriptorSHA256,
+            targetSnapshotArtifactEvidenceSHA256:
+                targetSnapshotAuthority?.artifactEvidenceSHA256
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let binding = try operation.journalBinding(
+            dependencyClosureDigest: Self.sha256(data: try encoder.encode(dependency))
+        )
+        let context = MachineLifecycleJournalContext(
+            operation: operation,
+            lease: try store.begin(binding)
+        )
+        activeLifecycleOperations[machineID] = context
+        return context
+    }
+
+    private func advanceLifecycleToPublishing(
+        _ context: MachineLifecycleJournalContext
+    ) throws {
+        for phase in [
+            DoryOperationPhase.quiescing,
+            .staging,
+            .verifying,
+            .readyToPublish,
+            .publishing,
+        ] {
+            let current = try context.lease.read().state
+            if current.phase.indexForMachineLifecycle >= phase.indexForMachineLifecycle { continue }
+            _ = try context.lease.transition(
+                to: phase,
+                status: .running,
+                expectedRevision: current.revision,
+                stepID: "lifecycle.\(phase.rawValue)"
+            )
+        }
+    }
+
+    private func completeLifecycle(_ context: MachineLifecycleJournalContext) throws {
+        var current = try context.lease.read().state
+        if current.phase.indexForMachineLifecycle < DoryOperationPhase.validating.indexForMachineLifecycle {
+            current = try context.lease.transition(
+                to: .validating,
+                status: .running,
+                expectedRevision: current.revision,
+                stepID: "lifecycle.validated"
+            )
+        }
+#if DEBUG
+        // Persist the post-commit boundary before exercising the terminal journal write. Recovery
+        // can then distinguish a committed target from a pre-commit interruption even when the
+        // source and target machine.json bytes happen to be identical.
+        try injectLifecycleFault(.completionBeforeJournalWrite(context.operation.kind))
+#endif
+        if current.phase.indexForMachineLifecycle < DoryOperationPhase.completed.indexForMachineLifecycle {
+            _ = try context.lease.transition(
+                to: .completed,
+                status: .completed,
+                expectedRevision: current.revision,
+                stepID: "lifecycle.completed"
+            )
+        }
+        activeLifecycleOperations.removeValue(forKey: context.operation.source.workspaceID)
+        context.releaseLease()
+    }
+
+    @discardableResult
+    private func completeCommittedLifecycle(
+        _ context: MachineLifecycleJournalContext,
+        diagnostic: String
+    ) -> Bool {
+        do {
+            try completeLifecycle(context)
+            return true
+        } catch {
+            // The target side effect is already durable. Preserve the journal's last valid,
+            // nonterminal state so restart recovery can verify and finish it; claiming rollback
+            // or terminal failure here would contradict the machine/snapshot authority on disk.
+            activeLifecycleOperations.removeValue(forKey: context.operation.source.workspaceID)
+            context.releaseLease()
+            lock.lock()
+            if machines[context.operation.source.workspaceID] != nil {
+                machines[context.operation.source.workspaceID]?.lastError =
+                    "\(diagnostic): \(error)"
+            }
+            lock.unlock()
+            return false
+        }
+    }
+
+    private func failLifecycle(
+        _ context: MachineLifecycleJournalContext,
+        stepID: String,
+        rolledBack: Bool = false
+    ) {
+        defer {
+            activeLifecycleOperations.removeValue(forKey: context.operation.source.workspaceID)
+            context.releaseLease()
+        }
+        guard var current = try? context.lease.read().state,
+              current.status != .failed, current.status != .completed else { return }
+        if rolledBack,
+           let rollingBack = try? context.lease.transition(
+               to: current.phase,
+               status: .rollingBack,
+               expectedRevision: current.revision,
+               stepID: "lifecycle.rolling-back",
+               recoveryAction: "rollback"
+           ) {
+            current = rollingBack
+        }
+        _ = try? context.lease.transition(
+            to: current.phase,
+            status: .failed,
+            expectedRevision: current.revision,
+            stepID: stepID,
+            recoveryAction: rolledBack ? "rollback" : nil
+        )
+    }
+
+    private func completeActiveStartLifecycle(id: String) {
+        guard let context = activeLifecycleOperations[id], context.operation.kind == .starting else {
+            return
+        }
+        _ = completeCommittedLifecycle(
+            context,
+            diagnostic: "running machine has an unfinished readiness journal"
+        )
+    }
+
+    private func failActiveStartLifecycle(id: String, stepID: String) {
+        guard let context = activeLifecycleOperations[id], context.operation.kind == .starting else {
+            return
+        }
+        failLifecycle(context, stepID: stepID)
+    }
+
+    private func cancelActiveStartLifecycleIfNeeded(id: String, reason: String) throws {
+        guard let context = activeLifecycleOperations[id] else { return }
+        guard context.operation.kind == .starting else {
+            throw MachineManagerError.persistence(
+                "machine \(id) already has an active lifecycle mutation"
+            )
+        }
+        failLifecycle(context, stepID: reason)
+    }
+
+    private func lifecycleDeletionQuarantinePath(
+        machineID: String,
+        operationID: UUID
+    ) -> String {
+        Self.lifecycleDeletionQuarantinePath(
+            configuration: configuration,
+            machineID: machineID,
+            operationID: operationID
+        )
+    }
+
+    private static func lifecycleDeletionQuarantinePath(
+        configuration: MachineManagerConfiguration,
+        machineID: String,
+        operationID: UUID
+    ) -> String {
+        "\(configuration.stateDirectory)/\(deletionQuarantinePrefix)\(machineID)-"
+            + operationID.uuidString.lowercased()
+    }
+
+#if DEBUG
+    func installLifecycleFaultInjectorForTesting(
+        _ injector: @escaping @Sendable (MachineLifecycleFaultPoint) throws -> Void
+    ) {
+        operationLock.lock()
+        lifecycleFaultInjector = injector
+        operationLock.unlock()
+    }
+
+    private func injectLifecycleFault(_ point: MachineLifecycleFaultPoint) throws {
+        try lifecycleFaultInjector?(point)
+    }
+#endif
+
+    private static func recoverInterruptedLifecycleOperations(
+        store: DoryOperationJournalStore?,
+        configuration: MachineManagerConfiguration
+    ) -> [String: String] {
+        guard let store, let records = try? store.list() else { return [:] }
+        var diagnostics: [String: String] = [:]
+        for record in records where record.state.status != .completed
+            && record.state.status != .failed {
+            var lease: DoryOperationLease?
+            do {
+                guard Self.isValidID(record.plan.source.id) else { continue }
+                lease = try store.acquire(record.plan.id)
+                guard let lease else { continue }
+                let operation = try lease.readWorkspaceLifecycleOperation()
+                guard operation.source.workspaceID == record.plan.source.id,
+                      operation.target.workspaceID == record.plan.source.id else {
+                    throw MachineManagerError.persistence(
+                        "lifecycle journal mutation scope changed during recovery"
+                    )
+                }
+                let id = operation.source.workspaceID
+                let recoveryState = try lease.read().state
+                switch operation.kind {
+                case .resolving:
+                    if lifecycleConfigurationMatches(
+                        operation.target.configurationAuthority,
+                        machineID: id,
+                        configuration: configuration
+                    ) {
+                        try completeRecoveredLifecycle(lease)
+                        diagnostics[id] =
+                            "interrupted start preparation was recovered; machine remains stopped"
+                    } else {
+                        try failRecoveredLifecycle(lease, rolledBack: false)
+                        diagnostics[id] =
+                            "interrupted start preparation authority changed; recovery failed closed"
+                    }
+                case .starting:
+                    try failRecoveredLifecycle(lease, rolledBack: true)
+                    diagnostics[id] = "interrupted start was recovered as stopped"
+                case .stopping:
+                    if lifecycleConfigurationMatches(
+                        operation.target.configurationAuthority,
+                        machineID: id,
+                        configuration: configuration
+                    ) {
+                        try completeRecoveredLifecycle(lease)
+                        diagnostics[id] = "interrupted stop completed during daemon recovery"
+                    } else {
+                        try failRecoveredLifecycle(lease, rolledBack: false)
+                        diagnostics[id] = "interrupted stop authority changed; recovery failed closed"
+                    }
+                case .snapshotting:
+                    if recoveryState.phase.indexForMachineLifecycle
+                        >= DoryOperationPhase.validating.indexForMachineLifecycle,
+                       recoveredSnapshot(
+                           machineID: id,
+                           operation: operation,
+                           configuration: configuration
+                       ) != nil,
+                       lifecycleConfigurationMatches(
+                           operation.target.configurationAuthority,
+                           machineID: id,
+                           configuration: configuration
+                       ) {
+                        try completeRecoveredLifecycle(lease)
+                        diagnostics[id] =
+                            "published snapshot journal completed during daemon recovery"
+                    } else {
+                        if let snapshotID = operation.targetResourceID {
+                            removeRecoveredSnapshot(
+                                machineID: id,
+                                snapshotID: snapshotID,
+                                configuration: configuration
+                            )
+                        }
+                        try failRecoveredLifecycle(lease, rolledBack: true)
+                        diagnostics[id] = "interrupted snapshot was rolled back"
+                    }
+                case .restoring:
+                    if recoveryState.phase.indexForMachineLifecycle
+                        >= DoryOperationPhase.validating.indexForMachineLifecycle {
+                        if let snapshot = recoveredSnapshot(
+                            machineID: id,
+                            operation: operation,
+                            configuration: configuration
+                        ), lifecycleConfigurationMatches(
+                                operation.target.configurationAuthority,
+                                machineID: id,
+                                configuration: configuration
+                           ), recoveredLiveArtifactsMatch(
+                                snapshot: snapshot,
+                                machineID: id,
+                                configuration: configuration
+                           ) {
+                            try completeRecoveredLifecycle(lease)
+                            diagnostics[id] =
+                                "interrupted snapshot restore completed before daemon restart"
+                        } else {
+                            try failRecoveredLifecycle(lease, rolledBack: false)
+                            diagnostics[id] = "committed snapshot restore authority requires repair"
+                        }
+                    } else {
+                        let restored = restoreRecoveredMachineBackups(
+                            machineID: id,
+                            operationID: operation.operationID,
+                            configuration: configuration
+                        )
+                        if restored || lifecycleConfigurationMatches(
+                            operation.source.configurationAuthority,
+                            machineID: id,
+                            configuration: configuration
+                        ) {
+                            try failRecoveredLifecycle(lease, rolledBack: true)
+                            diagnostics[id] = "interrupted snapshot restore was rolled back"
+                        } else if lifecycleConfigurationMatches(
+                            operation.target.configurationAuthority,
+                            machineID: id,
+                            configuration: configuration
+                        ) {
+                            try completeRecoveredLifecycle(lease)
+                            diagnostics[id] =
+                                "interrupted snapshot restore completed before daemon restart"
+                        } else {
+                            try failRecoveredLifecycle(lease, rolledBack: false)
+                            diagnostics[id] = "interrupted snapshot restore requires repair"
+                        }
+                    }
+                case .deleting:
+                    let state = "\(configuration.stateDirectory)/\(id)"
+                    let quarantine = lifecycleDeletionQuarantinePath(
+                        configuration: configuration,
+                        machineID: id,
+                        operationID: operation.operationID
+                    )
+                    if pathEntryExists(quarantine), !pathEntryExists(state) {
+                        guard rename(quarantine, state) == 0 else {
+                            throw MachineManagerError.persistence(
+                                "could not roll back interrupted machine deletion"
+                            )
+                        }
+                        try failRecoveredLifecycle(lease, rolledBack: true)
+                        diagnostics[id] = "interrupted deletion was rolled back"
+                    } else if !pathEntryExists(quarantine), !pathEntryExists(state) {
+                        try completeRecoveredLifecycle(lease)
+                    } else {
+                        try failRecoveredLifecycle(lease, rolledBack: false)
+                        diagnostics[id] = "interrupted deletion preserved existing machine data"
+                    }
+                case .importing, .provisioning, .pausing, .resuming,
+                     .suspending, .cloning, .updating, .repairing:
+                    try failRecoveredLifecycle(lease, rolledBack: false)
+                    diagnostics[id] = "unsupported interrupted lifecycle mutation requires repair"
+                }
+            } catch {
+                if let id = try? lease?.readWorkspaceLifecycleOperation().source.workspaceID {
+                    diagnostics[id] = "lifecycle recovery failed closed: \(error)"
+                }
+            }
+            lease = nil
+        }
+        return diagnostics
+    }
+
+    private static func lifecycleConfigurationMatches(
+        _ authority: DoryWorkspaceConfigurationAuthority?,
+        machineID: String,
+        configuration: MachineManagerConfiguration
+    ) -> Bool {
+        guard let expected = authority?.legacyConfigurationSHA256,
+              let data = readPrivateMetadata(
+                  path: "\(configuration.stateDirectory)/\(machineID)/machine.json"
+              ) else { return false }
+        return sha256(data: data) == expected
+    }
+
+    private static func completeRecoveredLifecycle(_ lease: DoryOperationLease) throws {
+        var current = try lease.read().state
+        if current.status != .running {
+            current = try lease.transition(
+                to: current.phase,
+                status: .running,
+                expectedRevision: current.revision,
+                stepID: "recovery.resumed"
+            )
+        }
+        for phase in DoryOperationPhase.allCases
+            where phase.indexForMachineLifecycle > current.phase.indexForMachineLifecycle {
+            current = try lease.transition(
+                to: phase,
+                status: phase == .completed ? .completed : .running,
+                expectedRevision: current.revision,
+                stepID: phase == .completed ? "recovery.completed" : "recovery.\(phase.rawValue)"
+            )
+        }
+    }
+
+    private static func failRecoveredLifecycle(
+        _ lease: DoryOperationLease,
+        rolledBack: Bool
+    ) throws {
+        var current = try lease.read().state
+        if rolledBack, current.status != .rollingBack {
+            current = try lease.transition(
+                to: current.phase,
+                status: .rollingBack,
+                expectedRevision: current.revision,
+                stepID: "recovery.rolling-back",
+                recoveryAction: "rollback"
+            )
+        }
+        _ = try lease.transition(
+            to: current.phase,
+            status: .failed,
+            expectedRevision: current.revision,
+            stepID: "recovery.failed",
+            recoveryAction: rolledBack ? "rollback" : nil
+        )
+    }
+
+    private static func removeRecoveredSnapshot(
+        machineID: String,
+        snapshotID: String,
+        configuration: MachineManagerConfiguration
+    ) {
+        let directory = "\(configuration.stateDirectory)/\(machineID)/snapshots"
+        for suffix in ["json", "ext4", "kernel", "machine-identifier", "nvram"] {
+            try? FileManager.default.removeItem(
+                atPath: "\(directory)/\(snapshotID).\(suffix)"
+            )
+        }
+    }
+
+    private static func recoveredSnapshot(
+        machineID: String,
+        operation: DoryWorkspaceLifecycleOperation,
+        configuration: MachineManagerConfiguration
+    ) -> DoryMachineSnapshot? {
+        guard let snapshotID = operation.targetResourceID,
+              let authority = operation.targetSnapshotAuthority,
+              isValidID(machineID), isValidID(snapshotID) else { return nil }
+        let directory = "\(configuration.stateDirectory)/\(machineID)/snapshots"
+        let metadataPath = "\(directory)/\(snapshotID).json"
+        let rootfsPath = "\(directory)/\(snapshotID).ext4"
+        let kernelPath = "\(directory)/\(snapshotID).kernel"
+        let machineIdentifierPath = "\(directory)/\(snapshotID).machine-identifier"
+        let nvramPath = "\(directory)/\(snapshotID).nvram"
+        guard isPrivateDirectory(path: directory),
+              let metadata = readPrivateMetadata(path: metadataPath),
+              sha256(data: metadata) == authority.descriptorSHA256,
+              let snapshot = try? JSONDecoder().decode(DoryMachineSnapshot.self, from: metadata),
+              snapshot.id == snapshotID,
+              snapshot.machineID == machineID,
+              snapshot.rootfsPath == rootfsPath,
+              snapshot.kernelPath == kernelPath,
+              snapshot.architecture == configuration.guestArchitecture,
+              snapshot.sizeBytes > 0,
+              snapshot.runtimeIdentity.validate().isEmpty,
+              (try? validateResources(
+                  memoryMB: snapshot.memoryMB,
+                  cpuCount: snapshot.cpuCount
+              )) != nil,
+              let evidence = snapshot.artifactEvidence,
+              evidence.isValid,
+              (try? snapshotEvidenceData(evidence)).map(sha256(data:))
+                == authority.artifactEvidenceSHA256,
+              isPrivateRegularFile(path: rootfsPath),
+              isPrivateRegularFile(path: kernelPath) else { return nil }
+        switch snapshot.bootMode {
+        case .linuxKernel:
+            guard snapshot.machineIdentifierPath == nil,
+                  snapshot.nvramPath == nil else { return nil }
+        case .efi:
+            guard snapshot.machineIdentifierPath == machineIdentifierPath,
+                  snapshot.nvramPath == nvramPath,
+                  isPrivateRegularFile(path: machineIdentifierPath),
+                  isPrivateRegularFile(path: nvramPath) else { return nil }
+        }
+        guard (try? validateSnapshotRuntimeIdentity(snapshot)) != nil,
+              (try? validateSnapshotArtifactEvidence(snapshot)) != nil else { return nil }
+        return snapshot
+    }
+
+    private static func recoveredLiveArtifactsMatch(
+        snapshot: DoryMachineSnapshot,
+        machineID: String,
+        configuration: MachineManagerConfiguration
+    ) -> Bool {
+        guard let expected = snapshot.artifactEvidence else { return false }
+        let directory = "\(configuration.stateDirectory)/\(machineID)"
+        let rootfsPath = "\(directory)/rootfs.ext4"
+        let kernelPath = "\(directory)/kernel"
+        let machineIdentifierPath = snapshot.bootMode == .efi
+            ? "\(directory)/MachineIdentifier" : nil
+        let nvramPath = snapshot.bootMode == .efi ? "\(directory)/NVRAM" : nil
+        guard isPrivateDirectory(path: directory),
+              isPrivateRegularFile(path: rootfsPath),
+              isPrivateRegularFile(path: kernelPath),
+              machineIdentifierPath.map(isPrivateRegularFile(path:)) ?? true,
+              nvramPath.map(isPrivateRegularFile(path:)) ?? true,
+              let actual = try? snapshotArtifactEvidence(
+                  rootfsPath: rootfsPath,
+                  kernelPath: kernelPath,
+                  machineIdentifierPath: machineIdentifierPath,
+                  nvramPath: nvramPath
+              ) else { return false }
+        return actual == expected
+    }
+
+    private static func restoreRecoveredMachineBackups(
+        machineID: String,
+        operationID: UUID,
+        configuration: MachineManagerConfiguration
+    ) -> Bool {
+        let directory = "\(configuration.stateDirectory)/\(machineID)"
+        let token = operationID.uuidString.lowercased()
+        let pairs = [
+            (".restore-\(token)-rootfs", "rootfs.ext4"),
+            (".restore-\(token)-kernel", "kernel"),
+            (".restore-\(token)-machine-json", "machine.json"),
+            (".restore-\(token)-machine-identifier", "MachineIdentifier"),
+            (".restore-\(token)-nvram", "NVRAM"),
+        ]
+        let required = Array(pairs.prefix(3))
+        guard required.allSatisfy({ pathEntryExists("\(directory)/\($0.0)") }) else {
+            return false
+        }
+        do {
+            for (backup, destination) in pairs where pathEntryExists("\(directory)/\(backup)") {
+                try cloneOrCopyFile(
+                    source: "\(directory)/\(backup)",
+                    destination: "\(directory)/\(destination)",
+                    replaceExisting: true
+                )
+            }
+            for (backup, _) in pairs {
+                try? FileManager.default.removeItem(atPath: "\(directory)/\(backup)")
+            }
+            return true
+        } catch {
+            return false
+        }
     }
 
     private static func removeStaleDeletionQuarantines(stateDirectory: String) {
@@ -4882,6 +6096,65 @@ private struct WorkspaceMigrationAuthorityFacts: Codable {
     var installedEFIBoot: DoryMachineConfigurationInstalledEFIBoot?
     var lifecycle: DoryVMLifecycleMetadata
 }
+
+private final class MachineLifecycleJournalContext: @unchecked Sendable {
+    let operation: DoryWorkspaceLifecycleOperation
+    private(set) var lease: DoryOperationLease!
+
+    init(operation: DoryWorkspaceLifecycleOperation, lease: DoryOperationLease) {
+        self.operation = operation
+        self.lease = lease
+    }
+
+    func releaseLease() {
+        lease = nil
+    }
+}
+
+private struct MachineLifecycleDependencyAuthority: Codable {
+    var schemaVersion: UInt16 = 2
+    var mutationKind: String
+    var workspaceID: String
+    var sourceLegacyConfigurationSHA256: String?
+    var sourceDefinitionSHA256: String?
+    var sourceRuntimeIdentitySHA256: String?
+    var targetLegacyConfigurationSHA256: String?
+    var targetDefinitionSHA256: String?
+    var targetRuntimeIdentitySHA256: String?
+    var targetResourceID: String?
+    var targetSnapshotDescriptorSHA256: String?
+    var targetSnapshotArtifactEvidenceSHA256: String?
+}
+
+private extension DoryOperationPhase {
+    var indexForMachineLifecycle: Int {
+        switch self {
+        case .planned: 0
+        case .quiescing: 1
+        case .staging: 2
+        case .verifying: 3
+        case .readyToPublish: 4
+        case .publishing: 5
+        case .validating: 6
+        case .completed: 7
+        }
+    }
+}
+
+#if DEBUG
+enum MachineLifecycleFaultPoint: Sendable, Equatable {
+    case startAfterPreparation
+    case completionBeforeJournalWrite(DoryWorkspaceMutationKind)
+    case stopAfterProcessStop
+    case snapshotAfterRootfs
+    case restoreAfterBackups
+    case deleteAfterQuarantine
+}
+
+struct MachineLifecycleInjectedCrash: Error, Sendable {}
+#endif
+
+private struct MachineLifecycleJournalCompletionPending: Error, Sendable {}
 
 private struct PreparedMachineStart {
     var machine: DoryMachineConfiguration

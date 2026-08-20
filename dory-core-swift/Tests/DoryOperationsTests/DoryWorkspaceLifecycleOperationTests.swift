@@ -183,6 +183,7 @@ struct DoryWorkspaceLifecycleOperationTests {
             source: condition(.stopped, resolved: resolved),
             target: condition(.stopped, resolved: nil, requiresReplanning: true),
             targetResourceID: "snapshot-one",
+            targetSnapshotAuthority: snapshotAuthority(),
             createdAtUnixMilliseconds: 1_700_000_000_000,
             deadlineUnixMilliseconds: 1_700_000_060_000,
             steps: [step("restore", 50_000)],
@@ -190,6 +191,10 @@ struct DoryWorkspaceLifecycleOperationTests {
             recovery: .init(disposition: .rollback, stepIDs: ["restore"])
         )
         #expect(restoreStopped.validate().isEmpty)
+
+        var missingSnapshotAuthority = restoreStopped
+        missingSnapshotAuthority.targetSnapshotAuthority = nil
+        #expect(has(.invalidCondition, "targetSnapshotAuthority", missingSnapshotAuthority))
 
         var restoreRunning = restoreStopped
         restoreRunning.target.state = .running
@@ -320,6 +325,7 @@ struct DoryWorkspaceLifecycleOperationTests {
             DoryWorkspaceLifecycleOperation.self,
             from: legacyRestoreData
         )
+        #expect(legacyRestore.targetSnapshotAuthority == nil)
         #expect(legacyRestore.validate().isEmpty)
         #expect(legacyRestore.target.runtime?.authorizationState == .resolvedPlan)
     }
@@ -434,6 +440,13 @@ struct DoryWorkspaceLifecycleOperationTests {
             backendID: "dory-hv-linux",
             backendRuntimeBuildID: "dory-hv-1.0.0",
             virtualHardwareABIVersion: 1
+        )
+    }
+
+    private func snapshotAuthority() -> DoryWorkspaceSnapshotAuthority {
+        DoryWorkspaceSnapshotAuthority(
+            descriptorSHA256: String(repeating: "6", count: 64),
+            artifactEvidenceSHA256: String(repeating: "7", count: 64)
         )
     }
 
