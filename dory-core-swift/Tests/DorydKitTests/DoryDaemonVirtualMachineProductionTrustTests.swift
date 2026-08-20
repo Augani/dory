@@ -363,6 +363,58 @@ struct DoryDaemonVirtualMachineProductionTrustTests {
         #expect(trustFloor.activationCount == 1)
     }
 
+    @Test("activated production graph publishes a headless create plan through XPC authority")
+    func activatedGraphPlansHeadlessCreate() throws {
+        let fixture = try ProductionTrustFixture()
+        defer { fixture.cleanup() }
+        guard case let .activated(context) = fixture.factory.activate(
+            store: fixture.store,
+            machineConfiguration: fixture.machineConfiguration,
+            appVersion: fixture.appVersion,
+            publicKey: fixture.publicKey,
+            expectedArchitecture: "arm64"
+        ) else {
+            Issue.record("Expected production activation")
+            return
+        }
+        let service = DorydService(
+            socketPath: fixture.root.appendingPathComponent("doryd.sock").path,
+            machineManager: context.machineManager,
+            productionPlanningController: context.planningController
+        )
+        let qualifiedDisk = fixture.root.appendingPathComponent("qualified-headless.raw").path
+        FileManager.default.createFile(
+            atPath: qualifiedDisk,
+            contents: nil,
+            attributes: [.posixPermissions: 0o600]
+        )
+        let diskHandle = try FileHandle(forWritingTo: URL(fileURLWithPath: qualifiedDisk))
+        try diskHandle.truncate(atOffset: 16 * 1_024 * 1_024 * 1_024)
+        try diskHandle.synchronize()
+        try diskHandle.close()
+        let completed = LockedPlanningCreateReply()
+        service.machineCreate([
+            "id": "qualified-headless",
+            "kernelPath": fixture.mediaPath,
+            "rootfsPath": qualifiedDisk,
+            "displayMode": "headless",
+            "memoryMB": UInt64(2_048),
+            "cpuCount": 2,
+        ]) { ok, body, message in
+            completed.set(ok: ok, body: body, message: message)
+        }
+        let reply = completed.value
+        #expect(reply.ok, Comment(rawValue: reply.message))
+        #expect(reply.body["runtimeIdentity"] != nil)
+        #expect(context.machineManager.status(id: "qualified-headless")?
+            .runtimeIdentity.mode == .resolvedPlan)
+        let plan = try context.planning.plans.read(id: "qualified-headless")
+        #expect(plan.machineID == "qualified-headless")
+        #expect(plan.launchArtifacts.count == 2)
+        #expect(plan.devices.clockSynchronization)
+        #expect(plan.devices.gracefulShutdown)
+    }
+
     @Test("trust-floor failure exposes no manager and a fresh activation can retry")
     func activationFloorFailureIsTyped() throws {
         let trustFloor = ProductionTrustFloorActivationState(remainingFailures: 1)
@@ -548,6 +600,29 @@ struct DoryDaemonVirtualMachineProductionTrustTests {
 
 private enum ProductionTrustFixtureError: Error {
     case runtimeRejected
+}
+
+private final class LockedPlanningCreateReply: @unchecked Sendable {
+    struct Value {
+        var ok = false
+        var body: NSDictionary = [:]
+        var message = "callback was not invoked"
+    }
+
+    private let lock = NSLock()
+    private var stored = Value()
+
+    var value: Value {
+        lock.lock()
+        defer { lock.unlock() }
+        return stored
+    }
+
+    func set(ok: Bool, body: NSDictionary, message: String) {
+        lock.lock()
+        stored = Value(ok: ok, body: body, message: message)
+        lock.unlock()
+    }
 }
 
 private final class ProductionCallCounter: @unchecked Sendable {
@@ -1018,6 +1093,10 @@ private final class ProductionTrustFixture: @unchecked Sendable {
     ) throws {
         let signingKeyID = Self.digest(privateKey.publicKey.rawRepresentation)
         let devices = DoryVirtualMachineDeviceCapabilityRequest.minimumBootable
+        let headlessDevices = DoryVirtualMachineDeviceCapabilityRequest(
+            clockSynchronization: true,
+            gracefulShutdown: true
+        )
         let components = ["dory-hv", "dory-vmm"].map {
             DoryVirtualMachineQualifiedComponent(
                 componentIdentifier: $0,
@@ -1025,30 +1104,33 @@ private final class ProductionTrustFixture: @unchecked Sendable {
                 artifactSHA256: helperDigest
             )
         }
-        let records = [
+        let backends = [
             (DoryVirtualizationBackendIdentity.doryHypervisor,
              RawHVLinuxMachineBackend.backendDescriptor.implementationIdentifier,
              "dory-hv"),
             (DoryVirtualizationBackendIdentity.appleVirtualizationFramework,
              VirtualizationFrameworkLinuxMachineBackend.backendDescriptor.implementationIdentifier,
              "dory-vmm"),
-        ].map { backend, implementation, component in
-            DoryVirtualMachineQualificationRecord(
-                qualificationIdentity: "\(component)-qualification",
-                guest: guest,
-                bootMediaKind: .installedLinuxBootBundle,
-                bootMediaSource: .bundledByDory,
-                immutableArtifactSHA256: mediaDigest,
-                backend: backend,
-                backendImplementationIdentifier: implementation,
-                backendRuntimeBuildIdentifier: runtimeBuildIdentifier,
-                virtualHardwareABIVersion: 1,
-                graphics: .none,
-                devices: devices,
-                hostHardwareModelIdentifier: host.hardwareModelIdentifier,
-                hostOperatingSystemBuild: host.operatingSystemBuild,
-                components: [components.first { $0.componentIdentifier == component }!]
-            )
+        ]
+        let records = backends.flatMap { backend, implementation, component in
+            [("minimum", devices), ("headless", headlessDevices)].map { suffix, devices in
+                DoryVirtualMachineQualificationRecord(
+                    qualificationIdentity: "\(component)-\(suffix)-qualification",
+                    guest: guest,
+                    bootMediaKind: .installedLinuxBootBundle,
+                    bootMediaSource: .bundledByDory,
+                    immutableArtifactSHA256: mediaDigest,
+                    backend: backend,
+                    backendImplementationIdentifier: implementation,
+                    backendRuntimeBuildIdentifier: runtimeBuildIdentifier,
+                    virtualHardwareABIVersion: 1,
+                    graphics: .none,
+                    devices: devices,
+                    hostHardwareModelIdentifier: host.hardwareModelIdentifier,
+                    hostOperatingSystemBuild: host.operatingSystemBuild,
+                    components: [components.first { $0.componentIdentifier == component }!]
+                )
+            }
         }
         let manifest = DoryVirtualMachineQualificationManifest(
             manifestIdentity: "production-vm-qualification-1",

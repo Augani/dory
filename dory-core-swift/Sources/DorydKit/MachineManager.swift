@@ -1041,6 +1041,173 @@ public final class MachineManager: @unchecked Sendable {
         )
     }
 
+    /// Resolves and publishes the exact current compatibility projection through the production
+    /// planning transaction. This is invoked by the product create/update boundary only after
+    /// machine metadata and managed artifacts are durable. Starts remain fail-closed throughout:
+    /// the workspace is `requires-replanning` until the coordinator completes its mutation fence
+    /// and publishes the matching runtime identity.
+    @discardableResult
+    public func resolveAndPublishProductionPlan(
+        id: String,
+        controller: any DoryDaemonVirtualMachineProductionPlanningControlling
+    ) throws -> DoryMachineStatus {
+        operationLock.lock()
+        defer { operationLock.unlock() }
+        guard launchPolicy == .perWorkspaceAuthority else {
+            guard let current = status(id: id) else {
+                throw MachineManagerError.unknownMachine(id)
+            }
+            return current
+        }
+        try requireNoActivePlanningMutation(id: id)
+
+        let entry: MachineEntry
+        lock.lock()
+        guard let current = machines[id], !deletingMachineIDs.contains(id) else {
+            lock.unlock()
+            throw MachineManagerError.unknownMachine(id)
+        }
+        entry = current
+        lock.unlock()
+        guard entry.process == nil, entry.handoffServer == nil,
+              entry.state == .created || entry.state == .stopped else {
+            throw MachineManagerError.persistence(
+                "machine \(id) must be stopped before production planning"
+            )
+        }
+        switch entry.runtimeIdentity.mode {
+        case .legacyCompatibility, .resolvedPlan:
+            guard let current = status(id: id) else {
+                throw MachineManagerError.unknownMachine(id)
+            }
+            return current
+        case .requiresReplanning:
+            break
+        }
+
+        guard let legacyData = Self.readPrivateMetadata(path: machineConfigPath(id: id)),
+              let decoded = try? JSONDecoder().decode(
+                DoryMachineConfiguration.self,
+                from: legacyData
+              ), decoded == entry.configuration else {
+            throw MachineManagerError.persistence(
+                "authoritative machine metadata is unavailable for production planning"
+            )
+        }
+        let facts = try workspaceMigrationFacts(for: entry.configuration)
+        let factsData = try Self.workspaceMigrationAuthorityData(facts)
+        let migration = try DoryMachineConfigurationMigrationBridge.migrate(
+            entry.configuration,
+            facts: facts
+        )
+        let definition: DoryVirtualMachineDefinition
+        do {
+            definition = try workspaceRepository.reconcileLegacyProjection(
+                migration.definition,
+                authoritativeLegacyData: legacyData,
+                authoritativeMigrationFactsData: factsData
+            ).definition
+            let persisted = try workspaceRepository.readLegacyProjection(
+                id: id,
+                authoritativeLegacyData: legacyData,
+                authoritativeMigrationFactsData: factsData
+            )
+            guard persisted == definition else {
+                throw MachineManagerError.persistence(
+                    "workspace projection changed during production planning"
+                )
+            }
+        } catch let error as MachineManagerError {
+            throw error
+        } catch {
+            throw MachineManagerError.persistence(
+                "workspace projection is unavailable for production planning: \(error)"
+            )
+        }
+        let canonicalDefinitionData = try Self.canonicalDefinitionData(definition)
+
+        let plans: any DoryResolvedMachinePlanStoring = resolvedLaunchPlanStore
+            ?? DoryResolvedMachinePlanRepository(root: configuration.stateDirectory)
+        let planPublication: DoryDaemonVirtualMachinePlanPublication
+        do {
+            let existing = try plans.read(id: id)
+            planPublication = .replace(expectedPlanRevision: existing.planRevision)
+        } catch let error as DoryResolvedMachinePlanRepositoryError {
+            switch error {
+            case .planNotFound:
+                planPublication = .create
+            default:
+                throw MachineManagerError.persistence(
+                    "resolved-plan authority cannot be inspected: \(error)"
+                )
+            }
+        } catch {
+            throw MachineManagerError.persistence(
+                "resolved-plan authority cannot be inspected: \(error)"
+            )
+        }
+
+        guard let requirements = DoryDaemonVirtualMachinePlanningCoordinator
+            .launchArtifactRequirements(for: definition) else {
+            throw MachineManagerError.persistence(
+                "workspace launch artifacts are not representable"
+            )
+        }
+        let bindings = Dictionary(grouping: migration.artifactBindings, by: \.reference)
+        var publications: [DoryDaemonVirtualMachinePlanningArtifactPublication] = []
+        publications.reserveCapacity(requirements.count)
+        for requirement in requirements {
+            guard let matches = bindings[requirement.reference], matches.count == 1,
+                  let binding = matches.first else {
+                throw MachineManagerError.persistence(
+                    "workspace launch artifact has no exact managed path"
+                )
+            }
+            let revision: UInt64?
+            do { revision = try controller.authorityRevision(for: requirement.reference) }
+            catch {
+                throw MachineManagerError.persistence(
+                    "workspace artifact authority cannot be inspected: \(error)"
+                )
+            }
+            publications.append(DoryDaemonVirtualMachinePlanningArtifactPublication(
+                reference: requirement.reference,
+                path: binding.path,
+                kind: requirement.kind,
+                source: requirement.source,
+                mutability: requirement.mutable ? .mutable : .immutable,
+                expectedAuthorityRevision: revision
+            ))
+        }
+
+        let request = DoryDaemonVirtualMachinePlanningTransactionRequest(
+            planning: DoryDaemonVirtualMachinePlanningRequest(
+                definition: definition,
+                canonicalDefinitionData: canonicalDefinitionData,
+                machine: entry.configuration,
+                publication: planPublication
+            ),
+            workspacePublication: .retainExistingExact
+        )
+        do {
+            try controller.publishResolvedPlan(
+                request,
+                artifacts: publications
+            )
+        } catch {
+            throw MachineManagerError.persistence(
+                "production planning failed closed: \(error)"
+            )
+        }
+        guard let current = status(id: id),
+              current.runtimeIdentity.mode == .resolvedPlan else {
+            throw MachineManagerError.persistence(
+                "production planning did not publish resolved runtime authority"
+            )
+        }
+        return current
+    }
+
     @discardableResult
     public func start(id: String) throws -> DoryMachineStatus {
         operationLock.lock()

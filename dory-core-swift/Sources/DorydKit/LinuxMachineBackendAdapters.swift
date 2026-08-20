@@ -423,7 +423,7 @@ public final class VirtualizationFrameworkLinuxMachineBackend: MachineBackend, @
         implementationIdentifier: "dory.vz-linux.compatibility.v1",
         guestFamilies: [.linux],
         guestArchitectures: [.arm64],
-        bootMediaKinds: [.installerISO, .virtualDisk],
+        bootMediaKinds: [.installedLinuxBootBundle, .installerISO, .virtualDisk],
         lifecycle: .currentMachineManager
     )
 
@@ -445,16 +445,21 @@ public final class VirtualizationFrameworkLinuxMachineBackend: MachineBackend, @
             executableIsAvailable: executableIsAvailable,
             operations: operations,
             validateMachine: { machine, capability in
-                guard machine.bootMode == .efi, machine.displayMode == .desktop else {
-                    return "The current Virtualization.framework media path requires an EFI desktop machine."
-                }
                 switch capability.request.bootMedia.kind {
+                case .installedLinuxBootBundle:
+                    guard machine.bootMode == .linuxKernel,
+                          machine.installerISOPath == nil,
+                          DoryInstalledLinuxBootBundle.isBundle(atPath: machine.kernelPath) else {
+                        return "A direct Linux VZ plan requires an installed-Linux boot bundle without installer media."
+                    }
                 case .installerISO:
-                    guard machine.installerISOPath?.isEmpty == false else {
+                    guard machine.bootMode == .efi, machine.displayMode == .desktop,
+                          machine.installerISOPath?.isEmpty == false else {
                         return "An installer capability requires attached installer media."
                     }
                 case .virtualDisk:
-                    guard machine.installerISOPath == nil else {
+                    guard machine.bootMode == .efi, machine.displayMode == .desktop,
+                          machine.installerISOPath == nil else {
                         return "A virtual-disk capability cannot retain attached installer media."
                     }
                     if DoryInstalledLinuxBootBundle.isBundle(atPath: machine.kernelPath) {

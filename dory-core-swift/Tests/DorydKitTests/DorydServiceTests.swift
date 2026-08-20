@@ -1,6 +1,7 @@
 import DoryCore
 @testable import DorydKit
 import CryptoKit
+import DoryOperations
 import XCTest
 
 final class DorydServiceTests: XCTestCase {
@@ -1440,6 +1441,63 @@ final class DorydServiceTests: XCTestCase {
         XCTAssertEqual(manager.status(id: "legacy")?.environment["PRIVATE_TOKEN"], "opaque-legacy-value")
     }
 
+    func testPerWorkspaceCreateInvokesProductionPlanningAndFailsClosed() throws {
+        let base = "/tmp/doryd-service-production-plan-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let manager = MachineManager(
+            configuration: MachineManagerConfiguration(
+                vmmExecutablePath: "/bin/sleep",
+                stateDirectory: base,
+                baseArguments: ["30"],
+                passMachineArguments: false,
+                requiresReadyHandoff: false
+            ),
+            launchPolicy: .perWorkspaceAuthority
+        )
+        let controller = ServiceRejectingProductionPlanningController()
+        let service = DorydService(
+            socketPath: "/tmp/doryd-test.sock",
+            machineManager: manager,
+            productionPlanningController: controller
+        )
+        defer { try? FileManager.default.removeItem(atPath: base) }
+
+        let reply = expectation(description: "production planning rejection")
+        service.machineCreate([
+            "id": "planned",
+            "kernelPath": doryTestKernelPath,
+            "rootfsPath": doryTestRootfsPath,
+        ]) { ok, _, message in
+            XCTAssertFalse(ok)
+            XCTAssertTrue(message.contains("production planning failed closed"), message)
+            reply.fulfill()
+        }
+        wait(for: [reply], timeout: 5)
+
+        let captured = try XCTUnwrap(controller.captured)
+        XCTAssertEqual(captured.request.planning.machine.id, "planned")
+        XCTAssertEqual(captured.request.planning.definition.identity.id, "planned")
+        XCTAssertEqual(captured.request.workspacePublication, .retainExistingExact)
+        XCTAssertEqual(captured.artifacts.count, 2)
+        XCTAssertTrue(captured.artifacts.allSatisfy { $0.path.hasPrefix(base + "/planned/") })
+        XCTAssertEqual(manager.status(id: "planned")?.runtimeIdentity.mode, .requiresReplanning)
+        XCTAssertThrowsError(try manager.start(id: "planned"))
+
+        let updateReply = expectation(description: "production update planning rejection")
+        service.machineUpdate("planned", config: ["memoryMB": UInt64(4_096)]) {
+            ok, _, message in
+            XCTAssertFalse(ok)
+            XCTAssertTrue(message.contains("production planning failed closed"), message)
+            updateReply.fulfill()
+        }
+        wait(for: [updateReply], timeout: 5)
+        XCTAssertEqual(controller.captures.count, 2)
+        XCTAssertEqual(
+            controller.captures.last?.request.planning.definition.resources.memoryBytes,
+            UInt64(4_096 * 1_024 * 1_024)
+        )
+        XCTAssertEqual(manager.status(id: "planned")?.runtimeIdentity.mode, .requiresReplanning)
+    }
+
     func testMachineExecOverXPCUsesMachineAgent() throws {
         let base = "/tmp/doryd-service-machine-exec-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         let manager = MachineManager(
@@ -1989,3 +2047,44 @@ private final class ServiceRepairCounter: @unchecked Sendable {
         lock.unlock()
     }
 }
+
+private final class ServiceRejectingProductionPlanningController:
+    DoryDaemonVirtualMachineProductionPlanningControlling, @unchecked Sendable
+{
+    struct Capture: Sendable {
+        var request: DoryDaemonVirtualMachinePlanningTransactionRequest
+        var artifacts: [DoryDaemonVirtualMachinePlanningArtifactPublication]
+    }
+
+    private let lock = NSLock()
+    private var stored: [Capture] = []
+
+    var captured: Capture? {
+        lock.lock()
+        defer { lock.unlock() }
+        return stored.last
+    }
+
+    var captures: [Capture] {
+        lock.lock()
+        defer { lock.unlock() }
+        return stored
+    }
+
+    func authorityRevision(for reference: DoryVMResolverReference) throws -> UInt64? {
+        _ = reference
+        return nil
+    }
+
+    func publishResolvedPlan(
+        _ request: DoryDaemonVirtualMachinePlanningTransactionRequest,
+        artifacts: [DoryDaemonVirtualMachinePlanningArtifactPublication]
+    ) throws {
+        lock.lock()
+        stored.append(Capture(request: request, artifacts: artifacts))
+        lock.unlock()
+        throw ServiceProductionPlanningTestError.rejected
+    }
+}
+
+private enum ServiceProductionPlanningTestError: Error { case rejected }

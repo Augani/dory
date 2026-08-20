@@ -434,7 +434,13 @@ public final class DoryDaemonVirtualMachinePlanningCoordinator: @unchecked Senda
               backendPlan.backend == backend.descriptor,
               backendPlan.machine == input.machine,
               backendPlan.capability == selected else {
-            throw failure(.backendPlanRejected, "The selected adapter rejected the machine plan.")
+            let detail = backendResult.failure.map {
+                " (\($0.code.rawValue): \($0.message))"
+            } ?? ""
+            throw failure(
+                .backendPlanRejected,
+                "The selected adapter rejected the machine plan.\(detail)"
+            )
         }
 
         let timing: (revision: UInt64, created: Int64, updated: Int64)

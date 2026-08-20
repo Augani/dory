@@ -67,25 +67,30 @@ let dockerTier = dorydEnvironment.dockerTierConfiguration().map {
 let desktopUpdateArtifactResolver = DoryComponentStoreDesktopUpdateArtifactResolver(
     store: DoryComponentStore(drive: dataDrive)
 )
+var productionPlanningController:
+    (any DoryDaemonVirtualMachineProductionPlanningControlling)?
 let machineManager = dorydEnvironment.machineManagerConfiguration().flatMap { configuration -> MachineManager? in
-    let readiness = DoryDaemonVirtualMachineProductionTrustFactory().resolve(
+    let readiness = DoryDaemonVirtualMachineProductionTrustFactory().activate(
         store: DoryComponentStore(drive: dataDrive),
         machineConfiguration: configuration
     )
     switch readiness {
-    case let .ready(context):
+    case let .activated(context):
         FileHandle.standardError.write(Data(
-            "doryd: VM launch policy requireResolvedPlan (production trust inventory ready)\n".utf8
+            "doryd: VM launch policy perWorkspaceAuthority "
+                .appending("(production planning recovered and activated)\n").utf8
         ))
+        productionPlanningController = context.planningController
         context.machineManager.installDesktopUpdateArtifactResolver(desktopUpdateArtifactResolver)
         return context.machineManager
-    case let .unavailable(reason):
-        guard reason.permitsLegacyCompatibilityMigration else {
+    case let .unavailable(failure):
+        guard let trustFailure = failure.trustFailure,
+              trustFailure.permitsLegacyCompatibilityMigration else {
             // Integrity and runtime verification failures disable VM launch. Falling through to
             // legacy here would execute the same helper that production trust just rejected.
             FileHandle.standardError.write(Data(
                 "doryd: VM launch unavailable "
-                    .appending("(\(reason.code.rawValue): \(reason.message))\n").utf8
+                    .appending("(\(failure.code.rawValue): \(failure.message))\n").utf8
             ))
             return nil
         }
@@ -93,7 +98,7 @@ let machineManager = dorydEnvironment.machineManagerConfiguration().flatMap { co
         // qualification authority yet, so the existing compatibility path stays labeled.
         FileHandle.standardError.write(Data(
             "doryd: VM launch policy legacyCompatibility "
-                .appending("(\(reason.code.rawValue): \(reason.message))\n").utf8
+                .appending("(\(trustFailure.code.rawValue): \(trustFailure.message))\n").utf8
         ))
         let manager = MachineManager(
             configuration: configuration,
@@ -246,6 +251,7 @@ let service = DorydService(
     home: dorydEnvironment.home,
     dockerTier: dockerTier,
     machineManager: machineManager,
+    productionPlanningController: productionPlanningController,
     machineBackupScheduler: machineBackupScheduler,
     remoteManager: remoteManager,
     networkingController: networkingController,

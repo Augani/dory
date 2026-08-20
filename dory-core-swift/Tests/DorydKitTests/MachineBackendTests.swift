@@ -15,7 +15,10 @@ final class MachineBackendTests: XCTestCase {
         XCTAssertEqual(vz.identity, .appleVirtualizationFramework)
         XCTAssertEqual(vz.guestFamilies, [.linux])
         XCTAssertEqual(vz.guestArchitectures, [.arm64])
-        XCTAssertEqual(vz.bootMediaKinds, [.installerISO, .virtualDisk])
+        XCTAssertEqual(
+            vz.bootMediaKinds,
+            [.installedLinuxBootBundle, .installerISO, .virtualDisk]
+        )
         XCTAssertFalse(vz.lifecycle.pause)
         XCTAssertFalse(vz.lifecycle.resume)
     }
@@ -123,6 +126,44 @@ final class MachineBackendTests: XCTestCase {
         XCTAssertTrue(result.isSuccess)
         XCTAssertEqual(result.plan?.backend.identity, .appleVirtualizationFramework)
         XCTAssertEqual(result.plan?.capability.request.bootMedia.kind, .installerISO)
+    }
+
+    func testRegistryPlansVZInstalledLinuxBundleWithPlannerSelection() throws {
+        let bundle = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "dory-vz-direct-\(UUID().uuidString).boot"
+        )
+        defer { try? FileManager.default.removeItem(at: bundle) }
+        try DoryInstalledLinuxBootBundle.write(
+            assets: DoryLinuxInstallerBootAssets(
+                kernel: Data("kernel".utf8),
+                initrd: Data("initrd".utf8),
+                kernelISOPath: "/boot/kernel",
+                initrdISOPath: "/boot/initrd"
+            ),
+            rootDevice: "/dev/vda2",
+            toPath: bundle.path
+        )
+        let machine = DoryMachineConfiguration(
+            id: "vz-direct-linux",
+            kernelPath: bundle.path,
+            rootfsPath: "/fixture/linux.raw",
+            bootMode: .linuxKernel,
+            displayMode: .headless
+        )
+        let registry = try BackendRegistry(backends: [
+            availableVZBackend(operations: recordingOperations().operations),
+        ])
+        let result = registry.plan(MachineBackendPlanRequest(
+            machine: machine,
+            capabilityPlan: capabilityPlan(
+                backend: .appleVirtualizationFramework,
+                media: .installedLinuxBootBundle
+            )
+        ))
+
+        XCTAssertTrue(result.isSuccess)
+        XCTAssertEqual(result.plan?.backend.identity, .appleVirtualizationFramework)
+        XCTAssertEqual(result.plan?.capability.request.bootMedia.kind, .installedLinuxBootBundle)
     }
 
     func testPlanningFailsClosedWhenProductPlannerHasNoSelection() throws {

@@ -287,6 +287,26 @@ struct VirtualMachineCapabilitiesTests {
         #expect(linuxRestore.availability.reason?.code == .bootMediaDoesNotSupportGuest)
     }
 
+    @Test("VZ direct-kernel lifecycle devices remain exact pending qualification")
+    func vzDirectKernelLifecycleDevices() {
+        let devices = DoryVirtualMachineDeviceCapabilityRequest(
+            clockSynchronization: true,
+            gracefulShutdown: true
+        )
+        let descriptor = evaluate(
+            family: .linux,
+            media: .installedLinuxBootBundle,
+            source: .userProvided,
+            backend: .appleVirtualizationFramework,
+            graphics: .none,
+            devices: devices
+        )
+
+        #expect(descriptor.availability.isUsable)
+        #expect(descriptor.resolvedDevices == devices)
+        #expect(descriptor.availability.reason?.code == .runtimeQualificationUnavailable)
+    }
+
     @Test("missing renderer blocks accelerated native graphics but not software graphics")
     func rendererAvailabilityIsExact() {
         var host = Self.provisionedHost

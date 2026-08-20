@@ -964,7 +964,13 @@ public final class DoryDaemonVirtualMachinePlanningTransactionCoordinator:
         )
         let result: DoryDaemonVirtualMachinePlanningResult
         do { result = try coordinator.resolveAndPersist(request.planning) }
-        catch {
+        catch let planning as DoryDaemonVirtualMachinePlanningFailure {
+            throw failure(
+                .planConstructionRejected,
+                "Exact trusted facts could not construct a plan "
+                    + "(\(planning.code.rawValue): \(planning.message))"
+            )
+        } catch {
             throw failure(.planConstructionRejected, "Exact trusted facts could not construct a plan.")
         }
         let candidateData = Self.canonicalData(result.resolvedPlan)

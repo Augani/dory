@@ -374,9 +374,7 @@ public enum DoryVZConfigurationBuilder {
         }
         if let devices = spec.resolvedDevices {
             guard devices.networkAttachment == .sharedNAT,
-                  !devices.clockSynchronization,
-                  !devices.dynamicDisplay,
-                  !devices.gracefulShutdown else {
+                  !devices.dynamicDisplay else {
                 throw DoryVZMachineError.validation(
                     "resolved device contract contains a device not implemented by this VZ launch"
                 )

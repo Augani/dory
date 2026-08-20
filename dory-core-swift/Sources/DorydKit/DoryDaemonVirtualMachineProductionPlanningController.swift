@@ -69,6 +69,17 @@ public protocol DoryDaemonVirtualMachinePlanningTransactionCoordinating: Sendabl
 extension DoryDaemonVirtualMachinePlanningTransactionCoordinator:
     DoryDaemonVirtualMachinePlanningTransactionCoordinating {}
 
+/// Narrow product boundary used by MachineManager and XPC. The concrete controller retains the
+/// trusted artifact/repository graph; tests can inject only an observer/rejector and therefore
+/// cannot manufacture a resolved runtime identity.
+public protocol DoryDaemonVirtualMachineProductionPlanningControlling: Sendable {
+    func authorityRevision(for reference: DoryVMResolverReference) throws -> UInt64?
+    func publishResolvedPlan(
+        _ request: DoryDaemonVirtualMachinePlanningTransactionRequest,
+        artifacts: [DoryDaemonVirtualMachinePlanningArtifactPublication]
+    ) throws
+}
+
 /// The sole production entry for a manager-owned native create/update/replan transaction. It
 /// first establishes exact artifact authority, then delegates reserve -> bind -> publication to
 /// the crash-safe coordinator, and finally proves the published plan and workspace are the exact
@@ -138,7 +149,13 @@ public final class DoryDaemonVirtualMachineProductionPlanningController:
 
         let result: DoryDaemonVirtualMachinePlanningTransactionResult
         do { result = try coordinator.resolveReserveAndPublish(request) }
-        catch {
+        catch let transaction as DoryDaemonVirtualMachinePlanningTransactionFailure {
+            throw failure(
+                .transactionRejected,
+                "Production planning transaction failed closed "
+                    + "(\(transaction.code.rawValue): \(transaction.message))"
+            )
+        } catch {
             throw failure(.transactionRejected, "Production planning transaction failed closed.")
         }
         let workspace: DoryVirtualMachineDefinition
@@ -158,6 +175,22 @@ public final class DoryDaemonVirtualMachineProductionPlanningController:
             throw failure(.publicationMismatch, "Published planning authority is not exact.")
         }
         return result
+    }
+
+    /// Returns the exact current artifact-authority revision so a manager-owned replan can make
+    /// mutable-media replacement an explicit compare-and-swap. Corrupt authority is never
+    /// collapsed into a missing record.
+    public func authorityRevision(
+        for reference: DoryVMResolverReference
+    ) throws -> UInt64? {
+        try artifactAuthority.authorityRecord(reference: reference)?.authorityRevision
+    }
+
+    public func publishResolvedPlan(
+        _ request: DoryDaemonVirtualMachinePlanningTransactionRequest,
+        artifacts: [DoryDaemonVirtualMachinePlanningArtifactPublication]
+    ) throws {
+        _ = try resolveReserveAndPublish(request, artifacts: artifacts)
     }
 
     /// Compatibility launch paths remain daemon-local, but they are still launch authority. A
@@ -267,6 +300,9 @@ public final class DoryDaemonVirtualMachineProductionPlanningController:
         )
     }
 }
+
+extension DoryDaemonVirtualMachineProductionPlanningController:
+    DoryDaemonVirtualMachineProductionPlanningControlling {}
 
 enum DoryDaemonVirtualMachineProductionRecoveryError: Error, Sendable, Equatable {
     case invalidDescriptor

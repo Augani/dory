@@ -928,8 +928,11 @@ public enum DoryAppleSiliconCapabilityEvaluator {
         switch (request.guest.family, request.backend) {
         case (.linux, .doryHypervisor):
             return request.bootMedia.kind == .installedLinuxBootBundle
-        case (.linux, .appleVirtualizationFramework),
-             (.linux, .qemuHypervisorFramework),
+        case (.linux, .appleVirtualizationFramework):
+            return request.bootMedia.kind == .installerISO
+                || request.bootMedia.kind == .virtualDisk
+                || request.bootMedia.kind == .installedLinuxBootBundle
+        case (.linux, .qemuHypervisorFramework),
              (.windows, .qemuHypervisorFramework):
             return request.bootMedia.kind == .installerISO || request.bootMedia.kind == .virtualDisk
         case (.macOS, .appleVirtualizationFramework):
@@ -1385,11 +1388,15 @@ public enum DoryAppleSiliconCapabilityEvaluator {
             )
         }
         if devices.clockSynchronization {
-            return unavailable(
-                tier: tier,
-                code: .clockSynchronizationUnsupported,
-                message: "Clock synchronization is not yet part of a qualified backend contract."
-            )
+            guard request.guest.family == .linux,
+                  request.backend == .doryHypervisor
+                    || request.backend == .appleVirtualizationFramework else {
+                return unavailable(
+                    tier: tier,
+                    code: .clockSynchronizationUnsupported,
+                    message: "The selected guest/backend contract does not implement clock synchronization."
+                )
+            }
         }
         if devices.dynamicDisplay {
             return unavailable(
@@ -1399,12 +1406,15 @@ public enum DoryAppleSiliconCapabilityEvaluator {
             )
         }
         if devices.gracefulShutdown {
-            return unavailable(
-                tier: tier,
-                code: .gracefulShutdownUnsupported,
-                message: "Graceful shutdown requires a digest-bound guest-integration "
-                    + "qualification that is not yet modeled."
-            )
+            guard request.guest.family == .linux,
+                  request.backend == .doryHypervisor
+                    || request.backend == .appleVirtualizationFramework else {
+                return unavailable(
+                    tier: tier,
+                    code: .gracefulShutdownUnsupported,
+                    message: "The selected guest/backend contract does not implement graceful shutdown."
+                )
+            }
         }
         return nil
     }

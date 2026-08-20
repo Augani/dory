@@ -920,6 +920,8 @@ public struct DoryResolvedMachinePlan: Codable, Sendable, Equatable, Hashable {
              (.windows, .qemuHypervisorFramework):
             runtimeCombinationIsImplemented = bootMedia.media.kind == .installerISO
                 || bootMedia.media.kind == .virtualDisk
+                || (backend == .appleVirtualizationFramework
+                    && bootMedia.media.kind == .installedLinuxBootBundle)
         case (.macOS, .appleVirtualizationFramework):
             runtimeCombinationIsImplemented = bootMedia.media.kind == .macOSRestoreImage
                 || bootMedia.media.kind == .virtualDisk

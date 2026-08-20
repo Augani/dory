@@ -80,9 +80,7 @@ enum DesktopMode {
             )
             self.graphicsBackend = resolvedGraphics.backend
             if let devices = configuration.resolvedDevices {
-                guard devices.networkAttachment == .sharedNAT,
-                      !devices.clockSynchronization,
-                      !devices.gracefulShutdown else {
+                guard devices.networkAttachment == .sharedNAT else {
                     throw VMError.bootFailure(
                         "resolved device contract contains a device not implemented by raw-HV"
                     )

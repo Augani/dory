@@ -8,6 +8,8 @@ public final class DorydService: NSObject, DorydControl {
     private let home: String
     private let dockerTier: DockerTier?
     private let machineManager: MachineManager?
+    private let productionPlanningController:
+        (any DoryDaemonVirtualMachineProductionPlanningControlling)?
     private let machineBackupScheduler: MachineBackupScheduler?
     private let remoteManager: RemoteMachineManager?
     private let networkingController: NetworkingController?
@@ -26,6 +28,8 @@ public final class DorydService: NSObject, DorydControl {
         home: String = NSHomeDirectory(),
         dockerTier: DockerTier? = nil,
         machineManager: MachineManager? = nil,
+        productionPlanningController:
+            (any DoryDaemonVirtualMachineProductionPlanningControlling)? = nil,
         machineBackupScheduler: MachineBackupScheduler? = nil,
         remoteManager: RemoteMachineManager? = nil,
         networkingController: NetworkingController? = nil,
@@ -42,6 +46,7 @@ public final class DorydService: NSObject, DorydControl {
         self.home = home
         self.dockerTier = dockerTier
         self.machineManager = machineManager
+        self.productionPlanningController = productionPlanningController
         self.machineBackupScheduler = machineBackupScheduler
         self.remoteManager = remoteManager
         self.networkingController = networkingController
@@ -241,7 +246,18 @@ public final class DorydService: NSObject, DorydControl {
                 to: [:],
                 displayMode: machine.displayMode
             )
-            let status = try machineManager.create(machine)
+            var status = try machineManager.create(machine)
+            if machineManager.configuredLaunchPolicy == .perWorkspaceAuthority {
+                guard let productionPlanningController else {
+                    throw MachineManagerError.persistence(
+                        "production planning controller is not configured"
+                    )
+                }
+                status = try machineManager.resolveAndPublishProductionPlan(
+                    id: machine.id,
+                    controller: productionPlanningController
+                )
+            }
             incidentWriter?.record(type: "machine.create", detail: machine.id)
             reply(true, status.xpcDictionary, "")
         } catch {
@@ -279,7 +295,7 @@ public final class DorydService: NSObject, DorydControl {
         }
         do {
             let update = try MachineUpdateRequest(xpcDictionary: config)
-            let status = try machineManager.update(
+            var status = try machineManager.update(
                 id: machineID,
                 memoryMB: update.memoryMB,
                 cpuCount: update.cpuCount,
@@ -290,6 +306,17 @@ public final class DorydService: NSObject, DorydControl {
                 typedSettingsPatch: update.typedSettings.isEmpty ? nil : update.typedSettings,
                 installerMediaAttached: update.installerMediaAttached
             )
+            if machineManager.configuredLaunchPolicy == .perWorkspaceAuthority {
+                guard let productionPlanningController else {
+                    throw MachineManagerError.persistence(
+                        "production planning controller is not configured"
+                    )
+                }
+                status = try machineManager.resolveAndPublishProductionPlan(
+                    id: machineID,
+                    controller: productionPlanningController
+                )
+            }
             incidentWriter?.record(type: "machine.update", detail: machineID)
             reply(true, status.xpcDictionary, "")
         } catch {
