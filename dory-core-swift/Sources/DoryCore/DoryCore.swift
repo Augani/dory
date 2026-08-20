@@ -122,13 +122,18 @@ public final class DoryDataplaneHandle: @unchecked Sendable {
     }
 }
 
-public struct DoryAgentCapability: Sendable, Equatable, Hashable {
+public struct DoryAgentCapability: Sendable, Equatable, Hashable, Codable {
     public var id: String
     public var version: UInt32
 
     public init(id: String, version: UInt32) {
         self.id = id
         self.version = version
+    }
+
+    public var isValid: Bool {
+        version > 0 && id.utf8.count <= 63
+            && id.wholeMatch(of: /[a-z][a-z0-9]*(?:-[a-z0-9]+)*/) != nil
     }
 }
 
@@ -151,6 +156,16 @@ public struct DoryAgentInfo: Sendable, Equatable {
         self.agentBuild = agentBuild
         self.uptimeSeconds = uptimeSeconds
         self.capabilities = capabilities
+    }
+
+    public var capabilitiesAreCanonical: Bool {
+        capabilities.allSatisfy(\.isValid)
+            && capabilities == capabilities.sorted { $0.id < $1.id }
+            && Set(capabilities.map(\.id)).count == capabilities.count
+    }
+
+    public func supports(_ id: String, minimumVersion: UInt32 = 1) -> Bool {
+        capabilities.contains { $0.id == id && $0.version >= minimumVersion }
     }
 }
 

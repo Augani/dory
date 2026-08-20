@@ -1621,6 +1621,14 @@ private extension DoryMachineStatus {
         if let agentBuild {
             dictionary["agentBuild"] = agentBuild
         }
+        if let agentProtocolVersion {
+            dictionary["agentProtocolVersion"] = agentProtocolVersion
+        }
+        if !agentCapabilities.isEmpty {
+            dictionary["agentCapabilities"] = agentCapabilities.map {
+                ["id": $0.id, "version": $0.version] as NSDictionary
+            }
+        }
         if let agentSocketPath {
             dictionary["agentSocketPath"] = agentSocketPath
         }

@@ -310,6 +310,8 @@ public struct DoryMachineStatus: Sendable, Equatable {
     public var lastError: String?
     public var handoffSocketPath: String?
     public var agentBuild: String?
+    public var agentProtocolVersion: UInt32?
+    public var agentCapabilities: [DoryAgentCapability]
     public var agentSocketPath: String?
     public var dockerdSocketPath: String?
     public var shellSocketPath: String?
@@ -339,6 +341,8 @@ public struct DoryMachineStatus: Sendable, Equatable {
         lastError: String? = nil,
         handoffSocketPath: String? = nil,
         agentBuild: String? = nil,
+        agentProtocolVersion: UInt32? = nil,
+        agentCapabilities: [DoryAgentCapability] = [],
         agentSocketPath: String? = nil,
         dockerdSocketPath: String? = nil,
         shellSocketPath: String? = nil,
@@ -368,6 +372,8 @@ public struct DoryMachineStatus: Sendable, Equatable {
         self.lastError = lastError
         self.handoffSocketPath = handoffSocketPath
         self.agentBuild = agentBuild
+        self.agentProtocolVersion = agentProtocolVersion
+        self.agentCapabilities = agentCapabilities
         self.agentSocketPath = agentSocketPath
         self.dockerdSocketPath = dockerdSocketPath
         self.shellSocketPath = shellSocketPath
@@ -3983,6 +3989,8 @@ public final class MachineManager: @unchecked Sendable {
             lastError: entry.lastError,
             handoffSocketPath: entry.handoffServer?.path,
             agentBuild: entry.handoff?.ready.agentBuild,
+            agentProtocolVersion: entry.handoff?.ready.agentProtocolVersion,
+            agentCapabilities: entry.handoff?.ready.agentCapabilities ?? [],
             agentSocketPath: entry.handoff?.ready.agentSocketPath,
             dockerdSocketPath: entry.handoff?.ready.dockerdSocketPath,
             shellSocketPath: entry.handoff?.ready.shellSocketPath,

@@ -366,6 +366,8 @@ enum DesktopMode {
                         ready: VmmReadyMessage(
                             machineID: configuration.machineID,
                             agentBuild: info.agentBuild,
+                            agentProtocolVersion: info.protocolVersion,
+                            agentCapabilities: info.capabilities,
                             agentSocketPath: configuration.agentSocketPath,
                             shellSocketPath: configuration.shellSocketPath,
                             detail: "raw-HV desktop running with \(graphicsDisplayName) graphics; dory-agent answered protocol \(info.protocolVersion)"

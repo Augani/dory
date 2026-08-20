@@ -434,6 +434,46 @@ final class HealthReporterTests: XCTestCase {
         ) == true)
     }
 
+    func testMachineToolsHealthRequiresCanonicalVersionedCapabilities() {
+        let capabilities = [
+            "clock-sync", "exec", "exec-stdin", "ports-watch", "sync-push", "telemetry",
+        ].map { DoryAgentCapability(id: $0, version: 1) }
+        let ready = HealthReporter.machineToolsCheck(DoryMachineStatus(
+            id: "ready",
+            state: .running,
+            agentBuild: "dory-agent/1.0",
+            agentProtocolVersion: DoryCore.protocolVersion(),
+            agentCapabilities: capabilities
+        ))
+        XCTAssertEqual(ready.status, .pass)
+        XCTAssertEqual(ready.code, "machine.tools.ready")
+        XCTAssertEqual(ready.data["capabilities"], capabilities.map {
+            "\($0.id)@\($0.version)"
+        }.joined(separator: ","))
+
+        let legacy = HealthReporter.machineToolsCheck(DoryMachineStatus(
+            id: "legacy",
+            state: .running,
+            agentBuild: "dory-agent/0.9",
+            agentProtocolVersion: DoryCore.protocolVersion()
+        ))
+        XCTAssertEqual(legacy.status, .warn)
+        XCTAssertEqual(legacy.code, "machine.tools.legacy_handshake")
+
+        let invalid = HealthReporter.machineToolsCheck(DoryMachineStatus(
+            id: "invalid",
+            state: .running,
+            agentBuild: "dory-agent/tampered",
+            agentProtocolVersion: DoryCore.protocolVersion(),
+            agentCapabilities: [
+                DoryAgentCapability(id: "exec", version: 1),
+                DoryAgentCapability(id: "exec", version: 2),
+            ]
+        ))
+        XCTAssertEqual(invalid.status, .fail)
+        XCTAssertEqual(invalid.code, "machine.tools.invalid_handshake")
+    }
+
     func testInvalidRuntimeIdentityFailsClosedWithoutProjectingUntrustedPlanFields() {
         let plan = healthResolvedPlan()
         let identity = DoryMachineRuntimeIdentity(

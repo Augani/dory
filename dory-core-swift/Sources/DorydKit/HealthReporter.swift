@@ -1962,7 +1962,100 @@ public final class HealthReporter: @unchecked Sendable {
                 data: data
             )
         }
-        return [summary] + statuses.map(Self.machineEvidenceCheck)
+        return [summary] + statuses.flatMap {
+            [Self.machineEvidenceCheck($0), Self.machineToolsCheck($0)]
+        }
+    }
+
+    static func machineToolsCheck(_ status: DoryMachineStatus) -> HealthCheck {
+        var data = ["state": status.state.rawValue]
+        guard [.running, .paused].contains(status.state) else {
+            return HealthCheck(
+                id: "machine.local.\(status.id).tools",
+                status: .skip,
+                code: "machine.tools.inactive",
+                title: "Dory Tools inactive",
+                detail: "\(status.id) is not resident",
+                data: data
+            )
+        }
+        guard let build = status.agentBuild, !build.isEmpty else {
+            return HealthCheck(
+                id: "machine.local.\(status.id).tools",
+                status: .warn,
+                code: "machine.tools.unavailable",
+                title: "Dory Tools unavailable",
+                detail: "\(status.id) has not reported a guest-tools handshake",
+                action: "Install or repair the qualified Dory Tools pack in this workspace.",
+                data: data
+            )
+        }
+        data["build"] = build
+        guard let protocolVersion = status.agentProtocolVersion else {
+            return HealthCheck(
+                id: "machine.local.\(status.id).tools",
+                status: .warn,
+                code: "machine.tools.unversioned",
+                title: "Dory Tools unversioned",
+                detail: "\(status.id) reported \(build) without a protocol contract",
+                action: "Update the workspace's Dory Tools pack.",
+                data: data
+            )
+        }
+        data["protocol_version"] = String(protocolVersion)
+        let capabilities = status.agentCapabilities
+        let canonical = capabilities.allSatisfy(\.isValid)
+            && capabilities == capabilities.sorted { $0.id < $1.id }
+            && Set(capabilities.map(\.id)).count == capabilities.count
+        guard protocolVersion == DoryCore.protocolVersion(), canonical else {
+            data["capabilities"] = capabilities.map { "\($0.id)@\($0.version)" }
+                .joined(separator: ",")
+            return HealthCheck(
+                id: "machine.local.\(status.id).tools",
+                status: .fail,
+                code: "machine.tools.invalid_handshake",
+                title: "Dory Tools handshake invalid",
+                detail: "\(status.id) reported an incompatible or malformed tools contract",
+                action: "Stop the workspace and repair its Dory Tools pack before using integrations.",
+                data: data
+            )
+        }
+        guard !capabilities.isEmpty else {
+            return HealthCheck(
+                id: "machine.local.\(status.id).tools",
+                status: .warn,
+                code: "machine.tools.legacy_handshake",
+                title: "Dory Tools need an update",
+                detail: "\(status.id) reported protocol \(protocolVersion) without versioned capabilities",
+                action: "Update the workspace's Dory Tools pack to enable integration health.",
+                data: data
+            )
+        }
+
+        let required = ["clock-sync", "exec", "exec-stdin", "ports-watch", "telemetry"]
+        let versions = Dictionary(uniqueKeysWithValues: capabilities.map { ($0.id, $0.version) })
+        let missing = required.filter { (versions[$0] ?? 0) < 1 }
+        data["capabilities"] = capabilities.map { "\($0.id)@\($0.version)" }.joined(separator: ",")
+        if !missing.isEmpty {
+            data["missing_capabilities"] = missing.joined(separator: ",")
+            return HealthCheck(
+                id: "machine.local.\(status.id).tools",
+                status: .warn,
+                code: "machine.tools.partial",
+                title: "Dory Tools integrations are partial",
+                detail: "\(status.id) is missing \(missing.joined(separator: ", "))",
+                action: "Update or repair the workspace's Dory Tools pack.",
+                data: data
+            )
+        }
+        return HealthCheck(
+            id: "machine.local.\(status.id).tools",
+            status: .pass,
+            code: "machine.tools.ready",
+            title: "Dory Tools ready",
+            detail: "\(status.id) reported \(build) with \(capabilities.count) versioned capabilities",
+            data: data
+        )
     }
 
     /// Emits exact, non-secret launch evidence for one workspace. Environment values, host paths,

@@ -1,9 +1,12 @@
 import Darwin
+import DoryCore
 import Foundation
 
 public struct VmmReadyMessage: Sendable, Equatable, Codable {
     public var machineID: String
     public var agentBuild: String?
+    public var agentProtocolVersion: UInt32?
+    public var agentCapabilities: [DoryAgentCapability]
     public var agentSocketPath: String?
     public var dockerdSocketPath: String?
     public var shellSocketPath: String?
@@ -13,6 +16,8 @@ public struct VmmReadyMessage: Sendable, Equatable, Codable {
     public init(
         machineID: String,
         agentBuild: String? = nil,
+        agentProtocolVersion: UInt32? = nil,
+        agentCapabilities: [DoryAgentCapability] = [],
         agentSocketPath: String? = nil,
         dockerdSocketPath: String? = nil,
         shellSocketPath: String? = nil,
@@ -21,6 +26,8 @@ public struct VmmReadyMessage: Sendable, Equatable, Codable {
     ) {
         self.machineID = machineID
         self.agentBuild = agentBuild
+        self.agentProtocolVersion = agentProtocolVersion
+        self.agentCapabilities = agentCapabilities
         self.agentSocketPath = agentSocketPath
         self.dockerdSocketPath = dockerdSocketPath
         self.shellSocketPath = shellSocketPath

@@ -723,6 +723,8 @@ final class DorydServiceTests: XCTestCase {
             ready: VmmReadyMessage(
                 machineID: "dev",
                 agentBuild: "dory-agent/test",
+                agentProtocolVersion: DoryCore.protocolVersion(),
+                agentCapabilities: [DoryAgentCapability(id: "exec", version: 1)],
                 agentSocketPath: "/run/agent.sock",
                 dockerdSocketPath: "/run/docker.sock",
                 controlSocketPath: "/run/control.sock"
@@ -741,6 +743,20 @@ final class DorydServiceTests: XCTestCase {
                 pressure: .critical
             )))
         )
+        let machineStatus = expectation(description: "versioned machine tools status")
+        service.machineList { rows, message in
+            XCTAssertEqual(message, "")
+            let status = (rows as? [NSDictionary])?.first
+            XCTAssertEqual(
+                (status?["agentProtocolVersion"] as? NSNumber)?.uint32Value,
+                DoryCore.protocolVersion()
+            )
+            let capabilities = status?["agentCapabilities"] as? [NSDictionary]
+            XCTAssertEqual(capabilities?.first?["id"] as? String, "exec")
+            XCTAssertEqual((capabilities?.first?["version"] as? NSNumber)?.uint32Value, 1)
+            machineStatus.fulfill()
+        }
+        wait(for: [machineStatus], timeout: 5)
         let listener = makeAnonymousListener(service: service)
         listener.resume()
         defer { listener.invalidate() }

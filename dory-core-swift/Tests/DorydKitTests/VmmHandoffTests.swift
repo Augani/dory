@@ -1,4 +1,5 @@
 import Darwin
+import DoryCore
 @testable import DorydKit
 import XCTest
 
@@ -26,6 +27,8 @@ final class VmmHandoffTests: XCTestCase {
             ready: VmmReadyMessage(
                 machineID: "dev",
                 agentBuild: "dory-agent/test",
+                agentProtocolVersion: 1,
+                agentCapabilities: [DoryAgentCapability(id: "exec", version: 1)],
                 agentSocketPath: "/run/agent.sock",
                 dockerdSocketPath: "/run/docker.sock",
                 shellSocketPath: "/run/shell.sock",
@@ -38,6 +41,11 @@ final class VmmHandoffTests: XCTestCase {
         let handoff = try resultBox.get()
         XCTAssertEqual(handoff.ready.machineID, "dev")
         XCTAssertEqual(handoff.ready.agentBuild, "dory-agent/test")
+        XCTAssertEqual(handoff.ready.agentProtocolVersion, 1)
+        XCTAssertEqual(
+            handoff.ready.agentCapabilities,
+            [DoryAgentCapability(id: "exec", version: 1)]
+        )
         XCTAssertEqual(handoff.ready.agentSocketPath, "/run/agent.sock")
         XCTAssertEqual(handoff.ready.shellSocketPath, "/run/shell.sock")
         XCTAssertEqual(handoff.fileDescriptors.count, 1)
