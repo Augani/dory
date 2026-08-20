@@ -514,8 +514,8 @@ private func resourceAdmission(
 
 private func hostQualification() -> DoryResolvedHostQualificationEvidence {
     DoryResolvedHostQualificationEvidence(
-        qualificationIdentity: "host-qualification-1",
-        qualificationReportSHA256: digest("e"),
+        qualificationIdentity: "runtime-qualification-1",
+        qualificationReportSHA256: digest("b"),
         hostHardwareModelIdentifier: "Mac16.1",
         hostOperatingSystemBuild: "26A5406c",
         backend: .doryHypervisor,
