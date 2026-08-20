@@ -969,7 +969,7 @@ struct DorydClientTests {
     }
 
     @MainActor
-    @Test func appStoreCopiesAllowedHostEnvWhenCreatingDorydMachine() async throws {
+    @Test func appStoreDoesNotCopyHostCredentialsWhenCreatingDorydMachine() async throws {
         let base = "/tmp/damc-env-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         let socketPath = base + "/doryd.sock"
         defer { try? FileManager.default.removeItem(atPath: base) }
@@ -994,14 +994,9 @@ struct DorydClientTests {
             environment: [
                 "DORYD_MACHINE_KERNEL": "/vm/Image",
                 "DORYD_MACHINE_ROOTFS": "/vm/rootfs.raw",
-            ],
-            machineEnvResolver: { _ in
-                [
-                    "ANTHROPIC_API_KEY": "sk-ant-host",
-                    "GH_TOKEN": "gh-host",
-                    "EMPTY_TOKEN": "",
-                ]
-            }
+                "ANTHROPIC_API_KEY": "sk-ant-host",
+                "GH_TOKEN": "gh-host",
+            ]
         )
         store.routeDockerCLI = false
         store.setMachineEnvAllowList(["ANTHROPIC_API_KEY", "GH_TOKEN", "EMPTY_TOKEN"])
@@ -1009,7 +1004,14 @@ struct DorydClientTests {
         await store.connectBackend()
         let result = await store.createMachine(
             name: "envdev",
-            settings: MachineSettings(cpus: nil, memoryMB: nil, env: ["GH_TOKEN": "gh-explicit"])
+            settings: MachineSettings(
+                cpus: nil,
+                memoryMB: nil,
+                env: [
+                    "GH_TOKEN": "gh-explicit",
+                    "DORY_DESKTOP_DISTRO": "ubuntu",
+                ]
+            )
         )
 
         #expect(result == nil)
@@ -1019,9 +1021,10 @@ struct DorydClientTests {
             guard let key = row["key"] as? String, let value = row["value"] as? String else { return nil }
             return (key, value)
         })
-        #expect(env["ANTHROPIC_API_KEY"] == "sk-ant-host")
-        #expect(env["GH_TOKEN"] == "gh-explicit")
+        #expect(env["ANTHROPIC_API_KEY"] == nil)
+        #expect(env["GH_TOKEN"] == nil)
         #expect(env["EMPTY_TOKEN"] == nil)
+        #expect(env["DORY_DESKTOP_DISTRO"] == "ubuntu")
     }
 
     @MainActor

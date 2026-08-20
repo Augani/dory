@@ -4,38 +4,33 @@ import Testing
 
 @MainActor
 struct AppStoreEnvAllowListTests {
-    @Test func defaultAllowListIsAnthropicOnly() {
+    @Test func hostEnvironmentImportDefaultsToDisabled() {
         let store = AppStore(runtime: MockRuntime())
-        #expect(store.machineEnvAllowList == ["ANTHROPIC_API_KEY"])
-    }
-
-    @Test func setAllowListNormalizesDedupesAndPersistsUserChoice() {
-        defer { UserDefaults.standard.removeObject(forKey: AppStore.machineEnvAllowListKey) }
-        let store = AppStore(runtime: MockRuntime())
-        store.setMachineEnvAllowList(["gh_token", "  ", "gh_token"])
-        #expect(store.machineEnvAllowList == ["GH_TOKEN"])
-        #expect(UserDefaults.standard.string(forKey: AppStore.machineEnvAllowListKey) == "GH_TOKEN")
-    }
-
-    @Test func setAllowListCanDisableAutomaticEnvTransfer() {
-        defer { UserDefaults.standard.removeObject(forKey: AppStore.machineEnvAllowListKey) }
-        let store = AppStore(runtime: MockRuntime())
-        store.setMachineEnvAllowList([])
         #expect(store.machineEnvAllowList.isEmpty)
-        #expect(UserDefaults.standard.string(forKey: AppStore.machineEnvAllowListKey) == "")
     }
 
-    @Test func mergingEnvAddsResolvedButUserKeysWin() {
-        var settings = MachineSettings.default
-        settings.env = ["ANTHROPIC_API_KEY": "user-set"]
-        let merged = AppStore.mergingEnv(settings, resolved: ["ANTHROPIC_API_KEY": "probed", "GH_TOKEN": "gh-123"])
-        #expect(merged.env["ANTHROPIC_API_KEY"] == "user-set")
-        #expect(merged.env["GH_TOKEN"] == "gh-123")
+    @Test func legacyAllowListPreferenceIsClearedAndCannotBeReenabled() {
+        defer { UserDefaults.standard.removeObject(forKey: AppStore.machineEnvAllowListKey) }
+        UserDefaults.standard.set("ANTHROPIC_API_KEY,GH_TOKEN", forKey: AppStore.machineEnvAllowListKey)
+        let store = AppStore(runtime: MockRuntime())
+        store.setMachineEnvAllowList(["ANTHROPIC_API_KEY", "GH_TOKEN"])
+        #expect(store.machineEnvAllowList.isEmpty)
+        #expect(UserDefaults.standard.string(forKey: AppStore.machineEnvAllowListKey) == nil)
     }
 
-    @Test func mergingEnvIgnoresEmptyResolved() {
-        let merged = AppStore.mergingEnv(.default, resolved: [:])
-        #expect(merged.env.isEmpty)
+    @Test func newMachineEnvironmentKeepsOnlyBoundedDoryMetadata() {
+        let result = AppStore.sanitizedNewMachineEnvironment([
+            "ANTHROPIC_API_KEY": "sk-ant-host",
+            "GH_TOKEN": "gh-host",
+            "APP_ENV": "development",
+            "DORY_DESKTOP_DISTRO": "ubuntu",
+            "DORY_GUEST_USER": "dory",
+        ])
+
+        #expect(result == [
+            "DORY_DESKTOP_DISTRO": "ubuntu",
+            "DORY_GUEST_USER": "dory",
+        ])
     }
 
     @Test func createMachineRejectsPathTraversalName() async {

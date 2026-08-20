@@ -80,7 +80,9 @@ final class AppStore {
     var showMenuBarIcon = true
     var routeDockerCLI = true
     var keepDorydRunningAfterQuit = false
-    var machineEnvAllowList: [String] = MachineEnvImport.defaultNames
+    /// Retained as an empty v1 managed-settings compatibility field. Host environment import is
+    /// disabled: credentials belong in scoped secret grants, never persisted machine environment.
+    var machineEnvAllowList: [String] = []
     var openLoginsOnMac = true
     var externalTerminalPreference = ExternalTerminalPreference(terminal: .terminal, customApplicationPath: nil)
     var dockerHostConflict: DockerHostConflict.Conflict?
@@ -191,7 +193,6 @@ final class AppStore {
     @ObservationIgnored private let authorizedNetworkingRemover: @Sendable () async throws -> Void
     @ObservationIgnored private let localCATrustManager: any LocalCATrustManaging
     @ObservationIgnored private let environment: [String: String]
-    @ObservationIgnored private let machineEnvResolver: @Sendable ([String]) async -> [String: String]
     @ObservationIgnored private let desktopMachineAssetPreparer: @Sendable (
         _ home: String,
         _ environment: [String: String],
@@ -219,9 +220,6 @@ final class AppStore {
         environment: [String: String] = ProcessInfo.processInfo.environment,
         composeCommandRunner: any ToolCommandRunning = BoundedToolProcessRunner(),
         buildCommandRunner: any ToolCommandRunning = BoundedToolProcessRunner(),
-        machineEnvResolver: @escaping @Sendable ([String]) async -> [String: String] = { names in
-            await MachineEnvImport.resolve(names: names)
-        },
         desktopMachineAssetPreparer: @escaping @Sendable (
             _ home: String,
             _ environment: [String: String],
@@ -241,7 +239,6 @@ final class AppStore {
         self.environment = env
         self.composeCommandRunner = composeCommandRunner
         self.buildCommandRunner = buildCommandRunner
-        self.machineEnvResolver = machineEnvResolver
         self.desktopMachineAssetPreparer = desktopMachineAssetPreparer
         self.dorydClient = dorydClient
         self.dorydEngineEnabled = dorydFlags.enabled
@@ -278,9 +275,10 @@ final class AppStore {
             _ = DoryUpdater.shared
             if let v = UserDefaults.standard.object(forKey: Self.routeDockerKey) as? Bool { routeDockerCLI = v }
             keepDorydRunningAfterQuit = Self.resolvedKeepDorydRunningAfterQuit(defaults: .standard)
-            if let raw = UserDefaults.standard.string(forKey: Self.machineEnvAllowListKey) {
-                machineEnvAllowList = MachineEnvImport.parse(raw)
-            }
+            // Earlier builds stored environment *names* here and copied their values into new VM
+            // definitions. Clear that opt-in permanently; legacy VM records remain launchable but
+            // no new machine inherits host credentials.
+            UserDefaults.standard.removeObject(forKey: Self.machineEnvAllowListKey)
             if let v = UserDefaults.standard.object(forKey: Self.openLoginsOnMacKey) as? Bool { openLoginsOnMac = v }
             externalTerminalPreference = ExternalTerminalPreferenceStore.load()
             if let saved = UserDefaults.standard.string(forKey: Self.kubernetesVersionKey) {
@@ -697,13 +695,10 @@ final class AppStore {
         showSettingsSuccess(showMenuBarIcon ? "Menu bar icon enabled." : "Menu bar icon hidden.")
     }
 
-    func setMachineEnvAllowList(_ names: [String]) {
-        let normalized = MachineEnvImport.normalize(names)
-        machineEnvAllowList = normalized
-        UserDefaults.standard.set(MachineEnvImport.serialize(normalized), forKey: Self.machineEnvAllowListKey)
-        showSettingsSuccess(normalized.isEmpty
-            ? "New machines will not copy host environment variables."
-            : "New machines will copy \(normalized.count) allowed environment variable\(normalized.count == 1 ? "" : "s") when present.")
+    func setMachineEnvAllowList(_: [String]) {
+        machineEnvAllowList = []
+        UserDefaults.standard.removeObject(forKey: Self.machineEnvAllowListKey)
+        showSettingsSuccess("Host environment import is disabled for new machines.")
     }
 
     func completeOnboarding() {
@@ -5410,15 +5405,6 @@ final class AppStore {
         return Int(UInt16(bigEndian: result.sin_port))
     }
 
-    nonisolated static func mergingEnv(_ settings: MachineSettings, resolved: [String: String]) -> MachineSettings {
-        guard !resolved.isEmpty else { return settings }
-        var copy = settings
-        for (key, value) in resolved where copy.env[key] == nil && !value.isEmpty {
-            copy.env[key] = value
-        }
-        return copy
-    }
-
     nonisolated static func desktopAssetEnvironment(
         processEnvironment: [String: String],
         distro: DesktopMachineDistro
@@ -5426,6 +5412,26 @@ final class AppStore {
         var result = processEnvironment
         result["DORY_DESKTOP_DISTRO"] = distro.rawValue
         return result
+    }
+
+    /// Temporary compatibility projection until these fields move into native WorkspaceSpec
+    /// properties. New app-created machines never persist arbitrary environment values.
+    nonisolated static func sanitizedNewMachineEnvironment(
+        _ environment: [String: String]
+    ) -> [String: String] {
+        let allowed: Set<String> = [
+            "DORY_CLIPBOARD_POLICY",
+            "DORY_CUSTOM_LINUX",
+            "DORY_DESKTOP_DISTRO",
+            "DORY_DESKTOP_ENVIRONMENT",
+            "DORY_DESKTOP_GRAPHICS",
+            "DORY_DESKTOP_NAME",
+            "DORY_DESKTOP_VERSION",
+            "DORY_DESKTOP_VMM",
+            "DORY_GUEST_UID",
+            "DORY_GUEST_USER",
+        ]
+        return environment.filter { allowed.contains($0.key) }
     }
 
     /// Brings persistent desktop machines forward after a signed desktop component activation.
@@ -5602,7 +5608,7 @@ final class AppStore {
             address: address,
             displayMode: settings.displayMode,
             shares: dorydShares(from: settings.mounts),
-            environment: settings.env
+            environment: sanitizedNewMachineEnvironment(settings.env)
         )
     }
 
@@ -5641,9 +5647,7 @@ final class AppStore {
             return message
         }
         guard requireDorydMachines() else { return actionError }
-        let resolvedEnv = await machineEnvResolver(machineEnvAllowList)
-        let effectiveSettings = Self.mergingEnv(settings, resolved: resolvedEnv)
-        return await createDorydMachine(name: trimmedName, settings: effectiveSettings, recipe: recipe)
+        return await createDorydMachine(name: trimmedName, settings: settings, recipe: recipe)
     }
 
     nonisolated static func dorydRecipeID(for recipe: DevRecipe) -> String? {
