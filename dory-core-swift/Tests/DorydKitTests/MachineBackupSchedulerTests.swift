@@ -1,7 +1,127 @@
+import DoryOperations
 @testable import DorydKit
 import XCTest
 
 final class MachineBackupSchedulerTests: XCTestCase {
+    func testRealMachineManagerBackupRoundTripsBundleABIAndBootVerifies() throws {
+        let base = NSTemporaryDirectory()
+            + "dory-real-machine-backup-\(getpid())-\(UUID().uuidString)"
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let kernel = base + "/kernel"
+        let rootfs = base + "/rootfs.ext4"
+        try Data("kernel-v1".utf8).write(to: URL(fileURLWithPath: kernel))
+        try Data("rootfs-v1".utf8).write(to: URL(fileURLWithPath: rootfs))
+        let manager = MachineManager(configuration: MachineManagerConfiguration(
+            vmmExecutablePath: "/bin/sleep",
+            stateDirectory: base + "/machines",
+            baseArguments: ["30"],
+            passMachineArguments: false,
+            requiresReadyHandoff: false
+        ))
+        defer { try? manager.delete(id: "dev") }
+        let created = try manager.create(DoryMachineConfiguration(
+            id: "dev",
+            kernelPath: kernel,
+            rootfsPath: rootfs,
+            memoryMB: 2_048,
+            cpuCount: 2
+        ))
+        XCTAssertEqual(created.runtimeIdentity.mode, .legacyCompatibility)
+        XCTAssertEqual(
+            created.runtimeIdentity.virtualHardwareABIVersion,
+            DoryVirtualMachineDefinition.currentVirtualHardwareABIVersion
+        )
+
+        let scheduler = try MachineBackupScheduler(
+            machines: manager,
+            rootDirectory: base + "/backups",
+            now: { Date(timeIntervalSince1970: 1_783_392_000) }
+        )
+        _ = try scheduler.upsert(DoryMachineBackupSchedule(
+            machineID: "dev",
+            frequency: .daily,
+            keepLocal: 1,
+            verifyEveryRuns: 1
+        ))
+        let completed = try scheduler.runNow(machineID: "dev")
+
+        XCTAssertEqual(completed.successfulRuns, 1)
+        XCTAssertEqual(completed.retainedSnapshots, 1)
+        XCTAssertEqual(completed.retainedArchives, 1)
+        XCTAssertNotNil(completed.lastBootVerificationISO)
+        let archive = try XCTUnwrap(completed.lastArchivePath)
+        XCTAssertEqual(
+            try Data(contentsOf: URL(fileURLWithPath: archive))
+                .prefix(Data("DORYMACHINE3\n".utf8).count),
+            Data("DORYMACHINE3\n".utf8)
+        )
+        XCTAssertEqual(manager.list().map(\.id), ["dev"])
+        let retained = try XCTUnwrap(manager.listSnapshots(machineID: "dev").first)
+        XCTAssertEqual(retained.runtimeIdentity, created.runtimeIdentity)
+
+        let imported = try manager.importSnapshot(fromPath: archive)
+        defer { try? manager.deleteSnapshot(machineID: imported.machineID, snapshotID: imported.id) }
+        XCTAssertEqual(imported.runtimeIdentity, created.runtimeIdentity)
+        XCTAssertEqual(
+            imported.runtimeIdentity.virtualHardwareABIVersion,
+            DoryVirtualMachineDefinition.currentVirtualHardwareABIVersion
+        )
+        XCTAssertEqual(
+            try String(contentsOfFile: imported.rootfsPath, encoding: .utf8),
+            "rootfs-v1"
+        )
+        XCTAssertEqual(
+            try String(contentsOfFile: imported.kernelPath, encoding: .utf8),
+            "kernel-v1"
+        )
+    }
+
+    func testRealMachineManagerBackupRollsBackWhenDisposableBootFails() throws {
+        let base = NSTemporaryDirectory()
+            + "dory-real-machine-backup-failure-\(getpid())-\(UUID().uuidString)"
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let kernel = base + "/kernel"
+        let rootfs = base + "/rootfs.ext4"
+        try Data("kernel-v1".utf8).write(to: URL(fileURLWithPath: kernel))
+        try Data("rootfs-v1".utf8).write(to: URL(fileURLWithPath: rootfs))
+        let manager = MachineManager(configuration: MachineManagerConfiguration(
+            vmmExecutablePath: base + "/missing-vmm",
+            stateDirectory: base + "/machines",
+            passMachineArguments: false,
+            requiresReadyHandoff: false
+        ))
+        defer { try? manager.delete(id: "dev") }
+        _ = try manager.create(DoryMachineConfiguration(
+            id: "dev",
+            kernelPath: kernel,
+            rootfsPath: rootfs
+        ))
+        let scheduler = try MachineBackupScheduler(
+            machines: manager,
+            rootDirectory: base + "/backups",
+            now: { Date(timeIntervalSince1970: 1_783_392_000) }
+        )
+        _ = try scheduler.upsert(DoryMachineBackupSchedule(
+            machineID: "dev",
+            keepLocal: 1,
+            verifyEveryRuns: 1
+        ))
+
+        XCTAssertThrowsError(try scheduler.runNow(machineID: "dev"))
+        let failed = try XCTUnwrap(scheduler.list().first)
+        XCTAssertEqual(failed.successfulRuns, 0)
+        XCTAssertEqual(failed.consecutiveFailures, 1)
+        XCTAssertNotNil(failed.lastError)
+        XCTAssertTrue(try manager.listSnapshots(machineID: "dev").isEmpty)
+        XCTAssertEqual(manager.list().map(\.id), ["dev"])
+        let archiveDirectory = base + "/backups/archives/dev"
+        let archives = (try? FileManager.default.contentsOfDirectory(atPath: archiveDirectory)) ?? []
+        XCTAssertTrue(archives.filter { $0.hasSuffix(".dorymachine") }.isEmpty)
+        XCTAssertFalse(archives.contains { $0.hasSuffix(".partial") })
+    }
+
     func testSchedulePersistsAndReloadsWithOwnerOnlyState() throws {
         let fixture = try Fixture()
         defer { fixture.cleanup() }
