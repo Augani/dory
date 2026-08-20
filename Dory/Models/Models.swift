@@ -303,6 +303,8 @@ struct Machine: Identifiable, Hashable, Sendable {
     var installerMediaAttached: Bool = false
     var runtimeIdentity: DorydMachineRuntimeIdentity = .legacyCompatibility
     var agentBuild: String? = nil
+    var agentProtocolVersion: UInt32? = nil
+    var agentCapabilities: [DorydAgentCapability] = []
     var mounts: [MountPair] = []
     var id: String { name }
 
@@ -369,14 +371,66 @@ struct Machine: Identifiable, Hashable, Sendable {
                 detail: "Legacy compatibility launch authority"
             ))
         }
-        evidence.append(MachineRuntimeEvidence(
-            id: "tools",
-            label: agentBuild == nil ? "Tools unavailable" : "Tools ready",
-            systemImage: agentBuild == nil ? "wrench.and.screwdriver" : "wrench.and.screwdriver.fill",
-            tone: agentBuild == nil ? .warning : .positive,
-            detail: agentBuild ?? "The guest has not reported a Dory Tools build"
-        ))
+        evidence.append(toolsRuntimeEvidence)
         return evidence
+    }
+
+    private var toolsRuntimeEvidence: MachineRuntimeEvidence {
+        guard let agentBuild, !agentBuild.isEmpty else {
+            return MachineRuntimeEvidence(
+                id: "tools",
+                label: "Tools unavailable",
+                systemImage: "wrench.and.screwdriver",
+                tone: .warning,
+                detail: "The guest has not reported a Dory Tools handshake"
+            )
+        }
+        guard let agentProtocolVersion else {
+            return MachineRuntimeEvidence(
+                id: "tools",
+                label: "Tools unversioned",
+                systemImage: "wrench.and.screwdriver",
+                tone: .warning,
+                detail: "\(agentBuild) does not report a protocol contract"
+            )
+        }
+        guard agentProtocolVersion == 1 else {
+            return MachineRuntimeEvidence(
+                id: "tools",
+                label: "Tools incompatible",
+                systemImage: "exclamationmark.triangle.fill",
+                tone: .warning,
+                detail: "\(agentBuild) uses unsupported protocol \(agentProtocolVersion)"
+            )
+        }
+        guard !agentCapabilities.isEmpty else {
+            return MachineRuntimeEvidence(
+                id: "tools",
+                label: "Tools need an update",
+                systemImage: "arrow.triangle.2.circlepath",
+                tone: .warning,
+                detail: "\(agentBuild) does not report versioned capabilities"
+            )
+        }
+        let versions = Dictionary(uniqueKeysWithValues: agentCapabilities.map { ($0.id, $0.version) })
+        let required = ["clock-sync", "exec", "exec-stdin", "ports-watch", "telemetry"]
+        let missing = required.filter { (versions[$0] ?? 0) < 1 }
+        guard missing.isEmpty else {
+            return MachineRuntimeEvidence(
+                id: "tools",
+                label: "Tools partially ready",
+                systemImage: "wrench.and.screwdriver",
+                tone: .warning,
+                detail: "\(agentBuild) is missing \(missing.joined(separator: ", "))"
+            )
+        }
+        return MachineRuntimeEvidence(
+            id: "tools",
+            label: "Tools ready",
+            systemImage: "wrench.and.screwdriver.fill",
+            tone: .positive,
+            detail: "\(agentBuild) · \(agentCapabilities.count) versioned capabilities"
+        )
     }
 
     private static func backendLabel(_ backend: String) -> String {

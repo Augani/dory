@@ -747,6 +747,16 @@ nonisolated struct DorydMachineSnapshotArtifactEvidence: Codable, Sendable, Equa
     }
 }
 
+nonisolated struct DorydAgentCapability: Sendable, Equatable, Hashable {
+    var id: String
+    var version: UInt32
+
+    var isValid: Bool {
+        version > 0 && id.utf8.count <= 63
+            && id.wholeMatch(of: /[a-z][a-z0-9]*(?:-[a-z0-9]+)*/) != nil
+    }
+}
+
 nonisolated struct DorydMachineStatus: Sendable, Equatable {
     var id: String
     var state: String
@@ -754,6 +764,8 @@ nonisolated struct DorydMachineStatus: Sendable, Equatable {
     var lastError: String?
     var handoffSocketPath: String?
     var agentBuild: String?
+    var agentProtocolVersion: UInt32? = nil
+    var agentCapabilities: [DorydAgentCapability] = []
     var agentSocketPath: String?
     var dockerdSocketPath: String?
     var shellSocketPath: String?
@@ -1850,6 +1862,9 @@ nonisolated final class DorydClient: @unchecked Sendable {
         ) else {
             return nil
         }
+        guard let agentHandshake = machineAgentHandshake(from: dictionary) else {
+            return nil
+        }
         return DorydMachineStatus(
             id: id,
             state: state,
@@ -1857,6 +1872,8 @@ nonisolated final class DorydClient: @unchecked Sendable {
             lastError: nonEmptyString(dictionary["lastError"]),
             handoffSocketPath: nonEmptyString(dictionary["handoffSocketPath"]),
             agentBuild: nonEmptyString(dictionary["agentBuild"]),
+            agentProtocolVersion: agentHandshake.protocolVersion,
+            agentCapabilities: agentHandshake.capabilities,
             agentSocketPath: nonEmptyString(dictionary["agentSocketPath"]),
             dockerdSocketPath: nonEmptyString(dictionary["dockerdSocketPath"]),
             shellSocketPath: nonEmptyString(dictionary["shellSocketPath"]),
@@ -1878,6 +1895,65 @@ nonisolated final class DorydClient: @unchecked Sendable {
             typedSettings: typedSettings.value,
             runtimeIdentity: runtimeIdentity,
             installedDesktopPayloadReceipt: installedDesktopPayloadReceipt.value
+        )
+    }
+
+    private struct ParsedMachineAgentHandshake {
+        var protocolVersion: UInt32?
+        var capabilities: [DorydAgentCapability]
+    }
+
+    nonisolated private static func machineAgentHandshake(
+        from dictionary: NSDictionary
+    ) -> ParsedMachineAgentHandshake? {
+        let encodedProtocol = dictionary["agentProtocolVersion"]
+        let encodedCapabilities = dictionary["agentCapabilities"]
+        guard encodedProtocol != nil || encodedCapabilities != nil else {
+            return ParsedMachineAgentHandshake(protocolVersion: nil, capabilities: [])
+        }
+        guard let encodedProtocol,
+              dictionary["agentBuild"] is String,
+              let number = encodedProtocol as? NSNumber,
+              CFGetTypeID(number) != CFBooleanGetTypeID(),
+              number.doubleValue.rounded(.towardZero) == number.doubleValue,
+              number.uint64Value > 0,
+              number.uint64Value <= UInt64(UInt32.max) else {
+            return nil
+        }
+        let protocolVersion = UInt32(number.uint64Value)
+        guard let encodedCapabilities else {
+            return ParsedMachineAgentHandshake(protocolVersion: protocolVersion, capabilities: [])
+        }
+        guard let rawCapabilities = encodedCapabilities as? NSArray else { return nil }
+        var capabilities: [DorydAgentCapability] = []
+        capabilities.reserveCapacity(rawCapabilities.count)
+        for encoded in rawCapabilities {
+            guard let raw = encoded as? NSDictionary,
+                  let keys = raw.allKeys as? [String],
+                  Set(keys) == ["id", "version"],
+                  keys.count == 2,
+                  let id = raw["id"] as? String,
+                  let versionNumber = raw["version"] as? NSNumber,
+                  CFGetTypeID(versionNumber) != CFBooleanGetTypeID(),
+                  versionNumber.doubleValue.rounded(.towardZero) == versionNumber.doubleValue,
+                  versionNumber.uint64Value > 0,
+                  versionNumber.uint64Value <= UInt64(UInt32.max) else {
+                return nil
+            }
+            let capability = DorydAgentCapability(
+                id: id,
+                version: UInt32(versionNumber.uint64Value)
+            )
+            guard capability.isValid else { return nil }
+            capabilities.append(capability)
+        }
+        guard capabilities == capabilities.sorted(by: { $0.id < $1.id }),
+              Set(capabilities.map(\.id)).count == capabilities.count else {
+            return nil
+        }
+        return ParsedMachineAgentHandshake(
+            protocolVersion: protocolVersion,
+            capabilities: capabilities
         )
     }
 

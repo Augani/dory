@@ -5193,6 +5193,8 @@ final class AppStore {
             installerMediaAttached: status.installerMediaAttached,
             runtimeIdentity: status.runtimeIdentity,
             agentBuild: status.agentBuild,
+            agentProtocolVersion: status.agentProtocolVersion,
+            agentCapabilities: status.agentCapabilities,
             mounts: status.shares.map(Self.mountPair(fromDoryd:))
         )
     }

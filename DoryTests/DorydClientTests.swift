@@ -545,6 +545,10 @@ struct DorydClientTests {
         )
         let machine = AppStore.machine(fromDoryd: status)
         #expect(machine.runtimeIdentity.graphics == "hardware-accelerated-3d")
+        #expect(machine.agentProtocolVersion == 1)
+        #expect(machine.agentCapabilities.map(\.id) == [
+            "clock-sync", "exec", "exec-stdin", "ports-watch", "sync-push", "telemetry",
+        ])
         #expect(machine.runtimeEvidence.map(\.label) == [
             "Supported", "Raw HV", "Qualified 3D", "Tools ready",
         ])
@@ -559,9 +563,62 @@ struct DorydClientTests {
             invalidationReason: "restored-snapshot"
         )
         replanning.agentBuild = nil
+        replanning.agentProtocolVersion = nil
+        replanning.agentCapabilities = []
         #expect(replanning.runtimeEvidence.map(\.label) == [
             "Needs planning", "Tools unavailable",
         ])
+
+        var legacyHandshake = machine
+        legacyHandshake.agentProtocolVersion = nil
+        legacyHandshake.agentCapabilities = []
+        #expect(legacyHandshake.runtimeEvidence.last?.label == "Tools unversioned")
+
+        var partialHandshake = machine
+        partialHandshake.agentCapabilities = [DorydAgentCapability(id: "exec", version: 1)]
+        #expect(partialHandshake.runtimeEvidence.last?.label == "Tools partially ready")
+        #expect(partialHandshake.runtimeEvidence.last?.detail.contains("clock-sync") == true)
+
+        var incompatibleHandshake = machine
+        incompatibleHandshake.agentProtocolVersion = 2
+        #expect(incompatibleHandshake.runtimeEvidence.last?.label == "Tools incompatible")
+    }
+
+    @Test func machineCapabilityHandshakeRejectsMalformedPresentClaims() async throws {
+        let listener = NSXPCListener.anonymous()
+        let service = FakeDorydService()
+        let delegate = FakeDorydListenerDelegate(service: service)
+        listener.delegate = delegate
+        listener.resume()
+        defer { listener.invalidate() }
+        let client = DorydClient(endpoint: listener.endpoint)
+
+        let valid = try #require((try await client.machineList()).first)
+        #expect(valid.agentProtocolVersion == 1)
+        #expect(valid.agentCapabilities.count == 6)
+
+        let malformed: [(Any?, Any?)] = [
+            (nil, [["id": "exec", "version": 1] as NSDictionary]),
+            (true, nil),
+            (1, [["id": "exec", "version": 1, "unknown": "claim"] as NSDictionary]),
+            (1, [
+                ["id": "exec", "version": 1] as NSDictionary,
+                ["id": "exec", "version": 1] as NSDictionary,
+            ]),
+        ]
+        for (protocolVersion, capabilities) in malformed {
+            service.setMachineAgentHandshake(
+                "dev",
+                protocolVersion: protocolVersion,
+                capabilities: capabilities
+            )
+            do {
+                _ = try await client.machineList()
+                Issue.record("present malformed capability handshake must fail closed")
+            } catch let error as DorydClientError {
+                #expect(error.description.contains("invalid doryd response"))
+            }
+        }
     }
 
     @Test func snapshotArtifactEvidenceIsAbsentOnlyForLegacyAndOtherwiseExact() async throws {
@@ -2475,6 +2532,27 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
         current["displayMode"] = "desktop"
         machines[machineID] = current.copy() as? NSDictionary
     }
+
+    func setMachineAgentHandshake(
+        _ machineID: String,
+        protocolVersion: Any?,
+        capabilities: Any?
+    ) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let current = machines[machineID]?.mutableCopy() as? NSMutableDictionary else {
+            return
+        }
+        current.removeObject(forKey: "agentProtocolVersion")
+        current.removeObject(forKey: "agentCapabilities")
+        if let protocolVersion {
+            current["agentProtocolVersion"] = protocolVersion
+        }
+        if let capabilities {
+            current["agentCapabilities"] = capabilities
+        }
+        machines[machineID] = current
+    }
     var machineStopCount: Int {
         lock.lock(); defer { lock.unlock() }
         return _machineStopCount
@@ -3391,6 +3469,15 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
         state: String,
         pid: Int32? = nil,
         agentBuild: String? = nil,
+        agentProtocolVersion: UInt32? = 1,
+        agentCapabilities: [NSDictionary] = [
+            ["id": "clock-sync", "version": 1] as NSDictionary,
+            ["id": "exec", "version": 1] as NSDictionary,
+            ["id": "exec-stdin", "version": 1] as NSDictionary,
+            ["id": "ports-watch", "version": 1] as NSDictionary,
+            ["id": "sync-push", "version": 1] as NSDictionary,
+            ["id": "telemetry", "version": 1] as NSDictionary,
+        ],
         handoffFDCount: Int = 0,
         memoryMB: UInt64 = 2048,
         cpuCount: Int = 2,
@@ -3411,6 +3498,12 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
         if let pid { row["pid"] = pid }
         if let agentBuild {
             row["agentBuild"] = agentBuild
+            if let agentProtocolVersion {
+                row["agentProtocolVersion"] = agentProtocolVersion
+                if !agentCapabilities.isEmpty {
+                    row["agentCapabilities"] = agentCapabilities
+                }
+            }
             row["handoffSocketPath"] = "/tmp/handoff.sock"
             row["agentSocketPath"] = "/tmp/agent.sock"
             row["dockerdSocketPath"] = "/tmp/dockerd.sock"
