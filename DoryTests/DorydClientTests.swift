@@ -353,6 +353,9 @@ struct DorydClientTests {
         #expect(slept == DorydCommandResult(ok: true, message: ""))
         #expect(woke == DorydCommandResult(ok: true, message: ""))
         #expect(dockerAgentInfo.agentBuild == "docker-agent")
+        #expect(dockerAgentInfo.capabilities.map(\.id) == [
+            "clock-sync", "exec", "exec-stdin", "ports-watch", "telemetry",
+        ])
         #expect(dockerAgentPorts.ports == [DorydListenPort(protocol: "tcp", port: 8080)])
         #expect(dockerAgentPorts.added == [DorydListenPort(protocol: "tcp", port: 8080)])
         #expect(dockerAgentTelemetry.memTotalKB == 2048)
@@ -411,6 +414,7 @@ struct DorydClientTests {
         #expect(machines.map(\.id) == ["dev", "dev-copy"])
         #expect(deletedMachine == DorydCommandResult(ok: true, message: ""))
         #expect(remoteInfo.agentBuild == "remote-agent")
+        #expect(remoteInfo.capabilities.map(\.id) == ["exec", "sync-push", "telemetry"])
         #expect(pushStats == DorydPushStats(filesSent: 2, bytesSent: 30, filesDeleted: 1))
         #expect(remoteStatus.telemetry?.memAvailableKB == 512)
         #expect(replacedRoutes == DorydCommandResult(ok: true, message: ""))
@@ -3434,6 +3438,13 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
             "kernel": "Linux docker",
             "agentBuild": "docker-agent",
             "uptimeSeconds": 11,
+            "capabilities": [
+                ["id": "clock-sync", "version": 1] as NSDictionary,
+                ["id": "exec", "version": 1] as NSDictionary,
+                ["id": "exec-stdin", "version": 1] as NSDictionary,
+                ["id": "ports-watch", "version": 1] as NSDictionary,
+                ["id": "telemetry", "version": 1] as NSDictionary,
+            ],
         ]
     }
 
@@ -3452,6 +3463,11 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
             "kernel": "Linux test",
             "agentBuild": "remote-agent",
             "uptimeSeconds": 9,
+            "capabilities": [
+                ["id": "exec", "version": 1] as NSDictionary,
+                ["id": "sync-push", "version": 1] as NSDictionary,
+                ["id": "telemetry", "version": 1] as NSDictionary,
+            ],
         ]
     }
 

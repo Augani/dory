@@ -928,6 +928,7 @@ nonisolated struct DorydAgentInfo: Sendable, Equatable {
     var kernel: String
     var agentBuild: String
     var uptimeSeconds: UInt64
+    var capabilities: [DorydAgentCapability] = []
 }
 
 nonisolated struct DorydTelemetry: Sendable, Equatable {
@@ -1924,6 +1925,16 @@ nonisolated final class DorydClient: @unchecked Sendable {
         guard let encodedCapabilities else {
             return ParsedMachineAgentHandshake(protocolVersion: protocolVersion, capabilities: [])
         }
+        guard let capabilities = agentCapabilities(from: encodedCapabilities) else { return nil }
+        return ParsedMachineAgentHandshake(
+            protocolVersion: protocolVersion,
+            capabilities: capabilities
+        )
+    }
+
+    nonisolated private static func agentCapabilities(
+        from encodedCapabilities: Any
+    ) -> [DorydAgentCapability]? {
         guard let rawCapabilities = encodedCapabilities as? NSArray else { return nil }
         var capabilities: [DorydAgentCapability] = []
         capabilities.reserveCapacity(rawCapabilities.count)
@@ -1951,10 +1962,7 @@ nonisolated final class DorydClient: @unchecked Sendable {
               Set(capabilities.map(\.id)).count == capabilities.count else {
             return nil
         }
-        return ParsedMachineAgentHandshake(
-            protocolVersion: protocolVersion,
-            capabilities: capabilities
-        )
+        return capabilities
     }
 
     private struct ParsedMachineTypedSettings {
@@ -2427,11 +2435,19 @@ nonisolated final class DorydClient: @unchecked Sendable {
               let uptimeSeconds = uint64(dictionary["uptimeSeconds"]) else {
             return nil
         }
+        let capabilities: [DorydAgentCapability]
+        if let encodedCapabilities = dictionary["capabilities"] {
+            guard let parsed = agentCapabilities(from: encodedCapabilities) else { return nil }
+            capabilities = parsed
+        } else {
+            capabilities = []
+        }
         return DorydAgentInfo(
             protocolVersion: protocolVersion,
             kernel: kernel,
             agentBuild: agentBuild,
-            uptimeSeconds: uptimeSeconds
+            uptimeSeconds: uptimeSeconds,
+            capabilities: capabilities
         )
     }
 

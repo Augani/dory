@@ -444,6 +444,10 @@ final class DorydServiceTests: XCTestCase {
             XCTAssertEqual(message, "")
             XCTAssertEqual(body["agentBuild"] as? String, "docker-agent")
             XCTAssertEqual(body["protocolVersion"] as? UInt32, 1)
+            XCTAssertEqual(
+                (body["capabilities"] as? [NSDictionary])?.compactMap { $0["id"] as? String },
+                ["clock-sync", "exec", "exec-stdin", "ports-watch", "telemetry"]
+            )
             infoReply.fulfill()
         }
         wait(for: [infoReply], timeout: 5)
@@ -537,6 +541,10 @@ final class DorydServiceTests: XCTestCase {
         wait(for: [connect], timeout: 5)
         XCTAssertTrue(connectOK, connectMessage)
         XCTAssertEqual(info["agentBuild"] as? String, "remote-agent")
+        XCTAssertEqual(
+            (info["capabilities"] as? [NSDictionary])?.compactMap { $0["id"] as? String },
+            ["exec", "sync-push", "telemetry"]
+        )
         XCTAssertEqual(captured.value?.opensshPrivateKey, "PRIVATE")
 
         let push = expectation(description: "remotePush reply")

@@ -1835,6 +1835,9 @@ private extension DoryAgentInfo {
             "kernel": kernel,
             "agentBuild": agentBuild,
             "uptimeSeconds": uptimeSeconds,
+            "capabilities": capabilities.map {
+                ["id": $0.id, "version": $0.version] as NSDictionary
+            },
         ]
     }
 }
