@@ -40,6 +40,8 @@ public struct DoryDaemonVirtualMachineProductionActivationFailure:
 public struct DoryDaemonVirtualMachineProductionActivationContext: Sendable {
     public let machineManager: MachineManager
     public let planning: DoryDaemonVirtualMachineProductionPlanningContext
+    public let planningController:
+        DoryDaemonVirtualMachineProductionPlanningController
     public let backendRuntimeBuildIdentifiers: [
         DoryVirtualizationBackendIdentity: String
     ]
@@ -51,12 +53,15 @@ public struct DoryDaemonVirtualMachineProductionActivationContext: Sendable {
     init(
         machineManager: MachineManager,
         planning: DoryDaemonVirtualMachineProductionPlanningContext,
+        planningController:
+            DoryDaemonVirtualMachineProductionPlanningController,
         backendRuntimeBuildIdentifiers: [
             DoryVirtualizationBackendIdentity: String
         ]
     ) {
         self.machineManager = machineManager
         self.planning = planning
+        self.planningController = planningController
         self.backendRuntimeBuildIdentifiers = backendRuntimeBuildIdentifiers
     }
 }
@@ -78,13 +83,11 @@ extension DoryDaemonVirtualMachineProductionTrustFactory {
     /// escape this boundary or poison a retry.
     public func activate(
         store: DoryComponentStore,
-        machineConfiguration: MachineManagerConfiguration,
-        recoveryProvider: any DoryDaemonVirtualMachinePlanningRecoveryProviding
+        machineConfiguration: MachineManagerConfiguration
     ) -> DoryDaemonVirtualMachineProductionActivationResult {
         activate(
             store: store,
             machineConfiguration: machineConfiguration,
-            recoveryProvider: recoveryProvider,
             appVersion: Self.compiledDaemonVersion,
             publicKey: DoryComponentDefaults.publicKey,
             expectedArchitecture: DoryComponentDefaults.architecture
@@ -96,7 +99,6 @@ extension DoryDaemonVirtualMachineProductionTrustFactory {
     func activate(
         store: DoryComponentStore,
         machineConfiguration: MachineManagerConfiguration,
-        recoveryProvider: any DoryDaemonVirtualMachinePlanningRecoveryProviding,
         appVersion: String,
         publicKey: String,
         expectedArchitecture: String
@@ -180,7 +182,9 @@ extension DoryDaemonVirtualMachineProductionTrustFactory {
             runtimeVerifier: material.runtimeVerifier,
             hostProbe: material.hostProbe,
             mutationAuthority: machineManager,
-            recoveryProvider: recoveryProvider
+            recoveryProvider: DoryDaemonVirtualMachineProductionRecoveryProvider(
+                stateDirectory: canonicalStateDirectory
+            )
         )
         let planning: DoryDaemonVirtualMachineProductionPlanningContext
         switch composition.resolve() {
@@ -225,6 +229,8 @@ extension DoryDaemonVirtualMachineProductionTrustFactory {
         return .activated(DoryDaemonVirtualMachineProductionActivationContext(
             machineManager: machineManager,
             planning: planning,
+            planningController:
+                DoryDaemonVirtualMachineProductionPlanningController(planning: planning),
             backendRuntimeBuildIdentifiers: Dictionary(
                 uniqueKeysWithValues: material.runtimes.map {
                     ($0.descriptor.identity, $0.runtimeBuildIdentifier)

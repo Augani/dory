@@ -26,6 +26,28 @@ public struct DoryDaemonVirtualMachineResolvedMedia: Sendable {
     }
 }
 
+public struct DoryDaemonVirtualMachineLaunchArtifactRequirement: Sendable, Equatable {
+    public var reference: DoryVMResolverReference
+    public var kind: DoryBootMediaKind
+    public var source: DoryBootMediaSource
+    public var mutable: Bool
+    public var usages: [DoryResolvedMachineLaunchArtifactUsage]
+
+    public init(
+        reference: DoryVMResolverReference,
+        kind: DoryBootMediaKind,
+        source: DoryBootMediaSource,
+        mutable: Bool,
+        usages: [DoryResolvedMachineLaunchArtifactUsage]
+    ) {
+        self.reference = reference
+        self.kind = kind
+        self.source = source
+        self.mutable = mutable
+        self.usages = usages
+    }
+}
+
 public struct DoryDaemonVirtualMachineBackendRuntimeInventory: Sendable, Equatable {
     public var backend: DoryVirtualizationBackendIdentity
     public var runtimeBuildIdentifier: String
@@ -48,6 +70,7 @@ public struct DoryDaemonVirtualMachineBackendRuntimeInventory: Sendable, Equatab
 public struct DoryDaemonVirtualMachineTrustedInventorySnapshot: Sendable {
     public var hostFacts: DoryAppleSiliconHostFacts
     public var media: DoryDaemonVirtualMachineResolvedMedia
+    public var launchArtifacts: [DoryResolvedMachineLaunchArtifact]
     public var backendRuntimes: [DoryDaemonVirtualMachineBackendRuntimeInventory]
     public var resourceAdmission: DoryResolvedMachineResourceAdmissionEvidence
     public var runtimeQualifications: [DoryTrustedVirtualMachineRuntimeQualification]
@@ -60,6 +83,7 @@ public struct DoryDaemonVirtualMachineTrustedInventorySnapshot: Sendable {
     public init(
         hostFacts: DoryAppleSiliconHostFacts,
         media: DoryDaemonVirtualMachineResolvedMedia,
+        launchArtifacts: [DoryResolvedMachineLaunchArtifact] = [],
         backendRuntimes: [DoryDaemonVirtualMachineBackendRuntimeInventory],
         resourceAdmission: DoryResolvedMachineResourceAdmissionEvidence,
         runtimeQualifications: [DoryTrustedVirtualMachineRuntimeQualification] = [],
@@ -69,6 +93,7 @@ public struct DoryDaemonVirtualMachineTrustedInventorySnapshot: Sendable {
     ) {
         self.hostFacts = hostFacts
         self.media = media
+        self.launchArtifacts = launchArtifacts
         self.backendRuntimes = backendRuntimes
         self.resourceAdmission = resourceAdmission
         self.runtimeQualifications = runtimeQualifications
@@ -106,6 +131,7 @@ public struct DoryDaemonVirtualMachineInventoryRequest: Sendable, Equatable {
     public var definitionRevision: UInt64
     public var guest: DoryGuestPlatform
     public var bootMedia: DoryVMBootMediaReference
+    public var launchArtifacts: [DoryDaemonVirtualMachineLaunchArtifactRequirement]
     public var resources: DoryVMResourceRequest
     public var devices: DoryVirtualMachineDeviceCapabilityRequest
     public var acceptableGraphics: [DoryGraphicsAccelerationLevel]
@@ -116,6 +142,7 @@ public struct DoryDaemonVirtualMachineInventoryRequest: Sendable, Equatable {
         definitionRevision: UInt64,
         guest: DoryGuestPlatform,
         bootMedia: DoryVMBootMediaReference,
+        launchArtifacts: [DoryDaemonVirtualMachineLaunchArtifactRequirement],
         resources: DoryVMResourceRequest,
         devices: DoryVirtualMachineDeviceCapabilityRequest,
         acceptableGraphics: [DoryGraphicsAccelerationLevel],
@@ -125,6 +152,7 @@ public struct DoryDaemonVirtualMachineInventoryRequest: Sendable, Equatable {
         self.definitionRevision = definitionRevision
         self.guest = guest
         self.bootMedia = bootMedia
+        self.launchArtifacts = launchArtifacts
         self.resources = resources
         self.devices = devices
         self.acceptableGraphics = acceptableGraphics
@@ -335,11 +363,17 @@ public final class DoryDaemonVirtualMachinePlanningCoordinator: @unchecked Senda
             throw failure(.bootMediaUnavailable, "The workspace has no primary boot device.")
         }
         let devices = Self.devices(for: definition)
+        guard let launchArtifactRequirements = Self.launchArtifactRequirements(
+            for: definition
+        ) else {
+            throw failure(.invalidDefinition, "Launch artifact requirements conflict.")
+        }
         let inventoryRequest = DoryDaemonVirtualMachineInventoryRequest(
             machineID: definition.identity.id,
             definitionRevision: definition.lifecycle.revision,
             guest: definition.guest,
             bootMedia: bootReference,
+            launchArtifacts: launchArtifactRequirements,
             resources: definition.resources,
             devices: devices,
             acceptableGraphics: definition.graphics.acceptableLevels,
@@ -355,6 +389,19 @@ public final class DoryDaemonVirtualMachinePlanningCoordinator: @unchecked Senda
               snapshot.media.media.kind == bootReference.kind,
               snapshot.media.media.source == bootReference.source else {
             throw failure(.mediaInventoryMismatch, "Resolved media does not match the boot reference.")
+        }
+        guard snapshot.launchArtifacts.map(\.resolverReference)
+                == launchArtifactRequirements.map(\.reference),
+              zip(snapshot.launchArtifacts, launchArtifactRequirements).allSatisfy({ artifact, requirement in
+                  artifact.media.kind == requirement.kind
+                      && artifact.media.source == requirement.source
+                      && artifact.usages == requirement.usages
+                      && (artifact.media.mutableProvenance != nil) == requirement.mutable
+              }) else {
+            throw failure(
+                .mediaInventoryMismatch,
+                "Resolved launch artifacts do not match desired-state references."
+            )
         }
         guard snapshot.resourceAdmission.admittedVirtualCPUCount
                 == definition.resources.virtualCPUCount,
@@ -418,6 +465,7 @@ public final class DoryDaemonVirtualMachinePlanningCoordinator: @unchecked Senda
                 backendDescriptor: backend.descriptor,
                 backendRuntimeBuildIdentifier: runtime.runtimeBuildIdentifier,
                 resolverReference: snapshot.media.reference,
+                launchArtifacts: snapshot.launchArtifacts,
                 components: runtime.components.sorted {
                     $0.componentIdentifier < $1.componentIdentifier
                 },
@@ -477,6 +525,76 @@ public final class DoryDaemonVirtualMachinePlanningCoordinator: @unchecked Senda
             dynamicDisplay: definition.integrations.contains(.dynamicDisplay),
             gracefulShutdown: definition.integrations.contains(.gracefulShutdown)
         )
+    }
+
+    static func launchArtifactRequirements(
+        for definition: DoryVirtualMachineDefinition
+    ) -> [DoryDaemonVirtualMachineLaunchArtifactRequirement]? {
+        var requirements: [DoryVMResolverReference:
+            DoryDaemonVirtualMachineLaunchArtifactRequirement] = [:]
+        func insert(
+            reference: DoryVMResolverReference,
+            kind: DoryBootMediaKind,
+            source: DoryBootMediaSource,
+            mutable: Bool,
+            usage: DoryResolvedMachineLaunchArtifactUsage
+        ) -> Bool {
+            if var existing = requirements[reference] {
+                guard existing.kind == kind, existing.source == source,
+                      existing.mutable == mutable else { return false }
+                existing.usages.append(usage)
+                requirements[reference] = existing
+            } else {
+                requirements[reference] = DoryDaemonVirtualMachineLaunchArtifactRequirement(
+                    reference: reference,
+                    kind: kind,
+                    source: source,
+                    mutable: mutable,
+                    usages: [usage]
+                )
+            }
+            return true
+        }
+        for boot in definition.boot.devices {
+            let mutable = boot.kind == .virtualDisk
+            guard insert(
+                reference: boot.artifact,
+                kind: boot.kind,
+                source: boot.source,
+                mutable: mutable,
+                usage: DoryResolvedMachineLaunchArtifactUsage(
+                    kind: .boot,
+                    identifier: boot.id,
+                    readOnly: !mutable
+                )
+            ) else { return nil }
+        }
+        for storage in definition.storage {
+            guard insert(
+                reference: storage.artifact,
+                kind: .virtualDisk,
+                source: storage.source,
+                mutable: !storage.readOnly,
+                usage: DoryResolvedMachineLaunchArtifactUsage(
+                    kind: .storage,
+                    identifier: storage.id,
+                    readOnly: storage.readOnly
+                )
+            ) else { return nil }
+        }
+        return requirements.values.map { requirement in
+            var requirement = requirement
+            requirement.usages.sort {
+                let left = $0.kind.rawValue + "\0" + $0.identifier
+                let right = $1.kind.rawValue + "\0" + $1.identifier
+                return left < right
+            }
+            return requirement
+        }.sorted {
+            let left = $0.reference.namespace + "\0" + $0.reference.identifier
+            let right = $1.reference.namespace + "\0" + $1.reference.identifier
+            return left < right
+        }
     }
 
     private static func plannerRequest(

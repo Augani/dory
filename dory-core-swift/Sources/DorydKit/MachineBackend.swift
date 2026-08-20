@@ -210,17 +210,25 @@ public struct MachineBackendLaunchBinding: Sendable, Equatable {
     public var backend: MachineBackendDescriptor
     public var componentIdentifier: String
     public var executablePath: String
+    /// Exact capability contract selected and revalidated by this adapter. These values must be
+    /// carried into process construction; a launcher may not reinterpret them as "automatic".
+    public var graphics: DoryGraphicsAccelerationLevel
+    public var devices: DoryVirtualMachineDeviceCapabilityRequest
 
     public init(
         machineID: String,
         backend: MachineBackendDescriptor,
         componentIdentifier: String,
-        executablePath: String
+        executablePath: String,
+        graphics: DoryGraphicsAccelerationLevel,
+        devices: DoryVirtualMachineDeviceCapabilityRequest
     ) {
         self.machineID = machineID
         self.backend = backend
         self.componentIdentifier = componentIdentifier
         self.executablePath = executablePath
+        self.graphics = graphics
+        self.devices = devices
     }
 }
 

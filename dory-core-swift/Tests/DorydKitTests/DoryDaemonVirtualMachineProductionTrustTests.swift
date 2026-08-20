@@ -262,6 +262,28 @@ struct DoryDaemonVirtualMachineProductionTrustTests {
         }
     }
 
+    @Test("mutable storage changed after planning is rejected before spawn")
+    func changedStorageFailsPreSpawnAuthorization() throws {
+        let fixture = try ProductionTrustFixture()
+        defer { fixture.cleanup() }
+        guard case let .ready(context) = fixture.resolve(),
+              let provider = context.inventory
+                as? any DoryDaemonVirtualMachinePreSpawnAuthorizationProviding else {
+            Issue.record("Expected production pre-spawn authority")
+            return
+        }
+        let request = try fixture.makeBoundStartRequest()
+        let authorization = try provider.preSpawnAuthorization(for: request)
+        let handle = try FileHandle(forWritingTo: URL(fileURLWithPath: fixture.storagePath))
+        try handle.write(contentsOf: Data("changed-storage".utf8))
+        try handle.synchronize()
+        try handle.close()
+
+        #expect(throws: DoryDaemonVirtualMachinePreSpawnAuthorizationError.self) {
+            try authorization.authorize()
+        }
+    }
+
     @Test("start inventory refreshes volatile host resources")
     func startInventoryRefreshesHostResources() throws {
         let fixture = try ProductionTrustFixture()
@@ -320,7 +342,6 @@ struct DoryDaemonVirtualMachineProductionTrustTests {
         let result = fixture.factory.activate(
             store: fixture.store,
             machineConfiguration: fixture.machineConfiguration,
-            recoveryProvider: ProductionEmptyPlanningRecovery(),
             appVersion: fixture.appVersion,
             publicKey: fixture.publicKey,
             expectedArchitecture: "arm64"
@@ -349,12 +370,9 @@ struct DoryDaemonVirtualMachineProductionTrustTests {
             trustFloorActivationState: trustFloor
         )
         defer { fixture.cleanup() }
-        let recovery = ProductionEmptyPlanningRecovery()
-
         guard case let .unavailable(failure) = fixture.factory.activate(
             store: fixture.store,
             machineConfiguration: fixture.machineConfiguration,
-            recoveryProvider: recovery,
             appVersion: fixture.appVersion,
             publicKey: fixture.publicKey,
             expectedArchitecture: "arm64"
@@ -368,7 +386,6 @@ struct DoryDaemonVirtualMachineProductionTrustTests {
         guard case let .activated(context) = fixture.factory.activate(
             store: fixture.store,
             machineConfiguration: fixture.machineConfiguration,
-            recoveryProvider: recovery,
             appVersion: fixture.appVersion,
             publicKey: fixture.publicKey,
             expectedArchitecture: "arm64"
@@ -406,6 +423,15 @@ struct DoryDaemonVirtualMachineProductionTrustTests {
                         artifact: reference,
                         removable: false
                     ),
+                    launchArtifacts: [DoryDaemonVirtualMachineLaunchArtifactRequirement(
+                        reference: reference,
+                        kind: .installedLinuxBootBundle,
+                        source: .bundledByDory,
+                        mutable: false,
+                        usages: [DoryResolvedMachineLaunchArtifactUsage(
+                            kind: .boot, identifier: "system", readOnly: true
+                        )]
+                    )],
                     resources: DoryVMResourceRequest(
                         virtualCPUCount: 2,
                         memoryBytes: 2 * 1_024 * 1_024 * 1_024,
@@ -524,17 +550,6 @@ private enum ProductionTrustFixtureError: Error {
     case runtimeRejected
 }
 
-private struct ProductionEmptyPlanningRecovery:
-    DoryDaemonVirtualMachinePlanningRecoveryProviding
-{
-    func recoveryRequest(
-        for machineID: String
-    ) throws -> DoryDaemonVirtualMachinePlanningTransactionRequest? {
-        _ = machineID
-        return nil
-    }
-}
-
 private final class ProductionCallCounter: @unchecked Sendable {
     private let lock = NSLock()
     private var count = 0
@@ -615,6 +630,15 @@ private func productionPlanningRequest(
             artifact: plan.bootMedia.resolverReference!,
             removable: false
         ),
+        launchArtifacts: plan.launchArtifacts.map { artifact in
+            DoryDaemonVirtualMachineLaunchArtifactRequirement(
+                reference: artifact.resolverReference,
+                kind: artifact.media.kind,
+                source: artifact.media.source,
+                mutable: artifact.media.mutableProvenance != nil,
+                usages: artifact.usages
+            )
+        },
         resources: DoryVMResourceRequest(
             virtualCPUCount: plan.resourceAdmission!.admittedVirtualCPUCount,
             memoryBytes: plan.resourceAdmission!.admittedMemoryBytes,
@@ -641,6 +665,11 @@ private final class ProductionTrustFixture: @unchecked Sendable {
     let mediaReference = DoryVMResolverReference(
         namespace: "artifact",
         identifier: "qualified-linux-boot"
+    )
+    let storagePath: String
+    let storageReference = DoryVMResolverReference(
+        namespace: "artifact",
+        identifier: "qualified-linux-disk"
     )
     let guest = DoryGuestPlatform(family: .linux, architecture: .arm64)
     let host = DoryDaemonProductionHostObservation(
@@ -711,13 +740,27 @@ private final class ProductionTrustFixture: @unchecked Sendable {
             toPath: mediaPath
         )
         mediaDigest = try DoryComponentCatalogVerifier.fileDigest(mediaPath)
-        _ = try DoryVirtualMachineArtifactAuthority(
+        storagePath = root.appendingPathComponent("qualified-linux.raw").path
+        try Data(repeating: 0x5a, count: 4_096).write(
+            to: URL(fileURLWithPath: storagePath)
+        )
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600],
+            ofItemAtPath: storagePath
+        )
+        let artifactAuthority = DoryVirtualMachineArtifactAuthority(
             root: state.path + "/.artifact-authority"
-        ).publishImmutable(
+        )
+        _ = try artifactAuthority.publishImmutable(
             reference: mediaReference,
             path: mediaPath,
             kind: .installedLinuxBootBundle,
             source: .bundledByDory
+        )
+        _ = try artifactAuthority.publishMutable(
+            reference: storageReference,
+            path: storagePath,
+            source: .userProvided
         )
 
         if installCatalog {
@@ -876,6 +919,13 @@ private final class ProductionTrustFixture: @unchecked Sendable {
             trustedRuntimeQualification: qualification.runtime
         )
         #expect(descriptor.availability.isUsable)
+        let storageArtifact = try DoryVirtualMachineArtifactAuthority(
+            root: machineConfiguration.stateDirectory + "/.artifact-authority"
+        ).resolve(
+            reference: storageReference,
+            kind: .virtualDisk,
+            source: .userProvided
+        )
         let plan = DoryResolvedMachinePlan(
             machineID: binding.machineID,
             definitionRevision: binding.definitionRevision,
@@ -893,6 +943,18 @@ private final class ProductionTrustFixture: @unchecked Sendable {
                 resolverReference: mediaReference,
                 media: media
             ),
+            launchArtifacts: resolvedBootLaunchArtifacts(
+                reference: mediaReference, media: media, identifier: "system"
+            ) + [DoryResolvedMachineLaunchArtifact(
+                resolverReference: storageArtifact.reference,
+                media: storageArtifact.media,
+                authorityRevision: storageArtifact.authorityRevision,
+                usages: [DoryResolvedMachineLaunchArtifactUsage(
+                    kind: .storage, identifier: "system-disk", readOnly: false
+                )],
+                mutableProvenanceEvidence:
+                    storageArtifact.mutableProvenance?.persistedAuditEvidence
+            )],
             components: [DoryResolvedBackendComponentEvidence(
                 componentIdentifier: "dory-hv",
                 buildIdentifier: runtimeBuildIdentifier,

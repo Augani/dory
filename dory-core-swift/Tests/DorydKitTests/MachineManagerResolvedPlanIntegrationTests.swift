@@ -87,6 +87,194 @@ struct MachineManagerResolvedPlanIntegrationTests {
         }
     }
 
+    @Test("adapter cannot substitute resolved graphics or devices")
+    func adapterCannotSubstituteLaunchContract() throws {
+        enum Mutation: CaseIterable, Sendable { case graphics, devices }
+
+        for mutation in Mutation.allCases {
+            try withHarness("binding-substitution-\(mutation)") { manager, starter, _ in
+                let plans = MutablePlanStore()
+                let managerOperations = manager.resolvedLaunchCompatibilityOperations(
+                    for: .doryHypervisor
+                )
+                let mutatingOperations = MachineBackendCompatibilityOperations(
+                    authorizedStart: { binding in
+                        var changed = binding
+                        switch mutation {
+                        case .graphics:
+                            changed.graphics = .software
+                        case .devices:
+                            changed.devices.keyboard.toggle()
+                        }
+                        return try managerOperations.authorizedStart(changed)
+                    },
+                    stop: managerOperations.stop
+                )
+                let registry = try rawRegistry(operations: mutatingOperations)
+                let resolver = ClosureLaunchResolver { request in
+                    let resolution = try exactResolution(request: request)
+                    plans.set(resolution.resolvedPlan)
+                    return resolution
+                }
+                try manager.installResolvedLaunchInfrastructure(
+                    registry: registry,
+                    resolver: resolver,
+                    plans: plans,
+                    expectedPlanRevision: { _ in 1 }
+                )
+
+                #expect(throws: MachineManagerError.self) {
+                    _ = try manager.start(id: "dev")
+                }
+                #expect(starter.count == 0)
+            }
+        }
+    }
+
+    @Test("resolved raw-HV launch carries explicit graphics and device arguments")
+    func resolvedLaunchUsesExactHelperArguments() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "dory-resolved-arguments-\(UUID().uuidString)"
+        ).path
+        let helper = root + "/helper.sh"
+        let capture = root + "/arguments.txt"
+        try FileManager.default.createDirectory(atPath: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        try writeExecutable(
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > '\(capture)'\nsleep 30\n",
+            path: helper
+        )
+
+        try withHarness(
+            "exact-arguments",
+            acceleratedExecutablePath: helper,
+            passMachineArguments: true
+        ) { manager, starter, _ in
+            let plans = MutablePlanStore()
+            let operations = manager.resolvedLaunchCompatibilityOperations(for: .doryHypervisor)
+            let registry = try rawRegistry(operations: operations, executablePath: helper)
+            let helperSHA256 = try fileSHA256(path: helper)
+            let resolver = ClosureLaunchResolver { request in
+                let resolution = try exactResolution(
+                    request: request,
+                    componentSHA256: helperSHA256
+                )
+                plans.set(resolution.resolvedPlan)
+                return resolution
+            }
+            try manager.installResolvedLaunchInfrastructure(
+                registry: registry,
+                resolver: resolver,
+                plans: plans,
+                expectedPlanRevision: { _ in 1 }
+            )
+
+            _ = try manager.start(id: "dev")
+            #expect(starter.count == 1)
+            let deadline = Date().addingTimeInterval(2)
+            while !FileManager.default.fileExists(atPath: capture), Date() < deadline {
+                Thread.sleep(forTimeInterval: 0.01)
+            }
+            let arguments = try String(contentsOfFile: capture, encoding: .utf8)
+                .split(separator: "\n").map(String.init)
+            func value(after flag: String) throws -> String {
+                let index = try #require(arguments.firstIndex(of: flag))
+                return arguments[index + 1]
+            }
+            #expect(try value(after: "--resolved-graphics") == "host-accelerated-display")
+            let deviceData = Data(try value(after: "--resolved-devices").utf8)
+            #expect(try JSONDecoder().decode(
+                DoryVirtualMachineDeviceCapabilityRequest.self,
+                from: deviceData
+            ) == .minimumBootable)
+            #expect(arguments.contains("DORY_DESKTOP_GRAPHICS=virgl"))
+            #expect(arguments.contains("DORY_DESKTOP_VMM=accelerated"))
+            #expect(!arguments.contains("DORY_DESKTOP_GRAPHICS=auto"))
+        }
+    }
+
+    @Test("resolved installed-Linux launch rematerializes verified boot outputs after authorization")
+    func resolvedInstalledLinuxRevalidatesMaterializedOutputs() throws {
+        let root = try makeState("resolved-installed-linux")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let sourceBundle = root + "/source.boot"
+        let sourceDisk = root + "/source.raw"
+        let kernel = Data(repeating: 0x41, count: 8_192)
+        let initrd = Data(repeating: 0x42, count: 16_384)
+        try DoryInstalledLinuxBootBundle.write(
+            assets: DoryLinuxInstallerBootAssets(
+                kernel: kernel,
+                initrd: initrd,
+                kernelISOPath: "casper/vmlinuz",
+                initrdISOPath: "casper/initrd"
+            ),
+            rootDevice: "/dev/vda2",
+            toPath: sourceBundle
+        )
+        try Data(repeating: 0x31, count: 4_096).write(
+            to: URL(fileURLWithPath: sourceDisk)
+        )
+        let starter = CountingProcessStarter()
+        let manager = MachineManager(
+            configuration: MachineManagerConfiguration(
+                vmmExecutablePath: "/bin/sleep",
+                acceleratedDesktopExecutablePath: "/bin/sleep",
+                stateDirectory: root + "/machines",
+                baseArguments: ["30"],
+                acceleratedDesktopBaseArguments: ["30"],
+                passMachineArguments: false,
+                requiresReadyHandoff: false
+            ),
+            launchPolicy: .requireResolvedPlan,
+            processStarter: { process in try starter.start(process) }
+        )
+        defer {
+            _ = try? manager.stop(id: "installed")
+            _ = try? manager.delete(id: "installed")
+        }
+        _ = try manager.create(DoryMachineConfiguration(
+            id: "installed",
+            kernelPath: sourceBundle,
+            rootfsPath: sourceDisk,
+            bootMode: .efi,
+            memoryMB: 4_096,
+            cpuCount: 4,
+            displayMode: .desktop
+        ))
+        let state = root + "/machines/installed"
+        let directKernel = state + "/direct-kernel"
+        let directInitrd = state + "/direct-initrd"
+        let plans = MutablePlanStore()
+        let operations = manager.resolvedLaunchCompatibilityOperations(for: .doryHypervisor)
+        let registry = try rawRegistry(operations: operations)
+        let resolver = ClosureLaunchResolver { request in
+            let resolution = try exactResolution(
+                request: request,
+                preSpawnRevalidation: {
+                    try Data("stale-kernel".utf8).write(
+                        to: URL(fileURLWithPath: directKernel)
+                    )
+                    try Data("stale-initrd".utf8).write(
+                        to: URL(fileURLWithPath: directInitrd)
+                    )
+                }
+            )
+            plans.set(resolution.resolvedPlan)
+            return resolution
+        }
+        try manager.installResolvedLaunchInfrastructure(
+            registry: registry,
+            resolver: resolver,
+            plans: plans,
+            expectedPlanRevision: { _ in 1 }
+        )
+
+        _ = try manager.start(id: "installed")
+        #expect(starter.count == 1)
+        #expect(try Data(contentsOf: URL(fileURLWithPath: directKernel)) == kernel)
+        #expect(try Data(contentsOf: URL(fileURLWithPath: directInitrd)) == initrd)
+    }
+
     @Test("resolved snapshot disk capacity is bound to resource admission")
     func resolvedSnapshotRejectsSelfConsistentDifferentCapacityDisk() throws {
         try withHarness("snapshot-storage-evidence") { manager, _, state in
@@ -1055,6 +1243,7 @@ struct MachineManagerResolvedPlanIntegrationTests {
         _ label: String,
         launchPolicy: DoryMachineLaunchPolicy = .requireResolvedPlan,
         acceleratedExecutablePath: String? = "/bin/sleep",
+        passMachineArguments: Bool = false,
         _ body: (MachineManager, CountingProcessStarter, String) throws -> Void
     ) throws {
         let state = FileManager.default.temporaryDirectory
@@ -1068,7 +1257,7 @@ struct MachineManagerResolvedPlanIntegrationTests {
                 stateDirectory: state,
                 baseArguments: ["30"],
                 acceleratedDesktopBaseArguments: ["30"],
-                passMachineArguments: false,
+                passMachineArguments: passMachineArguments,
                 requiresReadyHandoff: false
             ),
             launchPolicy: launchPolicy,
@@ -1134,13 +1323,19 @@ struct MachineManagerResolvedPlanIntegrationTests {
                 RawHVLinuxMachineBackend.backendDescriptor.implementationIdentifier,
             backendRuntimeBuildIdentifier: runtime,
             virtualHardwareABIVersion: request.definition.virtualHardwareABIVersion,
-            bootMedia: DoryResolvedMachineBootMedia(
+        bootMedia: DoryResolvedMachineBootMedia(
                 resolverReference: DoryVMResolverReference(
                     namespace: "machine",
                     identifier: "dev-kernel"
                 ),
-                media: media
+            media: media
+        ),
+        launchArtifacts: resolvedBootLaunchArtifacts(
+            reference: DoryVMResolverReference(
+                namespace: "machine", identifier: "dev-kernel"
             ),
+            media: media
+        ),
             components: [DoryResolvedBackendComponentEvidence(
                 componentIdentifier: "dory-hv",
                 buildIdentifier: runtime,

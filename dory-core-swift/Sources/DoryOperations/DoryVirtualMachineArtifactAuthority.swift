@@ -551,7 +551,7 @@ public final class DoryVirtualMachineArtifactAuthority: @unchecked Sendable {
         }
         switch record.identity {
         case let .immutable(sha256, byteCount):
-            guard record.kind != .virtualDisk, Self.isSHA256(sha256), byteCount > 0 else {
+            guard Self.isSHA256(sha256), byteCount > 0 else {
                 throw DoryVirtualMachineArtifactAuthorityError.invalidRecord
             }
         case let .mutable(provenance, sha256, byteCount, _, _, _, _, _, _):

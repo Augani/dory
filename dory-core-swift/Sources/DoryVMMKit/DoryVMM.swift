@@ -45,6 +45,8 @@ public struct DoryVMMArguments: Sendable, Equatable {
     public var holdSeconds: UInt32?
     public var shares: [DoryMachineShareConfiguration] = []
     public var environment: [String: String] = [:]
+    public var resolvedGraphics: DoryGraphicsAccelerationLevel?
+    public var resolvedDevices: DoryVirtualMachineDeviceCapabilityRequest?
 
     public init() {}
 
@@ -69,6 +71,8 @@ public enum DoryVMMArgumentError: Error, Sendable, Equatable, CustomStringConver
     case invalidDisplayMode(String)
     case invalidMachineBootMode(String)
     case invalidEnvironment(String)
+    case invalidResolvedGraphics(String)
+    case invalidResolvedDevices(String)
 
     public var description: String {
         switch self {
@@ -96,6 +100,10 @@ public enum DoryVMMArgumentError: Error, Sendable, Equatable, CustomStringConver
             return "invalid --boot-mode (expected linux-kernel or efi): \(mode)"
         case let .invalidEnvironment(value):
             return "invalid --env value: \(value)"
+        case let .invalidResolvedGraphics(value):
+            return "invalid --resolved-graphics value: \(value)"
+        case let .invalidResolvedDevices(value):
+            return "invalid --resolved-devices value: \(value)"
         }
     }
 }
@@ -175,6 +183,22 @@ public func parseDoryVMMArguments(_ raw: [String]) throws -> DoryVMMArguments {
                 throw DoryVMMArgumentError.invalidEnvironment(key)
             }
             parsed.environment[key] = String(rawValue[rawValue.index(after: equals)...])
+        case "--resolved-graphics":
+            let rawValue = try value(after: argument, from: raw, index: &index)
+            guard let graphics = DoryGraphicsAccelerationLevel(rawValue: rawValue) else {
+                throw DoryVMMArgumentError.invalidResolvedGraphics(rawValue)
+            }
+            parsed.resolvedGraphics = graphics
+        case "--resolved-devices":
+            let rawValue = try value(after: argument, from: raw, index: &index)
+            do {
+                parsed.resolvedDevices = try JSONDecoder().decode(
+                    DoryVirtualMachineDeviceCapabilityRequest.self,
+                    from: Data(rawValue.utf8)
+                )
+            } catch {
+                throw DoryVMMArgumentError.invalidResolvedDevices(rawValue)
+            }
         case "--exit-after-handoff":
             parsed.exitAfterHandoff = true
         case "--handoff-only":
@@ -224,6 +248,8 @@ public struct DoryVZMachineSpec: Sendable, Equatable {
     public var kernelCommandLine: String?
     public var shares: [DoryMachineShareConfiguration]
     public var environment: [String: String]
+    public var resolvedGraphics: DoryGraphicsAccelerationLevel?
+    public var resolvedDevices: DoryVirtualMachineDeviceCapabilityRequest?
     public var dockerDataDiskPath: String?
     public var nativeIPv6: Bool
     public var sourcePreservingLAN: Bool
@@ -242,6 +268,8 @@ public struct DoryVZMachineSpec: Sendable, Equatable {
         kernelCommandLine: String? = nil,
         shares: [DoryMachineShareConfiguration] = [],
         environment: [String: String] = [:],
+        resolvedGraphics: DoryGraphicsAccelerationLevel? = nil,
+        resolvedDevices: DoryVirtualMachineDeviceCapabilityRequest? = nil,
         dockerDataDiskPath: String? = nil,
         nativeIPv6: Bool = false,
         sourcePreservingLAN: Bool = false,
@@ -259,6 +287,8 @@ public struct DoryVZMachineSpec: Sendable, Equatable {
         self.kernelCommandLine = kernelCommandLine
         self.shares = shares
         self.environment = environment
+        self.resolvedGraphics = resolvedGraphics
+        self.resolvedDevices = resolvedDevices
         self.dockerDataDiskPath = dockerDataDiskPath
         self.nativeIPv6 = nativeIPv6
         self.sourcePreservingLAN = sourcePreservingLAN
@@ -333,6 +363,38 @@ public enum DoryVZConfigurationBuilder {
             throw DoryVZMachineError.missingFile(spec.rootfsPath)
         }
 
+        if let graphics = spec.resolvedGraphics {
+            let expected: DoryGraphicsAccelerationLevel = spec.displayMode == .desktop
+                ? .hostAcceleratedDisplay : .none
+            guard graphics == expected else {
+                throw DoryVZMachineError.validation(
+                    "resolved graphics \(graphics.rawValue) cannot be represented by this VZ launch"
+                )
+            }
+        }
+        if let devices = spec.resolvedDevices {
+            guard devices.networkAttachment == .sharedNAT,
+                  !devices.clockSynchronization,
+                  !devices.dynamicDisplay,
+                  !devices.gracefulShutdown else {
+                throw DoryVZMachineError.validation(
+                    "resolved device contract contains a device not implemented by this VZ launch"
+                )
+            }
+            guard devices.directorySharing == !spec.shares.isEmpty else {
+                throw DoryVZMachineError.validation(
+                    "resolved directory-sharing contract does not match the launch shares"
+                )
+            }
+            if spec.displayMode != .desktop,
+               devices.audioInput || devices.audioOutput || devices.keyboard
+                    || devices.pointer || devices.clipboard {
+                throw DoryVZMachineError.validation(
+                    "resolved desktop devices cannot be attached to a headless VZ launch"
+                )
+            }
+        }
+
         let configuration = VZVirtualMachineConfiguration()
         switch spec.bootMode {
         case .linuxKernel:
@@ -376,38 +438,51 @@ public enum DoryVZConfigurationBuilder {
         configuration.networkDevices = [network]
 
         if spec.displayMode == .desktop {
+            let devices = spec.resolvedDevices
             let graphics = VZVirtioGraphicsDeviceConfiguration()
             graphics.scanouts = [VZVirtioGraphicsScanoutConfiguration(
                 widthInPixels: DoryVMMDisplayDefaults.widthInPixels,
                 heightInPixels: DoryVMMDisplayDefaults.heightInPixels
             )]
             configuration.graphicsDevices = [graphics]
-            configuration.keyboards = [VZUSBKeyboardConfiguration()]
-            configuration.pointingDevices = [VZUSBScreenCoordinatePointingDeviceConfiguration()]
+            if devices?.keyboard != false {
+                configuration.keyboards = [VZUSBKeyboardConfiguration()]
+            }
+            if devices?.pointer != false {
+                configuration.pointingDevices = [VZUSBScreenCoordinatePointingDeviceConfiguration()]
+            }
 
-            let output = VZVirtioSoundDeviceOutputStreamConfiguration()
-            output.sink = VZHostAudioOutputStreamSink()
-            let outputSound = VZVirtioSoundDeviceConfiguration()
-            outputSound.streams = [output]
+            var audioDevices = [VZVirtioSoundDeviceConfiguration]()
+            if devices?.audioOutput != false {
+                let output = VZVirtioSoundDeviceOutputStreamConfiguration()
+                output.sink = VZHostAudioOutputStreamSink()
+                let outputSound = VZVirtioSoundDeviceConfiguration()
+                outputSound.streams = [output]
+                audioDevices.append(outputSound)
+            }
+            if devices?.audioInput != false {
+                let input = VZVirtioSoundDeviceInputStreamConfiguration()
+                input.source = VZHostAudioInputStreamSource()
+                let inputSound = VZVirtioSoundDeviceConfiguration()
+                inputSound.streams = [input]
+                audioDevices.append(inputSound)
+            }
+            configuration.audioDevices = audioDevices
 
-            let input = VZVirtioSoundDeviceInputStreamConfiguration()
-            input.source = VZHostAudioInputStreamSource()
-            let inputSound = VZVirtioSoundDeviceConfiguration()
-            inputSound.streams = [input]
-            configuration.audioDevices = [outputSound, inputSound]
-
-            let console = VZVirtioConsoleDeviceConfiguration()
-            let spiceAgent = VZVirtioConsolePortConfiguration()
-            spiceAgent.name = VZSpiceAgentPortAttachment.spiceAgentPortName
-            let spiceAttachment = VZSpiceAgentPortAttachment()
-            // The native SPICE bridge has only an all-or-nothing switch. Keep it for the efficient
-            // bidirectional default; directional policies use Dory's agent-backed bridge instead.
-            spiceAttachment.sharesClipboard = DoryDesktopClipboardPolicy(
-                environment: spec.environment
-            ) == .bidirectional
-            spiceAgent.attachment = spiceAttachment
-            console.ports[0] = spiceAgent
-            configuration.consoleDevices = [console]
+            if devices?.clipboard != false {
+                let console = VZVirtioConsoleDeviceConfiguration()
+                let spiceAgent = VZVirtioConsolePortConfiguration()
+                spiceAgent.name = VZSpiceAgentPortAttachment.spiceAgentPortName
+                let spiceAttachment = VZSpiceAgentPortAttachment()
+                // The native SPICE bridge has only an all-or-nothing switch. Keep it for the efficient
+                // bidirectional default; directional policies use Dory's agent-backed bridge instead.
+                spiceAttachment.sharesClipboard = DoryDesktopClipboardPolicy(
+                    environment: spec.environment
+                ) == .bidirectional
+                spiceAgent.attachment = spiceAttachment
+                console.ports[0] = spiceAgent
+                configuration.consoleDevices = [console]
+            }
         }
 
         var dockerDataDiskPath: String?
@@ -442,7 +517,10 @@ public enum DoryVZConfigurationBuilder {
             )
             directoryShares = [bootConfigShare] + spec.shares
         }
-        configuration.directorySharingDevices = try directoryShares.map { share in
+        let attachedDirectoryShares = spec.resolvedDevices?.directorySharing == false
+            ? directoryShares.filter { $0.tag == bootConfigTag }
+            : directoryShares
+        configuration.directorySharingDevices = try attachedDirectoryShares.map { share in
             try share.validate()
             var isDirectory: ObjCBool = false
             guard fileManager.fileExists(atPath: share.hostPath, isDirectory: &isDirectory),
@@ -836,6 +914,8 @@ public enum DoryVMMMain {
                 readyTimeoutSeconds: arguments.readyTimeoutSeconds,
                 shares: arguments.shares,
                 environment: arguments.environment,
+                resolvedGraphics: arguments.resolvedGraphics,
+                resolvedDevices: arguments.resolvedDevices,
                 gvproxyPath: arguments.gvproxyPath,
                 sshAgentSocketPath: arguments.sshAgentSocketPath,
                 publishHost: arguments.publishHost,
@@ -866,7 +946,8 @@ public enum DoryVMMMain {
                         try DoryVMMDesktopApplication.run(
                             runtime: runtime,
                             machineID: machineID,
-                            environment: arguments.environment
+                            environment: arguments.environment,
+                            resolvedDevices: arguments.resolvedDevices
                         )
                     }
                 } else {
@@ -923,6 +1004,8 @@ public enum DoryVMMMain {
         readyTimeoutSeconds: TimeInterval,
         shares: [DoryMachineShareConfiguration],
         environment: [String: String],
+        resolvedGraphics: DoryGraphicsAccelerationLevel?,
+        resolvedDevices: DoryVirtualMachineDeviceCapabilityRequest?,
         gvproxyPath: String?,
         sshAgentSocketPath: String?,
         publishHost: String,
@@ -1014,6 +1097,8 @@ public enum DoryVMMMain {
             kernelCommandLine: kernelCommandLine,
             shares: shares,
             environment: environment,
+            resolvedGraphics: resolvedGraphics,
+            resolvedDevices: resolvedDevices,
             dockerDataDiskPath: dataDrive?.engineDataDiskPath,
             nativeIPv6: gvproxyNetwork != nil,
             sourcePreservingLAN: sourcePreservingLANClient != nil,

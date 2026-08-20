@@ -14,6 +14,9 @@ struct DoryDaemonVirtualMachineRuntimePlanningTests {
         #expect(result.resolvedPlan.definitionSHA256
             == DoryDaemonVirtualMachinePlanningCoordinator.sha256(fixture.canonicalDefinition))
         #expect(result.resolvedPlanSHA256.count == 64)
+        #expect(result.resolvedPlan.launchArtifacts.count == 2)
+        #expect(result.resolvedPlan.launchArtifacts.flatMap(\.usages).map(\.kind)
+            == [.storage, .boot])
         #expect(result.backendPlan.backend.identity == .doryHypervisor)
         #expect(try fixture.store.read(id: fixture.definition.identity.id) == result.resolvedPlan)
     }
@@ -121,6 +124,33 @@ struct DoryDaemonVirtualMachineRuntimePlanningTests {
             #expect(failure.revalidationIssues.contains {
                 $0.code == .backendRuntimeBuildMismatch
             })
+        }
+    }
+
+    @Test("changed storage authority rejects start evidence")
+    func storageEvidenceMismatch() throws {
+        let fixture = try Fixture()
+        let planned = try fixture.coordinator.resolveAndPersist(fixture.planningRequest())
+        var evidence = DoryResolvedMachineRuntimeEvidence(plan: planned.resolvedPlan)
+        evidence.launchArtifacts[0].authorityRevision += 1
+        let collector = FixtureEvidenceCollector(collection:
+            DoryDaemonVirtualMachineStartEvidenceCollection(
+                capability: planned.plannerResult.selectedDescriptor!,
+                runtimeEvidence: evidence
+            ))
+        let resolver = DoryDaemonVirtualMachineLaunchPlanResolver(
+            registry: fixture.registry,
+            plans: fixture.store,
+            evidenceCollector: collector
+        )
+
+        #expect(throws: DoryDaemonVirtualMachineLaunchPlanFailure.self) {
+            _ = try resolver.resolve(DoryDaemonVirtualMachineLaunchPlanRequest(
+                definition: fixture.definition,
+                canonicalDefinitionData: fixture.canonicalDefinition,
+                machine: fixture.machine,
+                expectedPlanRevision: planned.resolvedPlan.planRevision
+            ))
         }
     }
 
@@ -262,6 +292,18 @@ private struct Fixture {
         let snapshot = DoryDaemonVirtualMachineTrustedInventorySnapshot(
             hostFacts: hostFacts(),
             media: DoryDaemonVirtualMachineResolvedMedia(reference: bootArtifact, media: media),
+            launchArtifacts: [
+                resolvedMutableStorageLaunchArtifact(
+                    reference: diskArtifact,
+                    source: .userProvided,
+                    identifier: "system-disk"
+                ),
+                resolvedBootLaunchArtifacts(
+                    reference: bootArtifact,
+                    media: media,
+                    identifier: "system"
+                )[0],
+            ],
             backendRuntimes: [DoryDaemonVirtualMachineBackendRuntimeInventory(
                 backend: .doryHypervisor,
                 runtimeBuildIdentifier: "raw-runtime-1",

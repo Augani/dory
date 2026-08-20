@@ -436,6 +436,8 @@ case "desktop":
     var cpus = 6
     var shares = [DoryMachineShareConfiguration]()
     var environment = [String: String]()
+    var resolvedGraphics: DoryGraphicsAccelerationLevel?
+    var resolvedDevices: DoryVirtualMachineDeviceCapabilityRequest?
     var iterator = arguments.dropFirst().makeIterator()
     while let argument = iterator.next() {
         switch argument {
@@ -463,6 +465,22 @@ case "desktop":
                 fail("desktop --env requires KEY=VALUE")
             }
             environment[String(value[..<equals])] = String(value[value.index(after: equals)...])
+        case "--resolved-graphics":
+            guard let value = iterator.next(),
+                  let graphics = DoryGraphicsAccelerationLevel(rawValue: value) else {
+                fail("desktop --resolved-graphics requires an exact supported level")
+            }
+            resolvedGraphics = graphics
+        case "--resolved-devices":
+            guard let value = iterator.next(),
+                  let data = value.data(using: .utf8),
+                  let devices = try? JSONDecoder().decode(
+                      DoryVirtualMachineDeviceCapabilityRequest.self,
+                      from: data
+                  ) else {
+                fail("desktop --resolved-devices requires a valid device contract")
+            }
+            resolvedDevices = devices
         case "--display-mode":
             guard iterator.next() == "desktop" else { fail("raw-HV desktop requires --display-mode desktop") }
         case "--boot-mode":
@@ -501,7 +519,9 @@ case "desktop":
             memoryMB: memoryMB,
             cpuCount: cpus,
             shares: shares,
-            environment: environment
+            environment: environment,
+            resolvedGraphics: resolvedGraphics,
+            resolvedDevices: resolvedDevices
         ))
     } catch {
         fail("desktop failed: \(error)")

@@ -240,6 +240,30 @@ final class DoryVMMKitTests: XCTestCase {
         }
     }
 
+    func testParsesExactResolvedLaunchContract() throws {
+        let devices = DoryVirtualMachineDeviceCapabilityRequest(
+            audioOutput: true,
+            keyboard: true,
+            pointer: true
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let encodedDevices = String(decoding: try encoder.encode(devices), as: UTF8.self)
+        let arguments = try parseDoryVMMArguments([
+            "--resolved-graphics", "host-accelerated-display",
+            "--resolved-devices", encodedDevices,
+        ])
+
+        XCTAssertEqual(arguments.resolvedGraphics, .hostAcceleratedDisplay)
+        XCTAssertEqual(arguments.resolvedDevices, devices)
+        XCTAssertThrowsError(try parseDoryVMMArguments([
+            "--resolved-graphics", "auto",
+        ]))
+        XCTAssertThrowsError(try parseDoryVMMArguments([
+            "--resolved-devices", "{}",
+        ]))
+    }
+
     func testRejectsInvalidDisplayModeArgument() throws {
         XCTAssertThrowsError(try parseDoryVMMArguments([
             "--display-mode", "gui",
@@ -575,6 +599,67 @@ final class DoryVMMKitTests: XCTestCase {
         )
         XCTAssertEqual(desktopShare.tag, "desktop-share")
         XCTAssertFalse(FileManager.default.fileExists(atPath: "\(base)/dorycfg"))
+    }
+
+    func testResolvedVZContractControlsAttachedDesktopDevices() throws {
+        let base = "/tmp/dory-vmm-resolved-devices-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let kernel = "\(base)/vmlinux"
+        let rootfs = "\(base)/rootfs.raw"
+        FileManager.default.createFile(
+            atPath: kernel,
+            contents: Data([0x7f, 0x45, 0x4c, 0x46])
+        )
+        FileManager.default.createFile(atPath: rootfs, contents: nil)
+        XCTAssertEqual(truncate(rootfs, 1024 * 1024), 0)
+        let devices = DoryVirtualMachineDeviceCapabilityRequest(
+            audioInput: false,
+            audioOutput: true,
+            keyboard: true,
+            pointer: false,
+            directorySharing: false,
+            clipboard: false,
+            clockSynchronization: false,
+            dynamicDisplay: false,
+            gracefulShutdown: false
+        )
+        let configuration = try DoryVZConfigurationBuilder.makeConfiguration(
+            spec: DoryVZMachineSpec(
+                machineID: "resolved-desktop",
+                stateDirectory: base,
+                kernelPath: kernel,
+                rootfsPath: rootfs,
+                memoryMB: 4096,
+                cpuCount: 4,
+                displayMode: .desktop,
+                resolvedGraphics: .hostAcceleratedDisplay,
+                resolvedDevices: devices
+            ),
+            serialOutput: nil
+        )
+
+        XCTAssertEqual(configuration.graphicsDevices.count, 1)
+        XCTAssertEqual(configuration.keyboards.count, 1)
+        XCTAssertTrue(configuration.pointingDevices.isEmpty)
+        XCTAssertEqual(configuration.audioDevices.count, 1)
+        XCTAssertTrue(configuration.consoleDevices.isEmpty)
+        XCTAssertTrue(configuration.directorySharingDevices.isEmpty)
+
+        XCTAssertThrowsError(try DoryVZConfigurationBuilder.makeConfiguration(
+            spec: DoryVZMachineSpec(
+                machineID: "resolved-desktop",
+                stateDirectory: base,
+                kernelPath: kernel,
+                rootfsPath: rootfs,
+                memoryMB: 4096,
+                cpuCount: 4,
+                displayMode: .desktop,
+                resolvedGraphics: .hardwareAccelerated3D,
+                resolvedDevices: devices
+            ),
+            serialOutput: nil
+        ))
     }
 
     func testDockerVZConfigurationAttachesPersistentDataDisk() throws {

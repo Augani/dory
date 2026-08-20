@@ -93,6 +93,49 @@ struct DoryDaemonVirtualMachineProductionPlanningCompositionTests {
         #expect(try context.resourceLedger.snapshot().leases.count == 2)
     }
 
+    @Test("production recovery replays only the exact private machine authority")
+    func productionRecoveryReplaysExactMachineAuthority() throws {
+        let machineID = "production-recovery-a"
+        let fixture = try CompositionFixture(ids: [machineID])
+        try fixture.interrupt(machineID, at: .planBindingCommitted)
+        try fixture.writeMachineAuthority(machineID)
+
+        let provider = DoryDaemonVirtualMachineProductionRecoveryProvider(
+            stateDirectory: fixture.root
+        )
+        let context = try readyContext(fixture.factory(
+            recoveryProvider: provider
+        ).resolve())
+
+        #expect(context.recoveredTransactionIDs.keys.sorted() == [machineID])
+        #expect(try context.plans.read(id: machineID).machineID == machineID)
+    }
+
+    @Test("stale private machine authority cannot replay a durable journal")
+    func staleProductionMachineAuthorityFailsClosed() throws {
+        let machineID = "stale-production-recovery-b"
+        let fixture = try CompositionFixture(ids: [machineID])
+        try fixture.interrupt(machineID, at: .planBindingCommitted)
+        try fixture.writeMachineAuthority(machineID) { machine in
+            machine.cpuCount += 1
+        }
+
+        let provider = DoryDaemonVirtualMachineProductionRecoveryProvider(
+            stateDirectory: fixture.root
+        )
+        guard case let .unavailable(failure) = fixture.factory(
+            recoveryProvider: provider
+        ).resolve() else {
+            Issue.record("Expected stale private authority to fail closed")
+            return
+        }
+        #expect(failure.code == .recoveryFailed)
+        #expect(failure.machineID == machineID)
+        #expect(throws: DoryResolvedMachinePlanRepositoryError.self) {
+            _ = try fixture.plans.read(id: machineID)
+        }
+    }
+
     private func readyContext(
         _ readiness: DoryDaemonVirtualMachineProductionPlanningReadiness
     ) throws -> DoryDaemonVirtualMachineProductionPlanningContext {
@@ -157,19 +200,49 @@ private final class CompositionFixture: @unchecked Sendable {
 
     func factory(
         hasMutationAuthority: Bool = true,
-        hasRecoveryProvider: Bool = true
+        hasRecoveryProvider: Bool = true,
+        recoveryProvider:
+            (any DoryDaemonVirtualMachinePlanningRecoveryProviding)? = nil
     ) -> DoryDaemonVirtualMachineProductionPlanningCompositionFactory {
+        let selectedRecovery: (any DoryDaemonVirtualMachinePlanningRecoveryProviding)?
+        if hasRecoveryProvider {
+            selectedRecovery = recoveryProvider ?? recovery
+        } else {
+            selectedRecovery = nil
+        }
         return DoryDaemonVirtualMachineProductionPlanningCompositionFactory(
             stateDirectory: root,
             backends: [backend],
             mutationAuthority: hasMutationAuthority ? authorizer : nil,
-            recoveryProvider: hasRecoveryProvider ? recovery : nil,
+            recoveryProvider: selectedRecovery,
             capabilityPlanner: CompositionCapabilityPlanner(),
             inventoryBuilder: { [trust] artifactAuthority, resourceLedger in
                 _ = artifactAuthority
                 _ = resourceLedger
                 return trust
             }
+        )
+    }
+
+    func writeMachineAuthority(
+        _ id: String,
+        mutate: (inout DoryMachineConfiguration) -> Void = { _ in }
+    ) throws {
+        var machine = try #require(requests[id]).planning.machine
+        mutate(&machine)
+        let directory = root + "/" + id
+        try FileManager.default.createDirectory(
+            atPath: directory,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        let path = directory + "/machine.json"
+        try encoder.encode(machine).write(to: URL(fileURLWithPath: path))
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600],
+            ofItemAtPath: path
         )
     }
 
@@ -288,6 +361,18 @@ private final class CompositionFixture: @unchecked Sendable {
             media: DoryDaemonVirtualMachineResolvedMedia(
                 reference: mediaReference, media: media
             ),
+            launchArtifacts: [
+                resolvedMutableStorageLaunchArtifact(
+                    reference: diskReference,
+                    source: .userProvided,
+                    identifier: "system-disk"
+                ),
+                resolvedBootLaunchArtifacts(
+                    reference: mediaReference,
+                    media: media,
+                    identifier: "system"
+                )[0],
+            ],
             backendRuntimes: [DoryDaemonVirtualMachineBackendRuntimeInventory(
                 backend: .doryHypervisor,
                 runtimeBuildIdentifier: "raw-runtime-1",
@@ -375,11 +460,15 @@ private final class CompositionRecovery:
     var requestedIDs: [String] { lock.withLock { storage } }
 
     func recoveryRequest(
-        for machineID: String
+        for descriptor: DoryDaemonVirtualMachinePlanningRecoveryDescriptor
     ) throws -> DoryDaemonVirtualMachinePlanningTransactionRequest? {
+        let machineID = descriptor.machineID
         lock.withLock { storage.append(machineID) }
         events.append("recovery:\(machineID)")
-        return requests[machineID]
+        guard let request = requests[machineID], descriptor.matches(request) else {
+            return nil
+        }
+        return request
     }
 }
 

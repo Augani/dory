@@ -12,7 +12,7 @@ public struct DoryResolvedBackendComponentEvidence: Codable, Sendable, Equatable
     public var buildIdentifier: String
     public var artifactSHA256: String
 
-    public init(
+    init(
         componentIdentifier: String,
         buildIdentifier: String,
         artifactSHA256: String
@@ -31,7 +31,7 @@ public struct DoryResolvedMachineBootMedia: Codable, Sendable, Equatable, Hashab
     public var inspectionEvidence: DoryBootMediaInspectionAuditEvidence?
     public var mutableProvenanceEvidence: DoryMutableBootMediaProvenanceAuditEvidence?
 
-    public init(
+    init(
         resolverReference: DoryVMResolverReference?,
         media: DoryBootMedia,
         inspectionEvidence: DoryBootMediaInspectionAuditEvidence? = nil,
@@ -40,6 +40,61 @@ public struct DoryResolvedMachineBootMedia: Codable, Sendable, Equatable, Hashab
         self.resolverReference = resolverReference
         self.media = media
         self.inspectionEvidence = inspectionEvidence
+        self.mutableProvenanceEvidence = mutableProvenanceEvidence
+    }
+}
+
+public enum DoryResolvedMachineLaunchArtifactUsageKind:
+    String, Codable, Sendable, Equatable, Hashable
+{
+    case boot
+    case storage
+    case firmware
+}
+
+/// One launch-time use of an artifact. Keeping the stable desired-state identifier makes a plan
+/// auditable without persisting any host path.
+public struct DoryResolvedMachineLaunchArtifactUsage:
+    Codable, Sendable, Equatable, Hashable
+{
+    public var kind: DoryResolvedMachineLaunchArtifactUsageKind
+    public var identifier: String
+    public var readOnly: Bool
+
+    public init(
+        kind: DoryResolvedMachineLaunchArtifactUsageKind,
+        identifier: String,
+        readOnly: Bool
+    ) {
+        self.kind = kind
+        self.identifier = identifier
+        self.readOnly = readOnly
+    }
+}
+
+/// Exact, path-free authority for every artifact whose bytes can influence launch. Immutable
+/// artifacts carry a content digest in `media`; mutable disks carry a daemon-issued provenance
+/// revision and receipt. `authorityRevision` binds the exact private resolver publication.
+public struct DoryResolvedMachineLaunchArtifact:
+    Codable, Sendable, Equatable, Hashable
+{
+    public var resolverReference: DoryVMResolverReference
+    public var media: DoryBootMedia
+    public var authorityRevision: UInt64
+    public var usages: [DoryResolvedMachineLaunchArtifactUsage]
+    public var mutableProvenanceEvidence: DoryMutableBootMediaProvenanceAuditEvidence?
+
+    public init(
+        resolverReference: DoryVMResolverReference,
+        media: DoryBootMedia,
+        authorityRevision: UInt64,
+        usages: [DoryResolvedMachineLaunchArtifactUsage],
+        mutableProvenanceEvidence: DoryMutableBootMediaProvenanceAuditEvidence? = nil
+    ) {
+        self.resolverReference = resolverReference
+        self.media = media
+        self.authorityRevision = authorityRevision
+        self.usages = usages
         self.mutableProvenanceEvidence = mutableProvenanceEvidence
     }
 }
@@ -401,6 +456,7 @@ public enum DoryResolvedMachinePlanValidationCode: String, Codable, Sendable, Ha
     case invalidResolverReference = "invalid-resolver-reference"
     case invalidMediaBinding = "invalid-media-binding"
     case invalidMediaEvidence = "invalid-media-evidence"
+    case invalidLaunchArtifactEvidence = "invalid-launch-artifact-evidence"
     case unsupportedRuntimeCombination = "unsupported-runtime-combination"
     case duplicateComponent = "duplicate-component"
     case unorderedComponents = "unordered-components"
@@ -435,7 +491,7 @@ public struct DoryResolvedMachinePlanValidationIssue: Codable, Sendable, Equatab
 /// decision or non-secret audit reference and is replaced whenever any bound evidence changes.
 public struct DoryResolvedMachinePlan: Codable, Sendable, Equatable, Hashable {
     public static let oldestSupportedSchemaVersion: UInt16 = 1
-    public static let currentSchemaVersion: UInt16 = 2
+    public static let currentSchemaVersion: UInt16 = 3
 
     public var schemaVersion: UInt16
     public var sourceSchemaVersion: UInt16
@@ -452,6 +508,7 @@ public struct DoryResolvedMachinePlan: Codable, Sendable, Equatable, Hashable {
     public var backendRuntimeBuildIdentifier: String
     public var virtualHardwareABIVersion: UInt16
     public var bootMedia: DoryResolvedMachineBootMedia
+    public var launchArtifacts: [DoryResolvedMachineLaunchArtifact]
     public var components: [DoryResolvedBackendComponentEvidence]
     public var devices: DoryVirtualMachineDeviceCapabilityRequest
     public var graphics: DoryGraphicsAccelerationLevel
@@ -475,6 +532,7 @@ public struct DoryResolvedMachinePlan: Codable, Sendable, Equatable, Hashable {
         backendRuntimeBuildIdentifier: String,
         virtualHardwareABIVersion: UInt16,
         bootMedia: DoryResolvedMachineBootMedia,
+        launchArtifacts: [DoryResolvedMachineLaunchArtifact],
         components: [DoryResolvedBackendComponentEvidence],
         devices: DoryVirtualMachineDeviceCapabilityRequest,
         graphics: DoryGraphicsAccelerationLevel,
@@ -500,6 +558,7 @@ public struct DoryResolvedMachinePlan: Codable, Sendable, Equatable, Hashable {
         self.backendRuntimeBuildIdentifier = backendRuntimeBuildIdentifier
         self.virtualHardwareABIVersion = virtualHardwareABIVersion
         self.bootMedia = bootMedia
+        self.launchArtifacts = launchArtifacts
         self.components = components
         self.devices = devices
         self.graphics = graphics
@@ -523,6 +582,7 @@ public struct DoryResolvedMachinePlan: Codable, Sendable, Equatable, Hashable {
         backendDescriptor: MachineBackendDescriptor,
         backendRuntimeBuildIdentifier: String,
         resolverReference: DoryVMResolverReference?,
+        launchArtifacts: [DoryResolvedMachineLaunchArtifact],
         components: [DoryResolvedBackendComponentEvidence],
         resourceAdmission: DoryResolvedMachineResourceAdmissionEvidence,
         hostQualification: DoryResolvedHostQualificationEvidence,
@@ -570,6 +630,7 @@ public struct DoryResolvedMachinePlan: Codable, Sendable, Equatable, Hashable {
                 inspectionEvidence: selectedCapability.bootMediaInspectionEvidence,
                 mutableProvenanceEvidence: selectedCapability.mutableBootMediaProvenanceEvidence
             ),
+            launchArtifacts: launchArtifacts,
             components: components,
             devices: selectedCapability.request.devices,
             graphics: selectedCapability.request.graphics,
@@ -605,6 +666,7 @@ public struct DoryResolvedMachinePlan: Codable, Sendable, Equatable, Hashable {
         case backendRuntimeBuildID
         case virtualHardwareABIVersion
         case bootMedia
+        case launchArtifacts
         case components
         case componentDigests
         case devices
@@ -652,6 +714,7 @@ public struct DoryResolvedMachinePlan: Codable, Sendable, Equatable, Hashable {
                 resolverReference: nil,
                 media: try container.decode(DoryBootMedia.self, forKey: .bootMedia)
             )
+            launchArtifacts = []
             let legacyDigests = try container.decode(
                 [String: String].self,
                 forKey: .componentDigests
@@ -674,16 +737,14 @@ public struct DoryResolvedMachinePlan: Codable, Sendable, Equatable, Hashable {
             resourceAdmission = nil
             hostQualification = nil
             experimentalAuthorization = nil
-        case Self.currentSchemaVersion:
-            schemaVersion = persistedSchema
-            sourceSchemaVersion = try container.decodeIfPresent(
-                UInt16.self,
-                forKey: .sourceSchemaVersion
-            ) ?? persistedSchema
-            migrationDisposition = try container.decode(
-                DoryResolvedMachinePlanMigrationDisposition.self,
-                forKey: .migrationDisposition
-            )
+        case 2, Self.currentSchemaVersion:
+            schemaVersion = Self.currentSchemaVersion
+            sourceSchemaVersion = persistedSchema
+            migrationDisposition = persistedSchema == Self.currentSchemaVersion
+                ? try container.decode(
+                    DoryResolvedMachinePlanMigrationDisposition.self,
+                    forKey: .migrationDisposition
+                ) : .requiresReplanning
             machineID = try container.decode(String.self, forKey: .machineID)
             definitionRevision = try container.decode(UInt64.self, forKey: .definitionRevision)
             definitionSHA256 = try container.decodeIfPresent(String.self, forKey: .definitionSHA256)
@@ -711,6 +772,11 @@ public struct DoryResolvedMachinePlan: Codable, Sendable, Equatable, Hashable {
                 forKey: .virtualHardwareABIVersion
             )
             bootMedia = try container.decode(DoryResolvedMachineBootMedia.self, forKey: .bootMedia)
+            launchArtifacts = persistedSchema == Self.currentSchemaVersion
+                ? try container.decode(
+                    [DoryResolvedMachineLaunchArtifact].self,
+                    forKey: .launchArtifacts
+                ) : []
             components = try container.decode(
                 [DoryResolvedBackendComponentEvidence].self,
                 forKey: .components
@@ -767,6 +833,7 @@ public struct DoryResolvedMachinePlan: Codable, Sendable, Equatable, Hashable {
         try container.encode(backendRuntimeBuildIdentifier, forKey: .backendRuntimeBuildIdentifier)
         try container.encode(virtualHardwareABIVersion, forKey: .virtualHardwareABIVersion)
         try container.encode(bootMedia, forKey: .bootMedia)
+        try container.encode(launchArtifacts, forKey: .launchArtifacts)
         try container.encode(components, forKey: .components)
         try container.encode(devices, forKey: .devices)
         try container.encode(graphics, forKey: .graphics)
@@ -812,6 +879,7 @@ public struct DoryResolvedMachinePlan: Codable, Sendable, Equatable, Hashable {
         }
 
         validateBootMedia(into: &issues)
+        validateLaunchArtifacts(into: &issues)
         validateComponents(into: &issues)
         validateQualifications(into: &issues)
         validateResourceAdmission(into: &issues)
@@ -887,6 +955,85 @@ public struct DoryResolvedMachinePlan: Codable, Sendable, Equatable, Hashable {
         } else if mutable != nil {
             add(.invalidMediaEvidence, "bootMedia.mutableProvenanceEvidence")
         }
+    }
+
+    private func validateLaunchArtifacts(
+        into issues: inout [DoryResolvedMachinePlanValidationIssue]
+    ) {
+        func add(_ field: String) {
+            issues.append(DoryResolvedMachinePlanValidationIssue(
+                code: .invalidLaunchArtifactEvidence,
+                field: field
+            ))
+        }
+        guard !launchArtifacts.isEmpty else {
+            add("launchArtifacts")
+            return
+        }
+        let ordered = launchArtifacts.sorted { lhs, rhs in
+            let left = lhs.resolverReference.namespace + "\0"
+                + lhs.resolverReference.identifier
+            let right = rhs.resolverReference.namespace + "\0"
+                + rhs.resolverReference.identifier
+            return left < right
+        }
+        if ordered != launchArtifacts { add("launchArtifacts") }
+
+        var references: Set<DoryVMResolverReference> = []
+        var bootBindingIsPresent = false
+        for (index, artifact) in launchArtifacts.enumerated() {
+            let field = "launchArtifacts[\(index)]"
+            guard Self.isSafeResolverReference(artifact.resolverReference),
+                  references.insert(artifact.resolverReference).inserted,
+                  artifact.authorityRevision > 0,
+                  !artifact.usages.isEmpty else {
+                add(field)
+                continue
+            }
+            let usages = artifact.usages.sorted {
+                ($0.kind.rawValue, $0.identifier) < ($1.kind.rawValue, $1.identifier)
+            }
+            if usages != artifact.usages
+                || Set(usages.map { $0.kind.rawValue + "\0" + $0.identifier }).count
+                    != usages.count
+                || usages.contains(where: { !Self.isSafeIdentifier($0.identifier) }) {
+                add("\(field).usages")
+            }
+
+            let immutable = artifact.media.artifactSHA256
+            let mutable = artifact.media.mutableProvenance
+            let identityIsValid = (immutable.map(Self.isSHA256) ?? false)
+                != (mutable != nil)
+            if !identityIsValid { add("\(field).media") }
+            if let evidence = artifact.mutableProvenanceEvidence {
+                if mutable == nil
+                    || evidence.provenance != mutable
+                    || !Self.isSafeEvidenceIdentifier(evidence.receiptIdentity)
+                    || !Self.isSHA256(evidence.receiptSHA256)
+                    || !Self.isSafeEvidenceIdentifier(evidence.resolverID)
+                    || evidence.resolverVersion == 0 {
+                    add("\(field).mutableProvenanceEvidence")
+                }
+            } else if mutable != nil {
+                add("\(field).mutableProvenanceEvidence")
+            }
+            if mutable != nil && artifact.media.kind != .virtualDisk {
+                add("\(field).media.kind")
+            }
+            for usage in artifact.usages where usage.kind == .storage {
+                if artifact.media.kind != .virtualDisk
+                    || (usage.readOnly && immutable == nil)
+                    || (!usage.readOnly && mutable == nil) {
+                    add("\(field).usages")
+                }
+            }
+            if artifact.usages.contains(where: { $0.kind == .boot }),
+               artifact.resolverReference == bootMedia.resolverReference,
+               artifact.media == bootMedia.media {
+                bootBindingIsPresent = true
+            }
+        }
+        if !bootBindingIsPresent { add("bootMedia.resolverReference") }
     }
 
     private func validateComponents(
@@ -1276,6 +1423,7 @@ public struct DoryResolvedMachineRuntimeEvidence: Codable, Sendable, Equatable, 
     public var backendRuntimeBuildIdentifier: String
     public var virtualHardwareABIVersion: UInt16
     public var bootMedia: DoryResolvedMachineBootMedia
+    public var launchArtifacts: [DoryResolvedMachineLaunchArtifact]
     public var components: [DoryResolvedBackendComponentEvidence]
     public var devices: DoryVirtualMachineDeviceCapabilityRequest
     public var graphics: DoryGraphicsAccelerationLevel
@@ -1293,6 +1441,7 @@ public struct DoryResolvedMachineRuntimeEvidence: Codable, Sendable, Equatable, 
         backendRuntimeBuildIdentifier: String,
         virtualHardwareABIVersion: UInt16,
         bootMedia: DoryResolvedMachineBootMedia,
+        launchArtifacts: [DoryResolvedMachineLaunchArtifact],
         components: [DoryResolvedBackendComponentEvidence],
         devices: DoryVirtualMachineDeviceCapabilityRequest,
         graphics: DoryGraphicsAccelerationLevel,
@@ -1309,6 +1458,7 @@ public struct DoryResolvedMachineRuntimeEvidence: Codable, Sendable, Equatable, 
         self.backendRuntimeBuildIdentifier = backendRuntimeBuildIdentifier
         self.virtualHardwareABIVersion = virtualHardwareABIVersion
         self.bootMedia = bootMedia
+        self.launchArtifacts = launchArtifacts
         self.components = components
         self.devices = devices
         self.graphics = graphics
@@ -1327,6 +1477,7 @@ public struct DoryResolvedMachineRuntimeEvidence: Codable, Sendable, Equatable, 
         backendRuntimeBuildIdentifier = plan.backendRuntimeBuildIdentifier
         virtualHardwareABIVersion = plan.virtualHardwareABIVersion
         bootMedia = plan.bootMedia
+        launchArtifacts = plan.launchArtifacts
         components = plan.components
         devices = plan.devices
         graphics = plan.graphics
@@ -1337,6 +1488,7 @@ public struct DoryResolvedMachineRuntimeEvidence: Codable, Sendable, Equatable, 
         hostQualification = plan.hostQualification
         experimentalAuthorization = plan.experimentalAuthorization
     }
+
 }
 
 public struct DoryResolvedMachinePlanStartRevalidationInput: Codable, Sendable, Equatable, Hashable {
@@ -1373,6 +1525,7 @@ public enum DoryResolvedMachinePlanRevalidationCode: String, Codable, Sendable, 
     case backendRuntimeBuildMismatch = "backend-runtime-build-mismatch"
     case virtualHardwareABIMismatch = "virtual-hardware-abi-mismatch"
     case bootMediaEvidenceMismatch = "boot-media-evidence-mismatch"
+    case launchArtifactEvidenceMismatch = "launch-artifact-evidence-mismatch"
     case componentEvidenceMismatch = "component-evidence-mismatch"
     case deviceContractMismatch = "device-contract-mismatch"
     case graphicsMismatch = "graphics-mismatch"
@@ -1478,6 +1631,12 @@ public enum DoryResolvedMachinePlanStartValidator {
             field: "virtualHardwareABIVersion"
         )
         compare(runtime.bootMedia, plan.bootMedia, code: .bootMediaEvidenceMismatch, field: "bootMedia")
+        compare(
+            runtime.launchArtifacts,
+            plan.launchArtifacts,
+            code: .launchArtifactEvidenceMismatch,
+            field: "launchArtifacts"
+        )
         compare(runtime.components, plan.components, code: .componentEvidenceMismatch, field: "components")
         compare(runtime.devices, plan.devices, code: .deviceContractMismatch, field: "devices")
         compare(runtime.graphics, plan.graphics, code: .graphicsMismatch, field: "graphics")

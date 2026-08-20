@@ -7,7 +7,7 @@ import Foundation
 /// facts, and lifecycle fence; a journal is never recovered from its persisted plan bytes alone.
 public protocol DoryDaemonVirtualMachinePlanningRecoveryProviding: Sendable {
     func recoveryRequest(
-        for machineID: String
+        for descriptor: DoryDaemonVirtualMachinePlanningRecoveryDescriptor
     ) throws -> DoryDaemonVirtualMachinePlanningTransactionRequest?
 }
 
@@ -284,10 +284,47 @@ public final class DoryDaemonVirtualMachineProductionPlanningCompositionFactory:
                 let pending = try pendingTransactionMachineIDs()
                 var recovered: [String: String] = [:]
                 for machineID in pending {
-                    guard let request = try recoveryProvider.recoveryRequest(
-                        for: machineID
-                    ), request.planning.definition.identity.id == machineID,
-                    request.planning.machine.id == machineID else {
+                    let descriptor: DoryDaemonVirtualMachinePlanningRecoveryDescriptor
+                    do {
+                        guard let recoveredDescriptor = try coordinator.recoveryDescriptor(
+                            for: machineID
+                        ), recoveredDescriptor.machineID == machineID else {
+                            throw failure(
+                                .recoveryRequestUnavailable,
+                                machineID: machineID,
+                                "The durable planning recovery descriptor is unavailable."
+                            )
+                        }
+                        descriptor = recoveredDescriptor
+                    } catch {
+                        throw failure(
+                            .recoveryFailed,
+                            machineID: machineID,
+                            "The durable planning recovery descriptor failed validation."
+                        )
+                    }
+                    let request: DoryDaemonVirtualMachinePlanningTransactionRequest
+                    do {
+                        guard let recoveredRequest = try recoveryProvider.recoveryRequest(
+                            for: descriptor
+                        ) else {
+                            throw failure(
+                                .recoveryRequestUnavailable,
+                                machineID: machineID,
+                                "Exact authoritative recovery input is unavailable."
+                            )
+                        }
+                        request = recoveredRequest
+                    } catch {
+                        throw failure(
+                            .recoveryFailed,
+                            machineID: machineID,
+                            "Authoritative recovery input failed validation."
+                        )
+                    }
+                    guard request.planning.definition.identity.id == machineID,
+                          request.planning.machine.id == machineID,
+                          descriptor.matches(request) else {
                         throw failure(
                             .recoveryRequestUnavailable,
                             machineID: machineID,

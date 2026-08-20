@@ -771,6 +771,20 @@ private final class ResourceLedgerFixture {
                     resolverVersion: 1
                 )
             ),
+            launchArtifacts: resolvedBootLaunchArtifacts(
+                reference: DoryVMResolverReference(
+                    namespace: "machine",
+                    identifier: "\(binding.machineID)-disk"
+                ),
+                media: media,
+                mutableEvidence: DoryMutableBootMediaProvenanceAuditEvidence(
+                    receiptIdentity: "disk-receipt-1",
+                    provenance: provenance,
+                    receiptSHA256: digest("7"),
+                    resolverID: "machine-store",
+                    resolverVersion: 1
+                )
+            ),
             components: [DoryResolvedBackendComponentEvidence(
                 componentIdentifier: "dory-vmm",
                 buildIdentifier: "vz-runtime-1",

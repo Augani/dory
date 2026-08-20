@@ -4333,7 +4333,7 @@ private func waitForMachineStatus(
     }
     return try XCTUnwrap(
         manager.status(id: id).flatMap { predicate($0) ? $0 : nil },
-        "timed out waiting for matching machine status for \(id)"
+        "timed out waiting for matching machine status for \(id); current=\(String(describing: manager.status(id: id)))"
     )
 }
 

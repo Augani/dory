@@ -25,6 +25,8 @@ enum DesktopMode {
         var cpuCount: Int
         var shares: [DoryMachineShareConfiguration]
         var environment: [String: String]
+        var resolvedGraphics: DoryGraphicsAccelerationLevel?
+        var resolvedDevices: DoryVirtualMachineDeviceCapabilityRequest?
     }
 
     private struct ResolvedGraphics {
@@ -73,9 +75,34 @@ enum DesktopMode {
             self.serialLog = try Self.openAppendLog("\(configuration.stateDirectory)/serial.log")
             let resolvedGraphics = try Self.resolveGraphics(
                 environment: configuration.environment,
-                requireVulkan: configuration.genericGuest
+                requireVulkan: configuration.genericGuest,
+                exactLevel: configuration.resolvedGraphics
             )
             self.graphicsBackend = resolvedGraphics.backend
+            if let devices = configuration.resolvedDevices {
+                guard devices.networkAttachment == .sharedNAT,
+                      !devices.clockSynchronization,
+                      !devices.gracefulShutdown else {
+                    throw VMError.bootFailure(
+                        "resolved device contract contains a device not implemented by raw-HV"
+                    )
+                }
+                guard devices.keyboard == devices.pointer else {
+                    throw VMError.bootFailure(
+                        "raw-HV input is a combined keyboard/pointer device"
+                    )
+                }
+                guard devices.audioInput == devices.audioOutput else {
+                    throw VMError.bootFailure(
+                        "raw-HV audio is a combined input/output device"
+                    )
+                }
+                guard devices.directorySharing == !configuration.shares.isEmpty else {
+                    throw VMError.bootFailure(
+                        "resolved directory-sharing contract does not match the launch shares"
+                    )
+                }
+            }
             self.machine = try Machine(configuration: MachineConfiguration(
                 kernelPath: configuration.kernelPath,
                 initrdPath: configuration.initrdPath,
@@ -153,13 +180,19 @@ enum DesktopMode {
                 var backends: [VirtioDeviceBackend] = [
                     try VirtioBlk(path: configuration.rootfsPath, identity: "dory-rootfs"),
                     gpu,
-                    input,
                     VirtioRng(),
                     balloon,
                     vsock,
-                    sound,
                 ]
-                for share in configuration.shares {
+                if configuration.resolvedDevices?.keyboard != false {
+                    backends.append(input)
+                }
+                if configuration.resolvedDevices?.audioInput != false {
+                    backends.append(sound)
+                }
+                let attachedShares = configuration.resolvedDevices?.directorySharing == false
+                    ? [] : configuration.shares
+                for share in attachedShares {
                     let rawShare = try VirtioFSShareConfiguration(
                         tag: share.tag,
                         path: share.hostPath,
@@ -173,7 +206,7 @@ enum DesktopMode {
                 backends.append(network)
                 for (slot, backend) in backends.enumerated() {
                     let transport = Self.attachBackend(backend, to: machine, slot: slot)
-                    if backend === gpu {
+                    if backend === gpu, configuration.resolvedDevices?.dynamicDisplay != false {
                         display.onDrawableSizeChange = { [weak gpu, weak transport] width, height in
                             guard let gpu, let transport else { return }
                             gpu.updateScanoutSize(width: width, height: height, transport: transport)
@@ -209,7 +242,7 @@ enum DesktopMode {
             } else {
                 self.sshAgentBridge = nil
             }
-            if configuration.genericGuest {
+            if configuration.genericGuest || configuration.resolvedDevices?.clipboard == false {
                 self.clipboard = nil
             } else {
                 let clipboardControl = DorydKit.AgentControl(configuration: .init(
@@ -535,7 +568,8 @@ enum DesktopMode {
 
         private static func resolveGraphics(
             environment: [String: String],
-            requireVulkan: Bool
+            requireVulkan: Bool,
+            exactLevel: DoryGraphicsAccelerationLevel?
         ) throws -> ResolvedGraphics {
             let preference = try DoryDesktopGraphicsPreference(environment: environment)
             var rendererEnvironment = ProcessInfo.processInfo.environment
@@ -558,6 +592,21 @@ enum DesktopMode {
                     backend: classicOnly ? .virgl : .virglVenus,
                     renderer: renderer
                 )
+            }
+
+            if let exactLevel {
+                switch exactLevel {
+                case .hardwareAccelerated3D:
+                    return try accelerated(classicOnly: false)
+                case .hostAcceleratedDisplay:
+                    return try accelerated(classicOnly: true)
+                case .software:
+                    return ResolvedGraphics(backend: .software, renderer: nil)
+                case .none:
+                    throw VMError.bootFailure(
+                        "raw-HV desktop cannot satisfy a no-graphics resolved plan"
+                    )
+                }
             }
 
             switch preference {

@@ -42,6 +42,33 @@ final class DoryVirtualMachineArtifactAuthorityTests: XCTestCase {
         }
     }
 
+    func testReadOnlyVirtualDiskCanBePublishedAsImmutable() throws {
+        try withFixture("immutable-read-only-disk") { fixture in
+            let disk = try fixture.file(
+                "tools.raw",
+                data: Data(repeating: 0x5a, count: 4_096)
+            )
+            let published = try fixture.authority.publishImmutable(
+                reference: fixture.reference,
+                path: disk,
+                kind: .virtualDisk,
+                source: .bundledByDory
+            )
+
+            XCTAssertEqual(published.media.kind, .virtualDisk)
+            XCTAssertNotNil(published.media.artifactSHA256)
+            XCTAssertNil(published.media.mutableProvenance)
+            XCTAssertEqual(
+                try fixture.authority.resolve(
+                    reference: fixture.reference,
+                    kind: .virtualDisk,
+                    source: .bundledByDory
+                ).media,
+                published.media
+            )
+        }
+    }
+
     func testMutableArtifactRequiresExplicitRevisionPublication() throws {
         try withFixture("mutable") { fixture in
             let disk = try fixture.file("system.raw", data: Data(repeating: 0, count: 4_096))

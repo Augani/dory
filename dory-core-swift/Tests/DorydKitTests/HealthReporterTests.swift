@@ -728,6 +728,12 @@ private func healthResolvedPlan() -> DoryResolvedMachinePlan {
             ),
             media: media
         ),
+        launchArtifacts: resolvedBootLaunchArtifacts(
+            reference: DoryVMResolverReference(
+                namespace: "artifact", identifier: "qualified-linux"
+            ),
+            media: media
+        ),
         components: [DoryResolvedBackendComponentEvidence(
             componentIdentifier: "dory-hv",
             buildIdentifier: "raw-runtime-1",

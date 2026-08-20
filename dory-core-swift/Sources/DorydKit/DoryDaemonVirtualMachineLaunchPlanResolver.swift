@@ -211,6 +211,7 @@ public final class DoryDaemonVirtualMachineStartEvidenceCollector:
                 inspectionEvidence: capability.bootMediaInspectionEvidence,
                 mutableProvenanceEvidence: capability.mutableBootMediaProvenanceEvidence
             ),
+            launchArtifacts: snapshot.launchArtifacts,
             components: runtime.components.sorted {
                 $0.componentIdentifier < $1.componentIdentifier
             },

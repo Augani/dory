@@ -39,6 +39,28 @@ struct DoryResolvedMachinePlanTests {
         #expect(result.issues.contains { $0.code == .storedPlanInvalid })
     }
 
+    @Test("schema v2 without launch-artifact evidence requires replanning")
+    func schemaV2LaunchArtifactMigration() throws {
+        let encoded = try JSONEncoder().encode(supportedPlan())
+        var object = try #require(
+            JSONSerialization.jsonObject(with: encoded) as? [String: Any]
+        )
+        object["schemaVersion"] = 2
+        object["sourceSchemaVersion"] = 2
+        object.removeValue(forKey: "launchArtifacts")
+
+        let migrated = try JSONDecoder().decode(
+            DoryResolvedMachinePlan.self,
+            from: JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+        )
+        #expect(migrated.schemaVersion == DoryResolvedMachinePlan.currentSchemaVersion)
+        #expect(migrated.sourceSchemaVersion == 2)
+        #expect(migrated.migrationDisposition == .requiresReplanning)
+        #expect(migrated.launchArtifacts.isEmpty)
+        #expect(migrated.validate().contains { $0.code == .legacyPlanRequiresReplanning })
+        #expect(migrated.validate().contains { $0.code == .invalidLaunchArtifactEvidence })
+    }
+
     @Test("exact fresh evidence authorizes start")
     func exactStartEvidence() {
         let plan = supportedPlan()
@@ -180,6 +202,7 @@ struct DoryResolvedMachinePlanTests {
                 backendDescriptor: VirtualizationFrameworkLinuxMachineBackend.backendDescriptor,
                 backendRuntimeBuildIdentifier: plan.backendRuntimeBuildIdentifier,
                 resolverReference: plan.bootMedia.resolverReference,
+                launchArtifacts: plan.launchArtifacts,
                 components: plan.components,
                 resourceAdmission: plan.resourceAdmission!,
                 hostQualification: plan.hostQualification!,
@@ -208,6 +231,7 @@ struct DoryResolvedMachinePlanTests {
                 backendDescriptor: RawHVLinuxMachineBackend.backendDescriptor,
                 backendRuntimeBuildIdentifier: plan.backendRuntimeBuildIdentifier,
                 resolverReference: plan.bootMedia.resolverReference,
+                launchArtifacts: plan.launchArtifacts,
                 components: plan.components,
                 resourceAdmission: plan.resourceAdmission!,
                 hostQualification: plan.hostQualification!,
@@ -708,6 +732,12 @@ private func supportedPlan() -> DoryResolvedMachinePlan {
             ),
             media: media
         ),
+        launchArtifacts: resolvedBootLaunchArtifacts(
+            reference: DoryVMResolverReference(
+                namespace: "artifact", identifier: "ubuntu-desktop-1"
+            ),
+            media: media
+        ),
         components: [
             DoryResolvedBackendComponentEvidence(
                 componentIdentifier: "dory-hv",
@@ -785,6 +815,19 @@ private func mutableVZPlan() -> DoryResolvedMachinePlan {
             ),
             media: media,
             mutableProvenanceEvidence: DoryMutableBootMediaProvenanceAuditEvidence(
+                receiptIdentity: "disk-receipt-7",
+                provenance: provenance,
+                receiptSHA256: digest("7"),
+                resolverID: "machine-store",
+                resolverVersion: 1
+            )
+        ),
+        launchArtifacts: resolvedBootLaunchArtifacts(
+            reference: DoryVMResolverReference(
+                namespace: "machine", identifier: "workspace-one-disk"
+            ),
+            media: media,
+            mutableEvidence: DoryMutableBootMediaProvenanceAuditEvidence(
                 receiptIdentity: "disk-receipt-7",
                 provenance: provenance,
                 receiptSHA256: digest("7"),

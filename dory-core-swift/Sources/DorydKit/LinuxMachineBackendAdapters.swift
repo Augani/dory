@@ -213,7 +213,9 @@ private final class LinuxMachineBackendAdapterCore: @unchecked Sendable {
             machineID: plan.machine.id,
             backend: descriptor,
             componentIdentifier: componentIdentifier,
-            executablePath: executablePath
+            executablePath: executablePath,
+            graphics: plan.capability.request.graphics,
+            devices: plan.capability.request.devices
         ))
     }
 

@@ -513,6 +513,18 @@ private final class TransactionFixture: @unchecked Sendable {
             media: DoryDaemonVirtualMachineResolvedMedia(
                 reference: bootArtifact, media: media
             ),
+            launchArtifacts: [
+                resolvedMutableStorageLaunchArtifact(
+                    reference: diskArtifact,
+                    source: .userProvided,
+                    identifier: "system-disk"
+                ),
+                resolvedBootLaunchArtifacts(
+                    reference: bootArtifact,
+                    media: media,
+                    identifier: "system"
+                )[0],
+            ],
             backendRuntimes: [DoryDaemonVirtualMachineBackendRuntimeInventory(
                 backend: .doryHypervisor,
                 runtimeBuildIdentifier: "raw-runtime-1",

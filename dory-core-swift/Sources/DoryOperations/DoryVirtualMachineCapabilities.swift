@@ -406,6 +406,12 @@ public struct DoryMutableBootMediaProvenanceAuditEvidence: Codable, Sendable, Eq
 public struct DoryTrustedMutableBootMediaProvenance: Sendable, Equatable, Hashable {
     let auditEvidence: DoryMutableBootMediaProvenanceAuditEvidence
 
+    /// Non-secret durable receipt reference. The opaque trusted wrapper remains daemon-owned;
+    /// persisted plans carry only this audit evidence and must resolve it again before launch.
+    public var persistedAuditEvidence: DoryMutableBootMediaProvenanceAuditEvidence {
+        auditEvidence
+    }
+
     init(auditEvidence: DoryMutableBootMediaProvenanceAuditEvidence) {
         self.auditEvidence = auditEvidence
     }

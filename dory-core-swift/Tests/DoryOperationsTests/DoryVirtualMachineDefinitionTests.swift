@@ -7,7 +7,7 @@ struct DoryVirtualMachineDefinitionTests {
     private let gibibyte: UInt64 = 1_073_741_824
     private let nowMilliseconds: Int64 = 1_787_200_000_000
 
-    @Test("schema 2 round trips with stable resolver and timestamp representations")
+    @Test("schema 3 round trips with stable resolver and timestamp representations")
     func currentRoundTrip() throws {
         let original = linuxDefinition()
         #expect(original.isValid)
@@ -19,7 +19,7 @@ struct DoryVirtualMachineDefinitionTests {
         #expect(decoded == original)
 
         let json = try #require(String(data: data, encoding: .utf8))
-        #expect(json.contains("\"schemaVersion\":2"))
+        #expect(json.contains("\"schemaVersion\":3"))
         #expect(json.contains("\"virtualHardwareABIVersion\":1"))
         #expect(json.contains("\"createdAtUnixMilliseconds\":1787200000000"))
         #expect(json.contains("\"namespace\":\"boot\""))
@@ -30,7 +30,7 @@ struct DoryVirtualMachineDefinitionTests {
         #expect(!json.contains("hostLocationID"))
     }
 
-    @Test("schema 2 records written before typed guest intent retain compatibility defaults")
+    @Test("schema 2 records migrate storage provenance and typed-intent defaults")
     func additiveSchemaTwoMigration() throws {
         let encoder = JSONEncoder()
         let data = try encoder.encode(linuxDefinition())
@@ -39,6 +39,10 @@ struct DoryVirtualMachineDefinitionTests {
         )
         object.removeValue(forKey: "guestIdentityIntent")
         object.removeValue(forKey: "clipboardPolicy")
+        object["schemaVersion"] = 2
+        var storage = try #require(object["storage"] as? [[String: Any]])
+        for index in storage.indices { storage[index].removeValue(forKey: "source") }
+        object["storage"] = storage
         let oldSchemaTwo = try JSONSerialization.data(withJSONObject: object)
 
         let decoded = try JSONDecoder().decode(
@@ -47,6 +51,8 @@ struct DoryVirtualMachineDefinitionTests {
         )
         #expect(decoded.guestIdentityIntent == .unspecified)
         #expect(decoded.clipboardPolicy == .legacyDesktop(.bidirectional))
+        #expect(decoded.schemaVersion == 3)
+        #expect(decoded.storage.allSatisfy { $0.source == .userProvided })
         #expect(decoded.isValid)
     }
 
@@ -176,19 +182,20 @@ struct DoryVirtualMachineDefinitionTests {
         """#.utf8)
 
         let migrated = try JSONDecoder().decode(DoryVirtualMachineDefinition.self, from: golden)
-        #expect(migrated.schemaVersion == 2)
+        #expect(migrated.schemaVersion == 3)
         #expect(migrated.virtualHardwareABIVersion == 1)
         #expect(migrated.workload == .desktop)
         #expect(migrated.boot.phase == .install)
         #expect(migrated.boot.order == ["installer"])
         #expect(migrated.boot.devices[0].artifact == reference("install", "ubuntu-24.04"))
         #expect(migrated.graphics.acceptableLevels == [.hostAcceleratedDisplay, .software])
+        #expect(migrated.storage[0].source == .userProvided)
         #expect(migrated.lifecycle.createdAtUnixMilliseconds == 1_700_000_000_000)
         #expect(migrated.isValid)
 
         let upgraded = try JSONEncoder().encode(migrated)
         let upgradedJSON = try #require(String(data: upgraded, encoding: .utf8))
-        #expect(upgradedJSON.contains("\"schemaVersion\":2"))
+        #expect(upgradedJSON.contains("\"schemaVersion\":3"))
         #expect(upgradedJSON.contains("createdAtUnixMilliseconds"))
         #expect(!upgradedJSON.contains("\"bootMedia\""))
     }

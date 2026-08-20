@@ -129,6 +129,9 @@ public struct DoryVMStorageAttachment: Codable, Sendable, Equatable {
     public var id: String
     public var role: DoryVMStorageRole
     public var artifact: DoryVMResolverReference
+    /// Provenance intent for the virtual disk. Storage kind is always `.virtualDisk`; writable
+    /// attachments require mutable daemon provenance and read-only attachments are immutable.
+    public var source: DoryBootMediaSource
     public var capacityBytes: UInt64
     public var readOnly: Bool
 
@@ -136,14 +139,37 @@ public struct DoryVMStorageAttachment: Codable, Sendable, Equatable {
         id: String,
         role: DoryVMStorageRole,
         artifact: DoryVMResolverReference,
+        source: DoryBootMediaSource = .userProvided,
         capacityBytes: UInt64,
         readOnly: Bool = false
     ) {
         self.id = id
         self.role = role
         self.artifact = artifact
+        self.source = source
         self.capacityBytes = capacityBytes
         self.readOnly = readOnly
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, role, artifact, source, capacityBytes, readOnly
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            id: try container.decode(String.self, forKey: .id),
+            role: try container.decode(DoryVMStorageRole.self, forKey: .role),
+            artifact: try container.decode(DoryVMResolverReference.self, forKey: .artifact),
+            // Schema 2 did not bind storage provenance. Conservatively migrate it as imported;
+            // never manufacture Dory distribution/qualification authority.
+            source: try container.decodeIfPresent(
+                DoryBootMediaSource.self,
+                forKey: .source
+            ) ?? .userProvided,
+            capacityBytes: try container.decode(UInt64.self, forKey: .capacityBytes),
+            readOnly: try container.decode(Bool.self, forKey: .readOnly)
+        )
     }
 }
 
@@ -323,7 +349,7 @@ public struct DoryVMDefinitionValidationIssue: Codable, Sendable, Equatable {
 /// passwords, tokens, host filesystem paths, or volatile process state.
 public struct DoryVirtualMachineDefinition: Codable, Sendable, Equatable {
     public static let oldestSupportedSchemaVersion: UInt16 = 1
-    public static let currentSchemaVersion: UInt16 = 2
+    public static let currentSchemaVersion: UInt16 = 3
     public static let currentVirtualHardwareABIVersion: UInt16 = 1
 
     public var schemaVersion: UInt16
@@ -535,7 +561,16 @@ public struct DoryVirtualMachineDefinition: Codable, Sendable, Equatable {
             return
         }
 
-        schemaVersion = persistedSchema
+        guard persistedSchema == 2 || persistedSchema == Self.currentSchemaVersion else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .schemaVersion,
+                in: container,
+                debugDescription: "Unsupported VM definition schema \(persistedSchema)."
+            )
+        }
+        // Schema 2 is structurally migrated by the attachment decoder above. Its missing storage
+        // source becomes `.userProvided`; encoding always publishes current schema 3.
+        schemaVersion = Self.currentSchemaVersion
         virtualHardwareABIVersion = try container.decode(
             UInt16.self,
             forKey: .virtualHardwareABIVersion

@@ -1240,6 +1240,8 @@ public final class MachineManager: @unchecked Sendable {
                 backend: resolved.backendPlan.backend,
                 runtimeBuildIdentifier: resolved.resolvedPlan.backendRuntimeBuildIdentifier,
                 runtimeComponents: resolved.resolvedPlan.components,
+                graphics: resolved.resolvedPlan.graphics,
+                devices: resolved.resolvedPlan.devices,
                 planRevision: resolved.resolvedPlan.planRevision,
                 planSHA256: resolved.resolvedPlanSHA256,
                 preSpawnAuthorization: preSpawnAuthorization
@@ -1340,9 +1342,12 @@ public final class MachineManager: @unchecked Sendable {
               authorization.machine.id == binding.machineID,
               authorization.backend == binding.backend,
               binding.backend.identity == expectedBackend,
+              authorization.graphics == binding.graphics,
+              authorization.devices == binding.devices,
               !binding.executablePath.isEmpty else {
+            pendingResolvedStart = nil
             throw MachineManagerError.persistence(
-                "backend start lacks a validated resolved-plan authorization"
+                "backend start does not match the exact resolved-plan launch contract"
             )
         }
         let executableSHA256: String
@@ -1585,13 +1590,17 @@ public final class MachineManager: @unchecked Sendable {
             // This single-use daemon-owned check deliberately sits after all persisted
             // machine/plan validation and immediately before any path-derived launch arguments
             // are read. Failure consumes the token and cannot reach processStarter.
-            if launchBinding != nil {
+            if let launchBinding {
                 guard let preSpawnAuthorization else {
                     throw MachineManagerError.persistence(
                         "resolved launch is missing final pre-spawn authorization"
                     )
                 }
                 try preSpawnAuthorization.authorize()
+                try revalidateMaterializedInstalledLinuxBootRuntimeImmediatelyBeforeSpawn(
+                    entry.configuration,
+                    launchBinding: launchBinding
+                )
             }
             processConfiguration = try self.processConfiguration(
                 for: entry.configuration,
@@ -2078,6 +2087,10 @@ public final class MachineManager: @unchecked Sendable {
             return try startAndWaitUntilReady(id: id, journalLifecycle: true)
         } catch {
             let updateError = error
+            // The handoff callback publishes `.failed` before it can acquire operationLock to
+            // terminalize the readiness journal. update() already owns operationLock here, so it
+            // must settle that failed start before opening the rollback stop/start transaction.
+            failActiveStartLifecycle(id: id, stepID: "start.readiness-failed")
             _ = try? stopImplementation(id: id, journalLifecycle: true)
             do {
                 try persist(current)
@@ -2954,7 +2967,8 @@ public final class MachineManager: @unchecked Sendable {
                 for: machine,
                 handoffPath: handoffPath,
                 baseArguments: target.baseArguments,
-                acceleratedDesktop: target.acceleratedDesktop
+                acceleratedDesktop: target.acceleratedDesktop,
+                resolvedLaunchBinding: resolvedLaunchBinding
             ),
             logPath: "\(configuration.logDirectory)/\(machine.id).log",
             restartPolicy: configuration.requiresReadyHandoff
@@ -3054,7 +3068,8 @@ public final class MachineManager: @unchecked Sendable {
         for machine: DoryMachineConfiguration,
         handoffPath: String?,
         baseArguments: [String],
-        acceleratedDesktop: Bool
+        acceleratedDesktop: Bool,
+        resolvedLaunchBinding: MachineBackendLaunchBinding?
     ) throws -> [String] {
         guard configuration.passMachineArguments else {
             return baseArguments
@@ -3094,10 +3109,64 @@ public final class MachineManager: @unchecked Sendable {
         if let handoffPath {
             arguments.append(contentsOf: ["--handoff-sock", handoffPath])
         }
+        if let resolvedLaunchBinding {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys]
+            let deviceContract = String(
+                decoding: try encoder.encode(resolvedLaunchBinding.devices),
+                as: UTF8.self
+            )
+            arguments.append(contentsOf: [
+                "--resolved-graphics", resolvedLaunchBinding.graphics.rawValue,
+                "--resolved-devices", deviceContract,
+            ])
+        }
         for share in machine.shares {
             arguments.append(contentsOf: ["--share", share.argumentValue])
         }
-        for (key, value) in machine.environment.sorted(by: { $0.key < $1.key }) {
+        var launchEnvironment = machine.environment
+        if let resolvedLaunchBinding {
+            launchEnvironment.removeValue(forKey: DoryDesktopVMMPreference.environmentKey)
+            launchEnvironment.removeValue(forKey: DoryDesktopGraphicsPreference.environmentKey)
+            launchEnvironment.removeValue(
+                forKey: DoryDesktopGraphicsPreference.legacyClassicOnlyEnvironmentKey
+            )
+            switch resolvedLaunchBinding.backend.identity {
+            case .doryHypervisor:
+                let preference: DoryDesktopGraphicsPreference
+                switch resolvedLaunchBinding.graphics {
+                case .hardwareAccelerated3D:
+                    preference = .virglVenus
+                case .hostAcceleratedDisplay:
+                    preference = .virgl
+                case .software:
+                    preference = .software
+                case .none:
+                    throw MachineManagerError.persistence(
+                        "raw-Hypervisor desktop cannot satisfy a no-graphics resolved plan"
+                    )
+                }
+                launchEnvironment[DoryDesktopGraphicsPreference.environmentKey]
+                    = preference.rawValue
+                launchEnvironment[DoryDesktopVMMPreference.environmentKey]
+                    = DoryDesktopVMMPreference.accelerated.rawValue
+            case .appleVirtualizationFramework:
+                guard resolvedLaunchBinding.graphics == .hostAcceleratedDisplay
+                        || (machine.displayMode == .headless
+                            && resolvedLaunchBinding.graphics == .none) else {
+                    throw MachineManagerError.persistence(
+                        "Virtualization.framework cannot satisfy the exact resolved graphics contract"
+                    )
+                }
+                launchEnvironment[DoryDesktopVMMPreference.environmentKey]
+                    = DoryDesktopVMMPreference.compatible.rawValue
+            default:
+                throw MachineManagerError.persistence(
+                    "resolved backend has no exact graphics argument contract"
+                )
+            }
+        }
+        for (key, value) in launchEnvironment.sorted(by: { $0.key < $1.key }) {
             arguments.append(contentsOf: ["--env", "\(key)=\(value)"])
         }
         let isSandbox = machine.environment["DORY_SANDBOX"] == "1"
@@ -3741,6 +3810,44 @@ public final class MachineManager: @unchecked Sendable {
         } catch {
             throw MachineManagerError.persistence(
                 "could not verify the installed Linux accelerated runtime: \(error.localizedDescription)"
+            )
+        }
+    }
+
+    /// Installed-Linux acceleration launches materialized kernel/initrd paths rather than the
+    /// authority-bound bundle itself. Re-materialize from the fully verified bundle only after
+    /// the single-use pre-spawn authorization has succeeded so stale or replaced derived files
+    /// can never reach process construction.
+    private func revalidateMaterializedInstalledLinuxBootRuntimeImmediatelyBeforeSpawn(
+        _ machine: DoryMachineConfiguration,
+        launchBinding: MachineBackendLaunchBinding
+    ) throws {
+        guard launchBinding.backend.identity == .doryHypervisor,
+              machine.bootMode == .efi,
+              machine.installerISOPath == nil,
+              DoryInstalledLinuxBootBundle.isBundle(atPath: machine.kernelPath) else {
+            return
+        }
+        do {
+            try DoryInstalledLinuxBootBundle.materialize(
+                fromPath: machine.kernelPath,
+                kernelPath: machineInstalledLinuxKernelPath(id: machine.id),
+                initrdPath: machineInstalledLinuxInitrdPath(id: machine.id)
+            )
+            guard Self.isPrivateRegularFile(
+                path: machineInstalledLinuxKernelPath(id: machine.id)
+            ), Self.isPrivateRegularFile(
+                path: machineInstalledLinuxInitrdPath(id: machine.id)
+            ) else {
+                throw MachineManagerError.persistence(
+                    "materialized installed-Linux launch artifacts are not private regular files"
+                )
+            }
+        } catch let error as MachineManagerError {
+            throw error
+        } catch {
+            throw MachineManagerError.persistence(
+                "installed-Linux launch artifacts failed final verification: \(error)"
             )
         }
     }
@@ -5991,6 +6098,16 @@ public final class MachineManager: @unchecked Sendable {
             existing.depth += 1
             return existing
         }
+        // A handoff publishes the runtime state before its callback can acquire operationLock to
+        // settle the readiness journal. If the very next user mutation wins that race, it owns
+        // operationLock already and can deterministically finish the committed start itself
+        // instead of rejecting a healthy running machine as an active lifecycle conflict.
+        if activeLifecycleOperations[id]?.operation.kind == .starting {
+            lock.lock()
+            let readinessCommitted = machines[id]?.state == .running
+            lock.unlock()
+            if readinessCommitted { completeActiveStartLifecycle(id: id) }
+        }
         guard activeLifecycleOperations[id] == nil else {
             throw MachineManagerError.persistence(
                 "machine \(id) already has an active lifecycle mutation"
@@ -7604,6 +7721,8 @@ private struct PendingResolvedMachineStart {
     var backend: MachineBackendDescriptor
     var runtimeBuildIdentifier: String
     var runtimeComponents: [DoryResolvedBackendComponentEvidence]
+    var graphics: DoryGraphicsAccelerationLevel
+    var devices: DoryVirtualMachineDeviceCapabilityRequest
     var planRevision: UInt64
     var planSHA256: String
     var preSpawnAuthorization: DoryDaemonVirtualMachinePreSpawnAuthorization

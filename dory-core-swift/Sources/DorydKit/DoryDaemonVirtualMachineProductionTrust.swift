@@ -437,6 +437,7 @@ private struct DoryDaemonProductionPlanningHostIdentity: Sendable, Equatable {
 private struct DoryDaemonProductionPlanningMaterial: Sendable {
     var host: DoryDaemonProductionHostObservation
     var artifact: DoryVerifiedVirtualMachineArtifact
+    var launchArtifacts: [DoryResolvedMachineLaunchArtifact]
     var runtimes: [DoryDaemonVerifiedBackendRuntime]
     var qualifications: [DoryResolvedTrustedVirtualMachineQualification]
     var media: DoryDaemonVirtualMachineResolvedMedia
@@ -521,6 +522,7 @@ final class DoryProductionDaemonVirtualMachineTrustInventory:
                 DoryDaemonVirtualMachineTrustedInventorySnapshot(
                     hostFacts: initial.hostFacts,
                     media: initial.media,
+                    launchArtifacts: initial.launchArtifacts,
                     backendRuntimes: initial.backendInventories,
                     resourceAdmission: admission,
                     runtimeQualifications: initial.qualifications.map(\.runtime),
@@ -540,6 +542,7 @@ final class DoryProductionDaemonVirtualMachineTrustInventory:
                           current.artifact.media == initial.artifact.media,
                           current.artifact.authorityRevision
                             == initial.artifact.authorityRevision,
+                          current.launchArtifacts == initial.launchArtifacts,
                           current.runtimes == initial.runtimes,
                           current.qualificationRecords == initial.qualificationRecords else {
                         throw DoryDaemonProductionTrustInventoryError.invalidRequest
@@ -560,11 +563,20 @@ final class DoryProductionDaemonVirtualMachineTrustInventory:
         do { host = try hostProbe(stateDirectory) }
         catch { throw DoryDaemonProductionTrustInventoryError.invalidRequest }
         let artifact: DoryVerifiedVirtualMachineArtifact
+        let launchArtifacts: [DoryResolvedMachineLaunchArtifact]
         do {
+            launchArtifacts = try resolveLaunchArtifacts(request.launchArtifacts)
+            guard let primary = launchArtifacts.first(where: {
+                $0.resolverReference == request.bootMedia.artifact
+                    && $0.media.kind == request.bootMedia.kind
+                    && $0.media.source == request.bootMedia.source
+            }) else {
+                throw DoryDaemonProductionTrustInventoryError.mediaUnavailable
+            }
             artifact = try artifactAuthority.resolve(
-                reference: request.bootMedia.artifact,
-                kind: request.bootMedia.kind,
-                source: request.bootMedia.source
+                reference: primary.resolverReference,
+                kind: primary.media.kind,
+                source: primary.media.source
             )
         } catch {
             throw DoryDaemonProductionTrustInventoryError.mediaUnavailable
@@ -673,6 +685,7 @@ final class DoryProductionDaemonVirtualMachineTrustInventory:
         return DoryDaemonProductionPlanningMaterial(
             host: host,
             artifact: artifact,
+            launchArtifacts: launchArtifacts,
             runtimes: runtimes,
             qualifications: qualifications,
             media: DoryDaemonVirtualMachineResolvedMedia(
@@ -733,7 +746,12 @@ final class DoryProductionDaemonVirtualMachineTrustInventory:
         }
 
         let artifact: DoryVerifiedVirtualMachineArtifact
+        let launchArtifacts: [DoryResolvedMachineLaunchArtifact]
         do {
+            launchArtifacts = try resolveLaunchArtifacts(plan.launchArtifacts)
+            guard launchArtifacts == plan.launchArtifacts else {
+                throw DoryDaemonProductionTrustInventoryError.mediaInvalid
+            }
             artifact = try artifactAuthority.resolve(
                 reference: request.bootMediaReference,
                 kind: plan.bootMedia.media.kind,
@@ -839,6 +857,7 @@ final class DoryProductionDaemonVirtualMachineTrustInventory:
                 bootInspection: inspection,
                 mutableProvenance: artifact.mutableProvenance
             ),
+            launchArtifacts: launchArtifacts,
             backendRuntimes: [runtimeInventory],
             resourceAdmission: admission,
             exactStartRuntimeQualification: qualification.runtime
@@ -855,6 +874,49 @@ final class DoryProductionDaemonVirtualMachineTrustInventory:
             // Repeats artifact hashing, structural media verification, helper signature/digest,
             // host/resource probing, signed exact qualification, and bound-ledger validation.
             _ = try self.startInventory(for: request)
+        }
+    }
+
+    private func resolveLaunchArtifacts(
+        _ requirements: [DoryDaemonVirtualMachineLaunchArtifactRequirement]
+    ) throws -> [DoryResolvedMachineLaunchArtifact] {
+        try requirements.map { requirement in
+            let artifact = try artifactAuthority.resolve(
+                reference: requirement.reference,
+                kind: requirement.kind,
+                source: requirement.source
+            )
+            guard (artifact.media.mutableProvenance != nil) == requirement.mutable else {
+                throw DoryDaemonProductionTrustInventoryError.mediaInvalid
+            }
+            return DoryResolvedMachineLaunchArtifact(
+                resolverReference: artifact.reference,
+                media: artifact.media,
+                authorityRevision: artifact.authorityRevision,
+                usages: requirement.usages,
+                mutableProvenanceEvidence:
+                    artifact.mutableProvenance?.persistedAuditEvidence
+            )
+        }
+    }
+
+    private func resolveLaunchArtifacts(
+        _ planned: [DoryResolvedMachineLaunchArtifact]
+    ) throws -> [DoryResolvedMachineLaunchArtifact] {
+        try planned.map { expected in
+            let artifact = try artifactAuthority.resolve(
+                reference: expected.resolverReference,
+                kind: expected.media.kind,
+                source: expected.media.source
+            )
+            return DoryResolvedMachineLaunchArtifact(
+                resolverReference: artifact.reference,
+                media: artifact.media,
+                authorityRevision: artifact.authorityRevision,
+                usages: expected.usages,
+                mutableProvenanceEvidence:
+                    artifact.mutableProvenance?.persistedAuditEvidence
+            )
         }
     }
 

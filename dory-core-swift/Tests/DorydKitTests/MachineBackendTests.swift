@@ -96,6 +96,8 @@ final class MachineBackendTests: XCTestCase {
         let started = registry.start(plan)
         XCTAssertTrue(started.isSuccess)
         XCTAssertEqual(started.observation?.state, .running)
+        XCTAssertEqual(recorder.launchBindings.first?.graphics, .hostAcceleratedDisplay)
+        XCTAssertEqual(recorder.launchBindings.first?.devices, .minimumBootable)
 
         let stopped = registry.stop(MachineBackendRuntimeRequest(
             machineID: plan.machine.id,
@@ -317,16 +319,21 @@ final class MachineBackendTests: XCTestCase {
 private final class OperationRecorder: @unchecked Sendable {
     private let lock = NSLock()
     private var recordedEvents: [String] = []
+    private var recordedLaunchBindings: [MachineBackendLaunchBinding] = []
 
     var events: [String] {
         lock.withLock { recordedEvents }
     }
 
+    var launchBindings: [MachineBackendLaunchBinding] {
+        lock.withLock { recordedLaunchBindings }
+    }
+
     lazy var operations = MachineBackendCompatibilityOperations(
-        start: { [weak self] id in
-            self?.append("start:\(id)")
+        authorizedStart: { [weak self] binding in
+            self?.append(binding)
             return MachineBackendRuntimeObservation(
-                machineID: id,
+                machineID: binding.machineID,
                 state: .running,
                 processIdentifier: 42
             )
@@ -339,5 +346,12 @@ private final class OperationRecorder: @unchecked Sendable {
 
     private func append(_ event: String) {
         lock.withLock { recordedEvents.append(event) }
+    }
+
+    private func append(_ binding: MachineBackendLaunchBinding) {
+        lock.withLock {
+            recordedLaunchBindings.append(binding)
+            recordedEvents.append("start:\(binding.machineID)")
+        }
     }
 }

@@ -9,14 +9,21 @@ final class DoryVMMDesktopApplication: NSObject, NSApplicationDelegate, NSWindow
     private let runtime: DoryVMMRuntime
     private let machineView: VZVirtualMachineView
     private let window: NSWindow
-    private let clipboard: DoryDesktopClipboardCoordinator
+    private let clipboard: DoryDesktopClipboardCoordinator?
+    private let dynamicDisplayEnabled: Bool
     private var pendingDisplayResize: DispatchWorkItem?
     private var requestedPixelSize: CGSize?
     private var stopError: String?
 
-    private init(runtime: DoryVMMRuntime, machineID: String, environment: [String: String]) {
+    private init(
+        runtime: DoryVMMRuntime,
+        machineID: String,
+        environment: [String: String],
+        resolvedDevices: DoryVirtualMachineDeviceCapabilityRequest?
+    ) {
         self.application = NSApplication.shared
         self.runtime = runtime
+        dynamicDisplayEnabled = resolvedDevices?.dynamicDisplay ?? true
 
         let windowSize = NSSize(width: 1_280, height: 800)
         let machineView = DoryVirtualMachineView(frame: NSRect(origin: .zero, size: windowSize))
@@ -35,21 +42,21 @@ final class DoryVMMDesktopApplication: NSObject, NSApplicationDelegate, NSWindow
         let coordinatorPolicy: DoryDesktopClipboardPolicy = requestedPolicy == .bidirectional
             ? .off
             : requestedPolicy
-        self.clipboard = DoryDesktopClipboardCoordinator(
-            policy: coordinatorPolicy,
-            execute: { argv, stdin, timeoutMs, outputLimitBytes in
-                try runtime.executeDesktopIntegration(
-                    argv: argv,
-                    stdin: stdin,
-                    timeoutMs: timeoutMs,
-                    outputLimitBytes: outputLimitBytes
-                )
-            },
-            sendShortcut: { keyCode in machineView.sendControlShortcut(linuxKeyCode: keyCode) },
-            log: { message in
-                FileHandle.standardError.write(Data("dory-vmm clipboard: \(message)\n".utf8))
-            }
-        )
+        clipboard = resolvedDevices?.clipboard == false ? nil : DoryDesktopClipboardCoordinator(
+                policy: coordinatorPolicy,
+                execute: { argv, stdin, timeoutMs, outputLimitBytes in
+                    try runtime.executeDesktopIntegration(
+                        argv: argv,
+                        stdin: stdin,
+                        timeoutMs: timeoutMs,
+                        outputLimitBytes: outputLimitBytes
+                    )
+                },
+                sendShortcut: { keyCode in machineView.sendControlShortcut(linuxKeyCode: keyCode) },
+                log: { message in
+                    FileHandle.standardError.write(Data("dory-vmm clipboard: \(message)\n".utf8))
+                }
+            )
 
         self.window = NSWindow(
             contentRect: NSRect(origin: .zero, size: windowSize),
@@ -73,12 +80,14 @@ final class DoryVMMDesktopApplication: NSObject, NSApplicationDelegate, NSWindow
     static func run(
         runtime: DoryVMMRuntime,
         machineID: String,
-        environment: [String: String]
+        environment: [String: String],
+        resolvedDevices: DoryVirtualMachineDeviceCapabilityRequest? = nil
     ) throws {
         let controller = DoryVMMDesktopApplication(
             runtime: runtime,
             machineID: machineID,
-            environment: environment
+            environment: environment,
+            resolvedDevices: resolvedDevices
         )
         try controller.runUntilStopped()
     }
@@ -86,11 +95,11 @@ final class DoryVMMDesktopApplication: NSObject, NSApplicationDelegate, NSWindow
     private func runUntilStopped() throws {
         application.setActivationPolicy(.regular)
         application.delegate = self
-        clipboard.start()
-        clipboard.markGuestReady()
+        clipboard?.start()
+        clipboard?.markGuestReady()
         window.makeKeyAndOrderFront(nil)
         application.activate()
-        reconfigureDisplayNow()
+        if dynamicDisplayEnabled { reconfigureDisplayNow() }
 
         let runtime = self.runtime
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
@@ -107,7 +116,7 @@ final class DoryVMMDesktopApplication: NSObject, NSApplicationDelegate, NSWindow
         }
 
         application.run()
-        clipboard.stop()
+        clipboard?.stop()
         if let stopError {
             throw DoryVZMachineError.stoppedWithError(stopError)
         }
@@ -177,6 +186,7 @@ final class DoryVMMDesktopApplication: NSObject, NSApplicationDelegate, NSWindow
     }
 
     private func scheduleDisplayReconfiguration() {
+        guard dynamicDisplayEnabled else { return }
         pendingDisplayResize?.cancel()
         let work = DispatchWorkItem { [weak self] in
             self?.reconfigureDisplayNow()
@@ -186,6 +196,7 @@ final class DoryVMMDesktopApplication: NSObject, NSApplicationDelegate, NSWindow
     }
 
     private func reconfigureDisplayNow() {
+        guard dynamicDisplayEnabled else { return }
         pendingDisplayResize?.cancel()
         pendingDisplayResize = nil
         let size = Self.targetPixelSize(

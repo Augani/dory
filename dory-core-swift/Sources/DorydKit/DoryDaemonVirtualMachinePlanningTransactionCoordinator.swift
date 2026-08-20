@@ -30,6 +30,63 @@ public struct DoryDaemonVirtualMachinePlanningTransactionRequest: Sendable {
     }
 }
 
+/// Validated, daemon-local reconstruction authority decoded from the durable transaction journal.
+/// It carries no raw machine configuration, filesystem path, or environment value. A recovery
+/// provider must re-read those values from its own MachineManager authority and prove that the
+/// resulting request matches every digest and publication decision below.
+public struct DoryDaemonVirtualMachinePlanningRecoveryDescriptor: Sendable, Equatable {
+    public var machineID: String
+    public var definition: DoryVirtualMachineDefinition
+    public var definitionSHA256: String
+    public var workspacePublication: DoryDaemonVirtualMachineWorkspacePublication
+    public var planPublication: DoryDaemonVirtualMachinePlanPublication
+    public var machineSHA256: String
+    public var resourceRequirements: [DoryVMResourceRequirement]
+    public var startingLeaseDurationMilliseconds: Int64
+    public var fallbackAuthorization: DoryResolvedMachineFallbackAuthorization?
+    public var experimentalAuthorization: DoryResolvedExperimentalSupportAuthorization?
+    public var requestSHA256: String
+    public var machineAuthoritySHA256: String
+
+    public func matches(
+        _ request: DoryDaemonVirtualMachinePlanningTransactionRequest
+    ) -> Bool {
+        let definitionData = DoryDaemonVirtualMachinePlanningCoordinator
+            .canonicalDefinitionData(request.planning.definition)
+        return request.planning.definition == definition
+            && request.planning.canonicalDefinitionData == definitionData
+            && DoryDaemonVirtualMachinePlanningCoordinator.sha256(definitionData)
+                == definitionSHA256
+            && Self.sha256(request.planning.machine) == machineSHA256
+            && request.workspacePublication == workspacePublication
+            && request.planning.publication == planPublication
+            && request.resourceRequirements.sorted(by: Self.requirementOrder)
+                == resourceRequirements
+            && request.startingLeaseDurationMilliseconds
+                == startingLeaseDurationMilliseconds
+            && request.planning.fallbackAuthorization == fallbackAuthorization
+            && request.planning.experimentalAuthorization == experimentalAuthorization
+    }
+
+    private static func sha256<T: Encodable>(_ value: T) -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        guard let data = try? encoder.encode(value) else { return "" }
+        return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func requirementOrder(
+        _ lhs: DoryVMResourceRequirement,
+        _ rhs: DoryVMResourceRequirement
+    ) -> Bool {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        let left = (try? encoder.encode(lhs)) ?? Data()
+        let right = (try? encoder.encode(rhs)) ?? Data()
+        return left.lexicographicallyPrecedes(right)
+    }
+}
+
 /// One-use daemon authority. It re-resolves media, helper, host identity, and signed
 /// qualification immediately before desired-state publication. Start obtains a separate token.
 public final class DoryDaemonVirtualMachinePlanningPublicationAuthorization:
@@ -337,6 +394,11 @@ public final class DoryDaemonVirtualMachinePlanningTransactionCoordinator:
         var phase: Phase
         var requestSHA256: String
         var machineAuthoritySHA256: String
+        var machineSHA256: String
+        var resourceRequirements: [DoryVMResourceRequirement]
+        var startingLeaseDurationMilliseconds: Int64
+        var fallbackAuthorization: DoryResolvedMachineFallbackAuthorization?
+        var experimentalAuthorization: DoryResolvedExperimentalSupportAuthorization?
         var definition: DoryVirtualMachineDefinition
         var definitionSHA256: String
         var sourceDefinitionSHA256: String?
@@ -479,6 +541,33 @@ public final class DoryDaemonVirtualMachinePlanningTransactionCoordinator:
         try instanceLock.withLock {
             try withWorkspaceLock(machineID: request.planning.definition.identity.id) {
                 try execute(request)
+            }
+        }
+    }
+
+    /// Reads and integrity-validates a durable journal before any external recovery authority is
+    /// consulted. Callers cannot select publication modes or authorization policy from live state.
+    public func recoveryDescriptor(
+        for machineID: String
+    ) throws -> DoryDaemonVirtualMachinePlanningRecoveryDescriptor? {
+        try instanceLock.withLock {
+            try withWorkspaceLock(machineID: machineID) {
+                guard let journal = try readJournal(machineID: machineID) else { return nil }
+                return DoryDaemonVirtualMachinePlanningRecoveryDescriptor(
+                    machineID: journal.definition.identity.id,
+                    definition: journal.definition,
+                    definitionSHA256: journal.definitionSHA256,
+                    workspacePublication: journal.workspacePublication,
+                    planPublication: Self.planPublication(from: journal.planPublication),
+                    machineSHA256: journal.machineSHA256,
+                    resourceRequirements: journal.resourceRequirements,
+                    startingLeaseDurationMilliseconds:
+                        journal.startingLeaseDurationMilliseconds,
+                    fallbackAuthorization: journal.fallbackAuthorization,
+                    experimentalAuthorization: journal.experimentalAuthorization,
+                    requestSHA256: journal.requestSHA256,
+                    machineAuthoritySHA256: journal.machineAuthoritySHA256
+                )
             }
         }
     }
@@ -707,6 +796,14 @@ public final class DoryDaemonVirtualMachinePlanningTransactionCoordinator:
             phase: .prepared,
             requestSHA256: requestDigest,
             machineAuthoritySHA256: machineAuthoritySHA256,
+            machineSHA256: Self.sha256(Self.canonicalData(request.planning.machine)),
+            resourceRequirements: request.resourceRequirements.sorted(
+                by: Self.requirementOrder
+            ),
+            startingLeaseDurationMilliseconds:
+                request.startingLeaseDurationMilliseconds,
+            fallbackAuthorization: request.planning.fallbackAuthorization,
+            experimentalAuthorization: request.planning.experimentalAuthorization,
             definition: request.planning.definition,
             definitionSHA256: Self.sha256(canonicalDefinition),
             sourceDefinitionSHA256: existingDefinition.map {
@@ -1218,7 +1315,9 @@ public final class DoryDaemonVirtualMachinePlanningTransactionCoordinator:
         _ definition: DoryVirtualMachineDefinition
     ) throws -> DoryDaemonVirtualMachineInventoryRequest {
         guard let boot = DoryDaemonVirtualMachinePlanningCoordinator
-            .primaryBootMedia(in: definition) else {
+            .primaryBootMedia(in: definition),
+              let launchArtifacts = DoryDaemonVirtualMachinePlanningCoordinator
+                .launchArtifactRequirements(for: definition) else {
             throw failure(.invalidRequest, "Workspace has no primary boot media.")
         }
         return DoryDaemonVirtualMachineInventoryRequest(
@@ -1226,6 +1325,7 @@ public final class DoryDaemonVirtualMachinePlanningTransactionCoordinator:
             definitionRevision: definition.lifecycle.revision,
             guest: definition.guest,
             bootMedia: boot,
+            launchArtifacts: launchArtifacts,
             resources: definition.resources,
             devices: DoryDaemonVirtualMachinePlanningCoordinator.devices(for: definition),
             acceptableGraphics: definition.graphics.acceptableLevels,
@@ -1410,6 +1510,10 @@ public final class DoryDaemonVirtualMachinePlanningTransactionCoordinator:
               ) != nil,
               Self.isSHA256(journal.requestSHA256),
               Self.isSHA256(journal.machineAuthoritySHA256),
+              Self.isSHA256(journal.machineSHA256),
+              journal.startingLeaseDurationMilliseconds > 0,
+              journal.resourceRequirements
+                == journal.resourceRequirements.sorted(by: Self.requirementOrder),
               Self.isSHA256(journal.definitionSHA256),
               journal.definitionSHA256 == Self.sha256(
                 DoryDaemonVirtualMachinePlanningCoordinator
