@@ -283,6 +283,24 @@ public final class DorydService: NSObject, DorydControl {
         }
     }
 
+    public func machinePause(
+        _ machineID: String,
+        reply: @escaping (Bool, NSDictionary, String) -> Void
+    ) {
+        machineControl(machineID, action: "pause", reply: reply) { manager, id in
+            try manager.pause(id: id)
+        }
+    }
+
+    public func machineResume(
+        _ machineID: String,
+        reply: @escaping (Bool, NSDictionary, String) -> Void
+    ) {
+        machineControl(machineID, action: "resume", reply: reply) { manager, id in
+            try manager.resume(id: id)
+        }
+    }
+
     public func machineUpdate(
         _ machineID: String,
         config: NSDictionary,

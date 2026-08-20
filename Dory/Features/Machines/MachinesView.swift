@@ -125,6 +125,8 @@ private struct MachineCard: View {
     @State private var confirmingDelete = false
 
     private var isRunning: Bool { machine.status == .running }
+    private var isPaused: Bool { machine.status == .paused }
+    private var isActive: Bool { isRunning || isPaused }
     private var hasAssignedAddress: Bool { DoryDNS.ipv4Bytes(machine.ip) != nil }
 
     var body: some View {
@@ -150,10 +152,10 @@ private struct MachineCard: View {
 
             HStack(alignment: .top, spacing: 0) {
                 metric("CPU", isRunning ? String(format: "%.1f%%", machine.cpuPercent) : "—")
-                metric("MEMORY", isRunning ? machine.memoryDisplay : "—")
+                metric("MEMORY", isActive ? machine.memoryDisplay : "—")
                 VStack(alignment: .leading, spacing: 3) {
                     Text(hasAssignedAddress ? "ADDRESS" : "DNS NAME").font(.system(size: 10, weight: .semibold)).foregroundStyle(p.text3).tracking(0.4)
-                    Text(machine.ip).font(.mono(12.5, weight: .semibold)).foregroundStyle(isRunning ? p.accentText : p.text3).lineLimit(1)
+                    Text(machine.ip).font(.mono(12.5, weight: .semibold)).foregroundStyle(isActive ? p.accentText : p.text3).lineLimit(1)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -191,8 +193,17 @@ private struct MachineCard: View {
             Divider().overlay(p.border)
 
             HStack(spacing: 8) {
-                actionButton(isRunning ? "stop.fill" : "play.fill", isRunning ? "Stop" : "Start", prominent: !isRunning) {
+                actionButton(
+                    isRunning ? "stop.fill" : "play.fill",
+                    isRunning ? "Stop" : (isPaused ? "Resume" : "Start"),
+                    prominent: !isRunning
+                ) {
                     store.toggleMachine(machine)
+                }
+                if isRunning {
+                    actionButton("pause.fill", "Pause", prominent: false) {
+                        store.pauseMachine(machine)
+                    }
                 }
                 if machine.displayMode == .desktop {
                     actionButton("display", "Desktop", prominent: false, enabled: store.canOpenMachineDesktop(machine)) {

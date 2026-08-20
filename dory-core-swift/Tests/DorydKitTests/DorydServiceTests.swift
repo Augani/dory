@@ -1117,6 +1117,24 @@ final class DorydServiceTests: XCTestCase {
         }
         wait(for: [start], timeout: 5)
 
+        let pause = expectation(description: "machinePause reply")
+        proxy.machinePause("dev") { ok, body, message in
+            XCTAssertTrue(ok, message)
+            XCTAssertEqual(body["state"] as? String, "paused")
+            XCTAssertNotNil(body["pid"])
+            pause.fulfill()
+        }
+        wait(for: [pause], timeout: 5)
+
+        let resume = expectation(description: "machineResume reply")
+        proxy.machineResume("dev") { ok, body, message in
+            XCTAssertTrue(ok, message)
+            XCTAssertEqual(body["state"] as? String, "running")
+            XCTAssertNotNil(body["pid"])
+            resume.fulfill()
+        }
+        wait(for: [resume], timeout: 5)
+
         let list = expectation(description: "machineList reply")
         proxy.machineList { body, message in
             XCTAssertEqual(message, "")

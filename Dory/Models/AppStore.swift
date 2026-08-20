@@ -5152,7 +5152,7 @@ final class AppStore {
         switch status.state {
         case "running":
             runState = .running
-        case "starting":
+        case "paused", "starting":
             runState = .paused
         default:
             runState = .stopped
@@ -5361,19 +5361,42 @@ final class AppStore {
     func toggleMachine(_ machine: Machine) {
         guard requireDorydMachines() else { return }
         guard let idx = machines.firstIndex(where: { $0.id == machine.id }) else { return }
-        let wasRunning = machines[idx].status == .running
+        let previousState = machines[idx].status
         let name = machine.name
         busyMachines.insert(name)
         Task {
             defer { busyMachines.remove(name) }
             do {
-                if wasRunning {
+                switch previousState {
+                case .running:
                     _ = try await dorydClient.machineStop(name)
-                } else {
+                case .paused:
+                    _ = try await dorydClient.machineResume(name)
+                case .stopped:
                     _ = try await dorydClient.machineStart(name)
                 }
             } catch {
-                actionError = "Could not \(wasRunning ? "stop" : "start") \(name): \(error)"
+                let action = switch previousState {
+                case .running: "stop"
+                case .paused: "resume"
+                case .stopped: "start"
+                }
+                actionError = "Could not \(action) \(name): \(error)"
+            }
+            await refreshMachines()
+        }
+    }
+
+    func pauseMachine(_ machine: Machine) {
+        guard requireDorydMachines(), machine.status == .running else { return }
+        guard !busyMachines.contains(machine.name) else { return }
+        busyMachines.insert(machine.name)
+        Task {
+            defer { busyMachines.remove(machine.name) }
+            do {
+                _ = try await dorydClient.machinePause(machine.name)
+            } catch {
+                actionError = "Could not pause \(machine.name): \(error)"
             }
             await refreshMachines()
         }
