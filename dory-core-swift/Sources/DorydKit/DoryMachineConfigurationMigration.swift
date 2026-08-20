@@ -516,7 +516,7 @@ public enum DoryMachineConfigurationMigrationBridge {
         switch bootContract {
         case .managedDirectKernel:
             boot = normalBoot(
-                kind: .installedLinuxBootBundle,
+                kind: .linuxKernel,
                 source: configuration.environment["DORY_CUSTOM_LINUX"] == "1"
                     ? .userProvided : .bundledByDory,
                 artifact: kernelReference

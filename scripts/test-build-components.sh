@@ -58,7 +58,7 @@ manifest = {
     "records": [{
         "qualificationIdentity": "linux-desktop-arm64-mac16-1-25a1",
         "guest": {"family": "linux", "architecture": "arm64"},
-        "bootMediaKind": "installed-linux-boot-bundle",
+        "bootMediaKind": "linux-kernel",
         "bootMediaSource": "dory-bundled",
         "immutableArtifactSHA256": digest("a"),
         "backend": "dory-hypervisor",

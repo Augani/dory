@@ -753,6 +753,7 @@ struct MachineManagerResolvedPlanIntegrationTests {
         #expect(createdRecord.legacyMigrationFactsSHA256 == nil)
         #expect(createdRecord.definition.guestIdentityIntent.account?.username == "developer")
         #expect(createdRecord.definition.backendPreference.backend == .doryHypervisor)
+        #expect(createdRecord.definition.boot.devices.first?.kind == .linuxKernel)
         #expect(created.typedSettings?.graphicsPreference == .virgl)
         #expect(createdRecord.definition.graphics.acceptableLevels == [.hostAcceleratedDisplay])
         let snapshot = try manager.snapshot(id: "typed", snapshotID: "typed-baseline")
@@ -814,6 +815,44 @@ struct MachineManagerResolvedPlanIntegrationTests {
         #expect(restartedStatus.environment.isEmpty)
         #expect(restartedStatus.typedSettings == created.typedSettings)
         #expect(restartedStatus.runtimeIdentity.mode == .requiresReplanning)
+    }
+
+    @Test("native direct-kernel records upgrade the historical bundle alias exactly once")
+    func nativeDirectKernelAliasMigrates() throws {
+        let state = try makeState("native-kernel-media-upgrade")
+        defer { try? FileManager.default.removeItem(atPath: state) }
+        do {
+            let manager = makeManager(state: state, policy: .perWorkspaceAuthority)
+            _ = try createMachine(id: "native", manager: manager)
+        }
+
+        let repository = DoryWorkspaceRepository(root: state)
+        let current = try repository.readPersistedRecord(id: "native").definition
+        #expect(current.boot.devices.first?.kind == .linuxKernel)
+        var historicalAlias = current
+        historicalAlias.boot.devices[0].kind = .installedLinuxBootBundle
+        historicalAlias.lifecycle = DoryVMLifecycleMetadata(
+            revision: current.lifecycle.revision + 1,
+            createdAtUnixMilliseconds: current.lifecycle.createdAtUnixMilliseconds,
+            updatedAtUnixMilliseconds: current.lifecycle.updatedAtUnixMilliseconds + 1
+        )
+        try repository.replace(
+            historicalAlias,
+            expectedRevision: current.lifecycle.revision
+        )
+
+        let machineBytes = try Data(contentsOf: URL(
+            fileURLWithPath: state + "/native/machine.json"
+        ))
+        let restarted = makeManager(state: state, policy: .perWorkspaceAuthority)
+        let status = try #require(restarted.status(id: "native"))
+        #expect(status.runtimeIdentity.mode == .requiresReplanning)
+        let upgraded = try repository.readPersistedRecord(id: "native").definition
+        #expect(upgraded.boot.devices.first?.kind == .linuxKernel)
+        #expect(upgraded.lifecycle.revision == historicalAlias.lifecycle.revision + 1)
+        #expect(try Data(contentsOf: URL(
+            fileURLWithPath: state + "/native/machine.json"
+        )) == machineBytes)
     }
 
     @Test("native creation authority is durable before machine metadata becomes discoverable")
@@ -1424,7 +1463,7 @@ struct MachineManagerResolvedPlanIntegrationTests {
         let artifact = digest("a")
         let devices = DoryVirtualMachineDeviceCapabilityRequest.minimumBootable
         let media = DoryBootMedia(
-            kind: .installedLinuxBootBundle,
+            kind: request.definition.boot.devices[0].kind,
             source: .userProvided,
             artifactSHA256: artifact
         )

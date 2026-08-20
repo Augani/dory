@@ -57,7 +57,7 @@ struct DoryMachineConfigurationMigrationTests {
         #expect(migrated.bootContract == .managedDirectKernel)
         #expect(migrated.definition.workload == .desktop)
         #expect(migrated.definition.boot.phase == .normal)
-        #expect(migrated.definition.boot.devices[0].kind == .installedLinuxBootBundle)
+        #expect(migrated.definition.boot.devices[0].kind == .linuxKernel)
         #expect(migrated.definition.boot.devices[0].source == .bundledByDory)
         #expect(migrated.definition.backendPreference == DoryVMBackendPreference(
             mode: .preferred,

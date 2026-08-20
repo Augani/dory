@@ -395,7 +395,7 @@ struct DoryDaemonVirtualMachineProductionTrustTests {
         let completed = LockedPlanningCreateReply()
         service.machineCreate([
             "id": "qualified-headless",
-            "kernelPath": fixture.mediaPath,
+            "kernelPath": fixture.directKernelPath,
             "rootfsPath": qualifiedDisk,
             "displayMode": "headless",
             "memoryMB": UInt64(2_048),
@@ -776,6 +776,8 @@ private final class ProductionTrustFixture: @unchecked Sendable {
     let runtimeBuildIdentifier: String
     let mediaPath: String
     let mediaDigest: String
+    let directKernelPath: String
+    let directKernelDigest: String
     let mediaReference = DoryVMResolverReference(
         namespace: "artifact",
         identifier: "qualified-linux-boot"
@@ -855,6 +857,15 @@ private final class ProductionTrustFixture: @unchecked Sendable {
             toPath: mediaPath
         )
         mediaDigest = try DoryComponentCatalogVerifier.fileDigest(mediaPath)
+        directKernelPath = root.appendingPathComponent("qualified-direct-kernel").path
+        try Data("qualified-direct-kernel".utf8).write(
+            to: URL(fileURLWithPath: directKernelPath)
+        )
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600],
+            ofItemAtPath: directKernelPath
+        )
+        directKernelDigest = try DoryComponentCatalogVerifier.fileDigest(directKernelPath)
         storagePath = root.appendingPathComponent("qualified-linux.raw").path
         try Data(repeating: 0x5a, count: 4_096).write(
             to: URL(fileURLWithPath: storagePath)
@@ -1152,24 +1163,30 @@ private final class ProductionTrustFixture: @unchecked Sendable {
              VirtualizationFrameworkLinuxMachineBackend.backendDescriptor.implementationIdentifier,
              "dory-vmm"),
         ]
+        let media = [
+            (DoryBootMediaKind.installedLinuxBootBundle, mediaDigest, "bundle"),
+            (DoryBootMediaKind.linuxKernel, directKernelDigest, "kernel"),
+        ]
         let records = backends.flatMap { backend, implementation, component in
-            [("minimum", devices), ("headless", headlessDevices)].map { suffix, devices in
-                DoryVirtualMachineQualificationRecord(
-                    qualificationIdentity: "\(component)-\(suffix)-qualification",
-                    guest: guest,
-                    bootMediaKind: .installedLinuxBootBundle,
-                    bootMediaSource: .bundledByDory,
-                    immutableArtifactSHA256: mediaDigest,
-                    backend: backend,
-                    backendImplementationIdentifier: implementation,
-                    backendRuntimeBuildIdentifier: runtimeBuildIdentifier,
-                    virtualHardwareABIVersion: 1,
-                    graphics: .none,
-                    devices: devices,
-                    hostHardwareModelIdentifier: host.hardwareModelIdentifier,
-                    hostOperatingSystemBuild: host.operatingSystemBuild,
-                    components: [components.first { $0.componentIdentifier == component }!]
-                )
+            media.flatMap { mediaKind, mediaDigest, mediaSuffix in
+                [("minimum", devices), ("headless", headlessDevices)].map { suffix, devices in
+                    DoryVirtualMachineQualificationRecord(
+                        qualificationIdentity: "\(component)-\(mediaSuffix)-\(suffix)-qualification",
+                        guest: guest,
+                        bootMediaKind: mediaKind,
+                        bootMediaSource: .bundledByDory,
+                        immutableArtifactSHA256: mediaDigest,
+                        backend: backend,
+                        backendImplementationIdentifier: implementation,
+                        backendRuntimeBuildIdentifier: runtimeBuildIdentifier,
+                        virtualHardwareABIVersion: 1,
+                        graphics: .none,
+                        devices: devices,
+                        hostHardwareModelIdentifier: host.hardwareModelIdentifier,
+                        hostOperatingSystemBuild: host.operatingSystemBuild,
+                        components: [components.first { $0.componentIdentifier == component }!]
+                    )
+                }
             }
         }
         let manifest = DoryVirtualMachineQualificationManifest(

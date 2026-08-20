@@ -639,6 +639,8 @@ final class DoryProductionDaemonVirtualMachineTrustInventory:
             } catch {
                 throw DoryDaemonProductionTrustInventoryError.mediaInvalid
             }
+        case .linuxKernel:
+            inspection = nil
         case .installedLinuxBootBundle:
             do { _ = try DoryInstalledLinuxBootBundle.verifyContents(atPath: artifact.path) }
             catch { throw DoryDaemonProductionTrustInventoryError.mediaInvalid }
@@ -790,6 +792,8 @@ final class DoryProductionDaemonVirtualMachineTrustInventory:
             } catch {
                 throw DoryDaemonProductionTrustInventoryError.mediaInvalid
             }
+        case .linuxKernel:
+            inspection = nil
         case .installedLinuxBootBundle:
             do {
                 _ = try DoryInstalledLinuxBootBundle.verifyContents(atPath: artifact.path)

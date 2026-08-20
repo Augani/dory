@@ -8,7 +8,7 @@ final class MachineBackendTests: XCTestCase {
         XCTAssertEqual(raw.identity, .doryHypervisor)
         XCTAssertEqual(raw.guestFamilies, [.linux])
         XCTAssertEqual(raw.guestArchitectures, [.arm64])
-        XCTAssertEqual(raw.bootMediaKinds, [.installedLinuxBootBundle])
+        XCTAssertEqual(raw.bootMediaKinds, [.linuxKernel, .installedLinuxBootBundle])
         XCTAssertEqual(raw.lifecycle, .currentMachineManager)
 
         let vz = VirtualizationFrameworkLinuxMachineBackend.backendDescriptor
@@ -17,7 +17,7 @@ final class MachineBackendTests: XCTestCase {
         XCTAssertEqual(vz.guestArchitectures, [.arm64])
         XCTAssertEqual(
             vz.bootMediaKinds,
-            [.installedLinuxBootBundle, .installerISO, .virtualDisk]
+            [.linuxKernel, .installedLinuxBootBundle, .installerISO, .virtualDisk]
         )
         XCTAssertFalse(vz.lifecycle.pause)
         XCTAssertFalse(vz.lifecycle.resume)
@@ -86,7 +86,7 @@ final class MachineBackendTests: XCTestCase {
             machine: rawMachine(),
             capabilityPlan: capabilityPlan(
                 backend: .doryHypervisor,
-                media: .installedLinuxBootBundle
+                media: .linuxKernel
             )
         )
 
@@ -147,7 +147,7 @@ final class MachineBackendTests: XCTestCase {
             id: "vz-direct-linux",
             kernelPath: bundle.path,
             rootfsPath: "/fixture/linux.raw",
-            bootMode: .linuxKernel,
+            bootMode: .efi,
             displayMode: .headless
         )
         let registry = try BackendRegistry(backends: [
@@ -228,7 +228,7 @@ final class MachineBackendTests: XCTestCase {
             machine: machine,
             capabilityPlan: capabilityPlan(
                 backend: .doryHypervisor,
-                media: .installedLinuxBootBundle
+                media: .linuxKernel
             )
         ))
 

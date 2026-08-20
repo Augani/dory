@@ -914,14 +914,18 @@ public struct DoryResolvedMachinePlan: Codable, Sendable, Equatable, Hashable {
         let runtimeCombinationIsImplemented: Bool
         switch (guest.family, backend) {
         case (.linux, .doryHypervisor):
-            runtimeCombinationIsImplemented = bootMedia.media.kind == .installedLinuxBootBundle
+            runtimeCombinationIsImplemented = bootMedia.media.kind == .linuxKernel
+                || bootMedia.media.kind == .installedLinuxBootBundle
         case (.linux, .appleVirtualizationFramework),
-             (.linux, .qemuHypervisorFramework),
-             (.windows, .qemuHypervisorFramework):
-            runtimeCombinationIsImplemented = bootMedia.media.kind == .installerISO
+             (.linux, .qemuHypervisorFramework):
+            runtimeCombinationIsImplemented = bootMedia.media.kind == .linuxKernel
+                || bootMedia.media.kind == .installerISO
                 || bootMedia.media.kind == .virtualDisk
                 || (backend == .appleVirtualizationFramework
                     && bootMedia.media.kind == .installedLinuxBootBundle)
+        case (.windows, .qemuHypervisorFramework):
+            runtimeCombinationIsImplemented = bootMedia.media.kind == .installerISO
+                || bootMedia.media.kind == .virtualDisk
         case (.macOS, .appleVirtualizationFramework):
             runtimeCombinationIsImplemented = bootMedia.media.kind == .macOSRestoreImage
                 || bootMedia.media.kind == .virtualDisk

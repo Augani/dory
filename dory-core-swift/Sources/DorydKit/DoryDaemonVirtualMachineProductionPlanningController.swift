@@ -209,6 +209,9 @@ public final class DoryDaemonVirtualMachineProductionPlanningController:
                     $0.id == usage.identifier && $0.artifact == requirement.reference
                 }) else { return nil }
                 switch boot.kind {
+                case .linuxKernel:
+                    guard machine.bootMode == .linuxKernel else { return nil }
+                    paths.insert(machine.kernelPath)
                 case .installedLinuxBootBundle:
                     paths.insert(machine.kernelPath)
                 case .installerISO:

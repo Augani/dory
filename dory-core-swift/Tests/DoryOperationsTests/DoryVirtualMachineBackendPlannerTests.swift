@@ -69,6 +69,10 @@ struct DoryVirtualMachineBackendPlannerTests {
             bootMedia: .installedLinuxBootBundle
         ) == [.doryHypervisor])
         #expect(DoryAppleSiliconVirtualMachineBackendPlanner.defaultBackends(
+            for: linux,
+            bootMedia: .linuxKernel
+        ) == [.doryHypervisor])
+        #expect(DoryAppleSiliconVirtualMachineBackendPlanner.defaultBackends(
             for: macOS,
             bootMedia: .macOSRestoreImage
         ) == [.appleVirtualizationFramework])

@@ -5380,15 +5380,29 @@ public final class MachineManager: @unchecked Sendable {
         if let currentRecord,
            currentRecord.legacyConfigurationSHA256 == nil,
            currentRecord.legacyMigrationFactsSHA256 == nil {
-            guard Self.nativeDefinition(
+            let nativeDefinition: DoryVirtualMachineDefinition
+            if let migrated = try migrateNativeDirectKernelMediaIfNeeded(
                 currentRecord.definition,
+                compatibility: migration.definition
+            ) {
+                try workspaceRepository.replace(
+                    migrated,
+                    expectedRevision: currentRecord.definition.lifecycle.revision
+                )
+                nativeDefinition = migrated
+                reconcileState = .published
+            } else {
+                nativeDefinition = currentRecord.definition
+                reconcileState = .unchanged
+            }
+            guard Self.nativeDefinition(
+                nativeDefinition,
                 isCompatibleWith: migration.definition
             ) else {
                 throw DoryWorkspaceRepositoryError.staleLegacyProjection(machine.id)
             }
-            definition = currentRecord.definition
+            definition = nativeDefinition
             isNative = true
-            reconcileState = .unchanged
         } else {
             let result = try workspaceRepository.reconcileLegacyProjection(
                 migration.definition,
@@ -5416,6 +5430,44 @@ public final class MachineManager: @unchecked Sendable {
             isNative: isNative,
             reconcileState: reconcileState
         )
+    }
+
+    /// Native records written before the raw direct-kernel media kind existed used the portable
+    /// installed-bundle label for both shapes. The compatibility machine still proves which bytes
+    /// are actually launched, so upgrade only that one exact alias and advance desired-state
+    /// authority instead of continuing to misclassify a raw kernel at production trust time.
+    private func migrateNativeDirectKernelMediaIfNeeded(
+        _ definition: DoryVirtualMachineDefinition,
+        compatibility: DoryVirtualMachineDefinition
+    ) throws -> DoryVirtualMachineDefinition? {
+        guard compatibility.boot.devices.count == 1,
+              compatibility.boot.devices[0].kind == .linuxKernel,
+              definition.boot.devices.count == 1,
+              definition.boot.devices[0].kind == .installedLinuxBootBundle else {
+            return nil
+        }
+        var legacyCompatibility = compatibility
+        legacyCompatibility.boot.devices[0].kind = .installedLinuxBootBundle
+        guard Self.nativeDefinition(
+            definition,
+            isCompatibleWith: legacyCompatibility
+        ), definition.lifecycle.revision < UInt64.max,
+           definition.lifecycle.updatedAtUnixMilliseconds < Int64.max else {
+            return nil
+        }
+        var migrated = definition
+        migrated.boot = compatibility.boot
+        migrated.lifecycle = DoryVMLifecycleMetadata(
+            revision: definition.lifecycle.revision + 1,
+            createdAtUnixMilliseconds: definition.lifecycle.createdAtUnixMilliseconds,
+            updatedAtUnixMilliseconds: definition.lifecycle.updatedAtUnixMilliseconds + 1
+        )
+        guard migrated.validate().isEmpty else {
+            throw DoryWorkspaceRepositoryError.staleLegacyProjection(
+                definition.identity.id
+            )
+        }
+        return migrated
     }
 
     private static func nativeDefinition(

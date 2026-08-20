@@ -150,7 +150,7 @@ struct VirtualMachineCapabilitiesTests {
             == .trustedGuestImageGraphicsQualificationUnavailable)
     }
 
-    @Test("native hypervisor only accepts the post-install direct-boot bundle")
+    @Test("native hypervisor rejects installer media while VZ accepts it")
     func nativeHypervisorRejectsInstallerISO() {
         let native = evaluate(
             family: .linux,

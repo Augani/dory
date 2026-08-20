@@ -199,7 +199,7 @@ def validate_qualification_record(value: object, index: int) -> dict:
     if guest["architecture"] not in {"arm64", "x86_64"}:
         fail(f"{label} guest architecture is unsupported")
     if record["bootMediaKind"] not in {
-        "installer-iso", "virtual-disk", "installed-linux-boot-bundle",
+        "linux-kernel", "installer-iso", "virtual-disk", "installed-linux-boot-bundle",
         "macos-restore-image",
     }:
         fail(f"{label} boot media kind is unsupported")

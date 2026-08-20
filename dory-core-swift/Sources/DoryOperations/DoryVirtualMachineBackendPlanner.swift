@@ -281,7 +281,7 @@ public enum DoryAppleSiliconVirtualMachineBackendPlanner {
         bootMedia: DoryBootMediaKind
     ) -> [DoryVirtualizationBackendIdentity] {
         switch (guest.family, bootMedia) {
-        case (.linux, .installedLinuxBootBundle):
+        case (.linux, .linuxKernel), (.linux, .installedLinuxBootBundle):
             return [.doryHypervisor]
         case (.linux, _):
             return [.appleVirtualizationFramework, .qemuHypervisorFramework]

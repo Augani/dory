@@ -23,6 +23,9 @@ public struct DoryGuestPlatform: Codable, Sendable, Equatable, Hashable {
 
 /// The format presented to the virtual machine's firmware or boot loader.
 public enum DoryBootMediaKind: String, Codable, Sendable, CaseIterable, Hashable {
+    /// One immutable Linux kernel image used by the existing direct-kernel launch path. This is
+    /// distinct from the portable kernel+initrd+root-device bundle created after an EFI install.
+    case linuxKernel = "linux-kernel"
     case installerISO = "installer-iso"
     case virtualDisk = "virtual-disk"
     case installedLinuxBootBundle = "installed-linux-boot-bundle"
@@ -914,7 +917,8 @@ public enum DoryAppleSiliconCapabilityEvaluator {
     ) -> Bool {
         switch family {
         case .linux:
-            media == .installerISO || media == .virtualDisk || media == .installedLinuxBootBundle
+            media == .linuxKernel || media == .installerISO || media == .virtualDisk
+                || media == .installedLinuxBootBundle
         case .windows:
             media == .installerISO || media == .virtualDisk
         case .macOS:
@@ -927,9 +931,11 @@ public enum DoryAppleSiliconCapabilityEvaluator {
     ) -> Bool {
         switch (request.guest.family, request.backend) {
         case (.linux, .doryHypervisor):
-            return request.bootMedia.kind == .installedLinuxBootBundle
+            return request.bootMedia.kind == .linuxKernel
+                || request.bootMedia.kind == .installedLinuxBootBundle
         case (.linux, .appleVirtualizationFramework):
-            return request.bootMedia.kind == .installerISO
+            return request.bootMedia.kind == .linuxKernel
+                || request.bootMedia.kind == .installerISO
                 || request.bootMedia.kind == .virtualDisk
                 || request.bootMedia.kind == .installedLinuxBootBundle
         case (.linux, .qemuHypervisorFramework),

@@ -701,7 +701,7 @@ public struct DoryVirtualMachineDefinition: Codable, Sendable, Equatable {
 
             let roleMatchesKind: Bool
             switch device.kind {
-            case .virtualDisk, .installedLinuxBootBundle:
+            case .linuxKernel, .virtualDisk, .installedLinuxBootBundle:
                 roleMatchesKind = device.role == .system
             case .installerISO, .macOSRestoreImage:
                 roleMatchesKind = device.role == .installer || device.role == .recovery
@@ -987,7 +987,8 @@ public struct DoryVirtualMachineDefinition: Codable, Sendable, Equatable {
     ) -> Bool {
         switch family {
         case .linux:
-            kind == .installerISO || kind == .virtualDisk || kind == .installedLinuxBootBundle
+            kind == .linuxKernel || kind == .installerISO || kind == .virtualDisk
+                || kind == .installedLinuxBootBundle
         case .windows:
             kind == .installerISO || kind == .virtualDisk
         case .macOS:
