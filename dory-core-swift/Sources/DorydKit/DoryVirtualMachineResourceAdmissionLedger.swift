@@ -119,6 +119,7 @@ public enum DoryVirtualMachineResourceAdmissionLedgerError:
     case staleLedgerRevision(expected: UInt64, actual: UInt64)
     case staleLeaseRevision(expected: UInt64, actual: UInt64)
     case invalidLeaseState(DoryVirtualMachineResourceLeaseState)
+    case storageReservationCannotShrink(existing: UInt64, requested: UInt64)
     case planAlreadyBound
     case planMismatch
     case hostFactsMismatch
@@ -141,6 +142,8 @@ public enum DoryVirtualMachineResourceAdmissionLedgerError:
             "stale resource lease revision: expected \(expected), found \(actual)"
         case let .invalidLeaseState(state):
             "resource lease has invalid state: \(state.rawValue)"
+        case let .storageReservationCannotShrink(existing, requested):
+            "storage reservation cannot shrink from \(existing) to \(requested) bytes"
         case .planAlreadyBound: "resource admission lease is already bound to a plan"
         case .planMismatch: "resolved plan does not match the admitted resource lease"
         case .hostFactsMismatch: "current host facts do not match the admitted snapshot"
@@ -206,12 +209,22 @@ public final class DoryVirtualMachineResourceAdmissionLedger: @unchecked Sendabl
             let stoppedLeaseIndex = record.leases.firstIndex {
                 $0.binding.machineID == binding.machineID && $0.state == .stopped
             }
+            let stoppedLease = stoppedLeaseIndex.map { record.leases[$0] }
             guard !record.leases.contains(where: {
                 $0.binding.machineID == binding.machineID && $0.state != .stopped
             }) else {
                 throw DoryVirtualMachineResourceAdmissionLedgerError.machineAlreadyReserved(
                     binding.machineID
                 )
+            }
+            if let stoppedLease,
+               resources.diskBytes < stoppedLease.resources.diskBytes {
+                if recovered { try persistRecoveredRecord(&record) }
+                throw DoryVirtualMachineResourceAdmissionLedgerError
+                    .storageReservationCannotShrink(
+                        existing: stoppedLease.resources.diskBytes,
+                        requested: resources.diskBytes
+                    )
             }
             // A restart atomically replaces the stopped reservation. Excluding that lease from
             // assessment prevents double-counting its disk while the lock prevents any interval
@@ -237,7 +250,6 @@ public final class DoryVirtualMachineResourceAdmissionLedger: @unchecked Sendabl
                 if recovered { try persistRecoveredRecord(&record) }
                 throw DoryVirtualMachineResourceAdmissionLedgerError.capacityUnavailable(errors)
             }
-            let stoppedLease = stoppedLeaseIndex.map { record.leases[$0] }
             let leaseID = stoppedLease?.leaseID
                 ?? "resource-lease-\(UUID().uuidString.lowercased())"
             let evidence = Self.makeEvidence(
@@ -641,12 +653,11 @@ public final class DoryVirtualMachineResourceAdmissionLedger: @unchecked Sendabl
                 continue
             }
             changed = true
-            // The composition contract does not permit artifact creation before plan binding, so
-            // an abandoned pre-publication reservation owns no durable disk yet.
-            guard lease.boundPlanSHA256 != nil else { continue }
-            // A process may have crossed the launch boundary before daemon failure. Never release
-            // runtime capacity until a daemon-owned process observation resolves that ambiguity.
-            lease.state = .recoveryRequired
+            // Binding is the launch boundary. An unbound start cannot have launched, so CPU and
+            // memory are released, but storage is always durable and requires explicit release.
+            // A bound start may have launched before daemon failure and retains every commitment
+            // until a daemon-owned process observation resolves that ambiguity.
+            lease.state = lease.boundPlanSHA256 == nil ? .stopped : .recoveryRequired
             lease.startingExpiresAtUnixMilliseconds = nil
             lease.leaseRevision = try Self.incrementing(lease.leaseRevision)
             lease.updatedAtUnixMilliseconds = timestamp
@@ -801,8 +812,7 @@ public final class DoryVirtualMachineResourceAdmissionLedger: @unchecked Sendabl
                     throw DoryVirtualMachineResourceAdmissionLedgerError.invalidRecord
                 }
             case .stopped:
-                guard lease.boundPlanSHA256 != nil,
-                      lease.startingExpiresAtUnixMilliseconds == nil else {
+                guard lease.startingExpiresAtUnixMilliseconds == nil else {
                     throw DoryVirtualMachineResourceAdmissionLedgerError.invalidRecord
                 }
             }

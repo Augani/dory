@@ -187,6 +187,27 @@ final class DoryVirtualMachineResourceAdmissionLedgerTests: XCTestCase {
             expectedLeaseRevision: running.leaseRevision
         )
         let beforeFailure = try fixture.ledger.snapshot()
+        let smallerDisk = DoryVMResourceRequest(
+            virtualCPUCount: fixture.resources.virtualCPUCount,
+            memoryBytes: fixture.resources.memoryBytes,
+            diskBytes: fixture.resources.diskBytes - ResourceLedgerFixture.gibibyte
+        )
+        XCTAssertThrowsError(try fixture.ledger.reserveStarting(
+            binding: fixture.binding("machine-a"),
+            hostFacts: fixture.host,
+            workload: .desktop,
+            resources: smallerDisk
+        )) { error in
+            XCTAssertEqual(
+                error as? DoryVirtualMachineResourceAdmissionLedgerError,
+                .storageReservationCannotShrink(
+                    existing: fixture.resources.diskBytes,
+                    requested: smallerDisk.diskBytes
+                )
+            )
+        }
+        XCTAssertEqual(try fixture.ledger.snapshot(), beforeFailure)
+
         let oversized = DoryVMResourceRequest(
             virtualCPUCount: fixture.host.logicalCPUCount,
             memoryBytes: fixture.resources.memoryBytes,
@@ -266,7 +287,13 @@ final class DoryVirtualMachineResourceAdmissionLedgerTests: XCTestCase {
             root: fixture.ledger.root,
             now: clock.read
         )
-        XCTAssertTrue(try restarted.snapshot().leases.isEmpty)
+        let abandoned = try XCTUnwrap(restarted.snapshot().leases.first)
+        XCTAssertEqual(abandoned.state, .stopped)
+        XCTAssertNil(abandoned.boundPlanSHA256)
+        try restarted.releaseStorageReservation(
+            leaseID: abandoned.leaseID,
+            expectedLeaseRevision: abandoned.leaseRevision
+        )
 
         let durable = try restarted.reserveStarting(
             binding: fixture.binding("durable"),
