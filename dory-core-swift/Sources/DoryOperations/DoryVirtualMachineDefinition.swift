@@ -298,6 +298,9 @@ public enum DoryVMDefinitionValidationCode: String, Codable, Sendable, CaseItera
     case unsafeGuestMountPath = "unsafe-guest-mount-path"
     case duplicateIntegration = "duplicate-integration"
     case integrationRequiresDisplay = "integration-requires-display"
+    case invalidGuestIdentityIntent = "invalid-guest-identity-intent"
+    case guestIdentityIncompatibleWithGuest = "guest-identity-incompatible-with-guest"
+    case clipboardPolicyRequiresIntegration = "clipboard-policy-requires-integration"
     case legacyInstallerWorkload = "legacy-installer-workload"
     case invalidLifecycleMetadata = "invalid-lifecycle-metadata"
 }
@@ -339,6 +342,8 @@ public struct DoryVirtualMachineDefinition: Codable, Sendable, Equatable {
     public var input: DoryVMInputConfiguration
     public var shares: [DoryVMShare]
     public var integrations: [DoryVMGuestIntegration]
+    public var guestIdentityIntent: DoryVMGuestIdentityIntent
+    public var clipboardPolicy: DoryVMClipboardPolicy
     public var lifecycle: DoryVMLifecycleMetadata
 
     public init(
@@ -358,6 +363,8 @@ public struct DoryVirtualMachineDefinition: Codable, Sendable, Equatable {
         input: DoryVMInputConfiguration = DoryVMInputConfiguration(),
         shares: [DoryVMShare] = [],
         integrations: [DoryVMGuestIntegration] = [],
+        guestIdentityIntent: DoryVMGuestIdentityIntent = .unspecified,
+        clipboardPolicy: DoryVMClipboardPolicy? = nil,
         lifecycle: DoryVMLifecycleMetadata
     ) {
         self.schemaVersion = schemaVersion
@@ -376,6 +383,10 @@ public struct DoryVirtualMachineDefinition: Codable, Sendable, Equatable {
         self.input = input
         self.shares = shares
         self.integrations = integrations
+        self.guestIdentityIntent = guestIdentityIntent
+        self.clipboardPolicy = clipboardPolicy
+            ?? (integrations.contains(.clipboard)
+                ? .legacyDesktop(.bidirectional) : .disabled)
         self.lifecycle = lifecycle
     }
 
@@ -397,6 +408,8 @@ public struct DoryVirtualMachineDefinition: Codable, Sendable, Equatable {
         case input
         case shares
         case integrations
+        case guestIdentityIntent
+        case clipboardPolicy
         case lifecycle
     }
 
@@ -511,6 +524,9 @@ public struct DoryVirtualMachineDefinition: Codable, Sendable, Equatable {
                 [DoryVMGuestIntegration].self,
                 forKey: .integrations
             )
+            guestIdentityIntent = .unspecified
+            clipboardPolicy = integrations.contains(.clipboard)
+                ? .legacyDesktop(.bidirectional) : .disabled
             lifecycle = DoryVMLifecycleMetadata(
                 revision: legacyLifecycle.revision,
                 createdAt: legacyLifecycle.createdAt,
@@ -538,6 +554,15 @@ public struct DoryVirtualMachineDefinition: Codable, Sendable, Equatable {
         input = try container.decode(DoryVMInputConfiguration.self, forKey: .input)
         shares = try container.decode([DoryVMShare].self, forKey: .shares)
         integrations = try container.decode([DoryVMGuestIntegration].self, forKey: .integrations)
+        guestIdentityIntent = try container.decodeIfPresent(
+            DoryVMGuestIdentityIntent.self,
+            forKey: .guestIdentityIntent
+        ) ?? .unspecified
+        clipboardPolicy = try container.decodeIfPresent(
+            DoryVMClipboardPolicy.self,
+            forKey: .clipboardPolicy
+        ) ?? (integrations.contains(.clipboard)
+            ? .legacyDesktop(.bidirectional) : .disabled)
         lifecycle = try container.decode(DoryVMLifecycleMetadata.self, forKey: .lifecycle)
     }
 
@@ -559,6 +584,8 @@ public struct DoryVirtualMachineDefinition: Codable, Sendable, Equatable {
         try container.encode(input, forKey: .input)
         try container.encode(shares, forKey: .shares)
         try container.encode(integrations, forKey: .integrations)
+        try container.encode(guestIdentityIntent, forKey: .guestIdentityIntent)
+        try container.encode(clipboardPolicy, forKey: .clipboardPolicy)
         try container.encode(lifecycle, forKey: .lifecycle)
     }
 
@@ -610,6 +637,8 @@ public struct DoryVirtualMachineDefinition: Codable, Sendable, Equatable {
         validateDisplay(into: &issues)
         validateShares(into: &issues)
         validateIntegrations(into: &issues)
+        validateGuestIdentityIntent(into: &issues)
+        validateClipboardPolicy(into: &issues)
         validateLifecycle(into: &issues)
         return issues
     }
@@ -816,6 +845,74 @@ public struct DoryVirtualMachineDefinition: Codable, Sendable, Equatable {
         }
         if !display.enabled, integrations.contains(.dynamicDisplay) {
             issues.append(issue(.integrationRequiresDisplay, "integrations"))
+        }
+    }
+
+    private func validateGuestIdentityIntent(
+        into issues: inout [DoryVMDefinitionValidationIssue]
+    ) {
+        if !guestIdentityIntent.isEmpty, guest.family != .linux {
+            issues.append(issue(
+                .guestIdentityIncompatibleWithGuest,
+                "guestIdentityIntent"
+            ))
+        }
+        if let account = guestIdentityIntent.account, !account.isValidForPersistence {
+            issues.append(issue(.invalidGuestIdentityIntent, "guestIdentityIntent.account"))
+        }
+        if let username = guestIdentityIntent.account?.username,
+           !DoryVMGuestAccountIntent.isValidUsername(username) {
+            issues.append(issue(
+                .invalidGuestIdentityIntent,
+                "guestIdentityIntent.account.username"
+            ))
+        }
+        if let numericUserID = guestIdentityIntent.account?.numericUserID,
+           !DoryVMGuestAccountIntent.isValidNumericUserID(numericUserID) {
+            issues.append(issue(
+                .invalidGuestIdentityIntent,
+                "guestIdentityIntent.account.numericUserID"
+            ))
+        }
+        if let desktop = guestIdentityIntent.desktop {
+            if !desktop.isValidForPersistence {
+                issues.append(issue(.invalidGuestIdentityIntent, "guestIdentityIntent.desktop"))
+            }
+            if let identifier = desktop.distributionIdentifier,
+               !DoryVMDesktopIdentityIntent.isValidDistributionIdentifier(identifier) {
+                issues.append(issue(
+                    .invalidGuestIdentityIntent,
+                    "guestIdentityIntent.desktop.distributionIdentifier"
+                ))
+            }
+            for (field, value) in [
+                ("displayName", desktop.displayName),
+                ("version", desktop.version),
+                ("desktopEnvironment", desktop.desktopEnvironment),
+            ] where value.map(DoryVMDesktopIdentityIntent.isValidLabel) == false {
+                issues.append(issue(
+                    .invalidGuestIdentityIntent,
+                    "guestIdentityIntent.desktop.\(field)"
+                ))
+            }
+            if !desktop.isEmpty,
+               (workload != .desktop || !display.enabled) {
+                issues.append(issue(
+                    .guestIdentityIncompatibleWithGuest,
+                    "guestIdentityIntent.desktop"
+                ))
+            }
+        }
+    }
+
+    private func validateClipboardPolicy(
+        into issues: inout [DoryVMDefinitionValidationIssue]
+    ) {
+        if clipboardPolicy.isEnabled, !integrations.contains(.clipboard) {
+            issues.append(issue(
+                .clipboardPolicyRequiresIntegration,
+                "clipboardPolicy"
+            ))
         }
     }
 

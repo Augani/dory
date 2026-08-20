@@ -23,9 +23,127 @@ struct DoryVirtualMachineDefinitionTests {
         #expect(json.contains("\"virtualHardwareABIVersion\":1"))
         #expect(json.contains("\"createdAtUnixMilliseconds\":1787200000000"))
         #expect(json.contains("\"namespace\":\"boot\""))
+        #expect(json.contains("\"clipboardPolicy\""))
+        #expect(json.contains("\"guestIdentityIntent\""))
         #expect(!json.contains("\"bootMedia\""))
         #expect(!json.contains("artifactID"))
         #expect(!json.contains("hostLocationID"))
+    }
+
+    @Test("schema 2 records written before typed guest intent retain compatibility defaults")
+    func additiveSchemaTwoMigration() throws {
+        let encoder = JSONEncoder()
+        let data = try encoder.encode(linuxDefinition())
+        var object = try #require(
+            JSONSerialization.jsonObject(with: data) as? [String: Any]
+        )
+        object.removeValue(forKey: "guestIdentityIntent")
+        object.removeValue(forKey: "clipboardPolicy")
+        let oldSchemaTwo = try JSONSerialization.data(withJSONObject: object)
+
+        let decoded = try JSONDecoder().decode(
+            DoryVirtualMachineDefinition.self,
+            from: oldSchemaTwo
+        )
+        #expect(decoded.guestIdentityIntent == .unspecified)
+        #expect(decoded.clipboardPolicy == .legacyDesktop(.bidirectional))
+        #expect(decoded.isValid)
+    }
+
+    @Test("guest identity and clipboard policies are bounded typed intent")
+    func guestIdentityAndClipboardValidation() {
+        var definition = linuxDefinition()
+        definition.guestIdentityIntent = DoryVMGuestIdentityIntent(
+            account: DoryVMGuestAccountIntent(username: "developer", numericUserID: 1_000),
+            desktop: DoryVMDesktopIdentityIntent(
+                distributionIdentifier: "ubuntu",
+                displayName: "Ubuntu",
+                version: "24.04 LTS",
+                desktopEnvironment: "GNOME"
+            )
+        )
+        definition.clipboardPolicy = DoryVMClipboardPolicy(
+            text: .hostToGuest,
+            image: .guestToHost,
+            files: .off
+        )
+        #expect(definition.isValid)
+        #expect(definition.clipboardPolicy.text.allowsHostToGuest)
+        #expect(!definition.clipboardPolicy.text.allowsGuestToHost)
+
+        definition.guestIdentityIntent.account?.username = "../host"
+        #expect(has(
+            .invalidGuestIdentityIntent,
+            "guestIdentityIntent.account.username",
+            in: definition.validate()
+        ))
+        definition.guestIdentityIntent.account?.username = "developer"
+        definition.guestIdentityIntent.account?.numericUserID = 99
+        #expect(has(
+            .invalidGuestIdentityIntent,
+            "guestIdentityIntent.account.numericUserID",
+            in: definition.validate()
+        ))
+        definition.guestIdentityIntent.account?.numericUserID = 100
+        #expect(!has(
+            .invalidGuestIdentityIntent,
+            "guestIdentityIntent.account.numericUserID",
+            in: definition.validate()
+        ))
+        definition.guestIdentityIntent.account?.numericUserID = 60_000
+        #expect(!has(
+            .invalidGuestIdentityIntent,
+            "guestIdentityIntent.account.numericUserID",
+            in: definition.validate()
+        ))
+        definition.guestIdentityIntent.account?.numericUserID = 60_001
+        #expect(has(
+            .invalidGuestIdentityIntent,
+            "guestIdentityIntent.account.numericUserID",
+            in: definition.validate()
+        ))
+        definition.guestIdentityIntent.account?.numericUserID = 1_000
+        definition.guestIdentityIntent.desktop?.distributionIdentifier = "Ubuntu/../../host"
+        #expect(has(
+            .invalidGuestIdentityIntent,
+            "guestIdentityIntent.desktop.distributionIdentifier",
+            in: definition.validate()
+        ))
+        definition.guestIdentityIntent.desktop?.distributionIdentifier = "ubuntu"
+        definition.guestIdentityIntent.desktop?.version = "https://token.invalid/secret"
+        #expect(has(
+            .invalidGuestIdentityIntent,
+            "guestIdentityIntent.desktop.version",
+            in: definition.validate()
+        ))
+
+        definition.guestIdentityIntent.desktop?.version = "a"
+            + String(repeating: "\u{0301}", count: 128)
+        #expect(has(
+            .invalidGuestIdentityIntent,
+            "guestIdentityIntent.desktop.version",
+            in: definition.validate()
+        ))
+
+        definition.guestIdentityIntent.desktop?.version = "24.04"
+        definition.integrations.removeAll { $0 == .clipboard }
+        #expect(has(
+            .clipboardPolicyRequiresIntegration,
+            "clipboardPolicy",
+            in: definition.validate()
+        ))
+
+        for family in [DoryGuestFamily.windows, .macOS] {
+            var nonLinux = installerDefinition(family: family)
+            nonLinux.guestIdentityIntent = DoryVMGuestIdentityIntent(
+                account: DoryVMGuestAccountIntent(username: "developer", numericUserID: 1_000)
+            )
+            #expect(has(
+                .guestIdentityIncompatibleWithGuest,
+                "guestIdentityIntent",
+                in: nonLinux.validate()
+            ))
+        }
     }
 
     @Test("oldest schema 1 golden JSON migrates deterministically")

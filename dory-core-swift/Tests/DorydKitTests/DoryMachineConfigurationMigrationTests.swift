@@ -27,6 +27,12 @@ struct DoryMachineConfigurationMigrationTests {
                 DoryDesktopVMMPreference.environmentKey: "accelerated",
                 DoryDesktopGraphicsPreference.environmentKey: "virgl",
                 "DORY_DESKTOP_DISTRO": "ubuntu",
+                "DORY_DESKTOP_NAME": "Ubuntu",
+                "DORY_DESKTOP_VERSION": "24.04",
+                "DORY_DESKTOP_ENVIRONMENT": "GNOME",
+                "DORY_GUEST_USER": "developer",
+                "DORY_GUEST_UID": "1000",
+                "DORY_CLIPBOARD_POLICY": "host-to-guest",
                 "PRIVATE_RUNTIME_VALUE": "do-not-copy-into-workspace",
             ]
         )
@@ -46,6 +52,17 @@ struct DoryMachineConfigurationMigrationTests {
         #expect(migrated.definition.resources.memoryBytes == 8 * gibibyte)
         #expect(migrated.definition.resources.virtualCPUCount == 6)
         #expect(migrated.definition.storage[0].capacityBytes == 96 * gibibyte)
+        #expect(migrated.definition.guestIdentityIntent.account == DoryVMGuestAccountIntent(
+            username: "developer",
+            numericUserID: 1_000
+        ))
+        #expect(migrated.definition.guestIdentityIntent.desktop == DoryVMDesktopIdentityIntent(
+            distributionIdentifier: "ubuntu",
+            displayName: "Ubuntu",
+            version: "24.04",
+            desktopEnvironment: "GNOME"
+        ))
+        #expect(migrated.definition.clipboardPolicy == .legacyDesktop(.hostToGuest))
         #expect(migrated.hostPath(for: migrated.definition.shares[0].hostLocation)
             == "/Users/developer/Source")
         #expect(migrated.artifactPath(for: migrated.definition.storage[0].artifact)
@@ -56,6 +73,8 @@ struct DoryMachineConfigurationMigrationTests {
         #expect(!definitionJSON.contains("/Users/developer"))
         #expect(!definitionJSON.contains("PRIVATE_RUNTIME_VALUE"))
         #expect(!definitionJSON.contains("do-not-copy-into-workspace"))
+        #expect(!definitionJSON.contains("DORY_GUEST_USER"))
+        #expect(!definitionJSON.contains("DORY_CLIPBOARD_POLICY"))
 
         #expect(try migrated.legacyConfiguration() == legacy)
         #expect(try migrated.authoritativeLegacyData()
@@ -69,6 +88,115 @@ struct DoryMachineConfigurationMigrationTests {
             == migrated.definition.shares[0].hostLocation)
     }
 
+    @Test("typed guest and clipboard edits back-project through legacy compatibility keys")
+    func typedGuestIntentBackProjection() throws {
+        let legacy = DoryMachineConfiguration(
+            id: "desktop-intent",
+            kernelPath: "/managed/desktop-intent/kernel",
+            rootfsPath: "/managed/desktop-intent/rootfs.ext4",
+            displayMode: .desktop,
+            environment: ["PRESERVE": "yes"]
+        )
+        var migrated = try migrate(legacy, capacity: 64 * gibibyte)
+        migrated.definition.guestIdentityIntent = DoryVMGuestIdentityIntent(
+            account: DoryVMGuestAccountIntent(username: "builder", numericUserID: 1_001),
+            desktop: DoryVMDesktopIdentityIntent(
+                distributionIdentifier: "ubuntu",
+                displayName: "Ubuntu",
+                version: "24.04",
+                desktopEnvironment: "GNOME"
+            )
+        )
+        migrated.definition.clipboardPolicy = .legacyDesktop(.guestToHost)
+
+        let projected = try migrated.legacyConfiguration()
+        #expect(projected.environment["DORY_GUEST_USER"] == "builder")
+        #expect(projected.environment["DORY_GUEST_UID"] == "1001")
+        #expect(projected.environment["DORY_DESKTOP_DISTRO"] == "ubuntu")
+        #expect(projected.environment["DORY_DESKTOP_NAME"] == "Ubuntu")
+        #expect(projected.environment["DORY_DESKTOP_VERSION"] == "24.04")
+        #expect(projected.environment["DORY_DESKTOP_ENVIRONMENT"] == "GNOME")
+        #expect(projected.environment["DORY_CLIPBOARD_POLICY"] == "guest-to-host")
+        #expect(projected.environment["PRESERVE"] == "yes")
+
+        migrated.definition.clipboardPolicy = DoryVMClipboardPolicy(
+            text: .hostToGuest,
+            image: .guestToHost,
+            files: .off
+        )
+        #expect(throws: DoryMachineConfigurationMigrationError.unsupportedDefinitionChange(
+            "clipboardPolicy"
+        )) {
+            try migrated.legacyConfiguration()
+        }
+    }
+
+    @Test("unsafe legacy reserved values remain only in authoritative legacy bytes")
+    func unsafeReservedValuesDoNotLeak() throws {
+        let legacy = DoryMachineConfiguration(
+            id: "legacy-hostile",
+            kernelPath: "/managed/legacy-hostile/kernel",
+            rootfsPath: "/managed/legacy-hostile/rootfs.ext4",
+            displayMode: .desktop,
+            environment: [
+                "DORY_GUEST_USER": "../../host",
+                "DORY_GUEST_UID": "not-a-uid",
+                "DORY_DESKTOP_DISTRO": "https://token.invalid/secret",
+                "DORY_DESKTOP_VERSION": "secret\nvalue",
+                "DORY_CLIPBOARD_POLICY": "invalid-widening-value",
+            ]
+        )
+        let migrated = try migrate(legacy, capacity: 64 * gibibyte)
+        #expect(migrated.definition.guestIdentityIntent == .unspecified)
+        #expect(migrated.definition.clipboardPolicy == .legacyDesktop(.off))
+        #expect(migrated.definition.isValid)
+
+        let data = try JSONEncoder().encode(migrated.definition)
+        let json = try #require(String(data: data, encoding: .utf8))
+        #expect(!json.contains("../../host"))
+        #expect(!json.contains("token.invalid"))
+        #expect(!json.contains("secret\\nvalue"))
+        #expect(try migrated.legacyConfiguration() == legacy)
+
+        var edited = migrated
+        edited.definition.guestIdentityIntent.desktop = DoryVMDesktopIdentityIntent(
+            distributionIdentifier: "ubuntu",
+            displayName: "Ubuntu",
+            version: "24.04",
+            desktopEnvironment: "GNOME"
+        )
+        let projected = try edited.legacyConfiguration()
+        #expect(projected.environment["DORY_GUEST_USER"] == "../../host")
+        #expect(projected.environment["DORY_GUEST_UID"] == "not-a-uid")
+        #expect(projected.environment["DORY_DESKTOP_DISTRO"] == "ubuntu")
+        #expect(projected.environment["DORY_DESKTOP_VERSION"] == "24.04")
+    }
+
+    @Test("legacy UID migration accepts exactly the guest provisioning range")
+    func guestUIDMigrationBoundaries() throws {
+        for (raw, expected) in [
+            ("99", nil),
+            ("100", UInt32(100)),
+            ("60000", UInt32(60_000)),
+            ("60001", nil),
+            (String(UInt32.max), nil),
+        ] {
+            let legacy = DoryMachineConfiguration(
+                id: "uid-\(raw)",
+                kernelPath: "/managed/uid-\(raw)/kernel",
+                rootfsPath: "/managed/uid-\(raw)/rootfs.ext4",
+                displayMode: .desktop,
+                environment: [
+                    "DORY_GUEST_USER": "developer",
+                    "DORY_GUEST_UID": raw,
+                ]
+            )
+            let migrated = try migrate(legacy, capacity: 64 * gibibyte)
+            #expect(migrated.definition.guestIdentityIntent.account?.numericUserID == expected)
+            #expect(try migrated.legacyConfiguration() == legacy)
+        }
+    }
+
     @Test("headless Linux maps to an explicit non-graphical Virtualization.framework contract")
     func headlessRoundTrip() throws {
         let legacy = DoryMachineConfiguration(
@@ -78,7 +206,10 @@ struct DoryMachineConfigurationMigrationTests {
             memoryMB: 4_096,
             cpuCount: 4,
             displayMode: .headless,
-            environment: ["SERVICE_TOKEN": "legacy-only-value"]
+            environment: [
+                "SERVICE_TOKEN": "legacy-only-value",
+                "DORY_DESKTOP_DISTRO": "stale-desktop-metadata",
+            ]
         )
         let migrated = try migrate(legacy, capacity: 48 * gibibyte)
 
@@ -90,6 +221,7 @@ struct DoryMachineConfigurationMigrationTests {
         #expect(!migrated.definition.audio.outputEnabled)
         #expect(!migrated.definition.input.keyboardEnabled)
         #expect(!migrated.definition.input.pointerEnabled)
+        #expect(migrated.definition.guestIdentityIntent.desktop == nil)
         #expect(try migrated.legacyConfiguration() == legacy)
     }
 

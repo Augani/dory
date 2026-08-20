@@ -235,6 +235,8 @@ public struct DoryMachineConfigurationMigrationResult: Sendable, Equatable {
         var environment = authoritativeLegacyConfiguration.environment
         try applyBackendPreference(to: &environment)
         try applyGraphicsPolicy(to: &environment)
+        try applyGuestIdentityIntent(to: &environment)
+        try applyClipboardPolicy(to: &environment)
 
         let shares = try definition.shares.map { share -> DoryMachineShareConfiguration in
             guard let hostPath = hostPath(for: share.hostLocation) else {
@@ -317,6 +319,79 @@ public struct DoryMachineConfigurationMigrationResult: Sendable, Equatable {
         }
         environment[DoryDesktopGraphicsPreference.environmentKey] = preference.rawValue
         environment.removeValue(forKey: DoryDesktopGraphicsPreference.legacyClassicOnlyEnvironmentKey)
+    }
+
+    private func applyGuestIdentityIntent(to environment: inout [String: String]) throws {
+        guard definition.guestIdentityIntent != baselineDefinition.guestIdentityIntent else {
+            return
+        }
+        guard definition.guest.family == .linux else {
+            throw DoryMachineConfigurationMigrationError.unsupportedDefinitionChange(
+                "guestIdentityIntent"
+            )
+        }
+        Self.assignIfChanged(
+            definition.guestIdentityIntent.account?.username,
+            baseline: baselineDefinition.guestIdentityIntent.account?.username,
+            key: DoryVMGuestAccountIntent.legacyUsernameEnvironmentKey,
+            to: &environment
+        )
+        Self.assignIfChanged(
+            definition.guestIdentityIntent.account?.numericUserID.map(String.init),
+            baseline: baselineDefinition.guestIdentityIntent.account?.numericUserID.map(String.init),
+            key: DoryVMGuestAccountIntent.legacyNumericUserIDEnvironmentKey,
+            to: &environment
+        )
+        Self.assignIfChanged(
+            definition.guestIdentityIntent.desktop?.distributionIdentifier,
+            baseline: baselineDefinition.guestIdentityIntent.desktop?.distributionIdentifier,
+            key: DoryVMDesktopIdentityIntent.legacyDistributionEnvironmentKey,
+            to: &environment
+        )
+        Self.assignIfChanged(
+            definition.guestIdentityIntent.desktop?.displayName,
+            baseline: baselineDefinition.guestIdentityIntent.desktop?.displayName,
+            key: DoryVMDesktopIdentityIntent.legacyDisplayNameEnvironmentKey,
+            to: &environment
+        )
+        Self.assignIfChanged(
+            definition.guestIdentityIntent.desktop?.version,
+            baseline: baselineDefinition.guestIdentityIntent.desktop?.version,
+            key: DoryVMDesktopIdentityIntent.legacyVersionEnvironmentKey,
+            to: &environment
+        )
+        Self.assignIfChanged(
+            definition.guestIdentityIntent.desktop?.desktopEnvironment,
+            baseline: baselineDefinition.guestIdentityIntent.desktop?.desktopEnvironment,
+            key: DoryVMDesktopIdentityIntent.legacyDesktopEnvironmentKey,
+            to: &environment
+        )
+    }
+
+    private func applyClipboardPolicy(to environment: inout [String: String]) throws {
+        guard definition.clipboardPolicy != baselineDefinition.clipboardPolicy else { return }
+        guard definition.clipboardPolicy.text == definition.clipboardPolicy.image,
+              definition.clipboardPolicy.files == .off else {
+            throw DoryMachineConfigurationMigrationError.unsupportedDefinitionChange(
+                "clipboardPolicy"
+            )
+        }
+        environment[DoryDesktopClipboardPolicy.environmentKey]
+            = definition.clipboardPolicy.text.rawValue
+    }
+
+    private static func assignIfChanged(
+        _ value: String?,
+        baseline: String?,
+        key: String,
+        to environment: inout [String: String]
+    ) {
+        guard value != baseline else { return }
+        if let value {
+            environment[key] = value
+        } else {
+            environment.removeValue(forKey: key)
+        }
     }
 }
 
@@ -503,6 +578,20 @@ public enum DoryMachineConfigurationMigrationBridge {
         }
 
         let isDesktop = configuration.displayMode == .desktop
+        let guestIdentityIntent = typedGuestIdentityIntent(
+            configuration.environment,
+            includeDesktop: isDesktop
+        )
+        let clipboardPolicy: DoryVMClipboardPolicy
+        if isDesktop {
+            let legacyDirection = DoryVMClipboardDirection(
+                rawValue: configuration.environment[DoryDesktopClipboardPolicy.environmentKey]
+                    ?? DoryVMClipboardDirection.bidirectional.rawValue
+            ) ?? .off
+            clipboardPolicy = .legacyDesktop(legacyDirection)
+        } else {
+            clipboardPolicy = .disabled
+        }
         let acceleratedBoot = bootContract == .managedDirectKernel
             || bootContract == .efiInstalledDirectBoot
         let backendPreference: DoryVMBackendPreference
@@ -555,6 +644,8 @@ public enum DoryMachineConfigurationMigrationBridge {
             integrations: isDesktop
                 ? [.clipboard, .clockSynchronization, .dynamicDisplay, .gracefulShutdown]
                 : [.clockSynchronization, .gracefulShutdown],
+            guestIdentityIntent: guestIdentityIntent,
+            clipboardPolicy: clipboardPolicy,
             lifecycle: facts.lifecycle
         )
         let issues = definition.validate()
@@ -568,6 +659,42 @@ public enum DoryMachineConfigurationMigrationBridge {
             shareBindings: shareBindings,
             authoritativeLegacyConfiguration: configuration
         )
+    }
+
+    private static func typedGuestIdentityIntent(
+        _ environment: [String: String],
+        includeDesktop: Bool
+    ) -> DoryVMGuestIdentityIntent {
+        let username = environment[DoryVMGuestAccountIntent.legacyUsernameEnvironmentKey]
+            .flatMap { DoryVMGuestAccountIntent.isValidUsername($0) ? $0 : nil }
+        let numericUserID = environment[DoryVMGuestAccountIntent.legacyNumericUserIDEnvironmentKey]
+            .flatMap(UInt32.init)
+            .flatMap { DoryVMGuestAccountIntent.isValidNumericUserID($0) ? $0 : nil }
+        let accountCandidate = DoryVMGuestAccountIntent(
+            username: username,
+            numericUserID: numericUserID
+        )
+        let account = accountCandidate.isValidForPersistence ? accountCandidate : nil
+
+        let distributionIdentifier = environment[
+            DoryVMDesktopIdentityIntent.legacyDistributionEnvironmentKey
+        ].flatMap {
+            DoryVMDesktopIdentityIntent.isValidDistributionIdentifier($0) ? $0 : nil
+        }
+        func safeLabel(_ key: String) -> String? {
+            environment[key].flatMap { DoryVMDesktopIdentityIntent.isValidLabel($0) ? $0 : nil }
+        }
+        let desktopCandidate = DoryVMDesktopIdentityIntent(
+            distributionIdentifier: distributionIdentifier,
+            displayName: safeLabel(DoryVMDesktopIdentityIntent.legacyDisplayNameEnvironmentKey),
+            version: safeLabel(DoryVMDesktopIdentityIntent.legacyVersionEnvironmentKey),
+            desktopEnvironment: safeLabel(
+                DoryVMDesktopIdentityIntent.legacyDesktopEnvironmentKey
+            )
+        )
+        let desktop = includeDesktop && desktopCandidate.isValidForPersistence
+            ? desktopCandidate : nil
+        return DoryVMGuestIdentityIntent(account: account, desktop: desktop)
     }
 
     private static func legacyBootContract(
