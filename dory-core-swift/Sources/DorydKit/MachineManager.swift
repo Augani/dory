@@ -2426,6 +2426,31 @@ public final class MachineManager: @unchecked Sendable {
         }
     }
 
+    public func restart(id: String) throws -> DoryMachineStatus {
+        operationLock.lock()
+        defer { operationLock.unlock() }
+        try requireNoActivePlanningMutation(id: id)
+        let directMutation = try retainDirectWorkspaceMutationLock(id: id)
+        defer { releaseDirectWorkspaceMutationLock(id: id, retention: directMutation) }
+
+        lock.lock()
+        guard let entry = machines[id] else {
+            lock.unlock()
+            throw MachineManagerError.unknownMachine(id)
+        }
+        guard [.running, .paused].contains(entry.state), entry.process != nil else {
+            lock.unlock()
+            throw MachineManagerError.persistence(
+                "machine \(id) must be running or paused before restart"
+            )
+        }
+        lock.unlock()
+
+        _ = try stopImplementation(id: id, journalLifecycle: true)
+        try refreshResolvedAdmissionForStartIfNeeded(id: id)
+        return try startImplementation(id: id, journalLifecycle: true)
+    }
+
     private func performAuthorizedResolvedBackendPause(
         id: String,
         expectedBackend: DoryVirtualizationBackendIdentity

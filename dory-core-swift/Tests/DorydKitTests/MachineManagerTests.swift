@@ -125,6 +125,43 @@ final class MachineManagerTests: XCTestCase {
         XCTAssertNil(stopped.pid)
     }
 
+    func testRestartReplacesTheHelperFromRunningAndPausedStates() throws {
+        let base = "/tmp/dory-machine-restart-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let manager = MachineManager(configuration: MachineManagerConfiguration(
+            vmmExecutablePath: "/bin/sleep",
+            stateDirectory: base,
+            baseArguments: ["30"],
+            passMachineArguments: false,
+            requiresReadyHandoff: false
+        ))
+        defer {
+            try? manager.delete(id: "dev")
+            try? FileManager.default.removeItem(atPath: base)
+        }
+
+        _ = try manager.create(DoryMachineConfiguration(
+            id: "dev",
+            kernelPath: doryTestKernelPath,
+            rootfsPath: doryTestRootfsPath,
+            displayMode: .desktop
+        ))
+        XCTAssertThrowsError(try manager.restart(id: "dev"))
+
+        let firstPID = try XCTUnwrap(try manager.start(id: "dev").pid)
+        let restartedRunning = try manager.restart(id: "dev")
+        let secondPID = try XCTUnwrap(restartedRunning.pid)
+        XCTAssertEqual(restartedRunning.state, .running)
+        XCTAssertNotEqual(secondPID, firstPID)
+        XCTAssertEqual(kill(firstPID, 0), -1)
+
+        _ = try manager.pause(id: "dev")
+        let restartedPaused = try manager.restart(id: "dev")
+        let thirdPID = try XCTUnwrap(restartedPaused.pid)
+        XCTAssertEqual(restartedPaused.state, .running)
+        XCTAssertNotEqual(thirdPID, secondPID)
+        XCTAssertEqual(kill(secondPID, 0), -1)
+    }
+
     func testDesktopUpdatePreservesPersistentDiskAndRetainsLastGoodSnapshot() throws {
         let base = "/tmp/dory-machine-desktop-update-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         let sources = base + "/sources"
