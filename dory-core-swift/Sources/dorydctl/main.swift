@@ -1048,10 +1048,11 @@ func runMachine(cursor: inout ArgumentCursor, client: DorydCtlClient) throws {
                 message.isEmpty ? finish(.success(body)) : finish(.failure(DorydCtlError.daemon(message)))
             }
         }
-        try emitJSON(rows)
+        try emitJSON(DoryMachineDiagnosticsProjection.supportSafeMachineList(rows))
     case "status":
         let name = try cursor.take("usage: dorydctl machine status NAME")
-        try emitJSON(try machineDictionary(name: name, client: client))
+        let status = try machineDictionary(name: name, client: client)
+        try emitJSON(DoryMachineDiagnosticsProjection.supportSafeMachineStatus(status))
     case "stats":
         let name = try cursor.take("usage: dorydctl machine stats NAME")
         guard cursor.values.isEmpty else {
