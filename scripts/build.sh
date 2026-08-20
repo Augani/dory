@@ -47,6 +47,16 @@ if [ "$DESKTOP_BUNDLE_MODE" = all ] && [ "${DORY_BUILD_DEBUG_HELPERS:-1}" != 1 ]
   exit 64
 fi
 
+# Replacing or re-signing the same DerivedData bundle while its app, daemon, or helpers are
+# executing can leave macOS provenance locks behind and corrupt the bundle's CodeResources.
+# Fail before deleting any product so the caller can stop that runtime cleanly first.
+running_product_pattern="$HOME/Library/Developer/Xcode/DerivedData/Dory-.*/Build/Products/$XCODE_CONFIGURATION/Dory\.app/Contents/"
+if pgrep -f "$running_product_pattern" >/dev/null 2>&1; then
+  echo "error: a $XCODE_CONFIGURATION Dory build product is running; quit Dory and unload its development daemon before rebuilding" >&2
+  pgrep -alf "$running_product_pattern" >&2 || true
+  exit 1
+fi
+
 # shellcheck source=gvproxy-payload.sh
 source scripts/gvproxy-payload.sh
 
@@ -185,7 +195,7 @@ bundle_debug_desktop_assets() {
   [ "$(uname -m)" = "arm64" ] || return 0
   kernel="guest/out/Image-desktop"
   [ -f "$kernel" ] || { echo "error: all-inclusive build is missing $kernel" >&2; return 1; }
-  guest/kernel/verify-build.sh arm64 desktop >/dev/null || return 1
+  DORY_KERNEL_PROFILE=accelerated-desktop guest/kernel/verify-build.sh arm64 >/dev/null || return 1
   kernel_out="$app/Contents/Resources/dory-desktop-kernel-arm64.lzfse"
   if [ ! -f "$kernel_out" ] || [ "$kernel" -nt "$kernel_out" ]; then
     "$compressor" lzfse compress "$kernel" "$kernel_out" || return 1
@@ -278,6 +288,12 @@ bundle_debug_hv_helper() {
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict><key>com.apple.security.hypervisor</key><true/></dict></plist>
 PLIST
+  /usr/libexec/PlistBuddy \
+    -c 'Add :com.apple.security.cs.disable-library-validation bool true' \
+    "$entitlements" >/dev/null || return 1
+  /usr/libexec/PlistBuddy \
+    -c 'Add :com.apple.security.device.audio-input bool true' \
+    "$entitlements" >/dev/null || return 1
 
   for app in "$HOME"/Library/Developer/Xcode/DerivedData/Dory-*/Build/Products/"$XCODE_CONFIGURATION"/Dory.app; do
     [ -d "$app" ] || continue
@@ -334,6 +350,67 @@ PLIST
   rm -f "$gvproxy_tmp" "$gvproxy_tmp.provenance"
 }
 
+bundle_debug_gpu_renderer() {
+  local renderer provenance molten_prefix molten molten_provenance epoxy icd app framework resources dylib dep
+  [ "${DORY_BUILD_DEBUG_HELPERS:-1}" = "1" ] || return 0
+  renderer="$PWD/.build/virglrenderer/libvirglrenderer.dylib"
+  provenance="$PWD/.build/virglrenderer/provenance.txt"
+  molten_prefix="$PWD/.build/moltenvk"
+  molten_provenance="$molten_prefix/provenance.txt"
+  echo "note: building and bundling Dory's patched GPU renderer" >&2
+  if [ ! -f "$molten_prefix/lib/libMoltenVK.dylib" ] \
+      || ! nm -gU "$molten_prefix/lib/libMoltenVK.dylib" \
+        | grep '_dory_moltenvk_spirv_native_array_fix$' >/dev/null; then
+    scripts/build-moltenvk.sh --prefix "$molten_prefix" --provenance "$molten_provenance" || return 1
+  fi
+  DORY_MOLTENVK_PREFIX="$molten_prefix" scripts/build-virglrenderer.sh \
+    --output "$renderer" --provenance "$provenance" || return 1
+  molten="$molten_prefix/lib/libMoltenVK.dylib"
+  epoxy="$(brew --prefix libepoxy 2>/dev/null)/lib/libepoxy.0.dylib"
+  icd="$molten_prefix/share/vulkan/icd.d/MoltenVK_icd.json"
+  for dylib in "$renderer" "$molten" "$epoxy"; do
+    [ -f "$dylib" ] || { echo "error: missing GPU renderer dependency $dylib" >&2; return 1; }
+  done
+  [ -f "$icd" ] || { echo "error: missing MoltenVK_icd.json" >&2; return 1; }
+
+  for app in "$HOME"/Library/Developer/Xcode/DerivedData/Dory-*/Build/Products/"$XCODE_CONFIGURATION"/Dory.app; do
+    [ -d "$app" ] || continue
+    framework="$app/Contents/Frameworks"
+    resources="$app/Contents/Resources"
+    mkdir -p "$framework" "$resources/vulkan/icd.d"
+    install -m0755 "$renderer" "$framework/libvirglrenderer.dylib"
+    install -m0755 "$molten" "$framework/libMoltenVK.dylib"
+    install -m0755 "$epoxy" "$framework/libepoxy.0.dylib"
+    for dylib in "$framework/libvirglrenderer.dylib" \
+                 "$framework/libMoltenVK.dylib" \
+                 "$framework/libepoxy.0.dylib"; do
+      install_name_tool -id "@rpath/$(basename "$dylib")" "$dylib" 2>/dev/null || true
+      for dep in $(otool -L "$dylib" | awk 'NR > 1 {print $1}'); do
+        case "$dep" in
+          /opt/homebrew/*|/usr/local/*)
+            install_name_tool -change "$dep" "@rpath/$(basename "$dep")" "$dylib" 2>/dev/null || true ;;
+        esac
+      done
+      otool -l "$dylib" | grep -q 'path @loader_path ' \
+        || install_name_tool -add_rpath @loader_path "$dylib" 2>/dev/null \
+        || true
+      codesign --force -s - "$dylib" >/dev/null || return 1
+    done
+    sed -E 's#"library_path"[[:space:]]*:[[:space:]]*"[^"]+"#"library_path": "@executable_path/../Frameworks/libMoltenVK.dylib"#' \
+      "$icd" > "$resources/vulkan/icd.d/MoltenVK_icd.json"
+    install -m0644 "$provenance" "$resources/virglrenderer-provenance.txt"
+    install -m0644 "$molten_provenance" "$resources/moltenvk-provenance.txt"
+    echo "bundled_sha256=$(shasum -a 256 "$framework/libvirglrenderer.dylib" | awk '{print $1}')" \
+      >> "$resources/virglrenderer-provenance.txt"
+    nm -gU "$framework/libvirglrenderer.dylib" \
+      | grep '_dory_virglrenderer_macos_fragment_coord_fix$' >/dev/null || return 1
+    nm -gU "$framework/libvirglrenderer.dylib" \
+      | grep '_dory_virglrenderer_macos_venus_fence_fix$' >/dev/null || return 1
+    nm -gU "$framework/libMoltenVK.dylib" \
+      | grep '_dory_moltenvk_spirv_native_array_fix$' >/dev/null || return 1
+  done
+}
+
 bundle_doryd_swiftpm_helpers() {
   local configuration bin_path entitlements app product helper vmm_app vmm_executable
   [ "${DORY_BUILD_DORYD_HELPERS:-1}" = "1" ] || return 0
@@ -352,7 +429,11 @@ bundle_doryd_swiftpm_helpers() {
   done
   bin_path="$(swift build --package-path dory-core-swift -c "$configuration" --show-bin-path 2>/dev/null)"
 
-  entitlements="dory-core-swift/Sources/dory-vmm/dory-vmm.entitlements"
+  entitlements="$(mktemp "${TMPDIR:-/tmp}/dory-vmm-entitlements.XXXXXX")" || return 1
+  cp dory-core-swift/Sources/dory-vmm/dory-vmm.entitlements "$entitlements" || return 1
+  /usr/libexec/PlistBuddy \
+    -c 'Add :com.apple.security.cs.disable-library-validation bool true' \
+    "$entitlements" >/dev/null || return 1
 
   for app in "$HOME"/Library/Developer/Xcode/DerivedData/Dory-*/Build/Products/"$XCODE_CONFIGURATION"/Dory.app; do
     [ -d "$app" ] || continue
@@ -382,6 +463,7 @@ bundle_doryd_swiftpm_helpers() {
       "$app/Contents/Library/LaunchDaemons/dev.dory.network-helper.plist"
     plutil -lint "$app/Contents/Library/LaunchDaemons/dev.dory.network-helper.plist" >/dev/null
   done
+  rm -f "$entitlements"
 }
 
 bundle_debug_transfer_helper() {
@@ -696,6 +778,9 @@ PLIST
 
 if [ "$status" -eq 0 ]; then
   bundle_debug_hv_helper || status=$?
+fi
+if [ "$status" -eq 0 ]; then
+  bundle_debug_gpu_renderer || status=$?
 fi
 if [ "$status" -eq 0 ]; then
   bundle_doryd_swiftpm_helpers || status=$?

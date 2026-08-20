@@ -59,6 +59,9 @@ secrets*
 ExportOptions.plist
 
 # Release pipeline output
+# Exact-candidate release gates are source, even when a checkout's private exclude file hides
+# untracked scripts by default.
+!/scripts/desktop-linux-live-gate.sh
 release-build*/
 /release/
 /dist/

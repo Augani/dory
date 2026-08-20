@@ -15,8 +15,8 @@
 #   * Contents/Helpers/gvproxy    — userspace networking (Apache-2.0) for the dory-hv engine.
 #   * Contents/Helpers/docker, docker-buildx, docker-compose — Docker Core host CLIs.
 #   * kubectl is exported as the independently installable Kubernetes component in Core builds.
-#   * Contents/Frameworks/libvirglrenderer.dylib, libMoltenVK.dylib — optional experimental
-#                                   Venus/Vulkan renderer payload for in-guest GPU acceleration.
+#   * Contents/Frameworks/libvirglrenderer.dylib, libMoltenVK.dylib — pinned VirGL/Venus renderer
+#                                   payload for in-guest GPU acceleration.
 #   * Contents/Resources/dory-hv-kernel-<arch>             — legacy raw kernel payload.
 #   * Contents/Resources/dory-machine-rootfs-<arch>.ext4   — legacy raw machine payload.
 #   * Contents/Resources/dory-hv-kernel-<arch>.lzfse       — LZFSE PVH/Image kernel for dory-hv.
@@ -300,13 +300,27 @@ fetch_url_stdout() {
 dylib_has_symbol() {
   local dylib="$1" symbol="$2"
   [ -f "$dylib" ] || return 1
-  nm -gU "$dylib" 2>/dev/null | grep -q "_$symbol"
+  nm -gU "$dylib" 2>/dev/null | grep "_$symbol" >/dev/null
+}
+
+virglrenderer_is_dory_compatible() {
+  local dylib="$1"
+  dylib_has_symbol "$dylib" dory_virglrenderer_macos_fragment_coord_fix || return 1
+  dylib_has_symbol "$dylib" dory_virglrenderer_macos_venus_fence_fix || return 1
+  otool -L "$dylib" 2>/dev/null | grep -q '@loader_path/libMoltenVK\.dylib' || return 1
+  dylib_has_symbol "$dylib" virgl_renderer_resource_get_map_ptr \
+    || dylib_has_symbol "$dylib" virgl_renderer_resource_map
+}
+
+moltenvk_is_dory_compatible() {
+  dylib_has_symbol "$1" dory_moltenvk_spirv_native_array_fix
 }
 
 find_compatible_virglrenderer() {
   local cand
   for cand in "${DORY_VIRGLRENDERER_PATH:-}" \
               "${DORY_VIRGLRENDERER:-}" \
+              "$REPO_ROOT/release-build/virglrenderer/libvirglrenderer.dylib" \
               "$FRAMEWORKS/libvirglrenderer.dylib" \
               /opt/homebrew/lib/libvirglrenderer.dylib \
               /opt/homebrew/opt/virglrenderer/lib/libvirglrenderer.dylib \
@@ -315,14 +329,13 @@ find_compatible_virglrenderer() {
               /usr/local/opt/virglrenderer/lib/libvirglrenderer.dylib \
               /usr/local/opt/virglrenderer/lib/libvirglrenderer.1.dylib; do
     [ -n "$cand" ] && [ -f "$cand" ] || continue
-    # The Venus path maps host-visible blobs via virgl_renderer_resource_get_map_ptr (the
-    # libkrun/krunkit model); the slp/krunkit build exports it. resource_map is the fallback.
-    if dylib_has_symbol "$cand" virgl_renderer_resource_get_map_ptr \
-       || dylib_has_symbol "$cand" virgl_renderer_resource_map; then
+    # Dory's markers prove that the macOS shader and async Venus fence fixes are present. The map
+    # entry point is also mandatory because Venus blobs must be exposed as host-visible memory.
+    if virglrenderer_is_dory_compatible "$cand"; then
       printf '%s\n' "$cand"
       return 0
     fi
-    echo "    WARNING: $cand exports no virgl_renderer_resource_get_map_ptr/resource_map; skipping for Venus GPU bundling" >&2
+    echo "    WARNING: $cand is not Dory's patched VirGL/Venus renderer; skipping it" >&2
   done
   return 1
 }
@@ -356,20 +369,21 @@ find_moltenvk_icd() {
 find_moltenvk_dylib() {
   local icd="${1:-}" library_path cand base_dir relative_dir
   if [ -n "${DORY_MOLTENVK_DYLIB:-}" ] && [ -f "$DORY_MOLTENVK_DYLIB" ]; then
-    printf '%s\n' "$DORY_MOLTENVK_DYLIB"
-    return 0
+    moltenvk_is_dory_compatible "$DORY_MOLTENVK_DYLIB" \
+      && { printf '%s\n' "$DORY_MOLTENVK_DYLIB"; return 0; }
   fi
   if [ -n "$icd" ] && [ -f "$icd" ]; then
     library_path="$(sed -nE 's/.*"library_path"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' "$icd" | head -1)"
     if [ -n "$library_path" ]; then
       if [ "${library_path#/}" != "$library_path" ] && [ -f "$library_path" ]; then
-        printf '%s\n' "$library_path"
-        return 0
+        moltenvk_is_dory_compatible "$library_path" \
+          && { printf '%s\n' "$library_path"; return 0; }
       fi
       base_dir="$(cd "$(dirname "$icd")" && pwd)"
       relative_dir="$(dirname "$library_path")"
       cand="$(cd "$base_dir/$relative_dir" 2>/dev/null && pwd)/$(basename "$library_path")"
-      [ -f "$cand" ] && { printf '%s\n' "$cand"; return 0; }
+      [ -f "$cand" ] && moltenvk_is_dory_compatible "$cand" \
+        && { printf '%s\n' "$cand"; return 0; }
     fi
   fi
   for cand in "$FRAMEWORKS/libMoltenVK.dylib" \
@@ -377,7 +391,8 @@ find_moltenvk_dylib() {
               /opt/homebrew/opt/molten-vk/lib/libMoltenVK.dylib \
               /usr/local/lib/libMoltenVK.dylib \
               /usr/local/opt/molten-vk/lib/libMoltenVK.dylib; do
-    [ -n "$cand" ] && [ -f "$cand" ] && { printf '%s\n' "$cand"; return 0; }
+    [ -n "$cand" ] && [ -f "$cand" ] || continue
+    moltenvk_is_dory_compatible "$cand" && { printf '%s\n' "$cand"; return 0; }
   done
   return 1
 }
@@ -436,18 +451,53 @@ warn_or_fail_missing_bundle_asset() {
 }
 
 bundle_venus_renderer() {
-  local virgl icd molten bundled_icd dylib
-  echo "==> Bundling experimental Venus GPU renderer (virglrenderer + MoltenVK)…"
+  local virgl icd molten bundled_icd dylib provenance managed_virgl managed_provenance explicit_virgl sibling_provenance
+  local molten_prefix managed_molten_prefix molten_provenance
+  echo "==> Bundling Dory's pinned VirGL/Venus GPU renderer (virglrenderer + MoltenVK)…"
+
+  managed_virgl="$REPO_ROOT/release-build/virglrenderer/libvirglrenderer.dylib"
+  managed_provenance="$REPO_ROOT/release-build/virglrenderer/provenance.txt"
+  managed_molten_prefix="$REPO_ROOT/release-build/moltenvk"
+  molten_prefix="${DORY_MOLTENVK_PREFIX:-$managed_molten_prefix}"
+  molten_provenance="$molten_prefix/provenance.txt"
+  if [ ! -f "$molten_prefix/lib/libMoltenVK.dylib" ] \
+      || [ ! -f "$molten_prefix/share/vulkan/icd.d/MoltenVK_icd.json" ] \
+      || ! moltenvk_is_dory_compatible "$molten_prefix/lib/libMoltenVK.dylib"; then
+    if ! "$REPO_ROOT/scripts/build-moltenvk.sh" \
+        --prefix "$molten_prefix" \
+        --provenance "$molten_provenance"; then
+      warn_or_fail_optional_venus "failed to build Dory's pinned MoltenVK runtime; install full Xcode and retry"
+      return 0
+    fi
+  fi
+  molten="$molten_prefix/lib/libMoltenVK.dylib"
+  icd="$molten_prefix/share/vulkan/icd.d/MoltenVK_icd.json"
+  provenance=""
+  explicit_virgl="${DORY_VIRGLRENDERER_PATH:-${DORY_VIRGLRENDERER:-}}"
+  if [ -z "$explicit_virgl" ]; then
+    if ! DORY_MOLTENVK_PREFIX="$molten_prefix" "$REPO_ROOT/scripts/build-virglrenderer.sh" \
+        --output "$managed_virgl" \
+        --provenance "$managed_provenance"; then
+      warn_or_fail_optional_venus "failed to build Dory's pinned VirGL renderer; install meson, ninja, pkg-config, and libepoxy"
+      return 0
+    fi
+    virgl="$managed_virgl"
+    provenance="$managed_provenance"
+  elif virglrenderer_is_dory_compatible "$explicit_virgl"; then
+    virgl="$explicit_virgl"
+    sibling_provenance="$(dirname "$explicit_virgl")/provenance.txt"
+    [ -f "$sibling_provenance" ] && provenance="$sibling_provenance"
+  else
+    warn_or_fail_optional_venus "explicit VirGL renderer $explicit_virgl is missing Dory's shader/fence fixes, bundled-MoltenVK linkage, or a required Venus map entry point"
+    return 0
+  fi
+
   if ! virgl="$(find_compatible_virglrenderer)"; then
-    warn_or_fail_optional_venus "no compatible libvirglrenderer.dylib found; install the slp/krunkit tap (brew install slp/krunkit/virglrenderer molten-vk libepoxy) or set DORY_VIRGLRENDERER_PATH to a Venus build that exports virgl_renderer_resource_get_map_ptr"
+    warn_or_fail_optional_venus "Dory's patched libvirglrenderer.dylib could not be built or found"
     return 0
   fi
-  if ! icd="$(find_moltenvk_icd)"; then
-    warn_or_fail_optional_venus "MoltenVK_icd.json not found; install/provide MoltenVK or set DORY_MOLTENVK_ICD"
-    return 0
-  fi
-  if ! molten="$(find_moltenvk_dylib "$icd")"; then
-    warn_or_fail_optional_venus "libMoltenVK.dylib not found; install/provide MoltenVK or set DORY_MOLTENVK_DYLIB"
+  if ! moltenvk_is_dory_compatible "$molten"; then
+    warn_or_fail_optional_venus "MoltenVK is missing Dory's SPIRV native-array compatibility fix"
     return 0
   fi
 
@@ -456,10 +506,30 @@ bundle_venus_renderer() {
   copy_dylib_dependency_closure "$virgl" libvirglrenderer.dylib
   copy_dylib_dependency_closure "$molten" libMoltenVK.dylib
 
-  if ! dylib_has_symbol "$FRAMEWORKS/libvirglrenderer.dylib" virgl_renderer_resource_get_map_ptr \
-     && ! dylib_has_symbol "$FRAMEWORKS/libvirglrenderer.dylib" virgl_renderer_resource_map; then
-    warn_or_fail_optional_venus "bundled libvirglrenderer.dylib exports no virgl_renderer_resource_get_map_ptr/resource_map"
+  if ! virglrenderer_is_dory_compatible "$FRAMEWORKS/libvirglrenderer.dylib"; then
+    warn_or_fail_optional_venus "bundled libvirglrenderer.dylib lost Dory's compatibility markers or required Venus map entry point"
     return 0
+  fi
+
+  if [ -n "$provenance" ] && [ -f "$provenance" ]; then
+    install -m0644 "$provenance" "$RESOURCES/virglrenderer-provenance.txt"
+  else
+    {
+      echo "source=explicit"
+      echo "path=$virgl"
+      echo "verified_sha256=$(shasum -a 256 "$virgl" | awk '{print $1}')"
+      echo "features=venus,macos-core-shader-compat-v2,macos-venus-fence-callback-v1,moltenvk-native-array-v1"
+    } > "$RESOURCES/virglrenderer-provenance.txt"
+  fi
+  if [ -f "$molten_provenance" ]; then
+    install -m0644 "$molten_provenance" "$RESOURCES/moltenvk-provenance.txt"
+  else
+    {
+      echo "source=explicit"
+      echo "path=$molten"
+      echo "features=spirv-native-function-arrays-v1"
+      echo "verified_sha256=$(shasum -a 256 "$molten" | awk '{print $1}')"
+    } > "$RESOURCES/moltenvk-provenance.txt"
   fi
 
   bundled_icd="$RESOURCES/vulkan/icd.d/MoltenVK_icd.json"
@@ -485,9 +555,14 @@ bundle_venus_renderer() {
     sign_runtime_payload "$dylib"
   done < <(find "$FRAMEWORKS" -maxdepth 1 -type f -name '*.dylib' -print)
 
+  echo "bundled_sha256=$(shasum -a 256 "$FRAMEWORKS/libvirglrenderer.dylib" | awk '{print $1}')" \
+    >> "$RESOURCES/virglrenderer-provenance.txt"
+
   echo "    bundled Frameworks/libvirglrenderer.dylib (from $virgl)"
   echo "    bundled Frameworks/libMoltenVK.dylib (from $molten)"
   echo "    bundled Resources/vulkan/icd.d/MoltenVK_icd.json"
+  echo "    bundled Resources/virglrenderer-provenance.txt"
+  echo "    bundled Resources/moltenvk-provenance.txt"
 }
 
 find_debugfs() {
@@ -750,7 +825,10 @@ if [ -d "$PKG" ]; then
   cat > "$DORY_HV_ENTITLEMENTS" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict><key>com.apple.security.hypervisor</key><true/></dict></plist>
+<plist version="1.0"><dict>
+  <key>com.apple.security.hypervisor</key><true/>
+  <key>com.apple.security.device.audio-input</key><true/>
+</dict></plist>
 PLIST
   bundle_swiftpm_executable "$PKG" release dory-hv "$HELPERS/dory-hv" "$DORY_HV_ENTITLEMENTS"
   rm -f "$DORY_HV_ENTITLEMENTS"

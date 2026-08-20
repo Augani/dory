@@ -104,7 +104,7 @@ def validate_sources(repo: pathlib.Path, source_root: pathlib.Path, kubectl: pat
     run([str(repo / "guest/kernel/verify-build.sh"), "arm64"], cwd=repo)
     run([str(repo / "guest/initfs/verify-build.sh"), "arm64"], cwd=repo)
     desktop_env = dict(os.environ)
-    desktop_env["DORY_KERNEL_PROFILE"] = "desktop"
+    desktop_env["DORY_KERNEL_PROFILE"] = "accelerated-desktop"
     run([str(repo / "guest/kernel/verify-build.sh"), "arm64"], cwd=repo, env=desktop_env)
     for distro in ("debian", "ubuntu", "kali"):
         run([str(repo / "guest/desktop/verify-build.sh"), "arm64", distro], cwd=repo)
@@ -137,7 +137,7 @@ def component_specs(source_root: pathlib.Path, kubectl: pathlib.Path) -> list[di
         (
             "ubuntu",
             "Ubuntu 24.04 LTS Desktop",
-            "An Ubuntu 24.04 LTS Xfce desktop with its own packages and official repositories.",
+            "Canonical's Ubuntu 24.04 LTS GNOME desktop with its own packages and official repositories.",
         ),
         (
             "kali",
@@ -167,6 +167,12 @@ def component_specs(source_root: pathlib.Path, kubectl: pathlib.Path) -> list[di
                     {
                         "path": f"dory-desktop-{distro}-packages-arm64.txt",
                         "source": source_root / f"dory-desktop-{distro}-packages-arm64.txt",
+                        "delivery": "none",
+                        "executable": False,
+                    },
+                    {
+                        "path": f"dory-desktop-{distro}-update-arm64.tar",
+                        "source": source_root / f"dory-desktop-{distro}-update-arm64.tar",
                         "delivery": "none",
                         "executable": False,
                     },

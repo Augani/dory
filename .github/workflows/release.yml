@@ -270,12 +270,23 @@ jobs:
           DORY_EXPERIMENTAL_GPU=0 guest/kernel/verify-build.sh arm64
           DORY_EXPERIMENTAL_GPU=1 guest/kernel/verify-build.sh arm64
           guest/initfs/verify-build.sh arm64
+      - name: Build and verify every Linux desktop payload from this commit
+        run: |
+          DORY_KERNEL_PROFILE=accelerated-desktop guest/kernel/build.sh arm64
+          for distro in debian ubuntu kali; do
+            guest/desktop/build.sh arm64 "$distro"
+          done
+          DORY_KERNEL_PROFILE=accelerated-desktop guest/kernel/verify-build.sh arm64
+          for distro in debian ubuntu kali; do
+            guest/desktop/verify-build.sh arm64 "$distro"
+          done
       - name: Upload same-commit arm64 guest payload
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: dory-guest-arm64-${{ github.sha }}
           retention-days: 30
           if-no-files-found: error
+          compression-level: 0
           path: |
             guest/out/Image
             guest/out/Image.zst
@@ -288,6 +299,21 @@ jobs:
             guest/out/initfs-arm64.ext4
             guest/out/dory-agent-arm64
             guest/out/initfs-build-arm64.stamp
+            guest/out/Image-desktop.zst
+            guest/out/config-arm64-desktop
+            guest/out/kernel-build-arm64-desktop.stamp
+            guest/out/dory-desktop-debian-rootfs-arm64.ext4.zst
+            guest/out/dory-desktop-debian-packages-arm64.txt
+            guest/out/dory-desktop-debian-update-arm64.tar
+            guest/out/dory-desktop-debian-build-arm64.stamp
+            guest/out/dory-desktop-ubuntu-rootfs-arm64.ext4.zst
+            guest/out/dory-desktop-ubuntu-packages-arm64.txt
+            guest/out/dory-desktop-ubuntu-update-arm64.tar
+            guest/out/dory-desktop-ubuntu-build-arm64.stamp
+            guest/out/dory-desktop-kali-rootfs-arm64.ext4.zst
+            guest/out/dory-desktop-kali-packages-arm64.txt
+            guest/out/dory-desktop-kali-update-arm64.tar
+            guest/out/dory-desktop-kali-build-arm64.stamp
 
   prepublication-quality:
     name: macOS pre-publication quality gate
@@ -375,9 +401,19 @@ jobs:
           path: guest/out
       - name: Independently verify every downloaded guest payload
         run: |
+          zstd -q -d --sparse -f guest/out/Image-desktop.zst -o guest/out/Image-desktop
+          for distro in debian ubuntu kali; do
+            zstd -q -d --sparse -f \
+              "guest/out/dory-desktop-$distro-rootfs-arm64.ext4.zst" \
+              -o "guest/out/dory-desktop-$distro-rootfs-arm64.ext4"
+          done
           DORY_EXPERIMENTAL_GPU=0 guest/kernel/verify-build.sh arm64
           DORY_EXPERIMENTAL_GPU=1 guest/kernel/verify-build.sh arm64
           guest/initfs/verify-build.sh arm64
+          DORY_KERNEL_PROFILE=accelerated-desktop guest/kernel/verify-build.sh arm64
+          for distro in debian ubuntu kali; do
+            guest/desktop/verify-build.sh arm64 "$distro"
+          done
 
       - name: Prove the tracked release source exactly matches the commit
         run: |
@@ -431,6 +467,9 @@ jobs:
 
       - name: Ensure Metal toolchain (SwiftTerm ships Metal shaders)
         run: xcodebuild -downloadComponent MetalToolchain || true
+
+      - name: Install pinned GPU renderer build prerequisites
+        run: brew install meson ninja pkgconf molten-vk libepoxy
 
       - name: Preserve previous released appcast history
         run: |
@@ -591,7 +630,7 @@ jobs:
           printf 'path=%s\n' "$sparkle_source" >> "$GITHUB_OUTPUT"
 
       - name: Exercise the notarized direct-download candidate on a clean physical Mac
-        timeout-minutes: 30
+        timeout-minutes: 60
         env:
           DORY_RELEASE_CLEAN_USER: '1'
           DORY_RELEASE_EXTERNAL_VOLUME_ROOT: ${{ vars.DORY_EXTERNAL_VOLUME_TEST_ROOT }}
@@ -604,6 +643,14 @@ jobs:
           DORY_RELEASE_CORPORATE_VPN_PROBE_HOST: ${{ vars.DORY_CORPORATE_VPN_PROBE_HOST }}
           DORY_RELEASE_CORPORATE_VPN_PROBE_URL: ${{ vars.DORY_CORPORATE_VPN_PROBE_URL }}
           DORY_RELEASE_TAILSCALE_EXIT_NODE: ${{ vars.DORY_TAILSCALE_EXIT_NODE }}
+          DORY_RELEASE_DESKTOP_KERNEL: ${{ github.workspace }}/guest/out/Image-desktop
+          DORY_RELEASE_DESKTOP_DEBIAN_ROOTFS: ${{ github.workspace }}/guest/out/dory-desktop-debian-rootfs-arm64.ext4
+          DORY_RELEASE_DESKTOP_UBUNTU_ROOTFS: ${{ github.workspace }}/guest/out/dory-desktop-ubuntu-rootfs-arm64.ext4
+          DORY_RELEASE_DESKTOP_KALI_ROOTFS: ${{ github.workspace }}/guest/out/dory-desktop-kali-rootfs-arm64.ext4
+          DORY_RELEASE_DESKTOP_DEBIAN_UPDATE: ${{ github.workspace }}/guest/out/dory-desktop-debian-update-arm64.tar
+          DORY_RELEASE_DESKTOP_UBUNTU_UPDATE: ${{ github.workspace }}/guest/out/dory-desktop-ubuntu-update-arm64.tar
+          DORY_RELEASE_DESKTOP_KALI_UPDATE: ${{ github.workspace }}/guest/out/dory-desktop-kali-update-arm64.tar
+          DORY_RELEASE_DESKTOP_VERSION: ${{ steps.ver.outputs.version }}
         run: |
           scripts/direct-dmg-install-gate.sh \
             --dmg "${{ steps.build.outputs.dmg }}" \

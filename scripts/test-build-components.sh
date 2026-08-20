@@ -27,7 +27,14 @@ write_fixture "$SOURCE/Image-desktop" 196608
 for distro in debian ubuntu kali; do
   write_fixture "$SOURCE/dory-desktop-$distro-rootfs-arm64.ext4" 327680
   printf 'schema=fixture\n' > "$SOURCE/dory-desktop-$distro-build-arm64.stamp"
-  printf 'xfce4\tfixture\n' > "$SOURCE/dory-desktop-$distro-packages-arm64.txt"
+  if [ "$distro" = ubuntu ]; then
+    printf 'ubuntu-desktop-minimal\tfixture\nubuntu-session\tfixture\ngdm3\tfixture\n' \
+      > "$SOURCE/dory-desktop-$distro-packages-arm64.txt"
+  else
+    printf 'xfce4\tfixture\nlightdm\tfixture\n' \
+      > "$SOURCE/dory-desktop-$distro-packages-arm64.txt"
+  fi
+  write_fixture "$SOURCE/dory-desktop-$distro-update-arm64.tar" 4096
 done
 printf 'schema=fixture\n' > "$SOURCE/kernel-build-arm64-desktop.stamp"
 
