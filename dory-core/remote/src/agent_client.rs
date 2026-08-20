@@ -12,9 +12,9 @@ use std::time::Duration;
 use dory_pb::agent::{
     self, agent_request::Method, agent_response::Result as Res, AgentRequest, AgentResponse,
     ClockSyncRequest, ExecEnv, ExecRequest, ExecResponse, InfoRequest, PortsWatchRequest,
-    SyncDeleteRequest, SyncDeleteResponse, SyncFileStatusRequest, SyncFileStatusResponse,
-    SyncManifestRequest, SyncManifestResponse, SyncPutChunkRequest, SyncPutChunkResponse,
-    TelemetryRequest, TelemetryResponse,
+    SnapshotQuiesceRequest, SnapshotQuiesceResponse, SyncDeleteRequest, SyncDeleteResponse,
+    SyncFileStatusRequest, SyncFileStatusResponse, SyncManifestRequest, SyncManifestResponse,
+    SyncPutChunkRequest, SyncPutChunkResponse, TelemetryRequest, TelemetryResponse,
 };
 use dory_proto::handshake::{handshake, Hello};
 use dory_proto::mux::Mux;
@@ -122,6 +122,21 @@ impl AgentClient {
     pub async fn telemetry(&self) -> Result<TelemetryResponse, RemoteError> {
         match self.call(Method::Telemetry(TelemetryRequest {})).await? {
             Res::Telemetry(r) => Ok(r),
+            _ => Err(RemoteError::UnexpectedVariant),
+        }
+    }
+
+    pub async fn snapshot_quiesce(
+        &self,
+        action: agent::snapshot_quiesce_request::Action,
+    ) -> Result<SnapshotQuiesceResponse, RemoteError> {
+        match self
+            .call(Method::SnapshotQuiesce(SnapshotQuiesceRequest {
+                action: action as i32,
+            }))
+            .await?
+        {
+            Res::SnapshotQuiesce(r) => Ok(r),
             _ => Err(RemoteError::UnexpectedVariant),
         }
     }

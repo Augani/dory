@@ -3715,6 +3715,57 @@ final class MachineManagerTests: XCTestCase {
         XCTAssertEqual(connector.clockSyncs, [1_234_500_000_000])
     }
 
+    func testSnapshotsQuiesceCapableGuestsAndColdStopPausedMachines() throws {
+        let base = "/tmp/dory-machine-snapshot-quiesce-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let connector = RecordingMachineAgentConnector()
+        let manager = MachineManager(
+            configuration: MachineManagerConfiguration(
+                vmmExecutablePath: "/bin/sleep",
+                stateDirectory: base,
+                baseArguments: ["30"],
+                passMachineArguments: false,
+                requiresReadyHandoff: true
+            ),
+            agentConnector: connector.connect(socketPath:)
+        )
+        defer {
+            try? manager.delete(id: "dev")
+            try? FileManager.default.removeItem(atPath: base)
+        }
+
+        _ = try manager.create(DoryMachineConfiguration(
+            id: "dev",
+            kernelPath: doryTestKernelPath,
+            rootfsPath: doryTestRootfsPath
+        ))
+        let starting = try manager.start(id: "dev")
+        try sendSnapshotQuiesceHandoff(
+            path: try XCTUnwrap(starting.handoffSocketPath),
+            machineID: "dev"
+        )
+        _ = try waitForMachineState(manager, id: "dev", state: .running)
+
+        let runningSnapshot = try takeSnapshotAndCompleteRestart(
+            manager: manager,
+            machineID: "dev",
+            snapshotID: "running"
+        )
+        XCTAssertEqual(runningSnapshot.consistency, .guestQuiesced)
+        XCTAssertEqual(connector.snapshotFreezes, 1)
+        XCTAssertEqual(connector.snapshotThaws, 0)
+        XCTAssertEqual(manager.status(id: "dev")?.state, .running)
+
+        _ = try manager.pause(id: "dev")
+        let pausedSnapshot = try takeSnapshotAndCompleteRestart(
+            manager: manager,
+            machineID: "dev",
+            snapshotID: "paused"
+        )
+        XCTAssertEqual(pausedSnapshot.consistency, .coldStopped)
+        XCTAssertEqual(connector.snapshotFreezes, 1)
+        XCTAssertEqual(manager.status(id: "dev")?.state, .paused)
+    }
+
     func testExecRunsThroughRunningMachineAgent() throws {
         let base = "/tmp/dory-machine-exec-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         let connector = RecordingMachineAgentConnector()
@@ -4051,6 +4102,47 @@ final class MachineManagerTests: XCTestCase {
     }
 }
 
+private func sendSnapshotQuiesceHandoff(path: String, machineID: String) throws {
+    try sendVmmHandoff(
+        path: path,
+        ready: VmmReadyMessage(
+            machineID: machineID,
+            agentBuild: "dory-agent/snapshot-test",
+            agentProtocolVersion: DoryCore.protocolVersion(),
+            agentCapabilities: [DoryAgentCapability(id: "snapshot-quiesce", version: 1)],
+            agentSocketPath: "/run/dory-snapshot-agent.sock"
+        ),
+        fileDescriptors: []
+    )
+}
+
+private func takeSnapshotAndCompleteRestart(
+    manager: MachineManager,
+    machineID: String,
+    snapshotID: String
+) throws -> DoryMachineSnapshot {
+    let result = LockedResult<DoryMachineSnapshot>()
+    DispatchQueue.global(qos: .userInitiated).async {
+        result.store(Result {
+            try manager.snapshot(id: machineID, snapshotID: snapshotID)
+        })
+    }
+    let deadline = Date().addingTimeInterval(15)
+    var handedOffPIDs: Set<Int32> = []
+    while Date() < deadline, result.value == nil {
+        if let status = manager.status(id: machineID),
+           status.state == .starting,
+           let pid = status.pid,
+           !handedOffPIDs.contains(pid),
+           let handoffPath = status.handoffSocketPath {
+            try sendSnapshotQuiesceHandoff(path: handoffPath, machineID: machineID)
+            handedOffPIDs.insert(pid)
+        }
+        Thread.sleep(forTimeInterval: 0.01)
+    }
+    return try XCTUnwrap(result.value, "snapshot timed out").get()
+}
+
 private func runDesktopUpdate(
     manager: MachineManager,
     id: String,
@@ -4211,6 +4303,8 @@ private final class RecordingMachineAgentConnector: @unchecked Sendable {
     private let lock = NSLock()
     private var paths: [String] = []
     private var syncs: [Int64] = []
+    private var freezes = 0
+    private var thaws = 0
     private var recordedExecs: [Exec] = []
     private let telemetry: DoryTelemetry
     private let execResult: DoryExecResult
@@ -4259,6 +4353,18 @@ private final class RecordingMachineAgentConnector: @unchecked Sendable {
         return recordedExecs
     }
 
+    var snapshotFreezes: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return freezes
+    }
+
+    var snapshotThaws: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return thaws
+    }
+
     func connect(socketPath: String) throws -> any AgentControlClient {
         lock.lock()
         paths.append(socketPath)
@@ -4280,6 +4386,18 @@ private final class RecordingMachineAgentConnector: @unchecked Sendable {
     func recordExec(_ exec: Exec) {
         lock.lock()
         recordedExecs.append(exec)
+        lock.unlock()
+    }
+
+    func recordSnapshotFreeze() {
+        lock.lock()
+        freezes += 1
+        lock.unlock()
+    }
+
+    func recordSnapshotThaw() {
+        lock.lock()
+        thaws += 1
         lock.unlock()
     }
 }
@@ -4324,6 +4442,14 @@ private final class RecordingMachineAgentClient: AgentControlClient, @unchecked 
 
     func telemetry() throws -> DoryTelemetry {
         telemetryValue
+    }
+
+    func snapshotFreeze() throws {
+        recorder.recordSnapshotFreeze()
+    }
+
+    func snapshotThaw() throws {
+        recorder.recordSnapshotThaw()
     }
 
     func exec(

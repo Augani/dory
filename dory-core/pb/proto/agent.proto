@@ -58,6 +58,22 @@ message TelemetryResponse {
   double psi_full_avg10 = 4; // memory-pressure "full" 10s average, percent (0..100)
 }
 
+// Coordinate application-consistent snapshots. The agent advertises `snapshot-quiesce@1` only
+// when the guest contains a usable filesystem-freeze implementation. Freeze and thaw are one
+// negotiated capability because callers must always be able to undo a failed snapshot attempt.
+message SnapshotQuiesceRequest {
+  enum Action {
+    ACTION_UNSPECIFIED = 0;
+    FREEZE = 1;
+    THAW = 2;
+  }
+  Action action = 1;
+}
+message SnapshotQuiesceResponse {
+  bool completed = 1;
+  string detail = 2;
+}
+
 // Run a bounded non-interactive command in the guest. This is the primitive doryd uses for
 // VM-machine provisioning and smoke checks; streaming terminals/debug shells can layer on a
 // separate channel later.
@@ -147,6 +163,7 @@ message AgentRequest {
     SyncDeleteRequest sync_delete = 7;
     TelemetryRequest telemetry = 8;
     ExecRequest exec = 9;
+    SnapshotQuiesceRequest snapshot_quiesce = 10;
   }
 }
 
@@ -162,5 +179,6 @@ message AgentResponse {
     SyncDeleteResponse sync_delete = 8;
     TelemetryResponse telemetry = 9;
     ExecResponse exec = 10;
+    SnapshotQuiesceResponse snapshot_quiesce = 11;
   }
 }

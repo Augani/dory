@@ -16,6 +16,7 @@ pub mod fsevents;
 pub mod handler;
 pub mod proc_net;
 pub mod reaper;
+pub mod snapshot_quiesce;
 pub mod sync_apply;
 pub mod telemetry;
 

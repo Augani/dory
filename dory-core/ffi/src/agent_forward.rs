@@ -164,6 +164,17 @@ impl AgentControl {
         })
     }
 
+    pub fn snapshot_freeze(&self) -> Result<(), RemoteFfiError> {
+        snapshot_quiesce(
+            self,
+            dory_pb::agent::snapshot_quiesce_request::Action::Freeze,
+        )
+    }
+
+    pub fn snapshot_thaw(&self) -> Result<(), RemoteFfiError> {
+        snapshot_quiesce(self, dory_pb::agent::snapshot_quiesce_request::Action::Thaw)
+    }
+
     pub fn exec(
         &self,
         argv: Vec<String>,
@@ -204,6 +215,24 @@ impl AgentControl {
             stdin,
         ))?;
         Ok(exec_result(out))
+    }
+}
+
+fn snapshot_quiesce(
+    control: &AgentControl,
+    action: dory_pb::agent::snapshot_quiesce_request::Action,
+) -> Result<(), RemoteFfiError> {
+    let guard = control.runtime.lock().unwrap();
+    let runtime = guard.as_ref().ok_or_else(shutdown_error)?;
+    let result = runtime.block_on(control.client.snapshot_quiesce(action))?;
+    if result.completed {
+        Ok(())
+    } else {
+        Err(failed(if result.detail.is_empty() {
+            "guest declined snapshot quiesce"
+        } else {
+            result.detail.as_str()
+        }))
     }
 }
 

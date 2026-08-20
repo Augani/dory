@@ -20,20 +20,25 @@ pub fn agent_build() -> String {
 }
 
 pub fn agent_capabilities() -> Vec<agent::AgentCapability> {
-    [
+    let mut capabilities = vec![
         ("clock-sync", 1),
         ("exec", 1),
         ("exec-stdin", 1),
         ("ports-watch", 1),
         ("sync-push", 1),
         ("telemetry", 1),
-    ]
-    .into_iter()
-    .map(|(id, version)| agent::AgentCapability {
-        id: id.to_string(),
-        version,
-    })
-    .collect()
+    ];
+    if crate::snapshot_quiesce::available() {
+        capabilities.push(("snapshot-quiesce", 1));
+    }
+    capabilities.sort_unstable_by_key(|(id, _)| *id);
+    capabilities
+        .into_iter()
+        .map(|(id, version)| agent::AgentCapability {
+            id: id.to_string(),
+            version,
+        })
+        .collect()
 }
 
 pub fn err(code: i32, message: &str) -> agent::AgentResponse {
@@ -190,19 +195,24 @@ mod tests {
                 assert_eq!(i.proto_version, dory_proto::handshake::PROTO_VERSION);
                 assert!(i.agent_build.starts_with("dory-agent/"));
                 assert!(!i.kernel.is_empty());
+                let mut expected_capabilities = vec![
+                    ("clock-sync", 1),
+                    ("exec", 1),
+                    ("exec-stdin", 1),
+                    ("ports-watch", 1),
+                    ("sync-push", 1),
+                    ("telemetry", 1),
+                ];
+                if crate::snapshot_quiesce::available() {
+                    expected_capabilities.push(("snapshot-quiesce", 1));
+                    expected_capabilities.sort_unstable();
+                }
                 assert_eq!(
                     i.capabilities
                         .iter()
                         .map(|capability| (capability.id.as_str(), capability.version))
                         .collect::<Vec<_>>(),
-                    vec![
-                        ("clock-sync", 1),
-                        ("exec", 1),
-                        ("exec-stdin", 1),
-                        ("ports-watch", 1),
-                        ("sync-push", 1),
-                        ("telemetry", 1),
-                    ]
+                    expected_capabilities
                 );
             }
             other => panic!("expected Info, got {other:?}"),

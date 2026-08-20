@@ -396,6 +396,11 @@ public struct DoryMachineStatus: Sendable, Equatable {
     }
 }
 
+public enum DoryMachineSnapshotConsistency: String, Sendable, Equatable, Hashable, Codable {
+    case coldStopped = "cold-stopped"
+    case guestQuiesced = "guest-quiesced"
+}
+
 public struct DoryMachineSnapshot: Sendable, Equatable, Hashable, Codable {
     public var id: String
     public var machineID: String
@@ -418,6 +423,7 @@ public struct DoryMachineSnapshot: Sendable, Equatable, Hashable, Codable {
     public var runtimeIdentity: DoryMachineRuntimeIdentity
     public var artifactEvidence: DoryMachineSnapshotArtifactEvidence?
     public var installedDesktopPayloadReceipt: DoryInstalledDesktopPayloadReceipt?
+    public var consistency: DoryMachineSnapshotConsistency
 
     public init(
         id: String,
@@ -443,7 +449,8 @@ public struct DoryMachineSnapshot: Sendable, Equatable, Hashable, Codable {
                 DoryVirtualMachineDefinition.currentVirtualHardwareABIVersion
         ),
         artifactEvidence: DoryMachineSnapshotArtifactEvidence? = nil,
-        installedDesktopPayloadReceipt: DoryInstalledDesktopPayloadReceipt? = nil
+        installedDesktopPayloadReceipt: DoryInstalledDesktopPayloadReceipt? = nil,
+        consistency: DoryMachineSnapshotConsistency = .coldStopped
     ) {
         self.id = id
         self.machineID = machineID
@@ -466,6 +473,7 @@ public struct DoryMachineSnapshot: Sendable, Equatable, Hashable, Codable {
         self.runtimeIdentity = runtimeIdentity
         self.artifactEvidence = artifactEvidence
         self.installedDesktopPayloadReceipt = installedDesktopPayloadReceipt
+        self.consistency = consistency
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -490,6 +498,7 @@ public struct DoryMachineSnapshot: Sendable, Equatable, Hashable, Codable {
         case runtimeIdentity
         case artifactEvidence
         case installedDesktopPayloadReceipt
+        case consistency
     }
 
     public init(from decoder: Decoder) throws {
@@ -530,7 +539,11 @@ public struct DoryMachineSnapshot: Sendable, Equatable, Hashable, Codable {
             installedDesktopPayloadReceipt: try container.decodeIfPresent(
                 DoryInstalledDesktopPayloadReceipt.self,
                 forKey: .installedDesktopPayloadReceipt
-            )
+            ),
+            consistency: try container.decodeIfPresent(
+                DoryMachineSnapshotConsistency.self,
+                forKey: .consistency
+            ) ?? .coldStopped
         )
     }
 }
@@ -3053,6 +3066,7 @@ public final class MachineManager: @unchecked Sendable {
         let (machine, sourceMachineState) = try configurationAndPowerState(id: id)
         let wasRunning = [.starting, .running].contains(sourceMachineState)
         let wasPaused = sourceMachineState == .paused
+        let wasResident = wasRunning || wasPaused
         let snapshotRuntimeIdentity = try currentRuntimeIdentity(id: id)
         try Self.validateLaunchConfiguration(machine)
         try ensurePrivateSnapshotDirectory(machineID: id)
@@ -3067,22 +3081,38 @@ public final class MachineManager: @unchecked Sendable {
               !Self.pathEntryExists(nvramPath) else {
             throw MachineManagerError.duplicateSnapshot(snapshotID)
         }
-        // Quiesce under its own durable stop journal. Once stopped, the exact bytes selected for
-        // the snapshot can be hashed and bound before any snapshot artifact is published.
-        if wasRunning {
-            _ = try stopImplementation(
-                id: id,
-                journalLifecycle: true,
-                preserveResolvedAdmissionForRestart: true
-            )
+        // Prefer a negotiated guest freeze before the durable cold-stop boundary. A missing tools
+        // capability degrades to the existing cold snapshot; an advertised capability that fails
+        // is not silently ignored because the guest may already be partially frozen.
+        let guestQuiesced = sourceMachineState == .running
+            ? try freezeGuestForSnapshotIfSupported(id: id) : false
+        if wasResident {
+            do {
+                _ = try stopImplementation(
+                    id: id,
+                    journalLifecycle: true,
+                    preserveResolvedAdmissionForRestart: true
+                )
+            } catch {
+                if guestQuiesced {
+                    do { try thawGuestAfterFailedSnapshotStop(id: id) }
+                    catch let thawError {
+                        throw MachineManagerError.persistence(
+                            "could not stop \(id) for snapshot: \(error); guest thaw failed: \(thawError)"
+                        )
+                    }
+                }
+                throw error
+            }
         }
         var snapshotLifecycleStarted = false
         defer {
-            if wasRunning, !snapshotLifecycleStarted {
-                try? prepareRetainedResolvedAdmissionForRestart(
-                    plan: snapshotRuntimeIdentity.resolvedPlan
+            if wasResident, !snapshotLifecycleStarted {
+                try? restoreSnapshotSourcePowerState(
+                    id: id,
+                    wasPaused: wasPaused,
+                    resolvedPlan: snapshotRuntimeIdentity.resolvedPlan
                 )
-                _ = try? startImplementation(id: id, journalLifecycle: true)
             }
         }
         let liveMachineIdentifierPath = machine.bootMode == .efi
@@ -3129,7 +3159,8 @@ public final class MachineManager: @unchecked Sendable {
             runtimeIdentity: snapshotRuntimeIdentity,
             artifactEvidence: artifactEvidence,
             installedDesktopPayloadReceipt:
-                machine.effectiveInstalledDesktopPayloadReceipt
+                machine.effectiveInstalledDesktopPayloadReceipt,
+            consistency: guestQuiesced ? .guestQuiesced : .coldStopped
         )
         let snapshotAuthority = try Self.lifecycleSnapshotAuthority(snapshot)
         let lifecycle = try beginLifecycleSnapshot(
@@ -3186,11 +3217,12 @@ public final class MachineManager: @unchecked Sendable {
                 try? FileManager.default.removeItem(atPath: nvramPath)
             }
             failLifecycle(lifecycle, stepID: "snapshot.failed", rolledBack: true)
-            if wasRunning {
-                try? prepareRetainedResolvedAdmissionForRestart(
-                    plan: snapshotRuntimeIdentity.resolvedPlan
+            if wasResident {
+                try? restoreSnapshotSourcePowerState(
+                    id: id,
+                    wasPaused: wasPaused,
+                    resolvedPlan: snapshotRuntimeIdentity.resolvedPlan
                 )
-                _ = try? startImplementation(id: id, journalLifecycle: true)
             }
             if let error = error as? MachineManagerError {
                 throw error
@@ -3202,18 +3234,20 @@ public final class MachineManager: @unchecked Sendable {
             lifecycle,
             diagnostic: "published snapshot has an unfinished snapshot journal"
         )
-        if wasRunning, journalCompleted {
+        if wasResident, journalCompleted {
             do {
-                try prepareRetainedResolvedAdmissionForRestart(
-                    plan: snapshotRuntimeIdentity.resolvedPlan
+                try restoreSnapshotSourcePowerState(
+                    id: id,
+                    wasPaused: wasPaused,
+                    resolvedPlan: snapshotRuntimeIdentity.resolvedPlan
                 )
-                _ = try startAndWaitUntilReady(id: id, journalLifecycle: true)
             } catch let firstError {
                 do {
-                    try prepareRetainedResolvedAdmissionForRestart(
-                        plan: snapshotRuntimeIdentity.resolvedPlan
+                    try restoreSnapshotSourcePowerState(
+                        id: id,
+                        wasPaused: wasPaused,
+                        resolvedPlan: snapshotRuntimeIdentity.resolvedPlan
                     )
-                    _ = try startAndWaitUntilReady(id: id, journalLifecycle: true)
                 } catch {
                     throw MachineManagerError.persistence(
                         "snapshot \(snapshotID) was created, but \(id) could not restart: \(firstError); retry: \(error)"
@@ -3222,6 +3256,51 @@ public final class MachineManager: @unchecked Sendable {
             }
         }
         return snapshot
+    }
+
+    private func freezeGuestForSnapshotIfSupported(id: String) throws -> Bool {
+        guard status(id: id)?.supportsAgentCapability("snapshot-quiesce") == true else {
+            return false
+        }
+        do {
+            try withAgentClient(id: id, requiredCapability: "snapshot-quiesce") { client in
+                try client.snapshotFreeze()
+            }
+        } catch {
+            let freezeError = error
+            do { try thawGuestAfterFailedSnapshotStop(id: id) }
+            catch let thawError {
+                throw MachineManagerError.persistence(
+                    "guest snapshot freeze failed for \(id): \(freezeError); thaw failed: \(thawError)"
+                )
+            }
+            throw MachineManagerError.persistence(
+                "guest snapshot freeze failed for \(id): \(freezeError)"
+            )
+        }
+        return true
+    }
+
+    private func thawGuestAfterFailedSnapshotStop(id: String) throws {
+        try withAgentClient(id: id, requiredCapability: "snapshot-quiesce") { client in
+            try client.snapshotThaw()
+        }
+    }
+
+    private func restoreSnapshotSourcePowerState(
+        id: String,
+        wasPaused: Bool,
+        resolvedPlan: DoryResolvedMachinePlan?
+    ) throws {
+        try prepareRetainedResolvedAdmissionForRestart(plan: resolvedPlan)
+        _ = try startAndWaitUntilReady(id: id, journalLifecycle: true)
+        if wasPaused {
+            // Readiness publishes `.running` before its callback can reacquire operationLock to
+            // terminalize the start journal. snapshot() already owns that recursive lock, so
+            // settle the committed start here before opening the pause lifecycle transaction.
+            completeActiveStartLifecycle(id: id)
+            _ = try pauseImplementation(id: id, journalLifecycle: true)
+        }
     }
 
     /// Applies a signed desktop component to an existing persistent guest. The caller provides

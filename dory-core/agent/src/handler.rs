@@ -10,6 +10,7 @@ use prost::Message;
 
 use crate::dispatch::{err, handle_method};
 use crate::exec::{self, ExecError};
+use crate::snapshot_quiesce;
 use crate::sync_apply::{self, SyncError};
 
 pub async fn handle(req_bytes: &[u8]) -> Vec<u8> {
@@ -26,6 +27,9 @@ pub async fn handle(req_bytes: &[u8]) -> Vec<u8> {
         Some(Method::SyncPutChunk(r)) => wrap(sync_apply::put_chunk(r).await, Res::SyncPutChunk),
         Some(Method::SyncDelete(r)) => wrap(sync_apply::delete(r).await, Res::SyncDelete),
         Some(Method::Exec(r)) => wrap_exec(exec::run(r).await),
+        Some(Method::SnapshotQuiesce(r)) => AgentResponse {
+            result: Some(Res::SnapshotQuiesce(snapshot_quiesce::run(r).await)),
+        },
         other => handle_method(other),
     };
     response.encode_to_vec()

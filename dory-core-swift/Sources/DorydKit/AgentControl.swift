@@ -25,6 +25,8 @@ public protocol AgentControlClient: Sendable {
     func clockSync(hostEpochNs: Int64) throws -> Bool
     func portsWatch() throws -> DoryPortsSnapshot
     func telemetry() throws -> DoryTelemetry
+    func snapshotFreeze() throws
+    func snapshotThaw() throws
     func exec(
         argv: [String],
         cwd: String,
@@ -44,6 +46,14 @@ public protocol AgentControlClient: Sendable {
 }
 
 public extension AgentControlClient {
+    func snapshotFreeze() throws {
+        throw AgentControlError.capabilityUnavailable("snapshot-quiesce")
+    }
+
+    func snapshotThaw() throws {
+        throw AgentControlError.capabilityUnavailable("snapshot-quiesce")
+    }
+
     func execWithInput(
         argv: [String],
         stdin: Data,
@@ -117,6 +127,14 @@ public final class AgentControl: @unchecked Sendable {
 
     public func telemetry() throws -> DoryTelemetry {
         try client(requiring: "telemetry").telemetry()
+    }
+
+    public func snapshotFreeze() throws {
+        try client(requiring: "snapshot-quiesce").snapshotFreeze()
+    }
+
+    public func snapshotThaw() throws {
+        try client(requiring: "snapshot-quiesce").snapshotThaw()
     }
 
     public func exec(
