@@ -6,6 +6,10 @@ nonisolated enum MachineDisplayMode: String, Sendable, Hashable, CaseIterable {
     case headless
     case desktop
 }
+nonisolated enum MachineBootMode: String, Sendable, Hashable, CaseIterable {
+    case linuxKernel = "linux-kernel"
+    case efi
+}
 nonisolated struct MachineSettings: Sendable, Hashable {
     var cpus: Int?
     var memoryMB: Int?
@@ -15,6 +19,9 @@ nonisolated struct MachineSettings: Sendable, Hashable {
     var env: [String: String] = [:]
     var address: String? = nil
     var displayMode: MachineDisplayMode = .headless
+    var bootMode: MachineBootMode = .linuxKernel
+    var installerISOPath: String? = nil
+    var diskSizeGB: Int? = nil
     nonisolated static let `default` = MachineSettings(cpus: nil, memoryMB: nil)
 }
 

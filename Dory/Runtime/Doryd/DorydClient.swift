@@ -22,6 +22,7 @@ nonisolated protocol DorydControlXPC {
     func machineStats(_ machineID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineExec(_ machineID: String, request: NSDictionary, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineProvision(_ machineID: String, request: NSDictionary, reply: @escaping (Bool, NSDictionary, String) -> Void)
+    func machineDesktopUpdate(_ machineID: String, request: NSDictionary, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineSnapshot(_ machineID: String, request: NSDictionary, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineSnapshots(_ machineID: String, reply: @escaping (NSArray, String) -> Void)
     func machineCloneSnapshot(_ machineID: String, snapshotID: String, newID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
@@ -86,6 +87,9 @@ nonisolated struct DorydMachineConfiguration: Sendable, Equatable {
     var id: String
     var kernelPath: String
     var rootfsPath: String
+    var bootMode: MachineBootMode = .linuxKernel
+    var installerISOPath: String? = nil
+    var diskSizeBytes: UInt64? = nil
     var memoryMB: UInt64
     var cpuCount: Int
     var address: String? = nil
@@ -98,12 +102,19 @@ nonisolated struct DorydMachineConfiguration: Sendable, Equatable {
             "id": id,
             "kernelPath": kernelPath,
             "rootfsPath": rootfsPath,
+            "bootMode": bootMode.rawValue,
             "memoryMB": memoryMB,
             "cpuCount": cpuCount,
             "displayMode": displayMode.rawValue,
         ]
         if let address {
             dictionary["address"] = address
+        }
+        if let installerISOPath {
+            dictionary["installerISOPath"] = installerISOPath
+        }
+        if let diskSizeBytes {
+            dictionary["diskSizeBytes"] = diskSizeBytes
         }
         if !shares.isEmpty {
             dictionary["shares"] = shares.map(\.xpcDictionary)
@@ -139,6 +150,8 @@ nonisolated struct DorydMachineStatus: Sendable, Equatable {
     var currentBalloonTargetMB: UInt64? = nil
     var cpuCount: Int?
     var displayMode: MachineDisplayMode = .headless
+    var bootMode: MachineBootMode = .linuxKernel
+    var installerMediaAttached: Bool = false
     var shares: [DorydMachineShareConfiguration] = []
     var environment: [String: String] = [:]
 }
@@ -168,6 +181,17 @@ nonisolated struct DorydMachineProvisionResult: Sendable, Equatable {
     var recipeID: String
     var install: DorydMachineExecResult
     var verify: DorydMachineExecResult
+}
+
+nonisolated struct DorydDesktopUpdateResult: Sendable, Equatable {
+    var machineID: String
+    var distro: String
+    var version: String
+    var inputSHA256: String
+    var bundleSHA256: String
+    var snapshotID: String
+    var status: DorydMachineStatus
+    var restoredRunningState: Bool
 }
 
 nonisolated struct DorydMachineSnapshot: Sendable, Equatable {
@@ -634,7 +658,8 @@ nonisolated final class DorydClient: @unchecked Sendable {
         address: String? = nil,
         updatesAddress: Bool = false,
         shares: [DorydMachineShareConfiguration]? = nil,
-        environment: [String: String]? = nil
+        environment: [String: String]? = nil,
+        installerMediaAttached: Bool? = nil
     ) async throws -> DorydMachineStatus {
         var config: [String: Any] = [:]
         if let memoryMB {
@@ -658,6 +683,9 @@ nonisolated final class DorydClient: @unchecked Sendable {
                     "value": value,
                 ] as NSDictionary
             }
+        }
+        if let installerMediaAttached {
+            config["installerMediaAttached"] = installerMediaAttached
         }
         return try await withTimeout(atLeast: 120).statusCommand { proxy, reply in
             proxy.machineUpdate(machineID, config: config as NSDictionary, reply: reply)
@@ -707,6 +735,26 @@ nonisolated final class DorydClient: @unchecked Sendable {
             proxy.machineProvision(machineID, request: ["recipe": recipe] as NSDictionary, reply: reply)
         } decode: {
             Self.machineProvisionResult(from: $0)
+        }
+    }
+
+    func machineDesktopUpdate(
+        _ machineID: String,
+        distro: String,
+        version: String,
+        bundlePath: String,
+        kernelPath: String
+    ) async throws -> DorydDesktopUpdateResult {
+        let request: NSDictionary = [
+            "distro": distro,
+            "version": version,
+            "bundlePath": bundlePath,
+            "kernelPath": kernelPath,
+        ]
+        return try await withTimeout(atLeast: 3_900).statusCommand { proxy, reply in
+            proxy.machineDesktopUpdate(machineID, request: request, reply: reply)
+        } decode: {
+            Self.desktopUpdateResult(from: $0)
         }
     }
 
@@ -1160,6 +1208,10 @@ nonisolated final class DorydClient: @unchecked Sendable {
             currentBalloonTargetMB: uint64(dictionary["currentBalloonTargetMB"]),
             cpuCount: int(dictionary["cpuCount"]),
             displayMode: (dictionary["displayMode"] as? String).flatMap(MachineDisplayMode.init(rawValue:)) ?? .headless,
+            bootMode: (dictionary["bootMode"] as? String).flatMap(MachineBootMode.init(rawValue:)) ?? .linuxKernel,
+            installerMediaAttached: (dictionary["installerMediaAttached"] as? Bool)
+                ?? (dictionary["installerMediaAttached"] as? NSNumber)?.boolValue
+                ?? false,
             shares: machineShares(from: dictionary["shares"]),
             environment: machineEnvironment(from: dictionary["env"])
         )
@@ -1274,6 +1326,30 @@ nonisolated final class DorydClient: @unchecked Sendable {
             return nil
         }
         return DorydMachineProvisionResult(recipeID: recipeID, install: install, verify: verify)
+    }
+
+    nonisolated private static func desktopUpdateResult(from dictionary: NSDictionary) -> DorydDesktopUpdateResult? {
+        guard let machineID = dictionary["machineID"] as? String,
+              let distro = dictionary["distro"] as? String,
+              let version = dictionary["version"] as? String,
+              let inputSHA256 = dictionary["inputSHA256"] as? String,
+              let bundleSHA256 = dictionary["bundleSHA256"] as? String,
+              let snapshotID = dictionary["snapshotID"] as? String,
+              let statusDictionary = dictionary["status"] as? NSDictionary,
+              let status = machineStatus(from: statusDictionary),
+              let restoredRunningState = dictionary["restoredRunningState"] as? Bool else {
+            return nil
+        }
+        return DorydDesktopUpdateResult(
+            machineID: machineID,
+            distro: distro,
+            version: version,
+            inputSHA256: inputSHA256,
+            bundleSHA256: bundleSHA256,
+            snapshotID: snapshotID,
+            status: status,
+            restoredRunningState: restoredRunningState
+        )
     }
 
     nonisolated private static func machineSnapshot(from dictionary: NSDictionary) -> DorydMachineSnapshot? {

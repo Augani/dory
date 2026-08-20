@@ -1,4 +1,5 @@
 import Darwin
+import DoryOperations
 import SwiftUI
 
 struct MachinesView: View {
@@ -158,7 +159,7 @@ private struct MachineCard: View {
             }
             .padding(.top, 16).padding(.bottom, 14)
 
-            if machine.username != "root" {
+            if machine.username != "root", !machine.loginShell.isEmpty {
                 Text("\(machine.username) · \(machine.loginShell)")
                     .font(.system(size: 11)).foregroundStyle(p.text3).lineLimit(1)
                     .padding(.bottom, 12)
@@ -246,6 +247,17 @@ private struct MachineCard: View {
             }
             Button { store.openMachineEdit(machine) } label: {
                 Label("Edit…", systemImage: "slider.horizontal.3")
+            }
+            if machine.bootMode == .efi {
+                Divider()
+                Button {
+                    store.setMachineInstallerMedia(machine, attached: !machine.installerMediaAttached)
+                } label: {
+                    Label(
+                        machine.installerMediaAttached ? "Eject Installer ISO" : "Attach Installer ISO",
+                        systemImage: machine.installerMediaAttached ? "eject" : "opticaldiscdrive"
+                    )
+                }
             }
         } label: {
             Image(systemName: "ellipsis.circle").font(.system(size: 14, weight: .semibold))
@@ -350,6 +362,9 @@ private struct MachineEditSheet: View {
     @State private var address = ""
     @State private var displayMode: MachineDisplayMode = .headless
     @State private var guestUsername = "dory"
+    @State private var clipboardPolicy = DoryDesktopClipboardPolicy.bidirectional
+    @State private var runtimePreference = DoryDesktopVMMPreference.automatic
+    @State private var graphicsPreference = DoryDesktopGraphicsPreference.automatic
     @State private var environment: [String: String] = [:]
 
     private struct MountRow: Identifiable, Hashable {
@@ -369,6 +384,8 @@ private struct MachineEditSheet: View {
                 VStack(alignment: .leading, spacing: 18) {
                     warning
                     machineTypeBlock
+                    runtimeBlock
+                    clipboardBlock
                     resourceRow
                     addressBlock
                     mountsBlock
@@ -391,6 +408,9 @@ private struct MachineEditSheet: View {
         displayMode = settings.displayMode
         environment = settings.env
         guestUsername = settings.env["DORY_GUEST_USER"] ?? "dory"
+        clipboardPolicy = DoryDesktopClipboardPolicy(environment: settings.env)
+        runtimePreference = (try? DoryDesktopVMMPreference(environment: settings.env)) ?? .automatic
+        graphicsPreference = (try? DoryDesktopGraphicsPreference(environment: settings.env)) ?? .automatic
         mountRows = settings.mounts.map { MountRow(host: $0.host, guest: $0.guest, readOnly: $0.readOnly) }
     }
 
@@ -401,7 +421,10 @@ private struct MachineEditSheet: View {
                 .background(p.accentSoft, in: RoundedRectangle(cornerRadius: 10))
             VStack(alignment: .leading, spacing: 1) {
                 Text("Edit \(machine.name)").font(.system(size: 15, weight: .bold)).foregroundStyle(p.text)
-                Text("Apply user, resources, address and mounted folders").font(.system(size: 11.5)).foregroundStyle(p.text3)
+                Text(machine.bootMode == .efi
+                     ? "Apply resources, address and mounted folders"
+                     : "Apply user, resources, address and mounted folders")
+                    .font(.system(size: 11.5)).foregroundStyle(p.text3)
             }
             Spacer()
         }
@@ -411,7 +434,9 @@ private struct MachineEditSheet: View {
     private var warning: some View {
         HStack(spacing: 9) {
             Image(systemName: "info.circle.fill").font(.system(size: 13)).foregroundStyle(p.accent)
-            Text("Resource, user and mount changes restart a running machine automatically. The machine type is fixed to protect its existing disk.")
+            Text(machine.bootMode == .efi
+                 ? "Resource and mount changes restart a running machine automatically. The EFI machine type is fixed to protect its installed disk."
+                 : "Resource, user and mount changes restart a running machine automatically. The machine type is fixed to protect its existing disk.")
                 .font(.system(size: 12)).foregroundStyle(p.text2)
             Spacer(minLength: 0)
         }
@@ -428,13 +453,13 @@ private struct MachineEditSheet: View {
                     .frame(width: 34, height: 34)
                     .background(p.accentSoft, in: RoundedRectangle(cornerRadius: 9))
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(displayMode == .desktop ? "Desktop Linux" : "Headless Linux")
+                    Text(machine.bootMode == .efi ? "Custom EFI Linux" : (displayMode == .desktop ? "Desktop Linux" : "Headless Linux"))
                         .font(.system(size: 12.5, weight: .semibold)).foregroundStyle(p.text)
                     Text(displayMode == .desktop ? "\(machine.distro) \(machine.version)" : "Lightweight Dory Linux")
                         .font(.system(size: 11)).foregroundStyle(p.text3)
                 }
                 Spacer(minLength: 0)
-                if displayMode == .desktop {
+                if displayMode == .desktop, machine.bootMode != .efi {
                     TextField("dory", text: $guestUsername)
                         .textFieldStyle(.plain)
                         .font(.mono(11.5)).foregroundStyle(p.text)
@@ -475,6 +500,55 @@ private struct MachineEditSheet: View {
                 .frame(width: 180)
             }
             Spacer(minLength: 0)
+        }
+    }
+
+    @ViewBuilder private var clipboardBlock: some View {
+        if displayMode == .desktop, machine.bootMode != .efi {
+            VStack(alignment: .leading, spacing: 8) {
+                sectionLabel("CLIPBOARD SHARING")
+                Picker("Clipboard sharing", selection: $clipboardPolicy) {
+                    ForEach(DoryDesktopClipboardPolicy.allCases, id: \.self) { policy in
+                        Text(policy.displayName).tag(policy)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.segmented)
+                .accessibilityIdentifier("edit-machine-clipboard-policy")
+                Text("Control whether text and images can move between this Linux desktop and your Mac.")
+                    .font(.system(size: 11)).foregroundStyle(p.text3)
+            }
+        }
+    }
+
+    @ViewBuilder private var runtimeBlock: some View {
+        if displayMode == .desktop, machine.bootMode != .efi {
+            VStack(alignment: .leading, spacing: 9) {
+                sectionLabel("DISPLAY ENGINE")
+                HStack(spacing: 14) {
+                    Picker("Virtual machine", selection: $runtimePreference) {
+                        Text("Automatic").tag(DoryDesktopVMMPreference.automatic)
+                        Text("Accelerated").tag(DoryDesktopVMMPreference.accelerated)
+                        Text("Compatibility").tag(DoryDesktopVMMPreference.compatible)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .accessibilityIdentifier("edit-machine-vmm-preference")
+
+                    Picker("Graphics", selection: $graphicsPreference) {
+                        Text("Automatic").tag(DoryDesktopGraphicsPreference.automatic)
+                        Text("VirGL").tag(DoryDesktopGraphicsPreference.virgl)
+                        Text("VirGL + Venus").tag(DoryDesktopGraphicsPreference.virglVenus)
+                        Text("Software").tag(DoryDesktopGraphicsPreference.software)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .disabled(runtimePreference == .compatible)
+                    .accessibilityIdentifier("edit-machine-graphics-preference")
+                }
+                Text(runtimePreference == .compatible
+                     ? "Compatibility uses Apple's Virtualization framework; the raw graphics choice is kept for when you switch back."
+                     : "Automatic uses VirGL for the desktop and Venus for Vulkan apps, then falls back safely when acceleration is unavailable.")
+                    .font(.system(size: 11)).foregroundStyle(p.text3)
+            }
         }
     }
 
@@ -613,7 +687,7 @@ private struct MachineEditSheet: View {
             guard !host.isEmpty, !guest.isEmpty else { return nil }
             return MountPair(host: host, guest: guest, readOnly: row.readOnly)
         }
-        if displayMode == .desktop {
+        if displayMode == .desktop, machine.bootMode != .efi {
             let previousUsername = environment["DORY_GUEST_USER"] ?? "dory"
             if previousUsername != normalizedGuestUsername {
                 let previousHome = "/home/\(previousUsername)"
@@ -631,6 +705,10 @@ private struct MachineEditSheet: View {
             }
             environment["DORY_GUEST_USER"] = normalizedGuestUsername
             environment["DORY_GUEST_UID"] = environment["DORY_GUEST_UID"] ?? String(getuid())
+            environment[DoryDesktopClipboardPolicy.environmentKey] = clipboardPolicy.rawValue
+            environment[DoryDesktopVMMPreference.environmentKey] = runtimePreference.rawValue
+            environment[DoryDesktopGraphicsPreference.environmentKey] = graphicsPreference.rawValue
+            environment.removeValue(forKey: DoryDesktopGraphicsPreference.legacyClassicOnlyEnvironmentKey)
         }
         let settings = MachineSettings(
             cpus: cpus,
@@ -638,7 +716,8 @@ private struct MachineEditSheet: View {
             mounts: mounts,
             env: environment,
             address: address.trimmingCharacters(in: .whitespacesAndNewlines),
-            displayMode: displayMode
+            displayMode: displayMode,
+            bootMode: machine.bootMode
         )
         let target = machine
         store.editMachineTarget = nil
@@ -650,7 +729,7 @@ private struct MachineEditSheet: View {
     }
 
     private var guestUsernameInvalid: Bool {
-        guard displayMode == .desktop else { return false }
+        guard displayMode == .desktop, machine.bootMode != .efi else { return false }
         return normalizedGuestUsername.range(
             of: "^[a-z_][a-z0-9_-]{0,31}$",
             options: .regularExpression

@@ -1,3 +1,4 @@
+import AppKit
 import Darwin
 import DoryCore
 import DorydKit
@@ -6,6 +7,113 @@ import Virtualization
 import XCTest
 
 final class DoryVMMKitTests: XCTestCase {
+    @MainActor
+    func testClipboardRetriesInitialHostPushUntilDesktopSessionIsReady() async throws {
+        let pasteboard = NSPasteboard.withUniqueName()
+        defer { pasteboard.releaseGlobally() }
+        pasteboard.clearContents()
+        pasteboard.setString("host clipboard before guest login", forType: .string)
+        let recorder = ClipboardWriteRecorder()
+        let coordinator = DoryDesktopClipboardCoordinator(
+            policy: .hostToGuest,
+            execute: { argv, stdin, _, _ in
+                if argv == ["/usr/bin/test", "-x", "/usr/lib/dory/clipboard"] {
+                    return Self.execResult(exitCode: 0)
+                }
+                XCTAssertEqual(argv, [
+                    "/usr/lib/dory/clipboard", "set", "text/plain;charset=utf-8",
+                ])
+                let attempt = recorder.record(stdin)
+                return Self.execResult(exitCode: attempt == 1 ? 1 : 0)
+            },
+            sendShortcut: { _ in },
+            pasteboard: pasteboard,
+            startupRetryDelay: 0.01,
+            startupRetryLimit: 3,
+            log: { _ in }
+        )
+
+        coordinator.start()
+        coordinator.markGuestReady()
+        defer { coordinator.stop() }
+
+        let deadline = ContinuousClock.now + .seconds(2)
+        while recorder.attemptCount < 2, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(recorder.attemptCount, 2)
+        XCTAssertEqual(recorder.lastPayload, Data("host clipboard before guest login".utf8))
+    }
+
+    @MainActor
+    func testClipboardPullsGuestValueWhenDesktopResignsFocus() async throws {
+        let pasteboard = NSPasteboard.withUniqueName()
+        defer { pasteboard.releaseGlobally() }
+        pasteboard.clearContents()
+        pasteboard.setString("original host value", forType: .string)
+        let recorder = ClipboardWriteRecorder()
+        let coordinator = DoryDesktopClipboardCoordinator(
+            policy: .guestToHost,
+            execute: { argv, _, _, _ in
+                if argv == ["/usr/bin/test", "-x", "/usr/lib/dory/clipboard"] {
+                    recorder.recordCapabilityProbe()
+                    return Self.execResult(exitCode: 0)
+                }
+                if argv == ["/usr/lib/dory/clipboard", "get", "image/png"] {
+                    return Self.execResult(exitCode: 1)
+                }
+                XCTAssertEqual(argv, [
+                    "/usr/lib/dory/clipboard", "get", "text/plain;charset=utf-8",
+                ])
+                return DoryExecResult(
+                    exitCode: 0,
+                    stdout: Data("guest clipboard after copy".utf8),
+                    stderr: Data(),
+                    timedOut: false,
+                    stdoutTruncated: false,
+                    stderrTruncated: false
+                )
+            },
+            sendShortcut: { _ in },
+            pasteboard: pasteboard,
+            startupRetryDelay: 0.01,
+            startupRetryLimit: 1,
+            log: { _ in }
+        )
+
+        coordinator.start()
+        coordinator.markGuestReady()
+        defer { coordinator.stop() }
+
+        let readyDeadline = ContinuousClock.now + .seconds(2)
+        while recorder.capabilityProbeCount == 0, ContinuousClock.now < readyDeadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        try await Task.sleep(for: .milliseconds(20))
+        NotificationCenter.default.post(
+            name: NSApplication.didResignActiveNotification,
+            object: NSApplication.shared
+        )
+
+        let pullDeadline = ContinuousClock.now + .seconds(2)
+        while pasteboard.string(forType: .string) != "guest clipboard after copy",
+              ContinuousClock.now < pullDeadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(pasteboard.string(forType: .string), "guest clipboard after copy")
+    }
+
+    private static func execResult(exitCode: Int32) -> DoryExecResult {
+        DoryExecResult(
+            exitCode: exitCode,
+            stdout: Data(),
+            stderr: Data(),
+            timedOut: false,
+            stdoutTruncated: false,
+            stderrTruncated: false
+        )
+    }
+
     func testDesktopWindowUsesRetinaBackingPixels() {
         XCTAssertEqual(
             DoryVMMDesktopApplication.targetPixelSize(
@@ -75,6 +183,8 @@ final class DoryVMMKitTests: XCTestCase {
             "--data-drive", "/Volumes/Work/Dory.dorydrive",
             "--kernel", "/tmp/vmlinux",
             "--rootfs", "/tmp/rootfs.raw",
+            "--boot-mode", "efi",
+            "--installer-iso", "/tmp/ubuntu.iso",
             "--gvproxy", "/tmp/gvproxy",
             "--ssh-agent-socket", "/private/tmp/com.apple.launchd.fixture/Listeners",
             "--publish-host", "0.0.0.0",
@@ -96,6 +206,8 @@ final class DoryVMMKitTests: XCTestCase {
         XCTAssertEqual(arguments.dataDriveRoot, "/Volumes/Work/Dory.dorydrive")
         XCTAssertEqual(arguments.kernelPath, "/tmp/vmlinux")
         XCTAssertEqual(arguments.rootfsPath, "/tmp/rootfs.raw")
+        XCTAssertEqual(arguments.machineBootMode, .efi)
+        XCTAssertEqual(arguments.installerISOPath, "/tmp/ubuntu.iso")
         XCTAssertEqual(arguments.gvproxyPath, "/tmp/gvproxy")
         XCTAssertEqual(
             arguments.sshAgentSocketPath,
@@ -319,6 +431,71 @@ final class DoryVMMKitTests: XCTestCase {
         try assertShellSyntax("\(base)/dorycfg/boot.sh")
     }
 
+    func testEFIProfileSeparatesInstallerAndInstalledFirmwareAndAttachesISOReadOnly() throws {
+        let base = "/tmp/dory-vmm-efi-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let rootfs = "\(base)/rootfs.raw"
+        let installer = "\(base)/ubuntu-arm64.iso"
+        let installerSource = "\(base)/installer-source"
+        try FileManager.default.createDirectory(atPath: installerSource, withIntermediateDirectories: true)
+        try Data("installer".utf8).write(to: URL(fileURLWithPath: "\(installerSource)/README"))
+        FileManager.default.createFile(atPath: rootfs, contents: nil)
+        XCTAssertEqual(truncate(rootfs, 1024 * 1024), 0)
+        let isoBuilder = Process()
+        isoBuilder.executableURL = URL(fileURLWithPath: "/usr/bin/hdiutil")
+        isoBuilder.arguments = ["makehybrid", "-iso", "-joliet", "-o", installer, installerSource]
+        isoBuilder.standardOutput = FileHandle.nullDevice
+        isoBuilder.standardError = FileHandle.nullDevice
+        try isoBuilder.run()
+        isoBuilder.waitUntilExit()
+        XCTAssertEqual(isoBuilder.terminationStatus, 0)
+
+        let spec = DoryVZMachineSpec(
+            machineID: "ubuntu",
+            stateDirectory: base,
+            kernelPath: "\(base)/unused-kernel-marker",
+            rootfsPath: rootfs,
+            bootMode: .efi,
+            installerISOPath: installer,
+            memoryMB: 4096,
+            cpuCount: 4,
+            displayMode: .desktop
+        )
+        let configuration = try DoryVZConfigurationBuilder.makeConfiguration(
+            spec: spec,
+            serialOutput: nil
+        )
+        XCTAssertTrue(configuration.bootLoader is VZEFIBootLoader)
+        XCTAssertTrue(configuration.platform is VZGenericPlatformConfiguration)
+        XCTAssertEqual(configuration.storageDevices.count, 2)
+        XCTAssertTrue(configuration.storageDevices[0] is VZUSBMassStorageDeviceConfiguration)
+        let rootDevice = try XCTUnwrap(
+            configuration.storageDevices[1] as? VZNVMExpressControllerDeviceConfiguration
+        )
+        let rootAttachment = try XCTUnwrap(
+            rootDevice.attachment as? VZDiskImageStorageDeviceAttachment
+        )
+        XCTAssertEqual(rootAttachment.cachingMode, .cached)
+        XCTAssertEqual(rootAttachment.synchronizationMode, .fsync)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: "\(base)/MachineIdentifier"))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: "\(base)/NVRAM.installer"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: "\(base)/NVRAM"))
+
+        let identifierBefore = try Data(contentsOf: URL(fileURLWithPath: "\(base)/MachineIdentifier"))
+        _ = try DoryVZConfigurationBuilder.makeConfiguration(spec: spec, serialOutput: nil)
+        XCTAssertEqual(
+            try Data(contentsOf: URL(fileURLWithPath: "\(base)/MachineIdentifier")),
+            identifierBefore
+        )
+
+        var installedSpec = spec
+        installedSpec.installerISOPath = nil
+        _ = try DoryVZConfigurationBuilder.makeConfiguration(spec: installedSpec, serialOutput: nil)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: "\(base)/NVRAM"))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: "\(base)/NVRAM.installer"))
+    }
+
     func testDesktopProfileAddsDisplayInputAudioAndClipboardDevices() throws {
         let base = "/tmp/dory-vmm-desktop-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
@@ -358,12 +535,40 @@ final class DoryVMMKitTests: XCTestCase {
         XCTAssertTrue(configuration.keyboards.first is VZUSBKeyboardConfiguration)
         XCTAssertEqual(configuration.pointingDevices.count, 1)
         XCTAssertTrue(configuration.pointingDevices.first is VZUSBScreenCoordinatePointingDeviceConfiguration)
-        XCTAssertEqual(configuration.audioDevices.count, 1)
-        let sound = try XCTUnwrap(configuration.audioDevices.first as? VZVirtioSoundDeviceConfiguration)
-        XCTAssertEqual(sound.streams.count, 1)
-        XCTAssertTrue(sound.streams.first is VZVirtioSoundDeviceOutputStreamConfiguration)
+        XCTAssertEqual(configuration.audioDevices.count, 2)
+        let outputSound = try XCTUnwrap(configuration.audioDevices.first as? VZVirtioSoundDeviceConfiguration)
+        XCTAssertEqual(outputSound.streams.count, 1)
+        XCTAssertTrue(outputSound.streams.first is VZVirtioSoundDeviceOutputStreamConfiguration)
+        let inputSound = try XCTUnwrap(configuration.audioDevices.last as? VZVirtioSoundDeviceConfiguration)
+        XCTAssertEqual(inputSound.streams.count, 1)
+        XCTAssertTrue(inputSound.streams.first is VZVirtioSoundDeviceInputStreamConfiguration)
         XCTAssertEqual(configuration.consoleDevices.count, 1)
-        XCTAssertTrue(configuration.consoleDevices.first is VZVirtioConsoleDeviceConfiguration)
+        let console = try XCTUnwrap(configuration.consoleDevices.first as? VZVirtioConsoleDeviceConfiguration)
+        let spicePort = try XCTUnwrap(console.ports[0])
+        let spiceAttachment = try XCTUnwrap(spicePort.attachment as? VZSpiceAgentPortAttachment)
+        XCTAssertTrue(spiceAttachment.sharesClipboard)
+
+        let directionalConfiguration = try DoryVZConfigurationBuilder.makeConfiguration(
+            spec: DoryVZMachineSpec(
+                machineID: "desktop",
+                stateDirectory: base,
+                kernelPath: kernel,
+                rootfsPath: rootfs,
+                memoryMB: 4096,
+                cpuCount: 4,
+                displayMode: .desktop,
+                environment: ["DORY_CLIPBOARD_POLICY": "host-to-guest"]
+            ),
+            serialOutput: nil
+        )
+        let directionalConsole = try XCTUnwrap(
+            directionalConfiguration.consoleDevices.first as? VZVirtioConsoleDeviceConfiguration
+        )
+        let directionalPort = try XCTUnwrap(directionalConsole.ports[0])
+        let directionalAttachment = try XCTUnwrap(
+            directionalPort.attachment as? VZSpiceAgentPortAttachment
+        )
+        XCTAssertFalse(directionalAttachment.sharesClipboard)
         XCTAssertEqual(configuration.directorySharingDevices.count, 1)
         let desktopShare = try XCTUnwrap(
             configuration.directorySharingDevices.first as? VZVirtioFileSystemDeviceConfiguration
@@ -566,6 +771,67 @@ final class DoryVMMKitTests: XCTestCase {
         }
     }
 
+    func testSerialConsoleLogsGuestOutputAndForwardsInputBidirectionally() throws {
+        let base = "/tmp/dory-vmm-serial-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let logPath = "\(base)/serial.log"
+        XCTAssertTrue(FileManager.default.createFile(atPath: logPath, contents: nil))
+        let log = try FileHandle(forWritingTo: URL(fileURLWithPath: logPath))
+        defer { try? log.close() }
+        let socketPath = "\(base)/console.sock"
+        let console = try DoryVMMSerialConsole(socketPath: socketPath, log: log)
+        defer { console.stop() }
+
+        let client = socket(AF_UNIX, SOCK_STREAM, 0)
+        XCTAssertGreaterThanOrEqual(client, 0)
+        defer { close(client) }
+        var address = sockaddr_un()
+        address.sun_family = sa_family_t(AF_UNIX)
+        let pathBytes = Array(socketPath.utf8CString)
+        withUnsafeMutableBytes(of: &address.sun_path) { destination in
+            pathBytes.withUnsafeBytes { source in destination.copyBytes(from: source) }
+        }
+        let connectResult = withUnsafePointer(to: &address) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { raw in
+                Darwin.connect(client, raw, socklen_t(MemoryLayout<sockaddr_un>.size))
+            }
+        }
+        XCTAssertEqual(connectResult, 0)
+
+        let hostInput = Data("ubuntu\n".utf8)
+        XCTAssertEqual(hostInput.withUnsafeBytes { bytes in
+            Darwin.send(client, bytes.baseAddress, bytes.count, MSG_NOSIGNAL)
+        }, hostInput.count)
+        var inputPoll = pollfd(
+            fd: console.guestInput.fileDescriptor,
+            events: Int16(POLLIN),
+            revents: 0
+        )
+        XCTAssertEqual(poll(&inputPoll, 1, 2_000), 1)
+        var inputBuffer = [UInt8](repeating: 0, count: 64)
+        let inputCount = Darwin.read(
+            console.guestInput.fileDescriptor,
+            &inputBuffer,
+            inputBuffer.count
+        )
+        XCTAssertEqual(Data(inputBuffer.prefix(inputCount)), hostInput)
+
+        let guestOutput = Data("ubuntu login: ".utf8)
+        try console.guestOutput.write(contentsOf: guestOutput)
+        var outputPoll = pollfd(fd: client, events: Int16(POLLIN), revents: 0)
+        XCTAssertEqual(poll(&outputPoll, 1, 2_000), 1)
+        var outputBuffer = [UInt8](repeating: 0, count: 64)
+        let outputCount = Darwin.read(client, &outputBuffer, outputBuffer.count)
+        XCTAssertEqual(Data(outputBuffer.prefix(outputCount)), guestOutput)
+
+        Thread.sleep(forTimeInterval: 0.05)
+        try log.synchronize()
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: logPath)), guestOutput)
+        let attributes = try FileManager.default.attributesOfItem(atPath: socketPath)
+        XCTAssertEqual((attributes[.posixPermissions] as? NSNumber)?.intValue, 0o600)
+    }
+
     func testDeferredVMMShutdownRequestIsDeliveredExactlyOnceAfterRuntimeAttach() {
         let watchdog = ShutdownWatchdogRecorder()
         let forcedExit = ForcedExitRecorder()
@@ -605,6 +871,45 @@ final class DoryVMMKitTests: XCTestCase {
         watchdog.fireAll()
 
         XCTAssertEqual(forcedExit.codes, [1])
+    }
+}
+
+private final class ClipboardWriteRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var attempts = 0
+    private var payload = Data()
+    private var capabilityProbes = 0
+
+    func record(_ value: Data) -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        attempts += 1
+        payload = value
+        return attempts
+    }
+
+    var attemptCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return attempts
+    }
+
+    var lastPayload: Data {
+        lock.lock()
+        defer { lock.unlock() }
+        return payload
+    }
+
+    func recordCapabilityProbe() {
+        lock.lock()
+        capabilityProbes += 1
+        lock.unlock()
+    }
+
+    var capabilityProbeCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return capabilityProbes
     }
 }
 

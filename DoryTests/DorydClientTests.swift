@@ -2160,6 +2160,26 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
         ] as NSDictionary, "")
     }
 
+    func machineDesktopUpdate(
+        _ machineID: String,
+        request: NSDictionary,
+        reply: @escaping (Bool, NSDictionary, String) -> Void
+    ) {
+        lock.lock()
+        let current = machines[machineID] ?? Self.machineRow(id: machineID, state: "stopped")
+        lock.unlock()
+        reply(true, [
+            "machineID": machineID,
+            "distro": request["distro"] as? String ?? "ubuntu",
+            "version": request["version"] as? String ?? "test",
+            "inputSHA256": String(repeating: "1", count: 64),
+            "bundleSHA256": String(repeating: "2", count: 64),
+            "snapshotID": "du-test",
+            "restoredRunningState": false,
+            "status": current,
+        ] as NSDictionary, "")
+    }
+
     func machineSnapshot(_ machineID: String, request: NSDictionary, reply: @escaping (Bool, NSDictionary, String) -> Void) {
         let id = request["snapshotID"] as? String ?? "s\(UUID().uuidString.prefix(8).lowercased())"
         let row = Self.snapshotRow(

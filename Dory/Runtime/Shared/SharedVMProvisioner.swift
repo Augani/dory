@@ -283,13 +283,16 @@ nonisolated enum SharedVMProvisioner {
         guard icdCandidates.contains(where: { fileManager.fileExists(atPath: $0) }) else { return false }
         // The Venus path exposes host-visible blobs by hv_vm_mapping the pointer virglrenderer returns
         // from virgl_renderer_resource_map (the libkrun/krunkit model), so probe the renderer actually
-        // exports a blob-map entrypoint before enabling the toggle.
+        // exports a blob-map entrypoint and Dory's async macOS fence fix before enabling the
+        // toggle. A stock or older renderer can appear usable but stall Vulkan applications.
         for path in rendererCandidates where fileManager.fileExists(atPath: path) {
             guard let handle = dlopen(path, RTLD_LAZY | RTLD_LOCAL) else { continue }
             let hasBlobMap = dlsym(handle, "virgl_renderer_resource_map") != nil
                 || dlsym(handle, "virgl_renderer_resource_get_map_ptr") != nil
+            let hasDoryFenceFix = dlsym(handle, "dory_virglrenderer_macos_venus_fence_fix") != nil
+            let hasDoryMoltenVKFix = dlsym(handle, "dory_moltenvk_spirv_native_array_fix") != nil
             dlclose(handle)
-            if hasBlobMap { return true }
+            if hasBlobMap && hasDoryFenceFix && hasDoryMoltenVKFix { return true }
         }
         return false
     }

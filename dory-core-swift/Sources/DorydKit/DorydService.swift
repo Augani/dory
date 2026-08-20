@@ -280,7 +280,8 @@ public final class DorydService: NSObject, DorydControl {
                 shares: update.shares,
                 updatesShares: update.updatesShares,
                 environment: update.environment,
-                updatesEnvironment: update.updatesEnvironment
+                updatesEnvironment: update.updatesEnvironment,
+                installerMediaAttached: update.installerMediaAttached
             )
             incidentWriter?.record(type: "machine.update", detail: machineID)
             reply(true, status.xpcDictionary, "")
@@ -377,6 +378,41 @@ public final class DorydService: NSObject, DorydControl {
         } catch {
             incidentWriter?.record(type: "machine.provision_failed", detail: "\(machineID): \(error)")
             reply(false, [:], "\(error)")
+        }
+    }
+
+    public func machineDesktopUpdate(
+        _ machineID: String,
+        request: NSDictionary,
+        reply: @escaping (Bool, NSDictionary, String) -> Void
+    ) {
+        guard let machineManager else {
+            reply(false, [:], "machine manager is not configured")
+            return
+        }
+        let parsedRequest: DoryDesktopUpdateRequest
+        do {
+            parsedRequest = try DoryDesktopUpdateRequest(xpcDictionary: request)
+        } catch {
+            reply(false, [:], String(describing: error))
+            return
+        }
+        let reply = StatusReply(reply)
+        DispatchQueue.global(qos: .utility).async { [incidentWriter] in
+            do {
+                let result = try machineManager.updateDesktop(id: machineID, request: parsedRequest)
+                incidentWriter?.record(
+                    type: "machine.desktop_update",
+                    detail: machineID + " " + result.distro + " " + result.version + " snapshot=" + result.snapshotID
+                )
+                reply.reply(true, result.xpcDictionary, "")
+            } catch {
+                incidentWriter?.record(
+                    type: "machine.desktop_update_failed",
+                    detail: machineID + ": " + String(describing: error)
+                )
+                reply.reply(false, [:], String(describing: error))
+            }
         }
     }
 
@@ -1146,6 +1182,17 @@ private struct MachineProvisionRequest {
     }
 }
 
+private extension DoryDesktopUpdateRequest {
+    init(xpcDictionary dictionary: NSDictionary) throws {
+        self.init(
+            distro: try dictionary.requiredString("distro"),
+            version: try dictionary.requiredString("version"),
+            bundlePath: try dictionary.requiredString("bundlePath"),
+            kernelPath: try dictionary.requiredString("kernelPath")
+        )
+    }
+}
+
 private struct MachineUpdateRequest {
     var memoryMB: UInt64?
     var cpuCount: Int?
@@ -1155,6 +1202,7 @@ private struct MachineUpdateRequest {
     var updatesShares: Bool
     var environment: [String: String]?
     var updatesEnvironment: Bool
+    var installerMediaAttached: Bool?
 
     init(xpcDictionary dictionary: NSDictionary) throws {
         self.memoryMB = try dictionary.optionalUInt64("memoryMB")
@@ -1170,7 +1218,9 @@ private struct MachineUpdateRequest {
         self.updatesShares = dictionary["shares"] != nil
         self.environment = dictionary["env"] == nil ? nil : try dictionary.optionalEnvironmentDictionary("env")
         self.updatesEnvironment = dictionary["env"] != nil
-        if memoryMB == nil, cpuCount == nil, !updatesAddress, !updatesShares, !updatesEnvironment {
+        self.installerMediaAttached = dictionary.optionalBool("installerMediaAttached")
+        if memoryMB == nil, cpuCount == nil, !updatesAddress, !updatesShares, !updatesEnvironment,
+           installerMediaAttached == nil {
             throw XPCRemoteConfigError.invalid("config")
         }
     }
@@ -1222,10 +1272,17 @@ private extension DoryMachineConfiguration {
         guard let displayMode = DoryMachineDisplayMode(rawValue: rawDisplayMode) else {
             throw MachineManagerError.persistence("unsupported machine display mode: \(rawDisplayMode)")
         }
+        let rawBootMode = dictionary.optionalString("bootMode") ?? DoryMachineBootMode.linuxKernel.rawValue
+        guard let bootMode = DoryMachineBootMode(rawValue: rawBootMode) else {
+            throw MachineManagerError.persistence("unsupported machine boot mode: \(rawBootMode)")
+        }
         self.init(
             id: try dictionary.requiredString("id"),
-            kernelPath: try dictionary.requiredString("kernelPath"),
-            rootfsPath: try dictionary.requiredString("rootfsPath"),
+            kernelPath: dictionary.optionalString("kernelPath") ?? "",
+            rootfsPath: dictionary.optionalString("rootfsPath") ?? "",
+            bootMode: bootMode,
+            installerISOPath: dictionary.optionalString("installerISOPath"),
+            diskSizeBytes: try dictionary.optionalUInt64("diskSizeBytes"),
             memoryMB: try dictionary.optionalUInt64("memoryMB") ?? 2048,
             cpuCount: try dictionary.optionalInt("cpuCount") ?? 2,
             address: dictionary.optionalString("address"),
@@ -1542,6 +1599,8 @@ private extension DoryMachineStatus {
         dictionary["currentBalloonTargetMB"] = currentBalloonTargetMB
         dictionary["cpuCount"] = cpuCount
         dictionary["displayMode"] = displayMode.rawValue
+        dictionary["bootMode"] = bootMode.rawValue
+        dictionary["installerMediaAttached"] = installerMediaAttached
         return dictionary as NSDictionary
     }
 }
@@ -1636,6 +1695,21 @@ private extension DoryMachineSnapshot {
             "memoryMB": memoryMB,
             "cpuCount": cpuCount,
             "displayMode": displayMode.rawValue,
+        ]
+    }
+}
+
+private extension DoryDesktopUpdateResult {
+    var xpcDictionary: NSDictionary {
+        [
+            "machineID": machineID,
+            "distro": distro,
+            "version": version,
+            "inputSHA256": inputSHA256,
+            "bundleSHA256": bundleSHA256,
+            "snapshotID": snapshotID,
+            "status": status.xpcDictionary,
+            "restoredRunningState": restoredRunningState,
         ]
     }
 }

@@ -94,6 +94,8 @@ public final class HvProcess: @unchecked Sendable {
     private var hasStarted = false
     private var suspended = false
     private var restartCount = 0
+    private var restartPending = false
+    private var restartsEnabled = true
     private var lastTerminationStatus: Int32?
     private var lastLaunchError: String?
 
@@ -116,6 +118,16 @@ public final class HvProcess: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return process?.isRunning == true
+    }
+
+    /// True while a helper is running or a bounded restart has already been scheduled.
+    /// Callers use this to distinguish a transient startup handoff from a terminal exit.
+    public var isRunningOrRestarting: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        // Keep the launch active while Foundation is between observing child exit and invoking
+        // its termination callback; that callback decides whether a retry is permitted.
+        return (!stopping && process != nil) || (!stopping && restartsEnabled && restartPending)
     }
 
     public var terminationStatus: Int32? {
@@ -146,6 +158,8 @@ public final class HvProcess: @unchecked Sendable {
         stopping = false
         suspended = false
         restartCount = 0
+        restartPending = false
+        restartsEnabled = true
         lastTerminationStatus = nil
         lastLaunchError = nil
         try launchLocked()
@@ -214,10 +228,13 @@ public final class HvProcess: @unchecked Sendable {
         oldLog = logHandle
         logHandle = nil
         wasUnexpected = !stopping
-        shouldRestart = wasUnexpected && restartCount < configuration.restartPolicy.maxRestarts
+        shouldRestart = wasUnexpected
+            && restartsEnabled
+            && restartCount < configuration.restartPolicy.maxRestarts
         if shouldRestart {
             restartCount += 1
         }
+        restartPending = shouldRestart
         delay = configuration.restartPolicy.delay(forAttempt: restartCount)
         lock.unlock()
         try? oldLog?.close()
@@ -234,13 +251,41 @@ public final class HvProcess: @unchecked Sendable {
 
     private func restartAfterUnexpectedExit() {
         lock.lock()
-        defer { lock.unlock() }
-        guard !stopping, process == nil else { return }
+        guard !stopping, restartsEnabled, restartPending, process == nil else {
+            restartPending = false
+            lock.unlock()
+            return
+        }
+        restartPending = false
         do {
             try launchLocked()
+            lock.unlock()
         } catch {
             lastLaunchError = "\(error)"
+            let shouldRetry = !stopping
+                && restartsEnabled
+                && restartCount < configuration.restartPolicy.maxRestarts
+            if shouldRetry {
+                restartCount += 1
+                restartPending = true
+            }
+            let delay = configuration.restartPolicy.delay(forAttempt: restartCount)
+            lock.unlock()
+            if shouldRetry {
+                DispatchQueue.global().asyncAfter(deadline: .now() + delay) { [weak self] in
+                    self?.restartAfterUnexpectedExit()
+                }
+            }
         }
+    }
+
+    /// Startup retries are useful until the supervisor accepts the ready handoff. After that
+    /// point an unexpected VMM exit is a real machine failure and must remain visible.
+    public func disableRestarts() {
+        lock.lock()
+        restartsEnabled = false
+        restartPending = false
+        lock.unlock()
     }
 
     public var isSuspended: Bool {
@@ -278,6 +323,8 @@ public final class HvProcess: @unchecked Sendable {
         let wasSuspended: Bool
         lock.lock()
         stopping = true
+        restartsEnabled = false
+        restartPending = false
         task = process
         terminationWaiter = self.terminationWaiter
         // Take-and-null the handle so exactly one of stop()/handleTermination closes it; a
@@ -288,13 +335,16 @@ public final class HvProcess: @unchecked Sendable {
         suspended = false
         lock.unlock()
 
-        guard let task, task.isRunning else {
+        guard let task else {
             try? oldLog?.close()
             return
         }
         if wasSuspended {
             kill(task.processIdentifier, SIGCONT)
         }
+        // Process.isRunning may briefly read false before its termination callback fires. Send
+        // the signal unconditionally; ESRCH is harmless and avoids waiting for a live child to
+        // reach the timeout solely because Foundation exposed that transient state.
         kill(task.processIdentifier, signal)
 
         // Process.isRunning can flip to false when SIGTERM is delivered while the child is still

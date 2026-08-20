@@ -299,6 +299,8 @@ struct Machine: Identifiable, Hashable, Sendable {
     var shellSocketPath: String = ""
     var processID: Int32? = nil
     var displayMode: MachineDisplayMode = .headless
+    var bootMode: MachineBootMode = .linuxKernel
+    var installerMediaAttached: Bool = false
     var mounts: [MountPair] = []
     var id: String { name }
 

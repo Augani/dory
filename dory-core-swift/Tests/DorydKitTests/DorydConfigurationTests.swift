@@ -897,6 +897,47 @@ final class DorydConfigurationTests: XCTestCase {
         XCTAssertTrue(config.requiresReadyHandoff)
     }
 
+    func testMachineManagerConfigurationSelectsRawHVOnlyForEligibleAcceleratedDesktops() throws {
+        let directory = "/tmp/doryd-desktop-hv-config-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+        let vmm = try executableFixture(at: directory + "/dory-vmm")
+        let hv = try executableFixture(at: directory + "/dory-hv")
+        let gvproxy = try executableFixture(at: directory + "/gvproxy")
+        let values = [
+            "DORYD_VMM_HELPER": vmm,
+            "DORYD_DESKTOP_HV_HELPER": hv,
+            "DORYD_GVPROXY": gvproxy,
+            "DORYD_MACHINE_STATE_DIR": directory + "/machines",
+        ]
+
+        let supported = DorydEnvironment(
+            values: values,
+            home: directory + "/home",
+            cwd: directory,
+            hostPlatform: DorydHostPlatform(architecture: .arm64, macOSMajorVersion: 15)
+        )
+        let accelerated = try XCTUnwrap(supported.machineManagerConfiguration())
+        XCTAssertEqual(accelerated.acceleratedDesktopExecutablePath, hv)
+        XCTAssertEqual(accelerated.acceleratedDesktopBaseArguments, ["desktop", "--gvproxy", gvproxy])
+
+        let disabled = DorydEnvironment(
+            values: values.merging(["DORYD_ACCELERATED_DESKTOP": "0"]) { _, new in new },
+            home: directory + "/home",
+            cwd: directory,
+            hostPlatform: DorydHostPlatform(architecture: .arm64, macOSMajorVersion: 15)
+        )
+        XCTAssertNil(disabled.machineManagerConfiguration()?.acceleratedDesktopExecutablePath)
+
+        let sonoma = DorydEnvironment(
+            values: values,
+            home: directory + "/home",
+            cwd: directory,
+            hostPlatform: DorydHostPlatform(architecture: .arm64, macOSMajorVersion: 14)
+        )
+        XCTAssertNil(sonoma.machineManagerConfiguration()?.acceleratedDesktopExecutablePath)
+    }
+
     func testDataDriveOverrideRoutesDockerAndMachinePersistenceTogether() throws {
         let directory = "/tmp/doryd-data-drive-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)

@@ -1,5 +1,7 @@
 import CryptoKit
+import Darwin
 import DoryCore
+import DoryOperations
 @testable import DorydKit
 import XCTest
 
@@ -61,9 +63,11 @@ final class MachineManagerTests: XCTestCase {
         let created = try manager.create(DoryMachineConfiguration(
             id: "dev",
             kernelPath: doryTestKernelPath,
-            rootfsPath: doryTestRootfsPath
+            rootfsPath: doryTestRootfsPath,
+            displayMode: .desktop
         ))
         XCTAssertEqual(created.state, .created)
+        XCTAssertEqual(created.displayMode, .desktop)
 
         let running = try manager.start(id: "dev")
         XCTAssertEqual(running.state, .running)
@@ -76,6 +80,222 @@ final class MachineManagerTests: XCTestCase {
 
         try manager.delete(id: "dev")
         XCTAssertTrue(manager.list().isEmpty)
+    }
+
+    func testDesktopUpdatePreservesPersistentDiskAndRetainsLastGoodSnapshot() throws {
+        let base = "/tmp/dory-machine-desktop-update-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let sources = base + "/sources"
+        let state = base + "/machines"
+        try FileManager.default.createDirectory(atPath: sources, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let rootfs = sources + "/rootfs.ext4"
+        let kernel = sources + "/kernel"
+        let candidateKernel = sources + "/candidate-kernel"
+        let bundle = sources + "/desktop-update.tar"
+        try Data("rootfs-before".utf8).write(to: URL(fileURLWithPath: rootfs))
+        try Data("kernel-before".utf8).write(to: URL(fileURLWithPath: kernel))
+        try Data("kernel-after".utf8).write(to: URL(fileURLWithPath: candidateKernel))
+        try Data("signed-bundle".utf8).write(to: URL(fileURLWithPath: bundle))
+
+        let connector = DesktopUpdateAgentConnector(managedRootfsPath: state + "/dev/rootfs.ext4")
+        let manager = MachineManager(
+            configuration: MachineManagerConfiguration(
+                vmmExecutablePath: "/bin/sleep",
+                stateDirectory: state,
+                baseArguments: ["30"],
+                passMachineArguments: false,
+                requiresReadyHandoff: true
+            ),
+            agentConnector: { socketPath in try connector.connect(socketPath: socketPath) }
+        )
+        defer { try? manager.delete(id: "dev") }
+        _ = try manager.create(DoryMachineConfiguration(
+            id: "dev",
+            kernelPath: kernel,
+            rootfsPath: rootfs,
+            displayMode: .desktop,
+            environment: ["DORY_DESKTOP_DISTRO": "ubuntu"]
+        ))
+
+        let result = try runDesktopUpdate(
+            manager: manager,
+            id: "dev",
+            request: DoryDesktopUpdateRequest(
+                distro: "ubuntu",
+                version: "1.2.3+runtime.4.5.6",
+                bundlePath: bundle,
+                kernelPath: candidateKernel
+            )
+        ).get()
+
+        XCTAssertEqual(result.status.state, .stopped)
+        XCTAssertEqual(result.version, "1.2.3+runtime.4.5.6")
+        XCTAssertEqual(result.inputSHA256, String(repeating: "a", count: 64))
+        XCTAssertEqual(
+            try String(contentsOfFile: state + "/dev/rootfs.ext4", encoding: .utf8),
+            "rootfs-after"
+        )
+        XCTAssertEqual(
+            try String(contentsOfFile: state + "/dev/kernel", encoding: .utf8),
+            "kernel-after"
+        )
+        let status = try XCTUnwrap(manager.status(id: "dev"))
+        XCTAssertEqual(status.environment["DORY_DESKTOP_RELEASE_VERSION"], "1.2.3+runtime.4.5.6")
+        XCTAssertEqual(status.environment["DORY_DESKTOP_INPUT_SHA256"], String(repeating: "a", count: 64))
+        XCTAssertTrue(status.shares.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: state + "/dev/desktop-update.json"))
+        let snapshots = try manager.listSnapshots(machineID: "dev")
+        XCTAssertEqual(snapshots.map(\.id), [result.snapshotID])
+        XCTAssertTrue(snapshots[0].note.contains("Automatic last-good snapshot"))
+        XCTAssertGreaterThanOrEqual(connector.execCount, 6)
+    }
+
+    func testDesktopUpdateFailureRestoresDiskConfigurationAndRunningState() throws {
+        let base = "/tmp/dory-machine-desktop-update-rollback-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let sources = base + "/sources"
+        let state = base + "/machines"
+        try FileManager.default.createDirectory(atPath: sources, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let rootfs = sources + "/rootfs.ext4"
+        let kernel = sources + "/kernel"
+        let candidateKernel = sources + "/candidate-kernel"
+        let bundle = sources + "/desktop-update.tar"
+        try Data("rootfs-before".utf8).write(to: URL(fileURLWithPath: rootfs))
+        try Data("kernel-before".utf8).write(to: URL(fileURLWithPath: kernel))
+        try Data("kernel-after".utf8).write(to: URL(fileURLWithPath: candidateKernel))
+        try Data("signed-bundle".utf8).write(to: URL(fileURLWithPath: bundle))
+
+        let connector = DesktopUpdateAgentConnector(
+            managedRootfsPath: state + "/dev/rootfs.ext4",
+            failsInstall: true
+        )
+        let manager = MachineManager(
+            configuration: MachineManagerConfiguration(
+                vmmExecutablePath: "/bin/sleep",
+                stateDirectory: state,
+                baseArguments: ["30"],
+                passMachineArguments: false,
+                requiresReadyHandoff: true
+            ),
+            agentConnector: { socketPath in try connector.connect(socketPath: socketPath) }
+        )
+        defer { try? manager.delete(id: "dev") }
+        _ = try manager.create(DoryMachineConfiguration(
+            id: "dev",
+            kernelPath: kernel,
+            rootfsPath: rootfs,
+            displayMode: .desktop,
+            environment: ["DORY_DESKTOP_DISTRO": "ubuntu", "PRESERVE": "yes"]
+        ))
+
+        let result = try runDesktopUpdate(
+            manager: manager,
+            id: "dev",
+            request: DoryDesktopUpdateRequest(
+                distro: "ubuntu",
+                version: "1.2.3+runtime.4.5.6",
+                bundlePath: bundle,
+                kernelPath: candidateKernel
+            )
+        )
+        XCTAssertThrowsError(try result.get()) { error in
+            XCTAssertTrue(String(describing: error).contains("last-good snapshot"))
+            XCTAssertTrue(String(describing: error).contains("was restored"))
+        }
+        XCTAssertEqual(
+            try String(contentsOfFile: state + "/dev/rootfs.ext4", encoding: .utf8),
+            "rootfs-before"
+        )
+        XCTAssertEqual(
+            try String(contentsOfFile: state + "/dev/kernel", encoding: .utf8),
+            "kernel-before"
+        )
+        let status = try XCTUnwrap(manager.status(id: "dev"))
+        XCTAssertEqual(status.state, .stopped)
+        XCTAssertEqual(status.environment, ["DORY_DESKTOP_DISTRO": "ubuntu", "PRESERVE": "yes"])
+        XCTAssertTrue(status.shares.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: state + "/dev/desktop-update.json"))
+        XCTAssertEqual(try manager.listSnapshots(machineID: "dev").count, 1)
+    }
+
+    func testManagerStartupRollsBackInterruptedDesktopUpdateJournal() throws {
+        let base = "/tmp/dory-machine-desktop-update-recovery-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let sources = base + "/sources"
+        let state = base + "/machines"
+        try FileManager.default.createDirectory(atPath: sources, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let rootfs = sources + "/rootfs.ext4"
+        let kernel = sources + "/kernel"
+        try Data("rootfs-before".utf8).write(to: URL(fileURLWithPath: rootfs))
+        try Data("kernel-before".utf8).write(to: URL(fileURLWithPath: kernel))
+
+        do {
+            let manager = MachineManager(configuration: MachineManagerConfiguration(
+                vmmExecutablePath: "/bin/sleep",
+                stateDirectory: state,
+                baseArguments: ["30"],
+                passMachineArguments: false,
+                requiresReadyHandoff: false
+            ))
+            _ = try manager.create(DoryMachineConfiguration(
+                id: "dev",
+                kernelPath: kernel,
+                rootfsPath: rootfs,
+                displayMode: .desktop,
+                environment: ["DORY_DESKTOP_DISTRO": "ubuntu", "PRESERVE": "yes"]
+            ))
+            _ = try manager.snapshot(id: "dev", note: "before interrupted update", snapshotID: "s1")
+            try Data("rootfs-half-updated".utf8).write(
+                to: URL(fileURLWithPath: state + "/dev/rootfs.ext4")
+            )
+            _ = try manager.update(
+                id: "dev",
+                shares: [DoryMachineShareConfiguration(
+                    tag: "dory-update-interrupted",
+                    hostPath: sources,
+                    guestPath: "/mnt/dory-update-interrupted",
+                    readOnly: true
+                )],
+                updatesShares: true,
+                environment: [
+                    "DORY_DESKTOP_DISTRO": "ubuntu",
+                    "DORY_DESKTOP_RELEASE_VERSION": "half-applied",
+                ],
+                updatesEnvironment: true
+            )
+            let journal: [String: Any] = [
+                "schema": 1,
+                "machineID": "dev",
+                "distro": "ubuntu",
+                "version": "1.2.3+runtime.4.5.6",
+                "snapshotID": "s1",
+                "originalWasRunning": false,
+                "stage": "installing",
+            ]
+            let data = try JSONSerialization.data(withJSONObject: journal, options: [.sortedKeys])
+            let journalPath = state + "/dev/desktop-update.json"
+            try data.write(to: URL(fileURLWithPath: journalPath), options: .atomic)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: journalPath)
+        }
+
+        let recovered = MachineManager(configuration: MachineManagerConfiguration(
+            vmmExecutablePath: "/bin/sleep",
+            stateDirectory: state,
+            baseArguments: ["30"],
+            passMachineArguments: false,
+            requiresReadyHandoff: false
+        ))
+        defer { try? recovered.delete(id: "dev") }
+        XCTAssertEqual(
+            try String(contentsOfFile: state + "/dev/rootfs.ext4", encoding: .utf8),
+            "rootfs-before"
+        )
+        let status = try XCTUnwrap(recovered.status(id: "dev"))
+        XCTAssertEqual(status.state, .stopped)
+        XCTAssertEqual(status.environment, ["DORY_DESKTOP_DISTRO": "ubuntu", "PRESERVE": "yes"])
+        XCTAssertTrue(status.shares.isEmpty)
+        XCTAssertTrue(status.lastError?.contains("interrupted desktop update was rolled back") == true)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: state + "/dev/desktop-update.json"))
     }
 
     func testStopAllowsTheSharedGracefulShutdownBudget() throws {
@@ -1800,6 +2020,245 @@ final class MachineManagerTests: XCTestCase {
         XCTAssertEqual(String(data: try Data(contentsOf: URL(fileURLWithPath: sourceRootfs)), encoding: .utf8), "base-rootfs")
     }
 
+    func testCreateEFIMachineImportsInstallerAndCreatesManagedSparseDisk() throws {
+        let base = "/tmp/dory-machine-efi-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let installer = "\(base)/ubuntu-arm64.iso"
+        try Data("efi-installer".utf8).write(to: URL(fileURLWithPath: installer))
+        let state = "\(base)/machines"
+        let configuration = MachineManagerConfiguration(
+            vmmExecutablePath: "/bin/sleep",
+            stateDirectory: state,
+            baseArguments: ["30"],
+            passMachineArguments: false,
+            requiresReadyHandoff: false
+        )
+        let manager = MachineManager(configuration: configuration)
+
+        _ = try manager.create(DoryMachineConfiguration(
+            id: "ubuntu",
+            kernelPath: "",
+            rootfsPath: "",
+            bootMode: .efi,
+            installerISOPath: installer,
+            diskSizeBytes: MachineManager.minimumEFIDiskSizeBytes,
+            memoryMB: 4096,
+            cpuCount: 4,
+            displayMode: .desktop,
+            environment: ["DORY_CUSTOM_LINUX": "1"]
+        ))
+
+        let stored = try JSONDecoder().decode(
+            DoryMachineConfiguration.self,
+            from: Data(contentsOf: URL(fileURLWithPath: "\(state)/ubuntu/machine.json"))
+        )
+        XCTAssertEqual(stored.bootMode, .efi)
+        XCTAssertNil(stored.diskSizeBytes)
+        XCTAssertEqual(stored.rootfsPath, "\(state)/ubuntu/rootfs.ext4")
+        XCTAssertEqual(stored.kernelPath, "\(state)/ubuntu/kernel")
+        XCTAssertEqual(stored.installerISOPath, "\(state)/ubuntu/installer.iso")
+        XCTAssertEqual(
+            (try FileManager.default.attributesOfItem(atPath: stored.rootfsPath)[.size] as? NSNumber)?.uint64Value,
+            MachineManager.minimumEFIDiskSizeBytes
+        )
+        XCTAssertEqual(
+            try Data(contentsOf: URL(fileURLWithPath: try XCTUnwrap(stored.installerISOPath))),
+            Data("efi-installer".utf8)
+        )
+
+        let reloaded = MachineManager(configuration: configuration)
+        XCTAssertEqual(reloaded.list().map(\.id), ["ubuntu"])
+        let ejected = try reloaded.update(id: "ubuntu", installerMediaAttached: false)
+        XCTAssertEqual(ejected.bootMode, .efi)
+        XCTAssertFalse(ejected.installerMediaAttached)
+        let attached = try reloaded.update(id: "ubuntu", installerMediaAttached: true)
+        XCTAssertTrue(attached.installerMediaAttached)
+    }
+
+    func testRunningEFIInstallerEjectRetriesTransientStartupExitBeforeRollback() throws {
+        let base = "/tmp/dory-machine-efi-eject-retry-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+
+        let installer = "\(base)/installer.iso"
+        let disk = "\(base)/installed-disk.img"
+        try Data("arm64 installer".utf8).write(to: URL(fileURLWithPath: installer))
+        try Data("installed system".utf8).write(to: URL(fileURLWithPath: disk))
+        let manager = MachineManager(configuration: MachineManagerConfiguration(
+            vmmExecutablePath: "/bin/sleep",
+            stateDirectory: "\(base)/machines",
+            baseArguments: ["30"],
+            passMachineArguments: false,
+            requiresReadyHandoff: true,
+            startupRestartPolicy: HvRestartPolicy(maxRestarts: 3, delaySeconds: 0.05)
+        ))
+        defer { try? manager.delete(id: "linux") }
+
+        let created = try manager.create(DoryMachineConfiguration(
+            id: "linux",
+            kernelPath: "",
+            rootfsPath: disk,
+            bootMode: .efi,
+            installerISOPath: installer,
+            memoryMB: 4096,
+            cpuCount: 4,
+            displayMode: .desktop
+        ))
+        XCTAssertTrue(created.installerMediaAttached)
+        let original = try manager.start(id: "linux")
+        XCTAssertTrue(original.installerMediaAttached)
+        try sendVmmHandoff(
+            path: try XCTUnwrap(original.handoffSocketPath),
+            ready: VmmReadyMessage(machineID: "linux"),
+            fileDescriptors: []
+        )
+        let originallyRunning = try waitForMachineStatus(manager, id: "linux") {
+            $0.state == .running && $0.pid != nil
+        }
+        XCTAssertTrue(originallyRunning.installerMediaAttached)
+        // The production helper emits readiness only after VZ has started. Mirror that settled
+        // boundary after the test injects its synthetic handoff directly into the supervisor.
+        Thread.sleep(forTimeInterval: 0.1)
+
+        let updateFinished = expectation(description: "installer eject finished")
+        let updateResult = LockedResult<DoryMachineStatus>()
+        DispatchQueue.global(qos: .userInitiated).async {
+            updateResult.store(Result {
+                try manager.update(id: "linux", installerMediaAttached: false)
+            })
+            updateFinished.fulfill()
+        }
+
+        let updatedLaunch = try waitForMachineStatus(manager, id: "linux") {
+            $0.state == .starting
+                && !$0.installerMediaAttached
+                && $0.pid != nil
+                && $0.pid != originallyRunning.pid
+        }
+        let failedStartupPID = try XCTUnwrap(updatedLaunch.pid)
+        XCTAssertEqual(kill(failedStartupPID, SIGKILL), 0)
+
+        let restarted = try waitForMachineStatus(manager, id: "linux", timeout: 3) {
+            $0.state == .starting
+                && !$0.installerMediaAttached
+                && $0.pid != nil
+                && $0.pid != failedStartupPID
+        }
+        try sendVmmHandoff(
+            path: try XCTUnwrap(restarted.handoffSocketPath),
+            ready: VmmReadyMessage(machineID: "linux"),
+            fileDescriptors: []
+        )
+
+        wait(for: [updateFinished], timeout: 5)
+        switch try XCTUnwrap(updateResult.value) {
+        case let .success(status):
+            XCTAssertEqual(status.state, .running)
+            XCTAssertFalse(status.installerMediaAttached)
+        case let .failure(error):
+            XCTFail("installer eject unexpectedly rolled back: \(error)")
+        }
+    }
+
+    func testCreateEFIMachineRejectsKnownWrongArchitectureInstaller() throws {
+        let base = "/tmp/dory-machine-efi-arch-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let installer = "\(base)/omarchy-x86-only.iso"
+        try Data("EFI/BOOT/BOOTX64.EFI".utf8).write(to: URL(fileURLWithPath: installer))
+        let manager = MachineManager(configuration: MachineManagerConfiguration(
+            vmmExecutablePath: "/bin/sleep",
+            stateDirectory: "\(base)/machines",
+            passMachineArguments: false,
+            requiresReadyHandoff: false,
+            guestArchitecture: "arm64"
+        ))
+
+        XCTAssertThrowsError(try manager.create(DoryMachineConfiguration(
+            id: "omarchy",
+            kernelPath: "",
+            rootfsPath: "",
+            bootMode: .efi,
+            installerISOPath: installer,
+            diskSizeBytes: MachineManager.minimumEFIDiskSizeBytes,
+            memoryMB: 4096,
+            cpuCount: 4,
+            displayMode: .desktop
+        ))) { error in
+            XCTAssertTrue(String(describing: error).contains("x86_64-only"))
+            XCTAssertTrue(String(describing: error).contains("arm64 EFI ISO"))
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: "\(base)/machines/omarchy"))
+    }
+
+    func testEFISnapshotRestoresAndPortsFirmwareState() throws {
+        let base = "/tmp/dory-machine-efi-snapshot-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let disk = "\(base)/installed-linux.ext4"
+        try Data("disk-v1".utf8).write(to: URL(fileURLWithPath: disk))
+        let state = "\(base)/machines"
+        let manager = MachineManager(configuration: MachineManagerConfiguration(
+            vmmExecutablePath: "/bin/sleep",
+            stateDirectory: state,
+            baseArguments: ["30"],
+            passMachineArguments: false,
+            requiresReadyHandoff: false
+        ))
+        defer {
+            try? manager.delete(id: "ubuntu")
+            try? manager.delete(id: "ubuntu-copy")
+        }
+
+        _ = try manager.create(DoryMachineConfiguration(
+            id: "ubuntu",
+            kernelPath: "",
+            rootfsPath: disk,
+            bootMode: .efi,
+            memoryMB: 4096,
+            cpuCount: 4,
+            displayMode: .desktop
+        ))
+        let liveDisk = "\(state)/ubuntu/rootfs.ext4"
+        let liveIdentifier = "\(state)/ubuntu/MachineIdentifier"
+        let liveNVRAM = "\(state)/ubuntu/NVRAM"
+        try Data("identifier-v1".utf8).write(to: URL(fileURLWithPath: liveIdentifier))
+        try Data("nvram-v1".utf8).write(to: URL(fileURLWithPath: liveNVRAM))
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: liveIdentifier)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: liveNVRAM)
+
+        let snapshot = try manager.snapshot(id: "ubuntu", snapshotID: "s1")
+        XCTAssertEqual(snapshot.bootMode, .efi)
+        XCTAssertEqual(try String(contentsOfFile: try XCTUnwrap(snapshot.machineIdentifierPath), encoding: .utf8), "identifier-v1")
+        XCTAssertEqual(try String(contentsOfFile: try XCTUnwrap(snapshot.nvramPath), encoding: .utf8), "nvram-v1")
+
+        try Data("disk-v2".utf8).write(to: URL(fileURLWithPath: liveDisk))
+        try Data("identifier-v2".utf8).write(to: URL(fileURLWithPath: liveIdentifier))
+        try Data("nvram-v2".utf8).write(to: URL(fileURLWithPath: liveNVRAM))
+        _ = try manager.restoreSnapshot(machineID: "ubuntu", snapshotID: "s1")
+        XCTAssertEqual(try String(contentsOfFile: liveDisk, encoding: .utf8), "disk-v1")
+        XCTAssertEqual(try String(contentsOfFile: liveIdentifier, encoding: .utf8), "identifier-v1")
+        XCTAssertEqual(try String(contentsOfFile: liveNVRAM, encoding: .utf8), "nvram-v1")
+
+        let bundle = "\(base)/ubuntu.dorymachine"
+        try manager.exportSnapshot(machineID: "ubuntu", snapshotID: "s1", toPath: bundle)
+        XCTAssertEqual(
+            try Data(contentsOf: URL(fileURLWithPath: bundle)).prefix(Data("DORYMACHINE4\n".utf8).count),
+            Data("DORYMACHINE4\n".utf8)
+        )
+        try manager.deleteSnapshot(machineID: "ubuntu", snapshotID: "s1")
+        let imported = try manager.importSnapshot(fromPath: bundle)
+        XCTAssertEqual(imported.bootMode, .efi)
+        XCTAssertEqual(try String(contentsOfFile: try XCTUnwrap(imported.machineIdentifierPath), encoding: .utf8), "identifier-v1")
+        XCTAssertEqual(try String(contentsOfFile: try XCTUnwrap(imported.nvramPath), encoding: .utf8), "nvram-v1")
+
+        let clone = try manager.cloneSnapshot(machineID: "ubuntu", snapshotID: imported.id, newID: "ubuntu-copy")
+        XCTAssertEqual(clone.bootMode, .efi)
+        XCTAssertEqual(try String(contentsOfFile: "\(state)/ubuntu-copy/NVRAM", encoding: .utf8), "nvram-v1")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: "\(state)/ubuntu-copy/MachineIdentifier"))
+    }
+
     func testSnapshotsCopyRestoreCloneExportImportAndDeleteArtifacts() throws {
         let base = "/tmp/dory-machine-snapshots-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
@@ -2061,6 +2520,42 @@ final class MachineManagerTests: XCTestCase {
         XCTAssertEqual(running.dockerdSocketPath, "/run/docker.sock")
         XCTAssertEqual(running.shellSocketPath, "/run/shell.sock")
         XCTAssertEqual(running.handoffFDCount, 0)
+    }
+
+    func testDesktopHandoffUsesDesktopStartupBudget() throws {
+        let base = "/tmp/dory-machine-desktop-handoff-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let manager = MachineManager(configuration: MachineManagerConfiguration(
+            vmmExecutablePath: "/bin/sleep",
+            stateDirectory: base,
+            baseArguments: ["30"],
+            passMachineArguments: false,
+            requiresReadyHandoff: true,
+            handoffReadyTimeoutSeconds: 0.05,
+            desktopHandoffReadyTimeoutSeconds: 1
+        ))
+        defer {
+            try? manager.delete(id: "desktop")
+            try? FileManager.default.removeItem(atPath: base)
+        }
+
+        _ = try manager.create(DoryMachineConfiguration(
+            id: "desktop",
+            kernelPath: doryTestKernelPath,
+            rootfsPath: doryTestRootfsPath,
+            displayMode: .desktop
+        ))
+
+        let starting = try manager.start(id: "desktop")
+        let handoffPath = try XCTUnwrap(starting.handoffSocketPath)
+        Thread.sleep(forTimeInterval: 0.15)
+        XCTAssertEqual(manager.status(id: "desktop")?.state, .starting)
+
+        try sendVmmHandoff(
+            path: handoffPath,
+            ready: VmmReadyMessage(machineID: "desktop"),
+            fileDescriptors: []
+        )
+        _ = try waitForMachineState(manager, id: "desktop", state: .running)
     }
 
     func testRequiredHandoffPublishesGuestReportedRuntimeAddress() throws {
@@ -2329,6 +2824,161 @@ final class MachineManagerTests: XCTestCase {
             XCTAssertLessThan(path.utf8.count, 104)
         }
         _ = try manager.stop(id: "dev")
+    }
+
+    func testAcceleratedHelperIsScopedToLinuxDesktopMachines() throws {
+        let base = "/tmp/dory-machine-accelerated-helper-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let desktopCapture = base + "/desktop.txt"
+        let fallbackCapture = base + "/fallback.txt"
+        let desktopHelper = base + "/dory-hv"
+        let fallbackHelper = base + "/dory-vmm"
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        try "#!/bin/sh\nprintf '%s\\n' \"$@\" > '\(desktopCapture)'\nsleep 30\n".write(
+            toFile: desktopHelper,
+            atomically: true,
+            encoding: .utf8
+        )
+        try "#!/bin/sh\nprintf '%s\\n' \"$@\" > '\(fallbackCapture)'\nsleep 30\n".write(
+            toFile: fallbackHelper,
+            atomically: true,
+            encoding: .utf8
+        )
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: desktopHelper)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fallbackHelper)
+        let manager = MachineManager(configuration: MachineManagerConfiguration(
+            vmmExecutablePath: fallbackHelper,
+            acceleratedDesktopExecutablePath: desktopHelper,
+            stateDirectory: base + "/machines",
+            baseArguments: ["fallback"],
+            acceleratedDesktopBaseArguments: ["desktop", "--gvproxy", "/tmp/gvproxy"],
+            requiresReadyHandoff: false
+        ))
+        defer {
+            try? manager.delete(id: "desktop")
+            try? manager.delete(id: "compatible")
+            try? manager.delete(id: "headless")
+            try? FileManager.default.removeItem(atPath: base)
+        }
+
+        _ = try manager.create(DoryMachineConfiguration(
+            id: "desktop",
+            kernelPath: doryTestKernelPath,
+            rootfsPath: doryTestRootfsPath,
+            displayMode: .desktop
+        ))
+        _ = try manager.start(id: "desktop")
+        for _ in 0..<100 where !FileManager.default.fileExists(atPath: desktopCapture) {
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        let desktopArguments = try String(contentsOfFile: desktopCapture, encoding: .utf8)
+            .split(separator: "\n").map(String.init)
+        XCTAssertEqual(Array(desktopArguments.prefix(3)), ["desktop", "--gvproxy", "/tmp/gvproxy"])
+        let desktopDisplayIndex = try XCTUnwrap(desktopArguments.firstIndex(of: "--display-mode"))
+        XCTAssertEqual(desktopArguments[desktopDisplayIndex + 1], "desktop")
+        _ = try manager.stop(id: "desktop")
+
+        _ = try manager.create(DoryMachineConfiguration(
+            id: "compatible",
+            kernelPath: doryTestKernelPath,
+            rootfsPath: doryTestRootfsPath,
+            displayMode: .desktop,
+            environment: [DoryDesktopVMMPreference.environmentKey: "compatible"]
+        ))
+        _ = try manager.start(id: "compatible")
+        for _ in 0..<100 where !FileManager.default.fileExists(atPath: fallbackCapture) {
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        let compatibleArguments = try String(contentsOfFile: fallbackCapture, encoding: .utf8)
+            .split(separator: "\n").map(String.init)
+        XCTAssertEqual(compatibleArguments.first, "fallback")
+        let compatibleDisplayIndex = try XCTUnwrap(compatibleArguments.firstIndex(of: "--display-mode"))
+        XCTAssertEqual(compatibleArguments[compatibleDisplayIndex + 1], "desktop")
+        _ = try manager.stop(id: "compatible")
+        try FileManager.default.removeItem(atPath: fallbackCapture)
+
+        _ = try manager.create(DoryMachineConfiguration(
+            id: "headless",
+            kernelPath: doryTestKernelPath,
+            rootfsPath: doryTestRootfsPath,
+            displayMode: .headless
+        ))
+        _ = try manager.start(id: "headless")
+        for _ in 0..<100 where !FileManager.default.fileExists(atPath: fallbackCapture) {
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        let fallbackArguments = try String(contentsOfFile: fallbackCapture, encoding: .utf8)
+            .split(separator: "\n").map(String.init)
+        XCTAssertEqual(fallbackArguments.first, "fallback")
+        let fallbackDisplayIndex = try XCTUnwrap(fallbackArguments.firstIndex(of: "--display-mode"))
+        XCTAssertEqual(fallbackArguments[fallbackDisplayIndex + 1], "headless")
+        _ = try manager.stop(id: "headless")
+    }
+
+    func testInstalledEFIBootBundleLaunchesThroughAcceleratedGenericLinuxRuntime() throws {
+        let base = "/tmp/dory-machine-installed-efi-accelerated-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let capture = base + "/arguments.txt"
+        let desktopHelper = base + "/dory-hv"
+        let fallbackHelper = base + "/dory-vmm"
+        let sourceDisk = base + "/installed.raw"
+        let sourceBundle = base + "/installed.boot"
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        try "#!/bin/sh\nprintf '%s\\n' \"$@\" > '\(capture)'\nsleep 30\n".write(
+            toFile: desktopHelper,
+            atomically: true,
+            encoding: .utf8
+        )
+        try "#!/bin/sh\nexit 91\n".write(toFile: fallbackHelper, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: desktopHelper)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fallbackHelper)
+        try Data("installed-disk".utf8).write(to: URL(fileURLWithPath: sourceDisk))
+        let kernel = Data(repeating: 0x41, count: 8_192)
+        let initrd = Data(repeating: 0x42, count: 16_384)
+        try DoryInstalledLinuxBootBundle.write(
+            assets: DoryLinuxInstallerBootAssets(
+                kernel: kernel,
+                initrd: initrd,
+                kernelISOPath: "casper/vmlinuz",
+                initrdISOPath: "casper/initrd"
+            ),
+            rootDevice: "/dev/vda2",
+            toPath: sourceBundle
+        )
+        let state = base + "/machines"
+        let manager = MachineManager(configuration: MachineManagerConfiguration(
+            vmmExecutablePath: fallbackHelper,
+            acceleratedDesktopExecutablePath: desktopHelper,
+            stateDirectory: state,
+            acceleratedDesktopBaseArguments: ["desktop", "--gvproxy", "/tmp/gvproxy"],
+            requiresReadyHandoff: false
+        ))
+        defer { try? manager.delete(id: "ubuntu") }
+
+        _ = try manager.create(DoryMachineConfiguration(
+            id: "ubuntu",
+            kernelPath: sourceBundle,
+            rootfsPath: sourceDisk,
+            bootMode: .efi,
+            memoryMB: 4096,
+            cpuCount: 4,
+            displayMode: .desktop
+        ))
+        _ = try manager.start(id: "ubuntu")
+        let arguments = try waitForFileContent(capture)
+            .split(separator: "\n").map(String.init)
+        func value(after flag: String) throws -> String {
+            let index = try XCTUnwrap(arguments.firstIndex(of: flag))
+            return arguments[index + 1]
+        }
+
+        XCTAssertEqual(Array(arguments.prefix(3)), ["desktop", "--gvproxy", "/tmp/gvproxy"])
+        XCTAssertEqual(try value(after: "--boot-mode"), "efi-installed")
+        XCTAssertEqual(try value(after: "--root-device"), "/dev/vda2")
+        XCTAssertEqual(try value(after: "--kernel"), "\(state)/ubuntu/direct-kernel")
+        XCTAssertEqual(try value(after: "--initrd"), "\(state)/ubuntu/direct-initrd")
+        XCTAssertTrue(arguments.contains("--generic-guest"))
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: "\(state)/ubuntu/direct-kernel")), kernel)
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: "\(state)/ubuntu/direct-initrd")), initrd)
     }
 
     func testWakeClockSyncsRunningMachineAgents() throws {
@@ -2641,6 +3291,139 @@ final class MachineManagerTests: XCTestCase {
         wait(for: [lockReleased], timeout: 1)
         XCTAssertEqual(manager.status(id: "dev")?.state, .created)
     }
+}
+
+private func runDesktopUpdate(
+    manager: MachineManager,
+    id: String,
+    request: DoryDesktopUpdateRequest,
+    timeout: TimeInterval = 15
+) throws -> Result<DoryDesktopUpdateResult, Error> {
+    let box = LockedResult<DoryDesktopUpdateResult>()
+    DispatchQueue.global(qos: .userInitiated).async {
+        box.store(Result { try manager.updateDesktop(id: id, request: request) })
+    }
+    let deadline = Date().addingTimeInterval(timeout)
+    var handedOffPIDs: Set<Int32> = []
+    while Date() < deadline, box.value == nil {
+        if let status = manager.status(id: id),
+           status.state == .starting,
+           let pid = status.pid,
+           !handedOffPIDs.contains(pid),
+           let handoffPath = status.handoffSocketPath {
+            try sendVmmHandoff(
+                path: handoffPath,
+                ready: VmmReadyMessage(
+                    machineID: id,
+                    agentBuild: "dory-agent/update-test",
+                    agentSocketPath: "/run/dory-update-test-agent.sock",
+                    dockerdSocketPath: "/run/dory-update-test-docker.sock"
+                ),
+                fileDescriptors: []
+            )
+            handedOffPIDs.insert(pid)
+        }
+        Thread.sleep(forTimeInterval: 0.01)
+    }
+    return try XCTUnwrap(box.value, "desktop update timed out")
+}
+
+private final class DesktopUpdateAgentConnector: @unchecked Sendable {
+    private let lock = NSLock()
+    private let managedRootfsPath: String
+    private let failsInstall: Bool
+    private var executions = 0
+
+    init(managedRootfsPath: String, failsInstall: Bool = false) {
+        self.managedRootfsPath = managedRootfsPath
+        self.failsInstall = failsInstall
+    }
+
+    var execCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return executions
+    }
+
+    func connect(socketPath: String) throws -> any AgentControlClient {
+        DesktopUpdateAgentControlClient(owner: self)
+    }
+
+    func execute(argv: [String]) -> DoryExecResult {
+        lock.lock()
+        executions += 1
+        lock.unlock()
+        if argv.first?.hasSuffix("/apply.sh") == true {
+            try? Data("rootfs-after".utf8).write(to: URL(fileURLWithPath: managedRootfsPath))
+            if failsInstall {
+                return DoryExecResult(
+                    exitCode: 42,
+                    stdout: Data(),
+                    stderr: Data("injected package failure".utf8),
+                    timedOut: false,
+                    stdoutTruncated: false,
+                    stderrTruncated: false
+                )
+            }
+            let output = "Dory desktop update applied: ubuntu 1.2.3+runtime.4.5.6 "
+                + String(repeating: "a", count: 64) + "\n"
+            return DoryExecResult(
+                exitCode: 0,
+                stdout: Data(output.utf8),
+                stderr: Data(),
+                timedOut: false,
+                stdoutTruncated: false,
+                stderrTruncated: false
+            )
+        }
+        return DoryExecResult(
+            exitCode: 0,
+            stdout: Data("ok\n".utf8),
+            stderr: Data(),
+            timedOut: false,
+            stdoutTruncated: false,
+            stderrTruncated: false
+        )
+    }
+}
+
+private final class DesktopUpdateAgentControlClient: AgentControlClient, @unchecked Sendable {
+    private let owner: DesktopUpdateAgentConnector
+
+    init(owner: DesktopUpdateAgentConnector) {
+        self.owner = owner
+    }
+
+    func info() throws -> DoryAgentInfo {
+        DoryAgentInfo(
+            protocolVersion: 1,
+            kernel: "Linux update-test",
+            agentBuild: "dory-agent/update-test",
+            uptimeSeconds: 1
+        )
+    }
+
+    func clockSync(hostEpochNs: Int64) throws -> Bool { true }
+
+    func portsWatch() throws -> DoryPortsSnapshot {
+        DoryPortsSnapshot(ports: [], added: [], removed: [])
+    }
+
+    func telemetry() throws -> DoryTelemetry {
+        DoryTelemetry(memTotalKB: 2048, memAvailableKB: 1024, psiSomeAvg10: 0, psiFullAvg10: 0)
+    }
+
+    func exec(
+        argv: [String],
+        cwd: String,
+        env: [DoryExecEnvironment],
+        timeoutMs: UInt64,
+        outputLimitBytes: UInt64
+    ) throws -> DoryExecResult {
+        owner.execute(argv: argv)
+    }
+
+    func close() {}
 }
 
 private final class RecordingMachineAgentConnector: @unchecked Sendable {

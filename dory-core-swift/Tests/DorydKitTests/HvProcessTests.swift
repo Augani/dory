@@ -76,6 +76,55 @@ final class HvProcessTests: XCTestCase {
         process.stop()
     }
 
+    func testPendingStartupRestartRemainsActiveAndCanBeDisabled() throws {
+        let directory = "/tmp/dory-hv-startup-retry-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+
+        let marker = directory + "/runs"
+        let script = directory + "/retry-then-hold.sh"
+        try """
+        #!/bin/sh
+        printf 'run\n' >> "$1"
+        count=$(wc -l < "$1" | tr -d ' ')
+        test "$count" -ne 1 || exit 7
+        exec /bin/sleep 30
+        """.write(toFile: script, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script)
+
+        let process = HvProcess(configuration: HvProcessConfiguration(
+            executablePath: script,
+            arguments: [marker],
+            restartPolicy: HvRestartPolicy(maxRestarts: 2, delaySeconds: 0.2)
+        ))
+        try process.start()
+
+        let firstRunDeadline = Date().addingTimeInterval(2)
+        while Date() < firstRunDeadline,
+              ((try? String(contentsOfFile: marker, encoding: .utf8))?
+                .split(separator: "\n").count ?? 0) < 1 {
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        XCTAssertTrue(process.isRunningOrRestarting)
+
+        let secondRunDeadline = Date().addingTimeInterval(2)
+        while Date() < secondRunDeadline,
+              ((try? String(contentsOfFile: marker, encoding: .utf8))?
+                .split(separator: "\n").count ?? 0) < 2 {
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        let pid = try XCTUnwrap(process.pid)
+        process.disableRestarts()
+        XCTAssertEqual(kill(pid, SIGKILL), 0)
+
+        let stoppedDeadline = Date().addingTimeInterval(2)
+        while Date() < stoppedDeadline, process.isRunningOrRestarting {
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        XCTAssertFalse(process.isRunningOrRestarting)
+        XCTAssertEqual(try String(contentsOfFile: marker, encoding: .utf8).split(separator: "\n").count, 2)
+    }
+
     func testUnexpectedExitNotifiesSupervisor() throws {
         let callback = expectation(description: "unexpected termination callback")
         let captured = LockedTermination()

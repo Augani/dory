@@ -424,6 +424,7 @@ struct ComponentsView: View {
             let store = try DoryComponentStore.selected()
             let installer = DoryComponentInstaller(store: store)
             let digest = DoryComponentCatalogVerifier.digest(catalogData)
+            var activatedComponents: Set<DoryComponentID> = [id]
             for release in try installationOrder(id, catalog: catalog) {
                 if let current = try store.installedComponent(release.id),
                    current.version == release.version,
@@ -436,12 +437,18 @@ struct ComponentsView: View {
                 _ = try await installer.install(release, catalogData: catalogData) { update in
                     Task { @MainActor in self.progress[release.id] = update }
                 }
+                activatedComponents.insert(release.id)
                 busy.remove(release.id)
             }
+            let desktopUpdates = try await appStore.updateManagedDesktops(affectedBy: activatedComponents)
             statuses = store.list(catalog: catalog, catalogDigest: digest)
             HostDockerCLI.reconcileOptionalTools(enabled: appStore.routeDockerCLI)
             if showSuccess {
-                appStore.showSettingsSuccess("\(displayName(id)) is installed and verified.")
+                let updated = desktopUpdates.isEmpty
+                    ? ""
+                    : " Updated " + String(desktopUpdates.count) + " existing desktop"
+                        + (desktopUpdates.count == 1 ? "." : "s.")
+                appStore.showSettingsSuccess("\(displayName(id)) is installed and verified." + updated)
             }
             return true
         } catch {

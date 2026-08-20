@@ -1,5 +1,6 @@
 import Darwin
 import DoryCore
+import DoryOperations
 import DorydKit
 import Foundation
 @preconcurrency import Virtualization
@@ -21,6 +22,8 @@ public struct DoryVMMArguments: Sendable, Equatable {
     public var dataDriveRoot: String?
     public var kernelPath: String?
     public var rootfsPath: String?
+    public var machineBootMode: DoryMachineBootMode = .linuxKernel
+    public var installerISOPath: String?
     public var gvproxyPath: String?
     public var sshAgentSocketPath: String?
     public var publishHost = "127.0.0.1"
@@ -64,6 +67,7 @@ public enum DoryVMMArgumentError: Error, Sendable, Equatable, CustomStringConver
     case missingGVProxy
     case invalidPublishHost(String)
     case invalidDisplayMode(String)
+    case invalidMachineBootMode(String)
     case invalidEnvironment(String)
 
     public var description: String {
@@ -88,6 +92,8 @@ public enum DoryVMMArgumentError: Error, Sendable, Equatable, CustomStringConver
             return "invalid --publish-host (expected 127.0.0.1 or 0.0.0.0): \(host)"
         case let .invalidDisplayMode(mode):
             return "invalid --display-mode (expected headless or desktop): \(mode)"
+        case let .invalidMachineBootMode(mode):
+            return "invalid --boot-mode (expected linux-kernel or efi): \(mode)"
         case let .invalidEnvironment(value):
             return "invalid --env value: \(value)"
         }
@@ -111,6 +117,14 @@ public func parseDoryVMMArguments(_ raw: [String]) throws -> DoryVMMArguments {
             parsed.kernelPath = try value(after: argument, from: raw, index: &index)
         case "--rootfs":
             parsed.rootfsPath = try value(after: argument, from: raw, index: &index)
+        case "--boot-mode":
+            let value = try value(after: argument, from: raw, index: &index)
+            guard let mode = DoryMachineBootMode(rawValue: value) else {
+                throw DoryVMMArgumentError.invalidMachineBootMode(value)
+            }
+            parsed.machineBootMode = mode
+        case "--installer-iso":
+            parsed.installerISOPath = try value(after: argument, from: raw, index: &index)
         case "--gvproxy":
             parsed.gvproxyPath = try value(after: argument, from: raw, index: &index)
         case "--ssh-agent-socket":
@@ -202,6 +216,8 @@ public struct DoryVZMachineSpec: Sendable, Equatable {
     public var stateDirectory: String
     public var kernelPath: String
     public var rootfsPath: String
+    public var bootMode: DoryMachineBootMode
+    public var installerISOPath: String?
     public var memoryMB: UInt64
     public var cpuCount: Int
     public var displayMode: DoryMachineDisplayMode
@@ -218,6 +234,8 @@ public struct DoryVZMachineSpec: Sendable, Equatable {
         stateDirectory: String,
         kernelPath: String,
         rootfsPath: String,
+        bootMode: DoryMachineBootMode = .linuxKernel,
+        installerISOPath: String? = nil,
         memoryMB: UInt64,
         cpuCount: Int,
         displayMode: DoryMachineDisplayMode = .headless,
@@ -233,6 +251,8 @@ public struct DoryVZMachineSpec: Sendable, Equatable {
         self.stateDirectory = stateDirectory
         self.kernelPath = kernelPath
         self.rootfsPath = rootfsPath
+        self.bootMode = bootMode
+        self.installerISOPath = installerISOPath
         self.memoryMB = memoryMB
         self.cpuCount = cpuCount
         self.displayMode = displayMode
@@ -288,6 +308,7 @@ public enum DoryVZConfigurationBuilder {
     public static func makeConfiguration(
         spec: DoryVZMachineSpec,
         serialOutput: FileHandle?,
+        serialInput: FileHandle? = nil,
         networkAttachment: VZNetworkDeviceAttachment? = nil
     ) throws -> VZVirtualMachineConfiguration {
         let fileManager = FileManager.default
@@ -308,18 +329,40 @@ public enum DoryVZConfigurationBuilder {
                 "native IPv6 requires the gvproxy file-handle network attachment"
             )
         }
-        guard fileManager.fileExists(atPath: spec.kernelPath) else {
-            throw DoryVZMachineError.missingFile(spec.kernelPath)
-        }
         guard fileManager.fileExists(atPath: spec.rootfsPath) else {
             throw DoryVZMachineError.missingFile(spec.rootfsPath)
         }
 
-        let bootLoader = VZLinuxBootLoader(kernelURL: URL(fileURLWithPath: spec.kernelPath))
-        bootLoader.commandLine = spec.kernelCommandLine ?? defaultKernelCommandLine(machineID: spec.machineID)
-
         let configuration = VZVirtualMachineConfiguration()
-        configuration.bootLoader = bootLoader
+        switch spec.bootMode {
+        case .linuxKernel:
+            guard fileManager.fileExists(atPath: spec.kernelPath) else {
+                throw DoryVZMachineError.missingFile(spec.kernelPath)
+            }
+            let bootLoader = VZLinuxBootLoader(kernelURL: URL(fileURLWithPath: spec.kernelPath))
+            bootLoader.commandLine = spec.kernelCommandLine ?? defaultKernelCommandLine(machineID: spec.machineID)
+            configuration.bootLoader = bootLoader
+        case .efi:
+            guard spec.displayMode == .desktop else {
+                throw DoryVZMachineError.validation("EFI boot requires desktop display mode")
+            }
+            let platform = VZGenericPlatformConfiguration()
+            platform.machineIdentifier = try persistentMachineIdentifier(
+                at: spec.stateDirectory + "/MachineIdentifier"
+            )
+            let bootLoader = VZEFIBootLoader()
+            // Keep installation/recovery firmware state separate from the installed system.
+            // UEFI remembers the disk as its first boot target after an OS installation, and
+            // merely reconnecting a USB ISO does not override that persisted BootOrder. A
+            // dedicated installer variable store gives attached media a stable CD-first boot
+            // profile while preserving the installed disk's firmware entries for normal boots.
+            let variableStoreName = spec.installerISOPath == nil ? "NVRAM" : "NVRAM.installer"
+            bootLoader.variableStore = try persistentEFIVariableStore(
+                at: spec.stateDirectory + "/\(variableStoreName)"
+            )
+            configuration.platform = platform
+            configuration.bootLoader = bootLoader
+        }
         configuration.cpuCount = spec.cpuCount
         configuration.memorySize = memorySize
         configuration.entropyDevices = [VZVirtioEntropyDeviceConfiguration()]
@@ -344,14 +387,25 @@ public enum DoryVZConfigurationBuilder {
 
             let output = VZVirtioSoundDeviceOutputStreamConfiguration()
             output.sink = VZHostAudioOutputStreamSink()
-            let sound = VZVirtioSoundDeviceConfiguration()
-            sound.streams = [output]
-            configuration.audioDevices = [sound]
+            let outputSound = VZVirtioSoundDeviceConfiguration()
+            outputSound.streams = [output]
+
+            let input = VZVirtioSoundDeviceInputStreamConfiguration()
+            input.source = VZHostAudioInputStreamSource()
+            let inputSound = VZVirtioSoundDeviceConfiguration()
+            inputSound.streams = [input]
+            configuration.audioDevices = [outputSound, inputSound]
 
             let console = VZVirtioConsoleDeviceConfiguration()
             let spiceAgent = VZVirtioConsolePortConfiguration()
             spiceAgent.name = VZSpiceAgentPortAttachment.spiceAgentPortName
-            spiceAgent.attachment = VZSpiceAgentPortAttachment()
+            let spiceAttachment = VZSpiceAgentPortAttachment()
+            // The native SPICE bridge has only an all-or-nothing switch. Keep it for the efficient
+            // bidirectional default; directional policies use Dory's agent-backed bridge instead.
+            spiceAttachment.sharesClipboard = DoryDesktopClipboardPolicy(
+                environment: spec.environment
+            ) == .bidirectional
+            spiceAgent.attachment = spiceAttachment
             console.ports[0] = spiceAgent
             configuration.consoleDevices = [console]
         }
@@ -411,14 +465,48 @@ public enum DoryVZConfigurationBuilder {
         }
 
         do {
-            let attachment = try VZDiskImageStorageDeviceAttachment(
-                url: URL(fileURLWithPath: spec.rootfsPath),
-                readOnly: false
-            )
-            let block = VZVirtioBlockDeviceConfiguration(attachment: attachment)
-            block.blockDeviceIdentifier = "dory-rootfs"
-            configuration.storageDevices = [block]
+            let rootURL = URL(fileURLWithPath: spec.rootfsPath)
+            if spec.bootMode == .efi {
+                // EFI installers exercise long, flush-heavy writes before Dory guest tools exist.
+                // Apple's native NVMe model avoids tying that workload to the VirtIO-block path
+                // used by Dory-owned direct-kernel guests. Cached host I/O with fsync semantics
+                // matches a normal virtual disk while retaining crash-consistent guest flushes.
+                let attachment = try VZDiskImageStorageDeviceAttachment(
+                    url: rootURL,
+                    readOnly: false,
+                    cachingMode: .cached,
+                    synchronizationMode: .fsync
+                )
+                configuration.storageDevices = [
+                    VZNVMExpressControllerDeviceConfiguration(attachment: attachment),
+                ]
+            } else {
+                let attachment = try VZDiskImageStorageDeviceAttachment(
+                    url: rootURL,
+                    readOnly: false
+                )
+                let block = VZVirtioBlockDeviceConfiguration(attachment: attachment)
+                block.blockDeviceIdentifier = "dory-rootfs"
+                configuration.storageDevices = [block]
+            }
+            if let installerISOPath = spec.installerISOPath {
+                guard spec.bootMode == .efi else {
+                    throw DoryVZMachineError.validation("installer ISO requires EFI boot mode")
+                }
+                guard fileManager.fileExists(atPath: installerISOPath) else {
+                    throw DoryVZMachineError.missingFile(installerISOPath)
+                }
+                let installerAttachment = try VZDiskImageStorageDeviceAttachment(
+                    url: URL(fileURLWithPath: installerISOPath),
+                    readOnly: true
+                )
+                configuration.storageDevices.insert(
+                    VZUSBMassStorageDeviceConfiguration(attachment: installerAttachment),
+                    at: 0
+                )
+            }
         } catch {
+            if let error = error as? DoryVZMachineError { throw error }
             throw DoryVZMachineError.storageAttachment("\(error)")
         }
 
@@ -439,13 +527,42 @@ public enum DoryVZConfigurationBuilder {
         if let serialOutput {
             let serial = VZVirtioConsoleDeviceSerialPortConfiguration()
             serial.attachment = VZFileHandleSerialPortAttachment(
-                fileHandleForReading: nil,
+                fileHandleForReading: serialInput,
                 fileHandleForWriting: serialOutput
             )
             configuration.serialPorts = [serial]
         }
 
         return configuration
+    }
+
+    private static func persistentMachineIdentifier(at path: String) throws -> VZGenericMachineIdentifier {
+        let url = URL(fileURLWithPath: path)
+        if FileManager.default.fileExists(atPath: path) {
+            let data = try Data(contentsOf: url)
+            guard let identifier = VZGenericMachineIdentifier(dataRepresentation: data) else {
+                throw DoryVZMachineError.validation("stored EFI machine identifier is invalid")
+            }
+            return identifier
+        }
+        let identifier = VZGenericMachineIdentifier()
+        try identifier.dataRepresentation.write(to: url, options: [.atomic])
+        guard chmod(path, mode_t(0o600)) == 0 else {
+            throw DoryVZMachineError.syscall("chmod MachineIdentifier", errno)
+        }
+        return identifier
+    }
+
+    private static func persistentEFIVariableStore(at path: String) throws -> VZEFIVariableStore {
+        let url = URL(fileURLWithPath: path)
+        if FileManager.default.fileExists(atPath: path) {
+            return VZEFIVariableStore(url: url)
+        }
+        let store = try VZEFIVariableStore(creatingVariableStoreAt: url)
+        guard chmod(path, mode_t(0o600)) == 0 else {
+            throw DoryVZMachineError.syscall("chmod NVRAM", errno)
+        }
+        return store
     }
 
     public static func defaultKernelCommandLine(machineID: String) -> String {
@@ -705,6 +822,8 @@ public enum DoryVMMMain {
                 stateDirectory: stateDirectory,
                 kernelPath: kernelPath,
                 rootfsPath: rootfsPath,
+                bootMode: arguments.machineBootMode,
+                installerISOPath: arguments.installerISOPath,
                 handoffSocketPath: handoffSocketPath,
                 dockerdSocketPath: arguments.dockerdSocketPath ?? "\(stateDirectory)/dockerd.sock",
                 agentSocketPath: arguments.agentSocketPath ?? "\(stateDirectory)/agent.sock",
@@ -746,7 +865,8 @@ public enum DoryVMMMain {
                     try MainActor.assumeIsolated {
                         try DoryVMMDesktopApplication.run(
                             runtime: runtime,
-                            machineID: machineID
+                            machineID: machineID,
+                            environment: arguments.environment
                         )
                     }
                 } else {
@@ -789,6 +909,8 @@ public enum DoryVMMMain {
         stateDirectory: String,
         kernelPath: String,
         rootfsPath: String,
+        bootMode: DoryMachineBootMode,
+        installerISOPath: String?,
         handoffSocketPath: String,
         dockerdSocketPath: String,
         agentSocketPath: String,
@@ -816,6 +938,21 @@ public enum DoryVMMMain {
             )
         }
         let serialLog = try openAppendLog("\(stateDirectory)/serial.log")
+        try appendBootSessionMarker(
+            to: serialLog,
+            machineID: machineID,
+            bootMode: bootMode,
+            cpuCount: cpuCount,
+            memoryMB: memoryMB,
+            runtimeProfile: bootMode == .efi
+                ? DoryInstallerRuntimeProfile.current.rawValue
+                : "linux-kernel-virtio-blk"
+        )
+        let runtimeSocketDirectory = (controlSocketPath as NSString).deletingLastPathComponent
+        let serialConsole = try DoryVMMSerialConsole(
+            socketPath: "\(runtimeSocketDirectory)/console.sock",
+            log: serialLog
+        )
         let dataDrive: DoryDataDrive?
         if let dataDriveRoot, machineID == "docker" {
             dataDrive = try DoryDataDrive(overrideRoot: dataDriveRoot)
@@ -869,6 +1006,8 @@ public enum DoryVMMMain {
             stateDirectory: stateDirectory,
             kernelPath: kernelPath,
             rootfsPath: rootfsPath,
+            bootMode: bootMode,
+            installerISOPath: installerISOPath,
             memoryMB: memoryMB,
             cpuCount: cpuCount,
             displayMode: displayMode,
@@ -882,7 +1021,8 @@ public enum DoryVMMMain {
         )
         let configuration = try DoryVZConfigurationBuilder.makeConfiguration(
             spec: spec,
-            serialOutput: serialLog,
+            serialOutput: serialConsole.guestOutput,
+            serialInput: serialConsole.guestInput,
             networkAttachment: gvproxyNetwork?.attachment
         )
         try validate(configuration: configuration)
@@ -937,6 +1077,7 @@ public enum DoryVMMMain {
             controlServer: controlServer,
             proxies: [dockerdProxy, agentProxy, shellProxy],
             serialLog: serialLog,
+            serialConsole: serialConsole,
             gvproxyNetwork: gvproxyNetwork,
             sourcePreservingLANClient: sourcePreservingLANClient,
             sourcePreservingLANSessionID: sourcePreservingLANSessionID,
@@ -956,6 +1097,22 @@ public enum DoryVMMMain {
         )
         runtime.portForwarder?.start()
         onRuntimeCreated(runtime)
+
+        if bootMode == .efi {
+            try sendHandoff(
+                machineID: machineID,
+                handoffSocketPath: handoffSocketPath,
+                agentBuild: "dory-vmm/efi",
+                agentSocketPath: nil,
+                dockerdSocketPath: nil,
+                shellSocketPath: nil,
+                controlSocketPath: controlSocketPath,
+                detail: installerISOPath == nil
+                    ? "EFI machine running from its installed disk"
+                    : "EFI machine running with read-only installer media attached"
+            )
+            return runtime
+        }
 
         let agentConnection = try machine.waitForConnection(toPort: DoryGuestPorts.control, timeout: readyTimeoutSeconds)
         defer { agentConnection.close() }
@@ -1056,6 +1213,20 @@ public enum DoryVMMMain {
             throw DoryVZMachineError.syscall("open", errno)
         }
         return FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+    }
+
+    private static func appendBootSessionMarker(
+        to log: FileHandle,
+        machineID: String,
+        bootMode: DoryMachineBootMode,
+        cpuCount: Int,
+        memoryMB: UInt64,
+        runtimeProfile: String
+    ) throws {
+        let timestamp = Date().formatted(.iso8601)
+        let marker = "\n--- DORY BOOT \(timestamp) machine=\(machineID) mode=\(bootMode.rawValue) cpus=\(cpuCount) memoryMB=\(memoryMB) runtime=\(runtimeProfile) ---\n"
+        try log.write(contentsOf: Data(marker.utf8))
+        try log.synchronize()
     }
 
     private static func validate(configuration: VZVirtualMachineConfiguration) throws {
@@ -1199,6 +1370,7 @@ final class DoryVMMRuntime: DoryVMMGuestShutdownHandling, @unchecked Sendable {
     private let controlServer: DoryVMMControlServer
     private let proxies: [DoryVZPortUnixProxy]
     private let serialLog: FileHandle
+    private let serialConsole: DoryVMMSerialConsole
     private let gvproxyNetwork: DoryVMMGVProxyNetwork?
     private let sourcePreservingLANClient: SourcePreservingLANPrivilegedClient?
     private let sourcePreservingLANSessionID: String?
@@ -1210,6 +1382,7 @@ final class DoryVMMRuntime: DoryVMMGuestShutdownHandling, @unchecked Sendable {
         controlServer: DoryVMMControlServer,
         proxies: [DoryVZPortUnixProxy],
         serialLog: FileHandle,
+        serialConsole: DoryVMMSerialConsole,
         gvproxyNetwork: DoryVMMGVProxyNetwork?,
         sourcePreservingLANClient: SourcePreservingLANPrivilegedClient?,
         sourcePreservingLANSessionID: String?,
@@ -1220,6 +1393,7 @@ final class DoryVMMRuntime: DoryVMMGuestShutdownHandling, @unchecked Sendable {
         self.controlServer = controlServer
         self.proxies = proxies
         self.serialLog = serialLog
+        self.serialConsole = serialConsole
         self.gvproxyNetwork = gvproxyNetwork
         self.sourcePreservingLANClient = sourcePreservingLANClient
         self.sourcePreservingLANSessionID = sourcePreservingLANSessionID
@@ -1229,6 +1403,26 @@ final class DoryVMMRuntime: DoryVMMGuestShutdownHandling, @unchecked Sendable {
 
     var isStopped: Bool {
         machine.isStopped
+    }
+
+    func executeDesktopIntegration(
+        argv: [String],
+        stdin: Data,
+        timeoutMs: UInt64,
+        outputLimitBytes: UInt64
+    ) throws -> DoryExecResult {
+        let connection = try machine.connect(toPort: DoryGuestPorts.control)
+        defer { connection.close() }
+        let fd = dup(connection.fileDescriptor)
+        guard fd >= 0 else { throw DoryVZMachineError.syscall("dup", errno) }
+        let control = try DoryCore.connectAgentControlOverFD(fd)
+        defer { control.close() }
+        return try control.execWithInput(
+            argv: argv,
+            stdin: stdin,
+            timeoutMs: timeoutMs,
+            outputLimitBytes: outputLimitBytes
+        )
     }
 
     func requestGuestShutdown() throws {
@@ -1243,6 +1437,14 @@ final class DoryVMMRuntime: DoryVMMGuestShutdownHandling, @unchecked Sendable {
         if let gvproxyNetwork {
             try gvproxyNetwork.requestGuestShutdown()
             return
+        }
+        do {
+            try machine.requestGuestStop()
+            return
+        } catch {
+            FileHandle.standardError.write(Data(
+                "dory-vmm: virtual power-button shutdown request failed, trying transport fallback: \(error)\n".utf8
+            ))
         }
         let deadline = Date().addingTimeInterval(5)
         var lastError: Error?
@@ -1301,6 +1503,7 @@ final class DoryVMMRuntime: DoryVMMGuestShutdownHandling, @unchecked Sendable {
             ))
         }
         gvproxyNetwork?.stop()
+        serialConsole.stop()
         try? serialLog.close()
     }
 }
@@ -1408,6 +1611,20 @@ public final class DoryVZMachine: @unchecked Sendable {
 
     public func waitUntilStopped() throws {
         try stopObserver.waitUntilStopped()
+    }
+
+    /// Ask the guest firmware/OS to shut down as if its virtual power button were pressed.
+    /// This is the integration-free shutdown path for arbitrary EFI guests that do not run
+    /// Dory's agent yet; it gives Linux a chance to flush filesystems before the VMM exits.
+    public func requestGuestStop() throws {
+        try queue.sync {
+            guard virtualMachine.canRequestStop else {
+                throw DoryVZMachineError.validation(
+                    "virtual machine is not in a state that accepts a guest stop request"
+                )
+            }
+            try virtualMachine.requestStop()
+        }
     }
 
     public func connect(toPort port: UInt32) throws -> VZVirtioSocketConnection {

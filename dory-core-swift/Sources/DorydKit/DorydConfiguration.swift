@@ -267,6 +267,7 @@ public struct DorydEnvironment: Sendable {
         guard let helper = executablePath(firstOf: ["DORYD_VMM_HELPER", "DORY_VMM_HELPER"], fallbackCandidates: helperCandidates(named: "dory-vmm")) else {
             return nil
         }
+        let acceleratedDesktop = acceleratedDesktopHelperConfiguration()
         let stateDirectory: String
         if let explicit = string("DORYD_MACHINE_STATE_DIR") {
             stateDirectory = explicit
@@ -276,15 +277,39 @@ public struct DorydEnvironment: Sendable {
         }
         return MachineManagerConfiguration(
             vmmExecutablePath: helper,
+            acceleratedDesktopExecutablePath: acceleratedDesktop?.executablePath,
             stateDirectory: stateDirectory,
             runtimeDirectory: string("DORYD_MACHINE_RUNTIME_DIR") ?? "\(home)/.dory/machines",
             baseArguments: splitArguments(string("DORYD_VMM_ARGS") ?? ""),
+            acceleratedDesktopBaseArguments: acceleratedDesktop?.arguments ?? [],
             passMachineArguments: bool("DORYD_VMM_PASS_MACHINE_ARGS", default: true),
             logDirectory: string("DORYD_MACHINE_LOG_DIR") ?? "\(stateDirectory)/logs",
             requiresReadyHandoff: bool("DORYD_VMM_READY_HANDOFF", default: true),
             guestArchitecture: hostGuestArch,
             sshAgentSocketPath: string("DORYD_SSH_AUTH_SOCK")
         )
+    }
+
+    private func acceleratedDesktopHelperConfiguration() -> (
+        executablePath: String,
+        arguments: [String]
+    )? {
+        guard rawHVSupported,
+              hostGuestArch == "arm64",
+              bool("DORYD_ACCELERATED_DESKTOP", default: true),
+              let helper = executablePath(
+                firstOf: ["DORYD_DESKTOP_HV_HELPER", "DORYD_HV_HELPER", "DORY_HV_HELPER"],
+                fallbackCandidates: helperCandidates(named: "dory-hv")
+              ),
+              let gvproxy = executablePath(
+                firstOf: ["DORYD_GVPROXY", "DORY_GVPROXY"],
+                fallbackCandidates: gvproxyCandidates()
+              ) else {
+            return nil
+        }
+        let arguments = ["desktop", "--gvproxy", gvproxy]
+            + splitArguments(string("DORYD_DESKTOP_HV_ARGS") ?? "")
+        return (helper, arguments)
     }
 
     public func dataDriveConfiguration() throws -> DoryDataDrive {

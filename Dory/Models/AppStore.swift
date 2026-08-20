@@ -5085,7 +5085,8 @@ final class AppStore {
                 mounts: status.shares.map(Self.mountPair(fromDoryd:)),
                 env: status.environment,
                 address: status.configuredAddress,
-                displayMode: status.displayMode
+                displayMode: status.displayMode,
+                bootMode: status.bootMode
             )
         } catch {
             actionError = "Could not load doryd machine settings: \(error)"
@@ -5160,26 +5161,29 @@ final class AppStore {
             .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
             .first { !$0.isEmpty } ?? status.state
         let isDesktop = status.displayMode == .desktop
+        let isCustomLinux = status.bootMode == .efi
         let desktopDistro = DesktopMachineDistro.resolve(status.environment["DORY_DESKTOP_DISTRO"])
-        let guestUsername = status.environment["DORY_GUEST_USER"] ?? (isDesktop ? "dory" : "root")
+        let guestUsername = status.environment["DORY_GUEST_USER"] ?? (isCustomLinux ? "installer" : (isDesktop ? "dory" : "root"))
         return Machine(
             name: status.id,
-            distro: isDesktop ? desktopDistro.displayName : "Dory Linux",
-            version: isDesktop ? "\(desktopDistro.version) · \(desktopDistro.desktopName)" : detail,
+            distro: isCustomLinux ? "Custom Linux" : (isDesktop ? desktopDistro.displayName : "Dory Linux"),
+            version: isCustomLinux ? "EFI · arm64" : (isDesktop ? "\(desktopDistro.version) · \(desktopDistro.desktopName)" : detail),
             status: runState,
             cpuPercent: 0,
             memoryDisplay: "—",
             ip: status.address ?? Self.machineDNSName(name: status.id, suffix: domainSuffix),
-            letter: isDesktop ? String(desktopDistro.displayName.prefix(1)) : "D",
-            badgeHex: isDesktop ? desktopDistro.badgeHex : 0x3B82F6,
+            letter: isCustomLinux ? "L" : (isDesktop ? String(desktopDistro.displayName.prefix(1)) : "D"),
+            badgeHex: isCustomLinux ? 0x7C3AED : (isDesktop ? desktopDistro.badgeHex : 0x3B82F6),
             containerID: "",
             arch: "",
             recipe: "doryd",
             username: guestUsername,
-            loginShell: isDesktop ? "/bin/bash" : "/bin/sh",
+            loginShell: isCustomLinux ? "" : (isDesktop ? "/bin/bash" : "/bin/sh"),
             shellSocketPath: status.shellSocketPath ?? "",
             processID: status.pid,
             displayMode: status.displayMode,
+            bootMode: status.bootMode,
+            installerMediaAttached: status.installerMediaAttached,
             mounts: status.shares.map(Self.mountPair(fromDoryd:))
         )
     }
@@ -5232,7 +5236,10 @@ final class AppStore {
             actionError = "The Desktop Linux display is not available yet. Start the machine and try again."
             return
         }
-        guard application.activate(options: [.activateAllWindows]) else {
+        if application.activate(options: [.activateAllWindows]) { return }
+        // Raw-HV desktops run in an unbundled helper, which LaunchServices can discover by PID but
+        // does not always activate. The helper handles SIGUSR1 by raising its own display window.
+        guard Darwin.kill(processID, SIGUSR1) == 0 else {
             actionError = "Dory could not bring \(machine.name)'s desktop window forward."
             return
         }
@@ -5363,6 +5370,24 @@ final class AppStore {
         }
     }
 
+    func setMachineInstallerMedia(_ machine: Machine, attached: Bool) {
+        guard requireDorydMachines(), machine.bootMode == .efi else { return }
+        guard !busyMachines.contains(machine.name) else { return }
+        busyMachines.insert(machine.name)
+        Task {
+            defer { busyMachines.remove(machine.name) }
+            do {
+                _ = try await dorydClient.machineUpdate(
+                    machine.name,
+                    installerMediaAttached: attached
+                )
+            } catch {
+                actionError = "Could not \(attached ? "attach" : "eject") the installer ISO for \(machine.name): \(error)"
+            }
+            await refreshMachines()
+        }
+    }
+
     nonisolated static func allocateFreePort() -> Int {
         let fd = socket(AF_INET, SOCK_STREAM, 0)
         guard fd >= 0 else { return 0 }
@@ -5400,6 +5425,83 @@ final class AppStore {
         var result = processEnvironment
         result["DORY_DESKTOP_DISTRO"] = distro.rawValue
         return result
+    }
+
+    /// Brings persistent desktop machines forward after a signed desktop component activation.
+    /// The daemon preserves each guest's disk, applications, accounts, and settings; it owns the
+    /// last-good snapshot, reboot qualification, and automatic rollback transaction.
+    func updateManagedDesktops(affectedBy components: Set<DoryComponentID>) async throws -> [DorydDesktopUpdateResult] {
+        let statuses = try await dorydClient.machineList()
+        let desktopStatuses = statuses.filter { $0.displayMode == .desktop }
+        guard !desktopStatuses.isEmpty else { return [] }
+
+        let runtimeChanged = components.contains(.linuxDesktop)
+        let store = try DoryComponentStore.selected()
+        guard let runtimeRelease = try store.installedComponent(.linuxDesktop) else {
+            throw DesktopMachineAssetError.missingAsset("runtime update")
+        }
+        _ = try store.verify(.linuxDesktop)
+        let home = environment["HOME"] ?? NSHomeDirectory()
+        var prepared: [DesktopMachineDistro: DesktopMachineAssets] = [:]
+        var results: [DorydDesktopUpdateResult] = []
+
+        for status in desktopStatuses {
+            guard status.environment["DORY_CUSTOM_LINUX"] != "1" else { continue }
+            let distro = DesktopMachineDistro.resolve(status.environment["DORY_DESKTOP_DISTRO"])
+            guard runtimeChanged || components.contains(distro.componentID) else { continue }
+            guard let distroRelease = try store.installedComponent(distro.componentID) else {
+                if components.contains(distro.componentID) {
+                    throw DesktopMachineAssetError.missingAsset(distro.displayName + " update")
+                }
+                // Removing a component intentionally preserves its machine disks. A runtime-only
+                // update cannot update that distro until the user reinstalls its signed payload.
+                continue
+            }
+            _ = try store.verify(distro.componentID)
+            let targetVersion = distroRelease.version + "+runtime." + runtimeRelease.version
+            if status.environment["DORY_DESKTOP_RELEASE_VERSION"] == targetVersion {
+                continue
+            }
+            guard let bundlePath = DoryComponentStore.activeAssetPath(
+                component: distro.componentID,
+                path: "dory-desktop-" + distro.rawValue + "-update-arm64.tar"
+            ) else {
+                throw DesktopMachineAssetError.missingAsset(distro.displayName + " in-place update")
+            }
+            let assets: DesktopMachineAssets
+            if let cached = prepared[distro] {
+                assets = cached
+            } else {
+                assets = try await desktopMachineAssetPreparer(
+                    home,
+                    Self.desktopAssetEnvironment(processEnvironment: environment, distro: distro),
+                    Bundle.main.resourcePath
+                )
+                prepared[distro] = assets
+            }
+
+            busyMachines.insert(status.id)
+            defer { busyMachines.remove(status.id) }
+            do {
+                let result = try await dorydClient.machineDesktopUpdate(
+                    status.id,
+                    distro: distro.rawValue,
+                    version: targetVersion,
+                    bundlePath: bundlePath,
+                    kernelPath: assets.kernelPath
+                )
+                results.append(result)
+            } catch {
+                throw DesktopMachineAssetError.filesystem(
+                    "Could not update " + status.id + ". Dory restored its last-good snapshot. "
+                        + String(describing: error)
+                )
+            }
+        }
+        if !results.isEmpty {
+            _ = await refreshMachines()
+        }
+        return results
     }
 
     nonisolated static func preservingHiddenMachineSettings(_ settings: MachineSettings, existing: MachineSettings) -> MachineSettings {
@@ -5445,23 +5547,31 @@ final class AppStore {
     ) -> DorydMachineConfiguration? {
         let useBundledAssets = environment["DORYD_DISABLE_BUNDLED_MACHINE_ASSETS"] != "1"
         let arch = hostMachineAssetArch
-        let kernel = assets?.kernelPath
-            ?? firstMachinePath(["DORYD_MACHINE_KERNEL", "DORYD_GUEST_KERNEL"], environment: environment)
-            ?? installedMachinePath(["dory-hv-kernel-\(arch)", "dory-hv-kernel"])
-            ?? (useBundledAssets ? bundledMachinePath(["dory-hv-kernel-\(arch)", "dory-hv-kernel"]) : nil)
-        let rootfs = assets?.rootfsPath
-            ?? firstMachinePath(["DORYD_MACHINE_ROOTFS", "DORYD_GUEST_ROOTFS"], environment: environment)
-            ?? installedMachinePath([
-                "dory-machine-rootfs-\(arch).ext4",
-                "dory-machine-rootfs.ext4",
-            ])
-            ?? (useBundledAssets ? bundledMachinePath([
-                "dory-machine-rootfs-\(arch).ext4",
-                "dory-machine-rootfs.ext4",
-                "initfs-\(arch).ext4",
-            ]) : nil)
-        guard let kernel, let rootfs else {
-            return nil
+        let kernel: String
+        let rootfs: String
+        if settings.bootMode == .efi {
+            kernel = ""
+            rootfs = ""
+        } else {
+            guard let resolvedKernel = assets?.kernelPath
+                ?? firstMachinePath(["DORYD_MACHINE_KERNEL", "DORYD_GUEST_KERNEL"], environment: environment)
+                ?? installedMachinePath(["dory-hv-kernel-\(arch)", "dory-hv-kernel"])
+                ?? (useBundledAssets ? bundledMachinePath(["dory-hv-kernel-\(arch)", "dory-hv-kernel"]) : nil),
+                  let resolvedRootfs = assets?.rootfsPath
+                ?? firstMachinePath(["DORYD_MACHINE_ROOTFS", "DORYD_GUEST_ROOTFS"], environment: environment)
+                ?? installedMachinePath([
+                    "dory-machine-rootfs-\(arch).ext4",
+                    "dory-machine-rootfs.ext4",
+                ])
+                ?? (useBundledAssets ? bundledMachinePath([
+                    "dory-machine-rootfs-\(arch).ext4",
+                    "dory-machine-rootfs.ext4",
+                    "initfs-\(arch).ext4",
+                ]) : nil) else {
+                return nil
+            }
+            kernel = resolvedKernel
+            rootfs = resolvedRootfs
         }
         let memoryMB: UInt64
         if let rawMemory = environment["DORYD_MACHINE_MEMORY_MB"] {
@@ -5481,6 +5591,11 @@ final class AppStore {
             id: name,
             kernelPath: kernel,
             rootfsPath: rootfs,
+            bootMode: settings.bootMode,
+            installerISOPath: settings.installerISOPath,
+            diskSizeBytes: settings.diskSizeGB.flatMap { UInt64(exactly: $0) }.map {
+                $0 * 1024 * 1024 * 1024
+            },
             memoryMB: memoryMB,
             cpuCount: cpuCount,
             address: address,
@@ -5501,7 +5616,15 @@ final class AppStore {
             actionError = "Invalid machine name: use letters, digits, and _ . - (must start alphanumeric)"
             return "Invalid machine name"
         }
-        if settings.displayMode == .desktop {
+        if settings.bootMode == .efi {
+            guard settings.displayMode == .desktop,
+                  let installerISOPath = settings.installerISOPath,
+                  FileManager.default.fileExists(atPath: installerISOPath) else {
+                let message = "Choose a readable Linux installer ISO before creating the VM."
+                actionError = message
+                return message
+            }
+        } else if settings.displayMode == .desktop {
             let distro = DesktopMachineDistro.resolve(settings.env["DORY_DESKTOP_DISTRO"])
             guard AppInfo.componentAvailable(.linuxDesktop),
                   AppInfo.componentAvailable(distro.componentID) else {
@@ -5534,6 +5657,7 @@ final class AppStore {
     }
 
     private func createDorydMachine(name: String, settings: MachineSettings, recipe: DevRecipe?) async -> String? {
+        var settings = settings
         let address = Self.trimmedNonEmpty(settings.address)
         let provisioningRecipe: String?
         if let recipe {
@@ -5555,10 +5679,41 @@ final class AppStore {
         activeSheet = .creatingMachine
         defer { busyMachines.remove(name) }
 
+        var stagedInstallerISOPath: String?
+        defer {
+            if let stagedInstallerISOPath {
+                try? FileManager.default.removeItem(atPath: stagedInstallerISOPath)
+            }
+        }
+
         var createdDefinition = false
         do {
+            if settings.bootMode == .efi, let installerISOPath = settings.installerISOPath {
+                let sourceURL = URL(fileURLWithPath: installerISOPath)
+                let hasSecurityScope = sourceURL.startAccessingSecurityScopedResource()
+                defer {
+                    if hasSecurityScope { sourceURL.stopAccessingSecurityScopedResource() }
+                }
+                appendMachineCreationLog("Checking the selected installer's EFI architecture…")
+                let staged = try DoryInstallerISOStager.stage(atPath: installerISOPath)
+                if staged.architecture == .unknown {
+                    appendMachineCreationLog("The EFI architecture is non-standard; continuing as a custom image.")
+                } else {
+                    appendMachineCreationLog("\(staged.architecture.rawValue) EFI architecture confirmed.")
+                }
+                appendMachineCreationLog("Media SHA-256: \(staged.sha256)")
+                if case .unqualified = staged.runtimeQualification {
+                    appendMachineCreationLog("This exact installer/host combination is not yet runtime-qualified by Dory.")
+                }
+                appendMachineCreationLog("Installer media is staged for the VM service.")
+                stagedInstallerISOPath = staged.path
+                settings.installerISOPath = staged.path
+            }
             let desktopAssets: DesktopMachineAssets?
-            if settings.displayMode == .desktop {
+            if settings.bootMode == .efi {
+                appendMachineCreationLog("Importing the installer ISO and creating a thin-provisioned virtual disk…")
+                desktopAssets = nil
+            } else if settings.displayMode == .desktop {
                 let distro = DesktopMachineDistro.resolve(settings.env["DORY_DESKTOP_DISTRO"])
                 appendMachineCreationLog("Preparing \(distro.displayName) \(distro.version) Desktop in the selected Dory data drive…")
                 let home = environment["HOME"] ?? NSHomeDirectory()
@@ -5651,7 +5806,8 @@ final class AppStore {
                 mounts: current?.shares.map(Self.mountPair(fromDoryd:)) ?? [],
                 env: current?.environment ?? [:],
                 address: current?.configuredAddress,
-                displayMode: current?.displayMode ?? machine.displayMode
+                displayMode: current?.displayMode ?? machine.displayMode,
+                bootMode: current?.bootMode ?? machine.bootMode
             )
             let effectiveSettings = Self.preservingHiddenMachineSettings(settings, existing: currentSettings)
             let memory = effectiveSettings.memoryMB.flatMap { UInt64(exactly: $0) } ?? current?.memoryMB
