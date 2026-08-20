@@ -60,6 +60,44 @@ struct DoryWorkspaceLifecycleOperationTests {
         }
     }
 
+    @Test("schema v2 importing persists an explicit absent-condition discriminator")
+    func importingAbsentConditionJournalRoundTrip() throws {
+        let operation = DoryWorkspaceLifecycleOperation(
+            operationID: UUID(uuidString: "c4cf98dc-c476-40c6-b5e9-f05f460b465f")!,
+            kind: .importing,
+            source: DoryWorkspaceLifecycleCondition(
+                workspaceID: "workspace-import",
+                state: .absent
+            ),
+            target: condition(
+                .defined,
+                workspaceID: "workspace-import",
+                resolved: nil
+            ),
+            createdAtUnixMilliseconds: 1_700_000_000_000,
+            deadlineUnixMilliseconds: 1_700_000_060_000,
+            steps: [step("import", 50_000)],
+            cancellationPolicy: .beforePublish,
+            recovery: .init(disposition: .rollback, stepIDs: ["import"])
+        )
+        #expect(operation.validate().isEmpty)
+        let binding = try operation.journalBinding(
+            dependencyClosureDigest: String(repeating: "b", count: 64)
+        )
+        #expect(binding.specification.data.range(of: Data("conditionSchemaVersion".utf8)) != nil)
+
+        let home = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dory-workspace-import-v2-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let store = try DoryOperationJournalStore(home: home.path)
+        var lease: DoryOperationLease? = try store.begin(binding)
+        #expect(try lease?.readWorkspaceLifecycleOperation() == operation)
+        lease = nil
+        let recovered = try store.acquire(operation.operationID)
+        #expect(try recovered.readWorkspaceLifecycleOperation() == operation)
+    }
+
     @Test("all lifecycle mutation kinds have stable journal kinds")
     func journalKinds() {
         #expect(Set(DoryWorkspaceMutationKind.allCases.map(\.journalKind.rawValue)).count
@@ -71,7 +109,7 @@ struct DoryWorkspaceLifecycleOperationTests {
     @Test("start requires exact resolved source target and backend readiness")
     func startRequirements() {
         var operation = makeOperation()
-        operation.source.resolved = nil
+        operation.source.runtime = nil
         #expect(has(.invalidCondition, "source", operation))
 
         operation = makeOperation()
@@ -113,6 +151,7 @@ struct DoryWorkspaceLifecycleOperationTests {
             kind: .cloning,
             source: condition(.stopped, resolved: resolved),
             target: condition(.stopped, workspaceID: "workspace-copy", resolved: resolved),
+            targetResourceID: "workspace-copy",
             createdAtUnixMilliseconds: 1_700_000_000_000,
             deadlineUnixMilliseconds: 1_700_000_060_000,
             steps: [step("clone", 30_000)],
@@ -142,7 +181,8 @@ struct DoryWorkspaceLifecycleOperationTests {
         let restoreStopped = DoryWorkspaceLifecycleOperation(
             kind: .restoring,
             source: condition(.stopped, resolved: resolved),
-            target: condition(.stopped, resolved: resolved),
+            target: condition(.stopped, resolved: nil, requiresReplanning: true),
+            targetResourceID: "snapshot-one",
             createdAtUnixMilliseconds: 1_700_000_000_000,
             deadlineUnixMilliseconds: 1_700_000_060_000,
             steps: [step("restore", 50_000)],
@@ -196,6 +236,141 @@ struct DoryWorkspaceLifecycleOperationTests {
         #expect(has(.invalidCondition, "source", operation))
     }
 
+    @Test("schema v1 resolved journals migrate into strict tagged runtime bindings")
+    func schemaV1GoldenMigration() throws {
+        let json = """
+        {
+          "schemaVersion": 1,
+          "operationID": "8F9F5B13-77EE-4F59-8A13-1704147C7F00",
+          "kind": "starting",
+          "source": {
+            "workspaceID": "workspace-one", "state": "stopped", "definitionRevision": 3,
+            "resolved": {
+              "planRevision": 4,
+              "planDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "backendID": "dory-hv-linux", "backendRuntimeBuildID": "dory-hv-1.0.0",
+              "virtualHardwareABIVersion": 1
+            }
+          },
+          "target": {
+            "workspaceID": "workspace-one", "state": "running", "definitionRevision": 3,
+            "resolved": {
+              "planRevision": 4,
+              "planDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "backendID": "dory-hv-linux", "backendRuntimeBuildID": "dory-hv-1.0.0",
+              "virtualHardwareABIVersion": 1
+            }
+          },
+          "createdAtUnixMilliseconds": 1700000000000,
+          "deadlineUnixMilliseconds": 1700000060000,
+          "steps": [
+            {"id":"launch","stage":"launch","deadlineOffsetMilliseconds":20000},
+            {"id":"ready","stage":"readiness","deadlineOffsetMilliseconds":55000}
+          ],
+          "readinessGates": [
+            {"kind":"backendRunning","required":true,"deadlineOffsetMilliseconds":20000}
+          ],
+          "retryBudgets": [],
+          "cancellationPolicy": "beforeGuestMutation",
+          "recovery": {"disposition":"rollback","stepIDs":["launch"]}
+        }
+        """
+        let migrated = try JSONDecoder().decode(
+            DoryWorkspaceLifecycleOperation.self,
+            from: Data(json.utf8)
+        )
+        #expect(migrated.schemaVersion == 1)
+        #expect(migrated.sourceSchemaVersion == 1)
+        #expect(migrated.source.runtime?.policy == .requireResolvedPlan)
+        #expect(migrated.source.runtime?.authorizationState == .resolvedPlan)
+        #expect(migrated.source.runtime?.resolved?.planRevision == 4)
+        #expect(migrated.source.runtime?.runtimeIdentityDigest == String(repeating: "a", count: 64))
+        #expect(migrated.validate().isEmpty)
+
+        let reencoded = try JSONEncoder().encode(migrated)
+        let current = try JSONDecoder().decode(
+            DoryWorkspaceLifecycleOperation.self,
+            from: reencoded
+        )
+        #expect(current == migrated)
+
+        let home = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dory-workspace-lifecycle-v1-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let binding = try migrated.journalBinding(
+            dependencyClosureDigest: String(repeating: "b", count: 64)
+        )
+        #expect(binding.specification.data.range(of: Data("sourceSchemaVersion".utf8)) == nil)
+        #expect(binding.specification.data.range(of: Data("runtimeIdentityDigest".utf8)) == nil)
+        #expect(binding.specification.data.range(of: Data("resolved".utf8)) != nil)
+        let store = try DoryOperationJournalStore(home: home.path)
+        var lease: DoryOperationLease? = try store.begin(binding)
+        #expect(try lease?.readWorkspaceLifecycleOperation() == migrated)
+        lease = nil
+        let recovered = try store.acquire(migrated.operationID)
+        #expect(try recovered.readWorkspaceLifecycleOperation() == migrated)
+
+        let legacyRestoreData = Data(
+            json.replacingOccurrences(of: "\"kind\": \"starting\"", with: "\"kind\": \"restoring\"")
+                .replacingOccurrences(of: "\"state\": \"running\"", with: "\"state\": \"stopped\"")
+                .utf8
+        )
+        let legacyRestore = try JSONDecoder().decode(
+            DoryWorkspaceLifecycleOperation.self,
+            from: legacyRestoreData
+        )
+        #expect(legacyRestore.validate().isEmpty)
+        #expect(legacyRestore.target.runtime?.authorizationState == .resolvedPlan)
+    }
+
+    @Test("schema v2 cannot claim v1 authority and exact runtime identity cannot drift")
+    func schemaAndRuntimeAuthorityAreExact() throws {
+        let dishonest = """
+        {
+          "schemaVersion": 2, "sourceSchemaVersion": 1,
+          "operationID": "8F9F5B13-77EE-4F59-8A13-1704147C7F00",
+          "kind": "starting", "source": {}, "target": {},
+          "createdAtUnixMilliseconds": 1700000000000,
+          "deadlineUnixMilliseconds": 1700000060000,
+          "steps": [], "readinessGates": [], "retryBudgets": [],
+          "cancellationPolicy": "prohibited",
+          "recovery": {"disposition":"rollback","stepIDs":[]}
+        }
+        """
+        #expect(throws: DecodingError.self) {
+            _ = try JSONDecoder().decode(
+                DoryWorkspaceLifecycleOperation.self,
+                from: Data(dishonest.utf8)
+            )
+        }
+
+        var operation = makeOperation()
+        operation.target.runtime?.runtimeIdentityDigest = String(repeating: "f", count: 64)
+        #expect(has(.invalidCondition, "target.runtime", operation))
+    }
+
+    @Test("legacy compatibility is an explicit ABI and identity binding, never a plan claim")
+    func legacyCompatibilityBindingIsExplicit() {
+        var operation = makeOperation()
+        let legacy = DoryWorkspaceRuntimeBinding.legacyCompatibility(
+            virtualHardwareABIVersion: 1,
+            runtimeIdentityDigest: String(repeating: "9", count: 64)
+        )
+        operation.source.runtime = legacy
+        operation.target.runtime = legacy
+        #expect(operation.validate().isEmpty)
+
+        operation.target.runtime = DoryWorkspaceRuntimeBinding(
+            policy: .legacyCompatibility,
+            authorizationState: .legacyCompatibility,
+            virtualHardwareABIVersion: 1,
+            runtimeIdentityDigest: String(repeating: "9", count: 64),
+            resolved: resolvedCondition()
+        )
+        #expect(has(.invalidCondition, "target", operation))
+    }
+
     private func makeOperation() -> DoryWorkspaceLifecycleOperation {
         let resolved = resolvedCondition()
         return DoryWorkspaceLifecycleOperation(
@@ -223,13 +398,32 @@ struct DoryWorkspaceLifecycleOperationTests {
     private func condition(
         _ state: DoryWorkspaceLifecycleState,
         workspaceID: String = "workspace-one",
-        resolved: DoryWorkspaceResolvedCondition?
+        resolved: DoryWorkspaceResolvedCondition?,
+        requiresReplanning: Bool = false
     ) -> DoryWorkspaceLifecycleCondition {
-        DoryWorkspaceLifecycleCondition(
+        let runtime: DoryWorkspaceRuntimeBinding?
+        if let resolved {
+            runtime = .resolvedPlan(
+                resolved,
+                runtimeIdentityDigest: String(repeating: "e", count: 64)
+            )
+        } else if requiresReplanning {
+            runtime = .requiresReplanning(
+                virtualHardwareABIVersion: 1,
+                runtimeIdentityDigest: String(repeating: "f", count: 64)
+            )
+        } else {
+            runtime = nil
+        }
+        return DoryWorkspaceLifecycleCondition(
             workspaceID: workspaceID,
             state: state,
             definitionRevision: 3,
-            resolved: resolved
+            runtime: runtime,
+            configurationAuthority: DoryWorkspaceConfigurationAuthority(
+                legacyConfigurationSHA256: String(repeating: "c", count: 64),
+                canonicalDefinitionSHA256: String(repeating: "d", count: 64)
+            )
         )
     }
 

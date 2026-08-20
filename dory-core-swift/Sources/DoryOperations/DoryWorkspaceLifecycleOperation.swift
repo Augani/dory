@@ -77,34 +77,232 @@ public struct DoryWorkspaceResolvedCondition: Codable, Sendable, Equatable {
     }
 }
 
+public enum DoryWorkspaceRuntimePolicy: String, Codable, CaseIterable, Sendable {
+    case legacyCompatibility = "legacy-compatibility"
+    case requireResolvedPlan = "require-resolved-plan"
+}
+
+public enum DoryWorkspaceRuntimeAuthorizationState: String, Codable, CaseIterable, Sendable {
+    case legacyCompatibility = "legacy-compatibility"
+    case resolvedPlan = "resolved-plan"
+    case requiresReplanning = "requires-replanning"
+}
+
+/// Exact runtime-policy authority for a lifecycle transition. Legacy compatibility is explicit
+/// and cannot carry plan claims; resolved operation bindings must carry the complete immutable
+/// plan identity used by the executor. `runtimeIdentityDigest` binds the full status identity,
+/// including a requires-replanning identity when a resolved-policy restore invalidates launch.
+public struct DoryWorkspaceRuntimeBinding: Codable, Sendable, Equatable {
+    public var policy: DoryWorkspaceRuntimePolicy
+    public var authorizationState: DoryWorkspaceRuntimeAuthorizationState
+    public var virtualHardwareABIVersion: UInt16
+    public var runtimeIdentityDigest: String
+    public var resolved: DoryWorkspaceResolvedCondition?
+
+    public init(
+        policy: DoryWorkspaceRuntimePolicy,
+        authorizationState: DoryWorkspaceRuntimeAuthorizationState,
+        virtualHardwareABIVersion: UInt16,
+        runtimeIdentityDigest: String,
+        resolved: DoryWorkspaceResolvedCondition? = nil
+    ) {
+        self.policy = policy
+        self.authorizationState = authorizationState
+        self.virtualHardwareABIVersion = virtualHardwareABIVersion
+        self.runtimeIdentityDigest = runtimeIdentityDigest
+        self.resolved = resolved
+    }
+
+    public static func legacyCompatibility(
+        virtualHardwareABIVersion: UInt16,
+        runtimeIdentityDigest: String
+    ) -> Self {
+        Self(
+            policy: .legacyCompatibility,
+            authorizationState: .legacyCompatibility,
+            virtualHardwareABIVersion: virtualHardwareABIVersion,
+            runtimeIdentityDigest: runtimeIdentityDigest
+        )
+    }
+
+    public static func resolvedPlan(
+        _ resolved: DoryWorkspaceResolvedCondition,
+        runtimeIdentityDigest: String
+    ) -> Self {
+        Self(
+            policy: .requireResolvedPlan,
+            authorizationState: .resolvedPlan,
+            virtualHardwareABIVersion: resolved.virtualHardwareABIVersion,
+            runtimeIdentityDigest: runtimeIdentityDigest,
+            resolved: resolved
+        )
+    }
+
+    public static func requiresReplanning(
+        virtualHardwareABIVersion: UInt16,
+        runtimeIdentityDigest: String
+    ) -> Self {
+        Self(
+            policy: .requireResolvedPlan,
+            authorizationState: .requiresReplanning,
+            virtualHardwareABIVersion: virtualHardwareABIVersion,
+            runtimeIdentityDigest: runtimeIdentityDigest
+        )
+    }
+
+    fileprivate var isValid: Bool {
+        guard virtualHardwareABIVersion > 0,
+              DoryOperationJournalStore.isDigest(runtimeIdentityDigest) else {
+            return false
+        }
+        switch (policy, authorizationState) {
+        case (.legacyCompatibility, .legacyCompatibility):
+            return resolved == nil
+        case (.requireResolvedPlan, .resolvedPlan):
+            return resolved?.isValid == true
+                && resolved?.virtualHardwareABIVersion == virtualHardwareABIVersion
+        case (.requireResolvedPlan, .requiresReplanning):
+            return resolved == nil
+        default:
+            return false
+        }
+    }
+}
+
+/// Content authority only; host paths and configuration values never enter the journal contract.
+public struct DoryWorkspaceConfigurationAuthority: Codable, Sendable, Equatable {
+    public var legacyConfigurationSHA256: String
+    public var canonicalDefinitionSHA256: String?
+
+    public init(
+        legacyConfigurationSHA256: String,
+        canonicalDefinitionSHA256: String? = nil
+    ) {
+        self.legacyConfigurationSHA256 = legacyConfigurationSHA256
+        self.canonicalDefinitionSHA256 = canonicalDefinitionSHA256
+    }
+
+    fileprivate var isValid: Bool {
+        DoryOperationJournalStore.isDigest(legacyConfigurationSHA256)
+            && (canonicalDefinitionSHA256.map(DoryOperationJournalStore.isDigest) ?? true)
+    }
+}
+
 public struct DoryWorkspaceLifecycleCondition: Codable, Sendable, Equatable {
+    private var persistenceSchemaVersion: UInt16
     public var workspaceID: String
     public var state: DoryWorkspaceLifecycleState
     public var definitionRevision: UInt64?
-    public var resolved: DoryWorkspaceResolvedCondition?
+    public var runtime: DoryWorkspaceRuntimeBinding?
+    public var configurationAuthority: DoryWorkspaceConfigurationAuthority?
+
+    /// Read-only source compatibility for schema-v1 inspection. New construction must provide an
+    /// exact tagged runtime binding and cannot synthesize an identity digest from a plan digest.
+    public var resolved: DoryWorkspaceResolvedCondition? { runtime?.resolved }
 
     public init(
         workspaceID: String,
         state: DoryWorkspaceLifecycleState,
         definitionRevision: UInt64? = nil,
-        resolved: DoryWorkspaceResolvedCondition? = nil
+        runtime: DoryWorkspaceRuntimeBinding? = nil,
+        configurationAuthority: DoryWorkspaceConfigurationAuthority? = nil
     ) {
+        persistenceSchemaVersion = DoryWorkspaceLifecycleOperation.schemaVersion
         self.workspaceID = workspaceID
         self.state = state
         self.definitionRevision = definitionRevision
-        self.resolved = resolved
+        self.runtime = runtime
+        self.configurationAuthority = configurationAuthority
     }
 
     fileprivate var isValid: Bool {
         guard DoryOperationJournalStore.isToken(workspaceID) else { return false }
         if state == .absent {
-            return definitionRevision == nil && resolved == nil
+            return definitionRevision == nil && runtime == nil && configurationAuthority == nil
         }
         return definitionRevision.map { $0 > 0 } == true
-            && (resolved?.isValid ?? true)
+            && (runtime?.isValid ?? true)
+            && (configurationAuthority?.isValid ?? true)
             && (!(state == .running || state == .paused || state == .suspended)
-                || resolved != nil)
+                || (runtime != nil
+                    && runtime?.authorizationState != .requiresReplanning))
     }
+
+    private enum CodingKeys: String, CodingKey {
+        case conditionSchemaVersion
+        case workspaceID
+        case state
+        case definitionRevision
+        case resolved
+        case runtime
+        case configurationAuthority
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        workspaceID = try container.decode(String.self, forKey: .workspaceID)
+        state = try container.decode(DoryWorkspaceLifecycleState.self, forKey: .state)
+        definitionRevision = try container.decodeIfPresent(UInt64.self, forKey: .definitionRevision)
+        if let conditionSchemaVersion = try container.decodeIfPresent(
+            UInt16.self,
+            forKey: .conditionSchemaVersion
+        ) {
+            guard conditionSchemaVersion == DoryWorkspaceLifecycleOperation.schemaVersion,
+                  !container.contains(.resolved) else {
+                throw DecodingError.dataCorruptedError(
+                    forKey: .conditionSchemaVersion,
+                    in: container,
+                    debugDescription: "unsupported workspace lifecycle condition schema"
+                )
+            }
+            persistenceSchemaVersion = DoryWorkspaceLifecycleOperation.schemaVersion
+            runtime = try container.decodeIfPresent(
+                DoryWorkspaceRuntimeBinding.self,
+                forKey: .runtime
+            )
+            configurationAuthority = try container.decodeIfPresent(
+                DoryWorkspaceConfigurationAuthority.self,
+                forKey: .configurationAuthority
+            )
+        } else {
+            guard !container.contains(.runtime), !container.contains(.configurationAuthority) else {
+                throw DecodingError.dataCorruptedError(
+                    forKey: .conditionSchemaVersion,
+                    in: container,
+                    debugDescription: "workspace lifecycle condition schema marker is required"
+                )
+            }
+            persistenceSchemaVersion = DoryWorkspaceLifecycleOperation.oldestSupportedSchemaVersion
+            configurationAuthority = nil
+            if let legacyResolved = try container.decodeIfPresent(
+                DoryWorkspaceResolvedCondition.self,
+                forKey: .resolved
+            ) {
+                runtime = .resolvedPlan(
+                    legacyResolved,
+                    runtimeIdentityDigest: legacyResolved.planDigest
+                )
+            } else {
+                runtime = nil
+            }
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(workspaceID, forKey: .workspaceID)
+        try container.encode(state, forKey: .state)
+        try container.encodeIfPresent(definitionRevision, forKey: .definitionRevision)
+        if persistenceSchemaVersion == DoryWorkspaceLifecycleOperation.oldestSupportedSchemaVersion {
+            try container.encodeIfPresent(runtime?.resolved, forKey: .resolved)
+        } else {
+            try container.encode(persistenceSchemaVersion, forKey: .conditionSchemaVersion)
+            try container.encodeIfPresent(runtime, forKey: .runtime)
+            try container.encodeIfPresent(configurationAuthority, forKey: .configurationAuthority)
+        }
+    }
+
+    fileprivate var encodedSchemaVersion: UInt16 { persistenceSchemaVersion }
 }
 
 public enum DoryWorkspaceOperationStage: String, Codable, CaseIterable, Sendable {
@@ -246,14 +444,18 @@ public struct DoryWorkspaceLifecycleJournalBinding: Sendable, Equatable {
 /// actual progress to `DoryOperationJournalStore`; this specification is the exact transition,
 /// deadline, retry, readiness, cancellation, and recovery contract they must follow.
 public struct DoryWorkspaceLifecycleOperation: Codable, Sendable, Equatable {
-    public static let schemaVersion: UInt16 = 1
+    public static let oldestSupportedSchemaVersion: UInt16 = 1
+    public static let schemaVersion: UInt16 = 2
 
     public var schemaVersion: UInt16
+    public var sourceSchemaVersion: UInt16
     public var operationID: UUID
     public var kind: DoryWorkspaceMutationKind
     public var source: DoryWorkspaceLifecycleCondition
     public var target: DoryWorkspaceLifecycleCondition
     public var targetWorkspaceID: String?
+    /// Stable snapshot or clone identity needed for deterministic recovery; never a host path.
+    public var targetResourceID: String?
     public var createdAtUnixMilliseconds: Int64
     public var deadlineUnixMilliseconds: Int64
     public var steps: [DoryWorkspaceOperationStep]
@@ -268,6 +470,7 @@ public struct DoryWorkspaceLifecycleOperation: Codable, Sendable, Equatable {
         source: DoryWorkspaceLifecycleCondition,
         target: DoryWorkspaceLifecycleCondition,
         targetWorkspaceID: String? = nil,
+        targetResourceID: String? = nil,
         createdAtUnixMilliseconds: Int64,
         deadlineUnixMilliseconds: Int64,
         steps: [DoryWorkspaceOperationStep],
@@ -277,11 +480,13 @@ public struct DoryWorkspaceLifecycleOperation: Codable, Sendable, Equatable {
         recovery: DoryWorkspaceRecoveryRecipe
     ) {
         schemaVersion = Self.schemaVersion
+        sourceSchemaVersion = Self.schemaVersion
         self.operationID = operationID
         self.kind = kind
         self.source = source
         self.target = target
         self.targetWorkspaceID = targetWorkspaceID
+        self.targetResourceID = targetResourceID
         self.createdAtUnixMilliseconds = createdAtUnixMilliseconds
         self.deadlineUnixMilliseconds = deadlineUnixMilliseconds
         self.steps = steps
@@ -297,7 +502,12 @@ public struct DoryWorkspaceLifecycleOperation: Codable, Sendable, Equatable {
             issues.append(DoryWorkspaceOperationValidationIssue(code: code, field: field))
         }
 
-        if schemaVersion != Self.schemaVersion { add(.invalidSchemaVersion, "schemaVersion") }
+        if !(Self.oldestSupportedSchemaVersion...Self.schemaVersion).contains(schemaVersion)
+            || sourceSchemaVersion != schemaVersion
+            || source.encodedSchemaVersion != schemaVersion
+            || target.encodedSchemaVersion != schemaVersion {
+            add(.invalidSchemaVersion, "schemaVersion")
+        }
         if operationID == UUID.zero { add(.invalidOperationID, "operationID") }
         if !source.isValid { add(.invalidCondition, "source") }
         if !target.isValid { add(.invalidCondition, "target") }
@@ -308,14 +518,45 @@ public struct DoryWorkspaceLifecycleOperation: Codable, Sendable, Equatable {
         } else if source.workspaceID != target.workspaceID {
             add(.invalidCondition, "target.workspaceID")
         }
-        if Self.requiresResolvedSource(kind), source.resolved == nil {
+        if Self.requiresRuntimeSource(kind), source.runtime == nil {
             add(.invalidCondition, "source")
         }
-        if Self.requiresResolvedTarget(kind), target.resolved == nil {
+        if Self.requiresRuntimeTarget(kind), target.runtime == nil {
             add(.invalidCondition, "target")
         }
-        if Self.requiresUnchangedResolvedPlan(kind), source.resolved != target.resolved {
-            add(.invalidCondition, "target.resolved")
+        if Self.requiresUnchangedRuntimePlan(kind),
+           !Self.hasSameRuntimePlan(source.runtime, target.runtime) {
+            add(.invalidCondition, "target.runtime")
+        }
+        if kind == .starting {
+            if target.runtime?.authorizationState != .resolvedPlan
+                && target.runtime?.authorizationState != .legacyCompatibility {
+                add(.invalidCondition, "target.runtime.authorizationState")
+            }
+            if source.runtime?.policy != target.runtime?.policy {
+                add(.invalidCondition, "target.runtime.policy")
+            } else if source.runtime?.authorizationState != .requiresReplanning,
+                      !Self.hasSameRuntimePlan(source.runtime, target.runtime) {
+                add(.invalidCondition, "target.runtime")
+            }
+        }
+        if sourceSchemaVersion == Self.schemaVersion,
+           kind == .restoring,
+           source.runtime?.policy == .requireResolvedPlan,
+           target.runtime?.authorizationState != .requiresReplanning {
+            add(.invalidCondition, "target.runtime.authorizationState")
+        }
+        if source.runtime?.policy != target.runtime?.policy,
+           kind != .importing, kind != .provisioning, kind != .resolving {
+            add(.invalidCondition, "target.runtime.policy")
+        }
+        if sourceSchemaVersion == Self.schemaVersion {
+            if source.state != .absent, source.configurationAuthority == nil {
+                add(.invalidCondition, "source.configurationAuthority")
+            }
+            if target.state != .absent, target.configurationAuthority == nil {
+                add(.invalidCondition, "target.configurationAuthority")
+            }
         }
         if !Self.allows(kind: kind, source: source.state, target: target.state) {
             add(.invalidTransition, "target.state")
@@ -327,6 +568,15 @@ public struct DoryWorkspaceLifecycleOperation: Codable, Sendable, Equatable {
             if validTargetWorkspace != true { add(.invalidTargetWorkspace, "targetWorkspaceID") }
         } else if targetWorkspaceID != nil {
             add(.invalidTargetWorkspace, "targetWorkspaceID")
+        }
+        let requiresResourceID = kind == .snapshotting || kind == .restoring || kind == .cloning
+        if requiresResourceID {
+            if sourceSchemaVersion == Self.schemaVersion,
+               targetResourceID.map(DoryOperationJournalStore.isToken) != true {
+                add(.invalidTargetWorkspace, "targetResourceID")
+            }
+        } else if targetResourceID != nil {
+            add(.invalidTargetWorkspace, "targetResourceID")
         }
         if createdAtUnixMilliseconds < 0
             || deadlineUnixMilliseconds <= createdAtUnixMilliseconds {
@@ -363,6 +613,97 @@ public struct DoryWorkspaceLifecycleOperation: Codable, Sendable, Equatable {
             add(.invalidRecoveryRecipe, "recovery")
         }
         return issues
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion
+        case sourceSchemaVersion
+        case operationID
+        case kind
+        case source
+        case target
+        case targetWorkspaceID
+        case targetResourceID
+        case createdAtUnixMilliseconds
+        case deadlineUnixMilliseconds
+        case steps
+        case readinessGates
+        case retryBudgets
+        case cancellationPolicy
+        case recovery
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let persistedSchema = try container.decode(UInt16.self, forKey: .schemaVersion)
+        guard (Self.oldestSupportedSchemaVersion...Self.schemaVersion).contains(persistedSchema) else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .schemaVersion,
+                in: container,
+                debugDescription: "unsupported workspace lifecycle schema"
+            )
+        }
+        schemaVersion = persistedSchema
+        sourceSchemaVersion = try container.decodeIfPresent(UInt16.self, forKey: .sourceSchemaVersion)
+            ?? persistedSchema
+        guard sourceSchemaVersion == persistedSchema else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .sourceSchemaVersion,
+                in: container,
+                debugDescription: "workspace lifecycle source schema mismatch"
+            )
+        }
+        operationID = try container.decode(UUID.self, forKey: .operationID)
+        kind = try container.decode(DoryWorkspaceMutationKind.self, forKey: .kind)
+        source = try container.decode(DoryWorkspaceLifecycleCondition.self, forKey: .source)
+        target = try container.decode(DoryWorkspaceLifecycleCondition.self, forKey: .target)
+        guard source.encodedSchemaVersion == persistedSchema,
+              target.encodedSchemaVersion == persistedSchema else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .source,
+                in: container,
+                debugDescription: "workspace lifecycle condition schema mismatch"
+            )
+        }
+        targetWorkspaceID = try container.decodeIfPresent(String.self, forKey: .targetWorkspaceID)
+        targetResourceID = try container.decodeIfPresent(String.self, forKey: .targetResourceID)
+        createdAtUnixMilliseconds = try container.decode(Int64.self, forKey: .createdAtUnixMilliseconds)
+        deadlineUnixMilliseconds = try container.decode(Int64.self, forKey: .deadlineUnixMilliseconds)
+        steps = try container.decode([DoryWorkspaceOperationStep].self, forKey: .steps)
+        readinessGates = try container.decodeIfPresent(
+            [DoryWorkspaceReadinessGate].self,
+            forKey: .readinessGates
+        ) ?? []
+        retryBudgets = try container.decodeIfPresent(
+            [DoryWorkspaceRetryBudget].self,
+            forKey: .retryBudgets
+        ) ?? []
+        cancellationPolicy = try container.decode(
+            DoryWorkspaceCancellationPolicy.self,
+            forKey: .cancellationPolicy
+        )
+        recovery = try container.decode(DoryWorkspaceRecoveryRecipe.self, forKey: .recovery)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(schemaVersion, forKey: .schemaVersion)
+        if schemaVersion == Self.schemaVersion {
+            try container.encode(sourceSchemaVersion, forKey: .sourceSchemaVersion)
+        }
+        try container.encode(operationID, forKey: .operationID)
+        try container.encode(kind, forKey: .kind)
+        try container.encode(source, forKey: .source)
+        try container.encode(target, forKey: .target)
+        try container.encodeIfPresent(targetWorkspaceID, forKey: .targetWorkspaceID)
+        try container.encodeIfPresent(targetResourceID, forKey: .targetResourceID)
+        try container.encode(createdAtUnixMilliseconds, forKey: .createdAtUnixMilliseconds)
+        try container.encode(deadlineUnixMilliseconds, forKey: .deadlineUnixMilliseconds)
+        try container.encode(steps, forKey: .steps)
+        try container.encode(readinessGates, forKey: .readinessGates)
+        try container.encode(retryBudgets, forKey: .retryBudgets)
+        try container.encode(cancellationPolicy, forKey: .cancellationPolicy)
+        try container.encode(recovery, forKey: .recovery)
     }
 
     public func journalSpecification() throws -> DoryOperationSpecification {
@@ -423,7 +764,7 @@ public struct DoryWorkspaceLifecycleOperation: Codable, Sendable, Equatable {
             || (kind == .restoring && targetState == .running)
     }
 
-    private static func requiresResolvedSource(_ kind: DoryWorkspaceMutationKind) -> Bool {
+    private static func requiresRuntimeSource(_ kind: DoryWorkspaceMutationKind) -> Bool {
         switch kind {
         case .starting, .stopping, .pausing, .resuming, .suspending, .restoring,
              .snapshotting, .cloning, .updating:
@@ -433,7 +774,7 @@ public struct DoryWorkspaceLifecycleOperation: Codable, Sendable, Equatable {
         }
     }
 
-    private static func requiresResolvedTarget(_ kind: DoryWorkspaceMutationKind) -> Bool {
+    private static func requiresRuntimeTarget(_ kind: DoryWorkspaceMutationKind) -> Bool {
         switch kind {
         case .provisioning, .resolving, .starting, .stopping, .pausing, .resuming,
              .suspending, .restoring, .snapshotting, .cloning, .updating, .repairing:
@@ -443,14 +784,27 @@ public struct DoryWorkspaceLifecycleOperation: Codable, Sendable, Equatable {
         }
     }
 
-    private static func requiresUnchangedResolvedPlan(_ kind: DoryWorkspaceMutationKind) -> Bool {
+    private static func requiresUnchangedRuntimePlan(_ kind: DoryWorkspaceMutationKind) -> Bool {
         switch kind {
-        case .starting, .stopping, .pausing, .resuming, .suspending, .snapshotting:
+        case .stopping, .pausing, .resuming, .suspending, .snapshotting:
             true
-        case .importing, .provisioning, .resolving, .restoring, .cloning, .updating,
+        case .importing, .provisioning, .resolving, .starting, .restoring, .cloning, .updating,
              .repairing, .deleting:
             false
         }
+    }
+
+    private static func hasSameRuntimePlan(
+        _ source: DoryWorkspaceRuntimeBinding?,
+        _ target: DoryWorkspaceRuntimeBinding?
+    ) -> Bool {
+        guard let source, let target, source.policy == target.policy,
+              source.virtualHardwareABIVersion == target.virtualHardwareABIVersion else {
+            return false
+        }
+        return source.authorizationState == target.authorizationState
+            && source.runtimeIdentityDigest == target.runtimeIdentityDigest
+            && source.resolved == target.resolved
     }
 
     private func deadlineContains(offset: UInt64) -> Bool {
@@ -481,7 +835,8 @@ public struct DoryWorkspaceLifecycleOperation: Codable, Sendable, Equatable {
         case .suspending:
             (source == .running || source == .paused) && target == .suspended
         case .restoring:
-            (source == .stopped || source == .suspended || source == .failed)
+            (source == .stopped || source == .suspended || source == .failed
+                || source == .running || source == .paused)
                 && (target == .stopped || target == .running)
         case .snapshotting:
             (source == .stopped || source == .running || source == .paused)
