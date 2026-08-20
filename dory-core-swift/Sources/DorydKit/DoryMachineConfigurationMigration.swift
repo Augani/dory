@@ -639,7 +639,7 @@ public enum DoryMachineConfigurationMigrationBridge {
             networkMode: .sharedNAT,
             display: isDesktop ? DoryVMDisplayConfiguration() : .disabled,
             audio: isDesktop
-                ? DoryVMAudioConfiguration()
+                ? DoryVMAudioConfiguration(inputEnabled: true, outputEnabled: true)
                 : DoryVMAudioConfiguration(inputEnabled: false, outputEnabled: false),
             input: isDesktop
                 ? DoryVMInputConfiguration()

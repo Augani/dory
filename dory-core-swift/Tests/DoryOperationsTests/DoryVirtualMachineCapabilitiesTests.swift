@@ -818,7 +818,7 @@ struct VirtualMachineCapabilitiesTests {
             graphics: .software,
             devices: DoryVirtualMachineDeviceCapabilityRequest(networkAttachment: .disconnected)
         )
-        let spoofedGuestTools = evaluate(
+        let qualifiedVZSharing = evaluate(
             family: .linux,
             media: .virtualDisk,
             source: .userProvided,
@@ -826,10 +826,43 @@ struct VirtualMachineCapabilitiesTests {
             graphics: .software,
             devices: DoryVirtualMachineDeviceCapabilityRequest(directorySharing: true)
         )
+        let qualifiedRawDesktopDevices = DoryVirtualMachineDeviceCapabilityRequest(
+            audioInput: true,
+            audioOutput: true,
+            keyboard: true,
+            pointer: true,
+            directorySharing: true,
+            clipboard: true,
+            clockSynchronization: true,
+            dynamicDisplay: true,
+            gracefulShutdown: true
+        )
+        let qualifiedRawDesktop = evaluate(
+            family: .linux,
+            media: .installedLinuxBootBundle,
+            source: .userProvided,
+            backend: .doryHypervisor,
+            graphics: .hostAcceleratedDisplay,
+            mediaArtifactSHA256: Self.guestArtifactSHA256,
+            devices: qualifiedRawDesktopDevices
+        )
+        let unsupportedAudioShape = evaluate(
+            family: .linux,
+            media: .installedLinuxBootBundle,
+            source: .userProvided,
+            backend: .doryHypervisor,
+            graphics: .hostAcceleratedDisplay,
+            mediaArtifactSHA256: Self.guestArtifactSHA256,
+            devices: DoryVirtualMachineDeviceCapabilityRequest(audioOutput: true)
+        )
 
         #expect(resolved.resolvedDevices == .minimumBootable)
         #expect(disconnected.availability.reason?.code == .networkAttachmentUnsupported)
-        #expect(spoofedGuestTools.availability.reason?.code == .directorySharingUnsupported)
+        #expect(qualifiedVZSharing.availability.isUsable)
+        #expect(qualifiedVZSharing.resolvedDevices?.directorySharing == true)
+        #expect(qualifiedRawDesktop.availability.isUsable)
+        #expect(qualifiedRawDesktop.resolvedDevices == qualifiedRawDesktopDevices)
+        #expect(unsupportedAudioShape.availability.reason?.code == .audioOutputUnsupported)
     }
 
     @Test("version-one descriptor JSON remains readable with conservative device defaults")

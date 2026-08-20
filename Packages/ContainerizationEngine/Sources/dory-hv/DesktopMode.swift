@@ -240,7 +240,8 @@ enum DesktopMode {
             } else {
                 self.sshAgentBridge = nil
             }
-            if configuration.genericGuest || configuration.resolvedDevices?.clipboard == false {
+            if configuration.resolvedDevices?.clipboard == false
+                || (configuration.resolvedDevices == nil && configuration.genericGuest) {
                 self.clipboard = nil
             } else {
                 let clipboardControl = DorydKit.AgentControl(configuration: .init(

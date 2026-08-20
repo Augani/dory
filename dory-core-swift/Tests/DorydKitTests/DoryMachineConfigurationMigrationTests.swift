@@ -64,6 +64,8 @@ struct DoryMachineConfigurationMigrationTests {
             backend: .doryHypervisor
         ))
         #expect(migrated.definition.graphics.acceptableLevels == [.hostAcceleratedDisplay])
+        #expect(migrated.definition.audio.inputEnabled)
+        #expect(migrated.definition.audio.outputEnabled)
         #expect(migrated.definition.resources.memoryBytes == 8 * gibibyte)
         #expect(migrated.definition.resources.virtualCPUCount == 6)
         #expect(migrated.definition.storage[0].capacityBytes == 96 * gibibyte)

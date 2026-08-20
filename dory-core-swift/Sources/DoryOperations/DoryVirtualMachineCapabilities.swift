@@ -1332,14 +1332,19 @@ public enum DoryAppleSiliconCapabilityEvaluator {
         let isGraphical = request.graphics != .none
         let isLinuxVZ = request.guest.family == .linux
             && request.backend == .appleVirtualizationFramework
-        if devices.audioInput, !(isLinuxVZ && isGraphical) {
+        let isLinuxRawHV = request.guest.family == .linux
+            && request.backend == .doryHypervisor
+        let isLinuxDesktopRuntime = isGraphical && (isLinuxVZ || isLinuxRawHV)
+        let audioIsImplemented = isLinuxVZ && isGraphical
+            || isLinuxRawHV && isGraphical && devices.audioInput == devices.audioOutput
+        if devices.audioInput, !audioIsImplemented {
             return unavailable(
                 tier: tier,
                 code: .audioInputUnsupported,
                 message: "The selected guest/backend contract does not implement host audio input."
             )
         }
-        if devices.audioOutput, !(isLinuxVZ && isGraphical) {
+        if devices.audioOutput, !audioIsImplemented {
             return unavailable(
                 tier: tier,
                 code: .audioOutputUnsupported,
@@ -1371,20 +1376,21 @@ public enum DoryAppleSiliconCapabilityEvaluator {
             )
         }
 
-        if devices.directorySharing {
+        if devices.directorySharing,
+           !(request.guest.family == .linux
+                && (request.backend == .doryHypervisor
+                    || request.backend == .appleVirtualizationFramework)) {
             return unavailable(
                 tier: tier,
                 code: .directorySharingUnsupported,
-                message: "Directory sharing requires a digest-bound guest-integration "
-                    + "qualification that is not yet modeled."
+                message: "The selected guest/backend contract does not implement directory sharing."
             )
         }
-        if devices.clipboard {
+        if devices.clipboard, !isLinuxDesktopRuntime {
             return unavailable(
                 tier: tier,
                 code: .clipboardIntegrationUnsupported,
-                message: "Clipboard integration requires a digest-bound guest-integration "
-                    + "qualification that is not yet modeled."
+                message: "The selected guest/backend contract does not implement clipboard integration."
             )
         }
         if devices.clockSynchronization {
@@ -1398,11 +1404,11 @@ public enum DoryAppleSiliconCapabilityEvaluator {
                 )
             }
         }
-        if devices.dynamicDisplay {
+        if devices.dynamicDisplay, !isLinuxDesktopRuntime {
             return unavailable(
                 tier: tier,
                 code: .dynamicDisplayUnsupported,
-                message: "Dynamic display resizing is not yet part of a qualified backend contract."
+                message: "The selected guest/backend contract does not implement dynamic display resizing."
             )
         }
         if devices.gracefulShutdown {

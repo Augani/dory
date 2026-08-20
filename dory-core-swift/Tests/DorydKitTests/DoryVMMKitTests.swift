@@ -621,7 +621,7 @@ final class DoryVMMKitTests: XCTestCase {
             directorySharing: false,
             clipboard: false,
             clockSynchronization: false,
-            dynamicDisplay: false,
+            dynamicDisplay: true,
             gracefulShutdown: false
         )
         let configuration = try DoryVZConfigurationBuilder.makeConfiguration(
