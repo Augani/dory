@@ -122,17 +122,35 @@ public final class DoryDataplaneHandle: @unchecked Sendable {
     }
 }
 
+public struct DoryAgentCapability: Sendable, Equatable, Hashable {
+    public var id: String
+    public var version: UInt32
+
+    public init(id: String, version: UInt32) {
+        self.id = id
+        self.version = version
+    }
+}
+
 public struct DoryAgentInfo: Sendable, Equatable {
     public var protocolVersion: UInt32
     public var kernel: String
     public var agentBuild: String
     public var uptimeSeconds: UInt64
+    public var capabilities: [DoryAgentCapability]
 
-    public init(protocolVersion: UInt32, kernel: String, agentBuild: String, uptimeSeconds: UInt64) {
+    public init(
+        protocolVersion: UInt32,
+        kernel: String,
+        agentBuild: String,
+        uptimeSeconds: UInt64,
+        capabilities: [DoryAgentCapability] = []
+    ) {
         self.protocolVersion = protocolVersion
         self.kernel = kernel
         self.agentBuild = agentBuild
         self.uptimeSeconds = uptimeSeconds
+        self.capabilities = capabilities
     }
 }
 
@@ -334,7 +352,10 @@ public final class DoryAgentControlHandle: @unchecked Sendable {
             protocolVersion: raw.protoVersion,
             kernel: raw.kernel,
             agentBuild: raw.agentBuild,
-            uptimeSeconds: raw.uptimeSecs
+            uptimeSeconds: raw.uptimeSecs,
+            capabilities: raw.capabilities.map {
+                DoryAgentCapability(id: $0.id, version: $0.version)
+            }
         )
     }
 
@@ -441,7 +462,10 @@ public final class DoryRemoteAgentHandle: @unchecked Sendable {
             protocolVersion: raw.protoVersion,
             kernel: raw.kernel,
             agentBuild: raw.agentBuild,
-            uptimeSeconds: raw.uptimeSecs
+            uptimeSeconds: raw.uptimeSecs,
+            capabilities: raw.capabilities.map {
+                DoryAgentCapability(id: $0.id, version: $0.version)
+            }
         )
     }
 

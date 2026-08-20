@@ -266,6 +266,10 @@ mod tests {
                 kernel: "Linux fake 6.12".into(),
                 agent_build: "fake-agent".into(),
                 uptime_secs: 42,
+                capabilities: vec![agent::AgentCapability {
+                    id: "exec".into(),
+                    version: 1,
+                }],
             }),
             Some(Method::ClockSync(_)) => Res::ClockSync(agent::ClockSyncResponse { synced: true }),
             Some(Method::PortsWatch(_)) => Res::PortsWatch(agent::PortsWatchResponse::default()),
@@ -299,6 +303,9 @@ mod tests {
         let info = client.info().await.unwrap();
         assert_eq!(info.proto_version, dory_proto::handshake::PROTO_VERSION);
         assert_eq!(info.agent_build, "fake-agent");
+        assert_eq!(info.capabilities.len(), 1);
+        assert_eq!(info.capabilities[0].id, "exec");
+        assert_eq!(info.capabilities[0].version, 1);
         assert_eq!(info.uptime_secs, 42);
 
         let clock = client.clock_sync(1_700_000_000_000_000_000).await.unwrap();

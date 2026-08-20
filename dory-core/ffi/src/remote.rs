@@ -63,11 +63,18 @@ pub struct RemoteConfig {
 }
 
 #[derive(uniffi::Record)]
+pub struct AgentCapabilityFfi {
+    pub id: String,
+    pub version: u32,
+}
+
+#[derive(uniffi::Record)]
 pub struct AgentInfoFfi {
     pub proto_version: u32,
     pub kernel: String,
     pub agent_build: String,
     pub uptime_secs: u64,
+    pub capabilities: Vec<AgentCapabilityFfi>,
 }
 
 #[derive(uniffi::Record)]
@@ -167,6 +174,14 @@ impl RemoteAgent {
             kernel: i.kernel,
             agent_build: i.agent_build,
             uptime_secs: i.uptime_secs,
+            capabilities: i
+                .capabilities
+                .into_iter()
+                .map(|capability| AgentCapabilityFfi {
+                    id: capability.id,
+                    version: capability.version,
+                })
+                .collect(),
         })
     }
 

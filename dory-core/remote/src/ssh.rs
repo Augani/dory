@@ -167,6 +167,10 @@ mod tests {
                         kernel: "Linux vps 6.12".into(),
                         agent_build: "fake-remote-agent".into(),
                         uptime_secs: 7,
+                        capabilities: vec![agent::AgentCapability {
+                            id: "exec".into(),
+                            version: 1,
+                        }],
                     }),
                     _ => Res::Error(agent::RpcError {
                         code: 400,
@@ -277,6 +281,9 @@ mod tests {
         let info = agent.client.info().await.expect("info rpc over ssh");
         assert_eq!(info.proto_version, dory_proto::handshake::PROTO_VERSION);
         assert_eq!(info.agent_build, "fake-remote-agent");
+        assert_eq!(info.capabilities.len(), 1);
+        assert_eq!(info.capabilities[0].id, "exec");
+        assert_eq!(info.capabilities[0].version, 1);
         assert_eq!(info.uptime_secs, 7);
     }
 

@@ -14,7 +14,8 @@ use dory_remote::AgentClient;
 use tokio::net::UnixStream;
 
 use crate::remote::{
-    exec_result, AgentInfoFfi, ExecEnvFfi, ExecResultFfi, RemoteFfiError, TelemetryFfi,
+    exec_result, AgentCapabilityFfi, AgentInfoFfi, ExecEnvFfi, ExecResultFfi, RemoteFfiError,
+    TelemetryFfi,
 };
 
 #[derive(uniffi::Record)]
@@ -114,6 +115,14 @@ impl AgentControl {
             kernel: i.kernel,
             agent_build: i.agent_build,
             uptime_secs: i.uptime_secs,
+            capabilities: i
+                .capabilities
+                .into_iter()
+                .map(|capability| AgentCapabilityFfi {
+                    id: capability.id,
+                    version: capability.version,
+                })
+                .collect(),
         })
     }
 

@@ -13,11 +13,18 @@ message ClockSyncResponse {
 }
 
 message InfoRequest {}
+message AgentCapability {
+  string id = 1;
+  uint32 version = 2;
+}
 message InfoResponse {
   uint32 proto_version = 1;
   string kernel = 2;
   string agent_build = 3;
   uint64 uptime_secs = 4;
+  // Independently versioned guest-tool capabilities. New optional entries do not require a
+  // transport protocol bump; callers must require the exact capability/version they consume.
+  repeated AgentCapability capabilities = 5;
 }
 
 message ListenPort {

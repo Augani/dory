@@ -19,6 +19,23 @@ pub fn agent_build() -> String {
     concat!("dory-agent/", env!("CARGO_PKG_VERSION")).to_string()
 }
 
+pub fn agent_capabilities() -> Vec<agent::AgentCapability> {
+    [
+        ("clock-sync", 1),
+        ("exec", 1),
+        ("exec-stdin", 1),
+        ("ports-watch", 1),
+        ("sync-push", 1),
+        ("telemetry", 1),
+    ]
+    .into_iter()
+    .map(|(id, version)| agent::AgentCapability {
+        id: id.to_string(),
+        version,
+    })
+    .collect()
+}
+
 pub fn err(code: i32, message: &str) -> agent::AgentResponse {
     agent::AgentResponse {
         result: Some(Res::Error(agent::RpcError {
@@ -53,6 +70,7 @@ fn info() -> agent::InfoResponse {
         kernel: kernel(),
         agent_build: agent_build(),
         uptime_secs: uptime_secs(),
+        capabilities: agent_capabilities(),
     }
 }
 
@@ -172,6 +190,20 @@ mod tests {
                 assert_eq!(i.proto_version, dory_proto::handshake::PROTO_VERSION);
                 assert!(i.agent_build.starts_with("dory-agent/"));
                 assert!(!i.kernel.is_empty());
+                assert_eq!(
+                    i.capabilities
+                        .iter()
+                        .map(|capability| (capability.id.as_str(), capability.version))
+                        .collect::<Vec<_>>(),
+                    vec![
+                        ("clock-sync", 1),
+                        ("exec", 1),
+                        ("exec-stdin", 1),
+                        ("ports-watch", 1),
+                        ("sync-push", 1),
+                        ("telemetry", 1),
+                    ]
+                );
             }
             other => panic!("expected Info, got {other:?}"),
         }

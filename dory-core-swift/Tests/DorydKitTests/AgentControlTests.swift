@@ -17,6 +17,7 @@ final class AgentControlTests: XCTestCase {
         XCTAssertEqual(counter.value, 0)
         let info = try control.info()
         XCTAssertEqual(info.agentBuild, "fake-agent")
+        XCTAssertEqual(info.capabilities, [DoryAgentCapability(id: "exec", version: 1)])
         XCTAssertEqual(counter.value, 1)
 
         XCTAssertFalse(try control.clockSync(now: Date(timeIntervalSince1970: 1.5)))
@@ -58,7 +59,8 @@ private final class FakeAgentControlClient: AgentControlClient, @unchecked Senda
             protocolVersion: 1,
             kernel: "Linux fake",
             agentBuild: "fake-agent",
-            uptimeSeconds: 42
+            uptimeSeconds: 42,
+            capabilities: [DoryAgentCapability(id: "exec", version: 1)]
         )
     }
 
