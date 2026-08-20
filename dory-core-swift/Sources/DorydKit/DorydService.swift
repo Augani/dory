@@ -241,12 +241,11 @@ public final class DorydService: NSObject, DorydControl {
                 xpcDictionary: config,
                 allowsClears: false
             )
-            var machine = try DoryMachineConfiguration(xpcDictionary: config)
-            machine.environment = try typedSettings.applying(
-                to: [:],
-                displayMode: machine.displayMode
+            let machine = try DoryMachineConfiguration(xpcDictionary: config)
+            var status = try machineManager.create(
+                machine,
+                typedSettings: typedSettings.isEmpty ? nil : typedSettings
             )
-            var status = try machineManager.create(machine)
             if machineManager.configuredLaunchPolicy == .perWorkspaceAuthority {
                 guard let productionPlanningController else {
                     throw MachineManagerError.persistence(
@@ -1630,6 +1629,9 @@ private extension DoryMachineStatus {
         dictionary["displayMode"] = displayMode.rawValue
         dictionary["bootMode"] = bootMode.rawValue
         dictionary["installerMediaAttached"] = installerMediaAttached
+        if let typedSettings {
+            dictionary["typedSettings"] = typedSettings.xpcDictionary
+        }
         dictionary["runtimeIdentity"] = runtimeIdentity.xpcDictionary
         if let installedDesktopPayloadReceipt {
             dictionary["installedDesktopPayloadReceipt"] =

@@ -327,6 +327,7 @@ public struct DoryMachineStatus: Sendable, Equatable {
     public var installerMediaAttached: Bool
     public var shares: [DoryMachineShareConfiguration]
     public var environment: [String: String]
+    public var typedSettings: DoryMachineTypedSettingsSnapshot?
     public var runtimeIdentity: DoryMachineRuntimeIdentity
     public var installedDesktopPayloadReceipt: DoryInstalledDesktopPayloadReceipt?
 
@@ -353,6 +354,7 @@ public struct DoryMachineStatus: Sendable, Equatable {
         installerMediaAttached: Bool = false,
         shares: [DoryMachineShareConfiguration] = [],
         environment: [String: String] = [:],
+        typedSettings: DoryMachineTypedSettingsSnapshot? = nil,
         runtimeIdentity: DoryMachineRuntimeIdentity = .legacyCompatibility(
             virtualHardwareABIVersion:
                 DoryVirtualMachineDefinition.currentVirtualHardwareABIVersion
@@ -381,6 +383,7 @@ public struct DoryMachineStatus: Sendable, Equatable {
         self.installerMediaAttached = installerMediaAttached
         self.shares = shares
         self.environment = environment
+        self.typedSettings = typedSettings
         self.runtimeIdentity = runtimeIdentity
         self.installedDesktopPayloadReceipt = installedDesktopPayloadReceipt
     }
@@ -401,6 +404,7 @@ public struct DoryMachineSnapshot: Sendable, Equatable, Hashable, Codable {
     public var address: String?
     public var shares: [DoryMachineShareConfiguration]
     public var environment: [String: String]
+    public var typedSettings: DoryMachineTypedSettingsSnapshot?
     public var bootMode: DoryMachineBootMode
     public var machineIdentifierPath: String?
     public var nvramPath: String?
@@ -423,6 +427,7 @@ public struct DoryMachineSnapshot: Sendable, Equatable, Hashable, Codable {
         address: String? = nil,
         shares: [DoryMachineShareConfiguration] = [],
         environment: [String: String] = [:],
+        typedSettings: DoryMachineTypedSettingsSnapshot? = nil,
         bootMode: DoryMachineBootMode = .linuxKernel,
         machineIdentifierPath: String? = nil,
         nvramPath: String? = nil,
@@ -447,6 +452,7 @@ public struct DoryMachineSnapshot: Sendable, Equatable, Hashable, Codable {
         self.address = address
         self.shares = shares
         self.environment = environment
+        self.typedSettings = typedSettings
         self.bootMode = bootMode
         self.machineIdentifierPath = machineIdentifierPath
         self.nvramPath = nvramPath
@@ -470,6 +476,7 @@ public struct DoryMachineSnapshot: Sendable, Equatable, Hashable, Codable {
         case address
         case shares
         case environment
+        case typedSettings
         case bootMode
         case machineIdentifierPath
         case nvramPath
@@ -495,6 +502,10 @@ public struct DoryMachineSnapshot: Sendable, Equatable, Hashable, Codable {
             address: try container.decodeIfPresent(String.self, forKey: .address),
             shares: try container.decodeIfPresent([DoryMachineShareConfiguration].self, forKey: .shares) ?? [],
             environment: try container.decodeIfPresent([String: String].self, forKey: .environment) ?? [:],
+            typedSettings: try container.decodeIfPresent(
+                DoryMachineTypedSettingsSnapshot.self,
+                forKey: .typedSettings
+            ),
             bootMode: try container.decodeIfPresent(DoryMachineBootMode.self, forKey: .bootMode) ?? .linuxKernel,
             machineIdentifierPath: try container.decodeIfPresent(String.self, forKey: .machineIdentifierPath),
             nvramPath: try container.decodeIfPresent(String.self, forKey: .nvramPath),
@@ -926,7 +937,10 @@ public final class MachineManager: @unchecked Sendable {
     }
 
     @discardableResult
-    public func create(_ machine: DoryMachineConfiguration) throws -> DoryMachineStatus {
+    public func create(
+        _ machine: DoryMachineConfiguration,
+        typedSettings: DoryMachineTypedSettingsPatch? = nil
+    ) throws -> DoryMachineStatus {
         operationLock.lock()
         defer { operationLock.unlock() }
         guard Self.isValidID(machine.id) else {
@@ -934,6 +948,18 @@ public final class MachineManager: @unchecked Sendable {
         }
         var machine = machine
         machine.address = try Self.normalizedAddress(machine.address)
+        if launchPolicy == .perWorkspaceAuthority {
+            guard machine.environment.isEmpty else {
+                throw MachineManagerError.persistence(
+                    "native workspace creation does not accept persisted environment values"
+                )
+            }
+        } else if let typedSettings {
+            machine.environment = try typedSettings.applying(
+                to: machine.environment,
+                displayMode: machine.displayMode
+            )
+        }
         try Self.validateLaunchConfiguration(machine)
         lock.lock()
         let exists = machines[machine.id] != nil || deletingMachineIDs.contains(machine.id)
@@ -1013,6 +1039,20 @@ public final class MachineManager: @unchecked Sendable {
         let initialRuntimeIdentity = runtimeIdentityForUnplannedMachine()
         let authoritativeLegacyData = try DoryMachineConfigurationMigrationBridge
             .encodeLegacy(preparedMachine)
+        var nativeDefinition: DoryVirtualMachineDefinition?
+        if launchPolicy == .perWorkspaceAuthority {
+            let facts = try workspaceMigrationFacts(for: preparedMachine)
+            let migration = try DoryMachineConfigurationMigrationBridge.migrate(
+                preparedMachine,
+                facts: facts
+            )
+            let definition = try (typedSettings ?? DoryMachineTypedSettingsPatch()).applying(
+                to: migration.definition,
+                displayMode: preparedMachine.displayMode
+            )
+            try workspaceRepository.create(definition)
+            nativeDefinition = definition
+        }
         // The launch authority is durable before machine.json becomes discoverable. A crash in
         // this window leaves an incomplete, non-loadable directory, never a newly created VM that
         // startup can mistake for pre-companion legacy state.
@@ -1021,7 +1061,10 @@ public final class MachineManager: @unchecked Sendable {
             machineID: preparedMachine.id,
             authoritativeLegacyData: authoritativeLegacyData
         )
-        try persist(preparedMachine)
+        try persist(
+            preparedMachine,
+            reconcilesLegacyProjection: launchPolicy != .perWorkspaceAuthority
+        )
         // machine.json is now durable. Preserve this exact state on a marker-transition error so
         // restart can complete it; never report success until the committed marker is directory-
         // durable. Keeping the committed marker also distinguishes later metadata loss from an
@@ -1054,6 +1097,7 @@ public final class MachineManager: @unchecked Sendable {
             installerMediaAttached: preparedMachine.installerISOPath != nil,
             shares: preparedMachine.shares,
             environment: preparedMachine.environment,
+            typedSettings: try nativeDefinition.map(DoryMachineTypedSettingsSnapshot.init),
             runtimeIdentity: initialRuntimeIdentity
         )
     }
@@ -1136,36 +1180,18 @@ public final class MachineManager: @unchecked Sendable {
                 "authoritative machine metadata is unavailable for production planning"
             )
         }
-        let facts = try workspaceMigrationFacts(for: entry.configuration)
-        let factsData = try Self.workspaceMigrationAuthorityData(facts)
-        let migration = try DoryMachineConfigurationMigrationBridge.migrate(
-            entry.configuration,
-            facts: facts
-        )
-        let definition: DoryVirtualMachineDefinition
+        let authority: MachineWorkspaceAuthority
         do {
-            definition = try workspaceRepository.reconcileLegacyProjection(
-                migration.definition,
-                authoritativeLegacyData: legacyData,
-                authoritativeMigrationFactsData: factsData
-            ).definition
-            let persisted = try workspaceRepository.readLegacyProjection(
-                id: id,
-                authoritativeLegacyData: legacyData,
-                authoritativeMigrationFactsData: factsData
+            authority = try workspaceAuthority(
+                machine: entry.configuration,
+                authoritativeLegacyData: legacyData
             )
-            guard persisted == definition else {
-                throw MachineManagerError.persistence(
-                    "workspace projection changed during production planning"
-                )
-            }
-        } catch let error as MachineManagerError {
-            throw error
         } catch {
             throw MachineManagerError.persistence(
-                "workspace projection is unavailable for production planning: \(error)"
+                "workspace authority is unavailable for production planning: \(error)"
             )
         }
+        let definition = authority.definition
         let canonicalDefinitionData = try Self.canonicalDefinitionData(definition)
 
         let plans: any DoryResolvedMachinePlanStoring = resolvedLaunchPlanStore
@@ -1195,7 +1221,7 @@ public final class MachineManager: @unchecked Sendable {
                 "workspace launch artifacts are not representable"
             )
         }
-        let bindings = Dictionary(grouping: migration.artifactBindings, by: \.reference)
+        let bindings = Dictionary(grouping: authority.migration.artifactBindings, by: \.reference)
         var publications: [DoryDaemonVirtualMachinePlanningArtifactPublication] = []
         publications.reserveCapacity(requirements.count)
         for requirement in requirements {
@@ -1226,7 +1252,7 @@ public final class MachineManager: @unchecked Sendable {
             planning: DoryDaemonVirtualMachinePlanningRequest(
                 definition: definition,
                 canonicalDefinitionData: canonicalDefinitionData,
-                machine: entry.configuration,
+                machine: authority.runtimeMachine,
                 publication: planPublication
             ),
             workspacePublication: .retainExistingExact
@@ -1345,11 +1371,14 @@ public final class MachineManager: @unchecked Sendable {
             try revalidateDurableRuntimeIdentity(
                 id: id,
                 expected: expectedDurableIdentity,
-                expectedMachine: prepared.machine
+                expectedMachine: prepared.authoritativeMachine
             )
         }
         let lifecycle = try journalLifecycle
-            ? beginLifecycleStart(machine: prepared.machine, targetIdentity: identity)
+            ? beginLifecycleStart(
+                machine: prepared.authoritativeMachine,
+                targetIdentity: identity
+            )
             : nil
         do {
             if let lifecycle { try advanceLifecycleToPublishing(lifecycle) }
@@ -1436,11 +1465,14 @@ public final class MachineManager: @unchecked Sendable {
             try revalidateDurableRuntimeIdentity(
                 id: id,
                 expected: expectedRuntimeIdentity,
-                expectedMachine: prepared.machine
+                expectedMachine: prepared.authoritativeMachine
             )
         }
         let lifecycle = try journalLifecycle
-            ? beginLifecycleStart(machine: prepared.machine, targetIdentity: runtimeIdentity)
+            ? beginLifecycleStart(
+                machine: prepared.authoritativeMachine,
+                targetIdentity: runtimeIdentity
+            )
             : nil
 
         do {
@@ -1522,16 +1554,16 @@ public final class MachineManager: @unchecked Sendable {
     ) throws {
         guard let preparedLegacyData = prepared.authoritativeLegacyData,
               let currentLegacyData = Self.readPrivateMetadata(
-                path: machineConfigPath(id: prepared.machine.id)
+                path: machineConfigPath(id: prepared.authoritativeMachine.id)
               ),
               currentLegacyData == preparedLegacyData,
               let decoded = try? JSONDecoder().decode(
                 DoryMachineConfiguration.self,
                 from: currentLegacyData
               ),
-              decoded == prepared.machine,
+              decoded == prepared.authoritativeMachine,
               let currentDefinition = reconcileWorkspaceProjection(
-                machine: prepared.machine,
+                machine: prepared.authoritativeMachine,
                 authoritativeLegacyData: currentLegacyData
               ),
               currentDefinition == expectedDefinition,
@@ -1920,19 +1952,20 @@ public final class MachineManager: @unchecked Sendable {
         }
         lock.unlock()
 
-        let machine = entry.configuration
-        try ensureInstalledLinuxBootBundleIfNeeded(machine)
-        try materializeInstalledLinuxBootRuntimeIfNeeded(machine)
+        let authoritativeMachine = entry.configuration
+        try ensureInstalledLinuxBootBundleIfNeeded(authoritativeMachine)
+        try materializeInstalledLinuxBootRuntimeIfNeeded(authoritativeMachine)
         let authoritativeLegacyData = Self.readPrivateMetadata(
-            path: machineConfigPath(id: machine.id)
+            path: machineConfigPath(id: authoritativeMachine.id)
         )
         var authoritativeDefinition: DoryVirtualMachineDefinition?
+        var runtimeMachine = authoritativeMachine
         if let authoritativeLegacyData {
             if requiresAuthoritativeDefinition {
                 guard let decoded = try? JSONDecoder().decode(
                     DoryMachineConfiguration.self,
                     from: authoritativeLegacyData
-                ), decoded == machine else {
+                ), decoded == authoritativeMachine else {
                     throw MachineManagerError.persistence(
                         "authoritative machine metadata changed before resolved launch"
                     )
@@ -1941,18 +1974,30 @@ public final class MachineManager: @unchecked Sendable {
             // Boot-bundle materialization can change authoritative inspection facts without
             // changing machine.json. Reconcile those facts immediately before launch.
             authoritativeDefinition = reconcileWorkspaceProjection(
-                machine: machine,
+                machine: authoritativeMachine,
                 authoritativeLegacyData: authoritativeLegacyData
             )
+            if authoritativeDefinition != nil {
+                do {
+                    runtimeMachine = try workspaceAuthority(
+                        machine: authoritativeMachine,
+                        authoritativeLegacyData: authoritativeLegacyData
+                    ).runtimeMachine
+                } catch {
+                    throw MachineManagerError.persistence(
+                        "workspace runtime projection is unavailable: \(error)"
+                    )
+                }
+            }
         } else if requiresAuthoritativeDefinition {
             throw MachineManagerError.persistence(
                 "authoritative machine metadata is unavailable for resolved launch"
             )
         }
-        try Self.validateLaunchConfiguration(machine)
-        try validateManagedMachineArtifacts(machine)
+        try Self.validateLaunchConfiguration(runtimeMachine)
+        try validateManagedMachineArtifacts(runtimeMachine)
         if !requiresAuthoritativeDefinition {
-            try validateRuntimeAvailability(machine)
+            try validateRuntimeAvailability(runtimeMachine)
         }
         if requiresAuthoritativeDefinition, authoritativeDefinition == nil {
             throw MachineManagerError.persistence(
@@ -1961,7 +2006,8 @@ public final class MachineManager: @unchecked Sendable {
         }
         let definitionData = try authoritativeDefinition.map(Self.canonicalDefinitionData)
         return PreparedMachineStart(
-            machine: machine,
+            machine: runtimeMachine,
+            authoritativeMachine: authoritativeMachine,
             definition: authoritativeDefinition,
             canonicalDefinitionData: definitionData,
             authoritativeLegacyData: authoritativeLegacyData
@@ -2525,6 +2571,19 @@ public final class MachineManager: @unchecked Sendable {
             )
         }
         let (current, wasRunning) = try configurationAndRunningState(id: id)
+        let nativeRecord: DoryWorkspaceRepositoryRecord?
+        if launchPolicy == .perWorkspaceAuthority {
+            let record = try workspaceRepository.readPersistedRecord(id: id)
+            nativeRecord = record.legacyConfigurationSHA256 == nil
+                && record.legacyMigrationFactsSHA256 == nil ? record : nil
+        } else {
+            nativeRecord = nil
+        }
+        if nativeRecord != nil, updatesEnvironment {
+            throw MachineManagerError.persistence(
+                "native workspace updates do not accept persisted environment values"
+            )
+        }
         var updated = current
         if let memoryMB {
             updated.memoryMB = memoryMB
@@ -2541,7 +2600,7 @@ public final class MachineManager: @unchecked Sendable {
         if updatesEnvironment {
             updated.environment = environment ?? [:]
         }
-        if let typedSettingsPatch {
+        if let typedSettingsPatch, nativeRecord == nil {
             updated.environment = try typedSettingsPatch.applying(
                 to: current.environment,
                 displayMode: updated.displayMode
@@ -2562,7 +2621,54 @@ public final class MachineManager: @unchecked Sendable {
             }
         }
         try Self.validateLaunchConfiguration(updated)
-        guard updated != current else {
+        var nativeDefinition: DoryVirtualMachineDefinition?
+        if let nativeRecord {
+            let facts = try workspaceMigrationFacts(for: updated)
+            var migration = try DoryMachineConfigurationMigrationBridge.migrate(
+                updated,
+                facts: facts
+            )
+            var candidate = migration.definition
+            candidate.lifecycle = nativeRecord.definition.lifecycle
+            candidate.backendPreference = nativeRecord.definition.backendPreference
+            candidate.graphics = nativeRecord.definition.graphics
+            candidate.guestIdentityIntent = nativeRecord.definition.guestIdentityIntent
+            candidate.clipboardPolicy = nativeRecord.definition.clipboardPolicy
+            if let typedSettingsPatch {
+                candidate = try typedSettingsPatch.applying(
+                    to: candidate,
+                    displayMode: updated.displayMode
+                )
+            }
+            if updated == current, candidate == nativeRecord.definition {
+                return status(id: id) ?? DoryMachineStatus(id: id, state: .stopped)
+            }
+            guard nativeRecord.definition.lifecycle.revision < UInt64.max else {
+                throw MachineManagerError.persistence("workspace revision is exhausted")
+            }
+            guard nativeRecord.definition.lifecycle.updatedAtUnixMilliseconds < Int64.max else {
+                throw MachineManagerError.persistence("workspace timestamp is exhausted")
+            }
+            let now = Int64(max(0, Date().timeIntervalSince1970 * 1_000))
+            candidate.lifecycle = DoryVMLifecycleMetadata(
+                revision: nativeRecord.definition.lifecycle.revision + 1,
+                createdAtUnixMilliseconds:
+                    nativeRecord.definition.lifecycle.createdAtUnixMilliseconds,
+                updatedAtUnixMilliseconds: max(
+                    now,
+                    nativeRecord.definition.lifecycle.updatedAtUnixMilliseconds + 1
+                )
+            )
+            guard Self.nativeDefinition(candidate, isCompatibleWith: migration.definition) else {
+                throw MachineManagerError.persistence(
+                    "native workspace update is not representable by the compatibility runtime"
+                )
+            }
+            migration.definition = candidate
+            _ = try migration.legacyConfiguration()
+            nativeDefinition = candidate
+        }
+        guard updated != current || nativeDefinition != nil else {
             return status(id: id) ?? DoryMachineStatus(id: id, state: .stopped)
         }
         if launchPolicy == .perWorkspaceAuthority {
@@ -2574,7 +2680,21 @@ public final class MachineManager: @unchecked Sendable {
                updated.installerISOPath == nil {
                 try ensureInstalledLinuxBootBundleIfNeeded(updated)
             }
-            try persist(updated)
+            try persist(
+                updated,
+                reconcilesLegacyProjection: nativeRecord == nil
+            )
+            if let nativeRecord, let nativeDefinition {
+                do {
+                    try workspaceRepository.replace(
+                        nativeDefinition,
+                        expectedRevision: nativeRecord.definition.lifecycle.revision
+                    )
+                } catch {
+                    try? persist(current, reconcilesLegacyProjection: false)
+                    throw error
+                }
+            }
             try publishConfiguration(updated)
             // Every desired-state mutation invalidates the former plan. The workspace remains
             // stopped until planning publishes a replacement exact runtime identity.
@@ -2737,6 +2857,7 @@ public final class MachineManager: @unchecked Sendable {
             address: machine.address,
             shares: machine.shares,
             environment: machine.environment,
+            typedSettings: nativeTypedSettingsSnapshot(id: id),
             bootMode: machine.bootMode,
             machineIdentifierPath: machine.bootMode == .efi ? machineIdentifierPath : nil,
             nvramPath: machine.bootMode == .efi ? nvramPath : nil,
@@ -3113,7 +3234,10 @@ public final class MachineManager: @unchecked Sendable {
             installedDesktopPayloadReceipt:
                 Self.configurationReceipt(restoring: snapshot)
         )
-        let created = try create(machine)
+        let created = try create(
+            machine,
+            typedSettings: snapshot.typedSettings?.replacementPatch
+        )
         do {
             if snapshot.bootMode == .efi {
                 guard let snapshotNVRAMPath = snapshot.nvramPath else {
@@ -3174,6 +3298,70 @@ public final class MachineManager: @unchecked Sendable {
         restoredMachine.environment = snapshot.environment
         restoredMachine.installedDesktopPayloadReceipt =
             Self.configurationReceipt(restoring: snapshot)
+        let restoredNativeWorkspace: (
+            definition: DoryVirtualMachineDefinition,
+            expectedRevision: UInt64
+        )?
+        if launchPolicy == .perWorkspaceAuthority {
+            let record = try workspaceRepository.readPersistedRecord(id: machineID)
+            if record.legacyConfigurationSHA256 == nil,
+               record.legacyMigrationFactsSHA256 == nil {
+                // A native workspace never regains the legacy environment as desired-state
+                // authority. Older or imported snapshot metadata may still contain compatibility
+                // keys (or secrets); typed snapshot intent is restored through the definition
+                // below and the raw dictionary remains read-only historical evidence.
+                restoredMachine.environment = [:]
+                let facts = try workspaceMigrationFacts(for: restoredMachine)
+                let migration = try DoryMachineConfigurationMigrationBridge.migrate(
+                    restoredMachine,
+                    facts: facts
+                )
+                var candidate = migration.definition
+                candidate.lifecycle = record.definition.lifecycle
+                candidate.backendPreference = record.definition.backendPreference
+                candidate.graphics = record.definition.graphics
+                candidate.guestIdentityIntent = record.definition.guestIdentityIntent
+                candidate.clipboardPolicy = record.definition.clipboardPolicy
+                if let typedSettings = snapshot.typedSettings {
+                    candidate = try typedSettings.applyingAsReplacement(
+                        to: candidate,
+                        displayMode: restoredMachine.displayMode
+                    )
+                }
+                guard record.definition.lifecycle.revision < UInt64.max,
+                      record.definition.lifecycle.updatedAtUnixMilliseconds < Int64.max else {
+                    throw MachineManagerError.persistence(
+                        "workspace lifecycle authority is exhausted"
+                    )
+                }
+                let now = Int64(max(0, Date().timeIntervalSince1970 * 1_000))
+                candidate.lifecycle = DoryVMLifecycleMetadata(
+                    revision: record.definition.lifecycle.revision + 1,
+                    createdAtUnixMilliseconds:
+                        record.definition.lifecycle.createdAtUnixMilliseconds,
+                    updatedAtUnixMilliseconds: max(
+                        now,
+                        record.definition.lifecycle.updatedAtUnixMilliseconds + 1
+                    )
+                )
+                guard Self.nativeDefinition(
+                    candidate,
+                    isCompatibleWith: migration.definition
+                ) else {
+                    throw MachineManagerError.persistence(
+                        "snapshot typed settings do not match the restored machine"
+                    )
+                }
+                restoredNativeWorkspace = (
+                    candidate,
+                    record.definition.lifecycle.revision
+                )
+            } else {
+                restoredNativeWorkspace = nil
+            }
+        } else {
+            restoredNativeWorkspace = nil
+        }
         let sourceIdentity = try currentRuntimeIdentity(id: machineID)
         let targetIdentity = runtimeIdentityAfterSnapshotRestore(
             snapshot.runtimeIdentity,
@@ -3205,7 +3393,21 @@ public final class MachineManager: @unchecked Sendable {
                 snapshot: snapshot,
                 operationID: lifecycle.operation.operationID
             ) {
-                try persist(restoredMachine)
+                try persist(
+                    restoredMachine,
+                    reconcilesLegacyProjection: restoredNativeWorkspace == nil
+                )
+                if let restoredNativeWorkspace {
+                    do {
+                        try workspaceRepository.replace(
+                            restoredNativeWorkspace.definition,
+                            expectedRevision: restoredNativeWorkspace.expectedRevision
+                        )
+                    } catch {
+                        try? persist(machine, reconcilesLegacyProjection: false)
+                        throw error
+                    }
+                }
                 try persistRuntimeIdentity(
                     targetIdentity,
                     configuration: restoredMachine
@@ -3492,6 +3694,7 @@ public final class MachineManager: @unchecked Sendable {
     }
 
     private func statusLocked(id: String, entry: MachineEntry) -> DoryMachineStatus {
+        let typedSettings = nativeTypedSettingsSnapshot(id: id)
         if [.starting, .running].contains(entry.state), entry.process?.isRunningOrRestarting != true {
             return DoryMachineStatus(
                 id: id,
@@ -3506,6 +3709,7 @@ public final class MachineManager: @unchecked Sendable {
                 installerMediaAttached: entry.configuration.installerISOPath != nil,
                 shares: entry.configuration.shares,
                 environment: entry.configuration.environment,
+                typedSettings: typedSettings,
                 runtimeIdentity: entry.runtimeIdentity,
                 installedDesktopPayloadReceipt:
                     entry.configuration.effectiveInstalledDesktopPayloadReceipt
@@ -3534,10 +3738,23 @@ public final class MachineManager: @unchecked Sendable {
             installerMediaAttached: entry.configuration.installerISOPath != nil,
             shares: entry.configuration.shares,
             environment: entry.configuration.environment,
+            typedSettings: typedSettings,
             runtimeIdentity: entry.runtimeIdentity,
             installedDesktopPayloadReceipt:
                 entry.configuration.effectiveInstalledDesktopPayloadReceipt
         )
+    }
+
+    private func nativeTypedSettingsSnapshot(
+        id: String
+    ) -> DoryMachineTypedSettingsSnapshot? {
+        guard launchPolicy == .perWorkspaceAuthority,
+              let record = try? workspaceRepository.readPersistedRecord(id: id),
+              record.legacyConfigurationSHA256 == nil,
+              record.legacyMigrationFactsSHA256 == nil else {
+            return nil
+        }
+        return try? DoryMachineTypedSettingsSnapshot(definition: record.definition)
     }
 
     private func processConfiguration(
@@ -4996,7 +5213,10 @@ public final class MachineManager: @unchecked Sendable {
         _ = rmdir(owner)
     }
 
-    private func persist(_ machine: DoryMachineConfiguration) throws {
+    private func persist(
+        _ machine: DoryMachineConfiguration,
+        reconcilesLegacyProjection: Bool = true
+    ) throws {
         let fileManager = FileManager.default
         let directory = machineStateDirectory(id: machine.id)
         let temporaryPath = "\(directory)/\(Self.machineMetadataTemporaryPrefix)\(UUID().uuidString)"
@@ -5026,7 +5246,7 @@ public final class MachineManager: @unchecked Sendable {
         // The rename above is the commit point. Projection is intentionally best-effort and
         // ordered afterwards: a v2 failure must never roll back or hide working legacy metadata.
         resolvedLaunchIdentities.removeValue(forKey: machine.id)
-        if let authoritativeLegacyData {
+        if reconcilesLegacyProjection, let authoritativeLegacyData {
             _ = reconcileWorkspaceProjection(
                 machine: machine,
                 authoritativeLegacyData: authoritativeLegacyData
@@ -5088,23 +5308,18 @@ public final class MachineManager: @unchecked Sendable {
         authoritativeLegacyData: Data
     ) -> DoryVirtualMachineDefinition? {
         do {
-            let facts = try workspaceMigrationFacts(for: machine)
-            let migration = try DoryMachineConfigurationMigrationBridge.migrate(
-                machine,
-                facts: facts
-            )
-            let result = try workspaceRepository.reconcileLegacyProjection(
-                migration.definition,
-                authoritativeLegacyData: authoritativeLegacyData,
-                authoritativeMigrationFactsData: try Self.workspaceMigrationAuthorityData(facts)
+            let authority = try workspaceAuthority(
+                machine: machine,
+                authoritativeLegacyData: authoritativeLegacyData
             )
             setWorkspaceProjectionDiagnostic(
                 DoryWorkspaceProjectionDiagnostic(
-                    state: result.state == .unchanged ? .current : .regenerated
+                    state: authority.reconcileState == .unchanged
+                        ? .current : .regenerated
                 ),
                 id: machine.id
             )
-            return result.definition
+            return authority.definition
         } catch let error as DoryMachineConfigurationMigrationError {
             setWorkspaceProjectionDiagnostic(
                 DoryWorkspaceProjectionDiagnostic(
@@ -5136,6 +5351,84 @@ public final class MachineManager: @unchecked Sendable {
             )
             return nil
         }
+    }
+
+    private func workspaceAuthority(
+        machine: DoryMachineConfiguration,
+        authoritativeLegacyData: Data
+    ) throws -> MachineWorkspaceAuthority {
+        let facts = try workspaceMigrationFacts(for: machine)
+        var migration = try DoryMachineConfigurationMigrationBridge.migrate(
+            machine,
+            facts: facts
+        )
+        let factsData = try Self.workspaceMigrationAuthorityData(facts)
+        let currentRecord: DoryWorkspaceRepositoryRecord?
+        do {
+            currentRecord = try workspaceRepository.readPersistedRecord(id: machine.id)
+        } catch let error as DoryWorkspaceRepositoryError {
+            if case .workspaceNotFound = error {
+                currentRecord = nil
+            } else {
+                throw error
+            }
+        }
+
+        let definition: DoryVirtualMachineDefinition
+        let isNative: Bool
+        let reconcileState: DoryWorkspaceLegacyProjectionReconcileState
+        if let currentRecord,
+           currentRecord.legacyConfigurationSHA256 == nil,
+           currentRecord.legacyMigrationFactsSHA256 == nil {
+            guard Self.nativeDefinition(
+                currentRecord.definition,
+                isCompatibleWith: migration.definition
+            ) else {
+                throw DoryWorkspaceRepositoryError.staleLegacyProjection(machine.id)
+            }
+            definition = currentRecord.definition
+            isNative = true
+            reconcileState = .unchanged
+        } else {
+            let result = try workspaceRepository.reconcileLegacyProjection(
+                migration.definition,
+                authoritativeLegacyData: authoritativeLegacyData,
+                authoritativeMigrationFactsData: factsData
+            )
+            let persisted = try workspaceRepository.readLegacyProjection(
+                id: machine.id,
+                authoritativeLegacyData: authoritativeLegacyData,
+                authoritativeMigrationFactsData: factsData
+            )
+            guard result.definition == persisted else {
+                throw DoryWorkspaceRepositoryError.staleLegacyProjection(machine.id)
+            }
+            definition = persisted
+            isNative = false
+            reconcileState = result.state
+        }
+        migration.definition = definition
+        return MachineWorkspaceAuthority(
+            definition: definition,
+            migration: migration,
+            migrationFactsData: factsData,
+            runtimeMachine: try migration.legacyConfiguration(),
+            isNative: isNative,
+            reconcileState: reconcileState
+        )
+    }
+
+    private static func nativeDefinition(
+        _ definition: DoryVirtualMachineDefinition,
+        isCompatibleWith compatibility: DoryVirtualMachineDefinition
+    ) -> Bool {
+        var expected = compatibility
+        expected.lifecycle = definition.lifecycle
+        expected.backendPreference = definition.backendPreference
+        expected.graphics = definition.graphics
+        expected.guestIdentityIntent = definition.guestIdentityIntent
+        expected.clipboardPolicy = definition.clipboardPolicy
+        return expected == definition && definition.validate().isEmpty
     }
 
     private static func canonicalDefinitionData(
@@ -6214,6 +6507,7 @@ public final class MachineManager: @unchecked Sendable {
             Self.nativeCreationPrecommitMarkerName,
             DoryMachineRuntimeIdentityStore.recordFileName,
             DoryMachineRuntimeIdentityStore.headFileName,
+            DoryWorkspaceRepository.recordFileName,
         ])
         for id in ids where Self.isValidID(id) {
             let directory = stateDirectory + "/" + id
@@ -6241,6 +6535,7 @@ public final class MachineManager: @unchecked Sendable {
                     || entry.hasPrefix(
                         DoryMachineRuntimeIdentityStore.headTemporaryPrefix
                     )
+                    || entry.hasPrefix(DoryWorkspaceRepository.recordTemporaryPrefix)
             }
             let containsOnlyPrivateRuntimeTemporaries = entries.filter { entry in
                 entry.hasPrefix(
@@ -6248,9 +6543,15 @@ public final class MachineManager: @unchecked Sendable {
                 ) || entry.hasPrefix(
                     DoryMachineRuntimeIdentityStore.headTemporaryPrefix
                 )
+                    || entry.hasPrefix(DoryWorkspaceRepository.recordTemporaryPrefix)
             }.allSatisfy { entry in
                 Self.isPrivateRegularFile(path: directory + "/" + entry)
             }
+            let hasValidWorkspaceAuthority = !entries.contains(
+                DoryWorkspaceRepository.recordFileName
+            ) || Self.isPrivateRegularFile(
+                path: directory + "/" + DoryWorkspaceRepository.recordFileName
+            )
             let hasValidManagedArtifacts =
                 (!entries.contains("rootfs.ext4")
                     || Self.isPrivateRegularFile(path: directory + "/rootfs.ext4"))
@@ -6263,6 +6564,7 @@ public final class MachineManager: @unchecked Sendable {
                 && containsOnlyCreationEntries
                 && containsOnlyPrivateRuntimeTemporaries
                 && hasValidManagedArtifacts
+                && hasValidWorkspaceAuthority
             guard isMarkerInitializationCrash || isAuthenticatedInterruptedCreation else {
                 continue
             }
@@ -6525,8 +6827,8 @@ public final class MachineManager: @unchecked Sendable {
         }
         entry = current
         lock.unlock()
-        guard entry.configuration == machine,
-              entry.process == nil, entry.handoffServer == nil,
+        let authoritativeMachine = entry.configuration
+        guard entry.process == nil, entry.handoffServer == nil,
               entry.state == .created || entry.state == .stopped else {
             throw MachineManagerError.persistence(
                 "machine \(machine.id) must be exactly stopped before planning"
@@ -6543,31 +6845,21 @@ public final class MachineManager: @unchecked Sendable {
               let decoded = try? JSONDecoder().decode(
                 DoryMachineConfiguration.self,
                 from: legacyData
-              ), decoded == machine else {
+              ), decoded == authoritativeMachine else {
             throw MachineManagerError.persistence(
                 "authoritative machine metadata changed before planning"
             )
         }
-        let facts = try workspaceMigrationFacts(for: machine)
-        let factsData = try Self.workspaceMigrationAuthorityData(facts)
-        let migration = try DoryMachineConfigurationMigrationBridge.migrate(
-            machine,
-            facts: facts
+        let workspace = try workspaceAuthority(
+            machine: authoritativeMachine,
+            authoritativeLegacyData: legacyData
         )
-        let reconciled = try workspaceRepository.reconcileLegacyProjection(
-            migration.definition,
-            authoritativeLegacyData: legacyData,
-            authoritativeMigrationFactsData: factsData
-        ).definition
-        let loaded = try workspaceRepository.readLegacyProjection(
-            id: machine.id,
-            authoritativeLegacyData: legacyData,
-            authoritativeMigrationFactsData: factsData
-        )
-        guard reconciled == loaded, loaded == definition,
-              try Self.canonicalDefinitionData(loaded) == canonicalDefinitionData else {
+        guard workspace.runtimeMachine == machine,
+              workspace.definition == definition,
+              try Self.canonicalDefinitionData(workspace.definition)
+                == canonicalDefinitionData else {
             throw MachineManagerError.persistence(
-                "planning request does not match the authoritative workspace projection"
+                "planning request does not match authoritative workspace state"
             )
         }
 
@@ -6577,8 +6869,8 @@ public final class MachineManager: @unchecked Sendable {
         let authority = DoryDaemonVirtualMachinePlanningMachineAuthority(
             machineID: machine.id,
             legacyConfigurationSHA256: Self.sha256(data: legacyData),
-            migrationFactsSHA256: Self.sha256(data: factsData),
-            sourceDefinitionRevision: loaded.lifecycle.revision,
+            migrationFactsSHA256: Self.sha256(data: workspace.migrationFactsData),
+            sourceDefinitionRevision: workspace.definition.lifecycle.revision,
             sourceDefinitionSHA256: Self.sha256(data: canonicalDefinitionData),
             runtimeIdentitySHA256: Self.sha256(data: runtimeIdentityData)
         )
@@ -6600,11 +6892,12 @@ public final class MachineManager: @unchecked Sendable {
                     throw MachineManagerError.persistence("machine manager is unavailable")
                 }
                 try self.revalidatePlanningMutationAuthority(
-                    machine: machine,
+                    authoritativeMachine: authoritativeMachine,
+                    runtimeMachine: machine,
                     definition: definition,
                     canonicalDefinitionData: canonicalDefinitionData,
                     legacyData: legacyData,
-                    migrationFactsData: factsData,
+                    migrationFactsData: workspace.migrationFactsData,
                     runtimeIdentitySHA256: authority.runtimeIdentitySHA256
                 )
             },
@@ -6622,7 +6915,8 @@ public final class MachineManager: @unchecked Sendable {
     }
 
     private func revalidatePlanningMutationAuthority(
-        machine: DoryMachineConfiguration,
+        authoritativeMachine: DoryMachineConfiguration,
+        runtimeMachine: DoryMachineConfiguration,
         definition: DoryVirtualMachineDefinition,
         canonicalDefinitionData: Data,
         legacyData: Data,
@@ -6631,19 +6925,19 @@ public final class MachineManager: @unchecked Sendable {
     ) throws {
         operationLock.lock()
         defer { operationLock.unlock() }
-        guard activePlanningMutationIDs.contains(machine.id) else {
+        guard activePlanningMutationIDs.contains(authoritativeMachine.id) else {
             throw MachineManagerError.persistence("planning mutation authority was released")
         }
         let entry: MachineEntry
         lock.lock()
-        guard let current = machines[machine.id],
-              !deletingMachineIDs.contains(machine.id) else {
+        guard let current = machines[authoritativeMachine.id],
+              !deletingMachineIDs.contains(authoritativeMachine.id) else {
             lock.unlock()
-            throw MachineManagerError.unknownMachine(machine.id)
+            throw MachineManagerError.unknownMachine(authoritativeMachine.id)
         }
         entry = current
         lock.unlock()
-        guard entry.configuration == machine,
+        guard entry.configuration == authoritativeMachine,
               entry.process == nil, entry.handoffServer == nil,
               entry.state == .created || entry.state == .stopped,
               entry.runtimeIdentity.validate().isEmpty,
@@ -6652,30 +6946,32 @@ public final class MachineManager: @unchecked Sendable {
               )
                 == runtimeIdentitySHA256,
               let currentLegacyData = Self.readPrivateMetadata(
-                path: machineConfigPath(id: machine.id)
+                path: machineConfigPath(id: authoritativeMachine.id)
               ), currentLegacyData == legacyData,
               let decoded = try? JSONDecoder().decode(
                 DoryMachineConfiguration.self,
                 from: currentLegacyData
-              ), decoded == machine else {
+              ), decoded == authoritativeMachine else {
             throw MachineManagerError.persistence(
                 "authoritative machine state changed during planning"
             )
         }
-        let currentFacts = try workspaceMigrationFacts(for: machine)
-        let currentFactsData = try Self.workspaceMigrationAuthorityData(currentFacts)
-        guard currentFactsData == migrationFactsData else {
+        let currentWorkspace = try workspaceAuthority(
+            machine: authoritativeMachine,
+            authoritativeLegacyData: currentLegacyData
+        )
+        guard currentWorkspace.migrationFactsData == migrationFactsData else {
             throw MachineManagerError.persistence(
                 "authoritative migration facts changed during planning"
             )
         }
-        let currentDefinition = try workspaceRepository.readLegacyProjection(
-            id: machine.id,
-            authoritativeLegacyData: currentLegacyData,
-            authoritativeMigrationFactsData: currentFactsData
-        )
-        guard currentDefinition == definition,
-              try Self.canonicalDefinitionData(currentDefinition)
+        guard currentWorkspace.runtimeMachine == runtimeMachine else {
+            throw MachineManagerError.persistence(
+                "authoritative machine projection changed during planning"
+            )
+        }
+        guard currentWorkspace.definition == definition,
+              try Self.canonicalDefinitionData(currentWorkspace.definition)
                 == canonicalDefinitionData else {
             throw MachineManagerError.persistence(
                 "authoritative workspace projection changed during planning"
@@ -8352,9 +8648,19 @@ private struct MachineLifecycleJournalCompletionPending: Error, Sendable {}
 
 private struct PreparedMachineStart {
     var machine: DoryMachineConfiguration
+    var authoritativeMachine: DoryMachineConfiguration
     var definition: DoryVirtualMachineDefinition?
     var canonicalDefinitionData: Data?
     var authoritativeLegacyData: Data?
+}
+
+private struct MachineWorkspaceAuthority {
+    var definition: DoryVirtualMachineDefinition
+    var migration: DoryMachineConfigurationMigrationResult
+    var migrationFactsData: Data
+    var runtimeMachine: DoryMachineConfiguration
+    var isNative: Bool
+    var reconcileState: DoryWorkspaceLegacyProjectionReconcileState
 }
 
 private struct PendingResolvedMachineStart {

@@ -32,12 +32,122 @@ public enum DoryMachineTypedSettingUpdate<Value: Sendable & Equatable>: Sendable
     }
 }
 
-/// Typed public write authority for the compatibility MachineManager.
+public struct DoryMachineTypedSettingsSnapshot: Codable, Sendable, Equatable, Hashable {
+    public var guestIdentityIntent: DoryVMGuestIdentityIntent
+    public var clipboardPolicy: DoryVMClipboardPolicy?
+    public var runtimePreference: DoryDesktopVMMPreference?
+    public var graphicsPreference: DoryDesktopGraphicsPreference?
+
+    public init(definition: DoryVirtualMachineDefinition) throws {
+        guestIdentityIntent = definition.guestIdentityIntent
+        guard definition.display.enabled else {
+            clipboardPolicy = nil
+            runtimePreference = nil
+            graphicsPreference = nil
+            return
+        }
+        clipboardPolicy = definition.clipboardPolicy
+        switch (definition.backendPreference.mode, definition.backendPreference.backend) {
+        case (.automatic, nil):
+            runtimePreference = .automatic
+        case (.preferred, .doryHypervisor?):
+            runtimePreference = .accelerated
+        case (.preferred, .appleVirtualizationFramework?):
+            runtimePreference = .compatible
+        default:
+            throw DoryMachineTypedWriteAuthorityError.unsupportedByLegacyRuntime(
+                "desktopRuntimePreference"
+            )
+        }
+        switch definition.graphics.acceptableLevels {
+        case [.hardwareAccelerated3D, .hostAcceleratedDisplay, .software]:
+            graphicsPreference = .automatic
+        case [.hardwareAccelerated3D]:
+            graphicsPreference = .virglVenus
+        case [.software]:
+            graphicsPreference = .software
+        default:
+            throw DoryMachineTypedWriteAuthorityError.unsupportedByLegacyRuntime(
+                "desktopGraphicsPreference"
+            )
+        }
+    }
+
+    public var xpcDictionary: NSDictionary {
+        DoryMachineTypedSettingsPatch(
+            guestUsername: update(guestIdentityIntent.account?.username),
+            guestNumericUserID: update(guestIdentityIntent.account?.numericUserID),
+            desktopDistributionIdentifier: update(
+                guestIdentityIntent.desktop?.distributionIdentifier
+            ),
+            desktopDisplayName: update(guestIdentityIntent.desktop?.displayName),
+            desktopVersion: update(guestIdentityIntent.desktop?.version),
+            desktopEnvironment: update(
+                guestIdentityIntent.desktop?.desktopEnvironment
+            ),
+            clipboardPolicy: update(clipboardPolicy),
+            runtimePreference: update(runtimePreference),
+            graphicsPreference: update(graphicsPreference)
+        ).xpcDictionary
+    }
+
+    public func applyingAsReplacement(
+        to definition: DoryVirtualMachineDefinition,
+        displayMode: DoryMachineDisplayMode
+    ) throws -> DoryVirtualMachineDefinition {
+        try replacementPatch.applying(to: definition, displayMode: displayMode)
+    }
+
+    public var replacementPatch: DoryMachineTypedSettingsPatch {
+        DoryMachineTypedSettingsPatch(
+            guestUsername: replacement(guestIdentityIntent.account?.username),
+            guestNumericUserID: replacement(guestIdentityIntent.account?.numericUserID),
+            desktopDistributionIdentifier: replacement(
+                guestIdentityIntent.desktop?.distributionIdentifier
+            ),
+            desktopDisplayName: replacement(guestIdentityIntent.desktop?.displayName),
+            desktopVersion: replacement(guestIdentityIntent.desktop?.version),
+            desktopEnvironment: replacement(
+                guestIdentityIntent.desktop?.desktopEnvironment
+            ),
+            clipboardPolicy: replacement(clipboardPolicy),
+            runtimePreference: replacement(runtimePreference),
+            graphicsPreference: replacement(graphicsPreference)
+        )
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(guestIdentityIntent.account?.username)
+        hasher.combine(guestIdentityIntent.account?.numericUserID)
+        hasher.combine(guestIdentityIntent.desktop?.distributionIdentifier)
+        hasher.combine(guestIdentityIntent.desktop?.displayName)
+        hasher.combine(guestIdentityIntent.desktop?.version)
+        hasher.combine(guestIdentityIntent.desktop?.desktopEnvironment)
+        hasher.combine(clipboardPolicy?.text.rawValue)
+        hasher.combine(clipboardPolicy?.image.rawValue)
+        hasher.combine(clipboardPolicy?.files.rawValue)
+        hasher.combine(runtimePreference?.rawValue)
+        hasher.combine(graphicsPreference?.rawValue)
+    }
+
+    private func update<Value: Sendable & Equatable>(
+        _ value: Value?
+    ) -> DoryMachineTypedSettingUpdate<Value> {
+        value.map(DoryMachineTypedSettingUpdate.set) ?? .unchanged
+    }
+
+    private func replacement<Value: Sendable & Equatable>(
+        _ value: Value?
+    ) -> DoryMachineTypedSettingUpdate<Value> {
+        value.map(DoryMachineTypedSettingUpdate.set) ?? .clear
+    }
+}
+
+/// Typed public write authority shared by native workspace records and the legacy bridge.
 ///
-/// MachineManager still reads legacy `machine.json` environment values while M0 migration is in
-/// progress. Public callers never provide that dictionary: this patch accepts only non-secret,
-/// bounded intent and back-projects the seven explicitly owned compatibility keys. Unchanged
-/// fields preserve their exact legacy bytes, including values too old or unsafe to migrate.
+/// Native workspaces apply this patch directly to their versioned definition. Legacy workspaces
+/// back-project only the explicitly owned compatibility keys. Public callers never provide the
+/// persisted environment dictionary, and unchanged legacy fields retain their exact bytes.
 public struct DoryMachineTypedSettingsPatch: Sendable, Equatable {
     public var guestUsername: DoryMachineTypedSettingUpdate<String>
     public var guestNumericUserID: DoryMachineTypedSettingUpdate<UInt32>
@@ -333,6 +443,80 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable {
         return environment
     }
 
+    public func applying(
+        to source: DoryVirtualMachineDefinition,
+        displayMode: DoryMachineDisplayMode
+    ) throws -> DoryVirtualMachineDefinition {
+        try validate(displayMode: displayMode)
+        var definition = source
+        var account = definition.guestIdentityIntent.account ?? DoryVMGuestAccountIntent()
+        Self.apply(guestUsername, to: &account.username)
+        Self.apply(guestNumericUserID, to: &account.numericUserID)
+        definition.guestIdentityIntent.account = account.isEmpty ? nil : account
+
+        var desktop = definition.guestIdentityIntent.desktop
+            ?? DoryVMDesktopIdentityIntent()
+        Self.apply(
+            desktopDistributionIdentifier,
+            to: &desktop.distributionIdentifier
+        )
+        Self.apply(desktopDisplayName, to: &desktop.displayName)
+        Self.apply(desktopVersion, to: &desktop.version)
+        Self.apply(desktopEnvironment, to: &desktop.desktopEnvironment)
+        definition.guestIdentityIntent.desktop = desktop.isEmpty ? nil : desktop
+
+        switch clipboardPolicy {
+        case .unchanged:
+            break
+        case .clear:
+            definition.clipboardPolicy = displayMode == .desktop
+                ? .legacyDesktop(.bidirectional) : .disabled
+        case let .set(policy):
+            definition.clipboardPolicy = policy
+        }
+        switch runtimePreference {
+        case .unchanged:
+            break
+        case .clear, .set(.automatic):
+            definition.backendPreference = DoryVMBackendPreference()
+        case .set(.accelerated):
+            definition.backendPreference = DoryVMBackendPreference(
+                mode: .preferred,
+                backend: .doryHypervisor
+            )
+        case .set(.compatible):
+            definition.backendPreference = DoryVMBackendPreference(
+                mode: .preferred,
+                backend: .appleVirtualizationFramework
+            )
+        }
+        switch graphicsPreference {
+        case .unchanged:
+            break
+        case .clear, .set(.automatic):
+            definition.graphics = DoryVMGraphicsPolicy(
+                acceptableLevels: [
+                    .hardwareAccelerated3D,
+                    .hostAcceleratedDisplay,
+                    .software,
+                ]
+            )
+        case .set(.virgl), .set(.virglVenus):
+            definition.graphics = DoryVMGraphicsPolicy(
+                acceptableLevels: [.hardwareAccelerated3D]
+            )
+        case .set(.software):
+            definition.graphics = DoryVMGraphicsPolicy(acceptableLevels: [.software])
+        }
+        let issues = definition.validate()
+        guard issues.isEmpty else {
+            throw DoryMachineTypedWriteAuthorityError.invalidField(
+                issues.first?.field ?? "definition"
+            )
+        }
+        return definition
+    }
+
     private mutating func decodeGuestIdentity(_ raw: Any, allowsClears: Bool) throws {
         if raw is NSNull {
             guard allowsClears else {
@@ -529,6 +713,20 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable {
         if let dictionary = raw as? NSDictionary { return dictionary }
         if let dictionary = raw as? [String: Any] { return dictionary as NSDictionary }
         return nil
+    }
+
+    private static func apply<Value: Sendable & Equatable>(
+        _ update: DoryMachineTypedSettingUpdate<Value>,
+        to value: inout Value?
+    ) {
+        switch update {
+        case .unchanged:
+            break
+        case let .set(replacement):
+            value = replacement
+        case .clear:
+            value = nil
+        }
     }
 
     private static func hasOnlyKeys(_ dictionary: NSDictionary, allowed: Set<String>) -> Bool {

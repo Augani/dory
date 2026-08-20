@@ -5079,10 +5079,11 @@ final class AppStore {
                 memoryMB: status.memoryMB.flatMap { Int(exactly: $0) },
                 mounts: status.shares.map(Self.mountPair(fromDoryd:)),
                 env: status.environment,
-                virtualMachineSettings: DorydMachineTypedSettings(
-                    legacyEnvironment: status.environment,
-                    displayMode: status.displayMode
-                ),
+                virtualMachineSettings: status.typedSettings
+                    ?? DorydMachineTypedSettings(
+                        legacyEnvironment: status.environment,
+                        displayMode: status.displayMode
+                    ),
                 address: status.configuredAddress,
                 displayMode: status.displayMode,
                 bootMode: status.bootMode

@@ -1466,6 +1466,9 @@ final class DorydServiceTests: XCTestCase {
             "id": "planned",
             "kernelPath": doryTestKernelPath,
             "rootfsPath": doryTestRootfsPath,
+            "guestIdentityIntent": [
+                "account": ["username": "developer"] as NSDictionary,
+            ] as NSDictionary,
         ]) { ok, _, message in
             XCTAssertFalse(ok)
             XCTAssertTrue(message.contains("production planning failed closed"), message)
@@ -1475,11 +1478,39 @@ final class DorydServiceTests: XCTestCase {
 
         let captured = try XCTUnwrap(controller.captured)
         XCTAssertEqual(captured.request.planning.machine.id, "planned")
+        XCTAssertEqual(captured.request.planning.machine.environment["DORY_GUEST_USER"], "developer")
         XCTAssertEqual(captured.request.planning.definition.identity.id, "planned")
+        XCTAssertEqual(
+            captured.request.planning.definition.guestIdentityIntent.account?.username,
+            "developer"
+        )
         XCTAssertEqual(captured.request.workspacePublication, .retainExistingExact)
         XCTAssertEqual(captured.artifacts.count, 2)
         XCTAssertTrue(captured.artifacts.allSatisfy { $0.path.hasPrefix(base + "/planned/") })
         XCTAssertEqual(manager.status(id: "planned")?.runtimeIdentity.mode, .requiresReplanning)
+        XCTAssertEqual(
+            manager.status(id: "planned")?.typedSettings?
+                .guestIdentityIntent.account?.username,
+            "developer"
+        )
+        XCTAssertTrue(manager.status(id: "planned")?.environment.isEmpty == true)
+        let persisted = try JSONDecoder().decode(
+            DoryMachineConfiguration.self,
+            from: Data(contentsOf: URL(fileURLWithPath: base + "/planned/machine.json"))
+        )
+        XCTAssertTrue(persisted.environment.isEmpty)
+        let listReply = expectation(description: "native typed status projection")
+        service.machineList { rows, message in
+            XCTAssertEqual(message, "")
+            let row = (rows as? [NSDictionary])?.first { $0["id"] as? String == "planned" }
+            XCTAssertEqual((row?["env"] as? [NSDictionary])?.count, 0)
+            let typed = row?["typedSettings"] as? NSDictionary
+            let identity = typed?["guestIdentityIntent"] as? NSDictionary
+            let account = identity?["account"] as? NSDictionary
+            XCTAssertEqual(account?["username"] as? String, "developer")
+            listReply.fulfill()
+        }
+        wait(for: [listReply], timeout: 5)
         XCTAssertThrowsError(try manager.start(id: "planned"))
 
         let updateReply = expectation(description: "production update planning rejection")

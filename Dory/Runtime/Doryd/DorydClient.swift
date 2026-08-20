@@ -762,6 +762,7 @@ nonisolated struct DorydMachineStatus: Sendable, Equatable {
     var installerMediaAttached: Bool = false
     var shares: [DorydMachineShareConfiguration] = []
     var environment: [String: String] = [:]
+    var typedSettings: DorydMachineTypedSettings? = nil
     var runtimeIdentity: DorydMachineRuntimeIdentity = .legacyCompatibility
     var installedDesktopPayloadReceipt: DorydInstalledDesktopPayloadReceipt? = nil
 }
@@ -1808,6 +1809,9 @@ nonisolated final class DorydClient: @unchecked Sendable {
             return nil
         }
         let environment = machineEnvironment(from: dictionary["env"])
+        guard let typedSettings = machineTypedSettings(from: dictionary) else {
+            return nil
+        }
         guard let installedDesktopPayloadReceipt = machineInstalledDesktopPayloadReceipt(
             from: dictionary,
             legacyEnvironment: environment
@@ -1839,9 +1843,133 @@ nonisolated final class DorydClient: @unchecked Sendable {
                 ?? false,
             shares: machineShares(from: dictionary["shares"]),
             environment: environment,
+            typedSettings: typedSettings.value,
             runtimeIdentity: runtimeIdentity,
             installedDesktopPayloadReceipt: installedDesktopPayloadReceipt.value
         )
+    }
+
+    private struct ParsedMachineTypedSettings {
+        var value: DorydMachineTypedSettings?
+    }
+
+    nonisolated private static func machineTypedSettings(
+        from dictionary: NSDictionary
+    ) -> ParsedMachineTypedSettings? {
+        guard let encoded = dictionary["typedSettings"] else {
+            return ParsedMachineTypedSettings(value: nil)
+        }
+        guard let value = encoded as? NSDictionary,
+              let keys = value.allKeys as? [String],
+              Set(keys).isSubset(of: [
+                "guestIdentityIntent", "clipboardPolicy",
+                "desktopRuntimePreference", "desktopGraphicsPreference",
+              ]), keys.count == Set(keys).count else {
+            return nil
+        }
+
+        var identity = DoryVMGuestIdentityIntent.unspecified
+        if let encodedIdentity = value["guestIdentityIntent"] {
+            guard let rawIdentity = encodedIdentity as? NSDictionary,
+                  let identityKeys = rawIdentity.allKeys as? [String],
+                  Set(identityKeys).isSubset(of: ["account", "desktop"]),
+                  identityKeys.count == Set(identityKeys).count else { return nil }
+            if let encodedAccount = rawIdentity["account"] {
+                guard let raw = encodedAccount as? NSDictionary,
+                      let rawKeys = raw.allKeys as? [String],
+                      Set(rawKeys).isSubset(of: ["username", "numericUserID"]),
+                      rawKeys.count == Set(rawKeys).count else { return nil }
+                let username: String?
+                if let encoded = raw["username"] {
+                    guard let string = encoded as? String,
+                          DoryVMGuestAccountIntent.isValidUsername(string) else { return nil }
+                    username = string
+                } else { username = nil }
+                let numericUserID: UInt32?
+                if let encoded = raw["numericUserID"] {
+                    guard let number = encoded as? NSNumber,
+                          CFGetTypeID(number) != CFBooleanGetTypeID(),
+                          number.doubleValue == Double(number.uint32Value),
+                          DoryVMGuestAccountIntent.isValidNumericUserID(number.uint32Value)
+                    else { return nil }
+                    numericUserID = number.uint32Value
+                } else { numericUserID = nil }
+                let account = DoryVMGuestAccountIntent(
+                    username: username,
+                    numericUserID: numericUserID
+                )
+                guard account.isValidForPersistence else { return nil }
+                identity.account = account
+            }
+            if let encodedDesktop = rawIdentity["desktop"] {
+                guard let raw = encodedDesktop as? NSDictionary,
+                      let rawKeys = raw.allKeys as? [String],
+                      Set(rawKeys).isSubset(of: [
+                        "distributionIdentifier", "displayName", "version",
+                        "desktopEnvironment",
+                      ]), rawKeys.count == Set(rawKeys).count else { return nil }
+                func string(_ key: String, validating: (String) -> Bool) -> String? {
+                    guard let encoded = raw[key] else { return nil }
+                    guard let value = encoded as? String, validating(value) else { return nil }
+                    return value
+                }
+                let distribution = string(
+                    "distributionIdentifier",
+                    validating: DoryVMDesktopIdentityIntent.isValidDistributionIdentifier
+                )
+                if raw["distributionIdentifier"] != nil, distribution == nil { return nil }
+                let displayName = string(
+                    "displayName", validating: DoryVMDesktopIdentityIntent.isValidLabel
+                )
+                if raw["displayName"] != nil, displayName == nil { return nil }
+                let version = string(
+                    "version", validating: DoryVMDesktopIdentityIntent.isValidLabel
+                )
+                if raw["version"] != nil, version == nil { return nil }
+                let desktopEnvironment = string(
+                    "desktopEnvironment", validating: DoryVMDesktopIdentityIntent.isValidLabel
+                )
+                if raw["desktopEnvironment"] != nil, desktopEnvironment == nil { return nil }
+                let desktop = DoryVMDesktopIdentityIntent(
+                    distributionIdentifier: distribution,
+                    displayName: displayName,
+                    version: version,
+                    desktopEnvironment: desktopEnvironment
+                )
+                guard desktop.isValidForPersistence else { return nil }
+                identity.desktop = desktop
+            }
+        }
+
+        let clipboard: DoryVMClipboardPolicy?
+        if let encoded = value["clipboardPolicy"] {
+            guard let raw = encoded as? NSDictionary,
+                  let rawKeys = raw.allKeys as? [String],
+                  Set(rawKeys) == ["text", "image", "files"],
+                  let text = (raw["text"] as? String).flatMap(DoryVMClipboardDirection.init),
+                  let image = (raw["image"] as? String).flatMap(DoryVMClipboardDirection.init),
+                  let files = (raw["files"] as? String).flatMap(DoryVMClipboardDirection.init)
+            else { return nil }
+            clipboard = DoryVMClipboardPolicy(text: text, image: image, files: files)
+        } else { clipboard = nil }
+        let runtime: DoryDesktopVMMPreference?
+        if let encoded = value["desktopRuntimePreference"] {
+            guard let raw = encoded as? String,
+                  let parsed = DoryDesktopVMMPreference(rawValue: raw) else { return nil }
+            runtime = parsed
+        } else { runtime = nil }
+        let graphics: DoryDesktopGraphicsPreference?
+        if let encoded = value["desktopGraphicsPreference"] {
+            guard let raw = encoded as? String,
+                  let parsed = DoryDesktopGraphicsPreference(rawValue: raw) else { return nil }
+            graphics = parsed
+        } else { graphics = nil }
+        return ParsedMachineTypedSettings(value: DorydMachineTypedSettings(
+            guestIdentityIntent: identity,
+            clipboardPolicy: clipboard,
+            runtimePreference: runtime,
+            graphicsPreference: graphics
+        ))
     }
 
     private struct ParsedInstalledDesktopPayloadReceipt {

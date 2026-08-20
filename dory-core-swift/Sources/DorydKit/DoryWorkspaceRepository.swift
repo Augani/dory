@@ -136,8 +136,9 @@ public struct DoryWorkspaceLegacyProjectionReconcileResult: Sendable, Equatable 
 /// paths or credentials because `DoryVirtualMachineDefinition` contains resolver references only.
 public final class DoryWorkspaceRepository: @unchecked Sendable {
     public static let recordFileName = "workspace-v2.json"
+    public static let recordTemporaryPrefix = ".workspace-v2."
 
-    private static let temporaryPrefix = ".workspace-v2."
+    private static let temporaryPrefix = recordTemporaryPrefix
     private static let maximumRecordBytes = 16 * 1_024 * 1_024
 
     public let root: String

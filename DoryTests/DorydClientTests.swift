@@ -168,6 +168,46 @@ struct DorydClientTests {
         #expect(try await client.engineSleep() == DorydCommandResult(ok: true, message: ""))
     }
 
+    @Test func machineListPrefersExactTypedSettingsAndRejectsMalformedClaims() async throws {
+        let listener = NSXPCListener.anonymous()
+        let service = FakeDorydService()
+        service.setMachineTypedSettings("dev", [
+            "guestIdentityIntent": [
+                "account": [
+                    "username": "developer",
+                    "numericUserID": UInt32(1_000),
+                ] as NSDictionary,
+                "desktop": [
+                    "distributionIdentifier": "ubuntu",
+                    "displayName": "Ubuntu",
+                ] as NSDictionary,
+            ] as NSDictionary,
+            "clipboardPolicy": [
+                "text": "bidirectional", "image": "bidirectional", "files": "off",
+            ] as NSDictionary,
+            "desktopRuntimePreference": "accelerated",
+            "desktopGraphicsPreference": "virgl-venus",
+        ])
+        let delegate = FakeDorydListenerDelegate(service: service)
+        listener.delegate = delegate
+        listener.resume()
+        defer { listener.invalidate() }
+
+        let client = DorydClient(endpoint: listener.endpoint)
+        let status = try #require((try await client.machineList()).first { $0.id == "dev" })
+        #expect(status.environment.isEmpty)
+        #expect(status.typedSettings?.guestIdentityIntent.account?.username == "developer")
+        #expect(status.typedSettings?.guestIdentityIntent.desktop?.distributionIdentifier
+            == "ubuntu")
+        #expect(status.typedSettings?.runtimePreference == .accelerated)
+        #expect(status.typedSettings?.graphicsPreference == .virglVenus)
+
+        service.setMachineTypedSettings("dev", ["unknown": "claim"])
+        await #expect(throws: (any Error).self) {
+            _ = try await client.machineList()
+        }
+    }
+
     @MainActor
     @Test func readsDoctorJSONAndIncidentsOverXPC() async throws {
         let listener = NSXPCListener.anonymous()
@@ -2353,6 +2393,18 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
                 ["key": $0.key, "value": $0.value] as NSDictionary
             }
         )
+    }
+
+    func setMachineTypedSettings(_ machineID: String, _ typedSettings: NSDictionary) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let current = machines[machineID]?.mutableCopy() as? NSMutableDictionary else {
+            return
+        }
+        current["typedSettings"] = typedSettings
+        current["env"] = [] as [NSDictionary]
+        current["displayMode"] = "desktop"
+        machines[machineID] = current.copy() as? NSDictionary
     }
     var machineStopCount: Int {
         lock.lock(); defer { lock.unlock() }

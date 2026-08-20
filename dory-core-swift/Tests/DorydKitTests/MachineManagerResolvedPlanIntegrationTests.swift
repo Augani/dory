@@ -711,10 +711,118 @@ struct MachineManagerResolvedPlanIntegrationTests {
         }
     }
 
+    @Test("native typed settings persist outside machine environment")
+    func nativeTypedSettingsAreWorkspaceAuthority() throws {
+        let state = try makeState("native-typed-settings")
+        defer { try? FileManager.default.removeItem(atPath: state) }
+        let manager = makeManager(state: state, policy: .perWorkspaceAuthority)
+        let created = try manager.create(
+            DoryMachineConfiguration(
+                id: "typed",
+                kernelPath: doryTestKernelPath,
+                rootfsPath: doryTestRootfsPath,
+                memoryMB: 2_048,
+                cpuCount: 2,
+                displayMode: .desktop
+            ),
+            typedSettings: DoryMachineTypedSettingsPatch(
+                guestUsername: .set("developer"),
+                guestNumericUserID: .set(1_000),
+                desktopDistributionIdentifier: .set("ubuntu"),
+                desktopDisplayName: .set("Ubuntu"),
+                clipboardPolicy: .set(.legacyDesktop(.bidirectional)),
+                runtimePreference: .set(.accelerated),
+                graphicsPreference: .set(.virglVenus)
+            )
+        )
+        #expect(created.environment.isEmpty)
+        #expect(created.typedSettings?.guestIdentityIntent.account?.username == "developer")
+        #expect(created.typedSettings?.runtimePreference == .accelerated)
+
+        let machineData = try Data(contentsOf: URL(
+            fileURLWithPath: state + "/typed/machine.json"
+        ))
+        let persistedMachine = try JSONDecoder().decode(
+            DoryMachineConfiguration.self,
+            from: machineData
+        )
+        #expect(persistedMachine.environment.isEmpty)
+        let repository = DoryWorkspaceRepository(root: state)
+        let createdRecord = try repository.readPersistedRecord(id: "typed")
+        #expect(createdRecord.legacyConfigurationSHA256 == nil)
+        #expect(createdRecord.legacyMigrationFactsSHA256 == nil)
+        #expect(createdRecord.definition.guestIdentityIntent.account?.username == "developer")
+        #expect(createdRecord.definition.backendPreference.backend == .doryHypervisor)
+        #expect(createdRecord.definition.graphics.acceptableLevels == [.hardwareAccelerated3D])
+        let snapshot = try manager.snapshot(id: "typed", snapshotID: "typed-baseline")
+        #expect(snapshot.typedSettings == created.typedSettings)
+
+        let updated = try manager.update(
+            id: "typed",
+            typedSettingsPatch: DoryMachineTypedSettingsPatch(
+                guestUsername: .set("builder"),
+                desktopDisplayName: .set("Ubuntu Builder"),
+                graphicsPreference: .set(.software)
+            )
+        )
+        #expect(updated.environment.isEmpty)
+        #expect(updated.typedSettings?.guestIdentityIntent.account?.username == "builder")
+        #expect(updated.typedSettings?.guestIdentityIntent.account?.numericUserID == 1_000)
+        #expect(updated.typedSettings?.graphicsPreference == .software)
+        let updatedRecord = try repository.readPersistedRecord(id: "typed")
+        #expect(updatedRecord.definition.lifecycle.revision == 2)
+        #expect(updatedRecord.definition.guestIdentityIntent.desktop?.displayName
+            == "Ubuntu Builder")
+        #expect(updatedRecord.definition.guestIdentityIntent.desktop?.distributionIdentifier
+            == "ubuntu")
+        #expect(updatedRecord.definition.graphics.acceptableLevels == [.software])
+        _ = try manager.update(id: "typed")
+        #expect(try repository.readPersistedRecord(id: "typed").definition.lifecycle.revision == 2)
+
+        let clone = try manager.cloneSnapshot(
+            machineID: "typed",
+            snapshotID: snapshot.id,
+            newID: "typed-clone"
+        )
+        #expect(clone.environment.isEmpty)
+        #expect(clone.typedSettings == created.typedSettings)
+        let cloneRecord = try repository.readPersistedRecord(id: "typed-clone")
+        #expect(cloneRecord.legacyConfigurationSHA256 == nil)
+        #expect(cloneRecord.definition.guestIdentityIntent.account?.username == "developer")
+
+        var snapshotWithLegacyEnvironment = snapshot
+        snapshotWithLegacyEnvironment.environment = ["SHOULD_NOT_PERSIST": "opaque-secret"]
+        try JSONEncoder().encode(snapshotWithLegacyEnvironment).write(
+            to: URL(fileURLWithPath: state + "/typed/snapshots/typed-baseline.json")
+        )
+
+        let restored = try manager.restoreSnapshot(
+            machineID: "typed",
+            snapshotID: snapshot.id
+        )
+        #expect(restored.environment.isEmpty)
+        #expect(restored.typedSettings == created.typedSettings)
+        #expect(restored.runtimeIdentity.mode == .requiresReplanning)
+        let restoredRecord = try repository.readPersistedRecord(id: "typed")
+        #expect(restoredRecord.definition.lifecycle.revision == 3)
+        #expect(restoredRecord.definition.guestIdentityIntent.account?.username == "developer")
+        #expect(restoredRecord.definition.graphics.acceptableLevels == [.hardwareAccelerated3D])
+
+        let restarted = makeManager(state: state, policy: .perWorkspaceAuthority)
+        let restartedStatus = try #require(restarted.status(id: "typed"))
+        #expect(restartedStatus.environment.isEmpty)
+        #expect(restartedStatus.typedSettings == created.typedSettings)
+        #expect(restartedStatus.runtimeIdentity.mode == .requiresReplanning)
+    }
+
     @Test("native creation authority is durable before machine metadata becomes discoverable")
     func nativeCreationCrashOrderingNeverMintsLegacy() throws {
         let state = try makeState("native-create-order")
         defer { try? FileManager.default.removeItem(atPath: state) }
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o700],
+            ofItemAtPath: state
+        )
         let directory = state + "/native"
         try FileManager.default.createDirectory(
             atPath: directory,
@@ -755,6 +863,22 @@ struct MachineManagerResolvedPlanIntegrationTests {
             [.posixPermissions: 0o600],
             ofItemAtPath: markerPath
         )
+        let rootfsBytes = try #require(
+            (try FileManager.default.attributesOfItem(atPath: rootfs)[.size] as? NSNumber)?
+                .uint64Value
+        )
+        let interruptedDefinition = try DoryMachineConfigurationMigrationBridge.migrate(
+            machine,
+            facts: DoryMachineConfigurationMigrationFacts(
+                guestArchitecture: .arm64,
+                systemDiskCapacityBytes: rootfsBytes,
+                lifecycle: DoryVMLifecycleMetadata(
+                    createdAtUnixMilliseconds: 1,
+                    updatedAtUnixMilliseconds: 1
+                )
+            )
+        ).definition
+        try DoryWorkspaceRepository(root: state).create(interruptedDefinition)
         try DoryMachineRuntimeIdentityStore(root: state).publish(
             expected,
             machineID: "native",
