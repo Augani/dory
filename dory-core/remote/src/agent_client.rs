@@ -134,6 +134,19 @@ impl AgentClient {
         timeout_ms: u64,
         output_limit_bytes: u64,
     ) -> Result<ExecResponse, RemoteError> {
+        self.exec_with_input(argv, cwd, env, timeout_ms, output_limit_bytes, Vec::new())
+            .await
+    }
+
+    pub async fn exec_with_input(
+        &self,
+        argv: Vec<String>,
+        cwd: String,
+        env: Vec<(String, String)>,
+        timeout_ms: u64,
+        output_limit_bytes: u64,
+        stdin: Vec<u8>,
+    ) -> Result<ExecResponse, RemoteError> {
         let env = env
             .into_iter()
             .map(|(key, value)| ExecEnv { key, value })
@@ -152,6 +165,7 @@ impl AgentClient {
                     env,
                     timeout_ms,
                     output_limit_bytes,
+                    stdin,
                 }),
                 server_timeout + EXEC_GRACE,
             )

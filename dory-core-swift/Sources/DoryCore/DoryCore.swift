@@ -380,6 +380,27 @@ public final class DoryAgentControlHandle: @unchecked Sendable {
         return DoryExecResult(raw)
     }
 
+    public func execWithInput(
+        argv: [String],
+        stdin: Data,
+        cwd: String = "",
+        env: [DoryExecEnvironment] = [],
+        timeoutMs: UInt64 = 30_000,
+        outputLimitBytes: UInt64 = 1024 * 1024
+    ) throws -> DoryExecResult {
+        let raw = try withControl {
+            try $0.execWithInput(
+                argv: argv,
+                cwd: cwd,
+                env: env.map(\.ffiValue),
+                timeoutMs: timeoutMs,
+                outputLimitBytes: outputLimitBytes,
+                stdin: stdin
+            )
+        }
+        return DoryExecResult(raw)
+    }
+
     public func close() {
         lock.lock()
         control = nil
@@ -457,6 +478,27 @@ public final class DoryRemoteAgentHandle: @unchecked Sendable {
                 env: env.map(\.ffiValue),
                 timeoutMs: timeoutMs,
                 outputLimitBytes: outputLimitBytes
+            )
+        }
+        return DoryExecResult(raw)
+    }
+
+    public func execWithInput(
+        argv: [String],
+        stdin: Data,
+        cwd: String = "",
+        env: [DoryExecEnvironment] = [],
+        timeoutMs: UInt64 = 30_000,
+        outputLimitBytes: UInt64 = 1024 * 1024
+    ) throws -> DoryExecResult {
+        let raw = try withRemote {
+            try $0.execWithInput(
+                argv: argv,
+                cwd: cwd,
+                env: env.map(\.ffiValue),
+                timeoutMs: timeoutMs,
+                outputLimitBytes: outputLimitBytes,
+                stdin: stdin
             )
         }
         return DoryExecResult(raw)

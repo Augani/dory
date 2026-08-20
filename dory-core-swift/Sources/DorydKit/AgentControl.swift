@@ -32,7 +32,35 @@ public protocol AgentControlClient: Sendable {
         timeoutMs: UInt64,
         outputLimitBytes: UInt64
     ) throws -> DoryExecResult
+    func execWithInput(
+        argv: [String],
+        stdin: Data,
+        cwd: String,
+        env: [DoryExecEnvironment],
+        timeoutMs: UInt64,
+        outputLimitBytes: UInt64
+    ) throws -> DoryExecResult
     func close()
+}
+
+public extension AgentControlClient {
+    func execWithInput(
+        argv: [String],
+        stdin: Data,
+        cwd: String,
+        env: [DoryExecEnvironment],
+        timeoutMs: UInt64,
+        outputLimitBytes: UInt64
+    ) throws -> DoryExecResult {
+        guard stdin.isEmpty else { throw AgentControlError.standardInputUnsupported }
+        return try exec(
+            argv: argv,
+            cwd: cwd,
+            env: env,
+            timeoutMs: timeoutMs,
+            outputLimitBytes: outputLimitBytes
+        )
+    }
 }
 
 extension DoryAgentControlHandle: AgentControlClient {}
@@ -104,6 +132,24 @@ public final class AgentControl: @unchecked Sendable {
         )
     }
 
+    public func execWithInput(
+        argv: [String],
+        stdin: Data,
+        cwd: String = "",
+        env: [DoryExecEnvironment] = [],
+        timeoutMs: UInt64 = 30_000,
+        outputLimitBytes: UInt64 = 1024 * 1024
+    ) throws -> DoryExecResult {
+        try connectedClient().execWithInput(
+            argv: argv,
+            stdin: stdin,
+            cwd: cwd,
+            env: env,
+            timeoutMs: timeoutMs,
+            outputLimitBytes: outputLimitBytes
+        )
+    }
+
     public func disconnect() {
         lock.lock()
         let current = client
@@ -136,6 +182,10 @@ public final class AgentControl: @unchecked Sendable {
     deinit {
         disconnect()
     }
+}
+
+public enum AgentControlError: Error, Sendable {
+    case standardInputUnsupported
 }
 
 public enum LocalAgentControlError: Error, Sendable, Equatable, CustomStringConvertible {

@@ -174,6 +174,28 @@ impl AgentControl {
         ))?;
         Ok(exec_result(out))
     }
+
+    pub fn exec_with_input(
+        &self,
+        argv: Vec<String>,
+        cwd: String,
+        env: Vec<ExecEnvFfi>,
+        timeout_ms: u64,
+        output_limit_bytes: u64,
+        stdin: Vec<u8>,
+    ) -> Result<ExecResultFfi, RemoteFfiError> {
+        let guard = self.runtime.lock().unwrap();
+        let runtime = guard.as_ref().ok_or_else(shutdown_error)?;
+        let out = runtime.block_on(self.client.exec_with_input(
+            argv,
+            cwd,
+            env.into_iter().map(|item| (item.key, item.value)).collect(),
+            timeout_ms,
+            output_limit_bytes,
+            stdin,
+        ))?;
+        Ok(exec_result(out))
+    }
 }
 
 impl Drop for AgentControl {
@@ -271,6 +293,19 @@ mod tests {
             .expect("exec");
         assert_eq!(exec.exit_code, 0);
         assert_eq!(exec.stdout, b"ffi-exec");
+        let input = vec![0, 1, 2, 0xff, b'\n'];
+        let echoed = control
+            .exec_with_input(
+                vec!["/bin/cat".into()],
+                String::new(),
+                Vec::new(),
+                5_000,
+                1024,
+                input.clone(),
+            )
+            .expect("exec with input");
+        assert_eq!(echoed.exit_code, 0);
+        assert_eq!(echoed.stdout, input);
         let _ = std::fs::remove_file(&path);
     }
 

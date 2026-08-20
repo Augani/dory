@@ -204,6 +204,29 @@ impl RemoteAgent {
         Ok(exec_result(out))
     }
 
+    /// Run a bounded command and deliver a binary-safe stdin payload through the agent RPC.
+    pub fn exec_with_input(
+        &self,
+        argv: Vec<String>,
+        cwd: String,
+        env: Vec<ExecEnvFfi>,
+        timeout_ms: u64,
+        output_limit_bytes: u64,
+        stdin: Vec<u8>,
+    ) -> Result<ExecResultFfi, RemoteFfiError> {
+        let guard = self.runtime.lock().unwrap();
+        let runtime = guard.as_ref().ok_or_else(shutdown_error)?;
+        let out = runtime.block_on(self.agent.client.exec_with_input(
+            argv,
+            cwd,
+            env.into_iter().map(|item| (item.key, item.value)).collect(),
+            timeout_ms,
+            output_limit_bytes,
+            stdin,
+        ))?;
+        Ok(exec_result(out))
+    }
+
     /// Push `local_root` to `remote_root`, making the remote an exact replica (host-authoritative).
     pub fn push(
         &self,

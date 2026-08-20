@@ -64,6 +64,9 @@ message ExecRequest {
   repeated ExecEnv env = 3;
   uint64 timeout_ms = 4;
   uint64 output_limit_bytes = 5;
+  // Optional bounded stdin payload. This is binary-safe so desktop integration can transfer
+  // clipboard images without placing their contents in argv or the environment.
+  bytes stdin = 6;
 }
 message ExecResponse {
   int32 exit_code = 1;

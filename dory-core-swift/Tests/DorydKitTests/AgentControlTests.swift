@@ -25,6 +25,10 @@ final class AgentControlTests: XCTestCase {
         let exec = try control.exec(argv: ["/bin/echo", "ok"], cwd: "/tmp")
         XCTAssertEqual(exec.exitCode, 0)
         XCTAssertEqual(String(data: exec.stdout, encoding: .utf8), "ok\n")
+        XCTAssertThrowsError(try control.execWithInput(
+            argv: ["/bin/cat"],
+            stdin: Data("payload".utf8)
+        ))
         XCTAssertEqual(counter.value, 1)
 
         control.disconnect()
