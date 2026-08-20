@@ -201,6 +201,7 @@ let idlePolicyStore = IdlePolicyStore(home: dorydEnvironment.home, environment: 
     dockerTier?.containerSummariesForIdle() ?? .ok([])
 }
 var sleepHandlers: [HostSleepHandling] = []
+var wakeHandlers: [HostWakeHandling] = []
 var clockSyncers: [WakeClockSyncing] = []
 if let dockerTier {
     sleepHandlers.append(PolicyAwareHostSleepHandler(
@@ -213,10 +214,14 @@ if let dockerTier {
     clockSyncers.append(dockerTier)
 }
 if let machineManager {
+    let machinePowerController = MachineHostPowerController(manager: machineManager)
+    sleepHandlers.append(machinePowerController)
+    wakeHandlers.append(machinePowerController)
     clockSyncers.append(machineManager)
 }
 let wakeCoordinator = HostWakeCoordinator(
     sleepHandlers: sleepHandlers,
+    wakeHandlers: wakeHandlers,
     clockSyncers: clockSyncers,
     dnsProbe: SystemDNSProbe(targets: dnsTargets),
     networkReconcilers: [corporateConnectivity],

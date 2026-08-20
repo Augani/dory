@@ -125,6 +125,59 @@ final class MachineManagerTests: XCTestCase {
         XCTAssertNil(stopped.pid)
     }
 
+    func testHostPowerControllerDurablyResumesOnlyMachinesItPaused() throws {
+        let base = "/tmp/dory-machine-host-power-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let manager = MachineManager(configuration: MachineManagerConfiguration(
+            vmmExecutablePath: "/bin/sleep",
+            stateDirectory: base,
+            baseArguments: ["30"],
+            passMachineArguments: false,
+            requiresReadyHandoff: false
+        ))
+        defer {
+            for id in ["automatic", "stopped", "manual"] {
+                if manager.status(id: id)?.state == .paused { _ = try? manager.resume(id: id) }
+                if manager.status(id: id)?.state == .running { _ = try? manager.stop(id: id) }
+                try? manager.delete(id: id)
+            }
+            try? FileManager.default.removeItem(atPath: base)
+        }
+
+        for id in ["automatic", "stopped", "manual"] {
+            _ = try manager.create(DoryMachineConfiguration(
+                id: id,
+                kernelPath: doryTestKernelPath,
+                rootfsPath: doryTestRootfsPath,
+                displayMode: .desktop
+            ))
+            XCTAssertEqual(try manager.start(id: id).state, .running)
+        }
+        XCTAssertEqual(try manager.pause(id: "manual").state, .paused)
+
+        let beforeSleep = MachineHostPowerController(manager: manager)
+        let sleep = beforeSleep.prepareForHostSleep(now: Date(timeIntervalSince1970: 100))
+        XCTAssertTrue(sleep.attempted)
+        XCTAssertTrue(sleep.slept, sleep.detail ?? "")
+        XCTAssertEqual(manager.status(id: "automatic")?.state, .paused)
+        XCTAssertEqual(manager.status(id: "stopped")?.state, .paused)
+        XCTAssertEqual(manager.status(id: "manual")?.state, .paused)
+        XCTAssertEqual(try manager.stop(id: "stopped").state, .stopped)
+
+        // Recreate the controller to prove the resume cause is durable rather than an in-memory
+        // set tied to the pre-sleep daemon object.
+        let afterWake = MachineHostPowerController(manager: manager)
+        let wake = afterWake.recoverAfterHostWake(now: Date(timeIntervalSince1970: 200))
+        XCTAssertTrue(wake.attempted)
+        XCTAssertTrue(wake.recovered, wake.detail ?? "")
+        XCTAssertEqual(manager.status(id: "automatic")?.state, .running)
+        XCTAssertEqual(manager.status(id: "stopped")?.state, .stopped)
+        XCTAssertEqual(manager.status(id: "manual")?.state, .paused)
+
+        let repeatedWake = afterWake.recoverAfterHostWake(now: Date(timeIntervalSince1970: 201))
+        XCTAssertFalse(repeatedWake.attempted)
+        XCTAssertTrue(repeatedWake.recovered)
+    }
+
     func testRestartReplacesTheHelperFromRunningAndPausedStates() throws {
         let base = "/tmp/dory-machine-restart-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         let manager = MachineManager(configuration: MachineManagerConfiguration(

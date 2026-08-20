@@ -43,8 +43,10 @@ final class HostWakeCoordinatorTests: XCTestCase {
         ])
         let writer = IncidentWriter(path: base + "/incidents.jsonl")
         let network = TestNetworkReconciler()
+        let wake = TestWakeHandler()
         let coordinator = HostWakeCoordinator(
             powerSource: source,
+            wakeHandlers: [wake],
             clockSyncers: [clock],
             dnsProbe: dns,
             networkReconcilers: [network],
@@ -54,6 +56,8 @@ final class HostWakeCoordinatorTests: XCTestCase {
         try coordinator.start()
         source.emitWake()
 
+        XCTAssertEqual(wake.wakeDates.count, 1)
+        XCTAssertEqual(coordinator.lastWake?.actions.first?.recovered, true)
         XCTAssertEqual(clock.syncDates.count, 1)
         XCTAssertEqual(dns.probeCount, 1)
         XCTAssertEqual(network.wakeDates.count, 1)
@@ -62,6 +66,7 @@ final class HostWakeCoordinatorTests: XCTestCase {
         XCTAssertEqual(coordinator.lastWake?.networkReconciliations, ["network reconciled"])
         let incident = try XCTUnwrap(writer.read(limit: 1).first)
         XCTAssertEqual(incident.type, "host.wake")
+        XCTAssertTrue(incident.detail?.contains("wake_actions=1") ?? false)
         XCTAssertTrue(incident.detail?.contains("dns_ok=1/1") ?? false)
     }
 
@@ -160,6 +165,29 @@ private final class TestClockSyncer: WakeClockSyncing, @unchecked Sendable {
         dates.append(now)
         lock.unlock()
         return AgentClockSyncResult(name: "test", attempted: true, synced: true)
+    }
+}
+
+private final class TestWakeHandler: HostWakeHandling, @unchecked Sendable {
+    private let lock = NSLock()
+    private var dates: [Date] = []
+
+    var wakeDates: [Date] {
+        lock.lock()
+        defer { lock.unlock() }
+        return dates
+    }
+
+    func recoverAfterHostWake(now: Date) -> HostWakeActionResult {
+        lock.lock()
+        dates.append(now)
+        lock.unlock()
+        return HostWakeActionResult(
+            name: "test",
+            attempted: true,
+            recovered: true,
+            detail: "recovered"
+        )
     }
 }
 

@@ -4709,7 +4709,7 @@ public final class MachineManager: @unchecked Sendable {
     public func memorySnapshots() -> [GuestMemorySnapshot] {
         list().compactMap { status in
             if status.state == .paused {
-                let residentMB = max(1, status.currentBalloonTargetMB ?? status.memoryMB)
+                let residentMB = max(1, status.currentBalloonTargetMB)
                 return GuestMemorySnapshot(
                     id: "machine.\(status.id)",
                     kind: .virtualMachine,
