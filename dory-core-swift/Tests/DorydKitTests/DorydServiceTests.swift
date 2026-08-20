@@ -5,16 +5,6 @@ import DoryOperations
 import XCTest
 
 final class DorydServiceTests: XCTestCase {
-    private static func environmentValues(_ body: NSDictionary) -> [String: String] {
-        let rows = body["env"] as? [NSDictionary] ?? []
-        return Dictionary(uniqueKeysWithValues: rows.compactMap { row in
-            guard let key = row["key"] as? String, let value = row["value"] as? String else {
-                return nil
-            }
-            return (key, value)
-        })
-    }
-
     func testPublishedPortRepairDetailUsesValidatedGvproxyReceiptCounts() {
         let startedAt = Date()
         let receipt = PublishedPortReconcileReceipt(
@@ -1103,10 +1093,13 @@ final class DorydServiceTests: XCTestCase {
             XCTAssertTrue(ok, message)
             XCTAssertEqual(body["state"] as? String, "created")
             XCTAssertEqual(body["address"] as? String, "192.168.215.40")
-            let values = Self.environmentValues(body)
-            XCTAssertEqual(values["DORY_GUEST_USER"], "developer")
-            XCTAssertEqual(values["DORY_GUEST_UID"], "1000")
-            XCTAssertEqual(values["DORY_CLIPBOARD_POLICY"], "off")
+            XCTAssertNil(body["env"])
+            let typed = body["typedSettings"] as? NSDictionary
+            let identity = typed?["guestIdentityIntent"] as? NSDictionary
+            let account = identity?["account"] as? NSDictionary
+            XCTAssertEqual(account?["username"] as? String, "developer")
+            XCTAssertEqual((account?["numericUserID"] as? NSNumber)?.uint32Value, 1_000)
+            XCTAssertNil(typed?["clipboardPolicy"])
             create.fulfill()
         }
         wait(for: [create], timeout: 5)
@@ -1130,8 +1123,11 @@ final class DorydServiceTests: XCTestCase {
             let statuses = body as? [NSDictionary]
             XCTAssertEqual(statuses?.first?["id"] as? String, "dev")
             XCTAssertEqual(statuses?.first?["address"] as? String, "192.168.215.40")
-            let env = statuses?.first?["env"] as? [NSDictionary]
-            XCTAssertTrue(env?.contains { $0["value"] as? String == "developer" } == true)
+            XCTAssertNil(statuses?.first?["env"])
+            let typed = statuses?.first?["typedSettings"] as? NSDictionary
+            let identity = typed?["guestIdentityIntent"] as? NSDictionary
+            let account = identity?["account"] as? NSDictionary
+            XCTAssertEqual(account?["username"] as? String, "developer")
             list.fulfill()
         }
         wait(for: [list], timeout: 5)
@@ -1172,10 +1168,12 @@ final class DorydServiceTests: XCTestCase {
             XCTAssertEqual(shares?.first?["hostPath"] as? String, share)
             XCTAssertEqual(shares?.first?["guestPath"] as? String, "/workspace/src")
             XCTAssertEqual(shares?.first?["readOnly"] as? Bool, true)
-            let values = Self.environmentValues(body)
-            XCTAssertEqual(values["DORY_GUEST_USER"], "builder")
-            XCTAssertEqual(values["DORY_GUEST_UID"], "1000")
-            XCTAssertEqual(values["DORY_CLIPBOARD_POLICY"], "off")
+            XCTAssertNil(body["env"])
+            let typed = body["typedSettings"] as? NSDictionary
+            let identity = typed?["guestIdentityIntent"] as? NSDictionary
+            let account = identity?["account"] as? NSDictionary
+            XCTAssertEqual(account?["username"] as? String, "builder")
+            XCTAssertEqual((account?["numericUserID"] as? NSNumber)?.uint32Value, 1_000)
             update.fulfill()
         }
         wait(for: [update], timeout: 5)
@@ -1395,14 +1393,17 @@ final class DorydServiceTests: XCTestCase {
             "desktopGraphicsPreference": "virgl-venus",
         ]) { ok, body, message in
             XCTAssertTrue(ok, message)
-            let values = Self.environmentValues(body)
-            XCTAssertEqual(values["DORY_GUEST_USER"], "developer")
-            XCTAssertEqual(values["DORY_GUEST_UID"], "1000")
-            XCTAssertEqual(values["DORY_DESKTOP_DISTRO"], "ubuntu")
-            XCTAssertEqual(values["DORY_DESKTOP_NAME"], "Ubuntu")
-            XCTAssertEqual(values["DORY_CLIPBOARD_POLICY"], "bidirectional")
-            XCTAssertEqual(values["DORY_DESKTOP_VMM"], "accelerated")
-            XCTAssertEqual(values["DORY_DESKTOP_GRAPHICS"], "virgl-venus")
+            XCTAssertNil(body["env"])
+            let typed = body["typedSettings"] as? NSDictionary
+            let identity = typed?["guestIdentityIntent"] as? NSDictionary
+            let account = identity?["account"] as? NSDictionary
+            let desktop = identity?["desktop"] as? NSDictionary
+            XCTAssertEqual(account?["username"] as? String, "developer")
+            XCTAssertEqual((account?["numericUserID"] as? NSNumber)?.uint32Value, 1_000)
+            XCTAssertEqual(desktop?["distributionIdentifier"] as? String, "ubuntu")
+            XCTAssertEqual(desktop?["displayName"] as? String, "Ubuntu")
+            XCTAssertEqual(typed?["desktopRuntimePreference"] as? String, "accelerated")
+            XCTAssertEqual(typed?["desktopGraphicsPreference"] as? String, "virgl-venus")
             typedCreate.fulfill()
         }
         wait(for: [typedCreate], timeout: 5)
@@ -1418,13 +1419,17 @@ final class DorydServiceTests: XCTestCase {
             "desktopGraphicsPreference": "software",
         ]) { ok, body, message in
             XCTAssertTrue(ok, message)
-            let values = Self.environmentValues(body)
-            XCTAssertEqual(values["DORY_DESKTOP_NAME"], "Ubuntu Legacy")
-            XCTAssertEqual(values["DORY_GUEST_USER"], "../../unsafe-old-user")
-            XCTAssertEqual(values["DORY_GUEST_UID"], "not-a-uid")
-            XCTAssertEqual(values["PRIVATE_TOKEN"], "opaque-legacy-value")
-            XCTAssertEqual(values["DORY_DESKTOP_VMM"], "compatible")
-            XCTAssertEqual(values["DORY_DESKTOP_GRAPHICS"], "software")
+            XCTAssertNil(body["env"])
+            XCTAssertFalse(body.description.contains("opaque-legacy-value"))
+            let typed = body["typedSettings"] as? NSDictionary
+            let identity = typed?["guestIdentityIntent"] as? NSDictionary
+            let account = identity?["account"] as? NSDictionary
+            let desktop = identity?["desktop"] as? NSDictionary
+            XCTAssertNil(account?["username"])
+            XCTAssertNil(account?["numericUserID"])
+            XCTAssertEqual(desktop?["displayName"] as? String, "Ubuntu Legacy")
+            XCTAssertEqual(typed?["desktopRuntimePreference"] as? String, "compatible")
+            XCTAssertEqual(typed?["desktopGraphicsPreference"] as? String, "software")
             typedUpdate.fulfill()
         }
         wait(for: [typedUpdate], timeout: 5)
@@ -1503,7 +1508,7 @@ final class DorydServiceTests: XCTestCase {
         service.machineList { rows, message in
             XCTAssertEqual(message, "")
             let row = (rows as? [NSDictionary])?.first { $0["id"] as? String == "planned" }
-            XCTAssertEqual((row?["env"] as? [NSDictionary])?.count, 0)
+            XCTAssertNil(row?["env"])
             let typed = row?["typedSettings"] as? NSDictionary
             let identity = typed?["guestIdentityIntent"] as? NSDictionary
             let account = identity?["account"] as? NSDictionary

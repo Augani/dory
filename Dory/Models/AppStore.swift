@@ -5078,7 +5078,7 @@ final class AppStore {
                 cpus: status.cpuCount,
                 memoryMB: status.memoryMB.flatMap { Int(exactly: $0) },
                 mounts: status.shares.map(Self.mountPair(fromDoryd:)),
-                env: status.environment,
+                env: [:],
                 virtualMachineSettings: status.typedSettings
                     ?? DorydMachineTypedSettings(
                         legacyEnvironment: status.environment,
@@ -5162,7 +5162,7 @@ final class AppStore {
             .first { !$0.isEmpty } ?? status.state
         let isDesktop = status.displayMode == .desktop
         let isCustomLinux = status.bootMode == .efi
-        let typedSettings = DorydMachineTypedSettings(
+        let typedSettings = status.typedSettings ?? DorydMachineTypedSettings(
             legacyEnvironment: status.environment,
             displayMode: status.displayMode
         )
@@ -5467,7 +5467,7 @@ final class AppStore {
             // EFI machines are user-provided installer workspaces. Boot mode is authoritative;
             // do not depend on the legacy DORY_CUSTOM_LINUX compatibility marker.
             guard status.bootMode != .efi else { continue }
-            let typedSettings = DorydMachineTypedSettings(
+            let typedSettings = status.typedSettings ?? DorydMachineTypedSettings(
                 legacyEnvironment: status.environment,
                 displayMode: status.displayMode
             )

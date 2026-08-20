@@ -70,6 +70,43 @@ struct DoryMachineTypedWriteAuthorityTests {
         #expect(runtime["DORY_DESKTOP_GRAPHICS"] == "software")
     }
 
+    @Test("legacy status projection exposes only bounded typed settings")
+    func safeLegacyStatusProjection() {
+        let snapshot = DoryMachineTypedSettingsSnapshot(
+            legacyEnvironment: [
+                "DORY_GUEST_USER": "developer",
+                "DORY_GUEST_UID": "1000",
+                "DORY_DESKTOP_DISTRO": "ubuntu",
+                "DORY_DESKTOP_NAME": "Ubuntu",
+                "DORY_CLIPBOARD_POLICY": "host-to-guest",
+                "DORY_DESKTOP_VMM": "accelerated",
+                "DORY_DESKTOP_GRAPHICS": "virgl-venus",
+                "PRIVATE_TOKEN": "must-never-cross-xpc",
+            ],
+            displayMode: .desktop
+        )
+
+        #expect(snapshot.guestIdentityIntent.account?.username == "developer")
+        #expect(snapshot.guestIdentityIntent.account?.numericUserID == 1_000)
+        #expect(snapshot.guestIdentityIntent.desktop?.distributionIdentifier == "ubuntu")
+        #expect(snapshot.guestIdentityIntent.desktop?.displayName == "Ubuntu")
+        #expect(snapshot.clipboardPolicy?.text == .hostToGuest)
+        #expect(snapshot.runtimePreference == .accelerated)
+        #expect(snapshot.graphicsPreference == .virglVenus)
+        #expect(snapshot.xpcDictionary.description.contains("must-never-cross-xpc") == false)
+
+        let invalid = DoryMachineTypedSettingsSnapshot(
+            legacyEnvironment: [
+                "DORY_GUEST_USER": "../../unsafe",
+                "DORY_GUEST_UID": "not-a-uid",
+                "PRIVATE_TOKEN": "opaque",
+            ],
+            displayMode: .desktop
+        )
+        #expect(invalid.guestIdentityIntent.account == nil)
+        #expect(invalid.xpcDictionary.description.contains("opaque") == false)
+    }
+
     @Test("update clear is explicit and field scoped")
     func explicitClear() throws {
         let source = DoryMachineTypedSettingsPatch(

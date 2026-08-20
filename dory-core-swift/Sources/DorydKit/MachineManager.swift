@@ -1085,6 +1085,12 @@ public final class MachineManager: @unchecked Sendable {
             runtimeIdentity: initialRuntimeIdentity
         )
         lock.unlock()
+        let typedSettingsSnapshot = try nativeDefinition.map(
+            DoryMachineTypedSettingsSnapshot.init
+        ) ?? DoryMachineTypedSettingsSnapshot(
+            legacyEnvironment: preparedMachine.environment,
+            displayMode: preparedMachine.displayMode
+        )
         return DoryMachineStatus(
             id: preparedMachine.id,
             state: .created,
@@ -1097,7 +1103,7 @@ public final class MachineManager: @unchecked Sendable {
             installerMediaAttached: preparedMachine.installerISOPath != nil,
             shares: preparedMachine.shares,
             environment: preparedMachine.environment,
-            typedSettings: try nativeDefinition.map(DoryMachineTypedSettingsSnapshot.init),
+            typedSettings: typedSettingsSnapshot,
             runtimeIdentity: initialRuntimeIdentity
         )
     }
@@ -3695,6 +3701,10 @@ public final class MachineManager: @unchecked Sendable {
 
     private func statusLocked(id: String, entry: MachineEntry) -> DoryMachineStatus {
         let typedSettings = nativeTypedSettingsSnapshot(id: id)
+            ?? DoryMachineTypedSettingsSnapshot(
+                legacyEnvironment: entry.configuration.environment,
+                displayMode: entry.configuration.displayMode
+            )
         if [.starting, .running].contains(entry.state), entry.process?.isRunningOrRestarting != true {
             return DoryMachineStatus(
                 id: id,

@@ -1616,12 +1616,6 @@ private extension DoryMachineStatus {
             dictionary["runtimeAddress"] = runtimeAddress
         }
         dictionary["shares"] = shares.map(\.xpcDictionary)
-        dictionary["env"] = environment.sorted(by: { $0.key < $1.key }).map { key, value in
-            [
-                "key": key,
-                "value": value,
-            ] as NSDictionary
-        }
         dictionary["handoffFDCount"] = handoffFDCount
         dictionary["memoryMB"] = memoryMB
         dictionary["currentBalloonTargetMB"] = currentBalloonTargetMB

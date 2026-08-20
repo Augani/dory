@@ -955,7 +955,7 @@ struct DorydClientTests {
         #expect(currentSettings.address == "192.168.215.40")
         #expect(currentSettings.displayMode == .desktop)
         #expect(currentSettings.mounts == [MountPair(host: "/Users/me/src", guest: "/workspace/src", readOnly: true)])
-        #expect(currentSettings.env == ["ANTHROPIC_API_KEY": "test-token"])
+        #expect(currentSettings.env.isEmpty)
 
         store.toggleMachine(machine)
         try await waitUntil {
@@ -2440,7 +2440,7 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
             return
         }
         current["typedSettings"] = typedSettings
-        current["env"] = [] as [NSDictionary]
+        current.removeObject(forKey: "env")
         current["displayMode"] = "desktop"
         machines[machineID] = current.copy() as? NSDictionary
     }

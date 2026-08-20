@@ -75,6 +75,74 @@ public struct DoryMachineTypedSettingsSnapshot: Codable, Sendable, Equatable, Ha
         }
     }
 
+    /// Projects only the bounded, non-secret compatibility fields understood by the typed
+    /// machine-settings contract. Opaque legacy environment entries remain daemon-private and
+    /// are never copied into status/XPC diagnostics.
+    public init(
+        legacyEnvironment: [String: String],
+        displayMode: DoryMachineDisplayMode
+    ) {
+        let username = legacyEnvironment[
+            DoryVMGuestAccountIntent.legacyUsernameEnvironmentKey
+        ].flatMap { DoryVMGuestAccountIntent.isValidUsername($0) ? $0 : nil }
+        let numericUserID = legacyEnvironment[
+            DoryVMGuestAccountIntent.legacyNumericUserIDEnvironmentKey
+        ].flatMap(UInt32.init).flatMap {
+            DoryVMGuestAccountIntent.isValidNumericUserID($0) ? $0 : nil
+        }
+        let account = DoryVMGuestAccountIntent(
+            username: username,
+            numericUserID: numericUserID
+        )
+        let desktop: DoryVMDesktopIdentityIntent?
+        if displayMode == .desktop {
+            func safeLabel(_ key: String) -> String? {
+                legacyEnvironment[key].flatMap {
+                    DoryVMDesktopIdentityIntent.isValidLabel($0) ? $0 : nil
+                }
+            }
+            let distributionIdentifier = legacyEnvironment[
+                DoryVMDesktopIdentityIntent.legacyDistributionEnvironmentKey
+            ].flatMap {
+                DoryVMDesktopIdentityIntent.isValidDistributionIdentifier($0) ? $0 : nil
+            }
+            let candidate = DoryVMDesktopIdentityIntent(
+                distributionIdentifier: distributionIdentifier,
+                displayName: safeLabel(
+                    DoryVMDesktopIdentityIntent.legacyDisplayNameEnvironmentKey
+                ),
+                version: safeLabel(
+                    DoryVMDesktopIdentityIntent.legacyVersionEnvironmentKey
+                ),
+                desktopEnvironment: safeLabel(
+                    DoryVMDesktopIdentityIntent.legacyDesktopEnvironmentKey
+                )
+            )
+            desktop = candidate.isValidForPersistence ? candidate : nil
+        } else {
+            desktop = nil
+        }
+        guestIdentityIntent = DoryVMGuestIdentityIntent(
+            account: account.isValidForPersistence ? account : nil,
+            desktop: desktop
+        )
+        if displayMode == .desktop {
+            let clipboard = DoryDesktopClipboardPolicy(environment: legacyEnvironment)
+            clipboardPolicy = DoryVMClipboardDirection(rawValue: clipboard.rawValue)
+                .map(DoryVMClipboardPolicy.legacyDesktop)
+            runtimePreference = (try? DoryDesktopVMMPreference(
+                environment: legacyEnvironment
+            )) ?? .automatic
+            graphicsPreference = (try? DoryDesktopGraphicsPreference(
+                environment: legacyEnvironment
+            )) ?? .automatic
+        } else {
+            clipboardPolicy = nil
+            runtimePreference = nil
+            graphicsPreference = nil
+        }
+    }
+
     public var xpcDictionary: NSDictionary {
         DoryMachineTypedSettingsPatch(
             guestUsername: update(guestIdentityIntent.account?.username),
