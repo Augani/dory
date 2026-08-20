@@ -846,30 +846,7 @@ public struct DoryVirtualMachineDefinition: Codable, Sendable, Equatable {
     }
 
     private static func isSafeResolverReference(_ reference: DoryVMResolverReference) -> Bool {
-        let namespace = Array(reference.namespace.utf8)
-        let identifier = Array(reference.identifier.utf8)
-        guard (1...32).contains(namespace.count),
-              namespace[0] >= 97,
-              namespace[0] <= 122,
-              namespace.dropFirst().allSatisfy({ byte in
-                  (byte >= 97 && byte <= 122)
-                      || (byte >= 48 && byte <= 57)
-                      || byte == 45
-              }),
-              (1...64).contains(identifier.count),
-              isASCIIAlphaNumeric(identifier[0]),
-              identifier.dropFirst().allSatisfy({ byte in
-                  isASCIIAlphaNumeric(byte) || byte == 95 || byte == 46 || byte == 45
-              }) else {
-            return false
-        }
-        let lowercase = reference.identifier.lowercased()
-        let secretPrefixes = [
-            "sk-", "ghp_", "github_pat_", "xoxb-", "xoxp-", "xoxa-", "xoxr-",
-            "bearer-", "password-", "secret-", "token-", "akia",
-        ]
-        return !secretPrefixes.contains(where: lowercase.hasPrefix)
-            && !lowercase.hasPrefix("eyj")
+        reference.isValidForPersistence
     }
 
     private static func bootMediaIsCompatible(
