@@ -94,6 +94,32 @@ public enum DoryInstalledLinuxBootBundle {
         return try readHeader(from: input).descriptor
     }
 
+    /// Verifies the complete immutable bundle without materializing guest boot files. Reading the
+    /// header alone is insufficient at a daemon trust boundary because the embedded kernel or
+    /// initrd may have changed independently of their declared lengths.
+    @discardableResult
+    public static func verifyContents(
+        atPath path: String
+    ) throws -> DoryInstalledLinuxBootDescriptor {
+        let input = try openForReading(path)
+        defer { try? input.close() }
+        let header = try readHeader(from: input)
+        try input.seek(toOffset: header.kernelOffset)
+        let kernelDigest = try hashExactly(
+            from: input,
+            byteCount: header.descriptor.kernelLength
+        )
+        let initrdDigest = try hashExactly(
+            from: input,
+            byteCount: header.descriptor.initrdLength
+        )
+        guard kernelDigest == header.kernelDigest,
+              initrdDigest == header.initrdDigest else {
+            throw DoryInstalledLinuxBootBundleError.digestMismatch
+        }
+        return header.descriptor
+    }
+
     @discardableResult
     public static func materialize(
         fromPath path: String,
@@ -239,6 +265,21 @@ public enum DoryInstalledLinuxBootBundle {
             let count = Int(min(UInt64(copyChunkBytes), remaining))
             let data = try readExactly(from: input, count: count)
             try output.write(contentsOf: data)
+            hasher.update(data: data)
+            remaining -= UInt64(data.count)
+        }
+        return Data(hasher.finalize())
+    }
+
+    private static func hashExactly(
+        from input: FileHandle,
+        byteCount: UInt64
+    ) throws -> Data {
+        var remaining = byteCount
+        var hasher = SHA256()
+        while remaining > 0 {
+            let count = Int(min(UInt64(copyChunkBytes), remaining))
+            let data = try readExactly(from: input, count: count)
             hasher.update(data: data)
             remaining -= UInt64(data.count)
         }

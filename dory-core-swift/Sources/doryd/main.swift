@@ -14,17 +14,18 @@ _ = signal(SIGPIPE, SIG_IGN)
 let env = ProcessInfo.processInfo.environment
 let dorydEnvironment = DorydEnvironment(values: env)
 let dataDriveSelectionAuthority: DoryDataDriveSelectionAuthority
+let dataDrive: DoryDataDrive
 do {
     let requestedDrive = try dorydEnvironment.dataDriveConfiguration()
     let selectionStore = try DoryDataDriveSelectionStore(home: dorydEnvironment.home)
     dataDriveSelectionAuthority = try selectionStore.acquireAuthority()
-    let drive = try selectionStore.prepareSelection(
+    dataDrive = try selectionStore.prepareSelection(
         requestedRoot: requestedDrive.root,
         authority: dataDriveSelectionAuthority
     )
-    let driveID = try drive.readManifest().id.uuidString.lowercased()
+    let driveID = try dataDrive.readManifest().id.uuidString.lowercased()
     FileHandle.standardError.write(
-        Data("doryd: data drive \(driveID) ready at \(drive.root)\n".utf8)
+        Data("doryd: data drive \(driveID) ready at \(dataDrive.root)\n".utf8)
     )
 } catch {
     FileHandle.standardError.write(Data("doryd: data drive unavailable: \(error)\n".utf8))
@@ -63,17 +64,38 @@ let idleController = IdleController()
 let dockerTier = dorydEnvironment.dockerTierConfiguration().map {
     DockerTier(configuration: $0, idleController: idleController)
 }
-let machineManager = dorydEnvironment.machineManagerConfiguration().map { configuration in
-    // Transitional and explicit: existing machines remain launchable until the production trusted
-    // inventory collector is installed. MachineManager's resolved-plan policy fails closed and is
-    // not enabled here without that evidence source.
-    FileHandle.standardError.write(Data(
-        "doryd: VM launch policy legacyCompatibility (trusted resolved-plan inventory unavailable)\n".utf8
-    ))
-    return MachineManager(
-        configuration: configuration,
-        launchPolicy: .legacyCompatibility
+let machineManager = dorydEnvironment.machineManagerConfiguration().flatMap { configuration -> MachineManager? in
+    let readiness = DoryDaemonVirtualMachineProductionTrustFactory().resolve(
+        store: DoryComponentStore(drive: dataDrive),
+        machineConfiguration: configuration
     )
+    switch readiness {
+    case let .ready(context):
+        FileHandle.standardError.write(Data(
+            "doryd: VM launch policy requireResolvedPlan (production trust inventory ready)\n".utf8
+        ))
+        return context.machineManager
+    case let .unavailable(reason):
+        guard reason.permitsLegacyCompatibilityMigration else {
+            // Integrity and runtime verification failures disable VM launch. Falling through to
+            // legacy here would execute the same helper that production trust just rejected.
+            FileHandle.standardError.write(Data(
+                "doryd: VM launch unavailable "
+                    .appending("(\(reason.code.rawValue): \(reason.message))\n").utf8
+            ))
+            return nil
+        }
+        // Explicit migration window: no catalog or a signature-verified schema-v1 catalog has no
+        // qualification authority yet, so the existing compatibility path stays labeled.
+        FileHandle.standardError.write(Data(
+            "doryd: VM launch policy legacyCompatibility "
+                .appending("(\(reason.code.rawValue): \(reason.message))\n").utf8
+        ))
+        return MachineManager(
+            configuration: configuration,
+            launchPolicy: .legacyCompatibility
+        )
+    }
 }
 let sandboxTTLReconciler = machineManager.map { manager in
     SandboxTTLReconciler(

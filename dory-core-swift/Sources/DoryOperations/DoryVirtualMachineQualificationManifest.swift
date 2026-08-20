@@ -140,6 +140,7 @@ public enum DoryVirtualMachineQualificationAuthorityError:
 public struct DoryVerifiedVirtualMachineQualificationAuthority: Sendable {
     public let catalogDigest: String
     public let catalogReleaseVersion: String
+    public let catalogGeneratedAt: String
     public let componentIdentifier: String
     public let componentVersion: String
     public let manifestSHA256: String
@@ -151,6 +152,7 @@ public struct DoryVerifiedVirtualMachineQualificationAuthority: Sendable {
     fileprivate init(
         catalogDigest: String,
         catalogReleaseVersion: String,
+        catalogGeneratedAt: String,
         componentIdentifier: String,
         componentVersion: String,
         manifestSHA256: String,
@@ -160,6 +162,7 @@ public struct DoryVerifiedVirtualMachineQualificationAuthority: Sendable {
     ) {
         self.catalogDigest = catalogDigest
         self.catalogReleaseVersion = catalogReleaseVersion
+        self.catalogGeneratedAt = catalogGeneratedAt
         self.componentIdentifier = componentIdentifier
         self.componentVersion = componentVersion
         self.manifestSHA256 = manifestSHA256
@@ -344,6 +347,7 @@ public enum DoryVirtualMachineQualificationAuthorityResolver {
         return DoryVerifiedVirtualMachineQualificationAuthority(
             catalogDigest: catalogDigest,
             catalogReleaseVersion: cached.catalog.releaseVersion,
+            catalogGeneratedAt: cached.catalog.generatedAt,
             componentIdentifier: installed.id.rawValue,
             componentVersion: installed.version,
             manifestSHA256: declaredAsset.installedSHA256,

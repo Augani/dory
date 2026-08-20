@@ -380,6 +380,84 @@ struct MachineManagerResolvedPlanIntegrationTests {
         }
     }
 
+    @Test("final media mutation is rejected by single-use authorization before process starter")
+    func preSpawnArtifactMutationIsRejected() throws {
+        try withHarness("pre-spawn-media-mutation") { manager, starter, state in
+            let plans = MutablePlanStore()
+            let operations = manager.resolvedLaunchCompatibilityOperations(
+                for: .doryHypervisor
+            )
+            let registry = try rawRegistry(operations: operations)
+            let resolver = ClosureLaunchResolver { request in
+                let mediaPath = state + "/resolved-media"
+                try Data("qualified-media".utf8).write(
+                    to: URL(fileURLWithPath: mediaPath),
+                    options: .atomic
+                )
+                let expectedSHA256 = SHA256.hash(
+                    data: try Data(contentsOf: URL(fileURLWithPath: mediaPath))
+                ).map { String(format: "%02x", $0) }.joined()
+                let resolution = try exactResolution(
+                    request: request,
+                    preSpawnRevalidation: {
+                        let current = try Data(contentsOf: URL(fileURLWithPath: mediaPath))
+                        let currentSHA256 = SHA256.hash(data: current)
+                            .map { String(format: "%02x", $0) }.joined()
+                        guard currentSHA256 == expectedSHA256 else {
+                            throw DoryDaemonVirtualMachinePreSpawnAuthorizationError
+                                .revalidationFailed
+                        }
+                    }
+                )
+                plans.set(resolution.resolvedPlan)
+                try Data("mutated-after-evidence".utf8).write(
+                    to: URL(fileURLWithPath: mediaPath),
+                    options: .atomic
+                )
+                return resolution
+            }
+            try manager.installResolvedLaunchInfrastructure(
+                registry: registry,
+                resolver: resolver,
+                plans: plans,
+                expectedPlanRevision: { _ in 1 }
+            )
+
+            #expect(throws: MachineManagerError.self) {
+                _ = try manager.start(id: "dev")
+            }
+            #expect(starter.count == 0)
+            #expect(manager.status(id: "dev")?.state == .created)
+        }
+    }
+
+    @Test("required resolved launch rejects a missing pre-spawn authorization")
+    func missingPreSpawnAuthorizationFailsClosed() throws {
+        try withHarness("missing-pre-spawn") { manager, starter, _ in
+            let plans = MutablePlanStore()
+            let operations = manager.resolvedLaunchCompatibilityOperations(
+                for: .doryHypervisor
+            )
+            let resolver = ClosureLaunchResolver { request in
+                var resolution = try exactResolution(request: request)
+                plans.set(resolution.resolvedPlan)
+                resolution.preSpawnAuthorization = nil
+                return resolution
+            }
+            try manager.installResolvedLaunchInfrastructure(
+                registry: try rawRegistry(operations: operations),
+                resolver: resolver,
+                plans: plans,
+                expectedPlanRevision: { _ in 1 }
+            )
+
+            #expect(throws: MachineManagerError.self) {
+                _ = try manager.start(id: "dev")
+            }
+            #expect(starter.count == 0)
+        }
+    }
+
     @Test("adapter-issued executable is launched instead of manager backend lookup")
     func adapterExecutableBindingIsUsed() throws {
         try withHarness(
@@ -482,7 +560,8 @@ struct MachineManagerResolvedPlanIntegrationTests {
 
     private func exactResolution(
         request: DoryDaemonVirtualMachineLaunchPlanRequest,
-        componentSHA256: String? = nil
+        componentSHA256: String? = nil,
+        preSpawnRevalidation: @escaping @Sendable () throws -> Void = {}
     ) throws -> DoryDaemonVirtualMachineLaunchPlanResolution {
         let definitionDigest = SHA256.hash(data: request.canonicalDefinitionData)
             .map { String(format: "%02x", $0) }.joined()
@@ -614,6 +693,9 @@ struct MachineManagerResolvedPlanIntegrationTests {
                 backend: RawHVLinuxMachineBackend.backendDescriptor,
                 machine: request.machine,
                 capability: capability
+            ),
+            preSpawnAuthorization: DoryDaemonVirtualMachinePreSpawnAuthorization(
+                revalidate: preSpawnRevalidation
             )
         )
     }

@@ -116,19 +116,25 @@ public struct DoryDaemonVirtualMachineStartInventoryRequest: Sendable, Equatable
     public var planRevision: UInt64
     public var bootMediaReference: DoryVMResolverReference
     public var exactCapabilityRequest: DoryVirtualMachineCapabilityRequest
+    /// Exact already-persisted plan. This request is daemon-local and non-Codable; carrying the
+    /// plan lets the resource authority verify its one-shot plan binding rather than trusting a
+    /// caller-supplied digest or merely matching resource numbers.
+    public var resolvedPlan: DoryResolvedMachinePlan
 
     public init(
         machineID: String,
         definitionRevision: UInt64,
         planRevision: UInt64,
         bootMediaReference: DoryVMResolverReference,
-        exactCapabilityRequest: DoryVirtualMachineCapabilityRequest
+        exactCapabilityRequest: DoryVirtualMachineCapabilityRequest,
+        resolvedPlan: DoryResolvedMachinePlan
     ) {
         self.machineID = machineID
         self.definitionRevision = definitionRevision
         self.planRevision = planRevision
         self.bootMediaReference = bootMediaReference
         self.exactCapabilityRequest = exactCapabilityRequest
+        self.resolvedPlan = resolvedPlan
     }
 }
 

@@ -1029,6 +1029,11 @@ public final class MachineManager: @unchecked Sendable {
             resolved,
             planStore: planStore
         )
+        guard let preSpawnAuthorization = resolved.preSpawnAuthorization else {
+            throw MachineManagerError.persistence(
+                "resolved launch is missing final pre-spawn authorization"
+            )
+        }
         let runtimeIdentity = try DoryMachineRuntimeIdentity(
             resolvedPlan: resolved.resolvedPlan,
             planSHA256: resolved.resolvedPlanSHA256
@@ -1045,7 +1050,8 @@ public final class MachineManager: @unchecked Sendable {
                 runtimeBuildIdentifier: resolved.resolvedPlan.backendRuntimeBuildIdentifier,
                 runtimeComponents: resolved.resolvedPlan.components,
                 planRevision: resolved.resolvedPlan.planRevision,
-                planSHA256: resolved.resolvedPlanSHA256
+                planSHA256: resolved.resolvedPlanSHA256,
+                preSpawnAuthorization: preSpawnAuthorization
             )
             defer { pendingResolvedStart = nil }
             let operation = registry.start(resolved.backendPlan)
@@ -1173,7 +1179,8 @@ public final class MachineManager: @unchecked Sendable {
         pendingResolvedStart = nil
         return MachineBackendRuntimeObservation(try spawnPreparedMachine(
             authorization.machine,
-            launchBinding: binding
+            launchBinding: binding,
+            preSpawnAuthorization: authorization.preSpawnAuthorization
         ))
     }
 
@@ -1348,7 +1355,8 @@ public final class MachineManager: @unchecked Sendable {
 
     private func spawnPreparedMachine(
         _ preparedMachine: DoryMachineConfiguration,
-        launchBinding: MachineBackendLaunchBinding?
+        launchBinding: MachineBackendLaunchBinding?,
+        preSpawnAuthorization: DoryDaemonVirtualMachinePreSpawnAuthorization? = nil
     ) throws -> DoryMachineStatus {
         lock.lock()
         guard var entry = machines[preparedMachine.id] else {
@@ -1383,6 +1391,17 @@ public final class MachineManager: @unchecked Sendable {
         }
         let processConfiguration: HvProcessConfiguration
         do {
+            // This single-use daemon-owned check deliberately sits after all persisted
+            // machine/plan validation and immediately before any path-derived launch arguments
+            // are read. Failure consumes the token and cannot reach processStarter.
+            if launchBinding != nil {
+                guard let preSpawnAuthorization else {
+                    throw MachineManagerError.persistence(
+                        "resolved launch is missing final pre-spawn authorization"
+                    )
+                }
+                try preSpawnAuthorization.authorize()
+            }
             processConfiguration = try self.processConfiguration(
                 for: entry.configuration,
                 handoffPath: handoffPath,
@@ -6170,6 +6189,7 @@ private struct PendingResolvedMachineStart {
     var runtimeComponents: [DoryResolvedBackendComponentEvidence]
     var planRevision: UInt64
     var planSHA256: String
+    var preSpawnAuthorization: DoryDaemonVirtualMachinePreSpawnAuthorization
 }
 
 private struct MachineEntry {

@@ -67,4 +67,34 @@ public enum DorydXPCSecurity {
         }
         return team
     }
+
+    public static func isProductionDaemonIdentity(
+        teamIdentifier: String?,
+        signingIdentifier: String?
+    ) -> Bool {
+        teamIdentifier == productionTeamID && signingIdentifier == "doryd"
+    }
+
+    /// Checks the complete signed daemon requirement, not only team membership. This prevents a
+    /// different binary signed by Dory's team from constructing production VM trust authority.
+    public static func currentProcessSatisfiesProductionDaemonRequirement() -> Bool {
+        var code: SecCode?
+        guard SecCodeCopySelf(SecCSFlags(), &code) == errSecSuccess, let code else {
+            return false
+        }
+        var requirement: SecRequirement?
+        guard SecRequirementCreateWithString(
+            productionDaemonRequirement as CFString,
+            SecCSFlags(),
+            &requirement
+        ) == errSecSuccess,
+        let requirement else {
+            return false
+        }
+        return SecCodeCheckValidity(
+            code,
+            SecCSFlags(rawValue: kSecCSCheckAllArchitectures),
+            requirement
+        ) == errSecSuccess
+    }
 }

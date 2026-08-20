@@ -1,6 +1,46 @@
 import DoryOperations
 import Foundation
 
+public enum DoryDaemonVirtualMachinePreSpawnAuthorizationError:
+    Error, Sendable, Equatable
+{
+    case alreadyConsumed
+    case revalidationFailed
+}
+
+/// Single-use daemon authorization for the last possible trust check before MachineManager reads
+/// path-derived boot arguments or starts the helper. It is non-Codable and cannot be supplied as
+/// API intent.
+public final class DoryDaemonVirtualMachinePreSpawnAuthorization: @unchecked Sendable {
+    private let lock = NSLock()
+    private var consumed = false
+    private let revalidate: @Sendable () throws -> Void
+
+    init(revalidate: @escaping @Sendable () throws -> Void) {
+        self.revalidate = revalidate
+    }
+
+    public func authorize() throws {
+        lock.lock()
+        guard !consumed else {
+            lock.unlock()
+            throw DoryDaemonVirtualMachinePreSpawnAuthorizationError.alreadyConsumed
+        }
+        consumed = true
+        lock.unlock()
+        do { try revalidate() }
+        catch {
+            throw DoryDaemonVirtualMachinePreSpawnAuthorizationError.revalidationFailed
+        }
+    }
+}
+
+protocol DoryDaemonVirtualMachinePreSpawnAuthorizationProviding: Sendable {
+    func preSpawnAuthorization(
+        for request: DoryDaemonVirtualMachineStartInventoryRequest
+    ) throws -> DoryDaemonVirtualMachinePreSpawnAuthorization
+}
+
 public protocol DoryDaemonVirtualMachineExactCapabilityEvaluating: Sendable {
     func evaluate(
         _ request: DoryVirtualMachineCapabilityRequest,
@@ -33,13 +73,26 @@ public struct DoryAppleSiliconDaemonVirtualMachineExactCapabilityEvaluator:
 public struct DoryDaemonVirtualMachineStartEvidenceCollection: Sendable, Equatable {
     public var capability: DoryVirtualMachineCapabilityDescriptor
     public var runtimeEvidence: DoryResolvedMachineRuntimeEvidence
+    public var preSpawnAuthorization: DoryDaemonVirtualMachinePreSpawnAuthorization?
 
     public init(
         capability: DoryVirtualMachineCapabilityDescriptor,
-        runtimeEvidence: DoryResolvedMachineRuntimeEvidence
+        runtimeEvidence: DoryResolvedMachineRuntimeEvidence,
+        preSpawnAuthorization: DoryDaemonVirtualMachinePreSpawnAuthorization? = nil
     ) {
         self.capability = capability
         self.runtimeEvidence = runtimeEvidence
+        self.preSpawnAuthorization = preSpawnAuthorization
+    }
+
+    public static func == (
+        lhs: DoryDaemonVirtualMachineStartEvidenceCollection,
+        rhs: DoryDaemonVirtualMachineStartEvidenceCollection
+    ) -> Bool {
+        lhs.capability == rhs.capability
+            && lhs.runtimeEvidence == rhs.runtimeEvidence
+            && ((lhs.preSpawnAuthorization == nil)
+                == (rhs.preSpawnAuthorization == nil))
     }
 }
 
@@ -56,6 +109,7 @@ public enum DoryDaemonVirtualMachineStartEvidenceFailureCode: String, Sendable, 
     case backendUnavailable = "backend-unavailable"
     case backendInventoryUnavailable = "backend-inventory-unavailable"
     case exactCapabilityUnavailable = "exact-capability-unavailable"
+    case preSpawnAuthorizationUnavailable = "pre-spawn-authorization-unavailable"
 }
 
 public struct DoryDaemonVirtualMachineStartEvidenceFailure: Error, Sendable, Equatable {
@@ -103,15 +157,17 @@ public final class DoryDaemonVirtualMachineStartEvidenceCollector:
             devices: plan.devices,
             virtualHardwareABIVersion: plan.virtualHardwareABIVersion
         )
+        let inventoryRequest = DoryDaemonVirtualMachineStartInventoryRequest(
+            machineID: plan.machineID,
+            definitionRevision: plan.definitionRevision,
+            planRevision: plan.planRevision,
+            bootMediaReference: reference,
+            exactCapabilityRequest: persistedRequest,
+            resolvedPlan: plan
+        )
         let snapshot: DoryDaemonVirtualMachineTrustedInventorySnapshot
         do {
-            snapshot = try inventory.startInventory(for: DoryDaemonVirtualMachineStartInventoryRequest(
-                machineID: plan.machineID,
-                definitionRevision: plan.definitionRevision,
-                planRevision: plan.planRevision,
-                bootMediaReference: reference,
-                exactCapabilityRequest: persistedRequest
-            ))
+            snapshot = try inventory.startInventory(for: inventoryRequest)
         } catch {
             throw failure(.inventoryUnavailable, "Fresh trusted start inventory could not be resolved.")
         }
@@ -170,9 +226,28 @@ public final class DoryDaemonVirtualMachineStartEvidenceCollector:
             hostQualification: runtime.hostQualification,
             experimentalAuthorization: plan.experimentalAuthorization
         )
+        guard let authorizationProvider = inventory
+                as? any DoryDaemonVirtualMachinePreSpawnAuthorizationProviding else {
+            throw failure(
+                .preSpawnAuthorizationUnavailable,
+                "The trusted inventory cannot authorize final pre-spawn revalidation."
+            )
+        }
+        let preSpawnAuthorization: DoryDaemonVirtualMachinePreSpawnAuthorization
+        do {
+            preSpawnAuthorization = try authorizationProvider.preSpawnAuthorization(
+                for: inventoryRequest
+            )
+        } catch {
+            throw failure(
+                .preSpawnAuthorizationUnavailable,
+                "Final pre-spawn revalidation could not be prepared."
+            )
+        }
         return DoryDaemonVirtualMachineStartEvidenceCollection(
             capability: capability,
-            runtimeEvidence: runtimeEvidence
+            runtimeEvidence: runtimeEvidence,
+            preSpawnAuthorization: preSpawnAuthorization
         )
     }
 
@@ -210,17 +285,20 @@ public struct DoryDaemonVirtualMachineLaunchPlanResolution: Sendable {
     public var resolvedPlanSHA256: String
     public var revalidation: DoryResolvedMachinePlanRevalidationResult
     public var backendPlan: MachineBackendPlan
+    public var preSpawnAuthorization: DoryDaemonVirtualMachinePreSpawnAuthorization?
 
     public init(
         resolvedPlan: DoryResolvedMachinePlan,
         resolvedPlanSHA256: String,
         revalidation: DoryResolvedMachinePlanRevalidationResult,
-        backendPlan: MachineBackendPlan
+        backendPlan: MachineBackendPlan,
+        preSpawnAuthorization: DoryDaemonVirtualMachinePreSpawnAuthorization? = nil
     ) {
         self.resolvedPlan = resolvedPlan
         self.resolvedPlanSHA256 = resolvedPlanSHA256
         self.revalidation = revalidation
         self.backendPlan = backendPlan
+        self.preSpawnAuthorization = preSpawnAuthorization
     }
 }
 
@@ -358,7 +436,8 @@ public final class DoryDaemonVirtualMachineLaunchPlanResolver:
             resolvedPlan: plan,
             resolvedPlanSHA256: DoryDaemonVirtualMachinePlanningCoordinator.planSHA256(plan),
             revalidation: revalidation,
-            backendPlan: backendPlan
+            backendPlan: backendPlan,
+            preSpawnAuthorization: fresh.preSpawnAuthorization
         )
     }
 

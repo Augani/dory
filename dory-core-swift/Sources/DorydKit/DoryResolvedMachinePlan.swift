@@ -1247,7 +1247,7 @@ public struct DoryResolvedMachinePlan: Codable, Sendable, Equatable, Hashable {
         guard (1...256).contains(bytes.count) else { return false }
         return bytes.allSatisfy { byte in
             isAlphaNumeric(byte) || byte == 45 || byte == 46 || byte == 47
-                || byte == 58 || byte == 64 || byte == 95
+                || byte == 44 || byte == 58 || byte == 64 || byte == 95
         }
     }
 
