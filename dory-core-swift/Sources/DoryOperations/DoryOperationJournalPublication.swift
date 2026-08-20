@@ -25,7 +25,7 @@ extension DoryOperationJournalStore {
         do {
             try Self.createPrivateDirectory(partial)
             try Self.createOperationDirectories(in: partial)
-            if completenessPlanData != nil {
+            if completenessPlanData != nil || !specifications.isEmpty {
                 try Self.createPrivateDirectory(partial + "/specs/objects")
             }
 
@@ -37,12 +37,12 @@ extension DoryOperationJournalStore {
                     completenessPlanData,
                     to: partial + "/specs/completeness-plan.json"
                 )
-                for specification in specifications.sorted(by: { $0.digest < $1.digest }) {
-                    try Self.publish(
-                        specification.data,
-                        to: partial + "/specs/objects/" + specification.digest
-                    )
-                }
+            }
+            for specification in specifications.sorted(by: { $0.digest < $1.digest }) {
+                try Self.publish(
+                    specification.data,
+                    to: partial + "/specs/objects/" + specification.digest
+                )
             }
             try Self.publish(try Self.encoded(initial.state, pretty: true), to: partial + "/state.json")
             try Self.publish(try Self.encoded(initial.event, pretty: false), to: partial + "/events.ndjson")

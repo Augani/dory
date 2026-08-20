@@ -6,6 +6,20 @@ public enum DoryOperationKind: String, Codable, CaseIterable, Sendable {
     case driveRestore
     case driveRelocation
     case driveUpgrade
+    case workspaceImport
+    case workspaceProvision
+    case workspaceResolve
+    case workspaceStart
+    case workspaceStop
+    case workspacePause
+    case workspaceResume
+    case workspaceSuspend
+    case workspaceRestore
+    case workspaceSnapshot
+    case workspaceClone
+    case workspaceUpdate
+    case workspaceRepair
+    case workspaceDelete
 }
 
 public enum DoryOperationAuthorityKind: String, Codable, CaseIterable, Sendable {
@@ -13,6 +27,9 @@ public enum DoryOperationAuthorityKind: String, Codable, CaseIterable, Sendable 
     case dataDrive
     case backupArchive
     case filesystem
+    case workspace
+    case machineBackend
+    case componentSet
 }
 
 public enum DoryOperationPhase: String, Codable, CaseIterable, Sendable {
