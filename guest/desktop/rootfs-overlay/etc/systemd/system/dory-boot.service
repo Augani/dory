@@ -1,7 +1,7 @@
 [Unit]
 Description=Dory guest integration agent
 After=dory-first-boot.service
-Before=lightdm.service
+Before=display-manager.service
 Requires=dory-first-boot.service
 
 [Service]

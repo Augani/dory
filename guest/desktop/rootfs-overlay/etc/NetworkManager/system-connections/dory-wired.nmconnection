@@ -1,0 +1,16 @@
+[connection]
+id=Dory Wired
+type=ethernet
+autoconnect=true
+autoconnect-priority=100
+
+[ethernet]
+
+[ipv4]
+method=auto
+
+[ipv6]
+method=auto
+addr-gen-mode=default
+
+[proxy]

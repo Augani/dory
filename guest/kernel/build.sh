@@ -63,9 +63,10 @@ case "$PROFILE" in
   headless) CONFIGS="$CONFIGS dory-headless.fragment" ;;
   venus) CONFIGS="$CONFIGS dory-virtual-display.fragment dory-gpu.fragment" ;;
   desktop) CONFIGS="$CONFIGS dory-virtual-display.fragment dory-desktop.fragment" ;;
+  accelerated-desktop) CONFIGS="$CONFIGS dory-virtual-display.fragment dory-gpu.fragment dory-desktop.fragment dory-accelerated-desktop.fragment" ;;
 esac
-if [ "$PROFILE" = "desktop" ] && [ "$ARCH" != "arm64" ]; then
-  echo "the desktop kernel profile currently supports arm64 only" >&2
+if { [ "$PROFILE" = "desktop" ] || [ "$PROFILE" = "accelerated-desktop" ]; } && [ "$ARCH" != "arm64" ]; then
+  echo "desktop kernel profiles currently support arm64 only" >&2
   exit 64
 fi
 

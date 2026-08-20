@@ -63,6 +63,11 @@ fi
 if [ "$requested" != "$current" ]; then
   sed -i "s/^$current /$requested /" /etc/sudoers.d/dory
 fi
-sed -i "s/^autologin-user=.*/autologin-user=$requested/" \
-  /etc/lightdm/lightdm.conf.d/50-dory.conf
+if [ -f /etc/lightdm/lightdm.conf.d/50-dory.conf ]; then
+  sed -i "s/^autologin-user=.*/autologin-user=$requested/" \
+    /etc/lightdm/lightdm.conf.d/50-dory.conf
+fi
+if [ -f /etc/gdm3/custom.conf ]; then
+  sed -i "s/^AutomaticLogin=.*/AutomaticLogin=$requested/" /etc/gdm3/custom.conf
+fi
 printf '%s\n' "$requested" > /var/lib/dory/username

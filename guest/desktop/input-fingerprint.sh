@@ -35,6 +35,8 @@ fi
 INPUTS=(
   guest/desktop/PINS
   guest/desktop/build.sh
+  guest/desktop/apply-update.sh
+  guest/desktop/build-update-bundle.py
   guest/desktop/input-fingerprint.sh
   guest/desktop/verify-build.sh
   dory-core/Cargo.lock
@@ -43,6 +45,9 @@ INPUTS=(
 while IFS= read -r input; do
   INPUTS+=("$input")
 done < <(find guest/desktop/rootfs-overlay -type f | LC_ALL=C sort)
+while IFS= read -r input; do
+  INPUTS+=("$input")
+done < <(find guest/mesa -type f | LC_ALL=C sort)
 for package in agent pb proto sync; do
   while IFS= read -r input; do
     INPUTS+=("$input")
@@ -58,8 +63,9 @@ for package in agent pb proto sync; do
 done
 
 {
-  printf 'schema=2\narch=arm64\ndistro=%s\ntarget=%s\nimage_size_mb=%s\nrustflags=%s\n' \
-    "$DISTRO" "$TARGET" "${DORY_DESKTOP_IMAGE_SIZE_MB:-$DESKTOP_IMAGE_SIZE_MB}" "$RUSTFLAGS_EFFECTIVE"
+  printf 'schema=2\narch=arm64\ndistro=%s\ntarget=%s\nimage_size_mb=%s\nfree_space_mb=%s\nrustflags=%s\n' \
+    "$DISTRO" "$TARGET" "${DORY_DESKTOP_IMAGE_SIZE_MB:-$DESKTOP_IMAGE_SIZE_MB}" \
+    "${DORY_DESKTOP_FREE_SPACE_MB:-$DESKTOP_FREE_SPACE_MB}" "$RUSTFLAGS_EFFECTIVE"
   rustc -Vv
   cargo -V
   printf 'linker_sha256=%s\n' "$(shasum -a 256 "$LINKER" | awk '{print $1}')"

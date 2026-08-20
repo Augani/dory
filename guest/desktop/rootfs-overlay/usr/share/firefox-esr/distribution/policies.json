@@ -1,0 +1,14 @@
+{
+  "policies": {
+    "Preferences": {
+      "gfx.webrender.software": {
+        "Value": true,
+        "Status": "locked"
+      },
+      "widget.dmabuf.enabled": {
+        "Value": false,
+        "Status": "locked"
+      }
+    }
+  }
+}

@@ -1,0 +1,4 @@
+/org/gnome/desktop/screensaver/lock-enabled
+/org/gnome/desktop/session/idle-delay
+/org/gnome/settings-daemon/plugins/power/sleep-inactive-ac-type
+/org/gnome/settings-daemon/plugins/power/sleep-inactive-battery-type

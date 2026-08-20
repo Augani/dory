@@ -1,0 +1,67 @@
+#!/bin/bash
+set -euo pipefail
+
+environment_file=/etc/environment.d/70-dory-graphics.conf
+session_environment=/etc/X11/Xsession.d/70dory-graphics
+graphics_status=/run/dory/graphics-status
+venus_root=/opt/dory/mesa
+venus_icd=$venus_root/share/vulkan/icd.d/virtio_icd.aarch64.json
+venus_probe=/usr/lib/dory/dory-vulkan-probe
+
+# The host publishes the backend it actually attached. Mesa selects its native driver from the
+# advertised virtio-gpu capsets; a global Zink override would incorrectly force the desktop itself
+# through Venus and is both slower and less compatible on MoltenVK.
+rm -f "$environment_file" "$session_environment"
+install -d -m0755 /run/dory
+case " $(cat /proc/cmdline) " in
+  *' dory.graphics=virgl-venus '*) backend=virgl2+venus ;;
+  *' dory.graphics=virgl '*) backend=virgl2 ;;
+  *' dory.graphics=software '*) backend=software ;;
+  # Compatibility with images and VMMs from before the versioned graphics contract.
+  *' dory.gpu=venus '*) backend=virgl2+venus ;;
+  *) backend=software ;;
+esac
+printf '%s\n' "$backend" > /run/dory/graphics-backend
+printf '%s\n' "$backend" > "$graphics_status"
+
+case "$backend" in
+  virgl2|virgl2+venus)
+    # GTK4's newer renderer corrupts large textures with the current VirGL/MoltenVK bridge. The
+    # established GL renderer uses the same accelerated virgl driver, but correctly renders
+    # libadwaita applications such as Files, Settings, and Calculator. Keep this backend-specific:
+    # the software display path should retain GTK's native fallback selection.
+    install -d -m0755 "$(dirname "$environment_file")"
+    printf '%s\n' \
+      '# Dory accelerated GTK4 compatibility policy; managed by configure-graphics-backend.' \
+      'GSK_RENDERER=gl' > "$environment_file"
+    install -d -m0755 "$(dirname "$session_environment")"
+    printf '%s\n' \
+      '# Dory accelerated desktop environment; managed by configure-graphics-backend.' \
+      'export GSK_RENDERER=gl' > "$session_environment"
+    ;;
+esac
+
+if [ "$backend" = virgl2+venus ]; then
+  if [ -x "$venus_probe" ] && [ -r "$venus_icd" ]; then
+    if probe_output="$(env \
+      LD_LIBRARY_PATH="$venus_root/lib" \
+      VK_DRIVER_FILES="$venus_icd" \
+      timeout 10 "$venus_probe" 2>&1)"; then
+      printf '%s\n' \
+        "LD_LIBRARY_PATH=$venus_root/lib" \
+        "VK_DRIVER_FILES=$venus_icd" >> "$environment_file"
+      printf '%s\n' \
+        "export LD_LIBRARY_PATH=$venus_root/lib" \
+        "export VK_DRIVER_FILES=$venus_icd" >> "$session_environment"
+      printf 'venus-ready: %s\n' "$probe_output" > "$graphics_status"
+    else
+      printf 'venus-unavailable: %s\n' "$probe_output" > "$graphics_status"
+    fi
+  else
+    printf 'venus-unavailable: Dory Venus runtime is missing\n' > "$graphics_status"
+  fi
+fi
+
+[ ! -e "$environment_file" ] || chmod 0644 "$environment_file"
+[ ! -e "$session_environment" ] || chmod 0644 "$session_environment"
+chmod 0644 "$graphics_status" /run/dory/graphics-backend

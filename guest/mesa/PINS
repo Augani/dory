@@ -1,0 +1,7 @@
+# Dory-owned Venus runtime inputs for Apple-silicon desktop guests.
+MESA_VERSION=26.1.4
+MESA_SOURCE_URL=https://archive.mesa3d.org/mesa-26.1.4.tar.xz
+MESA_SOURCE_SHA256=072705caa9adf4740f1489194b13e278ad959166863b5271fe423a86353c9ab6
+MESA_BUILDER_IMAGE=ubuntu:24.04@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90
+MESON_VERSION=1.10.0
+MESON_WHEEL_SHA256=4b27aafce281e652dcb437b28007457411245d975c48b5db3a797d3e93ae1585

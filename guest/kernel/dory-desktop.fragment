@@ -17,6 +17,11 @@ CONFIG_USB_XHCI_HCD=y
 CONFIG_USB_XHCI_PLATFORM=y
 CONFIG_USB_HID=y
 
+# Give full desktop guests compressed swap without consuming another host-backed disk. Browsers
+# and GNOME otherwise run out of reclaimable memory abruptly at the VM memory ceiling.
+CONFIG_ZSMALLOC=y
+CONFIG_ZRAM=y
+
 # VZVirtioSoundDeviceConfiguration output stream.
 CONFIG_SOUND=y
 CONFIG_SND=y

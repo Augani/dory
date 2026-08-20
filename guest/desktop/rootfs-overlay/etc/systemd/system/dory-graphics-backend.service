@@ -1,0 +1,12 @@
+[Unit]
+Description=Select Dory desktop graphics backend
+After=local-fs.target systemd-remount-fs.service
+Before=display-manager.service dory-boot.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/dory/configure-graphics-backend
+RemainAfterExit=yes
+
+[Install]
+WantedBy=graphical.target

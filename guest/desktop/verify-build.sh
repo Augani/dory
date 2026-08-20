@@ -3,6 +3,8 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT"
+source guest/desktop/PINS
+source guest/mesa/PINS
 
 case "${1:-arm64}" in
   arm64|aarch64) ;;
@@ -19,14 +21,16 @@ OUT="${DORY_DESKTOP_OUT_DIR:-$ROOT/guest/out}"
 IMAGE="$OUT/$ARTIFACT_PREFIX-rootfs-arm64.ext4"
 COMPRESSED="$IMAGE.zst"
 PACKAGES="$OUT/$ARTIFACT_PREFIX-packages-arm64.txt"
+UPDATE="$OUT/$ARTIFACT_PREFIX-update-arm64.tar"
 STAMP="$OUT/$ARTIFACT_PREFIX-build-arm64.stamp"
+VENUS_RUNTIME="$ROOT/guest/out/dory-mesa-venus-arm64.tar.zst"
 
 fail() {
   echo "desktop image verification failed: $*" >&2
   exit 1
 }
 
-for path in "$IMAGE" "$COMPRESSED" "$PACKAGES" "$STAMP"; do
+for path in "$IMAGE" "$COMPRESSED" "$PACKAGES" "$UPDATE" "$STAMP"; do
   [ -s "$path" ] || fail "missing or empty $path"
 done
 
@@ -45,6 +49,35 @@ EXPECTED_INPUT="$(guest/desktop/input-fingerprint.sh arm64 "$DISTRO")"
   || fail "$COMPRESSED digest does not match its stamp"
 [ "$(stamp_value packages_sha256)" = "$(shasum -a 256 "$PACKAGES" | awk '{print $1}')" ] \
   || fail "$PACKAGES digest does not match its stamp"
+[ "$(stamp_value update_sha256)" = "$(shasum -a 256 "$UPDATE" | awk '{print $1}')" ] \
+  || fail "$UPDATE digest does not match its stamp"
+
+UPDATE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/dory-desktop-update-verify.XXXXXX")"
+trap 'rm -rf "$UPDATE_DIR"' EXIT
+tar -xf "$UPDATE" -C "$UPDATE_DIR"
+guest/mesa/verify-build.sh arm64 >/dev/null
+for path in apply.sh dory-agent dory-mesa-venus-arm64.tar.zst manifest.env packages.txt rootfs-overlay.tar SHA256SUMS; do
+  [ -s "$UPDATE_DIR/$path" ] || fail "$UPDATE is missing $path"
+done
+(cd "$UPDATE_DIR" && shasum -a 256 -c SHA256SUMS) \
+  || fail "$UPDATE payload digests do not match"
+grep -Fqx 'schema=2' "$UPDATE_DIR/manifest.env" || fail "$UPDATE has an unsupported schema"
+grep -Fqx 'arch=arm64' "$UPDATE_DIR/manifest.env" || fail "$UPDATE has the wrong architecture"
+grep -Fqx "distro=$DISTRO" "$UPDATE_DIR/manifest.env" || fail "$UPDATE has the wrong distribution"
+grep -Fqx "input_sha256=$EXPECTED_INPUT" "$UPDATE_DIR/manifest.env" \
+  || fail "$UPDATE has a stale input fingerprint"
+cmp -s "$PACKAGES" "$UPDATE_DIR/packages.txt" || fail "$UPDATE package manifest is stale"
+cmp -s "$VENUS_RUNTIME" "$UPDATE_DIR/dory-mesa-venus-arm64.tar.zst" \
+  || fail "$UPDATE contains a stale Dory Venus runtime"
+grep -Fq 'packages.txt is the signed package provenance' "$UPDATE_DIR/apply.sh" \
+  || fail "$UPDATE does not keep package provenance separate from guest-tools installation"
+grep -Fq 'dory-mesa-venus-arm64.tar.zst' "$UPDATE_DIR/apply.sh" \
+  || fail "$UPDATE does not install the Dory Venus runtime"
+grep -Fq 'dconf update' "$UPDATE_DIR/apply.sh" \
+  || fail "$UPDATE does not compile the managed desktop session policy"
+if grep -Eq 'apt-get|with-new-pkgs|xargs .*install' "$UPDATE_DIR/apply.sh"; then
+  fail "$UPDATE performs a network-dependent distribution package mutation"
+fi
 
 DEBUGFS="${DORY_DEBUGFS:-}"
 if [ -z "$DEBUGFS" ]; then
@@ -60,26 +93,102 @@ if [ -z "$DEBUGFS" ]; then
 fi
 [ -n "$DEBUGFS" ] || fail "debugfs is required"
 
+case "$DISTRO" in
+  ubuntu) BROWSER_POLICY_PATH=/usr/lib/firefox/distribution/policies.json ;;
+  *) BROWSER_POLICY_PATH=/usr/share/firefox-esr/distribution/policies.json ;;
+esac
+
 for guest_path in \
   /sbin/init \
   /usr/bin/dory-agent \
+  /usr/lib/dory/clipboard \
   /usr/lib/dory/configure-machine \
   /usr/lib/dory/configure-display \
+  /usr/lib/dory/configure-graphics-backend \
+  /usr/lib/dory/dory-vulkan-probe \
+  /usr/lib/dory/configure-zram \
   /usr/lib/dory/first-boot \
   /usr/lib/dory/start-agent \
   /usr/lib/dory/wait-host-configuration \
   /etc/systemd/system/dory-first-boot.service \
   /etc/systemd/system/dory-boot.service \
   /etc/systemd/system/dory-desktop-ready.service \
-  /etc/lightdm/lightdm.conf.d/50-dory.conf \
+  /etc/systemd/system/dory-graphics-backend.service \
+  /etc/systemd/system/dory-zram.service \
+  /etc/NetworkManager/conf.d/10-dory.conf \
+  /etc/NetworkManager/conf.d/10-globally-managed-devices.conf \
+  /etc/NetworkManager/system-connections/dory-wired.nmconnection \
+  /etc/dconf/profile/user \
+  /etc/dconf/db/dory.d/00-managed-session \
+  /etc/dconf/db/dory.d/locks/00-managed-session \
+  /etc/dconf/db/dory \
+  /etc/polkit-1/rules.d/49-dory-passwordless-admin.rules \
+  /etc/wireplumber/main.lua.d/60-dory-virtio-sound.lua \
   /etc/xdg/autostart/dory-display.desktop \
+  "$BROWSER_POLICY_PATH" \
   /home/dory/.profile \
-  /usr/bin/startxfce4 \
   /usr/bin/spice-vdagent \
   /usr/bin/pipewire; do
   "$DEBUGFS" -R "stat $guest_path" "$IMAGE" 2>&1 | grep -Fq 'Inode:' \
     || fail "$IMAGE is missing $guest_path"
 done
+
+for guest_path in \
+  /opt/dory/mesa/lib/libvulkan_virtio.so \
+  /opt/dory/mesa/lib/libxcb-keysyms.so.1.0.0 \
+  /opt/dory/mesa/share/vulkan/icd.d/virtio_icd.aarch64.json \
+  /opt/dory/mesa/share/dory/runtime.env; do
+  "$DEBUGFS" -R "stat $guest_path" "$IMAGE" 2>&1 | grep -Fq 'Inode:' \
+    || fail "$IMAGE is missing $guest_path"
+done
+
+VENUS_ICD="$($DEBUGFS -R \
+  'cat /opt/dory/mesa/share/vulkan/icd.d/virtio_icd.aarch64.json' "$IMAGE" 2>/dev/null)"
+grep -Fq '"library_path": "/opt/dory/mesa/lib/libvulkan_virtio.so"' <<<"$VENUS_ICD" \
+  || fail "the desktop image Venus ICD does not select Dory's isolated library"
+VENUS_MANIFEST="$($DEBUGFS -R \
+  'cat /opt/dory/mesa/share/dory/runtime.env' "$IMAGE" 2>/dev/null)"
+grep -Fqx "mesa_version=$MESA_VERSION" <<<"$VENUS_MANIFEST" \
+  || fail "the desktop image contains the wrong Mesa Venus version"
+grep -Fqx "mesa_source_sha256=$MESA_SOURCE_SHA256" <<<"$VENUS_MANIFEST" \
+  || fail "the desktop image contains an unpinned Mesa Venus source"
+
+CLIPBOARD_HELPER="$($DEBUGFS -R 'cat /usr/lib/dory/clipboard' "$IMAGE" 2>/dev/null)"
+grep -Fq 'wl-copy --type "$mime"' <<<"$CLIPBOARD_HELPER" \
+  || fail "clipboard helper does not provide Wayland writes"
+grep -Fq 'xclip -selection clipboard -out' <<<"$CLIPBOARD_HELPER" \
+  || fail "clipboard helper does not provide X11 reads"
+
+WIREPLUMBER_SOUND_RULE="$($DEBUGFS -R \
+  'cat /etc/wireplumber/main.lua.d/60-dory-virtio-sound.lua' "$IMAGE" 2>/dev/null)"
+grep -Fq '["device.profile"] = "pro-audio"' <<<"$WIREPLUMBER_SOUND_RULE" \
+  || fail "WirePlumber does not activate Dory's virtio sound profile"
+grep -Fq 'alsa_card.platform-*.virtio_mmio' <<<"$WIREPLUMBER_SOUND_RULE" \
+  || fail "WirePlumber sound policy is not scoped to the virtio card"
+grep -Fq 'alsa_output.platform-*.virtio_mmio.pro-output-*' <<<"$WIREPLUMBER_SOUND_RULE" \
+  || fail "WirePlumber does not configure Dory playback"
+grep -Fq 'alsa_input.platform-*.virtio_mmio.pro-input-*' <<<"$WIREPLUMBER_SOUND_RULE" \
+  || fail "WirePlumber does not configure Dory capture"
+[ "$(grep -Fc '["node.pause-on-idle"] = true' <<<"$WIREPLUMBER_SOUND_RULE")" -eq 2 ] \
+  || fail "WirePlumber does not suspend both idle Dory audio directions"
+grep -Fq '["node.group"] = "dory-playback"' <<<"$WIREPLUMBER_SOUND_RULE" \
+  || fail "WirePlumber does not isolate Dory playback lifecycle"
+grep -Fq '["node.group"] = "dory-capture"' <<<"$WIREPLUMBER_SOUND_RULE" \
+  || fail "WirePlumber does not isolate Dory capture lifecycle"
+[ "$(grep -Fc '["audio.position"] = "FL,FR"' <<<"$WIREPLUMBER_SOUND_RULE")" -eq 2 ] \
+  || fail "WirePlumber does not expose conventional stereo channel positions"
+
+BROWSER_POLICY="$($DEBUGFS -R "cat $BROWSER_POLICY_PATH" "$IMAGE" 2>/dev/null)"
+  grep -Fq '"gfx.webrender.software"' <<<"$BROWSER_POLICY" \
+    || fail "$BROWSER_POLICY_PATH does not select Firefox SWGL"
+  grep -Fq '"widget.dmabuf.enabled"' <<<"$BROWSER_POLICY" \
+    || fail "$BROWSER_POLICY_PATH does not disable Firefox DMA-BUF presentation"
+  [ "$(grep -Fc '"Value": true' <<<"$BROWSER_POLICY")" -eq 1 ] \
+    || fail "$BROWSER_POLICY_PATH must enable exactly the SWGL preference"
+  [ "$(grep -Fc '"Value": false' <<<"$BROWSER_POLICY")" -eq 1 ] \
+    || fail "$BROWSER_POLICY_PATH must disable exactly the DMA-BUF preference"
+  [ "$(grep -Fc '"Status": "locked"' <<<"$BROWSER_POLICY")" -eq 2 ] \
+    || fail "$BROWSER_POLICY_PATH preferences are not locked"
 
 for user_owned_path in /home/dory /home/dory/.profile; do
   "$DEBUGFS" -R "stat $user_owned_path" "$IMAGE" 2>/dev/null \
@@ -90,11 +199,15 @@ done
 for root_owned_path in \
   /usr/lib/dory/configure-machine \
   /usr/lib/dory/configure-display \
+  /usr/lib/dory/configure-graphics-backend \
+  /usr/lib/dory/configure-zram \
   /usr/lib/dory/first-boot \
   /usr/lib/dory/start-agent \
   /usr/lib/dory/wait-host-configuration \
   /etc/systemd/system/dory-boot.service \
-  /etc/systemd/system/dory-desktop-ready.service; do
+  /etc/systemd/system/dory-desktop-ready.service \
+  /etc/systemd/system/dory-graphics-backend.service \
+  /etc/systemd/system/dory-zram.service; do
   "$DEBUGFS" -R "stat $root_owned_path" "$IMAGE" 2>/dev/null \
     | grep -Eq 'User:[[:space:]]+0[[:space:]]+Group:[[:space:]]+0' \
     || fail "$root_owned_path is not owned by root in $IMAGE"
@@ -108,6 +221,15 @@ case "$DISTRO" in
     grep -Fqx 'ID=debian' <<<"$OS_RELEASE" || fail "$IMAGE is not Debian"
     DEBIAN_VERSION="$($DEBUGFS -R 'cat /etc/debian_version' "$IMAGE" 2>/dev/null | tr -d '\r\n')"
     case "$DEBIAN_VERSION" in 13.*) ;; *) fail "$IMAGE contains unexpected Debian version $DEBIAN_VERSION" ;; esac
+    for guest_path in \
+      /etc/lightdm/lightdm.conf.d/50-dory.conf \
+      /usr/bin/startxfce4 \
+      /usr/bin/firefox-esr \
+      /usr/bin/evince \
+      /usr/bin/galculator; do
+      "$DEBUGFS" -R "stat $guest_path" "$IMAGE" 2>&1 | grep -Fq 'Inode:' \
+        || fail "$IMAGE is missing $guest_path"
+    done
     ;;
   ubuntu)
     grep -Fqx 'ID=ubuntu' <<<"$OS_RELEASE" || fail "$IMAGE is not Ubuntu"
@@ -115,9 +237,22 @@ case "$DISTRO" in
     "$DEBUGFS" -R 'cat /etc/apt/sources.list.d/ubuntu.sources' "$IMAGE" 2>/dev/null \
       | grep -Fqx 'URIs: https://ports.ubuntu.com/ubuntu-ports' \
       || fail "$IMAGE does not use the official Ubuntu HTTPS repository"
+    for guest_path in \
+      /etc/gdm3/custom.conf \
+      /usr/bin/gnome-shell \
+      /usr/bin/gnome-terminal \
+      /usr/bin/firefox \
+      /usr/share/xsessions/ubuntu.desktop; do
+      "$DEBUGFS" -R "stat $guest_path" "$IMAGE" 2>&1 | grep -Fq 'Inode:' \
+        || fail "$IMAGE is missing $guest_path"
+    done
     ;;
   kali)
     grep -Fqx 'ID=kali' <<<"$OS_RELEASE" || fail "$IMAGE is not Kali Linux"
+    for guest_path in /etc/lightdm/lightdm.conf.d/50-dory.conf /usr/bin/startxfce4; do
+      "$DEBUGFS" -R "stat $guest_path" "$IMAGE" 2>&1 | grep -Fq 'Inode:' \
+        || fail "$IMAGE is missing $guest_path"
+    done
     "$DEBUGFS" -R 'stat /home/dory/.config/xfce4/panel' "$IMAGE" 2>&1 \
       | grep -Fq 'Inode:' || fail "$IMAGE is missing the Kali Xfce user defaults"
     "$DEBUGFS" -R 'cat /etc/apt/sources.list' "$IMAGE" 2>/dev/null \
@@ -127,17 +262,156 @@ case "$DISTRO" in
 esac
 "$DEBUGFS" -R 'cat /etc/ssh/sshd_config.d/50-dory.conf' "$IMAGE" 2>/dev/null \
   | grep -Fqx 'PasswordAuthentication no' || fail "SSH password login is not disabled"
-"$DEBUGFS" -R 'cat /etc/lightdm/lightdm.conf.d/50-dory.conf' "$IMAGE" 2>/dev/null \
-  | grep -Fqx 'autologin-user=dory' || fail "desktop autologin is not configured"
+case "$DISTRO" in
+  ubuntu)
+    "$DEBUGFS" -R 'cat /etc/gdm3/custom.conf' "$IMAGE" 2>/dev/null \
+      | grep -Fqx 'AutomaticLogin=dory' || fail "Ubuntu GNOME autologin is not configured"
+    "$DEBUGFS" -R 'cat /etc/gdm3/custom.conf' "$IMAGE" 2>/dev/null \
+      | grep -Fqx 'WaylandEnable=false' || fail "Ubuntu GNOME does not select accelerated Xorg"
+    "$DEBUGFS" -R 'cat /etc/gdm3/custom.conf' "$IMAGE" 2>/dev/null \
+      | grep -Fqx 'DefaultSession=ubuntu-xorg.desktop' \
+      || fail "Ubuntu GNOME does not default to Ubuntu on Xorg"
+    DCONF_SESSION="$($DEBUGFS -R \
+      'cat /etc/dconf/db/dory.d/00-managed-session' "$IMAGE" 2>/dev/null)"
+    grep -Fqx 'lock-enabled=false' <<<"$DCONF_SESSION" \
+      || fail "Ubuntu GNOME can lock its passwordless managed account"
+    grep -Fqx 'idle-delay=uint32 0' <<<"$DCONF_SESSION" \
+      || fail "Ubuntu GNOME can idle into an impossible password prompt"
+    DCONF_LOCKS="$($DEBUGFS -R \
+      'cat /etc/dconf/db/dory.d/locks/00-managed-session' "$IMAGE" 2>/dev/null)"
+    grep -Fqx '/org/gnome/desktop/screensaver/lock-enabled' <<<"$DCONF_LOCKS" \
+      || fail "Ubuntu GNOME screen-lock policy is not immutable"
+    ;;
+  *)
+    "$DEBUGFS" -R 'cat /etc/lightdm/lightdm.conf.d/50-dory.conf' "$IMAGE" 2>/dev/null \
+      | grep -Fqx 'autologin-user=dory' || fail "Xfce autologin is not configured"
+    ;;
+esac
+"$DEBUGFS" -R 'cat /etc/NetworkManager/conf.d/10-globally-managed-devices.conf' "$IMAGE" 2>/dev/null \
+  | grep -Fqx 'unmanaged-devices=' || fail "virtio Ethernet is not opted into NetworkManager"
+"$DEBUGFS" -R 'cat /etc/NetworkManager/system-connections/dory-wired.nmconnection' "$IMAGE" 2>/dev/null \
+  | grep -Fqx 'type=ethernet' || fail "the Dory wired connection is not an Ethernet profile"
+if "$DEBUGFS" -R 'cat /etc/NetworkManager/system-connections/dory-wired.nmconnection' "$IMAGE" 2>/dev/null \
+  | grep -q '^interface-name='; then
+  fail "the Dory wired connection is pinned to a distro-specific interface name"
+fi
+"$DEBUGFS" -R 'stat /etc/NetworkManager/system-connections/dory-wired.nmconnection' "$IMAGE" 2>/dev/null \
+  | grep -Eq 'Mode:[[:space:]]+0600' || fail "the Dory wired connection is not private"
+"$DEBUGFS" -R 'cat /etc/NetworkManager/conf.d/10-dory.conf' "$IMAGE" 2>/dev/null \
+  | grep -Fqx 'rc-manager=file' || fail "NetworkManager does not own the guest resolver file"
+RESOLV_LINK="$($DEBUGFS -R 'stat /etc/resolv.conf' "$IMAGE" 2>/dev/null \
+  | sed -n 's/^Fast link dest: "\(.*\)"$/\1/p')"
+[ "$RESOLV_LINK" = '../run/NetworkManager/resolv.conf' ] \
+  || fail "resolv.conf does not follow NetworkManager: $RESOLV_LINK"
 DISPLAY_CONFIGURATION="$($DEBUGFS -R 'cat /usr/lib/dory/configure-display' "$IMAGE" 2>/dev/null)"
-grep -Fq 'set_xfce_value /Gdk/WindowScalingFactor int 2' <<<"$DISPLAY_CONFIGURATION" \
-  || fail "Retina desktop scaling is not configured"
 grep -Fq 'xrandr --output "$output_name" --mode "$preferred_mode"' <<<"$DISPLAY_CONFIGURATION" \
   || fail "dynamic desktop resizing is not configured"
-grep -q $'^xfce4\t' "$PACKAGES" || fail "Xfce package provenance is missing"
-grep -q $'^lightdm\t' "$PACKAGES" || fail "LightDM package provenance is missing"
+case "$DISTRO" in
+  ubuntu)
+    grep -Fq 'gsettings set org.gnome.desktop.interface scaling-factor 2' <<<"$DISPLAY_CONFIGURATION" \
+      || fail "GNOME Retina scaling is not configured"
+    grep -Fq '/run/dory/graphics-backend' <<<"$DISPLAY_CONFIGURATION" \
+      || fail "GNOME does not select effects based on the active graphics backend"
+    grep -Fq 'gsettings set org.gnome.desktop.interface enable-animations true' <<<"$DISPLAY_CONFIGURATION" \
+      || fail "GNOME accelerated animations are not configured"
+    grep -Fq 'gsettings set org.gnome.desktop.interface enable-animations false' <<<"$DISPLAY_CONFIGURATION" \
+      || fail "GNOME software-rendering fallback mode is not configured"
+    grep -Fq 'xdg-settings set default-web-browser firefox.desktop' <<<"$DISPLAY_CONFIGURATION" \
+      || fail "Firefox is not configured as the default Ubuntu browser"
+    grep -Fq 'firefox_firefox.desktop/firefox.desktop' <<<"$DISPLAY_CONFIGURATION" \
+      || fail "GNOME does not repair Ubuntu's stale Snap Firefox favorite"
+    grep -Fq 'gnome-control-center.desktop/org.gnome.Settings.desktop' <<<"$DISPLAY_CONFIGURATION" \
+      || fail "GNOME does not repair Ubuntu's stale Settings favorite"
+    grep -Fq 'org.gnome.Settings.desktop' <<<"$DISPLAY_CONFIGURATION" \
+      || fail "GNOME does not install Ubuntu's real Settings favorite"
+    UBUNTU_SCHEMA_OVERRIDE="$($DEBUGFS -R \
+      'cat /usr/share/glib-2.0/schemas/10_ubuntu-settings.gschema.override' \
+      "$IMAGE" 2>/dev/null)"
+    grep -Fq "'firefox.desktop'" <<<"$UBUNTU_SCHEMA_OVERRIDE" \
+      || fail "Ubuntu's dock default does not point at the installed Firefox launcher"
+    if grep -Fq 'firefox_firefox.desktop' <<<"$UBUNTU_SCHEMA_OVERRIDE"; then
+      fail "Ubuntu's dock default still points at the absent Firefox Snap launcher"
+    fi
+    for package in ubuntu-desktop-minimal ubuntu-session gdm3 firefox yaru-theme-gtk; do
+      grep -q "^${package}[[:space:]]" "$PACKAGES" || fail "$package provenance is missing"
+    done
+    "$DEBUGFS" -R 'cat /etc/apt/keyrings/packages.mozilla.org.asc' "$IMAGE" 2>/dev/null \
+      | shasum -a 256 | grep -Fq "$MOZILLA_APT_KEY_SHA256" \
+      || fail "the Mozilla APT key is not the pinned key"
+    "$DEBUGFS" -R 'cat /etc/environment.d/60-dory-desktop.conf' "$IMAGE" 2>/dev/null \
+      | grep -Fqx 'MOZ_ENABLE_WAYLAND=0' \
+      || fail "Firefox is not configured for reliable XWayland presentation"
+    if grep -Eq '^(xfce4|lightdm)[[:space:]]' "$PACKAGES"; then
+      fail "the Ubuntu image still contains the retired Xfce/LightDM session"
+    fi
+    ;;
+  *)
+    grep -Fq 'set_xfce_value /Gdk/WindowScalingFactor int 2' <<<"$DISPLAY_CONFIGURATION" \
+      || fail "Xfce Retina scaling is not configured"
+    grep -q $'^xfce4\t' "$PACKAGES" || fail "Xfce package provenance is missing"
+    grep -q $'^lightdm\t' "$PACKAGES" || fail "LightDM package provenance is missing"
+    if [ "$DISTRO" = debian ]; then
+      for package in firefox-esr evince galculator; do
+        grep -q "^${package}[[:space:]]" "$PACKAGES" || fail "$package provenance is missing"
+      done
+    fi
+    ;;
+esac
 grep -q $'^spice-vdagent\t' "$PACKAGES" || fail "SPICE package provenance is missing"
+grep -q $'^x11-utils\t' "$PACKAGES" || fail "X11 window qualification tools are missing"
+grep -q $'^wl-clipboard\t' "$PACKAGES" || fail "Wayland clipboard package provenance is missing"
+grep -q $'^xclip\t' "$PACKAGES" || fail "X11 clipboard package provenance is missing"
 grep -q $'^pipewire-audio\t' "$PACKAGES" || fail "PipeWire package provenance is missing"
+for package in mesa-vulkan-drivers vulkan-tools; do
+  # dpkg's ${binary:Package} field appends an architecture qualifier for
+  # Multi-Arch packages (for example, mesa-vulkan-drivers:arm64).
+  grep -Eq "^${package}(:arm64)?[[:space:]]" "$PACKAGES" \
+    || fail "$package provenance is missing"
+done
+
+GRAPHICS_CONFIGURATION="$($DEBUGFS -R 'cat /usr/lib/dory/configure-graphics-backend' "$IMAGE" 2>/dev/null)"
+grep -Fq "dory.graphics=virgl-venus" <<<"$GRAPHICS_CONFIGURATION" \
+  || fail "graphics backend configuration does not recognize VirGL plus Venus"
+grep -Fq "dory.graphics=virgl" <<<"$GRAPHICS_CONFIGURATION" \
+  || fail "graphics backend configuration does not recognize stable VirGL"
+grep -Fq "dory.graphics=software" <<<"$GRAPHICS_CONFIGURATION" \
+  || fail "graphics backend configuration does not recognize software fallback"
+if grep -Fq "printf '%s\\n' 'virgl2+venus'" <<<"$GRAPHICS_CONFIGURATION"; then
+  fail "graphics backend writes a hard-coded backend instead of the resolved runtime"
+fi
+grep -Fq "printf '%s\\n' \"\$backend\" > /run/dory/graphics-backend" \
+  <<<"$GRAPHICS_CONFIGURATION" \
+  || fail "graphics backend does not record the resolved runtime"
+grep -Fq "virgl2|virgl2+venus" <<<"$GRAPHICS_CONFIGURATION" \
+  || fail "accelerated graphics backends do not share a GTK renderer policy"
+grep -Fq "'GSK_RENDERER=gl' > \"\$environment_file\"" <<<"$GRAPHICS_CONFIGURATION" \
+  || fail "accelerated graphics does not select the qualified GTK4 GL renderer"
+grep -Fq 'VK_DRIVER_FILES="$venus_icd"' <<<"$GRAPHICS_CONFIGURATION" \
+  || fail "Venus applications do not select Dory's isolated Vulkan ICD"
+grep -Fq 'LD_LIBRARY_PATH="$venus_root/lib"' <<<"$GRAPHICS_CONFIGURATION" \
+  || fail "Venus applications do not select Dory's isolated Vulkan library"
+grep -Fq 'timeout 10 "$venus_probe"' <<<"$GRAPHICS_CONFIGURATION" \
+  || fail "Venus is enabled without a bounded hardware capability probe"
+grep -Fq 'venus-ready:' <<<"$GRAPHICS_CONFIGURATION" \
+  || fail "Venus readiness is not recorded for support diagnostics"
+grep -Fq '/etc/X11/Xsession.d/70dory-graphics' <<<"$GRAPHICS_CONFIGURATION" \
+  || fail "desktop sessions do not receive the qualified graphics environment"
+grep -Fq 'export VK_DRIVER_FILES=$venus_icd' <<<"$GRAPHICS_CONFIGURATION" \
+  || fail "GDM and LightDM sessions do not select Dory's Venus ICD"
+grep -Fq 'export LD_LIBRARY_PATH=$venus_root/lib' <<<"$GRAPHICS_CONFIGURATION" \
+  || fail "GDM and LightDM sessions do not select Dory's Venus library"
+if grep -Fq 'ZED_ALLOW_EMULATED_GPU' <<<"$GRAPHICS_CONFIGURATION"; then
+  fail "graphics configuration masks Zed's hardware-GPU requirement"
+fi
+if grep -Fq 'GSK_RENDERER=cairo' <<<"$GRAPHICS_CONFIGURATION"; then
+  fail "accelerated graphics falls back to CPU-rendered GTK instead of qualified GL"
+fi
+if grep -Eq 'MESA_LOADER_DRIVER_OVERRIDE|GALLIUM_DRIVER|LIBGL_KOPPER_DRI2' <<<"$GRAPHICS_CONFIGURATION"; then
+  fail "graphics backend globally overrides Mesa instead of allowing API-native driver selection"
+fi
+if grep -Fq "grep -qw 'dory.gpu=venus' /proc/cmdline" <<<"$GRAPHICS_CONFIGURATION"; then
+  fail "graphics backend still relies only on the legacy Venus token"
+fi
 
 ZSTD="${DORY_ZSTD:-$(command -v zstd 2>/dev/null || true)}"
 [ -n "$ZSTD" ] || fail "zstd is required"

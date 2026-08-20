@@ -1,0 +1,42 @@
+#!/bin/bash
+set -euo pipefail
+
+# A desktop browser can create short-lived memory peaks well beyond its steady working set. Keep
+# those peaks compressed inside the guest rather than letting the kernel kill the browser or shell.
+if grep -q '^/dev/zram0 ' /proc/swaps 2>/dev/null; then
+  exit 0
+fi
+
+if [ ! -b /dev/zram0 ]; then
+  # Dory's appliance kernel links zram into the image rather than shipping a separate module tree.
+  # A built-in driver exposes zram-control directly, so `modprobe` correctly reports that there is
+  # no module file even though the driver is available.
+  if [ ! -e /sys/class/zram-control ]; then
+    modprobe zram num_devices=1
+  fi
+  if [ ! -b /dev/zram0 ] && [ -e /sys/class/zram-control/hot_add ]; then
+    cat /sys/class/zram-control/hot_add >/dev/null
+  fi
+fi
+udevadm settle 2>/dev/null || true
+for _ in $(seq 1 100); do
+  [ -b /dev/zram0 ] && break
+  sleep 0.05
+done
+[ -b /dev/zram0 ] || { echo 'zram device is unavailable' >&2; exit 1; }
+
+memory_bytes="$(awk '/^MemTotal:/ { print $2 * 1024; exit }' /proc/meminfo)"
+size_bytes="$((memory_bytes / 2))"
+maximum_bytes=$((2 * 1024 * 1024 * 1024))
+if [ "$size_bytes" -gt "$maximum_bytes" ]; then
+  size_bytes="$maximum_bytes"
+fi
+
+# `zramctl --reset` removes a dynamically hot-added device on current util-linux. Reset through
+# sysfs only when a previous, inactive configuration exists, then size the same device in place.
+if [ "$(cat /sys/block/zram0/disksize)" -ne 0 ]; then
+  printf '1\n' > /sys/block/zram0/reset
+fi
+printf '%s\n' "$size_bytes" > /sys/block/zram0/disksize
+mkswap --quiet /dev/zram0
+swapon --priority 100 /dev/zram0

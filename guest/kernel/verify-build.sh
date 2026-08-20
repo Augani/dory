@@ -29,8 +29,8 @@ case "$ARCH" in
     exit 64
     ;;
 esac
-if [ "$PROFILE" = "desktop" ] && [ "$ARCH" != "arm64" ]; then
-  echo "the desktop kernel profile currently supports arm64 only" >&2
+if { [ "$PROFILE" = "desktop" ] || [ "$PROFILE" = "accelerated-desktop" ]; } && [ "$ARCH" != "arm64" ]; then
+  echo "desktop kernel profiles currently support arm64 only" >&2
   exit 64
 fi
 
@@ -88,6 +88,7 @@ case "$PROFILE" in
   headless) CONFIG_FRAGMENTS+=(dory-headless.fragment) ;;
   venus) CONFIG_FRAGMENTS+=(dory-virtual-display.fragment dory-gpu.fragment) ;;
   desktop) CONFIG_FRAGMENTS+=(dory-virtual-display.fragment dory-desktop.fragment) ;;
+  accelerated-desktop) CONFIG_FRAGMENTS+=(dory-virtual-display.fragment dory-gpu.fragment dory-desktop.fragment dory-accelerated-desktop.fragment) ;;
 esac
 
 REQUIRED_POLICIES="$({
