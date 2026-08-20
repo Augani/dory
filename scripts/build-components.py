@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import binascii
 import datetime as dt
 import hashlib
 import json
@@ -19,8 +20,14 @@ from typing import NoReturn
 
 
 CATALOG_KIND = "dev.dory.component-catalog"
-CATALOG_SCHEMA = 1
+CATALOG_SCHEMA = 2
 ARCHITECTURE = "arm64"
+QUALIFICATION_KIND = "dev.dory.virtual-machine-qualification-manifest"
+QUALIFICATION_SCHEMA = 1
+QUALIFICATION_COMPONENT = "linux-desktop"
+QUALIFICATION_PATH = "virtual-machine-qualification.json"
+DEFAULT_CATALOG_PUBLIC_KEY = "AFetajNbqZty68rRY7OMWYNt6suUsrokQmYMhDJtnP4="
+MAX_QUALIFICATION_BYTES = 2 * 1024 * 1024
 
 
 def fail(message: str) -> NoReturn:
@@ -126,7 +133,223 @@ def generated_at(value: str | None) -> str:
     return parsed.astimezone(dt.timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
-def component_specs(source_root: pathlib.Path, kubectl: pathlib.Path) -> list[dict]:
+def unique_json_object(pairs: list[tuple[str, object]]) -> dict:
+    result: dict = {}
+    for key, value in pairs:
+        if key in result:
+            fail(f"qualification manifest contains duplicate key: {key}")
+        result[key] = value
+    return result
+
+
+def exact_keys(value: object, required: set[str], optional: set[str], label: str) -> dict:
+    if not isinstance(value, dict):
+        fail(f"{label} must be an object")
+    actual = set(value)
+    if not required <= actual or not actual <= required | optional:
+        fail(f"{label} has missing or unknown fields")
+    return value
+
+
+def nonempty_string(value: object, label: str, maximum_bytes: int = 256) -> str:
+    if not isinstance(value, str) or not value or len(value.encode("utf-8")) > maximum_bytes:
+        fail(f"{label} must be a bounded non-empty string")
+    return value
+
+
+def sha256_value(value: object, label: str) -> str:
+    text = nonempty_string(value, label, 64)
+    if len(text) != 64 or any(character not in "0123456789abcdef" for character in text):
+        fail(f"{label} must be a lowercase SHA-256 digest")
+    return text
+
+
+def positive_integer_value(value: object, label: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        fail(f"{label} must be a positive integer")
+    return value
+
+
+def boolean_value(value: object, label: str) -> bool:
+    if not isinstance(value, bool):
+        fail(f"{label} must be a boolean")
+    return value
+
+
+def validate_qualification_record(value: object, index: int) -> dict:
+    label = f"qualification record {index}"
+    required = {
+        "qualificationIdentity", "guest", "bootMediaKind", "bootMediaSource",
+        "backend", "backendImplementationIdentifier", "backendRuntimeBuildIdentifier",
+        "virtualHardwareABIVersion", "graphics", "devices",
+        "hostHardwareModelIdentifier", "hostOperatingSystemBuild", "components",
+        "virtioGPUKernelAndDeviceSupportQualified", "venusVulkanGuestRuntimeQualified",
+    }
+    record = exact_keys(
+        value,
+        required,
+        {"immutableArtifactSHA256", "mutableProvenance"},
+        label,
+    )
+    nonempty_string(record["qualificationIdentity"], f"{label} identity")
+
+    guest = exact_keys(record["guest"], {"family", "architecture"}, set(), f"{label} guest")
+    if guest["family"] not in {"linux", "windows", "macos"}:
+        fail(f"{label} guest family is unsupported")
+    if guest["architecture"] not in {"arm64", "x86_64"}:
+        fail(f"{label} guest architecture is unsupported")
+    if record["bootMediaKind"] not in {
+        "installer-iso", "virtual-disk", "installed-linux-boot-bundle",
+        "macos-restore-image",
+    }:
+        fail(f"{label} boot media kind is unsupported")
+    if record["bootMediaSource"] not in {
+        "dory-bundled", "vendor-download", "user-provided",
+    }:
+        fail(f"{label} boot media source is unsupported")
+    if record["backend"] not in {
+        "dory-hypervisor", "apple-virtualization-framework", "qemu-hvf",
+    }:
+        fail(f"{label} backend is unsupported")
+    if record["graphics"] not in {
+        "none", "software", "host-accelerated-display", "hardware-accelerated-3d",
+    }:
+        fail(f"{label} graphics contract is unsupported")
+    nonempty_string(record["backendImplementationIdentifier"], f"{label} implementation")
+    nonempty_string(record["backendRuntimeBuildIdentifier"], f"{label} runtime build")
+    positive_integer_value(record["virtualHardwareABIVersion"], f"{label} ABI")
+    nonempty_string(record["hostHardwareModelIdentifier"], f"{label} host model")
+    nonempty_string(record["hostOperatingSystemBuild"], f"{label} host build")
+
+    immutable = record.get("immutableArtifactSHA256")
+    mutable = record.get("mutableProvenance")
+    if (immutable is None) == (mutable is None):
+        fail(f"{label} must have exactly one immutable or mutable media identity")
+    if immutable is not None:
+        sha256_value(immutable, f"{label} immutable artifact")
+    if mutable is not None:
+        provenance = exact_keys(
+            mutable,
+            {"repositoryIdentity", "mediaIdentity", "revision"},
+            set(),
+            f"{label} mutable provenance",
+        )
+        nonempty_string(provenance["repositoryIdentity"], f"{label} repository identity")
+        nonempty_string(provenance["mediaIdentity"], f"{label} media identity")
+        positive_integer_value(provenance["revision"], f"{label} media revision")
+
+    devices = exact_keys(
+        record["devices"],
+        {
+            "networkAttachment", "audioInput", "audioOutput", "keyboard", "pointer",
+            "directorySharing", "clipboard", "clockSynchronization", "dynamicDisplay",
+            "gracefulShutdown",
+        },
+        set(),
+        f"{label} devices",
+    )
+    if devices["networkAttachment"] not in {
+        "disconnected", "shared-nat", "bridged", "isolated",
+    }:
+        fail(f"{label} network attachment is unsupported")
+    for key in set(devices) - {"networkAttachment"}:
+        boolean_value(devices[key], f"{label} device {key}")
+
+    components = record["components"]
+    if not isinstance(components, list) or not components:
+        fail(f"{label} components must be a non-empty array")
+    identifiers: list[str] = []
+    for component_index, value in enumerate(components):
+        component = exact_keys(
+            value,
+            {"componentIdentifier", "buildIdentifier", "artifactSHA256"},
+            set(),
+            f"{label} component {component_index}",
+        )
+        identifiers.append(nonempty_string(
+            component["componentIdentifier"], f"{label} component identifier"
+        ))
+        nonempty_string(component["buildIdentifier"], f"{label} component build")
+        sha256_value(component["artifactSHA256"], f"{label} component digest")
+    if identifiers != sorted(identifiers) or len(set(identifiers)) != len(identifiers):
+        fail(f"{label} components must be uniquely sorted by identifier")
+    boolean_value(
+        record["virtioGPUKernelAndDeviceSupportQualified"],
+        f"{label} VirtIO GPU qualification",
+    )
+    boolean_value(
+        record["venusVulkanGuestRuntimeQualified"],
+        f"{label} Venus qualification",
+    )
+    return record
+
+
+def load_qualification_manifest(
+    path: pathlib.Path,
+    *,
+    release_version: str,
+    public_key_base64: str,
+) -> dict:
+    path = regular_file(path.resolve(), "VM qualification manifest")
+    if path.stat().st_size > MAX_QUALIFICATION_BYTES:
+        fail("VM qualification manifest exceeds the maximum size")
+    try:
+        public_key = base64.b64decode(public_key_base64, validate=True)
+    except (ValueError, binascii.Error):
+        fail("catalog public key is malformed")
+    if len(public_key) != 32:
+        fail("catalog public key must be a 32-byte Ed25519 key")
+    try:
+        manifest = json.loads(
+            path.read_text(encoding="utf-8"),
+            object_pairs_hook=unique_json_object,
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        fail(f"VM qualification manifest is unreadable: {error}")
+    manifest = exact_keys(
+        manifest,
+        {
+            "kind", "schemaVersion", "manifestIdentity", "catalogReleaseVersion",
+            "architecture", "signingKeyID", "records",
+        },
+        set(),
+        "VM qualification manifest",
+    )
+    expected_key_id = hashlib.sha256(public_key).hexdigest()
+    if manifest["kind"] != QUALIFICATION_KIND:
+        fail("VM qualification manifest kind is invalid")
+    schema_version = manifest["schemaVersion"]
+    if (
+        isinstance(schema_version, bool)
+        or not isinstance(schema_version, int)
+        or schema_version != QUALIFICATION_SCHEMA
+    ):
+        fail("VM qualification manifest schema is unsupported")
+    nonempty_string(manifest["manifestIdentity"], "VM qualification manifest identity")
+    if manifest["catalogReleaseVersion"] != release_version:
+        fail("VM qualification manifest release does not match the catalog")
+    if manifest["architecture"] != ARCHITECTURE:
+        fail("VM qualification manifest architecture is unsupported")
+    if manifest["signingKeyID"] != expected_key_id:
+        fail("VM qualification manifest signing key does not match the catalog trust root")
+    records = manifest["records"]
+    if not isinstance(records, list) or not records:
+        fail("VM qualification manifest must contain records")
+    validated = [
+        validate_qualification_record(record, index)
+        for index, record in enumerate(records)
+    ]
+    identities = [record["qualificationIdentity"] for record in validated]
+    if len(set(identities)) != len(identities):
+        fail("VM qualification identities must be unique")
+    return manifest
+
+
+def component_specs(
+    source_root: pathlib.Path,
+    kubectl: pathlib.Path,
+    qualification_manifest: pathlib.Path,
+) -> list[dict]:
     desktop_specs = []
     for distro, display, summary in (
         (
@@ -229,6 +452,12 @@ def component_specs(source_root: pathlib.Path, kubectl: pathlib.Path) -> list[di
                 {
                     "path": "kernel-build-arm64-desktop.stamp",
                     "source": source_root / "kernel-build-arm64-desktop.stamp",
+                    "delivery": "none",
+                    "executable": False,
+                },
+                {
+                    "path": QUALIFICATION_PATH,
+                    "source": qualification_manifest,
                     "delivery": "none",
                     "executable": False,
                 },
@@ -361,6 +590,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--minimum-app-version")
     parser.add_argument("--generated-at")
     parser.add_argument("--signer", type=pathlib.Path)
+    parser.add_argument("--qualification-manifest", required=True, type=pathlib.Path)
+    parser.add_argument("--catalog-public-key", default=DEFAULT_CATALOG_PUBLIC_KEY)
     parser.add_argument("--skip-source-verification", action="store_true")
     return parser.parse_args()
 
@@ -374,6 +605,11 @@ def main() -> None:
     kubectl = regular_file(args.kubectl.resolve(), "kubectl")
     compression_tool = pathlib.Path("/usr/bin/compression_tool")
     regular_file(compression_tool, "macOS compression_tool")
+    qualification_manifest = load_qualification_manifest(
+        args.qualification_manifest,
+        release_version=args.version,
+        public_key_base64=args.catalog_public_key,
+    )
     if not args.skip_source_verification:
         validate_sources(repo, source_root, kubectl)
 
@@ -398,7 +634,7 @@ def main() -> None:
                 "assets": [],
             }
         ]
-        for spec in component_specs(source_root, kubectl):
+        for spec in component_specs(source_root, kubectl, args.qualification_manifest.resolve()):
             assets = [
                 materialize_asset(
                     version=args.version,
@@ -431,6 +667,13 @@ def main() -> None:
             "minimumAppVersion": args.minimum_app_version or args.version,
             "architecture": ARCHITECTURE,
             "components": releases,
+            "virtualMachineQualification": {
+                "component": QUALIFICATION_COMPONENT,
+                "path": QUALIFICATION_PATH,
+                "manifestIdentity": qualification_manifest["manifestIdentity"],
+                "manifestFormatVersion": qualification_manifest["schemaVersion"],
+                "signingKeyID": qualification_manifest["signingKeyID"],
+            },
         }
         catalog_path = staging / "catalog.json"
         catalog_path.write_text(

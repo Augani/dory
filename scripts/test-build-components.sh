@@ -8,6 +8,7 @@ trap 'rm -rf "$TMP"' EXIT
 SOURCE="$TMP/source"
 CORE_APP="$TMP/Dory.app"
 OUTPUT="$TMP/components/arm64"
+QUALIFICATION="$TMP/virtual-machine-qualification.json"
 mkdir -p "$SOURCE" "$CORE_APP/Contents/MacOS"
 
 write_fixture() {
@@ -38,6 +39,62 @@ for distro in debian ubuntu kali; do
 done
 printf 'schema=fixture\n' > "$SOURCE/kernel-build-arm64-desktop.stamp"
 
+python3 - "$QUALIFICATION" <<'PY'
+import base64
+import hashlib
+import json
+import pathlib
+import sys
+
+key = base64.b64decode("AFetajNbqZty68rRY7OMWYNt6suUsrokQmYMhDJtnP4=")
+digest = lambda byte: byte * 64
+manifest = {
+    "kind": "dev.dory.virtual-machine-qualification-manifest",
+    "schemaVersion": 1,
+    "manifestIdentity": "dory-release-9.8.7-apple-silicon",
+    "catalogReleaseVersion": "9.8.7",
+    "architecture": "arm64",
+    "signingKeyID": hashlib.sha256(key).hexdigest(),
+    "records": [{
+        "qualificationIdentity": "linux-desktop-arm64-mac16-1-25a1",
+        "guest": {"family": "linux", "architecture": "arm64"},
+        "bootMediaKind": "installed-linux-boot-bundle",
+        "bootMediaSource": "dory-bundled",
+        "immutableArtifactSHA256": digest("a"),
+        "backend": "dory-hypervisor",
+        "backendImplementationIdentifier": "dory.raw-hv-linux",
+        "backendRuntimeBuildIdentifier": "9.8.7",
+        "virtualHardwareABIVersion": 1,
+        "graphics": "hardware-accelerated-3d",
+        "devices": {
+            "networkAttachment": "shared-nat",
+            "audioInput": True,
+            "audioOutput": True,
+            "keyboard": True,
+            "pointer": True,
+            "directorySharing": True,
+            "clipboard": True,
+            "clockSynchronization": True,
+            "dynamicDisplay": True,
+            "gracefulShutdown": True,
+        },
+        "hostHardwareModelIdentifier": "Mac16,1",
+        "hostOperatingSystemBuild": "25A1",
+        "components": [{
+            "componentIdentifier": "dory-hv",
+            "buildIdentifier": "9.8.7",
+            "artifactSHA256": digest("b"),
+        }],
+        "virtioGPUKernelAndDeviceSupportQualified": True,
+        "venusVulkanGuestRuntimeQualified": True,
+    }],
+}
+pathlib.Path(sys.argv[1]).write_text(
+    json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n",
+    encoding="utf-8",
+)
+PY
+
 build() {
   "$ROOT/scripts/build-components.py" \
     --version 9.8.7 \
@@ -48,13 +105,14 @@ build() {
     --output "$OUTPUT" \
     --asset-base-url https://example.invalid/dory \
     --generated-at 2026-07-16T00:00:00Z \
+    --qualification-manifest "$QUALIFICATION" \
     --skip-source-verification
 }
 
 build
 build
 
-python3 - "$OUTPUT" "$ROOT" <<'PY'
+python3 - "$OUTPUT" "$ROOT" "$QUALIFICATION" <<'PY'
 import hashlib
 import importlib.util
 import json
@@ -65,9 +123,10 @@ import tempfile
 
 root = pathlib.Path(sys.argv[1])
 repo = pathlib.Path(sys.argv[2])
+qualification_source = pathlib.Path(sys.argv[3])
 catalog = json.loads((root / "catalog.json").read_text())
 assert catalog["kind"] == "dev.dory.component-catalog"
-assert catalog["schemaVersion"] == 1
+assert catalog["schemaVersion"] == 2
 assert catalog["architecture"] == "arm64"
 assert [item["id"] for item in catalog["components"]] == [
     "docker-core",
@@ -81,6 +140,20 @@ assert [item["id"] for item in catalog["components"]] == [
 assert catalog["components"][0]["assets"] == []
 assert catalog["components"][0]["downloadBytes"] == 4096
 assert catalog["components"][0]["installedBytes"] == 8192
+qualification = catalog["virtualMachineQualification"]
+assert qualification["component"] == "linux-desktop"
+assert qualification["path"] == "virtual-machine-qualification.json"
+assert qualification["manifestIdentity"] == "dory-release-9.8.7-apple-silicon"
+assert qualification["manifestFormatVersion"] == 1
+linux_desktop = next(item for item in catalog["components"] if item["id"] == "linux-desktop")
+qualification_assets = [
+    item for item in linux_desktop["assets"]
+    if item["path"] == "virtual-machine-qualification.json"
+]
+assert len(qualification_assets) == 1
+assert qualification_assets[0]["installedSHA256"] == hashlib.sha256(
+    qualification_source.read_bytes()
+).hexdigest()
 
 for component in catalog["components"][1:]:
     assert component["downloadBytes"] == sum(
@@ -137,5 +210,40 @@ else:
     raise AssertionError("cleanup guard accepted the repository root")
 assert (repo / ".git").is_dir()
 PY
+
+cp "$QUALIFICATION" "$TMP/invalid-qualification.json"
+python3 - "$TMP/invalid-qualification.json" <<'PY'
+import json
+import pathlib
+import sys
+path = pathlib.Path(sys.argv[1])
+manifest = json.loads(path.read_text(encoding="utf-8"))
+manifest["catalogReleaseVersion"] = "9.8.6"
+path.write_text(json.dumps(manifest) + "\n", encoding="utf-8")
+PY
+if "$ROOT/scripts/build-components.py" \
+    --version 9.8.7 \
+    --core-artifact "$TMP/Dory-test.dmg" \
+    --core-app "$CORE_APP" \
+    --kubectl "$TMP/kubectl" \
+    --source-root "$SOURCE" \
+    --output "$TMP/rejected-components" \
+    --qualification-manifest "$TMP/invalid-qualification.json" \
+    --skip-source-verification 2>/dev/null; then
+  echo "component packaging accepted a qualification manifest for another release" >&2
+  exit 1
+fi
+
+if "$ROOT/scripts/build-components.py" \
+    --version 9.8.7 \
+    --core-artifact "$TMP/Dory-test.dmg" \
+    --core-app "$CORE_APP" \
+    --kubectl "$TMP/kubectl" \
+    --source-root "$SOURCE" \
+    --output "$TMP/missing-qualification-components" \
+    --skip-source-verification 2>/dev/null; then
+  echo "component packaging accepted a catalog without qualification evidence" >&2
+  exit 1
+fi
 
 echo "component packaging test passed"
