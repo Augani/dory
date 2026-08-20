@@ -1,5 +1,6 @@
 import DoryCore
 @testable import DorydKit
+import CryptoKit
 import XCTest
 
 final class DorydServiceTests: XCTestCase {
@@ -1195,6 +1196,125 @@ final class DorydServiceTests: XCTestCase {
             delete.fulfill()
         }
         wait(for: [delete], timeout: 5)
+    }
+
+    func testMachineStatusAndSnapshotExposeOnlySafeTypedDesktopPayloadReceipt() throws {
+        let base = "/tmp/doryd-service-desktop-receipt-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let manager = MachineManager(configuration: MachineManagerConfiguration(
+            vmmExecutablePath: "/bin/sleep",
+            stateDirectory: base,
+            baseArguments: ["30"],
+            passMachineArguments: false,
+            requiresReadyHandoff: false
+        ))
+        defer {
+            try? manager.delete(id: "dev")
+            try? FileManager.default.removeItem(atPath: base)
+        }
+        let kernelData = try Data(contentsOf: URL(fileURLWithPath: doryTestKernelPath))
+        let kernelSHA256 = SHA256.hash(data: kernelData)
+            .map { String(format: "%02x", $0) }.joined()
+        let receipt = DoryInstalledDesktopPayloadReceipt.verifiedUpdate(
+            distributionIdentifier: "ubuntu",
+            releaseVersion: "24.04+runtime.7",
+            inputSHA256: String(repeating: "a", count: 64),
+            bundleSHA256: String(repeating: "b", count: 64),
+            distributionComponentIdentifier: "desktop-ubuntu",
+            distributionInstallationName: "ubuntu-installation",
+            distributionCatalogSHA256: String(repeating: "c", count: 64),
+            bundleAssetIdentifier: "dory-desktop-ubuntu-update-arm64.tar",
+            runtimeComponentIdentifier: "linux-desktop",
+            runtimeInstallationName: "runtime-installation",
+            runtimeCatalogSHA256: String(repeating: "d", count: 64),
+            kernelAssetIdentifier: "dory-desktop-kernel-arm64.lzfse",
+            kernelSHA256: kernelSHA256
+        )
+        _ = try manager.create(DoryMachineConfiguration(
+            id: "dev",
+            kernelPath: doryTestKernelPath,
+            rootfsPath: doryTestRootfsPath,
+            displayMode: .desktop,
+            environment: ["OPAQUE_SECRET": "must-not-enter-diagnostics"],
+            installedDesktopPayloadReceipt: receipt
+        ))
+        let service = DorydService(socketPath: "/tmp/doryd-test.sock", machineManager: manager)
+        let listener = makeAnonymousListener(service: service)
+        listener.resume()
+        defer { listener.invalidate() }
+        let connection = NSXPCConnection(listenerEndpoint: listener.endpoint)
+        connection.remoteObjectInterface = NSXPCInterface(with: DorydControl.self)
+        connection.resume()
+        defer { connection.invalidate() }
+        let proxy = try XCTUnwrap(connection.remoteObjectProxy as? DorydControl)
+
+        let list = expectation(description: "typed desktop receipt list")
+        proxy.machineList { rows, message in
+            XCTAssertEqual(message, "")
+            let body = (rows as? [NSDictionary])?.first
+            let encoded = body?["installedDesktopPayloadReceipt"] as? NSDictionary
+            XCTAssertEqual((encoded?["schemaVersion"] as? NSNumber)?.uint16Value, 1)
+            XCTAssertEqual(encoded?["provenance"] as? String, "verified-update-bundle")
+            XCTAssertEqual(encoded?["distributionIdentifier"] as? String, "ubuntu")
+            XCTAssertEqual(encoded?["releaseVersion"] as? String, "24.04+runtime.7")
+            XCTAssertEqual(encoded?["inputSHA256"] as? String, String(repeating: "a", count: 64))
+            XCTAssertEqual(encoded?["bundleSHA256"] as? String, String(repeating: "b", count: 64))
+            let safe = body.map(DoryMachineDiagnosticsProjection.supportSafeMachineStatus)
+            XCTAssertNil(safe?["env"])
+            XCTAssertNotNil(safe?["installedDesktopPayloadReceipt"])
+            XCTAssertFalse(String(describing: safe).contains("must-not-enter-diagnostics"))
+            list.fulfill()
+        }
+        wait(for: [list], timeout: 5)
+
+        let snapshot = expectation(description: "typed desktop receipt snapshot")
+        proxy.machineSnapshot("dev", request: ["snapshotID": "s1"]) { ok, body, message in
+            XCTAssertTrue(ok, message)
+            let encoded = body["installedDesktopPayloadReceipt"] as? NSDictionary
+            XCTAssertEqual(encoded?["releaseVersion"] as? String, "24.04+runtime.7")
+            XCTAssertEqual(encoded?["bundleSHA256"] as? String, String(repeating: "b", count: 64))
+            snapshot.fulfill()
+        }
+        wait(for: [snapshot], timeout: 5)
+    }
+
+    func testDesktopUpdateRejectsCallerPathsAndRequiresStableComponentGenerations() throws {
+        let base = "/tmp/doryd-service-desktop-authority-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let manager = MachineManager(configuration: MachineManagerConfiguration(
+            vmmExecutablePath: "/bin/sleep",
+            stateDirectory: base,
+            baseArguments: ["30"],
+            passMachineArguments: false,
+            requiresReadyHandoff: false
+        ))
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let service = DorydService(socketPath: "/tmp/doryd-test.sock", machineManager: manager)
+
+        let oldPaths = expectation(description: "caller paths rejected")
+        service.machineDesktopUpdate("dev", request: [
+            "distro": "ubuntu",
+            "version": "24.04+runtime.7",
+            "bundlePath": "/tmp/caller-controlled.tar",
+            "kernelPath": "/tmp/caller-controlled-kernel",
+        ]) { ok, _, message in
+            XCTAssertFalse(ok)
+            XCTAssertTrue(message.contains("desktopUpdateAuthority"))
+            oldPaths.fulfill()
+        }
+        wait(for: [oldPaths], timeout: 2)
+
+        let mixed = expectation(description: "mixed authority rejected")
+        service.machineDesktopUpdate("dev", request: [
+            "distro": "ubuntu",
+            "version": "24.04+runtime.7",
+            "distributionInstallationName": "ubuntu-installation",
+            "runtimeInstallationName": "runtime-installation",
+            "bundlePath": "/tmp/caller-controlled.tar",
+        ]) { ok, _, message in
+            XCTAssertFalse(ok)
+            XCTAssertTrue(message.contains("desktopUpdateAuthority"))
+            mixed.fulfill()
+        }
+        wait(for: [mixed], timeout: 2)
     }
 
     func testMachineWritesRequireTypedIntentAndPreserveLegacyEnvironmentFieldLocally() throws {

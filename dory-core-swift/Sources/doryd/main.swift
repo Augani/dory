@@ -64,6 +64,9 @@ let idleController = IdleController()
 let dockerTier = dorydEnvironment.dockerTierConfiguration().map {
     DockerTier(configuration: $0, idleController: idleController)
 }
+let desktopUpdateArtifactResolver = DoryComponentStoreDesktopUpdateArtifactResolver(
+    store: DoryComponentStore(drive: dataDrive)
+)
 let machineManager = dorydEnvironment.machineManagerConfiguration().flatMap { configuration -> MachineManager? in
     let readiness = DoryDaemonVirtualMachineProductionTrustFactory().resolve(
         store: DoryComponentStore(drive: dataDrive),
@@ -74,6 +77,7 @@ let machineManager = dorydEnvironment.machineManagerConfiguration().flatMap { co
         FileHandle.standardError.write(Data(
             "doryd: VM launch policy requireResolvedPlan (production trust inventory ready)\n".utf8
         ))
+        context.machineManager.installDesktopUpdateArtifactResolver(desktopUpdateArtifactResolver)
         return context.machineManager
     case let .unavailable(reason):
         guard reason.permitsLegacyCompatibilityMigration else {
@@ -91,10 +95,12 @@ let machineManager = dorydEnvironment.machineManagerConfiguration().flatMap { co
             "doryd: VM launch policy legacyCompatibility "
                 .appending("(\(reason.code.rawValue): \(reason.message))\n").utf8
         ))
-        return MachineManager(
+        let manager = MachineManager(
             configuration: configuration,
             launchPolicy: .legacyCompatibility
         )
+        manager.installDesktopUpdateArtifactResolver(desktopUpdateArtifactResolver)
+        return manager
     }
 }
 let sandboxTTLReconciler = machineManager.map { manager in

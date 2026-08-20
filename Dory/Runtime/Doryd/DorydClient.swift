@@ -572,6 +572,109 @@ nonisolated private extension String {
                 || byte == 58 || byte == 64 || byte == 95
         }
     }
+
+    var isSafeComponentInstallationName: Bool {
+        let bytes = Array(utf8)
+        guard (1...255).contains(bytes.count),
+              let first = bytes.first,
+              (first >= 48 && first <= 57)
+                || (first >= 65 && first <= 90)
+                || (first >= 97 && first <= 122) else {
+            return false
+        }
+        return bytes.dropFirst().allSatisfy { byte in
+            (byte >= 48 && byte <= 57)
+                || (byte >= 65 && byte <= 90)
+                || (byte >= 97 && byte <= 122)
+                || byte == 43 || byte == 45 || byte == 46 || byte == 95
+        }
+    }
+}
+
+nonisolated struct DorydInstalledDesktopPayloadReceipt: Codable, Sendable, Equatable, Hashable {
+    var schemaVersion: UInt16
+    var provenance: String
+    var distributionIdentifier: String
+    var releaseVersion: String
+    var inputSHA256: String
+    var bundleSHA256: String?
+    var distributionComponentIdentifier: String?
+    var distributionInstallationName: String?
+    var distributionCatalogSHA256: String?
+    var bundleAssetIdentifier: String?
+    var runtimeComponentIdentifier: String?
+    var runtimeInstallationName: String?
+    var runtimeCatalogSHA256: String?
+    var kernelAssetIdentifier: String?
+    var kernelSHA256: String?
+
+    var isValid: Bool {
+        guard schemaVersion == 1,
+              ["debian", "kali", "ubuntu"].contains(distributionIdentifier),
+              releaseVersion.wholeMatch(of: /[A-Za-z0-9][A-Za-z0-9._+-]{0,127}/) != nil,
+              inputSHA256.isLowercaseSHA256 else {
+            return false
+        }
+        switch provenance {
+        case "legacy-environment":
+            return verifiedAuthorityFieldsAreNil
+        case "legacy-snapshot-migration":
+            return verifiedAuthorityFieldsAreNil
+        case "verified-update-bundle":
+            return bundleSHA256?.isLowercaseSHA256 == true
+                && kernelSHA256?.isLowercaseSHA256 == true
+                && distributionComponentIdentifier == "desktop-" + distributionIdentifier
+                && distributionInstallationName?.isSafeComponentInstallationName == true
+                && distributionCatalogSHA256?.isLowercaseSHA256 == true
+                && bundleAssetIdentifier
+                    == "dory-desktop-" + distributionIdentifier + "-update-arm64.tar"
+                && runtimeComponentIdentifier == "linux-desktop"
+                && runtimeInstallationName?.isSafeComponentInstallationName == true
+                && runtimeCatalogSHA256?.isLowercaseSHA256 == true
+                && kernelAssetIdentifier == "dory-desktop-kernel-arm64.lzfse"
+        default:
+            return false
+        }
+    }
+
+    private var verifiedAuthorityFieldsAreNil: Bool {
+        bundleSHA256 == nil
+            && distributionComponentIdentifier == nil
+            && distributionInstallationName == nil
+            && distributionCatalogSHA256 == nil
+            && bundleAssetIdentifier == nil
+            && runtimeComponentIdentifier == nil
+            && runtimeInstallationName == nil
+            && runtimeCatalogSHA256 == nil
+            && kernelAssetIdentifier == nil
+            && kernelSHA256 == nil
+    }
+
+    static func legacyEnvironment(_ environment: [String: String]) -> Self? {
+        guard let distributionIdentifier = environment["DORY_DESKTOP_DISTRO"],
+              let releaseVersion = environment["DORY_DESKTOP_RELEASE_VERSION"],
+              let inputSHA256 = environment["DORY_DESKTOP_INPUT_SHA256"] else {
+            return nil
+        }
+        let receipt = Self(
+            schemaVersion: 1,
+            provenance: "legacy-environment",
+            distributionIdentifier: distributionIdentifier,
+            releaseVersion: releaseVersion,
+            inputSHA256: inputSHA256,
+            bundleSHA256: nil,
+            distributionComponentIdentifier: nil,
+            distributionInstallationName: nil,
+            distributionCatalogSHA256: nil,
+            bundleAssetIdentifier: nil,
+            runtimeComponentIdentifier: nil,
+            runtimeInstallationName: nil,
+            runtimeCatalogSHA256: nil,
+            kernelAssetIdentifier: nil,
+            kernelSHA256: nil
+        )
+        return receipt.isValid ? receipt : nil
+    }
 }
 
 nonisolated private extension DorydMachineRuntimeBootMediaIdentity {
@@ -660,6 +763,7 @@ nonisolated struct DorydMachineStatus: Sendable, Equatable {
     var shares: [DorydMachineShareConfiguration] = []
     var environment: [String: String] = [:]
     var runtimeIdentity: DorydMachineRuntimeIdentity = .legacyCompatibility
+    var installedDesktopPayloadReceipt: DorydInstalledDesktopPayloadReceipt? = nil
 }
 
 nonisolated struct DorydMachineExecResult: Sendable, Equatable {
@@ -713,6 +817,7 @@ nonisolated struct DorydMachineSnapshot: Sendable, Equatable {
     var cpuCount: Int
     var runtimeIdentity: DorydMachineRuntimeIdentity = .legacyCompatibility
     var artifactEvidence: DorydMachineSnapshotArtifactEvidence? = nil
+    var installedDesktopPayloadReceipt: DorydInstalledDesktopPayloadReceipt? = nil
 }
 
 nonisolated enum DorydMachineBackupFrequency: String, Sendable, Equatable, CaseIterable {
@@ -1254,14 +1359,14 @@ nonisolated final class DorydClient: @unchecked Sendable {
         _ machineID: String,
         distro: String,
         version: String,
-        bundlePath: String,
-        kernelPath: String
+        distributionInstallationName: String,
+        runtimeInstallationName: String
     ) async throws -> DorydDesktopUpdateResult {
         let request: NSDictionary = [
             "distro": distro,
             "version": version,
-            "bundlePath": bundlePath,
-            "kernelPath": kernelPath,
+            "distributionInstallationName": distributionInstallationName,
+            "runtimeInstallationName": runtimeInstallationName,
         ]
         return try await withTimeout(atLeast: 3_900).statusCommand { proxy, reply in
             proxy.machineDesktopUpdate(machineID, request: request, reply: reply)
@@ -1702,6 +1807,13 @@ nonisolated final class DorydClient: @unchecked Sendable {
               let runtimeIdentity = machineRuntimeIdentity(from: dictionary) else {
             return nil
         }
+        let environment = machineEnvironment(from: dictionary["env"])
+        guard let installedDesktopPayloadReceipt = machineInstalledDesktopPayloadReceipt(
+            from: dictionary,
+            legacyEnvironment: environment
+        ) else {
+            return nil
+        }
         return DorydMachineStatus(
             id: id,
             state: state,
@@ -1726,9 +1838,84 @@ nonisolated final class DorydClient: @unchecked Sendable {
                 ?? (dictionary["installerMediaAttached"] as? NSNumber)?.boolValue
                 ?? false,
             shares: machineShares(from: dictionary["shares"]),
-            environment: machineEnvironment(from: dictionary["env"]),
-            runtimeIdentity: runtimeIdentity
+            environment: environment,
+            runtimeIdentity: runtimeIdentity,
+            installedDesktopPayloadReceipt: installedDesktopPayloadReceipt.value
         )
+    }
+
+    private struct ParsedInstalledDesktopPayloadReceipt {
+        var value: DorydInstalledDesktopPayloadReceipt?
+    }
+
+    /// Only absence gets legacy compatibility. A present typed receipt is an evidence claim and
+    /// malformed or future-schema values fail the entire row instead of downgrading to env.
+    nonisolated private static func machineInstalledDesktopPayloadReceipt(
+        from dictionary: NSDictionary,
+        legacyEnvironment: [String: String]? = nil
+    ) -> ParsedInstalledDesktopPayloadReceipt? {
+        guard let encoded = dictionary["installedDesktopPayloadReceipt"] else {
+            return ParsedInstalledDesktopPayloadReceipt(
+                value: legacyEnvironment.flatMap(
+                    DorydInstalledDesktopPayloadReceipt.legacyEnvironment
+                )
+            )
+        }
+        guard let receiptDictionary = encoded as? NSDictionary,
+              let receipt = strictInstalledDesktopPayloadReceipt(from: receiptDictionary),
+              receipt.isValid else {
+            return nil
+        }
+        return ParsedInstalledDesktopPayloadReceipt(value: receipt)
+    }
+
+    nonisolated private static func strictInstalledDesktopPayloadReceipt(
+        from dictionary: NSDictionary
+    ) -> DorydInstalledDesktopPayloadReceipt? {
+        let allowed: Set<String> = [
+            "schemaVersion", "provenance", "distributionIdentifier", "releaseVersion",
+            "inputSHA256", "bundleSHA256", "distributionComponentIdentifier",
+            "distributionInstallationName", "distributionCatalogSHA256",
+            "bundleAssetIdentifier", "runtimeComponentIdentifier", "runtimeInstallationName",
+            "runtimeCatalogSHA256", "kernelAssetIdentifier", "kernelSHA256",
+        ]
+        guard let keys = dictionary.allKeys as? [String], Set(keys).isSubset(of: allowed),
+              keys.count == Set(keys).count,
+              let schemaNumber = dictionary["schemaVersion"] as? NSNumber,
+              CFGetTypeID(schemaNumber) != CFBooleanGetTypeID(),
+              schemaNumber.uint64Value == 1,
+              schemaNumber.doubleValue == 1,
+              let provenance = dictionary["provenance"] as? String,
+              let distributionIdentifier = dictionary["distributionIdentifier"] as? String,
+              let releaseVersion = dictionary["releaseVersion"] as? String,
+              let inputSHA256 = dictionary["inputSHA256"] as? String else {
+            return nil
+        }
+        let optionalKeys = allowed.subtracting([
+            "schemaVersion", "provenance", "distributionIdentifier", "releaseVersion",
+            "inputSHA256",
+        ])
+        for key in optionalKeys where dictionary[key] != nil {
+            guard dictionary[key] is String else { return nil }
+        }
+        let receipt = DorydInstalledDesktopPayloadReceipt(
+            schemaVersion: 1,
+            provenance: provenance,
+            distributionIdentifier: distributionIdentifier,
+            releaseVersion: releaseVersion,
+            inputSHA256: inputSHA256,
+            bundleSHA256: dictionary["bundleSHA256"] as? String,
+            distributionComponentIdentifier: dictionary["distributionComponentIdentifier"] as? String,
+            distributionInstallationName: dictionary["distributionInstallationName"] as? String,
+            distributionCatalogSHA256: dictionary["distributionCatalogSHA256"] as? String,
+            bundleAssetIdentifier: dictionary["bundleAssetIdentifier"] as? String,
+            runtimeComponentIdentifier: dictionary["runtimeComponentIdentifier"] as? String,
+            runtimeInstallationName: dictionary["runtimeInstallationName"] as? String,
+            runtimeCatalogSHA256: dictionary["runtimeCatalogSHA256"] as? String,
+            kernelAssetIdentifier: dictionary["kernelAssetIdentifier"] as? String,
+            kernelSHA256: dictionary["kernelSHA256"] as? String
+        )
+        return receipt.isValid ? receipt : nil
     }
 
     /// Only an absent key is compatible with an older daemon. A present identity is an evidence
@@ -1893,6 +2080,9 @@ nonisolated final class DorydClient: @unchecked Sendable {
               let memoryMB = uint64(dictionary["memoryMB"]),
               let cpuCount = int(dictionary["cpuCount"]),
               let runtimeIdentity = machineRuntimeIdentity(from: dictionary),
+              let installedDesktopPayloadReceipt = machineInstalledDesktopPayloadReceipt(
+                  from: dictionary
+              ),
               let artifactEvidence = machineSnapshotArtifactEvidence(
                   from: dictionary,
                   runtimeIdentity: runtimeIdentity
@@ -1911,7 +2101,8 @@ nonisolated final class DorydClient: @unchecked Sendable {
             memoryMB: memoryMB,
             cpuCount: cpuCount,
             runtimeIdentity: runtimeIdentity,
-            artifactEvidence: artifactEvidence.value
+            artifactEvidence: artifactEvidence.value,
+            installedDesktopPayloadReceipt: installedDesktopPayloadReceipt.value
         )
     }
 

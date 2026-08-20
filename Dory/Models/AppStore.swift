@@ -5459,8 +5459,6 @@ final class AppStore {
             throw DesktopMachineAssetError.missingAsset("runtime update")
         }
         _ = try store.verify(.linuxDesktop)
-        let home = environment["HOME"] ?? NSHomeDirectory()
-        var prepared: [DesktopMachineDistro: DesktopMachineAssets] = [:]
         var results: [DorydDesktopUpdateResult] = []
 
         for status in desktopStatuses {
@@ -5472,7 +5470,11 @@ final class AppStore {
                 displayMode: status.displayMode
             )
             let distro = DesktopMachineDistro.resolve(
-                typedSettings.guestIdentityIntent.desktop?.distributionIdentifier
+                Self.managedDesktopDistributionIdentifier(
+                    configuredIdentifier:
+                        typedSettings.guestIdentityIntent.desktop?.distributionIdentifier,
+                    receipt: status.installedDesktopPayloadReceipt
+                )
             )
             guard runtimeChanged || components.contains(distro.componentID) else { continue }
             guard let distroRelease = try store.installedComponent(distro.componentID) else {
@@ -5485,25 +5487,32 @@ final class AppStore {
             }
             _ = try store.verify(distro.componentID)
             let targetVersion = distroRelease.version + "+runtime." + runtimeRelease.version
-            if status.environment["DORY_DESKTOP_RELEASE_VERSION"] == targetVersion {
-                continue
-            }
-            guard let bundlePath = DoryComponentStore.activeAssetPath(
-                component: distro.componentID,
-                path: "dory-desktop-" + distro.rawValue + "-update-arm64.tar"
-            ) else {
+            let bundleAssetIdentifier = "dory-desktop-" + distro.rawValue
+                + "-update-arm64.tar"
+            let kernelAssetIdentifier = "dory-desktop-kernel-arm64.lzfse"
+            guard let bundleAsset = distroRelease.assets.first(where: {
+                $0.path == bundleAssetIdentifier
+            }),
+            let kernelAsset = runtimeRelease.assets.first(where: {
+                $0.path == kernelAssetIdentifier
+            }) else {
                 throw DesktopMachineAssetError.missingAsset(distro.displayName + " in-place update")
             }
-            let assets: DesktopMachineAssets
-            if let cached = prepared[distro] {
-                assets = cached
-            } else {
-                assets = try await desktopMachineAssetPreparer(
-                    home,
-                    Self.desktopAssetEnvironment(processEnvironment: environment, distro: distro),
-                    Bundle.main.resourcePath
-                )
-                prepared[distro] = assets
+            if Self.desktopReceiptMatchesActiveComponents(
+                status.installedDesktopPayloadReceipt,
+                distributionIdentifier: distro.rawValue,
+                releaseVersion: targetVersion,
+                distributionComponentIdentifier: distro.componentID.rawValue,
+                distributionInstallationName: distroRelease.installationName,
+                distributionCatalogSHA256: distroRelease.catalogDigest,
+                bundleAssetIdentifier: bundleAsset.path,
+                bundleSHA256: bundleAsset.installedSHA256,
+                runtimeInstallationName: runtimeRelease.installationName,
+                runtimeCatalogSHA256: runtimeRelease.catalogDigest,
+                kernelAssetIdentifier: kernelAsset.path,
+                kernelSHA256: kernelAsset.installedSHA256
+            ) {
+                continue
             }
 
             busyMachines.insert(status.id)
@@ -5513,8 +5522,8 @@ final class AppStore {
                     status.id,
                     distro: distro.rawValue,
                     version: targetVersion,
-                    bundlePath: bundlePath,
-                    kernelPath: assets.kernelPath
+                    distributionInstallationName: distroRelease.installationName,
+                    runtimeInstallationName: runtimeRelease.installationName
                 )
                 results.append(result)
             } catch {
@@ -5528,6 +5537,45 @@ final class AppStore {
             _ = await refreshMachines()
         }
         return results
+    }
+
+    /// Portable snapshots intentionally omit raw environment. Preserve an explicit typed guest
+    /// identity when one exists; otherwise use the validated installed-payload observation.
+    nonisolated static func managedDesktopDistributionIdentifier(
+        configuredIdentifier: String?,
+        receipt: DorydInstalledDesktopPayloadReceipt?
+    ) -> String? {
+        configuredIdentifier ?? (receipt?.isValid == true ? receipt?.distributionIdentifier : nil)
+    }
+
+    nonisolated static func desktopReceiptMatchesActiveComponents(
+        _ receipt: DorydInstalledDesktopPayloadReceipt?,
+        distributionIdentifier: String,
+        releaseVersion: String,
+        distributionComponentIdentifier: String,
+        distributionInstallationName: String,
+        distributionCatalogSHA256: String,
+        bundleAssetIdentifier: String,
+        bundleSHA256: String,
+        runtimeInstallationName: String,
+        runtimeCatalogSHA256: String,
+        kernelAssetIdentifier: String,
+        kernelSHA256: String
+    ) -> Bool {
+        guard let receipt, receipt.isValid else { return false }
+        return receipt.provenance == "verified-update-bundle"
+            && receipt.distributionIdentifier == distributionIdentifier
+            && receipt.releaseVersion == releaseVersion
+            && receipt.distributionComponentIdentifier == distributionComponentIdentifier
+            && receipt.distributionInstallationName == distributionInstallationName
+            && receipt.distributionCatalogSHA256 == distributionCatalogSHA256.lowercased()
+            && receipt.bundleAssetIdentifier == bundleAssetIdentifier
+            && receipt.bundleSHA256 == bundleSHA256.lowercased()
+            && receipt.runtimeComponentIdentifier == DoryComponentID.linuxDesktop.rawValue
+            && receipt.runtimeInstallationName == runtimeInstallationName
+            && receipt.runtimeCatalogSHA256 == runtimeCatalogSHA256.lowercased()
+            && receipt.kernelAssetIdentifier == kernelAssetIdentifier
+            && receipt.kernelSHA256 == kernelSHA256.lowercased()
     }
 
     nonisolated static func preservingHiddenMachineSettings(_ settings: MachineSettings, existing: MachineSettings) -> MachineSettings {

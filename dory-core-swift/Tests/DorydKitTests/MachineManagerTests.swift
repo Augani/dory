@@ -108,13 +108,17 @@ final class MachineManagerTests: XCTestCase {
             ),
             agentConnector: { socketPath in try connector.connect(socketPath: socketPath) }
         )
+        manager.installDesktopUpdateArtifactResolver(TestDesktopUpdateArtifactResolver(
+            bundlePath: bundle,
+            kernelPath: candidateKernel
+        ))
         defer { try? manager.delete(id: "dev") }
         _ = try manager.create(DoryMachineConfiguration(
             id: "dev",
             kernelPath: kernel,
             rootfsPath: rootfs,
             displayMode: .desktop,
-            environment: ["DORY_DESKTOP_DISTRO": "ubuntu"]
+            environment: ["DORY_DESKTOP_DISTRO": "ubuntu", "PRESERVE": "yes"]
         ))
 
         let result = try runDesktopUpdate(
@@ -123,8 +127,8 @@ final class MachineManagerTests: XCTestCase {
             request: DoryDesktopUpdateRequest(
                 distro: "ubuntu",
                 version: "1.2.3+runtime.4.5.6",
-                bundlePath: bundle,
-                kernelPath: candidateKernel
+                distributionInstallationName: "ubuntu-installation",
+                runtimeInstallationName: "runtime-installation"
             )
         ).get()
 
@@ -140,8 +144,34 @@ final class MachineManagerTests: XCTestCase {
             "kernel-after"
         )
         let status = try XCTUnwrap(manager.status(id: "dev"))
-        XCTAssertEqual(status.environment["DORY_DESKTOP_RELEASE_VERSION"], "1.2.3+runtime.4.5.6")
-        XCTAssertEqual(status.environment["DORY_DESKTOP_INPUT_SHA256"], String(repeating: "a", count: 64))
+        XCTAssertEqual(status.environment, ["DORY_DESKTOP_DISTRO": "ubuntu", "PRESERVE": "yes"])
+        XCTAssertEqual(
+            status.installedDesktopPayloadReceipt,
+            DoryInstalledDesktopPayloadReceipt.verifiedUpdate(
+                distributionIdentifier: "ubuntu",
+                releaseVersion: "1.2.3+runtime.4.5.6",
+                inputSHA256: String(repeating: "a", count: 64),
+                bundleSHA256: SHA256.hash(data: Data("signed-bundle".utf8))
+                    .map { String(format: "%02x", $0) }.joined(),
+                distributionComponentIdentifier: "desktop-ubuntu",
+                distributionInstallationName: "ubuntu-installation",
+                distributionCatalogSHA256: String(repeating: "b", count: 64),
+                bundleAssetIdentifier: "dory-desktop-ubuntu-update-arm64.tar",
+                runtimeComponentIdentifier: "linux-desktop",
+                runtimeInstallationName: "runtime-installation",
+                runtimeCatalogSHA256: String(repeating: "c", count: 64),
+                kernelAssetIdentifier: "dory-desktop-kernel-arm64.lzfse",
+                kernelSHA256: SHA256.hash(data: Data("kernel-after".utf8))
+                    .map { String(format: "%02x", $0) }.joined()
+            )
+        )
+        let persisted = try JSONDecoder().decode(
+            DoryMachineConfiguration.self,
+            from: Data(contentsOf: URL(fileURLWithPath: state + "/dev/machine.json"))
+        )
+        XCTAssertEqual(persisted.installedDesktopPayloadReceipt, status.installedDesktopPayloadReceipt)
+        XCTAssertNil(persisted.environment["DORY_DESKTOP_RELEASE_VERSION"])
+        XCTAssertNil(persisted.environment["DORY_DESKTOP_INPUT_SHA256"])
         XCTAssertTrue(status.shares.isEmpty)
         XCTAssertFalse(FileManager.default.fileExists(atPath: state + "/dev/desktop-update.json"))
         let snapshots = try manager.listSnapshots(machineID: "dev")
@@ -179,6 +209,10 @@ final class MachineManagerTests: XCTestCase {
             ),
             agentConnector: { socketPath in try connector.connect(socketPath: socketPath) }
         )
+        manager.installDesktopUpdateArtifactResolver(TestDesktopUpdateArtifactResolver(
+            bundlePath: bundle,
+            kernelPath: candidateKernel
+        ))
         defer { try? manager.delete(id: "dev") }
         _ = try manager.create(DoryMachineConfiguration(
             id: "dev",
@@ -194,8 +228,8 @@ final class MachineManagerTests: XCTestCase {
             request: DoryDesktopUpdateRequest(
                 distro: "ubuntu",
                 version: "1.2.3+runtime.4.5.6",
-                bundlePath: bundle,
-                kernelPath: candidateKernel
+                distributionInstallationName: "ubuntu-installation",
+                runtimeInstallationName: "runtime-installation"
             )
         )
         XCTAssertThrowsError(try result.get()) { error in
@@ -213,9 +247,233 @@ final class MachineManagerTests: XCTestCase {
         let status = try XCTUnwrap(manager.status(id: "dev"))
         XCTAssertEqual(status.state, .stopped)
         XCTAssertEqual(status.environment, ["DORY_DESKTOP_DISTRO": "ubuntu", "PRESERVE": "yes"])
+        XCTAssertNil(status.installedDesktopPayloadReceipt)
         XCTAssertTrue(status.shares.isEmpty)
         XCTAssertFalse(FileManager.default.fileExists(atPath: state + "/dev/desktop-update.json"))
         XCTAssertEqual(try manager.listSnapshots(machineID: "dev").count, 1)
+    }
+
+    func testDesktopUpdateRejectsStagedBundleMutationBeforeGuestCommit() throws {
+        let base = "/tmp/dory-machine-desktop-update-tamper-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let sources = base + "/sources"
+        let state = base + "/machines"
+        try FileManager.default.createDirectory(atPath: sources, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let rootfs = sources + "/rootfs.ext4"
+        let kernel = sources + "/kernel"
+        let candidateKernel = sources + "/candidate-kernel"
+        let bundle = sources + "/desktop-update.tar"
+        try Data("rootfs-before".utf8).write(to: URL(fileURLWithPath: rootfs))
+        try Data("kernel-before".utf8).write(to: URL(fileURLWithPath: kernel))
+        try Data("kernel-after".utf8).write(to: URL(fileURLWithPath: candidateKernel))
+        try Data("signed-bundle".utf8).write(to: URL(fileURLWithPath: bundle))
+        let connector = DesktopUpdateAgentConnector(
+            managedRootfsPath: state + "/dev/rootfs.ext4",
+            mutatesStagedBundle: true
+        )
+        let manager = MachineManager(
+            configuration: MachineManagerConfiguration(
+                vmmExecutablePath: "/bin/sleep",
+                stateDirectory: state,
+                baseArguments: ["30"],
+                passMachineArguments: false,
+                requiresReadyHandoff: true
+            ),
+            agentConnector: { socketPath in try connector.connect(socketPath: socketPath) }
+        )
+        manager.installDesktopUpdateArtifactResolver(TestDesktopUpdateArtifactResolver(
+            bundlePath: bundle,
+            kernelPath: candidateKernel
+        ))
+        _ = try manager.create(DoryMachineConfiguration(
+            id: "dev",
+            kernelPath: kernel,
+            rootfsPath: rootfs,
+            displayMode: .desktop,
+            environment: ["DORY_DESKTOP_DISTRO": "ubuntu"]
+        ))
+        let result = try runDesktopUpdate(
+            manager: manager,
+            id: "dev",
+            request: DoryDesktopUpdateRequest(
+                distro: "ubuntu",
+                version: "1.2.3+runtime.4.5.6",
+                distributionInstallationName: "ubuntu-installation",
+                runtimeInstallationName: "runtime-installation"
+            )
+        )
+        XCTAssertThrowsError(try result.get()) { error in
+            XCTAssertTrue(String(describing: error).contains("staged bundle changed"))
+        }
+        XCTAssertEqual(
+            try String(contentsOfFile: state + "/dev/rootfs.ext4", encoding: .utf8),
+            "rootfs-before"
+        )
+        XCTAssertEqual(
+            try String(contentsOfFile: state + "/dev/kernel", encoding: .utf8),
+            "kernel-before"
+        )
+        XCTAssertNil(manager.status(id: "dev")?.installedDesktopPayloadReceipt)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: state + "/dev/desktop-update.json"))
+    }
+
+    func testCorruptAndUnknownDesktopUpdateJournalsFenceMachineOnRestart() throws {
+        for (suffix, journalData) in [
+            ("truncated", Data("{\"schema\":".utf8)),
+            ("unknown-stage", Data(
+                """
+                {"schema":1,"machineID":"dev","distro":"ubuntu","version":"1.2.3+runtime.4.5.6","snapshotID":"s1","originalWasRunning":false,"stage":"unknown"}
+                """.utf8
+            )),
+        ] {
+            let base = "/tmp/dory-machine-desktop-update-journal-\(suffix)-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+            let state = base + "/machines"
+            defer { try? FileManager.default.removeItem(atPath: base) }
+            do {
+                let manager = MachineManager(configuration: MachineManagerConfiguration(
+                    vmmExecutablePath: "/bin/sleep",
+                    stateDirectory: state,
+                    baseArguments: ["30"],
+                    passMachineArguments: false,
+                    requiresReadyHandoff: false
+                ))
+                _ = try manager.create(DoryMachineConfiguration(
+                    id: "dev",
+                    kernelPath: doryTestKernelPath,
+                    rootfsPath: doryTestRootfsPath,
+                    displayMode: .desktop,
+                    environment: ["DORY_DESKTOP_DISTRO": "ubuntu"]
+                ))
+                let path = state + "/dev/desktop-update.json"
+                try journalData.write(to: URL(fileURLWithPath: path))
+                try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path)
+            }
+            let recovered = MachineManager(configuration: MachineManagerConfiguration(
+                vmmExecutablePath: "/bin/sleep",
+                stateDirectory: state,
+                baseArguments: ["30"],
+                passMachineArguments: false,
+                requiresReadyHandoff: false
+            ))
+            let status = try XCTUnwrap(recovered.status(id: "dev"))
+            XCTAssertEqual(status.state, .failed)
+            XCTAssertTrue(status.lastError?.contains("recovery is required") == true)
+            XCTAssertTrue(FileManager.default.fileExists(atPath: state + "/dev/desktop-update.json"))
+        }
+    }
+
+    func testSchemaOneCommittedDesktopUpdateJournalRetainsHistoricalCleanupSemantics() throws {
+        let base = "/tmp/dory-machine-desktop-update-journal-v1-committed-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let state = base + "/machines"
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let digest = String(repeating: "a", count: 64)
+        let machinePath = state + "/dev/machine.json"
+        do {
+            let manager = MachineManager(configuration: MachineManagerConfiguration(
+                vmmExecutablePath: "/bin/sleep",
+                stateDirectory: state,
+                baseArguments: ["30"],
+                passMachineArguments: false,
+                requiresReadyHandoff: false
+            ))
+            _ = try manager.create(DoryMachineConfiguration(
+                id: "dev",
+                kernelPath: doryTestKernelPath,
+                rootfsPath: doryTestRootfsPath,
+                displayMode: .desktop,
+                environment: [
+                    "DORY_DESKTOP_DISTRO": "ubuntu",
+                    "DORY_DESKTOP_RELEASE_VERSION": "24.04+runtime.6",
+                    "DORY_DESKTOP_INPUT_SHA256": digest,
+                    "OPAQUE_LEGACY": "preserve",
+                ]
+            ))
+            let journal: [String: Any] = [
+                "schema": 1,
+                "machineID": "dev",
+                "distro": "ubuntu",
+                "version": "24.04+runtime.6",
+                "snapshotID": "last-good",
+                "originalWasRunning": false,
+                "stage": "committed",
+            ]
+            let data = try JSONSerialization.data(withJSONObject: journal, options: [.sortedKeys])
+            let journalPath = state + "/dev/desktop-update.json"
+            try data.write(to: URL(fileURLWithPath: journalPath))
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: journalPath)
+        }
+        let authoritativeBytes = try Data(contentsOf: URL(fileURLWithPath: machinePath))
+
+        let recovered = MachineManager(configuration: MachineManagerConfiguration(
+            vmmExecutablePath: "/bin/sleep",
+            stateDirectory: state,
+            baseArguments: ["30"],
+            passMachineArguments: false,
+            requiresReadyHandoff: false
+        ))
+        let status = try XCTUnwrap(recovered.status(id: "dev"))
+        XCTAssertEqual(status.state, .stopped)
+        XCTAssertNil(status.lastError)
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: machinePath)), authoritativeBytes)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: state + "/dev/desktop-update.json"))
+    }
+
+    func testSchemaTwoCommittedDesktopUpdateJournalRequiresExactReceiptAuthority() throws {
+        let base = "/tmp/dory-machine-desktop-update-journal-v2-tamper-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let state = base + "/machines"
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        var expectedAuthority = testVerifiedDesktopReceipt()
+        expectedAuthority.inputSHA256 = String(repeating: "0", count: 64)
+        var tamperedReceipt = testVerifiedDesktopReceipt()
+        tamperedReceipt.distributionCatalogSHA256 = String(repeating: "f", count: 64)
+        do {
+            let manager = MachineManager(configuration: MachineManagerConfiguration(
+                vmmExecutablePath: "/bin/sleep",
+                stateDirectory: state,
+                baseArguments: ["30"],
+                passMachineArguments: false,
+                requiresReadyHandoff: false
+            ))
+            _ = try manager.create(DoryMachineConfiguration(
+                id: "dev",
+                kernelPath: doryTestKernelPath,
+                rootfsPath: doryTestRootfsPath,
+                displayMode: .desktop,
+                environment: ["DORY_DESKTOP_DISTRO": "ubuntu"],
+                installedDesktopPayloadReceipt: tamperedReceipt
+            ))
+            let authorityObject = try XCTUnwrap(
+                JSONSerialization.jsonObject(with: JSONEncoder().encode(expectedAuthority))
+                    as? [String: Any]
+            )
+            let journal: [String: Any] = [
+                "schema": 2,
+                "machineID": "dev",
+                "distro": "ubuntu",
+                "version": "24.04+runtime.7",
+                "snapshotID": "last-good",
+                "originalWasRunning": false,
+                "stage": "committed",
+                "sourceConfigurationSHA256": String(repeating: "1", count: 64),
+                "updateAuthority": authorityObject,
+            ]
+            let data = try JSONSerialization.data(withJSONObject: journal, options: [.sortedKeys])
+            let journalPath = state + "/dev/desktop-update.json"
+            try data.write(to: URL(fileURLWithPath: journalPath))
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: journalPath)
+        }
+
+        let recovered = MachineManager(configuration: MachineManagerConfiguration(
+            vmmExecutablePath: "/bin/sleep",
+            stateDirectory: state,
+            baseArguments: ["30"],
+            passMachineArguments: false,
+            requiresReadyHandoff: false
+        ))
+        let status = try XCTUnwrap(recovered.status(id: "dev"))
+        XCTAssertEqual(status.state, .failed)
+        XCTAssertTrue(status.lastError?.contains("committed component evidence") == true)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: state + "/dev/desktop-update.json"))
     }
 
     func testManagerStartupRollsBackInterruptedDesktopUpdateJournal() throws {
@@ -293,9 +551,241 @@ final class MachineManagerTests: XCTestCase {
         let status = try XCTUnwrap(recovered.status(id: "dev"))
         XCTAssertEqual(status.state, .stopped)
         XCTAssertEqual(status.environment, ["DORY_DESKTOP_DISTRO": "ubuntu", "PRESERVE": "yes"])
+        XCTAssertNil(status.installedDesktopPayloadReceipt)
         XCTAssertTrue(status.shares.isEmpty)
         XCTAssertTrue(status.lastError?.contains("interrupted desktop update was rolled back") == true)
         XCTAssertFalse(FileManager.default.fileExists(atPath: state + "/dev/desktop-update.json"))
+    }
+
+    func testLegacyDesktopReceiptIsProjectedWithoutRewritingAndSurvivesExportImport() throws {
+        let base = "/tmp/dory-machine-desktop-receipt-legacy-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let state = base + "/machines"
+        let machineDirectory = state + "/dev"
+        let machineJSON = machineDirectory + "/machine.json"
+        let rootfs = machineDirectory + "/rootfs.ext4"
+        let kernel = machineDirectory + "/kernel"
+        try FileManager.default.createDirectory(
+            atPath: machineDirectory,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        try Data("rootfs".utf8).write(to: URL(fileURLWithPath: rootfs))
+        try Data("kernel".utf8).write(to: URL(fileURLWithPath: kernel))
+        let digest = String(repeating: "c", count: 64)
+        let raw = Data(
+            """
+            {"rootfsPath":"\(rootfs)","id":"dev","kernelPath":"\(kernel)","displayMode":"desktop","environment":{"OPAQUE_LEGACY":"leave-me","DORY_DESKTOP_INPUT_SHA256":"\(digest)","DORY_DESKTOP_RELEASE_VERSION":"24.04+runtime.7","DORY_DESKTOP_DISTRO":"ubuntu"}}
+            """.utf8
+        )
+        try raw.write(to: URL(fileURLWithPath: machineJSON))
+        for path in [rootfs, kernel, machineJSON] {
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o600],
+                ofItemAtPath: path
+            )
+        }
+
+        let manager = MachineManager(configuration: MachineManagerConfiguration(
+            vmmExecutablePath: "/bin/sleep",
+            stateDirectory: state,
+            baseArguments: ["30"],
+            passMachineArguments: false,
+            requiresReadyHandoff: false
+        ))
+        let expected = DoryInstalledDesktopPayloadReceipt(
+            provenance: .legacyEnvironment,
+            distributionIdentifier: "ubuntu",
+            releaseVersion: "24.04+runtime.7",
+            inputSHA256: digest
+        )
+        XCTAssertEqual(manager.status(id: "dev")?.installedDesktopPayloadReceipt, expected)
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: machineJSON)), raw)
+
+        let snapshot = try manager.snapshot(id: "dev", snapshotID: "s1")
+        XCTAssertEqual(snapshot.installedDesktopPayloadReceipt, expected)
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: machineJSON)), raw)
+        let bundle = base + "/legacy.dorymachine"
+        try manager.exportSnapshot(machineID: "dev", snapshotID: "s1", toPath: bundle)
+        XCTAssertNil(
+            try Data(contentsOf: URL(fileURLWithPath: bundle))
+                .range(of: Data("leave-me".utf8))
+        )
+        try manager.deleteSnapshot(machineID: "dev", snapshotID: "s1")
+        let imported = try manager.importSnapshot(fromPath: bundle)
+        XCTAssertEqual(
+            imported.installedDesktopPayloadReceipt,
+            DoryInstalledDesktopPayloadReceipt(
+                provenance: .legacySnapshotMigration,
+                distributionIdentifier: "ubuntu",
+                releaseVersion: "24.04+runtime.7",
+                inputSHA256: digest
+            )
+        )
+        XCTAssertTrue(imported.environment.isEmpty)
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: machineJSON)), raw)
+    }
+
+    func testConflictingTypedAndLegacyDesktopReceiptIsRejectedOnCreateImportAndRestore() throws {
+        let base = "/tmp/dory-machine-desktop-receipt-conflict-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let state = base + "/machines"
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let manager = MachineManager(configuration: MachineManagerConfiguration(
+            vmmExecutablePath: "/bin/sleep",
+            stateDirectory: state,
+            baseArguments: ["30"],
+            passMachineArguments: false,
+            requiresReadyHandoff: false
+        ))
+        let receipt = testVerifiedDesktopReceipt()
+        XCTAssertThrowsError(try manager.create(DoryMachineConfiguration(
+            id: "conflict",
+            kernelPath: doryTestKernelPath,
+            rootfsPath: doryTestRootfsPath,
+            displayMode: .desktop,
+            environment: [
+                "DORY_DESKTOP_DISTRO": "ubuntu",
+                "DORY_DESKTOP_RELEASE_VERSION": "older",
+                "DORY_DESKTOP_INPUT_SHA256": String(repeating: "f", count: 64),
+            ],
+            installedDesktopPayloadReceipt: receipt
+        )))
+
+        _ = try manager.create(DoryMachineConfiguration(
+            id: "dev",
+            kernelPath: doryTestKernelPath,
+            rootfsPath: doryTestRootfsPath,
+            displayMode: .desktop,
+            environment: ["DORY_DESKTOP_DISTRO": "ubuntu"]
+        ))
+        let snapshot = try manager.snapshot(id: "dev", snapshotID: "s1")
+        let descriptorPath = state + "/dev/snapshots/s1.json"
+        var conflictingSnapshot = snapshot
+        conflictingSnapshot.environment["DORY_DESKTOP_RELEASE_VERSION"] = "older"
+        conflictingSnapshot.environment["DORY_DESKTOP_INPUT_SHA256"] = String(repeating: "f", count: 64)
+        conflictingSnapshot.installedDesktopPayloadReceipt = receipt
+        try JSONEncoder().encode(conflictingSnapshot).write(to: URL(fileURLWithPath: descriptorPath))
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: descriptorPath)
+        XCTAssertThrowsError(try manager.restoreSnapshot(machineID: "dev", snapshotID: "s1"))
+
+        let bundle = base + "/conflict.dorymachine"
+        try writeMachineBundle(
+            toPath: bundle,
+            snapshot: conflictingSnapshot,
+            rootfs: Data("rootfs".utf8),
+            kernel: Data("kernel".utf8)
+        )
+        XCTAssertThrowsError(try manager.importSnapshot(fromPath: bundle))
+    }
+
+    func testVerifiedDesktopReceiptKernelDigestMustMatchSnapshotOnRestoreAndImport() throws {
+        let base = "/tmp/dory-machine-desktop-receipt-kernel-mismatch-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let state = base + "/machines"
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let manager = MachineManager(configuration: MachineManagerConfiguration(
+            vmmExecutablePath: "/bin/sleep",
+            stateDirectory: state,
+            baseArguments: ["30"],
+            passMachineArguments: false,
+            requiresReadyHandoff: false
+        ))
+        let sourceKernel = try Data(contentsOf: URL(fileURLWithPath: doryTestKernelPath))
+        var receipt = testVerifiedDesktopReceipt()
+        receipt.kernelSHA256 = SHA256.hash(data: sourceKernel)
+            .map { String(format: "%02x", $0) }.joined()
+        _ = try manager.create(DoryMachineConfiguration(
+            id: "dev",
+            kernelPath: doryTestKernelPath,
+            rootfsPath: doryTestRootfsPath,
+            displayMode: .desktop,
+            environment: ["DORY_DESKTOP_DISTRO": "ubuntu"],
+            installedDesktopPayloadReceipt: receipt
+        ))
+        var tampered = try manager.snapshot(id: "dev", snapshotID: "s1")
+        tampered.installedDesktopPayloadReceipt?.kernelSHA256 = String(repeating: "f", count: 64)
+        let descriptorPath = state + "/dev/snapshots/s1.json"
+        try JSONEncoder().encode(tampered).write(to: URL(fileURLWithPath: descriptorPath))
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: descriptorPath)
+        XCTAssertThrowsError(try manager.restoreSnapshot(machineID: "dev", snapshotID: "s1")) { error in
+            XCTAssertTrue(String(describing: error).contains("kernel receipt"))
+        }
+
+        let rootfs = try Data(contentsOf: URL(fileURLWithPath: tampered.rootfsPath))
+        let kernel = try Data(contentsOf: URL(fileURLWithPath: tampered.kernelPath))
+        tampered.machineID = "clone"
+        let bundle = base + "/kernel-mismatch.dorymachine"
+        try writeMachineBundle(toPath: bundle, snapshot: tampered, rootfs: rootfs, kernel: kernel)
+        XCTAssertThrowsError(try manager.importSnapshot(fromPath: bundle)) { error in
+            XCTAssertTrue(String(describing: error).contains("kernel receipt"))
+        }
+
+        tampered.machineID = "claimed"
+        tampered.installedDesktopPayloadReceipt = receipt
+        let consistentBundle = base + "/structural-verified-claim.dorymachine"
+        try writeMachineBundle(
+            toPath: consistentBundle,
+            snapshot: tampered,
+            rootfs: rootfs,
+            kernel: kernel
+        )
+        let imported = try manager.importSnapshot(fromPath: consistentBundle)
+        XCTAssertEqual(
+            imported.installedDesktopPayloadReceipt?.provenance,
+            .legacySnapshotMigration
+        )
+        XCTAssertNil(imported.installedDesktopPayloadReceipt?.bundleSHA256)
+    }
+
+    func testPortableVerifiedReceiptDistroAdmitsUpdateWithoutLegacyEnvironment() throws {
+        let base = "/tmp/dory-machine-portable-receipt-update-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let manager = MachineManager(configuration: MachineManagerConfiguration(
+            vmmExecutablePath: "/bin/sleep",
+            stateDirectory: base + "/machines",
+            baseArguments: ["30"],
+            passMachineArguments: false,
+            requiresReadyHandoff: false
+        ))
+        manager.installDesktopUpdateArtifactResolver(RejectingDesktopUpdateArtifactResolver())
+        for distro in ["ubuntu", "kali"] {
+            let receipt = DoryInstalledDesktopPayloadReceipt.verifiedUpdate(
+                distributionIdentifier: distro,
+                releaseVersion: "current+runtime.1",
+                inputSHA256: String(repeating: "a", count: 64),
+                bundleSHA256: String(repeating: "b", count: 64),
+                distributionComponentIdentifier: "desktop-" + distro,
+                distributionInstallationName: distro + "-installation",
+                distributionCatalogSHA256: String(repeating: "c", count: 64),
+                bundleAssetIdentifier: "dory-desktop-" + distro + "-update-arm64.tar",
+                runtimeComponentIdentifier: "linux-desktop",
+                runtimeInstallationName: "runtime-installation",
+                runtimeCatalogSHA256: String(repeating: "d", count: 64),
+                kernelAssetIdentifier: "dory-desktop-kernel-arm64.lzfse",
+                kernelSHA256: String(repeating: "e", count: 64)
+            )
+            _ = try manager.create(DoryMachineConfiguration(
+                id: distro,
+                kernelPath: doryTestKernelPath,
+                rootfsPath: doryTestRootfsPath,
+                displayMode: .desktop,
+                environment: [:],
+                installedDesktopPayloadReceipt: receipt
+            ))
+            XCTAssertThrowsError(try manager.updateDesktop(
+                id: distro,
+                request: DoryDesktopUpdateRequest(
+                    distro: distro,
+                    version: "next+runtime.2",
+                    distributionInstallationName: distro + "-installation",
+                    runtimeInstallationName: "runtime-installation"
+                )
+            )) { error in
+                XCTAssertEqual(
+                    String(describing: error),
+                    "machine state persistence failed: resolver reached"
+                )
+            }
+        }
     }
 
     func testStopAllowsTheSharedGracefulShutdownBudget() throws {
@@ -2268,6 +2758,8 @@ final class MachineManagerTests: XCTestCase {
         let sharePath = "\(base)/shared-source"
         try Data("base-rootfs".utf8).write(to: URL(fileURLWithPath: sourceRootfs))
         try Data("kernel-v1".utf8).write(to: URL(fileURLWithPath: sourceKernel))
+        let kernelV1SHA256 = SHA256.hash(data: Data("kernel-v1".utf8))
+            .map { String(format: "%02x", $0) }.joined()
         try FileManager.default.createDirectory(atPath: sharePath, withIntermediateDirectories: true)
         let manager = MachineManager(configuration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
@@ -2295,7 +2787,22 @@ final class MachineManagerTests: XCTestCase {
                 hostPath: sharePath,
                 guestPath: "/workspace/src"
             )],
-            environment: ["DORY_TEST_TOKEN": "snapshot-secret"]
+            environment: ["DORY_TEST_TOKEN": "snapshot-secret"],
+            installedDesktopPayloadReceipt: .verifiedUpdate(
+                distributionIdentifier: "ubuntu",
+                releaseVersion: "24.04+runtime.1",
+                inputSHA256: String(repeating: "a", count: 64),
+                bundleSHA256: String(repeating: "b", count: 64),
+                distributionComponentIdentifier: "desktop-ubuntu",
+                distributionInstallationName: "ubuntu-installation",
+                distributionCatalogSHA256: String(repeating: "c", count: 64),
+                bundleAssetIdentifier: "dory-desktop-ubuntu-update-arm64.tar",
+                runtimeComponentIdentifier: "linux-desktop",
+                runtimeInstallationName: "runtime-installation",
+                runtimeCatalogSHA256: String(repeating: "d", count: 64),
+                kernelAssetIdentifier: "dory-desktop-kernel-arm64.lzfse",
+                kernelSHA256: kernelV1SHA256
+            )
         ))
         _ = try manager.start(id: "dev")
         let devRootfs = "\(base)/machines/dev/rootfs.ext4"
@@ -2319,6 +2826,10 @@ final class MachineManagerTests: XCTestCase {
         XCTAssertEqual(snapshot.displayMode, .desktop)
         XCTAssertEqual(snapshot.shares.map(\.hostPath), [sharePath])
         XCTAssertEqual(snapshot.environment, ["DORY_TEST_TOKEN": "snapshot-secret"])
+        XCTAssertEqual(
+            snapshot.installedDesktopPayloadReceipt?.releaseVersion,
+            "24.04+runtime.1"
+        )
         XCTAssertEqual(manager.status(id: "dev")?.state, .running)
         XCTAssertEqual(try manager.listSnapshots(machineID: "dev").map(\.id), ["s1"])
         XCTAssertEqual(String(data: try Data(contentsOf: URL(fileURLWithPath: snapshot.rootfsPath)), encoding: .utf8), "snapshot-v1")
@@ -2347,6 +2858,10 @@ final class MachineManagerTests: XCTestCase {
         XCTAssertEqual(clone.shares.map(\.hostPath), [sharePath])
         XCTAssertEqual(clone.environment, ["DORY_TEST_TOKEN": "snapshot-secret"])
         XCTAssertEqual(
+            clone.installedDesktopPayloadReceipt,
+            snapshot.installedDesktopPayloadReceipt
+        )
+        XCTAssertEqual(
             String(data: try Data(contentsOf: URL(fileURLWithPath: "\(base)/machines/dev-copy/rootfs.ext4")), encoding: .utf8),
             "snapshot-v1"
         )
@@ -2360,6 +2875,10 @@ final class MachineManagerTests: XCTestCase {
         XCTAssertEqual(restored.displayMode, .desktop)
         XCTAssertEqual(restored.shares.map(\.hostPath), [sharePath])
         XCTAssertEqual(restored.environment, ["DORY_TEST_TOKEN": "snapshot-secret"])
+        XCTAssertEqual(
+            restored.installedDesktopPayloadReceipt,
+            snapshot.installedDesktopPayloadReceipt
+        )
         XCTAssertEqual(String(data: try Data(contentsOf: URL(fileURLWithPath: devRootfs)), encoding: .utf8), "snapshot-v1")
         XCTAssertEqual(try String(contentsOfFile: devKernel, encoding: .utf8), "kernel-v1")
         let restoredDefinition = try JSONDecoder().decode(
@@ -2393,12 +2912,20 @@ final class MachineManagerTests: XCTestCase {
         XCTAssertNil(imported.address)
         XCTAssertTrue(imported.shares.isEmpty)
         XCTAssertTrue(imported.environment.isEmpty)
+        XCTAssertEqual(
+            imported.installedDesktopPayloadReceipt,
+            snapshot.installedDesktopPayloadReceipt?.portableSnapshotReceipt
+        )
 
         let portable = try manager.cloneSnapshot(machineID: "dev", snapshotID: "s1", newID: "dev-portable")
         XCTAssertEqual(portable.state, .running)
         XCTAssertNil(portable.address)
         XCTAssertTrue(portable.shares.isEmpty)
         XCTAssertTrue(portable.environment.isEmpty)
+        XCTAssertEqual(
+            portable.installedDesktopPayloadReceipt,
+            snapshot.installedDesktopPayloadReceipt?.portableSnapshotReceipt
+        )
         try manager.deleteSnapshot(machineID: "dev", snapshotID: "s1")
         _ = try manager.stop(id: "dev-portable")
         XCTAssertEqual(try manager.start(id: "dev-portable").state, .running)
@@ -3332,11 +3859,17 @@ private final class DesktopUpdateAgentConnector: @unchecked Sendable {
     private let lock = NSLock()
     private let managedRootfsPath: String
     private let failsInstall: Bool
+    private let mutatesStagedBundle: Bool
     private var executions = 0
 
-    init(managedRootfsPath: String, failsInstall: Bool = false) {
+    init(
+        managedRootfsPath: String,
+        failsInstall: Bool = false,
+        mutatesStagedBundle: Bool = false
+    ) {
         self.managedRootfsPath = managedRootfsPath
         self.failsInstall = failsInstall
+        self.mutatesStagedBundle = mutatesStagedBundle
     }
 
     var execCount: Int {
@@ -3353,6 +3886,21 @@ private final class DesktopUpdateAgentConnector: @unchecked Sendable {
         lock.lock()
         executions += 1
         lock.unlock()
+        if mutatesStagedBundle, argv.prefix(2) == ["/bin/tar", "-xf"] {
+            let machineDirectory = URL(fileURLWithPath: managedRootfsPath)
+                .deletingLastPathComponent().path
+            if let stage = try? FileManager.default.contentsOfDirectory(atPath: machineDirectory)
+                .first(where: { $0.hasPrefix(".desktop-update-stage-") }) {
+                let path = machineDirectory + "/" + stage + "/payload.tar"
+                try? FileManager.default.setAttributes(
+                    [.posixPermissions: 0o600],
+                    ofItemAtPath: path
+                )
+                try? Data("mutated-after-authority".utf8).write(
+                    to: URL(fileURLWithPath: path)
+                )
+            }
+        }
         if argv.first?.hasSuffix("/apply.sh") == true {
             try? Data("rootfs-after".utf8).write(to: URL(fileURLWithPath: managedRootfsPath))
             if failsInstall {
@@ -3620,6 +4168,70 @@ private final class RecordingProcessStarter: @unchecked Sendable {
 
 private enum RecordingProcessStarterError: Error {
     case rejected(Int)
+}
+
+private struct TestDesktopUpdateArtifactResolver: DoryDesktopUpdateArtifactResolving {
+    var bundlePath: String
+    var kernelPath: String
+
+    func resolve(
+        _ request: DoryDesktopUpdateRequest,
+        guestArchitecture: String
+    ) throws -> DoryDesktopUpdateArtifactAuthority {
+        let bundleData = try Data(contentsOf: URL(fileURLWithPath: bundlePath))
+        let kernelData = try Data(contentsOf: URL(fileURLWithPath: kernelPath))
+        let digest: (Data) -> String = { data in
+            SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        }
+        return DoryDesktopUpdateArtifactAuthority(
+            receipt: .verifiedUpdate(
+                distributionIdentifier: request.distro,
+                releaseVersion: request.version,
+                inputSHA256: String(repeating: "0", count: 64),
+                bundleSHA256: digest(bundleData),
+                distributionComponentIdentifier: "desktop-" + request.distro,
+                distributionInstallationName: request.distributionInstallationName,
+                distributionCatalogSHA256: String(repeating: "b", count: 64),
+                bundleAssetIdentifier: "dory-desktop-" + request.distro + "-update-arm64.tar",
+                runtimeComponentIdentifier: "linux-desktop",
+                runtimeInstallationName: request.runtimeInstallationName,
+                runtimeCatalogSHA256: String(repeating: "c", count: 64),
+                kernelAssetIdentifier: "dory-desktop-kernel-arm64.lzfse",
+                kernelSHA256: digest(kernelData)
+            ),
+            bundlePath: bundlePath,
+            bundleByteCount: UInt64(bundleData.count),
+            kernelPath: kernelPath,
+            kernelByteCount: UInt64(kernelData.count)
+        )
+    }
+}
+
+private func testVerifiedDesktopReceipt() -> DoryInstalledDesktopPayloadReceipt {
+    .verifiedUpdate(
+        distributionIdentifier: "ubuntu",
+        releaseVersion: "24.04+runtime.7",
+        inputSHA256: String(repeating: "a", count: 64),
+        bundleSHA256: String(repeating: "b", count: 64),
+        distributionComponentIdentifier: "desktop-ubuntu",
+        distributionInstallationName: "ubuntu-installation",
+        distributionCatalogSHA256: String(repeating: "c", count: 64),
+        bundleAssetIdentifier: "dory-desktop-ubuntu-update-arm64.tar",
+        runtimeComponentIdentifier: "linux-desktop",
+        runtimeInstallationName: "runtime-installation",
+        runtimeCatalogSHA256: String(repeating: "d", count: 64),
+        kernelAssetIdentifier: "dory-desktop-kernel-arm64.lzfse",
+        kernelSHA256: String(repeating: "e", count: 64)
+    )
+}
+
+private struct RejectingDesktopUpdateArtifactResolver: DoryDesktopUpdateArtifactResolving {
+    func resolve(
+        _ request: DoryDesktopUpdateRequest,
+        guestArchitecture: String
+    ) throws -> DoryDesktopUpdateArtifactAuthority {
+        throw MachineManagerError.persistence("resolver reached")
+    }
 }
 
 private final class LockedResult<Value>: @unchecked Sendable {

@@ -268,7 +268,9 @@ public struct DoryMachineConfigurationMigrationResult: Sendable, Equatable {
             address: authoritativeLegacyConfiguration.address,
             displayMode: authoritativeLegacyConfiguration.displayMode,
             shares: shares,
-            environment: environment
+            environment: environment,
+            installedDesktopPayloadReceipt:
+                authoritativeLegacyConfiguration.installedDesktopPayloadReceipt
         )
     }
 

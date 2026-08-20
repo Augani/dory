@@ -34,7 +34,22 @@ struct DoryMachineConfigurationMigrationTests {
                 "DORY_GUEST_UID": "1000",
                 "DORY_CLIPBOARD_POLICY": "host-to-guest",
                 "PRIVATE_RUNTIME_VALUE": "do-not-copy-into-workspace",
-            ]
+            ],
+            installedDesktopPayloadReceipt: .verifiedUpdate(
+                distributionIdentifier: "ubuntu",
+                releaseVersion: "24.04+runtime.7",
+                inputSHA256: String(repeating: "a", count: 64),
+                bundleSHA256: String(repeating: "b", count: 64),
+                distributionComponentIdentifier: "desktop-ubuntu",
+                distributionInstallationName: "ubuntu-installation",
+                distributionCatalogSHA256: String(repeating: "c", count: 64),
+                bundleAssetIdentifier: "dory-desktop-ubuntu-update-arm64.tar",
+                runtimeComponentIdentifier: "linux-desktop",
+                runtimeInstallationName: "runtime-installation",
+                runtimeCatalogSHA256: String(repeating: "d", count: 64),
+                kernelAssetIdentifier: "dory-desktop-kernel-arm64.lzfse",
+                kernelSHA256: String(repeating: "e", count: 64)
+            )
         )
         let migrated = try migrate(legacy, capacity: 96 * gibibyte)
 
@@ -75,6 +90,8 @@ struct DoryMachineConfigurationMigrationTests {
         #expect(!definitionJSON.contains("do-not-copy-into-workspace"))
         #expect(!definitionJSON.contains("DORY_GUEST_USER"))
         #expect(!definitionJSON.contains("DORY_CLIPBOARD_POLICY"))
+        #expect(!definitionJSON.contains("24.04+runtime.7"))
+        #expect(!definitionJSON.contains(String(repeating: "b", count: 64)))
 
         #expect(try migrated.legacyConfiguration() == legacy)
         #expect(try migrated.authoritativeLegacyData()

@@ -1191,12 +1191,26 @@ private struct MachineProvisionRequest {
 
 private extension DoryDesktopUpdateRequest {
     init(xpcDictionary dictionary: NSDictionary) throws {
+        let allowed: Set<String> = [
+            "distro", "version", "distributionInstallationName", "runtimeInstallationName",
+        ]
+        guard let keys = dictionary.allKeys as? [String], Set(keys) == allowed else {
+            throw XPCRemoteConfigError.invalid("desktopUpdateAuthority")
+        }
         self.init(
             distro: try dictionary.requiredString("distro"),
             version: try dictionary.requiredString("version"),
-            bundlePath: try dictionary.requiredString("bundlePath"),
-            kernelPath: try dictionary.requiredString("kernelPath")
+            distributionInstallationName: try dictionary.requiredString(
+                "distributionInstallationName"
+            ),
+            runtimeInstallationName: try dictionary.requiredString("runtimeInstallationName")
         )
+        guard ["debian", "kali", "ubuntu"].contains(distro),
+              version.wholeMatch(of: /[A-Za-z0-9][A-Za-z0-9._+-]{0,127}/) != nil,
+              distributionInstallationName.wholeMatch(of: /[A-Za-z0-9][A-Za-z0-9._+-]{0,254}/) != nil,
+              runtimeInstallationName.wholeMatch(of: /[A-Za-z0-9][A-Za-z0-9._+-]{0,254}/) != nil else {
+            throw XPCRemoteConfigError.invalid("desktopUpdateAuthority")
+        }
     }
 }
 
@@ -1590,6 +1604,53 @@ private extension DoryMachineStatus {
         dictionary["bootMode"] = bootMode.rawValue
         dictionary["installerMediaAttached"] = installerMediaAttached
         dictionary["runtimeIdentity"] = runtimeIdentity.xpcDictionary
+        if let installedDesktopPayloadReceipt {
+            dictionary["installedDesktopPayloadReceipt"] =
+                installedDesktopPayloadReceipt.xpcDictionary
+        }
+        return dictionary as NSDictionary
+    }
+}
+
+private extension DoryInstalledDesktopPayloadReceipt {
+    var xpcDictionary: NSDictionary {
+        var dictionary: [String: Any] = [
+            "schemaVersion": schemaVersion,
+            "provenance": provenance.rawValue,
+            "distributionIdentifier": distributionIdentifier,
+            "releaseVersion": releaseVersion,
+            "inputSHA256": inputSHA256,
+        ]
+        if let bundleSHA256 {
+            dictionary["bundleSHA256"] = bundleSHA256
+        }
+        if let distributionComponentIdentifier {
+            dictionary["distributionComponentIdentifier"] = distributionComponentIdentifier
+        }
+        if let distributionInstallationName {
+            dictionary["distributionInstallationName"] = distributionInstallationName
+        }
+        if let distributionCatalogSHA256 {
+            dictionary["distributionCatalogSHA256"] = distributionCatalogSHA256
+        }
+        if let bundleAssetIdentifier {
+            dictionary["bundleAssetIdentifier"] = bundleAssetIdentifier
+        }
+        if let runtimeComponentIdentifier {
+            dictionary["runtimeComponentIdentifier"] = runtimeComponentIdentifier
+        }
+        if let runtimeInstallationName {
+            dictionary["runtimeInstallationName"] = runtimeInstallationName
+        }
+        if let runtimeCatalogSHA256 {
+            dictionary["runtimeCatalogSHA256"] = runtimeCatalogSHA256
+        }
+        if let kernelAssetIdentifier {
+            dictionary["kernelAssetIdentifier"] = kernelAssetIdentifier
+        }
+        if let kernelSHA256 {
+            dictionary["kernelSHA256"] = kernelSHA256
+        }
         return dictionary as NSDictionary
     }
 }
@@ -1790,6 +1851,11 @@ private extension DoryMachineSnapshot {
         ]
         if let artifactEvidence {
             dictionary["artifactEvidence"] = artifactEvidence.xpcDictionary
+        }
+        let receipt = installedDesktopPayloadReceipt
+            ?? DoryInstalledDesktopPayloadReceipt.legacyEnvironment(environment)
+        if let receipt {
+            dictionary["installedDesktopPayloadReceipt"] = receipt.xpcDictionary
         }
         return dictionary as NSDictionary
     }

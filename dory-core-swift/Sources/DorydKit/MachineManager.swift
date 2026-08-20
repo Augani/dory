@@ -218,6 +218,7 @@ public struct DoryMachineConfiguration: Sendable, Equatable, Hashable, Codable {
     public var displayMode: DoryMachineDisplayMode
     public var shares: [DoryMachineShareConfiguration]
     public var environment: [String: String]
+    public var installedDesktopPayloadReceipt: DoryInstalledDesktopPayloadReceipt?
 
     public init(
         id: String,
@@ -231,7 +232,8 @@ public struct DoryMachineConfiguration: Sendable, Equatable, Hashable, Codable {
         address: String? = nil,
         displayMode: DoryMachineDisplayMode = .headless,
         shares: [DoryMachineShareConfiguration] = [],
-        environment: [String: String] = [:]
+        environment: [String: String] = [:],
+        installedDesktopPayloadReceipt: DoryInstalledDesktopPayloadReceipt? = nil
     ) {
         self.id = id
         self.kernelPath = kernelPath
@@ -245,6 +247,7 @@ public struct DoryMachineConfiguration: Sendable, Equatable, Hashable, Codable {
         self.displayMode = displayMode
         self.shares = shares
         self.environment = environment
+        self.installedDesktopPayloadReceipt = installedDesktopPayloadReceipt
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -260,6 +263,7 @@ public struct DoryMachineConfiguration: Sendable, Equatable, Hashable, Codable {
         case displayMode
         case shares
         case environment
+        case installedDesktopPayloadReceipt
     }
 
     public init(from decoder: Decoder) throws {
@@ -276,8 +280,17 @@ public struct DoryMachineConfiguration: Sendable, Equatable, Hashable, Codable {
             address: try container.decodeIfPresent(String.self, forKey: .address),
             displayMode: try container.decodeIfPresent(DoryMachineDisplayMode.self, forKey: .displayMode) ?? .headless,
             shares: try container.decodeIfPresent([DoryMachineShareConfiguration].self, forKey: .shares) ?? [],
-            environment: try container.decodeIfPresent([String: String].self, forKey: .environment) ?? [:]
+            environment: try container.decodeIfPresent([String: String].self, forKey: .environment) ?? [:],
+            installedDesktopPayloadReceipt: try container.decodeIfPresent(
+                DoryInstalledDesktopPayloadReceipt.self,
+                forKey: .installedDesktopPayloadReceipt
+            )
         )
+    }
+
+    public var effectiveInstalledDesktopPayloadReceipt: DoryInstalledDesktopPayloadReceipt? {
+        installedDesktopPayloadReceipt
+            ?? DoryInstalledDesktopPayloadReceipt.legacyEnvironment(environment)
     }
 }
 
@@ -315,6 +328,7 @@ public struct DoryMachineStatus: Sendable, Equatable {
     public var shares: [DoryMachineShareConfiguration]
     public var environment: [String: String]
     public var runtimeIdentity: DoryMachineRuntimeIdentity
+    public var installedDesktopPayloadReceipt: DoryInstalledDesktopPayloadReceipt?
 
     public init(
         id: String,
@@ -342,7 +356,8 @@ public struct DoryMachineStatus: Sendable, Equatable {
         runtimeIdentity: DoryMachineRuntimeIdentity = .legacyCompatibility(
             virtualHardwareABIVersion:
                 DoryVirtualMachineDefinition.currentVirtualHardwareABIVersion
-        )
+        ),
+        installedDesktopPayloadReceipt: DoryInstalledDesktopPayloadReceipt? = nil
     ) {
         self.id = id
         self.state = state
@@ -367,6 +382,7 @@ public struct DoryMachineStatus: Sendable, Equatable {
         self.shares = shares
         self.environment = environment
         self.runtimeIdentity = runtimeIdentity
+        self.installedDesktopPayloadReceipt = installedDesktopPayloadReceipt
     }
 }
 
@@ -390,6 +406,7 @@ public struct DoryMachineSnapshot: Sendable, Equatable, Hashable, Codable {
     public var nvramPath: String?
     public var runtimeIdentity: DoryMachineRuntimeIdentity
     public var artifactEvidence: DoryMachineSnapshotArtifactEvidence?
+    public var installedDesktopPayloadReceipt: DoryInstalledDesktopPayloadReceipt?
 
     public init(
         id: String,
@@ -413,7 +430,8 @@ public struct DoryMachineSnapshot: Sendable, Equatable, Hashable, Codable {
             virtualHardwareABIVersion:
                 DoryVirtualMachineDefinition.currentVirtualHardwareABIVersion
         ),
-        artifactEvidence: DoryMachineSnapshotArtifactEvidence? = nil
+        artifactEvidence: DoryMachineSnapshotArtifactEvidence? = nil,
+        installedDesktopPayloadReceipt: DoryInstalledDesktopPayloadReceipt? = nil
     ) {
         self.id = id
         self.machineID = machineID
@@ -434,6 +452,7 @@ public struct DoryMachineSnapshot: Sendable, Equatable, Hashable, Codable {
         self.nvramPath = nvramPath
         self.runtimeIdentity = runtimeIdentity
         self.artifactEvidence = artifactEvidence
+        self.installedDesktopPayloadReceipt = installedDesktopPayloadReceipt
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -456,6 +475,7 @@ public struct DoryMachineSnapshot: Sendable, Equatable, Hashable, Codable {
         case nvramPath
         case runtimeIdentity
         case artifactEvidence
+        case installedDesktopPayloadReceipt
     }
 
     public init(from decoder: Decoder) throws {
@@ -488,22 +508,12 @@ public struct DoryMachineSnapshot: Sendable, Equatable, Hashable, Codable {
             artifactEvidence: try container.decodeIfPresent(
                 DoryMachineSnapshotArtifactEvidence.self,
                 forKey: .artifactEvidence
+            ),
+            installedDesktopPayloadReceipt: try container.decodeIfPresent(
+                DoryInstalledDesktopPayloadReceipt.self,
+                forKey: .installedDesktopPayloadReceipt
             )
         )
-    }
-}
-
-public struct DoryDesktopUpdateRequest: Sendable, Equatable {
-    public var distro: String
-    public var version: String
-    public var bundlePath: String
-    public var kernelPath: String
-
-    public init(distro: String, version: String, bundlePath: String, kernelPath: String) {
-        self.distro = distro
-        self.version = version
-        self.bundlePath = bundlePath
-        self.kernelPath = kernelPath
     }
 }
 
@@ -538,6 +548,13 @@ public struct DoryDesktopUpdateResult: Sendable, Equatable {
     }
 }
 
+private enum DesktopUpdateJournalStage: String, Codable, Sendable {
+    case snapshotReady = "snapshot-ready"
+    case installing
+    case qualifying
+    case committed
+}
+
 private struct DesktopUpdateJournal: Codable, Sendable, Equatable {
     var schema: Int
     var machineID: String
@@ -545,7 +562,37 @@ private struct DesktopUpdateJournal: Codable, Sendable, Equatable {
     var version: String
     var snapshotID: String
     var originalWasRunning: Bool
-    var stage: String
+    var stage: DesktopUpdateJournalStage
+    var sourceConfigurationSHA256: String?
+    var updateAuthority: DoryInstalledDesktopPayloadReceipt?
+
+    var isValid: Bool {
+        guard [1, 2].contains(schema),
+              Self.isValidIdentifier(machineID),
+              Self.isValidIdentifier(snapshotID),
+              ["debian", "kali", "ubuntu"].contains(distro),
+              version.wholeMatch(of: /[A-Za-z0-9][A-Za-z0-9._+-]{0,127}/) != nil else {
+            return false
+        }
+        if schema == 1 {
+            return sourceConfigurationSHA256 == nil && updateAuthority == nil
+        }
+        return sourceConfigurationSHA256.map(Self.isLowercaseSHA256) == true
+            && updateAuthority?.isValid == true
+            && updateAuthority?.provenance == .verifiedUpdateBundle
+            && updateAuthority?.distributionIdentifier == distro
+            && updateAuthority?.releaseVersion == version
+    }
+
+    private static func isLowercaseSHA256(_ value: String) -> Bool {
+        value.utf8.count == 64 && value.utf8.allSatisfy { byte in
+            (byte >= 48 && byte <= 57) || (byte >= 97 && byte <= 102)
+        }
+    }
+
+    private static func isValidIdentifier(_ value: String) -> Bool {
+        value.wholeMatch(of: /[A-Za-z0-9][A-Za-z0-9_.-]{0,62}/) != nil
+    }
 }
 
 public enum MachineManagerError: Error, Sendable, Equatable, CustomStringConvertible {
@@ -668,6 +715,7 @@ public final class MachineManager: @unchecked Sendable {
     private static let snapshotNVRAMTemporaryMarker = ".nvram.tmp-"
     private static let snapshotMetadataTemporaryPrefix = ".dory-snapshot-metadata-"
     private static let desktopUpdateJournalName = "desktop-update.json"
+    private static let desktopUpdateStagingPrefix = ".desktop-update-stage-"
     private static let maximumPersistedMetadataBytes: Int64 = 16 * 1024 * 1024
     /// Public Apple-Silicon machine resource contract. These match the app's steppers; enforcing
     /// them again in doryd prevents CLI/XPC callers from persisting values that the VMM would later
@@ -699,6 +747,7 @@ public final class MachineManager: @unchecked Sendable {
     private var pendingResolvedStart: PendingResolvedMachineStart?
     private var resolvedLaunchIdentities: [String: DoryMachineResolvedLaunchIdentity] = [:]
     private var activeLifecycleOperations: [String: MachineLifecycleJournalContext] = [:]
+    private var desktopUpdateArtifactResolver: (any DoryDesktopUpdateArtifactResolving)?
 #if DEBUG
     private var lifecycleFaultInjector: (@Sendable (MachineLifecycleFaultPoint) throws -> Void)?
 #endif
@@ -759,6 +808,16 @@ public final class MachineManager: @unchecked Sendable {
         }
         reconcileLoadedWorkspaceProjections()
         recoverInterruptedDesktopUpdates()
+    }
+
+    /// Installs the daemon-owned active-component resolver. Desktop update writes fail closed until
+    /// this is installed; caller-supplied filesystem paths are never accepted as update authority.
+    public func installDesktopUpdateArtifactResolver(
+        _ resolver: any DoryDesktopUpdateArtifactResolving
+    ) {
+        operationLock.lock()
+        desktopUpdateArtifactResolver = resolver
+        operationLock.unlock()
     }
 
     /// Enables the explicit plan-driven launch path exactly once. Machines keep using the
@@ -1960,7 +2019,9 @@ public final class MachineManager: @unchecked Sendable {
             machineIdentifierPath: machine.bootMode == .efi ? machineIdentifierPath : nil,
             nvramPath: machine.bootMode == .efi ? nvramPath : nil,
             runtimeIdentity: snapshotRuntimeIdentity,
-            artifactEvidence: artifactEvidence
+            artifactEvidence: artifactEvidence,
+            installedDesktopPayloadReceipt:
+                machine.effectiveInstalledDesktopPayloadReceipt
         )
         let snapshotAuthority = try Self.lifecycleSnapshotAuthority(snapshot)
         let lifecycle = try beginLifecycleSnapshot(
@@ -2046,7 +2107,8 @@ public final class MachineManager: @unchecked Sendable {
     }
 
     /// Applies a signed desktop component to an existing persistent guest. The caller provides
-    /// component-store paths, but doryd owns the entire transaction: a last-good disk/kernel
+    /// only stable active-component generation identifiers; doryd resolves and re-verifies the
+    /// exact component-store bytes and owns the entire transaction: a last-good disk/kernel
     /// snapshot is durable before the guest is mutated, and any failed install or post-reboot
     /// qualification restores that snapshot and the machine's original running state.
     public func updateDesktop(
@@ -2063,23 +2125,37 @@ public final class MachineManager: @unchecked Sendable {
         guard original.displayMode == .desktop else {
             throw MachineManagerError.persistence("desktop updates require a graphical machine")
         }
+        let persistedDistro = original.environment["DORY_DESKTOP_DISTRO"]
+            ?? original.effectiveInstalledDesktopPayloadReceipt?.distributionIdentifier
         guard ["debian", "ubuntu", "kali"].contains(request.distro),
-              original.environment["DORY_DESKTOP_DISTRO"] == request.distro else {
+              persistedDistro == request.distro else {
             throw MachineManagerError.persistence("desktop update distribution does not match " + id)
         }
         guard request.version.wholeMatch(of: /[A-Za-z0-9][A-Za-z0-9._+-]{0,127}/) != nil else {
             throw MachineManagerError.persistence("desktop update version is invalid")
         }
-        guard Self.isRegularNonemptyFile(path: request.bundlePath),
-              Self.isRegularNonemptyFile(path: request.kernelPath) else {
-            throw MachineManagerError.persistence("desktop update assets are missing or invalid")
+        guard let desktopUpdateArtifactResolver else {
+            throw MachineManagerError.persistence(
+                "desktop updates require daemon component-store authority"
+            )
         }
-        let bundleURL = URL(fileURLWithPath: request.bundlePath).standardizedFileURL
-        let bundleDirectory = bundleURL.deletingLastPathComponent().path
-        guard Self.isDirectory(path: bundleDirectory), bundleURL.lastPathComponent != "." else {
-            throw MachineManagerError.persistence("desktop update bundle directory is invalid")
+        let authority = try desktopUpdateArtifactResolver.resolve(
+            request,
+            guestArchitecture: configuration.guestArchitecture
+        )
+        guard authority.receipt.isValid,
+              authority.receipt.provenance == .verifiedUpdateBundle,
+              authority.receipt.distributionIdentifier == request.distro,
+              authority.receipt.releaseVersion == request.version,
+              authority.receipt.distributionInstallationName
+                == request.distributionInstallationName,
+              authority.receipt.runtimeInstallationName == request.runtimeInstallationName,
+              let bundleSHA256 = authority.receipt.bundleSHA256,
+              let kernelSHA256 = authority.receipt.kernelSHA256 else {
+            throw MachineManagerError.persistence("desktop update authority is inconsistent")
         }
-        let bundleSHA256 = try Self.sha256(path: request.bundlePath)
+        let staged = try stageDesktopUpdateAuthority(authority, machineID: id)
+        defer { try? FileManager.default.removeItem(atPath: staged.directory) }
         let snapshotID = Self.generatedSnapshotID(prefix: "du")
         let snapshot = try snapshot(
             id: id,
@@ -2087,13 +2163,17 @@ public final class MachineManager: @unchecked Sendable {
             snapshotID: snapshotID
         )
         var journal = DesktopUpdateJournal(
-            schema: 1,
+            schema: 2,
             machineID: id,
             distro: request.distro,
             version: request.version,
             snapshotID: snapshot.id,
             originalWasRunning: originallyRunning,
-            stage: "snapshot-ready"
+            stage: .snapshotReady,
+            sourceConfigurationSHA256: Self.sha256(
+                data: try DoryMachineConfigurationMigrationBridge.encodeLegacy(original)
+            ),
+            updateAuthority: authority.receipt
         )
         try persistDesktopUpdateJournal(journal)
 
@@ -2102,11 +2182,11 @@ public final class MachineManager: @unchecked Sendable {
         let guestStage = "/var/lib/dory/update-" + token
         let updateShare = DoryMachineShareConfiguration(
             tag: "dory-update-" + token,
-            hostPath: bundleDirectory,
+            hostPath: staged.directory,
             guestPath: mountPath,
             readOnly: true
         )
-        let bundleGuestPath = mountPath + "/" + bundleURL.lastPathComponent
+        let bundleGuestPath = mountPath + "/payload.tar"
 
         do {
             var transientShares = original.shares.filter { $0.tag != updateShare.tag }
@@ -2115,7 +2195,7 @@ public final class MachineManager: @unchecked Sendable {
             if status(id: id)?.state != .running {
                 _ = try startAndWaitUntilReady(id: id)
             }
-            journal.stage = "installing"
+            journal.stage = .installing
             try persistDesktopUpdateJournal(journal)
 
             try requireSuccessfulDesktopUpdateExec(
@@ -2134,6 +2214,11 @@ public final class MachineManager: @unchecked Sendable {
                 timeoutMs: 120_000,
                 stage: "extract signed payload"
             )
+            guard try Self.sha256(path: staged.bundlePath) == bundleSHA256 else {
+                throw MachineManagerError.persistence(
+                    "desktop update staged bundle changed while the guest read it"
+                )
+            }
             let install = try requireSuccessfulDesktopUpdateExec(
                 id: id,
                 argv: [guestStage + "/apply.sh", request.distro, request.version],
@@ -2168,22 +2253,24 @@ public final class MachineManager: @unchecked Sendable {
                 stage: "clear applied payload"
             )
             _ = try stop(id: id)
-            var updatedEnvironment = original.environment
-            updatedEnvironment["DORY_DESKTOP_RELEASE_VERSION"] = request.version
-            updatedEnvironment["DORY_DESKTOP_INPUT_SHA256"] = inputSHA256
-            _ = try update(
-                id: id,
-                shares: original.shares,
-                updatesShares: true,
-                environment: updatedEnvironment,
-                updatesEnvironment: true
+            var installedReceipt = authority.receipt
+            installedReceipt.inputSHA256 = inputSHA256
+            try publishInstalledDesktopPayloadReceipt(
+                original: original,
+                receipt: installedReceipt
             )
             try Self.cloneOrCopyFile(
-                source: request.kernelPath,
+                source: staged.kernelPath,
                 destination: original.kernelPath,
                 replaceExisting: true
             )
-            journal.stage = "qualifying"
+            guard try Self.sha256(path: staged.kernelPath) == kernelSHA256,
+                  try Self.sha256(path: original.kernelPath) == kernelSHA256 else {
+                throw MachineManagerError.persistence(
+                    "desktop update kernel authority changed before commit"
+                )
+            }
+            journal.stage = .qualifying
             try persistDesktopUpdateJournal(journal)
             _ = try startAndWaitUntilReady(id: id)
             try qualifyUpdatedDesktop(
@@ -2199,7 +2286,7 @@ public final class MachineManager: @unchecked Sendable {
             } else {
                 finalStatus = try stop(id: id)
             }
-            journal.stage = "committed"
+            journal.stage = .committed
             try persistDesktopUpdateJournal(journal)
             try removeDesktopUpdateJournal(machineID: id)
             return DoryDesktopUpdateResult(
@@ -2287,7 +2374,9 @@ public final class MachineManager: @unchecked Sendable {
             address: nil,
             displayMode: snapshot.displayMode,
             shares: snapshot.shares,
-            environment: snapshot.environment
+            environment: snapshot.environment,
+            installedDesktopPayloadReceipt:
+                Self.configurationReceipt(restoring: snapshot)
         )
         _ = try create(machine)
         do {
@@ -2335,6 +2424,8 @@ public final class MachineManager: @unchecked Sendable {
         restoredMachine.address = address
         restoredMachine.shares = snapshot.shares
         restoredMachine.environment = snapshot.environment
+        restoredMachine.installedDesktopPayloadReceipt =
+            Self.configurationReceipt(restoring: snapshot)
         let sourceIdentity = try currentRuntimeIdentity(id: machineID)
         let targetIdentity = runtimeIdentityAfterSnapshotRestore(snapshot.runtimeIdentity)
         let snapshotAuthority = try Self.lifecycleSnapshotAuthority(snapshot)
@@ -2452,7 +2543,20 @@ public final class MachineManager: @unchecked Sendable {
     public func exportSnapshot(machineID: String, snapshotID: String, toPath path: String) throws {
         operationLock.lock()
         defer { operationLock.unlock() }
-        let snapshot = try loadSnapshot(machineID: machineID, snapshotID: snapshotID)
+        var snapshot = try loadSnapshot(machineID: machineID, snapshotID: snapshotID)
+        if snapshot.installedDesktopPayloadReceipt == nil {
+            snapshot.installedDesktopPayloadReceipt =
+                DoryInstalledDesktopPayloadReceipt.legacyEnvironment(snapshot.environment)
+        }
+        if let portable = snapshot.installedDesktopPayloadReceipt?.portableSnapshotReceipt {
+            snapshot.installedDesktopPayloadReceipt = portable
+            snapshot.environment.removeValue(
+                forKey: DoryInstalledDesktopPayloadReceipt.legacyReleaseVersionEnvironmentKey
+            )
+            snapshot.environment.removeValue(
+                forKey: DoryInstalledDesktopPayloadReceipt.legacyInputSHA256EnvironmentKey
+            )
+        }
         do {
             try MachineSnapshotBundle.write(snapshot: snapshot, toPath: path)
         } catch let error as MachineManagerError {
@@ -2483,6 +2587,8 @@ public final class MachineManager: @unchecked Sendable {
             }
             try Self.validateResources(memoryMB: snapshot.memoryMB, cpuCount: snapshot.cpuCount)
             try Self.validateSnapshotRuntimeIdentity(snapshot)
+            snapshot.installedDesktopPayloadReceipt =
+                snapshot.installedDesktopPayloadReceipt?.portableSnapshotReceipt
             snapshot.address = nil
             snapshot.shares = []
             snapshot.environment = [:]
@@ -2611,7 +2717,9 @@ public final class MachineManager: @unchecked Sendable {
                 installerMediaAttached: entry.configuration.installerISOPath != nil,
                 shares: entry.configuration.shares,
                 environment: entry.configuration.environment,
-                runtimeIdentity: entry.runtimeIdentity
+                runtimeIdentity: entry.runtimeIdentity,
+                installedDesktopPayloadReceipt:
+                    entry.configuration.effectiveInstalledDesktopPayloadReceipt
             )
         }
         return DoryMachineStatus(
@@ -2637,7 +2745,9 @@ public final class MachineManager: @unchecked Sendable {
             installerMediaAttached: entry.configuration.installerISOPath != nil,
             shares: entry.configuration.shares,
             environment: entry.configuration.environment,
-            runtimeIdentity: entry.runtimeIdentity
+            runtimeIdentity: entry.runtimeIdentity,
+            installedDesktopPayloadReceipt:
+                entry.configuration.effectiveInstalledDesktopPayloadReceipt
         )
     }
 
@@ -2832,7 +2942,126 @@ public final class MachineManager: @unchecked Sendable {
         "\(machineStateDirectory(id: machineID))/\(Self.desktopUpdateJournalName)"
     }
 
+    private struct StagedDesktopUpdateAuthority {
+        var directory: String
+        var bundlePath: String
+        var kernelPath: String
+    }
+
+    private func stageDesktopUpdateAuthority(
+        _ authority: DoryDesktopUpdateArtifactAuthority,
+        machineID: String
+    ) throws -> StagedDesktopUpdateAuthority {
+        guard let bundleSHA256 = authority.receipt.bundleSHA256,
+              let kernelSHA256 = authority.receipt.kernelSHA256 else {
+            throw MachineManagerError.persistence("desktop update authority lacks artifact digests")
+        }
+        let directory = machineStateDirectory(id: machineID)
+            + "/" + Self.desktopUpdateStagingPrefix + UUID().uuidString.lowercased()
+        guard mkdir(directory, 0o700) == 0 else {
+            throw MachineManagerError.persistence("could not create private desktop update staging")
+        }
+        let bundlePath = directory + "/payload.tar"
+        let kernelPath = directory + "/kernel"
+        do {
+            try Self.copyExactDesktopUpdateArtifact(
+                source: authority.bundlePath,
+                destination: bundlePath,
+                expectedByteCount: authority.bundleByteCount,
+                expectedSHA256: bundleSHA256
+            )
+            try Self.copyExactDesktopUpdateArtifact(
+                source: authority.kernelPath,
+                destination: kernelPath,
+                expectedByteCount: authority.kernelByteCount,
+                expectedSHA256: kernelSHA256
+            )
+            try Self.syncDirectory(path: directory)
+            return StagedDesktopUpdateAuthority(
+                directory: directory,
+                bundlePath: bundlePath,
+                kernelPath: kernelPath
+            )
+        } catch {
+            try? FileManager.default.removeItem(atPath: directory)
+            throw error
+        }
+    }
+
+    private static func copyExactDesktopUpdateArtifact(
+        source: String,
+        destination: String,
+        expectedByteCount: UInt64,
+        expectedSHA256: String
+    ) throws {
+        let sourceFD = open(source, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
+        guard sourceFD >= 0 else {
+            throw MachineManagerError.persistence("could not open verified desktop update artifact")
+        }
+        defer { close(sourceFD) }
+        var before = stat()
+        guard fstat(sourceFD, &before) == 0,
+              (before.st_mode & S_IFMT) == S_IFREG,
+              before.st_size > 0,
+              UInt64(before.st_size) == expectedByteCount else {
+            throw MachineManagerError.persistence("verified desktop update artifact identity is invalid")
+        }
+        let destinationFD = open(
+            destination,
+            O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW,
+            mode_t(0o400)
+        )
+        guard destinationFD >= 0 else {
+            throw MachineManagerError.persistence("could not create private desktop update artifact")
+        }
+        var copied: UInt64 = 0
+        var hasher = SHA256()
+        var copyError: Error?
+        do {
+            let input = FileHandle(fileDescriptor: sourceFD, closeOnDealloc: false)
+            let output = FileHandle(fileDescriptor: destinationFD, closeOnDealloc: false)
+            while true {
+                let chunk = try input.read(upToCount: 1024 * 1024) ?? Data()
+                if chunk.isEmpty { break }
+                copied = copied.addingReportingOverflow(UInt64(chunk.count)).partialValue
+                guard copied <= expectedByteCount else {
+                    throw MachineManagerError.persistence("verified desktop update artifact grew while staging")
+                }
+                hasher.update(data: chunk)
+                try output.write(contentsOf: chunk)
+            }
+            guard fsync(destinationFD) == 0 else {
+                throw MachineManagerError.persistence("could not sync private desktop update artifact")
+            }
+        } catch {
+            copyError = error
+        }
+        close(destinationFD)
+        if let copyError {
+            try? FileManager.default.removeItem(atPath: destination)
+            throw copyError
+        }
+        var after = stat()
+        let digest = hasher.finalize().map { String(format: "%02x", $0) }.joined()
+        guard fstat(sourceFD, &after) == 0,
+              before.st_dev == after.st_dev,
+              before.st_ino == after.st_ino,
+              before.st_size == after.st_size,
+              before.st_mtimespec.tv_sec == after.st_mtimespec.tv_sec,
+              before.st_mtimespec.tv_nsec == after.st_mtimespec.tv_nsec,
+              before.st_ctimespec.tv_sec == after.st_ctimespec.tv_sec,
+              before.st_ctimespec.tv_nsec == after.st_ctimespec.tv_nsec,
+              copied == expectedByteCount,
+              digest == expectedSHA256 else {
+            try? FileManager.default.removeItem(atPath: destination)
+            throw MachineManagerError.persistence("verified desktop update artifact changed while staging")
+        }
+    }
+
     private func persistDesktopUpdateJournal(_ journal: DesktopUpdateJournal) throws {
+        guard journal.isValid else {
+            throw MachineManagerError.persistence("invalid desktop update journal")
+        }
         let directory = machineStateDirectory(id: journal.machineID)
         guard Self.isPrivateDirectory(path: directory) else {
             throw MachineManagerError.persistence("desktop update journal owner is not private")
@@ -2842,13 +3071,13 @@ public final class MachineManager: @unchecked Sendable {
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             let data = try encoder.encode(journal)
-            try data.write(to: URL(fileURLWithPath: temporaryPath), options: .atomic)
-            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: temporaryPath)
+            try Self.writeDurablePrivateData(data, toPath: temporaryPath)
             guard rename(temporaryPath, desktopUpdateJournalPath(machineID: journal.machineID)) == 0 else {
                 throw MachineManagerError.persistence(
                     "could not publish desktop update journal: \(String(cString: strerror(errno)))"
                 )
             }
+            try Self.syncDirectory(path: directory)
         } catch {
             try? FileManager.default.removeItem(atPath: temporaryPath)
             if let error = error as? MachineManagerError { throw error }
@@ -2861,9 +3090,35 @@ public final class MachineManager: @unchecked Sendable {
         guard Self.pathEntryExists(path) else { return }
         do {
             try FileManager.default.removeItem(atPath: path)
+            try Self.syncDirectory(path: machineStateDirectory(id: machineID))
         } catch {
             throw MachineManagerError.persistence("could not remove desktop update journal: \(error)")
         }
+    }
+
+    /// Commits the verified installed-state receipt and removes only its two superseded legacy
+    /// fields. The update transaction's last-good snapshot owns rollback of this exact change.
+    private func publishInstalledDesktopPayloadReceipt(
+        original: DoryMachineConfiguration,
+        receipt: DoryInstalledDesktopPayloadReceipt
+    ) throws {
+        guard receipt.isValid, receipt.provenance == .verifiedUpdateBundle else {
+            throw MachineManagerError.persistence(
+                "desktop update produced an invalid installed payload receipt"
+            )
+        }
+        var updated = original
+        updated.shares = original.shares
+        updated.environment.removeValue(
+            forKey: DoryInstalledDesktopPayloadReceipt.legacyReleaseVersionEnvironmentKey
+        )
+        updated.environment.removeValue(
+            forKey: DoryInstalledDesktopPayloadReceipt.legacyInputSHA256EnvironmentKey
+        )
+        updated.installedDesktopPayloadReceipt = receipt
+        try Self.validateLaunchConfiguration(updated)
+        try persist(updated)
+        try publishConfiguration(updated)
     }
 
     private func recoverInterruptedDesktopUpdates() {
@@ -2872,18 +3127,104 @@ public final class MachineManager: @unchecked Sendable {
         lock.unlock()
         for machineID in machineIDs {
             let path = desktopUpdateJournalPath(machineID: machineID)
-            guard let data = Self.readPrivateMetadata(path: path),
-                  let journal = try? JSONDecoder().decode(DesktopUpdateJournal.self, from: data),
-                  journal.schema == 1,
-                  journal.machineID == machineID,
-                  Self.isValidID(journal.snapshotID) else {
+            guard Self.pathEntryExists(path) else {
                 continue
             }
-            if journal.stage == "committed" {
-                try? removeDesktopUpdateJournal(machineID: machineID)
+            guard let data = Self.readPrivateMetadata(path: path),
+                  let journal = try? JSONDecoder().decode(DesktopUpdateJournal.self, from: data),
+                  journal.machineID == machineID,
+                  journal.isValid else {
+                lock.lock()
+                if var entry = machines[machineID] {
+                    entry.state = .failed
+                    entry.lastError = "Desktop update recovery is required: the durable update journal is invalid."
+                    machines[machineID] = entry
+                }
+                lock.unlock()
+                continue
+            }
+            if journal.stage == .committed {
+                // Schema 1 was authored by the pre-receipt updater after its machine.json write
+                // had committed. It carried no component authority to revalidate, and historical
+                // recovery semantics treated this marker as cleanup-only. Preserve that exact
+                // upgrade behavior instead of relabeling a working legacy machine as failed.
+                if journal.schema == 1 {
+                    do {
+                        try removeDesktopUpdateJournal(machineID: machineID)
+                    } catch {
+                        lock.lock()
+                        machines[machineID]?.lastError = "Legacy desktop update committed, but journal cleanup requires retry: \(error)"
+                        lock.unlock()
+                    }
+                    continue
+                }
+                lock.lock()
+                let receipt = machines[machineID]?.configuration.installedDesktopPayloadReceipt
+                let environment = machines[machineID]?.configuration.environment
+                lock.unlock()
+                var expectedReceipt = journal.updateAuthority
+                expectedReceipt?.inputSHA256 = receipt?.inputSHA256 ?? ""
+                guard let receipt,
+                      let environment,
+                      receipt.provenance == .verifiedUpdateBundle,
+                      receipt.hasCoherentAuthority(environment: environment),
+                      receipt == expectedReceipt else {
+                    lock.lock()
+                    if var entry = machines[machineID] {
+                        entry.state = .failed
+                        entry.lastError = "Desktop update recovery is required: committed component evidence does not match machine state."
+                        machines[machineID] = entry
+                    }
+                    lock.unlock()
+                    continue
+                }
+                do {
+                    try removeDesktopUpdateJournal(machineID: machineID)
+                } catch {
+                    lock.lock()
+                    machines[machineID]?.lastError = "Desktop update committed, but journal cleanup requires retry: \(error)"
+                    lock.unlock()
+                }
                 continue
             }
             do {
+                if journal.schema == 2 {
+                    let snapshot = try loadSnapshot(
+                        machineID: machineID,
+                        snapshotID: journal.snapshotID
+                    )
+                    lock.lock()
+                    let current = machines[machineID]?.configuration
+                    lock.unlock()
+                    guard let current,
+                          let expectedSourceSHA256 = journal.sourceConfigurationSHA256 else {
+                        throw MachineManagerError.persistence(
+                            "desktop update journal source authority is unavailable"
+                        )
+                    }
+                    let source = DoryMachineConfiguration(
+                        id: current.id,
+                        kernelPath: current.kernelPath,
+                        rootfsPath: current.rootfsPath,
+                        bootMode: snapshot.bootMode,
+                        memoryMB: snapshot.memoryMB,
+                        cpuCount: snapshot.cpuCount,
+                        address: snapshot.address,
+                        displayMode: snapshot.displayMode,
+                        shares: snapshot.shares,
+                        environment: snapshot.environment,
+                        installedDesktopPayloadReceipt:
+                            Self.configurationReceipt(restoring: snapshot)
+                    )
+                    let actualSourceSHA256 = Self.sha256(
+                        data: try DoryMachineConfigurationMigrationBridge.encodeLegacy(source)
+                    )
+                    guard actualSourceSHA256 == expectedSourceSHA256 else {
+                        throw MachineManagerError.persistence(
+                            "desktop update journal does not match its last-good snapshot"
+                        )
+                    }
+                }
                 _ = try restoreSnapshot(machineID: machineID, snapshotID: journal.snapshotID)
                 try removeDesktopUpdateJournal(machineID: machineID)
                 lock.lock()
@@ -3665,13 +4006,13 @@ public final class MachineManager: @unchecked Sendable {
             )
             let data = try DoryMachineConfigurationMigrationBridge.encodeLegacy(machine)
             let path = machineConfigPath(id: machine.id)
-            try data.write(to: URL(fileURLWithPath: temporaryPath), options: .atomic)
-            try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: temporaryPath)
+            try Self.writeDurablePrivateData(data, toPath: temporaryPath)
             guard rename(temporaryPath, path) == 0 else {
                 throw MachineManagerError.persistence(
                     "could not publish machine metadata: \(String(cString: strerror(errno)))"
                 )
             }
+            try Self.syncDirectory(path: directory)
             authoritativeLegacyData = data
         } catch let error as MachineManagerError {
             try? fileManager.removeItem(atPath: temporaryPath)
@@ -3958,6 +4299,22 @@ public final class MachineManager: @unchecked Sendable {
     fileprivate static func validateSnapshotRuntimeIdentity(
         _ snapshot: DoryMachineSnapshot
     ) throws {
+        guard snapshot.installedDesktopPayloadReceipt?.hasCoherentAuthority(
+            environment: snapshot.environment
+        ) ?? true else {
+            throw MachineManagerError.persistence(
+                "invalid installed desktop payload receipt"
+            )
+        }
+        if let receipt = snapshot.installedDesktopPayloadReceipt,
+           receipt.provenance == .verifiedUpdateBundle {
+            guard let artifactEvidence = snapshot.artifactEvidence,
+                  receipt.kernelSHA256 == artifactEvidence.kernel.sha256 else {
+                throw MachineManagerError.persistence(
+                    "installed desktop kernel receipt does not match snapshot evidence"
+                )
+            }
+        }
         guard snapshot.runtimeIdentity.validate().isEmpty,
               snapshot.runtimeIdentity.virtualHardwareABIVersion
                 == DoryVirtualMachineDefinition.currentVirtualHardwareABIVersion else {
@@ -4298,6 +4655,22 @@ public final class MachineManager: @unchecked Sendable {
         }
         try validateShares(machine.shares)
         try validateEnvironment(machine.environment)
+        guard machine.installedDesktopPayloadReceipt?.hasCoherentAuthority(
+            environment: machine.environment
+        ) ?? true else {
+            throw MachineManagerError.persistence(
+                "installed desktop payload receipt is invalid"
+            )
+        }
+    }
+
+    /// A local legacy snapshot retains the original raw receipt fields byte-for-byte. Imported
+    /// snapshots have no environment authority, so their typed receipt becomes authoritative.
+    private static func configurationReceipt(
+        restoring snapshot: DoryMachineSnapshot
+    ) -> DoryInstalledDesktopPayloadReceipt? {
+        guard let receipt = snapshot.installedDesktopPayloadReceipt else { return nil }
+        return receipt.matchesLegacyEnvironment(snapshot.environment) ? nil : receipt
     }
 
     private static func validateResources(memoryMB: UInt64, cpuCount: Int) throws {
@@ -4617,6 +4990,52 @@ public final class MachineManager: @unchecked Sendable {
         SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 
+    private static func syncDirectory(path: String) throws {
+        let descriptor = open(path, O_RDONLY | O_CLOEXEC | O_DIRECTORY)
+        guard descriptor >= 0 else {
+            throw MachineManagerError.persistence("could not open metadata directory for sync")
+        }
+        defer { close(descriptor) }
+        guard fsync(descriptor) == 0 else {
+            throw MachineManagerError.persistence("could not sync metadata directory")
+        }
+    }
+
+    private static func writeDurablePrivateData(_ data: Data, toPath path: String) throws {
+        let descriptor = open(
+            path,
+            O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW,
+            mode_t(0o600)
+        )
+        guard descriptor >= 0 else {
+            throw MachineManagerError.persistence("could not create durable private metadata")
+        }
+        var succeeded = false
+        defer {
+            close(descriptor)
+            if !succeeded { _ = unlink(path) }
+        }
+        try data.withUnsafeBytes { raw in
+            guard var address = raw.baseAddress else { return }
+            var remaining = raw.count
+            while remaining > 0 {
+                let written = Darwin.write(descriptor, address, remaining)
+                if written > 0 {
+                    remaining -= written
+                    address = address.advanced(by: written)
+                } else if written < 0, errno == EINTR {
+                    continue
+                } else {
+                    throw MachineManagerError.persistence("could not write durable private metadata")
+                }
+            }
+        }
+        guard fsync(descriptor) == 0 else {
+            throw MachineManagerError.persistence("could not sync durable private metadata")
+        }
+        succeeded = true
+    }
+
     private static func isPrivateDirectory(info: stat) -> Bool {
         (info.st_mode & S_IFMT) == S_IFDIR
             && info.st_uid == getuid()
@@ -4649,6 +5068,9 @@ public final class MachineManager: @unchecked Sendable {
                   let machine = try? decoder.decode(DoryMachineConfiguration.self, from: data),
                   machine.id == id,
                   isValidID(machine.id),
+                  machine.installedDesktopPayloadReceipt?.hasCoherentAuthority(
+                    environment: machine.environment
+                  ) ?? true,
                   isPrivateDirectory(path: "\(root)/\(id)"),
                   machine.rootfsPath == rootfsPath,
                   machine.kernelPath == kernelPath,
@@ -5531,6 +5953,7 @@ public final class MachineManager: @unchecked Sendable {
             for entry in entries where entry.hasPrefix(machineMetadataTemporaryPrefix)
                 || entry.hasPrefix(machineDiskTemporaryPrefix)
                 || entry.hasPrefix(machineKernelTemporaryPrefix)
+                || entry.hasPrefix(desktopUpdateStagingPrefix)
                 || (entry.hasPrefix(".") && entry.contains(machineRestoreBackupMarker)) {
                 try? fileManager.removeItem(atPath: "\(directory)/\(entry)")
             }

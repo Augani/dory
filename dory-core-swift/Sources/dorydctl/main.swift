@@ -1412,23 +1412,27 @@ func runMachineProvision(cursor: inout ArgumentCursor, client: DorydCtlClient) t
 }
 
 func runMachineDesktopUpdate(cursor: inout ArgumentCursor, client: DorydCtlClient) throws {
-    let usage = "usage: dorydctl machine desktop-update NAME --distro debian|ubuntu|kali --version VERSION --bundle PATH --kernel PATH"
+    let usage = "usage: dorydctl machine desktop-update NAME --distro debian|ubuntu|kali --version VERSION --distribution-installation ID --runtime-installation ID"
     let name = try cursor.take(usage)
     let distro = try requiredOption("--distro", cursor: &cursor, usage: usage)
     guard ["debian", "ubuntu", "kali"].contains(distro) else {
         throw DorydCtlError.usage("--distro must be debian, ubuntu, or kali")
     }
     let version = try requiredOption("--version", cursor: &cursor, usage: usage)
-    let bundlePath = try requiredOption("--bundle", cursor: &cursor, usage: usage)
-    let kernelPath = try requiredOption("--kernel", cursor: &cursor, usage: usage)
+    let distributionInstallationName = try requiredOption(
+        "--distribution-installation", cursor: &cursor, usage: usage
+    )
+    let runtimeInstallationName = try requiredOption(
+        "--runtime-installation", cursor: &cursor, usage: usage
+    )
     guard cursor.values.isEmpty else {
         throw DorydCtlError.usage("unexpected machine desktop-update argument: " + cursor.values[0])
     }
     let request: NSDictionary = [
         "distro": distro,
         "version": version,
-        "bundlePath": bundlePath,
-        "kernelPath": kernelPath,
+        "distributionInstallationName": distributionInstallationName,
+        "runtimeInstallationName": runtimeInstallationName,
     ]
     let result = try client.withTimeout(atLeast: 3_900).statusCommand { proxy, reply in
         proxy.machineDesktopUpdate(name, request: request, reply: reply)

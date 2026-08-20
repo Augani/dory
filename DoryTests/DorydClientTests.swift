@@ -524,6 +524,169 @@ struct DorydClientTests {
         }
     }
 
+    @Test func installedDesktopPayloadReceiptUsesAbsentOnlyLegacyCompatibilityAndRejectsMalformedClaims() async throws {
+        let digest = String(repeating: "a", count: 64)
+        let valid: [String: Any] = [
+            "schemaVersion": 1,
+            "provenance": "verified-update-bundle",
+            "distributionIdentifier": "ubuntu",
+            "releaseVersion": "24.04+runtime.7",
+            "inputSHA256": digest,
+            "bundleSHA256": String(repeating: "b", count: 64),
+            "distributionComponentIdentifier": "desktop-ubuntu",
+            "distributionInstallationName": "ubuntu-installation",
+            "distributionCatalogSHA256": String(repeating: "c", count: 64),
+            "bundleAssetIdentifier": "dory-desktop-ubuntu-update-arm64.tar",
+            "runtimeComponentIdentifier": "linux-desktop",
+            "runtimeInstallationName": "runtime-installation",
+            "runtimeCatalogSHA256": String(repeating: "d", count: 64),
+            "kernelAssetIdentifier": "dory-desktop-kernel-arm64.lzfse",
+            "kernelSHA256": String(repeating: "e", count: 64),
+        ]
+        do {
+            let listener = NSXPCListener.anonymous()
+            let service = FakeDorydService(
+                installedDesktopPayloadReceiptOverride: valid as NSDictionary
+            )
+            let delegate = FakeDorydListenerDelegate(service: service)
+            listener.delegate = delegate
+            listener.resume()
+            defer { listener.invalidate() }
+            let client = DorydClient(endpoint: listener.endpoint)
+            let status = try #require(try await client.machineList().first)
+            #expect(status.installedDesktopPayloadReceipt?.releaseVersion == "24.04+runtime.7")
+            #expect(status.installedDesktopPayloadReceipt?.bundleSHA256 == String(repeating: "b", count: 64))
+            let snapshot = try await client.machineSnapshot(
+                "dev",
+                note: "receipt",
+                createdISO: "2026-07-07T00:00:00Z",
+                snapshotID: "receipt"
+            )
+            #expect(snapshot.installedDesktopPayloadReceipt == status.installedDesktopPayloadReceipt)
+        }
+
+        do {
+            let listener = NSXPCListener.anonymous()
+            let service = FakeDorydService()
+            service.setMachineEnvironment("dev", [
+                "DORY_DESKTOP_DISTRO": "ubuntu",
+                "DORY_DESKTOP_RELEASE_VERSION": "24.04+runtime.6",
+                "DORY_DESKTOP_INPUT_SHA256": digest,
+            ])
+            let delegate = FakeDorydListenerDelegate(service: service)
+            listener.delegate = delegate
+            listener.resume()
+            defer { listener.invalidate() }
+            let status = try #require(
+                try await DorydClient(endpoint: listener.endpoint).machineList().first
+            )
+            #expect(status.installedDesktopPayloadReceipt?.provenance == "legacy-environment")
+            #expect(status.installedDesktopPayloadReceipt?.releaseVersion == "24.04+runtime.6")
+            #expect(status.installedDesktopPayloadReceipt?.bundleSHA256 == nil)
+        }
+
+        for malformed in [
+            [
+                "schemaVersion": 2,
+                "provenance": "verified-update-bundle",
+                "distributionIdentifier": "ubuntu",
+                "releaseVersion": "24.04+runtime.7",
+                "inputSHA256": digest,
+                "bundleSHA256": String(repeating: "b", count: 64),
+            ],
+            [
+                "schemaVersion": 1,
+                "provenance": "verified-update-bundle",
+                "distributionIdentifier": "ubuntu",
+                "releaseVersion": "24.04+runtime.7",
+                "inputSHA256": digest,
+            ],
+            valid.merging(["unknownEvidence": "must-reject"]) { _, new in new },
+            valid.merging(["schemaVersion": "1"]) { _, new in new },
+            valid.merging(["bundleSHA256": NSNumber(value: 7)]) { _, new in new },
+            valid.merging(["distributionInstallationName": "../../outside-store"]) { _, new in new },
+        ] as [[String: Any]] {
+            let listener = NSXPCListener.anonymous()
+            let service = FakeDorydService(
+                installedDesktopPayloadReceiptOverride: malformed as NSDictionary
+            )
+            let delegate = FakeDorydListenerDelegate(service: service)
+            listener.delegate = delegate
+            listener.resume()
+            defer { listener.invalidate() }
+            let client = DorydClient(endpoint: listener.endpoint)
+            await #expect(throws: DorydClientError.self) {
+                _ = try await client.machineList()
+            }
+            await #expect(throws: DorydClientError.self) {
+                _ = try await client.machineSnapshot(
+                    "dev",
+                    note: "invalid receipt",
+                    createdISO: "2026-07-07T00:00:00Z",
+                    snapshotID: "invalid-receipt"
+                )
+            }
+        }
+    }
+
+    @Test func desktopUpdateSkipRequiresExactVerifiedActiveComponentProvenance() {
+        let receipt = DorydInstalledDesktopPayloadReceipt(
+            schemaVersion: 1,
+            provenance: "verified-update-bundle",
+            distributionIdentifier: "ubuntu",
+            releaseVersion: "24.04+runtime.7",
+            inputSHA256: String(repeating: "a", count: 64),
+            bundleSHA256: String(repeating: "b", count: 64),
+            distributionComponentIdentifier: "desktop-ubuntu",
+            distributionInstallationName: "ubuntu-installation",
+            distributionCatalogSHA256: String(repeating: "c", count: 64),
+            bundleAssetIdentifier: "dory-desktop-ubuntu-update-arm64.tar",
+            runtimeComponentIdentifier: "linux-desktop",
+            runtimeInstallationName: "runtime-installation",
+            runtimeCatalogSHA256: String(repeating: "d", count: 64),
+            kernelAssetIdentifier: "dory-desktop-kernel-arm64.lzfse",
+            kernelSHA256: String(repeating: "e", count: 64)
+        )
+        let matches: (DorydInstalledDesktopPayloadReceipt?) -> Bool = { candidate in
+            AppStore.desktopReceiptMatchesActiveComponents(
+                candidate,
+                distributionIdentifier: "ubuntu",
+                releaseVersion: "24.04+runtime.7",
+                distributionComponentIdentifier: "desktop-ubuntu",
+                distributionInstallationName: "ubuntu-installation",
+                distributionCatalogSHA256: String(repeating: "c", count: 64),
+                bundleAssetIdentifier: "dory-desktop-ubuntu-update-arm64.tar",
+                bundleSHA256: String(repeating: "b", count: 64),
+                runtimeInstallationName: "runtime-installation",
+                runtimeCatalogSHA256: String(repeating: "d", count: 64),
+                kernelAssetIdentifier: "dory-desktop-kernel-arm64.lzfse",
+                kernelSHA256: String(repeating: "e", count: 64)
+            )
+        }
+        #expect(matches(receipt))
+        var wrongDistro = receipt
+        wrongDistro.distributionIdentifier = "kali"
+        #expect(!matches(wrongDistro))
+        var staleBundle = receipt
+        staleBundle.bundleSHA256 = String(repeating: "f", count: 64)
+        #expect(!matches(staleBundle))
+        var legacy = receipt
+        legacy.provenance = "legacy-environment"
+        #expect(!matches(legacy))
+        #expect(
+            AppStore.managedDesktopDistributionIdentifier(
+                configuredIdentifier: nil,
+                receipt: receipt
+            ) == "ubuntu"
+        )
+        #expect(
+            AppStore.managedDesktopDistributionIdentifier(
+                configuredIdentifier: "kali",
+                receipt: receipt
+            ) == "kali"
+        )
+    }
+
     private func validResolvedRuntimeIdentity() -> NSDictionary {
         [
             "schemaVersion": 1,
@@ -2147,6 +2310,7 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
     private var _latestMachineProvisionRecipe: String?
     private var runtimeIdentityOverride: NSDictionary?
     private var artifactEvidenceOverride: NSDictionary?
+    private var installedDesktopPayloadReceiptOverride: NSDictionary?
     private var snapshots: [String: [NSDictionary]] = [:]
     private var backupStatuses: [String: NSDictionary] = [:]
     var engineStartCount: Int {
@@ -2251,15 +2415,22 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
         socketPath: String = "/tmp/doryd-test.sock",
         engineShutdownReplyDelay: TimeInterval = 0,
         runtimeIdentityOverride: NSDictionary? = nil,
-        artifactEvidenceOverride: NSDictionary? = nil
+        artifactEvidenceOverride: NSDictionary? = nil,
+        installedDesktopPayloadReceiptOverride: NSDictionary? = nil
     ) {
         self.socketPath = socketPath
         self.engineShutdownReplyDelay = engineShutdownReplyDelay
         self.runtimeIdentityOverride = runtimeIdentityOverride
         self.artifactEvidenceOverride = artifactEvidenceOverride
-        if let runtimeIdentityOverride,
-           let existing = machines["dev"]?.mutableCopy() as? NSMutableDictionary {
-            existing["runtimeIdentity"] = runtimeIdentityOverride
+        self.installedDesktopPayloadReceiptOverride = installedDesktopPayloadReceiptOverride
+        if let existing = machines["dev"]?.mutableCopy() as? NSMutableDictionary {
+            if let runtimeIdentityOverride {
+                existing["runtimeIdentity"] = runtimeIdentityOverride
+            }
+            if let installedDesktopPayloadReceiptOverride {
+                existing["installedDesktopPayloadReceipt"] =
+                    installedDesktopPayloadReceiptOverride
+            }
             machines["dev"] = existing.copy() as? NSDictionary
         }
     }
@@ -2586,10 +2757,23 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
             if let artifactEvidenceOverride {
                 mutable["artifactEvidence"] = artifactEvidenceOverride
             }
+            if let installedDesktopPayloadReceiptOverride {
+                mutable["installedDesktopPayloadReceipt"] =
+                    installedDesktopPayloadReceiptOverride
+            }
             row = mutable.copy() as? NSDictionary ?? baseRow
         } else if let artifactEvidenceOverride,
                   let mutable = baseRow.mutableCopy() as? NSMutableDictionary {
             mutable["artifactEvidence"] = artifactEvidenceOverride
+            if let installedDesktopPayloadReceiptOverride {
+                mutable["installedDesktopPayloadReceipt"] =
+                    installedDesktopPayloadReceiptOverride
+            }
+            row = mutable.copy() as? NSDictionary ?? baseRow
+        } else if let installedDesktopPayloadReceiptOverride,
+                  let mutable = baseRow.mutableCopy() as? NSMutableDictionary {
+            mutable["installedDesktopPayloadReceipt"] =
+                installedDesktopPayloadReceiptOverride
             row = mutable.copy() as? NSDictionary ?? baseRow
         } else {
             row = baseRow
