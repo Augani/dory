@@ -150,9 +150,35 @@ public struct DoryComponentRelease: Codable, Sendable, Equatable, Identifiable {
     }
 }
 
+/// Catalog-declared location of semantic VM qualification data. The manifest bytes are an
+/// ordinary component asset, so their installed digest is covered by the signed catalog and the
+/// component store's immutable-installation checks. Schema-v1 catalogs cannot declare this root.
+public struct DoryComponentVirtualMachineQualificationAsset: Codable, Sendable, Equatable {
+    public let component: DoryComponentID
+    public let path: String
+    public let manifestIdentity: String
+    public let manifestFormatVersion: UInt16
+    public let signingKeyID: String
+
+    public init(
+        component: DoryComponentID,
+        path: String,
+        manifestIdentity: String,
+        manifestFormatVersion: UInt16,
+        signingKeyID: String
+    ) {
+        self.component = component
+        self.path = path
+        self.manifestIdentity = manifestIdentity
+        self.manifestFormatVersion = manifestFormatVersion
+        self.signingKeyID = signingKeyID
+    }
+}
+
 public struct DoryComponentCatalog: Codable, Sendable, Equatable {
     public static let kind = "dev.dory.component-catalog"
-    public static let schemaVersion = 1
+    public static let oldestSupportedSchemaVersion = 1
+    public static let schemaVersion = 2
 
     public let kind: String
     public let schemaVersion: Int
@@ -161,21 +187,25 @@ public struct DoryComponentCatalog: Codable, Sendable, Equatable {
     public let minimumAppVersion: String
     public let architecture: String
     public let components: [DoryComponentRelease]
+    public let virtualMachineQualification: DoryComponentVirtualMachineQualificationAsset?
 
     public init(
+        schemaVersion: Int = Self.schemaVersion,
         releaseVersion: String,
         generatedAt: String,
         minimumAppVersion: String,
         architecture: String,
-        components: [DoryComponentRelease]
+        components: [DoryComponentRelease],
+        virtualMachineQualification: DoryComponentVirtualMachineQualificationAsset? = nil
     ) {
         kind = Self.kind
-        schemaVersion = Self.schemaVersion
+        self.schemaVersion = schemaVersion
         self.releaseVersion = releaseVersion
         self.generatedAt = generatedAt
         self.minimumAppVersion = minimumAppVersion
         self.architecture = architecture
         self.components = components
+        self.virtualMachineQualification = virtualMachineQualification
     }
 
     public func component(_ id: DoryComponentID) -> DoryComponentRelease? {
@@ -256,7 +286,8 @@ public enum DoryComponentCatalogVerifier {
         appVersion: String
     ) throws {
         guard catalog.kind == DoryComponentCatalog.kind,
-              catalog.schemaVersion == DoryComponentCatalog.schemaVersion,
+              catalog.schemaVersion >= DoryComponentCatalog.oldestSupportedSchemaVersion,
+              catalog.schemaVersion <= DoryComponentCatalog.schemaVersion,
               validVersion(catalog.releaseVersion),
               validVersion(catalog.minimumAppVersion),
               validTimestamp(catalog.generatedAt),
@@ -283,6 +314,27 @@ public enum DoryComponentCatalogVerifier {
         }
         for component in catalog.components {
             try validate(component, available: Set(ids))
+        }
+        if catalog.schemaVersion == DoryComponentCatalog.oldestSupportedSchemaVersion,
+           catalog.virtualMachineQualification != nil {
+            throw DoryComponentError.invalidCatalog(
+                "schema-v1 catalogs cannot declare VM qualification authority"
+            )
+        }
+        if let qualification = catalog.virtualMachineQualification {
+            guard catalog.schemaVersion == DoryComponentCatalog.schemaVersion,
+                  qualification.component.isRemovable,
+                  safeRelativePath(qualification.path),
+                  !qualification.manifestIdentity.isEmpty,
+                  qualification.manifestFormatVersion > 0,
+                  !qualification.signingKeyID.isEmpty,
+                  catalog.component(qualification.component)?.assets.contains(where: {
+                      $0.path == qualification.path
+                  }) == true else {
+                throw DoryComponentError.invalidCatalog(
+                    "VM qualification authority is incomplete or is not a declared component asset"
+                )
+            }
         }
         try validateDependencyGraph(catalog.components)
     }
@@ -747,6 +799,37 @@ public struct DoryComponentStore: Sendable {
                 digest: asset.installedSHA256
             )
         }
+    }
+
+    /// Reads one immutable installed asset only after revalidating its complete component
+    /// generation and the bytes returned by this read. This closes the verify/use race for
+    /// security metadata such as VM qualification manifests.
+    public func verifiedAssetData(
+        component id: DoryComponentID,
+        path: String,
+        maximumBytes: Int
+    ) throws -> Data {
+        guard maximumBytes > 0,
+              DoryComponentCatalogVerifier.safeRelativePath(path) else {
+            throw DoryComponentError.invalidAsset(path)
+        }
+        let installed = try verify(id)
+        guard let asset = installed.assets.first(where: { $0.path == path }),
+              asset.installedBytes <= UInt64(maximumBytes),
+              let assetPath = assetPath(component: id, path: path) else {
+            throw DoryComponentError.invalidAsset(path)
+        }
+        let data: Data
+        do {
+            data = try PrivateRecordFile.read(at: assetPath, maximumBytes: maximumBytes)
+        } catch {
+            throw DoryComponentError.invalidAsset(path)
+        }
+        guard UInt64(data.count) == asset.installedBytes,
+              DoryComponentCatalogVerifier.digest(data) == asset.installedSHA256 else {
+            throw DoryComponentError.digestMismatch(path)
+        }
+        return data
     }
 
     public func isInstalledAndValid(_ id: DoryComponentID) -> Bool {
