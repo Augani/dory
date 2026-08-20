@@ -41,13 +41,14 @@ struct NewMachineSettingsTests {
         #expect(s.mounts.count == 1)
         #expect(s.address == "192.168.215.40")
         #expect(s.displayMode == .desktop)
-        #expect(s.env["DORY_GUEST_USER"] == "dory")
-        #expect(s.env["DORY_GUEST_UID"] == String(getuid()))
-        #expect(s.env["DORY_DESKTOP_DISTRO"] == "debian")
-        #expect(s.env["DORY_DESKTOP_VERSION"] == "13")
-        #expect(s.env[DoryDesktopClipboardPolicy.environmentKey] == "bidirectional")
-        #expect(s.env[DoryDesktopVMMPreference.environmentKey] == "auto")
-        #expect(s.env[DoryDesktopGraphicsPreference.environmentKey] == "auto")
+        #expect(s.env.isEmpty)
+        #expect(s.virtualMachineSettings?.guestIdentityIntent.account?.username == "dory")
+        #expect(s.virtualMachineSettings?.guestIdentityIntent.account?.numericUserID == UInt32(getuid()))
+        #expect(s.virtualMachineSettings?.guestIdentityIntent.desktop?.distributionIdentifier == "debian")
+        #expect(s.virtualMachineSettings?.guestIdentityIntent.desktop?.version == "13")
+        #expect(s.virtualMachineSettings?.clipboardPolicy == .legacyDesktop(.bidirectional))
+        #expect(s.virtualMachineSettings?.runtimePreference == .automatic)
+        #expect(s.virtualMachineSettings?.graphicsPreference == .automatic)
         #expect(s.ports.isEmpty)
     }
 
@@ -62,12 +63,13 @@ struct NewMachineSettingsTests {
             guestUID: 1_001
         )
 
-        #expect(settings.env["DORY_DESKTOP_DISTRO"] == "kali")
-        #expect(settings.env["DORY_DESKTOP_NAME"] == "Kali Linux")
-        #expect(settings.env["DORY_DESKTOP_VERSION"] == "Rolling")
-        #expect(settings.env["DORY_DESKTOP_ENVIRONMENT"] == "Xfce")
-        #expect(settings.env["DORY_GUEST_USER"] == "analyst")
-        #expect(settings.env["DORY_GUEST_UID"] == "1001")
+        #expect(settings.env.isEmpty)
+        #expect(settings.virtualMachineSettings?.guestIdentityIntent.desktop?.distributionIdentifier == "kali")
+        #expect(settings.virtualMachineSettings?.guestIdentityIntent.desktop?.displayName == "Kali Linux")
+        #expect(settings.virtualMachineSettings?.guestIdentityIntent.desktop?.version == "Rolling")
+        #expect(settings.virtualMachineSettings?.guestIdentityIntent.desktop?.desktopEnvironment == "Xfce")
+        #expect(settings.virtualMachineSettings?.guestIdentityIntent.account?.username == "analyst")
+        #expect(settings.virtualMachineSettings?.guestIdentityIntent.account?.numericUserID == 1_001)
     }
 
     @Test func recordsUbuntuAsTheCanonicalGnomeDesktop() {
@@ -81,10 +83,11 @@ struct NewMachineSettingsTests {
             guestUID: 1_002
         )
 
-        #expect(settings.env["DORY_DESKTOP_DISTRO"] == "ubuntu")
-        #expect(settings.env["DORY_DESKTOP_NAME"] == "Ubuntu")
-        #expect(settings.env["DORY_DESKTOP_VERSION"] == "24.04 LTS")
-        #expect(settings.env["DORY_DESKTOP_ENVIRONMENT"] == "GNOME")
+        #expect(settings.env.isEmpty)
+        #expect(settings.virtualMachineSettings?.guestIdentityIntent.desktop?.distributionIdentifier == "ubuntu")
+        #expect(settings.virtualMachineSettings?.guestIdentityIntent.desktop?.displayName == "Ubuntu")
+        #expect(settings.virtualMachineSettings?.guestIdentityIntent.desktop?.version == "24.04 LTS")
+        #expect(settings.virtualMachineSettings?.guestIdentityIntent.desktop?.desktopEnvironment == "GNOME")
     }
 
     @Test func headlessServersDoNotCarryDesktopMetadata() {
@@ -95,10 +98,7 @@ struct NewMachineSettingsTests {
             displayMode: .headless
         )
 
-        #expect(settings.env["DORY_DESKTOP_DISTRO"] == nil)
-        #expect(settings.env["DORY_GUEST_USER"] == nil)
-        #expect(settings.env[DoryDesktopClipboardPolicy.environmentKey] == nil)
-        #expect(settings.env[DoryDesktopVMMPreference.environmentKey] == nil)
-        #expect(settings.env[DoryDesktopGraphicsPreference.environmentKey] == nil)
+        #expect(settings.env.isEmpty)
+        #expect(settings.virtualMachineSettings == nil)
     }
 }

@@ -1,9 +1,64 @@
 import Foundation
+import DoryOperations
 import Testing
 @testable import Dory
 
 @Suite(.serialized)
 struct DorydClientTests {
+    @Test func legacyDesktopDefaultsAndTogglesRemainFieldLocalInTypedEdits() throws {
+        let defaults = DorydMachineTypedSettings(
+            legacyEnvironment: [:],
+            displayMode: .desktop
+        )
+        #expect(defaults.clipboardPolicy == .legacyDesktop(.bidirectional))
+        #expect(defaults.runtimePreference == .automatic)
+        #expect(defaults.graphicsPreference == .automatic)
+
+        for (legacy, expected) in [("1", DoryDesktopGraphicsPreference.virgl),
+                                   ("0", DoryDesktopGraphicsPreference.virglVenus)] {
+            let settings = DorydMachineTypedSettings(
+                legacyEnvironment: ["DORY_VIRGL_CLASSIC_ONLY": legacy],
+                displayMode: .desktop
+            )
+            #expect(settings.graphicsPreference == expected)
+            #expect(DorydMachineTypedSettingsPatch(
+                baseline: settings,
+                desired: settings
+            ).xpcDictionary["desktopGraphicsPreference"] == nil)
+        }
+
+        let hostile = [
+            "DORY_GUEST_USER": "../../unsafe-user",
+            "DORY_GUEST_UID": "not-a-uid",
+            "DORY_CLIPBOARD_POLICY": "invalid-and-must-remain",
+            "DORY_DESKTOP_VMM": "invalid-and-must-remain",
+            "DORY_DESKTOP_GRAPHICS": "invalid-and-must-remain",
+        ]
+        let baseline = DorydMachineTypedSettings(
+            legacyEnvironment: hostile,
+            displayMode: .desktop
+        )
+        #expect(baseline.guestIdentityIntent.account == nil)
+        #expect(baseline.clipboardPolicy == .disabled)
+        #expect(baseline.runtimePreference == .automatic)
+        #expect(baseline.graphicsPreference == .automatic)
+        var desired = baseline
+        desired.guestIdentityIntent.account = DoryVMGuestAccountIntent(
+            username: "developer"
+        )
+        let wire = DorydMachineTypedSettingsPatch(
+            baseline: baseline,
+            desired: desired
+        ).xpcDictionary
+        let identity = try #require(wire["guestIdentityIntent"] as? NSDictionary)
+        let account = try #require(identity["account"] as? NSDictionary)
+        #expect(account["username"] as? String == "developer")
+        #expect(account["numericUserID"] == nil)
+        #expect(wire["clipboardPolicy"] == nil)
+        #expect(wire["desktopRuntimePreference"] == nil)
+        #expect(wire["desktopGraphicsPreference"] == nil)
+    }
+
     @Test func desktopAssetEnvironmentUsesSelectedDistribution() {
         for distro in DesktopMachineDistro.allCases {
             let environment = AppStore.desktopAssetEnvironment(
@@ -144,7 +199,23 @@ struct DorydClientTests {
             shares: [
                 DorydMachineShareConfiguration(tag: "src", hostPath: "/Users/me/src", guestPath: "/workspace/src", readOnly: true),
             ],
-            environment: ["FOO": "bar"]
+            typedSettings: DorydMachineTypedSettings(
+                guestIdentityIntent: DoryVMGuestIdentityIntent(
+                    account: DoryVMGuestAccountIntent(
+                        username: "developer",
+                        numericUserID: 1_000
+                    ),
+                    desktop: DoryVMDesktopIdentityIntent(
+                        distributionIdentifier: "ubuntu",
+                        displayName: "Ubuntu",
+                        version: "24.04",
+                        desktopEnvironment: "GNOME"
+                    )
+                ),
+                clipboardPolicy: .legacyDesktop(.bidirectional),
+                runtimePreference: .accelerated,
+                graphicsPreference: .virglVenus
+            )
         ))
         let startedMachine = try await client.machineStart("dev")
         let machineStats = try await client.machineStats("dev")
@@ -178,7 +249,14 @@ struct DorydClientTests {
             memoryMB: 4096,
             cpuCount: 4,
             address: "192.168.215.41",
-            environment: ["BAR": "baz"]
+            typedSettings: DorydMachineTypedSettings(
+                guestIdentityIntent: DoryVMGuestIdentityIntent(
+                    account: DoryVMGuestAccountIntent(username: "builder")
+                ),
+                clipboardPolicy: .legacyDesktop(.hostToGuest),
+                runtimePreference: .compatible,
+                graphicsPreference: .software
+            )
         )
         let machines = try await client.machineList()
         let deletedMachine = try await client.machineDelete("dev")
@@ -247,7 +325,8 @@ struct DorydClientTests {
         #expect(startedMachine.shares == [
             DorydMachineShareConfiguration(tag: "src", hostPath: "/Users/me/src", guestPath: "/workspace/src", readOnly: true),
         ])
-        #expect(startedMachine.environment == ["FOO": "bar"])
+        #expect(startedMachine.environment["DORY_GUEST_USER"] == "developer")
+        #expect(startedMachine.environment["DORY_DESKTOP_DISTRO"] == "ubuntu")
         #expect(startedMachine.displayMode == .desktop)
         #expect(execResult.stdout == "cargo 1.0\n")
         #expect(execResult.exitCode == 0)
@@ -276,7 +355,10 @@ struct DorydClientTests {
         #expect(updatedMachine.memoryMB == 4096)
         #expect(updatedMachine.cpuCount == 4)
         #expect(updatedMachine.address == "192.168.215.41")
-        #expect(updatedMachine.environment == ["BAR": "baz"])
+        #expect(updatedMachine.environment["DORY_GUEST_USER"] == "builder")
+        #expect(updatedMachine.environment["DORY_CLIPBOARD_POLICY"] == "host-to-guest")
+        #expect(updatedMachine.environment["DORY_DESKTOP_VMM"] == "compatible")
+        #expect(updatedMachine.environment["DORY_DESKTOP_GRAPHICS"] == "software")
         #expect(machines.map(\.id) == ["dev", "dev-copy"])
         #expect(deletedMachine == DorydCommandResult(ok: true, message: ""))
         #expect(remoteInfo.agentBuild == "remote-agent")
@@ -669,9 +751,7 @@ struct DorydClientTests {
         #expect(updateShares.first?["hostPath"] as? String == "/Users/me/app")
         #expect(updateShares.first?["guestPath"] as? String == "/workspace/app")
         #expect(updateShares.first?["readOnly"] as? Bool == false)
-        let updateEnv = try #require(service.latestMachineUpdateConfig?["env"] as? [NSDictionary])
-        #expect(updateEnv.first?["key"] as? String == "ANTHROPIC_API_KEY")
-        #expect(updateEnv.first?["value"] as? String == "test-token")
+        #expect(service.latestMachineUpdateConfig?["env"] == nil)
 
         machine = try #require(store.machines.first { $0.name == "dev" })
         let clearAddressResult = await store.editMachine(
@@ -900,16 +980,10 @@ struct DorydClientTests {
         let createShares = try #require(config["shares"] as? [NSDictionary])
         #expect(createShares.first?["hostPath"] as? String == "/Users/me/project")
         #expect(createShares.first?["guestPath"] as? String == "/workspace/project")
-        let createEnv = try #require(config["env"] as? [NSDictionary])
-        let createEnvValues: [String: String] = Dictionary(
-            uniqueKeysWithValues: createEnv.compactMap { entry -> (String, String)? in
-                guard let key = entry["key"] as? String,
-                      let value = entry["value"] as? String else { return nil }
-                return (key, value)
-            }
-        )
-        #expect(createEnvValues["APP_ENV"] == "dev")
-        #expect(createEnvValues["DORY_DESKTOP_DISTRO"] == "ubuntu")
+        #expect(config["env"] == nil)
+        let identity = try #require(config["guestIdentityIntent"] as? NSDictionary)
+        let desktop = try #require(identity["desktop"] as? NSDictionary)
+        #expect(desktop["distributionIdentifier"] as? String == "ubuntu")
 
         try await waitUntil {
             store.machines.first { $0.name == "vmdev" }?.status == .running
@@ -917,6 +991,113 @@ struct DorydClientTests {
         #expect(store.machineCreated?.name == "vmdev")
         #expect(store.machineCreationLog.contains("Provisioning Rust"))
         #expect(store.machineCreationLog.contains("cargo 1.0"))
+    }
+
+    @MainActor
+    @Test func appStoreEditsTypedLeavesWithoutRewritingLegacyEnvironment() async throws {
+        let listener = NSXPCListener.anonymous()
+        let service = FakeDorydService()
+        service.setMachineEnvironment("dev", [
+            "DORY_GUEST_USER": "dory",
+            "DORY_GUEST_UID": "not-a-uid",
+            "DORY_DESKTOP_DISTRO": "ubuntu",
+            "DORY_DESKTOP_NAME": "Ubuntu",
+            "DORY_DESKTOP_VERSION": "24.04 LTS",
+            "DORY_DESKTOP_ENVIRONMENT": "GNOME",
+            "DORY_CLIPBOARD_POLICY": "invalid-clipboard",
+            "DORY_DESKTOP_VMM": "invalid-runtime",
+            "DORY_DESKTOP_GRAPHICS": "invalid-graphics",
+            "OPAQUE_LEGACY": "preserve-exactly",
+        ])
+        let delegate = FakeDorydListenerDelegate(service: service)
+        listener.delegate = delegate
+        listener.resume()
+        defer { listener.invalidate() }
+
+        let store = AppStore(
+            dorydClient: DorydClient(endpoint: listener.endpoint),
+            useDorydEngine: true
+        )
+        store.routeDockerCLI = false
+        await store.connectBackend()
+        let machine = try #require(store.machines.first { $0.name == "dev" })
+        let baseline = await store.machineSettings("dev")
+        let desktop = try #require(
+            baseline.virtualMachineSettings?.guestIdentityIntent.desktop
+        )
+        var desired = try #require(baseline.virtualMachineSettings)
+        desired.guestIdentityIntent = DoryVMGuestIdentityIntent(
+            account: DoryVMGuestAccountIntent(username: "builder"),
+            desktop: desktop
+        )
+
+        let result = await store.editMachine(
+            machine,
+            settings: MachineSettings(
+                cpus: baseline.cpus,
+                memoryMB: baseline.memoryMB,
+                mounts: baseline.mounts,
+                env: [:],
+                virtualMachineSettings: desired,
+                address: baseline.address,
+                displayMode: .desktop
+            )
+        )
+
+        #expect(result == nil)
+        let update = try #require(service.latestMachineUpdateConfig)
+        #expect(update["env"] == nil)
+        let identity = try #require(update["guestIdentityIntent"] as? NSDictionary)
+        let account = try #require(identity["account"] as? NSDictionary)
+        #expect(account["username"] as? String == "builder")
+        #expect(account["numericUserID"] == nil)
+        #expect(identity["desktop"] == nil)
+        #expect(update["clipboardPolicy"] == nil)
+        #expect(update["desktopRuntimePreference"] == nil)
+        #expect(update["desktopGraphicsPreference"] == nil)
+
+        let persisted = try #require(
+            (try await DorydClient(endpoint: listener.endpoint).machineList())
+                .first { $0.id == "dev" }
+        )
+        #expect(persisted.environment["DORY_GUEST_USER"] == "builder")
+        #expect(persisted.environment["DORY_GUEST_UID"] == "not-a-uid")
+        #expect(persisted.environment["DORY_DESKTOP_DISTRO"] == "ubuntu")
+        #expect(persisted.environment["DORY_DESKTOP_NAME"] == "Ubuntu")
+        #expect(persisted.environment["DORY_DESKTOP_VERSION"] == "24.04 LTS")
+        #expect(persisted.environment["DORY_DESKTOP_ENVIRONMENT"] == "GNOME")
+        #expect(persisted.environment["DORY_CLIPBOARD_POLICY"] == "invalid-clipboard")
+        #expect(persisted.environment["DORY_DESKTOP_VMM"] == "invalid-runtime")
+        #expect(persisted.environment["DORY_DESKTOP_GRAPHICS"] == "invalid-graphics")
+        #expect(persisted.environment["OPAQUE_LEGACY"] == "preserve-exactly")
+
+        let afterUsernameEdit = await store.machineSettings("dev")
+        var explicitRuntimeEdit = try #require(
+            afterUsernameEdit.virtualMachineSettings
+        )
+        explicitRuntimeEdit.clipboardPolicy = .legacyDesktop(.hostToGuest)
+        explicitRuntimeEdit.runtimePreference = .compatible
+        explicitRuntimeEdit.graphicsPreference = .software
+        let secondResult = await store.editMachine(
+            machine,
+            settings: MachineSettings(
+                cpus: afterUsernameEdit.cpus,
+                memoryMB: afterUsernameEdit.memoryMB,
+                mounts: afterUsernameEdit.mounts,
+                env: [:],
+                virtualMachineSettings: explicitRuntimeEdit,
+                address: afterUsernameEdit.address,
+                displayMode: .desktop
+            )
+        )
+        #expect(secondResult == nil)
+        let explicitUpdate = try #require(service.latestMachineUpdateConfig)
+        #expect(explicitUpdate["desktopRuntimePreference"] as? String == "compatible")
+        #expect(explicitUpdate["desktopGraphicsPreference"] as? String == "software")
+        let clipboard = try #require(
+            explicitUpdate["clipboardPolicy"] as? NSDictionary
+        )
+        #expect(clipboard["text"] as? String == "host-to-guest")
     }
 
     @MainActor
@@ -1016,19 +1197,12 @@ struct DorydClientTests {
 
         #expect(result == nil)
         let config = try #require(service.latestMachineCreateConfig)
-        let envRows = try #require(config["env"] as? [NSDictionary])
-        let env = Dictionary(uniqueKeysWithValues: envRows.compactMap { row -> (String, String)? in
-            guard let key = row["key"] as? String, let value = row["value"] as? String else { return nil }
-            return (key, value)
-        })
-        #expect(env["ANTHROPIC_API_KEY"] == nil)
-        #expect(env["GH_TOKEN"] == nil)
-        #expect(env["EMPTY_TOKEN"] == nil)
-        #expect(env["DORY_DESKTOP_DISTRO"] == "ubuntu")
+        #expect(config["env"] == nil)
+        #expect(config["guestIdentityIntent"] == nil)
     }
 
     @MainActor
-    @Test func dorydMachineConfigurationRequiresKernelAndRootfsAndUsesSettingsDefaults() {
+    @Test func dorydMachineConfigurationRequiresKernelAndRootfsAndUsesSettingsDefaults() throws {
         #expect(AppStore.dorydMachineConfiguration(
             name: "vmdev",
             settings: .default,
@@ -1050,7 +1224,7 @@ struct DorydClientTests {
             rootfsPath: "/vm/rootfs.raw",
             memoryMB: 3072,
             cpuCount: 3,
-            environment: ["APP_ENV": "dev"]
+            typedSettings: DorydMachineTypedSettings()
         ))
 
         let invalidResources = AppStore.dorydMachineConfiguration(
@@ -1078,6 +1252,26 @@ struct DorydClientTests {
         )
         #expect(malformedResources?.memoryMB == 0)
         #expect(malformedResources?.cpuCount == 0)
+
+        let customEFI = AppStore.dorydMachineConfiguration(
+            name: "omarchy",
+            settings: MachineSettings(
+                cpus: 4,
+                memoryMB: 4_096,
+                env: ["DORY_CUSTOM_LINUX": "1", "TOKEN": "must-not-cross"],
+                displayMode: .desktop,
+                bootMode: .efi,
+                installerISOPath: "/staged/omarchy.iso",
+                diskSizeGB: 64
+            ),
+            environment: [:]
+        )
+        let custom = try #require(customEFI)
+        #expect(custom.bootMode == .efi)
+        #expect(custom.installerISOPath == "/staged/omarchy.iso")
+        #expect(custom.typedSettings.isEmpty)
+        #expect(custom.xpcDictionary["env"] == nil)
+        #expect(custom.xpcDictionary["guestIdentityIntent"] == nil)
     }
 
     @MainActor
@@ -1975,6 +2169,27 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
         lock.lock(); defer { lock.unlock() }
         return _machineStartCount
     }
+
+    func setMachineEnvironment(_ machineID: String, _ environment: [String: String]) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let current = machines[machineID] else { return }
+        machines[machineID] = Self.machineRow(
+            id: machineID,
+            state: current["state"] as? String ?? "stopped",
+            pid: (current["pid"] as? NSNumber)?.int32Value,
+            agentBuild: current["agentBuild"] as? String,
+            handoffFDCount: (current["handoffFDCount"] as? NSNumber)?.intValue ?? 0,
+            memoryMB: Self.uint64(current["memoryMB"]) ?? 2_048,
+            cpuCount: Self.int(current["cpuCount"]) ?? 2,
+            address: current["address"] as? String,
+            displayMode: current["displayMode"] as? String ?? "headless",
+            shares: Self.shareRows(current["shares"]),
+            environment: environment.sorted { $0.key < $1.key }.map {
+                ["key": $0.key, "value": $0.value] as NSDictionary
+            }
+        )
+    }
     var machineStopCount: Int {
         lock.lock(); defer { lock.unlock() }
         return _machineStopCount
@@ -2183,7 +2398,7 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
             address: config["address"] as? String,
             displayMode: config["displayMode"] as? String ?? "headless",
             shares: Self.shareRows(config["shares"]),
-            environment: Self.environmentRows(config["env"])
+            environment: Self.typedEnvironment(config, baseline: [])
         )
         lock.lock()
         _machineCreateCount += 1
@@ -2251,7 +2466,10 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
             ?? 2
         let address = config["address"] == nil ? current["address"] as? String : config["address"] as? String
         let shares = config["shares"] == nil ? Self.shareRows(current["shares"]) : Self.shareRows(config["shares"])
-        let environment = config["env"] == nil ? Self.environmentRows(current["env"]) : Self.environmentRows(config["env"])
+        let environment = Self.typedEnvironment(
+            config,
+            baseline: Self.environmentRows(current["env"])
+        )
         let state = current["state"] as? String ?? "stopped"
         let row = Self.machineRow(
             id: machineID,
@@ -2842,6 +3060,71 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
             return rows.compactMap { $0 as? NSDictionary }
         }
         return []
+    }
+
+    private static func typedEnvironment(
+        _ config: NSDictionary,
+        baseline: [NSDictionary]
+    ) -> [NSDictionary] {
+        var environment = Dictionary(uniqueKeysWithValues: baseline.compactMap {
+            row -> (String, String)? in
+            guard let key = row["key"] as? String,
+                  let value = row["value"] as? String else { return nil }
+            return (key, value)
+        })
+        if let identity = config["guestIdentityIntent"] as? NSDictionary {
+            if let account = identity["account"] as? NSDictionary {
+                apply(account["username"], key: "DORY_GUEST_USER", to: &environment)
+                let uid = (account["numericUserID"] as? NSNumber)?.stringValue
+                    ?? (account["numericUserID"] as? UInt32).map(String.init)
+                if account["numericUserID"] != nil {
+                    apply(uid ?? NSNull(), key: "DORY_GUEST_UID", to: &environment)
+                }
+            }
+            if let desktop = identity["desktop"] as? NSDictionary {
+                apply(
+                    desktop["distributionIdentifier"],
+                    key: "DORY_DESKTOP_DISTRO",
+                    to: &environment
+                )
+                apply(desktop["displayName"], key: "DORY_DESKTOP_NAME", to: &environment)
+                apply(desktop["version"], key: "DORY_DESKTOP_VERSION", to: &environment)
+                apply(
+                    desktop["desktopEnvironment"],
+                    key: "DORY_DESKTOP_ENVIRONMENT",
+                    to: &environment
+                )
+            }
+        }
+        if let clipboard = config["clipboardPolicy"] as? NSDictionary {
+            apply(clipboard["text"], key: "DORY_CLIPBOARD_POLICY", to: &environment)
+        }
+        apply(
+            config["desktopRuntimePreference"],
+            key: "DORY_DESKTOP_VMM",
+            to: &environment
+        )
+        apply(
+            config["desktopGraphicsPreference"],
+            key: "DORY_DESKTOP_GRAPHICS",
+            to: &environment
+        )
+        return environment.sorted { $0.key < $1.key }.map { key, value in
+            ["key": key, "value": value] as NSDictionary
+        }
+    }
+
+    private static func apply(
+        _ raw: Any?,
+        key: String,
+        to environment: inout [String: String]
+    ) {
+        guard let raw else { return }
+        if raw is NSNull {
+            environment.removeValue(forKey: key)
+        } else if let value = raw as? String {
+            environment[key] = value
+        }
     }
 
     private static func uint64(_ value: Any?) -> UInt64? {

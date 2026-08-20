@@ -5079,6 +5079,10 @@ final class AppStore {
                 memoryMB: status.memoryMB.flatMap { Int(exactly: $0) },
                 mounts: status.shares.map(Self.mountPair(fromDoryd:)),
                 env: status.environment,
+                virtualMachineSettings: DorydMachineTypedSettings(
+                    legacyEnvironment: status.environment,
+                    displayMode: status.displayMode
+                ),
                 address: status.configuredAddress,
                 displayMode: status.displayMode,
                 bootMode: status.bootMode
@@ -5157,8 +5161,15 @@ final class AppStore {
             .first { !$0.isEmpty } ?? status.state
         let isDesktop = status.displayMode == .desktop
         let isCustomLinux = status.bootMode == .efi
-        let desktopDistro = DesktopMachineDistro.resolve(status.environment["DORY_DESKTOP_DISTRO"])
-        let guestUsername = status.environment["DORY_GUEST_USER"] ?? (isCustomLinux ? "installer" : (isDesktop ? "dory" : "root"))
+        let typedSettings = DorydMachineTypedSettings(
+            legacyEnvironment: status.environment,
+            displayMode: status.displayMode
+        )
+        let desktopDistro = DesktopMachineDistro.resolve(
+            typedSettings.guestIdentityIntent.desktop?.distributionIdentifier
+        )
+        let guestUsername = typedSettings.guestIdentityIntent.account?.username
+            ?? (isCustomLinux ? "installer" : (isDesktop ? "dory" : "root"))
         return Machine(
             name: status.id,
             distro: isCustomLinux ? "Custom Linux" : (isDesktop ? desktopDistro.displayName : "Dory Linux"),
@@ -5453,8 +5464,16 @@ final class AppStore {
         var results: [DorydDesktopUpdateResult] = []
 
         for status in desktopStatuses {
-            guard status.environment["DORY_CUSTOM_LINUX"] != "1" else { continue }
-            let distro = DesktopMachineDistro.resolve(status.environment["DORY_DESKTOP_DISTRO"])
+            // EFI machines are user-provided installer workspaces. Boot mode is authoritative;
+            // do not depend on the legacy DORY_CUSTOM_LINUX compatibility marker.
+            guard status.bootMode != .efi else { continue }
+            let typedSettings = DorydMachineTypedSettings(
+                legacyEnvironment: status.environment,
+                displayMode: status.displayMode
+            )
+            let distro = DesktopMachineDistro.resolve(
+                typedSettings.guestIdentityIntent.desktop?.distributionIdentifier
+            )
             guard runtimeChanged || components.contains(distro.componentID) else { continue }
             guard let distroRelease = try store.installedComponent(distro.componentID) else {
                 if components.contains(distro.componentID) {
@@ -5514,6 +5533,9 @@ final class AppStore {
     nonisolated static func preservingHiddenMachineSettings(_ settings: MachineSettings, existing: MachineSettings) -> MachineSettings {
         var copy = settings
         if copy.env.isEmpty { copy.env = existing.env }
+        if copy.virtualMachineSettings == nil {
+            copy.virtualMachineSettings = existing.virtualMachineSettings
+        }
         if copy.identity == nil { copy.identity = existing.identity }
         if copy.address == nil { copy.address = existing.address }
         return copy
@@ -5608,7 +5630,13 @@ final class AppStore {
             address: address,
             displayMode: settings.displayMode,
             shares: dorydShares(from: settings.mounts),
-            environment: sanitizedNewMachineEnvironment(settings.env)
+            typedSettings: settings.virtualMachineSettings
+                ?? (settings.bootMode == .efi
+                    ? DorydMachineTypedSettings()
+                    : DorydMachineTypedSettings(
+                        legacyEnvironment: sanitizedNewMachineEnvironment(settings.env),
+                        displayMode: settings.displayMode
+                    ))
         )
     }
 
@@ -5632,7 +5660,10 @@ final class AppStore {
                 return message
             }
         } else if settings.displayMode == .desktop {
-            let distro = DesktopMachineDistro.resolve(settings.env["DORY_DESKTOP_DISTRO"])
+            let distro = DesktopMachineDistro.resolve(
+                settings.virtualMachineSettings?.guestIdentityIntent.desktop?
+                    .distributionIdentifier ?? settings.env["DORY_DESKTOP_DISTRO"]
+            )
             guard AppInfo.componentAvailable(.linuxDesktop),
                   AppInfo.componentAvailable(distro.componentID) else {
                 let message = "Install the Linux Desktop runtime and \(distro.displayName) in Components first."
@@ -5719,7 +5750,10 @@ final class AppStore {
                 appendMachineCreationLog("Importing the installer ISO and creating a thin-provisioned virtual disk…")
                 desktopAssets = nil
             } else if settings.displayMode == .desktop {
-                let distro = DesktopMachineDistro.resolve(settings.env["DORY_DESKTOP_DISTRO"])
+                let distro = DesktopMachineDistro.resolve(
+                    settings.virtualMachineSettings?.guestIdentityIntent.desktop?
+                        .distributionIdentifier ?? settings.env["DORY_DESKTOP_DISTRO"]
+                )
                 appendMachineCreationLog("Preparing \(distro.displayName) \(distro.version) Desktop in the selected Dory data drive…")
                 let home = environment["HOME"] ?? NSHomeDirectory()
                 let resourceDirectory = Bundle.main.resourcePath
@@ -5810,11 +5844,21 @@ final class AppStore {
                 memoryMB: current?.memoryMB.flatMap { Int(exactly: $0) },
                 mounts: current?.shares.map(Self.mountPair(fromDoryd:)) ?? [],
                 env: current?.environment ?? [:],
+                virtualMachineSettings: current.map {
+                    DorydMachineTypedSettings(
+                        legacyEnvironment: $0.environment,
+                        displayMode: $0.displayMode
+                    )
+                },
                 address: current?.configuredAddress,
                 displayMode: current?.displayMode ?? machine.displayMode,
                 bootMode: current?.bootMode ?? machine.bootMode
             )
             let effectiveSettings = Self.preservingHiddenMachineSettings(settings, existing: currentSettings)
+            let baselineTypedSettings = currentSettings.virtualMachineSettings
+                ?? DorydMachineTypedSettings()
+            let desiredTypedSettings = effectiveSettings.virtualMachineSettings
+                ?? baselineTypedSettings
             let memory = effectiveSettings.memoryMB.flatMap { UInt64(exactly: $0) } ?? current?.memoryMB
             let cpus = effectiveSettings.cpus ?? current?.cpuCount
             let address = Self.trimmedNonEmpty(effectiveSettings.address)
@@ -5825,7 +5869,10 @@ final class AppStore {
                 address: address,
                 updatesAddress: true,
                 shares: Self.dorydShares(from: effectiveSettings.mounts),
-                environment: effectiveSettings.env
+                typedSettingsPatch: DorydMachineTypedSettingsPatch(
+                    baseline: baselineTypedSettings,
+                    desired: desiredTypedSettings
+                )
             )
             appendMachineCreationLog("Settings applied to doryd VM definition.")
             activeSheet = nil

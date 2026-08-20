@@ -232,7 +232,15 @@ public final class DorydService: NSObject, DorydControl {
             return
         }
         do {
-            let machine = try DoryMachineConfiguration(xpcDictionary: config)
+            let typedSettings = try DoryMachineTypedSettingsPatch(
+                xpcDictionary: config,
+                allowsClears: false
+            )
+            var machine = try DoryMachineConfiguration(xpcDictionary: config)
+            machine.environment = try typedSettings.applying(
+                to: [:],
+                displayMode: machine.displayMode
+            )
             let status = try machineManager.create(machine)
             incidentWriter?.record(type: "machine.create", detail: machine.id)
             reply(true, status.xpcDictionary, "")
@@ -279,8 +287,7 @@ public final class DorydService: NSObject, DorydControl {
                 updatesAddress: update.updatesAddress,
                 shares: update.shares,
                 updatesShares: update.updatesShares,
-                environment: update.environment,
-                updatesEnvironment: update.updatesEnvironment,
+                typedSettingsPatch: update.typedSettings.isEmpty ? nil : update.typedSettings,
                 installerMediaAttached: update.installerMediaAttached
             )
             incidentWriter?.record(type: "machine.update", detail: machineID)
@@ -1200,8 +1207,7 @@ private struct MachineUpdateRequest {
     var updatesAddress: Bool
     var shares: [DoryMachineShareConfiguration]?
     var updatesShares: Bool
-    var environment: [String: String]?
-    var updatesEnvironment: Bool
+    var typedSettings: DoryMachineTypedSettingsPatch
     var installerMediaAttached: Bool?
 
     init(xpcDictionary dictionary: NSDictionary) throws {
@@ -1216,10 +1222,12 @@ private struct MachineUpdateRequest {
         }
         self.shares = dictionary["shares"] == nil ? nil : try dictionary.optionalMachineShares("shares")
         self.updatesShares = dictionary["shares"] != nil
-        self.environment = dictionary["env"] == nil ? nil : try dictionary.optionalEnvironmentDictionary("env")
-        self.updatesEnvironment = dictionary["env"] != nil
+        self.typedSettings = try DoryMachineTypedSettingsPatch(
+            xpcDictionary: dictionary,
+            allowsClears: true
+        )
         self.installerMediaAttached = dictionary.optionalBool("installerMediaAttached")
-        if memoryMB == nil, cpuCount == nil, !updatesAddress, !updatesShares, !updatesEnvironment,
+        if memoryMB == nil, cpuCount == nil, !updatesAddress, !updatesShares, typedSettings.isEmpty,
            installerMediaAttached == nil {
             throw XPCRemoteConfigError.invalid("config")
         }
@@ -1288,7 +1296,7 @@ private extension DoryMachineConfiguration {
             address: dictionary.optionalString("address"),
             displayMode: displayMode,
             shares: try dictionary.optionalMachineShares("shares"),
-            environment: try dictionary.optionalEnvironmentDictionary("env")
+            environment: [:]
         )
     }
 }
@@ -1430,26 +1438,6 @@ private extension NSDictionary {
             try share.validate()
             return share
         }
-    }
-
-    func optionalEnvironmentDictionary(_ key: String) throws -> [String: String] {
-        guard let raw = self[key] else { return [:] }
-        guard let rows = raw as? [NSDictionary] else {
-            throw XPCRemoteConfigError.invalid(key)
-        }
-        var result: [String: String] = [:]
-        for row in rows {
-            let key = try row.requiredString("key")
-            guard key.wholeMatch(of: /[A-Za-z_][A-Za-z0-9_]*/) != nil else {
-                throw XPCRemoteConfigError.invalid("env")
-            }
-            let value = row.optionalString("value") ?? ""
-            guard !value.contains("\0") else {
-                throw XPCRemoteConfigError.invalid("env")
-            }
-            result[key] = value
-        }
-        return result
     }
 
     func optionalString(_ key: String) -> String? {

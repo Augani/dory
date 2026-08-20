@@ -1766,10 +1766,16 @@ public final class MachineManager: @unchecked Sendable {
         updatesShares: Bool = false,
         environment: [String: String]? = nil,
         updatesEnvironment: Bool = false,
+        typedSettingsPatch: DoryMachineTypedSettingsPatch? = nil,
         installerMediaAttached: Bool? = nil
     ) throws -> DoryMachineStatus {
         operationLock.lock()
         defer { operationLock.unlock() }
+        guard !(updatesEnvironment && typedSettingsPatch != nil) else {
+            throw MachineManagerError.persistence(
+                "raw environment replacement and typed machine settings are mutually exclusive"
+            )
+        }
         let (current, wasRunning) = try configurationAndRunningState(id: id)
         var updated = current
         if let memoryMB {
@@ -1786,6 +1792,12 @@ public final class MachineManager: @unchecked Sendable {
         }
         if updatesEnvironment {
             updated.environment = environment ?? [:]
+        }
+        if let typedSettingsPatch {
+            updated.environment = try typedSettingsPatch.applying(
+                to: current.environment,
+                displayMode: updated.displayMode
+            )
         }
         if let installerMediaAttached {
             guard updated.bootMode == .efi else {

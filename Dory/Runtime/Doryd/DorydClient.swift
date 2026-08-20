@@ -1,5 +1,6 @@
 @preconcurrency import Foundation
 @preconcurrency import Security
+import DoryOperations
 
 @objc(DorydHealthControl)
 nonisolated protocol DorydControlXPC {
@@ -83,6 +84,256 @@ nonisolated struct DorydMachineShareConfiguration: Sendable, Equatable {
     }
 }
 
+nonisolated struct DorydMachineTypedSettings: Sendable, Equatable, Hashable {
+    var guestIdentityIntent: DoryVMGuestIdentityIntent = .unspecified
+    var clipboardPolicy: DoryVMClipboardPolicy? = nil
+    var runtimePreference: DoryDesktopVMMPreference? = nil
+    var graphicsPreference: DoryDesktopGraphicsPreference? = nil
+
+    init(
+        guestIdentityIntent: DoryVMGuestIdentityIntent = .unspecified,
+        clipboardPolicy: DoryVMClipboardPolicy? = nil,
+        runtimePreference: DoryDesktopVMMPreference? = nil,
+        graphicsPreference: DoryDesktopGraphicsPreference? = nil
+    ) {
+        self.guestIdentityIntent = guestIdentityIntent
+        self.clipboardPolicy = clipboardPolicy
+        self.runtimePreference = runtimePreference
+        self.graphicsPreference = graphicsPreference
+    }
+
+    init(legacyEnvironment: [String: String], displayMode: MachineDisplayMode) {
+        let username = legacyEnvironment[DoryVMGuestAccountIntent.legacyUsernameEnvironmentKey]
+            .flatMap { DoryVMGuestAccountIntent.isValidUsername($0) ? $0 : nil }
+        let numericUserID = legacyEnvironment[
+            DoryVMGuestAccountIntent.legacyNumericUserIDEnvironmentKey
+        ].flatMap(UInt32.init).flatMap {
+            DoryVMGuestAccountIntent.isValidNumericUserID($0) ? $0 : nil
+        }
+        let account = DoryVMGuestAccountIntent(username: username, numericUserID: numericUserID)
+        let desktop: DoryVMDesktopIdentityIntent?
+        if displayMode == .desktop {
+            func safeLabel(_ key: String) -> String? {
+                legacyEnvironment[key].flatMap {
+                    DoryVMDesktopIdentityIntent.isValidLabel($0) ? $0 : nil
+                }
+            }
+            let distribution = legacyEnvironment[
+                DoryVMDesktopIdentityIntent.legacyDistributionEnvironmentKey
+            ].flatMap {
+                DoryVMDesktopIdentityIntent.isValidDistributionIdentifier($0) ? $0 : nil
+            }
+            let candidate = DoryVMDesktopIdentityIntent(
+                distributionIdentifier: distribution,
+                displayName: safeLabel(DoryVMDesktopIdentityIntent.legacyDisplayNameEnvironmentKey),
+                version: safeLabel(DoryVMDesktopIdentityIntent.legacyVersionEnvironmentKey),
+                desktopEnvironment: safeLabel(
+                    DoryVMDesktopIdentityIntent.legacyDesktopEnvironmentKey
+                )
+            )
+            desktop = candidate.isValidForPersistence ? candidate : nil
+        } else {
+            desktop = nil
+        }
+        guestIdentityIntent = DoryVMGuestIdentityIntent(
+            account: account.isValidForPersistence ? account : nil,
+            desktop: desktop
+        )
+        if displayMode == .desktop {
+            let effectiveClipboard = DoryDesktopClipboardPolicy(
+                environment: legacyEnvironment
+            )
+            clipboardPolicy = DoryVMClipboardDirection(
+                rawValue: effectiveClipboard.rawValue
+            ).map(DoryVMClipboardPolicy.legacyDesktop)
+            runtimePreference = (try? DoryDesktopVMMPreference(
+                environment: legacyEnvironment
+            )) ?? .automatic
+            graphicsPreference = (try? DoryDesktopGraphicsPreference(
+                environment: legacyEnvironment
+            )) ?? .automatic
+        } else {
+            clipboardPolicy = nil
+            runtimePreference = nil
+            graphicsPreference = nil
+        }
+    }
+
+    var isEmpty: Bool {
+        guestIdentityIntent.isEmpty
+            && clipboardPolicy == nil
+            && runtimePreference == nil
+            && graphicsPreference == nil
+    }
+
+    var xpcDictionary: NSDictionary {
+        var result: [String: Any] = [:]
+        var identity: [String: Any] = [:]
+        if let account = guestIdentityIntent.account, !account.isEmpty {
+            var value: [String: Any] = [:]
+            if let username = account.username { value["username"] = username }
+            if let numericUserID = account.numericUserID {
+                value["numericUserID"] = numericUserID
+            }
+            identity["account"] = value as NSDictionary
+        }
+        if let desktop = guestIdentityIntent.desktop, !desktop.isEmpty {
+            var value: [String: Any] = [:]
+            if let distributionIdentifier = desktop.distributionIdentifier {
+                value["distributionIdentifier"] = distributionIdentifier
+            }
+            if let displayName = desktop.displayName { value["displayName"] = displayName }
+            if let version = desktop.version { value["version"] = version }
+            if let desktopEnvironment = desktop.desktopEnvironment {
+                value["desktopEnvironment"] = desktopEnvironment
+            }
+            identity["desktop"] = value as NSDictionary
+        }
+        if !identity.isEmpty { result["guestIdentityIntent"] = identity as NSDictionary }
+        if let clipboardPolicy {
+            result["clipboardPolicy"] = [
+                "text": clipboardPolicy.text.rawValue,
+                "image": clipboardPolicy.image.rawValue,
+                "files": clipboardPolicy.files.rawValue,
+            ] as NSDictionary
+        }
+        if let runtimePreference {
+            result["desktopRuntimePreference"] = runtimePreference.rawValue
+        }
+        if let graphicsPreference {
+            result["desktopGraphicsPreference"] = graphicsPreference.rawValue
+        }
+        return result as NSDictionary
+    }
+
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(guestIdentityIntent.account?.username)
+        hasher.combine(guestIdentityIntent.account?.numericUserID)
+        hasher.combine(guestIdentityIntent.desktop?.distributionIdentifier)
+        hasher.combine(guestIdentityIntent.desktop?.displayName)
+        hasher.combine(guestIdentityIntent.desktop?.version)
+        hasher.combine(guestIdentityIntent.desktop?.desktopEnvironment)
+        hasher.combine(clipboardPolicy?.text.rawValue)
+        hasher.combine(clipboardPolicy?.image.rawValue)
+        hasher.combine(clipboardPolicy?.files.rawValue)
+        hasher.combine(runtimePreference?.rawValue)
+        hasher.combine(graphicsPreference?.rawValue)
+    }
+}
+
+/// Leaf-level update authority. Comparing a safely migrated baseline to the desired typed state
+/// means an unrelated edit never clears an opaque or invalid legacy value that was intentionally
+/// omitted during migration.
+nonisolated struct DorydMachineTypedSettingsPatch: Sendable, Equatable {
+    var baseline: DorydMachineTypedSettings
+    var desired: DorydMachineTypedSettings
+
+    var isEmpty: Bool { xpcDictionary.count == 0 }
+
+    var xpcDictionary: NSDictionary {
+        var result: [String: Any] = [:]
+        var account: [String: Any] = [:]
+        Self.encode(
+            baseline.guestIdentityIntent.account?.username,
+            desired.guestIdentityIntent.account?.username,
+            key: "username",
+            into: &account
+        )
+        Self.encode(
+            baseline.guestIdentityIntent.account?.numericUserID,
+            desired.guestIdentityIntent.account?.numericUserID,
+            key: "numericUserID",
+            into: &account
+        )
+        var desktop: [String: Any] = [:]
+        Self.encode(
+            baseline.guestIdentityIntent.desktop?.distributionIdentifier,
+            desired.guestIdentityIntent.desktop?.distributionIdentifier,
+            key: "distributionIdentifier",
+            into: &desktop
+        )
+        Self.encode(
+            baseline.guestIdentityIntent.desktop?.displayName,
+            desired.guestIdentityIntent.desktop?.displayName,
+            key: "displayName",
+            into: &desktop
+        )
+        Self.encode(
+            baseline.guestIdentityIntent.desktop?.version,
+            desired.guestIdentityIntent.desktop?.version,
+            key: "version",
+            into: &desktop
+        )
+        Self.encode(
+            baseline.guestIdentityIntent.desktop?.desktopEnvironment,
+            desired.guestIdentityIntent.desktop?.desktopEnvironment,
+            key: "desktopEnvironment",
+            into: &desktop
+        )
+        if !account.isEmpty || !desktop.isEmpty {
+            var identity: [String: Any] = [:]
+            if !account.isEmpty { identity["account"] = account as NSDictionary }
+            if !desktop.isEmpty { identity["desktop"] = desktop as NSDictionary }
+            result["guestIdentityIntent"] = identity as NSDictionary
+        }
+        Self.encodePolicy(
+            baseline.clipboardPolicy,
+            desired.clipboardPolicy,
+            into: &result
+        )
+        Self.encodeEnum(
+            baseline.runtimePreference,
+            desired.runtimePreference,
+            key: "desktopRuntimePreference",
+            into: &result
+        )
+        Self.encodeEnum(
+            baseline.graphicsPreference,
+            desired.graphicsPreference,
+            key: "desktopGraphicsPreference",
+            into: &result
+        )
+        return result as NSDictionary
+    }
+
+    private static func encode<Value: Equatable>(
+        _ baseline: Value?,
+        _ desired: Value?,
+        key: String,
+        into dictionary: inout [String: Any]
+    ) {
+        guard baseline != desired else { return }
+        dictionary[key] = desired ?? NSNull()
+    }
+
+    private static func encodePolicy(
+        _ baseline: DoryVMClipboardPolicy?,
+        _ desired: DoryVMClipboardPolicy?,
+        into dictionary: inout [String: Any]
+    ) {
+        guard baseline != desired else { return }
+        guard let desired else {
+            dictionary["clipboardPolicy"] = NSNull()
+            return
+        }
+        dictionary["clipboardPolicy"] = [
+            "text": desired.text.rawValue,
+            "image": desired.image.rawValue,
+            "files": desired.files.rawValue,
+        ] as NSDictionary
+    }
+
+    private static func encodeEnum<Value: RawRepresentable & Equatable>(
+        _ baseline: Value?,
+        _ desired: Value?,
+        key: String,
+        into dictionary: inout [String: Any]
+    ) where Value.RawValue == String {
+        guard baseline != desired else { return }
+        dictionary[key] = desired?.rawValue ?? NSNull()
+    }
+}
+
 nonisolated struct DorydMachineConfiguration: Sendable, Equatable {
     var id: String
     var kernelPath: String
@@ -95,7 +346,7 @@ nonisolated struct DorydMachineConfiguration: Sendable, Equatable {
     var address: String? = nil
     var displayMode: MachineDisplayMode = .headless
     var shares: [DorydMachineShareConfiguration] = []
-    var environment: [String: String] = [:]
+    var typedSettings: DorydMachineTypedSettings = DorydMachineTypedSettings()
 
     var xpcDictionary: NSDictionary {
         var dictionary: [String: Any] = [
@@ -119,13 +370,8 @@ nonisolated struct DorydMachineConfiguration: Sendable, Equatable {
         if !shares.isEmpty {
             dictionary["shares"] = shares.map(\.xpcDictionary)
         }
-        if !environment.isEmpty {
-            dictionary["env"] = environment.sorted(by: { $0.key < $1.key }).map { key, value in
-                [
-                    "key": key,
-                    "value": value,
-                ] as NSDictionary
-            }
+        for (rawKey, value) in typedSettings.xpcDictionary {
+            if let key = rawKey as? String { dictionary[key] = value }
         }
         return dictionary as NSDictionary
     }
@@ -920,7 +1166,8 @@ nonisolated final class DorydClient: @unchecked Sendable {
         address: String? = nil,
         updatesAddress: Bool = false,
         shares: [DorydMachineShareConfiguration]? = nil,
-        environment: [String: String]? = nil,
+        typedSettings: DorydMachineTypedSettings? = nil,
+        typedSettingsPatch: DorydMachineTypedSettingsPatch? = nil,
         installerMediaAttached: Bool? = nil
     ) async throws -> DorydMachineStatus {
         var config: [String: Any] = [:]
@@ -938,12 +1185,15 @@ nonisolated final class DorydClient: @unchecked Sendable {
         if let shares {
             config["shares"] = shares.map(\.xpcDictionary)
         }
-        if let environment {
-            config["env"] = environment.sorted(by: { $0.key < $1.key }).map { key, value in
-                [
-                    "key": key,
-                    "value": value,
-                ] as NSDictionary
+        if let typedSettings {
+            for (rawKey, value) in typedSettings.xpcDictionary {
+                if let key = rawKey as? String { config[key] = value }
+            }
+        }
+        if let typedSettingsPatch {
+            precondition(typedSettings == nil, "use either full typed settings or a typed patch")
+            for (rawKey, value) in typedSettingsPatch.xpcDictionary {
+                if let key = rawKey as? String { config[key] = value }
             }
         }
         if let installerMediaAttached {

@@ -164,8 +164,8 @@ func usage(exitCode: Int32 = 2) -> Never {
           dorydctl [global] machine list
           dorydctl [global] machine status NAME
           dorydctl [global] machine stats NAME
-          dorydctl [global] machine create NAME (--kernel PATH --rootfs PATH | --installer-iso PATH [--disk-size-gb N]) [--memory-mb N] [--cpus N] [--display-mode headless|desktop] [--dns-target IPv4] [--share TAG=HOST:GUEST[:ro|rw] | JSON] [--env KEY=VALUE]
-          dorydctl [global] machine update NAME [--memory-mb N] [--cpus N] [--dns-target IPv4 | --clear-dns-target] [--share TAG=HOST:GUEST[:ro|rw] | JSON ... | --clear-shares] [--env KEY=VALUE ... | --clear-env] [--attach-installer | --eject-installer]
+          dorydctl [global] machine create NAME (--kernel PATH --rootfs PATH | --installer-iso PATH [--disk-size-gb N]) [--memory-mb N] [--cpus N] [--display-mode headless|desktop] [--dns-target IPv4] [--share TAG=HOST:GUEST[:ro|rw] | JSON] [--guest-user NAME] [--guest-uid N] [--desktop-distro ID] [--desktop-name NAME] [--desktop-version VERSION] [--desktop-environment NAME] [--clipboard off|host-to-guest|guest-to-host|bidirectional] [--runtime auto|accelerated|compatible] [--graphics auto|virgl|virgl-venus|software]
+          dorydctl [global] machine update NAME [--memory-mb N] [--cpus N] [--dns-target IPv4 | --clear-dns-target] [--share TAG=HOST:GUEST[:ro|rw] | JSON ... | --clear-shares] [typed create options | --clear-guest-account | --clear-desktop-identity | --clear-clipboard | --clear-runtime | --clear-graphics] [--attach-installer | --eject-installer]
           dorydctl [global] machine start|stop|delete NAME
           dorydctl [global] machine exec NAME [--json] [--cwd PATH] [--env KEY=VALUE] [--env-json-stdin] [--timeout-ms N] [--output-limit-bytes N] -- COMMAND [ARG...]
           dorydctl [global] machine shell NAME
@@ -504,20 +504,6 @@ func nonNegativeUInt64(_ raw: String, option: String) throws -> UInt64 {
     return value
 }
 
-func parseEnvironmentRow(_ raw: String) throws -> NSDictionary {
-    guard let equals = raw.firstIndex(of: "="), equals != raw.startIndex else {
-        throw DorydCtlError.usage("--env must be KEY=VALUE")
-    }
-    let key = String(raw[..<equals])
-    guard key.wholeMatch(of: /[A-Za-z_][A-Za-z0-9_]*/) != nil else {
-        throw DorydCtlError.usage("--env key must match [A-Za-z_][A-Za-z0-9_]*")
-    }
-    return [
-        "key": key,
-        "value": String(raw[raw.index(after: equals)...]),
-    ] as NSDictionary
-}
-
 func readEnvironmentJSONFromStandardInput() throws -> [NSDictionary] {
     let data = FileHandle.standardInput.readDataToEndOfFile()
     guard !data.isEmpty,
@@ -530,6 +516,30 @@ func readEnvironmentJSONFromStandardInput() throws -> [NSDictionary] {
             throw DorydCtlError.usage("--env-json-stdin keys must be environment names and values must be strings")
         }
         return ["key": key, "value": value] as NSDictionary
+    }
+}
+
+func parseMachineTypedSettings(
+    cursor: inout ArgumentCursor,
+    allowsClears: Bool
+) throws -> DoryMachineTypedSettingsPatch {
+    do {
+        return try DoryMachineTypedSettingsPatch.consumeCLIArguments(
+            &cursor.values,
+            allowsClears: allowsClears
+        )
+    } catch {
+        throw DorydCtlError.usage("\(error)")
+    }
+}
+
+func mergeMachineTypedSettings(
+    _ patch: DoryMachineTypedSettingsPatch,
+    into configuration: inout [String: Any]
+) {
+    for (rawKey, value) in patch.xpcDictionary {
+        guard let key = rawKey as? String else { continue }
+        configuration[key] = value
     }
 }
 
@@ -1090,7 +1100,11 @@ func runMachine(cursor: inout ArgumentCursor, client: DorydCtlClient) throws {
             throw DorydCtlError.usage("--display-mode must be headless or desktop")
         }
         let shares = try cursor.optionValues("--share").map { try DoryMachineShareConfiguration(argument: $0) }
-        let env = try cursor.optionValues("--env").map(parseEnvironmentRow)
+        let typedSettings = try parseMachineTypedSettings(cursor: &cursor, allowsClears: false)
+        let address = try cursor.optionValue("--dns-target")
+        guard cursor.values.isEmpty else {
+            throw DorydCtlError.usage("unexpected machine create argument: \(cursor.values[0])")
+        }
         var stagedInstallerISOPath: String?
         defer {
             if let stagedInstallerISOPath {
@@ -1117,7 +1131,7 @@ func runMachine(cursor: inout ArgumentCursor, client: DorydCtlClient) throws {
             config["installerISOPath"] = stagedInstallerISOPath
             config["diskSizeBytes"] = diskSizeGB * 1024 * 1024 * 1024
         }
-        if let address = try cursor.optionValue("--dns-target") {
+        if let address {
             config["address"] = address
         }
         if !shares.isEmpty {
@@ -1130,9 +1144,7 @@ func runMachine(cursor: inout ArgumentCursor, client: DorydCtlClient) throws {
                 ] as NSDictionary
             }
         }
-        if !env.isEmpty {
-            config["env"] = env
-        }
+        mergeMachineTypedSettings(typedSettings, into: &config)
         // Creating a machine can copy a multi-gigabyte root disk or installer ISO.
         // Keep the request alive long enough for that transactional mutation to
         // finish so the CLI cannot report a timeout after the daemon has succeeded.
@@ -1301,7 +1313,7 @@ func runMachineBackup(cursor: inout ArgumentCursor, client: DorydCtlClient) thro
 }
 
 func runMachineUpdate(cursor: inout ArgumentCursor, client: DorydCtlClient) throws {
-    let usage = "usage: dorydctl machine update NAME [--memory-mb N] [--cpus N] [--dns-target IPv4 | --clear-dns-target] [--share TAG=HOST:GUEST[:ro|rw] | JSON ... | --clear-shares] [--env KEY=VALUE ... | --clear-env] [--attach-installer | --eject-installer]"
+    let usage = "usage: dorydctl machine update NAME [resource/network options] [typed guest/desktop/clipboard options] [--attach-installer | --eject-installer]"
     let name = try cursor.take(usage)
     var config: [String: Any] = [:]
     if let memory = try cursor.optionValue("--memory-mb") {
@@ -1342,17 +1354,8 @@ func runMachineUpdate(cursor: inout ArgumentCursor, client: DorydCtlClient) thro
         cursor.values.removeAll { $0 == "--clear-shares" }
         config["shares"] = [] as [NSDictionary]
     }
-    let envValues = try cursor.optionValues("--env")
-    if !envValues.isEmpty {
-        config["env"] = try envValues.map(parseEnvironmentRow)
-    }
-    if cursor.values.contains("--clear-env") {
-        guard config["env"] == nil else {
-            throw DorydCtlError.usage("use either --env or --clear-env, not both")
-        }
-        cursor.values.removeAll { $0 == "--clear-env" }
-        config["env"] = [] as [NSDictionary]
-    }
+    let typedSettings = try parseMachineTypedSettings(cursor: &cursor, allowsClears: true)
+    mergeMachineTypedSettings(typedSettings, into: &config)
     let attachInstaller = cursor.values.contains("--attach-installer")
     let ejectInstaller = cursor.values.contains("--eject-installer")
     guard !attachInstaller || !ejectInstaller else {

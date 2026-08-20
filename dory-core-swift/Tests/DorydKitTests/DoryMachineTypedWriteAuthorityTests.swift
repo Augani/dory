@@ -1,0 +1,285 @@
+import DoryOperations
+import Foundation
+import Testing
+@testable import DorydKit
+
+@Suite("Typed machine write authority")
+struct DoryMachineTypedWriteAuthorityTests {
+    @Test("typed wire round trip is exact and contains no raw environment")
+    func wireRoundTrip() throws {
+        let source = DoryMachineTypedSettingsPatch(
+            guestUsername: .set("developer"),
+            guestNumericUserID: .set(1_000),
+            desktopDistributionIdentifier: .set("ubuntu"),
+            desktopDisplayName: .set("Ubuntu"),
+            desktopVersion: .set("24.04"),
+            desktopEnvironment: .set("GNOME"),
+            clipboardPolicy: .set(.legacyDesktop(.hostToGuest)),
+            runtimePreference: .set(.accelerated),
+            graphicsPreference: .set(.virglVenus)
+        )
+
+        let wire = source.xpcDictionary
+        #expect(wire["env"] == nil)
+        #expect(try DoryMachineTypedSettingsPatch(
+            xpcDictionary: wire,
+            allowsClears: false
+        ) == source)
+    }
+
+    @Test("raw environment write authority is rejected even when empty")
+    func rejectsRawEnvironment() {
+        for raw: Any in [NSArray(), NSNull(), [["key": "SAFE", "value": "value"]]] {
+            let dictionary: NSDictionary = ["env": raw]
+            #expect(throws: DoryMachineTypedWriteAuthorityError.rawEnvironmentForbidden) {
+                try DoryMachineTypedSettingsPatch(
+                    xpcDictionary: dictionary,
+                    allowsClears: true
+                )
+            }
+        }
+    }
+
+    @Test("update applies fields locally and preserves opaque legacy values")
+    func fieldLocalBackProjection() throws {
+        let legacy = [
+            "DORY_GUEST_USER": "../../unsafe-old-user",
+            "DORY_GUEST_UID": "not-a-uid",
+            "DORY_DESKTOP_DISTRO": "unsafe://old",
+            "DORY_VIRGL_CLASSIC_ONLY": "1",
+            "PRIVATE_TOKEN": "must-remain-opaque",
+        ]
+        let patch = DoryMachineTypedSettingsPatch(
+            desktopDisplayName: .set("Ubuntu")
+        )
+
+        let projected = try patch.applying(to: legacy, displayMode: .desktop)
+
+        #expect(projected["DORY_DESKTOP_NAME"] == "Ubuntu")
+        #expect(projected["DORY_GUEST_USER"] == "../../unsafe-old-user")
+        #expect(projected["DORY_GUEST_UID"] == "not-a-uid")
+        #expect(projected["DORY_DESKTOP_DISTRO"] == "unsafe://old")
+        #expect(projected["DORY_VIRGL_CLASSIC_ONLY"] == "1")
+        #expect(projected["PRIVATE_TOKEN"] == "must-remain-opaque")
+
+        let runtime = try DoryMachineTypedSettingsPatch(
+            runtimePreference: .set(.compatible),
+            graphicsPreference: .set(.software)
+        ).applying(to: legacy, displayMode: .desktop)
+        #expect(runtime["DORY_DESKTOP_VMM"] == "compatible")
+        #expect(runtime["DORY_DESKTOP_GRAPHICS"] == "software")
+    }
+
+    @Test("update clear is explicit and field scoped")
+    func explicitClear() throws {
+        let source = DoryMachineTypedSettingsPatch(
+            guestUsername: .clear,
+            desktopVersion: .clear,
+            clipboardPolicy: .clear
+        )
+        let wire = source.xpcDictionary
+        let decoded = try DoryMachineTypedSettingsPatch(
+            xpcDictionary: wire,
+            allowsClears: true
+        )
+        let projected = try decoded.applying(
+            to: [
+                "DORY_GUEST_USER": "developer",
+                "DORY_GUEST_UID": "1000",
+                "DORY_DESKTOP_VERSION": "24.04",
+                "DORY_DESKTOP_NAME": "Ubuntu",
+                "DORY_CLIPBOARD_POLICY": "bidirectional",
+            ],
+            displayMode: .desktop
+        )
+
+        #expect(projected["DORY_GUEST_USER"] == nil)
+        #expect(projected["DORY_DESKTOP_VERSION"] == nil)
+        #expect(projected["DORY_CLIPBOARD_POLICY"] == nil)
+        #expect(projected["DORY_GUEST_UID"] == "1000")
+        #expect(projected["DORY_DESKTOP_NAME"] == "Ubuntu")
+        #expect(throws: DoryMachineTypedWriteAuthorityError.invalidField(
+            "guestIdentityIntent.account.username"
+        )) {
+            try DoryMachineTypedSettingsPatch(
+                xpcDictionary: wire,
+                allowsClears: false
+            )
+        }
+    }
+
+    @Test("hostile and out of range guest fields fail closed")
+    func hostileGuestFields() {
+        let cases: [NSDictionary] = [
+            ["guestIdentityIntent": ["account": ["username": "../../host"]]],
+            ["guestIdentityIntent": ["account": ["numericUserID": 99]]],
+            ["guestIdentityIntent": ["account": ["numericUserID": 60_001]]],
+            ["guestIdentityIntent": ["desktop": ["displayName": "token\nvalue"]]],
+            ["guestIdentityIntent": ["desktop": ["displayName": "a" + String(repeating: "\u{301}", count: 128)]]],
+            ["guestIdentityIntent": ["unexpected": "value"]],
+            ["guestIdentityIntent": ["account": ["username": "developer", "secret": "x"]]],
+        ]
+        for dictionary in cases {
+            #expect(throws: (any Error).self) {
+                try DoryMachineTypedSettingsPatch(
+                    xpcDictionary: dictionary,
+                    allowsClears: false
+                )
+            }
+        }
+    }
+
+    @Test("current compatibility runtime rejects widening clipboard or desktop on headless")
+    func runtimeRepresentability() throws {
+        let widened = DoryMachineTypedSettingsPatch(clipboardPolicy: .set(
+            DoryVMClipboardPolicy(
+                text: .hostToGuest,
+                image: .guestToHost,
+                files: .off
+            )
+        ))
+        #expect(throws: DoryMachineTypedWriteAuthorityError.unsupportedByLegacyRuntime(
+            "clipboardPolicy"
+        )) {
+            try widened.applying(to: [:], displayMode: .desktop)
+        }
+
+        let files = DoryMachineTypedSettingsPatch(clipboardPolicy: .set(
+            DoryVMClipboardPolicy(text: .off, image: .off, files: .hostToGuest)
+        ))
+        #expect(throws: DoryMachineTypedWriteAuthorityError.unsupportedByLegacyRuntime(
+            "clipboardPolicy"
+        )) {
+            try files.applying(to: [:], displayMode: .desktop)
+        }
+
+        let desktop = DoryMachineTypedSettingsPatch(desktopDisplayName: .set("Ubuntu"))
+        #expect(throws: DoryMachineTypedWriteAuthorityError.unsupportedForDisplay(
+            "guestIdentityIntent.desktop"
+        )) {
+            try desktop.applying(to: [:], displayMode: .headless)
+        }
+
+        let enabledClipboard = DoryMachineTypedSettingsPatch(
+            clipboardPolicy: .set(.legacyDesktop(.bidirectional))
+        )
+        #expect(throws: DoryMachineTypedWriteAuthorityError.unsupportedForDisplay(
+            "clipboardPolicy"
+        )) {
+            try enabledClipboard.applying(to: [:], displayMode: .headless)
+        }
+        #expect(try DoryMachineTypedSettingsPatch(
+            clipboardPolicy: .set(.disabled)
+        ).applying(to: [:], displayMode: .headless)["DORY_CLIPBOARD_POLICY"] == "off")
+        #expect(throws: DoryMachineTypedWriteAuthorityError.unsupportedForDisplay(
+            "desktopRuntimePreference"
+        )) {
+            try DoryMachineTypedSettingsPatch(
+                runtimePreference: .set(.accelerated)
+            ).applying(to: [:], displayMode: .headless)
+        }
+    }
+
+    @Test("clipboard wire shape is complete and exact")
+    func exactClipboardWireShape() {
+        let cases: [NSDictionary] = [
+            ["clipboardPolicy": ["text": "off", "image": "off"]],
+            [
+                "clipboardPolicy": [
+                    "text": "off",
+                    "image": "off",
+                    "files": "off",
+                    "token": "secret",
+                ],
+            ],
+            [
+                "clipboardPolicy": [
+                    "text": "invalid",
+                    "image": "off",
+                    "files": "off",
+                ],
+            ],
+        ]
+        for dictionary in cases {
+            #expect(throws: DoryMachineTypedWriteAuthorityError.invalidField(
+                "clipboardPolicy"
+            )) {
+                try DoryMachineTypedSettingsPatch(
+                    xpcDictionary: dictionary,
+                    allowsClears: false
+                )
+            }
+        }
+    }
+
+    @Test("CLI consumes typed persistence options and leaves raw env unconsumed")
+    func cliTypedOptions() throws {
+        var arguments = [
+            "--memory-mb", "4096",
+            "--guest-user", "developer",
+            "--guest-uid", "1000",
+            "--desktop-distro", "ubuntu",
+            "--desktop-name", "Ubuntu",
+            "--desktop-version", "24.04",
+            "--desktop-environment", "GNOME",
+            "--clipboard", "guest-to-host",
+            "--runtime", "compatible",
+            "--graphics", "software",
+            "--env", "TOKEN=secret",
+        ]
+
+        let patch = try DoryMachineTypedSettingsPatch.consumeCLIArguments(
+            &arguments,
+            allowsClears: false
+        )
+
+        #expect(patch.guestUsername == .set("developer"))
+        #expect(patch.guestNumericUserID == .set(1_000))
+        #expect(patch.desktopDistributionIdentifier == .set("ubuntu"))
+        #expect(patch.clipboardPolicy == .set(.legacyDesktop(.guestToHost)))
+        #expect(patch.runtimePreference == .set(.compatible))
+        #expect(patch.graphicsPreference == .set(.software))
+        #expect(arguments == ["--memory-mb", "4096", "--env", "TOKEN=secret"])
+        #expect(patch.xpcDictionary["env"] == nil)
+    }
+
+    @Test("CLI clear groups are explicit and conflict with replacement values")
+    func cliClearSemantics() throws {
+        var clearing = [
+            "--clear-guest-account",
+            "--clear-desktop-identity",
+            "--clear-clipboard",
+            "--clear-runtime",
+            "--clear-graphics",
+        ]
+        let patch = try DoryMachineTypedSettingsPatch.consumeCLIArguments(
+            &clearing,
+            allowsClears: true
+        )
+        #expect(clearing.isEmpty)
+        #expect(patch.guestUsername == .clear)
+        #expect(patch.guestNumericUserID == .clear)
+        #expect(patch.desktopDistributionIdentifier == .clear)
+        #expect(patch.desktopDisplayName == .clear)
+        #expect(patch.clipboardPolicy == .clear)
+        #expect(patch.runtimePreference == .clear)
+        #expect(patch.graphicsPreference == .clear)
+
+        var createClear = ["--clear-clipboard"]
+        #expect(throws: DoryMachineTypedWriteAuthorityError.invalidField("clear options")) {
+            try DoryMachineTypedSettingsPatch.consumeCLIArguments(
+                &createClear,
+                allowsClears: false
+            )
+        }
+        var conflict = ["--guest-user", "developer", "--clear-guest-account"]
+        #expect(throws: DoryMachineTypedWriteAuthorityError.invalidField(
+            "--clear-guest-account"
+        )) {
+            try DoryMachineTypedSettingsPatch.consumeCLIArguments(
+                &conflict,
+                allowsClears: true
+            )
+        }
+    }
+}

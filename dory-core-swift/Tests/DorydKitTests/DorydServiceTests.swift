@@ -3,6 +3,16 @@ import DoryCore
 import XCTest
 
 final class DorydServiceTests: XCTestCase {
+    private static func environmentValues(_ body: NSDictionary) -> [String: String] {
+        let rows = body["env"] as? [NSDictionary] ?? []
+        return Dictionary(uniqueKeysWithValues: rows.compactMap { row in
+            guard let key = row["key"] as? String, let value = row["value"] as? String else {
+                return nil
+            }
+            return (key, value)
+        })
+    }
+
     func testPublishedPortRepairDetailUsesValidatedGvproxyReceiptCounts() {
         let startedAt = Date()
         let receipt = PublishedPortReconcileReceipt(
@@ -1076,19 +1086,25 @@ final class DorydServiceTests: XCTestCase {
             "memoryMB": 1024,
             "cpuCount": 2,
             "address": "192.168.215.40",
-            "env": [
-                [
-                    "key": "APP_ENV",
-                    "value": "dev",
+            "guestIdentityIntent": [
+                "account": [
+                    "username": "developer",
+                    "numericUserID": UInt32(1_000),
                 ] as NSDictionary,
-            ],
+            ] as NSDictionary,
+            "clipboardPolicy": [
+                "text": "off",
+                "image": "off",
+                "files": "off",
+            ] as NSDictionary,
         ]) { ok, body, message in
             XCTAssertTrue(ok, message)
             XCTAssertEqual(body["state"] as? String, "created")
             XCTAssertEqual(body["address"] as? String, "192.168.215.40")
-            let env = body["env"] as? [NSDictionary]
-            XCTAssertEqual(env?.first?["key"] as? String, "APP_ENV")
-            XCTAssertEqual(env?.first?["value"] as? String, "dev")
+            let values = Self.environmentValues(body)
+            XCTAssertEqual(values["DORY_GUEST_USER"], "developer")
+            XCTAssertEqual(values["DORY_GUEST_UID"], "1000")
+            XCTAssertEqual(values["DORY_CLIPBOARD_POLICY"], "off")
             create.fulfill()
         }
         wait(for: [create], timeout: 5)
@@ -1113,7 +1129,7 @@ final class DorydServiceTests: XCTestCase {
             XCTAssertEqual(statuses?.first?["id"] as? String, "dev")
             XCTAssertEqual(statuses?.first?["address"] as? String, "192.168.215.40")
             let env = statuses?.first?["env"] as? [NSDictionary]
-            XCTAssertEqual(env?.first?["value"] as? String, "dev")
+            XCTAssertTrue(env?.contains { $0["value"] as? String == "developer" } == true)
             list.fulfill()
         }
         wait(for: [list], timeout: 5)
@@ -1139,12 +1155,11 @@ final class DorydServiceTests: XCTestCase {
                     "readOnly": true,
                 ] as NSDictionary,
             ],
-            "env": [
-                [
-                    "key": "NODE_ENV",
-                    "value": "production",
+            "guestIdentityIntent": [
+                "account": [
+                    "username": "builder",
                 ] as NSDictionary,
-            ],
+            ] as NSDictionary,
         ]) { ok, body, message in
             XCTAssertTrue(ok, message)
             XCTAssertEqual(body["state"] as? String, "stopped")
@@ -1155,9 +1170,10 @@ final class DorydServiceTests: XCTestCase {
             XCTAssertEqual(shares?.first?["hostPath"] as? String, share)
             XCTAssertEqual(shares?.first?["guestPath"] as? String, "/workspace/src")
             XCTAssertEqual(shares?.first?["readOnly"] as? Bool, true)
-            let env = body["env"] as? [NSDictionary]
-            XCTAssertEqual(env?.first?["key"] as? String, "NODE_ENV")
-            XCTAssertEqual(env?.first?["value"] as? String, "production")
+            let values = Self.environmentValues(body)
+            XCTAssertEqual(values["DORY_GUEST_USER"], "builder")
+            XCTAssertEqual(values["DORY_GUEST_UID"], "1000")
+            XCTAssertEqual(values["DORY_CLIPBOARD_POLICY"], "off")
             update.fulfill()
         }
         wait(for: [update], timeout: 5)
@@ -1179,6 +1195,129 @@ final class DorydServiceTests: XCTestCase {
             delete.fulfill()
         }
         wait(for: [delete], timeout: 5)
+    }
+
+    func testMachineWritesRequireTypedIntentAndPreserveLegacyEnvironmentFieldLocally() throws {
+        let base = "/tmp/doryd-service-typed-write-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let manager = MachineManager(configuration: MachineManagerConfiguration(
+            vmmExecutablePath: "/bin/sleep",
+            stateDirectory: base,
+            baseArguments: ["30"],
+            passMachineArguments: false,
+            requiresReadyHandoff: false
+        ))
+        defer {
+            try? manager.delete(id: "legacy")
+            try? manager.delete(id: "typed")
+            try? FileManager.default.removeItem(atPath: base)
+        }
+        _ = try manager.create(DoryMachineConfiguration(
+            id: "legacy",
+            kernelPath: doryTestKernelPath,
+            rootfsPath: doryTestRootfsPath,
+            displayMode: .desktop,
+            environment: [
+                "DORY_GUEST_USER": "../../unsafe-old-user",
+                "DORY_GUEST_UID": "not-a-uid",
+                "PRIVATE_TOKEN": "opaque-legacy-value",
+            ]
+        ))
+        let service = DorydService(socketPath: "/tmp/doryd-test.sock", machineManager: manager)
+        let listener = makeAnonymousListener(service: service)
+        listener.resume()
+        defer { listener.invalidate() }
+
+        let connection = NSXPCConnection(listenerEndpoint: listener.endpoint)
+        connection.remoteObjectInterface = NSXPCInterface(with: DorydControl.self)
+        connection.resume()
+        defer { connection.invalidate() }
+        let proxy = try XCTUnwrap(connection.remoteObjectProxy as? DorydControl)
+
+        let rawCreate = expectation(description: "raw environment create rejected")
+        proxy.machineCreate([
+            "id": "typed",
+            "kernelPath": doryTestKernelPath,
+            "rootfsPath": doryTestRootfsPath,
+            "env": [] as [NSDictionary],
+        ]) { ok, _, message in
+            XCTAssertFalse(ok)
+            XCTAssertTrue(message.contains("raw machine environment input is not accepted"))
+            rawCreate.fulfill()
+        }
+        wait(for: [rawCreate], timeout: 5)
+        XCTAssertNil(manager.status(id: "typed"))
+
+        let typedCreate = expectation(description: "typed intent create accepted")
+        proxy.machineCreate([
+            "id": "typed",
+            "kernelPath": doryTestKernelPath,
+            "rootfsPath": doryTestRootfsPath,
+            "displayMode": "desktop",
+            "guestIdentityIntent": [
+                "account": [
+                    "username": "developer",
+                    "numericUserID": UInt32(1_000),
+                ] as NSDictionary,
+                "desktop": [
+                    "distributionIdentifier": "ubuntu",
+                    "displayName": "Ubuntu",
+                    "version": "24.04",
+                    "desktopEnvironment": "GNOME",
+                ] as NSDictionary,
+            ] as NSDictionary,
+            "clipboardPolicy": [
+                "text": "bidirectional",
+                "image": "bidirectional",
+                "files": "off",
+            ] as NSDictionary,
+            "desktopRuntimePreference": "accelerated",
+            "desktopGraphicsPreference": "virgl-venus",
+        ]) { ok, body, message in
+            XCTAssertTrue(ok, message)
+            let values = Self.environmentValues(body)
+            XCTAssertEqual(values["DORY_GUEST_USER"], "developer")
+            XCTAssertEqual(values["DORY_GUEST_UID"], "1000")
+            XCTAssertEqual(values["DORY_DESKTOP_DISTRO"], "ubuntu")
+            XCTAssertEqual(values["DORY_DESKTOP_NAME"], "Ubuntu")
+            XCTAssertEqual(values["DORY_CLIPBOARD_POLICY"], "bidirectional")
+            XCTAssertEqual(values["DORY_DESKTOP_VMM"], "accelerated")
+            XCTAssertEqual(values["DORY_DESKTOP_GRAPHICS"], "virgl-venus")
+            typedCreate.fulfill()
+        }
+        wait(for: [typedCreate], timeout: 5)
+
+        let typedUpdate = expectation(description: "typed update is field local")
+        proxy.machineUpdate("legacy", config: [
+            "guestIdentityIntent": [
+                "desktop": [
+                    "displayName": "Ubuntu Legacy",
+                ] as NSDictionary,
+            ] as NSDictionary,
+            "desktopRuntimePreference": "compatible",
+            "desktopGraphicsPreference": "software",
+        ]) { ok, body, message in
+            XCTAssertTrue(ok, message)
+            let values = Self.environmentValues(body)
+            XCTAssertEqual(values["DORY_DESKTOP_NAME"], "Ubuntu Legacy")
+            XCTAssertEqual(values["DORY_GUEST_USER"], "../../unsafe-old-user")
+            XCTAssertEqual(values["DORY_GUEST_UID"], "not-a-uid")
+            XCTAssertEqual(values["PRIVATE_TOKEN"], "opaque-legacy-value")
+            XCTAssertEqual(values["DORY_DESKTOP_VMM"], "compatible")
+            XCTAssertEqual(values["DORY_DESKTOP_GRAPHICS"], "software")
+            typedUpdate.fulfill()
+        }
+        wait(for: [typedUpdate], timeout: 5)
+
+        let rawUpdate = expectation(description: "raw environment update rejected")
+        proxy.machineUpdate("legacy", config: [
+            "env": [["key": "PRIVATE_TOKEN", "value": "replacement"] as NSDictionary],
+        ]) { ok, _, message in
+            XCTAssertFalse(ok)
+            XCTAssertTrue(message.contains("raw machine environment input is not accepted"))
+            rawUpdate.fulfill()
+        }
+        wait(for: [rawUpdate], timeout: 5)
+        XCTAssertEqual(manager.status(id: "legacy")?.environment["PRIVATE_TOKEN"], "opaque-legacy-value")
     }
 
     func testMachineExecOverXPCUsesMachineAgent() throws {

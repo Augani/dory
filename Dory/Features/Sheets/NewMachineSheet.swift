@@ -871,23 +871,34 @@ struct NewMachineSheet: View {
         guestUsername: String = "dory",
         guestUID: uid_t = getuid()
     ) -> MachineSettings {
-        var environment: [String: String] = [:]
+        let typedSettings: DorydMachineTypedSettings?
         if displayMode == .desktop {
-            environment["DORY_GUEST_USER"] = guestUsername
-            environment["DORY_GUEST_UID"] = String(guestUID)
-            environment["DORY_DESKTOP_DISTRO"] = desktopDistro.rawValue
-            environment["DORY_DESKTOP_NAME"] = desktopDistro.displayName
-            environment["DORY_DESKTOP_VERSION"] = desktopDistro.version
-            environment["DORY_DESKTOP_ENVIRONMENT"] = desktopDistro.desktopName
-            environment[DoryDesktopClipboardPolicy.environmentKey] = DoryDesktopClipboardPolicy.bidirectional.rawValue
-            environment[DoryDesktopVMMPreference.environmentKey] = DoryDesktopVMMPreference.automatic.rawValue
-            environment[DoryDesktopGraphicsPreference.environmentKey] = DoryDesktopGraphicsPreference.automatic.rawValue
+            typedSettings = DorydMachineTypedSettings(
+                guestIdentityIntent: DoryVMGuestIdentityIntent(
+                    account: DoryVMGuestAccountIntent(
+                        username: guestUsername,
+                        numericUserID: UInt32(guestUID)
+                    ),
+                    desktop: DoryVMDesktopIdentityIntent(
+                        distributionIdentifier: desktopDistro.rawValue,
+                        displayName: desktopDistro.displayName,
+                        version: desktopDistro.version,
+                        desktopEnvironment: desktopDistro.desktopName
+                    )
+                ),
+                clipboardPolicy: .legacyDesktop(.bidirectional),
+                runtimePreference: .automatic,
+                graphicsPreference: .automatic
+            )
+        } else {
+            typedSettings = nil
         }
         return MachineSettings(
             cpus: cpus,
             memoryMB: memoryGB * 1024,
             mounts: mounts,
-            env: environment,
+            env: [:],
+            virtualMachineSettings: typedSettings,
             address: address,
             displayMode: displayMode
         )
@@ -930,7 +941,10 @@ struct NewMachineSheet: View {
             settings.bootMode = .efi
             settings.installerISOPath = installerISOPath
             settings.diskSizeGB = diskSizeGB
-            settings.env = ["DORY_CUSTOM_LINUX": "1"]
+            // EFI boot/media authority is explicit. It must never be inferred from a reserved
+            // environment marker or carry managed-desktop provisioning intent.
+            settings.env = [:]
+            settings.virtualMachineSettings = nil
         }
         return settings
     }

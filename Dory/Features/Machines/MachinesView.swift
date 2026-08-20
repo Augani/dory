@@ -365,7 +365,7 @@ private struct MachineEditSheet: View {
     @State private var clipboardPolicy = DoryDesktopClipboardPolicy.bidirectional
     @State private var runtimePreference = DoryDesktopVMMPreference.automatic
     @State private var graphicsPreference = DoryDesktopGraphicsPreference.automatic
-    @State private var environment: [String: String] = [:]
+    @State private var typedSettings = DorydMachineTypedSettings()
 
     private struct MountRow: Identifiable, Hashable {
         let id = UUID()
@@ -406,11 +406,22 @@ private struct MachineEditSheet: View {
         memoryGB = max(1, min(16, settings.memoryMB.map { $0 / 1024 } ?? 4))
         address = settings.address ?? ""
         displayMode = settings.displayMode
-        environment = settings.env
-        guestUsername = settings.env["DORY_GUEST_USER"] ?? "dory"
-        clipboardPolicy = DoryDesktopClipboardPolicy(environment: settings.env)
-        runtimePreference = (try? DoryDesktopVMMPreference(environment: settings.env)) ?? .automatic
-        graphicsPreference = (try? DoryDesktopGraphicsPreference(environment: settings.env)) ?? .automatic
+        typedSettings = settings.virtualMachineSettings ?? DorydMachineTypedSettings(
+            legacyEnvironment: settings.env,
+            displayMode: settings.displayMode
+        )
+        // Keep an unrepresentable legacy username visible and invalid until the user explicitly
+        // corrects that field. Hiding it behind a default would turn an unrelated edit into a
+        // destructive rewrite.
+        guestUsername = settings.env[DoryVMGuestAccountIntent.legacyUsernameEnvironmentKey]
+            ?? typedSettings.guestIdentityIntent.account?.username
+            ?? "dory"
+        clipboardPolicy = typedSettings.clipboardPolicy.flatMap {
+            guard $0.text == $0.image, $0.files == .off else { return nil }
+            return DoryDesktopClipboardPolicy(rawValue: $0.text.rawValue)
+        } ?? .bidirectional
+        runtimePreference = typedSettings.runtimePreference ?? .automatic
+        graphicsPreference = typedSettings.graphicsPreference ?? .automatic
         mountRows = settings.mounts.map { MountRow(host: $0.host, guest: $0.guest, readOnly: $0.readOnly) }
     }
 
@@ -688,7 +699,7 @@ private struct MachineEditSheet: View {
             return MountPair(host: host, guest: guest, readOnly: row.readOnly)
         }
         if displayMode == .desktop, machine.bootMode != .efi {
-            let previousUsername = environment["DORY_GUEST_USER"] ?? "dory"
+            let previousUsername = typedSettings.guestIdentityIntent.account?.username ?? "dory"
             if previousUsername != normalizedGuestUsername {
                 let previousHome = "/home/\(previousUsername)"
                 let updatedHome = "/home/\(normalizedGuestUsername)"
@@ -703,18 +714,29 @@ private struct MachineEditSheet: View {
                     )
                 }
             }
-            environment["DORY_GUEST_USER"] = normalizedGuestUsername
-            environment["DORY_GUEST_UID"] = environment["DORY_GUEST_UID"] ?? String(getuid())
-            environment[DoryDesktopClipboardPolicy.environmentKey] = clipboardPolicy.rawValue
-            environment[DoryDesktopVMMPreference.environmentKey] = runtimePreference.rawValue
-            environment[DoryDesktopGraphicsPreference.environmentKey] = graphicsPreference.rawValue
-            environment.removeValue(forKey: DoryDesktopGraphicsPreference.legacyClassicOnlyEnvironmentKey)
+            typedSettings.guestIdentityIntent.account = DoryVMGuestAccountIntent(
+                username: normalizedGuestUsername,
+                numericUserID: typedSettings.guestIdentityIntent.account?.numericUserID
+            )
+            if typedSettings.clipboardPolicy != nil || clipboardPolicy != .bidirectional {
+                typedSettings.clipboardPolicy = .legacyDesktop(
+                    DoryVMClipboardDirection(rawValue: clipboardPolicy.rawValue)
+                        ?? .bidirectional
+                )
+            }
+            if typedSettings.runtimePreference != nil || runtimePreference != .automatic {
+                typedSettings.runtimePreference = runtimePreference
+            }
+            if typedSettings.graphicsPreference != nil || graphicsPreference != .automatic {
+                typedSettings.graphicsPreference = graphicsPreference
+            }
         }
         let settings = MachineSettings(
             cpus: cpus,
             memoryMB: memoryGB * 1024,
             mounts: mounts,
-            env: environment,
+            env: [:],
+            virtualMachineSettings: machine.bootMode == .efi ? nil : typedSettings,
             address: address.trimmingCharacters(in: .whitespacesAndNewlines),
             displayMode: displayMode,
             bootMode: machine.bootMode
