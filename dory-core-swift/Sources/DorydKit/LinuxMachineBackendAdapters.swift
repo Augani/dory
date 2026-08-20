@@ -1,0 +1,438 @@
+import DoryOperations
+import Foundation
+
+public typealias MachineBackendLifecycleHandler = @Sendable (String) throws -> MachineBackendRuntimeObservation
+
+/// Hooks implemented by the existing machine launcher. Keeping them injectable lets the seam be
+/// qualified before MachineManager starts consuming BackendRegistry.
+public struct MachineBackendCompatibilityOperations: Sendable {
+    public var start: MachineBackendLifecycleHandler
+    public var stop: MachineBackendLifecycleHandler
+
+    public init(
+        start: @escaping MachineBackendLifecycleHandler,
+        stop: @escaping MachineBackendLifecycleHandler
+    ) {
+        self.start = start
+        self.stop = stop
+    }
+
+    /// Compatibility bridge to today's launch path. Both Linux adapters may share this bridge;
+    /// their validated backend plans determine which adapter is allowed to invoke it.
+    public init(machineManager: MachineManager) {
+        self.init(
+            start: { id in
+                MachineBackendRuntimeObservation(try machineManager.start(id: id))
+            },
+            stop: { id in
+                MachineBackendRuntimeObservation(try machineManager.stop(id: id))
+            }
+        )
+    }
+}
+
+public extension MachineBackendRuntimeObservation {
+    init(_ status: DoryMachineStatus) {
+        self.init(
+            machineID: status.id,
+            state: MachineBackendRuntimeState(status.state),
+            processIdentifier: status.pid,
+            failureMessage: status.lastError
+        )
+    }
+}
+
+private extension MachineBackendRuntimeState {
+    init(_ state: DoryMachineState) {
+        switch state {
+        case .created: self = .created
+        case .starting: self = .starting
+        case .running: self = .running
+        case .stopped: self = .stopped
+        case .failed: self = .failed
+        }
+    }
+}
+
+private final class LinuxMachineBackendAdapterCore: @unchecked Sendable {
+    typealias MachineValidator = @Sendable (
+        DoryMachineConfiguration,
+        DoryVirtualMachineCapabilityDescriptor
+    ) -> String?
+
+    let descriptor: MachineBackendDescriptor
+    private let executablePath: String?
+    private let executableIsAvailable: @Sendable (String) -> Bool
+    private let operations: MachineBackendCompatibilityOperations
+    private let validateMachine: MachineValidator
+
+    init(
+        descriptor: MachineBackendDescriptor,
+        executablePath: String?,
+        executableIsAvailable: @escaping @Sendable (String) -> Bool,
+        operations: MachineBackendCompatibilityOperations,
+        validateMachine: @escaping MachineValidator
+    ) {
+        self.descriptor = descriptor
+        self.executablePath = executablePath
+        self.executableIsAvailable = executableIsAvailable
+        self.operations = operations
+        self.validateMachine = validateMachine
+    }
+
+    func probe() -> MachineBackendProbeResult {
+        guard let executablePath, !executablePath.isEmpty else {
+            return unavailableProbe(
+                code: .componentNotConfigured,
+                message: "The backend helper path is not configured."
+            )
+        }
+        guard executableIsAvailable(executablePath) else {
+            return unavailableProbe(
+                code: .componentUnavailable,
+                message: "The configured backend helper is unavailable or not executable."
+            )
+        }
+        return MachineBackendProbeResult(descriptor: descriptor, state: .available)
+    }
+
+    func plan(_ request: MachineBackendPlanRequest) -> MachineBackendPlanResult {
+        let currentProbe = probe()
+        guard currentProbe.isAvailable else {
+            return MachineBackendPlanResult(
+                plan: nil,
+                probe: currentProbe,
+                failure: currentProbe.failure
+            )
+        }
+        guard request.capabilityPlan.failure == nil,
+              let capability = request.capabilityPlan.selectedDescriptor else {
+            return failedPlan(
+                probe: currentProbe,
+                code: .capabilityPlanRejected,
+                message: "The product capability planner did not select a backend."
+            )
+        }
+        guard request.capabilityPlan.evaluatedDescriptors.contains(capability),
+              capability.schemaVersion == DoryVirtualMachineCapabilityDescriptor.currentSchemaVersion,
+              capability.evaluatorVersion == DoryVirtualMachineCapabilityDescriptor.appleSiliconEvaluatorVersion,
+              capability.availability.isUsable,
+              capability.resolvedDevices == capability.request.devices else {
+            return failedPlan(
+                probe: currentProbe,
+                code: .capabilitySelectionInvalid,
+                message: "The selected capability is not a complete usable planner result."
+            )
+        }
+        guard capability.request.backend == descriptor.identity else {
+            return failedPlan(
+                probe: currentProbe,
+                code: .backendIdentityMismatch,
+                message: "The selected capability belongs to a different backend."
+            )
+        }
+        guard descriptor.guestFamilies.contains(capability.request.guest.family),
+              descriptor.guestArchitectures.contains(capability.request.guest.architecture) else {
+            return failedPlan(
+                probe: currentProbe,
+                code: .guestUnsupported,
+                message: "The selected guest is not implemented by this backend adapter."
+            )
+        }
+        guard descriptor.bootMediaKinds.contains(capability.request.bootMedia.kind) else {
+            return failedPlan(
+                probe: currentProbe,
+                code: .bootMediaUnsupported,
+                message: "The selected boot-media kind is not implemented by this backend adapter."
+            )
+        }
+        if let validationFailure = validateMachine(request.machine, capability) {
+            return failedPlan(
+                probe: currentProbe,
+                code: .machineConfigurationIncompatible,
+                message: validationFailure
+            )
+        }
+        return MachineBackendPlanResult(
+            plan: MachineBackendPlan(
+                backend: descriptor,
+                machine: request.machine,
+                capability: capability
+            ),
+            probe: currentProbe,
+            failure: nil
+        )
+    }
+
+    func start(_ plan: MachineBackendPlan) -> MachineBackendOperationResult {
+        guard plan.backend == descriptor,
+              plan.capability.request.backend == descriptor.identity else {
+            return failedOperation(
+                .start,
+                code: .backendIdentityMismatch,
+                message: "The launch plan belongs to a different backend adapter."
+            )
+        }
+        let revalidated = self.plan(MachineBackendPlanRequest(
+            machine: plan.machine,
+            capabilityPlan: DoryVirtualMachineBackendPlanResult(
+                selectedDescriptor: plan.capability,
+                evaluatedDescriptors: [plan.capability],
+                failure: nil
+            )
+        ))
+        guard revalidated.plan == plan else {
+            return failedOperation(
+                .start,
+                code: revalidated.failure?.code ?? .capabilitySelectionInvalid,
+                message: revalidated.failure?.message
+                    ?? "The backend launch plan could not be revalidated."
+            )
+        }
+        guard descriptor.lifecycle.start else {
+            return unsupportedOperation(.start)
+        }
+        return perform(.start, machineID: plan.machine.id, operation: operations.start)
+    }
+
+    func stop(_ request: MachineBackendRuntimeRequest) -> MachineBackendOperationResult {
+        guard request.backend == descriptor.identity else {
+            return failedOperation(
+                .stop,
+                code: .backendIdentityMismatch,
+                message: "The runtime request belongs to a different backend adapter."
+            )
+        }
+        guard descriptor.lifecycle.stop else {
+            return unsupportedOperation(.stop)
+        }
+        return perform(.stop, machineID: request.machineID, operation: operations.stop)
+    }
+
+    func pause(_ request: MachineBackendRuntimeRequest) -> MachineBackendOperationResult {
+        guard request.backend == descriptor.identity else {
+            return failedOperation(
+                .pause,
+                code: .backendIdentityMismatch,
+                message: "The runtime request belongs to a different backend adapter."
+            )
+        }
+        return unsupportedOperation(.pause)
+    }
+
+    func resume(_ request: MachineBackendRuntimeRequest) -> MachineBackendOperationResult {
+        guard request.backend == descriptor.identity else {
+            return failedOperation(
+                .resume,
+                code: .backendIdentityMismatch,
+                message: "The runtime request belongs to a different backend adapter."
+            )
+        }
+        return unsupportedOperation(.resume)
+    }
+
+    private func unavailableProbe(
+        code: MachineBackendFailureCode,
+        message: String
+    ) -> MachineBackendProbeResult {
+        MachineBackendProbeResult(
+            descriptor: descriptor,
+            state: .unavailable,
+            failure: MachineBackendFailure(
+                code: code,
+                backend: descriptor.identity,
+                message: message
+            )
+        )
+    }
+
+    private func failedPlan(
+        probe: MachineBackendProbeResult,
+        code: MachineBackendFailureCode,
+        message: String
+    ) -> MachineBackendPlanResult {
+        MachineBackendPlanResult(
+            plan: nil,
+            probe: probe,
+            failure: MachineBackendFailure(
+                code: code,
+                backend: descriptor.identity,
+                message: message
+            )
+        )
+    }
+
+    private func perform(
+        _ operation: MachineBackendLifecycleOperation,
+        machineID: String,
+        operation handler: MachineBackendLifecycleHandler
+    ) -> MachineBackendOperationResult {
+        do {
+            return MachineBackendOperationResult(
+                operation: operation,
+                backend: descriptor.identity,
+                observation: try handler(machineID),
+                failure: nil
+            )
+        } catch {
+            return failedOperation(
+                operation,
+                code: .lifecycleOperationFailed,
+                message: String(describing: error)
+            )
+        }
+    }
+
+    private func unsupportedOperation(
+        _ operation: MachineBackendLifecycleOperation
+    ) -> MachineBackendOperationResult {
+        failedOperation(
+            operation,
+            code: .lifecycleOperationUnsupported,
+            message: "The current backend adapter does not implement \(operation.rawValue)."
+        )
+    }
+
+    private func failedOperation(
+        _ operation: MachineBackendLifecycleOperation,
+        code: MachineBackendFailureCode,
+        message: String
+    ) -> MachineBackendOperationResult {
+        MachineBackendOperationResult(
+            operation: operation,
+            backend: descriptor.identity,
+            observation: nil,
+            failure: MachineBackendFailure(
+                code: code,
+                backend: descriptor.identity,
+                message: message
+            )
+        )
+    }
+}
+
+/// Compatibility adapter for Dory's current direct-kernel/raw-Hypervisor Linux desktop path.
+public final class RawHVLinuxMachineBackend: MachineBackend, @unchecked Sendable {
+    public static let backendDescriptor = MachineBackendDescriptor(
+        identity: .doryHypervisor,
+        implementationIdentifier: "dory.raw-hv-linux.compatibility.v1",
+        guestFamilies: [.linux],
+        guestArchitectures: [.arm64],
+        bootMediaKinds: [.installedLinuxBootBundle],
+        lifecycle: .currentMachineManager
+    )
+
+    private let core: LinuxMachineBackendAdapterCore
+
+    public var descriptor: MachineBackendDescriptor { core.descriptor }
+
+    public init(
+        executablePath: String?,
+        operations: MachineBackendCompatibilityOperations,
+        executableIsAvailable: @escaping @Sendable (String) -> Bool = {
+            FileManager.default.isExecutableFile(atPath: $0)
+        }
+    ) {
+        core = LinuxMachineBackendAdapterCore(
+            descriptor: Self.backendDescriptor,
+            executablePath: executablePath,
+            executableIsAvailable: executableIsAvailable,
+            operations: operations,
+            validateMachine: { machine, _ in
+                guard machine.displayMode == .desktop else {
+                    return "The current raw-HV machine path is implemented only for desktop Linux."
+                }
+                guard machine.installerISOPath == nil else {
+                    return "The raw-HV machine path cannot boot attached installer media."
+                }
+                guard machine.bootMode == .linuxKernel || machine.bootMode == .efi else {
+                    return "The machine boot mode is not implemented by the raw-HV adapter."
+                }
+                do {
+                    guard try DoryDesktopVMMPreference(environment: machine.environment) != .compatible else {
+                        return "The machine explicitly requests the Virtualization.framework compatibility path."
+                    }
+                } catch {
+                    return "The machine contains an invalid desktop backend preference."
+                }
+                if machine.bootMode == .efi,
+                   !DoryInstalledLinuxBootBundle.isBundle(atPath: machine.kernelPath) {
+                    return "An EFI-installed raw-HV machine requires a verified installed-Linux boot bundle."
+                }
+                return nil
+            }
+        )
+    }
+
+    public func probe() -> MachineBackendProbeResult { core.probe() }
+    public func plan(_ request: MachineBackendPlanRequest) -> MachineBackendPlanResult { core.plan(request) }
+    public func start(_ plan: MachineBackendPlan) -> MachineBackendOperationResult { core.start(plan) }
+    public func stop(_ request: MachineBackendRuntimeRequest) -> MachineBackendOperationResult { core.stop(request) }
+    public func pause(_ request: MachineBackendRuntimeRequest) -> MachineBackendOperationResult { core.pause(request) }
+    public func resume(_ request: MachineBackendRuntimeRequest) -> MachineBackendOperationResult { core.resume(request) }
+}
+
+/// Compatibility adapter for the current Virtualization.framework EFI Linux helper path.
+public final class VirtualizationFrameworkLinuxMachineBackend: MachineBackend, @unchecked Sendable {
+    public static let backendDescriptor = MachineBackendDescriptor(
+        identity: .appleVirtualizationFramework,
+        implementationIdentifier: "dory.vz-linux.compatibility.v1",
+        guestFamilies: [.linux],
+        guestArchitectures: [.arm64],
+        bootMediaKinds: [.installerISO, .virtualDisk],
+        lifecycle: .currentMachineManager
+    )
+
+    private let core: LinuxMachineBackendAdapterCore
+
+    public var descriptor: MachineBackendDescriptor { core.descriptor }
+
+    public init(
+        executablePath: String?,
+        operations: MachineBackendCompatibilityOperations,
+        executableIsAvailable: @escaping @Sendable (String) -> Bool = {
+            FileManager.default.isExecutableFile(atPath: $0)
+        }
+    ) {
+        core = LinuxMachineBackendAdapterCore(
+            descriptor: Self.backendDescriptor,
+            executablePath: executablePath,
+            executableIsAvailable: executableIsAvailable,
+            operations: operations,
+            validateMachine: { machine, capability in
+                guard machine.bootMode == .efi, machine.displayMode == .desktop else {
+                    return "The current Virtualization.framework media path requires an EFI desktop machine."
+                }
+                switch capability.request.bootMedia.kind {
+                case .installerISO:
+                    guard machine.installerISOPath?.isEmpty == false else {
+                        return "An installer capability requires attached installer media."
+                    }
+                case .virtualDisk:
+                    guard machine.installerISOPath == nil else {
+                        return "A virtual-disk capability cannot retain attached installer media."
+                    }
+                    if DoryInstalledLinuxBootBundle.isBundle(atPath: machine.kernelPath) {
+                        do {
+                            guard try DoryDesktopVMMPreference(environment: machine.environment) == .compatible else {
+                                return "An installed-Linux boot bundle must explicitly select the compatibility path to use this adapter."
+                            }
+                        } catch {
+                            return "The machine contains an invalid desktop backend preference."
+                        }
+                    }
+                default:
+                    return "The selected media is not implemented by the Virtualization.framework Linux adapter."
+                }
+                return nil
+            }
+        )
+    }
+
+    public func probe() -> MachineBackendProbeResult { core.probe() }
+    public func plan(_ request: MachineBackendPlanRequest) -> MachineBackendPlanResult { core.plan(request) }
+    public func start(_ plan: MachineBackendPlan) -> MachineBackendOperationResult { core.start(plan) }
+    public func stop(_ request: MachineBackendRuntimeRequest) -> MachineBackendOperationResult { core.stop(request) }
+    public func pause(_ request: MachineBackendRuntimeRequest) -> MachineBackendOperationResult { core.pause(request) }
+    public func resume(_ request: MachineBackendRuntimeRequest) -> MachineBackendOperationResult { core.resume(request) }
+}
