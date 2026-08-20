@@ -561,6 +561,35 @@ public enum MachineManagerError: Error, Sendable, Equatable, CustomStringConvert
     }
 }
 
+public enum DoryWorkspaceProjectionState: String, Sendable, Equatable {
+    case current
+    case regenerated
+    case unavailable
+}
+
+public enum DoryWorkspaceProjectionFailureCode: String, Sendable, Equatable {
+    case unsupportedLegacyConfiguration = "unsupported-legacy-configuration"
+    case repositoryFailure = "repository-failure"
+}
+
+/// Non-fatal migration status. Legacy `machine.json` remains runnable when a projection cannot
+/// be produced; callers can surface this diagnostic without treating the VM itself as corrupt.
+public struct DoryWorkspaceProjectionDiagnostic: Sendable, Equatable {
+    public var state: DoryWorkspaceProjectionState
+    public var failureCode: DoryWorkspaceProjectionFailureCode?
+    public var message: String?
+
+    public init(
+        state: DoryWorkspaceProjectionState,
+        failureCode: DoryWorkspaceProjectionFailureCode? = nil,
+        message: String? = nil
+    ) {
+        self.state = state
+        self.failureCode = failureCode
+        self.message = message
+    }
+}
+
 public final class MachineManager: @unchecked Sendable {
     public typealias AgentConnector = @Sendable (String) throws -> any AgentControlClient
     public typealias ProcessStarter = @Sendable (HvProcess) throws -> Void
@@ -594,10 +623,12 @@ public final class MachineManager: @unchecked Sendable {
     private let agentConnector: AgentConnector
     private let balloonController: any MachineBalloonControlling
     private let processStarter: ProcessStarter
+    private let workspaceRepository: DoryWorkspaceRepository
     private let operationLock = NSRecursiveLock()
     private let lock = NSLock()
     private var machines: [String: MachineEntry] = [:]
     private var deletingMachineIDs: Set<String> = []
+    private var workspaceProjectionDiagnostics: [String: DoryWorkspaceProjectionDiagnostic] = [:]
 
     public init(
         configuration: MachineManagerConfiguration,
@@ -611,6 +642,7 @@ public final class MachineManager: @unchecked Sendable {
         self.balloonController = balloonController
         self.agentConnector = agentConnector
         self.processStarter = processStarter
+        self.workspaceRepository = DoryWorkspaceRepository(root: configuration.stateDirectory)
         _ = HelperProcessJanitor.terminateStaleHelpers(
             executablePath: configuration.vmmExecutablePath,
             stateDirectory: configuration.stateDirectory,
@@ -627,7 +659,9 @@ public final class MachineManager: @unchecked Sendable {
         Self.removeStaleDeletionQuarantines(stateDirectory: configuration.stateDirectory)
         Self.removeStaleMachineMetadataArtifacts(stateDirectory: configuration.stateDirectory)
         Self.removeStaleSnapshotArtifacts(stateDirectory: configuration.stateDirectory)
+        Self.restrictWorkspaceProjectionRootIfOwned(configuration.stateDirectory)
         self.machines = Self.loadPersistedMachines(configuration: configuration)
+        reconcileLoadedWorkspaceProjections()
         recoverInterruptedDesktopUpdates()
     }
 
@@ -686,6 +720,7 @@ public final class MachineManager: @unchecked Sendable {
         let fileManager = FileManager.default
         do {
             try fileManager.createDirectory(atPath: configuration.stateDirectory, withIntermediateDirectories: true)
+            Self.restrictWorkspaceProjectionRootIfOwned(configuration.stateDirectory)
         } catch {
             throw MachineManagerError.persistence("could not create machine state root: \(error)")
         }
@@ -744,6 +779,16 @@ public final class MachineManager: @unchecked Sendable {
         do {
             try ensureInstalledLinuxBootBundleIfNeeded(entry.configuration)
             try materializeInstalledLinuxBootRuntimeIfNeeded(entry.configuration)
+            if let authoritativeLegacyData = Self.readPrivateMetadata(
+                path: machineConfigPath(id: entry.configuration.id)
+            ) {
+                // Boot-bundle materialization changes authoritative inspection facts without
+                // changing machine.json. Bind that fact change and advance the projection here.
+                reconcileWorkspaceProjection(
+                    machine: entry.configuration,
+                    authoritativeLegacyData: authoritativeLegacyData
+                )
+            }
             try Self.validateLaunchConfiguration(entry.configuration)
             try validateManagedMachineArtifacts(entry.configuration)
             try validateRuntimeAvailability(entry.configuration)
@@ -986,6 +1031,7 @@ public final class MachineManager: @unchecked Sendable {
 
         lock.lock()
         deletingMachineIDs.remove(id)
+        workspaceProjectionDiagnostics.removeValue(forKey: id)
         lock.unlock()
 
         try? FileManager.default.removeItem(atPath: machineRuntimeDirectory(id: id))
@@ -1716,6 +1762,15 @@ public final class MachineManager: @unchecked Sendable {
         }
         lock.unlock()
         return statuses
+    }
+
+    public func workspaceProjectionDiagnostic(
+        id: String
+    ) -> DoryWorkspaceProjectionDiagnostic? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard machines[id] != nil else { return nil }
+        return workspaceProjectionDiagnostics[id]
     }
 
     private func statusLocked(id: String, entry: MachineEntry) -> DoryMachineStatus {
@@ -2629,14 +2684,13 @@ public final class MachineManager: @unchecked Sendable {
         let fileManager = FileManager.default
         let directory = machineStateDirectory(id: machine.id)
         let temporaryPath = "\(directory)/\(Self.machineMetadataTemporaryPrefix)\(UUID().uuidString)"
+        var authoritativeLegacyData: Data?
         do {
             try fileManager.createDirectory(
                 atPath: directory,
                 withIntermediateDirectories: true
             )
-            let encoder = JSONEncoder()
-            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            let data = try encoder.encode(machine)
+            let data = try DoryMachineConfigurationMigrationBridge.encodeLegacy(machine)
             let path = machineConfigPath(id: machine.id)
             try data.write(to: URL(fileURLWithPath: temporaryPath), options: .atomic)
             try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: temporaryPath)
@@ -2645,6 +2699,7 @@ public final class MachineManager: @unchecked Sendable {
                     "could not publish machine metadata: \(String(cString: strerror(errno)))"
                 )
             }
+            authoritativeLegacyData = data
         } catch let error as MachineManagerError {
             try? fileManager.removeItem(atPath: temporaryPath)
             throw error
@@ -2652,6 +2707,164 @@ public final class MachineManager: @unchecked Sendable {
             try? fileManager.removeItem(atPath: temporaryPath)
             throw MachineManagerError.persistence("\(error)")
         }
+        // The rename above is the commit point. Projection is intentionally best-effort and
+        // ordered afterwards: a v2 failure must never roll back or hide working legacy metadata.
+        if let authoritativeLegacyData {
+            reconcileWorkspaceProjection(
+                machine: machine,
+                authoritativeLegacyData: authoritativeLegacyData
+            )
+        }
+    }
+
+    private func reconcileLoadedWorkspaceProjections() {
+        let configurations = machines.values.map(\.configuration)
+            .sorted { $0.id < $1.id }
+        for machine in configurations {
+            guard let data = Self.readPrivateMetadata(path: machineConfigPath(id: machine.id)) else {
+                setWorkspaceProjectionDiagnostic(
+                    DoryWorkspaceProjectionDiagnostic(
+                        state: .unavailable,
+                        failureCode: .repositoryFailure,
+                        message: "authoritative legacy metadata could not be reread"
+                    ),
+                    id: machine.id
+                )
+                continue
+            }
+            reconcileWorkspaceProjection(machine: machine, authoritativeLegacyData: data)
+        }
+    }
+
+    private func reconcileWorkspaceProjection(
+        machine: DoryMachineConfiguration,
+        authoritativeLegacyData: Data
+    ) {
+        do {
+            let facts = try workspaceMigrationFacts(for: machine)
+            let migration = try DoryMachineConfigurationMigrationBridge.migrate(
+                machine,
+                facts: facts
+            )
+            let result = try workspaceRepository.reconcileLegacyProjection(
+                migration.definition,
+                authoritativeLegacyData: authoritativeLegacyData,
+                authoritativeMigrationFactsData: try Self.workspaceMigrationAuthorityData(facts)
+            )
+            setWorkspaceProjectionDiagnostic(
+                DoryWorkspaceProjectionDiagnostic(
+                    state: result.state == .unchanged ? .current : .regenerated
+                ),
+                id: machine.id
+            )
+        } catch let error as DoryMachineConfigurationMigrationError {
+            setWorkspaceProjectionDiagnostic(
+                DoryWorkspaceProjectionDiagnostic(
+                    state: .unavailable,
+                    failureCode: .unsupportedLegacyConfiguration,
+                    message: error.localizedDescription
+                ),
+                id: machine.id
+            )
+        } catch let error as DoryWorkspaceRepositoryError {
+            setWorkspaceProjectionDiagnostic(
+                DoryWorkspaceProjectionDiagnostic(
+                    state: .unavailable,
+                    failureCode: .repositoryFailure,
+                    message: error.description
+                ),
+                id: machine.id
+            )
+        } catch {
+            setWorkspaceProjectionDiagnostic(
+                DoryWorkspaceProjectionDiagnostic(
+                    state: .unavailable,
+                    failureCode: .repositoryFailure,
+                    message: String(describing: error)
+                ),
+                id: machine.id
+            )
+        }
+    }
+
+    private func workspaceMigrationFacts(
+        for machine: DoryMachineConfiguration
+    ) throws -> DoryMachineConfigurationMigrationFacts {
+        let architecture: DoryGuestArchitecture
+        switch configuration.guestArchitecture.lowercased() {
+        case "arm64", "aarch64":
+            architecture = .arm64
+        case "amd64", "x86_64":
+            architecture = .x86_64
+        default:
+            throw DoryMachineConfigurationMigrationError.invalidLegacyConfiguration(
+                "unsupported guest architecture \(configuration.guestArchitecture)"
+            )
+        }
+
+        var diskInfo = stat()
+        guard lstat(machine.rootfsPath, &diskInfo) == 0,
+              (diskInfo.st_mode & S_IFMT) == S_IFREG,
+              diskInfo.st_size > 0 else {
+            throw DoryMachineConfigurationMigrationError.missingSystemDiskCapacity
+        }
+        let diskCapacity = UInt64(diskInfo.st_size)
+
+        let installedEFIBoot: DoryMachineConfigurationInstalledEFIBoot?
+        if machine.bootMode == .efi, machine.installerISOPath == nil {
+            installedEFIBoot = DoryInstalledLinuxBootBundle.isBundle(atPath: machine.kernelPath)
+                ? .installedLinuxBootBundle : .firmwareDisk
+        } else {
+            installedEFIBoot = nil
+        }
+
+        return DoryMachineConfigurationMigrationFacts(
+            guestArchitecture: architecture,
+            systemDiskCapacityBytes: diskCapacity,
+            installedEFIBoot: installedEFIBoot,
+            lifecycle: DoryVMLifecycleMetadata(
+                revision: 1,
+                createdAtUnixMilliseconds: workspaceCreationTimestamp(id: machine.id),
+                updatedAtUnixMilliseconds: workspaceCreationTimestamp(id: machine.id)
+            )
+        )
+    }
+
+    private func workspaceCreationTimestamp(id: String) -> Int64 {
+        var info = stat()
+        guard lstat(machineStateDirectory(id: id), &info) == 0 else { return 1 }
+        let time = info.st_birthtimespec.tv_sec > 0
+            ? info.st_birthtimespec : info.st_ctimespec
+        guard time.tv_sec > 0 else { return 1 }
+        let seconds = Int64(time.tv_sec)
+        let (milliseconds, overflow) = seconds.multipliedReportingOverflow(by: 1_000)
+        guard !overflow else { return Int64.max }
+        let nanos = max(Int64(0), Int64(time.tv_nsec)) / 1_000_000
+        let (result, additionOverflow) = milliseconds.addingReportingOverflow(nanos)
+        return additionOverflow ? Int64.max : max(1, result)
+    }
+
+    private static func workspaceMigrationAuthorityData(
+        _ facts: DoryMachineConfigurationMigrationFacts
+    ) throws -> Data {
+        let authority = WorkspaceMigrationAuthorityFacts(
+            guestArchitecture: facts.guestArchitecture,
+            systemDiskCapacityBytes: facts.systemDiskCapacityBytes,
+            installedEFIBoot: facts.installedEFIBoot,
+            lifecycle: facts.lifecycle
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        return try encoder.encode(authority)
+    }
+
+    private func setWorkspaceProjectionDiagnostic(
+        _ diagnostic: DoryWorkspaceProjectionDiagnostic,
+        id: String
+    ) {
+        lock.lock()
+        workspaceProjectionDiagnostics[id] = diagnostic
+        lock.unlock()
     }
 
     private func persistSnapshot(_ snapshot: DoryMachineSnapshot) throws {
@@ -3183,6 +3396,18 @@ public final class MachineManager: @unchecked Sendable {
     private static func isPrivateDirectory(path: String) -> Bool {
         var info = stat()
         return lstat(path, &info) == 0 && isPrivateDirectory(info: info)
+    }
+
+    /// Workspace records share MachineManager's state root. Tighten an existing owned directory
+    /// without following links; failure merely leaves projection publishing unavailable.
+    private static func restrictWorkspaceProjectionRootIfOwned(_ path: String) {
+        var info = stat()
+        guard lstat(path, &info) == 0,
+              (info.st_mode & S_IFMT) == S_IFDIR,
+              info.st_uid == getuid() else {
+            return
+        }
+        _ = chmod(path, mode_t(0o700))
     }
 
     private static func isDirectory(path: String) -> Bool {
@@ -3836,6 +4061,13 @@ private enum MachineSnapshotBundle {
         }
         return Data(bytes)
     }
+}
+
+private struct WorkspaceMigrationAuthorityFacts: Codable {
+    var guestArchitecture: DoryGuestArchitecture
+    var systemDiskCapacityBytes: UInt64?
+    var installedEFIBoot: DoryMachineConfigurationInstalledEFIBoot?
+    var lifecycle: DoryVMLifecycleMetadata
 }
 
 private struct MachineEntry {

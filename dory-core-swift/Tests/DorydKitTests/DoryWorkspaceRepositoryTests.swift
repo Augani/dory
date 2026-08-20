@@ -66,7 +66,122 @@ struct DoryWorkspaceRepositoryTests {
                     authoritativeLegacyData: secondLegacy
                 ) == reconciled
             )
+            #expect(throws: DoryWorkspaceRepositoryError.invalidRevision(expected: 3, actual: 1)) {
+                try repository.publishLegacyProjection(
+                    workspace,
+                    authoritativeLegacyData: firstLegacy
+                )
+            }
+            #expect(
+                try repository.readLegacyProjection(
+                    id: workspace.identity.id,
+                    authoritativeLegacyData: secondLegacy
+                ) == reconciled
+            )
         }
+    }
+
+    @Test("facts-bound projections require both exact authorities")
+    func factsBoundProjectionAuthority() throws {
+        try withRepository { repository, _ in
+            let legacy = Data("legacy-v1".utf8)
+            let factsA = Data("facts-a".utf8)
+            let factsB = Data("facts-b".utf8)
+            let workspace = definition()
+
+            let result = try repository.reconcileLegacyProjection(
+                workspace,
+                authoritativeLegacyData: legacy,
+                authoritativeMigrationFactsData: factsA
+            )
+            #expect(result.state == .published)
+            #expect(
+                try repository.readLegacyProjection(
+                    id: workspace.identity.id,
+                    authoritativeLegacyData: legacy,
+                    authoritativeMigrationFactsData: factsA
+                ) == workspace
+            )
+            #expect(throws: DoryWorkspaceRepositoryError.staleLegacyProjection(workspace.identity.id)) {
+                _ = try repository.readLegacyProjection(
+                    id: workspace.identity.id,
+                    authoritativeLegacyData: legacy,
+                    authoritativeMigrationFactsData: factsB
+                )
+            }
+            #expect(throws: DoryWorkspaceRepositoryError.staleLegacyProjection(workspace.identity.id)) {
+                _ = try repository.readLegacyProjection(
+                    id: workspace.identity.id,
+                    authoritativeLegacyData: legacy
+                )
+            }
+            #expect(throws: DoryWorkspaceRepositoryError.staleLegacyProjection(workspace.identity.id)) {
+                try repository.publishLegacyProjection(
+                    workspace,
+                    authoritativeLegacyData: legacy
+                )
+            }
+        }
+    }
+
+    @Test("legacy publication cannot overwrite native or ambiguously corrupt v2 state")
+    func legacyCannotOverwriteNativeState() throws {
+        try withRepository { repository, root in
+            let workspace = definition()
+            try repository.create(workspace)
+            let path = recordPath(root: root, id: workspace.identity.id)
+            let nativeBytes = try Data(contentsOf: URL(fileURLWithPath: path))
+
+            #expect(throws: DoryWorkspaceRepositoryError.legacyAuthorityRequired(workspace.identity.id)) {
+                try repository.publishLegacyProjection(
+                    workspace,
+                    authoritativeLegacyData: Data("legacy".utf8)
+                )
+            }
+            #expect(try Data(contentsOf: URL(fileURLWithPath: path)) == nativeBytes)
+
+            let corruptNative = Data("{\"schemaVersion\":1,\"definition\":{}}".utf8)
+            try corruptNative.write(to: URL(fileURLWithPath: path), options: .atomic)
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o600],
+                ofItemAtPath: path
+            )
+            #expect(throws: DoryWorkspaceRepositoryError.self) {
+                _ = try repository.reconcileLegacyProjection(
+                    workspace,
+                    authoritativeLegacyData: Data("legacy".utf8),
+                    authoritativeMigrationFactsData: Data("facts".utf8)
+                )
+            }
+            #expect(try Data(contentsOf: URL(fileURLWithPath: path)) == corruptNative)
+        }
+    }
+
+    @Test("golden prior repository record decodes without migration facts digest")
+    func priorRecordCompatibility() throws {
+        let workspace = definition()
+        let definitionJSON = try #require(String(
+            data: JSONEncoder().encode(workspace),
+            encoding: .utf8
+        ))
+        let legacyDigest = String(repeating: "a", count: 64)
+        let priorRecord = Data(
+            """
+            {
+              "definition": \(definitionJSON),
+              "legacyConfigurationSHA256": "\(legacyDigest)",
+              "schemaVersion": 1
+            }
+            """.utf8
+        )
+
+        let decoded = try JSONDecoder().decode(
+            DoryWorkspaceRepositoryRecord.self,
+            from: priorRecord
+        )
+        #expect(decoded.definition == workspace)
+        #expect(decoded.legacyConfigurationSHA256 == legacyDigest)
+        #expect(decoded.legacyMigrationFactsSHA256 == nil)
     }
 
     @Test("invalid definitions and revision or identity changes fail before publication")
@@ -211,5 +326,9 @@ struct DoryWorkspaceRepositoryTests {
                 updatedAtUnixMilliseconds: 1_700_000_000_000
             )
         )
+    }
+
+    private func recordPath(root: String, id: String) -> String {
+        root + "/" + id + "/" + DoryWorkspaceRepository.recordFileName
     }
 }

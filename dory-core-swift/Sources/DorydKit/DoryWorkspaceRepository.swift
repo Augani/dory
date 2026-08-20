@@ -47,7 +47,7 @@ public enum DoryWorkspaceRepositoryError: Error, Sendable, Equatable, CustomStri
 
 /// One durable desired-state record.
 ///
-/// During migration, `legacyConfigurationSHA256` binds the v2 definition to the exact canonical
+/// During migration, `legacyConfigurationSHA256` binds the v2 definition to the exact raw
 /// `DoryMachineConfiguration` bytes that remain authoritative. Once all consumers use the v2
 /// contract, authoritative records omit this digest and use optimistic lifecycle revisions.
 public struct DoryWorkspaceRepositoryRecord: Codable, Sendable, Equatable {
@@ -55,14 +55,76 @@ public struct DoryWorkspaceRepositoryRecord: Codable, Sendable, Equatable {
 
     public let schemaVersion: UInt16
     public let legacyConfigurationSHA256: String?
+    /// Digest of canonical non-lifecycle facts used by the legacy migration bridge. Raw metadata
+    /// alone is insufficient because artifact inspection can change the boot contract in place.
+    public let legacyMigrationFactsSHA256: String?
     public let definition: DoryVirtualMachineDefinition
 
     public init(
         definition: DoryVirtualMachineDefinition,
-        legacyConfigurationSHA256: String? = nil
+        legacyConfigurationSHA256: String? = nil,
+        legacyMigrationFactsSHA256: String? = nil
     ) {
         schemaVersion = Self.schemaVersion
         self.legacyConfigurationSHA256 = legacyConfigurationSHA256
+        self.legacyMigrationFactsSHA256 = legacyMigrationFactsSHA256
+        self.definition = definition
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion
+        case legacyConfigurationSHA256
+        case legacyMigrationFactsSHA256
+        case definition
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try container.decode(UInt16.self, forKey: .schemaVersion)
+        legacyConfigurationSHA256 = try container.decodeIfPresent(
+            String.self,
+            forKey: .legacyConfigurationSHA256
+        )
+        // Records written before facts became part of legacy authority do not contain this key.
+        legacyMigrationFactsSHA256 = try container.decodeIfPresent(
+            String.self,
+            forKey: .legacyMigrationFactsSHA256
+        )
+        definition = try container.decode(
+            DoryVirtualMachineDefinition.self,
+            forKey: .definition
+        )
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(schemaVersion, forKey: .schemaVersion)
+        try container.encodeIfPresent(
+            legacyConfigurationSHA256,
+            forKey: .legacyConfigurationSHA256
+        )
+        try container.encodeIfPresent(
+            legacyMigrationFactsSHA256,
+            forKey: .legacyMigrationFactsSHA256
+        )
+        try container.encode(definition, forKey: .definition)
+    }
+}
+
+public enum DoryWorkspaceLegacyProjectionReconcileState: String, Sendable, Equatable {
+    case unchanged
+    case published
+}
+
+public struct DoryWorkspaceLegacyProjectionReconcileResult: Sendable, Equatable {
+    public let state: DoryWorkspaceLegacyProjectionReconcileState
+    public let definition: DoryVirtualMachineDefinition
+
+    public init(
+        state: DoryWorkspaceLegacyProjectionReconcileState,
+        definition: DoryVirtualMachineDefinition
+    ) {
+        self.state = state
         self.definition = definition
     }
 }
@@ -158,14 +220,146 @@ public final class DoryWorkspaceRepository: @unchecked Sendable {
             throw DoryWorkspaceRepositoryError.staleLegacyProjection(definition.identity.id)
         }
         let directory = try prepareWorkspaceDirectory(id: definition.identity.id)
+        let path = directory + "/\(Self.recordFileName)"
+        let replacing = Self.pathExists(path)
+        if replacing {
+            let current = try readRecordUnlocked(id: definition.identity.id)
+            guard current.legacyConfigurationSHA256 != nil else {
+                throw DoryWorkspaceRepositoryError.legacyAuthorityRequired(definition.identity.id)
+            }
+            // This compatibility API cannot validate facts-bound projections. Require callers to
+            // use reconcileLegacyProjection rather than silently dropping half the authority.
+            guard current.legacyMigrationFactsSHA256 == nil else {
+                throw DoryWorkspaceRepositoryError.staleLegacyProjection(definition.identity.id)
+            }
+            guard current.definition.lifecycle.revision < UInt64.max,
+                  definition.lifecycle.revision
+                    == current.definition.lifecycle.revision + 1 else {
+                throw DoryWorkspaceRepositoryError.invalidRevision(
+                    expected: current.definition.lifecycle.revision == UInt64.max
+                        ? UInt64.max : current.definition.lifecycle.revision + 1,
+                    actual: definition.lifecycle.revision
+                )
+            }
+            guard definition.identity.id == current.definition.identity.id,
+                  definition.lifecycle.createdAtUnixMilliseconds
+                    == current.definition.lifecycle.createdAtUnixMilliseconds else {
+                throw DoryWorkspaceRepositoryError.identityChanged(definition.identity.id)
+            }
+        } else {
+            guard definition.lifecycle.revision == 1 else {
+                throw DoryWorkspaceRepositoryError.invalidRevision(
+                    expected: 1,
+                    actual: definition.lifecycle.revision
+                )
+            }
+        }
         let record = DoryWorkspaceRepositoryRecord(
             definition: definition,
             legacyConfigurationSHA256: Self.sha256(authoritativeLegacyData)
         )
         try publish(
             record,
-            path: directory + "/\(Self.recordFileName)",
-            replacing: Self.pathExists(directory + "/\(Self.recordFileName)")
+            path: path,
+            replacing: replacing
+        )
+    }
+
+    /// Atomically reconcile a derived legacy projection and its two-part authority tuple.
+    ///
+    /// An exact metadata+facts restart does not rewrite or bump. Any changed bytes, changed facts,
+    /// or changed derived definition advances the revision while retaining `createdAt`. Invalid
+    /// projections can be regenerated, but a native v2 record is never overwritten by legacy.
+    public func reconcileLegacyProjection(
+        _ candidate: DoryVirtualMachineDefinition,
+        authoritativeLegacyData: Data,
+        authoritativeMigrationFactsData: Data
+    ) throws -> DoryWorkspaceLegacyProjectionReconcileResult {
+        lock.lock()
+        defer { lock.unlock() }
+        try Self.validate(candidate)
+        guard !authoritativeLegacyData.isEmpty, !authoritativeMigrationFactsData.isEmpty else {
+            throw DoryWorkspaceRepositoryError.staleLegacyProjection(candidate.identity.id)
+        }
+
+        let directory = try prepareWorkspaceDirectory(id: candidate.identity.id)
+        let path = directory + "/\(Self.recordFileName)"
+        let legacyDigest = Self.sha256(authoritativeLegacyData)
+        let factsDigest = Self.sha256(authoritativeMigrationFactsData)
+        let pathExists = Self.pathExists(path)
+        let current: DoryWorkspaceRepositoryRecord?
+        if pathExists {
+            do {
+                current = try readRecordUnlocked(id: candidate.identity.id)
+            } catch {
+                // A damaged legacy-derived projection is disposable and can be recreated from
+                // authority. Native v2 state and ambiguous damage must never be overwritten.
+                guard try Self.hasRecoverableLegacyAuthorityMarker(path: path) else {
+                    throw error
+                }
+                current = nil
+            }
+        } else {
+            current = nil
+        }
+
+        if let current {
+            guard current.legacyConfigurationSHA256 != nil else {
+                throw DoryWorkspaceRepositoryError.legacyAuthorityRequired(candidate.identity.id)
+            }
+            var sameLifecycleCandidate = candidate
+            sameLifecycleCandidate.lifecycle = current.definition.lifecycle
+            if current.legacyConfigurationSHA256 == legacyDigest,
+               current.legacyMigrationFactsSHA256 == factsDigest,
+               current.definition == sameLifecycleCandidate {
+                return DoryWorkspaceLegacyProjectionReconcileResult(
+                    state: .unchanged,
+                    definition: current.definition
+                )
+            }
+            guard current.definition.lifecycle.revision < UInt64.max else {
+                throw DoryWorkspaceRepositoryError.invalidRevision(
+                    expected: UInt64.max,
+                    actual: UInt64.max
+                )
+            }
+            var replacement = candidate
+            replacement.lifecycle = DoryVMLifecycleMetadata(
+                revision: current.definition.lifecycle.revision + 1,
+                createdAtUnixMilliseconds: current.definition.lifecycle.createdAtUnixMilliseconds,
+                updatedAtUnixMilliseconds: Self.nextUpdatedTimestamp(
+                    previous: current.definition.lifecycle.updatedAtUnixMilliseconds,
+                    proposed: candidate.lifecycle.updatedAtUnixMilliseconds
+                )
+            )
+            try Self.validate(replacement)
+            let record = DoryWorkspaceRepositoryRecord(
+                definition: replacement,
+                legacyConfigurationSHA256: legacyDigest,
+                legacyMigrationFactsSHA256: factsDigest
+            )
+            try publish(record, path: path, replacing: true)
+            return DoryWorkspaceLegacyProjectionReconcileResult(
+                state: .published,
+                definition: replacement
+            )
+        }
+
+        guard candidate.lifecycle.revision == 1 else {
+            throw DoryWorkspaceRepositoryError.invalidRevision(
+                expected: 1,
+                actual: candidate.lifecycle.revision
+            )
+        }
+        let record = DoryWorkspaceRepositoryRecord(
+            definition: candidate,
+            legacyConfigurationSHA256: legacyDigest,
+            legacyMigrationFactsSHA256: factsDigest
+        )
+        try publish(record, path: path, replacing: pathExists)
+        return DoryWorkspaceLegacyProjectionReconcileResult(
+            state: .published,
+            definition: candidate
         )
     }
 
@@ -189,7 +383,29 @@ public final class DoryWorkspaceRepository: @unchecked Sendable {
         guard let expectedDigest = record.legacyConfigurationSHA256 else {
             throw DoryWorkspaceRepositoryError.invalidRecord(recordPath(id: id))
         }
+        guard record.legacyMigrationFactsSHA256 == nil else {
+            throw DoryWorkspaceRepositoryError.staleLegacyProjection(id)
+        }
         guard expectedDigest == Self.sha256(authoritativeLegacyData) else {
+            throw DoryWorkspaceRepositoryError.staleLegacyProjection(id)
+        }
+        return record.definition
+    }
+
+    public func readLegacyProjection(
+        id: String,
+        authoritativeLegacyData: Data,
+        authoritativeMigrationFactsData: Data
+    ) throws -> DoryVirtualMachineDefinition {
+        lock.lock()
+        defer { lock.unlock() }
+        let record = try readRecordUnlocked(id: id)
+        guard let expectedLegacyDigest = record.legacyConfigurationSHA256,
+              let expectedFactsDigest = record.legacyMigrationFactsSHA256 else {
+            throw DoryWorkspaceRepositoryError.invalidRecord(recordPath(id: id))
+        }
+        guard expectedLegacyDigest == Self.sha256(authoritativeLegacyData),
+              expectedFactsDigest == Self.sha256(authoritativeMigrationFactsData) else {
             throw DoryWorkspaceRepositoryError.staleLegacyProjection(id)
         }
         return record.definition
@@ -224,7 +440,10 @@ public final class DoryWorkspaceRepository: @unchecked Sendable {
               record.schemaVersion == DoryWorkspaceRepositoryRecord.schemaVersion,
               record.definition.identity.id == id,
               record.definition.validate().isEmpty,
-              record.legacyConfigurationSHA256.map(Self.isSHA256) ?? true else {
+              record.legacyConfigurationSHA256.map(Self.isSHA256) ?? true,
+              record.legacyMigrationFactsSHA256.map(Self.isSHA256) ?? true,
+              record.legacyMigrationFactsSHA256 == nil
+                || record.legacyConfigurationSHA256 != nil else {
             throw DoryWorkspaceRepositoryError.invalidRecord(path)
         }
         return record
@@ -460,5 +679,20 @@ public final class DoryWorkspaceRepository: @unchecked Sendable {
         value.utf8.count == 64 && value.utf8.allSatisfy { byte in
             (byte >= 48 && byte <= 57) || (byte >= 97 && byte <= 102)
         }
+    }
+
+    private static func hasRecoverableLegacyAuthorityMarker(path: String) throws -> Bool {
+        let data = try secureRead(path: path)
+        guard let object = try? JSONSerialization.jsonObject(with: data),
+              let dictionary = object as? [String: Any],
+              let digest = dictionary["legacyConfigurationSHA256"] as? String else {
+            return false
+        }
+        return isSHA256(digest)
+    }
+
+    private static func nextUpdatedTimestamp(previous: Int64, proposed: Int64) -> Int64 {
+        guard previous < Int64.max else { return Int64.max }
+        return max(previous + 1, proposed)
     }
 }
