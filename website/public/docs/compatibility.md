@@ -18,7 +18,8 @@
   and a default container `nofile` limit of 65536
 - Common linux/amd64 images on Apple Silicon through FEX
 - k3s v1.34, v1.35, and v1.36 presets
-- Persistent arm64 Linux machines: managed Debian 13, Ubuntu 24.04 LTS, and Kali rolling Xfce desktops plus lightweight Alpine headless VMs, with resources, scoped mounts, network addresses, recipes, snapshots, clone, import, export, and verified scheduled local recovery bundles
+- Persistent arm64 Linux machines: managed Ubuntu 24.04 LTS GNOME and Debian 13/Kali rolling Xfce desktops plus lightweight Alpine headless VMs, with resources, scoped mounts, network addresses, recipes, snapshots, clone, import, export, verified scheduled local recovery bundles, and signed in-place desktop updates with automatic rollback
+- Hardware Vulkan in managed arm64 desktops through Dory's isolated, capability-probed Venus runtime, with automatic fallback to classic VirGL and software
 - Managed `.dorydrive` storage, sparse growth, verified backup, restore, and external local APFS drives
 - Transactional full or exact-selection migration from detected Docker-compatible engines, with dependency closure, rollback, source-drift rejection, and selected/verified/omitted completeness evidence
 - Localhost ports, optional local domains and HTTPS, built-in low-port forwarding, custom resolver and proxy ports, and opt-in LAN access
@@ -41,7 +42,7 @@ Compatibility can vary when a client depends on another product's private paths,
 
 ## Current machine boundary
 
-Desktop machines run normal graphical and command-line applications with Debian 13, Ubuntu 24.04 LTS, or Kali rolling, plus glibc, systemd, Xfce, Bash, and a configurable login user. Their window uses a true 2x guest framebuffer, dynamically follows its Mac window, and applies matching Xfce scaling. Headless machines use Alpine, musl, `root`, and `/bin/sh`. Arbitrary desktop images and guest kernel modules are outside the current contract.
+Desktop machines run normal graphical and command-line applications with Ubuntu 24.04 LTS GNOME or Debian 13/Kali rolling Xfce, plus glibc, systemd, Bash, and a configurable login user. Their window uses a true 2x guest framebuffer, dynamically follows its Mac window, and applies matching desktop scaling. Headless machines use Alpine, musl, `root`, and `/bin/sh`. User-selected arm64 EFI installer ISOs are preview: Dory separates architecture preflight from exact-media/host runtime evidence, privately stages accepted media, and preserves disk, NVRAM, and install-media lifecycle. Other arbitrary desktop images and guest kernel modules are outside the current contract.
 
 ## Supported
 
@@ -56,7 +57,12 @@ Desktop machines run normal graphical and command-line applications with Debian 
 
 ## Preview
 
-- In-guest Venus/Vulkan acceleration on the Apple-silicon raw-HV tier.
+- Custom arm64 Linux installation from ISO through EFI until installation, reboot, media ejection,
+  devices, and guest integration pass the exact-candidate physical-Mac matrix.
+  Ubuntu 24.04.3 and 24.04.4 are known unstable on Mac14,10/macOS build 26A5406e with the retired
+  VirtIO-block EFI profile. The current native-NVMe/fsync profile completed Ubuntu 24.04.3 install,
+  updates, ISO ejection, and persistent GNOME/Chrome boot, but a later Chromium-install guest stall
+  keeps that exact tuple unqualified.
 - Remote SSH workspace foundations and custom machine kernel/rootfs inputs within their published
   image and trust limits.
 
@@ -64,7 +70,7 @@ Desktop machines run normal graphical and command-line applications with Debian 
 
 - USB attach, detach, and replay until the guest USB/IP RPC and physical qualification exist
 - Intel host builds before dedicated physical qualification
-- Desktop images beyond the managed Debian, Ubuntu, and Kali Xfce profiles
+- Complete x86_64 guest operating systems on Apple Silicon hardware virtualization
 - Audio passthrough
 - Managed remote/offsite machine backup or S3 backup
 - Third-party MCP catalog/gateway; Dory's local MCP controls Dory only

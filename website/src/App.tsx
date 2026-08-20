@@ -287,21 +287,21 @@ const surfaces: Array<{
     icon: ServerStackIcon,
     label: 'Real Linux machines',
     title: 'A full Linux desktop beside your containers.',
-    copy: 'Create a managed Debian, Ubuntu, or Kali Xfce desktop for graphical and command-line apps, or choose lightweight headless Linux for services and agents.',
+    copy: 'Create a managed Ubuntu GNOME or Debian/Kali Xfce desktop for graphical and command-line apps, or choose lightweight headless Linux for services and agents.',
     facts: ['Three desktop distributions', 'Scoped Mac folders', 'Snapshot and clone'],
     command: 'dory machine shell dev',
   },
 ]
 
 const desktopDistros = [
-  ['Debian', '13', 'Stable, clean desktop for everyday Linux and development', '#a80030'],
-  ['Ubuntu', '24.04 LTS', 'A familiar long-term-support base for development and daily work', '#e95420'],
-  ['Kali Linux', 'Rolling', 'A focused security lab backed by Kali\'s official rolling repository', '#367bf0'],
+  ['Debian', '13', 'Xfce', 'Stable, clean desktop for everyday Linux and development', '#a80030'],
+  ['Ubuntu', '24.04 LTS', 'GNOME', 'Canonical\'s familiar long-term-support desktop for development and daily work', '#e95420'],
+  ['Kali Linux', 'Rolling', 'Xfce', 'A focused security lab backed by Kali\'s official rolling repository', '#367bf0'],
 ]
 
 const desktopCapabilities = [
-  ['Real Linux guest', 'Native arm64, systemd, Xfce, Bash, apt, and normal graphical or command-line applications'],
-  ['Retina display', 'A true 2x guest framebuffer follows the window and keeps the Xfce desktop sharp as it resizes'],
+  ['Real Linux guest', 'Native arm64, systemd, GNOME or Xfce, Bash, apt, and normal graphical or command-line applications'],
+  ['Retina display', 'A true 2x guest framebuffer follows the window and keeps the selected desktop sharp as it resizes'],
   ['Your identity', 'Choose the Linux username, CPU, memory, development recipe, and only the Mac folders to share'],
   ['Persistent and recoverable', 'A thin 64 GiB disk lives in the selected .dorydrive with snapshots, clone, import, and export'],
 ]
@@ -382,7 +382,7 @@ const faqs = [
   },
   {
     question: 'Are Linux machines full desktop VMs?',
-    answer: 'Yes on Apple Silicon. Choose managed Debian 13, Ubuntu 24.04 LTS, or Kali rolling with systemd, Xfce, Bash, a configurable user, a Retina-sharp resizable display, and a 64 GiB thin-provisioned disk. Lightweight Alpine headless machines remain available for terminal and service workloads.',
+    answer: 'Yes on Apple Silicon. Choose Ubuntu 24.04 LTS with Canonical\'s GNOME session, or Debian 13 and Kali rolling with Xfce. Each has systemd, Bash, a configurable user, a Retina-sharp resizable display, and a 64 GiB thin-provisioned disk. Signed component updates preserve the guest and keep a last-good snapshot for automatic rollback. Lightweight Alpine headless machines remain available for terminal and service workloads.',
   },
   {
     question: 'Which Dory components should I install?',
@@ -399,9 +399,9 @@ const faqs = [
 ]
 
 const releaseStates = [
-  ['Supported', 'Docker, Compose, Kubernetes, Linux desktops and servers, migration, storage, networking, health, MCP, policy-enforced sandbox VMs, and USB discovery'],
-  ['Preview', 'In-guest Venus/Vulkan, remote SSH workspace foundations, and bounded custom machine images'],
-  ['Unavailable', 'USB passthrough, Intel host releases, desktop images beyond Debian/Ubuntu/Kali, and audio passthrough'],
+  ['Supported', 'Docker, Compose, Kubernetes, hardware-accelerated Linux desktops and servers, migration, storage, networking, health, MCP, policy-enforced sandbox VMs, and USB discovery'],
+  ['Preview', 'Remote SSH workspace foundations and bounded custom machine images'],
+  ['Unavailable', 'USB passthrough, Intel host releases, and desktop images beyond Debian/Ubuntu/Kali'],
 ]
 
 type DemoView = 'containers' | 'kubernetes' | 'machines'
@@ -528,7 +528,7 @@ function KubernetesDemo() {
 
 function MachinesDemo({ tick }: { tick: number }) {
   const machines = [
-    { name: 'workbench', status: 'Running', cpu: 8.6 + (tick % 4), memory: '2.4 GB', address: '192.168.127.11', shell: 'augustus · /bin/bash', distro: 'Ubuntu 24.04 LTS · Xfce · arm64' },
+    { name: 'workbench', status: 'Running', cpu: 8.6 + (tick % 4), memory: '2.4 GB', address: '192.168.127.11', shell: 'augustus · /bin/bash', distro: 'Ubuntu 24.04 LTS · GNOME · arm64' },
     { name: 'security-lab', status: 'Stopped', cpu: 0, memory: 'Not running', address: 'security-lab.dory.local', shell: 'analyst · /bin/bash', distro: 'Kali Linux Rolling · Xfce · arm64' },
   ]
   return (
@@ -853,10 +853,10 @@ function App() {
               distribution, login user, resources, development tools, and only the Mac folders it
               should see. Then open its desktop or terminal without leaving Dory.</p>
             <div className="desktop-distros">
-              {desktopDistros.map(([name, version, copy, color]) => (
+              {desktopDistros.map(([name, version, desktop, copy, color]) => (
                 <article key={name} style={{ '--distro-color': color } as CSSProperties}>
                   <i>{name.slice(0, 1)}</i>
-                  <div><h3>{name}</h3><small>{version} · Xfce · arm64</small><p>{copy}</p></div>
+                  <div><h3>{name}</h3><small>{version} · {desktop} · arm64</small><p>{copy}</p></div>
                 </article>
               ))}
             </div>

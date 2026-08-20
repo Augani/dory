@@ -68,20 +68,26 @@ engine resources.
 
 | Capability | Status |
 |---|---|
-| Guest OS | Managed Debian 13, Ubuntu 24.04 LTS, or Kali rolling Xfce desktop; lightweight Alpine headless Linux on native arm64 |
+| Guest OS | Managed Ubuntu 24.04 LTS GNOME, Debian 13 Xfce, or Kali rolling Xfce desktop; lightweight Alpine headless Linux on native arm64 |
 | Access | Configurable desktop user, graphical session, embedded or selected external terminal, `dory machine shell`, and command execution |
 | Resources | CPU and memory configuration with guest-reported statistics |
 | Snapshots and export/import | Supported |
 | Scheduled local recovery bundles | Supported; owner-only durable schedules, archive re-import verification on every run, periodic disposable boot verification, and scheduler-owned retention |
 | Managed remote/offsite machine backup | **Unavailable**; Dory does not claim an S3 or hosted backup service |
 | Development recipes | Curated Node, Python, Go, Rust, Java, Ruby, and DevOps toolsets for Debian and Alpine |
-| Graphical Linux sessions | Supported with managed Debian, Ubuntu, and Kali Xfce profiles on Apple Silicon |
-| Desktop display | Retina-sharp 2x framebuffer, dynamic window resizing, and matching Xfce scaling |
+| Graphical Linux sessions | Supported with managed Ubuntu GNOME and Debian/Kali Xfce profiles on Apple Silicon |
+| Desktop display | Retina-sharp 2x framebuffer, dynamic window resizing, and matching GNOME or Xfce scaling |
+| Desktop Vulkan | Supported through Dory's isolated, capability-probed Venus runtime on Apple-silicon raw-HV; Automatic falls back to classic VirGL and software when unavailable |
+| Existing desktop updates | Signed in-place package, browser, guest-integration, and kernel updates with a retained last-good snapshot and automatic failure/interruption rollback |
+| Custom arm64 installer ISO | Preview: architecture preflight, exact-media SHA-256/runtime evidence, native EFI boot, private managed ISO copy and recovery console, thin-provisioned disk, persistent machine identity/NVRAM, and attach/eject lifecycle |
 
-Desktop machines run normal graphical and command-line applications with glibc and systemd. Their
-disk is thin-provisioned to 64 GiB in the selected Dory data drive. Headless machines use Alpine,
-musl, `root`, and `/bin/sh`. Arbitrary desktop images and guest kernel modules are not part of the
-current contract.
+Managed desktop machines run normal graphical and command-line applications with glibc and systemd.
+Their disk is thin-provisioned to 64 GiB in the selected Dory data drive. Headless machines use
+Alpine, musl, `root`, and `/bin/sh`. Custom arm64 ISO installation is preview until real-distribution
+installation, reboot, media-ejection, device, and guest-tools qualification passes on physical Macs.
+Architecture compatibility does not imply runtime qualification: Dory records the exact ISO hash,
+host model, and macOS build, blocks known-unstable tuples, and labels unseen combinations as
+unqualified.
 
 ## Networking
 
@@ -127,7 +133,7 @@ grants; `full` is an explicit unrestricted choice. See the
 
 ## Preview
 
-- In-guest Venus/Vulkan acceleration is preview on the Apple-silicon raw-HV tier.
+- Custom arm64 Linux installation from ISO through EFI is preview pending exact-candidate physical-Mac qualification. Ubuntu 24.04.3 and 24.04.4 ARM64 are known unstable on Mac14,10/macOS build 26A5406e with Dory's retired VirtIO-block EFI profile. Under the current native-NVMe/fsync profile, Ubuntu 24.04.3 completed installation, package updates, ISO ejection, and persistent GNOME/Chrome boot, but a later whole-guest stall during Chromium snap installation keeps that exact tuple unqualified.
 - Remote SSH workspace foundations and custom machine kernel/rootfs inputs remain preview with the
   exact limits reported by `dory agent guide --json`.
 
@@ -137,7 +143,6 @@ grants; `full` is an explicit unrestricted choice. See the
   engine fails closed until a complete guest USB/IP RPC and physical qualification exist.
 - Audio passthrough is unavailable.
 - Intel-host public builds are unavailable before dedicated physical qualification.
-- Desktop images beyond the managed Debian, Ubuntu, and Kali Xfce profiles are unavailable.
 - Managed image update discovery/replacement, mDNS/multicast relay, and general L2 bridging are
   unavailable in 0.4.
 

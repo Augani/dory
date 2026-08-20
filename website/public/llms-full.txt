@@ -12,10 +12,10 @@ Telemetry: none
 Dory has three distinct execution surfaces:
 
 1. The shared container engine is one persistent Linux VM that serves the Docker API. Docker containers, images, volumes, networks, Compose, BuildKit, and k3s use this engine.
-2. Dory Linux machines are separate persistent arm64 VMs. Managed Debian 13, Ubuntu 24.04 LTS, and Kali rolling Xfce desktops have configurable users and Retina-sharp resizable displays; lightweight Alpine headless machines retain root /bin/sh. Each has its own disk, address, resources, scoped mounts, and snapshots.
+2. Dory Linux machines are separate persistent arm64 VMs. Managed Ubuntu 24.04 LTS GNOME and Debian 13/Kali rolling Xfce desktops have configurable users, Retina-sharp resizable displays, and signed in-place updates with automatic last-good snapshot rollback; lightweight Alpine headless machines retain root /bin/sh. Each has its own disk, address, resources, scoped mounts, and snapshots.
 3. Agent sandboxes are supported, dedicated Dory Linux VMs created for bounded non-root commands. They have no ambient host files, network, or credentials and are deleted by default.
 
-Do not describe a Dory Linux machine as a container. Inspect its display mode and identity: desktop machines use the selected managed Debian, Ubuntu, or Kali profile with systemd, Xfce, Bash, and a configurable user; headless machines are Alpine-based, root, and /bin/sh.
+Do not describe a Dory Linux machine as a container. Inspect its display mode and identity: Ubuntu desktop machines use GNOME, Debian and Kali desktop machines use Xfce, and all three use systemd, Bash, and a configurable user; headless machines are Alpine-based, root, and /bin/sh.
 
 ## Installation and host tools
 
@@ -219,7 +219,7 @@ and deliberately omitted objects. Dory never deletes source data.
     dory machine backup run NAME
     dory machine backup remove NAME
 
-The app has separate Linux Desktops and Linux Servers areas. Desktop creation selects Debian 13, Ubuntu 24.04 LTS, or Kali rolling, a login user, CPU, memory, optional development recipe, Mac home sharing, and scoped mounts. Desktop windows render at a true 2x guest framebuffer, follow window resizing, and configure matching Xfce scaling. A new graphical machine requires its matching `desktop-*` component; a headless machine requires `linux-machines`.
+The app has separate Linux Desktops and Linux Servers areas. Desktop creation selects Debian 13 Xfce, Ubuntu 24.04 LTS GNOME, or Kali rolling Xfce, a login user, CPU, memory, optional development recipe, Mac home sharing, and scoped mounts. Desktop windows render at a true 2x guest framebuffer, follow window resizing, and configure matching desktop scaling. A new graphical machine requires its matching `desktop-*` component; a headless machine requires `linux-machines`.
 
 The machine command also supports clone, import, export, and snapshot deletion. Destructive Dory
 commands repeat the exact target with `--confirm`; restore first creates and reports a retained

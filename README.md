@@ -54,7 +54,7 @@ or commercial-use tier. Dory is GPL-3.0 software and stores workload data on you
 |---|---|
 | Docker | Docker 29 API and CLI, Buildx, BuildKit, Compose v2, registries, bind mounts, volumes, and custom networks |
 | Native app | Containers, images, volumes, networks, Compose projects, Kubernetes, Linux machines, health, migration, and settings |
-| Linux machines | Full Debian 13, Ubuntu 24.04 LTS, and Kali rolling Xfce desktops plus lightweight Alpine headless VMs, with configurable resources, scoped mounts, networking, recipes, snapshots, clone, import, and export |
+| Linux machines | Full Ubuntu 24.04 LTS GNOME, Debian 13 Xfce, and Kali rolling Xfce desktops plus lightweight Alpine headless VMs, with configurable resources, scoped mounts, networking, recipes, snapshots, clone, import, and export |
 | Kubernetes | One-click k3s with selectable v1.34, v1.35, and v1.36 presets plus a native resource browser |
 | Migration | Transactional full or exact-selection import from Docker Desktop, OrbStack, Colima, Rancher Desktop, Podman, or another Docker-compatible socket, with a selected/verified/omitted completeness report |
 | Storage | One managed `.dorydrive`, external APFS drive support, sparse growth, verified backup, restore, and safe selection |
@@ -71,6 +71,16 @@ or commercial-use tier. Dory is GPL-3.0 software and stores workload data on you
   configurable, and free guest pages can be returned to macOS.
 - **Linux machines beside containers.** Machines are separate VMs with their own disk, address,
   resources, shell, shares, and snapshots. They are not disguised containers.
+- **Install custom arm64 Linux.** Choose an installer ISO and virtual-disk size in the desktop
+  creation flow. Dory fingerprints the exact media, reports architecture compatibility separately
+  from runtime qualification, and privately imports accepted bytes. It preserves the VM's EFI
+  identity and NVRAM; eject or reattach the ISO from the machine menu after installation. A private
+  bidirectional serial console supplies durable boot diagnostics and recovery input. Snapshots
+  preserve the disk and EFI firmware state together, including across export/import.
+- **Desktops update without recreation.** Signed Debian, Ubuntu, Kali, and graphical-kernel
+  component updates are applied to existing persistent guests. Dory creates a last-good snapshot,
+  preserves installed applications and user data, reboots and qualifies the desktop, and restores
+  the snapshot automatically if installation, boot, or qualification fails.
 - **Every important setting is in the app.** Engine resources, storage, migration, automatic and custom domains,
   low ports, LAN access, Auto-Idle, machine environment policy, USB, and managed defaults all have a
   graphical path.
@@ -114,7 +124,7 @@ migration, diagnostics, and recovery. The signed component catalog offers:
 | Linux Machines | Headless VPS-style Linux guests | Docker Core |
 | Linux Desktop Runtime | Shared graphical VM kernel | Docker Core |
 | Debian 13 Desktop | Debian 13 Xfce image | Linux Desktop Runtime |
-| Ubuntu 24.04 LTS Desktop | Ubuntu Xfce image | Linux Desktop Runtime |
+| Ubuntu 24.04 LTS Desktop | Canonical Ubuntu GNOME image | Linux Desktop Runtime |
 | Kali Linux Desktop | Kali rolling Xfce image | Linux Desktop Runtime |
 
 Component download and installed sizes come from the signed release catalog, not estimates. Dory
@@ -286,9 +296,9 @@ store, so push a built image to a registry or import it into the cluster before 
 Install Linux Machines for headless guests. Graphical guests additionally need the Linux Desktop
 Runtime and the selected Debian, Ubuntu, or Kali distribution component.
 
-Dory Linux machines are persistent, separate VMs rather than containers. The app offers full Xfce
-desktops based on Debian 13, Ubuntu 24.04 LTS, or Kali Linux rolling for graphical and command-line
-applications. A lightweight Alpine-based headless profile remains available for services,
+Dory Linux machines are persistent, separate VMs rather than containers. The app offers Canonical's
+Ubuntu 24.04 LTS GNOME desktop plus Debian 13 and Kali Linux rolling Xfce desktops for graphical and
+command-line applications. A lightweight Alpine-based headless profile remains available for services,
 terminals, test environments, and agent work. Each machine has its own disk, address, resources,
 shares, and snapshots.
 
@@ -297,7 +307,7 @@ From the app or CLI you can:
 - create, start, stop, delete, and inspect machines;
 - choose Desktop Linux or Headless Linux when creating a machine in the app;
 - choose 1 to 8 CPUs and 1 to 16 GiB of memory per machine;
-- configure the desktop Linux username, then use its Xfce session, embedded terminal, or an external
+- configure the desktop Linux username, then use its GNOME or Xfce session, embedded terminal, or an external
   terminal selected in Settings;
 - use a root shell for lightweight headless machines or `dory machine shell NAME`;
 - execute structured commands with `dory machine exec NAME --json -- COMMAND`;
@@ -336,12 +346,23 @@ deletes only scheduler-owned archives and snapshots; manual snapshots are never 
 local backup contract, not an S3 or managed offsite service, so copy important verified archives to
 independent storage as part of your normal backup policy.
 
-Desktop machines use native arm64 Debian 13, Ubuntu 24.04 LTS, or Kali rolling with systemd, Xfce,
-Bash, a configurable login user, and a 64 GiB thin-provisioned disk stored in the selected
+Desktop machines use native arm64 Ubuntu 24.04 LTS with GNOME or Debian 13 and Kali rolling with
+Xfce, plus systemd, Bash, a configurable login user, and a 64 GiB thin-provisioned disk stored in the selected
 `.dorydrive`. Their window follows the Mac display at a true 2x framebuffer, resizes dynamically,
-and configures Xfce for Retina-sharp text and controls. They run normal graphical and command-line
+and configures the selected desktop for Retina-sharp text and controls. They run normal graphical and command-line
 Linux applications and can mount the Mac home at `~/Mac` only when the user enables that share.
+Installing a newer desktop component updates matching existing guests in place; their automatic
+last-good snapshot remains available in the normal snapshot list for manual rollback.
 Headless machines retain the smaller Alpine, `root`, and `/bin/sh` contract.
+
+The custom ISO path accepts arm64 Linux installation media on Apple Silicon. It verifies the media
+architecture before allocation, computes an SHA-256 identity, and evaluates exact media/host
+runtime evidence separately; a known-unstable tuple is blocked while unknown media is clearly
+reported as unqualified. It uses native EFI and an NVMe root disk with fsync semantics, plus VirtIO
+display, network, audio, pointer, keyboard, clipboard, and memory-balloon devices; the distribution must include drivers for the
+devices it needs. Desktop ISO machines default to four vCPUs and 4 GB of memory as balanced resource
+defaults, not as compatibility claims. This path remains preview until the real-installer
+physical-Mac release matrix passes.
 
 ### Machine secrets and host access
 
@@ -686,9 +707,10 @@ docker run --rm \
 
 - **Unavailable — Intel hosts:** Apple Silicon is the only qualified host architecture. Intel support is planned for a later
   release after dedicated hardware validation.
-- **Supported — Desktop Linux:** managed Debian 13, Ubuntu 24.04 LTS, and Kali rolling Xfce arm64 profiles.
+- **Supported — Desktop Linux:** managed Ubuntu 24.04 LTS GNOME plus Debian 13 and Kali rolling Xfce arm64 profiles.
 - **Supported — Headless Linux:** Alpine-based arm64 guests with an initial root `/bin/sh` login.
-- **Preview — Venus/Vulkan:** opt-in on the Apple-silicon raw-HV path. Host AI services work without it.
+- **Supported — Desktop Venus/Vulkan:** managed arm64 desktops automatically use the isolated,
+  capability-probed Venus path for Vulkan apps, with ordered fallback to classic VirGL and software.
 - **Supported discovery / unavailable passthrough — USB:** host discovery is available. Attach, detach, and remembered replay are disabled
   until the engine has a complete guest USB/IP RPC and verified guest-kernel support.
 - **Unavailable — audio passthrough:** not part of the current release.

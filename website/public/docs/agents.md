@@ -65,7 +65,7 @@ servers and should not be described as an MCP catalog or gateway.
 dory machine exec dev --json -- /bin/sh -lc 'uname -a'
 ```
 
-The result uses `dev.dory.machine.exec v1` and includes command status and bounded output. Inspect each machine before choosing commands: desktop machines use the selected Debian, Ubuntu, or Kali profile with systemd, Xfce, Bash, and a configured user, while headless machines use Alpine with an initial root `/bin/sh` login.
+The result uses `dev.dory.machine.exec v1` and includes command status and bounded output. Inspect each machine before choosing commands: Ubuntu desktop machines use GNOME, Debian and Kali desktop machines use Xfce, and all three use systemd, Bash, and a configured user; headless machines use Alpine with an initial root `/bin/sh` login.
 
 Agents may inspect verified local backup schedules without changing them:
 
