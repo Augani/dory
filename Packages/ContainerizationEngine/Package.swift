@@ -35,6 +35,7 @@ let package = Package(
                 .linkedFramework("CoreServices"),
                 .linkedFramework("IOKit"),
                 .linkedFramework("IOUSBHost"),
+                .linkedFramework("OpenGL"),
             ]
         ),
         .executableTarget(
@@ -42,6 +43,16 @@ let package = Package(
             dependencies: [
                 "DoryHV",
                 .product(name: "DoryCore", package: "dory-core-swift"),
+                .product(name: "DorydKit", package: "dory-core-swift"),
+                .product(name: "DoryOperations", package: "dory-core-swift"),
+                .product(name: "DoryVMMKit", package: "dory-core-swift"),
+            ],
+            linkerSettings: [
+                .linkedFramework("AppKit"),
+                .linkedFramework("AVFAudio"),
+                .linkedFramework("AVFoundation"),
+                .linkedFramework("Metal"),
+                .linkedFramework("MetalKit"),
             ]
         ),
         .testTarget(

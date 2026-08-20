@@ -18,17 +18,29 @@ public enum GuestLayout {
     public static let virtioFirstIRQ: UInt32 = 16  // SPI numbers 16... (intid 48...)
     public static let ramBase: UInt64 = 0x8000_0000
     public static let dtbOffset: UInt64 = 256 << 20
+    /// Direct-boot initrds live beyond the kernel/DTB reservation while remaining well inside
+    /// the minimum supported 1-GiB guest. Keeping this deterministic also makes the DTB contract
+    /// straightforward to test and diagnose.
+    public static let initrdOffset: UInt64 = 320 << 20
     public static let daxWindowBase: UInt64 = 0xC_0000_0000
 }
 
 public struct MachineConfiguration {
     public var kernelPath: String
+    public var initrdPath: String?
     public var commandLine: String
     public var memoryBytes: UInt64
     public var cpuCount: Int
 
-    public init(kernelPath: String, commandLine: String, memoryBytes: UInt64, cpuCount: Int) {
+    public init(
+        kernelPath: String,
+        initrdPath: String? = nil,
+        commandLine: String,
+        memoryBytes: UInt64,
+        cpuCount: Int
+    ) {
         self.kernelPath = kernelPath
+        self.initrdPath = initrdPath
         self.commandLine = commandLine
         self.memoryBytes = memoryBytes
         self.cpuCount = cpuCount
@@ -125,11 +137,29 @@ public final class Machine: @unchecked Sendable {
         guard kernel.textOffset + kernel.imageSize < GuestLayout.dtbOffset else {
             throw VMError.bootFailure("kernel image overlaps DTB placement")
         }
-        let dtb = try buildDeviceTree()
+        let initrdRange = try loadInitrdIfPresent()
+        let dtb = try buildDeviceTree(initrdRange: initrdRange)
         try memory.write(dtb, at: dtbAddress)
     }
 
-    private func buildDeviceTree() throws -> [UInt8] {
+    private func loadInitrdIfPresent() throws -> Range<UInt64>? {
+        guard let path = configuration.initrdPath else { return nil }
+        let data = try Data(contentsOf: URL(fileURLWithPath: path), options: .mappedIfSafe)
+        guard !data.isEmpty else {
+            throw VMError.bootFailure("initrd is empty: \(path)")
+        }
+        let start = GuestLayout.ramBase + GuestLayout.initrdOffset
+        let (end, overflowed) = start.addingReportingOverflow(UInt64(data.count))
+        guard !overflowed,
+              end > start,
+              end <= GuestLayout.ramBase + configuration.memoryBytes else {
+            throw VMError.bootFailure("initrd does not fit in guest memory")
+        }
+        try memory.write(Array(data), at: start)
+        return start..<end
+    }
+
+    private func buildDeviceTree(initrdRange: Range<UInt64>?) throws -> [UInt8] {
         let gicPhandle: UInt32 = 1
         let clockPhandle: UInt32 = 2
         let virtualTimer = try Self.reservedIntid(HV_GIC_INT_EL1_VIRTUAL_TIMER)
@@ -148,6 +178,10 @@ public final class Machine: @unchecked Sendable {
         fdt.beginNode("chosen")
         fdt.property("bootargs", string: configuration.commandLine)
         fdt.property("stdout-path", string: "/pl011@\(String(GuestLayout.uartBase, radix: 16))")
+        if let initrdRange {
+            fdt.property("linux,initrd-start", cells64: [initrdRange.lowerBound])
+            fdt.property("linux,initrd-end", cells64: [initrdRange.upperBound])
+        }
         fdt.endNode()
 
         fdt.beginNode("memory@\(String(GuestLayout.ramBase, radix: 16))")
@@ -596,12 +630,20 @@ public enum GuestLayout {
 
 public struct MachineConfiguration {
     public var kernelPath: String
+    public var initrdPath: String?
     public var commandLine: String
     public var memoryBytes: UInt64
     public var cpuCount: Int
 
-    public init(kernelPath: String, commandLine: String, memoryBytes: UInt64, cpuCount: Int) {
+    public init(
+        kernelPath: String,
+        initrdPath: String? = nil,
+        commandLine: String,
+        memoryBytes: UInt64,
+        cpuCount: Int
+    ) {
         self.kernelPath = kernelPath
+        self.initrdPath = initrdPath
         self.commandLine = commandLine
         self.memoryBytes = memoryBytes
         self.cpuCount = cpuCount
@@ -648,6 +690,21 @@ public final class Machine: @unchecked Sendable {
         entryPoint = try kernel.load(into: memory)
         startInfoAddress = X86GuestLayout.pvhStartInfo
 
+        let initrdData = try configuration.initrdPath.map {
+            try Data(contentsOf: URL(fileURLWithPath: $0), options: .mappedIfSafe)
+        }
+        if let initrdData, initrdData.isEmpty {
+            throw VMError.bootFailure("initrd is empty: \(configuration.initrdPath ?? "")")
+        }
+        let initrdAddress = X86GuestLayout.initrd
+        if let initrdData {
+            let (end, overflowed) = initrdAddress.addingReportingOverflow(UInt64(initrdData.count))
+            guard !overflowed, end <= configuration.memoryBytes else {
+                throw VMError.bootFailure("initrd does not fit in guest memory")
+            }
+            try memory.write(Array(initrdData), at: initrdAddress)
+        }
+
         let plan = X86BootPlanBuilder.build(
             baseCommandLine: configuration.commandLine,
             memoryBytes: configuration.memoryBytes,
@@ -658,11 +715,16 @@ public final class Machine: @unchecked Sendable {
             commandLinePhysicalAddress: X86GuestLayout.pvhCommandLine,
             modulesPhysicalAddress: X86GuestLayout.pvhModules,
             memoryMapPhysicalAddress: X86GuestLayout.pvhMemoryMap,
-            modules: [],
+            modules: initrdData.map {
+                [PVHModule(physicalAddress: initrdAddress, size: UInt64($0.count))]
+            } ?? [],
             memoryMap: plan.memoryMap
         )
         try memory.write(Array(pvh.startInfo), at: X86GuestLayout.pvhStartInfo)
         try memory.write(Array(pvh.commandLine), at: X86GuestLayout.pvhCommandLine)
+        if !pvh.modules.isEmpty {
+            try memory.write(Array(pvh.modules), at: X86GuestLayout.pvhModules)
+        }
         try memory.write(Array(pvh.memoryMap), at: X86GuestLayout.pvhMemoryMap)
 
         let mpTable = MPTableBuilder.build(

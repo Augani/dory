@@ -12,7 +12,7 @@ The full process, storage, networking, and trust-boundary contract is documented
 
 - Arm64 and x86_64 raw-HV boot/device implementations. Public 0.4 releases remain Apple-silicon
   only until an Intel candidate passes dedicated physical qualification.
-- Virtio block, network, vsock, rng, balloon, GPU-preview, and VirtioFS devices.
+- Virtio block, network, vsock, rng, balloon, VirGL/Venus GPU, and VirtioFS devices.
 - A copyless guest networking path through the provenance-pinned `gvproxy` helper.
 - Host-share coherence, bounded FSEvents batching, queue/backpressure telemetry, and recovery.
 - Published-port, SSH-agent, host-AI, and guest-control bridges.

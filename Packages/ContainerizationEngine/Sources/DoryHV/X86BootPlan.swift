@@ -37,6 +37,7 @@ public enum X86GuestLayout {
     public static let pvhCommandLine: UInt64 = 0x0009_1000
     public static let pvhModules: UInt64 = 0x0009_2000
     public static let pvhMemoryMap: UInt64 = 0x0009_3000
+    public static let initrd: UInt64 = 0x1000_0000
     public static let mpFloatingPointer: UInt64 = 0x000F_0000
     public static let mpConfigurationTable: UInt64 = 0x000F_1000
     public static let daxWindowBase: UInt64 = 0xC_0000_0000

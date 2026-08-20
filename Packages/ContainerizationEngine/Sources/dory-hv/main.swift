@@ -1,5 +1,6 @@
 import DoryHV
 import DoryCore
+import DorydKit
 import Foundation
 
 signal(SIGPIPE, SIG_IGN)
@@ -188,7 +189,7 @@ func runAgentPing(_ options: Options) {
 
 let arguments = Array(CommandLine.arguments.dropFirst())
 guard let command = arguments.first else {
-    fail("usage: dory-hv <smoke|madvtest|daxprobe|boot|agent-ping|data-drive|engine|usb> [options]")
+    fail("usage: dory-hv <smoke|madvtest|daxprobe|boot|desktop|agent-ping|data-drive|engine|usb> [options]")
 }
 
 switch command {
@@ -417,6 +418,93 @@ case "boot":
         print("\ndory-hv: guest stopped: \(stop)")
     } catch {
         fail("\(error)")
+    }
+case "desktop":
+    var machineID: String?
+    var stateDirectory: String?
+    var kernel: String?
+    var initrd: String?
+    var rootfs: String?
+    var rootDevice = "/dev/vda"
+    var genericGuest = false
+    var gvproxy: String?
+    var handoffSocket: String?
+    var agentSocket: String?
+    var shellSocket: String?
+    var sshAgentSocket: String?
+    var memoryMB: UInt64 = 6_144
+    var cpus = 6
+    var shares = [DoryMachineShareConfiguration]()
+    var environment = [String: String]()
+    var iterator = arguments.dropFirst().makeIterator()
+    while let argument = iterator.next() {
+        switch argument {
+        case "--machine-id": machineID = iterator.next()
+        case "--state-dir": stateDirectory = iterator.next()
+        case "--kernel": kernel = iterator.next()
+        case "--initrd": initrd = iterator.next()
+        case "--rootfs": rootfs = iterator.next()
+        case "--root-device": rootDevice = iterator.next() ?? rootDevice
+        case "--generic-guest": genericGuest = true
+        case "--gvproxy": gvproxy = iterator.next()
+        case "--handoff-sock": handoffSocket = iterator.next()
+        case "--agent-sock": agentSocket = iterator.next()
+        case "--shell-sock": shellSocket = iterator.next()
+        case "--ssh-agent-socket": sshAgentSocket = iterator.next()
+        case "--memory-mb", "--mem-mb":
+            memoryMB = iterator.next().flatMap(UInt64.init) ?? memoryMB
+        case "--cpus": cpus = iterator.next().flatMap(Int.init) ?? cpus
+        case "--share":
+            guard let value = iterator.next() else { fail("desktop --share requires a value") }
+            do { shares.append(try DoryMachineShareConfiguration(argument: value)) }
+            catch { fail("invalid desktop share: \(error)") }
+        case "--env":
+            guard let value = iterator.next(), let equals = value.firstIndex(of: "=") else {
+                fail("desktop --env requires KEY=VALUE")
+            }
+            environment[String(value[..<equals])] = String(value[value.index(after: equals)...])
+        case "--display-mode":
+            guard iterator.next() == "desktop" else { fail("raw-HV desktop requires --display-mode desktop") }
+        case "--boot-mode":
+            guard let mode = iterator.next(), ["linux-kernel", "efi-installed"].contains(mode) else {
+                fail("raw-HV desktop requires --boot-mode linux-kernel or efi-installed")
+            }
+        case "--control-sock", "--dockerd-sock":
+            _ = iterator.next()  // accepted for dory-vmm command-line compatibility
+        default:
+            fail("unknown desktop option \(argument)")
+        }
+    }
+    guard let machineID, !machineID.isEmpty else { fail("desktop requires --machine-id") }
+    guard let stateDirectory, !stateDirectory.isEmpty else { fail("desktop requires --state-dir") }
+    guard let kernel else { fail("desktop requires --kernel") }
+    if genericGuest, initrd == nil { fail("desktop --generic-guest requires --initrd") }
+    guard let rootfs else { fail("desktop requires --rootfs") }
+    guard let gvproxy else { fail("desktop requires --gvproxy") }
+    guard let handoffSocket else { fail("desktop requires --handoff-sock") }
+    guard let agentSocket else { fail("desktop requires --agent-sock") }
+    guard let shellSocket else { fail("desktop requires --shell-sock") }
+    do {
+        try DesktopMode.run(.init(
+            machineID: machineID,
+            stateDirectory: stateDirectory,
+            kernelPath: kernel,
+            initrdPath: initrd,
+            rootfsPath: rootfs,
+            rootDevice: rootDevice,
+            genericGuest: genericGuest,
+            gvproxyPath: gvproxy,
+            handoffSocketPath: handoffSocket,
+            agentSocketPath: agentSocket,
+            shellSocketPath: shellSocket,
+            sshAgentSocketPath: sshAgentSocket,
+            memoryMB: memoryMB,
+            cpuCount: cpus,
+            shares: shares,
+            environment: environment
+        ))
+    } catch {
+        fail("desktop failed: \(error)")
     }
 case "agent-ping":
     runAgentPing(parseOptions(arguments.dropFirst()))

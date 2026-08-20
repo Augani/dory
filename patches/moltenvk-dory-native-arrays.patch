@@ -1,0 +1,37 @@
+diff --git a/MoltenVKShaderConverter/MoltenVKShaderConverter/SPIRVToMSLConverter.cpp b/MoltenVKShaderConverter/MoltenVKShaderConverter/SPIRVToMSLConverter.cpp
+index 406f4f8..56e9bda 100644
+--- a/MoltenVKShaderConverter/MoltenVKShaderConverter/SPIRVToMSLConverter.cpp
++++ b/MoltenVKShaderConverter/MoltenVKShaderConverter/SPIRVToMSLConverter.cpp
+@@ -28,6 +28,11 @@ using namespace std;
+ using namespace spv;
+ using namespace SPIRV_CROSS_NAMESPACE;
+
++extern "C" MVK_PUBLIC_SYMBOL uint32_t dory_moltenvk_spirv_native_array_fix();
++extern "C" MVK_PUBLIC_SYMBOL uint32_t dory_moltenvk_spirv_native_array_fix() {
++	return 1;
++}
++
+
+ #pragma mark -
+ #pragma mark SPIRVToMSLConversionConfiguration
+@@ -89,6 +93,9 @@ MVK_PUBLIC_SYMBOL SPIRVToMSLConversionOptions::SPIRVToMSLConversionOptions() {
+ #endif
+
+ 	mslOptions.pad_fragment_output_components = true;
++	// Dory: keep fixed-size arrays native so values extracted from nested
++	// Vulkan structs retain the same Metal type when passed to helper functions.
++	mslOptions.force_native_arrays = true;
+ }
+
+ MVK_PUBLIC_SYMBOL bool mvk::MSLShaderInterfaceVariable::matches(const mvk::MSLShaderInterfaceVariable& other) const {
+@@ -295,6 +302,10 @@ MVK_PUBLIC_SYMBOL bool SPIRVToMSLConverter::convert(SPIRVToMSLConversionConfigur
+
+ 		// Establish the MSL options for the compiler
+ 		// This needs to be done in two steps...for CompilerMSL and its superclass.
++		// Dory: Metal has no by-value native-array parameters. Force SPIRV-Cross
++		// to keep fixed arrays native at the final conversion boundary as well;
++		// cached/deserialized conversion configurations may predate this default.
++		shaderConfig.options.mslOptions.force_native_arrays = true;
+ 		pMSLCompiler->set_msl_options(shaderConfig.options.mslOptions);
+
+ 		auto scOpts = pMSLCompiler->get_common_options();

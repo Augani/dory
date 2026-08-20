@@ -37,6 +37,23 @@ public enum GuestShutdownCommand {
             + " ) >/var/log/dory-shutdown.log 2>&1 </dev/null &"
     }
 
+    /// Requests a normal systemd shutdown for a full desktop guest.
+    ///
+    /// Unlike the minimal Docker guest, a desktop has a graphical user session whose applications
+    /// need SIGTERM and time to persist their state. Forcing power off makes Firefox count every
+    /// ordinary VM stop as a crash and eventually relaunch in Troubleshoot Mode. The VMM's bounded
+    /// watchdog remains the fallback if systemd cannot complete the request.
+    public static func detachedDesktopRequest() -> String {
+        // Let PID 1 own the delayed request. A shell backgrounded by dory-agent remains in the
+        // agent's process group/cgroup and can be reaped before it reaches `systemctl poweroff`.
+        // A transient systemd service survives the RPC process and gives the agent time to return
+        // its success response before the graphical session begins shutting down.
+        "echo shutdown requested >/var/log/dory-shutdown.log; sync; "
+            + "systemd-run --quiet --collect --unit=dory-host-poweroff "
+            + "--on-active=1s /usr/bin/systemctl poweroff "
+            + ">>/var/log/dory-shutdown.log 2>&1"
+    }
+
     private static func shutdownSequence() -> String {
         let attempts = DoryEngineShutdownTiming.dockerdPollAttempts
         let interval = DoryEngineShutdownTiming.pollIntervalSeconds

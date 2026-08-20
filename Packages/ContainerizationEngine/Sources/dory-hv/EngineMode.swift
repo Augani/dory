@@ -562,7 +562,8 @@ enum EngineMode {
             ))
             note(
                 "experimental gpu=venus: attached virtio-gpu with virglrenderer "
-                    + "\(renderer.libraryPath) and MoltenVK ICD \(renderer.moltenVKICDPath)"
+                    + "\(renderer.libraryPath) and MoltenVK ICD "
+                    + "\(renderer.moltenVKICDPath ?? "unavailable")"
             )
         }
         let vsock = VirtioVsock(guestCID: 3)

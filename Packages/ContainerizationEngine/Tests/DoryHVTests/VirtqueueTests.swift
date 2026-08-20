@@ -60,6 +60,26 @@ import Testing
         #expect(try queue.pop() == nil)                                  // ring drained
     }
 
+    @Test func writesAcrossWritableSegmentsAtAProtocolOffset() throws {
+        let memory = try makeMemory()
+        let queue = Virtqueue(memory: memory)
+        queue.configure(size: 8, descriptorTable: descTable, availRing: availRing, usedRing: usedRing)
+        queue.setReady(true)
+
+        try writeDescriptor(memory, index: 0, addr: dataIn, len: 5, flags: 0x3, next: 1)
+        try writeDescriptor(memory, index: 1, addr: dataIn + 5, len: 7, flags: 0x2, next: 0)
+        try memory.write([UInt8](repeating: 0xAA, count: 12), at: dataIn)
+        try memory.write(UInt16(0), at: availRing)
+        try memory.write(UInt16(0), at: availRing + 4)
+        try memory.write(UInt16(1), at: availRing + 2)
+
+        let chain = try #require(try queue.pop())
+        #expect(chain.writeBytes([1, 2, 3, 4], atWritableOffset: 4) == 4)
+        #expect(try memory.readBytes(at: dataIn, count: 12) == [
+            0xAA, 0xAA, 0xAA, 0xAA, 1, 2, 3, 4, 0xAA, 0xAA, 0xAA, 0xAA,
+        ])
+    }
+
     @Test func pushIsSafeAfterResetToZeroSize() throws {
         let memory = try makeMemory()
         let queue = Virtqueue(memory: memory)

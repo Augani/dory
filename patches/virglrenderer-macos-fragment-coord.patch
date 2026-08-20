@@ -1,0 +1,177 @@
+diff --git a/src/virglrenderer.h b/src/virglrenderer.h
+index 12a9904..5d940b7 100644
+--- a/src/virglrenderer.h
++++ b/src/virglrenderer.h
+@@ -34,6 +34,8 @@ struct virgl_box;
+ struct iovec;
+
+ #define VIRGL_EXPORT  __attribute__((visibility("default")))
++VIRGL_EXPORT int dory_virglrenderer_macos_fragment_coord_fix(void);
++VIRGL_EXPORT int dory_virglrenderer_macos_venus_fence_fix(void);
+
+ typedef void *virgl_renderer_gl_context;
+
+diff --git a/src/virglrenderer.c b/src/virglrenderer.c
+index 6c565d2..d0f3b21 100644
+--- a/src/virglrenderer.c
++++ b/src/virglrenderer.c
+@@ -61,6 +61,19 @@ struct global_state {
+
+ static struct global_state state;
+
++/* Release tooling requires this marker before it will bundle a renderer on macOS. */
++VIRGL_EXPORT int
++dory_virglrenderer_macos_fragment_coord_fix(void)
++{
++   return 1;
++}
++
++VIRGL_EXPORT int
++dory_virglrenderer_macos_venus_fence_fix(void)
++{
++   return 1;
++}
++
+ /* new API - just wrap internal API for now */
+
+ static int virgl_renderer_resource_create_internal(struct virgl_renderer_resource_create_args *args,
+diff --git a/src/vrend_shader.c b/src/vrend_shader.c
+index 327523f..50b3c08 100644
+--- a/src/vrend_shader.c
++++ b/src/vrend_shader.c
+@@ -6266,10 +6266,14 @@ static void emit_header(const struct dump_ctx *ctx,
+
+       if (ctx->prog_type == TGSI_PROCESSOR_VERTEX && ctx->cfg->use_explicit_locations)
+          emit_ext(glsl_strbufs, "ARB_explicit_attrib_location", "require");
+-      if (ctx->prog_type == TGSI_PROCESSOR_FRAGMENT && fs_emit_layout(ctx))
++      if (ctx->prog_type == TGSI_PROCESSOR_FRAGMENT && fs_emit_layout(ctx) &&
++          ctx->glsl_ver_required < 150)
+          emit_ext(glsl_strbufs, "ARB_fragment_coord_conventions", "require");
+
+-      if (ctx->ubo_used_mask)
+-         emit_ext(glsl_strbufs, "ARB_uniform_buffer_object", "require");
++      if (ctx->ubo_used_mask) {
++#ifndef __APPLE__
++         emit_ext(glsl_strbufs, "ARB_uniform_buffer_object", "require");
++#endif
++      }
+
+       if (ctx->num_cull_dist_prop || ctx->key->num_in_cull || ctx->key->num_out_cull)
+@@ -8181,6 +8185,13 @@ bool vrend_convert_shader(const struct vrend_context *rctx,
+       ctx.shader_req_bits |= SHADER_REQ_SHADER_NOPERSPECTIVE_INTERPOLATION;
+    }
+
++   /* Fragment coordinate layout qualifiers are core in GLSL 1.50. Some
++    * core-profile implementations (notably macOS) support the core syntax
++    * without exposing GL_ARB_fragment_coord_conventions as an extension. */
++   if (!cfg->use_gles && cfg->glsl_version >= 150 &&
++       ctx.prog_type == TGSI_PROCESSOR_FRAGMENT && fs_emit_layout(&ctx))
++      ctx.glsl_ver_required = require_glsl_ver(&ctx, 150);
++
+    emit_header(&ctx, &ctx.glsl_strbufs);
+    ctx.glsl_ver_required = emit_ios(&ctx, &ctx.glsl_strbufs, &ctx.generic_ios,
+                                     &ctx.texcoord_ios, &ctx.patches_emitted_mask,
+diff --git a/src/venus_context.c b/src/venus_context.c
+index 45a98af..5302069 100644
+--- a/src/venus_context.c
++++ b/src/venus_context.c
+@@ -231,33 +231,19 @@ venus_context_retire_fences_internal(struct venus_context *ctx, uint32_t ring_i
+ static void
+ venus_context_retire_fences(struct virgl_context *base)
+ {
+-   fprintf(stderr, "%s: UNIMPLEMENTED\n", __func__);
+-#if 0
+-   struct proxy_context *ctx = (struct proxy_context *)base;
+-
+-   uint64_t new_busy_mask = 0;
+-   uint64_t old_busy_mask = ctx->timeline_busy_mask;
+-   while (old_busy_mask) {
+-      const uint32_t ring_idx = u_bit_scan64(&old_busy_mask);
+-      const uint32_t cur_seqno = proxy_context_load_timeline_seqno(ctx, ring_idx);
+-      if (!proxy_context_retire_timeline_fences_locked(ctx, ring_idx, cur_seqno))
+-         new_busy_mask |= 1ull << ring_idx;
+-   }
+-
+-   ctx->timeline_busy_mask = new_busy_mask;
+-
+-   if (proxy_renderer.flags & VIRGL_RENDERER_ASYNC_FENCE_CB)
+-      mtx_unlock(&ctx->timeline_mutex);
+-#endif
++   /* vkr_renderer is always initialized with VKR_RENDERER_ASYNC_FENCE_CB and
++    * retires Venus fences through venus_state_cb_retire_fence.  The outer
++    * virglrenderer was intentionally initialized without its Linux eventfd
++    * flag on macOS, so virgl_renderer_poll still visits this context.  There
++    * is nothing to poll here; the callback is the sole completion path.
++    */
++   (void)base;
+ }
+
+ static int
+ venus_context_get_fencing_fd(struct virgl_context *base)
+ {
+-   struct venus_context *ctx = (struct venus_context *)base;
+-
+-   //fprintf(stderr, "%s: UNIMPLEMENTED\n", __func__);
+-
+-   //assert(!(venus_renderer.flags & VIRGL_RENDERER_ASYNC_FENCE_CB));
+-   //return ctx->sync_thread.fence_eventfd;
++   /* The krunkit macOS renderer has no Linux eventfd. */
++   (void)base;
++   return -1;
+ }
+@@ -414,7 +400,8 @@ venus_state_cb_debug_logger(UNUSED enum virgl_log_level_flags log_level,
+                              const char *message,
+                              UNUSED void* user_data)
+ {
+-   //fprintf(stderr, "%s: %s\n", __func__, message);
++   /* Do not discard renderer protocol/device failures on macOS. */
++   fprintf(stderr, "dory-venus: %s\n", message);
+ }
+
+ static void
+diff --git a/src/venus/vkr_ring.c b/src/venus/vkr_ring.c
+index 1ba50e8..4d60065 100644
+--- a/src/venus/vkr_ring.c
++++ b/src/venus/vkr_ring.c
+@@ -280,6 +280,9 @@ vkr_ring_thread(void *arg)
+       const uint32_t cmd_size = vkr_ring_load_tail(ring) - ring->buffer.cur;
+       if (cmd_size) {
+          if (cmd_size > ring->buffer.size) {
++            vkr_log("ring command size %u exceeds buffer size %zu "
++                    "(head %u, tail %u)", cmd_size, ring->buffer.size,
++                    ring->buffer.cur, vkr_ring_load_tail(ring));
+             ret = -EINVAL;
+             break;
+          }
+diff --git a/src/venus/vkr_pipeline.c b/src/venus/vkr_pipeline.c
+index c142ab1..cfa9b17 100644
+--- a/src/venus/vkr_pipeline.c
++++ b/src/venus/vkr_pipeline.c
+@@ -111,8 +111,12 @@ vkr_dispatch_vkCreateGraphicsPipelines(struct vn_dispatch_context *dispatch,
+    struct vkr_device *dev = vkr_device_from_handle(args->device);
+    struct object_array arr;
+
+-   if (vkr_graphics_pipeline_create_array(ctx, args, &arr) < VK_SUCCESS)
++   const VkResult result =
++      vkr_graphics_pipeline_create_array(ctx, args, &arr);
++   if (result < VK_SUCCESS) {
++      vkr_log("vkCreateGraphicsPipelines failed (%d)", result);
+       return;
++   }
+
+    vkr_pipeline_add_array(ctx, dev, &arr, args->pPipelines);
+ }
+@@ -125,8 +129,12 @@ vkr_dispatch_vkCreateComputePipelines(struct vn_dispatch_context *dispatch,
+    struct vkr_device *dev = vkr_device_from_handle(args->device);
+    struct object_array arr;
+
+-   if (vkr_compute_pipeline_create_array(ctx, args, &arr) < VK_SUCCESS)
++   const VkResult result =
++      vkr_compute_pipeline_create_array(ctx, args, &arr);
++   if (result < VK_SUCCESS) {
++      vkr_log("vkCreateComputePipelines failed (%d)", result);
+       return;
++   }
+
+    vkr_pipeline_add_array(ctx, dev, &arr, args->pPipelines);
+ }

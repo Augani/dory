@@ -36,16 +36,36 @@ public struct VirtqueueChain {
 
     @discardableResult
     public func writeBytes(_ bytes: [UInt8]) -> Int {
-        var offset = 0
+        writeBytes(bytes, atWritableOffset: 0)
+    }
+
+    /// Writes into the concatenated device-writable portion of the chain at a byte offset.
+    /// Virtio protocols such as virtio-snd place a writable PCM payload before a writable status
+    /// structure, so the device must address the latter without overwriting the former.
+    @discardableResult
+    public func writeBytes(_ bytes: [UInt8], atWritableOffset requestedOffset: Int) -> Int {
+        guard requestedOffset >= 0 else { return 0 }
+        var sourceOffset = 0
+        var writableOffset = 0
         for segment in segments where segment.isDeviceWritable {
-            let take = min(segment.length, bytes.count - offset)
-            guard take > 0 else { break }
-            bytes[offset..<(offset + take)].withUnsafeBytes { source in
-                segment.pointer.copyMemory(from: source.baseAddress!, byteCount: take)
+            if writableOffset + segment.length <= requestedOffset {
+                writableOffset += segment.length
+                continue
             }
-            offset += take
+            let destinationOffset = max(0, requestedOffset - writableOffset)
+            let available = segment.length - destinationOffset
+            let take = min(available, bytes.count - sourceOffset)
+            guard take > 0 else { break }
+            bytes[sourceOffset..<(sourceOffset + take)].withUnsafeBytes { source in
+                segment.pointer.advanced(by: destinationOffset).copyMemory(
+                    from: source.baseAddress!,
+                    byteCount: take
+                )
+            }
+            sourceOffset += take
+            writableOffset += segment.length
         }
-        return offset
+        return sourceOffset
     }
 }
 

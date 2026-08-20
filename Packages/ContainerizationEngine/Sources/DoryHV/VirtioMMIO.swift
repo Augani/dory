@@ -72,6 +72,7 @@ public final class VirtioMMIOTransport: MMIODevice {
     private var sharedMemorySelect: UInt32 = 0
     private var status: UInt32 = 0
     private var interruptStatus: UInt32 = 0
+    private var configGeneration: UInt32 = 0
     private let interruptLock = NSLock()  // device backends may complete buffers off the vCPU thread
     private let registerLock = NSRecursiveLock()  // SMP: register access and kicks arrive from any vCPU thread
     private var pendingQueueLayout: [(descriptor: UInt64, avail: UInt64, used: UInt64, count: UInt16)]
@@ -99,6 +100,19 @@ public final class VirtioMMIOTransport: MMIODevice {
         interruptLock.lock()
         interruptStatus |= 1
         interruptLock.unlock()
+        interrupt()
+    }
+
+    /// Signals that device configuration visible at 0x100 changed. Virtio drivers distinguish
+    /// this from a used-ring interrupt through ISR bit 1 and use ConfigGeneration to take a
+    /// coherent snapshot when the host changes multiple fields during one resize.
+    public func notifyConfigChange() {
+        registerLock.lock()
+        configGeneration &+= 1
+        interruptLock.lock()
+        interruptStatus |= 2
+        interruptLock.unlock()
+        registerLock.unlock()
         interrupt()
     }
 
@@ -139,7 +153,7 @@ public final class VirtioMMIOTransport: MMIODevice {
         case 0x0B4: return selectedSharedMemoryRegion?.length.highUInt32 ?? UInt64(UInt32.max)
         case 0x0B8: return selectedSharedMemoryRegion?.guestBase.lowUInt32 ?? 0
         case 0x0BC: return selectedSharedMemoryRegion?.guestBase.highUInt32 ?? 0
-        case 0x0FC: return 0  // ConfigGeneration
+        case 0x0FC: return UInt64(configGeneration)
         case 0x100...:
             return readConfig(offset: offset - 0x100, width: width)
         default:

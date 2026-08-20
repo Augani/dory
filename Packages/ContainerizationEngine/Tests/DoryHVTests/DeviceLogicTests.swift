@@ -778,6 +778,23 @@ import Testing
     private let requestBuffer: UInt64 = 0x8000_4000
     private let responseBuffer: UInt64 = 0x8000_5000
 
+    @Test func singleCapsetBecomesImplicitRendererDefault() {
+        let venus = VirtioGPUCapset(id: 4, maxVersion: 0, data: [1])
+        #expect(VirtioGPU.rendererContextFlags(requested: 0, capsets: [venus]) == 4)
+        #expect(VirtioGPU.rendererContextFlags(requested: 4, capsets: [venus]) == 4)
+        #expect(VirtioGPU.rendererContextFlags(requested: 2, capsets: [venus]) == 2)
+        #expect(VirtioGPU.rendererContextFlags(requested: 0, capsets: []) == 0)
+    }
+
+    @Test func virgl2IsTheImplicitDefaultWhenDesktopAndVulkanCapsetsCoexist() {
+        let virgl = VirtioGPUCapset(id: 1, maxVersion: 1, data: [1])
+        let virgl2 = VirtioGPUCapset(id: 2, maxVersion: 2, data: [2])
+        let venus = VirtioGPUCapset(id: 4, maxVersion: 0, data: [4])
+
+        #expect(VirtioGPU.rendererContextFlags(requested: 0, capsets: [virgl, virgl2, venus]) == 2)
+        #expect(VirtioGPU.rendererContextFlags(requested: 4, capsets: [virgl, virgl2, venus]) == 4)
+    }
+
     @Test func exposesBootstrapIdentityConfigAndHostMemoryWindow() {
         let gpu = VirtioGPU(hostMemoryBase: 0x1_0000_0000, hostMemorySize: 0x2000_0000)
 
@@ -797,6 +814,7 @@ import Testing
         let gpu = VirtioGPU(hostMemoryBase: 0x1_0000_0000, renderer: renderer)
 
         #expect(gpu.deviceFeatures & (1 << 0) != 0)  // VIRGL command family
+        #expect(gpu.deviceFeatures & (1 << 2) != 0)  // resource UUID / cross-device DRM
         #expect(gpu.deviceFeatures & (1 << 3) != 0)  // resource blobs
         #expect(gpu.deviceFeatures & (1 << 4) != 0)  // context init
         #expect(leUInt32(gpu.configSpace, at: 12) == 1)
@@ -818,9 +836,53 @@ import Testing
         #expect(Array(data[24..<29]) == [0x56, 0x45, 0x4e, 0x55, 0x53])
     }
 
+    @Test func assignsStableUUIDToRendererResource() throws {
+        let renderer = FakeVirtioGPURenderer(capsets: [
+            VirtioGPUCapset(id: 4, maxVersion: 2, data: [0x56, 0x45, 0x4e, 0x55, 0x53])
+        ])
+        let gpu = VirtioGPU(hostMemoryBase: 0x1_0000_0000, renderer: renderer)
+
+        var create = gpuRequest(type: 0x0204, fenceID: 0, contextID: 0, ringIndex: 0)
+        create.appendLE(UInt32(7))       // resource_id
+        create.appendLE(UInt32(2))       // PIPE_TEXTURE_2D
+        create.appendLE(UInt32(1))       // B8G8R8A8_UNORM
+        create.appendLE(UInt32(1 << 1))  // PIPE_BIND_RENDER_TARGET
+        create.appendLE(UInt32(4))
+        create.appendLE(UInt32(3))
+        create.appendLE(UInt32(1))
+        create.appendLE(UInt32(1))
+        create.appendLE(UInt32(0))
+        create.appendLE(UInt32(0))
+        create.appendLE(UInt32(1))
+        create.appendLE(UInt32(0))
+        #expect(leUInt32(try gpuResponse(gpu: gpu, request: create), at: 0) == 0x1100)
+
+        var assign = gpuRequest(type: 0x010B, fenceID: 41, contextID: 0, ringIndex: 0)
+        assign.appendLE(UInt32(7))
+        assign.appendLE(UInt32(0))
+        let first = try gpuResponse(gpu: gpu, request: assign)
+        #expect(first.count == 40)
+        #expect(leUInt32(first, at: 0) == 0x1105)
+        #expect(Array(first[24..<40]) != Array(repeating: UInt8(0), count: 16))
+
+        let second = try gpuResponse(gpu: gpu, request: assign)
+        #expect(leUInt32(second, at: 0) == 0x1105)
+        #expect(Array(second[24..<40]) == Array(first[24..<40]))
+
+        var unknown = gpuRequest(type: 0x010B, fenceID: 42, contextID: 0, ringIndex: 0)
+        unknown.appendLE(UInt32(99))
+        unknown.appendLE(UInt32(0))
+        #expect(leUInt32(try gpuResponse(gpu: gpu, request: unknown), at: 0) == 0x1202)
+    }
+
     @Test func respondsToDisplayInfoOnControlQueue() throws {
         let memory = try GuestMemory(guestBase: base, size: 64 * HostPage.size)
-        let gpu = VirtioGPU(hostMemoryBase: 0x1_0000_0000)
+        let gpu = VirtioGPU(
+            hostMemoryBase: 0x1_0000_0000,
+            scanoutCount: 1,
+            scanoutWidth: 2_560,
+            scanoutHeight: 1_600
+        )
         let transport = VirtioMMIOTransport(baseAddress: GuestLayout.virtioBase, backend: gpu, memory: memory) {}
         transport.queues[0].configure(size: 8, descriptorTable: descTable, availRing: availRing, usedRing: usedRing)
         transport.queues[0].setReady(true)
@@ -838,7 +900,500 @@ import Testing
         #expect(try memory.read(UInt64.self, at: responseBuffer + 8) == 42)
         #expect(try memory.read(UInt32.self, at: responseBuffer + 16) == 7)
         #expect(try memory.readBytes(at: responseBuffer + 20, count: 1) == [3])
+        #expect(try memory.read(UInt32.self, at: responseBuffer + 32) == 2_560)
+        #expect(try memory.read(UInt32.self, at: responseBuffer + 36) == 1_600)
+        #expect(try memory.read(UInt32.self, at: responseBuffer + 40) == 1)
         #expect(try memory.read(UInt32.self, at: usedRing + 8) == 408)
+        #expect(leUInt32(gpu.configSpace, at: 8) == 1)
+    }
+
+    @Test func hostResizeRaisesConfigInterruptAndUpdatesPreferredMode() throws {
+        let memory = try GuestMemory(guestBase: base, size: 64 * HostPage.size)
+        let gpu = VirtioGPU(
+            hostMemoryBase: 0x1_0000_0000,
+            scanoutCount: 1,
+            scanoutWidth: 2_560,
+            scanoutHeight: 1_600
+        )
+        var interruptCount = 0
+        let transport = VirtioMMIOTransport(
+            baseAddress: GuestLayout.virtioBase,
+            backend: gpu,
+            memory: memory
+        ) { interruptCount += 1 }
+
+        gpu.updateScanoutSize(width: 3_024, height: 1_964, transport: transport)
+
+        #expect(interruptCount == 1)
+        #expect(transport.read(offset: 0x060, width: 4) == 2)
+        #expect(transport.read(offset: 0x0FC, width: 4) == 1)
+        #expect(leUInt32(gpu.configSpace, at: 0) == 1)
+
+        let display = try gpuResponse(gpu: gpu, request: gpuRequest(
+            type: 0x0100,
+            fenceID: 0,
+            contextID: 0,
+            ringIndex: 0
+        ))
+        #expect(leUInt32(display, at: 32) == 3_024)
+        #expect(leUInt32(display, at: 36) == 1_964)
+
+        gpu.writeConfig(offset: 4, value: 1, width: 4)
+        #expect(leUInt32(gpu.configSpace, at: 0) == 0)
+
+        // Re-publishing the same size must not create an interrupt storm.
+        gpu.updateScanoutSize(width: 3_024, height: 1_964, transport: transport)
+        #expect(interruptCount == 1)
+    }
+
+    @Test func scanoutDisableAcceptsTheEmptyRectangleUsedDuringModesets() throws {
+        let gpu = VirtioGPU(
+            hostMemoryBase: 0x1_0000_0000,
+            scanoutCount: 1,
+            scanoutWidth: 2_560,
+            scanoutHeight: 1_600
+        )
+        var disable2D = gpuRequest(type: 0x0103, fenceID: 0, contextID: 0, ringIndex: 0)
+        disable2D.append(contentsOf: [UInt8](repeating: 0, count: 16))  // ignored empty rect
+        disable2D.appendLE(UInt32(0))  // scanout_id
+        disable2D.appendLE(UInt32(0))  // resource_id disables the scanout
+        #expect(leUInt32(try gpuResponse(gpu: gpu, request: disable2D), at: 0) == 0x1100)
+
+        var disableBlob = gpuRequest(type: 0x010D, fenceID: 0, contextID: 0, ringIndex: 0)
+        disableBlob.append(contentsOf: [UInt8](repeating: 0, count: 72))
+        #expect(disableBlob.count == 96)
+        #expect(leUInt32(try gpuResponse(gpu: gpu, request: disableBlob), at: 0) == 0x1100)
+    }
+
+    @Test func twoDimensionalBindingFlushAndReleaseFollowScanoutLifetime() throws {
+        let memory = try GuestMemory(guestBase: base, size: 64 * HostPage.size)
+        let frameBox = ScanoutFrameBox()
+        let releasedResources = ScanoutResourceBox()
+        let renderer = FakeVirtioGPURenderer(capsets: [])
+        let gpu = VirtioGPU(
+            hostMemoryBase: 0x1_0000_0000,
+            scanoutCount: 1,
+            scanoutWidth: 2,
+            scanoutHeight: 2,
+            renderer: renderer,
+            onScanoutFrame: { frameBox.store($0) },
+            onScanoutResourceReleased: { releasedResources.store($0) }
+        )
+        let transport = VirtioMMIOTransport(
+            baseAddress: GuestLayout.virtioBase,
+            backend: gpu,
+            memory: memory
+        ) {}
+        transport.queues[0].configure(
+            size: 8,
+            descriptorTable: descTable,
+            availRing: availRing,
+            usedRing: usedRing
+        )
+        transport.queues[0].setReady(true)
+
+        var availableIndex = UInt16(0)
+        func submit(_ request: [UInt8]) throws -> [UInt8] {
+            try writeDescriptor(
+                memory,
+                index: 0,
+                addr: requestBuffer,
+                len: UInt32(request.count),
+                flags: 0x1,
+                next: 1
+            )
+            try writeDescriptor(memory, index: 1, addr: responseBuffer, len: 512, flags: 0x2, next: 0)
+            try memory.write(request, at: requestBuffer)
+            let slot = UInt64(availableIndex % 8)
+            try memory.write(UInt16(0), at: availRing + 4 + slot * 2)
+            availableIndex &+= 1
+            try memory.write(availableIndex, at: availRing + 2)
+            gpu.handleKick(queue: 0, transport: transport)
+            let usedSlot = UInt64((availableIndex - 1) % 8)
+            let responseLength = try memory.read(UInt32.self, at: usedRing + 8 + usedSlot * 8)
+            return try memory.readBytes(at: responseBuffer, count: Int(responseLength))
+        }
+
+        var create = gpuRequest(type: 0x0101, fenceID: 0, contextID: 0, ringIndex: 0)
+        create.appendLE(UInt32(7))  // resource_id
+        create.appendLE(UInt32(1))  // B8G8R8A8_UNORM
+        create.appendLE(UInt32(2))
+        create.appendLE(UInt32(2))
+        #expect(leUInt32(try submit(create), at: 0) == 0x1100)
+        #expect(renderer.createdResources.count == 1)
+        let rendererResource = try #require(renderer.createdResources.first)
+        #expect(rendererResource.resourceID == 7)
+        #expect(rendererResource.target == 2)
+        #expect(rendererResource.bind == 1 << 1)
+        #expect(rendererResource.width == 2)
+        #expect(rendererResource.height == 2)
+        #expect(rendererResource.depth == 1)
+        #expect(rendererResource.arraySize == 1)
+        #expect(rendererResource.flags == 1)
+
+        let pixelBuffer = base + 0x6000
+        let pixels: [UInt8] = [
+            1, 2, 3, 4, 5, 6, 7, 8,
+            9, 10, 11, 12, 13, 14, 15, 16,
+        ]
+        try memory.write(pixels, at: pixelBuffer)
+        var attach = gpuRequest(type: 0x0106, fenceID: 0, contextID: 0, ringIndex: 0)
+        attach.appendLE(UInt32(7))
+        attach.appendLE(UInt32(1))
+        attach.appendLE(pixelBuffer)
+        attach.appendLE(UInt32(pixels.count))
+        attach.appendLE(UInt32(0))
+        #expect(leUInt32(try submit(attach), at: 0) == 0x1100)
+        #expect(renderer.attachedBackingResourceIDs == [7])
+
+        var setScanout = gpuRequest(type: 0x0103, fenceID: 0, contextID: 0, ringIndex: 0)
+        setScanout.appendLE(UInt32(0))
+        setScanout.appendLE(UInt32(0))
+        setScanout.appendLE(UInt32(2))
+        setScanout.appendLE(UInt32(2))
+        setScanout.appendLE(UInt32(0))
+        setScanout.appendLE(UInt32(7))
+        #expect(leUInt32(try submit(setScanout), at: 0) == 0x1100)
+        let boundFrame = try #require(frameBox.value)
+        #expect(boundFrame.dirtyRect == VirtioGPURect(x: 0, y: 0, width: 2, height: 2))
+        #expect(Array(boundFrame.bytes) == pixels)
+
+        var flush = gpuRequest(type: 0x0104, fenceID: 0, contextID: 0, ringIndex: 0)
+        flush.appendLE(UInt32(1))
+        flush.appendLE(UInt32(0))
+        flush.appendLE(UInt32(1))
+        flush.appendLE(UInt32(2))
+        flush.appendLE(UInt32(7))
+        flush.appendLE(UInt32(0))
+        #expect(leUInt32(try submit(flush), at: 0) == 0x1100)
+
+        let frame = try #require(frameBox.value)
+        #expect(frame.scanoutID == 0)
+        #expect(frame.resourceID == 7)
+        #expect(frame.format == 1)
+        #expect(frame.width == 2)
+        #expect(frame.height == 2)
+        #expect(frame.stride == 4)
+        #expect(frame.dirtyRect == VirtioGPURect(x: 1, y: 0, width: 1, height: 2))
+        #expect(Array(frame.bytes) == [5, 6, 7, 8, 13, 14, 15, 16])
+
+        var detach = gpuRequest(type: 0x0107, fenceID: 0, contextID: 0, ringIndex: 0)
+        detach.appendLE(UInt32(7))
+        detach.appendLE(UInt32(0))
+        #expect(leUInt32(try submit(detach), at: 0) == 0x1100)
+        #expect(renderer.detachedBackingResourceIDs == [7])
+
+        var unref = gpuRequest(type: 0x0102, fenceID: 0, contextID: 0, ringIndex: 0)
+        unref.appendLE(UInt32(7))
+        unref.appendLE(UInt32(0))
+        #expect(leUInt32(try submit(unref), at: 0) == 0x1100)
+        #expect(releasedResources.value == 7)
+        #expect(renderer.unreferencedResourceIDs == [7])
+    }
+
+    @Test func threeDimensionalPartialFlushUsesFullResourceReadbackStride() throws {
+        let memory = try GuestMemory(guestBase: base, size: 64 * HostPage.size)
+        let frameBox = ScanoutFrameBox()
+        let renderer = FakeVirtioGPURenderer(capsets: [])
+        renderer.setTransferReadback(
+            width: 4,
+            height: 3,
+            pixels: Array(0..<48).map(UInt8.init)
+        )
+        let gpu = VirtioGPU(
+            hostMemoryBase: 0x1_0000_0000,
+            scanoutCount: 1,
+            scanoutWidth: 4,
+            scanoutHeight: 3,
+            renderer: renderer,
+            onScanoutFrame: { frameBox.store($0) }
+        )
+        let transport = VirtioMMIOTransport(
+            baseAddress: GuestLayout.virtioBase,
+            backend: gpu,
+            memory: memory
+        ) {}
+        transport.queues[0].configure(
+            size: 8,
+            descriptorTable: descTable,
+            availRing: availRing,
+            usedRing: usedRing
+        )
+        transport.queues[0].setReady(true)
+
+        var availableIndex = UInt16(0)
+        func submit(_ request: [UInt8]) throws -> [UInt8] {
+            try writeDescriptor(
+                memory,
+                index: 0,
+                addr: requestBuffer,
+                len: UInt32(request.count),
+                flags: 0x1,
+                next: 1
+            )
+            try writeDescriptor(memory, index: 1, addr: responseBuffer, len: 512, flags: 0x2, next: 0)
+            try memory.write(request, at: requestBuffer)
+            let slot = UInt64(availableIndex % 8)
+            try memory.write(UInt16(0), at: availRing + 4 + slot * 2)
+            availableIndex &+= 1
+            try memory.write(availableIndex, at: availRing + 2)
+            gpu.handleKick(queue: 0, transport: transport)
+            let usedSlot = UInt64((availableIndex - 1) % 8)
+            let responseLength = try memory.read(UInt32.self, at: usedRing + 8 + usedSlot * 8)
+            return try memory.readBytes(at: responseBuffer, count: Int(responseLength))
+        }
+
+        var create = gpuRequest(type: 0x0204, fenceID: 0, contextID: 0, ringIndex: 0)
+        create.appendLE(UInt32(7))  // resource_id
+        create.appendLE(UInt32(2))  // PIPE_TEXTURE_2D
+        create.appendLE(UInt32(1))  // B8G8R8A8_UNORM
+        create.appendLE(UInt32(1 << 1))  // PIPE_BIND_RENDER_TARGET
+        create.appendLE(UInt32(4))
+        create.appendLE(UInt32(3))
+        create.appendLE(UInt32(1))
+        create.appendLE(UInt32(1))
+        create.appendLE(UInt32(0))
+        create.appendLE(UInt32(0))
+        create.appendLE(UInt32(1))
+        create.appendLE(UInt32(0))
+        #expect(leUInt32(try submit(create), at: 0) == 0x1100)
+
+        var setScanout = gpuRequest(type: 0x0103, fenceID: 0, contextID: 0, ringIndex: 0)
+        setScanout.appendLE(UInt32(0))
+        setScanout.appendLE(UInt32(0))
+        setScanout.appendLE(UInt32(4))
+        setScanout.appendLE(UInt32(3))
+        setScanout.appendLE(UInt32(0))
+        setScanout.appendLE(UInt32(7))
+        #expect(leUInt32(try submit(setScanout), at: 0) == 0x1100)
+        #expect(Array(try #require(frameBox.value).bytes) == Array(0..<48).map(UInt8.init))
+
+        renderer.setTransferReadback(
+            width: 4,
+            height: 3,
+            pixels: Array(100..<148).map(UInt8.init)
+        )
+        renderer.transferFromHostCalls.removeAll()
+        var flush = gpuRequest(type: 0x0104, fenceID: 0, contextID: 0, ringIndex: 0)
+        flush.appendLE(UInt32(1))
+        flush.appendLE(UInt32(1))
+        flush.appendLE(UInt32(2))
+        flush.appendLE(UInt32(1))
+        flush.appendLE(UInt32(7))
+        flush.appendLE(UInt32(0))
+        #expect(leUInt32(try submit(flush), at: 0) == 0x1100)
+
+        let transfer = try #require(renderer.transferFromHostCalls.last)
+        #expect(transfer.stride == 16)
+        #expect(transfer.entryLengths == [48])
+        #expect(transfer.offset == 20)
+        #expect(transfer.box == [1, 1, 0, 2, 1, 1])
+        let frame = try #require(frameBox.value)
+        #expect(frame.stride == 8)
+        #expect(frame.dirtyRect == VirtioGPURect(x: 1, y: 1, width: 2, height: 1))
+        #expect(Array(frame.bytes) == Array(120..<128).map(UInt8.init))
+    }
+
+    @Test func guestBlobFlushPublishesStrideAwareScanoutFrame() throws {
+        let memory = try GuestMemory(guestBase: base, size: 64 * HostPage.size)
+        let frameBox = ScanoutFrameBox()
+        let renderer = FakeVirtioGPURenderer(capsets: [])
+        let gpu = VirtioGPU(
+            hostMemoryBase: 0x1_0000_0000,
+            scanoutCount: 1,
+            scanoutWidth: 2,
+            scanoutHeight: 2,
+            renderer: renderer,
+            onScanoutFrame: { frameBox.store($0) }
+        )
+        let transport = VirtioMMIOTransport(
+            baseAddress: GuestLayout.virtioBase,
+            backend: gpu,
+            memory: memory
+        ) {}
+        transport.queues[0].configure(
+            size: 8,
+            descriptorTable: descTable,
+            availRing: availRing,
+            usedRing: usedRing
+        )
+        transport.queues[0].setReady(true)
+
+        var availableIndex = UInt16(0)
+        func submit(_ request: [UInt8]) throws -> [UInt8] {
+            try writeDescriptor(
+                memory,
+                index: 0,
+                addr: requestBuffer,
+                len: UInt32(request.count),
+                flags: 0x1,
+                next: 1
+            )
+            try writeDescriptor(memory, index: 1, addr: responseBuffer, len: 512, flags: 0x2, next: 0)
+            try memory.write(request, at: requestBuffer)
+            let slot = UInt64(availableIndex % 8)
+            try memory.write(UInt16(0), at: availRing + 4 + slot * 2)
+            availableIndex &+= 1
+            try memory.write(availableIndex, at: availRing + 2)
+            gpu.handleKick(queue: 0, transport: transport)
+            let usedSlot = UInt64((availableIndex - 1) % 8)
+            let responseLength = try memory.read(UInt32.self, at: usedRing + 8 + usedSlot * 8)
+            return try memory.readBytes(at: responseBuffer, count: Int(responseLength))
+        }
+
+        let pixelBuffer = base + 0x6000
+        let pixels: [UInt8] = [
+            1, 2, 3, 4, 5, 6, 7, 8, 90, 91, 92, 93,
+            9, 10, 11, 12, 13, 14, 15, 16, 94, 95, 96, 97,
+        ]
+        try memory.write(pixels, at: pixelBuffer)
+        var createBlob = gpuRequest(type: 0x010C, fenceID: 0, contextID: 0, ringIndex: 0)
+        createBlob.appendLE(UInt32(7))
+        createBlob.appendLE(UInt32(1))  // VIRTIO_GPU_BLOB_MEM_GUEST
+        createBlob.appendLE(UInt32(0))
+        createBlob.appendLE(UInt32(1))
+        createBlob.appendLE(UInt64(0))
+        createBlob.appendLE(UInt64(pixels.count))
+        createBlob.appendLE(pixelBuffer)
+        createBlob.appendLE(UInt32(pixels.count))
+        createBlob.appendLE(UInt32(0))
+        #expect(leUInt32(try submit(createBlob), at: 0) == 0x1100)
+
+        var setScanout = gpuRequest(type: 0x010D, fenceID: 0, contextID: 0, ringIndex: 0)
+        setScanout.appendLE(UInt32(0))
+        setScanout.appendLE(UInt32(0))
+        setScanout.appendLE(UInt32(2))
+        setScanout.appendLE(UInt32(2))
+        setScanout.appendLE(UInt32(0))
+        setScanout.appendLE(UInt32(7))
+        setScanout.appendLE(UInt32(2))
+        setScanout.appendLE(UInt32(2))
+        setScanout.appendLE(UInt32(1))  // B8G8R8A8_UNORM
+        setScanout.appendLE(UInt32(0))
+        setScanout.appendLE(UInt32(12))
+        setScanout.appendLE(UInt32(0))
+        setScanout.appendLE(UInt32(0))
+        setScanout.appendLE(UInt32(0))
+        setScanout.appendLE(UInt32(0))
+        setScanout.appendLE(UInt32(0))
+        setScanout.appendLE(UInt32(0))
+        setScanout.appendLE(UInt32(0))
+        #expect(leUInt32(try submit(setScanout), at: 0) == 0x1100)
+
+        var flush = gpuRequest(type: 0x0104, fenceID: 0, contextID: 0, ringIndex: 0)
+        flush.appendLE(UInt32(0))
+        flush.appendLE(UInt32(1))
+        flush.appendLE(UInt32(2))
+        flush.appendLE(UInt32(1))
+        flush.appendLE(UInt32(7))
+        flush.appendLE(UInt32(0))
+        #expect(leUInt32(try submit(flush), at: 0) == 0x1100)
+
+        let frame = try #require(frameBox.value)
+        #expect(frame.scanoutID == 0)
+        #expect(frame.resourceID == 7)
+        #expect(frame.format == 1)
+        #expect(frame.width == 2)
+        #expect(frame.height == 2)
+        #expect(frame.stride == 8)
+        #expect(frame.dirtyRect == VirtioGPURect(x: 0, y: 1, width: 2, height: 1))
+        #expect(Array(frame.bytes) == [9, 10, 11, 12, 13, 14, 15, 16])
+    }
+
+    @Test func host3DBlobScanoutMapsRendererMemoryUntilDisplayIsReleased() throws {
+        let memory = try GuestMemory(guestBase: base, size: 64 * HostPage.size)
+        let frameBox = ScanoutFrameBox()
+        let rendererPixels: [UInt8] = [
+            1, 2, 3, 4, 5, 6, 7, 8, 80, 81, 82, 83,
+            9, 10, 11, 12, 13, 14, 15, 16, 84, 85, 86, 87,
+        ]
+        let renderer = FakeVirtioGPURenderer(capsets: [], blobBytes: rendererPixels)
+        let gpu = VirtioGPU(
+            hostMemoryBase: 0x1_0000_0000,
+            scanoutCount: 1,
+            renderer: renderer,
+            onScanoutFrame: { frameBox.store($0) }
+        )
+        let transport = VirtioMMIOTransport(
+            baseAddress: GuestLayout.virtioBase,
+            backend: gpu,
+            memory: memory
+        ) {}
+        transport.queues[0].configure(
+            size: 8,
+            descriptorTable: descTable,
+            availRing: availRing,
+            usedRing: usedRing
+        )
+        transport.queues[0].setReady(true)
+
+        var availableIndex = UInt16(0)
+        func submit(_ request: [UInt8]) throws -> [UInt8] {
+            try writeDescriptor(memory, index: 0, addr: requestBuffer, len: UInt32(request.count), flags: 0x1, next: 1)
+            try writeDescriptor(memory, index: 1, addr: responseBuffer, len: 512, flags: 0x2, next: 0)
+            try memory.write(request, at: requestBuffer)
+            try memory.write(UInt16(0), at: availRing + 4 + UInt64(availableIndex % 8) * 2)
+            availableIndex &+= 1
+            try memory.write(availableIndex, at: availRing + 2)
+            gpu.handleKick(queue: 0, transport: transport)
+            let usedSlot = UInt64((availableIndex - 1) % 8)
+            let responseLength = try memory.read(UInt32.self, at: usedRing + 8 + usedSlot * 8)
+            return try memory.readBytes(at: responseBuffer, count: Int(responseLength))
+        }
+
+        var createBlob = gpuRequest(type: 0x010C, fenceID: 0, contextID: 3, ringIndex: 0)
+        createBlob.appendLE(UInt32(9))
+        createBlob.appendLE(UInt32(2))  // VIRTIO_GPU_BLOB_MEM_HOST3D
+        createBlob.appendLE(UInt32(1))  // mappable
+        createBlob.appendLE(UInt32(0))
+        createBlob.appendLE(UInt64(44))
+        createBlob.appendLE(UInt64(rendererPixels.count))
+        #expect(leUInt32(try submit(createBlob), at: 0) == 0x1100)
+
+        var setScanout = gpuRequest(type: 0x010D, fenceID: 0, contextID: 0, ringIndex: 0)
+        setScanout.appendLE(UInt32(0))
+        setScanout.appendLE(UInt32(0))
+        setScanout.appendLE(UInt32(2))
+        setScanout.appendLE(UInt32(2))
+        setScanout.appendLE(UInt32(0))
+        setScanout.appendLE(UInt32(9))
+        setScanout.appendLE(UInt32(2))
+        setScanout.appendLE(UInt32(2))
+        setScanout.appendLE(UInt32(1))
+        setScanout.appendLE(UInt32(0))
+        setScanout.appendLE(UInt32(12))
+        for _ in 0..<7 { setScanout.appendLE(UInt32(0)) }
+        #expect(leUInt32(try submit(setScanout), at: 0) == 0x1100)
+        let boundFrame = try #require(frameBox.value)
+        #expect(boundFrame.dirtyRect == VirtioGPURect(x: 0, y: 0, width: 2, height: 2))
+        #expect(Array(boundFrame.bytes) == [
+            1, 2, 3, 4, 5, 6, 7, 8,
+            9, 10, 11, 12, 13, 14, 15, 16,
+        ])
+
+        var flush = gpuRequest(type: 0x0104, fenceID: 0, contextID: 0, ringIndex: 0)
+        flush.appendLE(UInt32(0))
+        flush.appendLE(UInt32(0))
+        flush.appendLE(UInt32(2))
+        flush.appendLE(UInt32(2))
+        flush.appendLE(UInt32(9))
+        flush.appendLE(UInt32(0))
+        #expect(leUInt32(try submit(flush), at: 0) == 0x1100)
+        #expect(renderer.mapBlobCount == 1)
+        #expect(Array(try #require(frameBox.value).bytes) == [
+            1, 2, 3, 4, 5, 6, 7, 8,
+            9, 10, 11, 12, 13, 14, 15, 16,
+        ])
+
+        var disable = gpuRequest(type: 0x0103, fenceID: 0, contextID: 0, ringIndex: 0)
+        disable.appendLE(UInt32(0))
+        disable.appendLE(UInt32(0))
+        disable.appendLE(UInt32(2))
+        disable.appendLE(UInt32(2))
+        disable.appendLE(UInt32(0))
+        disable.appendLE(UInt32(0))
+        #expect(leUInt32(try submit(disable), at: 0) == 0x1100)
+        #expect(renderer.unmapBlobCount == 1)
     }
 
     @Test func fencedCommandDefersCompletionUntilRendererSignals() throws {
@@ -994,11 +1549,79 @@ import Testing
     }
 }
 
-private final class FakeVirtioGPURenderer: VirtioGPURenderer {
-    let capsets: [VirtioGPUCapset]
+private final class ScanoutFrameBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var frame: VirtioGPUScanoutFrame?
 
-    init(capsets: [VirtioGPUCapset]) {
+    func store(_ frame: VirtioGPUScanoutFrame) {
+        lock.lock()
+        self.frame = frame
+        lock.unlock()
+    }
+
+    var value: VirtioGPUScanoutFrame? {
+        lock.lock()
+        defer { lock.unlock() }
+        return frame
+    }
+}
+
+private final class ScanoutResourceBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var resourceID: UInt32?
+
+    func store(_ resourceID: UInt32) {
+        lock.lock()
+        self.resourceID = resourceID
+        lock.unlock()
+    }
+
+    var value: UInt32? {
+        lock.lock()
+        defer { lock.unlock() }
+        return resourceID
+    }
+}
+
+private final class FakeVirtioGPURenderer: VirtioGPURenderer {
+    struct TransferFromHostCall {
+        var stride: UInt32
+        var offset: UInt64
+        var entryLengths: [Int]
+        var box: [UInt32]
+    }
+
+    let capsets: [VirtioGPUCapset]
+    private let blobStorage: UnsafeMutableRawPointer?
+    private let blobStorageSize: UInt64
+    private(set) var mapBlobCount = 0
+    private(set) var unmapBlobCount = 0
+    private(set) var createdResources: [VirtioGPUResourceCreate3D] = []
+    private(set) var attachedBackingResourceIDs: [UInt32] = []
+    private(set) var detachedBackingResourceIDs: [UInt32] = []
+    private(set) var unreferencedResourceIDs: [UInt32] = []
+    private var transferReadbackWidth: UInt32 = 0
+    private var transferReadbackHeight: UInt32 = 0
+    private var transferReadbackPixels = [UInt8]()
+    var transferFromHostCalls = [TransferFromHostCall]()
+
+    init(capsets: [VirtioGPUCapset], blobBytes: [UInt8]? = nil) {
         self.capsets = capsets
+        if let blobBytes {
+            let storage = UnsafeMutableRawPointer.allocate(byteCount: blobBytes.count, alignment: 16)
+            blobBytes.withUnsafeBytes { bytes in
+                storage.copyMemory(from: bytes.baseAddress!, byteCount: blobBytes.count)
+            }
+            self.blobStorage = storage
+            self.blobStorageSize = UInt64(blobBytes.count)
+        } else {
+            self.blobStorage = nil
+            self.blobStorageSize = 0
+        }
+    }
+
+    deinit {
+        blobStorage?.deallocate()
     }
 
     func createContext(id: UInt32, flags: UInt32, name: String) throws {}
@@ -1006,7 +1629,9 @@ private final class FakeVirtioGPURenderer: VirtioGPURenderer {
     func attachResource(contextID: UInt32, resourceID: UInt32) throws {}
     func detachResource(contextID: UInt32, resourceID: UInt32) throws {}
     func submit3D(contextID: UInt32, command: [UInt8]) throws {}
-    func createResource3D(_ resource: VirtioGPUResourceCreate3D, entries: [VirtioGPUMemoryEntry]) throws {}
+    func createResource3D(_ resource: VirtioGPUResourceCreate3D, entries: [VirtioGPUMemoryEntry]) throws {
+        createdResources.append(resource)
+    }
     func createBlob(
         resourceID: UInt32,
         contextID: UInt32,
@@ -1016,15 +1641,67 @@ private final class FakeVirtioGPURenderer: VirtioGPURenderer {
         size: UInt64,
         entries: [VirtioGPUMemoryEntry]
     ) throws {}
-    func attachBacking(resourceID: UInt32, entries: [VirtioGPUMemoryEntry]) throws {}
-    func detachBacking(resourceID: UInt32) throws {}
-    func unrefResource(resourceID: UInt32) throws {}
-    func mapBlob(resourceID: UInt32) throws -> VirtioGPUBlobMapping {
-        VirtioGPUBlobMapping(hostPointer: UnsafeMutableRawPointer(bitPattern: 0x1000)!, size: 4096, mapInfo: 2)
+    func attachBacking(resourceID: UInt32, entries: [VirtioGPUMemoryEntry]) throws {
+        attachedBackingResourceIDs.append(resourceID)
     }
-    func unmapBlob(resourceID: UInt32) throws {}
+    func detachBacking(resourceID: UInt32) throws {
+        detachedBackingResourceIDs.append(resourceID)
+    }
+    func unrefResource(resourceID: UInt32) throws {
+        unreferencedResourceIDs.append(resourceID)
+    }
+    func mapBlob(resourceID: UInt32) throws -> VirtioGPUBlobMapping {
+        mapBlobCount += 1
+        return VirtioGPUBlobMapping(
+            hostPointer: blobStorage ?? UnsafeMutableRawPointer(bitPattern: 0x1000)!,
+            size: blobStorage == nil ? 4096 : blobStorageSize,
+            mapInfo: 2
+        )
+    }
+    func unmapBlob(resourceID: UInt32) throws { unmapBlobCount += 1 }
     func transferToHost3D(_ transfer: VirtioGPUTransfer3D, entries: [VirtioGPUMemoryEntry]) throws {}
-    func transferFromHost3D(_ transfer: VirtioGPUTransfer3D, entries: [VirtioGPUMemoryEntry]) throws {}
+    func setTransferReadback(width: UInt32, height: UInt32, pixels: [UInt8]) {
+        transferReadbackWidth = width
+        transferReadbackHeight = height
+        transferReadbackPixels = pixels
+    }
+
+    func transferFromHost3D(_ transfer: VirtioGPUTransfer3D, entries: [VirtioGPUMemoryEntry]) throws {
+        transferFromHostCalls.append(TransferFromHostCall(
+            stride: transfer.stride,
+            offset: transfer.offset,
+            entryLengths: entries.map(\.length),
+            box: transfer.box
+        ))
+        guard transferReadbackWidth > 0, transferReadbackHeight > 0 else { return }
+        guard transfer.box.count == 6,
+              transfer.box[2] == 0, transfer.box[5] == 1,
+              transfer.box[0] <= transferReadbackWidth,
+              transfer.box[3] <= transferReadbackWidth - transfer.box[0],
+              transfer.box[1] <= transferReadbackHeight,
+              transfer.box[4] <= transferReadbackHeight - transfer.box[1],
+              transferReadbackPixels.count == Int(transferReadbackWidth * transferReadbackHeight * 4),
+              let destination = entries.first else {
+            throw VMError.invalidConfiguration("invalid fake renderer readback")
+        }
+        let rowBytes = Int(transfer.box[3] * 4)
+        for row in 0..<Int(transfer.box[4]) {
+            let y = Int(transfer.box[1]) + row
+            let x = Int(transfer.box[0])
+            let sourceOffset = (y * Int(transferReadbackWidth) + x) * 4
+            let destinationOffset = Int(transfer.offset) + row * Int(transfer.stride)
+            guard destinationOffset <= destination.length,
+                  rowBytes <= destination.length - destinationOffset else {
+                throw VMError.invalidConfiguration("fake renderer readback destination is too small")
+            }
+            transferReadbackPixels.withUnsafeBytes { source in
+                destination.pointer.advanced(by: destinationOffset).copyMemory(
+                    from: source.baseAddress!.advanced(by: sourceOffset),
+                    byteCount: rowBytes
+                )
+            }
+        }
+    }
 
     var onFenceSignaled: ((UInt32, UInt32, UInt64) -> Void)?
     /// Registered fences accumulate; tests fire them via `signalFence` to model asynchronous
@@ -1045,6 +1722,425 @@ private final class FakeVirtioGPURenderer: VirtioGPURenderer {
 
     func signalFence(contextID: UInt32, ringIndex: UInt32, fenceID: UInt64) {
         onFenceSignaled?(contextID, ringIndex, fenceID)
+    }
+}
+
+@Suite struct VirtioSoundTests {
+    @Test func advertisesStandardPlaybackAndCaptureStreams() {
+        let host = TestSoundHost()
+        let sound = VirtioSound(host: host)
+
+        #expect(sound.deviceID == 25)
+        #expect(sound.queueCount == 4)
+        #expect(sound.configSpace.leUInt32(at: 0) == 0)
+        #expect(sound.configSpace.leUInt32(at: 4) == 2)
+        #expect(sound.configSpace.leUInt32(at: 8) == 0)
+
+        var request = [UInt8]()
+        request.appendLE(UInt32(0x0100))
+        request.appendLE(UInt32(0))
+        request.appendLE(UInt32(2))
+        request.appendLE(UInt32(32))
+        let response = sound.controlResponseForTesting(request, responseCapacity: 68)
+
+        #expect(response.count == 68)
+        #expect(response.leUInt32(at: 0) == 0x8000)
+        #expect(response[28] == VirtioSoundDirection.output.rawValue)
+        #expect(response[60] == VirtioSoundDirection.input.rawValue)
+        #expect(response[29] == 1 && response[30] == 2)
+        #expect(response[61] == 1 && response[62] == 2)
+        #expect(response.leUInt64(at: 12) & (1 << 5) != 0)  // S16_LE
+        #expect(response.leUInt64(at: 20) & (1 << 6) != 0)  // 44.1 kHz
+        #expect(response.leUInt64(at: 20) & (1 << 7) != 0)  // 48 kHz
+    }
+
+    @Test func enforcesTheVirtioPCMStreamLifecycle() {
+        let host = TestSoundHost()
+        let sound = VirtioSound(host: host)
+
+        #expect(status(sound, setParameters(streamID: 0)) == 0x8000)
+        #expect(status(sound, lifecycle(0x0102, streamID: 0)) == 0x8000)
+        #expect(status(sound, lifecycle(0x0104, streamID: 0)) == 0x8000)
+        #expect(status(sound, lifecycle(0x0105, streamID: 0)) == 0x8000)
+        #expect(status(sound, lifecycle(0x0103, streamID: 0)) == 0x8000)
+        #expect(host.events == [
+            "configure-0-output-48000-2",
+            "prepare-0-output",
+            "start-0-output",
+            "stop-0-output",
+            "release-0-output",
+        ])
+    }
+
+    @Test func rejectsFormatsThatLinuxWasNotToldAreAvailable() {
+        let host = TestSoundHost()
+        let sound = VirtioSound(host: host)
+
+        #expect(status(sound, setParameters(streamID: 0, format: 1)) == 0x8002)
+        #expect(host.events.isEmpty)
+    }
+
+    @Test func playbackDescriptorCompletesOnlyAfterHostPlaybackCallback() throws {
+        let base = GuestLayout.ramBase
+        let descriptorTable = base + 0x1000
+        let availableRing = base + 0x2000
+        let usedRing = base + 0x3000
+        let requestBuffer = base + 0x4000
+        let responseBuffer = base + 0x5000
+        let host = TestSoundHost()
+        host.acceptPlayback = true
+        let sound = VirtioSound(host: host)
+
+        #expect(status(sound, setParameters(streamID: 0)) == 0x8000)
+        #expect(status(sound, lifecycle(0x0102, streamID: 0)) == 0x8000)
+        #expect(status(sound, lifecycle(0x0104, streamID: 0)) == 0x8000)
+
+        let memory = try GuestMemory(guestBase: base, size: 8 * HostPage.size)
+        let transport = VirtioMMIOTransport(
+            baseAddress: GuestLayout.virtioBase,
+            backend: sound,
+            memory: memory
+        ) {}
+        transport.queues[2].configure(
+            size: 8,
+            descriptorTable: descriptorTable,
+            availRing: availableRing,
+            usedRing: usedRing
+        )
+        transport.queues[2].setReady(true)
+
+        let audio = [UInt8](repeating: 0x40, count: 16)
+        var request = [UInt8]()
+        request.appendLE(UInt32(0))
+        request.append(contentsOf: audio)
+        try writeDescriptor(
+            memory,
+            table: descriptorTable,
+            index: 0,
+            address: requestBuffer,
+            length: UInt32(request.count),
+            flags: 0x1,
+            next: 1
+        )
+        try writeDescriptor(
+            memory,
+            table: descriptorTable,
+            index: 1,
+            address: responseBuffer,
+            length: 8,
+            flags: 0x2,
+            next: 0
+        )
+        try memory.write(request, at: requestBuffer)
+        try memory.write(UInt16(0), at: availableRing)
+        try memory.write(UInt16(0), at: availableRing + 4)
+        try memory.write(UInt16(1), at: availableRing + 2)
+
+        sound.handleKick(queue: 2, transport: transport)
+
+        #expect(host.playbackData == Data(audio))
+        #expect(try memory.read(UInt16.self, at: usedRing + 2) == 0)
+        let completion = try #require(host.playbackCompletion)
+        completion(true, 256)
+        #expect(try memory.read(UInt16.self, at: usedRing + 2) == 1)
+        #expect(try memory.read(UInt32.self, at: usedRing + 8) == 8)
+        #expect(try memory.read(UInt32.self, at: responseBuffer) == 0x8000)
+        #expect(try memory.read(UInt32.self, at: responseBuffer + 4) == 256)
+    }
+
+    @Test func captureDescriptorCanPrimeBeforeStartAndReturnsPayloadThenStatus() throws {
+        let base = GuestLayout.ramBase
+        let descriptorTable = base + 0x1000
+        let availableRing = base + 0x2000
+        let usedRing = base + 0x3000
+        let requestBuffer = base + 0x4000
+        let audioBuffer = base + 0x5000
+        let statusBuffer = base + 0x6000
+        let host = TestSoundHost()
+        host.acceptCapture = true
+        let sound = VirtioSound(host: host)
+
+        #expect(status(sound, setParameters(streamID: 1)) == 0x8000)
+        #expect(status(sound, lifecycle(0x0102, streamID: 1)) == 0x8000)
+
+        let memory = try GuestMemory(guestBase: base, size: 8 * HostPage.size)
+        let transport = VirtioMMIOTransport(
+            baseAddress: GuestLayout.virtioBase,
+            backend: sound,
+            memory: memory
+        ) {}
+        transport.queues[3].configure(
+            size: 8,
+            descriptorTable: descriptorTable,
+            availRing: availableRing,
+            usedRing: usedRing
+        )
+        transport.queues[3].setReady(true)
+
+        try writeDescriptor(
+            memory,
+            table: descriptorTable,
+            index: 0,
+            address: requestBuffer,
+            length: 4,
+            flags: 0x1,
+            next: 1
+        )
+        try writeDescriptor(
+            memory,
+            table: descriptorTable,
+            index: 1,
+            address: audioBuffer,
+            length: 16,
+            flags: 0x3,
+            next: 2
+        )
+        try writeDescriptor(
+            memory,
+            table: descriptorTable,
+            index: 2,
+            address: statusBuffer,
+            length: 8,
+            flags: 0x2,
+            next: 0
+        )
+        try memory.write([UInt8](repeating: 0, count: 4), at: requestBuffer)
+        try memory.write(UInt32(1), at: requestBuffer)
+        try memory.write(UInt16(0), at: availableRing)
+        try memory.write(UInt16(0), at: availableRing + 4)
+        try memory.write(UInt16(1), at: availableRing + 2)
+
+        sound.handleKick(queue: 3, transport: transport)
+
+        #expect(host.captureByteCount == 16)
+        #expect(try memory.read(UInt16.self, at: usedRing + 2) == 0)
+        let completion = try #require(host.captureCompletion)
+        let audio = Data((0..<16).map(UInt8.init))
+        completion(audio, 512)
+        #expect(try memory.read(UInt16.self, at: usedRing + 2) == 1)
+        #expect(try memory.read(UInt32.self, at: usedRing + 8) == 24)
+        #expect(try memory.readBytes(at: audioBuffer, count: 16) == [UInt8](audio))
+        #expect(try memory.read(UInt32.self, at: statusBuffer) == 0x8000)
+        #expect(try memory.read(UInt32.self, at: statusBuffer + 4) == 512)
+    }
+
+    private func status(_ sound: VirtioSound, _ request: [UInt8]) -> UInt32 {
+        sound.controlResponseForTesting(request).leUInt32(at: 0)
+    }
+
+    private func lifecycle(_ code: UInt32, streamID: UInt32) -> [UInt8] {
+        var request = [UInt8]()
+        request.appendLE(code)
+        request.appendLE(streamID)
+        return request
+    }
+
+    private func setParameters(
+        streamID: UInt32,
+        channels: UInt8 = 2,
+        format: UInt8 = 5,
+        rate: UInt8 = 7
+    ) -> [UInt8] {
+        var request = [UInt8]()
+        request.appendLE(UInt32(0x0101))
+        request.appendLE(streamID)
+        request.appendLE(UInt32(32_768))
+        request.appendLE(UInt32(4_096))
+        request.appendLE(UInt32(0))
+        request.append(channels)
+        request.append(format)
+        request.append(rate)
+        request.append(0)
+        return request
+    }
+
+    private func writeDescriptor(
+        _ memory: GuestMemory,
+        table: UInt64,
+        index: UInt64,
+        address: UInt64,
+        length: UInt32,
+        flags: UInt16,
+        next: UInt16
+    ) throws {
+        let descriptor = table + index * 16
+        try memory.write(address, at: descriptor)
+        try memory.write(length, at: descriptor + 8)
+        try memory.write(flags, at: descriptor + 12)
+        try memory.write(next, at: descriptor + 14)
+    }
+
+    private final class TestSoundHost: VirtioSoundHost, @unchecked Sendable {
+        var events = [String]()
+        var acceptPlayback = false
+        var acceptCapture = false
+        var playbackData: Data?
+        var playbackCompletion: (@Sendable (Bool, UInt32) -> Void)?
+        var captureByteCount: Int?
+        var captureCompletion: (@Sendable (Data?, UInt32) -> Void)?
+
+        func configure(
+            streamID: Int,
+            direction: VirtioSoundDirection,
+            parameters: VirtioSoundPCMParameters
+        ) -> Bool {
+            events.append("configure-\(streamID)-\(direction)-\(Int(parameters.sampleRate))-\(parameters.channels)")
+            return true
+        }
+
+        func prepare(streamID: Int, direction: VirtioSoundDirection) -> Bool {
+            events.append("prepare-\(streamID)-\(direction)")
+            return true
+        }
+
+        func start(streamID: Int, direction: VirtioSoundDirection) -> Bool {
+            events.append("start-\(streamID)-\(direction)")
+            return true
+        }
+
+        func stop(streamID: Int, direction: VirtioSoundDirection) -> Bool {
+            events.append("stop-\(streamID)-\(direction)")
+            return true
+        }
+
+        func release(streamID: Int, direction: VirtioSoundDirection) {
+            events.append("release-\(streamID)-\(direction)")
+        }
+
+        func enqueuePlayback(
+            _ data: Data,
+            parameters: VirtioSoundPCMParameters,
+            completion: @escaping @Sendable (Bool, UInt32) -> Void
+        ) -> Bool {
+            guard acceptPlayback else { return false }
+            playbackData = data
+            playbackCompletion = completion
+            return true
+        }
+
+        func requestCapture(
+            byteCount: Int,
+            parameters: VirtioSoundPCMParameters,
+            completion: @escaping @Sendable (Data?, UInt32) -> Void
+        ) -> Bool {
+            guard acceptCapture else { return false }
+            captureByteCount = byteCount
+            captureCompletion = completion
+            return true
+        }
+
+        func reset() { events.append("reset") }
+    }
+}
+
+@Suite struct VirtioInputTests {
+    private let base = GuestLayout.ramBase
+    private var descriptorTable: UInt64 { base + 0x1000 }
+    private var availableRing: UInt64 { base + 0x2000 }
+    private var usedRing: UInt64 { base + 0x3000 }
+    private var eventBuffers: UInt64 { base + 0x4000 }
+
+    @Test func advertisesKeyboardPointerWheelAndAbsoluteAxes() {
+        let input = VirtioInput()
+
+        input.writeConfig(offset: 0, value: 0x11, width: 1)
+        input.writeConfig(offset: 1, value: 1, width: 1)  // EV_KEY
+        var config = input.configSpace
+        #expect(config[2] >= 35)
+        #expect(config[8 + 30] & (1 << 7) != 0)  // KEY 247
+        #expect(config[8 + 34] & 1 != 0)         // BTN_LEFT 272
+
+        input.writeConfig(offset: 1, value: 2, width: 1)  // EV_REL
+        config = input.configSpace
+        #expect(config[8 + 1] & (1 << 3) != 0)   // REL_WHEEL_HI_RES 11
+
+        input.writeConfig(offset: 0, value: 0x12, width: 1)
+        input.writeConfig(offset: 1, value: 0, width: 1)  // ABS_X
+        config = input.configSpace
+        #expect(config[2] == 20)
+        #expect(config.leUInt32(at: 12) == 32_767)
+    }
+
+    @Test func convertsAppKitScrollDirectionToLinuxWheelDirection() {
+        var scroll = VirtioInputScrollAccumulator()
+        let events = scroll.events(
+            horizontalDelta: -1,
+            verticalDelta: 1,
+            hasPreciseDeltas: false
+        )
+
+        #expect(events == [
+            VirtioInputEvent(type: 2, code: 11, value: -120),
+            VirtioInputEvent(type: 2, code: 8, value: -1),
+            VirtioInputEvent(type: 2, code: 12, value: 120),
+            VirtioInputEvent(type: 2, code: 6, value: 1),
+        ])
+    }
+
+    @Test func accumulatesPreciseScrollIntoDiscreteLinuxTicks() {
+        var scroll = VirtioInputScrollAccumulator()
+        for _ in 0..<9 {
+            let events = scroll.events(
+                horizontalDelta: 0,
+                verticalDelta: 1,
+                hasPreciseDeltas: true
+            )
+            #expect(events == [VirtioInputEvent(type: 2, code: 11, value: -12)])
+        }
+        let finalEvents = scroll.events(
+            horizontalDelta: 0,
+            verticalDelta: 1,
+            hasPreciseDeltas: true
+        )
+        #expect(finalEvents == [
+            VirtioInputEvent(type: 2, code: 11, value: -12),
+            VirtioInputEvent(type: 2, code: 8, value: -1),
+        ])
+    }
+
+    @Test func waitsForEnoughGuestBuffersBeforePublishingWholeInputFrame() throws {
+        let memory = try GuestMemory(guestBase: base, size: 8 * HostPage.size)
+        let input = VirtioInput()
+        let transport = VirtioMMIOTransport(
+            baseAddress: GuestLayout.virtioBase,
+            backend: input,
+            memory: memory
+        ) {}
+        transport.queues[0].configure(
+            size: 8,
+            descriptorTable: descriptorTable,
+            availRing: availableRing,
+            usedRing: usedRing
+        )
+        transport.queues[0].setReady(true)
+        input.deviceReady(transport: transport)
+
+        for index in 0..<3 {
+            let descriptor = descriptorTable + UInt64(index) * 16
+            try memory.write(eventBuffers + UInt64(index) * 8, at: descriptor)
+            try memory.write(UInt32(8), at: descriptor + 8)
+            try memory.write(UInt16(2), at: descriptor + 12)  // device-writable
+            try memory.write(UInt16(0), at: descriptor + 14)
+            try memory.write(UInt16(index), at: availableRing + 4 + UInt64(index) * 2)
+        }
+        try memory.write(UInt16(0), at: availableRing)
+        try memory.write(UInt16(2), at: availableRing + 2)
+
+        input.send(frame: [
+            VirtioInputEvent(type: 1, code: 30, value: 1),
+            VirtioInputEvent(type: 3, code: 0, value: 16_000),
+        ])
+        #expect(try memory.read(UInt16.self, at: usedRing + 2) == 0)
+
+        try memory.write(UInt16(3), at: availableRing + 2)
+        input.handleKick(queue: 0, transport: transport)
+        #expect(try memory.read(UInt16.self, at: usedRing + 2) == 3)
+        #expect(try memory.read(UInt16.self, at: eventBuffers) == 1)
+        #expect(try memory.read(UInt16.self, at: eventBuffers + 2) == 30)
+        #expect(try memory.read(UInt32.self, at: eventBuffers + 4) == 1)
+        #expect(try memory.read(UInt16.self, at: eventBuffers + 8) == 3)
+        #expect(try memory.read(UInt32.self, at: eventBuffers + 12) == 16_000)
+        #expect(try memory.read(UInt16.self, at: eventBuffers + 16) == 0)
     }
 }
 
