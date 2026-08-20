@@ -8,13 +8,26 @@ extension DoryOperationJournalStore {
         specifications: [DoryOperationSpecification],
         at date: Date,
         fileManager: FileManager,
-        mutationScope: String? = nil
+        mutationScope: String? = nil,
+        heldMutationLock: EngineStateDirectoryLock? = nil
     ) throws -> DoryOperationLease {
         guard plan.isValid else {
             throw DoryOperationJournalError.invalidPlan(plan.id.uuidString.lowercased())
         }
         try prepareRoot(fileManager: fileManager)
-        let lock = try acquireMutationLock(scope: mutationScope)
+        let lock: EngineStateDirectoryLock
+        if let heldMutationLock {
+            let expectedLockName = mutationScope.map { ".mutation.\($0).lock" }
+                ?? ".mutation.lock"
+            guard heldMutationLock.path == root + "/" + expectedLockName else {
+                throw DoryOperationJournalError.invalidPlan(
+                    "held mutation lock does not match authenticated scope"
+                )
+            }
+            lock = heldMutationLock
+        } else {
+            lock = try acquireMutationLock(scope: mutationScope)
+        }
         let destination = operationDirectory(for: plan.id)
         guard !Self.pathEntryExists(destination) else {
             throw DoryOperationJournalError.operationExists(plan.id)

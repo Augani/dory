@@ -928,6 +928,47 @@ extension DoryOperationJournalStore {
             mutationScope: mutationScope
         )
     }
+
+    /// Publishes a lifecycle journal while retaining an already-acquired, exact workspace
+    /// mutation fence. The lock path must match the scope authenticated by the immutable plan;
+    /// callers cannot use this overload to redirect an operation to another workspace lock.
+    public func begin(
+        _ binding: DoryWorkspaceLifecycleJournalBinding,
+        holdingMutationLock: EngineStateDirectoryLock,
+        fileManager: FileManager = .default
+    ) throws -> DoryOperationLease {
+        let operation: DoryWorkspaceLifecycleOperation
+        do {
+            operation = try JSONDecoder().decode(
+                DoryWorkspaceLifecycleOperation.self,
+                from: binding.specification.data
+            )
+        } catch {
+            throw DoryOperationJournalError.invalidPlan(
+                "workspace lifecycle specification decoding"
+            )
+        }
+        let expected = try operation.journalBinding(
+            dependencyClosureDigest: binding.plan.dependencyClosureDigest
+        )
+        guard expected == binding else {
+            throw DoryOperationJournalError.invalidPlan(
+                "workspace lifecycle journal binding mismatch"
+            )
+        }
+        let mutationScope = authenticatedMutationScope(for: binding.plan)
+        return try begin(
+            binding.plan,
+            completenessPlanData: nil,
+            specifications: [binding.specification],
+            at: Date(
+                timeIntervalSince1970: Double(operation.createdAtUnixMilliseconds) / 1_000
+            ),
+            fileManager: fileManager,
+            mutationScope: mutationScope,
+            heldMutationLock: holdingMutationLock
+        )
+    }
 }
 
 extension DoryOperationLease {

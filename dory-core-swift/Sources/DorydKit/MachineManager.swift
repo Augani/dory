@@ -747,6 +747,9 @@ public final class MachineManager: @unchecked Sendable {
     private var pendingResolvedStart: PendingResolvedMachineStart?
     private var resolvedLaunchIdentities: [String: DoryMachineResolvedLaunchIdentity] = [:]
     private var activeLifecycleOperations: [String: MachineLifecycleJournalContext] = [:]
+    private var activePlanningMutationIDs: Set<String> = []
+    private var activeDirectWorkspaceMutationLocks:
+        [String: MachineManagerDirectMutationRetention] = [:]
     private var desktopUpdateArtifactResolver: (any DoryDesktopUpdateArtifactResolving)?
 #if DEBUG
     private var lifecycleFaultInjector: (@Sendable (MachineLifecycleFaultPoint) throws -> Void)?
@@ -986,6 +989,9 @@ public final class MachineManager: @unchecked Sendable {
     public func start(id: String) throws -> DoryMachineStatus {
         operationLock.lock()
         defer { operationLock.unlock() }
+        try requireNoActivePlanningMutation(id: id)
+        let directMutation = try retainDirectWorkspaceMutationLock(id: id)
+        defer { releaseDirectWorkspaceMutationLock(id: id, retention: directMutation) }
         return try startImplementation(id: id, journalLifecycle: true)
     }
 
@@ -1628,7 +1634,10 @@ public final class MachineManager: @unchecked Sendable {
     public func stop(id: String) throws -> DoryMachineStatus {
         operationLock.lock()
         defer { operationLock.unlock() }
+        try requireNoActivePlanningMutation(id: id)
         try cancelActiveStartLifecycleIfNeeded(id: id, reason: "start.cancelled-by-stop")
+        let directMutation = try retainDirectWorkspaceMutationLock(id: id)
+        defer { releaseDirectWorkspaceMutationLock(id: id, retention: directMutation) }
         return try stopImplementation(id: id, journalLifecycle: true)
     }
 
@@ -1721,7 +1730,10 @@ public final class MachineManager: @unchecked Sendable {
         guard Self.isValidID(id) else {
             throw MachineManagerError.invalidID(id)
         }
+        try requireNoActivePlanningMutation(id: id)
         try cancelActiveStartLifecycleIfNeeded(id: id, reason: "start.cancelled-by-delete")
+        let directMutation = try retainDirectWorkspaceMutationLock(id: id)
+        defer { releaseDirectWorkspaceMutationLock(id: id, retention: directMutation) }
         lock.lock()
         guard let sourceEntry = machines[id] else {
             lock.unlock()
@@ -1830,6 +1842,9 @@ public final class MachineManager: @unchecked Sendable {
     ) throws -> DoryMachineStatus {
         operationLock.lock()
         defer { operationLock.unlock() }
+        try requireNoActivePlanningMutation(id: id)
+        let directMutation = try retainDirectWorkspaceMutationLock(id: id)
+        defer { releaseDirectWorkspaceMutationLock(id: id, retention: directMutation) }
         guard !(updatesEnvironment && typedSettingsPatch != nil) else {
             throw MachineManagerError.persistence(
                 "raw environment replacement and typed machine settings are mutually exclusive"
@@ -1892,7 +1907,7 @@ public final class MachineManager: @unchecked Sendable {
             return status(id: id) ?? DoryMachineStatus(id: id, state: .stopped)
         }
         if wasRunning {
-            _ = try stop(id: id)
+            _ = try stopImplementation(id: id, journalLifecycle: true)
         }
         do {
             if current.bootMode == .efi,
@@ -1905,7 +1920,7 @@ public final class MachineManager: @unchecked Sendable {
         } catch {
             if wasRunning {
                 do {
-                    _ = try startAndWaitUntilReady(id: id)
+                    _ = try startAndWaitUntilReady(id: id, journalLifecycle: true)
                 } catch let restartError {
                     throw MachineManagerError.persistence(
                         "could not update \(id): \(error); original configuration restart failed: \(restartError)"
@@ -1919,10 +1934,10 @@ public final class MachineManager: @unchecked Sendable {
             return status(id: id) ?? DoryMachineStatus(id: id, state: .stopped)
         }
         do {
-            return try startAndWaitUntilReady(id: id)
+            return try startAndWaitUntilReady(id: id, journalLifecycle: true)
         } catch {
             let updateError = error
-            _ = try? stop(id: id)
+            _ = try? stopImplementation(id: id, journalLifecycle: true)
             do {
                 try persist(current)
                 try publishConfiguration(current)
@@ -1932,7 +1947,7 @@ public final class MachineManager: @unchecked Sendable {
                 )
             }
             do {
-                _ = try startAndWaitUntilReady(id: id)
+                _ = try startAndWaitUntilReady(id: id, journalLifecycle: true)
             } catch {
                 throw MachineManagerError.persistence(
                     "could not start updated \(id): \(updateError); original configuration was restored but restart failed: \(error)"
@@ -1952,6 +1967,9 @@ public final class MachineManager: @unchecked Sendable {
     ) throws -> DoryMachineSnapshot {
         operationLock.lock()
         defer { operationLock.unlock() }
+        try requireNoActivePlanningMutation(id: id)
+        let directMutation = try retainDirectWorkspaceMutationLock(id: id)
+        defer { releaseDirectWorkspaceMutationLock(id: id, retention: directMutation) }
         let snapshotID = explicitSnapshotID ?? Self.generatedSnapshotID()
         guard Self.isValidID(snapshotID) else {
             throw MachineManagerError.invalidID(snapshotID)
@@ -2117,6 +2135,9 @@ public final class MachineManager: @unchecked Sendable {
     ) throws -> DoryDesktopUpdateResult {
         operationLock.lock()
         defer { operationLock.unlock() }
+        try requireNoActivePlanningMutation(id: id)
+        let directMutation = try retainDirectWorkspaceMutationLock(id: id)
+        defer { releaseDirectWorkspaceMutationLock(id: id, retention: directMutation) }
 
         let (original, originallyRunning) = try configurationAndRunningState(id: id)
         guard original.bootMode == .linuxKernel else {
@@ -2407,6 +2428,14 @@ public final class MachineManager: @unchecked Sendable {
     public func restoreSnapshot(machineID: String, snapshotID: String) throws -> DoryMachineStatus {
         operationLock.lock()
         defer { operationLock.unlock() }
+        try requireNoActivePlanningMutation(id: machineID)
+        let directMutation = try retainDirectWorkspaceMutationLock(id: machineID)
+        defer {
+            releaseDirectWorkspaceMutationLock(
+                id: machineID,
+                retention: directMutation
+            )
+        }
         let snapshot = try loadSnapshot(machineID: machineID, snapshotID: snapshotID)
         let (machine, wasRunning) = try configurationAndRunningState(id: machineID)
         try validateSnapshotRuntimeCompatibility(snapshot, machine: machine, cloning: false)
@@ -5117,6 +5146,317 @@ public final class MachineManager: @unchecked Sendable {
         return identity
     }
 
+    /// Acquires the same per-workspace cross-process mutation lock used by lifecycle operations,
+    /// then derives planning authority only from the exact persisted legacy bytes and migration
+    /// facts observed under that lock. This path never starts a helper or mutates guest state.
+    public func acquirePlanningMutationFence(
+        machine: DoryMachineConfiguration,
+        definition: DoryVirtualMachineDefinition,
+        canonicalDefinitionData: Data
+    ) throws -> DoryDaemonVirtualMachinePlanningMutationFence {
+        operationLock.lock()
+        defer { operationLock.unlock() }
+
+        guard launchPolicy == .requireResolvedPlan else {
+            throw MachineManagerError.persistence(
+                "planning promotion requires the resolved-plan launch policy"
+            )
+        }
+        guard Self.isValidID(machine.id), machine.id == definition.identity.id,
+              canonicalDefinitionData == (try Self.canonicalDefinitionData(definition)) else {
+            throw MachineManagerError.persistence("planning request identity is inconsistent")
+        }
+        guard activePlanningMutationIDs.insert(machine.id).inserted else {
+            throw MachineManagerError.persistence(
+                "machine \(machine.id) already has an active planning mutation"
+            )
+        }
+        var shouldRemoveActiveID = true
+        defer {
+            if shouldRemoveActiveID { activePlanningMutationIDs.remove(machine.id) }
+        }
+        guard activeLifecycleOperations[machine.id] == nil else {
+            throw MachineManagerError.persistence(
+                "machine \(machine.id) already has an active lifecycle mutation"
+            )
+        }
+        guard let store = lifecycleJournalStore else {
+            throw MachineManagerError.persistence(
+                "lifecycle journal is unavailable: "
+                    + (lifecycleJournalInitializationError ?? "unknown error")
+            )
+        }
+
+        let workspaceLock: EngineStateDirectoryLock
+        do {
+            workspaceLock = try EngineStateDirectoryLock(
+                stateDirectory: store.root,
+                lockFileName: ".mutation.\(machine.id).lock"
+            )
+        } catch {
+            throw MachineManagerError.persistence(
+                "machine \(machine.id) mutation authority is busy: \(error)"
+            )
+        }
+        if let unfinished = try store.list().first(where: {
+            $0.state.status != .completed && $0.state.status != .failed
+                && ($0.plan.source.id == machine.id || $0.plan.target.id == machine.id)
+        }) {
+            throw MachineManagerError.persistence(
+                "machine \(machine.id) lifecycle operation "
+                    + unfinished.plan.id.uuidString.lowercased() + " requires recovery"
+            )
+        }
+
+        let entry: MachineEntry
+        lock.lock()
+        guard let current = machines[machine.id],
+              !deletingMachineIDs.contains(machine.id) else {
+            lock.unlock()
+            throw MachineManagerError.unknownMachine(machine.id)
+        }
+        entry = current
+        lock.unlock()
+        guard entry.configuration == machine,
+              entry.process == nil, entry.handoffServer == nil,
+              entry.state == .created || entry.state == .stopped else {
+            throw MachineManagerError.persistence(
+                "machine \(machine.id) must be exactly stopped before planning"
+            )
+        }
+        guard entry.runtimeIdentity.validate().isEmpty,
+              entry.runtimeIdentity.mode != .legacyCompatibility else {
+            throw MachineManagerError.persistence(
+                "machine \(machine.id) has no resolved-policy migration authority"
+            )
+        }
+
+        guard let legacyData = Self.readPrivateMetadata(path: machineConfigPath(id: machine.id)),
+              let decoded = try? JSONDecoder().decode(
+                DoryMachineConfiguration.self,
+                from: legacyData
+              ), decoded == machine else {
+            throw MachineManagerError.persistence(
+                "authoritative machine metadata changed before planning"
+            )
+        }
+        let facts = try workspaceMigrationFacts(for: machine)
+        let factsData = try Self.workspaceMigrationAuthorityData(facts)
+        let migration = try DoryMachineConfigurationMigrationBridge.migrate(
+            machine,
+            facts: facts
+        )
+        let reconciled = try workspaceRepository.reconcileLegacyProjection(
+            migration.definition,
+            authoritativeLegacyData: legacyData,
+            authoritativeMigrationFactsData: factsData
+        ).definition
+        let loaded = try workspaceRepository.readLegacyProjection(
+            id: machine.id,
+            authoritativeLegacyData: legacyData,
+            authoritativeMigrationFactsData: factsData
+        )
+        guard reconciled == loaded, loaded == definition,
+              try Self.canonicalDefinitionData(loaded) == canonicalDefinitionData else {
+            throw MachineManagerError.persistence(
+                "planning request does not match the authoritative workspace projection"
+            )
+        }
+
+        let runtimeIdentityData = try Self.canonicalPlanningRuntimeAuthorityData(
+            entry.runtimeIdentity
+        )
+        let authority = DoryDaemonVirtualMachinePlanningMachineAuthority(
+            machineID: machine.id,
+            legacyConfigurationSHA256: Self.sha256(data: legacyData),
+            migrationFactsSHA256: Self.sha256(data: factsData),
+            sourceDefinitionRevision: loaded.lifecycle.revision,
+            sourceDefinitionSHA256: Self.sha256(data: canonicalDefinitionData),
+            runtimeIdentitySHA256: Self.sha256(data: runtimeIdentityData)
+        )
+        guard authority.isValid else {
+            throw MachineManagerError.persistence("planning mutation authority is invalid")
+        }
+
+        let retention = MachineManagerPlanningMutationRetention(
+            manager: self,
+            machineID: machine.id,
+            workspaceLock: workspaceLock
+        )
+        shouldRemoveActiveID = false
+        return DoryDaemonVirtualMachinePlanningMutationFence(
+            authority: authority,
+            retainedAuthority: retention,
+            validation: { [weak self] in
+                guard let self else {
+                    throw MachineManagerError.persistence("machine manager is unavailable")
+                }
+                try self.revalidatePlanningMutationAuthority(
+                    machine: machine,
+                    definition: definition,
+                    canonicalDefinitionData: canonicalDefinitionData,
+                    legacyData: legacyData,
+                    migrationFactsData: factsData,
+                    runtimeIdentitySHA256: authority.runtimeIdentitySHA256
+                )
+            },
+            completion: { retention.release() },
+            recoveryRelease: { retention.release() }
+        )
+    }
+
+    private func revalidatePlanningMutationAuthority(
+        machine: DoryMachineConfiguration,
+        definition: DoryVirtualMachineDefinition,
+        canonicalDefinitionData: Data,
+        legacyData: Data,
+        migrationFactsData: Data,
+        runtimeIdentitySHA256: String
+    ) throws {
+        operationLock.lock()
+        defer { operationLock.unlock() }
+        guard activePlanningMutationIDs.contains(machine.id) else {
+            throw MachineManagerError.persistence("planning mutation authority was released")
+        }
+        let entry: MachineEntry
+        lock.lock()
+        guard let current = machines[machine.id],
+              !deletingMachineIDs.contains(machine.id) else {
+            lock.unlock()
+            throw MachineManagerError.unknownMachine(machine.id)
+        }
+        entry = current
+        lock.unlock()
+        guard entry.configuration == machine,
+              entry.process == nil, entry.handoffServer == nil,
+              entry.state == .created || entry.state == .stopped,
+              entry.runtimeIdentity.validate().isEmpty,
+              Self.sha256(
+                data: try Self.canonicalPlanningRuntimeAuthorityData(entry.runtimeIdentity)
+              )
+                == runtimeIdentitySHA256,
+              let currentLegacyData = Self.readPrivateMetadata(
+                path: machineConfigPath(id: machine.id)
+              ), currentLegacyData == legacyData,
+              let decoded = try? JSONDecoder().decode(
+                DoryMachineConfiguration.self,
+                from: currentLegacyData
+              ), decoded == machine else {
+            throw MachineManagerError.persistence(
+                "authoritative machine state changed during planning"
+            )
+        }
+        let currentFacts = try workspaceMigrationFacts(for: machine)
+        let currentFactsData = try Self.workspaceMigrationAuthorityData(currentFacts)
+        guard currentFactsData == migrationFactsData else {
+            throw MachineManagerError.persistence(
+                "authoritative migration facts changed during planning"
+            )
+        }
+        let currentDefinition = try workspaceRepository.readLegacyProjection(
+            id: machine.id,
+            authoritativeLegacyData: currentLegacyData,
+            authoritativeMigrationFactsData: currentFactsData
+        )
+        guard currentDefinition == definition,
+              try Self.canonicalDefinitionData(currentDefinition)
+                == canonicalDefinitionData else {
+            throw MachineManagerError.persistence(
+                "authoritative workspace projection changed during planning"
+            )
+        }
+    }
+
+    private static func canonicalPlanningRuntimeAuthorityData(
+        _ identity: DoryMachineRuntimeIdentity
+    ) throws -> Data {
+        let authority = MachinePlanningRuntimeAuthority(identity: identity)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        return try encoder.encode(authority)
+    }
+
+    private func requireNoActivePlanningMutation(id: String) throws {
+        guard !activePlanningMutationIDs.contains(id) else {
+            throw MachineManagerError.persistence(
+                "machine \(id) already has an active planning mutation"
+            )
+        }
+    }
+
+    private func acquireDirectWorkspaceMutationLock(
+        id: String
+    ) throws -> EngineStateDirectoryLock {
+        guard let store = lifecycleJournalStore else {
+            throw MachineManagerError.persistence(
+                "lifecycle journal is unavailable: "
+                    + (lifecycleJournalInitializationError ?? "unknown error")
+            )
+        }
+        let workspaceLock: EngineStateDirectoryLock
+        do {
+            workspaceLock = try EngineStateDirectoryLock(
+                stateDirectory: store.root,
+                lockFileName: ".mutation.\(id).lock"
+            )
+        } catch {
+            throw MachineManagerError.persistence(
+                "machine \(id) mutation authority is busy: \(error)"
+            )
+        }
+        if let unfinished = try store.list().first(where: {
+            $0.state.status != .completed && $0.state.status != .failed
+                && ($0.plan.source.id == id || $0.plan.target.id == id)
+        }) {
+            throw MachineManagerError.persistence(
+                "machine \(id) lifecycle operation "
+                    + unfinished.plan.id.uuidString.lowercased() + " requires recovery"
+            )
+        }
+        return workspaceLock
+    }
+
+    private func retainDirectWorkspaceMutationLock(
+        id: String
+    ) throws -> MachineManagerDirectMutationRetention {
+        if let existing = activeDirectWorkspaceMutationLocks[id] {
+            existing.depth += 1
+            return existing
+        }
+        guard activeLifecycleOperations[id] == nil else {
+            throw MachineManagerError.persistence(
+                "machine \(id) already has an active lifecycle mutation"
+            )
+        }
+        let retention = MachineManagerDirectMutationRetention(
+            workspaceLock: try acquireDirectWorkspaceMutationLock(id: id)
+        )
+        activeDirectWorkspaceMutationLocks[id] = retention
+        return retention
+    }
+
+    private func releaseDirectWorkspaceMutationLock(
+        id: String,
+        retention: MachineManagerDirectMutationRetention
+    ) {
+        guard activeDirectWorkspaceMutationLocks[id] === retention,
+              retention.depth > 0 else { return }
+        retention.depth -= 1
+        if retention.depth == 0 {
+            activeDirectWorkspaceMutationLocks.removeValue(forKey: id)
+        }
+    }
+
+    fileprivate func releasePlanningMutation(
+        machineID: String,
+        releaseWorkspaceLock: () -> Void
+    ) {
+        operationLock.lock()
+        releaseWorkspaceLock()
+        activePlanningMutationIDs.remove(machineID)
+        operationLock.unlock()
+    }
+
     private func lifecycleState(for state: DoryMachineState) -> DoryWorkspaceLifecycleState {
         switch state {
         case .starting, .running: .running
@@ -5414,10 +5754,16 @@ public final class MachineManager: @unchecked Sendable {
         let binding = try operation.journalBinding(
             dependencyClosureDigest: Self.sha256(data: try encoder.encode(dependency))
         )
-        let context = MachineLifecycleJournalContext(
-            operation: operation,
-            lease: try store.begin(binding)
-        )
+        let lease: DoryOperationLease
+        if let retained = activeDirectWorkspaceMutationLocks[machineID] {
+            lease = try store.begin(
+                binding,
+                holdingMutationLock: retained.workspaceLock
+            )
+        } else {
+            lease = try store.begin(binding)
+        }
+        let context = MachineLifecycleJournalContext(operation: operation, lease: lease)
         activeLifecycleOperations[machineID] = context
         return context
     }
@@ -6565,6 +6911,72 @@ private final class MachineLifecycleJournalContext: @unchecked Sendable {
     }
 }
 
+private final class MachineManagerPlanningMutationRetention: @unchecked Sendable {
+    private let stateLock = NSLock()
+    private let manager: MachineManager
+    private let machineID: String
+    private var workspaceLock: EngineStateDirectoryLock?
+
+    init(
+        manager: MachineManager,
+        machineID: String,
+        workspaceLock: EngineStateDirectoryLock
+    ) {
+        self.manager = manager
+        self.machineID = machineID
+        self.workspaceLock = workspaceLock
+    }
+
+    func release() {
+        stateLock.withLock {
+            guard workspaceLock != nil else { return }
+            manager.releasePlanningMutation(machineID: machineID) {
+                workspaceLock = nil
+            }
+        }
+    }
+
+    deinit { release() }
+}
+
+private final class MachineManagerDirectMutationRetention: @unchecked Sendable {
+    let workspaceLock: EngineStateDirectoryLock
+    var depth = 1
+
+    init(workspaceLock: EngineStateDirectoryLock) {
+        self.workspaceLock = workspaceLock
+    }
+}
+
+/// Planning recovery binds launch-relevant runtime authority, not the transient explanation for
+/// why an unplanned machine needs a plan. This stays stable across daemon restart while resolved
+/// identities retain the exact immutable plan digest and backend/runtime tuple.
+private struct MachinePlanningRuntimeAuthority: Codable {
+    var schemaVersion: UInt16
+    var mode: DoryMachineRuntimeIdentityMode
+    var virtualHardwareABIVersion: UInt16
+    var resolvedPlanSHA256: String?
+    var planRevision: UInt64?
+    var definitionRevision: UInt64?
+    var definitionSHA256: String?
+    var backend: DoryVirtualizationBackendIdentity?
+    var backendImplementationIdentifier: String?
+    var backendRuntimeBuildIdentifier: String?
+
+    init(identity: DoryMachineRuntimeIdentity) {
+        schemaVersion = identity.schemaVersion
+        mode = identity.mode
+        virtualHardwareABIVersion = identity.virtualHardwareABIVersion
+        resolvedPlanSHA256 = identity.resolvedPlanSHA256
+        planRevision = identity.planRevision
+        definitionRevision = identity.definitionRevision
+        definitionSHA256 = identity.definitionSHA256
+        backend = identity.backend
+        backendImplementationIdentifier = identity.backendImplementationIdentifier
+        backendRuntimeBuildIdentifier = identity.backendRuntimeBuildIdentifier
+    }
+}
+
 private struct MachineLifecycleDependencyAuthority: Codable {
     var schemaVersion: UInt16 = 2
     var mutationKind: String
@@ -6579,6 +6991,8 @@ private struct MachineLifecycleDependencyAuthority: Codable {
     var targetSnapshotDescriptorSHA256: String?
     var targetSnapshotArtifactEvidenceSHA256: String?
 }
+
+extension MachineManager: DoryDaemonVirtualMachinePlanningMutationAuthorizing {}
 
 private extension DoryOperationPhase {
     var indexForMachineLifecycle: Int {

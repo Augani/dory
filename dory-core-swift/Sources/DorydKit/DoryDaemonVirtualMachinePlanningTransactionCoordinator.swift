@@ -86,28 +86,119 @@ public protocol DoryDaemonVirtualMachinePlanningTrustPreparing: Sendable {
     ) throws -> DoryDaemonVirtualMachinePlanningTrustPreparation
 }
 
+/// Content-only authority captured while the MachineManager owns the workspace mutation fence.
+/// Raw legacy bytes, host paths, and migration inputs stay daemon-local; their exact digests bind
+/// the planning request and durable transaction journal without persisting secrets.
+public struct DoryDaemonVirtualMachinePlanningMachineAuthority:
+    Codable, Sendable, Equatable
+{
+    public static let schemaVersion: UInt16 = 1
+
+    public var schemaVersion: UInt16
+    public var machineID: String
+    public var legacyConfigurationSHA256: String
+    public var migrationFactsSHA256: String
+    public var sourceDefinitionRevision: UInt64
+    public var sourceDefinitionSHA256: String
+    public var runtimeIdentitySHA256: String
+
+    public init(
+        machineID: String,
+        legacyConfigurationSHA256: String,
+        migrationFactsSHA256: String,
+        sourceDefinitionRevision: UInt64,
+        sourceDefinitionSHA256: String,
+        runtimeIdentitySHA256: String
+    ) {
+        schemaVersion = Self.schemaVersion
+        self.machineID = machineID
+        self.legacyConfigurationSHA256 = legacyConfigurationSHA256.lowercased()
+        self.migrationFactsSHA256 = migrationFactsSHA256.lowercased()
+        self.sourceDefinitionRevision = sourceDefinitionRevision
+        self.sourceDefinitionSHA256 = sourceDefinitionSHA256.lowercased()
+        self.runtimeIdentitySHA256 = runtimeIdentitySHA256.lowercased()
+    }
+
+    public var isValid: Bool {
+        schemaVersion == Self.schemaVersion
+            && machineID.wholeMatch(of: /[A-Za-z0-9][A-Za-z0-9_.-]{0,62}/) != nil
+            && !machineID.hasPrefix(".")
+            && sourceDefinitionRevision > 0
+            && Self.isSHA256(legacyConfigurationSHA256)
+            && Self.isSHA256(migrationFactsSHA256)
+            && Self.isSHA256(sourceDefinitionSHA256)
+            && Self.isSHA256(runtimeIdentitySHA256)
+    }
+
+    public var authoritySHA256: String {
+        guard isValid else { return "" }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        guard let data = try? encoder.encode(self) else { return "" }
+        return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func isSHA256(_ value: String) -> Bool {
+        value.utf8.count == 64 && value.utf8.allSatisfy {
+            (48...57).contains($0) || (97...102).contains($0)
+        }
+    }
+}
+
 /// Held for the whole transaction. A MachineManager-backed implementation owns the lifecycle
 /// operation fence and validates authoritative machine bytes/migration facts against `definition`.
 /// The coordinator has no unsafe default: production composition must provide this authority.
 public final class DoryDaemonVirtualMachinePlanningMutationFence: @unchecked Sendable {
-    public let authoritySHA256: String
+    public let authority: DoryDaemonVirtualMachinePlanningMachineAuthority
+    public var authoritySHA256: String { authority.authoritySHA256 }
+
+    private let stateLock = NSLock()
+    private var finalized = false
     private let validation: @Sendable () throws -> Void
+    private let completion: @Sendable () throws -> Void
+    private let recoveryRelease: @Sendable () -> Void
     private let retainedAuthority: any Sendable
 
     public init(
-        authoritySHA256: String,
+        authority: DoryDaemonVirtualMachinePlanningMachineAuthority,
         retainedAuthority: any Sendable,
-        validation: @escaping @Sendable () throws -> Void
+        validation: @escaping @Sendable () throws -> Void,
+        completion: @escaping @Sendable () throws -> Void = {},
+        recoveryRelease: @escaping @Sendable () -> Void = {}
     ) {
-        self.authoritySHA256 = authoritySHA256.lowercased()
+        self.authority = authority
         self.retainedAuthority = retainedAuthority
         self.validation = validation
+        self.completion = completion
+        self.recoveryRelease = recoveryRelease
     }
 
     public func revalidate() throws {
         _ = retainedAuthority
         try validation()
     }
+
+    /// Marks both planning publication and its retained MachineManager lifecycle authority
+    /// complete. If this throws, the durable nonterminal lifecycle record remains recoverable.
+    public func complete() throws {
+        try stateLock.withLock {
+            guard !finalized else { return }
+            try completion()
+            finalized = true
+        }
+    }
+
+    /// Releases only the live lock. Durable state is intentionally left nonterminal so daemon
+    /// restart can reacquire the exact transaction rather than fabricating completion.
+    public func releaseForRecovery() {
+        stateLock.withLock {
+            guard !finalized else { return }
+            finalized = true
+            recoveryRelease()
+        }
+    }
+
+    deinit { releaseForRecovery() }
 }
 
 public protocol DoryDaemonVirtualMachinePlanningMutationAuthorizing: Sendable {
@@ -173,11 +264,19 @@ public protocol DoryWorkspaceDefinitionStoring: Sendable {
     func replace(_ definition: DoryVirtualMachineDefinition, expectedRevision: UInt64) throws
     func read(id: String) throws -> DoryVirtualMachineDefinition
     func readIfPresent(id: String) throws -> DoryVirtualMachineDefinition?
+    func readPersistedRecordIfPresent(id: String) throws -> DoryWorkspaceRepositoryRecord?
 }
 
 extension DoryWorkspaceRepository: DoryWorkspaceDefinitionStoring {
     public func readIfPresent(id: String) throws -> DoryVirtualMachineDefinition? {
         do { return try read(id: id) }
+        catch DoryWorkspaceRepositoryError.workspaceNotFound { return nil }
+    }
+
+    public func readPersistedRecordIfPresent(
+        id: String
+    ) throws -> DoryWorkspaceRepositoryRecord? {
+        do { return try readPersistedRecord(id: id) }
         catch DoryWorkspaceRepositoryError.workspaceNotFound { return nil }
     }
 }
@@ -404,7 +503,14 @@ public final class DoryDaemonVirtualMachinePlanningTransactionCoordinator:
                 "Authoritative machine state is live, stale, or inconsistent with the workspace."
             )
         }
-        guard Self.isSHA256(mutationFence.authoritySHA256) else {
+        defer { mutationFence.releaseForRecovery() }
+        guard mutationFence.authority.isValid,
+              mutationFence.authority.machineID == request.planning.definition.identity.id,
+              mutationFence.authority.sourceDefinitionRevision
+                == request.planning.definition.lifecycle.revision,
+              mutationFence.authority.sourceDefinitionSHA256
+                == Self.sha256(canonicalDefinition),
+              Self.isSHA256(mutationFence.authoritySHA256) else {
             throw failure(.mutationAuthorityRejected, "Machine authority digest is invalid.")
         }
         let requestDigest = Self.requestDigest(
@@ -416,15 +522,28 @@ public final class DoryDaemonVirtualMachinePlanningTransactionCoordinator:
             request,
             requestDigest: requestDigest,
             machineAuthoritySHA256: mutationFence.authoritySHA256,
-            canonicalDefinition: canonicalDefinition
+            canonicalDefinition: canonicalDefinition,
+            mutationFence: mutationFence
         )
         switch journal.phase {
         case .aborted:
             throw failure(.transactionAborted, "The exact planning transaction was aborted.")
         case .recoveryRequired:
-            try resumeRecoveryRequired(&journal)
+            try resumeRecoveryRequired(&journal, mutationFence: mutationFence)
         case .complete:
-            return try completedResult(request, journal: journal)
+            let result = try completedResult(
+                request,
+                journal: journal,
+                mutationFence: mutationFence
+            )
+            do { try mutationFence.complete() }
+            catch {
+                throw failure(
+                    .recoveryRequired,
+                    "Planning completed, but its workspace mutation journal requires recovery."
+                )
+            }
+            return result
         default: break
         }
 
@@ -491,23 +610,40 @@ public final class DoryDaemonVirtualMachinePlanningTransactionCoordinator:
         }
         try faultInjector?(.publicationAuthorized)
 
-        try publishWorkspace(request, journal: &journal)
+        try publishWorkspace(request, journal: &journal, mutationFence: mutationFence)
+        // Workspace publication is not the final machine-authority boundary. Re-prove the
+        // exact legacy bytes, migration facts, projection, and runtime identity immediately
+        // before publishing the independently durable plan record too.
+        try revalidateMutationFence(
+            mutationFence,
+            journal: &journal,
+            message: "Machine authority changed before resolved-plan publication."
+        )
         try publishPlan(request, planning: planning, journal: &journal)
         journal.phase = .complete
         try publishJournal(journal)
         try faultInjector?(.completeJournalPublished)
-        return DoryDaemonVirtualMachinePlanningTransactionResult(
+        let result = DoryDaemonVirtualMachinePlanningTransactionResult(
             planning: planning,
             lease: lease,
             transactionID: journal.transactionID
         )
+        do { try mutationFence.complete() }
+        catch {
+            throw failure(
+                .recoveryRequired,
+                "Planning completed, but its workspace mutation journal requires recovery."
+            )
+        }
+        return result
     }
 
     private func loadOrPrepare(
         _ request: DoryDaemonVirtualMachinePlanningTransactionRequest,
         requestDigest: String,
         machineAuthoritySHA256: String,
-        canonicalDefinition: Data
+        canonicalDefinition: Data,
+        mutationFence: DoryDaemonVirtualMachinePlanningMutationFence
     ) throws -> Journal {
         if let existing = try readJournal(machineID: request.planning.definition.identity.id) {
             if existing.requestSHA256 == requestDigest { return existing }
@@ -518,9 +654,27 @@ public final class DoryDaemonVirtualMachinePlanningTransactionCoordinator:
         let timestamp = now()
         guard timestamp > 0 else { throw failure(.invalidRequest, "Planning time is invalid.") }
         let sourcePlan: DoryResolvedMachinePlan?
-        let existingDefinition = try workspaces.readIfPresent(
+        let existingRecord = try workspaces.readPersistedRecordIfPresent(
             id: request.planning.definition.identity.id
         )
+        let existingDefinition = existingRecord?.definition
+        if request.workspacePublication == .retainExistingExact {
+            guard mutationFence.authority.sourceDefinitionRevision
+                    == request.planning.definition.lifecycle.revision,
+                  mutationFence.authority.sourceDefinitionSHA256
+                    == Self.sha256(canonicalDefinition),
+                  let existingRecord,
+                  retainedRecordMatchesMutationAuthority(
+                    existingRecord,
+                    target: request.planning.definition,
+                    mutationFence: mutationFence
+                  ) else {
+                throw failure(
+                    .mutationAuthorityRejected,
+                    "Retained workspace source authority is not exact."
+                )
+            }
+        }
         sourcePlan = try plans.readIfPresent(id: request.planning.definition.identity.id)
         switch request.workspacePublication {
         case .create:
@@ -765,10 +919,27 @@ public final class DoryDaemonVirtualMachinePlanningTransactionCoordinator:
 
     private func publishWorkspace(
         _ request: DoryDaemonVirtualMachinePlanningTransactionRequest,
-        journal: inout Journal
+        journal: inout Journal,
+        mutationFence: DoryDaemonVirtualMachinePlanningMutationFence
     ) throws {
         let target = request.planning.definition
-        let current = try workspaces.readIfPresent(id: target.identity.id)
+        try revalidateMutationFence(
+            mutationFence,
+            journal: &journal,
+            message: "Machine authority changed before workspace publication."
+        )
+        let currentRecord = try workspaces.readPersistedRecordIfPresent(id: target.identity.id)
+        let current = currentRecord?.definition
+        if request.workspacePublication == .retainExistingExact {
+            guard let currentRecord,
+                  retainedRecordMatchesMutationAuthority(
+                    currentRecord,
+                    target: target,
+                    mutationFence: mutationFence
+                  ) else {
+                throw failure(.transactionConflict, "Retained workspace differs from target.")
+            }
+        }
         if current != target {
             do {
                 switch request.workspacePublication {
@@ -787,6 +958,19 @@ public final class DoryDaemonVirtualMachinePlanningTransactionCoordinator:
                 }
             } catch let error as DoryDaemonVirtualMachinePlanningTransactionFailure { throw error }
             catch { throw failure(.workspacePublicationRejected, "Workspace publication failed.") }
+        }
+        guard let published = try workspaces.readPersistedRecordIfPresent(id: target.identity.id),
+              published.definition == target,
+              request.workspacePublication != .retainExistingExact
+                || retainedRecordMatchesMutationAuthority(
+                    published,
+                    target: target,
+                    mutationFence: mutationFence
+                ) else {
+            throw failure(
+                .workspacePublicationRejected,
+                "Workspace publication did not persist the exact target."
+            )
         }
         try faultInjector?(.workspacePublished)
         journal.phase = .workspacePublished
@@ -825,12 +1009,28 @@ public final class DoryDaemonVirtualMachinePlanningTransactionCoordinator:
 
     private func completedResult(
         _ request: DoryDaemonVirtualMachinePlanningTransactionRequest,
-        journal: Journal
+        journal: Journal,
+        mutationFence: DoryDaemonVirtualMachinePlanningMutationFence
     ) throws -> DoryDaemonVirtualMachinePlanningTransactionResult {
         let planning = try planningResultFromCandidate(request, journal: journal)
         let plan = planning.resolvedPlan
-        guard
-              let currentDefinition = try workspaces.readIfPresent(id: plan.machineID),
+        do { try mutationFence.revalidate() }
+        catch {
+            throw failure(.recoveryRequired, "Completed machine authority no longer matches.")
+        }
+        let currentRecord = try workspaces.readPersistedRecordIfPresent(id: plan.machineID)
+        let currentDefinition = currentRecord?.definition
+        if request.workspacePublication == .retainExistingExact {
+            guard let currentRecord,
+                  retainedRecordMatchesMutationAuthority(
+                    currentRecord,
+                    target: journal.definition,
+                    mutationFence: mutationFence
+                  ) else {
+                throw failure(.recoveryRequired, "Completed retained workspace is not exact.")
+            }
+        }
+        guard let currentDefinition,
               currentDefinition == journal.definition,
               let currentPlan = try plans.readIfPresent(id: plan.machineID),
               currentPlan == plan,
@@ -850,7 +1050,10 @@ public final class DoryDaemonVirtualMachinePlanningTransactionCoordinator:
     /// explicit daemon recovery operation: it reacquires the mutation fence in `execute`, proves
     /// the same exact bound lease/candidate and source-or-target publication authorities here,
     /// then obtains a newly collected, single-use publication authorization before resuming.
-    private func resumeRecoveryRequired(_ journal: inout Journal) throws {
+    private func resumeRecoveryRequired(
+        _ journal: inout Journal,
+        mutationFence: DoryDaemonVirtualMachinePlanningMutationFence
+    ) throws {
         guard let leaseID = journal.leaseID,
               let candidateDigest = journal.candidatePlanSHA256,
               let lease = try ledger.snapshot().leases.first(where: { $0.leaseID == leaseID }),
@@ -860,9 +1063,24 @@ public final class DoryDaemonVirtualMachinePlanningTransactionCoordinator:
             throw failure(.recoveryRequired, "The retained bound lease cannot be recovered exactly.")
         }
 
-        let currentDefinition = try workspaces.readIfPresent(
+        do { try mutationFence.revalidate() }
+        catch {
+            throw failure(.recoveryRequired, "Machine authority changed during bound recovery.")
+        }
+        let currentRecord = try workspaces.readPersistedRecordIfPresent(
             id: journal.definition.identity.id
         )
+        let currentDefinition = currentRecord?.definition
+        if journal.workspacePublication == .retainExistingExact {
+            guard let currentRecord,
+                  retainedRecordMatchesMutationAuthority(
+                    currentRecord,
+                    target: journal.definition,
+                    mutationFence: mutationFence
+                  ) else {
+                throw failure(.recoveryRequired, "Retained workspace is missing or substituted.")
+            }
+        }
         let definitionIsTarget = currentDefinition == journal.definition
         let definitionIsSource: Bool
         switch journal.workspacePublication {
@@ -902,6 +1120,35 @@ public final class DoryDaemonVirtualMachinePlanningTransactionCoordinator:
         journal.leaseRevision = lease.leaseRevision
         journal.phase = .bound
         try publishJournal(journal)
+    }
+
+    private func retainedRecordMatchesMutationAuthority(
+        _ record: DoryWorkspaceRepositoryRecord,
+        target: DoryVirtualMachineDefinition,
+        mutationFence: DoryDaemonVirtualMachinePlanningMutationFence
+    ) -> Bool {
+        guard record.definition == target else { return false }
+        switch (record.legacyConfigurationSHA256, record.legacyMigrationFactsSHA256) {
+        case (nil, nil):
+            return true
+        case let (legacyDigest?, factsDigest?):
+            return legacyDigest == mutationFence.authority.legacyConfigurationSHA256
+                && factsDigest == mutationFence.authority.migrationFactsSHA256
+        default:
+            return false
+        }
+    }
+
+    private func revalidateMutationFence(
+        _ mutationFence: DoryDaemonVirtualMachinePlanningMutationFence,
+        journal: inout Journal,
+        message: String
+    ) throws {
+        do { try mutationFence.revalidate() }
+        catch {
+            try? markRecoveryRequired(&journal)
+            throw failure(.mutationAuthorityRejected, message)
+        }
     }
 
     private func abortUnboundIfPresent(_ journal: inout Journal) throws {

@@ -373,6 +373,16 @@ public final class DoryWorkspaceRepository: @unchecked Sendable {
         return record.definition
     }
 
+    /// Reads the validated durable repository envelope without promoting a legacy projection to
+    /// native desired-state authority. Transaction coordinators use this only to prove that the
+    /// repository still contains the exact record selected while the separate legacy mutation
+    /// authority remains held.
+    public func readPersistedRecord(id: String) throws -> DoryWorkspaceRepositoryRecord {
+        lock.lock()
+        defer { lock.unlock() }
+        return try readRecordUnlocked(id: id)
+    }
+
     public func readLegacyProjection(
         id: String,
         authoritativeLegacyData: Data
