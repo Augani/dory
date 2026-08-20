@@ -302,12 +302,115 @@ struct Machine: Identifiable, Hashable, Sendable {
     var bootMode: MachineBootMode = .linuxKernel
     var installerMediaAttached: Bool = false
     var runtimeIdentity: DorydMachineRuntimeIdentity = .legacyCompatibility
+    var agentBuild: String? = nil
     var mounts: [MountPair] = []
     var id: String { name }
 
     var badgeColor: Color { Color(hex: badgeHex) }
     var actionLabel: String { status == .running ? "Stop" : "Start" }
     var isEmulated: Bool { !arch.isEmpty && arch != MachineArch.host.rawValue }
+
+    var runtimeEvidence: [MachineRuntimeEvidence] {
+        var evidence: [MachineRuntimeEvidence] = []
+        switch runtimeIdentity.mode {
+        case "resolved-plan":
+            evidence.append(MachineRuntimeEvidence(
+                id: "authority",
+                label: runtimeIdentity.supportTier == "supported" ? "Supported" : "Preview",
+                systemImage: runtimeIdentity.supportTier == "supported"
+                    ? "checkmark.seal.fill" : "exclamationmark.triangle.fill",
+                tone: runtimeIdentity.supportTier == "supported" ? .positive : .warning,
+                detail: runtimeIdentity.runtimeQualification?.qualificationIdentity
+                    ?? "Resolved plan \(runtimeIdentity.planRevision ?? 0)"
+            ))
+            if let backend = runtimeIdentity.backend {
+                evidence.append(MachineRuntimeEvidence(
+                    id: "backend",
+                    label: Self.backendLabel(backend),
+                    systemImage: "cpu",
+                    tone: .standard,
+                    detail: runtimeIdentity.backendRuntimeBuildIdentifier ?? backend
+                ))
+            }
+            if displayMode == .desktop {
+                evidence.append(MachineRuntimeEvidence(
+                    id: "graphics",
+                    label: Self.graphicsLabel(runtimeIdentity.graphics),
+                    systemImage: "display",
+                    tone: runtimeIdentity.graphics == "hardware-accelerated-3d"
+                        ? .positive : .standard,
+                    detail: runtimeIdentity.graphicsQualification?.manifestIdentity
+                        ?? "No separate signed graphics qualification"
+                ))
+            }
+            if runtimeIdentity.selectionDisposition == "approved-fallback" {
+                evidence.append(MachineRuntimeEvidence(
+                    id: "fallback",
+                    label: "Approved fallback",
+                    systemImage: "arrow.triangle.branch",
+                    tone: .warning,
+                    detail: runtimeIdentity.fallbackAuthorizationIdentity ?? "Approved alternative"
+                ))
+            }
+        case "requires-replanning":
+            evidence.append(MachineRuntimeEvidence(
+                id: "authority",
+                label: "Needs planning",
+                systemImage: "exclamationmark.triangle.fill",
+                tone: .warning,
+                detail: runtimeIdentity.invalidationReason ?? "No current launch plan"
+            ))
+        default:
+            evidence.append(MachineRuntimeEvidence(
+                id: "authority",
+                label: "Compatibility",
+                systemImage: "arrow.triangle.2.circlepath",
+                tone: .standard,
+                detail: "Legacy compatibility launch authority"
+            ))
+        }
+        evidence.append(MachineRuntimeEvidence(
+            id: "tools",
+            label: agentBuild == nil ? "Tools unavailable" : "Tools ready",
+            systemImage: agentBuild == nil ? "wrench.and.screwdriver" : "wrench.and.screwdriver.fill",
+            tone: agentBuild == nil ? .warning : .positive,
+            detail: agentBuild ?? "The guest has not reported a Dory Tools build"
+        ))
+        return evidence
+    }
+
+    private static func backendLabel(_ backend: String) -> String {
+        switch backend {
+        case "dory-hypervisor": "Raw HV"
+        case "apple-virtualization-framework": "Virtualization.framework"
+        case "qemu-hvf": "QEMU/HVF"
+        default: backend
+        }
+    }
+
+    private static func graphicsLabel(_ graphics: String?) -> String {
+        switch graphics {
+        case "hardware-accelerated-3d": "Qualified 3D"
+        case "host-accelerated-display": "Accelerated display"
+        case "software": "Software graphics"
+        case "none": "No graphics"
+        default: "Graphics unknown"
+        }
+    }
+}
+
+enum MachineRuntimeEvidenceTone: Hashable, Sendable {
+    case standard
+    case positive
+    case warning
+}
+
+struct MachineRuntimeEvidence: Identifiable, Hashable, Sendable {
+    var id: String
+    var label: String
+    var systemImage: String
+    var tone: MachineRuntimeEvidenceTone
+    var detail: String
 }
 
 enum LogLevel: String, Sendable {

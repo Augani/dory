@@ -1707,6 +1707,7 @@ private extension DoryMachineRuntimeIdentity {
         dictionary["backendImplementationIdentifier"] = plan.backendImplementationIdentifier
         dictionary["backendRuntimeBuildIdentifier"] = plan.backendRuntimeBuildIdentifier
         dictionary["supportTier"] = plan.supportTier.rawValue
+        dictionary["graphics"] = plan.graphics.rawValue
         if let selectionDisposition = plan.selectionEvidence?.disposition {
             dictionary["selectionDisposition"] = selectionDisposition.rawValue
         }

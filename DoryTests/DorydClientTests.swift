@@ -469,6 +469,10 @@ struct DorydClientTests {
             "artifactSHA256": String(repeating: "6", count: 64),
             "provenanceReceiptIdentity": "orphan-receipt",
         ]
+        let unsupportedGraphics = NSMutableDictionary(
+            dictionary: validResolvedRuntimeIdentity()
+        )
+        unsupportedGraphics["graphics"] = "automatic"
         for identity in [
             [
                 "schemaVersion": 2,
@@ -488,6 +492,7 @@ struct DorydClientTests {
             resolvedWithoutComponentsOrMedia,
             mixedQualification,
             orphanProvenance,
+            unsupportedGraphics,
         ] {
             let listener = NSXPCListener.anonymous()
             let service = FakeDorydService(runtimeIdentityOverride: identity)
@@ -516,6 +521,38 @@ struct DorydClientTests {
                 #expect(error.description.contains("invalid doryd response"))
             }
         }
+    }
+
+    @Test func machineRuntimeEvidenceSurfacesPlanGraphicsBackendAndGuestTools() async throws {
+        let listener = NSXPCListener.anonymous()
+        let service = FakeDorydService(runtimeIdentityOverride: validResolvedRuntimeIdentity())
+        let delegate = FakeDorydListenerDelegate(service: service)
+        listener.delegate = delegate
+        listener.resume()
+        defer { listener.invalidate() }
+
+        let status = try #require(
+            (try await DorydClient(endpoint: listener.endpoint).machineList()).first
+        )
+        let machine = AppStore.machine(fromDoryd: status)
+        #expect(machine.runtimeIdentity.graphics == "hardware-accelerated-3d")
+        #expect(machine.runtimeEvidence.map(\.label) == [
+            "Supported", "Raw HV", "Qualified 3D", "Tools ready",
+        ])
+        #expect(machine.runtimeEvidence.first { $0.id == "authority" }?.detail
+            == "runtime-qualification-1")
+
+        var replanning = machine
+        replanning.runtimeIdentity = DorydMachineRuntimeIdentity(
+            schemaVersion: 1,
+            mode: "requires-replanning",
+            virtualHardwareABIVersion: 1,
+            invalidationReason: "restored-snapshot"
+        )
+        replanning.agentBuild = nil
+        #expect(replanning.runtimeEvidence.map(\.label) == [
+            "Needs planning", "Tools unavailable",
+        ])
     }
 
     @Test func snapshotArtifactEvidenceIsAbsentOnlyForLegacyAndOtherwiseExact() async throws {
@@ -740,6 +777,7 @@ struct DorydClientTests {
             "backendImplementationIdentifier": "dev.dory.raw-hv-linux",
             "backendRuntimeBuildIdentifier": "runtime-1",
             "supportTier": "supported",
+            "graphics": "hardware-accelerated-3d",
             "selectionDisposition": "primary",
             "runtimeQualification": [
                 "qualificationIdentity": "runtime-qualification-1",

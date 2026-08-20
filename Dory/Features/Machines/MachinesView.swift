@@ -165,6 +165,9 @@ private struct MachineCard: View {
                     .padding(.bottom, 12)
             }
 
+            runtimeEvidence
+                .padding(.bottom, 12)
+
             if let command = store.machineTerminalCommand(machine) {
                 HStack(spacing: 6) {
                     Image(systemName: "terminal").font(.system(size: 11)).foregroundStyle(p.text3)
@@ -310,6 +313,45 @@ private struct MachineCard: View {
                     .font(.system(size: 10.5, weight: .medium))
                     .foregroundStyle(p.text3)
             }
+        }
+    }
+
+    private var runtimeEvidence: some View {
+        LazyVGrid(
+            columns: [GridItem(.adaptive(minimum: 104, maximum: 190), spacing: 6)],
+            alignment: .leading,
+            spacing: 6
+        ) {
+            ForEach(machine.runtimeEvidence) { evidence in
+                HStack(spacing: 4) {
+                    Image(systemName: evidence.systemImage)
+                        .font(.system(size: 9, weight: .semibold))
+                    Text(evidence.label)
+                        .font(.system(size: 10, weight: .semibold))
+                        .lineLimit(1)
+                }
+                .foregroundStyle(runtimeEvidenceColor(evidence.tone))
+                .padding(.horizontal, 7)
+                .padding(.vertical, 4)
+                .background(runtimeEvidenceBackground(evidence.tone), in: Capsule())
+                .help(evidence.detail)
+            }
+        }
+    }
+
+    private func runtimeEvidenceColor(_ tone: MachineRuntimeEvidenceTone) -> Color {
+        switch tone {
+        case .standard: p.text2
+        case .positive: p.green
+        case .warning: p.amber
+        }
+    }
+
+    private func runtimeEvidenceBackground(_ tone: MachineRuntimeEvidenceTone) -> Color {
+        switch tone {
+        case .standard: p.pill
+        case .positive: p.greenWeak
+        case .warning: p.amberWeak
         }
     }
 

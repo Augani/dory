@@ -450,6 +450,7 @@ nonisolated struct DorydMachineRuntimeIdentity: Codable, Sendable, Equatable, Ha
     var backendImplementationIdentifier: String? = nil
     var backendRuntimeBuildIdentifier: String? = nil
     var supportTier: String? = nil
+    var graphics: String? = nil
     var selectionDisposition: String? = nil
     var fallbackAuthorizationIdentity: String? = nil
     var experimentalAuthorizationIdentity: String? = nil
@@ -492,6 +493,7 @@ nonisolated struct DorydMachineRuntimeIdentity: Codable, Sendable, Equatable, Ha
             && backendImplementationIdentifier == nil
             && backendRuntimeBuildIdentifier == nil
             && supportTier == nil
+            && graphics == nil
             && selectionDisposition == nil
             && fallbackAuthorizationIdentity == nil
             && experimentalAuthorizationIdentity == nil
@@ -512,6 +514,9 @@ nonisolated struct DorydMachineRuntimeIdentity: Codable, Sendable, Equatable, Ha
               backendImplementationIdentifier?.isSafeEvidenceIdentifier == true,
               backendRuntimeBuildIdentifier?.isSafeEvidenceIdentifier == true,
               let supportTier,
+              let graphics,
+              ["none", "software", "host-accelerated-display", "hardware-accelerated-3d"]
+                .contains(graphics),
               let selectionDisposition,
               ["primary", "explicit-alternative", "approved-fallback"]
                 .contains(selectionDisposition),
