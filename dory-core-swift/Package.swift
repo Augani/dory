@@ -21,7 +21,10 @@ let package = Package(
     ],
     targets: [
         .binaryTarget(name: "DoryFFI", path: "artifacts/DoryFFI.xcframework"),
-        .target(name: "DoryOperations"),
+        .target(
+            name: "DoryOperations",
+            linkerSettings: [.linkedLibrary("z")]
+        ),
         .target(
             name: "DoryCore",
             dependencies: ["DoryFFI", "DoryOperations"]
@@ -37,7 +40,7 @@ let package = Package(
         ),
         .target(
             name: "DoryVMMKit",
-            dependencies: ["DoryCore", "DorydKit"],
+            dependencies: ["DoryCore", "DorydKit", "DoryOperations"],
             linkerSettings: [
                 .linkedFramework("AppKit"),
                 .linkedFramework("Virtualization"),
