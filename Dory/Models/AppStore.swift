@@ -6148,7 +6148,8 @@ final class AppStore {
             boot: "vz",
             recipe: "doryd",
             runtimeIdentity: snapshot.runtimeIdentity,
-            artifactEvidence: snapshot.artifactEvidence
+            artifactEvidence: snapshot.artifactEvidence,
+            consistency: snapshot.consistency
         )
     }
 

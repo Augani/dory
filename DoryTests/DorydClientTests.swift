@@ -391,6 +391,7 @@ struct DorydClientTests {
         #expect(snapshot.id == "s1")
         #expect(snapshot.machineID == "dev")
         #expect(snapshot.runtimeIdentity == .legacyCompatibility)
+        #expect(snapshot.consistency == .coldStopped)
         #expect(snapshots.map(\.id).contains("s1"))
         #expect(clonedSnapshot.id == "dev-copy")
         #expect(restoredSnapshot.id == "dev")
@@ -668,6 +669,43 @@ struct DorydClientTests {
             } catch let error as DorydClientError {
                 #expect(error.description.contains("invalid doryd response"))
             }
+        }
+    }
+
+    @Test func snapshotConsistencyDefaultsOnlyWhenAbsentAndRejectsMalformedClaims() async throws {
+        let validService = FakeDorydService(snapshotConsistencyOverride: "guest-quiesced")
+        let validListener = NSXPCListener.anonymous()
+        let validDelegate = FakeDorydListenerDelegate(service: validService)
+        validListener.delegate = validDelegate
+        validListener.resume()
+        defer { validListener.invalidate() }
+        let valid = try await DorydClient(endpoint: validListener.endpoint).machineSnapshot(
+            "dev",
+            note: "consistent",
+            createdISO: "2026-07-07T00:00:00Z",
+            snapshotID: "consistent"
+        )
+        #expect(valid.consistency == .guestQuiesced)
+
+        for malformed in ["crash-consistent" as Any, 1 as Any] {
+            let listener = NSXPCListener.anonymous()
+            let service = FakeDorydService(snapshotConsistencyOverride: malformed)
+            let delegate = FakeDorydListenerDelegate(service: service)
+            listener.delegate = delegate
+            listener.resume()
+            let client = DorydClient(endpoint: listener.endpoint)
+            do {
+                _ = try await client.machineSnapshot(
+                    "dev",
+                    note: "invalid consistency",
+                    createdISO: "2026-07-07T00:00:00Z",
+                    snapshotID: "invalid-consistency"
+                )
+                Issue.record("present malformed snapshot consistency must fail closed")
+            } catch let error as DorydClientError {
+                #expect(error.description.contains("invalid doryd response"))
+            }
+            listener.invalidate()
         }
     }
 
@@ -1157,6 +1195,7 @@ struct DorydClientTests {
         let snapshot = try #require(store.machineSnapshots.first)
         #expect(snapshot.note == "before upgrade")
         #expect(snapshot.imageRef.hasPrefix("doryd://dev/"))
+        #expect(snapshot.consistency == .coldStopped)
 
         service.setMachineCloneSnapshotDuplicateFailures(1)
         store.cloneSnapshot(snapshot)
@@ -2481,6 +2520,7 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
     private var runtimeIdentityOverride: NSDictionary?
     private var artifactEvidenceOverride: NSDictionary?
     private var installedDesktopPayloadReceiptOverride: NSDictionary?
+    private var snapshotConsistencyOverride: Any?
     private var snapshots: [String: [NSDictionary]] = [:]
     private var backupStatuses: [String: NSDictionary] = [:]
     var engineStartCount: Int {
@@ -2631,13 +2671,15 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
         engineShutdownReplyDelay: TimeInterval = 0,
         runtimeIdentityOverride: NSDictionary? = nil,
         artifactEvidenceOverride: NSDictionary? = nil,
-        installedDesktopPayloadReceiptOverride: NSDictionary? = nil
+        installedDesktopPayloadReceiptOverride: NSDictionary? = nil,
+        snapshotConsistencyOverride: Any? = nil
     ) {
         self.socketPath = socketPath
         self.engineShutdownReplyDelay = engineShutdownReplyDelay
         self.runtimeIdentityOverride = runtimeIdentityOverride
         self.artifactEvidenceOverride = artifactEvidenceOverride
         self.installedDesktopPayloadReceiptOverride = installedDesktopPayloadReceiptOverride
+        self.snapshotConsistencyOverride = snapshotConsistencyOverride
         if let existing = machines["dev"]?.mutableCopy() as? NSMutableDictionary {
             if let runtimeIdentityOverride {
                 existing["runtimeIdentity"] = runtimeIdentityOverride
@@ -3031,34 +3073,22 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
             createdISO: request["createdISO"] as? String ?? "2026-07-07T00:00:00Z"
         )
         lock.lock()
-        let row: NSDictionary
-        if let runtimeIdentityOverride,
-           let mutable = baseRow.mutableCopy() as? NSMutableDictionary {
+        let mutable = baseRow.mutableCopy() as? NSMutableDictionary
+            ?? NSMutableDictionary(dictionary: baseRow)
+        if let runtimeIdentityOverride {
             mutable["runtimeIdentity"] = runtimeIdentityOverride
-            if let artifactEvidenceOverride {
-                mutable["artifactEvidence"] = artifactEvidenceOverride
-            }
-            if let installedDesktopPayloadReceiptOverride {
-                mutable["installedDesktopPayloadReceipt"] =
-                    installedDesktopPayloadReceiptOverride
-            }
-            row = mutable.copy() as? NSDictionary ?? baseRow
-        } else if let artifactEvidenceOverride,
-                  let mutable = baseRow.mutableCopy() as? NSMutableDictionary {
+        }
+        if let artifactEvidenceOverride {
             mutable["artifactEvidence"] = artifactEvidenceOverride
-            if let installedDesktopPayloadReceiptOverride {
-                mutable["installedDesktopPayloadReceipt"] =
-                    installedDesktopPayloadReceiptOverride
-            }
-            row = mutable.copy() as? NSDictionary ?? baseRow
-        } else if let installedDesktopPayloadReceiptOverride,
-                  let mutable = baseRow.mutableCopy() as? NSMutableDictionary {
+        }
+        if let installedDesktopPayloadReceiptOverride {
             mutable["installedDesktopPayloadReceipt"] =
                 installedDesktopPayloadReceiptOverride
-            row = mutable.copy() as? NSDictionary ?? baseRow
-        } else {
-            row = baseRow
         }
+        if let snapshotConsistencyOverride {
+            mutable["consistency"] = snapshotConsistencyOverride
+        }
+        let row = mutable.copy() as? NSDictionary ?? baseRow
         _machineSnapshotCount += 1
         snapshots[machineID, default: []].insert(row, at: 0)
         lock.unlock()

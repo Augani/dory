@@ -238,6 +238,12 @@ struct SnapshotsSheet: View {
                         Text(relativeTime(snapshot.createdISO)).font(.system(size: 11)).foregroundStyle(p.text3)
                         Text("·").font(.system(size: 11)).foregroundStyle(p.text3)
                         Text(DockerFormat.bytes(snapshot.sizeBytes)).font(.mono(11)).foregroundStyle(p.text3)
+                        if let consistency = snapshot.consistency {
+                            Text("·").font(.system(size: 11)).foregroundStyle(p.text3)
+                            Text(consistency == .guestQuiesced ? "Guest quiesced" : "Cold stopped")
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundStyle(consistency == .guestQuiesced ? p.green : p.text3)
+                        }
                     }
                 }
                 Spacer(minLength: 8)

@@ -747,6 +747,11 @@ nonisolated struct DorydMachineSnapshotArtifactEvidence: Codable, Sendable, Equa
     }
 }
 
+nonisolated enum DorydMachineSnapshotConsistency: String, Sendable, Equatable, Hashable {
+    case coldStopped = "cold-stopped"
+    case guestQuiesced = "guest-quiesced"
+}
+
 nonisolated struct DorydAgentCapability: Sendable, Equatable, Hashable {
     var id: String
     var version: UInt32
@@ -839,6 +844,7 @@ nonisolated struct DorydMachineSnapshot: Sendable, Equatable {
     var runtimeIdentity: DorydMachineRuntimeIdentity = .legacyCompatibility
     var artifactEvidence: DorydMachineSnapshotArtifactEvidence? = nil
     var installedDesktopPayloadReceipt: DorydInstalledDesktopPayloadReceipt? = nil
+    var consistency: DorydMachineSnapshotConsistency = .coldStopped
 }
 
 nonisolated enum DorydMachineBackupFrequency: String, Sendable, Equatable, CaseIterable {
@@ -2327,6 +2333,7 @@ nonisolated final class DorydClient: @unchecked Sendable {
               let installedDesktopPayloadReceipt = machineInstalledDesktopPayloadReceipt(
                   from: dictionary
               ),
+              let consistency = machineSnapshotConsistency(from: dictionary),
               let artifactEvidence = machineSnapshotArtifactEvidence(
                   from: dictionary,
                   runtimeIdentity: runtimeIdentity
@@ -2346,8 +2353,19 @@ nonisolated final class DorydClient: @unchecked Sendable {
             cpuCount: cpuCount,
             runtimeIdentity: runtimeIdentity,
             artifactEvidence: artifactEvidence.value,
-            installedDesktopPayloadReceipt: installedDesktopPayloadReceipt.value
+            installedDesktopPayloadReceipt: installedDesktopPayloadReceipt.value,
+            consistency: consistency
         )
+    }
+
+    /// Absence preserves compatibility with older daemons. Once the field is present, its type
+    /// and value are closed so invented consistency claims cannot be displayed as trusted facts.
+    nonisolated private static func machineSnapshotConsistency(
+        from dictionary: NSDictionary
+    ) -> DorydMachineSnapshotConsistency? {
+        guard let encoded = dictionary["consistency"] else { return .coldStopped }
+        guard let rawValue = encoded as? String else { return nil }
+        return DorydMachineSnapshotConsistency(rawValue: rawValue)
     }
 
     private struct ParsedMachineSnapshotArtifactEvidence {

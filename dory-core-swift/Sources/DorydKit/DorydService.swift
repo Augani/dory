@@ -1909,6 +1909,7 @@ private extension DoryMachineSnapshot {
             "memoryMB": memoryMB,
             "cpuCount": cpuCount,
             "displayMode": displayMode.rawValue,
+            "consistency": consistency.rawValue,
             "runtimeIdentity": runtimeIdentity.xpcDictionary,
         ]
         if let artifactEvidence {

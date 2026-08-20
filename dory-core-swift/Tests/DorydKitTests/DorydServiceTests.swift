@@ -1799,6 +1799,7 @@ final class DorydServiceTests: XCTestCase {
             let runtime = body["runtimeIdentity"] as? NSDictionary
             XCTAssertEqual(runtime?["mode"] as? String, "legacy-compatibility")
             XCTAssertEqual((runtime?["virtualHardwareABIVersion"] as? NSNumber)?.uint16Value, 1)
+            XCTAssertEqual(body["consistency"] as? String, "cold-stopped")
             let artifacts = body["artifactEvidence"] as? NSDictionary
             XCTAssertEqual(
                 ((artifacts?["rootfs"] as? NSDictionary)?["sha256"] as? String)?.count,
@@ -1812,6 +1813,10 @@ final class DorydServiceTests: XCTestCase {
         proxy.machineSnapshots("dev") { rows, message in
             XCTAssertEqual(message, "")
             XCTAssertEqual((rows as? [NSDictionary])?.first?["id"] as? String, "s1")
+            XCTAssertEqual(
+                (rows as? [NSDictionary])?.first?["consistency"] as? String,
+                "cold-stopped"
+            )
             listReply.fulfill()
         }
         wait(for: [listReply], timeout: 5)
