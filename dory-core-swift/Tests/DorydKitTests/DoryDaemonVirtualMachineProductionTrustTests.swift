@@ -413,6 +413,45 @@ struct DoryDaemonVirtualMachineProductionTrustTests {
         #expect(plan.launchArtifacts.count == 2)
         #expect(plan.devices.clockSynchronization)
         #expect(plan.devices.gracefulShutdown)
+        let started = try context.machineManager.start(id: "qualified-headless")
+        #expect(started.state == .running)
+        #expect(try context.planning.resourceLedger.snapshot().leases.first {
+            $0.binding.machineID == "qualified-headless"
+        }?.state == .running)
+        let stopped = try context.machineManager.stop(id: "qualified-headless")
+        #expect(stopped.state == .stopped)
+        #expect(try context.planning.resourceLedger.snapshot().leases.first {
+            $0.binding.machineID == "qualified-headless"
+        }?.state == .stopped)
+        let restarted = try context.machineManager.start(id: "qualified-headless")
+        #expect(restarted.state == .running)
+        #expect(try context.planning.plans.read(id: "qualified-headless").planRevision == 2)
+        #expect(try context.planning.resourceLedger.snapshot().leases.first {
+            $0.binding.machineID == "qualified-headless"
+        }?.state == .running)
+        let snapshot = try context.machineManager.snapshot(
+            id: "qualified-headless",
+            snapshotID: "running-admission"
+        )
+        #expect(snapshot.machineID == "qualified-headless")
+        #expect(context.machineManager.status(id: "qualified-headless")?.state == .running)
+        #expect(try context.planning.plans.read(id: "qualified-headless").planRevision == 2)
+        #expect(try context.planning.resourceLedger.snapshot().leases.first {
+            $0.binding.machineID == "qualified-headless"
+        }?.state == .running)
+        let restored = try context.machineManager.restoreSnapshot(
+            machineID: "qualified-headless",
+            snapshotID: snapshot.id
+        )
+        #expect(restored.state == .stopped)
+        #expect(restored.runtimeIdentity.mode == .requiresReplanning)
+        #expect(try context.planning.resourceLedger.snapshot().leases.first {
+            $0.binding.machineID == "qualified-headless"
+        }?.state == .stopped)
+        try context.machineManager.delete(id: "qualified-headless")
+        #expect(try context.planning.resourceLedger.snapshot().leases.contains {
+            $0.binding.machineID == "qualified-headless"
+        } == false)
     }
 
     @Test("trust-floor failure exposes no manager and a fresh activation can retry")
@@ -775,7 +814,8 @@ private final class ProductionTrustFixture: @unchecked Sendable {
         trustFloorDirectorySyncFails: Bool = false,
         trustFloorActivationState: ProductionTrustFloorActivationState? = nil
     ) throws {
-        helperDigest = Self.digest(Data("verified-helper".utf8))
+        let helperData = Data("#!/bin/sh\nexec /bin/sleep 30\n".utf8)
+        helperDigest = Self.digest(helperData)
         hostState = ProductionHostState(host)
         root = FileManager.default.temporaryDirectory.appendingPathComponent(
             "dory-production-trust-\(UUID().uuidString)",
@@ -792,7 +832,7 @@ private final class ProductionTrustFixture: @unchecked Sendable {
         let vz = root.appendingPathComponent("dory-vmm").path
         let raw = root.appendingPathComponent("dory-hv").path
         for path in [vz, raw] {
-            try Data("#!/bin/sh\nexit 0\n".utf8).write(to: URL(fileURLWithPath: path))
+            try helperData.write(to: URL(fileURLWithPath: path))
             try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: path)
         }
         machineConfiguration = MachineManagerConfiguration(

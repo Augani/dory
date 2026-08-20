@@ -754,6 +754,10 @@ public final class MachineManager: @unchecked Sendable {
     private var resolvedLaunchPlanResolver: (any DoryDaemonVirtualMachineLaunchPlanResolving)?
     private var resolvedLaunchPlanStore: (any DoryResolvedMachinePlanStoring)?
     private var resolvedPlanRevisionProvider: ResolvedPlanRevisionProvider?
+    private var productionPlanningController:
+        (any DoryDaemonVirtualMachineProductionPlanningControlling)?
+    private var productionResourceAdmissionLedger:
+        DoryVirtualMachineResourceAdmissionLedger?
     private var pendingResolvedStart: PendingResolvedMachineStart?
     private var resolvedLaunchIdentities: [String: DoryMachineResolvedLaunchIdentity] = [:]
     private var activeLifecycleOperations: [String: MachineLifecycleJournalContext] = [:]
@@ -855,7 +859,10 @@ public final class MachineManager: @unchecked Sendable {
         registry: BackendRegistry,
         resolver: any DoryDaemonVirtualMachineLaunchPlanResolving,
         plans: any DoryResolvedMachinePlanStoring,
-        expectedPlanRevision: @escaping ResolvedPlanRevisionProvider
+        expectedPlanRevision: @escaping ResolvedPlanRevisionProvider,
+        productionPlanningController:
+            (any DoryDaemonVirtualMachineProductionPlanningControlling)? = nil,
+        resourceAdmissionLedger: DoryVirtualMachineResourceAdmissionLedger? = nil
     ) throws {
         operationLock.lock()
         defer { operationLock.unlock() }
@@ -865,9 +872,16 @@ public final class MachineManager: @unchecked Sendable {
                 "resolved launch infrastructure requires a resolved-plan-capable policy"
             )
         }
+        guard (productionPlanningController == nil) == (resourceAdmissionLedger == nil) else {
+            throw MachineManagerError.persistence(
+                "production planning and resource-admission lifecycle must be installed together"
+            )
+        }
         guard resolvedLaunchRegistry == nil, resolvedLaunchPlanResolver == nil,
               resolvedLaunchPlanStore == nil,
               resolvedPlanRevisionProvider == nil,
+              self.productionPlanningController == nil,
+              productionResourceAdmissionLedger == nil,
               pendingResolvedStart == nil else {
             throw MachineManagerError.persistence(
                 "resolved launch infrastructure is already installed"
@@ -877,10 +891,13 @@ public final class MachineManager: @unchecked Sendable {
         resolvedLaunchPlanResolver = resolver
         resolvedLaunchPlanStore = plans
         resolvedPlanRevisionProvider = expectedPlanRevision
+        self.productionPlanningController = productionPlanningController
+        productionResourceAdmissionLedger = resourceAdmissionLedger
         recoverResolvedRuntimeIdentities(
             plans: plans,
             expectedPlanRevision: expectedPlanRevision
         )
+        try reconcileResourceAdmissionsAfterDaemonRestart()
     }
 
     /// Operations for the current Linux compatibility adapters. Start is protected by a
@@ -1076,13 +1093,38 @@ public final class MachineManager: @unchecked Sendable {
             )
         }
         switch entry.runtimeIdentity.mode {
-        case .legacyCompatibility, .resolvedPlan:
+        case .legacyCompatibility:
             guard let current = status(id: id) else {
                 throw MachineManagerError.unknownMachine(id)
             }
             return current
         case .requiresReplanning:
             break
+        case .resolvedPlan:
+            guard let plan = entry.runtimeIdentity.resolvedPlan else {
+                throw MachineManagerError.persistence(
+                    "resolved runtime identity has no exact plan"
+                )
+            }
+            guard let ledger = productionResourceAdmissionLedger else {
+                guard let current = status(id: id) else {
+                    throw MachineManagerError.unknownMachine(id)
+                }
+                return current
+            }
+            switch try exactResourceAdmissionLease(for: plan, ledger: ledger).state {
+            case .starting, .running:
+                guard let current = status(id: id) else {
+                    throw MachineManagerError.unknownMachine(id)
+                }
+                return current
+            case .stopped:
+                break
+            case .recoveryRequired:
+                throw MachineManagerError.persistence(
+                    "machine \(id) resource admission requires restart reconciliation"
+                )
+            }
         }
 
         guard let legacyData = Self.readPrivateMetadata(path: machineConfigPath(id: id)),
@@ -1213,6 +1255,7 @@ public final class MachineManager: @unchecked Sendable {
         operationLock.lock()
         defer { operationLock.unlock() }
         try requireNoActivePlanningMutation(id: id)
+        try refreshResolvedAdmissionForStartIfNeeded(id: id)
         let directMutation = try retainDirectWorkspaceMutationLock(id: id)
         defer { releaseDirectWorkspaceMutationLock(id: id, retention: directMutation) }
         return try startImplementation(id: id, journalLifecycle: true)
@@ -1404,6 +1447,7 @@ public final class MachineManager: @unchecked Sendable {
             if let lifecycle { try advanceLifecycleToPublishing(lifecycle) }
             pendingResolvedStart = PendingResolvedMachineStart(
                 machine: prepared.machine,
+                plan: resolved.resolvedPlan,
                 backend: resolved.backendPlan.backend,
                 runtimeBuildIdentifier: resolved.resolvedPlan.backendRuntimeBuildIdentifier,
                 runtimeComponents: resolved.resolvedPlan.components,
@@ -1543,7 +1587,8 @@ public final class MachineManager: @unchecked Sendable {
         return MachineBackendRuntimeObservation(try spawnPreparedMachine(
             authorization.machine,
             launchBinding: binding,
-            preSpawnAuthorization: authorization.preSpawnAuthorization
+            preSpawnAuthorization: authorization.preSpawnAuthorization,
+            resolvedPlan: authorization.plan
         ))
     }
 
@@ -1595,6 +1640,255 @@ public final class MachineManager: @unchecked Sendable {
         encoder.outputFormatting = [.sortedKeys]
         let data = try encoder.encode(plan)
         return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    private func exactResourceAdmissionLease(
+        for plan: DoryResolvedMachinePlan,
+        ledger: DoryVirtualMachineResourceAdmissionLedger
+    ) throws -> DoryVirtualMachineResourceAdmissionLease {
+        guard let admission = plan.resourceAdmission,
+              let definitionSHA256 = plan.definitionSHA256 else {
+            throw MachineManagerError.persistence(
+                "resolved plan has no exact resource-admission authority"
+            )
+        }
+        let snapshot: DoryVirtualMachineResourceAdmissionLedgerSnapshot
+        do { snapshot = try ledger.snapshot() }
+        catch {
+            throw MachineManagerError.persistence(
+                "resource-admission ledger cannot be inspected: \(error)"
+            )
+        }
+        let matches = snapshot.leases.filter { $0.leaseID == admission.admissionIdentity }
+        guard matches.count == 1, let lease = matches.first,
+              lease.binding.machineID == plan.machineID,
+              lease.binding.definitionRevision == plan.definitionRevision,
+              lease.binding.definitionSHA256.lowercased() == definitionSHA256.lowercased(),
+              lease.binding.plannedPlanRevision == plan.planRevision,
+              lease.boundPlanSHA256?.lowercased()
+                == (try Self.canonicalResolvedPlanSHA256(plan)),
+              lease.evidence == admission else {
+            throw MachineManagerError.persistence(
+                "resolved plan does not match its durable resource-admission lease"
+            )
+        }
+        return lease
+    }
+
+    private func refreshResolvedAdmissionForStartIfNeeded(id: String) throws {
+        guard launchPolicy == .perWorkspaceAuthority,
+              let controller = productionPlanningController,
+              let ledger = productionResourceAdmissionLedger else { return }
+        let identity = try currentDurableRuntimeIdentity(id: id)
+        guard identity.mode == .resolvedPlan, let plan = identity.resolvedPlan else { return }
+        var lease = try exactResourceAdmissionLease(for: plan, ledger: ledger)
+        switch lease.state {
+        case .starting:
+            return
+        case .running:
+            guard status(id: id)?.state != .running else { return }
+            do {
+                lease = try ledger.markStopped(
+                    leaseID: lease.leaseID,
+                    expectedLeaseRevision: lease.leaseRevision
+                )
+            } catch {
+                throw MachineManagerError.persistence(
+                    "stale running resource admission could not be reconciled: \(error)"
+                )
+            }
+        case .recoveryRequired:
+            guard status(id: id)?.state != .running else {
+                throw MachineManagerError.persistence(
+                    "running machine has an ambiguous expired resource admission"
+                )
+            }
+            do {
+                lease = try ledger.reconcileExpiredStart(
+                    leaseID: lease.leaseID,
+                    observedRuntimeState: .stopped,
+                    expectedLeaseRevision: lease.leaseRevision
+                )
+            } catch {
+                throw MachineManagerError.persistence(
+                    "expired resource admission could not be reconciled: \(error)"
+                )
+            }
+        case .stopped:
+            break
+        }
+        guard lease.state == .stopped else {
+            throw MachineManagerError.persistence(
+                "resource admission did not settle to stopped before replanning"
+            )
+        }
+        _ = try resolveAndPublishProductionPlan(id: id, controller: controller)
+    }
+
+    private func reconcileResourceAdmissionsAfterDaemonRestart() throws {
+        guard let ledger = productionResourceAdmissionLedger else { return }
+        let snapshot: DoryVirtualMachineResourceAdmissionLedgerSnapshot
+        do { snapshot = try ledger.snapshot() }
+        catch {
+            throw MachineManagerError.persistence(
+                "resource-admission restart reconciliation failed: \(error)"
+            )
+        }
+        let loadedMachineIDs: Set<String>
+        lock.lock()
+        loadedMachineIDs = Set(machines.keys)
+        lock.unlock()
+        for lease in snapshot.leases {
+            let machineIsLoaded = loadedMachineIDs.contains(lease.binding.machineID)
+            let machinePathExists = Self.pathEntryExists(
+                machineStateDirectory(id: lease.binding.machineID)
+            )
+            do {
+                if !machineIsLoaded, !machinePathExists, lease.state == .stopped {
+                    try ledger.releaseStorageReservation(
+                        leaseID: lease.leaseID,
+                        expectedLeaseRevision: lease.leaseRevision
+                    )
+                    continue
+                }
+                guard machineIsLoaded else { continue }
+                switch lease.state {
+                case .running:
+                    _ = try ledger.markStopped(
+                        leaseID: lease.leaseID,
+                        expectedLeaseRevision: lease.leaseRevision
+                    )
+                case .recoveryRequired:
+                    _ = try ledger.reconcileExpiredStart(
+                        leaseID: lease.leaseID,
+                        observedRuntimeState: .stopped,
+                        expectedLeaseRevision: lease.leaseRevision
+                    )
+                case .starting, .stopped:
+                    break
+                }
+            } catch {
+                throw MachineManagerError.persistence(
+                    "resource admission for \(lease.binding.machineID) could not be reconciled: \(error)"
+                )
+            }
+        }
+    }
+
+    private func markResolvedAdmissionRunning(
+        plan: DoryResolvedMachinePlan
+    ) throws {
+        guard let ledger = productionResourceAdmissionLedger else { return }
+        let lease = try exactResourceAdmissionLease(for: plan, ledger: ledger)
+        guard lease.state == .starting else {
+            throw MachineManagerError.persistence(
+                "resolved start requires a starting resource-admission lease"
+            )
+        }
+        do {
+            _ = try ledger.markRunning(
+                leaseID: lease.leaseID,
+                plan: plan,
+                hostFacts: lease.hostFacts,
+                expectedLeaseRevision: lease.leaseRevision
+            )
+        } catch {
+            throw MachineManagerError.persistence(
+                "resource admission could not commit running state: \(error)"
+            )
+        }
+    }
+
+    private func markResolvedAdmissionStopped(
+        plan: DoryResolvedMachinePlan?
+    ) throws {
+        guard let plan, let ledger = productionResourceAdmissionLedger else { return }
+        let lease = try exactResourceAdmissionLease(for: plan, ledger: ledger)
+        do {
+            switch lease.state {
+            case .starting, .running:
+                _ = try ledger.markStopped(
+                    leaseID: lease.leaseID,
+                    expectedLeaseRevision: lease.leaseRevision
+                )
+            case .recoveryRequired:
+                _ = try ledger.reconcileExpiredStart(
+                    leaseID: lease.leaseID,
+                    observedRuntimeState: .stopped,
+                    expectedLeaseRevision: lease.leaseRevision
+                )
+            case .stopped:
+                break
+            }
+        } catch {
+            throw MachineManagerError.persistence(
+                "resource admission could not commit stopped state: \(error)"
+            )
+        }
+    }
+
+    private func prepareRetainedResolvedAdmissionForRestart(
+        plan: DoryResolvedMachinePlan?
+    ) throws {
+        guard let plan, let ledger = productionResourceAdmissionLedger else { return }
+        let lease = try exactResourceAdmissionLease(for: plan, ledger: ledger)
+        switch lease.state {
+        case .running:
+            do {
+                _ = try ledger.prepareRetainedRunningForRestart(
+                    leaseID: lease.leaseID,
+                    plan: plan,
+                    expectedLeaseRevision: lease.leaseRevision
+                )
+            } catch {
+                throw MachineManagerError.persistence(
+                    "retained resource admission could not authorize restart: \(error)"
+                )
+            }
+        case .starting:
+            return
+        case .stopped, .recoveryRequired:
+            throw MachineManagerError.persistence(
+                "retained resource admission is unavailable for restart"
+            )
+        }
+    }
+
+    private func releaseResolvedAdmissionStorage(
+        machineID: String,
+        plan: DoryResolvedMachinePlan?
+    ) throws {
+        guard let ledger = productionResourceAdmissionLedger else { return }
+        let lease: DoryVirtualMachineResourceAdmissionLease
+        if let plan {
+            lease = try exactResourceAdmissionLease(for: plan, ledger: ledger)
+        } else {
+            let matches = try ledger.snapshot().leases.filter {
+                $0.binding.machineID == machineID
+            }
+            guard matches.count <= 1 else {
+                throw MachineManagerError.persistence(
+                    "machine has ambiguous resource storage reservations"
+                )
+            }
+            guard let retained = matches.first else { return }
+            lease = retained
+        }
+        guard lease.state == .stopped else {
+            throw MachineManagerError.persistence(
+                "resource storage can be released only after the machine is stopped"
+            )
+        }
+        do {
+            try ledger.releaseStorageReservation(
+                leaseID: lease.leaseID,
+                expectedLeaseRevision: lease.leaseRevision
+            )
+        } catch {
+            throw MachineManagerError.persistence(
+                "resource storage reservation could not be released: \(error)"
+            )
+        }
     }
 
     private static func fileSHA256(path: String) throws -> String {
@@ -1719,7 +2013,8 @@ public final class MachineManager: @unchecked Sendable {
     private func spawnPreparedMachine(
         _ preparedMachine: DoryMachineConfiguration,
         launchBinding: MachineBackendLaunchBinding?,
-        preSpawnAuthorization: DoryDaemonVirtualMachinePreSpawnAuthorization? = nil
+        preSpawnAuthorization: DoryDaemonVirtualMachinePreSpawnAuthorization? = nil,
+        resolvedPlan: DoryResolvedMachinePlan? = nil
     ) throws -> DoryMachineStatus {
         lock.lock()
         guard var entry = machines[preparedMachine.id] else {
@@ -1777,6 +2072,13 @@ public final class MachineManager: @unchecked Sendable {
         } catch {
             handoffServer?.stop()
             lock.unlock()
+            do { try markResolvedAdmissionStopped(plan: resolvedPlan) }
+            catch let settlementError {
+                throw MachineManagerError.persistence(
+                    "resolved launch failed before spawn: \(error); "
+                        + "resource settlement failed: \(settlementError)"
+                )
+            }
             throw error
         }
         let process = HvProcess(
@@ -1796,7 +2098,11 @@ public final class MachineManager: @unchecked Sendable {
         entry.launchID = launchID
         entry.runtimeAddress = nil
         entry.currentBalloonTargetMB = nil
-        entry.state = configuration.requiresReadyHandoff ? .starting : .running
+        entry.activeResolvedPlan = resolvedPlan
+        let requiresAdmissionCommit = resolvedPlan != nil
+            && productionResourceAdmissionLedger != nil
+        entry.state = configuration.requiresReadyHandoff || requiresAdmissionCommit
+            ? .starting : .running
         entry.lastError = nil
         machines[id] = entry
         lock.unlock()
@@ -1809,13 +2115,42 @@ public final class MachineManager: @unchecked Sendable {
             machines[id]?.handoffServer = nil
             machines[id]?.launchID = nil
             machines[id]?.runtimeAddress = nil
+            machines[id]?.activeResolvedPlan = nil
             machines[id]?.state = .failed
             machines[id]?.lastError = "\(error)"
             lock.unlock()
+            process.stop(timeout: DoryEngineShutdownTiming.hostTerminationSeconds)
+            do { try markResolvedAdmissionStopped(plan: resolvedPlan) }
+            catch let settlementError {
+                throw MachineManagerError.persistence(
+                    "resolved process start failed: \(error); "
+                        + "resource settlement failed: \(settlementError)"
+                )
+            }
             throw error
         }
         if configuration.requiresReadyHandoff {
             scheduleHandoffTimeout(id: id, process: process, timeout: handoffReadyTimeout)
+        } else if requiresAdmissionCommit, let resolvedPlan {
+            do {
+                try markResolvedAdmissionRunning(plan: resolvedPlan)
+                lock.lock()
+                if machines[id]?.launchID == launchID {
+                    machines[id]?.state = .running
+                }
+                lock.unlock()
+            } catch {
+                process.stop(timeout: DoryEngineShutdownTiming.hostTerminationSeconds)
+                lock.lock()
+                if machines[id]?.launchID == launchID {
+                    machines[id]?.state = .failed
+                    machines[id]?.lastError = "\(error)"
+                    machines[id]?.activeResolvedPlan = nil
+                }
+                lock.unlock()
+                try? markResolvedAdmissionStopped(plan: resolvedPlan)
+                throw error
+            }
         }
         return status(id: id) ?? DoryMachineStatus(id: id, state: .running)
     }
@@ -1893,12 +2228,15 @@ public final class MachineManager: @unchecked Sendable {
             entry.currentBalloonTargetMB = nil
             entry.state = .failed
             entry.lastError = "vmm ready handoff timed out after \(Int(timeout))s"
+            let admissionPlan = entry.activeResolvedPlan
+            entry.activeResolvedPlan = nil
             self.machines[id] = entry
             self.lock.unlock()
+            process.stop(timeout: DoryEngineShutdownTiming.hostTerminationSeconds)
             self.operationLock.lock()
+            try? self.markResolvedAdmissionStopped(plan: admissionPlan)
             self.failActiveStartLifecycle(id: id, stepID: "start.readiness-timeout")
             self.operationLock.unlock()
-            process.stop(timeout: DoryEngineShutdownTiming.hostTerminationSeconds)
         }
     }
 
@@ -1908,6 +2246,7 @@ public final class MachineManager: @unchecked Sendable {
         termination: HvProcessTermination
     ) {
         var handoffServer: VmmHandoffServer?
+        var admissionPlan: DoryResolvedMachinePlan?
         lock.lock()
         guard var entry = machines[machineID],
               entry.launchID == launchID,
@@ -1917,17 +2256,20 @@ public final class MachineManager: @unchecked Sendable {
             return
         }
         handoffServer = entry.handoffServer
+        admissionPlan = entry.activeResolvedPlan
         entry.handoffServer = nil
         entry.handoff = nil
         entry.launchID = nil
         entry.runtimeAddress = nil
         entry.currentBalloonTargetMB = nil
+        entry.activeResolvedPlan = nil
         entry.state = .failed
         entry.lastError = "dory-vmm \(termination.description)"
         machines[machineID] = entry
         lock.unlock()
 
         operationLock.lock()
+        try? markResolvedAdmissionStopped(plan: admissionPlan)
         failActiveStartLifecycle(id: machineID, stepID: "start.helper-exited")
         operationLock.unlock()
         handoffServer?.stop()
@@ -1945,7 +2287,8 @@ public final class MachineManager: @unchecked Sendable {
 
     private func stopImplementation(
         id: String,
-        journalLifecycle: Bool
+        journalLifecycle: Bool,
+        preserveResolvedAdmissionForRestart: Bool = false
     ) throws -> DoryMachineStatus {
         lock.lock()
         guard var entry = machines[id] else {
@@ -1955,10 +2298,12 @@ public final class MachineManager: @unchecked Sendable {
         let wasActive = [.starting, .running].contains(entry.state) && entry.process != nil
         let machine = entry.configuration
         let runtimeIdentity = entry.runtimeIdentity
+        let admissionPlan = entry.activeResolvedPlan ?? runtimeIdentity.resolvedPlan
         lock.unlock()
         let lifecycle = try journalLifecycle && wasActive
             ? beginLifecycleStop(machine: machine, runtimeIdentity: runtimeIdentity)
             : nil
+        var stopCommitted = false
         do {
             if let lifecycle { try advanceLifecycleToPublishing(lifecycle) }
             lock.lock()
@@ -1975,12 +2320,17 @@ public final class MachineManager: @unchecked Sendable {
             entry.launchID = nil
             entry.runtimeAddress = nil
             entry.currentBalloonTargetMB = nil
+            entry.activeResolvedPlan = nil
             entry.state = .stopped
             machines[id] = entry
             lock.unlock()
 
             handoffServer?.stop()
             process?.stop(timeout: DoryEngineShutdownTiming.hostTerminationSeconds)
+            stopCommitted = true
+            if !preserveResolvedAdmissionForRestart {
+                try markResolvedAdmissionStopped(plan: admissionPlan)
+            }
 #if DEBUG
             try injectLifecycleFault(.stopAfterProcessStop)
 #endif
@@ -1995,6 +2345,16 @@ public final class MachineManager: @unchecked Sendable {
 #if DEBUG
             if error is MachineLifecycleInjectedCrash { throw error }
 #endif
+            if stopCommitted {
+                if let lifecycle {
+                    activeLifecycleOperations.removeValue(forKey: id)
+                    lifecycle.releaseLease()
+                }
+                lock.lock()
+                machines[id]?.lastError = "machine stopped but resource settlement requires recovery: \(error)"
+                lock.unlock()
+                throw error
+            }
             if let lifecycle { failLifecycle(lifecycle, stepID: "stop.failed") }
             throw error
         }
@@ -2005,7 +2365,12 @@ public final class MachineManager: @unchecked Sendable {
         defer { operationLock.unlock() }
         lock.lock()
         let runningEntries = machines.map { id, entry in
-            (id: id, process: entry.process, handoffServer: entry.handoffServer)
+            (
+                id: id,
+                process: entry.process,
+                handoffServer: entry.handoffServer,
+                admissionPlan: entry.activeResolvedPlan ?? entry.runtimeIdentity.resolvedPlan
+            )
         }
         for id in machines.keys {
             machines[id]?.process = nil
@@ -2014,6 +2379,7 @@ public final class MachineManager: @unchecked Sendable {
             machines[id]?.launchID = nil
             machines[id]?.runtimeAddress = nil
             machines[id]?.currentBalloonTargetMB = nil
+            machines[id]?.activeResolvedPlan = nil
             machines[id]?.state = .stopped
         }
         lock.unlock()
@@ -2021,6 +2387,7 @@ public final class MachineManager: @unchecked Sendable {
         for entry in runningEntries {
             entry.handoffServer?.stop()
             entry.process?.stop(timeout: DoryEngineShutdownTiming.hostTerminationSeconds)
+            try? markResolvedAdmissionStopped(plan: entry.admissionPlan)
         }
     }
 
@@ -2090,6 +2457,10 @@ public final class MachineManager: @unchecked Sendable {
             // in-memory entry whose storage no longer exists. Recovery can deterministically
             // finish the still-durable deleting operation on the next daemon start.
             deletionCommitted = true
+            try releaseResolvedAdmissionStorage(
+                machineID: id,
+                plan: sourceEntry.runtimeIdentity.resolvedPlan
+            )
             do {
                 try completeLifecycle(lifecycle)
             } catch {
@@ -2102,6 +2473,7 @@ public final class MachineManager: @unchecked Sendable {
 #endif
             if deletionCommitted {
                 activeLifecycleOperations.removeValue(forKey: id)
+                lifecycle.releaseLease()
                 return
             }
             let quarantine = lifecycleDeletionQuarantinePath(
@@ -2313,7 +2685,20 @@ public final class MachineManager: @unchecked Sendable {
         // Quiesce under its own durable stop journal. Once stopped, the exact bytes selected for
         // the snapshot can be hashed and bound before any snapshot artifact is published.
         if wasRunning {
-            _ = try stopImplementation(id: id, journalLifecycle: true)
+            _ = try stopImplementation(
+                id: id,
+                journalLifecycle: true,
+                preserveResolvedAdmissionForRestart: true
+            )
+        }
+        var snapshotLifecycleStarted = false
+        defer {
+            if wasRunning, !snapshotLifecycleStarted {
+                try? prepareRetainedResolvedAdmissionForRestart(
+                    plan: snapshotRuntimeIdentity.resolvedPlan
+                )
+                _ = try? startImplementation(id: id, journalLifecycle: true)
+            }
         }
         let liveMachineIdentifierPath = machine.bootMode == .efi
             ? machineFirmwareIdentifierPath(id: id) : nil
@@ -2368,6 +2753,7 @@ public final class MachineManager: @unchecked Sendable {
             snapshotID: snapshotID,
             snapshotAuthority: snapshotAuthority
         )
+        snapshotLifecycleStarted = true
 
         var publishedRootfs = false
         var publishedKernel = false
@@ -2415,6 +2801,9 @@ public final class MachineManager: @unchecked Sendable {
             }
             failLifecycle(lifecycle, stepID: "snapshot.failed", rolledBack: true)
             if wasRunning {
+                try? prepareRetainedResolvedAdmissionForRestart(
+                    plan: snapshotRuntimeIdentity.resolvedPlan
+                )
                 _ = try? startImplementation(id: id, journalLifecycle: true)
             }
             if let error = error as? MachineManagerError {
@@ -2429,9 +2818,15 @@ public final class MachineManager: @unchecked Sendable {
         )
         if wasRunning, journalCompleted {
             do {
+                try prepareRetainedResolvedAdmissionForRestart(
+                    plan: snapshotRuntimeIdentity.resolvedPlan
+                )
                 _ = try startAndWaitUntilReady(id: id, journalLifecycle: true)
             } catch let firstError {
                 do {
+                    try prepareRetainedResolvedAdmissionForRestart(
+                        plan: snapshotRuntimeIdentity.resolvedPlan
+                    )
                     _ = try startAndWaitUntilReady(id: id, journalLifecycle: true)
                 } catch {
                     throw MachineManagerError.persistence(
@@ -2799,7 +3194,11 @@ public final class MachineManager: @unchecked Sendable {
         do {
             try advanceLifecycleToPublishing(lifecycle)
             if wasRunning {
-                _ = try stopImplementation(id: machineID, journalLifecycle: false)
+                _ = try stopImplementation(
+                    id: machineID,
+                    journalLifecycle: false,
+                    preserveResolvedAdmissionForRestart: true
+                )
             }
             try restoreManagedArtifacts(
                 machine: machine,
@@ -2822,8 +3221,24 @@ public final class MachineManager: @unchecked Sendable {
             }
             let status: DoryMachineStatus
             if wasRunning, shouldRestartAfterSnapshotRestore(targetIdentity) {
+                try prepareRetainedResolvedAdmissionForRestart(
+                    plan: sourceIdentity.resolvedPlan
+                )
                 status = try startAndWaitUntilReady(id: machineID, journalLifecycle: false)
             } else {
+                if wasRunning {
+                    do {
+                        try markResolvedAdmissionStopped(plan: sourceIdentity.resolvedPlan)
+                    } catch {
+                        // The restored target is already committed and its old plan is no longer
+                        // launch authority. Keep the conservative running reservation for daemon
+                        // restart reconciliation instead of falsely rolling back the restore.
+                        lock.lock()
+                        machines[machineID]?.lastError =
+                            "snapshot restored; resource settlement requires recovery: \(error)"
+                        lock.unlock()
+                    }
+                }
                 status = self.status(id: machineID)
                     ?? DoryMachineStatus(id: machineID, state: .stopped)
             }
@@ -2834,6 +3249,9 @@ public final class MachineManager: @unchecked Sendable {
             return status
         } catch let error as MachineManagerError {
             if wasRunning {
+                try? prepareRetainedResolvedAdmissionForRestart(
+                    plan: sourceIdentity.resolvedPlan
+                )
                 _ = try? startImplementation(id: machineID, journalLifecycle: false)
             }
             failLifecycle(lifecycle, stepID: "restore.failed", rolledBack: true)
@@ -2843,6 +3261,9 @@ public final class MachineManager: @unchecked Sendable {
             if error is MachineLifecycleInjectedCrash { throw error }
 #endif
             if wasRunning {
+                try? prepareRetainedResolvedAdmissionForRestart(
+                    plan: sourceIdentity.resolvedPlan
+                )
                 _ = try? startImplementation(id: machineID, journalLifecycle: false)
             }
             failLifecycle(lifecycle, stepID: "restore.failed", rolledBack: true)
@@ -5093,6 +5514,8 @@ public final class MachineManager: @unchecked Sendable {
         var processToStop: HvProcess?
         var agentSocketPath: String?
         var lifecycleReadinessSucceeded = false
+        var admissionPlan: DoryResolvedMachinePlan?
+        var requiresAdmissionCommit = false
         lock.lock()
         guard var entry = machines[machineID], entry.launchID == launchID else {
             lock.unlock()
@@ -5100,6 +5523,7 @@ public final class MachineManager: @unchecked Sendable {
         }
         handoffServer = entry.handoffServer
         entry.handoffServer = nil
+        admissionPlan = entry.activeResolvedPlan
         switch result {
         case let .success(handoff):
             guard handoff.ready.machineID == machineID else {
@@ -5107,34 +5531,84 @@ public final class MachineManager: @unchecked Sendable {
                 entry.lastError = "handoff machine id mismatch: \(handoff.ready.machineID)"
                 entry.launchID = nil
                 entry.runtimeAddress = nil
+                entry.activeResolvedPlan = nil
                 processToStop = entry.process
                 break
             }
             entry.handoff = handoff
-            entry.state = .running
             entry.lastError = nil
-            entry.process?.disableRestarts()
-            agentSocketPath = handoff.ready.agentSocketPath
-            lifecycleReadinessSucceeded = true
+            requiresAdmissionCommit = admissionPlan != nil
+                && productionResourceAdmissionLedger != nil
+            if requiresAdmissionCommit {
+                entry.state = .starting
+            } else {
+                entry.state = .running
+                entry.process?.disableRestarts()
+                agentSocketPath = handoff.ready.agentSocketPath
+                lifecycleReadinessSucceeded = true
+            }
         case let .failure(error):
             entry.state = .failed
             entry.lastError = "\(error)"
             entry.launchID = nil
             entry.runtimeAddress = nil
+            entry.activeResolvedPlan = nil
             processToStop = entry.process
         }
         machines[machineID] = entry
         lock.unlock()
 
+        handoffServer?.stop()
+        processToStop?.stop()
+
         operationLock.lock()
-        if lifecycleReadinessSucceeded {
+        if requiresAdmissionCommit, let admissionPlan {
+            do {
+                try markResolvedAdmissionRunning(plan: admissionPlan)
+                lock.lock()
+                if var current = machines[machineID], current.launchID == launchID,
+                   current.state == .starting {
+                    current.state = .running
+                    current.lastError = nil
+                    current.process?.disableRestarts()
+                    agentSocketPath = current.handoff?.ready.agentSocketPath
+                    machines[machineID] = current
+                    lifecycleReadinessSucceeded = true
+                }
+                lock.unlock()
+                if lifecycleReadinessSucceeded {
+                    completeActiveStartLifecycle(id: machineID)
+                } else {
+                    try markResolvedAdmissionStopped(plan: admissionPlan)
+                    failActiveStartLifecycle(
+                        id: machineID,
+                        stepID: "start.readiness-state-changed"
+                    )
+                }
+            } catch {
+                lock.lock()
+                if var current = machines[machineID], current.launchID == launchID {
+                    processToStop = current.process
+                    current.state = .failed
+                    current.lastError = "resource admission rejected readiness: \(error)"
+                    current.handoff = nil
+                    current.launchID = nil
+                    current.runtimeAddress = nil
+                    current.activeResolvedPlan = nil
+                    machines[machineID] = current
+                }
+                lock.unlock()
+                try? markResolvedAdmissionStopped(plan: admissionPlan)
+                failActiveStartLifecycle(id: machineID, stepID: "start.admission-failed")
+            }
+        } else if lifecycleReadinessSucceeded {
             completeActiveStartLifecycle(id: machineID)
         } else {
+            try? markResolvedAdmissionStopped(plan: admissionPlan)
             failActiveStartLifecycle(id: machineID, stepID: "start.readiness-failed")
         }
         operationLock.unlock()
 
-        handoffServer?.stop()
         processToStop?.stop()
         if let agentSocketPath {
             DispatchQueue.global(qos: .utility).async { [weak self] in
@@ -7885,6 +8359,7 @@ private struct PreparedMachineStart {
 
 private struct PendingResolvedMachineStart {
     var machine: DoryMachineConfiguration
+    var plan: DoryResolvedMachinePlan
     var backend: MachineBackendDescriptor
     var runtimeBuildIdentifier: String
     var runtimeComponents: [DoryResolvedBackendComponentEvidence]
@@ -7905,6 +8380,7 @@ private struct MachineEntry {
     var runtimeAddress: String?
     var currentBalloonTargetMB: UInt64?
     var lastError: String?
+    var activeResolvedPlan: DoryResolvedMachinePlan?
     var runtimeIdentity: DoryMachineRuntimeIdentity = .legacyCompatibility(
         virtualHardwareABIVersion:
             DoryVirtualMachineDefinition.currentVirtualHardwareABIVersion

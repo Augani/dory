@@ -106,6 +106,63 @@ final class DoryVirtualMachineResourceAdmissionLedgerTests: XCTestCase {
         }
     }
 
+    func testRunningLeaseCanBeReopenedOnlyForTheSameRetainedPlan() throws {
+        try withFixture("retained-running-restart") { fixture in
+            let reserved = try fixture.ledger.reserveStarting(
+                binding: fixture.binding("machine-a"),
+                hostFacts: fixture.host,
+                workload: .desktop,
+                resources: fixture.resources
+            )
+            let plan = fixture.plan(binding: reserved.binding, evidence: reserved.evidence)
+            let bound = try fixture.ledger.bind(
+                leaseID: reserved.leaseID,
+                to: plan,
+                expectedLeaseRevision: reserved.leaseRevision
+            )
+            let running = try fixture.ledger.markRunning(
+                leaseID: bound.leaseID,
+                plan: plan,
+                hostFacts: fixture.host,
+                expectedLeaseRevision: bound.leaseRevision
+            )
+
+            var changedPlan = plan
+            changedPlan.planRevision += 1
+            XCTAssertThrowsError(try fixture.ledger.prepareRetainedRunningForRestart(
+                leaseID: running.leaseID,
+                plan: changedPlan,
+                expectedLeaseRevision: running.leaseRevision
+            )) { error in
+                XCTAssertEqual(
+                    error as? DoryVirtualMachineResourceAdmissionLedgerError,
+                    .planMismatch
+                )
+            }
+            XCTAssertEqual(try fixture.ledger.snapshot().leases.first, running)
+
+            let restarting = try fixture.ledger.prepareRetainedRunningForRestart(
+                leaseID: running.leaseID,
+                plan: plan,
+                expectedLeaseRevision: running.leaseRevision
+            )
+            XCTAssertEqual(restarting.state, .starting)
+            XCTAssertEqual(restarting.leaseRevision, running.leaseRevision + 1)
+            XCTAssertEqual(restarting.boundPlanSHA256, running.boundPlanSHA256)
+            XCTAssertEqual(restarting.evidence, running.evidence)
+            XCTAssertThrowsError(try fixture.ledger.prepareRetainedRunningForRestart(
+                leaseID: restarting.leaseID,
+                plan: plan,
+                expectedLeaseRevision: restarting.leaseRevision
+            )) { error in
+                XCTAssertEqual(
+                    error as? DoryVirtualMachineResourceAdmissionLedgerError,
+                    .invalidLeaseState(.starting)
+                )
+            }
+        }
+    }
+
     func testStoppedMachineRestartAtomicallyReplacesItsStorageReservation() throws {
         try withFixture("stopped-restart") { fixture in
             let first = try fixture.ledger.reserveStarting(

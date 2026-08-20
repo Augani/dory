@@ -463,6 +463,46 @@ public final class DoryVirtualMachineResourceAdmissionLedger: @unchecked Sendabl
         }
     }
 
+    /// Reopens the same exact running admission for a daemon-controlled restart that did not
+    /// change guest or plan authority (for example, quiescing a VM to take a snapshot). Runtime
+    /// capacity remains reserved throughout the stop/restart window; this does not re-admit a
+    /// stopped VM or authorize a changed plan.
+    func prepareRetainedRunningForRestart(
+        leaseID: String,
+        plan: DoryResolvedMachinePlan,
+        startingLeaseDurationMilliseconds: Int64 = 120_000,
+        expectedLeaseRevision: UInt64
+    ) throws -> DoryVirtualMachineResourceAdmissionLease {
+        try withExclusiveAccess {
+            let timestamp = now()
+            guard startingLeaseDurationMilliseconds > 0,
+                  startingLeaseDurationMilliseconds
+                    <= Self.maximumStartingLeaseDurationMilliseconds,
+                  timestamp > 0,
+                  timestamp <= Int64.max - startingLeaseDurationMilliseconds else {
+                throw DoryVirtualMachineResourceAdmissionLedgerError.invalidLeaseDuration
+            }
+            var record = try readRecord()
+            _ = try recoverExpired(in: &record, at: timestamp)
+            let index = try leaseIndex(leaseID, in: record)
+            var lease = record.leases[index]
+            try Self.validateLeaseRevision(expectedLeaseRevision, lease)
+            guard lease.state == .running else {
+                throw DoryVirtualMachineResourceAdmissionLedgerError.invalidLeaseState(lease.state)
+            }
+            try Self.validate(plan, against: lease, requireBoundDigest: true)
+            try Self.validateCapacity(record.leases, hostFacts: lease.hostFacts)
+            lease.state = .starting
+            lease.startingExpiresAtUnixMilliseconds = timestamp
+                + startingLeaseDurationMilliseconds
+            lease.leaseRevision = try Self.incrementing(lease.leaseRevision)
+            lease.updatedAtUnixMilliseconds = timestamp
+            record.leases[index] = lease
+            try advanceAndPublish(&record)
+            return lease
+        }
+    }
+
     /// Releases CPU and RAM after stop while intentionally retaining the disk reservation.
     public func markStopped(
         leaseID: String,

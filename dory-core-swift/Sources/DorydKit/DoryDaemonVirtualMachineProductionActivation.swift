@@ -198,6 +198,9 @@ extension DoryDaemonVirtualMachineProductionTrustFactory {
             ))
         }
 
+        let planningController = DoryDaemonVirtualMachineProductionPlanningController(
+            planning: planning
+        )
         do {
             try machineManager.installResolvedLaunchInfrastructure(
                 registry: planning.registry,
@@ -205,7 +208,9 @@ extension DoryDaemonVirtualMachineProductionTrustFactory {
                 plans: planning.plans,
                 expectedPlanRevision: { machineID in
                     try? planning.plans.read(id: machineID).planRevision
-                }
+                },
+                productionPlanningController: planningController,
+                resourceAdmissionLedger: planning.resourceLedger
             )
         } catch {
             return unavailableActivation(
@@ -229,8 +234,7 @@ extension DoryDaemonVirtualMachineProductionTrustFactory {
         return .activated(DoryDaemonVirtualMachineProductionActivationContext(
             machineManager: machineManager,
             planning: planning,
-            planningController:
-                DoryDaemonVirtualMachineProductionPlanningController(planning: planning),
+            planningController: planningController,
             backendRuntimeBuildIdentifiers: Dictionary(
                 uniqueKeysWithValues: material.runtimes.map {
                     ($0.descriptor.identity, $0.runtimeBuildIdentifier)
