@@ -166,7 +166,7 @@ func usage(exitCode: Int32 = 2) -> Never {
           dorydctl [global] machine stats NAME
           dorydctl [global] machine create NAME (--kernel PATH --rootfs PATH | --installer-iso PATH [--disk-size-gb N]) [--memory-mb N] [--cpus N] [--display-mode headless|desktop] [--dns-target IPv4] [--share TAG=HOST:GUEST[:ro|rw] | JSON] [--guest-user NAME] [--guest-uid N] [--desktop-distro ID] [--desktop-name NAME] [--desktop-version VERSION] [--desktop-environment NAME] [--clipboard off|host-to-guest|guest-to-host|bidirectional] [--runtime auto|accelerated|compatible] [--graphics auto|virgl|virgl-venus|software]
           dorydctl [global] machine update NAME [--memory-mb N] [--cpus N] [--dns-target IPv4 | --clear-dns-target] [--share TAG=HOST:GUEST[:ro|rw] | JSON ... | --clear-shares] [typed create options | --clear-guest-account | --clear-desktop-identity | --clear-clipboard | --clear-runtime | --clear-graphics] [--attach-installer | --eject-installer]
-          dorydctl [global] machine start|stop|pause|resume|delete NAME
+          dorydctl [global] machine start|stop|pause|resume|restart|delete NAME
           dorydctl [global] machine exec NAME [--json] [--cwd PATH] [--env KEY=VALUE] [--env-json-stdin] [--timeout-ms N] [--output-limit-bytes N] -- COMMAND [ARG...]
           dorydctl [global] machine shell NAME
           dorydctl [global] machine provision NAME --recipe RECIPE
@@ -1050,7 +1050,7 @@ func runBalloon(cursor: inout ArgumentCursor, client: DorydCtlClient) throws {
 }
 
 func runMachine(cursor: inout ArgumentCursor, client: DorydCtlClient) throws {
-    let subcommand = try cursor.take("usage: dorydctl machine list|status|create|update|desktop-update|start|stop|pause|resume|delete|exec|shell|provision|snapshots|snapshot|backup")
+    let subcommand = try cursor.take("usage: dorydctl machine list|status|create|update|desktop-update|start|stop|pause|resume|restart|delete|exec|shell|provision|snapshots|snapshot|backup")
     switch subcommand {
     case "list":
         let rows: NSArray = try client.call { proxy, finish in
@@ -1166,6 +1166,11 @@ func runMachine(cursor: inout ArgumentCursor, client: DorydCtlClient) throws {
     case "resume":
         let name = try cursor.take("usage: dorydctl machine resume NAME")
         try emitJSON(try client.statusCommand { $0.machineResume(name, reply: $1) })
+    case "restart":
+        let name = try cursor.take("usage: dorydctl machine restart NAME")
+        try emitJSON(try client.withTimeout(atLeast: engineShutdownTimeout).statusCommand {
+            $0.machineRestart(name, reply: $1)
+        })
     case "update":
         try runMachineUpdate(cursor: &cursor, client: client)
     case "delete", "rm":

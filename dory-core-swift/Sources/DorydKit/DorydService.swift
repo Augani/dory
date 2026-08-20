@@ -301,6 +301,15 @@ public final class DorydService: NSObject, DorydControl {
         }
     }
 
+    public func machineRestart(
+        _ machineID: String,
+        reply: @escaping (Bool, NSDictionary, String) -> Void
+    ) {
+        machineControl(machineID, action: "restart", reply: reply) { manager, id in
+            try manager.restart(id: id)
+        }
+    }
+
     public func machineUpdate(
         _ machineID: String,
         config: NSDictionary,

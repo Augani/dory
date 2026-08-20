@@ -246,6 +246,12 @@ private struct MachineCard: View {
 
     private var overflowMenu: some View {
         Menu {
+            if isActive {
+                Button { store.restartMachine(machine) } label: {
+                    Label("Restart", systemImage: "arrow.clockwise")
+                }
+                Divider()
+            }
             Button { store.takeSnapshot(machine, note: "") } label: {
                 Label("Snapshot", systemImage: "camera.aperture")
             }

@@ -260,6 +260,7 @@ struct DorydClientTests {
         let startedMachine = try await client.machineStart("dev")
         let pausedMachine = try await client.machinePause("dev")
         let resumedMachine = try await client.machineResume("dev")
+        let restartedMachine = try await client.machineRestart("dev")
         let machineStats = try await client.machineStats("dev")
         let execResult = try await client.machineExec("dev", argv: ["/bin/sh", "-lc", "cargo --version"])
         let provisionedMachine = try await client.machineProvision("dev", recipe: "rust")
@@ -374,6 +375,8 @@ struct DorydClientTests {
         #expect(pausedMachine.pid == startedMachine.pid)
         #expect(resumedMachine.state == "running")
         #expect(resumedMachine.pid == startedMachine.pid)
+        #expect(restartedMachine.state == "running")
+        #expect(restartedMachine.pid == 1235)
         #expect(execResult.stdout == "cargo 1.0\n")
         #expect(execResult.exitCode == 0)
         #expect(machineStats.cpuPercent == 12.5)
@@ -989,6 +992,11 @@ struct DorydClientTests {
             store.machines.first { $0.name == "dev" }?.status == .running
         }
         #expect(service.machineResumeCount == 1)
+
+        machine = try #require(store.machines.first { $0.name == "dev" })
+        store.restartMachine(machine)
+        try await waitUntil { service.machineRestartCount == 1 }
+        #expect(store.machines.first { $0.name == "dev" }?.status == .running)
 
         machine = try #require(store.machines.first { $0.name == "dev" })
         let editResult = await store.editMachine(
@@ -2390,6 +2398,7 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
     private var _machineStopCount = 0
     private var _machinePauseCount = 0
     private var _machineResumeCount = 0
+    private var _machineRestartCount = 0
     private var _machineDeleteCount = 0
     private var _machineDeleteOK = true
     private var _machineDeleteMessage = ""
@@ -2477,6 +2486,10 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
     var machineResumeCount: Int {
         lock.lock(); defer { lock.unlock() }
         return _machineResumeCount
+    }
+    var machineRestartCount: Int {
+        lock.lock(); defer { lock.unlock() }
+        return _machineRestartCount
     }
     var machineDeleteCount: Int {
         lock.lock(); defer { lock.unlock() }
@@ -2779,6 +2792,28 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
             environment: Self.environmentRows(current?["env"])
         )
         _machineResumeCount += 1
+        machines[machineID] = row
+        lock.unlock()
+        reply(true, row, "")
+    }
+
+    func machineRestart(_ machineID: String, reply: @escaping (Bool, NSDictionary, String) -> Void) {
+        lock.lock()
+        let current = machines[machineID]
+        let row = Self.machineRow(
+            id: machineID,
+            state: "running",
+            pid: ((current?["pid"] as? NSNumber)?.int32Value ?? 1234) + 1,
+            agentBuild: current?["agentBuild"] as? String,
+            handoffFDCount: Self.int(current?["handoffFDCount"]) ?? 0,
+            memoryMB: Self.uint64(current?["memoryMB"]) ?? 2048,
+            cpuCount: Self.int(current?["cpuCount"]) ?? 2,
+            address: current?["address"] as? String,
+            displayMode: current?["displayMode"] as? String ?? "headless",
+            shares: Self.shareRows(current?["shares"]),
+            environment: Self.environmentRows(current?["env"])
+        )
+        _machineRestartCount += 1
         machines[machineID] = row
         lock.unlock()
         reply(true, row, "")

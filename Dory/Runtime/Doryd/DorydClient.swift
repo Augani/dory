@@ -19,6 +19,7 @@ nonisolated protocol DorydControlXPC {
     func machineStop(_ machineID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machinePause(_ machineID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineResume(_ machineID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
+    func machineRestart(_ machineID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineUpdate(_ machineID: String, config: NSDictionary, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineDelete(_ machineID: String, reply: @escaping (Bool, String) -> Void)
     func machineList(reply: @escaping (NSArray, String) -> Void)
@@ -1283,6 +1284,14 @@ nonisolated final class DorydClient: @unchecked Sendable {
     func machineResume(_ machineID: String) async throws -> DorydMachineStatus {
         try await withTimeout(atLeast: 30).statusCommand { proxy, reply in
             proxy.machineResume(machineID, reply: reply)
+        } decode: {
+            Self.machineStatus(from: $0)
+        }
+    }
+
+    func machineRestart(_ machineID: String) async throws -> DorydMachineStatus {
+        try await withTimeout(atLeast: 120).statusCommand { proxy, reply in
+            proxy.machineRestart(machineID, reply: reply)
         } decode: {
             Self.machineStatus(from: $0)
         }

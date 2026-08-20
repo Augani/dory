@@ -5402,6 +5402,21 @@ final class AppStore {
         }
     }
 
+    func restartMachine(_ machine: Machine) {
+        guard requireDorydMachines(), machine.status != .stopped else { return }
+        guard !busyMachines.contains(machine.name) else { return }
+        busyMachines.insert(machine.name)
+        Task {
+            defer { busyMachines.remove(machine.name) }
+            do {
+                _ = try await dorydClient.machineRestart(machine.name)
+            } catch {
+                actionError = "Could not restart \(machine.name): \(error)"
+            }
+            await refreshMachines()
+        }
+    }
+
     func setMachineInstallerMedia(_ machine: Machine, attached: Bool) {
         guard requireDorydMachines(), machine.bootMode == .efi else { return }
         guard !busyMachines.contains(machine.name) else { return }

@@ -1135,6 +1135,15 @@ final class DorydServiceTests: XCTestCase {
         }
         wait(for: [resume], timeout: 5)
 
+        let restart = expectation(description: "machineRestart reply")
+        proxy.machineRestart("dev") { ok, body, message in
+            XCTAssertTrue(ok, message)
+            XCTAssertEqual(body["state"] as? String, "running")
+            XCTAssertNotNil(body["pid"])
+            restart.fulfill()
+        }
+        wait(for: [restart], timeout: 5)
+
         let list = expectation(description: "machineList reply")
         proxy.machineList { body, message in
             XCTAssertEqual(message, "")
