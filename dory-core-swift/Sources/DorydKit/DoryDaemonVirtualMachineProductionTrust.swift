@@ -382,6 +382,19 @@ struct DoryDaemonVerifiedBackendRuntime: Sendable, Equatable {
     }
 }
 
+/// Opaque daemon-only output from signature, catalog, host, and installed-runtime verification.
+/// It deliberately carries no MachineManager or repository objects: production activation must
+/// compose those once around the already-constructed manager and the planning composition seam.
+struct DoryDaemonVirtualMachineVerifiedTrustMaterial: Sendable {
+    var authority: DoryVerifiedVirtualMachineQualificationAuthority
+    var runtimes: [DoryDaemonVerifiedBackendRuntime]
+    var permitsLegacyCompatibilityMigration: Bool
+    var runtimeVerifier: @Sendable (
+        String, MachineBackendDescriptor, String
+    ) throws -> DoryDaemonVerifiedBackendRuntime
+    var hostProbe: @Sendable (String) throws -> DoryDaemonProductionHostObservation
+}
+
 struct DoryDaemonBackendRuntimeSpecification: Sendable, Equatable {
     var descriptor: MachineBackendDescriptor
     var executablePath: String
@@ -954,6 +967,11 @@ public struct DoryDaemonVirtualMachineProductionTrustFactory: Sendable {
     ) throws -> DoryDaemonVerifiedBackendRuntime
     typealias HostProbe = @Sendable (String) throws -> DoryDaemonProductionHostObservation
     typealias DirectorySynchronizer = @Sendable (Int32) -> Bool
+    typealias TrustFloorActivator = @Sendable (
+        String,
+        DoryVerifiedVirtualMachineQualificationAuthority,
+        @escaping DirectorySynchronizer
+    ) throws -> Void
 
     private let authorityResolver: AuthorityResolver
     private let runtimeVerifier: RuntimeVerifier
@@ -961,6 +979,7 @@ public struct DoryDaemonVirtualMachineProductionTrustFactory: Sendable {
     private let daemonIdentityVerifier: @Sendable () -> Bool
     private let planningTransactionAvailable: @Sendable () -> Bool
     private let synchronizeTrustFloorDirectory: DirectorySynchronizer
+    private let trustFloorActivator: TrustFloorActivator
 
     /// Compiled into and covered by the daemon's code signature. Production catalog compatibility
     /// must not trust an environment override or a mutable outer Info.plist.
@@ -981,6 +1000,13 @@ public struct DoryDaemonVirtualMachineProductionTrustFactory: Sendable {
             .currentProcessSatisfiesProductionDaemonRequirement
         planningTransactionAvailable = { false }
         synchronizeTrustFloorDirectory = { fsync($0) == 0 }
+        trustFloorActivator = { stateDirectory, authority, synchronizeDirectory in
+            try DoryDaemonVirtualMachineProductionTrustFloor.activate(
+                stateDirectory: stateDirectory,
+                authority: authority,
+                synchronizeDirectory: synchronizeDirectory
+            )
+        }
     }
 
     init(
@@ -989,7 +1015,8 @@ public struct DoryDaemonVirtualMachineProductionTrustFactory: Sendable {
         hostProbe: @escaping HostProbe,
         daemonIdentityVerifier: @escaping @Sendable () -> Bool,
         planningTransactionAvailable: @escaping @Sendable () -> Bool = { false },
-        synchronizeTrustFloorDirectory: @escaping DirectorySynchronizer = { fsync($0) == 0 }
+        synchronizeTrustFloorDirectory: @escaping DirectorySynchronizer = { fsync($0) == 0 },
+        trustFloorActivator: TrustFloorActivator? = nil
     ) {
         self.authorityResolver = authorityResolver
         self.runtimeVerifier = runtimeVerifier
@@ -997,6 +1024,14 @@ public struct DoryDaemonVirtualMachineProductionTrustFactory: Sendable {
         self.daemonIdentityVerifier = daemonIdentityVerifier
         self.planningTransactionAvailable = planningTransactionAvailable
         self.synchronizeTrustFloorDirectory = synchronizeTrustFloorDirectory
+        self.trustFloorActivator = trustFloorActivator ?? {
+            stateDirectory, authority, synchronizeDirectory in
+            try DoryDaemonVirtualMachineProductionTrustFloor.activate(
+                stateDirectory: stateDirectory,
+                authority: authority,
+                synchronizeDirectory: synchronizeDirectory
+            )
+        }
     }
 
     public func resolve(
@@ -1021,108 +1056,22 @@ public struct DoryDaemonVirtualMachineProductionTrustFactory: Sendable {
         publicKey: String,
         expectedArchitecture: String
     ) -> DoryDaemonVirtualMachineProductionTrustReadiness {
-        let trustFloor: DoryDaemonVirtualMachineProductionTrustFloor.Record?
-        let hasResolvedPlanState: Bool
-        do {
-            trustFloor = try DoryDaemonVirtualMachineProductionTrustFloor
-                .read(stateDirectory: machineConfiguration.stateDirectory)
-            hasResolvedPlanState = try DoryDaemonVirtualMachineProductionTrustFloor
-                .hasResolvedPlanState(stateDirectory: machineConfiguration.stateDirectory)
-        } catch {
-            return unavailable(
-                .trustFloorViolated,
-                "The durable VM production trust floor is invalid or unavailable."
-            )
+        let material: DoryDaemonVirtualMachineVerifiedTrustMaterial
+        switch verifiedTrustMaterial(
+            store: store,
+            machineConfiguration: machineConfiguration,
+            appVersion: appVersion,
+            publicKey: publicKey,
+            expectedArchitecture: expectedArchitecture
+        ) {
+        case let .success(verified):
+            material = verified
+        case let .failure(reason):
+            return .unavailable(reason)
         }
-        let mayUseLegacyMigration = trustFloor == nil && !hasResolvedPlanState
-        let authority: DoryVerifiedVirtualMachineQualificationAuthority
-        do {
-            authority = try authorityResolver(
-                store, publicKey, expectedArchitecture, appVersion
-            )
-        } catch let error as DoryVirtualMachineQualificationAuthorityError {
-            let code: DoryDaemonVirtualMachineProductionTrustReadinessCode
-            switch error {
-            case .catalogUnavailable:
-                code = .catalogUnavailable
-            case let .catalogSchemaUnsupported(version):
-                code = version == DoryComponentCatalog.oldestSupportedSchemaVersion
-                    ? .catalogSchemaV1Migration : .catalogSchemaUnsupported
-            default:
-                code = .qualificationAuthorityUnavailable
-            }
-            if code == .catalogUnavailable || code == .catalogSchemaV1Migration {
-                guard mayUseLegacyMigration else {
-                    return unavailable(
-                        .trustFloorViolated,
-                        "VM production trust was previously activated; catalog authority cannot be removed or downgraded."
-                    )
-                }
-                return .unavailable(DoryDaemonVirtualMachineProductionTrustUnavailable(
-                    code: code,
-                    message: error.description,
-                    permitsLegacyCompatibilityMigration: true
-                ))
-            }
-            return .unavailable(DoryDaemonVirtualMachineProductionTrustUnavailable(
-                code: code,
-                message: error.description
-            ))
-        } catch {
-            return unavailable(
-                .qualificationAuthorityUnavailable,
-                "VM qualification authority could not be verified."
-            )
-        }
-
-        do {
-            try DoryDaemonVirtualMachineProductionTrustFloor.validate(
-                authority: authority,
-                against: trustFloor
-            )
-        } catch {
-            return unavailable(
-                .trustFloorViolated,
-                "The signed component catalog violates the accepted VM trust floor."
-            )
-        }
-
-        guard daemonIdentityVerifier() else {
-            return unavailable(
-                .daemonSignatureUnavailable,
-                "Resolved-plan launch requires a production-signed Dory daemon."
-            )
-        }
-        do { _ = try hostProbe(machineConfiguration.stateDirectory) }
-        catch {
-            return unavailable(
-                .hostFactsUnavailable,
-                "Exact host model, OS build, framework, or resource facts are unavailable."
-            )
-        }
-
-        var runtimes: [DoryDaemonVerifiedBackendRuntime] = []
-        do {
-            runtimes.append(try runtimeVerifier(
-                machineConfiguration.vmmExecutablePath,
-                VirtualizationFrameworkLinuxMachineBackend.backendDescriptor,
-                "dory-vmm"
-            ))
-        } catch {
-            return unavailable(
-                .backendRuntimeUnavailable,
-                "The signed Virtualization.framework helper failed exact verification."
-            )
-        }
-        if let rawPath = machineConfiguration.acceleratedDesktopExecutablePath {
-            if let runtime = try? runtimeVerifier(
-                rawPath,
-                RawHVLinuxMachineBackend.backendDescriptor,
-                "dory-hv"
-            ) {
-                runtimes.append(runtime)
-            }
-        }
+        let authority = material.authority
+        let runtimes = material.runtimes
+        let mayUseLegacyMigration = material.permitsLegacyCompatibilityMigration
 
         let artifactAuthority = DoryVirtualMachineArtifactAuthority(
             root: machineConfiguration.stateDirectory + "/.artifact-authority"
@@ -1161,10 +1110,9 @@ public struct DoryDaemonVirtualMachineProductionTrustFactory: Sendable {
         )
 
         do {
-            try DoryDaemonVirtualMachineProductionTrustFloor.activate(
+            try activateVerifiedTrustFloor(
                 stateDirectory: machineConfiguration.stateDirectory,
-                authority: authority,
-                synchronizeDirectory: synchronizeTrustFloorDirectory
+                material: material
             )
             let manager = MachineManager(
                 configuration: machineConfiguration,
@@ -1227,6 +1175,142 @@ public struct DoryDaemonVirtualMachineProductionTrustFactory: Sendable {
                 "Resolved-plan VM launch infrastructure could not be composed."
             )
         }
+    }
+
+    /// Shared preparation boundary for the legacy composition bridge and the per-workspace
+    /// activation path. Verification is performed once and yields only opaque daemon authority;
+    /// neither path may independently rebuild or reinterpret the catalog/runtime trust graph.
+    func verifiedTrustMaterial(
+        store: DoryComponentStore,
+        machineConfiguration: MachineManagerConfiguration,
+        appVersion: String,
+        publicKey: String,
+        expectedArchitecture: String
+    ) -> Result<
+        DoryDaemonVirtualMachineVerifiedTrustMaterial,
+        DoryDaemonVirtualMachineProductionTrustUnavailable
+    > {
+        let trustFloor: DoryDaemonVirtualMachineProductionTrustFloor.Record?
+        let hasResolvedPlanState: Bool
+        do {
+            trustFloor = try DoryDaemonVirtualMachineProductionTrustFloor
+                .read(stateDirectory: machineConfiguration.stateDirectory)
+            hasResolvedPlanState = try DoryDaemonVirtualMachineProductionTrustFloor
+                .hasResolvedPlanState(stateDirectory: machineConfiguration.stateDirectory)
+        } catch {
+            return .failure(DoryDaemonVirtualMachineProductionTrustUnavailable(
+                code: .trustFloorViolated,
+                message: "The durable VM production trust floor is invalid or unavailable."
+            ))
+        }
+        let mayUseLegacyMigration = trustFloor == nil && !hasResolvedPlanState
+        let authority: DoryVerifiedVirtualMachineQualificationAuthority
+        do {
+            authority = try authorityResolver(
+                store, publicKey, expectedArchitecture, appVersion
+            )
+        } catch let error as DoryVirtualMachineQualificationAuthorityError {
+            let code: DoryDaemonVirtualMachineProductionTrustReadinessCode
+            switch error {
+            case .catalogUnavailable:
+                code = .catalogUnavailable
+            case let .catalogSchemaUnsupported(version):
+                code = version == DoryComponentCatalog.oldestSupportedSchemaVersion
+                    ? .catalogSchemaV1Migration : .catalogSchemaUnsupported
+            default:
+                code = .qualificationAuthorityUnavailable
+            }
+            if code == .catalogUnavailable || code == .catalogSchemaV1Migration {
+                guard mayUseLegacyMigration else {
+                    return .failure(DoryDaemonVirtualMachineProductionTrustUnavailable(
+                        code: .trustFloorViolated,
+                        message: "VM production trust was previously activated; catalog authority cannot be removed or downgraded."
+                    ))
+                }
+                return .failure(DoryDaemonVirtualMachineProductionTrustUnavailable(
+                    code: code,
+                    message: error.description,
+                    permitsLegacyCompatibilityMigration: true
+                ))
+            }
+            return .failure(DoryDaemonVirtualMachineProductionTrustUnavailable(
+                code: code,
+                message: error.description
+            ))
+        } catch {
+            return .failure(DoryDaemonVirtualMachineProductionTrustUnavailable(
+                code: .qualificationAuthorityUnavailable,
+                message: "VM qualification authority could not be verified."
+            ))
+        }
+
+        do {
+            try DoryDaemonVirtualMachineProductionTrustFloor.validate(
+                authority: authority,
+                against: trustFloor
+            )
+        } catch {
+            return .failure(DoryDaemonVirtualMachineProductionTrustUnavailable(
+                code: .trustFloorViolated,
+                message: "The signed component catalog violates the accepted VM trust floor."
+            ))
+        }
+
+        guard daemonIdentityVerifier() else {
+            return .failure(DoryDaemonVirtualMachineProductionTrustUnavailable(
+                code: .daemonSignatureUnavailable,
+                message: "Resolved-plan launch requires a production-signed Dory daemon."
+            ))
+        }
+        do { _ = try hostProbe(machineConfiguration.stateDirectory) }
+        catch {
+            return .failure(DoryDaemonVirtualMachineProductionTrustUnavailable(
+                code: .hostFactsUnavailable,
+                message: "Exact host model, OS build, framework, or resource facts are unavailable."
+            ))
+        }
+
+        var runtimes: [DoryDaemonVerifiedBackendRuntime] = []
+        do {
+            runtimes.append(try runtimeVerifier(
+                machineConfiguration.vmmExecutablePath,
+                VirtualizationFrameworkLinuxMachineBackend.backendDescriptor,
+                "dory-vmm"
+            ))
+        } catch {
+            return .failure(DoryDaemonVirtualMachineProductionTrustUnavailable(
+                code: .backendRuntimeUnavailable,
+                message: "The signed Virtualization.framework helper failed exact verification."
+            ))
+        }
+        if let rawPath = machineConfiguration.acceleratedDesktopExecutablePath,
+           let runtime = try? runtimeVerifier(
+               rawPath,
+               RawHVLinuxMachineBackend.backendDescriptor,
+               "dory-hv"
+           ) {
+            runtimes.append(runtime)
+        }
+        return .success(DoryDaemonVirtualMachineVerifiedTrustMaterial(
+            authority: authority,
+            runtimes: runtimes,
+            permitsLegacyCompatibilityMigration: mayUseLegacyMigration,
+            runtimeVerifier: runtimeVerifier,
+            hostProbe: hostProbe
+        ))
+    }
+
+    /// Advances the monotonic catalog floor only after the caller has recovered planning state
+    /// and installed the exact resulting launch graph into its MachineManager.
+    func activateVerifiedTrustFloor(
+        stateDirectory: String,
+        material: DoryDaemonVirtualMachineVerifiedTrustMaterial
+    ) throws {
+        try trustFloorActivator(
+            stateDirectory,
+            material.authority,
+            synchronizeTrustFloorDirectory
+        )
     }
 
     private func unavailable(

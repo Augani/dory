@@ -309,6 +309,77 @@ struct DoryDaemonVirtualMachineProductionTrustTests {
             == fixture.runtimeBuildIdentifier)
     }
 
+    @Test("activation owns the exact production manager and graph")
+    func activationOrderAndExactGraph() throws {
+        let trustFloor = ProductionTrustFloorActivationState()
+        let fixture = try ProductionTrustFixture(
+            trustFloorActivationState: trustFloor
+        )
+        defer { fixture.cleanup() }
+
+        let result = fixture.factory.activate(
+            store: fixture.store,
+            machineConfiguration: fixture.machineConfiguration,
+            recoveryProvider: ProductionEmptyPlanningRecovery(),
+            appVersion: fixture.appVersion,
+            publicKey: fixture.publicKey,
+            expectedArchitecture: "arm64"
+        )
+        guard case let .activated(context) = result else {
+            Issue.record("Expected production activation")
+            return
+        }
+        #expect(context.machineManager.configuredLaunchPolicy == .perWorkspaceAuthority)
+        #expect(context.machineManager.managedStateDirectory
+            == fixture.machineConfiguration.stateDirectory)
+        #expect(context.planning.identity.stateDirectory
+            == context.machineManager.managedStateDirectory)
+        #expect(context.planning.plans.root
+            == context.machineManager.managedStateDirectory)
+        #expect(context.planning.workspaces.root
+            == context.machineManager.managedStateDirectory)
+        #expect(context.inventory is DoryProductionDaemonVirtualMachineTrustInventory)
+        #expect(trustFloor.activationCount == 1)
+    }
+
+    @Test("trust-floor failure exposes no manager and a fresh activation can retry")
+    func activationFloorFailureIsTyped() throws {
+        let trustFloor = ProductionTrustFloorActivationState(remainingFailures: 1)
+        let fixture = try ProductionTrustFixture(
+            trustFloorActivationState: trustFloor
+        )
+        defer { fixture.cleanup() }
+        let recovery = ProductionEmptyPlanningRecovery()
+
+        guard case let .unavailable(failure) = fixture.factory.activate(
+            store: fixture.store,
+            machineConfiguration: fixture.machineConfiguration,
+            recoveryProvider: recovery,
+            appVersion: fixture.appVersion,
+            publicKey: fixture.publicKey,
+            expectedArchitecture: "arm64"
+        ) else {
+            Issue.record("Expected trust-floor activation failure")
+            return
+        }
+        #expect(failure.code == .trustFloorActivationRejected)
+        #expect(trustFloor.activationCount == 1)
+
+        guard case let .activated(context) = fixture.factory.activate(
+            store: fixture.store,
+            machineConfiguration: fixture.machineConfiguration,
+            recoveryProvider: recovery,
+            appVersion: fixture.appVersion,
+            publicKey: fixture.publicKey,
+            expectedArchitecture: "arm64"
+        ) else {
+            Issue.record("Expected a fresh production-owned manager to activate")
+            return
+        }
+        #expect(context.machineManager.configuredLaunchPolicy == .perWorkspaceAuthority)
+        #expect(trustFloor.activationCount == 2)
+    }
+
     @Test("production inventory never fabricates an admission during planning")
     func planningFailsUntilAtomicAdmissionBindingExists() throws {
         let fixture = try ProductionTrustFixture()
@@ -453,6 +524,17 @@ private enum ProductionTrustFixtureError: Error {
     case runtimeRejected
 }
 
+private struct ProductionEmptyPlanningRecovery:
+    DoryDaemonVirtualMachinePlanningRecoveryProviding
+{
+    func recoveryRequest(
+        for machineID: String
+    ) throws -> DoryDaemonVirtualMachinePlanningTransactionRequest? {
+        _ = machineID
+        return nil
+    }
+}
+
 private final class ProductionCallCounter: @unchecked Sendable {
     private let lock = NSLock()
     private var count = 0
@@ -467,6 +549,32 @@ private final class ProductionCallCounter: @unchecked Sendable {
         lock.lock()
         count += 1
         lock.unlock()
+    }
+}
+
+private final class ProductionTrustFloorActivationState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var remainingFailures: Int
+    private var count = 0
+
+    init(remainingFailures: Int = 0) {
+        self.remainingFailures = remainingFailures
+    }
+
+    var activationCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return count
+    }
+
+    func activate() throws {
+        lock.lock()
+        defer { lock.unlock() }
+        count += 1
+        if remainingFailures > 0 {
+            remainingFailures -= 1
+            throw ProductionTrustFixtureError.runtimeRejected
+        }
     }
 }
 
@@ -560,7 +668,8 @@ private final class ProductionTrustFixture: @unchecked Sendable {
         daemonTeamIdentifier: String? = DorydXPCSecurity.productionTeamID,
         runtimeVerificationFails: Bool = false,
         planningTransactionAvailable: Bool = true,
-        trustFloorDirectorySyncFails: Bool = false
+        trustFloorDirectorySyncFails: Bool = false,
+        trustFloorActivationState: ProductionTrustFloorActivationState? = nil
     ) throws {
         helperDigest = Self.digest(Data("verified-helper".utf8))
         hostState = ProductionHostState(host)
@@ -621,6 +730,15 @@ private final class ProductionTrustFixture: @unchecked Sendable {
         let digest = helperDigest
         let build = runtimeBuildIdentifier
         let observedHostState = hostState
+        let floorActivator:
+            DoryDaemonVirtualMachineProductionTrustFactory.TrustFloorActivator?
+        if let trustFloorActivationState {
+            floorActivator = { _, _, _ in
+                try trustFloorActivationState.activate()
+            }
+        } else {
+            floorActivator = nil
+        }
         factory = DoryDaemonVirtualMachineProductionTrustFactory(
             authorityResolver: { store, key, architecture, appVersion in
                 try DoryVirtualMachineQualificationAuthorityResolver.resolve(
@@ -650,7 +768,8 @@ private final class ProductionTrustFixture: @unchecked Sendable {
             planningTransactionAvailable: { planningTransactionAvailable },
             synchronizeTrustFloorDirectory: { descriptor in
                 !trustFloorDirectorySyncFails && fsync(descriptor) == 0
-            }
+            },
+            trustFloorActivator: floorActivator
         )
     }
 
