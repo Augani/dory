@@ -202,6 +202,28 @@ public struct MachineBackendRuntimeRequest: Codable, Sendable, Equatable, Hashab
     }
 }
 
+/// Daemon-local launch authority issued by the exact adapter instance that revalidated a plan.
+/// It is deliberately not Codable: host executable paths are runtime wiring, never persisted VM
+/// desired state or portable plan evidence.
+public struct MachineBackendLaunchBinding: Sendable, Equatable {
+    public var machineID: String
+    public var backend: MachineBackendDescriptor
+    public var componentIdentifier: String
+    public var executablePath: String
+
+    public init(
+        machineID: String,
+        backend: MachineBackendDescriptor,
+        componentIdentifier: String,
+        executablePath: String
+    ) {
+        self.machineID = machineID
+        self.backend = backend
+        self.componentIdentifier = componentIdentifier
+        self.executablePath = executablePath
+    }
+}
+
 public enum MachineBackendLifecycleOperation: String, Codable, Sendable, Equatable, Hashable {
     case start
     case stop

@@ -2,11 +2,15 @@ import DoryOperations
 import Foundation
 
 public typealias MachineBackendLifecycleHandler = @Sendable (String) throws -> MachineBackendRuntimeObservation
+public typealias MachineBackendAuthorizedStartHandler = @Sendable (
+    MachineBackendLaunchBinding
+) throws -> MachineBackendRuntimeObservation
 
 /// Hooks implemented by the existing machine launcher. Keeping them injectable lets the seam be
 /// qualified before MachineManager starts consuming BackendRegistry.
 public struct MachineBackendCompatibilityOperations: Sendable {
     public var start: MachineBackendLifecycleHandler
+    public var authorizedStart: MachineBackendAuthorizedStartHandler
     public var stop: MachineBackendLifecycleHandler
 
     public init(
@@ -14,21 +18,24 @@ public struct MachineBackendCompatibilityOperations: Sendable {
         stop: @escaping MachineBackendLifecycleHandler
     ) {
         self.start = start
+        authorizedStart = { binding in try start(binding.machineID) }
         self.stop = stop
     }
 
-    /// Compatibility bridge to today's launch path. Both Linux adapters may share this bridge;
-    /// their validated backend plans determine which adapter is allowed to invoke it.
-    public init(machineManager: MachineManager) {
-        self.init(
-            start: { id in
-                MachineBackendRuntimeObservation(try machineManager.start(id: id))
-            },
-            stop: { id in
-                MachineBackendRuntimeObservation(try machineManager.stop(id: id))
-            }
-        )
+    public init(
+        authorizedStart: @escaping MachineBackendAuthorizedStartHandler,
+        stop: @escaping MachineBackendLifecycleHandler
+    ) {
+        start = { _ in
+            throw MachineBackendFailure(
+                code: .lifecycleOperationFailed,
+                message: "An adapter-issued launch binding is required."
+            )
+        }
+        self.authorizedStart = authorizedStart
+        self.stop = stop
     }
+
 }
 
 public extension MachineBackendRuntimeObservation {
@@ -61,6 +68,7 @@ private final class LinuxMachineBackendAdapterCore: @unchecked Sendable {
     ) -> String?
 
     let descriptor: MachineBackendDescriptor
+    private let componentIdentifier: String
     private let executablePath: String?
     private let executableIsAvailable: @Sendable (String) -> Bool
     private let operations: MachineBackendCompatibilityOperations
@@ -68,12 +76,14 @@ private final class LinuxMachineBackendAdapterCore: @unchecked Sendable {
 
     init(
         descriptor: MachineBackendDescriptor,
+        componentIdentifier: String,
         executablePath: String?,
         executableIsAvailable: @escaping @Sendable (String) -> Bool,
         operations: MachineBackendCompatibilityOperations,
         validateMachine: @escaping MachineValidator
     ) {
         self.descriptor = descriptor
+        self.componentIdentifier = componentIdentifier
         self.executablePath = executablePath
         self.executableIsAvailable = executableIsAvailable
         self.operations = operations
@@ -192,7 +202,19 @@ private final class LinuxMachineBackendAdapterCore: @unchecked Sendable {
         guard descriptor.lifecycle.start else {
             return unsupportedOperation(.start)
         }
-        return perform(.start, machineID: plan.machine.id, operation: operations.start)
+        guard let executablePath, !executablePath.isEmpty else {
+            return failedOperation(
+                .start,
+                code: .componentNotConfigured,
+                message: "The backend helper path is not configured."
+            )
+        }
+        return performAuthorizedStart(MachineBackendLaunchBinding(
+            machineID: plan.machine.id,
+            backend: descriptor,
+            componentIdentifier: componentIdentifier,
+            executablePath: executablePath
+        ))
     }
 
     func stop(_ request: MachineBackendRuntimeRequest) -> MachineBackendOperationResult {
@@ -283,6 +305,25 @@ private final class LinuxMachineBackendAdapterCore: @unchecked Sendable {
         }
     }
 
+    private func performAuthorizedStart(
+        _ binding: MachineBackendLaunchBinding
+    ) -> MachineBackendOperationResult {
+        do {
+            return MachineBackendOperationResult(
+                operation: .start,
+                backend: descriptor.identity,
+                observation: try operations.authorizedStart(binding),
+                failure: nil
+            )
+        } catch {
+            return failedOperation(
+                .start,
+                code: .lifecycleOperationFailed,
+                message: String(describing: error)
+            )
+        }
+    }
+
     private func unsupportedOperation(
         _ operation: MachineBackendLifecycleOperation
     ) -> MachineBackendOperationResult {
@@ -335,6 +376,7 @@ public final class RawHVLinuxMachineBackend: MachineBackend, @unchecked Sendable
     ) {
         core = LinuxMachineBackendAdapterCore(
             descriptor: Self.backendDescriptor,
+            componentIdentifier: "dory-hv",
             executablePath: executablePath,
             executableIsAvailable: executableIsAvailable,
             operations: operations,
@@ -396,6 +438,7 @@ public final class VirtualizationFrameworkLinuxMachineBackend: MachineBackend, @
     ) {
         core = LinuxMachineBackendAdapterCore(
             descriptor: Self.backendDescriptor,
+            componentIdentifier: "dory-vmm",
             executablePath: executablePath,
             executableIsAvailable: executableIsAvailable,
             operations: operations,

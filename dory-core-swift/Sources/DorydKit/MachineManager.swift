@@ -590,9 +590,35 @@ public struct DoryWorkspaceProjectionDiagnostic: Sendable, Equatable {
     }
 }
 
+public struct DoryMachineResolvedLaunchIdentity: Sendable, Equatable {
+    public var planRevision: UInt64
+    public var planSHA256: String
+    public var definitionRevision: UInt64
+    public var backend: DoryVirtualizationBackendIdentity
+    public var backendRuntimeBuildIdentifier: String
+    public var virtualHardwareABIVersion: UInt16
+
+    public init(plan: DoryResolvedMachinePlan, planSHA256: String) {
+        planRevision = plan.planRevision
+        self.planSHA256 = planSHA256
+        definitionRevision = plan.definitionRevision
+        backend = plan.backend
+        backendRuntimeBuildIdentifier = plan.backendRuntimeBuildIdentifier
+        virtualHardwareABIVersion = plan.virtualHardwareABIVersion
+    }
+}
+
+public enum DoryMachineLaunchPolicy: String, Sendable, Equatable {
+    /// Explicit transition mode for machines that predate durable workspace plans.
+    case legacyCompatibility
+    /// A start is rejected unless the complete persisted-plan trust path is installed.
+    case requireResolvedPlan
+}
+
 public final class MachineManager: @unchecked Sendable {
     public typealias AgentConnector = @Sendable (String) throws -> any AgentControlClient
     public typealias ProcessStarter = @Sendable (HvProcess) throws -> Void
+    public typealias ResolvedPlanRevisionProvider = @Sendable (_ machineID: String) -> UInt64?
 
     private static let deletionQuarantinePrefix = ".dory-machine-delete-"
     private static let machineDiskTemporaryPrefix = ".rootfs.ext4.tmp-"
@@ -624,14 +650,22 @@ public final class MachineManager: @unchecked Sendable {
     private let balloonController: any MachineBalloonControlling
     private let processStarter: ProcessStarter
     private let workspaceRepository: DoryWorkspaceRepository
+    private let launchPolicy: DoryMachineLaunchPolicy
     private let operationLock = NSRecursiveLock()
     private let lock = NSLock()
     private var machines: [String: MachineEntry] = [:]
     private var deletingMachineIDs: Set<String> = []
     private var workspaceProjectionDiagnostics: [String: DoryWorkspaceProjectionDiagnostic] = [:]
+    private var resolvedLaunchRegistry: BackendRegistry?
+    private var resolvedLaunchPlanResolver: (any DoryDaemonVirtualMachineLaunchPlanResolving)?
+    private var resolvedLaunchPlanStore: (any DoryResolvedMachinePlanStoring)?
+    private var resolvedPlanRevisionProvider: ResolvedPlanRevisionProvider?
+    private var pendingResolvedStart: PendingResolvedMachineStart?
+    private var resolvedLaunchIdentities: [String: DoryMachineResolvedLaunchIdentity] = [:]
 
     public init(
         configuration: MachineManagerConfiguration,
+        launchPolicy: DoryMachineLaunchPolicy = .legacyCompatibility,
         balloonController: any MachineBalloonControlling = UnixMachineBalloonController(),
         agentConnector: @escaping AgentConnector = { socketPath in
             try LocalAgentControl.connect(socketPath: socketPath)
@@ -639,6 +673,7 @@ public final class MachineManager: @unchecked Sendable {
         processStarter: @escaping ProcessStarter = { process in try process.start() }
     ) {
         self.configuration = configuration
+        self.launchPolicy = launchPolicy
         self.balloonController = balloonController
         self.agentConnector = agentConnector
         self.processStarter = processStarter
@@ -663,6 +698,61 @@ public final class MachineManager: @unchecked Sendable {
         self.machines = Self.loadPersistedMachines(configuration: configuration)
         reconcileLoadedWorkspaceProjections()
         recoverInterruptedDesktopUpdates()
+    }
+
+    /// Enables the explicit plan-driven launch path exactly once. Machines keep using the
+    /// labeled legacy compatibility path until this production trust infrastructure is injected;
+    /// once installed, a start never falls back when plan validation or adapter dispatch fails.
+    public func installResolvedLaunchInfrastructure(
+        registry: BackendRegistry,
+        resolver: any DoryDaemonVirtualMachineLaunchPlanResolving,
+        plans: any DoryResolvedMachinePlanStoring,
+        expectedPlanRevision: @escaping ResolvedPlanRevisionProvider
+    ) throws {
+        operationLock.lock()
+        defer { operationLock.unlock() }
+        guard launchPolicy == .requireResolvedPlan else {
+            throw MachineManagerError.persistence(
+                "resolved launch infrastructure requires the requireResolvedPlan policy"
+            )
+        }
+        guard resolvedLaunchRegistry == nil, resolvedLaunchPlanResolver == nil,
+              resolvedLaunchPlanStore == nil,
+              resolvedPlanRevisionProvider == nil,
+              pendingResolvedStart == nil else {
+            throw MachineManagerError.persistence(
+                "resolved launch infrastructure is already installed"
+            )
+        }
+        resolvedLaunchRegistry = registry
+        resolvedLaunchPlanResolver = resolver
+        resolvedLaunchPlanStore = plans
+        resolvedPlanRevisionProvider = expectedPlanRevision
+    }
+
+    /// Operations for the current Linux compatibility adapters. Start is protected by a
+    /// single-use authorization installed only after persisted-plan revalidation; calling the
+    /// returned operation directly cannot bypass the plan-driven public start path.
+    public func resolvedLaunchCompatibilityOperations(
+        for backend: DoryVirtualizationBackendIdentity
+    ) -> MachineBackendCompatibilityOperations {
+        MachineBackendCompatibilityOperations(
+            authorizedStart: { [weak self] binding in
+                guard let self else {
+                    throw MachineManagerError.persistence("machine manager is unavailable")
+                }
+                return try self.performAuthorizedResolvedBackendStart(
+                    binding: binding,
+                    expectedBackend: backend
+                )
+            },
+            stop: { [weak self] id in
+                guard let self else {
+                    throw MachineManagerError.persistence("machine manager is unavailable")
+                }
+                return MachineBackendRuntimeObservation(try self.stop(id: id))
+            }
+        )
     }
 
     @discardableResult
@@ -766,8 +856,270 @@ public final class MachineManager: @unchecked Sendable {
     public func start(id: String) throws -> DoryMachineStatus {
         operationLock.lock()
         defer { operationLock.unlock() }
+        switch launchPolicy {
+        case .legacyCompatibility:
+            let prepared = try prepareMachineStart(
+                id: id,
+                requiresAuthoritativeDefinition: false
+            )
+            return try spawnPreparedMachine(prepared.machine, launchBinding: nil)
+        case .requireResolvedPlan:
+            guard let registry = resolvedLaunchRegistry,
+                  let resolver = resolvedLaunchPlanResolver,
+                  let planStore = resolvedLaunchPlanStore,
+                  let revisionProvider = resolvedPlanRevisionProvider else {
+                throw MachineManagerError.persistence(
+                    "resolved launch infrastructure is not installed"
+                )
+            }
+            return try startResolvedMachine(
+                id: id,
+                registry: registry,
+                resolver: resolver,
+                planStore: planStore,
+                revisionProvider: revisionProvider
+            )
+        }
+    }
+
+    private func startResolvedMachine(
+        id: String,
+        registry: BackendRegistry,
+        resolver: any DoryDaemonVirtualMachineLaunchPlanResolving,
+        planStore: any DoryResolvedMachinePlanStoring,
+        revisionProvider: ResolvedPlanRevisionProvider
+    ) throws -> DoryMachineStatus {
+        let prepared = try prepareMachineStart(id: id, requiresAuthoritativeDefinition: true)
+        guard let definition = prepared.definition,
+              let definitionData = prepared.canonicalDefinitionData else {
+            throw MachineManagerError.persistence(
+                "authoritative workspace definition is unavailable for resolved launch"
+            )
+        }
+        guard let expectedPlanRevision = revisionProvider(id), expectedPlanRevision > 0 else {
+            throw MachineManagerError.persistence(
+                "no resolved-plan revision is pinned for machine \(id)"
+            )
+        }
+        let resolved: DoryDaemonVirtualMachineLaunchPlanResolution
+        do {
+            resolved = try resolver.resolve(DoryDaemonVirtualMachineLaunchPlanRequest(
+                definition: definition,
+                canonicalDefinitionData: definitionData,
+                machine: prepared.machine,
+                expectedPlanRevision: expectedPlanRevision
+            ))
+        } catch {
+            throw MachineManagerError.persistence("resolved launch rejected: \(error)")
+        }
+        try validateResolvedLaunch(
+            resolved,
+            machine: prepared.machine,
+            definition: definition,
+            canonicalDefinitionData: definitionData
+        )
+        try revalidatePreparedAuthorityImmediatelyBeforeSpawn(
+            prepared,
+            expectedDefinition: definition,
+            expectedCanonicalDefinitionData: definitionData
+        )
+        try revalidateResolvedPlanAuthorityImmediatelyBeforeSpawn(
+            resolved,
+            planStore: planStore
+        )
+
+        pendingResolvedStart = PendingResolvedMachineStart(
+            machine: prepared.machine,
+            backend: resolved.backendPlan.backend,
+            runtimeBuildIdentifier: resolved.resolvedPlan.backendRuntimeBuildIdentifier,
+            runtimeComponents: resolved.resolvedPlan.components,
+            planRevision: resolved.resolvedPlan.planRevision,
+            planSHA256: resolved.resolvedPlanSHA256
+        )
+        defer { pendingResolvedStart = nil }
+        let operation = registry.start(resolved.backendPlan)
+        guard operation.isSuccess,
+              operation.backend == resolved.resolvedPlan.backend,
+              operation.observation?.machineID == id else {
+            let failure = operation.failure?.message ?? "backend adapter returned no observation"
+            throw MachineManagerError.persistence("resolved backend start failed: \(failure)")
+        }
+        guard let status = status(id: id), [.starting, .running].contains(status.state) else {
+            throw MachineManagerError.persistence(
+                "resolved backend did not enter MachineManager's prepared spawn path"
+            )
+        }
+        resolvedLaunchIdentities[id] = DoryMachineResolvedLaunchIdentity(
+            plan: resolved.resolvedPlan,
+            planSHA256: resolved.resolvedPlanSHA256
+        )
+        return status
+    }
+
+    private func revalidateResolvedPlanAuthorityImmediatelyBeforeSpawn(
+        _ resolved: DoryDaemonVirtualMachineLaunchPlanResolution,
+        planStore: any DoryResolvedMachinePlanStoring
+    ) throws {
+        let current: DoryResolvedMachinePlan
+        do {
+            current = try planStore.read(id: resolved.resolvedPlan.machineID)
+        } catch {
+            throw MachineManagerError.persistence(
+                "resolved-plan authority changed during launch validation: \(error)"
+            )
+        }
+        guard current.planRevision == resolved.resolvedPlan.planRevision,
+              current == resolved.resolvedPlan,
+              try Self.canonicalResolvedPlanSHA256(current)
+                == resolved.resolvedPlanSHA256.lowercased() else {
+            throw MachineManagerError.persistence(
+                "resolved-plan authority changed during launch validation"
+            )
+        }
+    }
+
+    private func revalidatePreparedAuthorityImmediatelyBeforeSpawn(
+        _ prepared: PreparedMachineStart,
+        expectedDefinition: DoryVirtualMachineDefinition,
+        expectedCanonicalDefinitionData: Data
+    ) throws {
+        guard let preparedLegacyData = prepared.authoritativeLegacyData,
+              let currentLegacyData = Self.readPrivateMetadata(
+                path: machineConfigPath(id: prepared.machine.id)
+              ),
+              currentLegacyData == preparedLegacyData,
+              let decoded = try? JSONDecoder().decode(
+                DoryMachineConfiguration.self,
+                from: currentLegacyData
+              ),
+              decoded == prepared.machine,
+              let currentDefinition = reconcileWorkspaceProjection(
+                machine: prepared.machine,
+                authoritativeLegacyData: currentLegacyData
+              ),
+              currentDefinition == expectedDefinition,
+              try Self.canonicalDefinitionData(currentDefinition)
+                == expectedCanonicalDefinitionData else {
+            throw MachineManagerError.persistence(
+                "machine authority changed during resolved launch validation"
+            )
+        }
+    }
+
+    private func performAuthorizedResolvedBackendStart(
+        binding: MachineBackendLaunchBinding,
+        expectedBackend: DoryVirtualizationBackendIdentity
+    ) throws -> MachineBackendRuntimeObservation {
+        operationLock.lock()
+        defer { operationLock.unlock() }
+        guard let authorization = pendingResolvedStart,
+              authorization.machine.id == binding.machineID,
+              authorization.backend == binding.backend,
+              binding.backend.identity == expectedBackend,
+              !binding.executablePath.isEmpty else {
+            throw MachineManagerError.persistence(
+                "backend start lacks a validated resolved-plan authorization"
+            )
+        }
+        let executableSHA256: String
+        do {
+            executableSHA256 = try Self.fileSHA256(path: binding.executablePath)
+        } catch {
+            pendingResolvedStart = nil
+            throw MachineManagerError.persistence(
+                "resolved backend executable could not be verified: \(error)"
+            )
+        }
+        let matchingComponents = authorization.runtimeComponents.filter {
+            $0.componentIdentifier == binding.componentIdentifier
+                && $0.buildIdentifier == authorization.runtimeBuildIdentifier
+                && $0.artifactSHA256.lowercased() == executableSHA256
+        }
+        guard matchingComponents.count == 1 else {
+            pendingResolvedStart = nil
+            throw MachineManagerError.persistence(
+                "resolved backend executable does not match qualified runtime evidence"
+            )
+        }
+        // Consume before process construction so a second or delayed adapter callback cannot
+        // reuse the validated context, including after a spawn failure.
+        pendingResolvedStart = nil
+        return MachineBackendRuntimeObservation(try spawnPreparedMachine(
+            authorization.machine,
+            launchBinding: binding
+        ))
+    }
+
+    private func validateResolvedLaunch(
+        _ resolved: DoryDaemonVirtualMachineLaunchPlanResolution,
+        machine: DoryMachineConfiguration,
+        definition: DoryVirtualMachineDefinition,
+        canonicalDefinitionData: Data
+    ) throws {
+        let plan = resolved.resolvedPlan
+        let capability = resolved.backendPlan.capability
+        let definitionDigest = SHA256.hash(data: canonicalDefinitionData)
+            .map { String(format: "%02x", $0) }.joined()
+        let canonicalPlanDigest = try Self.canonicalResolvedPlanSHA256(plan)
+        let expectedMemoryBytes = machine.memoryMB.multipliedReportingOverflow(by: 1_048_576)
+        guard !expectedMemoryBytes.overflow,
+              resolved.revalidation.mayStart,
+              plan.validate().isEmpty,
+              plan.machineID == machine.id,
+              plan.definitionRevision == definition.lifecycle.revision,
+              plan.definitionSHA256?.lowercased() == definitionDigest,
+              resolved.resolvedPlanSHA256.lowercased() == canonicalPlanDigest,
+              plan.resourceAdmission?.admittedVirtualCPUCount == UInt64(machine.cpuCount),
+              plan.resourceAdmission?.admittedMemoryBytes == expectedMemoryBytes.partialValue,
+              plan.resourceAdmission?.admittedStorageBytes == definition.resources.diskBytes,
+              resolved.backendPlan.machine == machine,
+              resolved.backendPlan.backend.identity == plan.backend,
+              resolved.backendPlan.backend.implementationIdentifier
+                == plan.backendImplementationIdentifier,
+              capability.request.guest == plan.guest,
+              capability.request.backend == plan.backend,
+              capability.request.bootMedia == plan.bootMedia.media,
+              capability.request.devices == plan.devices,
+              capability.request.graphics == plan.graphics,
+              capability.request.virtualHardwareABIVersion == plan.virtualHardwareABIVersion,
+              capability.availability.supportTier == plan.supportTier,
+              capability.availability.isUsable,
+              capability.resolvedDevices == plan.devices else {
+            throw MachineManagerError.persistence(
+                "resolved plan does not exactly match current definition and adapter evidence"
+            )
+        }
+    }
+
+    private static func canonicalResolvedPlanSHA256(
+        _ plan: DoryResolvedMachinePlan
+    ) throws -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let data = try encoder.encode(plan)
+        return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func fileSHA256(path: String) throws -> String {
+        guard let handle = FileHandle(forReadingAtPath: path) else {
+            throw MachineManagerError.persistence("cannot open runtime executable at \(path)")
+        }
+        defer { _ = try? handle.close() }
+        var hash = SHA256()
+        while true {
+            let data = try handle.read(upToCount: 1_048_576) ?? Data()
+            if data.isEmpty { break }
+            hash.update(data: data)
+        }
+        return hash.finalize().map { String(format: "%02x", $0) }.joined()
+    }
+
+    private func prepareMachineStart(
+        id: String,
+        requiresAuthoritativeDefinition: Bool
+    ) throws -> PreparedMachineStart {
         lock.lock()
-        guard var entry = machines[id] else {
+        guard let entry = machines[id] else {
             lock.unlock()
             throw MachineManagerError.unknownMachine(id)
         }
@@ -776,35 +1128,75 @@ public final class MachineManager: @unchecked Sendable {
             throw MachineManagerError.alreadyRunning(id)
         }
         lock.unlock()
-        do {
-            try ensureInstalledLinuxBootBundleIfNeeded(entry.configuration)
-            try materializeInstalledLinuxBootRuntimeIfNeeded(entry.configuration)
-            if let authoritativeLegacyData = Self.readPrivateMetadata(
-                path: machineConfigPath(id: entry.configuration.id)
-            ) {
-                // Boot-bundle materialization changes authoritative inspection facts without
-                // changing machine.json. Bind that fact change and advance the projection here.
-                reconcileWorkspaceProjection(
-                    machine: entry.configuration,
-                    authoritativeLegacyData: authoritativeLegacyData
-                )
+
+        let machine = entry.configuration
+        try ensureInstalledLinuxBootBundleIfNeeded(machine)
+        try materializeInstalledLinuxBootRuntimeIfNeeded(machine)
+        let authoritativeLegacyData = Self.readPrivateMetadata(
+            path: machineConfigPath(id: machine.id)
+        )
+        var authoritativeDefinition: DoryVirtualMachineDefinition?
+        if let authoritativeLegacyData {
+            if requiresAuthoritativeDefinition {
+                guard let decoded = try? JSONDecoder().decode(
+                    DoryMachineConfiguration.self,
+                    from: authoritativeLegacyData
+                ), decoded == machine else {
+                    throw MachineManagerError.persistence(
+                        "authoritative machine metadata changed before resolved launch"
+                    )
+                }
             }
-            try Self.validateLaunchConfiguration(entry.configuration)
-            try validateManagedMachineArtifacts(entry.configuration)
-            try validateRuntimeAvailability(entry.configuration)
-        } catch {
-            throw error
+            // Boot-bundle materialization can change authoritative inspection facts without
+            // changing machine.json. Reconcile those facts immediately before launch.
+            authoritativeDefinition = reconcileWorkspaceProjection(
+                machine: machine,
+                authoritativeLegacyData: authoritativeLegacyData
+            )
+        } else if requiresAuthoritativeDefinition {
+            throw MachineManagerError.persistence(
+                "authoritative machine metadata is unavailable for resolved launch"
+            )
         }
+        try Self.validateLaunchConfiguration(machine)
+        try validateManagedMachineArtifacts(machine)
+        if !requiresAuthoritativeDefinition {
+            try validateRuntimeAvailability(machine)
+        }
+        if requiresAuthoritativeDefinition, authoritativeDefinition == nil {
+            throw MachineManagerError.persistence(
+                "authoritative workspace projection is unavailable for resolved launch"
+            )
+        }
+        let definitionData = try authoritativeDefinition.map(Self.canonicalDefinitionData)
+        return PreparedMachineStart(
+            machine: machine,
+            definition: authoritativeDefinition,
+            canonicalDefinitionData: definitionData,
+            authoritativeLegacyData: authoritativeLegacyData
+        )
+    }
+
+    private func spawnPreparedMachine(
+        _ preparedMachine: DoryMachineConfiguration,
+        launchBinding: MachineBackendLaunchBinding?
+    ) throws -> DoryMachineStatus {
         lock.lock()
-        guard let currentEntry = machines[id] else {
+        guard var entry = machines[preparedMachine.id] else {
             lock.unlock()
-            throw MachineManagerError.unknownMachine(id)
+            throw MachineManagerError.unknownMachine(preparedMachine.id)
         }
-        entry = currentEntry
+        guard entry.configuration == preparedMachine else {
+            lock.unlock()
+            throw MachineManagerError.persistence(
+                "machine configuration changed after launch validation"
+            )
+        }
         if entry.process?.isRunning == true {
             lock.unlock()
-            throw MachineManagerError.alreadyRunning(id)
+            throw MachineManagerError.alreadyRunning(preparedMachine.id)
         }
+        let id = preparedMachine.id
         let handoffPath = configuration.requiresReadyHandoff ? handoffSocketPath(id: id) : nil
         let launchID = UUID()
         let handoffServer: VmmHandoffServer?
@@ -824,7 +1216,8 @@ public final class MachineManager: @unchecked Sendable {
         do {
             processConfiguration = try self.processConfiguration(
                 for: entry.configuration,
-                handoffPath: handoffPath
+                handoffPath: handoffPath,
+                resolvedLaunchBinding: launchBinding
             )
         } catch {
             handoffServer?.stop()
@@ -1033,6 +1426,7 @@ public final class MachineManager: @unchecked Sendable {
         deletingMachineIDs.remove(id)
         workspaceProjectionDiagnostics.removeValue(forKey: id)
         lock.unlock()
+        resolvedLaunchIdentities.removeValue(forKey: id)
 
         try? FileManager.default.removeItem(atPath: machineRuntimeDirectory(id: id))
         if let quarantinePath {
@@ -1773,6 +2167,15 @@ public final class MachineManager: @unchecked Sendable {
         return workspaceProjectionDiagnostics[id]
     }
 
+    /// Immutable identity of the last plan-driven launch accepted for this machine. Runtime
+    /// status/snapshot/export can consume this hook without copying the full trust evidence yet.
+    public func resolvedLaunchIdentity(id: String) -> DoryMachineResolvedLaunchIdentity? {
+        operationLock.lock()
+        defer { operationLock.unlock() }
+        guard machines[id] != nil else { return nil }
+        return resolvedLaunchIdentities[id]
+    }
+
     private func statusLocked(id: String, entry: MachineEntry) -> DoryMachineStatus {
         if [.starting, .running].contains(entry.state), entry.process?.isRunningOrRestarting != true {
             return DoryMachineStatus(
@@ -1818,9 +2221,13 @@ public final class MachineManager: @unchecked Sendable {
 
     private func processConfiguration(
         for machine: DoryMachineConfiguration,
-        handoffPath: String?
+        handoffPath: String?,
+        resolvedLaunchBinding: MachineBackendLaunchBinding?
     ) throws -> HvProcessConfiguration {
-        let target = processTarget(for: machine)
+        let target = try processTarget(
+            for: machine,
+            resolvedLaunchBinding: resolvedLaunchBinding
+        )
         return HvProcessConfiguration(
             executablePath: target.executablePath,
             arguments: try processArguments(
@@ -1836,11 +2243,30 @@ public final class MachineManager: @unchecked Sendable {
         )
     }
 
-    private func processTarget(for machine: DoryMachineConfiguration) -> (
+    private func processTarget(
+        for machine: DoryMachineConfiguration,
+        resolvedLaunchBinding: MachineBackendLaunchBinding?
+    ) throws -> (
         executablePath: String,
         baseArguments: [String],
         acceleratedDesktop: Bool
     ) {
+        if let binding = resolvedLaunchBinding {
+            switch binding.backend.identity {
+            case .doryHypervisor:
+                return (
+                    binding.executablePath,
+                    configuration.acceleratedDesktopBaseArguments,
+                    true
+                )
+            case .appleVirtualizationFramework:
+                return (binding.executablePath, configuration.baseArguments, false)
+            default:
+                throw MachineManagerError.persistence(
+                    "resolved backend \(binding.backend.identity.rawValue) has no MachineManager launcher"
+                )
+            }
+        }
         let desktopPreference = try? DoryDesktopVMMPreference(environment: machine.environment)
         let supportsAcceleratedBoot = machine.bootMode == .linuxKernel
             || (machine.bootMode == .efi
@@ -2709,8 +3135,9 @@ public final class MachineManager: @unchecked Sendable {
         }
         // The rename above is the commit point. Projection is intentionally best-effort and
         // ordered afterwards: a v2 failure must never roll back or hide working legacy metadata.
+        resolvedLaunchIdentities.removeValue(forKey: machine.id)
         if let authoritativeLegacyData {
-            reconcileWorkspaceProjection(
+            _ = reconcileWorkspaceProjection(
                 machine: machine,
                 authoritativeLegacyData: authoritativeLegacyData
             )
@@ -2732,14 +3159,14 @@ public final class MachineManager: @unchecked Sendable {
                 )
                 continue
             }
-            reconcileWorkspaceProjection(machine: machine, authoritativeLegacyData: data)
+            _ = reconcileWorkspaceProjection(machine: machine, authoritativeLegacyData: data)
         }
     }
 
     private func reconcileWorkspaceProjection(
         machine: DoryMachineConfiguration,
         authoritativeLegacyData: Data
-    ) {
+    ) -> DoryVirtualMachineDefinition? {
         do {
             let facts = try workspaceMigrationFacts(for: machine)
             let migration = try DoryMachineConfigurationMigrationBridge.migrate(
@@ -2757,6 +3184,7 @@ public final class MachineManager: @unchecked Sendable {
                 ),
                 id: machine.id
             )
+            return result.definition
         } catch let error as DoryMachineConfigurationMigrationError {
             setWorkspaceProjectionDiagnostic(
                 DoryWorkspaceProjectionDiagnostic(
@@ -2766,6 +3194,7 @@ public final class MachineManager: @unchecked Sendable {
                 ),
                 id: machine.id
             )
+            return nil
         } catch let error as DoryWorkspaceRepositoryError {
             setWorkspaceProjectionDiagnostic(
                 DoryWorkspaceProjectionDiagnostic(
@@ -2775,6 +3204,7 @@ public final class MachineManager: @unchecked Sendable {
                 ),
                 id: machine.id
             )
+            return nil
         } catch {
             setWorkspaceProjectionDiagnostic(
                 DoryWorkspaceProjectionDiagnostic(
@@ -2784,7 +3214,16 @@ public final class MachineManager: @unchecked Sendable {
                 ),
                 id: machine.id
             )
+            return nil
         }
+    }
+
+    private static func canonicalDefinitionData(
+        _ definition: DoryVirtualMachineDefinition
+    ) throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        return try encoder.encode(definition)
     }
 
     private func workspaceMigrationFacts(
@@ -4068,6 +4507,22 @@ private struct WorkspaceMigrationAuthorityFacts: Codable {
     var systemDiskCapacityBytes: UInt64?
     var installedEFIBoot: DoryMachineConfigurationInstalledEFIBoot?
     var lifecycle: DoryVMLifecycleMetadata
+}
+
+private struct PreparedMachineStart {
+    var machine: DoryMachineConfiguration
+    var definition: DoryVirtualMachineDefinition?
+    var canonicalDefinitionData: Data?
+    var authoritativeLegacyData: Data?
+}
+
+private struct PendingResolvedMachineStart {
+    var machine: DoryMachineConfiguration
+    var backend: MachineBackendDescriptor
+    var runtimeBuildIdentifier: String
+    var runtimeComponents: [DoryResolvedBackendComponentEvidence]
+    var planRevision: UInt64
+    var planSHA256: String
 }
 
 private struct MachineEntry {

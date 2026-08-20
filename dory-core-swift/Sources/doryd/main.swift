@@ -63,7 +63,18 @@ let idleController = IdleController()
 let dockerTier = dorydEnvironment.dockerTierConfiguration().map {
     DockerTier(configuration: $0, idleController: idleController)
 }
-let machineManager = dorydEnvironment.machineManagerConfiguration().map { MachineManager(configuration: $0) }
+let machineManager = dorydEnvironment.machineManagerConfiguration().map { configuration in
+    // Transitional and explicit: existing machines remain launchable until the production trusted
+    // inventory collector is installed. MachineManager's resolved-plan policy fails closed and is
+    // not enabled here without that evidence source.
+    FileHandle.standardError.write(Data(
+        "doryd: VM launch policy legacyCompatibility (trusted resolved-plan inventory unavailable)\n".utf8
+    ))
+    return MachineManager(
+        configuration: configuration,
+        launchPolicy: .legacyCompatibility
+    )
+}
 let sandboxTTLReconciler = machineManager.map { manager in
     SandboxTTLReconciler(
         machines: manager,
