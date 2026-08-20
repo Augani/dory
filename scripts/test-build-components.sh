@@ -9,7 +9,7 @@ SOURCE="$TMP/source"
 CORE_APP="$TMP/Dory.app"
 OUTPUT="$TMP/components/arm64"
 QUALIFICATION="$TMP/virtual-machine-qualification.json"
-mkdir -p "$SOURCE" "$CORE_APP/Contents/MacOS"
+mkdir -p "$SOURCE" "$CORE_APP/Contents/MacOS" "$CORE_APP/Contents/Helpers"
 
 write_fixture() {
   local path="$1" bytes="$2"
@@ -19,6 +19,9 @@ write_fixture() {
 
 write_fixture "$TMP/Dory-test.dmg" 4096
 write_fixture "$CORE_APP/Contents/MacOS/Dory" 8192
+write_fixture "$CORE_APP/Contents/Helpers/dory-hv" 4096
+write_fixture "$CORE_APP/Contents/Helpers/dory-vmm" 4096
+chmod 0755 "$CORE_APP/Contents/Helpers/dory-hv" "$CORE_APP/Contents/Helpers/dory-vmm"
 write_fixture "$TMP/kubectl" 16384
 chmod 0755 "$TMP/kubectl"
 write_fixture "$SOURCE/Image" 131072
@@ -39,7 +42,7 @@ for distro in debian ubuntu kali; do
 done
 printf 'schema=fixture\n' > "$SOURCE/kernel-build-arm64-desktop.stamp"
 
-python3 - "$QUALIFICATION" <<'PY'
+python3 - "$QUALIFICATION" "$SOURCE" "$CORE_APP" <<'PY'
 import base64
 import hashlib
 import json
@@ -48,6 +51,10 @@ import sys
 
 key = base64.b64decode("AFetajNbqZty68rRY7OMWYNt6suUsrokQmYMhDJtnP4=")
 digest = lambda byte: byte * 64
+source = pathlib.Path(sys.argv[2])
+app = pathlib.Path(sys.argv[3])
+file_digest = lambda path: hashlib.sha256(path.read_bytes()).hexdigest()
+runtime_digest = file_digest(app / "Contents/Helpers/dory-hv")
 manifest = {
     "kind": "dev.dory.virtual-machine-qualification-manifest",
     "schemaVersion": 1,
@@ -60,10 +67,10 @@ manifest = {
         "guest": {"family": "linux", "architecture": "arm64"},
         "bootMediaKind": "linux-kernel",
         "bootMediaSource": "dory-bundled",
-        "immutableArtifactSHA256": digest("a"),
+        "immutableArtifactSHA256": file_digest(source / "Image-desktop"),
         "backend": "dory-hypervisor",
-        "backendImplementationIdentifier": "dory.raw-hv-linux",
-        "backendRuntimeBuildIdentifier": "9.8.7",
+        "backendImplementationIdentifier": "dory.raw-hv-linux.compatibility.v1",
+        "backendRuntimeBuildIdentifier": f"sha256:{runtime_digest}",
         "virtualHardwareABIVersion": 1,
         "graphics": "hardware-accelerated-3d",
         "devices": {
@@ -82,8 +89,8 @@ manifest = {
         "hostOperatingSystemBuild": "25A1",
         "components": [{
             "componentIdentifier": "dory-hv",
-            "buildIdentifier": "9.8.7",
-            "artifactSHA256": digest("b"),
+            "buildIdentifier": f"sha256:{runtime_digest}",
+            "artifactSHA256": runtime_digest,
         }],
         "virtioGPUKernelAndDeviceSupportQualified": True,
         "venusVulkanGuestRuntimeQualified": True,
@@ -139,7 +146,7 @@ assert [item["id"] for item in catalog["components"]] == [
 ]
 assert catalog["components"][0]["assets"] == []
 assert catalog["components"][0]["downloadBytes"] == 4096
-assert catalog["components"][0]["installedBytes"] == 8192
+assert catalog["components"][0]["installedBytes"] == 16384
 qualification = catalog["virtualMachineQualification"]
 assert qualification["component"] == "linux-desktop"
 assert qualification["path"] == "virtual-machine-qualification.json"
@@ -231,6 +238,52 @@ if "$ROOT/scripts/build-components.py" \
     --qualification-manifest "$TMP/invalid-qualification.json" \
     --skip-source-verification 2>/dev/null; then
   echo "component packaging accepted a qualification manifest for another release" >&2
+  exit 1
+fi
+
+cp "$QUALIFICATION" "$TMP/mismatched-helper-qualification.json"
+python3 - "$TMP/mismatched-helper-qualification.json" <<'PY'
+import json
+import pathlib
+import sys
+path = pathlib.Path(sys.argv[1])
+manifest = json.loads(path.read_text(encoding="utf-8"))
+manifest["records"][0]["components"][0]["artifactSHA256"] = "c" * 64
+path.write_text(json.dumps(manifest) + "\n", encoding="utf-8")
+PY
+if "$ROOT/scripts/build-components.py" \
+    --version 9.8.7 \
+    --core-artifact "$TMP/Dory-test.dmg" \
+    --core-app "$CORE_APP" \
+    --kubectl "$TMP/kubectl" \
+    --source-root "$SOURCE" \
+    --output "$TMP/mismatched-helper-components" \
+    --qualification-manifest "$TMP/mismatched-helper-qualification.json" \
+    --skip-source-verification 2>/dev/null; then
+  echo "component packaging accepted qualification evidence for different helper bytes" >&2
+  exit 1
+fi
+
+cp "$QUALIFICATION" "$TMP/mismatched-media-qualification.json"
+python3 - "$TMP/mismatched-media-qualification.json" <<'PY'
+import json
+import pathlib
+import sys
+path = pathlib.Path(sys.argv[1])
+manifest = json.loads(path.read_text(encoding="utf-8"))
+manifest["records"][0]["immutableArtifactSHA256"] = "d" * 64
+path.write_text(json.dumps(manifest) + "\n", encoding="utf-8")
+PY
+if "$ROOT/scripts/build-components.py" \
+    --version 9.8.7 \
+    --core-artifact "$TMP/Dory-test.dmg" \
+    --core-app "$CORE_APP" \
+    --kubectl "$TMP/kubectl" \
+    --source-root "$SOURCE" \
+    --output "$TMP/mismatched-media-components" \
+    --qualification-manifest "$TMP/mismatched-media-qualification.json" \
+    --skip-source-verification 2>/dev/null; then
+  echo "component packaging accepted qualification evidence for different bundled media" >&2
   exit 1
 fi
 

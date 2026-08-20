@@ -345,6 +345,77 @@ def load_qualification_manifest(
     return manifest
 
 
+def validate_qualification_bindings(
+    manifest: dict,
+    *,
+    source_root: pathlib.Path,
+    core_app: pathlib.Path,
+) -> None:
+    """Bind catalog-authenticated qualification claims to the exact shipped candidate bytes."""
+    runtime_contracts = {
+        "dory-hypervisor": (
+            "dory.raw-hv-linux.compatibility.v1",
+            "dory-hv",
+        ),
+        "apple-virtualization-framework": (
+            "dory.vz-linux.compatibility.v1",
+            "dory-vmm",
+        ),
+    }
+    runtime_evidence: dict[str, tuple[str, str]] = {}
+    for backend in {record["backend"] for record in manifest["records"]}:
+        if backend not in runtime_contracts:
+            fail(f"qualification backend is not shipped by the current Apple Silicon product: {backend}")
+        implementation, component = runtime_contracts[backend]
+        helper = regular_file(
+            core_app / "Contents" / "Helpers" / component,
+            f"{component} candidate helper",
+        )
+        if helper.stat().st_mode & 0o111 == 0:
+            fail(f"{component} candidate helper is not executable")
+        digest = sha256(helper)
+        runtime_evidence[backend] = (implementation, digest)
+
+    bundled_media = {
+        "linux-kernel": {
+            sha256(regular_file(source_root / "Image", "headless Linux kernel")),
+            sha256(regular_file(source_root / "Image-desktop", "desktop Linux kernel")),
+        },
+        "virtual-disk": {
+            sha256(regular_file(source_root / "initfs-arm64.ext4", "headless Linux rootfs")),
+            *{
+                sha256(regular_file(
+                    source_root / f"dory-desktop-{distro}-rootfs-arm64.ext4",
+                    f"{distro} desktop rootfs",
+                ))
+                for distro in ("debian", "ubuntu", "kali")
+            },
+        },
+    }
+
+    for index, record in enumerate(manifest["records"]):
+        label = f"qualification record {index}"
+        implementation, runtime_digest = runtime_evidence[record["backend"]]
+        if record["backendImplementationIdentifier"] != implementation:
+            fail(f"{label} implementation does not match the shipped adapter")
+        expected_build = f"sha256:{runtime_digest}"
+        if record["backendRuntimeBuildIdentifier"] != expected_build:
+            fail(f"{label} runtime build does not match the shipped helper")
+        expected_components = [{
+            "componentIdentifier": runtime_contracts[record["backend"]][1],
+            "buildIdentifier": expected_build,
+            "artifactSHA256": runtime_digest,
+        }]
+        if record["components"] != expected_components:
+            fail(f"{label} component evidence does not match the shipped helper")
+
+        if record["bootMediaSource"] == "dory-bundled":
+            accepted = bundled_media.get(record["bootMediaKind"])
+            digest = record.get("immutableArtifactSHA256")
+            if accepted is None or digest not in accepted:
+                fail(f"{label} bundled media digest is not an exact packaged artifact")
+
+
 def component_specs(
     source_root: pathlib.Path,
     kubectl: pathlib.Path,
@@ -609,6 +680,11 @@ def main() -> None:
         args.qualification_manifest,
         release_version=args.version,
         public_key_base64=args.catalog_public_key,
+    )
+    validate_qualification_bindings(
+        qualification_manifest,
+        source_root=source_root,
+        core_app=core_app,
     )
     if not args.skip_source_verification:
         validate_sources(repo, source_root, kubectl)
