@@ -348,6 +348,76 @@ struct DoryDaemonVirtualMachineProductionTrustTests {
         }
     }
 
+    @Test("production planning preparation resolves exact signed candidates before admission")
+    func planningPreparationUsesQualificationAuthority() throws {
+        let fixture = try ProductionTrustFixture()
+        defer { fixture.cleanup() }
+        guard case let .ready(context) = fixture.resolve(),
+              let preparer = context.inventory
+                as? any DoryDaemonVirtualMachinePlanningTrustPreparing else {
+            Issue.record("Expected production planning trust preparer")
+            return
+        }
+        let start = try fixture.makeBoundStartRequest()
+        let request = productionPlanningRequest(start)
+        let preparation = try preparer.preparePlanningTrust(for: request)
+        let snapshot = preparation.snapshot(start.resolvedPlan.resourceAdmission!)
+
+        #expect(snapshot.media.reference == start.bootMediaReference)
+        #expect(snapshot.backendRuntimes.count == 2)
+        #expect(snapshot.runtimeQualifications.count == 2)
+        #expect(snapshot.backendRuntime(for: .doryHypervisor) != nil)
+    }
+
+    @Test("publication authorization refreshes immutable host identity but not volatile free bytes")
+    func planningPublicationFreshness() throws {
+        let fixture = try ProductionTrustFixture()
+        defer { fixture.cleanup() }
+        guard case let .ready(context) = fixture.resolve(),
+              let preparer = context.inventory
+                as? any DoryDaemonVirtualMachinePlanningTrustPreparing else {
+            Issue.record("Expected production planning trust preparer")
+            return
+        }
+        let start = try fixture.makeBoundStartRequest()
+        let freeStoragePreparation = try preparer.preparePlanningTrust(
+            for: productionPlanningRequest(start)
+        )
+        var host = fixture.host
+        host = DoryDaemonProductionHostObservation(
+            hardwareModelIdentifier: host.hardwareModelIdentifier,
+            operatingSystemBuild: host.operatingSystemBuild,
+            macOSMajorVersion: host.macOSMajorVersion,
+            virtualizationFrameworkAvailable: host.virtualizationFrameworkAvailable,
+            hypervisorFrameworkAvailable: host.hypervisorFrameworkAvailable,
+            metalAvailable: host.metalAvailable,
+            resources: DoryVMHostResources(
+                logicalCPUCount: host.resources.logicalCPUCount,
+                physicalMemoryBytes: host.resources.physicalMemoryBytes,
+                freeStorageBytes: host.resources.freeStorageBytes - 1
+            )
+        )
+        fixture.hostState.set(host)
+        try freeStoragePreparation.publicationAuthorization.authorize()
+
+        let staleIdentityPreparation = try preparer.preparePlanningTrust(
+            for: productionPlanningRequest(start)
+        )
+        host = DoryDaemonProductionHostObservation(
+            hardwareModelIdentifier: host.hardwareModelIdentifier,
+            operatingSystemBuild: host.operatingSystemBuild + "-changed",
+            macOSMajorVersion: host.macOSMajorVersion,
+            virtualizationFrameworkAvailable: host.virtualizationFrameworkAvailable,
+            hypervisorFrameworkAvailable: host.hypervisorFrameworkAvailable,
+            metalAvailable: host.metalAvailable,
+            resources: host.resources
+        )
+        fixture.hostState.set(host)
+        #expect(throws: DoryDaemonProductionTrustInventoryError.self) {
+            try staleIdentityPreparation.publicationAuthorization.authorize()
+        }
+    }
+
     @Test("installed Linux boot verification hashes the embedded kernel and initrd")
     func installedBootBundleContentVerification() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(
@@ -419,6 +489,33 @@ private final class ProductionHostState: @unchecked Sendable {
         self.observation = observation
         lock.unlock()
     }
+}
+
+private func productionPlanningRequest(
+    _ start: DoryDaemonVirtualMachineStartInventoryRequest
+) -> DoryDaemonVirtualMachineInventoryRequest {
+    let plan = start.resolvedPlan
+    return DoryDaemonVirtualMachineInventoryRequest(
+        machineID: plan.machineID,
+        definitionRevision: plan.definitionRevision,
+        guest: plan.guest,
+        bootMedia: DoryVMBootMediaReference(
+            id: "system",
+            role: .system,
+            kind: plan.bootMedia.media.kind,
+            source: plan.bootMedia.media.source,
+            artifact: plan.bootMedia.resolverReference!,
+            removable: false
+        ),
+        resources: DoryVMResourceRequest(
+            virtualCPUCount: plan.resourceAdmission!.admittedVirtualCPUCount,
+            memoryBytes: plan.resourceAdmission!.admittedMemoryBytes,
+            diskBytes: plan.resourceAdmission!.admittedStorageBytes
+        ),
+        devices: plan.devices,
+        acceptableGraphics: [plan.graphics],
+        virtualHardwareABIVersion: plan.virtualHardwareABIVersion
+    )
 }
 
 private final class ProductionTrustFixture: @unchecked Sendable {

@@ -107,6 +107,19 @@ public struct DoryVirtualMachineResourceAdmissionLedgerSnapshot: Sendable, Equat
     }
 }
 
+/// Opaque daemon-only proof that a lifecycle fence observed no process using a bound planning
+/// lease. It is not Codable and has no public initializer, so API/UI callers cannot recover an
+/// ambiguous lease.
+public struct DoryVirtualMachineBoundPlanningLeaseRecoveryAuthorization: Sendable {
+    let machineID: String
+    let planSHA256: String
+
+    init(machineID: String, planSHA256: String) {
+        self.machineID = machineID
+        self.planSHA256 = planSHA256
+    }
+}
+
 public enum DoryVirtualMachineResourceAdmissionLedgerError:
     Error, Sendable, Equatable, CustomStringConvertible
 {
@@ -315,6 +328,33 @@ public final class DoryVirtualMachineResourceAdmissionLedger: @unchecked Sendabl
         }
     }
 
+    /// Compensates a planning attempt that failed before its lease was bound to exact plan bytes.
+    /// CPU and memory are released, while the durable storage reservation is retained. A bound
+    /// lease is never cancelled here because a process may already have consumed its authority.
+    public func cancelUnboundStarting(
+        leaseID: String,
+        expectedLeaseRevision: UInt64
+    ) throws -> DoryVirtualMachineResourceAdmissionLease {
+        try withExclusiveAccess {
+            let timestamp = now()
+            var record = try readRecord()
+            _ = try recoverExpired(in: &record, at: timestamp)
+            let index = try leaseIndex(leaseID, in: record)
+            var lease = record.leases[index]
+            try Self.validateLeaseRevision(expectedLeaseRevision, lease)
+            guard lease.state == .starting, lease.boundPlanSHA256 == nil else {
+                throw DoryVirtualMachineResourceAdmissionLedgerError.invalidLeaseState(lease.state)
+            }
+            lease.state = .stopped
+            lease.startingExpiresAtUnixMilliseconds = nil
+            lease.leaseRevision = try Self.incrementing(lease.leaseRevision)
+            lease.updatedAtUnixMilliseconds = timestamp
+            record.leases[index] = lease
+            try advanceAndPublish(&record)
+            return lease
+        }
+    }
+
     /// Revalidates an already bound starting lease against exact plan bytes and the same daemon
     /// host snapshot. It never replans or silently refreshes evidence.
     public func revalidateForStart(
@@ -340,6 +380,53 @@ public final class DoryVirtualMachineResourceAdmissionLedger: @unchecked Sendabl
             try Self.validate(plan, against: lease, requireBoundDigest: true)
             try Self.validateCapacity(record.leases, hostFacts: hostFacts)
             return lease.evidence
+        }
+    }
+
+    /// Renews a bound planning lease that expired before definition/plan publication. The caller
+    /// must hold a daemon lifecycle fence proving the exact plan never launched. Admission facts,
+    /// evidence, and bound plan bytes remain unchanged; no capacity is released or re-granted.
+    public func recoverBoundPlanningLease(
+        leaseID: String,
+        plan: DoryResolvedMachinePlan,
+        authorization: DoryVirtualMachineBoundPlanningLeaseRecoveryAuthorization,
+        startingLeaseDurationMilliseconds: Int64,
+        expectedLeaseRevision: UInt64
+    ) throws -> DoryVirtualMachineResourceAdmissionLease {
+        try withExclusiveAccess {
+            let timestamp = now()
+            guard startingLeaseDurationMilliseconds > 0,
+                  startingLeaseDurationMilliseconds
+                    <= Self.maximumStartingLeaseDurationMilliseconds,
+                  timestamp > 0,
+                  timestamp <= Int64.max - startingLeaseDurationMilliseconds else {
+                throw DoryVirtualMachineResourceAdmissionLedgerError.invalidLeaseDuration
+            }
+            var record = try readRecord()
+            _ = try recoverExpired(in: &record, at: timestamp)
+            let index = try leaseIndex(leaseID, in: record)
+            var lease = record.leases[index]
+            try Self.validateLeaseRevision(expectedLeaseRevision, lease)
+            guard lease.state == .recoveryRequired else {
+                throw DoryVirtualMachineResourceAdmissionLedgerError.invalidLeaseState(lease.state)
+            }
+            let digest = Self.planSHA256(plan)
+            guard authorization.machineID == lease.binding.machineID,
+                  authorization.machineID == plan.machineID,
+                  authorization.planSHA256 == digest,
+                  lease.boundPlanSHA256 == digest else {
+                throw DoryVirtualMachineResourceAdmissionLedgerError.planMismatch
+            }
+            try Self.validate(plan, against: lease, requireBoundDigest: true)
+            try Self.validateCapacity(record.leases, hostFacts: lease.hostFacts)
+            lease.state = .starting
+            lease.startingExpiresAtUnixMilliseconds = timestamp
+                + startingLeaseDurationMilliseconds
+            lease.leaseRevision = try Self.incrementing(lease.leaseRevision)
+            lease.updatedAtUnixMilliseconds = timestamp
+            record.leases[index] = lease
+            try advanceAndPublish(&record)
+            return lease
         }
     }
 

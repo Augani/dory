@@ -376,6 +376,72 @@ struct DoryVirtualMachineBackendPlannerTests {
             == "linux-runtime-qualification-v1")
     }
 
+    @Test("capability qualification order cannot authorize a different graphics candidate")
+    func capabilityQualificationSelectionIsExactAndOrderIndependent() throws {
+        let media = DoryBootMedia(
+            kind: .installedLinuxBootBundle,
+            source: .bundledByDory,
+            artifactSHA256: Self.guestArtifactSHA256
+        )
+        let request = DoryVirtualMachineBackendPlanRequest(
+            guest: DoryGuestPlatform(family: .linux, architecture: .arm64),
+            bootMedia: media,
+            acceptableGraphics: [.software, .hardwareAccelerated3D],
+            backendPreferences: [.doryHypervisor],
+            backendPreferencePolicy: .required
+        )
+        let runtimeByGraphics = Dictionary(uniqueKeysWithValues:
+            makeRuntimeQualifications(request: request, host: Self.host).filter {
+                $0.auditEvidence.backend == .doryHypervisor
+            }.map {
+                ($0.auditEvidence.graphics, $0)
+            }
+        )
+        let unsupportedSoftware = DoryTrustedGuestImageGraphicsQualification(
+            auditEvidence: DorySignedArtifactQualificationEvidence(
+                manifestIdentity: "dory-linux-software-unqualified-v1",
+                artifactSHA256: Self.guestArtifactSHA256,
+                manifestSHA256: String(repeating: "3", count: 64),
+                signingKeyID: "dory-release-2026",
+                manifestFormatVersion: 1
+            ),
+            virtioGPUKernelAndDeviceSupportQualified: false,
+            venusVulkanGuestRuntimeQualified: false
+        )
+        func exact(
+            _ graphics: DoryGraphicsAccelerationLevel,
+            _ qualification: DoryTrustedGuestImageGraphicsQualification
+        ) throws -> DoryTrustedVirtualMachineCapabilityQualification {
+            let capabilityRequest = DoryVirtualMachineCapabilityRequest(
+                guest: request.guest,
+                bootMedia: media,
+                backend: .doryHypervisor,
+                graphics: graphics,
+                devices: request.devices
+            )
+            return DoryTrustedVirtualMachineCapabilityQualification(
+                request: capabilityRequest,
+                runtime: try #require(runtimeByGraphics[graphics]),
+                graphics: qualification
+            )
+        }
+        let software = try exact(.software, unsupportedSoftware)
+        let accelerated = try exact(.hardwareAccelerated3D, Self.qualifiedLinuxGraphics)
+
+        for inventory in [[software, accelerated], [accelerated, software]] {
+            let result = DoryAppleSiliconVirtualMachineBackendPlanner.plan(
+                request,
+                host: Self.host,
+                trustedCapabilityQualifications: inventory
+            )
+            #expect(result.selectedDescriptor?.request.graphics == .hardwareAccelerated3D)
+            #expect(result.evaluatedDescriptors.first?.availability.reason?.code
+                == .linuxVirtioGPUKernelDeviceUnqualified)
+            #expect(result.selectedDescriptor?.graphicsQualificationEvidence
+                == Self.qualifiedLinuxGraphics.auditEvidence)
+        }
+    }
+
     @Test("runtime inventory selection is order independent for ISO digest and runtime build")
     func runtimeInventoryMatchesExactISORecordInEitherOrder() throws {
         let exact = runtimeQualification(

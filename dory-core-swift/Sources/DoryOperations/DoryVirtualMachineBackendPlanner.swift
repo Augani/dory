@@ -158,7 +158,9 @@ public enum DoryAppleSiliconVirtualMachineBackendPlanner {
         trustedGuestImageGraphicsQualification: DoryTrustedGuestImageGraphicsQualification? = nil,
         trustedBootMediaInspection: DoryTrustedBootMediaInspection? = nil,
         trustedMutableBootMediaProvenance: DoryTrustedMutableBootMediaProvenance? = nil,
-        trustedRuntimeQualifications: [DoryTrustedVirtualMachineRuntimeQualification] = []
+        trustedRuntimeQualifications: [DoryTrustedVirtualMachineRuntimeQualification] = [],
+        trustedCapabilityQualifications:
+            [DoryTrustedVirtualMachineCapabilityQualification] = []
     ) -> DoryVirtualMachineBackendPlanResult {
         if request.acceptableGraphics.isEmpty {
             return invalidPreference(
@@ -222,17 +224,27 @@ public enum DoryAppleSiliconVirtualMachineBackendPlanner {
                     devices: request.devices,
                     virtualHardwareABIVersion: request.virtualHardwareABIVersion
                 )
+                let exactQualification = matchingCapabilityQualification(
+                    for: capabilityRequest,
+                    host: host,
+                    in: trustedCapabilityQualifications
+                )
                 evaluated.append(DoryAppleSiliconCapabilityEvaluator.evaluate(
                     capabilityRequest,
                     host: host,
-                    trustedGuestImageGraphicsQualification: trustedGuestImageGraphicsQualification,
+                    trustedGuestImageGraphicsQualification:
+                        exactQualification?.graphics
+                            ?? (trustedCapabilityQualifications.isEmpty
+                                ? trustedGuestImageGraphicsQualification : nil),
                     trustedBootMediaInspection: trustedBootMediaInspection,
                     trustedMutableBootMediaProvenance: trustedMutableBootMediaProvenance,
-                    trustedRuntimeQualification: matchingRuntimeQualification(
-                        for: capabilityRequest,
-                        host: host,
-                        in: trustedRuntimeQualifications
-                    )
+                    trustedRuntimeQualification: exactQualification?.runtime
+                        ?? (trustedCapabilityQualifications.isEmpty
+                            ? matchingRuntimeQualification(
+                                for: capabilityRequest,
+                                host: host,
+                                in: trustedRuntimeQualifications
+                            ) : nil)
                 ))
             }
         }
@@ -318,6 +330,23 @@ public enum DoryAppleSiliconVirtualMachineBackendPlanner {
             return evidence.mutableProvenance == nil
                 && evidenceDigest.lowercased() == requestDigest.lowercased()
         }
+    }
+
+    private static func matchingCapabilityQualification(
+        for request: DoryVirtualMachineCapabilityRequest,
+        host: DoryAppleSiliconHostFacts,
+        in qualifications: [DoryTrustedVirtualMachineCapabilityQualification]
+    ) -> DoryTrustedVirtualMachineCapabilityQualification? {
+        guard let hostContext = host.runtimeQualificationContext else { return nil }
+        let matches = qualifications.filter { qualification in
+            guard qualification.request == request else { return false }
+            let evidence = qualification.runtime.auditEvidence
+            return evidence.backendRuntimeBuildID
+                == hostContext.runtimeBuildID(for: request.backend)
+                && evidence.virtualHardwareABIVersion
+                    == hostContext.virtualHardwareABIVersion
+        }
+        return matches.count == 1 ? matches[0] : nil
     }
 
     private static func invalidPreference(

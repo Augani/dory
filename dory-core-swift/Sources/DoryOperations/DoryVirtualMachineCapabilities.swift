@@ -505,6 +505,27 @@ public struct DoryTrustedVirtualMachineRuntimeQualification: Sendable, Equatable
     }
 }
 
+/// Opaque authority bundle for one exact capability request. Keeping runtime and guest-graphics
+/// facts paired prevents inventory order from applying one signed image qualification to a
+/// different backend, graphics level, device contract, or runtime build.
+public struct DoryTrustedVirtualMachineCapabilityQualification:
+    Sendable, Equatable, Hashable
+{
+    let request: DoryVirtualMachineCapabilityRequest
+    let runtime: DoryTrustedVirtualMachineRuntimeQualification
+    let graphics: DoryTrustedGuestImageGraphicsQualification?
+
+    init(
+        request: DoryVirtualMachineCapabilityRequest,
+        runtime: DoryTrustedVirtualMachineRuntimeQualification,
+        graphics: DoryTrustedGuestImageGraphicsQualification?
+    ) {
+        self.request = request
+        self.runtime = runtime
+        self.graphics = graphics
+    }
+}
+
 /// A request is deliberately free of detected host state so it can cross process and API
 /// boundaries and be evaluated by the daemon that owns the virtualization components.
 public struct DoryVirtualMachineCapabilityRequest: Codable, Sendable, Equatable, Hashable {

@@ -344,6 +344,87 @@ final class DoryVirtualMachineResourceAdmissionLedgerTests: XCTestCase {
         ))
     }
 
+    func testPlanningCompensationCancelsOnlyUnboundAndRetainsStorage() throws {
+        let fixture = try ResourceLedgerFixture("planning-cancel")
+        defer { fixture.cleanup() }
+        let reserved = try fixture.ledger.reserveStarting(
+            binding: fixture.binding("machine-a"),
+            hostFacts: fixture.host,
+            workload: .desktop,
+            resources: fixture.resources
+        )
+        let stopped = try fixture.ledger.cancelUnboundStarting(
+            leaseID: reserved.leaseID,
+            expectedLeaseRevision: reserved.leaseRevision
+        )
+        XCTAssertEqual(stopped.state, .stopped)
+        XCTAssertNil(stopped.boundPlanSHA256)
+        XCTAssertEqual(stopped.resources.diskBytes, fixture.resources.diskBytes)
+
+        let restarted = try fixture.ledger.reserveStarting(
+            binding: fixture.binding("machine-a"),
+            hostFacts: fixture.host,
+            workload: .desktop,
+            resources: fixture.resources
+        )
+        let plan = fixture.plan(binding: restarted.binding, evidence: restarted.evidence)
+        let bound = try fixture.ledger.bind(
+            leaseID: restarted.leaseID,
+            to: plan,
+            expectedLeaseRevision: restarted.leaseRevision
+        )
+        XCTAssertThrowsError(try fixture.ledger.cancelUnboundStarting(
+            leaseID: bound.leaseID,
+            expectedLeaseRevision: bound.leaseRevision
+        ))
+    }
+
+    func testExpiredBoundPlanningLeaseRequiresExactUnlaunchedAuthorization() throws {
+        let clock = ResourceLedgerClock(now: 40_000)
+        let fixture = try ResourceLedgerFixture("bound-planning-recovery", clock: clock)
+        defer { fixture.cleanup() }
+        let reserved = try fixture.ledger.reserveStarting(
+            binding: fixture.binding("machine-a"),
+            hostFacts: fixture.host,
+            workload: .desktop,
+            resources: fixture.resources,
+            startingLeaseDurationMilliseconds: 100
+        )
+        let plan = fixture.plan(binding: reserved.binding, evidence: reserved.evidence)
+        _ = try fixture.ledger.bind(
+            leaseID: reserved.leaseID,
+            to: plan,
+            expectedLeaseRevision: reserved.leaseRevision
+        )
+        clock.advance(by: 100)
+        let expired = try XCTUnwrap(try fixture.ledger.snapshot().leases.first)
+        XCTAssertEqual(expired.state, .recoveryRequired)
+        XCTAssertThrowsError(try fixture.ledger.recoverBoundPlanningLease(
+            leaseID: expired.leaseID,
+            plan: plan,
+            authorization: DoryVirtualMachineBoundPlanningLeaseRecoveryAuthorization(
+                machineID: plan.machineID,
+                planSHA256: digest("f")
+            ),
+            startingLeaseDurationMilliseconds: 100,
+            expectedLeaseRevision: expired.leaseRevision
+        ))
+        let exact = DoryVirtualMachineBoundPlanningLeaseRecoveryAuthorization(
+            machineID: plan.machineID,
+            planSHA256: DoryDaemonVirtualMachinePlanningCoordinator.planSHA256(plan)
+        )
+        let recovered = try fixture.ledger.recoverBoundPlanningLease(
+            leaseID: expired.leaseID,
+            plan: plan,
+            authorization: exact,
+            startingLeaseDurationMilliseconds: 100,
+            expectedLeaseRevision: expired.leaseRevision
+        )
+        XCTAssertEqual(recovered.state, .starting)
+        XCTAssertEqual(recovered.boundPlanSHA256,
+                       DoryDaemonVirtualMachinePlanningCoordinator.planSHA256(plan))
+    }
+
     func testBoundPlanAndHostFactsAreExactStartGates() throws {
         try withFixture("exact-binding") { fixture in
             let reserved = try fixture.ledger.reserveStarting(

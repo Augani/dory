@@ -51,6 +51,8 @@ public struct DoryDaemonVirtualMachineTrustedInventorySnapshot: Sendable {
     public var backendRuntimes: [DoryDaemonVirtualMachineBackendRuntimeInventory]
     public var resourceAdmission: DoryResolvedMachineResourceAdmissionEvidence
     public var runtimeQualifications: [DoryTrustedVirtualMachineRuntimeQualification]
+    public var capabilityQualifications:
+        [DoryTrustedVirtualMachineCapabilityQualification]
     /// Resolver-selected record for one exact start request. The evaluator still verifies every
     /// media, backend-build, ABI, graphics, and device binding before treating it as authority.
     public var exactStartRuntimeQualification: DoryTrustedVirtualMachineRuntimeQualification?
@@ -61,6 +63,8 @@ public struct DoryDaemonVirtualMachineTrustedInventorySnapshot: Sendable {
         backendRuntimes: [DoryDaemonVirtualMachineBackendRuntimeInventory],
         resourceAdmission: DoryResolvedMachineResourceAdmissionEvidence,
         runtimeQualifications: [DoryTrustedVirtualMachineRuntimeQualification] = [],
+        capabilityQualifications:
+            [DoryTrustedVirtualMachineCapabilityQualification] = [],
         exactStartRuntimeQualification: DoryTrustedVirtualMachineRuntimeQualification? = nil
     ) {
         self.hostFacts = hostFacts
@@ -68,6 +72,7 @@ public struct DoryDaemonVirtualMachineTrustedInventorySnapshot: Sendable {
         self.backendRuntimes = backendRuntimes
         self.resourceAdmission = resourceAdmission
         self.runtimeQualifications = runtimeQualifications
+        self.capabilityQualifications = capabilityQualifications
         self.exactStartRuntimeQualification = exactStartRuntimeQualification
     }
 
@@ -76,6 +81,23 @@ public struct DoryDaemonVirtualMachineTrustedInventorySnapshot: Sendable {
     ) -> DoryDaemonVirtualMachineBackendRuntimeInventory? {
         let matches = backendRuntimes.filter { $0.backend == backend }
         return matches.count == 1 ? matches[0] : nil
+    }
+
+    /// Selects the runtime record bound to the exact qualification chosen by the planner. A
+    /// backend may have several signed media/graphics qualifications; array order is not trust.
+    public func backendRuntime(
+        for descriptor: DoryVirtualMachineCapabilityDescriptor
+    ) -> DoryDaemonVirtualMachineBackendRuntimeInventory? {
+        let candidates = backendRuntimes.filter { runtime in
+            guard runtime.backend == descriptor.request.backend else { return false }
+            guard let evidence = descriptor.runtimeQualificationEvidence else { return true }
+            return runtime.runtimeBuildIdentifier == evidence.backendRuntimeBuildID
+                && runtime.hostQualification.qualificationIdentity
+                    == evidence.qualificationIdentity
+                && runtime.hostQualification.qualificationReportSHA256
+                    == evidence.qualificationReportSHA256
+        }
+        return candidates.count == 1 ? candidates[0] : nil
     }
 }
 
@@ -172,7 +194,8 @@ public struct DoryAppleSiliconDaemonVirtualMachineCapabilityPlanner:
             trustedGuestImageGraphicsQualification: inventory.media.guestGraphicsQualification,
             trustedBootMediaInspection: inventory.media.bootInspection,
             trustedMutableBootMediaProvenance: inventory.media.mutableProvenance,
-            trustedRuntimeQualifications: inventory.runtimeQualifications
+            trustedRuntimeQualifications: inventory.runtimeQualifications,
+            trustedCapabilityQualifications: inventory.capabilityQualifications
         )
     }
 }
@@ -353,7 +376,7 @@ public final class DoryDaemonVirtualMachinePlanningCoordinator: @unchecked Senda
         guard let backend = registry.backend(for: selected.request.backend) else {
             throw failure(.backendUnavailable, "The selected backend is not registered.")
         }
-        guard let runtime = snapshot.backendRuntime(for: selected.request.backend) else {
+        guard let runtime = snapshot.backendRuntime(for: selected) else {
             throw failure(.backendInventoryUnavailable, "Exact backend runtime evidence is unavailable.")
         }
         let backendResult = registry.plan(MachineBackendPlanRequest(

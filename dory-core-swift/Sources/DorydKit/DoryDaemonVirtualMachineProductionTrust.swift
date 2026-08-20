@@ -410,12 +410,53 @@ enum DoryDaemonProductionTrustInventoryError:
     case resourceAdmissionUnavailable
 }
 
+private struct DoryDaemonProductionPlanningHostIdentity: Sendable, Equatable {
+    var hardwareModelIdentifier: String
+    var operatingSystemBuild: String
+    var macOSMajorVersion: Int
+    var virtualizationFrameworkAvailable: Bool
+    var hypervisorFrameworkAvailable: Bool
+    var metalAvailable: Bool
+    var logicalCPUCount: UInt64
+    var physicalMemoryBytes: UInt64
+}
+
+private struct DoryDaemonProductionPlanningMaterial: Sendable {
+    var host: DoryDaemonProductionHostObservation
+    var artifact: DoryVerifiedVirtualMachineArtifact
+    var runtimes: [DoryDaemonVerifiedBackendRuntime]
+    var qualifications: [DoryResolvedTrustedVirtualMachineQualification]
+    var media: DoryDaemonVirtualMachineResolvedMedia
+    var backendInventories: [DoryDaemonVirtualMachineBackendRuntimeInventory]
+    var hostFacts: DoryAppleSiliconHostFacts
+
+    var stableHostIdentity: DoryDaemonProductionPlanningHostIdentity {
+        DoryDaemonProductionPlanningHostIdentity(
+            hardwareModelIdentifier: host.hardwareModelIdentifier,
+            operatingSystemBuild: host.operatingSystemBuild,
+            macOSMajorVersion: host.macOSMajorVersion,
+            virtualizationFrameworkAvailable: host.virtualizationFrameworkAvailable,
+            hypervisorFrameworkAvailable: host.hypervisorFrameworkAvailable,
+            metalAvailable: host.metalAvailable,
+            logicalCPUCount: host.resources.logicalCPUCount,
+            physicalMemoryBytes: host.resources.physicalMemoryBytes
+        )
+    }
+
+    var qualificationRecords: [DoryVirtualMachineQualificationRecord] {
+        qualifications.map(\.record).sorted {
+            $0.qualificationIdentity < $1.qualificationIdentity
+        }
+    }
+}
+
 /// Production inventory backed exclusively by opaque verified authorities. It deliberately does
 /// not implement admission reservation yet: the current coordinator has no atomic reserve -> plan
 /// bind -> publish transaction. Start-time verification is complete for previously published and
 /// bound plans; planning fails explicitly instead of returning invented admission evidence.
 final class DoryProductionDaemonVirtualMachineTrustInventory:
     DoryDaemonVirtualMachineTrustInventory,
+    DoryDaemonVirtualMachinePlanningTrustPreparing,
     DoryDaemonVirtualMachinePreSpawnAuthorizationProviding,
     @unchecked Sendable
 {
@@ -455,6 +496,184 @@ final class DoryProductionDaemonVirtualMachineTrustInventory:
         _ = request
         throw DoryDaemonProductionTrustInventoryError
             .planningRequiresAdmissionTransaction
+    }
+
+    func preparePlanningTrust(
+        for request: DoryDaemonVirtualMachineInventoryRequest
+    ) throws -> DoryDaemonVirtualMachinePlanningTrustPreparation {
+        let initial = try resolvePlanningMaterial(for: request)
+        return DoryDaemonVirtualMachinePlanningTrustPreparation(
+            hostResources: initial.host.resources,
+            snapshot: { admission in
+                DoryDaemonVirtualMachineTrustedInventorySnapshot(
+                    hostFacts: initial.hostFacts,
+                    media: initial.media,
+                    backendRuntimes: initial.backendInventories,
+                    resourceAdmission: admission,
+                    runtimeQualifications: initial.qualifications.map(\.runtime),
+                    capabilityQualifications: initial.qualifications.map(
+                        \.capabilityQualification
+                    )
+                )
+            },
+            publicationAuthorization:
+                DoryDaemonVirtualMachinePlanningPublicationAuthorization { [weak self] in
+                    guard let self else {
+                        throw DoryDaemonProductionTrustInventoryError.invalidRequest
+                    }
+                    let current = try self.resolvePlanningMaterial(for: request)
+                    guard current.stableHostIdentity == initial.stableHostIdentity,
+                          current.artifact.reference == initial.artifact.reference,
+                          current.artifact.media == initial.artifact.media,
+                          current.artifact.authorityRevision
+                            == initial.artifact.authorityRevision,
+                          current.runtimes == initial.runtimes,
+                          current.qualificationRecords == initial.qualificationRecords else {
+                        throw DoryDaemonProductionTrustInventoryError.invalidRequest
+                    }
+                }
+        )
+    }
+
+    private func resolvePlanningMaterial(
+        for request: DoryDaemonVirtualMachineInventoryRequest
+    ) throws -> DoryDaemonProductionPlanningMaterial {
+        guard !request.acceptableGraphics.isEmpty,
+              request.machineID.wholeMatch(of: /[A-Za-z0-9][A-Za-z0-9_.-]{0,62}/) != nil,
+              request.definitionRevision > 0 else {
+            throw DoryDaemonProductionTrustInventoryError.invalidRequest
+        }
+        let host: DoryDaemonProductionHostObservation
+        do { host = try hostProbe(stateDirectory) }
+        catch { throw DoryDaemonProductionTrustInventoryError.invalidRequest }
+        let artifact: DoryVerifiedVirtualMachineArtifact
+        do {
+            artifact = try artifactAuthority.resolve(
+                reference: request.bootMedia.artifact,
+                kind: request.bootMedia.kind,
+                source: request.bootMedia.source
+            )
+        } catch {
+            throw DoryDaemonProductionTrustInventoryError.mediaUnavailable
+        }
+
+        var runtimes: [DoryDaemonVerifiedBackendRuntime] = []
+        for specification in runtimeSpecifications.values.sorted(by: {
+            $0.descriptor.identity.rawValue < $1.descriptor.identity.rawValue
+        }) {
+            guard let runtime = try? runtimeVerifier(
+                specification.executablePath,
+                specification.descriptor,
+                specification.componentIdentifier
+            ), runtime.descriptor == specification.descriptor else { continue }
+            runtimes.append(runtime)
+        }
+        guard !runtimes.isEmpty else {
+            throw DoryDaemonProductionTrustInventoryError.backendUnavailable
+        }
+
+        var qualifications: [DoryResolvedTrustedVirtualMachineQualification] = []
+        for runtime in runtimes {
+            for graphics in request.acceptableGraphics {
+                let capability = DoryVirtualMachineCapabilityRequest(
+                    guest: request.guest,
+                    bootMedia: artifact.media,
+                    backend: runtime.descriptor.identity,
+                    graphics: graphics,
+                    devices: request.devices,
+                    virtualHardwareABIVersion: request.virtualHardwareABIVersion
+                )
+                if let qualification = try? qualificationAuthority.resolve(
+                    request: capability,
+                    backendImplementationIdentifier:
+                        runtime.descriptor.implementationIdentifier,
+                    backendRuntimeBuildIdentifier: runtime.runtimeBuildIdentifier,
+                    hostHardwareModelIdentifier: host.hardwareModelIdentifier,
+                    hostOperatingSystemBuild: host.operatingSystemBuild,
+                    installedComponents: runtime.components
+                ) {
+                    qualifications.append(qualification)
+                }
+            }
+        }
+        guard !qualifications.isEmpty else {
+            throw DoryDaemonProductionTrustInventoryError.qualificationUnavailable
+        }
+
+        let inspection: DoryTrustedBootMediaInspection?
+        switch artifact.media.kind {
+        case .installerISO:
+            guard let qualification = qualifications.first else {
+                throw DoryDaemonProductionTrustInventoryError.qualificationUnavailable
+            }
+            do {
+                inspection = try DoryQualifiedBootMediaInspector.inspectInstallerISO(
+                    atPath: artifact.path,
+                    qualification: qualification
+                ).inspection
+            } catch {
+                throw DoryDaemonProductionTrustInventoryError.mediaInvalid
+            }
+        case .installedLinuxBootBundle:
+            do { _ = try DoryInstalledLinuxBootBundle.verifyContents(atPath: artifact.path) }
+            catch { throw DoryDaemonProductionTrustInventoryError.mediaInvalid }
+            inspection = nil
+        case .virtualDisk:
+            guard artifact.mutableProvenance != nil else {
+                throw DoryDaemonProductionTrustInventoryError.mediaInvalid
+            }
+            inspection = nil
+        case .macOSRestoreImage:
+            throw DoryDaemonProductionTrustInventoryError.mediaInvalid
+        }
+
+        let runtimeByIdentity = Dictionary(uniqueKeysWithValues: runtimes.map {
+            ($0.descriptor.identity, $0)
+        })
+        let inventories = qualifications.compactMap { qualification
+            -> DoryDaemonVirtualMachineBackendRuntimeInventory? in
+            let record = qualification.record
+            guard let runtime = runtimeByIdentity[record.backend],
+                  runtime.runtimeBuildIdentifier == record.backendRuntimeBuildIdentifier else {
+                return nil
+            }
+            return DoryDaemonVirtualMachineBackendRuntimeInventory(
+                backend: record.backend,
+                runtimeBuildIdentifier: runtime.runtimeBuildIdentifier,
+                components: runtime.componentEvidence,
+                hostQualification: DoryResolvedHostQualificationEvidence(
+                    qualificationIdentity: record.qualificationIdentity,
+                    qualificationReportSHA256: Self.digest(Self.canonicalData(record)),
+                    hostHardwareModelIdentifier: host.hardwareModelIdentifier,
+                    hostOperatingSystemBuild: host.operatingSystemBuild,
+                    backend: record.backend,
+                    backendRuntimeBuildIdentifier: record.backendRuntimeBuildIdentifier,
+                    virtualHardwareABIVersion: record.virtualHardwareABIVersion,
+                    qualifierIdentifier: "dory.catalog-v2.virtual-machine-qualification",
+                    qualifierVersion: DoryVirtualMachineQualificationManifest.schemaVersion
+                )
+            )
+        }
+        guard inventories.count == qualifications.count else {
+            throw DoryDaemonProductionTrustInventoryError.backendUnavailable
+        }
+        return DoryDaemonProductionPlanningMaterial(
+            host: host,
+            artifact: artifact,
+            runtimes: runtimes,
+            qualifications: qualifications,
+            media: DoryDaemonVirtualMachineResolvedMedia(
+                reference: artifact.reference,
+                media: artifact.media,
+                // Graphics trust is capability-specific. Supplying one media-wide record here
+                // would let array order authorize a different backend/graphics candidate.
+                guestGraphicsQualification: nil,
+                bootInspection: inspection,
+                mutableProvenance: artifact.mutableProvenance
+            ),
+            backendInventories: inventories,
+            hostFacts: hostFacts(host: host, runtimes: runtimes)
+        )
     }
 
     func startInventory(
@@ -634,6 +853,50 @@ final class DoryProductionDaemonVirtualMachineTrustInventory:
             ? runtime.runtimeBuildIdentifier : ""
         let vzBuild = runtime.descriptor.identity == .appleVirtualizationFramework
             ? runtime.runtimeBuildIdentifier : ""
+        return DoryAppleSiliconHostFacts(
+            macOSMajorVersion: host.macOSMajorVersion,
+            virtualizationFrameworkAvailable:
+                host.virtualizationFrameworkAvailable && !vzBuild.isEmpty,
+            hypervisorFrameworkAvailable: host.hypervisorFrameworkAvailable,
+            doryHypervisorAvailable: !rawBuild.isEmpty,
+            qemuHypervisorFrameworkAvailable: false,
+            windowsUEFIFirmwareAvailable: false,
+            windowsSecureBootAvailable: false,
+            windowsSBSADeviceModelAvailable: false,
+            virtualTPM20Available: false,
+            windowsGuestDrivers: DoryWindowsGuestDriverFacts(
+                storageAvailable: false,
+                networkAvailable: false,
+                displayAvailable: false,
+                inputAvailable: false
+            ),
+            macOSGuestVirtualizationSupported: false,
+            macOSRestoreImageInstallationSupported: false,
+            doryMacOSBackendAvailable: false,
+            doryMacOSBackendQualified: false,
+            metalAvailable: host.metalAvailable,
+            doryAcceleratedRendererAvailable:
+                host.metalAvailable && !rawBuild.isEmpty,
+            runtimeQualificationContext:
+                DoryVirtualMachineRuntimeQualificationHostContext(
+                    virtualHardwareABIVersion: 1,
+                    doryHypervisorRuntimeBuildID: rawBuild,
+                    virtualizationFrameworkAdapterBuildID: vzBuild,
+                    qemuRuntimeBuildID: ""
+                )
+        )
+    }
+
+    private func hostFacts(
+        host: DoryDaemonProductionHostObservation,
+        runtimes: [DoryDaemonVerifiedBackendRuntime]
+    ) -> DoryAppleSiliconHostFacts {
+        let rawBuild = runtimes.first {
+            $0.descriptor.identity == .doryHypervisor
+        }?.runtimeBuildIdentifier ?? ""
+        let vzBuild = runtimes.first {
+            $0.descriptor.identity == .appleVirtualizationFramework
+        }?.runtimeBuildIdentifier ?? ""
         return DoryAppleSiliconHostFacts(
             macOSMajorVersion: host.macOSMajorVersion,
             virtualizationFrameworkAvailable:

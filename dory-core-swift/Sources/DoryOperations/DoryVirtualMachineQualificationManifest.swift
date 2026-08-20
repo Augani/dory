@@ -246,6 +246,11 @@ public struct DoryVerifiedVirtualMachineQualificationAuthority: Sendable {
             record: record,
             runtime: runtime,
             graphics: graphics,
+            capabilityQualification: DoryTrustedVirtualMachineCapabilityQualification(
+                request: request,
+                runtime: runtime,
+                graphics: graphics
+            ),
             manifestIdentity: manifestIdentity,
             manifestSHA256: manifestSHA256,
             signingKeyID: signingKeyID
@@ -267,6 +272,7 @@ public struct DoryResolvedTrustedVirtualMachineQualification: Sendable {
     public let record: DoryVirtualMachineQualificationRecord
     public let runtime: DoryTrustedVirtualMachineRuntimeQualification
     public let graphics: DoryTrustedGuestImageGraphicsQualification?
+    public let capabilityQualification: DoryTrustedVirtualMachineCapabilityQualification
     fileprivate let manifestIdentity: String
     fileprivate let manifestSHA256: String
     fileprivate let signingKeyID: String
