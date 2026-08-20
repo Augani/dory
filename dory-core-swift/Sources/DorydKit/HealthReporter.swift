@@ -1912,10 +1912,12 @@ public final class HealthReporter: @unchecked Sendable {
         let failed = statuses.filter { $0.state == .failed }
         let starting = statuses.filter { $0.state == .starting }
         let running = statuses.filter { $0.state == .running }
+        let paused = statuses.filter { $0.state == .paused }
         let stopped = statuses.filter { $0.state == .stopped || $0.state == .created }
         let data = [
             "total": String(statuses.count),
             "running": String(running.count),
+            "paused": String(paused.count),
             "starting": String(starting.count),
             "stopped": String(stopped.count),
             "failed": String(failed.count),
@@ -1939,6 +1941,15 @@ public final class HealthReporter: @unchecked Sendable {
                 code: "machine.starting",
                 title: "Local machine starting",
                 detail: starting.map(\.id).joined(separator: ", "),
+                data: data
+            )
+        } else if !paused.isEmpty && running.isEmpty {
+            summary = HealthCheck(
+                id: "machine.local",
+                status: .pass,
+                code: "machine.paused",
+                title: "Local machine paused",
+                detail: paused.map(\.id).joined(separator: ", "),
                 data: data
             )
         } else {

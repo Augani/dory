@@ -389,6 +389,16 @@ final class HealthReporterTests: XCTestCase {
         XCTAssertTrue(doctor.results.contains { $0.id == "machine.local" })
         XCTAssertTrue(doctor.results.contains { $0.id == "machine.local.dev" })
         XCTAssertNil(try doctor.jsonString().range(of: "sk-opaque-value"))
+
+        _ = try manager.pause(id: "dev")
+        let pausedHealth = reporter.report()
+        let pausedSummary = try XCTUnwrap(
+            pausedHealth.results.first { $0.id == "machine.local" }
+        )
+        XCTAssertEqual(pausedSummary.status, .pass)
+        XCTAssertEqual(pausedSummary.code, "machine.paused")
+        XCTAssertEqual(pausedSummary.data["running"], "0")
+        XCTAssertEqual(pausedSummary.data["paused"], "1")
     }
 
     func testResolvedMachineEvidencePinsPlanBackendMediaComponentsAndQualifications() throws {

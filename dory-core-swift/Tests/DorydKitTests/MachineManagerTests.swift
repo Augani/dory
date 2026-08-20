@@ -3702,7 +3702,7 @@ final class MachineManagerTests: XCTestCase {
         ])
     }
 
-    func testMemorySnapshotsIncludeRunningMachineTelemetry() throws {
+    func testMemorySnapshotsIncludeRunningTelemetryAndResidentPausedMemory() throws {
         let base = "/tmp/dory-machine-memory-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         let connector = RecordingMachineAgentConnector(telemetry: DoryTelemetry(
             memTotalKB: 3072 * 1024,
@@ -3755,6 +3755,16 @@ final class MachineManagerTests: XCTestCase {
         XCTAssertEqual(snapshots.first?.maximumTargetMB, 3072)
         XCTAssertEqual(snapshots.first?.telemetry.memTotalKB, 3072 * 1024)
         XCTAssertEqual(snapshots.first?.canBalloon, true)
+        XCTAssertEqual(connector.connectedPaths, ["/run/agent.sock", "/run/agent.sock"])
+
+        _ = try manager.pause(id: "dev")
+        let pausedSnapshots = manager.memorySnapshots()
+        XCTAssertEqual(pausedSnapshots.map(\.id), ["machine.dev"])
+        XCTAssertEqual(pausedSnapshots.first?.currentTargetMB, 3072)
+        XCTAssertEqual(pausedSnapshots.first?.maximumTargetMB, 3072)
+        XCTAssertEqual(pausedSnapshots.first?.telemetry.memTotalKB, 3072 * 1024)
+        XCTAssertEqual(pausedSnapshots.first?.telemetry.memAvailableKB, 0)
+        XCTAssertEqual(pausedSnapshots.first?.canBalloon, false)
         XCTAssertEqual(connector.connectedPaths, ["/run/agent.sock", "/run/agent.sock"])
     }
 

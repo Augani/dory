@@ -4708,6 +4708,22 @@ public final class MachineManager: @unchecked Sendable {
 
     public func memorySnapshots() -> [GuestMemorySnapshot] {
         list().compactMap { status in
+            if status.state == .paused {
+                let residentMB = max(1, status.currentBalloonTargetMB ?? status.memoryMB)
+                return GuestMemorySnapshot(
+                    id: "machine.\(status.id)",
+                    kind: .virtualMachine,
+                    telemetry: DoryTelemetry(
+                        memTotalKB: residentMB * 1024,
+                        memAvailableKB: 0,
+                        psiSomeAvg10: 0,
+                        psiFullAvg10: 0
+                    ),
+                    currentTargetMB: residentMB,
+                    maximumTargetMB: status.memoryMB,
+                    canBalloon: false
+                )
+            }
             guard status.state == .running, status.agentSocketPath != nil else {
                 return nil
             }
