@@ -121,6 +121,49 @@ def validate_sources(repo: pathlib.Path, source_root: pathlib.Path, kubectl: pat
         fail(f"kubectl does not contain arm64 code: {' '.join(archs)}")
 
 
+def designated_code_requirement(path: pathlib.Path) -> str:
+    completed = subprocess.run(
+        ["codesign", "-d", "-r-", str(path)],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if completed.returncode != 0:
+        fail(f"could not read the designated requirement for {path}")
+    for line in (completed.stdout + "\n" + completed.stderr).splitlines():
+        if "designated =>" in line:
+            requirement = line.split("designated =>", 1)[1].strip()
+            if requirement and len(requirement.encode("utf-8")) <= 4096:
+                return requirement
+    fail(f"codesign returned no designated requirement for {path}")
+
+
+def source_commit(repo: pathlib.Path, explicit: str | None) -> str:
+    value = explicit or run(["git", "rev-parse", "HEAD"], cwd=repo)
+    value = value.strip().lower()
+    if len(value) not in {40, 64} or any(character not in "0123456789abcdef" for character in value):
+        fail("source commit must be an exact lowercase Git digest")
+    return value
+
+
+def recipe_digest(repo: pathlib.Path) -> str:
+    inputs = [
+        repo / "scripts/build-components.py",
+        repo / "guest/kernel/build.sh",
+        repo / "guest/initfs/build.sh",
+        repo / "guest/desktop/build.sh",
+    ]
+    digest = hashlib.sha256()
+    for path in inputs:
+        file = regular_file(path, "component build recipe")
+        relative = str(file.relative_to(repo)).encode("utf-8")
+        digest.update(len(relative).to_bytes(4, "big"))
+        digest.update(relative)
+        digest.update(file.read_bytes())
+    return digest.hexdigest()
+
+
 def generated_at(value: str | None) -> str:
     if value:
         parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
@@ -420,6 +463,7 @@ def component_specs(
     source_root: pathlib.Path,
     kubectl: pathlib.Path,
     qualification_manifest: pathlib.Path,
+    minimum_app_version: str,
 ) -> list[dict]:
     desktop_specs = []
     for distro, display, summary in (
@@ -445,30 +489,39 @@ def component_specs(
                 "displayName": display,
                 "summary": summary,
                 "dependencies": ["docker-core", "linux-desktop"],
+                "provides": [f"guest.linux-desktop.{distro}.arm64@1"],
+                "requires": [
+                    f"app.dory-core>={minimum_app_version}",
+                    "guest.linux-desktop-runtime.arm64@1",
+                ],
                 "assets": [
                     {
                         "path": f"dory-desktop-{distro}-rootfs-arm64.ext4.lzfse",
                         "source": source_root / f"dory-desktop-{distro}-rootfs-arm64.ext4",
                         "delivery": "lzfse-stored",
                         "executable": False,
+                        "role": "guest-disk",
                     },
                     {
                         "path": f"dory-desktop-{distro}-build-arm64.stamp",
                         "source": source_root / f"dory-desktop-{distro}-build-arm64.stamp",
                         "delivery": "none",
                         "executable": False,
+                        "role": "build-metadata",
                     },
                     {
                         "path": f"dory-desktop-{distro}-packages-arm64.txt",
                         "source": source_root / f"dory-desktop-{distro}-packages-arm64.txt",
                         "delivery": "none",
                         "executable": False,
+                        "role": "guest-package-manifest",
                     },
                     {
                         "path": f"dory-desktop-{distro}-update-arm64.tar",
                         "source": source_root / f"dory-desktop-{distro}-update-arm64.tar",
                         "delivery": "none",
                         "executable": False,
+                        "role": "guest-update",
                     },
                 ],
             }
@@ -479,12 +532,15 @@ def component_specs(
             "displayName": "Kubernetes",
             "summary": "kubectl and Dory's local k3s workflow. The selected k3s image downloads when you create the cluster.",
             "dependencies": ["docker-core"],
+            "provides": ["cli.kubectl@1"],
+            "requires": [f"app.dory-core>={minimum_app_version}"],
             "assets": [
                 {
                     "path": "kubectl",
                     "source": kubectl,
                     "delivery": "none",
                     "executable": True,
+                    "role": "host-cli",
                 }
             ],
         },
@@ -493,18 +549,22 @@ def component_specs(
             "displayName": "Linux Machines",
             "summary": "Headless VPS-style Linux machines with terminals, services, and persistent disks.",
             "dependencies": ["docker-core"],
+            "provides": ["guest.linux-headless.arm64@1"],
+            "requires": [f"app.dory-core>={minimum_app_version}"],
             "assets": [
                 {
                     "path": "dory-hv-kernel-arm64",
                     "source": source_root / "Image",
                     "delivery": "lzfse-expanded",
                     "executable": False,
+                    "role": "guest-kernel",
                 },
                 {
                     "path": "dory-machine-rootfs-arm64.ext4",
                     "source": source_root / "initfs-arm64.ext4",
                     "delivery": "lzfse-expanded",
                     "executable": False,
+                    "role": "guest-disk",
                 },
             ],
         },
@@ -513,24 +573,33 @@ def component_specs(
             "displayName": "Linux Desktop Runtime",
             "summary": "The graphical VM kernel shared by independently installable desktop distributions.",
             "dependencies": ["docker-core"],
+            "provides": [
+                "guest.linux-desktop-runtime.arm64@1",
+                "device.virtio-gpu.virgl2@1",
+                "device.virtio-gpu.venus@1",
+            ],
+            "requires": [f"app.dory-core>={minimum_app_version}"],
             "assets": [
                 {
                     "path": "dory-desktop-kernel-arm64.lzfse",
                     "source": source_root / "Image-desktop",
                     "delivery": "lzfse-stored",
                     "executable": False,
+                    "role": "guest-kernel",
                 },
                 {
                     "path": "kernel-build-arm64-desktop.stamp",
                     "source": source_root / "kernel-build-arm64-desktop.stamp",
                     "delivery": "none",
                     "executable": False,
+                    "role": "build-metadata",
                 },
                 {
                     "path": QUALIFICATION_PATH,
                     "source": qualification_manifest,
                     "delivery": "none",
                     "executable": False,
+                    "role": "qualification-evidence",
                 },
             ],
         },
@@ -555,6 +624,7 @@ def materialize_asset(
     output: pathlib.Path,
     asset_base_url: str,
     compression_tool: pathlib.Path,
+    allow_test_code_requirement: bool,
 ) -> dict:
     source = regular_file(pathlib.Path(asset["source"]), f"{component_id} source")
     delivery = asset["delivery"]
@@ -588,8 +658,9 @@ def materialize_asset(
         compression = "none"
         installed_bytes = download_bytes
         installed_digest = download_digest
-    return {
+    result = {
         "path": asset["path"],
+        "role": asset["role"],
         "url": f"{asset_base_url.rstrip('/')}/{artifact_name}",
         "compression": compression,
         "downloadBytes": download_bytes,
@@ -598,6 +669,13 @@ def materialize_asset(
         "installedSHA256": installed_digest,
         "executable": bool(asset["executable"]),
     }
+    if asset["executable"]:
+        result["codeRequirement"] = (
+            f'identifier "dev.dory.test.{installed_digest[:16]}"'
+            if allow_test_code_requirement
+            else designated_code_requirement(source)
+        )
+    return result
 
 
 def sign_catalog(catalog_path: pathlib.Path, signer: pathlib.Path) -> str:
@@ -662,6 +740,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--generated-at")
     parser.add_argument("--signer", type=pathlib.Path)
     parser.add_argument("--qualification-manifest", required=True, type=pathlib.Path)
+    parser.add_argument("--sbom", required=True, type=pathlib.Path)
+    parser.add_argument("--source-commit")
+    parser.add_argument("--builder-identity", default="dory.build-components.v2")
     parser.add_argument("--catalog-public-key", default=DEFAULT_CATALOG_PUBLIC_KEY)
     parser.add_argument("--skip-source-verification", action="store_true")
     return parser.parse_args()
@@ -686,6 +767,15 @@ def main() -> None:
         source_root=source_root,
         core_app=core_app,
     )
+    sbom = regular_file(args.sbom.resolve(), "component SBOM")
+    minimum_app_version = args.minimum_app_version or args.version
+    provenance = {
+        "sourceCommit": source_commit(repo, args.source_commit),
+        "builder": nonempty_string(args.builder_identity, "builder identity"),
+        "recipeDigest": recipe_digest(repo),
+        "sbomDigest": sha256(sbom),
+        "attestationDigest": sha256(args.qualification_manifest.resolve()),
+    }
     if not args.skip_source_verification:
         validate_sources(repo, source_root, kubectl)
 
@@ -708,9 +798,27 @@ def main() -> None:
                 "downloadBytes": byte_size(core_artifact),
                 "installedBytes": tree_size(core_app),
                 "assets": [],
+                "architectures": [ARCHITECTURE],
+                "hostRequirements": {"platform": "macos", "minimumVersion": "14.0"},
+                "provides": [
+                    f"app.dory-core@{args.version}",
+                    "backend.rawhv-linux@1",
+                    "backend.vz-linux@1",
+                ],
+                "requires": [],
+                "provenance": provenance,
+                "qualification": [],
             }
         ]
-        for spec in component_specs(source_root, kubectl, args.qualification_manifest.resolve()):
+        qualification_ids = [
+            record["qualificationIdentity"] for record in qualification_manifest["records"]
+        ]
+        for spec in component_specs(
+            source_root,
+            kubectl,
+            args.qualification_manifest.resolve(),
+            minimum_app_version,
+        ):
             assets = [
                 materialize_asset(
                     version=args.version,
@@ -719,6 +827,7 @@ def main() -> None:
                     output=staging,
                     asset_base_url=asset_base_url,
                     compression_tool=compression_tool,
+                    allow_test_code_requirement=args.skip_source_verification,
                 )
                 for asset in spec["assets"]
             ]
@@ -732,6 +841,12 @@ def main() -> None:
                     "downloadBytes": sum(asset["downloadBytes"] for asset in assets),
                     "installedBytes": sum(asset["installedBytes"] for asset in assets),
                     "assets": assets,
+                    "architectures": [ARCHITECTURE],
+                    "hostRequirements": {"platform": "macos", "minimumVersion": "14.0"},
+                    "provides": spec["provides"],
+                    "requires": spec["requires"],
+                    "provenance": provenance,
+                    "qualification": qualification_ids if spec["id"] == "linux-desktop" else [],
                 }
             )
 
@@ -740,7 +855,7 @@ def main() -> None:
             "schemaVersion": CATALOG_SCHEMA,
             "releaseVersion": args.version,
             "generatedAt": generated_at(args.generated_at),
-            "minimumAppVersion": args.minimum_app_version or args.version,
+            "minimumAppVersion": minimum_app_version,
             "architecture": ARCHITECTURE,
             "components": releases,
             "virtualMachineQualification": {

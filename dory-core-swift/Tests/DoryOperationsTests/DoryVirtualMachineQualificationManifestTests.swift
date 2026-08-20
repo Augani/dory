@@ -245,13 +245,25 @@ private final class QualificationFixture {
             records: [record]
         )
         manifestData = try Self.encoded(manifest)
+        let isVersionTwo = catalogSchemaVersion == DoryComponentCatalog.schemaVersion
+        let provenance = isVersionTwo ? DoryComponentProvenance(
+            sourceCommit: String(repeating: "1", count: 40),
+            builder: "dory.qualification.fixture",
+            recipeDigest: String(repeating: "2", count: 64),
+            sbomDigest: String(repeating: "3", count: 64),
+            attestationDigest: Self.digest(manifestData)
+        ) : nil
+        let hostRequirements = isVersionTwo
+            ? DoryComponentHostRequirements(platform: "macos", minimumVersion: "14.0")
+            : nil
         let asset = DoryComponentAsset(
             path: manifestPath,
             url: "https://example.invalid/\(manifestPath)",
             downloadBytes: UInt64(manifestData.count),
             installedBytes: UInt64(manifestData.count),
             sha256: Self.digest(manifestData),
-            installedSHA256: Self.digest(manifestData)
+            installedSHA256: Self.digest(manifestData),
+            role: isVersionTwo ? .qualificationEvidence : nil
         )
         let core = DoryComponentRelease(
             id: .dockerCore,
@@ -261,7 +273,13 @@ private final class QualificationFixture {
             dependencies: [],
             downloadBytes: 1,
             installedBytes: 1,
-            assets: []
+            assets: [],
+            architectures: isVersionTwo ? ["arm64"] : nil,
+            hostRequirements: hostRequirements,
+            provides: isVersionTwo ? ["app.dory-core@1.0.0"] : nil,
+            requires: isVersionTwo ? [] : nil,
+            provenance: provenance,
+            qualification: isVersionTwo ? [] : nil
         )
         let machines = DoryComponentRelease(
             id: .linuxMachines,
@@ -271,7 +289,13 @@ private final class QualificationFixture {
             dependencies: [.dockerCore],
             downloadBytes: UInt64(manifestData.count),
             installedBytes: UInt64(manifestData.count),
-            assets: [asset]
+            assets: [asset],
+            architectures: isVersionTwo ? ["arm64"] : nil,
+            hostRequirements: hostRequirements,
+            provides: isVersionTwo ? ["guest.linux-headless.arm64@1"] : nil,
+            requires: isVersionTwo ? ["app.dory-core>=1.0.0"] : nil,
+            provenance: provenance,
+            qualification: isVersionTwo ? [record.qualificationIdentity] : nil
         )
         catalog = DoryComponentCatalog(
             schemaVersion: catalogSchemaVersion,

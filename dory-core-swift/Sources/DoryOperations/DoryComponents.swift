@@ -2,6 +2,7 @@ import Compression
 import CryptoKit
 import Darwin
 import Foundation
+import Security
 
 public enum DoryComponentID: String, Codable, CaseIterable, Hashable, Sendable {
     case dockerCore = "docker-core"
@@ -88,6 +89,49 @@ public enum DoryComponentCompression: String, Codable, Sendable {
     case lzfse
 }
 
+public enum DoryComponentArtifactRole: String, Codable, Sendable {
+    case hostHelper = "host-helper"
+    case hostCLI = "host-cli"
+    case guestKernel = "guest-kernel"
+    case guestDisk = "guest-disk"
+    case guestUpdate = "guest-update"
+    case guestPackageManifest = "guest-package-manifest"
+    case qualificationEvidence = "qualification-evidence"
+    case buildMetadata = "build-metadata"
+}
+
+public struct DoryComponentHostRequirements: Codable, Sendable, Equatable {
+    public let platform: String
+    public let minimumVersion: String
+
+    public init(platform: String, minimumVersion: String) {
+        self.platform = platform
+        self.minimumVersion = minimumVersion
+    }
+}
+
+public struct DoryComponentProvenance: Codable, Sendable, Equatable {
+    public let sourceCommit: String
+    public let builder: String
+    public let recipeDigest: String
+    public let sbomDigest: String
+    public let attestationDigest: String
+
+    public init(
+        sourceCommit: String,
+        builder: String,
+        recipeDigest: String,
+        sbomDigest: String,
+        attestationDigest: String
+    ) {
+        self.sourceCommit = sourceCommit
+        self.builder = builder
+        self.recipeDigest = recipeDigest.lowercased()
+        self.sbomDigest = sbomDigest.lowercased()
+        self.attestationDigest = attestationDigest.lowercased()
+    }
+}
+
 public struct DoryComponentAsset: Codable, Sendable, Equatable {
     public let path: String
     public let url: String
@@ -97,6 +141,8 @@ public struct DoryComponentAsset: Codable, Sendable, Equatable {
     public let sha256: String
     public let installedSHA256: String
     public let executable: Bool
+    public let role: DoryComponentArtifactRole?
+    public let codeRequirement: String?
 
     public init(
         path: String,
@@ -106,7 +152,9 @@ public struct DoryComponentAsset: Codable, Sendable, Equatable {
         installedBytes: UInt64,
         sha256: String,
         installedSHA256: String,
-        executable: Bool = false
+        executable: Bool = false,
+        role: DoryComponentArtifactRole? = nil,
+        codeRequirement: String? = nil
     ) {
         self.path = path
         self.url = url
@@ -116,6 +164,8 @@ public struct DoryComponentAsset: Codable, Sendable, Equatable {
         self.sha256 = sha256.lowercased()
         self.installedSHA256 = installedSHA256.lowercased()
         self.executable = executable
+        self.role = role
+        self.codeRequirement = codeRequirement
     }
 }
 
@@ -128,6 +178,12 @@ public struct DoryComponentRelease: Codable, Sendable, Equatable, Identifiable {
     public let downloadBytes: UInt64
     public let installedBytes: UInt64
     public let assets: [DoryComponentAsset]
+    public let architectures: [String]?
+    public let hostRequirements: DoryComponentHostRequirements?
+    public let provides: [String]?
+    public let requires: [String]?
+    public let provenance: DoryComponentProvenance?
+    public let qualification: [String]?
 
     public init(
         id: DoryComponentID,
@@ -137,7 +193,13 @@ public struct DoryComponentRelease: Codable, Sendable, Equatable, Identifiable {
         dependencies: [DoryComponentID] = [.dockerCore],
         downloadBytes: UInt64,
         installedBytes: UInt64,
-        assets: [DoryComponentAsset]
+        assets: [DoryComponentAsset],
+        architectures: [String]? = nil,
+        hostRequirements: DoryComponentHostRequirements? = nil,
+        provides: [String]? = nil,
+        requires: [String]? = nil,
+        provenance: DoryComponentProvenance? = nil,
+        qualification: [String]? = nil
     ) {
         self.id = id
         self.version = version
@@ -147,6 +209,12 @@ public struct DoryComponentRelease: Codable, Sendable, Equatable, Identifiable {
         self.downloadBytes = downloadBytes
         self.installedBytes = installedBytes
         self.assets = assets
+        self.architectures = architectures
+        self.hostRequirements = hostRequirements
+        self.provides = provides
+        self.requires = requires
+        self.provenance = provenance
+        self.qualification = qualification
     }
 }
 
@@ -313,7 +381,12 @@ public enum DoryComponentCatalogVerifier {
             throw DoryComponentError.invalidCatalog("Docker Core must be the first, unique, payload-free entry")
         }
         for component in catalog.components {
-            try validate(component, available: Set(ids))
+            try validate(
+                component,
+                available: Set(ids),
+                schemaVersion: catalog.schemaVersion,
+                catalogArchitecture: catalog.architecture
+            )
         }
         if catalog.schemaVersion == DoryComponentCatalog.oldestSupportedSchemaVersion,
            catalog.virtualMachineQualification != nil {
@@ -322,14 +395,16 @@ public enum DoryComponentCatalogVerifier {
             )
         }
         if let qualification = catalog.virtualMachineQualification {
+            let qualificationComponent = catalog.component(qualification.component)
             guard catalog.schemaVersion == DoryComponentCatalog.schemaVersion,
                   qualification.component.isRemovable,
                   safeRelativePath(qualification.path),
                   !qualification.manifestIdentity.isEmpty,
                   qualification.manifestFormatVersion > 0,
                   !qualification.signingKeyID.isEmpty,
-                  catalog.component(qualification.component)?.assets.contains(where: {
-                      $0.path == qualification.path
+                  qualificationComponent?.qualification?.isEmpty == false,
+                  qualificationComponent?.assets.contains(where: {
+                      $0.path == qualification.path && $0.role == .qualificationEvidence
                   }) == true else {
                 throw DoryComponentError.invalidCatalog(
                     "VM qualification authority is incomplete or is not a declared component asset"
@@ -358,7 +433,12 @@ public enum DoryComponentCatalogVerifier {
         return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
 
-    private static func validate(_ component: DoryComponentRelease, available: Set<DoryComponentID>) throws {
+    private static func validate(
+        _ component: DoryComponentRelease,
+        available: Set<DoryComponentID>,
+        schemaVersion: Int,
+        catalogArchitecture: String
+    ) throws {
         guard validVersion(component.version),
               !component.displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               !component.summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
@@ -366,6 +446,24 @@ public enum DoryComponentCatalogVerifier {
               !component.dependencies.contains(component.id),
               component.dependencies.allSatisfy(available.contains) else {
             throw DoryComponentError.invalidCatalog("invalid metadata for \(component.id.rawValue)")
+        }
+        if schemaVersion == DoryComponentCatalog.oldestSupportedSchemaVersion {
+            guard component.architectures == nil,
+                  component.hostRequirements == nil,
+                  component.provides == nil,
+                  component.requires == nil,
+                  component.provenance == nil,
+                  component.qualification == nil,
+                  component.assets.allSatisfy({ $0.role == nil && $0.codeRequirement == nil }) else {
+                throw DoryComponentError.invalidCatalog(
+                    "schema-v1 component contains schema-v2 authority"
+                )
+            }
+        } else {
+            try validateVersionTwoMetadata(
+                component,
+                catalogArchitecture: catalogArchitecture
+            )
         }
         if component.id == .dockerCore {
             guard component.dependencies.isEmpty,
@@ -402,6 +500,57 @@ public enum DoryComponentCatalogVerifier {
         }
     }
 
+    private static func validateVersionTwoMetadata(
+        _ component: DoryComponentRelease,
+        catalogArchitecture: String
+    ) throws {
+        guard component.architectures == [catalogArchitecture],
+              let host = component.hostRequirements,
+              host.platform == "macos",
+              validVersion(host.minimumVersion),
+              let provides = component.provides,
+              !provides.isEmpty,
+              Set(provides).count == provides.count,
+              provides.allSatisfy(validContractReference),
+              let requires = component.requires,
+              Set(requires).count == requires.count,
+              requires.allSatisfy(validContractReference),
+              let provenance = component.provenance,
+              validSourceCommit(provenance.sourceCommit),
+              validBoundedIdentifier(provenance.builder),
+              validDigest(provenance.recipeDigest),
+              validDigest(provenance.sbomDigest),
+              validDigest(provenance.attestationDigest),
+              let qualification = component.qualification,
+              Set(qualification).count == qualification.count,
+              qualification.allSatisfy(validBoundedIdentifier) else {
+            throw DoryComponentError.invalidCatalog(
+                "incomplete schema-v2 authority for \(component.id.rawValue)"
+            )
+        }
+        for asset in component.assets {
+            guard let role = asset.role else {
+                throw DoryComponentError.invalidCatalog(
+                    "schema-v2 asset role is missing for \(asset.path)"
+                )
+            }
+            if asset.executable {
+                guard role == .hostHelper || role == .hostCLI,
+                      let requirement = asset.codeRequirement,
+                      validCodeRequirement(requirement) else {
+                    throw DoryComponentError.invalidCatalog(
+                        "executable authority is incomplete for \(asset.path)"
+                    )
+                }
+            } else if asset.codeRequirement != nil
+                        || role == .hostHelper || role == .hostCLI {
+                throw DoryComponentError.invalidCatalog(
+                    "non-executable asset has executable authority for \(asset.path)"
+                )
+            }
+        }
+    }
+
     private static func validateDependencyGraph(_ components: [DoryComponentRelease]) throws {
         let byID = Dictionary(uniqueKeysWithValues: components.map { ($0.id, $0) })
         func visit(_ id: DoryComponentID, path: Set<DoryComponentID>) throws {
@@ -418,7 +567,43 @@ public enum DoryComponentCatalogVerifier {
     }
 
     private static func validDigest(_ value: String) -> Bool {
-        value.count == 64 && value.allSatisfy { $0.isHexDigit }
+        value.utf8.count == 64 && value.utf8.allSatisfy {
+            ($0 >= 48 && $0 <= 57) || ($0 >= 97 && $0 <= 102)
+        }
+    }
+
+    private static func validSourceCommit(_ value: String) -> Bool {
+        (value.utf8.count == 40 || value.utf8.count == 64) && value.utf8.allSatisfy {
+            ($0 >= 48 && $0 <= 57) || ($0 >= 97 && $0 <= 102)
+        }
+    }
+
+    private static func validBoundedIdentifier(_ value: String) -> Bool {
+        !value.isEmpty && value.utf8.count <= 256 && value.utf8.allSatisfy {
+            ($0 >= 48 && $0 <= 57)
+                || ($0 >= 65 && $0 <= 90)
+                || ($0 >= 97 && $0 <= 122)
+                || ".,_:+@/-".utf8.contains($0)
+        }
+    }
+
+    private static func validContractReference(_ value: String) -> Bool {
+        !value.isEmpty && value.utf8.count <= 256 && value.utf8.allSatisfy {
+            ($0 >= 48 && $0 <= 57)
+                || ($0 >= 65 && $0 <= 90)
+                || ($0 >= 97 && $0 <= 122)
+                || ".:_@/+<>=-".utf8.contains($0)
+        }
+    }
+
+    private static func validCodeRequirement(_ value: String) -> Bool {
+        guard !value.isEmpty, value.utf8.count <= 4_096 else { return false }
+        var requirement: SecRequirement?
+        return SecRequirementCreateWithString(
+            value as CFString,
+            SecCSFlags(),
+            &requirement
+        ) == errSecSuccess && requirement != nil
     }
 
     private static func validVersion(_ value: String) -> Bool {
@@ -745,6 +930,7 @@ public struct DoryComponentStore: Sendable {
                     ofItemAtPath: output
                 )
                 try verifyFile(output, bytes: asset.installedBytes, digest: asset.installedSHA256)
+                try Self.verifyCodeRequirement(output, requirement: asset.codeRequirement)
                 try Self.syncFile(output)
             }
             let record = DoryInstalledComponent(
@@ -797,6 +983,10 @@ public struct DoryComponentStore: Sendable {
                 payload + "/" + asset.path,
                 bytes: asset.installedBytes,
                 digest: asset.installedSHA256
+            )
+            try Self.verifyCodeRequirement(
+                payload + "/" + asset.path,
+                requirement: asset.codeRequirement
             )
         }
     }
@@ -1043,6 +1233,34 @@ public struct DoryComponentStore: Sendable {
             changedSeconds: Int64(info.st_ctimespec.tv_sec),
             changedNanoseconds: Int64(info.st_ctimespec.tv_nsec)
         )
+    }
+
+    private static func verifyCodeRequirement(
+        _ path: String,
+        requirement requirementText: String?
+    ) throws {
+        guard let requirementText else { return }
+        var staticCode: SecStaticCode?
+        var requirement: SecRequirement?
+        guard SecStaticCodeCreateWithPath(
+            URL(fileURLWithPath: path) as CFURL,
+            SecCSFlags(),
+            &staticCode
+        ) == errSecSuccess,
+        let staticCode,
+        SecRequirementCreateWithString(
+            requirementText as CFString,
+            SecCSFlags(),
+            &requirement
+        ) == errSecSuccess,
+        let requirement,
+        SecStaticCodeCheckValidity(
+            staticCode,
+            SecCSFlags(rawValue: kSecCSCheckAllArchitectures),
+            requirement
+        ) == errSecSuccess else {
+            throw DoryComponentError.invalidAsset(path)
+        }
     }
 
     private func readRecord<T: Decodable>(_ type: T.Type, at path: String) throws -> T {

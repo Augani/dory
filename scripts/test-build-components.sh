@@ -9,6 +9,7 @@ SOURCE="$TMP/source"
 CORE_APP="$TMP/Dory.app"
 OUTPUT="$TMP/components/arm64"
 QUALIFICATION="$TMP/virtual-machine-qualification.json"
+SBOM="$TMP/Dory-test.cdx.json"
 mkdir -p "$SOURCE" "$CORE_APP/Contents/MacOS" "$CORE_APP/Contents/Helpers"
 
 write_fixture() {
@@ -24,6 +25,7 @@ write_fixture "$CORE_APP/Contents/Helpers/dory-vmm" 4096
 chmod 0755 "$CORE_APP/Contents/Helpers/dory-hv" "$CORE_APP/Contents/Helpers/dory-vmm"
 write_fixture "$TMP/kubectl" 16384
 chmod 0755 "$TMP/kubectl"
+printf '{"bomFormat":"CycloneDX","specVersion":"1.6","components":[]}\n' > "$SBOM"
 write_fixture "$SOURCE/Image" 131072
 write_fixture "$SOURCE/initfs-arm64.ext4" 262144
 write_fixture "$SOURCE/Image-desktop" 196608
@@ -113,6 +115,7 @@ build() {
     --asset-base-url https://example.invalid/dory \
     --generated-at 2026-07-16T00:00:00Z \
     --qualification-manifest "$QUALIFICATION" \
+    --sbom "$SBOM" \
     --skip-source-verification
 }
 
@@ -147,6 +150,21 @@ assert [item["id"] for item in catalog["components"]] == [
 assert catalog["components"][0]["assets"] == []
 assert catalog["components"][0]["downloadBytes"] == 4096
 assert catalog["components"][0]["installedBytes"] == 16384
+for component in catalog["components"]:
+    assert component["architectures"] == ["arm64"]
+    assert component["hostRequirements"] == {
+        "platform": "macos", "minimumVersion": "14.0",
+    }
+    assert component["provides"]
+    assert isinstance(component["requires"], list)
+    assert component["provenance"]["sourceCommit"]
+    assert component["provenance"]["builder"] == "dory.build-components.v2"
+    assert len(component["provenance"]["recipeDigest"]) == 64
+    assert component["provenance"]["sbomDigest"] == hashlib.sha256(
+        pathlib.Path(sys.argv[3]).with_name("Dory-test.cdx.json").read_bytes()
+    ).hexdigest()
+    assert len(component["provenance"]["attestationDigest"]) == 64
+    assert isinstance(component["qualification"], list)
 qualification = catalog["virtualMachineQualification"]
 assert qualification["component"] == "linux-desktop"
 assert qualification["path"] == "virtual-machine-qualification.json"
@@ -158,6 +176,7 @@ qualification_assets = [
     if item["path"] == "virtual-machine-qualification.json"
 ]
 assert len(qualification_assets) == 1
+assert qualification_assets[0]["role"] == "qualification-evidence"
 assert qualification_assets[0]["installedSHA256"] == hashlib.sha256(
     qualification_source.read_bytes()
 ).hexdigest()
@@ -170,6 +189,14 @@ for component in catalog["components"][1:]:
         item["installedBytes"] for item in component["assets"]
     )
     for asset in component["assets"]:
+        assert asset["role"] in {
+            "host-cli", "guest-kernel", "guest-disk", "guest-update",
+            "guest-package-manifest", "qualification-evidence", "build-metadata",
+        }
+        if asset["executable"]:
+            assert asset["codeRequirement"].startswith('identifier "dev.dory.test.')
+        else:
+            assert "codeRequirement" not in asset
         artifact = root / asset["url"].rsplit("/", 1)[-1]
         assert artifact.is_file()
         assert artifact.stat().st_size == asset["downloadBytes"]
@@ -236,6 +263,7 @@ if "$ROOT/scripts/build-components.py" \
     --source-root "$SOURCE" \
     --output "$TMP/rejected-components" \
     --qualification-manifest "$TMP/invalid-qualification.json" \
+    --sbom "$SBOM" \
     --skip-source-verification 2>/dev/null; then
   echo "component packaging accepted a qualification manifest for another release" >&2
   exit 1
@@ -259,6 +287,7 @@ if "$ROOT/scripts/build-components.py" \
     --source-root "$SOURCE" \
     --output "$TMP/mismatched-helper-components" \
     --qualification-manifest "$TMP/mismatched-helper-qualification.json" \
+    --sbom "$SBOM" \
     --skip-source-verification 2>/dev/null; then
   echo "component packaging accepted qualification evidence for different helper bytes" >&2
   exit 1
@@ -282,6 +311,7 @@ if "$ROOT/scripts/build-components.py" \
     --source-root "$SOURCE" \
     --output "$TMP/mismatched-media-components" \
     --qualification-manifest "$TMP/mismatched-media-qualification.json" \
+    --sbom "$SBOM" \
     --skip-source-verification 2>/dev/null; then
   echo "component packaging accepted qualification evidence for different bundled media" >&2
   exit 1
@@ -294,6 +324,7 @@ if "$ROOT/scripts/build-components.py" \
     --kubectl "$TMP/kubectl" \
     --source-root "$SOURCE" \
     --output "$TMP/missing-qualification-components" \
+    --sbom "$SBOM" \
     --skip-source-verification 2>/dev/null; then
   echo "component packaging accepted a catalog without qualification evidence" >&2
   exit 1

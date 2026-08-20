@@ -101,6 +101,130 @@ final class DoryComponentsTests: XCTestCase {
         }
     }
 
+    func testSchemaTwoBindsCapabilitiesHostArtifactsProvenanceAndQualification() throws {
+        let provenance = DoryComponentProvenance(
+            sourceCommit: String(repeating: "a", count: 40),
+            builder: "dory.release.apple-silicon",
+            recipeDigest: String(repeating: "b", count: 64),
+            sbomDigest: String(repeating: "c", count: 64),
+            attestationDigest: String(repeating: "d", count: 64)
+        )
+        let host = DoryComponentHostRequirements(platform: "macos", minimumVersion: "15.0")
+        let core = DoryComponentRelease(
+            id: .dockerCore,
+            version: "0.5.0",
+            displayName: "Docker Core",
+            summary: "Signed Dory application",
+            dependencies: [],
+            downloadBytes: 100,
+            installedBytes: 200,
+            assets: [],
+            architectures: ["arm64"],
+            hostRequirements: host,
+            provides: ["app.dory-core@0.5.0", "backend.rawhv-linux@1"],
+            requires: [],
+            provenance: provenance,
+            qualification: []
+        )
+        let payload = Data("kernel".utf8)
+        let asset = DoryComponentAsset(
+            path: "dory-desktop-kernel-arm64.lzfse",
+            url: "https://example.invalid/kernel",
+            downloadBytes: UInt64(payload.count),
+            installedBytes: UInt64(payload.count),
+            sha256: digest(payload),
+            installedSHA256: digest(payload),
+            role: .guestKernel
+        )
+        let desktop = DoryComponentRelease(
+            id: .linuxDesktop,
+            version: "0.5.0",
+            displayName: "Linux Desktop Runtime",
+            summary: "Qualified accelerated desktop runtime",
+            downloadBytes: asset.downloadBytes,
+            installedBytes: asset.installedBytes,
+            assets: [asset],
+            architectures: ["arm64"],
+            hostRequirements: host,
+            provides: ["device.virtio-gpu.venus@1"],
+            requires: ["app.dory-core>=0.5.0"],
+            provenance: provenance,
+            qualification: ["linux-desktop-arm64.mac16-1.25a1"]
+        )
+        let catalog = DoryComponentCatalog(
+            releaseVersion: "0.5.0",
+            generatedAt: "2026-07-16T12:00:00Z",
+            minimumAppVersion: "0.5.0",
+            architecture: "arm64",
+            components: [core, desktop]
+        )
+
+        XCTAssertNoThrow(try DoryComponentCatalogVerifier.validate(
+            catalog,
+            expectedArchitecture: "arm64",
+            appVersion: "0.5.0"
+        ))
+        XCTAssertEqual(
+            try JSONDecoder().decode(DoryComponentCatalog.self, from: encoded(catalog)),
+            catalog
+        )
+
+        let incomplete = DoryComponentRelease(
+            id: .linuxDesktop,
+            version: "0.5.0",
+            displayName: "Linux Desktop Runtime",
+            summary: "Missing capability authority",
+            downloadBytes: asset.downloadBytes,
+            installedBytes: asset.installedBytes,
+            assets: [asset],
+            architectures: ["arm64"],
+            hostRequirements: host,
+            requires: ["app.dory-core>=0.5.0"],
+            provenance: provenance,
+            qualification: []
+        )
+        XCTAssertThrowsError(try DoryComponentCatalogVerifier.validate(
+            DoryComponentCatalog(
+                releaseVersion: "0.5.0",
+                generatedAt: "2026-07-16T12:00:00Z",
+                minimumAppVersion: "0.5.0",
+                architecture: "arm64",
+                components: [core, incomplete]
+            ),
+            expectedArchitecture: "arm64",
+            appVersion: "0.5.0"
+        ))
+    }
+
+    func testSchemaOneDecodesWithoutVersionTwoAuthorityAndCannotSmuggleIt() throws {
+        let legacy = catalog(components: [core()])
+        let decoded = try JSONDecoder().decode(DoryComponentCatalog.self, from: encoded(legacy))
+        XCTAssertNil(decoded.components[0].architectures)
+        XCTAssertNil(decoded.components[0].provenance)
+        XCTAssertNoThrow(try DoryComponentCatalogVerifier.validate(
+            decoded,
+            expectedArchitecture: "arm64",
+            appVersion: "0.4.0"
+        ))
+
+        let smuggled = DoryComponentRelease(
+            id: .dockerCore,
+            version: "0.4.0",
+            displayName: "Docker Core",
+            summary: "Docker, Compose, Buildx, networking, and storage",
+            dependencies: [],
+            downloadBytes: 100,
+            installedBytes: 200,
+            assets: [],
+            architectures: ["arm64"]
+        )
+        XCTAssertThrowsError(try DoryComponentCatalogVerifier.validate(
+            catalog(components: [smuggled]),
+            expectedArchitecture: "arm64",
+            appVersion: "0.4.0"
+        ))
+    }
+
     func testCatalogRejectsDuplicatePathsCyclesAndDisagreeingSizes() throws {
         let payload = Data("kubectl".utf8)
         let asset = try plainAsset(path: "kubectl", data: payload)
@@ -388,6 +512,45 @@ final class DoryComponentsTests: XCTestCase {
         XCTAssertEqual((attributes[.posixPermissions] as? NSNumber)?.intValue, 0o700)
     }
 
+    func testExecutableInstallRejectsMismatchedCodeRequirement() throws {
+        let fixture = try Fixture(name: "code-requirement")
+        defer { fixture.cleanup() }
+        let payload = try Data(contentsOf: URL(fileURLWithPath: "/usr/bin/true"))
+        let source = try fixture.write(payload, name: "signed-tool")
+        let asset = DoryComponentAsset(
+            path: "signed-tool",
+            url: source.absoluteString,
+            downloadBytes: UInt64(payload.count),
+            installedBytes: UInt64(payload.count),
+            sha256: digest(payload),
+            installedSHA256: digest(payload),
+            executable: true,
+            role: .hostCLI,
+            codeRequirement: #"identifier "dev.dory.not-the-installed-tool""#
+        )
+        let component = DoryComponentRelease(
+            id: .kubernetes,
+            version: "1.0.0",
+            displayName: "Kubernetes",
+            summary: "Signed executable requirement regression",
+            downloadBytes: asset.downloadBytes,
+            installedBytes: asset.installedBytes,
+            assets: [asset]
+        )
+
+        XCTAssertThrowsError(try fixture.store.install(
+            component,
+            catalogDigest: String(repeating: "a", count: 64),
+            downloadedAssets: [asset.path: source.path]
+        )) { error in
+            guard case let .invalidAsset(path) = error as? DoryComponentError else {
+                return XCTFail("expected invalid executable asset, got \(error)")
+            }
+            XCTAssertTrue(path.hasSuffix("/signed-tool"))
+        }
+        XCTAssertNil(try fixture.store.installedComponent(.kubernetes))
+    }
+
     func testCachedCatalogIsReverifiedEveryTime() throws {
         let fixture = try Fixture(name: "catalog-cache")
         defer { fixture.cleanup() }
@@ -481,6 +644,7 @@ final class DoryComponentsTests: XCTestCase {
 
     private func catalog(components: [DoryComponentRelease]) -> DoryComponentCatalog {
         DoryComponentCatalog(
+            schemaVersion: 1,
             releaseVersion: "0.4.0",
             generatedAt: "2026-07-16T12:00:00Z",
             minimumAppVersion: "0.4.0",

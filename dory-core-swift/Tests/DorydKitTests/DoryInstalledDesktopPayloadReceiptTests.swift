@@ -198,6 +198,7 @@ struct DoryInstalledDesktopPayloadReceiptTests {
             assets: []
         )
         let catalog = DoryComponentCatalog(
+            schemaVersion: 1,
             releaseVersion: "0.4.0",
             generatedAt: "2026-08-20T00:00:00Z",
             minimumAppVersion: "0.4.5",
