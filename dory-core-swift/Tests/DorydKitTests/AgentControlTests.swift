@@ -17,11 +17,14 @@ final class AgentControlTests: XCTestCase {
         XCTAssertEqual(counter.value, 0)
         let info = try control.info()
         XCTAssertEqual(info.agentBuild, "fake-agent")
-        XCTAssertEqual(info.capabilities, [DoryAgentCapability(id: "exec", version: 1)])
+        XCTAssertEqual(info.capabilities.map(\.id), [
+            "clock-sync", "exec", "exec-stdin", "ports-watch", "telemetry",
+        ])
         XCTAssertEqual(counter.value, 1)
 
         XCTAssertFalse(try control.clockSync(now: Date(timeIntervalSince1970: 1.5)))
         XCTAssertEqual(fake.clockSyncInputs, [1_500_000_000])
+        XCTAssertEqual(try control.portsWatch().ports.first?.port, 8080)
         XCTAssertEqual(try control.telemetry().memTotalKB, 1024)
         let exec = try control.exec(argv: ["/bin/echo", "ok"], cwd: "/tmp")
         XCTAssertEqual(exec.exitCode, 0)
@@ -35,12 +38,73 @@ final class AgentControlTests: XCTestCase {
         control.disconnect()
         XCTAssertEqual(fake.closeCount, 1)
     }
+
+    func testAgentControlRejectsMissingInvalidAndIncompatibleCapabilitiesBeforeCallingOperation() throws {
+        let missing = FakeAgentControlClient(
+            capabilities: [DoryAgentCapability(id: "exec", version: 1)]
+        )
+        let missingControl = AgentControl(
+            configuration: AgentControlConfiguration(directSocketPath: "/tmp/missing.sock"),
+            connector: { _ in missing }
+        )
+        XCTAssertThrowsError(try missingControl.telemetry()) { error in
+            XCTAssertEqual(error as? AgentControlError, .capabilityUnavailable("telemetry"))
+        }
+        XCTAssertEqual(missing.telemetryCalls, 0)
+
+        let invalid = FakeAgentControlClient(capabilities: [
+            DoryAgentCapability(id: "exec", version: 1),
+            DoryAgentCapability(id: "exec", version: 1),
+        ])
+        let invalidControl = AgentControl(
+            configuration: AgentControlConfiguration(directSocketPath: "/tmp/invalid.sock"),
+            connector: { _ in invalid }
+        )
+        XCTAssertThrowsError(try invalidControl.exec(argv: ["/bin/true"])) { error in
+            XCTAssertEqual(error as? AgentControlError, .invalidCapabilities)
+        }
+
+        let incompatible = FakeAgentControlClient(
+            protocolVersion: DoryCore.protocolVersion() + 1
+        )
+        let incompatibleControl = AgentControl(
+            configuration: AgentControlConfiguration(directSocketPath: "/tmp/incompatible.sock"),
+            connector: { _ in incompatible }
+        )
+        XCTAssertThrowsError(try incompatibleControl.clockSync()) { error in
+            XCTAssertEqual(
+                error as? AgentControlError,
+                .incompatibleProtocol(
+                    expected: DoryCore.protocolVersion(),
+                    actual: DoryCore.protocolVersion() + 1
+                )
+            )
+        }
+        XCTAssertTrue(incompatible.clockSyncInputs.isEmpty)
+    }
 }
 
 private final class FakeAgentControlClient: AgentControlClient, @unchecked Sendable {
     private let lock = NSLock()
+    private let protocolVersion: UInt32
+    private let capabilities: [DoryAgentCapability]
     private var inputs: [Int64] = []
     private var closes = 0
+    private var telemetryCallCount = 0
+
+    init(
+        protocolVersion: UInt32 = DoryCore.protocolVersion(),
+        capabilities: [DoryAgentCapability] = [
+            DoryAgentCapability(id: "clock-sync", version: 1),
+            DoryAgentCapability(id: "exec", version: 1),
+            DoryAgentCapability(id: "exec-stdin", version: 1),
+            DoryAgentCapability(id: "ports-watch", version: 1),
+            DoryAgentCapability(id: "telemetry", version: 1),
+        ]
+    ) {
+        self.protocolVersion = protocolVersion
+        self.capabilities = capabilities
+    }
 
     var clockSyncInputs: [Int64] {
         lock.lock()
@@ -54,13 +118,19 @@ private final class FakeAgentControlClient: AgentControlClient, @unchecked Senda
         return closes
     }
 
+    var telemetryCalls: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return telemetryCallCount
+    }
+
     func info() throws -> DoryAgentInfo {
         DoryAgentInfo(
-            protocolVersion: 1,
+            protocolVersion: protocolVersion,
             kernel: "Linux fake",
             agentBuild: "fake-agent",
             uptimeSeconds: 42,
-            capabilities: [DoryAgentCapability(id: "exec", version: 1)]
+            capabilities: capabilities
         )
     }
 
@@ -80,7 +150,10 @@ private final class FakeAgentControlClient: AgentControlClient, @unchecked Senda
     }
 
     func telemetry() throws -> DoryTelemetry {
-        DoryTelemetry(
+        lock.lock()
+        telemetryCallCount += 1
+        lock.unlock()
+        return DoryTelemetry(
             memTotalKB: 1024,
             memAvailableKB: 512,
             psiSomeAvg10: 0,

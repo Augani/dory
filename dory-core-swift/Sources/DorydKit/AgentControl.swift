@@ -72,6 +72,7 @@ public final class AgentControl: @unchecked Sendable {
     private let connector: Connector
     private let lock = NSLock()
     private var client: (any AgentControlClient)?
+    private var negotiatedInfo: DoryAgentInfo?
 
     public init(
         configuration: AgentControlConfiguration,
@@ -97,7 +98,8 @@ public final class AgentControl: @unchecked Sendable {
     }
 
     public func info() throws -> DoryAgentInfo {
-        try connectedClient().info()
+        let client = try connectedClient()
+        return try cachedInfo(from: client)
     }
 
     public func clockSync(now: Date = Date()) throws -> Bool {
@@ -105,15 +107,16 @@ public final class AgentControl: @unchecked Sendable {
     }
 
     public func clockSync(hostEpochNs: Int64) throws -> Bool {
-        try connectedClient().clockSync(hostEpochNs: hostEpochNs)
+        let client = try client(requiring: "clock-sync")
+        return try client.clockSync(hostEpochNs: hostEpochNs)
     }
 
     public func portsWatch() throws -> DoryPortsSnapshot {
-        try connectedClient().portsWatch()
+        try client(requiring: "ports-watch").portsWatch()
     }
 
     public func telemetry() throws -> DoryTelemetry {
-        try connectedClient().telemetry()
+        try client(requiring: "telemetry").telemetry()
     }
 
     public func exec(
@@ -123,7 +126,7 @@ public final class AgentControl: @unchecked Sendable {
         timeoutMs: UInt64 = 30_000,
         outputLimitBytes: UInt64 = 1024 * 1024
     ) throws -> DoryExecResult {
-        try connectedClient().exec(
+        try client(requiring: "exec").exec(
             argv: argv,
             cwd: cwd,
             env: env,
@@ -140,7 +143,9 @@ public final class AgentControl: @unchecked Sendable {
         timeoutMs: UInt64 = 30_000,
         outputLimitBytes: UInt64 = 1024 * 1024
     ) throws -> DoryExecResult {
-        try connectedClient().execWithInput(
+        let client = try client(requiring: "exec")
+        try requireCapability("exec-stdin", from: client)
+        return try client.execWithInput(
             argv: argv,
             stdin: stdin,
             cwd: cwd,
@@ -154,6 +159,7 @@ public final class AgentControl: @unchecked Sendable {
         lock.lock()
         let current = client
         client = nil
+        negotiatedInfo = nil
         lock.unlock()
         current?.close()
     }
@@ -179,13 +185,59 @@ public final class AgentControl: @unchecked Sendable {
         return existing
     }
 
+    private func client(requiring capability: String) throws -> any AgentControlClient {
+        let client = try connectedClient()
+        try requireCapability(capability, from: client)
+        return client
+    }
+
+    private func requireCapability(
+        _ capability: String,
+        from client: any AgentControlClient
+    ) throws {
+        let info = try cachedInfo(from: client)
+        guard info.protocolVersion == DoryCore.protocolVersion() else {
+            throw AgentControlError.incompatibleProtocol(
+                expected: DoryCore.protocolVersion(),
+                actual: info.protocolVersion
+            )
+        }
+        guard info.capabilitiesAreCanonical else {
+            throw AgentControlError.invalidCapabilities
+        }
+        guard info.supports(capability) else {
+            throw AgentControlError.capabilityUnavailable(capability)
+        }
+    }
+
+    private func cachedInfo(from client: any AgentControlClient) throws -> DoryAgentInfo {
+        lock.lock()
+        if let negotiatedInfo {
+            lock.unlock()
+            return negotiatedInfo
+        }
+        lock.unlock()
+
+        let fresh = try client.info()
+        lock.lock()
+        if negotiatedInfo == nil {
+            negotiatedInfo = fresh
+        }
+        let selected = negotiatedInfo!
+        lock.unlock()
+        return selected
+    }
+
     deinit {
         disconnect()
     }
 }
 
-public enum AgentControlError: Error, Sendable {
+public enum AgentControlError: Error, Sendable, Equatable {
     case standardInputUnsupported
+    case incompatibleProtocol(expected: UInt32, actual: UInt32)
+    case invalidCapabilities
+    case capabilityUnavailable(String)
 }
 
 public enum LocalAgentControlError: Error, Sendable, Equatable, CustomStringConvertible {

@@ -1941,10 +1941,17 @@ private final class ServiceFakeAgentControlClient: AgentControlClient, @unchecke
 
     func info() throws -> DoryAgentInfo {
         DoryAgentInfo(
-            protocolVersion: 1,
+            protocolVersion: DoryCore.protocolVersion(),
             kernel: "Linux docker",
             agentBuild: "docker-agent",
-            uptimeSeconds: 9
+            uptimeSeconds: 9,
+            capabilities: [
+                DoryAgentCapability(id: "clock-sync", version: 1),
+                DoryAgentCapability(id: "exec", version: 1),
+                DoryAgentCapability(id: "exec-stdin", version: 1),
+                DoryAgentCapability(id: "ports-watch", version: 1),
+                DoryAgentCapability(id: "telemetry", version: 1),
+            ]
         )
     }
 
