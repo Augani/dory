@@ -39,6 +39,20 @@ pub struct TreeSnapshot {
     pub directories: Vec<DirectoryEntry>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TreeLimits {
+    pub max_files: u64,
+    pub max_directories: u64,
+    pub max_bytes: u64,
+}
+
+#[derive(Default)]
+struct TreeUsage {
+    files: u64,
+    directories: u64,
+    bytes: u64,
+}
+
 /// Walk `root` recursively and build a manifest of every regular file, with a content hash. Symlinks
 /// and special files are skipped (only regular files replicate). Entries are sorted by path so a
 /// host and remote produce byte-identical ordering and the reconciler diff is stable.
@@ -48,7 +62,7 @@ pub fn walk_manifest(root: &Path) -> std::io::Result<Manifest> {
 
 /// Walk `root` once and capture both regular-file content authority and directory topology.
 pub fn walk_tree(root: &Path) -> std::io::Result<TreeSnapshot> {
-    walk_tree_impl(root, &[], false)
+    walk_tree_impl(root, &[], false, None)
 }
 
 /// Walk a tree while skipping named direct children of `root` before reading their metadata or
@@ -69,16 +83,29 @@ pub fn walk_tree_excluding(
     root: &Path,
     excluded_root_children: &[&str],
 ) -> std::io::Result<TreeSnapshot> {
-    walk_tree_impl(root, excluded_root_children, true)
+    walk_tree_impl(root, excluded_root_children, true, None)
+}
+
+/// Bounded directory-aware walk for untrusted guest trees. Limits are enforced before hashing a
+/// file or descending into a directory, keeping the agent's CPU and response allocation bounded
+/// by the same authority the host requested.
+pub fn walk_tree_excluding_bounded(
+    root: &Path,
+    excluded_root_children: &[&str],
+    limits: TreeLimits,
+) -> std::io::Result<TreeSnapshot> {
+    walk_tree_impl(root, excluded_root_children, true, Some(limits))
 }
 
 fn walk_tree_impl(
     root: &Path,
     excluded_root_children: &[&str],
     tolerate_not_found: bool,
+    limits: Option<TreeLimits>,
 ) -> std::io::Result<TreeSnapshot> {
     let mut files = Vec::new();
     let mut directories = Vec::new();
+    let mut usage = TreeUsage::default();
     walk_into(
         root,
         root,
@@ -86,6 +113,8 @@ fn walk_tree_impl(
         tolerate_not_found,
         &mut files,
         &mut directories,
+        limits,
+        &mut usage,
     )?;
     files.sort_by(|a, b| a.path.cmp(&b.path));
     directories.sort_by(|a, b| a.path.cmp(&b.path));
@@ -102,6 +131,8 @@ fn walk_into(
     tolerate_not_found: bool,
     files: &mut Vec<FileEntry>,
     directories: &mut Vec<DirectoryEntry>,
+    limits: Option<TreeLimits>,
+    usage: &mut TreeUsage,
 ) -> std::io::Result<()> {
     let entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,
@@ -133,6 +164,13 @@ fn walk_into(
         };
         let file_type = meta.file_type();
         if file_type.is_dir() {
+            usage.directories = usage
+                .directories
+                .checked_add(1)
+                .ok_or_else(tree_limit_error)?;
+            if limits.is_some_and(|limits| usage.directories > limits.max_directories) {
+                return Err(tree_limit_error());
+            }
             directories.push(DirectoryEntry {
                 path: relative_slash(root, &path),
                 mtime_ns: mtime_ns(&meta),
@@ -145,8 +183,20 @@ fn walk_into(
                 tolerate_not_found,
                 files,
                 directories,
+                limits,
+                usage,
             )?;
         } else if file_type.is_file() {
+            usage.files = usage.files.checked_add(1).ok_or_else(tree_limit_error)?;
+            usage.bytes = usage
+                .bytes
+                .checked_add(meta.len())
+                .ok_or_else(tree_limit_error)?;
+            if limits.is_some_and(|limits| {
+                usage.files > limits.max_files || usage.bytes > limits.max_bytes
+            }) {
+                return Err(tree_limit_error());
+            }
             let rel = relative_slash(root, &path);
             let hash = match hash_file(&path) {
                 Ok(hash) => hash,
@@ -166,6 +216,13 @@ fn walk_into(
         // Anything else (symlink, socket, fifo, device) is skipped.
     }
     Ok(())
+}
+
+fn tree_limit_error() -> std::io::Error {
+    std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        "sync tree exceeds requested limits",
+    )
 }
 
 /// Path relative to `root`, forward-slash separated (so a macOS host and a Linux guest agree).

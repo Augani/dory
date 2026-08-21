@@ -407,6 +407,9 @@ mod tests {
         let tree = client
             .sync_read_tree(SyncReadTreeRequest {
                 root: "/home/dory/Downloads".into(),
+                max_files: 10,
+                max_directories: 10,
+                max_bytes: 1024,
             })
             .await
             .unwrap();

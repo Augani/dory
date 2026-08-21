@@ -9,8 +9,8 @@ mod plan;
 
 pub use hash::{hash_bytes, hash_file, Hash, HASH_LEN};
 pub use manifest::{
-    walk_manifest, walk_manifest_excluding, walk_tree, walk_tree_excluding, DirectoryEntry,
-    FileEntry, Manifest, TreeSnapshot,
+    walk_manifest, walk_manifest_excluding, walk_tree, walk_tree_excluding,
+    walk_tree_excluding_bounded, DirectoryEntry, FileEntry, Manifest, TreeLimits, TreeSnapshot,
 };
 pub use plan::{plan, SyncPlan};
 

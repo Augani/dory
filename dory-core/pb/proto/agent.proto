@@ -179,7 +179,12 @@ message SyncTreeResponse {
 // Read-only counterpart used for guest-to-host transfers. The manifest is a point-in-time content
 // authority; the host must hash the fully assembled destination and reject it if guest bytes change
 // while they are being read. Empty directories are explicit so a pull never invents sentinel files.
-message SyncReadTreeRequest { string root = 1; }
+message SyncReadTreeRequest {
+  string root = 1;
+  uint64 max_files = 2;
+  uint64 max_directories = 3;
+  uint64 max_bytes = 4;
+}
 message SyncReadTreeResponse {
   repeated SyncFileEntry files = 1;
   repeated SyncDirectoryEntry directories = 2;

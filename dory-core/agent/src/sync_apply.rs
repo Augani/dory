@@ -88,12 +88,30 @@ pub async fn manifest(req: SyncManifestRequest) -> Result<SyncManifestResponse, 
 /// read-only and excludes the agent's private push staging subtree. The returned hashes are the
 /// authority the host must verify after assembling every bounded chunk.
 pub async fn read_tree(req: SyncReadTreeRequest) -> Result<SyncReadTreeResponse, SyncError> {
-    let root = canonical_root(&req.root).await?;
+    let root = validated_read_root_path(&req.root)?;
     let _root_guard = root_lock(&root).write().await;
-    let snapshot =
-        tokio::task::spawn_blocking(move || dory_sync::walk_tree_excluding(&root, &[STAGING_DIR]))
-            .await
-            .map_err(|error| SyncError::Io(std::io::Error::other(error)))??;
+    let limits = dory_sync::TreeLimits {
+        max_files: req.max_files,
+        max_directories: req.max_directories,
+        max_bytes: req.max_bytes,
+    };
+    let snapshot = tokio::task::spawn_blocking(move || {
+        let directory = open_absolute_directory_nofollow(&root)?;
+        #[cfg(target_os = "linux")]
+        let descriptor_root = {
+            use std::os::fd::AsRawFd;
+            PathBuf::from(format!("/proc/self/fd/{}", directory.as_raw_fd()))
+        };
+        #[cfg(not(target_os = "linux"))]
+        let descriptor_root = root;
+        #[cfg(not(target_os = "linux"))]
+        let _ = &directory;
+        let snapshot =
+            dory_sync::walk_tree_excluding_bounded(&descriptor_root, &[STAGING_DIR], limits)?;
+        Ok::<_, SyncError>(snapshot)
+    })
+    .await
+    .map_err(|error| SyncError::Io(std::io::Error::other(error)))??;
     let files = snapshot
         .manifest
         .entries
@@ -126,7 +144,7 @@ pub async fn get_chunk(req: SyncGetChunkRequest) -> Result<SyncGetChunkResponse,
     if req.max_bytes == 0 || req.max_bytes as usize > dory_sync::CHUNK_BYTES {
         return Err(SyncError::InvalidRead);
     }
-    let root = canonical_root(&req.root).await?;
+    let root = validated_read_root_path(&req.root)?;
     let _root_guard = root_lock(&root).read().await;
     let _path_guard = path_lock(&root, &req.path).lock().await;
     // The agent may run with more privilege than the guest desktop user. Open every component
@@ -169,8 +187,6 @@ pub async fn get_chunk(req: SyncGetChunkRequest) -> Result<SyncGetChunkResponse,
 fn open_regular_beneath(root: &Path, rel: &str) -> Result<std::fs::File, SyncError> {
     use std::ffi::CString;
     use std::os::fd::{AsRawFd, FromRawFd};
-    use std::os::unix::ffi::OsStrExt;
-    use std::path::Component;
 
     if !root.is_absolute() || rel.is_empty() || rel.starts_with('/') {
         return Err(SyncError::PathEscape);
@@ -189,7 +205,10 @@ fn open_regular_beneath(root: &Path, rel: &str) -> Result<std::fs::File, SyncErr
         let descriptor = unsafe { libc::openat(parent.as_raw_fd(), name.as_ptr(), flags) };
         if descriptor < 0 {
             let error = std::io::Error::last_os_error();
-            return if error.raw_os_error() == Some(libc::ELOOP) {
+            return if matches!(
+                error.raw_os_error(),
+                Some(libc::ELOOP) | Some(libc::ENOTDIR)
+            ) {
                 Err(SyncError::PathEscape)
             } else {
                 Err(SyncError::Io(error))
@@ -198,26 +217,7 @@ fn open_regular_beneath(root: &Path, rel: &str) -> Result<std::fs::File, SyncErr
         Ok(unsafe { std::fs::File::from_raw_fd(descriptor) })
     }
 
-    let slash = CString::new("/").expect("static path has no NUL");
-    let descriptor = unsafe {
-        libc::open(
-            slash.as_ptr(),
-            libc::O_RDONLY | libc::O_CLOEXEC | libc::O_DIRECTORY | libc::O_NOFOLLOW,
-        )
-    };
-    if descriptor < 0 {
-        return Err(SyncError::Io(std::io::Error::last_os_error()));
-    }
-    let mut directory = unsafe { std::fs::File::from_raw_fd(descriptor) };
-    for component in root.components() {
-        match component {
-            Component::RootDir => {}
-            Component::Normal(name) => {
-                directory = open_at(&directory, name.as_bytes(), true)?;
-            }
-            _ => return Err(SyncError::PathEscape),
-        }
-    }
+    let mut directory = open_absolute_directory_nofollow(root)?;
 
     let components = rel.split('/').collect::<Vec<_>>();
     if components
@@ -241,6 +241,92 @@ fn open_regular_beneath(root: &Path, rel: &str) -> Result<std::fs::File, SyncErr
         return Err(SyncError::SourceChanged);
     }
     Ok(file)
+}
+
+fn validated_read_root_path(root: &str) -> Result<PathBuf, SyncError> {
+    use std::path::Component;
+
+    if root.is_empty() || root.as_bytes().contains(&0) {
+        return Err(SyncError::PathEscape);
+    }
+    let path = PathBuf::from(root);
+    if !path.is_absolute()
+        || path
+            .components()
+            .any(|component| !matches!(component, Component::RootDir | Component::Normal(_)))
+    {
+        return Err(SyncError::PathEscape);
+    }
+    #[cfg(target_os = "linux")]
+    return Ok(path);
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        let metadata = std::fs::symlink_metadata(&path)?;
+        if metadata.file_type().is_symlink() {
+            return Err(SyncError::PathEscape);
+        }
+        Ok(std::fs::canonicalize(path)?)
+    }
+}
+
+#[cfg(unix)]
+fn open_absolute_directory_nofollow(root: &Path) -> Result<std::fs::File, SyncError> {
+    use std::ffi::CString;
+    use std::os::fd::{AsRawFd, FromRawFd};
+    use std::os::unix::ffi::OsStrExt;
+    use std::path::Component;
+
+    fn open_directory_at(parent: &std::fs::File, name: &[u8]) -> Result<std::fs::File, SyncError> {
+        let name = CString::new(name).map_err(|_| SyncError::PathEscape)?;
+        let descriptor = unsafe {
+            libc::openat(
+                parent.as_raw_fd(),
+                name.as_ptr(),
+                libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_DIRECTORY,
+            )
+        };
+        if descriptor < 0 {
+            let error = std::io::Error::last_os_error();
+            return if matches!(
+                error.raw_os_error(),
+                Some(libc::ELOOP) | Some(libc::ENOTDIR)
+            ) {
+                Err(SyncError::PathEscape)
+            } else {
+                Err(SyncError::Io(error))
+            };
+        }
+        Ok(unsafe { std::fs::File::from_raw_fd(descriptor) })
+    }
+
+    let root = validated_read_root_path(&root.to_string_lossy())?;
+    let slash = CString::new("/").expect("static path has no NUL");
+    let descriptor = unsafe {
+        libc::open(
+            slash.as_ptr(),
+            libc::O_RDONLY | libc::O_CLOEXEC | libc::O_DIRECTORY | libc::O_NOFOLLOW,
+        )
+    };
+    if descriptor < 0 {
+        return Err(SyncError::Io(std::io::Error::last_os_error()));
+    }
+    let mut directory = unsafe { std::fs::File::from_raw_fd(descriptor) };
+    for component in root.components() {
+        match component {
+            Component::RootDir => {}
+            Component::Normal(name) => {
+                directory = open_directory_at(&directory, name.as_bytes())?;
+            }
+            _ => return Err(SyncError::PathEscape),
+        }
+    }
+    Ok(directory)
+}
+
+#[cfg(not(unix))]
+fn open_absolute_directory_nofollow(_root: &Path) -> Result<std::fs::File, SyncError> {
+    Err(SyncError::InvalidRead)
 }
 
 #[cfg(not(unix))]
@@ -1028,9 +1114,14 @@ mod tests {
         fs::write(root.path.join(STAGING_DIR).join("private"), b"hidden").unwrap();
         fs::write(root.path.join("hello.txt"), b"hello").unwrap();
 
-        let snapshot = read_tree(SyncReadTreeRequest { root: root.root() })
-            .await
-            .unwrap();
+        let snapshot = read_tree(SyncReadTreeRequest {
+            root: root.root(),
+            max_files: 10,
+            max_directories: 10,
+            max_bytes: 1024,
+        })
+        .await
+        .unwrap();
         assert_eq!(
             snapshot
                 .files
@@ -1086,6 +1177,46 @@ mod tests {
             .await,
             Err(SyncError::SourceChanged)
         ));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn read_tree_rejects_symlink_roots_and_enforces_limits_before_reply() {
+        use std::os::unix::fs::symlink;
+
+        let root = TempRoot::new("read-root-authority");
+        fs::write(root.path.join("one"), b"12345").unwrap();
+        fs::write(root.path.join("two"), b"67890").unwrap();
+
+        let over_files = read_tree(SyncReadTreeRequest {
+            root: root.root(),
+            max_files: 1,
+            max_directories: 10,
+            max_bytes: 100,
+        })
+        .await;
+        assert!(over_files.is_err());
+
+        let over_bytes = read_tree(SyncReadTreeRequest {
+            root: root.root(),
+            max_files: 10,
+            max_directories: 10,
+            max_bytes: 9,
+        })
+        .await;
+        assert!(over_bytes.is_err());
+
+        let link = root.path.with_extension("symlink");
+        symlink(&root.path, &link).unwrap();
+        let symlink_result = read_tree(SyncReadTreeRequest {
+            root: link.to_string_lossy().into_owned(),
+            max_files: 10,
+            max_directories: 10,
+            max_bytes: 100,
+        })
+        .await;
+        let _ = fs::remove_file(&link);
+        assert!(matches!(symlink_result, Err(SyncError::PathEscape)));
     }
 
     #[cfg(unix)]

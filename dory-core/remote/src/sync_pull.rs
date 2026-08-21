@@ -91,6 +91,7 @@ pub trait SyncSource {
     fn read_tree(
         &self,
         root: &str,
+        limits: PullLimits,
     ) -> impl std::future::Future<Output = Result<TreeSnapshot, RemoteError>> + Send;
     fn get_chunk(
         &self,
@@ -155,7 +156,7 @@ async fn pull_inner<S: SyncSource, O: PullObserver>(
 ) -> Result<PullStats, RemoteError> {
     require_not_cancelled(observer, progress)?;
     validate_new_local_root(local_root)?;
-    let snapshot = source.read_tree(remote_root).await?;
+    let snapshot = source.read_tree(remote_root, limits).await?;
     let authority = validate_snapshot(snapshot, limits)?;
     progress.files_total = authority.files.len() as u64;
     progress.bytes_total = authority.bytes_total;
@@ -566,10 +567,13 @@ fn require_not_cancelled<O: PullObserver>(
 }
 
 impl SyncSource for AgentClient {
-    async fn read_tree(&self, root: &str) -> Result<TreeSnapshot, RemoteError> {
+    async fn read_tree(&self, root: &str, limits: PullLimits) -> Result<TreeSnapshot, RemoteError> {
         let response = self
             .sync_read_tree(SyncReadTreeRequest {
                 root: root.to_string(),
+                max_files: limits.max_files,
+                max_directories: limits.max_directories,
+                max_bytes: limits.max_bytes,
             })
             .await?;
         let mut files = Vec::with_capacity(response.files.len());
@@ -672,7 +676,11 @@ mod tests {
     }
 
     impl SyncSource for FakeSource {
-        async fn read_tree(&self, _root: &str) -> Result<TreeSnapshot, RemoteError> {
+        async fn read_tree(
+            &self,
+            _root: &str,
+            _limits: PullLimits,
+        ) -> Result<TreeSnapshot, RemoteError> {
             Ok(self.snapshot.clone())
         }
 
