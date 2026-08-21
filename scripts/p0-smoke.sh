@@ -355,7 +355,7 @@ services:
       - sh
       - -c
       - |
-        while true; do printf 'HTTP/1.1 200 OK\r\nContent-Length: 13\r\n\r\ndory-p0-smoke' | nc -l -p 8080; done
+        while true; do printf 'HTTP/1.1 200 OK\r\nContent-Length: 14\r\n\r\ndory-p0-smoke' | nc -l -p 8080; done
     ports:
       - "127.0.0.1:${PORT}:8080"
 YAML

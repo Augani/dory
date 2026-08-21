@@ -217,6 +217,7 @@ for required in \
   'DORY_P0_IMAGE must be digest-pinned' \
   'Dory socket is not owned by the release user' \
   'compatibility_smoke' \
+  'Content-Length: 14' \
   'candidate compatibility diagnostics omitted'; do
   grep -Fq "$required" <<< "$gate_text" \
     || { echo "test-p0-smoke: missing contract proof: $required" >&2; exit 1; }

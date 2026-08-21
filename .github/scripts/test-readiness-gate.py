@@ -36,6 +36,7 @@ class ReadinessGateTests(unittest.TestCase):
             "memory/cpu resource limits + update",
             "same-host competitor correctness gate",
             "json.dumps(payload, indent=2, sort_keys=True)",
+            "Content-Length: 14",
         ):
             self.assertIn(proof, text, proof)
         for stale in (
@@ -77,7 +78,6 @@ write_summary
                 "READINESS_WORKDIR": str(pathlib.Path(temporary) / "evidence"),
                 "READINESS_DOCKER_BIN": "/usr/bin/true",
                 "READINESS_ALPINE_IMAGE": "alpine:latest",
-                "READINESS_NGINX_IMAGE": DIGEST_IMAGE,
                 "RUN_NONNATIVE_ARCH": "0",
             }
             result = subprocess.run(
@@ -100,7 +100,6 @@ write_summary
                 "READINESS_WORKDIR": str(pathlib.Path(temporary) / "evidence"),
                 "READINESS_DOCKER_BIN": "",
                 "READINESS_ALPINE_IMAGE": DIGEST_IMAGE,
-                "READINESS_NGINX_IMAGE": DIGEST_IMAGE,
                 "RUN_NONNATIVE_ARCH": "0",
             }
             result = subprocess.run(

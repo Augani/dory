@@ -13,7 +13,7 @@
 # Environment knobs:
 #   DORY_SOCK, DORYD_SOCK, ORBSTACK_SOCK, DOCKER_DESKTOP_SOCK
 #   READINESS_WORKDIR, READINESS_SETTLE, READINESS_DOCKER_BIN
-#   READINESS_ALPINE_IMAGE, READINESS_NGINX_IMAGE (exact digest references)
+#   READINESS_ALPINE_IMAGE (exact digest reference)
 #   READINESS_BUILD_CONTEXT_MB for the BuildKit streaming build payload (default: 32)
 #   READINESS_NONNATIVE_BUILD_IMAGE for the non-native BuildKit qemu/npm probe (exact digest)
 #   RUN_MEMORY=0|1, RUN_NONNATIVE_ARCH=0|1, RUN_AMD64=0|1 (legacy alias), RUN_ONLINE=0|1, RUN_DOMAINS=0|1, RUN_DIRECT_IP=0|1, RUN_FILE_WATCH=0|1, RUN_K8S=0|1, RUN_MACHINES=0|1, RUN_MACHINE_RECIPE=0|1, RUN_USB=0|1, RUN_VPN=0|1
@@ -35,7 +35,6 @@ set -u
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ENGINES="${ENGINES:-dory}"
 ALPINE_IMAGE="${READINESS_ALPINE_IMAGE:-}"
-NGINX_IMAGE="${READINESS_NGINX_IMAGE:-}"
 NONNATIVE_BUILD_IMAGE="${READINESS_NONNATIVE_BUILD_IMAGE:-}"
 DOCKER_BIN="${READINESS_DOCKER_BIN:-}"
 MEMORY_COUNT="${READINESS_MEMORY_COUNT:-3}"
@@ -483,7 +482,6 @@ test_engine_info() {
 
 test_pull_images() {
   docker_e image inspect "$ALPINE_IMAGE" >/dev/null
-  docker_e image inspect "$NGINX_IMAGE" >/dev/null
 }
 
 test_lifecycle_logs_exec_stats() {
@@ -566,8 +564,11 @@ test_network_dns() {
   local net="$PREFIX-net"
   local web="$PREFIX-web"
   docker_e network create --label "$LABEL_KEY=$RUN_ID" "$net" >/dev/null
-  docker_e run -d --name "$web" --label "$LABEL_KEY=$RUN_ID" --network "$net" --network-alias web "$NGINX_IMAGE" >/dev/null
-  docker_e run --rm --label "$LABEL_KEY=$RUN_ID" --network "$net" "$ALPINE_IMAGE" wget -qO- http://web | grep -qi 'welcome'
+  docker_e run -d --name "$web" --label "$LABEL_KEY=$RUN_ID" --network "$net" \
+    --network-alias web "$ALPINE_IMAGE" sh -c \
+    'while true; do printf "HTTP/1.1 200 OK\r\nContent-Length: 14\r\n\r\ndory-readiness" | nc -l -p 8080; done' >/dev/null
+  docker_e run --rm --label "$LABEL_KEY=$RUN_ID" --network "$net" "$ALPINE_IMAGE" \
+    wget -qO- http://web:8080 | grep -q 'dory-readiness'
   docker_e rm -f "$web" >/dev/null
   docker_e network rm "$net" >/dev/null
 }
@@ -575,11 +576,14 @@ test_network_dns() {
 test_published_port() {
   local name="$PREFIX-port"
   local port
-  docker_e run -d --name "$name" --label "$LABEL_KEY=$RUN_ID" -p 127.0.0.1::80 "$NGINX_IMAGE" >/dev/null
-  port="$(docker_e port "$name" 80/tcp | first_host_port)"
+  docker_e run -d --name "$name" --label "$LABEL_KEY=$RUN_ID" -p 127.0.0.1::8080 \
+    "$ALPINE_IMAGE" sh -c \
+    'while true; do printf "HTTP/1.1 200 OK\r\nContent-Length: 14\r\n\r\ndory-readiness" | nc -l -p 8080; done' >/dev/null
+  port="$(docker_e port "$name" 8080/tcp | first_host_port)"
   [ -n "$port" ]
   for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
-    curl -fsS "http://127.0.0.1:$port" | grep -qi 'welcome' && { docker_e rm -f "$name" >/dev/null; return 0; }
+    curl -fsS "http://127.0.0.1:$port" | grep -q 'dory-readiness' \
+      && { docker_e rm -f "$name" >/dev/null; return 0; }
     sleep 1
   done
   docker_e rm -f "$name" >/dev/null
@@ -628,11 +632,15 @@ test_compose() {
   cat > "$dir/compose.yaml" <<EOF
 services:
   web:
-    image: $NGINX_IMAGE
+    image: $ALPINE_IMAGE
     labels:
       $LABEL_KEY: "$RUN_ID"
+    command:
+      - sh
+      - -c
+      - while true; do printf 'HTTP/1.1 200 OK\\r\\nContent-Length: 14\\r\\n\\r\\ndory-readiness' | nc -l -p 8080; done
     ports:
-      - "127.0.0.1::80"
+      - "127.0.0.1::8080"
   worker:
     image: $ALPINE_IMAGE
     labels:
@@ -648,11 +656,11 @@ EOF
   compose_e -f "$dir/compose.yaml" -p "$project" up -d >/dev/null
   compose_e -f "$dir/compose.yaml" -p "$project" ps >/dev/null
   compose_e -f "$dir/compose.yaml" -p "$project" logs worker | grep -q 'compose-ok'
-  port="$(compose_e -f "$dir/compose.yaml" -p "$project" port web 80 | first_host_port)"
+  port="$(compose_e -f "$dir/compose.yaml" -p "$project" port web 8080 | first_host_port)"
   [ -n "$port" ]
   rc=1
   for _ in 1 2 3 4 5 6 7 8 9 10; do
-    if curl -fsS "http://127.0.0.1:$port" | grep -qi 'welcome'; then
+    if curl -fsS "http://127.0.0.1:$port" | grep -q 'dory-readiness'; then
       rc=0
       break
     fi
@@ -1323,7 +1331,7 @@ run_engine() {
 
   cleanup_engine
   run_case "$CURRENT_ENGINE" "engine info / version / system df" test_engine_info
-  run_case "$CURRENT_ENGINE" "offline Alpine + Nginx fixtures available" test_pull_images
+  run_case "$CURRENT_ENGINE" "offline Alpine fixture available" test_pull_images
   run_case "$CURRENT_ENGINE" "container lifecycle + logs + exec + stats" test_lifecycle_logs_exec_stats
   run_case "$CURRENT_ENGINE" "docker cp + export" test_cp_archive
   run_case "$CURRENT_ENGINE" "bind mount host read/write" test_bind_mount
@@ -1509,7 +1517,7 @@ validate_configuration() {
   case "$WORKROOT" in /|"$HOME"|"$ROOT") echo "unsafe READINESS_WORKDIR: $WORKROOT" >&2; return 2 ;; esac
   [ ! -L "$WORKROOT" ] || { echo "READINESS_WORKDIR must not be a symlink" >&2; return 2; }
 
-  for image in "$ALPINE_IMAGE" "$NGINX_IMAGE"; do
+  for image in "$ALPINE_IMAGE"; do
     printf '%s\n' "$image" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[0-9a-f]{64}$' || {
       echo "readiness fixture images must be exact digest references" >&2
       return 2
