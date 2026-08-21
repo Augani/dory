@@ -372,6 +372,7 @@ jobs:
           python3 .github/scripts/test-nonnative-mmdebstrap-gate.py
           python3 .github/scripts/test-gvproxy-qemu-switch-gate.py
           python3 .github/scripts/test-long-lived-network-soak.py
+          python3 .github/scripts/test-endurance-reliability-soak.py
       - name: P0 smoke harness regression tests
         run: bash scripts/test-p0-smoke.sh
       - name: Dory app and offline quality suite
