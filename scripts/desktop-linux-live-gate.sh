@@ -644,6 +644,101 @@ APPLESCRIPT
     exit 1
   " > "$WORKROOT/evidence/$distro-display-fullscreen-restored.json"
 
+  assert_exec_token "$machine" cursor-left-ready sh -lc "
+    set -eu
+    uid=\$(id -u dorygate)
+    runtime=/run/user/\$uid
+    session_env=\$(runuser -u dorygate -- env XDG_RUNTIME_DIR=\"\$runtime\" \
+      DBUS_SESSION_BUS_ADDRESS=\"unix:path=\$runtime/bus\" systemctl --user show-environment \
+      | grep -E '^(DISPLAY|XAUTHORITY)=')
+    display=\$(printf '%s\n' \"\$session_env\" | sed -n 's/^DISPLAY=//p')
+    xauth=\$(printf '%s\n' \"\$session_env\" | sed -n 's/^XAUTHORITY=//p')
+    runuser -u dorygate -- env DISPLAY=\"\$display\" XAUTHORITY=\"\$xauth\" \
+      xsetroot -cursor_name left_ptr
+    echo cursor-left-ready
+  " > "$WORKROOT/evidence/$distro-cursor-left.json"
+
+  cursor_point="$(osascript - "$machine_pid" <<'APPLESCRIPT'
+on run argv
+  set targetPID to (item 1 of argv) as integer
+  tell application "System Events"
+    set targetProcess to first process whose unix id is targetPID
+    set frontmost of targetProcess to true
+    set targetWindow to front window of targetProcess
+    set windowPosition to position of targetWindow
+    set windowSize to size of targetWindow
+    set cursorX to (item 1 of windowPosition) + ((item 1 of windowSize) div 2)
+    set cursorY to (item 2 of windowPosition) + ((item 2 of windowSize) div 2)
+    click at {cursorX, cursorY}
+    delay 0.5
+    return (cursorX as text) & "," & (cursorY as text)
+  end tell
+end run
+APPLESCRIPT
+)"
+  printf '%s\n' "$cursor_point" | grep -Eq '^[0-9]+,[0-9]+$' \
+    || { echo "desktop live gate: invalid cursor point: $cursor_point" >&2; exit 1; }
+  cursor_x="${cursor_point%,*}"
+  cursor_y="${cursor_point#*,}"
+  cursor_left=$((cursor_x > 48 ? cursor_x - 48 : 0))
+  cursor_top=$((cursor_y > 48 ? cursor_y - 48 : 0))
+  cursor_region="$cursor_left,$cursor_top,96,96"
+  cursor_left_capture="$WORKROOT/evidence/$distro-cursor-left.png"
+  cursor_crosshair_capture="$WORKROOT/evidence/$distro-cursor-crosshair.png"
+  screencapture -C -x -R"$cursor_region" "$cursor_left_capture"
+  [ -s "$cursor_left_capture" ] \
+    || { echo "desktop live gate: screen recording permission is required for cursor qualification" >&2; exit 1; }
+
+  assert_exec_token "$machine" cursor-crosshair-ready sh -lc "
+    set -eu
+    uid=\$(id -u dorygate)
+    runtime=/run/user/\$uid
+    session_env=\$(runuser -u dorygate -- env XDG_RUNTIME_DIR=\"\$runtime\" \
+      DBUS_SESSION_BUS_ADDRESS=\"unix:path=\$runtime/bus\" systemctl --user show-environment \
+      | grep -E '^(DISPLAY|XAUTHORITY)=')
+    display=\$(printf '%s\n' \"\$session_env\" | sed -n 's/^DISPLAY=//p')
+    xauth=\$(printf '%s\n' \"\$session_env\" | sed -n 's/^XAUTHORITY=//p')
+    runuser -u dorygate -- env DISPLAY=\"\$display\" XAUTHORITY=\"\$xauth\" \
+      xsetroot -cursor_name crosshair
+    echo cursor-crosshair-ready
+  " > "$WORKROOT/evidence/$distro-cursor-crosshair.json"
+  osascript - "$cursor_x" "$cursor_y" <<'APPLESCRIPT'
+on run argv
+  set cursorX to (item 1 of argv) as integer
+  set cursorY to (item 2 of argv) as integer
+  tell application "System Events"
+    click at {cursorX + 1, cursorY}
+    click at {cursorX, cursorY}
+    delay 0.5
+  end tell
+end run
+APPLESCRIPT
+  screencapture -C -x -R"$cursor_region" "$cursor_crosshair_capture"
+  [ -s "$cursor_crosshair_capture" ] \
+    || { echo "desktop live gate: crosshair cursor capture is empty" >&2; exit 1; }
+  if cmp -s "$cursor_left_capture" "$cursor_crosshair_capture"; then
+    echo "desktop live gate: guest cursor shape did not change the captured macOS cursor" >&2
+    exit 1
+  fi
+  {
+    shasum -a 256 "$cursor_left_capture"
+    shasum -a 256 "$cursor_crosshair_capture"
+  } > "$WORKROOT/evidence/$distro-cursor-shapes.sha256"
+
+  assert_exec_token "$machine" cursor-restored sh -lc "
+    set -eu
+    uid=\$(id -u dorygate)
+    runtime=/run/user/\$uid
+    session_env=\$(runuser -u dorygate -- env XDG_RUNTIME_DIR=\"\$runtime\" \
+      DBUS_SESSION_BUS_ADDRESS=\"unix:path=\$runtime/bus\" systemctl --user show-environment \
+      | grep -E '^(DISPLAY|XAUTHORITY)=')
+    display=\$(printf '%s\n' \"\$session_env\" | sed -n 's/^DISPLAY=//p')
+    xauth=\$(printf '%s\n' \"\$session_env\" | sed -n 's/^XAUTHORITY=//p')
+    runuser -u dorygate -- env DISPLAY=\"\$display\" XAUTHORITY=\"\$xauth\" \
+      xsetroot -cursor_name left_ptr
+    echo cursor-restored
+  " > "$WORKROOT/evidence/$distro-cursor-restored.json"
+
   host_to_guest_clipboard="dory-host-to-guest-$distro-$(uuidgen | tr '[:upper:]' '[:lower:]')"
   osascript <<'APPLESCRIPT'
 tell application "Finder" to activate
@@ -1141,6 +1236,7 @@ fi
   printf 'graceful_shutdown=PASS\n'
   printf 'dynamic_retina_display=PASS\n'
   printf 'fullscreen_display=PASS\n'
+  printf 'cursor_shape=PASS\n'
   printf 'clipboard_bidirectional=PASS\n'
   printf 'keyboard_pointer_input=PASS\n'
   if [ "$SELECTED_DISTRO" = all ] || [ "$SELECTED_DISTRO" = debian ]; then
