@@ -2,16 +2,24 @@ import Foundation
 
 /// Produces the machine shape that is safe to print, log, or place in a support bundle.
 ///
-/// Legacy machine configuration can contain arbitrary host/guest environment values. Those values
-/// are launch authority, not diagnostics, and an opaque credential cannot be identified reliably
-/// from its bytes. The public CLI therefore removes environment containers structurally instead of
-/// attempting value-pattern redaction.
+/// Legacy machine configuration can contain arbitrary host/guest environment values. Host share
+/// and helper-socket paths also reveal private local filesystem structure. Those values are launch
+/// authority, not diagnostics, and cannot be made safe through value-pattern redaction. The public
+/// CLI therefore removes the corresponding fields structurally.
 public enum DoryMachineDiagnosticsProjection {
     private static let environmentKeys: Set<String> = [
         "env",
         "environment",
         "environment_variables",
         "environmentvariables",
+    ]
+    private static let hostPathKeys: Set<String> = [
+        "hostpath",
+        "handoffsocketpath",
+        "agentsocketpath",
+        "dockerdsocketpath",
+        "shellsocketpath",
+        "controlsocketpath",
     ]
 
     public static func supportSafeMachineStatus(_ status: NSDictionary) -> NSDictionary {
@@ -27,7 +35,9 @@ public enum DoryMachineDiagnosticsProjection {
             let result = NSMutableDictionary(capacity: dictionary.count)
             for (rawKey, item) in dictionary {
                 guard let key = rawKey as? String else { continue }
-                if environmentKeys.contains(key.lowercased()) { continue }
+                let normalizedKey = key.lowercased()
+                if environmentKeys.contains(normalizedKey)
+                    || hostPathKeys.contains(normalizedKey) { continue }
                 result[key] = sanitize(item)
             }
             return result.copy() as? NSDictionary ?? [:]
