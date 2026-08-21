@@ -687,6 +687,37 @@ struct DorydClientTests {
         }
     }
 
+    @Test func machineListRequiresExactFlightRecorderSummary() async throws {
+        let listener = NSXPCListener.anonymous()
+        let service = FakeDorydService()
+        let delegate = FakeDorydListenerDelegate(service: service)
+        listener.delegate = delegate
+        listener.resume()
+        defer { listener.invalidate() }
+        let client = DorydClient(endpoint: listener.endpoint)
+
+        service.setMachineFlightRecorderSummary("dev", [
+            "headSequence": UInt64(17),
+            "available": true,
+        ] as NSDictionary)
+        let current = try #require((try await client.machineList()).first)
+        #expect(current.flightRecorderHeadSequence == 17)
+        #expect(current.flightRecorderAvailable)
+
+        service.setMachineFlightRecorderSummary("dev", nil)
+        let oldDaemon = try #require((try await client.machineList()).first)
+        #expect(oldDaemon.flightRecorderHeadSequence == 0)
+        #expect(!oldDaemon.flightRecorderAvailable)
+
+        service.setMachineFlightRecorderSummary("dev", [
+            "headSequence": "17",
+            "available": true,
+        ] as NSDictionary)
+        await #expect(throws: (any Error).self) {
+            _ = try await client.machineList()
+        }
+    }
+
     @MainActor
     @Test func machineEventCursorRequiresExactOrderedSafeEvidence() async throws {
         let listener = NSXPCListener.anonymous()
@@ -826,6 +857,65 @@ struct DorydClientTests {
         service.setMachineEventBatch([:])
         store.loadMachines()
         try await waitUntil { service.machineListCount > beforeFallbackList }
+    }
+
+    @MainActor
+    @Test func machineFlightRecorderRequiresExactPathFreeCursorEvidence() async throws {
+        let listener = NSXPCListener.anonymous()
+        let service = FakeDorydService()
+        let delegate = FakeDorydListenerDelegate(service: service)
+        listener.delegate = delegate
+        listener.resume()
+        defer { listener.invalidate() }
+        let client = DorydClient(endpoint: listener.endpoint)
+
+        let event: NSDictionary = [
+            "schemaVersion": UInt16(1),
+            "sequence": UInt64(1),
+            "occurredAtUnixMilliseconds": Int64(1_000),
+            "machineID": "dev",
+            "kind": "workspace-created",
+            "evidenceReferences": [] as [NSDictionary],
+        ]
+        let valid: NSDictionary = [
+            "schemaVersion": UInt16(1),
+            "machineID": "dev",
+            "headSequence": UInt64(1),
+            "snapshotRequired": false,
+            "events": [event],
+        ]
+        service.setMachineFlightRecorderBatch(valid)
+        let batch = try await client.machineFlightRecorder(
+            machineID: "dev",
+            afterSequence: 0
+        )
+        #expect(batch.headSequence == 1)
+        #expect(batch.events.first?.kind == .workspaceCreated)
+
+        let leakedEvent = event.mutableCopy() as! NSMutableDictionary
+        leakedEvent["detail"] = "/private/opaque"
+        let leaked = valid.mutableCopy() as! NSMutableDictionary
+        leaked["events"] = [leakedEvent]
+        service.setMachineFlightRecorderBatch(leaked)
+        await #expect(throws: (any Error).self) {
+            _ = try await client.machineFlightRecorder(
+                machineID: "dev",
+                afterSequence: 0
+            )
+        }
+
+        let gapEvent = event.mutableCopy() as! NSMutableDictionary
+        gapEvent["sequence"] = UInt64(2)
+        let gap = valid.mutableCopy() as! NSMutableDictionary
+        gap["headSequence"] = UInt64(2)
+        gap["events"] = [gapEvent]
+        service.setMachineFlightRecorderBatch(gap)
+        await #expect(throws: (any Error).self) {
+            _ = try await client.machineFlightRecorder(
+                machineID: "dev",
+                afterSequence: 0
+            )
+        }
     }
 
     @MainActor
@@ -3708,6 +3798,7 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
     private var _machineGuestExportCurrentResponseOverride: NSDictionary?
     private var _machineImportAssessmentOverride: NSDictionary?
     private var _machineEventBatchOverride: NSDictionary?
+    private var _machineFlightRecorderBatchOverride: NSDictionary?
     private var _machineEventQueryCount = 0
     private var _machineListCount = 0
     private var _machineGuestExportCancelCount = 0
@@ -3963,6 +4054,20 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
         machines[machineID] = current.copy() as? NSDictionary
     }
 
+    func setMachineFlightRecorderSummary(_ machineID: String, _ summary: Any?) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let current = machines[machineID]?.mutableCopy() as? NSMutableDictionary else {
+            return
+        }
+        if let summary {
+            current["flightRecorder"] = summary
+        } else {
+            current.removeObject(forKey: "flightRecorder")
+        }
+        machines[machineID] = current.copy() as? NSDictionary
+    }
+
     var machineStopCount: Int {
         lock.lock(); defer { lock.unlock() }
         return _machineStopCount
@@ -4068,6 +4173,12 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
         lock.lock()
         _engineState = state
         _engineDetail = detail
+        lock.unlock()
+    }
+
+    func setMachineFlightRecorderBatch(_ response: NSDictionary?) {
+        lock.lock()
+        _machineFlightRecorderBatchOverride = response
         lock.unlock()
     }
 
@@ -4405,6 +4516,23 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
             "schemaVersion": UInt16(1),
             "headSequence": afterSequence,
             "snapshotRequired": afterSequence == 0,
+            "events": [] as [NSDictionary],
+        ]
+        lock.unlock()
+        reply(true, row, "")
+    }
+
+    func machineFlightRecorder(
+        _ machineID: String,
+        afterSequence: UInt64,
+        reply: @escaping (Bool, NSDictionary, String) -> Void
+    ) {
+        lock.lock()
+        let row = _machineFlightRecorderBatchOverride ?? [
+            "schemaVersion": UInt16(1),
+            "machineID": machineID,
+            "headSequence": UInt64(0),
+            "snapshotRequired": afterSequence > 0,
             "events": [] as [NSDictionary],
         ]
         lock.unlock()
@@ -5154,6 +5282,10 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
             "memoryMB": memoryMB,
             "cpuCount": cpuCount,
             "displayMode": displayMode,
+            "flightRecorder": [
+                "headSequence": UInt64(0),
+                "available": true,
+            ] as NSDictionary,
         ]
         if let pid { row["pid"] = pid }
         if let agentBuild {

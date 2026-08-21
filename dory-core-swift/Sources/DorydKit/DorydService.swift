@@ -416,6 +416,26 @@ public final class DorydService: NSObject, DorydControl {
         }
     }
 
+    public func machineFlightRecorder(
+        _ machineID: String,
+        afterSequence: UInt64,
+        reply: @escaping (Bool, NSDictionary, String) -> Void
+    ) {
+        guard let machineManager else {
+            reply(false, [:], "machine flight recorder is not configured")
+            return
+        }
+        do {
+            let batch = try machineManager.flightRecorder(
+                id: machineID,
+                afterSequence: afterSequence
+            )
+            reply(true, batch.xpcDictionary, "")
+        } catch {
+            reply(false, [:], "machine flight recorder is unavailable: \(error)")
+        }
+    }
+
     public func machineStats(
         _ machineID: String,
         reply: @escaping (Bool, NSDictionary, String) -> Void
@@ -2203,6 +2223,10 @@ private extension DoryMachineStatus {
                 "kind": activeOperationKind,
             ] as NSDictionary
         }
+        dictionary["flightRecorder"] = [
+            "headSequence": flightRecorderHeadSequence,
+            "available": flightRecorderAvailable,
+        ] as NSDictionary
         if let handoffSocketPath {
             dictionary["handoffSocketPath"] = handoffSocketPath
         }
@@ -2337,6 +2361,53 @@ private extension DoryMachineEventBatch {
             "snapshotRequired": snapshotRequired,
             "events": events.map(\.xpcDictionary),
         ]
+    }
+}
+
+private extension DoryMachineFlightRecorderBatch {
+    var xpcDictionary: NSDictionary {
+        [
+            "schemaVersion": schemaVersion,
+            "machineID": machineID,
+            "headSequence": headSequence,
+            "snapshotRequired": snapshotRequired,
+            "events": events.map(\.xpcDictionary),
+        ]
+    }
+}
+
+private extension DoryMachineFlightEvent {
+    var xpcDictionary: NSDictionary {
+        var dictionary: [String: Any] = [
+            "schemaVersion": schemaVersion,
+            "sequence": sequence,
+            "occurredAtUnixMilliseconds": occurredAtUnixMilliseconds,
+            "machineID": machineID,
+            "kind": kind.rawValue,
+            "evidenceReferences": evidenceReferences.map {
+                ["kind": $0.kind.rawValue, "identifier": $0.identifier] as NSDictionary
+            },
+        ]
+        if let operationID { dictionary["operationID"] = operationID }
+        if let operationKind { dictionary["operationKind"] = operationKind }
+        if let phase { dictionary["phase"] = phase }
+        if let machineState { dictionary["machineState"] = machineState }
+        if let failureCode { dictionary["failureCode"] = failureCode.rawValue }
+        if let recoveryDisposition {
+            dictionary["recoveryDisposition"] = recoveryDisposition.rawValue
+        }
+        if let backend { dictionary["backend"] = backend.rawValue }
+        if let virtualHardwareABIVersion {
+            dictionary["virtualHardwareABIVersion"] = virtualHardwareABIVersion
+        }
+        if let planSHA256 { dictionary["planSHA256"] = planSHA256 }
+        if let durationMilliseconds {
+            dictionary["durationMilliseconds"] = durationMilliseconds
+        }
+        if let deadlineUnixMilliseconds {
+            dictionary["deadlineUnixMilliseconds"] = deadlineUnixMilliseconds
+        }
+        return dictionary as NSDictionary
     }
 }
 

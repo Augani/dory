@@ -25,6 +25,7 @@ nonisolated protocol DorydControlXPC {
     func machineDelete(_ machineID: String, reply: @escaping (Bool, String) -> Void)
     func machineList(reply: @escaping (NSArray, String) -> Void)
     func machineEvents(_ afterSequence: UInt64, reply: @escaping (Bool, NSDictionary, String) -> Void)
+    func machineFlightRecorder(_ machineID: String, afterSequence: UInt64, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineStats(_ machineID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineExec(_ machineID: String, request: NSDictionary, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineTransfer(_ machineID: String, request: NSDictionary, reply: @escaping (Bool, NSDictionary, String) -> Void)
@@ -925,6 +926,8 @@ nonisolated struct DorydMachineStatus: Sendable, Equatable {
     var lastError: String?
     var failure: DorydMachineFailure? = nil
     var activeOperation: DorydMachineOperationSummary? = nil
+    var flightRecorderHeadSequence: UInt64 = 0
+    var flightRecorderAvailable: Bool = false
     var handoffSocketPath: String?
     var agentBuild: String?
     var agentProtocolVersion: UInt32? = nil
@@ -1040,6 +1043,48 @@ nonisolated struct DorydMachineEventBatch: Sendable, Equatable {
     var headSequence: UInt64
     var snapshotRequired: Bool
     var events: [DorydMachineEvent]
+}
+
+nonisolated enum DorydMachineFlightEventKind: String, Sendable, Equatable {
+    case workspaceCreated = "workspace-created"
+    case operationStarted = "operation-started"
+    case operationPhase = "operation-phase"
+    case backendSpawned = "backend-spawned"
+    case readinessAccepted = "readiness-accepted"
+    case readinessRejected = "readiness-rejected"
+    case resourceTransition = "resource-transition"
+    case processExited = "process-exited"
+    case failureRecorded = "failure-recorded"
+    case operationCompleted = "operation-completed"
+    case operationFailed = "operation-failed"
+    case recoveryRequired = "recovery-required"
+    case workspaceDeleted = "workspace-deleted"
+}
+
+nonisolated struct DorydMachineFlightEvent: Sendable, Equatable {
+    var sequence: UInt64
+    var occurredAtUnixMilliseconds: Int64
+    var machineID: String
+    var operationID: String?
+    var operationKind: DorydMachineOperationKind?
+    var kind: DorydMachineFlightEventKind
+    var phase: String?
+    var machineState: String?
+    var failureCode: DorydMachineFailureCode?
+    var recoveryDisposition: DorydMachineRecoveryDisposition?
+    var backend: DoryVirtualizationBackendIdentity?
+    var virtualHardwareABIVersion: UInt16?
+    var planSHA256: String?
+    var durationMilliseconds: UInt64?
+    var deadlineUnixMilliseconds: Int64?
+    var evidenceReferences: [DorydMachineFailureEvidenceReference]
+}
+
+nonisolated struct DorydMachineFlightRecorderBatch: Sendable, Equatable {
+    var machineID: String
+    var headSequence: UInt64
+    var snapshotRequired: Bool
+    var events: [DorydMachineFlightEvent]
 }
 
 nonisolated enum DorydMachineImportDisposition: String, Sendable, Equatable {
@@ -2114,6 +2159,25 @@ nonisolated final class DorydClient: @unchecked Sendable {
         }
     }
 
+    func machineFlightRecorder(
+        machineID: String,
+        afterSequence: UInt64
+    ) async throws -> DorydMachineFlightRecorderBatch {
+        try await statusCommand { proxy, reply in
+            proxy.machineFlightRecorder(
+                machineID,
+                afterSequence: afterSequence,
+                reply: reply
+            )
+        } decode: {
+            Self.machineFlightRecorderBatch(
+                from: $0,
+                machineID: machineID,
+                afterSequence: afterSequence
+            )
+        }
+    }
+
     func machineList() async throws -> [DorydMachineStatus] {
         try await call { proxy, finish in
             proxy.machineList { rows, error in
@@ -2460,6 +2524,9 @@ nonisolated final class DorydClient: @unchecked Sendable {
         guard let failure = machineFailure(from: dictionary["failure"]),
               let activeOperation = machineActiveOperation(
                   from: dictionary["activeOperation"]
+              ),
+              let flightRecorder = machineFlightRecorderSummary(
+                  from: dictionary["flightRecorder"]
               ) else {
             return nil
         }
@@ -2491,6 +2558,8 @@ nonisolated final class DorydClient: @unchecked Sendable {
             lastError: nonEmptyString(dictionary["lastError"]),
             failure: failure.value,
             activeOperation: activeOperation.value,
+            flightRecorderHeadSequence: flightRecorder.headSequence,
+            flightRecorderAvailable: flightRecorder.available,
             handoffSocketPath: nonEmptyString(dictionary["handoffSocketPath"]),
             agentBuild: agentBuild,
             agentProtocolVersion: agentHandshake.protocolVersion,
@@ -2593,6 +2662,36 @@ nonisolated final class DorydClient: @unchecked Sendable {
 
     private struct ParsedMachineActiveOperation {
         var value: DorydMachineOperationSummary?
+    }
+
+    private struct ParsedMachineFlightRecorderSummary {
+        var headSequence: UInt64
+        var available: Bool
+    }
+
+    nonisolated private static func machineFlightRecorderSummary(
+        from raw: Any?
+    ) -> ParsedMachineFlightRecorderSummary? {
+        // Absence means an older daemon; never claim recorder availability without evidence.
+        guard let raw else {
+            return ParsedMachineFlightRecorderSummary(
+                headSequence: 0,
+                available: false
+            )
+        }
+        guard let dictionary = raw as? NSDictionary,
+              let rawKeys = dictionary.allKeys as? [String],
+              rawKeys.count == dictionary.allKeys.count,
+              Set(rawKeys) == ["headSequence", "available"],
+              let headSequence = strictUInt64(dictionary["headSequence"]),
+              let available = dictionary["available"] as? NSNumber,
+              CFGetTypeID(available) == CFBooleanGetTypeID() else {
+            return nil
+        }
+        return ParsedMachineFlightRecorderSummary(
+            headSequence: headSequence,
+            available: available.boolValue
+        )
     }
 
     nonisolated private static func machineActiveOperation(
@@ -3292,6 +3391,178 @@ nonisolated final class DorydClient: @unchecked Sendable {
         )
     }
 
+    nonisolated private static func machineFlightRecorderBatch(
+        from dictionary: NSDictionary,
+        machineID: String,
+        afterSequence: UInt64
+    ) -> DorydMachineFlightRecorderBatch? {
+        guard machineID.isSafeMachineIdentifier,
+              let rawKeys = dictionary.allKeys as? [String],
+              rawKeys.count == dictionary.allKeys.count,
+              Set(rawKeys) == [
+                  "schemaVersion", "machineID", "headSequence", "snapshotRequired", "events",
+              ],
+              strictUInt64(dictionary["schemaVersion"]) == 1,
+              dictionary["machineID"] as? String == machineID,
+              let headSequence = strictUInt64(dictionary["headSequence"]),
+              let snapshot = dictionary["snapshotRequired"] as? NSNumber,
+              CFGetTypeID(snapshot) == CFBooleanGetTypeID(),
+              let rows = dictionary["events"] as? NSArray,
+              rows.count <= 256 else {
+            return nil
+        }
+        var events: [DorydMachineFlightEvent] = []
+        for raw in rows {
+            guard let row = raw as? NSDictionary,
+                  let event = machineFlightEvent(from: row),
+                  event.machineID == machineID else {
+                return nil
+            }
+            events.append(event)
+        }
+        guard events == events.sorted(by: { $0.sequence < $1.sequence }),
+              Set(events.map(\.sequence)).count == events.count,
+              zip(events, events.dropFirst()).allSatisfy({ lhs, rhs in
+                  lhs.sequence < UInt64.max && lhs.sequence + 1 == rhs.sequence
+              }) else {
+            return nil
+        }
+        if events.isEmpty {
+            guard headSequence == 0 || (!snapshot.boolValue && headSequence == afterSequence) else {
+                return nil
+            }
+        } else {
+            guard events.last?.sequence == headSequence else { return nil }
+            if !snapshot.boolValue {
+                guard afterSequence < UInt64.max,
+                      events.first?.sequence == afterSequence + 1 else { return nil }
+            }
+        }
+        return DorydMachineFlightRecorderBatch(
+            machineID: machineID,
+            headSequence: headSequence,
+            snapshotRequired: snapshot.boolValue,
+            events: events
+        )
+    }
+
+    nonisolated private static func machineFlightEvent(
+        from dictionary: NSDictionary
+    ) -> DorydMachineFlightEvent? {
+        let required: Set<String> = [
+            "schemaVersion", "sequence", "occurredAtUnixMilliseconds", "machineID",
+            "kind", "evidenceReferences",
+        ]
+        let optional: Set<String> = [
+            "operationID", "operationKind", "phase", "machineState", "failureCode",
+            "recoveryDisposition", "backend", "virtualHardwareABIVersion", "planSHA256",
+            "durationMilliseconds", "deadlineUnixMilliseconds",
+        ]
+        guard let rawKeys = dictionary.allKeys as? [String] else { return nil }
+        let keys = Set(rawKeys)
+        guard rawKeys.count == keys.count,
+              required.isSubset(of: keys),
+              keys.subtracting(required).isSubset(of: optional),
+              strictUInt64(dictionary["schemaVersion"]) == 1,
+              let sequence = strictUInt64(dictionary["sequence"]), sequence > 0,
+              let occurredAt = strictInt64(dictionary["occurredAtUnixMilliseconds"]),
+              occurredAt > 0,
+              let machineID = dictionary["machineID"] as? String,
+              machineID.isSafeMachineIdentifier,
+              let rawKind = dictionary["kind"] as? String,
+              let kind = DorydMachineFlightEventKind(rawValue: rawKind),
+              let rawEvidence = dictionary["evidenceReferences"] as? NSArray,
+              rawEvidence.count <= 16 else {
+            return nil
+        }
+        var evidence: [DorydMachineFailureEvidenceReference] = []
+        for raw in rawEvidence {
+            guard let row = raw as? NSDictionary,
+                  let rowKeys = row.allKeys as? [String],
+                  rowKeys.count == row.allKeys.count,
+                  Set(rowKeys) == ["kind", "identifier"],
+                  let rawEvidenceKind = row["kind"] as? String,
+                  let evidenceKind = DorydMachineFailureEvidenceKind(
+                      rawValue: rawEvidenceKind
+                  ),
+                  let identifier = row["identifier"] as? String,
+                  identifier.utf8.count <= 256,
+                  identifier.wholeMatch(
+                      of: /[A-Za-z0-9][A-Za-z0-9._:@+-]{0,255}/
+                  ) != nil else {
+                return nil
+            }
+            evidence.append(.init(kind: evidenceKind, identifier: identifier))
+        }
+        guard Set(evidence).count == evidence.count else { return nil }
+
+        let operationID = dictionary["operationID"] as? String
+        let operationKind = (dictionary["operationKind"] as? String).flatMap(
+            DorydMachineOperationKind.init(rawValue:)
+        )
+        let phase = dictionary["phase"] as? String
+        let machineState = dictionary["machineState"] as? String
+        let failureCode = (dictionary["failureCode"] as? String).flatMap(
+            DorydMachineFailureCode.init(rawValue:)
+        )
+        let recovery = (dictionary["recoveryDisposition"] as? String).flatMap(
+            DorydMachineRecoveryDisposition.init(rawValue:)
+        )
+        let backend = (dictionary["backend"] as? String).flatMap(
+            DoryVirtualizationBackendIdentity.init(rawValue:)
+        )
+        let abi = dictionary["virtualHardwareABIVersion"]
+            .flatMap { strictUInt64($0) }
+            .flatMap { UInt16(exactly: $0) }
+        let planSHA256 = dictionary["planSHA256"] as? String
+        let duration = dictionary["durationMilliseconds"].flatMap(strictUInt64)
+        let deadline = dictionary["deadlineUnixMilliseconds"].flatMap(strictInt64)
+        guard (dictionary["operationID"] == nil) == (operationID == nil),
+              (dictionary["operationKind"] == nil) == (operationKind == nil),
+              (operationID == nil) == (operationKind == nil),
+              operationID.map(isMachineOperationID) ?? true,
+              (dictionary["phase"] == nil)
+                || phase.map(machineFlightPhases.contains) == true,
+              (dictionary["machineState"] == nil)
+                || machineState.map(machineEventStates.contains) == true,
+              (dictionary["failureCode"] == nil) == (failureCode == nil),
+              (dictionary["recoveryDisposition"] == nil) == (recovery == nil),
+              (failureCode == nil) == (recovery == nil),
+              (dictionary["backend"] == nil) == (backend == nil),
+              (dictionary["virtualHardwareABIVersion"] == nil) == (abi == nil),
+              abi.map({ $0 > 0 }) ?? true,
+              (dictionary["planSHA256"] == nil)
+                || planSHA256?.isLowercaseSHA256 == true,
+              (dictionary["durationMilliseconds"] == nil) == (duration == nil),
+              duration.map({ $0 <= 31 * 24 * 60 * 60 * 1_000 }) ?? true,
+              (dictionary["deadlineUnixMilliseconds"] == nil) == (deadline == nil),
+              deadline.map({ $0 > 0 }) ?? true else {
+            return nil
+        }
+        if [.failureRecorded, .readinessRejected, .operationFailed, .recoveryRequired]
+            .contains(kind), failureCode == nil {
+            return nil
+        }
+        return DorydMachineFlightEvent(
+            sequence: sequence,
+            occurredAtUnixMilliseconds: occurredAt,
+            machineID: machineID,
+            operationID: operationID,
+            operationKind: operationKind,
+            kind: kind,
+            phase: phase,
+            machineState: machineState,
+            failureCode: failureCode,
+            recoveryDisposition: recovery,
+            backend: backend,
+            virtualHardwareABIVersion: abi,
+            planSHA256: planSHA256,
+            durationMilliseconds: duration,
+            deadlineUnixMilliseconds: deadline,
+            evidenceReferences: evidence
+        )
+    }
+
     nonisolated private static func machineEvent(
         from dictionary: NSDictionary
     ) -> DorydMachineEvent? {
@@ -3444,6 +3715,10 @@ nonisolated final class DorydClient: @unchecked Sendable {
 
     nonisolated private static let machineEventStates: Set<String> = [
         "created", "starting", "running", "paused", "suspended", "stopped", "failed",
+    ]
+    nonisolated private static let machineFlightPhases: Set<String> = [
+        "planned", "quiescing", "staging", "verifying", "readyToPublish",
+        "publishing", "validating", "completed",
     ]
     nonisolated private static let machineIntegrationHealthStates: Set<String> = [
         "inactive", "missing-tools", "incompatible", "degraded", "compatibility", "healthy",

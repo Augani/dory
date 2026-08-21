@@ -1963,8 +1963,33 @@ public final class HealthReporter: @unchecked Sendable {
             )
         }
         return [summary] + statuses.flatMap {
-            [Self.machineEvidenceCheck($0), Self.machineToolsCheck($0)]
+            [
+                Self.machineEvidenceCheck($0),
+                Self.machineFlightRecorderCheck($0),
+                Self.machineToolsCheck($0),
+            ]
         }
+    }
+
+    static func machineFlightRecorderCheck(_ status: DoryMachineStatus) -> HealthCheck {
+        HealthCheck(
+            id: "machine.local.\(status.id).flight-recorder",
+            status: status.flightRecorderAvailable ? .pass : .warn,
+            code: status.flightRecorderAvailable
+                ? "machine.flight_recorder.ready"
+                : "machine.flight_recorder.unavailable",
+            title: "Workspace flight recorder",
+            detail: status.flightRecorderAvailable
+                ? "\(status.id) flight recorder is durable through sequence \(status.flightRecorderHeadSequence)"
+                : "\(status.id) flight recorder authority could not be read or persisted",
+            action: status.flightRecorderAvailable
+                ? nil
+                : "Repair the private machine state directory before the next lifecycle mutation.",
+            data: [
+                "available": status.flightRecorderAvailable ? "true" : "false",
+                "head_sequence": String(status.flightRecorderHeadSequence),
+            ]
+        )
     }
 
     static func machineToolsCheck(_ status: DoryMachineStatus) -> HealthCheck {

@@ -6,6 +6,51 @@ import Foundation
 import XCTest
 
 final class MachineManagerLifecycleJournalIntegrationTests: XCTestCase {
+    func testFlightRecorderCapturesLifecycleAndSurvivesRestartAndDeletion() throws {
+        let fixture = try LifecycleFixture(name: #function)
+        defer { fixture.cleanup() }
+        let manager = fixture.makeManager()
+        let created = try fixture.createMachine(manager)
+        XCTAssertTrue(created.flightRecorderAvailable)
+        XCTAssertEqual(created.flightRecorderHeadSequence, 1)
+
+        XCTAssertEqual(try manager.start(id: fixture.machineID).state, .running)
+        XCTAssertEqual(try manager.stop(id: fixture.machineID).state, .stopped)
+        let beforeRestart = try manager.flightRecorder(
+            id: fixture.machineID,
+            afterSequence: 0
+        )
+        XCTAssertFalse(beforeRestart.snapshotRequired)
+        XCTAssertEqual(beforeRestart.headSequence, beforeRestart.events.last?.sequence)
+        XCTAssertTrue(beforeRestart.events.allSatisfy(\.isValid))
+        XCTAssertTrue(beforeRestart.events.contains { $0.kind == .workspaceCreated })
+        XCTAssertTrue(beforeRestart.events.contains { $0.kind == .backendSpawned })
+        XCTAssertTrue(beforeRestart.events.contains { $0.kind == .operationCompleted })
+        XCTAssertTrue(beforeRestart.events.contains {
+            $0.kind == .operationPhase && $0.phase == DoryOperationPhase.publishing.rawValue
+        })
+
+        let restarted = fixture.makeManager()
+        let status = try XCTUnwrap(restarted.status(id: fixture.machineID))
+        XCTAssertTrue(status.flightRecorderAvailable)
+        XCTAssertEqual(status.flightRecorderHeadSequence, beforeRestart.headSequence)
+        XCTAssertEqual(
+            try restarted.flightRecorder(
+                id: fixture.machineID,
+                afterSequence: beforeRestart.headSequence
+            ).events,
+            []
+        )
+
+        try restarted.delete(id: fixture.machineID)
+        let tombstone = try restarted.flightRecorder(
+            id: fixture.machineID,
+            afterSequence: beforeRestart.headSequence
+        )
+        XCTAssertTrue(tombstone.events.contains { $0.kind == .workspaceDeleted })
+        XCTAssertNil(restarted.status(id: fixture.machineID))
+    }
+
     func testPauseAndResumePublishExactLifecycleTransitions() throws {
         let fixture = try LifecycleFixture(name: #function)
         defer { fixture.cleanup() }

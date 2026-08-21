@@ -191,6 +191,7 @@ func usage(exitCode: Int32 = 2) -> Never {
           dorydctl [global] machine list
           dorydctl [global] machine status NAME
           dorydctl [global] machine stats NAME
+          dorydctl [global] machine flight-recorder NAME [--after SEQUENCE]
           dorydctl [global] machine create NAME (--kernel PATH --rootfs PATH | --installer-iso PATH [--disk-size-gb N]) [--memory-mb N] [--cpus N] [--display-mode headless|desktop] [--dns-target IPv4] [--share TAG=HOST:GUEST[:ro|rw] | JSON] [--guest-user NAME] [--guest-uid N] [--desktop-distro ID] [--desktop-name NAME] [--desktop-version VERSION] [--desktop-environment NAME] [--clipboard off|host-to-guest|guest-to-host|bidirectional] [--runtime auto|accelerated|compatible] [--graphics auto|virgl|virgl-venus|software] [--network shared-nat|host-only|disconnected|bridged] [--sandbox [--sandbox-expires-at UNIX_SECONDS] [--sandbox-ssh-agent denied|granted] [--sandbox-profile standard|agent-ready] [--sandbox-tool TOOL ...] [--sandbox-baseline ID]]
           dorydctl [global] machine update NAME [--memory-mb N] [--cpus N] [--dns-target IPv4 | --clear-dns-target] [--share TAG=HOST:GUEST[:ro|rw] | JSON ... | --clear-shares] [typed create options | --clear-guest-account | --clear-desktop-identity | --clear-clipboard | --clear-runtime | --clear-graphics | --clear-network] [--attach-installer | --eject-installer]
           dorydctl [global] machine start|stop|pause|suspend|resume|restart|delete NAME
@@ -1125,7 +1126,7 @@ func runBalloon(cursor: inout ArgumentCursor, client: DorydCtlClient) throws {
 }
 
 func runMachine(cursor: inout ArgumentCursor, client: DorydCtlClient) throws {
-    let subcommand = try cursor.take("usage: dorydctl machine list|status|create|update|desktop-update|start|stop|pause|suspend|resume|restart|delete|exec|shell|provision|snapshots|snapshot|backup")
+    let subcommand = try cursor.take("usage: dorydctl machine list|status|stats|flight-recorder|create|update|desktop-update|start|stop|pause|suspend|resume|restart|delete|exec|shell|provision|snapshots|snapshot|backup")
     switch subcommand {
     case "list":
         let rows: NSArray = try client.call { proxy, finish in
@@ -1147,6 +1148,28 @@ func runMachine(cursor: inout ArgumentCursor, client: DorydCtlClient) throws {
             proxy.machineStats(name, reply: reply)
         }
         try emitJSON(stats)
+    case "flight-recorder":
+        let name = try cursor.take(
+            "usage: dorydctl machine flight-recorder NAME [--after SEQUENCE]"
+        )
+        let after: UInt64
+        if let raw = try cursor.optionValue("--after") {
+            guard let value = UInt64(raw) else {
+                throw DorydCtlError.usage("--after must be an unsigned integer")
+            }
+            after = value
+        } else {
+            after = 0
+        }
+        guard cursor.values.isEmpty else {
+            throw DorydCtlError.usage(
+                "unexpected machine flight-recorder argument: \(cursor.values[0])"
+            )
+        }
+        let batch: NSDictionary = try client.statusCommand { proxy, reply in
+            proxy.machineFlightRecorder(name, afterSequence: after, reply: reply)
+        }
+        try emitJSON(batch)
     case "create":
         let name = try cursor.take("usage: dorydctl machine create NAME (--kernel PATH --rootfs PATH | --installer-iso PATH [--disk-size-gb N])")
         let installerISO = try cursor.optionValue("--installer-iso")

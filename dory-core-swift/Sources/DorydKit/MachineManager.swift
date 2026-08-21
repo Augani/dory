@@ -335,6 +335,8 @@ public struct DoryMachineStatus: Sendable, Equatable {
     public var failure: DoryMachineFailure?
     public var activeOperationID: String?
     public var activeOperationKind: String?
+    public var flightRecorderHeadSequence: UInt64
+    public var flightRecorderAvailable: Bool
     public var handoffSocketPath: String?
     public var agentBuild: String?
     public var agentProtocolVersion: UInt32?
@@ -372,6 +374,8 @@ public struct DoryMachineStatus: Sendable, Equatable {
         failure: DoryMachineFailure? = nil,
         activeOperationID: String? = nil,
         activeOperationKind: String? = nil,
+        flightRecorderHeadSequence: UInt64 = 0,
+        flightRecorderAvailable: Bool = false,
         handoffSocketPath: String? = nil,
         agentBuild: String? = nil,
         agentProtocolVersion: UInt32? = nil,
@@ -409,6 +413,8 @@ public struct DoryMachineStatus: Sendable, Equatable {
         self.failure = failure
         self.activeOperationID = activeOperationID
         self.activeOperationKind = activeOperationKind
+        self.flightRecorderHeadSequence = flightRecorderHeadSequence
+        self.flightRecorderAvailable = flightRecorderAvailable
         self.handoffSocketPath = handoffSocketPath
         self.agentBuild = agentBuild
         self.agentProtocolVersion = agentProtocolVersion
@@ -947,6 +953,7 @@ public final class MachineManager: @unchecked Sendable {
     private let workspaceRepository: DoryWorkspaceRepository
     private let runtimeIdentityStore: DoryMachineRuntimeIdentityStore
     private let failureStore: DoryMachineFailureStore
+    private let flightRecorderStore: DoryMachineFlightRecorderStore
     private let launchPolicy: DoryMachineLaunchPolicy
     private let lifecycleJournalStore: DoryOperationJournalStore?
     private let lifecycleJournalInitializationError: String?
@@ -1006,6 +1013,9 @@ public final class MachineManager: @unchecked Sendable {
             root: configuration.stateDirectory
         )
         self.failureStore = DoryMachineFailureStore(root: configuration.stateDirectory)
+        self.flightRecorderStore = DoryMachineFlightRecorderStore(
+            root: configuration.stateDirectory
+        )
         self.savedStateStore = DoryMachineSavedStateStore(root: configuration.stateDirectory)
         do {
             let store = try DoryOperationJournalStore(
@@ -1054,6 +1064,17 @@ public final class MachineManager: @unchecked Sendable {
             savedStateStore: savedStateStore
         )
         do {
+            let heads = try flightRecorderStore.headSequences()
+            for machineID in machines.keys {
+                machines[machineID]?.flightRecorderHeadSequence = heads[machineID] ?? 0
+                machines[machineID]?.flightRecorderAvailable = true
+            }
+        } catch {
+            for machineID in machines.keys {
+                machines[machineID]?.flightRecorderAvailable = false
+            }
+        }
+        do {
             let failures = try failureStore.failures()
             for (machineID, failure) in failures where machines[machineID] != nil {
                 machines[machineID]?.failure = failure
@@ -1096,6 +1117,11 @@ public final class MachineManager: @unchecked Sendable {
                     message: diagnostic,
                     causes: [.journal],
                     recoveryDisposition: .repair
+                )
+                appendFlightEvent(
+                    on: &entry,
+                    kind: .recoveryRequired,
+                    failure: entry.failure
                 )
                 machines[machineID] = entry
             }
@@ -1319,9 +1345,10 @@ public final class MachineManager: @unchecked Sendable {
         }
         do {
             try failureStore.clear(machine.id)
+            try flightRecorderStore.clear(machineID: machine.id)
         } catch {
             throw MachineManagerError.persistence(
-                "could not prepare machine diagnostic authority: \(error)"
+                "could not prepare machine diagnostic and flight-recorder authority: \(error)"
             )
         }
         let statePath = machineStateDirectory(id: machine.id)
@@ -1399,11 +1426,13 @@ public final class MachineManager: @unchecked Sendable {
         }
         try Self.syncDirectory(path: statePath)
         lock.lock()
-        machines[machine.id] = MachineEntry(
+        var createdEntry = MachineEntry(
             configuration: preparedMachine,
             state: .created,
             runtimeIdentity: initialRuntimeIdentity
         )
+        appendFlightEvent(on: &createdEntry, kind: .workspaceCreated)
+        machines[machine.id] = createdEntry
         lock.unlock()
         let typedSettingsSnapshot = try nativeDefinition.map(
             DoryMachineTypedSettingsSnapshot.init
@@ -1414,6 +1443,8 @@ public final class MachineManager: @unchecked Sendable {
         return DoryMachineStatus(
             id: preparedMachine.id,
             state: .created,
+            flightRecorderHeadSequence: createdEntry.flightRecorderHeadSequence,
+            flightRecorderAvailable: createdEntry.flightRecorderAvailable,
             address: preparedMachine.address,
             configuredAddress: preparedMachine.address,
             memoryMB: preparedMachine.memoryMB,
@@ -1748,11 +1779,17 @@ public final class MachineManager: @unchecked Sendable {
                 shareAuthorities: prepared.shareAuthorities,
                 launchBinding: nil
             )
-            if let lifecycle, status.state != .starting {
-                _ = completeCommittedLifecycle(
-                    lifecycle,
-                    diagnostic: "running machine has an unfinished start journal"
-                )
+            if let lifecycle {
+                if status.state == .failed {
+                    failLifecycle(lifecycle, stepID: "start.helper-exited")
+                    return self.status(id: id) ?? status
+                }
+                if status.state != .starting {
+                    _ = completeCommittedLifecycle(
+                        lifecycle,
+                        diagnostic: "running machine has an unfinished start journal"
+                    )
+                }
             }
             return status
         } catch {
@@ -1878,11 +1915,17 @@ public final class MachineManager: @unchecked Sendable {
                 plan: resolved.resolvedPlan,
                 planSHA256: resolved.resolvedPlanSHA256
             )
-            if let lifecycle, status.state != .starting {
-                _ = completeCommittedLifecycle(
-                    lifecycle,
-                    diagnostic: "running machine has an unfinished resolved-start journal"
-                )
+            if let lifecycle {
+                if status.state == .failed {
+                    failLifecycle(lifecycle, stepID: "start.helper-exited")
+                    return self.status(id: id) ?? status
+                }
+                if status.state != .starting {
+                    _ = completeCommittedLifecycle(
+                        lifecycle,
+                        diagnostic: "running machine has an unfinished resolved-start journal"
+                    )
+                }
             }
             return status
         } catch {
@@ -2558,6 +2601,7 @@ public final class MachineManager: @unchecked Sendable {
         entry.currentBalloonTargetMB = nil
         entry.activeResolvedPlan = resolvedPlan
         entry.activeBackend = processLaunch.backend
+        entry.readinessAcceptedPendingPublication = false
         let requiresAdmissionCommit = resolvedPlan != nil
             && productionResourceAdmissionLedger != nil
         entry.state = configuration.requiresReadyHandoff || requiresAdmissionCommit
@@ -2598,6 +2642,12 @@ public final class MachineManager: @unchecked Sendable {
             }
             throw error
         }
+        lock.lock()
+        if var current = machines[id], current.process === process {
+            appendFlightEvent(on: &current, kind: .backendSpawned)
+            machines[id] = current
+        }
+        lock.unlock()
         if configuration.requiresReadyHandoff {
             scheduleHandoffTimeout(id: id, process: process, timeout: handoffReadyTimeout)
         } else if requiresAdmissionCommit, let resolvedPlan {
@@ -2606,6 +2656,10 @@ public final class MachineManager: @unchecked Sendable {
                 lock.lock()
                 if machines[id]?.launchID == launchID {
                     machines[id]?.state = .running
+                    if var current = machines[id] {
+                        appendFlightEvent(on: &current, kind: .resourceTransition)
+                        machines[id] = current
+                    }
                 }
                 lock.unlock()
             } catch {
@@ -2648,6 +2702,7 @@ public final class MachineManager: @unchecked Sendable {
         )
         let deadline = Date().addingTimeInterval(handoffReadyTimeout + 1)
         while Date() < deadline {
+            publishAcceptedReadiness(id: id)
             guard let current = status(id: id) else {
                 throw MachineManagerError.unknownMachine(id)
             }
@@ -2710,6 +2765,11 @@ public final class MachineManager: @unchecked Sendable {
                 causes: [.readinessGate],
                 recoveryDisposition: .retry
             )
+            self.appendFlightEvent(
+                on: &entry,
+                kind: .readinessRejected,
+                failure: entry.failure
+            )
             // A terminal machine state must never advertise the journal as still active. The
             // durable failure retained the operation ID above; journal settlement follows under
             // the workspace operation fence.
@@ -2752,7 +2812,6 @@ public final class MachineManager: @unchecked Sendable {
         entry.currentBalloonTargetMB = nil
         entry.activeResolvedPlan = nil
         entry.activeBackend = nil
-        entry.state = .failed
         setFailure(
             on: &entry,
             code: .helperExited,
@@ -2760,8 +2819,6 @@ public final class MachineManager: @unchecked Sendable {
             causes: [.processExit],
             recoveryDisposition: .retry
         )
-        entry.activeOperationID = nil
-        entry.activeOperationKind = nil
         machines[machineID] = entry
         lock.unlock()
 
@@ -2769,6 +2826,19 @@ public final class MachineManager: @unchecked Sendable {
         try? markResolvedAdmissionStopped(plan: admissionPlan)
         failActiveStartLifecycle(id: machineID, stepID: "start.helper-exited")
         operationLock.unlock()
+        lock.lock()
+        if var current = machines[machineID], current.failure?.code == .helperExited {
+            current.state = .failed
+            current.activeOperationID = nil
+            current.activeOperationKind = nil
+            appendFlightEvent(
+                on: &current,
+                kind: .processExited,
+                failure: current.failure
+            )
+            machines[machineID] = current
+        }
+        lock.unlock()
         handoffServer?.stop()
     }
 
@@ -3493,10 +3563,12 @@ public final class MachineManager: @unchecked Sendable {
             try advanceLifecycleToPublishing(lifecycle)
             _ = try stopImplementation(id: id, journalLifecycle: false)
             lock.lock()
-            guard machines.removeValue(forKey: id) != nil else {
+            guard var deletingEntry = machines[id] else {
                 lock.unlock()
                 throw MachineManagerError.unknownMachine(id)
             }
+            appendFlightEvent(on: &deletingEntry, kind: .workspaceDeleted)
+            machines.removeValue(forKey: id)
             deletingMachineIDs.insert(id)
             lock.unlock()
 
@@ -4985,6 +5057,27 @@ public final class MachineManager: @unchecked Sendable {
         return resolvedLaunchIdentities[id]
     }
 
+    /// Returns the retained, path-free flight-recorder tail after a per-workspace cursor. A stale
+    /// or future cursor receives the full retained snapshot with `snapshotRequired == true`.
+    public func flightRecorder(
+        id: String,
+        afterSequence: UInt64
+    ) throws -> DoryMachineFlightRecorderBatch {
+        operationLock.lock()
+        defer { operationLock.unlock() }
+        lock.lock()
+        let exists = machines[id] != nil
+        lock.unlock()
+        if !exists {
+            let heads = try flightRecorderStore.headSequences()
+            guard heads[id] != nil else { throw MachineManagerError.unknownMachine(id) }
+        }
+        return try flightRecorderStore.batch(
+            machineID: id,
+            afterSequence: afterSequence
+        )
+    }
+
     private func statusLocked(id: String, entry: MachineEntry) -> DoryMachineStatus {
         let typedSettings = nativeTypedSettingsSnapshot(id: id)
             ?? DoryMachineTypedSettingsSnapshot(
@@ -5006,6 +5099,8 @@ public final class MachineManager: @unchecked Sendable {
                 ),
                 activeOperationID: entry.activeOperationID?.uuidString.lowercased(),
                 activeOperationKind: entry.activeOperationKind?.rawValue,
+                flightRecorderHeadSequence: entry.flightRecorderHeadSequence,
+                flightRecorderAvailable: entry.flightRecorderAvailable,
                 address: entry.configuration.address,
                 configuredAddress: entry.configuration.address,
                 memoryMB: entry.configuration.memoryMB,
@@ -5037,6 +5132,8 @@ public final class MachineManager: @unchecked Sendable {
             failure: entry.failure,
             activeOperationID: entry.activeOperationID?.uuidString.lowercased(),
             activeOperationKind: entry.activeOperationKind?.rawValue,
+            flightRecorderHeadSequence: entry.flightRecorderHeadSequence,
+            flightRecorderAvailable: entry.flightRecorderAvailable,
             handoffSocketPath: entry.handoffServer?.path,
             agentBuild: entry.handoff?.ready.agentBuild,
             agentProtocolVersion: entry.handoff?.ready.agentProtocolVersion,
@@ -5091,6 +5188,64 @@ public final class MachineManager: @unchecked Sendable {
         return references
     }
 
+    private func appendFlightEvent(
+        on entry: inout MachineEntry,
+        kind: DoryMachineFlightEventKind,
+        phase: DoryOperationPhase? = nil,
+        failure: DoryMachineFailure? = nil,
+        durationMilliseconds: UInt64? = nil,
+        deadlineUnixMilliseconds: Int64? = nil
+    ) {
+        do {
+            let event = try flightRecorderStore.append(
+                machineID: entry.configuration.id,
+                operationID: entry.activeOperationID?.uuidString.lowercased(),
+                operationKind: entry.activeOperationKind?.rawValue,
+                kind: kind,
+                phase: phase?.rawValue,
+                machineState: entry.state.rawValue,
+                failureCode: failure?.code,
+                recoveryDisposition: failure?.recoveryDisposition,
+                backend: entry.activeBackend ?? entry.runtimeIdentity.backend,
+                virtualHardwareABIVersion:
+                    entry.runtimeIdentity.virtualHardwareABIVersion,
+                planSHA256: entry.runtimeIdentity.resolvedPlanSHA256,
+                durationMilliseconds: durationMilliseconds,
+                deadlineUnixMilliseconds: deadlineUnixMilliseconds,
+                evidenceReferences: failureEvidenceReferences(for: entry)
+            )
+            entry.flightRecorderHeadSequence = event.sequence
+            entry.flightRecorderAvailable = true
+        } catch {
+            // Recorder persistence is deliberately independent from lifecycle authority. Mark it
+            // unavailable in status without recursively trying to persist another diagnostic.
+            entry.flightRecorderAvailable = false
+        }
+    }
+
+    private func appendFlightEvent(
+        machineID: String,
+        kind: DoryMachineFlightEventKind,
+        phase: DoryOperationPhase? = nil,
+        failure: DoryMachineFailure? = nil,
+        durationMilliseconds: UInt64? = nil,
+        deadlineUnixMilliseconds: Int64? = nil
+    ) {
+        lock.lock()
+        if var entry = machines[machineID] {
+            appendFlightEvent(
+                on: &entry,
+                kind: kind,
+                phase: phase,
+                failure: failure,
+                durationMilliseconds: durationMilliseconds,
+                deadlineUnixMilliseconds: deadlineUnixMilliseconds
+            )
+            machines[machineID] = entry
+        }
+        lock.unlock()
+    }
+
     private func setFailure(
         on entry: inout MachineEntry,
         code: DoryMachineFailureCode,
@@ -5120,6 +5275,11 @@ public final class MachineManager: @unchecked Sendable {
             )
             entry.lastError = "\(message); structured diagnostics could not be persisted"
         }
+        appendFlightEvent(
+            on: &entry,
+            kind: .failureRecorded,
+            failure: entry.failure
+        )
     }
 
     private func clearFailure(on entry: inout MachineEntry) {
@@ -8110,10 +8270,10 @@ public final class MachineManager: @unchecked Sendable {
     ) {
         var handoffServer: VmmHandoffServer?
         var processToStop: HvProcess?
-        var agentSocketPath: String?
         var lifecycleReadinessSucceeded = false
         var admissionPlan: DoryResolvedMachinePlan?
         var requiresAdmissionCommit = false
+        var lifecycleFailureStepID: String?
         lock.lock()
         guard var entry = machines[machineID], entry.launchID == launchID else {
             lock.unlock()
@@ -8133,10 +8293,16 @@ public final class MachineManager: @unchecked Sendable {
                     causes: [.readinessGate, .guestAgent],
                     recoveryDisposition: .repair
                 )
+                appendFlightEvent(
+                    on: &entry,
+                    kind: .readinessRejected,
+                    failure: entry.failure
+                )
                 entry.launchID = nil
                 entry.runtimeAddress = nil
                 entry.activeResolvedPlan = nil
                 entry.activeBackend = nil
+                entry.readinessAcceptedPendingPublication = false
                 processToStop = entry.process
                 break
             }
@@ -8144,14 +8310,9 @@ public final class MachineManager: @unchecked Sendable {
             clearFailure(on: &entry)
             requiresAdmissionCommit = admissionPlan != nil
                 && productionResourceAdmissionLedger != nil
-            if requiresAdmissionCommit {
-                entry.state = .starting
-            } else {
-                entry.state = .running
-                entry.process?.disableRestarts()
-                agentSocketPath = handoff.ready.agentSocketPath
-                lifecycleReadinessSucceeded = true
-            }
+            entry.state = .starting
+            lifecycleReadinessSucceeded = !requiresAdmissionCommit
+            entry.readinessAcceptedPendingPublication = lifecycleReadinessSucceeded
         case let .failure(error):
             entry.state = .failed
             setFailure(
@@ -8161,10 +8322,16 @@ public final class MachineManager: @unchecked Sendable {
                 causes: [.readinessGate],
                 recoveryDisposition: .retry
             )
+            appendFlightEvent(
+                on: &entry,
+                kind: .readinessRejected,
+                failure: entry.failure
+            )
             entry.launchID = nil
             entry.runtimeAddress = nil
             entry.activeResolvedPlan = nil
             entry.activeBackend = nil
+            entry.readinessAcceptedPendingPublication = false
             processToStop = entry.process
         }
         machines[machineID] = entry
@@ -8173,29 +8340,20 @@ public final class MachineManager: @unchecked Sendable {
         handoffServer?.stop()
         processToStop?.stop()
 
-        operationLock.lock()
         if requiresAdmissionCommit, let admissionPlan {
             do {
                 try markResolvedAdmissionRunning(plan: admissionPlan)
                 lock.lock()
                 if var current = machines[machineID], current.launchID == launchID,
-                   current.state == .starting {
-                    current.state = .running
-                    clearFailure(on: &current)
-                    current.process?.disableRestarts()
-                    agentSocketPath = current.handoff?.ready.agentSocketPath
+                   current.state == .starting, current.handoff != nil {
+                    current.readinessAcceptedPendingPublication = true
                     machines[machineID] = current
                     lifecycleReadinessSucceeded = true
                 }
                 lock.unlock()
-                if lifecycleReadinessSucceeded {
-                    completeActiveStartLifecycle(id: machineID)
-                } else {
+                if !lifecycleReadinessSucceeded {
                     try markResolvedAdmissionStopped(plan: admissionPlan)
-                    failActiveStartLifecycle(
-                        id: machineID,
-                        stepID: "start.readiness-state-changed"
-                    )
+                    lifecycleFailureStepID = "start.readiness-state-changed"
                 }
             } catch {
                 lock.lock()
@@ -8209,26 +8367,80 @@ public final class MachineManager: @unchecked Sendable {
                         causes: [.resourceAdmission, .readinessGate],
                         recoveryDisposition: .repair
                     )
+                    appendFlightEvent(
+                        on: &current,
+                        kind: .readinessRejected,
+                        failure: current.failure
+                    )
                     current.handoff = nil
                     current.launchID = nil
                     current.runtimeAddress = nil
                     current.activeResolvedPlan = nil
                     current.activeBackend = nil
+                    current.readinessAcceptedPendingPublication = false
                     machines[machineID] = current
                 }
                 lock.unlock()
                 try? markResolvedAdmissionStopped(plan: admissionPlan)
-                failActiveStartLifecycle(id: machineID, stepID: "start.admission-failed")
+                lifecycleFailureStepID = "start.admission-failed"
             }
-        } else if lifecycleReadinessSucceeded {
-            completeActiveStartLifecycle(id: machineID)
-        } else {
+        } else if !lifecycleReadinessSucceeded {
             try? markResolvedAdmissionStopped(plan: admissionPlan)
-            failActiveStartLifecycle(id: machineID, stepID: "start.readiness-failed")
+            lifecycleFailureStepID = "start.readiness-failed"
+        }
+
+        // A synchronous update/restore can own operationLock while it waits for this callback.
+        // Publish the accepted readiness token before blocking on that lock; the waiting owner can
+        // terminalize its start journal and publish `.running` itself. Ordinary asynchronous starts
+        // acquire the lock here and preserve journal-before-status ordering.
+        operationLock.lock()
+        if lifecycleReadinessSucceeded {
+            publishAcceptedReadiness(id: machineID)
+        } else if let lifecycleFailureStepID {
+            failActiveStartLifecycle(id: machineID, stepID: lifecycleFailureStepID)
         }
         operationLock.unlock()
 
         processToStop?.stop()
+    }
+
+    /// Completes an accepted readiness transition while the caller owns operationLock. This can
+    /// run either on the handoff callback or on a synchronous mutation that is already waiting for
+    /// readiness, avoiding a cross-thread operation-lock deadlock without exposing `.running`
+    /// before the start journal has reached its terminal/recovery boundary.
+    private func publishAcceptedReadiness(id machineID: String) {
+        lock.lock()
+        guard let pending = machines[machineID],
+              pending.state == .starting,
+              pending.readinessAcceptedPendingPublication,
+              pending.handoff != nil,
+              let launchID = pending.launchID else {
+            lock.unlock()
+            return
+        }
+        lock.unlock()
+
+        completeActiveStartLifecycle(id: machineID)
+
+        var agentSocketPath: String?
+        lock.lock()
+        if var current = machines[machineID], current.launchID == launchID,
+           current.state == .starting,
+           current.readinessAcceptedPendingPublication,
+           current.handoff != nil {
+            current.state = .running
+            current.readinessAcceptedPendingPublication = false
+            current.process?.disableRestarts()
+            agentSocketPath = current.handoff?.ready.agentSocketPath
+            if current.activeResolvedPlan != nil,
+               productionResourceAdmissionLedger != nil {
+                appendFlightEvent(on: &current, kind: .resourceTransition)
+            }
+            appendFlightEvent(on: &current, kind: .readinessAccepted)
+            machines[machineID] = current
+        }
+        lock.unlock()
+
         if let agentSocketPath {
             DispatchQueue.global(qos: .utility).async { [weak self] in
                 self?.discoverRuntimeAddress(
@@ -10019,6 +10231,12 @@ public final class MachineManager: @unchecked Sendable {
         if var entry = machines[machineID] {
             entry.activeOperationID = operation.operationID
             entry.activeOperationKind = kind
+            appendFlightEvent(
+                on: &entry,
+                kind: .operationStarted,
+                phase: .planned,
+                deadlineUnixMilliseconds: deadline
+            )
             machines[machineID] = entry
         }
         lock.unlock()
@@ -10043,6 +10261,13 @@ public final class MachineManager: @unchecked Sendable {
                 expectedRevision: current.revision,
                 stepID: "lifecycle.\(phase.rawValue)"
             )
+            appendFlightEvent(
+                machineID: context.operation.source.workspaceID,
+                kind: .operationPhase,
+                phase: phase,
+                deadlineUnixMilliseconds:
+                    context.operation.deadlineUnixMilliseconds
+            )
         }
     }
 
@@ -10054,6 +10279,13 @@ public final class MachineManager: @unchecked Sendable {
                 status: .running,
                 expectedRevision: current.revision,
                 stepID: "lifecycle.validated"
+            )
+            appendFlightEvent(
+                machineID: context.operation.source.workspaceID,
+                kind: .operationPhase,
+                phase: .validating,
+                deadlineUnixMilliseconds:
+                    context.operation.deadlineUnixMilliseconds
             )
         }
 #if DEBUG
@@ -10070,6 +10302,12 @@ public final class MachineManager: @unchecked Sendable {
                 stepID: "lifecycle.completed"
             )
         }
+        appendFlightEvent(
+            machineID: context.operation.source.workspaceID,
+            kind: .operationCompleted,
+            phase: .completed,
+            durationMilliseconds: lifecycleDurationMilliseconds(context.operation)
+        )
         activeLifecycleOperations.removeValue(forKey: context.operation.source.workspaceID)
         clearActiveOperation(
             machineID: context.operation.source.workspaceID,
@@ -10100,6 +10338,12 @@ public final class MachineManager: @unchecked Sendable {
                     message: "\(diagnostic): \(error)",
                     causes: [.journal],
                     recoveryDisposition: .repair
+                )
+                appendFlightEvent(
+                    on: &entry,
+                    kind: .recoveryRequired,
+                    failure: entry.failure,
+                    durationMilliseconds: lifecycleDurationMilliseconds(context.operation)
                 )
                 machines[context.operation.source.workspaceID] = entry
             }
@@ -10146,23 +10390,45 @@ public final class MachineManager: @unchecked Sendable {
         )
         lock.lock()
         let machineID = context.operation.source.workspaceID
-        if var entry = machines[machineID], entry.failure == nil {
-            setFailure(
-                on: &entry,
-                code: .lifecycleOperationFailed,
-                message: "Workspace \(context.operation.kind.rawValue) failed at \(stepID).",
-                causes: [.journal],
-                recoveryDisposition: rolledBack ? .rollbackCompleted : .retry,
-                extraEvidence: [
-                    .init(
-                        kind: .journal,
-                        identifier: context.operation.operationID.uuidString.lowercased()
-                    ),
-                ]
-            )
+        if var entry = machines[machineID] {
+            if entry.failure == nil {
+                setFailure(
+                    on: &entry,
+                    code: .lifecycleOperationFailed,
+                    message: "Workspace \(context.operation.kind.rawValue) failed at \(stepID).",
+                    causes: [.journal],
+                    recoveryDisposition: rolledBack ? .rollbackCompleted : .retry,
+                    extraEvidence: [
+                        .init(
+                            kind: .journal,
+                            identifier: context.operation.operationID.uuidString.lowercased()
+                        ),
+                    ]
+                )
+            }
+            if let failure = entry.failure {
+                appendFlightEvent(
+                    on: &entry,
+                    kind: .operationFailed,
+                    phase: current.phase,
+                    failure: failure,
+                    durationMilliseconds: lifecycleDurationMilliseconds(context.operation)
+                )
+            }
             machines[machineID] = entry
         }
         lock.unlock()
+    }
+
+    private func lifecycleDurationMilliseconds(
+        _ operation: DoryWorkspaceLifecycleOperation
+    ) -> UInt64 {
+        let now = Int64(max(0, (Date().timeIntervalSince1970 * 1_000).rounded()))
+        guard now > operation.createdAtUnixMilliseconds else { return 0 }
+        return min(
+            UInt64(now - operation.createdAtUnixMilliseconds),
+            UInt64(31 * 24 * 60 * 60 * 1_000)
+        )
     }
 
     private func completeActiveStartLifecycle(id: String) {
@@ -11565,6 +11831,9 @@ private struct MachineEntry {
     var failure: DoryMachineFailure? = nil
     var activeOperationID: UUID? = nil
     var activeOperationKind: DoryWorkspaceMutationKind? = nil
+    var flightRecorderHeadSequence: UInt64 = 0
+    var flightRecorderAvailable: Bool = true
+    var readinessAcceptedPendingPublication: Bool = false
     var activeResolvedPlan: DoryResolvedMachinePlan?
     var activeBackend: DoryVirtualizationBackendIdentity?
     var pendingRestoreStatePath: String?

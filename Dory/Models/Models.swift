@@ -304,6 +304,8 @@ struct Machine: Identifiable, Hashable, Sendable {
     var processID: Int32? = nil
     var failure: DorydMachineFailure? = nil
     var activeOperation: DorydMachineOperationSummary? = nil
+    var flightRecorderHeadSequence: UInt64 = 0
+    var flightRecorderAvailable: Bool = false
     var displayMode: MachineDisplayMode = .headless
     var bootMode: MachineBootMode = .linuxKernel
     var installerMediaAttached: Bool = false
@@ -337,6 +339,25 @@ struct Machine: Identifiable, Hashable, Sendable {
                 tone: .standard,
                 detail: "Operation \(activeOperation.operationID.prefix(8))…"
             ))
+        }
+        if recipe == "doryd" {
+            if !flightRecorderAvailable {
+                evidence.append(MachineRuntimeEvidence(
+                    id: "flight-recorder",
+                    label: "Recorder unavailable",
+                    systemImage: "waveform.path.ecg.rectangle",
+                    tone: .warning,
+                    detail: "Durable workspace diagnostics need repair"
+                ))
+            } else if flightRecorderHeadSequence > 0 {
+                evidence.append(MachineRuntimeEvidence(
+                    id: "flight-recorder",
+                    label: "Flight recorder",
+                    systemImage: "waveform.path.ecg.rectangle",
+                    tone: .standard,
+                    detail: "Durable through event \(flightRecorderHeadSequence)"
+                ))
+            }
         }
         switch runtimeIdentity.mode {
         case "resolved-plan":

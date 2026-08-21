@@ -5270,6 +5270,8 @@ final class AppStore {
             processID: status.pid,
             failure: status.failure,
             activeOperation: status.activeOperation,
+            flightRecorderHeadSequence: status.flightRecorderHeadSequence,
+            flightRecorderAvailable: status.flightRecorderAvailable,
             displayMode: status.displayMode,
             bootMode: status.bootMode,
             installerMediaAttached: status.installerMediaAttached,

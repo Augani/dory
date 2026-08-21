@@ -6,6 +6,28 @@ import Foundation
 import XCTest
 
 final class HealthReporterTests: XCTestCase {
+    func testMachineFlightRecorderHealthPublishesOnlyAvailabilityAndCursor() {
+        let ready = HealthReporter.machineFlightRecorderCheck(DoryMachineStatus(
+            id: "dev",
+            state: .running,
+            flightRecorderHeadSequence: 42,
+            flightRecorderAvailable: true
+        ))
+        XCTAssertEqual(ready.status, .pass)
+        XCTAssertEqual(ready.code, "machine.flight_recorder.ready")
+        XCTAssertEqual(ready.data, ["available": "true", "head_sequence": "42"])
+
+        let unavailable = HealthReporter.machineFlightRecorderCheck(DoryMachineStatus(
+            id: "dev",
+            state: .failed,
+            flightRecorderHeadSequence: 41,
+            flightRecorderAvailable: false
+        ))
+        XCTAssertEqual(unavailable.status, .warn)
+        XCTAssertEqual(unavailable.code, "machine.flight_recorder.unavailable")
+        XCTAssertFalse(unavailable.detail.contains("/"))
+    }
+
     func testHostDiskRequiresLowPercentageAndLowAbsoluteFreeSpaceToFail() {
         let gib: UInt64 = 1024 * 1024 * 1024
         let total = 1_000 * gib

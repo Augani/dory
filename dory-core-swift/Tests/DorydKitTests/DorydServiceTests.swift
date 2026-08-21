@@ -1154,6 +1154,24 @@ final class DorydServiceTests: XCTestCase {
         }
         wait(for: [running], timeout: 5)
 
+        var flightHead: UInt64 = 0
+        let flight = expectation(description: "machineFlightRecorder reply")
+        proxy.machineFlightRecorder("dev", afterSequence: 0) { ok, body, message in
+            XCTAssertTrue(ok, message)
+            XCTAssertEqual(body["schemaVersion"] as? Int, 1)
+            XCTAssertEqual(body["machineID"] as? String, "dev")
+            XCTAssertEqual(body["snapshotRequired"] as? Bool, false)
+            let rows = body["events"] as? [NSDictionary]
+            XCTAssertTrue(rows?.contains { $0["kind"] as? String == "workspace-created" } == true)
+            XCTAssertTrue(rows?.contains { $0["kind"] as? String == "backend-spawned" } == true)
+            XCTAssertFalse(body.description.contains("opaque-secret"))
+            XCTAssertFalse(body.description.contains(base))
+            flightHead = (body["headSequence"] as? NSNumber)?.uint64Value ?? 0
+            XCTAssertGreaterThan(flightHead, 0)
+            flight.fulfill()
+        }
+        wait(for: [flight], timeout: 5)
+
         _ = try manager.stop(id: "dev")
         try manager.delete(id: "dev")
         let removed = expectation(description: "removed machineEvents reply")
@@ -1166,6 +1184,15 @@ final class DorydServiceTests: XCTestCase {
             removed.fulfill()
         }
         wait(for: [removed], timeout: 5)
+
+        let deletedFlight = expectation(description: "deleted machine flight recorder reply")
+        proxy.machineFlightRecorder("dev", afterSequence: flightHead) { ok, body, message in
+            XCTAssertTrue(ok, message)
+            let rows = body["events"] as? [NSDictionary]
+            XCTAssertTrue(rows?.contains { $0["kind"] as? String == "workspace-deleted" } == true)
+            deletedFlight.fulfill()
+        }
+        wait(for: [deletedFlight], timeout: 5)
     }
 
     func testMachineStatusPublishesStructuredFailureWithoutFreeFormEvidence() throws {
