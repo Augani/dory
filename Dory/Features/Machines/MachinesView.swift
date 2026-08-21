@@ -134,6 +134,9 @@ private struct MachineCard: View {
     private var fileTransfer: DorydMachineFileTransferOperation? {
         store.machineFileTransfer(for: machine.name)
     }
+    private var guestFileExport: DorydMachineGuestFileExportOperation? {
+        store.machineGuestFileExport(for: machine.name)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -178,6 +181,9 @@ private struct MachineCard: View {
 
             if let fileTransfer {
                 fileTransferProgress(fileTransfer)
+                    .padding(.bottom, 12)
+            } else if let guestFileExport {
+                guestFileExportProgress(guestFileExport)
                     .padding(.bottom, 12)
             }
 
@@ -386,6 +392,104 @@ private struct MachineCard: View {
         return fileTransferTitle(operation)
     }
 
+    private func guestFileExportProgress(
+        _ operation: DorydMachineGuestFileExportOperation
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 7) {
+                Image(systemName: operation.phase == .cancelling
+                    ? "xmark.circle" : "square.and.arrow.down.fill")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(p.accentText)
+                Text(guestFileExportTitle(operation))
+                    .font(.system(size: 11.5, weight: .semibold))
+                    .foregroundStyle(p.text)
+                    .lineLimit(1)
+                Spacer(minLength: 8)
+                Text(operation.fractionCompleted, format: .percent.precision(.fractionLength(0)))
+                    .font(.mono(10.5, weight: .semibold))
+                    .foregroundStyle(p.text2)
+            }
+
+            ProgressView(value: operation.fractionCompleted)
+                .progressViewStyle(.linear)
+                .tint(p.accent)
+
+            HStack(spacing: 8) {
+                Text(guestFileExportDetail(operation))
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(p.text3)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer(minLength: 8)
+                if operation.phase == .completed {
+                    Button("Save…") { savePendingGuestFileExport() }
+                        .accessibilityIdentifier("machine-export-save-\(machine.name)")
+                    Button("Discard") {
+                        Task { await store.discardGuestFileExport(from: machine) }
+                    }
+                    .accessibilityIdentifier("machine-export-discard-\(machine.name)")
+                } else if !operation.phase.isTerminal {
+                    Button(operation.phase == .cancelling ? "Cancelling…" : "Cancel") {
+                        Task { await store.cancelGuestFileExport(from: machine) }
+                    }
+                    .disabled(operation.phase == .cancelling)
+                    .accessibilityIdentifier("machine-export-cancel-\(machine.name)")
+                }
+            }
+            .buttonStyle(.borderless)
+            .font(.system(size: 10.5, weight: .semibold))
+        }
+        .padding(10)
+        .background(p.accentSoft.opacity(0.55), in: RoundedRectangle(cornerRadius: 9))
+        .overlay(RoundedRectangle(cornerRadius: 9).strokeBorder(p.accent.opacity(0.24)))
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("File export from \(machine.name)")
+        .accessibilityValue(guestFileExportDetail(operation))
+    }
+
+    private func guestFileExportTitle(
+        _ operation: DorydMachineGuestFileExportOperation
+    ) -> String {
+        switch operation.phase {
+        case .preparing: "Preparing export"
+        case .transferring: "Receiving files"
+        case .finalizing: "Verifying files"
+        case .cancelling: "Cancelling export"
+        case .completed: "Files ready to save"
+        case .cancelled: "Export cancelled"
+        case .failed: "Export failed"
+        }
+    }
+
+    private func guestFileExportDetail(
+        _ operation: DorydMachineGuestFileExportOperation
+    ) -> String {
+        if operation.phase == .completed, let result = operation.result {
+            let bytes = ByteCountFormatter.string(
+                fromByteCount: Int64(clamping: result.bytesReceived),
+                countStyle: .file
+            )
+            let fileLabel = result.filesReceived == 1 ? "file" : "files"
+            return "\(result.filesReceived) \(fileLabel) · \(bytes)"
+        }
+        if let currentPath = operation.currentPath {
+            return currentPath
+        }
+        if operation.bytesTotal > 0 {
+            let completed = ByteCountFormatter.string(
+                fromByteCount: Int64(clamping: operation.bytesCompleted),
+                countStyle: .file
+            )
+            let total = ByteCountFormatter.string(
+                fromByteCount: Int64(clamping: operation.bytesTotal),
+                countStyle: .file
+            )
+            return "\(completed) of \(total)"
+        }
+        return guestFileExportTitle(operation)
+    }
+
     private var overflowMenu: some View {
         Menu {
             if isActive {
@@ -406,6 +510,11 @@ private struct MachineCard: View {
                             ? "Copy selected files and folders into this machine's Downloads folder"
                             : "Copy selected files into this machine's Downloads folder"
                     )
+                    Button { selectAndReceiveFiles() } label: {
+                        Label("Receive Files or Folder…", systemImage: "square.and.arrow.down")
+                    }
+                    .disabled(!store.canExportGuestFiles(from: machine))
+                    .help("Copy a file or folder from this machine into a folder on your Mac")
                 }
                 Divider()
             }
@@ -471,6 +580,73 @@ private struct MachineCard: View {
         let selected = panel.urls
         guard !selected.isEmpty else { return }
         Task { await store.transferFiles(selected, to: machine) }
+    }
+
+    private func selectAndReceiveFiles() {
+        guard store.canExportGuestFiles(from: machine),
+              let guestSource = promptForGuestSource() else {
+            return
+        }
+        let name = guestExportName(for: guestSource)
+        guard let destination = selectGuestExportDestination(suggestedName: name) else {
+            return
+        }
+        Task {
+            await store.exportGuestFiles(
+                guestSource,
+                from: machine,
+                to: destination
+            )
+        }
+    }
+
+    private func savePendingGuestFileExport() {
+        let name = store.suggestedGuestFileExportName(for: machine.name)
+        guard let destination = selectGuestExportDestination(suggestedName: name) else {
+            return
+        }
+        Task { await store.saveGuestFileExport(from: machine, to: destination) }
+    }
+
+    private func promptForGuestSource() -> String? {
+        let home = "/home/\(machine.username)"
+        let alert = NSAlert()
+        alert.messageText = "Receive files from \(machine.name)"
+        alert.informativeText = "Enter a file or folder inside \(home). Dory verifies the guest transfer before saving it on your Mac."
+        alert.addButton(withTitle: "Continue")
+        alert.addButton(withTitle: "Cancel")
+        let field = NSTextField(string: home + "/Documents")
+        field.placeholderString = home + "/Documents/project"
+        field.frame = NSRect(x: 0, y: 0, width: 390, height: 24)
+        alert.accessoryView = field
+        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+        let value = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.isEmpty ? nil : value
+    }
+
+    private func selectGuestExportDestination(suggestedName: String) -> URL? {
+        let panel = NSSavePanel()
+        panel.title = "Save files from \(machine.name)"
+        panel.message = "Dory creates a new folder at this location and never overwrites an existing item."
+        panel.prompt = "Save"
+        panel.canCreateDirectories = true
+        panel.nameFieldStringValue = suggestedName
+        panel.directoryURL = FileManager.default.urls(
+            for: .downloadsDirectory,
+            in: .userDomainMask
+        ).first
+        guard panel.runModal() == .OK else { return nil }
+        return panel.url
+    }
+
+    private func guestExportName(for guestSource: String) -> String {
+        let name = URL(fileURLWithPath: guestSource).lastPathComponent
+        guard !name.isEmpty,
+              name != ".dory-sync-tmp",
+              name.utf8.count <= 255 else {
+            return "\(machine.name)-export"
+        }
+        return name
     }
 
     private var statusPill: some View {

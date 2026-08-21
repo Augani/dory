@@ -1469,8 +1469,18 @@ struct DorydClientTests {
 
     @MainActor
     @Test func appStoreRecoversAnActiveDaemonFileTransferAfterReconnect() async throws {
+        let base = "/tmp/dory-transfer-recovery-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let socketPath = base + "/doryd.sock"
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let shim = DockerShim(runtime: MockRuntime())
+        let dockerServer = ShimHTTPServer(socketPath: socketPath) { request in
+            await shim.handle(request)
+        }
+        try dockerServer.start()
+        defer { dockerServer.stop() }
+
         let listener = NSXPCListener.anonymous()
-        let service = FakeDorydService()
+        let service = FakeDorydService(socketPath: socketPath)
         let operationID = String(repeating: "r", count: 32)
         let active = service.machineTransferOperationResponse(
             operationID: operationID,
@@ -1515,6 +1525,54 @@ struct DorydClientTests {
     }
 
     @MainActor
+    @Test func appStoreRecoversCompletedGuestExportForExplicitSaveOrDiscard() async throws {
+        let base = "/tmp/dory-export-recovery-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let socketPath = base + "/doryd.sock"
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let shim = DockerShim(runtime: MockRuntime())
+        let dockerServer = ShimHTTPServer(socketPath: socketPath) { request in
+            await shim.handle(request)
+        }
+        try dockerServer.start()
+        defer { dockerServer.stop() }
+
+        let listener = NSXPCListener.anonymous()
+        let service = FakeDorydService(socketPath: socketPath)
+        let operationID = String(repeating: "f", count: 32)
+        service.setMachineGuestExportCurrentResponse([
+            "schema": UInt16(1),
+            "active": true,
+            "operation": service.machineGuestExportOperationResponse(
+                operationID: operationID,
+                phase: "completed"
+            ),
+        ])
+        let delegate = FakeDorydListenerDelegate(service: service)
+        listener.delegate = delegate
+        listener.resume()
+        defer { listener.invalidate() }
+
+        let store = AppStore(
+            dorydClient: DorydClient(endpoint: listener.endpoint),
+            useDorydEngine: true
+        )
+        store.routeDockerCLI = false
+        await store.connectBackend()
+        store.loadMachines()
+
+        try await waitUntil {
+            store.machineGuestFileExport(for: "dev")?.phase == .completed
+        }
+        #expect(!store.isMachineBusy("dev"))
+        #expect(store.settingsNotice?.message.contains("ready to save") == true)
+
+        let machine = try #require(store.machines.first { $0.name == "dev" })
+        await store.discardGuestFileExport(from: machine)
+        #expect(store.machineGuestFileExport(for: "dev") == nil)
+        #expect(service.machineGuestExportDiscardCount == 1)
+    }
+
+    @MainActor
     @Test func appStoreRoutesMachineLifecycleToDorydVMs() async throws {
         let base = "/tmp/dam-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         let socketPath = base + "/doryd.sock"
@@ -1529,6 +1587,20 @@ struct DorydClientTests {
 
         let listener = NSXPCListener.anonymous()
         let service = FakeDorydService(socketPath: socketPath)
+        service.setMachineAgentHandshake(
+            "dev",
+            protocolVersion: UInt32(1),
+            capabilities: [
+                ["id": "clock-sync", "version": 1] as NSDictionary,
+                ["id": "exec", "version": 1] as NSDictionary,
+                ["id": "exec-stdin", "version": 1] as NSDictionary,
+                ["id": "ports-watch", "version": 1] as NSDictionary,
+                ["id": "snapshot-quiesce", "version": 2] as NSDictionary,
+                ["id": "sync-pull", "version": 1] as NSDictionary,
+                ["id": "sync-push", "version": 2] as NSDictionary,
+                ["id": "telemetry", "version": 1] as NSDictionary,
+            ]
+        )
         let delegate = FakeDorydListenerDelegate(service: service)
         listener.delegate = delegate
         listener.resume()
@@ -1569,6 +1641,7 @@ struct DorydClientTests {
         #expect(store.canUseMachineArtifacts(machine))
         #expect(store.canTransferFiles(to: machine))
         #expect(store.canTransferFolders(to: machine))
+        #expect(store.canExportGuestFiles(from: machine))
         #expect(store.canRepairMachineTools(machine))
 
         var customInstaller = machine
@@ -1649,11 +1722,77 @@ struct DorydClientTests {
         #expect(store.settingsNotice?.message.contains("Cancelled") == true)
         service.setMachineTransferOperationResponse(nil)
 
+        let exportID = String(repeating: "d", count: 32)
+        let privateExportRoot = DoryMachineFileTransferStager.defaultStagingDirectory
+            .appendingPathComponent(
+                "export-\(getpid())-\(exportID)",
+                isDirectory: true
+            ).path
+        try? FileManager.default.removeItem(atPath: privateExportRoot)
+        try FileManager.default.createDirectory(
+            atPath: privateExportRoot + "/nested",
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        try Data("guest-export".utf8).write(
+            to: URL(fileURLWithPath: privateExportRoot + "/nested/file.txt")
+        )
+        defer {
+            try? FileManager.default.removeItem(atPath: privateExportRoot)
+        }
+        let receivedURL = transferRoot.appendingPathComponent(
+            "received-project",
+            isDirectory: true
+        )
+        let received = try #require(await store.exportGuestFiles(
+            "/home/dory/Documents/project",
+            from: machine,
+            to: receivedURL
+        ))
+        #expect(received == receivedURL)
+        #expect(
+            try Data(contentsOf: received.appendingPathComponent("nested/file.txt"))
+                == Data("guest-export".utf8)
+        )
+        #expect(store.machineGuestFileExport(for: machine.name) == nil)
+        #expect(service.machineGuestExportDiscardCount == 1)
+        #expect(store.settingsNotice?.message.contains("Saved 1 file and 1 folder") == true)
+
+        let cancellingExportID = String(repeating: "e", count: 32)
+        let transferringExport = service.machineGuestExportOperationResponse(
+            operationID: cancellingExportID,
+            phase: "transferring"
+        )
+        service.setMachineGuestExportStartResponse(transferringExport)
+        service.setMachineGuestExportOperationResponse(transferringExport)
+        let cancellingExport = Task {
+            await store.exportGuestFiles(
+                "/home/dory/Documents/project",
+                from: machine,
+                to: transferRoot.appendingPathComponent("cancelled-export")
+            )
+        }
+        try await waitUntil {
+            store.machineGuestFileExport(for: machine.name)?.phase == .transferring
+        }
+        await store.cancelGuestFileExport(from: machine)
+        #expect(await cancellingExport.value == nil)
+        #expect(service.machineGuestExportCancelCount == 1)
+        #expect(store.machineGuestFileExport(for: machine.name) == nil)
+        service.setMachineGuestExportStartResponse(nil)
+        service.setMachineGuestExportOperationResponse(nil)
+
         var transferUnavailable = machine
         transferUnavailable.agentCapabilities = transferUnavailable.agentCapabilities.filter {
             $0.id != "sync-push"
         }
         #expect(!store.canTransferFiles(to: transferUnavailable))
+
+        var exportUnavailable = machine
+        exportUnavailable.agentCapabilities = exportUnavailable.agentCapabilities.filter {
+            $0.id != "sync-pull"
+        }
+        #expect(!store.canExportGuestFiles(from: exportUnavailable))
 
         let currentSettings = await store.machineSettings(machine.name)
         #expect(currentSettings.cpus == 2)

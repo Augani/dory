@@ -5113,11 +5113,20 @@ final class AppStore {
 
     private(set) var busyMachines: Set<String> = []
     private(set) var machineFileTransfers: [String: DorydMachineFileTransferOperation] = [:]
+    private(set) var machineGuestFileExports: [String: DorydMachineGuestFileExportOperation] = [:]
     private var recoveringMachineFileTransfers: Set<String> = []
+    private var recoveringMachineGuestFileExports: Set<String> = []
+    private var machineGuestFileExportSuggestedNames: [String: String] = [:]
     var machineBusy: Bool { !busyMachines.isEmpty }
     func isMachineBusy(_ name: String) -> Bool { busyMachines.contains(name) }
     func machineFileTransfer(for name: String) -> DorydMachineFileTransferOperation? {
         machineFileTransfers[name]
+    }
+    func machineGuestFileExport(for name: String) -> DorydMachineGuestFileExportOperation? {
+        machineGuestFileExports[name]
+    }
+    func suggestedGuestFileExportName(for name: String) -> String {
+        machineGuestFileExportSuggestedNames[name] ?? "\(name)-export"
     }
     static let importBusyKey = "__dory_import__"
     var machineCreationTitle = ""
@@ -5151,6 +5160,7 @@ final class AppStore {
                     self.machines[index].memoryDisplay = Self.machineMemoryDisplay(stats)
                 }
                 recoverActiveFileTransfer(for: machine)
+                recoverGuestFileExport(for: machine)
             }
             return machines
         } catch {
@@ -5333,6 +5343,16 @@ final class AppStore {
             }
     }
 
+    func canExportGuestFiles(from machine: Machine) -> Bool {
+        runtimeOwnedByDoryd
+            && machine.status == .running
+            && machine.agentProtocolVersion == 1
+            && machine.username != "root"
+            && machine.agentCapabilities.contains {
+                $0.id == "sync-pull" && $0.version >= 1
+            }
+    }
+
     func canRepairMachineTools(_ machine: Machine) -> Bool {
         runtimeOwnedByDoryd
             && machine.displayMode == .desktop
@@ -5383,6 +5403,49 @@ final class AppStore {
             machineFileTransfers[machine.name] = updated
         } catch {
             actionError = "Could not cancel the file transfer to \(machine.name): \(Self.userFacingError(error))"
+        }
+    }
+
+    func cancelGuestFileExport(from machine: Machine) async {
+        guard let operation = machineGuestFileExports[machine.name],
+              !operation.phase.isTerminal else {
+            return
+        }
+        do {
+            let updated = try await dorydClient.machineGuestExportCancel(
+                machine.name,
+                operationID: operation.operationID
+            )
+            guard machineGuestFileExports[machine.name]?.operationID
+                    == operation.operationID else {
+                return
+            }
+            machineGuestFileExports[machine.name] = updated
+        } catch {
+            actionError = "Could not cancel the file export from \(machine.name): \(Self.userFacingError(error))"
+        }
+    }
+
+    func discardGuestFileExport(from machine: Machine) async {
+        guard let operation = machineGuestFileExports[machine.name],
+              operation.phase == .completed else {
+            return
+        }
+        do {
+            let discarded = try await dorydClient.machineGuestExportDiscard(
+                machine.name,
+                operationID: operation.operationID
+            )
+            guard discarded.ok,
+                  machineGuestFileExports[machine.name]?.operationID
+                    == operation.operationID else {
+                throw DoryMachineFileTransferUIError.authorityChanged
+            }
+            machineGuestFileExports.removeValue(forKey: machine.name)
+            machineGuestFileExportSuggestedNames.removeValue(forKey: machine.name)
+            showSettingsSuccess("Discarded the pending file export from \(machine.name).")
+        } catch {
+            actionError = "Could not discard the file export from \(machine.name): \(Self.userFacingError(error))"
         }
     }
 
@@ -5462,6 +5525,256 @@ final class AppStore {
             return
         } catch {
             actionError = "Could not restore the file transfer to \(machineID): \(Self.userFacingError(error))"
+        }
+    }
+
+    private func recoverGuestFileExport(for machine: Machine) {
+        guard machineGuestFileExports[machine.name] == nil,
+              recoveringMachineGuestFileExports.insert(machine.name).inserted else {
+            return
+        }
+        Task { [weak self] in
+            await self?.recoverGuestFileExport(machineID: machine.name)
+        }
+    }
+
+    private func recoverGuestFileExport(machineID: String) async {
+        defer { recoveringMachineGuestFileExports.remove(machineID) }
+        let discovered: DorydMachineGuestFileExportOperation?
+        do {
+            discovered = try await dorydClient.machineGuestExportCurrent(machineID)
+        } catch {
+            return
+        }
+        guard var operation = discovered,
+              machineGuestFileExports[machineID] == nil,
+              machineFileTransfers[machineID] == nil else {
+            return
+        }
+
+        let operationID = operation.operationID
+        machineGuestFileExportSuggestedNames[machineID] = "\(machineID)-export"
+        machineGuestFileExports[machineID] = operation
+        if operation.phase == .completed {
+            showSettingsSuccess("Files from \(machineID) are ready to save.")
+            return
+        }
+        guard !operation.phase.isTerminal, !busyMachines.contains(machineID) else {
+            machineGuestFileExports.removeValue(forKey: machineID)
+            machineGuestFileExportSuggestedNames.removeValue(forKey: machineID)
+            return
+        }
+
+        busyMachines.insert(machineID)
+        defer { busyMachines.remove(machineID) }
+        do {
+            operation = try await awaitGuestFileExport(
+                machineID: machineID,
+                operationID: operationID,
+                initial: operation
+            )
+            switch operation.phase {
+            case .completed:
+                showSettingsSuccess("Files from \(machineID) are ready to save.")
+            case .cancelled:
+                machineGuestFileExports.removeValue(forKey: machineID)
+                machineGuestFileExportSuggestedNames.removeValue(forKey: machineID)
+                showSettingsSuccess("Cancelled the file export from \(machineID).")
+            case .failed:
+                machineGuestFileExports.removeValue(forKey: machineID)
+                machineGuestFileExportSuggestedNames.removeValue(forKey: machineID)
+                let message = operation.failure?.message
+                    ?? "The daemon reported a failed file export."
+                throw DoryMachineFileTransferUIError.remoteFailure(message)
+            case .preparing, .transferring, .finalizing, .cancelling:
+                throw DoryMachineFileTransferUIError.invalidCompletion
+            }
+        } catch is CancellationError {
+            return
+        } catch {
+            actionError = "Could not restore the file export from \(machineID): \(Self.userFacingError(error))"
+        }
+    }
+
+    @discardableResult
+    func exportGuestFiles(
+        _ guestSource: String,
+        from machine: Machine,
+        to destinationURL: URL
+    ) async -> URL? {
+        guard canExportGuestFiles(from: machine) else {
+            actionError = "Start \(machine.name) and update Dory Tools before receiving files."
+            return nil
+        }
+        guard !busyMachines.contains(machine.name),
+              !recoveringMachineGuestFileExports.contains(machine.name),
+              machineGuestFileExports[machine.name] == nil else {
+            return nil
+        }
+        let suggestedName = destinationURL.lastPathComponent
+        guard !suggestedName.isEmpty else {
+            actionError = "Choose a name for the received files."
+            return nil
+        }
+
+        busyMachines.insert(machine.name)
+        defer { busyMachines.remove(machine.name) }
+        actionError = nil
+        var operationID: String?
+        do {
+            var operation = try await dorydClient.machineGuestExportStart(
+                machine.name,
+                guestSource: guestSource
+            )
+            operationID = operation.operationID
+            machineGuestFileExportSuggestedNames[machine.name] = suggestedName
+            machineGuestFileExports[machine.name] = operation
+            operation = try await awaitGuestFileExport(
+                machineID: machine.name,
+                operationID: operation.operationID,
+                initial: operation
+            )
+
+            switch operation.phase {
+            case .completed:
+                return await saveCompletedGuestFileExport(
+                    from: machine,
+                    operation: operation,
+                    to: destinationURL
+                )
+            case .cancelled:
+                machineGuestFileExports.removeValue(forKey: machine.name)
+                machineGuestFileExportSuggestedNames.removeValue(forKey: machine.name)
+                showSettingsSuccess("Cancelled the file export from \(machine.name).")
+                return nil
+            case .failed:
+                machineGuestFileExports.removeValue(forKey: machine.name)
+                machineGuestFileExportSuggestedNames.removeValue(forKey: machine.name)
+                let message = operation.failure?.message
+                    ?? "The daemon reported a failed file export."
+                throw DoryMachineFileTransferUIError.remoteFailure(message)
+            case .preparing, .transferring, .finalizing, .cancelling:
+                throw DoryMachineFileTransferUIError.invalidCompletion
+            }
+        } catch is CancellationError {
+            if let operationID {
+                _ = try? await dorydClient.machineGuestExportCancel(
+                    machine.name,
+                    operationID: operationID
+                )
+            }
+            machineGuestFileExports.removeValue(forKey: machine.name)
+            machineGuestFileExportSuggestedNames.removeValue(forKey: machine.name)
+            return nil
+        } catch {
+            if let operationID,
+               machineGuestFileExports[machine.name]?.phase.isTerminal == false {
+                _ = try? await dorydClient.machineGuestExportCancel(
+                    machine.name,
+                    operationID: operationID
+                )
+                machineGuestFileExports.removeValue(forKey: machine.name)
+                machineGuestFileExportSuggestedNames.removeValue(forKey: machine.name)
+            }
+            actionError = "Could not receive files from \(machine.name): \(Self.userFacingError(error))"
+            return nil
+        }
+    }
+
+    @discardableResult
+    func saveGuestFileExport(
+        from machine: Machine,
+        to destinationURL: URL
+    ) async -> URL? {
+        guard let operation = machineGuestFileExports[machine.name],
+              operation.phase == .completed else {
+            return nil
+        }
+        actionError = nil
+        return await saveCompletedGuestFileExport(
+            from: machine,
+            operation: operation,
+            to: destinationURL
+        )
+    }
+
+    private func awaitGuestFileExport(
+        machineID: String,
+        operationID: String,
+        initial: DorydMachineGuestFileExportOperation
+    ) async throws -> DorydMachineGuestFileExportOperation {
+        var operation = initial
+        while !operation.phase.isTerminal {
+            try await Task.sleep(for: .milliseconds(150))
+            operation = try await dorydClient.machineGuestExportStatus(
+                machineID,
+                operationID: operationID
+            )
+            guard operation.operationID == operationID,
+                  machineGuestFileExports[machineID]?.operationID == operationID else {
+                throw DoryMachineFileTransferUIError.authorityChanged
+            }
+            machineGuestFileExports[machineID] = operation
+        }
+        return operation
+    }
+
+    private func saveCompletedGuestFileExport(
+        from machine: Machine,
+        operation: DorydMachineGuestFileExportOperation,
+        to destinationURL: URL
+    ) async -> URL? {
+        guard machineGuestFileExports[machine.name]?.operationID == operation.operationID,
+              operation.phase == .completed,
+              let result = operation.result,
+              result.exportID == operation.operationID else {
+            actionError = "Could not save files from \(machine.name): The completed export evidence is invalid."
+            return nil
+        }
+        do {
+            let materialized = try await Task.detached(priority: .userInitiated) {
+                try DoryMachineFileTransferStager.materializeGuestExport(
+                    privateStagingRoot: result.privateStagingRoot,
+                    exportID: result.exportID,
+                    expectedFileCount: result.filesReceived,
+                    expectedDirectoryCount: result.directoriesReceived,
+                    expectedByteCount: result.bytesReceived,
+                    destinationDirectory: destinationURL.deletingLastPathComponent(),
+                    destinationName: destinationURL.lastPathComponent
+                )
+            }.value
+            do {
+                let discarded = try await dorydClient.machineGuestExportDiscard(
+                    machine.name,
+                    operationID: operation.operationID
+                )
+                guard discarded.ok,
+                      machineGuestFileExports[machine.name]?.operationID
+                        == operation.operationID else {
+                    throw DoryMachineFileTransferUIError.authorityChanged
+                }
+                machineGuestFileExports.removeValue(forKey: machine.name)
+                machineGuestFileExportSuggestedNames.removeValue(forKey: machine.name)
+            } catch {
+                actionError = "Saved files from \(machine.name) to \(materialized.rootURL.path), but Dory could not remove its private staging copy."
+                return materialized.rootURL
+            }
+            let fileLabel = result.filesReceived == 1 ? "file" : "files"
+            let folderLabel = result.directoriesReceived == 1 ? "folder" : "folders"
+            let itemSummary = result.directoriesReceived == 0
+                ? "\(result.filesReceived) \(fileLabel)"
+                : "\(result.filesReceived) \(fileLabel) and \(result.directoriesReceived) \(folderLabel)"
+            let bytes = ByteCountFormatter.string(
+                fromByteCount: Int64(clamping: result.bytesReceived),
+                countStyle: .file
+            )
+            showSettingsSuccess(
+                "Saved \(itemSummary) (\(bytes)) from \(machine.name) to \(materialized.rootURL.path)."
+            )
+            return materialized.rootURL
+        } catch {
+            actionError = "Could not save files from \(machine.name): \(Self.userFacingError(error))"
+            return nil
         }
     }
 
