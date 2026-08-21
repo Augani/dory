@@ -555,6 +555,95 @@ APPLESCRIPT
     exit 1
   " > "$WORKROOT/evidence/$distro-display-restored.json"
 
+  fullscreen_window_size="$(osascript - "$machine_pid" <<'APPLESCRIPT'
+on run argv
+  set targetPID to (item 1 of argv) as integer
+  tell application "System Events"
+    set targetProcess to first process whose unix id is targetPID
+    set frontmost of targetProcess to true
+    keystroke "f" using {command down, control down}
+    repeat 80 times
+      delay 0.25
+      set targetWindow to front window of targetProcess
+      if value of attribute "AXFullScreen" of targetWindow is true then
+        set fullSize to size of targetWindow
+        return ((item 1 of fullSize) as text) & "x" & ((item 2 of fullSize) as text)
+      end if
+    end repeat
+    error "Dory display did not enter full screen"
+  end tell
+end run
+APPLESCRIPT
+)"
+  printf '%s\n' "$fullscreen_window_size" | grep -Eq '^[0-9]+x[0-9]+$' \
+    || { echo "desktop live gate: invalid full-screen window size: $fullscreen_window_size" >&2; exit 1; }
+  printf '%s\n' "$fullscreen_window_size" \
+    > "$WORKROOT/evidence/$distro-display-fullscreen-window.txt"
+
+  assert_exec_token "$machine" fullscreen-display-resized sh -lc "
+    set -eu
+    uid=\$(id -u dorygate)
+    runtime=/run/user/\$uid
+    session_env=\$(runuser -u dorygate -- env XDG_RUNTIME_DIR=\"\$runtime\" \
+      DBUS_SESSION_BUS_ADDRESS=\"unix:path=\$runtime/bus\" systemctl --user show-environment \
+      | grep -E '^(DISPLAY|XAUTHORITY)=')
+    display=\$(printf '%s\n' \"\$session_env\" | sed -n 's/^DISPLAY=//p')
+    xauth=\$(printf '%s\n' \"\$session_env\" | sed -n 's/^XAUTHORITY=//p')
+    baseline=\$(cat /var/lib/dory/release-display-baseline)
+    for _ in \$(seq 1 30); do
+      current=\$(runuser -u dorygate -- env DISPLAY=\"\$display\" XAUTHORITY=\"\$xauth\" \
+        xrandr --current | awk '\$2 ~ /\\*/ { print \$1; exit }')
+      if printf '%s\n' \"\$current\" | grep -Eq '^[0-9]+x[0-9]+$' \
+          && test \"\$current\" != \"\$baseline\"; then
+        printf '%s\n' \"\$current\" > /var/lib/dory/release-display-fullscreen
+        echo fullscreen-display-resized
+        exit 0
+      fi
+      sleep 1
+    done
+    echo 'guest display mode did not follow the full-screen host window' >&2
+    exit 1
+  " > "$WORKROOT/evidence/$distro-display-fullscreen.json"
+
+  osascript - "$machine_pid" <<'APPLESCRIPT'
+on run argv
+  set targetPID to (item 1 of argv) as integer
+  tell application "System Events"
+    set targetProcess to first process whose unix id is targetPID
+    set frontmost of targetProcess to true
+    keystroke "f" using {command down, control down}
+    repeat 80 times
+      delay 0.25
+      if value of attribute "AXFullScreen" of front window of targetProcess is false then return
+    end repeat
+    error "Dory display did not leave full screen"
+  end tell
+end run
+APPLESCRIPT
+
+  assert_exec_token "$machine" fullscreen-display-restored sh -lc "
+    set -eu
+    uid=\$(id -u dorygate)
+    runtime=/run/user/\$uid
+    session_env=\$(runuser -u dorygate -- env XDG_RUNTIME_DIR=\"\$runtime\" \
+      DBUS_SESSION_BUS_ADDRESS=\"unix:path=\$runtime/bus\" systemctl --user show-environment \
+      | grep -E '^(DISPLAY|XAUTHORITY)=')
+    display=\$(printf '%s\n' \"\$session_env\" | sed -n 's/^DISPLAY=//p')
+    xauth=\$(printf '%s\n' \"\$session_env\" | sed -n 's/^XAUTHORITY=//p')
+    baseline=\$(cat /var/lib/dory/release-display-baseline)
+    for _ in \$(seq 1 30); do
+      current=\$(runuser -u dorygate -- env DISPLAY=\"\$display\" XAUTHORITY=\"\$xauth\" \
+        xrandr --current | awk '\$2 ~ /\\*/ { print \$1; exit }')
+      if test \"\$current\" = \"\$baseline\"; then
+        echo fullscreen-display-restored
+        exit 0
+      fi
+      sleep 1
+    done
+    echo 'guest display mode did not restore after leaving full screen' >&2
+    exit 1
+  " > "$WORKROOT/evidence/$distro-display-fullscreen-restored.json"
+
   host_to_guest_clipboard="dory-host-to-guest-$distro-$(uuidgen | tr '[:upper:]' '[:lower:]')"
   osascript <<'APPLESCRIPT'
 tell application "Finder" to activate
@@ -1051,6 +1140,7 @@ fi
   printf 'snapshot_restore_exact_bytes=PASS\n'
   printf 'graceful_shutdown=PASS\n'
   printf 'dynamic_retina_display=PASS\n'
+  printf 'fullscreen_display=PASS\n'
   printf 'clipboard_bidirectional=PASS\n'
   printf 'keyboard_pointer_input=PASS\n'
   if [ "$SELECTED_DISTRO" = all ] || [ "$SELECTED_DISTRO" = debian ]; then

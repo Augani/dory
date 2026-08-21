@@ -310,6 +310,7 @@ enum DesktopMode {
         func run() throws {
             application.setActivationPolicy(.regular)
             application.delegate = self
+            installApplicationMenu()
             installSignalHandlers()
             window.makeKeyAndOrderFront(nil)
             application.activate()
@@ -317,6 +318,35 @@ enum DesktopMode {
             application.run()
             cleanup()
             if let stopError { throw stopError }
+        }
+
+        private func installApplicationMenu() {
+            let mainMenu = NSMenu()
+
+            let applicationItem = NSMenuItem(title: "Dory Linux", action: nil, keyEquivalent: "")
+            let applicationMenu = NSMenu(title: "Dory Linux")
+            applicationMenu.addItem(
+                withTitle: "Quit Dory Linux",
+                action: #selector(NSApplication.terminate(_:)),
+                keyEquivalent: "q"
+            )
+            applicationItem.submenu = applicationMenu
+            mainMenu.addItem(applicationItem)
+
+            let viewItem = NSMenuItem(title: "View", action: nil, keyEquivalent: "")
+            let viewMenu = NSMenu(title: "View")
+            let fullScreenItem = NSMenuItem(
+                title: "Enter Full Screen",
+                action: #selector(NSWindow.toggleFullScreen(_:)),
+                keyEquivalent: "f"
+            )
+            fullScreenItem.keyEquivalentModifierMask = [.command, .control]
+            fullScreenItem.target = window
+            viewMenu.addItem(fullScreenItem)
+            viewItem.submenu = viewMenu
+            mainMenu.addItem(viewItem)
+
+            application.mainMenu = mainMenu
         }
 
         func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
