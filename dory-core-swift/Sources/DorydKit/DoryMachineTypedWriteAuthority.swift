@@ -37,9 +37,52 @@ public struct DoryMachineTypedSettingsSnapshot: Codable, Sendable, Equatable, Ha
     public var clipboardPolicy: DoryVMClipboardPolicy?
     public var runtimePreference: DoryDesktopVMMPreference?
     public var graphicsPreference: DoryDesktopGraphicsPreference?
+    public var networkMode: DoryVMNetworkMode
+
+    private enum CodingKeys: String, CodingKey {
+        case guestIdentityIntent
+        case clipboardPolicy
+        case runtimePreference
+        case graphicsPreference
+        case networkMode
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        guestIdentityIntent = try container.decode(
+            DoryVMGuestIdentityIntent.self,
+            forKey: .guestIdentityIntent
+        )
+        clipboardPolicy = try container.decodeIfPresent(
+            DoryVMClipboardPolicy.self,
+            forKey: .clipboardPolicy
+        )
+        runtimePreference = try container.decodeIfPresent(
+            DoryDesktopVMMPreference.self,
+            forKey: .runtimePreference
+        )
+        graphicsPreference = try container.decodeIfPresent(
+            DoryDesktopGraphicsPreference.self,
+            forKey: .graphicsPreference
+        )
+        networkMode = try container.decodeIfPresent(
+            DoryVMNetworkMode.self,
+            forKey: .networkMode
+        ) ?? .sharedNAT
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(guestIdentityIntent, forKey: .guestIdentityIntent)
+        try container.encodeIfPresent(clipboardPolicy, forKey: .clipboardPolicy)
+        try container.encodeIfPresent(runtimePreference, forKey: .runtimePreference)
+        try container.encodeIfPresent(graphicsPreference, forKey: .graphicsPreference)
+        try container.encode(networkMode, forKey: .networkMode)
+    }
 
     public init(definition: DoryVirtualMachineDefinition) throws {
         guestIdentityIntent = definition.guestIdentityIntent
+        networkMode = definition.networkMode
         guard definition.display.enabled else {
             clipboardPolicy = nil
             runtimePreference = nil
@@ -126,6 +169,7 @@ public struct DoryMachineTypedSettingsSnapshot: Codable, Sendable, Equatable, Ha
             account: account.isValidForPersistence ? account : nil,
             desktop: desktop
         )
+        networkMode = .sharedNAT
         if displayMode == .desktop {
             let clipboard = DoryDesktopClipboardPolicy(environment: legacyEnvironment)
             clipboardPolicy = DoryVMClipboardDirection(rawValue: clipboard.rawValue)
@@ -157,7 +201,8 @@ public struct DoryMachineTypedSettingsSnapshot: Codable, Sendable, Equatable, Ha
             ),
             clipboardPolicy: update(clipboardPolicy),
             runtimePreference: update(runtimePreference),
-            graphicsPreference: update(graphicsPreference)
+            graphicsPreference: update(graphicsPreference),
+            networkMode: .set(networkMode)
         ).xpcDictionary
     }
 
@@ -182,7 +227,8 @@ public struct DoryMachineTypedSettingsSnapshot: Codable, Sendable, Equatable, Ha
             ),
             clipboardPolicy: replacement(clipboardPolicy),
             runtimePreference: replacement(runtimePreference),
-            graphicsPreference: replacement(graphicsPreference)
+            graphicsPreference: replacement(graphicsPreference),
+            networkMode: .set(networkMode)
         )
     }
 
@@ -198,6 +244,7 @@ public struct DoryMachineTypedSettingsSnapshot: Codable, Sendable, Equatable, Ha
         hasher.combine(clipboardPolicy?.files.rawValue)
         hasher.combine(runtimePreference?.rawValue)
         hasher.combine(graphicsPreference?.rawValue)
+        hasher.combine(networkMode.rawValue)
     }
 
     private func update<Value: Sendable & Equatable>(
@@ -228,6 +275,7 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable {
     public var clipboardPolicy: DoryMachineTypedSettingUpdate<DoryVMClipboardPolicy>
     public var runtimePreference: DoryMachineTypedSettingUpdate<DoryDesktopVMMPreference>
     public var graphicsPreference: DoryMachineTypedSettingUpdate<DoryDesktopGraphicsPreference>
+    public var networkMode: DoryMachineTypedSettingUpdate<DoryVMNetworkMode>
 
     public init(
         guestUsername: DoryMachineTypedSettingUpdate<String> = .unchanged,
@@ -238,7 +286,8 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable {
         desktopEnvironment: DoryMachineTypedSettingUpdate<String> = .unchanged,
         clipboardPolicy: DoryMachineTypedSettingUpdate<DoryVMClipboardPolicy> = .unchanged,
         runtimePreference: DoryMachineTypedSettingUpdate<DoryDesktopVMMPreference> = .unchanged,
-        graphicsPreference: DoryMachineTypedSettingUpdate<DoryDesktopGraphicsPreference> = .unchanged
+        graphicsPreference: DoryMachineTypedSettingUpdate<DoryDesktopGraphicsPreference> = .unchanged,
+        networkMode: DoryMachineTypedSettingUpdate<DoryVMNetworkMode> = .unchanged
     ) {
         self.guestUsername = guestUsername
         self.guestNumericUserID = guestNumericUserID
@@ -249,6 +298,7 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable {
         self.clipboardPolicy = clipboardPolicy
         self.runtimePreference = runtimePreference
         self.graphicsPreference = graphicsPreference
+        self.networkMode = networkMode
     }
 
     public var isEmpty: Bool {
@@ -261,6 +311,7 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable {
             && !clipboardPolicy.isChanged
             && !runtimePreference.isChanged
             && !graphicsPreference.isChanged
+            && !networkMode.isChanged
     }
 
     /// Consume the typed persistent-machine options shared by dorydctl create and update. Other
@@ -321,14 +372,21 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable {
             }
             patch.graphicsPreference = .set(preference)
         }
+        if let raw = try takeOption("--network", from: &arguments) {
+            guard let mode = DoryVMNetworkMode(rawValue: raw) else {
+                throw DoryMachineTypedWriteAuthorityError.invalidField("--network")
+            }
+            patch.networkMode = .set(mode)
+        }
 
         let clearsAccount = takeFlag("--clear-guest-account", from: &arguments)
         let clearsDesktop = takeFlag("--clear-desktop-identity", from: &arguments)
         let clearsClipboard = takeFlag("--clear-clipboard", from: &arguments)
         let clearsRuntime = takeFlag("--clear-runtime", from: &arguments)
         let clearsGraphics = takeFlag("--clear-graphics", from: &arguments)
+        let clearsNetwork = takeFlag("--clear-network", from: &arguments)
         guard allowsClears || (!clearsAccount && !clearsDesktop && !clearsClipboard
-            && !clearsRuntime && !clearsGraphics) else {
+            && !clearsRuntime && !clearsGraphics && !clearsNetwork) else {
             throw DoryMachineTypedWriteAuthorityError.invalidField("clear options")
         }
         if clearsAccount {
@@ -372,6 +430,12 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable {
             }
             patch.graphicsPreference = .clear
         }
+        if clearsNetwork {
+            guard !patch.networkMode.isChanged else {
+                throw DoryMachineTypedWriteAuthorityError.invalidField("--clear-network")
+            }
+            patch.networkMode = .clear
+        }
         return patch
     }
 
@@ -402,6 +466,12 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable {
             field: "desktopGraphicsPreference",
             allowsClears: allowsClears,
             type: DoryDesktopGraphicsPreference.self
+        )
+        networkMode = try Self.decodeEnum(
+            dictionary["networkMode"],
+            field: "networkMode",
+            allowsClears: allowsClears,
+            type: DoryVMNetworkMode.self
         )
     }
 
@@ -448,6 +518,7 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable {
             key: "desktopGraphicsPreference",
             into: &result
         )
+        Self.encodeEnum(networkMode, key: "networkMode", into: &result)
         return result as NSDictionary
     }
 
@@ -508,6 +579,14 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable {
         if graphicsPreference.isChanged {
             environment.removeValue(
                 forKey: DoryDesktopGraphicsPreference.legacyClassicOnlyEnvironmentKey
+            )
+        }
+        switch networkMode {
+        case .unchanged, .clear, .set(.sharedNAT):
+            break
+        case .set:
+            throw DoryMachineTypedWriteAuthorityError.unsupportedByLegacyRuntime(
+                "networkMode"
             )
         }
         return environment
@@ -581,6 +660,14 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable {
             )
         case .set(.software):
             definition.graphics = DoryVMGraphicsPolicy(acceptableLevels: [.software])
+        }
+        switch networkMode {
+        case .unchanged:
+            break
+        case .clear:
+            definition.networkMode = .sharedNAT
+        case let .set(mode):
+            definition.networkMode = mode
         }
         let issues = definition.validate()
         guard issues.isEmpty else {

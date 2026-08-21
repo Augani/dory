@@ -49,6 +49,7 @@ struct NewMachineSettingsTests {
         #expect(s.virtualMachineSettings?.clipboardPolicy == .legacyDesktop(.bidirectional))
         #expect(s.virtualMachineSettings?.runtimePreference == .automatic)
         #expect(s.virtualMachineSettings?.graphicsPreference == .automatic)
+        #expect(s.virtualMachineSettings?.networkMode == .sharedNAT)
         #expect(s.ports.isEmpty)
     }
 
@@ -90,15 +91,20 @@ struct NewMachineSettingsTests {
         #expect(settings.virtualMachineSettings?.guestIdentityIntent.desktop?.desktopEnvironment == "GNOME")
     }
 
-    @Test func headlessServersDoNotCarryDesktopMetadata() {
+    @Test func headlessServersCarryOnlyTypedNetworkIntent() {
         let settings = NewMachineSheet.buildSettings(
             cpus: 2,
             memoryGB: 2,
             mounts: [],
-            displayMode: .headless
+            displayMode: .headless,
+            networkMode: .disconnected
         )
 
         #expect(settings.env.isEmpty)
-        #expect(settings.virtualMachineSettings == nil)
+        #expect(settings.virtualMachineSettings?.guestIdentityIntent == .unspecified)
+        #expect(settings.virtualMachineSettings?.clipboardPolicy == nil)
+        #expect(settings.virtualMachineSettings?.runtimePreference == nil)
+        #expect(settings.virtualMachineSettings?.graphicsPreference == nil)
+        #expect(settings.virtualMachineSettings?.networkMode == .disconnected)
     }
 }

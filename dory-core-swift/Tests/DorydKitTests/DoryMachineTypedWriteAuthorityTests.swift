@@ -16,7 +16,8 @@ struct DoryMachineTypedWriteAuthorityTests {
             desktopEnvironment: .set("GNOME"),
             clipboardPolicy: .set(.legacyDesktop(.hostToGuest)),
             runtimePreference: .set(.accelerated),
-            graphicsPreference: .set(.virglVenus)
+            graphicsPreference: .set(.virglVenus),
+            networkMode: .set(.disconnected)
         )
 
         let wire = source.xpcDictionary
@@ -71,7 +72,7 @@ struct DoryMachineTypedWriteAuthorityTests {
     }
 
     @Test("legacy status projection exposes only bounded typed settings")
-    func safeLegacyStatusProjection() {
+    func safeLegacyStatusProjection() throws {
         let snapshot = DoryMachineTypedSettingsSnapshot(
             legacyEnvironment: [
                 "DORY_GUEST_USER": "developer",
@@ -93,6 +94,7 @@ struct DoryMachineTypedWriteAuthorityTests {
         #expect(snapshot.clipboardPolicy?.text == .hostToGuest)
         #expect(snapshot.runtimePreference == .accelerated)
         #expect(snapshot.graphicsPreference == .virglVenus)
+        #expect(snapshot.networkMode == .sharedNAT)
         #expect(snapshot.xpcDictionary.description.contains("must-never-cross-xpc") == false)
 
         let invalid = DoryMachineTypedSettingsSnapshot(
@@ -105,6 +107,17 @@ struct DoryMachineTypedWriteAuthorityTests {
         )
         #expect(invalid.guestIdentityIntent.account == nil)
         #expect(invalid.xpcDictionary.description.contains("opaque") == false)
+
+        var historical = try #require(
+            JSONSerialization.jsonObject(with: JSONEncoder().encode(snapshot))
+                as? [String: Any]
+        )
+        historical.removeValue(forKey: "networkMode")
+        let decoded = try JSONDecoder().decode(
+            DoryMachineTypedSettingsSnapshot.self,
+            from: JSONSerialization.data(withJSONObject: historical)
+        )
+        #expect(decoded.networkMode == .sharedNAT)
     }
 
     @Test("update clear is explicit and field scoped")
@@ -215,6 +228,36 @@ struct DoryMachineTypedWriteAuthorityTests {
                 runtimePreference: .set(.accelerated)
             ).applying(to: [:], displayMode: .headless)
         }
+
+        let disconnected = DoryMachineTypedSettingsPatch(
+            networkMode: .set(.disconnected)
+        )
+        #expect(throws: DoryMachineTypedWriteAuthorityError.unsupportedByLegacyRuntime(
+            "networkMode"
+        )) {
+            try disconnected.applying(to: [:], displayMode: .desktop)
+        }
+        let migrated = try DoryMachineConfigurationMigrationBridge.migrate(
+            DoryMachineConfiguration(
+                id: "offline",
+                kernelPath: "/fixture/kernel",
+                rootfsPath: "/fixture/rootfs",
+                displayMode: .desktop
+            ),
+            facts: DoryMachineConfigurationMigrationFacts(
+                guestArchitecture: .arm64,
+                systemDiskCapacityBytes: 32 * 1_024 * 1_024 * 1_024,
+                lifecycle: DoryVMLifecycleMetadata(
+                    revision: 1,
+                    createdAtUnixMilliseconds: 1_700_000_000_000,
+                    updatedAtUnixMilliseconds: 1_700_000_000_000
+                )
+            )
+        )
+        #expect(try disconnected.applying(
+            to: migrated.definition,
+            displayMode: .desktop
+        ).networkMode == .disconnected)
     }
 
     @Test("clipboard wire shape is complete and exact")
@@ -262,6 +305,7 @@ struct DoryMachineTypedWriteAuthorityTests {
             "--clipboard", "guest-to-host",
             "--runtime", "compatible",
             "--graphics", "software",
+            "--network", "disconnected",
             "--env", "TOKEN=secret",
         ]
 
@@ -276,6 +320,7 @@ struct DoryMachineTypedWriteAuthorityTests {
         #expect(patch.clipboardPolicy == .set(.legacyDesktop(.guestToHost)))
         #expect(patch.runtimePreference == .set(.compatible))
         #expect(patch.graphicsPreference == .set(.software))
+        #expect(patch.networkMode == .set(.disconnected))
         #expect(arguments == ["--memory-mb", "4096", "--env", "TOKEN=secret"])
         #expect(patch.xpcDictionary["env"] == nil)
     }
@@ -288,6 +333,7 @@ struct DoryMachineTypedWriteAuthorityTests {
             "--clear-clipboard",
             "--clear-runtime",
             "--clear-graphics",
+            "--clear-network",
         ]
         let patch = try DoryMachineTypedSettingsPatch.consumeCLIArguments(
             &clearing,
@@ -301,6 +347,7 @@ struct DoryMachineTypedWriteAuthorityTests {
         #expect(patch.clipboardPolicy == .clear)
         #expect(patch.runtimePreference == .clear)
         #expect(patch.graphicsPreference == .clear)
+        #expect(patch.networkMode == .clear)
 
         var createClear = ["--clear-clipboard"]
         #expect(throws: DoryMachineTypedWriteAuthorityError.invalidField("clear options")) {

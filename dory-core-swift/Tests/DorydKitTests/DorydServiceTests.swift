@@ -1463,6 +1463,7 @@ final class DorydServiceTests: XCTestCase {
             XCTAssertEqual(desktop?["displayName"] as? String, "Ubuntu")
             XCTAssertEqual(typed?["desktopRuntimePreference"] as? String, "accelerated")
             XCTAssertEqual(typed?["desktopGraphicsPreference"] as? String, "virgl-venus")
+            XCTAssertEqual(typed?["networkMode"] as? String, "shared-nat")
             typedCreate.fulfill()
         }
         wait(for: [typedCreate], timeout: 5)
@@ -1533,6 +1534,7 @@ final class DorydServiceTests: XCTestCase {
             "guestIdentityIntent": [
                 "account": ["username": "developer"] as NSDictionary,
             ] as NSDictionary,
+            "networkMode": "disconnected",
         ]) { ok, _, message in
             XCTAssertFalse(ok)
             XCTAssertTrue(message.contains("production planning failed closed"), message)
@@ -1548,6 +1550,7 @@ final class DorydServiceTests: XCTestCase {
             captured.request.planning.definition.guestIdentityIntent.account?.username,
             "developer"
         )
+        XCTAssertEqual(captured.request.planning.definition.networkMode, .disconnected)
         XCTAssertEqual(captured.request.workspacePublication, .retainExistingExact)
         XCTAssertEqual(captured.artifacts.count, 2)
         XCTAssertTrue(captured.artifacts.allSatisfy { $0.path.hasPrefix(base + "/planned/") })
@@ -1572,13 +1575,17 @@ final class DorydServiceTests: XCTestCase {
             let identity = typed?["guestIdentityIntent"] as? NSDictionary
             let account = identity?["account"] as? NSDictionary
             XCTAssertEqual(account?["username"] as? String, "developer")
+            XCTAssertEqual(typed?["networkMode"] as? String, "disconnected")
             listReply.fulfill()
         }
         wait(for: [listReply], timeout: 5)
         XCTAssertThrowsError(try manager.start(id: "planned"))
 
         let updateReply = expectation(description: "production update planning rejection")
-        service.machineUpdate("planned", config: ["memoryMB": UInt64(4_096)]) {
+        service.machineUpdate("planned", config: [
+            "memoryMB": UInt64(4_096),
+            "networkMode": "shared-nat",
+        ]) {
             ok, _, message in
             XCTAssertFalse(ok)
             XCTAssertTrue(message.contains("production planning failed closed"), message)
@@ -1589,6 +1596,10 @@ final class DorydServiceTests: XCTestCase {
         XCTAssertEqual(
             controller.captures.last?.request.planning.definition.resources.memoryBytes,
             UInt64(4_096 * 1_024 * 1_024)
+        )
+        XCTAssertEqual(
+            controller.captures.last?.request.planning.definition.networkMode,
+            .sharedNAT
         )
         XCTAssertEqual(manager.status(id: "planned")?.runtimeIdentity.mode, .requiresReplanning)
     }

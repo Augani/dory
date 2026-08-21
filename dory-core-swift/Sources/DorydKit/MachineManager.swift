@@ -3002,7 +3002,10 @@ public final class MachineManager: @unchecked Sendable {
                     "native workspace update is not representable by the compatibility runtime"
                 )
             }
-            migration.definition = candidate
+            migration.definition = Self.compatibilityRuntimeDefinition(
+                candidate,
+                compatibility: migration.definition
+            )
             _ = try migration.legacyConfiguration()
             nativeDefinition = candidate
         }
@@ -6329,12 +6332,20 @@ public final class MachineManager: @unchecked Sendable {
             isNative = false
             reconcileState = result.state
         }
+        let compatibilityDefinition = migration.definition
+        var runtimeMigration = migration
+        runtimeMigration.definition = isNative
+            ? Self.compatibilityRuntimeDefinition(
+                definition,
+                compatibility: compatibilityDefinition
+            )
+            : definition
         migration.definition = definition
         return MachineWorkspaceAuthority(
             definition: definition,
             migration: migration,
             migrationFactsData: factsData,
-            runtimeMachine: try migration.legacyConfiguration(),
+            runtimeMachine: try runtimeMigration.legacyConfiguration(),
             isNative: isNative,
             reconcileState: reconcileState
         )
@@ -6388,7 +6399,20 @@ public final class MachineManager: @unchecked Sendable {
         expected.graphics = definition.graphics
         expected.guestIdentityIntent = definition.guestIdentityIntent
         expected.clipboardPolicy = definition.clipboardPolicy
+        expected.networkMode = definition.networkMode
         return expected == definition && definition.validate().isEmpty
+    }
+
+    /// The compatibility helper has no persisted network-mode field. Native desired state keeps
+    /// that authority in WorkspaceSpec while the exact resolved device contract is supplied at
+    /// launch; only the transient legacy projection retains its historical shared-NAT value.
+    private static func compatibilityRuntimeDefinition(
+        _ definition: DoryVirtualMachineDefinition,
+        compatibility: DoryVirtualMachineDefinition
+    ) -> DoryVirtualMachineDefinition {
+        var projected = definition
+        projected.networkMode = compatibility.networkMode
+        return projected
     }
 
     private static func canonicalDefinitionData(

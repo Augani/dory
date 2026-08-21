@@ -607,6 +607,7 @@ private struct MachineEditSheet: View {
     @State private var clipboardPolicy = DoryDesktopClipboardPolicy.bidirectional
     @State private var runtimePreference = DoryDesktopVMMPreference.automatic
     @State private var graphicsPreference = DoryDesktopGraphicsPreference.automatic
+    @State private var networkMode = DoryVMNetworkMode.sharedNAT
     @State private var typedSettings = DorydMachineTypedSettings()
 
     private struct MountRow: Identifiable, Hashable {
@@ -626,6 +627,7 @@ private struct MachineEditSheet: View {
                 VStack(alignment: .leading, spacing: 18) {
                     warning
                     machineTypeBlock
+                    networkBlock
                     runtimeBlock
                     clipboardBlock
                     resourceRow
@@ -664,6 +666,7 @@ private struct MachineEditSheet: View {
         } ?? .bidirectional
         runtimePreference = typedSettings.runtimePreference ?? .automatic
         graphicsPreference = typedSettings.graphicsPreference ?? .automatic
+        networkMode = typedSettings.networkMode ?? .sharedNAT
         mountRows = settings.mounts.map { MountRow(host: $0.host, guest: $0.guest, readOnly: $0.readOnly) }
     }
 
@@ -753,6 +756,23 @@ private struct MachineEditSheet: View {
                 .frame(width: 180)
             }
             Spacer(minLength: 0)
+        }
+    }
+
+    private var networkBlock: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            sectionLabel("NETWORK")
+            Picker("Network", selection: $networkMode) {
+                Text("Shared NAT").tag(DoryVMNetworkMode.sharedNAT)
+                Text("Disconnected").tag(DoryVMNetworkMode.disconnected)
+            }
+            .labelsHidden()
+            .pickerStyle(.segmented)
+            .accessibilityIdentifier("edit-machine-network-mode")
+            Text(networkMode == .disconnected
+                 ? "Disconnected attaches no virtual network device."
+                 : "Shared NAT provides outbound access through your Mac without exposing the machine directly.")
+                .font(.system(size: 11)).foregroundStyle(p.text3)
         }
     }
 
@@ -940,6 +960,7 @@ private struct MachineEditSheet: View {
             guard !host.isEmpty, !guest.isEmpty else { return nil }
             return MountPair(host: host, guest: guest, readOnly: row.readOnly)
         }
+        typedSettings.networkMode = networkMode
         if displayMode == .desktop, machine.bootMode != .efi {
             let previousUsername = typedSettings.guestIdentityIntent.account?.username ?? "dory"
             if previousUsername != normalizedGuestUsername {
@@ -978,7 +999,7 @@ private struct MachineEditSheet: View {
             memoryMB: memoryGB * 1024,
             mounts: mounts,
             env: [:],
-            virtualMachineSettings: machine.bootMode == .efi ? nil : typedSettings,
+            virtualMachineSettings: typedSettings,
             address: address.trimmingCharacters(in: .whitespacesAndNewlines),
             displayMode: displayMode,
             bootMode: machine.bootMode

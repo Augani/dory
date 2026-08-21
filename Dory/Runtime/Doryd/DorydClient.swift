@@ -97,17 +97,20 @@ nonisolated struct DorydMachineTypedSettings: Sendable, Equatable, Hashable {
     var clipboardPolicy: DoryVMClipboardPolicy? = nil
     var runtimePreference: DoryDesktopVMMPreference? = nil
     var graphicsPreference: DoryDesktopGraphicsPreference? = nil
+    var networkMode: DoryVMNetworkMode? = nil
 
     init(
         guestIdentityIntent: DoryVMGuestIdentityIntent = .unspecified,
         clipboardPolicy: DoryVMClipboardPolicy? = nil,
         runtimePreference: DoryDesktopVMMPreference? = nil,
-        graphicsPreference: DoryDesktopGraphicsPreference? = nil
+        graphicsPreference: DoryDesktopGraphicsPreference? = nil,
+        networkMode: DoryVMNetworkMode? = nil
     ) {
         self.guestIdentityIntent = guestIdentityIntent
         self.clipboardPolicy = clipboardPolicy
         self.runtimePreference = runtimePreference
         self.graphicsPreference = graphicsPreference
+        self.networkMode = networkMode
     }
 
     init(legacyEnvironment: [String: String], displayMode: MachineDisplayMode) {
@@ -147,6 +150,7 @@ nonisolated struct DorydMachineTypedSettings: Sendable, Equatable, Hashable {
             account: account.isValidForPersistence ? account : nil,
             desktop: desktop
         )
+        networkMode = .sharedNAT
         if displayMode == .desktop {
             let effectiveClipboard = DoryDesktopClipboardPolicy(
                 environment: legacyEnvironment
@@ -172,6 +176,7 @@ nonisolated struct DorydMachineTypedSettings: Sendable, Equatable, Hashable {
             && clipboardPolicy == nil
             && runtimePreference == nil
             && graphicsPreference == nil
+            && networkMode == nil
     }
 
     var xpcDictionary: NSDictionary {
@@ -211,6 +216,9 @@ nonisolated struct DorydMachineTypedSettings: Sendable, Equatable, Hashable {
         if let graphicsPreference {
             result["desktopGraphicsPreference"] = graphicsPreference.rawValue
         }
+        if let networkMode {
+            result["networkMode"] = networkMode.rawValue
+        }
         return result as NSDictionary
     }
 
@@ -226,6 +234,7 @@ nonisolated struct DorydMachineTypedSettings: Sendable, Equatable, Hashable {
         hasher.combine(clipboardPolicy?.files.rawValue)
         hasher.combine(runtimePreference?.rawValue)
         hasher.combine(graphicsPreference?.rawValue)
+        hasher.combine(networkMode?.rawValue)
     }
 }
 
@@ -299,6 +308,12 @@ nonisolated struct DorydMachineTypedSettingsPatch: Sendable, Equatable {
             baseline.graphicsPreference,
             desired.graphicsPreference,
             key: "desktopGraphicsPreference",
+            into: &result
+        )
+        Self.encodeEnum(
+            baseline.networkMode,
+            desired.networkMode,
+            key: "networkMode",
             into: &result
         )
         return result as NSDictionary
@@ -2167,7 +2182,7 @@ nonisolated final class DorydClient: @unchecked Sendable {
               let keys = value.allKeys as? [String],
               Set(keys).isSubset(of: [
                 "guestIdentityIntent", "clipboardPolicy",
-                "desktopRuntimePreference", "desktopGraphicsPreference",
+                "desktopRuntimePreference", "desktopGraphicsPreference", "networkMode",
               ]), keys.count == Set(keys).count else {
             return nil
         }
@@ -2268,11 +2283,18 @@ nonisolated final class DorydClient: @unchecked Sendable {
                   let parsed = DoryDesktopGraphicsPreference(rawValue: raw) else { return nil }
             graphics = parsed
         } else { graphics = nil }
+        let networkMode: DoryVMNetworkMode?
+        if let encoded = value["networkMode"] {
+            guard let raw = encoded as? String,
+                  let parsed = DoryVMNetworkMode(rawValue: raw) else { return nil }
+            networkMode = parsed
+        } else { networkMode = nil }
         return ParsedMachineTypedSettings(value: DorydMachineTypedSettings(
             guestIdentityIntent: identity,
             clipboardPolicy: clipboard,
             runtimePreference: runtime,
-            graphicsPreference: graphics
+            graphicsPreference: graphics,
+            networkMode: networkMode
         ))
     }
 

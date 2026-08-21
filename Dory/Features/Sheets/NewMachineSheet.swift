@@ -17,6 +17,7 @@ struct NewMachineSheet: View {
     @State private var installerISOPath = ""
     @State private var installerISOCheck: InstallerISOCheck = .none
     @State private var diskSizeGB = 64
+    @State private var networkMode = DoryVMNetworkMode.sharedNAT
 
     private enum InstallerISOCheck: Equatable {
         case none
@@ -88,6 +89,7 @@ struct NewMachineSheet: View {
                         machineKindSection
                         devEnvironmentSection
                         identitySection
+                        networkBlock
                         optionsRow
                         advancedSection
                     }
@@ -513,6 +515,23 @@ struct NewMachineSheet: View {
         }
     }
 
+    private var networkBlock: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            sectionLabel("NETWORK")
+            Picker("Network", selection: $networkMode) {
+                Text("Shared NAT").tag(DoryVMNetworkMode.sharedNAT)
+                Text("Disconnected").tag(DoryVMNetworkMode.disconnected)
+            }
+            .labelsHidden()
+            .pickerStyle(.segmented)
+            .accessibilityIdentifier("new-machine-network-mode")
+            Text(networkMode == .disconnected
+                 ? "Disconnected attaches no virtual network device."
+                 : "Shared NAT provides outbound access through your Mac without exposing the machine directly.")
+                .font(.system(size: 11)).foregroundStyle(p.text3)
+        }
+    }
+
     private var advancedSection: some View {
         VStack(alignment: .leading, spacing: 0) {
             Button {
@@ -869,9 +888,10 @@ struct NewMachineSheet: View {
         displayMode: MachineDisplayMode = .desktop,
         desktopDistro: DesktopMachineDistro = .debian,
         guestUsername: String = "dory",
-        guestUID: uid_t = getuid()
+        guestUID: uid_t = getuid(),
+        networkMode: DoryVMNetworkMode = .sharedNAT
     ) -> MachineSettings {
-        let typedSettings: DorydMachineTypedSettings?
+        let typedSettings: DorydMachineTypedSettings
         if displayMode == .desktop {
             typedSettings = DorydMachineTypedSettings(
                 guestIdentityIntent: DoryVMGuestIdentityIntent(
@@ -888,10 +908,11 @@ struct NewMachineSheet: View {
                 ),
                 clipboardPolicy: .legacyDesktop(.bidirectional),
                 runtimePreference: .automatic,
-                graphicsPreference: .automatic
+                graphicsPreference: .automatic,
+                networkMode: networkMode
             )
         } else {
-            typedSettings = nil
+            typedSettings = DorydMachineTypedSettings(networkMode: networkMode)
         }
         return MachineSettings(
             cpus: cpus,
@@ -935,7 +956,8 @@ struct NewMachineSheet: View {
             address: trimmedAddress,
             displayMode: displayMode,
             desktopDistro: desktopDistro,
-            guestUsername: normalizedGuestUsername
+            guestUsername: normalizedGuestUsername,
+            networkMode: networkMode
         )
         if customISOInstall {
             settings.bootMode = .efi
@@ -944,7 +966,9 @@ struct NewMachineSheet: View {
             // EFI boot/media authority is explicit. It must never be inferred from a reserved
             // environment marker or carry managed-desktop provisioning intent.
             settings.env = [:]
-            settings.virtualMachineSettings = nil
+            settings.virtualMachineSettings = DorydMachineTypedSettings(
+                networkMode: networkMode
+            )
         }
         return settings
     }

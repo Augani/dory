@@ -166,6 +166,16 @@ struct DorydClientTests {
         #expect(defaults.clipboardPolicy == .legacyDesktop(.bidirectional))
         #expect(defaults.runtimePreference == .automatic)
         #expect(defaults.graphicsPreference == .automatic)
+        #expect(defaults.networkMode == .sharedNAT)
+
+        var disconnected = defaults
+        disconnected.networkMode = .disconnected
+        let networkWire = DorydMachineTypedSettingsPatch(
+            baseline: defaults,
+            desired: disconnected
+        ).xpcDictionary
+        #expect(networkWire.count == 1)
+        #expect(networkWire["networkMode"] as? String == "disconnected")
 
         for (legacy, expected) in [("1", DoryDesktopGraphicsPreference.virgl),
                                    ("0", DoryDesktopGraphicsPreference.virglVenus)] {
@@ -340,6 +350,7 @@ struct DorydClientTests {
             ] as NSDictionary,
             "desktopRuntimePreference": "accelerated",
             "desktopGraphicsPreference": "virgl-venus",
+            "networkMode": "disconnected",
         ])
         let delegate = FakeDorydListenerDelegate(service: service)
         listener.delegate = delegate
@@ -354,6 +365,7 @@ struct DorydClientTests {
             == "ubuntu")
         #expect(status.typedSettings?.runtimePreference == .accelerated)
         #expect(status.typedSettings?.graphicsPreference == .virglVenus)
+        #expect(status.typedSettings?.networkMode == .disconnected)
 
         service.setMachineTypedSettings("dev", ["unknown": "claim"])
         await #expect(throws: (any Error).self) {
@@ -407,7 +419,8 @@ struct DorydClientTests {
                 ),
                 clipboardPolicy: .legacyDesktop(.bidirectional),
                 runtimePreference: .accelerated,
-                graphicsPreference: .virglVenus
+                graphicsPreference: .virglVenus,
+                networkMode: .disconnected
             )
         ))
         let startedMachine = try await client.machineStart("dev")
@@ -451,7 +464,8 @@ struct DorydClientTests {
                 ),
                 clipboardPolicy: .legacyDesktop(.hostToGuest),
                 runtimePreference: .compatible,
-                graphicsPreference: .software
+                graphicsPreference: .software,
+                networkMode: .sharedNAT
             )
         )
         let machines = try await client.machineList()
