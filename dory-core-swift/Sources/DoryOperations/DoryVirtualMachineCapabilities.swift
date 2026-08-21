@@ -1327,7 +1327,16 @@ public enum DoryAppleSiliconCapabilityEvaluator {
         switch devices.networkAttachment {
         case .sharedNAT:
             break
-        case .disconnected, .bridged, .isolated:
+        case .disconnected:
+            guard request.guest.family == .linux,
+                  request.backend == .appleVirtualizationFramework else {
+                return unavailable(
+                    tier: tier,
+                    code: .networkAttachmentUnsupported,
+                    message: "The selected backend does not implement disconnected networking."
+                )
+            }
+        case .bridged, .isolated:
             return unavailable(
                 tier: tier,
                 code: .networkAttachmentUnsupported,

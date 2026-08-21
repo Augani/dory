@@ -857,7 +857,8 @@ struct VirtualMachineCapabilitiesTests {
         )
 
         #expect(resolved.resolvedDevices == .minimumBootable)
-        #expect(disconnected.availability.reason?.code == .networkAttachmentUnsupported)
+        #expect(disconnected.availability.isUsable)
+        #expect(disconnected.resolvedDevices?.networkAttachment == .disconnected)
         #expect(qualifiedVZSharing.availability.isUsable)
         #expect(qualifiedVZSharing.resolvedDevices?.directorySharing == true)
         #expect(qualifiedRawDesktop.availability.isUsable)

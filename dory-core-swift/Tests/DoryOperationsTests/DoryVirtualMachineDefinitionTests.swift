@@ -56,6 +56,19 @@ struct DoryVirtualMachineDefinitionTests {
         #expect(decoded.isValid)
     }
 
+    @Test("disconnected networking is durable typed intent")
+    func disconnectedNetworkRoundTrip() throws {
+        var original = linuxDefinition()
+        original.networkMode = .disconnected
+
+        let data = try JSONEncoder().encode(original)
+        let decoded = try JSONDecoder().decode(DoryVirtualMachineDefinition.self, from: data)
+
+        #expect(decoded.networkMode == .disconnected)
+        #expect(decoded == original)
+        #expect(decoded.isValid)
+    }
+
     @Test("guest identity and clipboard policies are bounded typed intent")
     func guestIdentityAndClipboardValidation() {
         var definition = linuxDefinition()

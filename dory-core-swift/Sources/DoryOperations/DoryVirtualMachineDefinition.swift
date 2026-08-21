@@ -174,6 +174,7 @@ public struct DoryVMStorageAttachment: Codable, Sendable, Equatable {
 }
 
 public enum DoryVMNetworkMode: String, Codable, Sendable, CaseIterable {
+    case disconnected
     case sharedNAT = "shared-nat"
     case bridged
     case isolated

@@ -515,6 +515,7 @@ public final class DoryDaemonVirtualMachinePlanningCoordinator: @unchecked Senda
     ) -> DoryVirtualMachineDeviceCapabilityRequest {
         let networkAttachment: DoryVirtualMachineNetworkAttachmentMode
         switch definition.networkMode {
+        case .disconnected: networkAttachment = .disconnected
         case .sharedNAT: networkAttachment = .sharedNAT
         case .bridged: networkAttachment = .bridged
         case .isolated: networkAttachment = .isolated

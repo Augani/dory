@@ -455,6 +455,37 @@ final class DoryVMMKitTests: XCTestCase {
         try assertShellSyntax("\(base)/dorycfg/boot.sh")
     }
 
+    func testResolvedDisconnectedVZConfigurationOmitsEveryNetworkDevice() throws {
+        let base = "/tmp/dory-vmm-disconnected-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let kernel = "\(base)/vmlinux"
+        let rootfs = "\(base)/rootfs.raw"
+        FileManager.default.createFile(
+            atPath: kernel,
+            contents: Data([0x7f, 0x45, 0x4c, 0x46])
+        )
+        FileManager.default.createFile(atPath: rootfs, contents: nil)
+        XCTAssertEqual(truncate(rootfs, 1024 * 1024), 0)
+
+        let configuration = try DoryVZConfigurationBuilder.makeConfiguration(
+            spec: DoryVZMachineSpec(
+                machineID: "offline",
+                stateDirectory: base,
+                kernelPath: kernel,
+                rootfsPath: rootfs,
+                memoryMB: 2048,
+                cpuCount: 2,
+                resolvedDevices: .init(networkAttachment: .disconnected)
+            ),
+            serialOutput: nil
+        )
+
+        XCTAssertTrue(configuration.networkDevices.isEmpty)
+        XCTAssertEqual(configuration.socketDevices.count, 1)
+        XCTAssertEqual(configuration.storageDevices.count, 1)
+    }
+
     func testEFIProfileSeparatesInstallerAndInstalledFirmwareAndAttachesISOReadOnly() throws {
         let base = "/tmp/dory-vmm-efi-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)

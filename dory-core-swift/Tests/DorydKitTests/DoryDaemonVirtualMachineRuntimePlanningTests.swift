@@ -5,6 +5,21 @@ import Testing
 
 @Suite("Daemon virtual-machine runtime planning")
 struct DoryDaemonVirtualMachineRuntimePlanningTests {
+    @Test("definition networking maps exactly into capability planning")
+    func definitionNetworkingMapsExactly() throws {
+        let fixture = try Fixture()
+        var definition = fixture.definition
+        definition.networkMode = .disconnected
+
+        let devices = DoryDaemonVirtualMachinePlanningCoordinator.devices(for: definition)
+
+        #expect(devices.networkAttachment == .disconnected)
+        #expect(devices.audioInput == definition.audio.inputEnabled)
+        #expect(devices.audioOutput == definition.audio.outputEnabled)
+        #expect(devices.keyboard == definition.input.keyboardEnabled)
+        #expect(devices.pointer == definition.input.pointerEnabled)
+    }
+
     @Test("planning constructs persists and exposes an exact plan digest")
     func planningSuccess() throws {
         let fixture = try Fixture()

@@ -373,9 +373,16 @@ public enum DoryVZConfigurationBuilder {
             }
         }
         if let devices = spec.resolvedDevices {
-            guard devices.networkAttachment == .sharedNAT else {
+            guard devices.networkAttachment == .sharedNAT
+                    || devices.networkAttachment == .disconnected else {
                 throw DoryVZMachineError.validation(
                     "resolved device contract contains a device not implemented by this VZ launch"
+                )
+            }
+            if devices.networkAttachment == .disconnected,
+               networkAttachment != nil || spec.nativeIPv6 {
+                throw DoryVZMachineError.validation(
+                    "disconnected networking cannot attach a host network backend"
                 )
             }
             guard devices.directorySharing == !spec.shares.isEmpty else {
@@ -427,12 +434,15 @@ public enum DoryVZConfigurationBuilder {
         configuration.entropyDevices = [VZVirtioEntropyDeviceConfiguration()]
         configuration.memoryBalloonDevices = [VZVirtioTraditionalMemoryBalloonDeviceConfiguration()]
         configuration.socketDevices = [VZVirtioSocketDeviceConfiguration()]
-        let network = VZVirtioNetworkDeviceConfiguration()
-        network.attachment = networkAttachment ?? VZNATNetworkDeviceAttachment()
-        if networkAttachment != nil, let macAddress = VZMACAddress(string: DoryVMMNativeIPv6Plan.guestMAC) {
-            network.macAddress = macAddress
+        if spec.resolvedDevices?.networkAttachment != .disconnected {
+            let network = VZVirtioNetworkDeviceConfiguration()
+            network.attachment = networkAttachment ?? VZNATNetworkDeviceAttachment()
+            if networkAttachment != nil,
+               let macAddress = VZMACAddress(string: DoryVMMNativeIPv6Plan.guestMAC) {
+                network.macAddress = macAddress
+            }
+            configuration.networkDevices = [network]
         }
-        configuration.networkDevices = [network]
 
         if spec.displayMode == .desktop {
             let devices = spec.resolvedDevices
