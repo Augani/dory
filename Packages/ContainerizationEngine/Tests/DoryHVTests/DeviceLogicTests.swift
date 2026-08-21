@@ -2281,6 +2281,22 @@ private final class FakeVirtioGPURenderer: VirtioGPURenderer {
         ])
     }
 
+    @Test func focusLossReleasesEveryPressedKeyAndButtonExactlyOnce() {
+        var state = VirtioInputPressedState()
+        state.record(VirtioInputEvent(type: 1, code: 42, value: 1))
+        state.record(VirtioInputEvent(type: 1, code: 30, value: 1))
+        state.record(VirtioInputEvent(type: 1, code: 30, value: 2))
+        state.record(VirtioInputEvent(type: 1, code: 272, value: 1))
+        state.record(VirtioInputEvent(type: 3, code: 0, value: 16_000))
+        state.record(VirtioInputEvent(type: 1, code: 42, value: 0))
+
+        #expect(state.releaseFrame() == [
+            VirtioInputEvent(type: 1, code: 30, value: 0),
+            VirtioInputEvent(type: 1, code: 272, value: 0),
+        ])
+        #expect(state.releaseFrame().isEmpty)
+    }
+
     @Test func waitsForEnoughGuestBuffersBeforePublishingWholeInputFrame() throws {
         let memory = try GuestMemory(guestBase: base, size: 8 * HostPage.size)
         let input = VirtioInput()

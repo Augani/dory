@@ -97,6 +97,7 @@ final class DesktopMetalView: MTKView, MTKViewDelegate {
     private var guestCursorUpdate: VirtioGPUCursorUpdate?
     private var tracking: NSTrackingArea?
     private var scrollAccumulator = VirtioInputScrollAccumulator()
+    private var pressedInput = VirtioInputPressedState()
     private var resizeGeneration: UInt64 = 0
     var onDrawableSizeChange: ((UInt32, UInt32) -> Void)?
     var onMacShortcut: ((NSEvent) -> Bool)?
@@ -288,7 +289,7 @@ final class DesktopMetalView: MTKView, MTKViewDelegate {
             super.keyDown(with: event)
             return
         }
-        input.send(frame: [VirtioInputEvent(type: 1, code: code, value: event.isARepeat ? 2 : 1)])
+        sendTracked([VirtioInputEvent(type: 1, code: code, value: event.isARepeat ? 2 : 1)])
     }
 
     override func keyUp(with event: NSEvent) {
@@ -296,7 +297,7 @@ final class DesktopMetalView: MTKView, MTKViewDelegate {
             super.keyUp(with: event)
             return
         }
-        input.send(frame: [VirtioInputEvent(type: 1, code: code, value: 0)])
+        sendTracked([VirtioInputEvent(type: 1, code: code, value: 0)])
     }
 
     override func flagsChanged(with event: NSEvent) {
@@ -305,7 +306,7 @@ final class DesktopMetalView: MTKView, MTKViewDelegate {
             super.flagsChanged(with: event)
             return
         }
-        input.send(frame: [
+        sendTracked([
             VirtioInputEvent(type: 1, code: code, value: event.modifierFlags.contains(flag) ? 1 : 0)
         ])
     }
@@ -339,7 +340,7 @@ final class DesktopMetalView: MTKView, MTKViewDelegate {
             verticalDelta: event.scrollingDeltaY,
             hasPreciseDeltas: event.hasPreciseScrollingDeltas
         )
-        if !events.isEmpty { input.send(frame: events) }
+        if !events.isEmpty { sendTracked(events) }
     }
 
     private func sendPointer(
@@ -359,6 +360,17 @@ final class DesktopMetalView: MTKView, MTKViewDelegate {
         if let button {
             events.append(VirtioInputEvent(type: 1, code: button, value: pressed ? 1 : 0))
         }
+        sendTracked(events)
+    }
+
+    func releasePressedInput() {
+        let releases = pressedInput.releaseFrame()
+        scrollAccumulator = VirtioInputScrollAccumulator()
+        if !releases.isEmpty { input.send(frame: releases) }
+    }
+
+    private func sendTracked(_ events: [VirtioInputEvent]) {
+        for event in events { pressedInput.record(event) }
         input.send(frame: events)
     }
 

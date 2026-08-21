@@ -65,6 +65,32 @@ public struct VirtioInputScrollAccumulator: Sendable {
     }
 }
 
+/// Tracks key and pointer-button state at the host display boundary. AppKit can deactivate a
+/// window without delivering the matching keyUp/mouseUp events, so the frontend drains this state
+/// as one atomic release frame whenever its window or application loses focus.
+public struct VirtioInputPressedState: Sendable {
+    private var pressedCodes = Set<UInt16>()
+
+    public init() {}
+
+    public mutating func record(_ event: VirtioInputEvent) {
+        guard event.type == 1 else { return }
+        if event.value == 0 {
+            pressedCodes.remove(event.code)
+        } else if event.value > 0 {
+            pressedCodes.insert(event.code)
+        }
+    }
+
+    public mutating func releaseFrame() -> [VirtioInputEvent] {
+        let releases = pressedCodes.sorted().map {
+            VirtioInputEvent(type: 1, code: $0, value: 0)
+        }
+        pressedCodes.removeAll(keepingCapacity: true)
+        return releases
+    }
+}
+
 /// A combined virtio keyboard, absolute pointer, buttons, and high-resolution wheel device.
 /// Host input is submitted as whole evdev frames ending in SYN_REPORT; a frame waits until the
 /// guest has posted enough receive buffers, so Dory never delivers half of a pointer update.

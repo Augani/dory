@@ -364,6 +364,14 @@ enum DesktopMode {
             return false
         }
 
+        func windowDidResignKey(_ notification: Notification) {
+            display.releasePressedInput()
+        }
+
+        func applicationDidResignActive(_ notification: Notification) {
+            display.releasePressedInput()
+        }
+
         private func startMachine() {
             let machine = self.machine
             DispatchQueue.global(qos: .userInteractive).async { [weak self] in
