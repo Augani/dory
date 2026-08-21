@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/dory-sparkle-evidence-test.XXXXXX")"
+TMP="$(cd "$TMP" && pwd -P)"
 trap 'rm -rf "$TMP"' EXIT
 
 SOURCE_COMMIT="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -142,6 +143,27 @@ if verify > "$TMP/reused-pid.out" 2>&1; then
   exit 1
 fi
 grep -Fq 'reused the previous app PID' "$TMP/reused-pid.out"
+
+write_manifest
+cp "$TMP/manifest.txt" "$TMP/direct-manifest.txt"
+rm "$TMP/manifest.txt"
+ln -s "$TMP/direct-manifest.txt" "$TMP/manifest.txt"
+if verify > "$TMP/indirect.out" 2>&1; then
+  echo "test-sparkle-install-evidence: accepted an indirect evidence manifest" >&2
+  exit 1
+fi
+grep -Fq 'missing or indirect' "$TMP/indirect.out"
+rm "$TMP/manifest.txt"
+mv "$TMP/direct-manifest.txt" "$TMP/manifest.txt"
+
+cp "$TMP/sbom.json" "$TMP/sbom-valid.json"
+printf '{"metadata":{},"metadata":{}}\n' > "$TMP/sbom.json"
+if verify > "$TMP/duplicate-json.out" 2>&1; then
+  echo "test-sparkle-install-evidence: accepted duplicate SBOM authority" >&2
+  exit 1
+fi
+grep -Fq 'duplicate JSON key' "$TMP/duplicate-json.out"
+mv "$TMP/sbom-valid.json" "$TMP/sbom.json"
 
 write_manifest
 printf 'tampered\n' >> "$TMP/update.zip"
