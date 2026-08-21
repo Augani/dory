@@ -40,6 +40,7 @@ pub enum PushPhase {
     Finalizing,
     Completed,
     Cancelled,
+    Failed,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -137,14 +138,31 @@ pub async fn push_observed<T: SyncTarget, O: PushObserver>(
 ) -> Result<PushStats, RemoteError> {
     let mut progress = PushProgress::default();
     observer.update(&progress);
-    require_not_cancelled(observer, &mut progress)?;
+    let result =
+        push_observed_inner(local_root, remote_root, target, observer, &mut progress).await;
+    if result.is_err() && progress.phase != PushPhase::Cancelled {
+        progress.phase = PushPhase::Failed;
+        progress.current_path = None;
+        observer.update(&progress);
+    }
+    result
+}
+
+async fn push_observed_inner<T: SyncTarget, O: PushObserver>(
+    local_root: &Path,
+    remote_root: &str,
+    target: &T,
+    observer: &O,
+    progress: &mut PushProgress,
+) -> Result<PushStats, RemoteError> {
+    require_not_cancelled(observer, progress)?;
     let root = local_root.to_path_buf();
     let local = tokio::task::spawn_blocking(move || walk_tree(&root))
         .await
         .map_err(|e| RemoteError::Io(std::io::Error::other(e)))??;
-    require_not_cancelled(observer, &mut progress)?;
+    require_not_cancelled(observer, progress)?;
     let remote = target.remote_manifest(remote_root).await?;
-    require_not_cancelled(observer, &mut progress)?;
+    require_not_cancelled(observer, progress)?;
     let plan = plan(&local.manifest, &remote);
     progress.files_total = u64::try_from(plan.transfer.len()).map_err(|_| RemoteError::Decode)?;
     progress.bytes_total = plan.transfer.iter().try_fold(0u64, |total, path| {
@@ -152,7 +170,7 @@ pub async fn push_observed<T: SyncTarget, O: PushObserver>(
         total.checked_add(size).ok_or(RemoteError::Decode)
     })?;
     progress.phase = PushPhase::Transferring;
-    observer.update(&progress);
+    observer.update(progress);
     let file_paths = local
         .manifest
         .entries
@@ -162,7 +180,7 @@ pub async fn push_observed<T: SyncTarget, O: PushObserver>(
     let directory_protocol = target
         .reconcile_tree(remote_root, &file_paths, &local.directories, false)
         .await?;
-    require_not_cancelled(observer, &mut progress)?;
+    require_not_cancelled(observer, progress)?;
     if !directory_protocol && has_empty_directory(&local) {
         return Err(RemoteError::CapabilityUnavailable("sync-push@2"));
     }
@@ -170,7 +188,7 @@ pub async fn push_observed<T: SyncTarget, O: PushObserver>(
     let mut stats = PushStats::default();
     let mut completed_file_bytes = 0u64;
     for rel in &plan.transfer {
-        require_not_cancelled(observer, &mut progress)?;
+        require_not_cancelled(observer, progress)?;
         let entry = local
             .manifest
             .get(rel)
@@ -183,10 +201,10 @@ pub async fn push_observed<T: SyncTarget, O: PushObserver>(
         let mut conflict_recoveries = 0usize;
         progress.current_path = Some(rel.clone());
         progress.bytes_completed = completed_file_bytes + offset;
-        observer.update(&progress);
+        observer.update(progress);
 
         loop {
-            require_not_cancelled(observer, &mut progress)?;
+            require_not_cancelled(observer, progress)?;
             file.seek(SeekFrom::Start(offset)).await?;
             let remaining = entry.size.checked_sub(offset).ok_or(RemoteError::Decode)?;
             let chunk_len = remaining.min(CHUNK_BYTES as u64) as usize;
@@ -210,7 +228,7 @@ pub async fn push_observed<T: SyncTarget, O: PushObserver>(
                     mtime_ns: entry.mtime_ns,
                 })
                 .await;
-            require_not_cancelled(observer, &mut progress)?;
+            require_not_cancelled(observer, progress)?;
             let (next_offset, committed) = match outcome {
                 Ok(outcome) => outcome,
                 Err(RemoteError::Rpc { code: 409, .. })
@@ -220,7 +238,7 @@ pub async fn push_observed<T: SyncTarget, O: PushObserver>(
                     let staged = target.staged_bytes(remote_root, rel, &entry.hash).await?;
                     offset = if staged <= entry.size { staged } else { 0 };
                     progress.bytes_completed = completed_file_bytes + offset;
-                    observer.update(&progress);
+                    observer.update(progress);
                     continue;
                 }
                 Err(error) => return Err(error),
@@ -228,7 +246,7 @@ pub async fn push_observed<T: SyncTarget, O: PushObserver>(
             stats.bytes_sent += sent;
             offset = end;
             progress.bytes_completed = completed_file_bytes + offset;
-            observer.update(&progress);
+            observer.update(progress);
             // We never use the peer's offset as a local slice index. A committed response is the
             // one exception where it affects control flow, so require proof that the peer claims
             // the complete local length. The final request must likewise be acknowledged as a
@@ -250,25 +268,25 @@ pub async fn push_observed<T: SyncTarget, O: PushObserver>(
         progress.files_completed = stats.files_sent;
         progress.bytes_completed = completed_file_bytes;
         progress.current_path = None;
-        observer.update(&progress);
+        observer.update(progress);
     }
 
     progress.phase = PushPhase::Finalizing;
     progress.current_path = None;
-    observer.update(&progress);
-    require_not_cancelled(observer, &mut progress)?;
+    observer.update(progress);
+    require_not_cancelled(observer, progress)?;
     if directory_protocol {
         stats.files_deleted = plan.delete.len() as u64;
         let finalized = target
             .reconcile_tree(remote_root, &file_paths, &local.directories, true)
             .await?;
-        require_not_cancelled(observer, &mut progress)?;
+        require_not_cancelled(observer, progress)?;
         if !finalized {
             return Err(RemoteError::CapabilityUnavailable("sync-push@2"));
         }
     } else if !plan.delete.is_empty() {
         stats.files_deleted += target.delete(remote_root, &plan.delete).await? as u64;
-        require_not_cancelled(observer, &mut progress)?;
+        require_not_cancelled(observer, progress)?;
     }
 
     // The manifest is a point-in-time source authority. Re-read it after all remote mutations so a
@@ -281,12 +299,12 @@ pub async fn push_observed<T: SyncTarget, O: PushObserver>(
     if final_local != local {
         return Err(RemoteError::SourceChanged);
     }
-    require_not_cancelled(observer, &mut progress)?;
+    require_not_cancelled(observer, progress)?;
     progress.phase = PushPhase::Completed;
     progress.files_completed = progress.files_total;
     progress.bytes_completed = progress.bytes_total;
     progress.current_path = None;
-    observer.update(&progress);
+    observer.update(progress);
     Ok(stats)
 }
 
@@ -726,6 +744,25 @@ mod tests {
         assert_eq!(final_progress.files_completed, 0);
         assert_eq!(final_progress.bytes_completed, CHUNK_BYTES as u64);
         assert_eq!(final_progress.bytes_total, (CHUNK_BYTES * 2 + 1) as u64);
+    }
+
+    #[tokio::test]
+    async fn observed_push_reports_a_terminal_protocol_failure() {
+        let t = TempTree::new("failed-progress");
+        t.write("file", b"contents");
+        let mut target = FakeTarget::new(Manifest::default());
+        target.suppress_final_commit = true;
+        let observer = RecordingObserver::new(None);
+
+        let error = push_observed(&t.root, "/remote", &target, &observer)
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, RemoteError::Decode));
+        let updates = observer.updates.lock().unwrap();
+        assert_eq!(updates.last().unwrap().phase, PushPhase::Failed);
+        assert_eq!(updates.last().unwrap().current_path, None);
+        assert_eq!(updates.last().unwrap().files_completed, 0);
     }
 
     #[tokio::test]
