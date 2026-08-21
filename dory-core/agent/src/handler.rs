@@ -26,6 +26,7 @@ pub async fn handle(req_bytes: &[u8]) -> Vec<u8> {
         }
         Some(Method::SyncPutChunk(r)) => wrap(sync_apply::put_chunk(r).await, Res::SyncPutChunk),
         Some(Method::SyncDelete(r)) => wrap(sync_apply::delete(r).await, Res::SyncDelete),
+        Some(Method::SyncTree(r)) => wrap(sync_apply::tree(r).await, Res::SyncTree),
         Some(Method::Exec(r)) => wrap_exec(exec::run(r).await),
         Some(Method::SnapshotQuiesce(r)) => AgentResponse {
             result: Some(Res::SnapshotQuiesce(snapshot_quiesce::run(r).await)),

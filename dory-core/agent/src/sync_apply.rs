@@ -11,7 +11,7 @@ use std::sync::OnceLock;
 use dory_pb::agent::{
     SyncDeleteRequest, SyncDeleteResponse, SyncFileEntry, SyncFileStatusRequest,
     SyncFileStatusResponse, SyncManifestRequest, SyncManifestResponse, SyncPutChunkRequest,
-    SyncPutChunkResponse,
+    SyncPutChunkResponse, SyncTreeRequest, SyncTreeResponse,
 };
 
 const STAGING_DIR: &str = ".dory-sync-tmp";
@@ -22,6 +22,8 @@ const ROOT_LOCK_STRIPES: usize = 64;
 // The hash is deliberately NOT part of this key: conflicting-content commits must linearize around
 // destination hash checks, chmod, and rename. Stripe collisions only reduce concurrency.
 const PATH_LOCK_STRIPES: usize = 64;
+const MAX_TREE_ENTRIES: usize = 100_000;
+const MAX_TREE_PATH_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Debug, thiserror::Error)]
 pub enum SyncError {
@@ -33,6 +35,8 @@ pub enum SyncError {
     HashMismatch,
     #[error("chunk range overflows uint64")]
     ChunkRangeOverflow,
+    #[error("invalid sync tree authority")]
+    InvalidTree,
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }
@@ -45,6 +49,7 @@ impl SyncError {
             SyncError::OffsetMismatch { .. } => 409,
             SyncError::HashMismatch => 422,
             SyncError::ChunkRangeOverflow => 400,
+            SyncError::InvalidTree => 400,
             SyncError::Io(_) => 500,
         }
     }
@@ -291,6 +296,231 @@ pub async fn delete(req: SyncDeleteRequest) -> Result<SyncDeleteResponse, SyncEr
         return Err(error);
     }
     Ok(SyncDeleteResponse { deleted })
+}
+
+/// Reconcile the complete namespace around streamed file puts. Running this under the root write
+/// lock makes file/directory type changes deterministic and preserves empty directories without a
+/// user-visible sentinel. The final pass also proves that every desired regular file exists.
+pub async fn tree(req: SyncTreeRequest) -> Result<SyncTreeResponse, SyncError> {
+    let root = canonical_root(&req.root).await?;
+    let _root_guard = root_lock(&root).write().await;
+    let desired = validate_tree_request(&root, &req).await?;
+    let scan_root = root.clone();
+    let current = tokio::task::spawn_blocking(move || scan_topology(&scan_root))
+        .await
+        .map_err(|error| SyncError::Io(std::io::Error::other(error)))??;
+
+    let mut paths_deleted = 0u32;
+    for leaf in current.leaves {
+        if !leaf.regular || !desired.files.contains(&leaf.path) {
+            tokio::fs::remove_file(root.join(&leaf.path)).await?;
+            paths_deleted = paths_deleted.checked_add(1).ok_or(SyncError::InvalidTree)?;
+        }
+    }
+
+    let mut current_directories = current.directories;
+    current_directories.sort_by(|lhs, rhs| {
+        path_depth(rhs)
+            .cmp(&path_depth(lhs))
+            .then_with(|| rhs.cmp(lhs))
+    });
+    for path in current_directories {
+        if !desired.directories.contains_key(&path) {
+            tokio::fs::remove_dir(root.join(&path)).await?;
+            paths_deleted = paths_deleted.checked_add(1).ok_or(SyncError::InvalidTree)?;
+        }
+    }
+
+    let mut directory_paths = desired.directories.keys().cloned().collect::<Vec<_>>();
+    directory_paths.sort_by(|lhs, rhs| {
+        path_depth(lhs)
+            .cmp(&path_depth(rhs))
+            .then_with(|| lhs.cmp(rhs))
+    });
+    let mut directories_created = 0u32;
+    for path in &directory_paths {
+        let destination = root.join(path);
+        match tokio::fs::symlink_metadata(&destination).await {
+            Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
+                if !req.finalize {
+                    // A previously finalized source directory may be read-only. The preparation
+                    // phase temporarily grants only its owner access so following file puts can
+                    // reconcile children; the final pass restores the exact source mode.
+                    apply_mode(&destination, 0o700).await?;
+                }
+            }
+            Ok(_) => return Err(SyncError::InvalidTree),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                tokio::fs::create_dir(&destination).await?;
+                apply_mode(&destination, 0o700).await?;
+                directories_created = directories_created
+                    .checked_add(1)
+                    .ok_or(SyncError::InvalidTree)?;
+            }
+            Err(error) => return Err(SyncError::Io(error)),
+        }
+    }
+
+    if req.finalize {
+        for path in &desired.files {
+            let metadata = tokio::fs::symlink_metadata(root.join(path)).await?;
+            if !metadata.is_file() || metadata.file_type().is_symlink() {
+                return Err(SyncError::InvalidTree);
+            }
+        }
+    }
+
+    // Persist every surviving namespace link. Desired directories include every non-root parent;
+    // syncing them plus the root covers creations and removals at every depth.
+    for path in directory_paths.iter().rev() {
+        sync_directory(&root.join(path)).await?;
+    }
+    sync_directory(&root).await?;
+    if req.finalize {
+        for path in directory_paths.iter().rev() {
+            apply_directory_mode_and_sync(
+                &root.join(path),
+                *desired
+                    .directories
+                    .get(path)
+                    .ok_or(SyncError::InvalidTree)?,
+            )
+            .await?;
+        }
+    }
+    Ok(SyncTreeResponse {
+        paths_deleted,
+        directories_created,
+    })
+}
+
+struct DesiredTree {
+    files: std::collections::HashSet<String>,
+    directories: std::collections::HashMap<String, u32>,
+}
+
+async fn validate_tree_request(
+    root: &Path,
+    req: &SyncTreeRequest,
+) -> Result<DesiredTree, SyncError> {
+    let count = req
+        .files
+        .len()
+        .checked_add(req.directories.len())
+        .ok_or(SyncError::InvalidTree)?;
+    if count > MAX_TREE_ENTRIES {
+        return Err(SyncError::InvalidTree);
+    }
+    let mut path_bytes = 0usize;
+    let mut files = std::collections::HashSet::with_capacity(req.files.len());
+    let mut directories = std::collections::HashMap::with_capacity(req.directories.len());
+    for path in &req.files {
+        path_bytes = path_bytes
+            .checked_add(path.len())
+            .ok_or(SyncError::InvalidTree)?;
+        validate_tree_path(root, path).await?;
+        if !files.insert(path.clone()) {
+            return Err(SyncError::InvalidTree);
+        }
+    }
+    for entry in &req.directories {
+        path_bytes = path_bytes
+            .checked_add(entry.path.len())
+            .ok_or(SyncError::InvalidTree)?;
+        validate_tree_path(root, &entry.path).await?;
+        if directories.insert(entry.path.clone(), entry.mode).is_some()
+            || files.contains(&entry.path)
+        {
+            return Err(SyncError::InvalidTree);
+        }
+    }
+    if path_bytes > MAX_TREE_PATH_BYTES {
+        return Err(SyncError::InvalidTree);
+    }
+    for path in files.iter().chain(directories.keys()) {
+        let mut parent = Path::new(path).parent();
+        while let Some(value) = parent {
+            if value.as_os_str().is_empty() {
+                break;
+            }
+            let parent_text = value.to_string_lossy();
+            if files.contains(parent_text.as_ref())
+                || !directories.contains_key(parent_text.as_ref())
+            {
+                return Err(SyncError::InvalidTree);
+            }
+            parent = value.parent();
+        }
+    }
+    Ok(DesiredTree { files, directories })
+}
+
+async fn validate_tree_path(root: &Path, path: &str) -> Result<(), SyncError> {
+    if path == STAGING_DIR || path.starts_with(&format!("{STAGING_DIR}/")) {
+        return Err(SyncError::InvalidTree);
+    }
+    safe_join(root, path).await.map(|_| ())
+}
+
+#[derive(Default)]
+struct CurrentTopology {
+    leaves: Vec<TopologyLeaf>,
+    directories: Vec<String>,
+}
+
+struct TopologyLeaf {
+    path: String,
+    regular: bool,
+}
+
+fn scan_topology(root: &Path) -> Result<CurrentTopology, SyncError> {
+    fn walk(
+        root: &Path,
+        directory: &Path,
+        topology: &mut CurrentTopology,
+    ) -> Result<(), SyncError> {
+        for entry in std::fs::read_dir(directory)? {
+            let entry = entry?;
+            if directory == root && entry.file_name() == STAGING_DIR {
+                continue;
+            }
+            let path = entry.path();
+            let metadata = std::fs::symlink_metadata(&path)?;
+            let relative = path
+                .strip_prefix(root)
+                .map_err(|_| SyncError::PathEscape)?
+                .components()
+                .map(|component| component.as_os_str().to_string_lossy())
+                .collect::<Vec<_>>()
+                .join("/");
+            if metadata.is_dir() && !metadata.file_type().is_symlink() {
+                topology.directories.push(relative);
+                walk(root, &path, topology)?;
+            } else {
+                topology.leaves.push(TopologyLeaf {
+                    path: relative,
+                    regular: metadata.is_file() && !metadata.file_type().is_symlink(),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    let mut topology = CurrentTopology::default();
+    walk(root, root, &mut topology)?;
+    Ok(topology)
+}
+
+fn path_depth(path: &str) -> usize {
+    path.bytes().filter(|byte| *byte == b'/').count() + 1
+}
+
+async fn apply_directory_mode_and_sync(path: &Path, mode: u32) -> Result<(), SyncError> {
+    // Open before chmod so even a source mode such as 0000 cannot prevent the durability sync.
+    let directory = tokio::fs::File::open(path).await?;
+    apply_mode(path, mode).await?;
+    directory.sync_all().await?;
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -594,6 +824,7 @@ fn staging_path(root: &Path, path: &str, hash: &[u8]) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dory_pb::agent::SyncDirectoryEntry;
     use dory_sync::hash_bytes;
     use std::fs;
 
@@ -616,6 +847,101 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.path);
         }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn tree_reconciles_type_conflicts_extras_and_empty_directories() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let t = TempRoot::new("tree-topology");
+        fs::write(t.path.join("extra.txt"), b"remove").unwrap();
+        fs::write(t.path.join("folder"), b"file-to-directory").unwrap();
+        fs::create_dir_all(t.path.join("replace.txt")).unwrap();
+        fs::write(t.path.join("replace.txt/old"), b"directory-to-file").unwrap();
+        fs::create_dir(t.path.join("old-empty")).unwrap();
+        let request = |finalize| SyncTreeRequest {
+            root: t.root(),
+            files: vec!["folder/a.txt".into(), "replace.txt".into()],
+            directories: vec![
+                SyncDirectoryEntry {
+                    path: "empty".into(),
+                    mode: 0o711,
+                },
+                SyncDirectoryEntry {
+                    path: "folder".into(),
+                    mode: 0o700,
+                },
+            ],
+            finalize,
+        };
+
+        let prepared = tree(request(false)).await.unwrap();
+        assert_eq!(prepared.paths_deleted, 5);
+        assert_eq!(prepared.directories_created, 2);
+        assert!(t.path.join("empty").is_dir());
+        assert!(t.path.join("folder").is_dir());
+        assert!(!t.path.join("extra.txt").exists());
+        assert!(!t.path.join("replace.txt").exists());
+
+        fs::write(t.path.join("folder/a.txt"), b"a").unwrap();
+        fs::write(t.path.join("replace.txt"), b"replacement").unwrap();
+        let finalized = tree(request(true)).await.unwrap();
+        assert_eq!(finalized.paths_deleted, 0);
+        assert_eq!(finalized.directories_created, 0);
+        assert_eq!(
+            fs::metadata(t.path.join("empty"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o711
+        );
+        assert_eq!(
+            fs::metadata(t.path.join("folder"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+    }
+
+    #[tokio::test]
+    async fn tree_rejects_incomplete_duplicate_reserved_and_missing_final_authority() {
+        let t = TempRoot::new("tree-invalid");
+        let cases = [
+            SyncTreeRequest {
+                root: t.root(),
+                files: vec!["missing-parent/file".into()],
+                directories: vec![],
+                finalize: false,
+            },
+            SyncTreeRequest {
+                root: t.root(),
+                files: vec!["same".into(), "same".into()],
+                directories: vec![],
+                finalize: false,
+            },
+            SyncTreeRequest {
+                root: t.root(),
+                files: vec![format!("{STAGING_DIR}/poison")],
+                directories: vec![],
+                finalize: false,
+            },
+        ];
+        for request in cases {
+            assert!(matches!(tree(request).await, Err(SyncError::InvalidTree)));
+        }
+
+        let missing = tree(SyncTreeRequest {
+            root: t.root(),
+            files: vec!["not-sent".into()],
+            directories: vec![],
+            finalize: true,
+        })
+        .await;
+        assert!(matches!(missing, Err(SyncError::Io(_))));
     }
 
     #[tokio::test]

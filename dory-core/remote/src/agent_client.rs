@@ -245,6 +245,19 @@ impl AgentClient {
             _ => Err(RemoteError::UnexpectedVariant),
         }
     }
+
+    pub async fn sync_tree(
+        &self,
+        req: dory_pb::agent::SyncTreeRequest,
+    ) -> Result<dory_pb::agent::SyncTreeResponse, RemoteError> {
+        match self
+            .call_with_deadline(Method::SyncTree(req), SYNC_IO_DEADLINE)
+            .await?
+        {
+            Res::SyncTree(r) => Ok(r),
+            _ => Err(RemoteError::UnexpectedVariant),
+        }
+    }
 }
 
 #[cfg(test)]

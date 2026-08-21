@@ -157,6 +157,25 @@ message SyncDeleteRequest {
 }
 message SyncDeleteResponse { uint32 deleted = 1; }
 
+// Reconcile the complete file/directory namespace before and after streamed file puts. The first
+// pass (`finalize=false`) removes conflicts/extras and creates missing directories. The final pass
+// additionally requires every desired file to exist and applies directory modes, closing races and
+// preserving empty directories without sentinel files.
+message SyncDirectoryEntry {
+  string path = 1;
+  uint32 mode = 2;
+}
+message SyncTreeRequest {
+  string root = 1;
+  repeated string files = 2;
+  repeated SyncDirectoryEntry directories = 3;
+  bool finalize = 4;
+}
+message SyncTreeResponse {
+  uint32 paths_deleted = 1;
+  uint32 directories_created = 2;
+}
+
 message AgentRequest {
   oneof method {
     ClockSyncRequest clock_sync = 1;
@@ -169,6 +188,7 @@ message AgentRequest {
     TelemetryRequest telemetry = 8;
     ExecRequest exec = 9;
     SnapshotQuiesceRequest snapshot_quiesce = 10;
+    SyncTreeRequest sync_tree = 11;
   }
 }
 
@@ -185,5 +205,6 @@ message AgentResponse {
     TelemetryResponse telemetry = 9;
     ExecResponse exec = 10;
     SnapshotQuiesceResponse snapshot_quiesce = 11;
+    SyncTreeResponse sync_tree = 12;
   }
 }

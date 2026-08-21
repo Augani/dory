@@ -25,7 +25,7 @@ pub fn agent_capabilities() -> Vec<agent::AgentCapability> {
         ("exec", 1),
         ("exec-stdin", 1),
         ("ports-watch", 1),
-        ("sync-push", 1),
+        ("sync-push", 2),
         ("telemetry", 1),
     ];
     if crate::snapshot_quiesce::available() {
@@ -200,7 +200,7 @@ mod tests {
                     ("exec", 1),
                     ("exec-stdin", 1),
                     ("ports-watch", 1),
-                    ("sync-push", 1),
+                    ("sync-push", 2),
                     ("telemetry", 1),
                 ];
                 if crate::snapshot_quiesce::available() {
