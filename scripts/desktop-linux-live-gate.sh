@@ -7,6 +7,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 CTL=""
+COMPONENT_DIR=""
 KERNEL=""
 DEBIAN_ROOTFS=""
 UBUNTU_ROOTFS=""
@@ -20,13 +21,14 @@ WORKROOT="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/dory-desktop-linux-live"
 CONFIRM=""
 
 usage() {
-  echo "usage: desktop-linux-live-gate.sh --ctl PATH --kernel PATH [--distro all|debian|ubuntu|kali] [desktop assets] --version VERSION --workroot PATH --confirm EXACT-CANDIDATE-DESKTOPS" >&2
+  echo "usage: desktop-linux-live-gate.sh --ctl PATH --component-dir PATH --kernel PATH [--distro all|debian|ubuntu|kali] [desktop assets] --version VERSION --workroot PATH --confirm EXACT-CANDIDATE-DESKTOPS" >&2
   exit 64
 }
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --ctl) CTL="${2:?missing path}"; shift 2 ;;
+    --component-dir) COMPONENT_DIR="${2:?missing path}"; shift 2 ;;
     --kernel) KERNEL="${2:?missing path}"; shift 2 ;;
     --debian-rootfs) DEBIAN_ROOTFS="${2:?missing path}"; shift 2 ;;
     --ubuntu-rootfs) UBUNTU_ROOTFS="${2:?missing path}"; shift 2 ;;
@@ -48,6 +50,8 @@ case "$SELECTED_DISTRO" in
   *) echo "desktop live gate: unsupported distro selection: $SELECTED_DISTRO" >&2; exit 64 ;;
 esac
 [ -x "$CTL" ] || { echo "desktop live gate: missing dorydctl: $CTL" >&2; exit 66; }
+[ -d "$COMPONENT_DIR" ] && [ ! -L "$COMPONENT_DIR" ] \
+  || { echo "desktop live gate: missing component candidate directory: $COMPONENT_DIR" >&2; exit 66; }
 HELPERS="$(cd "$(dirname "$CTL")" && pwd)"
 VMM="$HELPERS/dory-hv"
 VZ_VMM="$HELPERS/dory-vmm"
@@ -61,7 +65,8 @@ case "$SELECTED_DISTRO" in
   kali) assets+=("$KALI_ROOTFS" "$KALI_UPDATE") ;;
 esac
 for asset in "${assets[@]}"; do
-  [ -s "$asset" ] || { echo "desktop live gate: missing asset: $asset" >&2; exit 66; }
+  [ -f "$asset" ] && [ ! -L "$asset" ] && [ -s "$asset" ] \
+    || { echo "desktop live gate: missing regular asset: $asset" >&2; exit 66; }
 done
 absolute_asset() {
   local asset_input="$1"
@@ -70,6 +75,7 @@ absolute_asset() {
   printf '%s/%s\n' "$asset_directory" "$(basename "$asset_input")"
 }
 KERNEL="$(absolute_asset "$KERNEL")"
+COMPONENT_DIR="$(cd "$COMPONENT_DIR" && pwd -P)"
 case "$SELECTED_DISTRO" in
   all)
     DEBIAN_ROOTFS="$(absolute_asset "$DEBIAN_ROOTFS")"
@@ -94,16 +100,22 @@ case "$SELECTED_DISTRO" in
 esac
 printf '%s\n' "$DESKTOP_VERSION" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$' \
   || { echo "desktop live gate: invalid desktop version: $DESKTOP_VERSION" >&2; exit 64; }
-case "$WORKROOT" in
-  ""|/|"$HOME"|"$ROOT"|"${RUNNER_TEMP:-/definitely-not-this-path}")
-    echo "desktop live gate: unsafe workroot: $WORKROOT" >&2
-    exit 64
-    ;;
-esac
-case "$WORKROOT" in
-  *dory*desktop*) ;;
-  *) echo "desktop live gate: workroot must identify the Dory desktop gate: $WORKROOT" >&2; exit 64 ;;
-esac
+[ -n "${RUNNER_TEMP:-}" ] \
+  || { echo "desktop live gate: RUNNER_TEMP must identify the dedicated release workspace" >&2; exit 64; }
+case "$RUNNER_TEMP" in /*) ;; *) echo "desktop live gate: RUNNER_TEMP must be absolute" >&2; exit 64 ;; esac
+case "$WORKROOT" in /*) ;; *) echo "desktop live gate: workroot must be absolute" >&2; exit 64 ;; esac
+[ ! -L "$WORKROOT" ] \
+  || { echo "desktop live gate: workroot must not be a symlink" >&2; exit 64; }
+WORKROOT="$(python3 - "$RUNNER_TEMP" "$WORKROOT" <<'PY'
+import os
+import sys
+
+runner, requested = map(os.path.realpath, sys.argv[1:])
+if requested == runner or not requested.startswith(runner.rstrip(os.sep) + os.sep):
+    raise SystemExit("workroot must be a strict child of RUNNER_TEMP")
+print(requested)
+PY
+)" || { echo "desktop live gate: unsafe workroot: $WORKROOT" >&2; exit 64; }
 
 rm -rf "$WORKROOT"
 mkdir -p "$WORKROOT/share" "$WORKROOT/evidence"
@@ -148,8 +160,13 @@ assert_exec_token() {
 import json, sys
 token = sys.argv[1]
 body = json.load(sys.stdin)
-assert body["exitCode"] == 0 and not body["timedOut"], body
-assert token in body["stdout"], body
+if not isinstance(body, dict):
+    raise SystemExit("exec response is not an object")
+if body.get("exitCode") != 0 or body.get("timedOut") is not False:
+    raise SystemExit(f"exec failed: {body!r}")
+stdout = body.get("stdout")
+if not isinstance(stdout, str) or token not in stdout:
+    raise SystemExit(f"exec response omitted {token!r}: {body!r}")
 ' "$token"; then
     printf '%s\n' "$output" >&2
     return 1
@@ -220,6 +237,90 @@ run_desktop() {
   machine="dory-release-desktop-${distro}-$$"
   ACTIVE_MACHINE="$machine"
 
+  component_id="desktop-$distro"
+  candidate_result="$WORKROOT/evidence/$distro-component-import.json"
+  "$CTL" component install-candidate "$component_id" \
+    --candidate-dir "$COMPONENT_DIR" --json > "$candidate_result"
+  selection="$WORKROOT/evidence/$distro-component-selection.txt"
+  python3 - "$candidate_result" "$COMPONENT_DIR/catalog.json" \
+    "$component_id" "$DESKTOP_VERSION" > "$selection" <<'PY'
+import json
+import pathlib
+import re
+import sys
+
+result_path, catalog_path, component_id, expected_version = sys.argv[1:]
+result = json.loads(pathlib.Path(result_path).read_text(encoding="utf-8"))
+if not isinstance(result, dict) or set(result) != {
+    "catalogDigest", "installations", "schema", "schemaVersion"
+}:
+    raise SystemExit("component import response has an unexpected shape")
+if result["schema"] != "dev.dory.component-candidate-import" or result["schemaVersion"] != 1:
+    raise SystemExit("component import response has an unexpected contract")
+digest = result["catalogDigest"]
+if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+    raise SystemExit("component import response has an invalid catalog digest")
+installations = result["installations"]
+if not isinstance(installations, dict) or set(installations) != {"linux-desktop", component_id}:
+    raise SystemExit("component import response does not contain the exact desktop dependency set")
+safe_id = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]{0,254}")
+for value in installations.values():
+    if not isinstance(value, str) or safe_id.fullmatch(value) is None:
+        raise SystemExit("component import response has an invalid installation identity")
+
+catalog = json.loads(pathlib.Path(catalog_path).read_text(encoding="utf-8"))
+if not isinstance(catalog, dict) or catalog.get("schemaVersion") != 2:
+    raise SystemExit("signed component catalog is not schema 2")
+if catalog.get("releaseVersion") != expected_version:
+    raise SystemExit("signed component catalog release differs from the desktop candidate")
+components = catalog.get("components")
+if not isinstance(components, list):
+    raise SystemExit("signed component catalog omits components")
+matches = {
+    row.get("id"): row for row in components
+    if isinstance(row, dict) and row.get("id") in {"linux-desktop", component_id}
+}
+if set(matches) != {"linux-desktop", component_id}:
+    raise SystemExit("signed component catalog omits the selected desktop components")
+runtime_version = matches["linux-desktop"].get("version")
+distribution_version = matches[component_id].get("version")
+for value in (runtime_version, distribution_version):
+    if not isinstance(value, str) or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]{0,127}", value) is None:
+        raise SystemExit("signed component version is invalid")
+
+print(digest)
+print(installations["linux-desktop"])
+print(installations[component_id])
+print(runtime_version)
+print(distribution_version)
+PY
+  [ "$(wc -l < "$selection" | tr -d ' ')" = 5 ] \
+    || { echo "desktop live gate: invalid component selection evidence" >&2; exit 1; }
+  catalog_digest="$(sed -n '1p' "$selection")"
+  runtime_installation="$(sed -n '2p' "$selection")"
+  distribution_installation="$(sed -n '3p' "$selection")"
+  runtime_version="$(sed -n '4p' "$selection")"
+  distribution_version="$(sed -n '5p' "$selection")"
+  update_version="$distribution_version+runtime.$runtime_version"
+
+  "$CTL" component verify all --offline --json \
+    > "$WORKROOT/evidence/$distro-component-verify.json"
+  installed_kernel="$("$CTL" component path linux-desktop dory-desktop-kernel-arm64.lzfse)"
+  installed_rootfs="$("$CTL" component path "$component_id" \
+    "dory-desktop-$distro-rootfs-arm64.ext4.lzfse")"
+  installed_update="$("$CTL" component path "$component_id" \
+    "dory-desktop-$distro-update-arm64.tar")"
+  for installed_asset in "$installed_kernel" "$installed_rootfs" "$installed_update"; do
+    [ -f "$installed_asset" ] && [ ! -L "$installed_asset" ] && [ -s "$installed_asset" ] \
+      || { echo "desktop live gate: installed component asset is invalid: $installed_asset" >&2; exit 1; }
+  done
+  cmp -s "$KERNEL" "$installed_kernel" \
+    || { echo "desktop live gate: installed desktop kernel differs from the candidate" >&2; exit 1; }
+  cmp -s "$rootfs" "$installed_rootfs" \
+    || { echo "desktop live gate: installed $distro rootfs differs from the candidate" >&2; exit 1; }
+  cmp -s "$update_bundle" "$installed_update" \
+    || { echo "desktop live gate: installed $distro update differs from the candidate" >&2; exit 1; }
+
   if "$CTL" machine status "$machine" >/dev/null 2>&1; then
     echo "desktop live gate: refusing to overwrite existing machine $machine" >&2
     exit 1
@@ -227,19 +328,20 @@ run_desktop() {
 
   created="$WORKROOT/evidence/$distro-create.json"
   "$CTL" machine create "$machine" \
-    --kernel "$KERNEL" --rootfs "$rootfs" --memory-mb 4096 --cpus 4 \
+    --kernel "$installed_kernel" --rootfs "$installed_rootfs" --memory-mb 4096 --cpus 4 \
     --display-mode desktop \
     --share "releasegate=$WORKROOT/share:/home/dorygate/Mac:ro" \
-    --env "DORY_DESKTOP_DISTRO=$distro" \
-    --env DORY_DESKTOP_VMM=accelerated \
-    --env DORY_DESKTOP_GRAPHICS=virgl \
-    --env DORY_GUEST_USER=dorygate --env DORY_GUEST_UID=1550 > "$created"
+    --guest-user dorygate --guest-uid 1550 \
+    --desktop-distro "$distro" --runtime accelerated --graphics virgl-venus \
+    --clipboard bidirectional > "$created"
   python3 - "$created" <<'PY'
 import json, sys
 with open(sys.argv[1], encoding="utf-8") as handle:
     body = json.load(handle)
-assert body["state"] == "created", body
-assert body["displayMode"] == "desktop", body
+if not isinstance(body, dict) or body.get("state") != "created":
+    raise SystemExit(f"machine create did not return created: {body!r}")
+if body.get("displayMode") != "desktop":
+    raise SystemExit(f"machine create did not retain desktop mode: {body!r}")
 PY
 
   "$CTL" machine start "$machine" > "$WORKROOT/evidence/$distro-start.json"
@@ -250,12 +352,19 @@ PY
 import json, sys
 with open(sys.argv[1], encoding="utf-8") as handle:
     body = json.load(handle)
-assert body["state"] == "running" and body["displayMode"] == "desktop", body
-print(body["pid"])
+if not isinstance(body, dict) or body.get("state") != "running" \
+        or body.get("displayMode") != "desktop":
+    raise SystemExit(f"machine did not reach running desktop state: {body!r}")
+pid = body.get("pid")
+if not isinstance(pid, int) or pid <= 0:
+    raise SystemExit(f"machine status has an invalid pid: {body!r}")
+print(pid)
 PY
 )"
   ps -ww -p "$machine_pid" -o command= | grep -F "$VMM" \
     > "$WORKROOT/evidence/$distro-vmm-command.txt"
+  grep -F -- '--resolved-graphics hardware-accelerated-3d' \
+    "$WORKROOT/evidence/$distro-vmm-command.txt"
 
   app_checks=""
   for app in $expected_apps; do
@@ -265,7 +374,8 @@ PY
     set -eu
     systemctl is-active '$manager' >/dev/null
     systemctl is-active dory-zram.service >/dev/null
-    test \"\$(cat /run/dory/graphics-backend)\" = virgl2
+    test \"\$(cat /run/dory/graphics-backend)\" = virgl2+venus
+    grep -q '^venus-ready:' /run/dory/graphics-status
     grep -q '^/dev/zram0 ' /proc/swaps
     pgrep -u dorygate -x '$session' >/dev/null
     desktop_uid=\$(id -u dorygate)
@@ -406,42 +516,65 @@ PY
     > "$WORKROOT/evidence/$distro-persistence.json"
 
   "$CTL" machine desktop-update "$machine" \
-    --distro "$distro" --version "$DESKTOP_VERSION" \
-    --bundle "$update_bundle" --kernel "$KERNEL" \
+    --distro "$distro" --version "$update_version" \
+    --distribution-installation "$distribution_installation" \
+    --runtime-installation "$runtime_installation" \
     > "$WORKROOT/evidence/$distro-desktop-update.json"
-  python3 - "$WORKROOT/evidence/$distro-desktop-update.json" "$DESKTOP_VERSION" <<'PY'
+  python3 - "$WORKROOT/evidence/$distro-desktop-update.json" "$update_version" \
+    "$catalog_digest" "$distribution_installation" "$runtime_installation" <<'PY'
 import json, sys
 with open(sys.argv[1], encoding="utf-8") as handle:
     body = json.load(handle)
-assert body["version"] == sys.argv[2], body
-assert body["status"]["state"] == "running", body
-assert len(body["inputSHA256"]) == 64, body
-assert len(body["bundleSHA256"]) == 64, body
-assert body["snapshotID"], body
+if not isinstance(body, dict) or body.get("version") != sys.argv[2]:
+    raise SystemExit(f"desktop update returned the wrong version: {body!r}")
+status = body.get("status")
+if not isinstance(status, dict) or status.get("state") != "running":
+    raise SystemExit(f"desktop update did not restore running state: {body!r}")
+for key in ("inputSHA256", "bundleSHA256"):
+    value = body.get(key)
+    if not isinstance(value, str) or len(value) != 64:
+        raise SystemExit(f"desktop update omitted {key}: {body!r}")
+if not isinstance(body.get("snapshotID"), str) or not body["snapshotID"]:
+    raise SystemExit(f"desktop update omitted rollback snapshot authority: {body!r}")
+receipt = status.get("installedDesktopPayloadReceipt")
+if not isinstance(receipt, dict):
+    raise SystemExit(f"desktop status omitted installed payload receipt: {body!r}")
+expected = {
+    "releaseVersion": sys.argv[2],
+    "distributionCatalogSHA256": sys.argv[3],
+    "runtimeCatalogSHA256": sys.argv[3],
+    "distributionInstallationName": sys.argv[4],
+    "runtimeInstallationName": sys.argv[5],
+    "provenance": "verified-update-bundle",
+}
+for key, value in expected.items():
+    if receipt.get(key) != value:
+        raise SystemExit(f"desktop receipt mismatch for {key}: {body!r}")
 PY
   wait_for_desktop "$machine" "$manager" "$session"
   wait_for_running "$machine"
   assert_exec_token "$machine" update-pass sh -lc \
-    "grep -Fqx 'version=$DESKTOP_VERSION' /var/lib/dory/desktop-update.env; cat /home/dorygate/.dory-release-marker; echo update-pass" \
+    "grep -Fqx 'version=$update_version' /var/lib/dory/desktop-update.env; cat /home/dorygate/.dory-release-marker; echo update-pass" \
     > "$WORKROOT/evidence/$distro-update-qualified.json"
 
-  bad_update="$WORKROOT/$distro-corrupt-update.tar"
-  printf 'not a tar archive\n' > "$bad_update"
+  # Public updates accept only signed component installation identities. A stale identity must be
+  # rejected before guest mutation while the already-qualified machine keeps running.
   if "$CTL" machine desktop-update "$machine" \
-      --distro "$distro" --version "$DESKTOP_VERSION-fault" \
-      --bundle "$bad_update" --kernel "$KERNEL" \
-      > "$WORKROOT/evidence/$distro-rollback-stdout.json" \
-      2> "$WORKROOT/evidence/$distro-rollback-stderr.txt"; then
-    echo "desktop live gate: corrupt $distro update unexpectedly succeeded" >&2
+      --distro "$distro" --version "$update_version" \
+      --distribution-installation "$distribution_installation-stale" \
+      --runtime-installation "$runtime_installation" \
+      > "$WORKROOT/evidence/$distro-stale-update-stdout.json" \
+      2> "$WORKROOT/evidence/$distro-stale-update-stderr.txt"; then
+    echo "desktop live gate: stale $distro component identity unexpectedly succeeded" >&2
     exit 1
   fi
-  grep -q 'last-good snapshot' "$WORKROOT/evidence/$distro-rollback-stderr.txt"
-  grep -q 'was restored' "$WORKROOT/evidence/$distro-rollback-stderr.txt"
+  grep -q 'desktop update component selection is stale' \
+    "$WORKROOT/evidence/$distro-stale-update-stderr.txt"
   wait_for_desktop "$machine" "$manager" "$session"
   wait_for_running "$machine"
-  assert_exec_token "$machine" rollback-pass sh -lc \
-    "grep -Fqx 'version=$DESKTOP_VERSION' /var/lib/dory/desktop-update.env; cat /home/dorygate/.dory-release-marker; echo rollback-pass" \
-    > "$WORKROOT/evidence/$distro-rollback-qualified.json"
+  assert_exec_token "$machine" stale-update-rejected sh -lc \
+    "grep -Fqx 'version=$update_version' /var/lib/dory/desktop-update.env; cat /home/dorygate/.dory-release-marker; echo stale-update-rejected" \
+    > "$WORKROOT/evidence/$distro-stale-update-qualified.json"
 
   "$CTL" machine stop "$machine" >/dev/null
   "$CTL" machine delete "$machine" >/dev/null
