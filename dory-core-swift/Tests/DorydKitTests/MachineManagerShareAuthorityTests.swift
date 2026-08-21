@@ -124,6 +124,141 @@ final class MachineManagerShareAuthorityTests: XCTestCase {
         }
     }
 
+    func testBookmarkFollowsAuthorizedDirectoryMove() throws {
+        let base = temporaryRoot("bookmark-move")
+        let selectedPath = base + "/selected"
+        let movedPath = base + "/moved"
+        let argumentsPath = base + "/arguments"
+        let helperPath = base + "/helper.sh"
+        try FileManager.default.createDirectory(
+            atPath: selectedPath,
+            withIntermediateDirectories: true
+        )
+        let bookmark = try URL(fileURLWithPath: selectedPath).bookmarkData(
+            options: [.minimalBookmark],
+            includingResourceValuesForKeys: [
+                .fileResourceIdentifierKey,
+                .volumeIdentifierKey,
+            ],
+            relativeTo: nil
+        )
+        try writeArgumentRecorder(helperPath: helperPath, outputPath: argumentsPath)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+
+        let configuration = MachineManagerConfiguration(
+            vmmExecutablePath: helperPath,
+            stateDirectory: base + "/state",
+            requiresReadyHandoff: false
+        )
+        do {
+            let creator = MachineManager(configuration: configuration)
+            _ = try creator.create(DoryMachineConfiguration(
+                id: "dev",
+                kernelPath: doryTestKernelPath,
+                rootfsPath: doryTestRootfsPath,
+                shares: [DoryMachineShareConfiguration(
+                    tag: "src",
+                    hostPath: selectedPath,
+                    guestPath: "/workspace",
+                    authorizationBookmark: bookmark
+                )]
+            ))
+        }
+        try FileManager.default.moveItem(atPath: selectedPath, toPath: movedPath)
+
+        let manager = MachineManager(configuration: configuration)
+        _ = try manager.start(id: "dev")
+        let rows = try waitForLines(at: argumentsPath)
+        let shareFlag = try XCTUnwrap(rows.firstIndex(of: "--share"))
+        let decoded = try DoryMachineShareConfiguration(argument: rows[shareFlag + 1])
+        XCTAssertEqual(decoded.hostPath, try canonicalPath(movedPath))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: selectedPath))
+        try manager.delete(id: "dev")
+    }
+
+    func testBookmarkPathFallbackCannotAuthorizeReplacementDirectory() throws {
+        let base = temporaryRoot("bookmark-replacement")
+        let selectedPath = base + "/selected"
+        let movedPath = base + "/moved"
+        try FileManager.default.createDirectory(
+            atPath: selectedPath,
+            withIntermediateDirectories: true
+        )
+        let bookmark = try URL(fileURLWithPath: selectedPath).bookmarkData(
+            options: [.minimalBookmark],
+            includingResourceValuesForKeys: [
+                .fileResourceIdentifierKey,
+                .volumeIdentifierKey,
+            ],
+            relativeTo: nil
+        )
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let starter = LockedCounter()
+        let manager = MachineManager(
+            configuration: MachineManagerConfiguration(
+                vmmExecutablePath: "/bin/sleep",
+                stateDirectory: base + "/state",
+                requiresReadyHandoff: false
+            ),
+            processStarter: { _ in starter.increment() }
+        )
+        _ = try manager.create(DoryMachineConfiguration(
+            id: "dev",
+            kernelPath: doryTestKernelPath,
+            rootfsPath: doryTestRootfsPath,
+            shares: [DoryMachineShareConfiguration(
+                tag: "src",
+                hostPath: selectedPath,
+                guestPath: "/workspace",
+                authorizationBookmark: bookmark
+            )]
+        ))
+        try FileManager.default.moveItem(atPath: selectedPath, toPath: movedPath)
+        try FileManager.default.createDirectory(
+            atPath: selectedPath,
+            withIntermediateDirectories: false
+        )
+
+        XCTAssertThrowsError(try manager.start(id: "dev")) { error in
+            XCTAssertEqual(error as? MachineManagerError, .invalidShare(selectedPath))
+        }
+        XCTAssertEqual(starter.value, 0)
+    }
+
+    func testMalformedBookmarkFailsClosed() throws {
+        let base = temporaryRoot("bad-bookmark")
+        let share = base + "/share"
+        try FileManager.default.createDirectory(
+            atPath: share,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let starter = LockedCounter()
+        let manager = MachineManager(
+            configuration: MachineManagerConfiguration(
+                vmmExecutablePath: "/bin/sleep",
+                stateDirectory: base + "/state",
+                requiresReadyHandoff: false
+            ),
+            processStarter: { _ in starter.increment() }
+        )
+
+        XCTAssertThrowsError(try manager.create(DoryMachineConfiguration(
+            id: "dev",
+            kernelPath: doryTestKernelPath,
+            rootfsPath: doryTestRootfsPath,
+            shares: [DoryMachineShareConfiguration(
+                tag: "src",
+                hostPath: share,
+                guestPath: "/workspace",
+                authorizationBookmark: Data("not-a-bookmark".utf8)
+            )]
+        ))) { error in
+            XCTAssertEqual(error as? MachineManagerError, .invalidShare(share))
+        }
+        XCTAssertEqual(starter.value, 0)
+    }
+
     private func temporaryRoot(_ suffix: String) -> String {
         "/tmp/dory-share-authority-\(suffix)-\(getpid())-\(UUID().uuidString)"
     }
@@ -150,6 +285,19 @@ final class MachineManagerShareAuthorityTests: XCTestCase {
             domain: "MachineManagerShareAuthorityTests",
             code: 1,
             userInfo: [NSLocalizedDescriptionKey: "helper arguments were not recorded"]
+        )
+    }
+
+    private func writeArgumentRecorder(helperPath: String, outputPath: String) throws {
+        try """
+        #!/bin/sh
+        printf '%s\n' "$@" > "\(outputPath).tmp"
+        mv "\(outputPath).tmp" "\(outputPath)"
+        sleep 30
+        """.write(toFile: helperPath, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: helperPath
         )
     }
 }

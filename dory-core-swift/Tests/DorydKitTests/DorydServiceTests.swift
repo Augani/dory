@@ -1076,6 +1076,14 @@ final class DorydServiceTests: XCTestCase {
         let base = "/tmp/doryd-service-machine-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         let share = "\(base)-share"
         try FileManager.default.createDirectory(atPath: share, withIntermediateDirectories: true)
+        let shareBookmark = try URL(fileURLWithPath: share).bookmarkData(
+            options: [.minimalBookmark],
+            includingResourceValuesForKeys: [
+                .fileResourceIdentifierKey,
+                .volumeIdentifierKey,
+            ],
+            relativeTo: nil
+        )
         let manager = MachineManager(configuration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
             stateDirectory: base,
@@ -1210,6 +1218,7 @@ final class DorydServiceTests: XCTestCase {
                     "hostPath": share,
                     "guestPath": "/workspace/src",
                     "readOnly": true,
+                    "authorizationBookmark": shareBookmark as NSData,
                 ] as NSDictionary,
             ],
             "guestIdentityIntent": [
@@ -1227,6 +1236,9 @@ final class DorydServiceTests: XCTestCase {
             XCTAssertEqual(shares?.first?["hostPath"] as? String, share)
             XCTAssertEqual(shares?.first?["guestPath"] as? String, "/workspace/src")
             XCTAssertEqual(shares?.first?["readOnly"] as? Bool, true)
+            XCTAssertNil(shares?.first?["authorizationBookmark"])
+            XCTAssertNil(shares?.first?["authorizationVolumeUUID"])
+            XCTAssertNil(shares?.first?["authorizationFileIdentifier"])
             XCTAssertNil(body["env"])
             let typed = body["typedSettings"] as? NSDictionary
             let identity = typed?["guestIdentityIntent"] as? NSDictionary
@@ -1236,6 +1248,29 @@ final class DorydServiceTests: XCTestCase {
             update.fulfill()
         }
         wait(for: [update], timeout: 5)
+
+        let stored = try JSONDecoder().decode(
+            DoryMachineConfiguration.self,
+            from: Data(contentsOf: URL(fileURLWithPath: "\(base)/dev/machine.json"))
+        )
+        XCTAssertEqual(stored.shares.first?.authorizationBookmark, shareBookmark)
+        XCTAssertNotNil(stored.shares.first?.authorizationVolumeUUID)
+        XCTAssertNotNil(stored.shares.first?.authorizationFileIdentifier)
+
+        let malformedShare = expectation(description: "machineUpdate rejects malformed share bookmark")
+        proxy.machineUpdate("dev", config: [
+            "shares": [[
+                "tag": "src",
+                "hostPath": share,
+                "guestPath": "/workspace/src",
+                "authorizationBookmark": Data() as NSData,
+            ] as NSDictionary],
+        ]) { ok, _, message in
+            XCTAssertFalse(ok)
+            XCTAssertFalse(message.isEmpty)
+            malformedShare.fulfill()
+        }
+        wait(for: [malformedShare], timeout: 5)
 
         let clearAddress = expectation(description: "machineUpdate clear address reply")
         proxy.machineUpdate("dev", config: [

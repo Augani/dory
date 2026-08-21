@@ -27,6 +27,33 @@ enum DorydCtlError: Error, CustomStringConvertible {
     }
 }
 
+private func machineShareXPCDictionary(
+    _ share: DoryMachineShareConfiguration
+) throws -> NSDictionary {
+    let bookmark: Data
+    do {
+        bookmark = try URL(fileURLWithPath: share.hostPath).bookmarkData(
+            options: [.minimalBookmark],
+            includingResourceValuesForKeys: [
+                .fileResourceIdentifierKey,
+                .volumeIdentifierKey,
+            ],
+            relativeTo: nil
+        )
+    } catch {
+        throw DorydCtlError.usage(
+            "cannot authorize host share \(share.hostPath): \(error)"
+        )
+    }
+    return [
+        "tag": share.tag,
+        "hostPath": share.hostPath,
+        "guestPath": share.guestPath,
+        "readOnly": share.readOnly,
+        "authorizationBookmark": bookmark as NSData,
+    ]
+}
+
 final class ReplyBox<T>: @unchecked Sendable {
     private let lock = NSLock()
     private let semaphore = DispatchSemaphore(value: 0)
@@ -1183,14 +1210,7 @@ func runMachine(cursor: inout ArgumentCursor, client: DorydCtlClient) throws {
             config["address"] = address
         }
         if !shares.isEmpty {
-            config["shares"] = shares.map { share in
-                [
-                    "tag": share.tag,
-                    "hostPath": share.hostPath,
-                    "guestPath": share.guestPath,
-                    "readOnly": share.readOnly,
-                ] as NSDictionary
-            }
+            config["shares"] = try shares.map(machineShareXPCDictionary)
         }
         mergeMachineTypedSettings(typedSettings, into: &config)
         if let sandboxPolicy {
@@ -1400,14 +1420,7 @@ func runMachineUpdate(cursor: inout ArgumentCursor, client: DorydCtlClient) thro
     let shareValues = try cursor.optionValues("--share")
     if !shareValues.isEmpty {
         let shares = try shareValues.map { try DoryMachineShareConfiguration(argument: $0) }
-        config["shares"] = shares.map { share in
-            [
-                "tag": share.tag,
-                "hostPath": share.hostPath,
-                "guestPath": share.guestPath,
-                "readOnly": share.readOnly,
-            ] as NSDictionary
-        }
+        config["shares"] = try shares.map(machineShareXPCDictionary)
     }
     if cursor.values.contains("--clear-shares") {
         guard config["shares"] == nil else {

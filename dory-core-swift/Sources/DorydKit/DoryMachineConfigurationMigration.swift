@@ -70,10 +70,22 @@ public struct DoryMachineConfigurationArtifactBinding: Sendable, Equatable {
 public struct DoryMachineConfigurationShareBinding: Sendable, Equatable {
     public var reference: DoryVMResolverReference
     public var hostPath: String
+    public var authorizationBookmark: Data?
+    public var authorizationVolumeUUID: String?
+    public var authorizationFileIdentifier: Data?
 
-    public init(reference: DoryVMResolverReference, hostPath: String) {
+    public init(
+        reference: DoryVMResolverReference,
+        hostPath: String,
+        authorizationBookmark: Data? = nil,
+        authorizationVolumeUUID: String? = nil,
+        authorizationFileIdentifier: Data? = nil
+    ) {
         self.reference = reference
         self.hostPath = hostPath
+        self.authorizationBookmark = authorizationBookmark
+        self.authorizationVolumeUUID = authorizationVolumeUUID
+        self.authorizationFileIdentifier = authorizationFileIdentifier
     }
 }
 
@@ -154,6 +166,12 @@ public struct DoryMachineConfigurationMigrationResult: Sendable, Equatable {
 
     public func hostPath(for reference: DoryVMResolverReference) -> String? {
         shareBindings.first { $0.reference == reference }?.hostPath
+    }
+
+    public func shareBinding(
+        for reference: DoryVMResolverReference
+    ) -> DoryMachineConfigurationShareBinding? {
+        shareBindings.first { $0.reference == reference }
     }
 
     /// Reconstruct the legacy projection. Unsupported v2-only changes fail rather than being
@@ -240,14 +258,17 @@ public struct DoryMachineConfigurationMigrationResult: Sendable, Equatable {
         try applySandboxPolicy(to: &environment)
 
         let shares = try definition.shares.map { share -> DoryMachineShareConfiguration in
-            guard let hostPath = hostPath(for: share.hostLocation) else {
+            guard let binding = shareBinding(for: share.hostLocation) else {
                 throw DoryMachineConfigurationMigrationError.unresolvedShare(share.hostLocation)
             }
             let migrated = DoryMachineShareConfiguration(
                 tag: share.id,
-                hostPath: hostPath,
+                hostPath: binding.hostPath,
                 guestPath: share.guestMountPath,
-                readOnly: share.readOnly
+                readOnly: share.readOnly,
+                authorizationBookmark: binding.authorizationBookmark,
+                authorizationVolumeUUID: binding.authorizationVolumeUUID,
+                authorizationFileIdentifier: binding.authorizationFileIdentifier
             )
             do {
                 try migrated.validate()
@@ -610,13 +631,29 @@ public enum DoryMachineConfigurationMigrationBridge {
 
         var shareBindings: [DoryMachineConfigurationShareBinding] = []
         let shares = configuration.shares.enumerated().map { index, share in
+            let hostAuthorityIdentity: String
+            if let volumeUUID = share.authorizationVolumeUUID,
+               let fileIdentifier = share.authorizationFileIdentifier {
+                hostAuthorityIdentity = volumeUUID.lowercased() + "\u{0}"
+                    + fileIdentifier.map { String(format: "%02x", $0) }.joined()
+            } else if let bookmark = share.authorizationBookmark {
+                hostAuthorityIdentity = SHA256.hash(data: bookmark)
+                    .map { String(format: "%02x", $0) }
+                    .joined()
+            } else {
+                hostAuthorityIdentity = share.hostPath
+            }
             let reference = stableReference(
                 namespace: "legacy-share",
-                identity: configuration.id + "\u{0}\(index)\u{0}" + share.tag + "\u{0}" + share.hostPath
+                identity: configuration.id + "\u{0}\(index)\u{0}" + share.tag + "\u{0}"
+                    + hostAuthorityIdentity
             )
             shareBindings.append(DoryMachineConfigurationShareBinding(
                 reference: reference,
-                hostPath: share.hostPath
+                hostPath: share.hostPath,
+                authorizationBookmark: share.authorizationBookmark,
+                authorizationVolumeUUID: share.authorizationVolumeUUID,
+                authorizationFileIdentifier: share.authorizationFileIdentifier
             ))
             return DoryVMShare(
                 id: share.tag,

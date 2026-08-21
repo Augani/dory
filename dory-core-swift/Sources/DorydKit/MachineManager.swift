@@ -92,17 +92,30 @@ public struct DoryMachineShareConfiguration: Sendable, Equatable, Hashable, Coda
     public var hostPath: String
     public var guestPath: String
     public var readOnly: Bool
+    /// Persistent opaque identity created by the user-facing selector. It is daemon-resolved at
+    /// every start and is deliberately omitted from helper arguments and public status payloads.
+    public var authorizationBookmark: Data?
+    /// Daemon-sealed object identity. These fields prevent bookmark path fallback from silently
+    /// authorizing a replacement directory when the selected directory moved or was removed.
+    public var authorizationVolumeUUID: String?
+    public var authorizationFileIdentifier: Data?
 
     public init(
         tag: String,
         hostPath: String,
         guestPath: String,
-        readOnly: Bool = false
+        readOnly: Bool = false,
+        authorizationBookmark: Data? = nil,
+        authorizationVolumeUUID: String? = nil,
+        authorizationFileIdentifier: Data? = nil
     ) {
         self.tag = tag
         self.hostPath = hostPath
         self.guestPath = guestPath
         self.readOnly = readOnly
+        self.authorizationBookmark = authorizationBookmark
+        self.authorizationVolumeUUID = authorizationVolumeUUID
+        self.authorizationFileIdentifier = authorizationFileIdentifier
     }
 
     public init(argument: String) throws {
@@ -183,6 +196,15 @@ public struct DoryMachineShareConfiguration: Sendable, Equatable, Hashable, Coda
         }
         guard guestPath.hasPrefix("/"), guestPath != "/", !guestPath.contains("\0") else {
             throw MachineManagerError.invalidShare(guestPath)
+        }
+        guard authorizationBookmark.map({ !$0.isEmpty && $0.count <= 1_048_576 }) ?? true else {
+            throw MachineManagerError.invalidShare(hostPath)
+        }
+        guard authorizationVolumeUUID.map({ !$0.isEmpty && $0.utf8.count <= 128 }) ?? true,
+              authorizationFileIdentifier.map({ !$0.isEmpty && $0.count <= 4_096 }) ?? true,
+              authorizationBookmark != nil
+                || (authorizationVolumeUUID == nil && authorizationFileIdentifier == nil) else {
+            throw MachineManagerError.invalidShare(hostPath)
         }
     }
 
@@ -1133,6 +1155,7 @@ public final class MachineManager: @unchecked Sendable {
                 "sandbox policy is supported only for headless Linux machines"
             )
         }
+        machine.shares = try Self.sealShareAuthorizations(machine.shares)
         try Self.validateLaunchConfiguration(machine)
         lock.lock()
         let exists = machines[machine.id] != nil || deletingMachineIDs.contains(machine.id)
@@ -3029,7 +3052,7 @@ public final class MachineManager: @unchecked Sendable {
             updated.address = try Self.normalizedAddress(address)
         }
         if updatesShares {
-            updated.shares = shares ?? []
+            updated.shares = try Self.sealShareAuthorizations(shares ?? [])
         }
         if updatesEnvironment {
             updated.environment = environment ?? [:]
@@ -7145,7 +7168,8 @@ public final class MachineManager: @unchecked Sendable {
         _ shares: [DoryMachineShareConfiguration]
     ) throws -> [DoryMachineShareRuntimeAuthority] {
         try shares.map { share in
-            let canonicalPath = try canonicalShareRoot(share.hostPath)
+            let authorizedPath = try authorizedShareRoot(share)
+            let canonicalPath = try canonicalShareRoot(authorizedPath)
             let identity = try openedShareRootIdentity(
                 canonicalPath: canonicalPath,
                 reportedPath: share.hostPath
@@ -7156,6 +7180,30 @@ public final class MachineManager: @unchecked Sendable {
                 device: identity.device,
                 inode: identity.inode
             )
+        }
+    }
+
+    private static func sealShareAuthorizations(
+        _ shares: [DoryMachineShareConfiguration]
+    ) throws -> [DoryMachineShareConfiguration] {
+        try shares.map { share in
+            guard let bookmark = share.authorizationBookmark else { return share }
+            let resolution = try resolveShareBookmark(
+                bookmark,
+                reportedPath: share.hostPath
+            )
+            guard share.authorizationVolumeUUID.map({
+                $0 == resolution.volumeUUID
+            }) ?? true,
+            share.authorizationFileIdentifier.map({
+                $0 == resolution.fileIdentifier
+            }) ?? true else {
+                throw MachineManagerError.invalidShare(share.hostPath)
+            }
+            var sealed = share
+            sealed.authorizationVolumeUUID = resolution.volumeUUID
+            sealed.authorizationFileIdentifier = resolution.fileIdentifier
+            return sealed
         }
     }
 
@@ -7172,7 +7220,8 @@ public final class MachineManager: @unchecked Sendable {
             )
         }
         return try authorities.map { authority in
-            guard try canonicalShareRoot(authority.share.hostPath)
+            let authorizedPath = try authorizedShareRoot(authority.share)
+            guard try canonicalShareRoot(authorizedPath)
                     == authority.canonicalPath else {
                 throw MachineManagerError.invalidShare(authority.share.hostPath)
             }
@@ -7201,6 +7250,66 @@ public final class MachineManager: @unchecked Sendable {
             throw MachineManagerError.invalidShare(path)
         }
         return canonical
+    }
+
+    private static func authorizedShareRoot(
+        _ share: DoryMachineShareConfiguration
+    ) throws -> String {
+        guard let bookmark = share.authorizationBookmark else {
+            return share.hostPath
+        }
+        guard let expectedVolumeUUID = share.authorizationVolumeUUID,
+              let expectedFileIdentifier = share.authorizationFileIdentifier else {
+            throw MachineManagerError.invalidShare(share.hostPath)
+        }
+        let resolution = try resolveShareBookmark(
+            bookmark,
+            reportedPath: share.hostPath
+        )
+        guard resolution.volumeUUID == expectedVolumeUUID,
+              resolution.fileIdentifier == expectedFileIdentifier else {
+            throw MachineManagerError.invalidShare(share.hostPath)
+        }
+        return resolution.path
+    }
+
+    private static func resolveShareBookmark(
+        _ bookmark: Data,
+        reportedPath: String
+    ) throws -> (path: String, volumeUUID: String, fileIdentifier: Data) {
+        var stale = false
+        let resolved: URL
+        do {
+            resolved = try URL(
+                resolvingBookmarkData: bookmark,
+                options: [.withoutUI, .withoutMounting],
+                relativeTo: nil,
+                bookmarkDataIsStale: &stale
+            )
+        } catch {
+            throw MachineManagerError.invalidShare(reportedPath)
+        }
+        // A move commonly marks a bookmark stale even when it resolves the original object. The
+        // daemon-sealed volume/file identity decides whether that resolution is authorized; stale
+        // path fallback to a replacement object therefore remains fail-closed.
+        _ = stale
+        let values: URLResourceValues
+        do {
+            values = try resolved.resourceValues(forKeys: [
+                .fileResourceIdentifierKey,
+                .volumeUUIDStringKey,
+            ])
+        } catch {
+            throw MachineManagerError.invalidShare(reportedPath)
+        }
+        guard let volumeUUID = values.volumeUUIDString,
+              !volumeUUID.isEmpty,
+              let identifier = values.fileResourceIdentifier as? NSData,
+              identifier.length > 0,
+              identifier.length <= 4_096 else {
+            throw MachineManagerError.invalidShare(reportedPath)
+        }
+        return (resolved.path, volumeUUID, identifier as Data)
     }
 
     private static func openedShareRootIdentity(

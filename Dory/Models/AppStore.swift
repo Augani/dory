@@ -5237,11 +5237,17 @@ final class AppStore {
             let host = mount.host.trimmingCharacters(in: .whitespacesAndNewlines)
             let guest = mount.guest.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !host.isEmpty, !guest.isEmpty else { return nil }
+            let bookmark = try? URL(fileURLWithPath: host).bookmarkData(
+                options: [.minimalBookmark],
+                includingResourceValuesForKeys: [.fileResourceIdentifierKey, .volumeIdentifierKey],
+                relativeTo: nil
+            )
             return DorydMachineShareConfiguration(
                 tag: "doryapp\(index)",
                 hostPath: host,
                 guestPath: guest,
-                readOnly: mount.readOnly
+                readOnly: mount.readOnly,
+                authorizationBookmark: bookmark
             )
         }
     }

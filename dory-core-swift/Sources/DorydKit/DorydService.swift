@@ -1744,7 +1744,11 @@ private extension NSDictionary {
                 tag: try row.requiredString("tag"),
                 hostPath: try row.requiredString("hostPath"),
                 guestPath: try row.requiredString("guestPath"),
-                readOnly: row.optionalBool("readOnly") ?? false
+                readOnly: row.optionalBool("readOnly") ?? false,
+                authorizationBookmark: try row.optionalData(
+                    "authorizationBookmark",
+                    maximumBytes: 1_048_576
+                )
             )
             try share.validate()
             return share
@@ -1753,6 +1757,22 @@ private extension NSDictionary {
 
     func optionalString(_ key: String) -> String? {
         self[key] as? String
+    }
+
+    func optionalData(_ key: String, maximumBytes: Int) throws -> Data? {
+        guard let value = self[key] else { return nil }
+        let data: Data
+        if let swiftData = value as? Data {
+            data = swiftData
+        } else if let nsData = value as? NSData {
+            data = nsData as Data
+        } else {
+            throw XPCRemoteConfigError.invalid(key)
+        }
+        guard !data.isEmpty, data.count <= maximumBytes else {
+            throw XPCRemoteConfigError.invalid(key)
+        }
+        return data
     }
 
     func optionalBool(_ key: String) -> Bool? {

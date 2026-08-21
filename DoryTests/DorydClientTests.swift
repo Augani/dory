@@ -393,6 +393,7 @@ struct DorydClientTests {
         let dockerAgentPorts = try await client.dockerAgentPorts()
         let dockerAgentTelemetry = try await client.dockerAgentTelemetry()
         let stopped = try await client.engineStop()
+        let shareBookmark = Data([0x44, 0x4f, 0x52, 0x59])
         let createdMachine = try await client.machineCreate(DorydMachineConfiguration(
             id: "dev",
             kernelPath: "/tmp/kernel",
@@ -402,7 +403,13 @@ struct DorydClientTests {
             address: "192.168.215.40",
             displayMode: .desktop,
             shares: [
-                DorydMachineShareConfiguration(tag: "src", hostPath: "/Users/me/src", guestPath: "/workspace/src", readOnly: true),
+                DorydMachineShareConfiguration(
+                    tag: "src",
+                    hostPath: "/Users/me/src",
+                    guestPath: "/workspace/src",
+                    readOnly: true,
+                    authorizationBookmark: shareBookmark
+                ),
             ],
             typedSettings: DorydMachineTypedSettings(
                 guestIdentityIntent: DoryVMGuestIdentityIntent(
@@ -527,6 +534,10 @@ struct DorydClientTests {
         #expect(dockerAgentPorts.added == [DorydListenPort(protocol: "tcp", port: 8080)])
         #expect(dockerAgentTelemetry.memTotalKB == 2048)
         #expect(stopped == DorydCommandResult(ok: true, message: ""))
+        let createShares = try #require(
+            service.latestMachineCreateConfig?["shares"] as? [NSDictionary]
+        )
+        #expect(createShares.first?["authorizationBookmark"] as? Data == shareBookmark)
         #expect(createdMachine.state == "created")
         #expect(createdMachine.displayMode == .desktop)
         #expect(startedMachine.pid == 1234)

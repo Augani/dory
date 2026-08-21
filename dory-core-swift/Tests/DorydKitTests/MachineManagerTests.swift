@@ -48,6 +48,23 @@ final class MachineManagerTests: XCTestCase {
         )
         XCTAssertThrowsError(try DoryMachineShareConfiguration(argument: "dory-share-v1.invalid"))
         XCTAssertThrowsError(try DoryMachineShareConfiguration(argument: "{\"tag\":1}"))
+
+        let authorized = DoryMachineShareConfiguration(
+            tag: "src",
+            hostPath: "/tmp/src",
+            guestPath: "/workspace/src",
+            authorizationBookmark: Data([1, 2, 3]),
+            authorizationVolumeUUID: "volume",
+            authorizationFileIdentifier: Data([4, 5, 6])
+        )
+        let helperShare = try DoryMachineShareConfiguration(argument: authorized.argumentValue)
+        XCTAssertNil(helperShare.authorizationBookmark)
+        XCTAssertNil(helperShare.authorizationVolumeUUID)
+        XCTAssertNil(helperShare.authorizationFileIdentifier)
+        XCTAssertEqual(try JSONDecoder().decode(
+            DoryMachineShareConfiguration.self,
+            from: JSONEncoder().encode(authorized)
+        ), authorized)
     }
 
     func testCreateStartStopDeleteMachineProcess() throws {

@@ -81,14 +81,19 @@ nonisolated struct DorydMachineShareConfiguration: Sendable, Equatable {
     var hostPath: String
     var guestPath: String
     var readOnly: Bool
+    var authorizationBookmark: Data? = nil
 
     var xpcDictionary: NSDictionary {
-        [
+        let dictionary = NSMutableDictionary(dictionary: [
             "tag": tag,
             "hostPath": hostPath,
             "guestPath": guestPath,
             "readOnly": readOnly,
-        ]
+        ])
+        if let authorizationBookmark {
+            dictionary["authorizationBookmark"] = authorizationBookmark as NSData
+        }
+        return dictionary
     }
 }
 
