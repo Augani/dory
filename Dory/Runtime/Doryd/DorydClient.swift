@@ -752,6 +752,27 @@ nonisolated enum DorydMachineSnapshotConsistency: String, Sendable, Equatable, H
     case guestQuiesced = "guest-quiesced"
 }
 
+nonisolated struct DorydMachineSnapshotQuiesceReceipt: Sendable, Equatable, Hashable {
+    var schemaVersion: UInt16
+    var receiptID: String
+    var agentBuild: String
+    var agentProtocolVersion: UInt32
+    var capabilityVersion: UInt32
+
+    var isValid: Bool {
+        schemaVersion == 1
+            && receiptID.utf8.count == 32
+            && receiptID.utf8.allSatisfy {
+                ($0 >= 0x30 && $0 <= 0x39) || ($0 >= 0x61 && $0 <= 0x66)
+            }
+            && !agentBuild.isEmpty
+            && agentBuild.utf8.count <= 128
+            && agentBuild.utf8.allSatisfy { $0 >= 0x20 && $0 <= 0x7e }
+            && agentProtocolVersion == 1
+            && capabilityVersion >= 2
+    }
+}
+
 nonisolated struct DorydAgentCapability: Sendable, Equatable, Hashable {
     var id: String
     var version: UInt32
@@ -845,6 +866,7 @@ nonisolated struct DorydMachineSnapshot: Sendable, Equatable {
     var artifactEvidence: DorydMachineSnapshotArtifactEvidence? = nil
     var installedDesktopPayloadReceipt: DorydInstalledDesktopPayloadReceipt? = nil
     var consistency: DorydMachineSnapshotConsistency = .coldStopped
+    var guestQuiesceReceipt: DorydMachineSnapshotQuiesceReceipt? = nil
 }
 
 nonisolated enum DorydMachineBackupFrequency: String, Sendable, Equatable, CaseIterable {
@@ -2334,6 +2356,10 @@ nonisolated final class DorydClient: @unchecked Sendable {
                   from: dictionary
               ),
               let consistency = machineSnapshotConsistency(from: dictionary),
+              let guestQuiesceReceipt = machineSnapshotQuiesceReceipt(
+                  from: dictionary,
+                  consistency: consistency
+              ),
               let artifactEvidence = machineSnapshotArtifactEvidence(
                   from: dictionary,
                   runtimeIdentity: runtimeIdentity
@@ -2354,7 +2380,8 @@ nonisolated final class DorydClient: @unchecked Sendable {
             runtimeIdentity: runtimeIdentity,
             artifactEvidence: artifactEvidence.value,
             installedDesktopPayloadReceipt: installedDesktopPayloadReceipt.value,
-            consistency: consistency
+            consistency: consistency,
+            guestQuiesceReceipt: guestQuiesceReceipt.value
         )
     }
 
@@ -2366,6 +2393,47 @@ nonisolated final class DorydClient: @unchecked Sendable {
         guard let encoded = dictionary["consistency"] else { return .coldStopped }
         guard let rawValue = encoded as? String else { return nil }
         return DorydMachineSnapshotConsistency(rawValue: rawValue)
+    }
+
+    private struct ParsedMachineSnapshotQuiesceReceipt {
+        var value: DorydMachineSnapshotQuiesceReceipt?
+    }
+
+    nonisolated private static func machineSnapshotQuiesceReceipt(
+        from dictionary: NSDictionary,
+        consistency: DorydMachineSnapshotConsistency
+    ) -> ParsedMachineSnapshotQuiesceReceipt? {
+        guard let encoded = dictionary["guestQuiesceReceipt"] else {
+            guard consistency == .coldStopped else { return nil }
+            return ParsedMachineSnapshotQuiesceReceipt(value: nil)
+        }
+        guard consistency == .guestQuiesced,
+              let raw = encoded as? NSDictionary,
+              let keys = raw.allKeys as? [String],
+              Set(keys) == [
+                  "schemaVersion",
+                  "receiptID",
+                  "agentBuild",
+                  "agentProtocolVersion",
+                  "capabilityVersion",
+              ],
+              keys.count == 5,
+              let schemaVersion = uint16(raw["schemaVersion"]),
+              let receiptID = raw["receiptID"] as? String,
+              let agentBuild = raw["agentBuild"] as? String,
+              let agentProtocolVersion = uint32(raw["agentProtocolVersion"]),
+              let capabilityVersion = uint32(raw["capabilityVersion"]) else {
+            return nil
+        }
+        let receipt = DorydMachineSnapshotQuiesceReceipt(
+            schemaVersion: schemaVersion,
+            receiptID: receiptID,
+            agentBuild: agentBuild,
+            agentProtocolVersion: agentProtocolVersion,
+            capabilityVersion: capabilityVersion
+        )
+        guard receipt.isValid else { return nil }
+        return ParsedMachineSnapshotQuiesceReceipt(value: receipt)
     }
 
     private struct ParsedMachineSnapshotArtifactEvidence {

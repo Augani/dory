@@ -6149,7 +6149,8 @@ final class AppStore {
             recipe: "doryd",
             runtimeIdentity: snapshot.runtimeIdentity,
             artifactEvidence: snapshot.artifactEvidence,
-            consistency: snapshot.consistency
+            consistency: snapshot.consistency,
+            guestQuiesceReceipt: snapshot.guestQuiesceReceipt
         )
     }
 

@@ -19,6 +19,7 @@ struct MachineSnapshot: Identifiable, Hashable, Sendable {
     let runtimeIdentity: DorydMachineRuntimeIdentity
     let artifactEvidence: DorydMachineSnapshotArtifactEvidence?
     let consistency: DorydMachineSnapshotConsistency?
+    let guestQuiesceReceipt: DorydMachineSnapshotQuiesceReceipt?
 
     nonisolated init(id: String, imageRef: String, machineName: String, note: String, createdISO: String,
                      sizeBytes: Int64, distro: String, version: String, arch: String, boot: String,
@@ -26,7 +27,8 @@ struct MachineSnapshot: Identifiable, Hashable, Sendable {
                      loginShell: String = "/bin/sh",
                      runtimeIdentity: DorydMachineRuntimeIdentity = .legacyCompatibility,
                      artifactEvidence: DorydMachineSnapshotArtifactEvidence? = nil,
-                     consistency: DorydMachineSnapshotConsistency? = nil) {
+                     consistency: DorydMachineSnapshotConsistency? = nil,
+                     guestQuiesceReceipt: DorydMachineSnapshotQuiesceReceipt? = nil) {
         self.id = id
         self.imageRef = imageRef
         self.machineName = machineName
@@ -45,6 +47,7 @@ struct MachineSnapshot: Identifiable, Hashable, Sendable {
         self.runtimeIdentity = runtimeIdentity
         self.artifactEvidence = artifactEvidence
         self.consistency = consistency
+        self.guestQuiesceReceipt = guestQuiesceReceipt
     }
 }
 

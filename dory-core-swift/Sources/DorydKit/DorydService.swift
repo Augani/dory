@@ -1816,6 +1816,18 @@ private extension DoryMachineSnapshotArtifactEvidence {
     }
 }
 
+private extension DoryMachineSnapshotQuiesceReceipt {
+    var xpcDictionary: NSDictionary {
+        [
+            "schemaVersion": schemaVersion,
+            "receiptID": receiptID,
+            "agentBuild": agentBuild,
+            "agentProtocolVersion": agentProtocolVersion,
+            "capabilityVersion": capabilityVersion,
+        ]
+    }
+}
+
 private extension DoryMachineShareConfiguration {
     var xpcDictionary: NSDictionary {
         [
@@ -1914,6 +1926,9 @@ private extension DoryMachineSnapshot {
         ]
         if let artifactEvidence {
             dictionary["artifactEvidence"] = artifactEvidence.xpcDictionary
+        }
+        if let guestQuiesceReceipt {
+            dictionary["guestQuiesceReceipt"] = guestQuiesceReceipt.xpcDictionary
         }
         let receipt = installedDesktopPayloadReceipt
             ?? DoryInstalledDesktopPayloadReceipt.legacyEnvironment(environment)

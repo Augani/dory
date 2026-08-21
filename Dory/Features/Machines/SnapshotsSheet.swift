@@ -243,6 +243,9 @@ struct SnapshotsSheet: View {
                             Text(consistency == .guestQuiesced ? "Guest quiesced" : "Cold stopped")
                                 .font(.system(size: 11, weight: .medium))
                                 .foregroundStyle(consistency == .guestQuiesced ? p.green : p.text3)
+                                .help(snapshot.guestQuiesceReceipt.map {
+                                    "Quiesced by \($0.agentBuild) using snapshot-quiesce@\($0.capabilityVersion)"
+                                } ?? "The machine was stopped before its disks were copied")
                         }
                     }
                 }

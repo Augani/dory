@@ -1800,6 +1800,7 @@ final class DorydServiceTests: XCTestCase {
             XCTAssertEqual(runtime?["mode"] as? String, "legacy-compatibility")
             XCTAssertEqual((runtime?["virtualHardwareABIVersion"] as? NSNumber)?.uint16Value, 1)
             XCTAssertEqual(body["consistency"] as? String, "cold-stopped")
+            XCTAssertNil(body["guestQuiesceReceipt"])
             let artifacts = body["artifactEvidence"] as? NSDictionary
             XCTAssertEqual(
                 ((artifacts?["rootfs"] as? NSDictionary)?["sha256"] as? String)?.count,

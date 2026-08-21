@@ -392,6 +392,7 @@ struct DorydClientTests {
         #expect(snapshot.machineID == "dev")
         #expect(snapshot.runtimeIdentity == .legacyCompatibility)
         #expect(snapshot.consistency == .coldStopped)
+        #expect(snapshot.guestQuiesceReceipt == nil)
         #expect(snapshots.map(\.id).contains("s1"))
         #expect(clonedSnapshot.id == "dev-copy")
         #expect(restoredSnapshot.id == "dev")
@@ -585,6 +586,14 @@ struct DorydClientTests {
         #expect(partialHandshake.runtimeEvidence.last?.label == "Tools partially ready")
         #expect(partialHandshake.runtimeEvidence.last?.detail.contains("clock-sync") == true)
 
+        var oldQuiesceHandshake = machine
+        oldQuiesceHandshake.agentCapabilities = machine.agentCapabilities.map {
+            $0.id == "snapshot-quiesce"
+                ? DorydAgentCapability(id: $0.id, version: 1) : $0
+        }
+        #expect(oldQuiesceHandshake.runtimeEvidence.last?.label == "Tools partially ready")
+        #expect(oldQuiesceHandshake.runtimeEvidence.last?.detail.contains("snapshot-quiesce@2") == true)
+
         var incompatibleHandshake = machine
         incompatibleHandshake.agentProtocolVersion = 2
         #expect(incompatibleHandshake.runtimeEvidence.last?.label == "Tools incompatible")
@@ -674,7 +683,17 @@ struct DorydClientTests {
     }
 
     @Test func snapshotConsistencyDefaultsOnlyWhenAbsentAndRejectsMalformedClaims() async throws {
-        let validService = FakeDorydService(snapshotConsistencyOverride: "guest-quiesced")
+        let receipt = [
+            "schemaVersion": 1,
+            "receiptID": String(repeating: "a", count: 32),
+            "agentBuild": "dory-agent/test",
+            "agentProtocolVersion": 1,
+            "capabilityVersion": 2,
+        ] as NSDictionary
+        let validService = FakeDorydService(
+            snapshotConsistencyOverride: "guest-quiesced",
+            snapshotQuiesceReceiptOverride: receipt
+        )
         let validListener = NSXPCListener.anonymous()
         let validDelegate = FakeDorydListenerDelegate(service: validService)
         validListener.delegate = validDelegate
@@ -687,10 +706,34 @@ struct DorydClientTests {
             snapshotID: "consistent"
         )
         #expect(valid.consistency == .guestQuiesced)
+        #expect(valid.guestQuiesceReceipt?.agentBuild == "dory-agent/test")
 
-        for malformed in ["crash-consistent" as Any, 1 as Any] {
+        for fixture in [
+            (consistency: "crash-consistent" as Any, receipt: nil as NSDictionary?),
+            (consistency: 1 as Any, receipt: nil as NSDictionary?),
+            (consistency: "guest-quiesced" as Any, receipt: nil as NSDictionary?),
+            (consistency: "cold-stopped" as Any, receipt: receipt),
+            (consistency: "guest-quiesced" as Any, receipt: [
+                "schemaVersion": "1",
+                "receiptID": String(repeating: "a", count: 32),
+                "agentBuild": "dory-agent/test",
+                "agentProtocolVersion": 1,
+                "capabilityVersion": 2,
+            ] as NSDictionary),
+            (consistency: "guest-quiesced" as Any, receipt: [
+                "schemaVersion": 1,
+                "receiptID": String(repeating: "a", count: 32),
+                "agentBuild": "dory-agent/test",
+                "agentProtocolVersion": 1,
+                "capabilityVersion": 2,
+                "unknown": true,
+            ] as NSDictionary),
+        ] {
             let listener = NSXPCListener.anonymous()
-            let service = FakeDorydService(snapshotConsistencyOverride: malformed)
+            let service = FakeDorydService(
+                snapshotConsistencyOverride: fixture.consistency,
+                snapshotQuiesceReceiptOverride: fixture.receipt
+            )
             let delegate = FakeDorydListenerDelegate(service: service)
             listener.delegate = delegate
             listener.resume()
@@ -1197,6 +1240,7 @@ struct DorydClientTests {
         #expect(snapshot.note == "before upgrade")
         #expect(snapshot.imageRef.hasPrefix("doryd://dev/"))
         #expect(snapshot.consistency == .coldStopped)
+        #expect(snapshot.guestQuiesceReceipt == nil)
 
         service.setMachineCloneSnapshotDuplicateFailures(1)
         store.cloneSnapshot(snapshot)
@@ -2522,6 +2566,7 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
     private var artifactEvidenceOverride: NSDictionary?
     private var installedDesktopPayloadReceiptOverride: NSDictionary?
     private var snapshotConsistencyOverride: Any?
+    private var snapshotQuiesceReceiptOverride: NSDictionary?
     private var snapshots: [String: [NSDictionary]] = [:]
     private var backupStatuses: [String: NSDictionary] = [:]
     var engineStartCount: Int {
@@ -2673,7 +2718,8 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
         runtimeIdentityOverride: NSDictionary? = nil,
         artifactEvidenceOverride: NSDictionary? = nil,
         installedDesktopPayloadReceiptOverride: NSDictionary? = nil,
-        snapshotConsistencyOverride: Any? = nil
+        snapshotConsistencyOverride: Any? = nil,
+        snapshotQuiesceReceiptOverride: NSDictionary? = nil
     ) {
         self.socketPath = socketPath
         self.engineShutdownReplyDelay = engineShutdownReplyDelay
@@ -2681,6 +2727,7 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
         self.artifactEvidenceOverride = artifactEvidenceOverride
         self.installedDesktopPayloadReceiptOverride = installedDesktopPayloadReceiptOverride
         self.snapshotConsistencyOverride = snapshotConsistencyOverride
+        self.snapshotQuiesceReceiptOverride = snapshotQuiesceReceiptOverride
         if let existing = machines["dev"]?.mutableCopy() as? NSMutableDictionary {
             if let runtimeIdentityOverride {
                 existing["runtimeIdentity"] = runtimeIdentityOverride
@@ -3088,6 +3135,9 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
         }
         if let snapshotConsistencyOverride {
             mutable["consistency"] = snapshotConsistencyOverride
+        }
+        if let snapshotQuiesceReceiptOverride {
+            mutable["guestQuiesceReceipt"] = snapshotQuiesceReceiptOverride
         }
         let row = mutable.copy() as? NSDictionary ?? baseRow
         _machineSnapshotCount += 1
@@ -3522,7 +3572,7 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
             ["id": "exec", "version": 1] as NSDictionary,
             ["id": "exec-stdin", "version": 1] as NSDictionary,
             ["id": "ports-watch", "version": 1] as NSDictionary,
-            ["id": "snapshot-quiesce", "version": 1] as NSDictionary,
+            ["id": "snapshot-quiesce", "version": 2] as NSDictionary,
             ["id": "sync-push", "version": 1] as NSDictionary,
             ["id": "telemetry", "version": 1] as NSDictionary,
         ],
