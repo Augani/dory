@@ -10,12 +10,12 @@ use std::sync::Arc;
 
 use dory_proto::channels::PORT_CONTROL;
 use dory_proto::preamble::{write_preamble, Direction, Preamble};
-use dory_remote::{push, AgentClient};
+use dory_remote::{push, push_observed, AgentClient};
 use tokio::net::UnixStream;
 
 use crate::remote::{
-    exec_result, AgentCapabilityFfi, AgentInfoFfi, ExecEnvFfi, ExecResultFfi, PushStatsFfi,
-    RemoteFfiError, TelemetryFfi,
+    exec_result, AgentCapabilityFfi, AgentInfoFfi, ExecEnvFfi, ExecResultFfi, PushControl,
+    PushStatsFfi, RemoteFfiError, TelemetryFfi,
 };
 
 #[derive(uniffi::Record)]
@@ -177,6 +177,28 @@ impl AgentControl {
             std::path::Path::new(&local_root),
             &remote_root,
             &self.client,
+        ))?;
+        Ok(PushStatsFfi {
+            files_sent: stats.files_sent,
+            bytes_sent: stats.bytes_sent,
+            files_deleted: stats.files_deleted,
+        })
+    }
+
+    pub fn push_controlled(
+        &self,
+        local_root: String,
+        remote_root: String,
+        control: Arc<PushControl>,
+    ) -> Result<PushStatsFfi, RemoteFfiError> {
+        control.claim()?;
+        let guard = self.runtime.lock().unwrap();
+        let runtime = guard.as_ref().ok_or_else(shutdown_error)?;
+        let stats = runtime.block_on(push_observed(
+            std::path::Path::new(&local_root),
+            &remote_root,
+            &self.client,
+            control.as_ref(),
         ))?;
         Ok(PushStatsFfi {
             files_sent: stats.files_sent,
@@ -382,10 +404,12 @@ mod tests {
         std::fs::create_dir_all(&local_root).unwrap();
         std::fs::create_dir_all(&remote_root).unwrap();
         std::fs::write(local_root.join("payload.txt"), b"agent-push").unwrap();
+        let transfer_control = crate::remote::new_push_control();
         let stats = control
-            .push(
+            .push_controlled(
                 local_root.to_string_lossy().into_owned(),
                 remote_root.to_string_lossy().into_owned(),
+                transfer_control.clone(),
             )
             .expect("push");
         assert_eq!(stats.files_sent, 1);
@@ -394,6 +418,25 @@ mod tests {
             std::fs::read(remote_root.join("payload.txt")).unwrap(),
             b"agent-push"
         );
+        let progress = transfer_control.progress();
+        assert!(matches!(
+            progress.phase,
+            crate::remote::PushPhaseFfi::Completed
+        ));
+        assert_eq!(progress.files_total, 1);
+        assert_eq!(progress.files_completed, 1);
+        assert_eq!(progress.bytes_total, 10);
+        assert_eq!(progress.bytes_completed, 10);
+        assert!(progress.current_path.is_none());
+        let reuse_error = control
+            .push_controlled(
+                local_root.to_string_lossy().into_owned(),
+                remote_root.to_string_lossy().into_owned(),
+                transfer_control,
+            )
+            .err()
+            .expect("single-use control must reject reuse");
+        assert!(reuse_error.to_string().contains("already used"));
         let _ = std::fs::remove_dir_all(&transfer_root);
         let _ = std::fs::remove_file(&path);
     }
