@@ -1170,6 +1170,30 @@ struct DorydClientTests {
         #expect(machine.containerID.isEmpty)
         #expect(store.machineTerminalCommand(machine) == "dory machine shell dev")
         #expect(store.canUseMachineArtifacts(machine))
+        #expect(store.canTransferFiles(to: machine))
+
+        let transferRoot = URL(
+            fileURLWithPath: "/tmp/dory-store-transfer-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: transferRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: transferRoot) }
+        let transferFile = transferRoot.appendingPathComponent("hello.txt")
+        try Data("hello".utf8).write(to: transferFile)
+        let transferred = try #require(await store.transferFiles([transferFile], to: machine))
+        #expect(transferred.filesSent == 1)
+        #expect(transferred.bytesSent == 5)
+        #expect(store.settingsNotice?.message.contains(transferred.guestDestination) == true)
+        let stagedRoot = try #require(
+            service.latestMachineTransferRequest?["privateStagingRoot"] as? String
+        )
+        #expect(!FileManager.default.fileExists(atPath: stagedRoot))
+
+        var transferUnavailable = machine
+        transferUnavailable.agentCapabilities = transferUnavailable.agentCapabilities.filter {
+            $0.id != "sync-push"
+        }
+        #expect(!store.canTransferFiles(to: transferUnavailable))
 
         let currentSettings = await store.machineSettings(machine.name)
         #expect(currentSettings.cpus == 2)

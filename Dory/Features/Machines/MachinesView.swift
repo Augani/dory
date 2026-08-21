@@ -1,3 +1,4 @@
+import AppKit
 import Darwin
 import DoryOperations
 import SwiftUI
@@ -250,6 +251,13 @@ private struct MachineCard: View {
                 Button { store.restartMachine(machine) } label: {
                     Label("Restart", systemImage: "arrow.clockwise")
                 }
+                if isRunning {
+                    Button { selectAndSendFiles() } label: {
+                        Label("Send Files\u{2026}", systemImage: "paperplane")
+                    }
+                    .disabled(!store.canTransferFiles(to: machine))
+                    .help("Copy selected files into this machine's Downloads folder")
+                }
                 Divider()
             }
             Button { store.takeSnapshot(machine, note: "") } label: {
@@ -288,6 +296,22 @@ private struct MachineCard: View {
         .frame(width: 22)
         .fixedSize()
         .disabled(store.isMachineBusy(machine.name) || !store.canUseMachineArtifacts(machine))
+    }
+
+    private func selectAndSendFiles() {
+        guard store.canTransferFiles(to: machine) else { return }
+        let panel = NSOpenPanel()
+        panel.title = "Send files to \(machine.name)"
+        panel.message = "Files are copied into a new folder in the machine's Downloads folder."
+        panel.prompt = "Send"
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = true
+        panel.resolvesAliases = false
+        guard panel.runModal() == .OK else { return }
+        let selected = panel.urls
+        guard !selected.isEmpty else { return }
+        Task { await store.transferFiles(selected, to: machine) }
     }
 
     private var statusPill: some View {

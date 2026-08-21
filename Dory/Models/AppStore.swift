@@ -5260,6 +5260,67 @@ final class AppStore {
         runtimeOwnedByDoryd
     }
 
+    func canTransferFiles(to machine: Machine) -> Bool {
+        guard runtimeOwnedByDoryd,
+              machine.status == .running,
+              machine.agentProtocolVersion == 1 else {
+            return false
+        }
+        func supports(_ id: String) -> Bool {
+            machine.agentCapabilities.contains { $0.id == id && $0.version >= 1 }
+        }
+        return supports("exec") && supports("sync-push")
+    }
+
+    @discardableResult
+    func transferFiles(
+        _ fileURLs: [URL],
+        to machine: Machine
+    ) async -> DorydMachineFileTransferResult? {
+        guard canTransferFiles(to: machine) else {
+            actionError = "Start \(machine.name) and update Dory Tools before sending files."
+            return nil
+        }
+        guard !busyMachines.contains(machine.name) else { return nil }
+        busyMachines.insert(machine.name)
+        defer { busyMachines.remove(machine.name) }
+        actionError = nil
+
+        var staged: DoryStagedMachineFileTransfer?
+        do {
+            staged = try await Task.detached(priority: .userInitiated) {
+                try DoryMachineFileTransferStager.stage(fileURLs: fileURLs)
+            }.value
+            guard let staged else { return nil }
+            let result = try await dorydClient.machineTransfer(machine.name, staged: staged)
+            let fileLabel = result.filesSent == 1 ? "file" : "files"
+            let bytes = ByteCountFormatter.string(
+                fromByteCount: Int64(clamping: result.bytesSent),
+                countStyle: .file
+            )
+            do {
+                try await Task.detached(priority: .utility) {
+                    try staged.remove()
+                }.value
+            } catch {
+                actionError = "Files reached \(machine.name), but Dory could not remove its private staging copy."
+                return result
+            }
+            showSettingsSuccess(
+                "Sent \(result.filesSent) \(fileLabel) (\(bytes)) to \(result.guestDestination)."
+            )
+            return result
+        } catch {
+            if let staged {
+                try? await Task.detached(priority: .utility) {
+                    try staged.remove()
+                }.value
+            }
+            actionError = "Could not send files to \(machine.name): \(Self.userFacingError(error))"
+            return nil
+        }
+    }
+
     func syncMachineStats() {
         guard !machines.isEmpty else { return }
         for index in machines.indices {
