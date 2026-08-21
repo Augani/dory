@@ -1247,9 +1247,10 @@ struct DorydClientTests {
         #expect(transferred.bytesSent == 5)
         #expect(store.settingsNotice?.message.contains(transferred.guestDestination) == true)
         let stagedRoot = try #require(
-            service.latestMachineTransferRequest?["privateStagingRoot"] as? String
+            service.latestMachineTransferStartRequest?["privateStagingRoot"] as? String
         )
         #expect(!FileManager.default.fileExists(atPath: stagedRoot))
+        #expect(store.machineFileTransfer(for: machine.name) == nil)
 
         let transferFolder = transferRoot.appendingPathComponent("project", isDirectory: true)
         try FileManager.default.createDirectory(
@@ -1266,7 +1267,7 @@ struct DorydClientTests {
         #expect(transferredFolder.bytesSent == 5)
         #expect(store.settingsNotice?.message.contains("1 file and 3 folders") == true)
         let stagedFolderRoot = try #require(
-            service.latestMachineTransferRequest?["privateStagingRoot"] as? String
+            service.latestMachineTransferStartRequest?["privateStagingRoot"] as? String
         )
         #expect(!FileManager.default.fileExists(atPath: stagedFolderRoot))
 
@@ -1279,9 +1280,29 @@ struct DorydClientTests {
         #expect(await store.transferFiles([transferFolder], to: fileOnlyTransfer) == nil)
         #expect(store.actionError?.contains("Update Dory Tools") == true)
         #expect(
-            service.latestMachineTransferRequest?["privateStagingRoot"] as? String
+            service.latestMachineTransferStartRequest?["privateStagingRoot"] as? String
                 == stagedFolderRoot
         )
+
+        let cancellingID = String(repeating: "c", count: 32)
+        service.setMachineTransferOperationResponse(
+            service.machineTransferOperationResponse(
+                operationID: cancellingID,
+                phase: "transferring"
+            )
+        )
+        let cancellingTransfer = Task {
+            await store.transferFiles([transferFile], to: machine)
+        }
+        try await waitUntil {
+            store.machineFileTransfer(for: machine.name)?.phase == .transferring
+        }
+        await store.cancelFileTransfer(to: machine)
+        #expect(await cancellingTransfer.value == nil)
+        #expect(service.machineTransferCancelCount == 1)
+        #expect(store.machineFileTransfer(for: machine.name) == nil)
+        #expect(store.settingsNotice?.message.contains("Cancelled") == true)
+        service.setMachineTransferOperationResponse(nil)
 
         var transferUnavailable = machine
         transferUnavailable.agentCapabilities = transferUnavailable.agentCapabilities.filter {
@@ -2754,6 +2775,7 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
     private var _latestMachineTransferStartRequest: NSDictionary?
     private var _machineTransferResponseOverride: NSDictionary?
     private var _machineTransferOperationResponseOverride: NSDictionary?
+    private var _machineTransferCancelCount = 0
     private var runtimeIdentityOverride: NSDictionary?
     private var artifactEvidenceOverride: NSDictionary?
     private var installedDesktopPayloadReceiptOverride: NSDictionary?
@@ -2774,6 +2796,11 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
     var latestMachineTransferStartRequest: NSDictionary? {
         lock.lock(); defer { lock.unlock() }
         return _latestMachineTransferStartRequest
+    }
+
+    var machineTransferCancelCount: Int {
+        lock.lock(); defer { lock.unlock() }
+        return _machineTransferCancelCount
     }
 
     func setMachineTransferResponse(_ response: NSDictionary?) {
@@ -3359,13 +3386,18 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
         operationID: String,
         reply: @escaping (Bool, NSDictionary, String) -> Void
     ) {
+        let cancelled = Self.transferOperationRow(
+            operationID: operationID,
+            machineID: machineID,
+            phase: "cancelled"
+        )
+        lock.lock()
+        _machineTransferCancelCount += 1
+        _machineTransferOperationResponseOverride = cancelled
+        lock.unlock()
         reply(
             true,
-            Self.transferOperationRow(
-                operationID: operationID,
-                machineID: machineID,
-                phase: "cancelled"
-            ),
+            cancelled,
             ""
         )
     }

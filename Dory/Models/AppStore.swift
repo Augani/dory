@@ -16,6 +16,23 @@ struct SettingsNotice: Identifiable, Equatable, Sendable {
     var message: String
 }
 
+private enum DoryMachineFileTransferUIError: LocalizedError {
+    case authorityChanged
+    case invalidCompletion
+    case remoteFailure(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .authorityChanged:
+            "The file transfer identity changed unexpectedly."
+        case .invalidCompletion:
+            "The guest returned incomplete file transfer evidence."
+        case .remoteFailure(let message):
+            message
+        }
+    }
+}
+
 enum ContainerFilter: String, CaseIterable, Sendable {
     case running, all, stopped
     var label: String {
@@ -5095,8 +5112,12 @@ final class AppStore {
     }
 
     private(set) var busyMachines: Set<String> = []
+    private(set) var machineFileTransfers: [String: DorydMachineFileTransferOperation] = [:]
     var machineBusy: Bool { !busyMachines.isEmpty }
     func isMachineBusy(_ name: String) -> Bool { busyMachines.contains(name) }
+    func machineFileTransfer(for name: String) -> DorydMachineFileTransferOperation? {
+        machineFileTransfers[name]
+    }
     static let importBusyKey = "__dory_import__"
     var machineCreationTitle = ""
     var machineCreationLog = ""
@@ -5279,6 +5300,25 @@ final class AppStore {
             }
     }
 
+    func cancelFileTransfer(to machine: Machine) async {
+        guard let operation = machineFileTransfers[machine.name],
+              !operation.phase.isTerminal else {
+            return
+        }
+        do {
+            let updated = try await dorydClient.machineTransferCancel(
+                machine.name,
+                operationID: operation.operationID
+            )
+            guard machineFileTransfers[machine.name]?.operationID == operation.operationID else {
+                return
+            }
+            machineFileTransfers[machine.name] = updated
+        } catch {
+            actionError = "Could not cancel the file transfer to \(machine.name): \(Self.userFacingError(error))"
+        }
+    }
+
     @discardableResult
     func transferFiles(
         _ fileURLs: [URL],
@@ -5290,10 +5330,14 @@ final class AppStore {
         }
         guard !busyMachines.contains(machine.name) else { return nil }
         busyMachines.insert(machine.name)
-        defer { busyMachines.remove(machine.name) }
+        defer {
+            busyMachines.remove(machine.name)
+            machineFileTransfers.removeValue(forKey: machine.name)
+        }
         actionError = nil
 
         var staged: DoryStagedMachineFileTransfer?
+        var operationID: String?
         do {
             staged = try await Task.detached(priority: .userInitiated) {
                 try DoryMachineFileTransferStager.stage(fileURLs: fileURLs)
@@ -5312,7 +5356,42 @@ final class AppStore {
                 actionError = "Update Dory Tools in \(machine.name) before sending folders."
                 return nil
             }
-            let result = try await dorydClient.machineTransfer(machine.name, staged: preparedStage)
+            var operation = try await dorydClient.machineTransferStart(
+                machine.name,
+                staged: preparedStage
+            )
+            operationID = operation.operationID
+            machineFileTransfers[machine.name] = operation
+            while !operation.phase.isTerminal {
+                try await Task.sleep(for: .milliseconds(150))
+                operation = try await dorydClient.machineTransferStatus(
+                    machine.name,
+                    operationID: operation.operationID
+                )
+                guard operationID == operation.operationID else {
+                    throw DoryMachineFileTransferUIError.authorityChanged
+                }
+                machineFileTransfers[machine.name] = operation
+            }
+
+            guard operation.phase == .completed,
+                  let result = operation.result else {
+                if operation.phase == .failed, let failure = operation.failure {
+                    throw DoryMachineFileTransferUIError.remoteFailure(failure.message)
+                }
+                if operation.phase == .cancelled {
+                    showSettingsSuccess("Cancelled the file transfer to \(machine.name).")
+                    if let staged {
+                        try? await Task.detached(priority: .utility) { try staged.remove() }.value
+                    }
+                    return nil
+                }
+                throw DoryMachineFileTransferUIError.invalidCompletion
+            }
+            guard result.filesSent == preparedStage.fileCount,
+                  result.bytesSent == preparedStage.byteCount else {
+                throw DoryMachineFileTransferUIError.invalidCompletion
+            }
             let fileLabel = result.filesSent == 1 ? "file" : "files"
             let folderLabel = preparedStage.directoryCount == 1 ? "folder" : "folders"
             let bytes = ByteCountFormatter.string(
@@ -5332,7 +5411,27 @@ final class AppStore {
                 : "\(result.filesSent) \(fileLabel) and \(preparedStage.directoryCount) \(folderLabel)"
             showSettingsSuccess("Sent \(transferredItems) (\(bytes)) to \(result.guestDestination).")
             return result
+        } catch is CancellationError {
+            if let operationID {
+                _ = try? await dorydClient.machineTransferCancel(
+                    machine.name,
+                    operationID: operationID
+                )
+            }
+            if let staged {
+                try? await Task.detached(priority: .utility) {
+                    try staged.remove()
+                }.value
+            }
+            return nil
         } catch {
+            if let operationID,
+               machineFileTransfers[machine.name]?.phase.isTerminal == false {
+                _ = try? await dorydClient.machineTransferCancel(
+                    machine.name,
+                    operationID: operationID
+                )
+            }
             if let staged {
                 try? await Task.detached(priority: .utility) {
                     try staged.remove()
