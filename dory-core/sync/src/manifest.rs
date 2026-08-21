@@ -12,6 +12,16 @@ pub struct FileEntry {
     pub hash: Hash,
 }
 
+/// One directory in a sync tree. The root itself is implicit; every entry is a non-empty relative
+/// path. Recording directories separately preserves empty folders without pretending they are
+/// files or adding sentinel data to the user's tree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DirectoryEntry {
+    pub path: String,
+    pub mtime_ns: i64,
+    pub mode: u32,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Manifest {
     pub entries: Vec<FileEntry>,
@@ -23,11 +33,22 @@ impl Manifest {
     }
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TreeSnapshot {
+    pub manifest: Manifest,
+    pub directories: Vec<DirectoryEntry>,
+}
+
 /// Walk `root` recursively and build a manifest of every regular file, with a content hash. Symlinks
 /// and special files are skipped (only regular files replicate). Entries are sorted by path so a
 /// host and remote produce byte-identical ordering and the reconciler diff is stable.
 pub fn walk_manifest(root: &Path) -> std::io::Result<Manifest> {
-    walk_manifest_impl(root, &[], false)
+    Ok(walk_tree(root)?.manifest)
+}
+
+/// Walk `root` once and capture both regular-file content authority and directory topology.
+pub fn walk_tree(root: &Path) -> std::io::Result<TreeSnapshot> {
+    walk_tree_impl(root, &[], false)
 }
 
 /// Walk a tree while skipping named direct children of `root` before reading their metadata or
@@ -40,24 +61,30 @@ pub fn walk_manifest_excluding(
     root: &Path,
     excluded_root_children: &[&str],
 ) -> std::io::Result<Manifest> {
-    walk_manifest_impl(root, excluded_root_children, true)
+    Ok(walk_tree_impl(root, excluded_root_children, true)?.manifest)
 }
 
-fn walk_manifest_impl(
+fn walk_tree_impl(
     root: &Path,
     excluded_root_children: &[&str],
     tolerate_not_found: bool,
-) -> std::io::Result<Manifest> {
-    let mut entries = Vec::new();
+) -> std::io::Result<TreeSnapshot> {
+    let mut files = Vec::new();
+    let mut directories = Vec::new();
     walk_into(
         root,
         root,
         excluded_root_children,
         tolerate_not_found,
-        &mut entries,
+        &mut files,
+        &mut directories,
     )?;
-    entries.sort_by(|a, b| a.path.cmp(&b.path));
-    Ok(Manifest { entries })
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+    directories.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(TreeSnapshot {
+        manifest: Manifest { entries: files },
+        directories,
+    })
 }
 
 fn walk_into(
@@ -65,7 +92,8 @@ fn walk_into(
     dir: &Path,
     excluded_root_children: &[&str],
     tolerate_not_found: bool,
-    out: &mut Vec<FileEntry>,
+    files: &mut Vec<FileEntry>,
+    directories: &mut Vec<DirectoryEntry>,
 ) -> std::io::Result<()> {
     let entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,
@@ -97,7 +125,19 @@ fn walk_into(
         };
         let file_type = meta.file_type();
         if file_type.is_dir() {
-            walk_into(root, &path, excluded_root_children, tolerate_not_found, out)?;
+            directories.push(DirectoryEntry {
+                path: relative_slash(root, &path),
+                mtime_ns: mtime_ns(&meta),
+                mode: mode_of(&meta),
+            });
+            walk_into(
+                root,
+                &path,
+                excluded_root_children,
+                tolerate_not_found,
+                files,
+                directories,
+            )?;
         } else if file_type.is_file() {
             let rel = relative_slash(root, &path);
             let hash = match hash_file(&path) {
@@ -107,7 +147,7 @@ fn walk_into(
                 }
                 Err(e) => return Err(e),
             };
-            out.push(FileEntry {
+            files.push(FileEntry {
                 path: rel,
                 size: meta.len(),
                 mtime_ns: mtime_ns(&meta),
@@ -195,6 +235,34 @@ mod tests {
         let inner = m.get("nested/deep/inner.txt").unwrap();
         assert_eq!(inner.size, 7);
         assert_eq!(inner.hash, crate::hash::hash_bytes(b"world!!"));
+    }
+
+    #[test]
+    fn tree_snapshot_preserves_empty_directories_in_stable_order() {
+        let t = TempTree::new("directories");
+        fs::create_dir_all(t.root.join("z-empty/deep")).unwrap();
+        fs::create_dir_all(t.root.join("a-empty")).unwrap();
+        t.write("middle/file.txt", "data");
+
+        let snapshot = walk_tree(&t.root).unwrap();
+        assert_eq!(
+            snapshot
+                .directories
+                .iter()
+                .map(|entry| entry.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["a-empty", "middle", "z-empty", "z-empty/deep"]
+        );
+        assert_eq!(
+            snapshot
+                .manifest
+                .entries
+                .iter()
+                .map(|entry| entry.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["middle/file.txt"]
+        );
+        assert!(snapshot.directories.iter().all(|entry| entry.mode != 0));
     }
 
     #[test]
