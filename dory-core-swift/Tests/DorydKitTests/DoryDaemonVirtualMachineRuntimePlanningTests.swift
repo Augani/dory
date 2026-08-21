@@ -176,7 +176,8 @@ struct DoryDaemonVirtualMachineRuntimePlanningTests {
     }
 }
 
-private struct Fixture {
+private final class Fixture {
+    private let root: URL
     let definition: DoryVirtualMachineDefinition
     let canonicalDefinition: Data
     let machine: DoryMachineConfiguration
@@ -189,6 +190,26 @@ private struct Fixture {
     let coordinator: DoryDaemonVirtualMachinePlanningCoordinator
 
     init() throws {
+        root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "dory-runtime-planning-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(
+            at: root,
+            withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700]
+        )
+        let bootBundle = root.appendingPathComponent("installed-linux.boot")
+        try DoryInstalledLinuxBootBundle.write(
+            assets: DoryLinuxInstallerBootAssets(
+                kernel: Data("kernel".utf8),
+                initrd: Data("initrd".utf8),
+                kernelISOPath: "/boot/kernel",
+                initrdISOPath: "/boot/initrd"
+            ),
+            rootDevice: "/dev/vda2",
+            toPath: bootBundle.path
+        )
         let bootArtifact = DoryVMResolverReference(
             namespace: "artifact",
             identifier: "ubuntu-runtime"
@@ -242,9 +263,9 @@ private struct Fixture {
             .canonicalDefinitionData(definition)
         machine = DoryMachineConfiguration(
             id: definition.identity.id,
-            kernelPath: "/fixture/direct-kernel",
+            kernelPath: bootBundle.path,
             rootfsPath: "/fixture/linux.raw",
-            bootMode: .linuxKernel,
+            bootMode: .efi,
             displayMode: .desktop
         )
         media = DoryBootMedia(
@@ -334,6 +355,10 @@ private struct Fixture {
             capabilityPlanner: FixturePlanner(capability: capability),
             now: { 1_700_000_000_000 }
         )
+    }
+
+    deinit {
+        try? FileManager.default.removeItem(at: root)
     }
 
     func planningRequest() -> DoryDaemonVirtualMachinePlanningRequest {
