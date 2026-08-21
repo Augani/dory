@@ -50,6 +50,29 @@ enum DesktopMode {
         var attachesNetworkDevice: Bool { true }
     }
 
+    struct DisplayPlan: Equatable {
+        var widthPixels: UInt32
+        var heightPixels: UInt32
+
+        init(resolvedDevices: DoryVirtualMachineDeviceCapabilityRequest?) throws {
+            let display = resolvedDevices?.display ?? DoryVMMDisplayDefaults.capability
+            guard display.isValid else {
+                throw VMError.bootFailure(
+                    "resolved display geometry is outside the supported pixel bounds"
+                )
+            }
+            widthPixels = display.widthPixels
+            heightPixels = display.heightPixels
+        }
+
+        var windowSize: NSSize {
+            NSSize(
+                width: max(1, CGFloat(widthPixels) / 2),
+                height: max(1, CGFloat(heightPixels) / 2)
+            )
+        }
+    }
+
     private struct ResolvedGraphics {
         var backend: DoryDesktopGraphicsBackend
         var renderer: VirglRenderer?
@@ -101,6 +124,7 @@ enum DesktopMode {
             )
             self.graphicsBackend = resolvedGraphics.backend
             let networkPlan = try NetworkPlan(resolvedDevices: configuration.resolvedDevices)
+            let displayPlan = try DisplayPlan(resolvedDevices: configuration.resolvedDevices)
             if let devices = configuration.resolvedDevices {
                 guard devices.keyboard == devices.pointer else {
                     throw VMError.bootFailure(
@@ -138,7 +162,7 @@ enum DesktopMode {
             let firstFrame = FirstFrameGate()
             self.firstFrame = firstFrame
             self.display = try DesktopMetalView(
-                frame: NSRect(x: 0, y: 0, width: 1_280, height: 800),
+                frame: NSRect(origin: .zero, size: displayPlan.windowSize),
                 input: input
             )
             mailbox.view = display
@@ -151,8 +175,8 @@ enum DesktopMode {
             let gpu = VirtioGPU(
                 hostMemoryBase: GuestLayout.daxWindowBase,
                 scanoutCount: 1,
-                scanoutWidth: 2_560,
-                scanoutHeight: 1_600,
+                scanoutWidth: displayPlan.widthPixels,
+                scanoutHeight: displayPlan.heightPixels,
                 renderer: renderer,
                 hostVisibleMemory: hostVisibleMemory,
                 traceResourceLifecycle: configuration.environment["DORY_GPU_TRACE_RESOURCES"] == "1",
@@ -288,7 +312,7 @@ enum DesktopMode {
             }
 
             self.window = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 1_280, height: 800),
+                contentRect: NSRect(origin: .zero, size: displayPlan.windowSize),
                 styleMask: [.titled, .closable, .miniaturizable, .resizable],
                 backing: .buffered,
                 defer: false

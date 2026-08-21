@@ -522,6 +522,12 @@ public final class DoryDaemonVirtualMachinePlanningCoordinator: @unchecked Senda
         }
         return DoryVirtualMachineDeviceCapabilityRequest(
             networkAttachment: networkAttachment,
+            display: definition.display.enabled
+                ? DoryVirtualMachineDisplayCapabilityRequest(
+                    widthPixels: definition.display.widthPixels,
+                    heightPixels: definition.display.heightPixels
+                )
+                : nil,
             audioInput: definition.audio.inputEnabled,
             audioOutput: definition.audio.outputEnabled,
             keyboard: definition.input.keyboardEnabled,

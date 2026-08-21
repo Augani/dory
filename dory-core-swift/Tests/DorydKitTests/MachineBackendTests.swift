@@ -235,6 +235,29 @@ final class MachineBackendTests: XCTestCase {
         XCTAssertEqual(result.failure?.code, .machineConfigurationIncompatible)
     }
 
+    func testRawAdapterRejectsInvalidResolvedDisplayGeometry() {
+        let backend = availableRawBackend(operations: recordingOperations().operations)
+        var descriptor = capabilityDescriptor(
+            backend: .doryHypervisor,
+            media: .linuxKernel
+        )
+        descriptor.request.devices.display = DoryVirtualMachineDisplayCapabilityRequest(
+            widthPixels: 0,
+            heightPixels: 1_080
+        )
+        descriptor.resolvedDevices = descriptor.request.devices
+        let result = backend.plan(MachineBackendPlanRequest(
+            machine: rawMachine(),
+            capabilityPlan: DoryVirtualMachineBackendPlanResult(
+                selectedDescriptor: descriptor,
+                evaluatedDescriptors: [descriptor],
+                failure: nil
+            )
+        ))
+
+        XCTAssertEqual(result.failure?.code, .machineConfigurationIncompatible)
+    }
+
     func testVZInstallerPlanRequiresAttachedInstallerMedia() {
         let backend = availableVZBackend(operations: recordingOperations().operations)
         var machine = vzInstallerMachine()

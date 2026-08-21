@@ -25,7 +25,11 @@ final class DoryVMMDesktopApplication: NSObject, NSApplicationDelegate, NSWindow
         self.runtime = runtime
         dynamicDisplayEnabled = resolvedDevices?.dynamicDisplay ?? true
 
-        let windowSize = NSSize(width: 1_280, height: 800)
+        let display = resolvedDevices?.display ?? DoryVMMDisplayDefaults.capability
+        let windowSize = NSSize(
+            width: max(1, CGFloat(display.widthPixels) / 2),
+            height: max(1, CGFloat(display.heightPixels) / 2)
+        )
         let machineView = DoryVirtualMachineView(frame: NSRect(origin: .zero, size: windowSize))
         machineView.virtualMachine = runtime.machine.virtualMachineForDisplay
         // Apple's automatic path currently requests the view's point size on Retina displays.

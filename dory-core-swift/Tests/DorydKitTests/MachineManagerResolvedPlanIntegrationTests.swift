@@ -156,10 +156,17 @@ struct MachineManagerResolvedPlanIntegrationTests {
             let operations = manager.resolvedLaunchCompatibilityOperations(for: .doryHypervisor)
             let registry = try rawRegistry(operations: operations, executablePath: helper)
             let helperSHA256 = try fileSHA256(path: helper)
+            let devices = DoryVirtualMachineDeviceCapabilityRequest(
+                display: DoryVirtualMachineDisplayCapabilityRequest(
+                    widthPixels: 1_920,
+                    heightPixels: 1_080
+                )
+            )
             let resolver = ClosureLaunchResolver { request in
                 let resolution = try exactResolution(
                     request: request,
-                    componentSHA256: helperSHA256
+                    componentSHA256: helperSHA256,
+                    devices: devices
                 )
                 plans.set(resolution.resolvedPlan)
                 return resolution
@@ -188,7 +195,7 @@ struct MachineManagerResolvedPlanIntegrationTests {
             #expect(try JSONDecoder().decode(
                 DoryVirtualMachineDeviceCapabilityRequest.self,
                 from: deviceData
-            ) == .minimumBootable)
+            ) == devices)
             #expect(arguments.contains("DORY_DESKTOP_GRAPHICS=virgl"))
             #expect(arguments.contains("DORY_DESKTOP_VMM=accelerated"))
             #expect(!arguments.contains("DORY_DESKTOP_GRAPHICS=auto"))
@@ -1458,12 +1465,12 @@ struct MachineManagerResolvedPlanIntegrationTests {
     private func exactResolution(
         request: DoryDaemonVirtualMachineLaunchPlanRequest,
         componentSHA256: String? = nil,
+        devices: DoryVirtualMachineDeviceCapabilityRequest = .minimumBootable,
         preSpawnRevalidation: @escaping @Sendable () throws -> Void = {}
     ) throws -> DoryDaemonVirtualMachineLaunchPlanResolution {
         let definitionDigest = SHA256.hash(data: request.canonicalDefinitionData)
             .map { String(format: "%02x", $0) }.joined()
         let artifact = digest("a")
-        let devices = DoryVirtualMachineDeviceCapabilityRequest.minimumBootable
         let media = DoryBootMedia(
             kind: request.definition.boot.devices[0].kind,
             source: .userProvided,

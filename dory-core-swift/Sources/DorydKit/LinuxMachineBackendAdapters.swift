@@ -403,6 +403,9 @@ public final class RawHVLinuxMachineBackend: MachineBackend, @unchecked Sendable
                 guard machine.displayMode == .desktop else {
                     return "The current raw-HV machine path is implemented only for desktop Linux."
                 }
+                if let display = capability.request.devices.display, !display.isValid {
+                    return "The raw-HV display geometry is outside the supported pixel bounds."
+                }
                 guard machine.installerISOPath == nil else {
                     return "The raw-HV machine path cannot boot attached installer media."
                 }
@@ -469,6 +472,13 @@ public final class VirtualizationFrameworkLinuxMachineBackend: MachineBackend, @
             executableIsAvailable: executableIsAvailable,
             operations: operations,
             validateMachine: { machine, capability in
+                if machine.displayMode == .headless,
+                   capability.request.devices.display != nil {
+                    return "A headless VZ machine cannot attach a resolved display."
+                }
+                if let display = capability.request.devices.display, !display.isValid {
+                    return "The VZ display geometry is outside the supported pixel bounds."
+                }
                 switch capability.request.bootMedia.kind {
                 case .linuxKernel:
                     guard machine.bootMode == .linuxKernel,

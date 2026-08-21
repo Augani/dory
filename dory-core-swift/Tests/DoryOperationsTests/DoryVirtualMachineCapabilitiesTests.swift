@@ -898,6 +898,7 @@ struct VirtualMachineCapabilitiesTests {
             DoryVirtualMachineCapabilityDescriptor.self,
             from: data
         )
+        #expect(descriptor.request.devices.display == nil)
 
         #expect(descriptor.schemaVersion == 1)
         #expect(descriptor.request.devices == .minimumBootable)

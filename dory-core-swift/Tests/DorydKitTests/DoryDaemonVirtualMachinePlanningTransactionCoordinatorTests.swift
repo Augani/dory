@@ -487,7 +487,7 @@ private final class TransactionFixture: @unchecked Sendable {
             source: .bundledByDory,
             artifactSHA256: transactionDigest("a")
         )
-        let devices = DoryVirtualMachineDeviceCapabilityRequest.minimumBootable
+        let devices = DoryDaemonVirtualMachinePlanningCoordinator.devices(for: definition)
         let runtimeEvidence = DoryVirtualMachineRuntimeQualificationEvidence(
             qualificationIdentity: "runtime-qualification-1",
             qualificationReportSHA256: transactionDigest("b"),

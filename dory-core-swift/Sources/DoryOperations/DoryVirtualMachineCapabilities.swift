@@ -107,8 +107,28 @@ public enum DoryVirtualMachineNetworkAttachmentMode: String, Codable, Sendable, 
     case isolated
 }
 
+public struct DoryVirtualMachineDisplayCapabilityRequest: Codable, Sendable, Equatable, Hashable {
+    public static let maximumDimensionPixels: UInt32 = 16_384
+
+    public var widthPixels: UInt32
+    public var heightPixels: UInt32
+
+    public init(widthPixels: UInt32, heightPixels: UInt32) {
+        self.widthPixels = widthPixels
+        self.heightPixels = heightPixels
+    }
+
+    public var isValid: Bool {
+        (1...Self.maximumDimensionPixels).contains(widthPixels)
+            && (1...Self.maximumDimensionPixels).contains(heightPixels)
+    }
+}
+
 public struct DoryVirtualMachineDeviceCapabilityRequest: Codable, Sendable, Equatable, Hashable {
     public var networkAttachment: DoryVirtualMachineNetworkAttachmentMode
+    /// Exact initial display geometry. `nil` is retained only for historical capability records
+    /// that predate display binding; newly planned desktop workspaces always carry this value.
+    public var display: DoryVirtualMachineDisplayCapabilityRequest?
     public var audioInput: Bool
     public var audioOutput: Bool
     public var keyboard: Bool
@@ -121,6 +141,7 @@ public struct DoryVirtualMachineDeviceCapabilityRequest: Codable, Sendable, Equa
 
     public init(
         networkAttachment: DoryVirtualMachineNetworkAttachmentMode = .sharedNAT,
+        display: DoryVirtualMachineDisplayCapabilityRequest? = nil,
         audioInput: Bool = false,
         audioOutput: Bool = false,
         keyboard: Bool = false,
@@ -132,6 +153,7 @@ public struct DoryVirtualMachineDeviceCapabilityRequest: Codable, Sendable, Equa
         gracefulShutdown: Bool = false
     ) {
         self.networkAttachment = networkAttachment
+        self.display = display
         self.audioInput = audioInput
         self.audioOutput = audioOutput
         self.keyboard = keyboard

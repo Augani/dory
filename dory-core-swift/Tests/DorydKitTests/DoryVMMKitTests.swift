@@ -661,6 +661,10 @@ final class DoryVMMKitTests: XCTestCase {
         FileManager.default.createFile(atPath: rootfs, contents: nil)
         XCTAssertEqual(truncate(rootfs, 1024 * 1024), 0)
         let devices = DoryVirtualMachineDeviceCapabilityRequest(
+            display: DoryVirtualMachineDisplayCapabilityRequest(
+                widthPixels: 1_920,
+                heightPixels: 1_080
+            ),
             audioInput: false,
             audioOutput: true,
             keyboard: true,
@@ -687,6 +691,12 @@ final class DoryVMMKitTests: XCTestCase {
         )
 
         XCTAssertEqual(configuration.graphicsDevices.count, 1)
+        let graphics = try XCTUnwrap(
+            configuration.graphicsDevices.first as? VZVirtioGraphicsDeviceConfiguration
+        )
+        let scanout = try XCTUnwrap(graphics.scanouts.first)
+        XCTAssertEqual(scanout.widthInPixels, 1_920)
+        XCTAssertEqual(scanout.heightInPixels, 1_080)
         XCTAssertEqual(configuration.keyboards.count, 1)
         XCTAssertTrue(configuration.pointingDevices.isEmpty)
         XCTAssertEqual(configuration.audioDevices.count, 1)

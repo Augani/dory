@@ -14,10 +14,17 @@ struct DoryDaemonVirtualMachineRuntimePlanningTests {
         let devices = DoryDaemonVirtualMachinePlanningCoordinator.devices(for: definition)
 
         #expect(devices.networkAttachment == .disconnected)
+        #expect(devices.display == DoryVirtualMachineDisplayCapabilityRequest(
+            widthPixels: definition.display.widthPixels,
+            heightPixels: definition.display.heightPixels
+        ))
         #expect(devices.audioInput == definition.audio.inputEnabled)
         #expect(devices.audioOutput == definition.audio.outputEnabled)
         #expect(devices.keyboard == definition.input.keyboardEnabled)
         #expect(devices.pointer == definition.input.pointerEnabled)
+
+        definition.display = .disabled
+        #expect(DoryDaemonVirtualMachinePlanningCoordinator.devices(for: definition).display == nil)
     }
 
     @Test("planning constructs persists and exposes an exact plan digest")
@@ -288,7 +295,7 @@ private final class Fixture {
             source: .bundledByDory,
             artifactSHA256: digest("a")
         )
-        let devices = DoryVirtualMachineDeviceCapabilityRequest.minimumBootable
+        let devices = DoryDaemonVirtualMachinePlanningCoordinator.devices(for: definition)
         plannerRequest = DoryVirtualMachineBackendPlanRequest(
             guest: definition.guest,
             bootMedia: media,

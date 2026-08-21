@@ -14,6 +14,11 @@ public enum DoryVMMDisplayDefaults {
     /// A 2x backing surface for the default 1280x800-point desktop window.
     public static let widthInPixels = 2_560
     public static let heightInPixels = 1_600
+
+    public static let capability = DoryVirtualMachineDisplayCapabilityRequest(
+        widthPixels: UInt32(widthInPixels),
+        heightPixels: UInt32(heightInPixels)
+    )
 }
 
 public struct DoryVMMArguments: Sendable, Equatable {
@@ -391,7 +396,7 @@ public enum DoryVZConfigurationBuilder {
                 )
             }
             if spec.displayMode != .desktop,
-               devices.audioInput || devices.audioOutput || devices.keyboard
+               devices.display != nil || devices.audioInput || devices.audioOutput || devices.keyboard
                     || devices.pointer || devices.clipboard {
                 throw DoryVZMachineError.validation(
                     "resolved desktop devices cannot be attached to a headless VZ launch"
@@ -449,10 +454,16 @@ public enum DoryVZConfigurationBuilder {
 
         if spec.displayMode == .desktop {
             let devices = spec.resolvedDevices
+            let display = devices?.display ?? DoryVMMDisplayDefaults.capability
+            guard display.isValid else {
+                throw DoryVZMachineError.validation(
+                    "resolved display geometry is outside the supported pixel bounds"
+                )
+            }
             let graphics = VZVirtioGraphicsDeviceConfiguration()
             graphics.scanouts = [VZVirtioGraphicsScanoutConfiguration(
-                widthInPixels: DoryVMMDisplayDefaults.widthInPixels,
-                heightInPixels: DoryVMMDisplayDefaults.heightInPixels
+                widthInPixels: Int(display.widthPixels),
+                heightInPixels: Int(display.heightPixels)
             )]
             configuration.graphicsDevices = [graphics]
             if devices?.keyboard != false {
