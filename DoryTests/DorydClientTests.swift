@@ -839,6 +839,43 @@ struct DorydClientTests {
         }
     }
 
+    @Test func machineSharesUseAbsentOnlyCompatibilityAndRejectMalformedClaims() async throws {
+        let listener = NSXPCListener.anonymous()
+        let service = FakeDorydService()
+        let delegate = FakeDorydListenerDelegate(service: service)
+        listener.delegate = delegate
+        listener.resume()
+        defer { listener.invalidate() }
+        let client = DorydClient(endpoint: listener.endpoint)
+
+        let valid = try #require((try await client.machineList()).first)
+        #expect(valid.shares.map(\.tag) == ["src"])
+
+        service.setMachineShares("dev", nil)
+        #expect(try await client.machineList().first?.shares == [])
+
+        let base: [String: Any] = [
+            "tag": "src",
+            "hostPath": "/Users/me/src",
+            "guestPath": "/workspace/src",
+            "readOnly": true,
+        ]
+        let malformed: [Any] = [
+            true,
+            [["tag": "src", "guestPath": "/workspace/src", "readOnly": true]],
+            [base.merging(["unexpected": true]) { _, new in new }],
+            [base.merging(["readOnly": "true"]) { _, new in new }],
+            [base.merging(["mode": "rw"]) { _, new in new }],
+            [base, base],
+        ]
+        for claim in malformed {
+            service.setMachineShares("dev", claim)
+            await #expect(throws: DorydClientError.self) {
+                _ = try await client.machineList()
+            }
+        }
+    }
+
     @Test func snapshotArtifactEvidenceIsAbsentOnlyForLegacyAndOtherwiseExact() async throws {
         let malformedEvidence = [
             "schemaVersion": 1,
@@ -3019,6 +3056,20 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
         current["typedSettings"] = typedSettings
         current.removeObject(forKey: "env")
         current["displayMode"] = "desktop"
+        machines[machineID] = current.copy() as? NSDictionary
+    }
+
+    func setMachineShares(_ machineID: String, _ shares: Any?) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let current = machines[machineID]?.mutableCopy() as? NSMutableDictionary else {
+            return
+        }
+        if let shares {
+            current["shares"] = shares
+        } else {
+            current.removeObject(forKey: "shares")
+        }
         machines[machineID] = current.copy() as? NSDictionary
     }
 

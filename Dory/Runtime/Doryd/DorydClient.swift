@@ -2074,6 +2074,9 @@ nonisolated final class DorydClient: @unchecked Sendable {
         guard let agentHandshake = machineAgentHandshake(from: dictionary) else {
             return nil
         }
+        guard let shares = machineShares(from: dictionary["shares"]) else {
+            return nil
+        }
         return DorydMachineStatus(
             id: id,
             state: state,
@@ -2099,7 +2102,7 @@ nonisolated final class DorydClient: @unchecked Sendable {
             installerMediaAttached: (dictionary["installerMediaAttached"] as? Bool)
                 ?? (dictionary["installerMediaAttached"] as? NSNumber)?.boolValue
                 ?? false,
-            shares: machineShares(from: dictionary["shares"]),
+            shares: shares,
             environment: environment,
             typedSettings: typedSettings.value,
             runtimeIdentity: runtimeIdentity,
@@ -2392,31 +2395,65 @@ nonisolated final class DorydClient: @unchecked Sendable {
         return identity
     }
 
-    nonisolated private static func machineShares(from value: Any?) -> [DorydMachineShareConfiguration] {
-        let rows: [NSDictionary]
-        if let swiftRows = value as? [NSDictionary] {
-            rows = swiftRows
-        } else if let nsRows = value as? NSArray {
-            rows = nsRows.compactMap { $0 as? NSDictionary }
-        } else {
-            return []
-        }
-        return rows.compactMap { row in
-            guard let tag = row["tag"] as? String,
+    /// An absent field is compatible with an older daemon. Once present, every row is a durable
+    /// device-identity claim; silently dropping a malformed row could make the next app edit
+    /// delete a share the user never removed.
+    nonisolated private static func machineShares(
+        from value: Any?
+    ) -> [DorydMachineShareConfiguration]? {
+        guard let value else { return [] }
+        guard let rawRows = value as? NSArray else { return nil }
+        var shares: [DorydMachineShareConfiguration] = []
+        var tags: Set<String> = []
+        shares.reserveCapacity(rawRows.count)
+        for rawRow in rawRows {
+            guard let row = rawRow as? NSDictionary,
+                  let keys = row.allKeys as? [String],
+                  Set(keys).isSubset(of: ["tag", "hostPath", "guestPath", "readOnly", "mode"]),
+                  keys.count == Set(keys).count,
+                  let tag = row["tag"] as? String,
+                  !tag.isEmpty,
+                  tag.utf8.count < 36,
+                  tag.allSatisfy({
+                      $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" || $0 == "."
+                  }),
+                  tags.insert(tag).inserted,
                   let hostPath = row["hostPath"] as? String,
-                  let guestPath = row["guestPath"] as? String else {
+                  hostPath.hasPrefix("/"),
+                  !hostPath.contains("\0"),
+                  let guestPath = row["guestPath"] as? String,
+                  guestPath.hasPrefix("/"),
+                  guestPath != "/",
+                  !guestPath.contains("\0") else {
                 return nil
             }
-            let readOnly = (row["readOnly"] as? Bool)
-                ?? (row["readOnly"] as? NSNumber)?.boolValue
-                ?? ((row["mode"] as? String) == "ro")
-            return DorydMachineShareConfiguration(
+            let encodedMode = row["mode"]
+            guard encodedMode == nil
+                    || (encodedMode as? String).map({ $0 == "ro" || $0 == "rw" }) == true else {
+                return nil
+            }
+            let readOnly: Bool
+            if let encoded = row["readOnly"] {
+                guard let number = encoded as? NSNumber,
+                      CFGetTypeID(number) == CFBooleanGetTypeID() else {
+                    return nil
+                }
+                readOnly = number.boolValue
+            } else {
+                readOnly = (encodedMode as? String) == "ro"
+            }
+            if let mode = encodedMode as? String,
+               (mode == "ro") != readOnly {
+                return nil
+            }
+            shares.append(DorydMachineShareConfiguration(
                 tag: tag,
                 hostPath: hostPath,
                 guestPath: guestPath,
                 readOnly: readOnly
-            )
+            ))
         }
+        return shares
     }
 
     nonisolated private static func machineEnvironment(from value: Any?) -> [String: String] {
