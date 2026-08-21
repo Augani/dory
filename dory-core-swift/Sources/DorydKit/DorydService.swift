@@ -1750,6 +1750,9 @@ private extension NSDictionary {
                     maximumBytes: 1_048_576
                 )
             )
+            guard share.authorizationBookmark != nil else {
+                throw XPCRemoteConfigError.invalid("authorizationBookmark")
+            }
             try share.validate()
             return share
         }

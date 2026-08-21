@@ -1272,6 +1272,20 @@ final class DorydServiceTests: XCTestCase {
         }
         wait(for: [malformedShare], timeout: 5)
 
+        let pathOnlyShare = expectation(description: "machineUpdate rejects path-only share")
+        proxy.machineUpdate("dev", config: [
+            "shares": [[
+                "tag": "src",
+                "hostPath": share,
+                "guestPath": "/workspace/src",
+            ] as NSDictionary],
+        ]) { ok, _, message in
+            XCTAssertFalse(ok)
+            XCTAssertTrue(message.contains("authorizationBookmark"), message)
+            pathOnlyShare.fulfill()
+        }
+        wait(for: [pathOnlyShare], timeout: 5)
+
         let clearAddress = expectation(description: "machineUpdate clear address reply")
         proxy.machineUpdate("dev", config: [
             "address": "",
