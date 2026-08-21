@@ -5,6 +5,76 @@ import Testing
 
 @Suite(.serialized)
 struct DorydClientTests {
+    @MainActor
+    @Test func machineTransferUsesPrivateStageAndRejectsMalformedEvidence() async throws {
+        let root = URL(fileURLWithPath: "/tmp/dory-client-transfer-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))")
+        let source = root.appendingPathComponent("source", isDirectory: true)
+        let staging = root.appendingPathComponent("staging", isDirectory: true)
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(
+            at: staging,
+            withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700]
+        )
+        let selected = source.appendingPathComponent("hello.txt")
+        try Data("hello".utf8).write(to: selected)
+        let staged = try DoryMachineFileTransferStager.stage(
+            fileURLs: [selected],
+            stagingDirectory: staging
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let listener = NSXPCListener.anonymous()
+        let service = FakeDorydService()
+        let delegate = FakeDorydListenerDelegate(service: service)
+        listener.delegate = delegate
+        listener.resume()
+        defer { listener.invalidate() }
+        let client = DorydClient(endpoint: listener.endpoint)
+
+        let result = try await client.machineTransfer("dev", staged: staged)
+        #expect(result.filesSent == 1)
+        #expect(result.bytesSent == 5)
+        #expect(result.guestDestination == "/home/developer/Downloads/Dory Transfer " + result.transferID)
+        #expect(service.latestMachineTransferRequest?["privateStagingRoot"] as? String == staged.rootPath)
+        #expect(service.latestMachineTransferRequest?["schema"] as? UInt16 == 1)
+
+        let validID = String(repeating: "a", count: 32)
+        service.setMachineTransferResponse([
+            "schema": UInt16(1),
+            "transferID": validID,
+            "guestDestination": "/home/developer/Downloads/Dory Transfer " + validID,
+            "filesSent": UInt64(1),
+            "bytesSent": UInt64(5),
+            "unexpected": true,
+        ])
+        await #expect(throws: (any Error).self) {
+            _ = try await client.machineTransfer("dev", staged: staged)
+        }
+
+        service.setMachineTransferResponse([
+            "schema": UInt16(1),
+            "transferID": validID,
+            "guestDestination": "/tmp/host-path/" + validID,
+            "filesSent": UInt64(1),
+            "bytesSent": UInt64(5),
+        ])
+        await #expect(throws: (any Error).self) {
+            _ = try await client.machineTransfer("dev", staged: staged)
+        }
+
+        service.setMachineTransferResponse([
+            "schema": UInt16(1),
+            "transferID": validID,
+            "guestDestination": "/home/developer/Downloads/Dory Transfer " + validID,
+            "filesSent": true,
+            "bytesSent": UInt64(5),
+        ])
+        await #expect(throws: (any Error).self) {
+            _ = try await client.machineTransfer("dev", staged: staged)
+        }
+    }
+
     @Test func legacyDesktopDefaultsAndTogglesRemainFieldLocalInTypedEdits() throws {
         let defaults = DorydMachineTypedSettings(
             legacyEnvironment: [:],
@@ -2562,6 +2632,8 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
     private var _latestMachineCreateConfig: NSDictionary?
     private var _latestMachineUpdateConfig: NSDictionary?
     private var _latestMachineProvisionRecipe: String?
+    private var _latestMachineTransferRequest: NSDictionary?
+    private var _machineTransferResponseOverride: NSDictionary?
     private var runtimeIdentityOverride: NSDictionary?
     private var artifactEvidenceOverride: NSDictionary?
     private var installedDesktopPayloadReceiptOverride: NSDictionary?
@@ -2572,6 +2644,16 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
     var engineStartCount: Int {
         lock.lock(); defer { lock.unlock() }
         return _engineStartCount
+    }
+
+    var latestMachineTransferRequest: NSDictionary? {
+        lock.lock(); defer { lock.unlock() }
+        return _latestMachineTransferRequest
+    }
+
+    func setMachineTransferResponse(_ response: NSDictionary?) {
+        lock.lock(); defer { lock.unlock() }
+        _machineTransferResponseOverride = response
     }
     var engineStopCount: Int {
         lock.lock(); defer { lock.unlock() }
@@ -3071,6 +3153,29 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
 
     func machineExec(_ machineID: String, request: NSDictionary, reply: @escaping (Bool, NSDictionary, String) -> Void) {
         reply(true, Self.execRow(stdout: "cargo 1.0\n"), "")
+    }
+
+    func machineTransfer(
+        _ machineID: String,
+        request: NSDictionary,
+        reply: @escaping (Bool, NSDictionary, String) -> Void
+    ) {
+        lock.lock()
+        _latestMachineTransferRequest = request
+        let override = _machineTransferResponseOverride
+        lock.unlock()
+        if let override {
+            reply(true, override, "")
+            return
+        }
+        let transferID = String(repeating: "a", count: 32)
+        reply(true, [
+            "schema": UInt16(1),
+            "transferID": transferID,
+            "guestDestination": "/home/developer/Downloads/Dory Transfer " + transferID,
+            "filesSent": UInt64(1),
+            "bytesSent": UInt64(5),
+        ], "")
     }
 
     func machineProvision(_ machineID: String, request: NSDictionary, reply: @escaping (Bool, NSDictionary, String) -> Void) {

@@ -25,6 +25,7 @@ nonisolated protocol DorydControlXPC {
     func machineList(reply: @escaping (NSArray, String) -> Void)
     func machineStats(_ machineID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineExec(_ machineID: String, request: NSDictionary, reply: @escaping (Bool, NSDictionary, String) -> Void)
+    func machineTransfer(_ machineID: String, request: NSDictionary, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineProvision(_ machineID: String, request: NSDictionary, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineDesktopUpdate(_ machineID: String, request: NSDictionary, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineSnapshot(_ machineID: String, request: NSDictionary, reply: @escaping (Bool, NSDictionary, String) -> Void)
@@ -983,6 +984,13 @@ nonisolated struct DorydPushStats: Sendable, Equatable {
     var filesDeleted: UInt64
 }
 
+nonisolated struct DorydMachineFileTransferResult: Sendable, Equatable {
+    var transferID: String
+    var guestDestination: String
+    var filesSent: UInt64
+    var bytesSent: UInt64
+}
+
 nonisolated struct DorydRemoteMachineStatus: Sendable, Equatable {
     var id: String
     var state: String
@@ -1410,6 +1418,28 @@ nonisolated final class DorydClient: @unchecked Sendable {
             proxy.machineExec(machineID, request: request, reply: reply)
         } decode: {
             Self.machineExecResult(from: $0)
+        }
+    }
+
+    func machineTransfer(
+        _ machineID: String,
+        staged: DoryStagedMachineFileTransfer
+    ) async throws -> DorydMachineFileTransferResult {
+        let request: NSDictionary = [
+            "schema": UInt16(1),
+            "privateStagingRoot": staged.rootPath,
+        ]
+        return try await withTimeout(
+            atLeast: Self.machineTransferControlTimeout(byteCount: staged.byteCount)
+        ).statusCommand { proxy, reply in
+            proxy.machineTransfer(machineID, request: request, reply: reply)
+        } decode: { dictionary in
+            guard let result = Self.machineFileTransferResult(from: dictionary),
+                  result.filesSent == staged.fileCount,
+                  result.bytesSent == staged.byteCount else {
+                return nil
+            }
+            return result
         }
     }
 
@@ -2586,6 +2616,52 @@ nonisolated final class DorydClient: @unchecked Sendable {
         return DorydPushStats(filesSent: filesSent, bytesSent: bytesSent, filesDeleted: filesDeleted)
     }
 
+    nonisolated private static func machineFileTransferResult(
+        from dictionary: NSDictionary
+    ) -> DorydMachineFileTransferResult? {
+        guard Set(dictionary.allKeys.compactMap { $0 as? String })
+                == ["schema", "transferID", "guestDestination", "filesSent", "bytesSent"],
+              dictionary.allKeys.count == 5,
+              strictUInt64(dictionary["schema"]) == 1,
+              let transferID = dictionary["transferID"] as? String,
+              transferID.utf8.count == 32,
+              transferID.utf8.allSatisfy({ byte in
+                  (byte >= 48 && byte <= 57) || (byte >= 97 && byte <= 102)
+              }),
+              let guestDestination = dictionary["guestDestination"] as? String,
+              guestDestination.utf8.count <= 4_096,
+              !guestDestination.contains("\0"),
+              let filesSent = strictUInt64(dictionary["filesSent"]),
+              let bytesSent = strictUInt64(dictionary["bytesSent"]) else {
+            return nil
+        }
+        let suffix = "/Downloads/Dory Transfer " + transferID
+        guard guestDestination.hasPrefix("/home/"),
+              guestDestination.hasSuffix(suffix) else {
+            return nil
+        }
+        let usernameStart = guestDestination.index(
+            guestDestination.startIndex,
+            offsetBy: "/home/".count
+        )
+        let usernameEnd = guestDestination.index(
+            guestDestination.endIndex,
+            offsetBy: -suffix.count
+        )
+        guard usernameStart < usernameEnd,
+              DoryVMGuestAccountIntent.isValidUsername(
+                  String(guestDestination[usernameStart..<usernameEnd])
+              ) else {
+            return nil
+        }
+        return DorydMachineFileTransferResult(
+            transferID: transferID,
+            guestDestination: guestDestination,
+            filesSent: filesSent,
+            bytesSent: bytesSent
+        )
+    }
+
     nonisolated private static func remoteStatus(from dictionary: NSDictionary) -> DorydRemoteMachineStatus? {
         guard let id = dictionary["id"] as? String,
               let state = dictionary["state"] as? String else {
@@ -2767,6 +2843,14 @@ nonisolated final class DorydClient: @unchecked Sendable {
         machineExecControlTimeout(timeoutMs: 600_000) * 2
     }
 
+    nonisolated private static func machineTransferControlTimeout(
+        byteCount: UInt64
+    ) -> TimeInterval {
+        // Allow two hours at the 64 GiB staging ceiling, with a two-minute fixed setup budget.
+        let transferSeconds = Double(byteCount) / (10 * 1024 * 1024)
+        return min(2 * 60 * 60, 120 + transferSeconds)
+    }
+
     nonisolated private static func machineExecControlTimeout(timeoutMs: UInt64) -> TimeInterval {
         let effectiveTimeoutMs: UInt64 = timeoutMs == 0 ? 30_000 : min(timeoutMs, 600_000)
         return TimeInterval(effectiveTimeoutMs) / 1000 + 10
@@ -2780,6 +2864,16 @@ nonisolated final class DorydClient: @unchecked Sendable {
             return UInt64(string)
         }
         return value as? UInt64
+    }
+
+    nonisolated private static func strictUInt64(_ value: Any?) -> UInt64? {
+        guard let number = value as? NSNumber,
+              CFGetTypeID(number) != CFBooleanGetTypeID() else {
+            return nil
+        }
+        let decoded = number.uint64Value
+        guard number.stringValue == String(decoded) else { return nil }
+        return decoded
     }
 
     nonisolated private static func uint32(_ value: Any?) -> UInt32? {
