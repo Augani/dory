@@ -367,6 +367,7 @@ jobs:
           python3 .github/scripts/test-managed-data-drive-gate.py
           python3 .github/scripts/test-native-ipv6-gate.py
           python3 .github/scripts/test-nonnative-exec-conformance-gate.py
+          python3 .github/scripts/test-nonnative-nix-gc-gate.py
       - name: P0 smoke harness regression tests
         run: bash scripts/test-p0-smoke.sh
       - name: Dory app and offline quality suite
