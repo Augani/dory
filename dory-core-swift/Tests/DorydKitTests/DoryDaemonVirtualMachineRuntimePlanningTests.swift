@@ -14,6 +14,9 @@ struct DoryDaemonVirtualMachineRuntimePlanningTests {
         let devices = DoryDaemonVirtualMachinePlanningCoordinator.devices(for: definition)
 
         #expect(devices.networkAttachment == .disconnected)
+        #expect(devices.networkInterface
+            == .stable(machineID: definition.identity.id))
+        #expect(devices.networkInterface?.maximumTransmissionUnit == 1_280)
         #expect(devices.display == DoryVirtualMachineDisplayCapabilityRequest(
             widthPixels: definition.display.widthPixels,
             heightPixels: definition.display.heightPixels,

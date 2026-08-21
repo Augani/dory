@@ -12,6 +12,69 @@ struct VirtualMachineCapabilitiesTests {
     private static let inspectionReportSHA256 = String(repeating: "f", count: 64)
     private static let provenanceReceiptSHA256 = String(repeating: "1", count: 64)
     private static let runtimeQualificationReportSHA256 = String(repeating: "2", count: 64)
+
+    @Test("stable NIC identity is deterministic, local, unicast, and bounded")
+    func stableNetworkInterfaceIdentity() {
+        let first = DoryVirtualMachineNetworkInterfaceCapabilityRequest.stable(
+            machineID: "machine-a"
+        )
+        let repeated = DoryVirtualMachineNetworkInterfaceCapabilityRequest.stable(
+            machineID: "machine-a"
+        )
+        let other = DoryVirtualMachineNetworkInterfaceCapabilityRequest.stable(
+            machineID: "machine-b"
+        )
+
+        #expect(first == repeated)
+        #expect(first != other)
+        #expect(first.isValid)
+        #expect(first.id == "nic0")
+        #expect(first.maximumTransmissionUnit == 1_280)
+        #expect(first.macAddressOctets?.first.map { $0 & 0x03 } == 0x02)
+        #expect(!DoryVirtualMachineNetworkInterfaceCapabilityRequest(
+            macAddress: "01:00:00:00:00:00"
+        ).isValid)
+        #expect(!DoryVirtualMachineNetworkInterfaceCapabilityRequest(
+            macAddress: "02:11:22:33:44:55",
+            maximumTransmissionUnit: 1_279
+        ).isValid)
+    }
+
+    @Test("runtime qualification binds NIC type and MTU but not per-machine MAC")
+    func networkInterfaceQualificationContract() {
+        let first = DoryVirtualMachineDeviceCapabilityRequest(
+            networkInterface: .init(macAddress: "02:00:00:00:00:01")
+        )
+        let second = DoryVirtualMachineDeviceCapabilityRequest(
+            networkInterface: .init(macAddress: "02:00:00:00:00:02")
+        )
+        let changedMTU = DoryVirtualMachineDeviceCapabilityRequest(
+            networkInterface: .init(
+                macAddress: "02:00:00:00:00:02",
+                maximumTransmissionUnit: 1_500
+            )
+        )
+
+        #expect(first.matchesRuntimeQualificationContract(second))
+        #expect(!first.matchesRuntimeQualificationContract(changedMTU))
+        #expect(!first.matchesRuntimeQualificationContract(.minimumBootable))
+    }
+
+    @Test("historical device contracts decode without fabricating NIC authority")
+    func historicalDeviceContractWithoutNetworkInterface() throws {
+        let data = try JSONEncoder().encode(DoryVirtualMachineDeviceCapabilityRequest())
+        var object = try #require(
+            JSONSerialization.jsonObject(with: data) as? [String: Any]
+        )
+        object.removeValue(forKey: "networkInterface")
+        let historical = try JSONSerialization.data(withJSONObject: object)
+
+        let decoded = try JSONDecoder().decode(
+            DoryVirtualMachineDeviceCapabilityRequest.self,
+            from: historical
+        )
+        #expect(decoded.networkInterface == nil)
+    }
     private static let qualifiedLinuxGraphics = DoryTrustedGuestImageGraphicsQualification(
         auditEvidence: DorySignedArtifactQualificationEvidence(
             manifestIdentity: "dory-linux-desktop-arm64-gpu-v1",

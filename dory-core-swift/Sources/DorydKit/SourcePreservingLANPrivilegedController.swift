@@ -7,6 +7,7 @@ public enum SourcePreservingLANPrivilegedError: Error, Sendable, Equatable, Cust
     case unsupportedVersion(Int)
     case invalidMTU(Int)
     case invalidBridgeSubnet(String)
+    case invalidGuestMAC(String)
     case invalidSessionID
     case invalidSocketPath
     case socketUnavailable(String)
@@ -24,6 +25,7 @@ public enum SourcePreservingLANPrivilegedError: Error, Sendable, Equatable, Cust
         case .unsupportedVersion(let value): "unsupported source-preserving LAN request version: \(value)"
         case .invalidMTU(let value): "invalid source-preserving LAN MTU: \(value)"
         case .invalidBridgeSubnet(let value): "invalid source-preserving LAN bridge subnet: \(value)"
+        case .invalidGuestMAC(let value): "invalid source-preserving LAN guest MAC: \(value)"
         case .invalidSessionID: "invalid source-preserving LAN session identifier"
         case .invalidSocketPath: "invalid gvproxy socket path"
         case .socketUnavailable(let path): "gvproxy socket is unavailable: \(path)"
@@ -78,6 +80,7 @@ public final class SourcePreservingLANPrivilegedController: @unchecked Sendable 
     private var activeInterfaceName: String?
     private var activePFToken: String?
     private var activeBridgeNetwork: DoryIPv4BridgeNetwork?
+    private var activeGuestMACAddress: String?
 
     public init(
         enforceRoot: Bool = true,
@@ -142,6 +145,7 @@ public final class SourcePreservingLANPrivilegedController: @unchecked Sendable 
         let sessionOwner = activeClientUID
         let hasBridge = activeBridge != nil
         let hasBridgeNetwork = activeBridgeNetwork != nil
+        let hasGuestMACAddress = activeGuestMACAddress != nil
         lock.unlock()
         if let sessionID, hasBridge {
             guard sessionOwner == clientUID else {
@@ -155,7 +159,8 @@ public final class SourcePreservingLANPrivilegedController: @unchecked Sendable 
                 expectedSessionID: sessionID,
                 expectedClientUID: clientUID
             )
-        } else if sessionID != nil || sessionOwner != nil || hasBridge || hasBridgeNetwork {
+        } else if sessionID != nil || sessionOwner != nil || hasBridge || hasBridgeNetwork
+                    || hasGuestMACAddress {
             throw SourcePreservingLANPrivilegedError.sessionConflict
         } else {
             acceptingSessions = false
@@ -180,6 +185,7 @@ public final class SourcePreservingLANPrivilegedController: @unchecked Sendable 
         let existingBridge = activeBridge
         let existingInterfaceName = activeInterfaceName
         let existingBridgeNetwork = activeBridgeNetwork
+        let existingGuestMACAddress = activeGuestMACAddress
         lock.unlock()
         let bridgeNetwork: DoryIPv4BridgeNetwork
         do {
@@ -201,6 +207,9 @@ public final class SourcePreservingLANPrivilegedController: @unchecked Sendable 
                 guard existingBridgeNetwork == bridgeNetwork else {
                     throw SourcePreservingLANPrivilegedError.sessionConflict
                 }
+                guard existingGuestMACAddress == request.guestMACAddress else {
+                    throw SourcePreservingLANPrivilegedError.sessionConflict
+                }
                 _ = try applyPF(
                     bindings: request.bindings,
                     guestIngressIPv4: bridgeNetwork.lanGuestIngressAddress,
@@ -210,7 +219,7 @@ public final class SourcePreservingLANPrivilegedController: @unchecked Sendable 
             }
             _ = try cleanupActiveSession(expectedSessionID: existingSessionID)
         } else if existingSessionID != nil || existingClientUID != nil || existingBridge != nil
-                    || existingBridgeNetwork != nil {
+                    || existingBridgeNetwork != nil || existingGuestMACAddress != nil {
             throw SourcePreservingLANPrivilegedError.sessionConflict
         }
 
@@ -222,7 +231,8 @@ public final class SourcePreservingLANPrivilegedController: @unchecked Sendable 
             gateway: bridgeNetwork.lanHostAddress,
             gvproxySocketPath: gvproxySocketPath,
             localSocketPath: localSocket,
-            interfaceNamePath: interfaceFile
+            interfaceNamePath: interfaceFile,
+            guestMACAddress: try Self.parseGuestMAC(request.guestMACAddress)
         )
         let bridge = try bridgeFactory(configuration)
         let bridgeID = ObjectIdentifier(bridge)
@@ -234,7 +244,8 @@ public final class SourcePreservingLANPrivilegedController: @unchecked Sendable 
             )
         }
         lock.lock()
-        guard activeSessionID == nil, activeBridge == nil, activeBridgeNetwork == nil else {
+        guard activeSessionID == nil, activeBridge == nil, activeBridgeNetwork == nil,
+              activeGuestMACAddress == nil else {
             lock.unlock()
             throw SourcePreservingLANPrivilegedError.sessionConflict
         }
@@ -244,6 +255,7 @@ public final class SourcePreservingLANPrivilegedController: @unchecked Sendable 
         activeInterfaceName = nil
         activePFToken = nil
         activeBridgeNetwork = bridgeNetwork
+        activeGuestMACAddress = request.guestMACAddress
         lock.unlock()
 
         do {
@@ -330,6 +342,7 @@ public final class SourcePreservingLANPrivilegedController: @unchecked Sendable 
         let sessionOwner = activeClientUID
         let interfaceName = activeInterfaceName
         let bridgeNetwork = activeBridgeNetwork
+        let guestMACAddress = activeGuestMACAddress
         lock.unlock()
         guard matches else { throw SourcePreservingLANPrivilegedError.noActiveSession }
         guard sessionOwner == clientUID else {
@@ -340,6 +353,9 @@ public final class SourcePreservingLANPrivilegedController: @unchecked Sendable 
         }
         guard let bridgeNetwork else { throw SourcePreservingLANPrivilegedError.sessionConflict }
         guard try DoryIPv4BridgeNetwork(request.bridgeSubnetCIDR).cidr == bridgeNetwork.cidr else {
+            throw SourcePreservingLANPrivilegedError.sessionConflict
+        }
+        guard request.guestMACAddress == guestMACAddress else {
             throw SourcePreservingLANPrivilegedError.sessionConflict
         }
         _ = try applyPF(
@@ -453,6 +469,7 @@ public final class SourcePreservingLANPrivilegedController: @unchecked Sendable 
         activeInterfaceName = nil
         activePFToken = nil
         activeBridgeNetwork = nil
+        activeGuestMACAddress = nil
         lock.unlock()
         return interfaceName
     }
@@ -766,11 +783,25 @@ public final class SourcePreservingLANPrivilegedController: @unchecked Sendable 
         } catch {
             throw SourcePreservingLANPrivilegedError.invalidBridgeSubnet(request.bridgeSubnetCIDR)
         }
+        _ = try parseGuestMAC(request.guestMACAddress)
         guard request.sessionID.wholeMatch(of: /[A-Za-z0-9][A-Za-z0-9.-]{0,63}/) != nil,
               !request.sessionID.contains(".."),
               request.bindings.count <= 4_096 else {
             throw SourcePreservingLANPrivilegedError.invalidSessionID
         }
+    }
+
+    private static func parseGuestMAC(_ value: String) throws -> [UInt8] {
+        let parts = value.split(separator: ":", omittingEmptySubsequences: false)
+        let octets = parts.compactMap { part -> UInt8? in
+            guard part.utf8.count == 2 else { return nil }
+            return UInt8(part, radix: 16)
+        }
+        guard value == value.lowercased(), octets.count == 6,
+              octets[0] & 0x01 == 0, octets[0] & 0x02 == 0x02 else {
+            throw SourcePreservingLANPrivilegedError.invalidGuestMAC(value)
+        }
+        return octets
     }
 
     private static func validateGVProxySocket(_ path: String, clientUID: uid_t) throws {

@@ -134,6 +134,12 @@ enum DesktopMode {
             )
             self.graphicsBackend = resolvedGraphics.backend
             let networkPlan = try NetworkPlan(resolvedDevices: configuration.resolvedDevices)
+            let networkInterface = configuration.resolvedDevices?.networkInterface
+            if let networkInterface, !networkInterface.isValid {
+                throw VMError.bootFailure(
+                    "resolved network interface identity or MTU is invalid"
+                )
+            }
             let displayPlan = try DisplayPlan(resolvedDevices: configuration.resolvedDevices)
             if let devices = configuration.resolvedDevices {
                 guard devices.keyboard == devices.pointer else {
@@ -214,6 +220,7 @@ enum DesktopMode {
             let token = String(configuration.machineID.prefix(12))
             let networkRuntime = try Self.prepareNetwork(
                 plan: networkPlan,
+                networkInterface: networkInterface,
                 gvproxyPath: configuration.gvproxyPath,
                 runtimeDirectory: runtimeDirectory,
                 token: token
@@ -651,15 +658,20 @@ enum DesktopMode {
 
         private static func prepareNetwork(
             plan: NetworkPlan,
+            networkInterface: DoryVirtualMachineNetworkInterfaceCapabilityRequest?,
             gvproxyPath: String,
             runtimeDirectory: String,
             token: String
         ) throws -> NetworkRuntime {
             if plan == .disconnected {
+                let mac = networkInterface?.macAddressOctets ?? VirtioNet.guestMAC
                 return NetworkRuntime(
                     process: nil,
                     socketPaths: [],
-                    backend: VirtioDisconnectedNet()
+                    backend: VirtioDisconnectedNet(
+                        macAddress: mac,
+                        maximumTransmissionUnit: networkInterface?.maximumTransmissionUnit
+                    )
                 )
             }
             guard plan.startsGVProxy, plan.attachesNetworkDevice else {
@@ -668,20 +680,30 @@ enum DesktopMode {
             let gvproxySocket = "\(runtimeDirectory)/\(token)-gv.sock"
             let vmNetworkSocket = "\(runtimeDirectory)/\(token)-vm.sock"
             let apiSocket = "\(runtimeDirectory)/\(token)-api.sock"
-            let configurationPath = plan.gvproxyConfigurationYAML.map { _ in
+            let configurationYAML: String?
+            if let networkInterface {
+                configurationYAML = GVProxyDesktopLaunchPlan.configurationYAML(
+                    hostOnly: plan == .hostOnly,
+                    guestMAC: networkInterface.macAddress
+                )
+            } else {
+                configurationYAML = plan.gvproxyConfigurationYAML
+            }
+            let configurationPath = configurationYAML.map { _ in
                 "\(runtimeDirectory)/\(token)-network.yaml"
             }
             let socketPaths = [gvproxySocket, vmNetworkSocket, apiSocket]
                 + [configurationPath].compactMap { $0 }
             for path in socketPaths { unlink(path) }
-            if let configurationPath, let yaml = plan.gvproxyConfigurationYAML {
+            if let configurationPath, let yaml = configurationYAML {
                 try yaml.write(toFile: configurationPath, atomically: true, encoding: .utf8)
             }
 
             let process = Process()
             process.executableURL = URL(fileURLWithPath: gvproxyPath)
             process.arguments = GVProxyDesktopLaunchPlan.arguments(
-                mtu: DoryNetworkMTU.resolved(),
+                mtu: networkInterface.map { Int($0.maximumTransmissionUnit) }
+                    ?? DoryNetworkMTU.resolved(),
                 datapathSocket: gvproxySocket,
                 apiSocket: apiSocket,
                 configurationPath: configurationPath
@@ -696,7 +718,9 @@ enum DesktopMode {
                     socketPaths: socketPaths,
                     backend: try VirtioNet(
                         socketPath: vmNetworkSocket,
-                        remotePath: gvproxySocket
+                        remotePath: gvproxySocket,
+                        macAddress: networkInterface?.macAddressOctets ?? VirtioNet.guestMAC,
+                        maximumTransmissionUnit: networkInterface?.maximumTransmissionUnit
                     )
                 )
             } catch {

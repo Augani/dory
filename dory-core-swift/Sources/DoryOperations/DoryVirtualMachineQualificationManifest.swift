@@ -194,7 +194,7 @@ public struct DoryVerifiedVirtualMachineQualificationAuthority: Sendable {
                 && $0.backendRuntimeBuildIdentifier == backendRuntimeBuildIdentifier
                 && $0.virtualHardwareABIVersion == request.virtualHardwareABIVersion
                 && $0.graphics == request.graphics
-                && $0.devices == request.devices
+                && $0.devices.matchesRuntimeQualificationContract(request.devices)
                 && $0.hostHardwareModelIdentifier == hostHardwareModelIdentifier
                 && $0.hostOperatingSystemBuild == hostOperatingSystemBuild
                 && $0.components == components
@@ -401,6 +401,7 @@ public enum DoryVirtualMachineQualificationAuthorityResolver {
             && !record.backendImplementationIdentifier.isEmpty
             && !record.backendRuntimeBuildIdentifier.isEmpty
             && record.virtualHardwareABIVersion > 0
+            && (record.devices.networkInterface?.isValid ?? true)
             && !record.hostHardwareModelIdentifier.isEmpty
             && !record.hostOperatingSystemBuild.isEmpty
             && !record.components.isEmpty

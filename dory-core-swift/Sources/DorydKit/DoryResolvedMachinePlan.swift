@@ -1132,7 +1132,7 @@ public struct DoryResolvedMachinePlan: Codable, Sendable, Equatable, Hashable {
               runtime.backendRuntimeBuildID == backendRuntimeBuildIdentifier,
               runtime.virtualHardwareABIVersion == virtualHardwareABIVersion,
               runtime.graphics == graphics,
-              runtime.devices == devices else {
+              runtime.devices.matchesRuntimeQualificationContract(devices) else {
             issues.append(DoryResolvedMachinePlanValidationIssue(
                 code: .runtimeQualificationMismatch,
                 field: "qualificationEvidence.runtime"

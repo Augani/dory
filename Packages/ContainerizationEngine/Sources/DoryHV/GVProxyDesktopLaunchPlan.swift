@@ -10,6 +10,19 @@ package enum GVProxyDesktopLaunchPlan {
 
     """
 
+    /// Pins gvproxy's deterministic guest lease to the MAC persisted in the resolved plan.
+    /// Without this binding an adapter could expose one MAC while DHCP authority retained the
+    /// historical global default.
+    package static func configurationYAML(hostOnly: Bool, guestMAC: String) -> String {
+        let connectivity = hostOnly ? "  connectivity: host-only\n" : ""
+        return """
+        stack:
+        \(connectivity)  dhcpStaticLeases:
+            192.168.127.2: \(guestMAC)
+
+        """
+    }
+
     package static func arguments(
         mtu: Int,
         datapathSocket: String,

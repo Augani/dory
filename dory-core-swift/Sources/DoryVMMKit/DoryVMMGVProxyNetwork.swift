@@ -15,6 +15,7 @@ struct DoryVMMNativeIPv6Plan: Sendable, Equatable {
     static let guestMAC = "5a:94:ef:e4:0c:ee"
 
     var hostOnly = false
+    var guestMAC = Self.guestMAC
 
     var gvproxyYAML: String {
         let connectivity = hostOnly ? "  connectivity: host-only\n" : ""
@@ -22,6 +23,8 @@ struct DoryVMMNativeIPv6Plan: Sendable, Equatable {
         stack:
         \(connectivity)  ipv6Subnet: \(Self.virtualNetwork)
           ipv6GatewayIP: \(Self.hostGateway)
+          dhcpStaticLeases:
+            192.168.127.2: \(guestMAC)
           nat:
             "192.168.127.254": "127.0.0.1"
             "\(Self.hostGateway)": "::1"
@@ -63,6 +66,7 @@ final class DoryVMMGVProxyNetwork: @unchecked Sendable {
         gvproxyPath: String,
         stateDirectory: String,
         networkAttachment: DoryVirtualMachineNetworkAttachmentMode = .sharedNAT,
+        networkInterface: DoryVirtualMachineNetworkInterfaceCapabilityRequest? = nil,
         sourcePreservingLAN: Bool = false
     ) throws {
         guard FileManager.default.isExecutableFile(atPath: gvproxyPath) else {
@@ -85,7 +89,16 @@ final class DoryVMMGVProxyNetwork: @unchecked Sendable {
             try Self.validateUnixPath(path)
             unlink(path)
         }
-        try DoryVMMNativeIPv6Plan(hostOnly: networkAttachment == .isolated).gvproxyYAML.write(
+        if let networkInterface, !networkInterface.isValid {
+            throw DoryVZMachineError.validation("resolved network interface identity is invalid")
+        }
+        let guestMAC = networkInterface?.macAddress ?? DoryVMMNativeIPv6Plan.guestMAC
+        let mtu = networkInterface.map { Int($0.maximumTransmissionUnit) }
+            ?? DoryNetworkMTU.resolved()
+        try DoryVMMNativeIPv6Plan(
+            hostOnly: networkAttachment == .isolated,
+            guestMAC: guestMAC
+        ).gvproxyYAML.write(
             toFile: configurationPath,
             atomically: true,
             encoding: .utf8
@@ -94,7 +107,7 @@ final class DoryVMMGVProxyNetwork: @unchecked Sendable {
         let child = Process()
         child.executableURL = URL(fileURLWithPath: gvproxyPath)
         child.arguments = [
-            "-mtu", String(DoryNetworkMTU.resolved()),
+            "-mtu", String(mtu),
             "-listen-vfkit", "unixgram://\(datapathSocketPath)",
             "-listen", "unix://\(apiSocketPath)",
             "-config", configurationPath,
@@ -139,7 +152,7 @@ final class DoryVMMGVProxyNetwork: @unchecked Sendable {
             let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
             fileHandle = handle
             let networkAttachment = VZFileHandleNetworkDeviceAttachment(fileHandle: handle)
-            networkAttachment.maximumTransmissionUnit = 1500
+            networkAttachment.maximumTransmissionUnit = Int(mtu)
             attachment = networkAttachment
             try Self.publishUnixForward(
                 localPath: shutdownSocketPath,

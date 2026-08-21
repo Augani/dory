@@ -107,6 +107,70 @@ public enum DoryVirtualMachineNetworkAttachmentMode: String, Codable, Sendable, 
     case isolated
 }
 
+/// Exact guest-visible identity for the primary network function.
+///
+/// The value is persisted in the resolved device contract rather than inferred by a backend, so
+/// changing adapters cannot silently change the guest's interface identity or effective MTU.
+/// Historical plans decode this value as `nil` and retain their adapter-specific ABI.
+public struct DoryVirtualMachineNetworkInterfaceCapabilityRequest:
+    Codable, Sendable, Equatable, Hashable
+{
+    public static let minimumMTU: UInt16 = 1_280
+    public static let maximumMTU: UInt16 = 9_000
+    public static let defaultMTU: UInt16 = 1_280
+
+    public var id: String
+    public var macAddress: String
+    public var maximumTransmissionUnit: UInt16
+
+    public init(
+        id: String = "nic0",
+        macAddress: String,
+        maximumTransmissionUnit: UInt16 = Self.defaultMTU
+    ) {
+        self.id = id
+        self.macAddress = macAddress.lowercased()
+        self.maximumTransmissionUnit = maximumTransmissionUnit
+    }
+
+    public var macAddressOctets: [UInt8]? {
+        let components = macAddress.split(separator: ":", omittingEmptySubsequences: false)
+        guard components.count == 6 else { return nil }
+        let octets = components.compactMap { component -> UInt8? in
+            guard component.utf8.count == 2 else { return nil }
+            return UInt8(component, radix: 16)
+        }
+        return octets.count == 6 ? octets : nil
+    }
+
+    public var isValid: Bool {
+        guard id == "nic0",
+              macAddress == macAddress.lowercased(),
+              let octets = macAddressOctets,
+              (Self.minimumMTU...Self.maximumMTU).contains(maximumTransmissionUnit) else {
+            return false
+        }
+        return octets[0] & 0x01 == 0
+            && octets[0] & 0x02 == 0x02
+            && octets.contains(where: { $0 != 0 })
+            && octets.contains(where: { $0 != 0xFF })
+    }
+
+    /// Derives a stable locally administered unicast address without making a cryptographic trust
+    /// claim. The same identity is consumed by every backend and by gvproxy's exact DHCP lease.
+    public static func stable(machineID: String) -> Self {
+        var hash: UInt64 = 0xcbf2_9ce4_8422_2325
+        for byte in machineID.utf8 {
+            hash ^= UInt64(byte)
+            hash &*= 0x0000_0100_0000_01B3
+        }
+        var octets = (0..<6).map { UInt8(truncatingIfNeeded: hash >> UInt64($0 * 8)) }
+        octets[0] = (octets[0] | 0x02) & 0xFE
+        let mac = octets.map { String(format: "%02x", $0) }.joined(separator: ":")
+        return Self(macAddress: mac)
+    }
+}
+
 public struct DoryVirtualMachineDisplayCapabilityRequest: Codable, Sendable, Equatable, Hashable {
     public static let maximumDimensionPixels: UInt32 = 16_384
 
@@ -166,6 +230,9 @@ public struct DoryVirtualMachineDisplayCapabilityRequest: Codable, Sendable, Equ
 
 public struct DoryVirtualMachineDeviceCapabilityRequest: Codable, Sendable, Equatable, Hashable {
     public var networkAttachment: DoryVirtualMachineNetworkAttachmentMode
+    /// `nil` is compatibility-only for resolved plans authored before stable NIC identity was
+    /// introduced. New production planning always supplies this exact contract.
+    public var networkInterface: DoryVirtualMachineNetworkInterfaceCapabilityRequest?
     /// Exact initial display geometry. `nil` is retained only for historical capability records
     /// that predate display binding; newly planned desktop workspaces always carry this value.
     public var display: DoryVirtualMachineDisplayCapabilityRequest?
@@ -181,6 +248,7 @@ public struct DoryVirtualMachineDeviceCapabilityRequest: Codable, Sendable, Equa
 
     public init(
         networkAttachment: DoryVirtualMachineNetworkAttachmentMode = .sharedNAT,
+        networkInterface: DoryVirtualMachineNetworkInterfaceCapabilityRequest? = nil,
         display: DoryVirtualMachineDisplayCapabilityRequest? = nil,
         audioInput: Bool = false,
         audioOutput: Bool = false,
@@ -193,6 +261,7 @@ public struct DoryVirtualMachineDeviceCapabilityRequest: Codable, Sendable, Equa
         gracefulShutdown: Bool = false
     ) {
         self.networkAttachment = networkAttachment
+        self.networkInterface = networkInterface
         self.display = display
         self.audioInput = audioInput
         self.audioOutput = audioOutput
@@ -203,6 +272,34 @@ public struct DoryVirtualMachineDeviceCapabilityRequest: Codable, Sendable, Equa
         self.clockSynchronization = clockSynchronization
         self.dynamicDisplay = dynamicDisplay
         self.gracefulShutdown = gracefulShutdown
+    }
+
+    /// Compares the device ABI covered by a signed runtime qualification.
+    ///
+    /// A qualification record binds the NIC identifier and MTU, while the resolved machine plan
+    /// owns the per-machine locally administered MAC. This prevents a catalog from having to
+    /// enumerate every workspace identity without weakening the plan's exact MAC binding.
+    public func matchesRuntimeQualificationContract(
+        _ other: DoryVirtualMachineDeviceCapabilityRequest
+    ) -> Bool {
+        var lhs = self
+        var rhs = other
+        let lhsNetwork = lhs.networkInterface
+        let rhsNetwork = rhs.networkInterface
+        lhs.networkInterface = nil
+        rhs.networkInterface = nil
+        guard lhs == rhs else { return false }
+        switch (lhsNetwork, rhsNetwork) {
+        case (nil, nil):
+            return true
+        case let (.some(lhs), .some(rhs)):
+            return lhs.isValid
+                && rhs.isValid
+                && lhs.id == rhs.id
+                && lhs.maximumTransmissionUnit == rhs.maximumTransmissionUnit
+        default:
+            return false
+        }
     }
 
     /// The smallest currently implemented cross-backend device contract.
@@ -1245,7 +1342,7 @@ public enum DoryAppleSiliconCapabilityEvaluator {
               evidence.bootMediaKind == request.bootMedia.kind,
               evidence.backend == request.backend,
               evidence.graphics == request.graphics,
-              evidence.devices == request.devices,
+              evidence.devices.matchesRuntimeQualificationContract(request.devices),
               evidence.virtualHardwareABIVersion == request.virtualHardwareABIVersion else {
             return unavailable(
                 tier: .supported,
@@ -1386,6 +1483,13 @@ public enum DoryAppleSiliconCapabilityEvaluator {
         tier: DoryCapabilitySupportTier
     ) -> DoryCapabilityAvailability? {
         let devices = request.devices
+        if let networkInterface = devices.networkInterface, !networkInterface.isValid {
+            return unavailable(
+                tier: tier,
+                code: .networkAttachmentUnsupported,
+                message: "The resolved network interface identity or MTU is invalid."
+            )
+        }
         switch devices.networkAttachment {
         case .sharedNAT:
             break

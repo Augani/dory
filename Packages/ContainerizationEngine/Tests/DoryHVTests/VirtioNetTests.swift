@@ -4,6 +4,19 @@ import Testing
 @testable import DoryHV
 
 @Suite struct VirtioNetTests {
+    @Test func disconnectedDeviceBindsResolvedMACAndMTU() {
+        let mac: [UInt8] = [0x02, 0x11, 0x22, 0x33, 0x44, 0x55]
+        let device = VirtioDisconnectedNet(
+            macAddress: mac,
+            maximumTransmissionUnit: 1_280
+        )
+
+        #expect(device.deviceFeatures & (1 << 3) != 0)
+        #expect(Array(device.configSpace.prefix(6)) == mac)
+        #expect(Array(device.configSpace[6..<10]) == [0, 0, 0, 0])
+        #expect(Array(device.configSpace[10..<12]) == [0, 5])
+    }
+
     @Test func disconnectedDeviceAdvertisesStableMACWithCarrierDown() {
         let device = VirtioDisconnectedNet()
 
@@ -117,6 +130,29 @@ import Testing
         #expect(device.statistics.receivePackets == 1)
         #expect(device.statistics.receiveBytes == UInt64(ethernetFrame.count))
         #expect(device.statistics.receiveTruncations == 0)
+    }
+
+    @Test func connectedDeviceBindsResolvedMACAndMTU() throws {
+        let directory = "/tmp/dvn-contract-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+        let proxyPath = directory + "/proxy.sock"
+        let devicePath = directory + "/device.sock"
+        let proxyFD = try bindUnixDatagram(path: proxyPath)
+        defer { close(proxyFD) }
+        let mac: [UInt8] = [0x02, 0xaa, 0xbb, 0xcc, 0xdd, 0xee]
+
+        let device = try VirtioNet(
+            socketPath: devicePath,
+            remotePath: proxyPath,
+            macAddress: mac,
+            maximumTransmissionUnit: 9_000
+        )
+        var magic = [UInt8](repeating: 0, count: 4)
+        #expect(recv(proxyFD, &magic, magic.count, 0) == 4)
+        #expect(device.deviceFeatures & (1 << 3) != 0)
+        #expect(Array(device.configSpace.prefix(6)) == mac)
+        #expect(Array(device.configSpace[10..<12]) == [0x28, 0x23])
     }
 
     @Test func rejectsUnixDatagramPathsThatWouldBeSilentlyTruncated() throws {

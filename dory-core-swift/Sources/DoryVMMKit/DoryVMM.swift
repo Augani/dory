@@ -378,6 +378,12 @@ public enum DoryVZConfigurationBuilder {
             }
         }
         if let devices = spec.resolvedDevices {
+            if let networkInterface = devices.networkInterface,
+               !networkInterface.isValid {
+                throw DoryVZMachineError.validation(
+                    "resolved network interface identity or MTU is invalid"
+                )
+            }
             guard devices.networkAttachment == .sharedNAT
                     || devices.networkAttachment == .isolated
                     || devices.networkAttachment == .disconnected else {
@@ -450,9 +456,10 @@ public enum DoryVZConfigurationBuilder {
         if spec.resolvedDevices?.networkAttachment != .disconnected {
             network.attachment = networkAttachment ?? VZNATNetworkDeviceAttachment()
         }
-        let macAddressString = networkAttachment != nil
-            ? DoryVMMNativeIPv6Plan.guestMAC
-            : stableNetworkMACAddress(machineID: spec.machineID)
+        let macAddressString = spec.resolvedDevices?.networkInterface?.macAddress
+            ?? (networkAttachment != nil
+                ? DoryVMMNativeIPv6Plan.guestMAC
+                : stableNetworkMACAddress(machineID: spec.machineID))
         guard let macAddress = VZMACAddress(string: macAddressString) else {
             throw DoryVZMachineError.validation("could not derive stable network identity")
         }
@@ -1089,7 +1096,11 @@ public enum DoryVMMMain {
             dataDrive = nil
         }
         let requestedNetwork = resolvedDevices?.networkAttachment ?? .sharedNAT
-        let usesGVProxy = machineID == "docker" || requestedNetwork == .isolated
+        // An exact NIC contract uses the same gvproxy datapath on every supported attachment so
+        // the backend can enforce both its MAC lease and MTU rather than delegating them to VZ NAT.
+        let usesGVProxy = machineID == "docker"
+            || requestedNetwork == .isolated
+            || resolvedDevices?.networkInterface != nil
         let gvproxyNetwork: DoryVMMGVProxyNetwork?
         if usesGVProxy, requestedNetwork != .disconnected {
             guard let gvproxyPath else { throw DoryVMMArgumentError.missingGVProxy }
@@ -1105,6 +1116,7 @@ public enum DoryVMMMain {
                 gvproxyPath: gvproxyPath,
                 stateDirectory: stateDirectory,
                 networkAttachment: requestedNetwork,
+                networkInterface: resolvedDevices?.networkInterface,
                 sourcePreservingLAN: requestedNetwork == .sharedNAT && publishHost == "0.0.0.0"
             )
         } else {
@@ -1122,7 +1134,12 @@ public enum DoryVMMMain {
                     operation: .activate,
                     sessionID: sessionID,
                     gvproxySocketPath: lanDatapathSocketPath,
-                    bridgeSubnetCIDR: bridgeNetwork.cidr
+                    mtu: resolvedDevices?.networkInterface.map {
+                        Int($0.maximumTransmissionUnit)
+                    } ?? DoryNetworkMTU.resolved(),
+                    bridgeSubnetCIDR: bridgeNetwork.cidr,
+                    guestMACAddress: resolvedDevices?.networkInterface?.macAddress
+                        ?? SourcePreservingLANPlan.defaultGuestMAC
                 ))
                 guard response.status == "active" else {
                     throw DoryVZMachineError.validation("source-preserving LAN helper did not activate")
@@ -1229,7 +1246,9 @@ public enum DoryVMMMain {
                     sourcePreservingLANSessionID: sourcePreservingLANSessionID,
                     sourcePreservingLANGVProxySocketPath: sourcePreservingLANClient == nil
                         ? nil : $0.lanDatapathSocketPath,
-                    bridgeSubnetCIDR: bridgeNetwork.cidr
+                    bridgeSubnetCIDR: bridgeNetwork.cidr,
+                    guestMACAddress: resolvedDevices?.networkInterface?.macAddress
+                        ?? SourcePreservingLANPlan.defaultGuestMAC
                 )
             }
         )

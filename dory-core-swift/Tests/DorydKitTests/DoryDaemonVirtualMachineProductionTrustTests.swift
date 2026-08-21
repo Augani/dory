@@ -1145,6 +1145,7 @@ private final class ProductionTrustFixture: @unchecked Sendable {
         let signingKeyID = Self.digest(privateKey.publicKey.rawRepresentation)
         let devices = DoryVirtualMachineDeviceCapabilityRequest.minimumBootable
         let headlessDevices = DoryVirtualMachineDeviceCapabilityRequest(
+            networkInterface: .init(macAddress: "02:00:00:00:00:01"),
             clockSynchronization: true,
             gracefulShutdown: true
         )

@@ -26,11 +26,28 @@ struct DirectIPBridgeTests {
         let packet = ipv4Packet(source: "10.0.0.10", destination: "192.168.215.42", protocolNumber: 1)
         let frame = try #require(bridge.ethernetFrameForGvproxy(packet))
 
-        #expect(Array(frame.prefix(6)) == DirectIPPacketBridge.guestMAC)
+        #expect(Array(frame.prefix(6)) == DirectIPPacketBridge.defaultGuestMAC)
         #expect(Array(frame.dropFirst(6).prefix(6)) == DirectIPPacketBridge.bridgeMAC)
         #expect(Array(frame.dropFirst(12).prefix(2)) == [0x08, 0x00])
         #expect(bridge.ipv4PacketFromGvproxyFrame(frame) == packet)
         #expect(bridge.wrapInboundPacketForUtun(packet) == DirectIPPacketBridge.utunIPv4Header + packet)
+    }
+
+    @Test func framesIngressForThePlanOwnedGuestMAC() throws {
+        let mac: [UInt8] = [0x02, 0x11, 0x22, 0x33, 0x44, 0x55]
+        let bridge = try DirectIPPacketBridge(
+            subnetCIDR: "192.168.215.0/24",
+            gateway: "192.168.127.2",
+            guestMAC: mac
+        )
+        let packet = ipv4Packet(
+            source: "10.0.0.10",
+            destination: "192.168.215.42",
+            protocolNumber: 6
+        )
+
+        let frame = try #require(bridge.ethernetFrameForGvproxy(packet))
+        #expect(Array(frame.prefix(6)) == mac)
     }
 
     @Test func validatesBridgeConfigurationInputs() throws {
@@ -75,7 +92,7 @@ struct DirectIPBridgeTests {
             == .injectIPv6ToGvproxy(packet: packet, destination: destination))
 
         let frame = try #require(bridge.ethernetFrameForGvproxyIPv6(packet))
-        #expect(Array(frame.prefix(6)) == DirectIPPacketBridge.guestMAC)
+        #expect(Array(frame.prefix(6)) == DirectIPPacketBridge.defaultGuestMAC)
         #expect(Array(frame.dropFirst(6).prefix(6)) == DirectIPPacketBridge.bridgeMAC)
         #expect(Array(frame.dropFirst(12).prefix(2)) == [0x86, 0xdd])
         #expect(bridge.ipv6PacketFromGvproxyFrame(frame) == packet)

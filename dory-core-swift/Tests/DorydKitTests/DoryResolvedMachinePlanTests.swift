@@ -108,6 +108,18 @@ struct DoryResolvedMachinePlanTests {
         #expect(codes.contains(.resourceAdmissionMismatch))
     }
 
+    @Test("NIC identity and MTU are exact start gates")
+    func networkInterfaceEvidenceMismatch() {
+        var plan = supportedPlan()
+        plan.devices.networkInterface = .stable(machineID: plan.machineID)
+        var input = exactInput(for: plan)
+        input.runtimeEvidence.devices.networkInterface = .stable(machineID: "substituted-machine")
+
+        let result = DoryResolvedMachinePlanStartValidator.revalidate(plan, against: input)
+        #expect(!result.mayStart)
+        #expect(result.issues.contains { $0.code == .deviceContractMismatch })
+    }
+
     @Test("immutable media and qualification evidence mismatches are exact")
     func immutableEvidenceMismatch() {
         let plan = supportedPlan()

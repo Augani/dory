@@ -522,6 +522,13 @@ retained on the wire for compatibility while product surfaces call it **Host-onl
 remains unavailable until an adapter and physical-host qualification prove it; the UI must not
 imply that NAT or host-only is bridged networking.
 
+New resolved Linux plans also carry a deterministic locally administered MAC and an exact MTU for
+the primary `nic0`. Both adapters consume those values directly: VZ and raw-HV use the same
+plan-owned address, gvproxy's DHCP lease is rewritten to that address, virtio-net advertises the
+resolved MTU, and the privileged source-preserving LAN bridge targets the same MAC. Historical
+plans with no NIC identity retain their prior adapter-specific behavior and cannot silently acquire
+the new contract without replanning.
+
 ### Display and graphics
 
 - A display is a stable device with point size, pixel size, scale, refresh policy, and color-space

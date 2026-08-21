@@ -522,6 +522,7 @@ public final class DoryDaemonVirtualMachinePlanningCoordinator: @unchecked Senda
         }
         return DoryVirtualMachineDeviceCapabilityRequest(
             networkAttachment: networkAttachment,
+            networkInterface: .stable(machineID: definition.identity.id),
             display: definition.display.enabled
                 ? DoryVirtualMachineDisplayCapabilityRequest(
                     widthPixels: definition.display.widthPixels,

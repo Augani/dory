@@ -66,7 +66,8 @@ final class SourcePreservingLANPlanTests: XCTestCase {
             gvproxySocketPath: "/tmp/gvproxy.sock",
             bindings: [PublishedPortBinding(protocol: .tcp, port: 8080, hostIP: "0.0.0.0")],
             mtu: 1_400,
-            bridgeSubnetCIDR: "10.44.16.0/20"
+            bridgeSubnetCIDR: "10.44.16.0/20",
+            guestMACAddress: "02:11:22:33:44:55"
         )
         let decoded = try JSONDecoder().decode(
             SourcePreservingLANRequest.self,
@@ -76,6 +77,7 @@ final class SourcePreservingLANPlanTests: XCTestCase {
         XCTAssertEqual(decoded.version, SourcePreservingLANRequest.schemaVersion)
         XCTAssertEqual(decoded.mtu, 1_400)
         XCTAssertEqual(decoded.bridgeSubnetCIDR, "10.44.16.0/20")
+        XCTAssertEqual(decoded.guestMACAddress, "02:11:22:33:44:55")
     }
 
     func testCustomBridgeSubnetOwnsReservedLANIngressAddresses() throws {

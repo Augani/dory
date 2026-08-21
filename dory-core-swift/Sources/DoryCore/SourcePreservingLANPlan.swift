@@ -10,6 +10,7 @@ public enum SourcePreservingLANPlan {
     public static let hostBridgeIPv4 = defaultBridgeNetwork.lanHostAddress
     public static let guestReturnGatewayIPv4 = "192.168.127.253"
     public static let bridgeMAC = "5a:94:ef:d0:12:01"
+    public static let defaultGuestMAC = "5a:94:ef:e4:0c:ee"
     public static let connectionMark = "0xd072"
     public static let policyRoutingTable = 215
     public static let policyRoutingPriority = 215
@@ -99,7 +100,7 @@ public enum SourcePreservingLANOperation: String, Sendable, Codable {
 }
 
 public struct SourcePreservingLANRequest: Sendable, Equatable, Codable {
-    public static let schemaVersion = 3
+    public static let schemaVersion = 4
 
     public var version: Int
     public var operation: SourcePreservingLANOperation
@@ -108,6 +109,7 @@ public struct SourcePreservingLANRequest: Sendable, Equatable, Codable {
     public var bindings: Set<PublishedPortBinding>
     public var mtu: Int
     public var bridgeSubnetCIDR: String
+    public var guestMACAddress: String
 
     public init(
         operation: SourcePreservingLANOperation,
@@ -115,7 +117,8 @@ public struct SourcePreservingLANRequest: Sendable, Equatable, Codable {
         gvproxySocketPath: String? = nil,
         bindings: Set<PublishedPortBinding> = [],
         mtu: Int = DoryNetworkMTU.resolved(),
-        bridgeSubnetCIDR: String = DoryIPv4BridgeNetwork.defaultCIDR
+        bridgeSubnetCIDR: String = DoryIPv4BridgeNetwork.defaultCIDR,
+        guestMACAddress: String = SourcePreservingLANPlan.defaultGuestMAC
     ) {
         self.version = Self.schemaVersion
         self.operation = operation
@@ -124,6 +127,7 @@ public struct SourcePreservingLANRequest: Sendable, Equatable, Codable {
         self.bindings = bindings
         self.mtu = mtu
         self.bridgeSubnetCIDR = bridgeSubnetCIDR
+        self.guestMACAddress = guestMACAddress.lowercased()
     }
 }
 

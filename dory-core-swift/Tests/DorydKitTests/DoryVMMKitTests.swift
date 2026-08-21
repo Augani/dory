@@ -348,6 +348,15 @@ final class DoryVMMKitTests: XCTestCase {
         )
     }
 
+    func testGVProxyPlanPinsResolvedGuestMACLease() {
+        let plan = DoryVMMNativeIPv6Plan(
+            hostOnly: false,
+            guestMAC: "02:11:22:33:44:55"
+        )
+        XCTAssertTrue(plan.gvproxyYAML.contains("dhcpStaticLeases:"))
+        XCTAssertTrue(plan.gvproxyYAML.contains("192.168.127.2: 02:11:22:33:44:55"))
+    }
+
     func testHostOnlyGVProxyPlanDisablesExternalConnectivity() {
         let plan = DoryVMMNativeIPv6Plan(hostOnly: true)
         XCTAssertTrue(plan.gvproxyYAML.contains("connectivity: host-only"))
@@ -520,6 +529,46 @@ final class DoryVMMKitTests: XCTestCase {
         )
         XCTAssertEqual(configuration.socketDevices.count, 1)
         XCTAssertEqual(configuration.storageDevices.count, 1)
+    }
+
+    func testResolvedVZConfigurationUsesPlanOwnedNICIdentity() throws {
+        let base = "/tmp/dory-vmm-nic-contract-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let kernel = "\(base)/vmlinux"
+        let rootfs = "\(base)/rootfs.raw"
+        XCTAssertTrue(FileManager.default.createFile(
+            atPath: kernel,
+            contents: Data([0x7f, 0x45, 0x4c, 0x46])
+        ))
+        XCTAssertTrue(FileManager.default.createFile(atPath: rootfs, contents: nil))
+        XCTAssertEqual(truncate(rootfs, 1_024 * 1_024), 0)
+        let interface = DoryVirtualMachineNetworkInterfaceCapabilityRequest(
+            macAddress: "02:11:22:33:44:55",
+            maximumTransmissionUnit: 1_280
+        )
+
+        let configuration = try DoryVZConfigurationBuilder.makeConfiguration(
+            spec: DoryVZMachineSpec(
+                machineID: "resolved-nic",
+                stateDirectory: base,
+                kernelPath: kernel,
+                rootfsPath: rootfs,
+                memoryMB: 2_048,
+                cpuCount: 2,
+                resolvedDevices: .init(
+                    networkAttachment: .disconnected,
+                    networkInterface: interface
+                )
+            ),
+            serialOutput: nil
+        )
+
+        let network = try XCTUnwrap(
+            configuration.networkDevices.first as? VZVirtioNetworkDeviceConfiguration
+        )
+        XCTAssertEqual(network.macAddress.string, interface.macAddress)
+        XCTAssertNil(network.attachment)
     }
 
     func testHostOnlyVZConfigurationRequiresFileHandleDatapath() throws {

@@ -49,7 +49,8 @@ final class SourcePreservingLANPrivilegedControllerTests: XCTestCase {
                 PublishedPortBinding(protocol: .tcp, port: 8080),
                 PublishedPortBinding(protocol: .tcp, port: 9000, hostIP: "127.0.0.1"),
             ],
-            mtu: 1_400
+            mtu: 1_400,
+            guestMACAddress: "02:11:22:33:44:55"
         )
 
         let response = try controller.apply(request, clientUID: getuid())
@@ -60,6 +61,10 @@ final class SourcePreservingLANPrivilegedControllerTests: XCTestCase {
         XCTAssertEqual(recorder.configuration?.subnetCIDR, "192.168.215.254/32")
         XCTAssertEqual(recorder.configuration?.gateway, "192.168.215.253")
         XCTAssertEqual(recorder.configuration?.gvproxySocketPath, socketPath)
+        XCTAssertEqual(
+            recorder.configuration?.guestMACAddress,
+            [0x02, 0x11, 0x22, 0x33, 0x44, 0x55]
+        )
         XCTAssertTrue(bridge.started)
         XCTAssertTrue(recorder.commands.contains([
             "/sbin/ifconfig", "utun42", "inet", "192.168.215.253", "192.168.215.254",
@@ -130,6 +135,51 @@ final class SourcePreservingLANPrivilegedControllerTests: XCTestCase {
             ), clientUID: getuid())) { error in
                 XCTAssertEqual(error as? SourcePreservingLANPrivilegedError, .invalidMTU(mtu))
             }
+        }
+    }
+
+    func testRejectsInvalidOrChangedGuestMACAuthority() throws {
+        let socketPath = try makeDatagramSocket()
+        defer { unlink(socketPath) }
+        let controller = SourcePreservingLANPrivilegedController(
+            enforceRoot: false,
+            runtimeDirectory: temporaryRuntime("guest-mac"),
+            bridgeFactory: { _ in FakeBridge(interfaceName: "utun72") },
+            runCommand: { command in
+                if command == ["/sbin/pfctl", "-E"] {
+                    return "pf enabled\nToken : 424242\n"
+                }
+                if command == ["/usr/sbin/sysctl", "-n", "net.inet.ip.forwarding"] {
+                    return "0\n"
+                }
+                return ""
+            },
+            writeAnchor: { _ in }
+        )
+        XCTAssertThrowsError(try controller.apply(SourcePreservingLANRequest(
+            operation: .activate,
+            sessionID: "bad-mac",
+            gvproxySocketPath: socketPath,
+            guestMACAddress: "01:11:22:33:44:55"
+        ), clientUID: getuid())) { error in
+            XCTAssertEqual(
+                error as? SourcePreservingLANPrivilegedError,
+                .invalidGuestMAC("01:11:22:33:44:55")
+            )
+        }
+
+        _ = try controller.apply(SourcePreservingLANRequest(
+            operation: .activate,
+            sessionID: "exact-mac",
+            gvproxySocketPath: socketPath,
+            guestMACAddress: "02:11:22:33:44:55"
+        ), clientUID: getuid())
+        XCTAssertThrowsError(try controller.apply(SourcePreservingLANRequest(
+            operation: .refresh,
+            sessionID: "exact-mac",
+            guestMACAddress: "02:aa:bb:cc:dd:ee"
+        ), clientUID: getuid())) { error in
+            XCTAssertEqual(error as? SourcePreservingLANPrivilegedError, .sessionConflict)
         }
     }
 

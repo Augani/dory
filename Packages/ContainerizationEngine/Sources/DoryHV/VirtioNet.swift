@@ -19,7 +19,7 @@ public struct VirtioNetStatistics: Equatable, Sendable {
 public final class VirtioNet: VirtioDeviceBackend, @unchecked Sendable {
     public let deviceID: UInt32 = 1
     public let queueCount = 2  // 0 = receive, 1 = transmit
-    public var deviceFeatures: UInt64 { 1 << 5 }  // VIRTIO_NET_F_MAC
+    public let deviceFeatures: UInt64
 
     /// gvproxy's canonical vfkit guest MAC; its DHCP hands this MAC 192.168.127.2.
     public static let guestMAC: [UInt8] = [0x5A, 0x94, 0xEF, 0xE4, 0x0C, 0xEE]
@@ -32,6 +32,8 @@ public final class VirtioNet: VirtioDeviceBackend, @unchecked Sendable {
     private static let maximumDeferredReceiveFrames = 256
     private let socketFD: Int32
     private let localSocketPath: String
+    private let macAddress: [UInt8]
+    private let maximumTransmissionUnit: UInt16?
     private var receiveSource: (any DispatchSourceRead)?
     private weak var transport: VirtioMMIOTransport?
     private let receiveQueue = DispatchQueue(label: "dory-hv.net.rx")
@@ -47,7 +49,15 @@ public final class VirtioNet: VirtioDeviceBackend, @unchecked Sendable {
     private let receiveDrops = Atomic<UInt64>(0)
     private let receiveTruncations = Atomic<UInt64>(0)
 
-    public init(socketPath: String, remotePath: String) throws {
+    public init(
+        socketPath: String,
+        remotePath: String,
+        macAddress: [UInt8] = VirtioNet.guestMAC,
+        maximumTransmissionUnit: UInt16? = nil
+    ) throws {
+        guard macAddress.count == 6 else {
+            throw VMError.invalidConfiguration("a virtio-net MAC address must contain six bytes")
+        }
         try Self.validateSocketPath(socketPath)
         try Self.validateSocketPath(remotePath)
         let descriptor = socket(AF_UNIX, SOCK_DGRAM, 0)
@@ -109,6 +119,9 @@ public final class VirtioNet: VirtioDeviceBackend, @unchecked Sendable {
         }
         self.socketFD = descriptor
         self.localSocketPath = socketPath
+        self.macAddress = macAddress
+        self.maximumTransmissionUnit = maximumTransmissionUnit
+        self.deviceFeatures = (1 << 5) | (maximumTransmissionUnit == nil ? 0 : (1 << 3))
     }
 
     deinit {
@@ -120,7 +133,14 @@ public final class VirtioNet: VirtioDeviceBackend, @unchecked Sendable {
         }
     }
 
-    public var configSpace: [UInt8] { Self.guestMAC }
+    public var configSpace: [UInt8] {
+        guard let maximumTransmissionUnit else { return macAddress }
+        // virtio_net_config uses fixed offsets: MAC[0...5], status[6...7], max queue pairs
+        // [8...9], and MTU[10...11]. Only MAC and MTU are negotiated here.
+        return macAddress + [0, 0, 0, 0]
+            + [UInt8(truncatingIfNeeded: maximumTransmissionUnit),
+               UInt8(truncatingIfNeeded: maximumTransmissionUnit >> 8)]
+    }
 
     public func deviceReady(transport: VirtioMMIOTransport) {
         self.transport = transport
@@ -316,14 +336,25 @@ public final class VirtioNet: VirtioDeviceBackend, @unchecked Sendable {
 public final class VirtioDisconnectedNet: VirtioDeviceBackend, @unchecked Sendable {
     public let deviceID: UInt32 = 1
     public let queueCount = 2
-    public let deviceFeatures: UInt64 = (1 << 5) | (1 << 16) // MAC + STATUS
+    public let deviceFeatures: UInt64
     public let configSpace: [UInt8]
 
-    public init(macAddress: [UInt8] = VirtioNet.guestMAC) {
+    public init(
+        macAddress: [UInt8] = VirtioNet.guestMAC,
+        maximumTransmissionUnit: UInt16? = nil
+    ) {
         precondition(macAddress.count == 6, "a virtio-net MAC address must contain six bytes")
         // virtio_net_config.mac followed by little-endian status. A zero status keeps LINK_UP
         // clear, which Linux reports as NO-CARRIER while retaining the interface.
-        configSpace = macAddress + [0, 0]
+        deviceFeatures = (1 << 5) | (1 << 16)
+            | (maximumTransmissionUnit == nil ? 0 : (1 << 3))
+        if let maximumTransmissionUnit {
+            configSpace = macAddress + [0, 0, 0, 0]
+                + [UInt8(truncatingIfNeeded: maximumTransmissionUnit),
+                   UInt8(truncatingIfNeeded: maximumTransmissionUnit >> 8)]
+        } else {
+            configSpace = macAddress + [0, 0]
+        }
     }
 
     public func handleKick(queue: Int, transport: VirtioMMIOTransport) {
