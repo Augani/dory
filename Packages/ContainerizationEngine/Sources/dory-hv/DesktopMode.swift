@@ -10,6 +10,7 @@ import Foundation
 enum DesktopMode {
     struct Configuration {
         var machineID: String
+        var operationID: UUID
         var stateDirectory: String
         var kernelPath: String
         var initrdPath: String?
@@ -127,6 +128,11 @@ enum DesktopMode {
             )
             self.stateLock = try EngineStateDirectoryLock(stateDirectory: configuration.stateDirectory)
             self.serialLog = try Self.openAppendLog("\(configuration.stateDirectory)/serial.log")
+            try Self.appendBootSessionMarker(
+                to: serialLog,
+                machineID: configuration.machineID,
+                operationID: configuration.operationID
+            )
             let resolvedGraphics = try Self.resolveGraphics(
                 environment: configuration.environment,
                 requireVulkan: configuration.genericGuest,
@@ -163,6 +169,7 @@ enum DesktopMode {
                 initrdPath: configuration.initrdPath,
                 commandLine: Self.kernelCommandLine(
                     machineID: configuration.machineID,
+                    operationID: configuration.operationID,
                     rootDevice: configuration.rootDevice,
                     graphicsBackend: resolvedGraphics.backend,
                     genericGuest: configuration.genericGuest
@@ -446,6 +453,9 @@ enum DesktopMode {
                             path: configuration.handoffSocketPath,
                             ready: VmmReadyMessage(
                                 machineID: configuration.machineID,
+                                operationID: DoryOperationIdentity.canonical(
+                                    configuration.operationID
+                                ),
                                 agentBuild: "dory-hv/generic-linux",
                                 detail: "raw-HV generic Linux running with \(graphicsDisplayName) graphics; guest tools are not installed"
                             )
@@ -460,6 +470,9 @@ enum DesktopMode {
                         path: configuration.handoffSocketPath,
                         ready: VmmReadyMessage(
                             machineID: configuration.machineID,
+                            operationID: DoryOperationIdentity.canonical(
+                                configuration.operationID
+                            ),
                             agentBuild: info.agentBuild,
                             agentProtocolVersion: info.protocolVersion,
                             agentCapabilities: info.capabilities,
@@ -578,6 +591,21 @@ enum DesktopMode {
                         directSocketPath: configuration.agentSocketPath
                     ))
                     let info = try control.info()
+                    let operationToken = DoryOperationIdentity.canonical(
+                        configuration.operationID
+                    )
+                    try requireSuccess(control.exec(
+                        argv: [
+                            "/bin/sh", "-c",
+                            "mkdir -p /run/dory && chmod 700 /run/dory && umask 077 && printf '%s\\n' \"$DORY_OPERATION_ID\" > /run/dory/operation-id",
+                        ],
+                        env: [DoryExecEnvironment(
+                            key: "DORY_OPERATION_ID",
+                            value: operationToken
+                        )],
+                        timeoutMs: 10_000,
+                        outputLimitBytes: 16 * 1_024
+                    ), operation: "bind lifecycle operation")
                     if let display = configuration.resolvedDevices?.display {
                         guard let command = DoryVMMGuestDisplayScale.persistenceCommand(
                             scaleFactor: display.guestUIScaleFactor
@@ -592,9 +620,11 @@ enum DesktopMode {
                             outputLimitBytes: 64 * 1_024
                         ), operation: "persist guest UI scale")
                     }
+                    var guestEnvironment = configuration.environment
+                    guestEnvironment["DORY_OPERATION_ID"] = operationToken
                     try requireSuccess(control.exec(
                         argv: ["/usr/lib/dory/configure-machine"],
-                        env: configuration.environment.sorted(by: { $0.key < $1.key }).map {
+                        env: guestEnvironment.sorted(by: { $0.key < $1.key }).map {
                             DoryExecEnvironment(key: $0.key, value: $0.value)
                         },
                         timeoutMs: 30_000,
@@ -834,6 +864,7 @@ enum DesktopMode {
 
         private static func kernelCommandLine(
             machineID: String,
+            operationID: UUID,
             rootDevice: String,
             graphicsBackend: DoryDesktopGraphicsBackend,
             genericGuest: Bool
@@ -846,6 +877,7 @@ enum DesktopMode {
                 "rootwait",
                 "panic=1",
                 "dory.machine_id=\(machineID)",
+                "dory.operation_id=\(DoryOperationIdentity.canonical(operationID))",
                 graphicsBackend.kernelArgument,
             ]
             if genericGuest {
@@ -875,6 +907,16 @@ enum DesktopMode {
             let handle = try FileHandle(forWritingTo: URL(fileURLWithPath: path))
             try handle.seekToEnd()
             return handle
+        }
+
+        private static func appendBootSessionMarker(
+            to log: FileHandle,
+            machineID: String,
+            operationID: UUID
+        ) throws {
+            let marker = "\n--- DORY BOOT \(Date().formatted(.iso8601)) machine=\(machineID) operation=\(DoryOperationIdentity.canonical(operationID)) runtime=raw-hv-desktop ---\n"
+            try log.write(contentsOf: Data(marker.utf8))
+            try log.synchronize()
         }
 
         private static func error(for reason: GuestStopReason) -> Error? {

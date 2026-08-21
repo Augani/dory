@@ -457,7 +457,7 @@ private struct SubstitutingBackend: MachineBackend {
         )
     }
 
-    func start(_ plan: MachineBackendPlan) -> MachineBackendOperationResult {
+    func start(_ request: MachineBackendStartRequest) -> MachineBackendOperationResult {
         unsupported(.start)
     }
 

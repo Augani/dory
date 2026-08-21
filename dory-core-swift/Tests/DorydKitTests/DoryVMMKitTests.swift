@@ -192,6 +192,7 @@ final class DoryVMMKitTests: XCTestCase {
     func testParsesDorydMachineArgumentsAsVirtualMachineMode() throws {
         let arguments = try parseDoryVMMArguments([
             "--machine-id", "dev",
+            "--operation-id", "01234567-89ab-4cde-8f01-23456789abcd",
             "--state-dir", "/tmp/dory-machine-dev",
             "--data-drive", "/Volumes/Work/Dory.dorydrive",
             "--kernel", "/tmp/vmlinux",
@@ -216,6 +217,10 @@ final class DoryVMMKitTests: XCTestCase {
         ])
 
         XCTAssertEqual(arguments.machineID, "dev")
+        XCTAssertEqual(
+            arguments.operationID,
+            UUID(uuidString: "01234567-89ab-4cde-8f01-23456789abcd")
+        )
         XCTAssertEqual(arguments.stateDirectory, "/tmp/dory-machine-dev")
         XCTAssertEqual(arguments.dataDriveRoot, "/Volumes/Work/Dory.dorydrive")
         XCTAssertEqual(arguments.kernelPath, "/tmp/vmlinux")
@@ -372,6 +377,7 @@ final class DoryVMMKitTests: XCTestCase {
     func testExitAfterHandoffKeepsContractShimMode() throws {
         let arguments = try parseDoryVMMArguments([
             "--machine-id", "dev",
+            "--operation-id", "01234567-89ab-4cde-8f01-23456789abcd",
             "--handoff-sock", "/tmp/handoff.sock",
             "--exit-after-handoff",
         ])
@@ -382,6 +388,7 @@ final class DoryVMMKitTests: XCTestCase {
     func testMissingKernelAndRootfsDoesNotImplicitlyEnterShimMode() throws {
         let arguments = try parseDoryVMMArguments([
             "--machine-id", "dev",
+            "--operation-id", "01234567-89ab-4cde-8f01-23456789abcd",
             "--state-dir", "/tmp/dory-machine-dev",
             "--handoff-sock", "/tmp/handoff.sock",
         ])
@@ -392,7 +399,25 @@ final class DoryVMMKitTests: XCTestCase {
         }
     }
 
+    func testOperationIDRequiresCanonicalLowercaseUUID() throws {
+        XCTAssertThrowsError(try parseDoryVMMArguments([
+            "--operation-id", "01234567-89AB-4CDE-8F01-23456789ABCD",
+        ])) { error in
+            XCTAssertEqual(
+                error as? DoryVMMArgumentError,
+                .invalidOperationID("01234567-89AB-4CDE-8F01-23456789ABCD")
+            )
+        }
+        var arguments = DoryVMMArguments()
+        arguments.machineID = "dev"
+        arguments.handoffSocketPath = "/tmp/handoff.sock"
+        XCTAssertThrowsError(try DoryVMMMain.run(arguments)) { error in
+            XCTAssertEqual(error as? DoryVMMArgumentError, .missingOperationID)
+        }
+    }
+
     func testBuildsVZConfigurationWithRootfsVsockBalloonNetworkAndSerial() throws {
+        let operationID = UUID(uuidString: "01234567-89ab-4cde-8f01-23456789abcd")!
         let base = "/tmp/dory-vmm-config-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(atPath: base) }
@@ -412,6 +437,7 @@ final class DoryVMMKitTests: XCTestCase {
         let configuration = try DoryVZConfigurationBuilder.makeConfiguration(
             spec: DoryVZMachineSpec(
                 machineID: "dev",
+                operationID: operationID,
                 stateDirectory: base,
                 kernelPath: kernel,
                 rootfsPath: rootfs,
@@ -429,6 +455,9 @@ final class DoryVMMKitTests: XCTestCase {
         XCTAssertEqual(bootLoader.kernelURL.path, kernel)
         XCTAssertTrue(bootLoader.commandLine.contains("root=/dev/vda"))
         XCTAssertTrue(bootLoader.commandLine.contains("dory.machine_id=dev"))
+        XCTAssertTrue(bootLoader.commandLine.contains(
+            "dory.operation_id=\(DoryOperationIdentity.canonical(operationID))"
+        ))
         XCTAssertEqual(configuration.storageDevices.count, 1)
         XCTAssertTrue(configuration.storageDevices.first is VZVirtioBlockDeviceConfiguration)
         XCTAssertEqual(configuration.socketDevices.count, 1)
@@ -461,6 +490,10 @@ final class DoryVMMKitTests: XCTestCase {
         XCTAssertEqual(shareDevice.tag, "src")
         XCTAssertTrue(shareDevice.share is VZSingleDirectoryShare)
         let bootScript = try String(contentsOfFile: "\(base)/dorycfg/boot.sh", encoding: .utf8)
+        XCTAssertTrue(bootScript.contains(
+            "export DORY_OPERATION_ID='\(DoryOperationIdentity.canonical(operationID))'"
+        ))
+        XCTAssertTrue(bootScript.contains("/run/dory/operation-id"))
         XCTAssertTrue(bootScript.contains("export APP_ENV='dev build'"))
         XCTAssertTrue(bootScript.contains("/usr/lib/dory/configure-machine"))
         XCTAssertTrue(bootScript.contains("mount -t virtiofs -o 'ro' 'src' '/workspace/src'"))

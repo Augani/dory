@@ -200,7 +200,7 @@ struct MachineManagerResolvedPlanIntegrationTests {
                 expectedPlanRevision: { _ in 1 }
             )
 
-            _ = try manager.start(id: "dev")
+            let started = try manager.start(id: "dev")
             #expect(starter.count == 1)
             let deadline = Date().addingTimeInterval(2)
             var arguments: [String] = []
@@ -216,6 +216,7 @@ struct MachineManagerResolvedPlanIntegrationTests {
                 return arguments[index + 1]
             }
             #expect(try value(after: "--resolved-graphics") == "host-accelerated-display")
+            #expect(try value(after: "--operation-id") == started.activeOperationID)
             let deviceData = Data(try value(after: "--resolved-devices").utf8)
             #expect(try JSONDecoder().decode(
                 DoryVirtualMachineDeviceCapabilityRequest.self,

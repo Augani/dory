@@ -1772,12 +1772,14 @@ public final class MachineManager: @unchecked Sendable {
                 targetIdentity: identity
             )
             : nil
+        let operationID = try launchOperationID(id: id, lifecycle: lifecycle)
         do {
             if let lifecycle { try advanceLifecycleToPublishing(lifecycle) }
             let status = try spawnPreparedMachine(
                 prepared.machine,
                 shareAuthorities: prepared.shareAuthorities,
-                launchBinding: nil
+                launchBinding: nil,
+                operationID: operationID
             )
             if let lifecycle {
                 if status.state == .failed {
@@ -1876,6 +1878,7 @@ public final class MachineManager: @unchecked Sendable {
                 targetIdentity: runtimeIdentity
             )
             : nil
+        let operationID = try launchOperationID(id: id, lifecycle: lifecycle)
 
         do {
             if let lifecycle { try advanceLifecycleToPublishing(lifecycle) }
@@ -1887,13 +1890,17 @@ public final class MachineManager: @unchecked Sendable {
                 runtimeComponents: resolved.resolvedPlan.components,
                 graphics: resolved.resolvedPlan.graphics,
                 devices: resolved.resolvedPlan.devices,
+                operationID: operationID,
                 planRevision: resolved.resolvedPlan.planRevision,
                 planSHA256: resolved.resolvedPlanSHA256,
                 preSpawnAuthorization: preSpawnAuthorization,
                 shareAuthorities: prepared.shareAuthorities
             )
             defer { pendingResolvedStart = nil }
-            let operation = registry.start(resolved.backendPlan)
+            let operation = registry.start(MachineBackendStartRequest(
+                plan: resolved.backendPlan,
+                operationID: operationID
+            ))
             guard operation.isSuccess,
                   operation.backend == resolved.resolvedPlan.backend,
                   operation.observation?.machineID == id else {
@@ -1992,6 +1999,7 @@ public final class MachineManager: @unchecked Sendable {
         defer { operationLock.unlock() }
         guard let authorization = pendingResolvedStart,
               authorization.machine.id == binding.machineID,
+              authorization.operationID == binding.operationID,
               authorization.backend == binding.backend,
               binding.backend.identity == expectedBackend,
               authorization.graphics == binding.graphics,
@@ -2029,9 +2037,27 @@ public final class MachineManager: @unchecked Sendable {
             authorization.machine,
             shareAuthorities: authorization.shareAuthorities,
             launchBinding: binding,
+            operationID: authorization.operationID,
             preSpawnAuthorization: authorization.preSpawnAuthorization,
             resolvedPlan: authorization.plan
         ))
+    }
+
+    private func launchOperationID(
+        id: String,
+        lifecycle: MachineLifecycleJournalContext?
+    ) throws -> UUID {
+        if let lifecycle {
+            return lifecycle.operation.operationID
+        }
+        lock.lock()
+        defer { lock.unlock() }
+        guard let operationID = machines[id]?.activeOperationID else {
+            throw MachineManagerError.persistence(
+                "machine launch is missing a durable lifecycle operation identifier"
+            )
+        }
+        return operationID
     }
 
     private func validateResolvedLaunch(
@@ -2474,6 +2500,7 @@ public final class MachineManager: @unchecked Sendable {
         _ preparedMachine: DoryMachineConfiguration,
         shareAuthorities: [DoryMachineShareRuntimeAuthority],
         launchBinding: MachineBackendLaunchBinding?,
+        operationID: UUID,
         preSpawnAuthorization: DoryDaemonVirtualMachinePreSpawnAuthorization? = nil,
         resolvedPlan: DoryResolvedMachinePlan? = nil
     ) throws -> DoryMachineStatus {
@@ -2488,6 +2515,12 @@ public final class MachineManager: @unchecked Sendable {
                 "machine configuration changed after launch validation"
             )
         }
+        guard entry.activeOperationID == operationID else {
+            lock.unlock()
+            throw MachineManagerError.persistence(
+                "machine launch operation authority changed before helper spawn"
+            )
+        }
         if entry.process?.isRunning == true {
             lock.unlock()
             throw MachineManagerError.alreadyRunning(preparedMachine.id)
@@ -2499,7 +2532,12 @@ public final class MachineManager: @unchecked Sendable {
         do {
             handoffServer = try handoffPath.map { path in
                 let server = VmmHandoffServer(path: path) { [weak self] result in
-                    self?.handleHandoff(machineID: id, launchID: launchID, result: result)
+                    self?.handleHandoff(
+                        machineID: id,
+                        launchID: launchID,
+                        expectedOperationID: operationID,
+                        result: result
+                    )
                 }
                 try server.start()
                 return server
@@ -2566,6 +2604,7 @@ public final class MachineManager: @unchecked Sendable {
             )
             processLaunch = try self.processConfiguration(
                 for: launchMachine,
+                operationID: operationID,
                 handoffPath: handoffPath,
                 resolvedLaunchBinding: launchBinding,
                 restoreStatePath: entry.pendingRestoreStatePath
@@ -3100,7 +3139,7 @@ public final class MachineManager: @unchecked Sendable {
 
     private func restoreSavedStateImplementation(id: String) throws -> DoryMachineStatus {
         lock.lock()
-        guard var entry = machines[id] else {
+        guard let entry = machines[id] else {
             lock.unlock()
             throw MachineManagerError.unknownMachine(id)
         }
@@ -3157,16 +3196,18 @@ public final class MachineManager: @unchecked Sendable {
             try advanceLifecycleToPublishing(lifecycle)
             try refreshResolvedAdmissionForStartIfNeeded(id: id)
             lock.lock()
-            guard entry.configuration == machine,
-                  entry.runtimeIdentity == runtimeIdentity,
-                  machines[id]?.state == .suspended else {
+            guard var current = machines[id],
+                  current.configuration == machine,
+                  current.runtimeIdentity == runtimeIdentity,
+                  current.state == .suspended,
+                  current.activeOperationID == lifecycle.operation.operationID else {
                 lock.unlock()
                 throw MachineManagerError.persistence(
                     "machine changed before saved-state restoration"
                 )
             }
-            entry.pendingRestoreStatePath = savedStateStore.statePath(machineID: id)
-            machines[id] = entry
+            current.pendingRestoreStatePath = savedStateStore.statePath(machineID: id)
+            machines[id] = current
             lock.unlock()
 
             let running = try startAndWaitUntilReady(id: id, journalLifecycle: false)
@@ -5408,6 +5449,7 @@ public final class MachineManager: @unchecked Sendable {
 
     private func processConfiguration(
         for machine: DoryMachineConfiguration,
+        operationID: UUID,
         handoffPath: String?,
         resolvedLaunchBinding: MachineBackendLaunchBinding?,
         restoreStatePath: String?
@@ -5421,6 +5463,7 @@ public final class MachineManager: @unchecked Sendable {
             executablePath: target.executablePath,
             arguments: try processArguments(
                 for: machine,
+                operationID: operationID,
                 handoffPath: handoffPath,
                 baseArguments: target.baseArguments,
                 acceleratedDesktop: target.acceleratedDesktop,
@@ -5529,6 +5572,7 @@ public final class MachineManager: @unchecked Sendable {
 
     private func processArguments(
         for machine: DoryMachineConfiguration,
+        operationID: UUID,
         handoffPath: String?,
         baseArguments: [String],
         acceleratedDesktop: Bool,
@@ -5546,6 +5590,7 @@ public final class MachineManager: @unchecked Sendable {
             : nil
         var arguments = baseArguments + [
             "--machine-id", machine.id,
+            "--operation-id", operationID.uuidString.lowercased(),
             "--state-dir", machineStateDirectory(id: machine.id),
             "--dockerd-sock", "\(machineRuntimeDirectory(id: machine.id))/d.sock",
             "--agent-sock", "\(machineRuntimeDirectory(id: machine.id))/a.sock",
@@ -8328,6 +8373,7 @@ public final class MachineManager: @unchecked Sendable {
     private func handleHandoff(
         machineID: String,
         launchID: UUID,
+        expectedOperationID: UUID,
         result: Result<VmmHandoff, Error>
     ) {
         var handoffServer: VmmHandoffServer?
@@ -8337,7 +8383,8 @@ public final class MachineManager: @unchecked Sendable {
         var requiresAdmissionCommit = false
         var lifecycleFailureStepID: String?
         lock.lock()
-        guard var entry = machines[machineID], entry.launchID == launchID else {
+        guard var entry = machines[machineID], entry.launchID == launchID,
+              entry.activeOperationID == expectedOperationID else {
             lock.unlock()
             return
         }
@@ -8346,12 +8393,14 @@ public final class MachineManager: @unchecked Sendable {
         admissionPlan = entry.activeResolvedPlan
         switch result {
         case let .success(handoff):
-            guard handoff.ready.machineID == machineID else {
+            let expectedOperationToken = expectedOperationID.uuidString.lowercased()
+            guard handoff.ready.machineID == machineID,
+                  handoff.ready.operationID == expectedOperationToken else {
                 entry.state = .failed
                 setFailure(
                     on: &entry,
                     code: .readinessHandoffFailed,
-                    message: "handoff machine id mismatch: \(handoff.ready.machineID)",
+                    message: "handoff launch authority did not match the active machine operation",
                     causes: [.readinessGate, .guestAgent],
                     recoveryDisposition: .repair
                 )
@@ -11865,6 +11914,7 @@ private struct PendingResolvedMachineStart {
     var runtimeComponents: [DoryResolvedBackendComponentEvidence]
     var graphics: DoryGraphicsAccelerationLevel
     var devices: DoryVirtualMachineDeviceCapabilityRequest
+    var operationID: UUID
     var planRevision: UInt64
     var planSHA256: String
     var preSpawnAuthorization: DoryDaemonVirtualMachinePreSpawnAuthorization

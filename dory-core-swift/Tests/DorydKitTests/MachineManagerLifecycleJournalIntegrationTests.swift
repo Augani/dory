@@ -117,7 +117,10 @@ final class MachineManagerLifecycleJournalIntegrationTests: XCTestCase {
 
         try sendVmmHandoff(
             path: try XCTUnwrap(starting.handoffSocketPath),
-            ready: VmmReadyMessage(machineID: fixture.machineID),
+            ready: VmmReadyMessage(
+                machineID: fixture.machineID,
+                operationID: try XCTUnwrap(starting.activeOperationID)
+            ),
             fileDescriptors: []
         )
         XCTAssertEqual(try waitForState(manager, id: fixture.machineID, state: .running).state, .running)
@@ -160,12 +163,18 @@ final class MachineManagerLifecycleJournalIntegrationTests: XCTestCase {
 
         try sendVmmHandoff(
             path: try XCTUnwrap(first.handoffSocketPath),
-            ready: VmmReadyMessage(machineID: fixture.machineID),
+            ready: VmmReadyMessage(
+                machineID: fixture.machineID,
+                operationID: try XCTUnwrap(first.activeOperationID)
+            ),
             fileDescriptors: []
         )
         try sendVmmHandoff(
             path: try XCTUnwrap(second.handoffSocketPath),
-            ready: VmmReadyMessage(machineID: "lifecycle-vm-two"),
+            ready: VmmReadyMessage(
+                machineID: "lifecycle-vm-two",
+                operationID: try XCTUnwrap(second.activeOperationID)
+            ),
             fileDescriptors: []
         )
         _ = try waitForState(manager, id: fixture.machineID, state: .running)
@@ -303,7 +312,10 @@ final class MachineManagerLifecycleJournalIntegrationTests: XCTestCase {
         let starting = try XCTUnwrap(manager).start(id: fixture.machineID)
         try sendVmmHandoff(
             path: try XCTUnwrap(starting.handoffSocketPath),
-            ready: VmmReadyMessage(machineID: fixture.machineID),
+            ready: VmmReadyMessage(
+                machineID: fixture.machineID,
+                operationID: try XCTUnwrap(starting.activeOperationID)
+            ),
             fileDescriptors: []
         )
         let running = try waitForState(

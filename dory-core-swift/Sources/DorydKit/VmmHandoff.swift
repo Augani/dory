@@ -2,8 +2,27 @@ import Darwin
 import DoryCore
 import Foundation
 
+/// Canonical textual form used when a durable lifecycle UUID crosses process or guest boundaries.
+/// Requiring the lowercase RFC 4122 spelling prevents multiple log/cursor identities for one UUID.
+public enum DoryOperationIdentity {
+    public static func canonical(_ operationID: UUID) -> String {
+        operationID.uuidString.lowercased()
+    }
+
+    public static func parseCanonical(_ value: String) -> UUID? {
+        guard value.utf8.count == 36,
+              value == value.lowercased(),
+              let parsed = UUID(uuidString: value),
+              canonical(parsed) == value else {
+            return nil
+        }
+        return parsed
+    }
+}
+
 public struct VmmReadyMessage: Sendable, Equatable, Codable {
     public var machineID: String
+    public var operationID: String?
     public var agentBuild: String?
     public var agentProtocolVersion: UInt32?
     public var agentCapabilities: [DoryAgentCapability]
@@ -15,6 +34,7 @@ public struct VmmReadyMessage: Sendable, Equatable, Codable {
 
     public init(
         machineID: String,
+        operationID: String? = nil,
         agentBuild: String? = nil,
         agentProtocolVersion: UInt32? = nil,
         agentCapabilities: [DoryAgentCapability] = [],
@@ -25,6 +45,7 @@ public struct VmmReadyMessage: Sendable, Equatable, Codable {
         detail: String? = nil
     ) {
         self.machineID = machineID
+        self.operationID = operationID
         self.agentBuild = agentBuild
         self.agentProtocolVersion = agentProtocolVersion
         self.agentCapabilities = agentCapabilities
@@ -33,6 +54,10 @@ public struct VmmReadyMessage: Sendable, Equatable, Codable {
         self.shellSocketPath = shellSocketPath
         self.controlSocketPath = controlSocketPath
         self.detail = detail
+    }
+
+    public var hasValidOperationIdentity: Bool {
+        operationID.flatMap(DoryOperationIdentity.parseCanonical) != nil
     }
 }
 
@@ -57,6 +82,7 @@ public enum VmmHandoffError: Error, Sendable, CustomStringConvertible {
     case syscall(String, Int32)
     case emptyMessage
     case invalidJSON(String)
+    case invalidReadyMessage
 
     public var description: String {
         switch self {
@@ -68,6 +94,8 @@ public enum VmmHandoffError: Error, Sendable, CustomStringConvertible {
             return "empty VMM handoff message"
         case let .invalidJSON(message):
             return "invalid VMM handoff JSON: \(message)"
+        case .invalidReadyMessage:
+            return "invalid VMM readiness message"
         }
     }
 }
@@ -229,6 +257,9 @@ public final class VmmHandoffServer: @unchecked Sendable {
             ready = try JSONDecoder().decode(VmmReadyMessage.self, from: payload)
         } catch {
             throw VmmHandoffError.invalidJSON("\(error)")
+        }
+        guard ready.hasValidOperationIdentity else {
+            throw VmmHandoffError.invalidReadyMessage
         }
         return VmmHandoff(ready: ready, fileDescriptors: fileDescriptors(from: Array(control.prefix(controlLength))))
     }

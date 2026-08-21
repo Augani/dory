@@ -74,7 +74,9 @@ final class MachineManagerFileTransferTests: XCTestCase {
         let fixture = try makeRunningFixture(tag: "public-source")
         defer { fixture.cleanup() }
         XCTAssertEqual(chmod(fixture.stagingRoot, 0o755), 0)
-        let baselineExecCount = fixture.agent.execs.count
+        let baselineTransferExecCount = fixture.agent.execs.filter {
+            $0.argv != ["/sbin/ip", "-o", "-4", "addr", "show", "scope", "global"]
+        }.count
 
         XCTAssertThrowsError(try fixture.manager.transferStagedFiles(
             id: "desktop",
@@ -85,7 +87,12 @@ final class MachineManagerFileTransferTests: XCTestCase {
                 .invalidPrivateStagingRoot
             )
         }
-        XCTAssertEqual(fixture.agent.execs.count, baselineExecCount)
+        XCTAssertEqual(
+            fixture.agent.execs.filter {
+                $0.argv != ["/sbin/ip", "-o", "-4", "addr", "show", "scope", "global"]
+            }.count,
+            baselineTransferExecCount
+        )
         XCTAssertTrue(fixture.agent.pushes.isEmpty)
     }
 
@@ -498,6 +505,7 @@ final class MachineManagerFileTransferTests: XCTestCase {
             path: try XCTUnwrap(starting.handoffSocketPath),
             ready: VmmReadyMessage(
                 machineID: "desktop",
+                operationID: try XCTUnwrap(starting.activeOperationID),
                 agentBuild: "dory-agent/transfer-test",
                 agentProtocolVersion: DoryCore.protocolVersion(),
                 agentCapabilities: ["exec", "sync-pull", "sync-push"].map {

@@ -26,6 +26,7 @@ final class VmmHandoffTests: XCTestCase {
             path: server.path,
             ready: VmmReadyMessage(
                 machineID: "dev",
+                operationID: "01234567-89ab-4cde-8f01-23456789abcd",
                 agentBuild: "dory-agent/test",
                 agentProtocolVersion: 1,
                 agentCapabilities: [DoryAgentCapability(id: "exec", version: 1)],
@@ -40,6 +41,10 @@ final class VmmHandoffTests: XCTestCase {
         XCTAssertEqual(got.wait(timeout: .now() + 2), .success)
         let handoff = try resultBox.get()
         XCTAssertEqual(handoff.ready.machineID, "dev")
+        XCTAssertEqual(
+            handoff.ready.operationID,
+            "01234567-89ab-4cde-8f01-23456789abcd"
+        )
         XCTAssertEqual(handoff.ready.agentBuild, "dory-agent/test")
         XCTAssertEqual(handoff.ready.agentProtocolVersion, 1)
         XCTAssertEqual(
@@ -73,11 +78,39 @@ final class VmmHandoffTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: path))
         try VmmHandoffClient.send(
             path: path,
-            ready: VmmReadyMessage(machineID: "replacement"),
+            ready: VmmReadyMessage(
+                machineID: "replacement",
+                operationID: "01234567-89ab-4cde-8f01-23456789abcd"
+            ),
             fileDescriptors: []
         )
         XCTAssertEqual(received.wait(timeout: .now() + 2), .success)
         XCTAssertEqual(try resultBox.get().ready.machineID, "replacement")
+    }
+
+    func testReceiverRejectsReadinessWithoutOperationIdentity() throws {
+        let base = "/tmp/dory-vmm-handoff-operation-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+
+        let received = DispatchSemaphore(value: 0)
+        let resultBox = LockedHandoffResult()
+        let server = VmmHandoffServer(path: base + "/handoff.sock") { result in
+            resultBox.result = result
+            received.signal()
+        }
+        try server.start()
+        defer { server.stop() }
+
+        try VmmHandoffClient.send(
+            path: server.path,
+            ready: VmmReadyMessage(machineID: "dev"),
+            fileDescriptors: []
+        )
+        XCTAssertEqual(received.wait(timeout: .now() + 2), .success)
+        XCTAssertThrowsError(try resultBox.get()) { error in
+            XCTAssertEqual("\(error)", "invalid VMM readiness message")
+        }
     }
 }
 

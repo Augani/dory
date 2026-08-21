@@ -38,6 +38,7 @@ final class MachineManagerSavedStateIntegrationTests: XCTestCase {
             path: try XCTUnwrap(restoring.handoffSocketPath),
             ready: VmmReadyMessage(
                 machineID: fixture.machineID,
+                operationID: try XCTUnwrap(restoring.activeOperationID),
                 controlSocketPath: fixture.controlSocket
             ),
             fileDescriptors: []
@@ -168,9 +169,12 @@ final class MachineManagerSavedStateIntegrationTests: XCTestCase {
             }
         }
 
-        XCTAssertThrowsError(try manager.resume(id: fixture.machineID))
+        var resumeError: Error?
+        XCTAssertThrowsError(try manager.resume(id: fixture.machineID)) {
+            resumeError = $0
+        }
         let failed = try XCTUnwrap(manager.status(id: fixture.machineID))
-        XCTAssertEqual(failed.state, .failed)
+        XCTAssertEqual(failed.state, .failed, "resume error: \(String(describing: resumeError))")
         XCTAssertNil(failed.savedState)
         let arguments = try String(contentsOfFile: fixture.argumentsLog, encoding: .utf8)
             .split(separator: "\n").map(String.init)
@@ -241,6 +245,7 @@ final class MachineManagerSavedStateIntegrationTests: XCTestCase {
             path: try XCTUnwrap(starting.handoffSocketPath),
             ready: VmmReadyMessage(
                 machineID: fixture.machineID,
+                operationID: try XCTUnwrap(starting.activeOperationID),
                 controlSocketPath: fixture.controlSocket
             ),
             fileDescriptors: []
@@ -259,7 +264,7 @@ final class MachineManagerSavedStateIntegrationTests: XCTestCase {
             if let status = manager.status(id: id), predicate(status) { return status }
             Thread.sleep(forTimeInterval: 0.01)
         }
-        XCTFail("timed out waiting for machine state")
+        XCTFail("timed out waiting for machine state: \(String(describing: manager.status(id: id)))")
         throw SavedStateTestError.timeout
     }
 

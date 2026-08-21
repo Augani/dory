@@ -730,6 +730,7 @@ final class DorydServiceTests: XCTestCase {
             path: try XCTUnwrap(starting.handoffSocketPath),
             ready: VmmReadyMessage(
                 machineID: "dev",
+                operationID: try XCTUnwrap(starting.activeOperationID),
                 agentBuild: "dory-agent/test",
                 agentProtocolVersion: DoryCore.protocolVersion(),
                 agentCapabilities: [
@@ -840,6 +841,7 @@ final class DorydServiceTests: XCTestCase {
             path: try XCTUnwrap(starting.handoffSocketPath),
             ready: VmmReadyMessage(
                 machineID: "dev",
+                operationID: try XCTUnwrap(starting.activeOperationID),
                 agentBuild: "dory-agent/test",
                 agentProtocolVersion: DoryCore.protocolVersion(),
                 agentCapabilities: [
@@ -2125,6 +2127,7 @@ final class DorydServiceTests: XCTestCase {
             path: try XCTUnwrap(handoffPath.isEmpty ? nil : handoffPath),
             ready: VmmReadyMessage(
                 machineID: "dev",
+                operationID: try XCTUnwrap(manager.status(id: "dev")?.activeOperationID),
                 agentBuild: "dory-agent/test",
                 agentProtocolVersion: DoryCore.protocolVersion(),
                 agentCapabilities: [DoryAgentCapability(id: "exec", version: 1)],
@@ -2231,6 +2234,7 @@ final class DorydServiceTests: XCTestCase {
             path: try XCTUnwrap(handoffPath.isEmpty ? nil : handoffPath),
             ready: VmmReadyMessage(
                 machineID: "dev",
+                operationID: try XCTUnwrap(manager.status(id: "dev")?.activeOperationID),
                 agentBuild: "dory-agent/test",
                 agentProtocolVersion: DoryCore.protocolVersion(),
                 agentCapabilities: [
@@ -2601,6 +2605,7 @@ final class DorydServiceTests: XCTestCase {
             path: try XCTUnwrap(handoffPath.isEmpty ? nil : handoffPath),
             ready: VmmReadyMessage(
                 machineID: "dev",
+                operationID: try XCTUnwrap(manager.status(id: "dev")?.activeOperationID),
                 agentBuild: "dory-agent/test",
                 agentProtocolVersion: DoryCore.protocolVersion(),
                 agentCapabilities: [DoryAgentCapability(id: "exec", version: 1)],

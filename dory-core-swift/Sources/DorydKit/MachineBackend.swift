@@ -209,6 +209,9 @@ public struct MachineBackendRuntimeRequest: Codable, Sendable, Equatable, Hashab
 /// desired state or portable plan evidence.
 public struct MachineBackendLaunchBinding: Sendable, Equatable {
     public var machineID: String
+    /// The durable lifecycle operation authorizing this launch. Adapters must carry this exact
+    /// identifier back to MachineManager; they may not allocate a helper-local replacement.
+    public var operationID: UUID
     public var backend: MachineBackendDescriptor
     public var componentIdentifier: String
     public var executablePath: String
@@ -219,6 +222,7 @@ public struct MachineBackendLaunchBinding: Sendable, Equatable {
 
     public init(
         machineID: String,
+        operationID: UUID,
         backend: MachineBackendDescriptor,
         componentIdentifier: String,
         executablePath: String,
@@ -226,11 +230,24 @@ public struct MachineBackendLaunchBinding: Sendable, Equatable {
         devices: DoryVirtualMachineDeviceCapabilityRequest
     ) {
         self.machineID = machineID
+        self.operationID = operationID
         self.backend = backend
         self.componentIdentifier = componentIdentifier
         self.executablePath = executablePath
         self.graphics = graphics
         self.devices = devices
+    }
+}
+
+/// One non-persisted start dispatch. The resolved backend plan remains immutable while the
+/// lifecycle operation identifier is minted only when doryd begins the durable start mutation.
+public struct MachineBackendStartRequest: Sendable, Equatable {
+    public var plan: MachineBackendPlan
+    public var operationID: UUID
+
+    public init(plan: MachineBackendPlan, operationID: UUID) {
+        self.plan = plan
+        self.operationID = operationID
     }
 }
 
@@ -269,7 +286,7 @@ public protocol MachineBackend: Sendable {
 
     func probe() -> MachineBackendProbeResult
     func plan(_ request: MachineBackendPlanRequest) -> MachineBackendPlanResult
-    func start(_ plan: MachineBackendPlan) -> MachineBackendOperationResult
+    func start(_ request: MachineBackendStartRequest) -> MachineBackendOperationResult
     func stop(_ request: MachineBackendRuntimeRequest) -> MachineBackendOperationResult
     func pause(_ request: MachineBackendRuntimeRequest) -> MachineBackendOperationResult
     func resume(_ request: MachineBackendRuntimeRequest) -> MachineBackendOperationResult
@@ -336,11 +353,11 @@ public struct BackendRegistry: Sendable {
         return backend.plan(request)
     }
 
-    public func start(_ plan: MachineBackendPlan) -> MachineBackendOperationResult {
-        guard let backend = backends[plan.backend.identity] else {
-            return missingBackendResult(operation: .start, identity: plan.backend.identity)
+    public func start(_ request: MachineBackendStartRequest) -> MachineBackendOperationResult {
+        guard let backend = backends[request.plan.backend.identity] else {
+            return missingBackendResult(operation: .start, identity: request.plan.backend.identity)
         }
-        return backend.start(plan)
+        return backend.start(request)
     }
 
     public func stop(_ request: MachineBackendRuntimeRequest) -> MachineBackendOperationResult {

@@ -421,6 +421,7 @@ case "boot":
     }
 case "desktop":
     var machineID: String?
+    var operationID: UUID?
     var stateDirectory: String?
     var kernel: String?
     var initrd: String?
@@ -442,6 +443,12 @@ case "desktop":
     while let argument = iterator.next() {
         switch argument {
         case "--machine-id": machineID = iterator.next()
+        case "--operation-id":
+            guard let value = iterator.next(),
+                  let parsed = DoryOperationIdentity.parseCanonical(value) else {
+                fail("desktop --operation-id requires a canonical lowercase UUID")
+            }
+            operationID = parsed
         case "--state-dir": stateDirectory = iterator.next()
         case "--kernel": kernel = iterator.next()
         case "--initrd": initrd = iterator.next()
@@ -494,6 +501,7 @@ case "desktop":
         }
     }
     guard let machineID, !machineID.isEmpty else { fail("desktop requires --machine-id") }
+    guard let operationID else { fail("desktop requires --operation-id") }
     guard let stateDirectory, !stateDirectory.isEmpty else { fail("desktop requires --state-dir") }
     guard let kernel else { fail("desktop requires --kernel") }
     if genericGuest, initrd == nil { fail("desktop --generic-guest requires --initrd") }
@@ -505,6 +513,7 @@ case "desktop":
     do {
         try DesktopMode.run(.init(
             machineID: machineID,
+            operationID: operationID,
             stateDirectory: stateDirectory,
             kernelPath: kernel,
             initrdPath: initrd,

@@ -96,9 +96,14 @@ final class MachineBackendTests: XCTestCase {
         XCTAssertEqual(plan.backend.identity, .doryHypervisor)
         XCTAssertEqual(plan.machine.id, "raw-linux")
 
-        let started = registry.start(plan)
+        let operationID = UUID(uuidString: "01234567-89ab-4cde-8f01-23456789abcd")!
+        let started = registry.start(MachineBackendStartRequest(
+            plan: plan,
+            operationID: operationID
+        ))
         XCTAssertTrue(started.isSuccess)
         XCTAssertEqual(started.observation?.state, .running)
+        XCTAssertEqual(recorder.launchBindings.first?.operationID, operationID)
         XCTAssertEqual(recorder.launchBindings.first?.graphics, .hostAcceleratedDisplay)
         XCTAssertEqual(recorder.launchBindings.first?.devices, .minimumBootable)
 

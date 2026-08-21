@@ -2610,7 +2610,10 @@ final class MachineManagerTests: XCTestCase {
         let originalStarting = try manager.start(id: "dev")
         try sendVmmHandoff(
             path: try XCTUnwrap(originalStarting.handoffSocketPath),
-            ready: VmmReadyMessage(machineID: "dev"),
+            ready: VmmReadyMessage(
+                machineID: "dev",
+                operationID: try XCTUnwrap(originalStarting.activeOperationID)
+            ),
             fileDescriptors: []
         )
         _ = try waitForMachineState(manager, id: "dev", state: .running)
@@ -2627,7 +2630,10 @@ final class MachineManagerTests: XCTestCase {
         }
         try sendVmmHandoff(
             path: try XCTUnwrap(updatedStarting.handoffSocketPath),
-            ready: VmmReadyMessage(machineID: "wrong-machine"),
+            ready: VmmReadyMessage(
+                machineID: "wrong-machine",
+                operationID: try XCTUnwrap(updatedStarting.activeOperationID)
+            ),
             fileDescriptors: []
         )
 
@@ -2636,7 +2642,10 @@ final class MachineManagerTests: XCTestCase {
         }
         try sendVmmHandoff(
             path: try XCTUnwrap(restoredStarting.handoffSocketPath),
-            ready: VmmReadyMessage(machineID: "dev"),
+            ready: VmmReadyMessage(
+                machineID: "dev",
+                operationID: try XCTUnwrap(restoredStarting.activeOperationID)
+            ),
             fileDescriptors: []
         )
 
@@ -2887,7 +2896,10 @@ final class MachineManagerTests: XCTestCase {
         XCTAssertTrue(original.installerMediaAttached)
         try sendVmmHandoff(
             path: try XCTUnwrap(original.handoffSocketPath),
-            ready: VmmReadyMessage(machineID: "linux"),
+            ready: VmmReadyMessage(
+                machineID: "linux",
+                operationID: try XCTUnwrap(original.activeOperationID)
+            ),
             fileDescriptors: []
         )
         let originallyRunning = try waitForMachineStatus(manager, id: "linux") {
@@ -2924,7 +2936,10 @@ final class MachineManagerTests: XCTestCase {
         }
         try sendVmmHandoff(
             path: try XCTUnwrap(restarted.handoffSocketPath),
-            ready: VmmReadyMessage(machineID: "linux"),
+            ready: VmmReadyMessage(
+                machineID: "linux",
+                operationID: try XCTUnwrap(restarted.activeOperationID)
+            ),
             fileDescriptors: []
         )
 
@@ -3320,6 +3335,7 @@ final class MachineManagerTests: XCTestCase {
             path: handoffPath,
             ready: VmmReadyMessage(
                 machineID: "dev",
+                operationID: try XCTUnwrap(starting.activeOperationID),
                 agentBuild: "dory-agent/test",
                 agentProtocolVersion: DoryCore.protocolVersion(),
                 agentCapabilities: Self.agentCapabilities(
@@ -3338,6 +3354,42 @@ final class MachineManagerTests: XCTestCase {
         XCTAssertEqual(running.dockerdSocketPath, "/run/docker.sock")
         XCTAssertEqual(running.shellSocketPath, "/run/shell.sock")
         XCTAssertEqual(running.handoffFDCount, 0)
+    }
+
+    func testRequiredHandoffRejectsDifferentOperationIdentity() throws {
+        let base = "/tmp/dory-machine-handoff-operation-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let manager = MachineManager(configuration: MachineManagerConfiguration(
+            vmmExecutablePath: "/bin/sleep",
+            stateDirectory: base,
+            baseArguments: ["30"],
+            passMachineArguments: false,
+            requiresReadyHandoff: true
+        ))
+        defer {
+            try? manager.delete(id: "dev")
+            try? FileManager.default.removeItem(atPath: base)
+        }
+
+        _ = try manager.create(DoryMachineConfiguration(
+            id: "dev",
+            kernelPath: doryTestKernelPath,
+            rootfsPath: doryTestRootfsPath
+        ))
+        let starting = try manager.start(id: "dev")
+        XCTAssertNotNil(starting.activeOperationID)
+
+        try sendVmmHandoff(
+            path: try XCTUnwrap(starting.handoffSocketPath),
+            ready: VmmReadyMessage(
+                machineID: "dev",
+                operationID: "01234567-89ab-4cde-8f01-23456789abcd"
+            ),
+            fileDescriptors: []
+        )
+
+        let failed = try waitForMachineState(manager, id: "dev", state: .failed)
+        XCTAssertEqual(failed.failure?.code, .readinessHandoffFailed)
+        XCTAssertTrue(failed.lastError?.contains("launch authority") == true)
     }
 
     func testDesktopHandoffUsesDesktopStartupBudget() throws {
@@ -3370,7 +3422,10 @@ final class MachineManagerTests: XCTestCase {
 
         try sendVmmHandoff(
             path: handoffPath,
-            ready: VmmReadyMessage(machineID: "desktop"),
+            ready: VmmReadyMessage(
+                machineID: "desktop",
+                operationID: try XCTUnwrap(starting.activeOperationID)
+            ),
             fileDescriptors: []
         )
         _ = try waitForMachineState(manager, id: "desktop", state: .running)
@@ -3411,6 +3466,7 @@ final class MachineManagerTests: XCTestCase {
             path: try XCTUnwrap(starting.handoffSocketPath),
             ready: VmmReadyMessage(
                 machineID: "dev",
+                operationID: try XCTUnwrap(starting.activeOperationID),
                 agentBuild: "dory-agent/test",
                 agentProtocolVersion: DoryCore.protocolVersion(),
                 agentCapabilities: Self.agentCapabilities("exec"),
@@ -3462,6 +3518,7 @@ final class MachineManagerTests: XCTestCase {
             path: try XCTUnwrap(starting.handoffSocketPath),
             ready: VmmReadyMessage(
                 machineID: "dev",
+                operationID: try XCTUnwrap(starting.activeOperationID),
                 agentBuild: "dory-agent/test",
                 agentProtocolVersion: DoryCore.protocolVersion(),
                 agentCapabilities: Self.agentCapabilities("exec"),
@@ -3514,6 +3571,7 @@ final class MachineManagerTests: XCTestCase {
             path: try XCTUnwrap(starting.handoffSocketPath),
             ready: VmmReadyMessage(
                 machineID: "dev",
+                operationID: try XCTUnwrap(starting.activeOperationID),
                 agentBuild: "dory-agent/test",
                 agentProtocolVersion: DoryCore.protocolVersion(),
                 agentCapabilities: Self.agentCapabilities("exec"),
@@ -3586,7 +3644,10 @@ final class MachineManagerTests: XCTestCase {
 
         try sendVmmHandoff(
             path: handoffPath,
-            ready: VmmReadyMessage(machineID: id),
+            ready: VmmReadyMessage(
+                machineID: id,
+                operationID: try XCTUnwrap(starting.activeOperationID)
+            ),
             fileDescriptors: []
         )
         _ = try waitForMachineState(manager, id: id, state: .running)
@@ -3641,7 +3702,7 @@ final class MachineManagerTests: XCTestCase {
             rootfsPath: doryTestRootfsPath,
             displayMode: .desktop
         ))
-        _ = try manager.start(id: "dev")
+        let starting = try manager.start(id: "dev")
         for _ in 0..<100 where !FileManager.default.fileExists(atPath: capture) {
             Thread.sleep(forTimeInterval: 0.01)
         }
@@ -3653,6 +3714,7 @@ final class MachineManagerTests: XCTestCase {
         }
 
         XCTAssertEqual(try value(after: "--state-dir"), durable + "/dev")
+        XCTAssertEqual(try value(after: "--operation-id"), starting.activeOperationID)
         XCTAssertEqual(try value(after: "--display-mode"), "desktop")
         for flag in ["--dockerd-sock", "--agent-sock", "--shell-sock", "--control-sock"] {
             let path = try value(after: flag)
@@ -3846,6 +3908,7 @@ final class MachineManagerTests: XCTestCase {
             path: handoffPath,
             ready: VmmReadyMessage(
                 machineID: "dev",
+                operationID: try XCTUnwrap(starting.activeOperationID),
                 agentBuild: "dory-agent/test",
                 agentProtocolVersion: DoryCore.protocolVersion(),
                 agentCapabilities: Self.agentCapabilities("clock-sync", "exec"),
@@ -3891,7 +3954,8 @@ final class MachineManagerTests: XCTestCase {
         let starting = try manager.start(id: "dev")
         try sendSnapshotQuiesceHandoff(
             path: try XCTUnwrap(starting.handoffSocketPath),
-            machineID: "dev"
+            machineID: "dev",
+            operationID: try XCTUnwrap(starting.activeOperationID)
         )
         _ = try waitForMachineState(manager, id: "dev", state: .running)
 
@@ -3975,6 +4039,7 @@ final class MachineManagerTests: XCTestCase {
             path: handoffPath,
             ready: VmmReadyMessage(
                 machineID: "dev",
+                operationID: try XCTUnwrap(starting.activeOperationID),
                 agentBuild: "dory-agent/test",
                 agentProtocolVersion: DoryCore.protocolVersion(),
                 agentCapabilities: Self.agentCapabilities("exec"),
@@ -4044,6 +4109,7 @@ final class MachineManagerTests: XCTestCase {
             path: try XCTUnwrap(starting.handoffSocketPath),
             ready: VmmReadyMessage(
                 machineID: "dev",
+                operationID: try XCTUnwrap(starting.activeOperationID),
                 agentBuild: "dory-agent/test",
                 agentProtocolVersion: DoryCore.protocolVersion(),
                 agentCapabilities: Self.agentCapabilities("clock-sync"),
@@ -4104,6 +4170,7 @@ final class MachineManagerTests: XCTestCase {
             path: try XCTUnwrap(starting.handoffSocketPath),
             ready: VmmReadyMessage(
                 machineID: "dev",
+                operationID: try XCTUnwrap(starting.activeOperationID),
                 agentBuild: "dory-agent/test",
                 agentProtocolVersion: DoryCore.protocolVersion(),
                 agentCapabilities: Self.agentCapabilities("exec", "telemetry"),
@@ -4169,6 +4236,7 @@ final class MachineManagerTests: XCTestCase {
             path: try XCTUnwrap(starting.handoffSocketPath),
             ready: VmmReadyMessage(
                 machineID: "dev",
+                operationID: try XCTUnwrap(starting.activeOperationID),
                 agentBuild: "dory-agent/test",
                 agentProtocolVersion: DoryCore.protocolVersion(),
                 agentCapabilities: Self.agentCapabilities("telemetry"),
@@ -4219,6 +4287,7 @@ final class MachineManagerTests: XCTestCase {
             path: try XCTUnwrap(starting.handoffSocketPath),
             ready: VmmReadyMessage(
                 machineID: "dev",
+                operationID: try XCTUnwrap(starting.activeOperationID),
                 agentBuild: "dory-agent/test",
                 agentProtocolVersion: DoryCore.protocolVersion(),
                 agentCapabilities: Self.agentCapabilities("telemetry"),
@@ -4291,11 +4360,16 @@ private struct NoopMachineVZLifecycleController: MachineVZLifecycleControlling {
     }
 }
 
-private func sendSnapshotQuiesceHandoff(path: String, machineID: String) throws {
+private func sendSnapshotQuiesceHandoff(
+    path: String,
+    machineID: String,
+    operationID: String
+) throws {
     try sendVmmHandoff(
         path: path,
         ready: VmmReadyMessage(
             machineID: machineID,
+            operationID: operationID,
             agentBuild: "dory-agent/snapshot-test",
             agentProtocolVersion: DoryCore.protocolVersion(),
             agentCapabilities: [DoryAgentCapability(id: "snapshot-quiesce", version: 2)],
@@ -4323,8 +4397,13 @@ private func takeSnapshotAndCompleteRestart(
            status.state == .starting,
            let pid = status.pid,
            !handedOffPIDs.contains(pid),
-           let handoffPath = status.handoffSocketPath {
-            try sendSnapshotQuiesceHandoff(path: handoffPath, machineID: machineID)
+           let handoffPath = status.handoffSocketPath,
+           let operationID = status.activeOperationID {
+            try sendSnapshotQuiesceHandoff(
+                path: handoffPath,
+                machineID: machineID,
+                operationID: operationID
+            )
             handedOffPIDs.insert(pid)
         }
         Thread.sleep(forTimeInterval: 0.01)
@@ -4354,6 +4433,7 @@ private func runDesktopUpdate(
                 path: handoffPath,
                 ready: VmmReadyMessage(
                     machineID: id,
+                    operationID: try XCTUnwrap(status.activeOperationID),
                     agentBuild: "dory-agent/update-test",
                     agentProtocolVersion: DoryCore.protocolVersion(),
                     agentCapabilities: [DoryAgentCapability(id: "exec", version: 1)],

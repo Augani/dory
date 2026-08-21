@@ -186,7 +186,8 @@ private final class LinuxMachineBackendAdapterCore: @unchecked Sendable {
         )
     }
 
-    func start(_ plan: MachineBackendPlan) -> MachineBackendOperationResult {
+    func start(_ request: MachineBackendStartRequest) -> MachineBackendOperationResult {
+        let plan = request.plan
         guard plan.backend == descriptor,
               plan.capability.request.backend == descriptor.identity else {
             return failedOperation(
@@ -223,6 +224,7 @@ private final class LinuxMachineBackendAdapterCore: @unchecked Sendable {
         }
         return performAuthorizedStart(MachineBackendLaunchBinding(
             machineID: plan.machine.id,
+            operationID: request.operationID,
             backend: descriptor,
             componentIdentifier: componentIdentifier,
             executablePath: executablePath,
@@ -438,7 +440,9 @@ public final class RawHVLinuxMachineBackend: MachineBackend, @unchecked Sendable
 
     public func probe() -> MachineBackendProbeResult { core.probe() }
     public func plan(_ request: MachineBackendPlanRequest) -> MachineBackendPlanResult { core.plan(request) }
-    public func start(_ plan: MachineBackendPlan) -> MachineBackendOperationResult { core.start(plan) }
+    public func start(_ request: MachineBackendStartRequest) -> MachineBackendOperationResult {
+        core.start(request)
+    }
     public func stop(_ request: MachineBackendRuntimeRequest) -> MachineBackendOperationResult { core.stop(request) }
     public func pause(_ request: MachineBackendRuntimeRequest) -> MachineBackendOperationResult { core.pause(request) }
     public func resume(_ request: MachineBackendRuntimeRequest) -> MachineBackendOperationResult { core.resume(request) }
@@ -522,7 +526,9 @@ public final class VirtualizationFrameworkLinuxMachineBackend: MachineBackend, @
 
     public func probe() -> MachineBackendProbeResult { core.probe() }
     public func plan(_ request: MachineBackendPlanRequest) -> MachineBackendPlanResult { core.plan(request) }
-    public func start(_ plan: MachineBackendPlan) -> MachineBackendOperationResult { core.start(plan) }
+    public func start(_ request: MachineBackendStartRequest) -> MachineBackendOperationResult {
+        core.start(request)
+    }
     public func stop(_ request: MachineBackendRuntimeRequest) -> MachineBackendOperationResult { core.stop(request) }
     public func pause(_ request: MachineBackendRuntimeRequest) -> MachineBackendOperationResult { core.pause(request) }
     public func resume(_ request: MachineBackendRuntimeRequest) -> MachineBackendOperationResult { core.resume(request) }

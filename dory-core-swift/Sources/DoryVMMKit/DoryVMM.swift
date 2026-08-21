@@ -23,6 +23,7 @@ public enum DoryVMMDisplayDefaults {
 
 public struct DoryVMMArguments: Sendable, Equatable {
     public var machineID: String?
+    public var operationID: UUID?
     public var stateDirectory: String?
     public var dataDriveRoot: String?
     public var kernelPath: String?
@@ -68,6 +69,7 @@ public enum DoryVMMArgumentError: Error, Sendable, Equatable, CustomStringConver
     case missingValue(String)
     case invalidInteger(String, String)
     case missingMachineID
+    case missingOperationID
     case missingHandoffSocket
     case missingStateDirectory
     case missingKernel
@@ -79,6 +81,7 @@ public enum DoryVMMArgumentError: Error, Sendable, Equatable, CustomStringConver
     case invalidEnvironment(String)
     case invalidResolvedGraphics(String)
     case invalidResolvedDevices(String)
+    case invalidOperationID(String)
 
     public var description: String {
         switch self {
@@ -88,6 +91,8 @@ public enum DoryVMMArgumentError: Error, Sendable, Equatable, CustomStringConver
             return "invalid integer for \(flag): \(value)"
         case .missingMachineID:
             return "missing --machine-id"
+        case .missingOperationID:
+            return "missing --operation-id"
         case .missingHandoffSocket:
             return "missing --handoff-sock"
         case .missingStateDirectory:
@@ -110,6 +115,8 @@ public enum DoryVMMArgumentError: Error, Sendable, Equatable, CustomStringConver
             return "invalid --resolved-graphics value: \(value)"
         case let .invalidResolvedDevices(value):
             return "invalid --resolved-devices value: \(value)"
+        case let .invalidOperationID(value):
+            return "invalid --operation-id value: \(value)"
         }
     }
 }
@@ -123,6 +130,12 @@ public func parseDoryVMMArguments(_ raw: [String]) throws -> DoryVMMArguments {
         switch argument {
         case "--machine-id":
             parsed.machineID = try value(after: argument, from: raw, index: &index)
+        case "--operation-id":
+            let rawValue = try value(after: argument, from: raw, index: &index)
+            guard let operationID = DoryOperationIdentity.parseCanonical(rawValue) else {
+                throw DoryVMMArgumentError.invalidOperationID(rawValue)
+            }
+            parsed.operationID = operationID
         case "--state-dir":
             parsed.stateDirectory = try value(after: argument, from: raw, index: &index)
         case "--data-drive":
@@ -245,6 +258,7 @@ private func intValue(after flag: String, from raw: [String], index: inout Array
 
 public struct DoryVZMachineSpec: Sendable, Equatable {
     public var machineID: String
+    public var operationID: UUID?
     public var stateDirectory: String
     public var kernelPath: String
     public var rootfsPath: String
@@ -265,6 +279,7 @@ public struct DoryVZMachineSpec: Sendable, Equatable {
 
     public init(
         machineID: String,
+        operationID: UUID? = nil,
         stateDirectory: String,
         kernelPath: String,
         rootfsPath: String,
@@ -284,6 +299,7 @@ public struct DoryVZMachineSpec: Sendable, Equatable {
         bridgeSubnetCIDR: String = DoryIPv4BridgeNetwork.defaultCIDR
     ) {
         self.machineID = machineID
+        self.operationID = operationID
         self.stateDirectory = stateDirectory
         self.kernelPath = kernelPath
         self.rootfsPath = rootfsPath
@@ -427,7 +443,10 @@ public enum DoryVZConfigurationBuilder {
                 throw DoryVZMachineError.missingFile(spec.kernelPath)
             }
             let bootLoader = VZLinuxBootLoader(kernelURL: URL(fileURLWithPath: spec.kernelPath))
-            bootLoader.commandLine = spec.kernelCommandLine ?? defaultKernelCommandLine(machineID: spec.machineID)
+            bootLoader.commandLine = spec.kernelCommandLine ?? defaultKernelCommandLine(
+                machineID: spec.machineID,
+                operationID: spec.operationID
+            )
             configuration.bootLoader = bootLoader
         case .efi:
             guard spec.displayMode == .desktop else {
@@ -694,8 +713,18 @@ public enum DoryVZConfigurationBuilder {
         return store
     }
 
-    public static func defaultKernelCommandLine(machineID: String) -> String {
-        "console=hvc0 root=/dev/vda rw rootwait panic=1 dory.machine_id=\(machineID)"
+    public static func defaultKernelCommandLine(
+        machineID: String,
+        operationID: UUID? = nil
+    ) -> String {
+        var arguments = [
+            "console=hvc0", "root=/dev/vda", "rw", "rootwait", "panic=1",
+            "dory.machine_id=\(machineID)",
+        ]
+        if let operationID {
+            arguments.append("dory.operation_id=\(DoryOperationIdentity.canonical(operationID))")
+        }
+        return arguments.joined(separator: " ")
     }
 
     private static func prepareBootConfigShare(
@@ -710,6 +739,7 @@ public enum DoryVZConfigurationBuilder {
         let script = guestBootScript(
             shares: spec.shares,
             environment: spec.environment,
+            operationID: spec.operationID,
             allowDockerDataFormat: allowDockerDataFormat,
             nativeIPv6: spec.nativeIPv6,
             sourcePreservingLAN: spec.sourcePreservingLAN,
@@ -731,6 +761,7 @@ public enum DoryVZConfigurationBuilder {
     private static func guestBootScript(
         shares: [DoryMachineShareConfiguration],
         environment: [String: String],
+        operationID: UUID?,
         allowDockerDataFormat: Bool,
         nativeIPv6: Bool,
         sourcePreservingLAN: Bool,
@@ -757,6 +788,17 @@ public enum DoryVZConfigurationBuilder {
             "",
             ": > /var/log/dory-mounts.log",
         ]
+        if let operationID {
+            let token = DoryOperationIdentity.canonical(operationID)
+            lines += [
+                "mkdir -p /run/dory",
+                "chmod 700 /run/dory",
+                "printf '%s\\n' \(shellQuote(token)) > /run/dory/operation-id",
+                "chmod 600 /run/dory/operation-id",
+                "export DORY_OPERATION_ID=\(shellQuote(token))",
+                "",
+            ]
+        }
         for (key, value) in environment.sorted(by: { $0.key < $1.key }) {
             guard key.wholeMatch(of: /[A-Za-z_][A-Za-z0-9_]*/) != nil else { continue }
             lines.append("export \(key)=\(shellQuote(value))")
@@ -900,6 +942,9 @@ public enum DoryVMMMain {
         guard let machineID = arguments.machineID else {
             throw DoryVMMArgumentError.missingMachineID
         }
+        guard let operationID = arguments.operationID else {
+            throw DoryVMMArgumentError.missingOperationID
+        }
         guard let handoffSocketPath = arguments.handoffSocketPath else {
             throw DoryVMMArgumentError.missingHandoffSocket
         }
@@ -911,6 +956,7 @@ public enum DoryVMMMain {
         case .immediateHandoff:
             try sendHandoff(
                 machineID: machineID,
+                operationID: operationID,
                 handoffSocketPath: handoffSocketPath,
                 agentBuild: arguments.agentBuild,
                 agentSocketPath: arguments.agentSocketPath,
@@ -948,6 +994,7 @@ public enum DoryVMMMain {
             shutdownCoordinator = coordinator
             runtime = try runVirtualMachine(
                 machineID: machineID,
+                operationID: operationID,
                 stateDirectory: stateDirectory,
                 kernelPath: kernelPath,
                 rootfsPath: rootfsPath,
@@ -1015,6 +1062,7 @@ public enum DoryVMMMain {
 
     private static func sendHandoff(
         machineID: String,
+        operationID: UUID,
         handoffSocketPath: String,
         agentBuild: String?,
         agentProtocolVersion: UInt32? = nil,
@@ -1029,6 +1077,7 @@ public enum DoryVMMMain {
             path: handoffSocketPath,
             ready: VmmReadyMessage(
                 machineID: machineID,
+                operationID: DoryOperationIdentity.canonical(operationID),
                 agentBuild: agentBuild,
                 agentProtocolVersion: agentProtocolVersion,
                 agentCapabilities: agentCapabilities,
@@ -1043,6 +1092,7 @@ public enum DoryVMMMain {
 
     private static func runVirtualMachine(
         machineID: String,
+        operationID: UUID,
         stateDirectory: String,
         kernelPath: String,
         rootfsPath: String,
@@ -1081,6 +1131,7 @@ public enum DoryVMMMain {
         try appendBootSessionMarker(
             to: serialLog,
             machineID: machineID,
+            operationID: operationID,
             bootMode: bootMode,
             cpuCount: cpuCount,
             memoryMB: memoryMB,
@@ -1161,6 +1212,7 @@ public enum DoryVMMMain {
         }
         let spec = DoryVZMachineSpec(
             machineID: machineID,
+            operationID: operationID,
             stateDirectory: stateDirectory,
             kernelPath: kernelPath,
             rootfsPath: rootfsPath,
@@ -1275,6 +1327,7 @@ public enum DoryVMMMain {
         if bootMode == .efi {
             try sendHandoff(
                 machineID: machineID,
+                operationID: operationID,
                 handoffSocketPath: handoffSocketPath,
                 agentBuild: "dory-vmm/efi",
                 agentSocketPath: nil,
@@ -1292,6 +1345,7 @@ public enum DoryVMMMain {
         defer { agentConnection.close() }
         let agentInfo = try prepareAgent(
             from: agentConnection,
+            operationID: operationID,
             displayMode: displayMode,
             environment: environment,
             shares: shares,
@@ -1303,6 +1357,7 @@ public enum DoryVMMMain {
         // process can never collapse all of them into one misleading "running" bit.
         try sendHandoff(
             machineID: machineID,
+            operationID: operationID,
             handoffSocketPath: handoffSocketPath,
             agentBuild: agentInfo.agentBuild,
             agentProtocolVersion: agentInfo.protocolVersion,
@@ -1320,6 +1375,7 @@ public enum DoryVMMMain {
 
     private static func prepareAgent(
         from connection: VZVirtioSocketConnection,
+        operationID: UUID,
         displayMode: DoryMachineDisplayMode,
         environment: [String: String],
         shares: [DoryMachineShareConfiguration],
@@ -1333,6 +1389,16 @@ public enum DoryVMMMain {
         let control = try DoryCore.connectAgentControlOverFD(fd)
         defer { control.close() }
         let info = try control.info()
+        let operationToken = DoryOperationIdentity.canonical(operationID)
+        try requireSuccessfulDesktopExec(control.exec(
+            argv: [
+                "/bin/sh", "-c",
+                "mkdir -p /run/dory && chmod 700 /run/dory && umask 077 && printf '%s\\n' \"$DORY_OPERATION_ID\" > /run/dory/operation-id",
+            ],
+            env: [DoryExecEnvironment(key: "DORY_OPERATION_ID", value: operationToken)],
+            timeoutMs: 10_000,
+            outputLimitBytes: 16 * 1_024
+        ), operation: "bind lifecycle operation")
         if restoringSavedState { return info }
         guard displayMode == .desktop else { return info }
 
@@ -1351,9 +1417,11 @@ public enum DoryVMMMain {
             ), operation: "persist guest UI scale")
         }
 
+        var guestEnvironment = environment
+        guestEnvironment["DORY_OPERATION_ID"] = operationToken
         try requireSuccessfulDesktopExec(control.exec(
             argv: ["/usr/lib/dory/configure-machine"],
-            env: environment.sorted(by: { $0.key < $1.key }).map {
+            env: guestEnvironment.sorted(by: { $0.key < $1.key }).map {
                 DoryExecEnvironment(key: $0.key, value: $0.value)
             },
             timeoutMs: 30_000,
@@ -1414,13 +1482,14 @@ public enum DoryVMMMain {
     private static func appendBootSessionMarker(
         to log: FileHandle,
         machineID: String,
+        operationID: UUID,
         bootMode: DoryMachineBootMode,
         cpuCount: Int,
         memoryMB: UInt64,
         runtimeProfile: String
     ) throws {
         let timestamp = Date().formatted(.iso8601)
-        let marker = "\n--- DORY BOOT \(timestamp) machine=\(machineID) mode=\(bootMode.rawValue) cpus=\(cpuCount) memoryMB=\(memoryMB) runtime=\(runtimeProfile) ---\n"
+        let marker = "\n--- DORY BOOT \(timestamp) machine=\(machineID) operation=\(DoryOperationIdentity.canonical(operationID)) mode=\(bootMode.rawValue) cpus=\(cpuCount) memoryMB=\(memoryMB) runtime=\(runtimeProfile) ---\n"
         try log.write(contentsOf: Data(marker.utf8))
         try log.synchronize()
     }
