@@ -360,6 +360,7 @@ jobs:
           python3 .github/scripts/test-prune-safety-gate.py
           python3 .github/scripts/test-data-drive-volume-identity-gate.py
           python3 .github/scripts/test-data-disk-growth-gate.py
+          python3 .github/scripts/test-ecr-registry-retry-gate.py
       - name: P0 smoke harness regression tests
         run: bash scripts/test-p0-smoke.sh
       - name: Dory app and offline quality suite
