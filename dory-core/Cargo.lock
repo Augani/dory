@@ -772,6 +772,7 @@ dependencies = [
  "dory-pb",
  "dory-proto",
  "dory-sync",
+ "libc",
  "prost",
  "rand",
  "russh",

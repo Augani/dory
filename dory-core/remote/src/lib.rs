@@ -8,17 +8,23 @@
 //!   run `AgentClient` over it. Host-key verification is mandatory ([`ssh::HostKeyPolicy`]).
 //! - [`sync_push`] — host-authoritative chunked file sync (D5): manifest diff, chunked puts,
 //!   deletes; the guest-side reconciler lives in `dory-sync`.
+//! - [`sync_pull`] — bounded guest-to-host staging with exact manifest digest verification.
 
 pub mod agent_client;
 pub mod error;
 pub mod keys;
 pub mod ssh;
+pub mod sync_pull;
 pub mod sync_push;
 
 pub use agent_client::AgentClient;
 pub use error::RemoteError;
 pub use keys::{private_key_from_openssh, public_key_from_openssh};
 pub use ssh::{AgentEndpoint, HostKeyPolicy, SshAgent, SshConfig};
+pub use sync_pull::{
+    pull, pull_observed, PullLimits, PullObserver, PullPhase, PullProgress, PullStats, SourceChunk,
+    SyncSource,
+};
 pub use sync_push::{
     push, push_observed, PushObserver, PushPhase, PushProgress, PushStats, SyncTarget,
 };
