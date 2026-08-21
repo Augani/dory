@@ -404,6 +404,10 @@ final class DoryVMMKitTests: XCTestCase {
         XCTAssertEqual(configuration.memorySize, 2048 * 1024 * 1024)
         let network = try XCTUnwrap(configuration.networkDevices.first as? VZVirtioNetworkDeviceConfiguration)
         XCTAssertTrue(network.attachment is VZNATNetworkDeviceAttachment)
+        XCTAssertEqual(
+            network.macAddress.string,
+            DoryVZConfigurationBuilder.stableNetworkMACAddress(machineID: "dev")
+        )
         XCTAssertEqual(configuration.memoryBalloonDevices.count, 1)
         XCTAssertTrue(configuration.memoryBalloonDevices.first is VZVirtioTraditionalMemoryBalloonDeviceConfiguration)
         XCTAssertEqual(configuration.entropyDevices.count, 1)
@@ -455,7 +459,7 @@ final class DoryVMMKitTests: XCTestCase {
         try assertShellSyntax("\(base)/dorycfg/boot.sh")
     }
 
-    func testResolvedDisconnectedVZConfigurationOmitsEveryNetworkDevice() throws {
+    func testResolvedDisconnectedVZConfigurationRetainsAStableDetachedNetworkDevice() throws {
         let base = "/tmp/dory-vmm-disconnected-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(atPath: base) }
@@ -481,7 +485,19 @@ final class DoryVMMKitTests: XCTestCase {
             serialOutput: nil
         )
 
-        XCTAssertTrue(configuration.networkDevices.isEmpty)
+        XCTAssertEqual(configuration.networkDevices.count, 1)
+        let network = try XCTUnwrap(
+            configuration.networkDevices.first as? VZVirtioNetworkDeviceConfiguration
+        )
+        XCTAssertNil(network.attachment)
+        XCTAssertEqual(
+            network.macAddress.string,
+            DoryVZConfigurationBuilder.stableNetworkMACAddress(machineID: "offline")
+        )
+        XCTAssertNotEqual(
+            network.macAddress.string,
+            DoryVZConfigurationBuilder.stableNetworkMACAddress(machineID: "other")
+        )
         XCTAssertEqual(configuration.socketDevices.count, 1)
         XCTAssertEqual(configuration.storageDevices.count, 1)
     }

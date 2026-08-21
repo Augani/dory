@@ -47,7 +47,7 @@ enum DesktopMode {
         }
 
         var startsGVProxy: Bool { self == .sharedNAT }
-        var attachesNetworkDevice: Bool { self == .sharedNAT }
+        var attachesNetworkDevice: Bool { true }
     }
 
     private struct ResolvedGraphics {
@@ -554,7 +554,7 @@ enum DesktopMode {
         private struct NetworkRuntime {
             let process: Process?
             let socketPaths: [String]
-            let backend: VirtioNet?
+            let backend: (any VirtioDeviceBackend)?
         }
 
         private static func prepareNetwork(
@@ -563,6 +563,13 @@ enum DesktopMode {
             runtimeDirectory: String,
             token: String
         ) throws -> NetworkRuntime {
+            if plan == .disconnected {
+                return NetworkRuntime(
+                    process: nil,
+                    socketPaths: [],
+                    backend: VirtioDisconnectedNet()
+                )
+            }
             guard plan.startsGVProxy, plan.attachesNetworkDevice else {
                 return NetworkRuntime(process: nil, socketPaths: [], backend: nil)
             }

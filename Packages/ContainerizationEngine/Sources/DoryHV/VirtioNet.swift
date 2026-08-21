@@ -309,3 +309,30 @@ public final class VirtioNet: VirtioDeviceBackend, @unchecked Sendable {
         }
     }
 }
+
+/// A virtio-net function that remains visible to the guest while its carrier is down. This is
+/// deliberately a device, rather than an omitted backend: persistent interface identity and guest
+/// configuration survive a later reconnect without accidentally granting host connectivity.
+public final class VirtioDisconnectedNet: VirtioDeviceBackend, @unchecked Sendable {
+    public let deviceID: UInt32 = 1
+    public let queueCount = 2
+    public let deviceFeatures: UInt64 = (1 << 5) | (1 << 16) // MAC + STATUS
+    public let configSpace: [UInt8]
+
+    public init(macAddress: [UInt8] = VirtioNet.guestMAC) {
+        precondition(macAddress.count == 6, "a virtio-net MAC address must contain six bytes")
+        // virtio_net_config.mac followed by little-endian status. A zero status keeps LINK_UP
+        // clear, which Linux reports as NO-CARRIER while retaining the interface.
+        configSpace = macAddress + [0, 0]
+    }
+
+    public func handleKick(queue: Int, transport: VirtioMMIOTransport) {
+        guard queue == 1 else { return }
+        let virtqueue = transport.queues[1]
+        var interrupt = false
+        while let chain = (try? virtqueue.pop()) ?? nil {
+            interrupt = ((try? virtqueue.push(chain, written: 0)) ?? false) || interrupt
+        }
+        if interrupt { transport.notifyUsed() }
+    }
+}

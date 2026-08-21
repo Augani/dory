@@ -770,7 +770,7 @@ private struct MachineEditSheet: View {
             .pickerStyle(.segmented)
             .accessibilityIdentifier("edit-machine-network-mode")
             Text(networkMode == .disconnected
-                 ? "Disconnected attaches no virtual network device."
+                 ? "Disconnected keeps the virtual adapter present with its link down."
                  : "Shared NAT provides outbound access through your Mac without exposing the machine directly.")
                 .font(.system(size: 11)).foregroundStyle(p.text3)
         }

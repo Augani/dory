@@ -434,15 +434,18 @@ public enum DoryVZConfigurationBuilder {
         configuration.entropyDevices = [VZVirtioEntropyDeviceConfiguration()]
         configuration.memoryBalloonDevices = [VZVirtioTraditionalMemoryBalloonDeviceConfiguration()]
         configuration.socketDevices = [VZVirtioSocketDeviceConfiguration()]
+        let network = VZVirtioNetworkDeviceConfiguration()
         if spec.resolvedDevices?.networkAttachment != .disconnected {
-            let network = VZVirtioNetworkDeviceConfiguration()
             network.attachment = networkAttachment ?? VZNATNetworkDeviceAttachment()
-            if networkAttachment != nil,
-               let macAddress = VZMACAddress(string: DoryVMMNativeIPv6Plan.guestMAC) {
-                network.macAddress = macAddress
-            }
-            configuration.networkDevices = [network]
         }
+        let macAddressString = networkAttachment != nil
+            ? DoryVMMNativeIPv6Plan.guestMAC
+            : stableNetworkMACAddress(machineID: spec.machineID)
+        guard let macAddress = VZMACAddress(string: macAddressString) else {
+            throw DoryVZMachineError.validation("could not derive stable network identity")
+        }
+        network.macAddress = macAddress
+        configuration.networkDevices = [network]
 
         if spec.displayMode == .desktop {
             let devices = spec.resolvedDevices
@@ -619,6 +622,19 @@ public enum DoryVZConfigurationBuilder {
         }
 
         return configuration
+    }
+
+    static func stableNetworkMACAddress(machineID: String) -> String {
+        // FNV-1a provides a deterministic identity without introducing a cryptographic trust
+        // claim. Set the locally administered bit and clear multicast.
+        var hash: UInt64 = 0xcbf2_9ce4_8422_2325
+        for byte in machineID.utf8 {
+            hash ^= UInt64(byte)
+            hash &*= 0x0000_0100_0000_01B3
+        }
+        var bytes = (0..<6).map { UInt8(truncatingIfNeeded: hash >> UInt64($0 * 8)) }
+        bytes[0] = (bytes[0] | 0x02) & 0xFE
+        return bytes.map { String(format: "%02x", $0) }.joined(separator: ":")
     }
 
     private static func persistentMachineIdentifier(at path: String) throws -> VZGenericMachineIdentifier {

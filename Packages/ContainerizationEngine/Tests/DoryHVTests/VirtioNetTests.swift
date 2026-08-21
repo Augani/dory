@@ -4,6 +4,54 @@ import Testing
 @testable import DoryHV
 
 @Suite struct VirtioNetTests {
+    @Test func disconnectedDeviceAdvertisesStableMACWithCarrierDown() {
+        let device = VirtioDisconnectedNet()
+
+        #expect(device.queueCount == 2)
+        #expect(device.deviceFeatures & (1 << 5) != 0)
+        #expect(device.deviceFeatures & (1 << 16) != 0)
+        #expect(Array(device.configSpace.prefix(6)) == VirtioNet.guestMAC)
+        #expect(Array(device.configSpace.suffix(2)) == [0, 0])
+    }
+
+    @Test func disconnectedDeviceConsumesTransmitDescriptorsWithoutAHostBackend() throws {
+        let device = VirtioDisconnectedNet()
+        let guestBase: UInt64 = 0xA000_0000
+        let memory = try GuestMemory(guestBase: guestBase, size: 1 << 20)
+        let transport = VirtioMMIOTransport(
+            baseAddress: GuestLayout.virtioBase,
+            backend: device,
+            memory: memory
+        ) {}
+        let descriptorTable = guestBase + 0x1_0000
+        let availableRing = guestBase + 0x1_1000
+        let usedRing = guestBase + 0x1_2000
+        let frameAddress = guestBase + 0x1_3000
+        let frame = [UInt8](repeating: 0xA5, count: 64)
+
+        transport.queues[1].configure(
+            size: 8,
+            descriptorTable: descriptorTable,
+            availRing: availableRing,
+            usedRing: usedRing
+        )
+        transport.queues[1].setReady(true)
+        try memory.write(frame, at: frameAddress)
+        try memory.write(frameAddress, at: descriptorTable)
+        try memory.write(UInt32(frame.count), at: descriptorTable + 8)
+        try memory.write(UInt16(0), at: descriptorTable + 12)
+        try memory.write(UInt16(0), at: descriptorTable + 14)
+        try memory.write(UInt16(0), at: availableRing)
+        try memory.write(UInt16(1), at: availableRing + 2)
+        try memory.write(UInt16(0), at: availableRing + 4)
+        try memory.write(UInt16(0), at: usedRing + 2)
+
+        device.handleKick(queue: 1, transport: transport)
+
+        #expect(try memory.read(UInt16.self, at: usedRing + 2) == 1)
+        #expect(try memory.read(UInt32.self, at: usedRing + 8) == 0)
+    }
+
     @Test func receiveFrameWaitsForGuestBufferAndDrainsOnReceiveKick() throws {
         // sockaddr_un paths are capped at 103 bytes on Darwin; /var/folders/.../T is often already
         // long enough that a descriptive UUID path overflows it.

@@ -16,7 +16,7 @@ import Testing
         }
     }
 
-    @Test func disconnectedLaunchesNoNetworkProcessOrDevice() throws {
+    @Test func disconnectedRetainsTheNetworkDeviceWithoutLaunchingGVProxy() throws {
         let devices = DoryVirtualMachineDeviceCapabilityRequest(
             networkAttachment: .disconnected
         )
@@ -24,7 +24,7 @@ import Testing
 
         #expect(plan == .disconnected)
         #expect(!plan.startsGVProxy)
-        #expect(!plan.attachesNetworkDevice)
+        #expect(plan.attachesNetworkDevice)
     }
 
     @Test func unimplementedNetworkModesFailClosed() {
