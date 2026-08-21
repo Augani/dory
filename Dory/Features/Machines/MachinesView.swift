@@ -253,10 +253,18 @@ private struct MachineCard: View {
                 }
                 if isRunning {
                     Button { selectAndSendFiles() } label: {
-                        Label("Send Files\u{2026}", systemImage: "paperplane")
+                        Label(
+                            store.canTransferFolders(to: machine)
+                                ? "Send Files or Folders\u{2026}" : "Send Files\u{2026}",
+                            systemImage: "paperplane"
+                        )
                     }
                     .disabled(!store.canTransferFiles(to: machine))
-                    .help("Copy selected files into this machine's Downloads folder")
+                    .help(
+                        store.canTransferFolders(to: machine)
+                            ? "Copy selected files and folders into this machine's Downloads folder"
+                            : "Copy selected files into this machine's Downloads folder"
+                    )
                 }
                 Divider()
             }
@@ -300,12 +308,17 @@ private struct MachineCard: View {
 
     private func selectAndSendFiles() {
         guard store.canTransferFiles(to: machine) else { return }
+        let supportsFolders = store.canTransferFolders(to: machine)
         let panel = NSOpenPanel()
-        panel.title = "Send files to \(machine.name)"
-        panel.message = "Files are copied into a new folder in the machine's Downloads folder."
+        panel.title = supportsFolders
+            ? "Send files or folders to \(machine.name)"
+            : "Send files to \(machine.name)"
+        panel.message = supportsFolders
+            ? "Files and folders are copied into a new folder in the machine's Downloads folder."
+            : "Files are copied into a new folder in the machine's Downloads folder. Update Dory Tools to send folders."
         panel.prompt = "Send"
         panel.canChooseFiles = true
-        panel.canChooseDirectories = false
+        panel.canChooseDirectories = supportsFolders
         panel.allowsMultipleSelection = true
         panel.resolvesAliases = false
         guard panel.runModal() == .OK else { return }

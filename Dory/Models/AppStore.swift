@@ -5272,6 +5272,13 @@ final class AppStore {
         return supports("exec") && supports("sync-push")
     }
 
+    func canTransferFolders(to machine: Machine) -> Bool {
+        canTransferFiles(to: machine)
+            && machine.agentCapabilities.contains {
+                $0.id == "sync-push" && $0.version >= 2
+            }
+    }
+
     @discardableResult
     func transferFiles(
         _ fileURLs: [URL],
@@ -5291,24 +5298,39 @@ final class AppStore {
             staged = try await Task.detached(priority: .userInitiated) {
                 try DoryMachineFileTransferStager.stage(fileURLs: fileURLs)
             }.value
-            guard let staged else { return nil }
-            let result = try await dorydClient.machineTransfer(machine.name, staged: staged)
+            guard let preparedStage = staged else { return nil }
+            guard preparedStage.directoryCount == 0 || canTransferFolders(to: machine) else {
+                do {
+                    try await Task.detached(priority: .utility) {
+                        try preparedStage.remove()
+                    }.value
+                    staged = nil
+                } catch {
+                    actionError = "Dory could not remove its private staging copy."
+                    return nil
+                }
+                actionError = "Update Dory Tools in \(machine.name) before sending folders."
+                return nil
+            }
+            let result = try await dorydClient.machineTransfer(machine.name, staged: preparedStage)
             let fileLabel = result.filesSent == 1 ? "file" : "files"
+            let folderLabel = preparedStage.directoryCount == 1 ? "folder" : "folders"
             let bytes = ByteCountFormatter.string(
                 fromByteCount: Int64(clamping: result.bytesSent),
                 countStyle: .file
             )
             do {
                 try await Task.detached(priority: .utility) {
-                    try staged.remove()
+                    try preparedStage.remove()
                 }.value
             } catch {
                 actionError = "Files reached \(machine.name), but Dory could not remove its private staging copy."
                 return result
             }
-            showSettingsSuccess(
-                "Sent \(result.filesSent) \(fileLabel) (\(bytes)) to \(result.guestDestination)."
-            )
+            let transferredItems = preparedStage.directoryCount == 0
+                ? "\(result.filesSent) \(fileLabel)"
+                : "\(result.filesSent) \(fileLabel) and \(preparedStage.directoryCount) \(folderLabel)"
+            showSettingsSuccess("Sent \(transferredItems) (\(bytes)) to \(result.guestDestination).")
             return result
         } catch {
             if let staged {

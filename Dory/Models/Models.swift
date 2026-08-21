@@ -419,6 +419,7 @@ struct Machine: Identifiable, Hashable, Sendable {
             ("exec-stdin", 1),
             ("ports-watch", 1),
             ("snapshot-quiesce", 2),
+            ("sync-push", 2),
             ("telemetry", 1),
         ]
         let missing = required.compactMap { requirement in

@@ -664,6 +664,14 @@ struct DorydClientTests {
         #expect(oldQuiesceHandshake.runtimeEvidence.last?.label == "Tools partially ready")
         #expect(oldQuiesceHandshake.runtimeEvidence.last?.detail.contains("snapshot-quiesce@2") == true)
 
+        var oldSyncHandshake = machine
+        oldSyncHandshake.agentCapabilities = machine.agentCapabilities.map {
+            $0.id == "sync-push"
+                ? DorydAgentCapability(id: $0.id, version: 1) : $0
+        }
+        #expect(oldSyncHandshake.runtimeEvidence.last?.label == "Tools partially ready")
+        #expect(oldSyncHandshake.runtimeEvidence.last?.detail.contains("sync-push@2") == true)
+
         var incompatibleHandshake = machine
         incompatibleHandshake.agentProtocolVersion = 2
         #expect(incompatibleHandshake.runtimeEvidence.last?.label == "Tools incompatible")
@@ -1171,6 +1179,7 @@ struct DorydClientTests {
         #expect(store.machineTerminalCommand(machine) == "dory machine shell dev")
         #expect(store.canUseMachineArtifacts(machine))
         #expect(store.canTransferFiles(to: machine))
+        #expect(store.canTransferFolders(to: machine))
 
         let transferRoot = URL(
             fileURLWithPath: "/tmp/dory-store-transfer-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))",
@@ -1188,6 +1197,38 @@ struct DorydClientTests {
             service.latestMachineTransferRequest?["privateStagingRoot"] as? String
         )
         #expect(!FileManager.default.fileExists(atPath: stagedRoot))
+
+        let transferFolder = transferRoot.appendingPathComponent("project", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: transferFolder.appendingPathComponent("empty/deep", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        try Data("hello".utf8).write(
+            to: transferFolder.appendingPathComponent("hello.txt")
+        )
+        let transferredFolder = try #require(
+            await store.transferFiles([transferFolder], to: machine)
+        )
+        #expect(transferredFolder.filesSent == 1)
+        #expect(transferredFolder.bytesSent == 5)
+        #expect(store.settingsNotice?.message.contains("1 file and 3 folders") == true)
+        let stagedFolderRoot = try #require(
+            service.latestMachineTransferRequest?["privateStagingRoot"] as? String
+        )
+        #expect(!FileManager.default.fileExists(atPath: stagedFolderRoot))
+
+        var fileOnlyTransfer = machine
+        fileOnlyTransfer.agentCapabilities = fileOnlyTransfer.agentCapabilities.map {
+            $0.id == "sync-push" ? DorydAgentCapability(id: $0.id, version: 1) : $0
+        }
+        #expect(store.canTransferFiles(to: fileOnlyTransfer))
+        #expect(!store.canTransferFolders(to: fileOnlyTransfer))
+        #expect(await store.transferFiles([transferFolder], to: fileOnlyTransfer) == nil)
+        #expect(store.actionError?.contains("Update Dory Tools") == true)
+        #expect(
+            service.latestMachineTransferRequest?["privateStagingRoot"] as? String
+                == stagedFolderRoot
+        )
 
         var transferUnavailable = machine
         transferUnavailable.agentCapabilities = transferUnavailable.agentCapabilities.filter {
@@ -3702,7 +3743,7 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
             ["id": "exec-stdin", "version": 1] as NSDictionary,
             ["id": "ports-watch", "version": 1] as NSDictionary,
             ["id": "snapshot-quiesce", "version": 2] as NSDictionary,
-            ["id": "sync-push", "version": 1] as NSDictionary,
+            ["id": "sync-push", "version": 2] as NSDictionary,
             ["id": "telemetry", "version": 1] as NSDictionary,
         ],
         handoffFDCount: Int = 0,
