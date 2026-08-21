@@ -79,6 +79,26 @@ message SnapshotQuiesceResponse {
   string receipt_id = 3;
 }
 
+// Acknowledge one host lifecycle operation at the guest boundary. This does not itself pause or
+// terminate the VM: it proves that the exact durable operation identity reached the negotiated
+// guest agent immediately before/after the corresponding helper transition.
+message LifecycleReceiptRequest {
+  enum Action {
+    ACTION_UNSPECIFIED = 0;
+    PREPARE_PAUSE = 1;
+    RESUMED = 2;
+    PREPARE_STOP = 3;
+  }
+  Action action = 1;
+  // Canonical lowercase RFC 4122 UUID. The all-zero UUID is never a valid operation authority.
+  string operation_id = 2;
+}
+message LifecycleReceiptResponse {
+  bool acknowledged = 1;
+  LifecycleReceiptRequest.Action action = 2;
+  string operation_id = 3;
+}
+
 // Run a bounded non-interactive command in the guest. This is the primitive doryd uses for
 // VM-machine provisioning and smoke checks; streaming terminals/debug shells can layer on a
 // separate channel later.
@@ -221,6 +241,7 @@ message AgentRequest {
     SyncTreeRequest sync_tree = 11;
     SyncReadTreeRequest sync_read_tree = 12;
     SyncGetChunkRequest sync_get_chunk = 13;
+    LifecycleReceiptRequest lifecycle_receipt = 14;
   }
 }
 
@@ -240,5 +261,6 @@ message AgentResponse {
     SyncTreeResponse sync_tree = 12;
     SyncReadTreeResponse sync_read_tree = 13;
     SyncGetChunkResponse sync_get_chunk = 14;
+    LifecycleReceiptResponse lifecycle_receipt = 15;
   }
 }

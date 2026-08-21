@@ -41,6 +41,13 @@ pub struct PortsWatchFfi {
     pub removed: Vec<PortEventFfi>,
 }
 
+#[derive(Debug, Clone, Copy, uniffi::Enum)]
+pub enum LifecycleReceiptActionFfi {
+    PreparePause,
+    Resumed,
+    PrepareStop,
+}
+
 #[derive(uniffi::Object)]
 pub struct AgentControl {
     runtime: std::sync::Mutex<Option<tokio::runtime::Runtime>>,
@@ -286,6 +293,33 @@ impl AgentControl {
         .map(|_| ())
     }
 
+    pub fn lifecycle_receipt(
+        &self,
+        action: LifecycleReceiptActionFfi,
+        operation_id: String,
+    ) -> Result<String, RemoteFfiError> {
+        use dory_pb::agent::lifecycle_receipt_request::Action;
+
+        let action = match action {
+            LifecycleReceiptActionFfi::PreparePause => Action::PreparePause,
+            LifecycleReceiptActionFfi::Resumed => Action::Resumed,
+            LifecycleReceiptActionFfi::PrepareStop => Action::PrepareStop,
+        };
+        let guard = self.runtime.lock().unwrap();
+        let runtime = guard.as_ref().ok_or_else(shutdown_error)?;
+        let receipt =
+            runtime.block_on(self.client.lifecycle_receipt(action, operation_id.clone()))?;
+        if !receipt.acknowledged
+            || receipt.action != action as i32
+            || receipt.operation_id != operation_id
+        {
+            return Err(failed(
+                "guest returned a mismatched lifecycle operation receipt",
+            ));
+        }
+        Ok(receipt.operation_id)
+    }
+
     pub fn exec(
         &self,
         argv: Vec<String>,
@@ -433,6 +467,13 @@ mod tests {
             .expect("clock sync");
         let _ = control.ports_watch().expect("ports watch");
         let _ = control.telemetry().expect("telemetry");
+        let operation_id = "12345678-1234-4234-8234-123456789abc";
+        assert_eq!(
+            control
+                .lifecycle_receipt(LifecycleReceiptActionFfi::PreparePause, operation_id.into())
+                .expect("lifecycle receipt"),
+            operation_id
+        );
         let exec = control
             .exec(
                 vec!["/bin/sh".into(), "-lc".into(), "printf ffi-exec".into()],

@@ -18,8 +18,8 @@ final class AgentControlTests: XCTestCase {
         let info = try control.info()
         XCTAssertEqual(info.agentBuild, "fake-agent")
         XCTAssertEqual(info.capabilities.map(\.id), [
-            "clock-sync", "exec", "exec-stdin", "ports-watch", "snapshot-quiesce", "sync-pull",
-            "sync-push", "telemetry",
+            "clock-sync", "exec", "exec-stdin", "lifecycle-receipt", "ports-watch",
+            "snapshot-quiesce", "sync-pull", "sync-push", "telemetry",
         ])
         XCTAssertEqual(counter.value, 1)
 
@@ -65,6 +65,18 @@ final class AgentControlTests: XCTestCase {
         try control.snapshotThaw(receiptID: receiptID)
         XCTAssertEqual(fake.snapshotFreezeReceipts, [receiptID])
         XCTAssertEqual(fake.snapshotThawReceipts, [receiptID])
+        let operationID = "12345678-1234-4234-8234-123456789abc"
+        XCTAssertEqual(
+            try control.lifecycleReceipt(
+                action: .preparePause,
+                operationID: operationID
+            ),
+            operationID
+        )
+        XCTAssertEqual(
+            fake.lifecycleReceipts,
+            [.init(action: .preparePause, operationID: operationID)]
+        )
         let exec = try control.exec(argv: ["/bin/echo", "ok"], cwd: "/tmp")
         XCTAssertEqual(exec.exitCode, 0)
         XCTAssertEqual(String(data: exec.stdout, encoding: .utf8), "ok\n")
@@ -152,6 +164,11 @@ private final class FakeAgentControlClient: AgentControlClient, @unchecked Senda
     private var receivedPullLimits: [DoryPullLimits] = []
     private var freezeReceipts: [String] = []
     private var thawReceipts: [String] = []
+    struct LifecycleReceipt: Equatable {
+        var action: DoryLifecycleReceiptAction
+        var operationID: String
+    }
+    private var receivedLifecycleReceipts: [LifecycleReceipt] = []
 
     init(
         protocolVersion: UInt32 = DoryCore.protocolVersion(),
@@ -159,6 +176,7 @@ private final class FakeAgentControlClient: AgentControlClient, @unchecked Senda
             DoryAgentCapability(id: "clock-sync", version: 1),
             DoryAgentCapability(id: "exec", version: 1),
             DoryAgentCapability(id: "exec-stdin", version: 1),
+            DoryAgentCapability(id: "lifecycle-receipt", version: 1),
             DoryAgentCapability(id: "ports-watch", version: 1),
             DoryAgentCapability(id: "snapshot-quiesce", version: 2),
             DoryAgentCapability(id: "sync-pull", version: 1),
@@ -216,6 +234,12 @@ private final class FakeAgentControlClient: AgentControlClient, @unchecked Senda
         lock.lock()
         defer { lock.unlock() }
         return thawReceipts
+    }
+
+    var lifecycleReceipts: [LifecycleReceipt] {
+        lock.lock()
+        defer { lock.unlock() }
+        return receivedLifecycleReceipts
     }
 
     func info() throws -> DoryAgentInfo {
@@ -310,6 +334,19 @@ private final class FakeAgentControlClient: AgentControlClient, @unchecked Senda
         lock.lock()
         thawReceipts.append(receiptID)
         lock.unlock()
+    }
+
+    func lifecycleReceipt(
+        action: DoryLifecycleReceiptAction,
+        operationID: String
+    ) throws -> String {
+        lock.lock()
+        receivedLifecycleReceipts.append(.init(
+            action: action,
+            operationID: operationID
+        ))
+        lock.unlock()
+        return operationID
     }
 
     func exec(

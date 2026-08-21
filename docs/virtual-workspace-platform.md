@@ -724,9 +724,14 @@ durable operation; the retained legacy start selector mints at the daemon bounda
 compatibility. Stop, pause, and resume now also accept a caller-minted canonical UUID, reject
 malformed or zero identities before mutation, preserve the exact UUID in the durable lifecycle
 journal and flight recorder, and carry it through the selected backend adapter; the legacy XPC
-selectors mint at the daemon boundary for rolling upgrades. Helper/guest acknowledgement for those
-three operations, component-installer and device-event propagation, and device-level telemetry
-remain required before this section is complete.
+selectors mint at the daemon boundary for rolling upgrades. Stop, pause, and resume now also carry
+that exact UUID to the live helper and negotiated guest agent. The VZ helper returns the receipt
+only around its actual pause/resume transition; raw-HV exposes an owner-only receipt socket around
+daemon-owned signals; and the guest echoes the same action and UUID through `lifecycle-receipt@1`.
+Mismatches reject the mutation, resolved-plan readiness requires the helper receipt channel, and
+older guests without the capability use an explicit flight-recorder compatibility event rather
+than claiming acknowledgement. Component-installer and device-event propagation, plus device-level
+telemetry, remain required before this section is complete.
 
 ## Qualification and release gates
 

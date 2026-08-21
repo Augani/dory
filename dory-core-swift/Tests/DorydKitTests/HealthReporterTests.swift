@@ -467,7 +467,8 @@ final class HealthReporterTests: XCTestCase {
 
     func testMachineToolsHealthUsesDaemonIntegrationProjection() throws {
         let capabilities = [
-            "clock-sync", "exec", "exec-stdin", "ports-watch", "sync-push", "telemetry",
+            "clock-sync", "exec", "exec-stdin", "lifecycle-receipt", "ports-watch",
+            "sync-push", "telemetry",
         ].map { DoryAgentCapability(id: $0, version: 1) }
         let plan = healthResolvedPlan()
         let resolvedIdentity = try DoryMachineRuntimeIdentity(

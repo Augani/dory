@@ -228,6 +228,7 @@ struct DoryGuestIntegrationHealthTests {
             .init(id: "clock-sync", version: 1),
             .init(id: "exec", version: 1),
             .init(id: "exec-stdin", version: 1),
+            .init(id: "lifecycle-receipt", version: 1),
             .init(id: "ports-watch", version: 1),
             .init(id: "snapshot-quiesce", version: 2),
             .init(id: "sync-pull", version: 1),

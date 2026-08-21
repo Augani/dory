@@ -21,6 +21,7 @@ enum DesktopMode {
         var handoffSocketPath: String
         var agentSocketPath: String
         var shellSocketPath: String
+        var controlSocketPath: String
         var sshAgentSocketPath: String?
         var memoryMB: UInt64
         var cpuCount: Int
@@ -116,12 +117,16 @@ enum DesktopMode {
         private let sshAgentBridge: HostSSHAgentBridge?
         private let clipboard: DoryDesktopClipboardCoordinator?
         private let firstFrame: FirstFrameGate
+        private let lifecycleReceiptServer: VmmLifecycleReceiptServer
         private var signalSources = [DispatchSourceSignal]()
         private var stopError: Error?
         private var stopping = false
 
         init(configuration: Configuration) throws {
             self.configuration = configuration
+            self.lifecycleReceiptServer = VmmLifecycleReceiptServer(
+                socketPath: configuration.controlSocketPath
+            )
             try FileManager.default.createDirectory(
                 atPath: configuration.stateDirectory,
                 withIntermediateDirectories: true
@@ -357,6 +362,7 @@ enum DesktopMode {
         }
 
         func run() throws {
+            try lifecycleReceiptServer.start()
             application.setActivationPolicy(.regular)
             application.delegate = self
             installApplicationMenu()
@@ -457,6 +463,7 @@ enum DesktopMode {
                                     configuration.operationID
                                 ),
                                 agentBuild: "dory-hv/generic-linux",
+                                controlSocketPath: configuration.controlSocketPath,
                                 detail: "raw-HV generic Linux running with \(graphicsDisplayName) graphics; guest tools are not installed"
                             )
                         )
@@ -478,6 +485,7 @@ enum DesktopMode {
                             agentCapabilities: info.capabilities,
                             agentSocketPath: configuration.agentSocketPath,
                             shellSocketPath: configuration.shellSocketPath,
+                            controlSocketPath: configuration.controlSocketPath,
                             detail: "raw-HV desktop running with \(graphicsDisplayName) graphics; dory-agent answered protocol \(info.protocolVersion)"
                         )
                     )
@@ -543,6 +551,7 @@ enum DesktopMode {
         }
 
         private func cleanup() {
+            lifecycleReceiptServer.stop()
             clipboard?.stop()
             signalSources.forEach { $0.cancel() }
             signalSources.removeAll()

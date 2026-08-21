@@ -20,6 +20,7 @@ public enum DoryGuestIntegrationCapabilityID: String, Codable, Sendable, CaseIte
     case processLaunch = "exec"
     case processInput = "exec-stdin"
     case listenPorts = "ports-watch"
+    case lifecycleReceipt = "lifecycle-receipt"
     case telemetry
     case snapshotQuiesce = "snapshot-quiesce"
     case packageUpdate = "package-update"

@@ -11,11 +11,12 @@ use std::time::Duration;
 
 use dory_pb::agent::{
     self, agent_request::Method, agent_response::Result as Res, AgentRequest, AgentResponse,
-    ClockSyncRequest, ExecEnv, ExecRequest, ExecResponse, InfoRequest, PortsWatchRequest,
-    SnapshotQuiesceRequest, SnapshotQuiesceResponse, SyncDeleteRequest, SyncDeleteResponse,
-    SyncFileStatusRequest, SyncFileStatusResponse, SyncGetChunkRequest, SyncGetChunkResponse,
-    SyncManifestRequest, SyncManifestResponse, SyncPutChunkRequest, SyncPutChunkResponse,
-    SyncReadTreeRequest, SyncReadTreeResponse, TelemetryRequest, TelemetryResponse,
+    ClockSyncRequest, ExecEnv, ExecRequest, ExecResponse, InfoRequest, LifecycleReceiptRequest,
+    LifecycleReceiptResponse, PortsWatchRequest, SnapshotQuiesceRequest, SnapshotQuiesceResponse,
+    SyncDeleteRequest, SyncDeleteResponse, SyncFileStatusRequest, SyncFileStatusResponse,
+    SyncGetChunkRequest, SyncGetChunkResponse, SyncManifestRequest, SyncManifestResponse,
+    SyncPutChunkRequest, SyncPutChunkResponse, SyncReadTreeRequest, SyncReadTreeResponse,
+    TelemetryRequest, TelemetryResponse,
 };
 use dory_proto::handshake::{handshake, Hello};
 use dory_proto::mux::Mux;
@@ -140,6 +141,23 @@ impl AgentClient {
             .await?
         {
             Res::SnapshotQuiesce(r) => Ok(r),
+            _ => Err(RemoteError::UnexpectedVariant),
+        }
+    }
+
+    pub async fn lifecycle_receipt(
+        &self,
+        action: agent::lifecycle_receipt_request::Action,
+        operation_id: String,
+    ) -> Result<LifecycleReceiptResponse, RemoteError> {
+        match self
+            .call(Method::LifecycleReceipt(LifecycleReceiptRequest {
+                action: action as i32,
+                operation_id,
+            }))
+            .await?
+        {
+            Res::LifecycleReceipt(receipt) => Ok(receipt),
             _ => Err(RemoteError::UnexpectedVariant),
         }
     }
@@ -338,6 +356,13 @@ mod tests {
                 stdout_truncated: false,
                 stderr_truncated: false,
             }),
+            Some(Method::LifecycleReceipt(request)) => {
+                Res::LifecycleReceipt(agent::LifecycleReceiptResponse {
+                    acknowledged: true,
+                    action: request.action,
+                    operation_id: request.operation_id,
+                })
+            }
             Some(Method::SyncReadTree(_)) => Res::SyncReadTree(agent::SyncReadTreeResponse {
                 files: vec![agent::SyncFileEntry {
                     path: "report.txt".into(),
@@ -403,6 +428,21 @@ mod tests {
             .unwrap();
         assert_eq!(exec.exit_code, 0);
         assert_eq!(exec.stdout, b"exec-ok");
+
+        let operation_id = "12345678-1234-4234-8234-123456789abc";
+        let receipt = client
+            .lifecycle_receipt(
+                agent::lifecycle_receipt_request::Action::PrepareStop,
+                operation_id.into(),
+            )
+            .await
+            .unwrap();
+        assert!(receipt.acknowledged);
+        assert_eq!(
+            receipt.action,
+            agent::lifecycle_receipt_request::Action::PrepareStop as i32
+        );
+        assert_eq!(receipt.operation_id, operation_id);
 
         let tree = client
             .sync_read_tree(SyncReadTreeRequest {

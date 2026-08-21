@@ -3467,6 +3467,69 @@ public final class MachineManager: @unchecked Sendable {
         )
     }
 
+    @discardableResult
+    private func acknowledgeGuestLifecycle(
+        entry: MachineEntry,
+        action: DoryLifecycleReceiptAction,
+        operationID: UUID
+    ) throws -> Bool {
+        let canonical = DoryOperationIdentity.canonical(operationID)
+        guard let ready = entry.handoff?.ready,
+              ready.agentCapabilities.contains(where: {
+                  $0.id == "lifecycle-receipt" && $0.version >= 1
+              }),
+              let socketPath = ready.agentSocketPath else {
+            appendFlightEvent(
+                machineID: entry.configuration.id,
+                kind: .guestLifecycleUnavailable
+            )
+            return false
+        }
+        let client = try agentConnector(socketPath)
+        defer { client.close() }
+        let receipt = try client.lifecycleReceipt(
+            action: action,
+            operationID: canonical
+        )
+        guard receipt == canonical else {
+            throw MachineManagerError.persistence(
+                "guest returned a mismatched lifecycle operation receipt"
+            )
+        }
+        appendFlightEvent(
+            machineID: entry.configuration.id,
+            kind: .guestLifecycleAcknowledged
+        )
+        return true
+    }
+
+    private func acknowledgeHelperLifecycle(
+        entry: MachineEntry,
+        action: DoryLifecycleReceiptAction,
+        operationID: UUID
+    ) throws {
+        guard let socketPath = entry.handoff?.ready.controlSocketPath else {
+            appendFlightEvent(
+                machineID: entry.configuration.id,
+                kind: .helperLifecycleUnavailable
+            )
+            return
+        }
+        try vzLifecycleController.acknowledgeLifecycle(
+            socketPath: socketPath,
+            action: action,
+            operationID: operationID
+        )
+        appendFlightEvent(
+            machineID: entry.configuration.id,
+            kind: .helperLifecycleAcknowledged
+        )
+    }
+
+    private func recordHelperLifecycleAcknowledged(machineID: String) {
+        appendFlightEvent(machineID: machineID, kind: .helperLifecycleAcknowledged)
+    }
+
     private func pauseImplementation(
         id: String,
         journalLifecycle: Bool,
@@ -3491,21 +3554,50 @@ public final class MachineManager: @unchecked Sendable {
                 operationID: requestedOperationID
             )
             : nil
+        let operationID = lifecycle?.operation.operationID
+            ?? requestedOperationID
+            ?? entry.activeOperationID
         do {
             if let lifecycle { try advanceLifecycleToPublishing(lifecycle) }
+            if let operationID {
+                _ = try acknowledgeGuestLifecycle(
+                    entry: entry,
+                    action: .preparePause,
+                    operationID: operationID
+                )
+            }
             let usedVZPause = entry.activeBackend == .appleVirtualizationFramework
                 && entry.handoff?.ready.controlSocketPath != nil
-            if let socketPath = entry.handoff?.ready.controlSocketPath, usedVZPause {
-                try vzLifecycleController.pause(socketPath: socketPath)
-            } else if !process.suspend() {
-                throw MachineManagerError.persistence("could not pause machine \(id)")
+            if let socketPath = entry.handoff?.ready.controlSocketPath, usedVZPause,
+               let operationID {
+                try vzLifecycleController.pause(
+                    socketPath: socketPath,
+                    operationID: operationID
+                )
+                recordHelperLifecycleAcknowledged(machineID: id)
+            } else {
+                if let operationID {
+                    try acknowledgeHelperLifecycle(
+                        entry: entry,
+                        action: .preparePause,
+                        operationID: operationID
+                    )
+                }
+                guard process.suspend() else {
+                    throw MachineManagerError.persistence("could not pause machine \(id)")
+                }
             }
             lock.lock()
             guard var current = machines[id], current.process === process,
                   current.state == .running else {
                 lock.unlock()
                 if let socketPath = entry.handoff?.ready.controlSocketPath, usedVZPause {
-                    try? vzLifecycleController.resume(socketPath: socketPath)
+                    if let operationID {
+                        try? vzLifecycleController.resume(
+                            socketPath: socketPath,
+                            operationID: operationID
+                        )
+                    }
                 } else {
                     _ = process.resume()
                 }
@@ -3554,24 +3646,46 @@ public final class MachineManager: @unchecked Sendable {
                 operationID: requestedOperationID
             )
             : nil
+        let operationID = lifecycle?.operation.operationID
+            ?? requestedOperationID
+            ?? entry.activeOperationID
+        var resumedBackend = false
         do {
             if let lifecycle { try advanceLifecycleToPublishing(lifecycle) }
             let usedVZResume = entry.activeBackend == .appleVirtualizationFramework
                 && entry.handoff?.ready.controlSocketPath != nil
-            if let socketPath = entry.handoff?.ready.controlSocketPath, usedVZResume {
-                try vzLifecycleController.resume(socketPath: socketPath)
-            } else if !process.resume() {
-                throw MachineManagerError.persistence("could not resume machine \(id)")
+            if let socketPath = entry.handoff?.ready.controlSocketPath, usedVZResume,
+               let operationID {
+                try vzLifecycleController.resume(
+                    socketPath: socketPath,
+                    operationID: operationID
+                )
+                resumedBackend = true
+                recordHelperLifecycleAcknowledged(machineID: id)
+            } else {
+                guard process.resume() else {
+                    throw MachineManagerError.persistence("could not resume machine \(id)")
+                }
+                resumedBackend = true
+                if let operationID {
+                    try acknowledgeHelperLifecycle(
+                        entry: entry,
+                        action: .resumed,
+                        operationID: operationID
+                    )
+                }
+            }
+            if let operationID {
+                _ = try acknowledgeGuestLifecycle(
+                    entry: entry,
+                    action: .resumed,
+                    operationID: operationID
+                )
             }
             lock.lock()
             guard var current = machines[id], current.process === process,
                   current.state == .paused else {
                 lock.unlock()
-                if let socketPath = entry.handoff?.ready.controlSocketPath, usedVZResume {
-                    try? vzLifecycleController.pause(socketPath: socketPath)
-                } else {
-                    _ = process.suspend()
-                }
                 throw MachineManagerError.persistence(
                     "machine \(id) changed while resume was being committed"
                 )
@@ -3588,6 +3702,18 @@ public final class MachineManager: @unchecked Sendable {
             }
             return status(id: id) ?? DoryMachineStatus(id: id, state: .running)
         } catch {
+            if resumedBackend {
+                if let socketPath = entry.handoff?.ready.controlSocketPath,
+                   entry.activeBackend == .appleVirtualizationFramework,
+                   let operationID {
+                    try? vzLifecycleController.pause(
+                        socketPath: socketPath,
+                        operationID: operationID
+                    )
+                } else {
+                    _ = process.suspend()
+                }
+            }
             if let lifecycle { failLifecycle(lifecycle, stepID: "resume.failed") }
             throw error
         }
@@ -3620,7 +3746,11 @@ public final class MachineManager: @unchecked Sendable {
                 operationID: requestedOperationID
             )
             : nil
+        let operationID = lifecycle?.operation.operationID
+            ?? requestedOperationID
+            ?? entry.activeOperationID
         var stopCommitted = false
+        var resumedPausedBackend = false
         do {
             if let lifecycle { try advanceLifecycleToPublishing(lifecycle) }
             // Stopping a suspended VM means discarding its same-host execution state and
@@ -3628,6 +3758,35 @@ public final class MachineManager: @unchecked Sendable {
             // stopped state so a failed removal leaves the machine truthfully suspended.
             if wasSuspended {
                 try savedStateStore.remove(machineID: id)
+            }
+            if entry.state == .paused, let operationID {
+                if let socketPath = entry.handoff?.ready.controlSocketPath,
+                   entry.activeBackend == .appleVirtualizationFramework {
+                    try vzLifecycleController.resume(
+                        socketPath: socketPath,
+                        operationID: operationID
+                    )
+                    recordHelperLifecycleAcknowledged(machineID: id)
+                } else {
+                    guard entry.process?.resume() == true else {
+                        throw MachineManagerError.persistence(
+                            "could not resume paused machine \(id) for graceful stop"
+                        )
+                    }
+                }
+                resumedPausedBackend = true
+            }
+            if wasActive, let operationID {
+                _ = try acknowledgeGuestLifecycle(
+                    entry: entry,
+                    action: .prepareStop,
+                    operationID: operationID
+                )
+                try acknowledgeHelperLifecycle(
+                    entry: entry,
+                    action: .prepareStop,
+                    operationID: operationID
+                )
             }
             lock.lock()
             guard let current = machines[id] else {
@@ -3691,6 +3850,18 @@ public final class MachineManager: @unchecked Sendable {
                 }
                 lock.unlock()
                 throw error
+            }
+            if resumedPausedBackend {
+                if let socketPath = entry.handoff?.ready.controlSocketPath,
+                   entry.activeBackend == .appleVirtualizationFramework,
+                   let operationID {
+                    try? vzLifecycleController.pause(
+                        socketPath: socketPath,
+                        operationID: operationID
+                    )
+                } else {
+                    _ = entry.process?.suspend()
+                }
             }
             if let lifecycle { failLifecycle(lifecycle, stepID: "stop.failed") }
             throw error
@@ -8561,6 +8732,28 @@ public final class MachineManager: @unchecked Sendable {
                     code: .readinessHandoffFailed,
                     message: "handoff launch authority did not match the active machine operation",
                     causes: [.readinessGate, .guestAgent],
+                    recoveryDisposition: .repair
+                )
+                appendFlightEvent(
+                    on: &entry,
+                    kind: .readinessRejected,
+                    failure: entry.failure
+                )
+                entry.launchID = nil
+                entry.runtimeAddress = nil
+                entry.activeResolvedPlan = nil
+                entry.activeBackend = nil
+                entry.readinessAcceptedPendingPublication = false
+                processToStop = entry.process
+                break
+            }
+            guard admissionPlan == nil || handoff.ready.controlSocketPath != nil else {
+                entry.state = .failed
+                setFailure(
+                    on: &entry,
+                    code: .readinessHandoffFailed,
+                    message: "resolved helper omitted lifecycle receipt authority",
+                    causes: [.readinessGate, .runtimeAuthority],
                     recoveryDisposition: .repair
                 )
                 appendFlightEvent(

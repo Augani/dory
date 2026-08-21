@@ -1224,6 +1224,7 @@ private struct MachineIntegrationHealthSheet: View {
         case .processLaunch: "Process launch"
         case .processInput: "Process input"
         case .listenPorts: "Port discovery"
+        case .lifecycleReceipt: "Lifecycle acknowledgement"
         case .telemetry: "Telemetry"
         case .snapshotQuiesce: "Snapshot freeze/thaw"
         case .packageUpdate: "Tools update"

@@ -313,6 +313,8 @@ public struct DoryGuestIntegrationHealth: Codable, Sendable, Equatable, Hashable
                   minimumVersion: 1, agentCapabilityID: "exec-stdin"),
             .init(id: .listenPorts, provider: .guestAgent, required: true,
                   minimumVersion: 1, agentCapabilityID: "ports-watch"),
+            .init(id: .lifecycleReceipt, provider: .guestAgent, required: true,
+                  minimumVersion: 1, agentCapabilityID: "lifecycle-receipt"),
             .init(id: .telemetry, provider: .guestAgent, required: true,
                   minimumVersion: 1, agentCapabilityID: "telemetry"),
             .init(id: .fileTransferPull, provider: .guestAgent, required: false,

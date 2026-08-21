@@ -2339,11 +2339,27 @@ private final class DoryVMMControlServer: @unchecked Sendable {
                 response: VmmControlResponse(ok: true, targetMB: appliedMB)
             )
         case "pauseMachine":
+            let receipt = try lifecycleReceipt(
+                request,
+                expectedAction: .preparePause
+            )
             try machine.pause()
-            return HandledControlResponse(response: VmmControlResponse(ok: true))
+            return HandledControlResponse(response: receipt)
         case "resumeMachine":
+            let receipt = try lifecycleReceipt(request, expectedAction: .resumed)
             try machine.resume()
-            return HandledControlResponse(response: VmmControlResponse(ok: true))
+            return HandledControlResponse(response: receipt)
+        case "acknowledgeLifecycle":
+            guard let action = request.lifecycleAction else {
+                return HandledControlResponse(response: VmmControlResponse(
+                    ok: false,
+                    message: "missing lifecycle action"
+                ))
+            }
+            return HandledControlResponse(response: try lifecycleReceipt(
+                request,
+                expectedAction: action
+            ))
         case "saveMachineState":
             guard let path = request.statePath,
                   let accepted = acceptedSavedStatePath(path) else {
@@ -2368,6 +2384,26 @@ private final class DoryVMMControlServer: @unchecked Sendable {
                 )
             )
         }
+    }
+
+    private func lifecycleReceipt(
+        _ request: VmmControlRequest,
+        expectedAction: DoryLifecycleReceiptAction
+    ) throws -> VmmControlResponse {
+        guard request.lifecycleAction == expectedAction,
+              let operationID = request.operationID,
+              DoryOperationIdentity.parseCanonical(operationID) != nil,
+              operationID != "00000000-0000-0000-0000-000000000000" else {
+            return VmmControlResponse(
+                ok: false,
+                message: "invalid VMM lifecycle operation authority"
+            )
+        }
+        return VmmControlResponse(
+            ok: true,
+            lifecycleAction: expectedAction,
+            operationID: operationID
+        )
     }
 
     private func acceptedSavedStatePath(_ path: String) -> String? {

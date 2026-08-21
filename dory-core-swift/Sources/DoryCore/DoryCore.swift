@@ -169,6 +169,20 @@ public struct DoryAgentInfo: Sendable, Equatable {
     }
 }
 
+public enum DoryLifecycleReceiptAction: String, Sendable, Equatable, Hashable, Codable {
+    case preparePause = "prepare-pause"
+    case resumed
+    case prepareStop = "prepare-stop"
+
+    fileprivate var ffiValue: LifecycleReceiptActionFfi {
+        switch self {
+        case .preparePause: .preparePause
+        case .resumed: .resumed
+        case .prepareStop: .prepareStop
+        }
+    }
+}
+
 public struct DoryListenPort: Sendable, Equatable, Hashable {
     public var `protocol`: String
     public var port: UInt32
@@ -706,6 +720,18 @@ public final class DoryAgentControlHandle: @unchecked Sendable {
 
     public func snapshotThaw(receiptID: String) throws {
         try withControl { try $0.snapshotThaw(receiptId: receiptID) }
+    }
+
+    public func lifecycleReceipt(
+        action: DoryLifecycleReceiptAction,
+        operationID: String
+    ) throws -> String {
+        try withControl {
+            try $0.lifecycleReceipt(
+                action: action.ffiValue,
+                operationId: operationID
+            )
+        }
     }
 
     public func exec(

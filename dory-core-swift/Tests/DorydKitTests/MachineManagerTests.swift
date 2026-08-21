@@ -164,6 +164,202 @@ final class MachineManagerTests: XCTestCase {
         XCTAssertNil(stopped.pid)
     }
 
+    func testLifecycleOperationsRequireExactGuestAndHelperReceipts() throws {
+        let base = "/tmp/dory-machine-lifecycle-receipts-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let connector = RecordingMachineAgentConnector()
+        let lifecycle = RecordingMachineVZLifecycleController()
+        let manager = MachineManager(
+            configuration: MachineManagerConfiguration(
+                vmmExecutablePath: "/bin/sleep",
+                stateDirectory: base,
+                baseArguments: ["30"],
+                passMachineArguments: false,
+                requiresReadyHandoff: true
+            ),
+            vzLifecycleController: lifecycle,
+            agentConnector: connector.connect(socketPath:)
+        )
+        defer {
+            try? manager.delete(id: "dev")
+            try? FileManager.default.removeItem(atPath: base)
+        }
+
+        _ = try manager.create(DoryMachineConfiguration(
+            id: "dev",
+            kernelPath: doryTestKernelPath,
+            rootfsPath: doryTestRootfsPath
+        ))
+        let starting = try manager.start(id: "dev")
+        try sendVmmHandoff(
+            path: try XCTUnwrap(starting.handoffSocketPath),
+            ready: VmmReadyMessage(
+                machineID: "dev",
+                operationID: try XCTUnwrap(starting.activeOperationID),
+                agentBuild: "dory-agent/lifecycle-test",
+                agentProtocolVersion: DoryCore.protocolVersion(),
+                agentCapabilities: Self.agentCapabilities("lifecycle-receipt"),
+                agentSocketPath: "/run/dory-agent.sock",
+                controlSocketPath: "/run/dory-control.sock"
+            ),
+            fileDescriptors: []
+        )
+        _ = try waitForMachineState(manager, id: "dev", state: .running)
+
+        let pauseID = try XCTUnwrap(UUID(uuidString: "11111111-1111-4111-8111-111111111111"))
+        let resumeID = try XCTUnwrap(UUID(uuidString: "22222222-2222-4222-8222-222222222222"))
+        let stopID = try XCTUnwrap(UUID(uuidString: "33333333-3333-4333-8333-333333333333"))
+        XCTAssertEqual(try manager.pause(id: "dev", operationID: pauseID).state, .paused)
+        XCTAssertEqual(try manager.resume(id: "dev", operationID: resumeID).state, .running)
+        XCTAssertEqual(try manager.stop(id: "dev", operationID: stopID).state, .stopped)
+
+        XCTAssertEqual(connector.lifecycleReceipts, [
+            .init(action: .preparePause, operationID: DoryOperationIdentity.canonical(pauseID)),
+            .init(action: .resumed, operationID: DoryOperationIdentity.canonical(resumeID)),
+            .init(action: .prepareStop, operationID: DoryOperationIdentity.canonical(stopID)),
+        ])
+        XCTAssertEqual(lifecycle.receipts, [
+            .init(
+                socketPath: "/run/dory-control.sock",
+                action: .preparePause,
+                operationID: pauseID
+            ),
+            .init(
+                socketPath: "/run/dory-control.sock",
+                action: .resumed,
+                operationID: resumeID
+            ),
+            .init(
+                socketPath: "/run/dory-control.sock",
+                action: .prepareStop,
+                operationID: stopID
+            ),
+        ])
+
+        let events = try manager.flightRecorder(id: "dev", afterSequence: 0).events
+        for operationID in [pauseID, resumeID, stopID] {
+            let canonical = DoryOperationIdentity.canonical(operationID)
+            XCTAssertTrue(events.contains {
+                $0.operationID == canonical && $0.kind == .guestLifecycleAcknowledged
+            })
+            XCTAssertTrue(events.contains {
+                $0.operationID == canonical && $0.kind == .helperLifecycleAcknowledged
+            })
+        }
+    }
+
+    func testLifecycleReceiptMismatchRejectsBeforeHelperMutation() throws {
+        let base = "/tmp/dory-machine-lifecycle-mismatch-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let connector = RecordingMachineAgentConnector(
+            mismatchedLifecycleAction: .preparePause
+        )
+        let lifecycle = RecordingMachineVZLifecycleController()
+        let manager = MachineManager(
+            configuration: MachineManagerConfiguration(
+                vmmExecutablePath: "/bin/sleep",
+                stateDirectory: base,
+                baseArguments: ["30"],
+                passMachineArguments: false,
+                requiresReadyHandoff: true
+            ),
+            vzLifecycleController: lifecycle,
+            agentConnector: connector.connect(socketPath:)
+        )
+        defer {
+            _ = try? manager.stop(id: "dev")
+            try? manager.delete(id: "dev")
+            try? FileManager.default.removeItem(atPath: base)
+        }
+
+        _ = try manager.create(DoryMachineConfiguration(
+            id: "dev",
+            kernelPath: doryTestKernelPath,
+            rootfsPath: doryTestRootfsPath
+        ))
+        let starting = try manager.start(id: "dev")
+        try sendVmmHandoff(
+            path: try XCTUnwrap(starting.handoffSocketPath),
+            ready: VmmReadyMessage(
+                machineID: "dev",
+                operationID: try XCTUnwrap(starting.activeOperationID),
+                agentBuild: "dory-agent/lifecycle-test",
+                agentProtocolVersion: DoryCore.protocolVersion(),
+                agentCapabilities: Self.agentCapabilities("lifecycle-receipt"),
+                agentSocketPath: "/run/dory-agent.sock",
+                controlSocketPath: "/run/dory-control.sock"
+            ),
+            fileDescriptors: []
+        )
+        _ = try waitForMachineState(manager, id: "dev", state: .running)
+
+        let operationID = try XCTUnwrap(UUID(
+            uuidString: "44444444-4444-4444-8444-444444444444"
+        ))
+        XCTAssertThrowsError(try manager.pause(id: "dev", operationID: operationID)) { error in
+            XCTAssertTrue("\(error)".contains("mismatched lifecycle operation receipt"))
+        }
+        XCTAssertEqual(manager.status(id: "dev")?.state, .running)
+        XCTAssertTrue(lifecycle.receipts.isEmpty)
+    }
+
+    func testMissingGuestLifecycleCapabilityUsesVisibleCompatibilityPath() throws {
+        let base = "/tmp/dory-machine-lifecycle-compat-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let connector = RecordingMachineAgentConnector()
+        let lifecycle = RecordingMachineVZLifecycleController()
+        let manager = MachineManager(
+            configuration: MachineManagerConfiguration(
+                vmmExecutablePath: "/bin/sleep",
+                stateDirectory: base,
+                baseArguments: ["30"],
+                passMachineArguments: false,
+                requiresReadyHandoff: true
+            ),
+            vzLifecycleController: lifecycle,
+            agentConnector: connector.connect(socketPath:)
+        )
+        defer {
+            _ = try? manager.stop(id: "dev")
+            try? manager.delete(id: "dev")
+            try? FileManager.default.removeItem(atPath: base)
+        }
+
+        _ = try manager.create(DoryMachineConfiguration(
+            id: "dev",
+            kernelPath: doryTestKernelPath,
+            rootfsPath: doryTestRootfsPath
+        ))
+        let starting = try manager.start(id: "dev")
+        try sendVmmHandoff(
+            path: try XCTUnwrap(starting.handoffSocketPath),
+            ready: VmmReadyMessage(
+                machineID: "dev",
+                operationID: try XCTUnwrap(starting.activeOperationID),
+                agentBuild: "dory-agent/legacy-test",
+                agentProtocolVersion: DoryCore.protocolVersion(),
+                agentCapabilities: [],
+                agentSocketPath: "/run/dory-agent.sock",
+                controlSocketPath: "/run/dory-control.sock"
+            ),
+            fileDescriptors: []
+        )
+        _ = try waitForMachineState(manager, id: "dev", state: .running)
+
+        let operationID = try XCTUnwrap(UUID(
+            uuidString: "55555555-5555-4555-8555-555555555555"
+        ))
+        XCTAssertEqual(try manager.pause(id: "dev", operationID: operationID).state, .paused)
+        XCTAssertTrue(connector.lifecycleReceipts.isEmpty)
+        XCTAssertEqual(lifecycle.receipts.map(\.operationID), [operationID])
+
+        let canonical = DoryOperationIdentity.canonical(operationID)
+        let events = try manager.flightRecorder(id: "dev", afterSequence: 0).events
+        XCTAssertTrue(events.contains {
+            $0.operationID == canonical && $0.kind == .guestLifecycleUnavailable
+        })
+        XCTAssertTrue(events.contains {
+            $0.operationID == canonical && $0.kind == .helperLifecycleAcknowledged
+        })
+    }
+
     func testHostPowerControllerDurablyResumesOnlyMachinesItPaused() throws {
         let base = "/tmp/dory-machine-host-power-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         let manager = MachineManager(configuration: MachineManagerConfiguration(
@@ -4402,6 +4598,66 @@ private struct NoopMachineVZLifecycleController: MachineVZLifecycleControlling {
     }
 }
 
+private final class RecordingMachineVZLifecycleController:
+    MachineVZLifecycleControlling, @unchecked Sendable {
+    struct Receipt: Equatable {
+        var socketPath: String
+        var action: DoryLifecycleReceiptAction
+        var operationID: UUID
+    }
+
+    private let lock = NSLock()
+    private var recordedReceipts: [Receipt] = []
+
+    var receipts: [Receipt] {
+        lock.lock()
+        defer { lock.unlock() }
+        return recordedReceipts
+    }
+
+    func pause(socketPath: String) throws {
+        throw VmmControlError.rejected("operation identity is required")
+    }
+
+    func resume(socketPath: String) throws {
+        throw VmmControlError.rejected("operation identity is required")
+    }
+
+    func pause(socketPath: String, operationID: UUID) throws {
+        record(socketPath: socketPath, action: .preparePause, operationID: operationID)
+    }
+
+    func resume(socketPath: String, operationID: UUID) throws {
+        record(socketPath: socketPath, action: .resumed, operationID: operationID)
+    }
+
+    func acknowledgeLifecycle(
+        socketPath: String,
+        action: DoryLifecycleReceiptAction,
+        operationID: UUID
+    ) throws {
+        record(socketPath: socketPath, action: action, operationID: operationID)
+    }
+
+    func saveMachineState(socketPath: String, statePath: String) throws {
+        throw MachineManagerError.persistence("saved state is not available in this test")
+    }
+
+    private func record(
+        socketPath: String,
+        action: DoryLifecycleReceiptAction,
+        operationID: UUID
+    ) {
+        lock.lock()
+        recordedReceipts.append(.init(
+            socketPath: socketPath,
+            action: action,
+            operationID: operationID
+        ))
+        lock.unlock()
+    }
+}
+
 private func sendSnapshotQuiesceHandoff(
     path: String,
     machineID: String,
@@ -4617,9 +4873,11 @@ private final class RecordingMachineAgentConnector: @unchecked Sendable {
     private var freezes = 0
     private var thaws = 0
     private var recordedExecs: [Exec] = []
+    private var recordedLifecycleReceipts: [LifecycleReceipt] = []
     private let telemetry: DoryTelemetry
     private let execResult: DoryExecResult
     private let execDelay: TimeInterval
+    private let mismatchedLifecycleAction: DoryLifecycleReceiptAction?
 
     init(
         telemetry: DoryTelemetry = DoryTelemetry(memTotalKB: 1, memAvailableKB: 1, psiSomeAvg10: 0, psiFullAvg10: 0),
@@ -4631,11 +4889,13 @@ private final class RecordingMachineAgentConnector: @unchecked Sendable {
             stdoutTruncated: false,
             stderrTruncated: false
         ),
-        execDelay: TimeInterval = 0
+        execDelay: TimeInterval = 0,
+        mismatchedLifecycleAction: DoryLifecycleReceiptAction? = nil
     ) {
         self.telemetry = telemetry
         self.execResult = execResult
         self.execDelay = execDelay
+        self.mismatchedLifecycleAction = mismatchedLifecycleAction
     }
 
     struct Exec: Equatable {
@@ -4644,6 +4904,11 @@ private final class RecordingMachineAgentConnector: @unchecked Sendable {
         var env: [DoryExecEnvironment]
         var timeoutMs: UInt64
         var outputLimitBytes: UInt64
+    }
+
+    struct LifecycleReceipt: Equatable {
+        var action: DoryLifecycleReceiptAction
+        var operationID: String
     }
 
     var connectedPaths: [String] {
@@ -4674,6 +4939,12 @@ private final class RecordingMachineAgentConnector: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return thaws
+    }
+
+    var lifecycleReceipts: [LifecycleReceipt] {
+        lock.lock()
+        defer { lock.unlock() }
+        return recordedLifecycleReceipts
     }
 
     func connect(socketPath: String) throws -> any AgentControlClient {
@@ -4710,6 +4981,22 @@ private final class RecordingMachineAgentConnector: @unchecked Sendable {
         lock.lock()
         thaws += 1
         lock.unlock()
+    }
+
+    func recordLifecycleReceipt(
+        action: DoryLifecycleReceiptAction,
+        operationID: String
+    ) -> String {
+        lock.lock()
+        recordedLifecycleReceipts.append(.init(
+            action: action,
+            operationID: operationID
+        ))
+        let mismatches = mismatchedLifecycleAction == action
+        lock.unlock()
+        return mismatches
+            ? "ffffffff-ffff-4fff-8fff-ffffffffffff"
+            : operationID
     }
 }
 
@@ -4763,6 +5050,13 @@ private final class RecordingMachineAgentClient: AgentControlClient, @unchecked 
     func snapshotThaw(receiptID: String) throws {
         XCTAssertEqual(receiptID.utf8.count, 32)
         recorder.recordSnapshotThaw()
+    }
+
+    func lifecycleReceipt(
+        action: DoryLifecycleReceiptAction,
+        operationID: String
+    ) throws -> String {
+        recorder.recordLifecycleReceipt(action: action, operationID: operationID)
     }
 
     func exec(

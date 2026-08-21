@@ -432,6 +432,7 @@ case "desktop":
     var handoffSocket: String?
     var agentSocket: String?
     var shellSocket: String?
+    var controlSocket: String?
     var sshAgentSocket: String?
     var memoryMB: UInt64 = 6_144
     var cpus = 6
@@ -494,7 +495,8 @@ case "desktop":
             guard let mode = iterator.next(), ["linux-kernel", "efi-installed"].contains(mode) else {
                 fail("raw-HV desktop requires --boot-mode linux-kernel or efi-installed")
             }
-        case "--control-sock", "--dockerd-sock":
+        case "--control-sock": controlSocket = iterator.next()
+        case "--dockerd-sock":
             _ = iterator.next()  // accepted for dory-vmm command-line compatibility
         default:
             fail("unknown desktop option \(argument)")
@@ -510,6 +512,7 @@ case "desktop":
     guard let handoffSocket else { fail("desktop requires --handoff-sock") }
     guard let agentSocket else { fail("desktop requires --agent-sock") }
     guard let shellSocket else { fail("desktop requires --shell-sock") }
+    guard let controlSocket else { fail("desktop requires --control-sock") }
     do {
         try DesktopMode.run(.init(
             machineID: machineID,
@@ -524,6 +527,7 @@ case "desktop":
             handoffSocketPath: handoffSocket,
             agentSocketPath: agentSocket,
             shellSocketPath: shellSocket,
+            controlSocketPath: controlSocket,
             sshAgentSocketPath: sshAgentSocket,
             memoryMB: memoryMB,
             cpuCount: cpus,

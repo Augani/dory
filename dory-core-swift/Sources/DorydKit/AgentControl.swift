@@ -44,6 +44,10 @@ public protocol AgentControlClient: Sendable {
     ) throws -> DoryPullStats
     func snapshotFreeze(receiptID: String) throws -> String
     func snapshotThaw(receiptID: String) throws
+    func lifecycleReceipt(
+        action: DoryLifecycleReceiptAction,
+        operationID: String
+    ) throws -> String
     func exec(
         argv: [String],
         cwd: String,
@@ -63,6 +67,15 @@ public protocol AgentControlClient: Sendable {
 }
 
 public extension AgentControlClient {
+    func lifecycleReceipt(
+        action: DoryLifecycleReceiptAction,
+        operationID: String
+    ) throws -> String {
+        _ = action
+        _ = operationID
+        throw AgentControlError.capabilityUnavailable("lifecycle-receipt")
+    }
+
     func snapshotFreeze(receiptID: String) throws -> String {
         _ = receiptID
         throw AgentControlError.capabilityUnavailable("snapshot-quiesce")
@@ -242,6 +255,16 @@ public final class AgentControl: @unchecked Sendable {
     public func snapshotThaw(receiptID: String) throws {
         try client(requiring: "snapshot-quiesce", minimumVersion: 2)
             .snapshotThaw(receiptID: receiptID)
+    }
+
+    public func lifecycleReceipt(
+        action: DoryLifecycleReceiptAction,
+        operationID: String
+    ) throws -> String {
+        try client(requiring: "lifecycle-receipt").lifecycleReceipt(
+            action: action,
+            operationID: operationID
+        )
     }
 
     public func exec(
