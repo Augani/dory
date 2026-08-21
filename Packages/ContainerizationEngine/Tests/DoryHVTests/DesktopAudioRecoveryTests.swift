@@ -6,6 +6,94 @@ import Testing
 
 @Suite("Desktop audio configuration recovery")
 struct DesktopAudioRecoveryTests {
+    @Test("negotiated PCM buffers are hard queue bounds")
+    func queueCapacityIsBoundedWithoutOverflow() {
+        #expect(DoryMacAudioQueueCapacity.accepts(parameters: VirtioSoundPCMParameters(
+            bufferBytes: 16_384,
+            periodBytes: 4_096,
+            sampleRate: 48_000,
+            channels: 2
+        )))
+        #expect(!DoryMacAudioQueueCapacity.accepts(parameters: VirtioSoundPCMParameters(
+            bufferBytes: DoryMacAudioQueueCapacity.maximumBufferBytes + 1,
+            periodBytes: 4_096,
+            sampleRate: 48_000,
+            channels: 2
+        )))
+        #expect(!DoryMacAudioQueueCapacity.accepts(parameters: VirtioSoundPCMParameters(
+            bufferBytes: 16_384,
+            periodBytes: 5_000,
+            sampleRate: 48_000,
+            channels: 2
+        )))
+        #expect(DoryMacAudioQueueCapacity.accepts(
+            currentBytes: 0,
+            requestBytes: 4_096,
+            capacityBytes: 8_192
+        ))
+        #expect(DoryMacAudioQueueCapacity.accepts(
+            currentBytes: 4_096,
+            requestBytes: 4_096,
+            capacityBytes: 8_192
+        ))
+        #expect(!DoryMacAudioQueueCapacity.accepts(
+            currentBytes: 4_097,
+            requestBytes: 4_096,
+            capacityBytes: 8_192
+        ))
+        #expect(!DoryMacAudioQueueCapacity.accepts(
+            currentBytes: Int.max,
+            requestBytes: 1,
+            capacityBytes: Int.max
+        ))
+        #expect(!DoryMacAudioQueueCapacity.accepts(
+            currentBytes: 0,
+            requestBytes: 0,
+            capacityBytes: 8_192
+        ))
+    }
+
+    @Test("backend rejects playback and capture beyond the negotiated buffer")
+    func backendEnforcesNegotiatedQueueCapacity() {
+        let backend = DoryMacAudioBackend(log: { _ in })
+        let parameters = VirtioSoundPCMParameters(
+            bufferBytes: 8,
+            periodBytes: 4,
+            sampleRate: 48_000,
+            channels: 2
+        )
+        #expect(backend.configure(
+            streamID: 0,
+            direction: .output,
+            parameters: parameters
+        ))
+        #expect(backend.enqueuePlayback(Data(count: 4), parameters: parameters) { _, _ in })
+        #expect(backend.enqueuePlayback(Data(count: 4), parameters: parameters) { _, _ in })
+        #expect(!backend.enqueuePlayback(Data(count: 4), parameters: parameters) { _, _ in })
+
+        #expect(backend.configure(
+            streamID: 1,
+            direction: .input,
+            parameters: parameters
+        ))
+        #expect(backend.requestCapture(byteCount: 4, parameters: parameters) { _, _ in })
+        #expect(backend.requestCapture(byteCount: 4, parameters: parameters) { _, _ in })
+        #expect(!backend.requestCapture(byteCount: 4, parameters: parameters) { _, _ in })
+
+        let queued = backend.runtimeMetrics
+        #expect(queued.queuedPlaybackBytes == 8)
+        #expect(queued.pendingCaptureBytes == 8)
+        #expect(queued.droppedPlaybackPeriods == 1)
+        #expect(queued.droppedCapturePeriods == 1)
+
+        backend.reset()
+        let reset = backend.runtimeMetrics
+        #expect(reset.queuedPlaybackBytes == 0)
+        #expect(reset.pendingCaptureBytes == 0)
+        #expect(reset.droppedPlaybackPeriods == 3)
+        #expect(reset.droppedCapturePeriods == 3)
+    }
+
     @Test("only configured running streams recover")
     func recoveryPolicyRequiresConfiguredRunningStream() {
         let stopped = DoryMacAudioConfigurationRecoveryState(
@@ -65,5 +153,6 @@ struct DesktopAudioRecoveryTests {
             Thread.sleep(forTimeInterval: 0.005)
         }
         #expect(backend.configurationChangeCount == 2)
+        #expect(backend.runtimeMetrics.configurationChanges == 2)
     }
 }

@@ -25,6 +25,38 @@ struct DoryMacAudioConfigurationRecoveryState: Equatable {
     }
 }
 
+struct DoryMacAudioQueueCapacity {
+    static let maximumBufferBytes = 4 * 1_024 * 1_024
+    static let maximumPeriodBytes = 1 * 1_024 * 1_024
+
+    static func accepts(parameters: VirtioSoundPCMParameters) -> Bool {
+        parameters.bufferBytes > 0
+            && parameters.bufferBytes <= maximumBufferBytes
+            && parameters.periodBytes > 0
+            && parameters.periodBytes <= maximumPeriodBytes
+            && parameters.periodBytes <= parameters.bufferBytes
+            && parameters.bufferBytes % parameters.periodBytes == 0
+    }
+
+    static func accepts(currentBytes: Int, requestBytes: Int, capacityBytes: Int) -> Bool {
+        currentBytes >= 0
+            && requestBytes > 0
+            && capacityBytes > 0
+            && currentBytes <= capacityBytes
+            && requestBytes <= capacityBytes - currentBytes
+    }
+}
+
+struct DoryMacAudioRuntimeMetrics: Equatable {
+    var queuedPlaybackBytes: Int
+    var pendingCaptureBytes: Int
+    var bufferedCaptureBytes: Int
+    var droppedPlaybackPeriods: UInt64
+    var droppedCapturePeriods: UInt64
+    var discardedCaptureBytes: UInt64
+    var configurationChanges: Int
+}
+
 /// Bridges the raw Hypervisor.framework virtio-snd device to Core Audio. Guest PCM remains the
 /// standard signed 16-bit interleaved format while AVAudioEngine performs host sample-rate and
 /// device conversion.
@@ -74,6 +106,7 @@ final class DoryMacAudioBackend: VirtioSoundHost, @unchecked Sendable {
     private var permissionRequestInFlight = false
     private var captureBytes = Data()
     private var captureRequests = [CaptureRequest]()
+    private var pendingCaptureBytes = 0
     private var nextCaptureRequestID: UInt64 = 1
     private var captureTapCount = 0
     private var captureFallbackLogged = false
@@ -82,6 +115,9 @@ final class DoryMacAudioBackend: VirtioSoundHost, @unchecked Sendable {
     private var playbackRequests = [UInt64: PlaybackRequest]()
     private var nextPlaybackRequestID: UInt64 = 1
     private var observedConfigurationChanges = 0
+    private var droppedPlaybackPeriods: UInt64 = 0
+    private var droppedCapturePeriods: UInt64 = 0
+    private var discardedCaptureBytes: UInt64 = 0
 
     init(
         log: @escaping @Sendable (String) -> Void,
@@ -115,6 +151,20 @@ final class DoryMacAudioBackend: VirtioSoundHost, @unchecked Sendable {
     }
 
     var configurationChangeCount: Int { queue.sync { observedConfigurationChanges } }
+
+    var runtimeMetrics: DoryMacAudioRuntimeMetrics {
+        queue.sync {
+            DoryMacAudioRuntimeMetrics(
+                queuedPlaybackBytes: queuedPlaybackBytes,
+                pendingCaptureBytes: pendingCaptureBytes,
+                bufferedCaptureBytes: captureBytes.count,
+                droppedPlaybackPeriods: droppedPlaybackPeriods,
+                droppedCapturePeriods: droppedCapturePeriods,
+                discardedCaptureBytes: discardedCaptureBytes,
+                configurationChanges: observedConfigurationChanges
+            )
+        }
+    }
 
     func configure(
         streamID: Int,
@@ -230,8 +280,18 @@ final class DoryMacAudioBackend: VirtioSoundHost, @unchecked Sendable {
         completion: @escaping @Sendable (Bool, UInt32) -> Void
     ) -> Bool {
         queue.sync {
-            guard outputParameters == parameters,
-                  let buffer = Self.playbackBuffer(data: data, parameters: parameters) else {
+            guard outputParameters == parameters else {
+                return false
+            }
+            guard DoryMacAudioQueueCapacity.accepts(
+                currentBytes: queuedPlaybackBytes,
+                requestBytes: data.count,
+                capacityBytes: parameters.bufferBytes
+            ) else {
+                droppedPlaybackPeriods &+= 1
+                return false
+            }
+            guard let buffer = Self.playbackBuffer(data: data, parameters: parameters) else {
                 return false
             }
             if outputRunning, !startOutputEngine() { return false }
@@ -272,8 +332,17 @@ final class DoryMacAudioBackend: VirtioSoundHost, @unchecked Sendable {
             // Linux primes capture descriptors while the PCM is prepared, before PCM_START. Keep
             // those requests pending just as playback keeps its pre-roll buffers scheduled.
             guard byteCount > 0, inputParameters == parameters else { return false }
+            guard DoryMacAudioQueueCapacity.accepts(
+                currentBytes: pendingCaptureBytes,
+                requestBytes: byteCount,
+                capacityBytes: parameters.bufferBytes
+            ) else {
+                droppedCapturePeriods &+= 1
+                return false
+            }
             let requestID = nextCaptureRequestID
             nextCaptureRequestID &+= 1
+            pendingCaptureBytes += byteCount
             captureRequests.append(CaptureRequest(
                 id: requestID,
                 byteCount: byteCount,
@@ -443,9 +512,14 @@ final class DoryMacAudioBackend: VirtioSoundHost, @unchecked Sendable {
 
     private func appendCapture(_ data: Data) {
         captureBytes.append(data)
-        // Bound stale input if PipeWire temporarily stops submitting receive buffers.
-        if captureBytes.count > 4 * 1_024 * 1_024 {
-            captureBytes.removeFirst(captureBytes.count - 4 * 1_024 * 1_024)
+        // Keep only the newest negotiated buffer when PipeWire temporarily stops submitting
+        // receive descriptors. Old microphone frames are less useful than current audio after a
+        // stall, and the guest-controlled PCM contract must remain a hard memory bound.
+        let capacity = max(0, inputParameters?.bufferBytes ?? 0)
+        if captureBytes.count > capacity {
+            let discarded = captureBytes.count - capacity
+            discardedCaptureBytes &+= UInt64(discarded)
+            captureBytes.removeFirst(discarded)
         }
         satisfyCaptureRequests()
     }
@@ -453,6 +527,7 @@ final class DoryMacAudioBackend: VirtioSoundHost, @unchecked Sendable {
     private func satisfyCaptureRequests() {
         while let request = captureRequests.first, captureBytes.count >= request.byteCount {
             captureRequests.removeFirst()
+            pendingCaptureBytes = max(0, pendingCaptureBytes - request.byteCount)
             let data = Data(captureBytes.prefix(request.byteCount))
             captureBytes.removeFirst(request.byteCount)
             let latency = UInt32(clamping: captureBytes.count)
@@ -493,6 +568,7 @@ final class DoryMacAudioBackend: VirtioSoundHost, @unchecked Sendable {
                 return
             }
             let request = self.captureRequests.remove(at: pendingIndex)
+            self.pendingCaptureBytes = max(0, self.pendingCaptureBytes - request.byteCount)
             if !self.captureFallbackLogged {
                 self.captureFallbackLogged = true
                 self.log("Mac microphone frames are pending; Linux capture is using paced silence")
@@ -505,6 +581,8 @@ final class DoryMacAudioBackend: VirtioSoundHost, @unchecked Sendable {
     private func failCaptureRequests() {
         let requests = captureRequests
         captureRequests.removeAll(keepingCapacity: false)
+        pendingCaptureBytes = 0
+        droppedCapturePeriods &+= UInt64(requests.count)
         for request in requests { Self.deliver { request.completion(nil, 0) } }
     }
 
@@ -517,6 +595,7 @@ final class DoryMacAudioBackend: VirtioSoundHost, @unchecked Sendable {
 
     private func failPlaybackRequests() {
         let requestIDs = playbackRequests.keys.sorted()
+        droppedPlaybackPeriods &+= UInt64(requestIDs.count)
         for requestID in requestIDs {
             completePlayback(requestID: requestID, success: false)
         }
@@ -527,9 +606,7 @@ final class DoryMacAudioBackend: VirtioSoundHost, @unchecked Sendable {
         parameters.bytesPerSample == 2
             && (parameters.channels == 1 || parameters.channels == 2)
             && (parameters.sampleRate == 44_100 || parameters.sampleRate == 48_000)
-            && parameters.bufferBytes > 0
-            && parameters.periodBytes > 0
-            && parameters.periodBytes <= parameters.bufferBytes
+            && DoryMacAudioQueueCapacity.accepts(parameters: parameters)
             && parameters.periodBytes % parameters.bytesPerFrame == 0
     }
 
