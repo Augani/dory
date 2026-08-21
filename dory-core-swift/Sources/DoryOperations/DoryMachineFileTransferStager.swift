@@ -29,6 +29,25 @@ public struct DoryStagedMachineFileTransfer: Sendable, Equatable {
     }
 }
 
+public struct DoryMaterializedMachineGuestFileExport: Sendable, Equatable {
+    public let rootURL: URL
+    public let fileCount: UInt64
+    public let directoryCount: UInt64
+    public let byteCount: UInt64
+
+    fileprivate init(
+        rootURL: URL,
+        fileCount: UInt64,
+        directoryCount: UInt64,
+        byteCount: UInt64
+    ) {
+        self.rootURL = rootURL
+        self.fileCount = fileCount
+        self.directoryCount = directoryCount
+        self.byteCount = byteCount
+    }
+}
+
 public enum DoryMachineFileTransferStagingError: Error, Sendable, Equatable,
     CustomStringConvertible {
     case emptySelection
@@ -41,6 +60,8 @@ public enum DoryMachineFileTransferStagingError: Error, Sendable, Equatable,
     case transferTooLarge
     case sourceChanged(String)
     case unsafeStagingDirectory
+    case exportEvidenceMismatch
+    case destinationExists(String)
     case io(String, Int32)
 
     public var description: String {
@@ -65,6 +86,10 @@ public enum DoryMachineFileTransferStagingError: Error, Sendable, Equatable,
             "selected file changed while it was being staged: \(name)"
         case .unsafeStagingDirectory:
             "file transfer staging directory is not private"
+        case .exportEvidenceMismatch:
+            "guest file export no longer matches the verified transfer"
+        case let .destinationExists(name):
+            "a file or folder named \(name) already exists"
         case let .io(operation, code):
             "file transfer staging \(operation) failed: \(String(cString: strerror(code)))"
         }
@@ -237,6 +262,199 @@ public enum DoryMachineFileTransferStager {
             fileCount: UInt64(state.fileCount),
             directoryCount: UInt64(state.directoryCount),
             byteCount: state.byteCount
+        )
+    }
+
+    /// Copies one exact daemon-owned guest export into a newly-created child of a user-selected
+    /// directory. The source and destination are traversed by descriptor without following
+    /// symlinks; the destination is published only after every byte and count matches the daemon's
+    /// completed evidence. Existing user files are never overwritten.
+    public static func materializeGuestExport(
+        privateStagingRoot: String,
+        exportID: String,
+        expectedFileCount: UInt64,
+        expectedDirectoryCount: UInt64,
+        expectedByteCount: UInt64,
+        destinationDirectory: URL,
+        destinationName: String
+    ) throws -> DoryMaterializedMachineGuestFileExport {
+        let (expectedEntryCount, expectedEntryOverflow) = expectedFileCount
+            .addingReportingOverflow(expectedDirectoryCount)
+        guard isValidOperationID(exportID),
+              isValidFileName(destinationName, atRoot: true),
+              let managed = managedRoot(privateStagingRoot),
+              managed.kind == .export,
+              managed.name.hasSuffix("-" + exportID),
+              expectedFileCount <= UInt64(maximumFileCount),
+              !expectedEntryOverflow,
+              expectedEntryCount <= UInt64(maximumEntryCount),
+              expectedByteCount <= maximumTransferBytes else {
+            throw DoryMachineFileTransferStagingError.exportEvidenceMismatch
+        }
+
+        try makeManagedTreeReadable(privateStagingRoot)
+        let stagingDescriptor = try openPrivateStagingDirectory()
+        defer { close(stagingDescriptor) }
+        let sourceDescriptor = openat(
+            stagingDescriptor,
+            managed.name,
+            O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW
+        )
+        guard sourceDescriptor >= 0 else {
+            throw DoryMachineFileTransferStagingError.io("export open", errno)
+        }
+        defer { close(sourceDescriptor) }
+        guard isPrivateDirectory(descriptor: sourceDescriptor) else {
+            throw DoryMachineFileTransferStagingError.unsafeStagingDirectory
+        }
+        var sourceSnapshot = stat()
+        guard fstat(sourceDescriptor, &sourceSnapshot) == 0 else {
+            throw DoryMachineFileTransferStagingError.io("export stat", errno)
+        }
+
+        let securityScope = destinationDirectory.startAccessingSecurityScopedResource()
+        defer {
+            if securityScope { destinationDirectory.stopAccessingSecurityScopedResource() }
+        }
+        let destinationDescriptor = open(
+            destinationDirectory.path,
+            O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW
+        )
+        guard destinationDescriptor >= 0 else {
+            throw DoryMachineFileTransferStagingError.io("destination open", errno)
+        }
+        defer { close(destinationDescriptor) }
+        var destinationInfo = stat()
+        guard fstat(destinationDescriptor, &destinationInfo) == 0,
+              (destinationInfo.st_mode & S_IFMT) == S_IFDIR else {
+            throw DoryMachineFileTransferStagingError.io("destination stat", errno)
+        }
+
+        var existing = stat()
+        if fstatat(
+            destinationDescriptor,
+            destinationName,
+            &existing,
+            AT_SYMLINK_NOFOLLOW
+        ) == 0 {
+            throw DoryMachineFileTransferStagingError.destinationExists(destinationName)
+        }
+        guard errno == ENOENT else {
+            throw DoryMachineFileTransferStagingError.io("destination lookup", errno)
+        }
+
+        let temporaryName = ".dory-export-" + UUID().uuidString.lowercased()
+        guard mkdirat(destinationDescriptor, temporaryName, mode_t(0o700)) == 0 else {
+            throw DoryMachineFileTransferStagingError.io("destination creation", errno)
+        }
+        var published = false
+        defer {
+            if !published {
+                try? removeCreatedTree(
+                    parentDescriptor: destinationDescriptor,
+                    name: temporaryName
+                )
+            }
+        }
+        let temporaryDescriptor = openat(
+            destinationDescriptor,
+            temporaryName,
+            O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW
+        )
+        guard temporaryDescriptor >= 0 else {
+            throw DoryMachineFileTransferStagingError.io("destination open", errno)
+        }
+        defer { close(temporaryDescriptor) }
+
+        var state = StageState()
+        for childName in try directoryEntryNames(descriptor: sourceDescriptor) {
+            guard isValidFileName(childName, atRoot: true) else {
+                throw DoryMachineFileTransferStagingError.unsupportedFile(childName)
+            }
+            let childDescriptor = openat(
+                sourceDescriptor,
+                childName,
+                O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK
+            )
+            guard childDescriptor >= 0 else {
+                throw DoryMachineFileTransferStagingError.io("export entry open", errno)
+            }
+            defer { close(childDescriptor) }
+            var childSnapshot = stat()
+            guard fstat(childDescriptor, &childSnapshot) == 0 else {
+                throw DoryMachineFileTransferStagingError.io("export entry stat", errno)
+            }
+            switch childSnapshot.st_mode & S_IFMT {
+            case S_IFREG:
+                try stageFile(
+                    sourceDescriptor: childDescriptor,
+                    sourceSnapshot: childSnapshot,
+                    destinationDirectory: temporaryDescriptor,
+                    name: childName,
+                    displayPath: childName,
+                    state: &state
+                )
+            case S_IFDIR:
+                try stageDirectory(
+                    sourceDescriptor: childDescriptor,
+                    sourceSnapshot: childSnapshot,
+                    destinationDirectory: temporaryDescriptor,
+                    name: childName,
+                    displayPath: childName,
+                    depth: 1,
+                    state: &state
+                )
+            default:
+                throw DoryMachineFileTransferStagingError.unsupportedFile(childName)
+            }
+        }
+        try revalidateSource(
+            descriptor: sourceDescriptor,
+            expected: sourceSnapshot,
+            displayPath: "guest export"
+        )
+        guard UInt64(state.fileCount) == expectedFileCount,
+              UInt64(state.directoryCount) == expectedDirectoryCount,
+              state.byteCount == expectedByteCount else {
+            throw DoryMachineFileTransferStagingError.exportEvidenceMismatch
+        }
+        guard fsync(temporaryDescriptor) == 0, fsync(destinationDescriptor) == 0 else {
+            throw DoryMachineFileTransferStagingError.io("destination sync", errno)
+        }
+        let renameResult = temporaryName.withCString { temporaryName in
+            destinationName.withCString { destinationName in
+                renameatx_np(
+                    destinationDescriptor,
+                    temporaryName,
+                    destinationDescriptor,
+                    destinationName,
+                    UInt32(RENAME_EXCL)
+                )
+            }
+        }
+        guard renameResult == 0 else {
+            if errno == EEXIST {
+                throw DoryMachineFileTransferStagingError.destinationExists(destinationName)
+            }
+            throw DoryMachineFileTransferStagingError.io("destination publish", errno)
+        }
+        if fsync(destinationDescriptor) != 0 {
+            let code = errno
+            try? removeCreatedTree(
+                parentDescriptor: destinationDescriptor,
+                name: destinationName
+            )
+            throw DoryMachineFileTransferStagingError.io("destination sync", code)
+        }
+        published = true
+        return DoryMaterializedMachineGuestFileExport(
+            rootURL: destinationDirectory.appendingPathComponent(
+                destinationName,
+                isDirectory: true
+            ),
+            fileCount: expectedFileCount,
+            directoryCount: expectedDirectoryCount,
+            byteCount: expectedByteCount
         )
     }
 
@@ -489,6 +707,90 @@ public enum DoryMachineFileTransferStager {
                 URL(fileURLWithPath: path, isDirectory: true)
                     .appendingPathComponent(child, isDirectory: false).path
             )
+        }
+    }
+
+    /// Normalizes guest-provided modes so the app can descriptor-copy a completed export. The
+    /// pull engine creates every entry as the daemon user without symlinks, but preserves guest
+    /// permission bits; mode 000 therefore needs an owner-only read/traverse grant here.
+    private static func makeManagedTreeReadable(_ path: String) throws {
+        var info = stat()
+        guard lstat(path, &info) == 0 else {
+            throw DoryMachineFileTransferStagingError.io("export stat", errno)
+        }
+        guard info.st_uid == geteuid() else {
+            throw DoryMachineFileTransferStagingError.unsafeStagingDirectory
+        }
+        switch info.st_mode & S_IFMT {
+        case S_IFREG:
+            guard fchmodat(AT_FDCWD, path, mode_t(0o600), AT_SYMLINK_NOFOLLOW) == 0 else {
+                throw DoryMachineFileTransferStagingError.io("export permissions", errno)
+            }
+        case S_IFDIR:
+            guard fchmodat(AT_FDCWD, path, mode_t(0o700), AT_SYMLINK_NOFOLLOW) == 0 else {
+                throw DoryMachineFileTransferStagingError.io("export permissions", errno)
+            }
+            let descriptor = open(
+                path,
+                O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW
+            )
+            guard descriptor >= 0 else {
+                throw DoryMachineFileTransferStagingError.io("export directory open", errno)
+            }
+            defer { close(descriptor) }
+            for childName in try directoryEntryNames(descriptor: descriptor) {
+                guard isValidFileName(childName, atRoot: false) else {
+                    throw DoryMachineFileTransferStagingError.unsupportedFile(childName)
+                }
+                try makeManagedTreeReadable(
+                    URL(fileURLWithPath: path, isDirectory: true)
+                        .appendingPathComponent(childName, isDirectory: false).path
+                )
+            }
+        default:
+            throw DoryMachineFileTransferStagingError.unsupportedFile(
+                URL(fileURLWithPath: path).lastPathComponent
+            )
+        }
+    }
+
+    /// Deletes only an entry beneath an already-open directory. Symlinks and special files are
+    /// unlinked as entries and never followed; directories are traversed through O_NOFOLLOW.
+    private static func removeCreatedTree(
+        parentDescriptor: Int32,
+        name: String
+    ) throws {
+        var info = stat()
+        guard fstatat(parentDescriptor, name, &info, AT_SYMLINK_NOFOLLOW) == 0 else {
+            if errno == ENOENT { return }
+            throw DoryMachineFileTransferStagingError.io("cleanup stat", errno)
+        }
+        if (info.st_mode & S_IFMT) != S_IFDIR {
+            guard unlinkat(parentDescriptor, name, 0) == 0 else {
+                throw DoryMachineFileTransferStagingError.io("cleanup unlink", errno)
+            }
+            return
+        }
+
+        let descriptor = openat(
+            parentDescriptor,
+            name,
+            O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW
+        )
+        guard descriptor >= 0 else {
+            throw DoryMachineFileTransferStagingError.io("cleanup directory open", errno)
+        }
+        do {
+            for childName in try directoryEntryNames(descriptor: descriptor) {
+                try removeCreatedTree(parentDescriptor: descriptor, name: childName)
+            }
+        } catch {
+            close(descriptor)
+            throw error
+        }
+        close(descriptor)
+        guard unlinkat(parentDescriptor, name, AT_REMOVEDIR) == 0 else {
+            throw DoryMachineFileTransferStagingError.io("cleanup directory removal", errno)
         }
     }
 
