@@ -338,6 +338,7 @@ jobs:
           python3 .github/scripts/test-release-output-validator.py
           python3 .github/scripts/test-homebrew-install-gate.py
           python3 .github/scripts/test-release-performance-gate.py
+          python3 .github/scripts/test-source-preserving-lan-gate.py
           python3 .github/scripts/test-generate-appcast.py
           python3 .github/scripts/test-release-sbom.py
           python3 .github/scripts/test-direct-dmg-install-gate.py
