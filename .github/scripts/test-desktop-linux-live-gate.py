@@ -44,6 +44,13 @@ class DesktopLinuxLiveGateTests(unittest.TestCase):
             "VK_DRIVER_FILES",
             "LD_LIBRARY_PATH",
             "-u ZED_ALLOW_EMULATED_GPU",
+            'machine snapshot "$machine"',
+            'machine restore-snapshot "$machine"',
+            'machine delete-snapshot "$machine"',
+            "recovery-exact-bytes-restored",
+            'identity.get("mode") != "resolved-plan"',
+            "restore reused the snapshot's stale launch plan",
+            "snapshot_restore_exact_bytes=PASS",
             "workroot must be a strict child of RUNNER_TEMP",
         )
         for proof in required:

@@ -91,6 +91,11 @@ for proof in (
     "machine desktop-update",
     'body.get("snapshotID")',
     '"provenance": "verified-update-bundle"',
+    'machine snapshot "$machine"',
+    'machine restore-snapshot "$machine"',
+    "recovery-exact-bytes-restored",
+    "restore reused the snapshot's stale launch plan",
+    "snapshot_restore_exact_bytes=PASS",
 ):
     require(desktop_gate, proof, f"desktop live gate omits required proof: {proof}")
 

@@ -583,6 +583,114 @@ PY
     "cat /home/dorygate/.dory-release-marker; mountpoint -q /home/dorygate/Mac" \
     > "$WORKROOT/evidence/$distro-persistence.json"
 
+  recovery_snapshot="recovery-$distro"
+  assert_exec_token "$machine" recovery-source-ready sh -lc "
+    set -eu
+    recovery_path=/home/dorygate/.dory-release-recovery.bin
+    recovery_sum=/home/dorygate/.dory-release-recovery.sha256
+    dd if=/dev/urandom of=\"\$recovery_path\" bs=1M count=16 status=none
+    sha256sum \"\$recovery_path\" > \"\$recovery_sum\"
+    sync
+    echo recovery-source-ready
+  " > "$WORKROOT/evidence/$distro-recovery-source.json"
+  "$CTL" machine snapshot "$machine" --id "$recovery_snapshot" \
+    --note "Exact release-candidate recovery proof" \
+    > "$WORKROOT/evidence/$distro-recovery-snapshot.json"
+  snapshot_plan_sha="$(python3 - \
+    "$WORKROOT/evidence/$distro-recovery-snapshot.json" \
+    "$machine" "$recovery_snapshot" <<'PY'
+import json
+import re
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    body = json.load(handle)
+if not isinstance(body, dict) or body.get("machineID") != sys.argv[2] \
+        or body.get("id") != sys.argv[3]:
+    raise SystemExit(f"snapshot returned the wrong authority: {body!r}")
+if body.get("consistency") not in {"cold-stopped", "guest-quiesced"}:
+    raise SystemExit(f"snapshot omitted an exact consistency contract: {body!r}")
+identity = body.get("runtimeIdentity")
+if not isinstance(identity, dict) or identity.get("mode") != "resolved-plan" \
+        or re.fullmatch(r"[0-9a-f]{64}", identity.get("planSHA256", "")) is None:
+    raise SystemExit(f"snapshot omitted resolved runtime authority: {body!r}")
+artifacts = body.get("artifactEvidence")
+if not isinstance(artifacts, dict):
+    raise SystemExit(f"snapshot omitted artifact evidence: {body!r}")
+for key in ("rootfs", "kernel"):
+    artifact = artifacts.get(key)
+    if not isinstance(artifact, dict) \
+            or not isinstance(artifact.get("byteCount"), int) \
+            or artifact["byteCount"] <= 0 \
+            or re.fullmatch(r"[0-9a-f]{64}", artifact.get("sha256", "")) is None:
+        raise SystemExit(f"snapshot has invalid {key} evidence: {body!r}")
+print(identity["planSHA256"])
+PY
+  )"
+  printf '%s\n' "$snapshot_plan_sha" \
+    > "$WORKROOT/evidence/$distro-recovery-snapshot-plan.txt"
+  wait_for_desktop "$machine" "$manager" "$session"
+  wait_for_running "$machine"
+  assert_exec_token "$machine" recovery-source-mutated sh -lc "
+    set -eu
+    recovery_path=/home/dorygate/.dory-release-recovery.bin
+    recovery_sum=/home/dorygate/.dory-release-recovery.sha256
+    printf 'mutated-after-snapshot\n' > \"\$recovery_path\"
+    if sha256sum -c \"\$recovery_sum\" >/dev/null 2>&1; then
+      echo 'recovery mutation did not change the payload' >&2
+      exit 1
+    fi
+    sync
+    echo recovery-source-mutated
+  " > "$WORKROOT/evidence/$distro-recovery-mutated.json"
+  "$CTL" machine restore-snapshot "$machine" "$recovery_snapshot" \
+    > "$WORKROOT/evidence/$distro-recovery-restore.json"
+  restored_plan_sha="$(python3 - \
+    "$WORKROOT/evidence/$distro-recovery-restore.json" \
+    "$machine" "$snapshot_plan_sha" <<'PY'
+import json
+import re
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    body = json.load(handle)
+if not isinstance(body, dict) or body.get("id") != sys.argv[2] \
+        or body.get("state") not in {"starting", "running"}:
+    raise SystemExit(f"restore did not resume the running machine: {body!r}")
+identity = body.get("runtimeIdentity")
+if not isinstance(identity, dict) or identity.get("mode") != "resolved-plan" \
+        or re.fullmatch(r"[0-9a-f]{64}", identity.get("planSHA256", "")) is None:
+    raise SystemExit(f"restore did not publish fresh resolved authority: {body!r}")
+if identity["planSHA256"] == sys.argv[3]:
+    raise SystemExit(f"restore reused the snapshot's stale launch plan: {body!r}")
+print(identity["planSHA256"])
+PY
+  )"
+  printf '%s\n' "$restored_plan_sha" \
+    > "$WORKROOT/evidence/$distro-recovery-restored-plan.txt"
+  wait_for_desktop "$machine" "$manager" "$session"
+  wait_for_running "$machine"
+  assert_exec_token "$machine" recovery-exact-bytes-restored sh -lc "
+    set -eu
+    sha256sum -c /home/dorygate/.dory-release-recovery.sha256
+    echo recovery-exact-bytes-restored
+  " > "$WORKROOT/evidence/$distro-recovery-qualified.json"
+  "$CTL" machine delete-snapshot "$machine" "$recovery_snapshot" \
+    > "$WORKROOT/evidence/$distro-recovery-delete.json"
+  "$CTL" machine snapshots "$machine" \
+    > "$WORKROOT/evidence/$distro-recovery-remaining-snapshots.json"
+  python3 - "$WORKROOT/evidence/$distro-recovery-remaining-snapshots.json" \
+    "$recovery_snapshot" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    body = json.load(handle)
+if not isinstance(body, list) or any(
+        isinstance(row, dict) and row.get("id") == sys.argv[2] for row in body):
+    raise SystemExit(f"recovery snapshot survived deletion: {body!r}")
+PY
+
   "$CTL" machine desktop-update "$machine" \
     --distro "$distro" --version "$update_version" \
     --distribution-installation "$distribution_installation" \
@@ -682,6 +790,7 @@ fi
   else
     printf 'zed_native_venus=NOT-RUN\n'
   fi
+  printf 'snapshot_restore_exact_bytes=PASS\n'
   if [ "$SELECTED_DISTRO" = all ] || [ "$SELECTED_DISTRO" = debian ]; then
     printf 'debian_rootfs_sha256=%s\n' "$(shasum -a 256 "$DEBIAN_ROOTFS" | awk '{print $1}')"
     printf 'debian_update_sha256=%s\n' "$(shasum -a 256 "$DEBIAN_UPDATE" | awk '{print $1}')"
