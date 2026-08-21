@@ -96,6 +96,10 @@ final class DoryMacAudioBackend: VirtioSoundHost, @unchecked Sendable {
     private let player = AVAudioPlayerNode()
     private let log: @Sendable (String) -> Void
     private let notificationCenter: NotificationCenter
+    private let microphoneAuthorizationStatus: @Sendable () -> AVAuthorizationStatus
+    private let requestMicrophoneAccess: @Sendable (
+        @escaping @Sendable (Bool) -> Void
+    ) -> Void
     private var configurationObservers = [NSObjectProtocol]()
 
     private var outputParameters: VirtioSoundPCMParameters?
@@ -121,10 +125,20 @@ final class DoryMacAudioBackend: VirtioSoundHost, @unchecked Sendable {
 
     init(
         log: @escaping @Sendable (String) -> Void,
-        notificationCenter: NotificationCenter = .default
+        notificationCenter: NotificationCenter = .default,
+        microphoneAuthorizationStatus: @escaping @Sendable () -> AVAuthorizationStatus = {
+            AVCaptureDevice.authorizationStatus(for: .audio)
+        },
+        requestMicrophoneAccess: @escaping @Sendable (
+            @escaping @Sendable (Bool) -> Void
+        ) -> Void = { completion in
+            AVCaptureDevice.requestAccess(for: .audio, completionHandler: completion)
+        }
     ) {
         self.log = log
         self.notificationCenter = notificationCenter
+        self.microphoneAuthorizationStatus = microphoneAuthorizationStatus
+        self.requestMicrophoneAccess = requestMicrophoneAccess
         outputEngine.attach(player)
         configurationObservers = [
             notificationCenter.addObserver(
@@ -229,7 +243,10 @@ final class DoryMacAudioBackend: VirtioSoundHost, @unchecked Sendable {
             case .input:
                 guard inputParameters != nil else { return false }
                 inputRunning = true
-                guard startInputWhenAuthorized() else { return false }
+                guard startInputWhenAuthorized() else {
+                    failCaptureRequests()
+                    return false
+                }
                 satisfyCaptureRequests()
                 armCaptureFallbacks()
                 return true
@@ -373,19 +390,25 @@ final class DoryMacAudioBackend: VirtioSoundHost, @unchecked Sendable {
     }
 
     private func startInputWhenAuthorized() -> Bool {
-        switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        switch microphoneAuthorizationStatus() {
         case .authorized:
             return installInputTapAndStartEngine()
         case .notDetermined:
             guard !permissionRequestInFlight else { return true }
             permissionRequestInFlight = true
             log("requesting Mac microphone access; Linux capture will provide paced silence until permission is resolved")
-            AVCaptureDevice.requestAccess(for: .audio) { [weak self] granted in
+            requestMicrophoneAccess { [weak self] granted in
                 guard let self else { return }
                 self.queue.async {
                     self.permissionRequestInFlight = false
                     guard self.inputRunning else { return }
-                    if granted, self.installInputTapAndStartEngine() { return }
+                    guard granted else {
+                        self.inputRunning = false
+                        self.log("microphone access was denied; Linux capture requests were stopped")
+                        self.failCaptureRequests()
+                        return
+                    }
+                    if self.installInputTapAndStartEngine() { return }
                     self.log("microphone access is unavailable; Linux capture will continue with paced silence")
                     self.armCaptureFallbacks()
                 }
@@ -436,7 +459,11 @@ final class DoryMacAudioBackend: VirtioSoundHost, @unchecked Sendable {
                     log("Mac audio input is unavailable after the host device configuration changed")
                 }
                 satisfyCaptureRequests()
-                armCaptureFallbacks()
+                if inputRunning {
+                    armCaptureFallbacks()
+                } else {
+                    failCaptureRequests()
+                }
             }
         }
     }

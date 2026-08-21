@@ -94,6 +94,40 @@ struct DesktopAudioRecoveryTests {
         #expect(reset.droppedCapturePeriods == 3)
     }
 
+    @Test("denied microphone permission fails primed capture descriptors")
+    func deniedMicrophonePermissionFailsPendingCapture() {
+        let completion = DispatchSemaphore(value: 0)
+        let result = LockedCaptureCompletion()
+        let backend = DoryMacAudioBackend(
+            log: { _ in },
+            microphoneAuthorizationStatus: { .denied },
+            requestMicrophoneAccess: { _ in
+                Issue.record("denied authorization must not request microphone access")
+            }
+        )
+        let parameters = VirtioSoundPCMParameters(
+            bufferBytes: 8,
+            periodBytes: 4,
+            sampleRate: 48_000,
+            channels: 2
+        )
+        #expect(backend.configure(
+            streamID: 1,
+            direction: .input,
+            parameters: parameters
+        ))
+        #expect(backend.requestCapture(byteCount: 4, parameters: parameters) { data, _ in
+            result.record(data)
+            completion.signal()
+        })
+
+        #expect(!backend.start(streamID: 1, direction: .input))
+        #expect(completion.wait(timeout: .now() + 1) == .success)
+        #expect(result.snapshot == (completed: true, dataWasNil: true))
+        #expect(backend.runtimeMetrics.pendingCaptureBytes == 0)
+        #expect(backend.runtimeMetrics.droppedCapturePeriods == 1)
+    }
+
     @Test("only configured running streams recover")
     func recoveryPolicyRequiresConfiguredRunningStream() {
         let stopped = DoryMacAudioConfigurationRecoveryState(
@@ -154,5 +188,24 @@ struct DesktopAudioRecoveryTests {
         }
         #expect(backend.configurationChangeCount == 2)
         #expect(backend.runtimeMetrics.configurationChanges == 2)
+    }
+}
+
+private final class LockedCaptureCompletion: @unchecked Sendable {
+    private let lock = NSLock()
+    private var completed = false
+    private var dataWasNil = false
+
+    func record(_ data: Data?) {
+        lock.lock()
+        completed = true
+        dataWasNil = data == nil
+        lock.unlock()
+    }
+
+    var snapshot: (completed: Bool, dataWasNil: Bool) {
+        lock.lock()
+        defer { lock.unlock() }
+        return (completed, dataWasNil)
     }
 }
