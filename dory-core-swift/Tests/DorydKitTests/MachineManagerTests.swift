@@ -127,12 +127,25 @@ final class MachineManagerTests: XCTestCase {
         let running = try manager.start(id: "dev")
         let runningPID = try XCTUnwrap(running.pid)
         XCTAssertEqual(running.state, .running)
+        let zeroOperationID = UUID(
+            uuidString: "00000000-0000-0000-0000-000000000000"
+        )!
+        XCTAssertThrowsError(try manager.pause(
+            id: "dev",
+            operationID: zeroOperationID
+        ))
+        XCTAssertEqual(manager.status(id: "dev")?.state, .running)
 
         let paused = try manager.pause(id: "dev")
         XCTAssertEqual(paused.state, .paused)
         XCTAssertEqual(paused.pid, runningPID)
         XCTAssertEqual(kill(runningPID, 0), 0)
         XCTAssertThrowsError(try manager.pause(id: "dev"))
+        XCTAssertThrowsError(try manager.resume(
+            id: "dev",
+            operationID: zeroOperationID
+        ))
+        XCTAssertEqual(manager.status(id: "dev")?.state, .paused)
 
         let resumed = try manager.resume(id: "dev")
         XCTAssertEqual(resumed.state, .running)
@@ -141,6 +154,11 @@ final class MachineManagerTests: XCTestCase {
         XCTAssertThrowsError(try manager.resume(id: "dev"))
 
         _ = try manager.pause(id: "dev")
+        XCTAssertThrowsError(try manager.stop(
+            id: "dev",
+            operationID: zeroOperationID
+        ))
+        XCTAssertEqual(manager.status(id: "dev")?.state, .paused)
         let stopped = try manager.stop(id: "dev")
         XCTAssertEqual(stopped.state, .stopped)
         XCTAssertNil(stopped.pid)

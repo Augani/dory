@@ -924,6 +924,9 @@ public final class MachineManager: @unchecked Sendable {
         ".dory-native-create-precommit-v1"
     private static let nativeCreationCommittedMarkerName =
         ".dory-native-create-committed-v1"
+    private static let zeroLifecycleOperationID = UUID(
+        uuidString: "00000000-0000-0000-0000-000000000000"
+    )!
     private static let machineRestoreBackupMarker = ".restore-"
     private static let snapshotDeletionQuarantinePrefix = ".dory-snapshot-delete-"
     private static let snapshotDiskTemporaryMarker = ".ext4.tmp-"
@@ -1208,30 +1211,35 @@ public final class MachineManager: @unchecked Sendable {
                     expectedBackend: backend
                 )
             },
-            stop: { [weak self] id in
+            stop: { [weak self] request in
                 guard let self else {
                     throw MachineManagerError.persistence("machine manager is unavailable")
                 }
-                return MachineBackendRuntimeObservation(try self.stop(id: id))
+                return MachineBackendRuntimeObservation(
+                    try self.performAuthorizedResolvedBackendStop(
+                        request: request,
+                        expectedBackend: backend
+                    )
+                )
             },
-            pause: { [weak self] id in
+            pause: { [weak self] request in
                 guard let self else {
                     throw MachineManagerError.persistence("machine manager is unavailable")
                 }
                 return MachineBackendRuntimeObservation(
                     try self.performAuthorizedResolvedBackendPause(
-                        id: id,
+                        request: request,
                         expectedBackend: backend
                     )
                 )
             },
-            resume: { [weak self] id in
+            resume: { [weak self] request in
                 guard let self else {
                     throw MachineManagerError.persistence("machine manager is unavailable")
                 }
                 return MachineBackendRuntimeObservation(
                     try self.performAuthorizedResolvedBackendResume(
-                        id: id,
+                        request: request,
                         expectedBackend: backend
                     )
                 )
@@ -1645,11 +1653,10 @@ public final class MachineManager: @unchecked Sendable {
     ) throws -> DoryMachineStatus {
         operationLock.lock()
         defer { operationLock.unlock() }
-        if operationID == UUID(uuidString: "00000000-0000-0000-0000-000000000000") {
-            throw MachineManagerError.persistence(
-                "machine start operation identifier cannot be zero"
-            )
-        }
+        let durableOperationID = try Self.lifecycleOperationID(
+            operationID,
+            action: "start"
+        )
         try requireNoActivePlanningMutation(id: id)
         lock.lock()
         guard let startEntry = machines[id] else {
@@ -1679,7 +1686,10 @@ public final class MachineManager: @unchecked Sendable {
         if isDurablySuspended {
             let directMutation = try retainDirectWorkspaceMutationLock(id: id)
             defer { releaseDirectWorkspaceMutationLock(id: id, retention: directMutation) }
-            return try restoreSavedStateImplementation(id: id)
+            return try restoreSavedStateImplementation(
+                id: id,
+                requestedOperationID: durableOperationID
+            )
         }
         try refreshResolvedAdmissionForStartIfNeeded(id: id)
         let directMutation = try retainDirectWorkspaceMutationLock(id: id)
@@ -1687,8 +1697,21 @@ public final class MachineManager: @unchecked Sendable {
         return try startImplementation(
             id: id,
             journalLifecycle: true,
-            requestedOperationID: operationID
+            requestedOperationID: durableOperationID
         )
+    }
+
+    private static func lifecycleOperationID(
+        _ requested: UUID?,
+        action: String
+    ) throws -> UUID {
+        let operationID = requested ?? UUID()
+        guard operationID != zeroLifecycleOperationID else {
+            throw MachineManagerError.persistence(
+                "machine \(action) operation identifier cannot be zero"
+            )
+        }
+        return operationID
     }
 
     private func startImplementation(
@@ -2903,25 +2926,73 @@ public final class MachineManager: @unchecked Sendable {
     }
 
     public func stop(id: String) throws -> DoryMachineStatus {
+        try stop(id: id, operationID: UUID())
+    }
+
+    public func stop(
+        id: String,
+        operationID: UUID
+    ) throws -> DoryMachineStatus {
         operationLock.lock()
         defer { operationLock.unlock() }
+        let durableOperationID = try Self.lifecycleOperationID(
+            operationID,
+            action: "stop"
+        )
         try requireNoActivePlanningMutation(id: id)
         try cancelActiveStartLifecycleIfNeeded(id: id, reason: "start.cancelled-by-stop")
         let directMutation = try retainDirectWorkspaceMutationLock(id: id)
         defer { releaseDirectWorkspaceMutationLock(id: id, retention: directMutation) }
-        return try stopImplementation(id: id, journalLifecycle: true)
+        let identity = try currentRuntimeIdentity(id: id)
+        guard identity.mode == .resolvedPlan else {
+            return try stopImplementation(
+                id: id,
+                journalLifecycle: true,
+                requestedOperationID: durableOperationID
+            )
+        }
+        guard let backend = identity.resolvedPlan?.backend,
+              let registry = resolvedLaunchRegistry else {
+            throw MachineManagerError.persistence(
+                "resolved stop infrastructure is not installed"
+            )
+        }
+        let result = registry.stop(.init(
+            machineID: id,
+            backend: backend,
+            operationID: durableOperationID
+        ))
+        guard result.isSuccess, result.observation?.machineID == id,
+              result.observation?.state == .stopped else {
+            throw MachineManagerError.persistence(
+                "resolved backend stop failed: "
+                    + (result.failure?.message ?? "backend returned no stopped observation")
+            )
+        }
+        return status(id: id) ?? DoryMachineStatus(id: id, state: .stopped)
     }
 
-    public func pause(id: String) throws -> DoryMachineStatus {
+    public func pause(
+        id: String,
+        operationID: UUID? = nil
+    ) throws -> DoryMachineStatus {
         operationLock.lock()
         defer { operationLock.unlock() }
+        let durableOperationID = try Self.lifecycleOperationID(
+            operationID,
+            action: "pause"
+        )
         try requireNoActivePlanningMutation(id: id)
         let directMutation = try retainDirectWorkspaceMutationLock(id: id)
         defer { releaseDirectWorkspaceMutationLock(id: id, retention: directMutation) }
         let identity = try currentRuntimeIdentity(id: id)
         switch identity.mode {
         case .legacyCompatibility:
-            return try pauseImplementation(id: id, journalLifecycle: true)
+            return try pauseImplementation(
+                id: id,
+                journalLifecycle: true,
+                requestedOperationID: durableOperationID
+            )
         case .requiresReplanning:
             throw MachineManagerError.persistence(
                 "machine \(id) requires replanning and cannot be paused"
@@ -2933,7 +3004,11 @@ public final class MachineManager: @unchecked Sendable {
                     "resolved pause infrastructure is not installed"
                 )
             }
-            let result = registry.pause(.init(machineID: id, backend: backend))
+            let result = registry.pause(.init(
+                machineID: id,
+                backend: backend,
+                operationID: durableOperationID
+            ))
             guard result.isSuccess, result.observation?.machineID == id,
                   result.observation?.state == .paused else {
                 throw MachineManagerError.persistence(
@@ -2945,9 +3020,16 @@ public final class MachineManager: @unchecked Sendable {
         }
     }
 
-    public func resume(id: String) throws -> DoryMachineStatus {
+    public func resume(
+        id: String,
+        operationID: UUID? = nil
+    ) throws -> DoryMachineStatus {
         operationLock.lock()
         defer { operationLock.unlock() }
+        let durableOperationID = try Self.lifecycleOperationID(
+            operationID,
+            action: "resume"
+        )
         try requireNoActivePlanningMutation(id: id)
         let directMutation = try retainDirectWorkspaceMutationLock(id: id)
         defer { releaseDirectWorkspaceMutationLock(id: id, retention: directMutation) }
@@ -2955,12 +3037,19 @@ public final class MachineManager: @unchecked Sendable {
         let isDurablySuspended = machines[id]?.state == .suspended
         lock.unlock()
         if isDurablySuspended {
-            return try restoreSavedStateImplementation(id: id)
+            return try restoreSavedStateImplementation(
+                id: id,
+                requestedOperationID: durableOperationID
+            )
         }
         let identity = try currentRuntimeIdentity(id: id)
         switch identity.mode {
         case .legacyCompatibility:
-            return try resumeImplementation(id: id, journalLifecycle: true)
+            return try resumeImplementation(
+                id: id,
+                journalLifecycle: true,
+                requestedOperationID: durableOperationID
+            )
         case .requiresReplanning:
             throw MachineManagerError.persistence(
                 "machine \(id) requires replanning and cannot be resumed"
@@ -2972,7 +3061,11 @@ public final class MachineManager: @unchecked Sendable {
                     "resolved resume infrastructure is not installed"
                 )
             }
-            let result = registry.resume(.init(machineID: id, backend: backend))
+            let result = registry.resume(.init(
+                machineID: id,
+                backend: backend,
+                operationID: durableOperationID
+            ))
             guard result.isSuccess, result.observation?.machineID == id,
                   result.observation?.state == .running else {
                 throw MachineManagerError.persistence(
@@ -3158,7 +3251,10 @@ public final class MachineManager: @unchecked Sendable {
         }
     }
 
-    private func restoreSavedStateImplementation(id: String) throws -> DoryMachineStatus {
+    private func restoreSavedStateImplementation(
+        id: String,
+        requestedOperationID: UUID? = nil
+    ) throws -> DoryMachineStatus {
         lock.lock()
         guard let entry = machines[id] else {
             lock.unlock()
@@ -3198,6 +3294,7 @@ public final class MachineManager: @unchecked Sendable {
             artifactEvidenceSHA256: manifest.stateFileSHA256
         )
         let lifecycle = try beginLifecycleOperation(
+            operationID: requestedOperationID,
             kind: .restoring,
             source: lifecycleCondition(
                 machine: machine,
@@ -3313,37 +3410,67 @@ public final class MachineManager: @unchecked Sendable {
         return try startImplementation(id: id, journalLifecycle: true)
     }
 
-    private func performAuthorizedResolvedBackendPause(
-        id: String,
+    private func performAuthorizedResolvedBackendStop(
+        request: MachineBackendRuntimeRequest,
         expectedBackend: DoryVirtualizationBackendIdentity
     ) throws -> DoryMachineStatus {
-        let identity = try currentRuntimeIdentity(id: id)
+        let identity = try currentRuntimeIdentity(id: request.machineID)
         guard identity.mode == .resolvedPlan,
+              request.backend == expectedBackend,
+              identity.resolvedPlan?.backend == expectedBackend else {
+            throw MachineManagerError.persistence(
+                "resolved stop adapter does not match durable runtime authority"
+            )
+        }
+        return try stopImplementation(
+            id: request.machineID,
+            journalLifecycle: true,
+            requestedOperationID: request.operationID
+        )
+    }
+
+    private func performAuthorizedResolvedBackendPause(
+        request: MachineBackendRuntimeRequest,
+        expectedBackend: DoryVirtualizationBackendIdentity
+    ) throws -> DoryMachineStatus {
+        let identity = try currentRuntimeIdentity(id: request.machineID)
+        guard identity.mode == .resolvedPlan,
+              request.backend == expectedBackend,
               identity.resolvedPlan?.backend == expectedBackend else {
             throw MachineManagerError.persistence(
                 "resolved pause adapter does not match durable runtime authority"
             )
         }
-        return try pauseImplementation(id: id, journalLifecycle: true)
+        return try pauseImplementation(
+            id: request.machineID,
+            journalLifecycle: true,
+            requestedOperationID: request.operationID
+        )
     }
 
     private func performAuthorizedResolvedBackendResume(
-        id: String,
+        request: MachineBackendRuntimeRequest,
         expectedBackend: DoryVirtualizationBackendIdentity
     ) throws -> DoryMachineStatus {
-        let identity = try currentRuntimeIdentity(id: id)
+        let identity = try currentRuntimeIdentity(id: request.machineID)
         guard identity.mode == .resolvedPlan,
+              request.backend == expectedBackend,
               identity.resolvedPlan?.backend == expectedBackend else {
             throw MachineManagerError.persistence(
                 "resolved resume adapter does not match durable runtime authority"
             )
         }
-        return try resumeImplementation(id: id, journalLifecycle: true)
+        return try resumeImplementation(
+            id: request.machineID,
+            journalLifecycle: true,
+            requestedOperationID: request.operationID
+        )
     }
 
     private func pauseImplementation(
         id: String,
-        journalLifecycle: Bool
+        journalLifecycle: Bool,
+        requestedOperationID: UUID? = nil
     ) throws -> DoryMachineStatus {
         lock.lock()
         guard let entry = machines[id] else {
@@ -3358,7 +3485,11 @@ public final class MachineManager: @unchecked Sendable {
         let runtimeIdentity = entry.runtimeIdentity
         lock.unlock()
         let lifecycle = try journalLifecycle
-            ? beginLifecyclePause(machine: machine, runtimeIdentity: runtimeIdentity)
+            ? beginLifecyclePause(
+                machine: machine,
+                runtimeIdentity: runtimeIdentity,
+                operationID: requestedOperationID
+            )
             : nil
         do {
             if let lifecycle { try advanceLifecycleToPublishing(lifecycle) }
@@ -3401,7 +3532,8 @@ public final class MachineManager: @unchecked Sendable {
 
     private func resumeImplementation(
         id: String,
-        journalLifecycle: Bool
+        journalLifecycle: Bool,
+        requestedOperationID: UUID? = nil
     ) throws -> DoryMachineStatus {
         lock.lock()
         guard let entry = machines[id] else {
@@ -3416,7 +3548,11 @@ public final class MachineManager: @unchecked Sendable {
         let runtimeIdentity = entry.runtimeIdentity
         lock.unlock()
         let lifecycle = try journalLifecycle
-            ? beginLifecycleResume(machine: machine, runtimeIdentity: runtimeIdentity)
+            ? beginLifecycleResume(
+                machine: machine,
+                runtimeIdentity: runtimeIdentity,
+                operationID: requestedOperationID
+            )
             : nil
         do {
             if let lifecycle { try advanceLifecycleToPublishing(lifecycle) }
@@ -3460,7 +3596,8 @@ public final class MachineManager: @unchecked Sendable {
     private func stopImplementation(
         id: String,
         journalLifecycle: Bool,
-        preserveResolvedAdmissionForRestart: Bool = false
+        preserveResolvedAdmissionForRestart: Bool = false,
+        requestedOperationID: UUID? = nil
     ) throws -> DoryMachineStatus {
         lock.lock()
         guard var entry = machines[id] else {
@@ -3479,7 +3616,8 @@ public final class MachineManager: @unchecked Sendable {
             ? beginLifecycleStop(
                 machine: machine,
                 runtimeIdentity: runtimeIdentity,
-                sourceState: sourceState
+                sourceState: sourceState,
+                operationID: requestedOperationID
             )
             : nil
         var stopCommitted = false
@@ -10095,9 +10233,11 @@ public final class MachineManager: @unchecked Sendable {
     private func beginLifecycleStop(
         machine: DoryMachineConfiguration,
         runtimeIdentity: DoryMachineRuntimeIdentity,
-        sourceState: DoryWorkspaceLifecycleState
+        sourceState: DoryWorkspaceLifecycleState,
+        operationID: UUID?
     ) throws -> MachineLifecycleJournalContext {
         try beginLifecycleOperation(
+            operationID: operationID,
             kind: .stopping,
             source: lifecycleCondition(
                 machine: machine,
@@ -10116,9 +10256,11 @@ public final class MachineManager: @unchecked Sendable {
 
     private func beginLifecyclePause(
         machine: DoryMachineConfiguration,
-        runtimeIdentity: DoryMachineRuntimeIdentity
+        runtimeIdentity: DoryMachineRuntimeIdentity,
+        operationID: UUID?
     ) throws -> MachineLifecycleJournalContext {
         try beginLifecycleOperation(
+            operationID: operationID,
             kind: .pausing,
             source: lifecycleCondition(
                 machine: machine,
@@ -10137,9 +10279,11 @@ public final class MachineManager: @unchecked Sendable {
 
     private func beginLifecycleResume(
         machine: DoryMachineConfiguration,
-        runtimeIdentity: DoryMachineRuntimeIdentity
+        runtimeIdentity: DoryMachineRuntimeIdentity,
+        operationID: UUID?
     ) throws -> MachineLifecycleJournalContext {
         try beginLifecycleOperation(
+            operationID: operationID,
             kind: .resuming,
             source: lifecycleCondition(
                 machine: machine,

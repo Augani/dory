@@ -306,8 +306,24 @@ public final class DorydService: NSObject, DorydControl {
         _ machineID: String,
         reply: @escaping (Bool, NSDictionary, String) -> Void
     ) {
+        machineStop(
+            machineID,
+            operationID: DoryOperationIdentity.canonical(UUID()),
+            reply: reply
+        )
+    }
+
+    public func machineStop(
+        _ machineID: String,
+        operationID: String,
+        reply: @escaping (Bool, NSDictionary, String) -> Void
+    ) {
+        guard let parsedOperationID = DoryOperationIdentity.parseCanonical(operationID) else {
+            reply(false, [:], "machine stop requires a canonical operation ID")
+            return
+        }
         machineControl(machineID, action: "stop", reply: reply) { manager, id in
-            try manager.stop(id: id)
+            try manager.stop(id: id, operationID: parsedOperationID)
         }
     }
 
@@ -315,8 +331,24 @@ public final class DorydService: NSObject, DorydControl {
         _ machineID: String,
         reply: @escaping (Bool, NSDictionary, String) -> Void
     ) {
+        machinePause(
+            machineID,
+            operationID: DoryOperationIdentity.canonical(UUID()),
+            reply: reply
+        )
+    }
+
+    public func machinePause(
+        _ machineID: String,
+        operationID: String,
+        reply: @escaping (Bool, NSDictionary, String) -> Void
+    ) {
+        guard let parsedOperationID = DoryOperationIdentity.parseCanonical(operationID) else {
+            reply(false, [:], "machine pause requires a canonical operation ID")
+            return
+        }
         machineControl(machineID, action: "pause", reply: reply) { manager, id in
-            try manager.pause(id: id)
+            try manager.pause(id: id, operationID: parsedOperationID)
         }
     }
 
@@ -333,8 +365,24 @@ public final class DorydService: NSObject, DorydControl {
         _ machineID: String,
         reply: @escaping (Bool, NSDictionary, String) -> Void
     ) {
+        machineResume(
+            machineID,
+            operationID: DoryOperationIdentity.canonical(UUID()),
+            reply: reply
+        )
+    }
+
+    public func machineResume(
+        _ machineID: String,
+        operationID: String,
+        reply: @escaping (Bool, NSDictionary, String) -> Void
+    ) {
+        guard let parsedOperationID = DoryOperationIdentity.parseCanonical(operationID) else {
+            reply(false, [:], "machine resume requires a canonical operation ID")
+            return
+        }
         machineControl(machineID, action: "resume", reply: reply) { manager, id in
-            try manager.resume(id: id)
+            try manager.resume(id: id, operationID: parsedOperationID)
         }
     }
 

@@ -1466,8 +1466,25 @@ final class DorydServiceTests: XCTestCase {
         XCTAssertFalse(startEvents.isEmpty)
         XCTAssertTrue(startEvents.allSatisfy { $0.operationID == startOperationToken })
 
+        let invalidPause = expectation(description: "machinePause invalid operation reply")
+        proxy.machinePause(
+            "dev",
+            operationID: "12345678-9ABC-4DEF-8012-3456789ABCDE"
+        ) { ok, body, message in
+            XCTAssertFalse(ok)
+            XCTAssertEqual(body.count, 0)
+            XCTAssertTrue(message.contains("canonical operation ID"), message)
+            invalidPause.fulfill()
+        }
+        wait(for: [invalidPause], timeout: 5)
+        XCTAssertEqual(manager.status(id: "dev")?.state, .running)
+
+        let pauseOperationID = UUID(
+            uuidString: "12345678-9abc-4def-8012-3456789abcde"
+        )!
+        let pauseOperationToken = DoryOperationIdentity.canonical(pauseOperationID)
         let pause = expectation(description: "machinePause reply")
-        proxy.machinePause("dev") { ok, body, message in
+        proxy.machinePause("dev", operationID: pauseOperationToken) { ok, body, message in
             XCTAssertTrue(ok, message)
             XCTAssertEqual(body["state"] as? String, "paused")
             XCTAssertNotNil(body["pid"])
@@ -1475,14 +1492,40 @@ final class DorydServiceTests: XCTestCase {
         }
         wait(for: [pause], timeout: 5)
 
+        let invalidResume = expectation(description: "machineResume invalid operation reply")
+        proxy.machineResume(
+            "dev",
+            operationID: "23456789-ABCD-4EF0-8123-456789ABCDEF"
+        ) { ok, body, message in
+            XCTAssertFalse(ok)
+            XCTAssertEqual(body.count, 0)
+            XCTAssertTrue(message.contains("canonical operation ID"), message)
+            invalidResume.fulfill()
+        }
+        wait(for: [invalidResume], timeout: 5)
+        XCTAssertEqual(manager.status(id: "dev")?.state, .paused)
+
+        let resumeOperationID = UUID(
+            uuidString: "23456789-abcd-4ef0-8123-456789abcdef"
+        )!
+        let resumeOperationToken = DoryOperationIdentity.canonical(resumeOperationID)
         let resume = expectation(description: "machineResume reply")
-        proxy.machineResume("dev") { ok, body, message in
+        proxy.machineResume("dev", operationID: resumeOperationToken) { ok, body, message in
             XCTAssertTrue(ok, message)
             XCTAssertEqual(body["state"] as? String, "running")
             XCTAssertNotNil(body["pid"])
             resume.fulfill()
         }
         wait(for: [resume], timeout: 5)
+        let lifecycleEvents = try manager.flightRecorder(id: "dev", afterSequence: 0).events
+        XCTAssertTrue(lifecycleEvents.contains {
+            $0.operationKind == DoryWorkspaceMutationKind.pausing.rawValue
+                && $0.operationID == pauseOperationToken
+        })
+        XCTAssertTrue(lifecycleEvents.contains {
+            $0.operationKind == DoryWorkspaceMutationKind.resuming.rawValue
+                && $0.operationID == resumeOperationToken
+        })
 
         let suspend = expectation(description: "machineSuspend fail-closed reply")
         proxy.machineSuspend("dev") { ok, body, message in
@@ -1517,13 +1560,35 @@ final class DorydServiceTests: XCTestCase {
         }
         wait(for: [list], timeout: 5)
 
+        let invalidStop = expectation(description: "machineStop invalid operation reply")
+        proxy.machineStop(
+            "dev",
+            operationID: "3456789A-BCDE-4F01-8234-56789ABCDEF0"
+        ) { ok, body, message in
+            XCTAssertFalse(ok)
+            XCTAssertEqual(body.count, 0)
+            XCTAssertTrue(message.contains("canonical operation ID"), message)
+            invalidStop.fulfill()
+        }
+        wait(for: [invalidStop], timeout: 5)
+        XCTAssertEqual(manager.status(id: "dev")?.state, .running)
+
+        let stopOperationID = UUID(
+            uuidString: "3456789a-bcde-4f01-8234-56789abcdef0"
+        )!
+        let stopOperationToken = DoryOperationIdentity.canonical(stopOperationID)
         let stop = expectation(description: "machineStop reply")
-        proxy.machineStop("dev") { ok, body, message in
+        proxy.machineStop("dev", operationID: stopOperationToken) { ok, body, message in
             XCTAssertTrue(ok, message)
             XCTAssertEqual(body["state"] as? String, "stopped")
             stop.fulfill()
         }
         wait(for: [stop], timeout: 5)
+        let stopEvents = try manager.flightRecorder(id: "dev", afterSequence: 0).events
+        XCTAssertTrue(stopEvents.contains {
+            $0.operationKind == DoryWorkspaceMutationKind.stopping.rawValue
+                && $0.operationID == stopOperationToken
+        })
 
         let update = expectation(description: "machineUpdate reply")
         proxy.machineUpdate("dev", config: [

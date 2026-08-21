@@ -107,13 +107,16 @@ final class MachineBackendTests: XCTestCase {
         XCTAssertEqual(recorder.launchBindings.first?.graphics, .hostAcceleratedDisplay)
         XCTAssertEqual(recorder.launchBindings.first?.devices, .minimumBootable)
 
+        let stopOperationID = UUID(uuidString: "12345678-9abc-4def-8012-3456789abcde")!
         let stopped = registry.stop(MachineBackendRuntimeRequest(
             machineID: plan.machine.id,
-            backend: .doryHypervisor
+            backend: .doryHypervisor,
+            operationID: stopOperationID
         ))
         XCTAssertTrue(stopped.isSuccess)
         XCTAssertEqual(stopped.observation?.state, .stopped)
         XCTAssertEqual(recorder.events, ["start:raw-linux", "stop:raw-linux"])
+        XCTAssertEqual(recorder.runtimeRequests.map(\.operationID), [stopOperationID])
     }
 
     func testRegistryPlansVZInstallerWithPlannerSelection() throws {
@@ -281,19 +284,41 @@ final class MachineBackendTests: XCTestCase {
     func testPauseAndResumeDispatchThroughTheSelectedBackend() {
         let recorder = recordingOperations()
         let backend = availableRawBackend(operations: recorder.operations)
-        let request = MachineBackendRuntimeRequest(
+        let zeroOperationID = UUID(
+            uuidString: "00000000-0000-0000-0000-000000000000"
+        )!
+        let invalid = backend.pause(MachineBackendRuntimeRequest(
             machineID: "raw-linux",
-            backend: .doryHypervisor
+            backend: .doryHypervisor,
+            operationID: zeroOperationID
+        ))
+        XCTAssertEqual(invalid.failure?.code, .lifecycleOperationIdentityInvalid)
+        XCTAssertTrue(recorder.events.isEmpty)
+        let pauseOperationID = UUID(uuidString: "23456789-abcd-4ef0-8123-456789abcdef")!
+        let pauseRequest = MachineBackendRuntimeRequest(
+            machineID: "raw-linux",
+            backend: .doryHypervisor,
+            operationID: pauseOperationID
         )
 
-        let paused = backend.pause(request)
+        let paused = backend.pause(pauseRequest)
         XCTAssertTrue(paused.isSuccess)
         XCTAssertEqual(paused.observation?.state, .paused)
 
-        let resumed = backend.resume(request)
+        let resumeOperationID = UUID(uuidString: "3456789a-bcde-4f01-8234-56789abcdef0")!
+        let resumeRequest = MachineBackendRuntimeRequest(
+            machineID: "raw-linux",
+            backend: .doryHypervisor,
+            operationID: resumeOperationID
+        )
+        let resumed = backend.resume(resumeRequest)
         XCTAssertTrue(resumed.isSuccess)
         XCTAssertEqual(resumed.observation?.state, .running)
         XCTAssertEqual(recorder.events, ["pause:raw-linux", "resume:raw-linux"])
+        XCTAssertEqual(
+            recorder.runtimeRequests.map(\.operationID),
+            [pauseOperationID, resumeOperationID]
+        )
     }
 
     func testBackendPlanRoundTripsWithPlannerCapabilityEvidence() throws {
@@ -394,6 +419,7 @@ private final class OperationRecorder: @unchecked Sendable {
     private let lock = NSLock()
     private var recordedEvents: [String] = []
     private var recordedLaunchBindings: [MachineBackendLaunchBinding] = []
+    private var recordedRuntimeRequests: [MachineBackendRuntimeRequest] = []
 
     var events: [String] {
         lock.withLock { recordedEvents }
@@ -401,6 +427,10 @@ private final class OperationRecorder: @unchecked Sendable {
 
     var launchBindings: [MachineBackendLaunchBinding] {
         lock.withLock { recordedLaunchBindings }
+    }
+
+    var runtimeRequests: [MachineBackendRuntimeRequest] {
+        lock.withLock { recordedRuntimeRequests }
     }
 
     lazy var operations = MachineBackendCompatibilityOperations(
@@ -412,28 +442,31 @@ private final class OperationRecorder: @unchecked Sendable {
                 processIdentifier: 42
             )
         },
-        stop: { [weak self] id in
-            self?.append("stop:\(id)")
-            return MachineBackendRuntimeObservation(machineID: id, state: .stopped)
+        stop: { [weak self] request in
+            self?.append(request, event: "stop")
+            return MachineBackendRuntimeObservation(machineID: request.machineID, state: .stopped)
         },
-        pause: { [weak self] id in
-            self?.append("pause:\(id)")
-            return MachineBackendRuntimeObservation(machineID: id, state: .paused)
+        pause: { [weak self] request in
+            self?.append(request, event: "pause")
+            return MachineBackendRuntimeObservation(machineID: request.machineID, state: .paused)
         },
-        resume: { [weak self] id in
-            self?.append("resume:\(id)")
-            return MachineBackendRuntimeObservation(machineID: id, state: .running)
+        resume: { [weak self] request in
+            self?.append(request, event: "resume")
+            return MachineBackendRuntimeObservation(machineID: request.machineID, state: .running)
         }
     )
-
-    private func append(_ event: String) {
-        lock.withLock { recordedEvents.append(event) }
-    }
 
     private func append(_ binding: MachineBackendLaunchBinding) {
         lock.withLock {
             recordedLaunchBindings.append(binding)
             recordedEvents.append("start:\(binding.machineID)")
+        }
+    }
+
+    private func append(_ request: MachineBackendRuntimeRequest, event: String) {
+        lock.withLock {
+            recordedRuntimeRequests.append(request)
+            recordedEvents.append("\(event):\(request.machineID)")
         }
     }
 }

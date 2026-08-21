@@ -1,7 +1,12 @@
 import DoryOperations
 import Foundation
 
-public typealias MachineBackendLifecycleHandler = @Sendable (String) throws -> MachineBackendRuntimeObservation
+public typealias MachineBackendLegacyStartHandler = @Sendable (
+    String
+) throws -> MachineBackendRuntimeObservation
+public typealias MachineBackendLifecycleHandler = @Sendable (
+    MachineBackendRuntimeRequest
+) throws -> MachineBackendRuntimeObservation
 public typealias MachineBackendAuthorizedStartHandler = @Sendable (
     MachineBackendLaunchBinding
 ) throws -> MachineBackendRuntimeObservation
@@ -9,14 +14,14 @@ public typealias MachineBackendAuthorizedStartHandler = @Sendable (
 /// Hooks implemented by the existing machine launcher. Keeping them injectable lets the seam be
 /// qualified before MachineManager starts consuming BackendRegistry.
 public struct MachineBackendCompatibilityOperations: Sendable {
-    public var start: MachineBackendLifecycleHandler
+    public var start: MachineBackendLegacyStartHandler
     public var authorizedStart: MachineBackendAuthorizedStartHandler
     public var stop: MachineBackendLifecycleHandler
     public var pause: MachineBackendLifecycleHandler
     public var resume: MachineBackendLifecycleHandler
 
     public init(
-        start: @escaping MachineBackendLifecycleHandler,
+        start: @escaping MachineBackendLegacyStartHandler,
         stop: @escaping MachineBackendLifecycleHandler,
         pause: @escaping MachineBackendLifecycleHandler,
         resume: @escaping MachineBackendLifecycleHandler
@@ -188,6 +193,13 @@ private final class LinuxMachineBackendAdapterCore: @unchecked Sendable {
 
     func start(_ request: MachineBackendStartRequest) -> MachineBackendOperationResult {
         let plan = request.plan
+        guard request.hasValidOperationIdentity else {
+            return failedOperation(
+                .start,
+                code: .lifecycleOperationIdentityInvalid,
+                message: "The start request has no valid durable operation identity."
+            )
+        }
         guard plan.backend == descriptor,
               plan.capability.request.backend == descriptor.identity else {
             return failedOperation(
@@ -234,6 +246,13 @@ private final class LinuxMachineBackendAdapterCore: @unchecked Sendable {
     }
 
     func stop(_ request: MachineBackendRuntimeRequest) -> MachineBackendOperationResult {
+        guard request.hasValidOperationIdentity else {
+            return failedOperation(
+                .stop,
+                code: .lifecycleOperationIdentityInvalid,
+                message: "The stop request has no valid durable operation identity."
+            )
+        }
         guard request.backend == descriptor.identity else {
             return failedOperation(
                 .stop,
@@ -244,10 +263,17 @@ private final class LinuxMachineBackendAdapterCore: @unchecked Sendable {
         guard descriptor.lifecycle.stop else {
             return unsupportedOperation(.stop)
         }
-        return perform(.stop, machineID: request.machineID, operation: operations.stop)
+        return perform(.stop, request: request, operation: operations.stop)
     }
 
     func pause(_ request: MachineBackendRuntimeRequest) -> MachineBackendOperationResult {
+        guard request.hasValidOperationIdentity else {
+            return failedOperation(
+                .pause,
+                code: .lifecycleOperationIdentityInvalid,
+                message: "The pause request has no valid durable operation identity."
+            )
+        }
         guard request.backend == descriptor.identity else {
             return failedOperation(
                 .pause,
@@ -258,10 +284,17 @@ private final class LinuxMachineBackendAdapterCore: @unchecked Sendable {
         guard descriptor.lifecycle.pause else {
             return unsupportedOperation(.pause)
         }
-        return perform(.pause, machineID: request.machineID, operation: operations.pause)
+        return perform(.pause, request: request, operation: operations.pause)
     }
 
     func resume(_ request: MachineBackendRuntimeRequest) -> MachineBackendOperationResult {
+        guard request.hasValidOperationIdentity else {
+            return failedOperation(
+                .resume,
+                code: .lifecycleOperationIdentityInvalid,
+                message: "The resume request has no valid durable operation identity."
+            )
+        }
         guard request.backend == descriptor.identity else {
             return failedOperation(
                 .resume,
@@ -272,7 +305,7 @@ private final class LinuxMachineBackendAdapterCore: @unchecked Sendable {
         guard descriptor.lifecycle.resume else {
             return unsupportedOperation(.resume)
         }
-        return perform(.resume, machineID: request.machineID, operation: operations.resume)
+        return perform(.resume, request: request, operation: operations.resume)
     }
 
     private func unavailableProbe(
@@ -308,14 +341,14 @@ private final class LinuxMachineBackendAdapterCore: @unchecked Sendable {
 
     private func perform(
         _ operation: MachineBackendLifecycleOperation,
-        machineID: String,
+        request: MachineBackendRuntimeRequest,
         operation handler: MachineBackendLifecycleHandler
     ) -> MachineBackendOperationResult {
         do {
             return MachineBackendOperationResult(
                 operation: operation,
                 backend: descriptor.identity,
-                observation: try handler(machineID),
+                observation: try handler(request),
                 failure: nil
             )
         } catch {

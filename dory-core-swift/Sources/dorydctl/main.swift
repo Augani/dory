@@ -1330,12 +1330,16 @@ func runMachine(cursor: inout ArgumentCursor, client: DorydCtlClient) throws {
         })
     case "stop":
         let name = try cursor.take("usage: dorydctl machine stop NAME")
+        let operationID = DoryOperationIdentity.canonical(UUID())
         try emitJSON(try client.withTimeout(atLeast: engineShutdownTimeout).statusCommand {
-            $0.machineStop(name, reply: $1)
+            $0.machineStop(name, operationID: operationID, reply: $1)
         })
     case "pause":
         let name = try cursor.take("usage: dorydctl machine pause NAME")
-        try emitJSON(try client.statusCommand { $0.machinePause(name, reply: $1) })
+        let operationID = DoryOperationIdentity.canonical(UUID())
+        try emitJSON(try client.statusCommand {
+            $0.machinePause(name, operationID: operationID, reply: $1)
+        })
     case "suspend":
         let name = try cursor.take("usage: dorydctl machine suspend NAME")
         try emitJSON(try client.withTimeout(atLeast: machineFileMutationTimeout).statusCommand {
@@ -1343,7 +1347,10 @@ func runMachine(cursor: inout ArgumentCursor, client: DorydCtlClient) throws {
         })
     case "resume":
         let name = try cursor.take("usage: dorydctl machine resume NAME")
-        try emitJSON(try client.statusCommand { $0.machineResume(name, reply: $1) })
+        let operationID = DoryOperationIdentity.canonical(UUID())
+        try emitJSON(try client.statusCommand {
+            $0.machineResume(name, operationID: operationID, reply: $1)
+        })
     case "restart":
         let name = try cursor.take("usage: dorydctl machine restart NAME")
         try emitJSON(try client.withTimeout(atLeast: engineShutdownTimeout).statusCommand {

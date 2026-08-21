@@ -74,6 +74,7 @@ public enum MachineBackendFailureCode: String, Codable, Sendable, Equatable, Has
     case bootMediaUnsupported = "boot-media-unsupported"
     case machineConfigurationIncompatible = "machine-configuration-incompatible"
     case lifecycleOperationUnsupported = "lifecycle-operation-unsupported"
+    case lifecycleOperationIdentityInvalid = "lifecycle-operation-identity-invalid"
     case lifecycleOperationFailed = "lifecycle-operation-failed"
 }
 
@@ -197,10 +198,21 @@ public struct MachineBackendRuntimeObservation: Codable, Sendable, Equatable, Ha
 public struct MachineBackendRuntimeRequest: Codable, Sendable, Equatable, Hashable {
     public var machineID: String
     public var backend: DoryVirtualizationBackendIdentity
+    /// Durable lifecycle authority minted before dispatch. Adapters must carry this exact UUID
+    /// back into the manager operation; allocating an adapter-local replacement is forbidden.
+    public var operationID: UUID
+    public var hasValidOperationIdentity: Bool {
+        operationID.uuidString != "00000000-0000-0000-0000-000000000000"
+    }
 
-    public init(machineID: String, backend: DoryVirtualizationBackendIdentity) {
+    public init(
+        machineID: String,
+        backend: DoryVirtualizationBackendIdentity,
+        operationID: UUID
+    ) {
         self.machineID = machineID
         self.backend = backend
+        self.operationID = operationID
     }
 }
 
@@ -244,6 +256,9 @@ public struct MachineBackendLaunchBinding: Sendable, Equatable {
 public struct MachineBackendStartRequest: Sendable, Equatable {
     public var plan: MachineBackendPlan
     public var operationID: UUID
+    public var hasValidOperationIdentity: Bool {
+        operationID.uuidString != "00000000-0000-0000-0000-000000000000"
+    }
 
     public init(plan: MachineBackendPlan, operationID: UUID) {
         self.plan = plan
@@ -354,6 +369,18 @@ public struct BackendRegistry: Sendable {
     }
 
     public func start(_ request: MachineBackendStartRequest) -> MachineBackendOperationResult {
+        guard request.hasValidOperationIdentity else {
+            return MachineBackendOperationResult(
+                operation: .start,
+                backend: request.plan.backend.identity,
+                observation: nil,
+                failure: MachineBackendFailure(
+                    code: .lifecycleOperationIdentityInvalid,
+                    backend: request.plan.backend.identity,
+                    message: "The start request has no valid durable operation identity."
+                )
+            )
+        }
         guard let backend = backends[request.plan.backend.identity] else {
             return missingBackendResult(operation: .start, identity: request.plan.backend.identity)
         }
@@ -388,6 +415,18 @@ public struct BackendRegistry: Sendable {
         request: MachineBackendRuntimeRequest,
         action: (any MachineBackend) -> MachineBackendOperationResult
     ) -> MachineBackendOperationResult {
+        guard request.hasValidOperationIdentity else {
+            return MachineBackendOperationResult(
+                operation: operation,
+                backend: request.backend,
+                observation: nil,
+                failure: MachineBackendFailure(
+                    code: .lifecycleOperationIdentityInvalid,
+                    backend: request.backend,
+                    message: "The runtime request has no valid durable operation identity."
+                )
+            )
+        }
         guard let backend = backends[request.backend] else {
             return missingBackendResult(operation: operation, identity: request.backend)
         }

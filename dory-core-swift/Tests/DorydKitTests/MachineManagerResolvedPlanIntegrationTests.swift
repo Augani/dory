@@ -81,7 +81,41 @@ struct MachineManagerResolvedPlanIntegrationTests {
             #expect(!xpcText.contains("/bin/sleep"))
             #expect(!xpcText.contains(state))
             #expect(FileManager.default.fileExists(atPath: state + "/dev/machine.json"))
-            _ = try manager.stop(id: "dev")
+            let pauseOperationID = UUID(
+                uuidString: "12345678-9abc-4def-8012-3456789abcde"
+            )!
+            #expect(try manager.pause(
+                id: "dev",
+                operationID: pauseOperationID
+            ).state == .paused)
+            let resumeOperationID = UUID(
+                uuidString: "23456789-abcd-4ef0-8123-456789abcdef"
+            )!
+            #expect(try manager.resume(
+                id: "dev",
+                operationID: resumeOperationID
+            ).state == .running)
+            let stopOperationID = UUID(
+                uuidString: "3456789a-bcde-4f01-8234-56789abcdef0"
+            )!
+            #expect(try manager.stop(
+                id: "dev",
+                operationID: stopOperationID
+            ).state == .stopped)
+            let lifecycleEvents = try manager.flightRecorder(
+                id: "dev",
+                afterSequence: 0
+            ).events
+            for (kind, operationID) in [
+                (DoryWorkspaceMutationKind.pausing, pauseOperationID),
+                (DoryWorkspaceMutationKind.resuming, resumeOperationID),
+                (DoryWorkspaceMutationKind.stopping, stopOperationID),
+            ] {
+                #expect(lifecycleEvents.contains {
+                    $0.operationKind == kind.rawValue
+                        && $0.operationID == DoryOperationIdentity.canonical(operationID)
+                })
+            }
             let snapshot = try manager.snapshot(id: "dev", snapshotID: "evidence")
             #expect(snapshot.runtimeIdentity == status.runtimeIdentity)
             #expect(snapshot.artifactEvidence?.rootfs.sha256.count == 64)

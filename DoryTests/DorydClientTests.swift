@@ -1105,8 +1105,24 @@ struct DorydClientTests {
             service.latestMachineStartOperationID
                 == startOperationID.uuidString.lowercased()
         )
-        let pausedMachine = try await client.machinePause("dev")
-        let resumedMachine = try await client.machineResume("dev")
+        let pauseOperationID = UUID(uuidString: "12345678-9abc-4def-8012-3456789abcde")!
+        let pausedMachine = try await client.machinePause(
+            "dev",
+            operationID: pauseOperationID
+        )
+        #expect(
+            service.latestMachinePauseOperationID
+                == pauseOperationID.uuidString.lowercased()
+        )
+        let resumeOperationID = UUID(uuidString: "23456789-abcd-4ef0-8123-456789abcdef")!
+        let resumedMachine = try await client.machineResume(
+            "dev",
+            operationID: resumeOperationID
+        )
+        #expect(
+            service.latestMachineResumeOperationID
+                == resumeOperationID.uuidString.lowercased()
+        )
         let restartedMachine = try await client.machineRestart("dev")
         let machineStats = try await client.machineStats("dev")
         let execResult = try await client.machineExec("dev", argv: ["/bin/sh", "-lc", "cargo --version"])
@@ -1133,7 +1149,15 @@ struct DorydClientTests {
         let completedBackup = try await client.machineBackupRun(machineID: "dev")
         let removedBackup = try await client.machineBackupRemove(machineID: "dev")
         let deletedSnapshot = try await client.machineDeleteSnapshot(machineID: "dev", snapshotID: "s1")
-        let stoppedMachine = try await client.machineStop("dev")
+        let stopOperationID = UUID(uuidString: "3456789a-bcde-4f01-8234-56789abcdef0")!
+        let stoppedMachine = try await client.machineStop(
+            "dev",
+            operationID: stopOperationID
+        )
+        #expect(
+            service.latestMachineStopOperationID
+                == stopOperationID.uuidString.lowercased()
+        )
         let updatedMachine = try await client.machineUpdate(
             "dev",
             memoryMB: 4096,
@@ -3853,9 +3877,12 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
     private var _machineStartCount = 0
     private var _latestMachineStartOperationID: String?
     private var _machineStopCount = 0
+    private var _latestMachineStopOperationID: String?
     private var _machinePauseCount = 0
+    private var _latestMachinePauseOperationID: String?
     private var _machineSuspendCount = 0
     private var _machineResumeCount = 0
+    private var _latestMachineResumeOperationID: String?
     private var _machineRestartCount = 0
     private var _machineDeleteCount = 0
     private var _machineDeleteOK = true
@@ -4020,6 +4047,21 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
     var latestMachineStartOperationID: String? {
         lock.lock(); defer { lock.unlock() }
         return _latestMachineStartOperationID
+    }
+
+    var latestMachineStopOperationID: String? {
+        lock.lock(); defer { lock.unlock() }
+        return _latestMachineStopOperationID
+    }
+
+    var latestMachinePauseOperationID: String? {
+        lock.lock(); defer { lock.unlock() }
+        return _latestMachinePauseOperationID
+    }
+
+    var latestMachineResumeOperationID: String? {
+        lock.lock(); defer { lock.unlock() }
+        return _latestMachineResumeOperationID
     }
 
     func setMachineEnvironment(_ machineID: String, _ environment: [String: String]) {
@@ -4492,6 +4534,17 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
         reply(true, row, "")
     }
 
+    func machineStop(
+        _ machineID: String,
+        operationID: String,
+        reply: @escaping (Bool, NSDictionary, String) -> Void
+    ) {
+        lock.lock()
+        _latestMachineStopOperationID = operationID
+        lock.unlock()
+        machineStop(machineID, reply: reply)
+    }
+
     func machinePause(_ machineID: String, reply: @escaping (Bool, NSDictionary, String) -> Void) {
         lock.lock()
         let current = machines[machineID]
@@ -4512,6 +4565,17 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
         machines[machineID] = row
         lock.unlock()
         reply(true, row, "")
+    }
+
+    func machinePause(
+        _ machineID: String,
+        operationID: String,
+        reply: @escaping (Bool, NSDictionary, String) -> Void
+    ) {
+        lock.lock()
+        _latestMachinePauseOperationID = operationID
+        lock.unlock()
+        machinePause(machineID, reply: reply)
     }
 
     func machineSuspend(_ machineID: String, reply: @escaping (Bool, NSDictionary, String) -> Void) {
@@ -4554,6 +4618,17 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
         machines[machineID] = row
         lock.unlock()
         reply(true, row, "")
+    }
+
+    func machineResume(
+        _ machineID: String,
+        operationID: String,
+        reply: @escaping (Bool, NSDictionary, String) -> Void
+    ) {
+        lock.lock()
+        _latestMachineResumeOperationID = operationID
+        lock.unlock()
+        machineResume(machineID, reply: reply)
     }
 
     func machineRestart(_ machineID: String, reply: @escaping (Bool, NSDictionary, String) -> Void) {

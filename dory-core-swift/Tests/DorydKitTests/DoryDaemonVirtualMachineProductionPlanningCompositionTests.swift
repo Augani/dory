@@ -173,9 +173,15 @@ private final class CompositionFixture: @unchecked Sendable {
             executablePath: "/fixture/dory-hv",
             operations: MachineBackendCompatibilityOperations(
                 start: { id in MachineBackendRuntimeObservation(machineID: id, state: .running) },
-                stop: { id in MachineBackendRuntimeObservation(machineID: id, state: .stopped) },
-                pause: { id in MachineBackendRuntimeObservation(machineID: id, state: .paused) },
-                resume: { id in MachineBackendRuntimeObservation(machineID: id, state: .running) }
+                stop: { request in
+                    MachineBackendRuntimeObservation(machineID: request.machineID, state: .stopped)
+                },
+                pause: { request in
+                    MachineBackendRuntimeObservation(machineID: request.machineID, state: .paused)
+                },
+                resume: { request in
+                    MachineBackendRuntimeObservation(machineID: request.machineID, state: .running)
+                }
             ),
             executableIsAvailable: { _ in true }
         )
